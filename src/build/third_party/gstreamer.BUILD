@@ -82,9 +82,9 @@ cc_library(
     }) + [
         "-Lexternal/lib/x86_64-linux-gnu",
         "-Wl,--start-group",
-        "-l:libgstreamer-1.0.so",
-        "-l:libgstbase-1.0.so",
-        "-l:libgstvideo-1.0.so",
+        "-l:/usr/local/lib/x86_64-linux-gnu/libgstreamer-1.0.so",
+        "-l:/usr/local/lib/x86_64-linux-gnu/libgstbase-1.0.so",
+        "-l:/usr/local/lib/x86_64-linux-gnu/libgstvideo-1.0.so",
         "-Wl,--end-group",
     ],
     visibility = ["//visibility:public"],
@@ -109,8 +109,15 @@ void gst_allocator_register() {}
 void gst_allocator_set_default() {}
 void gst_atomic_queue_get_type() {}
 void gst_atomic_queue_length() {}
+void gst_meta_register_custom_simple() {}
+void gst_event_parse_gap_flags() {}
 void gst_atomic_queue_new() {}
 void gst_atomic_queue_peek() {}
+void _gst_meta_tag_memory_reference() {}
+void gst_message_new_instant_rate_request() {}
+void gst_event_parse_instant_rate_sync_time() {}
+void gst_buffer_add_custom_meta() {}
+void gst_event_parse_instant_rate_change() {}
 void gst_atomic_queue_pop() {}
 void gst_atomic_queue_push() {}
 void gst_atomic_queue_ref() {}
