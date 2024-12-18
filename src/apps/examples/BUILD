@@ -1,13 +1,11 @@
 cc_binary(
     name = "basic-tutorial",
     srcs = [
-      "basic-tutorial.cpp",
+      "basic-tutorial.c",
     ],
-    linkopts=[
-      # "-Wl,--unresolved-symbols=ignore-all",
-      # "-Wl,-t",
-      # "-Wl,-L/usr/local/lib/x86_64-linux-gnu",
-      # "-Wl,-L/usr/local/lib",
+    copts = [
+      "-x", "c",
+      "-Wno-error=write-strings",
     ],
     deps = [
         "@glib",

@@ -24,35 +24,6 @@ config_setting(
   define_values = {"multiarch": "x86_64-linux-gnu"},
 )
 
-# cc_library(
-#   name = "opencv",
-#   hdrs = glob([
-#       "opencv4/opencv2/**/*.h*",
-#   ]) + select({
-#     ":aarch64-linux-gnu":   ["aarch64-linux-gnu/opencv4/opencv2/cvconfig.h"],
-#     ":x86_64-linux-gnu":    ["x86_64-linux-gnu/opencv4/opencv2/cvconfig.h"],
-#     "//conditions:default": [],
-#   }),
-#   includes = [
-#       "opencv4",
-#   ] + select({
-#     ":aarch64-linux-gnu":   ["aarch64-linux-gnu/opencv4"],
-#     ":x86_64-linux-gnu":    ["x86_64-linux-gnu/opencv4"],
-#     "//conditions:default": [],
-#   }),
-#   linkopts = [
-#     "-l:libopencv_core.so",
-#     "-l:libopencv_calib3d.so",
-#     "-l:libopencv_features2d.so",
-#     "-l:libopencv_highgui.so",
-#     "-l:libopencv_imgcodecs.so",
-#     "-l:libopencv_imgproc.so",
-#     "-l:libopencv_video.so",
-#     "-l:libopencv_videoio.so",
-#   ],
-#   visibility = ["//visibility:public"],
-# )
-
 cc_binary(
     name = "libgstreamer-1.0.so",
     srcs = ["gst_stub"],
@@ -80,7 +51,6 @@ cc_library(
       ":x86_64-linux-gnu":    ["-Lexternal/lib/x86_64-linux-gnu/opencv4"],
       "//conditions:default": [],
     }) + [
-        "-Lexternal/lib/x86_64-linux-gnu",
         "-Wl,--start-group",
         "-l:/usr/local/lib/x86_64-linux-gnu/libgstreamer-1.0.so",
         "-l:/usr/local/lib/x86_64-linux-gnu/libgstbase-1.0.so",
