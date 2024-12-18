@@ -16,6 +16,7 @@ def gst_cc_plugin(
             "@deepstream_lib",
             "@deepstream_apps_common",
             "@gstreamer",
+            "@yaml-cpp",
             "@local_cuda//:cuda_runtime",
         ],
         linkopts = linkopts + ["-Wl,-no-undefined"],

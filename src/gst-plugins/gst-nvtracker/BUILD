@@ -47,24 +47,3 @@ cc_binary(
     visibility = ["//visibility:public"],
     linkshared = True,
 )
-
-# register_extension(
-#     name = "register_nvtracker_ext",
-#     badges = [""],
-#     extension = "nvtracker",
-#     labels = [
-#         "nvidia",
-#         "gpu",
-#         "deepstream",
-#     ],
-#     ngc_dependencies = {
-#         "NvDsBaseExt": "1.6.0",
-#     },
-#     priority = "1",
-#     git_repository = "",
-#     compute_dependencies = ["deepstream"],
-#     url = "www.example.com",
-#     uuid = "1ca0f521-371e-3c65-80fd-0b6a7cac4082",
-#     version = "0.0.1",
-#     visibility = ["//visibility:public"],
-# )

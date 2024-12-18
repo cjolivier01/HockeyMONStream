@@ -1,9 +1,7 @@
-
-load("@com_extension_dev//build:graph_extension.bzl", "graph_cc_extension")
+load("@gst_plugin_dev//build:gst_plugin.bzl", "gst_cc_plugin")
 load("@com_extension_dev//build:registry.bzl", "register_extension")
 load("@rules_cuda//cuda:defs.bzl", "cuda_library", "requires_cuda")
 
-exports_files(["LICENSE"])
 
 cc_binary(
     name = "nvdsgst_infer",
@@ -31,5 +29,4 @@ cc_binary(
         "@local_cuda//:cuda_runtime",
     ],
     visibility = ["//visibility:public"],
-    linkshared = True,
 )
