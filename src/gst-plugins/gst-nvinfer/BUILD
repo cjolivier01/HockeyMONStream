@@ -1,9 +1,9 @@
 load("@gst_plugin_dev//build:gst_plugin.bzl", "gst_cc_plugin")
-load("@com_extension_dev//build:registry.bzl", "register_extension")
-load("@rules_cuda//cuda:defs.bzl", "cuda_library", "requires_cuda")
+# load("@com_extension_dev//build:registry.bzl", "register_extension")
+# load("@rules_cuda//cuda:defs.bzl", "cuda_library", "requires_cuda")
 
 
-cc_binary(
+gst_cc_plugin(
     name = "nvdsgst_infer",
     srcs = glob([
         "*.cpp",
@@ -14,19 +14,9 @@ cc_binary(
       "-Wno-error=deprecated-declarations",
     ],
     linkopts=[
-      "-shared",
       "-l:/home/colivier/src/hmdeepstream/deepstream/sources/libs/nvdsinfer/libnvds_infer.so",
     ],
     deps = [
-        "@deepstream_lib",
-        "@deepstream_apps_common",
-        "@NvDsBaseExt",
-        "@NvDsInterfaceExt",
-        "@StandardExtension",
-        "@glib",
-        "@gstreamer",
-        "@yaml-cpp",
-        "@local_cuda//:cuda_runtime",
     ],
     visibility = ["//visibility:public"],
 )

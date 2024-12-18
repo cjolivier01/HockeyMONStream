@@ -18,6 +18,7 @@ def gst_cc_plugin(
             "@gstreamer",
             "@yaml-cpp",
             "@local_cuda//:cuda_runtime",
+            "@local_cuda//:cuda",
         ],
         linkopts = linkopts + ["-Wl,-no-undefined"],
         linkshared = True,
