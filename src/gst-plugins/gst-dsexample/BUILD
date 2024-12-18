@@ -1,6 +1,9 @@
 load("@com_extension_dev//build:graph_extension.bzl", "graph_cc_extension")
 load("@com_extension_dev//build:registry.bzl", "register_extension")
 load("@rules_cuda//cuda:defs.bzl", "cuda_library", "requires_cuda")
+load("@gst_plugin_dev//build:gst_plugin.bzl", "gst_cc_plugin")
+
+# gst_cc_extension
 
 exports_files(["LICENSE"])
 
@@ -15,7 +18,8 @@ exports_files(["LICENSE"])
 
 #graph_cc_extension(
 #cc_library(
-cc_binary(
+#cc_binary(
+gst_cc_plugin(
     name = "nvdsgst_dsexample",
     srcs = [
       "gstdsexample.cpp", "dsexample_lib.c", "gstdsexample.h", "dsexample_lib.h",
@@ -33,18 +37,17 @@ cc_binary(
     ],
     deps = [
         #"//extensions/includes:deepstream_headers",
-        "@deepstream_lib",
-        "@deepstream_apps_common",
+        # "@deepstream_lib",
+        # "@deepstream_apps_common",
         "@NvDsBaseExt",
         "@NvDsInterfaceExt",
         "@StandardExtension",
-        "@glib",
-        "@gstreamer",
-        "@local_cuda//:cuda_runtime",
+        # "@glib",
+        # "@gstreamer",
+        # "@local_cuda//:cuda_runtime",
         "@opencv_linux//:opencv",
     ],
     visibility = ["//visibility:public"],
-    linkshared = True,
 )
 
 # graph_cc_extension(
