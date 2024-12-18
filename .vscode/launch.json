@@ -58,7 +58,7 @@
       "cwd": "${workspaceFolder}/src",
       "program": "/usr/bin/gxe",
       "args": [
-        "-app", "${workspaceFolder}/src/apps/app-2.yaml",
+        "-app", "${workspaceFolder}/apps/app-2.yaml",
         //"-manifest", "${workspaceFolder}/src/manifest.yaml",
         "-manifest", "/tmp/ds.app-2/manifest.yaml",
       ],
