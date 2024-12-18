@@ -34,189 +34,169 @@
 #include "config.h"
 #endif
 
-#include <gst/gst.h>
-#include <gst/audio/gstaudiofilter.h>
 #include "gstgstaudiofilter.h"
+#include <gst/audio/gstaudiofilter.h>
+#include <gst/gst.h>
 
-GST_DEBUG_CATEGORY_STATIC (gst_gst_audio_filter_debug_category);
+GST_DEBUG_CATEGORY_STATIC(gst_gst_audio_filter_debug_category);
 #define GST_CAT_DEFAULT gst_gst_audio_filter_debug_category
 
 /* prototypes */
 
+static void gst_gst_audio_filter_set_property(GObject *object,
+                                              guint property_id,
+                                              const GValue *value,
+                                              GParamSpec *pspec);
+static void gst_gst_audio_filter_get_property(GObject *object,
+                                              guint property_id, GValue *value,
+                                              GParamSpec *pspec);
+static void gst_gst_audio_filter_dispose(GObject *object);
+static void gst_gst_audio_filter_finalize(GObject *object);
 
-static void gst_gst_audio_filter_set_property (GObject * object,
-    guint property_id, const GValue * value, GParamSpec * pspec);
-static void gst_gst_audio_filter_get_property (GObject * object,
-    guint property_id, GValue * value, GParamSpec * pspec);
-static void gst_gst_audio_filter_dispose (GObject * object);
-static void gst_gst_audio_filter_finalize (GObject * object);
+static gboolean gst_gst_audio_filter_setup(GstAudioFilter *filter,
+                                           const GstAudioInfo *info);
+static GstFlowReturn gst_gst_audio_filter_transform(GstBaseTransform *trans,
+                                                    GstBuffer *inbuf,
+                                                    GstBuffer *outbuf);
+static GstFlowReturn gst_gst_audio_filter_transform_ip(GstBaseTransform *trans,
+                                                       GstBuffer *buf);
 
-static gboolean gst_gst_audio_filter_setup (GstAudioFilter * filter,
-    const GstAudioInfo * info);
-static GstFlowReturn gst_gst_audio_filter_transform (GstBaseTransform * trans,
-    GstBuffer * inbuf, GstBuffer * outbuf);
-static GstFlowReturn gst_gst_audio_filter_transform_ip (GstBaseTransform * trans,
-    GstBuffer * buf);
-
-enum
-{
-  PROP_0
-};
+enum { PROP_0 };
 
 /* pad templates */
 
 /* FIXME add/remove the formats that you want to support */
 static GstStaticPadTemplate gst_gst_audio_filter_src_template =
-GST_STATIC_PAD_TEMPLATE ("src",
-    GST_PAD_SRC,
-    GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("audio/x-raw,format=S16LE,rate=[1,max],"
-      "channels=[1,max],layout=interleaved")
-    );
+    GST_STATIC_PAD_TEMPLATE(
+        "src", GST_PAD_SRC, GST_PAD_ALWAYS,
+        GST_STATIC_CAPS("audio/x-raw,format=S16LE,rate=[1,max],"
+                        "channels=[1,max],layout=interleaved"));
 
 /* FIXME add/remove the formats that you want to support */
 static GstStaticPadTemplate gst_gst_audio_filter_sink_template =
-GST_STATIC_PAD_TEMPLATE ("sink",
-    GST_PAD_SINK,
-    GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("audio/x-raw,format=S16LE,rate=[1,max],"
-      "channels=[1,max],layout=interleaved")
-    );
-
+    GST_STATIC_PAD_TEMPLATE(
+        "sink", GST_PAD_SINK, GST_PAD_ALWAYS,
+        GST_STATIC_CAPS("audio/x-raw,format=S16LE,rate=[1,max],"
+                        "channels=[1,max],layout=interleaved"));
 
 /* class initialization */
 
-G_DEFINE_TYPE_WITH_CODE (GstGstAudioFilter, gst_gst_audio_filter, GST_TYPE_AUDIO_FILTER,
-  GST_DEBUG_CATEGORY_INIT (gst_gst_audio_filter_debug_category, "gstaudiofilter", 0,
-  "debug category for gstaudiofilter element"));
+G_DEFINE_TYPE_WITH_CODE(
+    GstGstAudioFilter, gst_gst_audio_filter, GST_TYPE_AUDIO_FILTER,
+    GST_DEBUG_CATEGORY_INIT(gst_gst_audio_filter_debug_category,
+                            "gstaudiofilter", 0,
+                            "debug category for gstaudiofilter element"));
 
-static void
-gst_gst_audio_filter_class_init (GstGstAudioFilterClass * klass)
-{
-  GObjectClass *gobject_class = G_OBJECT_CLASS (klass);
-  GstBaseTransformClass *base_transform_class = GST_BASE_TRANSFORM_CLASS (klass);
-  GstAudioFilterClass *audio_filter_class = GST_AUDIO_FILTER_CLASS (klass);
+static void gst_gst_audio_filter_class_init(GstGstAudioFilterClass *klass) {
+  GObjectClass *gobject_class = G_OBJECT_CLASS(klass);
+  GstBaseTransformClass *base_transform_class = GST_BASE_TRANSFORM_CLASS(klass);
+  GstAudioFilterClass *audio_filter_class = GST_AUDIO_FILTER_CLASS(klass);
 
   /* Setting up pads and setting metadata should be moved to
      base_class_init if you intend to subclass this class. */
-  gst_element_class_add_static_pad_template (GST_ELEMENT_CLASS(klass),
-      &gst_gst_audio_filter_src_template);
-  gst_element_class_add_static_pad_template (GST_ELEMENT_CLASS(klass),
-      &gst_gst_audio_filter_sink_template);
+  gst_element_class_add_static_pad_template(GST_ELEMENT_CLASS(klass),
+                                            &gst_gst_audio_filter_src_template);
+  gst_element_class_add_static_pad_template(
+      GST_ELEMENT_CLASS(klass), &gst_gst_audio_filter_sink_template);
 
-  gst_element_class_set_static_metadata (GST_ELEMENT_CLASS(klass),
-      "FIXME Long name", "Generic", "FIXME Description",
-      "FIXME <fixme@example.com>");
+  gst_element_class_set_static_metadata(
+      GST_ELEMENT_CLASS(klass), "FIXME Long name", "Generic",
+      "FIXME Description", "FIXME <fixme@example.com>");
 
   gobject_class->set_property = gst_gst_audio_filter_set_property;
   gobject_class->get_property = gst_gst_audio_filter_get_property;
   gobject_class->dispose = gst_gst_audio_filter_dispose;
   gobject_class->finalize = gst_gst_audio_filter_finalize;
-  audio_filter_class->setup = GST_DEBUG_FUNCPTR (gst_gst_audio_filter_setup);
-  base_transform_class->transform = GST_DEBUG_FUNCPTR (gst_gst_audio_filter_transform);
-  base_transform_class->transform_ip = GST_DEBUG_FUNCPTR (gst_gst_audio_filter_transform_ip);
-
+  audio_filter_class->setup = GST_DEBUG_FUNCPTR(gst_gst_audio_filter_setup);
+  base_transform_class->transform =
+      GST_DEBUG_FUNCPTR(gst_gst_audio_filter_transform);
+  base_transform_class->transform_ip =
+      GST_DEBUG_FUNCPTR(gst_gst_audio_filter_transform_ip);
 }
 
-static void
-gst_gst_audio_filter_init (GstGstAudioFilter *gstaudiofilter)
-{
-}
+static void gst_gst_audio_filter_init(GstGstAudioFilter *gstaudiofilter) {}
 
-void
-gst_gst_audio_filter_set_property (GObject * object, guint property_id,
-    const GValue * value, GParamSpec * pspec)
-{
-  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER (object);
+void gst_gst_audio_filter_set_property(GObject *object, guint property_id,
+                                       const GValue *value, GParamSpec *pspec) {
+  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER(object);
 
-  GST_DEBUG_OBJECT (gstaudiofilter, "set_property");
+  GST_DEBUG_OBJECT(gstaudiofilter, "set_property");
 
   switch (property_id) {
-    default:
-      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
-      break;
+  default:
+    G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, pspec);
+    break;
   }
 }
 
-void
-gst_gst_audio_filter_get_property (GObject * object, guint property_id,
-    GValue * value, GParamSpec * pspec)
-{
-  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER (object);
+void gst_gst_audio_filter_get_property(GObject *object, guint property_id,
+                                       GValue *value, GParamSpec *pspec) {
+  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER(object);
 
-  GST_DEBUG_OBJECT (gstaudiofilter, "get_property");
+  GST_DEBUG_OBJECT(gstaudiofilter, "get_property");
 
   switch (property_id) {
-    default:
-      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
-      break;
+  default:
+    G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, pspec);
+    break;
   }
 }
 
-void
-gst_gst_audio_filter_dispose (GObject * object)
-{
-  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER (object);
+void gst_gst_audio_filter_dispose(GObject *object) {
+  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER(object);
 
-  GST_DEBUG_OBJECT (gstaudiofilter, "dispose");
+  GST_DEBUG_OBJECT(gstaudiofilter, "dispose");
 
   /* clean up as possible.  may be called multiple times */
 
-  G_OBJECT_CLASS (gst_gst_audio_filter_parent_class)->dispose (object);
+  G_OBJECT_CLASS(gst_gst_audio_filter_parent_class)->dispose(object);
 }
 
-void
-gst_gst_audio_filter_finalize (GObject * object)
-{
-  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER (object);
+void gst_gst_audio_filter_finalize(GObject *object) {
+  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER(object);
 
-  GST_DEBUG_OBJECT (gstaudiofilter, "finalize");
+  GST_DEBUG_OBJECT(gstaudiofilter, "finalize");
 
   /* clean up object here */
 
-  G_OBJECT_CLASS (gst_gst_audio_filter_parent_class)->finalize (object);
+  G_OBJECT_CLASS(gst_gst_audio_filter_parent_class)->finalize(object);
 }
 
-static gboolean
-gst_gst_audio_filter_setup (GstAudioFilter * filter, const GstAudioInfo * info)
-{
-  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER (filter);
+static gboolean gst_gst_audio_filter_setup(GstAudioFilter *filter,
+                                           const GstAudioInfo *info) {
+  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER(filter);
 
-  GST_DEBUG_OBJECT (gstaudiofilter, "setup");
+  GST_DEBUG_OBJECT(gstaudiofilter, "setup");
 
   return TRUE;
 }
 
 /* transform */
-static GstFlowReturn
-gst_gst_audio_filter_transform (GstBaseTransform * trans, GstBuffer * inbuf,
-    GstBuffer * outbuf)
-{
-  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER (trans);
+static GstFlowReturn gst_gst_audio_filter_transform(GstBaseTransform *trans,
+                                                    GstBuffer *inbuf,
+                                                    GstBuffer *outbuf) {
+  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER(trans);
 
-  GST_DEBUG_OBJECT (gstaudiofilter, "transform");
-
-  return GST_FLOW_OK;
-}
-
-static GstFlowReturn
-gst_gst_audio_filter_transform_ip (GstBaseTransform * trans, GstBuffer * buf)
-{
-  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER (trans);
-
-  GST_DEBUG_OBJECT (gstaudiofilter, "transform_ip");
+  GST_DEBUG_OBJECT(gstaudiofilter, "transform");
 
   return GST_FLOW_OK;
 }
 
-static gboolean
-plugin_init (GstPlugin * plugin)
-{
+static GstFlowReturn gst_gst_audio_filter_transform_ip(GstBaseTransform *trans,
+                                                       GstBuffer *buf) {
+  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER(trans);
+
+  GST_DEBUG_OBJECT(gstaudiofilter, "transform_ip");
+
+  return GST_FLOW_OK;
+}
+
+static gboolean plugin_init(GstPlugin *plugin) {
 
   /* FIXME Remember to set the rank if it's an element that is meant
      to be autoplugged by decodebin. */
-  return gst_element_register (plugin, "gstaudiofilter", GST_RANK_NONE,
-      GST_TYPE_GST_AUDIO_FILTER);
+  return gst_element_register(plugin, "gstaudiofilter", GST_RANK_NONE,
+                              GST_TYPE_GST_AUDIO_FILTER);
 }
 
 /* FIXME: these are normally defined by the GStreamer build system.
@@ -224,7 +204,7 @@ plugin_init (GstPlugin * plugin)
    remove these, as they're always defined.  Otherwise, edit as
    appropriate for your external plugin package. */
 #ifndef VERSION
-#define VERSION "0.0.FIXME"
+#define VERSION "0.0.1"
 #endif
 #ifndef PACKAGE
 #define PACKAGE "FIXME_package"
@@ -236,9 +216,6 @@ plugin_init (GstPlugin * plugin)
 #define GST_PACKAGE_ORIGIN "http://FIXME.org/"
 #endif
 
-GST_PLUGIN_DEFINE (GST_VERSION_MAJOR,
-    GST_VERSION_MINOR,
-    gstaudiofilter,
-    "FIXME plugin description",
-    plugin_init, VERSION, "LGPL", PACKAGE_NAME, GST_PACKAGE_ORIGIN)
-
+GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, gstaudiofilter,
+                  "My audio filter plugin", plugin_init, VERSION, "LGPL",
+                  PACKAGE_NAME, GST_PACKAGE_ORIGIN)
