@@ -2,6 +2,33 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "Build single target (set in json)",
+      "type": "shell",
+      "command": "./bld",
+      // "command": "bazel",
+      "args": [
+        // "cquery"
+        "//apps/examples:basic-tutorial-2",
+        //"//gst-plugins/gst-dsexample:nvdsgst_dsexample",
+        // "--output=starlark",
+        // "--starlark:expr='target'",
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "options": {
+        "cwd": "${workspaceRoot}/src",
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "showReuseMessage": true,
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "Build extensions",
       "type": "shell",
       "command": "./bld",

@@ -1,14 +1,24 @@
 #!/bin/bash
 set -e
 SCRIPT_DIR=$(dirname $(realpath $0))
-BAZEL_FLAGS="--config=debug $@"
-# BAZEL_FLAGS=" --//:multiarch=aarch64-linux-gnu ${BAZEL_FLAGS}"
-USE_BAZEL_VERSION=5.1.1 bazel build ${BAZEL_FLAGS}  //...
+
+BAZEL_FLAGS="--config=debug"
+
+TARGET="$@"
+if [ -z "${TARGET}" ]; then
+  TARGET="//..."
+fi
+
+echo "USE_BAZEL_VERSION=5.1.1 bazel build ${BAZEL_FLAGS} ${TARGET}"
+USE_BAZEL_VERSION=5.1.1 bazel build ${BAZEL_FLAGS} ${TARGET}
 
 BIN_DIR="$(bazel info ${BAZEL_FLAGS} bazel-bin)"
 echo "BIN_DIR=${BIN_DIR}"
 EXTENSIONS="$(cat ${SCRIPT_DIR}/extensions.lst)"
-for ext in ${EXTENSIONS}; do
-  ln -sf -v ${BIN_DIR}/extensions/${ext}/libgxf_${ext}.so ${SCRIPT_DIR}/_test_libs/libgxf_${ext}.so
-done
+
+# if [ "${TARGET}" == "//..." ]; then
+#   for ext in ${EXTENSIONS}; do
+#     ln -sf -v ${BIN_DIR}/extensions/${ext}/libgxf_${ext}.so ${SCRIPT_DIR}/_test_libs/libgxf_${ext}.so
+#   done
+# fi
 
