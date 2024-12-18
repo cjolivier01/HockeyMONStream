@@ -17,14 +17,14 @@
  * Boston, MA 02110-1335, USA.
  */
 /**
- * SECTION:element-gstgstaudiofilter
+ * SECTION:element-gstaudiofilter
  *
- * The gstaudiofilter element does FIXME stuff.
+ * The myaudiofilter element does FIXME stuff.
  *
  * <refsect2>
  * <title>Example launch line</title>
  * |[
- * gst-launch-1.0 -v fakesrc ! gstaudiofilter ! FIXME ! fakesink
+ * gst-launch-1.0 -v fakesrc ! myaudiofilter ! FIXME ! fakesink
  * ]|
  * FIXME Describe what the pipeline does.
  * </refsect2>
@@ -33,10 +33,11 @@
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
+#include "myaudiofilter.h"
 
-#include "gstgstaudiofilter.h"
 #include <gst/audio/gstaudiofilter.h>
 #include <gst/gst.h>
+
 
 GST_DEBUG_CATEGORY_STATIC(gst_gst_audio_filter_debug_category);
 #define GST_CAT_DEFAULT gst_gst_audio_filter_debug_category
@@ -84,8 +85,8 @@ static GstStaticPadTemplate gst_gst_audio_filter_sink_template =
 G_DEFINE_TYPE_WITH_CODE(
     GstGstAudioFilter, gst_gst_audio_filter, GST_TYPE_AUDIO_FILTER,
     GST_DEBUG_CATEGORY_INIT(gst_gst_audio_filter_debug_category,
-                            "gstaudiofilter", 0,
-                            "debug category for gstaudiofilter element"));
+                            "myaudiofilter", 0,
+                            "debug category for myaudiofilter element"));
 
 static void gst_gst_audio_filter_class_init(GstGstAudioFilterClass *klass) {
   GObjectClass *gobject_class = G_OBJECT_CLASS(klass);
@@ -114,15 +115,15 @@ static void gst_gst_audio_filter_class_init(GstGstAudioFilterClass *klass) {
       GST_DEBUG_FUNCPTR(gst_gst_audio_filter_transform_ip);
 }
 
-static void gst_gst_audio_filter_init(GstGstAudioFilter *gstaudiofilter) {
+static void gst_gst_audio_filter_init(GstGstAudioFilter *myaudiofilter) {
   
 }
 
 void gst_gst_audio_filter_set_property(GObject *object, guint property_id,
                                        const GValue *value, GParamSpec *pspec) {
-  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER(object);
+  GstGstAudioFilter *myaudiofilter = GST_GST_AUDIO_FILTER(object);
 
-  GST_DEBUG_OBJECT(gstaudiofilter, "set_property");
+  GST_DEBUG_OBJECT(myaudiofilter, "set_property");
 
   switch (property_id) {
   default:
@@ -133,9 +134,9 @@ void gst_gst_audio_filter_set_property(GObject *object, guint property_id,
 
 void gst_gst_audio_filter_get_property(GObject *object, guint property_id,
                                        GValue *value, GParamSpec *pspec) {
-  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER(object);
+  GstGstAudioFilter *myaudiofilter = GST_GST_AUDIO_FILTER(object);
 
-  GST_DEBUG_OBJECT(gstaudiofilter, "get_property");
+  GST_DEBUG_OBJECT(myaudiofilter, "get_property");
 
   switch (property_id) {
   default:
@@ -145,9 +146,9 @@ void gst_gst_audio_filter_get_property(GObject *object, guint property_id,
 }
 
 void gst_gst_audio_filter_dispose(GObject *object) {
-  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER(object);
+  GstGstAudioFilter *myaudiofilter = GST_GST_AUDIO_FILTER(object);
 
-  GST_DEBUG_OBJECT(gstaudiofilter, "dispose");
+  GST_DEBUG_OBJECT(myaudiofilter, "dispose");
 
   /* clean up as possible.  may be called multiple times */
 
@@ -155,9 +156,9 @@ void gst_gst_audio_filter_dispose(GObject *object) {
 }
 
 void gst_gst_audio_filter_finalize(GObject *object) {
-  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER(object);
+  GstGstAudioFilter *myaudiofilter = GST_GST_AUDIO_FILTER(object);
 
-  GST_DEBUG_OBJECT(gstaudiofilter, "finalize");
+  GST_DEBUG_OBJECT(myaudiofilter, "finalize");
 
   /* clean up object here */
 
@@ -166,9 +167,9 @@ void gst_gst_audio_filter_finalize(GObject *object) {
 
 static gboolean gst_gst_audio_filter_setup(GstAudioFilter *filter,
                                            const GstAudioInfo *info) {
-  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER(filter);
+  GstGstAudioFilter *myaudiofilter = GST_GST_AUDIO_FILTER(filter);
 
-  GST_DEBUG_OBJECT(gstaudiofilter, "setup");
+  GST_DEBUG_OBJECT(myaudiofilter, "setup");
 
   return TRUE;
 }
@@ -177,18 +178,18 @@ static gboolean gst_gst_audio_filter_setup(GstAudioFilter *filter,
 static GstFlowReturn gst_gst_audio_filter_transform(GstBaseTransform *trans,
                                                     GstBuffer *inbuf,
                                                     GstBuffer *outbuf) {
-  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER(trans);
+  GstGstAudioFilter *myaudiofilter = GST_GST_AUDIO_FILTER(trans);
 
-  GST_DEBUG_OBJECT(gstaudiofilter, "transform");
+  GST_DEBUG_OBJECT(myaudiofilter, "transform");
 
   return GST_FLOW_OK;
 }
 
 static GstFlowReturn gst_gst_audio_filter_transform_ip(GstBaseTransform *trans,
                                                        GstBuffer *buf) {
-  GstGstAudioFilter *gstaudiofilter = GST_GST_AUDIO_FILTER(trans);
+  GstGstAudioFilter *myaudiofilter = GST_GST_AUDIO_FILTER(trans);
 
-  GST_DEBUG_OBJECT(gstaudiofilter, "transform_ip");
+  GST_DEBUG_OBJECT(myaudiofilter, "transform_ip");
 
   return GST_FLOW_OK;
 }
@@ -197,10 +198,10 @@ static gboolean plugin_init(GstPlugin *plugin) {
 
   /* FIXME Remember to set the rank if it's an element that is meant
      to be autoplugged by decodebin. */
-  return gst_element_register(plugin, "gstaudiofilter", GST_RANK_NONE,
+  return gst_element_register(plugin, "myaudiofilter", GST_RANK_NONE,
                               GST_TYPE_GST_AUDIO_FILTER);
 }
-
+extern "C" {
 /* FIXME: these are normally defined by the GStreamer build system.
    If you are creating an element to be included in gst-plugins-*,
    remove these, as they're always defined.  Otherwise, edit as
@@ -218,6 +219,7 @@ static gboolean plugin_init(GstPlugin *plugin) {
 #define GST_PACKAGE_ORIGIN "http://FIXME.org/"
 #endif
 
-GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, gstaudiofilter,
+GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, myaudiofilter,
                   "My audio filter plugin", plugin_init, VERSION, "LGPL",
                   PACKAGE_NAME, GST_PACKAGE_ORIGIN)
+}
