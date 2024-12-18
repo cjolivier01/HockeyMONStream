@@ -1,12 +1,12 @@
 extensions:
 - /tmp/ds.app-2/gxf/std/libgxf_std.so
 #- /tmp/ds.app-2/gxf/hello_world/libgxf_hello_world.so
-- /home/colivier/src/hmstream/src/lib/libgxf_hello_world.so
+- /home/colivier/src/hstream/src/lib/libgxf_hello_world.so
 - /tmp/ds.app-2/deepstream/nvdsinterface/libgxf_nvdsinterface.so
 - /tmp/ds.app-2/gxf/multimedia/libgxf_multimedia.so
 - /tmp/ds.app-2/deepstream/nvdsbase/libgxf_nvdsbase.so
 #- /tmp/ds.app-2/gxf/pango/libgxf_pango.so
-- /home/colivier/src/hmstream/src/lib/libgxf_pango.so
+- /home/colivier/src/hstream/src/lib/libgxf_pango.so
 - /tmp/ds.app-2/gxf/http/libgxf_http.so
 - /tmp/ds.app-2/deepstream/nvdssource/libgxf_nvdssource.so
 - /tmp/ds.app-2/deepstream/nvdsoutputsink/libgxf_nvdsoutputsink.so
@@ -49,5 +49,5 @@ variants:
   variant: 'arch: x86_64 os: linux distribution: ubuntu_22.04 deepstream: 7.1 '
 
 
-# - /home/colivier/src/hmstream/src/lib/libgxf_hello_world.so
-# - /home/colivier/src/hmstream/src/lib/libgxf_pango.so
+# - /home/colivier/src/hstream/src/lib/libgxf_hello_world.so
+# - /home/colivier/src/hstream/src/lib/libgxf_pango.so

@@ -481,6 +481,7 @@
       "${workspaceRoot}/bazel-bin": true
     },
     "C_Cpp.default.compileCommands": "/home/colivier/src/gstreamer/builddir/compile_commands.json",
-    "C_Cpp.default.configurationProvider": "mesonbuild.mesonbuild"
+    "C_Cpp.default.configurationProvider": "mesonbuild.mesonbuild",
+    "mesonbuild.selectRootDir": false
   }
 }

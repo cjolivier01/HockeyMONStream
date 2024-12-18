@@ -88,7 +88,7 @@ components:
 - name: GstNvInfer placeholder display-name67
   parameters:
     batch-size: 4
-    config-file-path: /home/colivier/src/hmstream/config_infer_yolox_hockey.yaml
+    config-file-path: /home/colivier/src/hstream/config_infer_yolox_hockey.yaml
     unique-id: 15
     video-in: Static Data Input69
     video-out: Static Data Output68

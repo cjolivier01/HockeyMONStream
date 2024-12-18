@@ -6,7 +6,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "----------------- hmstream -----------------",
+      "name": "----------------- hstream -----------------",
     },
     {
       //
@@ -32,20 +32,18 @@
         // "envFile": "${workspaceFolder}/${config:mesonbuild.buildFolder}/meson-vscode.env",
       },
       "cwd": "${workspaceFolder}/src",
-      // "program": "/usr/bin/deepstream-app",
       "program": "/home/colivier/src/hmdeepstream/deepstream/sources/apps/sample_apps/deepstream-app/deepstream-app",
       "args": [
         "-c", "${workspaceFolder}/configs/ds_hockey_app_config.yaml"
       ],
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}/src",
-        //"/home/colivier/src": "~/src",
         "~/src": "/home/colivier/src",
       },
       "env": {
         //"GST_DEBUG": "4",
         "LD_LIBRARY_PATH": "/home/colivier/src/hmdeepstream/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:/home/colivier/mambaforge/envs/ubuntu/lib:/home/colivier/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu",
-        "GST_PLUGIN_PATH": "/home/colivier/src/hmstream/lib/gst-plugins:/home/colivier/src/hmdeepstream/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
+        "GST_PLUGIN_PATH": "/home/colivier/src/hstream/lib/gst-plugins:/home/colivier/src/hmdeepstream/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
         "GST_DEBUG": "3",
       },
       // "preLaunchTask": "Meson: Build all targets",
@@ -66,15 +64,12 @@
       ],
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}/src",
-        //"/home/colivier/src": "~/src",
         "~/src": "/home/colivier/src",
       },
       "env": {
-        //"GST_DEBUG": "4",
-        //"LD_LIBRARY_PATH": "/usr/local/lib/x86_64-linux-gnu/:/usr/local/lib:/home/colivier/src/hmdeepstream/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib",
         "LD_LIBRARY_PATH": "/usr/local/lib/x86_64-linux-gnu/:/usr/local/lib:/opt/nvidia/deepstream/deepstream/lib",
         //"GST_PLUGIN_PATH": "/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
-        "GST_PLUGIN_PATH": "/home/colivier/src/hmstream/lib/gst-plugins:/home/colivier/src/hmdeepstream/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
+        "GST_PLUGIN_PATH": "/home/colivier/src/hstream/lib/gst-plugins:/home/colivier/src/hmdeepstream/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
         "GST_DEBUG": "3",
       },
       // "preLaunchTask": "Meson: Build all targets",
@@ -86,13 +81,11 @@
       "cwd": "${workspaceFolder}/",
       "program": "${workspaceFolder}/src/bazel-src/external/gstreamer/external/bin/gst-inspect-1.0",
       //"stopOnEntry": true,
-      // "program": "/usr/local/bin/gst-inspect-1.0",
       "args": [
       ],
       "env": {
-        //"GST_DEBUG": "4",
         "LD_LIBRARY_PATH": "/usr/local/lib/x86_64-linux-gnu/:/usr/local/lib:/opt/nvidia/deepstream/deepstream/lib",
-        "GST_PLUGIN_PATH": "/home/colivier/src/hmstream/lib/gst-plugins:/home/colivier/src/hmdeepstream/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
+        "GST_PLUGIN_PATH": "/home/colivier/src/hstream/lib/gst-plugins:/home/colivier/src/hmdeepstream/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
         "GST_DEBUG": "5",
       },
       // "preLaunchTask": "Meson: Build all targets",
