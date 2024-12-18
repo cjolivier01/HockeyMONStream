@@ -1,7 +1,7 @@
 cc_binary(
-    name = "basic-tutorial-2",
+    name = "basic-tutorial",
     srcs = [
-      "basic-tutorial-2.cpp",
+      "basic-tutorial.cpp",
     ],
     linkopts=[
       # "-Wl,--unresolved-symbols=ignore-all",

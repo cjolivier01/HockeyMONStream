@@ -53,7 +53,7 @@
       "type": "lldb",
       "request": "launch",
       "cwd": "${workspaceFolder}/src",
-      "program": "${workspaceFolder}/src/bazel-bin/apps/examples/basic-tutorial-2",
+      "program": "${workspaceFolder}/src/bazel-bin/apps/examples/basic-tutorial",
       "args": [
       ],
       "sourceMap": {
