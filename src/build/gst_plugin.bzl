@@ -8,7 +8,7 @@ def gst_cc_plugin(
         linkopts = [],
         **kwargs):
     native.cc_binary(
-        name = "libgxf_" + name + ".so",
+        name = "lib" + name + ".so",
         srcs = srcs + hdrs,
         visibility = visibility,
         # deps = deps + ["@com_extension_dev//:extension_dev"],

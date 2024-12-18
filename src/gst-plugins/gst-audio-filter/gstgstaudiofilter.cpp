@@ -114,7 +114,9 @@ static void gst_gst_audio_filter_class_init(GstGstAudioFilterClass *klass) {
       GST_DEBUG_FUNCPTR(gst_gst_audio_filter_transform_ip);
 }
 
-static void gst_gst_audio_filter_init(GstGstAudioFilter *gstaudiofilter) {}
+static void gst_gst_audio_filter_init(GstGstAudioFilter *gstaudiofilter) {
+  
+}
 
 void gst_gst_audio_filter_set_property(GObject *object, guint property_id,
                                        const GValue *value, GParamSpec *pspec) {
