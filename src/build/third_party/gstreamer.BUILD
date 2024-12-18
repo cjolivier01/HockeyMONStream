@@ -55,6 +55,7 @@ cc_library(
         "-l:/usr/local/lib/x86_64-linux-gnu/libgstreamer-1.0.so",
         "-l:/usr/local/lib/x86_64-linux-gnu/libgstbase-1.0.so",
         "-l:/usr/local/lib/x86_64-linux-gnu/libgstvideo-1.0.so",
+        "-l:/usr/local/lib/x86_64-linux-gnu/libgstaudio-1.0.so",
         "-Wl,--end-group",
     ],
     visibility = ["//visibility:public"],

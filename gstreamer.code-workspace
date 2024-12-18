@@ -20,6 +20,9 @@
     },
     {
       "path": "../opencv-bazel"
+    },
+    {
+      "path": "../gst-template-main"
     }
   ],
   "settings": {
