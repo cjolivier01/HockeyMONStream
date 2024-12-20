@@ -24,7 +24,7 @@
 
 G_BEGIN_DECLS
 
-#define GST_TYPE_GST_AUDIO_FILTER (gst_gst_audio_filter_get_type())
+#define GST_TYPE_GST_AUDIO_FILTER (gst_gst_my_audio_filter_get_type())
 #define GST_GST_AUDIO_FILTER(obj)                                              \
   (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_GST_AUDIO_FILTER,                \
                               GstGstMyAudioFilter))
@@ -41,13 +41,18 @@ typedef struct _GstGstMyAudioFilterClass GstGstMyAudioFilterClass;
 
 struct _GstGstMyAudioFilter {
   GstAudioFilter base_gstaudiofilter;
+
+  GstPad *sinkpad{nullptr};
+  GstPad *srcpad{nullptr};
+
+  gboolean silent{false};
 };
 
 struct _GstGstMyAudioFilterClass {
   GstAudioFilterClass base_gstaudiofilter_class;
 };
 
-GType gst_gst_audio_filter_get_type(void);
+GType gst_gst_my_audio_filter_get_type(void);
 
 G_END_DECLS
 
