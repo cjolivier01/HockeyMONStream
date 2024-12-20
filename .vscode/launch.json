@@ -44,9 +44,9 @@
         //"GST_DEBUG": "4",
         "LD_LIBRARY_PATH": "/home/colivier/src/hmdeepstream/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:/home/colivier/mambaforge/envs/ubuntu/lib:/home/colivier/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu",
         "GST_PLUGIN_PATH": "/home/colivier/src/hstream/lib/gst-plugins:/home/colivier/src/hmdeepstream/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
-        "GST_DEBUG": "3",
+        //"GST_DEBUG": "3",
       },
-      // "preLaunchTask": "Meson: Build all targets",
+      "preLaunchTask": "Build extensions",
     },
     {
       "name": "(LLDB) myaudioapp",

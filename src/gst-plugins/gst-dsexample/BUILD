@@ -27,8 +27,7 @@ gst_cc_plugin(
     #   "gstdsexample.h", "dsexample_lib.h",
     # ],
     copts=[
-      "-fPIC",
-      "-DWITH_OPENCV=1",
+      # "-DWITH_OPENCV=1",
     ],
     linkopts=[
       "-shared",

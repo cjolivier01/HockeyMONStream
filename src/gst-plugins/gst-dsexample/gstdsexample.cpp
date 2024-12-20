@@ -20,6 +20,43 @@
 #include <ostream>
 #include <sstream>
 #include <string>
+
+namespace {
+class GPrintStreamBuffer : public std::streambuf {
+ public:
+  GPrintStreamBuffer() {}
+
+ protected:
+  // Buffer size
+  static constexpr std::size_t bufferSize = 256;
+  char buffer[bufferSize];
+
+  // Overriding the overflow method
+  int overflow(int c) override {
+    if (c != EOF) {
+      buffer[0] = static_cast<char>(c);
+      buffer[1] = '\0';
+      g_print("%s", buffer);
+    }
+    return c;
+  }
+
+  // Overriding sync method
+  int sync() override {
+    return 0; // Always successful
+  }
+};
+
+class GPrintOStream : public std::ostream {
+ public:
+  GPrintOStream() : std::ostream(&gprintBuffer) {}
+
+ private:
+  GPrintStreamBuffer gprintBuffer;
+};
+GPrintOStream gout;
+} // namespace
+
 GST_DEBUG_CATEGORY_STATIC(gst_dsexample_debug);
 #define GST_CAT_DEFAULT gst_dsexample_debug
 #define USE_EGLIMAGE 1
@@ -172,6 +209,7 @@ struct InputParams {
 };
 } // namespace
 
+#if 0
 static GstFlowReturn gst_ds_example_submit_input_buffer(
     GstBaseTransform* trans,
     gboolean is_discont,
@@ -304,6 +342,7 @@ static GstFlowReturn gst_ds_example_generate_output(
   *outbuf = NULL;
   return GST_FLOW_OK;
 }
+#endif
 
 /* Install properties, set sink and src pad capabilities, override the required
  * functions of the base class, These are common to all instances of the
@@ -324,10 +363,10 @@ static void gst_dsexample_class_init(GstDsExampleClass* klass) {
   gobject_class->set_property = GST_DEBUG_FUNCPTR(gst_dsexample_set_property);
   gobject_class->get_property = GST_DEBUG_FUNCPTR(gst_dsexample_get_property);
 
-  gstbasetransform_class->submit_input_buffer =
-      GST_DEBUG_FUNCPTR(gst_ds_example_submit_input_buffer);
-  gstbasetransform_class->generate_output =
-      GST_DEBUG_FUNCPTR(gst_ds_example_generate_output);
+  // gstbasetransform_class->submit_input_buffer =
+  //     GST_DEBUG_FUNCPTR(gst_ds_example_submit_input_buffer);
+  // gstbasetransform_class->generate_output =
+  //     GST_DEBUG_FUNCPTR(gst_ds_example_generate_output);
 
   gstbasetransform_class->set_caps = GST_DEBUG_FUNCPTR(gst_dsexample_set_caps);
   gstbasetransform_class->start = GST_DEBUG_FUNCPTR(gst_dsexample_start);
@@ -1131,6 +1170,11 @@ static GstFlowReturn gst_dsexample_transform_ip(
           return GST_FLOW_ERROR;
 #endif
         }
+
+        // gout << "Object: " << "l=" << obj_meta->rect_params.left
+        //           << ", t=" << obj_meta->rect_params.top
+        //           << ", w=" << obj_meta->rect_params.width
+        //           << ", h=" << obj_meta->rect_params.height << std::endl;
 
         /* Should not process on objects smaller than MIN_INPUT_OBJECT_WIDTH x
          * MIN_INPUT_OBJECT_HEIGHT */
