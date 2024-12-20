@@ -71,11 +71,18 @@ graph_nvidia_extension(
     version = "2.6.0",
 )
 
-# new_git_repository(
+new_git_repository(
+    name = "yaml-cpp",
+    build_file = "@com_extension_dev//build:third_party/yaml-cpp.BUILD",
+    #commit = "9a3624205e8774953ef18f57067b3426c1c5ada6",
+    tag="0.8.0",
+    remote = "https://github.com/jbeder/yaml-cpp.git",
+)
+
+# new_local_repository(
 #     name = "yaml-cpp",
-#     build_file = "@com_extension_dev//build:third_party/yaml-cpp.BUILD",
-#     commit = "9a3624205e8774953ef18f57067b3426c1c5ada6",
-#     remote = "https://github.com/jbeder/yaml-cpp.git",
+#     build_file = "@//build:third_party/yaml-cpp.BUILD",
+#     path = "/usr",
 # )
 
 git_repository(
@@ -111,12 +118,6 @@ new_git_repository(
 new_local_repository(
     name = "json_glib",
     build_file = "@//build:third_party/json_glib.BUILD",
-    path = "/usr",
-)
-
-new_local_repository(
-    name = "yaml-cpp",
-    build_file = "@//build:third_party/yaml-cpp.BUILD",
     path = "/usr",
 )
 
