@@ -108,6 +108,12 @@ new_git_repository(
     remote = "https://github.com/GNOME/glib.git",
 )
 
+new_local_repository(
+    name = "json_glib",
+    build_file = "@//build:third_party/json_glib.BUILD",
+    path = "/usr",
+)
+
 new_git_repository(
     name = "gstreamer",
     build_file = "//build:third_party/gstreamer.BUILD",

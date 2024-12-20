@@ -17,7 +17,7 @@ cc_library(
     "src/deepstream_dsexample.c",
     "src/deepstream_osd_bin.c",
     "src/deepstream_audio_classifier_bin.c",
-    # "src/deepstream_c2d_msg_util.c",
+    "src/deepstream_c2d_msg_util.c",
     "src/deepstream_segvisual_bin.c",
     "src/deepstream_perf.c",
     "src/deepstream_config_file_parser.c",
@@ -92,7 +92,9 @@ cc_library(
     "@deepstream_lib",
     "@glib",
     "@gstreamer",
+    "@json_glib",
     "@local_cuda//:cuda_runtime",
   ],
   visibility = ["//visibility:public"],
 )
+
