@@ -8,7 +8,7 @@
       // "command": "bazel",
       "args": [
         // "cquery"
-        "//apps/examples:basic-tutorial",
+        //"//apps/examples:basic-tutorial",
         //"//gst-plugins/gst-dsexample:nvdsgst_dsexample",
         // "--output=starlark",
         // "--starlark:expr='target'",

@@ -49,12 +49,13 @@
       // "preLaunchTask": "Meson: Build all targets",
     },
     {
-      "name": "(LLDB) tutorial",
+      "name": "(LLDB) myaudioapp",
       "type": "lldb",
       "request": "launch",
       "cwd": "${workspaceFolder}/src",
-      "program": "${workspaceFolder}/src/bazel-bin/apps/examples/basic-tutorial",
+      "program": "${workspaceFolder}/src/bazel-bin/gst-plugins/gst-myaudiofilter/test/myaudioapp",
       "args": [
+        "/mnt/ripper-data/Videos/ev-reno-1/audio.aac",
       ],
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}/src",
@@ -64,7 +65,7 @@
         //"GST_DEBUG": "4",
         "LD_LIBRARY_PATH": "/home/colivier/src/hmdeepstream/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:/home/colivier/mambaforge/envs/ubuntu/lib:/home/colivier/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu",
         "GST_PLUGIN_PATH": "/home/colivier/src/hstream/lib/gst-plugins:/home/colivier/src/hmdeepstream/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
-        "GST_DEBUG": "3",
+        "GST_DEBUG": "4",
       },
       "preLaunchTask": "Build single target (set in json)",
     },

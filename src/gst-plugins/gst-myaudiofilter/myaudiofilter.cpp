@@ -248,19 +248,26 @@ static void gst_gst_my_audio_filter_class_init(
  */
 static void gst_gst_my_audio_filter_init(GstGstMyAudioFilter* myaudiofilter) {
   // Init the pads...
+  GstElement* element = GST_ELEMENT(myaudiofilter);
   /* pad through which data comes in to the element */
-  myaudiofilter->sinkpad = gst_pad_new_from_static_template(
-      &gst_gst_my_audio_filter_src_template, "sink");
-  /* pads are configured here with gst_pad_set_*_function () */
+  myaudiofilter->sinkpad = gst_element_get_static_pad(element, "sink");
+  if (!myaudiofilter->sinkpad) {
+    myaudiofilter->sinkpad = gst_pad_new_from_static_template(
+        &gst_gst_my_audio_filter_src_template, "sink");
 
-  gst_element_add_pad(GST_ELEMENT(myaudiofilter), myaudiofilter->sinkpad);
+    /* pads are configured here with gst_pad_set_*_function () */
+    gst_element_add_pad(GST_ELEMENT(myaudiofilter), myaudiofilter->sinkpad);
+  }
 
-  /* pad through which data goes out of the element */
-  myaudiofilter->srcpad = gst_pad_new_from_static_template(
-      &gst_gst_my_audio_filter_sink_template, "src");
-  /* pads are configured here with gst_pad_set_*_function () */
+  // /* pad through which data goes out of the element */
+  myaudiofilter->srcpad = gst_element_get_static_pad(element, "src");
+  if (!myaudiofilter->srcpad) {
+    myaudiofilter->srcpad = gst_pad_new_from_static_template(
+        &gst_gst_my_audio_filter_sink_template, "src");
+    /* pads are configured here with gst_pad_set_*_function () */
 
-  gst_element_add_pad(GST_ELEMENT(myaudiofilter), myaudiofilter->srcpad);
+    gst_element_add_pad(GST_ELEMENT(myaudiofilter), myaudiofilter->srcpad);
+  }
 
   /* properties initial value */
   myaudiofilter->silent = FALSE;

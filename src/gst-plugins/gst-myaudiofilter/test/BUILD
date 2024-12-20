@@ -7,6 +7,6 @@ cc_binary(
   srcs=["myaudioapp.cpp"],
   deps=[
     "@gstreamer",
-    "//gst-plugins/gst-myaudiofilter:libnvdsgst_myaudiofilter.so",
+    # "//gst-plugins/gst-myaudiofilter:libnvdsgst_myaudiofilter.so",
   ]
 )
