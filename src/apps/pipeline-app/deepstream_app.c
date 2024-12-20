@@ -1532,6 +1532,26 @@ static gboolean create_common_elements(
     *sink_elem = pipeline->common_elements.dsanalytics_bin.bin;
   }
 
+  if (config->dsexample_config.enable) {
+    // Create dsexample element bin and set properties
+    if (!create_dsexample_bin(
+            &config->dsexample_config, &pipeline->dsexample_bin)) {
+      goto done;
+    }
+    // Add dsexample bin to instance bin
+    gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->dsexample_bin.bin);
+    if (!*src_elem) {
+      *src_elem = pipeline->dsexample_bin.bin;
+    }
+
+    if (*sink_elem) {
+      NVGSTDS_LINK_ELEMENT(pipeline->dsexample_bin.bin, *sink_elem);
+    }
+
+    // Set this bin as the last element
+    *sink_elem = pipeline->dsexample_bin.bin;
+  }
+
   if (config->tracker_config.enable) {
     if (!create_tracking_bin(
             &config->tracker_config, &pipeline->common_elements.tracker_bin)) {
@@ -2050,21 +2070,21 @@ gboolean create_pipeline(
   pipeline->common_elements.appCtx = appCtx;
   // Decide where in the pipeline the element should be added and add only if
   // enabled
-  if (config->dsexample_config.enable) {
-    // Create dsexample element bin and set properties
-    if (!create_dsexample_bin(
-            &config->dsexample_config, &pipeline->dsexample_bin)) {
-      goto done;
-    }
-    // Add dsexample bin to instance bin
-    gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->dsexample_bin.bin);
+  // if (config->dsexample_config.enable) {
+  //   // Create dsexample element bin and set properties
+  //   if (!create_dsexample_bin(
+  //           &config->dsexample_config, &pipeline->dsexample_bin)) {
+  //     goto done;
+  //   }
+  //   // Add dsexample bin to instance bin
+  //   gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->dsexample_bin.bin);
 
-    // Link this bin to the last element in the bin
-    NVGSTDS_LINK_ELEMENT(pipeline->dsexample_bin.bin, last_elem);
+  //   // Link this bin to the last element in the bin
+  //   NVGSTDS_LINK_ELEMENT(pipeline->dsexample_bin.bin, last_elem);
 
-    // Set this bin as the last element
-    last_elem = pipeline->dsexample_bin.bin;
-  }
+  //   // Set this bin as the last element
+  //   last_elem = pipeline->dsexample_bin.bin;
+  // }
   // create and add common components to pipeline.
   if (!create_common_elements(
           config,
