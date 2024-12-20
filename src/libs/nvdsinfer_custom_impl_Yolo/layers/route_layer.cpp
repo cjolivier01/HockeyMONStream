@@ -5,10 +5,12 @@
 
 #include "route_layer.h"
 
-nvinfer1::ITensor*
-routeLayer(int layerIdx, std::string& layers, std::map<std::string, std::string>& block,
-    std::vector<nvinfer1::ITensor*> tensorOutputs, nvinfer1::INetworkDefinition* network)
-{
+nvinfer1::ITensor* routeLayer(
+    int layerIdx,
+    std::string& layers,
+    std::map<std::string, std::string>& block,
+    std::vector<nvinfer1::ITensor*> tensorOutputs,
+    nvinfer1::INetworkDefinition* network) {
   nvinfer1::ITensor* output;
 
   assert(block.at("type") == "route");
@@ -44,8 +46,7 @@ routeLayer(int layerIdx, std::string& layers, std::map<std::string, std::string>
 
   if (concatInputs.size() == 1) {
     output = concatInputs[0];
-  }
-  else {
+  } else {
     int axis = 1;
     if (block.find("axis") != block.end()) {
       axis += std::stoi(block.at("axis"));
@@ -54,7 +55,8 @@ routeLayer(int layerIdx, std::string& layers, std::map<std::string, std::string>
       axis += concatInputs[0]->getDimensions().nbDims;
     }
 
-    nvinfer1::IConcatenationLayer* concat = network->addConcatenation(concatInputs.data(), concatInputs.size());
+    nvinfer1::IConcatenationLayer* concat =
+        network->addConcatenation(concatInputs.data(), concatInputs.size());
     assert(concat != nullptr);
     std::string concatLayerName = "route_" + std::to_string(layerIdx);
     concat->setName(concatLayerName.c_str());
@@ -71,7 +73,12 @@ routeLayer(int layerIdx, std::string& layers, std::map<std::string, std::string>
 
     std::string name = "slice";
     nvinfer1::Dims start = {4, {0, startSlice, 0, 0}};
-    nvinfer1::Dims size = {4, {prevTensorDims.d[0], channelSlice, prevTensorDims.d[2], prevTensorDims.d[3]}};
+    nvinfer1::Dims size = {
+        4,
+        {prevTensorDims.d[0],
+         channelSlice,
+         prevTensorDims.d[2],
+         prevTensorDims.d[3]}};
     nvinfer1::Dims stride = {4, {1, 1, 1, 1}};
 
     output = sliceLayer(layerIdx, name, output, start, size, stride, network);

@@ -1,6 +1,7 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+ * SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier:
+ * LicenseRef-NvidiaProprietary
  *
  * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
  * property and proprietary rights in and to this material, related
@@ -18,9 +19,9 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include "gst-nvquery.h"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
-#include "gst-nvquery.h"
 
 #include "gstnvdspreprocess_allocator.h"
 #include "nvdspreprocess_interface.h"
@@ -29,17 +30,19 @@
 #include "nvtx3/nvToolsExt.h"
 
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
-#include <functional>
 
 /* Package and library details required for plugin_init */
 #define PACKAGE "nvdsvideotemplate"
 #define VERSION "1.0"
 #define LICENSE "Proprietary"
-#define DESCRIPTION "NVIDIA custom preprocessing plugin for integration with DeepStream on DGPU/Jetson"
-#define BINARY_PACKAGE "NVIDIA DeepStream Preprocessing using custom algorithms for different streams"
+#define DESCRIPTION \
+  "NVIDIA custom preprocessing plugin for integration with DeepStream on DGPU/Jetson"
+#define BINARY_PACKAGE \
+  "NVIDIA DeepStream Preprocessing using custom algorithms for different streams"
 #define URL "http://nvidia.com/"
 
 G_BEGIN_DECLS
@@ -49,22 +52,28 @@ typedef struct _GstNvDsPreProcessClass GstNvDsPreProcessClass;
 
 /* Standard boilerplate stuff */
 #define GST_TYPE_NVDSPREPROCESS (gst_nvdspreprocess_get_type())
-#define GST_NVDSPREPROCESS(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj),GST_TYPE_NVDSPREPROCESS,GstNvDsPreProcess))
-#define GST_NVDSPREPROCESS_CLASS(klass) (G_TYPE_CHECK_CLASS_CAST((klass),GST_TYPE_NVDSPREPROCESS,GstNvDsPreProcessClass))
-#define GST_NVDSPREPROCESS_GET_CLASS(obj) (G_TYPE_INSTANCE_GET_CLASS((obj), GST_TYPE_NVDSPREPROCESS, GstNvDsPreProcessClass))
-#define GST_IS_NVDSPREPROCESS(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj),GST_TYPE_NVDSPREPROCESS))
-#define GST_IS_NVDSPREPROCESS_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE((klass),GST_TYPE_NVDSPREPROCESS))
-#define GST_NVDSPREPROCESS_CAST(obj)  ((GstNvDsPreProcess *)(obj))
+#define GST_NVDSPREPROCESS(obj) \
+  (G_TYPE_CHECK_INSTANCE_CAST(  \
+      (obj), GST_TYPE_NVDSPREPROCESS, GstNvDsPreProcess))
+#define GST_NVDSPREPROCESS_CLASS(klass) \
+  (G_TYPE_CHECK_CLASS_CAST(             \
+      (klass), GST_TYPE_NVDSPREPROCESS, GstNvDsPreProcessClass))
+#define GST_NVDSPREPROCESS_GET_CLASS(obj) \
+  (G_TYPE_INSTANCE_GET_CLASS(             \
+      (obj), GST_TYPE_NVDSPREPROCESS, GstNvDsPreProcessClass))
+#define GST_IS_NVDSPREPROCESS(obj) \
+  (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_NVDSPREPROCESS))
+#define GST_IS_NVDSPREPROCESS_CLASS(klass) \
+  (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_NVDSPREPROCESS))
+#define GST_NVDSPREPROCESS_CAST(obj) ((GstNvDsPreProcess*)(obj))
 
 /** per frame roi info */
-typedef struct
-{
+typedef struct {
   /** list of roi vectors per frame */
   std::vector<NvDsRoiMeta> roi_vector;
 } GstNvDsPreProcessFrame;
 
-typedef struct
-{
+typedef struct {
   /** vector of src_ids */
   std::vector<gint> src_ids;
 
@@ -78,8 +87,11 @@ typedef struct
   std::string custom_transform_function_name;
 
   /** wrapper to custom transformation function */
-  std::function<NvDsPreProcessStatus(NvBufSurface *, NvBufSurface *,
-                                    CustomTransformParams &)> custom_transform;
+  std::function<NvDsPreProcessStatus(
+      NvBufSurface*,
+      NvBufSurface*,
+      CustomTransformParams&)>
+      custom_transform;
 
   /** sync object for async transformation */
   NvBufSurfTransformSyncObj_t sync_obj = NULL;
@@ -90,7 +102,8 @@ typedef struct
   /** boolean indicating if processing on rois/full-frames inside the group */
   gboolean process_on_roi = 0;
 
-  /** boolean indicating if secondary classification is done on all detections/roi inside the group */
+  /** boolean indicating if secondary classification is done on all
+   * detections/roi inside the group */
   gboolean process_on_all_objects = 0;
 
   /** boolean indicating that the roi is to be drawn or not */
@@ -99,13 +112,15 @@ typedef struct
   /** color of roi*/
   NvOSD_ColorParams roi_color;
 
-  /** Input object size-based filtering parameters for object processing mode. */
+  /** Input object size-based filtering parameters for object processing mode.
+   */
   guint min_input_object_width;
   guint min_input_object_height;
   guint max_input_object_width;
   guint max_input_object_height;
 
-  /** src-id whose rois is used by all the src within the preprocess-group (when src-ids[0]=-1)*/
+  /** src-id whose rois is used by all the src within the preprocess-group (when
+   * src-ids[0]=-1)*/
   guint replicated_src_id;
 
   /** Group interval for frame/roi processing. */
@@ -115,29 +130,27 @@ typedef struct
 
 /** Used by plugin to access GstBuffer and GstNvDsPreProcessMemory
  *  acquired by Custom Library */
-struct NvDsPreProcessCustomBufImpl : public  NvDsPreProcessCustomBuf
-{
+struct NvDsPreProcessCustomBufImpl : public NvDsPreProcessCustomBuf {
   /** Gst Buffer acquired from gst allocator */
-  GstBuffer *gstbuf;
+  GstBuffer* gstbuf;
   /** Memory corresponding to the gst buffer */
-  GstNvDsPreProcessMemory *memory;
+  GstNvDsPreProcessMemory* memory;
 };
 
 /**
  *  For Acquiring/releasing buffer from buffer pool
  */
-class NvDsPreProcessAcquirerImpl : public NvDsPreProcessAcquirer
-{
-public:
+class NvDsPreProcessAcquirerImpl : public NvDsPreProcessAcquirer {
+ public:
   /** constructor */
-  NvDsPreProcessAcquirerImpl(GstBufferPool *pool);
+  NvDsPreProcessAcquirerImpl(GstBufferPool* pool);
   /** override acquire method in plugin */
   NvDsPreProcessCustomBuf* acquire() override;
   /** override release method in plugin */
-  gboolean release(NvDsPreProcessCustomBuf *) override;
+  gboolean release(NvDsPreProcessCustomBuf*) override;
 
-private:
-  GstBufferPool *m_gstpool = nullptr;
+ private:
+  GstBufferPool* m_gstpool = nullptr;
 };
 
 /**
@@ -195,13 +208,12 @@ typedef struct {
 /**
  * Strucuture containing Preprocess info
  */
-struct _GstNvDsPreProcess
-{
+struct _GstNvDsPreProcess {
   /** Gst Base Transform */
   GstBaseTransform base_trans;
 
   /** Target unique ids */
-  std::vector <guint64> target_unique_ids;
+  std::vector<guint64> target_unique_ids;
 
   /** Gie id to process */
   gint operate_on_gie_id;
@@ -228,12 +240,17 @@ struct _GstNvDsPreProcess
   std::string custom_tensor_function_name;
 
   /** wrapper to custom tensor function */
-  std::function <NvDsPreProcessStatus(CustomCtx *, NvDsPreProcessBatch *, NvDsPreProcessCustomBuf *&,
-                                      CustomTensorParams &, NvDsPreProcessAcquirer *)> custom_tensor_function;
+  std::function<NvDsPreProcessStatus(
+      CustomCtx*,
+      NvDsPreProcessBatch*,
+      NvDsPreProcessCustomBuf*&,
+      CustomTensorParams&,
+      NvDsPreProcessAcquirer*)>
+      custom_tensor_function;
 
-   /** Internal buffer pool for memory required for scaling input frames and
-    * cropping object. */
-  GstBufferPool *scaling_pool;
+  /** Internal buffer pool for memory required for scaling input frames and
+   * cropping object. */
+  GstBufferPool* scaling_pool;
 
   /** scaling pool color format */
   NvDsPreProcessFormat scaling_pool_format;
@@ -245,25 +262,27 @@ struct _GstNvDsPreProcess
   NvBufSurfTransform_Compute scaling_pool_compute_hw;
 
   /** interpolation filter for transformation */
-  NvBufSurfTransform_Inter scaling_pool_interpolation_filter;;
+  NvBufSurfTransform_Inter scaling_pool_interpolation_filter;
+  ;
 
   /** Scaling buffer pool size */
   guint scaling_buf_pool_size;
 
-  /** meta id for differentiating between multiple tensor meta from same gst buffer */
+  /** meta id for differentiating between multiple tensor meta from same gst
+   * buffer */
   guint meta_id;
 
-   /** Internal buffer pool for memory required for tensor preparation */
-  GstBufferPool *tensor_pool;
+  /** Internal buffer pool for memory required for tensor preparation */
+  GstBufferPool* tensor_pool;
 
   /** tensor buffer pool size */
   guint tensor_buf_pool_size;
 
   /** Class for acquiring/releasing buffer from tensor pool */
-  std::unique_ptr <NvDsPreProcessAcquirerImpl> acquire_impl;
+  std::unique_ptr<NvDsPreProcessAcquirerImpl> acquire_impl;
 
   /** pointer to buffer provided to custom library for tensor preparation */
-  NvDsPreProcessCustomBuf *tensor_buf;
+  NvDsPreProcessCustomBuf* tensor_buf;
 
   /** Parameters for tensor preparation */
   NvDsPreProcessTensorParams tensor_params;
@@ -288,13 +307,13 @@ struct _GstNvDsPreProcess
   GMutex preprocess_lock;
 
   /** Queue to send data to output thread for processing**/
-  GQueue *preprocess_queue;
+  GQueue* preprocess_queue;
 
   /** Gcondition for process queue**/
   GCond preprocess_cond;
 
   /** Output thread. */
-  GThread *output_thread;
+  GThread* output_thread;
 
   /** Boolean to signal output thread to stop. */
   gboolean stop;
@@ -322,12 +341,13 @@ struct _GstNvDsPreProcess
   gboolean enable;
 
   /** Config file path for nvdspreprocess **/
-  gchar *config_file_path;
+  gchar* config_file_path;
 
   /** Config file parsing status **/
   gboolean config_file_parse_successful;
 
-  /** Boolean indicating if processing on frame or already cropped objects should be processed */
+  /** Boolean indicating if processing on frame or already cropped objects
+   * should be processed */
   gboolean process_on_frame;
 
   /** Current batch number of the input batch. */
@@ -346,20 +366,19 @@ struct _GstNvDsPreProcess
   nvtxDomainHandle_t nvtx_domain;
 
   /** Map src-id : preprocess-group-id */
-  std::unordered_map<gint, gint> *src_to_group_map;
+  std::unordered_map<gint, gint>* src_to_group_map;
 
   /** Lock for framemeta_map */
   GMutex framemeta_map_lock;
 };
 
 /** Boiler plate stuff */
-struct _GstNvDsPreProcessClass
-{
+struct _GstNvDsPreProcessClass {
   /** gst base transform class */
   GstBaseTransformClass parent_class;
 };
 
-GType gst_nvdspreprocess_get_type (void);
+GType gst_nvdspreprocess_get_type(void);
 
 G_END_DECLS
 #endif /* __GST_NVDSPREPROCESS_H__ */

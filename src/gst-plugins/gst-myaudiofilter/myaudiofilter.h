@@ -25,15 +25,15 @@
 G_BEGIN_DECLS
 
 #define GST_TYPE_GST_AUDIO_FILTER (gst_gst_my_audio_filter_get_type())
-#define GST_GST_AUDIO_FILTER(obj)                                              \
-  (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_GST_AUDIO_FILTER,                \
-                              GstGstMyAudioFilter))
-#define GST_GST_AUDIO_FILTER_CLASS(klass)                                      \
-  (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_GST_AUDIO_FILTER,                 \
-                           GstGstMyAudioFilterClass))
-#define GST_IS_GST_AUDIO_FILTER(obj)                                           \
+#define GST_GST_AUDIO_FILTER(obj) \
+  (G_TYPE_CHECK_INSTANCE_CAST(    \
+      (obj), GST_TYPE_GST_AUDIO_FILTER, GstGstMyAudioFilter))
+#define GST_GST_AUDIO_FILTER_CLASS(klass) \
+  (G_TYPE_CHECK_CLASS_CAST(               \
+      (klass), GST_TYPE_GST_AUDIO_FILTER, GstGstMyAudioFilterClass))
+#define GST_IS_GST_AUDIO_FILTER(obj) \
   (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_GST_AUDIO_FILTER))
-#define GST_IS_GST_AUDIO_FILTER_CLASS(obj)                                     \
+#define GST_IS_GST_AUDIO_FILTER_CLASS(obj) \
   (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_GST_AUDIO_FILTER))
 
 typedef struct _GstGstMyAudioFilter GstGstMyAudioFilter;
@@ -42,8 +42,8 @@ typedef struct _GstGstMyAudioFilterClass GstGstMyAudioFilterClass;
 struct _GstGstMyAudioFilter {
   GstAudioFilter base_gstaudiofilter;
 
-  GstPad *sinkpad{nullptr};
-  GstPad *srcpad{nullptr};
+  GstPad* sinkpad{nullptr};
+  GstPad* srcpad{nullptr};
 
   gboolean silent{false};
 };

@@ -15,7 +15,7 @@
       ],
       "group": {
         "kind": "build",
-        "isDefault": true
+        "isDefault": false,
       },
       "options": {
         "cwd": "${workspaceRoot}/src",
@@ -24,7 +24,7 @@
         "reveal": "always",
         "panel": "shared",
         "showReuseMessage": true,
-        "clear": true
+        "clear": true,
       },
       "problemMatcher": []
     },
@@ -35,7 +35,7 @@
       "args": [],
       "group": {
         "kind": "build",
-        "isDefault": true
+        "isDefault": true,
       },
       "options": {
         "cwd": "${workspaceRoot}/src",
@@ -44,9 +44,9 @@
         "reveal": "always",
         "panel": "shared",
         "showReuseMessage": true,
-        "clear": true
+        "clear": true,
       },
-      "problemMatcher": []
+      "problemMatcher": [],
     },
     {
       "label": "Rebuild extensions",
@@ -55,7 +55,7 @@
       "args": [],
       "group": {
         "kind": "build",
-        "isDefault": false
+        "isDefault": false,
       },
       "options": {
         "cwd": "${workspaceRoot}/src",
@@ -64,7 +64,7 @@
         "reveal": "always",
         "panel": "shared",
         "showReuseMessage": true,
-        "clear": true
+        "clear": true,
       },
       "problemMatcher": []
     },
@@ -74,7 +74,7 @@
       "command": "meson compile -C builddir",
       "group": {
         "kind": "build",
-        "isDefault": false
+        "isDefault": false,
       },
       "problemMatcher": [
         "$gcc"
@@ -82,7 +82,7 @@
       "presentation": {
         "reveal": "always",
         "panel": "shared",
-        "clear": true
+        "clear": true,
       }
     },
   ]

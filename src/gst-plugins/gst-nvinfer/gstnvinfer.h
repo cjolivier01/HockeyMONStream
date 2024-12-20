@@ -1,6 +1,7 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2018-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+ * SPDX-FileCopyrightText: Copyright (c) 2018-2020 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier:
+ * LicenseRef-NvidiaProprietary
  *
  * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
  * property and proprietary rights in and to this material, related
@@ -16,14 +17,14 @@
 #include <gst/base/gstbasetransform.h>
 #include <gst/video/video.h>
 
+#include <memory>
 #include <set>
 #include <unordered_map>
 #include <vector>
-#include <memory>
 
+#include <nvdsinfer_context.h>
 #include "cuda_runtime_api.h"
 #include "nvbufsurftransform.h"
-#include <nvdsinfer_context.h>
 
 #include "gstnvdsinfer.h"
 
@@ -39,7 +40,6 @@
 #define BINARY_PACKAGE "NVIDIA DeepStreamSDK TensorRT plugin"
 #define URL "http://nvidia.com/"
 
-
 G_BEGIN_DECLS
 /* Standard GStreamer boilerplate */
 typedef struct _GstNvInfer GstNvInfer;
@@ -48,18 +48,22 @@ typedef struct _GstNvInferImpl GstNvInferImpl;
 
 /* Standard GStreamer boilerplate */
 #define GST_TYPE_NVINFER (gst_nvinfer_get_type())
-#define GST_NVINFER(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj),GST_TYPE_NVINFER,GstNvInfer))
-#define GST_NVINFER_CLASS(klass) (G_TYPE_CHECK_CLASS_CAST((klass),GST_TYPE_NVINFER,GstNvInferClass))
-#define GST_NVINFER_GET_CLASS(obj) (G_TYPE_INSTANCE_GET_CLASS((obj), GST_TYPE_NVINFER, GstNvInferClass))
-#define GST_IS_NVINFER(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj),GST_TYPE_NVINFER))
-#define GST_IS_NVINFER_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE((klass),GST_TYPE_NVINFER))
-#define GST_NVINFER_CAST(obj)  ((GstNvInfer *)(obj))
+#define GST_NVINFER(obj) \
+  (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_NVINFER, GstNvInfer))
+#define GST_NVINFER_CLASS(klass) \
+  (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_NVINFER, GstNvInferClass))
+#define GST_NVINFER_GET_CLASS(obj) \
+  (G_TYPE_INSTANCE_GET_CLASS((obj), GST_TYPE_NVINFER, GstNvInferClass))
+#define GST_IS_NVINFER(obj) \
+  (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_NVINFER))
+#define GST_IS_NVINFER_CLASS(klass) \
+  (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_NVINFER))
+#define GST_NVINFER_CAST(obj) ((GstNvInfer*)(obj))
 
 /**
  * Enum for all GObject properties for the element.
  */
-enum
-{
+enum {
   PROP_0,
   PROP_UNIQUE_ID,
   PROP_PROCESS_MODE,
@@ -95,8 +99,7 @@ extern guint gst_nvinfer_signals[LAST_SIGNAL];
 /**
  * Holds the bounding box/object detection filtering parameters per class.
  */
-typedef struct
-{
+typedef struct {
   guint roiTopOffset;
   guint roiBottomOffset;
   guint detectionMinWidth;
@@ -108,8 +111,7 @@ typedef struct
 /**
  * Holds the bounding box coloring information for one class;
  */
-typedef struct
-{
+typedef struct {
   gboolean have_border_color;
   NvOSD_ColorParams border_color;
 
@@ -126,10 +128,10 @@ struct GstNvInferObjectInfo {
 
   GstNvInferObjectInfo(const GstNvInferObjectInfo&) = delete;
   GstNvInferObjectInfo() = default;
-  ~GstNvInferObjectInfo(){
-    for (auto &attr : attributes) {
+  ~GstNvInferObjectInfo() {
+    for (auto& attr : attributes) {
       if (attr.attributeLabel)
-        free (attr.attributeLabel);
+        free(attr.attributeLabel);
     }
   }
 };
@@ -138,8 +140,7 @@ struct GstNvInferObjectInfo {
  * Holds the inference information/history for one object based on it's
  * tracking id.
  */
-typedef struct _GstNvInferObjectHistory
-{
+typedef struct _GstNvInferObjectHistory {
   /** Boolean indicating if the object is already being inferred on. */
   gboolean under_inference;
   /** Bounding box co-ordinates of the object when it was last inferred on. */
@@ -154,14 +155,15 @@ typedef struct _GstNvInferObjectHistory
   GstNvInferObjectInfo cached_info;
 } GstNvInferObjectHistory;
 
-/** Map type for maintaing inference history for objects based on their tracking ids.*/
-typedef std::unordered_map<guint64, std::shared_ptr<GstNvInferObjectHistory>> GstNvInferObjectHistoryMap;
+/** Map type for maintaing inference history for objects based on their tracking
+ * ids.*/
+typedef std::unordered_map<guint64, std::shared_ptr<GstNvInferObjectHistory>>
+    GstNvInferObjectHistoryMap;
 
 /**
  * Holds source-specific information.
  */
-typedef struct
-{
+typedef struct {
   /** Map of object tracking ID and the object infer history. */
   GstNvInferObjectHistoryMap object_history_map;
   /** Frame number of the buffer when the history map was last cleaned up. */
@@ -173,8 +175,7 @@ typedef struct
 /**
  * GstNvInfer element structure.
  */
-struct _GstNvInfer
-{
+struct _GstNvInfer {
   /** Should be the first member when extending from GstBaseTransform. */
   GstBaseTransform base_trans;
 
@@ -196,17 +197,17 @@ struct _GstNvInfer
   /**
    * Internal buffer pool for memory required for scaling input frames and
    * cropping object. */
-  GstBufferPool *pool;
+  GstBufferPool* pool;
 
   /** Processing Queue and related synchronization structures. */
-  GQueue *process_queue;
+  GQueue* process_queue;
   GMutex process_lock;
   GCond process_cond;
-  GQueue *input_queue;
+  GQueue* input_queue;
 
   /** Output thread. */
-  GThread *output_thread;
-  GThread *input_queue_thread;
+  GThread* output_thread;
+  GThread* input_queue_thread;
 
   /** Boolean to signal output thread to stop. */
   gboolean stop;
@@ -220,7 +221,7 @@ struct _GstNvInfer
   gboolean process_full_frame;
 
   /** Path to the configuration file for this instance of gst-nvinfer. */
-  gchar *config_file_path;
+  gchar* config_file_path;
 
   /** GstFlowReturn returned by the latest buffer pad push. */
   GstFlowReturn last_flow_ret;
@@ -233,7 +234,8 @@ struct _GstNvInfer
 
   gboolean input_tensor_from_meta;
 
-  /** Clip the object bounding-box which lies outside the roi specified by nvdspreprosess plugin. */
+  /** Clip the object bounding-box which lies outside the roi specified by
+   * nvdspreprosess plugin. */
   gboolean clip_object_outside_roi;
 
   /** Boolean indicating if aspect ratio should be maintained when scaling to
@@ -246,10 +248,10 @@ struct _GstNvInfer
   gboolean symmetric_padding;
 
   /** Vector for per-class detection filtering parameters. */
-  std::vector<GstNvInferDetectionFilterParams> *perClassDetectionFilterParams;
+  std::vector<GstNvInferDetectionFilterParams>* perClassDetectionFilterParams;
 
   /** Vector for per-class color parameters. */
-  std::vector<GstNvInferColorParams> *perClassColorParams;
+  std::vector<GstNvInferColorParams>* perClassColorParams;
 
   /** Batch interval for full-frame processing. */
   guint interval;
@@ -258,40 +260,44 @@ struct _GstNvInfer
   /** Frame interval after which objects should be reinferred on. */
   guint secondary_reinfer_interval;
 
-  /** Input object size-based filtering parameters for object processing mode. */
+  /** Input object size-based filtering parameters for object processing mode.
+   */
   guint min_input_object_width;
   guint min_input_object_height;
   guint max_input_object_width;
   guint max_input_object_height;
 
-  /** Source GIE ID and class-id based filtering parameters for object processing mode. */
+  /** Source GIE ID and class-id based filtering parameters for object
+   * processing mode. */
   gint operate_on_gie_id;
-  std::vector<gboolean> *operate_on_class_ids;
-  std::set<uint> *filter_out_class_ids;
+  std::vector<gboolean>* operate_on_class_ids;
+  std::set<uint>* filter_out_class_ids;
 
   /** Per source information. */
-  std::unordered_map<gint, GstNvInferSourceInfo> *source_info;
+  std::unordered_map<gint, GstNvInferSourceInfo>* source_info;
   gulong last_map_cleanup_frame_num;
 
   /** Current batch number of the input batch. */
   gulong current_batch_num;
 
-  /** Boolean indicating if the secondary classifier should run in asynchronous mode. */
+  /** Boolean indicating if the secondary classifier should run in asynchronous
+   * mode. */
   gboolean classifier_async_mode;
 
   /** String containing the type of classifier */
-  gchar *classifier_type;
+  gchar* classifier_type;
 
   /** Network input information. */
   NvDsInferNetworkInfo network_info;
 
   /** Vector of bound layers information. */
-  std::vector<NvDsInferLayerInfo> *layers_info;
+  std::vector<NvDsInferLayerInfo>* layers_info;
 
   /** Vector of bound output layers information. */
-  std::vector<NvDsInferLayerInfo> *output_layers_info;
+  std::vector<NvDsInferLayerInfo>* output_layers_info;
 
-  /** Boolean indicating if the bound buffer contents should be written to file. */
+  /** Boolean indicating if the bound buffer contents should be written to file.
+   */
   gboolean write_raw_buffers_to_file;
 
   /** Batch counter for writing buffer contents to file. */
@@ -304,7 +310,7 @@ struct _GstNvInfer
 
   /** Vector of booleans indicating if properties have been set through
    * GObject set method. */
-  std::vector<gboolean> *is_prop_set;
+  std::vector<gboolean>* is_prop_set;
 
   /** Config params required by NvBufSurfTransform API. */
   NvBufSurfTransformConfigParams transform_config_params;
@@ -329,11 +335,11 @@ struct _GstNvInfer
 
   /** NVTX Domain. */
   nvtxDomainHandle_t nvtx_domain;
-  
+
   /*Clip the object bounding-box which lies outside the roi boundary. */
   gboolean crop_objects_to_roi_boundary;
 
-  GstNvInferImpl *impl;
+  GstNvInferImpl* impl;
 };
 
 /* GStreamer boilerplate. */
@@ -342,13 +348,13 @@ struct _GstNvInferClass {
 
   /** Signals */
   /** signal : model-update
-    * err: int, error result, type NvDsInferStatus.
-    * cfg_file: update cfg file.
-    */
-  void (*model_updated) (GstNvInfer *, gint err, const gchar *cfg_file);
+   * err: int, error result, type NvDsInferStatus.
+   * cfg_file: update cfg file.
+   */
+  void (*model_updated)(GstNvInfer*, gint err, const gchar* cfg_file);
 };
 
-GType gst_nvinfer_get_type (void);
+GType gst_nvinfer_get_type(void);
 
 G_END_DECLS
 

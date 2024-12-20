@@ -26,32 +26,70 @@
 #include "yoloPlugins.h"
 
 namespace {
-  template <typename T>
-  void write(char*& buffer, const T& val) {
-    *reinterpret_cast<T*>(buffer) = val;
-    buffer += sizeof(T);
-  }
-  template <typename T>
-  void read(const char*& buffer, T& val) {
-    val = *reinterpret_cast<const T*>(buffer);
-    buffer += sizeof(T);
-  }
+template <typename T>
+void write(char*& buffer, const T& val) {
+  *reinterpret_cast<T*>(buffer) = val;
+  buffer += sizeof(T);
 }
+template <typename T>
+void read(const char*& buffer, T& val) {
+  val = *reinterpret_cast<const T*>(buffer);
+  buffer += sizeof(T);
+}
+} // namespace
 
-cudaError_t cudaYoloLayer_nc(const void* input, void* output, const uint& batchSize, const uint64_t& inputSize,
-    const uint64_t& outputSize, const uint64_t& lastInputSize, const uint& netWidth, const uint& netHeight,
-    const uint& gridSizeX, const uint& gridSizeY, const uint& numOutputClasses, const uint& numBBoxes,
-    const float& scaleXY, const void* anchors, const void* mask, cudaStream_t stream);
+cudaError_t cudaYoloLayer_nc(
+    const void* input,
+    void* output,
+    const uint& batchSize,
+    const uint64_t& inputSize,
+    const uint64_t& outputSize,
+    const uint64_t& lastInputSize,
+    const uint& netWidth,
+    const uint& netHeight,
+    const uint& gridSizeX,
+    const uint& gridSizeY,
+    const uint& numOutputClasses,
+    const uint& numBBoxes,
+    const float& scaleXY,
+    const void* anchors,
+    const void* mask,
+    cudaStream_t stream);
 
-cudaError_t cudaYoloLayer(const void* input, void* output, const uint& batchSize, const uint64_t& inputSize,
-    const uint64_t& outputSize, const uint64_t& lastInputSize, const uint& netWidth, const uint& netHeight,
-    const uint& gridSizeX, const uint& gridSizeY, const uint& numOutputClasses, const uint& numBBoxes,
-    const float& scaleXY, const void* anchors, const void* mask, cudaStream_t stream);
+cudaError_t cudaYoloLayer(
+    const void* input,
+    void* output,
+    const uint& batchSize,
+    const uint64_t& inputSize,
+    const uint64_t& outputSize,
+    const uint64_t& lastInputSize,
+    const uint& netWidth,
+    const uint& netHeight,
+    const uint& gridSizeX,
+    const uint& gridSizeY,
+    const uint& numOutputClasses,
+    const uint& numBBoxes,
+    const float& scaleXY,
+    const void* anchors,
+    const void* mask,
+    cudaStream_t stream);
 
-cudaError_t cudaRegionLayer(const void* input, void* softmax, void* output, const uint& batchSize,
-    const uint64_t& inputSize, const uint64_t& outputSize, const uint64_t& lastInputSize, const uint& netWidth,
-    const uint& netHeight, const uint& gridSizeX, const uint& gridSizeY, const uint& numOutputClasses,
-    const uint& numBBoxes, const void* anchors, cudaStream_t stream);
+cudaError_t cudaRegionLayer(
+    const void* input,
+    void* softmax,
+    void* output,
+    const uint& batchSize,
+    const uint64_t& inputSize,
+    const uint64_t& outputSize,
+    const uint64_t& lastInputSize,
+    const uint& netWidth,
+    const uint& netHeight,
+    const uint& gridSizeX,
+    const uint& gridSizeY,
+    const uint& numOutputClasses,
+    const uint& numBBoxes,
+    const void* anchors,
+    cudaStream_t stream);
 
 YoloLayer::YoloLayer(const void* data, size_t length) {
   const char* d = static_cast<const char*>(data);
@@ -91,26 +129,36 @@ YoloLayer::YoloLayer(const void* data, size_t length) {
   }
 };
 
-YoloLayer::YoloLayer(const uint& netWidth, const uint& netHeight, const uint& numClasses, const uint& newCoords,
-    const std::vector<TensorInfo>& yoloTensors, const uint64_t& outputSize) : m_NetWidth(netWidth),
-    m_NetHeight(netHeight), m_NumClasses(numClasses), m_NewCoords(newCoords), m_YoloTensors(yoloTensors),
-    m_OutputSize(outputSize)
-{
+YoloLayer::YoloLayer(
+    const uint& netWidth,
+    const uint& netHeight,
+    const uint& numClasses,
+    const uint& newCoords,
+    const std::vector<TensorInfo>& yoloTensors,
+    const uint64_t& outputSize)
+    : m_NetWidth(netWidth),
+      m_NetHeight(netHeight),
+      m_NumClasses(numClasses),
+      m_NewCoords(newCoords),
+      m_YoloTensors(yoloTensors),
+      m_OutputSize(outputSize) {
   assert(m_NetWidth > 0);
   assert(m_NetHeight > 0);
   assert(m_NumClasses > 0);
   assert(m_OutputSize > 0);
 };
 
-nvinfer1::IPluginV2DynamicExt*
-YoloLayer::clone() const noexcept
-{
-  return new YoloLayer(m_NetWidth, m_NetHeight, m_NumClasses, m_NewCoords, m_YoloTensors, m_OutputSize);
+nvinfer1::IPluginV2DynamicExt* YoloLayer::clone() const noexcept {
+  return new YoloLayer(
+      m_NetWidth,
+      m_NetHeight,
+      m_NumClasses,
+      m_NewCoords,
+      m_YoloTensors,
+      m_OutputSize);
 }
 
-size_t
-YoloLayer::getSerializationSize() const noexcept
-{
+size_t YoloLayer::getSerializationSize() const noexcept {
   size_t totalSize = 0;
 
   totalSize += sizeof(m_NetWidth);
@@ -128,16 +176,16 @@ YoloLayer::getSerializationSize() const noexcept
     totalSize += sizeof(curYoloTensor.gridSizeY);
     totalSize += sizeof(curYoloTensor.numBBoxes);
     totalSize += sizeof(curYoloTensor.scaleXY);
-    totalSize += sizeof(uint) + sizeof(curYoloTensor.anchors[0]) * curYoloTensor.anchors.size();
-    totalSize += sizeof(uint) + sizeof(curYoloTensor.mask[0]) * curYoloTensor.mask.size();
+    totalSize += sizeof(uint) +
+        sizeof(curYoloTensor.anchors[0]) * curYoloTensor.anchors.size();
+    totalSize += sizeof(uint) +
+        sizeof(curYoloTensor.mask[0]) * curYoloTensor.mask.size();
   }
 
   return totalSize;
 }
 
-void
-YoloLayer::serialize(void* buffer) const noexcept
-{
+void YoloLayer::serialize(void* buffer) const noexcept {
   char* d = static_cast<char*>(buffer);
 
   write(d, m_NetWidth);
@@ -169,42 +217,53 @@ YoloLayer::serialize(void* buffer) const noexcept
   }
 }
 
-nvinfer1::DimsExprs
-YoloLayer::getOutputDimensions(INT index, const nvinfer1::DimsExprs* inputs, INT nbInputDims,
-    nvinfer1::IExprBuilder& exprBuilder)noexcept
-{
+nvinfer1::DimsExprs YoloLayer::getOutputDimensions(
+    INT index,
+    const nvinfer1::DimsExprs* inputs,
+    INT nbInputDims,
+    nvinfer1::IExprBuilder& exprBuilder) noexcept {
   assert(index < 1);
-  return nvinfer1::DimsExprs{3, {inputs->d[0], exprBuilder.constant(static_cast<int>(m_OutputSize)),
-      exprBuilder.constant(6)}};
+  return nvinfer1::DimsExprs{
+      3,
+      {inputs->d[0],
+       exprBuilder.constant(static_cast<int>(m_OutputSize)),
+       exprBuilder.constant(6)}};
 }
 
-bool
-YoloLayer::supportsFormatCombination(INT pos, const nvinfer1::PluginTensorDesc* inOut, INT nbInputs, INT nbOutputs)
-    noexcept
-{
-  return inOut[pos].format == nvinfer1::TensorFormat::kLINEAR && inOut[pos].type == nvinfer1::DataType::kFLOAT;
+bool YoloLayer::supportsFormatCombination(
+    INT pos,
+    const nvinfer1::PluginTensorDesc* inOut,
+    INT nbInputs,
+    INT nbOutputs) noexcept {
+  return inOut[pos].format == nvinfer1::TensorFormat::kLINEAR &&
+      inOut[pos].type == nvinfer1::DataType::kFLOAT;
 }
 
-nvinfer1::DataType
-YoloLayer::getOutputDataType(INT index, const nvinfer1::DataType* inputTypes, INT nbInputs) const noexcept
-{
+nvinfer1::DataType YoloLayer::getOutputDataType(
+    INT index,
+    const nvinfer1::DataType* inputTypes,
+    INT nbInputs) const noexcept {
   assert(index < 1);
   return nvinfer1::DataType::kFLOAT;
 }
 
-void
-YoloLayer::configurePlugin(const nvinfer1::DynamicPluginTensorDesc* in, INT nbInput,
-    const nvinfer1::DynamicPluginTensorDesc* out, INT nbOutput) noexcept
-{
+void YoloLayer::configurePlugin(
+    const nvinfer1::DynamicPluginTensorDesc* in,
+    INT nbInput,
+    const nvinfer1::DynamicPluginTensorDesc* out,
+    INT nbOutput) noexcept {
   assert(nbInput > 0);
   assert(in->desc.format == nvinfer1::PluginFormat::kLINEAR);
   assert(in->desc.dims.d != nullptr);
 }
 
-INT
-YoloLayer::enqueue(const nvinfer1::PluginTensorDesc* inputDesc, const nvinfer1::PluginTensorDesc*  outputDesc,
-    void const* const* inputs, void* const* outputs, void* workspace, cudaStream_t stream) noexcept
-{
+INT YoloLayer::enqueue(
+    const nvinfer1::PluginTensorDesc* inputDesc,
+    const nvinfer1::PluginTensorDesc* outputDesc,
+    void const* const* inputs,
+    void* const* outputs,
+    void* workspace,
+    cudaStream_t stream) noexcept {
   INT batchSize = inputDesc[0].dims.d[0];
 
   uint64_t lastInputSize = 0;
@@ -224,34 +283,86 @@ YoloLayer::enqueue(const nvinfer1::PluginTensorDesc* inputDesc, const nvinfer1::
     void* d_mask;
     if (anchors.size() > 0) {
       CUDA_CHECK(cudaMalloc(&d_anchors, sizeof(float) * anchors.size()));
-      CUDA_CHECK(cudaMemcpyAsync(d_anchors, anchors.data(), sizeof(float) * anchors.size(), cudaMemcpyHostToDevice,
+      CUDA_CHECK(cudaMemcpyAsync(
+          d_anchors,
+          anchors.data(),
+          sizeof(float) * anchors.size(),
+          cudaMemcpyHostToDevice,
           stream));
     }
     if (mask.size() > 0) {
       CUDA_CHECK(cudaMalloc(&d_mask, sizeof(int) * mask.size()));
-      CUDA_CHECK(cudaMemcpyAsync(d_mask, mask.data(), sizeof(int) * mask.size(), cudaMemcpyHostToDevice, stream));
+      CUDA_CHECK(cudaMemcpyAsync(
+          d_mask,
+          mask.data(),
+          sizeof(int) * mask.size(),
+          cudaMemcpyHostToDevice,
+          stream));
     }
 
-    const uint64_t inputSize = (numBBoxes * (4 + 1 + m_NumClasses)) * gridSizeY * gridSizeX;
+    const uint64_t inputSize =
+        (numBBoxes * (4 + 1 + m_NumClasses)) * gridSizeY * gridSizeX;
 
     if (mask.size() > 0) {
       if (m_NewCoords) {
-        CUDA_CHECK(cudaYoloLayer_nc(inputs[i], outputs[0], batchSize, inputSize, m_OutputSize, lastInputSize,
-            m_NetWidth, m_NetHeight, gridSizeX, gridSizeY, m_NumClasses, numBBoxes, scaleXY, d_anchors, d_mask,
+        CUDA_CHECK(cudaYoloLayer_nc(
+            inputs[i],
+            outputs[0],
+            batchSize,
+            inputSize,
+            m_OutputSize,
+            lastInputSize,
+            m_NetWidth,
+            m_NetHeight,
+            gridSizeX,
+            gridSizeY,
+            m_NumClasses,
+            numBBoxes,
+            scaleXY,
+            d_anchors,
+            d_mask,
+            stream));
+      } else {
+        CUDA_CHECK(cudaYoloLayer(
+            inputs[i],
+            outputs[0],
+            batchSize,
+            inputSize,
+            m_OutputSize,
+            lastInputSize,
+            m_NetWidth,
+            m_NetHeight,
+            gridSizeX,
+            gridSizeY,
+            m_NumClasses,
+            numBBoxes,
+            scaleXY,
+            d_anchors,
+            d_mask,
             stream));
       }
-      else {
-        CUDA_CHECK(cudaYoloLayer(inputs[i], outputs[0], batchSize, inputSize, m_OutputSize, lastInputSize, m_NetWidth,
-            m_NetHeight, gridSizeX, gridSizeY, m_NumClasses, numBBoxes, scaleXY, d_anchors, d_mask, stream));
-      }
-    }
-    else {
+    } else {
       void* softmax;
       CUDA_CHECK(cudaMalloc(&softmax, sizeof(float) * inputSize * batchSize));
-      CUDA_CHECK(cudaMemsetAsync((float*)softmax, 0, sizeof(float) * inputSize * batchSize, stream));
+      CUDA_CHECK(cudaMemsetAsync(
+          (float*)softmax, 0, sizeof(float) * inputSize * batchSize, stream));
 
-      CUDA_CHECK(cudaRegionLayer(inputs[i], softmax, outputs[0], batchSize, inputSize, m_OutputSize, lastInputSize,
-          m_NetWidth, m_NetHeight, gridSizeX, gridSizeY, m_NumClasses, numBBoxes, d_anchors, stream));
+      CUDA_CHECK(cudaRegionLayer(
+          inputs[i],
+          softmax,
+          outputs[0],
+          batchSize,
+          inputSize,
+          m_OutputSize,
+          lastInputSize,
+          m_NetWidth,
+          m_NetHeight,
+          gridSizeX,
+          gridSizeY,
+          m_NumClasses,
+          numBBoxes,
+          d_anchors,
+          stream));
 
       CUDA_CHECK(cudaFree(softmax));
     }

@@ -1,6 +1,7 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2017-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+ * SPDX-FileCopyrightText: Copyright (c) 2017-2020 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier:
+ * LicenseRef-NvidiaProprietary
  *
  * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
  * property and proprietary rights in and to this material, related
@@ -21,8 +22,7 @@ extern "C" {
 typedef struct DsExampleCtx DsExampleCtx;
 
 // Init parameters structure as input, required for instantiating dsexample_lib
-typedef struct
-{
+typedef struct {
   // Width at which frame/object will be scaled
   int processingWidth;
   // height at which frame/object will be scaled
@@ -32,8 +32,7 @@ typedef struct
 } DsExampleInitParams;
 
 // Detected/Labelled object structure, stores bounding box info along with label
-typedef struct
-{
+typedef struct {
   float left;
   float top;
   float width;
@@ -42,20 +41,19 @@ typedef struct
 } DsExampleObject;
 
 // Output data returned after processing
-typedef struct
-{
+typedef struct {
   int numObjects;
   DsExampleObject object[4];
 } DsExampleOutput;
 
 // Initialize library context
-DsExampleCtx * DsExampleCtxInit (DsExampleInitParams *init_params);
+DsExampleCtx* DsExampleCtxInit(DsExampleInitParams* init_params);
 
 // Dequeue processed output
-DsExampleOutput *DsExampleProcess (DsExampleCtx *ctx, unsigned char *data);
+DsExampleOutput* DsExampleProcess(DsExampleCtx* ctx, unsigned char* data);
 
 // Deinitialize library context
-void DsExampleCtxDeinit (DsExampleCtx *ctx);
+void DsExampleCtxDeinit(DsExampleCtx* ctx);
 
 #ifdef __cplusplus
 }

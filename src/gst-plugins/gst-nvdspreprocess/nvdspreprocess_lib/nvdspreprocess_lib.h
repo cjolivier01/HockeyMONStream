@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+ * SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES.
+ * All rights reserved. SPDX-License-Identifier: LicenseRef-NvidiaProprietary
  *
  * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
  * property and proprietary rights in and to this material, related
@@ -36,7 +36,8 @@
 #define _PATH_MAX 4096
 
 /** pixel-normalization-factor config parameter */
-#define NVDSPREPROCESS_USER_CONFIGS_PIXEL_NORMALIZATION_FACTOR "pixel-normalization-factor"
+#define NVDSPREPROCESS_USER_CONFIGS_PIXEL_NORMALIZATION_FACTOR \
+  "pixel-normalization-factor"
 
 /** mean-file config parameter */
 #define NVDSPREPROCESS_USER_CONFIGS_MEAN_FILE "mean-file"
@@ -47,36 +48,37 @@
 /**
  * Custom transformation function for group
  */
-extern "C"
-NvDsPreProcessStatus CustomTransformation(NvBufSurface *in_surf,
-                                          NvBufSurface *out_surf,
-                                          CustomTransformParams &params);
+extern "C" NvDsPreProcessStatus CustomTransformation(
+    NvBufSurface* in_surf,
+    NvBufSurface* out_surf,
+    CustomTransformParams& params);
 
 /**
  * Custom Asynchronus group transformation function
  */
-extern "C"
-NvDsPreProcessStatus CustomAsyncTransformation(NvBufSurface *in_surf,
-                                          NvBufSurface *out_surf,
-                                          CustomTransformParams &params);
+extern "C" NvDsPreProcessStatus CustomAsyncTransformation(
+    NvBufSurface* in_surf,
+    NvBufSurface* out_surf,
+    CustomTransformParams& params);
 
 /**
  * Custom tensor preparation function for NCHW/NHWC network order
  */
-extern "C"
-NvDsPreProcessStatus CustomTensorPreparation(CustomCtx *ctx, NvDsPreProcessBatch *batch, NvDsPreProcessCustomBuf *&buf,
-                                             CustomTensorParams &tensorParam, NvDsPreProcessAcquirer *acquirer);
+extern "C" NvDsPreProcessStatus CustomTensorPreparation(
+    CustomCtx* ctx,
+    NvDsPreProcessBatch* batch,
+    NvDsPreProcessCustomBuf*& buf,
+    CustomTensorParams& tensorParam,
+    NvDsPreProcessAcquirer* acquirer);
 
 /**
  * custom library initialization function
  */
-extern "C"
-CustomCtx *initLib(CustomInitParams initparams);
+extern "C" CustomCtx* initLib(CustomInitParams initparams);
 
 /**
  * custom library deinitialization function
  */
-extern "C"
-void deInitLib(CustomCtx *ctx);
+extern "C" void deInitLib(CustomCtx* ctx);
 
 #endif

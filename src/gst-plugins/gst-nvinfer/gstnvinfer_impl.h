@@ -1,6 +1,7 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2019-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2020 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier:
+ * LicenseRef-NvidiaProprietary
  *
  * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
  * property and proprietary rights in and to this material, related
@@ -13,17 +14,17 @@
 #ifndef __GSTNVINFER_IMPL_H__
 #define __GSTNVINFER_IMPL_H__
 
-#include <string.h>
-#include <sys/time.h>
 #include <glib.h>
 #include <gst/gst.h>
+#include <string.h>
+#include <sys/time.h>
 
-#include <vector>
-#include <list>
 #include <condition_variable>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include "nvbufsurftransform.h"
 #include "nvdsinfer_context.h"
@@ -35,12 +36,17 @@
 G_BEGIN_DECLS
 typedef struct _GstNvInfer GstNvInfer;
 
-void gst_nvinfer_logger(NvDsInferContextHandle handle, unsigned int unique_id,
-    NvDsInferLogLevel log_level, const char* log_message, void* user_ctx);
+void gst_nvinfer_logger(
+    NvDsInferContextHandle handle,
+    unsigned int unique_id,
+    NvDsInferLogLevel log_level,
+    const char* log_message,
+    void* user_ctx);
 
 G_END_DECLS
 
-using NvDsInferContextInitParamsPtr = std::unique_ptr<NvDsInferContextInitParams>;
+using NvDsInferContextInitParamsPtr =
+    std::unique_ptr<NvDsInferContextInitParams>;
 using NvDsInferContextPtr = std::shared_ptr<INvDsInferContext>;
 
 typedef struct _GstNvInferObjectHistory GstNvInferObjectHistory;
@@ -65,16 +71,16 @@ typedef struct {
   guint roi_left = 0;
   guint roi_top = 0;
   /** NvDsObjectParams belonging to the object to be classified. */
-  NvDsObjectMeta *obj_meta = nullptr;
-  NvDsFrameMeta *frame_meta = nullptr;
-  NvDsRoiMeta *roi_meta = nullptr;
+  NvDsObjectMeta* obj_meta = nullptr;
+  NvDsFrameMeta* frame_meta = nullptr;
+  NvDsRoiMeta* roi_meta = nullptr;
   /** Index of the frame in the batched input GstBuffer. Not required for
    * classifiers. */
   guint batch_index = 0;
   /** Frame number of the frame from the source. */
   gulong frame_num = 0;
   /** The buffer structure the object / frame was converted from. */
-  NvBufSurfaceParams *input_surf_params = nullptr;
+  NvBufSurfaceParams* input_surf_params = nullptr;
   /** Pointer to the converted frame memory. This memory contains the frame
    * converted to RGB/RGBA and scaled to network resolution. This memory is
    * given to NvDsInferContext as input for pre-processing and inferencing. */
@@ -86,7 +92,7 @@ typedef struct {
 } GstNvInferFrame;
 
 using GstNvInferObjHistory_MetaPair =
-    std::pair<std::weak_ptr<GstNvInferObjectHistory>, NvDsObjectMeta *>;
+    std::pair<std::weak_ptr<GstNvInferObjectHistory>, NvDsObjectMeta*>;
 
 /**
  * Holds information about the batch of frames to be inferred.
@@ -95,7 +101,7 @@ typedef struct {
   /** Vector of frames in the batch. */
   std::vector<GstNvInferFrame> frames;
   /** Pointer to the input GstBuffer. */
-  GstBuffer *inbuf = nullptr;
+  GstBuffer* inbuf = nullptr;
   /** Batch number of the input batch. */
   gulong inbuf_batch_num = 0;
   /** Boolean indicating that the output thread should only push the buffer to
@@ -108,7 +114,7 @@ typedef struct {
    */
   gboolean event_marker = FALSE;
   /** Buffer containing the intermediate conversion output for the batch. */
-  GstBuffer *conv_buf = nullptr;
+  GstBuffer* conv_buf = nullptr;
   nvtxRangeId_t nvtx_complete_buf_range = 0;
 
   /** Sync object for allowing asynchronous call to nvbufsurftransform API
@@ -117,21 +123,20 @@ typedef struct {
 
   /** List of objects not inferred on in the current batch but pending
    * attachment of lastest available classification metadata. */
-  std::vector <GstNvInferObjHistory_MetaPair> objs_pending_meta_attach;
+  std::vector<GstNvInferObjHistory_MetaPair> objs_pending_meta_attach;
 } GstNvInferBatch;
 
-
 /**
- * Data type used for the refcounting and managing the usage of NvDsInferContext's
- * batch output and the output buffers contained in it. This is especially required
- * when the tensor output is flowed along with buffers as metadata or when the
- * segmentation output containing pointer to the NvDsInferContext allocated
- * memory is attached to buffers as metadata. Whenever the last ref on the buffer
- * is dropped, the callback to free the GstMiniObject-inherited GstNvInferTensorOutputObject
- * is called and the batch_output can be released back to the NvDsInferContext.
+ * Data type used for the refcounting and managing the usage of
+ * NvDsInferContext's batch output and the output buffers contained in it. This
+ * is especially required when the tensor output is flowed along with buffers as
+ * metadata or when the segmentation output containing pointer to the
+ * NvDsInferContext allocated memory is attached to buffers as metadata.
+ * Whenever the last ref on the buffer is dropped, the callback to free the
+ * GstMiniObject-inherited GstNvInferTensorOutputObject is called and the
+ * batch_output can be released back to the NvDsInferContext.
  */
-typedef struct
-{
+typedef struct {
   /** Parent type. Allows easy refcounting and destruction. Refcount will be
    * increased by 1 for each frame/object for which NvDsInferTensorMeta will be
    * generated. */
@@ -147,8 +152,7 @@ typedef struct
 namespace gstnvinfer {
 
 /** Holds runtime model update status along with the error message if any. */
-struct ModelStatus
-{
+struct ModelStatus {
   /** Status of the model update. */
   NvDsInferStatus status;
   /** Config file used for model update. */
@@ -158,29 +162,26 @@ struct ModelStatus
 };
 
 /** C++ helper class written on top of GMutex/GCond. */
-class LockGMutex
-{
-public:
-  LockGMutex (GMutex &mutex)
-    :m (mutex) {
-    lock ();
+class LockGMutex {
+ public:
+  LockGMutex(GMutex& mutex) : m(mutex) {
+    lock();
   }
-  ~LockGMutex () {
+  ~LockGMutex() {
     if (locked)
       unlock();
   }
-  void lock ();
-  void unlock ();
-  void wait (GCond &cond);
+  void lock();
+  void unlock();
+  void wait(GCond& cond);
 
-private:
-  GMutex &m;
+ private:
+  GMutex& m;
   bool locked = false;
 };
 
 /** Enum for type of model update required. */
-enum ModelLoadType
-{
+enum ModelLoadType {
   /** Load a new model by just replacing the model engine assuming no network
    * architecture changes. */
   MODEL_LOAD_FROM_ENGINE,
@@ -211,27 +212,30 @@ enum ModelLoadType
  *
  * Check deepstream-test5-app README for more details on OTA and runtime model
  * update and sample test steps.*/
-class DsNvInferImpl
-{
-public:
-  using ContextReplacementPtr =
-      std::unique_ptr<std::tuple<NvDsInferContextPtr, NvDsInferContextInitParamsPtr, std::string>>;
+class DsNvInferImpl {
+ public:
+  using ContextReplacementPtr = std::unique_ptr<std::tuple<
+      NvDsInferContextPtr,
+      NvDsInferContextInitParamsPtr,
+      std::string>>;
 
-  DsNvInferImpl (GstNvInfer *infer);
-  ~DsNvInferImpl ();
+  DsNvInferImpl(GstNvInfer* infer);
+  ~DsNvInferImpl();
   /* Start the model load thread. */
-  NvDsInferStatus start ();
+  NvDsInferStatus start();
   /* Stop the model load thread. Release the NvDsInferContext. */
-  void stop ();
+  void stop();
 
-  bool isContextReady () const { return m_InferCtx.get(); }
+  bool isContextReady() const {
+    return m_InferCtx.get();
+  }
 
   /** Load new model in separate thread */
-  bool triggerNewModel (const std::string &modelPath, ModelLoadType loadType);
+  bool triggerNewModel(const std::string& modelPath, ModelLoadType loadType);
 
   /** replace context, action in submit_input_buffer */
-  NvDsInferStatus ensureReplaceNextContext ();
-  void notifyLoadModelStatus (const ModelStatus &res);
+  NvDsInferStatus ensureReplaceNextContext();
+  void notifyLoadModelStatus(const ModelStatus& res);
 
   /** NvDsInferContext to be used for inferencing. */
   NvDsInferContextPtr m_InferCtx;
@@ -239,49 +243,53 @@ public:
   /** NvDsInferContext initialization params. */
   NvDsInferContextInitParamsPtr m_InitParams;
 
-private:
+ private:
   /** Class implementation of separate thread for runtime model load. */
-  class ModelLoadThread
-  {
-  public:
-    using ModelItem = std::tuple<std::string, ModelLoadType> ;
+  class ModelLoadThread {
+   public:
+    using ModelItem = std::tuple<std::string, ModelLoadType>;
 
-    ModelLoadThread (DsNvInferImpl &impl);
-    ~ModelLoadThread ();
-    void queueModel (const std::string &modelPath, ModelLoadType type) {
-      m_PendingModels.push (ModelItem(modelPath, type));
+    ModelLoadThread(DsNvInferImpl& impl);
+    ~ModelLoadThread();
+    void queueModel(const std::string& modelPath, ModelLoadType type) {
+      m_PendingModels.push(ModelItem(modelPath, type));
     }
-  private:
+
+   private:
     void Run();
 
-    DsNvInferImpl &m_Impl;
+    DsNvInferImpl& m_Impl;
     std::thread m_Thread;
     nvdsinfer::GuardQueue<std::list<ModelItem>> m_PendingModels;
   };
 
-  bool initNewInferModelParams (
-      NvDsInferContextInitParams &newParams,
-      const std::string &newModelPath, ModelLoadType loadType,
-      const NvDsInferContextInitParams &oldParams);
-  bool isNewContextValid (
-      INvDsInferContext &newCtx, NvDsInferContextInitParams &newParam);
-  bool triggerContextReplace (
-      NvDsInferContextPtr ctx, NvDsInferContextInitParamsPtr params,
-      const std::string &path);
-  void loadModel (const std::string &path, ModelLoadType loadType);
+  bool initNewInferModelParams(
+      NvDsInferContextInitParams& newParams,
+      const std::string& newModelPath,
+      ModelLoadType loadType,
+      const NvDsInferContextInitParams& oldParams);
+  bool isNewContextValid(
+      INvDsInferContext& newCtx,
+      NvDsInferContextInitParams& newParam);
+  bool triggerContextReplace(
+      NvDsInferContextPtr ctx,
+      NvDsInferContextInitParamsPtr params,
+      const std::string& path);
+  void loadModel(const std::string& path, ModelLoadType loadType);
 
-  ContextReplacementPtr getNextReplacementUnlock ();
-  NvDsInferStatus flushDataUnlock (LockGMutex &lock);
-  NvDsInferStatus resetContextUnlock (
-      NvDsInferContextPtr ctx, NvDsInferContextInitParamsPtr params,
-      const std::string &path);
+  ContextReplacementPtr getNextReplacementUnlock();
+  NvDsInferStatus flushDataUnlock(LockGMutex& lock);
+  NvDsInferStatus resetContextUnlock(
+      NvDsInferContextPtr ctx,
+      NvDsInferContextInitParamsPtr params,
+      const std::string& path);
 
-  GstNvInfer *m_GstInfer = nullptr;
+  GstNvInfer* m_GstInfer = nullptr;
   /** Updating model thread. */
   std::unique_ptr<ModelLoadThread> m_ModelLoadThread;
   ContextReplacementPtr m_NextContextReplacement;
 };
 
-}
+} // namespace gstnvinfer
 
 #endif

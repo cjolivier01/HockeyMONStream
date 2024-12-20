@@ -12,7 +12,12 @@
 
 #include "activation_layer.h"
 
-nvinfer1::ITensor* samLayer(int layerIdx, std::string activation, std::map<std::string, std::string>& block,
-    nvinfer1::ITensor* input, nvinfer1::ITensor* samInput, nvinfer1::INetworkDefinition* network);
+nvinfer1::ITensor* samLayer(
+    int layerIdx,
+    std::string activation,
+    std::map<std::string, std::string>& block,
+    nvinfer1::ITensor* input,
+    nvinfer1::ITensor* samInput,
+    nvinfer1::INetworkDefinition* network);
 
 #endif

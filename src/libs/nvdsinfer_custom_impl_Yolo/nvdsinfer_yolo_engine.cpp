@@ -25,28 +25,31 @@
 
 #include <algorithm>
 
-#include "nvdsinfer_custom_impl.h"
 #include "nvdsinfer_context.h"
+#include "nvdsinfer_custom_impl.h"
 
 #include "yolo.h"
 
 #define USE_CUDA_ENGINE_GET_API 1
 
-static bool
-getYoloNetworkInfo(NetworkInfo& networkInfo, const NvDsInferContextInitParams* initParams)
-{
+static bool getYoloNetworkInfo(
+    NetworkInfo& networkInfo,
+    const NvDsInferContextInitParams* initParams) {
   std::string onnxFilePath = initParams->onnxFilePath;
   std::string wtsFilePath = initParams->modelFilePath;
   std::string cfgFilePath = initParams->customNetworkConfigFilePath;
 
   std::string yoloType = onnxFilePath != "" ? "onnx" : "darknet";
-  std::string modelName = yoloType == "onnx" ?
-      onnxFilePath.substr(0, onnxFilePath.find(".onnx")).substr(onnxFilePath.rfind("/") + 1) :
-      cfgFilePath.substr(0, cfgFilePath.find(".cfg")).substr(cfgFilePath.rfind("/") + 1);
+  std::string modelName = yoloType == "onnx"
+      ? onnxFilePath.substr(0, onnxFilePath.find(".onnx"))
+            .substr(onnxFilePath.rfind("/") + 1)
+      : cfgFilePath.substr(0, cfgFilePath.find(".cfg"))
+            .substr(cfgFilePath.rfind("/") + 1);
 
-  std::transform(modelName.begin(), modelName.end(), modelName.begin(), [] (uint8_t c) {
-    return std::tolower(c);
-  });
+  std::transform(
+      modelName.begin(), modelName.end(), modelName.begin(), [](uint8_t c) {
+        return std::tolower(c);
+      });
 
   networkInfo.inputBlobName = "input";
   networkInfo.networkType = yoloType;
@@ -67,11 +70,9 @@ getYoloNetworkInfo(NetworkInfo& networkInfo, const NvDsInferContextInitParams* i
 
   if (initParams->networkMode == NvDsInferNetworkMode_FP32) {
     networkInfo.networkMode = "FP32";
-  }
-  else if (initParams->networkMode == NvDsInferNetworkMode_INT8) {
+  } else if (initParams->networkMode == NvDsInferNetworkMode_INT8) {
     networkInfo.networkMode = "INT8";
-  }
-  else if (initParams->networkMode == NvDsInferNetworkMode_FP16) {
+  } else if (initParams->networkMode == NvDsInferNetworkMode_FP16) {
     networkInfo.networkMode = "FP16";
   }
 
@@ -80,13 +81,11 @@ getYoloNetworkInfo(NetworkInfo& networkInfo, const NvDsInferContextInitParams* i
       std::cerr << "ONNX file does not exist\n" << std::endl;
       return false;
     }
-  }
-  else {
+  } else {
     if (!fileExists(networkInfo.wtsFilePath)) {
       std::cerr << "Darknet weights file does not exist\n" << std::endl;
       return false;
-    }
-    else if (!fileExists(networkInfo.cfgFilePath)) {
+    } else if (!fileExists(networkInfo.cfgFilePath)) {
       std::cerr << "Darknet cfg file does not exist\n" << std::endl;
       return false;
     }
@@ -96,9 +95,8 @@ getYoloNetworkInfo(NetworkInfo& networkInfo, const NvDsInferContextInitParams* i
 }
 
 #if !USE_CUDA_ENGINE_GET_API
-IModelParser*
-NvDsInferCreateModelParser(const NvDsInferContextInitParams* initParams)
-{
+IModelParser* NvDsInferCreateModelParser(
+    const NvDsInferContextInitParams* initParams) {
   NetworkInfo networkInfo;
   if (!getYoloNetworkInfo(networkInfo, initParams))
     return nullptr;
@@ -108,22 +106,31 @@ NvDsInferCreateModelParser(const NvDsInferContextInitParams* initParams)
 #else
 
 #if NV_TENSORRT_MAJOR >= 8
-extern "C" bool
-NvDsInferYoloCudaEngineGet(nvinfer1::IBuilder* const builder, nvinfer1::IBuilderConfig* const builderConfig,
-    const NvDsInferContextInitParams* const initParams, nvinfer1::DataType dataType,
+extern "C" bool NvDsInferYoloCudaEngineGet(
+    nvinfer1::IBuilder* const builder,
+    nvinfer1::IBuilderConfig* const builderConfig,
+    const NvDsInferContextInitParams* const initParams,
+    nvinfer1::DataType dataType,
     nvinfer1::ICudaEngine*& cudaEngine);
 
-extern "C" bool
-NvDsInferYoloCudaEngineGet(nvinfer1::IBuilder* const builder, nvinfer1::IBuilderConfig* const builderConfig,
-    const NvDsInferContextInitParams* const initParams, nvinfer1::DataType dataType, nvinfer1::ICudaEngine*& cudaEngine)
+extern "C" bool NvDsInferYoloCudaEngineGet(
+    nvinfer1::IBuilder* const builder,
+    nvinfer1::IBuilderConfig* const builderConfig,
+    const NvDsInferContextInitParams* const initParams,
+    nvinfer1::DataType dataType,
+    nvinfer1::ICudaEngine*& cudaEngine)
 #else
-extern "C" bool
-NvDsInferYoloCudaEngineGet(nvinfer1::IBuilder* const builder, const NvDsInferContextInitParams* const initParams,
-    nvinfer1::DataType dataType, nvinfer1::ICudaEngine*& cudaEngine);
+extern "C" bool NvDsInferYoloCudaEngineGet(
+    nvinfer1::IBuilder* const builder,
+    const NvDsInferContextInitParams* const initParams,
+    nvinfer1::DataType dataType,
+    nvinfer1::ICudaEngine*& cudaEngine);
 
-extern "C" bool
-NvDsInferYoloCudaEngineGet(nvinfer1::IBuilder* const builder, const NvDsInferContextInitParams* const initParams,
-    nvinfer1::DataType dataType, nvinfer1::ICudaEngine*& cudaEngine)
+extern "C" bool NvDsInferYoloCudaEngineGet(
+    nvinfer1::IBuilder* const builder,
+    const NvDsInferContextInitParams* const initParams,
+    nvinfer1::DataType dataType,
+    nvinfer1::ICudaEngine*& cudaEngine)
 #endif
 
 {

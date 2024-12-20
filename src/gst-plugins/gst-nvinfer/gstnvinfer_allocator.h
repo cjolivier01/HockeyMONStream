@@ -1,6 +1,7 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2018-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+ * SPDX-FileCopyrightText: Copyright (c) 2018-2020 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier:
+ * LicenseRef-NvidiaProprietary
  *
  * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
  * property and proprietary rights in and to this material, related
@@ -29,17 +30,17 @@
 /**
  * Holds the pointer for the allocated memory.
  */
-typedef struct
-{
-  NvBufSurface *surf;
-  /** Vector of cuda resources created by registering the above egl images in CUDA. */
+typedef struct {
+  NvBufSurface* surf;
+  /** Vector of cuda resources created by registering the above egl images in
+   * CUDA. */
   std::vector<CUgraphicsResource> cuda_resources;
   /** Vector of CUDA eglFrames created by mapping the above cuda resources. */
   std::vector<CUeglFrame> egl_frames;
   /** Pointer to the memory allocated for the batch of frames (DGPU). */
-  void *dev_memory_ptr;
+  void* dev_memory_ptr;
   /** Vector of pointer to individual frame memories in the batch memory */
-  std::vector<void *> frame_memory_ptrs;
+  std::vector<void*> frame_memory_ptrs;
 } GstNvInferMemory;
 
 /**
@@ -50,7 +51,7 @@ typedef struct
  *
  * @return Pointer to the associated GstNvInferMemory structure
  */
-GstNvInferMemory *gst_nvinfer_buffer_get_memory (GstBuffer * buffer);
+GstNvInferMemory* gst_nvinfer_buffer_get_memory(GstBuffer* buffer);
 
 /**
  * Create a new GstNvInferAllocator with the given parameters.
@@ -63,7 +64,11 @@ GstNvInferMemory *gst_nvinfer_buffer_get_memory (GstBuffer * buffer);
  *
  * @return Pointer to the GstNvInferAllocator structure cast as GstAllocator
  */
-GstAllocator *gst_nvinfer_allocator_new (guint width, guint height,
-    NvBufSurfaceColorFormat color_format, guint batch_size, guint gpu_id);
+GstAllocator* gst_nvinfer_allocator_new(
+    guint width,
+    guint height,
+    NvBufSurfaceColorFormat color_format,
+    guint batch_size,
+    guint gpu_id);
 
 #endif

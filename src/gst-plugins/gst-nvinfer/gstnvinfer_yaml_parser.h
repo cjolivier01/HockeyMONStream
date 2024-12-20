@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+ * SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES.
+ * All rights reserved. SPDX-License-Identifier: LicenseRef-NvidiaProprietary
  *
  * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
  * property and proprietary rights in and to this material, related
@@ -15,8 +15,8 @@
 
 #include <glib.h>
 
-#include "nvdsinfer_context.h"
 #include "gstnvinfer.h"
+#include "nvdsinfer_context.h"
 
 #define DEFAULT_PRE_CLUSTER_THRESHOLD 0.2
 #define DEFAULT_POST_CLUSTER_THRESHOLD 0.0
@@ -27,12 +27,13 @@
 #define DEFAULT_NMS_IOU_THRESHOLD 0.3
 #define DEFAULT_TOP_K -1
 
+gboolean gst_nvinfer_parse_config_file_yaml(
+    GstNvInfer* nvinfer,
+    NvDsInferContextInitParams* init_params,
+    const gchar* cfg_file_path);
 
-gboolean gst_nvinfer_parse_config_file_yaml (GstNvInfer *nvinfer,
-        NvDsInferContextInitParams *init_params, const gchar * cfg_file_path);
-
-gboolean gst_nvinfer_parse_context_params_yaml (NvDsInferContextInitParams *params,
-        const gchar * cfg_file_path);
-
+gboolean gst_nvinfer_parse_context_params_yaml(
+    NvDsInferContextInitParams* params,
+    const gchar* cfg_file_path);
 
 #endif /*__GST_NVINFER_PROPERTY_PARSER_H__*/

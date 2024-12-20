@@ -26,12 +26,12 @@
 #ifndef __UTILS_H__
 #define __UTILS_H__
 
-#include <map>
-#include <vector>
-#include <string>
 #include <cassert>
-#include <iostream>
 #include <fstream>
+#include <iostream>
+#include <map>
+#include <string>
+#include <vector>
 
 #include "NvInfer.h"
 
@@ -48,7 +48,10 @@ std::string dimsToString(const nvinfer1::Dims d);
 int getNumChannels(nvinfer1::ITensor* t);
 
 void printLayerInfo(
-    std::string layerIndex, std::string layerName, std::string layerInput,  std::string layerOutput,
+    std::string layerIndex,
+    std::string layerName,
+    std::string layerInput,
+    std::string layerOutput,
     std::string weightPtr);
 
 #endif

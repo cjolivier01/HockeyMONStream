@@ -1,6 +1,7 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+ * SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier:
+ * LicenseRef-NvidiaProprietary
  *
  * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
  * property and proprietary rights in and to this material, related
@@ -38,8 +39,10 @@
 
 #define NVDSPREPROCESS_PROPERTY_SCALING_BUF_POOL_SIZE "scaling-buf-pool-size"
 #define NVDSPREPROCESS_PROPERTY_SCALING_FILTER "scaling-filter"
-#define NVDSPREPROCESS_PROPERTY_SCALING_POOL_COMPUTE_HW "scaling-pool-compute-hw"
-#define NVDSPREPROCESS_PROPERTY_SCALING_POOL_MEMORY_TYPE "scaling-pool-memory-type"
+#define NVDSPREPROCESS_PROPERTY_SCALING_POOL_COMPUTE_HW \
+  "scaling-pool-compute-hw"
+#define NVDSPREPROCESS_PROPERTY_SCALING_POOL_MEMORY_TYPE \
+  "scaling-pool-memory-type"
 
 #define NVDSPREPROCESS_PROPERTY_NETWORK_INPUT_ORDER "network-input-order"
 #define NVDSPREPROCESS_PROPERTY_NETWORK_SHAPE "network-input-shape"
@@ -48,7 +51,8 @@
 #define NVDSPREPROCESS_PROPERTY_TENSOR_NAME "tensor-name"
 
 #define NVDSPREPROCESS_PROPERTY_CUSTOM_LIB_NAME "custom-lib-path"
-#define NVDSPREPROCESS_PROPERTY_TENSOR_PREPARATION_FUNCTION "custom-tensor-preparation-function"
+#define NVDSPREPROCESS_PROPERTY_TENSOR_PREPARATION_FUNCTION \
+  "custom-tensor-preparation-function"
 
 #define NVDSPREPROCESS_USER_CONFIGS "user-configs"
 
@@ -57,7 +61,8 @@
 #define NVDSPREPROCESS_GROUP_PROCESS_ON_ROI "process-on-roi"
 #define NVDSPREPROCESS_GROUP_PROCESS_ON_ALL_OBJECTS "process-on-all-objects"
 #define NVDSPREPROCESS_GROUP_ROI_PARAMS_SRC "roi-params-src"
-#define NVDSPREPROCESS_GROUP_CUSTOM_INPUT_PREPROCESS_FUNCTION "custom-input-transformation-function"
+#define NVDSPREPROCESS_GROUP_CUSTOM_INPUT_PREPROCESS_FUNCTION \
+  "custom-input-transformation-function"
 #define NVDSPREPROCESS_GROUP_DRAW_ROI "draw-roi"
 #define NVDSPREPROCESS_GROUP_ROI_COLOR "roi-color"
 #define NVDSPREPROCESS_GROUP_OPERATE_ON_CLASS_IDS "operate-on-class-ids"
@@ -79,7 +84,8 @@
  *
  * @return boolean denoting if successfully parsed config file
  */
-gboolean
-nvdspreprocess_parse_config_file (GstNvDsPreProcess *nvdspreprocess, gchar *cfg_file_path);
+gboolean nvdspreprocess_parse_config_file(
+    GstNvDsPreProcess* nvdspreprocess,
+    gchar* cfg_file_path);
 
 #endif /* NVDSPREPROCESS_PROPERTY_FILE_PARSER_H_ */

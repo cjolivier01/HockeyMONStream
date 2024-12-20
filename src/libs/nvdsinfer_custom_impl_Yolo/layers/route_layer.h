@@ -10,7 +10,11 @@
 
 #include "slice_layer.h"
 
-nvinfer1::ITensor* routeLayer(int layerIdx, std::string& layers, std::map<std::string, std::string>& block,
-    std::vector<nvinfer1::ITensor*> tensorOutputs, nvinfer1::INetworkDefinition* network);
+nvinfer1::ITensor* routeLayer(
+    int layerIdx,
+    std::string& layers,
+    std::map<std::string, std::string>& block,
+    std::vector<nvinfer1::ITensor*> tensorOutputs,
+    nvinfer1::INetworkDefinition* network);
 
 #endif

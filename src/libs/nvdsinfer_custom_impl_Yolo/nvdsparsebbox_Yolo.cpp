@@ -27,13 +27,19 @@
 
 #include "utils.h"
 
-extern "C" bool
-NvDsInferParseYolo(std::vector<NvDsInferLayerInfo> const& outputLayersInfo, NvDsInferNetworkInfo const& networkInfo,
-    NvDsInferParseDetectionParams const& detectionParams, std::vector<NvDsInferParseObjectInfo>& objectList);
+extern "C" bool NvDsInferParseYolo(
+    std::vector<NvDsInferLayerInfo> const& outputLayersInfo,
+    NvDsInferNetworkInfo const& networkInfo,
+    NvDsInferParseDetectionParams const& detectionParams,
+    std::vector<NvDsInferParseObjectInfo>& objectList);
 
-static NvDsInferParseObjectInfo
-convertBBox(const float& bx1, const float& by1, const float& bx2, const float& by2, const uint& netW, const uint& netH)
-{
+static NvDsInferParseObjectInfo convertBBox(
+    const float& bx1,
+    const float& by1,
+    const float& bx2,
+    const float& by2,
+    const uint& netW,
+    const uint& netH) {
   NvDsInferParseObjectInfo b;
 
   float x1 = bx1;
@@ -54,10 +60,16 @@ convertBBox(const float& bx1, const float& by1, const float& bx2, const float& b
   return b;
 }
 
-static void
-addBBoxProposal(const float bx1, const float by1, const float bx2, const float by2, const uint& netW, const uint& netH,
-    const int maxIndex, const float maxProb, std::vector<NvDsInferParseObjectInfo>& binfo)
-{
+static void addBBoxProposal(
+    const float bx1,
+    const float by1,
+    const float bx2,
+    const float by2,
+    const uint& netW,
+    const uint& netH,
+    const int maxIndex,
+    const float maxProb,
+    std::vector<NvDsInferParseObjectInfo>& binfo) {
   NvDsInferParseObjectInfo bbi = convertBBox(bx1, by1, bx2, by2, netW, netH);
 
   if (bbi.width < 1 || bbi.height < 1) {
@@ -69,15 +81,17 @@ addBBoxProposal(const float bx1, const float by1, const float bx2, const float b
   binfo.push_back(bbi);
 }
 
-static std::vector<NvDsInferParseObjectInfo>
-decodeTensorYolo(const float* output, const uint& outputSize, const uint& netW, const uint& netH,
-    const std::vector<float>& preclusterThreshold)
-{
+static std::vector<NvDsInferParseObjectInfo> decodeTensorYolo(
+    const float* output,
+    const uint& outputSize,
+    const uint& netW,
+    const uint& netH,
+    const std::vector<float>& preclusterThreshold) {
   std::vector<NvDsInferParseObjectInfo> binfo;
 
   for (uint b = 0; b < outputSize; ++b) {
     float maxProb = output[b * 6 + 4];
-    int maxIndex = (int) output[b * 6 + 5];
+    int maxIndex = (int)output[b * 6 + 5];
 
     if (maxProb < preclusterThreshold[maxIndex]) {
       continue;
@@ -94,13 +108,14 @@ decodeTensorYolo(const float* output, const uint& outputSize, const uint& netW, 
   return binfo;
 }
 
-static bool
-NvDsInferParseCustomYolo(std::vector<NvDsInferLayerInfo> const& outputLayersInfo,
-    NvDsInferNetworkInfo const& networkInfo, NvDsInferParseDetectionParams const& detectionParams,
-    std::vector<NvDsInferParseObjectInfo>& objectList)
-{
+static bool NvDsInferParseCustomYolo(
+    std::vector<NvDsInferLayerInfo> const& outputLayersInfo,
+    NvDsInferNetworkInfo const& networkInfo,
+    NvDsInferParseDetectionParams const& detectionParams,
+    std::vector<NvDsInferParseObjectInfo>& objectList) {
   if (outputLayersInfo.empty()) {
-    std::cerr << "ERROR: Could not find output layer in bbox parsing" << std::endl;
+    std::cerr << "ERROR: Could not find output layer in bbox parsing"
+              << std::endl;
     return false;
   }
 
@@ -109,8 +124,12 @@ NvDsInferParseCustomYolo(std::vector<NvDsInferLayerInfo> const& outputLayersInfo
   const NvDsInferLayerInfo& output = outputLayersInfo[0];
   const uint outputSize = output.inferDims.d[0];
 
-  std::vector<NvDsInferParseObjectInfo> outObjs = decodeTensorYolo((const float*) (output.buffer), outputSize,
-      networkInfo.width, networkInfo.height, detectionParams.perClassPreclusterThreshold);
+  std::vector<NvDsInferParseObjectInfo> outObjs = decodeTensorYolo(
+      (const float*)(output.buffer),
+      outputSize,
+      networkInfo.width,
+      networkInfo.height,
+      detectionParams.perClassPreclusterThreshold);
 
   objects.insert(objects.end(), outObjs.begin(), outObjs.end());
 
@@ -119,11 +138,13 @@ NvDsInferParseCustomYolo(std::vector<NvDsInferLayerInfo> const& outputLayersInfo
   return true;
 }
 
-extern "C" bool
-NvDsInferParseYolo(std::vector<NvDsInferLayerInfo> const& outputLayersInfo, NvDsInferNetworkInfo const& networkInfo,
-    NvDsInferParseDetectionParams const& detectionParams, std::vector<NvDsInferParseObjectInfo>& objectList)
-{
-  return NvDsInferParseCustomYolo(outputLayersInfo, networkInfo, detectionParams, objectList);
+extern "C" bool NvDsInferParseYolo(
+    std::vector<NvDsInferLayerInfo> const& outputLayersInfo,
+    NvDsInferNetworkInfo const& networkInfo,
+    NvDsInferParseDetectionParams const& detectionParams,
+    std::vector<NvDsInferParseObjectInfo>& objectList) {
+  return NvDsInferParseCustomYolo(
+      outputLayersInfo, networkInfo, detectionParams, objectList);
 }
 
 CHECK_CUSTOM_PARSE_FUNC_PROTOTYPE(NvDsInferParseYolo);

@@ -5,14 +5,19 @@
 
 #include "deconvolutional_layer.h"
 
-#include <cassert>
 #include <math.h>
+#include <cassert>
 
-nvinfer1::ITensor*
-deconvolutionalLayer(int layerIdx, std::map<std::string, std::string>& block, std::vector<float>& weights,
-    std::vector<nvinfer1::Weights>& trtWeights, int& weightPtr, int& inputChannels, nvinfer1::ITensor* input,
-    nvinfer1::INetworkDefinition* network, std::string layerName)
-{
+nvinfer1::ITensor* deconvolutionalLayer(
+    int layerIdx,
+    std::map<std::string, std::string>& block,
+    std::vector<float>& weights,
+    std::vector<nvinfer1::Weights>& trtWeights,
+    int& weightPtr,
+    int& inputChannels,
+    nvinfer1::ITensor* input,
+    nvinfer1::INetworkDefinition* network,
+    std::string layerName) {
   nvinfer1::ITensor* output;
 
   assert(block.at("type") == "deconv" || block.at("type") == "deconvolutional");
@@ -53,8 +58,7 @@ deconvolutionalLayer(int layerIdx, std::map<std::string, std::string>& block, st
   int pad;
   if (padding) {
     pad = (kernelSize - 1) / 2;
-  }
-  else {
+  } else {
     pad = 0;
   }
 
@@ -63,29 +67,28 @@ deconvolutionalLayer(int layerIdx, std::map<std::string, std::string>& block, st
   std::vector<float> bnWeights;
   std::vector<float> bnRunningMean;
   std::vector<float> bnRunningVar;
-  nvinfer1::Weights convWt {nvinfer1::DataType::kFLOAT, nullptr, size};
-  nvinfer1::Weights convBias {nvinfer1::DataType::kFLOAT, nullptr, bias};
+  nvinfer1::Weights convWt{nvinfer1::DataType::kFLOAT, nullptr, size};
+  nvinfer1::Weights convBias{nvinfer1::DataType::kFLOAT, nullptr, bias};
 
   if (batchNormalize == 0) {
     float* val;
     if (bias != 0) {
       val = new float[filters];
       for (int i = 0; i < filters; ++i) {
-          val[i] = weights[weightPtr];
-          ++weightPtr;
+        val[i] = weights[weightPtr];
+        ++weightPtr;
       }
       convBias.values = val;
       trtWeights.push_back(convBias);
     }
     val = new float[size];
     for (int i = 0; i < size; ++i) {
-        val[i] = weights[weightPtr];
-        ++weightPtr;
+      val[i] = weights[weightPtr];
+      ++weightPtr;
     }
     convWt.values = val;
     trtWeights.push_back(convWt);
-  }
-  else {
+  } else {
     for (int i = 0; i < filters; ++i) {
       bnBiases.push_back(weights[weightPtr]);
       ++weightPtr;
@@ -123,8 +126,12 @@ deconvolutionalLayer(int layerIdx, std::map<std::string, std::string>& block, st
     }
   }
 
-  nvinfer1::IDeconvolutionLayer* conv = network->addDeconvolutionNd(*input, filters,
-      nvinfer1::Dims{2, {kernelSize, kernelSize}}, convWt, convBias);
+  nvinfer1::IDeconvolutionLayer* conv = network->addDeconvolutionNd(
+      *input,
+      filters,
+      nvinfer1::Dims{2, {kernelSize, kernelSize}},
+      convWt,
+      convBias);
   assert(conv != nullptr);
   std::string convLayerName = "deconv_" + layerName + std::to_string(layerIdx);
   conv->setName(convLayerName.c_str());
@@ -139,13 +146,14 @@ deconvolutionalLayer(int layerIdx, std::map<std::string, std::string>& block, st
 
   if (batchNormalize == 1) {
     size = filters;
-    nvinfer1::Weights shift {nvinfer1::DataType::kFLOAT, nullptr, size};
-    nvinfer1::Weights scale {nvinfer1::DataType::kFLOAT, nullptr, size};
-    nvinfer1::Weights power {nvinfer1::DataType::kFLOAT, nullptr, size};
+    nvinfer1::Weights shift{nvinfer1::DataType::kFLOAT, nullptr, size};
+    nvinfer1::Weights scale{nvinfer1::DataType::kFLOAT, nullptr, size};
+    nvinfer1::Weights power{nvinfer1::DataType::kFLOAT, nullptr, size};
 
     float* shiftWt = new float[size];
     for (int i = 0; i < size; ++i) {
-      shiftWt[i] = bnBiases.at(i) - ((bnRunningMean.at(i) * bnWeights.at(i)) / bnRunningVar.at(i));
+      shiftWt[i] = bnBiases.at(i) -
+          ((bnRunningMean.at(i) * bnWeights.at(i)) / bnRunningVar.at(i));
     }
     shift.values = shiftWt;
 
@@ -165,9 +173,11 @@ deconvolutionalLayer(int layerIdx, std::map<std::string, std::string>& block, st
     trtWeights.push_back(scale);
     trtWeights.push_back(power);
 
-    nvinfer1::IScaleLayer* batchnorm = network->addScale(*output, nvinfer1::ScaleMode::kCHANNEL, shift, scale, power);
+    nvinfer1::IScaleLayer* batchnorm = network->addScale(
+        *output, nvinfer1::ScaleMode::kCHANNEL, shift, scale, power);
     assert(batchnorm != nullptr);
-    std::string batchnormLayerName = "batchnorm_" + layerName + std::to_string(layerIdx);
+    std::string batchnormLayerName =
+        "batchnorm_" + layerName + std::to_string(layerIdx);
     batchnorm->setName(batchnormLayerName.c_str());
     output = batchnorm->getOutput(0);
   }

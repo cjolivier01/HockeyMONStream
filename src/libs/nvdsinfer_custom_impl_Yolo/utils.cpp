@@ -25,41 +25,37 @@
 
 #include "utils.h"
 
-#include <iomanip>
 #include <algorithm>
 #include <experimental/filesystem>
+#include <iomanip>
 
-static void
-leftTrim(std::string& s)
-{
-  s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](int ch) { return !isspace(ch); }));
+static void leftTrim(std::string& s) {
+  s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](int ch) {
+            return !isspace(ch);
+          }));
 }
 
-static void
-rightTrim(std::string& s)
-{
-  s.erase(std::find_if(s.rbegin(), s.rend(), [](int ch) { return !isspace(ch); }).base(), s.end());
+static void rightTrim(std::string& s) {
+  s.erase(
+      std::find_if(s.rbegin(), s.rend(), [](int ch) { return !isspace(ch); })
+          .base(),
+      s.end());
 }
 
-std::string
-trim(std::string s)
-{
+std::string trim(std::string s) {
   leftTrim(s);
   rightTrim(s);
   return s;
 }
 
-float
-clamp(const float val, const float minVal, const float maxVal)
-{
+float clamp(const float val, const float minVal, const float maxVal) {
   assert(minVal <= maxVal);
   return std::min(maxVal, std::max(minVal, val));
 }
 
-bool
-fileExists(const std::string fileName, bool verbose)
-{
-  if (!std::experimental::filesystem::exists(std::experimental::filesystem::path(fileName))) {
+bool fileExists(const std::string fileName, bool verbose) {
+  if (!std::experimental::filesystem::exists(
+          std::experimental::filesystem::path(fileName))) {
     if (verbose) {
       std::cout << "\nFile does not exist: " << fileName << std::endl;
     }
@@ -68,9 +64,7 @@ fileExists(const std::string fileName, bool verbose)
   return true;
 }
 
-std::vector<float>
-loadWeights(const std::string weightsFilePath)
-{
+std::vector<float> loadWeights(const std::string weightsFilePath) {
   assert(fileExists(weightsFilePath));
   std::cout << "\nLoading pre-trained weights" << std::endl;
 
@@ -85,8 +79,7 @@ loadWeights(const std::string weightsFilePath)
         weightsFilePath.find("yolov2-tiny") == std::string::npos) {
       // Remove 4 int32 bytes of data from the stream belonging to the header
       file.ignore(4 * 4);
-    }
-    else {
+    } else {
       // Remove 5 int32 bytes of data from the stream belonging to the header
       file.ignore(4 * 5);
     }
@@ -100,9 +93,9 @@ loadWeights(const std::string weightsFilePath)
         break;
       }
     }
-  }
-  else {
-    std::cerr << "\nFile " << weightsFilePath << " is not supported" << std::endl;
+  } else {
+    std::cerr << "\nFile " << weightsFilePath << " is not supported"
+              << std::endl;
     assert(0);
   }
 
@@ -112,9 +105,7 @@ loadWeights(const std::string weightsFilePath)
   return weights;
 }
 
-std::string
-dimsToString(const nvinfer1::Dims d)
-{
+std::string dimsToString(const nvinfer1::Dims d) {
   assert(d.nbDims >= 1);
 
   std::stringstream s;
@@ -127,19 +118,21 @@ dimsToString(const nvinfer1::Dims d)
   return s.str();
 }
 
-int
-getNumChannels(nvinfer1::ITensor* t)
-{
+int getNumChannels(nvinfer1::ITensor* t) {
   nvinfer1::Dims d = t->getDimensions();
   assert(d.nbDims == 4);
   return d.d[1];
 }
 
-void
-printLayerInfo(std::string layerIndex, std::string layerName, std::string layerInput, std::string layerOutput,
-    std::string weightPtr)
-{
-  std::cout << std::setw(7) << std::left << layerIndex << std::setw(40) << std::left << layerName;
-  std::cout << std::setw(19) << std::left << layerInput << std::setw(19) << std::left << layerOutput;
+void printLayerInfo(
+    std::string layerIndex,
+    std::string layerName,
+    std::string layerInput,
+    std::string layerOutput,
+    std::string weightPtr) {
+  std::cout << std::setw(7) << std::left << layerIndex << std::setw(40)
+            << std::left << layerName;
+  std::cout << std::setw(19) << std::left << layerInput << std::setw(19)
+            << std::left << layerOutput;
   std::cout << weightPtr << std::endl;
 }

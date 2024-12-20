@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+ * SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES.
+ * All rights reserved. SPDX-License-Identifier: LicenseRef-NvidiaProprietary
  *
  * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
  * property and proprietary rights in and to this material, related
@@ -29,18 +29,18 @@
 /**
  * Holds the pointer for the allocated memory.
  */
-typedef struct
-{
+typedef struct {
   /** surface corresponding to memory allocated */
-  NvBufSurface *surf;
-  /** Vector of cuda resources created by registering the above egl images in CUDA. */
+  NvBufSurface* surf;
+  /** Vector of cuda resources created by registering the above egl images in
+   * CUDA. */
   std::vector<CUgraphicsResource> cuda_resources;
   /** Vector of CUDA eglFrames created by mapping the above cuda resources. */
   std::vector<CUeglFrame> egl_frames;
   /** Pointer to the memory allocated for the batch of frames (DGPU). */
-  void *dev_memory_ptr;
+  void* dev_memory_ptr;
   /** Vector of pointer to individual frame memories in the batch memory */
-  std::vector<void *> frame_memory_ptrs;
+  std::vector<void*> frame_memory_ptrs;
 } GstNvDsPreProcessMemory;
 
 /**
@@ -51,22 +51,23 @@ typedef struct
  *
  * @return Pointer to the associated GstNvDsPreProcessMemory structure
  */
-GstNvDsPreProcessMemory *gst_nvdspreprocess_buffer_get_memory (GstBuffer * buffer);
+GstNvDsPreProcessMemory* gst_nvdspreprocess_buffer_get_memory(
+    GstBuffer* buffer);
 
 /**
  * structure containing video buffer allocator info
  */
 typedef struct {
-    /** video buffer width */
-    guint width;
-    /** video buffer height */
-    guint height;
-    /** color format */
-    NvBufSurfaceColorFormat color_format;
-    /** batch size */
-    guint batch_size;
-    /** memory type of buffer */
-    NvBufSurfaceMemType memory_type;
+  /** video buffer width */
+  guint width;
+  /** video buffer height */
+  guint height;
+  /** color format */
+  NvBufSurfaceColorFormat color_format;
+  /** batch size */
+  guint batch_size;
+  /** memory type of buffer */
+  NvBufSurfaceMemType memory_type;
 } GstNvDsPreProcessVideoBufferAllocatorInfo;
 
 /**
@@ -77,9 +78,13 @@ typedef struct {
  * @param gpu_id ID of the gpu where the batch memory will be allocated.
  * @param debug_tensor boolean to denote if DEBUG_TENSOR flag is enabled.
  *
- * @return Pointer to the GstNvDsPreProcessAllocator structure cast as GstAllocator
+ * @return Pointer to the GstNvDsPreProcessAllocator structure cast as
+ * GstAllocator
  */
-GstAllocator *gst_nvdspreprocess_allocator_new (GstNvDsPreProcessVideoBufferAllocatorInfo *info, size_t raw_buf_size,
-    guint gpu_id, gboolean debug_tensor);
+GstAllocator* gst_nvdspreprocess_allocator_new(
+    GstNvDsPreProcessVideoBufferAllocatorInfo* info,
+    size_t raw_buf_size,
+    guint gpu_id,
+    gboolean debug_tensor);
 
 #endif

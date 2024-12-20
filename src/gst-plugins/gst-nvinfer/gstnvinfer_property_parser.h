@@ -1,6 +1,7 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2018-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+ * SPDX-FileCopyrightText: Copyright (c) 2018-2021 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier:
+ * LicenseRef-NvidiaProprietary
  *
  * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
  * property and proprietary rights in and to this material, related
@@ -15,8 +16,8 @@
 
 #include <glib.h>
 
-#include "nvdsinfer_context.h"
 #include "gstnvinfer.h"
+#include "nvdsinfer_context.h"
 
 #define DEFAULT_PRE_CLUSTER_THRESHOLD 0.2
 #define DEFAULT_POST_CLUSTER_THRESHOLD 0.0
@@ -37,9 +38,10 @@
 #define CONFIG_GROUP_INFER_INTERVAL "interval"
 #define CONFIG_GROUP_INFER_LABEL "labelfile-path"
 #define CONFIG_GROUP_INFER_GPU_ID "gpu-id"
-#define CONFIG_GROUP_INFER_SECONDARY_REINFER_INTERVAL "secondary-reinfer-interval"
+#define CONFIG_GROUP_INFER_SECONDARY_REINFER_INTERVAL \
+  "secondary-reinfer-interval"
 #define CONFIG_GROUP_INFER_OUTPUT_TENSOR_META "output-tensor-meta"
-//gpu_post_processing 0 is not 1 is yes
+// gpu_post_processing 0 is not 1 is yes
 #define CONFIG_GROUP_INFER_DISABLE_OUTPUT_HOST_COPY "disable-output-host-copy"
 
 #define CONFIG_GROUP_INFER_AUTO_INCREASE_MEMORY "auto-inc-mem"
@@ -88,9 +90,11 @@
 /** Custom implementation required to support a network. */
 #define CONFIG_GROUP_INFER_CUSTOM_LIB_PATH "custom-lib-path"
 #define CONFIG_GROUP_INFER_CUSTOM_PARSE_BBOX_FUNC "parse-bbox-func-name"
-#define CONFIG_GROUP_INFER_CUSTOM_PARSE_BBOX_IM_FUNC "parse-bbox-instance-mask-func-name"
+#define CONFIG_GROUP_INFER_CUSTOM_PARSE_BBOX_IM_FUNC \
+  "parse-bbox-instance-mask-func-name"
 #define CONFIG_GROUP_INFER_CUSTOM_ENGINE_CREATE_FUNC "engine-create-func-name"
-#define CONFIG_GROUP_INFER_CUSTOM_PARSE_CLASSIFIER_FUNC "parse-classifier-func-name"
+#define CONFIG_GROUP_INFER_CUSTOM_PARSE_CLASSIFIER_FUNC \
+  "parse-classifier-func-name"
 #define CONFIG_GROUP_INFER_CUSTOM_NETWORK_CONFIG "custom-network-config"
 
 /** Caffe model specific parameters. */
@@ -115,7 +119,8 @@
 #define CONFIG_GROUP_INFER_NUM_DETECTED_CLASSES "num-detected-classes"
 #define CONFIG_GROUP_INFER_ENABLE_DBSCAN "enable-dbscan"
 #define CONFIG_GROUP_INFER_CLUSTER_MODE "cluster-mode"
-#define CONFIG_GROUP_INFER_CROP_OBJECTS_TO_ROI_BOUNDARY "crop-objects-to-roi-boundary"
+#define CONFIG_GROUP_INFER_CROP_OBJECTS_TO_ROI_BOUNDARY \
+  "crop-objects-to-roi-boundary"
 
 /** Classifier specific parameters. */
 #define CONFIG_GROUP_INFER_CLASSIFIER_TYPE "classifier-type"
@@ -145,8 +150,10 @@
 /** Per-class detection/filtering parameters. */
 #define CONFIG_GROUP_INFER_CLASS_ATTRS_PREFIX "class-attrs-"
 #define CONFIG_GROUP_INFER_CLASS_ATTRS_THRESHOLD "threshold"
-#define CONFIG_GROUP_INFER_CLASS_ATTRS_PRE_CLUSTER_THRESHOLD "pre-cluster-threshold"
-#define CONFIG_GROUP_INFER_CLASS_ATTRS_POST_CLUSTER_THRESHOLD "post-cluster-threshold"
+#define CONFIG_GROUP_INFER_CLASS_ATTRS_PRE_CLUSTER_THRESHOLD \
+  "pre-cluster-threshold"
+#define CONFIG_GROUP_INFER_CLASS_ATTRS_POST_CLUSTER_THRESHOLD \
+  "post-cluster-threshold"
 #define CONFIG_GROUP_INFER_CLASS_ATTRS_EPS "eps"
 #define CONFIG_GROUP_INFER_CLASS_ATTRS_GROUP_THRESHOLD "group-threshold"
 #define CONFIG_GROUP_INFER_CLASS_ATTRS_MIN_BOXES "minBoxes"
@@ -162,11 +169,13 @@
 #define CONFIG_GROUP_INFER_CLASS_ATTRS_NMS_IOU_THRESHOLD "nms-iou-threshold"
 #define CONFIG_GROUP_INFER_CLASS_ATTRS_TOP_K "topk"
 
-gboolean gst_nvinfer_parse_config_file (GstNvInfer *nvinfer,
-        NvDsInferContextInitParams *init_params, const gchar * cfg_file_path);
+gboolean gst_nvinfer_parse_config_file(
+    GstNvInfer* nvinfer,
+    NvDsInferContextInitParams* init_params,
+    const gchar* cfg_file_path);
 
-gboolean gst_nvinfer_parse_context_params (NvDsInferContextInitParams *params,
-        const gchar * cfg_file_path);
-
+gboolean gst_nvinfer_parse_context_params(
+    NvDsInferContextInitParams* params,
+    const gchar* cfg_file_path);
 
 #endif /*__GST_NVINFER_PROPERTY_PARSER_H__*/

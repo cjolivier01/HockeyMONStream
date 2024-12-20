@@ -7,11 +7,15 @@
 
 #include <cassert>
 
-nvinfer1::ITensor*
-shortcutLayer(int layerIdx, std::string activation, std::string inputVol, std::string shortcutVol,
-    std::map<std::string, std::string>& block, nvinfer1::ITensor* input, nvinfer1::ITensor* shortcutInput,
-    nvinfer1::INetworkDefinition* network)
-{
+nvinfer1::ITensor* shortcutLayer(
+    int layerIdx,
+    std::string activation,
+    std::string inputVol,
+    std::string shortcutVol,
+    std::map<std::string, std::string>& block,
+    nvinfer1::ITensor* input,
+    nvinfer1::ITensor* shortcutInput,
+    nvinfer1::INetworkDefinition* network) {
   nvinfer1::ITensor* output;
 
   assert(block.at("type") == "shortcut");
@@ -22,15 +26,15 @@ shortcutLayer(int layerIdx, std::string activation, std::string inputVol, std::s
     nvinfer1::Dims size = input->getDimensions();
     nvinfer1::Dims stride = {4, {1, 1, 1, 1}};
 
-    output = sliceLayer(layerIdx, name, shortcutInput, start, size, stride, network);
+    output =
+        sliceLayer(layerIdx, name, shortcutInput, start, size, stride, network);
     assert(output != nullptr);
-  }
-  else {
+  } else {
     output = shortcutInput;
   }
 
-  nvinfer1::IElementWiseLayer* shortcut = network->addElementWise(*input, *output,
-      nvinfer1::ElementWiseOperation::kSUM);
+  nvinfer1::IElementWiseLayer* shortcut = network->addElementWise(
+      *input, *output, nvinfer1::ElementWiseOperation::kSUM);
   assert(shortcut != nullptr);
   std::string shortcutLayerName = "shortcut_" + std::to_string(layerIdx);
   shortcut->setName(shortcutLayerName.c_str());
