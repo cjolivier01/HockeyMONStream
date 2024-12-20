@@ -7,23 +7,8 @@ exports_files(["LICENSE"])
 cc_binary(
     name = "nvdsgst_preprocess",
     srcs = ["gstnvdspreprocess.cpp"],
-    copts=[
-      "-fPIC",
-      "-DWITH_CUDA",
-    ],
-    linkopts=[
-      "-shared",
-    ],
     deps = [
         ":nvdsgst_preprocess_lib",
-        "@deepstream_lib",
-        # "@NvDsBaseExt",
-        # "@NvDsInterfaceExt",
-        # "@StandardExtension",
-        "@glib",
-        "@gstreamer",
-        # "@local_cuda//:cuda_runtime",
-        # "@opencv_linux//:opencv",
     ],
     visibility = ["//visibility:public"],
     linkshared = True,
@@ -37,15 +22,11 @@ cc_library(
     hdrs = [
       "gstnvdspreprocess_allocator.h", "nvdspreprocess_property_parser.h", "gstnvdspreprocess.h",
     ],
-    copts=[
-      "-fPIC",
-      "-DWITH_CUDA",
-    ],
     includes = [
         ".",
     ],
     deps = [
-        "//gst-plugins/gst-nvdspreprocess/nvdspreprocess_lib:nvdspreprocess_lib",
+        "//src/gst-plugins/gst-nvdspreprocess/nvdspreprocess_lib:nvdspreprocess_lib",
         "@deepstream_lib",
         "@glib",
         "@gstreamer",
@@ -54,24 +35,3 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
 )
-
-# cc_library(
-#     name = "nvdspreprocess_lib",
-#     srcs = [
-#       "nvdspreprocess_impl.cpp", "nvdspreprocess_lib.cpp",
-#     ],
-#     hdrs = [
-#       "nvdspreprocess_impl.h", "nvdspreprocess_lib.h",
-#     ],
-#     copts=[
-#       "-fPIC",
-#     ],
-#     deps = [
-#         ":nvdspreprocess_cuda_lib",
-#         "@deepstream_lib",
-#         "@glib",
-#         "@gstreamer",
-#         "@opencv_linux//:opencv",
-#     ],
-#     visibility = ["//visibility:public"],
-# )

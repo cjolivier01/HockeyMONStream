@@ -3,7 +3,7 @@ _workspace_name = "test"
 workspace(name=_workspace_name)
 
 load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository", "new_git_repository")
-load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+# load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 local_repository(
     name="com_extension_dev",
@@ -36,6 +36,7 @@ git_repository(
     name = "rules_cuda",
     remote="https://github.com/bazel-contrib/rules_cuda",
     tag="v0.2.3",
+    # shallow_since = "1723675005 +0100",
 )
 
 load("@rules_cuda//cuda:repositories.bzl", "register_detected_cuda_toolchains", "rules_cuda_dependencies")

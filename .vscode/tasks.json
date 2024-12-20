@@ -7,18 +7,15 @@
       "command": "./bld",
       // "command": "bazel",
       "args": [
-        // "cquery"
-        "//apps/examples:basic-tutorial",
-        //"//gst-plugins/gst-dsexample:nvdsgst_dsexample",
-        // "--output=starlark",
-        // "--starlark:expr='target'",
+        //"//apps/examples:basic-tutorial",
+        "//src/gst-plugins/...",
       ],
       "group": {
         "kind": "build",
         "isDefault": true
       },
       "options": {
-        "cwd": "${workspaceRoot}/src",
+        "cwd": "${workspaceRoot}",
       },
       "presentation": {
         "reveal": "always",
@@ -38,7 +35,7 @@
         "isDefault": true
       },
       "options": {
-        "cwd": "${workspaceRoot}/src",
+        "cwd": "${workspaceRoot}",
       },
       "presentation": {
         "reveal": "always",
@@ -58,7 +55,7 @@
         "isDefault": false
       },
       "options": {
-        "cwd": "${workspaceRoot}/src",
+        "cwd": "${workspaceRoot}",
       },
       "presentation": {
         "reveal": "always",

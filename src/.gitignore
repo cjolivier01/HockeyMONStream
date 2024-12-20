@@ -1,6 +1,0 @@
-compile_commands.json
-bazel-bin
-bazel-testlogs
-bazel-src
-bazel-out
-.cache

@@ -14,8 +14,8 @@ USE_BAZEL_VERSION=5.1.1 bazel build ${BAZEL_FLAGS} ${TARGET}
 
 BIN_DIR="$(bazel info ${BAZEL_FLAGS} bazel-bin)"
 echo "BIN_DIR=${BIN_DIR}"
-EXTENSIONS="$(cat ${SCRIPT_DIR}/extensions.lst)"
 
+#EXTENSIONS="$(cat ${SCRIPT_DIR}/extensions.lst)"
 # if [ "${TARGET}" == "//..." ]; then
 #   for ext in ${EXTENSIONS}; do
 #     ln -sf -v ${BIN_DIR}/extensions/${ext}/libgxf_${ext}.so ${SCRIPT_DIR}/_test_libs/libgxf_${ext}.so
