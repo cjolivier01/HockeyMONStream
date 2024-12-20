@@ -17,13 +17,6 @@ cc_binary(
     "-lgstrtspserver-1.0",
     "-ldl",
     "-lm",
-    # "-lnvdsgst_meta",
-    # "-lnvds_meta",
-    # "-lnvdsgst_helper",
-    # "-lnvdsgst_customhelper",
-    # "-lnvdsgst_smartrecord",
-    #  -lnvds_utils -lnvds_msgbroker -lm -lyaml-cpp \
-    # -lcuda 
   ],
 )
 
