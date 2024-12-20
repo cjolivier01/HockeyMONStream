@@ -24,6 +24,9 @@ cc_library(
     "-l:libnvbufsurftransform.so",
     "-l:libnvdsgst_customhelper.so",
     "-l:libnvds_nvtxhelper.so",
+    "-l:libnvdsgst_smartrecord.so",
+    "-l:libnvds_utils.so",
+    "-l:libnvds_msgbroker.so",
   ],
   visibility = ["//visibility:public"],
 )

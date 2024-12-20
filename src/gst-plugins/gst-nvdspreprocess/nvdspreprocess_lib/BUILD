@@ -1,4 +1,4 @@
-load("@rules_cuda//cuda:defs.bzl", "cuda_library", "requires_cuda")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
 cuda_library(
     name = "nvdspreprocess_cuda_lib",
@@ -39,7 +39,7 @@ cc_library(
         "@deepstream_lib",
         "@glib",
         "@gstreamer",
-        "@opencv_linux//:opencv",
+        #"@opencv_linux//:opencv",
     ],
     visibility = ["//visibility:public"],
 )

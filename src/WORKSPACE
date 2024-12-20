@@ -1,119 +1,121 @@
 _workspace_name = "test"
 
-workspace(name=_workspace_name)
+workspace(name = _workspace_name)
 
 load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository", "new_git_repository")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 local_repository(
-    name="com_extension_dev",
+    name = "com_extension_dev",
     #path="/opt/nvidia/graph-composer/extension-dev",
-    path="/home/colivier/src/hmdeepstream/deepstream/graph-composer/extension-dev",
-)
-
-local_repository(
-    name="gst_plugin_dev",
-    path=".",
-)
-
-local_repository(
-  name="rules_compdb",
-  path="/home/colivier/src/hstream/bazel",
+    path = "/home/colivier/src/hmdeepstream/deepstream/graph-composer/extension-dev",
 )
 
 new_local_repository(
-    name="deepstream_apps_common",
-    path="/home/colivier/src/hmdeepstream/deepstream/sources/apps/apps-common",
-    # path="/opt/nvidia/deepstream/deepstream/sources/apps/apps-common",
-    build_file = "@//build:third_party/deepstream_apps_common.BUILD"
+    name = "deepstream_lib",
+    build_file = "@//build:third_party/deepstream_lib.BUILD",
+    path = "/home/colivier/src/hmdeepstream/deepstream",
 )
 
+new_local_repository(
+    name = "deepstream_apps_common",
+    # path="/opt/nvidia/deepstream/deepstream/sources/apps/apps-common",
+    build_file = "@//build:third_party/deepstream_apps_common.BUILD",
+    path = "/home/colivier/src/hmdeepstream/deepstream/sources/apps/apps-common",
+)
+
+local_repository(
+    name = "gst_plugin_dev",
+    path = ".",
+)
+
+local_repository(
+    name = "rules_compdb",
+    path = "/home/colivier/src/hstream/bazel",
+)
 
 load(
     "@com_extension_dev//build:graph_extension.bzl",
-    "load_extension_dev_workspace",
     "graph_nvidia_extension",
+    "load_extension_dev_workspace",
 )
 
 load_extension_dev_workspace()
 
 git_repository(
     name = "rules_cuda",
-    remote="https://github.com/bazel-contrib/rules_cuda",
-    tag="v0.2.3",
+    #tag="v0.2.3",
+    # v0.2.3 breaks some lubcupti for our version of bazel
+    commit = "3f2429254ec956220557e79ea9d5f5e8871c2907",
+    remote = "https://github.com/bazel-contrib/rules_cuda",
 )
 
 load("@rules_cuda//cuda:repositories.bzl", "register_detected_cuda_toolchains", "rules_cuda_dependencies")
+
 rules_cuda_dependencies()
+
 register_detected_cuda_toolchains()
 
 graph_nvidia_extension(
-    name="NvDsInterfaceExt",
-    version="1.6.0",
+    name = "NvDsInterfaceExt",
+    version = "1.6.0",
 )
 
 graph_nvidia_extension(
-    name="NvDsBaseExt",
-    version="1.6.0",
+    name = "NvDsBaseExt",
+    version = "1.6.0",
 )
 
 graph_nvidia_extension(
-    name="StandardExtension",
-    version="2.6.0",
+    name = "StandardExtension",
+    version = "2.6.0",
 )
-
 
 new_git_repository(
-    name="yaml-cpp",
-    commit="9a3624205e8774953ef18f57067b3426c1c5ada6",
-    remote="https://github.com/jbeder/yaml-cpp.git",
-    build_file="@com_extension_dev//build:third_party/yaml-cpp.BUILD",
+    name = "yaml-cpp",
+    build_file = "@com_extension_dev//build:third_party/yaml-cpp.BUILD",
+    commit = "9a3624205e8774953ef18f57067b3426c1c5ada6",
+    remote = "https://github.com/jbeder/yaml-cpp.git",
 )
 
 git_repository(
-    name="rules_python",
-    remote="https://github.com/bazelbuild/rules_python.git",
-    tag="0.1.0",  # Use the tag corresponding to version 0.1.0
+    name = "rules_python",
+    remote = "https://github.com/bazelbuild/rules_python.git",
+    tag = "0.1.0",  # Use the tag corresponding to version 0.1.0
 )
 
 git_repository(
-    name="magic_enum",
-    remote="https://github.com/Neargye/magic_enum.git",
-    tag="v0.9.3",  # Use the tag corresponding to version 0.9.3
-    strip_prefix="",  # No need for strip_prefix since Git directly clones the repository
+    name = "magic_enum",
+    remote = "https://github.com/Neargye/magic_enum.git",
+    strip_prefix = "",  # No need for strip_prefix since Git directly clones the repository
+    tag = "v0.9.3",  # Use the tag corresponding to version 0.9.3
 )
 
 new_local_repository(
     name = "opencv_linux",
+    build_file = "@//build:third_party/opencv_linux.BUILD",
     path = "/usr/include",
-    build_file = "@//build:third_party/opencv_linux.BUILD"
-)
-
-new_local_repository(
-    name = "deepstream_lib",
-    path = "/opt/nvidia/deepstream/deepstream-7.1",
-    build_file = "@//build:third_party/deepstream_lib.BUILD"
 )
 
 new_git_repository(
-    name="glib",
-    build_file="//build:third_party/glib.BUILD",
-    commit="763cc3b238398614c20069fd67642730e3a6519b",
-    patch_cmds=[
+    name = "glib",
+    build_file = "//build:third_party/glib.BUILD",
+    commit = "763cc3b238398614c20069fd67642730e3a6519b",
+    patch_cmds = [
         "meson setup builddir -Ddebug=true -Dprefix=$(pwd)/external",
         "ninja -C builddir install",
     ],
-    remote="https://github.com/GNOME/glib.git",
+    remote = "https://github.com/GNOME/glib.git",
 )
 
 new_git_repository(
-    name="gstreamer",
-    build_file="//build:third_party/gstreamer.BUILD",
-    commit="2d8273151571fcab887cc81de48e87aeb61b5c06",
-    patch_cmds=[
+    name = "gstreamer",
+    build_file = "//build:third_party/gstreamer.BUILD",
+    commit = "2d8273151571fcab887cc81de48e87aeb61b5c06",
+    patch_cmds = [
         "meson setup builddir -Ddebug=true -Dprefix=$(pwd)/external",
         "ninja -C builddir install",
     ],
-    remote="https://github.com/GStreamer/gstreamer.git",
+    remote = "https://github.com/GStreamer/gstreamer.git",
     shallow_since = "1712695735 +0100",
 )

@@ -31,7 +31,7 @@ graph_cc_extension(
     deps = [
         # "//gst-plugins/gst-dsexample:dsexample",
         "@NvDsBaseExt",
-        "@NvDsInterfaceExt",
+        # "@NvDsInterfaceExt",
         "@glib",
         "@gstreamer",
     ],

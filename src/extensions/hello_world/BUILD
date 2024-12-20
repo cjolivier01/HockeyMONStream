@@ -17,7 +17,7 @@ graph_cc_extension(
         "HelloWorld.hpp",
     ],
     deps=[
-        "@StandardExtension",
+        # "@StandardExtension",
     ],
 )
 

@@ -1,5 +1,5 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
-load("@rules_cuda//cuda:defs.bzl", "cuda_library", "requires_cuda")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
 cc_binary(
     name = "nvdsinfer_custom_impl_Yolo",

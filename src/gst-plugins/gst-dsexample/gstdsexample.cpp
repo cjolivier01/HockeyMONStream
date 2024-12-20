@@ -20,6 +20,7 @@
 #include <ostream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace {
 class GPrintStreamBuffer : public std::streambuf {
@@ -990,7 +991,7 @@ static GstFlowReturn gst_dsexample_transform_ip(
   GstMapInfo in_map_info;
   GstFlowReturn flow_ret = GST_FLOW_ERROR;
   gdouble scale_ratio = 1.0;
-  DsExampleOutput* output;
+  DsExampleOutput* output{nullptr};
 
   NvBufSurface* surface = NULL;
   NvDsBatchMeta* batch_meta = NULL;
@@ -1091,7 +1092,6 @@ static GstFlowReturn gst_dsexample_transform_ip(
         }
       }
     }
-
     for (l_frame = batch_meta->frame_meta_list; l_frame != NULL;
          l_frame = l_frame->next) {
       frame_meta = (NvDsFrameMeta*)(l_frame->data);
@@ -1128,6 +1128,23 @@ static GstFlowReturn gst_dsexample_transform_ip(
             surface->surfaceList[frame_meta->batch_id].planeParams.pitch[0]);
       }
 #endif
+
+      // NvDsObjectMetaList* new_list = new GList();
+
+      if (frame_meta->obj_meta_list) {
+        std::vector<NvDsMetaList*> to_remove;
+        std::size_t nr_items = g_list_length(frame_meta->obj_meta_list);
+        to_remove.reserve(nr_items);
+        // nvds_clear_obj_meta_list(frame_meta, frame_meta->obj_meta_list);
+        std::size_t counter = 0;
+        for (l_obj = frame_meta->obj_meta_list; l_obj != NULL;
+             l_obj = l_obj->next, ++counter) {
+          obj_meta = (NvDsObjectMeta*)(l_obj->data);
+          const NvDsComp_BboxInfo& detector_bbox_info = obj_meta->detector_bbox_info;
+          const NvDsComp_BboxInfo& tracker_bbox_info = obj_meta->tracker_bbox_info;
+          usleep(0);
+        }
+      }
 
       for (l_obj = frame_meta->obj_meta_list; l_obj != NULL;
            l_obj = l_obj->next) {

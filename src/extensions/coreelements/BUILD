@@ -31,7 +31,7 @@ graph_cc_extension(
     ],
     deps = [
         "@NvDsBaseExt",
-        "@NvDsInterfaceExt",
+        # "@NvDsInterfaceExt",
         "@glib",
         "@gstreamer",
     ],
