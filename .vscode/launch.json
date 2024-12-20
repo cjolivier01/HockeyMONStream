@@ -99,14 +99,15 @@
       "type": "lldb",
       "request": "launch",
       "cwd": "${workspaceFolder}/",
-      "program": "${workspaceFolder}/src/bazel-src/external/gstreamer/external/bin/gst-inspect-1.0",
+      //"program": "${workspaceFolder}/src/bazel-src/external/gstreamer/external/bin/gst-inspect-1.0",
+      "program": "/usr/local/bin/gst-inspect-1.0",
       //"stopOnEntry": true,
       "args": [
       ],
       "env": {
         "LD_LIBRARY_PATH": "/usr/local/lib/x86_64-linux-gnu/:/usr/local/lib:/opt/nvidia/deepstream/deepstream/lib",
         "GST_PLUGIN_PATH": "/home/colivier/src/hstream/lib/gst-plugins:/home/colivier/src/hmdeepstream/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
-        "GST_DEBUG": "5",
+        "GST_DEBUG": "4",
       },
       // "preLaunchTask": "Meson: Build all targets",
     },

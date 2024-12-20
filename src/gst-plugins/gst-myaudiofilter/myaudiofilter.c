@@ -201,7 +201,7 @@ static gboolean plugin_init(GstPlugin *plugin) {
   return gst_element_register(plugin, "myaudiofilter", GST_RANK_NONE,
                               GST_TYPE_GST_AUDIO_FILTER);
 }
-extern "C" {
+
 /* FIXME: these are normally defined by the GStreamer build system.
    If you are creating an element to be included in gst-plugins-*,
    remove these, as they're always defined.  Otherwise, edit as
@@ -219,7 +219,7 @@ extern "C" {
 #define GST_PACKAGE_ORIGIN "http://FIXME.org/"
 #endif
 
-GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, myaudiofilter,
+GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, nvdsgst_myaudiofilter,
                   "My audio filter plugin", plugin_init, VERSION, "LGPL",
                   PACKAGE_NAME, GST_PACKAGE_ORIGIN)
-}
+
