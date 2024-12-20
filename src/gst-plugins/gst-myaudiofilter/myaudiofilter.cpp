@@ -171,6 +171,8 @@ void gst_gst_my_audio_filter_get_property(
   GST_DEBUG_OBJECT(myaudiofilter, "get_property");
 
   switch (property_id) {
+    case PROP_SILENT:
+      g_value_set_boolean(value, myaudiofilter->silent);
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, pspec);
       break;
