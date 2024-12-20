@@ -16,6 +16,11 @@ local_repository(
     path=".",
 )
 
+local_repository(
+  name="rules_compdb",
+  path="/home/colivier/src/hstream/bazel",
+)
+
 new_local_repository(
     name="deepstream_apps_common",
     path="/home/colivier/src/hmdeepstream/deepstream/sources/apps/apps-common",
