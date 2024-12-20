@@ -29,6 +29,7 @@ gst_cc_plugin(
     copts=[
       # "-DWITH_OPENCV=1",
       "-Wno-error=unused-function",
+      "-Wno-error=unused-variable",
     ],
     linkopts=[
       "-shared",
