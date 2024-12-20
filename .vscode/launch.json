@@ -25,6 +25,30 @@
       }
     },
     {
+      "name": "(LLDB) pipeline-app",
+      "type": "lldb",
+      "request": "launch",
+      "linux": {
+        // "envFile": "${workspaceFolder}/${config:mesonbuild.buildFolder}/meson-vscode.env",
+      },
+      "cwd": "${workspaceFolder}/src",
+      "program": "${workspaceFolder}/src/bazel-bin/apps/pipeline-app/pipeline-app",
+      "args": [
+        "-c", "${workspaceFolder}/configs/ds_hockey_app_config.yaml"
+      ],
+      "sourceMap": {
+        "/proc/self/cwd": "${workspaceFolder}/src",
+        "~/src": "/home/colivier/src",
+      },
+      "env": {
+        //"GST_DEBUG": "4",
+        "LD_LIBRARY_PATH": "/home/colivier/src/hmdeepstream/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:/home/colivier/mambaforge/envs/ubuntu/lib:/home/colivier/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu",
+        "GST_PLUGIN_PATH": "/home/colivier/src/hstream/lib/gst-plugins:/home/colivier/src/hmdeepstream/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
+        //"GST_DEBUG": "3",
+      },
+      "preLaunchTask": "Build extensions",
+    },
+    {
       "name": "(LLDB) deepstream-app",
       "type": "lldb",
       "request": "launch",
