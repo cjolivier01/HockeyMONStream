@@ -81,8 +81,6 @@ static gboolean gst_my_filter_src_query(GstPad *pad, GstObject *parent,
 static void gst_my_filter_change_state(GstElement *element, GstState oldstate,
                                        GstState newstate, GstState pending);
 
-enum { PROP_0 };
-
 /* pad templates */
 
 /* FIXME add/remove the formats that you want to support */
@@ -187,6 +185,18 @@ static void gst_gst_my_audio_filter_init(GstGstMyAudioFilter *myaudiofilter) {
    * the pad to the element */
   gst_pad_set_query_function(myaudiofilter->srcpad, gst_my_filter_src_query);
 }
+
+/**
+ *  _____                              _   _
+ * |  __ \                            | | (_)
+ * | |__) |_ __  ___  _ __   ___  _ __| |_ _  ___  ___
+ * |  ___/| '__|/ _ \| '_ \ / _ \| '__| __| |/ _ \/ __|
+ * | |    | |  | (_) | |_) |  __/| |  | |_| |  __/\__ \
+ * |_|    |_|   \___/| .__/ \___||_|   \__|_|\___||___/
+ *                   | |
+ *                   |_|
+ */
+enum { PROP_0, PROP_SILENT };
 
 void gst_gst_my_audio_filter_set_property(GObject *object, guint property_id,
                                           const GValue *value,
