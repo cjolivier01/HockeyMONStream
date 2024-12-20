@@ -38,6 +38,9 @@
 #include <gst/audio/gstaudiofilter.h>
 #include <gst/gst.h>
 
+namespace {
+
+}
 
 GST_DEBUG_CATEGORY_STATIC(gst_gst_audio_filter_debug_category);
 #define GST_CAT_DEFAULT gst_gst_audio_filter_debug_category
