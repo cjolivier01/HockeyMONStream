@@ -1195,6 +1195,7 @@ static GstFlowReturn gst_dsexample_transform_ip(
           }
         }
 
+#if 0
         /* Crop and scale the object */
         if (get_converted_mat(
                 dsexample,
@@ -1207,6 +1208,9 @@ static GstFlowReturn gst_dsexample_transform_ip(
           /* Error in conversion, skip processing on object. */
           continue;
         }
+#endif
+
+#if 1
 
 #ifdef WITH_OPENCV
         /* Process the object crop to obtain label */
@@ -1224,8 +1228,8 @@ static GstFlowReturn gst_dsexample_transform_ip(
         attach_metadata_object(dsexample, obj_meta, output);
 
         free(output);
+#endif
       }
-
       if (dsexample->blur_objects) {
         /* Cache the mapped data for device access */
         if (dsexample->inter_buf->memType == NVBUF_MEM_SURFACE_ARRAY)

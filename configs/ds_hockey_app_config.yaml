@@ -53,9 +53,9 @@ sink1:
   enable: 0
   type: 3
   #1=mp4 2=mkv
-  container: 1
+  container: 2
   #1=h264 2=h265
-  codec: 1
+  codec: 2
   #encoder type 0=Hardware 1=Software
   enc-type: 0
   sync: 0
@@ -137,6 +137,10 @@ ds-example:
   enable: 1
   gpu-id: 0
   batch-size: 4
+  blur-objects: 0
+  full-frame: 0
+  processing-width: 1312
+  processing-height: 480
   #gie-unique-id: 2
   #operate-on-gie-id: 1
   #operate-on-class-ids: 0
