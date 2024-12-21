@@ -1550,27 +1550,6 @@ static gboolean create_common_elements(
     *sink_elem = pipeline->common_elements.tracker_bin.bin;
   }
 
-  if (config->dsfieldmask_config.enable) {
-    // Create dsexample element bin and set properties
-    if (!create_dsfieldmask_bin(
-            &config->dsfieldmask_config, &pipeline->dsfieldmask_bin)) {
-      goto done;
-    }
-    // Add dsfieldmask bin to instance bin
-    gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->dsfieldmask_bin.bin);
-    if (!*src_elem) {
-      *src_elem = pipeline->dsfieldmask_bin.bin;
-    }
-
-    if (*sink_elem) {
-      NVGSTDS_LINK_ELEMENT(pipeline->dsfieldmask_bin.bin, *sink_elem);
-    }
-
-    // Set this bin as the last element
-    *sink_elem = pipeline->dsfieldmask_bin.bin;
-  }
-
-
   if (config->dsexample_config.enable) {
     // Create dsexample element bin and set properties
     if (!create_dsexample_bin(
@@ -1589,6 +1568,26 @@ static gboolean create_common_elements(
 
     // Set this bin as the last element
     *sink_elem = pipeline->dsexample_bin.bin;
+  }
+
+  if (config->dsfieldmask_config.enable) {
+    // Create dsexample element bin and set properties
+    if (!create_dsfieldmask_bin(
+            &config->dsfieldmask_config, &pipeline->dsfieldmask_bin)) {
+      goto done;
+    }
+    // Add dsfieldmask bin to instance bin
+    gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->dsfieldmask_bin.bin);
+    if (!*src_elem) {
+      *src_elem = pipeline->dsfieldmask_bin.bin;
+    }
+
+    if (*sink_elem) {
+      NVGSTDS_LINK_ELEMENT(pipeline->dsfieldmask_bin.bin, *sink_elem);
+    }
+
+    // Set this bin as the last element
+    *sink_elem = pipeline->dsfieldmask_bin.bin;
   }
 
   if (config->primary_gie_config.enable) {
