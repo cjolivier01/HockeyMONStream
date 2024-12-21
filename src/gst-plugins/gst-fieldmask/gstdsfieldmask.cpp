@@ -61,8 +61,6 @@ enum {
 #define DEFAULT_UNIQUE_ID 15
 #define DEFAULT_PROCESSING_WIDTH 640
 #define DEFAULT_PROCESSING_HEIGHT 480
-#define DEFAULT_PROCESS_FULL_FRAME TRUE
-#define DEFAULT_BLUR_OBJECTS FALSE
 #define DEFAULT_GPU_ID 0
 #define DEFAULT_BATCH_SIZE 1
 
@@ -338,34 +336,12 @@ static void gst_dsfieldmask_class_init(GstDsFieldMaskClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
-      PROP_PROCESS_FULL_FRAME,
-      g_param_spec_boolean(
-          "full-frame",
-          "Full frame",
-          "Enable to process full frame or disable to process objects detected"
-          "by primary detector",
-          DEFAULT_PROCESS_FULL_FRAME,
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
-
-  g_object_class_install_property(
-      gobject_class,
       PROP_DETECTION_MASK_FILE,
       g_param_spec_string(
           "detection-mask",
           "Detection Mask",
           "Restrict detections to position mask",
           /*default_value=*/"",
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
-
-  g_object_class_install_property(
-      gobject_class,
-      PROP_BLUR_OBJECTS,
-      g_param_spec_boolean(
-          "blur-objects",
-          "Blur Objects",
-          "Enable to blur the objects detected in full-frame=0 mode"
-          "by primary detector",
-          DEFAULT_BLUR_OBJECTS,
           (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
   g_object_class_install_property(
@@ -421,8 +397,6 @@ static void gst_dsfieldmask_init(GstDsFieldMask* dsfieldmask) {
   dsfieldmask->unique_id = DEFAULT_UNIQUE_ID;
   dsfieldmask->processing_width = DEFAULT_PROCESSING_WIDTH;
   dsfieldmask->processing_height = DEFAULT_PROCESSING_HEIGHT;
-  dsfieldmask->process_full_frame = DEFAULT_PROCESS_FULL_FRAME;
-  dsfieldmask->blur_objects = DEFAULT_BLUR_OBJECTS;
   dsfieldmask->gpu_id = DEFAULT_GPU_ID;
   dsfieldmask->batch_size = DEFAULT_BATCH_SIZE;
 
@@ -445,12 +419,6 @@ static void gst_dsfieldmask_set_property(GObject* object, guint prop_id, const G
       break;
     case PROP_PROCESSING_HEIGHT:
       dsfieldmask->processing_height = g_value_get_int(value);
-      break;
-    case PROP_PROCESS_FULL_FRAME:
-      dsfieldmask->process_full_frame = g_value_get_boolean(value);
-      break;
-    case PROP_BLUR_OBJECTS:
-      dsfieldmask->blur_objects = g_value_get_boolean(value);
       break;
     case PROP_GPU_DEVICE_ID:
       dsfieldmask->gpu_id = g_value_get_uint(value);
@@ -483,12 +451,6 @@ static void gst_dsfieldmask_get_property(GObject* object, guint prop_id, GValue*
     case PROP_PROCESSING_HEIGHT:
       g_value_set_int(value, dsfieldmask->processing_height);
       break;
-    case PROP_PROCESS_FULL_FRAME:
-      g_value_set_boolean(value, dsfieldmask->process_full_frame);
-      break;
-    case PROP_BLUR_OBJECTS:
-      g_value_set_boolean(value, dsfieldmask->blur_objects);
-      break;
     case PROP_GPU_DEVICE_ID:
       g_value_set_uint(value, dsfieldmask->gpu_id);
       break;
@@ -512,10 +474,9 @@ static gboolean gst_dsfieldmask_start(GstBaseTransform* btrans) {
   NvBufSurfaceCreateParams create_params = {0};
 
   DsFieldMaskInitParams init_params = {
-      .processingWidth=dsfieldmask->processing_width,
-      .processingHeight=dsfieldmask->processing_height,
-      .fullFrame=dsfieldmask->process_full_frame,
-      .detection_mask_file=dsfieldmask->detection_mask_file};
+      .processingWidth = dsfieldmask->processing_width,
+      .processingHeight = dsfieldmask->processing_height,
+      .detection_mask_file = dsfieldmask->detection_mask_file};
 
   int val = -1;
 
@@ -530,24 +491,6 @@ static gboolean gst_dsfieldmask_start(GstBaseTransform* btrans) {
   dsfieldmask->is_integrated = val;
 
   GST_DEBUG_OBJECT(dsfieldmask, "Setting batch-size %d \n", dsfieldmask->batch_size);
-
-  if (dsfieldmask->process_full_frame && dsfieldmask->blur_objects) {
-    GST_ERROR("Error: does not support blurring while processing full frame");
-    goto error;
-  }
-
-#ifndef WITH_OPENCV
-  if (dsfieldmask->blur_objects) {
-    GST_ELEMENT_ERROR(
-        dsfieldmask,
-        STREAM,
-        FAILED,
-        ("OpenCV has been deprecated, hence object blurring will not work."
-         "Enable OpenCV compilation in gst-dsfieldmask Makefile by setting 'WITH_OPENCV:=1"),
-        (NULL));
-    goto error;
-  }
-#endif
 
   CHECK_CUDA_STATUS(cudaStreamCreate(&dsfieldmask->cuda_stream), "Could not create cuda stream");
 
@@ -579,7 +522,8 @@ static gboolean gst_dsfieldmask_start(GstBaseTransform* btrans) {
   /* Create host memory for storing converted/scaled interleaved RGB data */
   CHECK_CUDA_STATUS(
       cudaMallocHost(
-          &dsfieldmask->host_rgb_buf, dsfieldmask->processing_width * dsfieldmask->processing_height * RGB_BYTES_PER_PIXEL),
+          &dsfieldmask->host_rgb_buf,
+          dsfieldmask->processing_width * dsfieldmask->processing_height * RGB_BYTES_PER_PIXEL),
       "Could not allocate cuda host buffer");
 
   GST_DEBUG_OBJECT(dsfieldmask, "allocated cuda buffer %p \n", dsfieldmask->host_rgb_buf);
@@ -663,175 +607,7 @@ static gboolean gst_dsfieldmask_set_caps(GstBaseTransform* btrans, GstCaps* inca
   /* Save the input video information, since this will be required later. */
   gst_video_info_from_caps(&dsfieldmask->video_info, incaps);
 
-  if (dsfieldmask->blur_objects && !dsfieldmask->process_full_frame) {
-    /* requires RGBA format for blurring the objects in opencv */
-    if (dsfieldmask->video_info.finfo->format != GST_VIDEO_FORMAT_RGBA) {
-      GST_ELEMENT_ERROR(
-          dsfieldmask, STREAM, FAILED, ("input format should be RGBA when using blur-objects property"), (NULL));
-      goto error;
-    }
-  }
-
   return TRUE;
-
-error:
-  return FALSE;
-}
-
-/**
- * Scale the entire frame to the processing resolution maintaining aspect ratio.
- * Or crop and scale objects to the processing resolution maintaining the aspect
- * ratio. Remove the padding required by hardware and convert from RGBA to RGB
- * using openCV. These steps can be skipped if the algorithm can work with
- * padded data and/or can work with RGBA.
- */
-static GstFlowReturn get_converted_mat(
-    GstDsFieldMask* dsfieldmask,
-    NvBufSurface* input_buf,
-    gint idx,
-    NvOSD_RectParams* crop_rect_params,
-    gdouble& ratio,
-    gint input_width,
-    gint input_height) {
-  NvBufSurfTransform_Error err;
-  NvBufSurfTransformConfigParams transform_config_params;
-  NvBufSurfTransformParams transform_params;
-  NvBufSurfTransformRect src_rect;
-  NvBufSurfTransformRect dst_rect;
-  NvBufSurface ip_surf;
-#ifdef WITH_OPENCV
-  cv::Mat in_mat;
-#endif
-  ip_surf = *input_buf;
-
-  ip_surf.numFilled = ip_surf.batchSize = 1;
-  ip_surf.surfaceList = &(input_buf->surfaceList[idx]);
-
-  gint src_left = GST_ROUND_UP_2((unsigned int)crop_rect_params->left);
-  gint src_top = GST_ROUND_UP_2((unsigned int)crop_rect_params->top);
-  gint src_width = GST_ROUND_DOWN_2((unsigned int)crop_rect_params->width);
-  gint src_height = GST_ROUND_DOWN_2((unsigned int)crop_rect_params->height);
-
-  /* Maintain aspect ratio */
-  double hdest = dsfieldmask->processing_width * src_height / (double)src_width;
-  double wdest = dsfieldmask->processing_height * src_width / (double)src_height;
-  guint dest_width, dest_height;
-
-  if (hdest <= dsfieldmask->processing_height) {
-    dest_width = dsfieldmask->processing_width;
-    dest_height = hdest;
-  } else {
-    dest_width = wdest;
-    dest_height = dsfieldmask->processing_height;
-  }
-
-  /* Configure transform session parameters for the transformation */
-  transform_config_params.compute_mode = dsfieldmask->transform_config_params.compute_mode;
-  transform_config_params.gpu_id = dsfieldmask->gpu_id;
-  transform_config_params.cuda_stream = dsfieldmask->cuda_stream;
-
-  /* Set the transform session parameters for the conversions executed in this
-   * thread. */
-  err = NvBufSurfTransformSetSessionParams(&transform_config_params);
-  if (err != NvBufSurfTransformError_Success) {
-    GST_ELEMENT_ERROR(
-        dsfieldmask, STREAM, FAILED, ("NvBufSurfTransformSetSessionParams failed with error %d", err), (NULL));
-    goto error;
-  }
-
-  /* Calculate scaling ratio while maintaining aspect ratio */
-  ratio = MIN(1.0 * dest_width / src_width, 1.0 * dest_height / src_height);
-
-  if ((crop_rect_params->width == 0) || (crop_rect_params->height == 0)) {
-    GST_ELEMENT_ERROR(dsfieldmask, STREAM, FAILED, ("%s:crop_rect_params dimensions are zero", __func__), (NULL));
-    goto error;
-  }
-
-#ifdef __aarch64__
-  if (ratio <= 1.0 / 16 || ratio >= 16.0) {
-    /* Currently cannot scale by ratio > 16 or < 1/16 for Jetson */
-    goto error;
-  }
-#endif
-  /* Set the transform ROIs for source and destination */
-  src_rect = {(guint)src_top, (guint)src_left, (guint)src_width, (guint)src_height};
-  dst_rect = {0, 0, (guint)dest_width, (guint)dest_height};
-
-  /* Set the transform parameters */
-  transform_params.src_rect = &src_rect;
-  transform_params.dst_rect = &dst_rect;
-  transform_params.transform_flag =
-      NVBUFSURF_TRANSFORM_FILTER | NVBUFSURF_TRANSFORM_CROP_SRC | NVBUFSURF_TRANSFORM_CROP_DST;
-  transform_params.transform_filter = NvBufSurfTransformInter_Default;
-
-  /* Memset the memory */
-  NvBufSurfaceMemSet(dsfieldmask->inter_buf, 0, 0, 0);
-
-  GST_DEBUG_OBJECT(dsfieldmask, "Scaling and converting input buffer\n");
-
-  /* Transformation scaling+format conversion if any. */
-  err = NvBufSurfTransform(&ip_surf, dsfieldmask->inter_buf, &transform_params);
-  if (err != NvBufSurfTransformError_Success) {
-    GST_ELEMENT_ERROR(
-        dsfieldmask, STREAM, FAILED, ("NvBufSurfTransform failed with error %d while converting buffer", err), (NULL));
-    goto error;
-  }
-  /* Map the buffer so that it can be accessed by CPU */
-  if (NvBufSurfaceMap(dsfieldmask->inter_buf, 0, 0, NVBUF_MAP_READ) != 0) {
-    goto error;
-  }
-  if (dsfieldmask->inter_buf->memType == NVBUF_MEM_SURFACE_ARRAY) {
-    /* Cache the mapped data for CPU access */
-    NvBufSurfaceSyncForCpu(dsfieldmask->inter_buf, 0, 0);
-  }
-
-#ifdef WITH_OPENCV
-  /* Use openCV to remove padding and convert RGBA to BGR. Can be skipped if
-   * algorithm can handle padded RGBA data. */
-  in_mat = cv::Mat(
-      dsfieldmask->processing_height,
-      dsfieldmask->processing_width,
-      CV_8UC4,
-      dsfieldmask->inter_buf->surfaceList[0].mappedAddr.addr[0],
-      dsfieldmask->inter_buf->surfaceList[0].pitch);
-
-#if (CV_MAJOR_VERSION >= 4)
-  cv::cvtColor(in_mat, *dsfieldmask->cvmat, cv::COLOR_RGBA2BGR);
-#else
-  cv::cvtColor(in_mat, *dsfieldmask->cvmat, CV_RGBA2BGR);
-#endif
-#endif
-
-  if (NvBufSurfaceUnMap(dsfieldmask->inter_buf, 0, 0)) {
-    goto error;
-  }
-
-  if (dsfieldmask->is_integrated) {
-#ifdef __aarch64__
-    /* To use the converted buffer in CUDA, create an EGLImage and then use
-     * CUDA-EGL interop APIs */
-    if (USE_EGLIMAGE) {
-      if (NvBufSurfaceMapEglImage(dsfieldmask->inter_buf, 0) != 0) {
-        goto error;
-      }
-
-      /* dsfieldmask->inter_buf->surfaceList[0].mappedAddr.eglImage
-       * Use interop APIs cuGraphicsEGLRegisterImage and
-       * cuGraphicsResourceGetMappedEglFrame to access the buffer in CUDA */
-
-      /* Destroy the EGLImage */
-      NvBufSurfaceUnMapEglImage(dsfieldmask->inter_buf, 0);
-    }
-#endif
-  }
-
-  /* We will first convert only the Region of Interest (the entire frame or the
-   * object bounding box) to RGB and then scale the converted RGB frame to
-   * processing resolution. */
-  return GST_FLOW_OK;
-
-error:
-  return GST_FLOW_ERROR;
 }
 
 /**
@@ -841,14 +617,11 @@ static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstB
   GstDsFieldMask* dsfieldmask = GST_DSEXAMPLE(btrans);
   GstMapInfo in_map_info;
   GstFlowReturn flow_ret = GST_FLOW_ERROR;
-  gdouble scale_ratio = 1.0;
-  DsFieldMaskOutput* output{nullptr};
 
   NvBufSurface* surface = NULL;
   NvDsBatchMeta* batch_meta = NULL;
   NvDsFrameMeta* frame_meta = NULL;
   NvDsMetaList* l_frame = NULL;
-  guint i = 0;
 
   dsfieldmask->frame_num++;
   CHECK_CUDA_STATUS(cudaSetDevice(dsfieldmask->gpu_id), "Unable to set cuda device");
@@ -872,196 +645,13 @@ static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstB
     return GST_FLOW_ERROR;
   }
 
-  if (dsfieldmask->process_full_frame) {
-    for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
-      frame_meta = (NvDsFrameMeta*)(l_frame->data);
-      NvOSD_RectParams rect_params;
+  /* Using object crops as input to the algorithm. The objects are detected by
+   * the primary detector */
 
-      /* Scale the entire frame to processing resolution */
-      rect_params.left = 0;
-      rect_params.top = 0;
-      rect_params.width = dsfieldmask->video_info.width;
-      rect_params.height = dsfieldmask->video_info.height;
+  for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
+    frame_meta = (NvDsFrameMeta*)(l_frame->data);
 
-      /* Scale and convert the frame */
-      if (get_converted_mat(
-              dsfieldmask,
-              surface,
-              i,
-              &rect_params,
-              scale_ratio,
-              dsfieldmask->video_info.width,
-              dsfieldmask->video_info.height) != GST_FLOW_OK) {
-        goto error;
-      }
-
-      /* Process to get the output */
-#ifdef WITH_OPENCV
-      output = DsFieldMaskProcess(frame_meta, dsfieldmask->dsfieldmasklib_ctx, dsfieldmask->cvmat->data);
-#else
-      output = DsFieldMaskProcess(
-          dsfieldmask->dsfieldmasklib_ctx,
-          (unsigned char*)dsfieldmask->inter_buf->surfaceList[0].mappedAddr.addr[0]);
-#endif
-      i++;
-      free(output);
-    }
-
-  } else {
-    /* Using object crops as input to the algorithm. The objects are detected by
-     * the primary detector */
-    NvDsMetaList* l_obj = NULL;
-    NvDsObjectMeta* obj_meta = NULL;
-
-    if (!dsfieldmask->is_integrated) {
-      if (dsfieldmask->blur_objects) {
-        if (!(surface->memType == NVBUF_MEM_CUDA_UNIFIED || surface->memType == NVBUF_MEM_CUDA_PINNED)) {
-          GST_ELEMENT_ERROR(
-              dsfieldmask,
-              STREAM,
-              FAILED,
-              ("%s:need NVBUF_MEM_CUDA_UNIFIED or NVBUF_MEM_CUDA_PINNED memory for opencv blurring", __func__),
-              (NULL));
-          return GST_FLOW_ERROR;
-        }
-      }
-    }
-    for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
-      frame_meta = (NvDsFrameMeta*)(l_frame->data);
-
-#ifdef WITH_OPENCV
-      cv::Mat in_mat;
-
-      if (dsfieldmask->blur_objects) {
-        /* Map the buffer so that it can be accessed by CPU */
-        if (surface->surfaceList[frame_meta->batch_id].mappedAddr.addr[0] == NULL) {
-          if (NvBufSurfaceMap(surface, frame_meta->batch_id, 0, NVBUF_MAP_READ_WRITE) != 0) {
-            GST_ELEMENT_ERROR(
-                dsfieldmask, STREAM, FAILED, ("%s:buffer map to be accessed by CPU failed", __func__), (NULL));
-            return GST_FLOW_ERROR;
-          }
-        }
-
-        /* Cache the mapped data for CPU access */
-        if (dsfieldmask->inter_buf->memType == NVBUF_MEM_SURFACE_ARRAY)
-          NvBufSurfaceSyncForCpu(surface, frame_meta->batch_id, 0);
-
-        in_mat = cv::Mat(
-            surface->surfaceList[frame_meta->batch_id].planeParams.height[0],
-            surface->surfaceList[frame_meta->batch_id].planeParams.width[0],
-            CV_8UC4,
-            surface->surfaceList[frame_meta->batch_id].mappedAddr.addr[0],
-            surface->surfaceList[frame_meta->batch_id].planeParams.pitch[0]);
-      }
-#endif
-
-      DsFieldMaskProcessFrame(frame_meta, dsfieldmask->dsfieldmasklib_ctx);
-#if 0
-      for (l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
-        obj_meta = (NvDsObjectMeta*)(l_obj->data);
-
-        if (dsfieldmask->blur_objects) {
-          /* gaussian blur the detected objects using opencv */
-#ifdef WITH_OPENCV
-          if (blur_objects(dsfieldmask, frame_meta->batch_id, &obj_meta->rect_params, in_mat) != GST_FLOW_OK) {
-            /* Error in blurring, skip processing on object. */
-            GST_ELEMENT_ERROR(dsfieldmask, STREAM, FAILED, ("blurring the object failed"), (NULL));
-            if (NvBufSurfaceUnMap(surface, frame_meta->batch_id, 0)) {
-              GST_ELEMENT_ERROR(
-                  dsfieldmask, STREAM, FAILED, ("%s:buffer unmap to be accessed by CPU failed", __func__), (NULL));
-            }
-            return GST_FLOW_ERROR;
-          }
-          continue;
-#else
-          GST_ELEMENT_ERROR(
-              dsfieldmask,
-              STREAM,
-              FAILED,
-              ("OpenCV has been deprecated, hence object blurring will not work."
-               "Enable OpenCV compilation in gst-dsfieldmask Makefile by setting 'WITH_OPENCV:=1"),
-              (NULL));
-          return GST_FLOW_ERROR;
-#endif
-        }
-
-        // gout << "Object: " << "l=" << obj_meta->rect_params.left
-        //           << ", t=" << obj_meta->rect_params.top
-        //           << ", w=" << obj_meta->rect_params.width
-        //           << ", h=" << obj_meta->rect_params.height << std::endl;
-
-        /* Should not process on objects smaller than MIN_INPUT_OBJECT_WIDTH x
-         * MIN_INPUT_OBJECT_HEIGHT */
-        if (obj_meta->rect_params.width < MIN_INPUT_OBJECT_WIDTH ||
-            obj_meta->rect_params.height < MIN_INPUT_OBJECT_HEIGHT)
-          continue;
-
-        /* Extra check for Jetson devices as default compute mode on Jetson is
-         * VIC which supports min 16x16 */
-        if (dsfieldmask->is_integrated) {
-          if (dsfieldmask->transform_config_params.compute_mode == NvBufSurfTransformCompute_VIC ||
-              dsfieldmask->transform_config_params.compute_mode == NvBufSurfTransformCompute_Default) {
-            if (obj_meta->rect_params.width < 16 || obj_meta->rect_params.height < 16)
-              continue;
-          }
-        }
-
-#if 0
-        /* Crop and scale the object */
-        if (get_converted_mat(
-                dsfieldmask,
-                surface,
-                frame_meta->batch_id,
-                &obj_meta->rect_params,
-                scale_ratio,
-                dsfieldmask->video_info.width,
-                dsfieldmask->video_info.height) != GST_FLOW_OK) {
-          /* Error in conversion, skip processing on object. */
-          continue;
-        }
-#endif
-
-#if 1
-
-#ifdef WITH_OPENCV
-        /* Process the object crop to obtain label */
-        output = DsFieldMaskProcess(dsfieldmask->dsfieldmasklib_ctx, dsfieldmask->cvmat->data);
-#else
-        /* Process the object crop to obtain label */
-        output = DsFieldMaskProcess(
-            dsfieldmask->dsfieldmasklib_ctx,
-            (unsigned char*)dsfieldmask->inter_buf->surfaceList[0].mappedAddr.addr[0]);
-#endif
-
-        /* Attach labels for the object */
-        attach_metadata_object(dsfieldmask, obj_meta, output);
-
-        free(output);
-#endif
-      }
-#endif
-      if (dsfieldmask->blur_objects) {
-        /* Cache the mapped data for device access */
-        if (dsfieldmask->inter_buf->memType == NVBUF_MEM_SURFACE_ARRAY)
-          NvBufSurfaceSyncForDevice(surface, frame_meta->batch_id, 0);
-
-#ifdef WITH_OPENCV
-#ifdef DSEXAMPLE_DEBUG
-          /* Use openCV to remove padding and convert RGBA to BGR. Can be
-           * skipped if algorithm can handle padded RGBA data. */
-#if (CV_MAJOR_VERSION >= 4)
-        cv::cvtColor(in_mat, *dsfieldmask->cvmat, cv::COLOR_RGBA2BGR);
-#else
-        cv::cvtColor(in_mat, *dsfieldmask->cvmat, CV_RGBA2BGR);
-#endif
-        /* used to dump the converted mat to files for debug */
-        static guint cnt = 0;
-        cv::imwrite("out_" + std::to_string(cnt) + ".jpeg", *dsfieldmask->cvmat);
-        cnt++;
-#endif
-#endif
-      }
-    }
+    DsFieldMaskProcessFrame(frame_meta, dsfieldmask->dsfieldmasklib_ctx);
   }
   flow_ret = GST_FLOW_OK;
 
@@ -1080,7 +670,7 @@ static gboolean dsfieldmask_plugin_init(GstPlugin* plugin) {
 
   return gst_element_register(plugin, "dsfieldmask", GST_RANK_PRIMARY, GST_TYPE_DSEXAMPLE);
 }
-}
+} // namespace
 
 GST_PLUGIN_DEFINE(
     GST_VERSION_MAJOR,

@@ -39,9 +39,6 @@ DsFieldMaskCtx* DsFieldMaskCtxInit(DsFieldMaskInitParams* init_params);
 
 void DsFieldMaskProcessFrame(NvDsFrameMeta* frame_meta, DsFieldMaskCtx* ctx);
 
-// Dequeue processed output
-DsFieldMaskOutput* DsFieldMaskProcess(DsFieldMaskCtx* ctx, unsigned char* data);
-
 // Deinitialize library context
 void DsFieldMaskCtxDeinit(DsFieldMaskCtx* ctx);
 

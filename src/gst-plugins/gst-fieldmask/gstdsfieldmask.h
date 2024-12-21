@@ -112,10 +112,10 @@ struct _GstDsFieldMask {
   guint gpu_id;
 
   // Boolean indicating if entire frame or cropped objects should be processed
-  gboolean process_full_frame;
+  // gboolean process_full_frame;
 
   // Boolean indicating if to blur the detected objects
-  gboolean blur_objects;
+  // gboolean blur_objects;
 
   std::string detection_mask_file;
 

@@ -34,30 +34,6 @@ namespace {
 constexpr float raise_bbox_center_by_height_ratio = 0.1;
 constexpr float lower_bbox_bottom_by_height_ratio = 0.1;
 
-// Function to check if points are nonzero in the mask
-std::vector<bool> check_points_in_mask(const cv::Mat& mask, const std::vector<cv::Point>& points) {
-  // Ensure the mask is a bit mask (1 bit per pixel)
-  if (mask.type() != CV_8UC1) {
-    throw std::invalid_argument("Mask must be a single-channel (binary) image.");
-  }
-
-  std::vector<bool> results;
-  results.reserve(points.size());
-
-  for (const auto& point : points) {
-    // Check bounds
-    if (point.x >= 0 && point.x < mask.cols && point.y >= 0 && point.y < mask.rows) {
-      // Check if the mask value at the point is nonzero
-      results.push_back(mask.at<uchar>(point) != 0);
-    } else {
-      // Out-of-bounds points are considered false
-      results.push_back(false);
-    }
-  }
-
-  return results;
-}
-
 bool is_bit_set(const cv::Mat& mask, const cv::Point& point) {
   int byteIndex = (point.y * mask.cols + point.x) / 8; // Byte index in the data
   int bitIndex = point.x % 8; // Bit index within the byte
@@ -225,46 +201,6 @@ void DsFieldMaskProcessFrame(NvDsFrameMeta* frame_meta, DsFieldMaskCtx* ctx) {
     return;
   }
   prune_detection_boxes(frame_meta, ctx);
-}
-
-// In case of an actual processing library, processing on data wil be completed
-// in this function and output will be returned
-DsFieldMaskOutput* DsFieldMaskProcess(DsFieldMaskCtx* ctx, unsigned char* data) {
-  DsFieldMaskOutput* out = (DsFieldMaskOutput*)calloc(1, sizeof(DsFieldMaskOutput));
-
-  if (data != NULL) {
-    // Process your data here
-  }
-  // Fill output structure using processed output
-  // Here, we fake some detected objects and labels
-  if (ctx->initParams.fullFrame) {
-    out->numObjects = 2;
-    out->object[0] = (DsFieldMaskObject){
-        (float)(ctx->initParams.processingWidth) / 8,
-        (float)(ctx->initParams.processingHeight) / 8,
-        (float)(ctx->initParams.processingWidth) / 8,
-        (float)(ctx->initParams.processingHeight) / 8,
-        "Obj0"};
-
-    out->object[1] = (DsFieldMaskObject){
-        (float)(ctx->initParams.processingWidth) / 2,
-        (float)(ctx->initParams.processingHeight) / 2,
-        (float)(ctx->initParams.processingWidth) / 8,
-        (float)(ctx->initParams.processingHeight) / 8,
-        "Obj1"};
-  } else {
-    out->numObjects = 1;
-    out->object[0] = (DsFieldMaskObject){
-        (float)(ctx->initParams.processingWidth) / 8,
-        (float)(ctx->initParams.processingHeight) / 8,
-        (float)(ctx->initParams.processingWidth) / 8,
-        (float)(ctx->initParams.processingHeight) / 8,
-        ""};
-    // Set the object label
-    snprintf(out->object[0].label, 64, "Obj_label");
-  }
-
-  return out;
 }
 
 void DsFieldMaskCtxDeinit(DsFieldMaskCtx* ctx) {
