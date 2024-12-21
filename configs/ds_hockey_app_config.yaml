@@ -50,7 +50,7 @@ sink0:
   nvbuf-memory-type: 0
 
 sink1:
-  enable: 1
+  enable: 0
   type: 3
   #1=mp4 2=mkv
   container: 2
@@ -137,8 +137,8 @@ ds-example:
   enable: 1
   gpu-id: 0
   batch-size: 4
-  blur-objects: 0
-  full-frame: 1
+  blur-objects: 1
+  full-frame: 0
   processing-width: 1312
   processing-height: 480
   # detection-mask: /home/colivier/Videos/ev-reno-1/rink_mask_0.png
