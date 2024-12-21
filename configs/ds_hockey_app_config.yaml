@@ -50,7 +50,7 @@ sink0:
   nvbuf-memory-type: 0
 
 sink1:
-  enable: 0
+  enable: 1
   type: 3
   #1=mp4 2=mkv
   container: 2
@@ -112,8 +112,8 @@ streammux:
   ##to push the batch even if the complete batch is not formed
   batched-push-timeout: 40000
   ## Set muxer output width and height
-  width: 1920
-  height: 1080
+  width: 1312
+  height: 480
   ##Enable to maintain aspect ratio wrt source, and allow black borders, works
   ##along with width, height properties
   enable-padding: 0
