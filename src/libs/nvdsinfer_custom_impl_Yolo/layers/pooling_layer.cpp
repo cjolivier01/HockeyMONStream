@@ -13,7 +13,7 @@ nvinfer1::ITensor* poolingLayer(
     std::map<std::string, std::string>& block,
     nvinfer1::ITensor* input,
     nvinfer1::INetworkDefinition* network) {
-  nvinfer1::ITensor* output;
+  nvinfer1::ITensor* output{nullptr};
 
   assert(
       block.at("type") == "max" || block.at("type") == "maxpool" ||

@@ -13,7 +13,7 @@ nvinfer1::ITensor* channelsLayer(
     nvinfer1::ITensor* input,
     nvinfer1::ITensor* implicitTensor,
     nvinfer1::INetworkDefinition* network) {
-  nvinfer1::ITensor* output;
+  nvinfer1::ITensor* output{nullptr};
 
   assert(
       block.at("type") == "shift_channels" ||

@@ -89,7 +89,7 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
   nvinfer1::INetworkDefinition* network = builder->createNetworkV2(flags);
   assert(network);
 
-  nvonnxparser::IParser* parser;
+  nvonnxparser::IParser* parser{nullptr};
 
   if (m_NetworkType == "onnx") {
 #if NV_TENSORRT_MAJOR >= 8 && NV_TENSORRT_MINOR > 0
@@ -271,7 +271,7 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
 #endif
 
 #if NV_TENSORRT_MAJOR >= 8
-  if (m_NetworkType == "onnx") {
+  if (m_NetworkType == "onnx" && parser) {
     delete parser;
   }
   delete network;

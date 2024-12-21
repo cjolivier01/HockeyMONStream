@@ -14,7 +14,7 @@ nvinfer1::ITensor* activationLayer(
     nvinfer1::ITensor* input,
     nvinfer1::INetworkDefinition* network,
     std::string layerName) {
-  nvinfer1::ITensor* output;
+  nvinfer1::ITensor* output{nullptr};
 
   if (activation == "linear") {
     output = input;

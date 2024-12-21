@@ -89,6 +89,8 @@ enum {
     }                                                                                                             \
   } while (0)
 
+#define STRSIZE(str$) (sizeof(str$)/sizeof(str$[0]))
+
 /* By default NVIDIA Hardware allocated memory flows through the pipeline. We
  * will be processing on this type of memory only. */
 #define GST_CAPS_FEATURE_MEMORY_NVMM "memory:NVMM"
@@ -242,7 +244,7 @@ static void gst_dsfieldmask_set_property(GObject* object, guint prop_id, const G
     {
       const char *str = g_value_get_string(value);
       if (str && *str) {
-          strncpy(dsfieldmask->detection_mask_file, str, sizeof(dsfieldmask->detection_mask_file));
+          strncpy(dsfieldmask->detection_mask_file, str, STRSIZE(dsfieldmask->detection_mask_file) - 1);
       } else {
         dsfieldmask->detection_mask_file[0] = '\0';
       }
