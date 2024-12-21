@@ -362,7 +362,7 @@ parse_config_file_yaml (NvDsConfig *config, gchar *cfg_file_path)
     else if (paramKey == "ds-fieldmask") {
       /** set gpu_id for dsexample component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {
-        config->dsexample_config.gpu_id = config->global_gpu_id;
+        config->dsfieldmask_config.gpu_id = config->global_gpu_id;
       }
       /** if gpu_id for dsexample component is present,
        * it will override the value set using global_gpu_id in parse_fieldmask_yaml function */
