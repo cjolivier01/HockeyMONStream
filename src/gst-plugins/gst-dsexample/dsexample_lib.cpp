@@ -149,13 +149,18 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta) {
 
 struct DsExampleCtx {
   DsExampleInitParams initParams;
-  cv::Mat detection_mask;
+  cv::Mat detection_bit_mask;
   cv::Point2d detection_mask_centroid;
 };
 
 DsExampleCtx* DsExampleCtxInit(DsExampleInitParams* initParams) {
   DsExampleCtx* ctx = new DsExampleCtx();
   ctx->initParams = *initParams;
+  if (!ctx->initParams.detection_mask_file.empty()) {
+    cv::Mat u8_mask = load_mask_from_file(ctx->initParams.detection_mask_file);
+    ctx->detection_mask_centroid = compute_centroid(u8_mask);
+    ctx->detection_bit_mask = convert_to_bit_mask(u8_mask);
+  }
   return ctx;
 }
 

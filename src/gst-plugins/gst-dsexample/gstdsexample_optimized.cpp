@@ -1049,7 +1049,7 @@ static GstFlowReturn gst_dsexample_submit_input_buffer(
           }
         }
 
-        // Crop and scale the object maintainig aspect ratio
+        // Crop and scale the object maintaining aspect ratio
         if (scale_and_fill_data(
                 dsexample,
                 in_surf->surfaceList + frame_meta->batch_id,
