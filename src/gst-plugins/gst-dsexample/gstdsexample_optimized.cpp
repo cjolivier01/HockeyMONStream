@@ -62,7 +62,8 @@ enum {
   PROP_PROCESSING_HEIGHT,
   PROP_PROCESS_FULL_FRAME,
   PROP_BATCH_SIZE,
-  PROP_GPU_DEVICE_ID
+  PROP_GPU_DEVICE_ID,
+  PROP_DETECTION_MASK_FILE,
 };
 
 #define CHECK_NVDS_MEMORY_AND_GPUID(object, surface)                                 \
@@ -270,6 +271,16 @@ static void gst_dsexample_class_init(GstDsExampleClass* klass) {
           "Enable to process full frame or disable to process objects detected"
           "by primary detector",
           DEFAULT_PROCESS_FULL_FRAME,
+          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+
+  g_object_class_install_property(
+      gobject_class,
+      PROP_DETECTION_MASK_FILE,
+      g_param_spec_string(
+          "detection-mask",
+          "Detection Mask",
+          "Restrict detections to position mask",
+          /*default_value=*/"",
           (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
   g_object_class_install_property(

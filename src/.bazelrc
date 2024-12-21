@@ -8,15 +8,18 @@ build:debug -c dbg --strip="never"
 build:debug --copt=-g3
 build:debug --copt=-O0
 build:debug --copt=-UNDEBUG
-build:debug --copt=-v
-build:debug --linkopt=-v
+# build:debug --copt=-v
+build:debug --copt=-fdiagnostics-color=always
+# build:debug --linkopt=-v
 build:debug --linkopt=-Wl,-g
 build:debug --linkopt=-Wl,--discard-none
+
 
 # build:opt -c opt --strip="always"
 
 build --define=target_platform=x86_64
 build --action_env=target_platform="x86_64"
+build:x86_64 --cpu=k8
 build:x86_64 --define=target_platform=x86_64
 build:x86_64 --action_env=target_platform="x86_64"
 

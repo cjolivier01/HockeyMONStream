@@ -12,17 +12,156 @@
  */
 
 #include "dsexample_lib.h"
+#include "utils.h"
+
+#include <opencv2/opencv.hpp>
+
+#include <cassert>
+#include <vector>
+
+#include <opencv4/opencv2/core/types.hpp>
 #include <stdio.h>
 #include <stdlib.h>
 
+namespace {
+
+// Function to check if points are nonzero in the mask
+std::vector<bool> check_points_in_mask(const cv::Mat& mask, const std::vector<cv::Point>& points) {
+  // Ensure the mask is a bit mask (1 bit per pixel)
+  if (mask.type() != CV_8UC1) {
+    throw std::invalid_argument("Mask must be a single-channel (binary) image.");
+  }
+
+  std::vector<bool> results;
+  results.reserve(points.size());
+
+  for (const auto& point : points) {
+    // Check bounds
+    if (point.x >= 0 && point.x < mask.cols && point.y >= 0 && point.y < mask.rows) {
+      // Check if the mask value at the point is nonzero
+      results.push_back(mask.at<uchar>(point) != 0);
+    } else {
+      // Out-of-bounds points are considered false
+      results.push_back(false);
+    }
+  }
+
+  return results;
+}
+
+bool is_bit_set(const cv::Mat& mask, const cv::Point& point) {
+  int byteIndex = (point.y * mask.cols + point.x) / 8; // Byte index in the data
+  int bitIndex = point.x % 8; // Bit index within the byte
+  return (mask.data[byteIndex] & (1 << bitIndex)) != 0;
+}
+
+// Convert 8-bit-per-pixel mask to 1-bit-per-pixel (packed as bytes)
+cv::Mat convert_to_bit_mask(const cv::Mat& inputMask) {
+  if (inputMask.type() != CV_8UC1) {
+    throw std::invalid_argument("Input mask must be a CV_8UC1 matrix.");
+  }
+
+  // Output matrix: 1/8th the number of columns (rounded up), same rows
+  int packedCols = (inputMask.cols + 7) / 8;
+  cv::Mat bitMask(inputMask.rows, packedCols, CV_8UC1, cv::Scalar(0));
+
+  for (int y = 0; y < inputMask.rows; ++y) {
+    const uchar* inputRow = inputMask.ptr<uchar>(y);
+    uchar* outputRow = bitMask.ptr<uchar>(y);
+
+    for (int x = 0; x < inputMask.cols; ++x) {
+      if (inputRow[x] != 0) {
+        outputRow[x / 8] |= (1 << (7 - (x % 8))); // Set the corresponding bit
+      }
+    }
+  }
+
+  return bitMask;
+}
+
+// Compute the centroid of a binary mask
+cv::Point2d compute_centroid(const cv::Mat& mask) {
+  if (mask.type() != CV_8UC1) {
+    throw std::invalid_argument("Input mask must be a CV_8UC1 matrix.");
+  }
+
+  double sumX = 0.0, sumY = 0.0;
+  int count = 0;
+
+  for (int y = 0; y < mask.rows; ++y) {
+    const uchar* row = mask.ptr<uchar>(y);
+    for (int x = 0; x < mask.cols; ++x) {
+      if (row[x] != 0) { // Check for non-zero values
+        sumX += x;
+        sumY += y;
+        ++count;
+      }
+    }
+  }
+
+  if (count == 0) {
+    throw std::runtime_error("The mask has no non-zero pixels.");
+  }
+
+  // Return the centroid as a floating-point point
+  return cv::Point2d(sumX / count, sumY / count);
+}
+
+// Load mask from file
+cv::Mat load_mask_from_file(const std::string& filePath) {
+  // Load the image as a single-channel grayscale image
+  cv::Mat mask = cv::imread(filePath, cv::IMREAD_GRAYSCALE);
+  if (mask.empty()) {
+    throw std::runtime_error("Failed to load mask from file: " + filePath);
+  }
+
+  return mask;
+}
+
+void prune_detection_boxes(NvDsFrameMeta* frame_meta) {
+  if (frame_meta->obj_meta_list) {
+    std::vector<NvDsMetaList*> to_remove;
+    std::size_t nr_items = g_list_length(frame_meta->obj_meta_list);
+    to_remove.reserve(nr_items);
+    // nvds_clear_obj_meta_list(frame_meta, frame_meta->obj_meta_list);
+    std::size_t counter = 0;
+    NvDsMetaList* l_next = nullptr;
+    NvDsObjectMeta* obj_meta;
+    for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_next, ++counter) {
+      l_next = l_obj->next;
+      obj_meta = (NvDsObjectMeta*)(l_obj->data);
+      // const NvDsComp_BboxInfo& detector_bbox_info = obj_meta->detector_bbox_info;
+#ifndef NDEBUG
+      // Make sure that tracking wasn't done yet
+      const NvDsComp_BboxInfo& tracker_bbox_info = obj_meta->tracker_bbox_info;
+      assert(tracker_bbox_info.org_bbox_coords.height == 0 && tracker_bbox_info.org_bbox_coords.width == 0);
+#endif
+      if ((counter & 1) != 0) {
+        nvds_remove_obj_meta_from_frame(frame_meta, obj_meta);
+      }
+    }
+    std::size_t new_nr_items = g_list_length(frame_meta->obj_meta_list);
+    if (new_nr_items != nr_items) {
+      usleep(0);
+    }
+  }
+}
+} // namespace
+
 struct DsExampleCtx {
   DsExampleInitParams initParams;
+  cv::Mat detection_mask;
+  cv::Point2d detection_mask_centroid;
 };
 
 DsExampleCtx* DsExampleCtxInit(DsExampleInitParams* initParams) {
   DsExampleCtx* ctx = (DsExampleCtx*)calloc(1, sizeof(DsExampleCtx));
   ctx->initParams = *initParams;
   return ctx;
+}
+
+void DsExampleProcessFrame(NvDsFrameMeta* frame_meta, DsExampleCtx* ctx) {
+  prune_detection_boxes(frame_meta);
 }
 
 // In case of an actual processing library, processing on data wil be completed

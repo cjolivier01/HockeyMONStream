@@ -52,10 +52,9 @@ cuda_library(
     copts=[
         "-std=c++11",
         "-Xcompiler=-fPIC",
+        "-Xcompiler=-g",
         "-DWITH_CUDA",
-    ],
-    linkopts=[
-      "-shared",
+        "-g",
     ],
     deps = [
         ":nvdsinfer_custom_impl_Yolo_headers",

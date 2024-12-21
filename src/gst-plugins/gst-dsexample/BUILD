@@ -1,6 +1,6 @@
 load("@com_extension_dev//build:registry.bzl", "register_extension")
-load("@rules_cuda//cuda:defs.bzl", "cuda_library", "requires_cuda")
 load("@gst_plugin_dev//build:gst_plugin.bzl", "gst_cc_plugin")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library", "requires_cuda")
 
 # gst_cc_extension
 
@@ -21,20 +21,26 @@ exports_files(["LICENSE"])
 gst_cc_plugin(
     name = "nvdsgst_dsexample",
     srcs = [
-      "gstdsexample.cpp", "dsexample_lib.c", "gstdsexample.h", "dsexample_lib.h",
+        "dsexample_lib.cpp",
+        "dsexample_lib.h",
+        "gstdsexample_optimized.cpp",
+        "gstdsexample_optimized.h",
+        "utils.cpp",
+        "utils.h",
     ],
     # hdrs = [
     #   "gstdsexample.h", "dsexample_lib.h",
     # ],
-    copts=[
-      # "-DWITH_OPENCV=1",
-      "-Wno-error=unused-function",
-      "-Wno-error=unused-variable",
+    copts = [
+        # "-DWITH_OPENCV=1",
+        "-Wno-error=unused-function",
+        "-Wno-error=unused-variable",
     ],
-    linkopts=[
-      #"-shared",
-      #"-Wl,--unresolved-symbols=ignore-all",
+    linkopts = [
+        #"-shared",
+        #"-Wl,--unresolved-symbols=ignore-all",
     ],
+    visibility = ["//visibility:public"],
     deps = [
         #"//extensions/includes:deepstream_headers",
         # "@deepstream_lib",
@@ -44,7 +50,6 @@ gst_cc_plugin(
         # "@StandardExtension",
         "@opencv_linux//:opencv",
     ],
-    visibility = ["//visibility:public"],
 )
 
 # graph_cc_extension(

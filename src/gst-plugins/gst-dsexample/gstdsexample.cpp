@@ -22,42 +22,6 @@
 #include <string>
 #include <vector>
 
-namespace {
-class GPrintStreamBuffer : public std::streambuf {
- public:
-  GPrintStreamBuffer() {}
-
- protected:
-  // Buffer size
-  static constexpr std::size_t bufferSize = 256;
-  char buffer[bufferSize];
-
-  // Overriding the overflow method
-  int overflow(int c) override {
-    if (c != EOF) {
-      buffer[0] = static_cast<char>(c);
-      buffer[1] = '\0';
-      g_print("%s", buffer);
-    }
-    return c;
-  }
-
-  // Overriding sync method
-  int sync() override {
-    return 0; // Always successful
-  }
-};
-
-class GPrintOStream : public std::ostream {
- public:
-  GPrintOStream() : std::ostream(&gprintBuffer) {}
-
- private:
-  GPrintStreamBuffer gprintBuffer;
-};
-GPrintOStream gout;
-} // namespace
-
 GST_DEBUG_CATEGORY_STATIC(gst_dsexample_debug);
 #define GST_CAT_DEFAULT gst_dsexample_debug
 #define USE_EGLIMAGE 1
@@ -77,27 +41,23 @@ enum {
   PROP_GPU_DEVICE_ID
 };
 
-#define CHECK_NVDS_MEMORY_AND_GPUID(object, surface)                                 \
-  ({                                                                                 \
-    int _errtype = 0;                                                                \
-    do {                                                                             \
-      if ((surface->memType == NVBUF_MEM_DEFAULT ||                                  \
-           surface->memType == NVBUF_MEM_CUDA_DEVICE) &&                             \
-          (surface->gpuId != object->gpu_id)) {                                      \
-        GST_ELEMENT_ERROR(                                                           \
-            object,                                                                  \
-            RESOURCE,                                                                \
-            FAILED,                                                                  \
-            ("Input surface gpu-id doesnt match with configured gpu-id for element," \
-             " please allocate input using unified memory, or use same gpu-ids"),    \
-            ("surface-gpu-id=%d,%s-gpu-id=%d",                                       \
-             surface->gpuId,                                                         \
-             GST_ELEMENT_NAME(object),                                               \
-             object->gpu_id));                                                       \
-        _errtype = 1;                                                                \
-      }                                                                              \
-    } while (0);                                                                     \
-    _errtype;                                                                        \
+#define CHECK_NVDS_MEMORY_AND_GPUID(object, surface)                                                       \
+  ({                                                                                                       \
+    int _errtype = 0;                                                                                      \
+    do {                                                                                                   \
+      if ((surface->memType == NVBUF_MEM_DEFAULT || surface->memType == NVBUF_MEM_CUDA_DEVICE) &&          \
+          (surface->gpuId != object->gpu_id)) {                                                            \
+        GST_ELEMENT_ERROR(                                                                                 \
+            object,                                                                                        \
+            RESOURCE,                                                                                      \
+            FAILED,                                                                                        \
+            ("Input surface gpu-id doesnt match with configured gpu-id for element,"                       \
+             " please allocate input using unified memory, or use same gpu-ids"),                          \
+            ("surface-gpu-id=%d,%s-gpu-id=%d", surface->gpuId, GST_ELEMENT_NAME(object), object->gpu_id)); \
+        _errtype = 1;                                                                                      \
+      }                                                                                                    \
+    } while (0);                                                                                           \
+    _errtype;                                                                                              \
   })
 
 /* Default values for properties */
@@ -117,78 +77,49 @@ enum {
 #define MIN_INPUT_OBJECT_WIDTH 1
 #define MIN_INPUT_OBJECT_HEIGHT 1
 
-#define CHECK_NPP_STATUS(npp_status, error_str)         \
-  do {                                                  \
-    if ((npp_status) != NPP_SUCCESS) {                  \
-      g_print(                                          \
-          "Error: %s in %s at line %d: NPP Error %d\n", \
-          error_str,                                    \
-          __FILE__,                                     \
-          __LINE__,                                     \
-          npp_status);                                  \
-      goto error;                                       \
-    }                                                   \
+#define CHECK_NPP_STATUS(npp_status, error_str)                                                         \
+  do {                                                                                                  \
+    if ((npp_status) != NPP_SUCCESS) {                                                                  \
+      g_print("Error: %s in %s at line %d: NPP Error %d\n", error_str, __FILE__, __LINE__, npp_status); \
+      goto error;                                                                                       \
+    }                                                                                                   \
   } while (0)
 
-#define CHECK_CUDA_STATUS(cuda_status, error_str) \
-  do {                                            \
-    if ((cuda_status) != cudaSuccess) {           \
-      g_print(                                    \
-          "Error: %s in %s at line %d (%s)\n",    \
-          error_str,                              \
-          __FILE__,                               \
-          __LINE__,                               \
-          cudaGetErrorName(cuda_status));         \
-      goto error;                                 \
-    }                                             \
+#define CHECK_CUDA_STATUS(cuda_status, error_str)                                                                 \
+  do {                                                                                                            \
+    if ((cuda_status) != cudaSuccess) {                                                                           \
+      g_print("Error: %s in %s at line %d (%s)\n", error_str, __FILE__, __LINE__, cudaGetErrorName(cuda_status)); \
+      goto error;                                                                                                 \
+    }                                                                                                             \
   } while (0)
 
 /* By default NVIDIA Hardware allocated memory flows through the pipeline. We
  * will be processing on this type of memory only. */
 #define GST_CAPS_FEATURE_MEMORY_NVMM "memory:NVMM"
-static GstStaticPadTemplate gst_dsexample_sink_template =
-    GST_STATIC_PAD_TEMPLATE(
-        "sink",
-        GST_PAD_SINK,
-        GST_PAD_ALWAYS,
-        GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE_WITH_FEATURES(
-            GST_CAPS_FEATURE_MEMORY_NVMM,
-            "{ NV12, RGBA, I420 }")));
+static GstStaticPadTemplate gst_dsexample_sink_template = GST_STATIC_PAD_TEMPLATE(
+    "sink",
+    GST_PAD_SINK,
+    GST_PAD_ALWAYS,
+    GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE_WITH_FEATURES(GST_CAPS_FEATURE_MEMORY_NVMM, "{ NV12, RGBA, I420 }")));
 
-static GstStaticPadTemplate gst_dsexample_src_template =
-    GST_STATIC_PAD_TEMPLATE(
-        "src",
-        GST_PAD_SRC,
-        GST_PAD_ALWAYS,
-        GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE_WITH_FEATURES(
-            GST_CAPS_FEATURE_MEMORY_NVMM,
-            "{ NV12, RGBA, I420 }")));
+static GstStaticPadTemplate gst_dsexample_src_template = GST_STATIC_PAD_TEMPLATE(
+    "src",
+    GST_PAD_SRC,
+    GST_PAD_ALWAYS,
+    GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE_WITH_FEATURES(GST_CAPS_FEATURE_MEMORY_NVMM, "{ NV12, RGBA, I420 }")));
 
 /* Define our element type. Standard GObject/GStreamer boilerplate stuff */
 #define gst_dsexample_parent_class parent_class
 G_DEFINE_TYPE(GstDsExample, gst_dsexample, GST_TYPE_BASE_TRANSFORM);
 
-static void gst_dsexample_set_property(
-    GObject* object,
-    guint prop_id,
-    const GValue* value,
-    GParamSpec* pspec);
-static void gst_dsexample_get_property(
-    GObject* object,
-    guint prop_id,
-    GValue* value,
-    GParamSpec* pspec);
+static void gst_dsexample_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec);
+static void gst_dsexample_get_property(GObject* object, guint prop_id, GValue* value, GParamSpec* pspec);
 
-static gboolean gst_dsexample_set_caps(
-    GstBaseTransform* btrans,
-    GstCaps* incaps,
-    GstCaps* outcaps);
+static gboolean gst_dsexample_set_caps(GstBaseTransform* btrans, GstCaps* incaps, GstCaps* outcaps);
 static gboolean gst_dsexample_start(GstBaseTransform* btrans);
 static gboolean gst_dsexample_stop(GstBaseTransform* btrans);
 
-static GstFlowReturn gst_dsexample_transform_ip(
-    GstBaseTransform* btrans,
-    GstBuffer* inbuf);
+static GstFlowReturn gst_dsexample_transform_ip(GstBaseTransform* btrans, GstBuffer* inbuf);
 
 static void attach_metadata_full_frame(
     GstDsExample* dsexample,
@@ -196,10 +127,7 @@ static void attach_metadata_full_frame(
     gdouble scale_ratio,
     DsExampleOutput* output,
     guint batch_id);
-static void attach_metadata_object(
-    GstDsExample* dsexample,
-    NvDsObjectMeta* obj_meta,
-    DsExampleOutput* output);
+static void attach_metadata_object(GstDsExample* dsexample, NvDsObjectMeta* obj_meta, DsExampleOutput* output);
 
 namespace {
 struct InputParams {
@@ -379,8 +307,7 @@ static void gst_dsexample_class_init(GstDsExampleClass* klass) {
 
   // batch_meta = gst_buffer_get_nvds_batch_meta(inbuf);
 
-  gstbasetransform_class->transform_ip =
-      GST_DEBUG_FUNCPTR(gst_dsexample_transform_ip);
+  gstbasetransform_class->transform_ip = GST_DEBUG_FUNCPTR(gst_dsexample_transform_ip);
 
   /* Install properties */
   g_object_class_install_property(
@@ -452,9 +379,7 @@ static void gst_dsexample_class_init(GstDsExampleClass* klass) {
           0,
           G_MAXUINT,
           0,
-          GParamFlags(
-              G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
-              GST_PARAM_MUTABLE_READY)));
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
 
   g_object_class_install_property(
       gobject_class,
@@ -466,15 +391,10 @@ static void gst_dsexample_class_init(GstDsExampleClass* klass) {
           1,
           G_MAXUINT,
           DEFAULT_BATCH_SIZE,
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
-                        GST_PARAM_MUTABLE_READY)));
+          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
   /* Set sink and src pad capabilities */
-  gst_element_class_add_pad_template(
-      gstelement_class,
-      gst_static_pad_template_get(&gst_dsexample_src_template));
-  gst_element_class_add_pad_template(
-      gstelement_class,
-      gst_static_pad_template_get(&gst_dsexample_sink_template));
+  gst_element_class_add_pad_template(gstelement_class, gst_static_pad_template_get(&gst_dsexample_src_template));
+  gst_element_class_add_pad_template(gstelement_class, gst_static_pad_template_get(&gst_dsexample_sink_template));
 
   /* Set metadata describing the element */
   gst_element_class_set_details_simple(
@@ -515,11 +435,7 @@ static void gst_dsexample_init(GstDsExample* dsexample) {
 
 /* Function called when a property of the element is set. Standard boilerplate.
  */
-static void gst_dsexample_set_property(
-    GObject* object,
-    guint prop_id,
-    const GValue* value,
-    GParamSpec* pspec) {
+static void gst_dsexample_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
   GstDsExample* dsexample = GST_DSEXAMPLE(object);
   switch (prop_id) {
     case PROP_UNIQUE_ID:
@@ -552,11 +468,7 @@ static void gst_dsexample_set_property(
 /* Function called when a property of the element is requested. Standard
  * boilerplate.
  */
-static void gst_dsexample_get_property(
-    GObject* object,
-    guint prop_id,
-    GValue* value,
-    GParamSpec* pspec) {
+static void gst_dsexample_get_property(GObject* object, guint prop_id, GValue* value, GParamSpec* pspec) {
   GstDsExample* dsexample = GST_DSEXAMPLE(object);
 
   switch (prop_id) {
@@ -594,9 +506,7 @@ static gboolean gst_dsexample_start(GstBaseTransform* btrans) {
   GstDsExample* dsexample = GST_DSEXAMPLE(btrans);
   NvBufSurfaceCreateParams create_params = {0};
   DsExampleInitParams init_params = {
-      dsexample->processing_width,
-      dsexample->processing_height,
-      dsexample->process_full_frame};
+      dsexample->processing_width, dsexample->processing_height, dsexample->process_full_frame};
 
   int val = -1;
 
@@ -605,14 +515,12 @@ static gboolean gst_dsexample_start(GstBaseTransform* btrans) {
 
   GST_DEBUG_OBJECT(dsexample, "ctx lib %p \n", dsexample->dsexamplelib_ctx);
 
-  CHECK_CUDA_STATUS(
-      cudaSetDevice(dsexample->gpu_id), "Unable to set cuda device");
+  CHECK_CUDA_STATUS(cudaSetDevice(dsexample->gpu_id), "Unable to set cuda device");
 
   cudaDeviceGetAttribute(&val, cudaDevAttrIntegrated, dsexample->gpu_id);
   dsexample->is_integrated = val;
 
-  GST_DEBUG_OBJECT(
-      dsexample, "Setting batch-size %d \n", dsexample->batch_size);
+  GST_DEBUG_OBJECT(dsexample, "Setting batch-size %d \n", dsexample->batch_size);
 
   if (dsexample->process_full_frame && dsexample->blur_objects) {
     GST_ERROR("Error: does not support blurring while processing full frame");
@@ -632,9 +540,7 @@ static gboolean gst_dsexample_start(GstBaseTransform* btrans) {
   }
 #endif
 
-  CHECK_CUDA_STATUS(
-      cudaStreamCreate(&dsexample->cuda_stream),
-      "Could not create cuda stream");
+  CHECK_CUDA_STATUS(cudaStreamCreate(&dsexample->cuda_stream), "Could not create cuda stream");
 
   if (dsexample->inter_buf)
     NvBufSurfaceDestroy(dsexample->inter_buf);
@@ -664,13 +570,10 @@ static gboolean gst_dsexample_start(GstBaseTransform* btrans) {
   /* Create host memory for storing converted/scaled interleaved RGB data */
   CHECK_CUDA_STATUS(
       cudaMallocHost(
-          &dsexample->host_rgb_buf,
-          dsexample->processing_width * dsexample->processing_height *
-              RGB_BYTES_PER_PIXEL),
+          &dsexample->host_rgb_buf, dsexample->processing_width * dsexample->processing_height * RGB_BYTES_PER_PIXEL),
       "Could not allocate cuda host buffer");
 
-  GST_DEBUG_OBJECT(
-      dsexample, "allocated cuda buffer %p \n", dsexample->host_rgb_buf);
+  GST_DEBUG_OBJECT(dsexample, "allocated cuda buffer %p \n", dsexample->host_rgb_buf);
 
 #ifdef WITH_OPENCV
   /* CV Mat containing interleaved RGB data. This call does not allocate memory.
@@ -689,8 +592,7 @@ static gboolean gst_dsexample_start(GstBaseTransform* btrans) {
 #endif
 
   /* Set the NvBufSurfTransform config parameters. */
-  dsexample->transform_config_params.compute_mode =
-      NvBufSurfTransformCompute_Default;
+  dsexample->transform_config_params.compute_mode = NvBufSurfTransformCompute_Default;
   dsexample->transform_config_params.gpu_id = dsexample->gpu_id;
 
   return TRUE;
@@ -747,10 +649,7 @@ static gboolean gst_dsexample_stop(GstBaseTransform* btrans) {
 /**
  * Called when source / sink pad capabilities have been negotiated.
  */
-static gboolean gst_dsexample_set_caps(
-    GstBaseTransform* btrans,
-    GstCaps* incaps,
-    GstCaps* outcaps) {
+static gboolean gst_dsexample_set_caps(GstBaseTransform* btrans, GstCaps* incaps, GstCaps* outcaps) {
   GstDsExample* dsexample = GST_DSEXAMPLE(btrans);
   /* Save the input video information, since this will be required later. */
   gst_video_info_from_caps(&dsexample->video_info, incaps);
@@ -759,11 +658,7 @@ static gboolean gst_dsexample_set_caps(
     /* requires RGBA format for blurring the objects in opencv */
     if (dsexample->video_info.finfo->format != GST_VIDEO_FORMAT_RGBA) {
       GST_ELEMENT_ERROR(
-          dsexample,
-          STREAM,
-          FAILED,
-          ("input format should be RGBA when using blur-objects property"),
-          (NULL));
+          dsexample, STREAM, FAILED, ("input format should be RGBA when using blur-objects property"), (NULL));
       goto error;
     }
   }
@@ -822,8 +717,7 @@ static GstFlowReturn get_converted_mat(
   }
 
   /* Configure transform session parameters for the transformation */
-  transform_config_params.compute_mode =
-      dsexample->transform_config_params.compute_mode;
+  transform_config_params.compute_mode = dsexample->transform_config_params.compute_mode;
   transform_config_params.gpu_id = dsexample->gpu_id;
   transform_config_params.cuda_stream = dsexample->cuda_stream;
 
@@ -832,11 +726,7 @@ static GstFlowReturn get_converted_mat(
   err = NvBufSurfTransformSetSessionParams(&transform_config_params);
   if (err != NvBufSurfTransformError_Success) {
     GST_ELEMENT_ERROR(
-        dsexample,
-        STREAM,
-        FAILED,
-        ("NvBufSurfTransformSetSessionParams failed with error %d", err),
-        (NULL));
+        dsexample, STREAM, FAILED, ("NvBufSurfTransformSetSessionParams failed with error %d", err), (NULL));
     goto error;
   }
 
@@ -844,12 +734,7 @@ static GstFlowReturn get_converted_mat(
   ratio = MIN(1.0 * dest_width / src_width, 1.0 * dest_height / src_height);
 
   if ((crop_rect_params->width == 0) || (crop_rect_params->height == 0)) {
-    GST_ELEMENT_ERROR(
-        dsexample,
-        STREAM,
-        FAILED,
-        ("%s:crop_rect_params dimensions are zero", __func__),
-        (NULL));
+    GST_ELEMENT_ERROR(dsexample, STREAM, FAILED, ("%s:crop_rect_params dimensions are zero", __func__), (NULL));
     goto error;
   }
 
@@ -860,15 +745,14 @@ static GstFlowReturn get_converted_mat(
   }
 #endif
   /* Set the transform ROIs for source and destination */
-  src_rect = {
-      (guint)src_top, (guint)src_left, (guint)src_width, (guint)src_height};
+  src_rect = {(guint)src_top, (guint)src_left, (guint)src_width, (guint)src_height};
   dst_rect = {0, 0, (guint)dest_width, (guint)dest_height};
 
   /* Set the transform parameters */
   transform_params.src_rect = &src_rect;
   transform_params.dst_rect = &dst_rect;
-  transform_params.transform_flag = NVBUFSURF_TRANSFORM_FILTER |
-      NVBUFSURF_TRANSFORM_CROP_SRC | NVBUFSURF_TRANSFORM_CROP_DST;
+  transform_params.transform_flag =
+      NVBUFSURF_TRANSFORM_FILTER | NVBUFSURF_TRANSFORM_CROP_SRC | NVBUFSURF_TRANSFORM_CROP_DST;
   transform_params.transform_filter = NvBufSurfTransformInter_Default;
 
   /* Memset the memory */
@@ -880,12 +764,7 @@ static GstFlowReturn get_converted_mat(
   err = NvBufSurfTransform(&ip_surf, dsexample->inter_buf, &transform_params);
   if (err != NvBufSurfTransformError_Success) {
     GST_ELEMENT_ERROR(
-        dsexample,
-        STREAM,
-        FAILED,
-        ("NvBufSurfTransform failed with error %d while converting buffer",
-         err),
-        (NULL));
+        dsexample, STREAM, FAILED, ("NvBufSurfTransform failed with error %d while converting buffer", err), (NULL));
     goto error;
   }
   /* Map the buffer so that it can be accessed by CPU */
@@ -958,21 +837,13 @@ static GstFlowReturn blur_objects(
   cv::Rect crop_rect;
 
   if ((crop_rect_params->width == 0) || (crop_rect_params->height == 0)) {
-    GST_ELEMENT_ERROR(
-        dsexample,
-        STREAM,
-        FAILED,
-        ("%s:crop_rect_params dimensions are zero", __func__),
-        (NULL));
+    GST_ELEMENT_ERROR(dsexample, STREAM, FAILED, ("%s:crop_rect_params dimensions are zero", __func__), (NULL));
     return GST_FLOW_ERROR;
   }
 
   /* rectangle for cropped objects */
-  crop_rect = cv::Rect(
-      crop_rect_params->left,
-      crop_rect_params->top,
-      crop_rect_params->width,
-      crop_rect_params->height);
+  crop_rect =
+      cv::Rect(crop_rect_params->left, crop_rect_params->top, crop_rect_params->width, crop_rect_params->height);
 
   /* apply gaussian blur to the detected objects */
   GaussianBlur(in_mat(crop_rect), in_mat(crop_rect), cv::Size(15, 15), 4);
@@ -984,9 +855,7 @@ static GstFlowReturn blur_objects(
 /**
  * Called when element recieves an input buffer from upstream element.
  */
-static GstFlowReturn gst_dsexample_transform_ip(
-    GstBaseTransform* btrans,
-    GstBuffer* inbuf) {
+static GstFlowReturn gst_dsexample_transform_ip(GstBaseTransform* btrans, GstBuffer* inbuf) {
   GstDsExample* dsexample = GST_DSEXAMPLE(btrans);
   GstMapInfo in_map_info;
   GstFlowReturn flow_ret = GST_FLOW_ERROR;
@@ -1000,8 +869,7 @@ static GstFlowReturn gst_dsexample_transform_ip(
   guint i = 0;
 
   dsexample->frame_num++;
-  CHECK_CUDA_STATUS(
-      cudaSetDevice(dsexample->gpu_id), "Unable to set cuda device");
+  CHECK_CUDA_STATUS(cudaSetDevice(dsexample->gpu_id), "Unable to set cuda device");
 
   memset(&in_map_info, 0, sizeof(in_map_info));
   if (!gst_buffer_map(inbuf, &in_map_info, GST_MAP_READ)) {
@@ -1011,29 +879,19 @@ static GstFlowReturn gst_dsexample_transform_ip(
 
   nvds_set_input_system_timestamp(inbuf, GST_ELEMENT_NAME(dsexample));
   surface = (NvBufSurface*)in_map_info.data;
-  GST_DEBUG_OBJECT(
-      dsexample,
-      "Processing Frame %" G_GUINT64_FORMAT " Surface %p\n",
-      dsexample->frame_num,
-      surface);
+  GST_DEBUG_OBJECT(dsexample, "Processing Frame %" G_GUINT64_FORMAT " Surface %p\n", dsexample->frame_num, surface);
 
   if (CHECK_NVDS_MEMORY_AND_GPUID(dsexample, surface))
     goto error;
 
   batch_meta = gst_buffer_get_nvds_batch_meta(inbuf);
   if (batch_meta == nullptr) {
-    GST_ELEMENT_ERROR(
-        dsexample,
-        STREAM,
-        FAILED,
-        ("NvDsBatchMeta not found for input buffer."),
-        (NULL));
+    GST_ELEMENT_ERROR(dsexample, STREAM, FAILED, ("NvDsBatchMeta not found for input buffer."), (NULL));
     return GST_FLOW_ERROR;
   }
 
   if (dsexample->process_full_frame) {
-    for (l_frame = batch_meta->frame_meta_list; l_frame != NULL;
-         l_frame = l_frame->next) {
+    for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
       frame_meta = (NvDsFrameMeta*)(l_frame->data);
       NvOSD_RectParams rect_params;
 
@@ -1057,13 +915,11 @@ static GstFlowReturn gst_dsexample_transform_ip(
 
       /* Process to get the output */
 #ifdef WITH_OPENCV
-      output =
-          DsExampleProcess(dsexample->dsexamplelib_ctx, dsexample->cvmat->data);
+      output = DsExampleProcess(frame_meta, dsexample->dsexamplelib_ctx, dsexample->cvmat->data);
 #else
       output = DsExampleProcess(
           dsexample->dsexamplelib_ctx,
-          (unsigned char*)dsexample->inter_buf->surfaceList[0]
-              .mappedAddr.addr[0]);
+          (unsigned char*)dsexample->inter_buf->surfaceList[0].mappedAddr.addr[0]);
 #endif
       /* Attach the metadata for the full frame */
       attach_metadata_full_frame(dsexample, frame_meta, scale_ratio, output, i);
@@ -1079,21 +935,18 @@ static GstFlowReturn gst_dsexample_transform_ip(
 
     if (!dsexample->is_integrated) {
       if (dsexample->blur_objects) {
-        if (!(surface->memType == NVBUF_MEM_CUDA_UNIFIED ||
-              surface->memType == NVBUF_MEM_CUDA_PINNED)) {
+        if (!(surface->memType == NVBUF_MEM_CUDA_UNIFIED || surface->memType == NVBUF_MEM_CUDA_PINNED)) {
           GST_ELEMENT_ERROR(
               dsexample,
               STREAM,
               FAILED,
-              ("%s:need NVBUF_MEM_CUDA_UNIFIED or NVBUF_MEM_CUDA_PINNED memory for opencv blurring",
-               __func__),
+              ("%s:need NVBUF_MEM_CUDA_UNIFIED or NVBUF_MEM_CUDA_PINNED memory for opencv blurring", __func__),
               (NULL));
           return GST_FLOW_ERROR;
         }
       }
     }
-    for (l_frame = batch_meta->frame_meta_list; l_frame != NULL;
-         l_frame = l_frame->next) {
+    for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
       frame_meta = (NvDsFrameMeta*)(l_frame->data);
 
 #ifdef WITH_OPENCV
@@ -1101,17 +954,10 @@ static GstFlowReturn gst_dsexample_transform_ip(
 
       if (dsexample->blur_objects) {
         /* Map the buffer so that it can be accessed by CPU */
-        if (surface->surfaceList[frame_meta->batch_id].mappedAddr.addr[0] ==
-            NULL) {
-          if (NvBufSurfaceMap(
-                  surface, frame_meta->batch_id, 0, NVBUF_MAP_READ_WRITE) !=
-              0) {
+        if (surface->surfaceList[frame_meta->batch_id].mappedAddr.addr[0] == NULL) {
+          if (NvBufSurfaceMap(surface, frame_meta->batch_id, 0, NVBUF_MAP_READ_WRITE) != 0) {
             GST_ELEMENT_ERROR(
-                dsexample,
-                STREAM,
-                FAILED,
-                ("%s:buffer map to be accessed by CPU failed", __func__),
-                (NULL));
+                dsexample, STREAM, FAILED, ("%s:buffer map to be accessed by CPU failed", __func__), (NULL));
             return GST_FLOW_ERROR;
           }
         }
@@ -1129,49 +975,20 @@ static GstFlowReturn gst_dsexample_transform_ip(
       }
 #endif
 
-      // NvDsObjectMetaList* new_list = new GList();
+      DsExampleProcessFrame(frame_meta, dsexample->dsexamplelib_ctx);
 
-      if (frame_meta->obj_meta_list) {
-        std::vector<NvDsMetaList*> to_remove;
-        std::size_t nr_items = g_list_length(frame_meta->obj_meta_list);
-        to_remove.reserve(nr_items);
-        // nvds_clear_obj_meta_list(frame_meta, frame_meta->obj_meta_list);
-        std::size_t counter = 0;
-        for (l_obj = frame_meta->obj_meta_list; l_obj != NULL;
-             l_obj = l_obj->next, ++counter) {
-          obj_meta = (NvDsObjectMeta*)(l_obj->data);
-          const NvDsComp_BboxInfo& detector_bbox_info = obj_meta->detector_bbox_info;
-          const NvDsComp_BboxInfo& tracker_bbox_info = obj_meta->tracker_bbox_info;
-          usleep(0);
-        }
-      }
-
-      for (l_obj = frame_meta->obj_meta_list; l_obj != NULL;
-           l_obj = l_obj->next) {
+      for (l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
         obj_meta = (NvDsObjectMeta*)(l_obj->data);
 
         if (dsexample->blur_objects) {
           /* gaussian blur the detected objects using opencv */
 #ifdef WITH_OPENCV
-          if (blur_objects(
-                  dsexample,
-                  frame_meta->batch_id,
-                  &obj_meta->rect_params,
-                  in_mat) != GST_FLOW_OK) {
+          if (blur_objects(dsexample, frame_meta->batch_id, &obj_meta->rect_params, in_mat) != GST_FLOW_OK) {
             /* Error in blurring, skip processing on object. */
-            GST_ELEMENT_ERROR(
-                dsexample,
-                STREAM,
-                FAILED,
-                ("blurring the object failed"),
-                (NULL));
+            GST_ELEMENT_ERROR(dsexample, STREAM, FAILED, ("blurring the object failed"), (NULL));
             if (NvBufSurfaceUnMap(surface, frame_meta->batch_id, 0)) {
               GST_ELEMENT_ERROR(
-                  dsexample,
-                  STREAM,
-                  FAILED,
-                  ("%s:buffer unmap to be accessed by CPU failed", __func__),
-                  (NULL));
+                  dsexample, STREAM, FAILED, ("%s:buffer unmap to be accessed by CPU failed", __func__), (NULL));
             }
             return GST_FLOW_ERROR;
           }
@@ -1202,12 +1019,9 @@ static GstFlowReturn gst_dsexample_transform_ip(
         /* Extra check for Jetson devices as default compute mode on Jetson is
          * VIC which supports min 16x16 */
         if (dsexample->is_integrated) {
-          if (dsexample->transform_config_params.compute_mode ==
-                  NvBufSurfTransformCompute_VIC ||
-              dsexample->transform_config_params.compute_mode ==
-                  NvBufSurfTransformCompute_Default) {
-            if (obj_meta->rect_params.width < 16 ||
-                obj_meta->rect_params.height < 16)
+          if (dsexample->transform_config_params.compute_mode == NvBufSurfTransformCompute_VIC ||
+              dsexample->transform_config_params.compute_mode == NvBufSurfTransformCompute_Default) {
+            if (obj_meta->rect_params.width < 16 || obj_meta->rect_params.height < 16)
               continue;
           }
         }
@@ -1231,14 +1045,12 @@ static GstFlowReturn gst_dsexample_transform_ip(
 
 #ifdef WITH_OPENCV
         /* Process the object crop to obtain label */
-        output = DsExampleProcess(
-            dsexample->dsexamplelib_ctx, dsexample->cvmat->data);
+        output = DsExampleProcess(dsexample->dsexamplelib_ctx, dsexample->cvmat->data);
 #else
         /* Process the object crop to obtain label */
         output = DsExampleProcess(
             dsexample->dsexamplelib_ctx,
-            (unsigned char*)dsexample->inter_buf->surfaceList[0]
-                .mappedAddr.addr[0]);
+            (unsigned char*)dsexample->inter_buf->surfaceList[0].mappedAddr.addr[0]);
 #endif
 
         /* Attach labels for the object */
@@ -1355,21 +1167,16 @@ static void attach_metadata_full_frame(
  * Only update string label in an existing object metadata. No bounding boxes.
  * We assume only one label per object is generated
  */
-static void attach_metadata_object(
-    GstDsExample* dsexample,
-    NvDsObjectMeta* obj_meta,
-    DsExampleOutput* output) {
+static void attach_metadata_object(GstDsExample* dsexample, NvDsObjectMeta* obj_meta, DsExampleOutput* output) {
   if (output->numObjects == 0)
     return;
   NvDsBatchMeta* batch_meta = obj_meta->base_meta.batch_meta;
 
-  NvDsClassifierMeta* classifier_meta =
-      nvds_acquire_classifier_meta_from_pool(batch_meta);
+  NvDsClassifierMeta* classifier_meta = nvds_acquire_classifier_meta_from_pool(batch_meta);
 
   classifier_meta->unique_component_id = dsexample->unique_id;
 
-  NvDsLabelInfo* label_info =
-      nvds_acquire_label_info_meta_from_pool(batch_meta);
+  NvDsLabelInfo* label_info = nvds_acquire_label_info_meta_from_pool(batch_meta);
   g_strlcpy(label_info->result_label, output->object[0].label, MAX_LABEL_SIZE);
   nvds_add_label_info_meta_to_classifier(classifier_meta, label_info);
   nvds_add_classifier_meta_to_object(obj_meta, classifier_meta);
@@ -1382,8 +1189,7 @@ static void attach_metadata_object(
   /* Set black background for the text
    * display_text required heap allocated memory */
   if (text_params.display_text) {
-    gchar* conc_string = g_strconcat(
-        text_params.display_text, " ", output->object[0].label, NULL);
+    gchar* conc_string = g_strconcat(text_params.display_text, " ", output->object[0].label, NULL);
     g_free(text_params.display_text);
     text_params.display_text = conc_string;
   } else {
@@ -1406,11 +1212,9 @@ static void attach_metadata_object(
  * Boiler plate for registering a plugin and an element.
  */
 static gboolean dsexample_plugin_init(GstPlugin* plugin) {
-  GST_DEBUG_CATEGORY_INIT(
-      gst_dsexample_debug, "dsexample", 0, "dsexample plugin");
+  GST_DEBUG_CATEGORY_INIT(gst_dsexample_debug, "dsexample", 0, "dsexample plugin");
 
-  return gst_element_register(
-      plugin, "dsexample", GST_RANK_PRIMARY, GST_TYPE_DSEXAMPLE);
+  return gst_element_register(plugin, "dsexample", GST_RANK_PRIMARY, GST_TYPE_DSEXAMPLE);
 }
 
 GST_PLUGIN_DEFINE(

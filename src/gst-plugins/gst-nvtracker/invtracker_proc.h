@@ -17,6 +17,7 @@
 #include "nvbufsurface.h"
 #include "nvdstracker.h"
 
+#include <string>
 #include <vector>
 
 /** Input data for tracker plugin. */
