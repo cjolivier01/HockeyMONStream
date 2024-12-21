@@ -528,22 +528,6 @@ static gboolean gst_dsfieldmask_start(GstBaseTransform* btrans) {
 
   GST_DEBUG_OBJECT(dsfieldmask, "allocated cuda buffer %p \n", dsfieldmask->host_rgb_buf);
 
-#ifdef WITH_OPENCV
-  /* CV Mat containing interleaved RGB data. This call does not allocate memory.
-   * It uses host_rgb_buf as data. */
-  dsfieldmask->cvmat = new cv::Mat(
-      dsfieldmask->processing_height,
-      dsfieldmask->processing_width,
-      CV_8UC3,
-      dsfieldmask->host_rgb_buf,
-      dsfieldmask->processing_width * RGB_BYTES_PER_PIXEL);
-
-  if (!dsfieldmask->cvmat)
-    goto error;
-
-  GST_DEBUG_OBJECT(dsfieldmask, "created CV Mat\n");
-#endif
-
   /* Set the NvBufSurfTransform config parameters. */
   dsfieldmask->transform_config_params.compute_mode = NvBufSurfTransformCompute_Default;
   dsfieldmask->transform_config_params.gpu_id = dsfieldmask->gpu_id;
@@ -577,11 +561,6 @@ static gboolean gst_dsfieldmask_stop(GstBaseTransform* btrans) {
   if (dsfieldmask->cuda_stream)
     cudaStreamDestroy(dsfieldmask->cuda_stream);
   dsfieldmask->cuda_stream = NULL;
-
-#ifdef WITH_OPENCV
-  delete dsfieldmask->cvmat;
-  dsfieldmask->cvmat = NULL;
-#endif
 
   if (dsfieldmask->host_rgb_buf) {
     cudaFreeHost(dsfieldmask->host_rgb_buf);
