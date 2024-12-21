@@ -1,6 +1,7 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2016-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+ * SPDX-FileCopyrightText: Copyright (c) 2016-2024 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier:
+ * LicenseRef-NvidiaProprietary
  *
  * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
  * property and proprietary rights in and to this material, related
@@ -10,36 +11,35 @@
  * its affiliates is strictly prohibited.
  */
 
+#include "gstnvtracker.h"
+#include <cuda.h>
+#include <cuda_runtime.h>
+#include <gst/base/base.h>
+#include <gst/gst.h>
+#include <gst/video/video.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <iostream>
 #include <map>
+#include <sstream>
 #include <string>
 #include <vector>
-#include <sstream>
-#include <cuda.h>
-#include <cuda_runtime.h>
-#include <gst/gst.h>
-#include <gst/base/base.h>
-#include <gst/video/video.h>
 #include "gst-nvcommon.h"
 #include "gst-nvquery.h"
-#include "gstnvtracker.h"
 #include "nvds_dewarper_meta.h"
 
 #include "gst-nvevent.h"
 
 #include "deepstream_tracker.h"
 
-#include "nvtracker_proc.h"
 #include "logging.h"
+#include "nvtracker_proc.h"
 
 using namespace std;
 
 /* Filter signals and args */
-enum
-{
+enum {
   PROP_0,
   PROP_TRACKER_WIDTH,
   PROP_TRACKER_HEIGHT,
@@ -61,21 +61,23 @@ enum
 /* By default NVIDIA Hardware allocated memory flows through the pipeline. We
  * will be processing on this type of memory only. */
 #define GST_CAPS_FEATURE_MEMORY_NVMM "memory:NVMM"
-static GstStaticPadTemplate nvtracker_sink_factory = GST_STATIC_PAD_TEMPLATE ("sink",
+static GstStaticPadTemplate nvtracker_sink_factory = GST_STATIC_PAD_TEMPLATE(
+    "sink",
     GST_PAD_SINK,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE_WITH_FEATURES
-      (GST_CAPS_FEATURE_MEMORY_NVMM,
-       "{ " "I420, NV12, RGBA }"))
-    );
+    GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE_WITH_FEATURES(
+        GST_CAPS_FEATURE_MEMORY_NVMM,
+        "{ "
+        "I420, NV12, RGBA }")));
 
-static GstStaticPadTemplate nvtracker_src_factory = GST_STATIC_PAD_TEMPLATE ("src",
+static GstStaticPadTemplate nvtracker_src_factory = GST_STATIC_PAD_TEMPLATE(
+    "src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE_WITH_FEATURES
-      (GST_CAPS_FEATURE_MEMORY_NVMM,
-       "{ " "I420, NV12, RGBA }"))
-    );
+    GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE_WITH_FEATURES(
+        GST_CAPS_FEATURE_MEMORY_NVMM,
+        "{ "
+        "I420, NV12, RGBA }")));
 
 /* Default gstreamer property values */
 #define DEFAULT_LL_CONFIG_FILE NULL
@@ -89,72 +91,86 @@ static GstStaticPadTemplate nvtracker_src_factory = GST_STATIC_PAD_TEMPLATE ("sr
 #define DEFAULT_GPU_ID 0
 #define DEFAULT_CONV_BUF_POOL_SIZE 4
 #define DEFAULT_USER_META_POOL_SIZE 32
-#define DEFAULT_SUB_BATCHES {}
-#define DEFAULT_SUB_BATCH_ERR_RECOVERY_TRIALS  0
+#define DEFAULT_SUB_BATCHES \
+  {}
+#define DEFAULT_SUB_BATCH_ERR_RECOVERY_TRIALS 0
 
 static GQuark _dsmeta_quark;
 
 #define gst_nv_tracker_parent_class parent_class
-G_DEFINE_TYPE (GstNvTracker, gst_nv_tracker, GST_TYPE_BASE_TRANSFORM);
+G_DEFINE_TYPE(GstNvTracker, gst_nv_tracker, GST_TYPE_BASE_TRANSFORM);
 
-GST_DEBUG_CATEGORY_STATIC (gst_nv_tracker_debug);
+GST_DEBUG_CATEGORY_STATIC(gst_nv_tracker_debug);
 #define GST_CAT_DEFAULT gst_nv_tracker_debug
 
-static void gst_nv_tracker_finalize (GObject * object);
-static void gst_nv_tracker_set_property (GObject * object, guint prop_id,
-    const GValue * value, GParamSpec * pspec);
-static void gst_nv_tracker_get_property (GObject * object, guint prop_id,
-    GValue * value, GParamSpec * pspec);
-static GstFlowReturn gst_nv_tracker_submit_input_buffer (GstBaseTransform * trans,
-    gboolean is_discont, GstBuffer * buf);
-static GstFlowReturn gst_nv_tracker_generate_output (GstBaseTransform * trans, GstBuffer ** outbuf);
-static gboolean gst_nv_tracker_start (GstBaseTransform * btrans);
-static gboolean gst_nv_tracker_stop (GstBaseTransform * btrans);
+static void gst_nv_tracker_finalize(GObject* object);
+static void gst_nv_tracker_set_property(
+    GObject* object,
+    guint prop_id,
+    const GValue* value,
+    GParamSpec* pspec);
+static void gst_nv_tracker_get_property(
+    GObject* object,
+    guint prop_id,
+    GValue* value,
+    GParamSpec* pspec);
+static GstFlowReturn gst_nv_tracker_submit_input_buffer(
+    GstBaseTransform* trans,
+    gboolean is_discont,
+    GstBuffer* buf);
+static GstFlowReturn gst_nv_tracker_generate_output(
+    GstBaseTransform* trans,
+    GstBuffer** outbuf);
+static gboolean gst_nv_tracker_start(GstBaseTransform* btrans);
+static gboolean gst_nv_tracker_stop(GstBaseTransform* btrans);
 
-static gpointer gst_nv_nvtracker_output_loop (gpointer user_data);
+static gpointer gst_nv_nvtracker_output_loop(gpointer user_data);
 
-void print_caps(const GstCaps *caps) {
-    gchar *caps_str = gst_caps_to_string(caps);
-    g_print("Caps: %s\n", caps_str);
-    g_free(caps_str);
+void print_caps(const GstCaps* caps) {
+  gchar* caps_str = gst_caps_to_string(caps);
+  g_print("Caps: %s\n", caps_str);
+  g_free(caps_str);
 }
 
-void print_caps_details(const GstCaps *caps) {
-    int size = gst_caps_get_size(caps);
-    for (int i = 0; i < size; i++) {
-        const GstStructure *structure = gst_caps_get_structure(caps, i);
-        gchar *structure_str = gst_structure_to_string(structure);
-        g_print("Structure %d: %s\n", i, structure_str);
-        g_free(structure_str);
-    }
+void print_caps_details(const GstCaps* caps) {
+  int size = gst_caps_get_size(caps);
+  for (int i = 0; i < size; i++) {
+    const GstStructure* structure = gst_caps_get_structure(caps, i);
+    gchar* structure_str = gst_structure_to_string(structure);
+    g_print("Structure %d: %s\n", i, structure_str);
+    g_free(structure_str);
+  }
 }
 
-static gboolean
-gst_nv_tracker_set_caps (GstBaseTransform* trans, GstCaps* incaps, GstCaps* outcaps)
-{
+static gboolean gst_nv_tracker_set_caps(
+    GstBaseTransform* trans,
+    GstCaps* incaps,
+    GstCaps* outcaps) {
   print_caps_details(incaps);
   print_caps_details(outcaps);
   return TRUE;
 }
 
-static gboolean gst_nv_tracker_sink_event (GstPad * pad, GstObject * parent, GstEvent * event)
-{
+static gboolean gst_nv_tracker_sink_event(
+    GstPad* pad,
+    GstObject* parent,
+    GstEvent* event) {
   gboolean ret = TRUE;
   bool result = true;
   gboolean ignore_serialized_event = FALSE;
 
-  GstBaseTransform *trans = NULL;
-  GstBaseTransformClass *bclass = NULL;
-  GstNvTracker *nvtracker = NULL;
+  GstBaseTransform* trans = NULL;
+  GstBaseTransformClass* bclass = NULL;
+  GstNvTracker* nvtracker = NULL;
   guint source_id = 0;
 
-  trans = GST_BASE_TRANSFORM (parent);
-  bclass = GST_BASE_TRANSFORM_GET_CLASS (trans);
-  nvtracker = GST_NVTRACKER (trans);
+  trans = GST_BASE_TRANSFORM(parent);
+  bclass = GST_BASE_TRANSFORM_GET_CLASS(trans);
+  nvtracker = GST_NVTRACKER(trans);
   /* The TAG event is sent many times leading to drop in performance because of
    * buffer/event serialization. We can ignore such events which won't cause
    * issues if we don't serialize the events. */
-  switch (GST_EVENT_TYPE (event)) {
+  switch (GST_EVENT_TYPE(event)) {
     case GST_EVENT_TAG:
       ignore_serialized_event = TRUE;
       break;
@@ -165,8 +181,8 @@ static gboolean gst_nv_tracker_sink_event (GstPad * pad, GstObject * parent, Gst
   /* Serialize events. Wait for pending buffers to be processed and pushed
    * downstream.
    */
-  if (GST_EVENT_IS_SERIALIZED (event) && !ignore_serialized_event
-      && nvtracker->output_loop) {
+  if (GST_EVENT_IS_SERIALIZED(event) && !ignore_serialized_event &&
+      nvtracker->output_loop) {
     g_mutex_lock(&nvtracker->eventLock);
     result = nvtracker->trackerIface->flushReqs();
     g_cond_wait(&nvtracker->eventCondition, &nvtracker->eventLock);
@@ -175,36 +191,36 @@ static gboolean gst_nv_tracker_sink_event (GstPad * pad, GstObject * parent, Gst
 
   switch (static_cast<GstNvEventType>(event->type)) {
     case GST_NVEVENT_PAD_ADDED:
-        gst_nvevent_parse_pad_added (event, &source_id);
-        GST_DEBUG_OBJECT (nvtracker, "Pad added %d\n", source_id);
-        result = nvtracker->trackerIface->addSource(source_id);
-        break;
+      gst_nvevent_parse_pad_added(event, &source_id);
+      GST_DEBUG_OBJECT(nvtracker, "Pad added %d\n", source_id);
+      result = nvtracker->trackerIface->addSource(source_id);
+      break;
     case GST_NVEVENT_PAD_DELETED:
-        gst_nvevent_parse_pad_deleted (event, &source_id);
-        /** Stream is really deleted, remove everything */
-        GST_DEBUG_OBJECT (nvtracker, "Pad deleted %d\n", source_id);
-        result = nvtracker->trackerIface->removeSource(source_id);
-        break;
+      gst_nvevent_parse_pad_deleted(event, &source_id);
+      /** Stream is really deleted, remove everything */
+      GST_DEBUG_OBJECT(nvtracker, "Pad deleted %d\n", source_id);
+      result = nvtracker->trackerIface->removeSource(source_id);
+      break;
     case GST_NVEVENT_STREAM_RESET:
-        gst_nvevent_parse_stream_reset (event, &source_id);
-        if (nvtracker->trackerConfig.trackingIdResetMode & TrackingIdResetMode_NewIdAfterStreamReset)
-        {
-          /** Remove existing trackers, but don't change objectIdMapping */
-          result = nvtracker->trackerIface->removeSource(source_id, false);
-        }
-        break;
+      gst_nvevent_parse_stream_reset(event, &source_id);
+      if (nvtracker->trackerConfig.trackingIdResetMode &
+          TrackingIdResetMode_NewIdAfterStreamReset) {
+        /** Remove existing trackers, but don't change objectIdMapping */
+        result = nvtracker->trackerIface->removeSource(source_id, false);
+      }
+      break;
     case GST_NVEVENT_STREAM_EOS:
-        gst_nvevent_parse_stream_eos (event, &source_id);
-        if (nvtracker->trackerConfig.trackingIdResetMode & TrackingIdResetMode_FromZeroAfterEOS)
-        {
-          /** Remove existing trackers, remove objectIdMapping so in the new loop a new objectIdOffset
-           * will be set */
-          result = nvtracker->trackerIface->removeSource(source_id);
-        }
-        break;
+      gst_nvevent_parse_stream_eos(event, &source_id);
+      if (nvtracker->trackerConfig.trackingIdResetMode &
+          TrackingIdResetMode_FromZeroAfterEOS) {
+        /** Remove existing trackers, remove objectIdMapping so in the new loop
+         * a new objectIdOffset will be set */
+        result = nvtracker->trackerIface->removeSource(source_id);
+      }
+      break;
     case GST_NVEVENT_STREAM_SEGMENT:
     default:
-        break;
+      break;
   }
 
   if (!result) {
@@ -212,51 +228,59 @@ static gboolean gst_nv_tracker_sink_event (GstPad * pad, GstObject * parent, Gst
     return FALSE;
   }
 
-  if (bclass->sink_event)
-  {
-    ret = bclass->sink_event (trans, event);
+  if (bclass->sink_event) {
+    ret = bclass->sink_event(trans, event);
   }
 
   return ret;
 }
 
-static gboolean gst_nv_tracker_start (GstBaseTransform * btrans)
-{
-  GstNvTracker *nvtracker = GST_NVTRACKER (btrans);
+static gboolean gst_nv_tracker_start(GstBaseTransform* btrans) {
+  GstNvTracker* nvtracker = GST_NVTRACKER(btrans);
 
-  GstQuery *nsquery = gst_nvquery_numStreams_size_new ();
+  GstQuery* nsquery = gst_nvquery_numStreams_size_new();
   guint numStreams = 1;
-  if (gst_pad_peer_query (GST_BASE_TRANSFORM_SINK_PAD (btrans), nsquery)) {
-    gst_nvquery_numStreams_size_parse (nsquery, &numStreams);
-    GST_DEBUG_OBJECT (nvtracker, "gstnvtracker: numStreams set as %d...\n",0);
+  if (gst_pad_peer_query(GST_BASE_TRANSFORM_SINK_PAD(btrans), nsquery)) {
+    gst_nvquery_numStreams_size_parse(nsquery, &numStreams);
+    GST_DEBUG_OBJECT(nvtracker, "gstnvtracker: numStreams set as %d...\n", 0);
   } else {
-    GST_DEBUG_OBJECT (nvtracker, "gstnvtracker: numStreams not set. so setting default to 1\n");
+    GST_DEBUG_OBJECT(
+        nvtracker,
+        "gstnvtracker: numStreams not set. so setting default to 1\n");
   }
-  gst_query_unref (nsquery);
+  gst_query_unref(nsquery);
 
-  GstQuery *bsquery = gst_nvquery_batch_size_new ();
+  GstQuery* bsquery = gst_nvquery_batch_size_new();
   guint batchSize = 1;
-  if (gst_pad_peer_query (GST_BASE_TRANSFORM_SINK_PAD (btrans), bsquery)) {
-    gst_nvquery_batch_size_parse (bsquery, &batchSize);
+  if (gst_pad_peer_query(GST_BASE_TRANSFORM_SINK_PAD(btrans), bsquery)) {
+    gst_nvquery_batch_size_parse(bsquery, &batchSize);
     nvtracker->trackerConfig.batchSize = batchSize;
-    GST_DEBUG_OBJECT (nvtracker, "gstnvtracker: batchSize set as %d...\n",nvtracker->trackerConfig.batchSize);
+    GST_DEBUG_OBJECT(
+        nvtracker,
+        "gstnvtracker: batchSize set as %d...\n",
+        nvtracker->trackerConfig.batchSize);
   } else {
-    GST_DEBUG_OBJECT (nvtracker, "gstnvtracker: batchSize not set. so setting default to 1\n");
+    GST_DEBUG_OBJECT(
+        nvtracker,
+        "gstnvtracker: batchSize not set. so setting default to 1\n");
     nvtracker->trackerConfig.batchSize = 1;
   }
-  gst_query_unref (bsquery);
+  gst_query_unref(bsquery);
 
-  if (nvtracker->trackerConfig.inputTensorMeta == true)
-  {
-    GstQuery * poolsizequery = gst_nvquery_preprocess_poolsize_new(nvtracker->trackerConfig.tensorMetaGieId);
+  if (nvtracker->trackerConfig.inputTensorMeta == true) {
+    GstQuery* poolsizequery = gst_nvquery_preprocess_poolsize_new(
+        nvtracker->trackerConfig.tensorMetaGieId);
     guint poolSize = 4;
-    if (gst_pad_peer_query(GST_BASE_TRANSFORM_SINK_PAD(btrans), poolsizequery)){
+    if (gst_pad_peer_query(
+            GST_BASE_TRANSFORM_SINK_PAD(btrans), poolsizequery)) {
       gst_nvquery_preprocess_poolsize_parse(poolsizequery, &poolSize);
       nvtracker->trackerConfig.maxConvBufPoolSize = poolSize;
-      GST_DEBUG_OBJECT(nvtracker, "gstnvtracker: poolSize query set as %d...\n", poolSize);
-    }
-    else{
-      GST_DEBUG_OBJECT(nvtracker, "gstnvtracker: poolSize query failed. so setting default to 4\n");
+      GST_DEBUG_OBJECT(
+          nvtracker, "gstnvtracker: poolSize query set as %d...\n", poolSize);
+    } else {
+      GST_DEBUG_OBJECT(
+          nvtracker,
+          "gstnvtracker: poolSize query failed. so setting default to 4\n");
       nvtracker->trackerConfig.maxConvBufPoolSize = 4;
     }
     gst_query_unref(poolsizequery);
@@ -266,46 +290,48 @@ static gboolean gst_nv_tracker_start (GstBaseTransform * btrans)
 
   cudaError_t cudaReturn = cudaSetDevice(nvtracker->trackerConfig.gpuId);
   if (cudaReturn != cudaSuccess) {
-    GST_ERROR ("gstnvtracker: Failed to set gpu-id with error: %s\n",
-          cudaGetErrorName (cudaReturn));
+    GST_ERROR(
+        "gstnvtracker: Failed to set gpu-id with error: %s\n",
+        cudaGetErrorName(cudaReturn));
     return FALSE;
   }
-  nvtracker->trackerIface = new(std::nothrow) NvTrackerProc();
+  nvtracker->trackerIface = new (std::nothrow) NvTrackerProc();
   if (NULL == nvtracker->trackerIface) {
-    GST_ERROR ("gstnvtracker: Failed to allocate trackerIface\n");
+    GST_ERROR("gstnvtracker: Failed to allocate trackerIface\n");
     return FALSE;
   }
 
   bool initResult = nvtracker->trackerIface->init(nvtracker->trackerConfig);
   if (!initResult) {
-     GST_ERROR ("gstnvtracker: Failed to initialize trackerIface\n");
-     delete nvtracker->trackerIface;
-     nvtracker->trackerIface = NULL;
-     return FALSE;
+    GST_ERROR("gstnvtracker: Failed to initialize trackerIface\n");
+    delete nvtracker->trackerIface;
+    nvtracker->trackerIface = NULL;
+    return FALSE;
   }
 
-  gst_pad_set_event_function (GST_BASE_TRANSFORM_SINK_PAD(nvtracker),
-      GST_DEBUG_FUNCPTR (gst_nv_tracker_sink_event));
+  gst_pad_set_event_function(
+      GST_BASE_TRANSFORM_SINK_PAD(nvtracker),
+      GST_DEBUG_FUNCPTR(gst_nv_tracker_sink_event));
 
   nvtracker->running = TRUE;
 
-  nvtracker->output_loop = g_thread_new ("gst_nv_nvtracker_output_loop",
-      gst_nv_nvtracker_output_loop, (gpointer) nvtracker);
+  nvtracker->output_loop = g_thread_new(
+      "gst_nv_nvtracker_output_loop",
+      gst_nv_nvtracker_output_loop,
+      (gpointer)nvtracker);
 
   return TRUE;
 }
 
-static gboolean gst_nv_tracker_stop (GstBaseTransform * btrans)
-{
+static gboolean gst_nv_tracker_stop(GstBaseTransform* btrans) {
   return TRUE;
 }
 
-static void gst_nv_tracker_finalize (GObject * object)
-{
-  GstNvTracker *nvtracker = GST_NVTRACKER (object);
+static void gst_nv_tracker_finalize(GObject* object) {
+  GstNvTracker* nvtracker = GST_NVTRACKER(object);
 
   /** De-init the low-level threads and plugin */
-  if(nvtracker->trackerIface) {
+  if (nvtracker->trackerIface) {
     nvtracker->trackerIface->deInit();
   }
 
@@ -320,34 +346,35 @@ static void gst_nv_tracker_finalize (GObject * object)
   }
   nvtracker->output_loop = NULL;
 
-  if(nvtracker->trackerIface) {
+  if (nvtracker->trackerIface) {
     delete nvtracker->trackerIface;
     nvtracker->trackerIface = NULL;
   }
 
   if (nvtracker->trackerConfig.trackerLibFile != NULL) {
-      g_free(nvtracker->trackerConfig.trackerLibFile);
-      nvtracker->trackerConfig.trackerLibFile = NULL;
+    g_free(nvtracker->trackerConfig.trackerLibFile);
+    nvtracker->trackerConfig.trackerLibFile = NULL;
   }
 
   if (nvtracker->trackerConfig.trackerConfigFileList != NULL) {
-      g_free(nvtracker->trackerConfig.trackerConfigFileList);
-      nvtracker->trackerConfig.trackerConfigFileList = NULL;
+    g_free(nvtracker->trackerConfig.trackerConfigFileList);
+    nvtracker->trackerConfig.trackerConfigFileList = NULL;
   }
-  for(auto it=nvtracker->trackerConfig.trackerConfigFilePerSubBatch.begin();
-      it!=nvtracker->trackerConfig.trackerConfigFilePerSubBatch.end(); it++)
-  {
+  for (auto it = nvtracker->trackerConfig.trackerConfigFilePerSubBatch.begin();
+       it != nvtracker->trackerConfig.trackerConfigFilePerSubBatch.end();
+       it++) {
     it->clear();
   }
   nvtracker->trackerConfig.trackerConfigFilePerSubBatch.clear();
 
   if (nvtracker->trackerConfig.gstName != NULL) {
-      g_free(nvtracker->trackerConfig.gstName);
-      nvtracker->trackerConfig.gstName = NULL;
+    g_free(nvtracker->trackerConfig.gstName);
+    nvtracker->trackerConfig.gstName = NULL;
   }
 
-  for(auto it=nvtracker->trackerConfig.subBatchesConfig.begin(); it!=nvtracker->trackerConfig.subBatchesConfig.end(); it++)
-  {
+  for (auto it = nvtracker->trackerConfig.subBatchesConfig.begin();
+       it != nvtracker->trackerConfig.subBatchesConfig.end();
+       it++) {
     it->clear();
   }
   nvtracker->trackerConfig.subBatchesConfig.clear();
@@ -355,31 +382,28 @@ static void gst_nv_tracker_finalize (GObject * object)
 
   g_cond_clear(&nvtracker->eventCondition);
   g_mutex_clear(&nvtracker->eventLock);
-  G_OBJECT_CLASS (parent_class)->finalize (object);
+  G_OBJECT_CLASS(parent_class)->finalize(object);
 }
 
-
 /* initialize the nvtracker's class */
-  static void
-gst_nv_tracker_class_init (GstNvTrackerClass * klass)
-{
-  GObjectClass *gobject_class;
-  GstElementClass *gstelement_class;
-  GstBaseTransformClass *base_transform_class =
-    GST_BASE_TRANSFORM_CLASS (klass);
+static void gst_nv_tracker_class_init(GstNvTrackerClass* klass) {
+  GObjectClass* gobject_class;
+  GstElementClass* gstelement_class;
+  GstBaseTransformClass* base_transform_class = GST_BASE_TRANSFORM_CLASS(klass);
 
-  gobject_class = (GObjectClass *) klass;
-  gstelement_class = (GstElementClass *) klass;
+  gobject_class = (GObjectClass*)klass;
+  gstelement_class = (GstElementClass*)klass;
 
   base_transform_class->submit_input_buffer =
-    GST_DEBUG_FUNCPTR (gst_nv_tracker_submit_input_buffer);
+      GST_DEBUG_FUNCPTR(gst_nv_tracker_submit_input_buffer);
   base_transform_class->generate_output =
-    GST_DEBUG_FUNCPTR (gst_nv_tracker_generate_output);
+      GST_DEBUG_FUNCPTR(gst_nv_tracker_generate_output);
 
-  /**  base_transform_class->transform_ip = GST_DEBUG_FUNCPTR(gst_nv_tracker_transform_ip); */
-  base_transform_class->start = GST_DEBUG_FUNCPTR (gst_nv_tracker_start);
-  base_transform_class->stop = GST_DEBUG_FUNCPTR (gst_nv_tracker_stop);
-  base_transform_class->set_caps = GST_DEBUG_FUNCPTR (gst_nv_tracker_set_caps);
+  /**  base_transform_class->transform_ip =
+   * GST_DEBUG_FUNCPTR(gst_nv_tracker_transform_ip); */
+  base_transform_class->start = GST_DEBUG_FUNCPTR(gst_nv_tracker_start);
+  base_transform_class->stop = GST_DEBUG_FUNCPTR(gst_nv_tracker_stop);
+  base_transform_class->set_caps = GST_DEBUG_FUNCPTR(gst_nv_tracker_set_caps);
 
   gobject_class->set_property = gst_nv_tracker_set_property;
   gobject_class->get_property = gst_nv_tracker_get_property;
@@ -387,168 +411,257 @@ gst_nv_tracker_class_init (GstNvTrackerClass * klass)
 
   base_transform_class->passthrough_on_same_caps = TRUE;
 
-  g_object_class_install_property (gobject_class, PROP_TRACKER_WIDTH,
-      g_param_spec_uint ("tracker-width", "Tracker Width",
-        "Frame width at which the tracker should operate, in pixels",
-        0, G_MAXUINT, DEFAULT_TRACKER_WIDTH,
-        GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
-          GST_PARAM_MUTABLE_READY)));
+  g_object_class_install_property(
+      gobject_class,
+      PROP_TRACKER_WIDTH,
+      g_param_spec_uint(
+          "tracker-width",
+          "Tracker Width",
+          "Frame width at which the tracker should operate, in pixels",
+          0,
+          G_MAXUINT,
+          DEFAULT_TRACKER_WIDTH,
+          GParamFlags(
+              G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
+              GST_PARAM_MUTABLE_READY)));
 
-  g_object_class_install_property (gobject_class, PROP_TRACKER_HEIGHT,
-      g_param_spec_uint ("tracker-height", "Tracker Height",
-        "Frame height at which the tracker should operate, in pixels",
-        0, G_MAXUINT, DEFAULT_TRACKER_HEIGHT,
-        GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
-          GST_PARAM_MUTABLE_READY)));
+  g_object_class_install_property(
+      gobject_class,
+      PROP_TRACKER_HEIGHT,
+      g_param_spec_uint(
+          "tracker-height",
+          "Tracker Height",
+          "Frame height at which the tracker should operate, in pixels",
+          0,
+          G_MAXUINT,
+          DEFAULT_TRACKER_HEIGHT,
+          GParamFlags(
+              G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
+              GST_PARAM_MUTABLE_READY)));
 
-  g_object_class_install_property (gobject_class, PROP_GPU_DEVICE_ID,
-      g_param_spec_uint ("gpu-id", "Set GPU Device ID",
-        "Set GPU Device ID",
-        0, G_MAXUINT, DEFAULT_GPU_ID,
-        GParamFlags (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
-          GST_PARAM_MUTABLE_READY)));
+  g_object_class_install_property(
+      gobject_class,
+      PROP_GPU_DEVICE_ID,
+      g_param_spec_uint(
+          "gpu-id",
+          "Set GPU Device ID",
+          "Set GPU Device ID",
+          0,
+          G_MAXUINT,
+          DEFAULT_GPU_ID,
+          GParamFlags(
+              G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
+              GST_PARAM_MUTABLE_READY)));
 
-  g_object_class_install_property (gobject_class, PROP_LL_CONFIG_PATH,
-      g_param_spec_string ("ll-config-file", "Low-level library config file",
-        "Low-level library config file path",
-        DEFAULT_LL_CONFIG_FILE,
-        (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS )));
+  g_object_class_install_property(
+      gobject_class,
+      PROP_LL_CONFIG_PATH,
+      g_param_spec_string(
+          "ll-config-file",
+          "Low-level library config file",
+          "Low-level library config file path",
+          DEFAULT_LL_CONFIG_FILE,
+          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
-  g_object_class_install_property (gobject_class, PROP_LL_LIB_PATH,
-      g_param_spec_string ("ll-lib-file", "Low-level library file path",
-        "Low-level library file path",
-        DEFAULT_LL_LIB_FILE,
-        (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS )));
+  g_object_class_install_property(
+      gobject_class,
+      PROP_LL_LIB_PATH,
+      g_param_spec_string(
+          "ll-lib-file",
+          "Low-level library file path",
+          "Low-level library file path",
+          DEFAULT_LL_LIB_FILE,
+          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
-  g_object_class_install_property (gobject_class, PROP_SELECTIVE_TRACKING,
-      g_param_spec_uint ("tracking-surface-type", "Set Tracking Surface Type",
-        "Set Tracking Surface Type, default is ALL,\
+  g_object_class_install_property(
+      gobject_class,
+      PROP_SELECTIVE_TRACKING,
+      g_param_spec_uint(
+          "tracking-surface-type",
+          "Set Tracking Surface Type",
+          "Set Tracking Surface Type, default is ALL,\
         (1) => SPOT Surface, (2) => AISLE Surface",
-        0, G_MAXUINT, NVDS_META_SURFACE_NONE,
-        GParamFlags (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
-          GST_PARAM_MUTABLE_READY)));
+          0,
+          G_MAXUINT,
+          NVDS_META_SURFACE_NONE,
+          GParamFlags(
+              G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
+              GST_PARAM_MUTABLE_READY)));
 
   PROP_COMPUTE_HW_INSTALL(gobject_class);
 
-  g_object_class_install_property (gobject_class, PROP_DISPLAY_TRACK_ID,
-      g_param_spec_boolean ("display-tracking-id", "Display tracking id in object text",
-      "Display tracking id in object text",
-        DEFAULT_DISPLAY_TRACKING_ID, G_PARAM_READWRITE));
+  g_object_class_install_property(
+      gobject_class,
+      PROP_DISPLAY_TRACK_ID,
+      g_param_spec_boolean(
+          "display-tracking-id",
+          "Display tracking id in object text",
+          "Display tracking id in object text",
+          DEFAULT_DISPLAY_TRACKING_ID,
+          G_PARAM_READWRITE));
 
-  g_object_class_install_property (gobject_class, PROP_TRACK_ID_RESET_MODE,
-      g_param_spec_uint ("tracking-id-reset-mode", "Tracking ID reset mode",
-        "Tracking ID reset mode when stream reset or EOS happens",
-        0, TrackingIdResetMode_MaxValue, TrackingIdResetMode_Default,
-        GParamFlags (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
-        GST_PARAM_MUTABLE_READY)));
+  g_object_class_install_property(
+      gobject_class,
+      PROP_TRACK_ID_RESET_MODE,
+      g_param_spec_uint(
+          "tracking-id-reset-mode",
+          "Tracking ID reset mode",
+          "Tracking ID reset mode when stream reset or EOS happens",
+          0,
+          TrackingIdResetMode_MaxValue,
+          TrackingIdResetMode_Default,
+          GParamFlags(
+              G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
+              GST_PARAM_MUTABLE_READY)));
 
-  g_object_class_install_property (gobject_class, PROP_INPUT_TENSOR_META,
-      g_param_spec_boolean ("input-tensor-meta", "Use preprocess tensormeta if available for tensor-meta-gie-id",
-      "Use preprocess tensormeta if available for tensor-meta-gie-id",
-        DEFAULT_INPUT_TENSOR_META, G_PARAM_READWRITE));
+  g_object_class_install_property(
+      gobject_class,
+      PROP_INPUT_TENSOR_META,
+      g_param_spec_boolean(
+          "input-tensor-meta",
+          "Use preprocess tensormeta if available for tensor-meta-gie-id",
+          "Use preprocess tensormeta if available for tensor-meta-gie-id",
+          DEFAULT_INPUT_TENSOR_META,
+          G_PARAM_READWRITE));
 
-  g_object_class_install_property (gobject_class, PROP_TENSOR_META_GIE_ID,
-      g_param_spec_uint ("tensor-meta-gie-id", "Tensor Meta GIE ID to be used, property valid only if input-tensor-meta is TRUE",
-        "Tensor Meta GIE ID to be used, property valid only if input-tensor-meta is TRUE",
-        0, -1, 0,
-        GParamFlags (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
-        GST_PARAM_MUTABLE_READY)));
+  g_object_class_install_property(
+      gobject_class,
+      PROP_TENSOR_META_GIE_ID,
+      g_param_spec_uint(
+          "tensor-meta-gie-id",
+          "Tensor Meta GIE ID to be used, property valid only if input-tensor-meta is TRUE",
+          "Tensor Meta GIE ID to be used, property valid only if input-tensor-meta is TRUE",
+          0,
+          -1,
+          0,
+          GParamFlags(
+              G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
+              GST_PARAM_MUTABLE_READY)));
 
-  g_object_class_install_property (gobject_class, PROP_USER_META_POOL_SIZE,
-      g_param_spec_uint ("user-meta-pool-size", "User Meta Pool Size",
-        "Tracker user meta buffer pool size",
-        1, G_MAXUINT, DEFAULT_USER_META_POOL_SIZE,
-        GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
-          GST_PARAM_MUTABLE_READY)));
+  g_object_class_install_property(
+      gobject_class,
+      PROP_USER_META_POOL_SIZE,
+      g_param_spec_uint(
+          "user-meta-pool-size",
+          "User Meta Pool Size",
+          "Tracker user meta buffer pool size",
+          1,
+          G_MAXUINT,
+          DEFAULT_USER_META_POOL_SIZE,
+          GParamFlags(
+              G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
+              GST_PARAM_MUTABLE_READY)));
 
-  g_object_class_install_property (gobject_class, PROP_SUB_BATCHES,
-      g_param_spec_string ("sub-batches", "List of sub batces to be processed parallelly",
-        "Configuration of sub-batches. Can be specified in 2 ways.\n"
-        "\t\t\tOption 1 : List of sub-batches (seperated by ;).  \n"
-        "\t\t\tEach sub-batch contains list of source ids in that batch (seperated by ,) \n"
-        "\t\t\tOption 2 : List of sub-batch sizes seperated by :",
-        DEFAULT_SUB_BATCHES,
-        (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS )));
+  g_object_class_install_property(
+      gobject_class,
+      PROP_SUB_BATCHES,
+      g_param_spec_string(
+          "sub-batches",
+          "List of sub batces to be processed parallelly",
+          "Configuration of sub-batches. Can be specified in 2 ways.\n"
+          "\t\t\tOption 1 : List of sub-batches (seperated by ;).  \n"
+          "\t\t\tEach sub-batch contains list of source ids in that batch (seperated by ,) \n"
+          "\t\t\tOption 2 : List of sub-batch sizes seperated by :",
+          DEFAULT_SUB_BATCHES,
+          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
-  g_object_class_install_property (gobject_class, PROP_SUB_BATCH_ERR_RECOVERY_TRIAL_CNT,
-      g_param_spec_int ("sub-batch-err-recovery-trial-cnt", "Number of max. trials to reinitialize the low level tracker library of a sub-batch in case of a processing failure",
-        "Number of max. trials to reinitialize the low level tracker library\n"
-        "\t\t\tof a sub-batch in case of a processing failure. -1 corresponds to infinite trials.",
-        -1, G_MAXINT, DEFAULT_SUB_BATCH_ERR_RECOVERY_TRIALS,
-        GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+  g_object_class_install_property(
+      gobject_class,
+      PROP_SUB_BATCH_ERR_RECOVERY_TRIAL_CNT,
+      g_param_spec_int(
+          "sub-batch-err-recovery-trial-cnt",
+          "Number of max. trials to reinitialize the low level tracker library of a sub-batch in case of a processing failure",
+          "Number of max. trials to reinitialize the low level tracker library\n"
+          "\t\t\tof a sub-batch in case of a processing failure. -1 corresponds to infinite trials.",
+          -1,
+          G_MAXINT,
+          DEFAULT_SUB_BATCH_ERR_RECOVERY_TRIALS,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
-  gst_element_class_set_details_simple(gstelement_class,
+  gst_element_class_set_details_simple(
+      gstelement_class,
       "NvTracker plugin",
       "NvTracker functionality",
       "Gstreamer object tracking element",
       "NVIDIA Corporation. Post on Deepstream SDK forum for any queries "
       "@ https://devtalk.nvidia.com/default/board/209/");
 
-  gst_element_class_add_pad_template (gstelement_class,
-      gst_static_pad_template_get (&nvtracker_src_factory));
-  gst_element_class_add_pad_template (gstelement_class,
-      gst_static_pad_template_get (&nvtracker_sink_factory));
+  gst_element_class_add_pad_template(
+      gstelement_class, gst_static_pad_template_get(&nvtracker_src_factory));
+  gst_element_class_add_pad_template(
+      gstelement_class, gst_static_pad_template_get(&nvtracker_sink_factory));
 
   _dsmeta_quark = g_quark_from_static_string(NVDS_META_STRING);
 }
 
-#define SUB_BATCHES_CONFIG_ERROR {\
-g_print ("%s: Incorrect sub-batches config : should contain only unsigned integers seperated by a \",\". \
-Processing will continue with \"sub-batches\" feature disabled. \n", GST_ELEMENT_NAME (nvtracker));\
-for (auto it = subBatchesConfig.begin(); it != subBatchesConfig.end(); it++){it->clear();}\
-subBatchesConfig.clear();subBatchSizes.clear();}
+#define SUB_BATCHES_CONFIG_ERROR                                           \
+  {                                                                        \
+    g_print(                                                               \
+        "%s: Incorrect sub-batches config : should contain only unsigned integers seperated by a \",\". \
+Processing will continue with \"sub-batches\" feature disabled. \n",       \
+        GST_ELEMENT_NAME(nvtracker));                                      \
+    for (auto it = subBatchesConfig.begin(); it != subBatchesConfig.end(); \
+         it++) {                                                           \
+      it->clear();                                                         \
+    }                                                                      \
+    subBatchesConfig.clear();                                              \
+    subBatchSizes.clear();                                                 \
+  }
 
-static void
-gst_nv_tracker_set_property (GObject * object, guint prop_id,
-    const GValue * value, GParamSpec * pspec)
-{
-  GstNvTracker *nvtracker = GST_NVTRACKER (object);
+static void gst_nv_tracker_set_property(
+    GObject* object,
+    guint prop_id,
+    const GValue* value,
+    GParamSpec* pspec) {
+  GstNvTracker* nvtracker = GST_NVTRACKER(object);
   nvtracker = nvtracker;
 
   switch (prop_id) {
     case PROP_TRACKER_WIDTH:
-      nvtracker->trackerConfig.trackerWidth = g_value_get_uint (value);
+      nvtracker->trackerConfig.trackerWidth = g_value_get_uint(value);
       break;
     case PROP_TRACKER_HEIGHT:
-      nvtracker->trackerConfig.trackerHeight = g_value_get_uint (value);
+      nvtracker->trackerConfig.trackerHeight = g_value_get_uint(value);
       break;
     case PROP_GPU_DEVICE_ID:
-      nvtracker->trackerConfig.gpuId = g_value_get_uint (value);
+      nvtracker->trackerConfig.gpuId = g_value_get_uint(value);
       break;
     case PROP_COMPUTE_HW:
-      nvtracker->trackerConfig.compute_hw = g_value_get_enum (value);
+      nvtracker->trackerConfig.compute_hw = g_value_get_enum(value);
       break;
-    case PROP_LL_CONFIG_PATH:
-    {
+    case PROP_LL_CONFIG_PATH: {
       if (nvtracker->trackerConfig.trackerConfigFileList) {
-          g_free(nvtracker->trackerConfig.trackerConfigFileList);
+        g_free(nvtracker->trackerConfig.trackerConfigFileList);
       }
-      nvtracker->trackerConfig.trackerConfigFileList = (char*) g_value_dup_string(value);
+      nvtracker->trackerConfig.trackerConfigFileList =
+          (char*)g_value_dup_string(value);
       // Populate trackerConfigFilePerSubBatch
       std::string singleConfigFile;
-      if (nvtracker->trackerConfig.trackerConfigFileList == NULL)
-      {
-        nvtracker->trackerConfig.trackerConfigFilePerSubBatch.push_back(singleConfigFile);
+      if (nvtracker->trackerConfig.trackerConfigFileList == NULL) {
+        nvtracker->trackerConfig.trackerConfigFilePerSubBatch.push_back(
+            singleConfigFile);
         break;
       }
       std::stringstream str(nvtracker->trackerConfig.trackerConfigFileList);
       std::getline(str, singleConfigFile, ';');
-      nvtracker->trackerConfig.trackerConfigFilePerSubBatch.push_back(singleConfigFile);
-      while(std::getline(str, singleConfigFile, ';'))
-      {
-        nvtracker->trackerConfig.trackerConfigFilePerSubBatch.push_back(singleConfigFile);
+      nvtracker->trackerConfig.trackerConfigFilePerSubBatch.push_back(
+          singleConfigFile);
+      while (std::getline(str, singleConfigFile, ';')) {
+        nvtracker->trackerConfig.trackerConfigFilePerSubBatch.push_back(
+            singleConfigFile);
       }
       singleConfigFile.clear();
       break;
     }
     case PROP_LL_LIB_PATH:
       if (nvtracker->trackerConfig.trackerLibFile) {
-          g_free(nvtracker->trackerConfig.trackerLibFile);
+        g_free(nvtracker->trackerConfig.trackerLibFile);
       }
-      nvtracker->trackerConfig.trackerLibFile = (char*) g_value_dup_string(value);
+      nvtracker->trackerConfig.trackerLibFile =
+          (char*)g_value_dup_string(value);
       break;
     case PROP_SELECTIVE_TRACKING:
-      nvtracker->trackerConfig.trackingSurfType = g_value_get_uint (value);
+      nvtracker->trackerConfig.trackingSurfType = g_value_get_uint(value);
       if (nvtracker->trackerConfig.trackingSurfType == 0) {
         nvtracker->trackerConfig.trackingSurfTypeFromConfig = false;
       } else {
@@ -556,68 +669,68 @@ gst_nv_tracker_set_property (GObject * object, guint prop_id,
       }
       break;
     case PROP_DISPLAY_TRACK_ID:
-      nvtracker->trackerConfig.displayTrackingId = g_value_get_boolean (value);
+      nvtracker->trackerConfig.displayTrackingId = g_value_get_boolean(value);
       break;
     case PROP_TRACK_ID_RESET_MODE:
-      nvtracker->trackerConfig.trackingIdResetMode = (TrackingIdResetMode) g_value_get_uint (value);
+      nvtracker->trackerConfig.trackingIdResetMode =
+          (TrackingIdResetMode)g_value_get_uint(value);
       break;
     case PROP_INPUT_TENSOR_META:
-      nvtracker->trackerConfig.inputTensorMeta = g_value_get_boolean (value);
+      nvtracker->trackerConfig.inputTensorMeta = g_value_get_boolean(value);
       break;
     case PROP_TENSOR_META_GIE_ID:
-      nvtracker->trackerConfig.tensorMetaGieId = g_value_get_uint (value);
+      nvtracker->trackerConfig.tensorMetaGieId = g_value_get_uint(value);
       break;
     case PROP_USER_META_POOL_SIZE:
-      nvtracker->trackerConfig.maxMiscDataPoolSize = g_value_get_uint (value);
+      nvtracker->trackerConfig.maxMiscDataPoolSize = g_value_get_uint(value);
       break;
-    case PROP_SUB_BATCHES:
-    {
-      std::stringstream str(g_value_get_string(value)? g_value_get_string(value) : "");
-      std::vector<std::vector<int>> &subBatchesConfig = nvtracker->trackerConfig.subBatchesConfig;
-      std::vector<uint32_t> &subBatchSizes = nvtracker->trackerConfig.subBatchSizes;
+    case PROP_SUB_BATCHES: {
+      std::stringstream str(
+          g_value_get_string(value) ? g_value_get_string(value) : "");
+      std::vector<std::vector<int>>& subBatchesConfig =
+          nvtracker->trackerConfig.subBatchesConfig;
+      std::vector<uint32_t>& subBatchSizes =
+          nvtracker->trackerConfig.subBatchSizes;
       // Clear up the sub-batch list first
-      for (auto it = subBatchesConfig.begin(); it != subBatchesConfig.end(); it++)
-      {it->clear();}
+      for (auto it = subBatchesConfig.begin(); it != subBatchesConfig.end();
+           it++) {
+        it->clear();
+      }
       subBatchesConfig.clear();
       // Clear up the sub-batch sizes list as well
       subBatchSizes.clear();
 
-      if (((str.str().find_first_of(';', 0) != std::string::npos) || (str.str().find_first_of(',', 0) != std::string::npos))
-          && (str.str().find_first_of(':', 0) != std::string::npos))
-      {
-        g_print ("%s: Incorrect sub-batches config : sub-batches can be configured by either "
-                "using a \",\" and a \";\" or using  \":\". "
-                "Processing will continue with \"sub-batches\" feature disabled. \n",
-              GST_ELEMENT_NAME (nvtracker));
+      if (((str.str().find_first_of(';', 0) != std::string::npos) ||
+           (str.str().find_first_of(',', 0) != std::string::npos)) &&
+          (str.str().find_first_of(':', 0) != std::string::npos)) {
+        g_print(
+            "%s: Incorrect sub-batches config : sub-batches can be configured by either "
+            "using a \",\" and a \";\" or using  \":\". "
+            "Processing will continue with \"sub-batches\" feature disabled. \n",
+            GST_ELEMENT_NAME(nvtracker));
         return;
       }
 
       if ((str.str().find_first_of(';', 0) != std::string::npos) ||
-          (str.str().find_first_of(',', 0) != std::string::npos))
-      {
+          (str.str().find_first_of(',', 0) != std::string::npos)) {
         // Fill up subBatchesConfig
         std::string stringSourceIds;
         int numSubBatches = 0;
-        while (std::getline(str, stringSourceIds, ';'))
-        {
+        while (std::getline(str, stringSourceIds, ';')) {
           std::stringstream ss(stringSourceIds);
           subBatchesConfig.push_back({});
-          while (ss.peek() != EOF)
-          {
+          while (ss.peek() != EOF) {
             gint sourceID;
             // Make sure that a valid number is specified
             bool isNumber = (ss >> sourceID) ? true : false;
-            if(!isNumber || (sourceID < 0))
-            {
+            if (!isNumber || (sourceID < 0)) {
               SUB_BATCHES_CONFIG_ERROR;
               return;
             }
             subBatchesConfig[numSubBatches].push_back(sourceID);
             if (ss.peek() == ',') {
-                ss.get();
-            }
-            else if (ss.peek() != EOF)
-            {
+              ss.get();
+            } else if (ss.peek() != EOF) {
               SUB_BATCHES_CONFIG_ERROR;
               return;
             }
@@ -626,19 +739,15 @@ gst_nv_tracker_set_property (GObject * object, guint prop_id,
           numSubBatches++;
           nvtracker->trackerConfig.dynamicSubBatching = false;
         }
-      }
-      else
-      {
+      } else {
         std::string subBatchSizeString;
         // Fill up subBatchSizes
-        while (std::getline(str, subBatchSizeString, ':'))
-        {
+        while (std::getline(str, subBatchSizeString, ':')) {
           std::stringstream ss(subBatchSizeString);
           gint subBatchSize;
           // Make sure that a valid number is specified
           bool isNumber = (ss >> subBatchSize) ? true : false;
-          if(!isNumber || subBatchSize < 0)
-          {
+          if (!isNumber || subBatchSize < 0) {
             SUB_BATCHES_CONFIG_ERROR;
             return;
           }
@@ -649,71 +758,71 @@ gst_nv_tracker_set_property (GObject * object, guint prop_id,
       break;
     }
     case PROP_SUB_BATCH_ERR_RECOVERY_TRIAL_CNT:
-      nvtracker->trackerConfig.subBatchErrRecoveryTrialCnt = g_value_get_int (value);
+      nvtracker->trackerConfig.subBatchErrRecoveryTrialCnt =
+          g_value_get_int(value);
       break;
     default:
-      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
   }
 }
 
-  static void
-gst_nv_tracker_get_property (GObject * object, guint prop_id,
-    GValue * value, GParamSpec * pspec)
-{
-  GstNvTracker *nvtracker = GST_NVTRACKER (object);
+static void gst_nv_tracker_get_property(
+    GObject* object,
+    guint prop_id,
+    GValue* value,
+    GParamSpec* pspec) {
+  GstNvTracker* nvtracker = GST_NVTRACKER(object);
   nvtracker = nvtracker;
 
   switch (prop_id) {
     case PROP_TRACKER_WIDTH:
-      g_value_set_uint (value, nvtracker->trackerConfig.trackerWidth);
+      g_value_set_uint(value, nvtracker->trackerConfig.trackerWidth);
       break;
     case PROP_TRACKER_HEIGHT:
-      g_value_set_uint (value, nvtracker->trackerConfig.trackerHeight);
+      g_value_set_uint(value, nvtracker->trackerConfig.trackerHeight);
       break;
     case PROP_GPU_DEVICE_ID:
-      g_value_set_uint (value, nvtracker->trackerConfig.gpuId);
+      g_value_set_uint(value, nvtracker->trackerConfig.gpuId);
       break;
     case PROP_COMPUTE_HW:
-      g_value_set_enum (value, nvtracker->trackerConfig.compute_hw);
+      g_value_set_enum(value, nvtracker->trackerConfig.compute_hw);
       break;
     case PROP_LL_CONFIG_PATH:
-      g_value_set_string (value, nvtracker->trackerConfig.trackerConfigFileList);
+      g_value_set_string(value, nvtracker->trackerConfig.trackerConfigFileList);
       break;
     case PROP_LL_LIB_PATH:
-      g_value_set_string (value, nvtracker->trackerConfig.trackerLibFile);
+      g_value_set_string(value, nvtracker->trackerConfig.trackerLibFile);
       break;
     case PROP_SELECTIVE_TRACKING:
-      g_value_set_uint (value, nvtracker->trackerConfig.trackingSurfType);
+      g_value_set_uint(value, nvtracker->trackerConfig.trackingSurfType);
       break;
     case PROP_DISPLAY_TRACK_ID:
       g_value_set_boolean(value, nvtracker->trackerConfig.displayTrackingId);
       break;
     case PROP_TRACK_ID_RESET_MODE:
-      g_value_set_uint (value, nvtracker->trackerConfig.trackingIdResetMode);
+      g_value_set_uint(value, nvtracker->trackerConfig.trackingIdResetMode);
       break;
     case PROP_INPUT_TENSOR_META:
       g_value_set_boolean(value, nvtracker->trackerConfig.inputTensorMeta);
       break;
     case PROP_TENSOR_META_GIE_ID:
-      g_value_set_uint (value, nvtracker->trackerConfig.tensorMetaGieId);
+      g_value_set_uint(value, nvtracker->trackerConfig.tensorMetaGieId);
       break;
     case PROP_USER_META_POOL_SIZE:
-      g_value_set_uint (value, nvtracker->trackerConfig.maxMiscDataPoolSize);
+      g_value_set_uint(value, nvtracker->trackerConfig.maxMiscDataPoolSize);
       break;
-    case PROP_SUB_BATCHES:
-    {
+    case PROP_SUB_BATCHES: {
       std::stringstream ss;
-      std::vector<std::vector<int>> &subBatchesConfig = nvtracker->trackerConfig.subBatchesConfig;
-      std::vector<uint32_t> &subBatchSizes = nvtracker->trackerConfig.subBatchSizes;
-      if(!nvtracker->trackerConfig.dynamicSubBatching)
-      {
-        for (int32_t it = 0; it < (int32_t)subBatchesConfig.size(); it++)
-        {
+      std::vector<std::vector<int>>& subBatchesConfig =
+          nvtracker->trackerConfig.subBatchesConfig;
+      std::vector<uint32_t>& subBatchSizes =
+          nvtracker->trackerConfig.subBatchSizes;
+      if (!nvtracker->trackerConfig.dynamicSubBatching) {
+        for (int32_t it = 0; it < (int32_t)subBatchesConfig.size(); it++) {
           int i = 0;
-          std::vector<int> &subBatch = subBatchesConfig.at(it);
-          for (i = 0; i < ((int32_t)subBatch.size() - 1); i++)
-          {
+          std::vector<int>& subBatch = subBatchesConfig.at(it);
+          for (i = 0; i < ((int32_t)subBatch.size() - 1); i++) {
             int sourceID = subBatch[i];
             ss << sourceID << ",";
           }
@@ -721,60 +830,56 @@ gst_nv_tracker_get_property (GObject * object, guint prop_id,
             ss << subBatch[i];
           ss << ";";
         }
-      }
-      else
-      {
-        for (int32_t it = 0; it < (int32_t)subBatchSizes.size(); it++)
-        {
+      } else {
+        for (int32_t it = 0; it < (int32_t)subBatchSizes.size(); it++) {
           ss << subBatchSizes[it] << ":";
         }
       }
-      g_value_set_string (value, ss.str().c_str());
+      g_value_set_string(value, ss.str().c_str());
       ss.str().clear();
       break;
     }
     case PROP_SUB_BATCH_ERR_RECOVERY_TRIAL_CNT:
-      g_value_set_int (value, nvtracker->trackerConfig.subBatchErrRecoveryTrialCnt);
+      g_value_set_int(
+          value, nvtracker->trackerConfig.subBatchErrRecoveryTrialCnt);
       break;
     default:
-      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
   }
 }
 
-static GstFlowReturn gst_nv_tracker_submit_input_buffer (GstBaseTransform * trans,
-    gboolean is_discont, GstBuffer * inbuf)
-{
-  GstNvTracker *nvtracker = GST_NVTRACKER (trans);
+static GstFlowReturn gst_nv_tracker_submit_input_buffer(
+    GstBaseTransform* trans,
+    gboolean is_discont,
+    GstBuffer* inbuf) {
+  GstNvTracker* nvtracker = GST_NVTRACKER(trans);
 
   /** NOTE: Initializing state to nullptr is essential. */
-  NvDsBatchMeta *batch_meta = nullptr;
+  NvDsBatchMeta* batch_meta = nullptr;
   GstMapInfo inmap;
 
   batch_meta = gst_buffer_get_nvds_batch_meta(inbuf);
 
-  if (batch_meta->num_frames_in_batch == 0)
-  {
+  if (batch_meta->num_frames_in_batch == 0) {
     g_mutex_lock(&nvtracker->eventLock);
     bool result = nvtracker->trackerIface->flushReqs();
     g_cond_wait(&nvtracker->eventCondition, &nvtracker->eventLock);
     g_mutex_unlock(&nvtracker->eventLock);
-    if (!result)
-    {
+    if (!result) {
       return GST_FLOW_ERROR;
     }
-    return gst_pad_push (GST_BASE_TRANSFORM_SRC_PAD (trans), inbuf);
+    return gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(trans), inbuf);
   }
 
   memset(&inmap, 0, sizeof(inmap));
-  if (!gst_buffer_map (inbuf, &inmap, GST_MAP_READ))
-  {
+  if (!gst_buffer_map(inbuf, &inmap, GST_MAP_READ)) {
     return GST_FLOW_ERROR;
   }
 
   nvds_set_input_system_timestamp(inbuf, GST_ELEMENT_NAME(trans));
 
-  NvBufSurface* inputBuffer  = reinterpret_cast<NvBufSurface*>(inmap.data);
+  NvBufSurface* inputBuffer = reinterpret_cast<NvBufSurface*>(inmap.data);
   gst_buffer_unmap(inbuf, &inmap);
 
   /* Compose the input params and submit for tracker processing
@@ -789,59 +894,67 @@ static GstFlowReturn gst_nv_tracker_submit_input_buffer (GstBaseTransform * tran
   if (((inputBuffer->memType == NVBUF_MEM_DEFAULT ||
         inputBuffer->memType == NVBUF_MEM_CUDA_DEVICE) &&
        ((int)inputBuffer->gpuId != (int)nvtracker->trackerConfig.gpuId)) ||
-       (((int)inputBuffer->gpuId == (int)nvtracker->trackerConfig.gpuId) &&
-        (inputBuffer->memType == NVBUF_MEM_SYSTEM))) {
-    GST_ELEMENT_ERROR (nvtracker, RESOURCE, FAILED,
+      (((int)inputBuffer->gpuId == (int)nvtracker->trackerConfig.gpuId) &&
+       (inputBuffer->memType == NVBUF_MEM_SYSTEM))) {
+    GST_ELEMENT_ERROR(
+        nvtracker,
+        RESOURCE,
+        FAILED,
         ("Memory Compatibility Error:Input surface gpu-id doesnt match with configured gpu-id for element,"
          " please allocate input using unified memory, or use same gpu-ids OR,"
          " if same gpu-ids are used ensure appropriate Cuda memories are used"),
-        ("surface-gpu-id=%d,%s-gpu-id=%d",inputBuffer->gpuId,GST_ELEMENT_NAME(nvtracker),
+        ("surface-gpu-id=%d,%s-gpu-id=%d",
+         inputBuffer->gpuId,
+         GST_ELEMENT_NAME(nvtracker),
          nvtracker->trackerConfig.gpuId));
     return GST_FLOW_ERROR;
   }
 
   /** Check frame number in batch doesn't exceed batch size */
-  if (input.pBatchMeta->num_frames_in_batch > nvtracker->trackerConfig.batchSize)
-  {
-    GST_ELEMENT_ERROR (nvtracker, STREAM, FAILED,
-      ("Frame number in input batch exceeds maximum batch size"),
-      (nullptr));
+  if (input.pBatchMeta->num_frames_in_batch >
+      nvtracker->trackerConfig.batchSize) {
+    GST_ELEMENT_ERROR(
+        nvtracker,
+        STREAM,
+        FAILED,
+        ("Frame number in input batch exceeds maximum batch size"),
+        (nullptr));
     return GST_FLOW_ERROR;
   }
 
-  if (!nvtracker->trackerIface->submitInput(input))
-  {
-    GST_ELEMENT_ERROR (nvtracker, STREAM, FAILED,
-      ("Failed to submit input to tracker"),
-      (nullptr));
+  if (!nvtracker->trackerIface->submitInput(input)) {
+    GST_ELEMENT_ERROR(
+        nvtracker,
+        STREAM,
+        FAILED,
+        ("Failed to submit input to tracker"),
+        (nullptr));
     return GST_FLOW_ERROR;
   }
 
   return GST_FLOW_OK;
 }
 
-static gpointer gst_nv_nvtracker_output_loop (gpointer user_data)
-{
-  GstNvTracker *nvtracker = (GstNvTracker *) user_data;
-  while(nvtracker->running)
-  {
+static gpointer gst_nv_nvtracker_output_loop(gpointer user_data) {
+  GstNvTracker* nvtracker = (GstNvTracker*)user_data;
+  while (nvtracker->running) {
     InputParams inputParams;
-    CompletionStatus status = nvtracker->trackerIface->waitForCompletion(inputParams);
-    if (status == CompletionStatus_OK && nvtracker->running)
-    {
+    CompletionStatus status =
+        nvtracker->trackerIface->waitForCompletion(inputParams);
+    if (status == CompletionStatus_OK && nvtracker->running) {
       /** Check for event marker */
       if (inputParams.eventMarker) {
-          g_mutex_lock(&nvtracker->eventLock);
-          g_cond_signal(&nvtracker->eventCondition);
-          g_mutex_unlock(&nvtracker->eventLock);
-          continue;
+        g_mutex_lock(&nvtracker->eventLock);
+        g_cond_signal(&nvtracker->eventCondition);
+        g_mutex_unlock(&nvtracker->eventLock);
+        continue;
       }
-      GstBuffer *inbuf = (GstBuffer*)inputParams.pPreservedData;
+      GstBuffer* inbuf = (GstBuffer*)inputParams.pPreservedData;
 
       nvds_set_output_system_timestamp(inbuf, GST_ELEMENT_NAME(nvtracker));
 
       /** Push the buffer to peer sink pad */
-      gst_pad_push (GST_BASE_TRANSFORM_SRC_PAD (nvtracker), inbuf);
+      gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(nvtracker), inbuf);
 
     } else if (status == CompletionStatus_Exit) {
       nvtracker->running = false;
@@ -855,14 +968,14 @@ static gpointer gst_nv_nvtracker_output_loop (gpointer user_data)
 /* Mandatory override of generate_output function to match submit_input.
  * The actual output is pushed from gst_nv_nvtracker_output_loop.
  */
-static GstFlowReturn gst_nv_tracker_generate_output (GstBaseTransform * trans, GstBuffer ** outbuf)
-{
+static GstFlowReturn gst_nv_tracker_generate_output(
+    GstBaseTransform* trans,
+    GstBuffer** outbuf) {
   *outbuf = NULL;
   return GST_FLOW_OK;
 }
 
-void gst_nv_tracker_init(GstNvTracker* nvtracker)
-{
+void gst_nv_tracker_init(GstNvTracker* nvtracker) {
   /** Will be initialized from DeepStream app config file. */
   nvtracker->trackerConfig.trackerWidth = DEFAULT_TRACKER_WIDTH;
   nvtracker->trackerConfig.trackerHeight = DEFAULT_TRACKER_HEIGHT;
@@ -871,7 +984,8 @@ void gst_nv_tracker_init(GstNvTracker* nvtracker)
   nvtracker->trackerConfig.trackerConfigFileList = NULL;
 
   nvtracker->trackerConfig.displayTrackingId = true;
-  nvtracker->trackerConfig.trackingIdResetMode = TrackingIdResetMode_NewIdAfterStreamReset;
+  nvtracker->trackerConfig.trackingIdResetMode =
+      TrackingIdResetMode_NewIdAfterStreamReset;
 
   nvtracker->trackerConfig.computeTarget = NVMOTCOMP_ANY;
   nvtracker->trackerConfig.gpuId = DEFAULT_GPU_ID;
@@ -883,9 +997,10 @@ void gst_nv_tracker_init(GstNvTracker* nvtracker)
   nvtracker->trackerConfig.inputTensorMeta = false;
   nvtracker->trackerConfig.tensorMetaGieId = 0;
 
-   nvtracker->trackerConfig.subBatchesConfig = DEFAULT_SUB_BATCHES;
-   nvtracker->trackerConfig.subBatchSizes = DEFAULT_SUB_BATCHES;
-   nvtracker->trackerConfig.subBatchErrRecoveryTrialCnt = DEFAULT_SUB_BATCH_ERR_RECOVERY_TRIALS;
+  nvtracker->trackerConfig.subBatchesConfig = DEFAULT_SUB_BATCHES;
+  nvtracker->trackerConfig.subBatchSizes = DEFAULT_SUB_BATCHES;
+  nvtracker->trackerConfig.subBatchErrRecoveryTrialCnt =
+      DEFAULT_SUB_BATCH_ERR_RECOVERY_TRIALS;
 
   /** Will be initialized from low level tracker library query. */
   nvtracker->trackerConfig.colorFormat = NVBUF_COLOR_FORMAT_BGR;
@@ -925,17 +1040,16 @@ void gst_nv_tracker_init(GstNvTracker* nvtracker)
  * initialize the plug-in itself
  * register the element factories and other features
  */
-static gboolean nvtracker_init (GstPlugin * nvtracker)
-{
+static gboolean nvtracker_init(GstPlugin* nvtracker) {
   /* debug category for fltering log messages
    *
    * exchange the string 'Template nvtracker' with your description
    */
-  GST_DEBUG_CATEGORY_INIT (gst_nv_tracker_debug, "nvtracker",
-      0, "nvtracker plugin");
+  GST_DEBUG_CATEGORY_INIT(
+      gst_nv_tracker_debug, "nvtracker", 0, "nvtracker plugin");
 
-  return gst_element_register (nvtracker, "nvtracker", GST_RANK_PRIMARY,
-      GST_TYPE_NVTRACKER);
+  return gst_element_register(
+      nvtracker, "nvtracker", GST_RANK_PRIMARY, GST_TYPE_NVTRACKER);
 }
 
 /* PACKAGE: this is usually set by autotools depending on some _INIT macro
@@ -951,7 +1065,7 @@ static gboolean nvtracker_init (GstPlugin * nvtracker)
  *
  * exchange the string 'Template nvtracker' with your nvtracker description
  */
-GST_PLUGIN_DEFINE (
+GST_PLUGIN_DEFINE(
     GST_VERSION_MAJOR,
     GST_VERSION_MINOR,
     nvdsgst_tracker,
@@ -960,5 +1074,4 @@ GST_PLUGIN_DEFINE (
     "7.1",
     PACKAGE_LICENSE,
     PACKAGE_NAME,
-    PACKAGE_URL
-    )
+    PACKAGE_URL)

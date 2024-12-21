@@ -1,6 +1,7 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2016-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+ * SPDX-FileCopyrightText: Copyright (c) 2016-2024 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier:
+ * LicenseRef-NvidiaProprietary
  *
  * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
  * property and proprietary rights in and to this material, related
@@ -14,8 +15,8 @@
 #define __GST_NVTRACKER_H__
 
 #include <gst/gst.h>
-#include <gst/video/video.h>
 #include <gst/video/gstvideofilter.h>
+#include <gst/video/video.h>
 #include <sys/time.h>
 
 #include "gstnvdsmeta.h"
@@ -26,17 +27,15 @@ using namespace std;
 G_BEGIN_DECLS
 
 /* #defines don't like whitespacey bits */
-#define GST_TYPE_NVTRACKER \
-  (gst_nv_tracker_get_type())
+#define GST_TYPE_NVTRACKER (gst_nv_tracker_get_type())
 #define GST_NVTRACKER(obj) \
-  (G_TYPE_CHECK_INSTANCE_CAST((obj),GST_TYPE_NVTRACKER,GstNvTracker))
+  (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_NVTRACKER, GstNvTracker))
 #define GST_NVTRACKER_CLASS(klass) \
-  (G_TYPE_CHECK_CLASS_CAST((klass),GST_TYPE_NVTRACKER,GstNvTrackerClass))
+  (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_NVTRACKER, GstNvTrackerClass))
 #define GST_IS_NVTRACKER(obj) \
-  (G_TYPE_CHECK_INSTANCE_TYPE((obj),GST_TYPE_NVTRACKER))
+  (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_NVTRACKER))
 #define GST_IS_NVTRACKER_CLASS(klass) \
-  (G_TYPE_CHECK_CLASS_TYPE((klass),GST_TYPE_NVTRACKER))
-
+  (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_NVTRACKER))
 
 /* Version number of package */
 #define VERSION "2.0.0"
@@ -47,12 +46,11 @@ G_BEGIN_DECLS
 /* Define to the home page for this package. */
 #define PACKAGE_URL "http://nvidia.com/"
 
-typedef struct _GstNvTracker      GstNvTracker;
+typedef struct _GstNvTracker GstNvTracker;
 typedef struct _GstNvTrackerClass GstNvTrackerClass;
 
 /** Basic GStreamer class for tracker. */
-struct _GstNvTracker
-{
+struct _GstNvTracker {
   GstBaseTransform parent_instance;
 
   GstPad *sinkpad, *srcpad;
@@ -60,20 +58,19 @@ struct _GstNvTracker
   /** < private > */
   gboolean running;
   TrackerConfig trackerConfig;
-  INvTrackerProc *trackerIface;
+  INvTrackerProc* trackerIface;
 
   GCond eventCondition;
   GMutex eventLock;
 
-  GThread *output_loop;
+  GThread* output_loop;
 };
 
-struct _GstNvTrackerClass
-{
-    GstBaseTransformClass parent_class;
+struct _GstNvTrackerClass {
+  GstBaseTransformClass parent_class;
 };
 
-GType gst_nv_tracker_get_type (void);
+GType gst_nv_tracker_get_type(void);
 
 G_END_DECLS
 

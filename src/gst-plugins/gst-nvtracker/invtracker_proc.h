@@ -1,6 +1,7 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier:
+ * LicenseRef-NvidiaProprietary
  *
  * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
  * property and proprietary rights in and to this material, related
@@ -19,38 +20,35 @@
 #include <vector>
 
 /** Input data for tracker plugin. */
-struct InputParams
-{
-  NvBufSurface *pSurfaceBatch;
-  NvDsBatchMeta *pBatchMeta;
+struct InputParams {
+  NvBufSurface* pSurfaceBatch;
+  NvDsBatchMeta* pBatchMeta;
   void* pPreservedData;
   bool eventMarker;
 };
 
 /** Tracker process completion status. */
-enum CompletionStatus
-{
+enum CompletionStatus {
   CompletionStatus_OK,
   CompletionStatus_Error,
   CompletionStatus_Exit
 };
 
 /** Bitwise flags for tracker id reset. */
-enum TrackingIdResetMode
-{
+enum TrackingIdResetMode {
   /** No id reset. */
   TrackingIdResetMode_Default = 0,
   /** Terminate existing objects and assign new ids after stream reset. */
   TrackingIdResetMode_NewIdAfterStreamReset = 1 << 0,
   /** Id starts from 0 after stream reaching EOS. */
   TrackingIdResetMode_FromZeroAfterEOS = 1 << 1,
-  /** Max value of the enum. Supporting both NewIdAfterStreamReset and FromZeroAfterEOS. */
+  /** Max value of the enum. Supporting both NewIdAfterStreamReset and
+     FromZeroAfterEOS. */
   TrackingIdResetMode_MaxValue = 3
 };
 
 /** Tracker plugin config params. */
-struct TrackerConfig
-{
+struct TrackerConfig {
   /** From DeepStream app config file. */
   uint32_t batchSize;
   uint32_t trackerWidth;
@@ -74,8 +72,10 @@ struct TrackerConfig
   /** vector < sub-batch ids : vector <source ids in each sub-batch > >*/
   std::vector<std::vector<int>> subBatchesConfig = {};
   std::vector<uint32_t> subBatchSizes = {};
-  /** dynamicSubBatching will be set to "true" when user specifies sub-batch sizes and */
-  /** i.e. the actual mapping from source id (pad index) to sub-batch happens dynamically (run-time)*/
+  /** dynamicSubBatching will be set to "true" when user specifies sub-batch
+   * sizes and */
+  /** i.e. the actual mapping from source id (pad index) to sub-batch happens
+   * dynamically (run-time)*/
   bool dynamicSubBatching = false;
   int subBatchErrRecoveryTrialCnt;
 
@@ -105,10 +105,9 @@ struct TrackerConfig
 };
 
 /** Virtual base class for tracker plugin processing. */
-class INvTrackerProc
-{
-public:
-  virtual ~INvTrackerProc() {};
+class INvTrackerProc {
+ public:
+  virtual ~INvTrackerProc(){};
 
   virtual bool init(const TrackerConfig& config) = 0;
   virtual void deInit() = 0;
@@ -116,7 +115,9 @@ public:
   /** Tracker actions when a source is added to the pipeline. */
   virtual bool addSource(uint32_t sourceId) = 0;
   /** Tracker actions when a source is removed to the pipeline. */
-  virtual bool removeSource(uint32_t sourceId, bool removeObjectIdMapping=true) = 0;
+  virtual bool removeSource(
+      uint32_t sourceId,
+      bool removeObjectIdMapping = true) = 0;
   /** Tracker actions when a source is reset. */
   virtual bool resetSource(uint32_t sourceId) = 0;
   /** Submit an input batch to tracker process queue. */
