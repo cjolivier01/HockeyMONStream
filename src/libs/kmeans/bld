@@ -1,0 +1,1 @@
+nvcc kmeans_cuda.cu -o kmeans_cuda
