@@ -129,7 +129,7 @@ cv::Mat load_mask_from_file(const std::string& filePath) {
 }
 
 void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsExampleCtx* ctx) {
-  if (!frame_meta->obj_meta_list) {
+  if (!frame_meta->obj_meta_list || !frame_meta->bInferDone) {
     return;
   }
   const float mask_height = ctx->detection_u8_mask.rows;
@@ -138,30 +138,29 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsExampleCtx* ctx) {
   assert(guint(mask_width) == frame_meta->source_frame_width);
   assert(guint(mask_height) == frame_meta->source_frame_height);
 
-  // const float scale_width = float(mask_height) / frame_meta->source_frame_width;
-  // const float scale_height = float(mask_width) / frame_meta->source_frame_height;
-
-  const float scale_width = float(mask_height) / frame_meta->pipeline_height;
-  const float scale_height = float(mask_width) / frame_meta->pipeline_width;
+  const float scale_height = float(mask_height) / frame_meta->pipeline_height;
+  const float scale_width = float(mask_width) / frame_meta->pipeline_width;
 
   NvDsMetaList* l_next = nullptr;
-  float max_bottom_y = 0;
-  float max_x = 0;
+  static float max_y = 0;
+  static float max_x = 0;
   for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_next) {
     l_next = l_obj->next;
     NvDsMetaList* remove_me{nullptr};
     NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
     const NvDsComp_BboxInfo& detector_bbox_info = obj_meta->detector_bbox_info;
-    float half_width = detector_bbox_info.org_bbox_coords.width / 2;
-    float center_x = detector_bbox_info.org_bbox_coords.left + half_width;
-    float half_height = detector_bbox_info.org_bbox_coords.height / 2;
+    const float half_width = detector_bbox_info.org_bbox_coords.width / 2;
+    const float center_x = detector_bbox_info.org_bbox_coords.left + half_width;
+    const float half_height = detector_bbox_info.org_bbox_coords.height / 2;
 
     max_x = std::max(max_x, detector_bbox_info.org_bbox_coords.left + detector_bbox_info.org_bbox_coords.width);
+    max_y = std::max(max_y, detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height);
 
-    int raise_center_height_amount =
+    const int raise_center_height_amount =
         float(detector_bbox_info.org_bbox_coords.height) * raise_bbox_center_by_height_ratio;
-    int lower_bottom_height_amount =
+    const int lower_bottom_height_amount =
         float(detector_bbox_info.org_bbox_coords.height) * lower_bbox_bottom_by_height_ratio;
+
     cv::Point2f ptCenter = cv::Point2f(
         center_x,
         detector_bbox_info.org_bbox_coords.top + half_height - raise_center_height_amount);
@@ -170,7 +169,6 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsExampleCtx* ctx) {
         detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height +
             lower_bottom_height_amount);
 
-    max_bottom_y = std::max(max_bottom_y, ptBottom.y);
 
     ptBottom.x *= scale_width;
     ptBottom.y *= scale_height;
