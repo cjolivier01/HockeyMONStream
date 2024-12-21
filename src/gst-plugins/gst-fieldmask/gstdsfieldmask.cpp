@@ -15,13 +15,9 @@
 #include <string.h>
 #include <sys/time.h>
 #include <cassert>
-#include <fstream>
-#include <iostream>
-#include <ostream>
-#include <sstream>
 #include <string>
-#include <vector>
 
+namespace {
 GST_DEBUG_CATEGORY_STATIC(gst_dsfieldmask_debug);
 #define GST_CAT_DEFAULT gst_dsfieldmask_debug
 #define USE_EGLIMAGE 1
@@ -111,7 +107,7 @@ static GstStaticPadTemplate gst_dsfieldmask_src_template = GST_STATIC_PAD_TEMPLA
 
 /* Define our element type. Standard GObject/GStreamer boilerplate stuff */
 #define gst_dsfieldmask_parent_class parent_class
-G_DEFINE_TYPE(GstDsExample, gst_dsfieldmask, GST_TYPE_BASE_TRANSFORM);
+G_DEFINE_TYPE(GstDsFieldMask, gst_dsfieldmask, GST_TYPE_BASE_TRANSFORM);
 
 static void gst_dsfieldmask_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec);
 static void gst_dsfieldmask_get_property(GObject* object, guint prop_id, GValue* value, GParamSpec* pspec);
@@ -121,14 +117,6 @@ static gboolean gst_dsfieldmask_start(GstBaseTransform* btrans);
 static gboolean gst_dsfieldmask_stop(GstBaseTransform* btrans);
 
 static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstBuffer* inbuf);
-
-static void attach_metadata_full_frame(
-    GstDsExample* dsfieldmask,
-    NvDsFrameMeta* frame_meta,
-    gdouble scale_ratio,
-    DsExampleOutput* output,
-    guint batch_id);
-static void attach_metadata_object(GstDsExample* dsfieldmask, NvDsObjectMeta* obj_meta, DsExampleOutput* output);
 
 namespace {
 struct InputParams {
@@ -144,7 +132,7 @@ static GstFlowReturn gst_ds_example_submit_input_buffer(
     GstBaseTransform* trans,
     gboolean is_discont,
     GstBuffer* inbuf) {
-  GstDsExample* dsfieldmask = (GstDsExample*)trans;
+  GstDsFieldMask* dsfieldmask = (GstDsFieldMask*)trans;
   (void)dsfieldmask;
 
   /** NOTE: Initializing state to nullptr is essential. */
@@ -278,7 +266,7 @@ static GstFlowReturn gst_ds_example_generate_output(
  * functions of the base class, These are common to all instances of the
  * element.
  */
-static void gst_dsfieldmask_class_init(GstDsExampleClass* klass) {
+static void gst_dsfieldmask_class_init(GstDsFieldMaskClass* klass) {
   GObjectClass* gobject_class;
   GstElementClass* gstelement_class;
   GstBaseTransformClass* gstbasetransform_class;
@@ -410,14 +398,14 @@ static void gst_dsfieldmask_class_init(GstDsExampleClass* klass) {
   /* Set metadata describing the element */
   gst_element_class_set_details_simple(
       gstelement_class,
-      "DsExample plugin",
-      "DsExample Plugin",
+      "DsFieldMask plugin",
+      "DsFieldMask Plugin",
       "Process a 3rdparty example algorithm on objects / full frame",
       "NVIDIA Corporation. Post on Deepstream for Tesla forum for any queries "
       "@ https://devtalk.nvidia.com/default/board/209/");
 }
 
-static void gst_dsfieldmask_init(GstDsExample* dsfieldmask) {
+static void gst_dsfieldmask_init(GstDsFieldMask* dsfieldmask) {
   // std::cerr << "element ASSERTING" << std::endl;
   // assert(false);
   GstBaseTransform* btrans = GST_BASE_TRANSFORM(dsfieldmask);
@@ -447,7 +435,7 @@ static void gst_dsfieldmask_init(GstDsExample* dsfieldmask) {
 /* Function called when a property of the element is set. Standard boilerplate.
  */
 static void gst_dsfieldmask_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
-  GstDsExample* dsfieldmask = GST_DSEXAMPLE(object);
+  GstDsFieldMask* dsfieldmask = GST_DSEXAMPLE(object);
   switch (prop_id) {
     case PROP_UNIQUE_ID:
       dsfieldmask->unique_id = g_value_get_uint(value);
@@ -483,7 +471,7 @@ static void gst_dsfieldmask_set_property(GObject* object, guint prop_id, const G
  * boilerplate.
  */
 static void gst_dsfieldmask_get_property(GObject* object, guint prop_id, GValue* value, GParamSpec* pspec) {
-  GstDsExample* dsfieldmask = GST_DSEXAMPLE(object);
+  GstDsFieldMask* dsfieldmask = GST_DSEXAMPLE(object);
 
   switch (prop_id) {
     case PROP_UNIQUE_ID:
@@ -520,10 +508,10 @@ static void gst_dsfieldmask_get_property(GObject* object, guint prop_id, GValue*
  * Initialize all resources and start the output thread
  */
 static gboolean gst_dsfieldmask_start(GstBaseTransform* btrans) {
-  GstDsExample* dsfieldmask = GST_DSEXAMPLE(btrans);
+  GstDsFieldMask* dsfieldmask = GST_DSEXAMPLE(btrans);
   NvBufSurfaceCreateParams create_params = {0};
 
-  DsExampleInitParams init_params = {
+  DsFieldMaskInitParams init_params = {
       .processingWidth=dsfieldmask->processing_width,
       .processingHeight=dsfieldmask->processing_height,
       .fullFrame=dsfieldmask->process_full_frame,
@@ -532,7 +520,7 @@ static gboolean gst_dsfieldmask_start(GstBaseTransform* btrans) {
   int val = -1;
 
   /* Algorithm specific initializations and resource allocation. */
-  dsfieldmask->dsfieldmasklib_ctx = DsExampleCtxInit(&init_params);
+  dsfieldmask->dsfieldmasklib_ctx = DsFieldMaskCtxInit(&init_params);
 
   GST_DEBUG_OBJECT(dsfieldmask, "ctx lib %p \n", dsfieldmask->dsfieldmasklib_ctx);
 
@@ -628,7 +616,7 @@ error:
     dsfieldmask->cuda_stream = NULL;
   }
   if (dsfieldmask->dsfieldmasklib_ctx)
-    DsExampleCtxDeinit(dsfieldmask->dsfieldmasklib_ctx);
+    DsFieldMaskCtxDeinit(dsfieldmask->dsfieldmasklib_ctx);
   return FALSE;
 }
 
@@ -636,7 +624,7 @@ error:
  * Stop the output thread and free up all the resources
  */
 static gboolean gst_dsfieldmask_stop(GstBaseTransform* btrans) {
-  GstDsExample* dsfieldmask = GST_DSEXAMPLE(btrans);
+  GstDsFieldMask* dsfieldmask = GST_DSEXAMPLE(btrans);
 
   if (dsfieldmask->inter_buf)
     NvBufSurfaceDestroy(dsfieldmask->inter_buf);
@@ -659,7 +647,7 @@ static gboolean gst_dsfieldmask_stop(GstBaseTransform* btrans) {
   GST_DEBUG_OBJECT(dsfieldmask, "deleted CV Mat \n");
 
   /* Deinit the algorithm library */
-  DsExampleCtxDeinit(dsfieldmask->dsfieldmasklib_ctx);
+  DsFieldMaskCtxDeinit(dsfieldmask->dsfieldmasklib_ctx);
   dsfieldmask->dsfieldmasklib_ctx = NULL;
 
   GST_DEBUG_OBJECT(dsfieldmask, "ctx lib released \n");
@@ -671,7 +659,7 @@ static gboolean gst_dsfieldmask_stop(GstBaseTransform* btrans) {
  * Called when source / sink pad capabilities have been negotiated.
  */
 static gboolean gst_dsfieldmask_set_caps(GstBaseTransform* btrans, GstCaps* incaps, GstCaps* outcaps) {
-  GstDsExample* dsfieldmask = GST_DSEXAMPLE(btrans);
+  GstDsFieldMask* dsfieldmask = GST_DSEXAMPLE(btrans);
   /* Save the input video information, since this will be required later. */
   gst_video_info_from_caps(&dsfieldmask->video_info, incaps);
 
@@ -698,7 +686,7 @@ error:
  * padded data and/or can work with RGBA.
  */
 static GstFlowReturn get_converted_mat(
-    GstDsExample* dsfieldmask,
+    GstDsFieldMask* dsfieldmask,
     NvBufSurface* input_buf,
     gint idx,
     NvOSD_RectParams* crop_rect_params,
@@ -846,42 +834,15 @@ error:
   return GST_FLOW_ERROR;
 }
 
-#ifdef WITH_OPENCV
-/*
- * Blur the detected objects when processing in object mode (full-frame=0)
- */
-static GstFlowReturn blur_objects(
-    GstDsExample* dsfieldmask,
-    gint idx,
-    NvOSD_RectParams* crop_rect_params,
-    cv::Mat in_mat) {
-  cv::Rect crop_rect;
-
-  if ((crop_rect_params->width == 0) || (crop_rect_params->height == 0)) {
-    GST_ELEMENT_ERROR(dsfieldmask, STREAM, FAILED, ("%s:crop_rect_params dimensions are zero", __func__), (NULL));
-    return GST_FLOW_ERROR;
-  }
-
-  /* rectangle for cropped objects */
-  crop_rect =
-      cv::Rect(crop_rect_params->left, crop_rect_params->top, crop_rect_params->width, crop_rect_params->height);
-
-  /* apply gaussian blur to the detected objects */
-  GaussianBlur(in_mat(crop_rect), in_mat(crop_rect), cv::Size(15, 15), 4);
-
-  return GST_FLOW_OK;
-}
-#endif
-
 /**
  * Called when element recieves an input buffer from upstream element.
  */
 static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstBuffer* inbuf) {
-  GstDsExample* dsfieldmask = GST_DSEXAMPLE(btrans);
+  GstDsFieldMask* dsfieldmask = GST_DSEXAMPLE(btrans);
   GstMapInfo in_map_info;
   GstFlowReturn flow_ret = GST_FLOW_ERROR;
   gdouble scale_ratio = 1.0;
-  DsExampleOutput* output{nullptr};
+  DsFieldMaskOutput* output{nullptr};
 
   NvBufSurface* surface = NULL;
   NvDsBatchMeta* batch_meta = NULL;
@@ -936,14 +897,12 @@ static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstB
 
       /* Process to get the output */
 #ifdef WITH_OPENCV
-      output = DsExampleProcess(frame_meta, dsfieldmask->dsfieldmasklib_ctx, dsfieldmask->cvmat->data);
+      output = DsFieldMaskProcess(frame_meta, dsfieldmask->dsfieldmasklib_ctx, dsfieldmask->cvmat->data);
 #else
-      output = DsExampleProcess(
+      output = DsFieldMaskProcess(
           dsfieldmask->dsfieldmasklib_ctx,
           (unsigned char*)dsfieldmask->inter_buf->surfaceList[0].mappedAddr.addr[0]);
 #endif
-      /* Attach the metadata for the full frame */
-      attach_metadata_full_frame(dsfieldmask, frame_meta, scale_ratio, output, i);
       i++;
       free(output);
     }
@@ -996,7 +955,7 @@ static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstB
       }
 #endif
 
-      DsExampleProcessFrame(frame_meta, dsfieldmask->dsfieldmasklib_ctx);
+      DsFieldMaskProcessFrame(frame_meta, dsfieldmask->dsfieldmasklib_ctx);
 #if 0
       for (l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
         obj_meta = (NvDsObjectMeta*)(l_obj->data);
@@ -1066,10 +1025,10 @@ static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstB
 
 #ifdef WITH_OPENCV
         /* Process the object crop to obtain label */
-        output = DsExampleProcess(dsfieldmask->dsfieldmasklib_ctx, dsfieldmask->cvmat->data);
+        output = DsFieldMaskProcess(dsfieldmask->dsfieldmasklib_ctx, dsfieldmask->cvmat->data);
 #else
         /* Process the object crop to obtain label */
-        output = DsExampleProcess(
+        output = DsFieldMaskProcess(
             dsfieldmask->dsfieldmasklib_ctx,
             (unsigned char*)dsfieldmask->inter_buf->surfaceList[0].mappedAddr.addr[0]);
 #endif
@@ -1114,129 +1073,13 @@ error:
 }
 
 /**
- * Attach metadata for the full frame. We will be adding a new metadata.
- */
-static void attach_metadata_full_frame(
-    GstDsExample* dsfieldmask,
-    NvDsFrameMeta* frame_meta,
-    gdouble scale_ratio,
-    DsExampleOutput* output,
-    guint batch_id) {
-  NvDsBatchMeta* batch_meta = frame_meta->base_meta.batch_meta;
-  NvDsObjectMeta* object_meta = NULL;
-  static gchar font_name[] = "Serif";
-  GST_DEBUG_OBJECT(dsfieldmask, "Attaching metadata %d\n", output->numObjects);
-
-  for (gint i = 0; i < output->numObjects; i++) {
-    DsExampleObject* obj = &output->object[i];
-    object_meta = nvds_acquire_obj_meta_from_pool(batch_meta);
-    NvOSD_RectParams& rect_params = object_meta->rect_params;
-    NvOSD_TextParams& text_params = object_meta->text_params;
-
-    /* Assign bounding box coordinates */
-    rect_params.left = obj->left;
-    rect_params.top = obj->top;
-    rect_params.width = obj->width;
-    rect_params.height = obj->height;
-
-    /* Semi-transparent yellow background */
-    rect_params.has_bg_color = 0;
-    rect_params.bg_color = (NvOSD_ColorParams){1, 1, 0, 0.4};
-    /* Red border of width 6 */
-    rect_params.border_width = 3;
-    rect_params.border_color = (NvOSD_ColorParams){1, 0, 0, 1};
-
-    /* Scale the bounding boxes proportionally based on how the object/frame was
-     * scaled during input */
-    rect_params.left /= scale_ratio;
-    rect_params.top /= scale_ratio;
-    rect_params.width /= scale_ratio;
-    rect_params.height /= scale_ratio;
-    GST_DEBUG_OBJECT(
-        dsfieldmask,
-        "Attaching rect%d of batch%u"
-        "  left->%f top->%f width->%f"
-        " height->%f label->%s\n",
-        i,
-        batch_id,
-        rect_params.left,
-        rect_params.top,
-        rect_params.width,
-        rect_params.height,
-        obj->label);
-
-    object_meta->object_id = UNTRACKED_OBJECT_ID;
-    g_strlcpy(object_meta->obj_label, obj->label, MAX_LABEL_SIZE);
-    /* display_text required heap allocated memory */
-    text_params.display_text = g_strdup(obj->label);
-    /* Display text above the left top corner of the object */
-    text_params.x_offset = rect_params.left;
-    text_params.y_offset = rect_params.top - 10;
-    /* Set black background for the text */
-    text_params.set_bg_clr = 1;
-    text_params.text_bg_clr = (NvOSD_ColorParams){0, 0, 0, 1};
-    /* Font face, size and color */
-    text_params.font_params.font_name = font_name;
-    text_params.font_params.font_size = 11;
-    text_params.font_params.font_color = (NvOSD_ColorParams){1, 1, 1, 1};
-
-    nvds_add_obj_meta_to_frame(frame_meta, object_meta, NULL);
-    frame_meta->bInferDone = TRUE;
-  }
-}
-
-/**
- * Only update string label in an existing object metadata. No bounding boxes.
- * We assume only one label per object is generated
- */
-static void attach_metadata_object(GstDsExample* dsfieldmask, NvDsObjectMeta* obj_meta, DsExampleOutput* output) {
-  if (output->numObjects == 0)
-    return;
-  NvDsBatchMeta* batch_meta = obj_meta->base_meta.batch_meta;
-
-  NvDsClassifierMeta* classifier_meta = nvds_acquire_classifier_meta_from_pool(batch_meta);
-
-  classifier_meta->unique_component_id = dsfieldmask->unique_id;
-
-  NvDsLabelInfo* label_info = nvds_acquire_label_info_meta_from_pool(batch_meta);
-  g_strlcpy(label_info->result_label, output->object[0].label, MAX_LABEL_SIZE);
-  nvds_add_label_info_meta_to_classifier(classifier_meta, label_info);
-  nvds_add_classifier_meta_to_object(obj_meta, classifier_meta);
-
-  nvds_acquire_meta_lock(batch_meta);
-  NvOSD_TextParams& text_params = obj_meta->text_params;
-  NvOSD_RectParams& rect_params = obj_meta->rect_params;
-
-  /* Below code to display the result */
-  /* Set black background for the text
-   * display_text required heap allocated memory */
-  if (text_params.display_text) {
-    gchar* conc_string = g_strconcat(text_params.display_text, " ", output->object[0].label, NULL);
-    g_free(text_params.display_text);
-    text_params.display_text = conc_string;
-  } else {
-    /* Display text above the left top corner of the object */
-    text_params.x_offset = rect_params.left;
-    text_params.y_offset = rect_params.top - 10;
-    text_params.display_text = g_strdup(output->object[0].label);
-    /* Font face, size and color */
-    text_params.font_params.font_name = (char*)"Serif";
-    text_params.font_params.font_size = 11;
-    text_params.font_params.font_color = (NvOSD_ColorParams){1, 1, 1, 1};
-    /* Set black background for the text */
-    text_params.set_bg_clr = 1;
-    text_params.text_bg_clr = (NvOSD_ColorParams){0, 0, 0, 1};
-  }
-  nvds_release_meta_lock(batch_meta);
-}
-
-/**
  * Boiler plate for registering a plugin and an element.
  */
 static gboolean dsfieldmask_plugin_init(GstPlugin* plugin) {
   GST_DEBUG_CATEGORY_INIT(gst_dsfieldmask_debug, "dsfieldmask", 0, "dsfieldmask plugin");
 
   return gst_element_register(plugin, "dsfieldmask", GST_RANK_PRIMARY, GST_TYPE_DSEXAMPLE);
+}
 }
 
 GST_PLUGIN_DEFINE(

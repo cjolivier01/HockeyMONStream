@@ -25,8 +25,6 @@ gst_cc_plugin(
         "dsfieldmask_lib.h",
         "gstdsfieldmask.cpp",
         "gstdsfieldmask.h",
-        "utils.cpp",
-        "utils.h",
     ],
     # hdrs = [
     #   "gstdsfieldmask.h", "dsfieldmask_lib.h",

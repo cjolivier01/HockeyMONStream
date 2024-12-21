@@ -12,7 +12,6 @@
  */
 
 #include "dsfieldmask_lib.h"
-#include "utils.h"
 
 #include <opencv2/opencv.hpp>
 
@@ -23,8 +22,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-struct DsExampleCtx {
-  DsExampleInitParams initParams;
+struct DsFieldMaskCtx {
+  DsFieldMaskInitParams initParams;
   cv::Mat detection_bit_mask;
   cv::Mat detection_u8_mask;
   cv::Point2f detection_mask_centroid;
@@ -128,7 +127,7 @@ cv::Mat load_mask_from_file(const std::string& filePath) {
   return mask;
 }
 
-void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsExampleCtx* ctx) {
+void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx) {
   if (!frame_meta->obj_meta_list || !frame_meta->bInferDone) {
     return;
   }
@@ -206,8 +205,8 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsExampleCtx* ctx) {
 }
 } // namespace
 
-DsExampleCtx* DsExampleCtxInit(DsExampleInitParams* initParams) {
-  DsExampleCtx* ctx = new DsExampleCtx();
+DsFieldMaskCtx* DsFieldMaskCtxInit(DsFieldMaskInitParams* initParams) {
+  DsFieldMaskCtx* ctx = new DsFieldMaskCtx();
   ctx->initParams = *initParams;
   if (!ctx->initParams.detection_mask_file.empty()) {
     // extra memeory used here, try to settle on but mask
@@ -221,7 +220,7 @@ DsExampleCtx* DsExampleCtxInit(DsExampleInitParams* initParams) {
   return ctx;
 }
 
-void DsExampleProcessFrame(NvDsFrameMeta* frame_meta, DsExampleCtx* ctx) {
+void DsFieldMaskProcessFrame(NvDsFrameMeta* frame_meta, DsFieldMaskCtx* ctx) {
   if (ctx->initParams.detection_mask_file.empty()) {
     return;
   }
@@ -230,8 +229,8 @@ void DsExampleProcessFrame(NvDsFrameMeta* frame_meta, DsExampleCtx* ctx) {
 
 // In case of an actual processing library, processing on data wil be completed
 // in this function and output will be returned
-DsExampleOutput* DsExampleProcess(DsExampleCtx* ctx, unsigned char* data) {
-  DsExampleOutput* out = (DsExampleOutput*)calloc(1, sizeof(DsExampleOutput));
+DsFieldMaskOutput* DsFieldMaskProcess(DsFieldMaskCtx* ctx, unsigned char* data) {
+  DsFieldMaskOutput* out = (DsFieldMaskOutput*)calloc(1, sizeof(DsFieldMaskOutput));
 
   if (data != NULL) {
     // Process your data here
@@ -240,14 +239,14 @@ DsExampleOutput* DsExampleProcess(DsExampleCtx* ctx, unsigned char* data) {
   // Here, we fake some detected objects and labels
   if (ctx->initParams.fullFrame) {
     out->numObjects = 2;
-    out->object[0] = (DsExampleObject){
+    out->object[0] = (DsFieldMaskObject){
         (float)(ctx->initParams.processingWidth) / 8,
         (float)(ctx->initParams.processingHeight) / 8,
         (float)(ctx->initParams.processingWidth) / 8,
         (float)(ctx->initParams.processingHeight) / 8,
         "Obj0"};
 
-    out->object[1] = (DsExampleObject){
+    out->object[1] = (DsFieldMaskObject){
         (float)(ctx->initParams.processingWidth) / 2,
         (float)(ctx->initParams.processingHeight) / 2,
         (float)(ctx->initParams.processingWidth) / 8,
@@ -255,7 +254,7 @@ DsExampleOutput* DsExampleProcess(DsExampleCtx* ctx, unsigned char* data) {
         "Obj1"};
   } else {
     out->numObjects = 1;
-    out->object[0] = (DsExampleObject){
+    out->object[0] = (DsFieldMaskObject){
         (float)(ctx->initParams.processingWidth) / 8,
         (float)(ctx->initParams.processingHeight) / 8,
         (float)(ctx->initParams.processingWidth) / 8,
@@ -268,7 +267,7 @@ DsExampleOutput* DsExampleProcess(DsExampleCtx* ctx, unsigned char* data) {
   return out;
 }
 
-void DsExampleCtxDeinit(DsExampleCtx* ctx) {
+void DsFieldMaskCtxDeinit(DsFieldMaskCtx* ctx) {
   if (ctx) {
     delete ctx;
   }

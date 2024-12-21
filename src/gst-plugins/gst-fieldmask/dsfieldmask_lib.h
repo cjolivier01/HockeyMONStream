@@ -6,7 +6,7 @@
 
 #define MAX_LABEL_SIZE 128
 
-typedef struct DsExampleCtx DsExampleCtx;
+typedef struct DsFieldMaskCtx DsFieldMaskCtx;
 
 // Init parameters structure as input, required for instantiating dsfieldmask_lib
 typedef struct {
@@ -17,7 +17,7 @@ typedef struct {
   // Flag to indicate whether operating on crops of full frame
   int fullFrame;
   std::string detection_mask_file;
-} DsExampleInitParams;
+} DsFieldMaskInitParams;
 
 // Detected/Labelled object structure, stores bounding box info along with label
 typedef struct {
@@ -26,22 +26,22 @@ typedef struct {
   float width;
   float height;
   char label[MAX_LABEL_SIZE];
-} DsExampleObject;
+} DsFieldMaskObject;
 
 // Output data returned after processing
 typedef struct {
   int numObjects;
-  DsExampleObject object[4];
-} DsExampleOutput;
+  DsFieldMaskObject object[4];
+} DsFieldMaskOutput;
 
 // Initialize library context
-DsExampleCtx* DsExampleCtxInit(DsExampleInitParams* init_params);
+DsFieldMaskCtx* DsFieldMaskCtxInit(DsFieldMaskInitParams* init_params);
 
-void DsExampleProcessFrame(NvDsFrameMeta* frame_meta, DsExampleCtx* ctx);
+void DsFieldMaskProcessFrame(NvDsFrameMeta* frame_meta, DsFieldMaskCtx* ctx);
 
 // Dequeue processed output
-DsExampleOutput* DsExampleProcess(DsExampleCtx* ctx, unsigned char* data);
+DsFieldMaskOutput* DsFieldMaskProcess(DsFieldMaskCtx* ctx, unsigned char* data);
 
 // Deinitialize library context
-void DsExampleCtxDeinit(DsExampleCtx* ctx);
+void DsFieldMaskCtxDeinit(DsFieldMaskCtx* ctx);
 
