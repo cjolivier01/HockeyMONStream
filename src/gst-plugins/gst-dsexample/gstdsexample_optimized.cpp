@@ -34,6 +34,7 @@
 #include <string>
 
 #include "gstdsexample_optimized.h"
+#include "utils.h"
 
 #include <sys/time.h>
 #include <condition_variable>
@@ -378,7 +379,14 @@ static void gst_dsexample_set_property(
       dsexample->max_batch_size = g_value_get_uint(value);
       break;
     case PROP_DETECTION_MASK_FILE:
-      dsexample->detection_mask_file = g_value_get_string(value);
+    {
+      const char *str = g_value_get_string(value);
+      if (str && *str) {
+          strncpy(dsexample->detection_mask_file, str, STRSIZE(dsexample->detection_mask_file) - 1);
+      } else {
+        dsexample->detection_mask_file[0] = '\0';
+      }
+    }
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
@@ -416,7 +424,7 @@ static void gst_dsexample_get_property(
       g_value_set_uint(value, dsexample->max_batch_size);
       break;
     case PROP_DETECTION_MASK_FILE:
-      g_value_set_string(value, dsexample->detection_mask_file.c_str());
+      g_value_set_string(value, dsexample->detection_mask_file);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);

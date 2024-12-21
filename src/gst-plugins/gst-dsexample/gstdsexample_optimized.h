@@ -127,7 +127,7 @@ struct _GstDsExample {
   /** GPU ID on which we expect to execute the task */
   guint gpu_id;
 
-  std::string detection_mask_file;
+  char detection_mask_file[PATH_MAX*4];
 
   /** Boolean indicating if entire frame or cropped objects should be processed
    */

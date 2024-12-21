@@ -40,4 +40,6 @@ class GPrintOStream : public std::ostream {
 };
 extern GPrintOStream gout;
 
+#define STRSIZE(str$) (sizeof(str$)/sizeof(str$[0]))
+
 } // namespace hm

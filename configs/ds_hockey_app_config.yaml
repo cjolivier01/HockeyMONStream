@@ -138,7 +138,7 @@ ds-example:
   gpu-id: 0
   batch-size: 4
   blur-objects: 0
-  full-frame: 0
+  full-frame: 1
   processing-width: 1312
   processing-height: 480
   # detection-mask: /home/colivier/Videos/ev-reno-1/rink_mask_0.png
