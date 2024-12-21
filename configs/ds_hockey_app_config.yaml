@@ -147,7 +147,7 @@ ds-example:
   #config-file: config_infer_primary_yolox.yaml
 
 tracker:
-  enable: 0
+  enable: 1
   # For NvDCF and NvDeepSORT tracker, tracker-width and tracker-height must be a multiple of 32, respectively
   tracker-width: 960
   tracker-height: 544

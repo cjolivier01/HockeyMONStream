@@ -1532,6 +1532,24 @@ static gboolean create_common_elements(
     *sink_elem = pipeline->common_elements.dsanalytics_bin.bin;
   }
 
+  if (config->tracker_config.enable) {
+    if (!create_tracking_bin(
+            &config->tracker_config, &pipeline->common_elements.tracker_bin)) {
+      g_print("creating tracker bin failed\n");
+      goto done;
+    }
+    gst_bin_add(
+        GST_BIN(pipeline->pipeline), pipeline->common_elements.tracker_bin.bin);
+    if (!*src_elem) {
+      *src_elem = pipeline->common_elements.tracker_bin.bin;
+    }
+    if (*sink_elem) {
+      NVGSTDS_LINK_ELEMENT(
+          pipeline->common_elements.tracker_bin.bin, *sink_elem);
+    }
+    *sink_elem = pipeline->common_elements.tracker_bin.bin;
+  }
+
   if (config->dsexample_config.enable) {
     // Create dsexample element bin and set properties
     if (!create_dsexample_bin(
@@ -1550,24 +1568,6 @@ static gboolean create_common_elements(
 
     // Set this bin as the last element
     *sink_elem = pipeline->dsexample_bin.bin;
-  }
-
-  if (config->tracker_config.enable) {
-    if (!create_tracking_bin(
-            &config->tracker_config, &pipeline->common_elements.tracker_bin)) {
-      g_print("creating tracker bin failed\n");
-      goto done;
-    }
-    gst_bin_add(
-        GST_BIN(pipeline->pipeline), pipeline->common_elements.tracker_bin.bin);
-    if (!*src_elem) {
-      *src_elem = pipeline->common_elements.tracker_bin.bin;
-    }
-    if (*sink_elem) {
-      NVGSTDS_LINK_ELEMENT(
-          pipeline->common_elements.tracker_bin.bin, *sink_elem);
-    }
-    *sink_elem = pipeline->common_elements.tracker_bin.bin;
   }
 
   if (config->primary_gie_config.enable) {
