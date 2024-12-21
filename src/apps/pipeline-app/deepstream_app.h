@@ -87,6 +87,7 @@ typedef struct
   NvDsTiledDisplayBin tiled_display_bin;
   GstElement *demuxer;
   NvDsDsExampleBin dsexample_bin;
+  NvDsDsFieldMaskBin dsfieldmask_bin;
   AppCtx *appCtx;
 } NvDsPipeline;
 

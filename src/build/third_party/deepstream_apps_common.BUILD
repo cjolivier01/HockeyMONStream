@@ -15,6 +15,7 @@ cc_library(
     "src/deepstream_primary_gie_bin.c",
     "src/deepstream_streammux.c",
     "src/deepstream_dsexample.c",
+    "src/deepstream_dsfieldmask.c",
     "src/deepstream_osd_bin.c",
     "src/deepstream_audio_classifier_bin.c",
     "src/deepstream_c2d_msg_util.c",
