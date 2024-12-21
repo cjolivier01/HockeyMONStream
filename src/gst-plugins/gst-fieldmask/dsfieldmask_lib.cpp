@@ -31,8 +31,9 @@ struct DsFieldMaskCtx {
 
 namespace {
 
-constexpr float raise_bbox_center_by_height_ratio = 0.1;
-constexpr float lower_bbox_bottom_by_height_ratio = 0.1;
+// I dont understand why this is backwards (negative)
+constexpr float raise_bbox_center_by_height_ratio = -0.1;
+constexpr float lower_bbox_bottom_by_height_ratio = -0.1;
 
 bool is_bit_set(const cv::Mat& mask, const cv::Point& point) {
   int byteIndex = (point.y * mask.cols + point.x) / 8; // Byte index in the data
