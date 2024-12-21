@@ -12,6 +12,12 @@
  */
 
 #include "gstdsfieldmask.h"
+
+//#include "gst-nvquery.h"
+#include "gstnvdsmeta.h"
+#include "nvbufsurface.h"
+//#include "nvbufsurftransform.h"
+
 #include <string.h>
 #include <sys/time.h>
 #include <cassert>
@@ -22,14 +28,13 @@ GST_DEBUG_CATEGORY_STATIC(gst_dsfieldmask_debug);
 #define GST_CAT_DEFAULT gst_dsfieldmask_debug
 #define USE_EGLIMAGE 1
 /* enable to write transformed cvmat to files */
-/* #define DSEXAMPLE_DEBUG */
+/* #define DSFIELDMASK_DEBUG */
 static GQuark _dsmeta_quark = 0;
 
 /* Enum to identify properties */
 enum {
   PROP_0,
   PROP_UNIQUE_ID,
-  PROP_PROCESS_FULL_FRAME,
   PROP_GPU_DEVICE_ID,
   PROP_DETECTION_MASK_FILE,
 };
@@ -111,15 +116,6 @@ static gboolean gst_dsfieldmask_start(GstBaseTransform* btrans);
 static gboolean gst_dsfieldmask_stop(GstBaseTransform* btrans);
 
 static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstBuffer* inbuf);
-
-namespace {
-struct InputParams {
-  NvBufSurface* pSurfaceBatch;
-  NvDsBatchMeta* pBatchMeta;
-  void* pPreservedData;
-  bool eventMarker;
-};
-} // namespace
 
 /* Install properties, set sink and src pad capabilities, override the required
  * functions of the base class, These are common to all instances of the
@@ -232,7 +228,9 @@ static void gst_dsfieldmask_init(GstDsFieldMask* dsfieldmask) {
 /* Function called when a property of the element is set. Standard boilerplate.
  */
 static void gst_dsfieldmask_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
-  GstDsFieldMask* dsfieldmask = GST_DSEXAMPLE(object);
+  GstDsFieldMask* dsfieldmask = GST_DSFIELDMASK(object);
+  //_GstDsFieldMask* dsfieldmask = dynamic_cast<_GstDsFieldMask*>(object);
+  assert(dsfieldmask);
   switch (prop_id) {
     case PROP_UNIQUE_ID:
       dsfieldmask->unique_id = g_value_get_uint(value);
@@ -241,7 +239,14 @@ static void gst_dsfieldmask_set_property(GObject* object, guint prop_id, const G
       dsfieldmask->gpu_id = g_value_get_uint(value);
       break;
     case PROP_DETECTION_MASK_FILE:
-      dsfieldmask->detection_mask_file = g_value_get_string(value);
+    {
+      const char *str = g_value_get_string(value);
+      if (str && *str) {
+          dsfieldmask->detection_mask_file = str;
+      } else {
+        dsfieldmask->detection_mask_file.clear();
+      }
+    }
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
@@ -253,8 +258,8 @@ static void gst_dsfieldmask_set_property(GObject* object, guint prop_id, const G
  * boilerplate.
  */
 static void gst_dsfieldmask_get_property(GObject* object, guint prop_id, GValue* value, GParamSpec* pspec) {
-  GstDsFieldMask* dsfieldmask = GST_DSEXAMPLE(object);
-
+  GstDsFieldMask* dsfieldmask = GST_DSFIELDMASK(object);
+  assert(dsfieldmask);
   switch (prop_id) {
     case PROP_UNIQUE_ID:
       g_value_set_uint(value, dsfieldmask->unique_id);
@@ -275,7 +280,7 @@ static void gst_dsfieldmask_get_property(GObject* object, guint prop_id, GValue*
  * Initialize all resources and start the output thread
  */
 static gboolean gst_dsfieldmask_start(GstBaseTransform* btrans) {
-  GstDsFieldMask* dsfieldmask = GST_DSEXAMPLE(btrans);
+  GstDsFieldMask* dsfieldmask = GST_DSFIELDMASK(btrans);
 
   DsFieldMaskInitParams init_params = {
       .detection_mask_file = dsfieldmask->detection_mask_file};
@@ -297,7 +302,7 @@ error:
  * Stop the output thread and free up all the resources
  */
 static gboolean gst_dsfieldmask_stop(GstBaseTransform* btrans) {
-  GstDsFieldMask* dsfieldmask = GST_DSEXAMPLE(btrans);
+  GstDsFieldMask* dsfieldmask = GST_DSFIELDMASK(btrans);
 
   GST_DEBUG_OBJECT(dsfieldmask, "deleted CV Mat \n");
 
@@ -314,7 +319,7 @@ static gboolean gst_dsfieldmask_stop(GstBaseTransform* btrans) {
  * Called when source / sink pad capabilities have been negotiated.
  */
 static gboolean gst_dsfieldmask_set_caps(GstBaseTransform* btrans, GstCaps* incaps, GstCaps* outcaps) {
-  GstDsFieldMask* dsfieldmask = GST_DSEXAMPLE(btrans);
+  GstDsFieldMask* dsfieldmask = GST_DSFIELDMASK(btrans);
   /* Save the input video information, since this will be required later. */
   gst_video_info_from_caps(&dsfieldmask->video_info, incaps);
 
@@ -325,7 +330,7 @@ static gboolean gst_dsfieldmask_set_caps(GstBaseTransform* btrans, GstCaps* inca
  * Called when element recieves an input buffer from upstream element.
  */
 static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstBuffer* inbuf) {
-  GstDsFieldMask* dsfieldmask = GST_DSEXAMPLE(btrans);
+  GstDsFieldMask* dsfieldmask = GST_DSFIELDMASK(btrans);
   GstMapInfo in_map_info;
   GstFlowReturn flow_ret = GST_FLOW_ERROR;
 
@@ -379,7 +384,7 @@ error:
 static gboolean dsfieldmask_plugin_init(GstPlugin* plugin) {
   GST_DEBUG_CATEGORY_INIT(gst_dsfieldmask_debug, "dsfieldmask", 0, "dsfieldmask plugin");
 
-  return gst_element_register(plugin, "dsfieldmask", GST_RANK_PRIMARY, GST_TYPE_DSEXAMPLE);
+  return gst_element_register(plugin, "dsfieldmask", GST_RANK_PRIMARY, GST_TYPE_DSFIELDMASK);
 }
 } // namespace
 

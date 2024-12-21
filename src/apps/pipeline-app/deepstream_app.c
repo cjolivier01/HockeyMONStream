@@ -1567,7 +1567,7 @@ static gboolean create_common_elements(
     }
 
     // Set this bin as the last element
-    *sink_elem = pipeline->dsexample_bin.bin;
+    *sink_elem = pipeline->dsfieldmask_bin.bin;
   }
 
 

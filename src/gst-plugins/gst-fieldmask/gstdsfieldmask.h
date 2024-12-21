@@ -10,8 +10,8 @@
  * without an express license agreement from NVIDIA CORPORATION or
  * its affiliates is strictly prohibited.
  */
-#ifndef __GST_DSEXAMPLE_H__
-#define __GST_DSEXAMPLE_H__
+#ifndef __GST_DSFIELDMASK_H__
+#define __GST_DSFIELDMASK_H__
 
 #include <gst/base/gstbasetransform.h>
 #include <gst/gst.h>
@@ -22,19 +22,17 @@
 #if __GNUC__ >= 8
 #pragma GCC diagnostic ignored "-Wclass-memaccess"
 #endif
-#ifdef WITH_OPENCV
 #include "opencv2/highgui/highgui.hpp"
 #include "opencv2/imgproc/imgproc.hpp"
-#endif
 #pragma GCC diagnostic pop
 
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include "dsfieldmask_lib.h"
-#include "gst-nvquery.h"
-#include "gstnvdsmeta.h"
-#include "nvbufsurface.h"
-#include "nvbufsurftransform.h"
+// #include "gst-nvquery.h"
+// #include "gstnvdsmeta.h"
+// #include "nvbufsurface.h"
+// #include "nvbufsurftransform.h"
 
 /* Package and library details required for plugin_init */
 #define PACKAGE "dsfieldmask"
@@ -52,23 +50,26 @@ typedef struct _GstDsFieldMask GstDsFieldMask;
 typedef struct _GstDsFieldMaskClass GstDsFieldMaskClass;
 
 /* Standard boilerplate stuff */
-#define GST_TYPE_DSEXAMPLE (gst_dsfieldmask_get_type())
-#define GST_DSEXAMPLE(obj) \
-  (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_DSEXAMPLE, GstDsFieldMask))
-#define GST_DSEXAMPLE_CLASS(klass) \
-  (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_DSEXAMPLE, GstDsFieldMaskClass))
-#define GST_DSEXAMPLE_GET_CLASS(obj) \
-  (G_TYPE_INSTANCE_GET_CLASS((obj), GST_TYPE_DSEXAMPLE, GstDsFieldMaskClass))
-#define GST_IS_DSEXAMPLE(obj) \
-  (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_DSEXAMPLE))
-#define GST_IS_DSEXAMPLE_CLASS(klass) \
-  (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_DSEXAMPLE))
-#define GST_DSEXAMPLE_CAST(obj) ((GstDsFieldMask*)(obj))
+#define GST_TYPE_DSFIELDMASK (gst_dsfieldmask_get_type())
+#define GST_DSFIELDMASK(obj) \
+  (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_DSFIELDMASK, GstDsFieldMask))
+#define GST_DSFIELDMASK_CLASS(klass) \
+  (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_DSFIELDMASK, GstDsFieldMaskClass))
+#define GST_DSFIELDMASK_GET_CLASS(obj) \
+  (G_TYPE_INSTANCE_GET_CLASS((obj), GST_TYPE_DSFIELDMASK, GstDsFieldMaskClass))
+#define GST_IS_DSFIELDMASK(obj) \
+  (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_DSFIELDMASK))
+#define GST_IS_DSFIELDMASK_CLASS(klass) \
+  (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_DSFIELDMASK))
+#define GST_DSFIELDMASK_CAST(obj) ((GstDsFieldMask*)(obj))
 
 /** Maximum batch size to be supported by dsfieldmask. */
-// #define NVDSEXAMPLE_MAX_BATCH_SIZE 1024
+// #define NVDSFIELDMASK_MAX_BATCH_SIZE 1024
 
 struct _GstDsFieldMask {
+  _GstDsFieldMask() {
+    usleep(0);
+  }
   GstBaseTransform base_trans;
 
   // Context of the custom algorithm library
@@ -126,4 +127,4 @@ struct _GstDsFieldMaskClass {
 GType gst_dsfieldmask_get_type(void);
 
 G_END_DECLS
-#endif /* __GST_DSEXAMPLE_H__ */
+#endif /* __GST_DSFIELDMASK_H__ */
