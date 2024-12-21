@@ -25,6 +25,9 @@
 
 namespace {
 
+constexpr float raise_bbox_center_by_height_ratio = 0.1;
+constexpr float lower_bbox_bottom_by_height_ratio = 0.1;
+
 // Function to check if points are nonzero in the mask
 std::vector<bool> check_points_in_mask(const cv::Mat& mask, const std::vector<cv::Point>& points) {
   // Ensure the mask is a bit mask (1 bit per pixel)
@@ -80,7 +83,7 @@ cv::Mat convert_to_bit_mask(const cv::Mat& inputMask) {
 }
 
 // Compute the centroid of a binary mask
-cv::Point2d compute_centroid(const cv::Mat& mask) {
+cv::Point2f compute_centroid(const cv::Mat& mask) {
   if (mask.type() != CV_8UC1) {
     throw std::invalid_argument("Input mask must be a CV_8UC1 matrix.");
   }
@@ -104,7 +107,7 @@ cv::Point2d compute_centroid(const cv::Mat& mask) {
   }
 
   // Return the centroid as a floating-point point
-  return cv::Point2d(sumX / count, sumY / count);
+  return cv::Point2f(sumX / count, sumY / count);
 }
 
 // Load mask from file
@@ -118,13 +121,40 @@ cv::Mat load_mask_from_file(const std::string& filePath) {
   return mask;
 }
 
-void prune_detection_boxes(NvDsFrameMeta* frame_meta) {
+void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsExampleCtx* ctx) {
+  // if (!ctx->)
   if (frame_meta->obj_meta_list) {
-    std::vector<NvDsMetaList*> to_remove;
     std::size_t nr_items = g_list_length(frame_meta->obj_meta_list);
+
+    std::vector<cv::Point2f> all_centers, all_bottoms;
+    all_centers.reserve(nr_items);
+    all_bottoms.reserve(nr_items);
+
+    NvDsMetaList* l_next = nullptr;
+    for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_next) {
+      l_next = l_obj->next;
+      NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
+      const NvDsComp_BboxInfo& detector_bbox_info = obj_meta->detector_bbox_info;
+      int half_width = detector_bbox_info.org_bbox_coords.width / 2;
+      int half_height = detector_bbox_info.org_bbox_coords.height / 2;
+      int raise_center_height_amount = float(detector_bbox_info.org_bbox_coords.height) * raise_bbox_center_by_height_ratio;
+      int lower_bottom_height_amount = float(detector_bbox_info.org_bbox_coords.height) * lower_bbox_bottom_by_height_ratio;
+      cv::Point2f ptCenter = cv::Point2f(
+          detector_bbox_info.org_bbox_coords.left + half_width, detector_bbox_info.org_bbox_coords.top + half_height - raise_center_height_amount);
+      cv::Point2f ptBottom = cv::Point2f(
+          detector_bbox_info.org_bbox_coords.left + half_width,
+          detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height + lower_bottom_height_amount);
+      ptCenter.x = std::clamp(ptCenter.x, 0.0f, detector_bbox_info.org_bbox_coords.width - 1);
+      ptCenter.y = std::clamp(ptCenter.y, 0.0f, detector_bbox_info.org_bbox_coords.height - 1);
+      ptBottom.x = std::clamp(ptBottom.x, 0.0f, detector_bbox_info.org_bbox_coords.width - 1);
+      ptBottom.y = std::clamp(ptBottom.y, 0.0f, detector_bbox_info.org_bbox_coords.height - 1);
+      all_centers.emplace_back(ptCenter);
+      all_bottoms.emplace_back(ptBottom);
+    }
+
+    std::vector<NvDsMetaList*> to_remove;
     to_remove.reserve(nr_items);
     std::size_t counter = 0;
-    NvDsMetaList* l_next = nullptr;
     NvDsObjectMeta* obj_meta;
     for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_next, ++counter) {
       l_next = l_obj->next;
@@ -150,7 +180,7 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta) {
 struct DsExampleCtx {
   DsExampleInitParams initParams;
   cv::Mat detection_bit_mask;
-  cv::Point2d detection_mask_centroid;
+  cv::Point2f detection_mask_centroid;
 };
 
 DsExampleCtx* DsExampleCtxInit(DsExampleInitParams* initParams) {
@@ -165,7 +195,7 @@ DsExampleCtx* DsExampleCtxInit(DsExampleInitParams* initParams) {
 }
 
 void DsExampleProcessFrame(NvDsFrameMeta* frame_meta, DsExampleCtx* ctx) {
-  prune_detection_boxes(frame_meta);
+  prune_detection_boxes(frame_meta, ctx);
 }
 
 // In case of an actual processing library, processing on data wil be completed
