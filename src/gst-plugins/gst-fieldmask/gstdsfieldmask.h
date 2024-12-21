@@ -82,31 +82,26 @@ struct _GstDsFieldMask {
   guint64 frame_num;
 
   // CUDA Stream used for allocating the CUDA task
-  cudaStream_t cuda_stream;
+  //cudaStream_t cuda_stream;
 
   // Host buffer to store RGB data for use by algorithm
-  void* host_rgb_buf;
+  //void* host_rgb_buf;
 
   // the intermediate scratch buffer for conversions RGBA
-  NvBufSurface* inter_buf;
-
-#ifdef WITH_OPENCV
-  // OpenCV mat containing RGB data
-  cv::Mat* cvmat;
-#endif
+  //NvBufSurface* inter_buf;
 
   // Input video info (resolution, color format, framerate, etc)
   GstVideoInfo video_info;
 
   // Resolution at which frames/objects should be processed
-  gint processing_width;
-  gint processing_height;
+  // gint processing_width;
+  // gint processing_height;
 
   // Flag which defince igpu/dgpu
   guint is_integrated;
 
   // Maximum batch size
-  guint batch_size;
+  //guint batch_size;
 
   // GPU ID on which we expect to execute the task
   guint gpu_id;
@@ -120,7 +115,7 @@ struct _GstDsFieldMask {
   std::string detection_mask_file;
 
   /** Config params required by NvBufSurfTransform API. */
-  NvBufSurfTransformConfigParams transform_config_params;
+  //NvBufSurfTransformConfigParams transform_config_params;
 };
 
 // Boiler plate stuff

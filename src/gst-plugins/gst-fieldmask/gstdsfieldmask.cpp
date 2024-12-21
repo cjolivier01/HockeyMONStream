@@ -29,11 +29,7 @@ static GQuark _dsmeta_quark = 0;
 enum {
   PROP_0,
   PROP_UNIQUE_ID,
-  PROP_PROCESSING_WIDTH,
-  PROP_PROCESSING_HEIGHT,
   PROP_PROCESS_FULL_FRAME,
-  PROP_BATCH_SIZE,
-  PROP_BLUR_OBJECTS,
   PROP_GPU_DEVICE_ID,
   PROP_DETECTION_MASK_FILE,
 };
@@ -125,141 +121,6 @@ struct InputParams {
 };
 } // namespace
 
-#if 0
-static GstFlowReturn gst_ds_example_submit_input_buffer(
-    GstBaseTransform* trans,
-    gboolean is_discont,
-    GstBuffer* inbuf) {
-  GstDsFieldMask* dsfieldmask = (GstDsFieldMask*)trans;
-  (void)dsfieldmask;
-
-  /** NOTE: Initializing state to nullptr is essential. */
-  NvDsBatchMeta* batch_meta = nullptr;
-  GstMapInfo inmap;
-
-  batch_meta = gst_buffer_get_nvds_batch_meta(inbuf);
-
-  if (batch_meta->num_frames_in_batch == 0) {
-    // g_mutex_lock(&dsfieldmask->eventLock);
-    // bool result = dsfieldmask->trackerIface->flushReqs();
-    // g_cond_wait(&dsfieldmask->eventCondition, &dsfieldmask->eventLock);
-    // g_mutex_unlock(&dsfieldmask->eventLock);
-    // if (!result)
-    // {
-    //   return GST_FLOW_ERROR;
-    // }
-    return gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(trans), inbuf);
-  }
-
-  memset(&inmap, 0, sizeof(inmap));
-  if (!gst_buffer_map(inbuf, &inmap, GST_MAP_READ)) {
-    return GST_FLOW_ERROR;
-  }
-
-  nvds_set_input_system_timestamp(inbuf, GST_ELEMENT_NAME(trans));
-
-  NvBufSurface* inputBuffer = reinterpret_cast<NvBufSurface*>(inmap.data);
-  (void)inputBuffer;
-  gst_buffer_unmap(inbuf, &inmap);
-
-  /* Compose the input params and submit for tracker processing
-     Keep track of the inbuf via pPreservedData, so the output loop
-     can push it down the pipeline. */
-  InputParams input;
-  input.pSurfaceBatch = inputBuffer;
-  input.pBatchMeta = batch_meta;
-  input.pPreservedData = inbuf;
-  input.eventMarker = false;
-  (void)input;
-
-  if (((inputBuffer->memType == NVBUF_MEM_DEFAULT ||
-        inputBuffer->memType == NVBUF_MEM_CUDA_DEVICE) &&
-       ((int)inputBuffer->gpuId != (int)dsfieldmask->gpu_id)) ||
-      (((int)inputBuffer->gpuId == (int)dsfieldmask->gpu_id) &&
-       (inputBuffer->memType == NVBUF_MEM_SYSTEM))) {
-    GST_ELEMENT_ERROR(
-        dsfieldmask,
-        RESOURCE,
-        FAILED,
-        ("Memory Compatibility Error:Input surface gpu-id doesnt match with configured gpu-id for element,"
-         " please allocate input using unified memory, or use same gpu-ids OR,"
-         " if same gpu-ids are used ensure appropriate Cuda memories are used"),
-        ("surface-gpu-id=%d,%s-gpu-id=%d",
-         inputBuffer->gpuId,
-         GST_ELEMENT_NAME(dsfieldmask),
-         dsfieldmask->gpu_id));
-    return GST_FLOW_ERROR;
-  }
-
-  // /** Check frame count in batch doesn't exceed batch size */
-  if (dsfieldmask->batch_size &&
-      input.pBatchMeta->num_frames_in_batch > dsfieldmask->batch_size) {
-    GST_ELEMENT_ERROR(
-        dsfieldmask,
-        STREAM,
-        FAILED,
-        ("Frame number in input batch exceeds maximum batch size"),
-        (nullptr));
-    return GST_FLOW_ERROR;
-  }
-
-  // if (!dsfieldmask->trackerIface->submitInput(input))
-  // {
-  //   GST_ELEMENT_ERROR (dsfieldmask, STREAM, FAILED,
-  //     ("Failed to submit input to tracker"),
-  //     (nullptr));
-  //   return GST_FLOW_ERROR;
-  // }
-
-  return gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(trans), inbuf);
-
-  // return GST_FLOW_OK;
-}
-
-// static gpointer gst_nv_nvtracker_output_loop (gpointer user_data)
-// {
-//   GstNvTracker *dsfieldmask = (GstNvTracker *) user_data;
-//   while(dsfieldmask->running)
-//   {
-//     InputParams inputParams;
-//     CompletionStatus status =
-//     dsfieldmask->trackerIface->waitForCompletion(inputParams); if (status ==
-//     CompletionStatus_OK && dsfieldmask->running)
-//     {
-//       /** Check for event marker */
-//       if (inputParams.eventMarker) {
-//           g_mutex_lock(&dsfieldmask->eventLock);
-//           g_cond_signal(&dsfieldmask->eventCondition);
-//           g_mutex_unlock(&dsfieldmask->eventLock);
-//           continue;
-//       }
-//       GstBuffer *inbuf = (GstBuffer*)inputParams.pPreservedData;
-
-//       nvds_set_output_system_timestamp(inbuf, GST_ELEMENT_NAME(dsfieldmask));
-
-//       /** Push the buffer to peer sink pad */
-//       gst_pad_push (GST_BASE_TRANSFORM_SRC_PAD (dsfieldmask), inbuf);
-
-//     } else if (status == CompletionStatus_Exit) {
-//       dsfieldmask->running = false;
-//       return dsfieldmask;
-//     }
-//   }
-
-//   return dsfieldmask;
-// }
-
-/* Mandatory override of generate_output function to match submit_input.
- * The actual output is pushed from gst_nv_nvtracker_output_loop.
- */
-static GstFlowReturn gst_ds_example_generate_output(
-    GstBaseTransform* trans,
-    GstBuffer** outbuf) {
-  *outbuf = NULL;
-  return GST_FLOW_OK;
-}
-#endif
-
 /* Install properties, set sink and src pad capabilities, override the required
  * functions of the base class, These are common to all instances of the
  * element.
@@ -312,30 +173,6 @@ static void gst_dsfieldmask_class_init(GstDsFieldMaskClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
-      PROP_PROCESSING_WIDTH,
-      g_param_spec_int(
-          "processing-width",
-          "Processing Width",
-          "Width of the input buffer to algorithm",
-          1,
-          G_MAXINT,
-          DEFAULT_PROCESSING_WIDTH,
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
-
-  g_object_class_install_property(
-      gobject_class,
-      PROP_PROCESSING_HEIGHT,
-      g_param_spec_int(
-          "processing-height",
-          "Processing Height",
-          "Height of the input buffer to algorithm",
-          1,
-          G_MAXINT,
-          DEFAULT_PROCESSING_HEIGHT,
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
-
-  g_object_class_install_property(
-      gobject_class,
       PROP_DETECTION_MASK_FILE,
       g_param_spec_string(
           "detection-mask",
@@ -356,17 +193,6 @@ static void gst_dsfieldmask_class_init(GstDsFieldMaskClass* klass) {
           0,
           GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
 
-  g_object_class_install_property(
-      gobject_class,
-      PROP_BATCH_SIZE,
-      g_param_spec_uint(
-          "batch-size",
-          "Batch Size",
-          "Maximum batch size for processing",
-          1,
-          G_MAXUINT,
-          DEFAULT_BATCH_SIZE,
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
   /* Set sink and src pad capabilities */
   gst_element_class_add_pad_template(gstelement_class, gst_static_pad_template_get(&gst_dsfieldmask_src_template));
   gst_element_class_add_pad_template(gstelement_class, gst_static_pad_template_get(&gst_dsfieldmask_sink_template));
@@ -395,10 +221,7 @@ static void gst_dsfieldmask_init(GstDsFieldMask* dsfieldmask) {
 
   /* Initialize all property variables to default values */
   dsfieldmask->unique_id = DEFAULT_UNIQUE_ID;
-  dsfieldmask->processing_width = DEFAULT_PROCESSING_WIDTH;
-  dsfieldmask->processing_height = DEFAULT_PROCESSING_HEIGHT;
   dsfieldmask->gpu_id = DEFAULT_GPU_ID;
-  dsfieldmask->batch_size = DEFAULT_BATCH_SIZE;
 
   /* This quark is required to identify NvDsMeta when iterating through
    * the buffer metadatas */
@@ -414,17 +237,8 @@ static void gst_dsfieldmask_set_property(GObject* object, guint prop_id, const G
     case PROP_UNIQUE_ID:
       dsfieldmask->unique_id = g_value_get_uint(value);
       break;
-    case PROP_PROCESSING_WIDTH:
-      dsfieldmask->processing_width = g_value_get_int(value);
-      break;
-    case PROP_PROCESSING_HEIGHT:
-      dsfieldmask->processing_height = g_value_get_int(value);
-      break;
     case PROP_GPU_DEVICE_ID:
       dsfieldmask->gpu_id = g_value_get_uint(value);
-      break;
-    case PROP_BATCH_SIZE:
-      dsfieldmask->batch_size = g_value_get_uint(value);
       break;
     case PROP_DETECTION_MASK_FILE:
       dsfieldmask->detection_mask_file = g_value_get_string(value);
@@ -445,17 +259,8 @@ static void gst_dsfieldmask_get_property(GObject* object, guint prop_id, GValue*
     case PROP_UNIQUE_ID:
       g_value_set_uint(value, dsfieldmask->unique_id);
       break;
-    case PROP_PROCESSING_WIDTH:
-      g_value_set_int(value, dsfieldmask->processing_width);
-      break;
-    case PROP_PROCESSING_HEIGHT:
-      g_value_set_int(value, dsfieldmask->processing_height);
-      break;
     case PROP_GPU_DEVICE_ID:
       g_value_set_uint(value, dsfieldmask->gpu_id);
-      break;
-    case PROP_BATCH_SIZE:
-      g_value_set_uint(value, dsfieldmask->batch_size);
       break;
     case PROP_DETECTION_MASK_FILE:
       g_value_set_string(value, dsfieldmask->detection_mask_file.c_str());
@@ -471,14 +276,9 @@ static void gst_dsfieldmask_get_property(GObject* object, guint prop_id, GValue*
  */
 static gboolean gst_dsfieldmask_start(GstBaseTransform* btrans) {
   GstDsFieldMask* dsfieldmask = GST_DSEXAMPLE(btrans);
-  NvBufSurfaceCreateParams create_params = {0};
 
   DsFieldMaskInitParams init_params = {
-      .processingWidth = dsfieldmask->processing_width,
-      .processingHeight = dsfieldmask->processing_height,
       .detection_mask_file = dsfieldmask->detection_mask_file};
-
-  int val = -1;
 
   /* Algorithm specific initializations and resource allocation. */
   dsfieldmask->dsfieldmasklib_ctx = DsFieldMaskCtxInit(&init_params);
@@ -487,64 +287,9 @@ static gboolean gst_dsfieldmask_start(GstBaseTransform* btrans) {
 
   CHECK_CUDA_STATUS(cudaSetDevice(dsfieldmask->gpu_id), "Unable to set cuda device");
 
-  cudaDeviceGetAttribute(&val, cudaDevAttrIntegrated, dsfieldmask->gpu_id);
-  dsfieldmask->is_integrated = val;
-
-  GST_DEBUG_OBJECT(dsfieldmask, "Setting batch-size %d \n", dsfieldmask->batch_size);
-
-  CHECK_CUDA_STATUS(cudaStreamCreate(&dsfieldmask->cuda_stream), "Could not create cuda stream");
-
-  if (dsfieldmask->inter_buf)
-    NvBufSurfaceDestroy(dsfieldmask->inter_buf);
-  dsfieldmask->inter_buf = NULL;
-
-  /* An intermediate buffer for NV12/RGBA to BGR conversion  will be
-   * required. Can be skipped if custom algorithm can work directly on
-   * NV12/RGBA. */
-  create_params.gpuId = dsfieldmask->gpu_id;
-  create_params.width = dsfieldmask->processing_width;
-  create_params.height = dsfieldmask->processing_height;
-  create_params.size = 0;
-  create_params.colorFormat = NVBUF_COLOR_FORMAT_RGBA;
-  create_params.layout = NVBUF_LAYOUT_PITCH;
-
-  if (dsfieldmask->is_integrated) {
-    create_params.memType = NVBUF_MEM_DEFAULT;
-  } else {
-    create_params.memType = NVBUF_MEM_CUDA_PINNED;
-  }
-
-  if (NvBufSurfaceCreate(&dsfieldmask->inter_buf, 1, &create_params) != 0) {
-    GST_ERROR("Error: Could not allocate internal buffer for dsfieldmask");
-    goto error;
-  }
-
   /* Create host memory for storing converted/scaled interleaved RGB data */
-  CHECK_CUDA_STATUS(
-      cudaMallocHost(
-          &dsfieldmask->host_rgb_buf,
-          dsfieldmask->processing_width * dsfieldmask->processing_height * RGB_BYTES_PER_PIXEL),
-      "Could not allocate cuda host buffer");
-
-  GST_DEBUG_OBJECT(dsfieldmask, "allocated cuda buffer %p \n", dsfieldmask->host_rgb_buf);
-
-  /* Set the NvBufSurfTransform config parameters. */
-  dsfieldmask->transform_config_params.compute_mode = NvBufSurfTransformCompute_Default;
-  dsfieldmask->transform_config_params.gpu_id = dsfieldmask->gpu_id;
-
   return TRUE;
 error:
-  if (dsfieldmask->host_rgb_buf) {
-    cudaFreeHost(dsfieldmask->host_rgb_buf);
-    dsfieldmask->host_rgb_buf = NULL;
-  }
-
-  if (dsfieldmask->cuda_stream) {
-    cudaStreamDestroy(dsfieldmask->cuda_stream);
-    dsfieldmask->cuda_stream = NULL;
-  }
-  if (dsfieldmask->dsfieldmasklib_ctx)
-    DsFieldMaskCtxDeinit(dsfieldmask->dsfieldmasklib_ctx);
   return FALSE;
 }
 
@@ -553,19 +298,6 @@ error:
  */
 static gboolean gst_dsfieldmask_stop(GstBaseTransform* btrans) {
   GstDsFieldMask* dsfieldmask = GST_DSEXAMPLE(btrans);
-
-  if (dsfieldmask->inter_buf)
-    NvBufSurfaceDestroy(dsfieldmask->inter_buf);
-  dsfieldmask->inter_buf = NULL;
-
-  if (dsfieldmask->cuda_stream)
-    cudaStreamDestroy(dsfieldmask->cuda_stream);
-  dsfieldmask->cuda_stream = NULL;
-
-  if (dsfieldmask->host_rgb_buf) {
-    cudaFreeHost(dsfieldmask->host_rgb_buf);
-    dsfieldmask->host_rgb_buf = NULL;
-  }
 
   GST_DEBUG_OBJECT(dsfieldmask, "deleted CV Mat \n");
 
