@@ -997,7 +997,7 @@ static GstFlowReturn gst_dsexample_transform_ip(GstBaseTransform* btrans, GstBuf
 #endif
 
       DsExampleProcessFrame(frame_meta, dsexample->dsexamplelib_ctx);
-
+#if 0
       for (l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
         obj_meta = (NvDsObjectMeta*)(l_obj->data);
 
@@ -1080,6 +1080,7 @@ static GstFlowReturn gst_dsexample_transform_ip(GstBaseTransform* btrans, GstBuf
         free(output);
 #endif
       }
+#endif
       if (dsexample->blur_objects) {
         /* Cache the mapped data for device access */
         if (dsexample->inter_buf->memType == NVBUF_MEM_SURFACE_ARRAY)

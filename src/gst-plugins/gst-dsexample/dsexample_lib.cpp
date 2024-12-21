@@ -132,14 +132,21 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsExampleCtx* ctx) {
   if (!frame_meta->obj_meta_list) {
     return;
   }
-  // std::size_t nr_items = g_list_length(frame_meta->obj_meta_list);
-
-  // std::vector<cv::Point2f> all_centers, all_bottoms;
-  // all_centers.reserve(nr_items);
-  // all_bottoms.reserve(nr_items);
   const float mask_height = ctx->detection_u8_mask.rows;
   const float mask_width = ctx->detection_u8_mask.cols;
+
+  assert(guint(mask_width) == frame_meta->source_frame_width);
+  assert(guint(mask_height) == frame_meta->source_frame_height);
+
+  // const float scale_width = float(mask_height) / frame_meta->source_frame_width;
+  // const float scale_height = float(mask_width) / frame_meta->source_frame_height;
+
+  const float scale_width = float(mask_height) / frame_meta->pipeline_height;
+  const float scale_height = float(mask_width) / frame_meta->pipeline_width;
+
   NvDsMetaList* l_next = nullptr;
+  float max_bottom_y = 0;
+  float max_x = 0;
   for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_next) {
     l_next = l_obj->next;
     NvDsMetaList* remove_me{nullptr};
@@ -148,6 +155,9 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsExampleCtx* ctx) {
     float half_width = detector_bbox_info.org_bbox_coords.width / 2;
     float center_x = detector_bbox_info.org_bbox_coords.left + half_width;
     float half_height = detector_bbox_info.org_bbox_coords.height / 2;
+
+    max_x = std::max(max_x, detector_bbox_info.org_bbox_coords.left + detector_bbox_info.org_bbox_coords.width);
+
     int raise_center_height_amount =
         float(detector_bbox_info.org_bbox_coords.height) * raise_bbox_center_by_height_ratio;
     int lower_bottom_height_amount =
@@ -159,8 +169,13 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsExampleCtx* ctx) {
         center_x,
         detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height +
             lower_bottom_height_amount);
-    // all_centers.emplace_back(ptCenter);
-    // all_bottoms.emplace_back(ptBottom);
+
+    max_bottom_y = std::max(max_bottom_y, ptBottom.y);
+
+    ptBottom.x *= scale_width;
+    ptBottom.y *= scale_height;
+    ptCenter.x *= scale_width;
+    ptCenter.y *= scale_height;
 
     // ok, well, let's just do bottoms against centroid y
     if (ptBottom.y <= ctx->detection_mask_centroid.y) {
@@ -190,30 +205,6 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsExampleCtx* ctx) {
       usleep(0);
     }
   }
-
-  //     std::vector<NvDsMetaList*> to_remove;
-  //     to_remove.reserve(nr_items);
-  //     std::size_t counter = 0;
-  //     NvDsObjectMeta* obj_meta;
-  //     for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_next, ++counter) {
-  //       l_next = l_obj->next;
-  //       obj_meta = (NvDsObjectMeta*)(l_obj->data);
-  //       // const NvDsComp_BboxInfo& detector_bbox_info = obj_meta->detector_bbox_info;
-  // #ifndef NDEBUG
-  //       // Make sure that tracking wasn't done yet
-  //       const NvDsComp_BboxInfo& tracker_bbox_info = obj_meta->tracker_bbox_info;
-  //       assert(tracker_bbox_info.org_bbox_coords.height == 0 && tracker_bbox_info.org_bbox_coords.width == 0);
-  // #endif
-  //       if ((counter & 1) != 0) {
-  //         nvds_remove_obj_meta_from_frame(frame_meta, obj_meta);
-  //       }
-  //     }
-  //     std::size_t new_nr_items = g_list_length(frame_meta->obj_meta_list);
-  //     if (new_nr_items != nr_items) {
-  //       usleep(0);
-  //     }
-  //  }
-  //}
 }
 } // namespace
 
