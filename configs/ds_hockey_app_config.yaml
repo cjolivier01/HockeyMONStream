@@ -141,6 +141,7 @@ ds-example:
   full-frame: 0
   processing-width: 1312
   processing-height: 480
+  detection-mask: /home/colivier/Videos/ev-reno-1/rink_mask_0.png
   #gie-unique-id: 2
   #operate-on-gie-id: 1
   #operate-on-class-ids: 0

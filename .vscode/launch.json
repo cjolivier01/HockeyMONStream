@@ -42,6 +42,7 @@
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}/src",
         "~/src": "/home/colivier/src",
+        "external/deepstream_apps_common": "${workspaceFolder}/src/external/deepstream_apps_common",
       },
       "env": {
         //"GST_DEBUG": "4",

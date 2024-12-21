@@ -377,6 +377,9 @@ static void gst_dsexample_set_property(
     case PROP_BATCH_SIZE:
       dsexample->max_batch_size = g_value_get_uint(value);
       break;
+    case PROP_DETECTION_MASK_FILE:
+      dsexample->detection_mask_file = g_value_get_string(value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
@@ -412,6 +415,9 @@ static void gst_dsexample_get_property(
     case PROP_BATCH_SIZE:
       g_value_set_uint(value, dsexample->max_batch_size);
       break;
+    case PROP_DETECTION_MASK_FILE:
+      g_value_set_string(value, dsexample->detection_mask_file.c_str());
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
@@ -432,9 +438,10 @@ static gboolean gst_dsexample_start(GstBaseTransform* btrans) {
 #endif
   NvBufSurfaceCreateParams create_params = {0};
   DsExampleInitParams init_params = {
-      dsexample->processing_width,
-      dsexample->processing_height,
-      dsexample->process_full_frame};
+      .processingWidth=dsexample->processing_width,
+      .processingHeight=dsexample->processing_height,
+      .fullFrame=dsexample->process_full_frame,
+      .detection_mask_file=dsexample->detection_mask_file};
 
   /* Algorithm specific initializations and resource allocation. */
   dsexample->dsexamplelib_ctx = DsExampleCtxInit(&init_params);

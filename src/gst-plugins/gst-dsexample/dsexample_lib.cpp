@@ -123,7 +123,6 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta) {
     std::vector<NvDsMetaList*> to_remove;
     std::size_t nr_items = g_list_length(frame_meta->obj_meta_list);
     to_remove.reserve(nr_items);
-    // nvds_clear_obj_meta_list(frame_meta, frame_meta->obj_meta_list);
     std::size_t counter = 0;
     NvDsMetaList* l_next = nullptr;
     NvDsObjectMeta* obj_meta;
@@ -155,7 +154,7 @@ struct DsExampleCtx {
 };
 
 DsExampleCtx* DsExampleCtxInit(DsExampleInitParams* initParams) {
-  DsExampleCtx* ctx = (DsExampleCtx*)calloc(1, sizeof(DsExampleCtx));
+  DsExampleCtx* ctx = new DsExampleCtx();
   ctx->initParams = *initParams;
   return ctx;
 }
@@ -205,5 +204,7 @@ DsExampleOutput* DsExampleProcess(DsExampleCtx* ctx, unsigned char* data) {
 }
 
 void DsExampleCtxDeinit(DsExampleCtx* ctx) {
-  free(ctx);
+  if (ctx) {
+    delete ctx;
+  }
 }
