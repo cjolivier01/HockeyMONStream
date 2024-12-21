@@ -23,8 +23,8 @@ gst_cc_plugin(
     srcs = [
         "dsexample_lib.cpp",
         "dsexample_lib.h",
-        "gstdsexample_optimized.cpp",
-        "gstdsexample_optimized.h",
+        "gstdsexample.cpp",
+        "gstdsexample.h",
         "utils.cpp",
         "utils.h",
     ],

@@ -117,6 +117,8 @@ struct _GstDsExample {
   // Boolean indicating if to blur the detected objects
   gboolean blur_objects;
 
+  std::string detection_mask_file;
+
   /** Config params required by NvBufSurfTransform API. */
   NvBufSurfTransformConfigParams transform_config_params;
 };

@@ -38,7 +38,8 @@ enum {
   PROP_PROCESS_FULL_FRAME,
   PROP_BATCH_SIZE,
   PROP_BLUR_OBJECTS,
-  PROP_GPU_DEVICE_ID
+  PROP_GPU_DEVICE_ID,
+  PROP_DETECTION_MASK_FILE,
 };
 
 #define CHECK_NVDS_MEMORY_AND_GPUID(object, surface)                                                       \
@@ -360,6 +361,16 @@ static void gst_dsexample_class_init(GstDsExampleClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
+      PROP_DETECTION_MASK_FILE,
+      g_param_spec_string(
+          "detection-mask",
+          "Detection Mask",
+          "Restrict detections to position mask",
+          /*default_value=*/"",
+          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+
+  g_object_class_install_property(
+      gobject_class,
       PROP_BLUR_OBJECTS,
       g_param_spec_boolean(
           "blur-objects",
@@ -459,6 +470,9 @@ static void gst_dsexample_set_property(GObject* object, guint prop_id, const GVa
     case PROP_BATCH_SIZE:
       dsexample->batch_size = g_value_get_uint(value);
       break;
+    case PROP_DETECTION_MASK_FILE:
+      dsexample->detection_mask_file = g_value_get_string(value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
@@ -493,6 +507,9 @@ static void gst_dsexample_get_property(GObject* object, guint prop_id, GValue* v
     case PROP_BATCH_SIZE:
       g_value_set_uint(value, dsexample->batch_size);
       break;
+    case PROP_DETECTION_MASK_FILE:
+      g_value_set_string(value, dsexample->detection_mask_file.c_str());
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
@@ -505,8 +522,12 @@ static void gst_dsexample_get_property(GObject* object, guint prop_id, GValue* v
 static gboolean gst_dsexample_start(GstBaseTransform* btrans) {
   GstDsExample* dsexample = GST_DSEXAMPLE(btrans);
   NvBufSurfaceCreateParams create_params = {0};
+
   DsExampleInitParams init_params = {
-      dsexample->processing_width, dsexample->processing_height, dsexample->process_full_frame};
+      .processingWidth=dsexample->processing_width,
+      .processingHeight=dsexample->processing_height,
+      .fullFrame=dsexample->process_full_frame,
+      .detection_mask_file=dsexample->detection_mask_file};
 
   int val = -1;
 

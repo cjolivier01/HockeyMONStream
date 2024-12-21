@@ -23,6 +23,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+struct DsExampleCtx {
+  DsExampleInitParams initParams;
+  cv::Mat detection_bit_mask;
+  cv::Mat detection_u8_mask;
+  cv::Point2f detection_mask_centroid;
+};
+
 namespace {
 
 constexpr float raise_bbox_center_by_height_ratio = 0.1;
@@ -122,79 +129,113 @@ cv::Mat load_mask_from_file(const std::string& filePath) {
 }
 
 void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsExampleCtx* ctx) {
-  // if (!ctx->)
-  if (frame_meta->obj_meta_list) {
-    std::size_t nr_items = g_list_length(frame_meta->obj_meta_list);
+  if (!frame_meta->obj_meta_list) {
+    return;
+  }
+  // std::size_t nr_items = g_list_length(frame_meta->obj_meta_list);
 
-    std::vector<cv::Point2f> all_centers, all_bottoms;
-    all_centers.reserve(nr_items);
-    all_bottoms.reserve(nr_items);
+  // std::vector<cv::Point2f> all_centers, all_bottoms;
+  // all_centers.reserve(nr_items);
+  // all_bottoms.reserve(nr_items);
+  const float mask_height = ctx->detection_u8_mask.rows;
+  const float mask_width = ctx->detection_u8_mask.cols;
+  NvDsMetaList* l_next = nullptr;
+  for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_next) {
+    l_next = l_obj->next;
+    NvDsMetaList* remove_me{nullptr};
+    NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
+    const NvDsComp_BboxInfo& detector_bbox_info = obj_meta->detector_bbox_info;
+    float half_width = detector_bbox_info.org_bbox_coords.width / 2;
+    float center_x = detector_bbox_info.org_bbox_coords.left + half_width;
+    float half_height = detector_bbox_info.org_bbox_coords.height / 2;
+    int raise_center_height_amount =
+        float(detector_bbox_info.org_bbox_coords.height) * raise_bbox_center_by_height_ratio;
+    int lower_bottom_height_amount =
+        float(detector_bbox_info.org_bbox_coords.height) * lower_bbox_bottom_by_height_ratio;
+    cv::Point2f ptCenter = cv::Point2f(
+        center_x,
+        detector_bbox_info.org_bbox_coords.top + half_height - raise_center_height_amount);
+    cv::Point2f ptBottom = cv::Point2f(
+        center_x,
+        detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height +
+            lower_bottom_height_amount);
+    // all_centers.emplace_back(ptCenter);
+    // all_bottoms.emplace_back(ptBottom);
 
-    NvDsMetaList* l_next = nullptr;
-    for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_next) {
-      l_next = l_obj->next;
-      NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
-      const NvDsComp_BboxInfo& detector_bbox_info = obj_meta->detector_bbox_info;
-      int half_width = detector_bbox_info.org_bbox_coords.width / 2;
-      int half_height = detector_bbox_info.org_bbox_coords.height / 2;
-      int raise_center_height_amount = float(detector_bbox_info.org_bbox_coords.height) * raise_bbox_center_by_height_ratio;
-      int lower_bottom_height_amount = float(detector_bbox_info.org_bbox_coords.height) * lower_bbox_bottom_by_height_ratio;
-      cv::Point2f ptCenter = cv::Point2f(
-          detector_bbox_info.org_bbox_coords.left + half_width, detector_bbox_info.org_bbox_coords.top + half_height - raise_center_height_amount);
-      cv::Point2f ptBottom = cv::Point2f(
-          detector_bbox_info.org_bbox_coords.left + half_width,
-          detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height + lower_bottom_height_amount);
-      ptCenter.x = std::clamp(ptCenter.x, 0.0f, detector_bbox_info.org_bbox_coords.width - 1);
-      ptCenter.y = std::clamp(ptCenter.y, 0.0f, detector_bbox_info.org_bbox_coords.height - 1);
-      ptBottom.x = std::clamp(ptBottom.x, 0.0f, detector_bbox_info.org_bbox_coords.width - 1);
-      ptBottom.y = std::clamp(ptBottom.y, 0.0f, detector_bbox_info.org_bbox_coords.height - 1);
-      all_centers.emplace_back(ptCenter);
-      all_bottoms.emplace_back(ptBottom);
-    }
-
-    std::vector<NvDsMetaList*> to_remove;
-    to_remove.reserve(nr_items);
-    std::size_t counter = 0;
-    NvDsObjectMeta* obj_meta;
-    for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_next, ++counter) {
-      l_next = l_obj->next;
-      obj_meta = (NvDsObjectMeta*)(l_obj->data);
-      // const NvDsComp_BboxInfo& detector_bbox_info = obj_meta->detector_bbox_info;
-#ifndef NDEBUG
-      // Make sure that tracking wasn't done yet
-      const NvDsComp_BboxInfo& tracker_bbox_info = obj_meta->tracker_bbox_info;
-      assert(tracker_bbox_info.org_bbox_coords.height == 0 && tracker_bbox_info.org_bbox_coords.width == 0);
-#endif
-      if ((counter & 1) != 0) {
-        nvds_remove_obj_meta_from_frame(frame_meta, obj_meta);
+    // ok, well, let's just do bottoms against centroid y
+    if (ptBottom.y <= ctx->detection_mask_centroid.y) {
+      // It's in the top half of the ice, so we just look at the (adjusted) bottom in the mask
+      ptBottom.x = std::clamp(ptBottom.x, 0.0f, mask_width - 1);
+      ptBottom.y = std::clamp(ptBottom.y, 0.0f, mask_height - 1);
+      if (ctx->detection_u8_mask.at<uchar>(ptBottom) == 0) {
+        remove_me = l_obj;
       }
+      // if (!is_bit_set(ctx->detection_bit_mask, ptBottom)) {
+      //   remove_me = l_obj;
+      // }
+    } else {
+      // It's in the bottom half of the ice, so we check center
+      ptCenter.x = std::clamp(ptCenter.x, 0.0f, mask_width - 1);
+      ptCenter.y = std::clamp(ptCenter.y, 0.0f, mask_height - 1);
+      if (ctx->detection_u8_mask.at<uchar>(ptCenter) == 0) {
+        remove_me = l_obj;
+      }
+      // if (!is_bit_set(ctx->detection_bit_mask, ptCenter)) {
+      //   remove_me = l_obj;
+      // }
     }
-    std::size_t new_nr_items = g_list_length(frame_meta->obj_meta_list);
-    if (new_nr_items != nr_items) {
+    if (remove_me) {
+      nvds_remove_obj_meta_from_frame(frame_meta, obj_meta);
+    } else {
       usleep(0);
     }
   }
+
+  //     std::vector<NvDsMetaList*> to_remove;
+  //     to_remove.reserve(nr_items);
+  //     std::size_t counter = 0;
+  //     NvDsObjectMeta* obj_meta;
+  //     for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_next, ++counter) {
+  //       l_next = l_obj->next;
+  //       obj_meta = (NvDsObjectMeta*)(l_obj->data);
+  //       // const NvDsComp_BboxInfo& detector_bbox_info = obj_meta->detector_bbox_info;
+  // #ifndef NDEBUG
+  //       // Make sure that tracking wasn't done yet
+  //       const NvDsComp_BboxInfo& tracker_bbox_info = obj_meta->tracker_bbox_info;
+  //       assert(tracker_bbox_info.org_bbox_coords.height == 0 && tracker_bbox_info.org_bbox_coords.width == 0);
+  // #endif
+  //       if ((counter & 1) != 0) {
+  //         nvds_remove_obj_meta_from_frame(frame_meta, obj_meta);
+  //       }
+  //     }
+  //     std::size_t new_nr_items = g_list_length(frame_meta->obj_meta_list);
+  //     if (new_nr_items != nr_items) {
+  //       usleep(0);
+  //     }
+  //  }
+  //}
 }
 } // namespace
-
-struct DsExampleCtx {
-  DsExampleInitParams initParams;
-  cv::Mat detection_bit_mask;
-  cv::Point2f detection_mask_centroid;
-};
 
 DsExampleCtx* DsExampleCtxInit(DsExampleInitParams* initParams) {
   DsExampleCtx* ctx = new DsExampleCtx();
   ctx->initParams = *initParams;
   if (!ctx->initParams.detection_mask_file.empty()) {
-    cv::Mat u8_mask = load_mask_from_file(ctx->initParams.detection_mask_file);
-    ctx->detection_mask_centroid = compute_centroid(u8_mask);
-    ctx->detection_bit_mask = convert_to_bit_mask(u8_mask);
+    // extra memeory used here, try to settle on but mask
+    ctx->detection_u8_mask = load_mask_from_file(ctx->initParams.detection_mask_file);
+    ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask);
+    ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
+    // cv::imshow("Mask", ctx->detection_u8_mask);
+    //cv::imshow("Mask", ctx->detection_bit_mask);
+    cv::waitKey(10);
   }
   return ctx;
 }
 
 void DsExampleProcessFrame(NvDsFrameMeta* frame_meta, DsExampleCtx* ctx) {
+  if (ctx->initParams.detection_mask_file.empty()) {
+    return;
+  }
   prune_detection_boxes(frame_meta, ctx);
 }
 
