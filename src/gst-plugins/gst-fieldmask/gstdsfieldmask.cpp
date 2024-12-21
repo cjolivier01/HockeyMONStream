@@ -242,9 +242,9 @@ static void gst_dsfieldmask_set_property(GObject* object, guint prop_id, const G
     {
       const char *str = g_value_get_string(value);
       if (str && *str) {
-          dsfieldmask->detection_mask_file = str;
+          strncpy(dsfieldmask->detection_mask_file, str, sizeof(dsfieldmask->detection_mask_file));
       } else {
-        dsfieldmask->detection_mask_file.clear();
+        dsfieldmask->detection_mask_file[0] = '\0';
       }
     }
       break;
@@ -268,7 +268,7 @@ static void gst_dsfieldmask_get_property(GObject* object, guint prop_id, GValue*
       g_value_set_uint(value, dsfieldmask->gpu_id);
       break;
     case PROP_DETECTION_MASK_FILE:
-      g_value_set_string(value, dsfieldmask->detection_mask_file.c_str());
+      g_value_set_string(value, dsfieldmask->detection_mask_file);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);

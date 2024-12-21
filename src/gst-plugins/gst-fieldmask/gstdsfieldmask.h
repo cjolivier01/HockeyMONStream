@@ -113,7 +113,8 @@ struct _GstDsFieldMask {
   // Boolean indicating if to blur the detected objects
   // gboolean blur_objects;
 
-  std::string detection_mask_file;
+  gchar detection_mask_file[PATH_MAX * 4];
+  // std::string detection_mask_file;
 
   /** Config params required by NvBufSurfTransform API. */
   //NvBufSurfTransformConfigParams transform_config_params;
