@@ -16,7 +16,6 @@
 #include <opencv2/opencv.hpp>
 
 #include <cassert>
-#include <vector>
 
 #include <opencv4/opencv2/core/types.hpp>
 #include <stdio.h>
@@ -36,9 +35,13 @@ constexpr float raise_bbox_center_by_height_ratio = -0.1;
 constexpr float lower_bbox_bottom_by_height_ratio = -0.1;
 
 bool is_bit_set(const cv::Mat& mask, const cv::Point& point) {
-  int byteIndex = (point.y * mask.cols + point.x) / 8; // Byte index in the data
+  int byteIndex = (point.y * mask.cols + point.x/8); // Byte index in the data
   int bitIndex = point.x % 8; // Bit index within the byte
+  //int bitIndex = point.x & 7;
   return (mask.data[byteIndex] & (1 << bitIndex)) != 0;
+  //int bitIndex = point.x % 8; // Bit index within the byte
+  //uchar val = mask.at<uchar>(cv::Point2l(point.x/8, point.y));
+  //return (val & (1 << bitIndex)) != 0;
 }
 
 // Convert 8-bit-per-pixel mask to 1-bit-per-pixel (packed as bytes)
@@ -108,14 +111,12 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx)
   if (!frame_meta->obj_meta_list || !frame_meta->bInferDone) {
     return;
   }
-  const float mask_height = ctx->detection_u8_mask.rows;
-  const float mask_width = ctx->detection_u8_mask.cols;
 
-  assert(guint(mask_width) == frame_meta->source_frame_width);
-  assert(guint(mask_height) == frame_meta->source_frame_height);
+  assert(guint(ctx->detection_u8_mask.cols) >= frame_meta->source_frame_width);
+  assert(guint(ctx->detection_u8_mask.rows) == frame_meta->source_frame_height);
 
-  const float scale_height = float(mask_height) / frame_meta->pipeline_height;
-  const float scale_width = float(mask_width) / frame_meta->pipeline_width;
+  const float scale_height = float(frame_meta->source_frame_height) / frame_meta->pipeline_height;
+  const float scale_width = float(frame_meta->source_frame_width) / frame_meta->pipeline_width;
 
   NvDsMetaList* l_next = nullptr;
   static float max_y = 0;
@@ -145,7 +146,6 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx)
         detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height +
             lower_bottom_height_amount);
 
-
     ptBottom.x *= scale_width;
     ptBottom.y *= scale_height;
     ptCenter.x *= scale_width;
@@ -154,24 +154,24 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx)
     // ok, well, let's just do bottoms against centroid y
     if (ptBottom.y <= ctx->detection_mask_centroid.y) {
       // It's in the top half of the ice, so we just look at the (adjusted) bottom in the mask
-      ptBottom.x = std::clamp(ptBottom.x, 0.0f, mask_width - 1);
-      ptBottom.y = std::clamp(ptBottom.y, 0.0f, mask_height - 1);
-      if (ctx->detection_u8_mask.at<uchar>(ptBottom) == 0) {
-        remove_me = l_obj;
-      }
-      // if (!is_bit_set(ctx->detection_bit_mask, ptBottom)) {
+      ptBottom.x = std::clamp(ptBottom.x, 0.0f, float(frame_meta->source_frame_width - 1));
+      ptBottom.y = std::clamp(ptBottom.y, 0.0f, float(frame_meta->source_frame_height - 1));
+      // if (ctx->detection_u8_mask.at<uchar>(ptBottom) == 0) {
       //   remove_me = l_obj;
       // }
+      if (!is_bit_set(ctx->detection_bit_mask, ptBottom)) {
+        remove_me = l_obj;
+      }
     } else {
       // It's in the bottom half of the ice, so we check center
-      ptCenter.x = std::clamp(ptCenter.x, 0.0f, mask_width - 1);
-      ptCenter.y = std::clamp(ptCenter.y, 0.0f, mask_height - 1);
-      if (ctx->detection_u8_mask.at<uchar>(ptCenter) == 0) {
-        remove_me = l_obj;
-      }
-      // if (!is_bit_set(ctx->detection_bit_mask, ptCenter)) {
+      ptCenter.x = std::clamp(ptCenter.x, 0.0f, float(frame_meta->source_frame_width - 1));
+      ptCenter.y = std::clamp(ptCenter.y, 0.0f, float(frame_meta->source_frame_height - 1));
+      // if (ctx->detection_u8_mask.at<uchar>(ptCenter) == 0) {
       //   remove_me = l_obj;
       // }
+      if (!is_bit_set(ctx->detection_bit_mask, ptCenter)) {
+        remove_me = l_obj;
+      }
     }
     if (remove_me) {
       nvds_remove_obj_meta_from_frame(frame_meta, obj_meta);

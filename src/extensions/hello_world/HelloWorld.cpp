@@ -19,9 +19,6 @@ HelloWorld::~HelloWorld() {
 gxf_result_t HelloWorld::start() {
   GXF_LOG_INFO("Before assert...");
   //assert(false);
-  #ifdef NDEBUG
-  #error "not a debug build"
-  #endif
   GXF_LOG_INFO("Starting this thing again...");
   GXF_LOG_INFO("HelloWorld::start");
   return GXF_SUCCESS;

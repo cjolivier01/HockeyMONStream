@@ -3,6 +3,8 @@
 build --nokeep_going --color=yes --crosstool_top=@toolchain//crosstool:toolchain
 build --copt=-fPIC
 #build -c opt
+build:opt -c opt
+build:opt --copt=-O3
 
 build:debug -c dbg --strip="never"
 build:debug --copt=-g3
