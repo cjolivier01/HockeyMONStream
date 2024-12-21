@@ -38,7 +38,8 @@ cc_library(
     "src/deepstream-yaml/deepstream_msgconsumer_yaml.cpp",
     "src/deepstream-yaml/deepstream_msgconv_yaml.cpp",
     "src/deepstream-yaml/deepstream_image_save_yaml.cpp",
-    "src/deepstream-yaml/deepstream_dsexample_yaml.cpp",    
+    "src/deepstream-yaml/deepstream_dsexample_yaml.cpp",
+    "src/deepstream-yaml/deepstream_dsfieldmask_yaml.cpp",
   ],
   copts=[
     "-Wno-error=write-strings",
@@ -59,6 +60,7 @@ cc_library(
     "includes/deepstream_sinks.h",
     "includes/deepstream_image_save.h",
     "includes/deepstream_dsexample.h",
+    "includes/deepstream_dsfieldmask.h",
     "includes/deepstream_app_version.h",
     "includes/deepstream_streammux.h",
     "includes/deepstream_tracker.h",

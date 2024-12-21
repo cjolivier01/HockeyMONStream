@@ -359,6 +359,15 @@ parse_config_file_yaml (NvDsConfig *config, gchar *cfg_file_path)
        * it will override the value set using global_gpu_id in parse_dsexample_yaml function */
       parse_err = !parse_dsexample_yaml (&config->dsexample_config, cfg_file_path);
     }
+    else if (paramKey == "ds-fieldmask") {
+      /** set gpu_id for dsexample component using global_gpu_id(if available) */
+      if (config->global_gpu_id != -1) {
+        config->dsexample_config.gpu_id = config->global_gpu_id;
+      }
+      /** if gpu_id for dsexample component is present,
+       * it will override the value set using global_gpu_id in parse_fieldmask_yaml function */
+      parse_err = !parse_dsfieldmask_yaml (&config->dsfieldmask_config, cfg_file_path);
+    }
     else if (paramKey == "message-converter") {
       parse_err = !parse_msgconv_yaml (&config->msg_conv_config, paramKey, cfg_file_path);
     }

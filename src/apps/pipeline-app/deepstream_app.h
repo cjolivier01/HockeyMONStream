@@ -30,6 +30,7 @@
 #include "deepstream_tiled_display.h"
 #include "deepstream_dsanalytics.h"
 #include "deepstream_dsexample.h"
+#include "deepstream_dsfieldmask.h"
 #include "deepstream_tracker.h"
 #include "deepstream_secondary_gie.h"
 #include "deepstream_secondary_preprocess.h"
@@ -129,6 +130,7 @@ typedef struct
   NvDsTiledDisplayConfig tiled_display_config;
   NvDsDsAnalyticsConfig dsanalytics_config;
   NvDsDsExampleConfig dsexample_config;
+  NvDsDsFieldMaskConfig dsfieldmask_config;
   NvDsSinkMsgConvBrokerConfig msg_conv_config;
   NvDsImageSave image_save_config;
 
