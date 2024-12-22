@@ -1,7 +1,7 @@
 #include "kmeans_cuda_simple.h"
 
-#include <vector>
 #include <iostream>
+#include <vector>
 
 #include <cuda_runtime.h>
 #include <float.h>
@@ -92,7 +92,7 @@ __global__ void updateCentroids(
 
 // Host function to perform K-means clustering
 void kmeansGPU(
-    float* h_points,
+    const float* h_points,
     float* h_centroids,
     int* h_assignments,
     int n_points,
@@ -175,6 +175,31 @@ void kmeansGPU(
   cudaFree(d_cluster_sizes);
 }
 
+void kmeansCuda(
+    const std::vector<float>& points,
+    int numClusters,
+    int dim,
+    int numIterations,
+    std::vector<int>& assignments) {
+  const float tolerance = 1e-4;
+  std::vector<float> centroids(numClusters);
+  const size_t n_points = points.size();
+  assignments.resize(n_points);
+
+  for (int i = 0; i < numClusters * dim; i++) {
+    centroids[i] = points[rand() % n_points * dim + (i % dim)];
+  }
+
+  // Run K-means
+  kmeansGPU(points.data(), centroids.data(), assignments.data(), n_points, numClusters, dim, numIterations, tolerance);
+
+  for (int i = 0; i < n_points; ++i) {
+    std::cout << assignments[i] << " ";
+  }
+  std::cout << std::endl;
+}
+
+#ifdef BUILD_MAIN
 // Example usage function
 int main() {
   // Example parameters
@@ -212,54 +237,4 @@ int main() {
 
   return 0;
 }
-
-// void kmeansCuda(const std::vector<float>& points, int numClusters, int dim, int numIterations) {
-//   std::vector<float> h_x;
-//   std::vector<float> h_y;
-
-//   const size_t number_of_elements = h_x.size();
-//   h_x.reserve(number_of_elements);
-//   h_y.reserve(number_of_elements);
-
-//   for (std::size_t i = 0; i < number_of_elements; ++i) {
-//     std::size_t pos = i << 1;
-//     h_x.push_back(points[pos]);
-//     h_y.push_back(points[pos + 1]);
-//   }
-
-//   // Load x and y into host vectors ... (omitted)
-
-//   int k = numClusters;
-
-//   Data d_data(number_of_elements, h_x, h_y);
-
-//   // Random shuffle the data and pick the first
-//   // k points (i.e. k random points).
-
-//   std::random_device seed;
-//   std::mt19937 rng(seed());
-//   std::shuffle(h_x.begin(), h_x.end(), rng);
-//   std::shuffle(h_y.begin(), h_y.end(), rng);
-//   Data d_means(k, h_x, h_y);
-
-//   Data d_sums(k);
-
-//   int* d_counts;
-//   cudaMalloc(&d_counts, k * sizeof(int));
-//   cudaMemset(d_counts, 0, k * sizeof(int));
-
-//   const int threads = 1024;
-//   const int blocks = (number_of_elements + threads - 1) / threads;
-
-//   for (size_t iteration = 0; iteration < numIterations; ++iteration) {
-//     cudaMemset(d_counts, 0, k * sizeof(int));
-//     d_sums.clear();
-
-//     assign_clusters<<<blocks, threads>>>(
-//         d_data.x, d_data.y, d_data.size, d_means.x, d_means.y, d_sums.x, d_sums.y, k, d_counts);
-//     cudaDeviceSynchronize();
-
-//     compute_new_means<<<1, k>>>(d_means.x, d_means.y, d_sums.x, d_sums.y, d_counts);
-//     cudaDeviceSynchronize();
-//   }
-// }
+#endif // BUILD_MAIN
