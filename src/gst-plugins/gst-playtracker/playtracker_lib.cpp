@@ -1,0 +1,93 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2017-2020 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier:
+ * LicenseRef-NvidiaProprietary
+ *
+ * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+ * property and proprietary rights in and to this material, related
+ * documentation and any modifications thereto. Any use, reproduction,
+ * disclosure or distribution of this material and related documentation
+ * without an express license agreement from NVIDIA CORPORATION or
+ * its affiliates is strictly prohibited.
+ */
+
+#include "playtracker_lib.h"
+#include "utils.h"
+
+#include <opencv2/opencv.hpp>
+
+#include <cassert>
+#include <vector>
+
+#include <opencv4/opencv2/core/types.hpp>
+#include <stdio.h>
+#include <stdlib.h>
+
+struct DsPlayTrackerCtx {
+  DsPlayTrackerInitParams initParams;
+  cv::Mat detection_bit_mask;
+  cv::Mat detection_u8_mask;
+  cv::Point2f detection_mask_centroid;
+};
+
+namespace {
+
+} // namespace
+
+DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* initParams) {
+  DsPlayTrackerCtx* ctx = new DsPlayTrackerCtx();
+  ctx->initParams = *initParams;
+  return ctx;
+}
+
+void DsPlayTrackerProcessFrame(NvDsFrameMeta* frame_meta, DsPlayTrackerCtx* ctx) {
+  if (ctx->initParams.detection_mask_file.empty()) {
+    return;
+  }
+}
+
+// In case of an actual processing library, processing on data wil be completed
+// in this function and output will be returned
+DsPlayTrackerOutput* DsPlayTrackerProcess(DsPlayTrackerCtx* ctx, unsigned char* data) {
+  DsPlayTrackerOutput* out = (DsPlayTrackerOutput*)calloc(1, sizeof(DsPlayTrackerOutput));
+
+  if (data != NULL) {
+    // Process your data here
+  }
+  // Fill output structure using processed output
+  // Here, we fake some detected objects and labels
+  if (ctx->initParams.fullFrame) {
+    out->numObjects = 2;
+    out->object[0] = (DsPlayTrackerObject){
+        (float)(ctx->initParams.processingWidth) / 8,
+        (float)(ctx->initParams.processingHeight) / 8,
+        (float)(ctx->initParams.processingWidth) / 8,
+        (float)(ctx->initParams.processingHeight) / 8,
+        "Obj0"};
+
+    out->object[1] = (DsPlayTrackerObject){
+        (float)(ctx->initParams.processingWidth) / 2,
+        (float)(ctx->initParams.processingHeight) / 2,
+        (float)(ctx->initParams.processingWidth) / 8,
+        (float)(ctx->initParams.processingHeight) / 8,
+        "Obj1"};
+  } else {
+    out->numObjects = 1;
+    out->object[0] = (DsPlayTrackerObject){
+        (float)(ctx->initParams.processingWidth) / 8,
+        (float)(ctx->initParams.processingHeight) / 8,
+        (float)(ctx->initParams.processingWidth) / 8,
+        (float)(ctx->initParams.processingHeight) / 8,
+        ""};
+    // Set the object label
+    snprintf(out->object[0].label, 64, "Obj_label");
+  }
+
+  return out;
+}
+
+void DsPlayTrackerCtxDeinit(DsPlayTrackerCtx* ctx) {
+  if (ctx) {
+    delete ctx;
+  }
+}

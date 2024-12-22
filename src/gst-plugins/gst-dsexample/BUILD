@@ -25,8 +25,6 @@ gst_cc_plugin(
         "dsexample_lib.h",
         "gstdsexample_optimized.cpp",
         "gstdsexample_optimized.h",
-        "utils.cpp",
-        "utils.h",
     ],
     # hdrs = [
     #   "gstdsexample.h", "dsexample_lib.h",
@@ -48,6 +46,7 @@ gst_cc_plugin(
         # "@NvDsBaseExt",
         # "@NvDsInterfaceExt",
         # "@StandardExtension",
+        "//libs/common:utils",
         "@opencv_linux//:opencv",
     ],
 )
