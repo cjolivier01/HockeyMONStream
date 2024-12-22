@@ -1,221 +1,265 @@
 #include "kmeans_cuda_simple.h"
 
-#include <cuda_runtime.h>
-#include <cfloat>
-#include <cstdlib>
+#include <vector>
 #include <iostream>
-#include <vector>
 
-#include <algorithm>
-#include <cfloat>
-#include <chrono>
-#include <random>
-#include <vector>
+#include <cuda_runtime.h>
+#include <float.h>
+#include <stdio.h>
+#include <stdlib.h>
 
-// A small data structure to do RAII for a dataset of 2-dimensional points.
-struct Data {
-  explicit Data(int size) : size(size), bytes(size * sizeof(float)) {
-    cudaMalloc(&x, bytes);
-    cudaMalloc(&y, bytes);
+// Error checking macro
+#define CHECK_CUDA_ERROR(call)                                                                   \
+  {                                                                                              \
+    cudaError_t err = call;                                                                      \
+    if (err != cudaSuccess) {                                                                    \
+      fprintf(stderr, "CUDA error in %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+      exit(EXIT_FAILURE);                                                                        \
+    }                                                                                            \
   }
 
-  Data(int size, std::vector<float>& h_x, std::vector<float>& h_y) : size(size), bytes(size * sizeof(float)) {
-    cudaMalloc(&x, bytes);
-    cudaMalloc(&y, bytes);
-    cudaMemcpy(x, h_x.data(), bytes, cudaMemcpyHostToDevice);
-    cudaMemcpy(y, h_y.data(), bytes, cudaMemcpyHostToDevice);
+// Kernel to compute distances and assign points to nearest centroid
+__global__ void assignClusters(
+    float* points,
+    float* centroids,
+    int* assignments,
+    int n_points,
+    int n_clusters,
+    int dim) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if (idx < n_points) {
+    float min_dist = FLT_MAX;
+    int closest_centroid = 0;
+
+    // Find closest centroid for this point
+    for (int c = 0; c < n_clusters; c++) {
+      float dist = 0.0f;
+
+      // Compute Euclidean distance
+      for (int d = 0; d < dim; d++) {
+        float diff = points[idx * dim + d] - centroids[c * dim + d];
+        dist += diff * diff;
+      }
+
+      if (dist < min_dist) {
+        min_dist = dist;
+        closest_centroid = c;
+      }
+    }
+
+    assignments[idx] = closest_centroid;
   }
-
-  ~Data() {
-    cudaFree(x);
-    cudaFree(y);
-  }
-
-  void clear() {
-    cudaMemset(x, 0, bytes);
-    cudaMemset(y, 0, bytes);
-  }
-
-  float* x{nullptr};
-  float* y{nullptr};
-  int size{0};
-  int bytes{0};
-};
-
-__device__ float squared_l2_distance(float x_1, float y_1, float x_2, float y_2) {
-  return (x_1 - x_2) * (x_1 - x_2) + (y_1 - y_2) * (y_1 - y_2);
 }
 
-// In the assignment step, each point (thread) computes its distance to each
-// cluster centroid and adds its x and y values to the sum of its closest
-// centroid, as well as incrementing that centroid's count of assigned points.
-__global__ void assign_clusters(
-    const float* __restrict__ data_x,
-    const float* __restrict__ data_y,
-    int data_size,
-    const float* __restrict__ means_x,
-    const float* __restrict__ means_y,
-    float* __restrict__ new_sums_x,
-    float* __restrict__ new_sums_y,
-    int k,
-    int* __restrict__ counts) {
-  const int index = blockIdx.x * blockDim.x + threadIdx.x;
-  if (index >= data_size)
-    return;
+// Kernel to update centroids
+__global__ void updateCentroids(
+    float* points,
+    float* centroids,
+    int* assignments,
+    int* cluster_sizes,
+    int n_points,
+    int n_clusters,
+    int dim) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-  // Make global loads once.
-  const float x = data_x[index];
-  const float y = data_y[index];
+  if (idx < (n_clusters * dim)) {
+    int centroid_idx = idx / dim;
+    int dim_idx = idx % dim;
 
-  float best_distance = FLT_MAX;
-  int best_cluster = 0;
-  for (int cluster = 0; cluster < k; ++cluster) {
-    const float distance = squared_l2_distance(x, y, means_x[cluster], means_y[cluster]);
-    if (distance < best_distance) {
-      best_distance = distance;
-      best_cluster = cluster;
+    float sum = 0.0f;
+    int count = 0;
+
+    // Sum up all points assigned to this centroid
+    for (int p = 0; p < n_points; p++) {
+      if (assignments[p] == centroid_idx) {
+        sum += points[p * dim + dim_idx];
+        if (dim_idx == 0) {
+          count++;
+        }
+      }
+    }
+
+    // Update centroid coordinate
+    if (count > 0) {
+      centroids[idx] = sum / count;
+      if (dim_idx == 0) {
+        cluster_sizes[centroid_idx] = count;
+      }
     }
   }
-
-  // Slow but simple.
-  atomicAdd(&new_sums_x[best_cluster], x);
-  atomicAdd(&new_sums_y[best_cluster], y);
-  atomicAdd(&counts[best_cluster], 1);
 }
 
-// Each thread is one cluster, which just recomputes its coordinates as the mean
-// of all points assigned to it.
-__global__ void compute_new_means(
-    float* __restrict__ means_x,
-    float* __restrict__ means_y,
-    const float* __restrict__ new_sum_x,
-    const float* __restrict__ new_sum_y,
-    const int* __restrict__ counts) {
-  const int cluster = threadIdx.x;
-  // Threshold count to turn 0/0 into 0/1.
-  const int count = max(1, counts[cluster]);
-  means_x[cluster] = new_sum_x[cluster] / count;
-  means_y[cluster] = new_sum_y[cluster] / count;
+// Host function to perform K-means clustering
+void kmeansGPU(
+    float* h_points,
+    float* h_centroids,
+    int* h_assignments,
+    int n_points,
+    int n_clusters,
+    int dim,
+    int max_iters,
+    float tolerance) {
+  // Allocate device memory
+  float *d_points, *d_centroids, *d_old_centroids;
+  int *d_assignments, *d_cluster_sizes;
+
+  CHECK_CUDA_ERROR(cudaMalloc(&d_points, n_points * dim * sizeof(float)));
+  CHECK_CUDA_ERROR(cudaMalloc(&d_centroids, n_clusters * dim * sizeof(float)));
+  CHECK_CUDA_ERROR(cudaMalloc(&d_old_centroids, n_clusters * dim * sizeof(float)));
+  CHECK_CUDA_ERROR(cudaMalloc(&d_assignments, n_points * sizeof(int)));
+  CHECK_CUDA_ERROR(cudaMalloc(&d_cluster_sizes, n_clusters * sizeof(int)));
+
+  // Copy input data to device
+  CHECK_CUDA_ERROR(cudaMemcpy(d_points, h_points, n_points * dim * sizeof(float), cudaMemcpyHostToDevice));
+  CHECK_CUDA_ERROR(cudaMemcpy(d_centroids, h_centroids, n_clusters * dim * sizeof(float), cudaMemcpyHostToDevice));
+
+  // Calculate grid and block dimensions
+  int block_size = 256;
+  int grid_size_points = (n_points + block_size - 1) / block_size;
+  int grid_size_centroids = (n_clusters * dim + block_size - 1) / block_size;
+
+  bool converged = false;
+  int iter = 0;
+
+  while (!converged && iter < max_iters) {
+    // Save old centroids
+    CHECK_CUDA_ERROR(
+        cudaMemcpy(d_old_centroids, d_centroids, n_clusters * dim * sizeof(float), cudaMemcpyDeviceToDevice));
+
+    // Assign points to nearest centroids
+    assignClusters<<<grid_size_points, block_size>>>(d_points, d_centroids, d_assignments, n_points, n_clusters, dim);
+    CHECK_CUDA_ERROR(cudaGetLastError());
+
+    // Reset centroids and cluster sizes
+    CHECK_CUDA_ERROR(cudaMemset(d_centroids, 0, n_clusters * dim * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMemset(d_cluster_sizes, 0, n_clusters * sizeof(int)));
+
+    // Update centroids
+    updateCentroids<<<grid_size_centroids, block_size>>>(
+        d_points, d_centroids, d_assignments, d_cluster_sizes, n_points, n_clusters, dim);
+    CHECK_CUDA_ERROR(cudaGetLastError());
+
+    // Check convergence
+    float max_change = 0.0f;
+    float* h_new_centroids = new float[n_clusters * dim];
+    float* h_old_centroids = new float[n_clusters * dim];
+
+    CHECK_CUDA_ERROR(
+        cudaMemcpy(h_new_centroids, d_centroids, n_clusters * dim * sizeof(float), cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(
+        cudaMemcpy(h_old_centroids, d_old_centroids, n_clusters * dim * sizeof(float), cudaMemcpyDeviceToHost));
+
+    for (int i = 0; i < n_clusters * dim; i++) {
+      float change = fabs(h_new_centroids[i] - h_old_centroids[i]);
+      max_change = max_change > change ? max_change : change;
+    }
+
+    converged = max_change < tolerance;
+
+    delete[] h_new_centroids;
+    delete[] h_old_centroids;
+
+    iter++;
+  }
+
+  // Copy results back to host
+  CHECK_CUDA_ERROR(cudaMemcpy(h_assignments, d_assignments, n_points * sizeof(int), cudaMemcpyDeviceToHost));
+  CHECK_CUDA_ERROR(cudaMemcpy(h_centroids, d_centroids, n_clusters * dim * sizeof(float), cudaMemcpyDeviceToHost));
+
+  // Free device memory
+  cudaFree(d_points);
+  cudaFree(d_centroids);
+  cudaFree(d_old_centroids);
+  cudaFree(d_assignments);
+  cudaFree(d_cluster_sizes);
 }
 
-namespace hm {
-namespace cuda {
-// CPU Code for K-means clustering using CUDA
-// `void kmeansCuda(const std::vector<float>& points, int numClusters, int dim, int numIterations) {
-//   int numPoints = points.size() / dim;
+// Example usage function
+int main() {
+  // Example parameters
+  const int n_points = 100;
+  const int n_clusters = 3;
+  const int dim = 2;
+  const int max_iters = 100;
+  const float tolerance = 1e-4;
 
-//   // Allocate memory on the GPU
-//   float *d_points, *d_centroids;
-//   int *d_labels, *d_clusterSizes;
-//   cudaMalloc(&d_points, points.size() * sizeof(float));
-//   cudaMalloc(&d_centroids, numClusters * dim * sizeof(float));
-//   cudaMalloc(&d_labels, numPoints * sizeof(int));
-//   cudaMalloc(&d_clusterSizes, numClusters * sizeof(int));
+  // Allocate and initialize host memory
+  float* points = new float[n_points * dim];
+  float* centroids = new float[n_clusters * dim];
+  int* assignments = new int[n_points];
 
-//   // Copy points to the GPU
-//   cudaMemcpy(d_points, points.data(), points.size() * sizeof(float), cudaMemcpyHostToDevice);
+  // Initialize points and centroids with random values
+  for (int i = 0; i < n_points * dim; i++) {
+    points[i] = static_cast<float>(rand()) / RAND_MAX;
+  }
+  for (int i = 0; i < n_clusters * dim; i++) {
+    centroids[i] = points[rand() % n_points * dim + (i % dim)];
+  }
 
-//   // Initialize centroids randomly
-//   std::vector<float> centroids(numClusters * dim);
-//   for (int i = 0; i < numClusters * dim; ++i) {
-//     centroids[i] = points[rand() % points.size()];
-//   }
-//   cudaMemcpy(d_centroids, centroids.data(), centroids.size() * sizeof(float), cudaMemcpyHostToDevice);
+  // Run K-means
+  kmeansGPU(points, centroids, assignments, n_points, n_clusters, dim, max_iters, tolerance);
 
-//   // K-means iterations
-//   for (int iter = 0; iter < numIterations; ++iter) {
-//     cudaMemset(d_clusterSizes, 0, numClusters * sizeof(int));
+  for (int i = 0; i < n_points; ++i) {
+    std::cout << assignments[i] << " ";
+  }
+  std::cout << std::endl;
 
-//     // Assign points to clusters
-//     assignClusters<<<(numPoints + 255) / 256, 256>>>(d_points, d_centroids, d_labels, numPoints, numClusters, dim);
+  // Clean up
+  delete[] points;
+  delete[] centroids;
+  delete[] assignments;
 
-//     // Update centroids
-//     updateCentroids<<<numClusters, 256, 256 * dim * sizeof(float)>>>(
-//         d_points, d_labels, d_centroids, d_clusterSizes, numPoints, numClusters, dim);
-//   }
+  return 0;
+}
 
-//   // Copy results back to the CPU
-//   std::vector<int> cluster_sizes(numClusters, -1);
-//   std::vector<int> labels(numPoints, -1);
+// void kmeansCuda(const std::vector<float>& points, int numClusters, int dim, int numIterations) {
+//   std::vector<float> h_x;
+//   std::vector<float> h_y;
 
-//   cudaMemcpy(cluster_sizes.data(), d_clusterSizes, cluster_sizes.size() * sizeof(int), cudaMemcpyDeviceToHost);
-//   cudaMemcpy(labels.data(), d_labels, labels.size() * sizeof(int), cudaMemcpyDeviceToHost);
+//   const size_t number_of_elements = h_x.size();
+//   h_x.reserve(number_of_elements);
+//   h_y.reserve(number_of_elements);
 
-//   // Print final centroids
-//   std::cout << "Final centroids:\n";
-//   for (int c = 0; c < numClusters; ++c) {
-//     std::cout << "Cluster " << c << ": ";
-//     for (int d = 0; d < dim; ++d) {
-//       std::cout << centroids[c * dim + d] << " ";
-//     }
-//     int cluster_size = cluster_sizes.at(c);
-//     std::cout << "cluster size=" << cluster_size;
-//     std::cout << std::endl;
+//   for (std::size_t i = 0; i < number_of_elements; ++i) {
+//     std::size_t pos = i << 1;
+//     h_x.push_back(points[pos]);
+//     h_y.push_back(points[pos + 1]);
 //   }
 
-//   std::cout << "point labels: [ ";
-//   for (int l = 0; l < numPoints; l++) {
-//     std::cout << labels.at(l) << " ";
-//   }
-//   std::cout << "]";
-//   std::cout << std::endl;
+//   // Load x and y into host vectors ... (omitted)
 
-//   // Free GPU memory
-//   cudaFree(d_points);
-//   cudaFree(d_centroids);
-//   cudaFree(d_labels);
-//   cudaFree(d_clusterSizes);
+//   int k = numClusters;
+
+//   Data d_data(number_of_elements, h_x, h_y);
+
+//   // Random shuffle the data and pick the first
+//   // k points (i.e. k random points).
+
+//   std::random_device seed;
+//   std::mt19937 rng(seed());
+//   std::shuffle(h_x.begin(), h_x.end(), rng);
+//   std::shuffle(h_y.begin(), h_y.end(), rng);
+//   Data d_means(k, h_x, h_y);
+
+//   Data d_sums(k);
+
+//   int* d_counts;
+//   cudaMalloc(&d_counts, k * sizeof(int));
+//   cudaMemset(d_counts, 0, k * sizeof(int));
+
+//   const int threads = 1024;
+//   const int blocks = (number_of_elements + threads - 1) / threads;
+
+//   for (size_t iteration = 0; iteration < numIterations; ++iteration) {
+//     cudaMemset(d_counts, 0, k * sizeof(int));
+//     d_sums.clear();
+
+//     assign_clusters<<<blocks, threads>>>(
+//         d_data.x, d_data.y, d_data.size, d_means.x, d_means.y, d_sums.x, d_sums.y, k, d_counts);
+//     cudaDeviceSynchronize();
+
+//     compute_new_means<<<1, k>>>(d_means.x, d_means.y, d_sums.x, d_sums.y, d_counts);
+//     cudaDeviceSynchronize();
+//   }
 // }
-
-void kmeansCuda(const std::vector<float>& points, int numClusters, int dim, int numIterations) {
-  std::vector<float> h_x;
-  std::vector<float> h_y;
-
-  const size_t number_of_elements = h_x.size();
-  h_x.reserve(number_of_elements);
-  h_y.reserve(number_of_elements);
-
-  for (std::size_t i = 0; i < number_of_elements; ++i) {
-    std::size_t pos = i << 1;
-    h_x.push_back(points[pos]);
-    h_y.push_back(points[pos + 1]);
-  }
-
-  // Load x and y into host vectors ... (omitted)
-
-  int k = numClusters;
-
-  Data d_data(number_of_elements, h_x, h_y);
-
-  // Random shuffle the data and pick the first
-  // k points (i.e. k random points).
-
-  std::random_device seed;
-  std::mt19937 rng(seed());
-  std::shuffle(h_x.begin(), h_x.end(), rng);
-  std::shuffle(h_y.begin(), h_y.end(), rng);
-  Data d_means(k, h_x, h_y);
-
-  Data d_sums(k);
-
-  int* d_counts;
-  cudaMalloc(&d_counts, k * sizeof(int));
-  cudaMemset(d_counts, 0, k * sizeof(int));
-
-  const int threads = 1024;
-  const int blocks = (number_of_elements + threads - 1) / threads;
-
-  for (size_t iteration = 0; iteration < numIterations; ++iteration) {
-    cudaMemset(d_counts, 0, k * sizeof(int));
-    d_sums.clear();
-
-    assign_clusters<<<blocks, threads>>>(
-        d_data.x, d_data.y, d_data.size, d_means.x, d_means.y, d_sums.x, d_sums.y, k, d_counts);
-    cudaDeviceSynchronize();
-
-    compute_new_means<<<1, k>>>(d_means.x, d_means.y, d_sums.x, d_sums.y, d_counts);
-    cudaDeviceSynchronize();
-  }
-}
-} // namespace cuda
-} // namespace hm

@@ -64,6 +64,15 @@
       "cwd": "${workspaceFolder}/src",
       "program": "${workspaceFolder}/src/bazel-bin/libs/k-means/k-means",
       "args": [
+        "--algorithm", 
+        //"kmcuda",
+        //"cuda_base",
+        "cuda_best",
+        "--dim", "2",
+        "--N", "25",
+        "--k", "3",
+        "--iterations", "10",
+        "--verify",
       ],
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}/src",

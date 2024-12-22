@@ -121,6 +121,7 @@ void run_kmeans(bpp::ProgramArguments& args, std::vector<F>& data, std::vector<F
 	std::size_t k = (std::size_t)args.getArgInt("k").getValue();
 	std::size_t n = (std::size_t)args.getArgInt("N").getValue();
 	std::size_t iters = (std::size_t)args.getArgInt("iterations").getValue();
+  assert(data.size() == n * dim);
 	auto algoName = args.getArgString("algorithm").getValue();
 
 	CudaExecParameters cudaExecParams;
@@ -167,6 +168,9 @@ void run_kmeans(bpp::ProgramArguments& args, std::vector<F>& data, std::vector<F
 	std::cout << " " << (stopwatch.getMiliseconds() * 1000000.0 / (double)(iters * dim * n)); std::cout.flush();
 	std::cerr << " ns/input float)"; std::cerr.flush();
 	std::cout << std::endl;
+
+  const std::vector<std::uint32_t>& assignments = algorithm->getAssignment();
+  (void)assignments;
 
 	if (args.getArgBool("verify").getValue() && algoName != "serial") {
 		std::cerr << "Verifying results ... "; std::cerr.flush();
@@ -297,7 +301,7 @@ int main(int argc, char* argv[])
 	try {
 		args.registerArg<bpp::ProgramArguments::ArgInt>("dim", "Vector dimension.", false, 20, 2);
 		args.registerArg<bpp::ProgramArguments::ArgInt>("k", "Number of buckets.", false, 128, 2);
-		args.registerArg<bpp::ProgramArguments::ArgInt>("N", "Number of vectors in a batch.", false, 10240, 128);
+		args.registerArg<bpp::ProgramArguments::ArgInt>("N", "Number of vectors in a batch.", false, 10240, 2);
 		args.registerArg<bpp::ProgramArguments::ArgInt>("iterations", "Iterations to be performed.", false, 1, 1);
 		args.registerArg<bpp::ProgramArguments::ArgInt>("seed", "Random generator seed.", false, 42, 0);
 

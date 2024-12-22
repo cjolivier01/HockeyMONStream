@@ -1,1 +1,1 @@
-nvcc kmeans_cuda.cu -o kmeans_cuda
+nvcc kmeans_cuda_simple.cu -o kmeans_cuda
