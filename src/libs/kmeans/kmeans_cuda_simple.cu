@@ -1,4 +1,4 @@
-#include "kmeans_cuda.h"
+#include "kmeans_cuda_simple.h"
 
 #include <cuda_runtime.h>
 #include <cfloat>

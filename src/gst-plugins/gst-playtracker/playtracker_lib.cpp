@@ -13,7 +13,7 @@
 
 #include "playtracker_lib.h"
 #include "gstplaytracker.h"
-#include "kmeans_cuda.h"
+#include "kmeans_cuda_simple.h"
 #include "utils.h"
 
 #include <opencv2/opencv.hpp>
