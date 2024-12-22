@@ -1,7 +1,7 @@
 load("@gst_plugin_dev//build:gst_plugin.bzl", "gst_cc_plugin")
 
 gst_cc_plugin(
-    name = "nvdsgst_dsplaytracker",
+    name = "gstplaytracker",
     srcs = [
         "playtracker_lib.cpp",
         "playtracker_lib.h",
@@ -16,11 +16,6 @@ gst_cc_plugin(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        # "@deepstream_lib",
-        # "@deepstream_apps_common",
-        # "@NvDsBaseExt",
-        # "@NvDsInterfaceExt",
-        # "@StandardExtension",
         "//libs/common:utils",
         "@opencv_linux//:opencv",
     ],

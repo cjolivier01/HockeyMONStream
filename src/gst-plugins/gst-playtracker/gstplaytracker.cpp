@@ -27,19 +27,19 @@
  */
 
 #include <string.h>
-#include <fstream>
-#include <iostream>
-#include <ostream>
-#include <sstream>
+// #include <fstream>
+// #include <iostream>
+// #include <ostream>
+// #include <sstream>
 #include <string>
 
 #include "gstplaytracker.h"
 #include "utils.h"
 
 #include <sys/time.h>
-#include <condition_variable>
-#include <mutex>
-#include <thread>
+// #include <condition_variable>
+// #include <mutex>
+// #include <thread>
 
 GST_DEBUG_CATEGORY_STATIC(gst_playtracker_debug);
 #define GST_CAT_DEFAULT gst_playtracker_debug
@@ -1457,7 +1457,7 @@ static gboolean playtracker_plugin_init(GstPlugin* plugin) {
 GST_PLUGIN_DEFINE(
     GST_VERSION_MAJOR,
     GST_VERSION_MINOR,
-    nvdsgst_playtracker,
+    playtracker,
     DESCRIPTION,
     playtracker_plugin_init,
     "7.1",
