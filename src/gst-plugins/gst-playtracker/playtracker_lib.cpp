@@ -25,9 +25,9 @@
 
 struct DsPlayTrackerCtx {
   DsPlayTrackerInitParams initParams;
-  cv::Mat detection_bit_mask;
-  cv::Mat detection_u8_mask;
-  cv::Point2f detection_mask_centroid;
+  // cv::Mat detection_bit_mask;
+  // cv::Mat detection_u8_mask;
+  // cv::Point2f detection_mask_centroid;
 };
 
 namespace {
