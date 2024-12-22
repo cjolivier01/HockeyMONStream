@@ -67,27 +67,23 @@ enum {
   PROP_DETECTION_MASK_FILE,
 };
 
-#define CHECK_NVDS_MEMORY_AND_GPUID(object, surface)                                 \
-  ({                                                                                 \
-    int _errtype = 0;                                                                \
-    do {                                                                             \
-      if ((surface->memType == NVBUF_MEM_DEFAULT ||                                  \
-           surface->memType == NVBUF_MEM_CUDA_DEVICE) &&                             \
-          (surface->gpuId != object->gpu_id)) {                                      \
-        GST_ELEMENT_ERROR(                                                           \
-            object,                                                                  \
-            RESOURCE,                                                                \
-            FAILED,                                                                  \
-            ("Input surface gpu-id doesnt match with configured gpu-id for element," \
-             " please allocate input using unified memory, or use same gpu-ids"),    \
-            ("surface-gpu-id=%d,%s-gpu-id=%d",                                       \
-             surface->gpuId,                                                         \
-             GST_ELEMENT_NAME(object),                                               \
-             object->gpu_id));                                                       \
-        _errtype = 1;                                                                \
-      }                                                                              \
-    } while (0);                                                                     \
-    _errtype;                                                                        \
+#define CHECK_NVDS_MEMORY_AND_GPUID(object, surface)                                                       \
+  ({                                                                                                       \
+    int _errtype = 0;                                                                                      \
+    do {                                                                                                   \
+      if ((surface->memType == NVBUF_MEM_DEFAULT || surface->memType == NVBUF_MEM_CUDA_DEVICE) &&          \
+          (surface->gpuId != object->gpu_id)) {                                                            \
+        GST_ELEMENT_ERROR(                                                                                 \
+            object,                                                                                        \
+            RESOURCE,                                                                                      \
+            FAILED,                                                                                        \
+            ("Input surface gpu-id doesnt match with configured gpu-id for element,"                       \
+             " please allocate input using unified memory, or use same gpu-ids"),                          \
+            ("surface-gpu-id=%d,%s-gpu-id=%d", surface->gpuId, GST_ELEMENT_NAME(object), object->gpu_id)); \
+        _errtype = 1;                                                                                      \
+      }                                                                                                    \
+    } while (0);                                                                                           \
+    _errtype;                                                                                              \
   })
 
 /* Default values for properties */
@@ -106,82 +102,50 @@ enum {
 #define MIN_INPUT_OBJECT_WIDTH 1
 #define MIN_INPUT_OBJECT_HEIGHT 1
 
-#define CHECK_NPP_STATUS(npp_status, error_str)         \
-  do {                                                  \
-    if ((npp_status) != NPP_SUCCESS) {                  \
-      g_print(                                          \
-          "Error: %s in %s at line %d: NPP Error %d\n", \
-          error_str,                                    \
-          __FILE__,                                     \
-          __LINE__,                                     \
-          npp_status);                                  \
-      goto error;                                       \
-    }                                                   \
+#define CHECK_NPP_STATUS(npp_status, error_str)                                                         \
+  do {                                                                                                  \
+    if ((npp_status) != NPP_SUCCESS) {                                                                  \
+      g_print("Error: %s in %s at line %d: NPP Error %d\n", error_str, __FILE__, __LINE__, npp_status); \
+      goto error;                                                                                       \
+    }                                                                                                   \
   } while (0)
 
-#define CHECK_CUDA_STATUS(cuda_status, error_str) \
-  do {                                            \
-    if ((cuda_status) != cudaSuccess) {           \
-      g_print(                                    \
-          "Error: %s in %s at line %d (%s)\n",    \
-          error_str,                              \
-          __FILE__,                               \
-          __LINE__,                               \
-          cudaGetErrorName(cuda_status));         \
-      goto error;                                 \
-    }                                             \
+#define CHECK_CUDA_STATUS(cuda_status, error_str)                                                                 \
+  do {                                                                                                            \
+    if ((cuda_status) != cudaSuccess) {                                                                           \
+      g_print("Error: %s in %s at line %d (%s)\n", error_str, __FILE__, __LINE__, cudaGetErrorName(cuda_status)); \
+      goto error;                                                                                                 \
+    }                                                                                                             \
   } while (0)
 
 /* By default NVIDIA Hardware allocated memory flows through the pipeline. We
  * will be processing on this type of memory only. */
 #define GST_CAPS_FEATURE_MEMORY_NVMM "memory:NVMM"
-static GstStaticPadTemplate gst_playtracker_sink_template =
-    GST_STATIC_PAD_TEMPLATE(
-        "sink",
-        GST_PAD_SINK,
-        GST_PAD_ALWAYS,
-        GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE_WITH_FEATURES(
-            GST_CAPS_FEATURE_MEMORY_NVMM,
-            "{ NV12, RGBA, I420 }")));
+static GstStaticPadTemplate gst_playtracker_sink_template = GST_STATIC_PAD_TEMPLATE(
+    "sink",
+    GST_PAD_SINK,
+    GST_PAD_ALWAYS,
+    GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE_WITH_FEATURES(GST_CAPS_FEATURE_MEMORY_NVMM, "{ NV12, RGBA, I420 }")));
 
-static GstStaticPadTemplate gst_playtracker_src_template =
-    GST_STATIC_PAD_TEMPLATE(
-        "src",
-        GST_PAD_SRC,
-        GST_PAD_ALWAYS,
-        GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE_WITH_FEATURES(
-            GST_CAPS_FEATURE_MEMORY_NVMM,
-            "{ NV12, RGBA, I420 }")));
+static GstStaticPadTemplate gst_playtracker_src_template = GST_STATIC_PAD_TEMPLATE(
+    "src",
+    GST_PAD_SRC,
+    GST_PAD_ALWAYS,
+    GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE_WITH_FEATURES(GST_CAPS_FEATURE_MEMORY_NVMM, "{ NV12, RGBA, I420 }")));
 
 /* Define our element type. Standard GObject/GStreamer boilerplate stuff */
 #define gst_playtracker_parent_class parent_class
 G_DEFINE_TYPE(GstDsPlayTracker, gst_playtracker, GST_TYPE_BASE_TRANSFORM);
 
-static void gst_playtracker_set_property(
-    GObject* object,
-    guint prop_id,
-    const GValue* value,
-    GParamSpec* pspec);
-static void gst_playtracker_get_property(
-    GObject* object,
-    guint prop_id,
-    GValue* value,
-    GParamSpec* pspec);
+static void gst_playtracker_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec);
+static void gst_playtracker_get_property(GObject* object, guint prop_id, GValue* value, GParamSpec* pspec);
 
-static gboolean gst_playtracker_set_caps(
-    GstBaseTransform* btrans,
-    GstCaps* incaps,
-    GstCaps* outcaps);
+static gboolean gst_playtracker_set_caps(GstBaseTransform* btrans, GstCaps* incaps, GstCaps* outcaps);
 static gboolean gst_playtracker_start(GstBaseTransform* btrans);
 static gboolean gst_playtracker_stop(GstBaseTransform* btrans);
 
-static GstFlowReturn gst_playtracker_submit_input_buffer(
-    GstBaseTransform* btrans,
-    gboolean discont,
-    GstBuffer* inbuf);
-static GstFlowReturn gst_playtracker_generate_output(
-    GstBaseTransform* btrans,
-    GstBuffer** outbuf);
+static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btrans, gboolean discont, GstBuffer* inbuf);
+static GstFlowReturn gst_playtracker_generate_output(GstBaseTransform* btrans, GstBuffer** outbuf);
 
 static void attach_metadata_full_frame(
     GstDsPlayTracker* playtracker,
@@ -220,10 +184,8 @@ static void gst_playtracker_class_init(GstDsPlayTrackerClass* klass) {
   gstbasetransform_class->start = GST_DEBUG_FUNCPTR(gst_playtracker_start);
   gstbasetransform_class->stop = GST_DEBUG_FUNCPTR(gst_playtracker_stop);
 
-  gstbasetransform_class->submit_input_buffer =
-      GST_DEBUG_FUNCPTR(gst_playtracker_submit_input_buffer);
-  gstbasetransform_class->generate_output =
-      GST_DEBUG_FUNCPTR(gst_playtracker_generate_output);
+  gstbasetransform_class->submit_input_buffer = GST_DEBUG_FUNCPTR(gst_playtracker_submit_input_buffer);
+  gstbasetransform_class->generate_output = GST_DEBUG_FUNCPTR(gst_playtracker_generate_output);
 
   /* Install properties */
   g_object_class_install_property(
@@ -294,8 +256,7 @@ static void gst_playtracker_class_init(GstDsPlayTrackerClass* klass) {
           1,
           NVDSPLAYTRACKER_MAX_BATCH_SIZE,
           DEFAULT_BATCH_SIZE,
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
-                        GST_PARAM_MUTABLE_READY)));
+          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
 
   g_object_class_install_property(
       gobject_class,
@@ -307,16 +268,10 @@ static void gst_playtracker_class_init(GstDsPlayTrackerClass* klass) {
           0,
           G_MAXUINT,
           0,
-          GParamFlags(
-              G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS |
-              GST_PARAM_MUTABLE_READY)));
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
   /* Set sink and src pad capabilities */
-  gst_element_class_add_pad_template(
-      gstelement_class,
-      gst_static_pad_template_get(&gst_playtracker_src_template));
-  gst_element_class_add_pad_template(
-      gstelement_class,
-      gst_static_pad_template_get(&gst_playtracker_sink_template));
+  gst_element_class_add_pad_template(gstelement_class, gst_static_pad_template_get(&gst_playtracker_src_template));
+  gst_element_class_add_pad_template(gstelement_class, gst_static_pad_template_get(&gst_playtracker_sink_template));
 
   /* Set metadata describing the element */
   gst_element_class_set_details_simple(
@@ -353,11 +308,7 @@ static void gst_playtracker_init(GstDsPlayTracker* playtracker) {
 
 /* Function called when a property of the element is set. Standard boilerplate.
  */
-static void gst_playtracker_set_property(
-    GObject* object,
-    guint prop_id,
-    const GValue* value,
-    GParamSpec* pspec) {
+static void gst_playtracker_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(object);
   switch (prop_id) {
     case PROP_UNIQUE_ID:
@@ -378,16 +329,14 @@ static void gst_playtracker_set_property(
     case PROP_BATCH_SIZE:
       playtracker->max_batch_size = g_value_get_uint(value);
       break;
-    case PROP_DETECTION_MASK_FILE:
-    {
-      const char *str = g_value_get_string(value);
+    case PROP_DETECTION_MASK_FILE: {
+      const char* str = g_value_get_string(value);
       if (str && *str) {
-          strncpy(playtracker->detection_mask_file, str, STRSIZE(playtracker->detection_mask_file) - 1);
+        strncpy(playtracker->detection_mask_file, str, STRSIZE(playtracker->detection_mask_file) - 1);
       } else {
         playtracker->detection_mask_file[0] = '\0';
       }
-    }
-      break;
+    } break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
@@ -397,11 +346,7 @@ static void gst_playtracker_set_property(
 /* Function called when a property of the element is requested. Standard
  * boilerplate.
  */
-static void gst_playtracker_get_property(
-    GObject* object,
-    guint prop_id,
-    GValue* value,
-    GParamSpec* pspec) {
+static void gst_playtracker_get_property(GObject* object, guint prop_id, GValue* value, GParamSpec* pspec) {
   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(object);
 
   switch (prop_id) {
@@ -446,10 +391,10 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
 #endif
   NvBufSurfaceCreateParams create_params = {0};
   DsPlayTrackerInitParams init_params = {
-      .processingWidth=playtracker->processing_width,
-      .processingHeight=playtracker->processing_height,
-      .fullFrame=playtracker->process_full_frame,
-      .detection_mask_file=playtracker->detection_mask_file};
+      .processingWidth = playtracker->processing_width,
+      .processingHeight = playtracker->processing_height,
+      .fullFrame = playtracker->process_full_frame,
+      .detection_mask_file = playtracker->detection_mask_file};
 
   /* Algorithm specific initializations and resource allocation. */
   playtracker->playtrackerlib_ctx = DsPlayTrackerCtxInit(&init_params);
@@ -458,15 +403,12 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
 
   nvtx_str = "GstNvDsPlayTracker: UID=" + std::to_string(playtracker->unique_id);
   auto nvtx_deleter = [](nvtxDomainHandle_t d) { nvtxDomainDestroy(d); };
-  std::unique_ptr<nvtxDomainRegistration, decltype(nvtx_deleter)>
-      nvtx_domain_ptr(nvtxDomainCreate(nvtx_str.c_str()), nvtx_deleter);
+  std::unique_ptr<nvtxDomainRegistration, decltype(nvtx_deleter)> nvtx_domain_ptr(
+      nvtxDomainCreate(nvtx_str.c_str()), nvtx_deleter);
 
-  CHECK_CUDA_STATUS(
-      cudaSetDevice(playtracker->gpu_id), "Unable to set cuda device");
+  CHECK_CUDA_STATUS(cudaSetDevice(playtracker->gpu_id), "Unable to set cuda device");
 
-  CHECK_CUDA_STATUS(
-      cudaStreamCreate(&playtracker->cuda_stream),
-      "Could not create cuda stream");
+  CHECK_CUDA_STATUS(cudaStreamCreate(&playtracker->cuda_stream), "Could not create cuda stream");
 
 #ifdef WITH_OPENCV
   if (playtracker->inter_buf)
@@ -490,9 +432,7 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
 #endif
 
 #ifdef WITH_OPENCV
-  if (NvBufSurfaceCreate(
-          &playtracker->inter_buf, playtracker->max_batch_size, &create_params) !=
-      0) {
+  if (NvBufSurfaceCreate(&playtracker->inter_buf, playtracker->max_batch_size, &create_params) != 0) {
     GST_ERROR("Error: Could not allocate internal buffer for playtracker");
     goto error;
   }
@@ -513,8 +453,7 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
     cvmat = new cv::Mat[playtracker->max_batch_size];
 
     for (guint j = 0; j < playtracker->max_batch_size; j++) {
-      cvmat[j] = cv::Mat(
-          playtracker->processing_height, playtracker->processing_width, CV_8UC3);
+      cvmat[j] = cv::Mat(playtracker->processing_height, playtracker->processing_width, CV_8UC3);
     }
 
     if (!cvmat)
@@ -526,8 +465,7 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
   GST_DEBUG_OBJECT(playtracker, "created CV Mat\n");
 #else
   for (int i = 0; i < 2; i++) {
-    if (NvBufSurfaceCreate(
-            &inter_buf, playtracker->max_batch_size, &create_params) != 0) {
+    if (NvBufSurfaceCreate(&inter_buf, playtracker->max_batch_size, &create_params) != 0) {
       GST_ERROR("Error: Could not allocate internal buffer for playtracker");
       goto error;
     }
@@ -537,32 +475,26 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
 #endif
 
   /* Set the NvBufSurfTransform config parameters. */
-  playtracker->transform_config_params.compute_mode =
-      NvBufSurfTransformCompute_Default;
+  playtracker->transform_config_params.compute_mode = NvBufSurfTransformCompute_Default;
   playtracker->transform_config_params.gpu_id = playtracker->gpu_id;
 
   /* Create the intermediate NvBufSurface structure for holding an array of
    * input NvBufSurfaceParams for batched transforms. */
-  playtracker->batch_insurf.surfaceList =
-      new NvBufSurfaceParams[playtracker->max_batch_size];
+  playtracker->batch_insurf.surfaceList = new NvBufSurfaceParams[playtracker->max_batch_size];
   playtracker->batch_insurf.batchSize = playtracker->max_batch_size;
   playtracker->batch_insurf.gpuId = playtracker->gpu_id;
 
   /* Set up the NvBufSurfTransformParams structure for batched transforms. */
-  playtracker->transform_params.src_rect =
-      new NvBufSurfTransformRect[playtracker->max_batch_size];
-  playtracker->transform_params.dst_rect =
-      new NvBufSurfTransformRect[playtracker->max_batch_size];
-  playtracker->transform_params.transform_flag = NVBUFSURF_TRANSFORM_FILTER |
-      NVBUFSURF_TRANSFORM_CROP_SRC | NVBUFSURF_TRANSFORM_CROP_DST;
+  playtracker->transform_params.src_rect = new NvBufSurfTransformRect[playtracker->max_batch_size];
+  playtracker->transform_params.dst_rect = new NvBufSurfTransformRect[playtracker->max_batch_size];
+  playtracker->transform_params.transform_flag =
+      NVBUFSURF_TRANSFORM_FILTER | NVBUFSURF_TRANSFORM_CROP_SRC | NVBUFSURF_TRANSFORM_CROP_DST;
   playtracker->transform_params.transform_flip = NvBufSurfTransform_None;
-  playtracker->transform_params.transform_filter =
-      NvBufSurfTransformInter_Default;
+  playtracker->transform_params.transform_filter = NvBufSurfTransformInter_Default;
 
   /* Start a thread which will pop output from the algorithm, form NvDsMeta and
    * push buffers to the next element. */
-  playtracker->process_thread = g_thread_new(
-      "playtracker-process-thread", gst_playtracker_output_loop, playtracker);
+  playtracker->process_thread = g_thread_new("playtracker-process-thread", gst_playtracker_output_loop, playtracker);
 
   playtracker->nvtx_domain = nvtx_domain_ptr.release();
 
@@ -656,16 +588,12 @@ static gboolean gst_playtracker_stop(GstBaseTransform* btrans) {
 /**
  * Called when source / sink pad capabilities have been negotiated.
  */
-static gboolean gst_playtracker_set_caps(
-    GstBaseTransform* btrans,
-    GstCaps* incaps,
-    GstCaps* outcaps) {
+static gboolean gst_playtracker_set_caps(GstBaseTransform* btrans, GstCaps* incaps, GstCaps* outcaps) {
   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(btrans);
   /* Save the input video information, since this will be required later. */
   gst_video_info_from_caps(&playtracker->video_info, incaps);
 
-  CHECK_CUDA_STATUS(
-      cudaSetDevice(playtracker->gpu_id), "Unable to set cuda device");
+  CHECK_CUDA_STATUS(cudaSetDevice(playtracker->gpu_id), "Unable to set cuda device");
 
   return TRUE;
 
@@ -706,12 +634,7 @@ static GstFlowReturn scale_and_fill_data(
   ratio = MIN(1.0 * dest_width / src_width, 1.0 * dest_height / src_height);
 
   if ((crop_rect_params->width == 0) || (crop_rect_params->height == 0)) {
-    GST_ELEMENT_ERROR(
-        playtracker,
-        STREAM,
-        FAILED,
-        ("%s:crop_rect_params dimensions are zero", __func__),
-        (NULL));
+    GST_ELEMENT_ERROR(playtracker, STREAM, FAILED, ("%s:crop_rect_params dimensions are zero", __func__), (NULL));
     return GST_FLOW_ERROR;
   }
 #ifdef __aarch64__
@@ -727,25 +650,21 @@ static GstFlowReturn scale_and_fill_data(
   GST_DEBUG_OBJECT(playtracker, "Scaling and converting input buffer\n");
 
   /* Create temporary src and dest surfaces for NvBufSurfTransform API. */
-  playtracker->batch_insurf.surfaceList[playtracker->batch_insurf.numFilled] =
-      *src_frame;
+  playtracker->batch_insurf.surfaceList[playtracker->batch_insurf.numFilled] = *src_frame;
 
   /* Set the source ROI. Could be entire frame or an object. */
   playtracker->transform_params.src_rect[playtracker->batch_insurf.numFilled] = {
       (guint)src_top, (guint)src_left, (guint)src_width, (guint)src_height};
   /* Set the dest ROI. Could be the entire destination frame or part of it to
    * maintain aspect ratio. */
-  playtracker->transform_params.dst_rect[playtracker->batch_insurf.numFilled] = {
-      0, 0, dest_width, dest_height};
+  playtracker->transform_params.dst_rect[playtracker->batch_insurf.numFilled] = {0, 0, dest_width, dest_height};
 
   playtracker->batch_insurf.numFilled++;
 
   return GST_FLOW_OK;
 }
 
-static gboolean convert_batch_and_push_to_process_thread(
-    GstDsPlayTracker* playtracker,
-    GstDsPlayTrackerBatch* batch) {
+static gboolean convert_batch_and_push_to_process_thread(GstDsPlayTracker* playtracker, GstDsPlayTrackerBatch* batch) {
   NvBufSurfTransform_Error err;
   NvBufSurfTransformConfigParams transform_config_params;
   std::string nvtx_str;
@@ -754,19 +673,14 @@ static gboolean convert_batch_and_push_to_process_thread(
 #endif
 
   // Configure transform session parameters for the transformation
-  transform_config_params.compute_mode =
-      playtracker->transform_config_params.compute_mode;
+  transform_config_params.compute_mode = playtracker->transform_config_params.compute_mode;
   transform_config_params.gpu_id = playtracker->gpu_id;
   transform_config_params.cuda_stream = playtracker->cuda_stream;
 
   err = NvBufSurfTransformSetSessionParams(&transform_config_params);
   if (err != NvBufSurfTransformError_Success) {
     GST_ELEMENT_ERROR(
-        playtracker,
-        STREAM,
-        FAILED,
-        ("NvBufSurfTransformSetSessionParams failed with error %d", err),
-        (NULL));
+        playtracker, STREAM, FAILED, ("NvBufSurfTransformSetSessionParams failed with error %d", err), (NULL));
     return FALSE;
   }
 
@@ -776,8 +690,7 @@ static gboolean convert_batch_and_push_to_process_thread(
   eventAttrib.colorType = NVTX_COLOR_ARGB;
   eventAttrib.color = 0xFFFF0000;
   eventAttrib.messageType = NVTX_MESSAGE_TYPE_ASCII;
-  nvtx_str =
-      "convert_buf batch_num=" + std::to_string(playtracker->current_batch_num);
+  nvtx_str = "convert_buf batch_num=" + std::to_string(playtracker->current_batch_num);
   eventAttrib.message.ascii = nvtx_str.c_str();
 
   nvtxDomainRangePushEx(playtracker->nvtx_domain, &eventAttrib);
@@ -805,21 +718,13 @@ static gboolean convert_batch_and_push_to_process_thread(
     NvBufSurfaceMemSet(playtracker->inter_buf, i, 0, 0);
 
   /* Batched tranformation. */
-  err = NvBufSurfTransform(
-      &playtracker->batch_insurf,
-      playtracker->inter_buf,
-      &playtracker->transform_params);
+  err = NvBufSurfTransform(&playtracker->batch_insurf, playtracker->inter_buf, &playtracker->transform_params);
 
   nvtxDomainRangePop(playtracker->nvtx_domain);
 
   if (err != NvBufSurfTransformError_Success) {
     GST_ELEMENT_ERROR(
-        playtracker,
-        STREAM,
-        FAILED,
-        ("NvBufSurfTransform failed with error %d while converting buffer",
-         err),
-        (NULL));
+        playtracker, STREAM, FAILED, ("NvBufSurfTransform failed with error %d while converting buffer", err), (NULL));
     return FALSE;
   }
 
@@ -828,12 +733,7 @@ static gboolean convert_batch_and_push_to_process_thread(
   for (guint i = 0; i < playtracker->batch_insurf.numFilled; i++) {
     // Map the buffer so that it can be accessed by CPU
     if (NvBufSurfaceMap(playtracker->inter_buf, i, 0, NVBUF_MAP_READ) != 0) {
-      GST_ELEMENT_ERROR(
-          playtracker,
-          STREAM,
-          FAILED,
-          ("%s:buffer map to be accessed by CPU failed", __func__),
-          (NULL));
+      GST_ELEMENT_ERROR(playtracker, STREAM, FAILED, ("%s:buffer map to be accessed by CPU failed", __func__), (NULL));
       return FALSE;
     }
     // sync mapped data for CPU access
@@ -862,11 +762,7 @@ static gboolean convert_batch_and_push_to_process_thread(
 
     if (NvBufSurfaceUnMap(playtracker->inter_buf, i, 0)) {
       GST_ELEMENT_ERROR(
-          playtracker,
-          STREAM,
-          FAILED,
-          ("%s:buffer unmap to be accessed by CPU failed", __func__),
-          (NULL));
+          playtracker, STREAM, FAILED, ("%s:buffer unmap to be accessed by CPU failed", __func__), (NULL));
       return FALSE;
     }
 
@@ -875,12 +771,7 @@ static gboolean convert_batch_and_push_to_process_thread(
     // CUDA-EGL interop APIs
     if (USE_EGLIMAGE) {
       if (NvBufSurfaceMapEglImage(playtracker->inter_buf, 0) != 0) {
-        GST_ELEMENT_ERROR(
-            playtracker,
-            STREAM,
-            FAILED,
-            ("%s:buffer map eglimage failed", __func__),
-            (NULL));
+        GST_ELEMENT_ERROR(playtracker, STREAM, FAILED, ("%s:buffer map eglimage failed", __func__), (NULL));
         return FALSE;
       }
       // playtracker->inter_buf->surfaceList[0].mappedAddr.eglImage
@@ -908,10 +799,7 @@ static gboolean convert_batch_and_push_to_process_thread(
 /**
  * Called when element recieves an input buffer from upstream element.
  */
-static GstFlowReturn gst_playtracker_submit_input_buffer(
-    GstBaseTransform* btrans,
-    gboolean discont,
-    GstBuffer* inbuf) {
+static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btrans, gboolean discont, GstBuffer* inbuf) {
   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(btrans);
   GstMapInfo in_map_info;
   NvBufSurface* in_surf;
@@ -936,22 +824,16 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(
   eventAttrib.colorType = NVTX_COLOR_ARGB;
   eventAttrib.color = 0xFFFF0000;
   eventAttrib.messageType = NVTX_MESSAGE_TYPE_ASCII;
-  nvtx_str = "buffer_process batch_num=" +
-      std::to_string(playtracker->current_batch_num);
+  nvtx_str = "buffer_process batch_num=" + std::to_string(playtracker->current_batch_num);
   eventAttrib.message.ascii = nvtx_str.c_str();
-  nvtxRangeId_t buf_process_range =
-      nvtxDomainRangeStartEx(playtracker->nvtx_domain, &eventAttrib);
+  nvtxRangeId_t buf_process_range = nvtxDomainRangeStartEx(playtracker->nvtx_domain, &eventAttrib);
 
   memset(&in_map_info, 0, sizeof(in_map_info));
 
   /* Map the buffer contents and get the pointer to NvBufSurface. */
   if (!gst_buffer_map(inbuf, &in_map_info, GST_MAP_READ)) {
     GST_ELEMENT_ERROR(
-        playtracker,
-        STREAM,
-        FAILED,
-        ("%s:gst buffer map to get pointer to NvBufSurface failed", __func__),
-        (NULL));
+        playtracker, STREAM, FAILED, ("%s:gst buffer map to get pointer to NvBufSurface failed", __func__), (NULL));
     return GST_FLOW_ERROR;
   }
   in_surf = (NvBufSurface*)in_map_info.data;
@@ -960,12 +842,7 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(
 
   batch_meta = gst_buffer_get_nvds_batch_meta(inbuf);
   if (batch_meta == nullptr) {
-    GST_ELEMENT_ERROR(
-        playtracker,
-        STREAM,
-        FAILED,
-        ("NvDsBatchMeta not found for input buffer."),
-        (NULL));
+    GST_ELEMENT_ERROR(playtracker, STREAM, FAILED, ("NvDsBatchMeta not found for input buffer."), (NULL));
     return GST_FLOW_ERROR;
   }
   num_filled = batch_meta->num_frames_in_batch;
@@ -1003,8 +880,7 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(
       frame.scale_ratio_x = scale_ratio;
       frame.scale_ratio_y = scale_ratio;
       frame.obj_meta = nullptr;
-      frame.frame_meta =
-          nvds_get_nth_frame_meta(batch_meta->frame_meta_list, i);
+      frame.frame_meta = nvds_get_nth_frame_meta(batch_meta->frame_meta_list, i);
       frame.frame_num = frame.frame_meta->frame_num;
       frame.batch_index = i;
       frame.input_surf_params = in_surf->surfaceList + i;
@@ -1012,8 +888,7 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(
 
       // Set the transform session parameters for the conversions executed in
       // this thread.
-      if (batch->frames.size() == playtracker->max_batch_size ||
-          i == num_filled) {
+      if (batch->frames.size() == playtracker->max_batch_size || i == num_filled) {
         if (!convert_batch_and_push_to_process_thread(playtracker, batch.get())) {
           return GST_FLOW_ERROR;
         }
@@ -1031,11 +906,9 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(
     NvDsObjectMeta* obj_meta = NULL;
     NvDsMetaList* l_obj = NULL;
 
-    for (l_frame = batch_meta->frame_meta_list; l_frame != NULL;
-         l_frame = l_frame->next) {
+    for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
       frame_meta = (NvDsFrameMeta*)(l_frame->data);
-      for (l_obj = frame_meta->obj_meta_list; l_obj != NULL;
-           l_obj = l_obj->next) {
+      for (l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
         obj_meta = (NvDsObjectMeta*)(l_obj->data);
 
         /* Should not process on objects smaller than MIN_INPUT_OBJECT_WIDTH x
@@ -1047,12 +920,9 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(
         /* Extra check for Jetson devices as default compute mode on Jetson is
          * VIC which supports min 16x16 */
         if (prop.integrated) {
-          if (playtracker->transform_config_params.compute_mode ==
-                  NvBufSurfTransformCompute_VIC ||
-              playtracker->transform_config_params.compute_mode ==
-                  NvBufSurfTransformCompute_Default) {
-            if (obj_meta->rect_params.width < 16 ||
-                obj_meta->rect_params.height < 16)
+          if (playtracker->transform_config_params.compute_mode == NvBufSurfTransformCompute_VIC ||
+              playtracker->transform_config_params.compute_mode == NvBufSurfTransformCompute_Default) {
+            if (obj_meta->rect_params.width < 16 || obj_meta->rect_params.height < 16)
               continue;
           }
         }
@@ -1082,8 +952,7 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(
         frame.scale_ratio_x = scale_ratio;
         frame.scale_ratio_y = scale_ratio;
         frame.obj_meta = obj_meta;
-        frame.frame_meta =
-            nvds_get_nth_frame_meta(batch_meta->frame_meta_list, i);
+        frame.frame_meta = nvds_get_nth_frame_meta(batch_meta->frame_meta_list, i);
         frame.frame_num = frame.frame_meta->frame_num;
         frame.batch_index = i;
         frame.input_surf_params = in_surf->surfaceList + i;
@@ -1092,10 +961,8 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(
         i++;
 
         // Convert batch and push to process thread
-        if (batch->frames.size() == playtracker->max_batch_size ||
-            i == num_filled) {
-          if (!convert_batch_and_push_to_process_thread(
-                  playtracker, batch.get())) {
+        if (batch->frames.size() == playtracker->max_batch_size || i == num_filled) {
+          if (!convert_batch_and_push_to_process_thread(playtracker, batch.get())) {
             return GST_FLOW_ERROR;
           }
           /* Batch submitted. Set batch to nullptr so that a new
@@ -1151,9 +1018,7 @@ error:
  * Return the GstFlowReturn value of the latest pad push so that any error might
  * be caught by the application.
  */
-static GstFlowReturn gst_playtracker_generate_output(
-    GstBaseTransform* btrans,
-    GstBuffer** outbuf) {
+static GstFlowReturn gst_playtracker_generate_output(GstBaseTransform* btrans, GstBuffer** outbuf) {
   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(btrans);
   return playtracker->last_flow_ret;
 }
@@ -1241,13 +1106,11 @@ static void attach_metadata_object(
     return;
   NvDsBatchMeta* batch_meta = obj_meta->base_meta.batch_meta;
 
-  NvDsClassifierMeta* classifier_meta =
-      nvds_acquire_classifier_meta_from_pool(batch_meta);
+  NvDsClassifierMeta* classifier_meta = nvds_acquire_classifier_meta_from_pool(batch_meta);
 
   classifier_meta->unique_component_id = playtracker->unique_id;
 
-  NvDsLabelInfo* label_info =
-      nvds_acquire_label_info_meta_from_pool(batch_meta);
+  NvDsLabelInfo* label_info = nvds_acquire_label_info_meta_from_pool(batch_meta);
   g_strlcpy(label_info->result_label, output->object[0].label, MAX_LABEL_SIZE);
   nvds_add_label_info_meta_to_classifier(classifier_meta, label_info);
   nvds_add_classifier_meta_to_object(obj_meta, classifier_meta);
@@ -1260,8 +1123,7 @@ static void attach_metadata_object(
   // Set black background for the text
   // display_text required heap allocated memory
   if (text_params.display_text) {
-    gchar* conc_string = g_strconcat(
-        text_params.display_text, " ", output->object[0].label, NULL);
+    gchar* conc_string = g_strconcat(text_params.display_text, " ", output->object[0].label, NULL);
     g_free(text_params.display_text);
     text_params.display_text = conc_string;
   } else {
@@ -1301,8 +1163,7 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
   struct cudaDeviceProp prop;
   cudaGetDeviceProperties(&prop, playtracker->gpu_id);
 
-  nvtx_str =
-      "gst-playtracker_output-loop_uid=" + std::to_string(playtracker->unique_id);
+  nvtx_str = "gst-playtracker_output-loop_uid=" + std::to_string(playtracker->unique_id);
 
   g_mutex_lock(&playtracker->process_lock);
 
@@ -1330,14 +1191,11 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
     /* Need to only push buffer to downstream element. This batch was not
      * actually submitted for inferencing. */
     if (batch->push_buffer) {
-      nvtxDomainRangeEnd(
-          playtracker->nvtx_domain, batch->nvtx_complete_buf_range);
+      nvtxDomainRangeEnd(playtracker->nvtx_domain, batch->nvtx_complete_buf_range);
 
-      nvds_set_output_system_timestamp(
-          batch->inbuf, GST_ELEMENT_NAME(playtracker));
+      nvds_set_output_system_timestamp(batch->inbuf, GST_ELEMENT_NAME(playtracker));
 
-      GstFlowReturn flow_ret =
-          gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(playtracker), batch->inbuf);
+      GstFlowReturn flow_ret = gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(playtracker), batch->inbuf);
       if (playtracker->last_flow_ret != flow_ret) {
         switch (flow_ret) {
             /* Signal the application for pad push errors by posting a error
@@ -1350,9 +1208,7 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
                 STREAM,
                 FAILED,
                 ("Internal data stream error."),
-                ("streaming stopped, reason %s (%d)",
-                 gst_flow_get_name(flow_ret),
-                 flow_ret));
+                ("streaming stopped, reason %s (%d)", gst_flow_get_name(flow_ret), flow_ret));
             break;
           default:
             break;
@@ -1363,8 +1219,7 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
       continue;
     }
 
-    nvtx_str = "dequeueOutputAndAttachMeta batch_num=" +
-        std::to_string(batch->inbuf_batch_num);
+    nvtx_str = "dequeueOutputAndAttachMeta batch_num=" + std::to_string(batch->inbuf_batch_num);
     eventAttrib.message.ascii = nvtx_str.c_str();
     nvtxDomainRangePushEx(playtracker->nvtx_domain, &eventAttrib);
 
@@ -1373,17 +1228,13 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
       if (playtracker->process_full_frame) {
         // Process to get the output
 #ifdef WITH_OPENCV
-        output =
-            DsPlayTrackerProcess(playtracker->playtrackerlib_ctx, batch->cvmat[i].data);
+        output = DsPlayTrackerProcess(playtracker->playtrackerlib_ctx, batch->cvmat[i].data);
 #else
         output = DsPlayTrackerProcess(
-            playtracker->playtrackerlib_ctx,
-            (unsigned char*)batch->inter_buf->surfaceList[i]
-                .mappedAddr.addr[0]);
+            playtracker->playtrackerlib_ctx, (unsigned char*)batch->inter_buf->surfaceList[i].mappedAddr.addr[0]);
 #endif
         // Attach the metadata for the full frame
-        attach_metadata_full_frame(
-            playtracker, batch->frames[i].frame_meta, scale_ratio, output, i);
+        attach_metadata_full_frame(playtracker, batch->frames[i].frame_meta, scale_ratio, output, i);
         free(output);
       } else {
         GstDsPlayTrackerFrame& frame = batch->frames[i];
@@ -1399,25 +1250,19 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
         /* Extra check for Jetson devices as default compute mode on Jetson is
          * VIC which supports min 16x16 */
         if (prop.integrated) {
-          if (playtracker->transform_config_params.compute_mode ==
-                  NvBufSurfTransformCompute_VIC ||
-              playtracker->transform_config_params.compute_mode ==
-                  NvBufSurfTransformCompute_Default) {
-            if (obj_meta->rect_params.width < 16 ||
-                obj_meta->rect_params.height < 16)
+          if (playtracker->transform_config_params.compute_mode == NvBufSurfTransformCompute_VIC ||
+              playtracker->transform_config_params.compute_mode == NvBufSurfTransformCompute_Default) {
+            if (obj_meta->rect_params.width < 16 || obj_meta->rect_params.height < 16)
               continue;
           }
         }
 
         // Process the object crop to obtain label
 #ifdef WITH_OPENCV
-        output =
-            DsPlayTrackerProcess(playtracker->playtrackerlib_ctx, batch->cvmat[i].data);
+        output = DsPlayTrackerProcess(playtracker->playtrackerlib_ctx, batch->cvmat[i].data);
 #else
         output = DsPlayTrackerProcess(
-            playtracker->playtrackerlib_ctx,
-            (unsigned char*)batch->inter_buf->surfaceList[i]
-                .mappedAddr.addr[0]);
+            playtracker->playtrackerlib_ctx, (unsigned char*)batch->inter_buf->surfaceList[i].mappedAddr.addr[0]);
 #endif
 
         // Attach labels for the object
@@ -1447,11 +1292,9 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
  * Boiler plate for registering a plugin and an element.
  */
 static gboolean playtracker_plugin_init(GstPlugin* plugin) {
-  GST_DEBUG_CATEGORY_INIT(
-      gst_playtracker_debug, "playtracker", 0, "playtracker plugin");
+  GST_DEBUG_CATEGORY_INIT(gst_playtracker_debug, "playtracker", 0, "playtracker plugin");
 
-  return gst_element_register(
-      plugin, "playtracker", GST_RANK_PRIMARY, GST_TYPE_DSPLAYTRACKER);
+  return gst_element_register(plugin, "playtracker", GST_RANK_PRIMARY, GST_TYPE_DSPLAYTRACKER);
 }
 
 GST_PLUGIN_DEFINE(
