@@ -1,3 +1,5 @@
+#include "kmeans_cuda.h"
+
 #include <cuda_runtime.h>
 #include <cfloat>
 #include <cstdlib>
@@ -70,6 +72,8 @@ __global__ void updateCentroids(
   }
 }
 
+namespace hm {
+namespace cuda {
 // CPU Code for K-means clustering using CUDA
 void kmeansCuda(const std::vector<float>& points, int numClusters, int dim, int numIterations) {
   int numPoints = points.size() / dim;
@@ -135,3 +139,5 @@ int main() {
 
   return 0;
 }
+} // namespace cuda
+} // namespace hm

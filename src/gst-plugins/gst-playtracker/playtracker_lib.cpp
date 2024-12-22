@@ -12,6 +12,7 @@
  */
 
 #include "playtracker_lib.h"
+#include "gstplaytracker.h"
 #include "utils.h"
 
 #include <opencv2/opencv.hpp>
@@ -30,9 +31,7 @@ struct DsPlayTrackerCtx {
   // cv::Point2f detection_mask_centroid;
 };
 
-namespace {
-
-} // namespace
+namespace {} // namespace
 
 DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* initParams) {
   DsPlayTrackerCtx* ctx = new DsPlayTrackerCtx();
@@ -40,9 +39,17 @@ DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* initParams) {
   return ctx;
 }
 
-void DsPlayTrackerProcessFrame(NvDsFrameMeta* frame_meta, DsPlayTrackerCtx* ctx) {
-  if (ctx->initParams.detection_mask_file.empty()) {
+void DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx) {
+  if (!frame.frame_meta->bInferDone) {
     return;
+  }
+  for (NvDsMetaList* l_obj = frame.frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
+    NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
+    const NvDsComp_BboxInfo& trackler_bbox_info = obj_meta->tracker_bbox_info;
+    float x = trackler_bbox_info.org_bbox_coords.left + trackler_bbox_info.org_bbox_coords.width / 2;
+    float y = trackler_bbox_info.org_bbox_coords.top + trackler_bbox_info.org_bbox_coords.height / 2;
+    cv::Point2f ptCenter(x, y);
+    
   }
 }
 

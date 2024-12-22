@@ -1225,6 +1225,10 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
 
     /* For each frame attach metadata output. */
     for (guint i = 0; i < batch->frames.size(); i++) {
+
+      GstDsPlayTrackerFrame& frame = batch->frames[i];
+      DsPlayTrackerProcessFrame(frame, playtracker->playtrackerlib_ctx);
+
       if (playtracker->process_full_frame) {
         // Process to get the output
 #ifdef WITH_OPENCV

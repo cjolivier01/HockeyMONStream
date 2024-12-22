@@ -149,7 +149,7 @@ struct _GstDsPlayTracker {
   nvtxDomainHandle_t nvtx_domain;
 };
 
-typedef struct {
+struct GstDsPlayTrackerFrame {
   /** Ratio by which the frame / object crop was scaled in the horizontal
    * direction. Required when scaling co-ordinates/sizes in metadata
    * back to input resolution. */
@@ -168,7 +168,7 @@ typedef struct {
   gulong frame_num = 0;
   /** The buffer structure the object / frame was converted from. */
   NvBufSurfaceParams* input_surf_params = nullptr;
-} GstDsPlayTrackerFrame;
+};
 
 /**
  * Holds information about the batch of frames to be inferred.

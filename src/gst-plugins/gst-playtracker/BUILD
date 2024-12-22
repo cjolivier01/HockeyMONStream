@@ -17,6 +17,7 @@ gst_cc_plugin(
     visibility = ["//visibility:public"],
     deps = [
         "//libs/common:utils",
+        "//libs/kmeans:kmeans",
         "@opencv_linux//:opencv",
     ],
 )

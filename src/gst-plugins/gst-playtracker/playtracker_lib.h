@@ -7,6 +7,7 @@
 #define MAX_LABEL_SIZE 128
 
 typedef struct DsPlayTrackerCtx DsPlayTrackerCtx;
+typedef struct GstDsPlayTrackerFrame GstDsPlayTrackerFrame;
 
 // Init parameters structure as input, required for instantiating playtracker_lib
 typedef struct {
@@ -37,7 +38,7 @@ typedef struct {
 // Initialize library context
 DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* init_params);
 
-void DsPlayTrackerProcessFrame(NvDsFrameMeta* frame_meta, DsPlayTrackerCtx* ctx);
+void DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx);
 
 // Dequeue processed output
 DsPlayTrackerOutput* DsPlayTrackerProcess(DsPlayTrackerCtx* ctx, unsigned char* data);
