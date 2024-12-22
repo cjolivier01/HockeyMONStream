@@ -9,10 +9,14 @@ namespace utils {
 
 void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator) {
     for (const auto& it : yaml) {
-        const std::string& key = it.first.as<std::string>();
+        std::string key = it.first.as<std::string>();
         const YAML::Node& value = it.second;
-
         auto loc = locator.locators.find(key);
+        if (loc == locator.locators.end()) {
+          //key.replace(key.begin(), key.end(), '-', '_');
+          std::replace(key.begin(), key.end(), '-', '_');
+          loc = locator.locators.find(key);
+        }
         if (loc != locator.locators.end()) {
             std::visit(
                 [&](auto&& target) {

@@ -4,7 +4,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <string>
-#include <unordered_map>
+#include <map>
 #include <variant>
 
 using ConfigValue = std::variant<guint, float, std::string, gboolean>;
@@ -21,11 +21,11 @@ struct MyConfig {
 };
 
 struct ConfigLocator {
-  std::unordered_map<std::string, ConfigValueLocator> locators;
+  std::map<std::string, ConfigValueLocator> locators;
 };
 
 #define SET_LOCATOR(config_locator$, cfg_struct$, member$) \
-    (config_locator$).locators[#member$] = &((cfg_struct$).member$)
+    config_locator$.locators[#member$] = &((cfg_struct$).member$)
 
 void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator);
 

@@ -43,7 +43,6 @@ gboolean parse_dsplaytracker_yaml(NvDsDsPlayTrackerConfig* config, const YAML::N
   SET_LOCATOR(locator, *config, unique_id);
   SET_LOCATOR(locator, *config, gpu_id);
   SET_LOCATOR(locator, *config, nvbuf_memory_type);
-
   set_config_from_yaml(yaml_node, locator);
   return true;
 }
