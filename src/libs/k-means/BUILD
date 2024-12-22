@@ -21,6 +21,7 @@ cc_library(
     includes = ["."],
     visibility = ["//visibility:public"],
     deps = [
+        "//libs/k-means/kmcuda:kmcuda_lib",
         ":headers",
     ],
 )
