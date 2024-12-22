@@ -9,6 +9,6 @@ void kmeansCuda(
     int numClusters,
     int dim,
     int numIterations,
-    std::vector<size_t>& assignments);
+    std::vector<int>& assignments);
 }
 } // namespace hm

@@ -14,8 +14,8 @@
 #include "playtracker_lib.h"
 #include "gstplaytracker.h"
 #include "kmeans_cuda_simple.h"
-#include "utils.h"
 #include "libs/k-means/headers/kmcuda_adapter.hpp"
+#include "utils.h"
 
 #include <opencv2/opencv.hpp>
 
@@ -53,9 +53,15 @@ void DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
     points.emplace_back(x);
     points.emplace_back(y);
   }
-  if (object_count > 2) {
-    //hm::cuda::kmeansCuda(points, /*numClusters=*/2, /*dim=*/2, /*numIterations=*/10);
+  #if 1
+  std::vector<int> assignments_2, assignments_3;
+  if (object_count > 3) {
+    hm::cuda::kmeansCuda(points, /*numClusters=*/2, /*dim=*/2, /*numIterations=*/4, assignments_2);
   }
+  if (object_count > 4) {
+    hm::cuda::kmeansCuda(points, /*numClusters=*/2, /*dim=*/2, /*numIterations=*/4, assignments_3);
+  }
+  #endif
 }
 
 // In case of an actual processing library, processing on data wil be completed

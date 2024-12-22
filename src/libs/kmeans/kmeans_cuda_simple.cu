@@ -187,19 +187,20 @@ void kmeansCuda(
   const float tolerance = 1e-4;
   std::vector<float> centroids(numClusters);
   const size_t n_points = points.size();
-  assignments.resize(n_points);
+  
+  assignments.reserve(n_points);
 
   for (int i = 0; i < numClusters * dim; i++) {
-    centroids[i] = points[rand() % n_points * dim + (i % dim)];
+    centroids.emplace_back(points[rand() % n_points * dim + (i % dim)]);
   }
 
   // Run K-means
   kmeansGPU(points.data(), centroids.data(), assignments.data(), n_points, numClusters, dim, numIterations, tolerance);
 
-  for (int i = 0; i < n_points; ++i) {
-    std::cout << assignments[i] << " ";
-  }
-  std::cout << std::endl;
+  // for (int i = 0; i < n_points; ++i) {
+  //   std::cout << assignments[i] << " ";
+  // }
+  // std::cout << std::endl;
 }
 } // namespace cuda
 } // namespace hm
