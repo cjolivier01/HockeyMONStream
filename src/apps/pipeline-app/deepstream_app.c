@@ -52,20 +52,16 @@ static gboolean add_and_link_broker_sink(AppCtx* appCtx);
  * @param  source_id [IN] Source ID for which a specific [sink]
  *         group is searched for
  */
-static gboolean is_sink_available_for_source_id(
-    NvDsConfig* config,
-    guint source_id);
+static gboolean is_sink_available_for_source_id(NvDsConfig* config, guint source_id);
 
 static NvDsSensorInfo* s_sensor_info_create(NvDsSensorInfo* sensor_info);
 static void s_sensor_info_destroy(NvDsSensorInfo* sensor_info);
 
 static NvDsSensorInfo* s_sensor_info_create(NvDsSensorInfo* sensor_info) {
-  NvDsSensorInfo* sensorInfoToHash =
-      (NvDsSensorInfo*)g_malloc0(sizeof(NvDsSensorInfo));
+  NvDsSensorInfo* sensorInfoToHash = (NvDsSensorInfo*)g_malloc0(sizeof(NvDsSensorInfo));
   *sensorInfoToHash = *sensor_info;
   sensorInfoToHash->sensor_id = (gchar const*)g_strdup(sensor_info->sensor_id);
-  sensorInfoToHash->sensor_name =
-      (gchar const*)g_strdup(sensor_info->sensor_name);
+  sensorInfoToHash->sensor_name = (gchar const*)g_strdup(sensor_info->sensor_name);
   sensorInfoToHash->uri = (gchar const*)g_strdup(sensor_info->uri);
   return sensorInfoToHash;
 }
@@ -83,54 +79,39 @@ static void s_sensor_info_destroy(NvDsSensorInfo* sensor_info) {
   g_free(sensor_info);
 }
 
-static void s_sensor_info_callback_stream_added(
-    AppCtx* appCtx,
-    NvDsSensorInfo* sensorInfo) {
+static void s_sensor_info_callback_stream_added(AppCtx* appCtx, NvDsSensorInfo* sensorInfo) {
   NvDsSensorInfo* sensorInfoToHash = s_sensor_info_create(sensorInfo);
   /** save the sensor info into the hash map */
-  g_hash_table_insert(
-      appCtx->sensorInfoHash,
-      sensorInfo->source_id + (char*)NULL,
-      sensorInfoToHash);
+  g_hash_table_insert(appCtx->sensorInfoHash, sensorInfo->source_id + (char*)NULL, sensorInfoToHash);
 }
 
-static void s_sensor_info_callback_stream_removed(
-    AppCtx* appCtx,
-    NvDsSensorInfo* sensorInfo) {
-  NvDsSensorInfo* sensorInfoFromHash =
-      get_sensor_info(appCtx, sensorInfo->source_id);
+static void s_sensor_info_callback_stream_removed(AppCtx* appCtx, NvDsSensorInfo* sensorInfo) {
+  NvDsSensorInfo* sensorInfoFromHash = get_sensor_info(appCtx, sensorInfo->source_id);
   /** remove the sensor info from the hash map */
   if (sensorInfoFromHash) {
-    g_hash_table_remove(
-        appCtx->sensorInfoHash, sensorInfo->source_id + (gchar*)NULL);
+    g_hash_table_remove(appCtx->sensorInfoHash, sensorInfo->source_id + (gchar*)NULL);
     s_sensor_info_destroy(sensorInfoFromHash);
   }
 }
 
 NvDsSensorInfo* get_sensor_info(AppCtx* appCtx, guint source_id) {
-  NvDsSensorInfo* sensorInfo = (NvDsSensorInfo*)g_hash_table_lookup(
-      appCtx->sensorInfoHash, source_id + (gchar*)NULL);
+  NvDsSensorInfo* sensorInfo = (NvDsSensorInfo*)g_hash_table_lookup(appCtx->sensorInfoHash, source_id + (gchar*)NULL);
   return sensorInfo;
 }
 
 /*Note: Below callbacks/functions defined for FPS logging,
  *  when nvmultiurisrcbin is being used*/
-static NvDsFPSSensorInfo* s_fps_sensor_info_create(
-    NvDsFPSSensorInfo* sensor_info);
+static NvDsFPSSensorInfo* s_fps_sensor_info_create(NvDsFPSSensorInfo* sensor_info);
 NvDsFPSSensorInfo* get_fps_sensor_info(AppCtx* appCtx, guint source_id);
 static void s_fps_sensor_info_destroy(NvDsFPSSensorInfo* sensor_info);
 
-static NvDsFPSSensorInfo* s_fps_sensor_info_create(
-    NvDsFPSSensorInfo* sensor_info) {
-  NvDsFPSSensorInfo* fpssensorInfoToHash =
-      (NvDsFPSSensorInfo*)g_malloc0(sizeof(NvDsFPSSensorInfo));
+static NvDsFPSSensorInfo* s_fps_sensor_info_create(NvDsFPSSensorInfo* sensor_info) {
+  NvDsFPSSensorInfo* fpssensorInfoToHash = (NvDsFPSSensorInfo*)g_malloc0(sizeof(NvDsFPSSensorInfo));
   *fpssensorInfoToHash = *sensor_info;
   fpssensorInfoToHash->uri = (gchar const*)g_strdup(sensor_info->uri);
   fpssensorInfoToHash->source_id = sensor_info->source_id;
-  fpssensorInfoToHash->sensor_id =
-      (gchar const*)g_strdup(sensor_info->sensor_id);
-  fpssensorInfoToHash->sensor_name =
-      (gchar const*)g_strdup(sensor_info->sensor_name);
+  fpssensorInfoToHash->sensor_id = (gchar const*)g_strdup(sensor_info->sensor_id);
+  fpssensorInfoToHash->sensor_name = (gchar const*)g_strdup(sensor_info->sensor_name);
   return fpssensorInfoToHash;
 }
 
@@ -150,33 +131,23 @@ static void s_fps_sensor_info_destroy(NvDsFPSSensorInfo* sensor_info) {
   g_free(sensor_info);
 }
 
-static void s_fps_sensor_info_callback_stream_added(
-    AppCtx* appCtx,
-    NvDsFPSSensorInfo* sensorInfo) {
+static void s_fps_sensor_info_callback_stream_added(AppCtx* appCtx, NvDsFPSSensorInfo* sensorInfo) {
   NvDsFPSSensorInfo* fpssensorInfoToHash = s_fps_sensor_info_create(sensorInfo);
   /** save the sensor info into the hash map */
-  g_hash_table_insert(
-      appCtx->perf_struct.FPSInfoHash,
-      GUINT_TO_POINTER(sensorInfo->source_id),
-      fpssensorInfoToHash);
+  g_hash_table_insert(appCtx->perf_struct.FPSInfoHash, GUINT_TO_POINTER(sensorInfo->source_id), fpssensorInfoToHash);
 }
 
 NvDsFPSSensorInfo* get_fps_sensor_info(AppCtx* appCtx, guint source_id) {
-  NvDsFPSSensorInfo* sensorInfo = (NvDsFPSSensorInfo*)g_hash_table_lookup(
-      appCtx->perf_struct.FPSInfoHash, GUINT_TO_POINTER(source_id));
+  NvDsFPSSensorInfo* sensorInfo =
+      (NvDsFPSSensorInfo*)g_hash_table_lookup(appCtx->perf_struct.FPSInfoHash, GUINT_TO_POINTER(source_id));
   return sensorInfo;
 }
 
-static void s_fps_sensor_info_callback_stream_removed(
-    AppCtx* appCtx,
-    NvDsFPSSensorInfo* sensorInfo) {
-  NvDsFPSSensorInfo* fpsensorInfoFromHash =
-      get_fps_sensor_info(appCtx, sensorInfo->source_id);
+static void s_fps_sensor_info_callback_stream_removed(AppCtx* appCtx, NvDsFPSSensorInfo* sensorInfo) {
+  NvDsFPSSensorInfo* fpsensorInfoFromHash = get_fps_sensor_info(appCtx, sensorInfo->source_id);
   /** remove the sensor info from the hash map */
   if (fpsensorInfoFromHash) {
-    g_hash_table_remove(
-        appCtx->perf_struct.FPSInfoHash,
-        GUINT_TO_POINTER(sensorInfo->source_id));
+    g_hash_table_remove(appCtx->perf_struct.FPSInfoHash, GUINT_TO_POINTER(sensorInfo->source_id));
     s_fps_sensor_info_destroy(fpsensorInfoFromHash);
   }
 }
@@ -197,8 +168,7 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       GError* error = NULL;
       gchar* debuginfo = NULL;
       gst_message_parse_info(message, &error, &debuginfo);
-      g_printerr(
-          "INFO from %s: %s\n", GST_OBJECT_NAME(message->src), error->message);
+      g_printerr("INFO from %s: %s\n", GST_OBJECT_NAME(message->src), error->message);
       if (debuginfo) {
         g_printerr("Debug info: %s\n", debuginfo);
       }
@@ -210,10 +180,7 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       GError* error = NULL;
       gchar* debuginfo = NULL;
       gst_message_parse_warning(message, &error, &debuginfo);
-      g_printerr(
-          "WARNING from %s: %s\n",
-          GST_OBJECT_NAME(message->src),
-          error->message);
+      g_printerr("WARNING from %s: %s\n", GST_OBJECT_NAME(message->src), error->message);
       if (debuginfo) {
         g_printerr("Debug info: %s\n", debuginfo);
       }
@@ -224,8 +191,7 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
     case GST_MESSAGE_ERROR: {
       GError* error = NULL;
       gchar* debuginfo = NULL;
-      const gchar* attempts_error =
-          "Reconnection attempts exceeded for all sources or EOS received.";
+      const gchar* attempts_error = "Reconnection attempts exceeded for all sources or EOS received.";
       guint i = 0;
       gst_message_parse_error(message, &error, &debuginfo);
 
@@ -240,8 +206,7 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
         return TRUE;
       }
 
-      g_printerr(
-          "ERROR from %s: %s\n", GST_OBJECT_NAME(message->src), error->message);
+      g_printerr("ERROR from %s: %s\n", GST_OBJECT_NAME(message->src), error->message);
       if (debuginfo) {
         g_printerr("Debug info: %s\n", debuginfo);
       }
@@ -252,8 +217,7 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       /* Find the source bin which generated the error. */
       while (msg_src_elem && !bin_found) {
         for (i = 0; i < bin->num_bins && !bin_found; i++) {
-          if (bin->sub_bins[i].src_elem == msg_src_elem ||
-              bin->sub_bins[i].bin == msg_src_elem) {
+          if (bin->sub_bins[i].src_elem == msg_src_elem || bin->sub_bins[i].bin == msg_src_elem) {
             bin_found = TRUE;
             break;
           }
@@ -261,13 +225,11 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
         msg_src_elem = GST_ELEMENT_PARENT(msg_src_elem);
       }
 
-      if ((i != bin->num_bins) &&
-          (appCtx->config.multi_source_config[0].type == NV_DS_SOURCE_RTSP)) {
+      if ((i != bin->num_bins) && (appCtx->config.multi_source_config[0].type == NV_DS_SOURCE_RTSP)) {
         // Error from one of RTSP source.
         NvDsSrcBin* subBin = &bin->sub_bins[i];
 
-        if (!subBin->reconfiguring ||
-            g_strrstr(debuginfo, "500 (Internal Server Error)")) {
+        if (!subBin->reconfiguring || g_strrstr(debuginfo, "500 (Internal Server Error)")) {
           subBin->reconfiguring = TRUE;
           g_timeout_add(0, reset_source_pipeline, subBin);
         }
@@ -276,8 +238,7 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
         return TRUE;
       }
 
-      if (appCtx->config.multi_source_config[0].type ==
-          NV_DS_SOURCE_CAMERA_V4L2) {
+      if (appCtx->config.multi_source_config[0].type == NV_DS_SOURCE_CAMERA_V4L2) {
         if (g_strrstr(debuginfo, "reason not-negotiated (-4)")) {
           NVGSTDS_INFO_MSG_V(
               "incorrect camera parameters provided, please provide supported resolution and frame rate\n");
@@ -302,9 +263,7 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
           case GST_STATE_PLAYING:
             NVGSTDS_INFO_MSG_V("Pipeline running\n");
             GST_DEBUG_BIN_TO_DOT_FILE_WITH_TS(
-                GST_BIN(appCtx->pipeline.pipeline),
-                GST_DEBUG_GRAPH_SHOW_ALL,
-                "ds-app-playing");
+                GST_BIN(appCtx->pipeline.pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "ds-app-playing");
             break;
           case GST_STATE_PAUSED:
             if (oldstate == GST_STATE_PLAYING) {
@@ -313,9 +272,7 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
             break;
           case GST_STATE_READY:
             GST_DEBUG_BIN_TO_DOT_FILE_WITH_TS(
-                GST_BIN(appCtx->pipeline.pipeline),
-                GST_DEBUG_GRAPH_SHOW_ALL,
-                "ds-app-ready");
+                GST_BIN(appCtx->pipeline.pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "ds-app-ready");
             if (oldstate == GST_STATE_NULL) {
               NVGSTDS_INFO_MSG_V("Pipeline ready\n");
             } else {
@@ -345,8 +302,7 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
         gboolean app_quit = TRUE;
         for (int i = 0; i < MAX_SOURCE_BINS; i++) {
           if (appCtx->config.multi_source_config[i].type == NV_DS_SOURCE_RTSP) {
-            if (appCtx->config.multi_source_config[i]
-                    .rtsp_reconnect_attempt_exceeded != TRUE) {
+            if (appCtx->config.multi_source_config[i].rtsp_reconnect_attempt_exceeded != TRUE) {
               app_quit = FALSE;
             } else {
               app_quit = TRUE;
@@ -382,30 +338,20 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
         NvDsSensorInfo sensorInfo = {0};
         gst_nvmessage_parse_stream_add(message, &sensorInfo);
         g_print(
-            "new stream added [%d:%s:%s]\n\n\n\n",
-            sensorInfo.source_id,
-            sensorInfo.sensor_id,
-            sensorInfo.sensor_name);
+            "new stream added [%d:%s:%s]\n\n\n\n", sensorInfo.source_id, sensorInfo.sensor_id, sensorInfo.sensor_name);
         /** Callback */
         s_sensor_info_callback_stream_added(appCtx, &sensorInfo);
         gboolean is_rtsp = g_str_has_prefix(sensorInfo.uri, "rtsp://");
         gboolean is_ipc = g_str_has_prefix(sensorInfo.uri, "ipc://");
-        appCtx->config.multi_source_config[sensorInfo.source_id].uri =
-            g_strdup(sensorInfo.uri);
+        appCtx->config.multi_source_config[sensorInfo.source_id].uri = g_strdup(sensorInfo.uri);
         if (is_rtsp) {
-          appCtx->config.multi_source_config[sensorInfo.source_id].type =
-              NV_DS_SOURCE_RTSP;
+          appCtx->config.multi_source_config[sensorInfo.source_id].type = NV_DS_SOURCE_RTSP;
         } else if (is_ipc) {
-          appCtx->config.multi_source_config[sensorInfo.source_id].type =
-              NV_DS_SOURCE_IPC;
+          appCtx->config.multi_source_config[sensorInfo.source_id].type = NV_DS_SOURCE_IPC;
         } else {
-          appCtx->config.multi_source_config[sensorInfo.source_id].type =
-              NV_DS_SOURCE_URI;
+          appCtx->config.multi_source_config[sensorInfo.source_id].type = NV_DS_SOURCE_URI;
         }
-        GST_DEBUG_BIN_TO_DOT_FILE_WITH_TS(
-            GST_BIN(appCtx->pipeline.pipeline),
-            GST_DEBUG_GRAPH_SHOW_ALL,
-            "ds-app-added");
+        GST_DEBUG_BIN_TO_DOT_FILE_WITH_TS(GST_BIN(appCtx->pipeline.pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "ds-app-added");
         NvDsFPSSensorInfo fpssensorInfo = {0};
         gst_nvmessage_parse_fps_stream_add(message, &fpssensorInfo);
         s_fps_sensor_info_callback_stream_added(appCtx, &fpssensorInfo);
@@ -417,14 +363,9 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
         appCtx->config.num_source_sub_bins--;
         NvDsSensorInfo sensorInfo = {0};
         gst_nvmessage_parse_stream_remove(message, &sensorInfo);
-        g_print(
-            "new stream removed [%d:%s]\n\n\n\n",
-            sensorInfo.source_id,
-            sensorInfo.sensor_id);
+        g_print("new stream removed [%d:%s]\n\n\n\n", sensorInfo.source_id, sensorInfo.sensor_id);
         GST_DEBUG_BIN_TO_DOT_FILE_WITH_TS(
-            GST_BIN(appCtx->pipeline.pipeline),
-            GST_DEBUG_GRAPH_SHOW_ALL,
-            "ds-app-removed");
+            GST_BIN(appCtx->pipeline.pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "ds-app-removed");
         /** Callback */
         s_sensor_info_callback_stream_removed(appCtx, &sensorInfo);
         NvDsFPSSensorInfo fpssensorInfo = {0};
@@ -435,22 +376,17 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       if (gst_nvmessage_is_reconnect_attempt_exceeded(message)) {
         NvDsRtspAttemptsInfo rtsp_info = {0};
         gboolean rec_attempt_exceeded_for_all = TRUE;
-        if (gst_nvmessage_parse_reconnect_attempt_exceeded(
-                message, &rtsp_info)) {
+        if (gst_nvmessage_parse_reconnect_attempt_exceeded(message, &rtsp_info)) {
           if (rtsp_info.attempt_exceeded) {
-            appCtx->config.multi_source_config[rtsp_info.source_id]
-                .rtsp_reconnect_attempt_exceeded = rtsp_info.attempt_exceeded;
-            NVGSTDS_INFO_MSG_V(
-                "rtsp reconnect attempt exceeded for source_id : %d\n",
-                rtsp_info.source_id);
+            appCtx->config.multi_source_config[rtsp_info.source_id].rtsp_reconnect_attempt_exceeded =
+                rtsp_info.attempt_exceeded;
+            NVGSTDS_INFO_MSG_V("rtsp reconnect attempt exceeded for source_id : %d\n", rtsp_info.source_id);
           }
 
           if (appCtx->eos_received) {
             for (int i = 0; i < MAX_SOURCE_BINS; i++) {
-              if (appCtx->config.multi_source_config[i].type ==
-                  NV_DS_SOURCE_RTSP) {
-                if (appCtx->config.multi_source_config[i]
-                        .rtsp_reconnect_attempt_exceeded != TRUE) {
+              if (appCtx->config.multi_source_config[i].type == NV_DS_SOURCE_RTSP) {
+                if (appCtx->config.multi_source_config[i].rtsp_reconnect_attempt_exceeded != TRUE) {
                   rec_attempt_exceeded_for_all = FALSE;
                 }
               }
@@ -484,8 +420,7 @@ static void write_kitti_output(AppCtx* appCtx, NvDsBatchMeta* batch_meta) {
   if (!appCtx->config.bbox_dir_path)
     return;
 
-  for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != NULL;
-       l_frame = l_frame->next) {
+  for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)l_frame->data;
     guint stream_id = frame_meta->pad_index;
     g_snprintf(
@@ -500,8 +435,7 @@ static void write_kitti_output(AppCtx* appCtx, NvDsBatchMeta* batch_meta) {
     if (!bbox_params_dump_file)
       continue;
 
-    for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL;
-         l_obj = l_obj->next) {
+    for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
       NvDsObjectMeta* obj = (NvDsObjectMeta*)l_obj->data;
       float left = obj->rect_params.left;
       float top = obj->rect_params.top;
@@ -527,9 +461,7 @@ static void write_kitti_output(AppCtx* appCtx, NvDsBatchMeta* batch_meta) {
 /**
  * Function to dump past frame objs in kitti format.
  */
-static void write_kitti_past_track_output(
-    AppCtx* appCtx,
-    NvDsBatchMeta* batch_meta) {
+static void write_kitti_past_track_output(AppCtx* appCtx, NvDsBatchMeta* batch_meta) {
   if (!appCtx->config.kitti_track_dir_path)
     return;
 
@@ -540,13 +472,10 @@ static void write_kitti_past_track_output(
   NvDsTargetMiscDataBatch* pPastFrameObjBatch = NULL;
   NvDsUserMetaList* bmeta_list = NULL;
   NvDsUserMeta* user_meta = NULL;
-  for (bmeta_list = batch_meta->batch_user_meta_list; bmeta_list != NULL;
-       bmeta_list = bmeta_list->next) {
+  for (bmeta_list = batch_meta->batch_user_meta_list; bmeta_list != NULL; bmeta_list = bmeta_list->next) {
     user_meta = (NvDsUserMeta*)bmeta_list->data;
-    if (user_meta &&
-        user_meta->base_meta.meta_type == NVDS_TRACKER_PAST_FRAME_META) {
-      pPastFrameObjBatch =
-          (NvDsTargetMiscDataBatch*)(user_meta->user_meta_data);
+    if (user_meta && user_meta->base_meta.meta_type == NVDS_TRACKER_PAST_FRAME_META) {
+      pPastFrameObjBatch = (NvDsTargetMiscDataBatch*)(user_meta->user_meta_data);
       for (uint si = 0; si < pPastFrameObjBatch->numFilled; si++) {
         NvDsTargetMiscDataStream* objStream = (pPastFrameObjBatch->list) + si;
         guint stream_id = (guint)(objStream->streamID);
@@ -597,17 +526,14 @@ static void write_kitti_past_track_output(
  * configuration file. Data of different sources and frames is dumped in
  * separate file.
  */
-static void write_kitti_track_output(
-    AppCtx* appCtx,
-    NvDsBatchMeta* batch_meta) {
+static void write_kitti_track_output(AppCtx* appCtx, NvDsBatchMeta* batch_meta) {
   gchar bbox_file[1024] = {0};
   FILE* bbox_params_dump_file = NULL;
 
   if (!appCtx->config.kitti_track_dir_path)
     return;
 
-  for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != NULL;
-       l_frame = l_frame->next) {
+  for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)l_frame->data;
     guint stream_id = frame_meta->pad_index;
     g_snprintf(
@@ -622,8 +548,7 @@ static void write_kitti_track_output(
     if (!bbox_params_dump_file)
       continue;
 
-    for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL;
-         l_obj = l_obj->next) {
+    for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
       NvDsObjectMeta* obj = (NvDsObjectMeta*)l_obj->data;
       float left = obj->tracker_bbox_info.org_bbox_coords.left;
       float top = obj->tracker_bbox_info.org_bbox_coords.top;
@@ -635,19 +560,13 @@ static void write_kitti_track_output(
       bool write_proj_info = false;
       float visibility = -1.0, x_img_foot = -1.0, y_img_foot = -1.0;
       // Attach projected object info if stored in user meta
-      for (NvDsUserMetaList* l_obj_user = obj->obj_user_meta_list;
-           l_obj_user != NULL;
-           l_obj_user = l_obj_user->next) {
+      for (NvDsUserMetaList* l_obj_user = obj->obj_user_meta_list; l_obj_user != NULL; l_obj_user = l_obj_user->next) {
         NvDsUserMeta* user_meta = (NvDsUserMeta*)l_obj_user->data;
-        if (user_meta &&
-            user_meta->base_meta.meta_type == NVDS_OBJ_VISIBILITY &&
-            user_meta->user_meta_data) {
+        if (user_meta && user_meta->base_meta.meta_type == NVDS_OBJ_VISIBILITY && user_meta->user_meta_data) {
           write_proj_info = true;
           visibility = *((float*)(user_meta->user_meta_data));
         } else if (
-            user_meta &&
-            user_meta->base_meta.meta_type == NVDS_OBJ_IMAGE_FOOT_LOCATION &&
-            user_meta->user_meta_data) {
+            user_meta && user_meta->base_meta.meta_type == NVDS_OBJ_IMAGE_FOOT_LOCATION && user_meta->user_meta_data) {
           write_proj_info = true;
           x_img_foot = ((float*)(user_meta->user_meta_data))[0];
           y_img_foot = ((float*)(user_meta->user_meta_data))[1];
@@ -699,8 +618,7 @@ static void write_reid_track_output(AppCtx* appCtx, NvDsBatchMeta* batch_meta) {
   FILE* reid_params_dump_file = NULL;
 
   /** Save the reid embedding for each frame. */
-  for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != NULL;
-       l_frame = l_frame->next) {
+  for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)l_frame->data;
 
     /** Create dump file name. */
@@ -718,22 +636,16 @@ static void write_reid_track_output(AppCtx* appCtx, NvDsBatchMeta* batch_meta) {
       continue;
 
     /** Save the reid embedding for each object. */
-    for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL;
-         l_obj = l_obj->next) {
+    for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
       NvDsObjectMeta* obj = (NvDsObjectMeta*)l_obj->data;
       guint64 id = obj->object_id;
 
-      for (NvDsUserMetaList* l_obj_user = obj->obj_user_meta_list;
-           l_obj_user != NULL;
-           l_obj_user = l_obj_user->next) {
+      for (NvDsUserMetaList* l_obj_user = obj->obj_user_meta_list; l_obj_user != NULL; l_obj_user = l_obj_user->next) {
         /** Find the object's reid embedding index in user meta. */
         NvDsUserMeta* user_meta = (NvDsUserMeta*)l_obj_user->data;
-        if (user_meta &&
-            user_meta->base_meta.meta_type == NVDS_TRACKER_OBJ_REID_META &&
-            user_meta->user_meta_data) {
+        if (user_meta && user_meta->base_meta.meta_type == NVDS_TRACKER_OBJ_REID_META && user_meta->user_meta_data) {
           NvDsObjReid* pReidObj = (NvDsObjReid*)(user_meta->user_meta_data);
-          if (pReidObj != NULL && pReidObj->ptr_host != NULL &&
-              pReidObj->featureSize > 0) {
+          if (pReidObj != NULL && pReidObj->ptr_host != NULL && pReidObj->featureSize > 0) {
             fprintf(reid_params_dump_file, "%lu", id);
             for (guint ele_i = 0; ele_i < pReidObj->featureSize; ele_i++) {
               fprintf(reid_params_dump_file, " %f", pReidObj->ptr_host[ele_i]);
@@ -753,28 +665,21 @@ static void write_reid_track_output(AppCtx* appCtx, NvDsBatchMeta* batch_meta) {
  * "terminated_track_output_path" must be set in configuration file. Data of
  * different sources and frames is dumped in separate file.
  */
-static void write_terminated_track_output(
-    AppCtx* appCtx,
-    NvDsBatchMeta* batch_meta) {
+static void write_terminated_track_output(AppCtx* appCtx, NvDsBatchMeta* batch_meta) {
   if (!appCtx->config.terminated_track_output_path)
     return;
 
   gchar term_file[1024] = {0};
   FILE* term_params_dump_file = NULL;
   /** Find batch terminted tensor in batch user meta. */
-  GList* pTerminatedTrackList =
-      NULL; // list of pointers to NvDsTargetMiscDataBatch
+  GList* pTerminatedTrackList = NULL; // list of pointers to NvDsTargetMiscDataBatch
   NvDsTargetMiscDataBatch* pTerminatedTrackBatch = NULL;
-  for (NvDsUserMetaList* l_batch_user = batch_meta->batch_user_meta_list;
-       l_batch_user != NULL;
+  for (NvDsUserMetaList* l_batch_user = batch_meta->batch_user_meta_list; l_batch_user != NULL;
        l_batch_user = l_batch_user->next) {
     NvDsUserMeta* user_meta = (NvDsUserMeta*)l_batch_user->data;
-    if (user_meta &&
-        user_meta->base_meta.meta_type == NVDS_TRACKER_TERMINATED_LIST_META) {
-      pTerminatedTrackBatch =
-          (NvDsTargetMiscDataBatch*)(user_meta->user_meta_data);
-      pTerminatedTrackList =
-          g_list_append(pTerminatedTrackList, pTerminatedTrackBatch);
+    if (user_meta && user_meta->base_meta.meta_type == NVDS_TRACKER_TERMINATED_LIST_META) {
+      pTerminatedTrackBatch = (NvDsTargetMiscDataBatch*)(user_meta->user_meta_data);
+      pTerminatedTrackList = g_list_append(pTerminatedTrackList, pTerminatedTrackBatch);
     }
   }
 
@@ -782,16 +687,14 @@ static void write_terminated_track_output(
     return;
 
   /** Save the Terminated data for each frame. */
-  for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != NULL;
-       l_frame = l_frame->next) {
+  for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)l_frame->data;
 
     for (GList* l = pTerminatedTrackList; l != NULL; l = l->next) {
       pTerminatedTrackBatch = (NvDsTargetMiscDataBatch*)(l->data);
 
       for (uint si = 0; si < pTerminatedTrackBatch->numFilled; si++) {
-        NvDsTargetMiscDataStream* objStream =
-            (pTerminatedTrackBatch->list) + si;
+        NvDsTargetMiscDataStream* objStream = (pTerminatedTrackBatch->list) + si;
         guint stream_id = (guint)(objStream->streamID);
 
         if (frame_meta->pad_index != stream_id)
@@ -813,12 +716,7 @@ static void write_terminated_track_output(
 
         for (uint li = 0; li < objStream->numFilled; li++) {
           NvDsTargetMiscDataObject* objList = (objStream->list) + li;
-          fprintf(
-              term_params_dump_file,
-              "Target: %ld,%d,%hu\n",
-              objList->uniqueId,
-              objList->classId,
-              stream_id);
+          fprintf(term_params_dump_file, "Target: %ld,%d,%hu\n", objList->uniqueId, objList->classId, stream_id);
 
           for (uint oi = 0; oi < objList->numObj; oi++) {
             NvDsTargetMiscDataFrame* obj = (objList->list) + oi;
@@ -858,9 +756,7 @@ static void write_terminated_track_output(
  * "terminated_track_output_path" must be set in configuration file. Data of
  * different sources and frames is dumped in separate file.
  */
-static void write_shadow_track_output(
-    AppCtx* appCtx,
-    NvDsBatchMeta* batch_meta) {
+static void write_shadow_track_output(AppCtx* appCtx, NvDsBatchMeta* batch_meta) {
   if (!appCtx->config.shadow_track_output_path)
     return;
 
@@ -869,12 +765,10 @@ static void write_shadow_track_output(
   /** Find shadow tracked tensor in batch user meta. */
   GList* pShadowTrackList = NULL; // list of pointers to NvDsTargetMiscDataBatch
   NvDsTargetMiscDataBatch* pShadowTrackBatch = NULL;
-  for (NvDsUserMetaList* l_batch_user = batch_meta->batch_user_meta_list;
-       l_batch_user != NULL;
+  for (NvDsUserMetaList* l_batch_user = batch_meta->batch_user_meta_list; l_batch_user != NULL;
        l_batch_user = l_batch_user->next) {
     NvDsUserMeta* user_meta = (NvDsUserMeta*)l_batch_user->data;
-    if (user_meta &&
-        user_meta->base_meta.meta_type == NVDS_TRACKER_SHADOW_LIST_META) {
+    if (user_meta && user_meta->base_meta.meta_type == NVDS_TRACKER_SHADOW_LIST_META) {
       // std::cout << "Found Shadow Data" << std::endl;
       pShadowTrackBatch = (NvDsTargetMiscDataBatch*)(user_meta->user_meta_data);
       pShadowTrackList = g_list_append(pShadowTrackList, pShadowTrackBatch);
@@ -885,8 +779,7 @@ static void write_shadow_track_output(
     return;
 
   /** Save the Terminated data for each frame. */
-  for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != NULL;
-       l_frame = l_frame->next) {
+  for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)l_frame->data;
 
     for (GList* l = pShadowTrackList; l != NULL; l = l->next) {
@@ -916,8 +809,7 @@ static void write_shadow_track_output(
           NvDsTargetMiscDataObject* objList = (objStream->list) + li;
 
           if (objList->numObj > 0) {
-            NvDsTargetMiscDataFrame* obj =
-                (objList->list); // get first element only
+            NvDsTargetMiscDataFrame* obj = (objList->list); // get first element only
 
             float left = obj->tBbox.left;
             float right = left + obj->tBbox.width;
@@ -968,27 +860,22 @@ static gint component_id_compare_func(gconstpointer a, gconstpointer b) {
  */
 static void process_meta(AppCtx* appCtx, NvDsBatchMeta* batch_meta) {
   // For single source always display text either with demuxer or with tiler
-  if (!appCtx->config.tiled_display_config.enable ||
-      appCtx->config.num_source_sub_bins == 1) {
+  if (!appCtx->config.tiled_display_config.enable || appCtx->config.num_source_sub_bins == 1) {
     appCtx->show_bbox_text = 1;
   }
 
-  for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != NULL;
-       l_frame = l_frame->next) {
+  for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)l_frame->data;
-    for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL;
-         l_obj = l_obj->next) {
+    for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
       NvDsObjectMeta* obj = (NvDsObjectMeta*)l_obj->data;
       gint class_index = obj->class_id;
       NvDsGieConfig* gie_config = NULL;
       gchar* str_ins_pos = NULL;
 
-      if (obj->unique_component_id ==
-          (gint)appCtx->config.primary_gie_config.unique_id) {
+      if (obj->unique_component_id == (gint)appCtx->config.primary_gie_config.unique_id) {
         gie_config = &appCtx->config.primary_gie_config;
       } else {
-        for (gint i = 0; i < (gint)appCtx->config.num_secondary_gie_sub_bins;
-             i++) {
+        for (gint i = 0; i < (gint)appCtx->config.num_secondary_gie_sub_bins; i++) {
           gie_config = &appCtx->config.secondary_gie_sub_bin_config[i];
           if (obj->unique_component_id == (gint)gie_config->unique_id) {
             break;
@@ -1000,23 +887,18 @@ static void process_meta(AppCtx* appCtx, NvDsBatchMeta* batch_meta) {
       obj->text_params.display_text = NULL;
 
       if (gie_config != NULL) {
-        if (g_hash_table_contains(
-                gie_config->bbox_border_color_table,
-                class_index + (gchar*)NULL)) {
-          obj->rect_params.border_color =
-              *((NvOSD_ColorParams*)g_hash_table_lookup(
-                  gie_config->bbox_border_color_table,
-                  class_index + (gchar*)NULL));
+        if (g_hash_table_contains(gie_config->bbox_border_color_table, class_index + (gchar*)NULL)) {
+          obj->rect_params.border_color = *(
+              (NvOSD_ColorParams*)g_hash_table_lookup(gie_config->bbox_border_color_table, class_index + (gchar*)NULL));
         } else {
           obj->rect_params.border_color = gie_config->bbox_border_color;
         }
         obj->rect_params.border_width = appCtx->config.osd_config.border_width;
 
-        if (g_hash_table_contains(
-                gie_config->bbox_bg_color_table, class_index + (gchar*)NULL)) {
+        if (g_hash_table_contains(gie_config->bbox_bg_color_table, class_index + (gchar*)NULL)) {
           obj->rect_params.has_bg_color = 1;
-          obj->rect_params.bg_color = *((NvOSD_ColorParams*)g_hash_table_lookup(
-              gie_config->bbox_bg_color_table, class_index + (gchar*)NULL));
+          obj->rect_params.bg_color =
+              *((NvOSD_ColorParams*)g_hash_table_lookup(gie_config->bbox_bg_color_table, class_index + (gchar*)NULL));
         } else {
           obj->rect_params.has_bg_color = 0;
         }
@@ -1027,10 +909,8 @@ static void process_meta(AppCtx* appCtx, NvDsBatchMeta* batch_meta) {
 
       obj->text_params.x_offset = obj->rect_params.left;
       obj->text_params.y_offset = obj->rect_params.top - 30;
-      obj->text_params.font_params.font_color =
-          appCtx->config.osd_config.text_color;
-      obj->text_params.font_params.font_size =
-          appCtx->config.osd_config.text_size;
+      obj->text_params.font_params.font_color = appCtx->config.osd_config.text_color;
+      obj->text_params.font_params.font_size = appCtx->config.osd_config.text_size;
       obj->text_params.font_params.font_name = appCtx->config.osd_config.font;
       if (appCtx->config.osd_config.text_has_bg) {
         obj->text_params.set_bg_clr = 1;
@@ -1056,13 +936,10 @@ static void process_meta(AppCtx* appCtx, NvDsBatchMeta* batch_meta) {
         }
       }
 
-      obj->classifier_meta_list =
-          g_list_sort(obj->classifier_meta_list, component_id_compare_func);
-      for (NvDsMetaList* l_class = obj->classifier_meta_list; l_class != NULL;
-           l_class = l_class->next) {
+      obj->classifier_meta_list = g_list_sort(obj->classifier_meta_list, component_id_compare_func);
+      for (NvDsMetaList* l_class = obj->classifier_meta_list; l_class != NULL; l_class = l_class->next) {
         NvDsClassifierMeta* cmeta = (NvDsClassifierMeta*)l_class->data;
-        for (NvDsMetaList* l_label = cmeta->label_info_list; l_label != NULL;
-             l_label = l_label->next) {
+        for (NvDsMetaList* l_label = cmeta->label_info_list; l_label != NULL; l_label = l_label->next) {
           NvDsLabelInfo* label = (NvDsLabelInfo*)l_label->data;
           if (label->pResult_label) {
             sprintf(str_ins_pos, " %s", label->pResult_label);
@@ -1114,10 +991,7 @@ static void process_buffer(GstBuffer* buf, AppCtx* appCtx, guint index) {
  * Here it demonstrates the use by dumping bounding box coordinates in
  * kitti format.
  */
-static GstPadProbeReturn gie_primary_processing_done_buf_prob(
-    GstPad* pad,
-    GstPadProbeInfo* info,
-    gpointer u_data) {
+static GstPadProbeReturn gie_primary_processing_done_buf_prob(GstPad* pad, GstPadProbeInfo* info, gpointer u_data) {
   GstBuffer* buf = (GstBuffer*)info->data;
   AppCtx* appCtx = (AppCtx*)u_data;
   NvDsBatchMeta* batch_meta = gst_buffer_get_nvds_batch_meta(buf);
@@ -1135,10 +1009,7 @@ static GstPadProbeReturn gie_primary_processing_done_buf_prob(
  * Probe function to get results after all inferences(Primary + Secondary)
  * are done. This will be just before OSD or sink (in case OSD is disabled).
  */
-static GstPadProbeReturn gie_processing_done_buf_prob(
-    GstPad* pad,
-    GstPadProbeInfo* info,
-    gpointer u_data) {
+static GstPadProbeReturn gie_processing_done_buf_prob(GstPad* pad, GstPadProbeInfo* info, gpointer u_data) {
   GstBuffer* buf = (GstBuffer*)info->data;
   NvDsInstanceBin* bin = (NvDsInstanceBin*)u_data;
   guint index = bin->index;
@@ -1152,10 +1023,7 @@ static GstPadProbeReturn gie_processing_done_buf_prob(
 /**
  * Buffer probe function after tracker.
  */
-static GstPadProbeReturn analytics_done_buf_prob(
-    GstPad* pad,
-    GstPadProbeInfo* info,
-    gpointer u_data) {
+static GstPadProbeReturn analytics_done_buf_prob(GstPad* pad, GstPadProbeInfo* info, gpointer u_data) {
   NvDsInstanceBin* bin = (NvDsInstanceBin*)u_data;
   guint index = bin->index;
   AppCtx* appCtx = bin->appCtx;
@@ -1181,10 +1049,7 @@ static GstPadProbeReturn analytics_done_buf_prob(
   return GST_PAD_PROBE_OK;
 }
 
-static GstPadProbeReturn latency_measurement_buf_prob(
-    GstPad* pad,
-    GstPadProbeInfo* info,
-    gpointer u_data) {
+static GstPadProbeReturn latency_measurement_buf_prob(GstPad* pad, GstPadProbeInfo* info, gpointer u_data) {
   AppCtx* appCtx = (AppCtx*)u_data;
   guint i = 0, num_sources_in_batch = 0;
   if (nvds_enable_latency_measurement) {
@@ -1192,8 +1057,7 @@ static GstPadProbeReturn latency_measurement_buf_prob(
     NvDsFrameLatencyInfo* latency_info = NULL;
     g_mutex_lock(&appCtx->latency_lock);
     latency_info = appCtx->latency_info;
-    guint64 batch_num =
-        GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(pad), "latency-batch-num"));
+    guint64 batch_num = GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(pad), "latency-batch-num"));
     g_print("\n************BATCH-NUM = %lu**************\n", batch_num);
 
     num_sources_in_batch = nvds_measure_buffer_latency(buf, latency_info);
@@ -1206,17 +1070,13 @@ static GstPadProbeReturn latency_measurement_buf_prob(
           latency_info[i].latency);
     }
     g_mutex_unlock(&appCtx->latency_lock);
-    g_object_set_data(
-        G_OBJECT(pad), "latency-batch-num", GSIZE_TO_POINTER(batch_num + 1));
+    g_object_set_data(G_OBJECT(pad), "latency-batch-num", GSIZE_TO_POINTER(batch_num + 1));
   }
 
   return GST_PAD_PROBE_OK;
 }
 
-static GstPadProbeReturn demux_latency_measurement_buf_prob(
-    GstPad* pad,
-    GstPadProbeInfo* info,
-    gpointer u_data) {
+static GstPadProbeReturn demux_latency_measurement_buf_prob(GstPad* pad, GstPadProbeInfo* info, gpointer u_data) {
   AppCtx* appCtx = (AppCtx*)u_data;
   guint i = 0, num_sources_in_batch = 0;
   if (nvds_enable_latency_measurement) {
@@ -1224,8 +1084,7 @@ static GstPadProbeReturn demux_latency_measurement_buf_prob(
     NvDsFrameLatencyInfo* latency_info = NULL;
     g_mutex_lock(&appCtx->latency_lock);
     latency_info = appCtx->latency_info;
-    g_print(
-        "\n************DEMUX BATCH-NUM = %d**************\n", demux_batch_num);
+    g_print("\n************DEMUX BATCH-NUM = %d**************\n", demux_batch_num);
     num_sources_in_batch = nvds_measure_buffer_latency(buf, latency_info);
 
     for (i = 0; i < num_sources_in_batch; i++) {
@@ -1264,23 +1123,17 @@ static gboolean add_and_link_broker_sink(AppCtx* appCtx) {
   for (guint i = 0; i < config->num_sink_sub_bins; i++) {
     if (config->sink_bin_sub_bin_config[i].type == NV_DS_SINK_MSG_CONV_BROKER) {
       if (!pipeline->common_elements.tee) {
-        NVGSTDS_ERR_MSG_V(
-            "%s failed; broker added without analytics; check config file\n",
-            __func__);
+        NVGSTDS_ERR_MSG_V("%s failed; broker added without analytics; check config file\n", __func__);
         return FALSE;
       }
       /** add the broker sink bin to pipeline */
-      if (!gst_bin_add(
-              GST_BIN(pipeline->pipeline),
-              instance_bin->sink_bin.sub_bins[i].bin)) {
+      if (!gst_bin_add(GST_BIN(pipeline->pipeline), instance_bin->sink_bin.sub_bins[i].bin)) {
         return FALSE;
       }
       /** link the broker sink bin to the common_elements tee
        * (The tee after nvinfer -> tracker (optional) -> sgies (optional) block)
        */
-      if (!link_element_to_tee_src_pad(
-              pipeline->common_elements.tee,
-              instance_bin->sink_bin.sub_bins[i].bin)) {
+      if (!link_element_to_tee_src_pad(pipeline->common_elements.tee, instance_bin->sink_bin.sub_bins[i].bin)) {
         return FALSE;
       }
     }
@@ -1370,11 +1223,7 @@ static gboolean create_processing_instance(AppCtx* appCtx, guint index) {
   g_snprintf(elem_name, 32, "processing_bin_%d", index);
   instance_bin->bin = gst_bin_new(elem_name);
 
-  if (!create_sink_bin(
-          config->num_sink_sub_bins,
-          config->sink_bin_sub_bin_config,
-          &instance_bin->sink_bin,
-          index)) {
+  if (!create_sink_bin(config->num_sink_sub_bins, config->sink_bin_sub_bin_config, &instance_bin->sink_bin, index)) {
     goto done;
   }
 
@@ -1435,22 +1284,17 @@ static gboolean create_common_elements(
   *sink_elem = *src_elem = NULL;
 
   if (config->segvisual_config.enable) {
-    if (!create_segvisual_bin(
-            &config->segvisual_config,
-            &pipeline->common_elements.segvisual_bin)) {
+    if (!create_segvisual_bin(&config->segvisual_config, &pipeline->common_elements.segvisual_bin)) {
       goto done;
     }
 
-    gst_bin_add(
-        GST_BIN(pipeline->pipeline),
-        pipeline->common_elements.segvisual_bin.bin);
+    gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->common_elements.segvisual_bin.bin);
 
     if (!*src_elem) {
       *src_elem = pipeline->common_elements.segvisual_bin.bin;
     }
     if (*sink_elem) {
-      NVGSTDS_LINK_ELEMENT(
-          pipeline->common_elements.segvisual_bin.bin, *sink_elem);
+      NVGSTDS_LINK_ELEMENT(pipeline->common_elements.segvisual_bin.bin, *sink_elem);
     }
     *sink_elem = pipeline->common_elements.segvisual_bin.bin;
   }
@@ -1460,8 +1304,7 @@ static gboolean create_common_elements(
       /** if using nvmultiurisrcbin, override batch-size config for sgie */
       if (config->use_nvmultiurisrcbin) {
         for (guint i = 0; i < config->num_secondary_gie_sub_bins; i++) {
-          config->secondary_gie_sub_bin_config[i].batch_size =
-              config->sgie_batch_size;
+          config->secondary_gie_sub_bin_config[i].batch_size = config->sgie_batch_size;
         }
       }
       if (!create_secondary_gie_bin(
@@ -1471,15 +1314,12 @@ static gboolean create_common_elements(
               &pipeline->common_elements.secondary_gie_bin)) {
         goto done;
       }
-      gst_bin_add(
-          GST_BIN(pipeline->pipeline),
-          pipeline->common_elements.secondary_gie_bin.bin);
+      gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->common_elements.secondary_gie_bin.bin);
       if (!*src_elem) {
         *src_elem = pipeline->common_elements.secondary_gie_bin.bin;
       }
       if (*sink_elem) {
-        NVGSTDS_LINK_ELEMENT(
-            pipeline->common_elements.secondary_gie_bin.bin, *sink_elem);
+        NVGSTDS_LINK_ELEMENT(pipeline->common_elements.secondary_gie_bin.bin, *sink_elem);
       }
       *sink_elem = pipeline->common_elements.secondary_gie_bin.bin;
     }
@@ -1495,16 +1335,13 @@ static gboolean create_common_elements(
         g_print("creating secondary_preprocess bin failed\n");
         goto done;
       }
-      gst_bin_add(
-          GST_BIN(pipeline->pipeline),
-          pipeline->common_elements.secondary_preprocess_bin.bin);
+      gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->common_elements.secondary_preprocess_bin.bin);
 
       if (!*src_elem) {
         *src_elem = pipeline->common_elements.secondary_preprocess_bin.bin;
       }
       if (*sink_elem) {
-        NVGSTDS_LINK_ELEMENT(
-            pipeline->common_elements.secondary_preprocess_bin.bin, *sink_elem);
+        NVGSTDS_LINK_ELEMENT(pipeline->common_elements.secondary_preprocess_bin.bin, *sink_elem);
       }
 
       *sink_elem = pipeline->common_elements.secondary_preprocess_bin.bin;
@@ -1512,48 +1349,58 @@ static gboolean create_common_elements(
   }
 
   if (config->dsanalytics_config.enable) {
-    if (!create_dsanalytics_bin(
-            &config->dsanalytics_config,
-            &pipeline->common_elements.dsanalytics_bin)) {
+    if (!create_dsanalytics_bin(&config->dsanalytics_config, &pipeline->common_elements.dsanalytics_bin)) {
       g_print("creating dsanalytics bin failed\n");
       goto done;
     }
-    gst_bin_add(
-        GST_BIN(pipeline->pipeline),
-        pipeline->common_elements.dsanalytics_bin.bin);
+    gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->common_elements.dsanalytics_bin.bin);
 
     if (!*src_elem) {
       *src_elem = pipeline->common_elements.dsanalytics_bin.bin;
     }
     if (*sink_elem) {
-      NVGSTDS_LINK_ELEMENT(
-          pipeline->common_elements.dsanalytics_bin.bin, *sink_elem);
+      NVGSTDS_LINK_ELEMENT(pipeline->common_elements.dsanalytics_bin.bin, *sink_elem);
     }
     *sink_elem = pipeline->common_elements.dsanalytics_bin.bin;
   }
 
+  if (config->dsplaytracker_config.enable) {
+    // Create dsexample element bin and set properties
+    if (!create_dsplaytracker_bin(&config->dsplaytracker_config, &pipeline->dsplaytracker_bin)) {
+      goto done;
+    }
+    // Add dsplaytracker bin to instance bin
+    gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->dsplaytracker_bin.bin);
+    if (!*src_elem) {
+      *src_elem = pipeline->dsplaytracker_bin.bin;
+    }
+
+    if (*sink_elem) {
+      NVGSTDS_LINK_ELEMENT(pipeline->dsplaytracker_bin.bin, *sink_elem);
+    }
+
+    // Set this bin as the last element
+    *sink_elem = pipeline->dsplaytracker_bin.bin;
+  }
+
   if (config->tracker_config.enable) {
-    if (!create_tracking_bin(
-            &config->tracker_config, &pipeline->common_elements.tracker_bin)) {
+    if (!create_tracking_bin(&config->tracker_config, &pipeline->common_elements.tracker_bin)) {
       g_print("creating tracker bin failed\n");
       goto done;
     }
-    gst_bin_add(
-        GST_BIN(pipeline->pipeline), pipeline->common_elements.tracker_bin.bin);
+    gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->common_elements.tracker_bin.bin);
     if (!*src_elem) {
       *src_elem = pipeline->common_elements.tracker_bin.bin;
     }
     if (*sink_elem) {
-      NVGSTDS_LINK_ELEMENT(
-          pipeline->common_elements.tracker_bin.bin, *sink_elem);
+      NVGSTDS_LINK_ELEMENT(pipeline->common_elements.tracker_bin.bin, *sink_elem);
     }
     *sink_elem = pipeline->common_elements.tracker_bin.bin;
   }
 
   if (config->dsexample_config.enable) {
     // Create dsexample element bin and set properties
-    if (!create_dsexample_bin(
-            &config->dsexample_config, &pipeline->dsexample_bin)) {
+    if (!create_dsexample_bin(&config->dsexample_config, &pipeline->dsexample_bin)) {
       goto done;
     }
     // Add dsexample bin to instance bin
@@ -1572,8 +1419,7 @@ static gboolean create_common_elements(
 
   if (config->dsfieldmask_config.enable) {
     // Create dsexample element bin and set properties
-    if (!create_dsfieldmask_bin(
-            &config->dsfieldmask_config, &pipeline->dsfieldmask_bin)) {
+    if (!create_dsfieldmask_bin(&config->dsfieldmask_config, &pipeline->dsfieldmask_bin)) {
       goto done;
     }
     // Add dsfieldmask bin to instance bin
@@ -1595,17 +1441,12 @@ static gboolean create_common_elements(
     if (config->use_nvmultiurisrcbin) {
       config->primary_gie_config.batch_size = config->max_batch_size;
     }
-    if (!create_primary_gie_bin(
-            &config->primary_gie_config,
-            &pipeline->common_elements.primary_gie_bin)) {
+    if (!create_primary_gie_bin(&config->primary_gie_config, &pipeline->common_elements.primary_gie_bin)) {
       goto done;
     }
-    gst_bin_add(
-        GST_BIN(pipeline->pipeline),
-        pipeline->common_elements.primary_gie_bin.bin);
+    gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->common_elements.primary_gie_bin.bin);
     if (*sink_elem) {
-      NVGSTDS_LINK_ELEMENT(
-          pipeline->common_elements.primary_gie_bin.bin, *sink_elem);
+      NVGSTDS_LINK_ELEMENT(pipeline->common_elements.primary_gie_bin.bin, *sink_elem);
     }
     *sink_elem = pipeline->common_elements.primary_gie_bin.bin;
     if (!*src_elem) {
@@ -1621,22 +1462,17 @@ static gboolean create_common_elements(
   }
 
   if (config->preprocess_config.enable) {
-    if (!create_preprocess_bin(
-            &config->preprocess_config,
-            &pipeline->common_elements.preprocess_bin)) {
+    if (!create_preprocess_bin(&config->preprocess_config, &pipeline->common_elements.preprocess_bin)) {
       g_print("creating preprocess bin failed\n");
       goto done;
     }
-    gst_bin_add(
-        GST_BIN(pipeline->pipeline),
-        pipeline->common_elements.preprocess_bin.bin);
+    gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->common_elements.preprocess_bin.bin);
 
     if (!*src_elem) {
       *src_elem = pipeline->common_elements.preprocess_bin.bin;
     }
     if (*sink_elem) {
-      NVGSTDS_LINK_ELEMENT(
-          pipeline->common_elements.preprocess_bin.bin, *sink_elem);
+      NVGSTDS_LINK_ELEMENT(pipeline->common_elements.preprocess_bin.bin, *sink_elem);
     }
 
     *sink_elem = pipeline->common_elements.preprocess_bin.bin;
@@ -1654,8 +1490,7 @@ static gboolean create_common_elements(
     /* Add common message converter */
     if (config->msg_conv_config.enable) {
       NvDsSinkMsgConvBrokerConfig* convConfig = &config->msg_conv_config;
-      pipeline->common_elements.msg_conv =
-          gst_element_factory_make(NVDS_ELEM_MSG_CONV, "common_msg_conv");
+      pipeline->common_elements.msg_conv = gst_element_factory_make(NVDS_ELEM_MSG_CONV, "common_msg_conv");
       if (!pipeline->common_elements.msg_conv) {
         NVGSTDS_ERR_MSG_V("Failed to create element 'common_msg_conv'");
         goto done;
@@ -1681,14 +1516,12 @@ static gboolean create_common_elements(
           convConfig->conv_frame_interval,
           NULL);
 
-      gst_bin_add(
-          GST_BIN(pipeline->pipeline), pipeline->common_elements.msg_conv);
+      gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->common_elements.msg_conv);
 
       NVGSTDS_LINK_ELEMENT(*src_elem, pipeline->common_elements.msg_conv);
       *src_elem = pipeline->common_elements.msg_conv;
     }
-    pipeline->common_elements.tee =
-        gst_element_factory_make(NVDS_ELEM_TEE, "common_analytics_tee");
+    pipeline->common_elements.tee = gst_element_factory_make(NVDS_ELEM_TEE, "common_analytics_tee");
     if (!pipeline->common_elements.tee) {
       NVGSTDS_ERR_MSG_V("Failed to create element 'common_analytics_tee'");
       goto done;
@@ -1705,12 +1538,9 @@ done:
   return ret;
 }
 
-static gboolean is_sink_available_for_source_id(
-    NvDsConfig* config,
-    guint source_id) {
+static gboolean is_sink_available_for_source_id(NvDsConfig* config, guint source_id) {
   for (guint j = 0; j < config->num_sink_sub_bins; j++) {
-    if (config->sink_bin_sub_bin_config[j].enable &&
-        config->sink_bin_sub_bin_config[j].source_id == source_id &&
+    if (config->sink_bin_sub_bin_config[j].enable && config->sink_bin_sub_bin_config[j].source_id == source_id &&
         config->sink_bin_sub_bin_config[j].link_to_demux == FALSE) {
       return TRUE;
     }
@@ -1744,8 +1574,7 @@ gboolean create_pipeline(
   appCtx->bbox_generated_post_analytics_cb = bbox_generated_post_analytics_cb;
   appCtx->overlay_graphics_cb = overlay_graphics_cb;
   appCtx->sensorInfoHash = g_hash_table_new(NULL, NULL);
-  appCtx->perf_struct.FPSInfoHash =
-      g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, NULL);
+  appCtx->perf_struct.FPSInfoHash = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, NULL);
 
   if (config->osd_config.num_out_buffers < 8) {
     config->osd_config.num_out_buffers = 8;
@@ -1794,20 +1623,15 @@ gboolean create_pipeline(
   if (config->use_nvmultiurisrcbin) {
     if (config->num_source_sub_bins > 0) {
       if (!create_nvmultiurisrcbin_bin(
-              config->num_source_sub_bins,
-              config->multi_source_config,
-              &pipeline->multi_src_bin))
+              config->num_source_sub_bins, config->multi_source_config, &pipeline->multi_src_bin))
         goto done;
     } else {
       if (!config->source_attr_all_parsed) {
-        NVGSTDS_ERR_MSG_V(
-            "[source-attr-all] config group not set, needs to be configured");
+        NVGSTDS_ERR_MSG_V("[source-attr-all] config group not set, needs to be configured");
         goto done;
       }
       if (!create_nvmultiurisrcbin_bin(
-              config->num_source_sub_bins,
-              &config->source_attr_all_config,
-              &pipeline->multi_src_bin))
+              config->num_source_sub_bins, &config->source_attr_all_config, &pipeline->multi_src_bin))
         goto done;
       //[source-list] added with num-source-bins=0; This means source-bin
       // will be created and be waiting for source adds over REST API
@@ -1817,66 +1641,28 @@ gboolean create_pipeline(
     /** set properties for nvmultiurisrcbin */
     if (config->uri_list) {
       gchar* uri_list_comma_sep = g_strjoinv(",", config->uri_list);
-      g_object_set(
-          pipeline->multi_src_bin.nvmultiurisrcbin,
-          "uri-list",
-          uri_list_comma_sep,
-          NULL);
+      g_object_set(pipeline->multi_src_bin.nvmultiurisrcbin, "uri-list", uri_list_comma_sep, NULL);
       g_free(uri_list_comma_sep);
     }
     if (config->sensor_id_list) {
       gchar* uri_list_comma_sep = g_strjoinv(",", config->sensor_id_list);
-      g_object_set(
-          pipeline->multi_src_bin.nvmultiurisrcbin,
-          "sensor-id-list",
-          uri_list_comma_sep,
-          NULL);
+      g_object_set(pipeline->multi_src_bin.nvmultiurisrcbin, "sensor-id-list", uri_list_comma_sep, NULL);
       g_free(uri_list_comma_sep);
     }
     if (config->sensor_name_list) {
       gchar* uri_list_comma_sep = g_strjoinv(",", config->sensor_name_list);
-      g_object_set(
-          pipeline->multi_src_bin.nvmultiurisrcbin,
-          "sensor-name-list",
-          uri_list_comma_sep,
-          NULL);
+      g_object_set(pipeline->multi_src_bin.nvmultiurisrcbin, "sensor-name-list", uri_list_comma_sep, NULL);
       g_free(uri_list_comma_sep);
     }
+    g_object_set(pipeline->multi_src_bin.nvmultiurisrcbin, "batch-size", config->max_batch_size, NULL);
+    g_object_set(pipeline->multi_src_bin.nvmultiurisrcbin, "ip-address", config->http_ip, NULL);
+    g_object_set(pipeline->multi_src_bin.nvmultiurisrcbin, "port", config->http_port, NULL);
     g_object_set(
-        pipeline->multi_src_bin.nvmultiurisrcbin,
-        "batch-size",
-        config->max_batch_size,
-        NULL);
-    g_object_set(
-        pipeline->multi_src_bin.nvmultiurisrcbin,
-        "ip-address",
-        config->http_ip,
-        NULL);
-    g_object_set(
-        pipeline->multi_src_bin.nvmultiurisrcbin,
-        "port",
-        config->http_port,
-        NULL);
-    g_object_set(
-        pipeline->multi_src_bin.nvmultiurisrcbin,
-        "extract-sei-type5-data-dec",
-        config->extract_sei_type5_data,
-        NULL);
-    g_object_set(
-        pipeline->multi_src_bin.nvmultiurisrcbin,
-        "low-latency-mode",
-        config->low_latency_mode,
-        NULL);
-    g_object_set(
-        pipeline->multi_src_bin.nvmultiurisrcbin,
-        "sei-uuid",
-        config->sei_uuid,
-        NULL);
+        pipeline->multi_src_bin.nvmultiurisrcbin, "extract-sei-type5-data-dec", config->extract_sei_type5_data, NULL);
+    g_object_set(pipeline->multi_src_bin.nvmultiurisrcbin, "low-latency-mode", config->low_latency_mode, NULL);
+    g_object_set(pipeline->multi_src_bin.nvmultiurisrcbin, "sei-uuid", config->sei_uuid, NULL);
   } else {
-    if (!create_multi_source_bin(
-            config->num_source_sub_bins,
-            config->multi_source_config,
-            &pipeline->multi_src_bin))
+    if (!create_multi_source_bin(config->num_source_sub_bins, config->multi_source_config, &pipeline->multi_src_bin))
       goto done;
   }
   gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->multi_src_bin.bin);
@@ -1888,15 +1674,14 @@ gboolean create_pipeline(
       config->streammux_config.batch_size = config->max_batch_size;
     }
 
-    if (!set_streammux_properties(
-            &config->streammux_config, pipeline->multi_src_bin.streammux)) {
+    if (!set_streammux_properties(&config->streammux_config, pipeline->multi_src_bin.streammux)) {
       NVGSTDS_WARN_MSG_V("Failed to set streammux properties");
     }
   }
 
   if (appCtx->latency_info == NULL) {
-    appCtx->latency_info = (NvDsFrameLatencyInfo*)calloc(
-        1, config->streammux_config.batch_size * sizeof(NvDsFrameLatencyInfo));
+    appCtx->latency_info =
+        (NvDsFrameLatencyInfo*)calloc(1, config->streammux_config.batch_size * sizeof(NvDsFrameLatencyInfo));
   }
 
   /** a tee after the tiler which shall be connected to sink(s) */
@@ -1908,10 +1693,8 @@ gboolean create_pipeline(
   gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->tiler_tee);
 
   /** Tiler + Demux in Parallel Use-Case */
-  if (config->tiled_display_config.enable ==
-      NV_DS_TILED_DISPLAY_ENABLE_WITH_PARALLEL_DEMUX) {
-    pipeline->demuxer =
-        gst_element_factory_make(NVDS_ELEM_STREAM_DEMUX, "demuxer");
+  if (config->tiled_display_config.enable == NV_DS_TILED_DISPLAY_ENABLE_WITH_PARALLEL_DEMUX) {
+    pipeline->demuxer = gst_element_factory_make(NVDS_ELEM_STREAM_DEMUX, "demuxer");
     if (!pipeline->demuxer) {
       NVGSTDS_ERR_MSG_V("Failed to create element 'demuxer'");
       goto done;
@@ -1936,33 +1719,22 @@ gboolean create_pipeline(
 
       for (i = 0; i < config->num_sink_sub_bins; i++) {
         if (config->sink_bin_sub_bin_config[i].link_to_demux == TRUE) {
-          g_snprintf(
-              pad_name,
-              16,
-              "src_%02d",
-              config->sink_bin_sub_bin_config[i].source_id);
+          g_snprintf(pad_name, 16, "src_%02d", config->sink_bin_sub_bin_config[i].source_id);
           break;
         }
       }
 
       if (i >= config->num_sink_sub_bins) {
-        g_print(
-            "\n\nError : sink for demux (use link-to-demux-only property) is not provided in the config file\n\n");
+        g_print("\n\nError : sink for demux (use link-to-demux-only property) is not provided in the config file\n\n");
         goto done;
       }
 
       i = 0;
 
-      gst_bin_add(
-          GST_BIN(pipeline->pipeline), pipeline->demux_instance_bins[i].bin);
+      gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->demux_instance_bins[i].bin);
 
-      demux_src_pad =
-          gst_element_request_pad_simple(pipeline->demuxer, pad_name);
-      NVGSTDS_LINK_ELEMENT_FULL(
-          pipeline->demuxer,
-          pad_name,
-          pipeline->demux_instance_bins[i].bin,
-          "sink");
+      demux_src_pad = gst_element_request_pad_simple(pipeline->demuxer, pad_name);
+      NVGSTDS_LINK_ELEMENT_FULL(pipeline->demuxer, pad_name, pipeline->demux_instance_bins[i].bin, "sink");
       gst_object_unref(demux_src_pad);
 
       NVGSTDS_ELEM_ADD_PROBE(
@@ -1987,16 +1759,12 @@ gboolean create_pipeline(
       goto done;
     }
     // create and add tiling component to pipeline.
-    if (config->tiled_display_config.columns *
-            config->tiled_display_config.rows <
-        config->num_source_sub_bins) {
+    if (config->tiled_display_config.columns * config->tiled_display_config.rows < config->num_source_sub_bins) {
       if (config->tiled_display_config.columns == 0) {
-        config->tiled_display_config.columns =
-            (guint)(sqrt(config->num_source_sub_bins) + 0.5);
+        config->tiled_display_config.columns = (guint)(sqrt(config->num_source_sub_bins) + 0.5);
       }
-      config->tiled_display_config.rows = (guint)ceil(
-          1.0 * config->num_source_sub_bins /
-          config->tiled_display_config.columns);
+      config->tiled_display_config.rows =
+          (guint)ceil(1.0 * config->num_source_sub_bins / config->tiled_display_config.columns);
       NVGSTDS_WARN_MSG_V(
           "Num of Tiles less than number of sources, readjusting to "
           "%u rows, %u columns",
@@ -2007,16 +1775,14 @@ gboolean create_pipeline(
     gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->instance_bins[0].bin);
     last_elem = pipeline->instance_bins[0].bin;
 
-    if (!create_tiled_display_bin(
-            &config->tiled_display_config, &pipeline->tiled_display_bin)) {
+    if (!create_tiled_display_bin(&config->tiled_display_config, &pipeline->tiled_display_bin)) {
       goto done;
     }
     gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->tiled_display_bin.bin);
     NVGSTDS_LINK_ELEMENT(pipeline->tiled_display_bin.bin, last_elem);
     last_elem = pipeline->tiled_display_bin.bin;
 
-    link_element_to_tee_src_pad(
-        pipeline->tiler_tee, pipeline->tiled_display_bin.bin);
+    link_element_to_tee_src_pad(pipeline->tiler_tee, pipeline->tiled_display_bin.bin);
     last_elem = pipeline->tiler_tee;
 
     NVGSTDS_ELEM_ADD_PROBE(
@@ -2031,8 +1797,7 @@ gboolean create_pipeline(
     /*
      * Create demuxer only if tiled display is disabled.
      */
-    pipeline->demuxer =
-        gst_element_factory_make(NVDS_ELEM_STREAM_DEMUX, "demuxer");
+    pipeline->demuxer = gst_element_factory_make(NVDS_ELEM_STREAM_DEMUX, "demuxer");
     if (!pipeline->demuxer) {
       NVGSTDS_ERR_MSG_V("Failed to create element 'demuxer'");
       goto done;
@@ -2056,10 +1821,8 @@ gboolean create_pipeline(
       gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->instance_bins[i].bin);
 
       g_snprintf(pad_name, 16, "src_%02d", i);
-      demux_src_pad =
-          gst_element_request_pad_simple(pipeline->demuxer, pad_name);
-      NVGSTDS_LINK_ELEMENT_FULL(
-          pipeline->demuxer, pad_name, pipeline->instance_bins[i].bin, "sink");
+      demux_src_pad = gst_element_request_pad_simple(pipeline->demuxer, pad_name);
+      NVGSTDS_LINK_ELEMENT_FULL(pipeline->demuxer, pad_name, pipeline->instance_bins[i].bin, "sink");
       gst_object_unref(demux_src_pad);
 
       for (int k = 0; k < MAX_SINK_BINS; k++) {
@@ -2083,8 +1846,7 @@ gboolean create_pipeline(
   if (config->tiled_display_config.enable == NV_DS_TILED_DISPLAY_DISABLE) {
     fps_pad = gst_element_get_static_pad(pipeline->demuxer, "sink");
   } else {
-    fps_pad =
-        gst_element_get_static_pad(pipeline->tiled_display_bin.bin, "sink");
+    fps_pad = gst_element_get_static_pad(pipeline->tiled_display_bin.bin, "sink");
   }
 
   pipeline->common_elements.appCtx = appCtx;
@@ -2106,12 +1868,7 @@ gboolean create_pipeline(
   //   last_elem = pipeline->dsexample_bin.bin;
   // }
   // create and add common components to pipeline.
-  if (!create_common_elements(
-          config,
-          pipeline,
-          &tmp_elem1,
-          &tmp_elem2,
-          bbox_generated_post_analytics_cb)) {
+  if (!create_common_elements(config, pipeline, &tmp_elem1, &tmp_elem2, bbox_generated_post_analytics_cb)) {
     goto done;
   }
 
@@ -2155,10 +1912,8 @@ gboolean create_pipeline(
 
   if (config->num_message_consumers) {
     for (i = 0; i < config->num_message_consumers; i++) {
-      appCtx->c2d_ctx[i] = start_cloud_to_device_messaging(
-          &config->message_consumer_config[i],
-          NULL,
-          &appCtx->pipeline.multi_src_bin);
+      appCtx->c2d_ctx[i] =
+          start_cloud_to_device_messaging(&config->message_consumer_config[i], NULL, &appCtx->pipeline.multi_src_bin);
       if (appCtx->c2d_ctx[i] == NULL) {
         NVGSTDS_ERR_MSG_V("Failed to create message consumer");
         goto done;
@@ -2166,10 +1921,7 @@ gboolean create_pipeline(
     }
   }
 
-  GST_DEBUG_BIN_TO_DOT_FILE_WITH_TS(
-      GST_BIN(appCtx->pipeline.pipeline),
-      GST_DEBUG_GRAPH_SHOW_ALL,
-      "ds-app-null");
+  GST_DEBUG_BIN_TO_DOT_FILE_WITH_TS(GST_BIN(appCtx->pipeline.pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "ds-app-null");
 
   g_mutex_init(&appCtx->app_lock);
   g_cond_init(&appCtx->app_cond);
@@ -2226,16 +1978,13 @@ void destroy_pipeline(AppCtx* appCtx) {
   for (i = 0; i < appCtx->config.num_source_sub_bins; i++) {
     NvDsInstanceBin* bin = &appCtx->pipeline.instance_bins[i];
     if (config->osd_config.enable) {
-      NVGSTDS_ELEM_REMOVE_PROBE(
-          bin->all_bbox_buffer_probe_id, bin->osd_bin.nvosd, "sink");
+      NVGSTDS_ELEM_REMOVE_PROBE(bin->all_bbox_buffer_probe_id, bin->osd_bin.nvosd, "sink");
     } else {
-      NVGSTDS_ELEM_REMOVE_PROBE(
-          bin->all_bbox_buffer_probe_id, bin->sink_bin.bin, "sink");
+      NVGSTDS_ELEM_REMOVE_PROBE(bin->all_bbox_buffer_probe_id, bin->sink_bin.bin, "sink");
     }
 
     if (config->primary_gie_config.enable) {
-      NVGSTDS_ELEM_REMOVE_PROBE(
-          bin->primary_bbox_buffer_probe_id, bin->primary_gie_bin.bin, "src");
+      NVGSTDS_ELEM_REMOVE_PROBE(bin->primary_bbox_buffer_probe_id, bin->primary_gie_bin.bin, "src");
     }
   }
   if (appCtx->latency_info == NULL) {
@@ -2266,8 +2015,7 @@ void destroy_pipeline(AppCtx* appCtx) {
       NvDsSrcBin* src_bin;
       for (i = 0; i < MAX_SOURCE_BINS; i++) {
         src_bin = &pbin->sub_bins[i];
-        if (src_bin && src_bin->config &&
-            src_bin->config->type == NV_DS_SOURCE_RTSP) {
+        if (src_bin && src_bin->config && src_bin->config->type == NV_DS_SOURCE_RTSP) {
           src_bin->depay = NULL;
         }
       }
@@ -2288,8 +2036,7 @@ gboolean pause_pipeline(AppCtx* appCtx) {
   GstStateChangeReturn ret;
   GstClockTime timeout = 5 * GST_SECOND / 1000;
 
-  ret =
-      gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, timeout);
+  ret = gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, timeout);
 
   if (ret == GST_STATE_CHANGE_ASYNC) {
     return FALSE;
@@ -2299,8 +2046,7 @@ gboolean pause_pipeline(AppCtx* appCtx) {
     return TRUE;
   } else if (cur == GST_STATE_PLAYING) {
     gst_element_set_state(appCtx->pipeline.pipeline, GST_STATE_PAUSED);
-    gst_element_get_state(
-        appCtx->pipeline.pipeline, &cur, &pending, GST_CLOCK_TIME_NONE);
+    gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, GST_CLOCK_TIME_NONE);
     pause_perf_measurement(&appCtx->perf_struct);
     return TRUE;
   } else {
@@ -2314,8 +2060,7 @@ gboolean resume_pipeline(AppCtx* appCtx) {
   GstStateChangeReturn ret;
   GstClockTime timeout = 5 * GST_SECOND / 1000;
 
-  ret =
-      gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, timeout);
+  ret = gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, timeout);
 
   if (ret == GST_STATE_CHANGE_ASYNC) {
     return FALSE;
@@ -2325,8 +2070,7 @@ gboolean resume_pipeline(AppCtx* appCtx) {
     return TRUE;
   } else if (cur == GST_STATE_PAUSED) {
     gst_element_set_state(appCtx->pipeline.pipeline, GST_STATE_PLAYING);
-    gst_element_get_state(
-        appCtx->pipeline.pipeline, &cur, &pending, GST_CLOCK_TIME_NONE);
+    gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, GST_CLOCK_TIME_NONE);
     resume_perf_measurement(&appCtx->perf_struct);
     return TRUE;
   } else {
