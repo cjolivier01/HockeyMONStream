@@ -15,7 +15,7 @@ cuda_library(
       "-shared",
     ],
     deps = [
-        "@deepstream_sources//apps/apps-common:deepstream_apps_common",
+        "@deepstream//sources/apps/apps-common:deepstream_apps_common",
         "@local_cuda//:cuda_runtime",
     ],
     visibility = ["//visibility:public"],
@@ -37,7 +37,7 @@ cc_library(
     ],
     deps = [
         ":nvdspreprocess_cuda_lib",
-        "@deepstream_lib",
+        "@deepstream//:deepstream_lib",
         "@glib",
         "@gstreamer",
         #"@opencv_linux//:opencv",

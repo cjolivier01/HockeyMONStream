@@ -13,10 +13,7 @@ def gst_cc_plugin(
         srcs = srcs + hdrs,
         visibility = visibility,
         deps = deps + [
-            "@deepstream_lib",
-            #"@deepstream_apps_common",
-            "@deepstream_sources//:deepstream_includes",
-            "@deepstream_sources//apps/apps-common:deepstream_apps_common",
+            "@deepstream//:deepstream_lib",
             "@gstreamer",
             "@yaml-cpp",
             "@local_cuda//:cuda_runtime",

@@ -3,31 +3,16 @@ _workspace_name = "test"
 workspace(name = _workspace_name)
 
 load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository", "new_git_repository")
-load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 local_repository(
     name = "com_extension_dev",
-    #path="/opt/nvidia/graph-composer/extension-dev",
     path = "/home/colivier/src/hmdeepstream/deepstream/graph-composer/extension-dev",
 )
 
 local_repository(
-    name = "deepstream_sources",
-    path = "/home/colivier/src/hmdeepstream/deepstream/sources",
-)
-
-new_local_repository(
-    name = "deepstream_lib",
-    build_file = "@//build:third_party/deepstream_lib.BUILD",
+    name = "deepstream",
     path = "/home/colivier/src/hmdeepstream/deepstream",
 )
-
-# new_local_repository(
-#     name = "deepstream_apps_common",
-#     # path="/opt/nvidia/deepstream/deepstream/sources/apps/apps-common",
-#     build_file = "@//build:third_party/deepstream_apps_common.BUILD",
-#     path = "/home/colivier/src/hmdeepstream/deepstream/sources/apps/apps-common",
-# )
 
 local_repository(
     name = "gst_plugin_dev",
@@ -49,7 +34,6 @@ load_extension_dev_workspace()
 
 git_repository(
     name = "rules_cuda",
-    #tag="v0.2.3",
     # v0.2.3 breaks some lubcupti for our version of bazel
     commit = "3f2429254ec956220557e79ea9d5f5e8871c2907",
     remote = "https://github.com/bazel-contrib/rules_cuda",

@@ -4,8 +4,8 @@ cc_binary(
   srcs=glob(["*.c", "*.cpp", "*.h"]),
   deps=[
     #"@deepstream_apps_common",
-    "@deepstream_sources//apps/apps-common:deepstream_apps_common",
-    "@deepstream_lib",
+    "@deepstream//sources/apps/apps-common:deepstream_apps_common",
+    #"@deepstream_lib",
     "@gstreamer",
     "@yaml-cpp",
     "@local_cuda//:cuda_runtime",

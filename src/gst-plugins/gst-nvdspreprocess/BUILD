@@ -16,7 +16,7 @@ cc_binary(
     ],
     deps = [
         ":nvdsgst_preprocess_lib",
-        "@deepstream_lib",
+        "@deepstream//:deepstream_lib",
         "@NvDsBaseExt",
         "@NvDsInterfaceExt",
         "@StandardExtension",
@@ -45,7 +45,8 @@ cc_library(
     ],
     deps = [
         "//gst-plugins/gst-nvdspreprocess/nvdspreprocess_lib:nvdspreprocess_lib",
-        "@deepstream_lib",
+        "@deepstream//:deepstream_lib",
+        #"@deepstream_lib",
         "@glib",
         "@gstreamer",
         "@opencv_linux//:opencv",
