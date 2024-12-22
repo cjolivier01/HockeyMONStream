@@ -20,6 +20,9 @@
     },
     {
       "path": "../gst-template-main"
+    },
+    {
+      "path": "../cuda-kmeans"
     }
   ],
   "settings": {
