@@ -1,6 +1,5 @@
 #include "ConfigYaml.h"
 
-#include <yaml-cpp/yaml.h>
 #include <iostream>
 #include <string>
 #include <variant>
@@ -8,7 +7,7 @@
 namespace hm {
 namespace utils {
 
-void setConfigFromYaml(const YAML::Node& yaml, const ConfigLocator& locator) {
+void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator) {
     for (const auto& it : yaml) {
         const std::string& key = it.first.as<std::string>();
         const YAML::Node& value = it.second;
@@ -47,7 +46,7 @@ int config_yaml_test_main() {
 
     try {
         YAML::Node yaml = YAML::LoadFile(cfg_file_path);
-        setConfigFromYaml(yaml, locator);
+        set_config_from_yaml(yaml, locator);
     } catch (const std::exception& e) {
         std::cerr << "Error loading YAML file: " << e.what() << '\n';
         return 1;

@@ -147,6 +147,20 @@ ds-example:
   #operate-on-class-ids: 0
   #config-file: config_infer_primary_yolox.yaml
 
+ds-playtracker:
+  enable: 1
+  gpu-id: 0
+  batch-size: 4
+  # blur-objects: 1
+  # full-frame: 0
+  # processing-width: 1312
+  # processing-height: 480
+  # detection-mask: /home/colivier/Videos/ev-reno-1/rink_mask_0.png
+  #gie-unique-id: 2
+  #operate-on-gie-id: 1
+  #operate-on-class-ids: 0
+  #config-file: config_infer_primary_yolox.yaml
+
 ds-fieldmask:
   enable: 1
   gpu-id: 0

@@ -132,6 +132,7 @@ typedef struct
   NvDsDsAnalyticsConfig dsanalytics_config;
   NvDsDsExampleConfig dsexample_config;
   NvDsDsFieldMaskConfig dsfieldmask_config;
+  NvDsDsPlayTrackerConfig dsplaytracker_config;
   NvDsSinkMsgConvBrokerConfig msg_conv_config;
   NvDsImageSave image_save_config;
 

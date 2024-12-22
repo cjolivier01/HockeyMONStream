@@ -33,6 +33,21 @@ static gboolean parse_tests_yaml(NvDsConfig* config, gchar* cfg_file_path) {
   return ret;
 }
 
+// struct ConfigLocator {
+// std::unordered_map<std::string, ConfigValueLocator> locators;
+// };
+
+gboolean parse_dsplaytracker_yaml(NvDsDsPlayTrackerConfig* config, const YAML::Node& yaml_node) {
+  hm::utils::ConfigLocator locator;
+  SET_LOCATOR(locator, *config, enable);
+  SET_LOCATOR(locator, *config, unique_id);
+  SET_LOCATOR(locator, *config, gpu_id);
+  SET_LOCATOR(locator, *config, nvbuf_memory_type);
+
+  set_config_from_yaml(yaml_node, locator);
+  return true;
+}
+
 static gboolean parse_app_yaml(NvDsConfig* config, gchar* cfg_file_path) {
   gboolean ret = FALSE;
   YAML::Node configyml = YAML::LoadFile(cfg_file_path);
@@ -322,6 +337,14 @@ gboolean parse_config_file_yaml(NvDsConfig* config, gchar* cfg_file_path) {
       /** if gpu_id for dsexample component is present,
        * it will override the value set using global_gpu_id in parse_fieldmask_yaml function */
       parse_err = !parse_dsfieldmask_yaml(&config->dsfieldmask_config, cfg_file_path);
+    } else if (paramKey == "ds-playtracker") {
+      /** set gpu_id for dsexample component using global_gpu_id(if available) */
+      if (config->global_gpu_id != -1) {
+        config->dsplaytracker_config.gpu_id = config->global_gpu_id;
+      }
+      /** if gpu_id for dsexample component is present,
+       * it will override the value set using global_gpu_id in parse_playtracker_yaml function */
+      parse_err = !parse_dsplaytracker_yaml(&config->dsplaytracker_config, itr->second);
     } else if (paramKey == "message-converter") {
       parse_err = !parse_msgconv_yaml(&config->msg_conv_config, paramKey, cfg_file_path);
     } else if (paramKey == "tests") {
