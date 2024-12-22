@@ -151,10 +151,6 @@ ds-fieldmask:
   enable: 1
   gpu-id: 0
   detection-mask: /home/colivier/Videos/ev-reno-1/rink_mask_0.png
-  #gie-unique-id: 2
-  #operate-on-gie-id: 1
-  #operate-on-class-ids: 0
-  #config-file: config_infer_primary_yolox.yaml
 
 tracker:
   enable: 1
