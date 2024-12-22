@@ -175,6 +175,9 @@ void kmeansGPU(
   cudaFree(d_cluster_sizes);
 }
 
+namespace hm {
+namespace cuda {
+
 void kmeansCuda(
     const std::vector<float>& points,
     int numClusters,
@@ -198,6 +201,8 @@ void kmeansCuda(
   }
   std::cout << std::endl;
 }
+} // namespace cuda
+} // namespace hm
 
 #ifdef BUILD_MAIN
 // Example usage function
