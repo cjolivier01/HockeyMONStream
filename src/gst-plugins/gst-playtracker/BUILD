@@ -18,6 +18,7 @@ gst_cc_plugin(
     deps = [
         "//libs/common:utils",
         "//libs/kmeans:kmeans",
+        "//libs/k-means/kmcuda:kmcuda_lib",
         "@opencv_linux//:opencv",
     ],
 )

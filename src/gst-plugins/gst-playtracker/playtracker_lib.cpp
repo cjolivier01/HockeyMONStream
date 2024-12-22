@@ -15,6 +15,7 @@
 #include "gstplaytracker.h"
 #include "kmeans_cuda_simple.h"
 #include "utils.h"
+#include "libs/k-means/headers/kmcuda_adapter.hpp"
 
 #include <opencv2/opencv.hpp>
 
@@ -27,9 +28,6 @@
 
 struct DsPlayTrackerCtx {
   DsPlayTrackerInitParams initParams;
-  // cv::Mat detection_bit_mask;
-  // cv::Mat detection_u8_mask;
-  // cv::Point2f detection_mask_centroid;
 };
 
 namespace {} // namespace

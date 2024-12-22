@@ -8,7 +8,6 @@ cc_binary(
     visibility = ["//visibility:public"],
     deps = [
         ":k-means-lib",
-        "//libs/k-means/kmcuda:kmcuda_lib",
     ],
 )
 
