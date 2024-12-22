@@ -148,9 +148,9 @@ ds-example:
   #config-file: config_infer_primary_yolox.yaml
 
 ds-playtracker:
-  enable: 1
+  enable: 0
   gpu-id: 0
-  batch-size: 4
+  # batch-size: 4
   # blur-objects: 1
   # full-frame: 0
   # processing-width: 1312

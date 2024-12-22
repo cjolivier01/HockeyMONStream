@@ -45,6 +45,7 @@
         "${workspaceFolder}/src/external/deepstream/sources": "/home/colivier/src/hmdeepstream/deepstream/sources",
         "external/deepstream/sources": "/home/colivier/src/hmdeepstream/deepstream/sources",
       },
+      //"stopOnEntry": true,
       "env": {
         //"GST_DEBUG": "4",
         "LD_LIBRARY_PATH": "/home/colivier/src/hmdeepstream/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:/home/colivier/mambaforge/envs/ubuntu/lib:/home/colivier/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu",
@@ -74,7 +75,7 @@
         },
       ],
       "additionalSOLibSearchPath": "/home/colivier/src/hmdeepstream/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:/home/colivier/mambaforge/envs/ubuntu/lib:/home/colivier/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu",
-      "preLaunchTask": "Build extensions",
+      //"preLaunchTask": "Build extensions",
     },
     {
       "name": "(LLDB) deepstream-app",
