@@ -13,6 +13,7 @@
 
 #include "playtracker_lib.h"
 #include "gstplaytracker.h"
+#include "kmeans_cuda.h"
 #include "utils.h"
 
 #include <opencv2/opencv.hpp>
@@ -43,13 +44,19 @@ void DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
   if (!frame.frame_meta->bInferDone) {
     return;
   }
+  std::vector<float> points;
+  const std::size_t object_count = g_list_length(frame.frame_meta->obj_meta_list);
+  points.reserve(object_count * 2);
   for (NvDsMetaList* l_obj = frame.frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
     NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
     const NvDsComp_BboxInfo& trackler_bbox_info = obj_meta->tracker_bbox_info;
     float x = trackler_bbox_info.org_bbox_coords.left + trackler_bbox_info.org_bbox_coords.width / 2;
     float y = trackler_bbox_info.org_bbox_coords.top + trackler_bbox_info.org_bbox_coords.height / 2;
-    cv::Point2f ptCenter(x, y);
-    
+    points.emplace_back(x);
+    points.emplace_back(y);
+  }
+  if (object_count > 2) {
+    hm::cuda::kmeansCuda(points, /*numClusters=*/2, /*dim=*/2, /*numIterations=*/10);
   }
 }
 

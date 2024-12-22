@@ -109,7 +109,11 @@ void kmeansCuda(const std::vector<float>& points, int numClusters, int dim, int 
   }
 
   // Copy results back to the CPU
-  cudaMemcpy(centroids.data(), d_centroids, centroids.size() * sizeof(float), cudaMemcpyDeviceToHost);
+  std::vector<int> cluster_sizes(numClusters, -1);
+  std::vector<int> labels(numPoints, -1);
+
+  cudaMemcpy(cluster_sizes.data(), d_clusterSizes, cluster_sizes.size() * sizeof(int), cudaMemcpyDeviceToHost);
+  cudaMemcpy(labels.data(), d_labels, labels.size() * sizeof(int), cudaMemcpyDeviceToHost);
 
   // Print final centroids
   std::cout << "Final centroids:\n";
@@ -118,8 +122,17 @@ void kmeansCuda(const std::vector<float>& points, int numClusters, int dim, int 
     for (int d = 0; d < dim; ++d) {
       std::cout << centroids[c * dim + d] << " ";
     }
+    int cluster_size = cluster_sizes.at(c);
+    std::cout << "cluster size=" << cluster_size;
     std::cout << std::endl;
   }
+
+  std::cout << "point labels: [ ";
+  for (int l = 0; l < numPoints; l++) {
+    std::cout << labels.at(l) << " ";
+  }
+  std::cout << "]";
+  std::cout << std::endl;
 
   // Free GPU memory
   cudaFree(d_points);
