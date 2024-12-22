@@ -14,7 +14,9 @@ def gst_cc_plugin(
         visibility = visibility,
         deps = deps + [
             "@deepstream_lib",
-            "@deepstream_apps_common",
+            #"@deepstream_apps_common",
+            "@deepstream_sources//:deepstream_includes",
+            "@deepstream_sources//apps/apps-common:deepstream_apps_common",
             "@gstreamer",
             "@yaml-cpp",
             "@local_cuda//:cuda_runtime",

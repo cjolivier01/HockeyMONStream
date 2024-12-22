@@ -8,10 +8,12 @@ cc_library(
     ]),
     copts = [
         "-fPIC",
+        "-std=c++20",
     ],
     includes = ["."],
     visibility = ["//visibility:public"],
     deps = [
+        "@yaml-cpp",
         "@gstreamer",
     ],
 )

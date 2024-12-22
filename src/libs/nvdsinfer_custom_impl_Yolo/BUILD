@@ -31,7 +31,9 @@ cc_binary(
     deps=[
         ":nvdsinfer_custom_impl_Yolo_cuda_lib",
         "@deepstream_lib",
-        "@deepstream_apps_common",
+        # "@deepstream_sources//apps/apps-common:deepstream_apps_common",
+        "@deepstream_sources//:deepstream_includes",
+        #"@deepstream_apps_common",
         "@NvDsBaseExt",
         "@NvDsInterfaceExt",
         "@StandardExtension",
@@ -57,6 +59,7 @@ cuda_library(
         "-g",
     ],
     deps = [
+        "@deepstream_sources//:deepstream_includes",
         ":nvdsinfer_custom_impl_Yolo_headers",
         "@deepstream_lib",
         "@local_cuda//:cuda_runtime",

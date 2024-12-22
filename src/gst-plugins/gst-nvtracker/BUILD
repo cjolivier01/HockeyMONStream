@@ -36,7 +36,8 @@ cc_binary(
     deps = [
         "//gst-plugins/gst-nvdspreprocess:nvdsgst_preprocess_lib",
         "@deepstream_lib",
-        "@deepstream_apps_common",
+        "@deepstream_sources//apps/apps-common:deepstream_apps_common",
+        #"@deepstream_apps_common",
         # "@NvDsBaseExt",
         # "@NvDsInterfaceExt",
         # "@StandardExtension",

@@ -15,6 +15,7 @@ cuda_library(
       "-shared",
     ],
     deps = [
+        "@deepstream_sources//apps/apps-common:deepstream_apps_common",
         "@local_cuda//:cuda_runtime",
     ],
     visibility = ["//visibility:public"],

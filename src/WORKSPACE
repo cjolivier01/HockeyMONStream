@@ -11,18 +11,23 @@ local_repository(
     path = "/home/colivier/src/hmdeepstream/deepstream/graph-composer/extension-dev",
 )
 
+local_repository(
+    name = "deepstream_sources",
+    path = "/home/colivier/src/hmdeepstream/deepstream/sources",
+)
+
 new_local_repository(
     name = "deepstream_lib",
     build_file = "@//build:third_party/deepstream_lib.BUILD",
     path = "/home/colivier/src/hmdeepstream/deepstream",
 )
 
-new_local_repository(
-    name = "deepstream_apps_common",
-    # path="/opt/nvidia/deepstream/deepstream/sources/apps/apps-common",
-    build_file = "@//build:third_party/deepstream_apps_common.BUILD",
-    path = "/home/colivier/src/hmdeepstream/deepstream/sources/apps/apps-common",
-)
+# new_local_repository(
+#     name = "deepstream_apps_common",
+#     # path="/opt/nvidia/deepstream/deepstream/sources/apps/apps-common",
+#     build_file = "@//build:third_party/deepstream_apps_common.BUILD",
+#     path = "/home/colivier/src/hmdeepstream/deepstream/sources/apps/apps-common",
+# )
 
 local_repository(
     name = "gst_plugin_dev",

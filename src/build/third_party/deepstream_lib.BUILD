@@ -4,8 +4,9 @@ cc_library(
   name = "deepstream_lib",
   hdrs = glob([
       "sources/includes/**/*.h*",
-      "sources/libs/nvdsinfer/nvdsinfer_func_utils.h",
-  ]),
+  ]) + [
+    # "sources/libs/nvdsinfer/nvdsinfer_func_utils.h",
+  ],
   includes = [
       "sources/includes",
       "sources/libs/nvdsinfer",
@@ -14,7 +15,8 @@ cc_library(
   #   "-Isources/includes",
   # ],
   linkopts = [
-    "-L/home/colivier/src/hmdeepstream/deepstream/lib",
+    #"-L/home/colivier/src/hmdeepstream/deepstream/lib",
+    "-L./lib",
     "-L/opt/nvidia/deepstream/deepstream-7.1/lib",
     "-l:libnvdsgst_meta.so",
     "-l:libnvbufsurface.so",
