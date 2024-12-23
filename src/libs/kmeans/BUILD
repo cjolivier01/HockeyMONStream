@@ -6,10 +6,10 @@ cc_library(
     srcs = glob([
         "*.cpp",
     ]) + [
-      "omp_kmeans.c",
-      "seq_kmeans.c",
-      "wtime.c",
-      "file_io.c",
+        "file_io.c",
+        "omp_kmeans.c",
+        "seq_kmeans.c",
+        "wtime.c",
     ],
     copts = [
         "-fopenmp",
@@ -21,31 +21,34 @@ cc_library(
     ],
     linkopts = [
     ],
-    deps=[
-      ":kmeans_cuda_lib",
-      ":kmeans_lib_headers",
-    ],
     visibility = ["//visibility:public"],
+    deps = [
+        ":kmeans_cuda_lib",
+        ":kmeans_lib_headers",
+    ],
 )
 
 cuda_library(
     name = "kmeans_cuda_lib",
-    srcs=glob([
-        "*.cu",
+    srcs = glob([
+        "kmeans_cuda_simple.cu",
+        "cuda_io.cu",
+        "cuda_kmeans.cu",
+        "cuda_wtime.cu",
     ]),
-    copts=[
+    copts = [
         "-std=c++14",
         "-Xcompiler=-fPIC",
         "-Xcompiler=-g",
         "-DWITH_CUDA",
         "-g",
     ],
+    visibility = ["//visibility:public"],
     deps = [
         ":kmeans_lib_headers",
         # "@cuml//:cuml",
         "@local_cuda//:cuda_runtime",
     ],
-    visibility = ["//visibility:public"],
 )
 
 cc_library(
@@ -53,12 +56,12 @@ cc_library(
     hdrs = glob([
         "*.h",
     ]),
-    copts=[
-      "-fopenmp",
-      #"-Wno-error=write-strings",
+    copts = [
+        "-fopenmp",
+        #"-Wno-error=write-strings",
     ],
-    includes=[
-      ".",
+    includes = [
+        ".",
     ],
     visibility = ["//visibility:public"],
 )
