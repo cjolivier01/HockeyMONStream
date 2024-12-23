@@ -3,8 +3,8 @@ load("@gst_plugin_dev//build:gst_plugin.bzl", "gst_cc_plugin")
 gst_cc_plugin(
     name = "gstplaytracker",
     srcs = [
-        "playtracker_lib.cpp",
-        "playtracker_lib.h",
+        "PlayTracker.cpp",
+        "PlayTracker.h",
         "gstplaytracker.cpp",
         "gstplaytracker.h",
     ],

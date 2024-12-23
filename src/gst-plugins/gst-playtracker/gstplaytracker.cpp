@@ -39,6 +39,7 @@
 #include <sys/time.h>
 // #include <condition_variable>
 // #include <mutex>
+#include <memory>
 // #include <thread>
 
 GST_DEBUG_CATEGORY_STATIC(gst_playtracker_debug);

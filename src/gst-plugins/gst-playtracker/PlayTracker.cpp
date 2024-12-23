@@ -11,12 +11,12 @@
  * its affiliates is strictly prohibited.
  */
 
-#include "playtracker_lib.h"
+#include "PlayTracker.h"
 #include "gstplaytracker.h"
 #include "kmeans.h"
-#include "kmeans_cuda_simple.h"
-#include "libs/k-means/headers/kmcuda_adapter.hpp"
-#include "utils.h"
+//#include "kmeans_cuda_simple.h"
+//#include "libs/k-means/headers/kmcuda_adapter.hpp"
+//#include "utils.h"
 
 #include <opencv2/opencv.hpp>
 

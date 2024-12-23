@@ -25,16 +25,16 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include "playtracker_lib.h"
-#include "gst-nvquery.h"
+#include "PlayTracker.h"
+// #include "gst-nvquery.h"
 #include "gstnvdsmeta.h"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 #include "nvtx3/nvToolsExt.h"
 
-#include <condition_variable>
-#include <mutex>
-#include <thread>
+// #include <condition_variable>
+// #include <mutex>
+// #include <thread>
 #include <vector>
 
 /* Package and library details required for plugin_init */
