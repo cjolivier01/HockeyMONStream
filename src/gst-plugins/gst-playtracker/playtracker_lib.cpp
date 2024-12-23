@@ -13,6 +13,7 @@
 
 #include "playtracker_lib.h"
 #include "gstplaytracker.h"
+#include "kmeans.h"
 #include "kmeans_cuda_simple.h"
 #include "libs/k-means/headers/kmcuda_adapter.hpp"
 #include "utils.h"
@@ -53,15 +54,29 @@ void DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
     points.emplace_back(x);
     points.emplace_back(y);
   }
-  #if 1
+#if 1
   std::vector<int> assignments_2, assignments_3;
   if (object_count > 3) {
-    hm::cuda::kmeansCuda(points, /*numClusters=*/2, /*dim=*/2, /*numIterations=*/4, assignments_2);
+    hm::kmeans::compute_kmeans(
+        points,
+        /*numClusters=*/2,
+        /*dim=*/2,
+        /*numIterations=*/4,
+        assignments_2,
+        hm::kmeans::KMEANS_TYPE::KM_SEQ);
+    // hm::cuda::kmeansCuda(points, /*numClusters=*/2, /*dim=*/2, /*numIterations=*/4, assignments_2);
   }
   if (object_count > 4) {
-    hm::cuda::kmeansCuda(points, /*numClusters=*/2, /*dim=*/2, /*numIterations=*/4, assignments_3);
+    hm::kmeans::compute_kmeans(
+        points,
+        /*numClusters=*/3,
+        /*dim=*/2,
+        /*numIterations=*/4,
+        assignments_2,
+        hm::kmeans::KMEANS_TYPE::KM_SEQ);
+    // hm::cuda::kmeansCuda(points, /*numClusters=*/2, /*dim=*/2, /*numIterations=*/4, assignments_3);
   }
-  #endif
+#endif
 }
 
 // In case of an actual processing library, processing on data wil be completed

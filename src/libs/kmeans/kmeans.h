@@ -42,8 +42,9 @@ inline void checkLastCudaError() {
 namespace hm {
 namespace kmeans {
 
+/* return an array of cluster centers of size [numClusters][numCoords]       */
 float** omp_kmeans(int, float**, int, int, int, float, int*);
-float** seq_kmeans(float**, int, int, int, float, int*, int*);
+float** seq_kmeans(const float**, int, int, int, float, int*, int*);
 float** cuda_kmeans(float**, int, int, int, float, int*, int*);
 
 float** file_read(int, char*, int*, int*);
@@ -62,7 +63,8 @@ void compute_kmeans(
     int numClusters,
     int dim,
     int numIterations,
-    std::vector<int>& assignments);
+    std::vector<int>& assignments,
+    KMEANS_TYPE kmeans_type = KMEANS_TYPE::KM_SEQ);
 
 extern int _debug;
 } // namespace kmeans
