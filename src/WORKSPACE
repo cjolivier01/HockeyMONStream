@@ -88,6 +88,12 @@ git_repository(
 )
 
 new_local_repository(
+    name = "cuml",
+    build_file = "@//build:third_party/cuml.BUILD",
+    path = "/usr/local",
+)
+
+new_local_repository(
     name = "opencv_linux",
     build_file = "@//build:third_party/opencv_linux.BUILD",
     path = "/usr/include",

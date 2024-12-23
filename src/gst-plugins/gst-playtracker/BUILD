@@ -20,6 +20,6 @@ gst_cc_plugin(
         "//libs/kmeans:kmeans",
         "//libs/k-means/kmcuda:kmcuda_lib",
         "@opencv_linux//:opencv",
+        "@cuml//:cuml",
     ],
 )
-
