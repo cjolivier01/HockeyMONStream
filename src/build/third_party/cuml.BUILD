@@ -14,13 +14,19 @@ cc_library(
   name = "cuml",
   hdrs = glob([
       "include/cuml/**/*.h*",
+      "include/spdlog/**/*.h*",
+      "include/spdlog/fmt/bundled/*.h",
   ]),
   includes = [
       "include",
   ],
+  copts = [
+    "-std=c++17",
+    "-DSPDLOG_USE_STD_FORMAT",
+  ],
   linkopts = [
     "-Llib",
-    # "-l:libopencv_core.so",
+    "-l:libcuml++.so",
   ],
   visibility = ["//visibility:public"],
 )

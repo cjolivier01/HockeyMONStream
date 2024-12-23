@@ -87,11 +87,11 @@ git_repository(
     tag = "v0.9.3",  # Use the tag corresponding to version 0.9.3
 )
 
-new_local_repository(
-    name = "cuml",
-    build_file = "@//build:third_party/cuml.BUILD",
-    path = "/usr/local",
-)
+# new_local_repository(
+#     name = "cuml",
+#     build_file = "@//build:third_party/cuml.BUILD",
+#     path = "/usr/local",
+# )
 
 new_local_repository(
     name = "opencv_linux",

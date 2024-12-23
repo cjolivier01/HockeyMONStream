@@ -5,10 +5,16 @@ cc_library(
     name = "kmeans",
     srcs = glob([
         "*.cpp",
-    ]),
+    ]) + [
+      "omp_kmeans.c",
+      "seq_kmeans.c",
+      "wtime.c",
+      "file_io.c",
+    ],
     copts = [
+        "-fopenmp",
         "-Wall",
-        "-std=c++11",
+        "-std=c++17",
         "-fPIC",
         "-Wno-error=deprecated-declarations",
         "-DWITH_CUDA",
@@ -28,7 +34,7 @@ cuda_library(
         "*.cu",
     ]),
     copts=[
-        "-std=c++11",
+        "-std=c++14",
         "-Xcompiler=-fPIC",
         "-Xcompiler=-g",
         "-DWITH_CUDA",
@@ -36,6 +42,7 @@ cuda_library(
     ],
     deps = [
         ":kmeans_lib_headers",
+        # "@cuml//:cuml",
         "@local_cuda//:cuda_runtime",
     ],
     visibility = ["//visibility:public"],
@@ -46,6 +53,10 @@ cc_library(
     hdrs = glob([
         "*.h",
     ]),
+    copts=[
+      "-fopenmp",
+      #"-Wno-error=write-strings",
+    ],
     includes=[
       ".",
     ],
