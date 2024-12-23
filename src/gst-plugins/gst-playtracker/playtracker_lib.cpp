@@ -56,6 +56,8 @@ void DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
   }
 #if 1
   std::vector<int> assignments_2, assignments_3;
+  const auto kmeans_type = hm::kmeans::KMEANS_TYPE::KM_SEQ;
+  //const auto kmeans_type = hm::kmeans::KMEANS_TYPE::KM_OMP;
   if (object_count > 3) {
     hm::kmeans::compute_kmeans(
         points,
@@ -63,7 +65,7 @@ void DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
         /*dim=*/2,
         /*numIterations=*/4,
         assignments_2,
-        hm::kmeans::KMEANS_TYPE::KM_SEQ);
+        kmeans_type);
     // hm::cuda::kmeansCuda(points, /*numClusters=*/2, /*dim=*/2, /*numIterations=*/4, assignments_2);
   }
   if (object_count > 4) {
@@ -73,7 +75,7 @@ void DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
         /*dim=*/2,
         /*numIterations=*/4,
         assignments_2,
-        hm::kmeans::KMEANS_TYPE::KM_SEQ);
+        kmeans_type);
     // hm::cuda::kmeansCuda(points, /*numClusters=*/2, /*dim=*/2, /*numIterations=*/4, assignments_3);
   }
 #endif
