@@ -20,6 +20,7 @@ cc_library(
         "-DWITH_CUDA",
     ],
     linkopts = [
+        "-lgomp",
     ],
     visibility = ["//visibility:public"],
     deps = [

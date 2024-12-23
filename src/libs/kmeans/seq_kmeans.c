@@ -50,6 +50,8 @@
 namespace hm {
 namespace kmeans {
 
+int _debug = 0;
+
 /*----< euclid_dist_2() >----------------------------------------------------*/
 /* square of Euclid distance between two multi-dimensional points            */
 __inline static float euclid_dist_2(

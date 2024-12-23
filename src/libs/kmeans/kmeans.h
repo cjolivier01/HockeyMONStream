@@ -43,7 +43,7 @@ namespace hm {
 namespace kmeans {
 
 /* return an array of cluster centers of size [numClusters][numCoords]       */
-float** omp_kmeans(int, float**, int, int, int, float, int*);
+float** omp_kmeans(int, const float**, int, int, int, float, int*);
 float** seq_kmeans(const float**, int, int, int, float, int*, int*);
 float** cuda_kmeans(float**, int, int, int, float, int*, int*);
 

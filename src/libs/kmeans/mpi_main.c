@@ -24,7 +24,6 @@
 #include <fcntl.h>
 #include <unistd.h>     /* getopt() */
 #include <mpi.h>
-int      _debug;
 #include "kmeans.h"
 
 int     mpi_kmeans(float**, int, int, int, float, int*, float**, MPI_Comm);

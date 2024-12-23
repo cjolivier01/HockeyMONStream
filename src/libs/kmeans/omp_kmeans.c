@@ -30,8 +30,8 @@ namespace kmeans {
 /* square of Euclid distance between two multi-dimensional points            */
 __inline static float euclid_dist_2(
     int numdims, /* no. dimensions */
-    float* coord1, /* [numdims] */
-    float* coord2) /* [numdims] */
+    const float* coord1, /* [numdims] */
+    const float* coord2) /* [numdims] */
 {
   int i;
   float ans = 0.0;
@@ -46,7 +46,7 @@ __inline static float euclid_dist_2(
 __inline static int find_nearest_cluster(
     int numClusters, /* no. clusters */
     int numCoords, /* no. coordinates */
-    float* object, /* [numCoords] */
+    const float* object, /* [numCoords] */
     float** clusters) /* [numClusters][numCoords] */
 {
   int index, i;
@@ -71,7 +71,7 @@ __inline static int find_nearest_cluster(
 /* return an array of cluster centers of size [numClusters][numCoords]       */
 float** omp_kmeans(
     int is_perform_atomic, /* in: */
-    float** objects, /* in: [numObjs][numCoords] */
+    const float** objects, /* in: [numObjs][numCoords] */
     int numCoords, /* no. coordinates */
     int numObjs, /* no. objects */
     int numClusters, /* no. clusters */

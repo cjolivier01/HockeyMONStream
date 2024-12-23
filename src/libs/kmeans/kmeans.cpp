@@ -20,6 +20,16 @@ namespace kmeans {
 // 0.001f,                           // less than 0.1% of the samples are reassigned in the end
 // 0.1f,                             // activate Yinyang refinement with 0.1 threshold
 
+// float** omp_kmeans(
+//     int is_perform_atomic, /* in: */
+//     float** objects, /* in: [numObjs][numCoords] */
+//     int numCoords, /* no. coordinates */
+//     int numObjs, /* no. objects */
+//     int numClusters, /* no. clusters */
+//     float threshold, /* % objects change membership */
+//     int* membership) /* out: [numObjs] */
+// {
+
 void compute_kmeans(
     const std::vector<float>& points,
     int numClusters,
@@ -54,12 +64,14 @@ void compute_kmeans(
       results = seq_kmeans(ptrs.data(), dim, object_count, numClusters, 0.001f, assignments.data(), &numIterations);
       break;
     case KMEANS_TYPE::KM_OMP:
+      results = omp_kmeans(
+          /*is_perform_atomic=*/false, ptrs.data(), dim, object_count, numClusters, 0.001f, assignments.data());
+      break;
     case KMEANS_TYPE::KM_CUDA:
     default:
       assert(false);
       break;
   }
-  (void)results;
   if (results) {
     ::free(results);
   }

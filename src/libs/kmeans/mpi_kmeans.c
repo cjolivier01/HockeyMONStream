@@ -84,7 +84,7 @@ int mpi_kmeans(
   float delta; /* % of objects change their clusters */
   float delta_tmp;
   float** newClusters; /* [numClusters][numCoords] */
-  extern int _debug;
+  //extern int _debug;
 
   if (_debug)
     MPI_Comm_rank(comm, &rank);
