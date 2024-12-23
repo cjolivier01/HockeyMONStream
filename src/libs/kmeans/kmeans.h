@@ -42,7 +42,6 @@ inline void checkLastCudaError() {
 namespace hm {
 namespace kmeans {
 
-
 float** omp_kmeans(int, float**, int, int, int, float, int*);
 float** seq_kmeans(float**, int, int, int, float, int*, int*);
 float** cuda_kmeans(float**, int, int, int, float, int*, int*);
@@ -51,6 +50,12 @@ float** file_read(int, char*, int*, int*);
 int file_write(char*, int, int, int, float**, int*);
 
 double wtime(void);
+
+enum class KMEANS_TYPE {
+  KM_SEQ,
+  KM_OMP,
+  KM_CUDA, // Cuda will be much slower on small datasets
+};
 
 void compute_kmeans(
     const std::vector<float>& points,
