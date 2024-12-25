@@ -24,6 +24,11 @@ local_repository(
     path = "/home/colivier/src/hstream/bazel",
 )
 
+local_repository(
+    name = "hm",
+    path = "/home/colivier/src/hm",
+)
+
 load(
     "@com_extension_dev//build:graph_extension.bzl",
     "graph_nvidia_extension",
