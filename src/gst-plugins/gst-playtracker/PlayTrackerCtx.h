@@ -17,7 +17,7 @@ typedef struct {
   int processingHeight;
   // Flag to indicate whether operating on crops of full frame
   int fullFrame;
-  std::string detection_mask_file;
+  std::string play_tracker_config_file;
 } DsPlayTrackerInitParams;
 
 // Detected/Labelled object structure, stores bounding box info along with label

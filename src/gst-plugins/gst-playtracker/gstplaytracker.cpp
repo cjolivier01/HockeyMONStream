@@ -351,9 +351,9 @@ static void gst_playtracker_set_property(GObject* object, guint prop_id, const G
     case PROP_PLAY_TRACKER_CONFIG_FILE: {
       const char* str = g_value_get_string(value);
       if (str && *str) {
-        strncpy(playtracker->detection_mask_file, str, STRSIZE(playtracker->detection_mask_file) - 1);
+        strncpy(playtracker->play_tracker_config_file, str, STRSIZE(playtracker->play_tracker_config_file) - 1);
       } else {
-        playtracker->detection_mask_file[0] = '\0';
+        playtracker->play_tracker_config_file[0] = '\0';
       }
     } break;
     default:
@@ -388,7 +388,7 @@ static void gst_playtracker_get_property(GObject* object, guint prop_id, GValue*
       g_value_set_uint(value, playtracker->max_batch_size);
       break;
     case PROP_PLAY_TRACKER_CONFIG_FILE:
-      g_value_set_string(value, playtracker->detection_mask_file);
+      g_value_set_string(value, playtracker->play_tracker_config_file);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
@@ -413,7 +413,7 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
       .processingWidth = playtracker->processing_width,
       .processingHeight = playtracker->processing_height,
       .fullFrame = playtracker->process_full_frame,
-      .detection_mask_file = playtracker->detection_mask_file};
+      .play_tracker_config_file = playtracker->play_tracker_config_file};
 
   /* Algorithm specific initializations and resource allocation. */
   playtracker->playtrackerlib_ctx = DsPlayTrackerCtxInit(&init_params);

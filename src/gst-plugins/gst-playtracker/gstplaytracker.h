@@ -127,7 +127,7 @@ struct _GstDsPlayTracker {
   /** GPU ID on which we expect to execute the task */
   guint gpu_id;
 
-  char detection_mask_file[PATH_MAX*4];
+  char play_tracker_config_file[PATH_MAX*4];
 
   /** Boolean indicating if entire frame or cropped objects should be processed
    */
