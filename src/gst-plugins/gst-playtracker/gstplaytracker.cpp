@@ -1205,6 +1205,7 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
       continue;
     }
 
+#if 1
     g_mutex_unlock(&playtracker->process_lock);
 
     /* Need to only push buffer to downstream element. This batch was not
@@ -1237,6 +1238,7 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
       g_mutex_lock(&playtracker->process_lock);
       continue;
     }
+#endif
 
     nvtx_str = "dequeueOutputAndAttachMeta batch_num=" + std::to_string(batch->inbuf_batch_num);
     eventAttrib.message.ascii = nvtx_str.c_str();
