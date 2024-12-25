@@ -19,6 +19,8 @@
 
 #include <opencv2/opencv.hpp>
 
+#include <nvdsmeta.h>
+
 #include <cassert>
 #include <vector>
 
@@ -178,7 +180,7 @@ void adjust_config(const BBox& arena_box, PlayTrackerConfig& pt_config, const st
 PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::Node& yaml) {
   PlayTrackerConfig config;
   hm::utils::ConfigLocator locator{
-    .ignored{"live-boxes"},
+      .ignored{"live-boxes"},
   };
 
   if (yaml["live-boxes"]) {
@@ -228,6 +230,69 @@ hm::play_tracker::PlayTracker* get_or_create_play_tracker(const BBox& arena_box,
   return nullptr;
 }
 
+#define NvOSD_MAX_ELEMENTS 16
+
+static void add_boxes_circles_lines(NvDsFrameMeta* frame_meta) {
+  // Create display metadata
+  NvDsDisplayMeta* display_meta = nvds_acquire_display_meta_from_pool(frame_meta->base_meta.batch_meta);
+  if (!display_meta) {
+    g_printerr("Failed to acquire display meta from pool\n");
+    return;
+  }
+
+  // Add first box
+  NvOSD_RectParams* rect_params = display_meta->rect_params;
+  NvOSD_TextParams* text_params = display_meta->text_params;
+  NvOSD_CircleParams* circle_params = display_meta->circle_params;
+  NvOSD_LineParams* line_params = display_meta->line_params;
+
+  // Box 1
+  rect_params[0].left = 100;
+  rect_params[0].top = 200;
+  rect_params[0].width = 300;
+  rect_params[0].height = 150;
+  rect_params[0].border_width = 10;
+  rect_params[0].border_color = (NvOSD_ColorParams){1.0, 0.0, 0.0, 1.0}; // Red
+  rect_params[0].has_bg_color = 1;
+  rect_params[0].bg_color = (NvOSD_ColorParams){0.5, 0.5, 0.5, 0.4}; // Gray with 40% alpha
+
+  // Add label for Box 1
+  text_params[0].display_text = g_strdup("Box 1 Label");
+  text_params[0].x_offset = 100;
+  text_params[0].y_offset = 180;
+  text_params[0].font_params.font_size = 12;
+  text_params[0].font_params.font_color = (NvOSD_ColorParams){1.0, 1.0, 1.0, 1.0}; // White
+
+  // Box center
+  int box_center_x = rect_params[0].left + rect_params[0].width / 2;
+  int box_center_y = rect_params[0].top + rect_params[0].height / 2;
+
+  // Circle
+  circle_params[0].xc = 500; // X-coordinate of the circle's center
+  circle_params[0].yc = 350; // Y-coordinate of the circle's center
+  circle_params[0].radius = 10; // Radius of the circle
+  circle_params[0].circle_color = (NvOSD_ColorParams){0.0, 0.0, 1.0, 1.0}; // Blue
+  circle_params[0].has_bg_color = 1;
+  circle_params[0].bg_color = (NvOSD_ColorParams){0.0, 0.0, 1.0, 1.0}; // Blue solid fill
+
+  // Line from the center of the box to the center of the circle
+  line_params[0].x1 = box_center_x;
+  line_params[0].y1 = box_center_y;
+  line_params[0].x2 = circle_params[0].xc;
+  line_params[0].y2 = circle_params[0].yc;
+  line_params[0].line_width = 10;
+  line_params[0].line_color = (NvOSD_ColorParams){0.0, 1.0, 0.0, 1.0}; // Green line
+
+  // Set the number of rectangles, labels, circles, and lines
+  display_meta->num_rects = 1;
+  display_meta->num_labels = 1;
+  display_meta->num_circles = 1;
+  display_meta->num_lines = 1;
+
+  // Attach display metadata to the frame
+  nvds_add_display_meta_to_frame(frame_meta, display_meta);
+}
+
 } // namespace gst_hm
 
 DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* initParams) {
@@ -267,6 +332,7 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
   }
 
   hm::play_tracker::PlayTrackerResults results = play_tracker->forward(tracking_ids, tracking_boxes);
+  gst_hm::add_boxes_circles_lines(frame.frame_meta);
   return true;
 }
 
