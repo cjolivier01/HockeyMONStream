@@ -39,6 +39,7 @@ gboolean parse_dsplaytracker_yaml(
     const YAML::Node& yaml_node,
     const std::string& config_path) {
   hm::utils::ConfigLocator locator;
+  locator.ignored.emplace("config-file");
   SET_LOCATOR(locator, *config, enable);
   SET_LOCATOR(locator, *config, unique_id);
   SET_LOCATOR(locator, *config, gpu_id);

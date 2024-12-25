@@ -3,8 +3,9 @@
 #include <gst/gst.h>
 #include <yaml-cpp/yaml.h>
 
-#include <string>
 #include <map>
+#include <set>
+#include <string>
 #include <variant>
 
 using ConfigValue = std::variant<guint, float, std::string, gboolean>;
@@ -21,11 +22,11 @@ struct MyConfig {
 };
 
 struct ConfigLocator {
+  std::set<std::string> ignored;
   std::map<std::string, ConfigValueLocator> locators;
 };
 
-#define SET_LOCATOR(config_locator$, cfg_struct$, member$) \
-    config_locator$.locators[#member$] = &((cfg_struct$).member$)
+#define SET_LOCATOR(config_locator$, cfg_struct$, member$) config_locator$.locators[#member$] = &((cfg_struct$).member$)
 
 void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator);
 
