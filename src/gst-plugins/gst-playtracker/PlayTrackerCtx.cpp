@@ -37,9 +37,8 @@ namespace gst_hm {
 
 using namespace hm::play_tracker;
 
-PlayDetectorConfig create_play_detector_config(const YAML::Node& yaml) {
+PlayDetectorConfig create_play_detector_config(const YAML::Node& yaml, hm::utils::ConfigLocator& locator) {
   PlayDetectorConfig config;
-  hm::utils::ConfigLocator locator;
   SET_LOCATOR(locator, config, max_positions);
   SET_LOCATOR(locator, config, max_velocity_positions);
   SET_LOCATOR(locator, config, frame_step);
@@ -50,13 +49,11 @@ PlayDetectorConfig create_play_detector_config(const YAML::Node& yaml) {
   SET_LOCATOR(locator, config, scale_speed_constraints);
   SET_LOCATOR(locator, config, nonstop_delay_count);
   SET_LOCATOR(locator, config, overshoot_scale_speed_ratio);
-  set_config_from_yaml(yaml, locator);
   return config;
 }
 
-ResizingConfig create_resizing_config(const YAML::Node& yaml) {
+ResizingConfig create_resizing_config(const YAML::Node& yaml, hm::utils::ConfigLocator& locator) {
   ResizingConfig config;
-  hm::utils::ConfigLocator locator;
   SET_LOCATOR(locator, config, resizing_enabled);
   SET_LOCATOR(locator, config, max_speed_w);
   SET_LOCATOR(locator, config, max_speed_h);
@@ -66,43 +63,42 @@ ResizingConfig create_resizing_config(const YAML::Node& yaml) {
   SET_LOCATOR(locator, config, min_height);
   SET_LOCATOR(locator, config, max_width);
   SET_LOCATOR(locator, config, max_height);
-  SET_LOCATOR(locator, config, stop_on_dir_change);
+  SET_LOCATOR(locator, config, stop_resizing_on_dir_change);
   SET_LOCATOR(locator, config, sticky_sizing);
   SET_LOCATOR(locator, config, size_ratio_thresh_grow_dw);
   SET_LOCATOR(locator, config, size_ratio_thresh_grow_dh);
   SET_LOCATOR(locator, config, size_ratio_thresh_shrink_dw);
   SET_LOCATOR(locator, config, size_ratio_thresh_shrink_dh);
-  set_config_from_yaml(yaml, locator);
   return config;
 }
-TranslatingBoxConfig create_translating_box_config(const BBox& arena_box, const YAML::Node& yaml) {
+TranslatingBoxConfig create_translating_box_config(
+    const BBox& arena_box,
+    const YAML::Node& yaml,
+    hm::utils::ConfigLocator& locator) {
   TranslatingBoxConfig config;
-  hm::utils::ConfigLocator locator;
   SET_LOCATOR(locator, config, translation_enabled);
   SET_LOCATOR(locator, config, max_speed_x);
   SET_LOCATOR(locator, config, max_speed_y);
   SET_LOCATOR(locator, config, max_accel_x);
   SET_LOCATOR(locator, config, max_accel_y);
-  SET_LOCATOR(locator, config, stop_on_dir_change);
+  SET_LOCATOR(locator, config, stop_translation_on_dir_change);
   SET_LOCATOR(locator, config, sticky_translation);
   SET_LOCATOR(locator, config, sticky_size_ratio_to_frame_width);
   SET_LOCATOR(locator, config, sticky_translation_gaussian_mult);
   SET_LOCATOR(locator, config, unsticky_translation_size_ratio);
   config.arena_box = arena_box;
-  set_config_from_yaml(yaml, locator);
   return config;
 }
 
 LivingBoxConfig create_living_box_config(
     const YAML::Node& yaml,
+    hm::utils::ConfigLocator& locator,
     std::optional<FloatValue> fixed_aspect_ratio = std::nullopt) {
   LivingBoxConfig config;
-  hm::utils::ConfigLocator locator;
   SET_LOCATOR(locator, config, scale_dest_width);
   SET_LOCATOR(locator, config, scale_dest_height);
   SET_LOCATOR(locator, config, clamp_scaled_input_box);
   config.fixed_aspect_ratio = fixed_aspect_ratio;
-  set_config_from_yaml(yaml, locator);
   return config;
 }
 
@@ -113,9 +109,10 @@ AllLivingBoxConfig create_all_living_box_config(
   AllLivingBoxConfig config;
   hm::utils::ConfigLocator locator;
   SET_LOCATOR(locator, config, name);
-  *((ResizingConfig*)&config) = create_resizing_config(yaml);
-  *((TranslatingBoxConfig*)&config) = create_translating_box_config(arena_box, yaml);
-  *((LivingBoxConfig*)&config) = create_living_box_config(yaml, fixed_aspect_ratio);
+  *((ResizingConfig*)&config) = create_resizing_config(yaml, locator);
+  *((TranslatingBoxConfig*)&config) = create_translating_box_config(arena_box, yaml, locator);
+  *((LivingBoxConfig*)&config) = create_living_box_config(yaml, locator, fixed_aspect_ratio);
+  set_config_from_yaml(yaml, locator);
   return config;
 }
 
@@ -148,8 +145,8 @@ void adjust_config(const BBox& arena_box, PlayTrackerConfig& pt_config, const st
     bcfg.max_width = arena_box.width();
     bcfg.max_height = arena_box.height();
     bcfg.min_height = 10;
-    ((ResizingConfig*)&bcfg)->stop_on_dir_change = false;
-    ((TranslatingBoxConfig*)&bcfg)->stop_on_dir_change = false;
+    ((ResizingConfig*)&bcfg)->stop_resizing_on_dir_change = false;
+    ((TranslatingBoxConfig*)&bcfg)->stop_translation_on_dir_change = false;
     bcfg.sticky_sizing = false;
     bcfg.sticky_translation = false;
     bcfg.arena_box = arena_box;
@@ -170,8 +167,8 @@ void adjust_config(const BBox& arena_box, PlayTrackerConfig& pt_config, const st
     bcfg.max_width = arena_box.width();
     bcfg.max_height = arena_box.height();
     bcfg.min_height = arena_box.height() / 5;
-    ((ResizingConfig*)&bcfg)->stop_on_dir_change = true;
-    ((TranslatingBoxConfig*)&bcfg)->stop_on_dir_change = true;
+    ((ResizingConfig*)&bcfg)->stop_resizing_on_dir_change = true;
+    ((TranslatingBoxConfig*)&bcfg)->stop_translation_on_dir_change = true;
     bcfg.sticky_sizing = true;
     bcfg.sticky_translation = true;
     bcfg.arena_box = arena_box;
@@ -180,7 +177,9 @@ void adjust_config(const BBox& arena_box, PlayTrackerConfig& pt_config, const st
 
 PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::Node& yaml) {
   PlayTrackerConfig config;
-  hm::utils::ConfigLocator locator;
+  hm::utils::ConfigLocator locator{
+    .ignored{"live-boxes"},
+  };
 
   if (yaml["live-boxes"]) {
     YAML::Node live_boxes = yaml["live-boxes"];
@@ -193,7 +192,7 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
       config.living_boxes.back().fixed_aspect_ratio = 16.0 / 7.0;
     }
   }
-  config.play_detector = create_play_detector_config(yaml);
+  config.play_detector = create_play_detector_config(yaml, locator);
   adjust_config(arena_box, config);
   SET_LOCATOR(locator, config, no_wide_start);
   SET_LOCATOR(locator, config, max_lost_track_age);
@@ -210,9 +209,14 @@ hm::play_tracker::PlayTracker* get_or_create_play_tracker(const BBox& arena_box,
   if (!ctx->initParams.play_tracker_config_file.empty()) {
     try {
       YAML::Node yaml = YAML::LoadFile(ctx->initParams.play_tracker_config_file);
-      PlayTrackerConfig config = create_play_tracker_config(arena_box, yaml);
-      ctx->play_tracker = std::make_unique<hm::play_tracker::PlayTracker>(arena_box, config);
-      return ctx->play_tracker->get();
+      if (yaml["play-tracker"]) {
+        PlayTrackerConfig config = create_play_tracker_config(arena_box, yaml["play-tracker"]);
+        ctx->play_tracker = std::make_unique<hm::play_tracker::PlayTracker>(arena_box, config);
+        return ctx->play_tracker->get();
+      } else {
+        g_error("Could not find 'play-tracker' in config file: %s", ctx->initParams.play_tracker_config_file.c_str());
+        ctx->play_tracker = nullptr;
+      }
     } catch (const std::exception& e) {
       g_error("Error loading YAML file: %s", e.what());
       ctx->play_tracker = nullptr;

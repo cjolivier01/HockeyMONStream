@@ -3,6 +3,7 @@
 #include <gst/gst.h>
 #include <yaml-cpp/yaml.h>
 
+#include <cassert>
 #include <map>
 #include <set>
 #include <string>
@@ -26,7 +27,11 @@ struct ConfigLocator {
   std::map<std::string, ConfigValueLocator> locators;
 };
 
-#define SET_LOCATOR(config_locator$, cfg_struct$, member$) config_locator$.locators[#member$] = &((cfg_struct$).member$)
+#define SET_LOCATOR(config_locator$, cfg_struct$, member$)         \
+  do {                                                             \
+    assert(!config_locator$.locators.count(#member$));             \
+    config_locator$.locators[#member$] = &((cfg_struct$).member$); \
+  } while (false)
 
 void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator);
 
