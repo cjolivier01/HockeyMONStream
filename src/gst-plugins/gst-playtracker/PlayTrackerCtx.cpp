@@ -16,7 +16,6 @@
 #include "libs/common/ConfigYaml.h"
 
 #include "gstplaytracker.h"
-#include "kmeans.h"
 
 #include <opencv2/opencv.hpp>
 
@@ -120,6 +119,65 @@ AllLivingBoxConfig create_all_living_box_config(
   return config;
 }
 
+const std::unordered_map<std::string, float> CAMERA_TYPE_MAX_SPEEDS = {
+    {"GoPro", 200.0},
+    {"Zhiwei", 200.0},
+    {"LiveBarn", 150.0},
+};
+
+void adjust_config(const BBox& arena_box, PlayTrackerConfig& pt_config, const std::string& camera = "GoPro") {
+  const float max_camera_speed = CAMERA_TYPE_MAX_SPEEDS.at(camera);
+  const float scale = pt_config.play_detector.fps_speed_scale;
+  const float camera_box_max_speed_x = std::max(arena_box.width() / max_camera_speed, 12.0f);
+  const float camera_box_max_speed_y = std::max(arena_box.height() / max_camera_speed, 12.0f);
+  const float camera_box_max_accel_x = 1.0 / scale;
+  const float camera_box_max_accel_y = 1.0 / scale;
+  // Do the "fast" boxes
+  for (int i = 0; i < int(pt_config.living_boxes.size()) - 1; ++i) {
+    AllLivingBoxConfig& bcfg = pt_config.living_boxes.at(i);
+    // Translation
+    bcfg.max_speed_x = camera_box_max_speed_x * 1.5 / scale;
+    bcfg.max_speed_y = camera_box_max_speed_y * 1.5 / scale;
+    bcfg.max_accel_x = camera_box_max_accel_x * 1.1 / scale;
+    bcfg.max_accel_y = camera_box_max_accel_y * 1.1 / scale;
+    // Resizing
+    bcfg.max_speed_w = camera_box_max_speed_x * 1.5 / scale / 1.8;
+    bcfg.max_speed_h = camera_box_max_speed_y * 1.5 / scale / 1.8;
+    bcfg.max_accel_w = camera_box_max_accel_x * 1.1 / scale;
+    bcfg.max_accel_h = camera_box_max_accel_y * 1.1 / scale;
+    bcfg.max_width = arena_box.width();
+    bcfg.max_height = arena_box.height();
+    bcfg.min_height = 10;
+    ((ResizingConfig*)&bcfg)->stop_on_dir_change = false;
+    ((TranslatingBoxConfig*)&bcfg)->stop_on_dir_change = false;
+    bcfg.sticky_sizing = false;
+    bcfg.sticky_translation = false;
+    bcfg.arena_box = arena_box;
+  }
+  // "Do the final box
+  if (!pt_config.living_boxes.empty()) {
+    AllLivingBoxConfig& bcfg = pt_config.living_boxes.back();
+    // Translation
+    bcfg.max_speed_x = camera_box_max_speed_x / scale;
+    bcfg.max_speed_y = camera_box_max_speed_y / scale;
+    bcfg.max_accel_x = camera_box_max_accel_x / scale;
+    bcfg.max_accel_y = camera_box_max_accel_y / scale;
+    // Resizing
+    bcfg.max_speed_w = camera_box_max_speed_x / scale / 1.8;
+    bcfg.max_speed_h = camera_box_max_speed_y / scale / 1.8;
+    bcfg.max_accel_w = camera_box_max_accel_x / scale;
+    bcfg.max_accel_h = camera_box_max_accel_y / scale;
+    bcfg.max_width = arena_box.width();
+    bcfg.max_height = arena_box.height();
+    bcfg.min_height = arena_box.height() / 5;
+    ((ResizingConfig*)&bcfg)->stop_on_dir_change = true;
+    ((TranslatingBoxConfig*)&bcfg)->stop_on_dir_change = true;
+    bcfg.sticky_sizing = true;
+    bcfg.sticky_translation = true;
+    bcfg.arena_box = arena_box;
+  }
+}
+
 PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::Node& yaml) {
   PlayTrackerConfig config;
   hm::utils::ConfigLocator locator;
@@ -136,11 +194,12 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
     }
   }
   config.play_detector = create_play_detector_config(yaml);
-
+  adjust_config(arena_box, config);
   SET_LOCATOR(locator, config, no_wide_start);
   SET_LOCATOR(locator, config, max_lost_track_age);
   SET_LOCATOR(locator, config, ignore_largest_bbox);
   set_config_from_yaml(yaml, locator);
+
   return config;
 }
 
@@ -204,32 +263,6 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
   }
 
   hm::play_tracker::PlayTrackerResults results = play_tracker->forward(tracking_ids, tracking_boxes);
-
-#if 0
-  std::vector<int> assignments_2, assignments_3;
-  const auto kmeans_type = hm::kmeans::KMEANS_TYPE::KM_SEQ;
-  // const auto kmeans_type = hm::kmeans::KMEANS_TYPE::KM_OMP;
-  if (object_count > 3) {
-    hm::kmeans::compute_kmeans(
-        points,
-        /*numClusters=*/2,
-        /*dim=*/2,
-        /*numIterations=*/4,
-        assignments_2,
-        kmeans_type);
-    // hm::cuda::kmeansCuda(points, /*numClusters=*/2, /*dim=*/2, /*numIterations=*/4, assignments_2);
-  }
-  if (object_count > 4) {
-    hm::kmeans::compute_kmeans(
-        points,
-        /*numClusters=*/3,
-        /*dim=*/2,
-        /*numIterations=*/4,
-        assignments_2,
-        kmeans_type);
-    // hm::cuda::kmeansCuda(points, /*numClusters=*/2, /*dim=*/2, /*numIterations=*/4, assignments_3);
-  }
-#endif
   return true;
 }
 
@@ -275,6 +308,9 @@ DsPlayTrackerOutput* DsPlayTrackerProcess(DsPlayTrackerCtx* ctx, unsigned char* 
 
 void DsPlayTrackerCtxDeinit(DsPlayTrackerCtx* ctx) {
   if (ctx) {
+    if (ctx->play_tracker) {
+      ctx->play_tracker->reset();
+    }
     delete ctx;
   }
 }

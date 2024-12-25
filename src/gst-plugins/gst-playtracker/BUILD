@@ -17,8 +17,6 @@ gst_cc_plugin(
     visibility = ["//visibility:public"],
     deps = [
         "//libs/common:utils",
-        "//libs/kmeans:kmeans",
-        "//libs/k-means/kmcuda:kmcuda_lib",
         "@hm//hockeymom/csrc/play_tracker:play_tracker",
         "@opencv_linux//:opencv",
     ],
