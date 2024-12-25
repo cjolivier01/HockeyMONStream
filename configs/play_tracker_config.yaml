@@ -1,0 +1,4 @@
+play-tracker:
+  live-boxes:
+    - name: current_roi
+    - name: current_roi_aspect

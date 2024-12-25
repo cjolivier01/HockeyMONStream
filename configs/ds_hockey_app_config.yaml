@@ -150,6 +150,7 @@ ds-example:
 ds-playtracker:
   enable: 1
   gpu-id: 0
+  config-file: play_tracker_config.yaml
   # batch-size: 4
   # blur-objects: 1
   # full-frame: 0

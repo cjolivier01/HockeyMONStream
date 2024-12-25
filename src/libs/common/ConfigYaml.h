@@ -8,7 +8,7 @@
 #include <variant>
 
 using ConfigValue = std::variant<guint, float, std::string, gboolean>;
-using ConfigValueLocator = std::variant<guint*, float*, std::string*, gboolean*>;
+using ConfigValueLocator = std::variant<guint*, size_t*, float*, std::string*, gboolean*, bool*>;
 
 namespace hm {
 namespace utils {
@@ -28,6 +28,8 @@ struct ConfigLocator {
     config_locator$.locators[#member$] = &((cfg_struct$).member$)
 
 void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator);
+
+#define STRNLEN(__s$) (sizeof(__s$) / sizeof((__s$)[0]))
 
 } // namespace utils
 } // namespace hm

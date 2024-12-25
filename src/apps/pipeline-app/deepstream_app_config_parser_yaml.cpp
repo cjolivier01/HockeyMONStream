@@ -7,6 +7,7 @@
 #include "deepstream_config_yaml.h"
 
 #include <stdlib.h>
+#include <filesystem>
 #include <fstream>
 
 using std::cout;
@@ -33,16 +34,24 @@ static gboolean parse_tests_yaml(NvDsConfig* config, gchar* cfg_file_path) {
   return ret;
 }
 
-// struct ConfigLocator {
-// std::unordered_map<std::string, ConfigValueLocator> locators;
-// };
-
-gboolean parse_dsplaytracker_yaml(NvDsDsPlayTrackerConfig* config, const YAML::Node& yaml_node) {
+gboolean parse_dsplaytracker_yaml(
+    NvDsDsPlayTrackerConfig* config,
+    const YAML::Node& yaml_node,
+    const std::string& config_path) {
   hm::utils::ConfigLocator locator;
   SET_LOCATOR(locator, *config, enable);
   SET_LOCATOR(locator, *config, unique_id);
   SET_LOCATOR(locator, *config, gpu_id);
   SET_LOCATOR(locator, *config, nvbuf_memory_type);
+  if (yaml_node["config-file"]) {
+    std::string config_file = yaml_node["config-file"].as<std::string>();
+    if (!config_file.empty()) {
+      if (config_file[0] != '/' && !config_path.empty()) {
+        config_file = config_path + '/' + config_file;
+      }
+      strncpy(config->config_file, config_file.c_str(), STRNLEN(config->config_file) - 1);
+    }
+  }
   set_config_from_yaml(yaml_node, locator);
   return true;
 }
@@ -343,7 +352,8 @@ gboolean parse_config_file_yaml(NvDsConfig* config, gchar* cfg_file_path) {
       }
       /** if gpu_id for dsexample component is present,
        * it will override the value set using global_gpu_id in parse_playtracker_yaml function */
-      parse_err = !parse_dsplaytracker_yaml(&config->dsplaytracker_config, itr->second);
+      parse_err = !parse_dsplaytracker_yaml(
+          &config->dsplaytracker_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
     } else if (paramKey == "message-converter") {
       parse_err = !parse_msgconv_yaml(&config->msg_conv_config, paramKey, cfg_file_path);
     } else if (paramKey == "tests") {

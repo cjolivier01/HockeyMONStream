@@ -66,7 +66,7 @@ enum {
   PROP_PROCESS_FULL_FRAME,
   PROP_BATCH_SIZE,
   PROP_GPU_DEVICE_ID,
-  PROP_DETECTION_MASK_FILE,
+  PROP_PLAY_TRACKER_CONFIG_FILE,
 };
 
 #define CHECK_NVDS_MEMORY_AND_GPUID(object, surface)                                                       \
@@ -162,19 +162,19 @@ static void attach_metadata_object(
 
 static gpointer gst_playtracker_output_loop(gpointer data);
 
-static gboolean gst_playtracker_sink_event(GstBaseTransform *trans, GstEvent *event) {
-    switch (GST_EVENT_TYPE(event)) {
-        case GST_EVENT_CAPS: {
-            GstCaps *caps;
-            gst_event_parse_caps(event, &caps);
-            g_print("Received CAPS event: %s\n", gst_caps_to_string(caps));
-            break;
-        }
-        default:
-            break;
+static gboolean gst_playtracker_sink_event(GstBaseTransform* trans, GstEvent* event) {
+  switch (GST_EVENT_TYPE(event)) {
+    case GST_EVENT_CAPS: {
+      GstCaps* caps;
+      gst_event_parse_caps(event, &caps);
+      g_print("Received CAPS event: %s\n", gst_caps_to_string(caps));
+      break;
     }
-    //return gst_pad_event_default(pad, parent, event);  return true;
-    return GST_BASE_TRANSFORM_CLASS (parent_class)->sink_event (trans, event);
+    default:
+      break;
+  }
+  // return gst_pad_event_default(pad, parent, event);  return true;
+  return GST_BASE_TRANSFORM_CLASS(parent_class)->sink_event(trans, event);
 }
 
 /* Install properties, set sink and src pad capabilities, override the required
@@ -257,11 +257,11 @@ static void gst_playtracker_class_init(GstDsPlayTrackerClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
-      PROP_DETECTION_MASK_FILE,
+      PROP_PLAY_TRACKER_CONFIG_FILE,
       g_param_spec_string(
-          "detection-mask",
-          "Detection Mask",
-          "Restrict detections to position mask",
+          "config-file",
+          "Play Tracker configuration file",
+          "Config of the play tracker (not the plugin)",
           /*default_value=*/"",
           (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
@@ -348,7 +348,7 @@ static void gst_playtracker_set_property(GObject* object, guint prop_id, const G
     case PROP_BATCH_SIZE:
       playtracker->max_batch_size = g_value_get_uint(value);
       break;
-    case PROP_DETECTION_MASK_FILE: {
+    case PROP_PLAY_TRACKER_CONFIG_FILE: {
       const char* str = g_value_get_string(value);
       if (str && *str) {
         strncpy(playtracker->detection_mask_file, str, STRSIZE(playtracker->detection_mask_file) - 1);
@@ -387,7 +387,7 @@ static void gst_playtracker_get_property(GObject* object, guint prop_id, GValue*
     case PROP_BATCH_SIZE:
       g_value_set_uint(value, playtracker->max_batch_size);
       break;
-    case PROP_DETECTION_MASK_FILE:
+    case PROP_PLAY_TRACKER_CONFIG_FILE:
       g_value_set_string(value, playtracker->detection_mask_file);
       break;
     default:
@@ -1244,7 +1244,6 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
 
     /* For each frame attach metadata output. */
     for (guint i = 0; i < batch->frames.size(); i++) {
-
       GstDsPlayTrackerFrame& frame = batch->frames[i];
       DsPlayTrackerProcessFrame(frame, playtracker->playtrackerlib_ctx);
 
