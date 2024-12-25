@@ -33,6 +33,11 @@ struct DsPlayTrackerCtx {
 
 namespace {} // namespace
 
+namespace gst_hm {
+
+
+}
+
 DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* initParams) {
   DsPlayTrackerCtx* ctx = new DsPlayTrackerCtx();
   ctx->initParams = *initParams;

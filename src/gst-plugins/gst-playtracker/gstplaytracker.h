@@ -25,7 +25,7 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include "PlayTracker.h"
+#include "PlayTrackerCtx.h"
 // #include "gst-nvquery.h"
 #include "gstnvdsmeta.h"
 #include "nvbufsurface.h"

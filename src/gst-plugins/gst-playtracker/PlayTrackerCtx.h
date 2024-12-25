@@ -46,3 +46,11 @@ DsPlayTrackerOutput* DsPlayTrackerProcess(DsPlayTrackerCtx* ctx, unsigned char* 
 // Deinitialize library context
 void DsPlayTrackerCtxDeinit(DsPlayTrackerCtx* ctx);
 
+namespace gst_hm {
+
+class GstPlayTracker {
+  public:
+    GstPlayTracker();
+};
+
+}
