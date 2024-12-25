@@ -36,34 +36,34 @@ constexpr float raise_bbox_center_by_height_ratio = 0.1;
 constexpr float lower_bbox_bottom_by_height_ratio = 0.1;
 
 // Function to check if points are nonzero in the mask
-std::vector<bool> check_points_in_mask(const cv::Mat& mask, const std::vector<cv::Point>& points) {
-  // Ensure the mask is a bit mask (1 bit per pixel)
-  if (mask.type() != CV_8UC1) {
-    throw std::invalid_argument("Mask must be a single-channel (binary) image.");
-  }
+// std::vector<bool> check_points_in_mask(const cv::Mat& mask, const std::vector<cv::Point>& points) {
+//   // Ensure the mask is a bit mask (1 bit per pixel)
+//   if (mask.type() != CV_8UC1) {
+//     throw std::invalid_argument("Mask must be a single-channel (binary) image.");
+//   }
 
-  std::vector<bool> results;
-  results.reserve(points.size());
+//   std::vector<bool> results;
+//   results.reserve(points.size());
 
-  for (const auto& point : points) {
-    // Check bounds
-    if (point.x >= 0 && point.x < mask.cols && point.y >= 0 && point.y < mask.rows) {
-      // Check if the mask value at the point is nonzero
-      results.push_back(mask.at<uchar>(point) != 0);
-    } else {
-      // Out-of-bounds points are considered false
-      results.push_back(false);
-    }
-  }
+//   for (const auto& point : points) {
+//     // Check bounds
+//     if (point.x >= 0 && point.x < mask.cols && point.y >= 0 && point.y < mask.rows) {
+//       // Check if the mask value at the point is nonzero
+//       results.push_back(mask.at<uchar>(point) != 0);
+//     } else {
+//       // Out-of-bounds points are considered false
+//       results.push_back(false);
+//     }
+//   }
 
-  return results;
-}
+//   return results;
+// }
 
-bool is_bit_set(const cv::Mat& mask, const cv::Point& point) {
-  int byteIndex = (point.y * mask.cols + point.x) / 8; // Byte index in the data
-  int bitIndex = point.x % 8; // Bit index within the byte
-  return (mask.data[byteIndex] & (1 << bitIndex)) != 0;
-}
+// bool is_bit_set(const cv::Mat& mask, const cv::Point& point) {
+//   int byteIndex = (point.y * mask.cols + point.x) / 8; // Byte index in the data
+//   int bitIndex = point.x % 8; // Bit index within the byte
+//   return (mask.data[byteIndex] & (1 << bitIndex)) != 0;
+// }
 
 // Convert 8-bit-per-pixel mask to 1-bit-per-pixel (packed as bytes)
 cv::Mat convert_to_bit_mask(const cv::Mat& inputMask) {

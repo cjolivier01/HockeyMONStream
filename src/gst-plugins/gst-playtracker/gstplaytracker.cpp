@@ -41,6 +41,7 @@
 // #include <mutex>
 #include <memory>
 // #include <thread>
+#include <cassert>
 
 GST_DEBUG_CATEGORY_STATIC(gst_playtracker_debug);
 #define GST_CAT_DEFAULT gst_playtracker_debug
@@ -161,6 +162,21 @@ static void attach_metadata_object(
 
 static gpointer gst_playtracker_output_loop(gpointer data);
 
+static gboolean gst_playtracker_sink_event(GstBaseTransform *trans, GstEvent *event) {
+    switch (GST_EVENT_TYPE(event)) {
+        case GST_EVENT_CAPS: {
+            GstCaps *caps;
+            gst_event_parse_caps(event, &caps);
+            g_print("Received CAPS event: %s\n", gst_caps_to_string(caps));
+            break;
+        }
+        default:
+            break;
+    }
+    //return gst_pad_event_default(pad, parent, event);  return true;
+    return GST_BASE_TRANSFORM_CLASS (parent_class)->sink_event (trans, event);
+}
+
 /* Install properties, set sink and src pad capabilities, override the required
  * functions of the base class, These are common to all instances of the
  * element.
@@ -184,6 +200,8 @@ static void gst_playtracker_class_init(GstDsPlayTrackerClass* klass) {
   gstbasetransform_class->set_caps = GST_DEBUG_FUNCPTR(gst_playtracker_set_caps);
   gstbasetransform_class->start = GST_DEBUG_FUNCPTR(gst_playtracker_start);
   gstbasetransform_class->stop = GST_DEBUG_FUNCPTR(gst_playtracker_stop);
+
+  gstbasetransform_class->sink_event = GST_DEBUG_FUNCPTR(gst_playtracker_sink_event);
 
   gstbasetransform_class->submit_input_buffer = GST_DEBUG_FUNCPTR(gst_playtracker_submit_input_buffer);
   gstbasetransform_class->generate_output = GST_DEBUG_FUNCPTR(gst_playtracker_generate_output);

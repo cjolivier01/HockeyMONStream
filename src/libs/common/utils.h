@@ -1,9 +1,11 @@
 #pragma once
 
 #include <gst/gst.h>
-#include <iostream>
 
 #include <stdio.h>
+
+#include <iostream>
+#include <optional>
 
 namespace hm {
 class GPrintStreamBuffer : public std::streambuf {
@@ -41,5 +43,7 @@ class GPrintOStream : public std::ostream {
 extern GPrintOStream gout;
 
 #define STRSIZE(str$) (sizeof(str$)/sizeof(str$[0]))
+
+std::optional<std::pair<int, int>> extract_width_height(GstCaps* caps);
 
 } // namespace hm
