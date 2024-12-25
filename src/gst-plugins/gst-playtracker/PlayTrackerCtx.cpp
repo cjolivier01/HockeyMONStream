@@ -29,6 +29,7 @@
 
 struct DsPlayTrackerCtx {
   DsPlayTrackerInitParams initParams;
+  std::optional<std::unique_ptr<hm::play_tracker::PlayTracker>> play_tracker;
 };
 
 namespace {} // namespace
@@ -129,6 +130,10 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
     for (const auto& box_yaml : live_boxes) {
       config.living_boxes.emplace_back(create_all_living_box_config(arena_box, box_yaml));
     }
+    if (!config.living_boxes.empty()) {
+      // Last one gets fixed aspect ratio
+      config.living_boxes.back().fixed_aspect_ratio = 16.0 / 7.0;
+    }
   }
   config.play_detector = create_play_detector_config(yaml);
 
@@ -138,6 +143,28 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
   set_config_from_yaml(yaml, locator);
   return config;
 }
+
+hm::play_tracker::PlayTracker* get_or_create_play_tracker(const BBox& arena_box, DsPlayTrackerCtx* ctx) {
+  if (ctx->play_tracker.has_value()) {
+    return ctx->play_tracker->get();
+  }
+  if (!ctx->initParams.play_tracker_config_file.empty()) {
+    try {
+      YAML::Node yaml = YAML::LoadFile(ctx->initParams.play_tracker_config_file);
+      PlayTrackerConfig config = create_play_tracker_config(arena_box, yaml);
+      ctx->play_tracker = std::make_unique<hm::play_tracker::PlayTracker>(arena_box, config);
+      return ctx->play_tracker->get();
+    } catch (const std::exception& e) {
+      g_error("Error loading YAML file: %s", e.what());
+      ctx->play_tracker = nullptr;
+    }
+  } else {
+    ctx->play_tracker = nullptr;
+  }
+
+  return nullptr;
+}
+
 } // namespace gst_hm
 
 DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* initParams) {
@@ -146,22 +173,39 @@ DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* initParams) {
   return ctx;
 }
 
-void DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx) {
+bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx) {
   if (!frame.frame_meta->bInferDone) {
-    return;
+    return false;
   }
-  std::vector<float> points;
+
+  hm::play_tracker::BBox arena_box(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
+  hm::play_tracker::PlayTracker* play_tracker = gst_hm::get_or_create_play_tracker(arena_box, ctx);
+  if (!play_tracker) {
+    return false;
+  }
+
+  std::vector<size_t> tracking_ids;
+  std::vector<hm::play_tracker::BBox> tracking_boxes;
+
   const std::size_t object_count = g_list_length(frame.frame_meta->obj_meta_list);
-  points.reserve(object_count * 2);
+  tracking_ids.reserve(object_count);
+  tracking_boxes.reserve(object_count);
+
   for (NvDsMetaList* l_obj = frame.frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
     NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
     const NvDsComp_BboxInfo& trackler_bbox_info = obj_meta->tracker_bbox_info;
-    float x = trackler_bbox_info.org_bbox_coords.left + trackler_bbox_info.org_bbox_coords.width / 2;
-    float y = trackler_bbox_info.org_bbox_coords.top + trackler_bbox_info.org_bbox_coords.height / 2;
-    points.emplace_back(x);
-    points.emplace_back(y);
+    tracking_boxes.emplace_back(hm::play_tracker::BBox(
+        trackler_bbox_info.org_bbox_coords.left,
+        trackler_bbox_info.org_bbox_coords.top,
+        trackler_bbox_info.org_bbox_coords.left + trackler_bbox_info.org_bbox_coords.width,
+        trackler_bbox_info.org_bbox_coords.top + trackler_bbox_info.org_bbox_coords.height));
+    size_t tracking_id = obj_meta->object_id;
+    tracking_ids.push_back(tracking_id);
   }
-#if 1
+
+  hm::play_tracker::PlayTrackerResults results = play_tracker->forward(tracking_ids, tracking_boxes);
+
+#if 0
   std::vector<int> assignments_2, assignments_3;
   const auto kmeans_type = hm::kmeans::KMEANS_TYPE::KM_SEQ;
   // const auto kmeans_type = hm::kmeans::KMEANS_TYPE::KM_OMP;
@@ -186,6 +230,7 @@ void DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
     // hm::cuda::kmeansCuda(points, /*numClusters=*/2, /*dim=*/2, /*numIterations=*/4, assignments_3);
   }
 #endif
+  return true;
 }
 
 // In case of an actual processing library, processing on data wil be completed

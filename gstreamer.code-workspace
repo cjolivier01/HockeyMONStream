@@ -466,7 +466,8 @@
       "compare": "cpp",
       "numbers": "cpp",
       "ranges": "cpp",
-      "span": "cpp"
+      "span": "cpp",
+      "expected": "cpp"
     },
     "git.ignoreLimitWarning": true,
     "workbench.iconTheme": "vscode-icons",
