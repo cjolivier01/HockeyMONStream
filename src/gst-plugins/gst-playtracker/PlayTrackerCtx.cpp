@@ -291,6 +291,24 @@ static void add_boxes_circles_lines(NvDsFrameMeta* frame_meta) {
 
   // Attach display metadata to the frame
   nvds_add_display_meta_to_frame(frame_meta, display_meta);
+
+  auto batch_meta = frame_meta->base_meta.batch_meta;
+  if (batch_meta) {
+    // std::cout << "pt batch_meta = " << batch_meta << std::endl;
+    NvDsMetaList* l = NULL;
+    NvDsMetaList* display_meta_list = batch_meta->display_meta_pool->full_list;
+    //NvDsMetaList* display_meta_list = frame_meta->display_meta_list;
+    for (l = display_meta_list; l != NULL; l = l->next) {
+      NvDsDisplayMeta* display_meta = (NvDsDisplayMeta*)(l->data);
+      (void)display_meta;
+      // std::cout << "display meta" << std::endl;
+    }
+  }
+
+  /* Get objects to be drawn from display meta.
+   * Draw objects if count equals MAX_OSD_ELEMS.
+   */
+
 }
 
 } // namespace gst_hm
@@ -327,7 +345,7 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
     tracking_ids.push_back(tracking_id);
   }
 
-  hm::play_tracker::PlayTrackerResults results = play_tracker->forward(tracking_ids, tracking_boxes);
+  frame.play_tracker_results = play_tracker->forward(tracking_ids, tracking_boxes);
   gst_hm::add_boxes_circles_lines(frame.frame_meta);
   return true;
 }

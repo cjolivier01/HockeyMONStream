@@ -134,7 +134,7 @@ primary-gie:
   config-file: config_infer_yolox_hockey.yaml
 
 ds-example:
-  enable: 1
+  enable: 0
   gpu-id: 0
   batch-size: 4
   blur-objects: 1
@@ -145,11 +145,14 @@ ds-example:
 ds-playtracker:
   enable: 1
   gpu-id: 0
+  unique-id: 75
+  process_full_frame: 1
   config-file: play_tracker_config.yaml
 
 ds-fieldmask:
   enable: 1
   gpu-id: 0
+  unique-id: 76
   detection-mask: /home/colivier/Videos/ev-reno-1/rink_mask_0.png
 
 tracker:

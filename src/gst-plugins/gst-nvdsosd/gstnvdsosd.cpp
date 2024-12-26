@@ -23,6 +23,9 @@
 #include "nvbufsurface.h"
 #include "nvtx3/nvToolsExt.h"
 
+#include <cassert>
+#include <iostream>
+
 GST_DEBUG_CATEGORY_STATIC(gst_nvds_osd_debug);
 #define GST_CAT_DEFAULT gst_nvds_osd_debug
 
@@ -374,9 +377,21 @@ static GstFlowReturn gst_nvds_osd_transform_ip(GstBaseTransform* trans, GstBuffe
     }
   }
 
+  // if (batch_meta) {
+  //   NvDsMetaList* frame_meta_list = batch_meta->frame_meta_pool->full_list;
+  //   for (l = frame_meta_list; l != NULL; l = l->next) {
+  //     NvDsFrameMeta *frame_meta = (NvDsFrameMeta *)(l->data);
+  //     (void)frame_meta;
+  //     std::cout << "frame" << std::endl;
+  //   }
+  // }
+
   NvDsMetaList* display_meta_list = NULL;
   if (batch_meta)
     display_meta_list = batch_meta->display_meta_pool->full_list;
+  // if (display_meta_list) {
+  //   std::cout << "display_meta_list" << std::endl;
+  // }
   NvDsDisplayMeta* display_meta = NULL;
 
   /* Get objects to be drawn from display meta.

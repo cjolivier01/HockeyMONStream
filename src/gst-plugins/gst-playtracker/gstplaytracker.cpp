@@ -47,14 +47,6 @@ GST_DEBUG_CATEGORY_STATIC(gst_playtracker_debug);
 #define GST_CAT_DEFAULT gst_playtracker_debug
 #define USE_EGLIMAGE 1
 
-#ifdef WITH_OPENCV
-// enable to write transformed cvmat to files
-// #define DSPLAYTRACKER_DEBUG
-#ifdef DSPLAYTRACKER_DEBUG
-#include "opencv2/imgcodecs.hpp"
-#endif
-#endif
-
 static GQuark _dsmeta_quark = 0;
 
 /* Enum to identify properties */
@@ -402,12 +394,7 @@ static void gst_playtracker_get_property(GObject* object, guint prop_id, GValue*
 static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(btrans);
   std::string nvtx_str;
-#ifdef WITH_OPENCV
-  // OpenCV mat containing RGB data
-  cv::Mat* cvmat;
-#else
   NvBufSurface* inter_buf;
-#endif
   NvBufSurfaceCreateParams create_params = {0};
   DsPlayTrackerInitParams init_params = {
       .processingWidth = playtracker->processing_width,
@@ -429,12 +416,6 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
 
   CHECK_CUDA_STATUS(cudaStreamCreate(&playtracker->cuda_stream), "Could not create cuda stream");
 
-#ifdef WITH_OPENCV
-  if (playtracker->inter_buf)
-    NvBufSurfaceDestroy(playtracker->inter_buf);
-  playtracker->inter_buf = NULL;
-#endif
-
   /* An intermediate buffer for NV12/RGBA to BGR conversion  will be
    * required. Can be skipped if custom algorithm can work directly on
    * NV12/RGBA. */
@@ -450,39 +431,12 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
   create_params.memType = NVBUF_MEM_CUDA_UNIFIED;
 #endif
 
-#ifdef WITH_OPENCV
-  if (NvBufSurfaceCreate(&playtracker->inter_buf, playtracker->max_batch_size, &create_params) != 0) {
-    GST_ERROR("Error: Could not allocate internal buffer for playtracker");
-    goto error;
-  }
-#endif
-
   /* Create process queue and cvmat queue to transfer data between threads.
    * We will be using this queue to maintain the list of frames/objects
    * currently given to the algorithm for processing. */
   playtracker->process_queue = g_queue_new();
   playtracker->buf_queue = g_queue_new();
 
-#ifdef WITH_OPENCV
-  /* Push cvmat buffer twice on the buf_queue which will handle the
-   * different processing speed between input thread and process thread
-   * cvmat queue is used for getting processed data from the process thread*/
-  for (int i = 0; i < 2; i++) {
-    // CV Mat containing interleaved RGB data.
-    cvmat = new cv::Mat[playtracker->max_batch_size];
-
-    for (guint j = 0; j < playtracker->max_batch_size; j++) {
-      cvmat[j] = cv::Mat(playtracker->processing_height, playtracker->processing_width, CV_8UC3);
-    }
-
-    if (!cvmat)
-      goto error;
-
-    g_queue_push_tail(playtracker->buf_queue, cvmat);
-  }
-
-  GST_DEBUG_OBJECT(playtracker, "created CV Mat\n");
-#else
   for (int i = 0; i < 2; i++) {
     if (NvBufSurfaceCreate(&inter_buf, playtracker->max_batch_size, &create_params) != 0) {
       GST_ERROR("Error: Could not allocate internal buffer for playtracker");
@@ -491,7 +445,6 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
 
     g_queue_push_tail(playtracker->buf_queue, inter_buf);
   }
-#endif
 
   /* Set the NvBufSurfTransform config parameters. */
   playtracker->transform_config_params.compute_mode = NvBufSurfTransformCompute_Default;
@@ -539,11 +492,7 @@ error:
 static gboolean gst_playtracker_stop(GstBaseTransform* btrans) {
   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(btrans);
 
-#ifdef WITH_OPENCV
-  cv::Mat* cvmat;
-#else
   NvBufSurface* inter_buf;
-#endif
 
   g_mutex_lock(&playtracker->process_lock);
 
@@ -552,32 +501,18 @@ static gboolean gst_playtracker_stop(GstBaseTransform* btrans) {
     g_cond_wait(&playtracker->process_cond, &playtracker->process_lock);
   }
 
-#ifdef WITH_OPENCV
-  while (!g_queue_is_empty(playtracker->buf_queue)) {
-    cvmat = (cv::Mat*)g_queue_pop_head(playtracker->buf_queue);
-    delete[] cvmat;
-    cvmat = NULL;
-  }
-#else
   while (!g_queue_is_empty(playtracker->buf_queue)) {
     inter_buf = (NvBufSurface*)g_queue_pop_head(playtracker->buf_queue);
     if (inter_buf)
       NvBufSurfaceDestroy(inter_buf);
     inter_buf = NULL;
   }
-#endif
   playtracker->stop = TRUE;
 
   g_cond_broadcast(&playtracker->process_cond);
   g_mutex_unlock(&playtracker->process_lock);
 
   g_thread_join(playtracker->process_thread);
-
-#ifdef WITH_OPENCV
-  if (playtracker->inter_buf)
-    NvBufSurfaceDestroy(playtracker->inter_buf);
-  playtracker->inter_buf = NULL;
-#endif
 
   if (playtracker->cuda_stream)
     cudaStreamDestroy(playtracker->cuda_stream);
@@ -586,10 +521,6 @@ static gboolean gst_playtracker_stop(GstBaseTransform* btrans) {
   delete[] playtracker->transform_params.src_rect;
   delete[] playtracker->transform_params.dst_rect;
   delete[] playtracker->batch_insurf.surfaceList;
-
-#ifdef WITH_OPENCV
-  GST_DEBUG_OBJECT(playtracker, "deleted CV Mat \n");
-#endif
 
   // Deinit the algorithm library
   DsPlayTrackerCtxDeinit(playtracker->playtrackerlib_ctx);
@@ -687,9 +618,6 @@ static gboolean convert_batch_and_push_to_process_thread(GstDsPlayTracker* playt
   NvBufSurfTransform_Error err;
   NvBufSurfTransformConfigParams transform_config_params;
   std::string nvtx_str;
-#ifdef WITH_OPENCV
-  cv::Mat in_mat;
-#endif
 
   // Configure transform session parameters for the transformation
   transform_config_params.compute_mode = playtracker->transform_config_params.compute_mode;
@@ -721,14 +649,9 @@ static gboolean convert_batch_and_push_to_process_thread(GstDsPlayTracker* playt
     g_cond_wait(&playtracker->buf_cond, &playtracker->process_lock);
   }
 
-#ifdef WITH_OPENCV
-  /* Pop a buffer from the element's buf queue. */
-  batch->cvmat = (cv::Mat*)g_queue_pop_head(playtracker->buf_queue);
-#else
   /* Pop a buffer from the element's buf queue. */
   batch->inter_buf = (NvBufSurface*)g_queue_pop_head(playtracker->buf_queue);
   playtracker->inter_buf = batch->inter_buf;
-#endif
 
   g_mutex_unlock(&playtracker->process_lock);
 
@@ -758,26 +681,6 @@ static gboolean convert_batch_and_push_to_process_thread(GstDsPlayTracker* playt
     // sync mapped data for CPU access
     NvBufSurfaceSyncForCpu(playtracker->inter_buf, i, 0);
 
-#ifdef WITH_OPENCV
-    in_mat = cv::Mat(
-        playtracker->processing_height,
-        playtracker->processing_width,
-        CV_8UC4,
-        playtracker->inter_buf->surfaceList[i].mappedAddr.addr[0],
-        playtracker->inter_buf->surfaceList[i].pitch);
-
-#if (CV_MAJOR_VERSION >= 4)
-    cv::cvtColor(in_mat, batch->cvmat[i], cv::COLOR_RGBA2BGR);
-#else
-    cv::cvtColor(in_mat, batch->cvmat[i], CV_RGBA2BGR);
-#endif
-
-#ifdef DSPLAYTRACKER_DEBUG
-    static guint cnt = 0;
-    cv::imwrite("out_" + std::to_string(cnt) + ".jpeg", batch->cvmat[i]);
-    cnt++;
-#endif
-#endif
 
     if (NvBufSurfaceUnMap(playtracker->inter_buf, i, 0)) {
       GST_ELEMENT_ERROR(
@@ -1251,12 +1154,8 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
 
       if (playtracker->process_full_frame) {
         // Process to get the output
-#ifdef WITH_OPENCV
-        output = DsPlayTrackerProcess(playtracker->playtrackerlib_ctx, batch->cvmat[i].data);
-#else
         output = DsPlayTrackerProcess(
             playtracker->playtrackerlib_ctx, (unsigned char*)batch->inter_buf->surfaceList[i].mappedAddr.addr[0]);
-#endif
         // Attach the metadata for the full frame
         attach_metadata_full_frame(playtracker, batch->frames[i].frame_meta, scale_ratio, output, i);
         free(output);
@@ -1268,8 +1167,10 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
         /* Should not process on objects smaller than MIN_INPUT_OBJECT_WIDTH x
          * MIN_INPUT_OBJECT_HEIGHT */
         if (obj_meta->rect_params.width < MIN_INPUT_OBJECT_WIDTH ||
-            obj_meta->rect_params.height < MIN_INPUT_OBJECT_HEIGHT)
+            obj_meta->rect_params.height < MIN_INPUT_OBJECT_HEIGHT) {
+          assert(false);
           continue;
+        }
 
         /* Extra check for Jetson devices as default compute mode on Jetson is
          * VIC which supports min 16x16 */
@@ -1277,17 +1178,14 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
           if (playtracker->transform_config_params.compute_mode == NvBufSurfTransformCompute_VIC ||
               playtracker->transform_config_params.compute_mode == NvBufSurfTransformCompute_Default) {
             if (obj_meta->rect_params.width < 16 || obj_meta->rect_params.height < 16)
-              continue;
+              assert(false);
+            continue;
           }
         }
 
         // Process the object crop to obtain label
-#ifdef WITH_OPENCV
-        output = DsPlayTrackerProcess(playtracker->playtrackerlib_ctx, batch->cvmat[i].data);
-#else
         output = DsPlayTrackerProcess(
             playtracker->playtrackerlib_ctx, (unsigned char*)batch->inter_buf->surfaceList[i].mappedAddr.addr[0]);
-#endif
 
         // Attach labels for the object
         attach_metadata_object(playtracker, obj_meta, output);
@@ -1298,11 +1196,7 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
 
     g_mutex_lock(&playtracker->process_lock);
 
-#ifdef WITH_OPENCV
-    g_queue_push_tail(playtracker->buf_queue, batch->cvmat);
-#else
     g_queue_push_tail(playtracker->buf_queue, batch->inter_buf);
-#endif
     g_cond_broadcast(&playtracker->buf_cond);
 
     nvtxDomainRangePop(playtracker->nvtx_domain);

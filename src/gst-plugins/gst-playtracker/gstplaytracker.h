@@ -17,12 +17,6 @@
 #include <gst/base/gstbasetransform.h>
 #include <gst/video/video.h>
 
-/* Open CV headers */
-#ifdef WITH_OPENCV
-#include "opencv2/highgui/highgui.hpp"
-#include "opencv2/imgproc/imgproc.hpp"
-#endif
-
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include "PlayTrackerCtx.h"
@@ -31,6 +25,8 @@
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 #include "nvtx3/nvToolsExt.h"
+
+#include "hockeymom/csrc/play_tracker/PlayTracker.h"
 
 // #include <condition_variable>
 // #include <mutex>
@@ -166,6 +162,9 @@ struct GstDsPlayTrackerFrame {
   guint batch_index = 0;
   /** Frame number of the frame from the source. */
   gulong frame_num = 0;
+
+  hm::play_tracker::PlayTrackerResults play_tracker_results;
+
   /** The buffer structure the object / frame was converted from. */
   NvBufSurfaceParams* input_surf_params = nullptr;
 };
@@ -173,7 +172,7 @@ struct GstDsPlayTrackerFrame {
 /**
  * Holds information about the batch of frames to be inferred.
  */
-typedef struct {
+struct GstDsPlayTrackerBatch {
   /** Vector of frames in the batch. */
   std::vector<GstDsPlayTrackerFrame> frames;
   /** Pointer to the input GstBuffer. */
@@ -190,15 +189,10 @@ typedef struct {
    */
   gboolean event_marker = FALSE;
 
-#ifdef WITH_OPENCV
-  /** OpenCV mat containing RGB data */
-  cv::Mat* cvmat;
-#else
   NvBufSurface* inter_buf;
-#endif
 
   nvtxRangeId_t nvtx_complete_buf_range = 0;
-} GstDsPlayTrackerBatch;
+};
 
 /** Boiler plate stuff */
 struct _GstDsPlayTrackerClass {
