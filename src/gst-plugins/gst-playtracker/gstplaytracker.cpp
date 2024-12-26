@@ -147,10 +147,10 @@ static void attach_metadata_full_frame(
     gdouble scale_ratio,
     DsPlayTrackerOutput* output,
     guint batch_id);
-static void attach_metadata_object(
-    GstDsPlayTracker* playtracker,
-    NvDsObjectMeta* obj_meta,
-    DsPlayTrackerOutput* output);
+// static void attach_metadata_object(
+//     GstDsPlayTracker* playtracker,
+//     NvDsObjectMeta* obj_meta,
+//     DsPlayTrackerOutput* output);
 
 static gpointer gst_playtracker_output_loop(gpointer data);
 
@@ -308,7 +308,6 @@ static void gst_playtracker_init(GstDsPlayTracker* playtracker) {
   playtracker->unique_id = DEFAULT_UNIQUE_ID;
   playtracker->processing_width = DEFAULT_PROCESSING_WIDTH;
   playtracker->processing_height = DEFAULT_PROCESSING_HEIGHT;
-  playtracker->process_full_frame = DEFAULT_PROCESS_FULL_FRAME;
   playtracker->gpu_id = DEFAULT_GPU_ID;
   playtracker->max_batch_size = DEFAULT_BATCH_SIZE;
   /* This quark is required to identify NvDsMeta when iterating through
@@ -330,9 +329,6 @@ static void gst_playtracker_set_property(GObject* object, guint prop_id, const G
       break;
     case PROP_PROCESSING_HEIGHT:
       playtracker->processing_height = g_value_get_int(value);
-      break;
-    case PROP_PROCESS_FULL_FRAME:
-      playtracker->process_full_frame = g_value_get_boolean(value);
       break;
     case PROP_GPU_DEVICE_ID:
       playtracker->gpu_id = g_value_get_uint(value);
@@ -370,9 +366,6 @@ static void gst_playtracker_get_property(GObject* object, guint prop_id, GValue*
     case PROP_PROCESSING_HEIGHT:
       g_value_set_int(value, playtracker->processing_height);
       break;
-    case PROP_PROCESS_FULL_FRAME:
-      g_value_set_boolean(value, playtracker->process_full_frame);
-      break;
     case PROP_GPU_DEVICE_ID:
       g_value_set_uint(value, playtracker->gpu_id);
       break;
@@ -399,7 +392,6 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
   DsPlayTrackerInitParams init_params = {
       .processingWidth = playtracker->processing_width,
       .processingHeight = playtracker->processing_height,
-      .fullFrame = playtracker->process_full_frame,
       .play_tracker_config_file = playtracker->play_tracker_config_file};
 
   /* Algorithm specific initializations and resource allocation. */
@@ -681,7 +673,6 @@ static gboolean convert_batch_and_push_to_process_thread(GstDsPlayTracker* playt
     // sync mapped data for CPU access
     NvBufSurfaceSyncForCpu(playtracker->inter_buf, i, 0);
 
-
     if (NvBufSurfaceUnMap(playtracker->inter_buf, i, 0)) {
       GST_ELEMENT_ERROR(
           playtracker, STREAM, FAILED, ("%s:buffer unmap to be accessed by CPU failed", __func__), (NULL));
@@ -731,7 +722,7 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btran
   std::unique_ptr<GstDsPlayTrackerBatch> batch = nullptr;
 
   NvDsBatchMeta* batch_meta = NULL;
-  guint i = 0;
+  // guint i = 0;
   gdouble scale_ratio = 1.0;
   guint num_filled = 0;
 
@@ -769,131 +760,54 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btran
   }
   num_filled = batch_meta->num_frames_in_batch;
 
-  if (playtracker->process_full_frame) {
-    for (guint i = 0; i < num_filled; i++) {
-      NvOSD_RectParams rect_params;
+  for (guint i = 0; i < num_filled; i++) {
+    NvOSD_RectParams rect_params;
 
-      // Scale the entire frame to processing resolution
-      rect_params.left = 0;
-      rect_params.top = 0;
-      rect_params.width = in_surf->surfaceList[i].width;
-      rect_params.height = in_surf->surfaceList[i].height;
+    // Scale the entire frame to processing resolution
+    rect_params.left = 0;
+    rect_params.top = 0;
+    rect_params.width = in_surf->surfaceList[i].width;
+    rect_params.height = in_surf->surfaceList[i].height;
 
-      // Scale the frame maintaining aspect ratio
-      if (scale_and_fill_data(
-              playtracker,
-              in_surf->surfaceList + i,
-              &rect_params,
-              scale_ratio,
-              playtracker->video_info.width,
-              playtracker->video_info.height) != GST_FLOW_OK) {
-        goto error;
-      }
-
-      if (batch == nullptr) {
-        batch.reset(new GstDsPlayTrackerBatch);
-        batch->push_buffer = FALSE;
-        batch->inbuf = inbuf;
-        batch->inbuf_batch_num = playtracker->current_batch_num;
-      }
-
-      /* Adding a frame to the current batch. Set the frames members. */
-      GstDsPlayTrackerFrame frame;
-      frame.scale_ratio_x = scale_ratio;
-      frame.scale_ratio_y = scale_ratio;
-      frame.obj_meta = nullptr;
-      frame.frame_meta = nvds_get_nth_frame_meta(batch_meta->frame_meta_list, i);
-      frame.frame_num = frame.frame_meta->frame_num;
-      frame.batch_index = i;
-      frame.input_surf_params = in_surf->surfaceList + i;
-      batch->frames.push_back(frame);
-
-      // Set the transform session parameters for the conversions executed in
-      // this thread.
-      if (batch->frames.size() == playtracker->max_batch_size || i == num_filled) {
-        if (!convert_batch_and_push_to_process_thread(playtracker, batch.get())) {
-          return GST_FLOW_ERROR;
-        }
-        /* Batch submitted. Set batch to nullptr so that a new GstDsPlayTrackerBatch
-         * structure can be allocated if required. */
-        batch.release();
-        playtracker->batch_insurf.numFilled = 0;
-      }
+    // Scale the frame maintaining aspect ratio
+    if (scale_and_fill_data(
+            playtracker,
+            in_surf->surfaceList + i,
+            &rect_params,
+            scale_ratio,
+            playtracker->video_info.width,
+            playtracker->video_info.height) != GST_FLOW_OK) {
+      goto error;
     }
-  } else {
-    // Using object crops as input to the algorithm. The objects are detected by
-    // the primary detector
-    NvDsFrameMeta* frame_meta = NULL;
-    NvDsMetaList* l_frame = NULL;
-    NvDsObjectMeta* obj_meta = NULL;
-    NvDsMetaList* l_obj = NULL;
 
-    for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
-      frame_meta = (NvDsFrameMeta*)(l_frame->data);
-      for (l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
-        obj_meta = (NvDsObjectMeta*)(l_obj->data);
+    if (batch == nullptr) {
+      batch.reset(new GstDsPlayTrackerBatch);
+      batch->push_buffer = FALSE;
+      batch->inbuf = inbuf;
+      batch->inbuf_batch_num = playtracker->current_batch_num;
+    }
 
-        /* Should not process on objects smaller than MIN_INPUT_OBJECT_WIDTH x
-         * MIN_INPUT_OBJECT_HEIGHT */
-        if (obj_meta->rect_params.width < MIN_INPUT_OBJECT_WIDTH ||
-            obj_meta->rect_params.height < MIN_INPUT_OBJECT_HEIGHT)
-          continue;
+    /* Adding a frame to the current batch. Set the frames members. */
+    GstDsPlayTrackerFrame frame;
+    frame.scale_ratio_x = scale_ratio;
+    frame.scale_ratio_y = scale_ratio;
+    frame.obj_meta = nullptr;
+    frame.frame_meta = nvds_get_nth_frame_meta(batch_meta->frame_meta_list, i);
+    frame.frame_num = frame.frame_meta->frame_num;
+    frame.batch_index = i;
+    frame.input_surf_params = in_surf->surfaceList + i;
+    batch->frames.push_back(frame);
 
-        /* Extra check for Jetson devices as default compute mode on Jetson is
-         * VIC which supports min 16x16 */
-        if (prop.integrated) {
-          if (playtracker->transform_config_params.compute_mode == NvBufSurfTransformCompute_VIC ||
-              playtracker->transform_config_params.compute_mode == NvBufSurfTransformCompute_Default) {
-            if (obj_meta->rect_params.width < 16 || obj_meta->rect_params.height < 16)
-              continue;
-          }
-        }
-
-        // Crop and scale the object maintaining aspect ratio
-        if (scale_and_fill_data(
-                playtracker,
-                in_surf->surfaceList + frame_meta->batch_id,
-                &obj_meta->rect_params,
-                scale_ratio,
-                playtracker->video_info.width,
-                playtracker->video_info.height) != GST_FLOW_OK) {
-          // Error in conversion, skip processing on object. */
-          continue;
-        }
-
-        if (batch == nullptr) {
-          batch.reset(new GstDsPlayTrackerBatch);
-          batch->push_buffer = FALSE;
-          batch->inbuf = inbuf;
-          batch->inbuf_batch_num = playtracker->current_batch_num;
-          batch->nvtx_complete_buf_range = buf_process_range;
-        }
-
-        /* Adding a frame to the current batch. Set the frames members. */
-        GstDsPlayTrackerFrame frame;
-        frame.scale_ratio_x = scale_ratio;
-        frame.scale_ratio_y = scale_ratio;
-        frame.obj_meta = obj_meta;
-        frame.frame_meta = nvds_get_nth_frame_meta(batch_meta->frame_meta_list, i);
-        frame.frame_num = frame.frame_meta->frame_num;
-        frame.batch_index = i;
-        frame.input_surf_params = in_surf->surfaceList + i;
-        batch->frames.push_back(frame);
-
-        i++;
-
-        // Convert batch and push to process thread
-        if (batch->frames.size() == playtracker->max_batch_size || i == num_filled) {
-          if (!convert_batch_and_push_to_process_thread(playtracker, batch.get())) {
-            return GST_FLOW_ERROR;
-          }
-          /* Batch submitted. Set batch to nullptr so that a new
-           * GstDsPlayTrackerBatch structure can be allocated if required. */
-          i = 0;
-          batch.release();
-          playtracker->batch_insurf.numFilled = 0;
-        }
+    // Set the transform session parameters for the conversions executed in
+    // this thread.
+    if (batch->frames.size() == playtracker->max_batch_size || i == num_filled) {
+      if (!convert_batch_and_push_to_process_thread(playtracker, batch.get())) {
+        return GST_FLOW_ERROR;
       }
+      /* Batch submitted. Set batch to nullptr so that a new GstDsPlayTrackerBatch
+       * structure can be allocated if required. */
+      batch.release();
+      playtracker->batch_insurf.numFilled = 0;
     }
   }
   /* Submit a non-full batch. */
@@ -1020,49 +934,49 @@ static void attach_metadata_full_frame(
  * Only update string label in an existing object metadata. No bounding boxes.
  * We assume only one label per object is generated
  */
-static void attach_metadata_object(
-    GstDsPlayTracker* playtracker,
-    NvDsObjectMeta* obj_meta,
-    DsPlayTrackerOutput* output) {
-  if (output->numObjects == 0)
-    return;
-  NvDsBatchMeta* batch_meta = obj_meta->base_meta.batch_meta;
+// static void attach_metadata_object(
+//     GstDsPlayTracker* playtracker,
+//     NvDsObjectMeta* obj_meta,
+//     DsPlayTrackerOutput* output) {
+//   if (output->numObjects == 0)
+//     return;
+//   NvDsBatchMeta* batch_meta = obj_meta->base_meta.batch_meta;
 
-  NvDsClassifierMeta* classifier_meta = nvds_acquire_classifier_meta_from_pool(batch_meta);
+//   NvDsClassifierMeta* classifier_meta = nvds_acquire_classifier_meta_from_pool(batch_meta);
 
-  classifier_meta->unique_component_id = playtracker->unique_id;
+//   classifier_meta->unique_component_id = playtracker->unique_id;
 
-  NvDsLabelInfo* label_info = nvds_acquire_label_info_meta_from_pool(batch_meta);
-  g_strlcpy(label_info->result_label, output->object[0].label, MAX_LABEL_SIZE);
-  nvds_add_label_info_meta_to_classifier(classifier_meta, label_info);
-  nvds_add_classifier_meta_to_object(obj_meta, classifier_meta);
+//   NvDsLabelInfo* label_info = nvds_acquire_label_info_meta_from_pool(batch_meta);
+//   g_strlcpy(label_info->result_label, output->object[0].label, MAX_LABEL_SIZE);
+//   nvds_add_label_info_meta_to_classifier(classifier_meta, label_info);
+//   nvds_add_classifier_meta_to_object(obj_meta, classifier_meta);
 
-  nvds_acquire_meta_lock(batch_meta);
-  NvOSD_TextParams& text_params = obj_meta->text_params;
-  NvOSD_RectParams& rect_params = obj_meta->rect_params;
+//   nvds_acquire_meta_lock(batch_meta);
+//   NvOSD_TextParams& text_params = obj_meta->text_params;
+//   NvOSD_RectParams& rect_params = obj_meta->rect_params;
 
-  /* Below code to display the result */
-  // Set black background for the text
-  // display_text required heap allocated memory
-  if (text_params.display_text) {
-    gchar* conc_string = g_strconcat(text_params.display_text, " ", output->object[0].label, NULL);
-    g_free(text_params.display_text);
-    text_params.display_text = conc_string;
-  } else {
-    // Display text above the left top corner of the object
-    text_params.x_offset = rect_params.left;
-    text_params.y_offset = rect_params.top - 10;
-    text_params.display_text = g_strdup(output->object[0].label);
-    // Font face, size and color
-    text_params.font_params.font_name = (char*)"Serif";
-    text_params.font_params.font_size = 11;
-    text_params.font_params.font_color = (NvOSD_ColorParams){1, 1, 1, 1};
-    // Set black background for the text
-    text_params.set_bg_clr = 1;
-    text_params.text_bg_clr = (NvOSD_ColorParams){0, 0, 0, 1};
-  }
-  nvds_release_meta_lock(batch_meta);
-}
+//   /* Below code to display the result */
+//   // Set black background for the text
+//   // display_text required heap allocated memory
+//   if (text_params.display_text) {
+//     gchar* conc_string = g_strconcat(text_params.display_text, " ", output->object[0].label, NULL);
+//     g_free(text_params.display_text);
+//     text_params.display_text = conc_string;
+//   } else {
+//     // Display text above the left top corner of the object
+//     text_params.x_offset = rect_params.left;
+//     text_params.y_offset = rect_params.top - 10;
+//     text_params.display_text = g_strdup(output->object[0].label);
+//     // Font face, size and color
+//     text_params.font_params.font_name = (char*)"Serif";
+//     text_params.font_params.font_size = 11;
+//     text_params.font_params.font_color = (NvOSD_ColorParams){1, 1, 1, 1};
+//     // Set black background for the text
+//     text_params.set_bg_clr = 1;
+//     text_params.text_bg_clr = (NvOSD_ColorParams){0, 0, 0, 1};
+//   }
+//   nvds_release_meta_lock(batch_meta);
+// }
 
 /**
  * Output loop used to pop output from processing thread, attach the output to
@@ -1071,7 +985,7 @@ static void attach_metadata_object(
 static gpointer gst_playtracker_output_loop(gpointer data) {
   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(data);
   DsPlayTrackerOutput* output;
-  NvDsObjectMeta* obj_meta = NULL;
+  // NvDsObjectMeta* obj_meta = NULL;
   gdouble scale_ratio = 1.0;
 
   nvtxEventAttributes_t eventAttrib = {0};
@@ -1108,7 +1022,6 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
       continue;
     }
 
-#if 1
     g_mutex_unlock(&playtracker->process_lock);
 
     /* Need to only push buffer to downstream element. This batch was not
@@ -1141,7 +1054,6 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
       g_mutex_lock(&playtracker->process_lock);
       continue;
     }
-#endif
 
     nvtx_str = "dequeueOutputAndAttachMeta batch_num=" + std::to_string(batch->inbuf_batch_num);
     eventAttrib.message.ascii = nvtx_str.c_str();
@@ -1152,46 +1064,12 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
       GstDsPlayTrackerFrame& frame = batch->frames[i];
       DsPlayTrackerProcessFrame(frame, playtracker->playtrackerlib_ctx);
 
-      if (playtracker->process_full_frame) {
-        // Process to get the output
-        output = DsPlayTrackerProcess(
-            playtracker->playtrackerlib_ctx, (unsigned char*)batch->inter_buf->surfaceList[i].mappedAddr.addr[0]);
-        // Attach the metadata for the full frame
-        attach_metadata_full_frame(playtracker, batch->frames[i].frame_meta, scale_ratio, output, i);
-        free(output);
-      } else {
-        GstDsPlayTrackerFrame& frame = batch->frames[i];
-
-        obj_meta = frame.obj_meta;
-
-        /* Should not process on objects smaller than MIN_INPUT_OBJECT_WIDTH x
-         * MIN_INPUT_OBJECT_HEIGHT */
-        if (obj_meta->rect_params.width < MIN_INPUT_OBJECT_WIDTH ||
-            obj_meta->rect_params.height < MIN_INPUT_OBJECT_HEIGHT) {
-          assert(false);
-          continue;
-        }
-
-        /* Extra check for Jetson devices as default compute mode on Jetson is
-         * VIC which supports min 16x16 */
-        if (prop.integrated) {
-          if (playtracker->transform_config_params.compute_mode == NvBufSurfTransformCompute_VIC ||
-              playtracker->transform_config_params.compute_mode == NvBufSurfTransformCompute_Default) {
-            if (obj_meta->rect_params.width < 16 || obj_meta->rect_params.height < 16)
-              assert(false);
-            continue;
-          }
-        }
-
-        // Process the object crop to obtain label
-        output = DsPlayTrackerProcess(
-            playtracker->playtrackerlib_ctx, (unsigned char*)batch->inter_buf->surfaceList[i].mappedAddr.addr[0]);
-
-        // Attach labels for the object
-        attach_metadata_object(playtracker, obj_meta, output);
-
-        free(output);
-      }
+      // Process to get the output
+      output = DsPlayTrackerProcess(
+          playtracker->playtrackerlib_ctx, (unsigned char*)batch->inter_buf->surfaceList[i].mappedAddr.addr[0]);
+      // Attach the metadata for the full frame
+      attach_metadata_full_frame(playtracker, batch->frames[i].frame_meta, scale_ratio, output, i);
+      free(output);
     }
 
     g_mutex_lock(&playtracker->process_lock);

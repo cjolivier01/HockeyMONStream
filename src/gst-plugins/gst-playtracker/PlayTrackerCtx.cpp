@@ -297,7 +297,7 @@ static void add_boxes_circles_lines(NvDsFrameMeta* frame_meta) {
     // std::cout << "pt batch_meta = " << batch_meta << std::endl;
     NvDsMetaList* l = NULL;
     NvDsMetaList* display_meta_list = batch_meta->display_meta_pool->full_list;
-    //NvDsMetaList* display_meta_list = frame_meta->display_meta_list;
+    // NvDsMetaList* display_meta_list = frame_meta->display_meta_list;
     for (l = display_meta_list; l != NULL; l = l->next) {
       NvDsDisplayMeta* display_meta = (NvDsDisplayMeta*)(l->data);
       (void)display_meta;
@@ -308,7 +308,6 @@ static void add_boxes_circles_lines(NvDsFrameMeta* frame_meta) {
   /* Get objects to be drawn from display meta.
    * Draw objects if count equals MAX_OSD_ELEMS.
    */
-
 }
 
 } // namespace gst_hm
@@ -360,32 +359,20 @@ DsPlayTrackerOutput* DsPlayTrackerProcess(DsPlayTrackerCtx* ctx, unsigned char* 
   }
   // Fill output structure using processed output
   // Here, we fake some detected objects and labels
-  if (ctx->initParams.fullFrame) {
-    out->numObjects = 2;
-    out->object[0] = (DsPlayTrackerObject){
-        (float)(ctx->initParams.processingWidth) / 8,
-        (float)(ctx->initParams.processingHeight) / 8,
-        (float)(ctx->initParams.processingWidth) / 8,
-        (float)(ctx->initParams.processingHeight) / 8,
-        "Obj0"};
+  out->numObjects = 2;
+  out->object[0] = (DsPlayTrackerObject){
+      (float)(ctx->initParams.processingWidth) / 8,
+      (float)(ctx->initParams.processingHeight) / 8,
+      (float)(ctx->initParams.processingWidth) / 8,
+      (float)(ctx->initParams.processingHeight) / 8,
+      "Obj0"};
 
-    out->object[1] = (DsPlayTrackerObject){
-        (float)(ctx->initParams.processingWidth) / 2,
-        (float)(ctx->initParams.processingHeight) / 2,
-        (float)(ctx->initParams.processingWidth) / 8,
-        (float)(ctx->initParams.processingHeight) / 8,
-        "Obj1"};
-  } else {
-    out->numObjects = 1;
-    out->object[0] = (DsPlayTrackerObject){
-        (float)(ctx->initParams.processingWidth) / 8,
-        (float)(ctx->initParams.processingHeight) / 8,
-        (float)(ctx->initParams.processingWidth) / 8,
-        (float)(ctx->initParams.processingHeight) / 8,
-        ""};
-    // Set the object label
-    snprintf(out->object[0].label, 64, "Obj_label");
-  }
+  out->object[1] = (DsPlayTrackerObject){
+      (float)(ctx->initParams.processingWidth) / 2,
+      (float)(ctx->initParams.processingHeight) / 2,
+      (float)(ctx->initParams.processingWidth) / 8,
+      (float)(ctx->initParams.processingHeight) / 8,
+      "Obj1"};
 
   return out;
 }

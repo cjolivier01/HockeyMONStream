@@ -146,7 +146,7 @@ ds-playtracker:
   enable: 1
   gpu-id: 0
   unique-id: 75
-  process_full_frame: 1
+  # process_full_frame: 1
   config-file: play_tracker_config.yaml
 
 ds-fieldmask:

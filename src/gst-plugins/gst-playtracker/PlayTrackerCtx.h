@@ -16,7 +16,7 @@ typedef struct {
   // height at which frame/object will be scaled
   int processingHeight;
   // Flag to indicate whether operating on crops of full frame
-  int fullFrame;
+  // int fullFrame;
   std::string play_tracker_config_file;
 } DsPlayTrackerInitParams;
 

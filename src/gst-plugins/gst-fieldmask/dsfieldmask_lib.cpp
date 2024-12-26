@@ -31,17 +31,18 @@ struct DsFieldMaskCtx {
 namespace {
 
 // I dont understand why this is backwards (negative)
-constexpr float raise_bbox_center_by_height_ratio = -0.1;
-constexpr float lower_bbox_bottom_by_height_ratio = -0.1;
+constexpr float lower_bbox_center_by_height_ratio = 0.1;
+constexpr float raise_bbox_bottom_by_height_ratio = 0.1;
+constexpr float side_edges_bbox_by_half_width_ratio = 0.2;
 
 bool is_bit_set(const cv::Mat& mask, const cv::Point& point) {
-  int byteIndex = (point.y * mask.cols + point.x/8); // Byte index in the data
+  int byteIndex = (point.y * mask.cols + point.x / 8); // Byte index in the data
   int bitIndex = point.x % 8; // Bit index within the byte
-  //int bitIndex = point.x & 7;
+  // int bitIndex = point.x & 7;
   return (mask.data[byteIndex] & (1 << bitIndex)) != 0;
-  //int bitIndex = point.x % 8; // Bit index within the byte
-  //uchar val = mask.at<uchar>(cv::Point2l(point.x/8, point.y));
-  //return (val & (1 << bitIndex)) != 0;
+  // int bitIndex = point.x % 8; // Bit index within the byte
+  // uchar val = mask.at<uchar>(cv::Point2l(point.x/8, point.y));
+  // return (val & (1 << bitIndex)) != 0;
 }
 
 // Convert 8-bit-per-pixel mask to 1-bit-per-pixel (packed as bytes)
@@ -133,18 +134,25 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx)
     max_x = std::max(max_x, detector_bbox_info.org_bbox_coords.left + detector_bbox_info.org_bbox_coords.width);
     max_y = std::max(max_y, detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height);
 
-    const int raise_center_height_amount =
-        float(detector_bbox_info.org_bbox_coords.height) * raise_bbox_center_by_height_ratio;
-    const int lower_bottom_height_amount =
-        float(detector_bbox_info.org_bbox_coords.height) * lower_bbox_bottom_by_height_ratio;
+    const int lower_center_height_amount =
+        float(detector_bbox_info.org_bbox_coords.height) * lower_bbox_center_by_height_ratio;
+    const int raise_bottom_height_amount =
+        float(detector_bbox_info.org_bbox_coords.height) * raise_bbox_bottom_by_height_ratio;
 
-    cv::Point2f ptCenter = cv::Point2f(
-        center_x,
-        detector_bbox_info.org_bbox_coords.top + half_height - raise_center_height_amount);
+    cv::Point2f ptCenter =
+        cv::Point2f(center_x, detector_bbox_info.org_bbox_coords.top + half_height + lower_center_height_amount);
     cv::Point2f ptBottom = cv::Point2f(
         center_x,
-        detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height +
-            lower_bottom_height_amount);
+        detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height -
+            raise_bottom_height_amount);
+
+    if (ptBottom.x <= ctx->detection_mask_centroid.x) {
+      // left side, so move right just a little bit
+      ptBottom.x += half_width * side_edges_bbox_by_half_width_ratio;
+    } else {
+      // right side, so move left just a little bit
+      ptBottom.x -= half_width * side_edges_bbox_by_half_width_ratio;
+    }
 
     ptBottom.x *= scale_width;
     ptBottom.y *= scale_height;
@@ -191,7 +199,7 @@ DsFieldMaskCtx* DsFieldMaskCtxInit(DsFieldMaskInitParams* initParams) {
     ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask);
     ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
     // cv::imshow("Mask", ctx->detection_u8_mask);
-    //cv::imshow("Mask", ctx->detection_bit_mask);
+    // cv::imshow("Mask", ctx->detection_bit_mask);
     cv::waitKey(10);
   }
   return ctx;
