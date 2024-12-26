@@ -252,7 +252,7 @@ static void add_boxes_circles_lines(NvDsFrameMeta* frame_meta) {
   rect_params[0].width = 300;
   rect_params[0].height = 150;
   rect_params[0].border_width = 10;
-  rect_params[0].border_color = (NvOSD_ColorParams){1.0, 0.0, 0.0, 1.0}; // Red
+  rect_params[0].border_color = (NvOSD_ColorParams){1.0, 0.0, 1.0, 1.0}; // Red
   rect_params[0].has_bg_color = 1;
   rect_params[0].bg_color = (NvOSD_ColorParams){0.5, 0.5, 0.5, 0.4}; // Gray with 40% alpha
 
@@ -292,18 +292,18 @@ static void add_boxes_circles_lines(NvDsFrameMeta* frame_meta) {
   // Attach display metadata to the frame
   nvds_add_display_meta_to_frame(frame_meta, display_meta);
 
-  auto batch_meta = frame_meta->base_meta.batch_meta;
-  if (batch_meta) {
-    // std::cout << "pt batch_meta = " << batch_meta << std::endl;
-    NvDsMetaList* l = NULL;
-    NvDsMetaList* display_meta_list = batch_meta->display_meta_pool->full_list;
-    // NvDsMetaList* display_meta_list = frame_meta->display_meta_list;
-    for (l = display_meta_list; l != NULL; l = l->next) {
-      NvDsDisplayMeta* display_meta = (NvDsDisplayMeta*)(l->data);
-      (void)display_meta;
-      // std::cout << "display meta" << std::endl;
-    }
-  }
+  // auto batch_meta = frame_meta->base_meta.batch_meta;
+  // if (batch_meta) {
+  //   // std::cout << "pt batch_meta = " << batch_meta << std::endl;
+  //   NvDsMetaList* l = NULL;
+  //   NvDsMetaList* display_meta_list = batch_meta->display_meta_pool->full_list;
+  //   // NvDsMetaList* display_meta_list = frame_meta->display_meta_list;
+  //   for (l = display_meta_list; l != NULL; l = l->next) {
+  //     NvDsDisplayMeta* display_meta = (NvDsDisplayMeta*)(l->data);
+  //     (void)display_meta;
+  //     // std::cout << "display meta" << std::endl;
+  //   }
+  // }
 
   /* Get objects to be drawn from display meta.
    * Draw objects if count equals MAX_OSD_ELEMS.

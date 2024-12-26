@@ -125,10 +125,6 @@ struct _GstDsPlayTracker {
 
   char play_tracker_config_file[PATH_MAX*4];
 
-  /** Boolean indicating if entire frame or cropped objects should be processed
-   */
-  // gboolean process_full_frame;
-
   /** Current batch number of the input batch. */
   gulong current_batch_num;
 
