@@ -44,8 +44,8 @@ def repack_deb(work_dir, output_deb):
 
 
 def main():
-    deb_file = "input.deb"  # Input .deb file
-    output_deb = "output.deb"  # Output .deb file
+    deb_file = "graph_composer-4.1.0_x86_64.deb"  # Input .deb file
+    output_deb = "undependencies.deb"  # Output .deb file
 
     if not os.path.exists(deb_file):
         print(f"Error: {deb_file} not found.")
