@@ -13,19 +13,16 @@
  * manner between the two threads for parallel processing.
  */
 
-#include <string.h>
-#include <string>
-
 #include "gstplaytracker.h"
+#include "gstnvdsmeta.h"
 #include "utils.h"
 
 #include <sys/time.h>
-#include <memory>
 #include <cassert>
+#include <memory>
 
 GST_DEBUG_CATEGORY_STATIC(gst_playtracker_debug);
-#define GST_CAT_DEFAULT gst_playtracker_debug
-#define USE_EGLIMAGE 1
+// #define GST_CAT_DEFAULT gst_playtracker_debug
 
 static GQuark _dsmeta_quark = 0;
 
@@ -40,27 +37,7 @@ enum {
 
 /* Default values for properties */
 #define DEFAULT_UNIQUE_ID 15
-#define DEFAULT_PROCESSING_WIDTH 640
-#define DEFAULT_PROCESSING_HEIGHT 480
-#define DEFAULT_PROCESS_FULL_FRAME FALSE
 #define DEFAULT_GPU_ID 0
-#define DEFAULT_BATCH_SIZE 1
-
-#define RGB_BYTES_PER_PIXEL 3
-#define RGBA_BYTES_PER_PIXEL 4
-#define Y_BYTES_PER_PIXEL 1
-#define UV_BYTES_PER_PIXEL 2
-
-#define MIN_INPUT_OBJECT_WIDTH 1
-#define MIN_INPUT_OBJECT_HEIGHT 1
-
-#define CHECK_NPP_STATUS(npp_status, error_str)                                                         \
-  do {                                                                                                  \
-    if ((npp_status) != NPP_SUCCESS) {                                                                  \
-      g_print("Error: %s in %s at line %d: NPP Error %d\n", error_str, __FILE__, __LINE__, npp_status); \
-      goto error;                                                                                       \
-    }                                                                                                   \
-  } while (0)
 
 #define CHECK_CUDA_STATUS(cuda_status, error_str)                                                                 \
   do {                                                                                                            \
@@ -101,21 +78,6 @@ static GstFlowReturn gst_playtracker_generate_output(GstBaseTransform* btrans, G
 
 static gpointer gst_playtracker_output_loop(gpointer data);
 
-static gboolean gst_playtracker_sink_event(GstBaseTransform* trans, GstEvent* event) {
-  switch (GST_EVENT_TYPE(event)) {
-    case GST_EVENT_CAPS: {
-      GstCaps* caps;
-      gst_event_parse_caps(event, &caps);
-      g_print("Received CAPS event: %s\n", gst_caps_to_string(caps));
-      break;
-    }
-    default:
-      break;
-  }
-  // return gst_pad_event_default(pad, parent, event);  return true;
-  return GST_BASE_TRANSFORM_CLASS(parent_class)->sink_event(trans, event);
-}
-
 /* Install properties, set sink and src pad capabilities, override the required
  * functions of the base class, These are common to all instances of the
  * element.
@@ -139,8 +101,6 @@ static void gst_playtracker_class_init(GstDsPlayTrackerClass* klass) {
   gstbasetransform_class->set_caps = GST_DEBUG_FUNCPTR(gst_playtracker_set_caps);
   gstbasetransform_class->start = GST_DEBUG_FUNCPTR(gst_playtracker_start);
   gstbasetransform_class->stop = GST_DEBUG_FUNCPTR(gst_playtracker_stop);
-
-  gstbasetransform_class->sink_event = GST_DEBUG_FUNCPTR(gst_playtracker_sink_event);
 
   gstbasetransform_class->submit_input_buffer = GST_DEBUG_FUNCPTR(gst_playtracker_submit_input_buffer);
   gstbasetransform_class->generate_output = GST_DEBUG_FUNCPTR(gst_playtracker_generate_output);
@@ -281,7 +241,7 @@ static void gst_playtracker_get_property(GObject* object, guint prop_id, GValue*
  */
 static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(btrans);
-  std::string nvtx_str;
+  // std::string nvtx_str;
   DsPlayTrackerInitParams init_params = {
       .play_tracker_config_file = playtracker->play_tracker_config_file,
       .draw = !!playtracker->draw,
@@ -291,11 +251,6 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
   playtracker->playtrackerlib_ctx = DsPlayTrackerCtxInit(&init_params);
 
   GST_DEBUG_OBJECT(playtracker, "ctx lib %p \n", playtracker->playtrackerlib_ctx);
-
-  nvtx_str = "GstNvDsPlayTracker: UID=" + std::to_string(playtracker->unique_id);
-  auto nvtx_deleter = [](nvtxDomainHandle_t d) { nvtxDomainDestroy(d); };
-  std::unique_ptr<nvtxDomainRegistration, decltype(nvtx_deleter)> nvtx_domain_ptr(
-      nvtxDomainCreate(nvtx_str.c_str()), nvtx_deleter);
 
   /* Create process queue and cvmat queue to transfer data between threads.
    * We will be using this queue to maintain the list of frames/objects
@@ -312,8 +267,6 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
   /* Start a thread which will pop output from the algorithm, form NvDsMeta and
    * push buffers to the next element. */
   playtracker->process_thread = g_thread_new("playtracker-process-thread", gst_playtracker_output_loop, playtracker);
-
-  playtracker->nvtx_domain = nvtx_domain_ptr.release();
 
   return TRUE;
 }
@@ -376,19 +329,6 @@ error:
 }
 
 static gboolean convert_batch_and_push_to_process_thread(GstDsPlayTracker* playtracker, GstDsPlayTrackerBatch* batch) {
-  std::string nvtx_str;
-
-  nvtxEventAttributes_t eventAttrib = {0};
-  eventAttrib.version = NVTX_VERSION;
-  eventAttrib.size = NVTX_EVENT_ATTRIB_STRUCT_SIZE;
-  eventAttrib.colorType = NVTX_COLOR_ARGB;
-  eventAttrib.color = 0xFFFF0000;
-  eventAttrib.messageType = NVTX_MESSAGE_TYPE_ASCII;
-  nvtx_str = "convert_buf batch_num=" + std::to_string(playtracker->current_batch_num);
-  eventAttrib.message.ascii = nvtx_str.c_str();
-
-  nvtxDomainRangePushEx(playtracker->nvtx_domain, &eventAttrib);
-
   g_mutex_lock(&playtracker->process_lock);
 
   /* Wait if buf queue is empty. */
@@ -402,7 +342,9 @@ static gboolean convert_batch_and_push_to_process_thread(GstDsPlayTracker* playt
 
   g_mutex_unlock(&playtracker->process_lock);
 
-  nvtxDomainRangePop(playtracker->nvtx_domain);
+  //
+  // Used to do something here?
+  //
 
   /* Push the batch info structure in the processing queue and notify the
    * process thread that a new batch has been queued. */
@@ -422,31 +364,18 @@ static gboolean convert_batch_and_push_to_process_thread(GstDsPlayTracker* playt
 static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btrans, gboolean discont, GstBuffer* inbuf) {
   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(btrans);
   GstMapInfo in_map_info;
-  NvBufSurface* in_surf;
-  GstDsPlayTrackerBatch* buf_push_batch;
-  GstFlowReturn flow_ret;
-  std::string nvtx_str;
+  NvBufSurface* in_surf{nullptr};
+  GstDsPlayTrackerBatch* buf_push_batch{nullptr};
   std::unique_ptr<GstDsPlayTrackerBatch> batch = nullptr;
 
   NvDsBatchMeta* batch_meta = NULL;
-  // guint i = 0;
-  gdouble scale_ratio = 1.0;
+  // gdouble scale_ratio = 1.0;
   guint num_filled = 0;
 
   struct cudaDeviceProp prop;
   cudaGetDeviceProperties(&prop, playtracker->gpu_id);
 
   playtracker->current_batch_num++;
-
-  nvtxEventAttributes_t eventAttrib = {0};
-  eventAttrib.version = NVTX_VERSION;
-  eventAttrib.size = NVTX_EVENT_ATTRIB_STRUCT_SIZE;
-  eventAttrib.colorType = NVTX_COLOR_ARGB;
-  eventAttrib.color = 0xFFFF0000;
-  eventAttrib.messageType = NVTX_MESSAGE_TYPE_ASCII;
-  nvtx_str = "buffer_process batch_num=" + std::to_string(playtracker->current_batch_num);
-  eventAttrib.message.ascii = nvtx_str.c_str();
-  nvtxRangeId_t buf_process_range = nvtxDomainRangeStartEx(playtracker->nvtx_domain, &eventAttrib);
 
   memset(&in_map_info, 0, sizeof(in_map_info));
 
@@ -477,8 +406,8 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btran
 
     /* Adding a frame to the current batch. Set the frames members. */
     GstDsPlayTrackerFrame frame;
-    frame.scale_ratio_x = scale_ratio;
-    frame.scale_ratio_y = scale_ratio;
+    // frame.scale_ratio_x = scale_ratio;
+    // frame.scale_ratio_y = scale_ratio;
     frame.obj_meta = nullptr;
     frame.frame_meta = nvds_get_nth_frame_meta(batch_meta->frame_meta_list, i);
     frame.frame_num = frame.frame_meta->frame_num;
@@ -494,8 +423,7 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btran
       }
       /* Batch submitted. Set batch to nullptr so that a new GstDsPlayTrackerBatch
        * structure can be allocated if required. */
-      batch.release();
-      // playtracker->batch_insurf.numFilled = 0;
+      (void)batch.release();
     }
   }
   /* Submit a non-full batch. */
@@ -503,11 +431,8 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btran
     if (!convert_batch_and_push_to_process_thread(playtracker, batch.get())) {
       return GST_FLOW_ERROR;
     }
-    batch.release();
-    // playtracker->batch_insurf.numFilled = 0;
+    (void)batch.release();
   }
-
-  nvtxDomainRangeEnd(playtracker->nvtx_domain, buf_process_range);
 
   /* Queue a push buffer batch. This batch is not inferred. This batch is to
    * signal the process thread that there are no more batches
@@ -516,7 +441,6 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btran
   buf_push_batch = new GstDsPlayTrackerBatch;
   buf_push_batch->inbuf = inbuf;
   buf_push_batch->push_buffer = TRUE;
-  buf_push_batch->nvtx_complete_buf_range = buf_process_range;
 
   g_mutex_lock(&playtracker->process_lock);
   /* Check if this is a push buffer or event marker batch. If yes, no need to
@@ -529,9 +453,7 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btran
   }
   g_mutex_unlock(&playtracker->process_lock);
 
-  flow_ret = GST_FLOW_OK;
-
-  return flow_ret;
+  return GST_FLOW_OK;
 }
 
 /**
@@ -551,18 +473,9 @@ static GstFlowReturn gst_playtracker_generate_output(GstBaseTransform* btrans, G
  */
 static gpointer gst_playtracker_output_loop(gpointer data) {
   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(data);
-  nvtxEventAttributes_t eventAttrib = {0};
-  eventAttrib.version = NVTX_VERSION;
-  eventAttrib.size = NVTX_EVENT_ATTRIB_STRUCT_SIZE;
-  eventAttrib.colorType = NVTX_COLOR_ARGB;
-  eventAttrib.color = 0xFFFF0000;
-  eventAttrib.messageType = NVTX_MESSAGE_TYPE_ASCII;
-  std::string nvtx_str;
 
   struct cudaDeviceProp prop;
   cudaGetDeviceProperties(&prop, playtracker->gpu_id);
-
-  nvtx_str = "gst-playtracker_output-loop_uid=" + std::to_string(playtracker->unique_id);
 
   g_mutex_lock(&playtracker->process_lock);
 
@@ -590,8 +503,6 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
     /* Need to only push buffer to downstream element. This batch was not
      * actually submitted for inferencing. */
     if (batch->push_buffer) {
-      nvtxDomainRangeEnd(playtracker->nvtx_domain, batch->nvtx_complete_buf_range);
-
       nvds_set_output_system_timestamp(batch->inbuf, GST_ELEMENT_NAME(playtracker));
 
       GstFlowReturn flow_ret = gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(playtracker), batch->inbuf);
@@ -618,10 +529,6 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
       continue;
     }
 
-    nvtx_str = "dequeueOutputAndAttachMeta batch_num=" + std::to_string(batch->inbuf_batch_num);
-    eventAttrib.message.ascii = nvtx_str.c_str();
-    nvtxDomainRangePushEx(playtracker->nvtx_domain, &eventAttrib);
-
     /* For each frame attach metadata output. */
     for (guint i = 0; i < batch->frames.size(); i++) {
       GstDsPlayTrackerFrame& frame = batch->frames[i];
@@ -632,8 +539,6 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
 
     g_queue_push_tail(playtracker->buf_queue, batch->inter_buf);
     g_cond_broadcast(&playtracker->buf_cond);
-
-    nvtxDomainRangePop(playtracker->nvtx_domain);
   }
   g_mutex_unlock(&playtracker->process_lock);
 

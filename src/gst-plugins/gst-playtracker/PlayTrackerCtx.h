@@ -12,9 +12,9 @@ typedef struct GstDsPlayTrackerFrame GstDsPlayTrackerFrame;
 // Init parameters structure as input, required for instantiating playtracker_lib
 typedef struct {
   // Width at which frame/object will be scaled
-  int processingWidth;
+  //int processingWidth;
   // height at which frame/object will be scaled
-  int processingHeight;
+  //int processingHeight;
   // Flag to indicate whether operating on crops of full frame
   // int fullFrame;
   std::string play_tracker_config_file;

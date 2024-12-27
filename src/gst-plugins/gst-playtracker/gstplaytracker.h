@@ -21,9 +21,10 @@
 #include <cuda_runtime.h>
 #include "PlayTrackerCtx.h"
 // #include "gst-nvquery.h"
-#include "gstnvdsmeta.h"
+//#include "gstnvdsmeta.h
+#include "nvdsmeta.h"
 #include "nvbufsurface.h"
-#include "nvbufsurftransform.h"
+//#include "nvbufsurftransform.h"
 #include "nvtx3/nvToolsExt.h"
 
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
@@ -117,20 +118,9 @@ struct _GstDsPlayTracker {
 
   /** GstFlowReturn returned by the latest buffer pad push. */
   GstFlowReturn last_flow_ret;
-
-  /** NVTX Domain. */
-  nvtxDomainHandle_t nvtx_domain;
 };
 
 struct GstDsPlayTrackerFrame {
-  /** Ratio by which the frame / object crop was scaled in the horizontal
-   * direction. Required when scaling co-ordinates/sizes in metadata
-   * back to input resolution. */
-  gdouble scale_ratio_x = 0.0;
-  /** Ratio by which the frame / object crop was scaled in the vertical
-   * direction. Required when scaling co-ordinates/sizes in metadata
-   * back to input resolution. */
-  gdouble scale_ratio_y = 0.0;
   /** NvDsObjectParams belonging to the object to be classified. */
   NvDsObjectMeta* obj_meta = nullptr;
   NvDsFrameMeta* frame_meta = nullptr;
@@ -168,7 +158,7 @@ struct GstDsPlayTrackerBatch {
 
   NvBufSurface* inter_buf;
 
-  nvtxRangeId_t nvtx_complete_buf_range = 0;
+  // nvtxRangeId_t nvtx_complete_buf_range = 0;
 };
 
 /** Boiler plate stuff */
