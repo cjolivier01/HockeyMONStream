@@ -141,12 +141,12 @@ static gboolean gst_playtracker_stop(GstBaseTransform* btrans);
 static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btrans, gboolean discont, GstBuffer* inbuf);
 static GstFlowReturn gst_playtracker_generate_output(GstBaseTransform* btrans, GstBuffer** outbuf);
 
-static void attach_metadata_full_frame(
-    GstDsPlayTracker* playtracker,
-    NvDsFrameMeta* frame_meta,
-    gdouble scale_ratio,
-    DsPlayTrackerOutput* output,
-    guint batch_id);
+// static void attach_metadata_full_frame(
+//     GstDsPlayTracker* playtracker,
+//     NvDsFrameMeta* frame_meta,
+//     gdouble scale_ratio,
+//     DsPlayTrackerOutput* output,
+//     guint batch_id);
 // static void attach_metadata_object(
 //     GstDsPlayTracker* playtracker,
 //     NvDsObjectMeta* obj_meta,
@@ -867,133 +867,14 @@ static GstFlowReturn gst_playtracker_generate_output(GstBaseTransform* btrans, G
 }
 
 /**
- * Attach metadata for the full frame. We will be adding a new metadata.
- */
-static void attach_metadata_full_frame(
-    GstDsPlayTracker* playtracker,
-    NvDsFrameMeta* frame_meta,
-    gdouble scale_ratio,
-    DsPlayTrackerOutput* output,
-    guint batch_id) {
-  NvDsBatchMeta* batch_meta = frame_meta->base_meta.batch_meta;
-  NvDsObjectMeta* object_meta = NULL;
-  static gchar font_name[] = "Serif";
-  GST_DEBUG_OBJECT(playtracker, "Attaching metadata %d\n", output->numObjects);
-
-  for (gint i = 0; i < output->numObjects; i++) {
-    DsPlayTrackerObject* obj = &output->object[i];
-    object_meta = nvds_acquire_obj_meta_from_pool(batch_meta);
-    NvOSD_RectParams& rect_params = object_meta->rect_params;
-    NvOSD_TextParams& text_params = object_meta->text_params;
-
-    // Assign bounding box coordinates
-    rect_params.left = obj->left;
-    rect_params.top = obj->top;
-    rect_params.width = obj->width;
-    rect_params.height = obj->height;
-
-    // Semi-transparent yellow background
-    rect_params.has_bg_color = 0;
-    rect_params.bg_color = (NvOSD_ColorParams){1, 1, 0, 0.4};
-    // Red border of width 6
-    rect_params.border_width = 3;
-    rect_params.border_color = (NvOSD_ColorParams){1, 0, 0, 1};
-
-    // Scale the bounding boxes proportionally based on how the object/frame was
-    // scaled during input
-    rect_params.left /= scale_ratio;
-    rect_params.top /= scale_ratio;
-    rect_params.width /= scale_ratio;
-    rect_params.height /= scale_ratio;
-    GST_DEBUG_OBJECT(
-        playtracker,
-        "Attaching rect%d of batch%u"
-        "  left->%f top->%f width->%f"
-        " height->%f label->%s\n",
-        i,
-        batch_id,
-        rect_params.left,
-        rect_params.top,
-        rect_params.width,
-        rect_params.height,
-        obj->label);
-
-    object_meta->object_id = UNTRACKED_OBJECT_ID;
-    g_strlcpy(object_meta->obj_label, obj->label, MAX_LABEL_SIZE);
-    // display_text required heap allocated memory
-    text_params.display_text = g_strdup(obj->label);
-    // Display text above the left top corner of the object
-    text_params.x_offset = rect_params.left;
-    text_params.y_offset = rect_params.top - 10;
-    // Set black background for the text
-    text_params.set_bg_clr = 1;
-    text_params.text_bg_clr = (NvOSD_ColorParams){0, 0, 0, 1};
-    // Font face, size and color
-    text_params.font_params.font_name = font_name;
-    text_params.font_params.font_size = 11;
-    text_params.font_params.font_color = (NvOSD_ColorParams){1, 1, 1, 1};
-
-    nvds_add_obj_meta_to_frame(frame_meta, object_meta, NULL);
-  }
-}
-
-/**
- * Only update string label in an existing object metadata. No bounding boxes.
- * We assume only one label per object is generated
- */
-// static void attach_metadata_object(
-//     GstDsPlayTracker* playtracker,
-//     NvDsObjectMeta* obj_meta,
-//     DsPlayTrackerOutput* output) {
-//   if (output->numObjects == 0)
-//     return;
-//   NvDsBatchMeta* batch_meta = obj_meta->base_meta.batch_meta;
-
-//   NvDsClassifierMeta* classifier_meta = nvds_acquire_classifier_meta_from_pool(batch_meta);
-
-//   classifier_meta->unique_component_id = playtracker->unique_id;
-
-//   NvDsLabelInfo* label_info = nvds_acquire_label_info_meta_from_pool(batch_meta);
-//   g_strlcpy(label_info->result_label, output->object[0].label, MAX_LABEL_SIZE);
-//   nvds_add_label_info_meta_to_classifier(classifier_meta, label_info);
-//   nvds_add_classifier_meta_to_object(obj_meta, classifier_meta);
-
-//   nvds_acquire_meta_lock(batch_meta);
-//   NvOSD_TextParams& text_params = obj_meta->text_params;
-//   NvOSD_RectParams& rect_params = obj_meta->rect_params;
-
-//   /* Below code to display the result */
-//   // Set black background for the text
-//   // display_text required heap allocated memory
-//   if (text_params.display_text) {
-//     gchar* conc_string = g_strconcat(text_params.display_text, " ", output->object[0].label, NULL);
-//     g_free(text_params.display_text);
-//     text_params.display_text = conc_string;
-//   } else {
-//     // Display text above the left top corner of the object
-//     text_params.x_offset = rect_params.left;
-//     text_params.y_offset = rect_params.top - 10;
-//     text_params.display_text = g_strdup(output->object[0].label);
-//     // Font face, size and color
-//     text_params.font_params.font_name = (char*)"Serif";
-//     text_params.font_params.font_size = 11;
-//     text_params.font_params.font_color = (NvOSD_ColorParams){1, 1, 1, 1};
-//     // Set black background for the text
-//     text_params.set_bg_clr = 1;
-//     text_params.text_bg_clr = (NvOSD_ColorParams){0, 0, 0, 1};
-//   }
-//   nvds_release_meta_lock(batch_meta);
-// }
-
-/**
  * Output loop used to pop output from processing thread, attach the output to
  * the buffer in form of NvDsMeta and push the buffer to downstream element.
  */
 static gpointer gst_playtracker_output_loop(gpointer data) {
   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(data);
-  DsPlayTrackerOutput* output;
+  // DsPlayTrackerOutput* output;
   // NvDsObjectMeta* obj_meta = NULL;
-  gdouble scale_ratio = 1.0;
+  // gdouble scale_ratio = 1.0;
 
   nvtxEventAttributes_t eventAttrib = {0};
   eventAttrib.version = NVTX_VERSION;
@@ -1072,11 +953,11 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
       DsPlayTrackerProcessFrame(frame, playtracker->playtrackerlib_ctx);
 
       // Process to get the output
-      output = DsPlayTrackerProcess(
-          playtracker->playtrackerlib_ctx, (unsigned char*)batch->inter_buf->surfaceList[i].mappedAddr.addr[0]);
-      // Attach the metadata for the full frame
-      attach_metadata_full_frame(playtracker, batch->frames[i].frame_meta, scale_ratio, output, i);
-      free(output);
+      // output = DsPlayTrackerProcess(
+      //     playtracker->playtrackerlib_ctx, (unsigned char*)batch->inter_buf->surfaceList[i].mappedAddr.addr[0]);
+      // // Attach the metadata for the full frame
+      // // attach_metadata_full_frame(playtracker, batch->frames[i].frame_meta, scale_ratio, output, i);
+      // free(output);
     }
 
     g_mutex_lock(&playtracker->process_lock);

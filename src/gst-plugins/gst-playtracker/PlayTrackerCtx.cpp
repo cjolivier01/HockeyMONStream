@@ -419,31 +419,31 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
 
 // In case of an actual processing library, processing on data wil be completed
 // in this function and output will be returned
-DsPlayTrackerOutput* DsPlayTrackerProcess(DsPlayTrackerCtx* ctx, unsigned char* data) {
-  DsPlayTrackerOutput* out = (DsPlayTrackerOutput*)calloc(1, sizeof(DsPlayTrackerOutput));
+// DsPlayTrackerOutput* DsPlayTrackerProcess(DsPlayTrackerCtx* ctx, unsigned char* data) {
+//   DsPlayTrackerOutput* out = (DsPlayTrackerOutput*)calloc(1, sizeof(DsPlayTrackerOutput));
 
-  if (data != NULL) {
-    // Process your data here
-  }
-  // Fill output structure using processed output
-  // Here, we fake some detected objects and labels
-  out->numObjects = 2;
-  out->object[0] = (DsPlayTrackerObject){
-      (float)(ctx->initParams.processingWidth) / 8,
-      (float)(ctx->initParams.processingHeight) / 8,
-      (float)(ctx->initParams.processingWidth) / 8,
-      (float)(ctx->initParams.processingHeight) / 8,
-      "Obj0"};
+//   if (data != NULL) {
+//     // Process your data here
+//   }
+//   // Fill output structure using processed output
+//   // Here, we fake some detected objects and labels
+//   out->numObjects = 2;
+//   out->object[0] = (DsPlayTrackerObject){
+//       (float)(ctx->initParams.processingWidth) / 8,
+//       (float)(ctx->initParams.processingHeight) / 8,
+//       (float)(ctx->initParams.processingWidth) / 8,
+//       (float)(ctx->initParams.processingHeight) / 8,
+//       "Obj0"};
 
-  out->object[1] = (DsPlayTrackerObject){
-      (float)(ctx->initParams.processingWidth) / 2,
-      (float)(ctx->initParams.processingHeight) / 2,
-      (float)(ctx->initParams.processingWidth) / 8,
-      (float)(ctx->initParams.processingHeight) / 8,
-      "Obj1"};
+//   out->object[1] = (DsPlayTrackerObject){
+//       (float)(ctx->initParams.processingWidth) / 2,
+//       (float)(ctx->initParams.processingHeight) / 2,
+//       (float)(ctx->initParams.processingWidth) / 8,
+//       (float)(ctx->initParams.processingHeight) / 8,
+//       "Obj1"};
 
-  return out;
-}
+//   return out;
+// }
 
 void DsPlayTrackerCtxDeinit(DsPlayTrackerCtx* ctx) {
   if (ctx) {

@@ -23,19 +23,19 @@ typedef struct {
 } DsPlayTrackerInitParams;
 
 // Detected/Labelled object structure, stores bounding box info along with label
-typedef struct {
-  float left;
-  float top;
-  float width;
-  float height;
-  char label[MAX_LABEL_SIZE];
-} DsPlayTrackerObject;
+// typedef struct {
+//   float left;
+//   float top;
+//   float width;
+//   float height;
+//   char label[MAX_LABEL_SIZE];
+// } DsPlayTrackerObject;
 
-// Output data returned after processing
-typedef struct {
-  int numObjects;
-  DsPlayTrackerObject object[4];
-} DsPlayTrackerOutput;
+// // Output data returned after processing
+// typedef struct {
+//   int numObjects;
+//   DsPlayTrackerObject object[4];
+// } DsPlayTrackerOutput;
 
 // Initialize library context
 DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* init_params);
@@ -43,7 +43,7 @@ DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* init_params);
 bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx);
 
 // Dequeue processed output
-DsPlayTrackerOutput* DsPlayTrackerProcess(DsPlayTrackerCtx* ctx, unsigned char* data);
+// DsPlayTrackerOutput* DsPlayTrackerProcess(DsPlayTrackerCtx* ctx, unsigned char* data);
 
 // Deinitialize library context
 void DsPlayTrackerCtxDeinit(DsPlayTrackerCtx* ctx);
