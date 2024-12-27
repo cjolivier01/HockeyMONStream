@@ -319,6 +319,11 @@ DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* initParams) {
   return ctx;
 }
 
+static const std::array<hm::utils::ColorRGB, 2> track_colors{
+    hm::utils::ColorRGB{0, 0, 255},
+    hm::utils::ColorRGB{255, 0, 255},
+};
+
 bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx) {
   hm::BBox arena_box(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
   hm::play_tracker::PlayTracker* play_tracker = gst_hm::get_or_create_play_tracker(arena_box, ctx);
@@ -350,6 +355,9 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
     hm::utils::PlotContex plotter(frame.frame_meta, "");
     for (const auto& cluster_item : frame.play_tracker_results.cluster_boxes) {
       plotter.plot_rect(cluster_item.second, 1, hm::utils::ColorRGB{0, 0, 0}, hm::utils::ColorRGBA{128, 128, 128, 32});
+    }
+    for (size_t i = 0, n = frame.play_tracker_results.tracking_boxes.size(); i < n; ++i) {
+      plotter.plot_rect(frame.play_tracker_results.tracking_boxes[i], 5, track_colors.at(i));
     }
     // gst_hm::add_boxes_circles_lines(frame.frame_meta);
   }
