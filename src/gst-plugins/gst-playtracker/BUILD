@@ -18,6 +18,6 @@ gst_cc_plugin(
     deps = [
         "//libs/common:utils",
         "@hm//hockeymom/csrc/play_tracker:play_tracker",
-        "@opencv_linux//:opencv",
+        # "@opencv_linux//:opencv",
     ],
 )

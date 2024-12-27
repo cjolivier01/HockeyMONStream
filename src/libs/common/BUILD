@@ -13,6 +13,7 @@ cc_library(
     includes = ["."],
     visibility = ["//visibility:public"],
     deps = [
+        "@deepstream//:deepstream_lib",
         "@yaml-cpp",
         "@gstreamer",
     ],

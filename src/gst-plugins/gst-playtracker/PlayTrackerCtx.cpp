@@ -17,14 +17,11 @@
 
 #include "gstplaytracker.h"
 
-#include <opencv2/opencv.hpp>
-
 #include <nvdsmeta.h>
 
 #include <cassert>
 #include <vector>
 
-#include <opencv4/opencv2/core/types.hpp>
 #include <stdio.h>
 #include <stdlib.h>
 
