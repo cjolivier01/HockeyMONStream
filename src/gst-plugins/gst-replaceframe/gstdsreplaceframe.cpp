@@ -491,7 +491,6 @@ static GstStaticPadTemplate gst_dsreplaceframe_sink_template_1 = GST_STATIC_PAD_
     GST_PAD_ALWAYS,
     GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE_WITH_FEATURES(GST_CAPS_FEATURE_MEMORY_NVMM, "{ NV12, RGBA, I420 }")));
 
-#define GST_CAPS_FEATURE_MEMORY_NVMM "memory:NVMM"
 static GstStaticPadTemplate gst_dsreplaceframe_sink_template_2 = GST_STATIC_PAD_TEMPLATE(
     "sink_2",
     GST_PAD_SINK,
