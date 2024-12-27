@@ -50,6 +50,17 @@ class PlotContex {
       const ColorT& color,
       const std::optional<ColorT>& bg_color = std::nullopt);
 
+  // Dashed
+  void plot_dashed_line(
+      const Point& from,
+      const Point& to,
+      int thickness,
+      const ColorT& color,
+      int dash_length,
+      int gap_length);
+  void plot_dashed_rect(const BBox& rect, int thickness, const ColorT& color, int dash_length, int gap_length);
+
+  // Apply/reset
   void apply();
   void reset();
 

@@ -196,5 +196,54 @@ std::pair<NvDsDisplayMeta*, size_t> PlotContex::allocate_display_meta(PLOT_TYPE 
   return std::make_pair(display_meta, new_index);
 }
 
+void PlotContex::plot_dashed_line(
+    const Point& from,
+    const Point& to,
+    int thickness,
+    const ColorT& color,
+    int dash_length,
+    int gap_length) {
+  // Calculate the total line length
+  float line_length = std::sqrt(std::pow(to.x - from.x, 2) + std::pow(to.y - from.y, 2));
+
+  // Calculate the unit vector direction
+  float dx = (to.x - from.x) / line_length;
+  float dy = (to.y - from.y) / line_length;
+
+  // Plot dashes and gaps
+  float current_length = 0.0;
+  Point start = from;
+  while (current_length < line_length) {
+    // Calculate end point of the current dash
+    float dash_end_length = std::min(current_length + dash_length, line_length);
+    Point end = {from.x + dx * dash_end_length, from.y + dy * dash_end_length};
+
+    // Plot the dash
+    plot_line(start, end, thickness, color);
+
+    // Move to the next starting point (gap end)
+    current_length = dash_end_length + gap_length;
+    start = {from.x + dx * current_length, from.y + dy * current_length};
+  }
+}
+
+void PlotContex::plot_dashed_rect(
+    const BBox& rect,
+    int thickness,
+    const ColorT& color,
+    int dash_length,
+    int gap_length) {
+  // Extract rectangle corners
+  const Point top_left = {rect.left, rect.top};
+  const Point top_right = {rect.right, rect.top};
+  const Point bottom_left = {rect.left, rect.bottom};
+  const Point bottom_right = {rect.right, rect.bottom};
+
+  // Plot the dashed lines for each side of the rectangle
+  plot_dashed_line(top_left, top_right, thickness, color, dash_length, gap_length); // Top edge
+  plot_dashed_line(top_right, bottom_right, thickness, color, dash_length, gap_length); // Right edge
+  plot_dashed_line(bottom_right, bottom_left, thickness, color, dash_length, gap_length); // Bottom edge
+  plot_dashed_line(bottom_left, top_left, thickness, color, dash_length, gap_length); // Left edge
+}
 } // namespace utils
 } // namespace hm
