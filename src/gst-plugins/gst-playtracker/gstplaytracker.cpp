@@ -398,7 +398,7 @@ static gboolean convert_batch_and_push_to_process_thread(GstDsPlayTracker* playt
 
   /* Pop a buffer from the element's buf queue. */
   batch->inter_buf = (NvBufSurface*)g_queue_pop_head(playtracker->buf_queue);
-  assert(batch->inter_buf); // always null now, just for timing I guess
+  assert(!batch->inter_buf); // always null now, just for timing I guess
 
   g_mutex_unlock(&playtracker->process_lock);
 
