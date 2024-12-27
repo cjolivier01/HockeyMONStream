@@ -56,9 +56,8 @@ void PlotContex::apply() {
   for (NvDsDisplayMeta* display_meta : display_metas_) {
     // Attach display metadata to the frame
     assert(
-        display_meta->num_rects + display_meta->num_lines + display_meta->num_circles + display_meta->num_arrows +
-            display_meta->num_labels >
-        0);
+        (display_meta->num_rects + display_meta->num_lines + display_meta->num_circles + display_meta->num_arrows +
+         display_meta->num_labels) > 0);
     nvds_add_display_meta_to_frame(frame_meta_, display_meta);
   }
   reset();
@@ -161,7 +160,7 @@ std::pair<NvDsDisplayMeta*, size_t> PlotContex::allocate_display_meta(PLOT_TYPE 
   size_t current_count = plot_type_counts_.at(type);
   size_t current_meta = current_count / kMaxElementsInDisplayMeta;
   size_t new_index = current_count % kMaxElementsInDisplayMeta;
-  if (!new_index) {
+  if (current_meta >= display_metas_.size() && !new_index) {
     // Allocate a new one
     NvDsDisplayMeta* display_meta = nvds_acquire_display_meta_from_pool(frame_meta_->base_meta.batch_meta);
     display_metas_.emplace_back(display_meta);
