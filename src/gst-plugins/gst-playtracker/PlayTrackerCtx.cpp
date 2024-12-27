@@ -334,12 +334,6 @@ void plot_living_box(
     std::optional<ILivingBox*> following_lbox = std::nullopt) {
   plot_translation_state(plotter, lbox, box_config, thickness, color, draw_thresholds, following_lbox);
   plot_resizing_state(plotter, lbox, box_config, draw_thresholds, following_lbox);
-  // const hm::play_tracker::LivingState& living_state = lbox->get_live_box_state();
-  // const hm::play_tracker::ResizingState& resizing_state = lbox->get_resizing_state();
-  // const hm::play_tracker::TranslationState& translation_state = lbox->get_translation_state();
-  // (void)living_state;
-  // (void)resizing_state;
-  // (void)translation_state;
 }
 
 } // namespace gst_hm
