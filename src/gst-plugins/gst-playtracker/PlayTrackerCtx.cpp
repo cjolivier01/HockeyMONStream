@@ -12,6 +12,7 @@
  */
 
 #include "PlayTracker.h"
+#include "hockeymom/csrc/play_tracker/LivingBoxImpl.h"
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
 #include "libs/common/ConfigYaml.h"
 #include "libs/common/PlotContext.h"
@@ -28,6 +29,7 @@
 
 struct DsPlayTrackerCtx {
   DsPlayTrackerInitParams initParams;
+  hm::play_tracker::PlayTrackerConfig play_tracker_config;
   std::optional<std::unique_ptr<hm::play_tracker::PlayTracker>> play_tracker;
 };
 
@@ -211,8 +213,8 @@ hm::play_tracker::PlayTracker* get_or_create_play_tracker(const BBox& arena_box,
     try {
       YAML::Node yaml = YAML::LoadFile(ctx->initParams.play_tracker_config_file);
       if (yaml["play-tracker"]) {
-        PlayTrackerConfig config = create_play_tracker_config(arena_box, yaml["play-tracker"]);
-        ctx->play_tracker = std::make_unique<hm::play_tracker::PlayTracker>(arena_box, config);
+        ctx->play_tracker_config = create_play_tracker_config(arena_box, yaml["play-tracker"]);
+        ctx->play_tracker = std::make_unique<hm::play_tracker::PlayTracker>(arena_box, ctx->play_tracker_config);
         return ctx->play_tracker->get();
       } else {
         g_error("Could not find 'play-tracker' in config file: %s", ctx->initParams.play_tracker_config_file.c_str());
@@ -229,87 +231,64 @@ hm::play_tracker::PlayTracker* get_or_create_play_tracker(const BBox& arena_box,
   return nullptr;
 }
 
-#if 0
-#define NvOSD_MAX_ELEMENTS 16
-
-static void add_boxes_circles_lines(NvDsFrameMeta* frame_meta) {
-  // Create display metadata
-  NvDsDisplayMeta* display_meta = nvds_acquire_display_meta_from_pool(frame_meta->base_meta.batch_meta);
-  if (!display_meta) {
-    g_printerr("Failed to acquire display meta from pool\n");
-    return;
+void plot_resizing_state(
+    hm::utils::PlotContext& plotter,
+    const ILivingBox* lbox,
+    const hm::play_tracker::AllLivingBoxConfig& box_config,
+    bool draw_thresholds,
+    std::optional<ILivingBox*> following_lbox = std::nullopt) {
+  const hm::play_tracker::LivingState& living_state = lbox->get_live_box_state();
+  const hm::play_tracker::ResizingState& resizing_state = lbox->get_resizing_state();
+  const hm::play_tracker::TranslationState& translation_state = lbox->get_translation_state();
+  (void)living_state;
+  (void)resizing_state;
+  (void)translation_state;
+  if (box_config.sticky_sizing) {
+    BBox my_bbox = lbox->bounding_box();
+    assert(following_lbox.has_value());
+    BBox following_box = following_lbox.value()->bounding_box();
+    if (resizing_state.size_is_frozen) {
+      // Draw thick corners when frozen
+      BBox corner_box = my_bbox.make_scaled(0.98, 0.98);
+      plotter.plot_corner_rect(corner_box, /*thickness=*/8, hm::utils::ColorRGB{255, 255, 255}, 0.2, 0.2);
+    }
+    BBox scaled_following_box = following_box.make_scaled(box_config.scale_dest_width, box_config.scale_dest_height);
+    BBox inscribed = scaled_following_box.at_center(my_bbox.center());
+    int dash_length = inscribed.width() / 5;
+    plotter.plot_dashed_rect(
+        inscribed,
+        /*thickness=*/2,
+        hm::utils::ColorRGB{255, 255, 255},
+        /*dash_length=*/dash_length,
+        /*gap_length=*/dash_length);
+    if (draw_thresholds) {
+      Point my_center = my_bbox.center();
+      auto my_width = my_bbox.width(), my_height = my_bbox.height();
+      hm::play_tracker::GrowShrink gs = lbox->get_grow_shrink_wh(my_bbox);
+      BBox grow_box =
+          BBox(my_center, hm::WHDims{.width = my_width + gs.grow_width, .height = my_height + gs.grow_height});
+      BBox shrink_box =
+          BBox(my_center, hm::WHDims{.width = my_width - gs.shrink_width, .height = my_height - gs.shrink_height});
+      plotter.plot_no_corner_rect(grow_box, /*thickness=*/4, hm::utils::ColorRGB{0, 255, 0}, 0.5, 0.5);
+      plotter.plot_no_corner_rect(shrink_box, /*thickness=*/4, hm::utils::ColorRGB{0, 0, 255}, 0.5, 0.5);
+    }
   }
-
-  // Add first box
-  NvOSD_RectParams* rect_params = display_meta->rect_params;
-  NvOSD_TextParams* text_params = display_meta->text_params;
-  NvOSD_CircleParams* circle_params = display_meta->circle_params;
-  NvOSD_LineParams* line_params = display_meta->line_params;
-
-  // Box 1
-  rect_params[0].left = 100;
-  rect_params[0].top = 200;
-  rect_params[0].width = 300;
-  rect_params[0].height = 150;
-  rect_params[0].border_width = 10;
-  rect_params[0].border_color = (NvOSD_ColorParams){1.0, 0.0, 1.0, 1.0}; // Red
-  rect_params[0].has_bg_color = 1;
-  rect_params[0].bg_color = (NvOSD_ColorParams){0.5, 0.5, 0.5, 0.4}; // Gray with 40% alpha
-
-  // Add label for Box 1
-  text_params[0].display_text = g_strdup("Box 1 Label");
-  text_params[0].x_offset = 100;
-  text_params[0].y_offset = 180;
-  text_params[0].font_params.font_size = 12;
-  text_params[0].font_params.font_color = (NvOSD_ColorParams){1.0, 1.0, 1.0, 1.0}; // White
-
-  // Box center
-  int box_center_x = rect_params[0].left + rect_params[0].width / 2;
-  int box_center_y = rect_params[0].top + rect_params[0].height / 2;
-
-  // Circle
-  circle_params[0].xc = 500; // X-coordinate of the circle's center
-  circle_params[0].yc = 350; // Y-coordinate of the circle's center
-  circle_params[0].radius = 10; // Radius of the circle
-  circle_params[0].circle_color = (NvOSD_ColorParams){0.0, 0.0, 1.0, 1.0}; // Blue
-  circle_params[0].has_bg_color = 1;
-  circle_params[0].bg_color = (NvOSD_ColorParams){0.0, 0.0, 1.0, 1.0}; // Blue solid fill
-
-  // Line from the center of the box to the center of the circle
-  line_params[0].x1 = box_center_x;
-  line_params[0].y1 = box_center_y;
-  line_params[0].x2 = circle_params[0].xc;
-  line_params[0].y2 = circle_params[0].yc;
-  line_params[0].line_width = 10;
-  line_params[0].line_color = (NvOSD_ColorParams){0.0, 1.0, 0.0, 1.0}; // Green line
-
-  // Set the number of rectangles, labels, circles, and lines
-  display_meta->num_rects = 1;
-  display_meta->num_labels = 1;
-  display_meta->num_circles = 1;
-  display_meta->num_lines = 1;
-
-  // Attach display metadata to the frame
-  nvds_add_display_meta_to_frame(frame_meta, display_meta);
-
-  // auto batch_meta = frame_meta->base_meta.batch_meta;
-  // if (batch_meta) {
-  //   // std::cout << "pt batch_meta = " << batch_meta << std::endl;
-  //   NvDsMetaList* l = NULL;
-  //   NvDsMetaList* display_meta_list = batch_meta->display_meta_pool->full_list;
-  //   // NvDsMetaList* display_meta_list = frame_meta->display_meta_list;
-  //   for (l = display_meta_list; l != NULL; l = l->next) {
-  //     NvDsDisplayMeta* display_meta = (NvDsDisplayMeta*)(l->data);
-  //     (void)display_meta;
-  //     // std::cout << "display meta" << std::endl;
-  //   }
-  // }
-
-  /* Get objects to be drawn from display meta.
-   * Draw objects if count equals MAX_OSD_ELEMS.
-   */
 }
-#endif
+
+void plot_living_box(
+    hm::utils::PlotContext& plotter,
+    const ILivingBox* lbox,
+    const hm::play_tracker::AllLivingBoxConfig& box_config,
+    bool draw_thresholds,
+    std::optional<ILivingBox*> following_lbox = std::nullopt) {
+  plot_resizing_state(plotter, lbox, box_config, draw_thresholds, following_lbox);
+  const hm::play_tracker::LivingState& living_state = lbox->get_live_box_state();
+  const hm::play_tracker::ResizingState& resizing_state = lbox->get_resizing_state();
+  const hm::play_tracker::TranslationState& translation_state = lbox->get_translation_state();
+  (void)living_state;
+  (void)resizing_state;
+  (void)translation_state;
+}
 
 } // namespace gst_hm
 
@@ -354,12 +333,18 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
 
   frame.play_tracker_results = play_tracker->forward(tracking_ids, tracking_boxes);
   if (ctx->initParams.draw) {
-    hm::utils::PlotContex plotter(frame.frame_meta, "");
+    hm::utils::PlotContext plotter(frame.frame_meta, "");
     for (const auto& cluster_item : frame.play_tracker_results.cluster_boxes) {
       plotter.plot_rect(cluster_item.second, 1, hm::utils::ColorRGB{0, 0, 0}, hm::utils::ColorRGBA{128, 128, 128, 32});
     }
     for (size_t i = 0, n = frame.play_tracker_results.tracking_boxes.size(); i < n; ++i) {
       plotter.plot_rect(frame.play_tracker_results.tracking_boxes[i], 5, track_colors.at(i));
+      if (ctx->play_tracker.has_value()) {
+        std::shared_ptr<hm::play_tracker::ILivingBox> lbox = (*ctx->play_tracker)->get_live_box(i);
+        hm::play_tracker::ILivingBox* following_box = i ? (*ctx->play_tracker)->get_live_box(i - 1).get() : nullptr;
+        gst_hm::plot_living_box(
+            plotter, lbox.get(), ctx->play_tracker_config.living_boxes.at(i), /*draw_thresholds=*/true, following_box);
+      }
     }
     if (frame.play_tracker_results.play_detection.has_value()) {
       const hm::play_tracker::PlayDetectorResults& play_detector = *frame.play_tracker_results.play_detection;

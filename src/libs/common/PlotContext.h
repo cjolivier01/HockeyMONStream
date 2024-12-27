@@ -20,10 +20,10 @@ using ColorRGB = std::array<uint8_t, 3>;
 using ColorRGBA = std::array<uint8_t, 4>;
 using ColorT = std::variant<ColorRGB, ColorRGBA>;
 
-class PlotContex {
+class PlotContext {
  public:
-  PlotContex(NvDsFrameMeta* frame_meta, const std::string& font_name);
-  virtual ~PlotContex();
+  PlotContext(NvDsFrameMeta* frame_meta, const std::string& font_name);
+  virtual ~PlotContext();
 
   void plot_rect(
       const BBox& rect,
@@ -59,6 +59,10 @@ class PlotContex {
       int dash_length,
       int gap_length);
   void plot_dashed_rect(const BBox& rect, int thickness, const ColorT& color, int dash_length, int gap_length);
+
+  // Other misc
+  void plot_corner_rect(const BBox& rect, int thickness, const ColorT& color, float width_ratio, float height_ratio);
+  void plot_no_corner_rect(const BBox& rect, int thickness, const ColorT& color, float width_ratio, float height_ratio);
 
   // Apply/reset
   void apply();

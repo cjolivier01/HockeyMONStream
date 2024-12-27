@@ -34,16 +34,16 @@ NvOSD_ColorParams to_color_params(const ColorT& color) {
   }
 }
 
-PlotContex::PlotContex(NvDsFrameMeta* frame_meta, const std::string& font_name)
+PlotContext::PlotContext(NvDsFrameMeta* frame_meta, const std::string& font_name)
     : frame_meta_(frame_meta), font_name_(font_name) {
   reset();
 }
 
-PlotContex::~PlotContex() {
+PlotContext::~PlotContext() {
   apply();
 }
 
-void PlotContex::reset() {
+void PlotContext::reset() {
   std::unique_lock lk(mu_);
   for (auto& v : plot_type_counts_) {
     v = 0;
@@ -52,7 +52,7 @@ void PlotContex::reset() {
   text_data_.clear();
 }
 
-void PlotContex::apply() {
+void PlotContext::apply() {
   for (NvDsDisplayMeta* display_meta : display_metas_) {
     // Attach display metadata to the frame
     assert(
@@ -63,7 +63,7 @@ void PlotContex::apply() {
   reset();
 }
 
-void PlotContex::plot_rect(
+void PlotContext::plot_rect(
     const BBox& rect,
     int thickness,
     const ColorT& color,
@@ -82,7 +82,7 @@ void PlotContex::plot_rect(
   }
 }
 
-void PlotContex::plot_line(const Point& from, const Point& to, int thickness, const ColorT& color) {
+void PlotContext::plot_line(const Point& from, const Point& to, int thickness, const ColorT& color) {
   std::pair<NvDsDisplayMeta*, size_t> meta = allocate_display_meta(PLOT_TYPE::LINE);
   NvOSD_LineParams& line_params = meta.first->line_params[meta.second];
   line_params.x1 = from.x;
@@ -93,7 +93,7 @@ void PlotContex::plot_line(const Point& from, const Point& to, int thickness, co
   line_params.line_color = to_color_params(color);
 }
 
-void PlotContex::plot_circle(
+void PlotContext::plot_circle(
     const Point center,
     int radius,
     int thickness,
@@ -112,7 +112,7 @@ void PlotContex::plot_circle(
   }
 }
 
-void PlotContex::plot_arrow(
+void PlotContext::plot_arrow(
     const Point& from,
     const Point& to,
     int thickness,
@@ -129,7 +129,7 @@ void PlotContex::plot_arrow(
   arrow_params.arrow_head = arrow_direction;
 }
 
-void PlotContex::plot_text(
+void PlotContext::plot_text(
     const std::string& label,
     const Point& top_left,
     int font_size,
@@ -155,7 +155,7 @@ void PlotContex::plot_text(
   }
 }
 
-std::pair<NvDsDisplayMeta*, size_t> PlotContex::allocate_display_meta(PLOT_TYPE type) {
+std::pair<NvDsDisplayMeta*, size_t> PlotContext::allocate_display_meta(PLOT_TYPE type) {
   std::unique_lock lk(mu_);
   size_t current_count = plot_type_counts_.at(type);
   size_t current_meta = current_count / kMaxElementsInDisplayMeta;
@@ -196,7 +196,7 @@ std::pair<NvDsDisplayMeta*, size_t> PlotContex::allocate_display_meta(PLOT_TYPE 
   return std::make_pair(display_meta, new_index);
 }
 
-void PlotContex::plot_dashed_line(
+void PlotContext::plot_dashed_line(
     const Point& from,
     const Point& to,
     int thickness,
@@ -227,7 +227,7 @@ void PlotContex::plot_dashed_line(
   }
 }
 
-void PlotContex::plot_dashed_rect(
+void PlotContext::plot_dashed_rect(
     const BBox& rect,
     int thickness,
     const ColorT& color,
@@ -245,5 +245,88 @@ void PlotContex::plot_dashed_rect(
   plot_dashed_line(bottom_right, bottom_left, thickness, color, dash_length, gap_length); // Bottom edge
   plot_dashed_line(bottom_left, top_left, thickness, color, dash_length, gap_length); // Left edge
 }
+
+void PlotContext::plot_corner_rect(
+    const BBox& rect,
+    int thickness,
+    const ColorT& color,
+    float width_ratio,
+    float height_ratio) {
+  // Extract rectangle corners
+  const Point top_left = {rect.left, rect.top};
+  const Point top_right = {rect.right, rect.top};
+  const Point bottom_left = {rect.left, rect.bottom};
+  const Point bottom_right = {rect.right, rect.bottom};
+
+  // Extract rectangle dimensions
+  int width = bottom_right.x - top_left.x;
+  int height = bottom_right.y - top_left.y;
+
+  // Calculate lengths of corner segments
+  int corner_width = static_cast<int>(width * width_ratio);
+  int corner_height = static_cast<int>(height * height_ratio);
+
+  // Draw the four corners
+  // Top-left corner
+  plot_line(top_left, {top_left.x + corner_width, top_left.y}, thickness, color); // Horizontal
+  plot_line(top_left, {top_left.x, top_left.y + corner_height}, thickness, color); // Vertical
+
+  // Top-right corner
+  plot_line(top_right, {top_right.x - corner_width, top_right.y}, thickness, color); // Horizontal
+  plot_line(top_right, {top_right.x, top_right.y + corner_height}, thickness, color); // Vertical
+
+  // Bottom-left corner
+  plot_line(bottom_left, {bottom_left.x + corner_width, bottom_left.y}, thickness, color); // Horizontal
+  plot_line(bottom_left, {bottom_left.x, bottom_left.y - corner_height}, thickness, color); // Vertical
+
+  // Bottom-right corner
+  plot_line(bottom_right, {bottom_right.x - corner_width, bottom_right.y}, thickness, color); // Horizontal
+  plot_line(bottom_right, {bottom_right.x, bottom_right.y - corner_height}, thickness, color); // Vertical
+}
+
+void PlotContext::plot_no_corner_rect(
+    const BBox& rect,
+    int thickness,
+    const ColorT& color,
+    float width_ratio,
+    float height_ratio) {
+  // Extract rectangle corners
+  const Point top_left = {rect.left, rect.top};
+  const Point top_right = {rect.right, rect.top};
+  const Point bottom_left = {rect.left, rect.bottom};
+  const Point bottom_right = {rect.right, rect.bottom};
+
+  // Extract rectangle dimensions
+  int width = bottom_right.x - top_left.x;
+  int height = bottom_right.y - top_left.y;
+
+  // Calculate lengths of corner segments
+  int corner_width = static_cast<int>(width * width_ratio);
+  int corner_height = static_cast<int>(height * height_ratio);
+
+  // Draw the four corners
+  // Top-left corner
+  plot_line(
+      {top_left.x + corner_width, top_left.y},
+      {top_right.x - corner_width, top_right.y},
+      thickness,
+      color); // Top Horizontal
+  plot_line(
+      {top_left.x, top_left.y + corner_height},
+      {bottom_left.x, bottom_left.y - corner_height},
+      thickness,
+      color); // Left Vertical
+  plot_line(
+      {bottom_left.x + corner_width, bottom_left.y},
+      {bottom_right.x - corner_width, bottom_right.y},
+      thickness,
+      color); // Bottom Horizontal
+  plot_line(
+      {top_right.x, top_right.y + corner_height},
+      {bottom_right.x, bottom_right.y - corner_height},
+      thickness,
+      color); // Right Vertical
+}
+
 } // namespace utils
 } // namespace hm
