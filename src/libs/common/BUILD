@@ -16,5 +16,6 @@ cc_library(
         "@deepstream//:deepstream_lib",
         "@yaml-cpp",
         "@gstreamer",
+        "@hm//hockeymom/csrc/play_tracker:play_tracker",
     ],
 )

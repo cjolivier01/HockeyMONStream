@@ -34,6 +34,7 @@ namespace {} // namespace
 
 namespace gst_hm {
 
+using namespace hm;
 using namespace hm::play_tracker;
 
 PlayDetectorConfig create_play_detector_config(const YAML::Node& yaml, hm::utils::ConfigLocator& locator) {
@@ -316,14 +317,14 @@ DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* initParams) {
 }
 
 bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx) {
-  hm::play_tracker::BBox arena_box(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
+  hm::BBox arena_box(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
   hm::play_tracker::PlayTracker* play_tracker = gst_hm::get_or_create_play_tracker(arena_box, ctx);
   if (!play_tracker) {
     return false;
   }
 
   std::vector<size_t> tracking_ids;
-  std::vector<hm::play_tracker::BBox> tracking_boxes;
+  std::vector<hm::BBox> tracking_boxes;
 
   const std::size_t object_count = g_list_length(frame.frame_meta->obj_meta_list);
   tracking_ids.reserve(object_count);
@@ -332,7 +333,7 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
   for (NvDsMetaList* l_obj = frame.frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
     NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
     const NvDsComp_BboxInfo& trackler_bbox_info = obj_meta->tracker_bbox_info;
-    tracking_boxes.emplace_back(hm::play_tracker::BBox(
+    tracking_boxes.emplace_back(hm::BBox(
         trackler_bbox_info.org_bbox_coords.left,
         trackler_bbox_info.org_bbox_coords.top,
         trackler_bbox_info.org_bbox_coords.left + trackler_bbox_info.org_bbox_coords.width,

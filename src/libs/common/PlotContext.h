@@ -1,35 +1,67 @@
 #pragma once
 
+#include "hockeymom/csrc/play_tracker/BoxUtils.h"
+
 #include "nvdsmeta.h"
 
 #include <array>
+#include <cstdint>
+#include <list>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <variant>
 #include <vector>
 
 namespace hm {
 namespace utils {
 
-class PlotContex {
- public: 
-  PlotContex(NvDsFrameMeta* frame_meta);
-  virtual ~PlotContex();
- public:
+using ColorRGB = std::array<uint8_t, 3>;
+using ColorRGBA = std::array<uint8_t, 4>;
+using ColorT = std::variant<ColorRGB, ColorRGBA>;
 
-  enum PLOT_TYPE {
-    RECT = 0,
-    CIRCLE,
-    LINE,
-    TEXT,
-    ARROW,
-    NR_PLOT_TYPES
-  };
+class PlotContex {
+ public:
+  PlotContex(NvDsFrameMeta* frame_meta, const std::string& font_name);
+  virtual ~PlotContex();
+
+  void plot_rect(
+      const BBox& rect,
+      int thickness,
+      const ColorT& color,
+      const std::optional<ColorT>& fill_color = std::nullopt);
+  void plot_line(const Point& from, const Point& to, int thickness, const ColorT& color);
+  void plot_circle(
+      const Point center,
+      int radius,
+      int thickness,
+      const ColorT& color,
+      const std::optional<ColorT>& fill_color = std::nullopt);
+  void plot_arrow(
+      const Point& from,
+      const Point& to,
+      int thickness,
+      const ColorT& color,
+      NvOSD_Arrow_Head_Direction arrow_direction = END_HEAD);
+  void plot_text(
+      const std::string& label,
+      const Point& top_left,
+      int font_size,
+      const ColorT& color,
+      const std::optional<ColorT>& bg_color = std::nullopt);
+
+ public:
+  enum PLOT_TYPE { RECT = 0, CIRCLE, LINE, TEXT, ARROW, NR_PLOT_TYPES };
 
   std::pair<NvDsDisplayMeta*, size_t> allocate_display_meta(PLOT_TYPE type);
 
-
   static inline constexpr size_t kMaxElementsInDisplayMeta = MAX_ELEMENTS_IN_DISPLAY_META;
   NvDsFrameMeta* frame_meta_;
+  const std::string font_name_;
+  std::mutex mu_;
   std::array<size_t, NR_PLOT_TYPES> plot_type_counts_;
   std::vector<NvDsDisplayMeta*> display_metas_;
+  std::list<std::unique_ptr<char[]>> text_data;
 };
 
 } // namespace utils
