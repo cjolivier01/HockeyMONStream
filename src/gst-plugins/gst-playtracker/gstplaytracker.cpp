@@ -55,7 +55,7 @@ enum {
   PROP_UNIQUE_ID,
   PROP_PROCESSING_WIDTH,
   PROP_PROCESSING_HEIGHT,
-  PROP_PROCESS_FULL_FRAME,
+  PROP_DRAW,
   PROP_BATCH_SIZE,
   PROP_GPU_DEVICE_ID,
   PROP_PLAY_TRACKER_CONFIG_FILE,
@@ -238,13 +238,12 @@ static void gst_playtracker_class_init(GstDsPlayTrackerClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
-      PROP_PROCESS_FULL_FRAME,
+      PROP_DRAW,
       g_param_spec_boolean(
-          "full-frame",
-          "Full frame",
-          "Enable to process full frame or disable to process objects detected"
-          "by primary detector",
-          DEFAULT_PROCESS_FULL_FRAME,
+          "draw",
+          "Draw tracking boxes",
+          "Draw stuff",
+          false,
           (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
   g_object_class_install_property(
@@ -336,6 +335,9 @@ static void gst_playtracker_set_property(GObject* object, guint prop_id, const G
     case PROP_BATCH_SIZE:
       playtracker->max_batch_size = g_value_get_uint(value);
       break;
+    case PROP_DRAW:
+      playtracker->draw = g_value_get_boolean(value);
+      break;
     case PROP_PLAY_TRACKER_CONFIG_FILE: {
       const char* str = g_value_get_string(value);
       if (str && *str) {
@@ -372,6 +374,9 @@ static void gst_playtracker_get_property(GObject* object, guint prop_id, GValue*
     case PROP_BATCH_SIZE:
       g_value_set_uint(value, playtracker->max_batch_size);
       break;
+    case PROP_DRAW:
+      g_value_set_boolean(value, playtracker->draw);
+      break;
     case PROP_PLAY_TRACKER_CONFIG_FILE:
       g_value_set_string(value, playtracker->play_tracker_config_file);
       break;
@@ -392,7 +397,9 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
   DsPlayTrackerInitParams init_params = {
       .processingWidth = playtracker->processing_width,
       .processingHeight = playtracker->processing_height,
-      .play_tracker_config_file = playtracker->play_tracker_config_file};
+      .play_tracker_config_file = playtracker->play_tracker_config_file,
+      .draw = !!playtracker->draw,
+  };
 
   /* Algorithm specific initializations and resource allocation. */
   playtracker->playtrackerlib_ctx = DsPlayTrackerCtxInit(&init_params);

@@ -345,7 +345,9 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
   }
 
   frame.play_tracker_results = play_tracker->forward(tracking_ids, tracking_boxes);
-  gst_hm::add_boxes_circles_lines(frame.frame_meta);
+  if (ctx->initParams.draw) {
+    gst_hm::add_boxes_circles_lines(frame.frame_meta);
+  }
   return true;
 }
 

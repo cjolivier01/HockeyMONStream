@@ -18,6 +18,8 @@ typedef struct {
   // Flag to indicate whether operating on crops of full frame
   // int fullFrame;
   std::string play_tracker_config_file;
+
+  bool draw{false};
 } DsPlayTrackerInitParams;
 
 // Detected/Labelled object structure, stores bounding box info along with label

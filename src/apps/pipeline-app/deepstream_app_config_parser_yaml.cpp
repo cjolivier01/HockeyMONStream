@@ -44,6 +44,7 @@ gboolean parse_dsplaytracker_yaml(
   SET_LOCATOR(locator, *config, unique_id);
   SET_LOCATOR(locator, *config, gpu_id);
   SET_LOCATOR(locator, *config, nvbuf_memory_type);
+  SET_LOCATOR(locator, *config, draw);
   if (yaml_node["config-file"]) {
     std::string config_file = yaml_node["config-file"].as<std::string>();
     if (!config_file.empty()) {

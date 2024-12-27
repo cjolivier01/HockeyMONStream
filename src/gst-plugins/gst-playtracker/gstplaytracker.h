@@ -123,6 +123,9 @@ struct _GstDsPlayTracker {
   /** GPU ID on which we expect to execute the task */
   guint gpu_id;
 
+  /** send play tracking shapes to the OSD (who may or may not drw them) */
+  gboolean draw;
+
   char play_tracker_config_file[PATH_MAX*4];
 
   /** Current batch number of the input batch. */
