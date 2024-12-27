@@ -10,18 +10,27 @@
  * without an express license agreement from NVIDIA CORPORATION or
  * its affiliates is strictly prohibited.
  */
-
 #include "gstdsreplaceframe.h"
 
-//#include "gst-nvquery.h"
+// #include "gst-nvquery.h"
 #include "gstnvdsmeta.h"
 #include "nvbufsurface.h"
-//#include "nvbufsurftransform.h"
+// #include "nvbufsurftransform.h"
+
+#include <gst/gst.h>
+#include <gst/video/gstvideofilter.h>
+#include <gst/video/gstvideosink.h>
+#include <gst/video/video.h>
+#include <nvbufsurface.h>
+#include <nvbufsurftransform.h>
+#include <nvdsmeta.h>
 
 #include <string.h>
 #include <sys/time.h>
 #include <cassert>
 #include <string>
+
+#if 0
 
 namespace {
 GST_DEBUG_CATEGORY_STATIC(gst_dsreplaceframe_debug);
@@ -89,7 +98,7 @@ enum {
     }                                                                                                             \
   } while (0)
 
-#define STRSIZE(str$) (sizeof(str$)/sizeof(str$[0]))
+#define STRSIZE(str$) (sizeof(str$) / sizeof(str$[0]))
 
 /* By default NVIDIA Hardware allocated memory flows through the pipeline. We
  * will be processing on this type of memory only. */
@@ -389,7 +398,164 @@ static gboolean dsreplaceframe_plugin_init(GstPlugin* plugin) {
   return gst_element_register(plugin, "dsreplaceframe", GST_RANK_PRIMARY, GST_TYPE_DSREPLACEFRAME);
 }
 } // namespace
+#else
 
+// Boilerplate GStreamer plugin definitions
+//GST_DEBUG_CATEGORY_STATIC(custom_plugin_debug);
+#define GST_CAT_DEFAULT custom_plugin_debug
+
+#define GST_TYPE_CUSTOM_PLUGIN (gst_custom_plugin_get_type())
+G_DECLARE_FINAL_TYPE(GstCustomPlugin, gst_custom_plugin, GST, CUSTOM_PLUGIN, GstElement)
+
+struct _GstCustomPlugin {
+  GstElement parent;
+
+  GstPad* sink_pad_1; // For metadata sink
+  GstPad* sink_pad_2; // For video frame sink
+  GstPad* src_pad; // For source
+
+  GstBuffer* sink_1_buffer; // Buffer for sink 1
+  GstBuffer* sink_2_buffer; // Buffer for sink 2
+};
+
+G_DEFINE_TYPE(GstCustomPlugin, gst_custom_plugin, GST_TYPE_ELEMENT);
+
+static GstFlowReturn gst_custom_plugin_chain_sink_1(GstPad* pad, GstObject* parent, GstBuffer* buffer) {
+  GstCustomPlugin* plugin = GST_CUSTOM_PLUGIN(parent);
+
+  // Store the metadata buffer from sink 1
+  if (plugin->sink_1_buffer) {
+    gst_buffer_unref(plugin->sink_1_buffer);
+  }
+  plugin->sink_1_buffer = gst_buffer_ref(buffer);
+
+  // Attempt to join with sink 2 buffer if available
+  if (plugin->sink_2_buffer) {
+    GstBuffer* output_buffer = gst_buffer_ref(plugin->sink_2_buffer);
+
+    // Copy metadata from sink 1 buffer to sink 2 buffer
+    GstMeta* meta;
+    gpointer state = NULL;
+    while ((meta = gst_buffer_iterate_meta(plugin->sink_1_buffer, &state))) {
+      // ???
+      gst_buffer_add_meta(output_buffer, meta->info, nullptr);
+    }
+
+    // Push the combined buffer downstream
+    gst_pad_push(plugin->src_pad, output_buffer);
+
+    gst_buffer_unref(plugin->sink_2_buffer);
+    plugin->sink_2_buffer = NULL;
+  }
+
+  gst_buffer_unref(buffer);
+  return GST_FLOW_OK;
+}
+
+static GstFlowReturn gst_custom_plugin_chain_sink_2(GstPad* pad, GstObject* parent, GstBuffer* buffer) {
+  GstCustomPlugin* plugin = GST_CUSTOM_PLUGIN(parent);
+
+  // Store the video frame buffer from sink 2
+  if (plugin->sink_2_buffer) {
+    gst_buffer_unref(plugin->sink_2_buffer);
+  }
+  plugin->sink_2_buffer = gst_buffer_ref(buffer);
+
+  // Attempt to join with sink 1 buffer if available
+  if (plugin->sink_1_buffer) {
+    GstBuffer* output_buffer = gst_buffer_ref(buffer);
+
+    // Copy metadata from sink 1 buffer to sink 2 buffer
+    GstMeta* meta;
+    gpointer state = NULL;
+    while ((meta = gst_buffer_iterate_meta(plugin->sink_1_buffer, &state))) {
+      gst_buffer_add_meta(output_buffer, meta->info, nullptr);
+      // gst_buffer_add_meta(output_buffer, meta);
+    }
+
+    // Push the combined buffer downstream
+    gst_pad_push(plugin->src_pad, output_buffer);
+
+    gst_buffer_unref(plugin->sink_1_buffer);
+    plugin->sink_1_buffer = NULL;
+  }
+
+  gst_buffer_unref(buffer);
+  return GST_FLOW_OK;
+}
+
+#define GST_CAPS_FEATURE_MEMORY_NVMM "memory:NVMM"
+static GstStaticPadTemplate gst_dsreplaceframe_sink_template_1 = GST_STATIC_PAD_TEMPLATE(
+    "sink_1",
+    GST_PAD_SINK,
+    GST_PAD_ALWAYS,
+    GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE_WITH_FEATURES(GST_CAPS_FEATURE_MEMORY_NVMM, "{ NV12, RGBA, I420 }")));
+
+#define GST_CAPS_FEATURE_MEMORY_NVMM "memory:NVMM"
+static GstStaticPadTemplate gst_dsreplaceframe_sink_template_2 = GST_STATIC_PAD_TEMPLATE(
+    "sink_2",
+    GST_PAD_SINK,
+    GST_PAD_ALWAYS,
+    GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE_WITH_FEATURES(GST_CAPS_FEATURE_MEMORY_NVMM, "{ NV12, RGBA, I420 }")));
+
+static GstStaticPadTemplate gst_dsreplaceframe_src_template = GST_STATIC_PAD_TEMPLATE(
+    "src",
+    GST_PAD_SRC,
+    GST_PAD_ALWAYS,
+    GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE_WITH_FEATURES(GST_CAPS_FEATURE_MEMORY_NVMM, "{ NV12, RGBA, I420 }")));
+
+static void gst_custom_plugin_class_init(GstCustomPluginClass* klass) {
+  GstElementClass* element_class = GST_ELEMENT_CLASS(klass);
+
+  gst_element_class_set_static_metadata(
+      element_class,
+      "Custom Plugin",
+      "Filter/Video",
+      "Custom plugin with two sinks and one source",
+      "Your Name <your.email@example.com>");
+
+  // gst_element_class_add_pad_template(
+  //     element_class,
+  //     gst_static_pad_template_get(
+  //         &gst_static_pad_template_factory("sink_1", GST_PAD_SINK, GST_PAD_ALWAYS, gst_caps_new_any())));
+
+  // gst_element_class_add_pad_template(
+  //     element_class,
+  //     gst_static_pad_template_get(
+  //         &gst_static_pad_template_factory("sink_2", GST_PAD_SINK, GST_PAD_ALWAYS, gst_caps_new_any())));
+
+  // gst_element_class_add_pad_template(
+  //     element_class,
+  //     gst_static_pad_template_get(
+  //         &gst_static_pad_template_factory("src", GST_PAD_SRC, GST_PAD_ALWAYS, gst_caps_new_any())));
+
+  /* Set sink and src pad capabilities */
+  gst_element_class_add_pad_template(element_class, gst_static_pad_template_get(&gst_dsreplaceframe_src_template));
+  gst_element_class_add_pad_template(element_class, gst_static_pad_template_get(&gst_dsreplaceframe_sink_template_1));
+  gst_element_class_add_pad_template(element_class, gst_static_pad_template_get(&gst_dsreplaceframe_sink_template_2));
+}
+
+static void gst_custom_plugin_init(GstCustomPlugin* plugin) {
+  plugin->sink_pad_1 = gst_pad_new_from_static_template(&gst_dsreplaceframe_sink_template_1, "sink_1");
+  gst_pad_set_chain_function(plugin->sink_pad_1, gst_custom_plugin_chain_sink_1);
+  gst_element_add_pad(GST_ELEMENT(plugin), plugin->sink_pad_1);
+
+  plugin->sink_pad_2 = gst_pad_new_from_static_template(&gst_dsreplaceframe_sink_template_2, "sink_2");
+  gst_pad_set_chain_function(plugin->sink_pad_2, gst_custom_plugin_chain_sink_2);
+  gst_element_add_pad(GST_ELEMENT(plugin), plugin->sink_pad_2);
+
+  plugin->src_pad = gst_pad_new_from_static_template(&gst_dsreplaceframe_src_template, "src");
+  gst_element_add_pad(GST_ELEMENT(plugin), plugin->src_pad);
+
+  plugin->sink_1_buffer = NULL;
+  plugin->sink_2_buffer = NULL;
+}
+
+static gboolean dsreplaceframe_plugin_init(GstPlugin* plugin) {
+  return gst_element_register(plugin, "custom_plugin", GST_RANK_NONE, GST_TYPE_CUSTOM_PLUGIN);
+}
+
+#endif
 GST_PLUGIN_DEFINE(
     GST_VERSION_MAJOR,
     GST_VERSION_MINOR,
