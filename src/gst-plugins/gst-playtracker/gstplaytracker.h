@@ -101,24 +101,8 @@ struct _GstDsPlayTracker {
   /** Frame number of the current input buffer */
   guint64 frame_num;
 
-  /** CUDA Stream used for allocating the CUDA task */
-  // cudaStream_t cuda_stream;
-
-  /** Temporary NvBufSurface for batched transformations. */
-  // NvBufSurface batch_insurf;
-
-  /** the intermediate scratch buffer for conversions RGBA */
-  // NvBufSurface* inter_buf;
-
   /** Input video info (resolution, color format, framerate, etc) */
   GstVideoInfo video_info;
-
-  /** Resolution at which frames/objects should be processed */
-  //gint processing_width;
-  //gint processing_height;
-
-  /** Maximum batch size. */
-  //guint max_batch_size;
 
   /** GPU ID on which we expect to execute the task */
   guint gpu_id;
@@ -133,12 +117,6 @@ struct _GstDsPlayTracker {
 
   /** GstFlowReturn returned by the latest buffer pad push. */
   GstFlowReturn last_flow_ret;
-
-  /** Config params required by NvBufSurfTransform API. */
-  //NvBufSurfTransformConfigParams transform_config_params;
-
-  /** Parameters to use for transforming buffers. */
-  //NvBufSurfTransformParams transform_params;
 
   /** NVTX Domain. */
   nvtxDomainHandle_t nvtx_domain;
