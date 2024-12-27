@@ -237,12 +237,7 @@ void plot_resizing_state(
     const hm::play_tracker::AllLivingBoxConfig& box_config,
     bool draw_thresholds,
     std::optional<ILivingBox*> following_lbox = std::nullopt) {
-  const hm::play_tracker::LivingState& living_state = lbox->get_live_box_state();
   const hm::play_tracker::ResizingState& resizing_state = lbox->get_resizing_state();
-  const hm::play_tracker::TranslationState& translation_state = lbox->get_translation_state();
-  (void)living_state;
-  (void)resizing_state;
-  (void)translation_state;
   if (box_config.sticky_sizing) {
     BBox my_bbox = lbox->bounding_box();
     assert(following_lbox.has_value());
@@ -276,19 +271,75 @@ void plot_resizing_state(
   }
 }
 
-void plot_living_box(
+void plot_translation_state(
     hm::utils::PlotContext& plotter,
     const ILivingBox* lbox,
     const hm::play_tracker::AllLivingBoxConfig& box_config,
+    int thickness,
+    const hm::utils::ColorT& color,
     bool draw_thresholds,
     std::optional<ILivingBox*> following_lbox = std::nullopt) {
-  plot_resizing_state(plotter, lbox, box_config, draw_thresholds, following_lbox);
   const hm::play_tracker::LivingState& living_state = lbox->get_live_box_state();
   const hm::play_tracker::ResizingState& resizing_state = lbox->get_resizing_state();
   const hm::play_tracker::TranslationState& translation_state = lbox->get_translation_state();
   (void)living_state;
   (void)resizing_state;
   (void)translation_state;
+  BBox my_bbox = lbox->bounding_box();
+  plotter.plot_rect(
+      my_bbox, thickness, translation_state.translation_is_frozen ? hm::utils::ColorRGB{128, 128, 128} : color);
+  if (draw_thresholds && box_config.sticky_translation) {
+    auto sticky_unsticky = lbox->get_sticky_translation_sizes();
+    float sticky = std::get<0>(sticky_unsticky);
+    float unsticky = std::get<1>(sticky_unsticky);
+    Point my_center = my_bbox.center();
+    plotter.plot_circle(my_center, /*radius=*/int(sticky), /*thickness=*/3, hm::utils::ColorRGB{255, 0, 0});
+    plotter.plot_circle(my_center, /*radius=*/int(unsticky), /*thickness=*/3, hm::utils::ColorRGB{255, 0, 255});
+    if (following_lbox.has_value()) {
+      BBox following_bbox = (*following_lbox)->bounding_box();
+      Point following_bbox_center = following_bbox.center();
+      plotter.plot_circle(
+          my_center, /*radius=*/5, /*thickness=*/1, hm::utils::ColorRGB{255, 255, 0}, hm::utils::ColorRGB{255, 255, 0});
+      plotter.plot_circle(
+          following_bbox_center,
+          /*radius=*/5,
+          /*thickness=*/1,
+          hm::utils::ColorRGB{0, 255, 128},
+          hm::utils::ColorRGB{0, 255, 128});
+      // Diagonal
+      plotter.plot_line(my_center, following_bbox_center, /*thickness=*/10, hm::utils::ColorRGB{255, 0, 0});
+      // X shaft
+      plotter.plot_line(
+          my_center,
+          Point{.x = following_bbox_center.x, .y = my_center.y},
+          /*thickness=*/3,
+          hm::utils::ColorRGB{255, 255, 0});
+      // Y shaft
+      plotter.plot_line(
+          my_center,
+          Point{.x = my_center.x, .y = following_bbox_center.y},
+          /*thickness=*/3,
+          hm::utils::ColorRGB{255, 255, 0});
+    }
+  }
+}
+
+void plot_living_box(
+    hm::utils::PlotContext& plotter,
+    const ILivingBox* lbox,
+    const hm::play_tracker::AllLivingBoxConfig& box_config,
+    int thickness,
+    const hm::utils::ColorT& color,
+    bool draw_thresholds,
+    std::optional<ILivingBox*> following_lbox = std::nullopt) {
+  plot_translation_state(plotter, lbox, box_config, thickness, color, draw_thresholds, following_lbox);
+  plot_resizing_state(plotter, lbox, box_config, draw_thresholds, following_lbox);
+  // const hm::play_tracker::LivingState& living_state = lbox->get_live_box_state();
+  // const hm::play_tracker::ResizingState& resizing_state = lbox->get_resizing_state();
+  // const hm::play_tracker::TranslationState& translation_state = lbox->get_translation_state();
+  // (void)living_state;
+  // (void)resizing_state;
+  // (void)translation_state;
 }
 
 } // namespace gst_hm
@@ -339,12 +390,18 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
       plotter.plot_rect(cluster_item.second, 1, hm::utils::ColorRGB{0, 0, 0}, hm::utils::ColorRGBA{128, 128, 128, 32});
     }
     for (size_t i = 0, n = frame.play_tracker_results.tracking_boxes.size(); i < n; ++i) {
-      plotter.plot_rect(frame.play_tracker_results.tracking_boxes[i], 5, track_colors.at(i));
+      // plotter.plot_rect(frame.play_tracker_results.tracking_boxes[i], 5, track_colors.at(i));
       if (ctx->play_tracker.has_value()) {
         std::shared_ptr<hm::play_tracker::ILivingBox> lbox = (*ctx->play_tracker)->get_live_box(i);
         hm::play_tracker::ILivingBox* following_box = i ? (*ctx->play_tracker)->get_live_box(i - 1).get() : nullptr;
         gst_hm::plot_living_box(
-            plotter, lbox.get(), ctx->play_tracker_config.living_boxes.at(i), /*draw_thresholds=*/true, following_box);
+            plotter,
+            lbox.get(),
+            ctx->play_tracker_config.living_boxes.at(i),
+            /*thickness=*/4,
+            track_colors.at(i),
+            /*draw_thresholds=*/true,
+            following_box);
       }
     }
     if (frame.play_tracker_results.play_detection.has_value()) {
