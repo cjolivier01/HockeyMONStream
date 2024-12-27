@@ -249,8 +249,9 @@ void plot_resizing_state(
     BBox following_box = following_lbox.value()->bounding_box();
     if (resizing_state.size_is_frozen) {
       // Draw thick corners when frozen
-      BBox corner_box = my_bbox.make_scaled(0.98, 0.98);
-      plotter.plot_corner_rect(corner_box, /*thickness=*/8, hm::utils::ColorRGB{255, 255, 255}, 0.2, 0.2);
+      plotter.plot_corner_rect(my_bbox, /*thickness=*/8, hm::utils::ColorRGB{255, 255, 255}, 0.2, 0.2);
+      // BBox corner_box = my_bbox.make_scaled(0.98, 0.98);
+      // plotter.plot_corner_rect(corner_box, /*thickness=*/8, hm::utils::ColorRGB{255, 255, 255}, 0.2, 0.2);
     }
     BBox scaled_following_box = following_box.make_scaled(box_config.scale_dest_width, box_config.scale_dest_height);
     BBox inscribed = scaled_following_box.at_center(my_bbox.center());
