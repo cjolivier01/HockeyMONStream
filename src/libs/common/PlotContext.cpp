@@ -301,8 +301,8 @@ void PlotContext::plot_no_corner_rect(
   int height = bottom_right.y - top_left.y;
 
   // Calculate lengths of corner segments
-  int corner_width = static_cast<int>(width * width_ratio);
-  int corner_height = static_cast<int>(height * height_ratio);
+  int corner_width = static_cast<int>(width * width_ratio) / 2;
+  int corner_height = static_cast<int>(height * height_ratio) / 2;
 
   // Draw the four corners
   // Top-left corner
