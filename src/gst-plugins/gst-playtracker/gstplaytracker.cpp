@@ -53,10 +53,10 @@ static GQuark _dsmeta_quark = 0;
 enum {
   PROP_0,
   PROP_UNIQUE_ID,
-  PROP_PROCESSING_WIDTH,
-  PROP_PROCESSING_HEIGHT,
+  // PROP_PROCESSING_WIDTH,
+  // PROP_PROCESSING_HEIGHT,
   PROP_DRAW,
-  PROP_BATCH_SIZE,
+  // PROP_BATCH_SIZE,
   PROP_GPU_DEVICE_ID,
   PROP_PLAY_TRACKER_CONFIG_FILE,
 };
@@ -141,17 +141,6 @@ static gboolean gst_playtracker_stop(GstBaseTransform* btrans);
 static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btrans, gboolean discont, GstBuffer* inbuf);
 static GstFlowReturn gst_playtracker_generate_output(GstBaseTransform* btrans, GstBuffer** outbuf);
 
-// static void attach_metadata_full_frame(
-//     GstDsPlayTracker* playtracker,
-//     NvDsFrameMeta* frame_meta,
-//     gdouble scale_ratio,
-//     DsPlayTrackerOutput* output,
-//     guint batch_id);
-// static void attach_metadata_object(
-//     GstDsPlayTracker* playtracker,
-//     NvDsObjectMeta* obj_meta,
-//     DsPlayTrackerOutput* output);
-
 static gpointer gst_playtracker_output_loop(gpointer data);
 
 static gboolean gst_playtracker_sink_event(GstBaseTransform* trans, GstEvent* event) {
@@ -212,29 +201,29 @@ static void gst_playtracker_class_init(GstDsPlayTrackerClass* klass) {
           DEFAULT_UNIQUE_ID,
           (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
-  g_object_class_install_property(
-      gobject_class,
-      PROP_PROCESSING_WIDTH,
-      g_param_spec_int(
-          "processing-width",
-          "Processing Width",
-          "Width of the input buffer to algorithm",
-          1,
-          G_MAXINT,
-          DEFAULT_PROCESSING_WIDTH,
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+  // g_object_class_install_property(
+  //     gobject_class,
+  //     PROP_PROCESSING_WIDTH,
+  //     g_param_spec_int(
+  //         "processing-width",
+  //         "Processing Width",
+  //         "Width of the input buffer to algorithm",
+  //         1,
+  //         G_MAXINT,
+  //         DEFAULT_PROCESSING_WIDTH,
+  //         (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
-  g_object_class_install_property(
-      gobject_class,
-      PROP_PROCESSING_HEIGHT,
-      g_param_spec_int(
-          "processing-height",
-          "Processing Height",
-          "Height of the input buffer to algorithm",
-          1,
-          G_MAXINT,
-          DEFAULT_PROCESSING_HEIGHT,
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+  // g_object_class_install_property(
+  //     gobject_class,
+  //     PROP_PROCESSING_HEIGHT,
+  //     g_param_spec_int(
+  //         "processing-height",
+  //         "Processing Height",
+  //         "Height of the input buffer to algorithm",
+  //         1,
+  //         G_MAXINT,
+  //         DEFAULT_PROCESSING_HEIGHT,
+  //         (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
   g_object_class_install_property(
       gobject_class,
@@ -256,17 +245,17 @@ static void gst_playtracker_class_init(GstDsPlayTrackerClass* klass) {
           /*default_value=*/"",
           (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
-  g_object_class_install_property(
-      gobject_class,
-      PROP_BATCH_SIZE,
-      g_param_spec_uint(
-          "batch-size",
-          "Batch Size",
-          "Maximum batch size for processing",
-          1,
-          NVDSPLAYTRACKER_MAX_BATCH_SIZE,
-          DEFAULT_BATCH_SIZE,
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
+  // g_object_class_install_property(
+  //     gobject_class,
+  //     PROP_BATCH_SIZE,
+  //     g_param_spec_uint(
+  //         "batch-size",
+  //         "Batch Size",
+  //         "Maximum batch size for processing",
+  //         1,
+  //         NVDSPLAYTRACKER_MAX_BATCH_SIZE,
+  //         DEFAULT_BATCH_SIZE,
+  //         (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
 
   g_object_class_install_property(
       gobject_class,
@@ -305,10 +294,10 @@ static void gst_playtracker_init(GstDsPlayTracker* playtracker) {
 
   /* Initialize all property variables to default values */
   playtracker->unique_id = DEFAULT_UNIQUE_ID;
-  playtracker->processing_width = DEFAULT_PROCESSING_WIDTH;
-  playtracker->processing_height = DEFAULT_PROCESSING_HEIGHT;
+  // playtracker->processing_width = DEFAULT_PROCESSING_WIDTH;
+  // playtracker->processing_height = DEFAULT_PROCESSING_HEIGHT;
   playtracker->gpu_id = DEFAULT_GPU_ID;
-  playtracker->max_batch_size = DEFAULT_BATCH_SIZE;
+  // playtracker->max_batch_size = DEFAULT_BATCH_SIZE;
   /* This quark is required to identify NvDsMeta when iterating through
    * the buffer metadatas */
   if (!_dsmeta_quark)
@@ -323,18 +312,18 @@ static void gst_playtracker_set_property(GObject* object, guint prop_id, const G
     case PROP_UNIQUE_ID:
       playtracker->unique_id = g_value_get_uint(value);
       break;
-    case PROP_PROCESSING_WIDTH:
-      playtracker->processing_width = g_value_get_int(value);
-      break;
-    case PROP_PROCESSING_HEIGHT:
-      playtracker->processing_height = g_value_get_int(value);
-      break;
+    // case PROP_PROCESSING_WIDTH:
+    //   playtracker->processing_width = g_value_get_int(value);
+    //   break;
+    // case PROP_PROCESSING_HEIGHT:
+    //   playtracker->processing_height = g_value_get_int(value);
+    //   break;
     case PROP_GPU_DEVICE_ID:
       playtracker->gpu_id = g_value_get_uint(value);
       break;
-    case PROP_BATCH_SIZE:
-      playtracker->max_batch_size = g_value_get_uint(value);
-      break;
+    // case PROP_BATCH_SIZE:
+    //   playtracker->max_batch_size = g_value_get_uint(value);
+    //   break;
     case PROP_DRAW:
       playtracker->draw = g_value_get_boolean(value);
       break;
@@ -362,18 +351,18 @@ static void gst_playtracker_get_property(GObject* object, guint prop_id, GValue*
     case PROP_UNIQUE_ID:
       g_value_set_uint(value, playtracker->unique_id);
       break;
-    case PROP_PROCESSING_WIDTH:
-      g_value_set_int(value, playtracker->processing_width);
-      break;
-    case PROP_PROCESSING_HEIGHT:
-      g_value_set_int(value, playtracker->processing_height);
-      break;
+    // case PROP_PROCESSING_WIDTH:
+    //   g_value_set_int(value, playtracker->processing_width);
+    //   break;
+    // case PROP_PROCESSING_HEIGHT:
+    //   g_value_set_int(value, playtracker->processing_height);
+    //   break;
     case PROP_GPU_DEVICE_ID:
       g_value_set_uint(value, playtracker->gpu_id);
       break;
-    case PROP_BATCH_SIZE:
-      g_value_set_uint(value, playtracker->max_batch_size);
-      break;
+    // case PROP_BATCH_SIZE:
+    //   g_value_set_uint(value, playtracker->max_batch_size);
+    //   break;
     case PROP_DRAW:
       g_value_set_boolean(value, playtracker->draw);
       break;
@@ -392,11 +381,11 @@ static void gst_playtracker_get_property(GObject* object, guint prop_id, GValue*
 static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(btrans);
   std::string nvtx_str;
-  NvBufSurface* inter_buf;
-  NvBufSurfaceCreateParams create_params = {0};
+  //NvBufSurface* inter_buf;
+  // NvBufSurfaceCreateParams create_params = {0};
   DsPlayTrackerInitParams init_params = {
-      .processingWidth = playtracker->processing_width,
-      .processingHeight = playtracker->processing_height,
+      // .processingWidth = playtracker->processing_width,
+      // .processingHeight = playtracker->processing_height,
       .play_tracker_config_file = playtracker->play_tracker_config_file,
       .draw = !!playtracker->draw,
   };
@@ -411,24 +400,24 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
   std::unique_ptr<nvtxDomainRegistration, decltype(nvtx_deleter)> nvtx_domain_ptr(
       nvtxDomainCreate(nvtx_str.c_str()), nvtx_deleter);
 
-  CHECK_CUDA_STATUS(cudaSetDevice(playtracker->gpu_id), "Unable to set cuda device");
+  // CHECK_CUDA_STATUS(cudaSetDevice(playtracker->gpu_id), "Unable to set cuda device");
 
-  CHECK_CUDA_STATUS(cudaStreamCreate(&playtracker->cuda_stream), "Could not create cuda stream");
+  // CHECK_CUDA_STATUS(cudaStreamCreate(&playtracker->cuda_stream), "Could not create cuda stream");
 
   /* An intermediate buffer for NV12/RGBA to BGR conversion  will be
    * required. Can be skipped if custom algorithm can work directly on
    * NV12/RGBA. */
-  create_params.gpuId = playtracker->gpu_id;
-  create_params.width = playtracker->processing_width;
-  create_params.height = playtracker->processing_height;
-  create_params.size = 0;
-  create_params.colorFormat = NVBUF_COLOR_FORMAT_RGBA;
-  create_params.layout = NVBUF_LAYOUT_PITCH;
-#ifdef __aarch64__
-  create_params.memType = NVBUF_MEM_DEFAULT;
-#else
-  create_params.memType = NVBUF_MEM_CUDA_UNIFIED;
-#endif
+//   create_params.gpuId = playtracker->gpu_id;
+//   // create_params.width = playtracker->processing_width;
+//   // create_params.height = playtracker->processing_height;
+//   create_params.size = 0;
+//   create_params.colorFormat = NVBUF_COLOR_FORMAT_RGBA;
+//   create_params.layout = NVBUF_LAYOUT_PITCH;
+// #ifdef __aarch64__
+//   create_params.memType = NVBUF_MEM_DEFAULT;
+// #else
+//   create_params.memType = NVBUF_MEM_CUDA_UNIFIED;
+// #endif
 
   /* Create process queue and cvmat queue to transfer data between threads.
    * We will be using this queue to maintain the list of frames/objects
@@ -437,31 +426,33 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
   playtracker->buf_queue = g_queue_new();
 
   for (int i = 0; i < 2; i++) {
-    if (NvBufSurfaceCreate(&inter_buf, playtracker->max_batch_size, &create_params) != 0) {
-      GST_ERROR("Error: Could not allocate internal buffer for playtracker");
-      goto error;
-    }
+  //   if (NvBufSurfaceCreate(&inter_buf, playtracker->max_batch_size, &create_params) != 0) {
+  //     GST_ERROR("Error: Could not allocate internal buffer for playtracker");
+  //     goto error;
+  //   }
 
-    g_queue_push_tail(playtracker->buf_queue, inter_buf);
+  //   g_queue_push_tail(playtracker->buf_queue, inter_buf);
+    // FAKE BUFFER
+    g_queue_push_tail(playtracker->buf_queue, nullptr);
   }
 
   /* Set the NvBufSurfTransform config parameters. */
-  playtracker->transform_config_params.compute_mode = NvBufSurfTransformCompute_Default;
-  playtracker->transform_config_params.gpu_id = playtracker->gpu_id;
+  // playtracker->transform_config_params.compute_mode = NvBufSurfTransformCompute_Default;
+  // playtracker->transform_config_params.gpu_id = playtracker->gpu_id;
 
   /* Create the intermediate NvBufSurface structure for holding an array of
    * input NvBufSurfaceParams for batched transforms. */
-  playtracker->batch_insurf.surfaceList = new NvBufSurfaceParams[playtracker->max_batch_size];
-  playtracker->batch_insurf.batchSize = playtracker->max_batch_size;
-  playtracker->batch_insurf.gpuId = playtracker->gpu_id;
+  // playtracker->batch_insurf.surfaceList = new NvBufSurfaceParams[playtracker->max_batch_size];
+  // playtracker->batch_insurf.batchSize = playtracker->max_batch_size;
+  // playtracker->batch_insurf.gpuId = playtracker->gpu_id;
 
   /* Set up the NvBufSurfTransformParams structure for batched transforms. */
-  playtracker->transform_params.src_rect = new NvBufSurfTransformRect[playtracker->max_batch_size];
-  playtracker->transform_params.dst_rect = new NvBufSurfTransformRect[playtracker->max_batch_size];
-  playtracker->transform_params.transform_flag =
-      NVBUFSURF_TRANSFORM_FILTER | NVBUFSURF_TRANSFORM_CROP_SRC | NVBUFSURF_TRANSFORM_CROP_DST;
-  playtracker->transform_params.transform_flip = NvBufSurfTransform_None;
-  playtracker->transform_params.transform_filter = NvBufSurfTransformInter_Default;
+  // playtracker->transform_params.src_rect = new NvBufSurfTransformRect[playtracker->max_batch_size];
+  // playtracker->transform_params.dst_rect = new NvBufSurfTransformRect[playtracker->max_batch_size];
+  // playtracker->transform_params.transform_flag =
+  //     NVBUFSURF_TRANSFORM_FILTER | NVBUFSURF_TRANSFORM_CROP_SRC | NVBUFSURF_TRANSFORM_CROP_DST;
+  // playtracker->transform_params.transform_flip = NvBufSurfTransform_None;
+  // playtracker->transform_params.transform_filter = NvBufSurfTransformInter_Default;
 
   /* Start a thread which will pop output from the algorithm, form NvDsMeta and
    * push buffers to the next element. */
@@ -470,19 +461,19 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
   playtracker->nvtx_domain = nvtx_domain_ptr.release();
 
   return TRUE;
-error:
+//error:
 
-  delete[] playtracker->transform_params.src_rect;
-  delete[] playtracker->transform_params.dst_rect;
-  delete[] playtracker->batch_insurf.surfaceList;
+  // delete[] playtracker->transform_params.src_rect;
+  // delete[] playtracker->transform_params.dst_rect;
+  // delete[] playtracker->batch_insurf.surfaceList;
 
-  if (playtracker->cuda_stream) {
-    cudaStreamDestroy(playtracker->cuda_stream);
-    playtracker->cuda_stream = NULL;
-  }
-  if (playtracker->playtrackerlib_ctx)
-    DsPlayTrackerCtxDeinit(playtracker->playtrackerlib_ctx);
-  return FALSE;
+  // if (playtracker->cuda_stream) {
+  //   cudaStreamDestroy(playtracker->cuda_stream);
+  //   playtracker->cuda_stream = NULL;
+  // }
+  // if (playtracker->playtrackerlib_ctx)
+  //   DsPlayTrackerCtxDeinit(playtracker->playtrackerlib_ctx);
+  // return FALSE;
 }
 
 /**
@@ -513,13 +504,13 @@ static gboolean gst_playtracker_stop(GstBaseTransform* btrans) {
 
   g_thread_join(playtracker->process_thread);
 
-  if (playtracker->cuda_stream)
-    cudaStreamDestroy(playtracker->cuda_stream);
-  playtracker->cuda_stream = NULL;
+  // if (playtracker->cuda_stream)
+  //   cudaStreamDestroy(playtracker->cuda_stream);
+  // playtracker->cuda_stream = NULL;
 
-  delete[] playtracker->transform_params.src_rect;
-  delete[] playtracker->transform_params.dst_rect;
-  delete[] playtracker->batch_insurf.surfaceList;
+  // delete[] playtracker->transform_params.src_rect;
+  // delete[] playtracker->transform_params.dst_rect;
+  // delete[] playtracker->batch_insurf.surfaceList;
 
   // Deinit the algorithm library
   DsPlayTrackerCtxDeinit(playtracker->playtrackerlib_ctx);
@@ -554,6 +545,7 @@ error:
  * Scale the entire frame to the processing resolution maintaining aspect ratio.
  * Or crop and scale objects to the processing resolution maintaining the aspect
  * ratio and fills data for batched conversation */
+#if 0
 static GstFlowReturn scale_and_fill_data(
     GstDsPlayTracker* playtracker,
     NvBufSurfaceParams* src_frame,
@@ -567,30 +559,30 @@ static GstFlowReturn scale_and_fill_data(
   gint src_height = GST_ROUND_DOWN_2((unsigned int)crop_rect_params->height);
 
   // Maintain aspect ratio
-  double hdest = playtracker->processing_width * src_height / (double)src_width;
-  double wdest = playtracker->processing_height * src_width / (double)src_height;
+  // double hdest = playtracker->processing_width * src_height / (double)src_width;
+  // double wdest = playtracker->processing_height * src_width / (double)src_height;
   guint dest_width, dest_height;
 
-  if (hdest <= playtracker->processing_height) {
-    dest_width = playtracker->processing_width;
-    dest_height = hdest;
-  } else {
-    dest_width = wdest;
-    dest_height = playtracker->processing_height;
-  }
+  // if (hdest <= playtracker->processing_height) {
+  //   dest_width = playtracker->processing_width;
+  //   dest_height = hdest;
+  // } else {
+  //   dest_width = wdest;
+  //   dest_height = playtracker->processing_height;
+  // }
 
   // Calculate scaling ratio while maintaining aspect ratio
-  ratio = MIN(1.0 * dest_width / src_width, 1.0 * dest_height / src_height);
+  //ratio = MIN(1.0 * dest_width / src_width, 1.0 * dest_height / src_height);
 
-  if ((crop_rect_params->width == 0) || (crop_rect_params->height == 0)) {
-    GST_ELEMENT_ERROR(playtracker, STREAM, FAILED, ("%s:crop_rect_params dimensions are zero", __func__), (NULL));
-    return GST_FLOW_ERROR;
-  }
+  // if ((crop_rect_params->width == 0) || (crop_rect_params->height == 0)) {
+  //   GST_ELEMENT_ERROR(playtracker, STREAM, FAILED, ("%s:crop_rect_params dimensions are zero", __func__), (NULL));
+  //   return GST_FLOW_ERROR;
+  // }
 #ifdef __aarch64__
-  if (ratio <= 1.0 / 16 || ratio >= 16.0) {
-    // Currently cannot scale by ratio > 16 or < 1/16 for Jetson
-    return GST_FLOW_ERROR;
-  }
+  // if (ratio <= 1.0 / 16 || ratio >= 16.0) {
+  //   // Currently cannot scale by ratio > 16 or < 1/16 for Jetson
+  //   return GST_FLOW_ERROR;
+  // }
 #endif
 
   /* We will first convert only the Region of Interest (the entire frame or the
@@ -599,36 +591,36 @@ static GstFlowReturn scale_and_fill_data(
   GST_DEBUG_OBJECT(playtracker, "Scaling and converting input buffer\n");
 
   /* Create temporary src and dest surfaces for NvBufSurfTransform API. */
-  playtracker->batch_insurf.surfaceList[playtracker->batch_insurf.numFilled] = *src_frame;
+  //playtracker->batch_insurf.surfaceList[playtracker->batch_insurf.numFilled] = *src_frame;
 
   /* Set the source ROI. Could be entire frame or an object. */
-  playtracker->transform_params.src_rect[playtracker->batch_insurf.numFilled] = {
-      (guint)src_top, (guint)src_left, (guint)src_width, (guint)src_height};
+  //playtracker->transform_params.src_rect[playtracker->batch_insurf.numFilled] = {
+  //    (guint)src_top, (guint)src_left, (guint)src_width, (guint)src_height};
   /* Set the dest ROI. Could be the entire destination frame or part of it to
    * maintain aspect ratio. */
-  playtracker->transform_params.dst_rect[playtracker->batch_insurf.numFilled] = {0, 0, dest_width, dest_height};
+  //playtracker->transform_params.dst_rect[playtracker->batch_insurf.numFilled] = {0, 0, dest_width, dest_height};
 
-  playtracker->batch_insurf.numFilled++;
+  //playtracker->batch_insurf.numFilled++;
 
   return GST_FLOW_OK;
 }
-
+#endif
 static gboolean convert_batch_and_push_to_process_thread(GstDsPlayTracker* playtracker, GstDsPlayTrackerBatch* batch) {
-  NvBufSurfTransform_Error err;
-  NvBufSurfTransformConfigParams transform_config_params;
+   // NvBufSurfTransform_Error err;
+  // NvBufSurfTransformConfigParams transform_config_params;
   std::string nvtx_str;
 
   // Configure transform session parameters for the transformation
-  transform_config_params.compute_mode = playtracker->transform_config_params.compute_mode;
-  transform_config_params.gpu_id = playtracker->gpu_id;
-  transform_config_params.cuda_stream = playtracker->cuda_stream;
+  // transform_config_params.compute_mode = playtracker->transform_config_params.compute_mode;
+  // transform_config_params.gpu_id = playtracker->gpu_id;
+  // transform_config_params.cuda_stream = playtracker->cuda_stream;
 
-  err = NvBufSurfTransformSetSessionParams(&transform_config_params);
-  if (err != NvBufSurfTransformError_Success) {
-    GST_ELEMENT_ERROR(
-        playtracker, STREAM, FAILED, ("NvBufSurfTransformSetSessionParams failed with error %d", err), (NULL));
-    return FALSE;
-  }
+  // err = NvBufSurfTransformSetSessionParams(&transform_config_params);
+  // if (err != NvBufSurfTransformError_Success) {
+  //   GST_ELEMENT_ERROR(
+  //       playtracker, STREAM, FAILED, ("NvBufSurfTransformSetSessionParams failed with error %d", err), (NULL));
+  //   return FALSE;
+  // }
 
   nvtxEventAttributes_t eventAttrib = {0};
   eventAttrib.version = NVTX_VERSION;
@@ -650,59 +642,59 @@ static gboolean convert_batch_and_push_to_process_thread(GstDsPlayTracker* playt
 
   /* Pop a buffer from the element's buf queue. */
   batch->inter_buf = (NvBufSurface*)g_queue_pop_head(playtracker->buf_queue);
-  playtracker->inter_buf = batch->inter_buf;
+  // playtracker->inter_buf = batch->inter_buf;
 
   g_mutex_unlock(&playtracker->process_lock);
 
   // Memset the memory
-  for (uint i = 0; i < playtracker->batch_insurf.numFilled; i++)
-    NvBufSurfaceMemSet(playtracker->inter_buf, i, 0, 0);
+  // for (uint i = 0; i < playtracker->batch_insurf.numFilled; i++)
+  //   NvBufSurfaceMemSet(playtracker->inter_buf, i, 0, 0);
 
   /* Batched tranformation. */
-  err = NvBufSurfTransform(&playtracker->batch_insurf, playtracker->inter_buf, &playtracker->transform_params);
+  // err = NvBufSurfTransform(&playtracker->batch_insurf, playtracker->inter_buf, &playtracker->transform_params);
 
   nvtxDomainRangePop(playtracker->nvtx_domain);
 
-  if (err != NvBufSurfTransformError_Success) {
-    GST_ELEMENT_ERROR(
-        playtracker, STREAM, FAILED, ("NvBufSurfTransform failed with error %d while converting buffer", err), (NULL));
-    return FALSE;
-  }
+  // if (err != NvBufSurfTransformError_Success) {
+  //   GST_ELEMENT_ERROR(
+  //       playtracker, STREAM, FAILED, ("NvBufSurfTransform failed with error %d while converting buffer", err), (NULL));
+  //   return FALSE;
+  // }
 
   // Use openCV to remove padding and convert RGBA to BGR. Can be skipped if
   // algorithm can handle padded RGBA data.
-  for (guint i = 0; i < playtracker->batch_insurf.numFilled; i++) {
-    // Map the buffer so that it can be accessed by CPU
-    if (NvBufSurfaceMap(playtracker->inter_buf, i, 0, NVBUF_MAP_READ) != 0) {
-      GST_ELEMENT_ERROR(playtracker, STREAM, FAILED, ("%s:buffer map to be accessed by CPU failed", __func__), (NULL));
-      return FALSE;
-    }
-    // sync mapped data for CPU access
-    NvBufSurfaceSyncForCpu(playtracker->inter_buf, i, 0);
+//   for (guint i = 0; i < playtracker->batch_insurf.numFilled; i++) {
+//     // Map the buffer so that it can be accessed by CPU
+//     if (NvBufSurfaceMap(playtracker->inter_buf, i, 0, NVBUF_MAP_READ) != 0) {
+//       GST_ELEMENT_ERROR(playtracker, STREAM, FAILED, ("%s:buffer map to be accessed by CPU failed", __func__), (NULL));
+//       return FALSE;
+//     }
+//     // sync mapped data for CPU access
+//     NvBufSurfaceSyncForCpu(playtracker->inter_buf, i, 0);
 
-    if (NvBufSurfaceUnMap(playtracker->inter_buf, i, 0)) {
-      GST_ELEMENT_ERROR(
-          playtracker, STREAM, FAILED, ("%s:buffer unmap to be accessed by CPU failed", __func__), (NULL));
-      return FALSE;
-    }
+//     if (NvBufSurfaceUnMap(playtracker->inter_buf, i, 0)) {
+//       GST_ELEMENT_ERROR(
+//           playtracker, STREAM, FAILED, ("%s:buffer unmap to be accessed by CPU failed", __func__), (NULL));
+//       return FALSE;
+//     }
 
-#ifdef __aarch64__
-    // To use the converted buffer in CUDA, create an EGLImage and then use
-    // CUDA-EGL interop APIs
-    if (USE_EGLIMAGE) {
-      if (NvBufSurfaceMapEglImage(playtracker->inter_buf, 0) != 0) {
-        GST_ELEMENT_ERROR(playtracker, STREAM, FAILED, ("%s:buffer map eglimage failed", __func__), (NULL));
-        return FALSE;
-      }
-      // playtracker->inter_buf->surfaceList[0].mappedAddr.eglImage
-      // Use interop APIs cuGraphicsEGLRegisterImage and
-      // cuGraphicsResourceGetMappedEglFrame to access the buffer in CUDA
+// #ifdef __aarch64__
+//     // To use the converted buffer in CUDA, create an EGLImage and then use
+//     // CUDA-EGL interop APIs
+//     if (USE_EGLIMAGE) {
+//       if (NvBufSurfaceMapEglImage(playtracker->inter_buf, 0) != 0) {
+//         GST_ELEMENT_ERROR(playtracker, STREAM, FAILED, ("%s:buffer map eglimage failed", __func__), (NULL));
+//         return FALSE;
+//       }
+//       // playtracker->inter_buf->surfaceList[0].mappedAddr.eglImage
+//       // Use interop APIs cuGraphicsEGLRegisterImage and
+//       // cuGraphicsResourceGetMappedEglFrame to access the buffer in CUDA
 
-      // Destroy the EGLImage
-      NvBufSurfaceUnMapEglImage(playtracker->inter_buf, 0);
-    }
-#endif
-  }
+//       // Destroy the EGLImage
+//       NvBufSurfaceUnMapEglImage(playtracker->inter_buf, 0);
+//     }
+// #endif
+//   }
 
   /* Push the batch info structure in the processing queue and notify the
    * process thread that a new batch has been queued. */
@@ -768,24 +760,24 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btran
   num_filled = batch_meta->num_frames_in_batch;
 
   for (guint i = 0; i < num_filled; i++) {
-    NvOSD_RectParams rect_params;
+    // NvOSD_RectParams rect_params;
 
     // Scale the entire frame to processing resolution
-    rect_params.left = 0;
-    rect_params.top = 0;
-    rect_params.width = in_surf->surfaceList[i].width;
-    rect_params.height = in_surf->surfaceList[i].height;
+    // rect_params.left = 0;
+    // rect_params.top = 0;
+    // rect_params.width = in_surf->surfaceList[i].width;
+    // rect_params.height = in_surf->surfaceList[i].height;
 
     // Scale the frame maintaining aspect ratio
-    if (scale_and_fill_data(
-            playtracker,
-            in_surf->surfaceList + i,
-            &rect_params,
-            scale_ratio,
-            playtracker->video_info.width,
-            playtracker->video_info.height) != GST_FLOW_OK) {
-      goto error;
-    }
+    // if (scale_and_fill_data(
+    //         playtracker,
+    //         in_surf->surfaceList + i,
+    //         &rect_params,
+    //         scale_ratio,
+    //         playtracker->video_info.width,
+    //         playtracker->video_info.height) != GST_FLOW_OK) {
+    //   goto error;
+    // }
 
     if (batch == nullptr) {
       batch.reset(new GstDsPlayTrackerBatch);
@@ -807,14 +799,14 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btran
 
     // Set the transform session parameters for the conversions executed in
     // this thread.
-    if (batch->frames.size() == playtracker->max_batch_size || i == num_filled) {
+    if (i == num_filled) {
       if (!convert_batch_and_push_to_process_thread(playtracker, batch.get())) {
         return GST_FLOW_ERROR;
       }
       /* Batch submitted. Set batch to nullptr so that a new GstDsPlayTrackerBatch
        * structure can be allocated if required. */
       batch.release();
-      playtracker->batch_insurf.numFilled = 0;
+      // playtracker->batch_insurf.numFilled = 0;
     }
   }
   /* Submit a non-full batch. */
@@ -823,7 +815,7 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btran
       return GST_FLOW_ERROR;
     }
     batch.release();
-    playtracker->batch_insurf.numFilled = 0;
+    // playtracker->batch_insurf.numFilled = 0;
   }
 
   nvtxDomainRangeEnd(playtracker->nvtx_domain, buf_process_range);
@@ -850,9 +842,9 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btran
 
   flow_ret = GST_FLOW_OK;
 
-error:
-  gst_buffer_unmap(inbuf, &in_map_info);
-  return flow_ret;
+// error:
+//   gst_buffer_unmap(inbuf, &in_map_info);
+   return flow_ret;
 }
 
 /**
@@ -951,13 +943,6 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
     for (guint i = 0; i < batch->frames.size(); i++) {
       GstDsPlayTrackerFrame& frame = batch->frames[i];
       DsPlayTrackerProcessFrame(frame, playtracker->playtrackerlib_ctx);
-
-      // Process to get the output
-      // output = DsPlayTrackerProcess(
-      //     playtracker->playtrackerlib_ctx, (unsigned char*)batch->inter_buf->surfaceList[i].mappedAddr.addr[0]);
-      // // Attach the metadata for the full frame
-      // // attach_metadata_full_frame(playtracker, batch->frames[i].frame_meta, scale_ratio, output, i);
-      // free(output);
     }
 
     g_mutex_lock(&playtracker->process_lock);
