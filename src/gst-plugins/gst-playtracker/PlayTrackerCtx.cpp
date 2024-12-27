@@ -323,6 +323,8 @@ static const std::array<hm::utils::ColorRGB, 2> track_colors{
     hm::utils::ColorRGB{0, 0, 255},
     hm::utils::ColorRGB{255, 0, 255},
 };
+static const hm::utils::ColorRGB breakway_edge_line{128, 0, 28};
+static const hm::utils::ColorRGB breakway_edge_circle{128, 0, 28};
 
 bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx) {
   hm::BBox arena_box(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
@@ -359,7 +361,18 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
     for (size_t i = 0, n = frame.play_tracker_results.tracking_boxes.size(); i < n; ++i) {
       plotter.plot_rect(frame.play_tracker_results.tracking_boxes[i], 5, track_colors.at(i));
     }
-    // gst_hm::add_boxes_circles_lines(frame.frame_meta);
+    if (frame.play_tracker_results.play_detection.has_value()) {
+      const hm::play_tracker::PlayDetectorResults& play_detector = *frame.play_tracker_results.play_detection;
+      if (play_detector.breakaway_edge_center.has_value()) {
+        plotter.plot_circle(
+            *play_detector.breakaway_edge_center, /*radius=*/30, /*thickness=*/15, breakway_edge_circle);
+        plotter.plot_line(
+            frame.play_tracker_results.tracking_boxes.at(0).center(),
+            *play_detector.breakaway_edge_center,
+            3,
+            breakway_edge_line);
+      }
+    }
   }
   return true;
 }
