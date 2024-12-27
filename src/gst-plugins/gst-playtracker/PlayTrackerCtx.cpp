@@ -14,6 +14,7 @@
 #include "PlayTracker.h"
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
 #include "libs/common/ConfigYaml.h"
+#include "libs/common/PlotContext.h"
 
 #include "gstplaytracker.h"
 
@@ -228,6 +229,7 @@ hm::play_tracker::PlayTracker* get_or_create_play_tracker(const BBox& arena_box,
   return nullptr;
 }
 
+#if 0
 #define NvOSD_MAX_ELEMENTS 16
 
 static void add_boxes_circles_lines(NvDsFrameMeta* frame_meta) {
@@ -307,6 +309,7 @@ static void add_boxes_circles_lines(NvDsFrameMeta* frame_meta) {
    * Draw objects if count equals MAX_OSD_ELEMS.
    */
 }
+#endif
 
 } // namespace gst_hm
 
@@ -344,7 +347,11 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
 
   frame.play_tracker_results = play_tracker->forward(tracking_ids, tracking_boxes);
   if (ctx->initParams.draw) {
-    gst_hm::add_boxes_circles_lines(frame.frame_meta);
+    hm::utils::PlotContex plotter(frame.frame_meta, "");
+    for (const auto& cluster_item : frame.play_tracker_results.cluster_boxes) {
+      plotter.plot_rect(cluster_item.second, 1, hm::utils::ColorRGB{0, 0, 0}, hm::utils::ColorRGBA{128, 128, 128, 32});
+    }
+    // gst_hm::add_boxes_circles_lines(frame.frame_meta);
   }
   return true;
 }

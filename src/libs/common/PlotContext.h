@@ -50,6 +50,9 @@ class PlotContex {
       const ColorT& color,
       const std::optional<ColorT>& bg_color = std::nullopt);
 
+  void apply();
+  void reset();
+
  public:
   enum PLOT_TYPE { RECT = 0, CIRCLE, LINE, TEXT, ARROW, NR_PLOT_TYPES };
 
@@ -61,7 +64,7 @@ class PlotContex {
   std::mutex mu_;
   std::array<size_t, NR_PLOT_TYPES> plot_type_counts_;
   std::vector<NvDsDisplayMeta*> display_metas_;
-  std::list<std::unique_ptr<char[]>> text_data;
+  std::list<std::unique_ptr<char[]>> text_data_;
 };
 
 } // namespace utils

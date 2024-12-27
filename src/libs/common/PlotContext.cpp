@@ -20,15 +20,39 @@ NvOSD_ColorParams to_color_params(const ColorT& color) {
           .alpha = 1.0,
       };
     }
+    case 1: {
+      const ColorRGBA& clr = std::get<ColorRGBA>(color);
+      return NvOSD_ColorParams{
+          .red = double(clr[0]) / 255.0,
+          .green = double(clr[1]) / 255.0,
+          .blue = double(clr[2]) / 255.0,
+          .alpha = double(clr[3]) / 255.0,
+      };
+    }
     default:
       throw std::runtime_error("invalid variant index");
   }
 }
 
 PlotContex::PlotContex(NvDsFrameMeta* frame_meta, const std::string& font_name)
-    : frame_meta_(frame_meta), font_name_(font_name) {}
+    : frame_meta_(frame_meta), font_name_(font_name) {
+  reset();
+}
 
 PlotContex::~PlotContex() {
+  apply();
+}
+
+void PlotContex::reset() {
+  std::unique_lock lk(mu_);
+  for (auto& v : plot_type_counts_) {
+    v = 0;
+  }
+  display_metas_.clear();
+  text_data_.clear();
+}
+
+void PlotContex::apply() {
   for (NvDsDisplayMeta* display_meta : display_metas_) {
     // Attach display metadata to the frame
     assert(
@@ -37,6 +61,7 @@ PlotContex::~PlotContex() {
         0);
     nvds_add_display_meta_to_frame(frame_meta_, display_meta);
   }
+  reset();
 }
 
 void PlotContex::plot_rect(
@@ -51,6 +76,7 @@ void PlotContex::plot_rect(
   rect_params.top = rect.top;
   rect_params.width = rect.width();
   rect_params.height = rect.height();
+  rect_params.border_width = thickness;
   if (fill_color.has_value()) {
     rect_params.has_bg_color = true;
     rect_params.bg_color = to_color_params(*fill_color);
@@ -121,7 +147,7 @@ void PlotContex::plot_text(
   text_params.display_text = text.get();
   {
     std::unique_lock lk(mu_);
-    text_data.emplace_back(std::move(text));
+    text_data_.emplace_back(std::move(text));
   }
   // text_params.display_text
   if (bg_color.has_value()) {
@@ -134,7 +160,7 @@ std::pair<NvDsDisplayMeta*, size_t> PlotContex::allocate_display_meta(PLOT_TYPE 
   std::unique_lock lk(mu_);
   size_t current_count = plot_type_counts_.at(type);
   size_t current_meta = current_count / kMaxElementsInDisplayMeta;
-  size_t new_index = current_count % kMaxElementsInDisplayMeta == 0;
+  size_t new_index = current_count % kMaxElementsInDisplayMeta;
   if (!new_index) {
     // Allocate a new one
     NvDsDisplayMeta* display_meta = nvds_acquire_display_meta_from_pool(frame_meta_->base_meta.batch_meta);
