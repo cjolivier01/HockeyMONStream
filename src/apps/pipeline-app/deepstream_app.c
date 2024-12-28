@@ -1461,6 +1461,23 @@ static gboolean create_common_elements(
         pipeline->common_elements.appCtx);
   }
 
+  if (config->streammux2_config.is_parsed) {
+    if (!create_streammux_split_bin(&config->streammux2_config, &pipeline->common_elements.streammux_split_bin)) {
+      g_print("creating streammux_split bin failed\n");
+      goto done;
+    }
+    gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->common_elements.streammux_split_bin.bin);
+
+    if (!*src_elem) {
+      *src_elem = pipeline->common_elements.streammux_split_bin.bin;
+    }
+    if (*sink_elem) {
+      NVGSTDS_LINK_ELEMENT(pipeline->common_elements.streammux_split_bin.bin, *sink_elem);
+    }
+
+    *sink_elem = pipeline->common_elements.streammux_split_bin.bin;
+  }
+
   if (config->preprocess_config.enable) {
     if (!create_preprocess_bin(&config->preprocess_config, &pipeline->common_elements.preprocess_bin)) {
       g_print("creating preprocess bin failed\n");
@@ -1563,6 +1580,10 @@ void print_pipeline_order(GstElement* pipeline) {
   }
 
   g_list_free(children);
+}
+
+gboolean create_second_streammux(AppCtx* appCtx) {
+  return TRUE;
 }
 
 /**
@@ -1700,6 +1721,24 @@ gboolean create_pipeline(
     appCtx->latency_info =
         (NvDsFrameLatencyInfo*)calloc(1, config->streammux_config.batch_size * sizeof(NvDsFrameLatencyInfo));
   }
+
+  //
+  // Initial streammux is created, maybe tee off a second streammux
+  //
+  // if (config->streammux2_config.is_parsed) {
+  //   g_print("Second streammux is configured\n");
+  //   pipeline->common_elements.second_streammux = gst_element_factory_make(NVDS_ELEM_STREAM_MUX, "downsample_streammux");
+  //   if (!pipeline->common_elements.second_streammux) {
+  //     NVGSTDS_ERR_MSG_V("Failed to create element 'downsample_streammux'");
+  //     goto done;
+  //   }
+  //   if (!set_streammux_properties(&config->streammux2_config, pipeline->common_elements.second_streammux)) {
+  //     NVGSTDS_WARN_MSG_V("Failed to set streammux properties");
+  //   }
+  //   if (!gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->common_elements.second_streammux)) {
+  //     NVGSTDS_ERR_MSG_V("Failed to add to bin: 'downsample_streammux'");
+  //   }
+  // }
 
   /** a tee after the tiler which shall be connected to sink(s) */
   pipeline->tiler_tee = gst_element_factory_make(NVDS_ELEM_TEE, "tiler_tee");

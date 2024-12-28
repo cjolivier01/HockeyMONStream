@@ -56,6 +56,11 @@ typedef struct {
   GstElement* bin;
   GstElement* tee;
   GstElement* msg_conv;
+
+  // BEGIN tee off downsampled streammux
+  NvDsStreammuxSplitBin streammux_split_bin;
+  // END tee off downsampled streammux
+
   NvDsPreProcessBin preprocess_bin;
   NvDsPrimaryGieBin primary_gie_bin;
   NvDsOSDBin osd_bin;
@@ -114,6 +119,7 @@ typedef struct {
   gchar** sensor_name_list;
   NvDsSourceConfig multi_source_config[MAX_SOURCE_BINS];
   NvDsStreammuxConfig streammux_config;
+  NvDsStreammuxConfig streammux2_config;
   NvDsOSDConfig osd_config;
   NvDsSegVisualConfig segvisual_config;
   NvDsPreProcessConfig preprocess_config;

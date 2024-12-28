@@ -229,6 +229,14 @@ gboolean parse_config_file_yaml(NvDsConfig* config, gchar* cfg_file_path) {
       /** if gpu_id for streammux component is present,
        * it will override the value set using global_gpu_id in parse_streammux_yaml function */
       parse_err = !parse_streammux_yaml(&config->streammux_config, cfg_file_path);
+    } else if (paramKey == "streammux2") {
+      /** set gpu_id for streammux component using global_gpu_id(if available) */
+      if (config->global_gpu_id != -1) {
+        config->streammux2_config.gpu_id = config->global_gpu_id;
+      }
+      /** if gpu_id for streammux component is present,
+       * it will override the value set using global_gpu_id in parse_streammux_yaml function */
+      parse_err = !parse_streammux_yaml(&config->streammux2_config, cfg_file_path);
     } else if (paramKey == "osd") {
       /** set gpu_id for osd component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {

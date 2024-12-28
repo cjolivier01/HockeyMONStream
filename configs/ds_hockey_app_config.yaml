@@ -102,6 +102,9 @@ osd:
   clock-color: 1;0;0;0
   nvbuf-memory-type: 0
 
+#
+# Initial high-quality streammux
+#
 streammux:
   gpu-id: 0
   ##Boolean property to inform muxer that sources are live
@@ -118,8 +121,28 @@ streammux:
   height: 1360
   ##Enable to maintain aspect ratio wrt source, and allow black borders, works
   ##along with width, height properties
-  enable-padding: 0
+  enable-padding: 1
   nvbuf-memory-type: 0
+
+#
+# Downsampled streammux for inference jobs
+#
+# streammux2:
+#   gpu-id: 0
+#   ##Boolean property to inform muxer that sources are live
+#   live-source: 0
+#   buffer-pool-size: 4
+#   batch-size: 4
+#   ##time out in usec, to wait after the first buffer is available
+#   ##to push the batch even if the complete batch is not formed
+#   batched-push-timeout: 40000
+#   ## Set muxer output width and height
+#   width: 1312
+#   height: 480
+#   ##Enable to maintain aspect ratio wrt source, and allow black borders, works
+#   ##along with width, height properties
+#   enable-padding: 1
+#   nvbuf-memory-type: 0
 
 primary-gie:
   enable: 1

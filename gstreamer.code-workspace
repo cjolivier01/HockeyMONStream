@@ -467,7 +467,9 @@
       "numbers": "cpp",
       "ranges": "cpp",
       "span": "cpp",
-      "expected": "cpp"
+      "expected": "cpp",
+      "deepstream_common.h": "c",
+      "deepstream_playtracker.h": "c"
     },
     "git.ignoreLimitWarning": true,
     "workbench.iconTheme": "vscode-icons",
