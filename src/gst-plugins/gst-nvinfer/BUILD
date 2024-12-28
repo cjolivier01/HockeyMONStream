@@ -15,6 +15,7 @@ gst_cc_plugin(
       "-l:/home/colivier/src/hmdeepstream/deepstream/sources/libs/nvdsinfer/libnvds_infer.so",
     ],
     deps = [
+      "@deepstream//sources/libs/nvdsinfer:nvdsinfer",
     ],
     visibility = ["//visibility:public"],
 )

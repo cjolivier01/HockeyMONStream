@@ -33,6 +33,7 @@ cc_binary(
         #"@deepstream_lib",
         # "@deepstream_sources//apps/apps-common:deepstream_apps_common",
         "@deepstream//sources:deepstream_includes",
+        "@deepstream//sources/libs/nvdsinfer:nvdsinfer",
         #"@deepstream_apps_common",
         "@NvDsBaseExt",
         "@NvDsInterfaceExt",

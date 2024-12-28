@@ -1548,21 +1548,21 @@ static gboolean is_sink_available_for_source_id(NvDsConfig* config, guint source
   return FALSE;
 }
 
-void print_pipeline_order(GstElement *pipeline) {
-    if (!GST_IS_PIPELINE(pipeline)) {
-        g_printerr("The provided element is not a pipeline.\n");
-        return;
-    }
+void print_pipeline_order(GstElement* pipeline) {
+  if (!GST_IS_PIPELINE(pipeline)) {
+    g_printerr("The provided element is not a pipeline.\n");
+    return;
+  }
 
-    GList *children = GST_BIN_CHILDREN(GST_BIN(pipeline));
-    g_print("Pipeline elements in order:\n");
-    
-    for (GList *iter = children; iter != NULL; iter = iter->next) {
-        GstElement *child = GST_ELEMENT(iter->data);
-        g_print(" - %s (type: %s)\n", gst_element_get_name(child), G_OBJECT_TYPE_NAME(child));
-    }
+  GList* children = GST_BIN_CHILDREN(GST_BIN(pipeline));
+  g_print("Pipeline elements in order:\n");
 
-    g_list_free(children);
+  for (GList* iter = children; iter != NULL; iter = iter->next) {
+    GstElement* child = GST_ELEMENT(iter->data);
+    g_print(" - %s (type: %s)\n", gst_element_get_name(child), G_OBJECT_TYPE_NAME(child));
+  }
+
+  g_list_free(children);
 }
 
 /**
@@ -1947,7 +1947,7 @@ gboolean create_pipeline(
   ret = TRUE;
 done:
 
-  //print_pipeline_order(pipeline->pipeline);
+  // print_pipeline_order(pipeline->pipeline);
 
   if (fps_pad)
     gst_object_unref(fps_pad);
