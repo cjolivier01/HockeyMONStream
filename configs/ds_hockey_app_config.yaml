@@ -111,6 +111,7 @@ streammux:
   live-source: 0
   buffer-pool-size: 4
   batch-size: 4
+  # num-surfaces-per-frame: 1
   ##time out in usec, to wait after the first buffer is available
   ##to push the batch even if the complete batch is not formed
   batched-push-timeout: 40000
@@ -132,7 +133,8 @@ streammux:
 #   ##Boolean property to inform muxer that sources are live
 #   live-source: 0
 #   buffer-pool-size: 4
-#   batch-size: 4
+#   batch-size: 1
+#   # num-surfaces-per-frame: 2
 #   ##time out in usec, to wait after the first buffer is available
 #   ##to push the batch even if the complete batch is not formed
 #   batched-push-timeout: 40000
