@@ -1,0 +1,3 @@
+[submodule "src/external/hmdeepstream"]
+	path = src/external/hmdeepstream
+	url = ssh://git@github.com/cjolivier01/hmdeepstream

@@ -12,7 +12,9 @@ gst_cc_plugin(
       "-Wno-error=deprecated-declarations",
     ],
     linkopts=[
-      "-l:/home/colivier/src/hmdeepstream/deepstream/sources/libs/nvdsinfer/libnvds_infer.so",
+      "-Lexternal/hmdeepstream/deepstream/sources/libs/nvdsinfer",
+      #"-l:external/hmdeepstream/deepstream/sources/libs/nvdsinfer/libnvds_infer.so",
+      "-l:libnvds_infer.so",
     ],
     deps = [
       "@deepstream//sources/libs/nvdsinfer:nvdsinfer",

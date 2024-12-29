@@ -6,12 +6,14 @@ load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository", "new_git_r
 
 local_repository(
     name = "com_extension_dev",
-    path = "/home/colivier/src/hmdeepstream/deepstream/graph-composer/extension-dev",
+    # path = "/home/colivier/src/hmdeepstream/deepstream/graph-composer/extension-dev",
+    path = "external/hmdeepstream/deepstream/graph-composer/extension-dev",
 )
 
 local_repository(
     name = "deepstream",
-    path = "/home/colivier/src/hmdeepstream/deepstream",
+    # path = "/home/colivier/src/hmdeepstream/deepstream",
+    path = "external/hmdeepstream/deepstream",
 )
 
 local_repository(
