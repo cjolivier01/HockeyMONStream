@@ -1,16 +1,7 @@
 {
 	"folders": [
     {
-      "path": "../gstreamer"
-    },
-    {
       "path": "."
-    },
-    {
-      "path": "../../../../opt/nvidia/graph-composer"
-    },
-    {
-      "path": "../glib"
     }
   ],
   "settings": {
@@ -479,7 +470,7 @@
     "mesonbuild.selectRootDir": false,
     "clangd.arguments": [
       "--clang-tidy",
-      "--compile-commands-dir=${workspaceRoot}/src"
+      "--compile-commands-dir=/home/colivier/src/hstream/src"
     ]
   }
 }

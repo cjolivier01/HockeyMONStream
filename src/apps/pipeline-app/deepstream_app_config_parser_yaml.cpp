@@ -82,6 +82,19 @@ gboolean parse_dsfieldmask_yaml(
   return true;
 }
 
+gboolean parse_hmvideoprep_yaml(
+    NvDsHmVideoPrepConfig* config,
+    const YAML::Node& yaml_node,
+    const std::string& config_path) {
+  hm::utils::ConfigLocator locator;
+  SET_LOCATOR(locator, *config, enable);
+  SET_LOCATOR(locator, *config, unique_id);
+  SET_LOCATOR(locator, *config, gpu_id);
+  SET_LOCATOR(locator, *config, nvbuf_memory_type);
+  set_config_from_yaml(yaml_node, locator);
+  return true;
+}
+
 static gboolean parse_app_yaml(NvDsConfig* config, gchar* cfg_file_path) {
   gboolean ret = FALSE;
   YAML::Node configyml = YAML::LoadFile(cfg_file_path);
@@ -389,6 +402,15 @@ gboolean parse_config_file_yaml(NvDsConfig* config, gchar* cfg_file_path) {
        * it will override the value set using global_gpu_id in parse_playtracker_yaml function */
       parse_err = !parse_dsplaytracker_yaml(
           &config->dsplaytracker_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
+    } else if (paramKey == "hmvideoprep") {
+      /** set gpu_id for dsexample component using global_gpu_id(if available) */
+      if (config->global_gpu_id != -1) {
+        config->hmvideoprep_config.gpu_id = config->global_gpu_id;
+      }
+      /** if gpu_id for dsexample component is present,
+       * it will override the value set using global_gpu_id in parse_playtracker_yaml function */
+      parse_err = !parse_hmvideoprep_yaml(
+          &config->hmvideoprep_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
     } else if (paramKey == "message-converter") {
       parse_err = !parse_msgconv_yaml(&config->msg_conv_config, paramKey, cfg_file_path);
     } else if (paramKey == "tests") {

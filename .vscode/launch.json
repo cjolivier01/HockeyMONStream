@@ -42,8 +42,9 @@
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}/src",
         "~/src": "/home/colivier/src",
-        "${workspaceFolder}/src/external/deepstream/sources": "/home/colivier/src/hmdeepstream/deepstream/sources",
-        "external/deepstream/sources": "/home/colivier/src/hmdeepstream/deepstream/sources",
+        //"${workspaceFolder}/src/external/deepstream/sources": "/home/colivier/src/hmdeepstream/deepstream/sources",
+        //"external/deepstream/sources": "/home/colivier/src/hmdeepstream/deepstream/sources",
+        "external/hmdeepstream/deepstream/sources": "/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/sources",
       },
       //"stopOnEntry": true,
       "env": {
@@ -77,8 +78,8 @@
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}/src",
         "~/src": "/home/colivier/src",
-        "${workspaceFolder}/src/external/deepstream/sources": "/home/colivier/src/hmdeepstream/deepstream/sources",
-        "external/deepstream/sources": "/home/colivier/src/hmdeepstream/deepstream/sources",
+        // "${workspaceFolder}/src/external/deepstream/sources": "/home/colivier/src/hmdeepstream/deepstream/sources",
+        // "external/deepstream/sources": "/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/sources",
       },
       //"stopOnEntry": true,
       "env": {

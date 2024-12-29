@@ -132,6 +132,7 @@ typedef struct {
   NvDsTiledDisplayConfig tiled_display_config;
   NvDsDsAnalyticsConfig dsanalytics_config;
   NvDsDsExampleConfig dsexample_config;
+  NvDsHmVideoPrepConfig hmvideoprep_config;
   NvDsDsFieldMaskConfig dsfieldmask_config;
   NvDsDsPlayTrackerConfig dsplaytracker_config;
   NvDsSinkMsgConvBrokerConfig msg_conv_config;

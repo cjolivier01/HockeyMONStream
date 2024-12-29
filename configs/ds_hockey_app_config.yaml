@@ -126,7 +126,9 @@ streammux:
   nvbuf-memory-type: 0
 
 hmvideoprep:
+  enable: true
   gpu-id: 0
+  nvbuf-memory-type: 0
 
 primary-gie:
   enable: 1
