@@ -7,9 +7,6 @@
       "path": "."
     },
     {
-      "path": "../hmdeepstream"
-    },
-    {
       "path": "../../../../opt/nvidia/graph-composer"
     },
     {
@@ -479,6 +476,10 @@
     },
     "C_Cpp.default.compileCommands": "/home/colivier/src/gstreamer/builddir/compile_commands.json",
     "C_Cpp.default.configurationProvider": "mesonbuild.mesonbuild",
-    "mesonbuild.selectRootDir": false
+    "mesonbuild.selectRootDir": false,
+    "clangd.arguments": [
+      "--clang-tidy",
+      "--compile-commands-dir=${workspaceRoot}/src"
+    ]
   }
 }

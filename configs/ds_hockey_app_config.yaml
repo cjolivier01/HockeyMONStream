@@ -125,26 +125,8 @@ streammux:
   enable-padding: 1
   nvbuf-memory-type: 0
 
-#
-# Downsampled streammux for inference jobs
-#
-# streamsplit:
-#    gpu-id: 0
-#   ##Boolean property to inform muxer that sources are live
-#   live-source: 0
-#   buffer-pool-size: 4
-#   batch-size: 1
-#   # num-surfaces-per-frame: 2
-#   ##time out in usec, to wait after the first buffer is available
-#   ##to push the batch even if the complete batch is not formed
-#   batched-push-timeout: 40000
-#   ## Set muxer output width and height
-#   width: 1312
-#   height: 480
-#   ##Enable to maintain aspect ratio wrt source, and allow black borders, works
-#   ##along with width, height properties
-#   enable-padding: 1
-#   nvbuf-memory-type: 0
+hmvideoprep:
+  gpu-id: 0
 
 primary-gie:
   enable: 1

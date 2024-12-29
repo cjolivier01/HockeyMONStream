@@ -58,7 +58,7 @@ typedef struct {
   GstElement* msg_conv;
 
   // BEGIN tee off downsampled streammux
-  NvDsStreamSplitBin stream_split_bin;
+  NvDsHmVideoPrepBin hmvideoprep_bin;
   // END tee off downsampled streammux
 
   NvDsPreProcessBin preprocess_bin;

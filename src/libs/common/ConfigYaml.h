@@ -25,12 +25,20 @@ struct MyConfig {
 struct ConfigLocator {
   std::set<std::string> ignored;
   std::map<std::string, ConfigValueLocator> locators;
+  std::map<std::string, std::pair<char*, size_t>> char_array_locators;
 };
 
 #define SET_LOCATOR(config_locator$, cfg_struct$, member$)         \
   do {                                                             \
     assert(!config_locator$.locators.count(#member$));             \
     config_locator$.locators[#member$] = &((cfg_struct$).member$); \
+  } while (false)
+
+#define SET_LOCATOR_CHARS(config_locator$, cfg_struct$, member$)                                        \
+  do {                                                                                                  \
+    assert(!config_locator$.locators.count(#member$));                                                  \
+    constexpr size_t var_size$ = sizeof((cfg_struct$).member$);                                         \
+    config_locator$.char_array_locators[#member$] = std::make_pair(((cfg_struct$).member$), var_size$); \
   } while (false)
 
 void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator);

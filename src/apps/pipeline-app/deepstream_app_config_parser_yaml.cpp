@@ -58,6 +58,30 @@ gboolean parse_dsplaytracker_yaml(
   return true;
 }
 
+gboolean parse_dsfieldmask_yaml(
+    NvDsDsFieldMaskConfig* config,
+    const YAML::Node& yaml_node,
+    const std::string& config_path) {
+  hm::utils::ConfigLocator locator;
+  SET_LOCATOR(locator, *config, enable);
+  SET_LOCATOR(locator, *config, unique_id);
+  SET_LOCATOR(locator, *config, gpu_id);
+  SET_LOCATOR(locator, *config, nvbuf_memory_type);
+  SET_LOCATOR_CHARS(locator, *config, detection_mask_file);
+  // TODO: implement char_array_locators
+  if (yaml_node["detection-mask"]) {
+    std::string config_file = yaml_node["detection-mask"].as<std::string>();
+    if (!config_file.empty()) {
+      if (config_file[0] != '/' && !config_path.empty()) {
+        config_file = config_path + '/' + config_file;
+      }
+      strncpy(config->detection_mask_file, config_file.c_str(), STRNLEN(config->detection_mask_file) - 1);
+    }
+  }
+  set_config_from_yaml(yaml_node, locator);
+  return true;
+}
+
 static gboolean parse_app_yaml(NvDsConfig* config, gchar* cfg_file_path) {
   gboolean ret = FALSE;
   YAML::Node configyml = YAML::LoadFile(cfg_file_path);
@@ -354,7 +378,8 @@ gboolean parse_config_file_yaml(NvDsConfig* config, gchar* cfg_file_path) {
       }
       /** if gpu_id for dsexample component is present,
        * it will override the value set using global_gpu_id in parse_fieldmask_yaml function */
-      parse_err = !parse_dsfieldmask_yaml(&config->dsfieldmask_config, cfg_file_path);
+      parse_err = !parse_dsfieldmask_yaml(
+          &config->dsfieldmask_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
     } else if (paramKey == "ds-playtracker") {
       /** set gpu_id for dsexample component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {
