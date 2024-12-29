@@ -1461,22 +1461,22 @@ static gboolean create_common_elements(
         pipeline->common_elements.appCtx);
   }
 
-  if (config->streammux2_config.is_parsed) {
-    if (!create_streammux_split_bin(&config->streammux2_config, &pipeline->common_elements.streammux_split_bin)) {
-      g_print("creating streammux_split bin failed\n");
-      goto done;
-    }
-    gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->common_elements.streammux_split_bin.bin);
+  // if (config->streammux2_config.is_parsed) {
+  //   if (!create_stream_split_bin(&config->streammux2_config, &pipeline->common_elements.stream_split_bin)) {
+  //     g_print("creating streammux_split bin failed\n");
+  //     goto done;
+  //   }
+  //   gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->common_elements.stream_split_bin.bin);
 
-    if (!*src_elem) {
-      *src_elem = pipeline->common_elements.streammux_split_bin.bin;
-    }
-    if (*sink_elem) {
-      NVGSTDS_LINK_ELEMENT(pipeline->common_elements.streammux_split_bin.bin, *sink_elem);
-    }
+  //   if (!*src_elem) {
+  //     *src_elem = pipeline->common_elements.stream_split_bin.bin;
+  //   }
+  //   if (*sink_elem) {
+  //     NVGSTDS_LINK_ELEMENT(pipeline->common_elements.stream_split_bin.bin, *sink_elem);
+  //   }
 
-    *sink_elem = pipeline->common_elements.streammux_split_bin.bin;
-  }
+  //   *sink_elem = pipeline->common_elements.streammux_split_bin.bin;
+  // }
 
   if (config->preprocess_config.enable) {
     if (!create_preprocess_bin(&config->preprocess_config, &pipeline->common_elements.preprocess_bin)) {

@@ -14,6 +14,9 @@ property:
   process-mode: 1
   network-type: 0
   cluster-mode: 2
+  # TODO: implement processing_w/h
+  # processing_width: 1312
+  # processing_height: 480
   maintain-aspect-ratio: 1
   symmetric-padding: 0
   parse-bbox-func-name: NvDsInferParseYolo

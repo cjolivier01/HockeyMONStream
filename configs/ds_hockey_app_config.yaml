@@ -128,8 +128,8 @@ streammux:
 #
 # Downsampled streammux for inference jobs
 #
-# streammux2:
-#   gpu-id: 0
+# streamsplit:
+#    gpu-id: 0
 #   ##Boolean property to inform muxer that sources are live
 #   live-source: 0
 #   buffer-pool-size: 4
