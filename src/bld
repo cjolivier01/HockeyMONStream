@@ -2,7 +2,7 @@
 set -e
 SCRIPT_DIR=$(dirname $(realpath $0))
 
-BAZEL_FLAGS="--config=debug"
+BAZEL_FLAGS="--config=debug --cpu=k8"
 #BAZEL_FLAGS="--config=opt"
 
 TARGET="$@"
