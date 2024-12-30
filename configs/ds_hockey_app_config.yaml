@@ -128,6 +128,8 @@ streammux:
 hmvideoprep:
   enable: true
   gpu-id: 0
+  # has_queue: true
+  # has_videoconvert: true
   nvbuf-memory-type: 0
 
 primary-gie:
