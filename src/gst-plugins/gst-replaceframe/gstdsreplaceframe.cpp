@@ -551,7 +551,7 @@ static void gst_custom_plugin_init(GstCustomPlugin* plugin) {
 }
 
 static gboolean dsreplaceframe_plugin_init(GstPlugin* plugin) {
-  return gst_element_register(plugin, "custom_plugin", GST_RANK_NONE, GST_TYPE_CUSTOM_PLUGIN);
+  return gst_element_register(plugin, "dsreplaceframeq", GST_RANK_NONE, GST_TYPE_CUSTOM_PLUGIN);
 }
 
 #endif
