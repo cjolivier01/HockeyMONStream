@@ -1283,6 +1283,23 @@ static gboolean create_common_elements(
   gboolean ret = FALSE;
   *sink_elem = *src_elem = NULL;
 
+  if (config->hmimagemetamerger_config.enable) {
+    if (!create_hmimagemetamerger_bin(
+            &config->hmimagemetamerger_config, &pipeline->common_elements.hmimagemetamerger_bin)) {
+      goto done;
+    }
+
+    gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->common_elements.hmimagemetamerger_bin.bin);
+
+    if (!*src_elem) {
+      *src_elem = pipeline->common_elements.hmimagemetamerger_bin.bin;
+    }
+    if (*sink_elem) {
+      NVGSTDS_LINK_ELEMENT(pipeline->common_elements.hmimagemetamerger_bin.bin, *sink_elem);
+    }
+    *sink_elem = pipeline->common_elements.hmimagemetamerger_bin.bin;
+  }
+
   if (config->segvisual_config.enable) {
     if (!create_segvisual_bin(&config->segvisual_config, &pipeline->common_elements.segvisual_bin)) {
       goto done;
@@ -1727,8 +1744,8 @@ gboolean create_pipeline(
   //
   // if (config->streammux2_config.is_parsed) {
   //   g_print("Second streammux is configured\n");
-  //   pipeline->common_elements.second_streammux = gst_element_factory_make(NVDS_ELEM_STREAM_MUX, "downsample_streammux");
-  //   if (!pipeline->common_elements.second_streammux) {
+  //   pipeline->common_elements.second_streammux = gst_element_factory_make(NVDS_ELEM_STREAM_MUX,
+  //   "downsample_streammux"); if (!pipeline->common_elements.second_streammux) {
   //     NVGSTDS_ERR_MSG_V("Failed to create element 'downsample_streammux'");
   //     goto done;
   //   }

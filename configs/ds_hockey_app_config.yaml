@@ -132,6 +132,14 @@ hmvideoprep:
   # has_videoconvert: true
   nvbuf-memory-type: 0
 
+# hm-image-meta-merger:
+#   enable: false
+#   gpu-id: 0
+#   # has_queue: true
+#   # has_videoconvert: true
+#   nvbuf-memory-type: 0
+
+
 primary-gie:
   enable: 1
   gpu-id: 0

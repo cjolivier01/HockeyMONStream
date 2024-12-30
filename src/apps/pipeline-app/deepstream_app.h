@@ -68,6 +68,7 @@ typedef struct {
   NvDsSecondaryGieBin secondary_gie_bin;
   NvDsSecondaryPreProcessBin secondary_preprocess_bin;
   NvDsTrackerBin tracker_bin;
+  NvDsHmImageMetaMergerBin hmimagemetamerger_bin;
   NvDsSinkBin sink_bin;
   NvDsSinkBin demux_sink_bin;
   NvDsDsAnalyticsBin dsanalytics_bin;
@@ -132,6 +133,7 @@ typedef struct {
   NvDsTiledDisplayConfig tiled_display_config;
   NvDsDsAnalyticsConfig dsanalytics_config;
   NvDsDsExampleConfig dsexample_config;
+  NvDsHmImageMetaMergerConfig hmimagemetamerger_config;
   NvDsHmVideoPrepConfig hmvideoprep_config;
   NvDsDsFieldMaskConfig dsfieldmask_config;
   NvDsDsPlayTrackerConfig dsplaytracker_config;

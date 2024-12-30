@@ -62,7 +62,7 @@ gboolean parse_dsfieldmask_yaml(
     NvDsDsFieldMaskConfig* config,
     const YAML::Node& yaml_node,
     const std::string& config_path) {
-  hm::utils::ConfigLocator locator;
+  hm::utils::ConfigLocator locator{.ignored = {"detection-mask"}};
   SET_LOCATOR(locator, *config, enable);
   SET_LOCATOR(locator, *config, unique_id);
   SET_LOCATOR(locator, *config, gpu_id);
@@ -92,6 +92,19 @@ gboolean parse_hmvideoprep_yaml(
   SET_LOCATOR(locator, *config, gpu_id);
   SET_LOCATOR(locator, *config, has_queue);
   SET_LOCATOR(locator, *config, has_videoconvert);
+  SET_LOCATOR(locator, *config, nvbuf_memory_type);
+  set_config_from_yaml(yaml_node, locator);
+  return true;
+}
+
+gboolean parse_hmimagemetamerger_yaml(
+    NvDsHmImageMetaMergerConfig* config,
+    const YAML::Node& yaml_node,
+    const std::string& config_path) {
+  hm::utils::ConfigLocator locator;
+  SET_LOCATOR(locator, *config, enable);
+  SET_LOCATOR(locator, *config, unique_id);
+  SET_LOCATOR(locator, *config, gpu_id);
   SET_LOCATOR(locator, *config, nvbuf_memory_type);
   set_config_from_yaml(yaml_node, locator);
   return true;
@@ -185,6 +198,9 @@ gboolean parse_config_file_yaml(NvDsConfig* config, gchar* cfg_file_path) {
   std::string sgie_str = "secondary-gie";
   std::string msgcons_str = "message-consumer";
   std::string dewarper_str = "dewarper";
+
+  // ConfigLocator locator;
+  // SET_LOCATOR(locator, config, )
 
   config->source_list_enabled = FALSE;
 
@@ -413,6 +429,15 @@ gboolean parse_config_file_yaml(NvDsConfig* config, gchar* cfg_file_path) {
        * it will override the value set using global_gpu_id in parse_playtracker_yaml function */
       parse_err = !parse_hmvideoprep_yaml(
           &config->hmvideoprep_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
+    } else if (paramKey == "hm-image-meta-merger") {
+      /** set gpu_id for dsexample component using global_gpu_id(if available) */
+      if (config->global_gpu_id != -1) {
+        config->hmimagemetamerger_config.gpu_id = config->global_gpu_id;
+      }
+      /** if gpu_id for dsexample component is present,
+       * it will override the value set using global_gpu_id in parse_playtracker_yaml function */
+      parse_err = !parse_hmimagemetamerger_yaml(
+          &config->hmimagemetamerger_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
     } else if (paramKey == "message-converter") {
       parse_err = !parse_msgconv_yaml(&config->msg_conv_config, paramKey, cfg_file_path);
     } else if (paramKey == "tests") {
