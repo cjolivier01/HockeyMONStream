@@ -69,6 +69,31 @@
       "problemMatcher": []
     },
     {
+      "label": "Rebuild compile DB",
+      "type": "shell",
+      "command": "python3",
+      "args": [
+        "${workspaceFolder}/bazel/generate.py",
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": false,
+      },
+      "options": {
+        "cwd": "${workspaceRoot}/src",
+        "env": {
+          "USE_BAZEL_VERSION": "5.1.1",
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "showReuseMessage": true,
+        "clear": true,
+      },
+      "problemMatcher": [],
+    },
+    {
       "label": "Meson: Build all targets",
       "type": "shell",
       "command": "meson compile -C builddir",
