@@ -14,7 +14,10 @@ gst_cc_plugin(
     linkopts=[
       "-Lexternal/hmdeepstream/deepstream/sources/libs/nvdsinfer",
       #"-l:external/hmdeepstream/deepstream/sources/libs/nvdsinfer/libnvds_infer.so",
-      "-l:libnvds_infer.so",
+      #"-l:libnvds_infer.so",
+      #"-lnvinfer",
+      #"-lnvinfer_plugin",
+      #"-lnvonnxparser",
     ],
     deps = [
       "@deepstream//sources/libs/nvdsinfer:nvdsinfer",
