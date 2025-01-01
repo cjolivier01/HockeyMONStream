@@ -133,6 +133,8 @@ static gboolean gst_dscameraman_set_caps(GstBaseTransform* btrans, GstCaps* inca
 static gboolean gst_dscameraman_start(GstBaseTransform* btrans);
 static gboolean gst_dscameraman_stop(GstBaseTransform* btrans);
 
+static GstFlowReturn pad_chain(GstPad* pad, GstObject* parent, GstBuffer* buf);
+
 // Forward declarations
 static GstFlowReturn gst_crop_buf_surface_transform_ip(GstBaseTransform* base, GstBuffer* buf);
 
@@ -156,7 +158,7 @@ static void gst_dscameraman_class_init(GstDsCameraManClass* klass) {
   gobject_class->set_property = GST_DEBUG_FUNCPTR(gst_dscameraman_set_property);
   gobject_class->get_property = GST_DEBUG_FUNCPTR(gst_dscameraman_get_property);
 
-  // gstbasetransform_class->set_caps = GST_DEBUG_FUNCPTR(gst_dscameraman_set_caps);
+  gstbasetransform_class->set_caps = GST_DEBUG_FUNCPTR(gst_dscameraman_set_caps);
   gstbasetransform_class->start = GST_DEBUG_FUNCPTR(gst_dscameraman_start);
   gstbasetransform_class->stop = GST_DEBUG_FUNCPTR(gst_dscameraman_stop);
 
@@ -237,6 +239,7 @@ static void gst_dscameraman_class_init(GstDsCameraManClass* klass) {
           G_MAXUINT,
           0,
           GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
+
   /* Set sink and src pad capabilities */
   gst_element_class_add_pad_template(gstelement_class, gst_static_pad_template_get(&gst_dscameraman_src_template));
   gst_element_class_add_pad_template(gstelement_class, gst_static_pad_template_get(&gst_dscameraman_sink_template));
@@ -253,6 +256,7 @@ static void gst_dscameraman_class_init(GstDsCameraManClass* klass) {
 
 static void gst_dscameraman_init(GstDsCameraMan* dscameraman) {
   GstBaseTransform* btrans = GST_BASE_TRANSFORM(dscameraman);
+  GstElement* element = GST_ELEMENT(dscameraman);
 
   /* We will not be generating a new buffer. Just adding / updating
    * metadata. */
@@ -268,6 +272,11 @@ static void gst_dscameraman_init(GstDsCameraMan* dscameraman) {
   dscameraman->process_full_frame = DEFAULT_PROCESS_FULL_FRAME;
   dscameraman->gpu_id = DEFAULT_GPU_ID;
   dscameraman->max_batch_size = DEFAULT_BATCH_SIZE;
+
+  // Set the chain function for the sink pad
+  // auto sinkpad = gst_element_get_static_pad(element, "sink");
+  // gst_pad_set_chain_function(sinkpad, pad_chain);
+
   /* This quark is required to identify NvDsMeta when iterating through
    * the buffer metadatas */
   if (!_dsmeta_quark)
@@ -489,8 +498,52 @@ error:
   return FALSE;
 }
 
+void printNvBufSurfaceParams(const NvBufSurfaceParams& params) {
+  std::cout << "NvBufSurfaceParams Details:" << std::endl;
+  std::cout << "Width: " << params.width << std::endl;
+  std::cout << "Height: " << params.height << std::endl;
+  std::cout << "Pitch: " << params.pitch << std::endl;
+  std::cout << "Color Format: " << params.colorFormat << std::endl;
+  std::cout << "Layout: " << params.layout << std::endl;
+  std::cout << "Buffer Size: " << params.dataSize << std::endl;
+  std::cout << "Mapped Address: " << params.dataPtr << std::endl;
+  // std::cout << "Device Memory Address: " << params.gpuId << std::endl;
+  // std::cout << "Memory Type: " << params.memType << std::endl;
+}
+
+static GstFlowReturn pad_chain(GstPad* pad, GstObject* parent, GstBuffer* buf) {
+  // GstBuffer* new_buf;
+
+  // // Create a new buffer or modify the existing one.
+  // new_buf = gst_buffer_new_allocate(NULL, gst_buffer_get_size(buf), NULL);
+
+  // if (!new_buf) {
+  //   GST_ERROR("Failed to allocate new GstBuffer");
+  //   gst_buffer_unref(buf); // Release the original buffer before returning
+  //   return GST_FLOW_ERROR;
+  // }
+
+  // // Optionally copy or modify metadata from the original buffer to the new buffer
+  // GST_BUFFER_PTS(new_buf) = GST_BUFFER_PTS(buf);
+  // GST_BUFFER_DTS(new_buf) = GST_BUFFER_DTS(buf);
+
+  // // Push the new buffer downstream
+  //GstPad* peer = gst_pad_get_peer(pad);
+  //if (peer != NULL) {
+    //gst_pad_push(peer, buf);
+  //   gst_pad_push(peer, new_buf);
+  //   // gst_object_unref(peer);
+  //}
+
+  // // Unreference the original buffer to allow GStreamer to return it to streammux
+  // gst_buffer_unref(buf);
+
+  return GST_FLOW_OK;
+}
+
 static GstFlowReturn gst_crop_buf_surface_transform_ip(GstBaseTransform* btrans, GstBuffer* inbuf) {
   GstDsCameraMan* dscameraman = GST_DSCAMERAMAN(btrans);
+  DsCameraManOutput* cm_results;
   GstMapInfo in_map_info;
   GstFlowReturn flow_ret = GST_FLOW_ERROR;
 
@@ -498,6 +551,9 @@ static GstFlowReturn gst_crop_buf_surface_transform_ip(GstBaseTransform* btrans,
   NvDsBatchMeta* batch_meta = NULL;
   NvDsFrameMeta* frame_meta = NULL;
   NvDsMetaList* l_frame = NULL;
+  size_t frame_nr = 0;
+
+  // NvBufSurfaceCreateParams create_params = {0};
 
   dscameraman->frame_num++;
   CHECK_CUDA_STATUS(cudaSetDevice(dscameraman->gpu_id), "Unable to set cuda device");
@@ -524,11 +580,44 @@ static GstFlowReturn gst_crop_buf_surface_transform_ip(GstBaseTransform* btrans,
   /* Using object crops as input to the algorithm. The objects are detected by
    * the primary detector */
 
-  for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
+  for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next, ++frame_nr) {
     frame_meta = (NvDsFrameMeta*)(l_frame->data);
+    cm_results = DsCameraManProcess(frame_meta, dscameraman->dscameramanlib_ctx);
 
-    DsCameraManProcess(frame_meta, dscameraman->dscameramanlib_ctx);
+    NvBufSurfaceParams surface_params = surface->surfaceList[frame_nr];
+    (void)surface_params;
+    // printNvBufSurfaceParams(surface_params);
+
+    //   create_params.gpuId = dscameraman->gpu_id;
+    //   create_params.width = dscameraman->processing_width;
+    //   create_params.height = dscameraman->processing_height;
+    //   create_params.size = 0;
+    //   create_params.colorFormat = NVBUF_COLOR_FORMAT_RGBA;
+    //   create_params.layout = NVBUF_LAYOUT_PITCH;
+    // #ifdef __aarch64__
+    //   create_params.memType = NVBUF_MEM_DEFAULT;
+    // #else
+    //   create_params.memType = NVBUF_MEM_CUDA_UNIFIED;
+    // #endif
+
+    /* Create process queue and cvmat queue to transfer data between threads.
+     * We will be using this queue to maintain the list of frames/objects
+     * currently given to the algorithm for processing. */
+    // dscameraman->process_queue = g_queue_new();
+    // dscameraman->buf_queue = g_queue_new();
+
+    // for (int i = 0; i < 2; i++) {
+    //   if (NvBufSurfaceCreate(&inter_buf, dscameraman->max_batch_size, &create_params) != 0) {
+    //     GST_ERROR("Error: Could not allocate internal buffer for dscameraman");
+    //     goto error;
+    //   }
+
+    //   g_queue_push_tail(dscameraman->buf_queue, inter_buf);
+    // }
+
+    free(cm_results);
   }
+  assert(frame_nr == surface->numFilled);
   flow_ret = GST_FLOW_OK;
 
 error:
