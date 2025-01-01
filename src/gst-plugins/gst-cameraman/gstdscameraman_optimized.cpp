@@ -160,7 +160,7 @@ static void gst_dscameraman_class_init(GstDsCameraManClass* klass) {
   gstbasetransform_class->start = GST_DEBUG_FUNCPTR(gst_dscameraman_start);
   gstbasetransform_class->stop = GST_DEBUG_FUNCPTR(gst_dscameraman_stop);
 
-  // gstbasetransform_class->transform_ip = GST_DEBUG_FUNCPTR(gst_crop_buf_surface_transform_ip);
+  gstbasetransform_class->transform_ip = GST_DEBUG_FUNCPTR(gst_crop_buf_surface_transform_ip);
 
   // gstbasetransform_class->submit_input_buffer = GST_DEBUG_FUNCPTR(gst_dscameraman_submit_input_buffer);
   // gstbasetransform_class->generate_output = GST_DEBUG_FUNCPTR(gst_dscameraman_generate_output);
@@ -361,17 +361,17 @@ static gboolean gst_dscameraman_start(GstBaseTransform* btrans) {
 
   /* An intermediate buffer for NV12/RGBA to BGR conversion  will be
    * required. Can be skipped if custom algorithm can work directly on NV12/RGBA. */
-//   create_params.gpuId = dscameraman->gpu_id;
-//   create_params.width = dscameraman->processing_width;
-//   create_params.height = dscameraman->processing_height;
-//   create_params.size = 0;
-//   create_params.colorFormat = NVBUF_COLOR_FORMAT_RGBA;
-//   create_params.layout = NVBUF_LAYOUT_PITCH;
-// #ifdef __aarch64__
-//   create_params.memType = NVBUF_MEM_DEFAULT;
-// #else
-//   create_params.memType = NVBUF_MEM_CUDA_UNIFIED;
-// #endif
+  //   create_params.gpuId = dscameraman->gpu_id;
+  //   create_params.width = dscameraman->processing_width;
+  //   create_params.height = dscameraman->processing_height;
+  //   create_params.size = 0;
+  //   create_params.colorFormat = NVBUF_COLOR_FORMAT_RGBA;
+  //   create_params.layout = NVBUF_LAYOUT_PITCH;
+  // #ifdef __aarch64__
+  //   create_params.memType = NVBUF_MEM_DEFAULT;
+  // #else
+  //   create_params.memType = NVBUF_MEM_CUDA_UNIFIED;
+  // #endif
 
   /* Create process queue and cvmat queue to transfer data between threads.
    * We will be using this queue to maintain the list of frames/objects
@@ -489,23 +489,53 @@ error:
   return FALSE;
 }
 
-static GstFlowReturn gst_crop_buf_surface_transform_ip(GstBaseTransform* base, GstBuffer* buf) {
-  GstMapInfo map;
-  if (!gst_buffer_map(buf, &map, GST_MAP_READWRITE)) {
-    GST_ERROR("Failed to map buffer.");
+static GstFlowReturn gst_crop_buf_surface_transform_ip(GstBaseTransform* btrans, GstBuffer* inbuf) {
+  GstDsCameraMan* dscameraman = GST_DSCAMERAMAN(btrans);
+  GstMapInfo in_map_info;
+  GstFlowReturn flow_ret = GST_FLOW_ERROR;
+
+  NvBufSurface* surface = NULL;
+  NvDsBatchMeta* batch_meta = NULL;
+  // NvDsFrameMeta* frame_meta = NULL;
+  NvDsMetaList* l_frame = NULL;
+
+  dscameraman->frame_num++;
+  CHECK_CUDA_STATUS(cudaSetDevice(dscameraman->gpu_id), "Unable to set cuda device");
+
+  memset(&in_map_info, 0, sizeof(in_map_info));
+  if (!gst_buffer_map(inbuf, &in_map_info, GST_MAP_READ)) {
+    g_print("Error: Failed to map gst buffer\n");
+    goto error;
+  }
+
+  nvds_set_input_system_timestamp(inbuf, GST_ELEMENT_NAME(dscameraman));
+  surface = (NvBufSurface*)in_map_info.data;
+  GST_DEBUG_OBJECT(dscameraman, "Processing Frame %" G_GUINT64_FORMAT " Surface %p\n", dscameraman->frame_num, surface);
+
+  if (CHECK_NVDS_MEMORY_AND_GPUID(dscameraman, surface))
+    goto error;
+
+  batch_meta = gst_buffer_get_nvds_batch_meta(inbuf);
+  if (batch_meta == nullptr) {
+    GST_ELEMENT_ERROR(dscameraman, STREAM, FAILED, ("NvDsBatchMeta not found for input buffer."), (NULL));
     return GST_FLOW_ERROR;
   }
 
-  NvBufSurface* surface = (NvBufSurface*)map.data;
-  if (!surface) {
-    GST_ERROR("Invalid NvBufSurface.");
-    gst_buffer_unmap(buf, &map);
-    return GST_FLOW_ERROR;
-  }
+  /* Using object crops as input to the algorithm. The objects are detected by
+   * the primary detector */
 
-  // Simply pass the buffer through
-  gst_buffer_unmap(buf, &map);
-  return GST_FLOW_OK;
+  // for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
+  // frame_meta = (NvDsFrameMeta*)(l_frame->data);
+
+  // DsReplaceFrameProcessFrame(frame_meta, dscameraman->dscameraman_ctx);
+  //}
+  flow_ret = GST_FLOW_OK;
+
+error:
+
+  nvds_set_output_system_timestamp(inbuf, GST_ELEMENT_NAME(dscameraman));
+  gst_buffer_unmap(inbuf, &in_map_info);
+  return flow_ret;
 }
 
 /**
