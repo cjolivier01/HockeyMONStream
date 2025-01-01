@@ -17,11 +17,6 @@
 #include <gst/video/video.h>
 
 /* Open CV headers */
-#ifdef WITH_OPENCV
-#include "opencv2/highgui/highgui.hpp"
-#include "opencv2/imgproc/imgproc.hpp"
-#endif
-
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include "dscameraman_lib.h"
@@ -75,19 +70,19 @@ struct _GstDsCameraMan {
   GMutex process_lock;
 
   /** Queue to send data to output thread for processing**/
-  GQueue* process_queue;
+  // GQueue* process_queue;
 
   /** Gcondition for process queue**/
   GCond process_cond;
 
   /**Queue to receive processed data from output thread **/
-  GQueue* buf_queue;
+  // GQueue* buf_queue;
 
   /** Gcondition for buf queue **/
-  GCond buf_cond;
+  // GCond buf_cond;
 
   /** Output thread. */
-  GThread* process_thread;
+  // GThread* process_thread;
 
   /** Boolean to signal output thread to stop. */
   gboolean stop;
@@ -181,12 +176,7 @@ typedef struct {
    */
   gboolean event_marker = FALSE;
 
-#ifdef WITH_OPENCV
-  /** OpenCV mat containing RGB data */
-  cv::Mat* cvmat;
-#else
   NvBufSurface* inter_buf;
-#endif
 
   nvtxRangeId_t nvtx_complete_buf_range = 0;
 } GstDsCameraManBatch;
