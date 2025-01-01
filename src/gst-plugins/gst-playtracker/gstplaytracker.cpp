@@ -480,8 +480,9 @@ static void attach_metadata_full_frame(
   }
   NvDsBatchMeta* batch_meta = frame_meta->base_meta.batch_meta;
   NvDsObjectMeta* object_meta = NULL;
+
   // static gchar font_name[] = "Serif";
-  for (size_t i = 0; i < play_results.tracking_boxes.size(); i++) {
+  for (int64_t i = play_results.tracking_boxes.size() - 1; i >= 0; --i) {
     const hm::BBox& tracking_box = play_results.tracking_boxes[i];
     object_meta = nvds_acquire_obj_meta_from_pool(batch_meta);
     object_meta->class_id = DsPlayTrackerInitParams::kPlayBoxClassIdBase + i;
@@ -496,10 +497,10 @@ static void attach_metadata_full_frame(
     rect_params.height = tracking_box.height();
 
     // Semi-transparent yellow background
-    rect_params.has_bg_color = 1;
-    rect_params.bg_color = (NvOSD_ColorParams){1, 1, 0, 0.4};
+    // rect_params.has_bg_color = 1;
+    // rect_params.bg_color = (NvOSD_ColorParams){1, 1, 0, 0.1};
     // Red border of width 6
-    rect_params.border_width = 6;
+    rect_params.border_width = 0;
     rect_params.border_color = (NvOSD_ColorParams){1, 1, 0, 1};
 
     object_meta->object_id = UNTRACKED_OBJECT_ID;
