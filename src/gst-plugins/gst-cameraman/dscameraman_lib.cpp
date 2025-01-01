@@ -18,11 +18,10 @@ struct DsCameraManCtx {
   DsCameraManInitParams initParams;
 };
 
-
 namespace {
- // HACK: Duplciated from PlayTrackerCtx, nbeeds ot be part of config
+// HACK: Duplciated from PlayTrackerCtx, nbeeds ot be part of config
 static constexpr inline int kPlayBoxClassIdBase = 99;
-}
+} // namespace
 DsCameraManCtx* DsCameraManCtxInit(DsCameraManInitParams* initParams) {
   DsCameraManCtx* ctx = (DsCameraManCtx*)calloc(1, sizeof(DsCameraManCtx));
   ctx->initParams = *initParams;
