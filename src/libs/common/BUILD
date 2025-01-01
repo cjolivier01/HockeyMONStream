@@ -1,7 +1,7 @@
 cc_library(
     name = "utils",
     srcs = glob([
-      "*.cpp"
+        "*.cpp",
     ]),
     hdrs = glob([
         "*.h",
@@ -14,8 +14,9 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "@deepstream//:deepstream_lib",
-        "@yaml-cpp",
         "@gstreamer",
-        "@hm//hockeymom/csrc/play_tracker:play_tracker",
+        "@hm//hockeymom/csrc/play_tracker",
+        "@opencv_linux//:opencv",
+        "@yaml-cpp",
     ],
 )

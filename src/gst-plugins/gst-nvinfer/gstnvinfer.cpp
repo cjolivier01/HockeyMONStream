@@ -2430,9 +2430,8 @@ static GstFlowReturn gst_nvinfer_submit_input_buffer(
   GstFlowReturn flow_ret;
   std::string nvtx_str;
 
-  g_print("gst_nvinfer_submit_input_buffer\n");
-  fflush(stdout);
-
+  // g_print("gst_nvinfer_submit_input_buffer\n");
+  // fflush(stdout);
 
   /* Check for model updates and replace the model if a new model is loaded. */
   if (impl->ensureReplaceNextContext() != NVDSINFER_SUCCESS) {
