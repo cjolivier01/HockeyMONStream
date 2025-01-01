@@ -67,13 +67,13 @@ struct _GstDsCameraMan {
   /** Processing Queue and related synchronization structures. */
 
   /** Gmutex lock for against shared access in threads**/
-  GMutex process_lock;
+  // GMutex process_lock;
 
   /** Queue to send data to output thread for processing**/
   // GQueue* process_queue;
 
   /** Gcondition for process queue**/
-  GCond process_cond;
+  // GCond process_cond;
 
   /**Queue to receive processed data from output thread **/
   // GQueue* buf_queue;

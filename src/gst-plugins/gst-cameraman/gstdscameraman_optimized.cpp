@@ -156,11 +156,11 @@ static void gst_dscameraman_class_init(GstDsCameraManClass* klass) {
   gobject_class->set_property = GST_DEBUG_FUNCPTR(gst_dscameraman_set_property);
   gobject_class->get_property = GST_DEBUG_FUNCPTR(gst_dscameraman_get_property);
 
-  gstbasetransform_class->set_caps = GST_DEBUG_FUNCPTR(gst_dscameraman_set_caps);
+  // gstbasetransform_class->set_caps = GST_DEBUG_FUNCPTR(gst_dscameraman_set_caps);
   gstbasetransform_class->start = GST_DEBUG_FUNCPTR(gst_dscameraman_start);
   gstbasetransform_class->stop = GST_DEBUG_FUNCPTR(gst_dscameraman_stop);
 
-  gstbasetransform_class->transform_ip = GST_DEBUG_FUNCPTR(gst_crop_buf_surface_transform_ip);
+  // gstbasetransform_class->transform_ip = GST_DEBUG_FUNCPTR(gst_crop_buf_surface_transform_ip);
 
   // gstbasetransform_class->submit_input_buffer = GST_DEBUG_FUNCPTR(gst_dscameraman_submit_input_buffer);
   // gstbasetransform_class->generate_output = GST_DEBUG_FUNCPTR(gst_dscameraman_generate_output);
@@ -432,7 +432,7 @@ static gboolean gst_dscameraman_stop(GstBaseTransform* btrans) {
 
   // NvBufSurface* inter_buf;
 
-  g_mutex_lock(&dscameraman->process_lock);
+  // g_mutex_lock(&dscameraman->process_lock);
 
   /* Wait till all the items in the queue are handled. */
   // while (!g_queue_is_empty(dscameraman->process_queue)) {
@@ -447,8 +447,8 @@ static gboolean gst_dscameraman_stop(GstBaseTransform* btrans) {
   // }
   dscameraman->stop = TRUE;
 
-  g_cond_broadcast(&dscameraman->process_cond);
-  g_mutex_unlock(&dscameraman->process_lock);
+  // g_cond_broadcast(&dscameraman->process_cond);
+  // g_mutex_unlock(&dscameraman->process_lock);
 
   // g_thread_join(dscameraman->process_thread);
 
