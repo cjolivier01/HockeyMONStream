@@ -18,17 +18,17 @@
 
 /* Open CV headers */
 #ifdef WITH_OPENCV
-#include "opencv2/imgproc/imgproc.hpp"
 #include "opencv2/highgui/highgui.hpp"
+#include "opencv2/imgproc/imgproc.hpp"
 #endif
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include "nvbufsurface.h"
-#include "nvbufsurftransform.h"
+#include "dscameraman_lib.h"
 #include "gst-nvquery.h"
 #include "gstnvdsmeta.h"
-#include "dscameraman_lib.h"
+#include "nvbufsurface.h"
+#include "nvbufsurftransform.h"
 #include "nvtx3/nvToolsExt.h"
 
 #include <condition_variable>
@@ -44,7 +44,6 @@
 #define BINARY_PACKAGE "NVIDIA DeepStream 3rdparty IP integration example plugin"
 #define URL "http://nvidia.com/"
 
-
 G_BEGIN_DECLS
 /* Standard boilerplate stuff */
 typedef struct _GstDsCameraMan GstDsCameraMan;
@@ -52,22 +51,23 @@ typedef struct _GstDsCameraManClass GstDsCameraManClass;
 
 /* Standard boilerplate stuff */
 #define GST_TYPE_DSCAMERAMAN (gst_dscameraman_get_type())
-#define GST_DSCAMERAMAN(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj),GST_TYPE_DSCAMERAMAN,GstDsCameraMan))
-#define GST_DSCAMERAMAN_CLASS(klass) (G_TYPE_CHECK_CLASS_CAST((klass),GST_TYPE_DSCAMERAMAN,GstDsCameraManClass))
+#define GST_DSCAMERAMAN(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_DSCAMERAMAN, GstDsCameraMan))
+#define GST_DSCAMERAMAN_CLASS(klass) (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_DSCAMERAMAN, GstDsCameraManClass))
 #define GST_DSCAMERAMAN_GET_CLASS(obj) (G_TYPE_INSTANCE_GET_CLASS((obj), GST_TYPE_DSCAMERAMAN, GstDsCameraManClass))
-#define GST_IS_DSCAMERAMAN(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj),GST_TYPE_DSCAMERAMAN))
-#define GST_IS_DSCAMERAMAN_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE((klass),GST_TYPE_DSCAMERAMAN))
-#define GST_DSCAMERAMAN_CAST(obj)  ((GstDsCameraMan *)(obj))
+#define GST_IS_DSCAMERAMAN(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_DSCAMERAMAN))
+#define GST_IS_DSCAMERAMAN_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_DSCAMERAMAN))
+#define GST_DSCAMERAMAN_CAST(obj) ((GstDsCameraMan*)(obj))
 
 /** Maximum batch size to be supported by dscameraman. */
 #define NVDSCAMERAMAN_MAX_BATCH_SIZE 1024
 
-struct _GstDsCameraMan
-{
+struct DsCameraManCtx;
+
+struct _GstDsCameraMan {
   GstBaseTransform base_trans;
 
   /** Context of the custom algorithm library */
-  DsCameraManCtx *dscameramanlib_ctx;
+  DsCameraManCtx* dscameramanlib_ctx;
 
   /** Processing Queue and related synchronization structures. */
 
@@ -75,19 +75,19 @@ struct _GstDsCameraMan
   GMutex process_lock;
 
   /** Queue to send data to output thread for processing**/
-  GQueue *process_queue;
+  GQueue* process_queue;
 
   /** Gcondition for process queue**/
   GCond process_cond;
 
   /**Queue to receive processed data from output thread **/
-  GQueue *buf_queue;
+  GQueue* buf_queue;
 
   /** Gcondition for buf queue **/
   GCond buf_cond;
 
   /** Output thread. */
-  GThread *process_thread;
+  GThread* process_thread;
 
   /** Boolean to signal output thread to stop. */
   gboolean stop;
@@ -106,7 +106,7 @@ struct _GstDsCameraMan
   NvBufSurface batch_insurf;
 
   /** the intermediate scratch buffer for conversions RGBA */
-  NvBufSurface *inter_buf;
+  NvBufSurface* inter_buf;
 
   /** Input video info (resolution, color format, framerate, etc) */
   GstVideoInfo video_info;
@@ -140,8 +140,7 @@ struct _GstDsCameraMan
   nvtxDomainHandle_t nvtx_domain;
 };
 
-typedef struct
-{
+struct GstDsCameraManFrame {
   /** Ratio by which the frame / object crop was scaled in the horizontal
    * direction. Required when scaling co-ordinates/sizes in metadata
    * back to input resolution. */
@@ -151,26 +150,25 @@ typedef struct
    * back to input resolution. */
   gdouble scale_ratio_y = 0.0;
   /** NvDsObjectParams belonging to the object to be classified. */
-  NvDsObjectMeta *obj_meta = nullptr;
-  NvDsFrameMeta *frame_meta = nullptr;
+  NvDsObjectMeta* obj_meta = nullptr;
+  NvDsFrameMeta* frame_meta = nullptr;
   /** Index of the frame in the batched input GstBuffer. Not required for
    * classifiers. */
   guint batch_index = 0;
   /** Frame number of the frame from the source. */
   gulong frame_num = 0;
   /** The buffer structure the object / frame was converted from. */
-  NvBufSurfaceParams *input_surf_params = nullptr;
-} GstDsCameraManFrame;
+  NvBufSurfaceParams* input_surf_params = nullptr;
+};
 
 /**
  * Holds information about the batch of frames to be inferred.
  */
-typedef struct
-{
+typedef struct {
   /** Vector of frames in the batch. */
-  std::vector < GstDsCameraManFrame > frames;
+  std::vector<GstDsCameraManFrame> frames;
   /** Pointer to the input GstBuffer. */
-  GstBuffer *inbuf = nullptr;
+  GstBuffer* inbuf = nullptr;
   /** Batch number of the input batch. */
   gulong inbuf_batch_num = 0;
   /** Boolean indicating that the output thread should only push the buffer to
@@ -185,21 +183,20 @@ typedef struct
 
 #ifdef WITH_OPENCV
   /** OpenCV mat containing RGB data */
-  cv::Mat * cvmat;
+  cv::Mat* cvmat;
 #else
-  NvBufSurface *inter_buf;
+  NvBufSurface* inter_buf;
 #endif
 
   nvtxRangeId_t nvtx_complete_buf_range = 0;
 } GstDsCameraManBatch;
 
 /** Boiler plate stuff */
-struct _GstDsCameraManClass
-{
+struct _GstDsCameraManClass {
   GstBaseTransformClass parent_class;
 };
 
-GType gst_dscameraman_get_type (void);
+GType gst_dscameraman_get_type(void);
 
 G_END_DECLS
 #endif /* __GST_DSCAMERAMAN_H__ */
