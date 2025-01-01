@@ -10,7 +10,7 @@ typedef struct DsPlayTrackerCtx DsPlayTrackerCtx;
 typedef struct GstDsPlayTrackerFrame GstDsPlayTrackerFrame;
 
 // Init parameters structure as input, required for instantiating playtracker_lib
-typedef struct {
+struct DsPlayTrackerInitParams {
   // Width at which frame/object will be scaled
   //int processingWidth;
   // height at which frame/object will be scaled
@@ -20,30 +20,14 @@ typedef struct {
   std::string play_tracker_config_file;
 
   bool draw{false};
-} DsPlayTrackerInitParams;
-
-// Detected/Labelled object structure, stores bounding box info along with label
-// typedef struct {
-//   float left;
-//   float top;
-//   float width;
-//   float height;
-//   char label[MAX_LABEL_SIZE];
-// } DsPlayTrackerObject;
-
-// // Output data returned after processing
-// typedef struct {
-//   int numObjects;
-//   DsPlayTrackerObject object[4];
-// } DsPlayTrackerOutput;
+  // The class id we will set for the play box
+  static constexpr inline int kPlayBoxClassIdBase = 99;
+};
 
 // Initialize library context
 DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* init_params);
 
 bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx);
-
-// Dequeue processed output
-// DsPlayTrackerOutput* DsPlayTrackerProcess(DsPlayTrackerCtx* ctx, unsigned char* data);
 
 // Deinitialize library context
 void DsPlayTrackerCtxDeinit(DsPlayTrackerCtx* ctx);

@@ -27,19 +27,19 @@
  */
 
 #include <string.h>
-#include <fstream>
-#include <iostream>
-#include <ostream>
-#include <sstream>
+// #include <fstream>
+// #include <iostream>
+// #include <ostream>
+// #include <sstream>
 #include <string>
 
 #include "gstdsexample_optimized.h"
 #include "utils.h"
 
 #include <sys/time.h>
-#include <condition_variable>
-#include <mutex>
-#include <thread>
+// #include <condition_variable>
+// #include <mutex>
+// #include <thread>
 
 GST_DEBUG_CATEGORY_STATIC(gst_dsexample_debug);
 #define GST_CAT_DEFAULT gst_dsexample_debug
@@ -1185,11 +1185,11 @@ static void attach_metadata_full_frame(
     rect_params.height = obj->height;
 
     // Semi-transparent yellow background
-    rect_params.has_bg_color = 0;
+    rect_params.has_bg_color = 1;
     rect_params.bg_color = (NvOSD_ColorParams){1, 1, 0, 0.4};
     // Red border of width 6
-    rect_params.border_width = 3;
-    rect_params.border_color = (NvOSD_ColorParams){1, 0, 0, 1};
+    rect_params.border_width = 6;
+    rect_params.border_color = (NvOSD_ColorParams){0, 1, 0, 1};
 
     // Scale the bounding boxes proportionally based on how the object/frame was
     // scaled during input

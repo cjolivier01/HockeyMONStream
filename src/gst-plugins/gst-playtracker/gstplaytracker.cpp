@@ -468,6 +468,60 @@ static GstFlowReturn gst_playtracker_generate_output(GstBaseTransform* btrans, G
 }
 
 /**
+ * Attach metadata for the full frame. We will be adding a new metadata.
+ */
+static void attach_metadata_full_frame(
+    GstDsPlayTracker* playtracker,
+    NvDsFrameMeta* frame_meta,
+    const hm::play_tracker::PlayTrackerResults& play_results,
+    guint batch_id) {
+  if (play_results.final_cluster_box.empty()) {
+    return;
+  }
+  NvDsBatchMeta* batch_meta = frame_meta->base_meta.batch_meta;
+  NvDsObjectMeta* object_meta = NULL;
+  // static gchar font_name[] = "Serif";
+  for (size_t i = 0; i < play_results.tracking_boxes.size(); i++) {
+    const hm::BBox& tracking_box = play_results.tracking_boxes[i];
+    object_meta = nvds_acquire_obj_meta_from_pool(batch_meta);
+    object_meta->class_id = DsPlayTrackerInitParams::kPlayBoxClassIdBase + i;
+
+    NvOSD_RectParams& rect_params = object_meta->rect_params;
+    // NvOSD_TextParams& text_params = object_meta->text_params;
+
+    // Assign bounding box coordinates
+    rect_params.left = tracking_box.left;
+    rect_params.top = tracking_box.top;
+    rect_params.width = tracking_box.width();
+    rect_params.height = tracking_box.height();
+
+    // Semi-transparent yellow background
+    rect_params.has_bg_color = 1;
+    rect_params.bg_color = (NvOSD_ColorParams){1, 1, 0, 0.4};
+    // Red border of width 6
+    rect_params.border_width = 6;
+    rect_params.border_color = (NvOSD_ColorParams){1, 1, 0, 1};
+
+    object_meta->object_id = UNTRACKED_OBJECT_ID;
+    // g_strlcpy(object_meta->obj_label, obj->label, MAX_LABEL_SIZE);
+    // // display_text required heap allocated memory
+    // text_params.display_text = g_strdup(obj->label);
+    // // Display text above the left top corner of the object
+    // text_params.x_offset = rect_params.left;
+    // text_params.y_offset = rect_params.top - 10;
+    // // Set black background for the text
+    // text_params.set_bg_clr = 1;
+    // text_params.text_bg_clr = (NvOSD_ColorParams){0, 0, 0, 1};
+    // // Font face, size and color
+    // text_params.font_params.font_name = font_name;
+    // text_params.font_params.font_size = 11;
+    // text_params.font_params.font_color = (NvOSD_ColorParams){1, 1, 1, 1};
+
+    nvds_add_obj_meta_to_frame(frame_meta, object_meta, NULL);
+  }
+}
+
+/**
  * Output loop used to pop output from processing thread, attach the output to
  * the buffer in form of NvDsMeta and push the buffer to downstream element.
  */
@@ -532,7 +586,9 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
     /* For each frame attach metadata output. */
     for (guint i = 0; i < batch->frames.size(); i++) {
       GstDsPlayTrackerFrame& frame = batch->frames[i];
-      DsPlayTrackerProcessFrame(frame, playtracker->playtrackerlib_ctx);
+      if (DsPlayTrackerProcessFrame(frame, playtracker->playtrackerlib_ctx)) {
+        attach_metadata_full_frame(playtracker, frame.frame_meta, frame.play_tracker_results, frame.batch_index);
+      }
     }
 
     g_mutex_lock(&playtracker->process_lock);
