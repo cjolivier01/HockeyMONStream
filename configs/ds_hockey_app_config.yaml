@@ -126,11 +126,12 @@ streammux:
   nvbuf-memory-type: 0
 
 hmvideoprep:
-  enable: false
-  # enable: true
+  # enable: false
+  enable: true
   gpu-id: 0
   # has_queue: true
   # has_videoconvert: true
+  has_cameraman: true
   nvbuf-memory-type: 0
 
 hm-image-meta-merger:
