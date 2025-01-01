@@ -384,7 +384,7 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
   if (ctx->initParams.draw) {
     hm::utils::PlotContext plotter(frame.frame_meta, "");
     for (const auto& cluster_item : frame.play_tracker_results.cluster_boxes) {
-      plotter.plot_rect(cluster_item.second, 1, hm::utils::ColorRGB{0, 0, 0}, hm::utils::ColorRGBA{128, 128, 128, 32});
+      plotter.plot_rect(cluster_item.second, 1, hm::utils::ColorRGB{0, 0, 0}, hm::utils::ColorRGBA{128, 128, 128, 75});
     }
     for (size_t i = 0, n = frame.play_tracker_results.tracking_boxes.size(); i < n; ++i) {
       // plotter.plot_rect(frame.play_tracker_results.tracking_boxes[i], 5, track_colors.at(i));
