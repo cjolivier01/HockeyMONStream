@@ -4,6 +4,8 @@
 
 #include "gstdscameraman_optimized.h"
 
+#include "nvdsmeta.h"
+
 #define MAX_LABEL_SIZE 128
 // #ifdef __cplusplus
 // extern "C" {
@@ -45,8 +47,9 @@ typedef struct {
 DsCameraManCtx* DsCameraManCtxInit(DsCameraManInitParams* init_params);
 
 struct GstDsCameraManFrame;
+
 // Dequeue processed output
-DsCameraManOutput* DsCameraManProcess(GstDsCameraManFrame& frame, DsCameraManCtx* ctx, unsigned char* data);
+DsCameraManOutput* DsCameraManProcess(NvDsFrameMeta* frame_meta, DsCameraManCtx* ctx);
 
 // Deinitialize library context
 void DsCameraManCtxDeinit(DsCameraManCtx* ctx);

@@ -496,7 +496,7 @@ static GstFlowReturn gst_crop_buf_surface_transform_ip(GstBaseTransform* btrans,
 
   NvBufSurface* surface = NULL;
   NvDsBatchMeta* batch_meta = NULL;
-  // NvDsFrameMeta* frame_meta = NULL;
+  NvDsFrameMeta* frame_meta = NULL;
   NvDsMetaList* l_frame = NULL;
 
   dscameraman->frame_num++;
@@ -524,11 +524,11 @@ static GstFlowReturn gst_crop_buf_surface_transform_ip(GstBaseTransform* btrans,
   /* Using object crops as input to the algorithm. The objects are detected by
    * the primary detector */
 
-  // for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
-  // frame_meta = (NvDsFrameMeta*)(l_frame->data);
+  for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
+    frame_meta = (NvDsFrameMeta*)(l_frame->data);
 
-  // DsReplaceFrameProcessFrame(frame_meta, dscameraman->dscameraman_ctx);
-  //}
+    DsCameraManProcess(frame_meta, dscameraman->dscameramanlib_ctx);
+  }
   flow_ret = GST_FLOW_OK;
 
 error:

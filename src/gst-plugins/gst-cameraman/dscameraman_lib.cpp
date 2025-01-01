@@ -30,15 +30,11 @@ DsCameraManCtx* DsCameraManCtxInit(DsCameraManInitParams* initParams) {
 
 // In case of an actual processing library, processing on data wil be completed
 // in this function and output will be returned
-DsCameraManOutput* DsCameraManProcess(GstDsCameraManFrame& frame, DsCameraManCtx* ctx, unsigned char* data) {
+DsCameraManOutput* DsCameraManProcess(NvDsFrameMeta* frame_meta, DsCameraManCtx* ctx) {
   DsCameraManOutput* out = (DsCameraManOutput*)calloc(1, sizeof(DsCameraManOutput));
 
-  if (data != NULL) {
-    // Process your data here
-  }
-
   hm::BBox camera_box;
-  for (NvDsMetaList* l_obj = frame.frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
+  for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
     NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
     if (obj_meta->class_id != kPlayBoxClassIdBase) {
       continue;
