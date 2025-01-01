@@ -1,7 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2020-2021 NVIDIA CORPORATION &
- * AFFILIATES. All rights reserved. SPDX-License-Identifier:
- * LicenseRef-NvidiaProprietary
+ * SPDX-FileCopyrightText: Copyright (c) 2020-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: LicenseRef-NvidiaProprietary
  *
  * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
  * property and proprietary rights in and to this material, related
@@ -19,17 +18,17 @@
 
 /* Open CV headers */
 #ifdef WITH_OPENCV
-#include "opencv2/highgui/highgui.hpp"
 #include "opencv2/imgproc/imgproc.hpp"
+#include "opencv2/highgui/highgui.hpp"
 #endif
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include "dsexample_lib.h"
-#include "gst-nvquery.h"
-#include "gstnvdsmeta.h"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
+#include "gst-nvquery.h"
+#include "gstnvdsmeta.h"
+#include "dsexample_lib.h"
 #include "nvtx3/nvToolsExt.h"
 
 #include <condition_variable>
@@ -41,11 +40,10 @@
 #define PACKAGE "dsexample"
 #define VERSION "1.0"
 #define LICENSE "Proprietary"
-#define DESCRIPTION \
-  "NVIDIA example plugin for integration with DeepStream on DGPU/Jetson"
-#define BINARY_PACKAGE \
-  "NVIDIA DeepStream 3rdparty IP integration example plugin"
+#define DESCRIPTION "NVIDIA example plugin for integration with DeepStream on DGPU/Jetson"
+#define BINARY_PACKAGE "NVIDIA DeepStream 3rdparty IP integration example plugin"
 #define URL "http://nvidia.com/"
+
 
 G_BEGIN_DECLS
 /* Standard boilerplate stuff */
@@ -54,26 +52,22 @@ typedef struct _GstDsExampleClass GstDsExampleClass;
 
 /* Standard boilerplate stuff */
 #define GST_TYPE_DSEXAMPLE (gst_dsexample_get_type())
-#define GST_DSEXAMPLE(obj) \
-  (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_DSEXAMPLE, GstDsExample))
-#define GST_DSEXAMPLE_CLASS(klass) \
-  (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_DSEXAMPLE, GstDsExampleClass))
-#define GST_DSEXAMPLE_GET_CLASS(obj) \
-  (G_TYPE_INSTANCE_GET_CLASS((obj), GST_TYPE_DSEXAMPLE, GstDsExampleClass))
-#define GST_IS_DSEXAMPLE(obj) \
-  (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_DSEXAMPLE))
-#define GST_IS_DSEXAMPLE_CLASS(klass) \
-  (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_DSEXAMPLE))
-#define GST_DSEXAMPLE_CAST(obj) ((GstDsExample*)(obj))
+#define GST_DSEXAMPLE(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj),GST_TYPE_DSEXAMPLE,GstDsExample))
+#define GST_DSEXAMPLE_CLASS(klass) (G_TYPE_CHECK_CLASS_CAST((klass),GST_TYPE_DSEXAMPLE,GstDsExampleClass))
+#define GST_DSEXAMPLE_GET_CLASS(obj) (G_TYPE_INSTANCE_GET_CLASS((obj), GST_TYPE_DSEXAMPLE, GstDsExampleClass))
+#define GST_IS_DSEXAMPLE(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj),GST_TYPE_DSEXAMPLE))
+#define GST_IS_DSEXAMPLE_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE((klass),GST_TYPE_DSEXAMPLE))
+#define GST_DSEXAMPLE_CAST(obj)  ((GstDsExample *)(obj))
 
 /** Maximum batch size to be supported by dsexample. */
 #define NVDSEXAMPLE_MAX_BATCH_SIZE 1024
 
-struct _GstDsExample {
+struct _GstDsExample
+{
   GstBaseTransform base_trans;
 
   /** Context of the custom algorithm library */
-  DsExampleCtx* dsexamplelib_ctx;
+  DsExampleCtx *dsexamplelib_ctx;
 
   /** Processing Queue and related synchronization structures. */
 
@@ -81,19 +75,19 @@ struct _GstDsExample {
   GMutex process_lock;
 
   /** Queue to send data to output thread for processing**/
-  GQueue* process_queue;
+  GQueue *process_queue;
 
   /** Gcondition for process queue**/
   GCond process_cond;
 
   /**Queue to receive processed data from output thread **/
-  GQueue* buf_queue;
+  GQueue *buf_queue;
 
   /** Gcondition for buf queue **/
   GCond buf_cond;
 
   /** Output thread. */
-  GThread* process_thread;
+  GThread *process_thread;
 
   /** Boolean to signal output thread to stop. */
   gboolean stop;
@@ -112,7 +106,7 @@ struct _GstDsExample {
   NvBufSurface batch_insurf;
 
   /** the intermediate scratch buffer for conversions RGBA */
-  NvBufSurface* inter_buf;
+  NvBufSurface *inter_buf;
 
   /** Input video info (resolution, color format, framerate, etc) */
   GstVideoInfo video_info;
@@ -127,10 +121,7 @@ struct _GstDsExample {
   /** GPU ID on which we expect to execute the task */
   guint gpu_id;
 
-  char detection_mask_file[PATH_MAX*4];
-
-  /** Boolean indicating if entire frame or cropped objects should be processed
-   */
+  /** Boolean indicating if entire frame or cropped objects should be processed */
   gboolean process_full_frame;
 
   /** Current batch number of the input batch. */
@@ -149,7 +140,8 @@ struct _GstDsExample {
   nvtxDomainHandle_t nvtx_domain;
 };
 
-typedef struct {
+typedef struct
+{
   /** Ratio by which the frame / object crop was scaled in the horizontal
    * direction. Required when scaling co-ordinates/sizes in metadata
    * back to input resolution. */
@@ -159,25 +151,26 @@ typedef struct {
    * back to input resolution. */
   gdouble scale_ratio_y = 0.0;
   /** NvDsObjectParams belonging to the object to be classified. */
-  NvDsObjectMeta* obj_meta = nullptr;
-  NvDsFrameMeta* frame_meta = nullptr;
+  NvDsObjectMeta *obj_meta = nullptr;
+  NvDsFrameMeta *frame_meta = nullptr;
   /** Index of the frame in the batched input GstBuffer. Not required for
    * classifiers. */
   guint batch_index = 0;
   /** Frame number of the frame from the source. */
   gulong frame_num = 0;
   /** The buffer structure the object / frame was converted from. */
-  NvBufSurfaceParams* input_surf_params = nullptr;
+  NvBufSurfaceParams *input_surf_params = nullptr;
 } GstDsExampleFrame;
 
 /**
  * Holds information about the batch of frames to be inferred.
  */
-typedef struct {
+typedef struct
+{
   /** Vector of frames in the batch. */
-  std::vector<GstDsExampleFrame> frames;
+  std::vector < GstDsExampleFrame > frames;
   /** Pointer to the input GstBuffer. */
-  GstBuffer* inbuf = nullptr;
+  GstBuffer *inbuf = nullptr;
   /** Batch number of the input batch. */
   gulong inbuf_batch_num = 0;
   /** Boolean indicating that the output thread should only push the buffer to
@@ -192,20 +185,21 @@ typedef struct {
 
 #ifdef WITH_OPENCV
   /** OpenCV mat containing RGB data */
-  cv::Mat* cvmat;
+  cv::Mat * cvmat;
 #else
-  NvBufSurface* inter_buf;
+  NvBufSurface *inter_buf;
 #endif
 
   nvtxRangeId_t nvtx_complete_buf_range = 0;
 } GstDsExampleBatch;
 
 /** Boiler plate stuff */
-struct _GstDsExampleClass {
+struct _GstDsExampleClass
+{
   GstBaseTransformClass parent_class;
 };
 
-GType gst_dsexample_get_type(void);
+GType gst_dsexample_get_type (void);
 
 G_END_DECLS
 #endif /* __GST_DSEXAMPLE_H__ */
