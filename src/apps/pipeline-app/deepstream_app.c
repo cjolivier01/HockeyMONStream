@@ -1300,6 +1300,23 @@ static gboolean create_common_elements(
     *sink_elem = pipeline->common_elements.hmimagemetamerger_bin.bin;
   }
 
+  if (config->hmvideoprep_config.enable) {
+    if (!create_hmvideoprep_bin(&config->hmvideoprep_config, &pipeline->common_elements.hmvideoprep_bin)) {
+      g_print("creating streammux_split bin failed\n");
+      goto done;
+    }
+    gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->common_elements.hmvideoprep_bin.bin);
+
+    if (!*src_elem) {
+      *src_elem = pipeline->common_elements.hmvideoprep_bin.bin;
+    }
+    if (*sink_elem) {
+      NVGSTDS_LINK_ELEMENT(pipeline->common_elements.hmvideoprep_bin.bin, *sink_elem);
+    }
+
+    *sink_elem = pipeline->common_elements.hmvideoprep_bin.bin;
+  }
+
   if (config->segvisual_config.enable) {
     if (!create_segvisual_bin(&config->segvisual_config, &pipeline->common_elements.segvisual_bin)) {
       goto done;
@@ -1476,23 +1493,6 @@ static gboolean create_common_elements(
         gie_primary_processing_done_buf_prob,
         GST_PAD_PROBE_TYPE_BUFFER,
         pipeline->common_elements.appCtx);
-  }
-
-  if (config->hmvideoprep_config.enable) {
-    if (!create_hmvideoprep_bin(&config->hmvideoprep_config, &pipeline->common_elements.hmvideoprep_bin)) {
-      g_print("creating streammux_split bin failed\n");
-      goto done;
-    }
-    gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->common_elements.hmvideoprep_bin.bin);
-
-    if (!*src_elem) {
-      *src_elem = pipeline->common_elements.hmvideoprep_bin.bin;
-    }
-    if (*sink_elem) {
-      NVGSTDS_LINK_ELEMENT(pipeline->common_elements.hmvideoprep_bin.bin, *sink_elem);
-    }
-
-    *sink_elem = pipeline->common_elements.hmvideoprep_bin.bin;
   }
 
   if (config->preprocess_config.enable) {

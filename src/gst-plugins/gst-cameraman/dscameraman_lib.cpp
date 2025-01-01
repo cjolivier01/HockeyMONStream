@@ -18,6 +18,11 @@ struct DsCameraManCtx {
   DsCameraManInitParams initParams;
 };
 
+
+namespace {
+ // HACK: Duplciated from PlayTrackerCtx, nbeeds ot be part of config
+static constexpr inline int kPlayBoxClassIdBase = 99;
+}
 DsCameraManCtx* DsCameraManCtxInit(DsCameraManInitParams* initParams) {
   DsCameraManCtx* ctx = (DsCameraManCtx*)calloc(1, sizeof(DsCameraManCtx));
   ctx->initParams = *initParams;
@@ -32,8 +37,24 @@ DsCameraManOutput* DsCameraManProcess(GstDsCameraManFrame& frame, DsCameraManCtx
   if (data != NULL) {
     // Process your data here
   }
+
+  hm::BBox camera_box;
+  for (NvDsMetaList* l_obj = frame.frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
+    NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
+    if (obj_meta->class_id != kPlayBoxClassIdBase) {
+      continue;
+    }
+    camera_box.left = obj_meta->rect_params.left;
+    camera_box.top = obj_meta->rect_params.top;
+    camera_box.right = obj_meta->rect_params.left + obj_meta->rect_params.width;
+    camera_box.bottom = obj_meta->rect_params.top + obj_meta->rect_params.height;
+    out->ops.final_camera_bbox = camera_box;
+    break;
+  }
+
   // Fill output structure using processed output
   // Here, we fake some detected objects and labels
+#if 0
   if (ctx->initParams.fullFrame) {
     out->numObjects = 2;
     out->object[0] = (DsCameraManObject){
@@ -60,7 +81,7 @@ DsCameraManOutput* DsCameraManProcess(GstDsCameraManFrame& frame, DsCameraManCtx
     // Set the object label
     snprintf(out->object[0].label, 64, "Obj_label");
   }
-
+#endif
   return out;
 }
 
