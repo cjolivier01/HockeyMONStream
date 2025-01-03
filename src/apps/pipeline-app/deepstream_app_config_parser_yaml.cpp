@@ -93,7 +93,7 @@ gboolean parse_hmvideoprep_yaml(
   SET_LOCATOR(locator, *config, has_cameraman);
   SET_LOCATOR(locator, *config, nvbuf_memory_type);
 
-  SET_LOCATOR(locator, *config, num_out_buffers);
+  SET_LOCATOR(locator, *config, num_output_buffers);
   SET_LOCATOR(locator, *config, dewarper_dump_frames);
   SET_LOCATOR(locator, *config, source_id);
   SET_LOCATOR(locator, *config, num_surfaces_per_frame);

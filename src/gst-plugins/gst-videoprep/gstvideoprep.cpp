@@ -555,7 +555,10 @@ static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
         vp_params.surface,
         vp_params.dewarpWidth,
         vp_params.dewarpHeight);
-
+#ifndef NDEBUG      
+    fprintf(stderr, "Allocated Surface %p for W=%d H=%d\n", vp_params.surface, vp_params.dewarpWidth, vp_params.dewarpHeight);
+    fflush(stderr);
+#endif
     videoprep->surface_index[i] = vp_params.surface_index;
     videoprep->surface_type[i++] = vp_params.projection_type;
     if (vp_params.projection_type == NVDS_META_SURFACE_FISH_PUSHBROOM) {
