@@ -44,8 +44,8 @@ source:
   # num-sources: 1
   # gpu-id: 0
   # cudadec-memtype: 0
-  # csv-file-path: hockey_sources.csv
-  csv-file-path: webcam_sources.csv
+  csv-file-path: hockey_sources.csv
+  # csv-file-path: webcam_sources.csv
 
 sink0:
   enable: 1
