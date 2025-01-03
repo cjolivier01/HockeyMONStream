@@ -1,0 +1,3 @@
+enable,type,uri,num-sources,gpu-id,cudadec-memtype,camera-fps-n,camera-fps-d,camera-width,camera-height
+# 1,1,v4l2:///dev/video2,1,0,0,10,1,1280,720
+1,1,v4l2:///dev/video2,1,0,0,10,1,4032,720

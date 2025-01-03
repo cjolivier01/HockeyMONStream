@@ -38,7 +38,14 @@ tiled-display:
   nvbuf-memory-type: 0
 
 source:
-  csv-file-path: hockey_sources.csv
+  # enable: 1
+  #z type: 3
+  # uri: file:///home/colivier/Videos/ev-bs-stitched/stitched_output-with-audio.mp4,
+  # num-sources: 1
+  # gpu-id: 0
+  # cudadec-memtype: 0
+  # csv-file-path: hockey_sources.csv
+  csv-file-path: webcam_sources.csv
 
 sink0:
   enable: 1
@@ -174,7 +181,7 @@ ds-playtracker:
   gpu-id: 0
   unique-id: 75
   draw: true
-  play-tracker-class-id: 99
+  # play-tracker-class-id: 99
   config-file: play_tracker_config.yaml
 
 ds-fieldmask:
