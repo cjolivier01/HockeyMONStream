@@ -45,5 +45,24 @@ void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator);
 
 #define STRNLEN(__s$) (sizeof(__s$) / sizeof((__s$)[0]))
 
+template <typename T>
+bool parse_chracter_buffer(
+    T& config_file_dest_buffer,
+    const YAML::Node& yaml_node,
+    const char* key,
+    const std::string& default_prefix_path = "") {
+  if (yaml_node[key]) {
+    std::string config_file = yaml_node[key].as<std::string>();
+    if (!config_file.empty()) {
+      if (config_file[0] != '/' && !default_prefix_path.empty()) {
+        config_file = default_prefix_path + '/' + config_file;
+      }
+      strncpy(config_file_dest_buffer, config_file.c_str(), STRNLEN(config_file_dest_buffer) - 1);
+      return true;
+    }
+  }
+  return false;
+}
+
 } // namespace utils
 } // namespace hm

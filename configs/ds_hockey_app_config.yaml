@@ -21,10 +21,10 @@ tiled-display:
   columns: 1
   # rows: 2
   # columns: 2
-  # width: 7680
-  # height: 3176
-  width: 4080
-  height: 1360
+  width: 7680
+  height: 3176
+  # width: 4080
+  # height: 1360
   # width: 2048
   # height: 720
   # width: 1280
@@ -38,12 +38,6 @@ tiled-display:
   nvbuf-memory-type: 0
 
 source:
-  # enable: 1
-  #z type: 3
-  # uri: file:///home/colivier/Videos/ev-bs-stitched/stitched_output-with-audio.mp4,
-  # num-sources: 1
-  # gpu-id: 0
-  # cudadec-memtype: 0
   csv-file-path: hockey_sources.csv
   # csv-file-path: webcam_sources.csv
 
@@ -125,8 +119,10 @@ streammux:
   ## Set muxer output width and height
   # width: 1312
   # height: 480
-  width: 4080
-  height: 1360
+  # width: 4080
+  # height: 1360
+  width: 7680
+  height: 3176
   ##Enable to maintain aspect ratio wrt source, and allow black borders, works
   ##along with width, height properties
   enable-padding: 1
@@ -136,10 +132,17 @@ hmvideoprep:
   # enable: false
   enable: true
   gpu-id: 0
-  # has_queue: true
-  # has_videoconvert: true
-  has_cameraman: true
+  has_queue: false
+  has_videoconvert: false
+  has_cameraman: false
   nvbuf-memory-type: 0
+  # dewarper portion
+  # source-id: 6
+  # config-file: /opt/nvidia/deepstream/deepstream/sources/apps/sample_apps/deepstream-dewarper-test/config_dewarper_rot_matrix.txt
+  # gpu-id: 0
+  # nvbuf-memory-type: 0
+  # num-output-buffers: 4
+
 
 hm-image-meta-merger:
   enable: false
