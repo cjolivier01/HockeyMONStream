@@ -25,19 +25,22 @@
  * the two threads for parallel processing.
  */
 
-#include <string.h>
-#include <fstream>
-#include <iostream>
-#include <ostream>
-#include <sstream>
-#include <string>
-
 #include "gstdscameraman_optimized.h"
 
+#include <cuda_runtime_api.h>
+#include <nppi.h>
+#include <nvbufsurftransform.h>
+
+#include <string.h>
 #include <sys/time.h>
-#include <condition_variable>
-#include <mutex>
-#include <thread>
+// #include <condition_variable>
+// #include <fstream>
+#include <iostream>
+// #include <mutex>
+#include <ostream>
+// #include <sstream>
+#include <string>
+// #include <thread>
 
 GST_DEBUG_CATEGORY_STATIC(gst_dscameraman_debug);
 #define GST_CAT_DEFAULT gst_dscameraman_debug
@@ -256,7 +259,7 @@ static void gst_dscameraman_class_init(GstDsCameraManClass* klass) {
 
 static void gst_dscameraman_init(GstDsCameraMan* dscameraman) {
   GstBaseTransform* btrans = GST_BASE_TRANSFORM(dscameraman);
-  GstElement* element = GST_ELEMENT(dscameraman);
+  // GstElement* element = GST_ELEMENT(dscameraman);
 
   /* We will not be generating a new buffer. Just adding / updating
    * metadata. */
@@ -511,35 +514,236 @@ void printNvBufSurfaceParams(const NvBufSurfaceParams& params) {
   // std::cout << "Memory Type: " << params.memType << std::endl;
 }
 
-static GstFlowReturn pad_chain(GstPad* pad, GstObject* parent, GstBuffer* buf) {
-  // GstBuffer* new_buf;
+// static GstFlowReturn pad_chain(GstPad* pad, GstObject* parent, GstBuffer* buf) {
+//  GstBuffer* new_buf;
 
-  // // Create a new buffer or modify the existing one.
-  // new_buf = gst_buffer_new_allocate(NULL, gst_buffer_get_size(buf), NULL);
+// // Create a new buffer or modify the existing one.
+// new_buf = gst_buffer_new_allocate(NULL, gst_buffer_get_size(buf), NULL);
 
-  // if (!new_buf) {
-  //   GST_ERROR("Failed to allocate new GstBuffer");
-  //   gst_buffer_unref(buf); // Release the original buffer before returning
-  //   return GST_FLOW_ERROR;
-  // }
+// if (!new_buf) {
+//   GST_ERROR("Failed to allocate new GstBuffer");
+//   gst_buffer_unref(buf); // Release the original buffer before returning
+//   return GST_FLOW_ERROR;
+// }
 
-  // // Optionally copy or modify metadata from the original buffer to the new buffer
-  // GST_BUFFER_PTS(new_buf) = GST_BUFFER_PTS(buf);
-  // GST_BUFFER_DTS(new_buf) = GST_BUFFER_DTS(buf);
+// // Optionally copy or modify metadata from the original buffer to the new buffer
+// GST_BUFFER_PTS(new_buf) = GST_BUFFER_PTS(buf);
+// GST_BUFFER_DTS(new_buf) = GST_BUFFER_DTS(buf);
 
-  // // Push the new buffer downstream
-  //GstPad* peer = gst_pad_get_peer(pad);
-  //if (peer != NULL) {
-    //gst_pad_push(peer, buf);
-  //   gst_pad_push(peer, new_buf);
-  //   // gst_object_unref(peer);
-  //}
+// // Push the new buffer downstream
+// GstPad* peer = gst_pad_get_peer(pad);
+// if (peer != NULL) {
+// gst_pad_push(peer, buf);
+//   gst_pad_push(peer, new_buf);
+//   // gst_object_unref(peer);
+//}
 
-  // // Unreference the original buffer to allow GStreamer to return it to streammux
-  // gst_buffer_unref(buf);
+// // Unreference the original buffer to allow GStreamer to return it to streammux
+// gst_buffer_unref(buf);
+
+//  return GST_FLOW_OK;
+//}
+
+static size_t nv_surface_mem_size(const NvBufSurface* surface) {
+  size_t mem_size = 0;
+  for (size_t i = 0; i < surface->numFilled; ++i) {
+    const auto& params = surface->surfaceList[i];
+    mem_size += params.pitch * params.height * params.width;
+  }
+  return mem_size;
+}
+
+static size_t surface_size(const NvBufSurfaceParams& params) {
+  return params.pitch * params.height * params.width;
+}
+
+static GstFlowReturn gst_buffer_copy_transform(GstBaseTransform* base, GstBuffer* inbuf, GstBuffer* outbuf) {
+  GstMapInfo in_map, out_map;
+
+  // Map the incoming buffer
+  if (!gst_buffer_map(inbuf, &in_map, GST_MAP_READ)) {
+    GST_ERROR("Failed to map input buffer.");
+    return GST_FLOW_ERROR;
+  }
+
+  // Create a new NvBufSurface for the output buffer
+  NvBufSurface* in_surface = (NvBufSurface*)in_map.data;
+  NvBufSurface* out_surface = nullptr;
+
+  if (in_surface) {
+    NvBufSurfaceCreateParams create_params;
+    memset(&create_params, 0, sizeof(create_params));
+    create_params.gpuId = in_surface->gpuId;
+    create_params.width = in_surface->surfaceList[0].width;
+    create_params.height = in_surface->surfaceList[0].height;
+    create_params.colorFormat = in_surface->surfaceList[0].colorFormat;
+    create_params.layout = NVBUF_LAYOUT_PITCH;
+    create_params.memType = NVBUF_MEM_DEFAULT;
+
+    if (NvBufSurfaceCreate(&out_surface, 1, &create_params) != 0) {
+      GST_ERROR("Failed to create output NvBufSurface.");
+      gst_buffer_unmap(inbuf, &in_map);
+      return GST_FLOW_ERROR;
+    }
+
+    // Copy the input surface to the output surface
+    NvBufSurfTransformParams transform_params;
+    memset(&transform_params, 0, sizeof(transform_params));
+    transform_params.transform_flag = NVBUFSURF_TRANSFORM_CROP_SRC;
+    transform_params.transform_filter = NvBufSurfTransformInter_Default;
+
+    if (NvBufSurfTransform(in_surface, out_surface, &transform_params) != 0) {
+      GST_ERROR("Failed to copy NvBufSurface.");
+      NvBufSurfaceDestroy(out_surface);
+      gst_buffer_unmap(inbuf, &in_map);
+      return GST_FLOW_ERROR;
+    }
+  }
+
+  // Allocate memory for the output GstBuffer and attach the new NvBufSurface
+  if (!gst_buffer_map(outbuf, &out_map, GST_MAP_WRITE)) {
+    GST_ERROR("Failed to map output buffer.");
+    if (out_surface)
+      NvBufSurfaceDestroy(out_surface);
+    gst_buffer_unmap(inbuf, &in_map);
+    return GST_FLOW_ERROR;
+  }
+
+  memcpy(out_map.data, in_map.data, in_map.size);
+  gst_buffer_unmap(inbuf, &in_map);
+  gst_buffer_unmap(outbuf, &out_map);
+
+  if (out_surface) {
+    GstMemory* memory = gst_memory_new_wrapped(
+        GST_MEMORY_FLAG_READONLY,  // is read-only correct?
+        out_surface,
+        sizeof(NvBufSurface),
+        0,
+        sizeof(NvBufSurface),
+        out_surface,
+        (GDestroyNotify)NvBufSurfaceDestroy);
+    gst_buffer_append_memory(outbuf, memory);
+  }
 
   return GST_FLOW_OK;
 }
+
+#if 0
+static GstFlowReturn gst_rotate_crop_transform(size_t batch_id, GstBaseTransform* trans, GstBuffer* inbuf, GstBuffer* outbuf) {
+  GstDsCameraMan* dscameraman = GST_DSCAMERAMAN(trans);
+
+  NvBufSurface *in_surface, *out_surface;
+
+  // Map the incoming buffer to get the NvBufSurface
+  if (!gst_buffer_map(inbuf, (GstMapInfo*)&in_surface, GST_MAP_READ)) {
+    GST_ERROR("Failed to map input buffer");
+    return GST_FLOW_ERROR;
+  }
+
+  // Allocate new buffer for output
+  GstBuffer* new_buffer = gst_buffer_new_and_alloc(nv_surface_mem_size(in_surface));
+  if (!gst_buffer_map(new_buffer, (GstMapInfo*)&out_surface, GST_MAP_WRITE)) {
+    GST_ERROR("Failed to map output buffer");
+    return GST_FLOW_ERROR;
+  }
+
+  // Extract rotation and crop from metadata
+  gdouble rotation_angle = 0.0; // Example value, get from metadata
+  int crop_x = 0, crop_y = 0, crop_width = in_surface->surfaceList[batch_id].width,
+      crop_height = in_surface->surfaceList[batch_id].height;
+
+  // Map surfaces
+  NvBufSurfaceMap(in_surface, -1, -1, NVBUF_MAP_READ);
+  NvBufSurfaceMap(out_surface, -1, -1, NVBUF_MAP_WRITE);
+
+  // Get plane parameters for input and output
+  NvBufSurfacePlaneParams* in_plane = &in_surface->surfaceList[batch_id].planeParams;
+  NvBufSurfacePlaneParams* out_plane = &out_surface->surfaceList[batch_id].planeParams;
+
+  // Prepare for CUDA operations
+  cudaStream_t stream = cudaStreamCreateWithFlags(cudaStreamNonBlocking);
+  NppStreamContext nppStreamCtx;
+  nppGetStreamContext(&nppStreamCtx);
+  nppStreamCtx.hStream = stream;
+
+  // Define the rotation matrix
+  NppiRect oSrcRectROI = {0, 0, in_plane->width, in_plane->height};
+  NppiRect oDstRectROI = {0, 0, out_plane->width, out_plane->height};
+  Npp32f aCoeffs[2][3];
+
+  // Create rotation matrix
+  float radian = rotation_angle * (M_PI / 180.0);
+  aCoeffs[0][0] = cosf(radian);
+  aCoeffs[0][1] = sinf(radian);
+  aCoeffs[0][2] =
+      -(in_plane->width >> 1) * cosf(radian) - (in_plane->height >> 1) * sinf(radian) + (in_plane->width >> 1);
+  aCoeffs[1][0] = -sinf(radian);
+  aCoeffs[1][1] = cosf(radian);
+  aCoeffs[1][2] =
+      (in_plane->width >> 1) * sinf(radian) - (in_plane->height >> 1) * cosf(radian) + (in_plane->height >> 1);
+
+  // Perform the affine transformation (rotation)
+  NppiSize oSizeROI = {in_plane->width, in_plane->height};
+  NppiSize oNewSizeROI = {out_plane->width, out_plane->height};
+  NppStatus status = nppiWarpAffine_8u_C3R_Ctx(
+      in_plane->data,
+      in_plane->pitch,
+      oSizeROI,
+      oSrcRectROI,
+      out_plane->data,
+      out_plane->pitch,
+      oNewSizeROI,
+      oDstRectROI,
+      aCoeffs,
+      NPPI_INTER_LINEAR,
+      nppStreamCtx);
+
+  if (status != NPP_SUCCESS) {
+    GST_ERROR("CUDA rotation failed");
+    return GST_FLOW_ERROR;
+  }
+
+  // Apply crop
+  NppiSize srcSize = {crop_width, crop_height};
+  NppiSize dstSize = {crop_width, crop_height};
+  NppiRect srcRect = {crop_x, crop_y, crop_width, crop_height};
+  NppiRect dstRect = {0, 0, crop_width, crop_height};
+
+  status = nppiCopy_8u_C3R_Ctx(
+      out_plane->data + crop_y * out_plane->pitch + crop_x * 3,
+      out_plane->pitch,
+      srcRect,
+      out_plane->data,
+      out_plane->pitch,
+      dstRect,
+      dstSize,
+      nppStreamCtx);
+
+  if (status != NPP_SUCCESS) {
+    GST_ERROR("CUDA crop failed");
+    return GST_FLOW_ERROR;
+  }
+
+  // Synchronize the stream to ensure all operations are complete
+  cudaStreamSynchronize(stream);
+  cudaStreamDestroy(stream);
+
+  NvBufSurfaceUnMap(in_surface, -1, -1);
+  NvBufSurfaceUnMap(out_surface, -1, -1);
+
+  gst_buffer_unmap(inbuf, (GstMapInfo*)&in_surface);
+  gst_buffer_unmap(new_buffer, (GstMapInfo*)&out_surface);
+
+  // Copy metadata
+  gst_buffer_copy_into(new_buffer, inbuf, GST_BUFFER_COPY_METADATA, 0, -1);
+
+  // Replace the outbuf with our new buffer
+  gst_buffer_replace(&outbuf, new_buffer);
+  gst_buffer_unref(new_buffer);
+
+  return GST_FLOW_OK;
+}
+#endif
 
 static GstFlowReturn gst_crop_buf_surface_transform_ip(GstBaseTransform* btrans, GstBuffer* inbuf) {
   GstDsCameraMan* dscameraman = GST_DSCAMERAMAN(btrans);
