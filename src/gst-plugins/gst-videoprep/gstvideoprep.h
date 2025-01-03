@@ -44,8 +44,8 @@ G_BEGIN_DECLS
 #define GST_IS_VIDEOPREP_CLASS(klass) \
   (G_TYPE_CHECK_CLASS_TYPE((klass),GST_TYPE_VIDEOPREP))
 
-typedef struct _GstVideoPrep      GstVideoPrep;
-typedef struct _GstVideoPrepClass GstVideoPrepClass;
+//typedef struct _GstVideoPrep      GstVideoPrep;
+//typedef struct _GstVideoPrepClass GstVideoPrepClass;
 /** @} */
 
 /**
@@ -53,7 +53,7 @@ typedef struct _GstVideoPrepClass GstVideoPrepClass;
  * All these configurations can be set by the user under the "surface"
  * category in config file
  */
-typedef struct _VideoPrepParams
+struct VideoPrepParams
 {
   guint projection_type;                        /**< Projection type of type NvDsSurfaceType */
 
@@ -90,18 +90,18 @@ typedef struct _VideoPrepParams
 
   gfloat dstFocalLength[FOCAL_LENGTH_SIZE];     /**< destination surface focal length */
   gfloat dstPrincipalPoint[2];                  /**< destination surface principal point */
-} VideoPrepParams;
+};
 
 /** Data structure contaning dewarping parameters for all the output surfaces */
-typedef struct _VideoPrepPriv
+struct VideoPrepPriv
 {
   std::vector<VideoPrepParams> vecDewarpSurface; /**< Array of surface parameters of type "VideoPrepParams". Maximum 4. */
-} VideoPrepPriv;
+};
 
 /**
  * GstVideoPrep element structure.
  */
-struct _GstVideoPrep
+struct GstVideoPrep
 {
   GstBaseTransform element; /**< Should be the first member when extending from GstBaseTransform. */
 
@@ -166,7 +166,7 @@ struct _GstVideoPrep
 };
 
 /** GStreamer boilerplate. */
-struct _GstVideoPrepClass
+struct GstVideoPrepClass
 {
   GstBaseTransformClass parent_class;
 };

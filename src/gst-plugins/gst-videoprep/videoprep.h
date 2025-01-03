@@ -4,7 +4,7 @@
 
 #include "nvbufsurface.h"
 
-inline bool CUDA_CHECK_(gint e, gint iLine, const gchar *szFile) {
+inline bool CUDA_CHECK_(gint e, gint iLine, const gchar* szFile) {
   if (e != cudaSuccess) {
     std::cout << "CUDA runtime error " << e << " at line " << iLine << " in file " << szFile << endl;
     return false;
@@ -14,8 +14,14 @@ inline bool CUDA_CHECK_(gint e, gint iLine, const gchar *szFile) {
 
 #define cuda_ck(call) CUDA_CHECK_(call, __LINE__, __FILE__)
 
-#define BAIL_IF_FALSE(x, err, code)  do { if (!(x)) { err = code; goto bail; } } while(0)
-
+#define BAIL_IF_FALSE(x, err, code) \
+  do {                              \
+    if (!(x)) {                     \
+      err = code;                   \
+      goto bail;                    \
+    }                               \
+  } while (0)
+namespace hm {
 /**
  * Function definition of dewarping call for each surface.
  *
@@ -25,8 +31,7 @@ inline bool CUDA_CHECK_(gint e, gint iLine, const gchar *szFile) {
  *
  * @return Cuda Error. "cudaSuccess" in case of Success.
  */
-cudaError gst_videoprep_do_dewarp (GstVideoPrep *videoprep,
-    NvBufSurface *in_surface, NvBufSurface *out_surface);
+cudaError gst_videoprep_do_dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surface, NvBufSurface* out_surface);
 
 /**
  * Function to get core Dewarper library version.
@@ -35,3 +40,4 @@ cudaError gst_videoprep_do_dewarp (GstVideoPrep *videoprep,
  */
 uint32_t gst_videoprep_version();
 
+} // namespace hm

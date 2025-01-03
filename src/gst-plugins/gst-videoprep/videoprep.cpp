@@ -61,6 +61,8 @@
 #define ITER_FACTOR 1.01
 #define NUM_WARP_TYPES (NVDS_META_SURFACE_EQUIRECT_VERTCYLINDER + 1)
 
+namespace hm {
+
 // This array maps the enum "NvDsSurfaceType" to enum "nvwarpType_t"
 const nvwarpType_t NvDsSurfaceType_To_nvwarpType_t[NUM_WARP_TYPES]{
     NVWARP_NONE, // NVDS_META_SURFACE_NONE=0,
@@ -354,8 +356,220 @@ static cudaError Dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surface, const
 
   warparams.control[0] = surfaceParams->control;
 
-  cudaErr = Dewarp_Buffer(videoprep, src, dst, warparams, surfaceParams);
+#if 0 /* simple crop */
+  {
+      // Crop and rotate the surface
+      NvBufSurfTransformParams transform_params = {0};
+      NvBufSurfTransformRect src_rect = {0, 0, src.width, src.height};
+      NvBufSurfTransformRect dst_rect = {0, 0, dst.width, dst.height};
+      transform_params.src_rect = &src_rect;
+      transform_params.dst_rect = &dst_rect;
+      transform_params.transform_flag = NVBUFSURF_TRANSFORM_CROP_SRC;
+      transform_params.transform_filter = NvBufSurfTransformInter_Nearest;
 
+      // Perform the transformation
+      if (NvBufSurfTransform(in_surface, dst.ptr, &transform_params) != 0) {
+          GST_ERROR("Failed to transform surface");
+          cudaErr = cudaErrorInvalidValue; // ?
+      }
+
+  }
+#else
+  cudaErr = Dewarp_Buffer(videoprep, src, dst, warparams, surfaceParams);
+#endif
+  if (videoprep->dump_frames)
+  // Dump output
+  {
+    guint size = 0;
+
+    if (!videoprep->output) {
+      cuda_ck(cudaMallocHost(&videoprep->output, (dst.rowBytes * dst.height)));
+    }
+
+#ifdef USE_CUDA_STREAM
+    cudaErr = cudaStreamSynchronize(videoprep->stream);
+    GST_INFO_OBJECT(
+        videoprep,
+        "SPOT %s  DumpFrames i=%d Frame=%d cudaStreamSynchronize cudaErr=%d Stream=%p Completed",
+        __func__,
+        surfaceParams->id,
+        videoprep->frame_num,
+        cudaErr,
+        videoprep->stream);
+#endif
+
+    std::ostringstream elem;
+    elem << (void*)videoprep;
+
+    std::string idx_str = std::to_string(surfaceParams->surface_index);
+    std::string tmp =
+        "_" + elem.str() + "_" + std::to_string(dst.rowBytes >> 2) + "x" + std::to_string(dst.height) + "_" + idx_str;
+    std::string fname;
+
+    fname = "Dewarper_Output" + tmp + "_interleaved.rgba";
+
+    size = dst.rowBytes * dst.height;
+
+    cudaMemcpy2D(
+        videoprep->output, dst.rowBytes, dst.ptr, dst.rowBytes, dst.rowBytes, dst.height, cudaMemcpyDeviceToHost);
+
+    std::ofstream outfile1;
+    outfile1.open(fname, std::ofstream::out | std::ofstream::app);
+    outfile1.write(reinterpret_cast<gchar*>(videoprep->output), size);
+    outfile1.close();
+  }
+#if defined(__aarch64__)
+  if (in_surface->memType == NVBUF_MEM_SURFACE_ARRAY) {
+    status = cuGraphicsUnregisterResource(pResource);
+    if (status != CUDA_SUCCESS) {
+      printf("cuGraphicsEGLUnRegisterResource failed: %d \n", status);
+    }
+  }
+#endif
+  GST_INFO_OBJECT(
+      videoprep,
+      " %s Frame=%d Dewarp for Views=%d cudaErr=%d "
+      "Stream=%p Completed",
+      __func__,
+      videoprep->frame_num,
+      surfaceParams->id,
+      cudaErr,
+      videoprep->stream);
+  return cudaErr;
+}
+
+static cudaError MyDewarp(
+    GstVideoPrep* videoprep,
+    NvBufSurface* in_surface,
+    const VideoPrepParams* surfaceParams,
+    NvBufSurface* out_surface) {
+  nvwarpParams_t warparams;
+  cudaError_t cudaErr = cudaSuccess;
+  Buffer src, dst;
+
+  src.ptr = (const unsigned int*)in_surface->surfaceList[0].dataPtr;
+  src.width = in_surface->surfaceList[0].planeParams.width[0];
+  src.height = in_surface->surfaceList[0].planeParams.height[0];
+  src.rowBytes = in_surface->surfaceList[0].planeParams.pitch[0];
+
+  dst.ptr = (const guint*)(surfaceParams->surface);
+  dst.width = (surfaceParams->dewarpWidth == 0) ? src.width : surfaceParams->dewarpWidth;
+  dst.height = (surfaceParams->dewarpHeight == 0) ? src.height : surfaceParams->dewarpHeight;
+  dst.rowBytes = surfaceParams->dewarpPitch;
+
+#if defined(__aarch64__)
+  CUresult status;
+  CUeglFrame eglFrame = {};
+  CUgraphicsResource pResource = NULL;
+  EGLImageKHR eglimage_src = NULL;
+
+  if (in_surface->memType == NVBUF_MEM_SURFACE_ARRAY) {
+    if (in_surface->surfaceList[0].mappedAddr.eglImage == NULL) {
+      NvBufSurfaceMapEglImage(in_surface, 0);
+    }
+    eglimage_src = in_surface->surfaceList[0].mappedAddr.eglImage;
+
+    status = cuGraphicsEGLRegisterImage(&pResource, eglimage_src, CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE);
+    if (status != CUDA_SUCCESS) {
+      printf("cuGraphicsEGLRegisterImage failed: %d, cuda process stop\n", status);
+      exit(-1);
+    }
+
+    status = cuGraphicsResourceGetMappedEglFrame(&eglFrame, pResource, 0, 0);
+    if (status != CUDA_SUCCESS) {
+      printf("cuGraphicsSubResourceGetMappedArray failed\n");
+    }
+
+    src.ptr = (const unsigned*)eglFrame.frame.pPitch[0];
+  }
+#endif
+
+  warparams.type = NvDsSurfaceType_To_nvwarpType_t[surfaceParams->projection_type];
+  warparams.srcWidth = src.width;
+  warparams.srcHeight = src.height;
+  warparams.srcX0 = (surfaceParams->src_x0 == 0) ? (src.width - 1) * .5f : surfaceParams->src_x0;
+  warparams.srcY0 = (surfaceParams->src_y0 == 0) ? (src.height - 1) * .5f : surfaceParams->src_y0;
+  if (surfaceParams->dewarpFocalLength[0] == 0 && surfaceParams->srcFov > 0) {
+    float ang = surfaceParams->srcFov * (.5f * F_RADIANS_PER_DEGREE);
+    float rad = ((surfaceParams->srcFov == 180.f) ? src.height : (src.height - 1)) * .5F;
+
+    if (nvwarpComputeParamsSrcFocalLength(&warparams, ang, rad)) { // Computes and sets srcFocalLen
+      GST_INFO_OBJECT(
+          videoprep,
+          "Computing source Focal Length from source Field of View failed. "
+          "Setting Focal Length to zero\n");
+      warparams.srcFocalLen = 0.f;
+    }
+
+  } else {
+    warparams.srcFocalLen = surfaceParams->dewarpFocalLength[0];
+  }
+
+  /* Set warper parameters */
+  if (surfaceParams->distortion) {
+    warparams.dist[0] = surfaceParams->distortion[0];
+    warparams.dist[1] = surfaceParams->distortion[1];
+    warparams.dist[2] = surfaceParams->distortion[2];
+    warparams.dist[3] = surfaceParams->distortion[3];
+    warparams.dist[4] = surfaceParams->distortion[4];
+  }
+
+  warparams.dstWidth = dst.width;
+  warparams.dstHeight = dst.height;
+
+  if (surfaceParams->rot_axes[0]) {
+    if ((strcmp(surfaceParams->rot_axes, "XYZ") == 0) || (strcmp(surfaceParams->rot_axes, "XZY") == 0) ||
+        (strcmp(surfaceParams->rot_axes, "YXZ") == 0) || (strcmp(surfaceParams->rot_axes, "YZX") == 0) ||
+        (strcmp(surfaceParams->rot_axes, "ZXY") == 0) || (strcmp(surfaceParams->rot_axes, "ZYX") == 0)) {
+      strcpy(warparams.rotAxes, surfaceParams->rot_axes);
+    } else {
+      GST_WARNING_OBJECT(videoprep, "rot-axes setting is incorrect. Using the default setting : %s", warparams.rotAxes);
+    }
+  }
+
+  // Map Yaw, pitch and roll to appropriate position in "rotAngles" based on "rot_axes"
+  for (int i = 0; i < 3; i++) {
+    switch (warparams.rotAxes[i]) {
+      default:
+      case 'X':
+        warparams.rotAngles[i] = surfaceParams->pitch * F_RADIANS_PER_DEGREE;
+        break;
+      case 'Y':
+        warparams.rotAngles[i] = surfaceParams->yaw * F_RADIANS_PER_DEGREE;
+        break;
+      case 'Z':
+        warparams.rotAngles[i] = surfaceParams->roll * F_RADIANS_PER_DEGREE;
+        break;
+    }
+  }
+
+  warparams.topAngle = surfaceParams->top_angle * F_RADIANS_PER_DEGREE;
+  warparams.bottomAngle = surfaceParams->bottom_angle * F_RADIANS_PER_DEGREE;
+
+  warparams.control[0] = surfaceParams->control;
+
+#if 0 /* simple crop */
+  {
+      // Crop and rotate the surface
+      NvBufSurfTransformParams transform_params = {0};
+      NvBufSurfTransformRect src_rect = {0, 0, src.width, src.height};
+      NvBufSurfTransformRect dst_rect = {0, 0, dst.width, dst.height};
+      transform_params.src_rect = &src_rect;
+      transform_params.dst_rect = &dst_rect;
+      transform_params.transform_flag = NVBUFSURF_TRANSFORM_CROP_SRC|NVBUFSURF_TRANSFORM_CROP_DST;
+      transform_params.transform_filter = NvBufSurfTransformInter_Nearest;
+
+      // Perform the transformation
+      NvBufSurfTransform_Error error = NvBufSurfTransform(in_surface, out_surface, &transform_params);
+      if (error != 0) {
+          GST_ERROR("Failed to transform surface %d", error);
+          cudaErr = cudaErrorInvalidValue; // ?
+      }
+
+  }
+#else
+  cudaErr = Dewarp_Buffer(videoprep, src, dst, warparams, surfaceParams);
+#endif
   if (videoprep->dump_frames)
   // Dump output
   {
@@ -425,6 +639,7 @@ cudaError gst_videoprep_do_dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surf
 
   for (it = videoprep->priv->vecDewarpSurface.begin(); it != videoprep->priv->vecDewarpSurface.end(); it++) {
     dewarpParams = &(*it);
+    (void)dewarpParams;
     // cout << it->projection_type << " " << it->dewarpWidth << " " << it->dewarpHeight << endl;
     if ((it->projection_type >= NVDS_META_SURFACE_FISH_PUSHBROOM) &&
         (it->projection_type <= NVDS_META_SURFACE_EQUIRECT_VERTCYLINDER)) {
@@ -433,7 +648,8 @@ cudaError gst_videoprep_do_dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surf
             context_name, sizeof(context_name), "%s_(Frame=%u)", GST_ELEMENT_NAME(videoprep), videoprep->frame_num);
         // nvtx_helper_push_pop(strcat(context_name,"Dewarp"));
 
-        cuda_ck(Dewarp(videoprep, in_surface, dewarpParams));
+        // cuda_ck(Dewarp(videoprep, in_surface, dewarpParams));
+        cuda_ck(MyDewarp(videoprep, in_surface, dewarpParams, out_surface));
 
         // To maintain legacy prints
         if (it->projection_type == NVDS_META_SURFACE_FISH_PUSHBROOM) {
@@ -467,3 +683,4 @@ cudaError gst_videoprep_do_dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surf
 uint32_t gst_videoprep_version() {
   return nvwarpVersion();
 }
+} // namespace hm

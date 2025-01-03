@@ -140,7 +140,7 @@ void __attribute__((constructor)) videoprep_libinit(void);
 void __attribute__((destructor)) videoprep_libdeinit(void);
 
 void videoprep_libinit(void) {
-  unsigned version = gst_videoprep_version();
+  unsigned version = hm::gst_videoprep_version();
   if (0 != (version & 0xFF))
     g_snprintf(
         VIDEOPREP_LIB_VERSION,
@@ -916,7 +916,7 @@ static cudaError gst_videoprep_dewarp(GstVideoPrep* videoprep, NvBufSurface* in_
     }
   }
   // Do Dewarping of all surfaces
-  cuda_ck(gst_videoprep_do_dewarp(videoprep, in_surface, out_surface));
+  cuda_ck(hm::gst_videoprep_do_dewarp(videoprep, in_surface, out_surface));
 
   if (videoprep->output_fmt == GST_VIDEO_FORMAT_NV12 || videoprep->output_fmt == GST_VIDEO_FORMAT_NV21) {
     // RGBA ---> NV12 conversion
