@@ -132,13 +132,14 @@ hmvideoprep:
   # enable: false
   enable: true
   gpu-id: 0
-  has_queue: false
-  has_videoconvert: false
-  has_cameraman: false
+  # has_queue: false
+  # has_videoconvert: false
+  # has_cameraman: true
   nvbuf-memory-type: 0
   # dewarper portion
   # source-id: 6
   # config-file: /opt/nvidia/deepstream/deepstream/sources/apps/sample_apps/deepstream-dewarper-test/config_dewarper_rot_matrix.txt
+  config-file: config_dewarper_null.txt
   # gpu-id: 0
   # nvbuf-memory-type: 0
   # num-output-buffers: 4
