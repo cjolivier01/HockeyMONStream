@@ -21,9 +21,11 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#include <string.h>
-#include <cuda.h>
 #include "videoprep_property_parser.h"
+#include <cuda.h>
+#include <string.h>
+
+/* clang-format off */
 
 GST_DEBUG_CATEGORY (VIDEOPREP_CFG_PARSER_CAT);
 
@@ -86,7 +88,7 @@ inline bool CUDA_CHECK_ERR_(int e, int iLine, const char *szFile) {
 #define MAX_SURFACES 4
 
 gchar *
-get_absolute_file_path (gchar * cfg_file_path, gchar * file_path)
+get_absolute_file_path (const gchar * cfg_file_path, gchar * file_path)
 {
   gchar abs_cfg_path[PATH_MAX + 1];
   gchar *abs_file_path;
@@ -317,7 +319,7 @@ done:
 
 gboolean
 videoprep_parse_props (GstVideoPrep * videoprep, GKeyFile * key_file,
-    gchar * group, gchar * cfg_file_path)
+    const gchar * group, const gchar * cfg_file_path)
 {
   gboolean ret = FALSE;
   gchar **keys = NULL;
@@ -481,3 +483,5 @@ done:
   }
   return ret;
 }
+
+/* clang-format on */

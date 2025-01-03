@@ -32,10 +32,10 @@
 #ifndef __GST_VIDEOPREP_H__
 #define __GST_VIDEOPREP_H__
 
+#include <gst/base/gstbasetransform.h>
 #include <gst/gst.h>
 #include <gst/video/gstvideometa.h>
 #include <gst/video/video.h>
-#include <gst/base/gstbasetransform.h>
 
 #include <cuda.h>
 #include <npp.h>
@@ -49,6 +49,8 @@
 
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
+
+/* clang-format off */
 
 using namespace nvaisle_csv;
 using namespace nvspot_csv;
@@ -204,5 +206,7 @@ struct _GstVideoPrepClass
 GType gst_videoprep_get_type (void);
 
 G_END_DECLS
+
+/* clang-format on */
 
 #endif /* __GST_VIDEOPREP_H__ */

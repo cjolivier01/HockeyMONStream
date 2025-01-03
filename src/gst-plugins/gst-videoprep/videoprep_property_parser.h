@@ -35,6 +35,8 @@
 #include <gst/gst.h>
 #include "gstvideoprep.h"
 
+/* clang-format off */
+
 /**
  * @addtogroup one Global properties
  *
@@ -94,5 +96,6 @@ gboolean
 videoprep_parse_videoprep_props (GstVideoPrep *videoprep, GKeyFile *key_file,
     gchar *group, gchar *cfg_file_path);
 
+/* clang-format on */
 
 #endif /* VIDEOPREP_PROPERTY_FILE_PARSER_H_ */
