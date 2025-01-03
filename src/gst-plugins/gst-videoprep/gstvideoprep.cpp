@@ -531,7 +531,7 @@ static GstCaps* gst_videoprep_transform_caps(
 }
 
 static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
-  std::vector<VideoPrepParams>::iterator it;
+  std::vector<VideoPrepParams>::iterator iter;
   guint i = 0;
   cudaError_t cudaErr;
 
@@ -541,21 +541,27 @@ static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
     return cudaErr;
   }
 
-  for (it = videoprep->priv->vecDewarpSurface.begin(); it != videoprep->priv->vecDewarpSurface.end(); it++) {
+  for (iter = videoprep->priv->vecDewarpSurface.begin(); iter != videoprep->priv->vecDewarpSurface.end(); iter++) {
+    VideoPrepParams& vp_params = *iter;
     // it->dewarpPitch = 4 * (((it->dewarpWidth) + 31) / 32) * 32;
-    it->dewarpPitch = NVBUF_PLATFORM_ALIGNED_PITCH(it->dewarpWidth * 4);
+    vp_params.dewarpPitch = NVBUF_PLATFORM_ALIGNED_PITCH(vp_params.dewarpWidth * 4);
 
-    cuda_ck(cudaMalloc(&it->surface, it->dewarpPitch * it->dewarpHeight));
+    cuda_ck(cudaMalloc(&vp_params.surface, vp_params.dewarpPitch * vp_params.dewarpHeight));
     // cuda_ck (cudaMalloc (&it->surface, it->dewarpWidth * it->dewarpHeight * 4));
 
-    GST_INFO_OBJECT(videoprep, "Allocated Surface %p for W=%d H=%d", it->surface, it->dewarpWidth, it->dewarpHeight);
+    GST_INFO_OBJECT(
+        videoprep,
+        "Allocated Surface %p for W=%d H=%d",
+        vp_params.surface,
+        vp_params.dewarpWidth,
+        vp_params.dewarpHeight);
 
-    videoprep->surface_index[i] = it->surface_index;
-    videoprep->surface_type[i++] = it->projection_type;
-    if (it->projection_type == NVDS_META_SURFACE_FISH_PUSHBROOM) {
+    videoprep->surface_index[i] = vp_params.surface_index;
+    videoprep->surface_type[i++] = vp_params.projection_type;
+    if (vp_params.projection_type == NVDS_META_SURFACE_FISH_PUSHBROOM) {
       videoprep->spot_surf_index[videoprep->num_spot_views] = videoprep->num_spot_views;
       videoprep->num_spot_views++;
-    } else if (it->projection_type == NVDS_META_SURFACE_FISH_VERTCYL) {
+    } else if (vp_params.projection_type == NVDS_META_SURFACE_FISH_VERTCYL) {
       videoprep->aisle_surf_index[videoprep->num_aisle_views] = videoprep->num_aisle_views;
       videoprep->num_aisle_views++;
     }
