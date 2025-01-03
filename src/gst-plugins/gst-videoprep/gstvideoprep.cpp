@@ -23,9 +23,10 @@
 
 #include <gst/gst.h>
 
+#include <assert.h>
 #include <string.h>
 #include <unistd.h>
-#include <sstream>
+// #include <sstream>
 #include <vector>
 
 #include "gstnvdsbufferpool.h"
@@ -555,8 +556,13 @@ static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
         vp_params.surface,
         vp_params.dewarpWidth,
         vp_params.dewarpHeight);
-#ifndef NDEBUG      
-    fprintf(stderr, "Allocated Surface %p for W=%d H=%d\n", vp_params.surface, vp_params.dewarpWidth, vp_params.dewarpHeight);
+#ifndef NDEBUG
+    fprintf(
+        stderr,
+        "Allocated Surface %p for W=%d H=%d\n",
+        vp_params.surface,
+        vp_params.dewarpWidth,
+        vp_params.dewarpHeight);
     fflush(stderr);
 #endif
     videoprep->surface_index[i] = vp_params.surface_index;
@@ -730,6 +736,8 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
 
     config = gst_buffer_pool_get_config(videoprep->pool);
 
+    assert(videoprep->num_output_buffers > 0);
+    assert(videoprep->num_batch_buffers > 0);
     // g_print ("in videoconvert caps = %s\n", gst_caps_to_string (outcaps));
     gst_buffer_pool_config_set_params(
         config, outcaps, sizeof(NvBufSurface), videoprep->num_output_buffers, videoprep->num_output_buffers);
@@ -786,6 +794,7 @@ static cudaError gst_videoprep_generate_output(
   NvBufSurfaceParams surfaceList[MAX_DEWARPED_VIEWS];
   NvBufSurfTransformRect dstRect[MAX_DEWARPED_VIEWS];
   NvBufSurfTransformRect srcRect[MAX_DEWARPED_VIEWS];
+  (void)srcRect;
   gfloat xscale = 1.0;
   in_surf.gpuId = videoprep->gpu_id;
   in_surf.batchSize = 1;
@@ -861,6 +870,50 @@ static cudaError gst_videoprep_generate_output(
     nvtx_helper_push_pop(NULL);
   }
 
+  NvBufSurfTransform_Error tx_err = NvBufSurfTransformError_Success;
+#if 1
+  {
+    // Perform NvBufTransform
+    NvBufSurfTransformParams transform_params;
+    transform_params.transform_flag =
+        NVBUFSURF_TRANSFORM_FILTER | NVBUFSURF_TRANSFORM_CROP_DST | NVBUFSURF_TRANSFORM_CROP_SRC;
+    // transform_params.transform_flag =
+    //     NVBUFSURF_TRANSFORM_FILTER | NVBUFSURF_TRANSFORM_CROP_DST | NVBUFSURF_TRANSFORM_CROP_SRC;
+    transform_params.transform_flip = NvBufSurfTransform_None;
+    transform_params.transform_filter = videoprep->interpolation_method;
+
+    NvBufSurfTransformRect srcR, destR;
+    srcR.left = 0;
+    srcR.top = 0;
+    srcR.width = 500;
+    srcR.height = 500;
+
+    destR.left = 0;
+    destR.top = 0;
+    destR.width = 500;
+    destR.height = 500;
+    (void)destR;
+
+    transform_params.src_rect = &srcR;
+    transform_params.dst_rect = &destR;
+    // transform_params.dst_rect = &dstRect[0];
+
+    NvBufSurfTransformConfigParams config_params;
+    config_params.compute_mode = NvBufSurfTransformCompute_GPU;
+    config_params.gpu_id = videoprep->gpu_id;
+    config_params.cuda_stream = videoprep->stream;
+
+    tx_err = NvBufSurfTransformSetSessionParams(&config_params);
+    if (tx_err != NvBufSurfTransformError_Success) {
+      g_print("%s: %d NvBufSurfTransform set session failed\n", __func__, __LINE__);
+      g_free(surface_meta);
+      return cudaErrorInvalidSurface;
+    }
+    tx_err = NvBufSurfTransform(&in_surf, out_surface, &transform_params);
+    // tx_err = NvBufSurfTransform(in_surface, out_surface, &transform_params);
+  }
+#else
+
   // Perform NvBufTransform
   NvBufSurfTransformParams transform_params;
   transform_params.transform_flag =
@@ -872,7 +925,6 @@ static cudaError gst_videoprep_generate_output(
   in_surf.numFilled = i;
   in_surf.batchSize = i;
 
-  NvBufSurfTransform_Error tx_err = NvBufSurfTransformError_Success;
   NvBufSurfTransformConfigParams config_params;
   config_params.compute_mode = NvBufSurfTransformCompute_GPU;
   config_params.gpu_id = videoprep->gpu_id;
@@ -886,6 +938,7 @@ static cudaError gst_videoprep_generate_output(
   }
 
   tx_err = NvBufSurfTransform(&in_surf, out_surface, &transform_params);
+#endif
   if (tx_err != NvBufSurfTransformError_Success) {
     g_print("%s: %d NvBufSurfTransform failed\n", __func__, __LINE__);
     g_free(surface_meta);

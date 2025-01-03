@@ -102,6 +102,10 @@
       "program": "${workspaceFolder}/src/bazel-bin/apps/pipeline-app/pipeline-app",
       "args": "-c ${workspaceFolder}/configs/ds_hockey_app_config.yaml",
       "environment": [
+        // {
+        //   "name": "GST_DEBUG",
+        //   "value": "5",
+        // },
         {
           "name": "LD_LIBRARY_PATH",
           "value": "/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:/home/colivier/mambaforge/envs/ubuntu/lib:/home/colivier/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu"

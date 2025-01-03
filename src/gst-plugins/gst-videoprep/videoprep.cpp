@@ -648,8 +648,8 @@ cudaError gst_videoprep_do_dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surf
             context_name, sizeof(context_name), "%s_(Frame=%u)", GST_ELEMENT_NAME(videoprep), videoprep->frame_num);
         // nvtx_helper_push_pop(strcat(context_name,"Dewarp"));
 
-        // cuda_ck(Dewarp(videoprep, in_surface, dewarpParams));
-        cuda_ck(MyDewarp(videoprep, in_surface, dewarpParams, out_surface));
+        cuda_ck(Dewarp(videoprep, in_surface, dewarpParams));
+        //cuda_ck(MyDewarp(videoprep, in_surface, dewarpParams, out_surface));
 
         // To maintain legacy prints
         if (it->projection_type == NVDS_META_SURFACE_FISH_PUSHBROOM) {
