@@ -22,7 +22,7 @@ num-batch-buffers=1
 
 [surface0]
 # 1=PushBroom, 2=VertRadCyl, 3=PerspectivePerspective
-projection-type=3
+projection-type=15
 width=3680
 height=2428
 #focal-length=1721.592
