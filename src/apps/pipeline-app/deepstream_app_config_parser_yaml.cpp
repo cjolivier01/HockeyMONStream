@@ -46,15 +46,6 @@ gboolean parse_dsplaytracker_yaml(
   SET_LOCATOR(locator, *config, nvbuf_memory_type);
   SET_LOCATOR(locator, *config, draw);
   hm::utils::parse_chracter_buffer(config->config_file, yaml_node, "config-file", config_path);
-  // if (yaml_node["config-file"]) {
-  //   std::string config_file = yaml_node["config-file"].as<std::string>();
-  //   if (!config_file.empty()) {
-  //     if (config_file[0] != '/' && !config_path.empty()) {
-  //       config_file = config_path + '/' + config_file;
-  //     }
-  //     strncpy(config->config_file, config_file.c_str(), STRNLEN(config->config_file) - 1);
-  //   }
-  // }
   set_config_from_yaml(yaml_node, locator);
   return true;
 }
@@ -70,16 +61,6 @@ gboolean parse_dsfieldmask_yaml(
   SET_LOCATOR(locator, *config, nvbuf_memory_type);
   SET_LOCATOR_CHARS(locator, *config, detection_mask_file);
   hm::utils::parse_chracter_buffer(config->detection_mask_file, yaml_node, "detection-mask", config_path);
-  // TODO: implement char_array_locators
-  // if (yaml_node["detection-mask"]) {
-  //   std::string config_file = yaml_node["detection-mask"].as<std::string>();
-  //   if (!config_file.empty()) {
-  //     if (config_file[0] != '/' && !config_path.empty()) {
-  //       config_file = config_path + '/' + config_file;
-  //     }
-  //     strncpy(config->detection_mask_file, config_file.c_str(), STRNLEN(config->detection_mask_file) - 1);
-  //   }
-  // }
   set_config_from_yaml(yaml_node, locator);
   return true;
 }
