@@ -1,4 +1,6 @@
 #include "apps/pipeline-app/configurator.h"
+#include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
+
 namespace hm {
 Configurator::Configurator(
     const std::string& game_id,

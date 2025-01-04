@@ -29,10 +29,12 @@
       "problemMatcher": []
     },
     {
-      "label": "Build extensions",
+      "label": "Build All",
       "type": "shell",
       "command": "./bld",
-      "args": [],
+      "args": [
+        "//...",
+      ],
       "group": {
         "kind": "build",
         "isDefault": true,
@@ -49,7 +51,7 @@
       "problemMatcher": [],
     },
     {
-      "label": "Rebuild extensions",
+      "label": "Rebuild All",
       "type": "shell",
       "command": "./rebuild",
       "args": [],
