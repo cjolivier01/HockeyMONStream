@@ -194,6 +194,7 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
 
 static gpointer videoprep_meta_copy_func(gpointer data, gpointer user_data) {
   NvDewarperSurfaceMeta* src_surface_meta = (NvDewarperSurfaceMeta*)data;
+  assert(src_surface_meta);
   NvDewarperSurfaceMeta* dst_surface_meta = (NvDewarperSurfaceMeta*)g_malloc0(sizeof(NvDewarperSurfaceMeta));
   memcpy(dst_surface_meta, src_surface_meta, sizeof(NvDewarperSurfaceMeta));
   return (gpointer)dst_surface_meta;
@@ -210,6 +211,7 @@ static void videoprep_meta_release_func(gpointer data, gpointer user_data) {
 static gpointer videoprep_gst_to_nvds_meta_ransform_func(gpointer data, gpointer user_data) {
   NvDsUserMeta* user_meta = (NvDsUserMeta*)data;
   NvDewarperSurfaceMeta* src_surface_meta = (NvDewarperSurfaceMeta*)user_meta->user_meta_data;
+  assert(src_surface_meta);
   NvDewarperSurfaceMeta* dst_surface_meta = (NvDewarperSurfaceMeta*)videoprep_meta_copy_func(src_surface_meta, NULL);
   return (gpointer)dst_surface_meta;
 }
@@ -217,6 +219,7 @@ static gpointer videoprep_gst_to_nvds_meta_ransform_func(gpointer data, gpointer
 static void videoprep_gst_nvds_meta_release_func(gpointer data, gpointer user_data) {
   NvDsUserMeta* user_meta = (NvDsUserMeta*)data;
   NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)user_meta->user_meta_data;
+  assert(surface_meta);
   videoprep_meta_release_func(surface_meta, NULL);
 }
 
@@ -814,74 +817,6 @@ void inspect_nvbufsurface_dtype(GstBuffer* buffer) {
   gst_buffer_unmap(buffer, &map_info);
 }
 
-NppStatus rotateNvBufSurfaceWithNPP(
-    NvBufSurface* inputSurface,
-    size_t input_surface_index,
-    const hm::BBox& src_rect,
-    NvBufSurface* outputSurface,
-    size_t output_surface_index,
-    float angleDegrees,
-    const NppStreamContext& nppStreamContext,
-    std::optional<int> fill_value = std::nullopt) {
-  float angleRadians = angleDegrees * M_PI / 180.0f;
-
-  assert(input_surface_index < inputSurface->numFilled);
-  assert(output_surface_index < outputSurface->batchSize);
-
-  // Assume first plane for simplicity
-  NvBufSurfaceParams* inParams = &inputSurface->surfaceList[input_surface_index];
-  NvBufSurfaceParams* outParams = &outputSurface->surfaceList[output_surface_index];
-  assert(inParams->colorFormat == outParams->colorFormat);
-  assert(inParams->colorFormat == NVBUF_COLOR_FORMAT_RGBA);
-  // Define rotation matrix
-  double affineMatrix[2][3] = {
-      {cos(angleRadians), -sin(angleRadians), 0.0}, {sin(angleRadians), cos(angleRadians), 0.0}};
-
-  // Adjust translation to rotate around the center
-  affineMatrix[0][2] = (outParams->width / 2.0) - (cos(angleRadians) * inParams->width / 2.0) +
-      (sin(angleRadians) * inParams->height / 2.0);
-  affineMatrix[1][2] = (outParams->height / 2.0) - (sin(angleRadians) * inParams->width / 2.0) -
-      (cos(angleRadians) * inParams->height / 2.0);
-
-  // Set source and destination ROI
-  NppiRect srcROI = {0, 0, static_cast<int>(inParams->width), static_cast<int>(inParams->height)};
-  NppiRect dstROI = {0, 0, static_cast<int>(outParams->width), static_cast<int>(outParams->height)};
-
-  // Perform rotation using NPP
-
-  // nppiWarpAffine_8u_C4R(const Npp8u * pSrc, NppiSize oSrcSize, int nSrcStep, NppiRect oSrcROI,
-  //                             Npp8u * pDst, int nDstStep, NppiRect oDstROI,
-  //                       const double aCoeffs[2][3], int eInterpolation);
-  if (fill_value.has_value()) {
-    cudaMemset2DAsync(
-        outParams->dataPtr, outParams->pitch, 0, outParams->width, outParams->height, nppStreamContext.hStream);
-  }
-
-  srcROI.x = src_rect.left;
-  srcROI.y = src_rect.top;
-  srcROI.width = src_rect.width();
-  srcROI.height = src_rect.height();
-  float ar = float(srcROI.width) / srcROI.height;
-  (void)ar;
-
-  NppStatus status = nppiWarpAffine_8u_C4R_Ctx(
-      static_cast<const Npp8u*>(inParams->dataPtr), // Source pointer
-      {static_cast<int>(inParams->width), static_cast<int>(inParams->height)}, // Source size
-      inParams->pitch, // Source pitch
-      srcROI, // Source ROI
-      static_cast<Npp8u*>(outParams->dataPtr), // Destination pointer
-      outParams->pitch, // Destination pitch
-      dstROI, // Destination ROI
-      affineMatrix, // Affine transformation matrix
-      NPPI_INTER_LINEAR, // Interpolation method
-      nppStreamContext);
-
-  if (status != NPP_SUCCESS) {
-    std::cerr << "NPP rotation failed with error: " << status << std::endl;
-  }
-  return status;
-}
-
 static cudaError gst_videoprep_generate_output(
     NvDsBatchMeta* batch_meta,
     GstVideoPrep* videoprep,
@@ -1027,17 +962,17 @@ static cudaError gst_videoprep_generate_output(
   in_surf.numFilled = i;
   in_surf.batchSize = i;
 
-  // NvBufSurfTransformConfigParams config_params;
-  // config_params.compute_mode = NvBufSurfTransformCompute_GPU;
-  // config_params.gpu_id = videoprep->gpu_id;
-  // config_params.cuda_stream = videoprep->stream;
+  NvBufSurfTransformConfigParams config_params;
+  config_params.compute_mode = NvBufSurfTransformCompute_GPU;
+  config_params.gpu_id = videoprep->gpu_id;
+  config_params.cuda_stream = videoprep->stream;
 
-  // tx_err = NvBufSurfTransformSetSessionParams(&config_params);
-  // if (tx_err != NvBufSurfTransformError_Success) {
-  //   g_print("%s: %d NvBufSurfTransform set session failed\n", __func__, __LINE__);
-  //   g_free(surface_meta);
-  //   return cudaErrorInvalidSurface;
-  // }
+  tx_err = NvBufSurfTransformSetSessionParams(&config_params);
+  if (tx_err != NvBufSurfTransformError_Success) {
+    g_print("%s: %d NvBufSurfTransform set session failed\n", __func__, __LINE__);
+    g_free(surface_meta);
+    return cudaErrorInvalidSurface;
+  }
 
   // tx_err = NvBufSurfTransform(&in_surf, out_surface, &transform_params);
 
@@ -1049,14 +984,20 @@ static cudaError gst_videoprep_generate_output(
   nppStreamContext.nStreamFlags = 0; // No special flags
   nppStreamContext.nCudaDeviceId = videoprep->gpu_id; // Default queue size
 
-  std::vector<hm::BBox> tracking_boxes = get_tracking_boxes(batch_meta);
+  // std::vector<hm::BBox> tracking_boxes = get_tracking_boxes(batch_meta);
 
   for (size_t j = 0; j < in_surf.numFilled; ++j) {
     static float angle = 0.0;
     // cudaMemcpy2DAsync(void *dst, size_t dpitch, const void *src, size_t spitch, size_t width, size_t height, enum
     // cudaMemcpyKind kind, cudaStream_t stream __dv(0));
-    // assert(out_surface->surfaceList[j].width == in_surf.surfaceList[j].width);
-    // assert(out_surface->surfaceList[j].height == in_surf.surfaceList[j].height);
+    assert(out_surface->surfaceList[j].width == in_surf.surfaceList[j].width);
+    assert(out_surface->surfaceList[j].height == in_surf.surfaceList[j].height);
+    // cudaMemcpyAsync(
+    //     out_surface->surfaceList[j].dataPtr,
+    //     in_surf.surfaceList[j].dataPtr,
+    //     in_surf.surfaceList[j].height * in_surf.surfaceList[j].pitch,
+    //     cudaMemcpyDeviceToDevice,
+    //     videoprep->stream);
     // cudaMemcpy2DAsync(
     //     out_surface->surfaceList[j].dataPtr,
     //     out_surface->surfaceList[j].pitch,
@@ -1066,14 +1007,14 @@ static cudaError gst_videoprep_generate_output(
     //     out_surface->surfaceList[j].height,
     //     cudaMemcpyDeviceToDevice,
     //     videoprep->stream);
-    const BBox& box = tracking_boxes.at(j);
-    float ar = box.width() / box.height();
-    float myar = float(videoprep->output_width) / videoprep->output_height;
-    std::cout << "ar=" << ar << ", myar=" << myar << std::endl;
+    // const BBox& box = tracking_boxes.at(j);
+    // float ar = box.width() / box.height();
+    // float myar = float(videoprep->output_width) / videoprep->output_height;
+    // std::cout << "ar=" << ar << ", myar=" << myar << std::endl;
     rotateNvBufSurfaceWithNPP(
         &in_surf,
         /*input_surface_index=*/j,
-        box,
+        BBox(0, 0, srcRect[j].left + srcRect[j].width, srcRect[j].top + srcRect[j].height),
         out_surface,
         /*output_surface_index=*/j,
         angle,

@@ -1,10 +1,13 @@
 #pragma once
 
+#include <nppi.h>
+
+#include <optional>
+
 #include "gstvideoprep.h"
 #include "nvbufsurface.h"
 
 #include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
-
 
 inline bool CUDA_CHECK_(gint e, gint iLine, const gchar* szFile) {
   if (e != cudaSuccess) {
@@ -34,7 +37,11 @@ namespace videoprep {
  *
  * @return Cuda Error. "cudaSuccess" in case of Success.
  */
-cudaError gst_videoprep_do_dewarp(NvDsBatchMeta* batch_meta, GstVideoPrep* videoprep, NvBufSurface* in_surface, NvBufSurface* out_surface);
+cudaError gst_videoprep_do_dewarp(
+    NvDsBatchMeta* batch_meta,
+    GstVideoPrep* videoprep,
+    NvBufSurface* in_surface,
+    NvBufSurface* out_surface);
 
 /**
  * Function to get core Dewarper library version.
@@ -44,6 +51,23 @@ cudaError gst_videoprep_do_dewarp(NvDsBatchMeta* batch_meta, GstVideoPrep* video
 uint32_t gst_videoprep_version();
 
 std::vector<hm::BBox> get_tracking_boxes(NvDsBatchMeta* batch_meta);
+
+NppStatus rotateNvBufSurfaceWithNPP(
+    NvBufSurface* inputSurface,
+    size_t input_surface_index,
+    const hm::BBox& src_rect,
+    NvBufSurface* outputSurface,
+    size_t output_surface_index,
+    float angleDegrees,
+    const NppStreamContext& nppStreamContext,
+    std::optional<int> fill_value = std::nullopt);
+
+void cropAndResizeNvBufSurface(
+    NvBufSurface* srcSurface,
+    NvBufSurface* dstSurface,
+    size_t surface_index,
+    NppiSize dstSize,
+    const NppStreamContext& nppStreamContext);
 
 } // namespace videoprep
 } // namespace hm

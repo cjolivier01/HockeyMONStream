@@ -26,6 +26,8 @@
 #include <sstream>
 #include <vector>
 
+#include <npp.h>
+
 #include "gstnvdsmeta.h"
 #include "gstvideoprep.h"
 
@@ -155,141 +157,99 @@ struct WarpWrapper {
  * Initialize the warper, set advanced configurations and call the core warp library function
  ********************************************************************************/
 
-static cudaError Dewarp_Buffer(
-    const GstVideoPrep* videoprep,
-    const Buffer& src,
-    const Buffer& dst,
-    const nvwarpParams_t& warparams,
-    const VideoPrepParams* surfaceParams) {
-  cudaChannelFormatDesc formatDesc = {8, 8, 8, 8, cudaChannelFormatKindUnsigned}; // format descriptor for uchar4
-  cudaResourceDesc srcResDesc = {}, dstResDesc = {};
-  cudaTextureDesc srcTexDesc = {};
-  void *srcBuffer = nullptr, *dstBuffer = nullptr;
-  cudaTextureObject_t srcTex = 0;
-  gint err = 0;
-  cudaError_t cudaErr;
-  size_t cuSrcRowBytes, cuDstRowBytes;
-  // dim3 dimGrid, dimBlock;
-  WarpWrapper warper;
+// static cudaError Dewarp_Buffer(
+//     const GstVideoPrep* videoprep,
+//     const Buffer& src,
+//     const Buffer& dst,
+//     const nvwarpParams_t& warparams,
+//     const VideoPrepParams* surfaceParams) {
+//   cudaChannelFormatDesc formatDesc = {8, 8, 8, 8, cudaChannelFormatKindUnsigned}; // format descriptor for uchar4
+//   cudaResourceDesc srcResDesc = {}, dstResDesc = {};
+//   cudaTextureDesc srcTexDesc = {};
+//   void *srcBuffer = nullptr, *dstBuffer = nullptr;
+//   cudaTextureObject_t srcTex = 0;
+//   gint err = 0;
+//   cudaError_t cudaErr;
+//   size_t cuSrcRowBytes, cuDstRowBytes;
+//   // dim3 dimGrid, dimBlock;
+//   WarpWrapper warper;
 
-  // err = err;
-  (void)err;
+//   // err = err;
+//   (void)err;
 
-  /* Set warper parameters */
-  warper.setParams(&warparams);
+//   /* Set warper parameters */
+//   warper.setParams(&warparams);
 
-  // If focal lengths are specified for both X & Y seperately, set them here
-  if ((surfaceParams->dewarpFocalLength[0]) && (surfaceParams->dewarpFocalLength[1])) {
-    warper.setSrcFocalLength(surfaceParams->dewarpFocalLength[0], surfaceParams->dewarpFocalLength[1]);
-  }
-
-  // In case viewing angles are not provided keep same Focal Length and PPoint (preserves detail and symmetry)
-  if (warparams.topAngle == 0 && warparams.bottomAngle == 0) {
-    float xy[2];
-    warper.getSrcPrincipalPoint(xy, true);
-    warper.setDstPrincipalPoint(xy, true);
-    warper.getSrcFocalLength(&xy[0], &xy[1]);
-    warper.setDstFocalLength(xy[0], xy[1]);
-  }
-  if (surfaceParams->rot_matrix_valid)
-    warper.SetRotation(surfaceParams->rot_matrix);
-
-  if (surfaceParams->dstFocalLength[0])
-    warper.setDstFocalLength(surfaceParams->dstFocalLength[0], surfaceParams->dstFocalLength[1]);
-  if (surfaceParams->dstPrincipalPoint[0] && surfaceParams->dstPrincipalPoint[1])
-    warper.setDstPrincipalPoint(surfaceParams->dstPrincipalPoint, false);
-
-  /* Allocate src Buffer and texture */
-  cuSrcRowBytes = src.rowBytes;
-
-  srcBuffer = (void*)src.ptr;
-  srcResDesc.resType = cudaResourceTypePitch2D;
-  srcResDesc.res.pitch2D.devPtr = srcBuffer;
-  srcResDesc.res.pitch2D.desc = formatDesc;
-  srcResDesc.res.pitch2D.width = src.width;
-  srcResDesc.res.pitch2D.height = src.height;
-  srcResDesc.res.pitch2D.pitchInBytes = cuSrcRowBytes;
-  srcTexDesc.addressMode[0] = (surfaceParams->addressMode == 1) ? cudaAddressModeBorder : cudaAddressModeClamp;
-  srcTexDesc.addressMode[1] = srcTexDesc.addressMode[0];
-
-  if (surfaceParams->addressMode == 1)
-    srcTexDesc.borderColor[0] = srcTexDesc.borderColor[1] = srcTexDesc.borderColor[2] = srcTexDesc.borderColor[3] = 0;
-
-  srcTexDesc.filterMode = cudaFilterModeLinear;
-  srcTexDesc.readMode = cudaReadModeNormalizedFloat;
-  srcTexDesc.normalizedCoords = false;
-
-  cudaErr = cudaCreateTextureObject(&srcTex, &srcResDesc, &srcTexDesc, nullptr);
-  BAIL_IF_FALSE(cudaSuccess == cudaErr, err, (gint)cudaErr);
-
-  /* Allocate dst array */
-  cuDstRowBytes = dst.rowBytes;
-  dstBuffer = (void*)dst.ptr;
-  dstResDesc.resType = cudaResourceTypePitch2D;
-  dstResDesc.res.pitch2D.devPtr = dstBuffer;
-  dstResDesc.res.pitch2D.desc = formatDesc;
-  dstResDesc.res.pitch2D.width = warparams.dstWidth;
-  dstResDesc.res.pitch2D.height = warparams.dstHeight;
-  dstResDesc.res.pitch2D.pitchInBytes = cuDstRowBytes;
-
-  /* Test measurement with 10 iterations */
-#ifdef USE_CUDA_STREAM
-  warper.warp(videoprep->stream, srcTex, dstBuffer, cuDstRowBytes);
-  cudaErr = cudaStreamSynchronize(videoprep->stream);
-#else
-  warper.warp(0, srcTex, dstBuffer, cuDstRowBytes);
-  cudaErr = cudaDeviceSynchronize();
-#endif
-
-bail:
-  /* Dispose */
-  if (srcTex)
-    cudaDestroyTextureObject(srcTex);
-
-  return cudaErr;
-}
-
-/********************************************************************************
- * Dewarp
- ********************************************************************************/
-
-// void cropAndResizeNvBufSurface(NvBufSurface* srcSurface, NvBufSurface* dstSurface, NppiSize dstSize) {
-//   // Extract the source image from the NvBufSurface
-//   Npp8u* srcImage = (Npp8u*)srcSurface->data[0].ptr;
-//   int srcWidth = srcSurface->data[0].width;
-//   int srcHeight = srcSurface->data[0].height;
-//   int srcPitch = srcSurface->data[0].pitch;
-
-//   // Set the destination surface size (width, height) for the resized image
-//   int dstWidth = dstSize.width;
-//   int dstHeight = dstSize.height;
-
-//   // Define source and destination rectangles for cropping
-//   NppiRect srcRect = {0, 0, srcWidth, srcHeight}; // Assuming full image
-//   NppiRect dstRect = {0, 0, dstWidth, dstHeight};
-
-//   // Allocate memory for the destination image in the destination surface
-//   Npp8u* dstImage = (Npp8u*)dstSurface->data[0].ptr;
-//   int dstPitch = dstSurface->data[0].pitch;
-
-//   // Perform cropping and resizing using nppiResize or nppiWarpAffine (interpolation)
-//   // For simplicity, let's use nppiResize for resizing and interpolation
-//   NppStatus status = nppiResize_8u_C4R(
-//       srcImage,
-//       srcPitch, // Source image and pitch
-//       srcRect, // Source rectangle
-//       dstImage,
-//       dstPitch, // Destination image and pitch
-//       dstRect, // Destination rectangle
-//       NPPI_INTER_LINEAR // Interpolation method (e.g., linear)
-//   );
-
-//   if (status != NPP_SUCCESS) {
-//     std::cerr << "Error in nppiResize_8u_C4R: " << status << std::endl;
-//     return;
+//   // If focal lengths are specified for both X & Y seperately, set them here
+//   if ((surfaceParams->dewarpFocalLength[0]) && (surfaceParams->dewarpFocalLength[1])) {
+//     warper.setSrcFocalLength(surfaceParams->dewarpFocalLength[0], surfaceParams->dewarpFocalLength[1]);
 //   }
 
-//   std::cout << "Successfully cropped and resized the image from NvBufSurface to NvBufSurface." << std::endl;
+//   // In case viewing angles are not provided keep same Focal Length and PPoint (preserves detail and symmetry)
+//   if (warparams.topAngle == 0 && warparams.bottomAngle == 0) {
+//     float xy[2];
+//     warper.getSrcPrincipalPoint(xy, true);
+//     warper.setDstPrincipalPoint(xy, true);
+//     warper.getSrcFocalLength(&xy[0], &xy[1]);
+//     warper.setDstFocalLength(xy[0], xy[1]);
+//   }
+//   if (surfaceParams->rot_matrix_valid)
+//     warper.SetRotation(surfaceParams->rot_matrix);
+
+//   if (surfaceParams->dstFocalLength[0])
+//     warper.setDstFocalLength(surfaceParams->dstFocalLength[0], surfaceParams->dstFocalLength[1]);
+//   if (surfaceParams->dstPrincipalPoint[0] && surfaceParams->dstPrincipalPoint[1])
+//     warper.setDstPrincipalPoint(surfaceParams->dstPrincipalPoint, false);
+
+//   /* Allocate src Buffer and texture */
+//   cuSrcRowBytes = src.rowBytes;
+
+//   srcBuffer = (void*)src.ptr;
+//   srcResDesc.resType = cudaResourceTypePitch2D;
+//   srcResDesc.res.pitch2D.devPtr = srcBuffer;
+//   srcResDesc.res.pitch2D.desc = formatDesc;
+//   srcResDesc.res.pitch2D.width = src.width;
+//   srcResDesc.res.pitch2D.height = src.height;
+//   srcResDesc.res.pitch2D.pitchInBytes = cuSrcRowBytes;
+//   srcTexDesc.addressMode[0] = (surfaceParams->addressMode == 1) ? cudaAddressModeBorder : cudaAddressModeClamp;
+//   srcTexDesc.addressMode[1] = srcTexDesc.addressMode[0];
+
+//   if (surfaceParams->addressMode == 1)
+//     srcTexDesc.borderColor[0] = srcTexDesc.borderColor[1] = srcTexDesc.borderColor[2] = srcTexDesc.borderColor[3] =
+//     0;
+
+//   srcTexDesc.filterMode = cudaFilterModeLinear;
+//   srcTexDesc.readMode = cudaReadModeNormalizedFloat;
+//   srcTexDesc.normalizedCoords = false;
+
+//   cudaErr = cudaCreateTextureObject(&srcTex, &srcResDesc, &srcTexDesc, nullptr);
+//   BAIL_IF_FALSE(cudaSuccess == cudaErr, err, (gint)cudaErr);
+
+//   /* Allocate dst array */
+//   cuDstRowBytes = dst.rowBytes;
+//   dstBuffer = (void*)dst.ptr;
+//   dstResDesc.resType = cudaResourceTypePitch2D;
+//   dstResDesc.res.pitch2D.devPtr = dstBuffer;
+//   dstResDesc.res.pitch2D.desc = formatDesc;
+//   dstResDesc.res.pitch2D.width = warparams.dstWidth;
+//   dstResDesc.res.pitch2D.height = warparams.dstHeight;
+//   dstResDesc.res.pitch2D.pitchInBytes = cuDstRowBytes;
+
+//   /* Test measurement with 10 iterations */
+// #ifdef USE_CUDA_STREAM
+//   warper.warp(videoprep->stream, srcTex, dstBuffer, cuDstRowBytes);
+//   cudaErr = cudaStreamSynchronize(videoprep->stream);
+// #else
+//   warper.warp(0, srcTex, dstBuffer, cuDstRowBytes);
+//   cudaErr = cudaDeviceSynchronize();
+// #endif
+
+// bail:
+//   /* Dispose */
+//   if (srcTex)
+//     cudaDestroyTextureObject(srcTex);
+
+//   return cudaErr;
 // }
 
 static cudaError MyDewarp(
@@ -429,183 +389,30 @@ static cudaError MyDewarp(
 #else
   // cudaErr = Dewarp_Buffer(videoprep, src, dst, warparams, surfaceParams);
 
-  cudaErr = cudaMemcpyAsync(
-      (void*)dst.ptr, (void*)src.ptr, dst.rowBytes * dst.height, cudaMemcpyDeviceToDevice, videoprep->stream);
+  NppStreamContext nppStreamContext;
+  // NppStatus npp_status = nppiStreamContextInit(&nppStreamContext);
+  // assert(npp_status == 0);
+  memset(&nppStreamContext, 0, sizeof(nppStreamContext));
+  nppStreamContext.hStream = videoprep->stream; // Assign the CUDA stream
+  nppStreamContext.nStreamFlags = 0; // No special flags
+  nppStreamContext.nCudaDeviceId = videoprep->gpu_id; // Default queue size
+
+  void cropAndResizeNvBufSurface(
+      NvBufSurface * srcSurface,
+      NvBufSurface * dstSurface,
+      size_t surface_index,
+      NppiSize dstSize,
+      const NppStreamContext& nppStreamContext);
+
+  assert(in_surface->numFilled == 1);
+  for (size_t j = 0; j < in_surface->numFilled; ++j) {
+  }
+
+  // cudaErr = cudaMemcpyAsync(
+  //     (void*)dst.ptr, (void*)src.ptr, dst.rowBytes * dst.height, cudaMemcpyDeviceToDevice, videoprep->stream);
   assert(cudaErr == 0);
 
 #endif
-  if (videoprep->dump_frames)
-  // Dump output
-  {
-    guint size = 0;
-
-    if (!videoprep->output) {
-      cuda_ck(cudaMallocHost(&videoprep->output, (dst.rowBytes * dst.height)));
-    }
-
-#ifdef USE_CUDA_STREAM
-    cudaErr = cudaStreamSynchronize(videoprep->stream);
-    GST_INFO_OBJECT(
-        videoprep,
-        "SPOT %s  DumpFrames i=%d Frame=%d cudaStreamSynchronize cudaErr=%d Stream=%p Completed",
-        __func__,
-        surfaceParams->id,
-        videoprep->frame_num,
-        cudaErr,
-        videoprep->stream);
-#endif
-
-    std::ostringstream elem;
-    elem << (void*)videoprep;
-
-    std::string idx_str = std::to_string(surfaceParams->surface_index);
-    std::string tmp =
-        "_" + elem.str() + "_" + std::to_string(dst.rowBytes >> 2) + "x" + std::to_string(dst.height) + "_" + idx_str;
-    std::string fname;
-
-    fname = "Dewarper_Output" + tmp + "_interleaved.rgba";
-
-    size = dst.rowBytes * dst.height;
-
-    cudaMemcpy2D(
-        videoprep->output, dst.rowBytes, dst.ptr, dst.rowBytes, dst.rowBytes, dst.height, cudaMemcpyDeviceToHost);
-
-    std::ofstream outfile1;
-    outfile1.open(fname, std::ofstream::out | std::ofstream::app);
-    outfile1.write(reinterpret_cast<gchar*>(videoprep->output), size);
-    outfile1.close();
-  }
-#if defined(__aarch64__)
-  if (in_surface->memType == NVBUF_MEM_SURFACE_ARRAY) {
-    status = cuGraphicsUnregisterResource(pResource);
-    if (status != CUDA_SUCCESS) {
-      printf("cuGraphicsEGLUnRegisterResource failed: %d \n", status);
-    }
-  }
-#endif
-  GST_INFO_OBJECT(
-      videoprep,
-      " %s Frame=%d Dewarp for Views=%d cudaErr=%d "
-      "Stream=%p Completed",
-      __func__,
-      videoprep->frame_num,
-      surfaceParams->id,
-      cudaErr,
-      videoprep->stream);
-  return cudaErr;
-}
-
-static cudaError Dewarp(
-    GstVideoPrep* videoprep,
-    NvBufSurface* in_surface,
-    const VideoPrepParams* surfaceParams,
-    NvBufSurface* out_surface) {
-  nvwarpParams_t warparams;
-  cudaError_t cudaErr = cudaSuccess;
-  Buffer src, dst;
-
-  src.ptr = (const unsigned int*)in_surface->surfaceList[0].dataPtr;
-  src.width = in_surface->surfaceList[0].planeParams.width[0];
-  src.height = in_surface->surfaceList[0].planeParams.height[0];
-  src.rowBytes = in_surface->surfaceList[0].planeParams.pitch[0];
-
-  dst.ptr = (const guint*)(surfaceParams->surface);
-  dst.width = (surfaceParams->dewarpWidth == 0) ? src.width : surfaceParams->dewarpWidth;
-  dst.height = (surfaceParams->dewarpHeight == 0) ? src.height : surfaceParams->dewarpHeight;
-  dst.rowBytes = surfaceParams->dewarpPitch;
-
-#if defined(__aarch64__)
-  CUresult status;
-  CUeglFrame eglFrame = {};
-  CUgraphicsResource pResource = NULL;
-  EGLImageKHR eglimage_src = NULL;
-
-  if (in_surface->memType == NVBUF_MEM_SURFACE_ARRAY) {
-    if (in_surface->surfaceList[0].mappedAddr.eglImage == NULL) {
-      NvBufSurfaceMapEglImage(in_surface, 0);
-    }
-    eglimage_src = in_surface->surfaceList[0].mappedAddr.eglImage;
-
-    status = cuGraphicsEGLRegisterImage(&pResource, eglimage_src, CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE);
-    if (status != CUDA_SUCCESS) {
-      printf("cuGraphicsEGLRegisterImage failed: %d, cuda process stop\n", status);
-      exit(-1);
-    }
-
-    status = cuGraphicsResourceGetMappedEglFrame(&eglFrame, pResource, 0, 0);
-    if (status != CUDA_SUCCESS) {
-      printf("cuGraphicsSubResourceGetMappedArray failed\n");
-    }
-
-    src.ptr = (const unsigned*)eglFrame.frame.pPitch[0];
-  }
-#endif
-
-  warparams.type = NvDsSurfaceType_To_nvwarpType_t[surfaceParams->projection_type];
-  warparams.srcWidth = src.width;
-  warparams.srcHeight = src.height;
-  warparams.srcX0 = (surfaceParams->src_x0 == 0) ? (src.width - 1) * .5f : surfaceParams->src_x0;
-  warparams.srcY0 = (surfaceParams->src_y0 == 0) ? (src.height - 1) * .5f : surfaceParams->src_y0;
-  if (surfaceParams->dewarpFocalLength[0] == 0 && surfaceParams->srcFov > 0) {
-    float ang = surfaceParams->srcFov * (.5f * F_RADIANS_PER_DEGREE);
-    float rad = ((surfaceParams->srcFov == 180.f) ? src.height : (src.height - 1)) * .5F;
-
-    if (nvwarpComputeParamsSrcFocalLength(&warparams, ang, rad)) { // Computes and sets srcFocalLen
-      GST_INFO_OBJECT(
-          videoprep,
-          "Computing source Focal Length from source Field of View failed. "
-          "Setting Focal Length to zero\n");
-      warparams.srcFocalLen = 0.f;
-    }
-
-  } else {
-    warparams.srcFocalLen = surfaceParams->dewarpFocalLength[0];
-  }
-
-  /* Set warper parameters */
-  if (surfaceParams->distortion) {
-    warparams.dist[0] = surfaceParams->distortion[0];
-    warparams.dist[1] = surfaceParams->distortion[1];
-    warparams.dist[2] = surfaceParams->distortion[2];
-    warparams.dist[3] = surfaceParams->distortion[3];
-    warparams.dist[4] = surfaceParams->distortion[4];
-  }
-
-  warparams.dstWidth = dst.width;
-  warparams.dstHeight = dst.height;
-
-  if (surfaceParams->rot_axes[0]) {
-    if ((strcmp(surfaceParams->rot_axes, "XYZ") == 0) || (strcmp(surfaceParams->rot_axes, "XZY") == 0) ||
-        (strcmp(surfaceParams->rot_axes, "YXZ") == 0) || (strcmp(surfaceParams->rot_axes, "YZX") == 0) ||
-        (strcmp(surfaceParams->rot_axes, "ZXY") == 0) || (strcmp(surfaceParams->rot_axes, "ZYX") == 0)) {
-      strcpy(warparams.rotAxes, surfaceParams->rot_axes);
-    } else {
-      GST_WARNING_OBJECT(videoprep, "rot-axes setting is incorrect. Using the default setting : %s", warparams.rotAxes);
-    }
-  }
-
-  // Map Yaw, pitch and roll to appropriate position in "rotAngles" based on "rot_axes"
-  for (int i = 0; i < 3; i++) {
-    switch (warparams.rotAxes[i]) {
-      default:
-      case 'X':
-        warparams.rotAngles[i] = surfaceParams->pitch * F_RADIANS_PER_DEGREE;
-        break;
-      case 'Y':
-        warparams.rotAngles[i] = surfaceParams->yaw * F_RADIANS_PER_DEGREE;
-        break;
-      case 'Z':
-        warparams.rotAngles[i] = surfaceParams->roll * F_RADIANS_PER_DEGREE;
-        break;
-    }
-  }
-
-  warparams.topAngle = surfaceParams->top_angle * F_RADIANS_PER_DEGREE;
-  warparams.bottomAngle = surfaceParams->bottom_angle * F_RADIANS_PER_DEGREE;
-
-  warparams.control[0] = surfaceParams->control;
-
-  cudaErr = Dewarp_Buffer(videoprep, src, dst, warparams, surfaceParams);
   if (videoprep->dump_frames)
   // Dump output
   {
@@ -689,58 +496,250 @@ std::vector<hm::BBox> get_tracking_boxes(NvDsBatchMeta* batch_meta) {
   return results;
 }
 
+NppStatus rotateNvBufSurfaceWithNPP(
+    NvBufSurface* inputSurface,
+    size_t input_surface_index,
+    const hm::BBox& src_rect,
+    NvBufSurface* outputSurface,
+    size_t output_surface_index,
+    float angleDegrees,
+    const NppStreamContext& nppStreamContext,
+    std::optional<int> fill_value) {
+  float angleRadians = angleDegrees * M_PI / 180.0f;
+
+  assert(input_surface_index < inputSurface->numFilled);
+  assert(output_surface_index < outputSurface->batchSize);
+
+  // Assume first plane for simplicity
+  NvBufSurfaceParams* inParams = &inputSurface->surfaceList[input_surface_index];
+  NvBufSurfaceParams* outParams = &outputSurface->surfaceList[output_surface_index];
+  assert(inParams->colorFormat == outParams->colorFormat);
+  assert(inParams->colorFormat == NVBUF_COLOR_FORMAT_RGBA);
+  // Define rotation matrix
+  double affineMatrix[2][3] = {
+      {cos(angleRadians), -sin(angleRadians), 0.0}, {sin(angleRadians), cos(angleRadians), 0.0}};
+
+  // Adjust translation to rotate around the center
+  affineMatrix[0][2] = (outParams->width / 2.0) - (cos(angleRadians) * inParams->width / 2.0) +
+      (sin(angleRadians) * inParams->height / 2.0);
+  affineMatrix[1][2] = (outParams->height / 2.0) - (sin(angleRadians) * inParams->width / 2.0) -
+      (cos(angleRadians) * inParams->height / 2.0);
+
+  // Set source and destination ROI
+  NppiRect srcROI = {0, 0, static_cast<int>(inParams->width), static_cast<int>(inParams->height)};
+  NppiRect dstROI = {0, 0, static_cast<int>(outParams->width), static_cast<int>(outParams->height)};
+
+  // Perform rotation using NPP
+  if (fill_value.has_value()) {
+    cudaMemset2DAsync(
+        outParams->dataPtr, outParams->pitch, 0, outParams->width, outParams->height, nppStreamContext.hStream);
+  }
+
+  srcROI.x = src_rect.left;
+  srcROI.y = src_rect.top;
+  srcROI.width = src_rect.width();
+  srcROI.height = src_rect.height();
+  float ar = float(srcROI.width) / srcROI.height;
+  (void)ar;
+
+  NppStatus status = nppiWarpAffine_8u_C4R_Ctx(
+      static_cast<const Npp8u*>(inParams->dataPtr), // Source pointer
+      {static_cast<int>(inParams->width), static_cast<int>(inParams->height)}, // Source size
+      inParams->pitch, // Source pitch
+      srcROI, // Source ROI
+      static_cast<Npp8u*>(outParams->dataPtr), // Destination pointer
+      outParams->pitch, // Destination pitch
+      dstROI, // Destination ROI
+      affineMatrix, // Affine transformation matrix
+      NPPI_INTER_LINEAR, // Interpolation method
+      nppStreamContext);
+
+  if (status != NPP_SUCCESS) {
+    std::cerr << "NPP rotation failed with error: " << status << std::endl;
+  }
+  return status;
+}
+
+NppStatus cropAndResizeNvBufSurface(
+    NvBufSurface* srcSurface,
+    const BBox& src_rect,
+    NvBufSurface* dstSurface,
+    size_t surface_index,
+    const BBox& dest_rect,
+    const NppStreamContext& nppStreamContext) {
+  // Extract the source image from the NvBufSurface
+  const NvBufSurfaceParams& srcParams = srcSurface->surfaceList[surface_index];
+  Npp8u* srcImage = (Npp8u*)srcParams.dataPtr;
+  int srcWidth = srcParams.width;
+  int srcHeight = srcParams.height;
+  int srcPitch = srcParams.pitch;
+
+  // Set the destination surface size (width, height) for the resized image
+  // int dstWidth = dstSize.width;
+  // int dstHeight = dstSize.height;
+
+  // Define source and destination rectangles for cropping
+  NppiRect srcRect{
+      .x = (int)src_rect.left,
+      .y = (int)src_rect.top,
+      .width = (int)src_rect.width(),
+      .height = (int)src_rect.height()};
+
+  NppiRect dstRect = {
+      .x = (int)dest_rect.left,
+      .y = (int)dest_rect.top,
+      .width = (int)dest_rect.width(),
+      .height = (int)dest_rect.height()};
+
+  const NvBufSurfaceParams& destParams = dstSurface->surfaceList[surface_index];
+  // Allocate memory for the destination image in the destination surface
+  Npp8u* dstImage = (Npp8u*)destParams.dataPtr;
+  const int dstPitch = destParams.pitch;
+
+  // Perform cropping and resizing using nppiResize or nppiWarpAffine (interpolation)
+  // For simplicity, let's use nppiResize for resizing and interpolation
+
+  // nppiResize_8u_C4R(const Npp8u * pSrc, int nSrcStep, NppiSize oSrcSize, NppiRect oSrcRectROI,
+  //                         Npp8u * pDst, int nDstStep, NppiSize oDstSize, NppiRect oDstRectROI, int eInterpolation);
+
+  NppStatus status = NppStatus::NPP_SUCCESS;
+
+  status = nppiResize_8u_C4R_Ctx(
+      srcImage,
+      srcPitch, // Source image and pitch
+      NppiSize{.width = (int)srcParams.width, .height = (int)srcParams.height},
+      srcRect, // Source rectangle
+      dstImage,
+      dstPitch, // Destination image and pitch
+      NppiSize{.width = (int)destParams.width, .height = (int)destParams.height},
+      dstRect, // Destination rectangle
+      NPPI_INTER_LINEAR, // Interpolation method (e.g., linear)
+      nppStreamContext);
+
+  // cudaMemcpy2DAsync(
+  //     dstImage,
+  //     dstPitch,
+  //     srcImage,
+  //     srcParams.pitch,
+  //     (int)destParams.width,
+  //     (int)destParams.height,
+  //     cudaMemcpyDeviceToDevice,
+  //     nppStreamContext.hStream);
+
+  // cudaMemcpy2DAsync(
+  //     dstImage, dstPitch, srcImage, srcPitch, dstWidth, dstHeight, cudaMemcpyDeviceToDevice,
+  //     nppStreamContext.hStream);
+
+  if (status != NPP_SUCCESS) {
+    std::cerr << "Error in nppiResize_8u_C4R: " << status << std::endl;
+  }
+
+  // std::cout << "Successfully cropped and resized the image from NvBufSurface to NvBufSurface." << std::endl;
+  return status;
+}
+
+NppStatus cropAndResizeNvBufSurface(
+    NvBufSurface* srcSurface,
+    const BBox& src_rect,
+    VideoPrepParams* videpPrepParams,
+    size_t surface_index,
+    const BBox& dest_rect,
+    const NppStreamContext& nppStreamContext) {
+  // Extract the source image from the NvBufSurface
+  const NvBufSurfaceParams& srcParams = srcSurface->surfaceList[surface_index];
+  Npp8u* srcImage = (Npp8u*)srcParams.dataPtr;
+
+  const int dstPitch = videpPrepParams->dewarpPitch;
+
+  // Define source and destination rectangles for cropping
+  NppiRect srcRect{
+      .x = (int)src_rect.left,
+      .y = (int)src_rect.top,
+      .width = (int)src_rect.width(),
+      .height = (int)src_rect.height()};
+
+  NppiRect dstRect = {
+      .x = (int)dest_rect.left,
+      .y = (int)dest_rect.top,
+      .width = (int)dest_rect.width(),
+      .height = (int)dest_rect.height()};
+
+  // Allocate memory for the destination image in the destination surface
+  Npp8u* dstImage = (Npp8u*)videpPrepParams->surface;
+
+  // Perform cropping and resizing using nppiResize or nppiWarpAffine (interpolation)
+  // For simplicity, let's use nppiResize for resizing and interpolation
+
+  // nppiResize_8u_C4R(const Npp8u * pSrc, int nSrcStep, NppiSize oSrcSize, NppiRect oSrcRectROI,
+  //                         Npp8u * pDst, int nDstStep, NppiSize oDstSize, NppiRect oDstRectROI, int eInterpolation);
+
+  NppStatus status = NppStatus::NPP_SUCCESS;
+
+  status = nppiResize_8u_C4R_Ctx(
+      srcImage,
+      srcParams.pitch, // Source image and pitch
+      NppiSize{.width = (int)srcParams.width, .height = (int)srcParams.height},
+      srcRect, // Source rectangle
+      dstImage,
+      dstPitch, // Destination image and pitch
+      NppiSize{.width = (int)videpPrepParams->dewarpWidth, .height = (int)videpPrepParams->dewarpHeight},
+      dstRect, // Destination rectangle
+      NPPI_INTER_LINEAR, // Interpolation method (e.g., linear)
+      nppStreamContext);
+
+  // cudaMemcpy2DAsync(
+  //     dstImage,
+  //     dstPitch,
+  //     srcImage,
+  //     srcParams.pitch,
+  //     (int)videpPrepParams->dewarpWidth,
+  //     (int)videpPrepParams->dewarpHeight,
+  //     cudaMemcpyDeviceToDevice,
+  //     nppStreamContext.hStream);
+
+  if (status != NPP_SUCCESS) {
+    std::cerr << "Error in nppiResize_8u_C4R: " << status << std::endl;
+  }
+  return status;
+}
+
 cudaError gst_videoprep_do_dewarp(
     NvDsBatchMeta* batch_meta,
     GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
-  gchar context_name[100];
   cudaError cudaErr = cudaSuccess;
-  std::vector<VideoPrepParams>::iterator it;
   VideoPrepParams* dewarpParams = NULL;
 
+  NppStreamContext nppStreamContext;
+  memset(&nppStreamContext, 0, sizeof(nppStreamContext));
+  nppStreamContext.hStream = videoprep->stream; // Assign the CUDA stream
+  nppStreamContext.nStreamFlags = 0; // No special flags
+  nppStreamContext.nCudaDeviceId = videoprep->gpu_id; // Default queue size
+
   std::vector<hm::BBox> tracking_boxes = get_tracking_boxes(batch_meta);
-
-  for (it = videoprep->priv->vecDewarpSurface.begin(); it != videoprep->priv->vecDewarpSurface.end(); it++) {
-    dewarpParams = &(*it);
-    (void)dewarpParams;
-    // cout << it->projection_type << " " << it->dewarpWidth << " " << it->dewarpHeight << endl;
-    if ((it->projection_type >= NVDS_META_SURFACE_FISH_PUSHBROOM) &&
-        (it->projection_type <= NVDS_META_SURFACE_EQUIRECT_VERTCYLINDER)) {
-      if (it->isValid) {
-        snprintf(
-            context_name, sizeof(context_name), "%s_(Frame=%u)", GST_ELEMENT_NAME(videoprep), videoprep->frame_num);
-        // nvtx_helper_push_pop(strcat(context_name,"Dewarp"));
-
-        // cuda_ck(Dewarp(videoprep, in_surface, dewarpParams));
-        cuda_ck(MyDewarp(batch_meta, videoprep, in_surface, dewarpParams, out_surface));
-
-        // To maintain legacy prints
-        if (it->projection_type == NVDS_META_SURFACE_FISH_PUSHBROOM) {
-          GST_LOG_OBJECT(
-              videoprep,
-              "Called Dewarp for Pushbroom GPU=%d Frame=%d Views=%d\n",
-              videoprep->gpu_id,
-              videoprep->frame_num,
-              videoprep->num_spot_views);
-        } else if (it->projection_type == NVDS_META_SURFACE_FISH_VERTCYL) {
-          GST_LOG_OBJECT(
-              videoprep,
-              "Called Dewarp for VertRadCyl GPU=%d Frame=%d Views=%d\n",
-              videoprep->gpu_id,
-              videoprep->frame_num,
-              videoprep->num_aisle_views);
-        } else {
-          GST_LOG_OBJECT(videoprep, "Called Dewarp GPU=%d Frame=%d\n", videoprep->gpu_id, videoprep->frame_num);
-        }
-        // nvtx_helper_push_pop(NULL);
-      }
-    } else {
-      g_print("\n%s: Invalid Projection type (%d) selected \n", GST_ELEMENT_NAME(videoprep), it->projection_type);
-      g_assert(it->projection_type <= NVDS_META_SURFACE_EQUIRECT_VERTCYLINDER);
+  for (size_t j = 0; j < in_surface->numFilled; ++j) {
+    const BBox all_src_rect(0, 0, in_surface->surfaceList[j].width, in_surface->surfaceList[j].height);
+    size_t surface_index = 0;
+    dewarpParams = &videoprep->priv->vecDewarpSurface.at(surface_index);
+    const BBox dest_rect(0, 0, dewarpParams->dewarpWidth, dewarpParams->dewarpHeight);
+    NppStatus np_status = cropAndResizeNvBufSurface(
+        /*srcSurface=*/in_surface,
+        /*src_rect=*/ tracking_boxes.at(j),
+        /*src_rect=*/ // all_src_rect,
+        /*videpPrepParams=*/dewarpParams,
+        // out_surface,
+        /*surface_index=*/j,
+        /*dest_rect=*/dest_rect,
+        nppStreamContext);
+    if (np_status != 0 && cudaErr == 0) {
+      std::cerr << "Setting cudaErr to arbitrary 'cudaErrorInvalidValue'" << std::endl;
+      cudaErr = cudaErrorInvalidValue;
     }
+    cudaStreamSynchronize(nppStreamContext.hStream);
   }
-  cudaStreamSynchronize(videoprep->stream);
+
+  cudaStreamSynchronize(nppStreamContext.hStream);
   return cudaErr;
 }
 
