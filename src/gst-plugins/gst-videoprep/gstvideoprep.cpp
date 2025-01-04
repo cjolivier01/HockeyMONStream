@@ -906,7 +906,8 @@ NppStatus rotateNvBufSurfaceWithNPP(
   //                             Npp8u * pDst, int nDstStep, NppiRect oDstROI,
   //                       const double aCoeffs[2][3], int eInterpolation);
   if (fill_value.has_value()) {
-    cudaMemset2D(outParams->dataPtr, outParams->pitch, 0, outParams->width, outParams->height);
+    cudaMemset2DAsync(
+        outParams->dataPtr, outParams->pitch, 0, outParams->width, outParams->height, nppStreamContext.hStream);
   }
 
   NppStatus status = nppiWarpAffine_8u_C4R_Ctx(
@@ -919,8 +920,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
       dstROI, // Destination ROI
       affineMatrix, // Affine transformation matrix
       NPPI_INTER_LINEAR, // Interpolation method
-      nppStreamContext
-  );
+      nppStreamContext);
 
   if (status != NPP_SUCCESS) {
     std::cerr << "NPP rotation failed with error: " << status << std::endl;
@@ -1090,9 +1090,9 @@ static cudaError gst_videoprep_generate_output(
   // NppStatus npp_status = nppiStreamContextInit(&nppStreamContext);
   // assert(npp_status == 0);
   memset(&nppStreamContext, 0, sizeof(nppStreamContext));
-  nppStreamContext.hStream = videoprep->stream;  // Assign the CUDA stream
-  nppStreamContext.nStreamFlags = 0;          // No special flags
-  nppStreamContext.nCudaDeviceId = videoprep->gpu_id;     // Default queue size
+  nppStreamContext.hStream = videoprep->stream; // Assign the CUDA stream
+  nppStreamContext.nStreamFlags = 0; // No special flags
+  nppStreamContext.nCudaDeviceId = videoprep->gpu_id; // Default queue size
 
   for (size_t j = 0; j < in_surf.numFilled; ++j) {
     static float angle = 0.0;
