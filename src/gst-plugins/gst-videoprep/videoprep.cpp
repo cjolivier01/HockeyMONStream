@@ -326,12 +326,12 @@ static cudaError MyDewarp(
   }
 
   /* Set warper parameters */
-  //if (surfaceParams->distortion) {
-    warparams.dist[0] = surfaceParams->distortion[0];
-    warparams.dist[1] = surfaceParams->distortion[1];
-    warparams.dist[2] = surfaceParams->distortion[2];
-    warparams.dist[3] = surfaceParams->distortion[3];
-    warparams.dist[4] = surfaceParams->distortion[4];
+  // if (surfaceParams->distortion) {
+  warparams.dist[0] = surfaceParams->distortion[0];
+  warparams.dist[1] = surfaceParams->distortion[1];
+  warparams.dist[2] = surfaceParams->distortion[2];
+  warparams.dist[3] = surfaceParams->distortion[3];
+  warparams.dist[4] = surfaceParams->distortion[4];
   //}
 
   warparams.dstWidth = dst.width;
@@ -389,7 +389,8 @@ static cudaError MyDewarp(
 #else
   // cudaErr = Dewarp_Buffer(videoprep, src, dst, warparams, surfaceParams);
 
-  cudaErr = cudaMemcpy((void*)dst.ptr, (void*)src.ptr, dst.rowBytes * dst.height, cudaMemcpyDeviceToDevice);
+  cudaErr = cudaMemcpyAsync(
+      (void*)dst.ptr, (void*)src.ptr, dst.rowBytes * dst.height, cudaMemcpyDeviceToDevice, videoprep->stream);
   assert(cudaErr == 0);
 
 #endif
