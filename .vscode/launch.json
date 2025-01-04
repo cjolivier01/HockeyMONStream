@@ -49,7 +49,7 @@
       //"stopOnEntry": true,
       "env": {
         //"GST_DEBUG": "videoprep:7",
-        "GST_DEBUG": "7",
+        //"GST_DEBUG": "7",
         //"LD_LIBRARY_PATH": "/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:/home/colivier/mambaforge/envs/ubuntu/lib:/home/colivier/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu",
         //"GST_PLUGIN_PATH": "/home/colivier/src/hstream/lib/gst-plugins:/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
         "GST_PLUGIN_PATH": "/home/colivier/src/hstream/lib/gst-plugins:/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib/gst-plugins",
@@ -67,7 +67,7 @@
       "cwd": "${workspaceFolder}/src",
       "program": "${workspaceFolder}/src/bazel-bin/libs/k-means/k-means",
       "args": [
-        "--algorithm", 
+        "--algorithm",
         //"kmcuda",
         //"cuda_base",
         "cuda_best",
