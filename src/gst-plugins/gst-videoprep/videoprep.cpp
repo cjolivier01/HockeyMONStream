@@ -524,6 +524,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
       (sin(angleRadians) * inParams->height / 2.0);
   affineMatrix[1][2] = (outParams->height / 2.0) - (sin(angleRadians) * inParams->width / 2.0) -
       (cos(angleRadians) * inParams->height / 2.0);
+  (void)affineMatrix;
 
   // Set source and destination ROI
   NppiRect srcROI = {0, 0, static_cast<int>(inParams->width), static_cast<int>(inParams->height)};
@@ -542,15 +543,16 @@ NppStatus rotateNvBufSurfaceWithNPP(
   float ar = float(srcROI.width) / srcROI.height;
   (void)ar;
 
-  // cudaMemset2DAsync(
-  //     static_cast<Npp8u*>(outParams->dataPtr),
-  //     outParams->pitch,
-  //     0,
-  //     outParams->width,
-  //     outParams->height,
-  //     nppStreamContext.hStream);
+  cudaMemset2DAsync(
+      static_cast<Npp8u*>(outParams->dataPtr),
+      outParams->pitch,
+      128,
+      outParams->width,
+      outParams->height,
+      nppStreamContext.hStream);
 
-  NppStatus status = nppiWarpAffine_8u_C4R_Ctx(
+  NppStatus status = NppStatus::NPP_SUCCESS;
+  status = nppiWarpAffine_8u_C4R_Ctx(
       static_cast<const Npp8u*>(inParams->dataPtr), // Source pointer
       {static_cast<int>(inParams->width), static_cast<int>(inParams->height)}, // Source size
       inParams->pitch, // Source pitch
@@ -561,6 +563,19 @@ NppStatus rotateNvBufSurfaceWithNPP(
       affineMatrix, // Affine transformation matrix
       NPPI_INTER_LINEAR, // Interpolation method
       nppStreamContext);
+  // status = nppiRotate_8u_C4R_Ctx(
+  //     static_cast<const Npp8u*>(inParams->dataPtr), // Source pointer
+  //     {static_cast<int>(inParams->width), static_cast<int>(inParams->height)}, // Source size
+  //     inParams->pitch, // Source pitch
+  //     srcROI, // Source ROI
+  //     static_cast<Npp8u*>(outParams->dataPtr), // Destination pointer
+  //     outParams->pitch, // Destination pitch
+  //     dstROI, // Destination ROI
+  //     angleDegrees,
+  //     /*nShiftX=*/0.0,
+  //     /*nShiftY=*/0.0,
+  //     NPPI_INTER_LINEAR,
+  //     nppStreamContext);
 
   if (status != NPP_SUCCESS) {
     std::cerr << "NPP rotation failed with error: " << status << std::endl;
