@@ -12,8 +12,10 @@
 
 [property]
 #dewarp-dump-frames=10
-output-width=3680
-output-height=2428
+# output-width=3680
+# output-height=2428
+output-width=5646
+output-height=3176
 num-batch-buffers=1
 
 #########################################
@@ -23,17 +25,17 @@ num-batch-buffers=1
 [surface0]
 # 1=PushBroom, 2=VertRadCyl, 3=PerspectivePerspective
 projection-type=3
-# width=3680
-# height=2428
+# width=5646
+# height=3176
 width=7680
 height=3176
 focal-length=1721.592
 # focal-length=4.2
 src-fov=180
-top-angle=30
-bottom-angle=-30
+# top-angle=30
+# bottom-angle=-30
 # distortion=-0.09787;0.00574;-0.00013;0;0
-src-x0=1861.88
-src-y0=1216.04
+# src-x0=1861.88
+# src-y0=1216.04
 # 0=cudaAddressModeClamp, 1=cudaAddressModeBorder
 #cuda-address-mode=0

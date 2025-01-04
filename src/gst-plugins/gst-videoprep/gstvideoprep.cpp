@@ -143,60 +143,6 @@ void videoprep_libinit(void) {
 
 void videoprep_libdeinit(void) {}
 
-#include <cuda_runtime.h>
-#include <iostream>
-#include <stdexcept>
-
-class CudaDeviceStreamGuard {
- public:
-  CudaDeviceStreamGuard(int newDeviceIndex, cudaStream_t newStream) : oldDevice(-1), stream(newStream) {
-    // Save the current device
-    cudaError_t err = cudaGetDevice(&oldDevice);
-    if (err != cudaSuccess) {
-      throw std::runtime_error("Failed to get current CUDA device: " + std::string(cudaGetErrorString(err)));
-    }
-
-    // Switch to the new device
-    err = cudaSetDevice(newDeviceIndex);
-    if (err != cudaSuccess) {
-      throw std::runtime_error("Failed to set CUDA device: " + std::string(cudaGetErrorString(err)));
-    }
-
-    // Switch to the new stream
-    // In CUDA, streams are associated with operations, so explicitly switching is unnecessary.
-    // We'll assume all operations use `newStream`.
-  }
-
-  ~CudaDeviceStreamGuard() {
-    try {
-      // Synchronize the given stream
-      if (stream) {
-        cudaError_t err = cudaStreamSynchronize(stream);
-        if (err != cudaSuccess) {
-          std::cerr << "Warning: Failed to synchronize CUDA stream: " << cudaGetErrorString(err) << std::endl;
-        }
-      }
-
-      // Restore the old device
-      if (oldDevice != -1) {
-        cudaError_t err = cudaSetDevice(oldDevice);
-        if (err != cudaSuccess) {
-          std::cerr << "Warning: Failed to restore CUDA device: " << cudaGetErrorString(err) << std::endl;
-        }
-      }
-
-      // No explicit stream switching needed; we rely on operations using the restored stream.
-    } catch (...) {
-      // Suppress exceptions in destructors to prevent crashes during stack unwinding.
-      std::cerr << "Error occurred during CudaDeviceStreamGuard cleanup." << std::endl;
-    }
-  }
-
- private:
-  int oldDevice;
-  cudaStream_t stream;
-};
-
 static const gchar* print_pretty_time(gchar* ts_str, gsize ts_str_len, GstClockTime ts) {
   if (ts == GST_CLOCK_TIME_NONE)
     return "none";
@@ -871,6 +817,7 @@ void inspect_nvbufsurface_dtype(GstBuffer* buffer) {
 NppStatus rotateNvBufSurfaceWithNPP(
     NvBufSurface* inputSurface,
     size_t input_surface_index,
+    const hm::BBox& src_rect,
     NvBufSurface* outputSurface,
     size_t output_surface_index,
     float angleDegrees,
@@ -910,6 +857,13 @@ NppStatus rotateNvBufSurfaceWithNPP(
         outParams->dataPtr, outParams->pitch, 0, outParams->width, outParams->height, nppStreamContext.hStream);
   }
 
+  srcROI.x = src_rect.left;
+  srcROI.y = src_rect.top;
+  srcROI.width = src_rect.width();
+  srcROI.height = src_rect.height();
+  float ar = float(srcROI.width) / srcROI.height;
+  (void)ar;
+
   NppStatus status = nppiWarpAffine_8u_C4R_Ctx(
       static_cast<const Npp8u*>(inParams->dataPtr), // Source pointer
       {static_cast<int>(inParams->width), static_cast<int>(inParams->height)}, // Source size
@@ -929,6 +883,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
 }
 
 static cudaError gst_videoprep_generate_output(
+    NvDsBatchMeta* batch_meta,
     GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
@@ -1094,20 +1049,40 @@ static cudaError gst_videoprep_generate_output(
   nppStreamContext.nStreamFlags = 0; // No special flags
   nppStreamContext.nCudaDeviceId = videoprep->gpu_id; // Default queue size
 
+  std::vector<hm::BBox> tracking_boxes = get_tracking_boxes(batch_meta);
+
   for (size_t j = 0; j < in_surf.numFilled; ++j) {
     static float angle = 0.0;
+    // cudaMemcpy2DAsync(void *dst, size_t dpitch, const void *src, size_t spitch, size_t width, size_t height, enum
+    // cudaMemcpyKind kind, cudaStream_t stream __dv(0));
+    // assert(out_surface->surfaceList[j].width == in_surf.surfaceList[j].width);
+    // assert(out_surface->surfaceList[j].height == in_surf.surfaceList[j].height);
+    // cudaMemcpy2DAsync(
+    //     out_surface->surfaceList[j].dataPtr,
+    //     out_surface->surfaceList[j].pitch,
+    //     in_surf.surfaceList[j].dataPtr,
+    //     in_surf.surfaceList[j].pitch,
+    //     out_surface->surfaceList[j].width,
+    //     out_surface->surfaceList[j].height,
+    //     cudaMemcpyDeviceToDevice,
+    //     videoprep->stream);
+    const BBox& box = tracking_boxes.at(j);
+    float ar = box.width() / box.height();
+    float myar = float(videoprep->output_width) / videoprep->output_height;
+    std::cout << "ar=" << ar << ", myar=" << myar << std::endl;
     rotateNvBufSurfaceWithNPP(
         &in_surf,
         /*input_surface_index=*/j,
+        box,
         out_surface,
         /*output_surface_index=*/j,
         angle,
         nppStreamContext,
         /*fill_value=*/0);
-    angle += 1;
-    if (angle > 359.9) {
-      angle = 0.0;
-    }
+    // angle += 1;
+    // if (angle > 359.9) {
+    //   angle = 0.0;
+    // }
     assert(tx_err == NvBufSurfTransformError_Success);
   }
 
@@ -1137,7 +1112,11 @@ static cudaError gst_videoprep_generate_output(
   return err;
 }
 
-static cudaError gst_videoprep_dewarp(NvDsBatchMeta* batch_meta, GstVideoPrep* videoprep, NvBufSurface* in_surface, NvBufSurface* out_surface) {
+static cudaError gst_videoprep_dewarp(
+    NvDsBatchMeta* batch_meta,
+    GstVideoPrep* videoprep,
+    NvBufSurface* in_surface,
+    NvBufSurface* out_surface) {
   cudaError cudaErr = cudaSuccess;
   gint err = 0;
 
@@ -1163,7 +1142,7 @@ static cudaError gst_videoprep_dewarp(NvDsBatchMeta* batch_meta, GstVideoPrep* v
     exit(-1);
   } else if (videoprep->output_fmt == GST_VIDEO_FORMAT_RGBA || videoprep->output_fmt == GST_VIDEO_FORMAT_BGRx) {
     // Generate output surface after scaling
-    cuda_ck(gst_videoprep_generate_output(videoprep, in_surface, out_surface));
+    cuda_ck(gst_videoprep_generate_output(batch_meta, videoprep, in_surface, out_surface));
   }
 
   if (videoprep->dump_frames) {

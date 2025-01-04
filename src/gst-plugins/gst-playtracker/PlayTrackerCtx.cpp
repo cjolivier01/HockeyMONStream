@@ -192,7 +192,7 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
     }
     if (!config.living_boxes.empty()) {
       // Last one gets fixed aspect ratio
-      config.living_boxes.back().fixed_aspect_ratio = 16.0 / 7.0;
+      config.living_boxes.back().fixed_aspect_ratio = 16.0 / 9.0;
     }
   }
   config.play_detector = create_play_detector_config(yaml, locator);

@@ -253,7 +253,47 @@ bail:
  * Dewarp
  ********************************************************************************/
 
+// void cropAndResizeNvBufSurface(NvBufSurface* srcSurface, NvBufSurface* dstSurface, NppiSize dstSize) {
+//   // Extract the source image from the NvBufSurface
+//   Npp8u* srcImage = (Npp8u*)srcSurface->data[0].ptr;
+//   int srcWidth = srcSurface->data[0].width;
+//   int srcHeight = srcSurface->data[0].height;
+//   int srcPitch = srcSurface->data[0].pitch;
+
+//   // Set the destination surface size (width, height) for the resized image
+//   int dstWidth = dstSize.width;
+//   int dstHeight = dstSize.height;
+
+//   // Define source and destination rectangles for cropping
+//   NppiRect srcRect = {0, 0, srcWidth, srcHeight}; // Assuming full image
+//   NppiRect dstRect = {0, 0, dstWidth, dstHeight};
+
+//   // Allocate memory for the destination image in the destination surface
+//   Npp8u* dstImage = (Npp8u*)dstSurface->data[0].ptr;
+//   int dstPitch = dstSurface->data[0].pitch;
+
+//   // Perform cropping and resizing using nppiResize or nppiWarpAffine (interpolation)
+//   // For simplicity, let's use nppiResize for resizing and interpolation
+//   NppStatus status = nppiResize_8u_C4R(
+//       srcImage,
+//       srcPitch, // Source image and pitch
+//       srcRect, // Source rectangle
+//       dstImage,
+//       dstPitch, // Destination image and pitch
+//       dstRect, // Destination rectangle
+//       NPPI_INTER_LINEAR // Interpolation method (e.g., linear)
+//   );
+
+//   if (status != NPP_SUCCESS) {
+//     std::cerr << "Error in nppiResize_8u_C4R: " << status << std::endl;
+//     return;
+//   }
+
+//   std::cout << "Successfully cropped and resized the image from NvBufSurface to NvBufSurface." << std::endl;
+// }
+
 static cudaError MyDewarp(
+    NvDsBatchMeta* batch_meta,
     GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
     const VideoPrepParams* surfaceParams,
@@ -673,7 +713,7 @@ cudaError gst_videoprep_do_dewarp(
         // nvtx_helper_push_pop(strcat(context_name,"Dewarp"));
 
         // cuda_ck(Dewarp(videoprep, in_surface, dewarpParams));
-        cuda_ck(MyDewarp(videoprep, in_surface, dewarpParams, out_surface));
+        cuda_ck(MyDewarp(batch_meta, videoprep, in_surface, dewarpParams, out_surface));
 
         // To maintain legacy prints
         if (it->projection_type == NVDS_META_SURFACE_FISH_PUSHBROOM) {
