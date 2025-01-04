@@ -542,6 +542,14 @@ NppStatus rotateNvBufSurfaceWithNPP(
   float ar = float(srcROI.width) / srcROI.height;
   (void)ar;
 
+  // cudaMemset2DAsync(
+  //     static_cast<Npp8u*>(outParams->dataPtr),
+  //     outParams->pitch,
+  //     0,
+  //     outParams->width,
+  //     outParams->height,
+  //     nppStreamContext.hStream);
+
   NppStatus status = nppiWarpAffine_8u_C4R_Ctx(
       static_cast<const Npp8u*>(inParams->dataPtr), // Source pointer
       {static_cast<int>(inParams->width), static_cast<int>(inParams->height)}, // Source size
@@ -725,7 +733,7 @@ cudaError gst_videoprep_do_dewarp(
     const BBox dest_rect(0, 0, dewarpParams->dewarpWidth, dewarpParams->dewarpHeight);
     NppStatus np_status = cropAndResizeNvBufSurface(
         /*srcSurface=*/in_surface,
-        /*src_rect=*/ tracking_boxes.at(j),
+        /*src_rect=*/tracking_boxes.at(j),
         /*src_rect=*/ // all_src_rect,
         /*videpPrepParams=*/dewarpParams,
         // out_surface,

@@ -984,7 +984,10 @@ static cudaError gst_videoprep_generate_output(
   nppStreamContext.nStreamFlags = 0; // No special flags
   nppStreamContext.nCudaDeviceId = videoprep->gpu_id; // Default queue size
 
-  // std::vector<hm::BBox> tracking_boxes = get_tracking_boxes(batch_meta);
+  std::vector<hm::BBox> tracking_boxes = get_tracking_boxes(batch_meta);
+  const float max_angle = 30.0;
+  const float half_width = float(videoprep->input_width) / 2;
+
 
   for (size_t j = 0; j < in_surf.numFilled; ++j) {
     static float angle = 0.0;
@@ -992,6 +995,16 @@ static cudaError gst_videoprep_generate_output(
     // cudaMemcpyKind kind, cudaStream_t stream __dv(0));
     assert(out_surface->surfaceList[j].width == in_surf.surfaceList[j].width);
     assert(out_surface->surfaceList[j].height == in_surf.surfaceList[j].height);
+
+    const float tcx = tracking_boxes.at(j).center().x;
+    if (tcx < half_width) {
+      float pct = 1.0 - tcx / half_width;
+      angle = max_angle * pct;
+    } else if (tcx > half_width) {
+      float pct = (half_width - tcx) / half_width;
+      angle = max_angle * pct;
+    }
+
     // cudaMemcpyAsync(
     //     out_surface->surfaceList[j].dataPtr,
     //     in_surf.surfaceList[j].dataPtr,
