@@ -1014,6 +1014,7 @@ static cudaError gst_videoprep_generate_output(
     rotateNvBufSurfaceWithNPP(
         &in_surf,
         /*input_surface_index=*/j,
+        // BBox(0, 0, srcRect[j].left + srcRect[j].width, srcRect[j].top + srcRect[j].height),
         BBox(0, 0, srcRect[j].left + srcRect[j].width, srcRect[j].top + srcRect[j].height),
         out_surface,
         /*output_surface_index=*/j,
