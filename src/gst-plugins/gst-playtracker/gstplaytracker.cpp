@@ -482,10 +482,11 @@ static void attach_metadata_full_frame(
   NvDsObjectMeta* object_meta = NULL;
 
   // static gchar font_name[] = "Serif";
-  for (int64_t i = play_results.tracking_boxes.size() - 1; i >= 0; --i) {
+  size_t adder = 0;
+  for (int64_t i = play_results.tracking_boxes.size() - 1; i >= 0; --i, ++adder) {
     const hm::BBox& tracking_box = play_results.tracking_boxes[i];
     object_meta = nvds_acquire_obj_meta_from_pool(batch_meta);
-    object_meta->class_id = DsPlayTrackerInitParams::kPlayBoxClassIdBase + i;
+    object_meta->class_id = DsPlayTrackerInitParams::kPlayBoxClassIdBase + adder;
 
     NvOSD_RectParams& rect_params = object_meta->rect_params;
     // NvOSD_TextParams& text_params = object_meta->text_params;
