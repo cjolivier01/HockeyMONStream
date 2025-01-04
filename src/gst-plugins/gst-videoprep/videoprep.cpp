@@ -167,10 +167,11 @@ static cudaError Dewarp_Buffer(
   gint err = 0;
   cudaError_t cudaErr;
   size_t cuSrcRowBytes, cuDstRowBytes;
-  dim3 dimGrid, dimBlock;
+  // dim3 dimGrid, dimBlock;
   WarpWrapper warper;
 
-  err = err;
+  // err = err;
+  (void) err;
 
   /* Set warper parameters */
   warper.setParams(&warparams);

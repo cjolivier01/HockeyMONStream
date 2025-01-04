@@ -847,7 +847,7 @@ static cudaError gst_videoprep_generate_output(
   }
 
   NvBufSurfTransform_Error tx_err = NvBufSurfTransformError_Success;
-#if 1
+#if 0
   {
     // Perform NvBufTransform
     NvBufSurfTransformParams transform_params;
