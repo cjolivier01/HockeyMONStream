@@ -376,7 +376,10 @@ static cudaError Dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surface, const
 
   }
 #else
-  cudaErr = Dewarp_Buffer(videoprep, src, dst, warparams, surfaceParams);
+  // cudaErr = Dewarp_Buffer(videoprep, src, dst, warparams, surfaceParams);
+
+  cudaErr = cudaMemcpy((void*)dst.ptr, (void*)src.ptr, dst.rowBytes * dst.height, cudaMemcpyDeviceToDevice);
+
 #endif
   if (videoprep->dump_frames)
   // Dump output
