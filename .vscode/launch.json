@@ -55,7 +55,7 @@
         "GST_PLUGIN_PATH": "/home/colivier/src/hstream/lib/gst-plugins:/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib/gst-plugins",
         //"GST_DEBUG": "3",
       },
-      "preLaunchTask": "Build extensions",
+      "preLaunchTask": "Build All",
     },
     {
       "name": "(LLDB) kmeans",
@@ -90,7 +90,7 @@
         "GST_PLUGIN_PATH": "/home/colivier/src/hstream/lib/gst-plugins:/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
         //"GST_DEBUG": "3",
       },
-      "preLaunchTask": "Build extensions",
+      "preLaunchTask": "Build All",
     },
     {
       "name": "(CUDA) pipeline-app",
@@ -117,7 +117,7 @@
         },
       ],
       "additionalSOLibSearchPath": "/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:/home/colivier/mambaforge/envs/ubuntu/lib:/home/colivier/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu",
-      //"preLaunchTask": "Build extensions",
+      //"preLaunchTask": "Build All",
     },
     {
       "name": "(LLDB) deepstream-app",
@@ -142,7 +142,7 @@
         "GST_PLUGIN_PATH": "/home/colivier/src/hstream/lib/gst-plugins:/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
         //"GST_DEBUG": "3",
       },
-      "preLaunchTask": "Build extensions",
+      "preLaunchTask": "Build All",
     },
     {
       "name": "(LLDB) myaudioapp",
