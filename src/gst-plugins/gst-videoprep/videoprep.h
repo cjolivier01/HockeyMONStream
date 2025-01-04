@@ -22,6 +22,7 @@ inline bool CUDA_CHECK_(gint e, gint iLine, const gchar* szFile) {
     }                               \
   } while (0)
 namespace hm {
+namespace videoprep {
 /**
  * Function definition of dewarping call for each surface.
  *
@@ -40,4 +41,5 @@ cudaError gst_videoprep_do_dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surf
  */
 uint32_t gst_videoprep_version();
 
+} // namespace videoprep
 } // namespace hm

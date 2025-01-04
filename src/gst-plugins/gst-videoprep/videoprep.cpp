@@ -62,6 +62,7 @@
 #define NUM_WARP_TYPES (NVDS_META_SURFACE_EQUIRECT_VERTCYLINDER + 1)
 
 namespace hm {
+namespace videoprep {
 
 // This array maps the enum "NvDsSurfaceType" to enum "nvwarpType_t"
 const nvwarpType_t NvDsSurfaceType_To_nvwarpType_t[NUM_WARP_TYPES]{
@@ -171,7 +172,7 @@ static cudaError Dewarp_Buffer(
   WarpWrapper warper;
 
   // err = err;
-  (void) err;
+  (void)err;
 
   /* Set warper parameters */
   warper.setParams(&warparams);
@@ -653,7 +654,7 @@ cudaError gst_videoprep_do_dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surf
         // nvtx_helper_push_pop(strcat(context_name,"Dewarp"));
 
         cuda_ck(Dewarp(videoprep, in_surface, dewarpParams));
-        //cuda_ck(MyDewarp(videoprep, in_surface, dewarpParams, out_surface));
+        // cuda_ck(MyDewarp(videoprep, in_surface, dewarpParams, out_surface));
 
         // To maintain legacy prints
         if (it->projection_type == NVDS_META_SURFACE_FISH_PUSHBROOM) {
@@ -687,4 +688,5 @@ cudaError gst_videoprep_do_dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surf
 uint32_t gst_videoprep_version() {
   return nvwarpVersion();
 }
+} // namespace videoprep
 } // namespace hm

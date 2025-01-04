@@ -80,6 +80,9 @@ GST_DEBUG_CATEGORY_STATIC(gst_videoprep_debug);
 #define STOP_PROFILE(X)
 #endif
 
+namespace hm {
+namespace videoprep {
+
 // Helper macros for alignment
 #define NVBUF_ALIGN_VAL (256)
 #define NVBUF_ALIGN_PITCH(pitch, align_val) ((pitch % align_val == 0) ? pitch : ((pitch / align_val + 1) * align_val))
@@ -117,7 +120,7 @@ void __attribute__((constructor)) videoprep_libinit(void);
 void __attribute__((destructor)) videoprep_libdeinit(void);
 
 void videoprep_libinit(void) {
-  unsigned version = hm::gst_videoprep_version();
+  unsigned version = gst_videoprep_version();
   if (0 != (version & 0xFF))
     g_snprintf(
         VIDEOPREP_LIB_VERSION,
@@ -954,7 +957,7 @@ static cudaError gst_videoprep_dewarp(GstVideoPrep* videoprep, NvBufSurface* in_
     }
   }
   // Do Dewarping of all surfaces
-  cuda_ck(hm::gst_videoprep_do_dewarp(videoprep, in_surface, out_surface));
+  cuda_ck(hm::videoprep::gst_videoprep_do_dewarp(videoprep, in_surface, out_surface));
 
   if (videoprep->output_fmt == GST_VIDEO_FORMAT_NV12 || videoprep->output_fmt == GST_VIDEO_FORMAT_NV21) {
     // RGBA ---> NV12 conversion
@@ -1430,13 +1433,15 @@ static gboolean videoprep_init(GstPlugin* videoprep) {
 
   return gst_element_register(videoprep, "videoprep", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
 }
+} // namespace videoprep
+} // namespace hm
 
 GST_PLUGIN_DEFINE(
     GST_VERSION_MAJOR,
     GST_VERSION_MINOR,
     nvdsgst_videoprep,
     PACKAGE_DESCRIPTION,
-    videoprep_init,
+    hm::videoprep::videoprep_init,
     "7.1",
     PACKAGE_LICENSE,
     PACKAGE_NAME,

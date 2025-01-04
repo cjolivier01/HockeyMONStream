@@ -25,6 +25,9 @@
 #include <cuda.h>
 #include <string.h>
 
+namespace hm {
+namespace videoprep {
+
 /* clang-format off */
 
 GST_DEBUG_CATEGORY (VIDEOPREP_CFG_PARSER_CAT);
@@ -485,3 +488,6 @@ done:
 }
 
 /* clang-format on */
+
+} // namespace videoprep
+} // namespace hm

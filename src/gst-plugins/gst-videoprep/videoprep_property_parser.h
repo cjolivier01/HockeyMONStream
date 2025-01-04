@@ -3,6 +3,9 @@
 #include <gst/gst.h>
 #include "gstvideoprep.h"
 
+namespace hm {
+namespace videoprep {
+
 /* clang-format off */
 
 /**
@@ -66,3 +69,5 @@ videoprep_parse_videoprep_props (GstVideoPrep *videoprep, GKeyFile *key_file,
 
 /* clang-format on */
 
+} // namespace videoprep
+} // namespace hm
