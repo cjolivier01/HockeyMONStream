@@ -1137,7 +1137,7 @@ static cudaError gst_videoprep_generate_output(
   return err;
 }
 
-static cudaError gst_videoprep_dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surface, NvBufSurface* out_surface) {
+static cudaError gst_videoprep_dewarp(NvDsBatchMeta* batch_meta, GstVideoPrep* videoprep, NvBufSurface* in_surface, NvBufSurface* out_surface) {
   cudaError cudaErr = cudaSuccess;
   gint err = 0;
 
@@ -1155,7 +1155,7 @@ static cudaError gst_videoprep_dewarp(GstVideoPrep* videoprep, NvBufSurface* in_
     }
   }
   // Do Dewarping of all surfaces
-  cuda_ck(hm::videoprep::gst_videoprep_do_dewarp(videoprep, in_surface, out_surface));
+  cuda_ck(hm::videoprep::gst_videoprep_do_dewarp(batch_meta, videoprep, in_surface, out_surface));
 
   if (videoprep->output_fmt == GST_VIDEO_FORMAT_NV12 || videoprep->output_fmt == GST_VIDEO_FORMAT_NV21) {
     // RGBA ---> NV12 conversion
@@ -1189,6 +1189,9 @@ static GstFlowReturn gst_videoprep_transform(GstBaseTransform* btrans, GstBuffer
   cudaError cudaErr = cudaSuccess;
   gchar pts_str[64];
 
+  NvDsBatchMeta* batch_meta = gst_buffer_get_nvds_batch_meta(inbuf);
+  assert(batch_meta);
+
   videoprep->frame_num++;
   GST_DEBUG_OBJECT(videoprep, "%s : Frame=%d InBuf=%p OutBuf=%p\n", __func__, videoprep->frame_num, inbuf, outbuf);
 
@@ -1220,7 +1223,7 @@ static GstFlowReturn gst_videoprep_transform(GstBaseTransform* btrans, GstBuffer
 
   START_PROFILE;
   videoprep->out_gst_buf = outbuf;
-  cudaErr = gst_videoprep_dewarp(videoprep, in_surface, out_surface);
+  cudaErr = gst_videoprep_dewarp(batch_meta, videoprep, in_surface, out_surface);
   if (cudaErr != cudaSuccess) {
     GST_ERROR_OBJECT(videoprep, "gst_videoprep_dewarp failed");
     return GST_FLOW_ERROR;

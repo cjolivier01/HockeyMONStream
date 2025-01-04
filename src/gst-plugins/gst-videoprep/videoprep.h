@@ -1,8 +1,10 @@
 #pragma once
 
 #include "gstvideoprep.h"
-
 #include "nvbufsurface.h"
+
+#include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
+
 
 inline bool CUDA_CHECK_(gint e, gint iLine, const gchar* szFile) {
   if (e != cudaSuccess) {
@@ -32,7 +34,7 @@ namespace videoprep {
  *
  * @return Cuda Error. "cudaSuccess" in case of Success.
  */
-cudaError gst_videoprep_do_dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surface, NvBufSurface* out_surface);
+cudaError gst_videoprep_do_dewarp(NvDsBatchMeta* batch_meta, GstVideoPrep* videoprep, NvBufSurface* in_surface, NvBufSurface* out_surface);
 
 /**
  * Function to get core Dewarper library version.
@@ -40,6 +42,8 @@ cudaError gst_videoprep_do_dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surf
  * @return  The version number.
  */
 uint32_t gst_videoprep_version();
+
+std::vector<hm::BBox> get_tracking_boxes(NvDsBatchMeta* batch_meta);
 
 } // namespace videoprep
 } // namespace hm

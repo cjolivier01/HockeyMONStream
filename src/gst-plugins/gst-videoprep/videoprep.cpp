@@ -627,11 +627,39 @@ static cudaError Dewarp(
   return cudaErr;
 }
 
-cudaError gst_videoprep_do_dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surface, NvBufSurface* out_surface) {
+std::vector<hm::BBox> get_tracking_boxes(NvDsBatchMeta* batch_meta) {
+  std::vector<hm::BBox> results;
+  const size_t batch_size = g_list_length(batch_meta->frame_meta_list);
+  results.reserve(batch_size);
+  for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != nullptr; l_frame = l_frame->next) {
+    NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)l_frame->data;
+    for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
+      NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
+      if (obj_meta->class_id == 99) {
+        results.emplace_back(hm::BBox(
+            obj_meta->rect_params.left,
+            obj_meta->rect_params.top,
+            obj_meta->rect_params.left + obj_meta->rect_params.width,
+            obj_meta->rect_params.top + obj_meta->rect_params.height));
+        break;
+      }
+    }
+  }
+  assert(results.size() == batch_size);
+  return results;
+}
+
+cudaError gst_videoprep_do_dewarp(
+    NvDsBatchMeta* batch_meta,
+    GstVideoPrep* videoprep,
+    NvBufSurface* in_surface,
+    NvBufSurface* out_surface) {
   gchar context_name[100];
   cudaError cudaErr = cudaSuccess;
   std::vector<VideoPrepParams>::iterator it;
   VideoPrepParams* dewarpParams = NULL;
+
+  std::vector<hm::BBox> tracking_boxes = get_tracking_boxes(batch_meta);
 
   for (it = videoprep->priv->vecDewarpSurface.begin(); it != videoprep->priv->vecDewarpSurface.end(); it++) {
     dewarpParams = &(*it);

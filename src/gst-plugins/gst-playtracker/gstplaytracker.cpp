@@ -475,9 +475,9 @@ static void attach_metadata_full_frame(
     NvDsFrameMeta* frame_meta,
     const hm::play_tracker::PlayTrackerResults& play_results,
     guint batch_id) {
-  if (play_results.final_cluster_box.empty()) {
-    return;
-  }
+  // if (play_results.tracking_boxes.back().empty()) {
+  //   return;
+  // }
   NvDsBatchMeta* batch_meta = frame_meta->base_meta.batch_meta;
   NvDsObjectMeta* object_meta = NULL;
 
