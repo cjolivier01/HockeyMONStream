@@ -10,6 +10,11 @@ gst_cc_plugin(
         "-Wno-error=write-strings",
     ],
     linkopts = [
+      "-L/usr/local/cuda-12.6/targets/x86_64-linux/lib",
+      "-l:libnppig.so",
+      # "-l:libnppc.so",
+      "-lnppc_static",
+      "-lnppif_static",
       "-lnvdsgst_helper",
       "-lnvdsgst_meta",
       "-lnvds_meta",
@@ -18,7 +23,7 @@ gst_cc_plugin(
       "-lnvbufsurftransform",
       "-lnvds_csvparser",
       "-lnvds_dewarper",
-			 "-lnvds_nvtxhelper",
+			"-lnvds_nvtxhelper",
     ],
     visibility = ["//visibility:public"],
     deps = [

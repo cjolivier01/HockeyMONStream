@@ -20,6 +20,7 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
+#include <assert.h>
 #include <string.h>
 
 #include <sstream>
@@ -252,7 +253,11 @@ bail:
  * Dewarp
  ********************************************************************************/
 
-static cudaError Dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surface, const VideoPrepParams* surfaceParams) {
+static cudaError MyDewarp(
+    GstVideoPrep* videoprep,
+    NvBufSurface* in_surface,
+    const VideoPrepParams* surfaceParams,
+    NvBufSurface* out_surface) {
   nvwarpParams_t warparams;
   cudaError_t cudaErr = cudaSuccess;
   Buffer src, dst;
@@ -266,6 +271,11 @@ static cudaError Dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surface, const
   dst.width = (surfaceParams->dewarpWidth == 0) ? src.width : surfaceParams->dewarpWidth;
   dst.height = (surfaceParams->dewarpHeight == 0) ? src.height : surfaceParams->dewarpHeight;
   dst.rowBytes = surfaceParams->dewarpPitch;
+
+  assert(src.width == dst.width);
+  assert(src.height == dst.height);
+  assert(src.rowBytes == dst.rowBytes);
+  assert(src.ptr != dst.ptr);
 
 #if defined(__aarch64__)
   CUresult status;
@@ -316,13 +326,13 @@ static cudaError Dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surface, const
   }
 
   /* Set warper parameters */
-  if (surfaceParams->distortion) {
+  //if (surfaceParams->distortion) {
     warparams.dist[0] = surfaceParams->distortion[0];
     warparams.dist[1] = surfaceParams->distortion[1];
     warparams.dist[2] = surfaceParams->distortion[2];
     warparams.dist[3] = surfaceParams->distortion[3];
     warparams.dist[4] = surfaceParams->distortion[4];
-  }
+  //}
 
   warparams.dstWidth = dst.width;
   warparams.dstHeight = dst.height;
@@ -380,6 +390,7 @@ static cudaError Dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surface, const
   // cudaErr = Dewarp_Buffer(videoprep, src, dst, warparams, surfaceParams);
 
   cudaErr = cudaMemcpy((void*)dst.ptr, (void*)src.ptr, dst.rowBytes * dst.height, cudaMemcpyDeviceToDevice);
+  assert(cudaErr == 0);
 
 #endif
   if (videoprep->dump_frames)
@@ -443,7 +454,7 @@ static cudaError Dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surface, const
   return cudaErr;
 }
 
-static cudaError MyDewarp(
+static cudaError Dewarp(
     GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
     const VideoPrepParams* surfaceParams,
@@ -553,28 +564,7 @@ static cudaError MyDewarp(
 
   warparams.control[0] = surfaceParams->control;
 
-#if 0 /* simple crop */
-  {
-      // Crop and rotate the surface
-      NvBufSurfTransformParams transform_params = {0};
-      NvBufSurfTransformRect src_rect = {0, 0, src.width, src.height};
-      NvBufSurfTransformRect dst_rect = {0, 0, dst.width, dst.height};
-      transform_params.src_rect = &src_rect;
-      transform_params.dst_rect = &dst_rect;
-      transform_params.transform_flag = NVBUFSURF_TRANSFORM_CROP_SRC|NVBUFSURF_TRANSFORM_CROP_DST;
-      transform_params.transform_filter = NvBufSurfTransformInter_Nearest;
-
-      // Perform the transformation
-      NvBufSurfTransform_Error error = NvBufSurfTransform(in_surface, out_surface, &transform_params);
-      if (error != 0) {
-          GST_ERROR("Failed to transform surface %d", error);
-          cudaErr = cudaErrorInvalidValue; // ?
-      }
-
-  }
-#else
   cudaErr = Dewarp_Buffer(videoprep, src, dst, warparams, surfaceParams);
-#endif
   if (videoprep->dump_frames)
   // Dump output
   {
@@ -653,8 +643,8 @@ cudaError gst_videoprep_do_dewarp(GstVideoPrep* videoprep, NvBufSurface* in_surf
             context_name, sizeof(context_name), "%s_(Frame=%u)", GST_ELEMENT_NAME(videoprep), videoprep->frame_num);
         // nvtx_helper_push_pop(strcat(context_name,"Dewarp"));
 
-        cuda_ck(Dewarp(videoprep, in_surface, dewarpParams));
-        // cuda_ck(MyDewarp(videoprep, in_surface, dewarpParams, out_surface));
+        // cuda_ck(Dewarp(videoprep, in_surface, dewarpParams));
+        cuda_ck(MyDewarp(videoprep, in_surface, dewarpParams, out_surface));
 
         // To maintain legacy prints
         if (it->projection_type == NVDS_META_SURFACE_FISH_PUSHBROOM) {

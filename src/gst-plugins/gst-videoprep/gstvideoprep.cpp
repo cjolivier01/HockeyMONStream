@@ -1,6 +1,12 @@
 #include "gstvideoprep.h"
 #include "gstnvdsbufferpool.h"
 
+#include <cuda_runtime.h>
+#include <npp.h>
+#include <nvbufsurface.h>
+#include <cmath>
+#include <iostream>
+#include <optional>
 #include "gst-nvcommon.h"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
@@ -136,6 +142,60 @@ void videoprep_libinit(void) {
 }
 
 void videoprep_libdeinit(void) {}
+
+#include <cuda_runtime.h>
+#include <iostream>
+#include <stdexcept>
+
+class CudaDeviceStreamGuard {
+ public:
+  CudaDeviceStreamGuard(int newDeviceIndex, cudaStream_t newStream) : oldDevice(-1), stream(newStream) {
+    // Save the current device
+    cudaError_t err = cudaGetDevice(&oldDevice);
+    if (err != cudaSuccess) {
+      throw std::runtime_error("Failed to get current CUDA device: " + std::string(cudaGetErrorString(err)));
+    }
+
+    // Switch to the new device
+    err = cudaSetDevice(newDeviceIndex);
+    if (err != cudaSuccess) {
+      throw std::runtime_error("Failed to set CUDA device: " + std::string(cudaGetErrorString(err)));
+    }
+
+    // Switch to the new stream
+    // In CUDA, streams are associated with operations, so explicitly switching is unnecessary.
+    // We'll assume all operations use `newStream`.
+  }
+
+  ~CudaDeviceStreamGuard() {
+    try {
+      // Synchronize the given stream
+      if (stream) {
+        cudaError_t err = cudaStreamSynchronize(stream);
+        if (err != cudaSuccess) {
+          std::cerr << "Warning: Failed to synchronize CUDA stream: " << cudaGetErrorString(err) << std::endl;
+        }
+      }
+
+      // Restore the old device
+      if (oldDevice != -1) {
+        cudaError_t err = cudaSetDevice(oldDevice);
+        if (err != cudaSuccess) {
+          std::cerr << "Warning: Failed to restore CUDA device: " << cudaGetErrorString(err) << std::endl;
+        }
+      }
+
+      // No explicit stream switching needed; we rely on operations using the restored stream.
+    } catch (...) {
+      // Suppress exceptions in destructors to prevent crashes during stack unwinding.
+      std::cerr << "Error occurred during CudaDeviceStreamGuard cleanup." << std::endl;
+    }
+  }
+
+ private:
+  int oldDevice;
+  cudaStream_t stream;
+};
 
 static const gchar* print_pretty_time(gchar* ts_str, gsize ts_str_len, GstClockTime ts) {
   if (ts == GST_CLOCK_TIME_NONE)
@@ -760,6 +820,114 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
   return TRUE;
 }
 
+void inspect_nvbufsurface_dtype(GstBuffer* buffer) {
+  // Map the GstBuffer to retrieve the NvBufSurface
+  GstMapInfo map_info;
+  if (!gst_buffer_map(buffer, &map_info, GST_MAP_READ)) {
+    GST_ERROR("Failed to map GstBuffer.");
+    return;
+  }
+
+  NvBufSurface* nvbuf_surface = (NvBufSurface*)map_info.data;
+  if (!nvbuf_surface) {
+    GST_ERROR("NvBufSurface is null.");
+    gst_buffer_unmap(buffer, &map_info);
+    return;
+  }
+
+  // Iterate through surfaces in the NvBufSurface
+  for (uint32_t i = 0; i < nvbuf_surface->numFilled; i++) {
+    NvBufSurfaceParams& surface_params = nvbuf_surface->surfaceList[i];
+    GST_INFO(
+        "Surface %d: width=%d, height=%d, pitch=%d",
+        i,
+        surface_params.width,
+        surface_params.height,
+        surface_params.pitch);
+
+    switch (surface_params.colorFormat) {
+      case NVBUF_COLOR_FORMAT_RGBA:
+        GST_INFO("Surface %d has color format: NVBUF_COLOR_FORMAT_RGBA (dtype: uint8_t).", i);
+        break;
+
+      case NVBUF_COLOR_FORMAT_NV12:
+        GST_INFO("Surface %d has color format: NVBUF_COLOR_FORMAT_NV12 (dtype: uint8_t, YUV 4:2:0).", i);
+        break;
+
+      case NVBUF_COLOR_FORMAT_UYVY:
+        GST_INFO("Surface %d has color format: NVBUF_COLOR_FORMAT_UYVY (dtype: uint8_t, YUV 4:2:2).", i);
+        break;
+
+      default:
+        GST_WARNING("Surface %d has an unsupported or unknown color format: %d", i, surface_params.colorFormat);
+        break;
+    }
+  }
+
+  // Unmap the buffer
+  gst_buffer_unmap(buffer, &map_info);
+}
+
+NppStatus rotateNvBufSurfaceWithNPP(
+    NvBufSurface* inputSurface,
+    size_t input_surface_index,
+    NvBufSurface* outputSurface,
+    size_t output_surface_index,
+    float angleDegrees,
+    const NppStreamContext& nppStreamContext,
+    std::optional<int> fill_value = std::nullopt) {
+  float angleRadians = angleDegrees * M_PI / 180.0f;
+
+  assert(input_surface_index < inputSurface->numFilled);
+  assert(output_surface_index < outputSurface->batchSize);
+
+  // Assume first plane for simplicity
+  NvBufSurfaceParams* inParams = &inputSurface->surfaceList[input_surface_index];
+  NvBufSurfaceParams* outParams = &outputSurface->surfaceList[output_surface_index];
+  assert(inParams->colorFormat == outParams->colorFormat);
+  assert(inParams->colorFormat == NVBUF_COLOR_FORMAT_RGBA);
+  // Define rotation matrix
+  double affineMatrix[2][3] = {
+      {cos(angleRadians), -sin(angleRadians), 0.0}, {sin(angleRadians), cos(angleRadians), 0.0}};
+
+  // Adjust translation to rotate around the center
+  affineMatrix[0][2] = (outParams->width / 2.0) - (cos(angleRadians) * inParams->width / 2.0) +
+      (sin(angleRadians) * inParams->height / 2.0);
+  affineMatrix[1][2] = (outParams->height / 2.0) - (sin(angleRadians) * inParams->width / 2.0) -
+      (cos(angleRadians) * inParams->height / 2.0);
+
+  // Set source and destination ROI
+  NppiRect srcROI = {0, 0, static_cast<int>(inParams->width), static_cast<int>(inParams->height)};
+  NppiRect dstROI = {0, 0, static_cast<int>(outParams->width), static_cast<int>(outParams->height)};
+
+  // Perform rotation using NPP
+
+  // nppiWarpAffine_8u_C4R(const Npp8u * pSrc, NppiSize oSrcSize, int nSrcStep, NppiRect oSrcROI,
+  //                             Npp8u * pDst, int nDstStep, NppiRect oDstROI,
+  //                       const double aCoeffs[2][3], int eInterpolation);
+  if (fill_value.has_value()) {
+    cudaMemset2D(outParams->dataPtr, outParams->pitch, 0, outParams->width, outParams->height);
+  }
+
+  NppStatus status = nppiWarpAffine_8u_C4R_Ctx(
+      static_cast<const Npp8u*>(inParams->dataPtr), // Source pointer
+      {static_cast<int>(inParams->width), static_cast<int>(inParams->height)}, // Source size
+      inParams->pitch, // Source pitch
+      srcROI, // Source ROI
+      static_cast<Npp8u*>(outParams->dataPtr), // Destination pointer
+      outParams->pitch, // Destination pitch
+      dstROI, // Destination ROI
+      affineMatrix, // Affine transformation matrix
+      NPPI_INTER_LINEAR, // Interpolation method
+      nppStreamContext
+  );
+
+  if (status != NPP_SUCCESS) {
+    std::cerr << "NPP rotation failed with error: " << status << std::endl;
+  }
+  return status;
+}
+
 static cudaError gst_videoprep_generate_output(
     GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
@@ -842,7 +1010,6 @@ static cudaError gst_videoprep_generate_output(
         dstRect[i].height = out_surface->surfaceList[i].planeParams.height[0];
         srcRect[i].height = (dstRect[i].height / xscale + 0.5);
       }
-
       i++;
     }
 
@@ -894,29 +1061,60 @@ static cudaError gst_videoprep_generate_output(
 #else
 
   // Perform NvBufTransform
-  NvBufSurfTransformParams transform_params;
-  transform_params.transform_flag =
-      NVBUFSURF_TRANSFORM_FILTER | NVBUFSURF_TRANSFORM_CROP_DST | NVBUFSURF_TRANSFORM_CROP_SRC;
-  transform_params.transform_flip = NvBufSurfTransform_None;
-  transform_params.transform_filter = videoprep->interpolation_method;
-  transform_params.src_rect = &srcRect[0];
-  transform_params.dst_rect = &dstRect[0];
+  // NvBufSurfTransformParams transform_params;
+  // transform_params.transform_flag =
+  //     /*NVBUFSURF_TRANSFORM_FILTER |*/ NVBUFSURF_TRANSFORM_CROP_DST | NVBUFSURF_TRANSFORM_CROP_SRC;
+  // transform_params.transform_flip = NvBufSurfTransform_None;
+  // transform_params.transform_filter = videoprep->interpolation_method;
+  // transform_params.src_rect = &srcRect[0];
+  // transform_params.dst_rect = &dstRect[0];
+
   in_surf.numFilled = i;
   in_surf.batchSize = i;
 
-  NvBufSurfTransformConfigParams config_params;
-  config_params.compute_mode = NvBufSurfTransformCompute_GPU;
-  config_params.gpu_id = videoprep->gpu_id;
-  config_params.cuda_stream = videoprep->stream;
+  // NvBufSurfTransformConfigParams config_params;
+  // config_params.compute_mode = NvBufSurfTransformCompute_GPU;
+  // config_params.gpu_id = videoprep->gpu_id;
+  // config_params.cuda_stream = videoprep->stream;
 
-  tx_err = NvBufSurfTransformSetSessionParams(&config_params);
-  if (tx_err != NvBufSurfTransformError_Success) {
-    g_print("%s: %d NvBufSurfTransform set session failed\n", __func__, __LINE__);
-    g_free(surface_meta);
-    return cudaErrorInvalidSurface;
+  // tx_err = NvBufSurfTransformSetSessionParams(&config_params);
+  // if (tx_err != NvBufSurfTransformError_Success) {
+  //   g_print("%s: %d NvBufSurfTransform set session failed\n", __func__, __LINE__);
+  //   g_free(surface_meta);
+  //   return cudaErrorInvalidSurface;
+  // }
+
+  // tx_err = NvBufSurfTransform(&in_surf, out_surface, &transform_params);
+
+  NppStreamContext nppStreamContext;
+  // NppStatus npp_status = nppiStreamContextInit(&nppStreamContext);
+  // assert(npp_status == 0);
+  memset(&nppStreamContext, 0, sizeof(nppStreamContext));
+  nppStreamContext.hStream = videoprep->stream;  // Assign the CUDA stream
+  nppStreamContext.nStreamFlags = 0;          // No special flags
+  nppStreamContext.nCudaDeviceId = videoprep->gpu_id;     // Default queue size
+
+  for (size_t j = 0; j < in_surf.numFilled; ++j) {
+    static float angle = 0.0;
+    rotateNvBufSurfaceWithNPP(
+        &in_surf,
+        /*input_surface_index=*/j,
+        out_surface,
+        /*output_surface_index=*/j,
+        angle,
+        nppStreamContext,
+        /*fill_value=*/0);
+    angle += 1;
+    if (angle > 359.9) {
+      angle = 0.0;
+    }
+    assert(tx_err == NvBufSurfTransformError_Success);
   }
 
-  tx_err = NvBufSurfTransform(&in_surf, out_surface, &transform_params);
+  if (videoprep->stream) {
+    cudaStreamSynchronize(nppStreamContext.hStream);
+  }
+
 #endif
   if (tx_err != NvBufSurfTransformError_Success) {
     g_print("%s: %d NvBufSurfTransform failed\n", __func__, __LINE__);
