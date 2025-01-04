@@ -515,6 +515,9 @@ NppStatus rotateNvBufSurfaceWithNPP(
   NvBufSurfaceParams* outParams = &outputSurface->surfaceList[output_surface_index];
   assert(inParams->colorFormat == outParams->colorFormat);
   assert(inParams->colorFormat == NVBUF_COLOR_FORMAT_RGBA);
+  // assert(inParams->pitch == outParams->pitch);
+  // float szin = float(inParams->pitch) / inParams->width;
+  // float szout = float(outParams->pitch) / outParams->width;
   // Define rotation matrix
   double affineMatrix[2][3] = {
       {cos(angleRadians), -sin(angleRadians), 0.0}, {sin(angleRadians), cos(angleRadians), 0.0}};
@@ -530,6 +533,9 @@ NppStatus rotateNvBufSurfaceWithNPP(
   NppiRect srcROI = {0, 0, static_cast<int>(inParams->width), static_cast<int>(inParams->height)};
   NppiRect dstROI = {0, 0, static_cast<int>(outParams->width), static_cast<int>(outParams->height)};
 
+  assert(srcROI.width == dstROI.width);
+  assert(srcROI.height == dstROI.height);
+
   // Perform rotation using NPP
   if (fill_value.has_value()) {
     cudaMemset2DAsync(
@@ -543,15 +549,33 @@ NppStatus rotateNvBufSurfaceWithNPP(
   float ar = float(srcROI.width) / srcROI.height;
   (void)ar;
 
-  cudaMemset2DAsync(
-      static_cast<Npp8u*>(outParams->dataPtr),
-      outParams->pitch,
-      128,
-      outParams->width,
-      outParams->height,
-      nppStreamContext.hStream);
+  // cudaMemset2DAsync(
+  //     static_cast<Npp8u*>(outParams->dataPtr),
+  //     outParams->pitch,
+  //     128,
+  //     outParams->width,
+  //     outParams->height,
+  //     nppStreamContext.hStream);
+
+  // cudaMemcpy2DAsync(
+  //     static_cast<Npp8u*>(outParams->dataPtr),
+  //     outParams->pitch,
+  //     static_cast<const Npp8u*>(inParams->dataPtr),
+  //     inParams->pitch,
+  //     outParams->width,
+  //     outParams->height,
+  //     cudaMemcpyDeviceToDevice,
+  //     nppStreamContext.hStream);
+
+  // cudaMemcpyAsync(
+  //     static_cast<Npp8u*>(outParams->dataPtr),
+  //     static_cast<const Npp8u*>(inParams->dataPtr),
+  //     outParams->height * inParams->pitch,
+  //     cudaMemcpyDeviceToDevice,
+  //     nppStreamContext.hStream);
 
   NppStatus status = NppStatus::NPP_SUCCESS;
+#if 1
   status = nppiWarpAffine_8u_C4R_Ctx(
       static_cast<const Npp8u*>(inParams->dataPtr), // Source pointer
       {static_cast<int>(inParams->width), static_cast<int>(inParams->height)}, // Source size
@@ -576,7 +600,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
   //     /*nShiftY=*/0.0,
   //     NPPI_INTER_LINEAR,
   //     nppStreamContext);
-
+#endif
   if (status != NPP_SUCCESS) {
     std::cerr << "NPP rotation failed with error: " << status << std::endl;
   }
