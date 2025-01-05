@@ -534,6 +534,20 @@ static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
 
   for (iter = videoprep->priv->vecDewarpSurface.begin(); iter != videoprep->priv->vecDewarpSurface.end(); iter++) {
     VideoPrepParams& vp_params = *iter;
+
+    // static bool ranthis = false;
+    // (void)ranthis;
+    // assert(!ranthis);
+    // ranthis = true;
+
+    // hm::WHDims pre_rotate_dest{
+    //     .width = (FloatValue)vp_params.dewarpWidth, .height = (FloatValue)vp_params.dewarpHeight};
+    // hm::WHDims output_size{.width = (FloatValue)vp_params.dewarpWidth, .height = (FloatValue)vp_params.dewarpHeight};
+    // videoprep->pre_rotate_size = get_box_size_necessary_for_rotations(pre_rotate_dest, output_size);
+
+    // vp_params.dewarpWidth = videoprep->pre_rotate_size.width;
+    // vp_params.dewarpHeight = videoprep->pre_rotate_size.height;
+
     // it->dewarpPitch = 4 * (((it->dewarpWidth) + 31) / 32) * 32;
 #ifdef SCRATCH_USE_ALIGNED_PITCH
     vp_params.dewarpPitch = NVBUF_PLATFORM_ALIGNED_PITCH(vp_params.dewarpWidth * 4);
@@ -999,9 +1013,10 @@ static cudaError gst_videoprep_generate_output(
     static float angle = 0.0;
     // cudaMemcpy2DAsync(void *dst, size_t dpitch, const void *src, size_t spitch, size_t width, size_t height, enum
     // cudaMemcpyKind kind, cudaStream_t stream __dv(0));
-    assert(out_surface->surfaceList[j].width == in_surf.surfaceList[j].width);
-    assert(out_surface->surfaceList[j].height == in_surf.surfaceList[j].height);
+    //assert(out_surface->surfaceList[j].width == in_surf.surfaceList[j].width);
+    //assert(out_surface->surfaceList[j].height == in_surf.surfaceList[j].height);
 
+#if 0    
     const float tcx = tracking_boxes.at(j).center().x;
     if (tcx < half_width) {
       float pct = 1.0 - tcx / half_width;
@@ -1010,7 +1025,7 @@ static cudaError gst_videoprep_generate_output(
       float pct = (half_width - tcx) / half_width;
       angle = max_angle * pct;
     }
-
+#endif
     // cudaMemcpyAsync(
     //     out_surface->surfaceList[j].dataPtr,
     //     in_surf.surfaceList[j].dataPtr,
@@ -1030,20 +1045,24 @@ static cudaError gst_videoprep_generate_output(
     // float ar = box.width() / box.height();
     // float myar = float(videoprep->output_width) / videoprep->output_height;
     // std::cout << "ar=" << ar << ", myar=" << myar << std::endl;
+    BBox src_box(0, 0, srcRect[j].left + srcRect[j].width, srcRect[j].top + srcRect[j].height);
+    // src_box = tracking_boxes.at(j).at_center(src_box.center());
     rotateNvBufSurfaceWithNPP(
         &in_surf,
         /*input_surface_index=*/j,
         // BBox(0, 0, srcRect[j].left + srcRect[j].width, srcRect[j].top + srcRect[j].height),
-        BBox(0, 0, srcRect[j].left + srcRect[j].width, srcRect[j].top + srcRect[j].height),
+        src_box,
         out_surface,
         /*output_surface_index=*/j,
         angle,
         nppStreamContext,
         /*fill_value=*/0);
-    // angle += 1;
-    // if (angle > 359.9) {
-    //   angle = 0.0;
-    // }
+
+    angle += 1;
+    if (angle > 359.9) {
+      angle = 0.0;
+    }
+
     assert(tx_err == NvBufSurfTransformError_Success);
 
   }

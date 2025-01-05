@@ -499,6 +499,25 @@ std::vector<hm::BBox> get_tracking_boxes(NvDsBatchMeta* batch_meta) {
   return results;
 }
 
+// Rotate an image around the image's center
+void createAffineMatrix(double angleRadians, int width, int height, double matrix[2][3]) {
+  // Image center
+  double cx = width / 2.0;
+  double cy = height / 2.0;
+
+  // Rotation components
+  double cosTheta = std::cos(angleRadians);
+  double sinTheta = std::sin(angleRadians);
+
+  // Compute affine matrix
+  matrix[0][0] = cosTheta; // m00
+  matrix[0][1] = -sinTheta; // m01
+  matrix[0][2] = cx - cosTheta * cx + sinTheta * cy; // m02 (x-translation)
+  matrix[1][0] = sinTheta; // m10
+  matrix[1][1] = cosTheta; // m11
+  matrix[1][2] = cy - sinTheta * cx - cosTheta * cy; // m12 (y-translation)
+}
+
 NppStatus rotateNvBufSurfaceWithNPP(
     NvBufSurface* inputSurface,
     size_t input_surface_index,
@@ -522,22 +541,26 @@ NppStatus rotateNvBufSurfaceWithNPP(
   // float szin = float(inParams->pitch) / inParams->width;
   // float szout = float(outParams->pitch) / outParams->width;
   // Define rotation matrix
-  double affineMatrix[2][3] = {
-      {cos(angleRadians), -sin(angleRadians), 0.0}, {sin(angleRadians), cos(angleRadians), 0.0}};
 
-  // Adjust translation to rotate around the center
-  affineMatrix[0][2] = (outParams->width / 2.0) - (cos(angleRadians) * inParams->width / 2.0) +
-      (sin(angleRadians) * inParams->height / 2.0);
-  affineMatrix[1][2] = (outParams->height / 2.0) - (sin(angleRadians) * inParams->width / 2.0) -
-      (cos(angleRadians) * inParams->height / 2.0);
-  (void)affineMatrix;
+  double affineMatrix[2][3];
+  createAffineMatrix(angleRadians, static_cast<int>(inParams->width), static_cast<int>(inParams->height), affineMatrix);
+
+  // double affineMatrix[2][3] = {
+  //     {cos(angleRadians), -sin(angleRadians), 0.0}, {sin(angleRadians), cos(angleRadians), 0.0}};
+
+  // // Adjust translation to rotate around the center
+  // affineMatrix[0][2] = (outParams->width / 2.0) - (cos(angleRadians) * inParams->width / 2.0) +
+  //     (sin(angleRadians) * inParams->height / 2.0);
+  // affineMatrix[1][2] = (outParams->height / 2.0) - (sin(angleRadians) * inParams->width / 2.0) -
+  //     (cos(angleRadians) * inParams->height / 2.0);
+  // (void)affineMatrix;
 
   // Set source and destination ROI
   NppiRect srcROI = {0, 0, static_cast<int>(inParams->width), static_cast<int>(inParams->height)};
   NppiRect dstROI = {0, 0, static_cast<int>(outParams->width), static_cast<int>(outParams->height)};
 
-  assert(srcROI.width == dstROI.width);
-  assert(srcROI.height == dstROI.height);
+  // assert(srcROI.width == dstROI.width);
+  // assert(srcROI.height == dstROI.height);
 
   // Perform rotation using NPP
   if (fill_value.has_value()) {
@@ -801,9 +824,21 @@ cudaError gst_videoprep_do_dewarp(
     size_t surface_index = 0;
     dewarpParams = &videoprep->priv->vecDewarpSurface.at(surface_index);
     const BBox dest_rect(0, 0, dewarpParams->dewarpWidth, dewarpParams->dewarpHeight);
+
+    // assert((int)videoprep->pre_rotate_size.width == (int)dest_rect.width());
+    // assert((int)videoprep->pre_rotate_size.height == (int)dest_rect.height());
+    // const BBox& tbox = tracking_boxes.at(j);
+
+    // hm::WHDims pre_rotate_dest{.width = tbox.width(), .height = tbox.height()};
+    // hm::WHDims output_size{
+    //     .width = (FloatValue)videoprep->output_width, .height = (FloatValue)videoprep->output_height};
+    // WHDims new_tsize = get_box_size_necessary_for_rotations(pre_rotate_dest, output_size);
+    // BBox new_tbox(tbox.center(), new_tsize);
+
     NppStatus np_status = cropAndResizeNvBufSurface(
         /*srcSurface=*/in_surface,
         /*src_rect=*/tracking_boxes.at(j),
+        /*src_rect=*/ // new_tbox,
         /*src_rect=*/ // all_src_rect,
         /*videpPrepParams=*/dewarpParams,
         // out_surface,

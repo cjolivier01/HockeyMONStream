@@ -1,5 +1,7 @@
 #pragma once
 
+#include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
+
 #include <gst/base/gstbasetransform.h>
 #include <gst/gst.h>
 #include <gst/video/gstvideometa.h>
@@ -112,6 +114,8 @@ struct GstVideoPrep
   guint input_height;       /**<Input frame height */
   guint output_width;       /**<Output frame width */
   guint output_height;      /**<Output frame height */
+
+  hm::WHDims pre_rotate_size;
 
   guint num_batch_buffers;  /**< Number of batch buffers */
   guint gpu_id;             /**< ID of the GPU this element uses for dewarping/scaling. */
