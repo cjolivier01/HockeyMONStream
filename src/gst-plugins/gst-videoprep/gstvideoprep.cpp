@@ -964,26 +964,28 @@ static cudaError gst_videoprep_generate_output(
     extra_width_src_rect = clamp_box(extra_width_src_rect, input_rect);
     // const Point extra_width_src_rect_initial_center = extra_width_src_rect.center();
     if (extra_width_src_rect.left + extra_width_src_rect.width() > input_rect.width()) {
+      std::cerr << "Setting extra_width_src_rect.right from " << extra_width_src_rect.right << " to "
+                << input_rect.width() << std::endl;
       extra_width_src_rect.right = input_rect.width();
       // extra_width_src_rect.right = extra_width_src_rect.width();
       // extra_width_src_rect.left = extra_width_src_rect.right - extra_width_src_rect.width();
     }
     // const Point extra_width_src_rect_center = extra_width_src_rect.center();
-    //PointDiff center_diff = tbox.center() - extra_width_src_rect.center();
+    // PointDiff center_diff = tbox.center() - extra_width_src_rect.center();
     //(void)center_diff;
 
     BBox dst_box(0, 0, extra_width_src_rect.width(), extra_width_src_rect.height());
 
     Point new_center = tbox.center();
-    //PointDiff center_diff = extra_width_src_rect_initial_center - new_center;
+    // PointDiff center_diff = extra_width_src_rect_initial_center - new_center;
     new_center.y -= extra_width_src_rect.top;
-    new_center.x -= extra_width_src_rect.left / 2;
-    //new_center.x -= center_diff.dx;
-    //new_center.y -= center_diff.dy;
+    new_center.x -= extra_width_src_rect.left;
+    // new_center.x -= center_diff.dx;
+    // new_center.y -= center_diff.dy;
     BBox new_tbox(new_center, tbox.size());
     assert(new_tbox.left >= 0 && new_tbox.top >= 0);
 
-    angle  = 0.0;
+    angle = 0.0;
 
     rotateNvBufSurfaceWithNPP(
         in_surface,
@@ -994,8 +996,14 @@ static cudaError gst_videoprep_generate_output(
         dst_box,
         angle,
         // /*anchor_point=*/tbox.center(),
-        /*anchor_point=*/ extra_width_src_rect.center(),
+        /*anchor_point=*/extra_width_src_rect.center(),
         nppStreamContext);
+
+    FloatValue tbox_ar = tbox.width() / tbox.height();
+    FloatValue new_tbox_ar = new_tbox.width() / new_tbox.height();
+    FloatValue output_ar = output_rect.width() / output_rect.height();
+    assert(isClose(tbox_ar, new_tbox_ar, 1e-6f, 0.001));
+    assert(isClose(new_tbox_ar, output_ar, 1e-6f, 0.001));
 
     // BBox dest_rect(0, 0, in_surf.surfaceList[j].width, in_surf.surfaceList[j].height);
     NppStatus np_status = cropAndResizeNvBufSurface(
