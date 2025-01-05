@@ -37,12 +37,12 @@ namespace videoprep {
  *
  * @return Cuda Error. "cudaSuccess" in case of Success.
  */
-cudaError gst_videoprep_do_dewarp(
-    NvDsBatchMeta* batch_meta,
-    GstVideoPrep* videoprep,
-    NvBufSurface* in_surface,
-    NvBufSurface* out_surface,
-    PointDiff* tbox_shift);
+// cudaError gst_videoprep_do_dewarp(
+//     NvDsBatchMeta* batch_meta,
+//     GstVideoPrep* videoprep,
+//     NvBufSurface* in_surface,
+//     NvBufSurface* out_surface,
+//     PointDiff* tbox_shift);
 
 /**
  * Function to get core Dewarper library version.

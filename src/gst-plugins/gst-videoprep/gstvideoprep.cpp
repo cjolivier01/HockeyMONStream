@@ -848,8 +848,7 @@ static cudaError gst_videoprep_generate_output(
     NvDsBatchMeta* batch_meta,
     GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
-    NvBufSurface* out_surface,
-    const PointDiff& tbox_shift) {
+    NvBufSurface* out_surface) {
   gchar context_name[100];
   std::vector<VideoPrepParams>::iterator it;
   VideoPrepParams* dewarpParams = NULL;
@@ -1158,8 +1157,8 @@ static cudaError gst_videoprep_dewarp(
     }
   }
   // Do Dewarping of all surfaces
-  PointDiff tbox_shift{.dx = 0, .dy = 0};
-  cuda_ck(hm::videoprep::gst_videoprep_do_dewarp(batch_meta, videoprep, in_surface, out_surface, &tbox_shift));
+  // PointDiff tbox_shift{.dx = 0, .dy = 0};
+  // cuda_ck(hm::videoprep::gst_videoprep_do_dewarp(batch_meta, videoprep, in_surface, out_surface, &tbox_shift));
 
   if (videoprep->output_fmt == GST_VIDEO_FORMAT_NV12 || videoprep->output_fmt == GST_VIDEO_FORMAT_NV21) {
     // RGBA ---> NV12 conversion
@@ -1167,7 +1166,7 @@ static cudaError gst_videoprep_dewarp(
     exit(-1);
   } else if (videoprep->output_fmt == GST_VIDEO_FORMAT_RGBA || videoprep->output_fmt == GST_VIDEO_FORMAT_BGRx) {
     // Generate output surface after scaling
-    cuda_ck(gst_videoprep_generate_output(batch_meta, videoprep, in_surface, out_surface, tbox_shift));
+    cuda_ck(gst_videoprep_generate_output(batch_meta, videoprep, in_surface, out_surface));
   }
 
   if (videoprep->dump_frames) {

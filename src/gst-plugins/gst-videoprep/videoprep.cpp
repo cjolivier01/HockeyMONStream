@@ -716,7 +716,7 @@ NppStatus cropAndResizeNvBufSurface(
   }
   return status;
 }
-
+#if 0
 cudaError gst_videoprep_do_dewarp(
     NvDsBatchMeta* batch_meta,
     GstVideoPrep* videoprep,
@@ -803,6 +803,7 @@ cudaError gst_videoprep_do_dewarp(
 #endif
   return cudaErr;
 }
+#endif
 
 uint32_t gst_videoprep_version() {
   return nvwarpVersion();
