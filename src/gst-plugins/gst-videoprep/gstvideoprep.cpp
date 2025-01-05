@@ -866,6 +866,8 @@ static cudaError gst_videoprep_generate_output(
   in_surf.memType = NVBUF_MEM_CUDA_DEVICE;
   in_surf.surfaceList = &surfaceList[0];
 
+  NvBufSurfTransform_Error tx_err = NvBufSurfTransformError_Success;
+
   NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));
 
   NppStreamContext nppStreamContext;
@@ -919,26 +921,10 @@ static cudaError gst_videoprep_generate_output(
       in_surf.surfaceList[i].dataPtr = src;
       in_surf.surfaceList[i].layout = NVBUF_LAYOUT_PITCH;
 
-      // xscale = ((gfloat)out_surface->surfaceList[i].planeParams.width[0]) / inSrcSize.width;
-      // dstRect[i].top = 0;
-      // dstRect[i].left = 0;
-      // // dstRect[i].width = out_surface->surfaceList[i].planeParams.width[0];
-      // // dstRect[i].height = (inSrcSize.height * xscale + 0.5);
-      // dstRect[i].width = out_surface->surfaceList[i].planeParams.width[0];
-      // dstRect[i].height = out_surface->surfaceList[i].planeParams.height[0];
       srcRect[i].top = 0;
       srcRect[i].left = 0;
       srcRect[i].width = inSrcSize.width;
       srcRect[i].height = inSrcSize.height;
-
-      // For 360D to match close to Aisle output of NPP o/p, which crops when
-      // provided scale factor exceeds beyond dst image,
-      // calculate the corresponding limit in src
-      // to maintain aspect ratio and thus cropping the image
-      // if (inSrcSize.height * xscale > out_surface->surfaceList[i].planeParams.height[0]) {
-      //   dstRect[i].height = out_surface->surfaceList[i].planeParams.height[0];
-      //   srcRect[i].height = (dstRect[i].height / xscale + 0.5);
-      // }
       i++;
     }
 
@@ -955,20 +941,18 @@ static cudaError gst_videoprep_generate_output(
         nppStreamContext);
     // assert(np_status == NppStatus::)
     nvtx_helper_push_pop(NULL);
-  }
 
-  // NppStatus np_status = cropAndResizeNvBufSurface(
-  //     /*srcSurface=*/in_surface,
-  //     /*src_rect=*/ tbox,
-  //     /*src_rect=*/ // new_tbox,
-  //     /*src_rect=*/ // all_src_rect,
-  //     /*videpPrepParams=*/dewarpParams,
-  //     // out_surface,
-  //     /*surface_index=*/j,
-  //     /*dest_rect=*/dest_rect,
-  //     nppStreamContext);
+    // NppStatus np_status = cropAndResizeNvBufSurface(
+    //     /*srcSurface=*/in_surface,
+    //     /*src_rect=*/ tbox,
+    //     /*src_rect=*/ // new_tbox,
+    //     /*src_rect=*/ // all_src_rect,
+    //     /*videpPrepParams=*/dewarpParams,
+    //     // out_surface,
+    //     /*surface_index=*/j,
+    //     /*dest_rect=*/dest_rect,
+    //     nppStreamContext);
 
-  NvBufSurfTransform_Error tx_err = NvBufSurfTransformError_Success;
 #if 0
   {
     // Perform NvBufTransform
@@ -1012,101 +996,102 @@ static cudaError gst_videoprep_generate_output(
   }
 #else
 
-  // Perform NvBufTransform
-  // NvBufSurfTransformParams transform_params;
-  // transform_params.transform_flag =
-  //     /*NVBUFSURF_TRANSFORM_FILTER |*/ NVBUFSURF_TRANSFORM_CROP_DST | NVBUFSURF_TRANSFORM_CROP_SRC;
-  // transform_params.transform_flip = NvBufSurfTransform_None;
-  // transform_params.transform_filter = videoprep->interpolation_method;
-  // transform_params.src_rect = &srcRect[0];
-  // transform_params.dst_rect = &dstRect[0];
+    // Perform NvBufTransform
+    // NvBufSurfTransformParams transform_params;
+    // transform_params.transform_flag =
+    //     /*NVBUFSURF_TRANSFORM_FILTER |*/ NVBUFSURF_TRANSFORM_CROP_DST | NVBUFSURF_TRANSFORM_CROP_SRC;
+    // transform_params.transform_flip = NvBufSurfTransform_None;
+    // transform_params.transform_filter = videoprep->interpolation_method;
+    // transform_params.src_rect = &srcRect[0];
+    // transform_params.dst_rect = &dstRect[0];
 
-  in_surf.numFilled = i;
-  in_surf.batchSize = i;
+    in_surf.numFilled = i;
+    in_surf.batchSize = i;
 
-  NvBufSurfTransformConfigParams config_params;
-  config_params.compute_mode = NvBufSurfTransformCompute_GPU;
-  config_params.gpu_id = videoprep->gpu_id;
-  config_params.cuda_stream = videoprep->stream;
+    NvBufSurfTransformConfigParams config_params;
+    config_params.compute_mode = NvBufSurfTransformCompute_GPU;
+    config_params.gpu_id = videoprep->gpu_id;
+    config_params.cuda_stream = videoprep->stream;
 
-  tx_err = NvBufSurfTransformSetSessionParams(&config_params);
-  if (tx_err != NvBufSurfTransformError_Success) {
-    g_print("%s: %d NvBufSurfTransform set session failed\n", __func__, __LINE__);
-    g_free(surface_meta);
-    return cudaErrorInvalidSurface;
-  }
+    tx_err = NvBufSurfTransformSetSessionParams(&config_params);
+    if (tx_err != NvBufSurfTransformError_Success) {
+      g_print("%s: %d NvBufSurfTransform set session failed\n", __func__, __LINE__);
+      g_free(surface_meta);
+      return cudaErrorInvalidSurface;
+    }
 
-  // tx_err = NvBufSurfTransform(&in_surf, out_surface, &transform_params);
+    // tx_err = NvBufSurfTransform(&in_surf, out_surface, &transform_params);
 
-  const float max_angle = 30.0;
-  const float half_width = float(videoprep->input_width) / 2;
+    const float max_angle = 30.0;
+    const float half_width = float(videoprep->input_width) / 2;
 
-  for (size_t j = 0; j < in_surf.numFilled; ++j) {
-    static float angle = 0.0;
-    // cudaMemcpy2DAsync(void *dst, size_t dpitch, const void *src, size_t spitch, size_t width, size_t height, enum
-    // cudaMemcpyKind kind, cudaStream_t stream __dv(0));
-    // assert(out_surface->surfaceList[j].width == in_surf.surfaceList[j].width);
-    // assert(out_surface->surfaceList[j].height == in_surf.surfaceList[j].height);
+    for (size_t j = 0; j < in_surf.numFilled; ++j) {
+      static float angle = 0.0;
+      // cudaMemcpy2DAsync(void *dst, size_t dpitch, const void *src, size_t spitch, size_t width, size_t height, enum
+      // cudaMemcpyKind kind, cudaStream_t stream __dv(0));
+      // assert(out_surface->surfaceList[j].width == in_surf.surfaceList[j].width);
+      // assert(out_surface->surfaceList[j].height == in_surf.surfaceList[j].height);
 
 #if 1
-    const float tcx = tracking_boxes.at(j).center().x;
-    if (tcx < half_width) {
-      float pct = 1.0 - tcx / half_width;
-      angle = max_angle * pct;
-    } else if (tcx > half_width) {
-      float pct = (half_width - tcx) / half_width;
-      angle = max_angle * pct;
-    }
+      const float tcx = tracking_boxes.at(j).center().x;
+      if (tcx < half_width) {
+        float pct = 1.0 - tcx / half_width;
+        angle = max_angle * pct;
+      } else if (tcx > half_width) {
+        float pct = (half_width - tcx) / half_width;
+        angle = max_angle * pct;
+      }
 #endif
-    BBox dst_box(0, 0, videoprep->output_width, videoprep->output_height);
-    // cudaMemcpyAsync(
-    //     out_surface->surfaceList[j].dataPtr,
-    //     in_surf.surfaceList[j].dataPtr,
-    //     in_surf.surfaceList[j].height * in_surf.surfaceList[j].pitch,
-    //     cudaMemcpyDeviceToDevice,
-    //     videoprep->stream);
-    // cudaMemcpy2DAsync(
-    //     out_surface->surfaceList[j].dataPtr,
-    //     out_surface->surfaceList[j].pitch,
-    //     in_surf.surfaceList[j].dataPtr,
-    //     in_surf.surfaceList[j].pitch,
-    //     out_surface->surfaceList[j].width,
-    //     out_surface->surfaceList[j].height,
-    //     cudaMemcpyDeviceToDevice,
-    //     videoprep->stream);
-    // const BBox& box = tracking_boxes.at(j);
-    // float ar = box.width() / box.height();
-    // float myar = float(videoprep->output_width) / videoprep->output_height;
-    // std::cout << "ar=" << ar << ", myar=" << myar << std::endl;
+      BBox dst_box(0, 0, videoprep->output_width, videoprep->output_height);
+      // cudaMemcpyAsync(
+      //     out_surface->surfaceList[j].dataPtr,
+      //     in_surf.surfaceList[j].dataPtr,
+      //     in_surf.surfaceList[j].height * in_surf.surfaceList[j].pitch,
+      //     cudaMemcpyDeviceToDevice,
+      //     videoprep->stream);
+      // cudaMemcpy2DAsync(
+      //     out_surface->surfaceList[j].dataPtr,
+      //     out_surface->surfaceList[j].pitch,
+      //     in_surf.surfaceList[j].dataPtr,
+      //     in_surf.surfaceList[j].pitch,
+      //     out_surface->surfaceList[j].width,
+      //     out_surface->surfaceList[j].height,
+      //     cudaMemcpyDeviceToDevice,
+      //     videoprep->stream);
+      // const BBox& box = tracking_boxes.at(j);
+      // float ar = box.width() / box.height();
+      // float myar = float(videoprep->output_width) / videoprep->output_height;
+      // std::cout << "ar=" << ar << ", myar=" << myar << std::endl;
 
-    // BBox all_src_box(0, 0, srcRect[j].left + srcRect[j].width, srcRect[j].top + srcRect[j].height);
-    // Point centered_src_box = all_src_box.center();
-    // centered_src_box.x += tbox_shift.dx;
-    // centered_src_box.y += tbox_shift.dy;
-    // BBox new_src_bbox(centered_src_box, dst_box.size());
-    // // new_src_bbox = shift_box_to_edge(new_src_bbox, all_src_box).bbox;
-    // assert((int)new_src_bbox.left >= 0);
-    // assert((int)new_src_bbox.top >= 0);
+      // BBox all_src_box(0, 0, srcRect[j].left + srcRect[j].width, srcRect[j].top + srcRect[j].height);
+      // Point centered_src_box = all_src_box.center();
+      // centered_src_box.x += tbox_shift.dx;
+      // centered_src_box.y += tbox_shift.dy;
+      // BBox new_src_bbox(centered_src_box, dst_box.size());
+      // // new_src_bbox = shift_box_to_edge(new_src_bbox, all_src_box).bbox;
+      // assert((int)new_src_bbox.left >= 0);
+      // assert((int)new_src_bbox.top >= 0);
 
-    // src_box = tracking_boxes.at(j).at_center(src_box.center());
-    rotateNvBufSurfaceWithNPP(
-        &in_surf,
-        /*input_surface_index=*/j,
-        BBox(0, 0, srcRect[j].left + srcRect[j].width, srcRect[j].top + srcRect[j].height),
-        // src_box,
-        //  new_src_bbox,
-        out_surface,
-        /*output_surface_index=*/j,
-        dst_box,
-        angle,
-        nppStreamContext);
+      // src_box = tracking_boxes.at(j).at_center(src_box.center());
+      rotateNvBufSurfaceWithNPP(
+          &in_surf,
+          /*input_surface_index=*/j,
+          BBox(0, 0, srcRect[j].left + srcRect[j].width, srcRect[j].top + srcRect[j].height),
+          // src_box,
+          //  new_src_bbox,
+          out_surface,
+          /*output_surface_index=*/j,
+          dst_box,
+          angle,
+          nppStreamContext);
 
-    // angle += 1;
-    // if (angle > 359.9) {
-    //   angle = 0.0;
-    // }
+      // angle += 1;
+      // if (angle > 359.9) {
+      //   angle = 0.0;
+      // }
 
-    assert(tx_err == NvBufSurfTransformError_Success);
+      assert(tx_err == NvBufSurfTransformError_Success);
+    }
   }
 
   if (videoprep->stream) {
