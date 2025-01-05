@@ -1,27 +1,11 @@
-"""
-Copyright 2021-2023, NVIDIA CORPORATION
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-   http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-"""
-
 config_setting(
-  name = "aarch64-linux-gnu",
-  define_values = {"multiarch": "aarch64-linux-gnu"},
+    name = "aarch64-linux-gnu",
+    define_values = {"multiarch": "aarch64-linux-gnu"},
 )
 
 config_setting(
-  name = "x86_64-linux-gnu",
-  define_values = {"multiarch": "x86_64-linux-gnu"},
+    name = "x86_64-linux-gnu",
+    define_values = {"multiarch": "x86_64-linux-gnu"},
 )
 
 cc_binary(
@@ -40,22 +24,28 @@ cc_import(
 cc_library(
     name = "gstreamer",
     hdrs = glob([
-        "external/include/gstreamer-1.0/**/*.h"
+        "external/include/gstreamer-1.0/**/*.h",
     ]),
-    includes = ["external/include/gstreamer-1.0"],
-    copts=[
+    copts = [
         "-Iexternal/include/gstreamer-1.0",
     ],
+    includes = ["external/include/gstreamer-1.0"],
     linkopts = select({
-      ":aarch64-linux-gnu":   ["-Lexternal/lib/aarch64-linux-gnu"],
-      ":x86_64-linux-gnu":    ["-Lexternal/lib/x86_64-linux-gnu/opencv4"],
-      "//conditions:default": [],
+        ":aarch64-linux-gnu": ["-Lexternal/lib/aarch64-linux-gnu"],
+        ":x86_64-linux-gnu": ["-Lexternal/lib/x86_64-linux-gnu"],
+        "//conditions:default": [],
     }) + [
         "-Wl,--start-group",
         "-l:libgstreamer-1.0.so",
         "-l:libgstbase-1.0.so",
         "-l:libgstvideo-1.0.so",
         "-l:libgstaudio-1.0.so",
+        "-l:libgstrtsp-1.0.so",
+        "-l:libgstapp-1.0.so",
+        "-l:libgstrtsp-1.0.so",
+        # No idea why there isn't a simple ".so" files in /usr/lib/x86_64-linux-gnu
+        "-l:libgstwebrtc-1.0.so.0",
+        "-l:libgstrtspserver-1.0.so.0",
         "-Wl,--end-group",
     ],
     visibility = ["//visibility:public"],
@@ -1774,12 +1764,40 @@ void gst_value_subtract() {}
 void gst_value_union() {}
 void gst_version() {}
 void gst_version_string() {}
+void gst_app_src_set_caps() {}
+void gst_app_src_get_type() {}
+void gst_element_get_request_pad() {}
+void gst_webrtc_session_description_get_type() {}
+void gst_webrtc_session_description_new() {}
+void gst_rtsp_server_new() {}
+void gst_rtsp_server_set_service() {}
+void gst_rtsp_media_set_reusable() {}
+void gst_rtsp_media_prepare() {}
+void gst_rtsp_media_set_pipeline_state() {}
+void gst_webrtc_session_description_free() {}
+void gst_sdp_message_as_text() {}
+void gst_rtsp_server_get_mount_points() {}
+void gst_sdp_message_parse_buffer() {}
+void gst_rtsp_media_factory_new() {}
+void gst_rtsp_mount_points_add_factory() {}
+void gst_sdp_message_new() {}
+void gst_rtsp_server_attach() {}
+void gst_rtsp_media_factory_set_latency() {}
+void gst_rtsp_media_factory_set_buffer_size() {}
+void gst_rtsp_media_factory_set_shared() {}
+void gst_rtsp_media_factory_set_eos_shutdown() {}
+void gst_rtsp_media_factory_set_stop_on_disconnect() {}
+void gst_rtsp_media_factory_set_suspend_mode() {}
+void gst_rtsp_media_factory_set_transport_mode() {}
+void gst_rtsp_media_factory_set_do_retransmission() {}
+void gst_app_src_end_of_stream() {}
+void _gst_mini_object_type() {}
 }
 """
 
 genrule(
     name = "gst_stub",
-    outs = ["gst_stub.c"],
+    outs = ["gst_stub.cpp"],
     cmd = "echo \"" + stub_content + "\" > $@",
 )
 
