@@ -579,18 +579,18 @@ NppStatus rotateNvBufSurfaceWithNPP(
 
   NppStatus status = NppStatus::NPP_SUCCESS;
 
-  cudaError_t cuerr = cudaDrawLine(
-      static_cast<uchar4*>(inParams->dataPtr),
-      inParams->width,
-      inParams->height,
-      0,
-      0,
-      inParams->width,
-      inParams->height,
-      {1.0, 1.0, 0.0, 1.0},
-      25.0,
-      nppStreamContext.hStream);
-  (void)cuerr;
+  // cudaError_t cuerr = cudaDrawLine(
+  //     static_cast<uchar4*>(inParams->dataPtr),
+  //     inParams->width,
+  //     inParams->height,
+  //     0,
+  //     0,
+  //     inParams->width,
+  //     inParams->height,
+  //     {1.0, 1.0, 0.0, 1.0},
+  //     25.0,
+  //     nppStreamContext.hStream);
+  // (void)cuerr;
 #if 1
   status = nppiWarpAffine_8u_C4R_Ctx(
       static_cast<const Npp8u*>(inParams->dataPtr), // Source pointer
@@ -618,19 +618,19 @@ NppStatus rotateNvBufSurfaceWithNPP(
   //     nppStreamContext);
 #endif
 
-  cuerr = cudaDrawLine(
-      static_cast<uchar4*>(outParams->dataPtr),
-      outParams->width,
-      outParams->height,
-      0,
-      0,
-      outParams->width,
-      outParams->height,
-      {1.0, 0.0, 0.0, 1.0},
-      25.0,
-      nppStreamContext.hStream);
+  // cuerr = cudaDrawLine(
+  //     static_cast<uchar4*>(outParams->dataPtr),
+  //     outParams->width,
+  //     outParams->height,
+  //     0,
+  //     0,
+  //     outParams->width,
+  //     outParams->height,
+  //     {1.0, 0.0, 0.0, 1.0},
+  //     25.0,
+  //     nppStreamContext.hStream);
 
-  (void)cuerr;
+  // (void)cuerr;
 
   if (status != NPP_SUCCESS) {
     std::cerr << "NPP rotation failed with error: " << status << std::endl;
@@ -648,8 +648,8 @@ NppStatus cropAndResizeNvBufSurface(
   // Extract the source image from the NvBufSurface
   const NvBufSurfaceParams& srcParams = srcSurface->surfaceList[surface_index];
   Npp8u* srcImage = (Npp8u*)srcParams.dataPtr;
-  //int srcWidth = srcParams.width;
-  //int srcHeight = srcParams.height;
+  // int srcWidth = srcParams.width;
+  // int srcHeight = srcParams.height;
   int srcPitch = srcParams.pitch;
 
   // Set the destination surface size (width, height) for the resized image
@@ -810,6 +810,21 @@ cudaError gst_videoprep_do_dewarp(
         /*surface_index=*/j,
         /*dest_rect=*/dest_rect,
         nppStreamContext);
+
+    assert(dewarpParams->dewarpPitch % 4 == 0);
+    cudaError_t cuerr = cudaDrawLine(
+        (uchar4*)(dewarpParams->surface),
+        dewarpParams->dewarpWidth,
+        dewarpParams->dewarpHeight,
+        0,
+        0,
+        dewarpParams->dewarpWidth,
+        dewarpParams->dewarpHeight,
+        {1.0, 1.0, 0.0, 1.0},
+        25.0,
+        nppStreamContext.hStream);
+    (void)cuerr;
+
     if (np_status != 0 && cudaErr == 0) {
       std::cerr << "Setting cudaErr to arbitrary 'cudaErrorInvalidValue'" << std::endl;
       cudaErr = cudaErrorInvalidValue;

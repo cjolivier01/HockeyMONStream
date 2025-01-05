@@ -94,6 +94,8 @@ namespace videoprep {
 #define NVBUF_ALIGN_PITCH(pitch, align_val) ((pitch % align_val == 0) ? pitch : ((pitch / align_val + 1) * align_val))
 #define NVBUF_PLATFORM_ALIGNED_PITCH(pitch) NVBUF_ALIGN_PITCH(pitch, NVBUF_ALIGN_VAL)
 
+// #define SCRATCH_USE_ALIGNED_PITCH
+
 static gchar VIDEOPREP_LIB_VERSION[128];
 
 enum {
@@ -533,7 +535,11 @@ static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
   for (iter = videoprep->priv->vecDewarpSurface.begin(); iter != videoprep->priv->vecDewarpSurface.end(); iter++) {
     VideoPrepParams& vp_params = *iter;
     // it->dewarpPitch = 4 * (((it->dewarpWidth) + 31) / 32) * 32;
+#ifdef SCRATCH_USE_ALIGNED_PITCH
     vp_params.dewarpPitch = NVBUF_PLATFORM_ALIGNED_PITCH(vp_params.dewarpWidth * 4);
+#else
+    vp_params.dewarpPitch = vp_params.dewarpWidth * 4;
+#endif
 
     cuda_ck(cudaMalloc(&vp_params.surface, vp_params.dewarpPitch * vp_params.dewarpHeight));
     // cuda_ck (cudaMalloc (&it->surface, it->dewarpWidth * it->dewarpHeight * 4));
