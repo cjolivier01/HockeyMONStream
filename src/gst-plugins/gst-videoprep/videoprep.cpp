@@ -501,10 +501,12 @@ std::vector<hm::BBox> get_tracking_boxes(NvDsBatchMeta* batch_meta) {
 }
 
 // Rotate an image around the image's center
-void createAffineMatrix(double angleRadians, int width, int height, double matrix[2][3]) {
+void createAffineMatrix(double angleRadians, int width, int height, const Point& anchorPoint, double matrix[2][3]) {
   // Image center
-  double cx = width / 2.0;
-  double cy = height / 2.0;
+  // double cx = width / 2.0;
+  // double cy = height / 2.0;
+  double cx = anchorPoint.x;
+  double cy = anchorPoint.y;
 
   // Rotation components
   double cosTheta = std::cos(angleRadians);
@@ -539,10 +541,6 @@ NppStatus rotateNvBufSurfaceWithNPP(
   assert(inParams->colorFormat == outParams->colorFormat);
   assert(inParams->colorFormat == NVBUF_COLOR_FORMAT_RGBA);
 
-  // Define rotation matrix
-  double affineMatrix[2][3];
-  createAffineMatrix(angleRadians, static_cast<int>(inParams->width), static_cast<int>(inParams->height), affineMatrix);
-
   // Set source and destination ROI
   NppiRect srcROI = {0, 0, static_cast<int>(inParams->width), static_cast<int>(inParams->height)};
   NppiRect dstROI = {0, 0, static_cast<int>(outParams->width), static_cast<int>(outParams->height)};
@@ -573,6 +571,15 @@ NppStatus rotateNvBufSurfaceWithNPP(
   assert(dstROI.height == (int)outParams->height);
 
   NppStatus status = NppStatus::NPP_SUCCESS;
+
+  // Define rotation matrix
+  double affineMatrix[2][3];
+  createAffineMatrix(
+      angleRadians,
+      static_cast<int>(src_rect2.width()),
+      static_cast<int>(src_rect2.height()),
+      src_rect2.center(),
+      affineMatrix);
 
 #if 1
   // Wipe the destination image
