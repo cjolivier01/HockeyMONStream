@@ -63,11 +63,12 @@ NppStatus rotateNvBufSurfaceWithNPP(
     float angleDegrees,
     const NppStreamContext& nppStreamContext);
 
-void cropAndResizeNvBufSurface(
+NppStatus cropAndResizeNvBufSurface(
     NvBufSurface* srcSurface,
+    const BBox& src_rect,
     NvBufSurface* dstSurface,
     size_t surface_index,
-    NppiSize dstSize,
+    const BBox& dest_rect,
     const NppStreamContext& nppStreamContext);
 
 } // namespace videoprep

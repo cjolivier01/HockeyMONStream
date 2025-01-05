@@ -597,7 +597,8 @@ NppStatus rotateNvBufSurfaceWithNPP(
   }
   return status;
 }
-#if 0
+
+#if 1
 NppStatus cropAndResizeNvBufSurface(
     NvBufSurface* srcSurface,
     const BBox& src_rect,
@@ -608,13 +609,9 @@ NppStatus cropAndResizeNvBufSurface(
   // Extract the source image from the NvBufSurface
   const NvBufSurfaceParams& srcParams = srcSurface->surfaceList[surface_index];
   Npp8u* srcImage = (Npp8u*)srcParams.dataPtr;
-  // int srcWidth = srcParams.width;
-  // int srcHeight = srcParams.height;
-  int srcPitch = srcParams.pitch;
 
-  // Set the destination surface size (width, height) for the resized image
-  // int dstWidth = dstSize.width;
-  // int dstHeight = dstSize.height;
+  const NvBufSurfaceParams& dstParams = dstSurface->surfaceList[surface_index];
+  const int dstPitch = dstParams.pitch;
 
   // Define source and destination rectangles for cropping
   NppiRect srcRect{
@@ -629,52 +626,35 @@ NppStatus cropAndResizeNvBufSurface(
       .width = (int)dest_rect.width(),
       .height = (int)dest_rect.height()};
 
-  const NvBufSurfaceParams& destParams = dstSurface->surfaceList[surface_index];
   // Allocate memory for the destination image in the destination surface
-  Npp8u* dstImage = (Npp8u*)destParams.dataPtr;
-  const int dstPitch = destParams.pitch;
+  Npp8u* dstImage = (Npp8u*)dstParams.dataPtr;
 
   // Perform cropping and resizing using nppiResize or nppiWarpAffine (interpolation)
   // For simplicity, let's use nppiResize for resizing and interpolation
-
-  // nppiResize_8u_C4R(const Npp8u * pSrc, int nSrcStep, NppiSize oSrcSize, NppiRect oSrcRectROI,
-  //                         Npp8u * pDst, int nDstStep, NppiSize oDstSize, NppiRect oDstRectROI, int eInterpolation);
-
   NppStatus status = NppStatus::NPP_SUCCESS;
+
+  // Wipe the destination image
+  cudaMemsetAsync(dstImage, 0, dstParams.pitch * dstParams.height, nppStreamContext.hStream);
 
   status = nppiResize_8u_C4R_Ctx(
       srcImage,
-      srcPitch, // Source image and pitch
+      srcParams.pitch, // Source image and pitch
       NppiSize{.width = (int)srcParams.width, .height = (int)srcParams.height},
       srcRect, // Source rectangle
       dstImage,
       dstPitch, // Destination image and pitch
-      NppiSize{.width = (int)destParams.width, .height = (int)destParams.height},
+      NppiSize{.width = (int)dstParams.width, .height = (int)dstParams.height},
       dstRect, // Destination rectangle
       NPPI_INTER_LINEAR, // Interpolation method (e.g., linear)
       nppStreamContext);
 
-  // cudaMemcpy2DAsync(
-  //     dstImage,
-  //     dstPitch,
-  //     srcImage,
-  //     srcParams.pitch,
-  //     (int)destParams.width,
-  //     (int)destParams.height,
-  //     cudaMemcpyDeviceToDevice,
-  //     nppStreamContext.hStream);
-
-  // cudaMemcpy2DAsync(
-  //     dstImage, dstPitch, srcImage, srcPitch, dstWidth, dstHeight, cudaMemcpyDeviceToDevice,
-  //     nppStreamContext.hStream);
-
   if (status != NPP_SUCCESS) {
     std::cerr << "Error in nppiResize_8u_C4R: " << status << std::endl;
+    assert(false);
   }
-
-  // std::cout << "Successfully cropped and resized the image from NvBufSurface to NvBufSurface." << std::endl;
   return status;
 }
+
 #endif
 NppStatus cropAndResizeNvBufSurface(
     NvBufSurface* srcSurface,
@@ -707,14 +687,7 @@ NppStatus cropAndResizeNvBufSurface(
 
   // Perform cropping and resizing using nppiResize or nppiWarpAffine (interpolation)
   // For simplicity, let's use nppiResize for resizing and interpolation
-
-  // nppiResize_8u_C4R(const Npp8u * pSrc, int nSrcStep, NppiSize oSrcSize, NppiRect oSrcRectROI,
-  //                         Npp8u * pDst, int nDstStep, NppiSize oDstSize, NppiRect oDstRectROI, int eInterpolation);
-
   NppStatus status = NppStatus::NPP_SUCCESS;
-
-  // cudaMemsetAsync(srcImage, 0, srcParams.pitch * srcParams.height, nppStreamContext.hStream);
-  // cudaMemset2D(srcImage, 0, srcParams.pitch, srcParams.width, srcParams.height);
 
   // Wipe the destination image
   cudaMemsetAsync(dstImage, 0, videpPrepParams->dewarpPitch * videpPrepParams->dewarpHeight, nppStreamContext.hStream);
@@ -731,16 +704,6 @@ NppStatus cropAndResizeNvBufSurface(
       NPPI_INTER_LINEAR, // Interpolation method (e.g., linear)
       nppStreamContext);
 
-  // cudaMemcpy2DAsync(
-  //     dstImage,
-  //     dstPitch,
-  //     srcImage,
-  //     srcParams.pitch,
-  //     (int)videpPrepParams->dewarpWidth,
-  //     (int)videpPrepParams->dewarpHeight,
-  //     cudaMemcpyDeviceToDevice,
-  //     nppStreamContext.hStream);
-
   if (status != NPP_SUCCESS) {
     std::cerr << "Error in nppiResize_8u_C4R: " << status << std::endl;
   }
@@ -754,6 +717,7 @@ cudaError gst_videoprep_do_dewarp(
     NvBufSurface* out_surface,
     PointDiff* tbox_shift) {
   cudaError cudaErr = cudaSuccess;
+#if 0
   VideoPrepParams* dewarpParams = NULL;
 
   NppStreamContext nppStreamContext;
@@ -829,6 +793,7 @@ cudaError gst_videoprep_do_dewarp(
   }
 
   cudaStreamSynchronize(nppStreamContext.hStream);
+#endif
   return cudaErr;
 }
 

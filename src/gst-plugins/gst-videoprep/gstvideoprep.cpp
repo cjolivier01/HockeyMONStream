@@ -869,9 +869,19 @@ static cudaError gst_videoprep_generate_output(
 
   NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));
 
-  out_surface->numFilled = 0;
+  NppStreamContext nppStreamContext;
+  // NppStatus npp_status = nppiStreamContextInit(&nppStreamContext);
+  // assert(npp_status == 0);
+  memset(&nppStreamContext, 0, sizeof(nppStreamContext));
+  nppStreamContext.hStream = videoprep->stream; // Assign the CUDA stream
+  nppStreamContext.nStreamFlags = 0; // No special flags
+  nppStreamContext.nCudaDeviceId = videoprep->gpu_id; // Default queue size
 
-  for (it = videoprep->priv->vecDewarpSurface.begin(); it != videoprep->priv->vecDewarpSurface.end(); it++) {
+  const std::vector<BBox> tracking_boxes = get_tracking_boxes(batch_meta);
+
+  out_surface->numFilled = 0;
+  size_t j = 0;
+  for (it = videoprep->priv->vecDewarpSurface.begin(); it != videoprep->priv->vecDewarpSurface.end(); it++, ++j) {
     if (i == videoprep->num_batch_buffers)
       break;
 
@@ -933,8 +943,31 @@ static cudaError gst_videoprep_generate_output(
       i++;
     }
 
+    BBox dest_rect(0, 0, in_surf.surfaceList[j].width, in_surf.surfaceList[j].height);
+    NppStatus np_status = cropAndResizeNvBufSurface(
+        /*srcSurface=*/in_surface,
+        /*src_rect=*/tracking_boxes.at(j),
+        /*src_rect=*/ // new_tbox,
+        /*src_rect=*/ // all_src_rect,
+        &in_surf,
+        // out_surface,
+        /*surface_index=*/j,
+        /*dest_rect=*/dest_rect,
+        nppStreamContext);
+    // assert(np_status == NppStatus::)
     nvtx_helper_push_pop(NULL);
   }
+
+  // NppStatus np_status = cropAndResizeNvBufSurface(
+  //     /*srcSurface=*/in_surface,
+  //     /*src_rect=*/ tbox,
+  //     /*src_rect=*/ // new_tbox,
+  //     /*src_rect=*/ // all_src_rect,
+  //     /*videpPrepParams=*/dewarpParams,
+  //     // out_surface,
+  //     /*surface_index=*/j,
+  //     /*dest_rect=*/dest_rect,
+  //     nppStreamContext);
 
   NvBufSurfTransform_Error tx_err = NvBufSurfTransformError_Success;
 #if 0
@@ -1006,15 +1039,6 @@ static cudaError gst_videoprep_generate_output(
 
   // tx_err = NvBufSurfTransform(&in_surf, out_surface, &transform_params);
 
-  NppStreamContext nppStreamContext;
-  // NppStatus npp_status = nppiStreamContextInit(&nppStreamContext);
-  // assert(npp_status == 0);
-  memset(&nppStreamContext, 0, sizeof(nppStreamContext));
-  nppStreamContext.hStream = videoprep->stream; // Assign the CUDA stream
-  nppStreamContext.nStreamFlags = 0; // No special flags
-  nppStreamContext.nCudaDeviceId = videoprep->gpu_id; // Default queue size
-
-  std::vector<hm::BBox> tracking_boxes = get_tracking_boxes(batch_meta);
   const float max_angle = 30.0;
   const float half_width = float(videoprep->input_width) / 2;
 
@@ -1055,8 +1079,7 @@ static cudaError gst_videoprep_generate_output(
     // float ar = box.width() / box.height();
     // float myar = float(videoprep->output_width) / videoprep->output_height;
     // std::cout << "ar=" << ar << ", myar=" << myar << std::endl;
-    
-    
+
     // BBox all_src_box(0, 0, srcRect[j].left + srcRect[j].width, srcRect[j].top + srcRect[j].height);
     // Point centered_src_box = all_src_box.center();
     // centered_src_box.x += tbox_shift.dx;
@@ -1071,8 +1094,8 @@ static cudaError gst_videoprep_generate_output(
         &in_surf,
         /*input_surface_index=*/j,
         BBox(0, 0, srcRect[j].left + srcRect[j].width, srcRect[j].top + srcRect[j].height),
-        //src_box,
-        // new_src_bbox,
+        // src_box,
+        //  new_src_bbox,
         out_surface,
         /*output_surface_index=*/j,
         dst_box,
@@ -1088,7 +1111,7 @@ static cudaError gst_videoprep_generate_output(
   }
 
   if (videoprep->stream) {
-    cudaStreamSynchronize(nppStreamContext.hStream);
+    cudaStreamSynchronize(videoprep->stream);
   }
 
 #endif
