@@ -964,7 +964,9 @@ static cudaError gst_videoprep_generate_output(
     extra_width_src_rect = clamp_box(extra_width_src_rect, input_rect);
     // const Point extra_width_src_rect_initial_center = extra_width_src_rect.center();
     if (extra_width_src_rect.left + extra_width_src_rect.width() > input_rect.width()) {
-      extra_width_src_rect.right = extra_width_src_rect.width();
+      extra_width_src_rect.right = input_rect.width();
+      // extra_width_src_rect.right = extra_width_src_rect.width();
+      // extra_width_src_rect.left = extra_width_src_rect.right - extra_width_src_rect.width();
     }
     // const Point extra_width_src_rect_center = extra_width_src_rect.center();
     //PointDiff center_diff = tbox.center() - extra_width_src_rect.center();
