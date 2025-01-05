@@ -535,18 +535,20 @@ static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
   for (iter = videoprep->priv->vecDewarpSurface.begin(); iter != videoprep->priv->vecDewarpSurface.end(); iter++) {
     VideoPrepParams& vp_params = *iter;
 
-    // static bool ranthis = false;
-    // (void)ranthis;
-    // assert(!ranthis);
-    // ranthis = true;
+#if 0
+    static bool ranthis = false;
+    (void)ranthis;
+    assert(!ranthis);
+    ranthis = true;
 
-    // hm::WHDims pre_rotate_dest{
-    //     .width = (FloatValue)vp_params.dewarpWidth, .height = (FloatValue)vp_params.dewarpHeight};
-    // hm::WHDims output_size{.width = (FloatValue)vp_params.dewarpWidth, .height = (FloatValue)vp_params.dewarpHeight};
-    // videoprep->pre_rotate_size = get_box_size_necessary_for_rotations(pre_rotate_dest, output_size);
+    hm::WHDims pre_rotate_dest{
+        .width = (FloatValue)vp_params.dewarpWidth, .height = (FloatValue)vp_params.dewarpHeight};
+    hm::WHDims output_size{.width = (FloatValue)vp_params.dewarpWidth, .height = (FloatValue)vp_params.dewarpHeight};
+    videoprep->pre_rotate_size = get_box_size_necessary_for_rotations(pre_rotate_dest, output_size);
 
-    // vp_params.dewarpWidth = videoprep->pre_rotate_size.width;
-    // vp_params.dewarpHeight = videoprep->pre_rotate_size.height;
+    vp_params.dewarpWidth = videoprep->pre_rotate_size.width;
+    vp_params.dewarpHeight = videoprep->pre_rotate_size.height;
+#endif
 
     // it->dewarpPitch = 4 * (((it->dewarpWidth) + 31) / 32) * 32;
 #ifdef SCRATCH_USE_ALIGNED_PITCH

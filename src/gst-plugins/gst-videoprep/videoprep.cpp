@@ -537,23 +537,10 @@ NppStatus rotateNvBufSurfaceWithNPP(
   NvBufSurfaceParams* outParams = &outputSurface->surfaceList[output_surface_index];
   assert(inParams->colorFormat == outParams->colorFormat);
   assert(inParams->colorFormat == NVBUF_COLOR_FORMAT_RGBA);
-  // assert(inParams->pitch == outParams->pitch);
-  // float szin = float(inParams->pitch) / inParams->width;
-  // float szout = float(outParams->pitch) / outParams->width;
-  // Define rotation matrix
 
+  // Define rotation matrix
   double affineMatrix[2][3];
   createAffineMatrix(angleRadians, static_cast<int>(inParams->width), static_cast<int>(inParams->height), affineMatrix);
-
-  // double affineMatrix[2][3] = {
-  //     {cos(angleRadians), -sin(angleRadians), 0.0}, {sin(angleRadians), cos(angleRadians), 0.0}};
-
-  // // Adjust translation to rotate around the center
-  // affineMatrix[0][2] = (outParams->width / 2.0) - (cos(angleRadians) * inParams->width / 2.0) +
-  //     (sin(angleRadians) * inParams->height / 2.0);
-  // affineMatrix[1][2] = (outParams->height / 2.0) - (sin(angleRadians) * inParams->width / 2.0) -
-  //     (cos(angleRadians) * inParams->height / 2.0);
-  // (void)affineMatrix;
 
   // Set source and destination ROI
   NppiRect srcROI = {0, 0, static_cast<int>(inParams->width), static_cast<int>(inParams->height)};
@@ -575,46 +562,12 @@ NppStatus rotateNvBufSurfaceWithNPP(
   float ar = float(srcROI.width) / srcROI.height;
   (void)ar;
 
-  // cudaMemset2DAsync(
-  //     static_cast<Npp8u*>(outParams->dataPtr),
-  //     outParams->pitch,
-  //     128,
-  //     outParams->width,
-  //     outParams->height,
-  //     nppStreamContext.hStream);
-
-  // cudaMemcpy2DAsync(
-  //     static_cast<Npp8u*>(outParams->dataPtr),
-  //     outParams->pitch,
-  //     static_cast<const Npp8u*>(inParams->dataPtr),
-  //     inParams->pitch,
-  //     outParams->width,
-  //     outParams->height,
-  //     cudaMemcpyDeviceToDevice,
-  //     nppStreamContext.hStream);
-
-  // cudaMemcpyAsync(
-  //     static_cast<Npp8u*>(outParams->dataPtr),
-  //     static_cast<const Npp8u*>(inParams->dataPtr),
-  //     outParams->height * inParams->pitch,
-  //     cudaMemcpyDeviceToDevice,
-  //     nppStreamContext.hStream);
-
   NppStatus status = NppStatus::NPP_SUCCESS;
 
-  // cudaError_t cuerr = cudaDrawLine(
-  //     static_cast<uchar4*>(inParams->dataPtr),
-  //     inParams->width,
-  //     inParams->height,
-  //     0,
-  //     0,
-  //     inParams->width,
-  //     inParams->height,
-  //     {1.0, 1.0, 0.0, 1.0},
-  //     25.0,
-  //     nppStreamContext.hStream);
-  // (void)cuerr;
 #if 1
+  // Wipe the destination image
+  cudaMemsetAsync(outParams->dataPtr, 0, outParams->pitch * outParams->height, nppStreamContext.hStream);
+  // Now rotate into the dest image
   status = nppiWarpAffine_8u_C4R_Ctx(
       static_cast<const Npp8u*>(inParams->dataPtr), // Source pointer
       {static_cast<int>(inParams->width), static_cast<int>(inParams->height)}, // Source size
@@ -626,41 +579,14 @@ NppStatus rotateNvBufSurfaceWithNPP(
       affineMatrix, // Affine transformation matrix
       NPPI_INTER_LINEAR, // Interpolation method
       nppStreamContext);
-  // status = nppiRotate_8u_C4R_Ctx(
-  //     static_cast<const Npp8u*>(inParams->dataPtr), // Source pointer
-  //     {static_cast<int>(inParams->width), static_cast<int>(inParams->height)}, // Source size
-  //     inParams->pitch, // Source pitch
-  //     srcROI, // Source ROI
-  //     static_cast<Npp8u*>(outParams->dataPtr), // Destination pointer
-  //     outParams->pitch, // Destination pitch
-  //     dstROI, // Destination ROI
-  //     angleDegrees,
-  //     /*nShiftX=*/0.0,
-  //     /*nShiftY=*/0.0,
-  //     NPPI_INTER_LINEAR,
-  //     nppStreamContext);
 #endif
-
-  // cuerr = cudaDrawLine(
-  //     static_cast<uchar4*>(outParams->dataPtr),
-  //     outParams->width,
-  //     outParams->height,
-  //     0,
-  //     0,
-  //     outParams->width,
-  //     outParams->height,
-  //     {1.0, 0.0, 0.0, 1.0},
-  //     25.0,
-  //     nppStreamContext.hStream);
-
-  // (void)cuerr;
 
   if (status != NPP_SUCCESS) {
     std::cerr << "NPP rotation failed with error: " << status << std::endl;
   }
   return status;
 }
-
+#if 0
 NppStatus cropAndResizeNvBufSurface(
     NvBufSurface* srcSurface,
     const BBox& src_rect,
@@ -738,7 +664,7 @@ NppStatus cropAndResizeNvBufSurface(
   // std::cout << "Successfully cropped and resized the image from NvBufSurface to NvBufSurface." << std::endl;
   return status;
 }
-
+#endif
 NppStatus cropAndResizeNvBufSurface(
     NvBufSurface* srcSurface,
     const BBox& src_rect,
@@ -775,6 +701,12 @@ NppStatus cropAndResizeNvBufSurface(
   //                         Npp8u * pDst, int nDstStep, NppiSize oDstSize, NppiRect oDstRectROI, int eInterpolation);
 
   NppStatus status = NppStatus::NPP_SUCCESS;
+
+  // cudaMemsetAsync(srcImage, 0, srcParams.pitch * srcParams.height, nppStreamContext.hStream);
+  // cudaMemset2D(srcImage, 0, srcParams.pitch, srcParams.width, srcParams.height);
+
+  // Wipe the destination image
+  cudaMemsetAsync(dstImage, 0, videpPrepParams->dewarpPitch * videpPrepParams->dewarpHeight, nppStreamContext.hStream);
 
   status = nppiResize_8u_C4R_Ctx(
       srcImage,
@@ -837,9 +769,9 @@ cudaError gst_videoprep_do_dewarp(
 
     NppStatus np_status = cropAndResizeNvBufSurface(
         /*srcSurface=*/in_surface,
-        /*src_rect=*/tracking_boxes.at(j),
+        /*src_rect=*/ // tracking_boxes.at(j),
         /*src_rect=*/ // new_tbox,
-        /*src_rect=*/ // all_src_rect,
+        /*src_rect=*/all_src_rect,
         /*videpPrepParams=*/dewarpParams,
         // out_surface,
         /*surface_index=*/j,
