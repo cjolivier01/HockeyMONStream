@@ -549,7 +549,8 @@ NppStatus rotateNvBufSurfaceWithNPP(
   // assert(srcROI.height == dstROI.height);
 
   // Perform rotation using NPP
-  BBox src_rect2(src_rect.center(), dest_rect.size());
+  // BBox src_rect2(src_rect.center(), dest_rect.size());
+  BBox src_rect2 = src_rect;
 
   srcROI.x = src_rect2.left;
   srcROI.y = src_rect2.top;
@@ -567,8 +568,8 @@ NppStatus rotateNvBufSurfaceWithNPP(
   assert(srcROI.height == dstROI.height);
   assert(srcROI.x + srcROI.width <= (int)inParams->width);
   assert(srcROI.y + srcROI.height <= (int)inParams->height);
-  assert(dstROI.width == (int)outParams->width);
-  assert(dstROI.height == (int)outParams->height);
+  //assert(dstROI.width == (int)outParams->width);
+  //assert(dstROI.height == (int)outParams->height);
 
   NppStatus status = NppStatus::NPP_SUCCESS;
 
@@ -583,7 +584,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
 
 #if 1
   // Wipe the destination image
-  cudaMemsetAsync(outParams->dataPtr, 0, outParams->pitch * outParams->height, nppStreamContext.hStream);
+  cudaMemsetAsync(outParams->dataPtr, 255, outParams->pitch * outParams->height, nppStreamContext.hStream);
   // Now rotate into the dest image
   status = nppiWarpAffine_8u_C4R_Ctx(
       static_cast<const Npp8u*>(inParams->dataPtr), // Source pointer

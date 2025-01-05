@@ -535,7 +535,7 @@ static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
   for (iter = videoprep->priv->vecDewarpSurface.begin(); iter != videoprep->priv->vecDewarpSurface.end(); iter++) {
     VideoPrepParams& vp_params = *iter;
 
-#if 0
+#if 1
     static bool ranthis = false;
     (void)ranthis;
     assert(!ranthis);
@@ -940,57 +940,110 @@ static cudaError gst_videoprep_generate_output(
       i++;
     }
 
-    BBox dest_rect(0, 0, in_surf.surfaceList[j].width, in_surf.surfaceList[j].height);
-    NppStatus np_status = cropAndResizeNvBufSurface(
-        /*srcSurface=*/in_surface,
-        /*src_rect=*/tracking_boxes.at(j),
-        /*src_rect=*/ // new_tbox,
-        /*src_rect=*/ // all_src_rect,
+    static float angle = 0.0;
+#if 1
+    const float max_angle = 30.0;
+    const float half_width = float(videoprep->input_width) / 2;
+    const float tcx = tracking_boxes.at(j).center().x;
+    if (tcx < half_width) {
+      float pct = 1.0 - tcx / half_width;
+      angle = max_angle * pct;
+    } else if (tcx > half_width) {
+      float pct = (half_width - tcx) / half_width;
+      angle = max_angle * pct;
+    }
+#endif
+
+    const BBox& tbox = tracking_boxes.at(j);
+    FloatValue x_center = tbox.center().x;
+    const BBox input_rect(0, 0, videoprep->input_width, videoprep->input_height);
+    BBox output_rect(0, 0, (FloatValue)videoprep->output_width, (FloatValue)videoprep->output_height);
+    BBox extra_width_src_rect(
+        Point{.x = x_center, .y = input_rect.center().y},
+        WHDims{.width = videoprep->pre_rotate_size.width, .height = (FloatValue)videoprep->input_height});
+    extra_width_src_rect = clamp_box(extra_width_src_rect, input_rect);
+    // const Point extra_width_src_rect_initial_center = extra_width_src_rect.center();
+    if (extra_width_src_rect.left + extra_width_src_rect.width() > input_rect.width()) {
+      extra_width_src_rect.right = extra_width_src_rect.width();
+    }
+    // const Point extra_width_src_rect_center = extra_width_src_rect.center();
+    //PointDiff center_diff = tbox.center() - extra_width_src_rect.center();
+    //(void)center_diff;
+
+    BBox dst_box(0, 0, extra_width_src_rect.width(), extra_width_src_rect.height());
+
+    rotateNvBufSurfaceWithNPP(
+        in_surface,
+        /*input_surface_index=*/j,
+        extra_width_src_rect,
         &in_surf,
-        // out_surface,
+        /*output_surface_index=*/j,
+        dst_box,
+        angle,
+        nppStreamContext);
+
+    Point new_center = tbox.center();
+    //PointDiff center_diff = extra_width_src_rect_initial_center - new_center;
+    new_center.y -= extra_width_src_rect.top;
+    new_center.x -= extra_width_src_rect.left;
+    //new_center.x -= center_diff.dx;
+    //new_center.y -= center_diff.dy;
+    BBox new_tbox(new_center, tbox.size());
+    assert(new_tbox.left >= 0 && new_tbox.top >= 0);
+
+    // BBox dest_rect(0, 0, in_surf.surfaceList[j].width, in_surf.surfaceList[j].height);
+    NppStatus np_status = cropAndResizeNvBufSurface(
+        /*srcSurface=*/&in_surf,
+        /*src_rect=*/new_tbox,
+        out_surface,
         /*surface_index=*/j,
-        /*dest_rect=*/dest_rect,
+        /*dest_rect=*/output_rect,
         nppStreamContext);
     // assert(np_status == NppStatus::)
     nvtx_helper_push_pop(NULL);
     in_surf.numFilled = i;
     in_surf.batchSize = i;
 
-    const float max_angle = 30.0;
-    const float half_width = float(videoprep->input_width) / 2;
+    // BBox dest_rect(0, 0, in_surf.surfaceList[j].width, in_surf.surfaceList[j].height);
+    // NppStatus np_status = cropAndResizeNvBufSurface(
+    //     /*srcSurface=*/in_surface,
+    //     /*src_rect=*/tracking_boxes.at(j),
+    //     /*src_rect=*/ // new_tbox,
+    //     /*src_rect=*/ // all_src_rect,
+    //     &in_surf,
+    //     // out_surface,
+    //     /*surface_index=*/j,
+    //     /*dest_rect=*/dest_rect,
+    //     nppStreamContext);
+    // // assert(np_status == NppStatus::)
+    // nvtx_helper_push_pop(NULL);
+    // in_surf.numFilled = i;
+    // in_surf.batchSize = i;
 
-    for (size_t j = 0; j < in_surf.numFilled; ++j) {
-      static float angle = 0.0;
-#if 1
-      const float tcx = tracking_boxes.at(j).center().x;
-      if (tcx < half_width) {
-        float pct = 1.0 - tcx / half_width;
-        angle = max_angle * pct;
-      } else if (tcx > half_width) {
-        float pct = (half_width - tcx) / half_width;
-        angle = max_angle * pct;
-      }
-#endif
-      BBox dst_box(0, 0, videoprep->output_width, videoprep->output_height);
-      rotateNvBufSurfaceWithNPP(
-          &in_surf,
-          /*input_surface_index=*/j,
-          BBox(0, 0, srcRect[j].left + srcRect[j].width, srcRect[j].top + srcRect[j].height),
-          // src_box,
-          //  new_src_bbox,
-          out_surface,
-          /*output_surface_index=*/j,
-          dst_box,
-          angle,
-          nppStreamContext);
+    // const float max_angle = 30.0;
+    // const float half_width = float(videoprep->input_width) / 2;
+    // assert(in_surf.numFilled == 1); // we went into loop with this
+    // for (size_t j = 0; j < in_surf.numFilled; ++j) {
+    //   // BBox dst_box(0, 0, videoprep->output_width, videoprep->output_height);
+    //   // rotateNvBufSurfaceWithNPP(
+    //   //     &in_surf,
+    //   //     /*input_surface_index=*/j,
+    //   //     BBox(0, 0, srcRect[j].left + srcRect[j].width, srcRect[j].top + srcRect[j].height),
+    //   //     // src_box,
+    //   //     //  new_src_bbox,
+    //   //     out_surface,
+    //   //     /*output_surface_index=*/j,
+    //   //     dst_box,
+    //   //     angle,
+    //   //     nppStreamContext);
 
-      // angle += 1;
-      // if (angle > 359.9) {
-      //   angle = 0.0;
-      // }
+    //   // angle += 1;
+    //   // if (angle > 359.9) {
+    //   //   angle = 0.0;
+    //   // }
 
-      assert(tx_err == NvBufSurfTransformError_Success);
-    }
+    //   assert(tx_err == NvBufSurfTransformError_Success);
+    // }
   }
 
   if (videoprep->stream) {
