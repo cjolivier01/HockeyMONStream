@@ -41,7 +41,8 @@ cudaError gst_videoprep_do_dewarp(
     NvDsBatchMeta* batch_meta,
     GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
-    NvBufSurface* out_surface);
+    NvBufSurface* out_surface,
+    PointDiff* tbox_shift);
 
 /**
  * Function to get core Dewarper library version.
@@ -58,9 +59,9 @@ NppStatus rotateNvBufSurfaceWithNPP(
     const hm::BBox& src_rect,
     NvBufSurface* outputSurface,
     size_t output_surface_index,
+    const hm::BBox& dest_rect,
     float angleDegrees,
-    const NppStreamContext& nppStreamContext,
-    std::optional<int> fill_value = std::nullopt);
+    const NppStreamContext& nppStreamContext);
 
 void cropAndResizeNvBufSurface(
     NvBufSurface* srcSurface,

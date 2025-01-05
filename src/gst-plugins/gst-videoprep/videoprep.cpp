@@ -23,6 +23,7 @@
 #include <assert.h>
 #include <string.h>
 
+#include <cassert>
 #include <sstream>
 #include <vector>
 
@@ -524,9 +525,9 @@ NppStatus rotateNvBufSurfaceWithNPP(
     const hm::BBox& src_rect,
     NvBufSurface* outputSurface,
     size_t output_surface_index,
+    const hm::BBox& dest_rect,
     float angleDegrees,
-    const NppStreamContext& nppStreamContext,
-    std::optional<int> fill_value) {
+    const NppStreamContext& nppStreamContext) {
   float angleRadians = angleDegrees * M_PI / 180.0f;
 
   assert(input_surface_index < inputSurface->numFilled);
@@ -550,17 +551,26 @@ NppStatus rotateNvBufSurfaceWithNPP(
   // assert(srcROI.height == dstROI.height);
 
   // Perform rotation using NPP
-  if (fill_value.has_value()) {
-    cudaMemset2DAsync(
-        outParams->dataPtr, outParams->pitch, 0, outParams->width, outParams->height, nppStreamContext.hStream);
-  }
+  BBox src_rect2(src_rect.center(), dest_rect.size());
 
-  srcROI.x = src_rect.left;
-  srcROI.y = src_rect.top;
-  srcROI.width = src_rect.width();
-  srcROI.height = src_rect.height();
-  float ar = float(srcROI.width) / srcROI.height;
-  (void)ar;
+  srcROI.x = src_rect2.left;
+  srcROI.y = src_rect2.top;
+  srcROI.width = src_rect2.width();
+  srcROI.height = src_rect2.height();
+
+  dstROI.x = dest_rect.left;
+  dstROI.y = dest_rect.top;
+  dstROI.width = dest_rect.width();
+  dstROI.height = dest_rect.height();
+
+  // srcROI = dstROI;
+
+  assert(srcROI.width == dstROI.width);
+  assert(srcROI.height == dstROI.height);
+  assert(srcROI.x + srcROI.width <= (int)inParams->width);
+  assert(srcROI.y + srcROI.height <= (int)inParams->height);
+  assert(dstROI.width == (int)outParams->width);
+  assert(dstROI.height == (int)outParams->height);
 
   NppStatus status = NppStatus::NPP_SUCCESS;
 
@@ -583,6 +593,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
 
   if (status != NPP_SUCCESS) {
     std::cerr << "NPP rotation failed with error: " << status << std::endl;
+    // assert(false);
   }
   return status;
 }
@@ -740,7 +751,8 @@ cudaError gst_videoprep_do_dewarp(
     NvDsBatchMeta* batch_meta,
     GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
-    NvBufSurface* out_surface) {
+    NvBufSurface* out_surface,
+    PointDiff* tbox_shift) {
   cudaError cudaErr = cudaSuccess;
   VideoPrepParams* dewarpParams = NULL;
 
@@ -755,23 +767,40 @@ cudaError gst_videoprep_do_dewarp(
     const BBox all_src_rect(0, 0, in_surface->surfaceList[j].width, in_surface->surfaceList[j].height);
     size_t surface_index = 0;
     dewarpParams = &videoprep->priv->vecDewarpSurface.at(surface_index);
-    const BBox dest_rect(0, 0, dewarpParams->dewarpWidth, dewarpParams->dewarpHeight);
+    BBox dest_rect(0, 0, dewarpParams->dewarpWidth, dewarpParams->dewarpHeight);
 
     // assert((int)videoprep->pre_rotate_size.width == (int)dest_rect.width());
     // assert((int)videoprep->pre_rotate_size.height == (int)dest_rect.height());
-    // const BBox& tbox = tracking_boxes.at(j);
+    const BBox& tbox = tracking_boxes.at(j);
 
-    // hm::WHDims pre_rotate_dest{.width = tbox.width(), .height = tbox.height()};
-    // hm::WHDims output_size{
-    //     .width = (FloatValue)videoprep->output_width, .height = (FloatValue)videoprep->output_height};
-    // WHDims new_tsize = get_box_size_necessary_for_rotations(pre_rotate_dest, output_size);
-    // BBox new_tbox(tbox.center(), new_tsize);
+    hm::WHDims src_size{.width = (FloatValue)videoprep->input_width, .height = (FloatValue)videoprep->input_height};
+    hm::WHDims output_size{.width = tbox.width(), .height = tbox.height()};
+    assert(videoprep->output_height == dewarpParams->dewarpHeight);
+    WHDims new_tsize = get_box_size_necessary_for_rotations(src_size, output_size);
+    BBox new_tbox(tbox.center(), new_tsize);
+    new_tbox = shift_box_to_edge(new_tbox, all_src_rect).bbox;
+    //new_tbox = clamp_box(new_tbox, all_src_rect);
+    double new_tbox_ar = new_tbox.width() / new_tbox.height();
+    double tracking_ar = tbox.width() / tbox.height();
+    double dest_ar = double(dewarpParams->dewarpWidth) / dewarpParams->dewarpHeight;
+    double destw = double(dewarpParams->dewarpHeight) * new_tbox_ar;
+    // assert(isClose(new_tbox_ar, dest_ar));
+    // assert(destw <= dewarpParams->dewarpWidth);
+
+    *tbox_shift = tbox.center() - new_tbox.center();
+
+    // double ar = double(dewarpParams->dewarpWidth) / dewarpParams->dewarpHeight;
+
+    // dest_rect = BBox(0, 0, destw, dewarpParams->dewarpHeight);
+
+    assert(new_tbox.width() <= all_src_rect.width());
+    assert(new_tbox.height() <= all_src_rect.height());
 
     NppStatus np_status = cropAndResizeNvBufSurface(
         /*srcSurface=*/in_surface,
-        /*src_rect=*/ // tracking_boxes.at(j),
+        /*src_rect=*/ tbox,
         /*src_rect=*/ // new_tbox,
-        /*src_rect=*/all_src_rect,
+        /*src_rect=*/ // all_src_rect,
         /*videpPrepParams=*/dewarpParams,
         // out_surface,
         /*surface_index=*/j,

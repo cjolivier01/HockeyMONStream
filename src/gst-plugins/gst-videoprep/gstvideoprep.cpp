@@ -541,10 +541,15 @@ static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
     assert(!ranthis);
     ranthis = true;
 
-    hm::WHDims pre_rotate_dest{
-        .width = (FloatValue)vp_params.dewarpWidth, .height = (FloatValue)vp_params.dewarpHeight};
-    hm::WHDims output_size{.width = (FloatValue)vp_params.dewarpWidth, .height = (FloatValue)vp_params.dewarpHeight};
-    videoprep->pre_rotate_size = get_box_size_necessary_for_rotations(pre_rotate_dest, output_size);
+    // hm::WHDims pre_rotate_dest{
+    //     .width = (FloatValue)vp_params.dewarpWidth, .height = (FloatValue)vp_params.dewarpHeight};
+    // hm::WHDims output_size{.width = (FloatValue)vp_params.dewarpWidth, .height = (FloatValue)vp_params.dewarpHeight};
+
+    hm::WHDims src_size{.width = (FloatValue)videoprep->input_width, .height = (FloatValue)videoprep->input_height};
+    hm::WHDims output_size = {
+        .width = (FloatValue)videoprep->output_width, .height = (FloatValue)videoprep->output_height};
+
+    videoprep->pre_rotate_size = get_box_size_necessary_for_rotations(src_size, output_size);
 
     vp_params.dewarpWidth = videoprep->pre_rotate_size.width;
     vp_params.dewarpHeight = videoprep->pre_rotate_size.height;
@@ -843,7 +848,8 @@ static cudaError gst_videoprep_generate_output(
     NvDsBatchMeta* batch_meta,
     GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
-    NvBufSurface* out_surface) {
+    NvBufSurface* out_surface,
+    const PointDiff& tbox_shift) {
   gchar context_name[100];
   std::vector<VideoPrepParams>::iterator it;
   VideoPrepParams* dewarpParams = NULL;
@@ -851,10 +857,10 @@ static cudaError gst_videoprep_generate_output(
   cudaError err = cudaSuccess;
   NvBufSurface in_surf = {0};
   NvBufSurfaceParams surfaceList[MAX_DEWARPED_VIEWS];
-  NvBufSurfTransformRect dstRect[MAX_DEWARPED_VIEWS];
+  // NvBufSurfTransformRect dstRect[MAX_DEWARPED_VIEWS];
   NvBufSurfTransformRect srcRect[MAX_DEWARPED_VIEWS];
   (void)srcRect;
-  gfloat xscale = 1.0;
+  // gfloat xscale = 1.0;
   in_surf.gpuId = videoprep->gpu_id;
   in_surf.batchSize = 1;
   in_surf.numFilled = 1;
@@ -904,11 +910,13 @@ static cudaError gst_videoprep_generate_output(
       in_surf.surfaceList[i].dataPtr = src;
       in_surf.surfaceList[i].layout = NVBUF_LAYOUT_PITCH;
 
-      xscale = ((gfloat)out_surface->surfaceList[i].planeParams.width[0]) / inSrcSize.width;
-      dstRect[i].top = 0;
-      dstRect[i].left = 0;
-      dstRect[i].width = out_surface->surfaceList[i].planeParams.width[0];
-      dstRect[i].height = (inSrcSize.height * xscale + 0.5);
+      // xscale = ((gfloat)out_surface->surfaceList[i].planeParams.width[0]) / inSrcSize.width;
+      // dstRect[i].top = 0;
+      // dstRect[i].left = 0;
+      // // dstRect[i].width = out_surface->surfaceList[i].planeParams.width[0];
+      // // dstRect[i].height = (inSrcSize.height * xscale + 0.5);
+      // dstRect[i].width = out_surface->surfaceList[i].planeParams.width[0];
+      // dstRect[i].height = out_surface->surfaceList[i].planeParams.height[0];
       srcRect[i].top = 0;
       srcRect[i].left = 0;
       srcRect[i].width = inSrcSize.width;
@@ -918,10 +926,10 @@ static cudaError gst_videoprep_generate_output(
       // provided scale factor exceeds beyond dst image,
       // calculate the corresponding limit in src
       // to maintain aspect ratio and thus cropping the image
-      if (inSrcSize.height * xscale > out_surface->surfaceList[i].planeParams.height[0]) {
-        dstRect[i].height = out_surface->surfaceList[i].planeParams.height[0];
-        srcRect[i].height = (dstRect[i].height / xscale + 0.5);
-      }
+      // if (inSrcSize.height * xscale > out_surface->surfaceList[i].planeParams.height[0]) {
+      //   dstRect[i].height = out_surface->surfaceList[i].planeParams.height[0];
+      //   srcRect[i].height = (dstRect[i].height / xscale + 0.5);
+      // }
       i++;
     }
 
@@ -1010,15 +1018,14 @@ static cudaError gst_videoprep_generate_output(
   const float max_angle = 30.0;
   const float half_width = float(videoprep->input_width) / 2;
 
-
   for (size_t j = 0; j < in_surf.numFilled; ++j) {
     static float angle = 0.0;
     // cudaMemcpy2DAsync(void *dst, size_t dpitch, const void *src, size_t spitch, size_t width, size_t height, enum
     // cudaMemcpyKind kind, cudaStream_t stream __dv(0));
-    //assert(out_surface->surfaceList[j].width == in_surf.surfaceList[j].width);
-    //assert(out_surface->surfaceList[j].height == in_surf.surfaceList[j].height);
+    // assert(out_surface->surfaceList[j].width == in_surf.surfaceList[j].width);
+    // assert(out_surface->surfaceList[j].height == in_surf.surfaceList[j].height);
 
-#if 0    
+#if 1
     const float tcx = tracking_boxes.at(j).center().x;
     if (tcx < half_width) {
       float pct = 1.0 - tcx / half_width;
@@ -1028,6 +1035,7 @@ static cudaError gst_videoprep_generate_output(
       angle = max_angle * pct;
     }
 #endif
+    BBox dst_box(0, 0, videoprep->output_width, videoprep->output_height);
     // cudaMemcpyAsync(
     //     out_surface->surfaceList[j].dataPtr,
     //     in_surf.surfaceList[j].dataPtr,
@@ -1047,26 +1055,36 @@ static cudaError gst_videoprep_generate_output(
     // float ar = box.width() / box.height();
     // float myar = float(videoprep->output_width) / videoprep->output_height;
     // std::cout << "ar=" << ar << ", myar=" << myar << std::endl;
-    BBox src_box(0, 0, srcRect[j].left + srcRect[j].width, srcRect[j].top + srcRect[j].height);
+    
+    
+    // BBox all_src_box(0, 0, srcRect[j].left + srcRect[j].width, srcRect[j].top + srcRect[j].height);
+    // Point centered_src_box = all_src_box.center();
+    // centered_src_box.x += tbox_shift.dx;
+    // centered_src_box.y += tbox_shift.dy;
+    // BBox new_src_bbox(centered_src_box, dst_box.size());
+    // // new_src_bbox = shift_box_to_edge(new_src_bbox, all_src_box).bbox;
+    // assert((int)new_src_bbox.left >= 0);
+    // assert((int)new_src_bbox.top >= 0);
+
     // src_box = tracking_boxes.at(j).at_center(src_box.center());
     rotateNvBufSurfaceWithNPP(
         &in_surf,
         /*input_surface_index=*/j,
-        // BBox(0, 0, srcRect[j].left + srcRect[j].width, srcRect[j].top + srcRect[j].height),
-        src_box,
+        BBox(0, 0, srcRect[j].left + srcRect[j].width, srcRect[j].top + srcRect[j].height),
+        //src_box,
+        // new_src_bbox,
         out_surface,
         /*output_surface_index=*/j,
+        dst_box,
         angle,
-        nppStreamContext,
-        /*fill_value=*/0);
+        nppStreamContext);
 
-    angle += 1;
-    if (angle > 359.9) {
-      angle = 0.0;
-    }
+    // angle += 1;
+    // if (angle > 359.9) {
+    //   angle = 0.0;
+    // }
 
     assert(tx_err == NvBufSurfTransformError_Success);
-
   }
 
   if (videoprep->stream) {
@@ -1117,7 +1135,8 @@ static cudaError gst_videoprep_dewarp(
     }
   }
   // Do Dewarping of all surfaces
-  cuda_ck(hm::videoprep::gst_videoprep_do_dewarp(batch_meta, videoprep, in_surface, out_surface));
+  PointDiff tbox_shift{.dx = 0, .dy = 0};
+  cuda_ck(hm::videoprep::gst_videoprep_do_dewarp(batch_meta, videoprep, in_surface, out_surface, &tbox_shift));
 
   if (videoprep->output_fmt == GST_VIDEO_FORMAT_NV12 || videoprep->output_fmt == GST_VIDEO_FORMAT_NV21) {
     // RGBA ---> NV12 conversion
@@ -1125,7 +1144,7 @@ static cudaError gst_videoprep_dewarp(
     exit(-1);
   } else if (videoprep->output_fmt == GST_VIDEO_FORMAT_RGBA || videoprep->output_fmt == GST_VIDEO_FORMAT_BGRx) {
     // Generate output surface after scaling
-    cuda_ck(gst_videoprep_generate_output(batch_meta, videoprep, in_surface, out_surface));
+    cuda_ck(gst_videoprep_generate_output(batch_meta, videoprep, in_surface, out_surface, tbox_shift));
   }
 
   if (videoprep->dump_frames) {
