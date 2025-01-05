@@ -529,6 +529,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
     size_t output_surface_index,
     const hm::BBox& dest_rect,
     float angleDegrees,
+    const Point& anchor_point,
     const NppStreamContext& nppStreamContext) {
   float angleRadians = angleDegrees * M_PI / 180.0f;
 
@@ -579,7 +580,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
       angleRadians,
       static_cast<int>(src_rect2.width()),
       static_cast<int>(src_rect2.height()),
-      src_rect2.center(),
+      anchor_point,
       affineMatrix);
 
 #if 1

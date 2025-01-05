@@ -972,6 +972,17 @@ static cudaError gst_videoprep_generate_output(
 
     BBox dst_box(0, 0, extra_width_src_rect.width(), extra_width_src_rect.height());
 
+    Point new_center = tbox.center();
+    //PointDiff center_diff = extra_width_src_rect_initial_center - new_center;
+    new_center.y -= extra_width_src_rect.top;
+    new_center.x -= extra_width_src_rect.left / 2;
+    //new_center.x -= center_diff.dx;
+    //new_center.y -= center_diff.dy;
+    BBox new_tbox(new_center, tbox.size());
+    assert(new_tbox.left >= 0 && new_tbox.top >= 0);
+
+    angle  = 0.0;
+
     rotateNvBufSurfaceWithNPP(
         in_surface,
         /*input_surface_index=*/j,
@@ -980,16 +991,9 @@ static cudaError gst_videoprep_generate_output(
         /*output_surface_index=*/j,
         dst_box,
         angle,
+        // /*anchor_point=*/tbox.center(),
+        /*anchor_point=*/ extra_width_src_rect.center(),
         nppStreamContext);
-
-    Point new_center = tbox.center();
-    //PointDiff center_diff = extra_width_src_rect_initial_center - new_center;
-    new_center.y -= extra_width_src_rect.top;
-    new_center.x -= extra_width_src_rect.left;
-    //new_center.x -= center_diff.dx;
-    //new_center.y -= center_diff.dy;
-    BBox new_tbox(new_center, tbox.size());
-    assert(new_tbox.left >= 0 && new_tbox.top >= 0);
 
     // BBox dest_rect(0, 0, in_surf.surfaceList[j].width, in_surf.surfaceList[j].height);
     NppStatus np_status = cropAndResizeNvBufSurface(

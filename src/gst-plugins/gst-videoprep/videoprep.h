@@ -61,6 +61,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
     size_t output_surface_index,
     const hm::BBox& dest_rect,
     float angleDegrees,
+    const Point& anchor_point,
     const NppStreamContext& nppStreamContext);
 
 NppStatus cropAndResizeNvBufSurface(
