@@ -1039,6 +1039,7 @@ static cudaError gst_videoprep_generate_output(
     //   angle = 0.0;
     // }
     assert(tx_err == NvBufSurfTransformError_Success);
+
   }
 
   if (videoprep->stream) {

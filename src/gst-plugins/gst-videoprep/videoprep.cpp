@@ -31,6 +31,8 @@
 #include "gstnvdsmeta.h"
 #include "gstvideoprep.h"
 
+#include "cudaDraw.h"
+
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 #include "videoprep.h"
@@ -251,7 +253,7 @@ struct WarpWrapper {
 
 //   return cudaErr;
 // }
-
+#if 0
 static cudaError MyDewarp(
     NvDsBatchMeta* batch_meta,
     GstVideoPrep* videoprep,
@@ -473,6 +475,7 @@ static cudaError MyDewarp(
       videoprep->stream);
   return cudaErr;
 }
+#endif
 
 std::vector<hm::BBox> get_tracking_boxes(NvDsBatchMeta* batch_meta) {
   std::vector<hm::BBox> results;
@@ -575,6 +578,19 @@ NppStatus rotateNvBufSurfaceWithNPP(
   //     nppStreamContext.hStream);
 
   NppStatus status = NppStatus::NPP_SUCCESS;
+
+  cudaError_t cuerr = cudaDrawLine(
+      static_cast<uchar4*>(inParams->dataPtr),
+      inParams->width,
+      inParams->height,
+      0,
+      0,
+      inParams->width,
+      inParams->height,
+      {1.0, 1.0, 0.0, 1.0},
+      25.0,
+      nppStreamContext.hStream);
+  (void)cuerr;
 #if 1
   status = nppiWarpAffine_8u_C4R_Ctx(
       static_cast<const Npp8u*>(inParams->dataPtr), // Source pointer
@@ -601,6 +617,21 @@ NppStatus rotateNvBufSurfaceWithNPP(
   //     NPPI_INTER_LINEAR,
   //     nppStreamContext);
 #endif
+
+  cuerr = cudaDrawLine(
+      static_cast<uchar4*>(outParams->dataPtr),
+      outParams->width,
+      outParams->height,
+      0,
+      0,
+      outParams->width,
+      outParams->height,
+      {1.0, 0.0, 0.0, 1.0},
+      25.0,
+      nppStreamContext.hStream);
+
+  (void)cuerr;
+
   if (status != NPP_SUCCESS) {
     std::cerr << "NPP rotation failed with error: " << status << std::endl;
   }
@@ -617,8 +648,8 @@ NppStatus cropAndResizeNvBufSurface(
   // Extract the source image from the NvBufSurface
   const NvBufSurfaceParams& srcParams = srcSurface->surfaceList[surface_index];
   Npp8u* srcImage = (Npp8u*)srcParams.dataPtr;
-  int srcWidth = srcParams.width;
-  int srcHeight = srcParams.height;
+  //int srcWidth = srcParams.width;
+  //int srcHeight = srcParams.height;
   int srcPitch = srcParams.pitch;
 
   // Set the destination surface size (width, height) for the resized image
