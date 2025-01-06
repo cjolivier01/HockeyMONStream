@@ -12,7 +12,6 @@ gst_cc_plugin(
     linkopts = [
       "-L/usr/local/cuda-12.6/targets/x86_64-linux/lib",
       "-l:libnppig.so",
-      # "-l:libnppc.so",
       "-lnppc_static",
       "-lnppif_static",
       "-lnvdsgst_helper",

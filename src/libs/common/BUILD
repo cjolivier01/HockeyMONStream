@@ -18,5 +18,7 @@ cc_library(
         "@hm//hockeymom/csrc/play_tracker",
         "@opencv_linux//:opencv",
         "@yaml-cpp",
+        "@local_cuda//:cuda_runtime",
+        "@local_cuda//:cuda",
     ],
 )
