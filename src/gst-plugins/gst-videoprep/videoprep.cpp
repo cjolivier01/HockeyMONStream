@@ -569,24 +569,46 @@ NppStatus rotateNvBufSurfaceWithNPP(
   assert(srcROI.height == dstROI.height);
   assert(srcROI.x + srcROI.width <= (int)inParams->width);
   assert(srcROI.y + srcROI.height <= (int)inParams->height);
-  //assert(dstROI.width == (int)outParams->width);
-  //assert(dstROI.height == (int)outParams->height);
+  // assert(dstROI.width == (int)outParams->width);
+  // assert(dstROI.height == (int)outParams->height);
 
   NppStatus status = NppStatus::NPP_SUCCESS;
 
   // Define rotation matrix
-  double affineMatrix[2][3];
-  createAffineMatrix(
-      angleRadians,
-      static_cast<int>(src_rect2.width()),
-      static_cast<int>(src_rect2.height()),
-      anchor_point,
-      affineMatrix);
+  double affineMatrix[2][3] = {
+    {1, 0, 0},
+    {0, 1, 0}
+  };
+  // createAffineMatrix(
+  //     angleRadians,
+  //     static_cast<int>(src_rect2.width()),
+  //     static_cast<int>(src_rect2.height()),
+  //     anchor_point,
+  //     affineMatrix);
+
+  // double affineMatrix[3][3] = {
+  //    {1, 0, 0},
+  //    {0, 1, 0},
+  //    {0, 0, 1}
+  // };
 
 #if 1
   // Wipe the destination image
   cudaMemsetAsync(outParams->dataPtr, 255, outParams->pitch * outParams->height, nppStreamContext.hStream);
   // Now rotate into the dest image
+
+  // status = nppiWarpPerspective_8u_C4R_Ctx(
+  //     static_cast<const Npp8u*>(inParams->dataPtr), // Source pointer
+  //     {static_cast<int>(inParams->width), static_cast<int>(inParams->height)}, // Source size
+  //     inParams->pitch, // Source pitch
+  //     srcROI, // Source ROI
+  //     static_cast<Npp8u*>(outParams->dataPtr), // Destination pointer
+  //     outParams->pitch, // Destination pitch
+  //     dstROI, // Destination ROI
+  //     affineMatrix, // Affine transformation matrix
+  //     NPPI_INTER_LINEAR, // Interpolation method
+  //     nppStreamContext);
+
   status = nppiWarpAffine_8u_C4R_Ctx(
       static_cast<const Npp8u*>(inParams->dataPtr), // Source pointer
       {static_cast<int>(inParams->width), static_cast<int>(inParams->height)}, // Source size

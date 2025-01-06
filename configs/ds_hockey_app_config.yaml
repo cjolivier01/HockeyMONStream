@@ -21,14 +21,14 @@ tiled-display:
   columns: 1
   # rows: 2
   # columns: 2
-  width: 7680
-  height: 3176
+  # width: 7680
+  # height: 3176
   # width: 4080
   # height: 1360
   # width: 2048
   # height: 720
-  # width: 1280
-  # height: 720
+  width: 1280
+  height: 720
   gpu-id: 0
   #(0): nvbuf-mem-default - Default memory allocated, specific to particular platform
   #(1): nvbuf-mem-cuda-pinned - Allocate Pinned/Host cuda memory, applicable for Tesla
