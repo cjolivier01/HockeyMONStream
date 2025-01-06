@@ -6,7 +6,6 @@
 #include <nvbufsurface.h>
 #include <cmath>
 #include <iostream>
-#include <optional>
 #include "gst-nvcommon.h"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
@@ -16,6 +15,7 @@
 #include "videoprep_property_parser.h"
 
 #include <gst/gst.h>
+#include <npp.h>
 
 #include <assert.h>
 #include <string.h>
@@ -927,6 +927,8 @@ static cudaError gst_videoprep_generate_output(
     }
 
     static float angle = 0.0;
+    (void) angle;
+
 #if 1
     const float max_angle = 30.0;
     const float half_width = float(videoprep->input_width) / 2;
@@ -975,7 +977,8 @@ static cudaError gst_videoprep_generate_output(
 
     assert(dst_box.left == 0.0);
     assert(dst_box.top == 0.0);
-
+    NppStatus np_status;
+#if 0
     rotateNvBufSurfaceWithNPP(
         in_surface,
         /*input_surface_index=*/j,
@@ -987,7 +990,16 @@ static cudaError gst_videoprep_generate_output(
         // /*anchor_point=*/tbox.center(),
         /*anchor_point=*/extra_width_src_rect.center(),
         nppStreamContext);
-
+#else
+    np_status = cropAndResizeNvBufSurface(
+        /*srcSurface=*/in_surface,
+        /*src_rect=*/extra_width_src_rect,
+        &scratch_surf,
+        /*surface_index=*/j,
+        /*dest_rect=*/dst_box,
+        nppStreamContext);
+    assert(np_status == NppStatus::NPP_SUCCESS);
+#endif
     FloatValue tbox_ar = tbox.width() / tbox.height();
     FloatValue new_tbox_ar = new_tbox.width() / new_tbox.height();
     FloatValue output_ar = output_rect.width() / output_rect.height();
@@ -995,14 +1007,14 @@ static cudaError gst_videoprep_generate_output(
     assert(isClose(new_tbox_ar, output_ar, 1e-6f, 0.001));
 
     // BBox dest_rect(0, 0, scratch_surf.surfaceList[j].width, scratch_surf.surfaceList[j].height);
-    NppStatus np_status = cropAndResizeNvBufSurface(
+    np_status = cropAndResizeNvBufSurface(
         /*srcSurface=*/&scratch_surf,
         /*src_rect=*/new_tbox,
         out_surface,
         /*surface_index=*/j,
         /*dest_rect=*/output_rect,
         nppStreamContext);
-    // assert(np_status == NppStatus::)
+    assert(np_status == NppStatus::NPP_SUCCESS);
     nvtx_helper_push_pop(NULL);
     scratch_surf.numFilled = i;
     scratch_surf.batchSize = i;
