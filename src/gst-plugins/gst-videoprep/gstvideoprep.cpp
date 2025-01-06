@@ -855,11 +855,9 @@ static cudaError gst_videoprep_generate_output(
   guint i = 0;
   cudaError err = cudaSuccess;
   NvBufSurface in_surf = {0};
+  memset(&in_surf, 0, sizeof(in_surf));
   NvBufSurfaceParams surfaceList[MAX_DEWARPED_VIEWS];
-  // NvBufSurfTransformRect dstRect[MAX_DEWARPED_VIEWS];
-  NvBufSurfTransformRect srcRect[MAX_DEWARPED_VIEWS];
-  (void)srcRect;
-  // gfloat xscale = 1.0;
+  memset(surfaceList, 0, sizeof(surfaceList));
   in_surf.gpuId = videoprep->gpu_id;
   in_surf.batchSize = 1;
   in_surf.numFilled = 1;
@@ -871,8 +869,6 @@ static cudaError gst_videoprep_generate_output(
   NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));
 
   NppStreamContext nppStreamContext;
-  // NppStatus npp_status = nppiStreamContextInit(&nppStreamContext);
-  // assert(npp_status == 0);
   memset(&nppStreamContext, 0, sizeof(nppStreamContext));
   nppStreamContext.hStream = videoprep->stream; // Assign the CUDA stream
   nppStreamContext.nStreamFlags = 0; // No special flags
@@ -899,16 +895,9 @@ static cudaError gst_videoprep_generate_output(
       break;
 
     dewarpParams = &(*it);
-    // cout << it->projection_type << " " << it->dewarpWidth << " " << it->dewarpHeight << endl;
 
     snprintf(context_name, sizeof(context_name), "%s_(Frame=%u)", GST_ELEMENT_NAME(videoprep), videoprep->frame_num);
     nvtx_helper_push_pop(strcat(context_name, "_Scale"));
-
-    guint dstWidth = dewarpParams->dewarpWidth;
-    guint dstHeight = dewarpParams->dewarpHeight;
-    NppiSize inSrcSize = {(gint)dstWidth, (gint)dstHeight};
-
-    guint* src = (guint*)dewarpParams->surface;
 
     surface_meta->type[i] = dewarpParams->projection_type;
     surface_meta->index[i] = dewarpParams->surface_index;
@@ -917,6 +906,8 @@ static cudaError gst_videoprep_generate_output(
     {
       guint bytesPerPixel = 4;
       memset(&surfaceList[i], 0, sizeof(surfaceList[i]));
+
+      NppiSize inSrcSize = {(gint)dewarpParams->dewarpWidth, (gint)dewarpParams->dewarpHeight};
 
       in_surf.surfaceList[i].pitch = dewarpParams->dewarpPitch;
       in_surf.surfaceList[i].colorFormat = NVBUF_COLOR_FORMAT_RGBA;
@@ -930,13 +921,8 @@ static cudaError gst_videoprep_generate_output(
       in_surf.surfaceList[i].planeParams.bytesPerPix[0] = bytesPerPixel;
 
       in_surf.surfaceList[i].dataSize = in_surf.surfaceList[i].planeParams.psize[0];
-      in_surf.surfaceList[i].dataPtr = src;
+      in_surf.surfaceList[i].dataPtr = (guint*)dewarpParams->surface;
       in_surf.surfaceList[i].layout = NVBUF_LAYOUT_PITCH;
-
-      srcRect[i].top = 0;
-      srcRect[i].left = 0;
-      srcRect[i].width = inSrcSize.width;
-      srcRect[i].height = inSrcSize.height;
       i++;
     }
 
@@ -986,6 +972,9 @@ static cudaError gst_videoprep_generate_output(
     assert(new_tbox.left >= 0 && new_tbox.top >= 0);
 
     angle = 0.0;
+
+    assert(dst_box.left == 0.0);
+    assert(dst_box.top == 0.0);
 
     rotateNvBufSurfaceWithNPP(
         in_surface,
