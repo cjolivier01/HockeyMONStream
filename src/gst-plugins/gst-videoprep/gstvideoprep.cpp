@@ -854,15 +854,15 @@ static cudaError gst_videoprep_generate_output(
   VideoPrepParams* dewarpParams = NULL;
   guint i = 0;
   cudaError err = cudaSuccess;
-  NvBufSurface in_surf = {0};
-  memset(&in_surf, 0, sizeof(in_surf));
+  NvBufSurface scratch_surf = {0};
+  memset(&scratch_surf, 0, sizeof(scratch_surf));
   NvBufSurfaceParams surfaceList[MAX_DEWARPED_VIEWS];
   memset(surfaceList, 0, sizeof(surfaceList));
-  in_surf.gpuId = videoprep->gpu_id;
-  in_surf.batchSize = 1;
-  in_surf.numFilled = 1;
-  in_surf.memType = NVBUF_MEM_CUDA_DEVICE;
-  in_surf.surfaceList = &surfaceList[0];
+  scratch_surf.gpuId = videoprep->gpu_id;
+  scratch_surf.batchSize = 1;
+  scratch_surf.numFilled = 1;
+  scratch_surf.memType = NVBUF_MEM_CUDA_DEVICE;
+  scratch_surf.surfaceList = &surfaceList[0];
 
   NvBufSurfTransform_Error tx_err = NvBufSurfTransformError_Success;
 
@@ -909,20 +909,20 @@ static cudaError gst_videoprep_generate_output(
 
       NppiSize inSrcSize = {(gint)dewarpParams->dewarpWidth, (gint)dewarpParams->dewarpHeight};
 
-      in_surf.surfaceList[i].pitch = dewarpParams->dewarpPitch;
-      in_surf.surfaceList[i].colorFormat = NVBUF_COLOR_FORMAT_RGBA;
-      in_surf.surfaceList[i].width = inSrcSize.width;
-      in_surf.surfaceList[i].height = inSrcSize.height;
-      in_surf.surfaceList[i].planeParams.num_planes = 1;
-      in_surf.surfaceList[i].planeParams.width[0] = inSrcSize.width;
-      in_surf.surfaceList[i].planeParams.height[0] = inSrcSize.height;
-      in_surf.surfaceList[i].planeParams.pitch[0] = in_surf.surfaceList[i].pitch;
-      in_surf.surfaceList[i].planeParams.psize[0] = inSrcSize.height * in_surf.surfaceList[i].pitch;
-      in_surf.surfaceList[i].planeParams.bytesPerPix[0] = bytesPerPixel;
+      scratch_surf.surfaceList[i].pitch = dewarpParams->dewarpPitch;
+      scratch_surf.surfaceList[i].colorFormat = NVBUF_COLOR_FORMAT_RGBA;
+      scratch_surf.surfaceList[i].width = inSrcSize.width;
+      scratch_surf.surfaceList[i].height = inSrcSize.height;
+      scratch_surf.surfaceList[i].planeParams.num_planes = 1;
+      scratch_surf.surfaceList[i].planeParams.width[0] = inSrcSize.width;
+      scratch_surf.surfaceList[i].planeParams.height[0] = inSrcSize.height;
+      scratch_surf.surfaceList[i].planeParams.pitch[0] = scratch_surf.surfaceList[i].pitch;
+      scratch_surf.surfaceList[i].planeParams.psize[0] = inSrcSize.height * scratch_surf.surfaceList[i].pitch;
+      scratch_surf.surfaceList[i].planeParams.bytesPerPix[0] = bytesPerPixel;
 
-      in_surf.surfaceList[i].dataSize = in_surf.surfaceList[i].planeParams.psize[0];
-      in_surf.surfaceList[i].dataPtr = (guint*)dewarpParams->surface;
-      in_surf.surfaceList[i].layout = NVBUF_LAYOUT_PITCH;
+      scratch_surf.surfaceList[i].dataSize = scratch_surf.surfaceList[i].planeParams.psize[0];
+      scratch_surf.surfaceList[i].dataPtr = (guint*)dewarpParams->surface;
+      scratch_surf.surfaceList[i].layout = NVBUF_LAYOUT_PITCH;
       i++;
     }
 
@@ -980,7 +980,7 @@ static cudaError gst_videoprep_generate_output(
         in_surface,
         /*input_surface_index=*/j,
         extra_width_src_rect,
-        &in_surf,
+        &scratch_surf,
         /*output_surface_index=*/j,
         dst_box,
         angle,
@@ -994,9 +994,9 @@ static cudaError gst_videoprep_generate_output(
     assert(isClose(tbox_ar, new_tbox_ar, 1e-6f, 0.001));
     assert(isClose(new_tbox_ar, output_ar, 1e-6f, 0.001));
 
-    // BBox dest_rect(0, 0, in_surf.surfaceList[j].width, in_surf.surfaceList[j].height);
+    // BBox dest_rect(0, 0, scratch_surf.surfaceList[j].width, scratch_surf.surfaceList[j].height);
     NppStatus np_status = cropAndResizeNvBufSurface(
-        /*srcSurface=*/&in_surf,
+        /*srcSurface=*/&scratch_surf,
         /*src_rect=*/new_tbox,
         out_surface,
         /*surface_index=*/j,
@@ -1004,32 +1004,32 @@ static cudaError gst_videoprep_generate_output(
         nppStreamContext);
     // assert(np_status == NppStatus::)
     nvtx_helper_push_pop(NULL);
-    in_surf.numFilled = i;
-    in_surf.batchSize = i;
+    scratch_surf.numFilled = i;
+    scratch_surf.batchSize = i;
 
-    // BBox dest_rect(0, 0, in_surf.surfaceList[j].width, in_surf.surfaceList[j].height);
+    // BBox dest_rect(0, 0, scratch_surf.surfaceList[j].width, scratch_surf.surfaceList[j].height);
     // NppStatus np_status = cropAndResizeNvBufSurface(
     //     /*srcSurface=*/in_surface,
     //     /*src_rect=*/tracking_boxes.at(j),
     //     /*src_rect=*/ // new_tbox,
     //     /*src_rect=*/ // all_src_rect,
-    //     &in_surf,
+    //     &scratch_surf,
     //     // out_surface,
     //     /*surface_index=*/j,
     //     /*dest_rect=*/dest_rect,
     //     nppStreamContext);
     // // assert(np_status == NppStatus::)
     // nvtx_helper_push_pop(NULL);
-    // in_surf.numFilled = i;
-    // in_surf.batchSize = i;
+    // scratch_surf.numFilled = i;
+    // scratch_surf.batchSize = i;
 
     // const float max_angle = 30.0;
     // const float half_width = float(videoprep->input_width) / 2;
-    // assert(in_surf.numFilled == 1); // we went into loop with this
-    // for (size_t j = 0; j < in_surf.numFilled; ++j) {
+    // assert(scratch_surf.numFilled == 1); // we went into loop with this
+    // for (size_t j = 0; j < scratch_surf.numFilled; ++j) {
     //   // BBox dst_box(0, 0, videoprep->output_width, videoprep->output_height);
     //   // rotateNvBufSurfaceWithNPP(
-    //   //     &in_surf,
+    //   //     &scratch_surf,
     //   //     /*input_surface_index=*/j,
     //   //     BBox(0, 0, srcRect[j].left + srcRect[j].width, srcRect[j].top + srcRect[j].height),
     //   //     // src_box,
