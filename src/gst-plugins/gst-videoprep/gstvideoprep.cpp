@@ -927,7 +927,7 @@ static cudaError gst_videoprep_generate_output(
     }
 
     static float angle = 0.0;
-    (void) angle;
+    (void)angle;
 
 #if 1
     const float max_angle = 30.0;
@@ -979,7 +979,7 @@ static cudaError gst_videoprep_generate_output(
     assert(dst_box.top == 0.0);
     NppStatus np_status;
 #if 1
-    // std::cerr << "extra_width_src_rect.left=" << extra_width_src_rect.left << std::endl;
+    std::cerr << "extra_width_src_rect.left=" << extra_width_src_rect.left << std::endl;
     rotateNvBufSurfaceWithNPP(
         in_surface,
         /*input_surface_index=*/j,
@@ -990,7 +990,7 @@ static cudaError gst_videoprep_generate_output(
         angle,
         /*anchor_point=*/ // Point{0, 0},
         /*anchor_point=*/ // input_rect.center(),
-        /*anchor_point=*/ tbox.center(),
+        /*anchor_point=*/tbox.center(),
         /*anchor_point=*/ // extra_width_src_rect.center(),
         nppStreamContext);
 #else
@@ -1011,9 +1011,9 @@ static cudaError gst_videoprep_generate_output(
 
     // BBox dest_rect(0, 0, scratch_surf.surfaceList[j].width, scratch_surf.surfaceList[j].height);
     np_status = cropAndResizeNvBufSurface(
-        /*srcSurface=*/&scratch_surf,
-        /*src_rect=*/ new_tbox,
-        /*src_rect=*/ // dst_box,
+        /*srcSurface=*/ &scratch_surf,
+        /*src_rect=*/ // new_tbox,
+        /*src_rect=*/ dst_box,
         out_surface,
         /*surface_index=*/j,
         /*dest_rect=*/output_rect,
@@ -1063,6 +1063,9 @@ static cudaError gst_videoprep_generate_output(
 
     //   assert(tx_err == NvBufSurfTransformError_Success);
     // }
+    if (videoprep->stream) {
+      cudaStreamSynchronize(videoprep->stream);
+    }
   }
 
   if (videoprep->stream) {

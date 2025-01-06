@@ -609,6 +609,8 @@ NppStatus rotateNvBufSurfaceWithNPP(
   //     NPPI_INTER_LINEAR, // Interpolation method
   //     nppStreamContext);
 
+  // srcROI = dstROI;
+
   status = nppiWarpAffine_8u_C4R_Ctx(
       static_cast<const Npp8u*>(inParams->dataPtr), // Source pointer
       {static_cast<int>(inParams->width), static_cast<int>(inParams->height)}, // Source size
