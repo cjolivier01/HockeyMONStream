@@ -811,9 +811,6 @@ static cudaError gst_videoprep_generate_output(
         /*dest_rect=*/output_rect,
         nppStreamContext);
     assert(np_status == NppStatus::NPP_SUCCESS);
-    if (videoprep->stream) {
-      cudaStreamSynchronize(videoprep->stream);
-    }
   }
 
   if (videoprep->stream) {
