@@ -47,53 +47,6 @@ G_BEGIN_DECLS
 #define GST_IS_VIDEOPREP_CLASS(klass) \
   (G_TYPE_CHECK_CLASS_TYPE((klass),GST_TYPE_VIDEOPREP))
 
-//typedef struct _GstVideoPrep      GstVideoPrep;
-//typedef struct _GstVideoPrepClass GstVideoPrepClass;
-/** @} */
-
-/**
- * Holds all the configuration parameters required for dewarping a surface.
- * All these configurations can be set by the user under the "surface"
- * category in config file
- */
-// struct VideoPrepParams
-// {
-//   guint projection_type;                        /**< Projection type of type NvDsSurfaceType */
-
-//   gfloat top_angle;                             /**< The top view angle, in degrees */
-//   gfloat bottom_angle;                          /**< The bottom view angle, in degrees */
-//   gfloat pitch;                                 /**< The pitch angle, in degrees */
-//   gfloat roll;                                  /**< The roll angle, in degrees */
-//   gfloat yaw;                                   /**< The yaw angle, in degrees */
-//   gfloat dewarpFocalLength[FOCAL_LENGTH_SIZE];  /**< The X & Y focal length of the source, in pixels */
-//   char rot_axes[4];                             /**< A sequence of 3 rotation axes:  upper case 'X', 'Y', and 'Z'. */
-//                                                 /**< 4th character is set to '\0'. */
-//                                                 /**< X rotation rotates the view upward, Y rightward, and Z clockwise.  */
-//                                                 /**< The default is "YXZ", a.k.a. yaw, pitch, roll */
-//   gfloat control;                               /**< Projection-specific controls for Panini, Stereographic and Pushbroom projections */
-
-//   guint dewarpWidth;                            /**< Dewarped Surface width */
-//   guint dewarpHeight;                           /**< Dewarped Surface height */
-//   guint dewarpPitch;                            /**< Dewarped Surface pitch */
-
-//   guint addressMode;                            /**< Cuda Texture Address Mode */
-//   guchar *surface;                              /**< Pointer to Cuda Surface used for Projection */
-//   guint isValid;                                /**< Boolean indicating if the surface parameters structure is valid */
-
-
-//   guint id;                                     /**< Surface id. This is to distinguish between views of same type */
-//   guint surface_index;                          /**< Surface index */
-
-//   gdouble distortion[DISTORTION_SIZE];          /**< Distortion polynomial coefficients */
-//   gfloat src_x0;                                /**< source principal point in X direction */
-//   gfloat src_y0;                                /**< source principal point in Y direction */
-//   gfloat srcFov;                                /**< Source field of view */
-//   gfloat rot_matrix[ROTATION_MATRIX_SIZE];      /**< Rotation matrix */
-//   guint rot_matrix_valid;                       /**< Boolean indicating if the values in "rot_matrix" are valid */
-
-//   gfloat dstFocalLength[FOCAL_LENGTH_SIZE];     /**< destination surface focal length */
-//   gfloat dstPrincipalPoint[2];                  /**< destination surface principal point */
-// };
 
 /** Data structure contaning dewarping parameters for all the output surfaces */
 struct VideoPrepPriv
@@ -124,8 +77,6 @@ struct GstVideoPrep
   guint gpu_id;             /**< ID of the GPU this element uses for dewarping/scaling. */
 
   gchar* config_file;             /**< String contaning path and name of configuration file */
-  // gchar* spot_calibration_file;   /**< String contaning path and name of spot calibration file */
-  // gchar* aisle_calibration_file;  /**< String contaning path and name of aisle calibration file */
 
   GstBufferPool *pool;            /**< Internal buffer pool for output buffers  */
 
@@ -146,26 +97,12 @@ struct GstVideoPrep
   guint frame_num;                                /**< Number of the frame in the stream that was last processed. */
 
   guint dump_frames;  /**< Number of dewarped output frames to be dumped in a *.rgba file. Useful for debugging */
-  void *aisle_output; /**< Placeholder for aisle output host memory pointer. Currently unused. */
-  void *spot_output;  /**< Placeholder for spot output host memory pointer. Currently unused. */
   void *output;       /**< Host memory  pointer for output buffer. Used for frame dumps. */
 
   gboolean silent;                    /**< Boolean indicating swtiching on/off of verbose output */
-  gboolean spot_calibrationfile_set;  /**< Boolean indicating whether the spot calibration file is specified */
-  gboolean aisle_calibrationfile_set; /**< Boolean indicating whether the aisle calibration file is specified */
-  AisleCSVParser *aisleCSVParser;     /**< CSV parsed structure for aisle calibration */
-  SpotCSVParser *spotCSVParser;       /**< CSV parsed structure for spot calibration */
 
   guint source_id;                            /**< Source ID of the input source */
   guint num_output_buffers;                   /**< Number of Output Buffers to be allocated by buffer pool */
-  //guint aisleCSVInit;                         /**< Boolean indicating whether the aisle surface is initialized from CSV data */
-  //guint spotCSVInit;                          /**< Boolean indicating whether the spot surface is initialized from CSV data */
-  //guint num_spot_views;                       /**< Number of spot views */
-  //guint num_aisle_views;                      /**< Number of aisle views */
-  //guint spot_surf_index[MAX_DEWARPED_VIEWS];  /**< Array containing surface indices of spot surfaces */
-  //guint aisle_surf_index[MAX_DEWARPED_VIEWS]; /**< Array containing surface indices of aisle surfaces */
-  // guint surface_index[MAX_DEWARPED_VIEWS];    /**< Array of all surface indices */
-  // guint surface_type[MAX_DEWARPED_VIEWS];     /**< Array of type of projection for each surface. Values from enum NvDsSurfaceType */
 
   GstBuffer * out_gst_buf;                    /**< Pointer to the output buffer */
 
