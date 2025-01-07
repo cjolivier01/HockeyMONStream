@@ -56,44 +56,44 @@ G_BEGIN_DECLS
  * All these configurations can be set by the user under the "surface"
  * category in config file
  */
-struct VideoPrepParams
-{
-  guint projection_type;                        /**< Projection type of type NvDsSurfaceType */
+// struct VideoPrepParams
+// {
+//   guint projection_type;                        /**< Projection type of type NvDsSurfaceType */
 
-  gfloat top_angle;                             /**< The top view angle, in degrees */
-  gfloat bottom_angle;                          /**< The bottom view angle, in degrees */
-  gfloat pitch;                                 /**< The pitch angle, in degrees */
-  gfloat roll;                                  /**< The roll angle, in degrees */
-  gfloat yaw;                                   /**< The yaw angle, in degrees */
-  gfloat dewarpFocalLength[FOCAL_LENGTH_SIZE];  /**< The X & Y focal length of the source, in pixels */
-  char rot_axes[4];                             /**< A sequence of 3 rotation axes:  upper case 'X', 'Y', and 'Z'. */
-                                                /**< 4th character is set to '\0'. */
-                                                /**< X rotation rotates the view upward, Y rightward, and Z clockwise.  */
-                                                /**< The default is "YXZ", a.k.a. yaw, pitch, roll */
-  gfloat control;                               /**< Projection-specific controls for Panini, Stereographic and Pushbroom projections */
+//   gfloat top_angle;                             /**< The top view angle, in degrees */
+//   gfloat bottom_angle;                          /**< The bottom view angle, in degrees */
+//   gfloat pitch;                                 /**< The pitch angle, in degrees */
+//   gfloat roll;                                  /**< The roll angle, in degrees */
+//   gfloat yaw;                                   /**< The yaw angle, in degrees */
+//   gfloat dewarpFocalLength[FOCAL_LENGTH_SIZE];  /**< The X & Y focal length of the source, in pixels */
+//   char rot_axes[4];                             /**< A sequence of 3 rotation axes:  upper case 'X', 'Y', and 'Z'. */
+//                                                 /**< 4th character is set to '\0'. */
+//                                                 /**< X rotation rotates the view upward, Y rightward, and Z clockwise.  */
+//                                                 /**< The default is "YXZ", a.k.a. yaw, pitch, roll */
+//   gfloat control;                               /**< Projection-specific controls for Panini, Stereographic and Pushbroom projections */
 
-  guint dewarpWidth;                            /**< Dewarped Surface width */
-  guint dewarpHeight;                           /**< Dewarped Surface height */
-  guint dewarpPitch;                            /**< Dewarped Surface pitch */
+//   guint dewarpWidth;                            /**< Dewarped Surface width */
+//   guint dewarpHeight;                           /**< Dewarped Surface height */
+//   guint dewarpPitch;                            /**< Dewarped Surface pitch */
 
-  guint addressMode;                            /**< Cuda Texture Address Mode */
-  guchar *surface;                              /**< Pointer to Cuda Surface used for Projection */
-  guint isValid;                                /**< Boolean indicating if the surface parameters structure is valid */
+//   guint addressMode;                            /**< Cuda Texture Address Mode */
+//   guchar *surface;                              /**< Pointer to Cuda Surface used for Projection */
+//   guint isValid;                                /**< Boolean indicating if the surface parameters structure is valid */
 
 
-  guint id;                                     /**< Surface id. This is to distinguish between views of same type */
-  guint surface_index;                          /**< Surface index */
+//   guint id;                                     /**< Surface id. This is to distinguish between views of same type */
+//   guint surface_index;                          /**< Surface index */
 
-  gdouble distortion[DISTORTION_SIZE];          /**< Distortion polynomial coefficients */
-  gfloat src_x0;                                /**< source principal point in X direction */
-  gfloat src_y0;                                /**< source principal point in Y direction */
-  gfloat srcFov;                                /**< Source field of view */
-  gfloat rot_matrix[ROTATION_MATRIX_SIZE];      /**< Rotation matrix */
-  guint rot_matrix_valid;                       /**< Boolean indicating if the values in "rot_matrix" are valid */
+//   gdouble distortion[DISTORTION_SIZE];          /**< Distortion polynomial coefficients */
+//   gfloat src_x0;                                /**< source principal point in X direction */
+//   gfloat src_y0;                                /**< source principal point in Y direction */
+//   gfloat srcFov;                                /**< Source field of view */
+//   gfloat rot_matrix[ROTATION_MATRIX_SIZE];      /**< Rotation matrix */
+//   guint rot_matrix_valid;                       /**< Boolean indicating if the values in "rot_matrix" are valid */
 
-  gfloat dstFocalLength[FOCAL_LENGTH_SIZE];     /**< destination surface focal length */
-  gfloat dstPrincipalPoint[2];                  /**< destination surface principal point */
-};
+//   gfloat dstFocalLength[FOCAL_LENGTH_SIZE];     /**< destination surface focal length */
+//   gfloat dstPrincipalPoint[2];                  /**< destination surface principal point */
+// };
 
 /** Data structure contaning dewarping parameters for all the output surfaces */
 struct VideoPrepPriv
@@ -124,8 +124,8 @@ struct GstVideoPrep
   guint gpu_id;             /**< ID of the GPU this element uses for dewarping/scaling. */
 
   gchar* config_file;             /**< String contaning path and name of configuration file */
-  gchar* spot_calibration_file;   /**< String contaning path and name of spot calibration file */
-  gchar* aisle_calibration_file;  /**< String contaning path and name of aisle calibration file */
+  // gchar* spot_calibration_file;   /**< String contaning path and name of spot calibration file */
+  // gchar* aisle_calibration_file;  /**< String contaning path and name of aisle calibration file */
 
   GstBufferPool *pool;            /**< Internal buffer pool for output buffers  */
 

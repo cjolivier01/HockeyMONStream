@@ -33,8 +33,6 @@
 #define DEFAULT_DEWARP_OUTPUT_WIDTH 960
 #define DEFAULT_DEWARP_OUTPUT_HEIGHT 752
 
-#define NR_SCRATCH_BUFFERS 2
-
 #define USE_CUDA_STREAM
 
 #define GST_CAPS_FEATURE_MEMORY_NVMM "memory:NVMM"
@@ -735,8 +733,6 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
   videoprep->input_height = GST_VIDEO_INFO_HEIGHT(&in_info);
   videoprep->input_fmt = GST_VIDEO_FORMAT_INFO_FORMAT(in_info.finfo);
 
-  videoprep->num_batch_buffers = NR_SCRATCH_BUFFERS;
-
   if (!gst_video_info_from_caps(&out_info, outcaps)) {
     GST_ERROR("invalid output caps");
     return FALSE;
@@ -947,8 +943,12 @@ static cudaError gst_videoprep_generate_output(
   // assert(in_su)
 
   // TODO: what do we do about this mismatch???
+  assert(tracking_boxes.size() == in_surface->numFilled);
   const size_t nr_surfaces_to_process = std::min(tracking_boxes.size(), (size_t)out_surface->batchSize);
-  assert((size_t)in_surface->numFilled >= nr_surfaces_to_process);
+  assert(nr_surfaces_to_process <= videoprep->num_batch_buffers);
+  //assert(nr_surfaces_to_process == in_surface->batchSize);
+  //assert(nr_surfaces_to_process == out_surface->batchSize);
+  //assert((size_t)in_surface->numFilled >= nr_surfaces_to_process);
   for (size_t batch_nr = 0; batch_nr < nr_surfaces_to_process; ++batch_nr) {
     static float angle = 0.0;
     (void)angle;
@@ -1270,25 +1270,26 @@ static gboolean gst_videoprep_start(GstBaseTransform* btrans) {
 
   videoprep->frame_num = 0;
 
-  if (videoprep->spot_calibration_file) {
-    std::ifstream spot_infile(videoprep->spot_calibration_file);
-    if (!spot_infile.good()) {
-      g_print(
-          "%s: Spot Calibration File (%s) not found\n", GST_ELEMENT_NAME(videoprep), videoprep->spot_calibration_file);
-      return FALSE;
-    }
-  }
+  // if (videoprep->spot_calibration_file) {
+  //   std::ifstream spot_infile(videoprep->spot_calibration_file);
+  //   if (!spot_infile.good()) {
+  //     g_print(
+  //         "%s: Spot Calibration File (%s) not found\n", GST_ELEMENT_NAME(videoprep),
+  //         videoprep->spot_calibration_file);
+  //     return FALSE;
+  //   }
+  // }
 
-  if (videoprep->aisle_calibration_file) {
-    std::ifstream aisle_infile(videoprep->aisle_calibration_file);
-    if (!aisle_infile.good()) {
-      g_print(
-          "%s: Aisle Calibration File (%s) not found\n",
-          GST_ELEMENT_NAME(videoprep),
-          videoprep->aisle_calibration_file);
-      return FALSE;
-    }
-  }
+  // if (videoprep->aisle_calibration_file) {
+  //   std::ifstream aisle_infile(videoprep->aisle_calibration_file);
+  //   if (!aisle_infile.good()) {
+  //     g_print(
+  //         "%s: Aisle Calibration File (%s) not found\n",
+  //         GST_ELEMENT_NAME(videoprep),
+  //         videoprep->aisle_calibration_file);
+  //     return FALSE;
+  //   }
+  // }
 
   GST_LOG_OBJECT(videoprep, "SETTING CUDA DEVICE = %d in videoprep func=%s\n", videoprep->gpu_id, __func__);
   CUerr = cudaSetDevice(videoprep->gpu_id);
@@ -1482,7 +1483,7 @@ static void gst_videoprep_init(GstVideoPrep* videoprep) {
 
 static void gst_videoprep_finalize(GObject* object) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(object);
-  std::vector<VideoPrepParams>::iterator it;
+  // std::vector<VideoPrepParams>::iterator it;
   if (videoprep->priv) {
     // for (it = videoprep->priv->vecDewarpSurface.begin(); it != videoprep->priv->vecDewarpSurface.end(); it++) {
     //   if (it->surface) {

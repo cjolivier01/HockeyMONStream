@@ -115,6 +115,7 @@ get_absolute_file_path (const gchar * cfg_file_path, gchar * file_path)
   return abs_file_path;
 }
 
+#if 0
 static gboolean
 videoprep_parse_surface_attributes (GstVideoPrep * videoprep,
     GKeyFile * key_file, gchar * group, gchar * cfg_file_path, gint index)
@@ -319,7 +320,7 @@ done:
   }
   return ret;
 }
-
+#endif
 gboolean
 videoprep_parse_props (GstVideoPrep * videoprep, GKeyFile * key_file,
     const gchar * group, const gchar * cfg_file_path)
@@ -355,21 +356,21 @@ videoprep_parse_props (GstVideoPrep * videoprep, GKeyFile * key_file,
           g_key_file_get_integer (key_file, group,
               CONFIG_GROUP_VIDEOPREP_PROPERTY_DUMP_FRAMES, &error);
       CHECK_ERROR (error);
-    } else if (!g_strcmp0 (*key,
-        CONFIG_GROUP_VIDEOPREP_PROPERTY_AISLE_CALIB_FILE)) {
-      videoprep->aisle_calibration_file =
-          get_absolute_file_path (cfg_file_path,
-              g_key_file_get_string (key_file, group,
-              CONFIG_GROUP_VIDEOPREP_PROPERTY_AISLE_CALIB_FILE, &error));
-      videoprep->aisle_calibrationfile_set = TRUE;
-      CHECK_ERROR (error);
-    } else if (!g_strcmp0 (*key,
-        CONFIG_GROUP_VIDEOPREP_PROPERTY_SPOT_CALIB_FILE)) {
-      videoprep->spot_calibration_file = get_absolute_file_path (cfg_file_path,
-          g_key_file_get_string (key_file, group,
-              CONFIG_GROUP_VIDEOPREP_PROPERTY_SPOT_CALIB_FILE, &error));
-      videoprep->spot_calibrationfile_set = TRUE;
-      CHECK_ERROR (error);
+    // } else if (!g_strcmp0 (*key,
+    //     CONFIG_GROUP_VIDEOPREP_PROPERTY_AISLE_CALIB_FILE)) {
+    //   videoprep->aisle_calibration_file =
+    //       get_absolute_file_path (cfg_file_path,
+    //           g_key_file_get_string (key_file, group,
+    //           CONFIG_GROUP_VIDEOPREP_PROPERTY_AISLE_CALIB_FILE, &error));
+    //   videoprep->aisle_calibrationfile_set = TRUE;
+    //   CHECK_ERROR (error);
+    // } else if (!g_strcmp0 (*key,
+    //     CONFIG_GROUP_VIDEOPREP_PROPERTY_SPOT_CALIB_FILE)) {
+    //   videoprep->spot_calibration_file = get_absolute_file_path (cfg_file_path,
+    //       g_key_file_get_string (key_file, group,
+    //           CONFIG_GROUP_VIDEOPREP_PROPERTY_SPOT_CALIB_FILE, &error));
+    //   videoprep->spot_calibrationfile_set = TRUE;
+    //   CHECK_ERROR (error);
     } else if (!g_strcmp0 (*key,
         CONFIG_GROUP_VIDEOPREP_PROPERTY_NUM_BATCH_BUFFERS)) {
       videoprep->num_batch_buffers = g_key_file_get_integer (key_file, group,
@@ -450,8 +451,8 @@ videoprep_parse_config_file (GstVideoPrep * videoprep, gchar * cfg_file_path)
           PARSE_ERROR ("Invalid group [%s]. class-id should be >= 0", *group);
         }
 
-        parse_err = !videoprep_parse_surface_attributes (videoprep, cfg_file,
-            *group, cfg_file_path, surface_index);
+        // parse_err = !videoprep_parse_surface_attributes (videoprep, cfg_file,
+        //     *group, cfg_file_path, surface_index);
       } else {
         GST_CAT_WARNING (VIDEOPREP_CFG_PARSER_CAT, "Unknown group '%s'", *group);
       }

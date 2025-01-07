@@ -16,7 +16,7 @@
 # output-height=2428
 output-width=5646
 output-height=3176
-num-batch-buffers=1
+num-batch-buffers=4
 
 #########################################
 # Note - Max 4 surfaces are supported
