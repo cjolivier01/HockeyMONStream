@@ -556,17 +556,19 @@ static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
 #else
   size_t pitch = (size_t)videoprep->pre_rotate_size.width * kBytesPerPixel;
 #endif
-  void* surface_ptr = nullptr;
-  cuda_ck(cudaMalloc(&surface_ptr, pitch * (size_t)videoprep->pre_rotate_size.height));
+  constexpr size_t kNumScratchBuffers = 2;
+  for (size_t i = 0; i < kNumScratchBuffers; ++i) {
+    void* surface_ptr = nullptr;
+    cuda_ck(cudaMalloc(&surface_ptr, pitch * (size_t)videoprep->pre_rotate_size.height));
 
-  videoprep->priv->scratch_buffers.add_surface(
-      surface_ptr,
-      videoprep->pre_rotate_size.width,
-      videoprep->pre_rotate_size.height,
-      pitch,
-      kBytesPerPixel,
-      /*owns=*/true);
-
+    videoprep->priv->scratch_buffers.add_surface(
+        surface_ptr,
+        videoprep->pre_rotate_size.width,
+        videoprep->pre_rotate_size.height,
+        pitch,
+        kBytesPerPixel,
+        /*owns=*/true);
+  }
   return 0;
 }
 
