@@ -42,6 +42,7 @@ NppStatus cropSurface(
     const hm::surface::Surface& in_surface,
     const hm::BBox& src_rect,
     hm::surface::Surface out_surface,
+    bool clear_output_surface,
     const NppStreamContext& nppStreamContext);
 
 NppStatus rotateNvBufSurfaceWithNPP(

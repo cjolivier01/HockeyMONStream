@@ -66,15 +66,29 @@ NppStatus cropSurface(
     const hm::surface::Surface& in_surface,
     const hm::BBox& src_rect,
     hm::surface::Surface out_surface,
+    bool clear_output_surface,
     const NppStreamContext& nppStreamContext) {
   NppStatus status = NppStatus::NPP_SUCCESS;
 
   cudaError_t cuerr = cudaSuccess;
   (void)cuerr;
   // pitch must match width alignment for the destination surface
-  // assert(out_surface.)
-  // cuerr = cudaCrop( uchar4* input, uchar4* output, const int4& roi, size_t inputWidth, size_t inputHeight,
-  // cudaStream_t stream=0 );
+  assert(out_surface.pitch() == out_surface.width() * 4);
+  if (clear_output_surface) {
+    cuerr =
+        cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
+  }
+  if (cuerr == cudaSuccess) {
+    int eff_src_width = out_surface.pitch() / 4;
+    cuerr = cudaCrop(
+        in_surface.dataptr<uchar4*>(),
+        out_surface.dataptr<uchar4*>(),
+        {.x = (int)src_rect.left, .y = (int)src_rect.top, .z = (int)src_rect.width(), .w = (int)src_rect.height()},
+        //{.x = (int)src_rect.left, .y = (int)src_rect.top, .z = (int)src_rect.right, .w = (int)src_rect.bottom},
+        eff_src_width,
+        in_surface.height(),
+        nppStreamContext.hStream);
+  }
   if (cuerr != 0) {
     std::cerr << "Cuda error during crop" << std::endl;
     assert(false);
@@ -129,7 +143,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
   NppStatus status = NppStatus::NPP_SUCCESS;
 
   // Define rotation matrix
-  double affineMatrix[2][3] = {{1, 0, 0}, {0, 1, 0}};
+  double affineMatrix[2][3];
   createAffineMatrix(
       angleRadians,
       static_cast<int>(src_rect2.width()),

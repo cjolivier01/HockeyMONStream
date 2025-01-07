@@ -511,10 +511,6 @@ static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
     return cudaErr;
   }
 
-  // for (iter = videoprep->priv->vecDewarpSurface.begin(); iter != videoprep->priv->vecDewarpSurface.end(); iter++) {
-  // VideoPrepParams& vp_params = *iter;
-
-  // size_t surface_index = 0;
 #if 1
   static bool ranthis = false;
   (void)ranthis;
@@ -529,7 +525,6 @@ static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
 
 #endif
   constexpr size_t kBytesPerPixel = 4;
-  // it->dewarpPitch = 4 * (((it->dewarpWidth) + 31) / 32) * 32;
 #ifdef SCRATCH_USE_ALIGNED_PITCH
   size_t pitch = NVBUF_PLATFORM_ALIGNED_PITCH(vp_params.dewarpWidth * kBytesPerPixel);
 #else
@@ -729,10 +724,11 @@ static cudaError gst_videoprep_generate_output(
   const size_t nr_surfaces_to_process = std::min(tracking_boxes.size(), (size_t)out_surface->batchSize);
   assert(nr_surfaces_to_process <= videoprep->num_batch_buffers);
   for (size_t batch_nr = 0; batch_nr < nr_surfaces_to_process; ++batch_nr) {
-    static float angle = 0.0;
-    (void)angle;
+    // static float angle = 0.0;
+    // (void)angle;
 
 #if 1
+    float angle = 0.0;
     const float max_angle = 30.0;
     const float half_width = float(videoprep->input_width) / 2;
     const float tcx = tracking_boxes.at(batch_nr).center().x;
@@ -771,43 +767,44 @@ static cudaError gst_videoprep_generate_output(
     BBox new_tbox(new_center, tbox.size());
     assert(new_tbox.left >= 0 && new_tbox.top >= 0);
 
-    angle = 0.0;
+    // angle = 0.0;
 
     assert(dst_box.left == 0.0);
     assert(dst_box.top == 0.0);
+
     NppStatus np_status;
     hm::surface::Surface scratch_surface_0 = videoprep->priv->scratch_buffers[0];
-#if 1
-    rotateNvBufSurfaceWithNPP(
-        &in_surface->surfaceList[batch_nr],
-        extra_width_src_rect,
-        scratch_surface_0,
-        dst_box,
-        angle,
-        /*anchor_point=*/ // Point{0, 0},
-        /*anchor_point=*/ // input_rect.center(),
-        /*anchor_point=*/tbox.center(),
-        /*anchor_point=*/ // extra_width_src_rect.center(),
-        nppStreamContext);
-#else
+    hm::surface::Surface scratch_surface_1 = videoprep->priv->scratch_buffers[0];
+
     np_status = cropAndResizeNvBufSurface(
-        /*srcSurface=*/in_surface,
+        &in_surface->surfaceList[batch_nr],
         /*src_rect=*/extra_width_src_rect,
-        &scratch_surf,
-        /*surface_index=*/j,
+        scratch_surface_0,
         /*dest_rect=*/dst_box,
         nppStreamContext);
     assert(np_status == NppStatus::NPP_SUCCESS);
-#endif
+
     FloatValue tbox_ar = tbox.width() / tbox.height();
     FloatValue new_tbox_ar = new_tbox.width() / new_tbox.height();
     FloatValue output_ar = output_rect.width() / output_rect.height();
     assert(isClose(tbox_ar, new_tbox_ar, 1e-6f, 0.001));
     assert(isClose(new_tbox_ar, output_ar, 1e-6f, 0.001));
 
+    np_status = rotateNvBufSurfaceWithNPP(
+        &in_surface->surfaceList[batch_nr],
+        dst_box,
+        scratch_surface_1,
+        dst_box,
+        angle,
+        /*anchor_point=*/ // Point{0, 0},
+        /*anchor_point=*/dst_box.center() /* WRONG*/,
+        /*anchor_point=*/ // tbox.center(),
+        /*anchor_point=*/ // extra_width_src_rect.center(),
+        nppStreamContext);
+
     // BBox dest_rect(0, 0, scratch_surf.surfaceList[j].width, scratch_surf.surfaceList[j].height);
     np_status = cropAndResizeNvBufSurface(
-        /*srcSurface=*/scratch_surface_0,
+        /*srcSurface=*/scratch_surface_1,
         /*src_rect=*/ // new_tbox,
         /*src_rect=*/dst_box,
         &out_surface->surfaceList[batch_nr],
