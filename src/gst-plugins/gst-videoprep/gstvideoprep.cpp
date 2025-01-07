@@ -525,7 +525,7 @@ static GstCaps* gst_videoprep_transform_caps(
 
 static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
   // std::vector<VideoPrepParams>::iterator iter;
-  guint i = 0;
+  // guint i = 0;
   cudaError_t cudaErr;
 
   cudaErr = cudaSetDevice(videoprep->gpu_id);
@@ -537,7 +537,7 @@ static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
   // for (iter = videoprep->priv->vecDewarpSurface.begin(); iter != videoprep->priv->vecDewarpSurface.end(); iter++) {
   // VideoPrepParams& vp_params = *iter;
 
-  size_t surface_index = 0;
+  // size_t surface_index = 0;
 #if 1
   static bool ranthis = false;
   (void)ranthis;
@@ -589,7 +589,7 @@ static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
   //         vp_params.dewarpHeight);
   //     fflush(stderr);
   // #endif
-  videoprep->surface_index[i] = surface_index;
+  // videoprep->surface_index[i] = surface_index;
   // videoprep->surface_type[i++] = vp_params.projection_type;
   // if (vp_params.projection_type == NVDS_META_SURFACE_FISH_PUSHBROOM) {
   //   videoprep->spot_surf_index[videoprep->num_spot_views] = videoprep->num_spot_views;
@@ -903,7 +903,10 @@ static cudaError gst_videoprep_generate_output(
     g_free(surface_meta);
     return cudaErrorInvalidSurface;
   }
-
+  // std::cerr << "out_surface->numFilled = " << out_surface->numFilled << std::endl;
+  //  if (out_surface->numFilled) {
+  //    std::cerr << "out_surface->numFilled" << std::endl;
+  //  }
   out_surface->numFilled = 0;
   // size_t j = 0;
   // for (it = videoprep->priv->vecDewarpSurface.begin(); it != videoprep->priv->vecDewarpSurface.end(); it++, ++j) {

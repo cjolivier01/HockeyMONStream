@@ -164,7 +164,7 @@ struct GstVideoPrep
   //guint num_aisle_views;                      /**< Number of aisle views */
   //guint spot_surf_index[MAX_DEWARPED_VIEWS];  /**< Array containing surface indices of spot surfaces */
   //guint aisle_surf_index[MAX_DEWARPED_VIEWS]; /**< Array containing surface indices of aisle surfaces */
-  guint surface_index[MAX_DEWARPED_VIEWS];    /**< Array of all surface indices */
+  // guint surface_index[MAX_DEWARPED_VIEWS];    /**< Array of all surface indices */
   // guint surface_type[MAX_DEWARPED_VIEWS];     /**< Array of type of projection for each surface. Values from enum NvDsSurfaceType */
 
   GstBuffer * out_gst_buf;                    /**< Pointer to the output buffer */
