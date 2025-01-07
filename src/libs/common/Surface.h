@@ -16,8 +16,13 @@ class Surface {
  public:
   Surface(NvBufSurfaceParams* params) : params_(params) {}
 
-  constexpr void* dataptr() {
-    return params_->dataPtr;
+  template <typename T = void*>
+  constexpr T dataptr() {
+    return static_cast<T>(params_->dataPtr);
+  }
+  template <typename T = void*>
+  constexpr const T dataptr() const {
+    return static_cast<const T>(params_->dataPtr);
   }
   constexpr guint width() const {
     return params_->width;
@@ -43,6 +48,7 @@ class SurfaceList {
  public:
   SurfaceList(int gpu_id, size_t batch_size);
   SurfaceList(const NvBufSurface* buf_surface);
+  ~SurfaceList();
 
   constexpr operator NvBufSurface*() {
     return &nv_surf_;
@@ -53,16 +59,25 @@ class SurfaceList {
   size_t size() const {
     return nv_surface_list_.size();
   };
+  void clear();
   Surface operator[](size_t idx) {
     return Surface(&nv_surface_list_.at(idx));
   }
-  void add_surface(void* data, size_t width, size_t height, size_t pitch, size_t bytes_per_pixes = 4);
+  void add_surface(
+      void* data,
+      size_t width,
+      size_t height,
+      size_t pitch,
+      size_t bytes_per_pixes = 4,
+      bool owns = false);
   void add_surface(const NvBufSurfaceParams* surface_params);
   void add_surface(const Surface& surface);
 
  private:
   NvBufSurface nv_surf_;
   std::vector<NvBufSurfaceParams> nv_surface_list_;
+  // Whether we own the surface
+  std::vector<bool> owns_;
 };
 
 } // namespace surface

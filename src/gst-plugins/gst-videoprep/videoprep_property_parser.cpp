@@ -307,7 +307,7 @@ videoprep_parse_surface_attributes (GstVideoPrep * videoprep,
 
   surfaceParams.isValid = 1;
   surfaceParams.id = index;
-  videoprep->priv->vecDewarpSurface.push_back(surfaceParams);
+  // videoprep->priv->vecDewarpSurface.push_back(surfaceParams);
 
   ret = TRUE;
 done:

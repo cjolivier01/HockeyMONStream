@@ -33,6 +33,8 @@
 #define DEFAULT_DEWARP_OUTPUT_WIDTH 960
 #define DEFAULT_DEWARP_OUTPUT_HEIGHT 752
 
+#define NR_SCRATCH_BUFFERS 2
+
 #define USE_CUDA_STREAM
 
 #define GST_CAPS_FEATURE_MEMORY_NVMM "memory:NVMM"
@@ -522,7 +524,7 @@ static GstCaps* gst_videoprep_transform_caps(
 }
 
 static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
-  std::vector<VideoPrepParams>::iterator iter;
+  // std::vector<VideoPrepParams>::iterator iter;
   guint i = 0;
   cudaError_t cudaErr;
 
@@ -532,180 +534,190 @@ static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
     return cudaErr;
   }
 
-  for (iter = videoprep->priv->vecDewarpSurface.begin(); iter != videoprep->priv->vecDewarpSurface.end(); iter++) {
-    VideoPrepParams& vp_params = *iter;
+  // for (iter = videoprep->priv->vecDewarpSurface.begin(); iter != videoprep->priv->vecDewarpSurface.end(); iter++) {
+  // VideoPrepParams& vp_params = *iter;
 
+  size_t surface_index = 0;
 #if 1
-    static bool ranthis = false;
-    (void)ranthis;
-    assert(!ranthis);
-    ranthis = true;
+  static bool ranthis = false;
+  (void)ranthis;
+  assert(!ranthis);
+  ranthis = true;
 
-    // hm::WHDims pre_rotate_dest{
-    //     .width = (FloatValue)vp_params.dewarpWidth, .height = (FloatValue)vp_params.dewarpHeight};
-    // hm::WHDims output_size{.width = (FloatValue)vp_params.dewarpWidth, .height = (FloatValue)vp_params.dewarpHeight};
+  // hm::WHDims pre_rotate_dest{
+  //     .width = (FloatValue)vp_params.dewarpWidth, .height = (FloatValue)vp_params.dewarpHeight};
+  // hm::WHDims output_size{.width = (FloatValue)vp_params.dewarpWidth, .height = (FloatValue)vp_params.dewarpHeight};
 
-    hm::WHDims src_size{.width = (FloatValue)videoprep->input_width, .height = (FloatValue)videoprep->input_height};
-    hm::WHDims output_size = {
-        .width = (FloatValue)videoprep->output_width, .height = (FloatValue)videoprep->output_height};
+  hm::WHDims src_size{.width = (FloatValue)videoprep->input_width, .height = (FloatValue)videoprep->input_height};
+  hm::WHDims output_size = {
+      .width = (FloatValue)videoprep->output_width, .height = (FloatValue)videoprep->output_height};
 
-    videoprep->pre_rotate_size = get_box_size_necessary_for_rotations(src_size, output_size);
+  videoprep->pre_rotate_size = get_box_size_necessary_for_rotations(src_size, output_size);
 
-    vp_params.dewarpWidth = videoprep->pre_rotate_size.width;
-    vp_params.dewarpHeight = videoprep->pre_rotate_size.height;
 #endif
-
-    // it->dewarpPitch = 4 * (((it->dewarpWidth) + 31) / 32) * 32;
+  constexpr size_t kBytesPerPixel = 4;
+  // it->dewarpPitch = 4 * (((it->dewarpWidth) + 31) / 32) * 32;
 #ifdef SCRATCH_USE_ALIGNED_PITCH
-    vp_params.dewarpPitch = NVBUF_PLATFORM_ALIGNED_PITCH(vp_params.dewarpWidth * 4);
+  size_t pitch = NVBUF_PLATFORM_ALIGNED_PITCH(vp_params.dewarpWidth * kBytesPerPixel);
 #else
-    vp_params.dewarpPitch = vp_params.dewarpWidth * 4;
+  size_t pitch = (size_t)videoprep->pre_rotate_size.width * kBytesPerPixel;
 #endif
+  void* surface_ptr = nullptr;
+  cuda_ck(cudaMalloc(&surface_ptr, pitch * (size_t)videoprep->pre_rotate_size.height));
 
-    cuda_ck(cudaMalloc(&vp_params.surface, vp_params.dewarpPitch * vp_params.dewarpHeight));
-    // cuda_ck (cudaMalloc (&it->surface, it->dewarpWidth * it->dewarpHeight * 4));
+  videoprep->priv->scratch_buffers.add_surface(
+      surface_ptr,
+      videoprep->pre_rotate_size.width,
+      videoprep->pre_rotate_size.height,
+      pitch,
+      kBytesPerPixel,
+      /*owns=*/true);
 
-    GST_INFO_OBJECT(
-        videoprep,
-        "Allocated Surface %p for W=%d H=%d",
-        vp_params.surface,
-        vp_params.dewarpWidth,
-        vp_params.dewarpHeight);
-#ifndef NDEBUG
-    fprintf(
-        stderr,
-        "Allocated Surface %p for W=%d H=%d\n",
-        vp_params.surface,
-        vp_params.dewarpWidth,
-        vp_params.dewarpHeight);
-    fflush(stderr);
-#endif
-    videoprep->surface_index[i] = vp_params.surface_index;
-    videoprep->surface_type[i++] = vp_params.projection_type;
-    if (vp_params.projection_type == NVDS_META_SURFACE_FISH_PUSHBROOM) {
-      videoprep->spot_surf_index[videoprep->num_spot_views] = videoprep->num_spot_views;
-      videoprep->num_spot_views++;
-    } else if (vp_params.projection_type == NVDS_META_SURFACE_FISH_VERTCYL) {
-      videoprep->aisle_surf_index[videoprep->num_aisle_views] = videoprep->num_aisle_views;
-      videoprep->num_aisle_views++;
-    }
-  }
+  // cuda_ck (cudaMalloc (&it->surface, it->dewarpWidth * it->dewarpHeight * 4));
+  // GST_INFO_OBJECT(
+  //     videoprep,
+  //     "Allocated Surface %p for W=%d H=%d",
+  //     vp_params.surface,
+  //     vp_params.dewarpWidth,
+  //     vp_params.dewarpHeight);
+  // #ifndef NDEBUG
+  //     fprintf(
+  //         stderr,
+  //         "Allocated Surface %p for W=%d H=%d\n",
+  //         vp_params.surface,
+  //         vp_params.dewarpWidth,
+  //         vp_params.dewarpHeight);
+  //     fflush(stderr);
+  // #endif
+  videoprep->surface_index[i] = surface_index;
+  // videoprep->surface_type[i++] = vp_params.projection_type;
+  // if (vp_params.projection_type == NVDS_META_SURFACE_FISH_PUSHBROOM) {
+  //   videoprep->spot_surf_index[videoprep->num_spot_views] = videoprep->num_spot_views;
+  //   videoprep->num_spot_views++;
+  // } else if (vp_params.projection_type == NVDS_META_SURFACE_FISH_VERTCYL) {
+  //   videoprep->aisle_surf_index[videoprep->num_aisle_views] = videoprep->num_aisle_views;
+  //   videoprep->num_aisle_views++;
+  // }
+  //}
   return 0;
 }
-
+#if 0
 static gint gst_videoprep_csv_init(GstVideoPrep* videoprep) {
-  guint source_id = 0;
-  guint i = 0;
-  vector<gint> vec_spot_surf_index;
-  vector<gint> vec_aisle_surf_index;
-  VideoPrepParams surfaceParams;
+  // guint source_id = 0;
+  // guint i = 0;
+  // vector<gint> vec_spot_surf_index;
+  // vector<gint> vec_aisle_surf_index;
+  // VideoPrepParams surfaceParams;
 
-  if ((videoprep->spotCSVInit == 1) && (videoprep->aisleCSVInit == 1)) {
-    return 0;
-  }
+  // if ((videoprep->spotCSVInit == 1) && (videoprep->aisleCSVInit == 1)) {
+  //   return 0;
+  // }
 
   GST_INFO_OBJECT(videoprep, " %s\n", __func__);
 
-  source_id = videoprep->source_id;
-  videoprep->spotCSVParser = new SpotCSVParser(videoprep->spot_calibration_file);
-  videoprep->num_spot_views = videoprep->spotCSVParser->getNvSpotCSVMaxViews(source_id, &vec_spot_surf_index);
+  // source_id = videoprep->source_id;
+  // videoprep->spotCSVParser = new SpotCSVParser(videoprep->spot_calibration_file);
+  // videoprep->num_spot_views = videoprep->spotCSVParser->getNvSpotCSVMaxViews(source_id, &vec_spot_surf_index);
 
-  videoprep->aisleCSVParser = new AisleCSVParser(videoprep->aisle_calibration_file);
-  videoprep->num_aisle_views = videoprep->aisleCSVParser->getNvAisleCSVMaxViews(source_id, &vec_aisle_surf_index);
+  // videoprep->aisleCSVParser = new AisleCSVParser(videoprep->aisle_calibration_file);
+  // videoprep->num_aisle_views = videoprep->aisleCSVParser->getNvAisleCSVMaxViews(source_id, &vec_aisle_surf_index);
 
-  g_assert((videoprep->num_spot_views + videoprep->num_aisle_views) <= videoprep->num_batch_buffers);
-  g_assert(videoprep->num_spot_views <= MAX_DEWARPED_VIEWS);
-  g_assert(videoprep->num_aisle_views <= MAX_DEWARPED_VIEWS);
+  // g_assert((videoprep->num_spot_views + videoprep->num_aisle_views) <= videoprep->num_batch_buffers);
+  // g_assert(videoprep->num_spot_views <= MAX_DEWARPED_VIEWS);
+  // g_assert(videoprep->num_aisle_views <= MAX_DEWARPED_VIEWS);
 
-  if (videoprep->num_spot_views == 0) {
-    GST_WARNING_OBJECT(videoprep, "For source_id=%d NO SPOT Views Found for Dewarping\n", source_id);
-  }
-  if (videoprep->num_aisle_views == 0) {
-    GST_WARNING_OBJECT(videoprep, "For source_id=%d NO AISLE Views Found for Dewarping\n", source_id);
-  }
+  // if (videoprep->num_spot_views == 0) {
+  //   GST_WARNING_OBJECT(videoprep, "For source_id=%d NO SPOT Views Found for Dewarping\n", source_id);
+  // }
+  // if (videoprep->num_aisle_views == 0) {
+  //   GST_WARNING_OBJECT(videoprep, "For source_id=%d NO AISLE Views Found for Dewarping\n", source_id);
+  // }
   // if (videoprep->spotCSVInit == 0)
-  {
-    for (i = 0; i < videoprep->num_spot_views; i++) {
-      NvSpotCsvFields fields = {0};
-      guint surf_idx = vec_spot_surf_index.at(i);
+  // {
+  //   for (i = 0; i < videoprep->num_spot_views; i++) {
+  //     NvSpotCsvFields fields = {0};
+  //     guint surf_idx = vec_spot_surf_index.at(i);
 
-      memset(&surfaceParams, 0, sizeof(surfaceParams));
-      surfaceParams.control = 0.6f; // For pushbroom projection set default control = 0.6 to maintain legacy
+  //     memset(&surfaceParams, 0, sizeof(surfaceParams));
+  //     surfaceParams.control = 0.6f; // For pushbroom projection set default control = 0.6 to maintain legacy
 
-      // taking value for spot index 0
-      if (videoprep->spotCSVParser->getNvSpotCSVFields(source_id, surf_idx, 0, &fields) != 0) {
-        g_print(
-            "%s: SPOT Entry for cam=%d, view=%d surface=0 and spot_index=%d "
-            "not found in calibration file.\n",
-            GST_ELEMENT_NAME(videoprep),
-            source_id,
-            i,
-            0);
-        surfaceParams.isValid = 0;
-        continue;
-      }
+  //     // taking value for spot index 0
+  //     if (videoprep->spotCSVParser->getNvSpotCSVFields(source_id, surf_idx, 0, &fields) != 0) {
+  //       g_print(
+  //           "%s: SPOT Entry for cam=%d, view=%d surface=0 and spot_index=%d "
+  //           "not found in calibration file.\n",
+  //           GST_ELEMENT_NAME(videoprep),
+  //           source_id,
+  //           i,
+  //           0);
+  //       surfaceParams.isValid = 0;
+  //       continue;
+  //     }
 
-      surfaceParams.top_angle = fields.dewarpTopAngle;
-      surfaceParams.bottom_angle = fields.dewarpBottomAngle;
-      surfaceParams.yaw = fields.dewarpYaw;
-      surfaceParams.roll = fields.dewarpRoll;
-      surfaceParams.pitch = fields.dewarpPitch;
-      surfaceParams.dewarpFocalLength[0] = fields.dewarpFocalLength;
-      surfaceParams.dewarpWidth = fields.dewarpWidth;
-      surfaceParams.dewarpHeight = fields.dewarpHeight;
-      surfaceParams.surface_index = surf_idx;
-      surfaceParams.isValid = 1;
+  //     surfaceParams.top_angle = fields.dewarpTopAngle;
+  //     surfaceParams.bottom_angle = fields.dewarpBottomAngle;
+  //     surfaceParams.yaw = fields.dewarpYaw;
+  //     surfaceParams.roll = fields.dewarpRoll;
+  //     surfaceParams.pitch = fields.dewarpPitch;
+  //     surfaceParams.dewarpFocalLength[0] = fields.dewarpFocalLength;
+  //     surfaceParams.dewarpWidth = fields.dewarpWidth;
+  //     surfaceParams.dewarpHeight = fields.dewarpHeight;
+  //     surfaceParams.surface_index = surf_idx;
+  //     surfaceParams.isValid = 1;
 
-      // Assuming all the Spot surfaces will have same width and height
-      videoprep->spot_surf_index[i] = surf_idx;
+  //     // Assuming all the Spot surfaces will have same width and height
+  //     videoprep->spot_surf_index[i] = surf_idx;
 
-      surfaceParams.projection_type = NVDS_META_SURFACE_FISH_PUSHBROOM;
-      videoprep->priv->vecDewarpSurface.push_back(surfaceParams);
-    }
-    videoprep->spotCSVInit = 1;
-  }
+  //     surfaceParams.projection_type = NVDS_META_SURFACE_FISH_PUSHBROOM;
+  //     videoprep->priv->vecDewarpSurface.push_back(surfaceParams);
+  //   }
+  //   videoprep->spotCSVInit = 1;
+  // }
 
   // if (videoprep->aisleCSVInit == 0)
-  {
-    for (i = 0; i < videoprep->num_aisle_views; i++) {
-      NvAisleCsvFields fields = {0};
-      guint surf_idx = vec_aisle_surf_index.at(i);
+  // {
+  //   for (i = 0; i < videoprep->num_aisle_views; i++) {
+  //     NvAisleCsvFields fields = {0};
+  //     guint surf_idx = vec_aisle_surf_index.at(i);
 
-      memset(&surfaceParams, 0, sizeof(surfaceParams));
+  //     memset(&surfaceParams, 0, sizeof(surfaceParams));
 
-      if (videoprep->aisleCSVParser->getNvAisleCSVFields(source_id, surf_idx, &fields) != 0) {
-        g_print(
-            "%s: Aisle Entry for cam=%d, surface=%d not found in calibration "
-            "file.\n",
-            GST_ELEMENT_NAME(videoprep),
-            source_id,
-            0);
-        surfaceParams.isValid = 0;
-        continue;
-      }
+  //     if (videoprep->aisleCSVParser->getNvAisleCSVFields(source_id, surf_idx, &fields) != 0) {
+  //       g_print(
+  //           "%s: Aisle Entry for cam=%d, surface=%d not found in calibration "
+  //           "file.\n",
+  //           GST_ELEMENT_NAME(videoprep),
+  //           source_id,
+  //           0);
+  //       surfaceParams.isValid = 0;
+  //       continue;
+  //     }
 
-      surfaceParams.top_angle = fields.dewarpTopAngle;
-      surfaceParams.bottom_angle = fields.dewarpBottomAngle;
-      surfaceParams.pitch = fields.dewarpPitch;
-      surfaceParams.yaw = fields.dewarpYaw;
-      surfaceParams.roll = fields.dewarpRoll;
-      surfaceParams.dewarpFocalLength[0] = fields.dewarpFocalLength;
-      surfaceParams.dewarpWidth = fields.dewarpWidth;
-      surfaceParams.dewarpHeight = fields.dewarpHeight;
-      surfaceParams.surface_index = surf_idx;
-      surfaceParams.isValid = 1;
+  //     surfaceParams.top_angle = fields.dewarpTopAngle;
+  //     surfaceParams.bottom_angle = fields.dewarpBottomAngle;
+  //     surfaceParams.pitch = fields.dewarpPitch;
+  //     surfaceParams.yaw = fields.dewarpYaw;
+  //     surfaceParams.roll = fields.dewarpRoll;
+  //     surfaceParams.dewarpFocalLength[0] = fields.dewarpFocalLength;
+  //     surfaceParams.dewarpWidth = fields.dewarpWidth;
+  //     surfaceParams.dewarpHeight = fields.dewarpHeight;
+  //     surfaceParams.surface_index = surf_idx;
+  //     surfaceParams.isValid = 1;
 
-      // Assuming all the Aisle surfaces will have same width and height
-      videoprep->aisle_surf_index[i] = surf_idx;
+  //     // Assuming all the Aisle surfaces will have same width and height
+  //     videoprep->aisle_surf_index[i] = surf_idx;
 
-      surfaceParams.projection_type = NVDS_META_SURFACE_FISH_VERTCYL;
-      videoprep->priv->vecDewarpSurface.push_back(surfaceParams);
-    }
-    videoprep->aisleCSVInit = 1;
-  }
+  //     surfaceParams.projection_type = NVDS_META_SURFACE_FISH_VERTCYL;
+  //     videoprep->priv->vecDewarpSurface.push_back(surfaceParams);
+  //   }
+  //   videoprep->aisleCSVInit = 1;
+  // }
+  assert(!videoprep->priv);
+  videoprep->priv = new VideoPrepPriv(videoprep->gpu_id, videoprep->num_batch_buffers);
   gst_videoprep_allocate_projection_buffers(videoprep);
   return 0;
 }
+#endif
 
 static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps, GstCaps* outcaps) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(trans);
@@ -722,6 +734,8 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
   videoprep->input_width = GST_VIDEO_INFO_WIDTH(&in_info);
   videoprep->input_height = GST_VIDEO_INFO_HEIGHT(&in_info);
   videoprep->input_fmt = GST_VIDEO_FORMAT_INFO_FORMAT(in_info.finfo);
+
+  videoprep->num_batch_buffers = NR_SCRATCH_BUFFERS;
 
   if (!gst_video_info_from_caps(&out_info, outcaps)) {
     GST_ERROR("invalid output caps");
@@ -787,10 +801,12 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
           videoprep->num_batch_buffers);
     }
   }
-  if (!videoprep->aisle_calibrationfile_set || !videoprep->spot_calibrationfile_set) {
-    // Non-CVS Case
-    gst_videoprep_allocate_projection_buffers(videoprep);
-  }
+  // if (!videoprep->aisle_calibrationfile_set || !videoprep->spot_calibrationfile_set) {
+  //  Non-CVS Case
+  assert(!videoprep->priv);
+  videoprep->priv = new VideoPrepPriv(videoprep->gpu_id, videoprep->num_batch_buffers);
+  gst_videoprep_allocate_projection_buffers(videoprep);
+  //}
 
   gst_base_transform_set_passthrough(trans, FALSE);
   return TRUE;
@@ -849,20 +865,20 @@ static cudaError gst_videoprep_generate_output(
     GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
-  gchar context_name[100];
-  std::vector<VideoPrepParams>::iterator it;
-  VideoPrepParams* dewarpParams = NULL;
-  guint i = 0;
+  // gchar context_name[100];
+  // std::vector<VideoPrepParams>::iterator it;
+  // VideoPrepParams* dewarpParams = NULL;
+  // guint i = 0;
   cudaError err = cudaSuccess;
-  NvBufSurface scratch_surf = {0};
-  memset(&scratch_surf, 0, sizeof(scratch_surf));
-  NvBufSurfaceParams surfaceList[MAX_DEWARPED_VIEWS];
-  memset(surfaceList, 0, sizeof(surfaceList));
-  scratch_surf.gpuId = videoprep->gpu_id;
-  scratch_surf.batchSize = 1;
-  scratch_surf.numFilled = 1;
-  scratch_surf.memType = NVBUF_MEM_CUDA_DEVICE;
-  scratch_surf.surfaceList = &surfaceList[0];
+  // NvBufSurface scratch_surf = {0};
+  // memset(&scratch_surf, 0, sizeof(scratch_surf));
+  // NvBufSurfaceParams surfaceList[MAX_DEWARPED_VIEWS];
+  // memset(surfaceList, 0, sizeof(surfaceList));
+  // scratch_surf.gpuId = videoprep->gpu_id;
+  // scratch_surf.batchSize = 1;
+  // scratch_surf.numFilled = 1;
+  // scratch_surf.memType = NVBUF_MEM_CUDA_DEVICE;
+  // scratch_surf.surfaceList = &surfaceList[0];
 
   NvBufSurfTransform_Error tx_err = NvBufSurfTransformError_Success;
 
@@ -889,50 +905,55 @@ static cudaError gst_videoprep_generate_output(
   }
 
   out_surface->numFilled = 0;
-  size_t j = 0;
-  for (it = videoprep->priv->vecDewarpSurface.begin(); it != videoprep->priv->vecDewarpSurface.end(); it++, ++j) {
-    if (i == videoprep->num_batch_buffers)
-      break;
+  // size_t j = 0;
+  // for (it = videoprep->priv->vecDewarpSurface.begin(); it != videoprep->priv->vecDewarpSurface.end(); it++, ++j) {
+  //   if (i == videoprep->num_batch_buffers)
+  //     break;
 
-    dewarpParams = &(*it);
+  //   dewarpParams = &(*it);
 
-    snprintf(context_name, sizeof(context_name), "%s_(Frame=%u)", GST_ELEMENT_NAME(videoprep), videoprep->frame_num);
-    nvtx_helper_push_pop(strcat(context_name, "_Scale"));
+  //   snprintf(context_name, sizeof(context_name), "%s_(Frame=%u)", GST_ELEMENT_NAME(videoprep), videoprep->frame_num);
+  //   nvtx_helper_push_pop(strcat(context_name, "_Scale"));
 
-    surface_meta->type[i] = dewarpParams->projection_type;
-    surface_meta->index[i] = dewarpParams->surface_index;
+  //   surface_meta->type[i] = dewarpParams->projection_type;
+  //   surface_meta->index[i] = dewarpParams->surface_index;
 
-    // Create Dummy Input Surface
-    {
-      guint bytesPerPixel = 4;
-      memset(&surfaceList[i], 0, sizeof(surfaceList[i]));
+  //   // Create Dummy Input Surface
+  //   {
+  //     guint bytesPerPixel = 4;
+  //     memset(&surfaceList[i], 0, sizeof(surfaceList[i]));
 
-      NppiSize inSrcSize = {(gint)dewarpParams->dewarpWidth, (gint)dewarpParams->dewarpHeight};
+  //     NppiSize inSrcSize = {(gint)dewarpParams->dewarpWidth, (gint)dewarpParams->dewarpHeight};
 
-      scratch_surf.surfaceList[i].pitch = dewarpParams->dewarpPitch;
-      scratch_surf.surfaceList[i].colorFormat = NVBUF_COLOR_FORMAT_RGBA;
-      scratch_surf.surfaceList[i].width = inSrcSize.width;
-      scratch_surf.surfaceList[i].height = inSrcSize.height;
-      scratch_surf.surfaceList[i].planeParams.num_planes = 1;
-      scratch_surf.surfaceList[i].planeParams.width[0] = inSrcSize.width;
-      scratch_surf.surfaceList[i].planeParams.height[0] = inSrcSize.height;
-      scratch_surf.surfaceList[i].planeParams.pitch[0] = scratch_surf.surfaceList[i].pitch;
-      scratch_surf.surfaceList[i].planeParams.psize[0] = inSrcSize.height * scratch_surf.surfaceList[i].pitch;
-      scratch_surf.surfaceList[i].planeParams.bytesPerPix[0] = bytesPerPixel;
+  //     scratch_surf.surfaceList[i].pitch = dewarpParams->dewarpPitch;
+  //     scratch_surf.surfaceList[i].colorFormat = NVBUF_COLOR_FORMAT_RGBA;
+  //     scratch_surf.surfaceList[i].width = inSrcSize.width;
+  //     scratch_surf.surfaceList[i].height = inSrcSize.height;
+  //     scratch_surf.surfaceList[i].planeParams.num_planes = 1;
+  //     scratch_surf.surfaceList[i].planeParams.width[0] = inSrcSize.width;
+  //     scratch_surf.surfaceList[i].planeParams.height[0] = inSrcSize.height;
+  //     scratch_surf.surfaceList[i].planeParams.pitch[0] = scratch_surf.surfaceList[i].pitch;
+  //     scratch_surf.surfaceList[i].planeParams.psize[0] = inSrcSize.height * scratch_surf.surfaceList[i].pitch;
+  //     scratch_surf.surfaceList[i].planeParams.bytesPerPix[0] = bytesPerPixel;
 
-      scratch_surf.surfaceList[i].dataSize = scratch_surf.surfaceList[i].planeParams.psize[0];
-      scratch_surf.surfaceList[i].dataPtr = (guint*)dewarpParams->surface;
-      scratch_surf.surfaceList[i].layout = NVBUF_LAYOUT_PITCH;
-      i++;
-    }
+  //     scratch_surf.surfaceList[i].dataSize = scratch_surf.surfaceList[i].planeParams.psize[0];
+  //     scratch_surf.surfaceList[i].dataPtr = (guint*)dewarpParams->surface;
+  //     scratch_surf.surfaceList[i].layout = NVBUF_LAYOUT_PITCH;
+  //     i++;
+  //   }
+  // assert(in_su)
 
+  // TODO: what do we do about this mismatch???
+  const size_t nr_surfaces_to_process = std::min(tracking_boxes.size(), (size_t)out_surface->batchSize);
+  assert((size_t)in_surface->numFilled >= nr_surfaces_to_process);
+  for (size_t batch_nr = 0; batch_nr < nr_surfaces_to_process; ++batch_nr) {
     static float angle = 0.0;
     (void)angle;
 
 #if 1
     const float max_angle = 30.0;
     const float half_width = float(videoprep->input_width) / 2;
-    const float tcx = tracking_boxes.at(j).center().x;
+    const float tcx = tracking_boxes.at(batch_nr).center().x;
     if (tcx < half_width) {
       float pct = 1.0 - tcx / half_width;
       angle = max_angle * pct;
@@ -942,7 +963,7 @@ static cudaError gst_videoprep_generate_output(
     }
 #endif
 
-    const BBox& tbox = tracking_boxes.at(j);
+    const BBox& tbox = tracking_boxes.at(batch_nr);
     FloatValue x_center = tbox.center().x;
     const BBox input_rect(0, 0, videoprep->input_width, videoprep->input_height);
     BBox output_rect(0, 0, (FloatValue)videoprep->output_width, (FloatValue)videoprep->output_height);
@@ -978,14 +999,13 @@ static cudaError gst_videoprep_generate_output(
     assert(dst_box.left == 0.0);
     assert(dst_box.top == 0.0);
     NppStatus np_status;
+    hm::surface::Surface scratch_surface_0 = videoprep->priv->scratch_buffers[0];
 #if 1
-    std::cerr << "extra_width_src_rect.left=" << extra_width_src_rect.left << std::endl;
+    // std::cerr << "extra_width_src_rect.left=" << extra_width_src_rect.left << std::endl;
     rotateNvBufSurfaceWithNPP(
-        in_surface,
-        /*input_surface_index=*/j,
+        &in_surface->surfaceList[batch_nr],
         extra_width_src_rect,
-        &scratch_surf,
-        /*output_surface_index=*/j,
+        scratch_surface_0,
         dst_box,
         angle,
         /*anchor_point=*/ // Point{0, 0},
@@ -1011,17 +1031,16 @@ static cudaError gst_videoprep_generate_output(
 
     // BBox dest_rect(0, 0, scratch_surf.surfaceList[j].width, scratch_surf.surfaceList[j].height);
     np_status = cropAndResizeNvBufSurface(
-        /*srcSurface=*/ &scratch_surf,
+        /*srcSurface=*/scratch_surface_0,
         /*src_rect=*/ // new_tbox,
-        /*src_rect=*/ dst_box,
-        out_surface,
-        /*surface_index=*/j,
+        /*src_rect=*/dst_box,
+        &out_surface->surfaceList[batch_nr],
         /*dest_rect=*/output_rect,
         nppStreamContext);
     assert(np_status == NppStatus::NPP_SUCCESS);
-    nvtx_helper_push_pop(NULL);
-    scratch_surf.numFilled = i;
-    scratch_surf.batchSize = i;
+    // nvtx_helper_push_pop(NULL);
+    // scratch_surf.numFilled = i;
+    // scratch_surf.batchSize = i;
 
     // BBox dest_rect(0, 0, scratch_surf.surfaceList[j].width, scratch_surf.surfaceList[j].height);
     // NppStatus np_status = cropAndResizeNvBufSurface(
@@ -1077,9 +1096,9 @@ static cudaError gst_videoprep_generate_output(
     g_free(surface_meta);
     return cudaErrorInvalidSurface;
   }
-  out_surface->numFilled = i;
+  out_surface->numFilled = nr_surfaces_to_process;
 
-  surface_meta->num_filled_surfaces = i;
+  surface_meta->num_filled_surfaces = nr_surfaces_to_process;
   surface_meta->source_id = videoprep->source_id;
 
   NvDsMeta* meta = NULL;
@@ -1109,11 +1128,11 @@ static cudaError gst_videoprep_dewarp(
     return cudaErr;
   }
 
-  if ((videoprep->aisle_calibrationfile_set == TRUE) || (videoprep->spot_calibrationfile_set == TRUE)) {
-    if ((videoprep->spotCSVInit == 0) && (videoprep->aisleCSVInit == 0)) {
-      gst_videoprep_csv_init(videoprep);
-    }
-  }
+  // if ((videoprep->aisle_calibrationfile_set == TRUE) || (videoprep->spot_calibrationfile_set == TRUE)) {
+  //   if ((videoprep->spotCSVInit == 0) && (videoprep->aisleCSVInit == 0)) {
+  //     gst_videoprep_csv_init(videoprep);
+  //   }
+  // }
   // Do Dewarping of all surfaces
   // PointDiff tbox_shift{.dx = 0, .dy = 0};
   // cuda_ck(hm::videoprep::gst_videoprep_do_dewarp(batch_meta, videoprep, in_surface, out_surface, &tbox_shift));
@@ -1444,8 +1463,8 @@ static void gst_videoprep_init(GstVideoPrep* videoprep) {
   // TODO: If CSV is not given then we should not check this
   videoprep->aisle_calibrationfile_set = FALSE;
   videoprep->spot_calibrationfile_set = FALSE;
-  videoprep->aisleCSVInit = 0;
-  videoprep->spotCSVInit = 0;
+  // videoprep->aisleCSVInit = 0;
+  // videoprep->spotCSVInit = 0;
   videoprep->config_file = NULL;
   videoprep->num_output_buffers = DEFAULT_NUM_OUTPUT_BUFFERS;
 
@@ -1454,21 +1473,20 @@ static void gst_videoprep_init(GstVideoPrep* videoprep) {
   videoprep->output_width = DEFAULT_DEWARP_OUTPUT_WIDTH;
   videoprep->output_height = DEFAULT_DEWARP_OUTPUT_HEIGHT;
 
-  videoprep->num_spot_views = 0;
-  videoprep->num_aisle_views = 0;
-
-  videoprep->priv = new VideoPrepPriv;
+  // videoprep->num_spot_views = 0;
+  // videoprep->num_aisle_views = 0;
 }
 
 static void gst_videoprep_finalize(GObject* object) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(object);
   std::vector<VideoPrepParams>::iterator it;
-
-  for (it = videoprep->priv->vecDewarpSurface.begin(); it != videoprep->priv->vecDewarpSurface.end(); it++) {
-    if (it->surface) {
-      cuda_ck(cudaFree(it->surface));
-      it->surface = NULL;
-    }
+  if (videoprep->priv) {
+    // for (it = videoprep->priv->vecDewarpSurface.begin(); it != videoprep->priv->vecDewarpSurface.end(); it++) {
+    //   if (it->surface) {
+    //     cuda_ck(cudaFree(it->surface));
+    //     it->surface = NULL;
+    //   }
+    // }
   }
   if (videoprep->aisle_output) {
     cuda_ck(cudaFreeHost(videoprep->aisle_output));
@@ -1484,21 +1502,24 @@ static void gst_videoprep_finalize(GObject* object) {
     videoprep->output = NULL;
   }
 
-  videoprep->priv->vecDewarpSurface.clear();
   if (videoprep->priv) {
-    delete videoprep->priv;
-    videoprep->priv = NULL;
+    videoprep->priv->scratch_buffers.clear();
+    // videoprep->priv->vecDewarpSurface.clear();
+    if (videoprep->priv) {
+      delete videoprep->priv;
+      videoprep->priv = NULL;
+    }
   }
-  if (videoprep->spotCSVParser) {
-    delete videoprep->spotCSVParser;
-    videoprep->spotCSVParser = NULL;
-    videoprep->spotCSVInit = 0;
-  }
-  if (videoprep->aisleCSVParser) {
-    delete videoprep->aisleCSVParser;
-    videoprep->aisleCSVParser = NULL;
-    videoprep->aisleCSVInit = 0;
-  }
+  // if (videoprep->spotCSVParser) {
+  //   delete videoprep->spotCSVParser;
+  //   videoprep->spotCSVParser = NULL;
+  //   videoprep->spotCSVInit = 0;
+  // }
+  // if (videoprep->aisleCSVParser) {
+  //   delete videoprep->aisleCSVParser;
+  //   videoprep->aisleCSVParser = NULL;
+  //   videoprep->aisleCSVInit = 0;
+  // }
   if (videoprep->config_file)
     g_free(videoprep->config_file);
 }

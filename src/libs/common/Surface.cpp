@@ -27,8 +27,31 @@ SurfaceList::SurfaceList(const NvBufSurface* buf_surface) {
   }
 }
 
-void SurfaceList::add_surface(void* data, size_t width, size_t height, size_t pitch, size_t bytes_per_pixes) {
+SurfaceList::~SurfaceList() {
+  clear();
+}
+
+void SurfaceList::clear() {
+  for (size_t i = 0, n = nv_surface_list_.size(); i < n; ++i) {
+    if (owns_.at(i)) {
+      if (nv_surface_list_[i].dataPtr) {
+        cudaFree(nv_surface_list_[i].dataPtr);
+      }
+    }
+    nv_surface_list_.clear();
+    owns_.clear();
+  }
+}
+
+void SurfaceList::add_surface(
+    void* data,
+    size_t width,
+    size_t height,
+    size_t pitch,
+    size_t bytes_per_pixes,
+    bool owns) {
   NvBufSurfaceParams& params = nv_surface_list_.emplace_back();
+  owns_.emplace_back(owns);
   memset(&params, 0, sizeof(params));
 
   NppiSize inSrcSize = {(gint)width, (gint)height};
@@ -54,6 +77,8 @@ void SurfaceList::add_surface(void* data, size_t width, size_t height, size_t pi
 
 void SurfaceList::add_surface(const NvBufSurfaceParams* surface_params) {
   NvBufSurfaceParams& params = nv_surface_list_.emplace_back();
+  // We never own these right now
+  owns_.emplace_back(false);
   memcpy(&params, surface_params, sizeof(params));
   // Reset the surface-list pointer
   nv_surf_.surfaceList = &nv_surface_list_[0];

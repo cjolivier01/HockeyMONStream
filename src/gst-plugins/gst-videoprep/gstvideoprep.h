@@ -1,6 +1,7 @@
 #pragma once
 
 #include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
+#include "libs/common/Surface.h"
 
 #include <gst/base/gstbasetransform.h>
 #include <gst/gst.h>
@@ -97,7 +98,9 @@ struct VideoPrepParams
 /** Data structure contaning dewarping parameters for all the output surfaces */
 struct VideoPrepPriv
 {
-  std::vector<VideoPrepParams> vecDewarpSurface; /**< Array of surface parameters of type "VideoPrepParams". Maximum 4. */
+  VideoPrepPriv(int gpu_id, size_t batch_size) : scratch_buffers(gpu_id, batch_size) {}
+  // std::vector<VideoPrepParams> vecDewarpSurface; /**< Array of surface parameters of type "VideoPrepParams". Maximum 4. */
+  hm::surface::SurfaceList scratch_buffers;
 };
 
 /**
@@ -155,14 +158,14 @@ struct GstVideoPrep
 
   guint source_id;                            /**< Source ID of the input source */
   guint num_output_buffers;                   /**< Number of Output Buffers to be allocated by buffer pool */
-  guint aisleCSVInit;                         /**< Boolean indicating whether the aisle surface is initialized from CSV data */
-  guint spotCSVInit;                          /**< Boolean indicating whether the spot surface is initialized from CSV data */
-  guint num_spot_views;                       /**< Number of spot views */
-  guint num_aisle_views;                      /**< Number of aisle views */
-  guint spot_surf_index[MAX_DEWARPED_VIEWS];  /**< Array containing surface indices of spot surfaces */
-  guint aisle_surf_index[MAX_DEWARPED_VIEWS]; /**< Array containing surface indices of aisle surfaces */
+  //guint aisleCSVInit;                         /**< Boolean indicating whether the aisle surface is initialized from CSV data */
+  //guint spotCSVInit;                          /**< Boolean indicating whether the spot surface is initialized from CSV data */
+  //guint num_spot_views;                       /**< Number of spot views */
+  //guint num_aisle_views;                      /**< Number of aisle views */
+  //guint spot_surf_index[MAX_DEWARPED_VIEWS];  /**< Array containing surface indices of spot surfaces */
+  //guint aisle_surf_index[MAX_DEWARPED_VIEWS]; /**< Array containing surface indices of aisle surfaces */
   guint surface_index[MAX_DEWARPED_VIEWS];    /**< Array of all surface indices */
-  guint surface_type[MAX_DEWARPED_VIEWS];     /**< Array of type of projection for each surface. Values from enum NvDsSurfaceType */
+  // guint surface_type[MAX_DEWARPED_VIEWS];     /**< Array of type of projection for each surface. Values from enum NvDsSurfaceType */
 
   GstBuffer * out_gst_buf;                    /**< Pointer to the output buffer */
 

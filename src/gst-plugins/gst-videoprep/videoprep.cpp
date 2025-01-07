@@ -522,29 +522,29 @@ void createAffineMatrix(double angleRadians, int width, int height, const Point&
 }
 
 NppStatus rotateNvBufSurfaceWithNPP(
-    NvBufSurface* inputSurface,
-    size_t input_surface_index,
+    const hm::surface::Surface& in_surface,
     const hm::BBox& src_rect,
-    NvBufSurface* outputSurface,
-    size_t output_surface_index,
+    // NvBufSurface* outputSurface,
+    // size_t output_surface_index,
+    hm::surface::Surface out_surface,
     const hm::BBox& dest_rect,
     float angleDegrees,
     const Point& anchor_point,
     const NppStreamContext& nppStreamContext) {
   float angleRadians = angleDegrees * M_PI / 180.0f;
 
-  assert(input_surface_index < inputSurface->numFilled);
-  assert(output_surface_index < outputSurface->batchSize);
+  // assert(input_surface_index < inputSurface->numFilled);
+  // assert(output_surface_index < outputSurface->batchSize);
 
   // Assume first plane for simplicity
-  NvBufSurfaceParams* inParams = &inputSurface->surfaceList[input_surface_index];
-  NvBufSurfaceParams* outParams = &outputSurface->surfaceList[output_surface_index];
-  assert(inParams->colorFormat == outParams->colorFormat);
-  assert(inParams->colorFormat == NVBUF_COLOR_FORMAT_RGBA);
+  // NvBufSurfaceParams* inParams = &inputSurface->surfaceList[input_surface_index];
+  // NvBufSurfaceParams* outParams = &outputSurface->surfaceList[output_surface_index];
+  assert(in_surface->colorFormat == out_surface->colorFormat);
+  assert(in_surface->colorFormat == NVBUF_COLOR_FORMAT_RGBA);
 
   // Set source and destination ROI
-  NppiRect srcROI = {0, 0, static_cast<int>(inParams->width), static_cast<int>(inParams->height)};
-  NppiRect dstROI = {0, 0, static_cast<int>(outParams->width), static_cast<int>(outParams->height)};
+  NppiRect srcROI = {0, 0, static_cast<int>(in_surface.width()), static_cast<int>(in_surface.height())};
+  NppiRect dstROI = {0, 0, static_cast<int>(out_surface.width()), static_cast<int>(out_surface.height())};
 
   // assert(srcROI.width == dstROI.width);
   // assert(srcROI.height == dstROI.height);
@@ -567,24 +567,21 @@ NppStatus rotateNvBufSurfaceWithNPP(
 
   assert(srcROI.width == dstROI.width);
   assert(srcROI.height == dstROI.height);
-  assert(srcROI.x + srcROI.width <= (int)inParams->width);
-  assert(srcROI.y + srcROI.height <= (int)inParams->height);
+  assert(srcROI.x + srcROI.width <= (int)in_surface.width());
+  assert(srcROI.y + srcROI.height <= (int)in_surface.height());
   // assert(dstROI.width == (int)outParams->width);
   // assert(dstROI.height == (int)outParams->height);
 
   NppStatus status = NppStatus::NPP_SUCCESS;
 
   // Define rotation matrix
-  double affineMatrix[2][3] = {
-    {1, 0, 0},
-    {0, 1, 0}
-  };
-  // createAffineMatrix(
-  //     angleRadians,
-  //     static_cast<int>(src_rect2.width()),
-  //     static_cast<int>(src_rect2.height()),
-  //     anchor_point,
-  //     affineMatrix);
+  double affineMatrix[2][3] = {{1, 0, 0}, {0, 1, 0}};
+  createAffineMatrix(
+      angleRadians,
+      static_cast<int>(src_rect2.width()),
+      static_cast<int>(src_rect2.height()),
+      anchor_point,
+      affineMatrix);
 
   // double affineMatrix[3][3] = {
   //    {1, 0, 0},
@@ -594,7 +591,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
 
 #if 1
   // Wipe the destination image
-  cudaMemsetAsync(outParams->dataPtr, 255, outParams->pitch * outParams->height, nppStreamContext.hStream);
+  cudaMemsetAsync(out_surface.dataptr(), 255, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
   // Now rotate into the dest image
 
   // status = nppiWarpPerspective_8u_C4R_Ctx(
@@ -612,12 +609,12 @@ NppStatus rotateNvBufSurfaceWithNPP(
   // srcROI = dstROI;
 
   status = nppiWarpAffine_8u_C4R_Ctx(
-      static_cast<const Npp8u*>(inParams->dataPtr), // Source pointer
-      {static_cast<int>(inParams->width), static_cast<int>(inParams->height)}, // Source size
-      inParams->pitch, // Source pitch
+      in_surface.dataptr<Npp8u*>(), // Source pointer
+      {static_cast<int>(in_surface.width()), static_cast<int>(in_surface.height())}, // Source size
+      in_surface.pitch(), // Source pitch
       srcROI, // Source ROI
-      static_cast<Npp8u*>(outParams->dataPtr), // Destination pointer
-      outParams->pitch, // Destination pitch
+      out_surface.dataptr<Npp8u*>(), // Destination pointer
+      out_surface.pitch(), // Destination pitch
       dstROI, // Destination ROI
       affineMatrix, // Affine transformation matrix
       NPPI_INTER_LINEAR, // Interpolation method
@@ -626,25 +623,24 @@ NppStatus rotateNvBufSurfaceWithNPP(
 
   if (status != NPP_SUCCESS) {
     std::cerr << "NPP rotation failed with error: " << status << std::endl;
-    // assert(false);
+    assert(false);
   }
   return status;
 }
 
 #if 1
 NppStatus cropAndResizeNvBufSurface(
-    NvBufSurface* srcSurface,
+    const hm::surface::Surface& in_surface,
     const BBox& src_rect,
-    NvBufSurface* dstSurface,
-    size_t surface_index,
+    hm::surface::Surface out_surface,
     const BBox& dest_rect,
     const NppStreamContext& nppStreamContext) {
   // Extract the source image from the NvBufSurface
-  const NvBufSurfaceParams& srcParams = srcSurface->surfaceList[surface_index];
-  Npp8u* srcImage = (Npp8u*)srcParams.dataPtr;
+  // const NvBufSurfaceParams& srcParams = srcSurface->surfaceList[surface_index];
+  // Npp8u* srcImage = (Npp8u*)srcParams.dataPtr;
 
-  const NvBufSurfaceParams& dstParams = dstSurface->surfaceList[surface_index];
-  const int dstPitch = dstParams.pitch;
+  // const NvBufSurfaceParams& dstParams = dstSurface->surfaceList[surface_index];
+  // const int dstPitch = dstParams.pitch;
 
   // Define source and destination rectangles for cropping
   NppiRect srcRect{
@@ -660,23 +656,23 @@ NppStatus cropAndResizeNvBufSurface(
       .height = (int)dest_rect.height()};
 
   // Allocate memory for the destination image in the destination surface
-  Npp8u* dstImage = (Npp8u*)dstParams.dataPtr;
+  // Npp8u* dstImage = (Npp8u*)dstParams.dataPtr;
 
   // Perform cropping and resizing using nppiResize or nppiWarpAffine (interpolation)
   // For simplicity, let's use nppiResize for resizing and interpolation
   NppStatus status = NppStatus::NPP_SUCCESS;
 
   // Wipe the destination image
-  cudaMemsetAsync(dstImage, 0, dstParams.pitch * dstParams.height, nppStreamContext.hStream);
+  cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
 
   status = nppiResize_8u_C4R_Ctx(
-      srcImage,
-      srcParams.pitch, // Source image and pitch
-      NppiSize{.width = (int)srcParams.width, .height = (int)srcParams.height},
+      in_surface.dataptr<Npp8u*>(),
+      in_surface.pitch(), // Source image and pitch
+      NppiSize{.width = (int)in_surface.width(), .height = (int)in_surface.height()},
       srcRect, // Source rectangle
-      dstImage,
-      dstPitch, // Destination image and pitch
-      NppiSize{.width = (int)dstParams.width, .height = (int)dstParams.height},
+      out_surface.dataptr<Npp8u*>(),
+      out_surface.pitch(), // Destination image and pitch
+      NppiSize{.width = (int)out_surface.width(), .height = (int)out_surface.height()},
       dstRect, // Destination rectangle
       NPPI_INTER_LINEAR, // Interpolation method (e.g., linear)
       nppStreamContext);
@@ -689,6 +685,7 @@ NppStatus cropAndResizeNvBufSurface(
 }
 
 #endif
+#if 0
 NppStatus cropAndResizeNvBufSurface(
     NvBufSurface* srcSurface,
     const BBox& src_rect,
@@ -742,6 +739,8 @@ NppStatus cropAndResizeNvBufSurface(
   }
   return status;
 }
+#endif
+
 #if 0
 cudaError gst_videoprep_do_dewarp(
     NvDsBatchMeta* batch_meta,
