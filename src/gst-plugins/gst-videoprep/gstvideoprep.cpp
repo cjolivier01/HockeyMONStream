@@ -616,6 +616,8 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
 
     assert(videoprep->num_output_buffers > 0);
     assert(videoprep->num_batch_buffers > 0);
+    // What do we do if they differ?
+    assert(videoprep->num_batch_buffers == videoprep->num_output_buffers);
     // g_print ("in videoconvert caps = %s\n", gst_caps_to_string (outcaps));
     gst_buffer_pool_config_set_params(
         config, outcaps, sizeof(NvBufSurface), videoprep->num_output_buffers, videoprep->num_output_buffers);
