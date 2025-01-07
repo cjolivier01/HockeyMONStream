@@ -38,6 +38,12 @@ uint32_t gst_videoprep_version();
 
 std::vector<hm::BBox> get_tracking_boxes(NvDsBatchMeta* batch_meta);
 
+NppStatus cropSurface(
+    const hm::surface::Surface& in_surface,
+    const hm::BBox& src_rect,
+    hm::surface::Surface out_surface,
+    const NppStreamContext& nppStreamContext);
+
 NppStatus rotateNvBufSurfaceWithNPP(
     const hm::surface::Surface& in_surface,
     const hm::BBox& src_rect,

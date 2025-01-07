@@ -124,27 +124,6 @@ enum {
 
 static void gst_videoprep_finalize(GObject* object);
 
-void __attribute__((constructor)) videoprep_libinit(void);
-void __attribute__((destructor)) videoprep_libdeinit(void);
-
-void videoprep_libinit(void) {
-  unsigned version = gst_videoprep_version();
-  if (0 != (version & 0xFF))
-    g_snprintf(
-        VIDEOPREP_LIB_VERSION,
-        128,
-        "%u.%u.%ud%u",
-        version >> 24,
-        (version >> 16) & 0xFF,
-        (version >> 8) & 0xFF,
-        version & 0xFF);
-  else
-    g_snprintf(VIDEOPREP_LIB_VERSION, 128, "%u.%u.%u", version >> 24, (version >> 16) & 0xFF, (version >> 8) & 0xFF);
-  VIDEOPREP_LIB_VERSION[127] = '\0';
-}
-
-void videoprep_libdeinit(void) {}
-
 static const gchar* print_pretty_time(gchar* ts_str, gsize ts_str_len, GstClockTime ts) {
   if (ts == GST_CLOCK_TIME_NONE)
     return "none";

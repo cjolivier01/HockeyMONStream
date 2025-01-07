@@ -1,3 +1,5 @@
+#include "cudaCrop.h"
+
 #include <assert.h>
 #include <string.h>
 
@@ -8,7 +10,7 @@
 
 #include "videoprep.h"
 
-#include "NVWarp360.h"
+// #include "NVWarp360.h"
 
 namespace hm {
 namespace videoprep {
@@ -58,6 +60,27 @@ void createAffineMatrix(double angleRadians, int width, int height, const Point&
   matrix[1][0] = sinTheta; // m10
   matrix[1][1] = cosTheta; // m11
   matrix[1][2] = cy - sinTheta * cx - cosTheta * cy; // m12 (y-translation)
+}
+
+NppStatus cropSurface(
+    const hm::surface::Surface& in_surface,
+    const hm::BBox& src_rect,
+    hm::surface::Surface out_surface,
+    const NppStreamContext& nppStreamContext) {
+  NppStatus status = NppStatus::NPP_SUCCESS;
+
+  cudaError_t cuerr = cudaSuccess;
+  (void)cuerr;
+  // pitch must match width alignment for the destination surface
+  // assert(out_surface.)
+  // cuerr = cudaCrop( uchar4* input, uchar4* output, const int4& roi, size_t inputWidth, size_t inputHeight,
+  // cudaStream_t stream=0 );
+  if (cuerr != 0) {
+    std::cerr << "Cuda error during crop" << std::endl;
+    assert(false);
+  }
+
+  return status;
 }
 
 NppStatus rotateNvBufSurfaceWithNPP(
@@ -183,8 +206,5 @@ NppStatus cropAndResizeNvBufSurface(
   return status;
 }
 
-uint32_t gst_videoprep_version() {
-  return nvwarpVersion();
-}
 } // namespace videoprep
 } // namespace hm

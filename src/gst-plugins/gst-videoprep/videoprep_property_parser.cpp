@@ -401,7 +401,6 @@ videoprep_parse_config_file (GstVideoPrep * videoprep, gchar * cfg_file_path)
   GError *error = NULL;
   gboolean ret = FALSE;
   gchar **groups = NULL;
-  gchar **group;
   GKeyFile *cfg_file = g_key_file_new ();
 
   if (!VIDEOPREP_CFG_PARSER_CAT) {
@@ -426,51 +425,6 @@ videoprep_parse_config_file (GstVideoPrep * videoprep, gchar * cfg_file_path)
 
   groups = g_key_file_get_groups (cfg_file, NULL);
 
-  // if (!videoprep->aisle_calibrationfile_set ||
-  //         !videoprep->spot_calibrationfile_set)
-  // {
-  //   for (group = groups; *group; group++) {
-  //     gboolean parse_err = FALSE;
-
-  //     GST_CAT_DEBUG (VIDEOPREP_CFG_PARSER_CAT, "Parsing group: %s", *group);
-  //     if (!strncmp (*group, CONFIG_GROUP_VIDEOPREP_SURFACE_ATTRS_PREFIX,
-  //         sizeof (CONFIG_GROUP_VIDEOPREP_SURFACE_ATTRS_PREFIX) - 1)) {
-
-  //       gchar *key1 = *group +
-  //           sizeof (CONFIG_GROUP_VIDEOPREP_SURFACE_ATTRS_PREFIX) - 1;
-  //       gchar *endptr = NULL;
-  //       guint64 surface_index = g_ascii_strtoull (key1, &endptr, 10);
-
-  //       if (surface_index == 0 && endptr == key1) {
-  //         PARSE_ERROR
-  //         ("Invalid group [%s]. surface attributes should be specified using "
-  //             "group name '" CONFIG_GROUP_VIDEOPREP_SURFACE_ATTRS_PREFIX
-  //             "<surfaceId>'", *group);
-  //       }
-  //       if ((gint) surface_index < 0) {
-  //         PARSE_ERROR ("Invalid group [%s]. class-id should be >= 0", *group);
-  //       }
-
-  //       // parse_err = !videoprep_parse_surface_attributes (videoprep, cfg_file,
-  //       //     *group, cfg_file_path, surface_index);
-  //     } else {
-  //       GST_CAT_WARNING (VIDEOPREP_CFG_PARSER_CAT, "Unknown group '%s'", *group);
-  //     }
-
-  //     if (parse_err) {
-  //       GST_CAT_ERROR (VIDEOPREP_CFG_PARSER_CAT, "Failed to parse '%s' group",
-  //           *group);
-  //       goto done;
-  //     }
-  //   }
-  // }
-  // else
-  // {
-  //   // USE CVS INIT Here
-  //   GST_WARNING_OBJECT (videoprep,
-  //       "Dewarper Config File: Skipping source group config,"
-  //       " using CSV parsing module\n");
-  // }
   ret = TRUE;
 
 done:
