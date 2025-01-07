@@ -28,21 +28,6 @@ inline bool CUDA_CHECK_(gint e, gint iLine, const gchar* szFile) {
   } while (0)
 namespace hm {
 namespace videoprep {
-/**
- * Function definition of dewarping call for each surface.
- *
- * @param[in] videoprep Width of the network input, in pixels.
- * @param[in] in_surface Height of the network input, in pixels.
- * @param[in] out_surface Color format of the buffers in the pool.
- *
- * @return Cuda Error. "cudaSuccess" in case of Success.
- */
-// cudaError gst_videoprep_do_dewarp(
-//     NvDsBatchMeta* batch_meta,
-//     GstVideoPrep* videoprep,
-//     NvBufSurface* in_surface,
-//     NvBufSurface* out_surface,
-//     PointDiff* tbox_shift);
 
 /**
  * Function to get core Dewarper library version.
@@ -54,12 +39,8 @@ uint32_t gst_videoprep_version();
 std::vector<hm::BBox> get_tracking_boxes(NvDsBatchMeta* batch_meta);
 
 NppStatus rotateNvBufSurfaceWithNPP(
-    //NvBufSurface* inputSurface,
-    //size_t input_surface_index,
     const hm::surface::Surface& in_surface,
     const hm::BBox& src_rect,
-    //NvBufSurface* outputSurface,
-    //size_t output_surface_index,
     hm::surface::Surface out_surface,
     const hm::BBox& dest_rect,
     float angleDegrees,
@@ -68,11 +49,8 @@ NppStatus rotateNvBufSurfaceWithNPP(
 
 NppStatus cropAndResizeNvBufSurface(
     const hm::surface::Surface& in_surface,
-    //NvBufSurface* srcSurface,
     const BBox& src_rect,
     hm::surface::Surface out_surface,
-    //NvBufSurface* dstSurface,
-    //size_t surface_index,
     const BBox& dest_rect,
     const NppStreamContext& nppStreamContext);
 
