@@ -38,9 +38,9 @@ void SurfaceList::clear() {
         cudaFree(nv_surface_list_[i].dataPtr);
       }
     }
-    nv_surface_list_.clear();
-    owns_.clear();
   }
+  nv_surface_list_.clear();
+  owns_.clear();
 }
 
 void SurfaceList::add_surface(
