@@ -847,7 +847,6 @@ static cudaError gst_videoprep_generate_output(
       videoprep->priv->video_output->Render((uchar4*)dsurf.dataptr(), dsurf.width(), dsurf.height());
       videoprep->priv->video_output->RenderRect(
           new_tbox.left, new_tbox.top, new_tbox.width(), new_tbox.height(), 1.0f, 0.0f, 0.0f, 1.0f);
-      cudaStreamSynchronize(videoprep->stream);
     }
 
     // We just rotate the whole thjing around the point
