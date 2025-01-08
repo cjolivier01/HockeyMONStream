@@ -79,6 +79,7 @@ NppStatus cropSurface(
   const NppiSize dest_image_size = get_nppisize(out_surface);
   (void)dest_image_size;
   if (clear_output_surface) {
+    assert(false); // shouldnt need if theyre the same size
     cuerr =
         cudaMemsetAsync(out_surface.dataptr(), 128, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
   }
@@ -184,7 +185,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
       affineMatrix);
 #if 1
   // Wipe the destination image
-  cudaMemsetAsync(out_surface.dataptr(), 255, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
+  cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
   // Now rotate into the dest image
 
   status = nppiWarpAffine_8u_C4R_Ctx(

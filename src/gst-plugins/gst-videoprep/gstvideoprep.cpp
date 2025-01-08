@@ -796,7 +796,7 @@ static cudaError gst_videoprep_generate_output(
         &in_surface->surfaceList[batch_nr],
         /*src_rect=*/extra_width_src_rect,
         scratch_surface_0,
-        /*clear_output_surface=*/true,
+        /*clear_output_surface=*/false,
         nppStreamContext);
 
     assert(np_status == NppStatus::NPP_SUCCESS);
