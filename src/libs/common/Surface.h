@@ -33,6 +33,9 @@ class Surface {
   constexpr guint pitch() const {
     return params_->pitch;
   }
+  BBox bbox() const {
+    return BBox(0, 0, width(), height());
+  }
   constexpr const NvBufSurfaceParams* get() const {
     return params_;
   }

@@ -21,6 +21,9 @@
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 
+#include "videoOutput.h"
+
+
 /* clang-format off */
 
 using namespace nvaisle_csv;
@@ -54,6 +57,7 @@ struct VideoPrepPriv
   VideoPrepPriv(int gpu_id, size_t batch_size) : scratch_buffers(gpu_id, batch_size) {}
   // std::vector<VideoPrepParams> vecDewarpSurface; /**< Array of surface parameters of type "VideoPrepParams". Maximum 4. */
   hm::surface::SurfaceList scratch_buffers;
+  std::unique_ptr<videoOutput> video_output;
 };
 
 /**

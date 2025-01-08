@@ -80,6 +80,12 @@ new_git_repository(
     remote = "https://github.com/jbeder/yaml-cpp.git",
 )
 
+new_local_repository(
+    name = "libsoup",
+    build_file = "@//build:third_party/libsoup.BUILD",
+    path = "/usr",
+)
+
 # new_local_repository(
 #     name = "yaml-cpp",
 #     build_file = "@//build:third_party/yaml-cpp.BUILD",

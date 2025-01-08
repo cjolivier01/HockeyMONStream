@@ -58,6 +58,32 @@
       "preLaunchTask": "Build All",
     },
     {
+      "name": "(CUDA) pipeline-app",
+      "type": "cuda-gdb",
+      "request": "launch",
+      "linux": {
+        // "envFile": "${workspaceFolder}/${config:mesonbuild.buildFolder}/meson-vscode.env",
+      },
+      "program": "${workspaceFolder}/src/bazel-bin/apps/pipeline-app/pipeline-app",
+      "args": "-c ${workspaceFolder}/configs/ds_hockey_app_config.yaml",
+      "environment": [
+        // {
+        //   "name": "GST_DEBUG",
+        //   "value": "7",
+        // },
+        // {
+        //   "name": "LD_LIBRARY_PATH",
+        //   "value": "/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:/home/colivier/mambaforge/envs/ubuntu/lib:/home/colivier/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu"
+        // },
+        {
+          "name": "GST_PLUGIN_PATH",
+          "value": "/home/colivier/src/hstream/lib/gst-plugins:/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib/gst-plugins"
+        },
+      ],
+      "additionalSOLibSearchPath": "/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:/home/colivier/mambaforge/envs/ubuntu/lib:/home/colivier/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu",
+      //"preLaunchTask": "Build All",
+    },
+    {
       "name": "(LLDB) kmeans",
       "type": "lldb",
       "request": "launch",
@@ -91,33 +117,6 @@
         //"GST_DEBUG": "3",
       },
       "preLaunchTask": "Build All",
-    },
-    {
-      "name": "(CUDA) pipeline-app",
-      "type": "cuda-gdb",
-      "request": "launch",
-      "linux": {
-        // "envFile": "${workspaceFolder}/${config:mesonbuild.buildFolder}/meson-vscode.env",
-      },
-      "cwd": "${workspaceFolder}/src",
-      "program": "${workspaceFolder}/src/bazel-bin/apps/pipeline-app/pipeline-app",
-      "args": "-c ${workspaceFolder}/configs/ds_hockey_app_config.yaml",
-      "environment": [
-        // {
-        //   "name": "GST_DEBUG",
-        //   "value": "7",
-        // },
-        {
-          "name": "LD_LIBRARY_PATH",
-          "value": "/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:/home/colivier/mambaforge/envs/ubuntu/lib:/home/colivier/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu"
-        },
-        {
-          "name": "GST_PLUGIN_PATH",
-          "value": "/home/colivier/src/hstream/lib/gst-plugins:/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
-        },
-      ],
-      "additionalSOLibSearchPath": "/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:/home/colivier/mambaforge/envs/ubuntu/lib:/home/colivier/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu",
-      //"preLaunchTask": "Build All",
     },
     {
       "name": "(LLDB) deepstream-app",

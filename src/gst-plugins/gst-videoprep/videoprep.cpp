@@ -73,12 +73,43 @@ NppStatus cropSurface(
   cudaError_t cuerr = cudaSuccess;
   (void)cuerr;
   // pitch must match width alignment for the destination surface
-  assert(out_surface.pitch() == out_surface.width() * 4);
+  // assert(out_surface.pitch() == out_surface.width() * 4);
+  const NppiSize src_image_size = get_nppisize(in_surface);
+  (void)src_image_size;
+  const NppiSize dest_image_size = get_nppisize(out_surface);
+  (void)dest_image_size;
   if (clear_output_surface) {
     cuerr =
-        cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
+        cudaMemsetAsync(out_surface.dataptr(), 128, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
   }
+  // Sanity check everything
+  assert(src_rect.left >= 0 && src_rect.top >= 0);
+  assert(src_rect.width() <= in_surface.width());
+  assert(src_rect.height() <= in_surface.height());
+  // If not this, we need to clear
+  assert((int)src_rect.width() <= dest_image_size.width);
+  assert((int)src_rect.height() <= dest_image_size.height);
+  // Do we have a use-case for not startiong at 0, 0? does the resize functionw ork at all?
+  const NppiRect dstRect{.x = 0, .y = 0, .width = (int)src_rect.width(), .height = (int)src_rect.height()};
   if (cuerr == cudaSuccess) {
+#if 1
+    //const NppiSize src_rect_size{.width=(int)src_rect.width(), .height=(int)src_rect.height()};
+    //const NppiSize dest_rect_size{.width=(int)src_rect.width(), .height=(int)src_rect.height()};
+    status = nppiResize_8u_C4R_Ctx(
+        in_surface.dataptr<Npp8u*>(),
+        in_surface.pitch(), // Source image and pitch
+        src_image_size,
+        //src_rect_size,
+        get_nppirect(src_rect), // Source rectangle
+        out_surface.dataptr<Npp8u*>(),
+        out_surface.pitch(), // Destination image and pitch
+        dest_image_size,
+        //dest_rect_size,
+        dstRect, // Destination rectangle
+        NPPI_INTER_LINEAR, // Interpolation method (e.g., linear)
+        nppStreamContext);
+        // std::cout << (int)src_rect.width() << ", " << dest_image_size.width << std::endl;
+#else
     int eff_src_width = out_surface.pitch() / 4;
     cuerr = cudaCrop(
         in_surface.dataptr<uchar4*>(),
@@ -88,6 +119,7 @@ NppStatus cropSurface(
         eff_src_width,
         in_surface.height(),
         nppStreamContext.hStream);
+#endif
   }
   if (cuerr != 0) {
     std::cerr << "Cuda error during crop" << std::endl;

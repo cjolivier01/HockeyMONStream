@@ -61,5 +61,19 @@ NppStatus cropAndResizeNvBufSurface(
     const BBox& dest_rect,
     const NppStreamContext& nppStreamContext);
 
+template <typename T>
+inline NppiSize get_nppisize(const T& box) {
+  return NppiSize{.width = (int)box.width(), .height = (int)box.height()};
+}
+
+inline NppiRect get_nppirect(const hm::surface::Surface& surface) {
+  return NppiRect{.x = 0, .y = 0, .width = (int)surface.width(), .height = (int)surface.height()};
+}
+
+template <typename T>
+inline NppiRect get_nppirect(const T& box) {
+  return NppiRect{.x = (int)box.left, .y = (int)box.top, .width = (int)box.width(), .height = (int)box.height()};
+}
+
 } // namespace videoprep
 } // namespace hm

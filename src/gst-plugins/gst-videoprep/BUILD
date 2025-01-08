@@ -28,5 +28,6 @@ gst_cc_plugin(
     deps = [
         "//libs/common:utils",
         "@jetson-utils//cuda:cuda_lib",
+        "@jetson-utils//display:display",
     ],
 )
