@@ -10,12 +10,12 @@ if [ -z "${TARGET}" ]; then
   TARGET="//..."
 fi
 
-echo "USE_BAZEL_VERSION=5.1.1 bazel build ${BAZEL_FLAGS} ${TARGET}"
-USE_BAZEL_VERSION=5.1.1 bazel build ${BAZEL_FLAGS} ${TARGET}
+# echo "USE_BAZEL_VERSION=5.1.1 bazelisk build ${BAZEL_FLAGS} ${TARGET}"
+USE_BAZEL_VERSION=5.1.1 bazelisk build ${BAZEL_FLAGS} ${TARGET}
 
-BIN_DIR="$(bazel info ${BAZEL_FLAGS} bazel-bin)"
-echo "BIN_DIR=${BIN_DIR}"
-EXTENSIONS="$(cat ${SCRIPT_DIR}/extensions.lst)"
+# BIN_DIR="$(bazel info ${BAZEL_FLAGS} bazel-bin)"
+# echo "BIN_DIR=${BIN_DIR}"
+# EXTENSIONS="$(cat ${SCRIPT_DIR}/extensions.lst)"
 
 # if [ "${TARGET}" == "//..." ]; then
 #   for ext in ${EXTENSIONS}; do

@@ -112,23 +112,16 @@ git_repository(
 # )
 
 new_local_repository(
+    name = "opencv_linux",
+    build_file = "@//build:third_party/opencv_linux.BUILD",
+    path = "/usr/include",
+)
+
+new_local_repository(
     name = "glib",
     build_file = "@//build:third_party/glib_nobuild.BUILD",
     # path = "/usr/local",
     path = "/usr",
-)
-
-# new_local_repository(
-#     name = "gstreamer",
-#     build_file = "@//build:third_party/gstreamer_nobuild.BUILD",
-#     # path = "/usr/local",
-#     path = "/usr",
-# )
-
-new_local_repository(
-    name = "opencv_linux",
-    build_file = "@//build:third_party/opencv_linux.BUILD",
-    path = "/usr/include",
 )
 
 # new_git_repository(
@@ -148,14 +141,21 @@ new_local_repository(
     path = "/usr",
 )
 
-new_git_repository(
+new_local_repository(
     name = "gstreamer",
-    build_file = "//build:third_party/gstreamer.BUILD",
-    commit = "2d8273151571fcab887cc81de48e87aeb61b5c06",
-    patch_cmds = [
-        "meson setup builddir -Ddebug=true -Dprefix=$(pwd)/external",
-        "ninja -C builddir install",
-    ],
-    remote = "https://github.com/GStreamer/gstreamer.git",
-    shallow_since = "1712695735 +0100",
+    build_file = "@//build:third_party/gstreamer_nobuild.BUILD",
+    # path = "/usr/local",
+    path = "/usr",
 )
+
+# new_git_repository(
+#     name = "gstreamer",
+#     build_file = "//build:third_party/gstreamer.BUILD",
+#     commit = "2d8273151571fcab887cc81de48e87aeb61b5c06",
+#     patch_cmds = [
+#         "meson setup builddir -Ddebug=true -Dprefix=$(pwd)/external",
+#         "ninja -C builddir install",
+#     ],
+#     remote = "https://github.com/GStreamer/gstreamer.git",
+#     shallow_since = "1712695735 +0100",
+# )

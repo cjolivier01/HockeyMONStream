@@ -56,17 +56,21 @@ cc_library(
       "//conditions:default": [],
     }),
     copts=[
-        "-Iexternal/include/glib-2.0",
-        "-Iexternal/lib/x86_64-linux-gnu/glib-2.0/include",
+        "-Iinclude/glib-2.0",
+        "-Ilib/x86_64-linux-gnu/glib-2.0/include",
     ]+ select({
       ":aarch64-linux-gnu":   ["-Ilib/aarch64-linux-gnu/glib-2.0/include"],
       ":x86_64-linux-gnu":    ["-Ilib/x86_64-linux-gnu/glib-2.0/include"],
       "//conditions:default": [],
     }),
-    linkopts=[
+    linkopts = [
         "-Llib/x86_64-linux-gnu",
         "-lglib-2.0",
-    ],
+    ] + select({
+        ":aarch64-linux-gnu": ["-Llib/aarch64-linux-gnu"],
+        ":x86_64-linux-gnu": ["-Llib/x86_64-linux-gnu"],
+        "//conditions:default": [],
+    }),
     visibility = ["//visibility:public"],
     deps = [
         "libgobject",
@@ -521,6 +525,6 @@ void g_weak_ref_set() {}
 
 genrule(
     name = "gobject_stub",
-    outs = ["gobject_stub.c"],
+    outs = ["gobject_stub.cpp"],
     cmd = "echo \"" + gobject_stub_content + "\" > $@",
 )
