@@ -72,18 +72,24 @@ graph_nvidia_extension(
     version = "2.6.0",
 )
 
+new_local_repository(
+    name = "glibconfig_x86",
+    build_file = "//build:third_party/glibconfig.BUILD",
+    path = "/usr/lib/x86_64-linux-gnu/glib-2.0/include",
+)
+
+new_local_repository(
+    name = "glibconfig_aarch64",
+    build_file = "//build:third_party/glibconfig.BUILD",
+    path = "/usr/lib/aarch64-linux-gnu/glib-2.0/include",
+)
+
 new_git_repository(
     name = "yaml-cpp",
     build_file = "@com_extension_dev//build:third_party/yaml-cpp.BUILD",
     #commit = "9a3624205e8774953ef18f57067b3426c1c5ada6",
     tag="0.8.0",
     remote = "https://github.com/jbeder/yaml-cpp.git",
-)
-
-new_local_repository(
-    name = "libsoup",
-    build_file = "@//build:third_party/libsoup.BUILD",
-    path = "/usr",
 )
 
 # new_local_repository(
@@ -112,21 +118,42 @@ git_repository(
 # )
 
 new_local_repository(
+    name = "glib",
+    build_file = "//build:third_party/glib_nobuild.BUILD",
+    # path = "/usr/local",
+    path = "/usr",
+)
+
+new_local_repository(
     name = "opencv_linux",
     build_file = "@//build:third_party/opencv_linux.BUILD",
     path = "/usr/include",
 )
 
-new_git_repository(
-    name = "glib",
-    build_file = "//build:third_party/glib.BUILD",
-    commit = "763cc3b238398614c20069fd67642730e3a6519b",
-    patch_cmds = [
-        "meson setup builddir -Ddebug=true -Dprefix=$(pwd)/external",
-        "ninja -C builddir install",
-    ],
-    remote = "https://github.com/GNOME/glib.git",
-)
+# cc_import(
+#     name = "glib",
+#     hdrs = ["/usr/local/lib/x86_64-linux-gnu/glib-2.0/include/glibconfig.h"],
+#     includes = ["/usr/local/include/glib-2.0", "/usr/local/lib/x86_64-linux-gnu/glib-2.0/include"],
+#     system_provided = 1,
+# )
+
+# new_local_repository(
+#     name = "glib_lib",
+#     build_file = "@//build:third_party/glib_nobuild.BUILD",
+#     path = "/usr/local/lib",
+#     # path = "/usr",
+# )
+
+# new_git_repository(
+#     name = "glib",
+#     build_file = "//build:third_party/glib.BUILD",
+#     commit = "763cc3b238398614c20069fd67642730e3a6519b",
+#     patch_cmds = [
+#         "meson setup builddir -Ddebug=true -Dprefix=$(pwd)/external",
+#         "ninja -C builddir install",
+#     ],
+#     remote = "https://github.com/GNOME/glib.git",
+# )
 
 new_local_repository(
     name = "json_glib",
@@ -134,14 +161,28 @@ new_local_repository(
     path = "/usr",
 )
 
-new_git_repository(
+new_local_repository(
     name = "gstreamer",
-    build_file = "//build:third_party/gstreamer.BUILD",
-    commit = "2d8273151571fcab887cc81de48e87aeb61b5c06",
-    patch_cmds = [
-        "meson setup builddir -Ddebug=true -Dprefix=$(pwd)/external",
-        "ninja -C builddir install",
-    ],
-    remote = "https://github.com/GStreamer/gstreamer.git",
-    shallow_since = "1712695735 +0100",
+    build_file = "@//build:third_party/gstreamer_nobuild.BUILD",
+    # path = "/usr/local",
+    path = "/usr",
 )
+
+# new_git_repository(
+#     name = "gstreamer",
+#     build_file = "//build:third_party/gstreamer.BUILD",
+#     commit = "2d8273151571fcab887cc81de48e87aeb61b5c06",
+#     patch_cmds = [
+#         "meson setup builddir -Ddebug=true -Dprefix=$(pwd)/external",
+#         "ninja -C builddir install",
+#     ],
+#     remote = "https://github.com/GStreamer/gstreamer.git",
+#     shallow_since = "1712695735 +0100",
+# )
+
+new_local_repository(
+    name = "libsoup",
+    build_file = "@//build:third_party/libsoup.BUILD",
+    path = "/usr",
+)
+

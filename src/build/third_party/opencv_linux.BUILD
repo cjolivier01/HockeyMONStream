@@ -2,12 +2,18 @@
 
 config_setting(
   name = "aarch64-linux-gnu",
-  define_values = {"multiarch": "aarch64-linux-gnu"},
+  # define_values = {"multiarch": "aarch64-linux-gnu"},
+  constraint_values = ["@platforms//cpu:aarch64"],
 )
 
+# config_setting(
+#   name = "x86_64-linux-gnu",
+#   define_values = {"multiarch": "x86_64-linux-gnu"},
+# )
+
 config_setting(
-  name = "x86_64-linux-gnu",
-  define_values = {"multiarch": "x86_64-linux-gnu"},
+    name = "x86_64-linux-gnu",
+    constraint_values = ["@platforms//cpu:x86_64"],
 )
 
 cc_library(

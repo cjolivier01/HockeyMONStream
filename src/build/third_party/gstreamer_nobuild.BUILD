@@ -24,15 +24,15 @@ cc_import(
 cc_library(
     name = "gstreamer",
     hdrs = glob([
-        "external/include/gstreamer-1.0/**/*.h",
+        "include/gstreamer-1.0/**/*.h",
     ]),
     copts = [
-        "-Iexternal/include/gstreamer-1.0",
+        "-Iinclude/gstreamer-1.0",
     ],
-    includes = ["external/include/gstreamer-1.0"],
+    includes = ["include/gstreamer-1.0"],
     linkopts = select({
-        ":aarch64-linux-gnu": ["-Lexternal/lib/aarch64-linux-gnu"],
-        ":x86_64-linux-gnu": ["-Lexternal/lib/x86_64-linux-gnu"],
+        ":aarch64-linux-gnu": ["-Llib/aarch64-linux-gnu"],
+        ":x86_64-linux-gnu": ["-Llib/x86_64-linux-gnu"],
         "//conditions:default": [],
     }) + [
         "-Wl,--start-group",
@@ -1792,6 +1792,19 @@ void gst_rtsp_media_factory_set_transport_mode() {}
 void gst_rtsp_media_factory_set_do_retransmission() {}
 void gst_app_src_end_of_stream() {}
 void _gst_mini_object_type() {}
+void gst_discoverer_video_info_get_type() {}
+void gst_discoverer_container_info_get_type() {}
+void gst_discoverer_container_info_get_streams() {}
+void gst_discoverer_stream_info_get_type() {}
+void gst_discoverer_stream_info_get_next() {}
+void gst_discoverer_new() {}
+void gst_discoverer_discover_uri() {}
+void gst_discoverer_info_get_stream_info() {}
+void gst_discoverer_video_info_get_width() {}
+void gst_discoverer_video_info_get_height() {}
+void gst_discoverer_video_info_get_framerate_num() {}
+void gst_discoverer_video_info_get_framerate_denom() {}
+void gst_discoverer_stream_info_get_caps() {}
 }
 """
 
@@ -1800,13 +1813,3 @@ genrule(
     outs = ["gst_stub.cpp"],
     cmd = "echo \"" + stub_content + "\" > $@",
 )
-
-# cc_library(
-#     name = "gstreamer_headers",
-#     #srcs = glob(["src/**/*.c"]),
-#     #hdrs = glob(["include/**/*.h"]),
-#     hdrs = glob(["**/*.h"]),
-#     copts = ["-Iexternal/gstreamer/include"],
-#     linkopts = ["-lgstbase-1.0", "-lgobject-2.0", "-lglib-2.0"],
-#     visibility = ["//visibility:public"],
-# )
