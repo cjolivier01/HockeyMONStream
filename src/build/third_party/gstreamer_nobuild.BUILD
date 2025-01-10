@@ -51,7 +51,6 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "libgstreamer",
-        # "@glibconfig",
         "@glib",
     ],
 )
