@@ -25,6 +25,16 @@ cc_binary(
 cc_import(
     name = "libgobject",
     shared_library = "libgobject-2.0.so",
+    visibility = ["//visibility:public"],
+)
+
+#    hdrs=["lib/x86_64-linux-gnu/glib-2.0/include/glibconfig.h"],
+
+cc_library(
+  name="glibconfig",
+  hdrs=["lib/x86_64-linux-gnu/glib-2.0/include/glibconfig.h"],
+  includes=["lib/x86_64-linux-gnu/glib-2.0/include"],
+  visibility = ["//visibility:public"],
 )
 
 config_setting(
@@ -50,6 +60,7 @@ cc_library(
     includes = [
       "include/glib-2.0",
       "lib/x86_64-linux-gnu/glib-2.0/include",
+      "lib/x86_64-linux-gnu/glib-2.0/include/",
     ] + select({
       ":aarch64-linux-gnu":   ["lib/aarch64-linux-gnu/glib-2.0/include"],
       ":x86_64-linux-gnu":    ["lib/x86_64-linux-gnu/glib-2.0/include"],
