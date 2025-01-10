@@ -8,7 +8,7 @@ cc_binary(
       "-Wno-error=write-strings",
     ],
     deps = [
-        "@glib",
+        "@glib//:glib",
         "@gstreamer",
     ],
     visibility = ["//visibility:public"],
