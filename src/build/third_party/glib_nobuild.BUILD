@@ -38,7 +38,7 @@ config_setting(
 )
 
 cc_library(
-    name = "glib_nobuild",
+    name = "glib",
     hdrs = glob([
         "include/glib-2.0/**/*.h",
         "lib/x86_64-linux-gnu/glib-2.0/include/**/*.h",

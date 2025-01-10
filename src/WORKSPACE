@@ -112,10 +112,18 @@ git_repository(
 # )
 
 new_local_repository(
-    name = "glib_nobuild",
+    name = "glib",
     build_file = "@//build:third_party/glib_nobuild.BUILD",
+    # path = "/usr/local",
     path = "/usr",
 )
+
+# new_local_repository(
+#     name = "gstreamer",
+#     build_file = "@//build:third_party/gstreamer_nobuild.BUILD",
+#     # path = "/usr/local",
+#     path = "/usr",
+# )
 
 new_local_repository(
     name = "opencv_linux",
@@ -123,16 +131,16 @@ new_local_repository(
     path = "/usr/include",
 )
 
-new_git_repository(
-    name = "glib",
-    build_file = "//build:third_party/glib.BUILD",
-    commit = "763cc3b238398614c20069fd67642730e3a6519b",
-    patch_cmds = [
-        "meson setup builddir -Ddebug=true -Dprefix=$(pwd)/external",
-        "ninja -C builddir install",
-    ],
-    remote = "https://github.com/GNOME/glib.git",
-)
+# new_git_repository(
+#     name = "glib",
+#     build_file = "//build:third_party/glib.BUILD",
+#     commit = "763cc3b238398614c20069fd67642730e3a6519b",
+#     patch_cmds = [
+#         "meson setup builddir -Ddebug=true -Dprefix=$(pwd)/external",
+#         "ninja -C builddir install",
+#     ],
+#     remote = "https://github.com/GNOME/glib.git",
+# )
 
 new_local_repository(
     name = "json_glib",
