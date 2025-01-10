@@ -1,2 +1,2 @@
 #!/bin/bash
-USE_BAZEL_VERSION=5.1.1 bazel clean --expunge
+USE_BAZEL_VERSION=5.1.1 bazelisk clean --expunge
