@@ -2,8 +2,8 @@
 set -e
 SCRIPT_DIR=$(dirname $(realpath $0))
 
-BAZEL_FLAGS="--config=debug --cpu=k8"
-#BAZEL_FLAGS="--config=opt"
+#BAZEL_FLAGS="--config=debug --cpu=k8"
+BAZEL_FLAGS="--config=opt --cpu=aarch64"
 
 TARGET="$@"
 if [ -z "${TARGET}" ]; then

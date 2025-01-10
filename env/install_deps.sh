@@ -1,4 +1,7 @@
 #!/bin/bash
-sudo apt-get install \
-  libva-dev
-
+sudo apt-get install -y \
+  libva-dev \
+  libsoup2.4-dev \
+  libjson-glib-dev \
+  libjsoncpp-dev \
+  protobuf-compiler
