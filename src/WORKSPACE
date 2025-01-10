@@ -112,6 +112,12 @@ git_repository(
 # )
 
 new_local_repository(
+    name = "glib_nobuild",
+    build_file = "@//build:third_party/glib_nobuild.BUILD",
+    path = "/usr",
+)
+
+new_local_repository(
     name = "opencv_linux",
     build_file = "@//build:third_party/opencv_linux.BUILD",
     path = "/usr/include",
