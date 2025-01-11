@@ -1,4 +1,5 @@
 #include "cudaCrop.h"
+#include "cudaWarp.h"
 
 #include <assert.h>
 #include <string.h>
@@ -42,7 +43,8 @@ std::vector<hm::BBox> get_tracking_boxes(NvDsBatchMeta* batch_meta) {
 }
 
 // Rotate an image around the image's center
-void createAffineMatrix(double angleRadians, int width, int height, const Point& anchorPoint, double matrix[2][3]) {
+template <typename F>
+void createAffineMatrix(const F& angleRadians, int width, int height, const Point& anchorPoint, F matrix[2][3]) {
   // Image center
   // double cx = width / 2.0;
   // double cy = height / 2.0;
@@ -80,8 +82,8 @@ NppStatus cropSurface(
   (void)dest_image_size;
   if (clear_output_surface) {
     assert(false); // shouldnt need if theyre the same size
-    cuerr =
-        cudaMemsetAsync(out_surface.dataptr(), 128, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
+    cuerr = cudaMemsetAsync(
+        out_surface.dataptr(), 128, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
   }
   // Sanity check everything
   assert(src_rect.left >= 0 && src_rect.top >= 0);
@@ -94,22 +96,22 @@ NppStatus cropSurface(
   const NppiRect dstRect{.x = 0, .y = 0, .width = (int)src_rect.width(), .height = (int)src_rect.height()};
   if (cuerr == cudaSuccess) {
 #if 1
-    //const NppiSize src_rect_size{.width=(int)src_rect.width(), .height=(int)src_rect.height()};
-    //const NppiSize dest_rect_size{.width=(int)src_rect.width(), .height=(int)src_rect.height()};
+    // const NppiSize src_rect_size{.width=(int)src_rect.width(), .height=(int)src_rect.height()};
+    // const NppiSize dest_rect_size{.width=(int)src_rect.width(), .height=(int)src_rect.height()};
     status = nppiResize_8u_C4R_Ctx(
         in_surface.dataptr<Npp8u*>(),
         in_surface.pitch(), // Source image and pitch
         src_image_size,
-        //src_rect_size,
+        // src_rect_size,
         get_nppirect(src_rect), // Source rectangle
         out_surface.dataptr<Npp8u*>(),
         out_surface.pitch(), // Destination image and pitch
         dest_image_size,
-        //dest_rect_size,
+        // dest_rect_size,
         dstRect, // Destination rectangle
         NPPI_INTER_LINEAR, // Interpolation method (e.g., linear)
         nppStreamContext);
-        // std::cout << (int)src_rect.width() << ", " << dest_image_size.width << std::endl;
+    // std::cout << (int)src_rect.width() << ", " << dest_image_size.width << std::endl;
 #else
     int eff_src_width = out_surface.pitch() / 4;
     cuerr = cudaCrop(
@@ -176,6 +178,33 @@ NppStatus rotateNvBufSurfaceWithNPP(
   NppStatus status = NppStatus::NPP_SUCCESS;
 
   // Define rotation matrix
+#if 1
+  // Wipe the destination image
+  cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
+  // Now rotate into the dest image
+#if 1
+  float affineMatrix[2][3];
+  createAffineMatrix(
+      angleRadians,
+      static_cast<int>(src_rect2.width()),
+      static_cast<int>(src_rect2.height()),
+      anchor_point,
+      affineMatrix);
+  assert(in_surface.width() == out_surface.width());
+  assert(in_surface.height() == out_surface.height());
+  cudaError_t cuerr = cudaWarpAffine(
+      out_surface.dataptr<uchar4*>(),
+      out_surface.dataptr<uchar4*>(),
+      (uint32_t)in_surface.width(),
+      (uint32_t)in_surface.height(),
+      affineMatrix,
+      /*transform_inverted=*/false,
+      nppStreamContext.hStream);
+  if (cuerr != 0) {
+    std::cerr << "NPP rotation failed with error: " << cuerr << std::endl;
+    assert(false);
+  }
+#else
   double affineMatrix[2][3];
   createAffineMatrix(
       angleRadians,
@@ -183,11 +212,6 @@ NppStatus rotateNvBufSurfaceWithNPP(
       static_cast<int>(src_rect2.height()),
       anchor_point,
       affineMatrix);
-#if 1
-  // Wipe the destination image
-  cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
-  // Now rotate into the dest image
-
   status = nppiWarpAffine_8u_C4R_Ctx(
       in_surface.dataptr<Npp8u*>(), // Source pointer
       {static_cast<int>(in_surface.width()), static_cast<int>(in_surface.height())}, // Source size
@@ -199,6 +223,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
       affineMatrix, // Affine transformation matrix
       NPPI_INTER_LINEAR, // Interpolation method
       nppStreamContext);
+#endif
 #endif
 
   if (status != NPP_SUCCESS) {
