@@ -30,7 +30,8 @@ nvinfer1::ITensor* upsampleLayer(
 #if NV_TENSORRT_MAJOR >= 8 && NV_TENSORRT_MINOR > 4
   resize->setResizeMode(nvinfer1::InterpolationMode::kNEAREST);
 #else
-  resize->setResizeMode(nvinfer1::ResizeMode::kNEAREST);
+  // resize->setResizeMode(nvinfer1::ResizeMode::kNEAREST);
+  resize->setResizeMode(nvinfer1::InterpolationMode::kNEAREST);
 #endif
 
   resize->setScales(scale, 4);
