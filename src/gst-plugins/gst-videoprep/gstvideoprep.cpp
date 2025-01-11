@@ -7,7 +7,7 @@
 #include <nvbufsurface.h>
 #include <cmath>
 #include <iostream>
-// #include "cudaDraw.h"
+#include "cudaDraw.h"
 #include "gst-nvcommon.h"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
@@ -782,7 +782,7 @@ static cudaError gst_videoprep_generate_output(
 
     const Point bigrect_center = extra_width_src_rect.center();
     Point tbox_center = tbox.center();
-    FloatValue center_dx = tbox_center.x - bigrect_center.x;
+    // FloatValue center_dx = tbox_center.x - bigrect_center.x;
     BBox new_tbox = tbox;
     new_tbox.left -= extra_width_src_rect.left;
     new_tbox.right -= extra_width_src_rect.left;
