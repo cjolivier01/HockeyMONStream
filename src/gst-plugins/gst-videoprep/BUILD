@@ -40,5 +40,7 @@ gst_cc_plugin(
     visibility = ["//visibility:public"],
     deps = [
         "//libs/common:utils",
+        "@jetson-utils//cuda:cuda_lib",
+        "@jetson-utils//display:display",
     ],
 )
