@@ -6,4 +6,5 @@ sudo apt-get install -y \
   libjsoncpp-dev \
   protobuf-compiler \
   libgstrtspserver-1.0-dev \
-  libgstreamer-plugins-bad1.0-dev
+  libgstreamer-plugins-bad1.0-dev \
+  libglew-dev

@@ -14,6 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+config_setting(
+  name = "aarch64-linux-gnu",
+  constraint_values = ["@platforms//cpu:x86_64"],
+)
+
+config_setting(
+  name = "x86_64-linux-gnu",
+  constraint_values = ["@platforms//cpu:aarch64"],
+)
+
 cc_binary(
     name = "libgobject-2.0.so",
     srcs = ["gobject_stub"],
@@ -26,16 +36,6 @@ cc_import(
     name = "libgobject",
     shared_library = "libgobject-2.0.so",
     visibility = ["//visibility:public"],
-)
-
-config_setting(
-  name = "aarch64-linux-gnu",
-  values = { "cpu": "k8" },
-)
-
-config_setting(
-  name = "x86_64-linux-gnu",
-  values = { "cpu": "arm64" },
 )
 
 cc_library(

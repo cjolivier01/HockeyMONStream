@@ -2,14 +2,8 @@
 
 config_setting(
   name = "aarch64-linux-gnu",
-  # define_values = {"multiarch": "aarch64-linux-gnu"},
   constraint_values = ["@platforms//cpu:aarch64"],
 )
-
-# config_setting(
-#   name = "x86_64-linux-gnu",
-#   define_values = {"multiarch": "x86_64-linux-gnu"},
-# )
 
 config_setting(
     name = "x86_64-linux-gnu",
@@ -21,14 +15,18 @@ cc_library(
   hdrs = glob([
       "opencv4/opencv2/**/*.h*",
   ]) + select({
-    ":aarch64-linux-gnu":   ["aarch64-linux-gnu/opencv4/opencv2/cvconfig.h"],
+    ":aarch64-linux-gnu":   [
+      # "aarch64-linux-gnu/opencv4/opencv2/cvconfig.h"
+    ],
     ":x86_64-linux-gnu":    ["x86_64-linux-gnu/opencv4/opencv2/cvconfig.h"],
     "//conditions:default": [],
   }),
   includes = [
       "opencv4",
   ] + select({
-    ":aarch64-linux-gnu":   ["aarch64-linux-gnu/opencv4"],
+    ":aarch64-linux-gnu":   [
+      # "aarch64-linux-gnu/opencv4",
+    ],
     ":x86_64-linux-gnu":    ["x86_64-linux-gnu/opencv4"],
     "//conditions:default": [],
   }),
@@ -41,6 +39,7 @@ cc_library(
     "-l:libopencv_imgproc.so",
     "-l:libopencv_video.so",
     "-l:libopencv_videoio.so",
+    # Add as neeeded
     # '-lopencv_stitching', '-lopencv_alphamat', '-lopencv_aruco', '-lopencv_barcode', '-lopencv_bgsegm', 
     # '-lopencv_bioinspired', '-lopencv_ccalib', '-lopencv_cvv', '-lopencv_dnn_objdetect', 
     # '-lopencv_dnn_superres', '-lopencv_dpm', '-lopencv_face', '-lopencv_freetype',

@@ -1,11 +1,13 @@
 config_setting(
-    name = "aarch64-linux-gnu",
-    define_values = {"multiarch": "aarch64-linux-gnu"},
+  name = "aarch64-linux-gnu",
+  # values = { "cpu": "k8" },
+  constraint_values = ["@platforms//cpu:aarch64"],
 )
 
 config_setting(
-    name = "x86_64-linux-gnu",
-    define_values = {"multiarch": "x86_64-linux-gnu"},
+  name = "x86_64-linux-gnu",
+  # values = { "cpu": "arm64" },
+  constraint_values = ["@platforms//cpu:x86_64"],
 )
 
 cc_binary(
