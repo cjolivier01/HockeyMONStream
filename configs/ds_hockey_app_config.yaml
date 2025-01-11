@@ -88,7 +88,7 @@ sink2:
   udp-port: 5400
 
 osd:
-  enable: 1
+  enable: 0
   gpu-id: 0
   border-width: 1
   text-size: 15
