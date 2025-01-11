@@ -15,13 +15,13 @@ limitations under the License.
 """
 
 config_setting(
-  name = "aarch64-linux-gnu",
-  constraint_values = ["@platforms//cpu:x86_64"],
+    name = "aarch64-linux-gnu",
+    constraint_values = ["@platforms//cpu:aarch64"],
 )
 
 config_setting(
-  name = "x86_64-linux-gnu",
-  constraint_values = ["@platforms//cpu:aarch64"],
+    name = "x86_64-linux-gnu",
+    constraint_values = ["@platforms//cpu:x86_64"],
 )
 
 cc_binary(
@@ -43,11 +43,11 @@ cc_library(
     hdrs = glob([
         "include/glib-2.0/**/*.h",
     ]),
-    includes = [
-      "include/glib-2.0",
-    ],
-    copts=[
+    copts = [
         "-Iinclude/glib-2.0",
+    ],
+    includes = [
+        "include/glib-2.0",
     ],
     linkopts = [
         "-Llib/x86_64-linux-gnu",
@@ -61,8 +61,8 @@ cc_library(
     deps = [
         ":libgobject",
     ] + select({
-        ":aarch64-linux-gnu": ["@glibconfig_x86//:glibconfig"],
-        ":x86_64-linux-gnu": ["@glibconfig_aarch64//:glibconfig"],
+        ":aarch64-linux-gnu": ["@glibconfig_aarch64//:glibconfig"],
+        ":x86_64-linux-gnu": ["@glibconfig_x86//:glibconfig"],
         "//conditions:default": [],
     }),
 )
