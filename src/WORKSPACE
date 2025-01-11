@@ -16,10 +16,10 @@ local_repository(
     path = "external/deepstream",
 )
 
-local_repository(
-  name = "jetson-utils",
-  path = "/home/colivier/src/jetson-utils",
-)
+# local_repository(
+#   name = "jetson-utils",
+#   path = "/home/colivier/src/jetson-utils",
+# )
 
 local_repository(
     name = "gst_plugin_dev",

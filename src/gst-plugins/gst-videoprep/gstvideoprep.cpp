@@ -7,7 +7,7 @@
 #include <nvbufsurface.h>
 #include <cmath>
 #include <iostream>
-#include "cudaDraw.h"
+// #include "cudaDraw.h"
 #include "gst-nvcommon.h"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
@@ -688,13 +688,13 @@ void inspect_nvbufsurface_dtype(GstBuffer* buffer) {
   gst_buffer_unmap(buffer, &map_info);
 }
 
-std::unique_ptr<glDisplay> create_video_output(const hm::surface::Surface& surface) {
-  videoOptions vo;
-  vo.width = (int)surface.width();
-  vo.height = (int)surface.height();
-  auto result = std::unique_ptr<glDisplay>(glDisplay::Create(vo));
-  return result;
-}
+// std::unique_ptr<glDisplay> create_video_output(const hm::surface::Surface& surface) {
+//   videoOptions vo;
+//   vo.width = (int)surface.width();
+//   vo.height = (int)surface.height();
+//   auto result = std::unique_ptr<glDisplay>(glDisplay::Create(vo));
+//   return result;
+// }
 
 static cudaError gst_videoprep_generate_output(
     NvDsBatchMeta* batch_meta,
