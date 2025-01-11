@@ -28,9 +28,9 @@ cc_library(
     hdrs = glob([
         "include/gstreamer-1.0/**/*.h",
     ]),
-    copts = [
-        "-Iinclude/gstreamer-1.0",
-    ],
+    # copts = [
+    #     "-Iinclude/gstreamer-1.0",
+    # ],
     includes = ["include/gstreamer-1.0"],
     linkopts = select({
         ":aarch64-linux-gnu": ["-Llib/aarch64-linux-gnu"],

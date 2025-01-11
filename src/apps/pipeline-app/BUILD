@@ -10,6 +10,10 @@ cc_binary(
     "@local_cuda//:cuda_runtime",
     "@local_cuda//:cuda",
   ],
+  copts=[
+    "-x", "c++",
+    "-std=c++17",
+  ],
   linkopts=[
     "-L/usr/local/lib/x86_64-linux-gnu",
     "-ljson-glib-1.0",

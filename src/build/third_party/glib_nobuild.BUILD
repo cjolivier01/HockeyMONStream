@@ -30,6 +30,9 @@ cc_binary(
     linkopts = ["-Wl,-soname,libgobject-2.0.so.0"],
     linkshared = True,
     visibility = ["//visibility:public"],
+    # deps=[
+    #   "@misc",
+    # ]
 )
 
 cc_import(

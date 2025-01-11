@@ -14,6 +14,7 @@ cc_library(
     copts = [
         "-fopenmp",
         "-Wall",
+        "-x", "c++",
         "-std=c++17",
         "-fPIC",
         "-Wno-error=deprecated-declarations",
