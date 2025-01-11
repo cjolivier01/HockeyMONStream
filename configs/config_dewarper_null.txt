@@ -12,9 +12,15 @@
 
 [property]
 #dewarp-dump-frames=10
-# output-width=3680
-# output-height=2428
-output-width=5646
-output-height=3176
+# output-width=1312
+# output-height=738
+
+# ev-reno-1
+output-width=2418
+output-height=1360
+
+# ev-stockton-2
+# output-width=5646
+# output-height=3176
 num-batch-buffers=4
 

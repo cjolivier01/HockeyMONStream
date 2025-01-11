@@ -732,11 +732,23 @@ static cudaError gst_videoprep_generate_output(
   assert(tracking_boxes.size() == in_surface->numFilled);
   const size_t nr_surfaces_to_process = std::min(tracking_boxes.size(), (size_t)out_surface->batchSize);
   assert(nr_surfaces_to_process <= videoprep->num_batch_buffers);
-  for (size_t batch_nr = 0; batch_nr < nr_surfaces_to_process; ++batch_nr) {
+
+  NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list;
+
+  for (size_t batch_nr = 0; batch_nr < nr_surfaces_to_process; ++batch_nr, frame_meta_list = frame_meta_list->next) {
+    assert(frame_meta_list);
+    NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)frame_meta_list->data;
+
+    FloatValue pipeline_width = frame_meta->pipeline_width ? frame_meta->pipeline_width : frame_meta->source_frame_width;
+    FloatValue pipeline_height = frame_meta->pipeline_height ? frame_meta->pipeline_height : frame_meta->source_frame_height;
+
+    FloatValue scale_w = float(videoprep->input_width) / pipeline_width;
+    FloatValue scale_h = float(videoprep->input_height) / pipeline_height;
+
 #if 1
     float angle = 0.0;
     const float max_angle = 30.0;
-    const float half_width = float(videoprep->input_width) / 2;
+    const float half_width = float(pipeline_width) / 2;
     const float tcx = tracking_boxes.at(batch_nr).center().x;
     if (tcx < half_width) {
       float pct = 1.0 - tcx / half_width;
@@ -752,7 +764,11 @@ static cudaError gst_videoprep_generate_output(
       angle = 0;
     }
 #endif
-    const BBox& tbox = tracking_boxes.at(batch_nr);
+    BBox tbox = tracking_boxes.at(batch_nr);
+    tbox.left *= scale_w;
+    tbox.right *= scale_w;
+    tbox.top *= scale_h;
+    tbox.bottom *= scale_h;
     const BBox input_rect(0, 0, videoprep->input_width, videoprep->input_height);
     BBox output_rect(0, 0, (FloatValue)videoprep->output_width, (FloatValue)videoprep->output_height);
 

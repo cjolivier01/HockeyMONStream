@@ -88,7 +88,7 @@ sink2:
   udp-port: 5400
 
 osd:
-  enable: 0
+  enable: 1
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -117,20 +117,20 @@ streammux:
   ##to push the batch even if the complete batch is not formed
   batched-push-timeout: 40000
   ## Set muxer output width and height
-  # width: 1312
-  # height: 480
-  # width: 4080
-  # height: 1360
-  width: 7680
-  height: 3176
+  # width: 1784
+  # height: 738
+  width: 4080
+  height: 1360
+  # width: 7680
+  # height: 3176
   ##Enable to maintain aspect ratio wrt source, and allow black borders, works
   ##along with width, height properties
   enable-padding: 1
   nvbuf-memory-type: 0
 
 hmvideoprep:
-  # enable: false
-  enable: true
+  enable: false
+  # enable: true
   gpu-id: 0
   # has_queue: false
   # has_videoconvert: false

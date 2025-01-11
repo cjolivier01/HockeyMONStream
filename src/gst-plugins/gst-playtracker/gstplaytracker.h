@@ -20,18 +20,12 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include "PlayTrackerCtx.h"
-// #include "gst-nvquery.h"
-//#include "gstnvdsmeta.h
 #include "nvdsmeta.h"
 #include "nvbufsurface.h"
-//#include "nvbufsurftransform.h"
 #include "nvtx3/nvToolsExt.h"
 
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
 
-// #include <condition_variable>
-// #include <mutex>
-// #include <thread>
 #include <vector>
 
 /* Package and library details required for plugin_init */

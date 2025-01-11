@@ -7,16 +7,13 @@ property:
   labelfile-path: /mnt/data/pretrained/deepstream/yolox/labels_coco.txt
   batch-size: 4
   network-mode: 0
-  num-detected-classes: 80
-  # num-detected-classes: 1
+  # num-detected-classes: 80
+  num-detected-classes: 1
   interval: 0
   gie-unique-id: 1
   process-mode: 1
   network-type: 0
   cluster-mode: 2
-  # TODO: implement processing_w/h
-  # processing_width: 1312
-  # processing_height: 480
   maintain-aspect-ratio: 1
   symmetric-padding: 0
   parse-bbox-func-name: NvDsInferParseYolo
