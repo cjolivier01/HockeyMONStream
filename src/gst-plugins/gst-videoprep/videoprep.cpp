@@ -44,7 +44,7 @@ std::vector<hm::BBox> get_tracking_boxes(NvDsBatchMeta* batch_meta) {
 
 // Rotate an image around the image's center
 template <typename F>
-void createAffineMatrix(const F& angleRadians, int width, int height, const Point& anchorPoint, F matrix[2][3]) {
+void createAffineMatrix(double angleRadians, int width, int height, const Point& anchorPoint, F matrix[2][3]) {
   // Image center
   // double cx = width / 2.0;
   // double cy = height / 2.0;
@@ -182,7 +182,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
   // Wipe the destination image
   cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
   // Now rotate into the dest image
-#if 1
+#if 0
   float affineMatrix[2][3];
   createAffineMatrix(
       angleRadians,
