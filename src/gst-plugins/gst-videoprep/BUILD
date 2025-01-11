@@ -1,12 +1,12 @@
 load("@gst_plugin_dev//build:gst_plugin.bzl", "gst_cc_plugin")
 
 config_setting(
-    name = "aarch64-linux-gnu",
+    name = "x86_64-linux-gnu",
     constraint_values = ["@platforms//cpu:x86_64"],
 )
 
 config_setting(
-    name = "x86_64-linux-gnu",
+    name = "aarch64-linux-gnu",
     constraint_values = ["@platforms//cpu:aarch64"],
 )
 
@@ -20,8 +20,8 @@ gst_cc_plugin(
         "-Wno-error=write-strings",
     ],
     linkopts = select({
-        ":aarch64-linux-gnu": ["/usr/local/cuda-12.6/targets/aarch64-linux/lib"],
-        ":x86_64-linux-gnu": ["/usr/local/cuda-12.6/targets/x86_64-linux/lib"],
+        ":aarch64-linux-gnu": ["-L/usr/local/cuda-12.6/targets/aarch64-linux/lib"],
+        ":x86_64-linux-gnu": ["-L/usr/local/cuda-12.6/targets/x86_64-linux/lib"],
         "//conditions:default": [],
     }) + [
         "-l:libnppig.so",

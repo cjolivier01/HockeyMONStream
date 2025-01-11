@@ -92,7 +92,7 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
   nvonnxparser::IParser* parser{nullptr};
 
   if (m_NetworkType == "onnx") {
-#if NV_TENSORRT_MAJOR >= 8 && NV_TENSORRT_MINOR > 0
+#if NV_TENSORRT_MAJOR > 8 || (NV_TENSORRT_MAJOR == 8 && NV_TENSORRT_MINOR > 0)
     parser = nvonnxparser::createParser(*network, *builder->getLogger());
 #else
     parser = nvonnxparser::createParser(*network, logger);
@@ -223,7 +223,7 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
   config->setProfilingVerbosity(nvinfer1::ProfilingVerbosity::kDETAILED);
 #endif
 
-#if NV_TENSORRT_MAJOR >= 8 && NV_TENSORRT_MINOR > 0
+#if NV_TENSORRT_MAJOR > 8 || (NV_TENSORRT_MAJOR == 8 && NV_TENSORRT_MINOR > 0)
   nvinfer1::IRuntime* runtime =
       nvinfer1::createInferRuntime(*builder->getLogger());
 #else
