@@ -4,4 +4,5 @@ sudo apt-get install -y \
   libsoup2.4-dev \
   libjson-glib-dev \
   libjsoncpp-dev \
-  protobuf-compiler
+  protobuf-compiler \
+  libgstrtspserver-1.0-dev
