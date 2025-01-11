@@ -190,7 +190,8 @@ ds-fieldmask:
   enable: 1
   gpu-id: 0
   unique-id: 76
-  detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png
+  # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png
+  detection-mask: /home/colivier/Videos/ev-reno-1/rink_mask_0.png
 
 tracker:
   enable: 1
