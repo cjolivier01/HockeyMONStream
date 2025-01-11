@@ -525,7 +525,7 @@ static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
 #endif
   constexpr size_t kBytesPerPixel = 4;
 #ifdef SCRATCH_USE_ALIGNED_PITCH
-  size_t pitch = NVBUF_PLATFORM_ALIGNED_PITCH(vp_params.dewarpWidth * kBytesPerPixel);
+  size_t pitch = NVBUF_PLATFORM_ALIGNED_PITCH((size_t)videoprep->pre_rotate_size.width * kBytesPerPixel);
 #else
   // No alignment for simpler functions that cant handle aligned pitch
   size_t pitch = (size_t)videoprep->pre_rotate_size.width * kBytesPerPixel;
