@@ -116,8 +116,8 @@ NppStatus cropSurface(
     const int4 roi{
         .x = (int)src_rect.left,
         .y = (int)src_rect.top,
-        .z = (int)src_rect.right,
-        .w = (int)src_rect.bottom,
+        .z = (int)src_rect.right - 1,
+        .w = (int)src_rect.bottom - 1,
     };
     assert((guint)src_rect.width() <= out_surface.width());
     assert((guint)src_rect.height() <= out_surface.height());
