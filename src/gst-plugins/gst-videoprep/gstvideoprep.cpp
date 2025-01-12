@@ -688,13 +688,13 @@ void inspect_nvbufsurface_dtype(GstBuffer* buffer) {
   gst_buffer_unmap(buffer, &map_info);
 }
 
-// std::unique_ptr<glDisplay> create_video_output(const hm::surface::Surface& surface) {
-//   videoOptions vo;
-//   vo.width = (int)surface.width();
-//   vo.height = (int)surface.height();
-//   auto result = std::unique_ptr<glDisplay>(glDisplay::Create(vo));
-//   return result;
-// }
+std::unique_ptr<glDisplay> create_video_output(const hm::surface::Surface& surface) {
+  videoOptions vo;
+  vo.width = (int)surface.width();
+  vo.height = (int)surface.height();
+  auto result = std::unique_ptr<glDisplay>(glDisplay::Create(vo));
+  return result;
+}
 
 static cudaError gst_videoprep_generate_output(
     NvDsBatchMeta* batch_meta,
@@ -739,8 +739,10 @@ static cudaError gst_videoprep_generate_output(
     assert(frame_meta_list);
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)frame_meta_list->data;
 
-    FloatValue pipeline_width = frame_meta->pipeline_width ? frame_meta->pipeline_width : frame_meta->source_frame_width;
-    FloatValue pipeline_height = frame_meta->pipeline_height ? frame_meta->pipeline_height : frame_meta->source_frame_height;
+    FloatValue pipeline_width =
+        frame_meta->pipeline_width ? frame_meta->pipeline_width : frame_meta->source_frame_width;
+    FloatValue pipeline_height =
+        frame_meta->pipeline_height ? frame_meta->pipeline_height : frame_meta->source_frame_height;
 
     FloatValue scale_w = float(videoprep->input_width) / pipeline_width;
     FloatValue scale_h = float(videoprep->input_height) / pipeline_height;
@@ -780,9 +782,6 @@ static cudaError gst_videoprep_generate_output(
 
     const BBox dst_box(0, 0, extra_width_src_rect.width(), extra_width_src_rect.height());
 
-    const Point bigrect_center = extra_width_src_rect.center();
-    Point tbox_center = tbox.center();
-    // FloatValue center_dx = tbox_center.x - bigrect_center.x;
     BBox new_tbox = tbox;
     new_tbox.left -= extra_width_src_rect.left;
     new_tbox.right -= extra_width_src_rect.left;
@@ -802,10 +801,10 @@ static cudaError gst_videoprep_generate_output(
 
     hm::surface::Surface out_surf(&out_surface->surfaceList[batch_nr]);
 
-    // if (!videoprep->priv->video_output) {
-    //   assert(err == 0);
-    //   videoprep->priv->video_output = create_video_output(scratch_surface_0);
-    // }
+    if (!videoprep->priv->video_output) {
+      assert(err == 0);
+      videoprep->priv->video_output = create_video_output(scratch_surface_0);
+    }
 
     np_status = cropSurface(
         &in_surface->surfaceList[batch_nr],
@@ -839,32 +838,6 @@ static cudaError gst_videoprep_generate_output(
     //     5.0,
     //     nppStreamContext.hStream);
 
-    // if (videoprep->priv->video_output) {
-    //   // hm::surface::Surface dsurf = scratch_surface_1;
-    //   hm::surface::Surface dsurf = scratch_surface_0;
-    //   auto err = cudaDrawRect(
-    //       dsurf.dataptr(),
-    //       dsurf.width(),
-    //       dsurf.height(),
-    //       imageFormat::IMAGE_RGBA8,
-    //       100,
-    //       100,
-    //       700,
-    //       700,
-    //       // new_tbox.left,
-    //       // new_tbox.top,
-    //       // new_tbox.right,
-    //       // new_tbox.bottom,
-    //       {0, 0, 0, 1},
-    //       {1, 0, 0, 1},
-    //       5.0,
-    //       nppStreamContext.hStream);
-    //   cudaStreamSynchronize(videoprep->stream);
-    //   videoprep->priv->video_output->Render((uchar4*)dsurf.dataptr(), dsurf.width(), dsurf.height());
-    //   videoprep->priv->video_output->RenderRect(
-    //       new_tbox.left, new_tbox.top, new_tbox.width(), new_tbox.height(), 1.0f, 0.0f, 0.0f, 1.0f);
-    // }
-
     // We just rotate the whole thjing around the point
     // that is effectively the center of the tracking box
     np_status = rotateNvBufSurfaceWithNPP(
@@ -877,6 +850,33 @@ static cudaError gst_videoprep_generate_output(
         /*anchor_point=*/new_tbox.center(),
         nppStreamContext);
     assert(np_status == NppStatus::NPP_SUCCESS);
+
+    if (videoprep->priv->video_output) {
+      hm::surface::Surface dsurf = scratch_surface_1;
+      // hm::surface::Surface dsurf = scratch_surface_0;
+      // auto err = cudaDrawRect(
+      //     dsurf.dataptr(),
+      //     dsurf.width(),
+      //     dsurf.height(),
+      //     imageFormat::IMAGE_RGBA8,
+      //     100,
+      //     100,
+      //     700,
+      //     700,
+      //     // new_tbox.left,
+      //     // new_tbox.top,
+      //     // new_tbox.right,
+      //     // new_tbox.bottom,
+      //     {0, 0, 0, 1},
+      //     {1, 0, 0, 1},
+      //     5.0,
+      //     nppStreamContext.hStream);
+      cudaStreamSynchronize(videoprep->stream);
+      videoprep->priv->video_output->Render((uchar4*)dsurf.dataptr(), dsurf.width(), dsurf.height());
+      videoprep->priv->video_output->RenderRect(
+          new_tbox.left, new_tbox.top, new_tbox.width(), new_tbox.height(), 1.0f, 0.0f, 0.0f, 1.0f);
+    }
+
     np_status = cropAndResizeNvBufSurface(
         /*srcSurface=*/scratch_surface_1,
         /*src_rect=*/new_tbox,
