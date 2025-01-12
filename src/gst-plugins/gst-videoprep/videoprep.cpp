@@ -96,8 +96,7 @@ NppStatus cropSurface(
   // Do we have a use-case for not startiong at 0, 0? does the resize functionw ork at all?
   const NppiRect dstRect{.x = 0, .y = 0, .width = (int)src_rect.width(), .height = (int)src_rect.height()};
   if (cuerr == cudaSuccess) {
-    // if (in_surface.pitch_width() != in_surface.width() || out_surface.pitch_width() != out_surface.width()) {
-#if 0
+#if 1
     // const NppiSize src_rect_size{.width=(int)src_rect.width(), .height=(int)src_rect.height()};
     // const NppiSize dest_rect_size{.width=(int)src_rect.width(), .height=(int)src_rect.height()};
     status = nppiResize_8u_C4R_Ctx(
