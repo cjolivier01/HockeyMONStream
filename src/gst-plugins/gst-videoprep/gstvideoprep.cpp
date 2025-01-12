@@ -798,20 +798,21 @@ static cudaError gst_videoprep_generate_output(
     NppStatus np_status = NppStatus::NPP_SUCCESS;
     (void)np_status;
 
-    hm::surface::Surface scratch_surface_0 = videoprep->priv->scratch_buffers[0];
-    hm::surface::Surface scratch_surface_1 = videoprep->priv->scratch_buffers[1];
+    // hm::surface::Surface scratch_surface_0 = videoprep->priv->scratch_buffers[0];
+    // hm::surface::Surface scratch_surface_1 = videoprep->priv->scratch_buffers[1];
+    hm::surface::SurfaceList::round_robin_iterator scratch_surface_iter = videoprep->priv->scratch_buffers.begin();
 
     hm::surface::Surface out_surf(&out_surface->surfaceList[batch_nr]);
 
     if (!videoprep->priv->video_output) {
       assert(err == 0);
-      videoprep->priv->video_output = create_video_output(scratch_surface_0);
+      videoprep->priv->video_output = create_video_output(*scratch_surface_iter);
     }
 
     np_status = cropSurface(
         &in_surface->surfaceList[batch_nr],
         /*src_rect=*/extra_width_src_rect,
-        scratch_surface_0,
+        *scratch_surface_iter,
         /*clear_output_surface=*/false,
         nppStreamContext);
 
@@ -842,19 +843,22 @@ static cudaError gst_videoprep_generate_output(
 
     // We just rotate the whole thjing around the point
     // that is effectively the center of the tracking box
-    np_status = rotateNvBufSurfaceWithNPP(
-        //&in_surface->surfaceList[batch_nr],
-        scratch_surface_0,
-        dst_box,
-        scratch_surface_1,
-        dst_box,
-        angle,
-        /*anchor_point=*/new_tbox.center(),
-        nppStreamContext);
-    assert(np_status == NppStatus::NPP_SUCCESS);
+    {
+      auto in_surf_iter = scratch_surface_iter++;
+      np_status = rotateNvBufSurfaceWithNPP(
+          //&in_surface->surfaceList[batch_nr],
+          *in_surf_iter,
+          dst_box,
+          *scratch_surface_iter,
+          dst_box,
+          angle,
+          /*anchor_point=*/new_tbox.center(),
+          nppStreamContext);
+      assert(np_status == NppStatus::NPP_SUCCESS);
+    }
 
     if (videoprep->priv->video_output) {
-      hm::surface::Surface dsurf = scratch_surface_1;
+      hm::surface::Surface dsurf = *scratch_surface_iter;
       // hm::surface::Surface dsurf = scratch_surface_0;
       // auto err = cudaDrawRect(
       //     dsurf.dataptr(),
@@ -880,7 +884,7 @@ static cudaError gst_videoprep_generate_output(
     }
 
     np_status = cropAndResizeNvBufSurface(
-        /*srcSurface=*/scratch_surface_1,
+        /*srcSurface=*/*scratch_surface_iter++,
         /*src_rect=*/new_tbox,
         &out_surface->surfaceList[batch_nr],
         /*dest_rect=*/output_rect,
