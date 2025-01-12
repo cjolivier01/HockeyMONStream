@@ -802,10 +802,10 @@ static cudaError gst_videoprep_generate_output(
 
     hm::surface::Surface out_surf(&out_surface->surfaceList[batch_nr]);
 
-    if (!videoprep->priv->video_output) {
-      assert(err == 0);
-      videoprep->priv->video_output = create_video_output(*scratch_surface_iter);
-    }
+    // if (!videoprep->priv->video_output) {
+    //   assert(err == 0);
+    //   videoprep->priv->video_output = create_video_output(*scratch_surface_iter);
+    // }
 
     np_status = cropSurface(
         &in_surface->surfaceList[batch_nr],
@@ -824,44 +824,46 @@ static cudaError gst_videoprep_generate_output(
     assert(isClose(new_tbox_ar, output_ar, 1e-6f, 0.001));
 #endif
 
-    if (videoprep->priv->video_output) {
-      hm::surface::Surface dsurf = *scratch_surface_iter;
-      cudaDrawRect(
-          dsurf.dataptr(),
-          dsurf.width(),
-          dsurf.height(),
-          imageFormat::IMAGE_RGBA8,
-          new_tbox.left,
-          new_tbox.top,
-          new_tbox.right,
-          new_tbox.bottom,
-          {0, 0, 255, 10},
-          {0, 255, 255, 255},
-          5.0,
-          nppStreamContext.hStream);
-      videoprep->priv->video_output->Render(
-          dsurf.dataptr<uchar4*>(), dsurf.width(), dsurf.height(), nppStreamContext.hStream);
-    }
+    // if (videoprep->priv->video_output) {
+    //   hm::surface::Surface dsurf = *scratch_surface_iter;
+    //   cudaDrawRect(
+    //       dsurf.dataptr(),
+    //       dsurf.width(),
+    //       dsurf.height(),
+    //       imageFormat::IMAGE_RGBA8,
+    //       new_tbox.left,
+    //       new_tbox.top,
+    //       new_tbox.right,
+    //       new_tbox.bottom,
+    //       {0, 0, 255, 10},
+    //       {0, 255, 255, 255},
+    //       5.0,
+    //       nppStreamContext.hStream);
+    //   videoprep->priv->video_output->Render(
+    //       dsurf.dataptr<uchar4*>(), dsurf.width(), dsurf.height(), nppStreamContext.hStream);
+    // }
 
     // We just rotate the whole thjing around the point
     // that is effectively the center of the tracking box
-    // {
-    //   auto in_surf_iter = scratch_surface_iter++;
-    //   np_status = rotateNvBufSurfaceWithNPP(
-    //       //&in_surface->surfaceList[batch_nr],
-    //       *in_surf_iter,
-    //       dst_box,
-    //       *scratch_surface_iter,
-    //       dst_box,
-    //       angle,
-    //       /*anchor_point=*/new_tbox.center(),
-    //       nppStreamContext);
-    //   assert(np_status == NppStatus::NPP_SUCCESS);
-    // }
+#if 0
+    {
+      auto in_surf_iter = scratch_surface_iter++;
+      np_status = rotateNvBufSurfaceWithNPP(
+          //&in_surface->surfaceList[batch_nr],
+          *in_surf_iter,
+          dst_box,
+          *scratch_surface_iter,
+          dst_box,
+          angle,
+          /*anchor_point=*/new_tbox.center(),
+          nppStreamContext);
+      assert(np_status == NppStatus::NPP_SUCCESS);
+    }
+#endif
 
     // if (videoprep->priv->video_output) {
     //   hm::surface::Surface dsurf = *scratch_surface_iter;
-    //   // std::cout << new_tbox.top << std::endl;q
+    //   // std::cout << new_tbox.top << std::endl;
     //   cudaDrawRect(
     //       dsurf.dataptr(),
     //       dsurf.width(),
