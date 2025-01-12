@@ -180,10 +180,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
 
   // Define rotation matrix
 #if 1
-  // Wipe the destination image
-  cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
-  // Now rotate into the dest image
-#if 0
+#if 1
   float affineMatrix[2][3];
   createAffineMatrix(
       angleRadians,
@@ -194,7 +191,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
   assert(in_surface.width() == out_surface.width());
   assert(in_surface.height() == out_surface.height());
   cudaError_t cuerr = cudaWarpAffine(
-      out_surface.dataptr<uchar4*>(),
+      in_surface.dataptr<uchar4*>(),
       out_surface.dataptr<uchar4*>(),
       (uint32_t)in_surface.width(),
       (uint32_t)in_surface.height(),
@@ -206,6 +203,8 @@ NppStatus rotateNvBufSurfaceWithNPP(
     assert(false);
   }
 #else
+  // Wipe the destination image
+  cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
   double affineMatrix[2][3];
   createAffineMatrix(
       angleRadians,

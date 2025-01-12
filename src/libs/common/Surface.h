@@ -47,6 +47,12 @@ class Surface {
         assert(false);
     }
   }
+  constexpr guint pitch_width() const {
+    assert(pitch() % bytes_per_pixel() == 0);
+    guint pw = pitch() / bytes_per_pixel();
+    assert(pw <= width());
+    return pw;
+  }
   constexpr guint size(bool assert_pitch = false) const {
     assert(!assert_pitch || pitch() == width() * bytes_per_pixel());
     return pitch() * height();
