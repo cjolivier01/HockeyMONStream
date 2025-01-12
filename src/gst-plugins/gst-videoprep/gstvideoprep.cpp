@@ -824,6 +824,25 @@ static cudaError gst_videoprep_generate_output(
     assert(isClose(new_tbox_ar, output_ar, 1e-6f, 0.001));
 #endif
 
+    if (videoprep->priv->video_output) {
+      hm::surface::Surface dsurf = *scratch_surface_iter;
+      cudaDrawRect(
+          dsurf.dataptr(),
+          dsurf.width(),
+          dsurf.height(),
+          imageFormat::IMAGE_RGBA8,
+          new_tbox.left,
+          new_tbox.top,
+          new_tbox.right,
+          new_tbox.bottom,
+          {0, 0, 255, 10},
+          {0, 255, 255, 255},
+          5.0,
+          nppStreamContext.hStream);
+      videoprep->priv->video_output->Render(
+          dsurf.dataptr<uchar4*>(), dsurf.width(), dsurf.height(), nppStreamContext.hStream);
+    }
+
     // We just rotate the whole thjing around the point
     // that is effectively the center of the tracking box
     {
@@ -840,26 +859,26 @@ static cudaError gst_videoprep_generate_output(
       assert(np_status == NppStatus::NPP_SUCCESS);
     }
 
-    if (videoprep->priv->video_output) {
-      hm::surface::Surface dsurf = *scratch_surface_iter;
-      // std::cout << new_tbox.top << std::endl;
-      cudaDrawRect(
-          dsurf.dataptr(),
-          dsurf.width(),
-          dsurf.height(),
-          imageFormat::IMAGE_RGBA8,
-          new_tbox.left,
-          new_tbox.top,
-          new_tbox.right,
-          new_tbox.bottom,
-          {0, 0, 255, 10},
-          {0, 255, 255, 255},
-          5.0,
-          nppStreamContext.hStream);
-      // cudaStreamSynchronize(nppStreamContext.hStream);
-      videoprep->priv->video_output->Render(
-          dsurf.dataptr<uchar4*>(), dsurf.width(), dsurf.height(), nppStreamContext.hStream);
-    }
+    // if (videoprep->priv->video_output) {
+    //   hm::surface::Surface dsurf = *scratch_surface_iter;
+    //   // std::cout << new_tbox.top << std::endl;q
+    //   cudaDrawRect(
+    //       dsurf.dataptr(),
+    //       dsurf.width(),
+    //       dsurf.height(),
+    //       imageFormat::IMAGE_RGBA8,
+    //       new_tbox.left,
+    //       new_tbox.top,
+    //       new_tbox.right,
+    //       new_tbox.bottom,
+    //       {0, 0, 255, 10},
+    //       {0, 255, 255, 255},
+    //       5.0,
+    //       nppStreamContext.hStream);
+    //   // cudaStreamSynchronize(nppStreamContext.hStream);
+    //   videoprep->priv->video_output->Render(
+    //       dsurf.dataptr<uchar4*>(), dsurf.width(), dsurf.height(), nppStreamContext.hStream);
+    // }
 
     np_status = cropAndResizeNvBufSurface(
         /*srcSurface=*/*scratch_surface_iter++,

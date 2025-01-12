@@ -96,7 +96,8 @@ NppStatus cropSurface(
   // Do we have a use-case for not startiong at 0, 0? does the resize functionw ork at all?
   const NppiRect dstRect{.x = 0, .y = 0, .width = (int)src_rect.width(), .height = (int)src_rect.height()};
   if (cuerr == cudaSuccess) {
-#if 1
+    // if (in_surface.pitch_width() != in_surface.width() || out_surface.pitch_width() != out_surface.width()) {
+#if 0
     // const NppiSize src_rect_size{.width=(int)src_rect.width(), .height=(int)src_rect.height()};
     // const NppiSize dest_rect_size{.width=(int)src_rect.width(), .height=(int)src_rect.height()};
     status = nppiResize_8u_C4R_Ctx(
@@ -114,14 +115,21 @@ NppStatus cropSurface(
         nppStreamContext);
     // std::cout << (int)src_rect.width() << ", " << dest_image_size.width << std::endl;
 #else
-    int eff_src_width = out_surface.pitch() / 4;
+    cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
+    const int4 roi{
+        .x = (int)src_rect.left,
+        .y = (int)src_rect.top,
+        .z = (int)src_rect.width(),
+        .w = (int)src_rect.height(),
+    };
     cuerr = cudaCrop(
         in_surface.dataptr<uchar4*>(),
         out_surface.dataptr<uchar4*>(),
-        {.x = (int)src_rect.left, .y = (int)src_rect.top, .z = (int)src_rect.width(), .w = (int)src_rect.height()},
-        //{.x = (int)src_rect.left, .y = (int)src_rect.top, .z = (int)src_rect.right, .w = (int)src_rect.bottom},
-        eff_src_width,
+        roi,
+        in_surface.width(),
         in_surface.height(),
+        in_surface.pitch(), 
+        out_surface.pitch(),
         nppStreamContext.hStream);
 #endif
   }
