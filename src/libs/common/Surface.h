@@ -1,3 +1,7 @@
+/**
+ * @file surface_list.hpp
+ * @brief Implements a container for Surface objects with round-robin iteration capabilities
+ */
 #pragma once
 
 #include "nvbufsurface.h"
@@ -49,6 +53,15 @@ class Surface {
   NvBufSurfaceParams* params_{nullptr};
 };
 
+/**
+ * @class SurfaceList
+ * @brief A container class that stores and manages Surface objects with round-robin iteration support
+ *
+ * SurfaceList provides an STL-compatible container interface for storing Surface objects.
+ * It features a custom round-robin iterator that allows for infinite traversal of the contained
+ * surfaces, automatically wrapping back to the beginning after reaching the end.
+ *
+ */
 class SurfaceList {
  public:
   // Forward declaration of iterator
@@ -84,7 +97,15 @@ class SurfaceList {
   void add_surface(const NvBufSurfaceParams* surface_params);
   void add_surface(const Surface& surface);
 
-  // Iterator class definition
+  /**
+   * @class round_robin_iterator
+   * @brief Custom iterator providing infinite traversal of the SurfaceList
+   *
+   * This iterator implements the forward iterator concept and provides round-robin
+   * traversal behavior. When reaching the end of the container, it automatically
+   * wraps around to the beginning. The iterator will never equal end() unless the
+   * container is empty.
+   */
   class round_robin_iterator {
    private:
     SurfaceList* container;
