@@ -11,12 +11,12 @@
 #include <cuda.h>
 #include <npp.h>
 
-#include "nv_aisle_csvparser.hpp"
-#include "nv_spot_csvparser.hpp"
+//#include "nv_aisle_csvparser.hpp"
+//#include "nv_spot_csvparser.hpp"
 
-#include "gstnvdsmeta.h"
+// #include "gstnvdsmeta.h"
 
-#include "nvds_dewarper_meta.h"
+// #include "nvds_dewarper_meta.h"
 
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
@@ -26,8 +26,8 @@
 
 /* clang-format off */
 
-using namespace nvaisle_csv;
-using namespace nvspot_csv;
+//using namespace nvaisle_csv;
+//using namespace nvspot_csv;
 
 #define DISTORTION_SIZE 5 /**< Maximum number of distortion coefficients */
 #define FOCAL_LENGTH_SIZE 2 /**< Focal length array size : two values for X & Y direction */

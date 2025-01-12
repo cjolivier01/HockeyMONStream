@@ -22,6 +22,9 @@
  */
 
 #include "videoprep_property_parser.h"
+
+#include <iostream>
+
 #include <cuda.h>
 #include <string.h>
 
@@ -75,7 +78,7 @@ GST_DEBUG_CATEGORY (VIDEOPREP_CFG_PARSER_CAT);
 inline bool CUDA_CHECK_ERR_(int e, int iLine, const char *szFile) {
   if (e != cudaSuccess) {
     std::cout << "CUDA runtime error " << e << " at line " << iLine <<
-        " in file " << szFile << endl;
+        " in file " << szFile << std::endl;
     return false;
   }
   return true;

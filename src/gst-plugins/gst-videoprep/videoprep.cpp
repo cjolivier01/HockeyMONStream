@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include <cassert>
+#include <iostream>
 #include <vector>
 
 #include <npp.h>

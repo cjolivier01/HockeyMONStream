@@ -2,7 +2,7 @@
 
 #include <nppi.h>
 
-#include <optional>
+#include <iostream>
 
 #include "gstvideoprep.h"
 #include "nvbufsurface.h"
@@ -11,7 +11,7 @@
 
 inline bool CUDA_CHECK_(gint e, gint iLine, const gchar* szFile) {
   if (e != cudaSuccess) {
-    std::cout << "CUDA runtime error " << e << " at line " << iLine << " in file " << szFile << endl;
+    std::cout << "CUDA runtime error " << e << " at line " << iLine << " in file " << szFile << std::endl;
     return false;
   }
   return true;

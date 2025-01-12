@@ -9,10 +9,12 @@
 #include <iostream>
 #include "cudaDraw.h"
 #include "gst-nvcommon.h"
+#include "gstnvdsmeta.h"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
+#include "nvds_dewarper_meta.h"
 #include "nvdsmeta.h"
-#include "nvtx_helper.h"
+// #include "nvtx_helper.h"
 #include "videoprep.h"
 #include "videoprep_property_parser.h"
 
@@ -133,7 +135,7 @@ static const gchar* print_pretty_time(gchar* ts_str, gsize ts_str_len, GstClockT
 
 inline bool NPP_CHECK_(gint e, gint iLine, const gchar* szFile) {
   if (e != NPP_SUCCESS) {
-    std::cout << "Dewarper: NPP API error " << e << " at line " << iLine << " in file " << szFile << endl;
+    std::cout << "Dewarper: NPP API error " << e << " at line " << iLine << " in file " << szFile << std::endl;
     exit(-1);
     return false;
   }
