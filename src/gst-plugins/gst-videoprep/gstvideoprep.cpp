@@ -845,19 +845,19 @@ static cudaError gst_videoprep_generate_output(
 
     // We just rotate the whole thjing around the point
     // that is effectively the center of the tracking box
-    {
-      auto in_surf_iter = scratch_surface_iter++;
-      np_status = rotateNvBufSurfaceWithNPP(
-          //&in_surface->surfaceList[batch_nr],
-          *in_surf_iter,
-          dst_box,
-          *scratch_surface_iter,
-          dst_box,
-          angle,
-          /*anchor_point=*/new_tbox.center(),
-          nppStreamContext);
-      assert(np_status == NppStatus::NPP_SUCCESS);
-    }
+    // {
+    //   auto in_surf_iter = scratch_surface_iter++;
+    //   np_status = rotateNvBufSurfaceWithNPP(
+    //       //&in_surface->surfaceList[batch_nr],
+    //       *in_surf_iter,
+    //       dst_box,
+    //       *scratch_surface_iter,
+    //       dst_box,
+    //       angle,
+    //       /*anchor_point=*/new_tbox.center(),
+    //       nppStreamContext);
+    //   assert(np_status == NppStatus::NPP_SUCCESS);
+    // }
 
     // if (videoprep->priv->video_output) {
     //   hm::surface::Surface dsurf = *scratch_surface_iter;
