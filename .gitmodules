@@ -4,3 +4,6 @@
 [submodule "src/external/hm"]
 	path = src/external/hm
 	url = ssh://git@github.com/cjolivier01/hockeymom2
+[submodule "src/external/jetson-utils"]
+	path = src/external/jetson-utils
+	url = ssh://git@github.com/cjolivier01/jetson-utils

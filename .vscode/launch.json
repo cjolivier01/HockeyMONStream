@@ -66,6 +66,23 @@
       },
       "program": "${workspaceFolder}/src/bazel-bin/apps/pipeline-app/pipeline-app",
       "args": "-c ${workspaceFolder}/configs/ds_hockey_app_config.yaml",
+      // "substitutePath": [
+      //   {
+      //     "from": "/proc/self/cwd",
+      //     "to": "${workspaceFolder}/src"
+      //   },
+      //   {
+      //     "from": "~/src",
+      //     "to": "/home/colivier/src"
+      //   },
+      //   {
+      //     "from": "external/deepstream/sources",
+      //     "to": "/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/sources"
+      //   },
+      // ],
+      "initCommands": [
+        "directory ${workspaceFolder}/src",
+      ],
       "environment": [
         // {
         //   "name": "GST_DEBUG",
@@ -81,7 +98,7 @@
         },
       ],
       "additionalSOLibSearchPath": "/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:/home/colivier/mambaforge/envs/ubuntu/lib:/home/colivier/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu",
-      //"preLaunchTask": "Build All",
+      "preLaunchTask": "Build All",
     },
     {
       "name": "(LLDB) kmeans",
@@ -97,10 +114,14 @@
         //"kmcuda",
         //"cuda_base",
         "cuda_best",
-        "--dim", "2",
-        "--N", "25",
-        "--k", "3",
-        "--iterations", "10",
+        "--dim",
+        "2",
+        "--N",
+        "25",
+        "--k",
+        "3",
+        "--iterations",
+        "10",
         "--verify",
       ],
       "sourceMap": {

@@ -14,7 +14,8 @@ cc_library(
     copts = [
         "-fopenmp",
         "-Wall",
-        "-x", "c++",
+        "-x",
+        "c++",
         "-std=c++17",
         "-fPIC",
         "-Wno-error=deprecated-declarations",
@@ -32,12 +33,12 @@ cc_library(
 
 cuda_library(
     name = "kmeans_cuda_lib",
-    srcs = glob([
-        "kmeans_cuda_simple.cu",
+    srcs = [
         "cuda_io.cu",
         "cuda_kmeans.cu",
         "cuda_wtime.cu",
-    ]),
+        "kmeans_cuda_simple.cu",
+    ],
     copts = [
         "-std=c++14",
         "-Xcompiler=-fPIC",
@@ -48,7 +49,6 @@ cuda_library(
     visibility = ["//visibility:public"],
     deps = [
         ":kmeans_lib_headers",
-        # "@cuml//:cuml",
         "@local_cuda//:cuda_runtime",
     ],
 )
@@ -60,7 +60,6 @@ cc_library(
     ]),
     copts = [
         "-fopenmp",
-        #"-Wno-error=write-strings",
     ],
     includes = [
         ".",

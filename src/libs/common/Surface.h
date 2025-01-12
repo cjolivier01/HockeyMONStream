@@ -39,6 +39,18 @@ class Surface {
   constexpr guint pitch() const {
     return params_->pitch;
   }
+  constexpr guint bytes_per_pixel() const {
+    switch (params_->colorFormat) {
+      case NVBUF_COLOR_FORMAT_RGBA:
+        return 4;
+      default:
+        assert(false);
+    }
+  }
+  constexpr guint size(bool assert_pitch = false) const {
+    assert(!assert_pitch || pitch() == width() * bytes_per_pixel());
+    return pitch() * height();
+  }
   BBox bbox() const {
     return BBox(0, 0, width(), height());
   }

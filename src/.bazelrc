@@ -4,6 +4,13 @@ build --nokeep_going --color=yes
 # build --crosstool_top=@toolchain//crosstool:toolchain
 build --copt=-fPIC
 build --copt=-std=c++17
+# Add full path to all C++ compilations
+# build --copt=-H  # or --copt=-full-path depending on your compiler
+
+# Only for C++ files
+# build --per_file_copt=.*\\.cpp$@-H
+# build --per_file_copt=.*\\.cc$@-H
+# build --per_file_copt=.*\\.hpp$@-H
 
 #build -c opt
 build:opt -c opt

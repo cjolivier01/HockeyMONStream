@@ -16,7 +16,7 @@ application:
   ##gie-kitti-output-dir=streamscl
 
 tiled-display:
-  enable: 1
+  enable: 0
   rows: 1
   columns: 1
   # rows: 2

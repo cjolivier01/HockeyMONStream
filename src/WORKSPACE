@@ -19,6 +19,7 @@ local_repository(
 local_repository(
   name = "jetson-utils",
   path = "/home/colivier/src/jetson-utils",
+  # path = "src/external/jetson-utils",
 )
 
 local_repository(

@@ -1,2 +1,3 @@
 src/external/hm           colivier/playarea
 src/external/deepstream   colivier/hm
+src/external/jetson-utils colivier/hm
