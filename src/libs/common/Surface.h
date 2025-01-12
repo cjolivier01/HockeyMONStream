@@ -14,7 +14,9 @@ namespace surface {
 
 class Surface {
  public:
-  Surface(NvBufSurfaceParams* params) : params_(params) {}
+  Surface(NvBufSurfaceParams* params) : params_(params) {
+    static_assert(sizeof(*this) == sizeof(NvBufSurfaceParams*));
+  }
 
   template <typename T = void*>
   constexpr T dataptr() {
@@ -49,6 +51,9 @@ class Surface {
 
 class SurfaceList {
  public:
+  // Forward declaration of iterator
+  class round_robin_iterator;
+
   SurfaceList(int gpu_id, size_t batch_size);
   SurfaceList(const NvBufSurface* buf_surface);
   ~SurfaceList();
@@ -61,7 +66,10 @@ class SurfaceList {
   }
   size_t size() const {
     return nv_surface_list_.size();
-  };
+  }
+  size_t empty() const {
+    return nv_surface_list_.empty();
+  }
   void clear();
   Surface operator[](size_t idx) {
     return Surface(&nv_surface_list_.at(idx));
@@ -75,6 +83,75 @@ class SurfaceList {
       bool owns = false);
   void add_surface(const NvBufSurfaceParams* surface_params);
   void add_surface(const Surface& surface);
+
+  // Iterator class definition
+  class round_robin_iterator {
+   private:
+    SurfaceList* container;
+    size_t current_index;
+
+   public:
+    // Iterator traits
+    using iterator_category = std::forward_iterator_tag;
+    using value_type = Surface;
+    using difference_type = std::ptrdiff_t;
+    using pointer = Surface;
+    using reference = Surface;
+
+    // Constructor
+    explicit round_robin_iterator(SurfaceList* list, size_t index = 0) : container(list), current_index(index) {}
+
+    // Dereference operator
+    reference operator*() {
+      if (container->empty()) {
+        throw std::runtime_error("Cannot dereference iterator of empty container");
+      }
+      return (*container)[current_index % container->size()];
+    }
+
+    // Arrow operator
+    pointer operator->() {
+      if (container->empty()) {
+        throw std::runtime_error("Cannot dereference iterator of empty container");
+      }
+      return (*container)[current_index % container->size()];
+    }
+
+    // Pre-increment
+    round_robin_iterator& operator++() {
+      if (!container->empty()) {
+        ++current_index;
+      }
+      return *this;
+    }
+
+    // Post-increment
+    round_robin_iterator operator++(int) {
+      round_robin_iterator tmp = *this;
+      ++(*this);
+      return tmp;
+    }
+
+    // Equality operators
+    bool operator==(const round_robin_iterator& other) const {
+      // Will always return false unless container is empty
+      return container->empty() || (container == other.container && current_index == other.current_index);
+    }
+
+    bool operator!=(const round_robin_iterator& other) const {
+      return !(*this == other);
+    }
+  };
+  // STL-like container interface
+  round_robin_iterator begin() {
+    return round_robin_iterator(this);
+  }
+
+  round_robin_iterator end() {
+    // This iterator will never actually be reached in comparisons
+    // unless the container is empty
+    return round_robin_iterator(this, size());
+  }
 
  private:
   NvBufSurface nv_surf_;
