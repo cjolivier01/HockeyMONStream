@@ -5,8 +5,6 @@
   //
   "version": "0.2.0",
   "configurations": [
-    ``
-
     {
       "name": "----------------- hstream -----------------",
     },
@@ -54,6 +52,7 @@
         //"GST_PLUGIN_PATH": "/home/colivier/src/hstream/lib/gst-plugins:/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
         "GST_PLUGIN_PATH": "/home/colivier/src/hstream/lib/gst-plugins:/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib/gst-plugins",
         //"GST_DEBUG": "3",
+        "DISPLAY": ":1",
       },
       "preLaunchTask": "Build All",
     },
@@ -96,6 +95,10 @@
         {
           "name": "GST_PLUGIN_PATH",
           "value": "/home/colivier/src/hstream/lib/gst-plugins:/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib/gst-plugins"
+        },
+        {
+          "name": "DISPLAY",
+          "value": ":1",
         },
       ],
       "additionalSOLibSearchPath": "/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:/home/colivier/mambaforge/envs/ubuntu/lib:/home/colivier/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu",
