@@ -1,9 +1,9 @@
 [submodule "src/external/hmdeepstream"]
-	path = src/external/deepstream
+	path = external/deepstream
 	url = ssh://git@github.com/cjolivier01/hmdeepstream
 [submodule "src/external/hm"]
-	path = src/external/hm
+	path = external/hm
 	url = ssh://git@github.com/cjolivier01/hockeymom2
 [submodule "src/external/jetson-utils"]
-	path = src/external/jetson-utils
+	path = external/jetson-utils
 	url = ssh://git@github.com/cjolivier01/jetson-utils

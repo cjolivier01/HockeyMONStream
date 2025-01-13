@@ -1,1 +1,1 @@
-src/external/hm/switchto.sh
+external/hm/switchto.sh

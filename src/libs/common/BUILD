@@ -1,3 +1,6 @@
+
+INCLUDE_PREFIX = "src/libs/common"
+
 cc_library(
     name = "utils",
     srcs = glob([
@@ -10,7 +13,8 @@ cc_library(
         "-fPIC",
         "-std=c++20",
     ],
-    includes = ["."],
+    # includes = ["."], # TODO: can this be removed?
+    include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
         "@deepstream//:deepstream_lib",

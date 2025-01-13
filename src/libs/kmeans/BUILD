@@ -1,6 +1,8 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
+INCLUDE_PREFIX = "src/libs/kmeans"
+
 cc_library(
     name = "kmeans",
     srcs = glob([
@@ -61,8 +63,6 @@ cc_library(
     copts = [
         "-fopenmp",
     ],
-    includes = [
-        ".",
-    ],
+    include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
 )

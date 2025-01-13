@@ -14,15 +14,14 @@
 #include "PlayTracker.h"
 #include "hockeymom/csrc/play_tracker/LivingBoxImpl.h"
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
-#include "libs/common/ConfigYaml.h"
-#include "libs/common/PlotContext.h"
+#include "src/libs/common/ConfigYaml.h"
+#include "src/libs/common/PlotContext.h"
 
 #include "gstplaytracker.h"
 
 #include <nvdsmeta.h>
 
 #include <cassert>
-#include <vector>
 
 #include <stdio.h>
 #include <stdlib.h>

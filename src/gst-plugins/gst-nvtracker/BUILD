@@ -34,7 +34,7 @@ cc_binary(
       "-shared",
     ],
     deps = [
-        "//gst-plugins/gst-nvdspreprocess:nvdsgst_preprocess_lib",
+        "//src/gst-plugins/gst-nvdspreprocess:nvdsgst_preprocess_lib",
         # "@deepstream_lib",
         "@deepstream//sources/apps/apps-common:deepstream_apps_common",
         #"@deepstream_apps_common",

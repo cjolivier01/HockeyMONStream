@@ -15,7 +15,8 @@
 
 #include "gstplaytracker.h"
 #include "gstnvdsmeta.h"
-#include "utils.h"
+
+#include "src/libs/common/utils.h"
 
 #include <sys/time.h>
 #include <cassert>

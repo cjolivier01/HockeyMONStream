@@ -34,7 +34,7 @@ cuda_library(
     visibility = ["//visibility:public"],
     deps = [
         ":headers",
-        "//libs/k-means/kernels:kernels_cuda_lib",
+        "//src/libs/k-means/kernels:kernels_cuda_lib",
         "@local_cuda//:cuda_runtime",
     ],
 )

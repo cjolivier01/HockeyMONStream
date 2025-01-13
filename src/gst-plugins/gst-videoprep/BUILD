@@ -1,4 +1,4 @@
-load("@gst_plugin_dev//build:gst_plugin.bzl", "gst_cc_plugin")
+load("@gst_plugin_dev//buildfiles:gst_plugin.bzl", "gst_cc_plugin")
 
 config_setting(
     name = "x86_64-linux-gnu",
@@ -39,7 +39,7 @@ gst_cc_plugin(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        "//libs/common:utils",
+        "//src/libs/common:utils",
         "@jetson-utils//cuda:cuda_lib",
         "@jetson-utils//display:display",
     ],

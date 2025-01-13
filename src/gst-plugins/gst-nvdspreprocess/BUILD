@@ -44,9 +44,8 @@ cc_library(
         ".",
     ],
     deps = [
-        "//gst-plugins/gst-nvdspreprocess/nvdspreprocess_lib:nvdspreprocess_lib",
+        "//src/gst-plugins/gst-nvdspreprocess/nvdspreprocess_lib:nvdspreprocess_lib",
         "@deepstream//:deepstream_lib",
-        #"@deepstream_lib",
         "@glib",
         "@gstreamer",
         "@opencv_linux//:opencv",

@@ -20,7 +20,7 @@ cc_library(
     includes = ["."],
     visibility = ["//visibility:public"],
     deps = [
-        "//libs/k-means/kmcuda:kmcuda_lib",
+        "//src/libs/k-means/kmcuda:kmcuda_lib",
         ":headers",
     ],
 )
@@ -34,6 +34,6 @@ cc_library(
     includes = ["headers"],
     visibility = ["//visibility:public"],
     deps = [
-        "//libs/k-means/kmcuda:headers",
+        "//src/libs/k-means/kmcuda:headers",
     ],
 )

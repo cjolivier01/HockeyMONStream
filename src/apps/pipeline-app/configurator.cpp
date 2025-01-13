@@ -1,4 +1,4 @@
-#include "apps/pipeline-app/configurator.h"
+#include "src/apps/pipeline-app/configurator.h"
 #include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
 
 namespace hm {

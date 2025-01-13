@@ -1,4 +1,4 @@
-load("@gst_plugin_dev//build:gst_plugin.bzl", "gst_cc_plugin")
+load("@gst_plugin_dev//buildfiles:gst_plugin.bzl", "gst_cc_plugin")
 
 gst_cc_plugin(
     name = "gstplaytracker",
@@ -16,7 +16,7 @@ gst_cc_plugin(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        "//libs/common:utils",
+        "//src/libs/common:utils",
         "@hm//hockeymom/csrc/play_tracker:play_tracker",
     ],
 )

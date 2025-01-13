@@ -12,6 +12,9 @@ build --copt=-std=c++17
 # build --per_file_copt=.*\\.cc$@-H
 # build --per_file_copt=.*\\.hpp$@-H
 
+# build --aspects @com_grail_bazel_compdb//:aspects.bzl%compilation_database_aspect
+# build --output_groups=compilation_database_files
+
 #build -c opt
 build:opt -c opt
 build:opt --copt=-O3

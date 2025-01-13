@@ -9,7 +9,7 @@
       "args": [
         // "cquery"
         //"//apps/examples:basic-tutorial",
-        //"//gst-plugins/gst-dsexample:nvdsgst_dsexample",
+        //"//src/gst-plugins/gst-dsexample:nvdsgst_dsexample",
         // "--output=starlark",
         // "--starlark:expr='target'",
       ],
@@ -18,7 +18,7 @@
         "isDefault": false,
       },
       "options": {
-        "cwd": "${workspaceRoot}/src",
+        "cwd": "${workspaceRoot}",
       },
       "presentation": {
         "reveal": "always",
@@ -40,7 +40,7 @@
         "isDefault": true,
       },
       "options": {
-        "cwd": "${workspaceRoot}/src",
+        "cwd": "${workspaceRoot}",
       },
       "presentation": {
         "reveal": "always",
@@ -60,7 +60,7 @@
         "isDefault": false,
       },
       "options": {
-        "cwd": "${workspaceRoot}/src",
+        "cwd": "${workspaceRoot}",
       },
       "presentation": {
         "reveal": "always",
@@ -82,7 +82,7 @@
         "isDefault": false,
       },
       "options": {
-        "cwd": "${workspaceRoot}/src",
+        "cwd": "${workspaceRoot}",
       },
       "presentation": {
         "reveal": "always",
@@ -104,7 +104,7 @@
         "isDefault": false,
       },
       "options": {
-        "cwd": "${workspaceRoot}/src",
+        "cwd": "${workspaceRoot}",
         "env": {
           "USE_BAZEL_VERSION": "5.1.1",
         }

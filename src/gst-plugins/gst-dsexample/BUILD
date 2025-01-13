@@ -1,4 +1,4 @@
-load("@gst_plugin_dev//build:gst_plugin.bzl", "gst_cc_plugin")
+load("@gst_plugin_dev//buildfiles:gst_plugin.bzl", "gst_cc_plugin")
 
 gst_cc_plugin(
     name = "nvdsgst_dsexample",
@@ -28,7 +28,7 @@ gst_cc_plugin(
         # "@NvDsBaseExt",
         # "@NvDsInterfaceExt",
         # "@StandardExtension",
-        "//libs/common:utils",
+        "//src/libs/common:utils",
         "@opencv_linux//:opencv",
     ],
 )

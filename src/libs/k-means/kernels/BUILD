@@ -14,7 +14,7 @@ cuda_library(
         "-g",
     ],
     deps = [
-        "//libs/k-means:headers",
+        "//src/libs/k-means:headers",
         "@local_cuda//:cuda_runtime",
     ],
     visibility = ["//visibility:public"],

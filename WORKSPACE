@@ -1,4 +1,4 @@
-_workspace_name = "test"
+_workspace_name = "kstream"
 
 workspace(name = _workspace_name)
 
@@ -6,13 +6,11 @@ load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository", "new_git_r
 
 local_repository(
     name = "com_extension_dev",
-    # path = "/home/colivier/src/hmdeepstream/deepstream/graph-composer/extension-dev",
     path = "external/deepstream/graph-composer/extension-dev",
 )
 
 local_repository(
     name = "deepstream",
-    # path = "/home/colivier/src/hmdeepstream/deepstream",
     path = "external/deepstream",
 )
 
@@ -75,32 +73,39 @@ graph_nvidia_extension(
 
 new_local_repository(
     name = "misc",
-    build_file = "//build:third_party/misc.BUILD",
+    build_file = "//buildfiles:third_party/misc.BUILD",
     path = "/usr/include",
 )
 
 new_local_repository(
     name = "glibconfig_x86",
-    build_file = "//build:third_party/glibconfig.BUILD",
+    build_file = "//buildfiles:third_party/glibconfig.BUILD",
     path = "/usr/lib/x86_64-linux-gnu/glib-2.0/include",
 )
 
 new_local_repository(
     name = "glibconfig_aarch64",
-    build_file = "//build:third_party/glibconfig.BUILD",
+    build_file = "//buildfiles:third_party/glibconfig.BUILD",
     path = "/usr/lib/aarch64-linux-gnu/glib-2.0/include",
 )
 
+# new_git_repository(
+#     name = "yaml-cpp",
+#     build_file = "@com_extension_dev//buildfiles:third_party/yaml-cpp.BUILD",
+#     tag="0.8.0",
+#     remote = "https://github.com/jbeder/yaml-cpp.git",
+# )
+
 new_git_repository(
     name = "yaml-cpp",
-    build_file = "@com_extension_dev//build:third_party/yaml-cpp.BUILD",
+    build_file = "@//buildfiles:third_party/yaml-cpp.BUILD",
     tag="0.8.0",
     remote = "https://github.com/jbeder/yaml-cpp.git",
 )
 
 # new_local_repository(
 #     name = "yaml-cpp",
-#     build_file = "@//build:third_party/yaml-cpp.BUILD",
+#     build_file = "@//buildfiles:third_party/yaml-cpp.BUILD",
 #     path = "/usr",
 # )
 
@@ -117,78 +122,35 @@ git_repository(
     tag = "v0.9.3",  # Use the tag corresponding to version 0.9.3
 )
 
-# new_local_repository(
-#     name = "cuml",
-#     build_file = "@//build:third_party/cuml.BUILD",
-#     path = "/usr/local",
-# )
-
 new_local_repository(
     name = "glib",
-    build_file = "//build:third_party/glib_nobuild.BUILD",
+    build_file = "//buildfiles:third_party/glib_nobuild.BUILD",
     # path = "/usr/local",
     path = "/usr",
 )
 
 new_local_repository(
     name = "opencv_linux",
-    build_file = "@//build:third_party/opencv_linux.BUILD",
+    build_file = "@//buildfiles:third_party/opencv_linux.BUILD",
     path = "/usr/include",
 )
 
-# cc_import(
-#     name = "glib",
-#     hdrs = ["/usr/local/lib/x86_64-linux-gnu/glib-2.0/include/glibconfig.h"],
-#     includes = ["/usr/local/include/glib-2.0", "/usr/local/lib/x86_64-linux-gnu/glib-2.0/include"],
-#     system_provided = 1,
-# )
-
-# new_local_repository(
-#     name = "glib_lib",
-#     build_file = "@//build:third_party/glib_nobuild.BUILD",
-#     path = "/usr/local/lib",
-#     # path = "/usr",
-# )
-
-# new_git_repository(
-#     name = "glib",
-#     build_file = "//build:third_party/glib.BUILD",
-#     commit = "763cc3b238398614c20069fd67642730e3a6519b",
-#     patch_cmds = [
-#         "meson setup builddir -Ddebug=true -Dprefix=$(pwd)/external",
-#         "ninja -C builddir install",
-#     ],
-#     remote = "https://github.com/GNOME/glib.git",
-# )
-
 new_local_repository(
     name = "json_glib",
-    build_file = "@//build:third_party/json_glib.BUILD",
+    build_file = "@//buildfiles:third_party/json_glib.BUILD",
     path = "/usr",
 )
 
 new_local_repository(
     name = "gstreamer",
-    build_file = "@//build:third_party/gstreamer_nobuild.BUILD",
+    build_file = "@//buildfiles:third_party/gstreamer_nobuild.BUILD",
     # path = "/usr/local",
     path = "/usr",
 )
 
-# new_git_repository(
-#     name = "gstreamer",
-#     build_file = "//build:third_party/gstreamer.BUILD",
-#     commit = "2d8273151571fcab887cc81de48e87aeb61b5c06",
-#     patch_cmds = [
-#         "meson setup builddir -Ddebug=true -Dprefix=$(pwd)/external",
-#         "ninja -C builddir install",
-#     ],
-#     remote = "https://github.com/GStreamer/gstreamer.git",
-#     shallow_since = "1712695735 +0100",
-# )
-
 new_local_repository(
     name = "libsoup",
-    build_file = "@//build:third_party/libsoup.BUILD",
+    build_file = "@//buildfiles:third_party/libsoup.BUILD",
     path = "/usr",
 )
 
