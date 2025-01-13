@@ -8,6 +8,7 @@ SCRIPT_DIR=$(dirname $(realpath $0))
 #fi
 
 #BAZEL_FLAGS="--config=debug --cpu=${CPU}"
+BAZEL_FLAGS="--config=debug"
 
 TARGET="$@"
 if [ -z "${TARGET}" ]; then

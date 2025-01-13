@@ -473,7 +473,7 @@
     "mesonbuild.selectRootDir": false,
     "clangd.arguments": [
       "--clang-tidy",
-      "--compile-commands-dir=/home/colivier/src/hstream/src"
+      "--driver=/usr/bin/gcc"
     ]
   }
 }
