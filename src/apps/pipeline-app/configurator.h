@@ -12,7 +12,8 @@ class Configurator {
   Configurator(const std::string& game_id, const std::string& config_root_dir);
   virtual ~Configurator();
   YAML::Node load_config();
-  void configure();
+
+  virtual void configure();
 
   std::optional<YAML::Node> load_private_config();
   void save_private_config(const YAML::Node& private_config);
