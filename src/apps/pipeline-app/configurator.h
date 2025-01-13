@@ -7,9 +7,11 @@
 namespace hm {
 class Configurator {
  public:
-  Configurator(const std::string& game_id, const std::string& game_root_dir, const std::string& config_root_dir);
+  Configurator(const std::string& game_id, const std::string& config_root_dir);
   virtual ~Configurator();
   void configure();
+
+  static std::string get_game_dir(const std::string& game_id);
 
  private:
   YAML::Node& amend_config(const YAML::Node& new_config, YAML::Node& base_config);

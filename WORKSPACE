@@ -89,25 +89,12 @@ new_local_repository(
     path = "/usr/lib/aarch64-linux-gnu/glib-2.0/include",
 )
 
-# new_git_repository(
-#     name = "yaml-cpp",
-#     build_file = "@com_extension_dev//buildfiles:third_party/yaml-cpp.BUILD",
-#     tag="0.8.0",
-#     remote = "https://github.com/jbeder/yaml-cpp.git",
-# )
-
 new_git_repository(
     name = "yaml-cpp",
     build_file = "@//buildfiles:third_party/yaml-cpp.BUILD",
     tag="0.8.0",
     remote = "https://github.com/jbeder/yaml-cpp.git",
 )
-
-# new_local_repository(
-#     name = "yaml-cpp",
-#     build_file = "@//buildfiles:third_party/yaml-cpp.BUILD",
-#     path = "/usr",
-# )
 
 git_repository(
     name = "rules_python",

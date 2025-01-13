@@ -758,7 +758,7 @@ static cudaError gst_videoprep_generate_output(
     FloatValue scale_h = float(videoprep->input_height) / pipeline_height;
 
 #if 1
-    float angle = 0.0;
+    float angle;
     const float max_angle = 30.0;
     const float half_width = float(pipeline_width) / 2;
     const float tcx = tracking_boxes.at(batch_nr).center().x;
@@ -769,6 +769,7 @@ static cudaError gst_videoprep_generate_output(
       float pct = (half_width - tcx) / half_width;
       angle = max_angle * pct;
     }
+    (void)angle;
 #else
     static float angle = -1.0;
     angle += 1;

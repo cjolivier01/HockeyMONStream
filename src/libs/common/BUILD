@@ -13,7 +13,7 @@ cc_library(
         "-fPIC",
         "-std=c++20",
     ],
-    # includes = ["."], # TODO: can this be removed?
+    includes = ["."], # TODO: can this be removed?
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
