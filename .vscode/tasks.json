@@ -101,7 +101,7 @@
         "${env:HOME}/src/bazel-compilation-database/generate.py",
         "--",
         "--config=debug",
-        "//...",
+        // "//...",
       ],
       "cwd": "${workspaceRoot}",
       "group": {
