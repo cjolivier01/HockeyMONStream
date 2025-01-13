@@ -31,8 +31,8 @@
       "linux": {
         // "envFile": "${workspaceFolder}/${config:mesonbuild.buildFolder}/meson-vscode.env",
       },
-      "cwd": "${workspaceFolder}/src",
-      "program": "${workspaceFolder}/src/bazel-bin/apps/pipeline-app/pipeline-app",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/bazel-bin/src/apps/pipeline-app/pipeline-app",
       "args": [
         "-c",
         "${workspaceFolder}/configs/ds_hockey_app_config.yaml"
@@ -62,12 +62,12 @@
       "name": "(CUDA) pipeline-app",
       "type": "cuda-gdb",
       "request": "launch",
-      "cwd": "${workspaceFolder}/src",
+      "cwd": "${workspaceFolder}",
       "linux": {
         // "envFile": "${workspaceFolder}/${config:mesonbuild.buildFolder}/meson-vscode.env",
       },
       "debuggerPath": "/usr/local/cuda-12.6/bin/cuda-gdb",
-      "program": "${workspaceFolder}/src/bazel-bin/apps/pipeline-app/pipeline-app",
+      "program": "${workspaceFolder}/bazel-bin/src/apps/pipeline-app/pipeline-app",
       "args": "-c ${workspaceFolder}/configs/ds_hockey_app_config.yaml",
       // "substitutePath": [
       //   {
@@ -114,8 +114,8 @@
       "linux": {
         // "envFile": "${workspaceFolder}/${config:mesonbuild.buildFolder}/meson-vscode.env",
       },
-      "cwd": "${workspaceFolder}/src",
-      "program": "${workspaceFolder}/src/bazel-bin/libs/k-means/k-means",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/bazel-bin/libs/k-means/k-means",
       "args": [
         "--algorithm",
         //"kmcuda",
@@ -153,7 +153,7 @@
       "linux": {
         // "envFile": "${workspaceFolder}/${config:mesonbuild.buildFolder}/meson-vscode.env",
       },
-      "cwd": "${workspaceFolder}/src",
+      "cwd": "${workspaceFolder}",
       "program": "/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/sources/apps/sample_apps/deepstream-app/deepstream-app",
       "args": [
         "-c",
@@ -175,8 +175,8 @@
       "name": "(LLDB) myaudioapp",
       "type": "lldb",
       "request": "launch",
-      "cwd": "${workspaceFolder}/src",
-      "program": "${workspaceFolder}/src/bazel-bin/gst-plugins/gst-myaudiofilter/test/myaudioapp",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/bazel-bin/gst-plugins/gst-myaudiofilter/test/myaudioapp",
       "args": [
         "/mnt/ripper-data/Videos/ev-reno-1/audio.aac",
       ],
@@ -199,7 +199,7 @@
       "linux": {
         // "envFile": "${workspaceFolder}/${config:mesonbuild.buildFolder}/meson-vscode.env",
       },
-      "cwd": "${workspaceFolder}/src",
+      "cwd": "${workspaceFolder}",
       "program": "/usr/bin/gxe",
       "args": [
         "-app",

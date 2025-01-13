@@ -160,40 +160,46 @@ typedef struct {
 } NvDsInstanceData;
 
 struct _AppCtx {
-  gboolean version;
-  gboolean cintr;
-  gboolean show_bbox_text;
-  gboolean seeking;
-  gboolean quit;
-  gint person_class_id;
-  gint car_class_id;
-  gint return_value;
-  guint index;
-  gint active_source_index;
+  gboolean version{false};
+  gboolean cintr{false};
+  gboolean show_bbox_text{false};
+  gboolean seeking{false};
+  gboolean quit{false};
+  gint person_class_id{0};
+  gint car_class_id{0};
+  gint return_value{0};
+  guint index{0};
+  gint active_source_index{0};
 
-  GMutex app_lock;
-  GCond app_cond;
+  GMutex app_lock{0,};
+  GCond app_cond{0,};
 
-  NvDsPipeline pipeline;
-  NvDsConfig config;
-  NvDsConfig override_config;
-  NvDsInstanceData instance_data[MAX_SOURCE_BINS];
-  NvDsC2DContext* c2d_ctx[MAX_MESSAGE_CONSUMERS];
-  NvDsAppPerfStructInt perf_struct;
-  bbox_generated_callback bbox_generated_post_analytics_cb;
-  bbox_generated_callback all_bbox_generated_cb;
-  overlay_graphics_callback overlay_graphics_cb;
-  NvDsFrameLatencyInfo* latency_info;
-  GMutex latency_lock;
-  GThread* ota_handler_thread;
-  guint ota_inotify_fd;
-  guint ota_watch_desc;
+  NvDsPipeline pipeline{0,};
+  NvDsConfig config{0,};
+  NvDsConfig override_config{0,};
+  NvDsInstanceData instance_data[MAX_SOURCE_BINS] = {0,};
+  NvDsC2DContext* c2d_ctx[MAX_MESSAGE_CONSUMERS] = {0,};
+  NvDsAppPerfStructInt perf_struct{0,};
+  bbox_generated_callback bbox_generated_post_analytics_cb{0,};
+  bbox_generated_callback all_bbox_generated_cb{0,};
+  overlay_graphics_callback overlay_graphics_cb{0,};
+  NvDsFrameLatencyInfo* latency_info{nullptr};
+  GMutex latency_lock{0,};
+  GThread* ota_handler_thread{nullptr};
+  guint ota_inotify_fd{0};
+  guint ota_watch_desc{0};
 
   /** Hash table to save NvDsSensorInfo
    * obtained with REST API stream/add, remove operations
    * The key is souce_id */
-  GHashTable* sensorInfoHash;
-  gboolean eos_received;
+  GHashTable* sensorInfoHash{nullptr};
+  gboolean eos_received{false};
+};
+
+class HmApp : public _AppCtx {
+ public:
+  HmApp() {
+  }
 };
 
 /**

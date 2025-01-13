@@ -20,17 +20,20 @@
 #include "deepstream_config_file_parser.h"
 #include "nvds_version.h"
 
+#include <memory>
+
 #define MAX_INSTANCES 128
 #define APP_TITLE "DeepStream"
 
 #define DEFAULT_X_WINDOW_WIDTH 1920
 #define DEFAULT_X_WINDOW_HEIGHT 1080
 
-AppCtx* appCtx[MAX_INSTANCES];
+std::unique_ptr<HmApp> appCtx[MAX_INSTANCES];
 static guint cintr = FALSE;
 static GMainLoop* main_loop = NULL;
 static gchar** cfg_files = NULL;
 static gchar** input_uris = NULL;
+static gchar** game_id = NULL;
 static gboolean print_version = FALSE;
 static gboolean show_bbox_text = FALSE;
 static gboolean print_dependencies_version = FALSE;
@@ -64,6 +67,15 @@ GOptionEntry entries[] = {
      "Print DeepStreamSDK and dependencies version",
      NULL},
     {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &cfg_files, "Set the config file", NULL},
+    {
+        "game-id",
+        'g',
+        0,
+        G_OPTION_ARG_FILENAME_ARRAY,
+        &game_id,
+        "Game ID",
+        NULL,
+    },
     {"input-uri",
      'i',
      0,
@@ -315,11 +327,11 @@ static gboolean event_thread_func(gpointer arg) {
       break;
     case 'p':
       for (i = 0; i < num_instances; i++)
-        pause_pipeline(appCtx[i]);
+        pause_pipeline(appCtx[i].get());
       break;
     case 'r':
       for (i = 0; i < num_instances; i++)
-        resume_pipeline(appCtx[i]);
+        resume_pipeline(appCtx[i].get());
       break;
     case 'q':
       quit = TRUE;
@@ -405,7 +417,7 @@ static gpointer nvds_x_event_thread(gpointer data) {
 
           if (ev.button == Button1 && source_id == -1 && (index >= 0 && index < MAX_INSTANCES)) {
             source_id = get_source_id_from_coordinates(
-                ev.x * 1.0 / win_attr.width, ev.y * 1.0 / win_attr.height, appCtx[index]);
+                ev.x * 1.0 / win_attr.width, ev.y * 1.0 / win_attr.height, appCtx[index].get());
             if (source_id > -1) {
               g_object_set(G_OBJECT(tiler), "show-source", source_id, NULL);
               appCtx[index]->active_source_index = source_id;
@@ -427,12 +439,12 @@ static gpointer nvds_x_event_thread(gpointer data) {
           q = XKeysymToKeycode(display, XK_Q);
           if (e.xkey.keycode == p) {
             for (i = 0; i < num_instances; i++)
-              pause_pipeline(appCtx[i]);
+              pause_pipeline(appCtx[i].get());
             break;
           }
           if (e.xkey.keycode == r) {
             for (i = 0; i < num_instances; i++)
-              resume_pipeline(appCtx[i]);
+              resume_pipeline(appCtx[i].get());
             break;
           }
           if (e.xkey.keycode == q) {
@@ -602,7 +614,8 @@ int main(int argc, char* argv[]) {
   }
 
   for (i = 0; i < num_instances; i++) {
-    appCtx[i] = (AppCtx*)g_malloc0(sizeof(AppCtx));
+    // appCtx[i] = (AppCtx*)g_malloc0(sizeof(AppCtx));
+    appCtx[i] = std::make_unique<HmApp>();
     appCtx[i]->person_class_id = -1;
     appCtx[i]->car_class_id = -1;
     appCtx[i]->index = i;
@@ -632,7 +645,7 @@ int main(int argc, char* argv[]) {
   }
 
   for (i = 0; i < num_instances; i++) {
-    if (!create_pipeline(appCtx[i], NULL, all_bbox_generated, perf_cb, overlay_graphics)) {
+    if (!create_pipeline(appCtx[i].get(), NULL, all_bbox_generated, perf_cb, overlay_graphics)) {
       NVGSTDS_ERR_MSG_V("Failed to create pipeline");
       return_value = -1;
       goto done;
@@ -754,7 +767,7 @@ int main(int argc, char* argv[]) {
         goto done;
       }
       if (appCtx[i]->config.pipeline_recreate_sec)
-        g_timeout_add_seconds(appCtx[i]->config.pipeline_recreate_sec, recreate_pipeline_thread_func, appCtx[i]);
+        g_timeout_add_seconds(appCtx[i]->config.pipeline_recreate_sec, recreate_pipeline_thread_func, appCtx[i].get());
     }
   }
 
@@ -773,15 +786,15 @@ done:
   for (i = 0; i < num_instances; i++) {
     if (appCtx[i]->return_value == -1)
       return_value = -1;
-    destroy_pipeline(appCtx[i]);
+    destroy_pipeline(appCtx[i].get());
 
     g_mutex_lock(&disp_lock);
     if (windows[i])
       XDestroyWindow(display, windows[i]);
     windows[i] = 0;
     g_mutex_unlock(&disp_lock);
-
-    g_free(appCtx[i]);
+    appCtx[i].reset();
+    // g_free(appCtx[i]);
   }
 
   g_mutex_lock(&disp_lock);

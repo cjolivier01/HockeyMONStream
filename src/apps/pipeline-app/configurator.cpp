@@ -56,12 +56,12 @@ YAML::Node Configurator::load_config() {
   }
   std::optional<YAML::Node> private_config = load_private_config();
   if (private_config.has_value()) {
-    config = merge_nodes(config, *private_config);
+    config = merge_nodes(config, *private_config, /*warn_if_key_not_in_dest=*/!config);
   }
   return config;
 }
 
-YAML::Node Configurator::merge_nodes(const YAML::Node& base, const YAML::Node& overlay) {
+YAML::Node Configurator::merge_nodes(const YAML::Node& base, const YAML::Node& overlay, bool warn_if_key_not_in_dest) {
   if (!overlay.IsMap() || !base.IsMap()) {
     return overlay;
   }
@@ -71,13 +71,13 @@ YAML::Node Configurator::merge_nodes(const YAML::Node& base, const YAML::Node& o
     const std::string& key = pair.first.as<std::string>();
 
     // Check if key exists in base
-    if (!base[key]) {
+    if (warn_if_key_not_in_dest && !base[key]) {
       std::cerr << "Warning: Key '" << key << "' in overlay does not exist in base config\n";
     }
 
     // If both are maps, recursively merge
     if (pair.second.IsMap() && base[key].IsMap()) {
-      result[key] = merge_nodes(base[key], pair.second);
+      result[key] = merge_nodes(base[key], pair.second, warn_if_key_not_in_dest);
     } else {
       result[key] = pair.second;
     }

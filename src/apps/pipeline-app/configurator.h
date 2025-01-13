@@ -22,7 +22,7 @@ class Configurator {
   static std::filesystem::path get_private_config_file_name(const std::string& game_id);
 
  private:
-  YAML::Node merge_nodes(const YAML::Node& base, const YAML::Node& overlay);
+  YAML::Node merge_nodes(const YAML::Node& base, const YAML::Node& overlay, bool warn_if_key_not_in_dest);
 
   const std::string game_id_;
   const std::string config_root_dir_;
