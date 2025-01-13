@@ -60,6 +60,7 @@
       "name": "(CUDA) pipeline-app",
       "type": "cuda-gdb",
       "request": "launch",
+      "cwd": "${workspaceFolder}/src",
       "linux": {
         // "envFile": "${workspaceFolder}/${config:mesonbuild.buildFolder}/meson-vscode.env",
       },
