@@ -2,12 +2,12 @@
 set -e
 SCRIPT_DIR=$(dirname $(realpath $0))
 
-CPU="$(uname -p)"
-if [ "$CPU" == "x86_64" ]; then
-  CPU="k8"
-fi
+#CPU="$(uname -p)"
+#if [ "$CPU" == "x86_64" ]; then
+#  CPU="k8"
+#fi
 
-BAZEL_FLAGS="--config=debug --cpu=${CPU}"
+#BAZEL_FLAGS="--config=debug --cpu=${CPU}"
 
 TARGET="$@"
 if [ -z "${TARGET}" ]; then

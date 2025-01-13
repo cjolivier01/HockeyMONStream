@@ -2,6 +2,7 @@
 #include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
 
 #include <sstream>
+#include <filesystem>
 #include <string>
 
 #include <unistd.h>
@@ -32,11 +33,15 @@ std::string Configurator::get_game_dir(const std::string& game_id) {
   return ss.str();
 }
 
+YAML::Node Configurator::load_config() {
+  return YAML::Node();
+}
+
 YAML::Node& Configurator::amend_config(const YAML::Node& new_config, YAML::Node& base_config) {
   return base_config;
 }
 
 void Configurator::configure() {
-  // Configure
+  YAML::Node config = Configurator::load_config();
 }
 } // namespace hm
