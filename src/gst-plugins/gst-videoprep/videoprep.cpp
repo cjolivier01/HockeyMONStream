@@ -95,7 +95,7 @@ NppStatus cropSurface(
   assert((int)src_rect.height() <= dest_image_size.height);
   // Do we have a use-case for not startiong at 0, 0? does the resize functionw ork at all?
   if (cuerr == cudaSuccess) {
-#if 0
+#if 1
 #if 0
     const NppiRect dstRect{.x = 0, .y = 0, .width = (int)src_rect.width(), .height = (int)src_rect.height()};
     status = nppiResize_8u_C4R_Ctx(
@@ -121,10 +121,11 @@ NppStatus cropSurface(
     // }
     cuerr = cudaMemsetAsync(
         out_surface.dataptr(), 255, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
-    if (cuerr != 0) {
-      std::cerr << "Cuda error during cudaMemsetAsync()" << std::endl;
-      assert(false);
-    }
+    // *((char *)out_surface.dataptr()) = 3;
+    // if (cuerr != 0) {
+    //   std::cerr << "Cuda error during cudaMemsetAsync()" << std::endl;
+    //   assert(false);
+    // }
     // cuerr =
     //     cudaMemsetAsync(in_surface.dataptr(), 0, in_surface.pitch() * in_surface.height(), nppStreamContext.hStream);
     // if (cuerr != 0) {
@@ -140,25 +141,54 @@ NppStatus cropSurface(
     const int4 roi{
         .x = (int)0,
         .y = (int)0,
-        .z = (int)dest_image_size.width - 1,
-        .w = (int)dest_image_size.height - 1,
+        .z = (int)100,
+        .w = (int)100,
     };
     assert((guint)src_rect.width() <= out_surface.width());
     assert((guint)src_rect.height() <= out_surface.height());
+    cudaStreamSynchronize(nppStreamContext.hStream);
     cuerr = cudaGetLastError();
     if (cuerr != 0) {
       std::cerr << "Cuda error during crop" << std::endl;
       assert(false);
     }
+    // cudaDeviceSynchronize();
+
     cuerr = cudaCrop(
         in_surface.dataptr<uchar4*>(),
-        out_surface.dataptr<uchar4*>(),
+        in_surface.dataptr<uchar4*>(),
         roi,
         in_surface.width(),
         in_surface.height(),
         in_surface.pitch(),
-        out_surface.pitch(),
+        in_surface.pitch(),
         nppStreamContext.hStream);
+
+    // cuerr = cudaCrop(
+    //     out_surface.dataptr<uchar4*>(),
+    //     out_surface.dataptr<uchar4*>(),
+    //     roi,
+    //     out_surface.width(),
+    //     out_surface.height(),
+    //     out_surface.pitch(),
+    //     out_surface.pitch(),
+    //     nppStreamContext.hStream);
+
+    // cuerr = cudaCrop(
+    //     in_surface.dataptr<uchar4*>(),
+    //     out_surface.dataptr<uchar4*>(),
+    //     roi,
+    //     in_surface.width(),
+    //     in_surface.height(),
+    //     in_surface.pitch(),
+    //     out_surface.pitch(),
+    //     nppStreamContext.hStream);
+
+    assert(cudaGetLastError() == cudaSuccess);
+    // cudaDeviceSynchronize();
+    cudaStreamSynchronize(nppStreamContext.hStream);
+    cuerr = cudaGetLastError();
+    assert(cuerr == cudaSuccess);
 #endif
 #endif
   }

@@ -54,6 +54,7 @@
         "GST_PLUGIN_PATH": "/home/colivier/src/hstream/lib/gst-plugins:/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/lib/gst-plugins",
         //"GST_DEBUG": "3",
         "DISPLAY": ":1",
+        "CUDA_LAUNCH_BLOCKING": "1",
       },
       "preLaunchTask": "Build All",
     },

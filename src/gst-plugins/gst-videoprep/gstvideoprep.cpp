@@ -536,6 +536,7 @@ static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
   for (size_t i = 0; i < kNumScratchBuffers; ++i) {
     void* surface_ptr = nullptr;
     cuda_ck(cudaMalloc(&surface_ptr, pitch * (size_t)videoprep->pre_rotate_size.height));
+    // cuda_ck(cudaMallocHost(&surface_ptr, pitch * (size_t)videoprep->pre_rotate_size.height));
 
     videoprep->priv->scratch_buffers.add_surface(
         surface_ptr,
@@ -711,11 +712,16 @@ static cudaError gst_videoprep_generate_output(
 
   NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));
 
+  assert(videoprep->stream);
+
   NppStreamContext nppStreamContext;
   memset(&nppStreamContext, 0, sizeof(nppStreamContext));
   nppStreamContext.hStream = videoprep->stream; // Assign the CUDA stream
   nppStreamContext.nStreamFlags = 0; // No special flags
   nppStreamContext.nCudaDeviceId = videoprep->gpu_id; // Default queue size
+
+  err = cudaSetDevice(videoprep->gpu_id);
+  assert(err == cudaSuccess);
 
   const std::vector<BBox> tracking_boxes = get_tracking_boxes(batch_meta);
 
@@ -891,6 +897,8 @@ static cudaError gst_videoprep_generate_output(
         /*dest_rect=*/output_rect,
         nppStreamContext);
     assert(np_status == NppStatus::NPP_SUCCESS);
+    printf("Only doing one batch item\n");
+    break; 
   }
 
   if (videoprep->stream) {
