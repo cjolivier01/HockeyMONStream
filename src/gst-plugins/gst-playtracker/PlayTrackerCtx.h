@@ -1,7 +1,5 @@
 #pragma once
 
-//#include "nvdsmeta.h"
-
 #include <string>
 
 #define MAX_LABEL_SIZE 128
