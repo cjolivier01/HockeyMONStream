@@ -18,7 +18,6 @@ class Configurator {
 
   const std::string game_id_;
   const std::string config_root_dir_;
-  const std::string game_root_dir_;
 
   // The fully-realzied merged config
   const YAML::Node config_;
