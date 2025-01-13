@@ -6,3 +6,4 @@ bazel-out
 bazel-testlogs
 *.pyc
 /bazel-hstream
+compile_commands.json

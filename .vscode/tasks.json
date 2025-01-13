@@ -93,12 +93,14 @@
       "problemMatcher": [],
     },
     {
+      // Repo: https://github.com/grailbio/bazel-compilation-database
       "label": "Rebuild compile DB",
       "type": "shell",
       "command": "python3",
       "args": [
-        "${workspaceFolder}/bazel/generate.py",
+        "${env:HOME}/src/bazel-compilation-database/generate.py",
       ],
+      "cwd": "${workspaceRoot}",
       "group": {
         "kind": "build",
         "isDefault": false,
