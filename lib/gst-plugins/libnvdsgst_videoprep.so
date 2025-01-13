@@ -1,1 +1,1 @@
-../../src/bazel-bin/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so
+../../bazel-bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so

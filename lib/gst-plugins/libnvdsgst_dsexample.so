@@ -1,1 +1,1 @@
-../../src/bazel-bin/gst-plugins/gst-dsexample/libnvdsgst_dsexample.so
+../../bazel-bin/src/gst-plugins/gst-dsexample/libnvdsgst_dsexample.so

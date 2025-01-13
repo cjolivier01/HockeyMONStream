@@ -1,1 +1,1 @@
-../../src/bazel-bin/gst-plugins/gst-nvdsosd/libnvdsgst_osd.so
+../../bazel-bin/src/gst-plugins/gst-nvdsosd/libnvdsgst_osd.so

@@ -1,1 +1,1 @@
-../../src/bazel-bin/gst-plugins/gst-nvinfer/libnvdsgst_infer.so
+../../bazel-bin/src/gst-plugins/gst-nvinfer/libnvdsgst_infer.so
