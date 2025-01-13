@@ -705,7 +705,9 @@ static cudaError gst_videoprep_generate_output(
     NvBufSurface* out_surface) {
   cudaError err = cudaSuccess;
 
-  NvBufSurfTransform_Error tx_err = NvBufSurfTransformError_Success;
+  // NvBufSurfTransform_Error tx_err = NvBufSurfTransformError_Success;
+
+  assert(cudaGetLastError() == cudaSuccess);
 
   NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));
 
@@ -717,17 +719,17 @@ static cudaError gst_videoprep_generate_output(
 
   const std::vector<BBox> tracking_boxes = get_tracking_boxes(batch_meta);
 
-  NvBufSurfTransformConfigParams config_params;
-  config_params.compute_mode = NvBufSurfTransformCompute_GPU;
-  config_params.gpu_id = videoprep->gpu_id;
-  config_params.cuda_stream = videoprep->stream;
+  // NvBufSurfTransformConfigParams config_params;
+  // config_params.compute_mode = NvBufSurfTransformCompute_GPU;
+  // config_params.gpu_id = videoprep->gpu_id;
+  // config_params.cuda_stream = videoprep->stream;
 
-  tx_err = NvBufSurfTransformSetSessionParams(&config_params);
-  if (tx_err != NvBufSurfTransformError_Success) {
-    g_print("%s: %d NvBufSurfTransform set session failed\n", __func__, __LINE__);
-    g_free(surface_meta);
-    return cudaErrorInvalidSurface;
-  }
+  // tx_err = NvBufSurfTransformSetSessionParams(&config_params);
+  // if (tx_err != NvBufSurfTransformError_Success) {
+  //   g_print("%s: %d NvBufSurfTransform set session failed\n", __func__, __LINE__);
+  //   g_free(surface_meta);
+  //   return cudaErrorInvalidSurface;
+  // }
   out_surface->numFilled = 0;
 
   // TODO: what do we do about this mismatch???
@@ -895,11 +897,11 @@ static cudaError gst_videoprep_generate_output(
     cudaStreamSynchronize(videoprep->stream);
   }
 
-  if (tx_err != NvBufSurfTransformError_Success) {
-    g_print("%s: %d NvBufSurfTransform failed\n", __func__, __LINE__);
-    g_free(surface_meta);
-    return cudaErrorInvalidSurface;
-  }
+  // if (tx_err != NvBufSurfTransformError_Success) {
+  //   g_print("%s: %d NvBufSurfTransform failed\n", __func__, __LINE__);
+  //   g_free(surface_meta);
+  //   return cudaErrorInvalidSurface;
+  // }
   out_surface->numFilled = nr_surfaces_to_process;
 
   surface_meta->num_filled_surfaces = nr_surfaces_to_process;

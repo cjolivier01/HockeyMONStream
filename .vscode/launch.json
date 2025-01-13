@@ -43,6 +43,7 @@
         //"${workspaceFolder}/src/external/deepstream/sources": "/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/sources",
         "external/deepstream/sources": "/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/sources",
         //"external/hmdeepstream/deepstream/sources": "/home/colivier/src/hstream/src/external/hmdeepstream/deepstream/sources",
+        "home/colivier/src/jetson-utils": "${workspaceFolder}/src/external/jetson-utils",
       },
       //"stopOnEntry": true,
       "env": {

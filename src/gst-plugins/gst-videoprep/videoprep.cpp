@@ -96,6 +96,7 @@ NppStatus cropSurface(
   // Do we have a use-case for not startiong at 0, 0? does the resize functionw ork at all?
   if (cuerr == cudaSuccess) {
 #if 0
+#if 0
     const NppiRect dstRect{.x = 0, .y = 0, .width = (int)src_rect.width(), .height = (int)src_rect.height()};
     status = nppiResize_8u_C4R_Ctx(
         in_surface.dataptr<Npp8u*>(),
@@ -112,8 +113,24 @@ NppStatus cropSurface(
         nppStreamContext);
     // std::cout << (int)src_rect.width() << ", " << dest_image_size.width << std::endl;
 #else
-    cudaMemsetAsync(out_surface.dataptr(), 255, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
-    cudaMemsetAsync(in_surface.dataptr(), 0, in_surface.pitch() * in_surface.height(), nppStreamContext.hStream);
+    // reset error
+    cuerr = cudaGetLastError();
+    // if (cuerr != 0) {
+    //   std::cerr << "Cuda error during crop" << std::endl;
+    //   assert(false);
+    // }
+    cuerr = cudaMemsetAsync(
+        out_surface.dataptr(), 255, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
+    if (cuerr != 0) {
+      std::cerr << "Cuda error during cudaMemsetAsync()" << std::endl;
+      assert(false);
+    }
+    // cuerr =
+    //     cudaMemsetAsync(in_surface.dataptr(), 0, in_surface.pitch() * in_surface.height(), nppStreamContext.hStream);
+    // if (cuerr != 0) {
+    //   std::cerr << "Cuda error during crop" << std::endl;
+    //   assert(false);
+    // }
     // const int4 roi{
     //     .x = (int)src_rect.left,
     //     .y = (int)src_rect.top,
@@ -128,6 +145,11 @@ NppStatus cropSurface(
     };
     assert((guint)src_rect.width() <= out_surface.width());
     assert((guint)src_rect.height() <= out_surface.height());
+    cuerr = cudaGetLastError();
+    if (cuerr != 0) {
+      std::cerr << "Cuda error during crop" << std::endl;
+      assert(false);
+    }
     cuerr = cudaCrop(
         in_surface.dataptr<uchar4*>(),
         out_surface.dataptr<uchar4*>(),
@@ -137,6 +159,7 @@ NppStatus cropSurface(
         in_surface.pitch(),
         out_surface.pitch(),
         nppStreamContext.hStream);
+#endif
 #endif
   }
   if (cuerr != 0) {
@@ -254,6 +277,7 @@ NppStatus cropAndResizeNvBufSurface(
     const BBox& dest_rect,
     const NppStreamContext& nppStreamContext) {
   // Define source and destination rectangles for cropping
+  cudaError_t cuerr = cudaSuccess;
   NppiRect srcRect{
       .x = (int)src_rect.left,
       .y = (int)src_rect.top,
@@ -270,8 +294,16 @@ NppStatus cropAndResizeNvBufSurface(
   // For simplicity, let's use nppiResize for resizing and interpolation
   NppStatus status = NppStatus::NPP_SUCCESS;
 
+  assert(cudaGetLastError() == cudaSuccess);
+
   // Wipe the destination image
-  cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
+  // cuerr =
+  //     cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
+
+  if (cuerr != 0) {
+    std::cerr << "cudaMemsetAsync failed with error: " << cuerr << std::endl;
+    assert(false);
+  }
 
   // status = nppiResize_8u_C4R_Ctx(
   //     in_surface.dataptr<Npp8u*>(),
