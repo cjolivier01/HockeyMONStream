@@ -48,7 +48,7 @@ endif
 LIBS+= -shared -Wl,-no-undefined \
 	-L/usr/local/cuda-$(CUDA_VER)/lib64/ -lcudart
 
-LIBS+= -L$(LIB_INSTALL_DIR) -lnvdsgst_helper -lnvdsgst_meta -lnvds_meta -lnvdsbufferpool \
+LIBS+= -L$(LIB_INSTALL_DIR) -L/opt/nvidia/deepstream/deepstream-$(NVDS_VERSION)/lib -lnvdsgst_helper -lnvdsgst_meta -lnvds_meta -lnvdsbufferpool \
        -lnvbufsurface -lnvbufsurftransform -lnvds_csvparser -lnvds_videoprep \
 			 -lnvds_nvtxhelper -ldl -lpthread -lcuda -Wl,-rpath,$(LIB_INSTALL_DIR)
 
