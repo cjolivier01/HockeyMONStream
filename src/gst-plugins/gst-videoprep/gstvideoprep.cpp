@@ -898,8 +898,8 @@ static cudaError gst_videoprep_generate_output(
         /*dest_rect=*/output_rect,
         nppStreamContext);
     assert(np_status == NppStatus::NPP_SUCCESS);
-    printf("Only doing one batch item\n");
-    break; 
+    // printf("Only doing one batch item\n");
+//     break; 
   }
 
   if (videoprep->stream) {
