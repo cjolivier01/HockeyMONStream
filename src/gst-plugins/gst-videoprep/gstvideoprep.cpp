@@ -854,7 +854,7 @@ static cudaError gst_videoprep_generate_output(
 
     // We just rotate the whole thjing around the point
     // that is effectively the center of the tracking box
-#if 0
+#if 1
     {
       auto in_surf_iter = scratch_surface_iter++;
       np_status = rotateNvBufSurfaceWithNPP(

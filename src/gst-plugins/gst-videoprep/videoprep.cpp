@@ -132,17 +132,11 @@ NppStatus cropSurface(
     //   std::cerr << "Cuda error during crop" << std::endl;
     //   assert(false);
     // }
-    // const int4 roi{
-    //     .x = (int)src_rect.left,
-    //     .y = (int)src_rect.top,
-    //     .z = (int)src_rect.right - 1,
-    //     .w = (int)src_rect.bottom - 1,
-    // };
     const int4 roi{
-        .x = (int)0,
-        .y = (int)0,
-        .z = (int)100,
-        .w = (int)100,
+        .x = (int)src_rect.left,
+        .y = (int)src_rect.top,
+        .z = (int)src_rect.right - 1,
+        .w = (int)src_rect.bottom - 1,
     };
     assert((guint)src_rect.width() <= out_surface.width());
     assert((guint)src_rect.height() <= out_surface.height());
@@ -152,37 +146,16 @@ NppStatus cropSurface(
       std::cerr << "Cuda error during crop" << std::endl;
       assert(false);
     }
-    // cudaDeviceSynchronize();
 
     cuerr = cudaCrop(
         in_surface.dataptr<uchar4*>(),
-        in_surface.dataptr<uchar4*>(),
+        out_surface.dataptr<uchar4*>(),
         roi,
         in_surface.width(),
         in_surface.height(),
         in_surface.pitch(),
-        in_surface.pitch(),
+        out_surface.pitch(),
         nppStreamContext.hStream);
-
-    // cuerr = cudaCrop(
-    //     out_surface.dataptr<uchar4*>(),
-    //     out_surface.dataptr<uchar4*>(),
-    //     roi,
-    //     out_surface.width(),
-    //     out_surface.height(),
-    //     out_surface.pitch(),
-    //     out_surface.pitch(),
-    //     nppStreamContext.hStream);
-
-    // cuerr = cudaCrop(
-    //     in_surface.dataptr<uchar4*>(),
-    //     out_surface.dataptr<uchar4*>(),
-    //     roi,
-    //     in_surface.width(),
-    //     in_surface.height(),
-    //     in_surface.pitch(),
-    //     out_surface.pitch(),
-    //     nppStreamContext.hStream);
 
     assert(cudaGetLastError() == cudaSuccess);
     // cudaDeviceSynchronize();
@@ -335,17 +308,17 @@ NppStatus cropAndResizeNvBufSurface(
     assert(false);
   }
 
-  // status = nppiResize_8u_C4R_Ctx(
-  //     in_surface.dataptr<Npp8u*>(),
-  //     in_surface.pitch(), // Source image and pitch
-  //     NppiSize{.width = (int)in_surface.width(), .height = (int)in_surface.height()},
-  //     srcRect, // Source rectangle
-  //     out_surface.dataptr<Npp8u*>(),
-  //     out_surface.pitch(), // Destination image and pitch
-  //     NppiSize{.width = (int)out_surface.width(), .height = (int)out_surface.height()},
-  //     dstRect, // Destination rectangle
-  //     NPPI_INTER_LINEAR, // Interpolation method (e.g., linear)
-  //     nppStreamContext);
+  status = nppiResize_8u_C4R_Ctx(
+      in_surface.dataptr<Npp8u*>(),
+      in_surface.pitch(), // Source image and pitch
+      NppiSize{.width = (int)in_surface.width(), .height = (int)in_surface.height()},
+      srcRect, // Source rectangle
+      out_surface.dataptr<Npp8u*>(),
+      out_surface.pitch(), // Destination image and pitch
+      NppiSize{.width = (int)out_surface.width(), .height = (int)out_surface.height()},
+      dstRect, // Destination rectangle
+      NPPI_INTER_LINEAR, // Interpolation method (e.g., linear)
+      nppStreamContext);
 
   if (status != NPP_SUCCESS) {
     std::cerr << "Error in nppiResize_8u_C4R: " << status << std::endl;
