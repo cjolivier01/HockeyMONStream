@@ -135,7 +135,6 @@ hm-image-meta-merger:
   # has_videoconvert: true
   nvbuf-memory-type: 0
 
-
 primary-gie:
   enable: 1
   gpu-id: 0
