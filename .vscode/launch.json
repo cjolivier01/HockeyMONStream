@@ -38,7 +38,7 @@
         "${workspaceFolder}/configs/ds_hockey_app_config.yaml"
       ],
       "sourceMap": {
-        "/proc/self/cwd": "${workspaceFolder}/src",
+        "/proc/self/cwd": "${workspaceFolder}",
         "~/src": "/home/colivier/src",
         //"${workspaceFolder}/src/external/deepstream/sources": "/home/colivier/src/hstream/external/deepstream/sources",
         "external/deepstream/sources": "/home/colivier/src/hstream/external/deepstream/sources",
@@ -132,7 +132,7 @@
         "--verify",
       ],
       "sourceMap": {
-        "/proc/self/cwd": "${workspaceFolder}/src",
+        "/proc/self/cwd": "${workspaceFolder}",
         "~/src": "/home/colivier/src",
         // "${workspaceFolder}/src/external/deepstream/sources": "/home/colivier/src/hstream/external/deepstream/sources",
         // "external/deepstream/sources": "/home/colivier/src/hstream/external/deepstream/sources",
@@ -160,7 +160,7 @@
         "${workspaceFolder}/configs/ds_hockey_app_config.yaml"
       ],
       "sourceMap": {
-        "/proc/self/cwd": "${workspaceFolder}/src",
+        "/proc/self/cwd": "${workspaceFolder}",
         "~/src": "/home/colivier/src",
       },
       "env": {
@@ -181,7 +181,7 @@
         "/mnt/ripper-data/Videos/ev-reno-1/audio.aac",
       ],
       "sourceMap": {
-        "/proc/self/cwd": "${workspaceFolder}/src",
+        "/proc/self/cwd": "${workspaceFolder}",
         "~/src": "/home/colivier/src",
       },
       "env": {
@@ -209,7 +209,7 @@
         "/tmp/ds.app-2/manifest.yaml",
       ],
       "sourceMap": {
-        "/proc/self/cwd": "${workspaceFolder}/src",
+        "/proc/self/cwd": "${workspaceFolder}",
         // "~/src": "/home/colivier/src",
       },
       "env": {
