@@ -136,7 +136,7 @@ cudaError_t EglSurfaceMapper::map() {
   assert(eglFrame_.planeDesc->channelDesc.z == 8);
   assert(eglFrame_.planeDesc->channelDesc.w == 8);
   assert(eglFrame_.planeDesc->channelDesc.f == cudaChannelFormatKindUnsigned);
-#if 1
+#if 0
   // test write
   cuerr_result = cudaMemset(pitch_memory_.ptr, 128, pitch_memory_.ysize * pitch_memory_.pitch);
   if (cuerr_result != cudaSuccess) {

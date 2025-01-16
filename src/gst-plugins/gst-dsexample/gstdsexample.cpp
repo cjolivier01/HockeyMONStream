@@ -645,7 +645,7 @@ static GstFlowReturn get_converted_mat(
     /* To use the converted buffer in CUDA, create an EGLImage and then use
      * CUDA-EGL interop APIs */
     if (USE_EGLIMAGE) {
-#if 1
+#if 0
       if (NvBufSurfaceMapEglImage(dsexample->inter_buf, 0) != 0) {
         goto error;
       }
@@ -664,16 +664,16 @@ static GstFlowReturn get_converted_mat(
       if (result != CUDA_SUCCESS) {
         std::cerr << "FAILED!!!" << std::endl;
         assert(false);
-      }      
+      }
 
-      void *array_memory = eglFrame.frame.pArray[0];
+      void* array_memory = eglFrame.frame.pArray[0];
       cudaPitchedPtr pitch_memory = eglFrame.frame.pPitch[0];
 
       result = cudaMemset(pitch_memory.ptr, 128, pitch_memory.ysize * pitch_memory.pitch);
       if (result != CUDA_SUCCESS) {
         std::cerr << "FAILED!!!" << std::endl;
         assert(false);
-      }      
+      }
 
       // cuGraphicsEGLRegisterImage()
 

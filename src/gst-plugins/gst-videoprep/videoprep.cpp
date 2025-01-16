@@ -21,7 +21,6 @@ namespace videoprep {
  * @brief Wrapper over the Warp360 library calls.
  */
 
-
 std::vector<hm::BBox> get_tracking_boxes(NvDsBatchMeta* batch_meta) {
   std::vector<hm::BBox> results;
   const size_t batch_size = g_list_length(batch_meta->frame_meta_list);
@@ -121,21 +120,21 @@ NppStatus cropSurface(
     //   assert(false);
     // }
 
-    cuerr = cudaMemsetAsync(
-        in_surface.dataptr(), 128, in_surface.pitch() * in_surface.height(), nppStreamContext.hStream);
+    // cuerr = cudaMemsetAsync(
+    //     in_surface.dataptr(), 128, in_surface.pitch() * in_surface.height(), nppStreamContext.hStream);
 
-    if (cuerr != 0) {
-      std::cerr << "Cuda error during crop" << std::endl;
-      assert(false);
-    }
+    // if (cuerr != 0) {
+    //   std::cerr << "Cuda error during crop" << std::endl;
+    //   assert(false);
+    // }
 
-    cuerr = cudaMemsetAsync(
-        out_surface.dataptr(), 255, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
+    // cuerr = cudaMemsetAsync(
+    //     out_surface.dataptr(), 255, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
 
-    if (cuerr != 0) {
-      std::cerr << "Cuda error during crop" << std::endl;
-      assert(false);
-    }
+    // if (cuerr != 0) {
+    //   std::cerr << "Cuda error during crop" << std::endl;
+    //   assert(false);
+    // }
 
     // *((char *)out_surface.dataptr()) = 3;
     // if (cuerr != 0) {
@@ -317,7 +316,8 @@ NppStatus cropAndResizeNvBufSurface(
 
   // Wipe the destination image
   // cuerr =
-  //     cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
+  //     cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(),
+  //     nppStreamContext.hStream);
 
   if (cuerr != 0) {
     std::cerr << "cudaMemsetAsync failed with error: " << cuerr << std::endl;
