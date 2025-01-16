@@ -97,7 +97,7 @@ namespace videoprep {
 #define NVBUF_ALIGN_PITCH(pitch, align_val) ((pitch % align_val == 0) ? pitch : ((pitch / align_val + 1) * align_val))
 #define NVBUF_PLATFORM_ALIGNED_PITCH(pitch) NVBUF_ALIGN_PITCH(pitch, NVBUF_ALIGN_VAL)
 
-// #define SCRATCH_USE_ALIGNED_PITCH
+#define SCRATCH_USE_ALIGNED_PITCH
 
 static gchar VIDEOPREP_LIB_VERSION[128];
 
@@ -711,8 +711,6 @@ static cudaError gst_videoprep_generate_output(
     NvBufSurface* out_surface) {
   cudaError err = cudaSuccess;
 
-  // NvBufSurfTransform_Error tx_err = NvBufSurfTransformError_Success;
-
   assert(cudaGetLastError() == cudaSuccess);
 
   NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));
@@ -730,17 +728,6 @@ static cudaError gst_videoprep_generate_output(
 
   const std::vector<BBox> tracking_boxes = get_tracking_boxes(batch_meta);
 
-  // NvBufSurfTransformConfigParams config_params;
-  // config_params.compute_mode = NvBufSurfTransformCompute_GPU;
-  // config_params.gpu_id = videoprep->gpu_id;
-  // config_params.cuda_stream = videoprep->stream;
-
-  // tx_err = NvBufSurfTransformSetSessionParams(&config_params);
-  // if (tx_err != NvBufSurfTransformError_Success) {
-  //   g_print("%s: %d NvBufSurfTransform set session failed\n", __func__, __LINE__);
-  //   g_free(surface_meta);
-  //   return cudaErrorInvalidSurface;
-  // }
   out_surface->numFilled = 0;
 
   // TODO: what do we do about this mismatch???
@@ -845,25 +832,6 @@ static cudaError gst_videoprep_generate_output(
     assert(isClose(new_tbox_ar, output_ar, 1e-6f, 0.001));
 #endif
 
-    // if (videoprep->priv->video_output) {
-    //   hm::surface::Surface dsurf = *scratch_surface_iter;
-    //   cudaDrawRect(
-    //       dsurf.dataptr(),
-    //       dsurf.width(),
-    //       dsurf.height(),
-    //       imageFormat::IMAGE_RGBA8,
-    //       new_tbox.left,
-    //       new_tbox.top,
-    //       new_tbox.right,
-    //       new_tbox.bottom,
-    //       {0, 0, 255, 10},
-    //       {0, 255, 255, 255},
-    //       5.0,
-    //       nppStreamContext.hStream);
-    //   videoprep->priv->video_output->Render(
-    //       dsurf.dataptr<uchar4*>(), dsurf.width(), dsurf.height(), nppStreamContext.hStream);
-    // }
-
     // We just rotate the whole thjing around the point
     // that is effectively the center of the tracking box
 #if 1
@@ -882,27 +850,6 @@ static cudaError gst_videoprep_generate_output(
     }
 #endif
 
-    // if (videoprep->priv->video_output) {
-    //   hm::surface::Surface dsurf = *scratch_surface_iter;
-    //   // std::cout << new_tbox.top << std::endl;
-    //   cudaDrawRect(
-    //       dsurf.dataptr(),
-    //       dsurf.width(),
-    //       dsurf.height(),
-    //       imageFormat::IMAGE_RGBA8,
-    //       new_tbox.left,
-    //       new_tbox.top,
-    //       new_tbox.right,
-    //       new_tbox.bottom,
-    //       {0, 0, 255, 10},
-    //       {0, 255, 255, 255},
-    //       5.0,
-    //       nppStreamContext.hStream);
-    //   // cudaStreamSynchronize(nppStreamContext.hStream);
-    //   videoprep->priv->video_output->Render(
-    //       dsurf.dataptr<uchar4*>(), dsurf.width(), dsurf.height(), nppStreamContext.hStream);
-    // }
-#if 1
     {
 #ifdef __aarch64__
       hm::surface::EglSurfaceMapper outgoinh_elg_surface_mapper(out_surface, batch_nr);
@@ -919,20 +866,12 @@ static cudaError gst_videoprep_generate_output(
           nppStreamContext);
       assert(np_status == NppStatus::NPP_SUCCESS);
     }
-#endif
-    // printf("Only doing one batch item\n");
-    //     break;
   }
 
   if (videoprep->stream) {
     cudaStreamSynchronize(videoprep->stream);
   }
 
-  // if (tx_err != NvBufSurfTransformError_Success) {
-  //   g_print("%s: %d NvBufSurfTransform failed\n", __func__, __LINE__);
-  //   g_free(surface_meta);
-  //   return cudaErrorInvalidSurface;
-  // }
   out_surface->numFilled = nr_surfaces_to_process;
 
   surface_meta->num_filled_surfaces = nr_surfaces_to_process;
