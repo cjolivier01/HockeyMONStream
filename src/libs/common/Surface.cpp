@@ -3,6 +3,13 @@
 #include <npp.h>
 
 #include <cassert>
+#include <iostream>
+
+#if defined(__aarch64__)
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include "cudaEGL.h"
+#endif
 
 namespace hm {
 namespace surface {
@@ -86,6 +93,71 @@ void SurfaceList::add_surface(const NvBufSurfaceParams* surface_params) {
 
 void SurfaceList::add_surface(const Surface& surface) {
   add_surface(surface.get());
+}
+
+EglSurface::EglSurface(NvBufSurface* surface, int index) : surface_(surface), index_(index) {}
+~EglSurface::EglSurface() {
+  unmap();
+}
+
+cudaError_t EglSurface::map() {
+  auto nv_error = NvBufSurfaceMapEglImage(surface_, index_);
+  if (nv_error != 0) {
+    std::cerr << "FAILED!!!" << std::endl;
+    assert(false);
+    return cudaSuccess;
+  }
+
+  auto egl_image = surface_->surfaceList[index_].mappedAddr.eglImage;
+
+  cudaGraphicsResource* cuResource{nullptr};
+  cudaError_t cuerr_result = cudaGraphicsEGLRegisterImage(&cuResource, egl_image, CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE);
+  if (cuerr_result != cudaSuccess) {
+    std::cerr << "FAILED!!!" << std::endl;
+    assert(false);
+    return cuerr_result;
+  }
+
+  cuerr_result = cudaGraphicsResourceGetMappedEglFrame(&eglFrame_, cuResource, 0, 0);
+  if (cuerr_result != cudaSuccess) {
+    std::cerr << "FAILED!!!" << std::endl;
+    assert(false);
+    return cuerr_result;
+  }
+#if 1
+  // void* array_memory = eglFrame_.frame.pArray[0];
+  pitch_memory_ = eglFrame_.frame.pPitch[0];
+  // test write
+  cuerr_result = cudaMemset(pitch_memory_.ptr, 128, pitch_memory_.ysize * pitch_memory_.pitch);
+  if (cuerr_result != cudaSuccess) {
+    std::cerr << "FAILED!!!" << std::endl;
+    assert(false);
+    return cuerr_result;
+  }
+#endif
+  return cudaSuccess;
+}
+
+cudaError_t EglSurface::unmap() {
+  if (cuResource) {
+    cuerr_result = cudaGraphicsUnregisterResource(cuResource);
+    if (cuerr_result != cudaSuccess) {
+      std::cerr << "FAILED!!!" << std::endl;
+      assert(false);
+      return cuerr_result;
+    }
+    cuResource = nullptr;
+  }
+  if (surface_->surfaceList[index_].mappedAddr.eglImage) {
+    /* Destroy the EGLImage */
+    auto nvresult = NvBufSurfaceUnMapEglImage(surface_, index_);
+    if (nvresult != 0) {
+      std::cerr << "FAILED!!!" << std::endl;
+      assert(false);
+      return cudaErrorAssert;
+    }
+  }
+  memset(&pitch_memory_, 0, sizeof(pitch_memory_));
 }
 
 } // namespace surface

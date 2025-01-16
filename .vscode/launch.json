@@ -59,7 +59,7 @@
         "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
         // "GST_DEBUG": "3",
         "DISPLAY": ":1",
-        //"CUDA_LAUNCH_BLOCKING": "1",
+        "CUDA_LAUNCH_BLOCKING": "1",
       },
       "preLaunchTask": "Build All",
     },

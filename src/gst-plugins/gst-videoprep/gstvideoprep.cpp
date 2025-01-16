@@ -125,6 +125,9 @@ enum {
   PROP_SILENT,
 };
 
+#include <cuda.h>
+#include "nvbufsurface.h"
+
 static void gst_videoprep_finalize(GObject* object);
 
 static const gchar* print_pretty_time(gchar* ts_str, gsize ts_str_len, GstClockTime ts) {
@@ -817,7 +820,7 @@ static cudaError gst_videoprep_generate_output(
     //   assert(err == 0);
     //   videoprep->priv->video_output = create_video_output(*scratch_surface_iter);
     // }
-
+    assert(batch_nr < in_surface->numFilled);
     np_status = cropSurface(
         &in_surface->surfaceList[batch_nr],
         /*src_rect=*/extra_width_src_rect,

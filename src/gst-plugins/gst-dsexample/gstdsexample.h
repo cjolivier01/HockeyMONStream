@@ -33,7 +33,7 @@
 #include "nvbufsurftransform.h"
 #include "gst-nvquery.h"
 #include "gstnvdsmeta.h"
-#include "dsexample_lib/dsexample_lib.h"
+#include "dsexample_lib.h"
 
 /* Package and library details required for plugin_init */
 #define PACKAGE "dsexample"

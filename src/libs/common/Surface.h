@@ -10,6 +10,9 @@
 
 #include "nvdsmeta.h"
 
+#include <cuda_runtime.h>
+#include <cuda_egl_interop.h>
+
 #include <memory>
 #include <vector>
 
@@ -69,6 +72,21 @@ class Surface {
 
  private:
   NvBufSurfaceParams* params_{nullptr};
+};
+
+class EglSurface {
+  EglSurface(NvBufSurface* surface, int index);
+  ~EglSurface();
+
+ private:
+  cudaError_t map();
+  cudaError_t unmap();
+  // NvBufSurfaceParams* params_{nullptr};
+  NvBufSurface* surface_;
+  int index_;
+  cudaGraphicsResource* cuResource_{nullptr};
+  cudaEglFrame eglFrame_{0,};
+  cudaPitchedPtr pitch_memory_{0,};
 };
 
 /**
@@ -198,6 +216,8 @@ class SurfaceList {
   // Whether we own the surface
   std::vector<bool> owns_;
 };
+
+
 
 } // namespace surface
 } // namespace hm
