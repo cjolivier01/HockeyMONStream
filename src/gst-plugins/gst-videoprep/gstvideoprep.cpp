@@ -9,7 +9,6 @@
 #include <nvbufsurface.h>
 #include <cmath>
 #include <iostream>
-// #include "cudaDraw.h"
 #include "gst-nvcommon.h"
 #include "gstnvdsbufferpool.h"
 #include "gstnvdsmeta.h"
