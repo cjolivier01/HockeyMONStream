@@ -62,10 +62,12 @@ YAML::Node Configurator::load_config() {
 }
 
 YAML::Node Configurator::merge_nodes(const YAML::Node& base, const YAML::Node& overlay, bool warn_if_key_not_in_dest) {
-  if (!overlay.IsMap() || !base.IsMap()) {
+  if (!overlay.IsMap()) {
+    return base;
+  }
+  if (!base.IsMap()) {
     return overlay;
   }
-
   YAML::Node result = base;
   for (const auto& pair : overlay) {
     const std::string& key = pair.first.as<std::string>();

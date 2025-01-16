@@ -642,6 +642,7 @@ int main(int argc, char* argv[]) {
         goto done;
       }
     }
+    appCtx[i]->load_config();
   }
 
   for (i = 0; i < num_instances; i++) {

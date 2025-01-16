@@ -39,6 +39,9 @@
 #include "gst-nvdscommonconfig.h"
 #include "gst-nvdscustommessage.h"
 
+#include "configurator.h"
+
+#include <filesystem>
 #include <memory>
 #include <string>
 
@@ -225,9 +228,16 @@ struct _AppCtx {
 
 class HmApp : public _AppCtx {
  public:
-  HmApp(std::string game_id) : game_id_(std::move(game_id_)) {}
+  HmApp(std::string game_id) : game_id_(std::move(game_id)) {}
+  bool load_config() {
+    std::string config_root = std::filesystem::current_path() / "external" / "hm" / "config";
+    configurator_ = std::make_unique<hm::Configurator>(game_id_, config_root);
+    configurator_->load_config();
+    return true;
+  }
 
  private:
+  std::unique_ptr<hm::Configurator> configurator_;
   std::string game_id_;
 };
 
