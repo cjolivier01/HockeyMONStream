@@ -170,7 +170,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
   // Define rotation matrix
 #if 1
 #if 1
-  // cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
+  cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
   float affineMatrix[2][3];
   createAffineMatrix(
       angleRadians,
@@ -194,7 +194,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
   }
 #else
   // Wipe the destination image
-  // cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
+  cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
   double affineMatrix[2][3];
   createAffineMatrix(
       angleRadians,
