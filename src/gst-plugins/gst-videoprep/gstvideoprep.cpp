@@ -823,8 +823,8 @@ static cudaError gst_videoprep_generate_output(
     assert(batch_nr < in_surface->numFilled);
     {
 #ifdef __aarch64__
-      hm::surface::EglSurfaceMapper elg_surface_mapper(in_surface, batch_nr);
-      hm::surface::Surface incoming_surface = elg_surface_mapper.get_surface();
+      hm::surface::EglSurfaceMapper incoming_elg_surface_mapper(in_surface, batch_nr);
+      hm::surface::Surface incoming_surface = incoming_elg_surface_mapper.get_surface();
 #else
       hm::surface::Surface incoming_surface(&in_surface->surfaceList[batch_nr]);
 #endif
@@ -866,7 +866,7 @@ static cudaError gst_videoprep_generate_output(
 
     // We just rotate the whole thjing around the point
     // that is effectively the center of the tracking box
-#if 0
+#if 1
     {
       auto in_surf_iter = scratch_surface_iter++;
       np_status = rotateNvBufSurfaceWithNPP(
@@ -902,14 +902,23 @@ static cudaError gst_videoprep_generate_output(
     //   videoprep->priv->video_output->Render(
     //       dsurf.dataptr<uchar4*>(), dsurf.width(), dsurf.height(), nppStreamContext.hStream);
     // }
-#if 0
-    np_status = cropAndResizeNvBufSurface(
-        /*srcSurface=*/*scratch_surface_iter++,
-        /*src_rect=*/new_tbox,
-        &out_surface->surfaceList[batch_nr],
-        /*dest_rect=*/output_rect,
-        nppStreamContext);
-    assert(np_status == NppStatus::NPP_SUCCESS);
+#if 1
+    {
+#ifdef __aarch64__
+      hm::surface::EglSurfaceMapper outgoinh_elg_surface_mapper(out_surface, batch_nr);
+      hm::surface::Surface outgoing_surface = outgoinh_elg_surface_mapper.get_surface();
+#else
+      hm::surface::Surface outgoing_surface(&out_surface->surfaceList[batch_nr]);
+#endif
+
+      np_status = cropAndResizeNvBufSurface(
+          /*srcSurface=*/*scratch_surface_iter++,
+          /*src_rect=*/new_tbox,
+          outgoing_surface,
+          /*dest_rect=*/output_rect,
+          nppStreamContext);
+      assert(np_status == NppStatus::NPP_SUCCESS);
+    }
 #endif
     // printf("Only doing one batch item\n");
     //     break;
