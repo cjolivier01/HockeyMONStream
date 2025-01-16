@@ -21,6 +21,7 @@ namespace videoprep {
  * @brief Wrapper over the Warp360 library calls.
  */
 
+
 std::vector<hm::BBox> get_tracking_boxes(NvDsBatchMeta* batch_meta) {
   std::vector<hm::BBox> results;
   const size_t batch_size = g_list_length(batch_meta->frame_meta_list);

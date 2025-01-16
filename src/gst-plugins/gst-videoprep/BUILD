@@ -12,9 +12,19 @@ config_setting(
 
 gst_cc_plugin(
     name = "nvdsgst_videoprep",
-    srcs = glob(["*.cpp"]),
-    hdrs = glob(["*.h"]),
+    srcs = glob([
+      "*.cpp",
+      "customlib_impl/*.cpp",
+    ]),
+    hdrs = glob([
+      "*.h",
+      "includes/*.hpp",
+    ]),
+    includes=[
+      "includes",
+    ],
     copts = [
+        "-Iincludes",
         "-Wno-error=unused-function",
         "-Wno-error=unused-variable",
         "-Wno-error=write-strings",

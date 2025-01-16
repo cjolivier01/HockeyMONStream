@@ -2,19 +2,21 @@
 #include "gstnvdsbufferpool.h"
 
 #include <cuda_runtime.h>
+#include <gst/base/gstbasetransform.h>
 #include <gst/gst.h>
+#include <gst/video/video.h>
 #include <npp.h>
 #include <nvbufsurface.h>
 #include <cmath>
 #include <iostream>
 #include "cudaDraw.h"
 #include "gst-nvcommon.h"
+#include "gstnvdsbufferpool.h"
 #include "gstnvdsmeta.h"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 #include "nvds_dewarper_meta.h"
 #include "nvdsmeta.h"
-// #include "nvtx_helper.h"
 #include "videoprep.h"
 #include "videoprep_property_parser.h"
 
@@ -237,7 +239,7 @@ done:
   return ret;
 
 /* ERRORS */
-no_transform_possible: {
+no_transform_possible : {
   GST_DEBUG_OBJECT(videoprep, "could not transform %" GST_PTR_FORMAT " in anything we support", caps);
   ret = FALSE;
   goto done;
@@ -899,7 +901,7 @@ static cudaError gst_videoprep_generate_output(
         nppStreamContext);
     assert(np_status == NppStatus::NPP_SUCCESS);
     // printf("Only doing one batch item\n");
-//     break; 
+    //     break;
   }
 
   if (videoprep->stream) {
@@ -1033,12 +1035,12 @@ static GstFlowReturn gst_videoprep_transform(GstBaseTransform* btrans, GstBuffer
   }
   return GST_FLOW_OK;
 
-invalid_inbuf: {
+invalid_inbuf : {
   GST_ERROR("input buffer mapinfo failed");
   return GST_FLOW_ERROR;
 }
 
-invalid_outbuf: {
+invalid_outbuf : {
   GST_ERROR_OBJECT(videoprep, "output buffer mapinfo failed");
   gst_buffer_unmap(inbuf, &inmap);
   return GST_FLOW_ERROR;

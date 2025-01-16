@@ -615,7 +615,7 @@ int main(int argc, char* argv[]) {
 
   for (i = 0; i < num_instances; i++) {
     // appCtx[i] = (AppCtx*)g_malloc0(sizeof(AppCtx));
-    appCtx[i] = std::make_unique<HmApp>();
+    appCtx[i] = std::make_unique<HmApp>(game_id ? *game_id : "");
     appCtx[i]->person_class_id = -1;
     appCtx[i]->car_class_id = -1;
     appCtx[i]->index = i;

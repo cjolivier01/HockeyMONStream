@@ -39,6 +39,9 @@
 #include "gst-nvdscommonconfig.h"
 #include "gst-nvdscustommessage.h"
 
+#include <memory>
+#include <string>
+
 #ifdef __cplusplus
 extern "C" {
 #endif

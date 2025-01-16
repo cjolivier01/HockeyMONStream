@@ -16,7 +16,8 @@
       "type": "debugpy",
       "request": "launch",
       "program": "${file}",
-      "args": [],7
+      "args": [],
+      7
       "console": "integratedTerminal",
       "justMyCode": false,
       "cwd": "${workspaceFolder}",
@@ -36,7 +37,9 @@
       "args": [
         "-c",
         //"${workspaceFolder}/configs/deepstream_app_config.txt",   // baseline
-        "${workspaceFolder}/configs/ds_hockey_app_config.yaml"  // my app
+        "${workspaceFolder}/configs/ds_hockey_app_config.yaml", // my app
+        "-g",
+        "ev-reno-1",
       ],
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}",
