@@ -95,6 +95,8 @@ void SurfaceList::add_surface(const Surface& surface) {
   add_surface(surface.get());
 }
 
+#ifdef __aarch64__  /* Jetson */
+
 EglSurfaceMapper::EglSurfaceMapper(NvBufSurface* surface, int index) : surface_(surface), index_(index) {
   map();
 }
@@ -181,6 +183,8 @@ cudaError_t EglSurfaceMapper::unmap() {
   surface_list_.reset();
   return cuerr_result;
 }
+
+#endif // __aarch64__
 
 } // namespace surface
 } // namespace hm

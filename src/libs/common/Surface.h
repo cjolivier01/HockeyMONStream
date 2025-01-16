@@ -202,6 +202,7 @@ class SurfaceList {
   std::vector<bool> owns_;
 };
 
+#ifdef __aarch64__  /* Jetson */
 class EglSurfaceMapper {
  public:
   EglSurfaceMapper(NvBufSurface* surface, int index);
@@ -226,6 +227,7 @@ class EglSurfaceMapper {
   };
   std::unique_ptr<SurfaceList> surface_list_;
 };
+#endif // __aarch64__
 
 } // namespace surface
 } // namespace hm
