@@ -9,7 +9,7 @@
 #include <nvbufsurface.h>
 #include <cmath>
 #include <iostream>
-#include "cudaDraw.h"
+// #include "cudaDraw.h"
 #include "gst-nvcommon.h"
 #include "gstnvdsbufferpool.h"
 #include "gstnvdsmeta.h"
@@ -97,7 +97,7 @@ namespace videoprep {
 #define NVBUF_ALIGN_PITCH(pitch, align_val) ((pitch % align_val == 0) ? pitch : ((pitch / align_val + 1) * align_val))
 #define NVBUF_PLATFORM_ALIGNED_PITCH(pitch) NVBUF_ALIGN_PITCH(pitch, NVBUF_ALIGN_VAL)
 
-#define SCRATCH_USE_ALIGNED_PITCH
+// #define SCRATCH_USE_ALIGNED_PITCH
 
 static gchar VIDEOPREP_LIB_VERSION[128];
 

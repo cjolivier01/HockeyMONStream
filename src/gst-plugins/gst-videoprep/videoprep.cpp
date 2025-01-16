@@ -81,11 +81,11 @@ NppStatus cropSurface(
   (void)src_image_size;
   const NppiSize dest_image_size = get_nppisize(out_surface);
   (void)dest_image_size;
-  if (clear_output_surface) {
-    assert(false); // shouldnt need if theyre the same size
-    cuerr = cudaMemsetAsync(
-        out_surface.dataptr(), 128, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
-  }
+  // if (clear_output_surface) {
+  //   assert(false); // shouldnt need if theyre the same size
+  //   cuerr = cudaMemsetAsync(
+  //       out_surface.dataptr(), 128, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
+  // }
   // Sanity check everything
   assert(src_rect.left >= 0 && src_rect.top >= 0);
   assert(src_rect.width() <= in_surface.width());
@@ -170,6 +170,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
   // Define rotation matrix
 #if 1
 #if 1
+  // cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
   float affineMatrix[2][3];
   createAffineMatrix(
       angleRadians,
@@ -193,7 +194,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
   }
 #else
   // Wipe the destination image
-  cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
+  // cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
   double affineMatrix[2][3];
   createAffineMatrix(
       angleRadians,
