@@ -130,7 +130,12 @@ cudaError_t EglSurfaceMapper::map() {
 
   pitch_memory_ = eglFrame_.frame.pPitch[0];
   assert(pitch_memory_.ptr);
-
+  assert(eglFrame_.planeDesc->numChannels == 4);
+  assert(eglFrame_.planeDesc->channelDesc.x == 8);
+  assert(eglFrame_.planeDesc->channelDesc.y == 8);
+  assert(eglFrame_.planeDesc->channelDesc.z == 8);
+  assert(eglFrame_.planeDesc->channelDesc.w == 8);
+  assert(eglFrame_.planeDesc->channelDesc.f == cudaChannelFormatKindUnsigned);
 #if 1
   // test write
   cuerr_result = cudaMemset(pitch_memory_.ptr, 128, pitch_memory_.ysize * pitch_memory_.pitch);

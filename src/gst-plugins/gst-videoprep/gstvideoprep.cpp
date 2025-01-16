@@ -821,13 +821,20 @@ static cudaError gst_videoprep_generate_output(
     //   videoprep->priv->video_output = create_video_output(*scratch_surface_iter);
     // }
     assert(batch_nr < in_surface->numFilled);
-    np_status = cropSurface(
-        &in_surface->surfaceList[batch_nr],
-        /*src_rect=*/extra_width_src_rect,
-        *scratch_surface_iter,
-        /*clear_output_surface=*/false,
-        nppStreamContext);
-
+    {
+#ifdef __aarch64__
+      hm::surface::EglSurfaceMapper elg_surface_mapper(in_surface, batch_nr);
+      hm::surface::Surface incoming_surface = elg_surface_mapper.get_surface();
+#else
+      hm::surface::Surface incoming_surface(&in_surface->surfaceList[batch_nr]);
+#endif
+      np_status = cropSurface(
+          incoming_surface,
+          /*src_rect=*/extra_width_src_rect,
+          *scratch_surface_iter,
+          /*clear_output_surface=*/false,
+          nppStreamContext);
+    }
     assert(np_status == NppStatus::NPP_SUCCESS);
 
 #ifndef NDEBUG
@@ -859,7 +866,7 @@ static cudaError gst_videoprep_generate_output(
 
     // We just rotate the whole thjing around the point
     // that is effectively the center of the tracking box
-#if 1
+#if 0
     {
       auto in_surf_iter = scratch_surface_iter++;
       np_status = rotateNvBufSurfaceWithNPP(
@@ -895,7 +902,7 @@ static cudaError gst_videoprep_generate_output(
     //   videoprep->priv->video_output->Render(
     //       dsurf.dataptr<uchar4*>(), dsurf.width(), dsurf.height(), nppStreamContext.hStream);
     // }
-
+#if 0
     np_status = cropAndResizeNvBufSurface(
         /*srcSurface=*/*scratch_surface_iter++,
         /*src_rect=*/new_tbox,
@@ -903,6 +910,7 @@ static cudaError gst_videoprep_generate_output(
         /*dest_rect=*/output_rect,
         nppStreamContext);
     assert(np_status == NppStatus::NPP_SUCCESS);
+#endif
     // printf("Only doing one batch item\n");
     //     break;
   }

@@ -203,12 +203,13 @@ class SurfaceList {
 };
 
 class EglSurfaceMapper {
+ public:
   EglSurfaceMapper(NvBufSurface* surface, int index);
   ~EglSurfaceMapper();
 
   Surface get_surface() {
     assert(surface_list_);
-    return (*surface_list_)[index_];
+    return (*surface_list_)[0];
   }
 
  private:
