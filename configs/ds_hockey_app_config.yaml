@@ -29,6 +29,8 @@ tiled-display:
   # height: 720
   width: 1280
   height: 720
+  # width: 640
+  # height: 360
   gpu-id: 0
   #(0): nvbuf-mem-default - Default memory allocated, specific to particular platform
   #(1): nvbuf-mem-cuda-pinned - Allocate Pinned/Host cuda memory, applicable for Tesla
