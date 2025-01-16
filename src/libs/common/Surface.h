@@ -10,8 +10,8 @@
 
 #include "nvdsmeta.h"
 
-#include <cuda_runtime.h>
 #include <cuda_egl_interop.h>
+#include <cuda_runtime.h>
 
 #include <memory>
 #include <vector>
@@ -74,21 +74,6 @@ class Surface {
   NvBufSurfaceParams* params_{nullptr};
 };
 
-class EglSurface {
-  EglSurface(NvBufSurface* surface, int index);
-  ~EglSurface();
-
- private:
-  cudaError_t map();
-  cudaError_t unmap();
-  // NvBufSurfaceParams* params_{nullptr};
-  NvBufSurface* surface_;
-  int index_;
-  cudaGraphicsResource* cuResource_{nullptr};
-  cudaEglFrame eglFrame_{0,};
-  cudaPitchedPtr pitch_memory_{0,};
-};
-
 /**
  * @class SurfaceList
  * @brief A container class that stores and manages Surface objects with round-robin iteration support
@@ -128,7 +113,7 @@ class SurfaceList {
       size_t width,
       size_t height,
       size_t pitch,
-      size_t bytes_per_pixes = 4,
+      size_t bytes_per_pixel = 4,
       bool owns = false);
   void add_surface(const NvBufSurfaceParams* surface_params);
   void add_surface(const Surface& surface);
@@ -217,7 +202,29 @@ class SurfaceList {
   std::vector<bool> owns_;
 };
 
+class EglSurfaceMapper {
+  EglSurfaceMapper(NvBufSurface* surface, int index);
+  ~EglSurfaceMapper();
 
+  Surface get_surface() {
+    assert(surface_list_);
+    return (*surface_list_)[index_];
+  }
+
+ private:
+  cudaError_t map();
+  cudaError_t unmap();
+  NvBufSurface* surface_;
+  int index_;
+  cudaGraphicsResource* cuResource_{nullptr};
+  cudaEglFrame eglFrame_{
+      0,
+  };
+  cudaPitchedPtr pitch_memory_{
+      0,
+  };
+  std::unique_ptr<SurfaceList> surface_list_;
+};
 
 } // namespace surface
 } // namespace hm

@@ -55,7 +55,7 @@ void SurfaceList::add_surface(
     size_t width,
     size_t height,
     size_t pitch,
-    size_t bytes_per_pixes,
+    size_t bytes_per_pixel,
     bool owns) {
   NvBufSurfaceParams& params = nv_surface_list_.emplace_back();
   owns_.emplace_back(owns);
@@ -72,7 +72,7 @@ void SurfaceList::add_surface(
   params.planeParams.height[0] = inSrcSize.height;
   params.planeParams.pitch[0] = params.pitch;
   params.planeParams.psize[0] = inSrcSize.height * params.pitch;
-  params.planeParams.bytesPerPix[0] = bytes_per_pixes;
+  params.planeParams.bytesPerPix[0] = bytes_per_pixel;
 
   params.dataSize = params.planeParams.psize[0];
   params.dataPtr = (guint*)data;
@@ -95,12 +95,15 @@ void SurfaceList::add_surface(const Surface& surface) {
   add_surface(surface.get());
 }
 
-EglSurface::EglSurface(NvBufSurface* surface, int index) : surface_(surface), index_(index) {}
-~EglSurface::EglSurface() {
+EglSurfaceMapper::EglSurfaceMapper(NvBufSurface* surface, int index) : surface_(surface), index_(index) {
+  map();
+}
+
+EglSurfaceMapper::~EglSurfaceMapper() {
   unmap();
 }
 
-cudaError_t EglSurface::map() {
+cudaError_t EglSurfaceMapper::map() {
   auto nv_error = NvBufSurfaceMapEglImage(surface_, index_);
   if (nv_error != 0) {
     std::cerr << "FAILED!!!" << std::endl;
@@ -124,9 +127,11 @@ cudaError_t EglSurface::map() {
     assert(false);
     return cuerr_result;
   }
-#if 1
-  // void* array_memory = eglFrame_.frame.pArray[0];
+
   pitch_memory_ = eglFrame_.frame.pPitch[0];
+  assert(pitch_memory_.ptr);
+
+#if 1
   // test write
   cuerr_result = cudaMemset(pitch_memory_.ptr, 128, pitch_memory_.ysize * pitch_memory_.pitch);
   if (cuerr_result != cudaSuccess) {
@@ -135,18 +140,28 @@ cudaError_t EglSurface::map() {
     return cuerr_result;
   }
 #endif
+  surface_list_ = std::make_unique<SurfaceList>(/*gpu_id=*/0, /*batch_size=*/1);
+  surface_list_->add_surface(
+      pitch_memory_.ptr,
+      pitch_memory_.xsize,
+      pitch_memory_.ysize,
+      pitch_memory_.pitch,
+      /*bytes_per_pixel=*/3,
+      /*owns=*/false);
+
   return cudaSuccess;
 }
 
-cudaError_t EglSurface::unmap() {
-  if (cuResource) {
-    cuerr_result = cudaGraphicsUnregisterResource(cuResource);
+cudaError_t EglSurfaceMapper::unmap() {
+  cudaError_t cuerr_result = cudaSuccess;
+  if (cuResource_) {
+    cuerr_result = cudaGraphicsUnregisterResource(cuResource_);
     if (cuerr_result != cudaSuccess) {
       std::cerr << "FAILED!!!" << std::endl;
       assert(false);
       return cuerr_result;
     }
-    cuResource = nullptr;
+    cuResource_ = nullptr;
   }
   if (surface_->surfaceList[index_].mappedAddr.eglImage) {
     /* Destroy the EGLImage */
@@ -158,6 +173,8 @@ cudaError_t EglSurface::unmap() {
     }
   }
   memset(&pitch_memory_, 0, sizeof(pitch_memory_));
+  surface_list_.reset();
+  return cuerr_result;
 }
 
 } // namespace surface
