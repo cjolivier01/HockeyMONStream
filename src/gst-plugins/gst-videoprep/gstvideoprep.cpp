@@ -711,6 +711,8 @@ static cudaError gst_videoprep_generate_output(
     NvBufSurface* out_surface) {
   cudaError err = cudaSuccess;
 
+  return err;
+
   assert(cudaGetLastError() == cudaSuccess);
 
   NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));
@@ -808,6 +810,7 @@ static cudaError gst_videoprep_generate_output(
     //   videoprep->priv->video_output = create_video_output(*scratch_surface_iter);
     // }
     assert(batch_nr < in_surface->numFilled);
+#if 1
     {
 #ifdef __aarch64__
       hm::surface::EglSurfaceMapper incoming_elg_surface_mapper(in_surface, batch_nr);
@@ -823,6 +826,7 @@ static cudaError gst_videoprep_generate_output(
           nppStreamContext);
     }
     assert(np_status == NppStatus::NPP_SUCCESS);
+#endif
 
 #ifndef NDEBUG
     FloatValue tbox_ar = tbox.width() / tbox.height();
@@ -838,7 +842,6 @@ static cudaError gst_videoprep_generate_output(
     {
       auto in_surf_iter = scratch_surface_iter++;
       np_status = rotateNvBufSurfaceWithNPP(
-          //&in_surface->surfaceList[batch_nr],
           *in_surf_iter,
           dst_box,
           *scratch_surface_iter,
@@ -850,6 +853,7 @@ static cudaError gst_videoprep_generate_output(
     }
 #endif
 
+#if 1
     {
 #ifdef __aarch64__
       hm::surface::EglSurfaceMapper outgoinh_elg_surface_mapper(out_surface, batch_nr);
@@ -857,7 +861,6 @@ static cudaError gst_videoprep_generate_output(
 #else
       hm::surface::Surface outgoing_surface(&out_surface->surfaceList[batch_nr]);
 #endif
-
       np_status = cropAndResizeNvBufSurface(
           /*srcSurface=*/*scratch_surface_iter++,
           /*src_rect=*/new_tbox,
@@ -866,6 +869,7 @@ static cudaError gst_videoprep_generate_output(
           nppStreamContext);
       assert(np_status == NppStatus::NPP_SUCCESS);
     }
+#endif
   }
 
   if (videoprep->stream) {
@@ -877,13 +881,13 @@ static cudaError gst_videoprep_generate_output(
   surface_meta->num_filled_surfaces = nr_surfaces_to_process;
   surface_meta->source_id = videoprep->source_id;
 
-  NvDsMeta* meta = NULL;
-  meta = gst_buffer_add_nvds_meta(
-      videoprep->out_gst_buf, surface_meta, NULL, videoprep_meta_copy_func, videoprep_meta_release_func);
+  // NvDsMeta* meta = NULL;
+  // meta = gst_buffer_add_nvds_meta(
+  //     videoprep->out_gst_buf, surface_meta, NULL, videoprep_meta_copy_func, videoprep_meta_release_func);
 
-  meta->meta_type = NVDS_DEWARPER_GST_META;
-  meta->gst_to_nvds_meta_transform_func = videoprep_gst_to_nvds_meta_ransform_func;
-  meta->gst_to_nvds_meta_release_func = videoprep_gst_nvds_meta_release_func;
+  // meta->meta_type = NVDS_DEWARPER_GST_META;
+  // meta->gst_to_nvds_meta_transform_func = videoprep_gst_to_nvds_meta_ransform_func;
+  // meta->gst_to_nvds_meta_release_func = videoprep_gst_nvds_meta_release_func;
 
   return err;
 }
