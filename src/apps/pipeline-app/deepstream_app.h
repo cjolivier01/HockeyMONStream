@@ -171,20 +171,44 @@ struct _AppCtx {
   guint index{0};
   gint active_source_index{0};
 
-  GMutex app_lock{0,};
-  GCond app_cond{0,};
+  GMutex app_lock{
+      0,
+  };
+  GCond app_cond{
+      0,
+  };
 
-  NvDsPipeline pipeline{0,};
-  NvDsConfig config{0,};
-  NvDsConfig override_config{0,};
-  NvDsInstanceData instance_data[MAX_SOURCE_BINS] = {0,};
-  NvDsC2DContext* c2d_ctx[MAX_MESSAGE_CONSUMERS] = {0,};
-  NvDsAppPerfStructInt perf_struct{0,};
-  bbox_generated_callback bbox_generated_post_analytics_cb{0,};
-  bbox_generated_callback all_bbox_generated_cb{0,};
-  overlay_graphics_callback overlay_graphics_cb{0,};
+  NvDsPipeline pipeline{
+      0,
+  };
+  NvDsConfig config{
+      0,
+  };
+  NvDsConfig override_config{
+      0,
+  };
+  NvDsInstanceData instance_data[MAX_SOURCE_BINS] = {
+      0,
+  };
+  NvDsC2DContext* c2d_ctx[MAX_MESSAGE_CONSUMERS] = {
+      0,
+  };
+  NvDsAppPerfStructInt perf_struct{
+      0,
+  };
+  bbox_generated_callback bbox_generated_post_analytics_cb{
+      0,
+  };
+  bbox_generated_callback all_bbox_generated_cb{
+      0,
+  };
+  overlay_graphics_callback overlay_graphics_cb{
+      0,
+  };
   NvDsFrameLatencyInfo* latency_info{nullptr};
-  GMutex latency_lock{0,};
+  GMutex latency_lock{
+      0,
+  };
   GThread* ota_handler_thread{nullptr};
   guint ota_inotify_fd{0};
   guint ota_watch_desc{0};
@@ -198,8 +222,10 @@ struct _AppCtx {
 
 class HmApp : public _AppCtx {
  public:
-  HmApp() {
-  }
+  HmApp(std::string game_id) : game_id_(std::move(game_id_)) {}
+
+ private:
+  std::string game_id_;
 };
 
 /**

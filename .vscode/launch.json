@@ -35,8 +35,8 @@
       "program": "${workspaceFolder}/bazel-bin/src/apps/pipeline-app/pipeline-app",
       "args": [
         "-c",
-        "${workspaceFolder}/configs/deepstream_app_config.txt",   // baseline
-        //"${workspaceFolder}/configs/ds_hockey_app_config.yaml"  // my app
+        //"${workspaceFolder}/configs/deepstream_app_config.txt",   // baseline
+        "${workspaceFolder}/configs/ds_hockey_app_config.yaml"  // my app
       ],
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}",
@@ -50,7 +50,8 @@
       "env": {
         //"GST_DEBUG": "videoprep:7",
         //"GST_DEBUG": "7",
-        "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/mambaforge/envs/ubuntu/lib:${env:HOME}/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu",
+        // "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
+        "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib",
         //"GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
         "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
         // "GST_DEBUG": "3",
@@ -94,7 +95,7 @@
         // },
         // {
         //   "name": "LD_LIBRARY_PATH",
-        //   "value": "${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/mambaforge/envs/ubuntu/lib:${env:HOME}/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu"
+        //   "value": "${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu"
         // },
         {
           "name": "GST_PLUGIN_PATH",
@@ -105,7 +106,7 @@
           "value": ":1",
         },
       ],
-      "additionalSOLibSearchPath": "${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/mambaforge/envs/ubuntu/lib:${env:HOME}/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu",
+      "additionalSOLibSearchPath": "${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
       "preLaunchTask": "Build All",
     },
     {
@@ -141,7 +142,7 @@
       //"stopOnEntry": true,
       "env": {
         //"GST_DEBUG": "4",
-        "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/mambaforge/envs/ubuntu/lib:${env:HOME}/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu",
+        "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
         "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
         //"GST_DEBUG": "3",
       },
@@ -166,7 +167,7 @@
       },
       "env": {
         //"GST_DEBUG": "4",
-        "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/mambaforge/envs/ubuntu/lib:${env:HOME}/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu",
+        "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
         "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
         //"GST_DEBUG": "3",
       },
@@ -187,7 +188,7 @@
       },
       "env": {
         //"GST_DEBUG": "4",
-        "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/mambaforge/envs/ubuntu/lib:${env:HOME}/mambaforge/envs/ubuntu/lib/x86_64-linux-gnu",
+        "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
         "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
         "GST_DEBUG": "4",
       },
