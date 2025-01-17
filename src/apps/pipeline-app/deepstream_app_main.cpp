@@ -265,7 +265,7 @@ static gboolean event_thread_func(gpointer arg) {
 
   // Check if all instances have quit
   for (i = 0; i < num_instances; i++) {
-    if (!appCtx[i]->quit)
+    if (appCtx[i] && !appCtx[i]->quit)
       break;
   }
 

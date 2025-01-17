@@ -40,8 +40,8 @@ tiled-display:
   nvbuf-memory-type: 0
 
 source:
-  csv-file-path: hockey_sources.csv
-  # csv-file-path: webcam_sources.csv
+  # csv-file-path: hockey_sources.csv
+  csv-file-path: webcam_sources.csv
 
 sink0:
   enable: 1
@@ -90,7 +90,7 @@ sink2:
   udp-port: 5400
 
 osd:
-  enable: 0
+  enable: 1
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -165,8 +165,8 @@ ds-example:
   processing-height: 480
 
 hmvideoprep:
-  # enable: false
-  enable: true
+  enable: false
+  # enable: true
   gpu-id: 0
   # has_queue: false
   # has_videoconvert: false

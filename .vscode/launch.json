@@ -17,11 +17,11 @@
       "request": "launch",
       "program": "${file}",
       "args": [],
-      7
       "console": "integratedTerminal",
       "justMyCode": false,
       "cwd": "${workspaceFolder}",
       "env": {
+        "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib",
         "PYTHONPATH": "${workspaceRoot}/build:${workspaceRoot}/src:${workspaceRoot}/external/MOTChallengeEvalKit"
       }
     },

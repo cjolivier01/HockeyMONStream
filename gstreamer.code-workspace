@@ -5,6 +5,12 @@
     },
     {
       "path": "../jetson-utils"
+    },
+    {
+      "path": "../PTZ-Camera-Controller"
+    },
+    {
+      "path": "../libcamera"
     }
   ],
   "settings": {
@@ -472,8 +478,7 @@
     "C_Cpp.default.configurationProvider": "mesonbuild.mesonbuild",
     "mesonbuild.selectRootDir": false,
     "clangd.arguments": [
-      "--clang-tidy",
-      "--driver=/usr/bin/gcc"
+      "--clang-tidy"
     ]
   }
 }
