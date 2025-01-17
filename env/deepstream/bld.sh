@@ -1,10 +1,10 @@
 #!/bin/bash
-
 set -e
 
+REAL_SCRIPT_DIR=$(dirname $(realpath "${BASH_SOURCE}"))
 SCRIPT_DIR=$(dirname "${BASH_SOURCE[0]}")
 
-source ${SCRIPT_DIR}/../tools.sh
+source "${REAL_SCRIPT_DIR}/../tools.sh"
 
 DOCKER_OPTS=""
 
