@@ -7,6 +7,11 @@ SCRIPT_DIR=$(dirname $(realpath $0))
 #  CPU="k8"
 #fi
 
+if [ ! -e "$(which bazelisk)" ]; then
+  echo "Need to install bazelisk."
+  ./scripts/install_bazelisk.sh
+fi
+
 #BAZEL_FLAGS="--config=debug --cpu=${CPU}"
 BAZEL_FLAGS="--config=debug"
 

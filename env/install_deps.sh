@@ -8,4 +8,6 @@ sudo apt-get install -y \
   libgstrtspserver-1.0-dev \
   libgstreamer-plugins-bad1.0-dev \
   libglew-dev \
-  libabsl-dev
+  libabsl-dev \
+  libgtkglext1-dev
+  
