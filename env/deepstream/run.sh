@@ -38,4 +38,5 @@ docker run ${GPU_FLAGS} --privileged --user=$(id -u):$(id -g) -it \
   -v /etc/group:/etc/group:ro \
   -v /etc/shadow:/etc/shadow:ro \
   -v /etc/gshadow:/etc/gshadow:ro \
-  --workdir=${HOME} $@ ${DOCKER_OPTS}
+  --workdir=${HOME} ${DOCKER_OPTS} $@
+
