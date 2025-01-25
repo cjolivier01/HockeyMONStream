@@ -28,3 +28,7 @@ RUN useradd -r -g $USERNAME -G $USERNAME,docker,sudo $USERNAME
 
 RUN echo '%sudo   ALL=(ALL:ALL) ALL' >> /etc/sudoers
 RUN echo "$USERNAME ALL=(ALL:ALL) ALL" >> /etc/sudoers
+RUN echo 'cd /opt/nvidia; for i in $(find -maxdepth 1 -type d); do sudo rsync -rlv $i /host_opt/nvidia/ || break; done' > /opt_script.sh
+RUN chmod +x /opt_script.sh
+
+CMD ["/bin/bash"]
