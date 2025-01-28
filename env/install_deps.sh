@@ -9,5 +9,4 @@ sudo apt-get install -y \
   libgstreamer-plugins-bad1.0-dev \
   libglew-dev \
   libabsl-dev \
-  libgtkglext1-dev
-  
+  libgtkglext1-dev  
