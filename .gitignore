@@ -8,3 +8,4 @@ bazel-testlogs
 *.pyc
 /bazel-hstream
 compile_commands.json
+.registry-synced
