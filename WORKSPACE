@@ -3,6 +3,7 @@ _workspace_name = "kstream"
 workspace(name = _workspace_name)
 
 load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository", "new_git_repository")
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 local_repository(
     name = "com_extension_dev",
@@ -96,11 +97,22 @@ new_git_repository(
     remote = "https://github.com/jbeder/yaml-cpp.git",
 )
 
-git_repository(
+# git_repository(
+#     name = "rules_python",
+#     remote = "https://github.com/bazelbuild/rules_python.git",
+#     tag = "0.1.0",  # Use the tag corresponding to version 0.1.0
+# )
+
+http_archive(
     name = "rules_python",
-    remote = "https://github.com/bazelbuild/rules_python.git",
-    tag = "0.1.0",  # Use the tag corresponding to version 0.1.0
+    sha256 = "9c6e26911a79fbf510a8f06d8eedb40f412023cf7fa6d1461def27116bff022c",
+    strip_prefix = "rules_python-1.1.0",
+    url = "https://github.com/bazelbuild/rules_python/releases/download/1.1.0/rules_python-1.1.0.tar.gz",
 )
+
+load("@rules_python//python:repositories.bzl", "py_repositories")
+
+py_repositories()
 
 git_repository(
     name = "magic_enum",
