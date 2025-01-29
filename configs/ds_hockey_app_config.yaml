@@ -40,8 +40,9 @@ tiled-display:
   nvbuf-memory-type: 0
 
 source:
-  csv-file-path: hockey_sources.csv
+  # csv-file-path: hockey_sources.csv
   # csv-file-path: webcam_sources.csv
+  csv-file-path: hockey_source_mlk-extreme.csv
 
 sink0:
   enable: 1
@@ -72,7 +73,7 @@ sink1:
   source-id: 0
 
 sink2:
-  enable: 1
+  enable: 0
   #Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 4
   #1=h264 2=h265
@@ -91,7 +92,7 @@ sink2:
   udp-port: 5400
 
 osd:
-  enable: 0
+  enable: 1
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -122,8 +123,12 @@ streammux:
   ## Set muxer output width and height
   # width: 1784
   # height: 738
-  width: 4080
-  height: 1360
+  # width: 8192
+  # height: 2770
+  width: 4096
+  height: 1385
+  # width: 4080
+  # height: 1360
   # width: 7680
   # height: 3176
   ##Enable to maintain aspect ratio wrt source, and allow black borders, works
@@ -166,8 +171,8 @@ ds-example:
   processing-height: 480
 
 hmvideoprep:
-  # enable: false
-  enable: true
+  enable: false
+  # enable: true
   gpu-id: 0
   # has_queue: false
   # has_videoconvert: false
@@ -192,7 +197,8 @@ ds-fieldmask:
   gpu-id: 0
   unique-id: 76
   # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png
-  detection-mask: /home/colivier/Videos/ev-reno-1/rink_mask_0.png
+  # detection-mask: /home/colivier/Videos/ev-reno-1/rink_mask_0.png
+  detection-mask: /home/colivier/Videos/mlk-extreme/rink_mask_0.png
 
 tracker:
   enable: 1
