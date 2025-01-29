@@ -768,30 +768,45 @@ static cudaError gst_videoprep_generate_output(
       angle = 0;
     }
 #endif
+
     BBox tbox = tracking_boxes.at(batch_nr);
     tbox.left *= scale_w;
     tbox.right *= scale_w;
     tbox.top *= scale_h;
     tbox.bottom *= scale_h;
     const BBox input_rect(0, 0, videoprep->input_width, videoprep->input_height);
-    BBox output_rect(0, 0, (FloatValue)videoprep->output_width, (FloatValue)videoprep->output_height);
 
     const FloatValue x_center = tbox.center().x;
-    const FloatValue min_width_per_side = videoprep->pre_rotate_size.width / 2;
-    const FloatValue clip_left = std::max(input_rect.left, x_center - min_width_per_side);
-    const FloatValue clip_right = std::min(input_rect.right - 1, x_center + min_width_per_side);
-    BBox extra_width_src_rect(clip_left, input_rect.top, clip_right, input_rect.bottom);
 
-    const BBox dst_box(0, 0, extra_width_src_rect.width(), extra_width_src_rect.height());
+    // hm::WHDims src_size{.width = (FloatValue)videoprep->input_width, .height = (FloatValue)videoprep->input_height};
+    // hm::WHDims output_size{.width=tbox.width(), .height=tbox.height()};
+    // auto pre_rotate_size = get_box_size_necessary_for_rotations(src_size, output_size);
+    // const FloatValue min_width_per_side = pre_rotate_size.width / 2;
+
+    const FloatValue min_width_per_side = videoprep->pre_rotate_size.width / 2;
+    FloatValue clip_left = std::max(input_rect.left, x_center - min_width_per_side);
+    // if (clip_left > tbox.left) {
+    //   clip_left = tbox.left;
+    // }
+    FloatValue clip_right = std::min(input_rect.right - 1, x_center + min_width_per_side);
+    // if (clip_right < tbox.right) {
+    //   clip_right = tbox.right;
+    // }
+    BBox extra_width_src_rect(clip_left, input_rect.top, clip_right, input_rect.bottom);
+    
+    // extra_width_src_rect = clamp_box(extra_width_src_rect, input_rect);
 
     BBox new_tbox = tbox;
     new_tbox.left -= extra_width_src_rect.left;
     new_tbox.right -= extra_width_src_rect.left;
+    if (new_tbox.left < 0) {
+      // new_tbox.right -= new_tbox.left;
+      new_tbox.left = 0;
+    }
     assert(new_tbox.left >= 0 && new_tbox.top >= 0);
     assert(new_tbox.right <= extra_width_src_rect.width());
 
-    // angle = 0.0;
-
+    const BBox dst_box(0, 0, extra_width_src_rect.width(), extra_width_src_rect.height());
     assert(dst_box.left == 0.0);
     assert(dst_box.top == 0.0);
 
@@ -802,10 +817,10 @@ static cudaError gst_videoprep_generate_output(
 
     hm::surface::Surface out_surf(&out_surface->surfaceList[batch_nr]);
 
-    // if (!videoprep->priv->video_output) {
-    //   assert(err == 0);
-    //   videoprep->priv->video_output = create_video_output(*scratch_surface_iter);
-    // }
+    if (!videoprep->priv->video_output) {
+      assert(err == 0);
+      videoprep->priv->video_output = create_video_output(*scratch_surface_iter);
+    }
     assert(batch_nr < in_surface->numFilled);
 #if 1
     {
@@ -828,6 +843,7 @@ static cudaError gst_videoprep_generate_output(
 #ifndef NDEBUG
     FloatValue tbox_ar = tbox.width() / tbox.height();
     FloatValue new_tbox_ar = new_tbox.width() / new_tbox.height();
+    const BBox output_rect(0, 0, (FloatValue)videoprep->output_width, (FloatValue)videoprep->output_height);
     FloatValue output_ar = output_rect.width() / output_rect.height();
     assert(isClose(tbox_ar, new_tbox_ar, 1e-6f, 0.001));
     assert(isClose(new_tbox_ar, output_ar, 1e-6f, 0.001));
