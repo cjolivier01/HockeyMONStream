@@ -9,3 +9,4 @@ bazel-testlogs
 /bazel-hstream
 compile_commands.json
 .registry-synced
+cuda-keyring*.deb
