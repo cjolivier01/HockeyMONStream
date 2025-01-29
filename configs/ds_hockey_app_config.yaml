@@ -44,7 +44,7 @@ source:
   # csv-file-path: webcam_sources.csv
 
 sink0:
-  enable: 0
+  enable: 1
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
   type: 2
   sync: 1
