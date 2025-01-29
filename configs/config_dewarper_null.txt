@@ -16,11 +16,15 @@
 # output-height=738
 
 # ev-reno-1
-output-width=2418
-output-height=1360
+# output-width=2418
+# output-height=1360
+
+# mlk-extreme
+output-width=2462
+output-height=1385
 
 # ev-stockton-2
 # output-width=5646
 # output-height=3176
-num-batch-buffers=4
 
+num-batch-buffers=4
