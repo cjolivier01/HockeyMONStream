@@ -44,7 +44,7 @@ source:
   # csv-file-path: webcam_sources.csv
 
 sink0:
-  enable: 1
+  enable: 0
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
   type: 2
   sync: 1
@@ -72,7 +72,7 @@ sink1:
   source-id: 0
 
 sink2:
-  enable: 0
+  enable: 1
   #Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 4
   #1=h264 2=h265
@@ -81,6 +81,7 @@ sink2:
   enc-type: 0
   sync: 0
   bitrate: 4000000
+  NVBUF-MEMORY-TYPE: 0
   #H264 Profile - 0=Baseline 2=Main 4=High
   #H265 Profile - 0=Main 1=Main10
   # set profile only for hw encoder, sw encoder selects profile based on sw-preset
@@ -165,8 +166,8 @@ ds-example:
   processing-height: 480
 
 hmvideoprep:
-  enable: false
-  # enable: true
+  # enable: false
+  enable: true
   gpu-id: 0
   # has_queue: false
   # has_videoconvert: false
@@ -182,7 +183,7 @@ ds-playtracker:
   enable: 1
   gpu-id: 0
   unique-id: 75
-  draw: true
+  draw: false
   # play-tracker-class-id: 99
   config-file: play_tracker_config.yaml
 
