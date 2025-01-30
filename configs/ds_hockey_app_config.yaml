@@ -16,7 +16,7 @@ application:
   ##gie-kitti-output-dir=streamscl
 
 tiled-display:
-  enable: 1
+  enable: 0
   rows: 1
   columns: 1
   # rows: 2
@@ -96,7 +96,7 @@ sink2:
   udp-port: 5400
 
 osd:
-  enable: 0
+  enable: 1
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -125,12 +125,12 @@ streammux:
   ##to push the batch even if the complete batch is not formed
   batched-push-timeout: 40000
   ## Set muxer output width and height
-  # width: 1784
-  # height: 738
+  width: 1784
+  height: 738
   #width: 8192
   #height: 2770
-  width: 6142
-  height: 2077
+  # width: 6142
+  # height: 2077
   # width: 4096
   # height: 1385
   # width: 4080
