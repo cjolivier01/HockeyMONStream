@@ -15,6 +15,7 @@
 #include "hockeymom/csrc/play_tracker/LivingBoxImpl.h"
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
 #include "src/libs/common/ConfigYaml.h"
+#include "src/libs/common/Draw.h"
 #include "src/libs/common/PlotContext.h"
 
 #include "gstplaytracker.h"
@@ -353,8 +354,8 @@ static const std::array<hm::utils::ColorRGB, 2> track_colors{
 static const hm::utils::ColorRGB breakway_edge_line{128, 0, 28};
 static const hm::utils::ColorRGB breakway_edge_circle{128, 0, 28};
 
-bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx) {
-  //hm::BBox arena_box(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
+bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx, cudaStream_t stream) {
+  // hm::BBox arena_box(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
   hm::BBox arena_box(0, 0, frame.frame_meta->pipeline_width, frame.frame_meta->pipeline_height);
   hm::play_tracker::PlayTracker* play_tracker = gst_hm::get_or_create_play_tracker(arena_box, ctx);
   if (!play_tracker) {
@@ -399,6 +400,17 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
             track_colors.at(i),
             /*draw_thresholds=*/true,
             following_box);
+#if 0
+        hm::surface::Surface surface(frame.input_surf_params);
+        cudaError_t cerr = draw_rect(
+            surface,
+            lbox->bounding_box(),
+            make_float4(0, 0, 255, 255),
+            /*thickness=*/2,
+            stream);
+        cudaStreamSynchronize(stream);
+        assert(cerr == cudaError_t::cudaSuccess);
+#endif
       }
     }
     if (frame.play_tracker_results.play_detection.has_value()) {

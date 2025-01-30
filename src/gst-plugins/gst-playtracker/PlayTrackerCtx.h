@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include <cuda.h>
+
 #define MAX_LABEL_SIZE 128
 
 typedef struct DsPlayTrackerCtx DsPlayTrackerCtx;
@@ -19,7 +21,7 @@ struct DsPlayTrackerInitParams {
 // Initialize library context
 DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* init_params);
 
-bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx);
+bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx, cudaStream_t stream);
 
 // Deinitialize library context
 void DsPlayTrackerCtxDeinit(DsPlayTrackerCtx* ctx);

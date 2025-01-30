@@ -138,7 +138,7 @@ sink2:
   # udp-port: 5400
 
 osd:
-  enable: 1
+  enable: 0
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -219,8 +219,8 @@ ds-example:
   processing-height: 480
 
 hmvideoprep:
-  # enable: false
-  enable: true
+  enable: false
+  # enable: true
   gpu-id: 0
   # has_queue: false
   # has_videoconvert: false

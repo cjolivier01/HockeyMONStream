@@ -613,7 +613,7 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
     /* For each frame attach metadata output. */
     for (guint i = 0; i < batch->frames.size(); i++) {
       GstDsPlayTrackerFrame& frame = batch->frames[i];
-      if (DsPlayTrackerProcessFrame(frame, playtracker->playtrackerlib_ctx)) {
+      if (DsPlayTrackerProcessFrame(frame, playtracker->playtrackerlib_ctx, playtracker->stream)) {
         attach_metadata_full_frame(playtracker, frame.frame_meta, frame.play_tracker_results, frame.batch_index);
       }
     }

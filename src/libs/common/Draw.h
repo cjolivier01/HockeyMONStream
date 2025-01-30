@@ -9,7 +9,6 @@
 #include <optional>
 
 namespace hm {
-namespace surface {
 
 cudaError_t draw_rect(
     surface::Surface& surface,
@@ -19,5 +18,4 @@ cudaError_t draw_rect(
     cudaStream_t stream,
     const std::optional<float4>& fill_color = std::nullopt);
 
-} // namespace surface
 } // namespace hm
