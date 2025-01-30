@@ -829,8 +829,8 @@ static cudaError gst_videoprep_generate_output(
         nppStreamContext.hStream);
     assert(err_cuda == 0);
 
-    int tb_w = tbox.width();
-    int tb_h = tbox.height();
+    size_t tb_w = tbox.width();
+    size_t tb_h = tbox.height();
     assert(tb_w <= videoprep->input_width);
     assert(tb_h <= videoprep->input_height);
 

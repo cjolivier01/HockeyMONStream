@@ -22,6 +22,18 @@
 #include <cassert>
 #include <memory>
 
+inline bool CUDA_CHECK_(gint e, gint iLine, const gchar* szFile) {
+  if (e != cudaSuccess) {
+    std::cout << "CUDA runtime error " << e << " at line " << iLine << " in file " << szFile << std::endl;
+    return false;
+  }
+  return true;
+}
+
+#define cuda_ck(call) CUDA_CHECK_(call, __LINE__, __FILE__)
+
+#define cuda_ck(call) CUDA_CHECK_(call, __LINE__, __FILE__)
+
 GST_DEBUG_CATEGORY_STATIC(gst_playtracker_debug);
 // #define GST_CAT_DEFAULT gst_playtracker_debug
 
@@ -253,6 +265,13 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
 
   GST_DEBUG_OBJECT(playtracker, "ctx lib %p \n", playtracker->playtrackerlib_ctx);
 
+  cudaError_t CUerr = cudaSetDevice(playtracker->gpu_id);
+  if (CUerr != cudaSuccess) {
+    GST_ERROR_OBJECT(playtracker, "cudaSetDevice Failed in %s\n", __func__);
+    return FALSE;
+  }
+  cuda_ck(cudaStreamCreate(&(playtracker->stream)));
+
   /* Create process queue and cvmat queue to transfer data between threads.
    * We will be using this queue to maintain the list of frames/objects
    * currently given to the algorithm for processing. */
@@ -309,6 +328,11 @@ static gboolean gst_playtracker_stop(GstBaseTransform* btrans) {
   g_queue_free(playtracker->process_queue);
 
   g_queue_free(playtracker->buf_queue);
+
+  if (playtracker->stream) {
+    cudaStreamDestroy(playtracker->stream);
+    playtracker->stream = nullptr;
+  }
 
   return TRUE;
 }

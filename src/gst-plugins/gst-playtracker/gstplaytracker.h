@@ -112,6 +112,9 @@ struct _GstDsPlayTracker {
 
   /** GstFlowReturn returned by the latest buffer pad push. */
   GstFlowReturn last_flow_ret;
+
+  /** The Cuda stream we use (if any) */
+  cudaStream_t stream;
 };
 
 struct GstDsPlayTrackerFrame {
