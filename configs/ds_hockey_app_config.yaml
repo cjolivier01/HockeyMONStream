@@ -29,8 +29,12 @@ tiled-display:
   # height: 720
   # width: 1280
   # height: 720
-  width: 640
-  height: 360
+  width: 2700
+  height: 1000
+  # width: 6142
+  # height: 2077
+  # width: 640
+  # height: 360
   gpu-id: 0
   #(0): nvbuf-mem-default - Default memory allocated, specific to particular platform
   #(1): nvbuf-mem-cuda-pinned - Allocate Pinned/Host cuda memory, applicable for Tesla
@@ -40,8 +44,9 @@ tiled-display:
   nvbuf-memory-type: 0
 
 source:
-  csv-file-path: hockey_sources.csv
+  # csv-file-path: hockey_sources.csv
   # csv-file-path: webcam_sources.csv
+  csv-file-path: hockey_source_mlk-extreme.csv
 
 sink0:
   enable: 1
@@ -82,6 +87,7 @@ sink2:
   enc-type: 0
   sync: 0
   bitrate: 4000000
+  NVBUF-MEMORY-TYPE: 0
   #H264 Profile - 0=Baseline 2=Main 4=High
   #H265 Profile - 0=Main 1=Main10
   # set profile only for hw encoder, sw encoder selects profile based on sw-preset
@@ -161,15 +167,21 @@ streammux:
   ##to push the batch even if the complete batch is not formed
   batched-push-timeout: 40000
   ## Set muxer output width and height
-  # width: 1784
-  # height: 738
-  width: 4080
-  height: 1360
+  width: 1784
+  height: 738
+  #width: 8192
+  #height: 2770
+  # width: 6142
+  # height: 2077
+  # width: 4096
+  # height: 1385
+  # width: 4080
+  # height: 1360
   # width: 7680
   # height: 3176
   ##Enable to maintain aspect ratio wrt source, and allow black borders, works
   ##along with width, height properties
-  enable-padding: 1
+  enable-padding: 0
   nvbuf-memory-type: 0
 
 hm-image-meta-merger:
@@ -233,7 +245,8 @@ ds-fieldmask:
   gpu-id: 0
   unique-id: 76
   # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png
-  detection-mask: /home/colivier/Videos/ev-reno-1/rink_mask_0.png
+  # detection-mask: /home/colivier/Videos/ev-reno-1/rink_mask_0.png
+  detection-mask: /home/colivier/Videos/mlk-extreme/rink_mask_0.png
 
 tracker:
   enable: 1
