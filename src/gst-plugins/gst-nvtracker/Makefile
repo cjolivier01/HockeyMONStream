@@ -10,7 +10,7 @@
 # its affiliates is strictly prohibited.
 ################################################################################
 
-CUDA_VER?=12.6
+CUDA_VER?=12.8
 ifeq ($(CUDA_VER),)
   $(error "CUDA_VER is not set")
 endif
