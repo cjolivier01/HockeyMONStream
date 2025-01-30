@@ -239,12 +239,14 @@ void plot_resizing_state(
     const ILivingBox* lbox,
     const hm::play_tracker::AllLivingBoxConfig& box_config,
     bool draw_thresholds,
+    double scale_width,
+    double scale_height,
     std::optional<ILivingBox*> following_lbox = std::nullopt) {
   const hm::play_tracker::ResizingState& resizing_state = lbox->get_resizing_state();
   if (box_config.sticky_sizing) {
     BBox my_bbox = lbox->bounding_box();
     assert(following_lbox.has_value());
-    BBox following_box = following_lbox.value()->bounding_box();
+    BBox following_box = following_lbox.value()->bounding_box().make_canvas_scaled(scale_width, scale_height);
     if (resizing_state.size_is_frozen) {
       // Draw thick corners when frozen
       plotter.plot_corner_rect(my_bbox, /*thickness=*/8, hm::utils::ColorRGB{255, 255, 255}, 0.2, 0.2);
@@ -281,25 +283,28 @@ void plot_translation_state(
     int thickness,
     const hm::utils::ColorT& color,
     bool draw_thresholds,
+    double scale_width,
+    double scale_height,
     std::optional<ILivingBox*> following_lbox = std::nullopt) {
-  const hm::play_tracker::LivingState& living_state = lbox->get_live_box_state();
-  const hm::play_tracker::ResizingState& resizing_state = lbox->get_resizing_state();
+  // const hm::play_tracker::LivingState& living_state = lbox->get_live_box_state();
+  // const hm::play_tracker::ResizingState& resizing_state = lbox->get_resizing_state();
   const hm::play_tracker::TranslationState& translation_state = lbox->get_translation_state();
-  (void)living_state;
-  (void)resizing_state;
+  // (void)living_state;
+  // (void)resizing_state;
   (void)translation_state;
-  BBox my_bbox = lbox->bounding_box();
+  BBox my_bbox = lbox->bounding_box().make_canvas_scaled(scale_width, scale_height);
   plotter.plot_rect(
       my_bbox, thickness, translation_state.translation_is_frozen ? hm::utils::ColorRGB{128, 128, 128} : color);
   if (draw_thresholds && box_config.sticky_translation) {
-    auto sticky_unsticky = lbox->get_sticky_translation_sizes();
-    float sticky = std::get<0>(sticky_unsticky);
-    float unsticky = std::get<1>(sticky_unsticky);
+    const auto sticky_unsticky = lbox->get_sticky_translation_sizes();
+    const float scale_ratio = std::sqrt(scale_width * scale_height + scale_width * scale_height);
+    const float sticky = std::get<0>(sticky_unsticky) * scale_ratio;
+    const float unsticky = std::get<1>(sticky_unsticky) * scale_ratio;
     Point my_center = my_bbox.center();
     plotter.plot_circle(my_center, /*radius=*/int(sticky), /*thickness=*/3, hm::utils::ColorRGB{255, 0, 0});
     plotter.plot_circle(my_center, /*radius=*/int(unsticky), /*thickness=*/3, hm::utils::ColorRGB{255, 0, 255});
     if (following_lbox.has_value()) {
-      BBox following_bbox = (*following_lbox)->bounding_box();
+      BBox following_bbox = (*following_lbox)->bounding_box().make_canvas_scaled(scale_width, scale_height);
       Point following_bbox_center = following_bbox.center();
       plotter.plot_circle(
           my_center, /*radius=*/5, /*thickness=*/1, hm::utils::ColorRGB{255, 255, 0}, hm::utils::ColorRGB{255, 255, 0});
@@ -334,9 +339,12 @@ void plot_living_box(
     int thickness,
     const hm::utils::ColorT& color,
     bool draw_thresholds,
+    double scale_width,
+    double scale_height,
     std::optional<ILivingBox*> following_lbox = std::nullopt) {
-  plot_translation_state(plotter, lbox, box_config, thickness, color, draw_thresholds, following_lbox);
-  plot_resizing_state(plotter, lbox, box_config, draw_thresholds, following_lbox);
+  plot_translation_state(
+      plotter, lbox, box_config, thickness, color, draw_thresholds, scale_width, scale_height, following_lbox);
+  plot_resizing_state(plotter, lbox, box_config, draw_thresholds, scale_width, scale_height, following_lbox);
 }
 
 } // namespace gst_hm
@@ -354,9 +362,15 @@ static const std::array<hm::utils::ColorRGB, 2> track_colors{
 static const hm::utils::ColorRGB breakway_edge_line{128, 0, 28};
 static const hm::utils::ColorRGB breakway_edge_circle{128, 0, 28};
 
+<<<<<<< HEAD
 bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx, cudaStream_t stream) {
   // hm::BBox arena_box(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
   hm::BBox arena_box(0, 0, frame.frame_meta->pipeline_width, frame.frame_meta->pipeline_height);
+=======
+bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx) {
+  hm::BBox arena_box(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
+  // hm::BBox arena_box(0, 0, frame.frame_meta->pipeline_width, frame.frame_meta->pipeline_height);
+>>>>>>> db5ea21 (...)
   hm::play_tracker::PlayTracker* play_tracker = gst_hm::get_or_create_play_tracker(arena_box, ctx);
   if (!play_tracker) {
     return false;
@@ -369,14 +383,18 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
   tracking_ids.reserve(object_count);
   tracking_boxes.reserve(object_count);
 
+  assert(frame.frame_meta->pipeline_width && frame.frame_meta->pipeline_height);
+  const double scale_x = double(frame.frame_meta->source_frame_width) / double(frame.frame_meta->pipeline_width);
+  const double scale_y = double(frame.frame_meta->source_frame_height) / double(frame.frame_meta->pipeline_height);
+
   for (NvDsMetaList* l_obj = frame.frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
     NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
     const NvDsComp_BboxInfo& trackler_bbox_info = obj_meta->tracker_bbox_info;
     tracking_boxes.emplace_back(hm::BBox(
-        trackler_bbox_info.org_bbox_coords.left,
-        trackler_bbox_info.org_bbox_coords.top,
-        trackler_bbox_info.org_bbox_coords.left + trackler_bbox_info.org_bbox_coords.width,
-        trackler_bbox_info.org_bbox_coords.top + trackler_bbox_info.org_bbox_coords.height));
+        trackler_bbox_info.org_bbox_coords.left * scale_x,
+        trackler_bbox_info.org_bbox_coords.top * scale_y,
+        (trackler_bbox_info.org_bbox_coords.left + trackler_bbox_info.org_bbox_coords.width) * scale_x,
+        (trackler_bbox_info.org_bbox_coords.top + trackler_bbox_info.org_bbox_coords.height) * scale_y));
     size_t tracking_id = obj_meta->object_id;
     tracking_ids.push_back(tracking_id);
   }
@@ -392,6 +410,9 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
       if (ctx->play_tracker.has_value()) {
         std::shared_ptr<hm::play_tracker::ILivingBox> lbox = (*ctx->play_tracker)->get_live_box(i);
         hm::play_tracker::ILivingBox* following_box = i ? (*ctx->play_tracker)->get_live_box(i - 1).get() : nullptr;
+
+        // We scale back down for drawing, which is on the pipeline image
+
         gst_hm::plot_living_box(
             plotter,
             lbox.get(),
@@ -399,6 +420,8 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
             /*thickness=*/4,
             track_colors.at(i),
             /*draw_thresholds=*/true,
+            1.0 / scale_x,
+            1.0 / scale_y,
             following_box);
 #if 0
         hm::surface::Surface surface(frame.input_surf_params);
@@ -413,18 +436,18 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
 #endif
       }
     }
-    if (frame.play_tracker_results.play_detection.has_value()) {
-      const hm::play_tracker::PlayDetectorResults& play_detector = *frame.play_tracker_results.play_detection;
-      if (play_detector.breakaway_edge_center.has_value()) {
-        plotter.plot_circle(
-            *play_detector.breakaway_edge_center, /*radius=*/30, /*thickness=*/15, breakway_edge_circle);
-        plotter.plot_line(
-            frame.play_tracker_results.tracking_boxes.at(0).center(),
-            *play_detector.breakaway_edge_center,
-            3,
-            breakway_edge_line);
-      }
-    }
+    // if (frame.play_tracker_results.play_detection.has_value()) {
+    //   const hm::play_tracker::PlayDetectorResults& play_detector = *frame.play_tracker_results.play_detection;
+    //   if (play_detector.breakaway_edge_center.has_value()) {
+    //     plotter.plot_circle(
+    //         *play_detector.breakaway_edge_center, /*radius=*/30, /*thickness=*/15, breakway_edge_circle);
+    //     plotter.plot_line(
+    //         frame.play_tracker_results.tracking_boxes.at(0).center(),
+    //         *play_detector.breakaway_edge_center,
+    //         3,
+    //         breakway_edge_line);
+    //   }
+    // }
   }
   return true;
 }
