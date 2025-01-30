@@ -30,8 +30,8 @@ gst_cc_plugin(
         "-Wno-error=write-strings",
     ],
     linkopts = select({
-        ":aarch64-linux-gnu": ["-L/usr/local/cuda-12.6/targets/aarch64-linux/lib"],
-        ":x86_64-linux-gnu": ["-L/usr/local/cuda-12.6/targets/x86_64-linux/lib"],
+        ":aarch64-linux-gnu": ["-L/usr/local/cuda/targets/aarch64-linux/lib"],
+        ":x86_64-linux-gnu": ["-L/usr/local/cuda/targets/x86_64-linux/lib"],
         "//conditions:default": [],
     }) + [
         "-l:libnppig.so",

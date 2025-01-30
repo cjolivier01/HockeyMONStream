@@ -148,7 +148,7 @@ sudo sh cuda_12.6.2_560.35.03_linux.run --silent --toolkit
 * Export environment variables
 
   ```
-  echo $'export PATH=/usr/local/cuda-12.6/bin${PATH:+:${PATH}}\nexport LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}' >> ~/.bashrc && source ~/.bashrc
+  echo $'export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}\nexport LD_LIBRARY_PATH=/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}' >> ~/.bashrc && source ~/.bashrc
   ```
 
 ### 6. TensorRT
@@ -169,7 +169,7 @@ DeepStream 7.1 for Servers and Workstations
 wget --content-disposition 'https://api.ngc.nvidia.com/v2/resources/org/nvidia/deepstream/7.1/files?redirect=true&path=deepstream-7.1_7.1.0-1_amd64.deb' -O deepstream-7.1_7.1.0-1_amd64.deb
 sudo apt-get install ./deepstream-7.1_7.1.0-1_amd64.deb
 rm ${HOME}/.cache/gstreamer-1.0/registry.x86_64.bin
-sudo ln -snf /usr/local/cuda-12.6 /usr/local/cuda
+sudo ln -snf /usr/local/cuda /usr/local/cuda
 ```
 
 ### 8. Reboot

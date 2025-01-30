@@ -22,7 +22,7 @@ cc_binary(
         "-lnvinfer_plugin",
         "-lnvinfer",
         "-lnvonnxparser",
-        "-L/usr/local/cuda-12.6/lib64",
+        "-L/usr/local/cuda/lib64",
         "-lcudart",
         "-lcublas",
         "-lstdc++fs",
