@@ -19,6 +19,8 @@
 #include "videoprep.h"
 #include "videoprep_property_parser.h"
 
+#include "cudaDraw.h"
+
 #include <assert.h>
 #include <string.h>
 #include <unistd.h>
@@ -241,7 +243,7 @@ done:
   return ret;
 
 /* ERRORS */
-no_transform_possible : {
+no_transform_possible: {
   GST_DEBUG_OBJECT(videoprep, "could not transform %" GST_PTR_FORMAT " in anything we support", caps);
   ret = FALSE;
   goto done;
@@ -523,8 +525,11 @@ static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
   ranthis = true;
 
   hm::WHDims src_size{.width = (FloatValue)videoprep->input_width, .height = (FloatValue)videoprep->input_height};
-  hm::WHDims output_size = {
-      .width = (FloatValue)videoprep->output_width, .height = (FloatValue)videoprep->output_height};
+  // hm::WHDims output_size = {
+  //     .width = (FloatValue)videoprep->output_width, .height = (FloatValue)videoprep->output_height};
+  constexpr FloatValue out_ar = 16.0/9.0;
+  FloatValue virt_out_width = ((FloatValue)videoprep->input_height) * out_ar;
+  hm::WHDims output_size{.width = virt_out_width, .height = (FloatValue)videoprep->input_height};
 
   videoprep->pre_rotate_size = get_box_size_necessary_for_rotations(src_size, output_size);
 
@@ -740,10 +745,20 @@ static cudaError gst_videoprep_generate_output(
     assert(frame_meta_list);
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)frame_meta_list->data;
 
+#ifdef __aarch64__
+    hm::surface::EglSurfaceMapper incoming_elg_surface_mapper(in_surface, batch_nr);
+    hm::surface::Surface incoming_surface = incoming_elg_surface_mapper.get_surface();
+#else
+    hm::surface::Surface incoming_surface(&in_surface->surfaceList[batch_nr]);
+#endif
+
     FloatValue pipeline_width =
         frame_meta->pipeline_width ? frame_meta->pipeline_width : frame_meta->source_frame_width;
     FloatValue pipeline_height =
         frame_meta->pipeline_height ? frame_meta->pipeline_height : frame_meta->source_frame_height;
+
+    // FloatValue pipeline_width = frame_meta->pipeline_width ? frame_meta->pipeline_width : incoming_surface->width;
+    // FloatValue pipeline_height = frame_meta->pipeline_height ? frame_meta->pipeline_height : incoming_surface->height;
 
     FloatValue scale_w = float(videoprep->input_width) / pipeline_width;
     FloatValue scale_h = float(videoprep->input_height) / pipeline_height;
@@ -770,39 +785,84 @@ static cudaError gst_videoprep_generate_output(
 #endif
 
     BBox tbox = tracking_boxes.at(batch_nr);
+
+    cudaError_t err_cuda = cudaError_t::cudaSuccess;
+    // std::cout << tbox << std::endl;
+    err_cuda = cudaDrawRect(
+        incoming_surface.dataptr<uchar4*>(),
+        incoming_surface.dataptr<uchar4*>(),
+        incoming_surface.pitch() / 4,
+        incoming_surface.height(),
+        tbox.left,
+        tbox.top,
+        tbox.right,
+        tbox.bottom,
+        {0, 0, 0, 0},
+        /*line_color=*/{255, 255, 0, 255},
+        /*line_width=*/3.0f,
+        nppStreamContext.hStream);
+    assert(err_cuda == 0);
+
+    FloatValue tbox_aar = tbox.width() / tbox.height();
+
     tbox.left *= scale_w;
     tbox.right *= scale_w;
     tbox.top *= scale_h;
     tbox.bottom *= scale_h;
+
+    tbox_aar = tbox.width() / tbox.height();
+
+    // tbox = tbox.make_scaled(scale_w, scale_h);
+
+    err_cuda = cudaDrawRect(
+        incoming_surface.dataptr<uchar4*>(),
+        incoming_surface.dataptr<uchar4*>(),
+        incoming_surface.pitch() / 4,
+        incoming_surface.height(),
+        tbox.left,
+        tbox.top,
+        tbox.right,
+        tbox.bottom,
+        {0, 0, 0, 0},
+        /*line_color=*/{255, 255, 255, 255},
+        /*line_width=*/3.0f,
+        nppStreamContext.hStream);
+    assert(err_cuda == 0);
+
+    int tb_w = tbox.width();
+    int tb_h = tbox.height();
+    assert(tb_w <= videoprep->input_width);
+    assert(tb_h <= videoprep->input_height);
+
     const BBox input_rect(0, 0, videoprep->input_width, videoprep->input_height);
 
     const FloatValue x_center = tbox.center().x;
+
+    // const FloatValue tbox_aar = tbox.width() / tbox.height();
+
+    assert(tbox.height() <= videoprep->pre_rotate_size.height);
+    // this means our pre-rotate allocation is smaller than the tbox, so that's a bug when calculating pre_rotate_size
+    assert(tbox.width() <= videoprep->pre_rotate_size.width);
 
     // hm::WHDims src_size{.width = (FloatValue)videoprep->input_width, .height = (FloatValue)videoprep->input_height};
     // hm::WHDims output_size{.width=tbox.width(), .height=tbox.height()};
     // auto pre_rotate_size = get_box_size_necessary_for_rotations(src_size, output_size);
     // const FloatValue min_width_per_side = pre_rotate_size.width / 2;
-
-    const FloatValue min_width_per_side = videoprep->pre_rotate_size.width / 2;
+    FloatValue min_width_per_side = videoprep->pre_rotate_size.width / 2;
+    min_width_per_side = std::max(min_width_per_side, tbox.width() / 2);
     FloatValue clip_left = std::max(input_rect.left, x_center - min_width_per_side);
-    // if (clip_left > tbox.left) {
-    //   clip_left = tbox.left;
-    // }
     FloatValue clip_right = std::min(input_rect.right - 1, x_center + min_width_per_side);
-    // if (clip_right < tbox.right) {
-    //   clip_right = tbox.right;
-    // }
     BBox extra_width_src_rect(clip_left, input_rect.top, clip_right, input_rect.bottom);
-    
+
     // extra_width_src_rect = clamp_box(extra_width_src_rect, input_rect);
 
     BBox new_tbox = tbox;
     new_tbox.left -= extra_width_src_rect.left;
     new_tbox.right -= extra_width_src_rect.left;
-    if (new_tbox.left < 0) {
-      // new_tbox.right -= new_tbox.left;
-      new_tbox.left = 0;
-    }
+    // if (new_tbox.left < 0) {
+    //   // new_tbox.right -= new_tbox.left;
+    //   new_tbox.left = 0;
+    // }
     assert(new_tbox.left >= 0 && new_tbox.top >= 0);
     assert(new_tbox.right <= extra_width_src_rect.width());
 
@@ -817,19 +877,15 @@ static cudaError gst_videoprep_generate_output(
 
     hm::surface::Surface out_surf(&out_surface->surfaceList[batch_nr]);
 
+    assert(batch_nr < in_surface->numFilled);
+
     if (!videoprep->priv->video_output) {
       assert(err == 0);
       videoprep->priv->video_output = create_video_output(*scratch_surface_iter);
     }
-    assert(batch_nr < in_surface->numFilled);
+
 #if 1
     {
-#ifdef __aarch64__
-      hm::surface::EglSurfaceMapper incoming_elg_surface_mapper(in_surface, batch_nr);
-      hm::surface::Surface incoming_surface = incoming_elg_surface_mapper.get_surface();
-#else
-      hm::surface::Surface incoming_surface(&in_surface->surfaceList[batch_nr]);
-#endif
       np_status = cropSurface(
           incoming_surface,
           /*src_rect=*/extra_width_src_rect,
@@ -840,6 +896,34 @@ static cudaError gst_videoprep_generate_output(
     assert(np_status == NppStatus::NPP_SUCCESS);
 #endif
 
+    // cudaDrawRect(
+    //     (*scratch_surface_iter).dataptr<uchar4*>(),
+    //     (*scratch_surface_iter).dataptr<uchar4*>(),
+    //     (*scratch_surface_iter).width(),
+    //     (*scratch_surface_iter).height(),
+    //     new_tbox.left,
+    //     new_tbox.top,
+    //     new_tbox.right,
+    //     new_tbox.bottom,
+    //     {0, 0, 0, 0},
+    //     /*line_color=*/{255, 0, 0, 255},
+    //     /*line_width=*/5.0f,
+    //     nppStreamContext.hStream);
+
+    // videoprep->priv->video_output->Render(
+    //     incoming_surface.dataptr<uint8_t*>(),
+    //     incoming_surface.width(),
+    //     incoming_surface.pitch() / 4,
+    //     imageFormat::IMAGE_RGBA8,
+    //     nppStreamContext.hStream);
+
+    videoprep->priv->video_output->Render(
+        (*scratch_surface_iter).dataptr<uint8_t*>(),
+        (*scratch_surface_iter).width(),
+        (*scratch_surface_iter).height(),
+        imageFormat::IMAGE_RGBA8,
+        nppStreamContext.hStream);
+
 #ifndef NDEBUG
     FloatValue tbox_ar = tbox.width() / tbox.height();
     FloatValue new_tbox_ar = new_tbox.width() / new_tbox.height();
@@ -849,7 +933,7 @@ static cudaError gst_videoprep_generate_output(
     assert(isClose(new_tbox_ar, output_ar, 1e-6f, 0.001));
 #endif
 
-    // We just rotate the whole thjing around the point
+    // We just rotate the whole thing around the point
     // that is effectively the center of the tracking box
 #if 1
     {
@@ -1011,12 +1095,12 @@ static GstFlowReturn gst_videoprep_transform(GstBaseTransform* btrans, GstBuffer
   }
   return GST_FLOW_OK;
 
-invalid_inbuf : {
+invalid_inbuf: {
   GST_ERROR("input buffer mapinfo failed");
   return GST_FLOW_ERROR;
 }
 
-invalid_outbuf : {
+invalid_outbuf: {
   GST_ERROR_OBJECT(videoprep, "output buffer mapinfo failed");
   gst_buffer_unmap(inbuf, &inmap);
   return GST_FLOW_ERROR;

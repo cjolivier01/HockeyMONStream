@@ -370,6 +370,7 @@ static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstB
     frame_meta = (NvDsFrameMeta*)(l_frame->data);
     // If frame pipeline w/h isn't set, then set it from the first surface
     if (!frame_meta->pipeline_width && surface->surfaceList) {
+      assert(false);  // shoudl we be setting this?
       assert(!frame_meta->pipeline_height);
       NvBufSurfaceParams *params = &surface->surfaceList[0];
       frame_meta->pipeline_width = params->width;
