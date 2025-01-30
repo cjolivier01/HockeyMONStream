@@ -1,4 +1,3 @@
-
 INCLUDE_PREFIX = "src/libs/common"
 
 cc_library(
@@ -20,9 +19,10 @@ cc_library(
         "@deepstream//:deepstream_lib",
         "@gstreamer",
         "@hm//hockeymom/csrc/play_tracker",
+        "@jetson-utils//cuda:cuda_lib",
+        "@local_cuda//:cuda",
+        "@local_cuda//:cuda_runtime",
         "@opencv_linux//:opencv",
         "@yaml-cpp",
-        "@local_cuda//:cuda_runtime",
-        "@local_cuda//:cuda",
     ],
 )

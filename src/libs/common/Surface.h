@@ -1,5 +1,5 @@
 /**
- * @file surface_list.hpp
+ * @file Surface.h
  * @brief Implements a container for Surface objects with round-robin iteration capabilities
  */
 #pragma once
