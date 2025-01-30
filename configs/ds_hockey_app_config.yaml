@@ -27,8 +27,12 @@ tiled-display:
   # height: 1360
   # width: 2048
   # height: 720
-  width: 1280
-  height: 720
+  # width: 1280
+  # height: 720
+  width: 2700
+  height: 1000
+  # width: 6142
+  # height: 2077
   # width: 640
   # height: 360
   gpu-id: 0
@@ -123,8 +127,10 @@ streammux:
   ## Set muxer output width and height
   # width: 1784
   # height: 738
-  width: 8192
-  height: 2770
+  #width: 8192
+  #height: 2770
+  width: 6142
+  height: 2077
   # width: 4096
   # height: 1385
   # width: 4080
@@ -133,7 +139,7 @@ streammux:
   # height: 3176
   ##Enable to maintain aspect ratio wrt source, and allow black borders, works
   ##along with width, height properties
-  enable-padding: 1
+  enable-padding: 0
   nvbuf-memory-type: 0
 
 hm-image-meta-merger:
@@ -171,8 +177,8 @@ ds-example:
   processing-height: 480
 
 hmvideoprep:
-  # enable: false
-  enable: true
+  enable: false
+  # enable: true
   gpu-id: 0
   # has_queue: false
   # has_videoconvert: false
@@ -193,7 +199,7 @@ ds-playtracker:
   config-file: play_tracker_config.yaml
 
 ds-fieldmask:
-  enable: 1
+  enable: 0
   gpu-id: 0
   unique-id: 76
   # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png
