@@ -362,15 +362,9 @@ static const std::array<hm::utils::ColorRGB, 2> track_colors{
 static const hm::utils::ColorRGB breakway_edge_line{128, 0, 28};
 static const hm::utils::ColorRGB breakway_edge_circle{128, 0, 28};
 
-<<<<<<< HEAD
 bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx, cudaStream_t stream) {
   // hm::BBox arena_box(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
   hm::BBox arena_box(0, 0, frame.frame_meta->pipeline_width, frame.frame_meta->pipeline_height);
-=======
-bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx) {
-  hm::BBox arena_box(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
-  // hm::BBox arena_box(0, 0, frame.frame_meta->pipeline_width, frame.frame_meta->pipeline_height);
->>>>>>> db5ea21 (...)
   hm::play_tracker::PlayTracker* play_tracker = gst_hm::get_or_create_play_tracker(arena_box, ctx);
   if (!play_tracker) {
     return false;
