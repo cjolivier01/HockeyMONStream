@@ -7,6 +7,7 @@ sudo apt-get install -y \
   protobuf-compiler \
   libgstrtspserver-1.0-dev \
   libgstreamer-plugins-bad1.0-dev \
+  gstreamer1.0-rtsp \
   libglew-dev \
   libabsl-dev \
   libgtkglext1-dev  

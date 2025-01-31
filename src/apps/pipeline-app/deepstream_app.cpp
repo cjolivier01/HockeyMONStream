@@ -2085,7 +2085,7 @@ void destroy_pipeline(AppCtx* appCtx) {
     appCtx->pipeline.pipeline = NULL;
     pause_perf_measurement(&appCtx->perf_struct);
 
-    // for pipeline-recreate, reset rtsp srouce's depay, such as rtph264depay.
+    // for pipeline-recreate, reset rtsp source's depay, such as rtph264depay.
     NvDsSrcParentBin* pbin = &appCtx->pipeline.multi_src_bin;
     if (pbin) {
       NvDsSrcBin* src_bin;

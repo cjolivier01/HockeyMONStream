@@ -181,9 +181,9 @@
       "type": "lldb",
       "request": "launch",
       "cwd": "${workspaceFolder}",
-      "program": "${workspaceFolder}/bazel-bin/gst-plugins/gst-myaudiofilter/test/myaudioapp",
+      "program": "${workspaceFolder}/bazel-bin/src/gst-plugins/gst-myaudiofilter/test/myaudioapp",
       "args": [
-        "/mnt/ripper-data/Videos/ev-reno-1/audio.aac",
+        "/mnt/ripper-data/Videos/mlk-extreme/GX010015.MP4",
       ],
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}",
