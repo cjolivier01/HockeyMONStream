@@ -636,7 +636,7 @@ int main(int argc, char* argv[]) {
         appCtx[i]->return_value = -1;
         goto done;
       }
-      if (!parse_config_yaml(appCtx[i]->configurator().config(), &appCtx[i]->config, cfg_files[i])) {
+      if (!parse_config_yaml(appCtx[i]->configurator().config()["pipeline"], &appCtx[i]->config, cfg_files[i])) {
         NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files[i]);
         appCtx[i]->return_value = -1;
         goto done;
