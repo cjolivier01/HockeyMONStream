@@ -150,7 +150,7 @@ videoOutput* RenderSet::get_video_output(const std::string& name, const hm::surf
 
 void RenderSet::render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream) {
   get_video_output(name, surface)
-      ->Render(surface.dataptr(), surface.width(), surface.height(), surface.get_image_format(), stream);
+      ->Render(surface.dataptr(), surface.pitch_width(), surface.height(), surface.get_image_format(), stream);
 }
 
 static void gst_videoprep_finalize(GObject* object);
@@ -950,6 +950,7 @@ static cudaError gst_videoprep_generate_output(
           /*anchor_point=*/new_tbox.center(),
           nppStreamContext);
       assert(np_status == NppStatus::NPP_SUCCESS);
+      videoprep->priv->render(std::string("Rotate"), *in_surf_iter, nppStreamContext.hStream);
     }
 #endif
 
@@ -968,6 +969,7 @@ static cudaError gst_videoprep_generate_output(
           /*dest_rect=*/output_rect,
           nppStreamContext);
       assert(np_status == NppStatus::NPP_SUCCESS);
+      // videoprep->priv->render(std::string("Outgoing resized"), outgoing_surface, nppStreamContext.hStream);
     }
 #endif
   }
