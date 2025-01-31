@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include <iostream>
+#include <functional>
 #include <optional>
 
 namespace hm {
@@ -45,5 +46,13 @@ extern GPrintOStream gout;
 #define STRSIZE(str$) (sizeof(str$)/sizeof(str$[0]))
 
 std::optional<std::pair<int, int>> extract_width_height(GstCaps* caps);
+
+template <typename T>
+inline void glist_visitor(GList *list, const std::function<void(T*)>& pred) {
+  while (list) {
+    pred(static_cast<T*>(list->data));
+    list = list->next;
+  }
+}
 
 } // namespace hm

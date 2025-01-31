@@ -8,6 +8,7 @@
 
 #include "hockeymom/csrc/play_tracker/BoxUtils.h"
 
+#include "imageFormat.h"
 #include "nvdsmeta.h"
 
 #include <cuda_egl_interop.h>
@@ -22,6 +23,8 @@ namespace surface {
 class Surface {
  public:
   Surface(NvBufSurfaceParams* params) : params_(params) {
+    // No virtuals, no expensive construction.
+    // This is simply a wrapper class of the NvBufSurfaceParams pointer.
     static_assert(sizeof(*this) == sizeof(NvBufSurfaceParams*));
   }
 
@@ -56,6 +59,9 @@ class Surface {
     assert(pw >= width());
     return pw;
   }
+
+  imageFormat get_image_format() const;
+
   constexpr guint size(bool assert_pitch = false) const {
     assert(!assert_pitch || pitch() == width() * bytes_per_pixel());
     return pitch() * height();
@@ -202,7 +208,7 @@ class SurfaceList {
   std::vector<bool> owns_;
 };
 
-#ifdef __aarch64__  /* Jetson */
+#ifdef __aarch64__ /* Jetson */
 class EglSurfaceMapper {
  public:
   EglSurfaceMapper(NvBufSurface* surface, int index);

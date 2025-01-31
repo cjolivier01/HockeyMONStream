@@ -95,6 +95,18 @@ void SurfaceList::add_surface(const Surface& surface) {
   add_surface(surface.get());
 }
 
+imageFormat Surface::get_image_format() const {
+  switch ((*this)->colorFormat) {
+    case NVBUF_COLOR_FORMAT_RGBA:
+      return imageFormat::IMAGE_RGBA8;
+    case NVBUF_COLOR_FORMAT_NV12:
+      return imageFormat::IMAGE_NV12;
+    default:
+      assert(false);
+      return imageFormat::IMAGE_UNKNOWN;
+  }
+}
+
 #ifdef __aarch64__  /* Jetson */
 
 EglSurfaceMapper::EglSurfaceMapper(NvBufSurface* surface, int index) : surface_(surface), index_(index) {

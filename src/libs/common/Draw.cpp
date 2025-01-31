@@ -8,17 +8,6 @@
 
 namespace hm {
 namespace {
-imageFormat get_image_format(const surface::Surface& surface) {
-  switch (surface->colorFormat) {
-    case NVBUF_COLOR_FORMAT_RGBA:
-      return imageFormat::IMAGE_RGBA8;
-    case NVBUF_COLOR_FORMAT_NV12:
-      return imageFormat::IMAGE_NV12;
-    default:
-      assert(false);
-      return imageFormat::IMAGE_UNKNOWN;
-  }
-}
 
 size_t get_pitch_width(const surface::Surface& surface) {
   switch (surface->colorFormat) {
@@ -47,7 +36,7 @@ cudaError_t draw_rect(
       surface.dataptr(),
       get_pitch_width(surface),
       surface.height(),
-      get_image_format(surface),
+      surface.get_image_format(),
       rect.left,
       rect.top,
       rect.right,

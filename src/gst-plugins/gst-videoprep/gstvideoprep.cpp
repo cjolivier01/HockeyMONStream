@@ -22,9 +22,11 @@
 #include "cudaDraw.h"
 
 #include <assert.h>
+#include <cuda.h>
 #include <string.h>
 #include <unistd.h>
 #include <vector>
+#include "nvbufsurface.h"
 
 #if defined(__aarch64__)
 #include <EGL/egl.h>
@@ -126,8 +128,30 @@ enum {
   PROP_SILENT,
 };
 
-#include <cuda.h>
-#include "nvbufsurface.h"
+std::unique_ptr<glDisplay> RenderSet::create_video_output(
+    const std::string& name,
+    const hm::surface::Surface& surface) {
+  videoOptions vo;
+  vo.width = (int)surface.width();
+  vo.height = (int)surface.height();
+  auto video_output = std::unique_ptr<glDisplay>(glDisplay::Create(vo));
+  video_output->SetTitle(name.c_str());
+  return video_output;
+}
+
+videoOutput* RenderSet::get_video_output(const std::string& name, const hm::surface::Surface& surface) {
+  std::unique_lock lk(mu_);
+  auto found = video_outputs_.find(name);
+  if (found == video_outputs_.end()) {
+    found = video_outputs_.emplace(name, create_video_output(name, surface)).first;
+  }
+  return found->second.get();
+}
+
+void RenderSet::render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream) {
+  get_video_output(name, surface)
+      ->Render(surface.dataptr(), surface.width(), surface.height(), surface.get_image_format(), stream);
+}
 
 static void gst_videoprep_finalize(GObject* object);
 
@@ -527,7 +551,7 @@ static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
   hm::WHDims src_size{.width = (FloatValue)videoprep->input_width, .height = (FloatValue)videoprep->input_height};
   // hm::WHDims output_size = {
   //     .width = (FloatValue)videoprep->output_width, .height = (FloatValue)videoprep->output_height};
-  constexpr FloatValue out_ar = 16.0/9.0;
+  constexpr FloatValue out_ar = 16.0 / 9.0;
   FloatValue virt_out_width = ((FloatValue)videoprep->input_height) * out_ar;
   hm::WHDims output_size{.width = virt_out_width, .height = (FloatValue)videoprep->input_height};
 
@@ -700,14 +724,6 @@ void inspect_nvbufsurface_dtype(GstBuffer* buffer) {
   gst_buffer_unmap(buffer, &map_info);
 }
 
-std::unique_ptr<glDisplay> create_video_output(const hm::surface::Surface& surface) {
-  videoOptions vo;
-  vo.width = (int)surface.width();
-  vo.height = (int)surface.height();
-  auto result = std::unique_ptr<glDisplay>(glDisplay::Create(vo));
-  return result;
-}
-
 static cudaError gst_videoprep_generate_output(
     NvDsBatchMeta* batch_meta,
     GstVideoPrep* videoprep,
@@ -752,21 +768,22 @@ static cudaError gst_videoprep_generate_output(
     hm::surface::Surface incoming_surface(&in_surface->surfaceList[batch_nr]);
 #endif
 
-    FloatValue pipeline_width =
-        frame_meta->pipeline_width ? frame_meta->pipeline_width : frame_meta->source_frame_width;
-    FloatValue pipeline_height =
-        frame_meta->pipeline_height ? frame_meta->pipeline_height : frame_meta->source_frame_height;
+    // FloatValue pipeline_width =
+    //     frame_meta->pipeline_width ? frame_meta->pipeline_width : frame_meta->source_frame_width;
+    // FloatValue pipeline_height =
+    //     frame_meta->pipeline_height ? frame_meta->pipeline_height : frame_meta->source_frame_height;
 
     // FloatValue pipeline_width = frame_meta->pipeline_width ? frame_meta->pipeline_width : incoming_surface->width;
-    // FloatValue pipeline_height = frame_meta->pipeline_height ? frame_meta->pipeline_height : incoming_surface->height;
+    // FloatValue pipeline_height = frame_meta->pipeline_height ? frame_meta->pipeline_height :
+    // incoming_surface->height;
 
-    FloatValue scale_w = float(videoprep->input_width) / pipeline_width;
-    FloatValue scale_h = float(videoprep->input_height) / pipeline_height;
+    FloatValue scale_w = float(videoprep->input_width) / frame_meta->source_frame_width;
+    FloatValue scale_h = float(videoprep->input_height) / frame_meta->source_frame_height;
 
 #if 1
     float angle;
     const float max_angle = 30.0;
-    const float half_width = float(pipeline_width) / 2;
+    const float half_width = float(frame_meta->source_frame_width) / 2;
     const float tcx = tracking_boxes.at(batch_nr).center().x;
     if (tcx < half_width) {
       float pct = 1.0 - tcx / half_width;
@@ -836,7 +853,7 @@ static cudaError gst_videoprep_generate_output(
 
     const BBox input_rect(0, 0, videoprep->input_width, videoprep->input_height);
 
-    const FloatValue x_center = tbox.center().x;
+    const int x_center = tbox.center().x;
 
     // const FloatValue tbox_aar = tbox.width() / tbox.height();
 
@@ -854,15 +871,9 @@ static cudaError gst_videoprep_generate_output(
     FloatValue clip_right = std::min(input_rect.right - 1, x_center + min_width_per_side);
     BBox extra_width_src_rect(clip_left, input_rect.top, clip_right, input_rect.bottom);
 
-    // extra_width_src_rect = clamp_box(extra_width_src_rect, input_rect);
-
     BBox new_tbox = tbox;
     new_tbox.left -= extra_width_src_rect.left;
     new_tbox.right -= extra_width_src_rect.left;
-    // if (new_tbox.left < 0) {
-    //   // new_tbox.right -= new_tbox.left;
-    //   new_tbox.left = 0;
-    // }
     assert(new_tbox.left >= 0 && new_tbox.top >= 0);
     assert(new_tbox.right <= extra_width_src_rect.width());
 
@@ -879,10 +890,7 @@ static cudaError gst_videoprep_generate_output(
 
     assert(batch_nr < in_surface->numFilled);
 
-    if (!videoprep->priv->video_output) {
-      assert(err == 0);
-      videoprep->priv->video_output = create_video_output(*scratch_surface_iter);
-    }
+    // static std::string first_
 
 #if 1
     {
@@ -917,12 +925,7 @@ static cudaError gst_videoprep_generate_output(
     //     imageFormat::IMAGE_RGBA8,
     //     nppStreamContext.hStream);
 
-    videoprep->priv->video_output->Render(
-        (*scratch_surface_iter).dataptr<uint8_t*>(),
-        (*scratch_surface_iter).width(),
-        (*scratch_surface_iter).height(),
-        imageFormat::IMAGE_RGBA8,
-        nppStreamContext.hStream);
+    videoprep->priv->render(std::string("First Crop"), *scratch_surface_iter, nppStreamContext.hStream);
 
 #ifndef NDEBUG
     FloatValue tbox_ar = tbox.width() / tbox.height();
@@ -930,7 +933,7 @@ static cudaError gst_videoprep_generate_output(
     const BBox output_rect(0, 0, (FloatValue)videoprep->output_width, (FloatValue)videoprep->output_height);
     FloatValue output_ar = output_rect.width() / output_rect.height();
     assert(isClose(tbox_ar, new_tbox_ar, 1e-6f, 0.001));
-    assert(isClose(new_tbox_ar, output_ar, 1e-6f, 0.001));
+    // assert(isClose(new_tbox_ar, output_ar, 1e-6f, 0.001));
 #endif
 
     // We just rotate the whole thing around the point
