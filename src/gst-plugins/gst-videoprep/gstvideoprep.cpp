@@ -807,20 +807,20 @@ static cudaError gst_videoprep_generate_output(
 
     cudaError_t err_cuda = cudaError_t::cudaSuccess;
     // std::cout << tbox << std::endl;
-    err_cuda = cudaDrawRect(
-        incoming_surface.dataptr<uchar4*>(),
-        incoming_surface.dataptr<uchar4*>(),
-        incoming_surface.pitch() / 4,
-        incoming_surface.height(),
-        tbox.left,
-        tbox.top,
-        tbox.right,
-        tbox.bottom,
-        {0, 0, 0, 0},
-        /*line_color=*/{255, 255, 0, 255},
-        /*line_width=*/3.0f,
-        nppStreamContext.hStream);
-    assert(err_cuda == 0);
+    // err_cuda = cudaDrawRect(
+    //     incoming_surface.dataptr<uchar4*>(),
+    //     incoming_surface.dataptr<uchar4*>(),
+    //     incoming_surface.pitch() / 4,
+    //     incoming_surface.height(),
+    //     tbox.left,
+    //     tbox.top,
+    //     tbox.right,
+    //     tbox.bottom,
+    //     {0, 0, 0, 0},
+    //     /*line_color=*/{255, 255, 0, 255},
+    //     /*line_width=*/3.0f,
+    //     nppStreamContext.hStream);
+    // assert(err_cuda == 0);
 
     FloatValue tbox_aar = tbox.width() / tbox.height();
 
@@ -831,22 +831,20 @@ static cudaError gst_videoprep_generate_output(
 
     tbox_aar = tbox.width() / tbox.height();
 
-    // tbox = tbox.make_scaled(scale_w, scale_h);
-
-    err_cuda = cudaDrawRect(
-        incoming_surface.dataptr<uchar4*>(),
-        incoming_surface.dataptr<uchar4*>(),
-        incoming_surface.pitch() / 4,
-        incoming_surface.height(),
-        tbox.left,
-        tbox.top,
-        tbox.right,
-        tbox.bottom,
-        {0, 0, 0, 0},
-        /*line_color=*/{255, 255, 255, 255},
-        /*line_width=*/3.0f,
-        nppStreamContext.hStream);
-    assert(err_cuda == 0);
+    // err_cuda = cudaDrawRect(
+    //     incoming_surface.dataptr<uchar4*>(),
+    //     incoming_surface.dataptr<uchar4*>(),
+    //     incoming_surface.pitch() / 4,
+    //     incoming_surface.height(),
+    //     tbox.left,
+    //     tbox.top,
+    //     tbox.right,
+    //     tbox.bottom,
+    //     {0, 0, 0, 0},
+    //     /*line_color=*/{255, 255, 255, 255},
+    //     /*line_width=*/3.0f,
+    //     nppStreamContext.hStream);
+    // assert(err_cuda == 0);
 
     size_t tb_w = tbox.width();
     size_t tb_h = tbox.height();
@@ -905,30 +903,7 @@ static cudaError gst_videoprep_generate_output(
     }
     assert(np_status == NppStatus::NPP_SUCCESS);
 #endif
-
-    // cudaDrawRect(
-    //     (*scratch_surface_iter).dataptr<uchar4*>(),
-    //     (*scratch_surface_iter).dataptr<uchar4*>(),
-    //     (*scratch_surface_iter).width(),
-    //     (*scratch_surface_iter).height(),
-    //     new_tbox.left,
-    //     new_tbox.top,
-    //     new_tbox.right,
-    //     new_tbox.bottom,
-    //     {0, 0, 0, 0},
-    //     /*line_color=*/{255, 0, 0, 255},
-    //     /*line_width=*/5.0f,
-    //     nppStreamContext.hStream);
-
-    // videoprep->priv->video_output->Render(
-    //     incoming_surface.dataptr<uint8_t*>(),
-    //     incoming_surface.width(),
-    //     incoming_surface.pitch() / 4,
-    //     imageFormat::IMAGE_RGBA8,
-    //     nppStreamContext.hStream);
-
     // videoprep->priv->render(std::string("First Crop"), *scratch_surface_iter, nppStreamContext.hStream);
-
 #ifndef NDEBUG
     FloatValue tbox_ar = tbox.width() / tbox.height();
     FloatValue new_tbox_ar = new_tbox.width() / new_tbox.height();

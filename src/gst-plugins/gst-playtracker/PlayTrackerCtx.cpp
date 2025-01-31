@@ -428,7 +428,7 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
             1.0 / scale_x,
             1.0 / scale_y,
             following_box);
-#if 1
+#if 0
         hm::surface::Surface surface(frame.input_surf_params);
         cudaError_t cerr = draw_rect(
             surface,
