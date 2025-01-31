@@ -28,6 +28,8 @@
 #include <vector>
 #include "nvbufsurface.h"
 
+#include "src/libs/common/utils.h"
+
 #if defined(__aarch64__)
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -925,7 +927,7 @@ static cudaError gst_videoprep_generate_output(
     //     imageFormat::IMAGE_RGBA8,
     //     nppStreamContext.hStream);
 
-    videoprep->priv->render(std::string("First Crop"), *scratch_surface_iter, nppStreamContext.hStream);
+    // videoprep->priv->render(std::string("First Crop"), *scratch_surface_iter, nppStreamContext.hStream);
 
 #ifndef NDEBUG
     FloatValue tbox_ar = tbox.width() / tbox.height();
@@ -938,7 +940,7 @@ static cudaError gst_videoprep_generate_output(
 
     // We just rotate the whole thing around the point
     // that is effectively the center of the tracking box
-#if 1
+#if 0
     {
       auto in_surf_iter = scratch_surface_iter++;
       np_status = rotateNvBufSurfaceWithNPP(
@@ -950,7 +952,7 @@ static cudaError gst_videoprep_generate_output(
           /*anchor_point=*/new_tbox.center(),
           nppStreamContext);
       assert(np_status == NppStatus::NPP_SUCCESS);
-      videoprep->priv->render(std::string("Rotate"), *in_surf_iter, nppStreamContext.hStream);
+      // videoprep->priv->render(std::string("Rotate"), *in_surf_iter, nppStreamContext.hStream);
     }
 #endif
 
@@ -972,6 +974,20 @@ static cudaError gst_videoprep_generate_output(
       // videoprep->priv->render(std::string("Outgoing resized"), outgoing_surface, nppStreamContext.hStream);
     }
 #endif
+    // hm::glist_visitor<NvDsDisplayMeta>(frame_meta->display_meta_list, [&](NvDsDisplayMeta* display_meta) {
+    //   for (size_t i = 0; i < display_meta->num_rects; ++i) {
+    //     auto& rect = display_meta->rect_params[i];
+    //     rect.left -= extra_width_src_rect.left;
+    //     rect.top -= extra_width_src_rect.top;
+    //   }
+    // });
+    // hm::glist_visitor<NvDsObjectMeta>(frame_meta->object_meta_list, [&](NvDsObjectMeta* object_meta) {
+    //   for (size_t i = 0; i < display_meta->num_rects; ++i) {
+    //     auto& rect = display_meta->rect_params[i];
+    //     rect.left -= extra_width_src_rect.left;
+    //     rect.top -= extra_width_src_rect.top;
+    //   }
+    // });
   }
 
   if (videoprep->stream) {
