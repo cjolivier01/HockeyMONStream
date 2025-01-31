@@ -6,6 +6,8 @@ build --copt=-fPIC
 build --copt=-std=c++17
 # Add full path to all C++ compilations
 # build --copt=-H  # or --copt=-full-path depending on your compiler
+# build --copt=-H
+# build --copt=-full-path
 
 # Only for C++ files
 # build --per_file_copt=.*\\.cpp$@-H
@@ -29,6 +31,7 @@ build:debug --copt=-fdiagnostics-color=always
 build:debug --linkopt=-Wl,-g
 build:debug --linkopt=-Wl,--discard-none
 
+# build:debug --sandbox_debug
 
 # build:opt -c opt --strip="always"
 

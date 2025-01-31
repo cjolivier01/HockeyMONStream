@@ -614,7 +614,6 @@ int main(int argc, char* argv[]) {
   }
 
   for (i = 0; i < num_instances; i++) {
-    // appCtx[i] = (AppCtx*)g_malloc0(sizeof(AppCtx));
     appCtx[i] = std::make_unique<HmApp>(game_id ? *game_id : "");
     appCtx[i]->person_class_id = -1;
     appCtx[i]->car_class_id = -1;
@@ -629,8 +628,15 @@ int main(int argc, char* argv[]) {
       g_free(input_uris[i]);
     }
 
+    appCtx[i]->load_config();
+
     if (g_str_has_suffix(cfg_files[i], ".yml") || g_str_has_suffix(cfg_files[i], ".yaml")) {
-      if (!parse_config_file_yaml(&appCtx[i]->config, cfg_files[i])) {
+      if (!appCtx[i]->underlay_config("pipeline", cfg_files[i])) {
+        NVGSTDS_ERR_MSG_V("Failed to merge in config file '%s'", cfg_files[i]);
+        appCtx[i]->return_value = -1;
+        goto done;
+      }
+      if (!parse_config_yaml(appCtx[i]->configurator().config(), &appCtx[i]->config, cfg_files[i])) {
         NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files[i]);
         appCtx[i]->return_value = -1;
         goto done;
@@ -642,7 +648,6 @@ int main(int argc, char* argv[]) {
         goto done;
       }
     }
-    appCtx[i]->load_config();
   }
 
   for (i = 0; i < num_instances; i++) {

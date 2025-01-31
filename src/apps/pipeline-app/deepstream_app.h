@@ -236,6 +236,12 @@ class HmApp : public _AppCtx {
     return true;
   }
 
+  bool underlay_config(const std::string& node, const std::string& file) {
+    return configurator_->underlay_config(node, file);
+  }
+  const hm::Configurator& configurator() {
+    return *configurator_;
+  }
  private:
   std::unique_ptr<hm::Configurator> configurator_;
   std::string game_id_;
@@ -290,7 +296,9 @@ gboolean parse_config_file(NvDsConfig* config, gchar* cfg_file_path);
  *
  * @return true if parsed successfully.
  */
-gboolean parse_config_file_yaml(NvDsConfig* config, gchar* cfg_file_path);
+// gboolean parse_config_file_yaml(NvDsConfig* config, gchar* cfg_file_path);
+
+gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, gchar* cfg_file_path);
 
 /**
  * Function to procure the NvDsSensorInfo for the source_id

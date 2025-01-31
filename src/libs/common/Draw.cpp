@@ -12,7 +12,7 @@ namespace {
 size_t get_pitch_width(const surface::Surface& surface) {
   switch (surface->colorFormat) {
     case NVBUF_COLOR_FORMAT_RGBA:
-      return surface.pitch() * 4;
+      return surface.pitch() / 4;
     case NVBUF_COLOR_FORMAT_NV12:
       return surface.width();
     default:

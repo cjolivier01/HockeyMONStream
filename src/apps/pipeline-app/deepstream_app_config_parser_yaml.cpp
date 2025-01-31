@@ -197,10 +197,9 @@ static std::vector<std::string> split_csv_entries(std::string input) {
   return ret;
 }
 
-gboolean parse_config_file_yaml(NvDsConfig* config, gchar* cfg_file_path) {
+gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, gchar* cfg_file_path) {
   gboolean parse_err = false;
   gboolean ret = FALSE;
-  YAML::Node configyml = YAML::LoadFile(cfg_file_path);
   std::string source_str = "source";
   std::string sink_str = "sink";
   std::string sgie_str = "secondary-gie";
@@ -530,4 +529,9 @@ done:
     cout << __func__ << " failed" << endl;
   }
   return ret;
+}
+
+gboolean parse_config_file_yaml(NvDsConfig* config, gchar* cfg_file_path) {
+  YAML::Node configyml = YAML::LoadFile(cfg_file_path);
+  return parse_config_yaml(configyml, config, cfg_file_path);
 }

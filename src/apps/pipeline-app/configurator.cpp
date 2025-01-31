@@ -61,6 +61,32 @@ YAML::Node Configurator::load_config() {
   return config;
 }
 
+bool Configurator::underlay_config(const std::string& node_name, const std::string& filename) {
+  if (!std::filesystem::exists(filename)) {
+    return false;
+  }
+  YAML::Node underlaid_config = YAML::LoadFile(filename);
+  if (node_name.empty()) {
+    config_ = merge_nodes(underlaid_config, config_, /*warn_if_key_not_in_dest=*/false);
+  } else {
+    config_[node_name] = merge_nodes(underlaid_config, config_[node_name], /*warn_if_key_not_in_dest=*/false);
+  }
+  return true;
+}
+
+bool Configurator::overlay_config(const std::string& node_name, const std::string& filename) {
+  if (!std::filesystem::exists(filename)) {
+    return false;
+  }
+  YAML::Node overlaid_config = YAML::LoadFile(filename);
+  if (node_name.empty()) {
+    config_ = merge_nodes(config_, overlaid_config, /*warn_if_key_not_in_dest=*/false);
+  } else {
+    config_[node_name] = merge_nodes(config_[node_name], overlaid_config, /*warn_if_key_not_in_dest=*/false);
+  }
+  return true;
+}
+
 YAML::Node Configurator::merge_nodes(const YAML::Node& base, const YAML::Node& overlay, bool warn_if_key_not_in_dest) {
   if (!overlay.IsMap()) {
     return base;
@@ -78,7 +104,7 @@ YAML::Node Configurator::merge_nodes(const YAML::Node& base, const YAML::Node& o
     }
 
     // If both are maps, recursively merge
-    if (pair.second.IsMap() && base[key].IsMap()) {
+    if (pair.second.IsMap() && base[key].IsDefined() && base[key].IsMap()) {
       result[key] = merge_nodes(base[key], pair.second, warn_if_key_not_in_dest);
     } else {
       result[key] = pair.second;

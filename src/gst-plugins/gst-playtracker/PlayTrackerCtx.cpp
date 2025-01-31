@@ -363,6 +363,9 @@ static const hm::utils::ColorRGB breakway_edge_line{128, 0, 28};
 static const hm::utils::ColorRGB breakway_edge_circle{128, 0, 28};
 
 bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx, cudaStream_t stream) {
+  // We always do our calculations wrt the original image, since we tune based upon the camera
+  // type, which is generally tied to the resolution. We scale in the play tracker when possible, but
+  // it isn't perfectly scalable atm.
   hm::BBox arena_box(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
   hm::play_tracker::PlayTracker* play_tracker = gst_hm::get_or_create_play_tracker(arena_box, ctx);
   if (!play_tracker) {
@@ -376,11 +379,14 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
   tracking_ids.reserve(object_count);
   tracking_boxes.reserve(object_count);
 
-  assert(frame.frame_meta->pipeline_width && frame.frame_meta->pipeline_height);
-  const double scale_x = double(frame.frame_meta->source_frame_width) / double(frame.frame_meta->pipeline_width);
-  const double scale_y = double(frame.frame_meta->source_frame_height) / double(frame.frame_meta->pipeline_height);
+  // assert(frame.frame_meta->pipeline_width && frame.frame_meta->pipeline_height);
 
-  // const double scale_x = 1.0, scale_y = 1.0;
+  double pipeline_width = frame.input_surf_params->width;
+  double pipeline_height = frame.input_surf_params->height;
+  const double scale_x = double(frame.frame_meta->source_frame_width) / pipeline_width;
+  const double scale_y = double(frame.frame_meta->source_frame_height) / pipeline_height;
+
+  size_t draw_count = 0;
 
   for (NvDsMetaList* l_obj = frame.frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
     NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
@@ -422,31 +428,35 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
             1.0 / scale_x,
             1.0 / scale_y,
             following_box);
-#if 0
+#if 1
         hm::surface::Surface surface(frame.input_surf_params);
         cudaError_t cerr = draw_rect(
             surface,
-            lbox->bounding_box(),
+            lbox->bounding_box().make_canvas_scaled(1.0/scale_x, 1.0/scale_y),
             make_float4(0, 0, 255, 255),
             /*thickness=*/2,
             stream);
-        cudaStreamSynchronize(stream);
+        // cudaStreamSynchronize(stream);
         assert(cerr == cudaError_t::cudaSuccess);
+        ++draw_count;
 #endif
       }
     }
-    // if (frame.play_tracker_results.play_detection.has_value()) {
-    //   const hm::play_tracker::PlayDetectorResults& play_detector = *frame.play_tracker_results.play_detection;
-    //   if (play_detector.breakaway_edge_center.has_value()) {
-    //     plotter.plot_circle(
-    //         *play_detector.breakaway_edge_center, /*radius=*/30, /*thickness=*/15, breakway_edge_circle);
-    //     plotter.plot_line(
-    //         frame.play_tracker_results.tracking_boxes.at(0).center(),
-    //         *play_detector.breakaway_edge_center,
-    //         3,
-    //         breakway_edge_line);
-    //   }
-    // }
+    if (draw_count) {
+      cudaStreamSynchronize(stream);
+    }
+    if (frame.play_tracker_results.play_detection.has_value()) {
+      const hm::play_tracker::PlayDetectorResults& play_detector = *frame.play_tracker_results.play_detection;
+      if (play_detector.breakaway_edge_center.has_value()) {
+        plotter.plot_circle(
+            *play_detector.breakaway_edge_center, /*radius=*/30, /*thickness=*/15, breakway_edge_circle);
+        plotter.plot_line(
+            frame.play_tracker_results.tracking_boxes.at(0).center(),
+            *play_detector.breakaway_edge_center,
+            3,
+            breakway_edge_line);
+      }
+    }
   }
   return true;
 }
