@@ -24,10 +24,12 @@ class Configurator {
  private:
   YAML::Node merge_nodes(const YAML::Node& base, const YAML::Node& overlay, bool warn_if_key_not_in_dest);
 
+  YAML::Node auto_config(YAML::Node&& config);
+
   const std::string game_id_;
   const std::string config_root_dir_;
 
   // The fully-realzied merged config
-  const YAML::Node config_;
+  YAML::Node config_;
 };
 } // namespace hm

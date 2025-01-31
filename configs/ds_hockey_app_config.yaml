@@ -78,7 +78,7 @@ sink1:
 
 
 sink2:
-  enable: 1
+  enable: 0
   #Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 4
   #1=h264 2=h265
@@ -138,7 +138,7 @@ sink2:
   # udp-port: 5400
 
 osd:
-  enable: 0
+  enable: 1
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -246,6 +246,7 @@ ds-fieldmask:
   unique-id: 76
   # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png
   # detection-mask: /home/colivier/Videos/ev-reno-1/rink_mask_0.png
+  # detection-mask: /home/colivier/Videos/mlk-extreme/rink_mask_0.png
   detection-mask: /home/colivier/Videos/mlk-extreme/rink_mask_0.png
 
 tracker:

@@ -90,5 +90,12 @@ YAML::Node Configurator::merge_nodes(const YAML::Node& base, const YAML::Node& o
 
 void Configurator::configure() {
   YAML::Node config = Configurator::load_config();
+  config_ = auto_config(std::move(config));
 }
+
+YAML::Node Configurator::auto_config(YAML::Node&& config) {
+  std::cout << config << std::endl;
+  return std::move(config);
+}
+
 } // namespace hm

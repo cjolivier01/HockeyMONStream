@@ -244,7 +244,7 @@ void plot_resizing_state(
     std::optional<ILivingBox*> following_lbox = std::nullopt) {
   const hm::play_tracker::ResizingState& resizing_state = lbox->get_resizing_state();
   if (box_config.sticky_sizing) {
-    BBox my_bbox = lbox->bounding_box();
+    BBox my_bbox = lbox->bounding_box().make_canvas_scaled(scale_width, scale_height);
     assert(following_lbox.has_value());
     BBox following_box = following_lbox.value()->bounding_box().make_canvas_scaled(scale_width, scale_height);
     if (resizing_state.size_is_frozen) {
@@ -344,7 +344,7 @@ void plot_living_box(
     std::optional<ILivingBox*> following_lbox = std::nullopt) {
   plot_translation_state(
       plotter, lbox, box_config, thickness, color, draw_thresholds, scale_width, scale_height, following_lbox);
-  plot_resizing_state(plotter, lbox, box_config, draw_thresholds, scale_width, scale_height, following_lbox);
+  // plot_resizing_state(plotter, lbox, box_config, draw_thresholds, scale_width, scale_height, following_lbox);
 }
 
 } // namespace gst_hm
@@ -363,8 +363,7 @@ static const hm::utils::ColorRGB breakway_edge_line{128, 0, 28};
 static const hm::utils::ColorRGB breakway_edge_circle{128, 0, 28};
 
 bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx, cudaStream_t stream) {
-  // hm::BBox arena_box(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
-  hm::BBox arena_box(0, 0, frame.frame_meta->pipeline_width, frame.frame_meta->pipeline_height);
+  hm::BBox arena_box(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
   hm::play_tracker::PlayTracker* play_tracker = gst_hm::get_or_create_play_tracker(arena_box, ctx);
   if (!play_tracker) {
     return false;
@@ -380,6 +379,8 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
   assert(frame.frame_meta->pipeline_width && frame.frame_meta->pipeline_height);
   const double scale_x = double(frame.frame_meta->source_frame_width) / double(frame.frame_meta->pipeline_width);
   const double scale_y = double(frame.frame_meta->source_frame_height) / double(frame.frame_meta->pipeline_height);
+
+  // const double scale_x = 1.0, scale_y = 1.0;
 
   for (NvDsMetaList* l_obj = frame.frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
     NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
