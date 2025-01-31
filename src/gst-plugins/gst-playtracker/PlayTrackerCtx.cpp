@@ -344,7 +344,7 @@ void plot_living_box(
     std::optional<ILivingBox*> following_lbox = std::nullopt) {
   plot_translation_state(
       plotter, lbox, box_config, thickness, color, draw_thresholds, scale_width, scale_height, following_lbox);
-  // plot_resizing_state(plotter, lbox, box_config, draw_thresholds, scale_width, scale_height, following_lbox);
+  plot_resizing_state(plotter, lbox, box_config, draw_thresholds, scale_width, scale_height, following_lbox);
 }
 
 } // namespace gst_hm
