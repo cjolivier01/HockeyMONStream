@@ -11,6 +11,9 @@
     },
     {
       "path": "../libcamera"
+    },
+    {
+      "path": "../gopro_as_webcam_on_linux"
     }
   ],
   "settings": {

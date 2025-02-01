@@ -1,0 +1,2 @@
+enable,type,camera-v4l2-dev-node,num-sources,gpu-id,cudadec-memtype,camera-fps-n,camera-fps-d,camera-width,camera-height,video-format
+1,1,42,1,0,0,30000,1001,1920,1080,I420

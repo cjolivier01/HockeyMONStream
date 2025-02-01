@@ -46,7 +46,11 @@ tiled-display:
 source:
   # csv-file-path: hockey_sources.csv
   # csv-file-path: webcam_sources.csv
-  csv-file-path: hockey_source_mlk-extreme.csv
+  # csv-file-path: hockey_source_mlk-extreme.csv
+
+  # GoPro reroute to /dev/video42
+  # ffmpeg -nostdin -threads 1 -i 'udp://@0.0.0.0:8554?overrun_nonfatal=1&fifo_size=50000000' -f:v mpegts -fflags nobuffer -vf format=yuv420p -f v4l2 /dev/video42
+  csv-file-path: gopro_udp_source.csv
 
 sink0:
   enable: 1
@@ -78,7 +82,7 @@ sink1:
 
 
 sink2:
-  enable: 1
+  enable: 0
   #Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 4
   #1=h264 2=h265
