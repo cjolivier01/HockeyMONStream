@@ -472,7 +472,7 @@
       "deepstream_playtracker.h": "c"
     },
     "git.ignoreLimitWarning": true,
-    "workbench.iconTheme": "vscode-great-icons",
+    "workbench.iconTheme": "vscode-icons",
     "explorer.autoRevealExclude": {
       "${workspaceRoot}/bazel-out": true,
       "${workspaceRoot}/bazel-bin": true
