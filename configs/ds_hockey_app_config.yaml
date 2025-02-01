@@ -231,6 +231,8 @@ hmvideoprep:
   # has_cameraman: true
   nvbuf-memory-type: 0
   num-output-buffers: 4
+  plot-detections: 1
+  plot-tracking: 1
   # dewarper portion
   # source-id: 6
   # config-file: /opt/nvidia/deepstream/deepstream/sources/apps/sample_apps/deepstream-dewarper-test/config_dewarper_rot_matrix.txt
