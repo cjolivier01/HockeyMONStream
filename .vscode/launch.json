@@ -183,7 +183,8 @@
       "cwd": "${workspaceFolder}",
       "program": "${workspaceFolder}/bazel-bin/src/gst-plugins/gst-myaudiofilter/test/myaudioapp",
       "args": [
-        "/mnt/ripper-data/Videos/mlk-extreme/GX010015.MP4",
+        // "/mnt/ripper-data/Videos/mlk-extreme/GX010015.MP4",
+        "file:///mnt/ripper-data/Videos/mlk-extreme/GX010015.MP4",
       ],
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}",
