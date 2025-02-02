@@ -143,8 +143,8 @@ new_local_repository(
 new_local_repository(
     name = "gstreamer",
     build_file = "@//buildfiles:third_party/gstreamer_nobuild.BUILD",
-    # path = "/usr/local",
-    path = "/usr",
+    path = "/usr/local",
+    # path = "/usr",
 )
 
 new_local_repository(
