@@ -17,6 +17,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <iostream>
+
 #include "deepstream_app.h"
 
 #define MAX_DISPLAY_LEN 64
@@ -1921,6 +1923,18 @@ gboolean create_pipeline(
       latency_probe_id = latency_probe_id;
     }
     last_elem = pipeline->demuxer;
+  }
+
+  if (appCtx->config.hmaudio_config.enable && appCtx->config.hmaudio_config.dest == DEST_RTSP) {
+    for (int k = 0; k < MAX_SINK_BINS; k++) {
+      auto& sub_bin = pipeline->instance_bins[i].sink_bin.sub_bins[k];
+      if (sub_bin.sink && appCtx->config.sink_bin_sub_bin_config[k].type == NV_DS_SINK_UDPSINK) {
+        std::cerr << "Hooking up audio to RTSP sink" << std::endl;
+        if (!gst_element_link(appCtx->pipeline.hmaudio_bin.bin, sub_bin.sink)) {
+           g_printerr("Could not link hmaudio_bin to UDP sink.\n");
+        }
+      }
+    }
   }
 
   if (config->tiled_display_config.enable == NV_DS_TILED_DISPLAY_DISABLE) {
