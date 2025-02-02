@@ -121,7 +121,11 @@ gboolean parse_hmimagemetamerger_yaml(
 gboolean parse_hmaudio_yaml(NvDsHmAudioConfig* config, const YAML::Node& yaml_node) {
   hm::utils::ConfigLocator locator;
   SET_LOCATOR(locator, *config, enable);
+  SET_LOCATOR(locator, *config, src);
   SET_LOCATOR(locator, *config, dest);
+  SET_LOCATOR_CHARS(locator, *config, alsa_src_device);
+  SET_LOCATOR_CHARS(locator, *config, alsa_dest_device);
+  SET_LOCATOR_CHARS(locator, *config, audio_location);
   set_config_from_yaml(yaml_node, locator);
   return true;
 }

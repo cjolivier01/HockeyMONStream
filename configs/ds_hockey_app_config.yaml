@@ -53,9 +53,14 @@ source:
   # csv-file-path: gopro_udp_source.csv
 
 hmaudio:
-  enabled: 1
+  enable: 1
+  # 1=default alsa source, 2=file
+  src: 2
+  audio-location: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
+  alsa-src-device: hw:0,0
+  # alsa-dest-device: 
   # 1=nullsink, 2=alsa sink, 3=rtsp server
-  dest: 2
+  dest: 3
 
 sink0:
   enable: 1
