@@ -45,6 +45,8 @@ gboolean parse_dsplaytracker_yaml(
   SET_LOCATOR(locator, *config, gpu_id);
   SET_LOCATOR(locator, *config, nvbuf_memory_type);
   SET_LOCATOR(locator, *config, draw);
+  SET_LOCATOR(locator, *config, plot_detections);
+  SET_LOCATOR(locator, *config, plot_tracking);
   hm::utils::parse_chracter_buffer(config->config_file, yaml_node, "config-file", config_path);
   set_config_from_yaml(yaml_node, locator);
   return true;

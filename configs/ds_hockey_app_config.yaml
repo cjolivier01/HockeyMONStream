@@ -54,13 +54,13 @@ source:
 
 hmaudio:
   enable: 1
-  # 1=default alsa source, 2=file
-  src: 2
+  # 0=default alsa source, 1=file
+  src: 1
   audio-location: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   alsa-src-device: hw:0,0
   # alsa-dest-device: 
-  # 1=nullsink, 2=alsa sink, 3=rtsp server
-  dest: 3
+  # 0=nullsink, 1=alsa sink, 2=rtsp server
+  dest: 1
 
 sink0:
   enable: 1
@@ -92,7 +92,7 @@ sink1:
 
 
 sink2:
-  enable: 1
+  enable: 0
   #Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 4
   #1=h264 2=h265

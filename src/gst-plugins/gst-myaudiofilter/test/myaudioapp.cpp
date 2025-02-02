@@ -109,7 +109,6 @@ gint main(gint argc, gchar* argv[]) {
 
   filesrc = gst_element_factory_make("filesrc", "my_filesource");
   demuxer = gst_element_factory_make("qtdemux", "my_demuxer");
-  // decoder = gst_element_factory_make("mad", "my_decoder");
   decoder = gst_element_factory_make("decodebin", "decodebin");
 
   g_signal_connect(demuxer, "pad-added", G_CALLBACK(on_demuxer_pad_added), decoder);
