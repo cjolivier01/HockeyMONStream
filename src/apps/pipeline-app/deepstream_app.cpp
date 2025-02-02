@@ -1724,7 +1724,7 @@ gboolean create_pipeline(
   }
   gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->multi_src_bin.bin);
 
-  if (appCtx->config.hmvideoprep_config.enable) {
+  if (appCtx->config.hmaudio_config.enable) {
     if (!create_hmaudio_bin(&appCtx->config.hmaudio_config, &pipeline->hmaudio_bin)) {
       goto done;
     }
