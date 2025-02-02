@@ -43,27 +43,35 @@ tiled-display:
   #(4): nvbuf-mem-surface-array - Allocate Surface Array memory, applicable for Jetson
   nvbuf-memory-type: 0
 
-source:
+# NV_DS_SOURCE_CAMERA_V4L2 = 1,
+# NV_DS_SOURCE_URI = 2
+# NV_DS_SOURCE_URI_MULTIPLE = 3
+# NV_DS_SOURCE_RTSP = 4
+# NV_DS_SOURCE_CAMERA_CSI = 5
+# NV_DS_SOURCE_AUDIO_WAV = 6
+# NV_DS_SOURCE_AUDIO_URI = 7
+# NV_DS_SOURCE_ALSA_SRC = 8
+# NV_DS_SOURCE_IPC = 9
+
+source0:
+  enable: 1
+  type: 3
+  uri: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
+  num-sources: 1
+  gpu-id: 0
+  cudadec-memtype: 0
+
+#source:
   # csv-file-path: hockey_sources.csv
   # csv-file-path: webcam_sources.csv
-  csv-file-path: hockey_source_mlk-extreme.csv
-
+#  csv-file-path: hockey_source_mlk-extreme.csv
+#  input-audio-rate: 189
   # GoPro reroute to /dev/video42
   # ffmpeg -nostdin -threads 1 -i 'udp://@0.0.0.0:8554?overrun_nonfatal=1&fifo_size=50000000' -f:v mpegts -fflags nobuffer -vf format=yuv420p -f v4l2 /dev/video42
   # csv-file-path: gopro_udp_source.csv
 
-  # NV_DS_SOURCE_CAMERA_V4L2 = 1,
-  # NV_DS_SOURCE_URI = 2
-  # NV_DS_SOURCE_URI_MULTIPLE = 3
-  # NV_DS_SOURCE_RTSP = 4
-  # NV_DS_SOURCE_CAMERA_CSI = 5
-  # NV_DS_SOURCE_AUDIO_WAV = 6
-  # NV_DS_SOURCE_AUDIO_URI = 7
-  # NV_DS_SOURCE_ALSA_SRC = 8
-  # NV_DS_SOURCE_IPC = 9
-
 hmaudio:
-  enable: 1
+  enable: 0
   # 0=default alsa source, 1=file
   src: 1
   # audio-location: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4

@@ -236,8 +236,8 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, gcha
 
   for (YAML::const_iterator itr = configyml.begin(); itr != configyml.end(); ++itr) {
     std::string paramKey = itr->first.as<std::string>();
-    if (paramKey == "source") {
-      if (configyml["source"]["csv-file-path"]) {
+    if (paramKey == "source" || (paramKey.size() > 6 && paramKey.substr(0, 6) == "source")) {
+      if (configyml[paramKey]["csv-file-path"].IsDefined()) {
         std::string csv_file_path = configyml["source"]["csv-file-path"].as<std::string>();
         char* str = (char*)malloc(sizeof(char) * 1024);
         std::strncpy(str, csv_file_path.c_str(), 1023);
@@ -296,9 +296,28 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, gcha
             config->num_source_sub_bins++;
         }
       } else {
-        NVGSTDS_ERR_MSG_V("CSV file not specified\n");
-        ret = FALSE;
-        goto done;
+        YAML::Node source_node = configyml[paramKey];
+        std::vector<std::string> headers, source_values;
+        for (YAML::const_iterator itr = source_node.begin(); itr != source_node.end(); ++itr) {
+          headers.emplace_back(itr->first.as<std::string>());
+          source_values.emplace_back(itr->second.as<std::string>());
+        }
+        if (config->num_source_sub_bins == MAX_SOURCE_BINS) {
+          NVGSTDS_ERR_MSG_V("App supports max %d sources", MAX_SOURCE_BINS);
+          ret = FALSE;
+          goto done;
+        }
+        guint source_id = 0;
+        source_id = config->num_source_sub_bins;
+        /** set gpu_id for source component using global_gpu_id(if available) */
+        if (config->global_gpu_id != -1) {
+          config->multi_source_config[source_id].gpu_id = config->global_gpu_id;
+        }
+        /** if gpu_id for source component is present,
+         * it will override the value set using global_gpu_id in parse_source_yaml function */
+        parse_err = !parse_source_yaml(&config->multi_source_config[source_id], headers, source_values, cfg_file_path);
+        if (config->multi_source_config[source_id].enable)
+          config->num_source_sub_bins++;
       }
     } else if (paramKey == "streammux") {
       /** set gpu_id for streammux component using global_gpu_id(if available) */
