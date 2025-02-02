@@ -46,6 +46,10 @@ void print_pads(GstElement* element) {
   GValue item = G_VALUE_INIT;
   GEnumValue* pad_direction;
 
+  if (!element) {
+    return;
+  }
+
   g_print("Pads for element: %s\n", GST_ELEMENT_NAME(element));
 
   iter = gst_element_iterate_pads(element);
@@ -113,7 +117,9 @@ gint main(gint argc, gchar* argv[]) {
   watch_id = gst_bus_add_watch(bus, bus_call, loop);
   gst_object_unref(bus);
 
-  if (g_strrstr(argv[1], "file:/")) {
+  const bool is_uri = g_strrstr(argv[1], "file:/") != 0;
+
+  if (is_uri) {
     filesrc = gst_element_factory_make("uridecodebin", "my_urisource");
     g_object_set(filesrc, "uri", argv[1], NULL);
   } else {
@@ -140,23 +146,23 @@ gint main(gint argc, gchar* argv[]) {
   resample = gst_element_factory_make("audioresample", "audioresample");
   sink = gst_element_factory_make("pulsesink", "audiosink");
 
-  // if (!sink || !decoder) {
-  //   g_print("Decoder or output could not be found - check your install\n");
-  //   return -1;
-  // } else if (!convert1 || !convert2 || !resample) {
-  //   g_print(
-  //       "Could not create audioconvert or audioresample element, "
-  //       "check your installation\n");
-  //   return -1;
-  // } else if (!filter) {
-  //   g_print(
-  //       "Your self-written filter could not be found. Make sure it "
-  //       "is installed correctly in $(libdir)/gstreamer-1.0/ or "
-  //       "~/.gstreamer-1.0/plugins/ and that gst-inspect-1.0 lists it. "
-  //       "If it doesn't, check with 'GST_DEBUG=*:2 gst-inspect-1.0' for "
-  //       "the reason why it is not being loaded.");
-  //   return -1;
-  // }
+  if (!sink || (!is_uri && !decoder)) {
+    g_print("Decoder or output could not be found - check your install\n");
+    return -1;
+  } else if (!convert1 || !convert2 || !resample) {
+    g_print(
+        "Could not create audioconvert or audioresample element, "
+        "check your installation\n");
+    return -1;
+  } else if (!filter) {
+    g_print(
+        "Your self-written filter could not be found. Make sure it "
+        "is installed correctly in $(libdir)/gstreamer-1.0/ or "
+        "~/.gstreamer-1.0/plugins/ and that gst-inspect-1.0 lists it. "
+        "If it doesn't, check with 'GST_DEBUG=*:2 gst-inspect-1.0' for "
+        "the reason why it is not being loaded.");
+    return -1;
+  }
 
   g_signal_connect(decoder, "pad-added", G_CALLBACK(on_decode_pad_added), convert1);
 
@@ -166,10 +172,10 @@ gint main(gint argc, gchar* argv[]) {
     gst_bin_add_many(GST_BIN(pipeline), filesrc, demuxer, decoder, convert1, filter, convert2, resample, sink, NULL);
   }
 
-  // print_pads(filesrc);
-  // print_pads(demuxer);
-  // print_pads(decoder);
-  // print_pads(convert1);
+  print_pads(filesrc);
+  print_pads(demuxer);
+  print_pads(decoder);
+  print_pads(convert1);
 
   /* link everything together */
   if (demuxer) {
