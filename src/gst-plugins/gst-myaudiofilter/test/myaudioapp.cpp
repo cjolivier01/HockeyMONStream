@@ -34,9 +34,57 @@ static gboolean bus_call(GstBus* bus, GstMessage* msg, gpointer data) {
   return TRUE;
 }
 
+void print_pads(GstElement* element) {
+  GstIterator* iter;
+  GstPad* pad;
+  GValue item = G_VALUE_INIT;
+  GEnumValue* pad_direction;
+
+  g_print("Pads for element: %s\n", GST_ELEMENT_NAME(element));
+
+  iter = gst_element_iterate_pads(element);
+  while (gst_iterator_next(iter, &item) == GST_ITERATOR_OK) {
+    pad = GST_PAD(g_value_get_object(&item));
+    pad_direction =
+        g_enum_get_value((GEnumClass*)g_type_class_peek(GST_TYPE_PAD_DIRECTION), gst_pad_get_direction(pad));
+
+    g_print("  Pad: %s (%s)\n", GST_PAD_NAME(pad), pad_direction->value_nick);
+    g_value_unset(&item);
+  }
+  gst_iterator_free(iter);
+}
+
+static void on_decode_pad_added(GstElement* element, GstPad* pad, gpointer data) {
+  GstElement* convert = (GstElement*)data;
+  GstPad* sinkpad = gst_element_get_static_pad(convert, "sink");
+  GstPadLinkReturn ret;
+
+  ret = gst_pad_link(pad, sinkpad);
+  if (GST_PAD_LINK_FAILED(ret)) {
+    g_printerr("Decoder pad link failed: %d\n", ret);
+  }
+  gst_object_unref(sinkpad);
+}
+
+static void on_demuxer_pad_added(GstElement* element, GstPad* pad, gpointer data) {
+  GstElement* decoder = (GstElement*)data;
+  GstCaps* caps = gst_pad_get_current_caps(pad);
+  GstStructure* str = gst_caps_get_structure(caps, 0);
+
+  if (g_str_has_prefix(gst_structure_get_name(str), "audio/")) {
+    GstPad* sinkpad = gst_element_get_static_pad(decoder, "sink");
+    if (GST_PAD_LINK_FAILED(gst_pad_link(pad, sinkpad))) {
+      g_printerr("Failed to link demuxer to decoder\n");
+    }
+    gst_object_unref(sinkpad);
+  }
+
+  gst_caps_unref(caps);
+}
+
 gint main(gint argc, gchar* argv[]) {
   GstStateChangeReturn ret;
-  GstElement *pipeline, *filesrc, *decoder, *filter, *sink;
+  GstElement *pipeline, *filesrc, *demuxer, *decoder, *filter, *sink;
   GstElement *convert1, *convert2, *resample;
   GMainLoop* loop;
   GstBus* bus;
@@ -60,8 +108,11 @@ gint main(gint argc, gchar* argv[]) {
   gst_object_unref(bus);
 
   filesrc = gst_element_factory_make("filesrc", "my_filesource");
-  //decoder = gst_element_factory_make("mad", "my_decoder");
+  demuxer = gst_element_factory_make("qtdemux", "my_demuxer");
+  // decoder = gst_element_factory_make("mad", "my_decoder");
   decoder = gst_element_factory_make("decodebin", "decodebin");
+
+  g_signal_connect(demuxer, "pad-added", G_CALLBACK(on_demuxer_pad_added), decoder);
 
   /* putting an audioconvert element here to convert the output of the
    * decoder into a format that myaudiofilter can handle (we are assuming it
@@ -69,7 +120,7 @@ gint main(gint argc, gchar* argv[]) {
   convert1 = gst_element_factory_make("audioconvert", "audioconvert1");
 
   /* use "identity" here for a filter that does nothing */
-  //filter = gst_element_factory_make("myaudiofilter", "myaudiofilter");
+  // filter = gst_element_factory_make("myaudiofilter", "myaudiofilter");
   filter = gst_element_factory_make("audioconvert", "audioconvert_tst");
 
   /* there should always be audioconvert and audioresample elements before
@@ -99,20 +150,22 @@ gint main(gint argc, gchar* argv[]) {
 
   g_object_set(G_OBJECT(filesrc), "location", argv[1], NULL);
 
-  gst_bin_add_many(
-      GST_BIN(pipeline),
-      filesrc,
-      decoder,
-      convert1,
-      filter,
-      convert2,
-      resample,
-      sink,
-      NULL);
+  g_signal_connect(decoder, "pad-added", G_CALLBACK(on_decode_pad_added), convert1);
+
+  gst_bin_add_many(GST_BIN(pipeline), filesrc, demuxer, decoder, convert1, filter, convert2, resample, sink, NULL);
+
+  print_pads(filesrc);
+  print_pads(demuxer);
+  print_pads(decoder);
+  print_pads(convert1);
 
   /* link everything together */
-  if (!gst_element_link_many(
-          filesrc, decoder, convert1, /*filter,*/ convert2, resample, sink, NULL)) {
+  if (!gst_element_link_many(filesrc, demuxer, NULL)) {
+    g_print("Failed to link one or more elements!\n");
+    return -1;
+  }
+
+  if (!gst_element_link_many(convert1, filter, convert2, resample, sink, NULL)) {
     g_print("Failed to link one or more elements!\n");
     return -1;
   }

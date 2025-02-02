@@ -1,21 +1,24 @@
 {
     "folders": [
-    {
-      "path": "."
-    },
-    {
-      "path": "../jetson-utils"
-    },
-    {
-      "path": "../PTZ-Camera-Controller"
-    },
-    {
-      "path": "../libcamera"
-    },
-    {
-      "path": "../gopro_as_webcam_on_linux"
-    }
-  ],
+      {
+        "path": "."
+      },
+      {
+        "path": "../jetson-utils"
+      },
+      {
+        "path": "../PTZ-Camera-Controller"
+      },
+      {
+        "path": "../libcamera"
+      },
+      {
+        "path": "../gopro_as_webcam_on_linux"
+      },
+      {
+        "path": "../gstreamer"
+      }
+    ],
   "settings": {
     "workbench.editor.enablePreview": false,
     "workbench.sideBar.location": "right",
