@@ -4,6 +4,8 @@
 #include <iostream>
 #include <string>
 
+#include <string.h>
+
 namespace hm {
 namespace utils {
 
@@ -13,10 +15,16 @@ void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator) 
     const YAML::Node& value = it.second;
     bool ignored = !!locator.ignored.count(key);
     auto loc = locator.locators.find(key);
-    if (loc == locator.locators.end()) {
+    auto loc_char = locator.char_array_locators.find(key);
+    // Check not in both
+    assert(loc == locator.locators.end() || loc_char == locator.char_array_locators.end());
+    if (loc == locator.locators.end() && loc_char == locator.char_array_locators.end()) {
       std::replace(key.begin(), key.end(), '-', '_');
       loc = locator.locators.find(key);
+      loc_char = locator.char_array_locators.find(key);
       ignored |= !!locator.ignored.count(key);
+      // Check not in both
+      assert(loc == locator.locators.end() || loc_char == locator.char_array_locators.end());
     }
     if (loc != locator.locators.end()) {
       assert(!ignored);
@@ -30,6 +38,9 @@ void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator) 
             }
           },
           loc->second);
+    } else if (loc_char != locator.char_array_locators.end()) {
+      assert(!ignored);
+      ::strncpy(loc_char->second.first, value.as<std::string>().c_str(), loc_char->second.second);
     } else if (!ignored) {
       std::cerr << "Warning: Unrecognized key in YAML: " << key << '\n';
     }
