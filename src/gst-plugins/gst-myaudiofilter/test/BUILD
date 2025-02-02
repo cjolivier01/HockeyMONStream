@@ -8,5 +8,6 @@ cc_binary(
   deps=[
     "@glib",
     "@gstreamer",
+    "@deepstream//sources/apps/apps-common:deepstream_apps_common",
   ]
 )

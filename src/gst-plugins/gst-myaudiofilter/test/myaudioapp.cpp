@@ -1,5 +1,11 @@
 #include <gst/gst.h>
 
+#include "deepstream_common.h"
+#include "deepstream_sources.h"
+#include "gst-nvdssr.h"
+#include "gst-nvevent.h"
+#include "nvdsgstutils.h"
+
 #include <iostream>
 
 static gboolean bus_call(GstBus* bus, GstMessage* msg, gpointer data) {
@@ -82,6 +88,40 @@ static void on_demuxer_pad_added(GstElement* element, GstPad* pad, gpointer data
   gst_caps_unref(caps);
 }
 
+static void cb_newpad_audio(GstElement* decodebin, GstPad* pad, gpointer data) {
+  GstCaps* caps = gst_pad_query_caps(pad, NULL);
+  const GstStructure* str = gst_caps_get_structure(caps, 0);
+  const gchar* name = gst_structure_get_name(str);
+
+  if (g_str_has_prefix(name, "audio/x-raw")) {
+    NvDsSrcBin* bin = (NvDsSrcBin*)data;
+
+    GstPad* sinkpad = gst_element_get_static_pad(bin->audio_converter, "sink");
+
+    if (gst_pad_link(pad, sinkpad) != GST_PAD_LINK_OK)
+      NVGSTDS_ERR_MSG_V("Failed to link decodebin to pipeline");
+    gst_object_unref(sinkpad);
+  } else if (!strncmp(name, "video", 5)) {
+    /** connect video to fakesink and ignore the same */
+    NvDsSrcBin* bin = (NvDsSrcBin*)data;
+    bin->fakesink = gst_element_factory_make("fakesink", "src_fakesink");
+    if (!bin->fakesink) {
+      NVGSTDS_ERR_MSG_V("Could not create 'src_fakesink' for video path");
+      return;
+    }
+
+    g_object_set(G_OBJECT(bin->fakesink), "sync", FALSE, "async", FALSE, NULL);
+    gst_bin_add_many(GST_BIN(bin->bin), bin->fakesink, NULL);
+
+    GstPad* sinkpad = gst_element_get_static_pad(bin->fakesink, "sink");
+
+    if (gst_pad_link(pad, sinkpad) != GST_PAD_LINK_OK)
+      NVGSTDS_ERR_MSG_V("Failed to link decodebin to pipeline");
+    gst_object_unref(sinkpad);
+  }
+  gst_caps_unref(caps);
+}
+
 gint main(gint argc, gchar* argv[]) {
   GstStateChangeReturn ret;
   GstElement *pipeline, *filesrc, *demuxer{nullptr}, *decoder{nullptr}, *filter, *sink;
@@ -107,11 +147,12 @@ gint main(gint argc, gchar* argv[]) {
   watch_id = gst_bus_add_watch(bus, bus_call, loop);
   gst_object_unref(bus);
 
-#if 1
+#if 0
   std::string uri = "file://";
-  uri += argv[1];
+  uri += std::string(argv[1]);
   filesrc = gst_element_factory_make("uridecodebin", "my_urisource");
   g_object_set(filesrc, "uri", uri.c_str(), NULL);
+  // g_signal_connect(G_OBJECT(filesrc), "pad-added", G_CALLBACK(cb_newpad_audio), /*bin*/ nullptr);
 #else
   filesrc = gst_element_factory_make("filesrc", "my_filesource");
   g_object_set(G_OBJECT(filesrc), "location", argv[1], NULL);
@@ -136,37 +177,45 @@ gint main(gint argc, gchar* argv[]) {
   resample = gst_element_factory_make("audioresample", "audioresample");
   sink = gst_element_factory_make("pulsesink", "audiosink");
 
-  if (!sink || !decoder) {
-    g_print("Decoder or output could not be found - check your install\n");
-    return -1;
-  } else if (!convert1 || !convert2 || !resample) {
-    g_print(
-        "Could not create audioconvert or audioresample element, "
-        "check your installation\n");
-    return -1;
-  } else if (!filter) {
-    g_print(
-        "Your self-written filter could not be found. Make sure it "
-        "is installed correctly in $(libdir)/gstreamer-1.0/ or "
-        "~/.gstreamer-1.0/plugins/ and that gst-inspect-1.0 lists it. "
-        "If it doesn't, check with 'GST_DEBUG=*:2 gst-inspect-1.0' for "
-        "the reason why it is not being loaded.");
-    return -1;
-  }
+  // if (!sink || !decoder) {
+  //   g_print("Decoder or output could not be found - check your install\n");
+  //   return -1;
+  // } else if (!convert1 || !convert2 || !resample) {
+  //   g_print(
+  //       "Could not create audioconvert or audioresample element, "
+  //       "check your installation\n");
+  //   return -1;
+  // } else if (!filter) {
+  //   g_print(
+  //       "Your self-written filter could not be found. Make sure it "
+  //       "is installed correctly in $(libdir)/gstreamer-1.0/ or "
+  //       "~/.gstreamer-1.0/plugins/ and that gst-inspect-1.0 lists it. "
+  //       "If it doesn't, check with 'GST_DEBUG=*:2 gst-inspect-1.0' for "
+  //       "the reason why it is not being loaded.");
+  //   return -1;
+  // }
 
   g_signal_connect(decoder, "pad-added", G_CALLBACK(on_decode_pad_added), convert1);
 
-  gst_bin_add_many(GST_BIN(pipeline), filesrc, demuxer, decoder, convert1, filter, convert2, resample, sink, NULL);
+  if (!demuxer && !decoder) {
+    gst_bin_add_many(GST_BIN(pipeline), filesrc, convert1, filter, convert2, resample, sink, NULL);
+  } else {
+    gst_bin_add_many(GST_BIN(pipeline), filesrc, demuxer, decoder, convert1, filter, convert2, resample, sink, NULL);
+  }
 
-  print_pads(filesrc);
-  print_pads(demuxer);
-  print_pads(decoder);
-  print_pads(convert1);
+  // print_pads(filesrc);
+  // print_pads(demuxer);
+  // print_pads(decoder);
+  // print_pads(convert1);
 
   /* link everything together */
-  if (!gst_element_link_many(filesrc, demuxer, NULL)) {
-    g_print("Failed to link one or more elements!\n");
-    return -1;
+  if (demuxer) {
+    if (!gst_element_link_many(filesrc, demuxer, NULL)) {
+      g_print("Failed to link one or more elements!\n");
+      return -1;
+    }
+  } else {
+    g_signal_connect(filesrc, "pad-added", G_CALLBACK(on_demuxer_pad_added), convert1);
   }
 
   if (!gst_element_link_many(convert1, filter, convert2, resample, sink, NULL)) {
