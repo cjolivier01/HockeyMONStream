@@ -273,6 +273,9 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, gcha
         std::vector<std::string> headers = split_csv_entries(line);
         /*Parsing each csv entry as an input source */
         while (getline(inputFile, line)) {
+          if (line.empty() || line[0] == '#') {
+            continue;
+          }
           std::vector<std::string> source_values = split_csv_entries(line);
           if (config->num_source_sub_bins == MAX_SOURCE_BINS) {
             NVGSTDS_ERR_MSG_V("App supports max %d sources", MAX_SOURCE_BINS);

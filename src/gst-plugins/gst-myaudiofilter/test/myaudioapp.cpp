@@ -84,7 +84,7 @@ static void on_demuxer_pad_added(GstElement* element, GstPad* pad, gpointer data
 
 gint main(gint argc, gchar* argv[]) {
   GstStateChangeReturn ret;
-  GstElement *pipeline, *filesrc, *demuxer, *decoder, *filter, *sink;
+  GstElement *pipeline, *filesrc, *demuxer{nullptr}, *decoder{nullptr}, *filter, *sink;
   GstElement *convert1, *convert2, *resample;
   GMainLoop* loop;
   GstBus* bus;
@@ -107,11 +107,18 @@ gint main(gint argc, gchar* argv[]) {
   watch_id = gst_bus_add_watch(bus, bus_call, loop);
   gst_object_unref(bus);
 
+#if 1
+  std::string uri = "file://";
+  uri += argv[1];
+  filesrc = gst_element_factory_make("uridecodebin", "my_urisource");
+  g_object_set(filesrc, "uri", uri.c_str(), NULL);
+#else
   filesrc = gst_element_factory_make("filesrc", "my_filesource");
+  g_object_set(G_OBJECT(filesrc), "location", argv[1], NULL);
   demuxer = gst_element_factory_make("qtdemux", "my_demuxer");
   decoder = gst_element_factory_make("decodebin", "decodebin");
-
   g_signal_connect(demuxer, "pad-added", G_CALLBACK(on_demuxer_pad_added), decoder);
+#endif
 
   /* putting an audioconvert element here to convert the output of the
    * decoder into a format that myaudiofilter can handle (we are assuming it
@@ -146,8 +153,6 @@ gint main(gint argc, gchar* argv[]) {
         "the reason why it is not being loaded.");
     return -1;
   }
-
-  g_object_set(G_OBJECT(filesrc), "location", argv[1], NULL);
 
   g_signal_connect(decoder, "pad-added", G_CALLBACK(on_decode_pad_added), convert1);
 
