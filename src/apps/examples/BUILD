@@ -8,7 +8,6 @@ cc_binary(
       "-Wno-error=write-strings",
     ],
     deps = [
-        # "@glibconfig",
         "@glib",
         "@gstreamer",
     ],

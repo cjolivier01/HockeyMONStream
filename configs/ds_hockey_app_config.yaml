@@ -52,6 +52,11 @@ source:
   # ffmpeg -nostdin -threads 1 -i 'udp://@0.0.0.0:8554?overrun_nonfatal=1&fifo_size=50000000' -f:v mpegts -fflags nobuffer -vf format=yuv420p -f v4l2 /dev/video42
   # csv-file-path: gopro_udp_source.csv
 
+hmaudio:
+  enabled: 1
+  # 1=nullsink, 2=alsa sink, 3=rtsp server
+  dest: 2
+
 sink0:
   enable: 1
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File

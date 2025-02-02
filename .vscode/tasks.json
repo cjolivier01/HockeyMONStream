@@ -98,10 +98,10 @@
       "type": "shell",
       "command": "python3",
       "args": [
-        "${env:HOME}/src/bazel-compilation-database/generate.py",
+        // Installed by scripts/install_compdb.sh
+        "/usr/local/bin/bazel-compdb",
         "--",
         "--config=debug",
-        // "//...",
       ],
       "cwd": "${workspaceRoot}",
       "group": {

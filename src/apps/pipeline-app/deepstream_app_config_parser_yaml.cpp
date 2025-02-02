@@ -118,6 +118,14 @@ gboolean parse_hmimagemetamerger_yaml(
   return true;
 }
 
+gboolean parse_hmaudio_yaml(NvDsHmAudioConfig* config, const YAML::Node& yaml_node) {
+  hm::utils::ConfigLocator locator;
+  SET_LOCATOR(locator, *config, enable);
+  SET_LOCATOR(locator, *config, dest);
+  set_config_from_yaml(yaml_node, locator);
+  return true;
+}
+
 static gboolean parse_app_yaml(NvDsConfig* config, gchar* cfg_file_path) {
   gboolean ret = FALSE;
   YAML::Node configyml = YAML::LoadFile(cfg_file_path);
@@ -445,6 +453,8 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, gcha
        * it will override the value set using global_gpu_id in parse_playtracker_yaml function */
       parse_err = !parse_hmimagemetamerger_yaml(
           &config->hmimagemetamerger_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
+    } else if (paramKey == "hmaudio") {
+      parse_err = !parse_hmaudio_yaml(&config->hmaudio_config, itr->second);
     } else if (paramKey == "message-converter") {
       parse_err = !parse_msgconv_yaml(&config->msg_conv_config, paramKey, cfg_file_path);
     } else if (paramKey == "tests") {

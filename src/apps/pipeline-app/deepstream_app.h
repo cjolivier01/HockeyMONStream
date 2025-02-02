@@ -87,6 +87,7 @@ typedef struct {
   guint bus_id;
   GstElement* pipeline;
   NvDsSrcParentBin multi_src_bin;
+  NvDsHmAudioBin hmaudio_bin;
   NvDsInstanceBin instance_bins[MAX_SOURCE_BINS];
   NvDsInstanceBin demux_instance_bins[MAX_SOURCE_BINS];
   NvDsInstanceBin common_elements;
@@ -145,6 +146,7 @@ typedef struct {
   NvDsDsPlayTrackerConfig dsplaytracker_config;
   NvDsSinkMsgConvBrokerConfig msg_conv_config;
   NvDsImageSave image_save_config;
+  NvDsHmAudioConfig hmaudio_config;
 
   /** To support nvmultiurisrcbin */
   gboolean use_nvmultiurisrcbin;

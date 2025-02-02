@@ -1722,6 +1722,13 @@ gboolean create_pipeline(
   }
   gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->multi_src_bin.bin);
 
+  if (appCtx->config.hmvideoprep_config.enable) {
+    if (!create_hmaudio_bin(&appCtx->config.hmaudio_config, &pipeline->hmaudio_bin)) {
+      goto done;
+    }
+    gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->hmaudio_bin.bin);
+  }
+
   if (config->streammux_config.is_parsed) {
     if (config->use_nvmultiurisrcbin) {
       config->streammux_config.use_nvmultiurisrcbin = TRUE;

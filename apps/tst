@@ -1,1 +1,0 @@
-/opt/nvidia/graph-composer/execute_graph.sh -f -d /opt/nvidia/graph-composer/config/target_x86_64.yaml app-2.yaml 
