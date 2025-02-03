@@ -198,6 +198,27 @@
       "preLaunchTask": "Build single target (set in json)",
     },
     {
+      "name": "(LLDB) vplay",
+      "type": "lldb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/bazel-bin/src/gst-plugins/gst-myaudiofilter/test/vplay",
+      "args": [
+        // "/mnt/ripper-data/Videos/mlk-extreme/GX010015.MP4",
+        "${env:HOME}/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4",
+      ],
+      "sourceMap": {
+        "/proc/self/cwd": "${workspaceFolder}",
+        "~/src": "${env:HOME}/src",
+      },
+      "env": {
+        "GST_DEBUG": "2",
+        "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
+        "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
+      },
+      "preLaunchTask": "Build single target (set in json)",
+    },
+    {
       "name": "(LLDB) gxe",
       "type": "lldb",
       "request": "launch",

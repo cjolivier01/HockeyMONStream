@@ -11,3 +11,13 @@ cc_binary(
     "@deepstream//sources/apps/apps-common:deepstream_apps_common",
   ]
 )
+
+cc_binary(
+  name="vplay",
+  srcs=["vplay.cpp"],
+  deps=[
+    "@glib",
+    "@gstreamer",
+    "@deepstream//sources/apps/apps-common:deepstream_apps_common",
+  ]
+)
