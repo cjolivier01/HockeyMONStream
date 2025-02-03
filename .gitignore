@@ -11,3 +11,4 @@ compile_commands.json
 .registry-synced
 cuda-keyring*.deb
 out.mp4
+pipeline*.dot

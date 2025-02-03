@@ -1,5 +1,6 @@
 #include <glib.h>
 #include <gst/gst.h>
+#include <gst/gstdebugutils.h>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -149,6 +150,7 @@ class Pipeline {
   }
 
   void run() {
+    dump_graph();
     GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
     if (ret == GST_STATE_CHANGE_FAILURE) {
       throw std::runtime_error("Failed to set pipeline to playing state");
@@ -164,6 +166,10 @@ class Pipeline {
     if (loop_) {
       g_main_loop_unref(loop_);
     }
+  }
+
+  void dump_graph() {
+    gst_debug_bin_to_dot_file(GST_BIN(pipeline_), GST_DEBUG_GRAPH_SHOW_ALL, "pipeline");
   }
 
  private:

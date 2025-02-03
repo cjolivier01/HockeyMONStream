@@ -215,6 +215,7 @@
         "GST_DEBUG": "2",
         "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
         "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
+        "GST_DEBUG_DUMP_DOT_DIR": ".",
       },
       "preLaunchTask": "Build single target (set in json)",
     },
