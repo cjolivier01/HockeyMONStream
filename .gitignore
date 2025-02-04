@@ -12,3 +12,4 @@ compile_commands.json
 cuda-keyring*.deb
 out.mp4
 pipeline*.dot
+output.png
