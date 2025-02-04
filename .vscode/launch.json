@@ -113,6 +113,93 @@
       "preLaunchTask": "Build All",
     },
     {
+      "name": "(LLDB) cudaBlend",
+      "type": "lldb",
+      "request": "launch",
+      "linux": {
+        // "envFile": "${workspaceFolder}/${config:mesonbuild.buildFolder}/meson-vscode.env",
+      },
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/bazel-bin/src/apps/pipeline-app/pipeline-app",
+      "args": [
+        "-c",
+        //"${workspaceFolder}/configs/deepstream_app_config.txt",   // baseline
+        "${workspaceFolder}/configs/ds_hockey_app_config.yaml", // my app
+        "-g",
+        "mlk-extreme",
+      ],
+      "sourceMap": {
+        "/proc/self/cwd": "${workspaceFolder}",
+        "~/src": "${env:HOME}/src",
+        //"${workspaceFolder}/src/external/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",
+        "external/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",
+        //"external/hmdeepstream/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",
+        "home/colivier/src/jetson-utils": "${workspaceFolder}/src/external/jetson-utils",
+      },
+      //"stopOnEntry": true,
+      "env": {
+        //"GST_DEBUG": "videoprep:7",
+        // "GST_DEBUG": "4",
+        // "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
+        "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib",
+        //"GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
+        "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
+        //"GST_DEBUG": "4",
+        "DISPLAY": ":1",
+        "CUDA_LAUNCH_BLOCKING": "1",
+      },
+      "preLaunchTask": "Build All",
+    },
+    {
+      "name": "(CUDA) cudaBlend",
+      "type": "cuda-gdb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "linux": {
+        // "envFile": "${workspaceFolder}/${config:mesonbuild.buildFolder}/meson-vscode.env",
+      },
+      "debuggerPath": "/usr/local/cuda/bin/cuda-gdb",
+      "program": "${workspaceFolder}/bazel-bin/src/apps/pipeline-app/pipeline-app",
+      "args": "-c ${workspaceFolder}/configs/ds_hockey_app_config.yaml",
+      // "substitutePath": [
+      //   {
+      //     "from": "/proc/self/cwd",
+      //     "to": "${workspaceFolder}/src"
+      //   },
+      //   {
+      //     "from": "~/src",
+      //     "to": "${env:HOME}/src"
+      //   },
+      //   {
+      //     "from": "external/deepstream/sources",
+      //     "to": "${env:HOME}/src/hstream/external/deepstream/sources"
+      //   },
+      // ],
+      "initCommands": [
+        "directory ${workspaceFolder}/src",
+      ],
+      "environment": [
+        // {
+        //   "name": "GST_DEBUG",
+        //   "value": "7",
+        // },
+        // {
+        //   "name": "LD_LIBRARY_PATH",
+        //   "value": "${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu"
+        // },
+        {
+          "name": "GST_PLUGIN_PATH",
+          "value": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
+        },
+        {
+          "name": "DISPLAY",
+          "value": ":1",
+        },
+      ],
+      "additionalSOLibSearchPath": "${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
+      "preLaunchTask": "Build All",
+    },
+    {
       "name": "(LLDB) kmeans",
       "type": "lldb",
       "request": "launch",
