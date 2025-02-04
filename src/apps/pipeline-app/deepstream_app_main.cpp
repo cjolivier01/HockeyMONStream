@@ -651,6 +651,10 @@ int main(int argc, char* argv[]) {
   }
 
   for (i = 0; i < num_instances; i++) {
+    // appCtx[i]->config.use_nvmultiurisrcbin = TRUE;
+    // if (!appCtx[i]->config.max_batch_size) {
+    //   appCtx[i]->config.max_batch_size = 4;
+    // }
     if (!create_pipeline(appCtx[i].get(), NULL, all_bbox_generated, perf_cb, overlay_graphics)) {
       NVGSTDS_ERR_MSG_V("Failed to create pipeline");
       return_value = -1;

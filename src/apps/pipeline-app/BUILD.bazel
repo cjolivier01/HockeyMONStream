@@ -5,6 +5,7 @@ cc_binary(
   deps=[
     "//src/libs/common:utils",
     "@deepstream//sources/apps/apps-common:deepstream_apps_common",
+    "@deepstream//sources/apps/sample_apps/deepstream-audio:deepstream_audio",
     "@gstreamer",
     "@yaml-cpp",
     "@json_glib",

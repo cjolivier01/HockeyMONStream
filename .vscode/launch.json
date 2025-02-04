@@ -60,6 +60,7 @@
         //"GST_DEBUG": "4",
         "DISPLAY": ":1",
         "CUDA_LAUNCH_BLOCKING": "1",
+        //"USE_NEW_NVSTREAMMUX": "1",
       },
       "preLaunchTask": "Build All",
     },
@@ -249,7 +250,28 @@
         "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
         "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
       },
-      "preLaunchTask": "Build single target (set in json)",
+      "preLaunchTask": "Build All",
+    },
+    {
+      "name": "(LLDB) deepstream-audio",
+      "type": "lldb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/bazel-bin/external/deepstream/sources/apps/sample_apps/deepstream-audio/deepstream_audio",
+      "args": [
+        "-c",
+        "${workspaceFolder}/external/deepstream/sources/apps/sample_apps/deepstream-audio/configs/ds_audio_sonyc_test_config.txt",
+      ],
+      "sourceMap": {
+        "/proc/self/cwd": "${workspaceFolder}",
+        "~/src": "${env:HOME}/src",
+      },
+      "env": {
+        // "GST_DEBUG": "4",
+        "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
+        "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
+      },
+      "preLaunchTask": "Build All",
     },
     {
       "name": "(LLDB) vplay",
