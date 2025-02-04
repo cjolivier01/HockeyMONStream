@@ -89,7 +89,7 @@
       //   },
       // ],
       "initCommands": [
-        "directory ${workspaceFolder}/src",
+        "directory ${workspaceFolder}",
       ],
       "environment": [
         // {
@@ -151,7 +151,7 @@
       "program": "${workspaceFolder}/bazel-bin/external/jetson-utils/cuda/test_cuda_blend",
       "args": "${env:HOME}/src/hm/left_ready.png ${env:HOME}/src/hm/right_ready.png ${env:HOME}/src/hm/seam_mask_ready.png ${workspaceRoot}/output.png",
       "initCommands": [
-        "directory ${workspaceFolder}/src",
+        "directory ${workspaceFolder}",
       ],
       "environment": [
         {
