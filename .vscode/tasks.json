@@ -123,6 +123,27 @@
       "problemMatcher": [],
     },
     {
+      "label": "Build deepstream libs",
+      "type": "shell",
+      "command": "./deepstream_build",
+      "args": [
+        "CUDA_VER=12.8",
+        "DEBUG=1",
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": false,
+      },
+      "problemMatcher": [
+        "$gcc"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true,
+      },
+    },
+    {
       "label": "Meson: Build all targets",
       "type": "shell",
       "command": "meson compile -C builddir",

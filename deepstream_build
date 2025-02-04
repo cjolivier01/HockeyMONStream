@@ -1,0 +1,6 @@
+#!/bin/bash
+set -e
+cd external/deepstream/sources/libs
+DEBUG=1 make -j $(nproc) $@
+cd ../gst-plugins
+DEBUG=1 make -j $(nproc) $@
