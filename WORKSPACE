@@ -131,6 +131,7 @@ new_local_repository(
     name = "opencv_linux",
     build_file = "@//buildfiles:third_party/opencv_linux.BUILD",
     path = "/usr/include",
+    # path = "/usr/local/include",
 )
 
 new_local_repository(

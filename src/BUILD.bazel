@@ -1,1 +1,10 @@
 INCLUDE_PREFIX = "src/libs"
+
+# All the jetson stuff to build always
+cc_library(
+  name = "hstreamer",
+  deps = [
+    "@jetson-utils//cuda:cuda_lib",
+    "@jetson-utils//cuda:test_cuda_blend",
+  ],
+)

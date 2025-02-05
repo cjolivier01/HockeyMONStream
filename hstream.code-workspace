@@ -484,7 +484,8 @@
     "C_Cpp.default.configurationProvider": "mesonbuild.mesonbuild",
     "mesonbuild.selectRootDir": false,
     "clangd.arguments": [
-      "--clang-tidy"
+      "--clang-tidy",
+      "--query-driver=/usr/bin/**clang-*,/usr/bin/**/gcc-*,/usr/bin/**/g++-*"
     ]
   }
 }
