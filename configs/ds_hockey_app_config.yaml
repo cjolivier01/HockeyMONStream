@@ -264,6 +264,8 @@ hmvideoprep:
   # enable: false
   enable: true
   gpu-id: 0
+  # plugin-type: videoprep
+  plugin-type: playcropper
   # has_queue: false
   # has_videoconvert: false
   # has_cameraman: true

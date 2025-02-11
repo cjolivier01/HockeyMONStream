@@ -94,12 +94,12 @@ gboolean parse_hmvideoprep_yaml(
   SET_LOCATOR(locator, *config, has_videoconvert);
   SET_LOCATOR(locator, *config, has_cameraman);
   SET_LOCATOR(locator, *config, nvbuf_memory_type);
-
   SET_LOCATOR(locator, *config, num_output_buffers);
   SET_LOCATOR(locator, *config, dewarper_dump_frames);
   SET_LOCATOR(locator, *config, source_id);
   SET_LOCATOR(locator, *config, num_surfaces_per_frame);
   SET_LOCATOR(locator, *config, num_batch_buffers);
+  SET_LOCATOR_CHARS(locator, *config, plugin_type);
 
   hm::utils::parse_chracter_buffer(config->config_file, yaml_node, "config-file", config_path);
 
