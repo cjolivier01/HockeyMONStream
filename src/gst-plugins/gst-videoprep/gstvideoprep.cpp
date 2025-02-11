@@ -1427,32 +1427,3 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
       break;
   }
 }
-
-/* GstElement vmethod implementations */
-
-/* entry point to initialize the plug-in
- * initialize the plug-in itself
- * register the element factories and other features
- */
-// static gboolean videoprep_init(GstPlugin* videoprep) {
-//   /* debug category for filtering log messages
-//    *
-//    * exchange the string 'Template videoprep' with your description
-//    */
-//   GST_DEBUG_CATEGORY_INIT(gst_videoprep_debug, "videoprep", 0, "videoprep");
-
-//   return gst_element_register(videoprep, "videoprep", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
-// }
-} // namespace videoprep
-} // namespace hm
-
-// GST_PLUGIN_DEFINE(
-//     GST_VERSION_MAJOR,
-//     GST_VERSION_MINOR,
-//     nvdsgst_videoprep,
-//     PACKAGE_DESCRIPTION,
-//     hm::videoprep::videoprep_init,
-//     "7.1",
-//     PACKAGE_LICENSE,
-//     PACKAGE_NAME,
-//     PACKAGE_URL)
