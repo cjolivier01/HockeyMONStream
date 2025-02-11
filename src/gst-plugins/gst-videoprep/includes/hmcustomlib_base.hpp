@@ -93,7 +93,7 @@ class DSCustomLibraryBase : public IDSCustomLibrary {
   GstCaps* m_outCaps;
 };
 
-DSCustomLibraryBase::DSCustomLibraryBase(GstBaseTransform* btrans) : m_element(btrans) {
+inline DSCustomLibraryBase::DSCustomLibraryBase(GstBaseTransform* btrans) : m_element(btrans) {
   m_inCaps = NULL;
   m_outCaps = NULL;
   m_gpuId = 0;
@@ -101,7 +101,7 @@ DSCustomLibraryBase::DSCustomLibraryBase(GstBaseTransform* btrans) : m_element(b
   m_fillDummyBatchMeta = false;
 }
 
-bool DSCustomLibraryBase::SetInitParams(DSCustom_CreateParams* params) {
+inline bool DSCustomLibraryBase::SetInitParams(DSCustom_CreateParams* params) {
   m_element = params->m_element;
   m_inCaps = params->m_inCaps;
   m_outCaps = params->m_outCaps;
@@ -118,9 +118,9 @@ bool DSCustomLibraryBase::SetInitParams(DSCustom_CreateParams* params) {
   return true;
 }
 
-DSCustomLibraryBase::~DSCustomLibraryBase() {}
+inline DSCustomLibraryBase::~DSCustomLibraryBase() {}
 
-GstCaps* DSCustomLibraryBase::GetCompatibleCaps(GstPadDirection direction, GstCaps* in_caps, GstCaps* othercaps) {
+inline GstCaps* DSCustomLibraryBase::GetCompatibleCaps(GstPadDirection direction, GstCaps* in_caps, GstCaps* othercaps) {
   GstCaps* result = NULL;
   GstStructure *s1, *s2;
   gint width = 0, height = 0;
@@ -187,7 +187,7 @@ GstCaps* DSCustomLibraryBase::GetCompatibleCaps(GstPadDirection direction, GstCa
   return result;
 }
 
-GstBufferPool* DSCustomLibraryBase::CreateBufferPool(BufferPoolConfig* pool_config, GstCaps* outcaps) {
+inline GstBufferPool* DSCustomLibraryBase::CreateBufferPool(BufferPoolConfig* pool_config, GstCaps* outcaps) {
   GstBufferPool* m_buf_pool = NULL;
   GstStructure* config = NULL;
 
@@ -232,7 +232,7 @@ GstBufferPool* DSCustomLibraryBase::CreateBufferPool(BufferPoolConfig* pool_conf
 }
 
 /* Helped function to get the NvBufSurface from the GstBuffer */
-NvBufSurface* DSCustomLibraryBase::getNvBufSurface(GstBuffer* inbuf) {
+inline NvBufSurface* DSCustomLibraryBase::getNvBufSurface(GstBuffer* inbuf) {
   GstMapInfo in_map_info = GST_MAP_INFO_INIT;
   NvBufSurface* nvbuf_surface = NULL;
 

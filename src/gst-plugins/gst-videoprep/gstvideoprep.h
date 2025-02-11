@@ -16,11 +16,12 @@
 
 #include "preputils.h"
 
-#include "glDisplay.h"
+#include "includes/hmcustomlib_base.hpp"
 
-#include <map>
-#include <mutex>
-#include <utility>
+#include <cassert>
+// #include <map>
+// #include <mutex>
+// #include <utility>
 
 /* clang-format off */
 
@@ -35,8 +36,9 @@ namespace videoprep {
 #define ROTATION_MATRIX_SIZE 9  /**< Standard rotation matrix size */
 
 /** Data structure contaning dewarping parameters for all the output surfaces */
-struct VideoPrepPriv
+class VideoPrepPriv : public DSCustomLibraryBase
 {
+  public:
   VideoPrepPriv(int gpu_id, size_t batch_size) : scratch_buffers(gpu_id, batch_size) {}
   hm::surface::SurfaceList scratch_buffers;
 
@@ -49,7 +51,31 @@ struct VideoPrepPriv
   void render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream) {
     return render_.render(name, surface, stream);
   }
+
+  // -DSCustomLibraryBase
+  bool SetProperty(Property& prop) override {
+    assert(false);
+    return true;
+  }
+
+  bool HandleEvent(GstEvent* event) override  {
+    assert(false);
+    return true;
+  }
+
+  char* QueryProperties() override {
+    assert(false);
+  }
+
+  BufferResult ProcessBuffer(GstBuffer* inbuf) override {
+    assert(false);
+    return BufferResult::Buffer_Ok;
+  }
+
+  // DSCustomLibraryBase-
+
  private:
+
   RenderSet render_;
 };
 
