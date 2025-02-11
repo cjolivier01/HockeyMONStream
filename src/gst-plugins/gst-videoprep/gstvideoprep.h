@@ -152,6 +152,8 @@ struct GstVideoPrep
 /** GStreamer boilerplate. */
 struct GstVideoPrepClass {
   GstBaseTransformClass parent_class;
+  GstStateChangeReturn (* parent_change_state_fn) (GstElement * element,
+    GstStateChange transition);
 };
 
 GType gst_videoprep_get_type(void);
