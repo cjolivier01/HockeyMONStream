@@ -17,6 +17,7 @@
 #include "preputils.h"
 
 #include "includes/hmcustomlib_base.hpp"
+#include "videoprep_plugins.h"
 
 #include <cassert>
 
@@ -113,6 +114,7 @@ struct GstVideoPrep
   guint gpu_id;             /**< ID of the GPU this element uses for dewarping/scaling. */
 
   gchar* config_file;             /**< String contaning path and name of configuration file */
+  gchar* plugin_type;
 
   GstBufferPool *pool;            /**< Internal buffer pool for output buffers  */
 
@@ -142,6 +144,7 @@ struct GstVideoPrep
 
   GstBuffer * out_gst_buf;                    /**< Pointer to the output buffer */
 
+  VideoPrepLibrary_Factory *priv_factory;
   VideoPrepPriv *priv;                       /**< Pointer to private data structure contaning dewarping parameters for all the output surfaces */
 };
 /* clang-format on */

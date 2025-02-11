@@ -17,6 +17,7 @@
 #include "nvds_dewarper_meta.h"
 #include "nvdsmeta.h"
 #include "preputils.h"
+#include "videoprep_plugins.h"
 #include "videoprep_property_parser.h"
 
 #include <assert.h>
@@ -118,7 +119,8 @@ enum {
   PROP_GPU_DEVICE_ID,
   PROP_SOURCE_ID,
   PROP_NUM_OUTPUT_BUFFERS,
-  PROP_DEWARP_CONFIG_FILE,
+  PROP_CONFIG_FILE,
+  PROP_PLUGIN_TYPE,
   PROP_DEWARP_LIB_VERSION,
   PROP_NUM_BATCH_BUFFERS,
   PROP_NVBUF_MEMORY_TYPE,
@@ -638,10 +640,17 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
   // if (!videoprep->aisle_calibrationfile_set || !videoprep->spot_calibrationfile_set) {
   //  Non-CVS Case
   assert(!videoprep->priv);
-  videoprep->priv = new VideoPrepPriv(videoprep->gpu_id, videoprep->num_batch_buffers);
-  // videoprep->priv->video_output = std::unique_ptr<videoOutput>(videoOutput::CreateNullOutput());
+  // videoprep->priv = new VideoPrepPriv(videoprep->gpu_id, videoprep->num_batch_buffers);
+  GObject* object = G_OBJECT(trans);
+  assert(object);
+  // TODO: remove need for it to be anything but the base type
+  videoprep->priv = dynamic_cast<VideoPrepPriv*>(videoprep->priv_factory->CreateCustomAlgoCtx(
+      videoprep->plugin_type, object, videoprep->gpu_id, videoprep->num_batch_buffers));
+  if (!videoprep->priv) {
+    GST_ERROR("Unable to create plugin type %s", videoprep->plugin_type);
+    return FALSE;
+  }
   gst_videoprep_allocate_projection_buffers(videoprep);
-  //}
 
   gst_base_transform_set_passthrough(trans, FALSE);
   return TRUE;
@@ -1225,11 +1234,21 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
-      PROP_DEWARP_CONFIG_FILE,
+      PROP_CONFIG_FILE,
       g_param_spec_string(
           "config-file",
-          "Dewarper Config File",
-          "Dewarper Config File",
+          "Config File",
+          "Config File",
+          NULL,
+          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+
+  g_object_class_install_property(
+      gobject_class,
+      PROP_PLUGIN_TYPE,
+      g_param_spec_string(
+          "plugin-type",
+          "Plugin Type",
+          "Plugin Type",
           NULL,
           (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
@@ -1238,8 +1257,8 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
       PROP_DEWARP_LIB_VERSION,
       g_param_spec_string(
           "videoprep-lib-version",
-          "Dewarper Library Version",
-          "Dewarper Library Version",
+          "Library Version",
+          "Library Version",
           NULL,
           (GParamFlags)(G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
   PROP_NVBUF_MEMORY_TYPE_INSTALL(gobject_class);
@@ -1279,6 +1298,9 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
 
   // TODO: If CSV is not given then we should not check this
   videoprep->config_file = NULL;
+  videoprep->plugin_type = strdup("videoprep");
+  videoprep->priv_factory = new VideoPrepLibrary_Factory();
+
   videoprep->num_output_buffers = DEFAULT_NUM_OUTPUT_BUFFERS;
 
   videoprep->dump_frames = DEFAULT_DEWARP_DUMP_FRAMES;
@@ -1294,6 +1316,11 @@ static void gst_videoprep_finalize(GObject* object) {
     videoprep->output = NULL;
   }
 
+  if (videoprep->priv_factory) {
+    delete videoprep->priv_factory;
+    videoprep->priv_factory = nullptr;
+  }
+
   if (videoprep->priv) {
     videoprep->priv->scratch_buffers.clear();
     if (videoprep->priv) {
@@ -1303,6 +1330,8 @@ static void gst_videoprep_finalize(GObject* object) {
   }
   if (videoprep->config_file)
     g_free(videoprep->config_file);
+  if (videoprep->plugin_type)
+    g_free(videoprep->plugin_type);
 }
 
 static void gst_videoprep_init(GstVideoPrep* videoprep) {
@@ -1334,7 +1363,7 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
     case PROP_INTERPOLATION_METHOD:
       videoprep->interpolation_method = static_cast<NvBufSurfTransform_Inter>(g_value_get_enum(value));
       break;
-    case PROP_DEWARP_CONFIG_FILE:
+    case PROP_CONFIG_FILE:
       if (videoprep->config_file)
         g_free(videoprep->config_file);
       videoprep->config_file = (gchar*)g_value_dup_string(value);
@@ -1342,6 +1371,11 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
         g_print("%s: Failed to parse config file %s\n", GST_ELEMENT_NAME(videoprep), videoprep->config_file);
         abort();
       }
+      break;
+    case PROP_PLUGIN_TYPE:
+      if (videoprep->plugin_type)
+        g_free(videoprep->plugin_type);
+      videoprep->plugin_type = (gchar*)g_value_dup_string(value);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
@@ -1368,8 +1402,11 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
     case PROP_NUM_BATCH_BUFFERS:
       g_value_set_uint(value, videoprep->num_batch_buffers);
       break;
-    case PROP_DEWARP_CONFIG_FILE:
+    case PROP_CONFIG_FILE:
       g_value_set_string(value, videoprep->config_file);
+      break;
+    case PROP_PLUGIN_TYPE:
+      g_value_set_string(value, videoprep->plugin_type);
       break;
     case PROP_DEWARP_LIB_VERSION:
       g_value_set_static_string(value, VIDEOPREP_LIB_VERSION);
