@@ -55,7 +55,7 @@ class DSCustomLibraryBase : public IDSCustomLibrary {
   virtual bool HandleEvent(GstEvent* event) = 0;
   // TODO: Add getProperty as well
 
-  virtual char* QueryProperties() = 0;
+  virtual const char* QueryProperties() = 0;
 
   /* Get GetCompatibleOutputCaps */
   virtual GstCaps* GetCompatibleCaps(GstPadDirection direction, GstCaps* in_caps, GstCaps* othercaps);

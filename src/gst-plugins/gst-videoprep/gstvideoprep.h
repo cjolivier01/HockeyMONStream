@@ -19,14 +19,6 @@
 #include "includes/hmcustomlib_base.hpp"
 
 #include <cassert>
-// #include <map>
-// #include <mutex>
-// #include <utility>
-
-/* clang-format off */
-
-//using namespace nvaisle_csv;
-//using namespace nvspot_csv;
 
 namespace hm {
 namespace videoprep {
@@ -63,8 +55,9 @@ class VideoPrepPriv : public DSCustomLibraryBase
     return true;
   }
 
-  char* QueryProperties() override {
+  const char* QueryProperties() override {
     assert(false);
+    return "";
   }
 
   BufferResult ProcessBuffer(GstBuffer* inbuf) override {
@@ -101,6 +94,7 @@ G_BEGIN_DECLS
 /**
  * GstVideoPrep element structure.
  */
+/* clang-format off */
 struct GstVideoPrep
 {
   GstBaseTransform element; /**< Should be the first member when extending from GstBaseTransform. */
@@ -150,6 +144,8 @@ struct GstVideoPrep
 
   VideoPrepPriv *priv;                       /**< Pointer to private data structure contaning dewarping parameters for all the output surfaces */
 };
+/* clang-format on */
+
 
 /** GStreamer boilerplate. */
 struct GstVideoPrepClass
@@ -165,14 +161,6 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep);
 G_END_DECLS
 
 } // namespace videoprep
-
-struct GstVideoPrepPlayCropperClass : public videoprep::GstVideoPrepClass {
-
-};
-
-struct GstVideoPrepPlayCropper : public videoprep::GstVideoPrep {
-
-};
 
 } // namespace hm
 

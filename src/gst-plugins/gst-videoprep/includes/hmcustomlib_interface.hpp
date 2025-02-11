@@ -25,6 +25,9 @@
 #define __NVDSCUSTOMLIB_INTERFACE_HPP__
 
 #include <gst/gstbuffer.h>
+#include <gst/base/gstbasetransform.h>
+#include <cuda_runtime.h>
+
 #include <string>
 
 namespace hm {
@@ -58,7 +61,7 @@ class IDSCustomLibrary {
   virtual bool SetInitParams(DSCustom_CreateParams* params) = 0;
   virtual bool SetProperty(Property& prop) = 0;
   virtual bool HandleEvent(GstEvent* event) = 0;
-  virtual char* QueryProperties() = 0;
+  virtual const char* QueryProperties() = 0;
   virtual GstCaps* GetCompatibleCaps(GstPadDirection direction, GstCaps* in_caps, GstCaps* othercaps) = 0;
   virtual BufferResult ProcessBuffer(GstBuffer* inbuf) = 0;
   virtual ~IDSCustomLibrary(){};
