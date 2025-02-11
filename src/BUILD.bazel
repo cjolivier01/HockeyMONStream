@@ -5,6 +5,6 @@ cc_library(
   name = "hstreamer",
   deps = [
     "@jetson-utils//cuda:cuda_lib",
-    "@jetson-utils//cuda:test_cuda_blend",
+    "@hm-cupano//tests:test_cuda_blend",
   ],
 )

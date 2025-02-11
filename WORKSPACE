@@ -153,3 +153,7 @@ new_local_repository(
     path = "/usr",
 )
 
+local_repository(
+  name = "hm-cupano",
+  path = "external/hm/external/hm-cupano",
+)
