@@ -251,7 +251,7 @@ NppStatus cropAndResizeNvBufSurface(
     const BBox& dest_rect,
     const NppStreamContext& nppStreamContext) {
   // Define source and destination rectangles for cropping
-  cudaError_t cuerr = cudaSuccess;
+  // cudaError_t cuerr = cudaSuccess;
   NppiRect srcRect{
       .x = (int)src_rect.left,
       .y = (int)src_rect.top,

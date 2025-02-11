@@ -28,7 +28,7 @@
 #include <gst/video/video.h>
 
 #include "gstnvdsbufferpool.h"
-#include "nvdscustomlib_interface.hpp"
+#include "hmcustomlib_interface.hpp"
 
 namespace hm {
 

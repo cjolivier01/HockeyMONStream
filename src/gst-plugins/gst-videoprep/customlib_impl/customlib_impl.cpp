@@ -40,7 +40,7 @@
 #include "nvdscustomusermeta.h"
 #include "nvdsdummyusermeta.h"
 
-#include "nvdscustomlib_base.hpp"
+#include "hmcustomlib_base.hpp"
 
 namespace hm {
 
