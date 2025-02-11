@@ -1427,3 +1427,6 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
       break;
   }
 }
+
+} // namespace videoprep
+} // namespace hm
