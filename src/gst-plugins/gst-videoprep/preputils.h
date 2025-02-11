@@ -6,8 +6,14 @@
 
 #include "src/libs/common/Surface.h"
 #include "nvdsmeta.h"
+#include "glDisplay.h"
 
 #include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
+
+#include <map>
+#include <mutex>
+
+namespace hm {
 
 inline bool CUDA_CHECK_(gint e, gint iLine, const gchar* szFile) {
   if (e != cudaSuccess) {
@@ -26,8 +32,6 @@ inline bool CUDA_CHECK_(gint e, gint iLine, const gchar* szFile) {
       goto bail;                    \
     }                               \
   } while (0)
-namespace hm {
-namespace videoprep {
 
 /**
  * Function to get core Dewarper library version.
@@ -75,5 +79,16 @@ inline NppiRect get_nppirect(const T& box) {
   return NppiRect{.x = (int)box.left, .y = (int)box.top, .width = (int)box.width(), .height = (int)box.height()};
 }
 
-} // namespace videoprep
+class RenderSet {
+ public:
+  void render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream);
+ private:
+  static std::unique_ptr<glDisplay> create_video_output(const std::string& name, const hm::surface::Surface& surface);
+  videoOutput* get_video_output(const std::string& name, const hm::surface::Surface& surface);
+
+  std::mutex mu_;
+  std::map<std::string, std::unique_ptr<glDisplay>> video_outputs_;
+};
+
+
 } // namespace hm

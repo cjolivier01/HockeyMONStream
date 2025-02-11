@@ -19,16 +19,12 @@
 #include "preputils.h"
 #include "videoprep_property_parser.h"
 
-#include "cudaDraw.h"
-
 #include <assert.h>
 #include <cuda.h>
 #include <string.h>
 #include <unistd.h>
 #include <vector>
 #include "nvbufsurface.h"
-
-#include "src/libs/common/utils.h"
 
 #if defined(__aarch64__)
 #include <EGL/egl.h>
@@ -45,22 +41,22 @@
 
 #define GST_CAPS_FEATURE_MEMORY_NVMM "memory:NVMM"
 
-GST_DEBUG_CATEGORY_STATIC(gst_videoprep_debug);
-#define GST_CAT_DEFAULT gst_videoprep_debug
+// GST_DEBUG_CATEGORY_STATIC(gst_videoprep_debug);
+// #define GST_CAT_DEFAULT gst_videoprep_debug
 
 #define DEFAULT_GPU_ID 0
 #define DEFAULT_SOURCE_ID 0
 #define DEFAULT_NUM_OUTPUT_BUFFERS 4
 #define MAX_BUFFERS 4
 
-#ifndef PACKAGE
-#define PACKAGE "videoprep"
-#endif
+// #ifndef PACKAGE
+// #define PACKAGE "videoprep"
+// #endif
 
-#define PACKAGE_DESCRIPTION "Gstreamer plugin to dewarp 360d surfaces"
-#define PACKAGE_LICENSE "Proprietary"
-#define PACKAGE_NAME "GStreamer nVidia Dewarper Plugin"
-#define PACKAGE_URL "http://nvidia.com/"
+// #define PACKAGE_DESCRIPTION "Gstreamer plugin to dewarp 360d surfaces"
+// #define PACKAGE_LICENSE "Proprietary"
+// #define PACKAGE_NAME "GStreamer nVidia Dewarper Plugin"
+// #define PACKAGE_URL "http://nvidia.com/"
 
 // #define MEASURE_TIME
 #ifdef MEASURE_TIME
@@ -129,31 +125,6 @@ enum {
   PROP_INTERPOLATION_METHOD,
   PROP_SILENT,
 };
-
-std::unique_ptr<glDisplay> RenderSet::create_video_output(
-    const std::string& name,
-    const hm::surface::Surface& surface) {
-  videoOptions vo;
-  vo.width = (int)surface.width();
-  vo.height = (int)surface.height();
-  auto video_output = std::unique_ptr<glDisplay>(glDisplay::Create(vo));
-  video_output->SetTitle(name.c_str());
-  return video_output;
-}
-
-videoOutput* RenderSet::get_video_output(const std::string& name, const hm::surface::Surface& surface) {
-  std::unique_lock lk(mu_);
-  auto found = video_outputs_.find(name);
-  if (found == video_outputs_.end()) {
-    found = video_outputs_.emplace(name, create_video_output(name, surface)).first;
-  }
-  return found->second.get();
-}
-
-void RenderSet::render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream) {
-  get_video_output(name, surface)
-      ->Render(surface.dataptr(), surface.pitch_width(), surface.height(), surface.get_image_format(), stream);
-}
 
 static void gst_videoprep_finalize(GObject* object);
 
@@ -551,8 +522,6 @@ static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
   ranthis = true;
 
   hm::WHDims src_size{.width = (FloatValue)videoprep->input_width, .height = (FloatValue)videoprep->input_height};
-  // hm::WHDims output_size = {
-  //     .width = (FloatValue)videoprep->output_width, .height = (FloatValue)videoprep->output_height};
   constexpr FloatValue out_ar = 16.0 / 9.0;
   FloatValue virt_out_width = ((FloatValue)videoprep->input_height) * out_ar;
   hm::WHDims output_size{.width = virt_out_width, .height = (FloatValue)videoprep->input_height};
@@ -805,7 +774,7 @@ static cudaError gst_videoprep_generate_output(
 
     BBox tbox = tracking_boxes.at(batch_nr);
 
-    cudaError_t err_cuda = cudaError_t::cudaSuccess;
+    // cudaError_t err_cuda = cudaError_t::cudaSuccess;
     // std::cout << tbox << std::endl;
     // err_cuda = cudaDrawRect(
     //     incoming_surface.dataptr<uchar4*>(),
@@ -822,14 +791,14 @@ static cudaError gst_videoprep_generate_output(
     //     nppStreamContext.hStream);
     // assert(err_cuda == 0);
 
-    FloatValue tbox_aar = tbox.width() / tbox.height();
+    // FloatValue tbox_aar = tbox.width() / tbox.height();
 
     tbox.left *= scale_w;
     tbox.right *= scale_w;
     tbox.top *= scale_h;
     tbox.bottom *= scale_h;
 
-    tbox_aar = tbox.width() / tbox.height();
+    // tbox_aar = tbox.width() / tbox.height();
 
     // err_cuda = cudaDrawRect(
     //     incoming_surface.dataptr<uchar4*>(),
@@ -908,7 +877,7 @@ static cudaError gst_videoprep_generate_output(
     FloatValue tbox_ar = tbox.width() / tbox.height();
     FloatValue new_tbox_ar = new_tbox.width() / new_tbox.height();
     const BBox output_rect(0, 0, (FloatValue)videoprep->output_width, (FloatValue)videoprep->output_height);
-    FloatValue output_ar = output_rect.width() / output_rect.height();
+    // FloatValue output_ar = output_rect.width() / output_rect.height();
     assert(isClose(tbox_ar, new_tbox_ar, 1e-6f, 0.001));
     // assert(isClose(new_tbox_ar, output_ar, 1e-6f, 0.001));
 #endif
@@ -1172,7 +1141,7 @@ static gboolean gst_videoprep_stop(GstBaseTransform* btrans) {
 }
 
 /* initialize the videoprep's class */
-static void gst_videoprep_class_init(GstVideoPrepClass* klass) {
+void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
   GObjectClass* gobject_class;
   GstElementClass* gstelement_class;
   GstBaseTransformClass* gstbasetransform_class = (GstBaseTransformClass*)klass;
@@ -1288,12 +1257,16 @@ static void gst_videoprep_class_init(GstVideoPrepClass* klass) {
   gst_element_class_add_pad_template(gstelement_class, gst_static_pad_template_get(&sink_factory));
 }
 
+static void gst_videoprep_class_init(GstVideoPrepClass* klass) {
+  gst_videoprep_class_init_base(klass);
+}
+
 /* initialize the new element
  * instantiate pads and add them to element
  * set pad calback functions
  * initialize instance structure
  */
-static void gst_videoprep_init(GstVideoPrep* videoprep) {
+void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->sinkcaps = gst_static_pad_template_get_caps(&sink_factory);
   videoprep->srccaps = gst_static_pad_template_get_caps(&src_factory);
 
@@ -1330,6 +1303,10 @@ static void gst_videoprep_finalize(GObject* object) {
   }
   if (videoprep->config_file)
     g_free(videoprep->config_file);
+}
+
+static void gst_videoprep_init(GstVideoPrep* videoprep) {
+  gst_videoprep_init_base(videoprep);
 }
 
 static void gst_videoprep_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
@@ -1415,25 +1392,25 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
  * initialize the plug-in itself
  * register the element factories and other features
  */
-static gboolean videoprep_init(GstPlugin* videoprep) {
-  /* debug category for fltering log messages
-   *
-   * exchange the string 'Template videoprep' with your description
-   */
-  GST_DEBUG_CATEGORY_INIT(gst_videoprep_debug, "videoprep", 0, "videoprep");
+// static gboolean videoprep_init(GstPlugin* videoprep) {
+//   /* debug category for filtering log messages
+//    *
+//    * exchange the string 'Template videoprep' with your description
+//    */
+//   GST_DEBUG_CATEGORY_INIT(gst_videoprep_debug, "videoprep", 0, "videoprep");
 
-  return gst_element_register(videoprep, "videoprep", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
-}
+//   return gst_element_register(videoprep, "videoprep", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
+// }
 } // namespace videoprep
 } // namespace hm
 
-GST_PLUGIN_DEFINE(
-    GST_VERSION_MAJOR,
-    GST_VERSION_MINOR,
-    nvdsgst_videoprep,
-    PACKAGE_DESCRIPTION,
-    hm::videoprep::videoprep_init,
-    "7.1",
-    PACKAGE_LICENSE,
-    PACKAGE_NAME,
-    PACKAGE_URL)
+// GST_PLUGIN_DEFINE(
+//     GST_VERSION_MAJOR,
+//     GST_VERSION_MINOR,
+//     nvdsgst_videoprep,
+//     PACKAGE_DESCRIPTION,
+//     hm::videoprep::videoprep_init,
+//     "7.1",
+//     PACKAGE_LICENSE,
+//     PACKAGE_NAME,
+//     PACKAGE_URL)

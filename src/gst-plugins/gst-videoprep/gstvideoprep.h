@@ -14,6 +14,8 @@
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 
+#include "preputils.h"
+
 #include "glDisplay.h"
 
 #include <map>
@@ -31,17 +33,6 @@ namespace videoprep {
 #define DISTORTION_SIZE 5 /**< Maximum number of distortion coefficients */
 #define FOCAL_LENGTH_SIZE 2 /**< Focal length array size : two values for X & Y direction */
 #define ROTATION_MATRIX_SIZE 9  /**< Standard rotation matrix size */
-
-class RenderSet {
- public:
-  void render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream);
- private:
-  static std::unique_ptr<glDisplay> create_video_output(const std::string& name, const hm::surface::Surface& surface);
-  videoOutput* get_video_output(const std::string& name, const hm::surface::Surface& surface);
-
-  std::mutex mu_;
-  std::map<std::string, std::unique_ptr<glDisplay>> video_outputs_;
-};
 
 /** Data structure contaning dewarping parameters for all the output surfaces */
 struct VideoPrepPriv
@@ -70,7 +61,7 @@ G_BEGIN_DECLS
  * @{
  */
 #define GST_TYPE_VIDEOPREP \
-  (gst_videoprep_get_type())
+  (hm::videoprep::gst_videoprep_get_type())
 #define GST_VIDEOPREP(obj) \
   (G_TYPE_CHECK_INSTANCE_CAST((obj),GST_TYPE_VIDEOPREP,GstVideoPrep))
 #define GST_VIDEOPREP_CLASS(klass) \
@@ -142,9 +133,21 @@ struct GstVideoPrepClass
 
 GType gst_videoprep_get_type (void);
 
+void gst_videoprep_class_init_base(GstVideoPrepClass* klass);
+void gst_videoprep_init_base(GstVideoPrep* videoprep);
+
 G_END_DECLS
 
-}
-}
+} // namespace videoprep
+
+struct GstVideoPrepPlayCropperClass : public videoprep::GstVideoPrepClass {
+
+};
+
+struct GstVideoPrepPlayCropper : public videoprep::GstVideoPrep {
+
+};
+
+} // namespace hm
 
 /* clang-format on */
