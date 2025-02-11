@@ -17,6 +17,7 @@
 #include "nvds_dewarper_meta.h"
 #include "nvdsmeta.h"
 #include "videoprep_plugins.h"
+#include "videoprep_property_parser.h"
 
 #include <assert.h>
 #include <cuda.h>
@@ -688,6 +689,50 @@ void inspect_nvbufsurface_dtype(GstBuffer* buffer) {
   // Unmap the buffer
   gst_buffer_unmap(buffer, &map_info);
 }
+
+// static gboolean gst_videoprep_render(GstBaseTransform* trans, GstBuffer* audio, GstVideoFrame* video) {
+//   GstVideoPrep* videoprep = GST_VIDEOPREP(trans);
+//   GstElement* element = GST_ELEMENT(trans);
+//   GstPad* srcpad = GST_PAD(element->srcpads->data);
+//   GstFlowReturn ret;
+//   BufferResult ret_process_buffer = BufferResult::Buffer_Ok;
+
+//   GstBuffer *outbuf = NULL, *temp = NULL;
+
+//   ret = gst_buffer_pool_acquire_buffer(videoprep->pool, &outbuf, NULL);
+//   if (ret != GST_FLOW_OK) {
+//     GST_ERROR_ON_BUS("failed to activate bufferpool", "failed to activate bufferpool");
+//     return false;
+//   }
+
+//   GST_BUFFER_PTS(outbuf) = GST_BUFFER_PTS(video->buffer);
+//   GST_BUFFER_DURATION(outbuf) = GST_BUFFER_DURATION(video->buffer);
+
+//   temp = video->buffer;
+//   video->buffer = outbuf;
+
+//   ret_process_buffer = videoprep->priv->ProcessBuffer(trans, audio, video);
+//   if (ret_process_buffer == BufferResult::Buffer_Error) {
+//     gst_buffer_unref(outbuf);
+//     video->buffer = temp;
+//     GST_ERROR_ON_BUS("ProcessBuffer Error", "ProcessBuffer Error");
+//     return false;
+//   }
+
+//   if (ret_process_buffer == BufferResult::Buffer_Ok) {
+//     ret = gst_pad_push(srcpad, outbuf);
+//     if (ret != GST_FLOW_OK) {
+//       video->buffer = temp;
+//       GST_ERROR_ON_BUS("failed to push buffer", "failed to push buffer");
+//       return false;
+//     }
+//   } else if (ret_process_buffer == BufferResult::Buffer_Drop) {
+//     gst_buffer_unref(outbuf);
+//   }
+
+//   video->buffer = temp;
+//   return true;
+// }
 
 void videoprep_add_surface_meta(GstBuffer* out_gst_buf, int num_filled_surfaces, int source_id) {
   NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));
