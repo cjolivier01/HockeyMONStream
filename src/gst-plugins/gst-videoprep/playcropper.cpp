@@ -34,6 +34,7 @@
 #include "playcropper.h"
 
 namespace hm {
+namespace playcropper {
 
 cudaError PlayCropperPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
@@ -320,24 +321,5 @@ static void gst_playcropper_init(GstVideoPrepPlayCropper* playcropper) {
 #define gst_playcropper_parent_class parent_class
 G_DEFINE_TYPE(GstVideoPrepPlayCropper, gst_playcropper, GST_TYPE_BASE_TRANSFORM);
 
+} // namespace playcropper
 } // namespace hm
-
-// #ifndef PACKAGE
-// #define PACKAGE "playcropper"
-// #endif
-
-// #define PACKAGE_DESCRIPTION "Gstreamer plugin to crop surface to the play"
-// #define PACKAGE_LICENSE "Proprietary"
-// #define PACKAGE_NAME "GStreamer Playcropper Plugin"
-// #define PACKAGE_URL "http://foo.com/"
-
-// GST_PLUGIN_DEFINE(
-//     GST_VERSION_MAJOR,
-//     GST_VERSION_MINOR,
-//     nvdsgst_playcropper,
-//     PACKAGE_DESCRIPTION,
-//     hm::playcropper_init,
-//     "7.1",
-//     PACKAGE_LICENSE,
-//     PACKAGE_NAME,
-//     PACKAGE_URL)

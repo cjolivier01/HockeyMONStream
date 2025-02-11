@@ -17,7 +17,7 @@ IDSCustomLibrary* VideoPrepLibrary_Factory::CreateCustomAlgoCtx(
     return new VideoPrepPriv(gpu_id, batch_size);
   }
   if (libName == "playcropper") {
-    return new PlayCropperPriv(gpu_id, batch_size);
+    return new playcropper::PlayCropperPriv(gpu_id, batch_size);
   }
   return DSCustomLibrary_Factory::CreateCustomAlgoCtx(libName, object);
 }

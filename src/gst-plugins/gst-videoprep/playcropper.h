@@ -3,6 +3,7 @@
 #include "gstvideoprep.h"
 
 namespace hm {
+namespace playcropper {
 
 /**
  * @addtogroup three Standard GStreamer boilerplate
@@ -36,7 +37,7 @@ class PlayCropperPriv : public videoprep::VideoPrepPriv {
     return true;
   }
 
-  bool HandleEvent(GstEvent* event) override  {
+  bool HandleEvent(GstEvent* event) override {
     assert(false);
     return true;
   }
@@ -63,12 +64,9 @@ class PlayCropperPriv : public videoprep::VideoPrepPriv {
 };
 
 /** GStreamer boilerplate. */
-struct GstVideoPrepPlayCropper : public videoprep::GstVideoPrep {
+struct GstVideoPrepPlayCropper : public videoprep::GstVideoPrep {};
 
-};
+struct GstVideoPrepPlayCropperClass : public videoprep::GstVideoPrepClass {};
 
-struct GstVideoPrepPlayCropperClass : public videoprep::GstVideoPrepClass {
-
-};
-
+} // namespace playcropper
 } // namespace hm
