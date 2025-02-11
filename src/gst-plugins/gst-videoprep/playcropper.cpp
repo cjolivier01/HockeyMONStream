@@ -1,4 +1,3 @@
-// #include "gstnvdsbufferpool.h"
 #include "gstvideoprep.h"
 
 #include <cuda_runtime.h>
@@ -8,16 +7,10 @@
 #include <npp.h>
 #include <nvbufsurface.h>
 #include <cmath>
-// #include <iostream>
-// #include "gst-nvcommon.h"
-// #include "gstnvdsbufferpool.h"
-// #include "gstnvdsmeta.h"
 #include "nvbufsurface.h"
-// #include "nvbufsurftransform.h"
 #include "nvds_dewarper_meta.h"
 #include "nvdsmeta.h"
 #include "preputils.h"
-// #include "videoprep_property_parser.h"
 
 #include <assert.h>
 #include <cuda.h>
@@ -295,20 +288,6 @@ cudaError PlayCropperPriv::GenerateOutput(
 #endif
   return err;
 }
-
-/* entry point to initialize the plug-in
- * initialize the plug-in itself
- * register the element factories and other features
- */
-// static gboolean playcropper_init(GstPlugin* playcropper) {
-//   /* debug category for fltering log messages
-//    *
-//    * exchange the string 'Template videoprep' with your description
-//    */
-//   GST_DEBUG_CATEGORY_INIT(gst_playcropper_debug, "playcropper", 0, "playcropper");
-
-//   return gst_element_register(playcropper, "playcropper", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
-// }
 
 static void gst_playcropper_class_init(GstVideoPrepPlayCropperClass* klass) {
   gst_videoprep_class_init_base(klass);
