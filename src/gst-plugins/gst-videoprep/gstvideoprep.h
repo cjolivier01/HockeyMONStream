@@ -74,7 +74,7 @@ class VideoPrepPriv : public DSCustomLibraryBase
 
   // DSCustomLibraryBase-
 
- private:
+ protected:
 
   RenderSet render_;
 };
