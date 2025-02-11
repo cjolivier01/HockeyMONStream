@@ -26,12 +26,11 @@ namespace videoprep {
 
 #define DISTORTION_SIZE 5 /**< Maximum number of distortion coefficients */
 #define FOCAL_LENGTH_SIZE 2 /**< Focal length array size : two values for X & Y direction */
-#define ROTATION_MATRIX_SIZE 9  /**< Standard rotation matrix size */
+#define ROTATION_MATRIX_SIZE 9 /**< Standard rotation matrix size */
 
 /** Data structure contaning dewarping parameters for all the output surfaces */
-class VideoPrepPriv : public DSCustomLibraryBase
-{
-  public:
+class VideoPrepPriv : public DSCustomLibraryBase {
+ public:
   VideoPrepPriv(int gpu_id, size_t batch_size) : scratch_buffers(gpu_id, batch_size) {}
   hm::surface::SurfaceList scratch_buffers;
 
@@ -51,7 +50,7 @@ class VideoPrepPriv : public DSCustomLibraryBase
     return true;
   }
 
-  bool HandleEvent(GstEvent* event) override  {
+  bool HandleEvent(GstEvent* event) override {
     assert(false);
     return true;
   }
@@ -68,11 +67,18 @@ class VideoPrepPriv : public DSCustomLibraryBase
 
   // DSCustomLibraryBase-
 
- protected:
+  virtual cudaError GenerateOutput(
+      NvDsBatchMeta* batch_meta,
+      videoprep::GstVideoPrep* videoprep,
+      NvBufSurface* in_surface,
+      NvBufSurface* out_surface) {
+    assert(false);
+    return cudaError_t::cudaSuccess;
+  }
 
+ protected:
   RenderSet render_;
 };
-
 
 G_BEGIN_DECLS
 
@@ -80,17 +86,11 @@ G_BEGIN_DECLS
  * @addtogroup three Standard GStreamer boilerplate
  * @{
  */
-#define GST_TYPE_VIDEOPREP \
-  (hm::videoprep::gst_videoprep_get_type())
-#define GST_VIDEOPREP(obj) \
-  (G_TYPE_CHECK_INSTANCE_CAST((obj),GST_TYPE_VIDEOPREP,GstVideoPrep))
-#define GST_VIDEOPREP_CLASS(klass) \
-  (G_TYPE_CHECK_CLASS_CAST((klass),GST_TYPE_VIDEOPREP,GstVideoPrepClass))
-#define GST_IS_VIDEOPREP(obj) \
-  (G_TYPE_CHECK_INSTANCE_TYPE((obj),GST_TYPE_VIDEOPREP))
-#define GST_IS_VIDEOPREP_CLASS(klass) \
-  (G_TYPE_CHECK_CLASS_TYPE((klass),GST_TYPE_VIDEOPREP))
-
+#define GST_TYPE_VIDEOPREP (hm::videoprep::gst_videoprep_get_type())
+#define GST_VIDEOPREP(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_VIDEOPREP, GstVideoPrep))
+#define GST_VIDEOPREP_CLASS(klass) (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_VIDEOPREP, GstVideoPrepClass))
+#define GST_IS_VIDEOPREP(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_VIDEOPREP))
+#define GST_IS_VIDEOPREP_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_VIDEOPREP))
 
 /**
  * GstVideoPrep element structure.
@@ -149,14 +149,13 @@ struct GstVideoPrep
 };
 /* clang-format on */
 
-
 /** GStreamer boilerplate. */
-struct GstVideoPrepClass
-{
+struct GstVideoPrepClass {
   GstBaseTransformClass parent_class;
 };
 
-GType gst_videoprep_get_type (void);
+GType gst_videoprep_get_type(void);
+void videoprep_add_surface_meta(GstBuffer* out_gst_buf, int num_filled_surfaces, int source_id);
 
 void gst_videoprep_class_init_base(GstVideoPrepClass* klass);
 void gst_videoprep_init_base(GstVideoPrep* videoprep);

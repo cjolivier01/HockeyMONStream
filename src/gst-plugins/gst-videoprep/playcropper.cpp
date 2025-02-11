@@ -35,19 +35,16 @@
 
 namespace hm {
 
-// GST_DEBUG_CATEGORY_STATIC(gst_playcropper_debug);
-// #define GST_CAT_DEFAULT gst_playcropper_debug
-
-cudaError playcropper_gst_videoprep_generate_output(
+cudaError PlayCropperPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
-    GstVideoPrepPlayCropper* videoprep,
+    videoprep::GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
   cudaError err = cudaSuccess;
 
   assert(cudaGetLastError() == cudaSuccess);
 
-  NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));
+  // NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));
 
   assert(videoprep->stream);
 
@@ -134,14 +131,14 @@ cudaError playcropper_gst_videoprep_generate_output(
     //     nppStreamContext.hStream);
     // assert(err_cuda == 0);
 
-    //FloatValue tbox_aar = tbox.width() / tbox.height();
+    // FloatValue tbox_aar = tbox.width() / tbox.height();
 
     tbox.left *= scale_w;
     tbox.right *= scale_w;
     tbox.top *= scale_h;
     tbox.bottom *= scale_h;
 
-    //tbox_aar = tbox.width() / tbox.height();
+    // tbox_aar = tbox.width() / tbox.height();
 
     // err_cuda = cudaDrawRect(
     //     incoming_surface.dataptr<uchar4*>(),
@@ -283,9 +280,10 @@ cudaError playcropper_gst_videoprep_generate_output(
 
   out_surface->numFilled = nr_surfaces_to_process;
 
+  videoprep::videoprep_add_surface_meta(videoprep->out_gst_buf, nr_surfaces_to_process, videoprep->source_id);
+#if 0
   surface_meta->num_filled_surfaces = nr_surfaces_to_process;
   surface_meta->source_id = videoprep->source_id;
-#if 0
   NvDsMeta* meta = NULL;
   meta = gst_buffer_add_nvds_meta(
       videoprep->out_gst_buf, surface_meta, NULL, videoprep_meta_copy_func, videoprep_meta_release_func);
@@ -315,7 +313,7 @@ static void gst_playcropper_class_init(GstVideoPrepPlayCropperClass* klass) {
   gst_videoprep_class_init_base(klass);
 }
 
-static void gst_playcropper_init(GstVideoPrepPlayCropper *playcropper) {
+static void gst_playcropper_init(GstVideoPrepPlayCropper* playcropper) {
   gst_videoprep_init_base(playcropper);
 }
 

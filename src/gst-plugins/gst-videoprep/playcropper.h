@@ -53,6 +53,12 @@ class PlayCropperPriv : public videoprep::VideoPrepPriv {
 
   // DSCustomLibraryBase-
 
+  cudaError GenerateOutput(
+      NvDsBatchMeta* batch_meta,
+      videoprep::GstVideoPrep* videoprep,
+      NvBufSurface* in_surface,
+      NvBufSurface* out_surface) override;
+
  protected:
 };
 

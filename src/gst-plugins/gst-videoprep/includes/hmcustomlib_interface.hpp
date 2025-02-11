@@ -24,13 +24,19 @@
 #ifndef __NVDSCUSTOMLIB_INTERFACE_HPP__
 #define __NVDSCUSTOMLIB_INTERFACE_HPP__
 
-#include <gst/gstbuffer.h>
-#include <gst/base/gstbasetransform.h>
 #include <cuda_runtime.h>
+#include <gst/base/gstbasetransform.h>
+#include <gst/gstbuffer.h>
 
 #include <string>
+#include "nvbufsurface.h"
+#include "nvdsmeta.h"
 
 namespace hm {
+
+namespace videoprep {
+struct GstVideoPrep;
+}
 
 enum class BufferResult {
   Buffer_Ok, // Push the buffer from submit_input function

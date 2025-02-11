@@ -24,7 +24,6 @@
 #include <cuda.h>
 #include <string.h>
 #include <unistd.h>
-#include <vector>
 #include "nvbufsurface.h"
 
 #if defined(__aarch64__)
@@ -42,22 +41,10 @@
 
 #define GST_CAPS_FEATURE_MEMORY_NVMM "memory:NVMM"
 
-// GST_DEBUG_CATEGORY_STATIC(gst_videoprep_debug);
-// #define GST_CAT_DEFAULT gst_videoprep_debug
-
 #define DEFAULT_GPU_ID 0
 #define DEFAULT_SOURCE_ID 0
 #define DEFAULT_NUM_OUTPUT_BUFFERS 4
 #define MAX_BUFFERS 4
-
-// #ifndef PACKAGE
-// #define PACKAGE "videoprep"
-// #endif
-
-// #define PACKAGE_DESCRIPTION "Gstreamer plugin to dewarp 360d surfaces"
-// #define PACKAGE_LICENSE "Proprietary"
-// #define PACKAGE_NAME "GStreamer nVidia Dewarper Plugin"
-// #define PACKAGE_URL "http://nvidia.com/"
 
 // #define MEASURE_TIME
 #ifdef MEASURE_TIME
@@ -704,6 +691,7 @@ void inspect_nvbufsurface_dtype(GstBuffer* buffer) {
   gst_buffer_unmap(buffer, &map_info);
 }
 
+#if 0
 static cudaError gst_videoprep_generate_output(
     NvDsBatchMeta* batch_meta,
     GstVideoPrep* videoprep,
@@ -949,21 +937,37 @@ static cudaError gst_videoprep_generate_output(
 
   out_surface->numFilled = nr_surfaces_to_process;
 
-  surface_meta->num_filled_surfaces = nr_surfaces_to_process;
-  surface_meta->source_id = videoprep->source_id;
+  // surface_meta->num_filled_surfaces = nr_surfaces_to_process;
+  // surface_meta->source_id = videoprep->source_id;
+
+  // NvDsMeta* meta = NULL;
+  // meta = gst_buffer_add_nvds_meta(
+  //     videoprep->out_gst_buf, surface_meta, NULL, videoprep_meta_copy_func, videoprep_meta_release_func);
+
+  // meta->meta_type = NVDS_DEWARPER_GST_META;
+  // meta->gst_to_nvds_meta_transform_func = videoprep_gst_to_nvds_meta_ransform_func;
+  // meta->gst_to_nvds_meta_release_func = videoprep_gst_nvds_meta_release_func;
+  videoprep_add_surface_meta(videoprep->out_gst_buf, nr_surfaces_to_process, videoprep->source_id);
+  return err;
+}
+#endif
+
+void videoprep_add_surface_meta(GstBuffer* out_gst_buf, int num_filled_surfaces, int source_id) {
+  NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));
+
+  surface_meta->num_filled_surfaces = num_filled_surfaces;
+  surface_meta->source_id = source_id;
 
   NvDsMeta* meta = NULL;
-  meta = gst_buffer_add_nvds_meta(
-      videoprep->out_gst_buf, surface_meta, NULL, videoprep_meta_copy_func, videoprep_meta_release_func);
+  meta =
+      gst_buffer_add_nvds_meta(out_gst_buf, surface_meta, NULL, videoprep_meta_copy_func, videoprep_meta_release_func);
 
   meta->meta_type = NVDS_DEWARPER_GST_META;
   meta->gst_to_nvds_meta_transform_func = videoprep_gst_to_nvds_meta_ransform_func;
   meta->gst_to_nvds_meta_release_func = videoprep_gst_nvds_meta_release_func;
-
-  return err;
 }
 
-static cudaError gst_videoprep_dewarp(
+static cudaError gst_videoprep_do_prep(
     NvDsBatchMeta* batch_meta,
     GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
@@ -985,7 +989,8 @@ static cudaError gst_videoprep_dewarp(
     exit(-1);
   } else if (videoprep->output_fmt == GST_VIDEO_FORMAT_RGBA || videoprep->output_fmt == GST_VIDEO_FORMAT_BGRx) {
     // Generate output surface after scaling
-    cuda_ck(gst_videoprep_generate_output(batch_meta, videoprep, in_surface, out_surface));
+    // cuda_ck(gst_videoprep_generate_output(batch_meta, videoprep, in_surface, out_surface));
+    cuda_ck(videoprep->priv->GenerateOutput(batch_meta, videoprep, in_surface, out_surface));
   }
 
   if (videoprep->dump_frames) {
@@ -1045,9 +1050,9 @@ static GstFlowReturn gst_videoprep_transform(GstBaseTransform* btrans, GstBuffer
 
   START_PROFILE;
   videoprep->out_gst_buf = outbuf;
-  cudaErr = gst_videoprep_dewarp(batch_meta, videoprep, in_surface, out_surface);
+  cudaErr = gst_videoprep_do_prep(batch_meta, videoprep, in_surface, out_surface);
   if (cudaErr != cudaSuccess) {
-    GST_ERROR_OBJECT(videoprep, "gst_videoprep_dewarp failed");
+    GST_ERROR_OBJECT(videoprep, "gst_videoprep_do_prep failed");
     return GST_FLOW_ERROR;
   }
   STOP_PROFILE("********* TOTAL DEWARP AND SCALE TIME *********");
