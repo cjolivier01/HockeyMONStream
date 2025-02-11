@@ -16,7 +16,7 @@
 #include "nvbufsurftransform.h"
 #include "nvds_dewarper_meta.h"
 #include "nvdsmeta.h"
-#include "videoprep.h"
+#include "preputils.h"
 #include "videoprep_property_parser.h"
 
 #include "cudaDraw.h"

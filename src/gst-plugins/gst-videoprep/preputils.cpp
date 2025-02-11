@@ -1,3 +1,5 @@
+#include "preputils.h"
+
 #include "cudaCrop.h"
 #include "cudaWarp.h"
 
@@ -6,13 +8,8 @@
 
 #include <cassert>
 #include <iostream>
-#include <vector>
 
 #include <npp.h>
-
-#include "videoprep.h"
-
-// #include "NVWarp360.h"
 
 namespace hm {
 namespace videoprep {
