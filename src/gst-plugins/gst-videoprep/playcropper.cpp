@@ -29,7 +29,7 @@
 namespace hm {
 namespace playcropper {
 
-gint PlayCropperPriv::AllocateBuffers(videoprep::GstVideoPrep* videoprep) {
+gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) {
   cudaError_t cudaErr;
 
   cudaErr = cudaSetDevice(videoprep->gpu_id);

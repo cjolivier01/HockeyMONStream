@@ -76,7 +76,7 @@ class VideoPrepPriv : public DSCustomLibraryBase {
     return cudaError_t::cudaSuccess;
   }
 
-  virtual gint AllocateBuffers(videoprep::GstVideoPrep *videoprep) {
+  virtual gint AllocateScratchBuffers(videoprep::GstVideoPrep *videoprep) {
     return 0;
   }
 

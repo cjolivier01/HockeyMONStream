@@ -60,7 +60,7 @@ class PlayCropperPriv : public videoprep::VideoPrepPriv {
       NvBufSurface* in_surface,
       NvBufSurface* out_surface) override;
 
-  gint AllocateBuffers(videoprep::GstVideoPrep *videoprep) override;
+  gint AllocateScratchBuffers(videoprep::GstVideoPrep *videoprep) override;
 
  protected:
 };

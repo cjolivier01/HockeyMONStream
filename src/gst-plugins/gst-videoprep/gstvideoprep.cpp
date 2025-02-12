@@ -637,7 +637,7 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
     return FALSE;
   }
   //gst_videoprep_allocate_projection_buffers(videoprep);
-  if (videoprep->priv->AllocateBuffers(videoprep)) {
+  if (videoprep->priv->AllocateScratchBuffers(videoprep)) {
     GST_ERROR("Error allocating videoprep projection buffers");
     return FALSE;
   }
