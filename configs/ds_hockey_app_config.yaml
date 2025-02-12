@@ -28,10 +28,10 @@ tiled-display:
   # height: 1360
   # width: 2048
   # height: 720
-  # width: 1280
-  # height: 720
-  width: 888
-  height: 500
+  width: 1280
+  height: 720
+  # width: 888
+  # height: 500
   # width: 6142
   # height: 2077
   # width: 640
@@ -180,7 +180,7 @@ sink2:
   # udp-port: 5400
 
 osd:
-  enable: 1
+  enable: 0
   gpu-id: 0
   border-width: 1
   text-size: 15

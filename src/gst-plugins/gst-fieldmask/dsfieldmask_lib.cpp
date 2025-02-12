@@ -115,7 +115,7 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx)
   }
 
   assert(guint(ctx->detection_u8_mask.cols) >= frame_meta->source_frame_width);
-  assert(guint(ctx->detection_u8_mask.rows) == frame_meta->source_frame_height);
+  assert(guint(ctx->detection_u8_mask.rows) >= frame_meta->source_frame_height);
 
   assert(frame_meta->pipeline_height);
   assert(frame_meta->pipeline_width);
