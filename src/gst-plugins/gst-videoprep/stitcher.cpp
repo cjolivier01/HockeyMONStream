@@ -49,6 +49,8 @@ bool StitcherPriv::SetInitParams(DSCustom_CreateParams* params) {
   if (!stitcher_->status().ok()) {
     return false;
   }
+  videoprep->output_width = stitcher_->canvas_width();
+  videoprep->output_height = stitcher_->canvas_height();
   return true;
 }
 
