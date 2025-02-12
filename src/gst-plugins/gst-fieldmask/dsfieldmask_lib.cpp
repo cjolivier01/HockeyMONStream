@@ -18,7 +18,7 @@
 #include <algorithm>
 #include <cassert>
 
-#include <opencv4/opencv2/core/types.hpp>
+#include <opencv2/core/types.hpp>
 #include <stdio.h>
 #include <stdlib.h>
 
