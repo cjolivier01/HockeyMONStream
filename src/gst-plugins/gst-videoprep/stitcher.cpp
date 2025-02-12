@@ -29,9 +29,24 @@
 namespace hm {
 namespace stitcher {
 
+StitcherPriv::~StitcherPriv() {
+  stitcher_.reset();
+}
+
 bool StitcherPriv::SetInitParams(DSCustom_CreateParams* params) {
-  videoprep::GstVideoPrep* videoprep = static_cast<videoprep::GstVideoPrep*>(params);
-  if (!Super::SetInitParams(videoprep)) {
+  videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
+  if (!Super::SetInitParams(params)) {
+    return false;
+  }
+  assert(!stitcher_);
+  // CudaStitchPano(int batch_size, int num_levels, const ControlMasks& control_masks, bool match_exposure = false);
+  hm::pano::ControlMasks control_masks;
+  if (!control_masks.load(videoprep->config_file)) {
+    return false;
+  }
+  stitcher_ = std::make_unique<hm::pano::cuda::CudaStitchPano<uchar4, float4>>(
+      videoprep->num_batch_buffers, /*num+_levels=*/6, control_masks, /*match_exposure=*/true);
+  if (!stitcher_->status().ok()) {
     return false;
   }
   return true;

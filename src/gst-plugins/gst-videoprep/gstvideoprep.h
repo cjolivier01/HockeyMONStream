@@ -92,18 +92,18 @@ G_BEGIN_DECLS
  * @{
  */
 #define GST_TYPE_VIDEOPREP (hm::videoprep::gst_videoprep_get_type())
-#define GST_VIDEOPREP(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_VIDEOPREP, GstVideoPrep))
-// #define GST_VIDEOPREP_CLASS(klass) (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_VIDEOPREP, GstVideoPrepClass))
+#define GST_VIDEOPREP(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_VIDEOPREP, videoprep::GstVideoPrep))
+// #define GST_VIDEOPREP_CLASS(klass) (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_VIDEOPREP, videoprep::GstVideoPrepClass))
 #define GST_IS_VIDEOPREP(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_VIDEOPREP))
 #define GST_IS_VIDEOPREP_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_VIDEOPREP))
 
-#define GST_VIDEOPREP_CLASS(obj)      (G_TYPE_INSTANCE_GET_CLASS ((obj), GST_TYPE_ELEMENT, GstVideoPrepClass))
+#define GST_VIDEOPREP_CLASS(obj)      (G_TYPE_INSTANCE_GET_CLASS ((obj), GST_TYPE_ELEMENT, videoprep::GstVideoPrepClass))
 
 /**
  * GstVideoPrep element structure.
  */
 /* clang-format off */
-struct GstVideoPrep : public DSCustom_CreateParams
+struct GstVideoPrep
 {
   GstBaseTransform element; /**< Should be the first member when extending from GstBaseTransform. */
 

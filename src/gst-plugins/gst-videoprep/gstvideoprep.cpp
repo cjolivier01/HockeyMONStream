@@ -2,6 +2,7 @@
 #include "gstnvdsbufferpool.h"
 
 #include <cuda_runtime.h>
+#include <glib-2.0/glib.h>
 #include <gst/base/gstbasetransform.h>
 #include <gst/gst.h>
 #include <gst/video/video.h>
@@ -1259,6 +1260,7 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
       if (videoprep->config_file)
         g_free(videoprep->config_file);
       videoprep->config_file = (gchar*)g_value_dup_string(value);
+      g_print("Stitching config: \"%s\"\n", videoprep->config_file);
       // if (videoprep_parse_config_file(videoprep, videoprep->config_file) != TRUE) {
       //   g_print("%s: Failed to parse config file %s\n", GST_ELEMENT_NAME(videoprep), videoprep->config_file);
       //   abort();

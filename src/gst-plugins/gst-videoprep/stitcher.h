@@ -22,6 +22,7 @@ class StitcherPriv : public videoprep::VideoPrepPriv {
 
  public:
   StitcherPriv(int gpu_id, size_t batch_size) : videoprep::VideoPrepPriv(gpu_id, batch_size) {}
+  ~StitcherPriv();
 
   // template <typename... Args>
   // void render(Args&&... args) {
@@ -66,7 +67,7 @@ class StitcherPriv : public videoprep::VideoPrepPriv {
       NvBufSurface* out_surface) override;
 
  private:
-  // std::unique_ptr<CudaStitchPano> stitcher_;
+  std::unique_ptr<hm::pano::cuda::CudaStitchPano<uchar4, float4>> stitcher_;
 };
 
 /** GStreamer boilerplate. */
