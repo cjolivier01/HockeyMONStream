@@ -29,8 +29,12 @@
 
 struct DsPlayTrackerCtx {
   DsPlayTrackerInitParams initParams;
-  hm::play_tracker::PlayTrackerConfig play_tracker_config;
-  std::optional<std::unique_ptr<hm::play_tracker::PlayTracker>> play_tracker;
+  struct PlayTracker {
+    hm::play_tracker::PlayTrackerConfig play_tracker_config;
+    std::unique_ptr<hm::play_tracker::PlayTracker> play_tracker;
+  };
+  // source_id -> play_tracker
+  std::unordered_map<size_t, PlayTracker> play_trackers;
 };
 
 namespace {} // namespace
@@ -208,27 +212,28 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
   return config;
 }
 
-hm::play_tracker::PlayTracker* get_or_create_play_tracker(const BBox& arena_box, DsPlayTrackerCtx* ctx) {
-  if (ctx->play_tracker.has_value()) {
-    return ctx->play_tracker->get();
+hm::play_tracker::PlayTracker* get_or_create_play_tracker(int source_id, const BBox& arena_box, DsPlayTrackerCtx* ctx) {
+  if (ctx->play_trackers.count(source_id)) {
+    return ctx->play_trackers[source_id].play_tracker.get();
   }
   if (!ctx->initParams.play_tracker_config_file.empty()) {
     try {
       YAML::Node yaml = YAML::LoadFile(ctx->initParams.play_tracker_config_file);
       if (yaml["play-tracker"]) {
-        ctx->play_tracker_config = create_play_tracker_config(arena_box, yaml["play-tracker"]);
-        ctx->play_tracker = std::make_unique<hm::play_tracker::PlayTracker>(arena_box, ctx->play_tracker_config);
-        return ctx->play_tracker->get();
+        ctx->play_trackers[source_id].play_tracker_config = create_play_tracker_config(arena_box, yaml["play-tracker"]);
+        ctx->play_trackers[source_id].play_tracker = std::make_unique<hm::play_tracker::PlayTracker>(
+            arena_box, ctx->play_trackers[source_id].play_tracker_config);
+        return ctx->play_trackers[source_id].play_tracker.get();
       } else {
         g_error("Could not find 'play-tracker' in config file: %s", ctx->initParams.play_tracker_config_file.c_str());
-        ctx->play_tracker = nullptr;
+        ctx->play_trackers[source_id].play_tracker = nullptr;
       }
     } catch (const std::exception& e) {
       g_error("Error loading YAML file: %s", e.what());
-      ctx->play_tracker = nullptr;
+      ctx->play_trackers[source_id].play_tracker = nullptr;
     }
   } else {
-    ctx->play_tracker = nullptr;
+    ctx->play_trackers[source_id].play_tracker = nullptr;
   }
 
   return nullptr;
@@ -286,11 +291,7 @@ void plot_translation_state(
     double scale_width,
     double scale_height,
     std::optional<ILivingBox*> following_lbox = std::nullopt) {
-  // const hm::play_tracker::LivingState& living_state = lbox->get_live_box_state();
-  // const hm::play_tracker::ResizingState& resizing_state = lbox->get_resizing_state();
   const hm::play_tracker::TranslationState& translation_state = lbox->get_translation_state();
-  // (void)living_state;
-  // (void)resizing_state;
   (void)translation_state;
   BBox my_bbox = lbox->bounding_box().make_canvas_scaled(scale_width, scale_height);
   plotter.plot_rect(
@@ -367,7 +368,8 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
   // type, which is generally tied to the resolution. We scale in the play tracker when possible, but
   // it isn't perfectly scalable atm.
   hm::BBox arena_box(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
-  hm::play_tracker::PlayTracker* play_tracker = gst_hm::get_or_create_play_tracker(arena_box, ctx);
+  hm::play_tracker::PlayTracker* play_tracker =
+      gst_hm::get_or_create_play_tracker(frame.frame_meta->source_id, arena_box, ctx);
   if (!play_tracker) {
     return false;
   }
@@ -412,16 +414,18 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
     }
     for (size_t i = 0, n = frame.play_tracker_results.tracking_boxes.size(); i < n; ++i) {
       // plotter.plot_rect(frame.play_tracker_results.tracking_boxes[i], 5, track_colors.at(i));
-      if (ctx->play_tracker.has_value()) {
-        std::shared_ptr<hm::play_tracker::ILivingBox> lbox = (*ctx->play_tracker)->get_live_box(i);
-        hm::play_tracker::ILivingBox* following_box = i ? (*ctx->play_tracker)->get_live_box(i - 1).get() : nullptr;
+      auto& play_tracker_ctx = ctx->play_trackers[frame.frame_meta->source_id];
+      if (play_tracker_ctx.play_tracker) {
+        std::shared_ptr<hm::play_tracker::ILivingBox> lbox = play_tracker_ctx.play_tracker->get_live_box(i);
+        hm::play_tracker::ILivingBox* following_box =
+            i ? play_tracker_ctx.play_tracker->get_live_box(i - 1).get() : nullptr;
 
         // We scale back down for drawing, which is on the pipeline image
 
         gst_hm::plot_living_box(
             plotter,
             lbox.get(),
-            ctx->play_tracker_config.living_boxes.at(i),
+            play_tracker_ctx.play_tracker_config.living_boxes.at(i),
             /*thickness=*/4,
             track_colors.at(i),
             /*draw_thresholds=*/true,
@@ -429,16 +433,18 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
             1.0 / scale_y,
             following_box);
 #if 0
-        hm::surface::Surface surface(frame.input_surf_params);
-        cudaError_t cerr = draw_rect(
-            surface,
-            lbox->bounding_box().make_canvas_scaled(1.0/scale_x, 1.0/scale_y),
-            make_float4(0, 0, 255, 255),
-            /*thickness=*/2,
-            stream);
-        // cudaStreamSynchronize(stream);
-        assert(cerr == cudaError_t::cudaSuccess);
-        ++draw_count;
+        {
+          hm::surface::Surface surface(frame.input_surf_params);
+          cudaError_t cerr = draw_rect(
+              surface,
+              lbox->bounding_box().make_canvas_scaled(1.0 / scale_x, 1.0 / scale_y),
+              make_float4(0, 0, 255, 255),
+              /*thickness=*/2,
+              stream);
+          // cudaStreamSynchronize(stream);
+          assert(cerr == cudaError_t::cudaSuccess);
+          ++draw_count;
+        }
 #endif
       }
     }
@@ -463,9 +469,7 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
 
 void DsPlayTrackerCtxDeinit(DsPlayTrackerCtx* ctx) {
   if (ctx) {
-    if (ctx->play_tracker) {
-      ctx->play_tracker->reset();
-    }
+    ctx->play_trackers.clear();
     delete ctx;
   }
 }

@@ -1,0 +1,3 @@
+enable,type,uri,num-sources,gpu-id,cudadec-memtype,
+1,3,file:///home/colivier/Videos/pdp/GX010087.mp4,1,0,0
+1,3,file:///home/colivier/Videos/pdp/GX010003.mp4,1,0,0
