@@ -1,12 +1,14 @@
 #include "videoprep_plugins.h"
 #include "gstvideoprep.h"
 #include "playcropper.h"
+#include "stitcher.h"
 
 namespace hm {
 namespace videoprep {
 
 GST_DEBUG_CATEGORY_STATIC(gst_videoprep_debug);
 GST_DEBUG_CATEGORY_STATIC(gst_playcropper_debug);
+GST_DEBUG_CATEGORY_STATIC(gst_stitcher_debug);
 
 IDSCustomLibrary* VideoPrepLibrary_Factory::CreateCustomAlgoCtx(
     std::string libName,
@@ -18,6 +20,9 @@ IDSCustomLibrary* VideoPrepLibrary_Factory::CreateCustomAlgoCtx(
   }
   if (libName == "playcropper") {
     return new playcropper::PlayCropperPriv(gpu_id, batch_size);
+  }
+  if (libName == "hmstitcher") {
+    return new stitcher::StitcherPriv(gpu_id, batch_size);
   }
   return DSCustomLibrary_Factory::CreateCustomAlgoCtx(libName, object);
 }
@@ -33,9 +38,11 @@ static gboolean videoprep_init(GstPlugin* plugin) {
    */
   GST_DEBUG_CATEGORY_INIT(gst_videoprep_debug, "videoprep", 0, "videoprep");
   GST_DEBUG_CATEGORY_INIT(gst_playcropper_debug, "playcropper", 0, "playcropper");
+  GST_DEBUG_CATEGORY_INIT(gst_stitcher_debug, "hmstitcher", 0, "hmstitcher");
 
   gboolean result = gst_element_register(plugin, "videoprep", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
   result |= gst_element_register(plugin, "playcropper", GST_RANK_NONE, GST_TYPE_PLAY_CROPPER);
+  result |= gst_element_register(plugin, "hmstitcher", GST_RANK_NONE, GST_TYPE_PLAY_CROPPER);
   return result;
 }
 } // namespace videoprep
