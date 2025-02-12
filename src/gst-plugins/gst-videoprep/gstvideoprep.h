@@ -76,6 +76,10 @@ class VideoPrepPriv : public DSCustomLibraryBase {
     return cudaError_t::cudaSuccess;
   }
 
+  virtual gint AllocateBuffers(videoprep::GstVideoPrep *videoprep) {
+    return 0;
+  }
+
  protected:
   RenderSet render_;
 };

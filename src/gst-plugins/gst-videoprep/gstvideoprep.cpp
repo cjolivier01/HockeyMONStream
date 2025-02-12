@@ -492,54 +492,54 @@ static GstCaps* gst_videoprep_transform_caps(
   return new_caps;
 }
 
-static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
-  // std::vector<VideoPrepParams>::iterator iter;
-  // guint i = 0;
-  cudaError_t cudaErr;
+// static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
+//   // std::vector<VideoPrepParams>::iterator iter;
+//   // guint i = 0;
+//   cudaError_t cudaErr;
 
-  cudaErr = cudaSetDevice(videoprep->gpu_id);
-  if (cudaErr != cudaSuccess) {
-    printf("\n *** Unable to set device in %s Line %d\n", __func__, __LINE__);
-    return cudaErr;
-  }
+//   cudaErr = cudaSetDevice(videoprep->gpu_id);
+//   if (cudaErr != cudaSuccess) {
+//     printf("\n *** Unable to set device in %s Line %d\n", __func__, __LINE__);
+//     return cudaErr;
+//   }
 
-#if 1
-  static bool ranthis = false;
-  (void)ranthis;
-  assert(!ranthis);
-  ranthis = true;
+// #if 1
+//   static bool ranthis = false;
+//   (void)ranthis;
+//   assert(!ranthis);
+//   ranthis = true;
 
-  hm::WHDims src_size{.width = (FloatValue)videoprep->input_width, .height = (FloatValue)videoprep->input_height};
-  constexpr FloatValue out_ar = 16.0 / 9.0;
-  FloatValue virt_out_width = ((FloatValue)videoprep->input_height) * out_ar;
-  hm::WHDims output_size{.width = virt_out_width, .height = (FloatValue)videoprep->input_height};
+//   hm::WHDims src_size{.width = (FloatValue)videoprep->input_width, .height = (FloatValue)videoprep->input_height};
+//   constexpr FloatValue out_ar = 16.0 / 9.0;
+//   FloatValue virt_out_width = ((FloatValue)videoprep->input_height) * out_ar;
+//   hm::WHDims output_size{.width = virt_out_width, .height = (FloatValue)videoprep->input_height};
 
-  videoprep->pre_rotate_size = get_box_size_necessary_for_rotations(src_size, output_size);
+//   videoprep->pre_rotate_size = get_box_size_necessary_for_rotations(src_size, output_size);
 
-#endif
-  constexpr size_t kBytesPerPixel = 4;
-#ifdef SCRATCH_USE_ALIGNED_PITCH
-  size_t pitch = NVBUF_PLATFORM_ALIGNED_PITCH((size_t)videoprep->pre_rotate_size.width * kBytesPerPixel);
-#else
-  // No alignment for simpler functions that cant handle aligned pitch
-  size_t pitch = (size_t)videoprep->pre_rotate_size.width * kBytesPerPixel;
-#endif
-  constexpr size_t kNumScratchBuffers = 2;
-  for (size_t i = 0; i < kNumScratchBuffers; ++i) {
-    void* surface_ptr = nullptr;
-    cuda_ck(cudaMalloc(&surface_ptr, pitch * (size_t)videoprep->pre_rotate_size.height));
-    // cuda_ck(cudaMallocHost(&surface_ptr, pitch * (size_t)videoprep->pre_rotate_size.height));
+// #endif
+//   constexpr size_t kBytesPerPixel = 4;
+// #ifdef SCRATCH_USE_ALIGNED_PITCH
+//   size_t pitch = NVBUF_PLATFORM_ALIGNED_PITCH((size_t)videoprep->pre_rotate_size.width * kBytesPerPixel);
+// #else
+//   // No alignment for simpler functions that cant handle aligned pitch
+//   size_t pitch = (size_t)videoprep->pre_rotate_size.width * kBytesPerPixel;
+// #endif
+//   constexpr size_t kNumScratchBuffers = 2;
+//   for (size_t i = 0; i < kNumScratchBuffers; ++i) {
+//     void* surface_ptr = nullptr;
+//     cuda_ck(cudaMalloc(&surface_ptr, pitch * (size_t)videoprep->pre_rotate_size.height));
+//     // cuda_ck(cudaMallocHost(&surface_ptr, pitch * (size_t)videoprep->pre_rotate_size.height));
 
-    videoprep->priv->scratch_buffers.add_surface(
-        surface_ptr,
-        videoprep->pre_rotate_size.width,
-        videoprep->pre_rotate_size.height,
-        pitch,
-        kBytesPerPixel,
-        /*owns=*/true);
-  }
-  return 0;
-}
+//     videoprep->priv->scratch_buffers.add_surface(
+//         surface_ptr,
+//         videoprep->pre_rotate_size.width,
+//         videoprep->pre_rotate_size.height,
+//         pitch,
+//         kBytesPerPixel,
+//         /*owns=*/true);
+//   }
+//   return 0;
+// }
 
 static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps, GstCaps* outcaps) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(trans);
@@ -636,7 +636,11 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
     GST_ERROR("Unable to create plugin type %s", videoprep->plugin_type);
     return FALSE;
   }
-  gst_videoprep_allocate_projection_buffers(videoprep);
+  //gst_videoprep_allocate_projection_buffers(videoprep);
+  if (videoprep->priv->AllocateBuffers(videoprep)) {
+    GST_ERROR("Error allocating videoprep projection buffers");
+    return FALSE;
+  }
 
   gst_base_transform_set_passthrough(trans, FALSE);
   return TRUE;
