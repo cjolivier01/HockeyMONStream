@@ -69,7 +69,7 @@ cudaError StitcherPriv::GenerateOutput(
   assert(nr_surfaces_to_process <= videoprep->num_batch_buffers);
 
   NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list;
-
+#if 0
   for (size_t batch_nr = 0; batch_nr < nr_surfaces_to_process; ++batch_nr, frame_meta_list = frame_meta_list->next) {
     assert(frame_meta_list);
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)frame_meta_list->data;
@@ -275,7 +275,7 @@ cudaError StitcherPriv::GenerateOutput(
     //   }
     // });
   }
-
+#endif
   if (videoprep->stream) {
     cudaStreamSynchronize(videoprep->stream);
   }
