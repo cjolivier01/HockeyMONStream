@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cudaPano.h"
 #include "gstvideoprep.h"
 
 namespace hm {
@@ -10,14 +11,15 @@ namespace stitcher {
  * @{
  */
 #define GST_TYPE_PLAY_CROPPER (hm::videoprep::gst_videoprep_get_type())
-#define GST_VIDEOPREP_PLAY_CROPPER(obj) \
-  (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_PLAY_CROPPER, GstVideoPrepStitcher))
+#define GST_VIDEOPREP_PLAY_CROPPER(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_PLAY_CROPPER, GstVideoPrepStitcher))
 #define GST_VIDEOPREP_PLAY_CROPPER_CLASS(klass) \
   (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_PLAY_CROPPER, GstVideoPrepStitcherClass))
 #define GST_IS_VIDEOPREP_PLAY_CROPPER(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_PLAY_CROPPER))
 #define GST_IS_VIDEOPREP_PLAY_CROPPER_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_PLAY_CROPPER))
 
 class StitcherPriv : public videoprep::VideoPrepPriv {
+  using Super = videoprep::VideoPrepPriv;
+
  public:
   StitcherPriv(int gpu_id, size_t batch_size) : videoprep::VideoPrepPriv(gpu_id, batch_size) {}
 
@@ -32,6 +34,9 @@ class StitcherPriv : public videoprep::VideoPrepPriv {
   }
 
   // -DSCustomLibraryBase
+
+  bool SetInitParams(DSCustom_CreateParams* params) override;
+
   bool SetProperty(Property& prop) override {
     assert(false);
     return true;
@@ -60,13 +65,24 @@ class StitcherPriv : public videoprep::VideoPrepPriv {
       NvBufSurface* in_surface,
       NvBufSurface* out_surface) override;
 
- protected:
+ private:
+  // std::unique_ptr<CudaStitchPano> stitcher_;
 };
 
 /** GStreamer boilerplate. */
-struct GstVideoPrepStitcher : public videoprep::GstVideoPrep {};
+struct GstVideoPrepStitcher : public videoprep::GstVideoPrep {
+  // Don't add stuff here
+  GstVideoPrepStitcher() {
+    static_assert(sizeof(GstVideoPrepStitcher) == sizeof(videoprep::GstVideoPrep));
+  }
+};
 
-struct GstVideoPrepStitcherClass : public videoprep::GstVideoPrepClass {};
+struct GstVideoPrepStitcherClass : public videoprep::GstVideoPrepClass {
+  // Don't add stuff here
+  GstVideoPrepStitcherClass() {
+    static_assert(sizeof(GstVideoPrepStitcherClass) == sizeof(videoprep::GstVideoPrepClass));
+  }
+};
 
 } // namespace stitcher
 } // namespace hm

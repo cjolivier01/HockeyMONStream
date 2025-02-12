@@ -26,6 +26,8 @@
 #endif
 #include "playcropper.h"
 
+// #define SCRATCH_USE_ALIGNED_PITCH
+
 namespace hm {
 namespace playcropper {
 

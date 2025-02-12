@@ -85,8 +85,6 @@ namespace videoprep {
 #define NVBUF_ALIGN_PITCH(pitch, align_val) ((pitch % align_val == 0) ? pitch : ((pitch / align_val + 1) * align_val))
 #define NVBUF_PLATFORM_ALIGNED_PITCH(pitch) NVBUF_ALIGN_PITCH(pitch, NVBUF_ALIGN_VAL)
 
-// #define SCRATCH_USE_ALIGNED_PITCH
-
 static gchar VIDEOPREP_LIB_VERSION[128];
 
 enum {
@@ -492,6 +490,64 @@ static GstCaps* gst_videoprep_transform_caps(
   return new_caps;
 }
 
+static void gst_videoprep_state_changed(GstElement* element, GstState oldstate, GstState newstate, GstState pending) {}
+
+GstStateChangeReturn gst_videoprep_change_state(GstElement* element, GstStateChange transition) {
+  if (transition == GST_STATE_CHANGE_NULL_TO_READY) {
+    GstVideoPrep* videoprep = GST_VIDEOPREP(element);
+    DSCustom_CreateParams params = {0};
+    params.m_element = (GstBaseTransform*)element;
+
+    assert(!videoprep->priv);
+    GObject* object = G_OBJECT(element);
+    assert(object);
+    // TODO: remove need for it to be anything but the base type
+    videoprep->priv = dynamic_cast<VideoPrepPriv*>(videoprep->priv_factory->CreateCustomAlgoCtx(
+        videoprep->plugin_type, object, videoprep->gpu_id, videoprep->num_batch_buffers));
+    if (!videoprep->priv) {
+      GST_ERROR("Unable to create plugin type %s", videoprep->plugin_type);
+      return GST_STATE_CHANGE_FAILURE;
+    }
+    if (!videoprep->priv->SetInitParams(&params)) {
+      GST_ERROR("Error on bus: SetInitParams Error");
+      return GST_STATE_CHANGE_FAILURE;
+    }
+
+    if (videoprep->priv->AllocateScratchBuffers(videoprep)) {
+      GST_ERROR("Error allocating videoprep projection buffers");
+      return GST_STATE_CHANGE_FAILURE;
+    }
+  }
+  GstVideoPrepClass* klass = GST_VIDEOPREP_CLASS(element);
+  assert(GST_IS_VIDEOPREP_CLASS(klass));
+  assert(klass->parent_change_state_fn);
+  return klass->parent_change_state_fn(element, transition);
+}
+// GstStateChangeReturn ret = GST_STATE_CHANGE_SUCCESS;
+//  GstGstMyAudioFilter *myaudiofilter = GST_GST_AUDIO_FILTER(element);
+
+// switch (transition) {
+// case GST_STATE_CHANGE_NULL_TO_READY:
+//   // if (!gst_my_filter_allocate_memory(filter))
+//   //   return GST_STATE_CHANGE_FAILURE;
+//   break;
+// default:
+//   break;
+// }
+
+// ret = element->change_state(element, transition);
+// if (ret == GST_STATE_CHANGE_FAILURE)
+//   return ret;
+
+// switch (transition) {
+// case GST_STATE_CHANGE_READY_TO_NULL:
+//   gst_my_filter_free_memory(filter);
+//   break;
+// default:
+//   break;
+// }
+//}
+
 // static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
 //   // std::vector<VideoPrepParams>::iterator iter;
 //   // guint i = 0;
@@ -625,22 +681,22 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
   }
   // if (!videoprep->aisle_calibrationfile_set || !videoprep->spot_calibrationfile_set) {
   //  Non-CVS Case
-  assert(!videoprep->priv);
-  // videoprep->priv = new VideoPrepPriv(videoprep->gpu_id, videoprep->num_batch_buffers);
-  GObject* object = G_OBJECT(trans);
-  assert(object);
-  // TODO: remove need for it to be anything but the base type
-  videoprep->priv = dynamic_cast<VideoPrepPriv*>(videoprep->priv_factory->CreateCustomAlgoCtx(
-      videoprep->plugin_type, object, videoprep->gpu_id, videoprep->num_batch_buffers));
-  if (!videoprep->priv) {
-    GST_ERROR("Unable to create plugin type %s", videoprep->plugin_type);
-    return FALSE;
-  }
-  //gst_videoprep_allocate_projection_buffers(videoprep);
-  if (videoprep->priv->AllocateScratchBuffers(videoprep)) {
-    GST_ERROR("Error allocating videoprep projection buffers");
-    return FALSE;
-  }
+  // assert(!videoprep->priv);
+  // // videoprep->priv = new VideoPrepPriv(videoprep->gpu_id, videoprep->num_batch_buffers);
+  // GObject* object = G_OBJECT(trans);
+  // assert(object);
+  // // TODO: remove need for it to be anything but the base type
+  // videoprep->priv = dynamic_cast<VideoPrepPriv*>(videoprep->priv_factory->CreateCustomAlgoCtx(
+  //     videoprep->plugin_type, object, videoprep->gpu_id, videoprep->num_batch_buffers));
+  // if (!videoprep->priv) {
+  //   GST_ERROR("Unable to create plugin type %s", videoprep->plugin_type);
+  //   return FALSE;
+  // }
+  // // gst_videoprep_allocate_projection_buffers(videoprep);
+  // if (videoprep->priv->AllocateScratchBuffers(videoprep)) {
+  //   GST_ERROR("Error allocating videoprep projection buffers");
+  //   return FALSE;
+  // }
 
   gst_base_transform_set_passthrough(trans, FALSE);
   return TRUE;
@@ -942,7 +998,7 @@ static gboolean gst_videoprep_stop(GstBaseTransform* btrans) {
 // gst_nvdsA2Vtemplate_change_state (GstElement *bscope, GstStateChange transition)
 // {
 //   if(transition==GST_STATE_CHANGE_NULL_TO_READY) {
-//     //GstNvDsA2Vtemplate *scope = GST_NVDSA2VTEMPLATE (bscope);
+//     //GstNvDsA2Vtemplate *scope = GST_VIDEOPREP (bscope);
 //     DSCustom_CreateParams params = {0};
 
 //     bool ret;
@@ -976,7 +1032,7 @@ static gboolean gst_videoprep_stop(GstBaseTransform* btrans) {
 //       return GST_STATE_CHANGE_FAILURE;
 //     }
 //   }
-//   return GST_NVDSA2VTEMPLATE_GET_CLASS(bscope)->parent_change_state_fn(bscope,transition);
+//   return GST_VIDEOPREP_GET_CLASS(bscope)->parent_change_state_fn(bscope,transition);
 // }
 
 /* initialize the videoprep's class */
@@ -991,11 +1047,9 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
   // Indicates we want to use DS buf api
   g_setenv("DS_NEW_BUFAPI", "1", TRUE);
 
-  gobject_class->set_property = gst_videoprep_set_property;
-  gobject_class->get_property = gst_videoprep_get_property;
-  gobject_class->finalize = gst_videoprep_finalize;
-
-  // klass->parent_change_state_fn =   gstelement_class->change_state;
+  gobject_class->set_property = GST_DEBUG_FUNCPTR(gst_videoprep_set_property);
+  gobject_class->get_property = GST_DEBUG_FUNCPTR(gst_videoprep_get_property);
+  gobject_class->finalize = GST_DEBUG_FUNCPTR(gst_videoprep_finalize);
 
   gstbasetransform_class->transform_caps = GST_DEBUG_FUNCPTR(gst_videoprep_transform_caps);
   gstbasetransform_class->fixate_caps = GST_DEBUG_FUNCPTR(gst_videoprep_fixate_caps);
@@ -1007,6 +1061,10 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
 
   gstbasetransform_class->start = GST_DEBUG_FUNCPTR(gst_videoprep_start);
   gstbasetransform_class->stop = GST_DEBUG_FUNCPTR(gst_videoprep_stop);
+
+  klass->parent_change_state_fn = gstelement_class->change_state;
+  gstelement_class->change_state = GST_DEBUG_FUNCPTR(gst_videoprep_change_state);
+  gstelement_class->state_changed = GST_DEBUG_FUNCPTR(gst_videoprep_state_changed);
 
   gstbasetransform_class->passthrough_on_same_caps = FALSE;
 
@@ -1172,7 +1230,9 @@ static void gst_videoprep_init(GstVideoPrep* videoprep) {
 
 static void gst_videoprep_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(object);
-
+  // if (videoprep->priv) {
+  //   Property prop("key", g_value_get_string(value));
+  // }
   switch (prop_id) {
     case PROP_SILENT:
       videoprep->silent = g_value_get_boolean(value);
@@ -1199,10 +1259,10 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
       if (videoprep->config_file)
         g_free(videoprep->config_file);
       videoprep->config_file = (gchar*)g_value_dup_string(value);
-      if (videoprep_parse_config_file(videoprep, videoprep->config_file) != TRUE) {
-        g_print("%s: Failed to parse config file %s\n", GST_ELEMENT_NAME(videoprep), videoprep->config_file);
-        abort();
-      }
+      // if (videoprep_parse_config_file(videoprep, videoprep->config_file) != TRUE) {
+      //   g_print("%s: Failed to parse config file %s\n", GST_ELEMENT_NAME(videoprep), videoprep->config_file);
+      //   abort();
+      // }
       break;
     case PROP_PLUGIN_TYPE:
       if (videoprep->plugin_type)

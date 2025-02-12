@@ -52,5 +52,6 @@ gst_cc_plugin(
         "//src/libs/common:utils",
         "@jetson-utils//cuda:cuda_lib",
         "@jetson-utils//display:display",
+        "@hm-cupano//src/pano:cuda_pano",
     ],
 )

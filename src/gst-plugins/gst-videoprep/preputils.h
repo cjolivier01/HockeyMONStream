@@ -90,5 +90,4 @@ class RenderSet {
   std::map<std::string, std::unique_ptr<glDisplay>> video_outputs_;
 };
 
-
 } // namespace hm

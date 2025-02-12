@@ -29,6 +29,14 @@
 namespace hm {
 namespace stitcher {
 
+bool StitcherPriv::SetInitParams(DSCustom_CreateParams* params) {
+  videoprep::GstVideoPrep* videoprep = static_cast<videoprep::GstVideoPrep*>(params);
+  if (!Super::SetInitParams(videoprep)) {
+    return false;
+  }
+  return true;
+}
+
 cudaError StitcherPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     videoprep::GstVideoPrep* videoprep,

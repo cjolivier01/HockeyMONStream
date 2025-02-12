@@ -109,11 +109,14 @@ inline bool DSCustomLibraryBase::SetInitParams(DSCustom_CreateParams* params) {
   m_dummyMetaInsert = params->m_dummyMetaInsert;
   m_fillDummyBatchMeta = params->m_fillDummyBatchMeta;
 
-  gst_video_info_from_caps(&m_inVideoInfo, m_inCaps);
-  gst_video_info_from_caps(&m_outVideoInfo, m_outCaps);
-
-  m_inVideoFmt = GST_VIDEO_FORMAT_INFO_FORMAT(m_inVideoInfo.finfo);
-  m_outVideoFmt = GST_VIDEO_FORMAT_INFO_FORMAT(m_outVideoInfo.finfo);
+  if (m_inCaps) {
+    gst_video_info_from_caps(&m_inVideoInfo, m_inCaps);
+    m_inVideoFmt = GST_VIDEO_FORMAT_INFO_FORMAT(m_inVideoInfo.finfo);
+  }
+  if (m_outCaps) {
+    gst_video_info_from_caps(&m_outVideoInfo, m_outCaps);
+    m_outVideoFmt = GST_VIDEO_FORMAT_INFO_FORMAT(m_outVideoInfo.finfo);
+  }
 
   return true;
 }

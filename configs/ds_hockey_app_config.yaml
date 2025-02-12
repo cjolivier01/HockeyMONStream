@@ -274,11 +274,10 @@ ds-example:
   processing-height: 480
 
 hmvideoprep:
-  enable: false
-  # enable: true
+  # enable: false
+  enable: true
   gpu-id: 0
   # plugin-type: videoprep
-  plugin-type: playcropper
   # has_queue: false
   # has_videoconvert: false
   # has_cameraman: true
@@ -289,7 +288,12 @@ hmvideoprep:
   # dewarper portion
   # source-id: 6
   # config-file: /opt/nvidia/deepstream/deepstream/sources/apps/sample_apps/deepstream-dewarper-test/config_dewarper_rot_matrix.txt
-  config-file: config_dewarper_null.txt
+
+  # plugin-type: playcropper
+  # config-file: config_dewarper_null.txt
+
+  plugin-type: hmstitcher
+  config-file: /mnt/ripper-data/Videos/mlk-extreme
 
 ds-playtracker:
   enable: 1
