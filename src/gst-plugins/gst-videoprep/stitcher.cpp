@@ -63,6 +63,10 @@ cudaError StitcherPriv::GenerateOutput(
     videoprep::GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
+
+  // Should not be necessary, debugging some issue atm
+  std::unique_lock lk(process_mu_);
+
   cudaError err = cudaSuccess;
 
   assert(cudaGetLastError() == cudaSuccess);
@@ -144,13 +148,18 @@ cudaError StitcherPriv::GenerateOutput(
     err = cudaMemset(canvas->data(), 128, canvas->width() * canvas->height() * sizeof(uchar4));
     assert(err == cudaError_t::cudaSuccess);
 
-    auto stitch_result = stitcher_->process(left, right, videoprep->stream, std::move(canvas));
-    if (stitch_result.ok()) {
-      canvas = std::move(stitch_result.ValueOrDie());
-      render_.render("canvas", output_params, videoprep->stream);
-      ++out_surface->numFilled;
+    if (err == cudaError_t::cudaSuccess) {
+      auto stitch_result = stitcher_->process(left, right, videoprep->stream, std::move(canvas));
+      if (stitch_result.ok()) {
+        canvas = std::move(stitch_result.ValueOrDie());
+        render_.render("canvas", output_params, videoprep->stream);
+        ++out_surface->numFilled;
+      } else {
+        std::cerr << stitch_result.status() << std::endl;
+        GST_ERROR("%s\n", stitch_result.status().message().c_str());
+      }
     } else {
-      GST_ERROR("%s\n", stitch_result.status().message().c_str());
+      std::cerr << "oops" << std::endl;
     }
   }
 

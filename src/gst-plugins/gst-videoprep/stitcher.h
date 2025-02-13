@@ -3,6 +3,8 @@
 #include "cudaPano.h"
 #include "gstvideoprep.h"
 
+#include <mutex>
+
 namespace hm {
 namespace stitcher {
 
@@ -68,6 +70,7 @@ class StitcherPriv : public videoprep::VideoPrepPriv {
 
  private:
   std::unique_ptr<hm::pano::cuda::CudaStitchPano<uchar4, float4>> stitcher_;
+  std::mutex process_mu_;
 };
 
 /** GStreamer boilerplate. */
