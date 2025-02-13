@@ -136,6 +136,9 @@ cudaError StitcherPriv::GenerateOutput(
             .data_ptr = output_params->dataPtr,
         },
         /*batch_size=*/1);
+
+    render_.render("left", left_params, videoprep->stream);
+
     //auto stitch_result = stitcher_->process(left, right, videoprep->stream, std::move(canvas));
     //if (stitch_result.ok()) {
       ++out_surface->numFilled;
