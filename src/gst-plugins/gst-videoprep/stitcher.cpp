@@ -47,7 +47,7 @@ bool StitcherPriv::SetInitParams(DSCustom_CreateParams* params) {
     return false;
   }
   stitcher_ = std::make_unique<hm::pano::cuda::CudaStitchPano<uchar4, float4>>(
-      videoprep->num_batch_buffers, /*num+_levels=*/2, control_masks, /*match_exposure=*/false);
+      videoprep->num_batch_buffers, /*num+_levels=*/6, control_masks, /*match_exposure=*/false);
   if (!stitcher_->status().ok()) {
     return false;
   }
