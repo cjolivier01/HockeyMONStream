@@ -7,6 +7,7 @@
 #include <npp.h>
 #include <nvbufsurface.h>
 #include <cmath>
+#include <map>
 #include "nvbufsurface.h"
 #include "nvds_dewarper_meta.h"
 #include "nvdsmeta.h"
@@ -65,6 +66,17 @@ cudaError StitcherPriv::GenerateOutput(
 
   // NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));
 
+  assert(in_surface->batchSize % 2 == 0);
+  assert(in_surface->numFilled % 2 == 0);
+  // assert(in_surface->isContiguous);
+
+  //  source_id -> frame_number -> NvBufSurfaceParams*
+  std::map<int, std::map<int, NvBufSurfaceParams*>> source_frame_surfaces;
+  for (int i = 0; i < in_surface->numFilled; ++i) {
+    NvBufSurfaceParams* params = &in_surface->surfaceList[i];
+    
+  }
+
   assert(videoprep->stream);
 
   NppStreamContext nppStreamContext;
@@ -91,6 +103,11 @@ cudaError StitcherPriv::GenerateOutput(
     assert(frame_meta_list);
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)frame_meta_list->data;
 
+
+    
+    // Set the new pipeline surface size for anyone who cares downstream
+    frame_meta->pipeline_width = videoprep->output_width;
+    frame_meta->pipeline_height = videoprep->output_height;
 #ifdef __aarch64__
     hm::surface::EglSurfaceMapper incoming_elg_surface_mapper(in_surface, batch_nr);
     hm::surface::Surface incoming_surface = incoming_elg_surface_mapper.get_surface();
