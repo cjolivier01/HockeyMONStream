@@ -88,15 +88,9 @@ cudaError StitcherPriv::GenerateOutput(
   err = cudaSetDevice(videoprep->gpu_id);
   assert(err == cudaSuccess);
 
-  const std::vector<BBox> tracking_boxes = get_tracking_boxes(batch_meta);
-
   out_surface->numFilled = 0;
 
   // TODO: what do we do about this mismatch???
-  assert(tracking_boxes.size() == in_surface->numFilled);
-  const size_t nr_surfaces_to_process = std::min(tracking_boxes.size(), (size_t)out_surface->batchSize);
-  assert(nr_surfaces_to_process <= videoprep->num_batch_buffers);
-
   // NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list;
   // std::unordered_set<int> seen_surface_indexes;
   size_t surface_index = 0;
@@ -114,6 +108,9 @@ cudaError StitcherPriv::GenerateOutput(
   assert(surface_index == in_surface->numFilled);
   assert(source_frame_surfaces.size() == 2);
   assert(source_frame_surfaces.begin()->second.size() == source_frame_surfaces.rbegin()->second.size());
+
+  // We will have this many output frames
+  out_surface->numFilled = source_frame_surfaces.begin()->second.size();
 
 #if 0
   for (size_t batch_nr = 0; batch_nr < nr_surfaces_to_process; ++batch_nr, frame_meta_list = frame_meta_list->next) {
@@ -331,9 +328,7 @@ cudaError StitcherPriv::GenerateOutput(
     cudaStreamSynchronize(videoprep->stream);
   }
 
-  out_surface->numFilled = nr_surfaces_to_process;
-
-  videoprep::videoprep_add_surface_meta(videoprep->out_gst_buf, nr_surfaces_to_process, videoprep->source_id);
+  videoprep::videoprep_add_surface_meta(videoprep->out_gst_buf, out_surface->numFilled, videoprep->source_id);
 #if 0
   surface_meta->num_filled_surfaces = nr_surfaces_to_process;
   surface_meta->source_id = videoprep->source_id;
