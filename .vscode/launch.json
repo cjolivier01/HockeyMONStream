@@ -129,6 +129,7 @@
         "${workspaceRoot}/output.png",
       ],
       "sourceMap": {
+        // "/proc/self/cwd/external/jetson-utils" : "",
         "/proc/self/cwd": "${workspaceFolder}",
         "~/src": "${env:HOME}/src",
         "external/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",
