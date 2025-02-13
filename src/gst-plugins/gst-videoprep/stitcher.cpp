@@ -71,11 +71,11 @@ cudaError StitcherPriv::GenerateOutput(
   // assert(in_surface->isContiguous);
 
   //  source_id -> frame_number -> NvBufSurfaceParams*
-  std::map<int, std::map<int, NvBufSurfaceParams*>> source_frame_surfaces;
-  for (int i = 0; i < in_surface->numFilled; ++i) {
-    NvBufSurfaceParams* params = &in_surface->surfaceList[i];
-    
-  }
+  std::map<int, std::vector<NvBufSurfaceParams*>> source_frame_surfaces;
+  // for (int i = 0; i < in_surface->numFilled; ++i) {
+  //   NvBufSurfaceParams* params = &in_surface->surfaceList[i];
+
+  // }
 
   assert(videoprep->stream);
 
@@ -98,6 +98,14 @@ cudaError StitcherPriv::GenerateOutput(
   assert(nr_surfaces_to_process <= videoprep->num_batch_buffers);
 
   NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list;
+
+  for (size_t batch_nr = 0; batch_nr < nr_surfaces_to_process; ++batch_nr, frame_meta_list = frame_meta_list->next) {
+    assert(frame_meta_list);
+    NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)frame_meta_list->data;
+    assert(frame_meta->num_surfaces_per_frame == 1);
+    source_frame_surfaces[frame_meta->source_id].emplace_back(&in_surface->surfaceList[frame_meta->surface_index]);
+  }
+
 #if 0
   for (size_t batch_nr = 0; batch_nr < nr_surfaces_to_process; ++batch_nr, frame_meta_list = frame_meta_list->next) {
     assert(frame_meta_list);
