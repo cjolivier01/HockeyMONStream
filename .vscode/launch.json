@@ -75,20 +75,6 @@
       "debuggerPath": "/usr/local/cuda/bin/cuda-gdb",
       "program": "${workspaceFolder}/bazel-bin/src/apps/pipeline-app/pipeline-app",
       "args": "-c ${workspaceFolder}/configs/ds_hockey_app_config.yaml -g mlk-heat-1",
-      // "substitutePath": [
-      //   {
-      //     "from": "/proc/self/cwd",
-      //     "to": "${workspaceFolder}/src"
-      //   },
-      //   {
-      //     "from": "~/src",
-      //     "to": "${env:HOME}/src"
-      //   },
-      //   {
-      //     "from": "external/deepstream/sources",
-      //     "to": "${env:HOME}/src/hstream/external/deepstream/sources"
-      //   },
-      // ],
       "initCommands": [
         "directory ${workspaceFolder}",
       ],
@@ -97,18 +83,18 @@
         //   "name": "GST_DEBUG",
         //   "value": "7",
         // },
-        // {
-        //   "name": "LD_LIBRARY_PATH",
-        //   "value": "${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu"
-        // },
+        {
+          "name": "LD_LIBRARY_PATH",
+          "value": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib",
+        },
         {
           "name": "GST_PLUGIN_PATH",
           "value": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
         },
-        {
-          "name": "DISPLAY",
-          "value": ":1",
-        },
+        // {
+        //   "name": "DISPLAY",
+        //   "value": ":1",
+        // },
         {
           "name": "CUDA_LAUNCH_BLOCKING",
           "value": "1",

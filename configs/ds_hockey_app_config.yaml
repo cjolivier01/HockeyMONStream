@@ -301,7 +301,7 @@ hmvideoprep:
   num-output-buffers: 2
 
 ds-playtracker:
-  enable: 1
+  enable: 0
   gpu-id: 0
   unique-id: 75
   draw: true
