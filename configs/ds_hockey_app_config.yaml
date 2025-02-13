@@ -286,7 +286,6 @@ hmvideoprep:
   # has_videoconvert: false
   # has_cameraman: true
   nvbuf-memory-type: 0
-  num-output-buffers: 4
   plot-detections: 1
   plot-tracking: 1
   # dewarper portion
@@ -295,9 +294,11 @@ hmvideoprep:
 
   # plugin-type: playcropper
   # config-file: config_dewarper_null.txt
+  # num-output-buffers: 4
 
   plugin-type: hmstitcher
   config-file: /home/colivier/Videos/mlk-heat-1
+  num-output-buffers: 2
 
 ds-playtracker:
   enable: 1

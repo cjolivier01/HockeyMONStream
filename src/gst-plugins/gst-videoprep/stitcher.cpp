@@ -9,9 +9,7 @@
 #include <cmath>
 #include <map>
 #include "nvbufsurface.h"
-#include "nvds_dewarper_meta.h"
 #include "nvdsmeta.h"
-#include "preputils.h"
 
 #include <assert.h>
 #include <cuda.h>
@@ -39,8 +37,11 @@ bool StitcherPriv::SetInitParams(DSCustom_CreateParams* params) {
   if (!Super::SetInitParams(params)) {
     return false;
   }
+  // I am a little confused about the diufference between these two
+  assert(videoprep->num_batch_buffers % 2 == 0);
+  videoprep->num_output_buffers = videoprep->num_batch_buffers / 2;
+
   assert(!stitcher_);
-  // CudaStitchPano(int batch_size, int num_levels, const ControlMasks& control_masks, bool match_exposure = false);
   hm::pano::ControlMasks control_masks;
   if (!control_masks.load(videoprep->config_file)) {
     return false;
@@ -50,8 +51,10 @@ bool StitcherPriv::SetInitParams(DSCustom_CreateParams* params) {
   if (!stitcher_->status().ok()) {
     return false;
   }
+
   videoprep->output_width = stitcher_->canvas_width();
   videoprep->output_height = stitcher_->canvas_height();
+
   return true;
 }
 
@@ -72,18 +75,8 @@ cudaError StitcherPriv::GenerateOutput(
 
   //  source_id -> frame_number -> NvBufSurfaceParams*
   std::map<int, std::vector<NvBufSurfaceParams*>> source_frame_surfaces;
-  // for (int i = 0; i < in_surface->numFilled; ++i) {
-  //   NvBufSurfaceParams* params = &in_surface->surfaceList[i];
-
-  // }
 
   assert(videoprep->stream);
-
-  NppStreamContext nppStreamContext;
-  memset(&nppStreamContext, 0, sizeof(nppStreamContext));
-  nppStreamContext.hStream = videoprep->stream; // Assign the CUDA stream
-  nppStreamContext.nStreamFlags = 0; // No special flags
-  nppStreamContext.nCudaDeviceId = videoprep->gpu_id; // Default queue size
 
   err = cudaSetDevice(videoprep->gpu_id);
   assert(err == cudaSuccess);
@@ -110,7 +103,40 @@ cudaError StitcherPriv::GenerateOutput(
   assert(source_frame_surfaces.begin()->second.size() == source_frame_surfaces.rbegin()->second.size());
 
   // We will have this many output frames
-  out_surface->numFilled = source_frame_surfaces.begin()->second.size();
+  const size_t batch_size = source_frame_surfaces.begin()->second.size();
+  // out_surface->batchSize = batch_size;
+  out_surface->numFilled = batch_size;
+  out_surface->batchSize = batch_size;
+
+  for (size_t batch_nr = 0; batch_nr < batch_size; batch_nr++) {
+    NvBufSurfaceParams* left_params = source_frame_surfaces.begin()->second.at(batch_nr);
+    NvBufSurfaceParams* right_params = source_frame_surfaces.begin()->second.at(batch_nr);
+    NvBufSurfaceParams* output_params = &out_surface->surfaceList[batch_nr];
+    hm::CudaMat<uchar4> left(
+        hm::SurfaceInfo{
+            .width = (int)left_params->width,
+            .height = (int)left_params->height,
+            .pitch = (int)left_params->pitch,
+            .data_ptr = left_params->dataPtr,
+        },
+        /*batch_size=*/1);
+    hm::CudaMat<uchar4> right(
+        hm::SurfaceInfo{
+            .width = (int)right_params->width,
+            .height = (int)right_params->height,
+            .pitch = (int)right_params->pitch,
+            .data_ptr = right_params->dataPtr,
+        },
+        /*batch_size=*/1);
+    hm::CudaMat<uchar4> canvas(
+        hm::SurfaceInfo{
+            .width = (int)output_params->width,
+            .height = (int)output_params->height,
+            .pitch = (int)output_params->pitch,
+            .data_ptr = output_params->dataPtr,
+        },
+        /*batch_size=*/1);
+  }
 
 #if 0
   for (size_t batch_nr = 0; batch_nr < nr_surfaces_to_process; ++batch_nr, frame_meta_list = frame_meta_list->next) {
@@ -329,17 +355,6 @@ cudaError StitcherPriv::GenerateOutput(
   }
 
   videoprep::videoprep_add_surface_meta(videoprep->out_gst_buf, out_surface->numFilled, videoprep->source_id);
-#if 0
-  surface_meta->num_filled_surfaces = nr_surfaces_to_process;
-  surface_meta->source_id = videoprep->source_id;
-  NvDsMeta* meta = NULL;
-  meta = gst_buffer_add_nvds_meta(
-      videoprep->out_gst_buf, surface_meta, NULL, videoprep_meta_copy_func, videoprep_meta_release_func);
-
-  meta->meta_type = NVDS_DEWARPER_GST_META;
-  meta->gst_to_nvds_meta_transform_func = videoprep_gst_to_nvds_meta_ransform_func;
-  meta->gst_to_nvds_meta_release_func = videoprep_gst_nvds_meta_release_func;
-#endif
   return err;
 }
 
