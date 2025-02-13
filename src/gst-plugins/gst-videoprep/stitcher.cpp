@@ -112,6 +112,8 @@ cudaError StitcherPriv::GenerateOutput(
     NvBufSurfaceParams* left_params = source_frame_surfaces.begin()->second.at(batch_nr);
     NvBufSurfaceParams* right_params = source_frame_surfaces.begin()->second.at(batch_nr);
     NvBufSurfaceParams* output_params = &out_surface->surfaceList[batch_nr];
+    assert(output_params->width == stitcher_->canvas_width());
+    assert(output_params->height == stitcher_->canvas_height());
     hm::CudaMat<uchar4> left(
         hm::SurfaceInfo{
             .width = (int)left_params->width,
@@ -137,12 +139,19 @@ cudaError StitcherPriv::GenerateOutput(
         },
         /*batch_size=*/1);
 
-    render_.render("left", left_params, videoprep->stream);
+    // render_.render("left", left_params, videoprep->stream);
 
-    //auto stitch_result = stitcher_->process(left, right, videoprep->stream, std::move(canvas));
-    //if (stitch_result.ok()) {
+    err = cudaMemset(canvas->data(), 128, canvas->width() * canvas->height() * sizeof(uchar4));
+    assert(err == cudaError_t::cudaSuccess);
+
+    auto stitch_result = stitcher_->process(left, right, videoprep->stream, std::move(canvas));
+    if (stitch_result.ok()) {
+      canvas = std::move(stitch_result.ValueOrDie());
+      render_.render("canvas", output_params, videoprep->stream);
       ++out_surface->numFilled;
-    //}
+    } else {
+      GST_ERROR("%s\n", stitch_result.status().message().c_str());
+    }
   }
 
   if (out_surface->numFilled) {
