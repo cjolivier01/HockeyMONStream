@@ -97,14 +97,23 @@ cudaError StitcherPriv::GenerateOutput(
   const size_t nr_surfaces_to_process = std::min(tracking_boxes.size(), (size_t)out_surface->batchSize);
   assert(nr_surfaces_to_process <= videoprep->num_batch_buffers);
 
-  NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list;
-
-  for (size_t batch_nr = 0; batch_nr < nr_surfaces_to_process; ++batch_nr, frame_meta_list = frame_meta_list->next) {
+  // NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list;
+  // std::unordered_set<int> seen_surface_indexes;
+  size_t surface_index = 0;
+  for (NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list; frame_meta_list != nullptr;
+       frame_meta_list = frame_meta_list->next) {
     assert(frame_meta_list);
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)frame_meta_list->data;
     assert(frame_meta->num_surfaces_per_frame == 1);
-    source_frame_surfaces[frame_meta->source_id].emplace_back(&in_surface->surfaceList[frame_meta->surface_index]);
+    // assert(seen_surface_indexes.emplace(frame_meta->surface_index).second);
+    source_frame_surfaces[frame_meta->source_id].emplace_back(&in_surface->surfaceList[surface_index]);
+    ++surface_index;
   }
+
+  // Sanity that the surfaces are laid out as expected
+  assert(surface_index == in_surface->numFilled);
+  assert(source_frame_surfaces.size() == 2);
+  assert(source_frame_surfaces.begin()->second.size() == source_frame_surfaces.rbegin()->second.size());
 
 #if 0
   for (size_t batch_nr = 0; batch_nr < nr_surfaces_to_process; ++batch_nr, frame_meta_list = frame_meta_list->next) {
