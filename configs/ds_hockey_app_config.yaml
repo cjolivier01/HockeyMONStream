@@ -297,7 +297,7 @@ hmvideoprep:
   # config-file: config_dewarper_null.txt
 
   plugin-type: hmstitcher
-  config-file: /mnt/ripper-data/Videos/mlk-extreme
+  config-file: /home/colivier/Videos/mlk-heat-1
 
 ds-playtracker:
   enable: 1
