@@ -116,6 +116,9 @@ cudaError StitcherPriv::GenerateOutput(
   out_surface->numFilled = 0;
   out_surface->batchSize = in_surface->batchSize / 2;
 
+  std::vector<NvDsFrameMeta*> remove_frame_metas;
+  remove_frame_metas.reserve(in_surface->batchSize);
+
   // TODO: what do we do about this mismatch???
   // NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list;
   // std::unordered_set<int> seen_surface_indexes;
@@ -125,6 +128,7 @@ cudaError StitcherPriv::GenerateOutput(
     assert(frame_meta_list);
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)frame_meta_list->data;
     assert(frame_meta->num_surfaces_per_frame == 1);
+    remove_frame_metas.emplace_back(frame_meta);
     // assert(seen_surface_indexes.emplace(frame_meta->surface_index).second);
     std::cout << "surfaceindex: " << frame_meta->surface_index << std::endl;
     frame_source_surfaces[frame_meta->frame_num].emplace(
@@ -142,9 +146,6 @@ cudaError StitcherPriv::GenerateOutput(
   // out_surface->batchSize = batch_size;
   // out_surface->numFilled = batch_size;
   out_surface->batchSize = batch_size;
-
-  std::vector<NvDsFrameMeta*> remove_frame_metas;
-  remove_frame_metas.reserve(batch_size);
 
   // nvds_remove_frame_meta_from_batch_meta(NvDsBatchMeta *batch_meta, NvDsFrameMeta *frame_meta);
   // NvDsFrameMeta *nvds_acquire_frame_meta_from_pool(NvDsBatchMeta *batch_meta);
@@ -164,8 +165,8 @@ cudaError StitcherPriv::GenerateOutput(
     NvBufSurfaceParams* right_params = source_to_surface.rbegin()->second;
     NvBufSurfaceParams* output_params = &out_surface->surfaceList[out_surfcace_index];
 
-    assert(output_params->width == stitcher_->canvas_width());
-    assert(output_params->height == stitcher_->canvas_height());
+    assert(output_params->width == (uint32_t)stitcher_->canvas_width());
+    assert(output_params->height == (uint32_t)stitcher_->canvas_height());
     hm::CudaMat<uchar4> left(
         hm::SurfaceInfo{
             .width = (int)left_params->width,
