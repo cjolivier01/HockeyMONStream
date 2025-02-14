@@ -32,7 +32,7 @@ class StitcherPriv : public videoprep::VideoPrepPriv {
   //     render_(std::forward<Args>(args)...);
   // }
 
-  void render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream) {
+  bool render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream) {
     return render_.render(name, surface, stream);
   }
 

@@ -17,7 +17,7 @@ std::unique_ptr<glDisplay> RenderSet::create_video_output(
     const std::string& name,
     const hm::surface::Surface& surface) {
   videoOptions vo;
-  vo.width = (int)surface.width();
+  vo.width = (int)surface.pitch_width();
   vo.height = (int)surface.height();
   auto video_output = std::unique_ptr<glDisplay>(glDisplay::Create(vo));
   video_output->SetTitle(name.c_str());
@@ -33,8 +33,8 @@ videoOutput* RenderSet::get_video_output(const std::string& name, const hm::surf
   return found->second.get();
 }
 
-void RenderSet::render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream) {
-  get_video_output(name, surface)
+bool RenderSet::render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream) {
+  return get_video_output(name, surface)
       ->Render(surface.dataptr(), surface.pitch_width(), surface.height(), surface.get_image_format(), stream);
 }
 

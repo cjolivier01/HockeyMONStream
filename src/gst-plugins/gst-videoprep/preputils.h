@@ -4,9 +4,9 @@
 
 #include <iostream>
 
-#include "src/libs/common/Surface.h"
-#include "nvdsmeta.h"
 #include "glDisplay.h"
+#include "nvdsmeta.h"
+#include "src/libs/common/Surface.h"
 
 #include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
 
@@ -81,7 +81,8 @@ inline NppiRect get_nppirect(const T& box) {
 
 class RenderSet {
  public:
-  void render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream);
+  bool render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream);
+
  private:
   static std::unique_ptr<glDisplay> create_video_output(const std::string& name, const hm::surface::Surface& surface);
   videoOutput* get_video_output(const std::string& name, const hm::surface::Surface& surface);

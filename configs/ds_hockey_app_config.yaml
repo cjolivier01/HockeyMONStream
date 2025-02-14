@@ -197,7 +197,7 @@ sink2:
   # udp-port: 5400
 
 osd:
-  enable: 1
+  enable: 0
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -230,8 +230,8 @@ streammux:
   # height: 738
   #width: 8192
   #height: 2770
-  width: 6142
-  height: 2077
+  width: 5312
+  height: 2988
   # width: 4096
   # height: 1385
   # width: 4080
