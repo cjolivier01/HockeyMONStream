@@ -302,7 +302,7 @@ hmvideoprep:
   num-output-buffers: 2
 
 hmstitcher:
-  enable: 1
+  enable: 0
   gpu-id: 0
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
@@ -310,7 +310,7 @@ hmstitcher:
   num-output-buffers: 2
 
 ds-playtracker:
-  enable: 0
+  enable: 1
   gpu-id: 0
   unique-id: 75
   # draw: true

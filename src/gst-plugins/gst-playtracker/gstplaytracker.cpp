@@ -86,8 +86,10 @@ static gboolean gst_playtracker_set_caps(GstBaseTransform* btrans, GstCaps* inca
 static gboolean gst_playtracker_start(GstBaseTransform* btrans);
 static gboolean gst_playtracker_stop(GstBaseTransform* btrans);
 
-static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btrans, gboolean discont, GstBuffer* inbuf);
-static GstFlowReturn gst_playtracker_generate_output(GstBaseTransform* btrans, GstBuffer** outbuf);
+static GstFlowReturn gst_playtracker_transform(GstBaseTransform* btrans, GstBuffer* inbuf);
+
+// static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btrans, gboolean discont, GstBuffer*
+// inbuf); static GstFlowReturn gst_playtracker_generate_output(GstBaseTransform* btrans, GstBuffer** outbuf);
 
 static gpointer gst_playtracker_output_loop(gpointer data);
 
@@ -114,9 +116,11 @@ static void gst_playtracker_class_init(GstDsPlayTrackerClass* klass) {
   gstbasetransform_class->set_caps = GST_DEBUG_FUNCPTR(gst_playtracker_set_caps);
   gstbasetransform_class->start = GST_DEBUG_FUNCPTR(gst_playtracker_start);
   gstbasetransform_class->stop = GST_DEBUG_FUNCPTR(gst_playtracker_stop);
+  
+  gstbasetransform_class->transform_ip = GST_DEBUG_FUNCPTR(gst_playtracker_transform);
 
-  gstbasetransform_class->submit_input_buffer = GST_DEBUG_FUNCPTR(gst_playtracker_submit_input_buffer);
-  gstbasetransform_class->generate_output = GST_DEBUG_FUNCPTR(gst_playtracker_generate_output);
+  // gstbasetransform_class->submit_input_buffer = GST_DEBUG_FUNCPTR(gst_playtracker_submit_input_buffer);
+  // gstbasetransform_class->generate_output = GST_DEBUG_FUNCPTR(gst_playtracker_generate_output);
 
   /* Install properties */
   g_object_class_install_property(
@@ -286,7 +290,7 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
 
   /* Start a thread which will pop output from the algorithm, form NvDsMeta and
    * push buffers to the next element. */
-  playtracker->process_thread = g_thread_new("playtracker-process-thread", gst_playtracker_output_loop, playtracker);
+  // playtracker->process_thread = g_thread_new("playtracker-process-thread", gst_playtracker_output_loop, playtracker);
 
   return TRUE;
 }
@@ -353,133 +357,135 @@ error:
   return FALSE;
 }
 
-static gboolean convert_batch_and_push_to_process_thread(GstDsPlayTracker* playtracker, GstDsPlayTrackerBatch* batch) {
-  g_mutex_lock(&playtracker->process_lock);
+// static gboolean convert_batch_and_push_to_process_thread(GstDsPlayTracker* playtracker, GstDsPlayTrackerBatch* batch)
+// {
+//   g_mutex_lock(&playtracker->process_lock);
 
-  /* Wait if buf queue is empty. */
-  while (g_queue_is_empty(playtracker->buf_queue)) {
-    g_cond_wait(&playtracker->buf_cond, &playtracker->process_lock);
-  }
+//   /* Wait if buf queue is empty. */
+//   while (g_queue_is_empty(playtracker->buf_queue)) {
+//     g_cond_wait(&playtracker->buf_cond, &playtracker->process_lock);
+//   }
 
-  /* Pop a buffer from the element's buf queue. */
-  batch->inter_buf = (NvBufSurface*)g_queue_pop_head(playtracker->buf_queue);
-  assert(!batch->inter_buf); // always null now, just for timing I guess
+//   /* Pop a buffer from the element's buf queue. */
+//   batch->inter_buf = (NvBufSurface*)g_queue_pop_head(playtracker->buf_queue);
+//   assert(!batch->inter_buf); // always null now, just for timing I guess
 
-  g_mutex_unlock(&playtracker->process_lock);
+//   g_mutex_unlock(&playtracker->process_lock);
 
-  //
-  // Used to do something here?
-  //
+//   //
+//   // Used to do something here?
+//   //
 
-  /* Push the batch info structure in the processing queue and notify the
-   * process thread that a new batch has been queued. */
-  g_mutex_lock(&playtracker->process_lock);
+//   /* Push the batch info structure in the processing queue and notify the
+//    * process thread that a new batch has been queued. */
+//   g_mutex_lock(&playtracker->process_lock);
 
-  g_queue_push_tail(playtracker->process_queue, batch);
-  g_cond_broadcast(&playtracker->process_cond);
+//   g_queue_push_tail(playtracker->process_queue, batch);
+//   g_cond_broadcast(&playtracker->process_cond);
 
-  g_mutex_unlock(&playtracker->process_lock);
+//   g_mutex_unlock(&playtracker->process_lock);
 
-  return TRUE;
-}
+//   return TRUE;
+// }
 
 /**
  * Called when element recieves an input buffer from upstream element.
  */
-static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btrans, gboolean discont, GstBuffer* inbuf) {
-  GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(btrans);
-  GstMapInfo in_map_info;
-  NvBufSurface* in_surf{nullptr};
-  GstDsPlayTrackerBatch* buf_push_batch{nullptr};
-  std::unique_ptr<GstDsPlayTrackerBatch> batch = nullptr;
+// static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btrans, gboolean discont, GstBuffer*
+// inbuf) {
+//   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(btrans);
+//   GstMapInfo in_map_info;
+//   NvBufSurface* in_surf{nullptr};
+//   GstDsPlayTrackerBatch* buf_push_batch{nullptr};
+//   std::unique_ptr<GstDsPlayTrackerBatch> batch = nullptr;
 
-  NvDsBatchMeta* batch_meta = NULL;
-  // gdouble scale_ratio = 1.0;
-  guint num_filled = 0;
+//   NvDsBatchMeta* batch_meta = NULL;
+//   // gdouble scale_ratio = 1.0;
+//   guint num_filled = 0;
 
-  struct cudaDeviceProp prop;
-  cudaGetDeviceProperties(&prop, playtracker->gpu_id);
+//   struct cudaDeviceProp prop;
+//   cudaGetDeviceProperties(&prop, playtracker->gpu_id);
 
-  playtracker->current_batch_num++;
+//   playtracker->current_batch_num++;
 
-  memset(&in_map_info, 0, sizeof(in_map_info));
+//   memset(&in_map_info, 0, sizeof(in_map_info));
 
-  /* Map the buffer contents and get the pointer to NvBufSurface. */
-  if (!gst_buffer_map(inbuf, &in_map_info, GST_MAP_READ)) {
-    GST_ELEMENT_ERROR(
-        playtracker, STREAM, FAILED, ("%s:gst buffer map to get pointer to NvBufSurface failed", __func__), (NULL));
-    return GST_FLOW_ERROR;
-  }
-  in_surf = (NvBufSurface*)in_map_info.data;
+//   /* Map the buffer contents and get the pointer to NvBufSurface. */
+//   if (!gst_buffer_map(inbuf, &in_map_info, GST_MAP_READ)) {
+//     GST_ELEMENT_ERROR(
+//         playtracker, STREAM, FAILED, ("%s:gst buffer map to get pointer to NvBufSurface failed", __func__), (NULL));
+//     return GST_FLOW_ERROR;
+//   }
+//   in_surf = (NvBufSurface*)in_map_info.data;
 
-  nvds_set_input_system_timestamp(inbuf, GST_ELEMENT_NAME(playtracker));
+//   nvds_set_input_system_timestamp(inbuf, GST_ELEMENT_NAME(playtracker));
 
-  batch_meta = gst_buffer_get_nvds_batch_meta(inbuf);
-  if (batch_meta == nullptr) {
-    GST_ELEMENT_ERROR(playtracker, STREAM, FAILED, ("NvDsBatchMeta not found for input buffer."), (NULL));
-    return GST_FLOW_ERROR;
-  }
-  num_filled = batch_meta->num_frames_in_batch;
+//   batch_meta = gst_buffer_get_nvds_batch_meta(inbuf);
+//   if (batch_meta == nullptr) {
+//     GST_ELEMENT_ERROR(playtracker, STREAM, FAILED, ("NvDsBatchMeta not found for input buffer."), (NULL));
+//     return GST_FLOW_ERROR;
+//   }
+//   num_filled = batch_meta->num_frames_in_batch;
 
-  for (guint i = 0; i < num_filled; i++) {
-    if (batch == nullptr) {
-      batch.reset(new GstDsPlayTrackerBatch);
-      batch->push_buffer = FALSE;
-      batch->inbuf = inbuf;
-      batch->inbuf_batch_num = playtracker->current_batch_num;
-    }
+//   for (guint i = 0; i < num_filled; i++) {
+//     if (batch == nullptr) {
+//       batch.reset(new GstDsPlayTrackerBatch);
+//       batch->push_buffer = FALSE;
+//       batch->inbuf = inbuf;
+//       batch->inbuf_batch_num = playtracker->current_batch_num;
+//     }
 
-    /* Adding a frame to the current batch. Set the frames members. */
-    GstDsPlayTrackerFrame frame;
-    // frame.scale_ratio_x = scale_ratio;
-    // frame.scale_ratio_y = scale_ratio;
-    frame.obj_meta = nullptr;
-    frame.frame_meta = nvds_get_nth_frame_meta(batch_meta->frame_meta_list, i);
-    frame.frame_num = frame.frame_meta->frame_num;
-    frame.batch_index = i;
-    frame.input_surf_params = in_surf->surfaceList + i;
-    batch->frames.push_back(frame);
+//     /* Adding a frame to the current batch. Set the frames members. */
+//     GstDsPlayTrackerFrame frame;
+//     // frame.scale_ratio_x = scale_ratio;
+//     // frame.scale_ratio_y = scale_ratio;
+//     frame.obj_meta = nullptr;
+//     frame.frame_meta = nvds_get_nth_frame_meta(batch_meta->frame_meta_list, i);
+//     frame.frame_num = frame.frame_meta->frame_num;
+//     frame.batch_index = i;
+//     frame.input_surf_params = in_surf->surfaceList + i;
+//     batch->frames.push_back(frame);
 
-    // Set the transform session parameters for the conversions executed in
-    // this thread.
-    if (i == num_filled) {
-      if (!convert_batch_and_push_to_process_thread(playtracker, batch.get())) {
-        return GST_FLOW_ERROR;
-      }
-      /* Batch submitted. Set batch to nullptr so that a new GstDsPlayTrackerBatch
-       * structure can be allocated if required. */
-      (void)batch.release();
-    }
-  }
-  /* Submit a non-full batch. */
-  if (batch) {
-    if (!convert_batch_and_push_to_process_thread(playtracker, batch.get())) {
-      return GST_FLOW_ERROR;
-    }
-    (void)batch.release();
-  }
+//     // Set the transform session parameters for the conversions executed in
+//     // this thread.
+//     if (i == num_filled) {
+//       if (!convert_batch_and_push_to_process_thread(playtracker, batch.get())) {
+//         return GST_FLOW_ERROR;
+//       }
+//       /* Batch submitted. Set batch to nullptr so that a new GstDsPlayTrackerBatch
+//        * structure can be allocated if required. */
+//       (void)batch.release();
+//     }
+//   }
+//   /* Submit a non-full batch. */
+//   if (batch) {
+//     if (!convert_batch_and_push_to_process_thread(playtracker, batch.get())) {
+//       return GST_FLOW_ERROR;
+//     }
+//     (void)batch.release();
+//   }
 
-  /* Queue a push buffer batch. This batch is not inferred. This batch is to
-   * signal the process thread that there are no more batches
-   * belonging to this input buffer and this GstBuffer can be pushed to
-   * downstream element once all the previous processing is done. */
-  buf_push_batch = new GstDsPlayTrackerBatch;
-  buf_push_batch->inbuf = inbuf;
-  buf_push_batch->push_buffer = TRUE;
+//   /* Queue a push buffer batch. This batch is not inferred. This batch is to
+//    * signal the process thread that there are no more batches
+//    * belonging to this input buffer and this GstBuffer can be pushed to
+//    * downstream element once all the previous processing is done. */
+//   buf_push_batch = new GstDsPlayTrackerBatch;
+//   buf_push_batch->inbuf = inbuf;
+//   buf_push_batch->push_buffer = TRUE;
 
-  g_mutex_lock(&playtracker->process_lock);
-  /* Check if this is a push buffer or event marker batch. If yes, no need to
-   * queue the input for inferencing. */
-  if (buf_push_batch->push_buffer) {
-    /* Push the batch info structure in the processing queue and notify the
-     * process thread that a new batch has been queued. */
-    g_queue_push_tail(playtracker->process_queue, buf_push_batch);
-    g_cond_broadcast(&playtracker->process_cond);
-  }
-  g_mutex_unlock(&playtracker->process_lock);
+//   g_mutex_lock(&playtracker->process_lock);
+//   /* Check if this is a push buffer or event marker batch. If yes, no need to
+//    * queue the input for inferencing. */
+//   if (buf_push_batch->push_buffer) {
+//     /* Push the batch info structure in the processing queue and notify the
+//      * process thread that a new batch has been queued. */
+//     g_queue_push_tail(playtracker->process_queue, buf_push_batch);
+//     g_cond_broadcast(&playtracker->process_cond);
+//   }
+//   g_mutex_unlock(&playtracker->process_lock);
 
-  return GST_FLOW_OK;
-}
+//   return GST_FLOW_OK;
+// }
 
 /**
  * If submit_input_buffer is implemented, it is mandatory to implement
@@ -487,10 +493,10 @@ static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btran
  * Return the GstFlowReturn value of the latest pad push so that any error might
  * be caught by the application.
  */
-static GstFlowReturn gst_playtracker_generate_output(GstBaseTransform* btrans, GstBuffer** outbuf) {
-  GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(btrans);
-  return playtracker->last_flow_ret;
-}
+// static GstFlowReturn gst_playtracker_generate_output(GstBaseTransform* btrans, GstBuffer** outbuf) {
+//   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(btrans);
+//   return playtracker->last_flow_ret;
+// }
 
 /**
  * Attach metadata for the full frame. We will be adding a new metadata.
@@ -546,6 +552,90 @@ static void attach_metadata_full_frame(
 
     nvds_add_obj_meta_to_frame(frame_meta, object_meta, NULL);
   }
+}
+
+static GstFlowReturn gst_playtracker_transform(GstBaseTransform* btrans, GstBuffer* inbuf) {
+  GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(btrans);
+  GstMapInfo inmap = GST_MAP_INFO_INIT;
+  GstMapInfo outmap = GST_MAP_INFO_INIT;
+  NvBufSurface* in_surface = NULL;
+  NvBufSurface* out_surface = NULL;
+  cudaError cudaErr = cudaSuccess;
+  gchar pts_str[64];
+
+  NvDsBatchMeta* batch_meta = gst_buffer_get_nvds_batch_meta(inbuf);
+  assert(batch_meta);
+
+  // videoprep->frame_num++;
+  // GST_DEBUG_OBJECT(videoprep, "%s : Frame=%d InBuf=%p OutBuf=%p\n", __func__, videoprep->frame_num, inbuf, outbuf);
+
+  if (!gst_buffer_map(inbuf, &inmap, GST_MAP_READ))
+    goto invalid_inbuf;
+
+  // if (!gst_buffer_map(outbuf, &outmap, GST_MAP_WRITE))
+  //   goto invalid_outbuf;
+
+  GST_DEBUG_OBJECT(playtracker, "transform");
+  // if (videoprep->input_feature == MEM_FEATURE_NVMM) {
+  //   in_surface = (NvBufSurface*)inmap.data;
+  //   // TODO:
+  //   if (CHECK_NVDS_MEMORY_AND_GPUID(videoprep, in_surface)) {
+  //     gst_buffer_unmap(inbuf, &inmap);
+  //     gst_buffer_unmap(outbuf, &outmap);
+  //     return GST_FLOW_ERROR;
+  //   }
+  // }
+
+  // if (videoprep->output_feature == MEM_FEATURE_NVMM) {
+  //   out_surface = (NvBufSurface*)outmap.data;
+  //   if (CHECK_NVDS_MEMORY_AND_GPUID(videoprep, out_surface)) {
+  //     gst_buffer_unmap(inbuf, &inmap);
+  //     gst_buffer_unmap(outbuf, &outmap);
+  //     return GST_FLOW_ERROR;
+  //   }
+  // }
+
+  // START_PROFILE;
+  // videoprep->out_gst_buf = outbuf;
+  // cudaErr = gst_videoprep_do_prep(batch_meta, videoprep, in_surface, out_surface);
+  // if (cudaErr != cudaSuccess) {
+  //   GST_ERROR_OBJECT(videoprep, "gst_videoprep_do_prep failed");
+  //   return GST_FLOW_ERROR;
+  // }
+  // STOP_PROFILE("********* TOTAL DEWARP AND SCALE TIME *********");
+
+  // GST_BUFFER_PTS(outbuf) = GST_BUFFER_PTS(inbuf);
+
+  // GST_INFO_OBJECT(
+  //     videoprep,
+  //     " : source_id %d Frame=%d OUT-BUFFER %s",
+  //     videoprep->source_id,
+  //     videoprep->frame_num,
+  //     print_pretty_time(pts_str, sizeof(pts_str), GST_BUFFER_PTS(outbuf)));
+
+  gst_buffer_unmap(inbuf, &inmap);
+  //gst_buffer_unmap(outbuf, &outmap);
+
+  // if (!gst_buffer_copy_into(outbuf, inbuf, (GstBufferCopyFlags)GST_BUFFER_COPY_METADATA, 0, -1)) {
+  //   GST_DEBUG_OBJECT(playtracker, "Buffer metadata copy failed \n");
+  // }
+
+  // if (videoprep->deref_input_buffer) {
+  //   gst_buffer_unref(inbuf);
+  // }
+
+  return GST_FLOW_OK;
+
+invalid_inbuf: {
+  GST_ERROR("input buffer mapinfo failed");
+  return GST_FLOW_ERROR;
+}
+
+invalid_outbuf: {
+  GST_ERROR_OBJECT(playtracker, "output buffer mapinfo failed");
+  gst_buffer_unmap(inbuf, &inmap);
+  return GST_FLOW_ERROR;
+}
 }
 
 /**
