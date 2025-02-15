@@ -23,6 +23,7 @@
 #include <nvdsmeta.h>
 
 #include <cassert>
+#include <iostream>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -213,6 +214,7 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
 }
 
 hm::play_tracker::PlayTracker* get_or_create_play_tracker(int source_id, const BBox& arena_box, DsPlayTrackerCtx* ctx) {
+  // std::cerr << "play tracker source_id = " << source_id << std::endl;
   if (ctx->play_trackers.count(source_id)) {
     return ctx->play_trackers[source_id].play_tracker.get();
   }

@@ -396,7 +396,8 @@ error:
 /**
  * Called when element recieves an input buffer from upstream element.
  */
-// static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btrans, gboolean discont, GstBuffer* inbuf) {
+// static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btrans, gboolean discont, GstBuffer*
+// inbuf) {
 //   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(btrans);
 //   GstMapInfo in_map_info;
 //   NvBufSurface* in_surf{nullptr};
@@ -649,11 +650,11 @@ invalid_inbuf: {
   return GST_FLOW_ERROR;
 }
 
-// invalid_outbuf: {
-//   GST_ERROR_OBJECT(playtracker, "output buffer mapinfo failed");
-//   gst_buffer_unmap(inbuf, &inmap);
-//   return GST_FLOW_ERROR;
-// }
+  // invalid_outbuf: {
+  //   GST_ERROR_OBJECT(playtracker, "output buffer mapinfo failed");
+  //   gst_buffer_unmap(inbuf, &inmap);
+  //   return GST_FLOW_ERROR;
+  // }
 }
 
 /**

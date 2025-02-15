@@ -65,7 +65,7 @@ bool StitcherPriv::SetInitParams(DSCustom_CreateParams* params) {
 }
 
 struct ModifyBatchFrames {
-  ModifyBatchFrames(NvDsBatchMeta* batch_meta, std::vector<NvDsFrameMeta*>& remove) : batch_meta_(batch_meta) {
+  ModifyBatchFrames(NvDsBatchMeta* batch_meta, const std::vector<NvDsFrameMeta*>& remove) : batch_meta_(batch_meta) {
     // 1. Acquire the meta lock to ensure thread safety
     nvds_acquire_meta_lock(batch_meta);
 
@@ -85,7 +85,6 @@ struct ModifyBatchFrames {
     nvds_add_frame_meta_to_batch(batch_meta_, frame_meta);
     return true;
   }
-
   ~ModifyBatchFrames() {
     // 5. Release the meta lock
     nvds_release_meta_lock(batch_meta_);
@@ -142,9 +141,11 @@ cudaError StitcherPriv::GenerateOutput(
   out_surface->numFilled = 0;
   out_surface->batchSize = in_surface->batchSize / 2;
 
-  std::vector<NvDsFrameMeta*> remove_frame_metas;
+  std::vector<NvDsFrameMeta*> remove_frame_metas, add_frame_metas;
   remove_frame_metas.reserve(in_surface->batchSize);
+  add_frame_metas.reserve(in_surface->batchSize >> 1);
 
+  guint min_source_id = std::numeric_limits<guint>::max();
   size_t surface_index = 0;
   for (NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list; frame_meta_list != nullptr;
        frame_meta_list = frame_meta_list->next) {
@@ -155,7 +156,7 @@ cudaError StitcherPriv::GenerateOutput(
     // assert(seen_surface_indexes.emplace(frame_meta->surface_index).second);
     // std::cout << "source_id=" << frame_meta->source_id << ", frame_num=" << frame_meta->frame_num << std::endl;
     auto& frame_sources = frame_source_surfaces[frame_meta->frame_num];
-
+    min_source_id = std::min(min_source_id, frame_meta->source_id);
     NvDsFrameMeta* persistent_frame_meta{nullptr};
     if (!frame_sources.empty()) {
       // We only keep one of the frame meta's for each frame_num, and we'll modify it to
@@ -165,6 +166,7 @@ cudaError StitcherPriv::GenerateOutput(
       persistent_frame_meta = frame_sources.begin()->second.persistent_frame_meta;
     } else {
       persistent_frame_meta = frame_meta;
+      remove_frame_metas.emplace_back(frame_meta);
     }
 
 #if 0
@@ -250,13 +252,26 @@ cudaError StitcherPriv::GenerateOutput(
         ++out_surface->numFilled;
         // Both should have the same 'persistent_frame_meta'
         // TODO: Should we do this later under a batch meta lock?
-        assert(frame_info_left.persistent_frame_meta == frame_info_right.persistent_frame_meta);
-        frame_info_left.persistent_frame_meta->source_frame_width =
-            frame_info_left.persistent_frame_meta->pipeline_width = canvas->width();
-        frame_info_left.persistent_frame_meta->source_frame_height =
-            frame_info_left.persistent_frame_meta->pipeline_height = canvas->height();
-        frame_info_left.persistent_frame_meta->surface_index = out_surface_index;
-        frame_info_left.persistent_frame_meta->pad_index = 0;
+        ModifyBatchFrames frame_adder(batch_meta, {});
+        frame_adder.add_frame([&](NvDsFrameMeta* new_frame_meta) -> bool {
+          // Currently we don't copy over any user or object meta because it is assumed that thsoe would be wrt an
+          // invalid resolution. It may come, however, that we should copy over some stuff, esp user meta,
+          // if that ever gets filled.
+          assert(!frame_info_right.persistent_frame_meta->num_obj_meta);
+          assert(!frame_info_right.persistent_frame_meta->frame_user_meta_list);
+          assert(frame_info_left.persistent_frame_meta == frame_info_right.persistent_frame_meta);
+          new_frame_meta->source_frame_width = new_frame_meta->pipeline_width = canvas->width();
+          new_frame_meta->source_frame_height = new_frame_meta->pipeline_height = canvas->height();
+          new_frame_meta->surface_index = out_surface_index;
+          new_frame_meta->pad_index = 0;
+          new_frame_meta->source_id = min_source_id;
+          new_frame_meta->surface_type = frame_info_left.persistent_frame_meta->surface_type;
+          new_frame_meta->num_surfaces_per_frame = 1;
+          new_frame_meta->batch_id = frame_info_left.persistent_frame_meta->batch_id;
+          new_frame_meta->ntp_timestamp = frame_info_left.persistent_frame_meta->ntp_timestamp;
+          assert(min_source_id == 0); // debug checking
+          return true;
+        });
       } else {
         std::cerr << stitch_result.status() << std::endl;
         GST_ERROR("%s\n", stitch_result.status().message().c_str());
