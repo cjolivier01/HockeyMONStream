@@ -122,7 +122,10 @@ cudaError StitcherPriv::GenerateOutput(
 
   struct FrameInfo {
     NvBufSurfaceParams* surface_params;
+    // This is the actual frame meta for this surface
     NvDsFrameMeta* frame_meta;
+    // This is the frame meta that we'll keep for the final stitched frame (we'll discard on of them)
+    NvDsFrameMeta* persistent_frame_meta;
   };
 
   //  frame_number -> source_id -> NvBufSurfaceParams*
@@ -149,12 +152,18 @@ cudaError StitcherPriv::GenerateOutput(
     // assert(seen_surface_indexes.emplace(frame_meta->surface_index).second);
     std::cout << "source_id=" << frame_meta->source_id << ", frame_num=" << frame_meta->frame_num << std::endl;
     auto& frame_sources = frame_source_surfaces[frame_meta->frame_num];
+
+    NvDsFrameMeta* persistent_frame_meta{nullptr};
     if (!frame_sources.empty()) {
       // We only keep one of the frame meta's for each frame_num, and we'll modify it to
       // mathc the eventual stitched frame.
       // atm, we don't care which source it is, hopefully they come in sorted?
       remove_frame_metas.emplace_back(frame_meta);
+      persistent_frame_meta = frame_sources.begin()->second.persistent_frame_meta;
+    } else {
+      persistent_frame_meta = frame_meta;
     }
+
 #if 0
     if (frame_meta->source_id == 1 && frame_meta->frame_num == 0) {
       show_image("frame", surface_params, 0.2);
@@ -166,6 +175,7 @@ cudaError StitcherPriv::GenerateOutput(
                                   FrameInfo{
                                       .surface_params = surface_params,
                                       .frame_meta = frame_meta,
+                                      .persistent_frame_meta = persistent_frame_meta,
                                   })
                               .second;
     assert(inserted);
@@ -196,8 +206,6 @@ cudaError StitcherPriv::GenerateOutput(
     const FrameInfo& frame_info_left = source_to_surface.begin()->second;
     const FrameInfo& frame_info_right = source_to_surface.rbegin()->second;
     // This tests the assumption that the source ids come in sorted
-    assert(frame_info_left.frame_meta);
-    assert(!frame_info_right.frame_meta);
 
     const NvBufSurfaceParams* left_params = frame_info_left.surface_params;
     const NvBufSurfaceParams* right_params = frame_info_right.surface_params;
@@ -242,12 +250,15 @@ cudaError StitcherPriv::GenerateOutput(
         canvas = std::move(stitch_result.ValueOrDie());
         // render_.render("canvas", output_params, videoprep->stream);
         ++out_surface->numFilled;
-        frame_info_left.frame_meta->source_frame_width = canvas->width();
-        frame_info_left.frame_meta->source_frame_height = canvas->height();
-        frame_info_left.frame_meta->surface_index = 0; // out_surfcace_index;
-        frame_info_left.frame_meta->pad_index = 0;
-        frame_info_left.frame_meta->pipeline_width = 0;
-        frame_info_left.frame_meta->pipeline_height = 0;
+        // Both should have the same 'persistent_frame_meta'
+        // TODO: Should we do this later under a batch meta lock?
+        assert(frame_info_left.persistent_frame_meta == frame_info_right.persistent_frame_meta);
+        frame_info_left.persistent_frame_meta->source_frame_width = canvas->width();
+        frame_info_left.persistent_frame_meta->source_frame_height = canvas->height();
+        frame_info_left.persistent_frame_meta->surface_index = 0; // out_surfcace_index;
+        frame_info_left.persistent_frame_meta->pad_index = 0;
+        frame_info_left.persistent_frame_meta->pipeline_width = 0;
+        frame_info_left.persistent_frame_meta->pipeline_height = 0;
       } else {
         std::cerr << stitch_result.status() << std::endl;
         GST_ERROR("%s\n", stitch_result.status().message().c_str());
