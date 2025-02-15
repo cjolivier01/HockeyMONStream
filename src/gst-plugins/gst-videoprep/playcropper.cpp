@@ -333,7 +333,7 @@ cudaError PlayCropperPriv::GenerateOutput(
       videoprep->out_gst_buf, surface_meta, NULL, videoprep_meta_copy_func, videoprep_meta_release_func);
 
   meta->meta_type = NVDS_DEWARPER_GST_META;
-  meta->gst_to_nvds_meta_transform_func = videoprep_gst_to_nvds_meta_ransform_func;
+  meta->gst_to_nvds_meta_transform_func = videoprep_gst_to_nvds_meta_transform_func;
   meta->gst_to_nvds_meta_release_func = videoprep_gst_nvds_meta_release_func;
 #endif
   return err;

@@ -173,7 +173,7 @@ static gpointer videoprep_meta_copy_func(gpointer data, gpointer user_data) {
   return (gpointer)dst_surface_meta;
 }
 
-static void f(gpointer data, gpointer user_data) {
+static void videoprep_meta_release_func(gpointer data, gpointer user_data) {
   NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)data;
   if (surface_meta) {
     g_free(surface_meta);
@@ -181,7 +181,7 @@ static void f(gpointer data, gpointer user_data) {
   }
 }
 
-static gpointer videoprep_gst_to_nvds_meta_ransform_func(gpointer data, gpointer user_data) {
+static gpointer videoprep_gst_to_nvds_meta_transform_func(gpointer data, gpointer user_data) {
   NvDsUserMeta* user_meta = (NvDsUserMeta*)data;
   NvDewarperSurfaceMeta* src_surface_meta = (NvDewarperSurfaceMeta*)user_meta->user_meta_data;
   assert(src_surface_meta);
@@ -807,7 +807,7 @@ void videoprep_add_surface_meta(GstBuffer* out_gst_buf, int num_filled_surfaces,
       gst_buffer_add_nvds_meta(out_gst_buf, surface_meta, NULL, videoprep_meta_copy_func, videoprep_meta_release_func);
 
   meta->meta_type = NVDS_DEWARPER_GST_META;
-  meta->gst_to_nvds_meta_transform_func = videoprep_gst_to_nvds_meta_ransform_func;
+  meta->gst_to_nvds_meta_transform_func = videoprep_gst_to_nvds_meta_transform_func;
   meta->gst_to_nvds_meta_release_func = videoprep_gst_nvds_meta_release_func;
 }
 
