@@ -58,6 +58,7 @@ bool StitcherPriv::SetInitParams(DSCustom_CreateParams* params) {
   videoprep->output_width = stitcher_->canvas_width();
   videoprep->output_height = stitcher_->canvas_height();
 
+  g_print("Stitched canvas size: %d x %d\n", (int)stitcher_->canvas_width(), (int)stitcher_->canvas_height());
   return true;
 }
 

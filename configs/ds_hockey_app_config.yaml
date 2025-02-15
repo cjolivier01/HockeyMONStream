@@ -17,9 +17,9 @@ application:
   ##gie-kitti-output-dir=streamscl
 
 tiled-display:
-  enable: 0
-  rows: 1
-  columns: 2
+  enable: 1
+  rows: 2
+  columns: 1
   # rows: 2
   # columns: 2
   # width: 7680
@@ -28,8 +28,8 @@ tiled-display:
   # height: 1360
   # width: 2048
   # height: 720
-  width: 1280
-  height: 720
+  width: 1647
+  height: 740
   # width: 888
   # height: 500
   # width: 6142
@@ -112,6 +112,7 @@ sink0:
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
   type: 2
   sync: 1
+  # sync: 0
   source-id: 0
   gpu-id: 0
   nvbuf-memory-type: 0
@@ -278,8 +279,8 @@ ds-example:
   processing-height: 480
 
 hmvideoprep:
-  # enable: false
-  enable: true
+  enable: false
+  # enable: true
   gpu-id: 0
   # plugin-type: videoprep
   # has_queue: false
@@ -296,6 +297,14 @@ hmvideoprep:
   # config-file: config_dewarper_null.txt
   # num-output-buffers: 4
 
+  plugin-type: hmstitcher
+  config-file: /home/colivier/Videos/mlk-heat-1
+  num-output-buffers: 2
+
+hmstitcher:
+  enable: 1
+  gpu-id: 0
+  nvbuf-memory-type: 0
   plugin-type: hmstitcher
   config-file: /home/colivier/Videos/mlk-heat-1
   num-output-buffers: 2

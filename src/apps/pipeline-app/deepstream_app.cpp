@@ -1497,6 +1497,24 @@ static gboolean create_common_elements(
         pipeline->common_elements.appCtx);
   }
 
+  if (config->hmsticher_config.enable) {
+    // Create dsexample element bin and set properties
+    if (!create_hmstitcher_bin(&config->hmsticher_config, &pipeline->hmstitcher_bin)) {
+      goto done;
+    }
+    // Add dsfieldmask bin to instance bin
+    gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->hmstitcher_bin.bin);
+    if (!*src_elem) {
+      *src_elem = pipeline->hmstitcher_bin.bin;
+    }
+
+    if (*sink_elem) {
+      NVGSTDS_LINK_ELEMENT(pipeline->hmstitcher_bin.bin, *sink_elem);
+    }
+
+    // Set this bin as the last element
+    *sink_elem = pipeline->hmstitcher_bin.bin;
+  }
   if (config->preprocess_config.enable) {
     if (!create_preprocess_bin(&config->preprocess_config, &pipeline->common_elements.preprocess_bin)) {
       g_print("creating preprocess bin failed\n");

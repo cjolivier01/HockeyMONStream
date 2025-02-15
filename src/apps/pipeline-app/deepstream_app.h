@@ -96,6 +96,7 @@ typedef struct {
   GstElement* demuxer;
   NvDsDsExampleBin dsexample_bin;
   NvDsDsFieldMaskBin dsfieldmask_bin;
+  HmStitcherBin hmstitcher_bin; 
   NvDsDsPlayTrackerBin dsplaytracker_bin;
   AppCtx* appCtx;
 } NvDsPipeline;
@@ -143,6 +144,7 @@ typedef struct {
   NvDsHmImageMetaMergerConfig hmimagemetamerger_config;
   NvDsHmVideoPrepConfig hmvideoprep_config;
   NvDsDsFieldMaskConfig dsfieldmask_config;
+  HmStitcherConfig hmsticher_config;
   NvDsDsPlayTrackerConfig dsplaytracker_config;
   NvDsSinkMsgConvBrokerConfig msg_conv_config;
   NvDsImageSave image_save_config;
