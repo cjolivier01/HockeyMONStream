@@ -116,7 +116,7 @@ static void gst_playtracker_class_init(GstDsPlayTrackerClass* klass) {
   gstbasetransform_class->set_caps = GST_DEBUG_FUNCPTR(gst_playtracker_set_caps);
   gstbasetransform_class->start = GST_DEBUG_FUNCPTR(gst_playtracker_start);
   gstbasetransform_class->stop = GST_DEBUG_FUNCPTR(gst_playtracker_stop);
-  
+
   gstbasetransform_class->transform_ip = GST_DEBUG_FUNCPTR(gst_playtracker_transform);
 
   // gstbasetransform_class->submit_input_buffer = GST_DEBUG_FUNCPTR(gst_playtracker_submit_input_buffer);
@@ -312,8 +312,10 @@ static gboolean gst_playtracker_stop(GstBaseTransform* btrans) {
 
   while (!g_queue_is_empty(playtracker->buf_queue)) {
     inter_buf = (NvBufSurface*)g_queue_pop_head(playtracker->buf_queue);
-    if (inter_buf)
+    if (inter_buf) {
+      assert(false); // why we owning any surfaces? see about removing all of this crap.
       NvBufSurfaceDestroy(inter_buf);
+    }
     inter_buf = NULL;
   }
   playtracker->stop = TRUE;
@@ -321,7 +323,10 @@ static gboolean gst_playtracker_stop(GstBaseTransform* btrans) {
   g_cond_broadcast(&playtracker->process_cond);
   g_mutex_unlock(&playtracker->process_lock);
 
-  g_thread_join(playtracker->process_thread);
+  if (playtracker->process_thread) {
+    g_thread_join(playtracker->process_thread);
+    playtracker->process_thread = nullptr;
+  }
 
   // Deinit the algorithm library
   DsPlayTrackerCtxDeinit(playtracker->playtrackerlib_ctx);
@@ -614,7 +619,7 @@ static GstFlowReturn gst_playtracker_transform(GstBaseTransform* btrans, GstBuff
   //     print_pretty_time(pts_str, sizeof(pts_str), GST_BUFFER_PTS(outbuf)));
 
   gst_buffer_unmap(inbuf, &inmap);
-  //gst_buffer_unmap(outbuf, &outmap);
+  // gst_buffer_unmap(outbuf, &outmap);
 
   // if (!gst_buffer_copy_into(outbuf, inbuf, (GstBufferCopyFlags)GST_BUFFER_COPY_METADATA, 0, -1)) {
   //   GST_DEBUG_OBJECT(playtracker, "Buffer metadata copy failed \n");
