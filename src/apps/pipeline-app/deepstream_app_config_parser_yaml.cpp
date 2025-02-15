@@ -74,6 +74,8 @@ gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_
   SET_LOCATOR(locator, *config, gpu_id);
   // SET_LOCATOR(locator, *config, gpu_id);
   SET_LOCATOR(locator, *config, nvbuf_memory_type);
+  SET_LOCATOR(locator, *config, left_frame_offset_ns);
+  SET_LOCATOR(locator, *config, right_frame_offset_ns);
   SET_LOCATOR_CHARS(locator, *config, config_file);
   set_config_from_yaml(yaml_node, locator);
   return true;
