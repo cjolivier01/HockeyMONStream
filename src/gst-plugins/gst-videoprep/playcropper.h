@@ -42,9 +42,9 @@ class PlayCropperPriv : public videoprep::VideoPrepPriv {
     return true;
   }
 
-  const char* QueryProperties() override {
+  char* QueryProperties() override {
     assert(false);
-    return "";
+    return strdup("");
   }
 
   BufferResult ProcessBuffer(GstBuffer* inbuf) override {

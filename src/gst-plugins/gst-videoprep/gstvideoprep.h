@@ -56,9 +56,10 @@ class VideoPrepPriv : public DSCustomLibraryBase {
     return true;
   }
 
-  const char* QueryProperties() override {
+  char* QueryProperties() override {
     assert(false);
-    return "";
+    // ugh @ c programmers
+    return strdup("");
   }
 
   BufferResult ProcessBuffer(GstBuffer* inbuf) override {

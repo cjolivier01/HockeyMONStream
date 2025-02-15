@@ -49,7 +49,7 @@ bool StitcherPriv::SetInitParams(DSCustom_CreateParams* params) {
   if (!control_masks.load(videoprep->config_file)) {
     return false;
   }
-  stitcher_ = std::make_unique<hm::pano::cuda::CudaStitchPano<uchar4, float4>>(
+  stitcher_ = std::make_unique<hm::pano::cuda::CudaStitchPano<uchar4, float3>>(
       /*batch_size=*/1, /*num_levels=*/0, control_masks, /*match_exposure=*/false);
   if (!stitcher_->status().ok()) {
     return false;
@@ -98,7 +98,7 @@ void show_image(std::string label, hm::surface::Surface surface, float scale = 1
           .pitch = (int)surface.pitch(),
           .data_ptr = surface.dataptr(),
       },
-      1);
+      /*B=*/1);
   hm::utils::display_scaled_image(label, mat.download(), scale, wait);
 }
 

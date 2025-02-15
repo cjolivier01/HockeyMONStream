@@ -12,12 +12,11 @@ namespace stitcher {
  * @addtogroup three Standard GStreamer boilerplate
  * @{
  */
-#define GST_TYPE_PLAY_CROPPER (hm::videoprep::gst_videoprep_get_type())
-#define GST_VIDEOPREP_PLAY_CROPPER(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_PLAY_CROPPER, GstVideoPrepStitcher))
-#define GST_VIDEOPREP_PLAY_CROPPER_CLASS(klass) \
-  (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_PLAY_CROPPER, GstVideoPrepStitcherClass))
-#define GST_IS_VIDEOPREP_PLAY_CROPPER(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_PLAY_CROPPER))
-#define GST_IS_VIDEOPREP_PLAY_CROPPER_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_PLAY_CROPPER))
+// #define GST_TYPE_PLAY_CROPPER (hm::videoprep::gst_videoprep_get_type())
+// #define GST_VIDEOPREP_PLAY_CROPPER(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_PLAY_CROPPER, GstVideoPrepStitcher))
+// #define GST_VIDEOPREP_PLAY_CROPPER_CLASS(klass) (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_PLAY_CROPPER, GstVideoPrepStitcherClass))
+// #define GST_IS_VIDEOPREP_PLAY_CROPPER(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_PLAY_CROPPER))
+// #define GST_IS_VIDEOPREP_PLAY_CROPPER_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_PLAY_CROPPER))
 
 class StitcherPriv : public videoprep::VideoPrepPriv {
   using Super = videoprep::VideoPrepPriv;
@@ -50,9 +49,9 @@ class StitcherPriv : public videoprep::VideoPrepPriv {
     return true;
   }
 
-  const char* QueryProperties() override {
+  char* QueryProperties() override {
     assert(false);
-    return "";
+    return strdup("");
   }
 
   BufferResult ProcessBuffer(GstBuffer* inbuf) override {
@@ -69,7 +68,7 @@ class StitcherPriv : public videoprep::VideoPrepPriv {
       NvBufSurface* out_surface) override;
 
  private:
-  std::unique_ptr<hm::pano::cuda::CudaStitchPano<uchar4, float4>> stitcher_;
+  std::unique_ptr<hm::pano::cuda::CudaStitchPano<uchar4, float3>> stitcher_;
   std::mutex process_mu_;
 };
 
