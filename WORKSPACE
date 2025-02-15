@@ -144,7 +144,8 @@ new_local_repository(
     name = "gstreamer",
     build_file = "@//buildfiles:third_party/gstreamer_nobuild.BUILD",
     #path = "/usr/local",
-    path = "/usr",
+    #path = "/usr",
+    path = "/home/colivier/miniforge3/envs/ubuntu",
 )
 
 new_local_repository(

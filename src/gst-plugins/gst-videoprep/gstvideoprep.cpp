@@ -173,7 +173,7 @@ static gpointer videoprep_meta_copy_func(gpointer data, gpointer user_data) {
   return (gpointer)dst_surface_meta;
 }
 
-static void videoprep_meta_release_func(gpointer data, gpointer user_data) {
+static void f(gpointer data, gpointer user_data) {
   NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)data;
   if (surface_meta) {
     g_free(surface_meta);
