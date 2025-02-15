@@ -13,10 +13,10 @@
 
 #include "gstdsfieldmask.h"
 
-//#include "gst-nvquery.h"
+// #include "gst-nvquery.h"
 #include "gstnvdsmeta.h"
 #include "nvbufsurface.h"
-//#include "nvbufsurftransform.h"
+// #include "nvbufsurftransform.h"
 
 #include <string.h>
 #include <sys/time.h>
@@ -89,7 +89,7 @@ enum {
     }                                                                                                             \
   } while (0)
 
-#define STRSIZE(str$) (sizeof(str$)/sizeof(str$[0]))
+#define STRSIZE(str$) (sizeof(str$) / sizeof(str$[0]))
 
 /* By default NVIDIA Hardware allocated memory flows through the pipeline. We
  * will be processing on this type of memory only. */
@@ -240,16 +240,14 @@ static void gst_dsfieldmask_set_property(GObject* object, guint prop_id, const G
     case PROP_GPU_DEVICE_ID:
       dsfieldmask->gpu_id = g_value_get_uint(value);
       break;
-    case PROP_DETECTION_MASK_FILE:
-    {
-      const char *str = g_value_get_string(value);
+    case PROP_DETECTION_MASK_FILE: {
+      const char* str = g_value_get_string(value);
       if (str && *str) {
-          strncpy(dsfieldmask->detection_mask_file, str, STRSIZE(dsfieldmask->detection_mask_file) - 1);
+        strncpy(dsfieldmask->detection_mask_file, str, STRSIZE(dsfieldmask->detection_mask_file) - 1);
       } else {
         dsfieldmask->detection_mask_file[0] = '\0';
       }
-    }
-      break;
+    } break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
@@ -284,8 +282,7 @@ static void gst_dsfieldmask_get_property(GObject* object, guint prop_id, GValue*
 static gboolean gst_dsfieldmask_start(GstBaseTransform* btrans) {
   GstDsFieldMask* dsfieldmask = GST_DSFIELDMASK(btrans);
 
-  DsFieldMaskInitParams init_params = {
-      .detection_mask_file = dsfieldmask->detection_mask_file};
+  DsFieldMaskInitParams init_params = {.detection_mask_file = dsfieldmask->detection_mask_file};
 
   /* Algorithm specific initializations and resource allocation. */
   dsfieldmask->dsfieldmasklib_ctx = DsFieldMaskCtxInit(&init_params);
@@ -370,9 +367,10 @@ static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstB
     frame_meta = (NvDsFrameMeta*)(l_frame->data);
     // If frame pipeline w/h isn't set, then set it from the first surface
     if (!frame_meta->pipeline_width && surface->surfaceList) {
-      assert(false);  // shoudl we be setting this?
       assert(!frame_meta->pipeline_height);
-      NvBufSurfaceParams *params = &surface->surfaceList[0];
+      NvBufSurfaceParams* params = &surface->surfaceList[0];
+      // assuming no persistent resizing happenned before now
+      assert(params->width == frame_meta->source_frame_width && params->height == frame_meta->source_frame_height);
       frame_meta->pipeline_width = params->width;
       frame_meta->pipeline_height = params->height;
     }

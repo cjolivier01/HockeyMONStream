@@ -198,7 +198,7 @@ sink2:
   # udp-port: 5400
 
 osd:
-  enable: 0
+  enable: 1
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -302,7 +302,7 @@ hmvideoprep:
   num-output-buffers: 2
 
 hmstitcher:
-  enable: 0
+  enable: 1
   gpu-id: 0
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
@@ -318,13 +318,13 @@ ds-playtracker:
   config-file: play_tracker_config.yaml
 
 ds-fieldmask:
-  enable: 0
+  enable: 1
   gpu-id: 0
   unique-id: 76
   # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png
   # detection-mask: /home/colivier/Videos/ev-reno-1/rink_mask_0.png
   # detection-mask: /home/colivier/Videos/mlk-extreme/rink_mask_0.png
-  detection-mask: /home/colivier/Videos/mlk-extreme/rink_mask_0.png
+  detection-mask: /home/colivier/Videos/mlk-heat-1/rink_mask_0.png
 
 tracker:
   enable: 1

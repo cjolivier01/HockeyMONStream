@@ -249,12 +249,12 @@ cudaError StitcherPriv::GenerateOutput(
         // Both should have the same 'persistent_frame_meta'
         // TODO: Should we do this later under a batch meta lock?
         assert(frame_info_left.persistent_frame_meta == frame_info_right.persistent_frame_meta);
-        frame_info_left.persistent_frame_meta->source_frame_width = canvas->width();
-        frame_info_left.persistent_frame_meta->source_frame_height = canvas->height();
-        frame_info_left.persistent_frame_meta->surface_index = 0; // out_surface_index;
+        frame_info_left.persistent_frame_meta->source_frame_width =
+            frame_info_left.persistent_frame_meta->pipeline_width = canvas->width();
+        frame_info_left.persistent_frame_meta->source_frame_height =
+            frame_info_left.persistent_frame_meta->pipeline_height = canvas->height();
+        frame_info_left.persistent_frame_meta->surface_index = out_surface_index;
         frame_info_left.persistent_frame_meta->pad_index = 0;
-        frame_info_left.persistent_frame_meta->pipeline_width = 0;
-        frame_info_left.persistent_frame_meta->pipeline_height = 0;
       } else {
         std::cerr << stitch_result.status() << std::endl;
         GST_ERROR("%s\n", stitch_result.status().message().c_str());
