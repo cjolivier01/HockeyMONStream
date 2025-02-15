@@ -515,10 +515,10 @@ GstStateChangeReturn gst_videoprep_change_state(GstElement* element, GstStateCha
       return GST_STATE_CHANGE_FAILURE;
     }
 
-    if (videoprep->priv->AllocateScratchBuffers(videoprep)) {
-      GST_ERROR("Error allocating videoprep projection buffers");
-      return GST_STATE_CHANGE_FAILURE;
-    }
+    // if (videoprep->priv->AllocateScratchBuffers(videoprep)) {
+    //   GST_ERROR("Error allocating videoprep projection buffers");
+    //   return GST_STATE_CHANGE_FAILURE;
+    // }
   }
   GstVideoPrepClass* klass = GST_VIDEOPREP_CLASS(element);
   assert(GST_IS_VIDEOPREP_CLASS(klass));
@@ -681,24 +681,11 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
           videoprep->num_batch_buffers);
     }
   }
-  // if (!videoprep->aisle_calibrationfile_set || !videoprep->spot_calibrationfile_set) {
-  //  Non-CVS Case
-  // assert(!videoprep->priv);
-  // // videoprep->priv = new VideoPrepPriv(videoprep->gpu_id, videoprep->num_batch_buffers);
-  // GObject* object = G_OBJECT(trans);
-  // assert(object);
-  // // TODO: remove need for it to be anything but the base type
-  // videoprep->priv = dynamic_cast<VideoPrepPriv*>(videoprep->priv_factory->CreateCustomAlgoCtx(
-  //     videoprep->plugin_type, object, videoprep->gpu_id, videoprep->num_batch_buffers));
-  // if (!videoprep->priv) {
-  //   GST_ERROR("Unable to create plugin type %s", videoprep->plugin_type);
-  //   return FALSE;
-  // }
   // // gst_videoprep_allocate_projection_buffers(videoprep);
-  // if (videoprep->priv->AllocateScratchBuffers(videoprep)) {
-  //   GST_ERROR("Error allocating videoprep projection buffers");
-  //   return FALSE;
-  // }
+  if (videoprep->priv->AllocateScratchBuffers(videoprep)) {
+    GST_ERROR("Error allocating videoprep projection buffers");
+    return FALSE;
+  }
 
   gst_base_transform_set_passthrough(trans, FALSE);
   return TRUE;

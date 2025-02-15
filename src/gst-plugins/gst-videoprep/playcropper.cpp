@@ -34,6 +34,8 @@ namespace playcropper {
 gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) {
   cudaError_t cudaErr;
 
+  assert(videoprep->input_width && videoprep->input_height);
+
   cudaErr = cudaSetDevice(videoprep->gpu_id);
   if (cudaErr != cudaSuccess) {
     printf("\n *** Unable to set device in %s Line %d\n", __func__, __LINE__);
@@ -257,14 +259,14 @@ cudaError PlayCropperPriv::GenerateOutput(
     assert(np_status == NppStatus::NPP_SUCCESS);
 #endif
     // videoprep->priv->render(std::string("First Crop"), *scratch_surface_iter, nppStreamContext.hStream);
-//#ifndef NDEBUG
+    // #ifndef NDEBUG
     FloatValue tbox_ar = tbox.width() / tbox.height();
     FloatValue new_tbox_ar = new_tbox.width() / new_tbox.height();
     const BBox output_rect(0, 0, (FloatValue)videoprep->output_width, (FloatValue)videoprep->output_height);
     // FloatValue output_ar = output_rect.width() / output_rect.height();
     assert(isClose(tbox_ar, new_tbox_ar, 1e-6f, 0.001));
     // assert(isClose(new_tbox_ar, output_ar, 1e-6f, 0.001));
-//#endif
+    // #endif
 
     // We just rotate the whole thing around the point
     // that is effectively the center of the tracking box
