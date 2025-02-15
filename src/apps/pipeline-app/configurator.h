@@ -31,6 +31,7 @@ class Configurator {
   void complete_configuration();
 
  private:
+  std::string file_maybe_in_game_dir(const std::string& basename);
   YAML::Node merge_nodes(const YAML::Node& base, const YAML::Node& overlay, bool warn_if_key_not_in_dest);
 
   YAML::Node auto_config(YAML::Node&& config);

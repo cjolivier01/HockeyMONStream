@@ -236,7 +236,7 @@ class HmApp : public _AppCtx {
   bool load_config() {
     std::string config_root = std::filesystem::current_path() / "external" / "hm" / "config";
     configurator_ = std::make_unique<hm::Configurator>(game_id_, config_root);
-    configurator_->load_config();
+    configurator_->configure();
     return true;
   }
 

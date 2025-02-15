@@ -6,15 +6,24 @@
 #include <sstream>
 #include <string>
 
+#include <opencv2/opencv.hpp>
 #include <unistd.h>
 
 namespace hm {
+
 Configurator::Configurator(const std::string& game_id, const std::string& config_root_dir)
     : game_id_(game_id), config_root_dir_(config_root_dir) {
   // Constructor
 }
 Configurator::~Configurator() {
   // Destructor
+}
+
+std::string Configurator::file_maybe_in_game_dir(const std::string& basename) {
+  if (std::find(basename.begin(), basename.end(), '/') != basename.end()) {
+    return basename;
+  }
+  return get_game_dir(game_id_) / basename;
 }
 
 std::filesystem::path Configurator::get_game_dir(const std::string& game_id) {
@@ -124,10 +133,36 @@ YAML::Node Configurator::auto_config(YAML::Node&& config) {
   return std::move(config);
 }
 
+static double getVideoFPS(const std::string& videoPath) {
+  // Open the video file.
+  cv::VideoCapture cap(videoPath);
+  if (!cap.isOpened()) {
+    std::cerr << "Error: Could not open video file: " << videoPath << std::endl;
+    return -1.0;
+  }
+
+  // Retrieve the FPS property.
+  double fps = cap.get(cv::CAP_PROP_FPS);
+  return fps;
+}
+
 void Configurator::complete_configuration() {
+  std::cout << config_ << std::endl;
   YAML::Node pipeline = config_["pipeline"];
-  assert(pipeline.IsDefined()); 
-  // 
+  assert(pipeline.IsDefined());
+  std::vector<std::string> left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
+  std::vector<std::string> right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
+  auto offsets = config_["game"]["stitching"]["frame_offsets"];
+  if (!left_files.empty()) {
+    double fps = getVideoFPS(file_maybe_in_game_dir(left_files[0]));
+    double lfo = offsets["left"].as<double>(); // this is decimal frames
+    pipeline["hmstitcher"]["left-frame-offset"] = std::to_string(lfo / fps * GST_SECOND);
+  }
+  if (!right_files.empty()) {
+    double fps = getVideoFPS(file_maybe_in_game_dir(right_files[0]));
+    double lfo = offsets["right"].as<double>(); // this is decimal frames
+    pipeline["hmstitcher"]["right-frame-offset"] = std::to_string(lfo / fps * GST_SECOND);
+  }
 }
 
 } // namespace hm

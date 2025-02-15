@@ -72,6 +72,7 @@ gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_
   SET_LOCATOR(locator, *config, enable);
   SET_LOCATOR(locator, *config, unique_id);
   SET_LOCATOR(locator, *config, gpu_id);
+  // SET_LOCATOR(locator, *config, gpu_id);
   SET_LOCATOR(locator, *config, nvbuf_memory_type);
   SET_LOCATOR_CHARS(locator, *config, config_file);
   set_config_from_yaml(yaml_node, locator);
@@ -229,11 +230,6 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, gcha
   std::string sgie_str = "secondary-gie";
   std::string msgcons_str = "message-consumer";
   std::string dewarper_str = "dewarper";
-
-  std::cout << configyml << std::endl;
-
-  // ConfigLocator locator;
-  // SET_LOCATOR(locator, config, )
 
   config->source_list_enabled = FALSE;
 
