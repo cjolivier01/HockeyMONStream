@@ -161,7 +161,7 @@ void Configurator::complete_configuration() {
   if (!right_files.empty()) {
     double fps = getVideoFPS(file_maybe_in_game_dir(right_files[0]));
     double lfo = offsets["right"].as<double>(); // this is decimal frames
-    pipeline["hmstitcher"]["right-frame-offset"] = std::to_string(lfo / fps * GST_SECOND);
+    pipeline["hmstitcher"]["right-frame-offset"] = std::to_string(size_t(lfo / fps * GST_SECOND));
   }
 }
 
