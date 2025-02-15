@@ -139,27 +139,36 @@ cudaError StitcherPriv::GenerateOutput(
   std::vector<NvDsFrameMeta*> remove_frame_metas;
   remove_frame_metas.reserve(in_surface->batchSize);
 
-  // TODO: what do we do about this mismatch???
-  // NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list;
-  // std::unordered_set<int> seen_surface_indexes;
   size_t surface_index = 0;
   for (NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list; frame_meta_list != nullptr;
        frame_meta_list = frame_meta_list->next) {
     assert(frame_meta_list);
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)frame_meta_list->data;
     assert(frame_meta->num_surfaces_per_frame == 1);
+    auto* surface_params = &in_surface->surfaceList[surface_index];
     // assert(seen_surface_indexes.emplace(frame_meta->surface_index).second);
-    // std::cout << "surfaceindex: " << frame_meta->surface_index << std::endl;
+    std::cout << "source_id=" << frame_meta->source_id << ", frame_num=" << frame_meta->frame_num << std::endl;
     auto& frame_sources = frame_source_surfaces[frame_meta->frame_num];
     if (!frame_sources.empty()) {
+      // We only keep one of the frame meta's for each frame_num, and we'll modify it to
+      // mathc the eventual stitched frame.
+      // atm, we don't care which source it is, hopefully they come in sorted?
       remove_frame_metas.emplace_back(frame_meta);
     }
-    frame_sources.emplace(
-        frame_meta->source_id,
-        FrameInfo{
-            .surface_params = &in_surface->surfaceList[surface_index],
-            .frame_meta = frame_meta,
-        });
+#if 0
+    if (frame_meta->source_id == 1 && frame_meta->frame_num == 0) {
+      show_image("frame", surface_params, 0.2);
+    }
+#endif
+    const bool inserted = frame_sources
+                              .emplace(
+                                  frame_meta->source_id,
+                                  FrameInfo{
+                                      .surface_params = surface_params,
+                                      .frame_meta = frame_meta,
+                                  })
+                              .second;
+    assert(inserted);
     ++surface_index;
   }
 
@@ -174,10 +183,6 @@ cudaError StitcherPriv::GenerateOutput(
   // out_surface->numFilled = batch_size;
   out_surface->batchSize = batch_size;
 
-  // nvds_remove_frame_meta_from_batch_meta(NvDsBatchMeta *batch_meta, NvDsFrameMeta *frame_meta);
-  // NvDsFrameMeta *nvds_acquire_frame_meta_from_pool(NvDsBatchMeta *batch_meta);
-  // nvds_add_frame_meta_to_batch_meta(NvDsBatchMeta *batch_meta, NvDsFrameMeta *frame_meta);
-
   // for (size_t batch_nr = 0; batch_nr < batch_size; batch_nr++) {
   size_t out_surfcace_index = 0;
   for (auto frame_iter = frame_source_surfaces.begin(), frame_end = frame_source_surfaces.end();
@@ -188,10 +193,14 @@ cudaError StitcherPriv::GenerateOutput(
     auto& source_to_surface = frame_iter->second;
     assert(source_to_surface.size() == 2);
 
-    FrameInfo& frame_info = source_to_surface.begin()->second;
+    const FrameInfo& frame_info_left = source_to_surface.begin()->second;
+    const FrameInfo& frame_info_right = source_to_surface.rbegin()->second;
+    // This tests the assumption that the source ids come in sorted
+    assert(frame_info_left.frame_meta);
+    assert(!frame_info_right.frame_meta);
 
-    NvBufSurfaceParams* left_params = frame_info.surface_params;
-    NvBufSurfaceParams* right_params = frame_info.surface_params;
+    const NvBufSurfaceParams* left_params = frame_info_left.surface_params;
+    const NvBufSurfaceParams* right_params = frame_info_right.surface_params;
     NvBufSurfaceParams* output_params = &out_surface->surfaceList[out_surfcace_index];
 
     assert(output_params->width == (uint32_t)stitcher_->canvas_width());
@@ -221,14 +230,8 @@ cudaError StitcherPriv::GenerateOutput(
         },
         /*batch_size=*/1);
 
-    // if (!render("left", left_params, videoprep->stream)) {
-    //   std::cerr << "render oops" << std::endl;
-    // }
-
-    show_image("left", left_params);
-
-    // cudaStreamSynchronize(videoprep->stream);
-    // render("left", left_params, videoprep->stream);
+    // show_image("left", left_params, 0.2, /*wait=*/false);
+    // show_image("right", right_params, 0.2, /*wait=*/false);
 
     err = cudaMemset(canvas->data(), 128, canvas->width() * canvas->height() * sizeof(uchar4));
     assert(err == cudaError_t::cudaSuccess);
@@ -239,12 +242,12 @@ cudaError StitcherPriv::GenerateOutput(
         canvas = std::move(stitch_result.ValueOrDie());
         // render_.render("canvas", output_params, videoprep->stream);
         ++out_surface->numFilled;
-        frame_info.frame_meta->source_frame_width = canvas->width();
-        frame_info.frame_meta->source_frame_height = canvas->height();
-        frame_info.frame_meta->surface_index = 0; // out_surfcace_index;
-        frame_info.frame_meta->pad_index = 0;
-        frame_info.frame_meta->pipeline_width = 0;
-        frame_info.frame_meta->pipeline_height = 0;
+        frame_info_left.frame_meta->source_frame_width = canvas->width();
+        frame_info_left.frame_meta->source_frame_height = canvas->height();
+        frame_info_left.frame_meta->surface_index = 0; // out_surfcace_index;
+        frame_info_left.frame_meta->pad_index = 0;
+        frame_info_left.frame_meta->pipeline_width = 0;
+        frame_info_left.frame_meta->pipeline_height = 0;
       } else {
         std::cerr << stitch_result.status() << std::endl;
         GST_ERROR("%s\n", stitch_result.status().message().c_str());
