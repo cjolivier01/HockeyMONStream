@@ -279,8 +279,8 @@ ds-example:
   processing-height: 480
 
 hmvideoprep:
-  enable: false
-  # enable: true
+  # enable: false
+  enable: true
   gpu-id: 0
   # plugin-type: videoprep
   # has_queue: false
@@ -293,13 +293,13 @@ hmvideoprep:
   # source-id: 6
   # config-file: /opt/nvidia/deepstream/deepstream/sources/apps/sample_apps/deepstream-dewarper-test/config_dewarper_rot_matrix.txt
 
-  # plugin-type: playcropper
-  # config-file: config_dewarper_null.txt
-  # num-output-buffers: 4
+  plugin-type: playcropper
+  config-file: config_dewarper_null.txt
+  num-output-buffers: 4
 
-  plugin-type: hmstitcher
-  config-file: /home/colivier/Videos/mlk-heat-1
-  num-output-buffers: 2
+  # plugin-type: hmstitcher
+  # config-file: /home/colivier/Videos/mlk-heat-1
+  # num-output-buffers: 2
 
 hmstitcher:
   enable: 1

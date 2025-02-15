@@ -30,7 +30,6 @@
 
 namespace hm {
 namespace playcropper {
-
 gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) {
   cudaError_t cudaErr;
 
@@ -270,8 +269,11 @@ cudaError PlayCropperPriv::GenerateOutput(
 
     // We just rotate the whole thing around the point
     // that is effectively the center of the tracking box
-#if 0
+#if 1
     {
+      Point anchor_point = new_tbox.center();
+      // anchor_point.x = 0;
+      // anchor_point.y = 0;
       auto in_surf_iter = scratch_surface_iter++;
       np_status = rotateNvBufSurfaceWithNPP(
           *in_surf_iter,
@@ -279,7 +281,7 @@ cudaError PlayCropperPriv::GenerateOutput(
           *scratch_surface_iter,
           dst_box,
           angle,
-          /*anchor_point=*/new_tbox.center(),
+          /*anchor_point=*/anchor_point,
           nppStreamContext);
       assert(np_status == NppStatus::NPP_SUCCESS);
       // videoprep->priv->render(std::string("Rotate"), *in_surf_iter, nppStreamContext.hStream);
