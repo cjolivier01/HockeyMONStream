@@ -18,6 +18,9 @@
 #include <vector>
 #include "nvbufsurface.h"
 
+#include "cudaMat.h"
+#include "showImage.h"
+
 #if defined(__aarch64__)
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -86,6 +89,18 @@ struct ModifyBatchFrames {
   }
   NvDsBatchMeta* batch_meta_;
 };
+
+void show_image(std::string label, hm::surface::Surface surface, float scale = 1.0, bool wait = true) {
+  hm::CudaMat mat(
+      hm::SurfaceInfo{
+          .width = (int)surface.width(),
+          .height = (int)surface.height(),
+          .pitch = (int)surface.pitch(),
+          .data_ptr = surface.dataptr(),
+      },
+      1);
+  hm::utils::display_scaled_image(label, mat.download(), scale, wait);
+}
 
 cudaError StitcherPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
@@ -209,6 +224,8 @@ cudaError StitcherPriv::GenerateOutput(
     // if (!render("left", left_params, videoprep->stream)) {
     //   std::cerr << "render oops" << std::endl;
     // }
+
+    show_image("left", left_params);
 
     // cudaStreamSynchronize(videoprep->stream);
     // render("left", left_params, videoprep->stream);
