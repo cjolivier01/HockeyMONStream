@@ -246,6 +246,9 @@ class HmApp : public _AppCtx {
   const hm::Configurator& configurator() {
     return *configurator_;
   }
+  void complete_configuration() {
+    configurator_->complete_configuration();
+  }
  private:
   std::unique_ptr<hm::Configurator> configurator_;
   std::string game_id_;

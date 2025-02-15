@@ -124,4 +124,10 @@ YAML::Node Configurator::auto_config(YAML::Node&& config) {
   return std::move(config);
 }
 
+void Configurator::complete_configuration() {
+  YAML::Node pipeline = config_["pipeline"];
+  assert(pipeline.IsDefined()); 
+  // 
+}
+
 } // namespace hm

@@ -86,7 +86,6 @@ cudaError PlayCropperPriv::GenerateOutput(
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
   cudaError err = cudaSuccess;
-
   assert(cudaGetLastError() == cudaSuccess);
 
   // NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));

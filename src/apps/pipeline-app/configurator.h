@@ -28,6 +28,8 @@ class Configurator {
     return config_;
   }
 
+  void complete_configuration();
+
  private:
   YAML::Node merge_nodes(const YAML::Node& base, const YAML::Node& overlay, bool warn_if_key_not_in_dest);
 

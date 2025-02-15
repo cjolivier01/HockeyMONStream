@@ -17,7 +17,7 @@ application:
   ##gie-kitti-output-dir=streamscl
 
 tiled-display:
-  enable: 0
+  enable: 1
   rows: 1
   columns: 1
   # rows: 2
@@ -279,8 +279,8 @@ ds-example:
   processing-height: 480
 
 hmvideoprep:
-  # enable: false
-  enable: true
+  enable: false
+  # enable: true
   gpu-id: 0
   # plugin-type: videoprep
   # has_queue: false
@@ -302,7 +302,7 @@ hmvideoprep:
   # num-output-buffers: 2
 
 hmstitcher:
-  enable: 1
+  enable: 0
   gpu-id: 0
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
@@ -319,7 +319,7 @@ ds-playtracker:
   config-file: play_tracker_config.yaml
 
 ds-fieldmask:
-  enable: 1
+  enable: 0
   gpu-id: 0
   unique-id: 76
   # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png

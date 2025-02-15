@@ -230,6 +230,8 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, gcha
   std::string msgcons_str = "message-consumer";
   std::string dewarper_str = "dewarper";
 
+  std::cout << configyml << std::endl;
+
   // ConfigLocator locator;
   // SET_LOCATOR(locator, config, )
 

@@ -13,14 +13,14 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <cuda_runtime_api.h>
+#include <gst/gstbin.h>
 #include <string.h>
 #include <termios.h>
 #include <unistd.h>
+#include <memory>
 #include "deepstream_app.h"
 #include "deepstream_config_file_parser.h"
 #include "nvds_version.h"
-
-#include <memory>
 
 #define MAX_INSTANCES 128
 #define APP_TITLE "DeepStream"
@@ -38,6 +38,7 @@ static gboolean print_version = FALSE;
 static gboolean show_bbox_text = FALSE;
 static gboolean print_dependencies_version = FALSE;
 static gboolean quit = FALSE;
+static gboolean dump_pipeline_dot = FALSE;
 static gint return_value = 0;
 static guint num_instances;
 static guint num_input_uris;
@@ -59,6 +60,7 @@ GST_DEBUG_CATEGORY(NVDS_APP);
 GOptionEntry entries[] = {
     {"version", 'v', 0, G_OPTION_ARG_NONE, &print_version, "Print DeepStreamSDK version", NULL},
     {"tiledtext", 't', 0, G_OPTION_ARG_NONE, &show_bbox_text, "Display Bounding box labels in tiled mode", NULL},
+    {"dump-pipeline-dot", 'd', 0, G_OPTION_ARG_NONE, &dump_pipeline_dot, "Dump graphviz dot file of pipeline", NULL},
     {"version-all",
      0,
      0,
@@ -636,6 +638,7 @@ int main(int argc, char* argv[]) {
         appCtx[i]->return_value = -1;
         goto done;
       }
+      appCtx[i]->complete_configuration();
       if (!parse_config_yaml(appCtx[i]->configurator().config()["pipeline"], &appCtx[i]->config, cfg_files[i])) {
         NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files[i]);
         appCtx[i]->return_value = -1;
@@ -651,14 +654,19 @@ int main(int argc, char* argv[]) {
   }
 
   for (i = 0; i < num_instances; i++) {
-    // appCtx[i]->config.use_nvmultiurisrcbin = TRUE;
-    // if (!appCtx[i]->config.max_batch_size) {
-    //   appCtx[i]->config.max_batch_size = 4;
-    // }
     if (!create_pipeline(appCtx[i].get(), NULL, all_bbox_generated, perf_cb, overlay_graphics)) {
       NVGSTDS_ERR_MSG_V("Failed to create pipeline");
       return_value = -1;
       goto done;
+    }
+    if (dump_pipeline_dot) {
+      std::string s = "pipeline";
+      if (i) {
+        s += '_';
+        s += std::to_string(i);
+      }
+      gst_debug_bin_to_dot_file_with_ts(
+          GST_BIN(appCtx[i]->pipeline.pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "/mnt/data/src/hstream/pipeline.dot");
     }
   }
 
