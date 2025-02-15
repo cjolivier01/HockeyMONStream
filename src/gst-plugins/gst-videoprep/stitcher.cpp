@@ -91,7 +91,7 @@ struct ModifyBatchFrames {
 };
 
 void show_image(std::string label, hm::surface::Surface surface, float scale = 1.0, bool wait = true) {
-  hm::CudaMat mat(
+  hm::CudaMat<uchar4> mat(
       hm::SurfaceInfo{
           .width = (int)surface.width(),
           .height = (int)surface.height(),
