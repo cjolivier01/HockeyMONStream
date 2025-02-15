@@ -302,7 +302,7 @@ hmvideoprep:
   num-output-buffers: 2
 
 hmstitcher:
-  enable: 1
+  enable: 0
   gpu-id: 0
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
