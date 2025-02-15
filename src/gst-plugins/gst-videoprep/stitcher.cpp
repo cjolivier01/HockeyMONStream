@@ -150,7 +150,7 @@ cudaError StitcherPriv::GenerateOutput(
     assert(frame_meta->num_surfaces_per_frame == 1);
     auto* surface_params = &in_surface->surfaceList[surface_index];
     // assert(seen_surface_indexes.emplace(frame_meta->surface_index).second);
-    std::cout << "source_id=" << frame_meta->source_id << ", frame_num=" << frame_meta->frame_num << std::endl;
+    // std::cout << "source_id=" << frame_meta->source_id << ", frame_num=" << frame_meta->frame_num << std::endl;
     auto& frame_sources = frame_source_surfaces[frame_meta->frame_num];
 
     NvDsFrameMeta* persistent_frame_meta{nullptr};
