@@ -239,9 +239,6 @@ cudaError StitcherPriv::GenerateOutput(
     // show_image("left", left_params, 0.2, /*wait=*/false);
     // show_image("right", right_params, 0.2, /*wait=*/false);
 
-    err = cudaMemset(canvas->data(), 128, canvas->width() * canvas->height() * sizeof(uchar4));
-    assert(err == cudaError_t::cudaSuccess);
-
     if (err == cudaError_t::cudaSuccess) {
       auto stitch_result = stitcher_->process(left, right, videoprep->stream, std::move(canvas));
       if (stitch_result.ok()) {
