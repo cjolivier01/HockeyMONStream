@@ -105,8 +105,13 @@ cudaError StitcherPriv::GenerateOutput(
   assert(in_surface->numFilled % 2 == 0);
   // assert(in_surface->isContiguous);
 
+  struct FrameInfo {
+    NvBufSurfaceParams* surface_params;
+    NvDsFrameMeta* frame_meta;
+  };
+
   //  frame_number -> source_id -> NvBufSurfaceParams*
-  std::map<int, std::map<int, NvBufSurfaceParams*>> frame_source_surfaces;
+  std::map<int, std::map<int, FrameInfo>> frame_source_surfaces;
 
   assert(videoprep->stream);
 
@@ -128,11 +133,18 @@ cudaError StitcherPriv::GenerateOutput(
     assert(frame_meta_list);
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)frame_meta_list->data;
     assert(frame_meta->num_surfaces_per_frame == 1);
-    remove_frame_metas.emplace_back(frame_meta);
     // assert(seen_surface_indexes.emplace(frame_meta->surface_index).second);
-    std::cout << "surfaceindex: " << frame_meta->surface_index << std::endl;
-    frame_source_surfaces[frame_meta->frame_num].emplace(
-        frame_meta->source_id, &in_surface->surfaceList[surface_index]);
+    // std::cout << "surfaceindex: " << frame_meta->surface_index << std::endl;
+    auto& frame_sources = frame_source_surfaces[frame_meta->frame_num];
+    if (!frame_sources.empty()) {
+      remove_frame_metas.emplace_back(frame_meta);
+    }
+    frame_sources.emplace(
+        frame_meta->source_id,
+        FrameInfo{
+            .surface_params = &in_surface->surfaceList[surface_index],
+            .frame_meta = frame_meta,
+        });
     ++surface_index;
   }
 
@@ -161,8 +173,10 @@ cudaError StitcherPriv::GenerateOutput(
     auto& source_to_surface = frame_iter->second;
     assert(source_to_surface.size() == 2);
 
-    NvBufSurfaceParams* left_params = source_to_surface.begin()->second;
-    NvBufSurfaceParams* right_params = source_to_surface.rbegin()->second;
+    FrameInfo& frame_info = source_to_surface.begin()->second;
+
+    NvBufSurfaceParams* left_params = frame_info.surface_params;
+    NvBufSurfaceParams* right_params = frame_info.surface_params;
     NvBufSurfaceParams* output_params = &out_surface->surfaceList[out_surfcace_index];
 
     assert(output_params->width == (uint32_t)stitcher_->canvas_width());
@@ -208,6 +222,12 @@ cudaError StitcherPriv::GenerateOutput(
         canvas = std::move(stitch_result.ValueOrDie());
         // render_.render("canvas", output_params, videoprep->stream);
         ++out_surface->numFilled;
+        frame_info.frame_meta->source_frame_width = canvas->width();
+        frame_info.frame_meta->source_frame_height = canvas->height();
+        frame_info.frame_meta->surface_index = 0; // out_surfcace_index;
+        frame_info.frame_meta->pad_index = 0;
+        frame_info.frame_meta->pipeline_width = 0;
+        frame_info.frame_meta->pipeline_height = 0;
       } else {
         std::cerr << stitch_result.status() << std::endl;
         GST_ERROR("%s\n", stitch_result.status().message().c_str());
@@ -218,6 +238,7 @@ cudaError StitcherPriv::GenerateOutput(
   }
 
   if (out_surface->numFilled) {
+    ModifyBatchFrames modifier(batch_meta, remove_frame_metas);
     cudaStreamSynchronize(videoprep->stream);
   }
 
