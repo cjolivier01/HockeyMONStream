@@ -199,7 +199,7 @@ cudaError StitcherPriv::GenerateOutput(
        frame_iter != frame_end;
        ++frame_iter, ++out_surfcace_index) {
     const int frame_num = frame_iter->first;
-    std::cout << "frame_num=" << frame_num << std::endl;
+    // std::cout << "frame_num=" << frame_num << std::endl;
     auto& source_to_surface = frame_iter->second;
     assert(source_to_surface.size() == 2);
 
