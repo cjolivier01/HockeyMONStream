@@ -35,12 +35,6 @@ class VideoPrepPriv : public DSCustomLibraryBase {
   VideoPrepPriv(int gpu_id, size_t batch_size) : scratch_buffers(gpu_id, batch_size) {}
   hm::surface::SurfaceList scratch_buffers;
 
-  // template <typename... Args>
-  // void render(Args&&... args) {
-  //     // Forward all arguments to the target function
-  //     render_(std::forward<Args>(args)...);
-  // }
-
   bool render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream) {
     return render_.render(name, surface, stream);
   }
@@ -144,6 +138,8 @@ struct GstVideoPrep
 
   guint dump_frames;  /**< Number of dewarped output frames to be dumped in a *.rgba file. Useful for debugging */
   void *output;       /**< Host memory  pointer for output buffer. Used for frame dumps. */
+
+  // gboolean deref_input_buffer;        /** defer the incoming GstBuffer */
 
   gboolean silent;                    /**< Boolean indicating swtiching on/off of verbose output */
 

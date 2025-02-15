@@ -6,6 +6,7 @@
 #include <gst/base/gstbasetransform.h>
 #include <gst/gst.h>
 #include <gst/video/video.h>
+#include <gstreamer-1.0/gst/gstbuffer.h>
 #include <npp.h>
 #include <nvbufsurface.h>
 #include <cmath>
@@ -913,6 +914,11 @@ static GstFlowReturn gst_videoprep_transform(GstBaseTransform* btrans, GstBuffer
   if (!gst_buffer_copy_into(outbuf, inbuf, (GstBufferCopyFlags)GST_BUFFER_COPY_METADATA, 0, -1)) {
     GST_DEBUG_OBJECT(videoprep, "Buffer metadata copy failed \n");
   }
+
+  // if (videoprep->deref_input_buffer) {
+  //   gst_buffer_unref(inbuf);
+  // }
+
   return GST_FLOW_OK;
 
 invalid_inbuf: {
