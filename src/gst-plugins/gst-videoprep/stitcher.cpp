@@ -50,7 +50,7 @@ bool StitcherPriv::SetInitParams(DSCustom_CreateParams* params) {
     return false;
   }
   stitcher_ = std::make_unique<hm::pano::cuda::CudaStitchPano<uchar4, float3>>(
-      /*batch_size=*/1, /*num_levels=*/0, control_masks, /*match_exposure=*/false);
+      /*batch_size=*/1, /*num_levels=*/6, control_masks, /*match_exposure=*/true);
   if (!stitcher_->status().ok()) {
     return false;
   }
@@ -189,15 +189,13 @@ cudaError StitcherPriv::GenerateOutput(
 
   // We will have this many output frames
   const size_t batch_size = frame_source_surfaces.size();
-  // out_surface->batchSize = batch_size;
-  // out_surface->numFilled = batch_size;
   out_surface->batchSize = batch_size;
 
   // for (size_t batch_nr = 0; batch_nr < batch_size; batch_nr++) {
-  size_t out_surfcace_index = 0;
+  size_t out_surface_index = 0;
   for (auto frame_iter = frame_source_surfaces.begin(), frame_end = frame_source_surfaces.end();
        frame_iter != frame_end;
-       ++frame_iter, ++out_surfcace_index) {
+       ++frame_iter, ++out_surface_index) {
     // const int frame_num = frame_iter->first;
     // std::cout << "frame_num=" << frame_num << std::endl;
     auto& source_to_surface = frame_iter->second;
@@ -209,7 +207,7 @@ cudaError StitcherPriv::GenerateOutput(
 
     const NvBufSurfaceParams* left_params = frame_info_left.surface_params;
     const NvBufSurfaceParams* right_params = frame_info_right.surface_params;
-    NvBufSurfaceParams* output_params = &out_surface->surfaceList[out_surfcace_index];
+    NvBufSurfaceParams* output_params = &out_surface->surfaceList[out_surface_index];
 
     assert(output_params->width == (uint32_t)stitcher_->canvas_width());
     assert(output_params->height == (uint32_t)stitcher_->canvas_height());
@@ -255,7 +253,7 @@ cudaError StitcherPriv::GenerateOutput(
         assert(frame_info_left.persistent_frame_meta == frame_info_right.persistent_frame_meta);
         frame_info_left.persistent_frame_meta->source_frame_width = canvas->width();
         frame_info_left.persistent_frame_meta->source_frame_height = canvas->height();
-        frame_info_left.persistent_frame_meta->surface_index = 0; // out_surfcace_index;
+        frame_info_left.persistent_frame_meta->surface_index = 0; // out_surface_index;
         frame_info_left.persistent_frame_meta->pad_index = 0;
         frame_info_left.persistent_frame_meta->pipeline_width = 0;
         frame_info_left.persistent_frame_meta->pipeline_height = 0;
