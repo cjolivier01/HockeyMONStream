@@ -396,8 +396,7 @@ error:
 /**
  * Called when element recieves an input buffer from upstream element.
  */
-// static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btrans, gboolean discont, GstBuffer*
-// inbuf) {
+// static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btrans, gboolean discont, GstBuffer* inbuf) {
 //   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(btrans);
 //   GstMapInfo in_map_info;
 //   NvBufSurface* in_surf{nullptr};
@@ -562,11 +561,11 @@ static void attach_metadata_full_frame(
 static GstFlowReturn gst_playtracker_transform(GstBaseTransform* btrans, GstBuffer* inbuf) {
   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(btrans);
   GstMapInfo inmap = GST_MAP_INFO_INIT;
-  GstMapInfo outmap = GST_MAP_INFO_INIT;
+  // GstMapInfo outmap = GST_MAP_INFO_INIT;
   NvBufSurface* in_surface = NULL;
-  NvBufSurface* out_surface = NULL;
-  cudaError cudaErr = cudaSuccess;
-  gchar pts_str[64];
+  // NvBufSurface* out_surface = NULL;
+  // cudaError cudaErr = cudaSuccess;
+  // gchar pts_str[64];
 
   NvDsBatchMeta* batch_meta = gst_buffer_get_nvds_batch_meta(inbuf);
   assert(batch_meta);
@@ -576,6 +575,8 @@ static GstFlowReturn gst_playtracker_transform(GstBaseTransform* btrans, GstBuff
 
   if (!gst_buffer_map(inbuf, &inmap, GST_MAP_READ))
     goto invalid_inbuf;
+
+  in_surface = (NvBufSurface*)inmap.data;
 
   // if (!gst_buffer_map(outbuf, &outmap, GST_MAP_WRITE))
   //   goto invalid_outbuf;
@@ -618,6 +619,18 @@ static GstFlowReturn gst_playtracker_transform(GstBaseTransform* btrans, GstBuff
   //     videoprep->frame_num,
   //     print_pretty_time(pts_str, sizeof(pts_str), GST_BUFFER_PTS(outbuf)));
 
+  for (guint i = 0; i < batch_meta->num_frames_in_batch; i++) {
+    GstDsPlayTrackerFrame frame;
+    frame.obj_meta = nullptr;
+    frame.frame_meta = nvds_get_nth_frame_meta(batch_meta->frame_meta_list, i);
+    frame.frame_num = frame.frame_meta->frame_num;
+    frame.batch_index = i;
+    frame.input_surf_params = in_surface->surfaceList + i;
+    if (DsPlayTrackerProcessFrame(frame, playtracker->playtrackerlib_ctx, playtracker->stream)) {
+      attach_metadata_full_frame(playtracker, frame.frame_meta, frame.play_tracker_results, frame.batch_index);
+    }
+  }
+
   gst_buffer_unmap(inbuf, &inmap);
   // gst_buffer_unmap(outbuf, &outmap);
 
@@ -636,17 +649,18 @@ invalid_inbuf: {
   return GST_FLOW_ERROR;
 }
 
-invalid_outbuf: {
-  GST_ERROR_OBJECT(playtracker, "output buffer mapinfo failed");
-  gst_buffer_unmap(inbuf, &inmap);
-  return GST_FLOW_ERROR;
-}
+// invalid_outbuf: {
+//   GST_ERROR_OBJECT(playtracker, "output buffer mapinfo failed");
+//   gst_buffer_unmap(inbuf, &inmap);
+//   return GST_FLOW_ERROR;
+// }
 }
 
 /**
  * Output loop used to pop output from processing thread, attach the output to
  * the buffer in form of NvDsMeta and push the buffer to downstream element.
  */
+#if 0
 static gpointer gst_playtracker_output_loop(gpointer data) {
   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(data);
 
@@ -722,7 +736,7 @@ static gpointer gst_playtracker_output_loop(gpointer data) {
 
   return nullptr;
 }
-
+#endif
 /**
  * Boiler plate for registering a plugin and an element.
  */
