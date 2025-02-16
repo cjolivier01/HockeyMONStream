@@ -235,6 +235,36 @@ bool Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig
     src_bins.emplace_back(pipeline.multi_src_bin.sub_bins[i].src_elem);
   }
   assert(src_bins.size() == 2);
+  if (src_bins.size() == 2) {
+    if (config.hmsticher_config.left_frame_offset_ns) {
+      gboolean result = gst_element_seek(
+          src_bins[0],
+          1.0, // playback rate
+          GST_FORMAT_TIME, // seek format (nanoseconds)
+          (GstSeekFlags)((int)GST_SEEK_FLAG_FLUSH | (int)GST_SEEK_FLAG_KEY_UNIT),
+          GST_SEEK_TYPE_SET, // seek from a specific time
+          config.hmsticher_config.left_frame_offset_ns,
+          GST_SEEK_TYPE_NONE,
+          GST_CLOCK_TIME_NONE);
+      if (!result) {
+        g_printerr("Failed to seek source 0\n");
+      }
+    }
+    if (config.hmsticher_config.right_frame_offset_ns) {
+      gboolean result = gst_element_seek(
+          src_bins[1],
+          1.0, // playback rate
+          GST_FORMAT_TIME, // seek format (nanoseconds)
+          (GstSeekFlags)((int)GST_SEEK_FLAG_FLUSH | (int)GST_SEEK_FLAG_KEY_UNIT),
+          GST_SEEK_TYPE_SET, // seek from a specific time
+          config.hmsticher_config.right_frame_offset_ns,
+          GST_SEEK_TYPE_NONE,
+          GST_CLOCK_TIME_NONE);
+      if (!result) {
+        g_printerr("Failed to seek source 1\n");
+      }
+    }
+  }
   return true;
 }
 
