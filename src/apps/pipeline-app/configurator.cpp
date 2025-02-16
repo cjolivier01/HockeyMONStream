@@ -13,6 +13,32 @@
 
 namespace hm {
 
+namespace {
+
+static void save_dot_file(GstElement* pipeline, GstDebugGraphDetails details, const std::string& filename) {
+  gchar* dot_data = gst_debug_bin_to_dot_data(GST_BIN(pipeline), details);
+  if (dot_data) {
+    // Print to stdout
+    // std::cout << dot_data << std::endl;
+
+    // Or save to a file
+    std::ofstream dot_file(filename + ".dot");
+    if (dot_file.is_open()) {
+      dot_file << dot_data;
+      dot_file.close();
+      std::cout << "DOT file saved as '" << filename << ".dot'" << std::endl;
+    } else {
+      std::cerr << "Failed to open file for writing." << std::endl;
+    }
+
+    g_free(dot_data);
+  } else {
+    std::cerr << "Failed to generate DOT data" << std::endl;
+  }
+}
+
+} // namespace
+
 Configurator::Configurator(const std::string& game_id, const std::string& config_root_dir)
     : game_id_(game_id), config_root_dir_(config_root_dir) {
   // Constructor
@@ -169,12 +195,14 @@ void Configurator::complete_configuration() {
   if (!left_files.empty()) {
     double fps = getVideoFPS(file_maybe_in_game_dir(left_files[0]));
     double lfo = offsets["left"].as<double>(); // this is decimal frames
+    set_stream_offsets_ |= lfo != 0.0;
     pipeline["hmstitcher"]["left-frame-offset-ns"] = std::to_string(size_t(lfo / fps * GST_SECOND));
   }
   if (!right_files.empty()) {
     double fps = getVideoFPS(file_maybe_in_game_dir(right_files[0]));
-    double lfo = offsets["right"].as<double>(); // this is decimal frames
-    pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(lfo / fps * GST_SECOND));
+    double rfo = offsets["right"].as<double>(); // this is decimal frames
+    set_stream_offsets_ |= rfo != 0.0;
+    pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / fps * GST_SECOND));
   }
   // Source 0 files
   if (!left_files.empty() && !right_files.empty()) {
@@ -189,28 +217,6 @@ void Configurator::complete_configuration() {
       src1["uri"] = ff + file_maybe_in_game_dir(right_files[0]);
       // std::cout << src0 << std::endl;
     }
-  }
-}
-
-static void save_dot_file(GstElement* pipeline, GstDebugGraphDetails details, const std::string& filename) {
-  gchar* dot_data = gst_debug_bin_to_dot_data(GST_BIN(pipeline), GST_DEBUG_GRAPH_SHOW_ALL);
-  if (dot_data) {
-    // Print to stdout
-    // std::cout << dot_data << std::endl;
-
-    // Or save to a file
-    std::ofstream dot_file(filename + ".dot");
-    if (dot_file.is_open()) {
-      dot_file << dot_data;
-      dot_file.close();
-      std::cout << "DOT file saved as '" << filename << ".dot'" << std::endl;
-    } else {
-      std::cerr << "Failed to open file for writing." << std::endl;
-    }
-
-    g_free(dot_data);
-  } else {
-    std::cerr << "Failed to generate DOT data" << std::endl;
   }
 }
 

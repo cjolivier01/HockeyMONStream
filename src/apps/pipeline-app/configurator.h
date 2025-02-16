@@ -45,5 +45,7 @@ class Configurator {
 
   // The fully-realzied merged config
   YAML::Node config_;
+
+  bool set_stream_offsets_{false};
 };
 } // namespace hm
