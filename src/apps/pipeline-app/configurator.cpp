@@ -186,13 +186,15 @@ void Configurator::complete_configuration() {
       const std::string ff = "file://";
       src0["uri"] = ff + file_maybe_in_game_dir(left_files[0]);
       src1["uri"] = ff + file_maybe_in_game_dir(right_files[0]);
-      std::cout << src0 << std::endl;
+      // std::cout << src0 << std::endl;
     }
   }
 }
 
 bool Configurator::post_config_pipeline(GstElement *pipeline, const NvDsConfig& config) {
-  
+  // assert(gst_element_get_state(pipeline) == GST_STATE_PAUSED);
+  GST_DEBUG_BIN_TO_DOT_FILE(GST_BIN(pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "pipeline");
+
   return true;
 }
 
