@@ -3,6 +3,7 @@
 #include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
 
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -191,10 +192,30 @@ void Configurator::complete_configuration() {
   }
 }
 
-bool Configurator::post_config_pipeline(GstElement *pipeline, const NvDsConfig& config) {
-  // assert(gst_element_get_state(pipeline) == GST_STATE_PAUSED);
-  GST_DEBUG_BIN_TO_DOT_FILE(GST_BIN(pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "pipeline");
+static void save_dot_file(GstElement* pipeline, GstDebugGraphDetails details, const std::string& filename) {
+  gchar* dot_data = gst_debug_bin_to_dot_data(GST_BIN(pipeline), GST_DEBUG_GRAPH_SHOW_ALL);
+  if (dot_data) {
+    // Print to stdout
+    // std::cout << dot_data << std::endl;
 
+    // Or save to a file
+    std::ofstream dot_file(filename + ".dot");
+    if (dot_file.is_open()) {
+      dot_file << dot_data;
+      dot_file.close();
+      std::cout << "DOT file saved as '" << filename << ".dot'" << std::endl;
+    } else {
+      std::cerr << "Failed to open file for writing." << std::endl;
+    }
+
+    g_free(dot_data);
+  } else {
+    std::cerr << "Failed to generate DOT data" << std::endl;
+  }
+}
+
+bool Configurator::post_config_pipeline(GstElement* pipeline, const NvDsConfig& config) {
+  save_dot_file(pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline");
   return true;
 }
 
