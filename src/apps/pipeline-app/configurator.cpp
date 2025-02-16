@@ -1,6 +1,6 @@
 #include "configurator.h"
 #include "deepstream_app.h"
-#include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
+// #include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
 
 #include <filesystem>
 #include <fstream>
@@ -237,39 +237,51 @@ bool Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig
         config.multi_source_config[i].type != NV_DS_SOURCE_URI_MULTIPLE) {
       continue;
     }
-    src_bins.emplace_back(pipeline.multi_src_bin.sub_bins[i].src_elem);
+    // src_bins.emplace_back(pipeline.multi_src_bin.sub_bins[i].src_elem);
+    src_bins.emplace_back(pipeline.multi_src_bin.sub_bins[i].bin);
   }
   assert(src_bins.size() == 2);
-  if (src_bins.size() == 2) {
-    if (config.hmsticher_config.left_frame_offset_ns) {
-      gboolean result = gst_element_seek(
-          src_bins[0],
-          1.0, // playback rate
-          GST_FORMAT_TIME, // seek format (nanoseconds)
-          (GstSeekFlags)((int)GST_SEEK_FLAG_FLUSH | (int)GST_SEEK_FLAG_KEY_UNIT),
-          GST_SEEK_TYPE_SET, // seek from a specific time
-          config.hmsticher_config.left_frame_offset_ns,
-          GST_SEEK_TYPE_NONE,
-          GST_CLOCK_TIME_NONE);
-      if (!result) {
-        g_printerr("Failed to seek source 0\n");
-      }
-    }
-    if (config.hmsticher_config.right_frame_offset_ns) {
-      gboolean result = gst_element_seek(
-          src_bins[1],
-          1.0, // playback rate
-          GST_FORMAT_TIME, // seek format (nanoseconds)
-          (GstSeekFlags)((int)GST_SEEK_FLAG_FLUSH | (int)GST_SEEK_FLAG_KEY_UNIT),
-          GST_SEEK_TYPE_SET, // seek from a specific time
-          config.hmsticher_config.right_frame_offset_ns,
-          GST_SEEK_TYPE_NONE,
-          GST_CLOCK_TIME_NONE);
-      if (!result) {
-        g_printerr("Failed to seek source 1\n");
-      }
-    }
-  }
+
+  // if (src_bins.size() == 2) {
+  //   if (config.hmsticher_config.left_frame_offset_ns) {
+  //     gboolean result = gst_element_seek(
+  //         src_bins[0],
+  //         1.0, // playback rate
+  //         GST_FORMAT_TIME, // seek format (nanoseconds)
+  //         or_flags(GST_SEEK_FLAG_FLUSH, GST_SEEK_FLAG_KEY_UNIT),
+  //         GST_SEEK_TYPE_SET, // seek from a specific time
+  //         config.hmsticher_config.left_frame_offset_ns,
+  //         GST_SEEK_TYPE_NONE,
+  //         GST_CLOCK_TIME_NONE);
+  //     if (!result) {
+  //       g_printerr("Failed to seek source 0\n");
+  //     }
+  //   }
+  //   if (config.hmsticher_config.right_frame_offset_ns) {
+  //     gboolean result = gst_element_seek(
+  //         src_bins[1],
+  //         1.0, // playback rate
+  //         GST_FORMAT_TIME, // seek format (nanoseconds)
+  //         or_flags(GST_SEEK_FLAG_FLUSH, GST_SEEK_FLAG_KEY_UNIT),
+  //         GST_SEEK_TYPE_SET, // seek from a specific time
+  //         config.hmsticher_config.right_frame_offset_ns,
+  //         GST_SEEK_TYPE_NONE,
+  //         GST_CLOCK_TIME_NONE);
+  //     if (!result) {
+  //       g_printerr("Failed to seek source 1\n");
+  //     }
+  //   }
+  // }
+  // gboolean result = gst_element_seek(
+  //     pipeline.pipeline,
+  //     1.0, // playback rate
+  //     GST_FORMAT_TIME, // seek format (nanoseconds)
+  //     or_flags(GST_SEEK_FLAG_FLUSH, GST_SEEK_FLAG_KEY_UNIT),
+  //     GST_SEEK_TYPE_SET, // seek from a specific time
+  //     300 * GST_SECOND,
+  //     GST_SEEK_TYPE_NONE,
+  //     GST_CLOCK_TIME_NONE);
+  // assert(result);
   return true;
 }
 

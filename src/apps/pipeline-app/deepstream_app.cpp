@@ -21,9 +21,7 @@
 
 #include <gst/gstelementfactory.h>
 
-
 #include "deepstream_app.h"
-
 
 #define MAX_DISPLAY_LEN 64
 static guint demux_batch_num = 0;
@@ -2214,4 +2212,17 @@ gboolean resume_pipeline(AppCtx* appCtx) {
   } else {
     return FALSE;
   }
+}
+
+bool HmApp::pause() {
+  // if (!pipeline.pipeline) {
+  //   return false;
+  // }
+  // GstElement* multiSrcBin = gst_bin_get_by_name(GST_BIN(pipeline.pipeline), "multi_src_bin");
+  // if (!multiSrcBin) {
+  //   g_printerr("Could not find multi_src_bin element.\n");
+  //   gst_object_unref(pipeline.pipeline);
+  //   return false;
+  // }
+  return true;
 }

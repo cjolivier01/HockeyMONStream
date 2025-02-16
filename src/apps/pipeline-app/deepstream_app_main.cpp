@@ -779,6 +779,10 @@ int main(int argc, char* argv[]) {
   /* Dont try to set playing state if error is observed */
   if (return_value != -1) {
     for (i = 0; i < num_instances; i++) {
+      // if (!appCtx[i]->pause()) {
+      //   g_printerr("Could not set pipeline to paused\n");
+      //   goto done;
+      // }
       if (!appCtx[i]->configurator().post_config_pipeline(appCtx[i]->pipeline, appCtx[i]->config)) {
         g_print("\npipeline post-configuration failed.\n");
         return_value = -1;

@@ -252,6 +252,9 @@ class HmApp : public _AppCtx {
   void complete_configuration() {
     configurator_->complete_configuration();
   }
+
+  bool pause();
+
  private:
   std::unique_ptr<hm::Configurator> configurator_;
   std::string game_id_;
@@ -330,4 +333,12 @@ NvDsSensorInfo* get_sensor_info(AppCtx* appCtx, guint source_id);
 }
 #endif
 
+#ifdef __cplusplus
+
+template <typename T, typename... Ts>
+T or_flags(const T& flag0, const Ts&... flags) {
+  return static_cast<T>((static_cast<int>(flag0) | ... | static_cast<int>(flags)));
+}
+
+#endif // __cplusplus
 #endif
