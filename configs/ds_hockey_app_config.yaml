@@ -61,7 +61,7 @@ source0:
   # uri: file:///home/colivier/Videos/pdp/GX010087.mp4
   # mlk-extreme
   # uri: file:///home/colivier/Videos/mlk-extreme/GX010096.MP4
-  uri: file:///home/colivier/Videos/mlk-heat-1/GX010097.MP4
+  # uri: file:///home/colivier/Videos/mlk-heat-1/GX010097.MP4
   num-sources: 1
   gpu-id: 0
   cudadec-memtype: 0
@@ -73,7 +73,7 @@ source1:
   # uri: file:///home/colivier/Videos/pdp/GX010003.mp4
   # uri: file:///home/colivier/Videos/mlk-extreme/GX010015.MP4
   # uri: file:///home/colivier/Videos/mlk-heat-1/GX010097.MP4
-  uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
+  # uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
   num-sources: 1
   gpu-id: 0
   cudadec-memtype: 0

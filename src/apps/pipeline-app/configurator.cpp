@@ -146,10 +146,21 @@ static double getVideoFPS(const std::string& videoPath) {
   return fps;
 }
 
+static int as_int(const YAML::Node& node) {
+  // be less asserty than YAML-CPP
+  std::cout << node << std::endl;
+  if (!node.IsDefined()) {
+    return 0;
+  }
+  std::string s = node.as<std::string>();
+  return std::atoi(s.c_str());
+}
+
 void Configurator::complete_configuration() {
   std::cout << config_ << std::endl;
   YAML::Node pipeline = config_["pipeline"];
   assert(pipeline.IsDefined());
+  // Stitching LFO, RFO
   std::vector<std::string> left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
   std::vector<std::string> right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
   auto offsets = config_["game"]["stitching"]["frame_offsets"];
@@ -163,7 +174,20 @@ void Configurator::complete_configuration() {
     double lfo = offsets["right"].as<double>(); // this is decimal frames
     pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(lfo / fps * GST_SECOND));
   }
-  std::cout << pipeline["hmstitcher"] << std::endl;
+  // Source 0 files
+  if (!left_files.empty() && !right_files.empty()) {
+    auto src0 = pipeline["source0"];
+    auto src1 = pipeline["source1"];
+    if (src0.IsDefined() && as_int(src0["enable"]) && as_int(src0["type"]) == 3 && src1.IsDefined() &&
+        as_int(src1["enable"]) && as_int(src1["type"]) == 3) {
+      // Two uri sources, so set them to the stitching files
+      // TODO: how to set all of the files and roll them?
+      const std::string ff = "file://";
+      src0["uri"] = ff + file_maybe_in_game_dir(left_files[0]);
+      src1["uri"] = ff + file_maybe_in_game_dir(right_files[0]);
+      std::cout << src0 << std::endl;
+    }
+  }
 }
 
 } // namespace hm
