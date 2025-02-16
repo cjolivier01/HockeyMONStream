@@ -188,6 +188,10 @@ void Configurator::complete_configuration() {
   std::cout << config_ << std::endl;
   YAML::Node pipeline = config_["pipeline"];
   assert(pipeline.IsDefined());
+  // Stitching config mask config dir
+  auto game_dir = get_game_dir(game_id_);
+  pipeline["hmstitcher"]["config-file"] = std::string(game_dir);
+  pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / "rink_mask_0.png");
   // Stitching LFO, RFO
   std::vector<std::string> left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
   std::vector<std::string> right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
@@ -222,6 +226,7 @@ void Configurator::complete_configuration() {
 
 bool Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config) {
   save_dot_file(pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline");
+  // Seek pre-stitching streams to the proper offsets so that they're in sync
   std::vector<GstElement*> src_bins;
   src_bins.reserve(MAX_SOURCE_BINS);
   for (size_t i = 0; i < pipeline.multi_src_bin.num_bins; ++i) {

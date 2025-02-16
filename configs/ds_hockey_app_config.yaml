@@ -302,11 +302,11 @@ hmvideoprep:
   # num-output-buffers: 2
 
 hmstitcher:
-  enable: 0
+  enable: 1
   gpu-id: 0
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
-  config-file: /home/colivier/Videos/mlk-heat-1
+  # config-file: /home/colivier/Videos/mlk-heat-1
   num-output-buffers: 2
 
 ds-playtracker:
@@ -325,7 +325,7 @@ ds-fieldmask:
   # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png
   # detection-mask: /home/colivier/Videos/ev-reno-1/rink_mask_0.png
   # detection-mask: /home/colivier/Videos/mlk-extreme/rink_mask_0.png
-  detection-mask: /home/colivier/Videos/mlk-heat-1/rink_mask_0.png
+  # detection-mask: /home/colivier/Videos/mlk-heat-1/rink_mask_0.png
 
 tracker:
   enable: 1
