@@ -6,6 +6,8 @@
 #include <optional>
 #include <string>
 
+struct NvDsConfig;
+
 namespace hm {
 class Configurator {
  public:
@@ -29,6 +31,8 @@ class Configurator {
   }
 
   void complete_configuration();
+
+  bool post_config_pipeline(GstElement *pipeline, const NvDsConfig& config);
 
  private:
   std::string file_maybe_in_game_dir(const std::string& basename);

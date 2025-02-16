@@ -1,4 +1,5 @@
 #include "configurator.h"
+#include "deepstream_app.h"
 #include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
 
 #include <filesystem>
@@ -188,6 +189,11 @@ void Configurator::complete_configuration() {
       std::cout << src0 << std::endl;
     }
   }
+}
+
+bool Configurator::post_config_pipeline(GstElement *pipeline, const NvDsConfig& config) {
+  
+  return true;
 }
 
 } // namespace hm

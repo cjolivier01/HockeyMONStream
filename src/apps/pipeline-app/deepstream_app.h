@@ -101,7 +101,7 @@ typedef struct {
   AppCtx* appCtx;
 } NvDsPipeline;
 
-typedef struct {
+struct NvDsConfig {
   gboolean enable_perf_measurement;
   gint file_loop;
   gint pipeline_recreate_sec;
@@ -163,7 +163,7 @@ typedef struct {
    * This will be used in case gpu_id prop is not set for a component
    * if gpu_id prop is set for a component, global_gpu_id will be overridden by it */
   gint global_gpu_id;
-} NvDsConfig;
+};
 
 typedef struct {
   gulong frame_num;
@@ -243,7 +243,10 @@ class HmApp : public _AppCtx {
   bool underlay_config(const std::string& node, const std::string& file) {
     return configurator_->underlay_config(node, file);
   }
-  const hm::Configurator& configurator() {
+  const hm::Configurator& configurator() const {
+    return *configurator_;
+  }
+  hm::Configurator& configurator() {
     return *configurator_;
   }
   void complete_configuration() {

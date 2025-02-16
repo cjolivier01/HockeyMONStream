@@ -779,6 +779,11 @@ int main(int argc, char* argv[]) {
   /* Dont try to set playing state if error is observed */
   if (return_value != -1) {
     for (i = 0; i < num_instances; i++) {
+      if (!appCtx[i]->configurator().post_config_pipeline(appCtx[i]->pipeline.pipeline, appCtx[i]->config)) {
+        g_print("\npipeline post-configuration failed.\n");
+        return_value = -1;
+        goto done;
+      }
       if (gst_element_set_state(appCtx[i]->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
         g_print("\ncan't set pipeline to playing state.\n");
         return_value = -1;
