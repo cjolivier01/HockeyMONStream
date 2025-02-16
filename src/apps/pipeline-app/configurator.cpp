@@ -156,13 +156,14 @@ void Configurator::complete_configuration() {
   if (!left_files.empty()) {
     double fps = getVideoFPS(file_maybe_in_game_dir(left_files[0]));
     double lfo = offsets["left"].as<double>(); // this is decimal frames
-    pipeline["hmstitcher"]["left-frame-offset"] = std::to_string(lfo / fps * GST_SECOND);
+    pipeline["hmstitcher"]["left-frame-offset-ns"] = std::to_string(size_t(lfo / fps * GST_SECOND));
   }
   if (!right_files.empty()) {
     double fps = getVideoFPS(file_maybe_in_game_dir(right_files[0]));
     double lfo = offsets["right"].as<double>(); // this is decimal frames
-    pipeline["hmstitcher"]["right-frame-offset"] = std::to_string(size_t(lfo / fps * GST_SECOND));
+    pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(lfo / fps * GST_SECOND));
   }
+  std::cout << pipeline["hmstitcher"] << std::endl;
 }
 
 } // namespace hm

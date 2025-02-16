@@ -68,6 +68,7 @@ gboolean parse_dsfieldmask_yaml(
 }
 
 gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_node) {
+  std::cout << yaml_node << std::endl;
   hm::utils::ConfigLocator locator;
   SET_LOCATOR(locator, *config, enable);
   SET_LOCATOR(locator, *config, unique_id);
@@ -80,20 +81,6 @@ gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_
   set_config_from_yaml(yaml_node, locator);
   return true;
 }
-/*
-typedef struct
-{
-  gboolean enable;
-  guint gpu_id;
-  guint num_out_buffers;
-  guint dewarper_dump_frames;
-  gchar *config_file;
-  guint nvbuf_memory_type;
-  guint source_id;
-  guint num_surfaces_per_frame;
-  guint num_batch_buffers;
-} NvDsDewarperConfig;
-*/
 
 gboolean parse_hmvideoprep_yaml(
     NvDsHmVideoPrepConfig* config,
