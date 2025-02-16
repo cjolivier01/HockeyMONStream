@@ -220,8 +220,21 @@ void Configurator::complete_configuration() {
   }
 }
 
-bool Configurator::post_config_pipeline(GstElement* pipeline, const NvDsConfig& config) {
-  save_dot_file(pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline");
+bool Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config) {
+  save_dot_file(pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline");
+  std::vector<GstElement*> src_bins;
+  src_bins.reserve(MAX_SOURCE_BINS);
+  for (size_t i = 0; i < pipeline.multi_src_bin.num_bins; ++i) {
+    if (!pipeline.multi_src_bin.sub_bins[i].src_elem) {
+      continue;
+    }
+    if (config.multi_source_config[i].type != NV_DS_SOURCE_URI &&
+        config.multi_source_config[i].type != NV_DS_SOURCE_URI_MULTIPLE) {
+      continue;
+    }
+    src_bins.emplace_back(pipeline.multi_src_bin.sub_bins[i].src_elem);
+  }
+  assert(src_bins.size() == 2);
   return true;
 }
 

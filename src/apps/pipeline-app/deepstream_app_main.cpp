@@ -779,7 +779,7 @@ int main(int argc, char* argv[]) {
   /* Dont try to set playing state if error is observed */
   if (return_value != -1) {
     for (i = 0; i < num_instances; i++) {
-      if (!appCtx[i]->configurator().post_config_pipeline(appCtx[i]->pipeline.pipeline, appCtx[i]->config)) {
+      if (!appCtx[i]->configurator().post_config_pipeline(appCtx[i]->pipeline, appCtx[i]->config)) {
         g_print("\npipeline post-configuration failed.\n");
         return_value = -1;
         goto done;

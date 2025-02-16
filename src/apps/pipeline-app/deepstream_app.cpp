@@ -19,7 +19,11 @@
 
 #include <iostream>
 
+#include <gst/gstelementfactory.h>
+
+
 #include "deepstream_app.h"
+
 
 #define MAX_DISPLAY_LEN 64
 static guint demux_batch_num = 0;
@@ -58,6 +62,25 @@ static gboolean is_sink_available_for_source_id(NvDsConfig* config, guint source
 
 static NvDsSensorInfo* s_sensor_info_create(NvDsSensorInfo* sensor_info);
 static void s_sensor_info_destroy(NvDsSensorInfo* sensor_info);
+
+// static bool is_file_src(GObject* object) {
+//   if (GST_IS_ELEMENT(object)) {
+//     GstElement* child = GST_ELEMENT(object);
+//     // GstElementFactory* factory = gst_element_get_factory(child);
+//     // if (factory && g_strcmp0(gst_element_factory_get_name(factory), "filesrc") == 0) {
+//     //   g_print("This is a filesrc element\n");
+//     //   return true;
+//     // }
+//   }
+//   return false;
+// }
+
+// static void child_added_handler(GstChildProxy* child_proxy, GObject* object, gchar* name, gpointer user_data) {
+//   if (is_file_src(object)) {
+//     g_print("GstFileSrc added with name: %s\n", name);
+//     // Optionally, store a reference to the file source for later use.
+//   }
+// }
 
 static NvDsSensorInfo* s_sensor_info_create(NvDsSensorInfo* sensor_info) {
   NvDsSensorInfo* sensorInfoToHash = (NvDsSensorInfo*)g_malloc0(sizeof(NvDsSensorInfo));
@@ -1949,7 +1972,7 @@ gboolean create_pipeline(
       if (sub_bin.sink && appCtx->config.sink_bin_sub_bin_config[k].type == NV_DS_SINK_UDPSINK) {
         std::cerr << "Hooking up audio to RTSP sink" << std::endl;
         if (!gst_element_link(appCtx->pipeline.hmaudio_bin.bin, sub_bin.sink)) {
-           g_printerr("Could not link hmaudio_bin to UDP sink.\n");
+          g_printerr("Could not link hmaudio_bin to UDP sink.\n");
         }
       }
     }

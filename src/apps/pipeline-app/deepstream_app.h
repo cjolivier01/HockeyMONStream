@@ -82,7 +82,7 @@ typedef struct {
   AppCtx* appCtx;
 } NvDsInstanceBin;
 
-typedef struct {
+struct NvDsPipeline {
   gulong primary_bbox_buffer_probe_id;
   guint bus_id;
   GstElement* pipeline;
@@ -99,7 +99,7 @@ typedef struct {
   HmStitcherBin hmstitcher_bin; 
   NvDsDsPlayTrackerBin dsplaytracker_bin;
   AppCtx* appCtx;
-} NvDsPipeline;
+};
 
 struct NvDsConfig {
   gboolean enable_perf_measurement;

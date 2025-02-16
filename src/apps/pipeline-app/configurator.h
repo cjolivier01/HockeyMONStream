@@ -7,6 +7,7 @@
 #include <string>
 
 struct NvDsConfig;
+struct NvDsPipeline;
 
 namespace hm {
 class Configurator {
@@ -32,7 +33,7 @@ class Configurator {
 
   void complete_configuration();
 
-  bool post_config_pipeline(GstElement *pipeline, const NvDsConfig& config);
+  bool post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config);
 
  private:
   std::string file_maybe_in_game_dir(const std::string& basename);
