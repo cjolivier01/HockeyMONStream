@@ -819,7 +819,10 @@ static cudaError gst_videoprep_do_prep(
     g_print("RGBA to NV12 conversion is not supported in videoprep. Exiting...\n");
     exit(-1);
   } else if (videoprep->output_fmt == GST_VIDEO_FORMAT_RGBA || videoprep->output_fmt == GST_VIDEO_FORMAT_BGRx) {
-    cuda_ck(videoprep->priv->GenerateOutput(batch_meta, videoprep, in_surface, out_surface));
+    cudaErr = videoprep->priv->GenerateOutput(batch_meta, videoprep, in_surface, out_surface);
+    if (cudaErr != cudaError_t::cudaSuccess) {
+      return cudaErr;
+    }
   }
 
   if (videoprep->dump_frames) {
@@ -832,7 +835,7 @@ static cudaError gst_videoprep_do_prep(
 bail:
   g_print(
       "%s: %s failed at line %d, Error : %d Exiting ...\n", GST_ELEMENT_NAME(videoprep), __func__, __LINE__, cudaErr);
-  exit(-1);
+  // exit(-1);
   return cudaErr;
 }
 

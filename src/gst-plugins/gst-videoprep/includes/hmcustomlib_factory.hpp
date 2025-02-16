@@ -16,7 +16,7 @@ T* dlsym_ptr(void* handle, char const* name) {
 
 class DSCustomLibrary_Factory {
  public:
-  DSCustomLibrary_Factory() {}
+  DSCustomLibrary_Factory() : m_libHandle(nullptr) {}
 
   ~DSCustomLibrary_Factory() {
     if (m_libHandle) {
@@ -32,8 +32,6 @@ class DSCustomLibrary_Factory {
     m_libHandle = dlopen(m_libName.c_str(), RTLD_NOW);
     std::function<IDSCustomLibrary*(GObject*)> createAlgoCtx = nullptr;
     if (m_libHandle) {
-      // std::cout << "Library Opened Successfully" << std::endl;
-
       createAlgoCtx = dlsym_ptr<IDSCustomLibrary*(GObject*)>(m_libHandle, "CreateCustomAlgoCtx");
       if (!createAlgoCtx) {
         throw std::runtime_error("createCustomAlgoCtx function not found in library");
@@ -51,5 +49,3 @@ class DSCustomLibrary_Factory {
 };
 
 } // namespace hm
-
-

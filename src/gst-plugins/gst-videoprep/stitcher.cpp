@@ -50,7 +50,7 @@ bool StitcherPriv::SetInitParams(DSCustom_CreateParams* params) {
     return false;
   }
   stitcher_ = std::make_unique<hm::pano::cuda::CudaStitchPano<uchar4, float3>>(
-      /*batch_size=*/1, /*num_levels=*/6, control_masks, /*match_exposure=*/true);
+      /*batch_size=*/1, /*num_levels=*/0, control_masks, /*match_exposure=*/true);
   if (!stitcher_->status().ok()) {
     return false;
   }
@@ -189,6 +189,11 @@ cudaError StitcherPriv::GenerateOutput(
 
   // Sanity that the surfaces are laid out as expected
   assert(surface_index == in_surface->numFilled);
+  if (frame_source_surfaces.size() != in_surface->numFilled / 2) {
+    // This can happen during shutdown 
+    g_printerr("Stitcher did nto receive the expected source/frame sequence\n");
+    return cudaError_t::cudaErrorInvalidSource;
+  }
   assert(frame_source_surfaces.size() == in_surface->numFilled / 2);
   assert(frame_source_surfaces.begin()->second.size() == frame_source_surfaces.rbegin()->second.size());
 
