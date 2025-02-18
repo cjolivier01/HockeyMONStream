@@ -185,7 +185,7 @@ static int as_int(const YAML::Node& node) {
 }
 
 void Configurator::complete_configuration() {
-  std::cout << config_ << std::endl;
+  // std::cout << config_ << std::endl;
   YAML::Node pipeline = config_["pipeline"];
   assert(pipeline.IsDefined());
   // Stitching config mask config dir
