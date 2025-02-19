@@ -92,17 +92,17 @@ struct ModifyBatchFrames {
   NvDsBatchMeta* batch_meta_;
 };
 
-void show_image(std::string label, hm::surface::Surface surface, float scale = 1.0, bool wait = true) {
-  hm::CudaMat<uchar4> mat(
-      hm::SurfaceInfo{
-          .width = (int)surface.width(),
-          .height = (int)surface.height(),
-          .pitch = (int)surface.pitch(),
-          .data_ptr = surface.dataptr(),
-      },
-      /*B=*/1);
-  hm::utils::display_scaled_image(label, mat.download(), scale, wait);
-}
+// void show_image(std::string label, hm::surface::Surface surface, float scale = 1.0, bool wait = true) {
+//   hm::CudaMat<uchar4> mat(
+//       hm::SurfaceInfo{
+//           .width = (int)surface.width(),
+//           .height = (int)surface.height(),
+//           .pitch = (int)surface.pitch(),
+//           .data_ptr = surface.dataptr(),
+//       },
+//       /*B=*/1);
+//   hm::utils::display_scaled_image(label, mat.download(), scale, wait);
+// }
 
 cudaError StitcherPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
@@ -190,7 +190,7 @@ cudaError StitcherPriv::GenerateOutput(
   // Sanity that the surfaces are laid out as expected
   assert(surface_index == in_surface->numFilled);
   if (frame_source_surfaces.size() != in_surface->numFilled / 2) {
-    // This can happen during shutdown 
+    // This can happen during shutdown
     g_printerr("Stitcher did nto receive the expected source/frame sequence\n");
     return cudaError_t::cudaErrorInvalidSource;
   }
@@ -215,8 +215,8 @@ cudaError StitcherPriv::GenerateOutput(
     const FrameInfo& frame_info_right = source_to_surface.rbegin()->second;
     // This tests the assumption that the source ids come in sorted
 
-    const NvBufSurfaceParams* left_params = frame_info_left.surface_params;
-    const NvBufSurfaceParams* right_params = frame_info_right.surface_params;
+    NvBufSurfaceParams* left_params = frame_info_left.surface_params;
+    NvBufSurfaceParams* right_params = frame_info_right.surface_params;
     NvBufSurfaceParams* output_params = &out_surface->surfaceList[out_surface_index];
 
     assert(output_params->width == (uint32_t)stitcher_->canvas_width());
@@ -246,14 +246,14 @@ cudaError StitcherPriv::GenerateOutput(
         },
         /*batch_size=*/1);
 
-    // show_image("left", left_params, 0.2, /*wait=*/false);
-    // show_image("right", right_params, 0.2, /*wait=*/false);
+    // render("left", left_params, videoprep->stream);
+    // render("right", right_params, videoprep->stream);
 
     if (err == cudaError_t::cudaSuccess) {
       auto stitch_result = stitcher_->process(left, right, videoprep->stream, std::move(canvas));
       if (stitch_result.ok()) {
         canvas = std::move(stitch_result.ValueOrDie());
-        // render_.render("canvas", output_params, videoprep->stream);
+        // render("canvas", output_params, videoprep->stream);
         ++out_surface->numFilled;
         // Both should have the same 'persistent_frame_meta'
         // TODO: Should we do this later under a batch meta lock?
