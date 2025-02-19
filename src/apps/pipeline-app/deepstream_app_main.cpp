@@ -788,6 +788,27 @@ int main(int argc, char* argv[]) {
         return_value = -1;
         goto done;
       }
+
+      GstState state, pending;
+      GstStateChangeReturn ret =
+          gst_element_get_state(appCtx[i]->pipeline.pipeline, &state, &pending, GST_CLOCK_TIME_NONE);
+      assert(ret == GST_STATE_CHANGE_SUCCESS);
+
+      // size_t seekTarget = 5 * 60 * GST_SECOND;
+      size_t seekTarget = 0 * 60 * GST_SECOND;
+      if (!gst_element_seek(
+              appCtx[i]->pipeline.pipeline,
+              1.0, // Normal playback rate.
+              GST_FORMAT_TIME,
+              (GstSeekFlags)((int)GST_SEEK_FLAG_FLUSH | (int)GST_SEEK_FLAG_KEY_UNIT),
+              GST_SEEK_TYPE_SET, // Start from the target position.
+              seekTarget,
+              GST_SEEK_TYPE_NONE, // No specific end position.
+              GST_CLOCK_TIME_NONE)) {
+        g_printerr("Seek failed\n");
+      } else {
+        g_print("Seek successful to %" GST_TIME_FORMAT "\n", GST_TIME_ARGS(seekTarget));
+      }
       if (gst_element_set_state(appCtx[i]->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
         g_print("\ncan't set pipeline to playing state.\n");
         return_value = -1;
