@@ -789,18 +789,24 @@ int main(int argc, char* argv[]) {
         goto done;
       }
 
+#if 0
       GstState state, pending;
       GstStateChangeReturn ret =
           gst_element_get_state(appCtx[i]->pipeline.pipeline, &state, &pending, GST_CLOCK_TIME_NONE);
       assert(ret == GST_STATE_CHANGE_SUCCESS);
+      // GstElement *seek_element = appCtx[i]->pipeline.pipeline;
+      // GstElement *seek_element = appCtx[i]->pipeline.multi_src_bin.bin;
+      GstElement* seek_element = appCtx[i]->pipeline.multi_src_bin.sub_bins[1].bin;
 
       // size_t seekTarget = 5 * 60 * GST_SECOND;
-      size_t seekTarget = 0 * 60 * GST_SECOND;
+      size_t seekTarget = 0.95 * GST_SECOND;
+      // size_t seekTarget = 0 * 60 * GST_SECOND;
       if (!gst_element_seek(
-              appCtx[i]->pipeline.pipeline,
+              seek_element,
               1.0, // Normal playback rate.
               GST_FORMAT_TIME,
-              (GstSeekFlags)((int)GST_SEEK_FLAG_FLUSH | (int)GST_SEEK_FLAG_KEY_UNIT),
+              // (GstSeekFlags)((int)GST_SEEK_FLAG_FLUSH | (int)GST_SEEK_FLAG_KEY_UNIT),
+              (GstSeekFlags)((int)GST_SEEK_FLAG_FLUSH | (int)GST_SEEK_FLAG_ACCURATE),
               GST_SEEK_TYPE_SET, // Start from the target position.
               seekTarget,
               GST_SEEK_TYPE_NONE, // No specific end position.
@@ -809,6 +815,7 @@ int main(int argc, char* argv[]) {
       } else {
         g_print("Seek successful to %" GST_TIME_FORMAT "\n", GST_TIME_ARGS(seekTarget));
       }
+#endif
       if (gst_element_set_state(appCtx[i]->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
         g_print("\ncan't set pipeline to playing state.\n");
         return_value = -1;

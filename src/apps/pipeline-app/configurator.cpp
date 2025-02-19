@@ -37,6 +37,27 @@ static void save_dot_file(GstElement* pipeline, GstDebugGraphDetails details, co
   }
 }
 
+bool seek_element(GstElement* seek_element, size_t seek_to_nanoseconds) {
+  // size_t seekTarget = static_cast<size_t>(abs_seconds * 60 * GST_SECOND);
+  size_t seekTarget = seek_to_nanoseconds;
+  if (!gst_element_seek(
+          seek_element,
+          1.0, // Normal playback rate.
+          GST_FORMAT_TIME,
+          // (GstSeekFlags)((int)GST_SEEK_FLAG_FLUSH | (int)GST_SEEK_FLAG_ACCURATE),
+          (GstSeekFlags)((int)GST_SEEK_FLAG_FLUSH | (int)GST_SEEK_FLAG_ACCURATE),
+          GST_SEEK_TYPE_SET, // Start from the target position.
+          seekTarget,
+          GST_SEEK_TYPE_NONE, // No specific end position.
+          GST_CLOCK_TIME_NONE)) {
+    g_printerr("Seek failed\n");
+    return false;
+  } else {
+    g_print("Seek successful to %" GST_TIME_FORMAT "\n", GST_TIME_ARGS(seekTarget));
+    return true;
+  }
+}
+
 } // namespace
 
 Configurator::Configurator(const std::string& game_id, const std::string& config_root_dir)
@@ -225,12 +246,19 @@ void Configurator::complete_configuration() {
 }
 
 bool Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config) {
+  // We need to do this get state for some reason
+  GstState state, pending;
+  GstStateChangeReturn ret = gst_element_get_state(pipeline.pipeline, &state, &pending, GST_CLOCK_TIME_NONE);
+  assert(ret == GST_STATE_CHANGE_SUCCESS);
+  assert(state == GstState::GST_STATE_PAUSED);
+
   save_dot_file(pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline");
+
   // Seek pre-stitching streams to the proper offsets so that they're in sync
   std::vector<GstElement*> src_bins;
   src_bins.reserve(MAX_SOURCE_BINS);
   for (size_t i = 0; i < pipeline.multi_src_bin.num_bins; ++i) {
-    if (!pipeline.multi_src_bin.sub_bins[i].src_elem) {
+    if (!pipeline.multi_src_bin.sub_bins[i].bin) {
       continue;
     }
     if (config.multi_source_config[i].type != NV_DS_SOURCE_URI &&
@@ -240,48 +268,24 @@ bool Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig
     // src_bins.emplace_back(pipeline.multi_src_bin.sub_bins[i].src_elem);
     src_bins.emplace_back(pipeline.multi_src_bin.sub_bins[i].bin);
   }
-  assert(src_bins.size() == 2);
-
-  // if (src_bins.size() == 2) {
-  //   if (config.hmsticher_config.left_frame_offset_ns) {
-  //     gboolean result = gst_element_seek(
-  //         src_bins[0],
-  //         1.0, // playback rate
-  //         GST_FORMAT_TIME, // seek format (nanoseconds)
-  //         or_flags(GST_SEEK_FLAG_FLUSH, GST_SEEK_FLAG_KEY_UNIT),
-  //         GST_SEEK_TYPE_SET, // seek from a specific time
-  //         config.hmsticher_config.left_frame_offset_ns,
-  //         GST_SEEK_TYPE_NONE,
-  //         GST_CLOCK_TIME_NONE);
-  //     if (!result) {
-  //       g_printerr("Failed to seek source 0\n");
-  //     }
-  //   }
-  //   if (config.hmsticher_config.right_frame_offset_ns) {
-  //     gboolean result = gst_element_seek(
-  //         src_bins[1],
-  //         1.0, // playback rate
-  //         GST_FORMAT_TIME, // seek format (nanoseconds)
-  //         or_flags(GST_SEEK_FLAG_FLUSH, GST_SEEK_FLAG_KEY_UNIT),
-  //         GST_SEEK_TYPE_SET, // seek from a specific time
-  //         config.hmsticher_config.right_frame_offset_ns,
-  //         GST_SEEK_TYPE_NONE,
-  //         GST_CLOCK_TIME_NONE);
-  //     if (!result) {
-  //       g_printerr("Failed to seek source 1\n");
-  //     }
-  //   }
-  // }
-  // gboolean result = gst_element_seek(
-  //     pipeline.pipeline,
-  //     1.0, // playback rate
-  //     GST_FORMAT_TIME, // seek format (nanoseconds)
-  //     or_flags(GST_SEEK_FLAG_FLUSH, GST_SEEK_FLAG_KEY_UNIT),
-  //     GST_SEEK_TYPE_SET, // seek from a specific time
-  //     300 * GST_SECOND,
-  //     GST_SEEK_TYPE_NONE,
-  //     GST_CLOCK_TIME_NONE);
-  // assert(result);
+  // assert(src_bins.size() == 2);
+#if 1
+  if (src_bins.size() == 2) {
+    if (config.hmsticher_config.left_frame_offset_ns) {
+      bool result = seek_element(src_bins[0], config.hmsticher_config.left_frame_offset_ns);
+      if (!result) {
+        g_printerr("Failed to seek source 0\n");
+      }
+    }
+    if (config.hmsticher_config.right_frame_offset_ns) {
+      size_t seekTarget = 0.95 * GST_SECOND;
+      bool result = seek_element(src_bins[1], seekTarget /*config.hmsticher_config.right_frame_offset_ns*/);
+      if (!result) {
+        g_printerr("Failed to seek source 1\n");
+      }
+    }
+  }
+#endif
   return true;
 }
 
