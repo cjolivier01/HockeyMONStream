@@ -246,7 +246,7 @@ void Configurator::complete_configuration() {
     auto src0 = pipeline["source0"];
     if (src0.IsDefined() && as_int(src0["enable"])) {
       if (!src0["uri"].IsDefined() || src0["uri"].as<std::string>().empty()) {
-        std::string stiched_output = file_maybe_in_game_dir("stitched_output-with-audiuo.mp4");
+        std::string stiched_output = file_maybe_in_game_dir("stitched_output-with-audio.mp4");
         if (std::filesystem::exists(stiched_output)) {
           src0["uri"] = ff + stiched_output;
         }
