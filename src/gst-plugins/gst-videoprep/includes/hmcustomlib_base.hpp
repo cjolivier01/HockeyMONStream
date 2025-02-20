@@ -50,7 +50,7 @@ class DSCustomLibraryBase : public IDSCustomLibrary {
   virtual ~DSCustomLibraryBase();
 
   /* Set Custom Properties  of the library */
-  virtual bool SetProperty(Property& prop) = 0;
+  virtual bool SetProperty(const Property& prop) = 0;
 
   virtual bool HandleEvent(GstEvent* event) = 0;
   // TODO: Add getProperty as well

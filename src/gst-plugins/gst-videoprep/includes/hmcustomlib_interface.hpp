@@ -65,7 +65,7 @@ struct Property {
 class IDSCustomLibrary {
  public:
   virtual bool SetInitParams(DSCustom_CreateParams* params) = 0;
-  virtual bool SetProperty(Property& prop) = 0;
+  virtual bool SetProperty(const Property& prop) = 0;
   virtual bool HandleEvent(GstEvent* event) = 0;
   virtual char* QueryProperties() = 0;
   virtual GstCaps* GetCompatibleCaps(GstPadDirection direction, GstCaps* in_caps, GstCaps* othercaps) = 0;

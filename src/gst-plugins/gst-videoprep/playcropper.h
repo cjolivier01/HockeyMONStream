@@ -32,7 +32,7 @@ class PlayCropperPriv : public videoprep::VideoPrepPriv {
   }
 
   // -DSCustomLibraryBase
-  bool SetProperty(Property& prop) override {
+  bool SetProperty(const Property& prop) override {
     assert(false);
     return true;
   }

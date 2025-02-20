@@ -27,6 +27,8 @@
 #include <unistd.h>
 #include "nvbufsurface.h"
 
+#include "absl/strings/str_split.h"
+
 #if defined(__aarch64__)
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -1144,7 +1146,7 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
       gobject_class,
       PROP_PLUGIN_TYPE,
       g_param_spec_string(
-          "plugin-type",
+          CONFIG_GROUP_VIDEOPREP_PLUGIN_TYPE,
           "Plugin Type",
           "Plugin Type",
           NULL,
@@ -1154,7 +1156,7 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
       gobject_class,
       PROP_PLUGIN_PRIVATE_CONFIG,
       g_param_spec_string(
-          "plugin-private-config",
+          CONFIG_GROUP_VIDEOPREP_PLUGIN_PRIVATE_CONFIG,
           "Plugin Privatye Config",
           "Plugin Privatye Config \"key1=val1;key2=val2;...\"",
           NULL,
@@ -1246,6 +1248,24 @@ static void gst_videoprep_init(GstVideoPrep* videoprep) {
   gst_videoprep_init_base(videoprep);
 }
 
+void VideoPrepPriv::SetPrivateConfig(const char* config_string) {
+  if (!config_string) {
+    return;
+  }
+  std::string all_string = config_string;
+  std::vector<std::string> kv_pairs = absl::StrSplit(std::move(all_string), ';');
+  for (const std::string& kv : kv_pairs) {
+    std::vector<std::string> kv_tokens = absl::StrSplit(kv, '=');
+    if (!kv_tokens.empty() && !kv_tokens[0].empty()) {
+      if (kv_tokens.size() != 2) {
+        g_printerr("Error parsing key-value pair: \"%s\"\n", kv.c_str());
+        continue;
+      }
+      SetProperty(Property(kv_tokens.at(0), kv_tokens.at(1)));
+    }
+  }
+}
+
 static void gst_videoprep_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(object);
   // if (videoprep->priv) {
@@ -1292,6 +1312,9 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
       if (videoprep->plugin_private_config)
         g_free(videoprep->plugin_private_config);
       videoprep->plugin_private_config = (gchar*)g_value_dup_string(value);
+      if (videoprep->priv) {
+        videoprep->priv->SetPrivateConfig(videoprep->plugin_private_config);
+      }
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);

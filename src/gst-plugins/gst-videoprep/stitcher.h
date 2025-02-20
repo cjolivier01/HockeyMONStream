@@ -39,7 +39,7 @@ class StitcherPriv : public videoprep::VideoPrepPriv {
 
   bool SetInitParams(DSCustom_CreateParams* params) override;
 
-  bool SetProperty(Property& prop) override {
+  bool SetProperty(const Property& prop) override {
     assert(false);
     return true;
   }

@@ -33,7 +33,7 @@ namespace videoprep {
  */
 #define CONFIG_GROUP_VIDEOPREP_SURFACE_ATTRS_PREFIX "surface"                /**< Identifier for [surface<n>] group */
 #define CONFIG_GROUP_VIDEOPREP_SURFACE_INDEX "surface-index"                 /**< An index that distinguishes surfaces of the same projection type. */
-#define CONFIG_GROUP_VIDEOPREP_SURFACE_PROJECTION_TYPE "projection-type"     /**< Surface projection of type "NvDsSurfaceType" */
+// #define CONFIG_GROUP_VIDEOPREP_SURFACE_PROJECTION_TYPE "projection-type"     /**< Surface projection of type "NvDsSurfaceType" */
 //#define CONFIG_GROUP_VIDEOPREP_SURFACE_WIDTH "width"                         /**< Dewarped surface width. */
 //#define CONFIG_GROUP_VIDEOPREP_SURFACE_HEIGHT "height"                       /**< Dewarped surface height. */
 //#define CONFIG_GROUP_VIDEOPREP_SURFACE_TOP_ANGLE "top-angle"                 /**< Desired Top field of view angle, in degrees. */
@@ -59,6 +59,9 @@ namespace videoprep {
 /** Destination principal point corresponding to ""dst-focal-length" */
 //#define CONFIG_GROUP_VIDEOPREP_SURFACE_DST_PRINCIPAL_POINT "dst-principal-point"
 /** @} */
+
+#define CONFIG_GROUP_VIDEOPREP_PLUGIN_TYPE "plugin-type"
+#define CONFIG_GROUP_VIDEOPREP_PLUGIN_PRIVATE_CONFIG "plugin-private-config"
 
 gboolean
 videoprep_parse_config_file (GstVideoPrep *videoprep, gchar *cfg_file_path);

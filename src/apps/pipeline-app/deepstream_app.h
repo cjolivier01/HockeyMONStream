@@ -144,7 +144,7 @@ typedef struct {
   NvDsHmImageMetaMergerConfig hmimagemetamerger_config;
   NvDsHmVideoPrepConfig hmvideoprep_config;
   NvDsDsFieldMaskConfig dsfieldmask_config;
-  HmStitcherConfig hmsticher_config;
+  NvDsHmVideoPrepConfig hmsticher_config;
   NvDsDsPlayTrackerConfig dsplaytracker_config;
   NvDsSinkMsgConvBrokerConfig msg_conv_config;
   NvDsImageSave image_save_config;
