@@ -221,7 +221,8 @@ cudaError PlayCropperPriv::GenerateOutput(
     FloatValue min_width_per_side = videoprep->pre_rotate_size.width / 2;
     min_width_per_side = std::max(min_width_per_side, tbox.width() / 2);
     FloatValue clip_left = std::max(input_rect.left, x_center - min_width_per_side);
-    FloatValue clip_right = std::min(input_rect.right - 1, x_center + min_width_per_side);
+    // FloatValue clip_right = std::min(input_rect.right - 1, x_center + min_width_per_side);
+    FloatValue clip_right = std::min(input_rect.right, x_center + min_width_per_side);
     BBox extra_width_src_rect(clip_left, input_rect.top, clip_right, input_rect.bottom);
 
     BBox new_tbox = tbox;
@@ -242,8 +243,6 @@ cudaError PlayCropperPriv::GenerateOutput(
     hm::surface::Surface out_surf(&out_surface->surfaceList[batch_nr]);
 
     assert(batch_nr < in_surface->numFilled);
-
-    // static std::string first_
 
 #if 1
     {
@@ -290,8 +289,8 @@ cudaError PlayCropperPriv::GenerateOutput(
 #if 1
     {
 #ifdef __aarch64__
-      hm::surface::EglSurfaceMapper outgoinh_elg_surface_mapper(out_surface, batch_nr);
-      hm::surface::Surface outgoing_surface = outgoinh_elg_surface_mapper.get_surface();
+      hm::surface::EglSurfaceMapper outgoing_elg_surface_mapper(out_surface, batch_nr);
+      hm::surface::Surface outgoing_surface = outgoing_elg_surface_mapper.get_surface();
 #else
       hm::surface::Surface outgoing_surface(&out_surface->surfaceList[batch_nr]);
 #endif

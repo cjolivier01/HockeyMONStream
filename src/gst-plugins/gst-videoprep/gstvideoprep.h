@@ -117,6 +117,7 @@ struct GstVideoPrep
 
   gchar* config_file;             /**< String contaning path and name of configuration file */
   gchar* plugin_type;
+  gchar* plugin_private_config;
 
   GstBufferPool *pool;            /**< Internal buffer pool for output buffers  */
 
