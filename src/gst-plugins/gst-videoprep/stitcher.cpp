@@ -138,6 +138,7 @@ cudaError StitcherPriv::GenerateOutput(
     NvDsFrameMeta* frame_meta;
     // This is the frame meta that we'll keep for the final stitched frame (we'll discard on of them)
     // NvDsFrameMeta* persistent_frame_meta;
+    size_t incoming_surface_index;
   };
 
   //  frame_number -> source_id -> NvBufSurfaceParams*
@@ -188,8 +189,9 @@ cudaError StitcherPriv::GenerateOutput(
                               .emplace(
                                   frame_meta->source_id,
                                   FrameInfo{
-                                      .surface_params = surface_params, .frame_meta = frame_meta,
-                                      // .persistent_frame_meta = persistent_frame_meta,
+                                      .surface_params = surface_params,
+                                      .frame_meta = frame_meta,
+                                      .incoming_surface_index = surface_index,
                                   })
                               .second;
     assert(inserted);
@@ -224,34 +226,48 @@ cudaError StitcherPriv::GenerateOutput(
     const FrameInfo& frame_info_right = source_to_surface.rbegin()->second;
     // This tests the assumption that the source ids come in sorted
 
-    NvBufSurfaceParams* left_params = frame_info_left.surface_params;
-    NvBufSurfaceParams* right_params = frame_info_right.surface_params;
-    NvBufSurfaceParams* output_params = &out_surface->surfaceList[out_surface_index];
+    // NvBufSurfaceParams* left_params = frame_info_left.surface_params;
+    // NvBufSurfaceParams* right_params = frame_info_right.surface_params;
+    // NvBufSurfaceParams* output_params = &out_surface->surfaceList[out_surface_index];
 
-    assert(output_params->width == (uint32_t)stitcher_->canvas_width());
-    assert(output_params->height == (uint32_t)stitcher_->canvas_height());
+#ifdef __aarch64__
+    hm::surface::EglSurfaceMapper incoming_left_elg_surface_mapper(in_surface, frame_info_left.incoming_surface_index);
+    hm::surface::Surface incoming_surface_left = incoming_left_elg_surface_mapper.get_surface();
+    hm::surface::EglSurfaceMapper incoming_right_elg_surface_mapper(
+        in_surface, frame_info_right.incoming_surface_index);
+    hm::surface::Surface incoming_surface_right = incoming_right_elg_surface_mapper.get_surface();
+    hm::surface::EglSurfaceMapper outgoing_elg_surface_mapper(out_surface, out_surface_index);
+    hm::surface::Surface outgoing_surface = outgoing_elg_surface_mapper.get_surface();
+#else
+    hm::surface::Surface incoming_surface_left(frame_info_left.surface_params);
+    hm::surface::Surface incoming_surface_right(frame_info_right.surface_params);
+    hm::surface::Surface outgoing_surface(&out_surface->surfaceList[out_surface_index]);
+#endif
+
+    assert(outgoing_surface.width() == (uint32_t)stitcher_->canvas_width());
+    assert(outgoing_surface.height() == (uint32_t)stitcher_->canvas_height());
     hm::CudaMat<uchar4> left(
         hm::SurfaceInfo{
-            .width = (int)left_params->width,
-            .height = (int)left_params->height,
-            .pitch = (int)left_params->pitch,
-            .data_ptr = left_params->dataPtr,
+            .width = (int)incoming_surface_left.width(),
+            .height = (int)incoming_surface_left.height(),
+            .pitch = (int)incoming_surface_left.pitch(),
+            .data_ptr = incoming_surface_left.dataptr(),
         },
         /*batch_size=*/1);
     hm::CudaMat<uchar4> right(
         hm::SurfaceInfo{
-            .width = (int)right_params->width,
-            .height = (int)right_params->height,
-            .pitch = (int)right_params->pitch,
-            .data_ptr = right_params->dataPtr,
+            .width = (int)incoming_surface_right.width(),
+            .height = (int)incoming_surface_right.height(),
+            .pitch = (int)incoming_surface_right.pitch(),
+            .data_ptr = incoming_surface_right.dataptr(),
         },
         /*batch_size=*/1);
     auto canvas = std::make_unique<hm::CudaMat<uchar4>>(
         hm::SurfaceInfo{
-            .width = (int)output_params->width,
-            .height = (int)output_params->height,
-            .pitch = (int)output_params->pitch,
-            .data_ptr = output_params->dataPtr,
+            .width = (int)outgoing_surface.width(),
+            .height = (int)outgoing_surface.height(),
+            .pitch = (int)outgoing_surface.pitch(),
+            .data_ptr = outgoing_surface.dataptr(),
         },
         /*batch_size=*/1);
 

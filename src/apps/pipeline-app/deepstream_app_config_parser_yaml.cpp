@@ -67,32 +67,6 @@ gboolean parse_dsfieldmask_yaml(
   return true;
 }
 
-// gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_node) {
-//   hm::utils::ConfigLocator locator;
-//   SET_LOCATOR(locator, *config, enable);
-//   SET_LOCATOR(locator, *config, unique_id);
-//   SET_LOCATOR(locator, *config, gpu_id);
-//   SET_LOCATOR(locator, *config, nvbuf_memory_type);
-//   SET_LOCATOR_CHARS(locator, *config, config_file);
-//   SET_LOCATOR_CHARS(locator, *config, plugin_private_config);
-//   set_config_from_yaml(yaml_node, locator);
-//   return true;
-// }
-/*
-typedef struct
-{
-  gboolean enable;
-  guint gpu_id;
-  guint num_out_buffers;
-  guint dewarper_dump_frames;
-  gchar *config_file;
-  guint nvbuf_memory_type;
-  guint source_id;
-  guint num_surfaces_per_frame;
-  guint num_batch_buffers;
-} NvDsDewarperConfig;
-*/
-
 gboolean parse_hmvideoprep_yaml(
     NvDsHmVideoPrepConfig* config,
     const YAML::Node& yaml_node,
