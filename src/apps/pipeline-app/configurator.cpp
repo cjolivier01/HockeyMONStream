@@ -230,6 +230,7 @@ void Configurator::complete_configuration() {
     pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / fps * GST_SECOND));
   }
   // Source 0 files
+  static const std::string ff = "file://";
   if (!left_files.empty() && !right_files.empty()) {
     auto src0 = pipeline["source0"];
     auto src1 = pipeline["source1"];
@@ -237,10 +238,19 @@ void Configurator::complete_configuration() {
         as_int(src1["enable"]) && as_int(src1["type"]) == 3) {
       // Two uri sources, so set them to the stitching files
       // TODO: how to set all of the files and roll them?
-      const std::string ff = "file://";
       src0["uri"] = ff + file_maybe_in_game_dir(left_files[0]);
       src1["uri"] = ff + file_maybe_in_game_dir(right_files[0]);
       // std::cout << src0 << std::endl;
+    }
+  } else {
+    auto src0 = pipeline["source0"];
+    if (src0.IsDefined() && as_int(src0["enable"])) {
+      if (!src0["uri"].IsDefined() || src0["uri"].as<std::string>().empty()) {
+        std::string stiched_output = file_maybe_in_game_dir("stitched_output-with-audiuo.mp4");
+        if (std::filesystem::exists(stiched_output)) {
+          src0["uri"] = ff + stiched_output;
+        }
+      }
     }
   }
 }
