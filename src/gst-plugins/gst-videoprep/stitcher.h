@@ -39,10 +39,7 @@ class StitcherPriv : public videoprep::VideoPrepPriv {
 
   bool SetInitParams(DSCustom_CreateParams* params) override;
 
-  bool SetProperty(const Property& prop) override {
-    assert(false);
-    return true;
-  }
+  bool SetProperty(const Property& prop) override;
 
   bool HandleEvent(GstEvent* event) override {
     assert(false);
@@ -69,7 +66,8 @@ class StitcherPriv : public videoprep::VideoPrepPriv {
 
  private:
   std::unique_ptr<hm::pano::cuda::CudaStitchPano<uchar4, float3>> stitcher_;
-  std::mutex process_mu_;
+  // std::mutex process_mu_;
+  size_t left_frame_offset_ns_{0}, right_frame_offset_ns_{0};
 };
 
 /** GStreamer boilerplate. */

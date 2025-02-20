@@ -63,6 +63,17 @@ bool StitcherPriv::SetInitParams(DSCustom_CreateParams* params) {
   return true;
 }
 
+bool StitcherPriv::SetProperty(const Property& prop) {
+  std::cerr << "SetProperty(" << prop.key << "=" << prop.value << ")" << std::endl;
+  if (prop.key == "left-frame-offset-ns") {
+    left_frame_offset_ns_ = std::atol(prop.value.c_str());
+  }
+  if (prop.key == "right-frame-offset-ns") {
+    right_frame_offset_ns_ = std::atol(prop.value.c_str());
+  }
+  return true;
+}
+
 struct ModifyBatchFrames {
   ModifyBatchFrames(NvDsBatchMeta* batch_meta, const std::vector<NvDsFrameMeta*>& remove) : batch_meta_(batch_meta) {
     // 1. Acquire the meta lock to ensure thread safety
@@ -109,7 +120,7 @@ cudaError StitcherPriv::GenerateOutput(
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
   // Should not be necessary, debugging some issue atm
-  std::unique_lock lk(process_mu_);
+  // std::unique_lock lk(process_mu_);
 
   cudaError err = cudaSuccess;
   cudaError_t last_error = cudaGetLastError();
@@ -126,7 +137,7 @@ cudaError StitcherPriv::GenerateOutput(
     // This is the actual frame meta for this surface
     NvDsFrameMeta* frame_meta;
     // This is the frame meta that we'll keep for the final stitched frame (we'll discard on of them)
-    NvDsFrameMeta* persistent_frame_meta;
+    // NvDsFrameMeta* persistent_frame_meta;
   };
 
   //  frame_number -> source_id -> NvBufSurfaceParams*
@@ -156,15 +167,15 @@ cudaError StitcherPriv::GenerateOutput(
     // std::cout << "source_id=" << frame_meta->source_id << ", frame_num=" << frame_meta->frame_num << std::endl;
     auto& frame_sources = frame_source_surfaces[frame_meta->frame_num];
     min_source_id = std::min(min_source_id, frame_meta->source_id);
-    NvDsFrameMeta* persistent_frame_meta{nullptr};
+    // NvDsFrameMeta* persistent_frame_meta{nullptr};
     if (!frame_sources.empty()) {
       // We only keep one of the frame meta's for each frame_num, and we'll modify it to
       // mathc the eventual stitched frame.
       // atm, we don't care which source it is, hopefully they come in sorted?
       remove_frame_metas.emplace_back(frame_meta);
-      persistent_frame_meta = frame_sources.begin()->second.persistent_frame_meta;
+      // persistent_frame_meta = frame_sources.begin()->second.persistent_frame_meta;
     } else {
-      persistent_frame_meta = frame_meta;
+      // persistent_frame_meta = frame_meta;
       remove_frame_metas.emplace_back(frame_meta);
     }
 
@@ -177,9 +188,8 @@ cudaError StitcherPriv::GenerateOutput(
                               .emplace(
                                   frame_meta->source_id,
                                   FrameInfo{
-                                      .surface_params = surface_params,
-                                      .frame_meta = frame_meta,
-                                      .persistent_frame_meta = persistent_frame_meta,
+                                      .surface_params = surface_params, .frame_meta = frame_meta,
+                                      // .persistent_frame_meta = persistent_frame_meta,
                                   })
                               .second;
     assert(inserted);
@@ -261,18 +271,23 @@ cudaError StitcherPriv::GenerateOutput(
           // Currently we don't copy over any user or object meta because it is assumed that thsoe would be wrt an
           // invalid resolution. It may come, however, that we should copy over some stuff, esp user meta,
           // if that ever gets filled.
-          assert(!frame_info_right.persistent_frame_meta->num_obj_meta);
-          assert(!frame_info_right.persistent_frame_meta->frame_user_meta_list);
-          assert(frame_info_left.persistent_frame_meta == frame_info_right.persistent_frame_meta);
+          assert(!left_frame_offset_ns_ || !right_frame_offset_ns_);
+          const FrameInfo* base_frame_info = left_frame_offset_ns_ == 0 ? &frame_info_left : &frame_info_right;
+
+          assert(!base_frame_info->frame_meta->num_obj_meta);
+          assert(!base_frame_info->frame_meta->frame_user_meta_list);
+
+          new_frame_meta->frame_num = base_frame_info->frame_meta->frame_num;
           new_frame_meta->source_frame_width = new_frame_meta->pipeline_width = canvas->width();
           new_frame_meta->source_frame_height = new_frame_meta->pipeline_height = canvas->height();
-          new_frame_meta->surface_index = out_surface_index;
+          // new_frame_meta->surface_index = out_surface_index;
           new_frame_meta->pad_index = 0;
           new_frame_meta->source_id = min_source_id;
-          new_frame_meta->surface_type = frame_info_left.persistent_frame_meta->surface_type;
+          new_frame_meta->surface_type = base_frame_info->frame_meta->surface_type;
           new_frame_meta->num_surfaces_per_frame = 1;
-          new_frame_meta->batch_id = frame_info_left.persistent_frame_meta->batch_id;
-          new_frame_meta->ntp_timestamp = frame_info_left.persistent_frame_meta->ntp_timestamp;
+          new_frame_meta->batch_id = base_frame_info->frame_meta->batch_id;
+          // Use timestamp of the one that is based at 0 so that it matches the audio
+          new_frame_meta->ntp_timestamp = base_frame_info->frame_meta->ntp_timestamp;
           assert(min_source_id == 0); // debug checking
           return true;
         });

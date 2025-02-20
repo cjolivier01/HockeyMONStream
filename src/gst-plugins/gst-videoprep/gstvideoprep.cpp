@@ -518,6 +518,9 @@ GstStateChangeReturn gst_videoprep_change_state(GstElement* element, GstStateCha
       return GST_STATE_CHANGE_FAILURE;
     }
 
+    if (videoprep->plugin_private_config) {
+      videoprep->priv->SetPrivateConfig(videoprep->plugin_private_config);
+    }
     // if (videoprep->priv->AllocateScratchBuffers(videoprep)) {
     //   GST_ERROR("Error allocating videoprep projection buffers");
     //   return GST_STATE_CHANGE_FAILURE;
@@ -993,47 +996,6 @@ static gboolean gst_videoprep_stop(GstBaseTransform* btrans) {
 
   return TRUE;
 }
-
-// static GstStateChangeReturn
-// gst_nvdsA2Vtemplate_change_state (GstElement *bscope, GstStateChange transition)
-// {
-//   if(transition==GST_STATE_CHANGE_NULL_TO_READY) {
-//     //GstNvDsA2Vtemplate *scope = GST_VIDEOPREP (bscope);
-//     DSCustom_CreateParams params = {0};
-
-//     bool ret;
-//     // try {
-//     //   scope->algo_factory = new DSCustomLibrary_Factory();
-//     //   scope->algo_ctx = scope->algo_factory->CreateCustomAlgoCtx(scope->custom_lib_name, G_OBJECT(bscope));
-
-//     //   if(scope->algo_ctx && scope->vecProp && scope->vecProp && scope->vecProp->size()) {
-//     //       GST_INFO_OBJECT(scope, "Setting custom lib properties # %lu", scope->vecProp->size());
-//     //       for(std::vector<Property>::iterator it = scope->vecProp->begin(); it != scope->vecProp->end(); ++it) {
-//     //           GST_INFO_OBJECT(scope, "Adding Prop: %s : %s", it->key.c_str(), it->value.c_str());
-//     //           ret = scope->algo_ctx->SetProperty(*it);
-//     //           if (!ret) {
-//     //              return GST_STATE_CHANGE_FAILURE;
-//     //           }
-//     //       }
-//     //   }
-//     // }
-//     // catch (const std::runtime_error& e) {
-//     //   GST_ERROR_ON_BUS("Exception occurred", "Runtime error: %s", e.what());
-//     //   return GST_STATE_CHANGE_FAILURE;
-//     // }
-//     // catch (...) {
-//     //   GST_ERROR_ON_BUS("Exception occurred", "Exception occurred");
-//     //   return GST_STATE_CHANGE_FAILURE;
-//     // }
-//     params.m_element = bscope;
-
-//     if(!scope->algo_ctx->SetInitParams(&params)) {
-//       GST_ERROR_ON_BUS("SetInitParams Error", "SetInitParams Error");
-//       return GST_STATE_CHANGE_FAILURE;
-//     }
-//   }
-//   return GST_VIDEOPREP_GET_CLASS(bscope)->parent_change_state_fn(bscope,transition);
-// }
 
 /* initialize the videoprep's class */
 void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
