@@ -111,6 +111,7 @@ enum {
   PROP_NUM_BATCH_BUFFERS,
   PROP_NVBUF_MEMORY_TYPE,
   PROP_INTERPOLATION_METHOD,
+  PROP_PLUGIN_PRIVATE_CONFIG,
   PROP_SILENT,
 };
 
@@ -1151,6 +1152,16 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
+      PROP_PLUGIN_PRIVATE_CONFIG,
+      g_param_spec_string(
+          "plugin-private-config",
+          "Plugin Privatye Config",
+          "Plugin Privatye Config \"key1=val1;key2=val2;...\"",
+          NULL,
+          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+
+  g_object_class_install_property(
+      gobject_class,
       PROP_DEWARP_LIB_VERSION,
       g_param_spec_string(
           "videoprep-lib-version",
@@ -1277,6 +1288,11 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
         g_free(videoprep->plugin_type);
       videoprep->plugin_type = (gchar*)g_value_dup_string(value);
       break;
+    case PROP_PLUGIN_PRIVATE_CONFIG:
+      if (videoprep->plugin_private_config)
+        g_free(videoprep->plugin_private_config);
+      videoprep->plugin_private_config = (gchar*)g_value_dup_string(value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
@@ -1307,6 +1323,9 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
       break;
     case PROP_PLUGIN_TYPE:
       g_value_set_string(value, videoprep->plugin_type);
+      break;
+    case PROP_PLUGIN_PRIVATE_CONFIG:
+      g_value_set_string(value, videoprep->plugin_private_config);
       break;
     case PROP_DEWARP_LIB_VERSION:
       g_value_set_static_string(value, VIDEOPREP_LIB_VERSION);

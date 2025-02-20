@@ -120,6 +120,13 @@ git_repository(
     tag = "v0.9.3",  # Use the tag corresponding to version 0.9.3
 )
 
+# Abseil Library
+git_repository(
+    name = "com_google_absl",
+    remote = "https://github.com/abseil/abseil-cpp.git",
+    tag = "20250127.0",
+)
+
 new_local_repository(
     name = "glib",
     build_file = "//buildfiles:third_party/glib_nobuild.BUILD",
@@ -143,9 +150,9 @@ new_local_repository(
 new_local_repository(
     name = "gstreamer",
     build_file = "@//buildfiles:third_party/gstreamer_nobuild.BUILD",
-    #path = "/usr/local",
-    #path = "/usr",
-    path = "/home/colivier/miniforge3/envs/ubuntu",
+    # path = "/usr/local",
+    path = "/usr",
+    # path = "/home/colivier/miniforge3/envs/ubuntu",
 )
 
 new_local_repository(
