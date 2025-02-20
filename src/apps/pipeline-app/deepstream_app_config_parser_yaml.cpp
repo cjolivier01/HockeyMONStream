@@ -67,19 +67,31 @@ gboolean parse_dsfieldmask_yaml(
   return true;
 }
 
-gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_node) {
-  std::cout << yaml_node << std::endl;
-  hm::utils::ConfigLocator locator;
-  SET_LOCATOR(locator, *config, enable);
-  SET_LOCATOR(locator, *config, unique_id);
-  SET_LOCATOR(locator, *config, gpu_id);
-  SET_LOCATOR(locator, *config, nvbuf_memory_type);
-  SET_LOCATOR(locator, *config, left_frame_offset_ns);
-  SET_LOCATOR(locator, *config, right_frame_offset_ns);
-  SET_LOCATOR_CHARS(locator, *config, config_file);
-  set_config_from_yaml(yaml_node, locator);
-  return true;
-}
+// gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_node) {
+//   hm::utils::ConfigLocator locator;
+//   SET_LOCATOR(locator, *config, enable);
+//   SET_LOCATOR(locator, *config, unique_id);
+//   SET_LOCATOR(locator, *config, gpu_id);
+//   SET_LOCATOR(locator, *config, nvbuf_memory_type);
+//   SET_LOCATOR_CHARS(locator, *config, config_file);
+//   SET_LOCATOR_CHARS(locator, *config, plugin_private_config);
+//   set_config_from_yaml(yaml_node, locator);
+//   return true;
+// }
+/*
+typedef struct
+{
+  gboolean enable;
+  guint gpu_id;
+  guint num_out_buffers;
+  guint dewarper_dump_frames;
+  gchar *config_file;
+  guint nvbuf_memory_type;
+  guint source_id;
+  guint num_surfaces_per_frame;
+  guint num_batch_buffers;
+} NvDsDewarperConfig;
+*/
 
 gboolean parse_hmvideoprep_yaml(
     NvDsHmVideoPrepConfig* config,
@@ -99,6 +111,7 @@ gboolean parse_hmvideoprep_yaml(
   SET_LOCATOR(locator, *config, num_surfaces_per_frame);
   SET_LOCATOR(locator, *config, num_batch_buffers);
   SET_LOCATOR_CHARS(locator, *config, plugin_type);
+  SET_LOCATOR_CHARS(locator, *config, plugin_private_config);
 
   hm::utils::parse_chracter_buffer(config->config_file, yaml_node, "config-file", config_path);
 
@@ -457,7 +470,8 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, gcha
       }
       /** if gpu_id for dsexample component is present,
        * it will override the value set using global_gpu_id in parse_fieldmask_yaml function */
-      parse_err = !parse_hmstitcher_yaml(&config->hmsticher_config, itr->second);
+      // parse_err = !parse_hmstitcher_yaml(&config->hmsticher_config, itr->second);
+      parse_err = !parse_hmvideoprep_yaml(&config->hmsticher_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
     } else if (paramKey == "ds-playtracker") {
       /** set gpu_id for dsexample component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {

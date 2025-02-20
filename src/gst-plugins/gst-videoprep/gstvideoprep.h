@@ -40,7 +40,7 @@ class VideoPrepPriv : public DSCustomLibraryBase {
   }
 
   // -DSCustomLibraryBase
-  bool SetProperty(Property& prop) override {
+  bool SetProperty(const Property& prop) override {
     assert(false);
     return true;
   }
@@ -75,6 +75,8 @@ class VideoPrepPriv : public DSCustomLibraryBase {
   virtual gint AllocateScratchBuffers(videoprep::GstVideoPrep *videoprep) {
     return 0;
   }
+
+  void SetPrivateConfig(const char *config_string);
 
  protected:
   RenderSet render_;

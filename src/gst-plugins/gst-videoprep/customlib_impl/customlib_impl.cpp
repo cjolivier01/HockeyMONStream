@@ -86,7 +86,7 @@ class SampleAlgorithm : public DSCustomLibraryBase {
   virtual bool SetInitParams(DSCustom_CreateParams* params);
 
   /* Set Custom Properties  of the library */
-  virtual bool SetProperty(Property& prop);
+  virtual bool SetProperty(const Property& prop);
 
   /* Pass GST events to the library */
   virtual bool HandleEvent(GstEvent* event);
@@ -376,7 +376,7 @@ bool SampleAlgorithm::HandleEvent(GstEvent* event) {
 }
 
 // Set Custom Library Specific Properties
-bool SampleAlgorithm::SetProperty(Property& prop) {
+bool SampleAlgorithm::SetProperty(const Property& prop) {
   std::cout << "Inside Custom Lib : Setting Prop Key=" << prop.key << " Value=" << prop.value << std::endl;
   m_vectorProperty.emplace_back(prop.key, prop.value);
 
