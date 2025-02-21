@@ -13,10 +13,6 @@
 
 namespace hm {
 
-namespace {
-
-} // namespace
-
 void save_dot_file(GstElement* pipeline, GstDebugGraphDetails details, const std::string& filename) {
   gchar* dot_data = gst_debug_bin_to_dot_data(GST_BIN(pipeline), details);
   if (dot_data) {
@@ -38,6 +34,8 @@ void save_dot_file(GstElement* pipeline, GstDebugGraphDetails details, const std
     std::cerr << "Failed to generate DOT data" << std::endl;
   }
 }
+
+namespace {
 
 bool seek_element(GstElement* seek_element, size_t seek_to_nanoseconds) {
   // size_t seekTarget = static_cast<size_t>(abs_seconds * 60 * GST_SECOND);

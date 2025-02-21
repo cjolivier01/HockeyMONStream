@@ -17,7 +17,7 @@ cc_binary(
     "-std=c++17",
   ],
   linkopts=[
-    "-l:/usr/local/lib/x86_64-linux-gnu/libgstreamer-1.0.so",
+    # "-l:/usr/local/lib/x86_64-linux-gnu/libgstreamer-1.0.so",
     "-lX11",
     "-ldl",
     "-lm",
