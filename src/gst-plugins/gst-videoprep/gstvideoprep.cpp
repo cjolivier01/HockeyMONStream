@@ -495,9 +495,10 @@ static GstCaps* gst_videoprep_transform_caps(
   return new_caps;
 }
 
-static void gst_videoprep_state_changed(GstElement* element, GstState oldstate, GstState newstate, GstState pending) {}
+// static void gst_videoprep_state_changed(GstElement* element, GstState oldstate, GstState newstate, GstState pending)
+// {}
 
-GstStateChangeReturn gst_videoprep_change_state(GstElement* element, GstStateChange transition) {
+static GstStateChangeReturn gst_videoprep_change_state(GstElement* element, GstStateChange transition) {
   if (transition == GST_STATE_CHANGE_NULL_TO_READY) {
     GstVideoPrep* videoprep = GST_VIDEOPREP(element);
     DSCustom_CreateParams params = {0};
@@ -521,89 +522,12 @@ GstStateChangeReturn gst_videoprep_change_state(GstElement* element, GstStateCha
     if (videoprep->plugin_private_config) {
       videoprep->priv->SetPrivateConfig(videoprep->plugin_private_config);
     }
-    // if (videoprep->priv->AllocateScratchBuffers(videoprep)) {
-    //   GST_ERROR("Error allocating videoprep projection buffers");
-    //   return GST_STATE_CHANGE_FAILURE;
-    // }
   }
   GstVideoPrepClass* klass = GST_VIDEOPREP_CLASS(element);
   assert(GST_IS_VIDEOPREP_CLASS(klass));
   assert(klass->parent_change_state_fn);
   return klass->parent_change_state_fn(element, transition);
 }
-// GstStateChangeReturn ret = GST_STATE_CHANGE_SUCCESS;
-//  GstGstMyAudioFilter *myaudiofilter = GST_GST_AUDIO_FILTER(element);
-
-// switch (transition) {
-// case GST_STATE_CHANGE_NULL_TO_READY:
-//   // if (!gst_my_filter_allocate_memory(filter))
-//   //   return GST_STATE_CHANGE_FAILURE;
-//   break;
-// default:
-//   break;
-// }
-
-// ret = element->change_state(element, transition);
-// if (ret == GST_STATE_CHANGE_FAILURE)
-//   return ret;
-
-// switch (transition) {
-// case GST_STATE_CHANGE_READY_TO_NULL:
-//   gst_my_filter_free_memory(filter);
-//   break;
-// default:
-//   break;
-// }
-//}
-
-// static gint gst_videoprep_allocate_projection_buffers(GstVideoPrep* videoprep) {
-//   // std::vector<VideoPrepParams>::iterator iter;
-//   // guint i = 0;
-//   cudaError_t cudaErr;
-
-//   cudaErr = cudaSetDevice(videoprep->gpu_id);
-//   if (cudaErr != cudaSuccess) {
-//     printf("\n *** Unable to set device in %s Line %d\n", __func__, __LINE__);
-//     return cudaErr;
-//   }
-
-// #if 1
-//   static bool ranthis = false;
-//   (void)ranthis;
-//   assert(!ranthis);
-//   ranthis = true;
-
-//   hm::WHDims src_size{.width = (FloatValue)videoprep->input_width, .height = (FloatValue)videoprep->input_height};
-//   constexpr FloatValue out_ar = 16.0 / 9.0;
-//   FloatValue virt_out_width = ((FloatValue)videoprep->input_height) * out_ar;
-//   hm::WHDims output_size{.width = virt_out_width, .height = (FloatValue)videoprep->input_height};
-
-//   videoprep->pre_rotate_size = get_box_size_necessary_for_rotations(src_size, output_size);
-
-// #endif
-//   constexpr size_t kBytesPerPixel = 4;
-// #ifdef SCRATCH_USE_ALIGNED_PITCH
-//   size_t pitch = NVBUF_PLATFORM_ALIGNED_PITCH((size_t)videoprep->pre_rotate_size.width * kBytesPerPixel);
-// #else
-//   // No alignment for simpler functions that cant handle aligned pitch
-//   size_t pitch = (size_t)videoprep->pre_rotate_size.width * kBytesPerPixel;
-// #endif
-//   constexpr size_t kNumScratchBuffers = 2;
-//   for (size_t i = 0; i < kNumScratchBuffers; ++i) {
-//     void* surface_ptr = nullptr;
-//     cuda_ck(cudaMalloc(&surface_ptr, pitch * (size_t)videoprep->pre_rotate_size.height));
-//     // cuda_ck(cudaMallocHost(&surface_ptr, pitch * (size_t)videoprep->pre_rotate_size.height));
-
-//     videoprep->priv->scratch_buffers.add_surface(
-//         surface_ptr,
-//         videoprep->pre_rotate_size.width,
-//         videoprep->pre_rotate_size.height,
-//         pitch,
-//         kBytesPerPixel,
-//         /*owns=*/true);
-//   }
-//   return 0;
-// }
 
 static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps, GstCaps* outcaps) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(trans);
@@ -643,6 +567,7 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
   }
   gst_caps_features_free(ift);
 
+  // BEGIN BUFFER POOL SETUP
   // Pool Creation
   {
     videoprep->pool = gst_nvds_buffer_pool_new();
@@ -687,7 +612,7 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
           videoprep->num_batch_buffers);
     }
   }
-  // // gst_videoprep_allocate_projection_buffers(videoprep);
+  // END BUFFER POOL SETUP
   if (videoprep->priv->AllocateScratchBuffers(videoprep)) {
     GST_ERROR("Error allocating videoprep projection buffers");
     return FALSE;
@@ -744,50 +669,6 @@ void inspect_nvbufsurface_dtype(GstBuffer* buffer) {
   // Unmap the buffer
   gst_buffer_unmap(buffer, &map_info);
 }
-
-// static gboolean gst_videoprep_render(GstBaseTransform* trans, GstBuffer* audio, GstVideoFrame* video) {
-//   GstVideoPrep* videoprep = GST_VIDEOPREP(trans);
-//   GstElement* element = GST_ELEMENT(trans);
-//   GstPad* srcpad = GST_PAD(element->srcpads->data);
-//   GstFlowReturn ret;
-//   BufferResult ret_process_buffer = BufferResult::Buffer_Ok;
-
-//   GstBuffer *outbuf = NULL, *temp = NULL;
-
-//   ret = gst_buffer_pool_acquire_buffer(videoprep->pool, &outbuf, NULL);
-//   if (ret != GST_FLOW_OK) {
-//     GST_ERROR_ON_BUS("failed to activate bufferpool", "failed to activate bufferpool");
-//     return false;
-//   }
-
-//   GST_BUFFER_PTS(outbuf) = GST_BUFFER_PTS(video->buffer);
-//   GST_BUFFER_DURATION(outbuf) = GST_BUFFER_DURATION(video->buffer);
-
-//   temp = video->buffer;
-//   video->buffer = outbuf;
-
-//   ret_process_buffer = videoprep->priv->ProcessBuffer(trans, audio, video);
-//   if (ret_process_buffer == BufferResult::Buffer_Error) {
-//     gst_buffer_unref(outbuf);
-//     video->buffer = temp;
-//     GST_ERROR_ON_BUS("ProcessBuffer Error", "ProcessBuffer Error");
-//     return false;
-//   }
-
-//   if (ret_process_buffer == BufferResult::Buffer_Ok) {
-//     ret = gst_pad_push(srcpad, outbuf);
-//     if (ret != GST_FLOW_OK) {
-//       video->buffer = temp;
-//       GST_ERROR_ON_BUS("failed to push buffer", "failed to push buffer");
-//       return false;
-//     }
-//   } else if (ret_process_buffer == BufferResult::Buffer_Drop) {
-//     gst_buffer_unref(outbuf);
-//   }
-
-//   video->buffer = temp;
-//   return true;
-// }
 
 void videoprep_add_surface_meta(GstBuffer* out_gst_buf, int num_filled_surfaces, int source_id) {
   NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));
@@ -1026,7 +907,7 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
 
   klass->parent_change_state_fn = gstelement_class->change_state;
   gstelement_class->change_state = GST_DEBUG_FUNCPTR(gst_videoprep_change_state);
-  gstelement_class->state_changed = GST_DEBUG_FUNCPTR(gst_videoprep_state_changed);
+  // gstelement_class->state_changed = GST_DEBUG_FUNCPTR(gst_videoprep_state_changed);
 
   gstbasetransform_class->passthrough_on_same_caps = FALSE;
 

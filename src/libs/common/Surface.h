@@ -26,6 +26,7 @@ class Surface {
     // No virtuals, no expensive construction.
     // This is simply a wrapper class of the NvBufSurfaceParams pointer.
     static_assert(sizeof(*this) == sizeof(NvBufSurfaceParams*));
+    assert(!params->mappedAddr.eglImage);
   }
 
   template <typename T = void*>

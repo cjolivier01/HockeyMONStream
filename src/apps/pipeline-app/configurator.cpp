@@ -229,18 +229,27 @@ void Configurator::complete_configuration() {
     set_stream_offsets_ |= rfo != 0.0;
     pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / fps * GST_SECOND));
   }
+  std::string possible_audio_uri;
   // Source 0 files
   static const std::string ff = "file://";
+  size_t source_index = 0;
   if (!left_files.empty() && !right_files.empty()) {
     auto src0 = pipeline["source0"];
     auto src1 = pipeline["source1"];
-    if (src0.IsDefined() && as_int(src0["enable"]) && as_int(src0["type"]) == 3 && src1.IsDefined() &&
-        as_int(src1["enable"]) && as_int(src1["type"]) == 3) {
+    if (src0.IsDefined() && as_int(src0["enable"]) && as_int(src0["type"]) == NV_DS_SOURCE_URI_MULTIPLE &&
+        src1.IsDefined() && as_int(src1["enable"]) && as_int(src1["type"]) == NV_DS_SOURCE_URI_MULTIPLE) {
       // Two uri sources, so set them to the stitching files
       // TODO: how to set all of the files and roll them?
       src0["uri"] = ff + file_maybe_in_game_dir(left_files[0]);
       src1["uri"] = ff + file_maybe_in_game_dir(right_files[0]);
+      if (offsets["left"].as<double>() == 0) {
+        possible_audio_uri = src0["uri"].as<std::string>();
+      } else {
+        assert(offsets["right"].as<double>() == 0);
+        possible_audio_uri = src1["uri"].as<std::string>();
+      }
       // std::cout << src0 << std::endl;
+      source_index += 2;
     }
   } else {
     auto src0 = pipeline["source0"];
@@ -250,6 +259,19 @@ void Configurator::complete_configuration() {
         if (std::filesystem::exists(stiched_output)) {
           src0["uri"] = ff + stiched_output;
         }
+      }
+      source_index += 1;
+      possible_audio_uri = src0["uri"].as<std::string>();
+    }
+  }
+  std::string audio_source_key = "source" + std::to_string(source_index);
+  if (!possible_audio_uri.empty() && pipeline[audio_source_key].IsDefined()) {
+    ++source_index;
+    auto audio0 = pipeline[audio_source_key];
+    if (audio0["enable"].IsDefined() && audio0["enable"].as<int>() &&
+        audio0["type"].as<int>() == NV_DS_SOURCE_AUDIO_URI) {
+      if (!audio0["uri"].IsDefined() || audio0["uri"].as<std::string>().empty()) {
+        audio0["uri"] = possible_audio_uri;
       }
     }
   }

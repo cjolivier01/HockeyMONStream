@@ -79,10 +79,10 @@ source1:
   cudadec-memtype: 0
 
 source2:
-  enable: 0
+  enable: 1
   type: 7
   # uri: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
-  uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
+  # uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
   num-sources: 1
   gpu-id: 0
   input-audio-rate: 189  
@@ -110,7 +110,7 @@ hmaudio:
 sink0:
   enable: 1
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
-  type: 2
+  type: 1
   sync: 1
   # sync: 0
   source-id: 0
