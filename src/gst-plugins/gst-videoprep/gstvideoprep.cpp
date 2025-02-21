@@ -622,6 +622,7 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
   return TRUE;
 }
 
+#if 0
 void inspect_nvbufsurface_dtype(GstBuffer* buffer) {
   // Map the GstBuffer to retrieve the NvBufSurface
   GstMapInfo map_info;
@@ -669,6 +670,7 @@ void inspect_nvbufsurface_dtype(GstBuffer* buffer) {
   // Unmap the buffer
   gst_buffer_unmap(buffer, &map_info);
 }
+#endif
 
 void videoprep_add_surface_meta(GstBuffer* out_gst_buf, int num_filled_surfaces, int source_id) {
   NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));
@@ -712,10 +714,6 @@ static cudaError gst_videoprep_do_prep(
     }
   }
 
-  if (videoprep->dump_frames) {
-    videoprep->dump_frames--;
-  }
-
   BAIL_IF_FALSE(cudaSuccess == cudaErr, err, (gint)cudaErr);
   return cudaErr;
 
@@ -734,6 +732,7 @@ static GstFlowReturn gst_videoprep_transform(GstBaseTransform* btrans, GstBuffer
   NvBufSurface* out_surface = NULL;
   cudaError cudaErr = cudaSuccess;
   gchar pts_str[64];
+  GstClockTime in_pts, out_pts;
 
   NvDsBatchMeta* batch_meta = gst_buffer_get_nvds_batch_meta(inbuf);
   assert(batch_meta);
@@ -785,12 +784,18 @@ static GstFlowReturn gst_videoprep_transform(GstBaseTransform* btrans, GstBuffer
       videoprep->frame_num,
       print_pretty_time(pts_str, sizeof(pts_str), GST_BUFFER_PTS(outbuf)));
 
+  in_pts = GST_BUFFER_PTS(inbuf);
+  out_pts = GST_BUFFER_PTS(outbuf);
+
   gst_buffer_unmap(inbuf, &inmap);
   gst_buffer_unmap(outbuf, &outmap);
 
   if (!gst_buffer_copy_into(outbuf, inbuf, (GstBufferCopyFlags)GST_BUFFER_COPY_METADATA, 0, -1)) {
     GST_DEBUG_OBJECT(videoprep, "Buffer metadata copy failed \n");
   }
+
+  in_pts = GST_BUFFER_PTS(inbuf);
+  out_pts = GST_BUFFER_PTS(outbuf);
 
   // if (videoprep->deref_input_buffer) {
   //   gst_buffer_unref(inbuf);
@@ -1046,7 +1051,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
 
   videoprep->num_output_buffers = DEFAULT_NUM_OUTPUT_BUFFERS;
 
-  videoprep->dump_frames = DEFAULT_DEWARP_DUMP_FRAMES;
+  // videoprep->dump_frames = DEFAULT_DEWARP_DUMP_FRAMES;
 
   videoprep->output_width = DEFAULT_DEWARP_OUTPUT_WIDTH;
   videoprep->output_height = DEFAULT_DEWARP_OUTPUT_HEIGHT;

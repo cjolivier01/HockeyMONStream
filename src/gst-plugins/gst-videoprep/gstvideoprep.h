@@ -72,11 +72,11 @@ class VideoPrepPriv : public DSCustomLibraryBase {
     return cudaError_t::cudaSuccess;
   }
 
-  virtual gint AllocateScratchBuffers(videoprep::GstVideoPrep *videoprep) {
+  virtual gint AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) {
     return 0;
   }
 
-  void SetPrivateConfig(const char *config_string);
+  void SetPrivateConfig(const char* config_string);
 
  protected:
   RenderSet render_;
@@ -90,11 +90,12 @@ G_BEGIN_DECLS
  */
 #define GST_TYPE_VIDEOPREP (hm::videoprep::gst_videoprep_get_type())
 #define GST_VIDEOPREP(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_VIDEOPREP, videoprep::GstVideoPrep))
-// #define GST_VIDEOPREP_CLASS(klass) (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_VIDEOPREP, videoprep::GstVideoPrepClass))
+// #define GST_VIDEOPREP_CLASS(klass) (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_VIDEOPREP,
+// videoprep::GstVideoPrepClass))
 #define GST_IS_VIDEOPREP(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_VIDEOPREP))
 #define GST_IS_VIDEOPREP_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_VIDEOPREP))
 
-#define GST_VIDEOPREP_CLASS(obj)      (G_TYPE_INSTANCE_GET_CLASS ((obj), GST_TYPE_ELEMENT, videoprep::GstVideoPrepClass))
+#define GST_VIDEOPREP_CLASS(obj) (G_TYPE_INSTANCE_GET_CLASS((obj), GST_TYPE_ELEMENT, videoprep::GstVideoPrepClass))
 
 /**
  * GstVideoPrep element structure.
@@ -159,8 +160,7 @@ struct GstVideoPrep
 /** GStreamer boilerplate. */
 struct GstVideoPrepClass {
   GstBaseTransformClass parent_class;
-  GstStateChangeReturn (* parent_change_state_fn) (GstElement * element,
-    GstStateChange transition);
+  GstStateChangeReturn (*parent_change_state_fn)(GstElement* element, GstStateChange transition);
 };
 
 GType gst_videoprep_get_type(void);
