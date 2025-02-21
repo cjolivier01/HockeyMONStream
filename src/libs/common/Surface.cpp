@@ -107,9 +107,10 @@ imageFormat Surface::get_image_format() const {
   }
 }
 
-#ifdef __aarch64__  /* Jetson */
+#ifdef __aarch64__ /* Jetson */
 
-EglSurfaceMapper::EglSurfaceMapper(NvBufSurface* surface, int index) : surface_(surface), index_(index) {
+EglSurfaceMapper::EglSurfaceMapper(NvBufSurface* surface, int index, bool read_only)
+    : surface_(surface), index_(index), read_only_(read_only) {
   map();
 }
 
@@ -125,10 +126,16 @@ cudaError_t EglSurfaceMapper::map() {
     return cudaSuccess;
   }
 
-  auto egl_image = surface_->surfaceList[index_].mappedAddr.eglImage;
+  NvBufSurfaceParams* surface_params = &surface_->surfaceList[index_];
+
+  auto egl_image = surface_params->mappedAddr.eglImage;
+  assert(egl_image);
 
   cudaGraphicsResource* cuResource{nullptr};
-  cudaError_t cuerr_result = cudaGraphicsEGLRegisterImage(&cuResource, egl_image, CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE);
+  cudaError_t cuerr_result = cudaGraphicsEGLRegisterImage(
+      &cuResource,
+      egl_image,
+      read_only_ ? CU_GRAPHICS_MAP_RESOURCE_FLAGS_READ_ONLY : CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE);
   if (cuerr_result != cudaSuccess) {
     std::cerr << "FAILED!!!" << std::endl;
     assert(false);

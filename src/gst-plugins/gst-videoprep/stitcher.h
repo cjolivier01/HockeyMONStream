@@ -66,7 +66,7 @@ class StitcherPriv : public videoprep::VideoPrepPriv {
 
  private:
   std::unique_ptr<hm::pano::cuda::CudaStitchPano<uchar4, float3>> stitcher_;
-  // std::mutex process_mu_;
+  std::mutex process_mu_;
   size_t left_frame_offset_ns_{0}, right_frame_offset_ns_{0};
 };
 

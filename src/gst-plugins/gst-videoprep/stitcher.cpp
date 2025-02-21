@@ -120,7 +120,7 @@ cudaError StitcherPriv::GenerateOutput(
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
   // Should not be necessary, debugging some issue atm
-  // std::unique_lock lk(process_mu_);
+  std::unique_lock lk(process_mu_);
 
   cudaError err = cudaSuccess;
   cudaError_t last_error = cudaGetLastError();
@@ -228,15 +228,16 @@ cudaError StitcherPriv::GenerateOutput(
 
     // NvBufSurfaceParams* left_params = frame_info_left.surface_params;
     // NvBufSurfaceParams* right_params = frame_info_right.surface_params;
-    // NvBufSurfaceParams* output_params = &out_surface->surfaceList[out_surface_index];
+    NvBufSurfaceParams* output_params = &out_surface->surfaceList[out_surface_index];
 
 #ifdef __aarch64__
-    hm::surface::EglSurfaceMapper incoming_left_elg_surface_mapper(in_surface, frame_info_left.incoming_surface_index);
+    hm::surface::EglSurfaceMapper incoming_left_elg_surface_mapper(
+        in_surface, frame_info_left.incoming_surface_index, /*read_only=*/true);
     hm::surface::Surface incoming_surface_left = incoming_left_elg_surface_mapper.get_surface();
     hm::surface::EglSurfaceMapper incoming_right_elg_surface_mapper(
-        in_surface, frame_info_right.incoming_surface_index);
+        in_surface, frame_info_right.incoming_surface_index, /*read_only=*/true);
     hm::surface::Surface incoming_surface_right = incoming_right_elg_surface_mapper.get_surface();
-    hm::surface::EglSurfaceMapper outgoing_elg_surface_mapper(out_surface, out_surface_index);
+    hm::surface::EglSurfaceMapper outgoing_elg_surface_mapper(out_surface, out_surface_index, /*read_only=*/false);
     hm::surface::Surface outgoing_surface = outgoing_elg_surface_mapper.get_surface();
 #else
     hm::surface::Surface incoming_surface_left(frame_info_left.surface_params);
@@ -244,8 +245,10 @@ cudaError StitcherPriv::GenerateOutput(
     hm::surface::Surface outgoing_surface(&out_surface->surfaceList[out_surface_index]);
 #endif
 
-    assert(outgoing_surface.width() == (uint32_t)stitcher_->canvas_width());
-    assert(outgoing_surface.height() == (uint32_t)stitcher_->canvas_height());
+    //auto osw = outgoing_surface.width();
+    //auto cvw = stitcher_->canvas_width();
+    // assert(outgoing_surface.width() == (uint32_t)stitcher_->canvas_width());
+    // assert(outgoing_surface.height() == (uint32_t)stitcher_->canvas_height());
     hm::CudaMat<uchar4> left(
         hm::SurfaceInfo{
             .width = (int)incoming_surface_left.width(),
@@ -264,9 +267,9 @@ cudaError StitcherPriv::GenerateOutput(
         /*batch_size=*/1);
     auto canvas = std::make_unique<hm::CudaMat<uchar4>>(
         hm::SurfaceInfo{
-            .width = (int)outgoing_surface.width(),
-            .height = (int)outgoing_surface.height(),
-            .pitch = (int)outgoing_surface.pitch(),
+            .width = (int)output_params->width, // egl mapping may have slightly different width
+            .height = (int)output_params->height,
+            .pitch = (int)outgoing_surface.pitch(), // pitch may be egl image pitch
             .data_ptr = outgoing_surface.dataptr(),
         },
         /*batch_size=*/1);

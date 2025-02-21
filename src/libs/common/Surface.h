@@ -211,7 +211,7 @@ class SurfaceList {
 #ifdef __aarch64__ /* Jetson */
 class EglSurfaceMapper {
  public:
-  EglSurfaceMapper(NvBufSurface* surface, int index);
+  EglSurfaceMapper(NvBufSurface* surface, int index, bool read_only);
   ~EglSurfaceMapper();
 
   Surface get_surface() {
@@ -224,6 +224,7 @@ class EglSurfaceMapper {
   cudaError_t unmap();
   NvBufSurface* surface_;
   int index_;
+  bool read_only_;
   cudaGraphicsResource* cuResource_{nullptr};
   cudaEglFrame eglFrame_{
       0,

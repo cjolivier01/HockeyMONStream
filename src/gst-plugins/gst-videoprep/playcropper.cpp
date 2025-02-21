@@ -117,7 +117,7 @@ cudaError PlayCropperPriv::GenerateOutput(
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)frame_meta_list->data;
 
 #ifdef __aarch64__
-    hm::surface::EglSurfaceMapper incoming_elg_surface_mapper(in_surface, batch_nr);
+    hm::surface::EglSurfaceMapper incoming_elg_surface_mapper(in_surface, batch_nr, /*read_only=*/true);
     hm::surface::Surface incoming_surface = incoming_elg_surface_mapper.get_surface();
 #else
     hm::surface::Surface incoming_surface(&in_surface->surfaceList[batch_nr]);
@@ -289,7 +289,7 @@ cudaError PlayCropperPriv::GenerateOutput(
 #if 1
     {
 #ifdef __aarch64__
-      hm::surface::EglSurfaceMapper outgoing_elg_surface_mapper(out_surface, batch_nr);
+      hm::surface::EglSurfaceMapper outgoing_elg_surface_mapper(out_surface, batch_nr, /*read_only=*/false);
       hm::surface::Surface outgoing_surface = outgoing_elg_surface_mapper.get_surface();
 #else
       hm::surface::Surface outgoing_surface(&out_surface->surfaceList[batch_nr]);
