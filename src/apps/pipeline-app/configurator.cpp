@@ -15,7 +15,9 @@ namespace hm {
 
 namespace {
 
-static void save_dot_file(GstElement* pipeline, GstDebugGraphDetails details, const std::string& filename) {
+} // namespace
+
+void save_dot_file(GstElement* pipeline, GstDebugGraphDetails details, const std::string& filename) {
   gchar* dot_data = gst_debug_bin_to_dot_data(GST_BIN(pipeline), details);
   if (dot_data) {
     // Print to stdout

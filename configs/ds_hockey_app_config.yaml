@@ -243,6 +243,7 @@ streammux:
   ##along with width, height properties
   enable-padding: 0
   nvbuf-memory-type: 0
+  sync-inputs: 0
 
 hm-image-meta-merger:
   enable: false

@@ -821,6 +821,9 @@ int main(int argc, char* argv[]) {
         return_value = -1;
         goto done;
       }
+#if 1
+      hm::save_dot_file(appCtx[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_running");
+#endif
       if (appCtx[i]->config.pipeline_recreate_sec)
         g_timeout_add_seconds(appCtx[i]->config.pipeline_recreate_sec, recreate_pipeline_thread_func, appCtx[i].get());
     }

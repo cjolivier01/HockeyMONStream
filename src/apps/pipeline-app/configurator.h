@@ -49,4 +49,7 @@ class Configurator {
 
   bool set_stream_offsets_{false};
 };
+
+void save_dot_file(GstElement* pipeline, GstDebugGraphDetails details, const std::string& filename);
+
 } // namespace hm
