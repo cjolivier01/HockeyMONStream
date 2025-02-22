@@ -6,32 +6,64 @@
 
 namespace hm {
 
-bool has_node(YAML::Node n, const std::string& dot_string) {
-  if (!n.IsDefined()) {
-    return false;
+bool has_node(const YAML::Node& n, const std::string& dot_string) {
+  if (dot_string.empty()) {
+    return true;
   }
-  std::vector<std::string> tokens = absl::StrSplit(dot_string, '.');
-  for (const std::string& s : tokens) {
-    n = n[s];
-    if (!n.IsDefined()) {
+  std::vector<std::string> keys = absl::StrSplit(dot_string, '.');
+
+  // Start from the root node
+  const YAML::Node* current = &n;
+
+  // Traverse the node tree according to the keys
+  for (const auto& key : keys) {
+    if (!current->IsMap()) {
+      // If the current node is not a map, no further keys can be accessed
+      return false;
+    }
+
+    // Access the next node in the path
+    auto tmp = (*current)[key];
+    current = &tmp;
+
+    // Check if the current node is defined
+    if (!current->IsDefined()) {
       return false;
     }
   }
+
+  // If all keys are accessed and nodes are defined, return true
   return true;
 }
 
-std::optional<YAML::Node> get_node(YAML::Node n, const std::string& dot_string) {
-  if (!n.IsDefined()) {
-    return std::nullopt;
+std::optional<YAML::Node> get_node(YAML::Node& n, const std::string& dot_string) {
+  if (dot_string.empty()) {
+    return n;
   }
-  std::vector<std::string> tokens = absl::StrSplit(dot_string, '.');
-  for (const std::string& s : tokens) {
-    n = n[s];
-    if (!n.IsDefined()) {
+  std::vector<std::string> keys = absl::StrSplit(dot_string, '.');
+
+  // Start from the root node
+  const YAML::Node* current = &n;
+
+  // Traverse the node tree according to the keys
+  for (const auto& key : keys) {
+    if (!current->IsMap()) {
+      // If the current node is not a map, no further keys can be accessed
+      return std::nullopt;
+    }
+
+    // Access the next node in the path
+    auto tmp = (*current)[key];
+    current = &tmp;
+
+    // Check if the current node is defined
+    if (!current->IsDefined()) {
       return std::nullopt;
     }
   }
-  return n;
+
+  // If all keys are accessed and nodes are defined, return true
+  return *current;
 }
 
 bool seek_element(GstElement* seek_element, size_t seek_to_nanoseconds) {
@@ -62,7 +94,7 @@ void save_dot_file(GstElement* pipeline, GstDebugGraphDetails details, const std
     // std::cout << dot_data << std::endl;
 
     // Or save to a file
-    std::ofstream dot_file(filename + ".dot");
+    std::ofstream dot_file(TO_STRING(filename << ".dot"));
     if (dot_file.is_open()) {
       dot_file << dot_data;
       dot_file.close();

@@ -2,7 +2,6 @@
 #include "deepstream_app.h"
 
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -164,16 +163,25 @@ static int as_int(const YAML::Node& node) {
 }
 
 void Configurator::complete_configuration() {
-  // std::cout << config_ << std::endl;
   YAML::Node pipeline = config_["pipeline"];
   assert(pipeline.IsDefined());
   // Stitching config mask config dir
   auto game_dir = get_game_dir(game_id_);
+
   pipeline["hmstitcher"]["config-file"] = std::string(game_dir);
   pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / "rink_mask_0.png");
   // Stitching LFO, RFO
-  std::vector<std::string> left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
-  std::vector<std::string> right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
+  std::vector<std::string> left_files;
+  std::vector<std::string> right_files;
+
+  if (has_node(config_, "game.videos.left")) {
+    std::cout << config_["game"]["videos"]["left"] << std::endl;
+    left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
+  }
+  if (has_node(config_, "game.videos.right")) {
+    right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
+  }
+
   auto offsets = config_["game"]["stitching"]["frame_offsets"];
   if (!left_files.empty()) {
     double fps = getVideoFPS(file_maybe_in_game_dir(left_files[0]));
