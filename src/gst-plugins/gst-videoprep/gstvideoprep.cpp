@@ -743,8 +743,8 @@ static GstFlowReturn gst_videoprep_transform(GstBaseTransform* btrans, GstBuffer
   if (!gst_buffer_copy_into(
           outbuf,
           inbuf,
-          GstBufferCopyFlags::GST_BUFFER_COPY_TIMESTAMPS,
-          //(GstBufferCopyFlags)GST_BUFFER_COPY_METADATA,
+          //GstBufferCopyFlags::GST_BUFFER_COPY_TIMESTAMPS,
+          (GstBufferCopyFlags)GST_BUFFER_COPY_METADATA,
           0,
           -1)) {
     GST_DEBUG_OBJECT(videoprep, "Buffer metadata copy failed \n");
@@ -755,7 +755,7 @@ static GstFlowReturn gst_videoprep_transform(GstBaseTransform* btrans, GstBuffer
 
   assert(in_pts == out_pts);
   // std::cout << videoprep->plugin_type << ": " << in_pts << " - " << out_pts << std::endl;
-  std::cout << videoprep->plugin_type << ": " << in_pts << std::endl;
+  // std::cout << videoprep->plugin_type << ": " << in_pts << std::endl;
 
   // if (videoprep->deref_input_buffer) {
   //   gst_buffer_unref(inbuf);
