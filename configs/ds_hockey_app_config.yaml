@@ -198,7 +198,7 @@ sink2:
   # udp-port: 5400
 
 osd:
-  enable: 0
+  enable: 1
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -280,8 +280,8 @@ ds-example:
   processing-height: 480
 
 hmvideoprep:
-  enable: false
-  # enable: true
+  # enable: false
+  enable: true
   gpu-id: 0
   # plugin-type: videoprep
   # has_queue: false
@@ -303,8 +303,8 @@ hmvideoprep:
   # num-output-buffers: 2
 
 hmstitcher:
-  # enable: false
-  enable: true
+  enable: false
+  # enable: true
   gpu-id: 0
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
@@ -312,7 +312,7 @@ hmstitcher:
   num-output-buffers: 2
 
 ds-playtracker:
-  enable: 0
+  enable: 1
   gpu-id: 0
   unique-id: 75
   draw: true

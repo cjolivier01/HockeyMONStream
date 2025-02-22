@@ -622,56 +622,6 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
   return TRUE;
 }
 
-#if 0
-void inspect_nvbufsurface_dtype(GstBuffer* buffer) {
-  // Map the GstBuffer to retrieve the NvBufSurface
-  GstMapInfo map_info;
-  if (!gst_buffer_map(buffer, &map_info, GST_MAP_READ)) {
-    GST_ERROR("Failed to map GstBuffer.");
-    return;
-  }
-
-  NvBufSurface* nvbuf_surface = (NvBufSurface*)map_info.data;
-  if (!nvbuf_surface) {
-    GST_ERROR("NvBufSurface is null.");
-    gst_buffer_unmap(buffer, &map_info);
-    return;
-  }
-
-  // Iterate through surfaces in the NvBufSurface
-  for (uint32_t i = 0; i < nvbuf_surface->numFilled; i++) {
-    NvBufSurfaceParams& surface_params = nvbuf_surface->surfaceList[i];
-    GST_INFO(
-        "Surface %d: width=%d, height=%d, pitch=%d",
-        i,
-        surface_params.width,
-        surface_params.height,
-        surface_params.pitch);
-
-    switch (surface_params.colorFormat) {
-      case NVBUF_COLOR_FORMAT_RGBA:
-        GST_INFO("Surface %d has color format: NVBUF_COLOR_FORMAT_RGBA (dtype: uint8_t).", i);
-        break;
-
-      case NVBUF_COLOR_FORMAT_NV12:
-        GST_INFO("Surface %d has color format: NVBUF_COLOR_FORMAT_NV12 (dtype: uint8_t, YUV 4:2:0).", i);
-        break;
-
-      case NVBUF_COLOR_FORMAT_UYVY:
-        GST_INFO("Surface %d has color format: NVBUF_COLOR_FORMAT_UYVY (dtype: uint8_t, YUV 4:2:2).", i);
-        break;
-
-      default:
-        GST_WARNING("Surface %d has an unsupported or unknown color format: %d", i, surface_params.colorFormat);
-        break;
-    }
-  }
-
-  // Unmap the buffer
-  gst_buffer_unmap(buffer, &map_info);
-}
-#endif
-
 void videoprep_add_surface_meta(GstBuffer* out_gst_buf, int num_filled_surfaces, int source_id) {
   NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));
 
@@ -796,6 +746,8 @@ static GstFlowReturn gst_videoprep_transform(GstBaseTransform* btrans, GstBuffer
 
   in_pts = GST_BUFFER_PTS(inbuf);
   out_pts = GST_BUFFER_PTS(outbuf);
+
+  // std::cout << in_pts << " - " << out_pts << std::endl;
 
   // if (videoprep->deref_input_buffer) {
   //   gst_buffer_unref(inbuf);
