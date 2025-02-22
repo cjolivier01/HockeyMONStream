@@ -222,7 +222,7 @@ class EglSurfaceMapper {
  private:
   cudaError_t map();
   cudaError_t unmap();
-  NvBufSurface* surface_;
+  NvBufSurface* surface_{nullptr};
   int index_;
   bool read_only_;
   cudaGraphicsResource* cuResource_{nullptr};

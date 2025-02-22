@@ -118,22 +118,30 @@ EglSurfaceMapper::~EglSurfaceMapper() {
   unmap();
 }
 
+// if( CUDA_FAILED(cudaGraphicsEGLRegisterImage(&eglResource, eglImage, cudaGraphicsRegisterFlagsReadOnly)) )
+// 	return -1;
+
+// if( CUDA_FAILED(cudaGraphicsResourceGetMappedEglFrame(&eglFrame, eglResource, 0, 0)) )
+// 	return -1;
+
+// CUDA(cudaGraphicsUnregisterResource(eglResource));
+// NvDestroyEGLImage(NULL, eglImage);
+
 cudaError_t EglSurfaceMapper::map() {
+  assert(!surface_->surfaceList[index_].mappedAddr.eglImage);
   auto nv_error = NvBufSurfaceMapEglImage(surface_, index_);
   if (nv_error != 0) {
     std::cerr << "FAILED!!!" << std::endl;
     assert(false);
     return cudaSuccess;
   }
-
   NvBufSurfaceParams* surface_params = &surface_->surfaceList[index_];
 
   auto egl_image = surface_params->mappedAddr.eglImage;
   assert(egl_image);
-
-  cudaGraphicsResource* cuResource{nullptr};
+  assert(!cuResource_);
   cudaError_t cuerr_result = cudaGraphicsEGLRegisterImage(
-      &cuResource,
+      &cuResource_,
       egl_image,
       read_only_ ? CU_GRAPHICS_MAP_RESOURCE_FLAGS_READ_ONLY : CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE);
   if (cuerr_result != cudaSuccess) {
@@ -142,7 +150,7 @@ cudaError_t EglSurfaceMapper::map() {
     return cuerr_result;
   }
 
-  cuerr_result = cudaGraphicsResourceGetMappedEglFrame(&eglFrame_, cuResource, 0, 0);
+  cuerr_result = cudaGraphicsResourceGetMappedEglFrame(&eglFrame_, cuResource_, 0, 0);
   if (cuerr_result != cudaSuccess) {
     std::cerr << "FAILED!!!" << std::endl;
     assert(false);
@@ -189,7 +197,7 @@ cudaError_t EglSurfaceMapper::unmap() {
     }
     cuResource_ = nullptr;
   }
-  if (surface_->surfaceList[index_].mappedAddr.eglImage) {
+  if (surface_) {
     /* Destroy the EGLImage */
     auto nvresult = NvBufSurfaceUnMapEglImage(surface_, index_);
     if (nvresult != 0) {
