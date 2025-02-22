@@ -1,10 +1,10 @@
 #pragma once
 
-#include "src/libs/common/ConfigYaml.h"
+#include "yaml-cpp/yaml.h"
 
 #include <filesystem>
-#include <optional>
 #include <string>
+#include <optional>
 
 struct NvDsConfig;
 struct NvDsPipeline;
@@ -49,7 +49,5 @@ class Configurator {
 
   bool set_stream_offsets_{false};
 };
-
-void save_dot_file(GstElement* pipeline, GstDebugGraphDetails details, const std::string& filename);
 
 } // namespace hm

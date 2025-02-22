@@ -21,6 +21,7 @@
 #include "deepstream_app.h"
 #include "deepstream_config_file_parser.h"
 #include "nvds_version.h"
+#include "pipeline_utils.h"
 
 #define MAX_INSTANCES 128
 #define APP_TITLE "DeepStream"
