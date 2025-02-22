@@ -93,6 +93,21 @@ gboolean parse_hmvideoprep_yaml(
   return true;
 }
 
+gboolean parse_hmstitcher_yaml(
+    HmStitcherConfig* config,
+    const YAML::Node& yaml_node,
+    const std::string& config_path) {
+  if (!parse_hmvideoprep_yaml(config, yaml_node, config_path)) {
+    return false;
+  }
+  hm::utils::ConfigLocator locator;
+  SET_LOCATOR(locator, *config, left_frame_offset_ns);
+  SET_LOCATOR(locator, *config, right_frame_offset_ns);
+  SET_LOCATOR_CHARS(locator, *config, config_file);
+  set_config_from_yaml(yaml_node, locator);
+  return true;
+}
+
 gboolean parse_hmimagemetamerger_yaml(
     NvDsHmImageMetaMergerConfig* config,
     const YAML::Node& yaml_node,
@@ -445,7 +460,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, gcha
       /** if gpu_id for dsexample component is present,
        * it will override the value set using global_gpu_id in parse_fieldmask_yaml function */
       // parse_err = !parse_hmstitcher_yaml(&config->hmsticher_config, itr->second);
-      parse_err = !parse_hmvideoprep_yaml(&config->hmsticher_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
+      parse_err = !parse_hmstitcher_yaml(&config->hmsticher_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
     } else if (paramKey == "ds-playtracker") {
       /** set gpu_id for dsexample component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {

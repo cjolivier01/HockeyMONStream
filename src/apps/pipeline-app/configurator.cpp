@@ -1,9 +1,7 @@
 #include "configurator.h"
 #include "deepstream_app.h"
-// #include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
 
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -11,52 +9,11 @@
 #include <opencv2/opencv.hpp>
 #include <unistd.h>
 
+#include "pipeline_utils.h"
+
 namespace hm {
 
 namespace {
-
-static void save_dot_file(GstElement* pipeline, GstDebugGraphDetails details, const std::string& filename) {
-  gchar* dot_data = gst_debug_bin_to_dot_data(GST_BIN(pipeline), details);
-  if (dot_data) {
-    // Print to stdout
-    // std::cout << dot_data << std::endl;
-
-    // Or save to a file
-    std::ofstream dot_file(filename + ".dot");
-    if (dot_file.is_open()) {
-      dot_file << dot_data;
-      dot_file.close();
-      std::cout << "DOT file saved as '" << filename << ".dot'" << std::endl;
-    } else {
-      std::cerr << "Failed to open file for writing." << std::endl;
-    }
-
-    g_free(dot_data);
-  } else {
-    std::cerr << "Failed to generate DOT data" << std::endl;
-  }
-}
-
-bool seek_element(GstElement* seek_element, size_t seek_to_nanoseconds) {
-  // size_t seekTarget = static_cast<size_t>(abs_seconds * 60 * GST_SECOND);
-  size_t seekTarget = seek_to_nanoseconds;
-  if (!gst_element_seek(
-          seek_element,
-          1.0, // Normal playback rate.
-          GST_FORMAT_TIME,
-          // (GstSeekFlags)((int)GST_SEEK_FLAG_FLUSH | (int)GST_SEEK_FLAG_ACCURATE),
-          (GstSeekFlags)((int)GST_SEEK_FLAG_FLUSH | (int)GST_SEEK_FLAG_ACCURATE),
-          GST_SEEK_TYPE_SET, // Start from the target position.
-          seekTarget,
-          GST_SEEK_TYPE_NONE, // No specific end position.
-          GST_CLOCK_TIME_NONE)) {
-    g_printerr("Seek failed\n");
-    return false;
-  } else {
-    g_print("Seek successful to %" GST_TIME_FORMAT "\n", GST_TIME_ARGS(seekTarget));
-    return true;
-  }
-}
 
 } // namespace
 
@@ -178,7 +135,7 @@ void Configurator::configure() {
 }
 
 YAML::Node Configurator::auto_config(YAML::Node&& config) {
-  std::cout << config << std::endl;
+  // std::cout << config << std::endl;
   return std::move(config);
 }
 
@@ -197,7 +154,7 @@ static double getVideoFPS(const std::string& videoPath) {
 
 static int as_int(const YAML::Node& node) {
   // be less asserty than YAML-CPP
-  std::cout << node << std::endl;
+  // std::cout << node << std::endl;
   if (!node.IsDefined()) {
     return 0;
   }
@@ -206,16 +163,25 @@ static int as_int(const YAML::Node& node) {
 }
 
 void Configurator::complete_configuration() {
-  // std::cout << config_ << std::endl;
   YAML::Node pipeline = config_["pipeline"];
   assert(pipeline.IsDefined());
   // Stitching config mask config dir
   auto game_dir = get_game_dir(game_id_);
+
   pipeline["hmstitcher"]["config-file"] = std::string(game_dir);
   pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / "rink_mask_0.png");
   // Stitching LFO, RFO
-  std::vector<std::string> left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
-  std::vector<std::string> right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
+  std::vector<std::string> left_files;
+  std::vector<std::string> right_files;
+
+  if (has_node(config_, "game.videos.left")) {
+    std::cout << config_["game"]["videos"]["left"] << std::endl;
+    left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
+  }
+  if (has_node(config_, "game.videos.right")) {
+    right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
+  }
+
   auto offsets = config_["game"]["stitching"]["frame_offsets"];
   if (!left_files.empty()) {
     double fps = getVideoFPS(file_maybe_in_game_dir(left_files[0]));
@@ -229,18 +195,27 @@ void Configurator::complete_configuration() {
     set_stream_offsets_ |= rfo != 0.0;
     pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / fps * GST_SECOND));
   }
+  std::string possible_audio_uri;
   // Source 0 files
   static const std::string ff = "file://";
+  size_t source_index = 0;
   if (!left_files.empty() && !right_files.empty()) {
     auto src0 = pipeline["source0"];
     auto src1 = pipeline["source1"];
-    if (src0.IsDefined() && as_int(src0["enable"]) && as_int(src0["type"]) == 3 && src1.IsDefined() &&
-        as_int(src1["enable"]) && as_int(src1["type"]) == 3) {
+    if (src0.IsDefined() && as_int(src0["enable"]) && as_int(src0["type"]) == NV_DS_SOURCE_URI_MULTIPLE &&
+        src1.IsDefined() && as_int(src1["enable"]) && as_int(src1["type"]) == NV_DS_SOURCE_URI_MULTIPLE) {
       // Two uri sources, so set them to the stitching files
       // TODO: how to set all of the files and roll them?
       src0["uri"] = ff + file_maybe_in_game_dir(left_files[0]);
       src1["uri"] = ff + file_maybe_in_game_dir(right_files[0]);
+      if (offsets["left"].as<double>() == 0) {
+        possible_audio_uri = src0["uri"].as<std::string>();
+      } else {
+        assert(offsets["right"].as<double>() == 0);
+        possible_audio_uri = src1["uri"].as<std::string>();
+      }
       // std::cout << src0 << std::endl;
+      source_index += 2;
     }
   } else {
     auto src0 = pipeline["source0"];
@@ -250,6 +225,19 @@ void Configurator::complete_configuration() {
         if (std::filesystem::exists(stiched_output)) {
           src0["uri"] = ff + stiched_output;
         }
+      }
+      source_index += 1;
+      possible_audio_uri = src0["uri"].as<std::string>();
+    }
+  }
+  std::string audio_source_key = "source" + std::to_string(source_index);
+  if (!possible_audio_uri.empty() && pipeline[audio_source_key].IsDefined()) {
+    ++source_index;
+    auto audio0 = pipeline[audio_source_key];
+    if (audio0["enable"].IsDefined() && audio0["enable"].as<int>() &&
+        audio0["type"].as<int>() == NV_DS_SOURCE_AUDIO_URI) {
+      if (!audio0["uri"].IsDefined() || audio0["uri"].as<std::string>().empty()) {
+        audio0["uri"] = possible_audio_uri;
       }
     }
   }

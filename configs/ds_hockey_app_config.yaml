@@ -82,7 +82,7 @@ source2:
   enable: 0
   type: 7
   # uri: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
-  uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
+  # uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
   num-sources: 1
   gpu-id: 0
   input-audio-rate: 189  
@@ -243,6 +243,7 @@ streammux:
   ##along with width, height properties
   enable-padding: 0
   nvbuf-memory-type: 0
+  sync-inputs: 0
 
 hm-image-meta-merger:
   enable: false
@@ -279,8 +280,9 @@ ds-example:
   processing-height: 480
 
 hmvideoprep:
-  enable: false
-  # enable: true
+  # enable: false
+  enable: true
+  # enable: 1
   gpu-id: 0
   # plugin-type: videoprep
   # has_queue: false
@@ -311,7 +313,7 @@ hmstitcher:
   num-output-buffers: 2
 
 ds-playtracker:
-  enable: 0
+  enable: 1
   gpu-id: 0
   unique-id: 75
   draw: true
@@ -329,7 +331,7 @@ ds-fieldmask:
   # detection-mask: /home/colivier/Videos/mlk-heat-1/rink_mask_0.png
 
 tracker:
-  enable: 0
+  enable: 1
   # For NvDCF and NvDeepSORT tracker, tracker-width and tracker-height must be a multiple of 32, respectively
   tracker-width: 960
   tracker-height: 544

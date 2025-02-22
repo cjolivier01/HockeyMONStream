@@ -152,11 +152,13 @@ cudaError StitcherPriv::GenerateOutput(
   out_surface->numFilled = 0;
   out_surface->batchSize = in_surface->batchSize / 2;
 
-  std::vector<NvDsFrameMeta*> remove_frame_metas, add_frame_metas;
-  remove_frame_metas.reserve(in_surface->batchSize);
-  add_frame_metas.reserve(in_surface->batchSize >> 1);
+  std::map<guint, NvDsFrameMeta*> source_frame_metas;
+
+  //std::vector<guint, NvDsFrameMeta*> remove_frame_metas;
+  //remove_frame_metas.reserve(in_surface->batchSize);
 
   guint min_source_id = std::numeric_limits<guint>::max();
+  guint max_source_id = 0;
   size_t surface_index = 0;
   for (NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list; frame_meta_list != nullptr;
        frame_meta_list = frame_meta_list->next) {
@@ -168,17 +170,21 @@ cudaError StitcherPriv::GenerateOutput(
     // std::cout << "source_id=" << frame_meta->source_id << ", frame_num=" << frame_meta->frame_num << std::endl;
     auto& frame_sources = frame_source_surfaces[frame_meta->frame_num];
     min_source_id = std::min(min_source_id, frame_meta->source_id);
+    max_source_id = std::max(max_source_id, frame_meta->source_id);
+
+    source_frame_metas.emplace(frame_meta->source_id, frame_meta);
+
     // NvDsFrameMeta* persistent_frame_meta{nullptr};
-    if (!frame_sources.empty()) {
-      // We only keep one of the frame meta's for each frame_num, and we'll modify it to
-      // mathc the eventual stitched frame.
-      // atm, we don't care which source it is, hopefully they come in sorted?
-      remove_frame_metas.emplace_back(frame_meta);
-      // persistent_frame_meta = frame_sources.begin()->second.persistent_frame_meta;
-    } else {
-      // persistent_frame_meta = frame_meta;
-      remove_frame_metas.emplace_back(frame_meta);
-    }
+    // if (!frame_sources.empty()) {
+    //   // We only keep one of the frame meta's for each frame_num, and we'll modify it to
+    //   // mathc the eventual stitched frame.
+    //   // atm, we don't care which source it is, hopefully they come in sorted?
+    //   remove_frame_metas.emplace_back(frame_meta);
+    //   // persistent_frame_meta = frame_sources.begin()->second.persistent_frame_meta;
+    // } else {
+    //   // persistent_frame_meta = frame_meta;
+    //   remove_frame_metas.emplace_back(frame_meta);
+    // }
 
 #if 0
     if (frame_meta->source_id == 1 && frame_meta->frame_num == 0) {
@@ -198,6 +204,21 @@ cudaError StitcherPriv::GenerateOutput(
     ++surface_index;
   }
 
+
+  // NvDsFrameMeta* reuse_frame_meta{nullptr};
+  // assert(source_frame_metas.size() == 2);
+  // if (!left_frame_offset_ns_) {
+  //   // left frame has correct timestamps
+  //   reuse_frame_meta = source_frame_metas.at(min_source_id);
+  //   source_frame_metas.erase(min_source_id);
+  // } else {
+  //   // right frame has correct timestamps
+  //   assert(!right_frame_offset_ns_);
+  //   reuse_frame_meta = source_frame_metas.at(max_source_id);
+  //   source_frame_metas.erase(max_source_id);
+  // }
+
+
   // Sanity that the surfaces are laid out as expected
   assert(surface_index == in_surface->numFilled);
   if (frame_source_surfaces.size() != in_surface->numFilled / 2) {
@@ -211,6 +232,9 @@ cudaError StitcherPriv::GenerateOutput(
   // We will have this many output frames
   const size_t batch_size = frame_source_surfaces.size();
   out_surface->batchSize = batch_size;
+
+  std::vector<NvDsFrameMeta*> remove_frame_metas;
+  remove_frame_metas.reserve(in_surface->batchSize/2);
 
   // for (size_t batch_nr = 0; batch_nr < batch_size; batch_nr++) {
   size_t out_surface_index = 0;
@@ -230,6 +254,20 @@ cudaError StitcherPriv::GenerateOutput(
     // NvBufSurfaceParams* right_params = frame_info_right.surface_params;
     NvBufSurfaceParams* output_params = &out_surface->surfaceList[out_surface_index];
 
+    NvDsFrameMeta* reuse_frame_meta{nullptr};
+    assert(source_frame_metas.size() == 2);
+    if (!left_frame_offset_ns_) {
+      // left frame has correct timestamps
+      reuse_frame_meta = frame_info_left.frame_meta;
+      remove_frame_metas.emplace_back(frame_info_right.frame_meta);
+    } else {
+      // right frame has correct timestamps
+      assert(!right_frame_offset_ns_);
+      reuse_frame_meta = frame_info_right.frame_meta;
+      remove_frame_metas.emplace_back(frame_info_left.frame_meta);
+    }
+
+
 #ifdef __aarch64__
     hm::surface::EglSurfaceMapper incoming_left_elg_surface_mapper(
         in_surface, frame_info_left.incoming_surface_index, /*read_only=*/true);
@@ -245,10 +283,10 @@ cudaError StitcherPriv::GenerateOutput(
     hm::surface::Surface outgoing_surface(&out_surface->surfaceList[out_surface_index]);
 #endif
 
-    //auto osw = outgoing_surface.width();
-    //auto cvw = stitcher_->canvas_width();
-    // assert(outgoing_surface.width() == (uint32_t)stitcher_->canvas_width());
-    // assert(outgoing_surface.height() == (uint32_t)stitcher_->canvas_height());
+    // auto osw = outgoing_surface.width();
+    // auto cvw = stitcher_->canvas_width();
+    //  assert(outgoing_surface.width() == (uint32_t)stitcher_->canvas_width());
+    //  assert(outgoing_surface.height() == (uint32_t)stitcher_->canvas_height());
     hm::CudaMat<uchar4> left(
         hm::SurfaceInfo{
             .width = (int)incoming_surface_left.width(),
@@ -285,7 +323,12 @@ cudaError StitcherPriv::GenerateOutput(
         ++out_surface->numFilled;
         // Both should have the same 'persistent_frame_meta'
         // TODO: Should we do this later under a batch meta lock?
-        ModifyBatchFrames frame_adder(batch_meta, {});
+        // ModifyBatchFrames frame_adder(batch_meta, remove_frame_metas);
+#if 1
+          reuse_frame_meta->source_frame_width = reuse_frame_meta->pipeline_width = canvas->width();
+          reuse_frame_meta->source_frame_height = reuse_frame_meta->pipeline_height = canvas->height();
+          reuse_frame_meta->num_surfaces_per_frame = 1;
+#else
         frame_adder.add_frame([&](NvDsFrameMeta* new_frame_meta) -> bool {
           // Currently we don't copy over any user or object meta because it is assumed that thsoe would be wrt an
           // invalid resolution. It may come, however, that we should copy over some stuff, esp user meta,
@@ -310,6 +353,7 @@ cudaError StitcherPriv::GenerateOutput(
           assert(min_source_id == 0); // debug checking
           return true;
         });
+#endif
       } else {
         std::cerr << stitch_result.status() << std::endl;
         GST_ERROR("%s\n", stitch_result.status().message().c_str());
@@ -320,7 +364,10 @@ cudaError StitcherPriv::GenerateOutput(
   }
 
   if (out_surface->numFilled) {
+    //batch_meta->num_frames_in_batch /= 2;
     ModifyBatchFrames modifier(batch_meta, remove_frame_metas);
+    batch_meta->max_frames_in_batch /= 2;
+    assert(batch_meta->max_frames_in_batch); // make sure we didnt do too many times and make it 0
     cudaStreamSynchronize(videoprep->stream);
   }
 

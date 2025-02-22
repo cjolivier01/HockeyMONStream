@@ -137,8 +137,8 @@ new_local_repository(
 new_local_repository(
     name = "opencv_linux",
     build_file = "@//buildfiles:third_party/opencv_linux.BUILD",
-    path = "/usr/include",
-    # path = "/usr/local/include",
+    # path = "/usr/include",
+    path = "/usr/local/include",
 )
 
 new_local_repository(
@@ -150,7 +150,7 @@ new_local_repository(
 new_local_repository(
     name = "gstreamer",
     build_file = "@//buildfiles:third_party/gstreamer_nobuild.BUILD",
-    # path = "/usr/local",
+    #path = "/usr/local",
     path = "/usr",
     # path = "/home/colivier/miniforge3/envs/ubuntu",
 )
