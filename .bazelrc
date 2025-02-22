@@ -31,6 +31,9 @@ build:debug --copt=-fdiagnostics-color=always
 build:debug --linkopt=-Wl,-g
 build:debug --linkopt=-Wl,--discard-none
 
+build:gstdebug --config=debug
+build:gstdebug --define=gstreamer_build=gst_debug
+
 # build:debug --sandbox_debug
 
 # build:opt -c opt --strip="always"
