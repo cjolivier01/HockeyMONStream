@@ -154,9 +154,6 @@ cudaError StitcherPriv::GenerateOutput(
 
   std::map<guint, NvDsFrameMeta*> source_frame_metas;
 
-  //std::vector<guint, NvDsFrameMeta*> remove_frame_metas;
-  //remove_frame_metas.reserve(in_surface->batchSize);
-
   guint min_source_id = std::numeric_limits<guint>::max();
   guint max_source_id = 0;
   size_t surface_index = 0;
@@ -174,23 +171,6 @@ cudaError StitcherPriv::GenerateOutput(
 
     source_frame_metas.emplace(frame_meta->source_id, frame_meta);
 
-    // NvDsFrameMeta* persistent_frame_meta{nullptr};
-    // if (!frame_sources.empty()) {
-    //   // We only keep one of the frame meta's for each frame_num, and we'll modify it to
-    //   // mathc the eventual stitched frame.
-    //   // atm, we don't care which source it is, hopefully they come in sorted?
-    //   remove_frame_metas.emplace_back(frame_meta);
-    //   // persistent_frame_meta = frame_sources.begin()->second.persistent_frame_meta;
-    // } else {
-    //   // persistent_frame_meta = frame_meta;
-    //   remove_frame_metas.emplace_back(frame_meta);
-    // }
-
-#if 0
-    if (frame_meta->source_id == 1 && frame_meta->frame_num == 0) {
-      show_image("frame", surface_params, 0.2);
-    }
-#endif
     const bool inserted = frame_sources
                               .emplace(
                                   frame_meta->source_id,
@@ -203,21 +183,6 @@ cudaError StitcherPriv::GenerateOutput(
     assert(inserted);
     ++surface_index;
   }
-
-
-  // NvDsFrameMeta* reuse_frame_meta{nullptr};
-  // assert(source_frame_metas.size() == 2);
-  // if (!left_frame_offset_ns_) {
-  //   // left frame has correct timestamps
-  //   reuse_frame_meta = source_frame_metas.at(min_source_id);
-  //   source_frame_metas.erase(min_source_id);
-  // } else {
-  //   // right frame has correct timestamps
-  //   assert(!right_frame_offset_ns_);
-  //   reuse_frame_meta = source_frame_metas.at(max_source_id);
-  //   source_frame_metas.erase(max_source_id);
-  // }
-
 
   // Sanity that the surfaces are laid out as expected
   assert(surface_index == in_surface->numFilled);

@@ -743,7 +743,7 @@ static GstFlowReturn gst_videoprep_transform(GstBaseTransform* btrans, GstBuffer
   if (!gst_buffer_copy_into(
           outbuf,
           inbuf,
-          //GstBufferCopyFlags::GST_BUFFER_COPY_TIMESTAMPS,
+          // GstBufferCopyFlags::GST_BUFFER_COPY_TIMESTAMPS,
           (GstBufferCopyFlags)GST_BUFFER_COPY_METADATA,
           0,
           -1)) {
@@ -773,7 +773,7 @@ invalid_outbuf: {
   gst_buffer_unmap(inbuf, &inmap);
   return GST_FLOW_ERROR;
 }
-}
+} // namespace
 
 static GstFlowReturn gst_videoprep_prepare_output_buffer(
     GstBaseTransform* trans,
