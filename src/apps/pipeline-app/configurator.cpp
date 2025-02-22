@@ -178,7 +178,7 @@ void Configurator::configure() {
 }
 
 YAML::Node Configurator::auto_config(YAML::Node&& config) {
-  std::cout << config << std::endl;
+  // std::cout << config << std::endl;
   return std::move(config);
 }
 
@@ -197,7 +197,7 @@ static double getVideoFPS(const std::string& videoPath) {
 
 static int as_int(const YAML::Node& node) {
   // be less asserty than YAML-CPP
-  std::cout << node << std::endl;
+  // std::cout << node << std::endl;
   if (!node.IsDefined()) {
     return 0;
   }
