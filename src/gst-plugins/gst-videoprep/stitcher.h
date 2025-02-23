@@ -20,8 +20,13 @@ namespace stitcher {
 // #define GST_IS_VIDEOPREP_PLAY_CROPPER(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_PLAY_CROPPER))
 // #define GST_IS_VIDEOPREP_PLAY_CROPPER_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_PLAY_CROPPER))
 
-// using STITCH_PRIV_BASE = CustomAlgorithmBase;
+// #define NEW_VIDEOPREP
+
+#ifdef NEW_VIDEOPREP
+using STITCH_PRIV_BASE = CustomAlgorithmBase;
+#else
 using STITCH_PRIV_BASE = hm::videoprep::VideoPrepPriv;
+#endif
 
 class StitcherPriv : public STITCH_PRIV_BASE {
   using Super = STITCH_PRIV_BASE;
