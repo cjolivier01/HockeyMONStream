@@ -7,6 +7,7 @@
 #include <gst/gst.h>
 #include <gst/video/video.h>
 #include <gstreamer-1.0/gst/gstbuffer.h>
+#include <gstreamer-1.0/gst/gstpad.h>
 #include <npp.h>
 #include <nvbufsurface.h>
 #include <cmath>
@@ -646,6 +647,35 @@ void videoprep_add_surface_meta(GstBuffer* out_gst_buf, int num_filled_surfaces,
   meta->gst_to_nvds_meta_release_func = videoprep_gst_nvds_meta_release_func;
 }
 
+#if defined(NEW_VIDEOPREP)
+
+static GstFlowReturn gst_videoprep_submit_input_buffer(GstBaseTransform* btrans, gboolean discont, GstBuffer* inbuf) {
+  GstVideoPrep* videoprep = GST_VIDEOPREP(btrans);
+  BufferResult result = videoprep->priv->ProcessBuffer(inbuf);
+  switch (result) {
+    case BufferResult::Buffer_Ok:
+    case BufferResult::Buffer_Drop:
+    case BufferResult::Buffer_Async:
+      return GstFlowReturn::GST_FLOW_OK;
+    case BufferResult::Buffer_Error:
+    default:
+      return GST_FLOW_ERROR;
+  }
+}
+
+/**
+ * If submit_input_buffer is implemented, it is mandatory to implement
+ * generate_output. Buffers are not pushed to the downstream element from here.
+ * Return the GstFlowReturn value of the latest pad push so that any error might
+ * be caught by the application.
+ */
+static GstFlowReturn gst_videoprep_generate_output(GstBaseTransform* btrans, GstBuffer** outbuf) {
+  GstVideoPrep* videoprep = GST_VIDEOPREP(btrans);
+  return videoprep->priv->get_last_flow_ret();
+}
+
+#else // NEW_VIDEOPREP
+
 static cudaError gst_videoprep_do_prep(
     NvDsBatchMeta* batch_meta,
     GstVideoPrep* videoprep,
@@ -787,6 +817,7 @@ static GstFlowReturn gst_videoprep_prepare_output_buffer(
   *outbuf = gstOutBuf;
   return result;
 }
+#endif // NEW_VIDEOPREP
 
 static gboolean gst_videoprep_start(GstBaseTransform* btrans) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(btrans);
@@ -873,13 +904,18 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
   gobject_class->get_property = GST_DEBUG_FUNCPTR(gst_videoprep_get_property);
   gobject_class->finalize = GST_DEBUG_FUNCPTR(gst_videoprep_finalize);
 
+#if defined(NEW_VIDEOPREP)
+  gstbasetransform_class->submit_input_buffer = gst_videoprep_submit_input_buffer;
+  gstbasetransform_class->generate_output = gst_videoprep_generate_output;
+#else
+  gstbasetransform_class->transform = GST_DEBUG_FUNCPTR(gst_videoprep_transform);
+  gstbasetransform_class->prepare_output_buffer = GST_DEBUG_FUNCPTR(gst_videoprep_prepare_output_buffer);
+#endif
+
   gstbasetransform_class->transform_caps = GST_DEBUG_FUNCPTR(gst_videoprep_transform_caps);
   gstbasetransform_class->fixate_caps = GST_DEBUG_FUNCPTR(gst_videoprep_fixate_caps);
   gstbasetransform_class->accept_caps = GST_DEBUG_FUNCPTR(gst_videoprep_accept_caps);
   gstbasetransform_class->set_caps = GST_DEBUG_FUNCPTR(gst_videoprep_set_caps);
-
-  gstbasetransform_class->transform = GST_DEBUG_FUNCPTR(gst_videoprep_transform);
-  gstbasetransform_class->prepare_output_buffer = GST_DEBUG_FUNCPTR(gst_videoprep_prepare_output_buffer);
 
   gstbasetransform_class->start = GST_DEBUG_FUNCPTR(gst_videoprep_start);
   gstbasetransform_class->stop = GST_DEBUG_FUNCPTR(gst_videoprep_stop);

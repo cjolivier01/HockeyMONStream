@@ -25,6 +25,8 @@
 namespace hm {
 namespace videoprep {
 
+#define NEW_VIDEOPREP
+
 #define DISTORTION_SIZE 5 /**< Maximum number of distortion coefficients */
 #define FOCAL_LENGTH_SIZE 2 /**< Focal length array size : two values for X & Y direction */
 #define ROTATION_MATRIX_SIZE 9 /**< Standard rotation matrix size */
@@ -78,7 +80,12 @@ class VideoPrepPriv : public DSCustomLibraryBase {
 
   void SetPrivateConfig(const char* config_string);
 
+  GstFlowReturn get_last_flow_ret() const {
+    return last_flow_ret_;
+  }
+
  protected:
+  GstFlowReturn last_flow_ret_;
   RenderSet render_;
 };
 
