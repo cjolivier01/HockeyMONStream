@@ -37,7 +37,8 @@ StitcherPriv::~StitcherPriv() {
 bool StitcherPriv::SetInitParams(DSCustom_CreateParams* params) {
   // Not an in-place transform
   m_transformMode = true;
-
+  m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
+  m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
   videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
   if (!Super::SetInitParams(params)) {
     return false;

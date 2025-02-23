@@ -193,7 +193,7 @@ inline GstCaps* DSCustomLibraryBase::GetCompatibleCaps(GstPadDirection direction
 inline GstBufferPool* DSCustomLibraryBase::CreateBufferPool(BufferPoolConfig* pool_config, GstCaps* outcaps) {
   GstBufferPool* m_buf_pool = NULL;
   GstStructure* config = NULL;
-
+  
   m_buf_pool = gst_nvds_buffer_pool_new();
 
   config = gst_buffer_pool_get_config(m_buf_pool);
