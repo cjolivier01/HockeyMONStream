@@ -117,6 +117,15 @@ enum {
   PROP_SILENT,
 };
 
+#define GST_ERROR_ON_BUS(msg, ...)                                                                              \
+  do {                                                                                                          \
+    if (videoprep) {                                                                                            \
+      GST_ERROR_OBJECT(videoprep, __VA_ARGS__);                                                                 \
+      GError* err = g_error_new(g_quark_from_static_string(GST_ELEMENT_NAME(videoprep)), -1, __VA_ARGS__);      \
+      gst_element_post_message(GST_ELEMENT(videoprep), gst_message_new_error(GST_OBJECT(videoprep), err, msg)); \
+    }                                                                                                           \
+  } while (0)
+
 static void gst_videoprep_finalize(GObject* object);
 
 static const gchar* print_pretty_time(gchar* ts_str, gsize ts_str_len, GstClockTime ts) {
@@ -644,7 +653,6 @@ static cudaError gst_videoprep_do_prep(
     NvBufSurface* out_surface) {
   cudaError cudaErr = cudaSuccess;
   gint err = 0;
-
   err = err;
   GST_LOG_OBJECT(videoprep, "SETTING CUDA DEVICE = %d in videoprep func=%s\n", videoprep->gpu_id, __func__);
   cudaErr = cudaSetDevice(videoprep->gpu_id);
@@ -682,7 +690,6 @@ static GstFlowReturn gst_videoprep_transform(GstBaseTransform* btrans, GstBuffer
   NvBufSurface* out_surface = NULL;
   cudaError cudaErr = cudaSuccess;
   gchar pts_str[64];
-  GstClockTime in_pts, out_pts;
 
   NvDsBatchMeta* batch_meta = gst_buffer_get_nvds_batch_meta(inbuf);
   assert(batch_meta);
@@ -734,9 +741,6 @@ static GstFlowReturn gst_videoprep_transform(GstBaseTransform* btrans, GstBuffer
       videoprep->frame_num,
       print_pretty_time(pts_str, sizeof(pts_str), GST_BUFFER_PTS(outbuf)));
 
-  in_pts = GST_BUFFER_PTS(inbuf);
-  out_pts = GST_BUFFER_PTS(outbuf);
-
   gst_buffer_unmap(inbuf, &inmap);
   gst_buffer_unmap(outbuf, &outmap);
 
@@ -750,17 +754,6 @@ static GstFlowReturn gst_videoprep_transform(GstBaseTransform* btrans, GstBuffer
     GST_DEBUG_OBJECT(videoprep, "Buffer metadata copy failed \n");
   }
 
-  in_pts = GST_BUFFER_PTS(inbuf);
-  out_pts = GST_BUFFER_PTS(outbuf);
-
-  assert(in_pts == out_pts);
-  // std::cout << videoprep->plugin_type << ": " << in_pts << " - " << out_pts << std::endl;
-  // std::cout << videoprep->plugin_type << ": " << in_pts << std::endl;
-
-  // if (videoprep->deref_input_buffer) {
-  //   gst_buffer_unref(inbuf);
-  // }
-
   return GST_FLOW_OK;
 
 invalid_inbuf: {
@@ -773,7 +766,7 @@ invalid_outbuf: {
   gst_buffer_unmap(inbuf, &inmap);
   return GST_FLOW_ERROR;
 }
-} // namespace
+}
 
 static GstFlowReturn gst_videoprep_prepare_output_buffer(
     GstBaseTransform* trans,
