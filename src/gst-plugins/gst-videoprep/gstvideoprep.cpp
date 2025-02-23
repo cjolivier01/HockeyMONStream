@@ -843,6 +843,27 @@ static gboolean gst_videoprep_stop(GstBaseTransform* btrans) {
   return TRUE;
 }
 
+static gboolean gst_videoprep_sink_event(GstPad* sinkpad, GstObject* bscope, GstEvent* event) {
+  gboolean ret = TRUE;
+  GstVideoPrep* videoprep = GST_VIDEOPREP(bscope);
+
+  if (videoprep->priv) {
+    ret = videoprep->priv->HandleEvent(event);
+    if (!ret)
+      return ret;
+  }
+
+  ret = videoprep->parent_sink_event_fn(sinkpad, bscope, event);
+  if (ret == FALSE) {
+    GstState cur_state = GST_STATE_NULL;
+    gst_element_get_state(GST_ELEMENT(bscope), &cur_state, NULL, 0);
+    if (!(event != NULL || cur_state == GST_STATE_NULL || cur_state == GST_STATE_PAUSED)) {
+      g_printerr("sink_event error: %s\n", "sink_event error");
+    }
+  }
+  return ret;
+}
+
 /* initialize the videoprep's class */
 void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
   GObjectClass* gobject_class;
@@ -873,6 +894,14 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
   klass->parent_change_state_fn = gstelement_class->change_state;
   gstelement_class->change_state = GST_DEBUG_FUNCPTR(gst_videoprep_change_state);
   // gstelement_class->state_changed = GST_DEBUG_FUNCPTR(gst_videoprep_state_changed);
+
+  // GstPad *sinkpad = GST_PAD(GST_ELEMENT(gstelement_class)->sinkpads->data);
+  // GstPad *srcpad = GST_PAD(GST_kpad = ELEMENT(scope)->srcpads->data);
+
+  // scope->parent_sink_event_fn = GST_PAD_EVENTFUNC (sinkpad);
+
+  // gst_pad_set_event_function(sinkpad,
+  //   GST_DEBUG_FUNCPTR (gst_nvdsA2Vtemplate_sink_event));
 
   gstbasetransform_class->passthrough_on_same_caps = FALSE;
 
@@ -1015,6 +1044,17 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
 
   videoprep->output_width = DEFAULT_DEWARP_OUTPUT_WIDTH;
   videoprep->output_height = DEFAULT_DEWARP_OUTPUT_HEIGHT;
+
+  // GstElement *elem = GST_ELEMENT(videoprep);
+  // std::cout << "hwfh34f" << std::endl;
+  //  gstelement_class->state_changed = GST_DEBUG_FUNCPTR(gst_videoprep_state_changed);
+
+  GstPad* sinkpad = GST_PAD(GST_ELEMENT(videoprep)->sinkpads->data);
+  // GstPad *srcpad = GST_PAD(GST_ELEMENT(videoprep)->srcpads->data);
+
+  videoprep->parent_sink_event_fn = GST_PAD_EVENTFUNC(sinkpad);
+
+  gst_pad_set_event_function(sinkpad, GST_DEBUG_FUNCPTR(gst_videoprep_sink_event));
 }
 
 static void gst_videoprep_finalize(GObject* object) {

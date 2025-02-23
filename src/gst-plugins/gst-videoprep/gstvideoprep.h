@@ -152,6 +152,8 @@ struct GstVideoPrep
 
   GstBuffer * out_gst_buf;                    /**< Pointer to the output buffer */
 
+  GstPadEventFunction parent_sink_event_fn;
+
   VideoPrepLibrary_Factory *priv_factory;
   VideoPrepPriv *priv;                       /**< Pointer to private data structure contaning dewarping parameters for all the output surfaces */
 };

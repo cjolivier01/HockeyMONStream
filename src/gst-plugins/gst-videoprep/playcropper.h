@@ -38,7 +38,6 @@ class PlayCropperPriv : public videoprep::VideoPrepPriv {
   }
 
   bool HandleEvent(GstEvent* event) override {
-    assert(false);
     return true;
   }
 

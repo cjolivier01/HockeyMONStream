@@ -42,7 +42,6 @@ class StitcherPriv : public videoprep::VideoPrepPriv {
   bool SetProperty(const Property& prop) override;
 
   bool HandleEvent(GstEvent* event) override {
-    assert(false);
     return true;
   }
 
