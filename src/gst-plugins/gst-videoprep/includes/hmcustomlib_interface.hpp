@@ -64,7 +64,8 @@ struct Property {
 
 class IDSCustomLibrary {
  public:
-  virtual bool SetInitParams(DSCustom_CreateParams* params) = 0;
+  virtual bool PreCapsInit(DSCustom_CreateParams* params) = 0;
+  virtual bool PostCapsInit(DSCustom_CreateParams* params) = 0;
   virtual bool SetProperty(const Property& prop) = 0;
   virtual bool HandleEvent(GstEvent* event) = 0;
   virtual char* QueryProperties() = 0;

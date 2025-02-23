@@ -34,19 +34,8 @@ StitcherPriv::~StitcherPriv() {
   stitcher_.reset();
 }
 
-bool StitcherPriv::SetInitParams(DSCustom_CreateParams* params) {
-  // Not an in-place transform
-  m_transformMode = true;
-  m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
-  m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
+bool StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
   videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
-  if (!Super::SetInitParams(params)) {
-    return false;
-  }
-  // I am a little confused about the diufference between these two
-  assert(videoprep->num_batch_buffers % 2 == 0);
-  videoprep->num_output_buffers = videoprep->num_batch_buffers / 2;
-
   assert(!stitcher_);
   hm::pano::ControlMasks control_masks;
   if (!control_masks.load(videoprep->config_file)) {
@@ -64,6 +53,39 @@ bool StitcherPriv::SetInitParams(DSCustom_CreateParams* params) {
   // videoprep->deref_input_buffer = true;
 
   g_print("Stitched canvas size: %d x %d\n", (int)stitcher_->canvas_width(), (int)stitcher_->canvas_height());
+  return true;
+}
+
+bool StitcherPriv::PostCapsInit(DSCustom_CreateParams* params) {
+  // Not an in-place transform
+  m_transformMode = true;
+  m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
+  m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
+  videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
+  if (!Super::PostCapsInit(params)) {
+    return false;
+  }
+  // I am a little confused about the diufference between these two
+  assert(videoprep->num_batch_buffers % 2 == 0);
+  videoprep->num_output_buffers = videoprep->num_batch_buffers / 2;
+
+  // assert(!stitcher_);
+  // hm::pano::ControlMasks control_masks;
+  // if (!control_masks.load(videoprep->config_file)) {
+  //   return false;
+  // }
+  // stitcher_ = std::make_unique<hm::pano::cuda::CudaStitchPano<uchar4, float3>>(
+  //     /*batch_size=*/1, /*num_levels=*/0, control_masks, /*match_exposure=*/true);
+  // if (!stitcher_->status().ok()) {
+  //   return false;
+  // }
+
+  // videoprep->output_width = stitcher_->canvas_width();
+  // videoprep->output_height = stitcher_->canvas_height();
+
+  // // videoprep->deref_input_buffer = true;
+
+  // g_print("Stitched canvas size: %d x %d\n", (int)stitcher_->canvas_width(), (int)stitcher_->canvas_height());
   return true;
 }
 
@@ -203,7 +225,7 @@ cudaError StitcherPriv::GenerateOutput(
   out_surface->batchSize = batch_size;
 
   std::vector<NvDsFrameMeta*> remove_frame_metas;
-  remove_frame_metas.reserve(in_surface->batchSize/2);
+  remove_frame_metas.reserve(in_surface->batchSize / 2);
 
   // for (size_t batch_nr = 0; batch_nr < batch_size; batch_nr++) {
   size_t out_surface_index = 0;
@@ -235,7 +257,6 @@ cudaError StitcherPriv::GenerateOutput(
       reuse_frame_meta = frame_info_right.frame_meta;
       remove_frame_metas.emplace_back(frame_info_left.frame_meta);
     }
-
 
 #ifdef __aarch64__
     hm::surface::EglSurfaceMapper incoming_left_elg_surface_mapper(
@@ -294,9 +315,9 @@ cudaError StitcherPriv::GenerateOutput(
         // TODO: Should we do this later under a batch meta lock?
         // ModifyBatchFrames frame_adder(batch_meta, remove_frame_metas);
 #if 1
-          reuse_frame_meta->source_frame_width = reuse_frame_meta->pipeline_width = canvas->width();
-          reuse_frame_meta->source_frame_height = reuse_frame_meta->pipeline_height = canvas->height();
-          reuse_frame_meta->num_surfaces_per_frame = 1;
+        reuse_frame_meta->source_frame_width = reuse_frame_meta->pipeline_width = canvas->width();
+        reuse_frame_meta->source_frame_height = reuse_frame_meta->pipeline_height = canvas->height();
+        reuse_frame_meta->num_surfaces_per_frame = 1;
 #else
         frame_adder.add_frame([&](NvDsFrameMeta* new_frame_meta) -> bool {
           // Currently we don't copy over any user or object meta because it is assumed that thsoe would be wrt an
@@ -333,14 +354,14 @@ cudaError StitcherPriv::GenerateOutput(
   }
 
   if (out_surface->numFilled) {
-    //batch_meta->num_frames_in_batch /= 2;
+    // batch_meta->num_frames_in_batch /= 2;
     ModifyBatchFrames modifier(batch_meta, remove_frame_metas);
     batch_meta->max_frames_in_batch /= 2;
     assert(batch_meta->max_frames_in_batch); // make sure we didnt do too many times and make it 0
     cudaStreamSynchronize(videoprep->stream);
   }
 
-  videoprep::videoprep_add_surface_meta(videoprep->out_gst_buf, out_surface->numFilled, videoprep->source_id);
+  // videoprep::videoprep_add_surface_meta(videoprep->out_gst_buf, out_surface->numFilled, videoprep->source_id);
   return err;
 }
 

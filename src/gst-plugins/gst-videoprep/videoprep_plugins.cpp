@@ -15,11 +15,11 @@ IDSCustomLibrary* VideoPrepLibrary_Factory::CreateCustomAlgoCtx(
     GObject* object,
     int gpu_id,
     size_t batch_size) {
-  if (libName == "videoprep") {
-    // Basically a no-op now
-    // Keeping it here to validate a minimalistic run when developing a new plugin
-    return new VideoPrepPriv(gpu_id, batch_size);
-  }
+  // if (libName == "videoprep") {
+  //   // Basically a no-op now
+  //   // Keeping it here to validate a minimalistic run when developing a new plugin
+  //   return new VideoPrepPriv(gpu_id, batch_size);
+  // }
   if (libName == "playcropper") {
     return new playcropper::PlayCropperPriv(gpu_id, batch_size);
   }
@@ -38,11 +38,12 @@ static gboolean videoprep_init(GstPlugin* plugin) {
    *
    * exchange the string 'Template videoprep' with your description
    */
-  GST_DEBUG_CATEGORY_INIT(gst_videoprep_debug, "videoprep", 0, "videoprep");
+  // GST_DEBUG_CATEGORY_INIT(gst_videoprep_debug, "videoprep", 0, "videoprep");
   GST_DEBUG_CATEGORY_INIT(gst_playcropper_debug, "playcropper", 0, "playcropper");
   GST_DEBUG_CATEGORY_INIT(gst_stitcher_debug, "hmstitcher", 0, "hmstitcher");
 
-  gboolean result = gst_element_register(plugin, "videoprep", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
+  gboolean result = false;
+  // gboolean result = gst_element_register(plugin, "videoprep", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
   result |= gst_element_register(plugin, "playcropper", GST_RANK_NONE, GST_TYPE_PLAY_CROPPER);
   result |= gst_element_register(plugin, "hmstitcher", GST_RANK_NONE, GST_TYPE_PLAY_CROPPER);
   return result;

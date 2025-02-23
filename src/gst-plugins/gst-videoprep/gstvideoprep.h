@@ -117,6 +117,7 @@ struct GstVideoPrep
 
   guint input_width;        /**<Input frame width */
   guint input_height;       /**<Input frame height */
+
   guint output_width;       /**<Output frame width */
   guint output_height;      /**<Output frame height */
 
@@ -157,9 +158,11 @@ struct GstVideoPrep
   guint source_id;                            /**< Source ID of the input source */
   guint num_output_buffers;                   /**< Number of Output Buffers to be allocated by buffer pool */
 
-  GstBuffer * out_gst_buf;                    /**< Pointer to the output buffer */
+  // GstBuffer * out_gst_buf;                    /**< Pointer to the output buffer */
 
   GstPadEventFunction parent_sink_event_fn;
+
+  DSCustom_CreateParams custom_create_params;
 
   VideoPrepLibrary_Factory *priv_factory;
   VideoPrepPriv *priv;                       /**< Pointer to private data structure contaning dewarping parameters for all the output surfaces */
@@ -170,6 +173,7 @@ struct GstVideoPrep
 struct GstVideoPrepClass {
   GstBaseTransformClass parent_class;
   GstStateChangeReturn (*parent_change_state_fn)(GstElement* element, GstStateChange transition);
+  void (*parent_state_changed_fn)(GstElement* element, GstState oldstate, GstState newstate, GstState pending);
 };
 
 GType gst_videoprep_get_type(void);

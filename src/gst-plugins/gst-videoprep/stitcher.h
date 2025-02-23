@@ -33,11 +33,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   StitcherPriv(int gpu_id, size_t batch_size) : STITCH_PRIV_BASE(gpu_id, batch_size) {}
   ~StitcherPriv();
 
-  // template <typename... Args>
-  // void render(Args&&... args) {
-  //     // Forward all arguments to the target function
-  //     render_(std::forward<Args>(args)...);
-  // }
+  
 
   bool render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream) {
     return render_.render(name, surface, stream);
@@ -45,7 +41,8 @@ class StitcherPriv : public STITCH_PRIV_BASE {
 
   // -DSCustomLibraryBase
 
-  bool SetInitParams(DSCustom_CreateParams* params) override;
+  bool PreCapsInit(DSCustom_CreateParams* params) override;
+  bool PostCapsInit(DSCustom_CreateParams* params) override;
 
   bool SetProperty(const Property& prop) override;
 

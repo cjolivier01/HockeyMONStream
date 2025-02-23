@@ -83,7 +83,7 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   }
 
   /* Set Init Parameters */
-  virtual bool SetInitParams(DSCustom_CreateParams* params);
+  virtual bool PostCapsInit(DSCustom_CreateParams* params);
 
   /* Set Custom Properties  of the library */
   virtual bool SetProperty(const Property& prop);
@@ -139,6 +139,7 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   std::queue<PacketInfo> m_processQ;
   std::mutex m_processLock;
   std::condition_variable m_processCV;
+  cudaError_t last_cuda_error{cudaError_t::cudaSuccess};
   NvBufSurfTransformConfigParams m_config_params;
   /* Aysnc Stop Handling */
   gboolean m_stop = FALSE;
@@ -160,10 +161,10 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
 // }
 
 // Set Init Parameters
-inline bool CustomAlgorithmBase::SetInitParams(DSCustom_CreateParams* params) {
-  DSCustomLibraryBase::SetInitParams(params);
+inline bool CustomAlgorithmBase::PostCapsInit(DSCustom_CreateParams* params) {
+  DSCustomLibraryBase::PostCapsInit(params);
 
-  BufferPoolConfig pool_config = {0};
+  BufferPoolConfig pool_config{0};
   GstStructure* s1 = NULL;
   GstCapsFeatures* feature;
   GstStructure* config = NULL;
@@ -734,9 +735,18 @@ inline void CustomAlgorithmBase::OutputThread(void) {
           fill_dummy_batch_meta_on_buffer(batch_meta);
         }
 
+#if 1
+        assert(m_element);
+        videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(m_element);
+        assert(videoprep);
+        last_cuda_error = GenerateOutput(batch_meta, videoprep, in_surf, out_surf);
+        if (last_cuda_error != cudaError_t::cudaSuccess) {
+          last_flow_ret_ = GST_FLOW_ERROR;
+        }
+#else
         out_surf->numFilled = in_surf->numFilled;
         // Enable below code to copy the frame, else it will insert GREEN frame
-        if (1) {
+        if (0) {
           NvBufSurfTransformParams transform_params;
           transform_params.transform_flag = NVBUFSURF_TRANSFORM_FILTER;
           transform_params.transform_flip = NvBufSurfTransform_None;
@@ -746,7 +756,7 @@ inline void CustomAlgorithmBase::OutputThread(void) {
 
           NvBufSurfTransform(in_surf, out_surf, &transform_params);
         }
-
+#endif
         outBuffer = newGstOutBuf;
 
         GST_BUFFER_PTS(outBuffer) = GST_BUFFER_PTS(packetInfo.inbuf);

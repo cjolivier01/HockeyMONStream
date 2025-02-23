@@ -505,14 +505,22 @@ static GstCaps* gst_videoprep_transform_caps(
   return new_caps;
 }
 
-// static void gst_videoprep_state_changed(GstElement* element, GstState oldstate, GstState newstate, GstState pending)
-// {}
+static void gst_videoprep_state_changed(GstElement* element, GstState oldstate, GstState newstate, GstState pending) {
+  GstVideoPrepClass* klass = GST_VIDEOPREP_CLASS(element);
+  GstVideoPrep* videoprep = GST_VIDEOPREP(element);
+  // if (oldstate == GstState::GST_STATE_NULL && newstate == GstState::GST_STATE_READY) {
+  //   std::cout << "state change here" << std::endl;
+  // }
+  if (klass->parent_state_changed_fn) {
+    klass->parent_state_changed_fn(element, oldstate, newstate, pending);
+  }
+}
 
 static GstStateChangeReturn gst_videoprep_change_state(GstElement* element, GstStateChange transition) {
   if (transition == GST_STATE_CHANGE_NULL_TO_READY) {
     GstVideoPrep* videoprep = GST_VIDEOPREP(element);
-    DSCustom_CreateParams params = {0};
-    params.m_element = (GstBaseTransform*)element;
+    memset(&videoprep->custom_create_params, 0, sizeof(videoprep->custom_create_params));
+    videoprep->custom_create_params.m_element = (GstBaseTransform*)element;
 
     assert(!videoprep->priv);
     GObject* object = G_OBJECT(element);
@@ -524,7 +532,7 @@ static GstStateChangeReturn gst_videoprep_change_state(GstElement* element, GstS
       GST_ERROR("Unable to create plugin type %s", videoprep->plugin_type);
       return GST_STATE_CHANGE_FAILURE;
     }
-    if (!videoprep->priv->SetInitParams(&params)) {
+    if (!videoprep->priv->PreCapsInit(&videoprep->custom_create_params)) {
       GST_ERROR("Error on bus: SetInitParams Error");
       return GST_STATE_CHANGE_FAILURE;
     }
@@ -542,7 +550,7 @@ static GstStateChangeReturn gst_videoprep_change_state(GstElement* element, GstS
 static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps, GstCaps* outcaps) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(trans);
   GstCapsFeatures* ift = NULL;
-  GstStructure* config = NULL;
+  // GstStructure* config = NULL;
   GstVideoInfo in_info = {}, out_info = {};
 
   GST_DEBUG_OBJECT(videoprep, "set_caps");
@@ -577,6 +585,17 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
   }
   gst_caps_features_free(ift);
 
+  assert(videoprep->stream);
+  videoprep->custom_create_params.m_cudaStream = videoprep->stream;
+  videoprep->custom_create_params.m_gpuId = videoprep->gpu_id;
+  videoprep->custom_create_params.m_inCaps = incaps;
+  videoprep->custom_create_params.m_outCaps = outcaps;
+
+  if (!videoprep->priv->PostCapsInit(&videoprep->custom_create_params)) {
+    GST_ERROR("Error on bus: SetInitParams Error");
+    return GST_STATE_CHANGE_FAILURE;
+  }
+#if 0
   // BEGIN BUFFER POOL SETUP
   // Pool Creation
   {
@@ -623,6 +642,7 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
     }
   }
   // END BUFFER POOL SETUP
+#endif
   if (videoprep->priv->AllocateScratchBuffers(videoprep)) {
     GST_ERROR("Error allocating videoprep projection buffers");
     return FALSE;
@@ -922,7 +942,9 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
 
   klass->parent_change_state_fn = gstelement_class->change_state;
   gstelement_class->change_state = GST_DEBUG_FUNCPTR(gst_videoprep_change_state);
-  // gstelement_class->state_changed = GST_DEBUG_FUNCPTR(gst_videoprep_state_changed);
+
+  klass->parent_state_changed_fn = gstelement_class->state_changed;
+  gstelement_class->state_changed = GST_DEBUG_FUNCPTR(gst_videoprep_state_changed);
 
   // GstPad *sinkpad = GST_PAD(GST_ELEMENT(gstelement_class)->sinkpads->data);
   // GstPad *srcpad = GST_PAD(GST_kpad = ELEMENT(scope)->srcpads->data);

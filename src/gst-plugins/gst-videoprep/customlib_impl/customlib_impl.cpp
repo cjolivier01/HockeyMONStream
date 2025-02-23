@@ -83,7 +83,7 @@ class SampleAlgorithm : public DSCustomLibraryBase {
   }
 
   /* Set Init Parameters */
-  virtual bool SetInitParams(DSCustom_CreateParams* params);
+  virtual bool PostCapsInit(DSCustom_CreateParams* params);
 
   /* Set Custom Properties  of the library */
   virtual bool SetProperty(const Property& prop);
@@ -160,8 +160,8 @@ extern "C" IDSCustomLibrary* CreateCustomAlgoCtx(DSCustom_CreateParams* params) 
 }
 
 // Set Init Parameters
-bool SampleAlgorithm::SetInitParams(DSCustom_CreateParams* params) {
-  DSCustomLibraryBase::SetInitParams(params);
+bool SampleAlgorithm::PostCapsInit(DSCustom_CreateParams* params) {
+  DSCustomLibraryBase::PostCapsInit(params);
 
   BufferPoolConfig pool_config = {0};
   GstStructure* s1 = NULL;

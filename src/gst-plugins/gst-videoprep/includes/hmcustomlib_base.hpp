@@ -45,7 +45,9 @@ class DSCustomLibraryBase : public IDSCustomLibrary {
   explicit DSCustomLibraryBase(GstBaseTransform* btrans = nullptr);
 
   /* Set Init Parameters */
-  virtual bool SetInitParams(DSCustom_CreateParams* params);
+  virtual bool PreCapsInit(DSCustom_CreateParams* params) { return true; };
+
+  virtual bool PostCapsInit(DSCustom_CreateParams* params);
 
   virtual ~DSCustomLibraryBase();
 
@@ -101,7 +103,7 @@ inline DSCustomLibraryBase::DSCustomLibraryBase(GstBaseTransform* btrans) : m_el
   m_fillDummyBatchMeta = false;
 }
 
-inline bool DSCustomLibraryBase::SetInitParams(DSCustom_CreateParams* params) {
+inline bool DSCustomLibraryBase::PostCapsInit(DSCustom_CreateParams* params) {
   m_element = params->m_element;
   m_inCaps = params->m_inCaps;
   m_outCaps = params->m_outCaps;

@@ -326,7 +326,7 @@ cudaError PlayCropperPriv::GenerateOutput(
 
   out_surface->numFilled = nr_surfaces_to_process;
 
-  videoprep::videoprep_add_surface_meta(videoprep->out_gst_buf, nr_surfaces_to_process, videoprep->source_id);
+  // videoprep::videoprep_add_surface_meta(videoprep->out_gst_buf, nr_surfaces_to_process, videoprep->source_id);
 #if 0
   surface_meta->num_filled_surfaces = nr_surfaces_to_process;
   surface_meta->source_id = videoprep->source_id;
