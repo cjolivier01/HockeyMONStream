@@ -3,6 +3,8 @@
 #include "cudaPano.h"
 #include "gstvideoprep.h"
 
+#include "custom_algorithm_base.h"
+
 #include <mutex>
 
 namespace hm {

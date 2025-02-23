@@ -2,6 +2,8 @@
 
 #include "gstvideoprep.h"
 
+#include "custom_algorithm_base.h"
+
 namespace hm {
 namespace playcropper {
 
