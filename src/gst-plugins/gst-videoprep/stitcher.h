@@ -20,11 +20,14 @@ namespace stitcher {
 // #define GST_IS_VIDEOPREP_PLAY_CROPPER(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_PLAY_CROPPER))
 // #define GST_IS_VIDEOPREP_PLAY_CROPPER_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_PLAY_CROPPER))
 
-class StitcherPriv : public videoprep::VideoPrepPriv {
-  using Super = videoprep::VideoPrepPriv;
+using STITCH_PRIV_BASE = CustomAlgorithmBase;
+// using STITCH_PRIV_BASE = hm::videoprep::VideoPrepPriv;
+
+class StitcherPriv : public STITCH_PRIV_BASE {
+  using Super = STITCH_PRIV_BASE;
 
  public:
-  StitcherPriv(int gpu_id, size_t batch_size) : videoprep::VideoPrepPriv(gpu_id, batch_size) {}
+  StitcherPriv(int gpu_id, size_t batch_size) : STITCH_PRIV_BASE(gpu_id, batch_size) {}
   ~StitcherPriv();
 
   // template <typename... Args>

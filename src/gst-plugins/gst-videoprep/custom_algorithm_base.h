@@ -32,9 +32,9 @@
 #include <queue>
 #include <stdexcept>
 #include <thread>
-
 #include "gst-nvevent.h"
 #include "gstnvdsmeta.h"
+#include "gstvideoprep.h"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 #include "nvdscustomusermeta.h"
@@ -75,9 +75,9 @@ struct PacketInfo {
   guint frame_num;
 };
 
-class CustomAlgorithmBase : public DSCustomLibraryBase {
+class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
  public:
-  CustomAlgorithmBase() {
+  CustomAlgorithmBase(int gpu_id, size_t batch_size) : videoprep::VideoPrepPriv(gpu_id, batch_size) {
     m_vectorProperty.clear();
     outputthread_stopped = false;
   }
