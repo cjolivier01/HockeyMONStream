@@ -4,6 +4,7 @@
 #include <gst/base/gstbasetransform.h>
 #include <gst/gst.h>
 #include <gst/video/video.h>
+#include <gstreamer-1.0/gst/gstinfo.h>
 #include <npp.h>
 #include <nvbufsurface.h>
 #include <cmath>
@@ -155,7 +156,10 @@ cudaError StitcherPriv::GenerateOutput(
   // NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));
 
   assert(in_surface->batchSize % 2 == 0);
-  assert(in_surface->numFilled % 2 == 0);
+  if(in_surface->numFilled % 2 != 0) {
+    gst_printerr("Not enough filled surfaces to perform stitching\n");
+    return cudaError_t::cudaErrorInvalidValue;
+  }
   // assert(in_surface->isContiguous);
 
   struct FrameInfo {
