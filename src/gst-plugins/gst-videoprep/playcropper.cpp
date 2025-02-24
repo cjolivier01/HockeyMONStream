@@ -38,8 +38,8 @@ bool PlayCropperPriv::PreCapsInit(DSCustom_CreateParams* params) {
 #endif
   m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
   m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
-  videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
-  videoprep->num_batch_buffers /= 2;
+  // videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
+  // videoprep->num_batch_buffers /= 2;
   return Super::PreCapsInit(params);
 };
 
@@ -110,6 +110,9 @@ cudaError PlayCropperPriv::GenerateOutput(
   std::cout << "PlayCropperPriv::GenerateOutput: " << counter++ << std::endl;
   cudaError err = cudaSuccess;
   assert(cudaGetLastError() == cudaSuccess);
+
+  // Debugging sanity check
+  assert(in_surface->batchSize == out_surface->batchSize);
 
   assert(videoprep->stream);
 

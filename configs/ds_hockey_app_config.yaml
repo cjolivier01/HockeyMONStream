@@ -280,8 +280,8 @@ ds-example:
   processing-height: 480
 
 hmvideoprep:
-  enable: false
-  # enable: true
+  # enable: false
+  enable: true
   # enable: 1
   gpu-id: 0
   # plugin-type: videoprep
@@ -297,7 +297,9 @@ hmvideoprep:
 
   plugin-type: playcropper
   # config-file: config_dewarper_null.txt
+  num-batch-buffers: 4
   num-output-buffers: 4
+
   output-width: 5311
   output-height: 2988
   # plugin-type: hmstitcher
@@ -305,8 +307,8 @@ hmvideoprep:
   # num-output-buffers: 2
 
 hmstitcher:
-  # enable: false
-  enable: true
+  enable: false
+  # enable: true
   gpu-id: 0
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
