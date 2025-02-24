@@ -280,9 +280,8 @@ ds-example:
   processing-height: 480
 
 hmvideoprep:
-  enable: false
-  # enable: true
-  # enable: 1
+  # enable: false
+  enable: true
   gpu-id: 0
   # plugin-type: videoprep
   # has_queue: false
