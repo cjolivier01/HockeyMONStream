@@ -128,7 +128,7 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   bool outputthread_stopped = false;
 
   /* Custom Library Bufferpool */
-  GstBufferPool* m_dsBufferPool = NULL;
+  // GstBufferPool* m_dsBufferPool = NULL;
   GstBufferPool* m_swbufpool = NULL;
   guint swbuffersize;
 
@@ -212,10 +212,10 @@ inline bool CustomAlgorithmBase::PostCapsInit(DSCustom_CreateParams* params) {
       pool_config.batch_size = 1;
     }
 
-    m_dsBufferPool = CreateBufferPool(&pool_config, m_outCaps);
-    if (!m_dsBufferPool) {
-      throw std::runtime_error("Custom Buffer Pool Creation failed");
-    }
+    // m_dsBufferPool = CreateBufferPool(&pool_config, m_outCaps);
+    // if (!m_dsBufferPool) {
+    //   throw std::runtime_error("Custom Buffer Pool Creation failed");
+    // }
     m_config_params.compute_mode = NvBufSurfTransformCompute_GPU;
     m_config_params.gpu_id = params->m_gpuId;
     m_config_params.cuda_stream = params->m_cudaStream;
@@ -419,11 +419,11 @@ inline CustomAlgorithmBase::~CustomAlgorithmBase() {
     m_outputThread->join();
   }
 
-  if (m_dsBufferPool) {
-    gst_buffer_pool_set_active(m_dsBufferPool, FALSE);
-    gst_object_unref(m_dsBufferPool);
-    m_dsBufferPool = NULL;
-  }
+  // if (m_dsBufferPool) {
+  //   gst_buffer_pool_set_active(m_dsBufferPool, FALSE);
+  //   gst_object_unref(m_dsBufferPool);
+  //   m_dsBufferPool = NULL;
+  // }
   if (m_swbufpool) {
     gst_buffer_pool_set_active(m_swbufpool, FALSE);
     gst_object_unref(m_swbufpool);
@@ -705,7 +705,8 @@ inline void CustomAlgorithmBase::OutputThread(void) {
         // Transform mode, hence transform input buffer to output buffer
         GstBuffer* newGstOutBuf = NULL;
         GstFlowReturn result = GST_FLOW_OK;
-        result = gst_buffer_pool_acquire_buffer(m_dsBufferPool, &newGstOutBuf, NULL);
+        videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(m_element);
+        result = gst_buffer_pool_acquire_buffer(videoprep->pool, &newGstOutBuf, NULL);
         if (result != GST_FLOW_OK) {
           GST_ERROR_OBJECT(m_element, "InsertCustomFrame failed error = %d, exiting...", result);
           exit(-1);
@@ -737,7 +738,7 @@ inline void CustomAlgorithmBase::OutputThread(void) {
 
 #if 1
         assert(m_element);
-        videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(m_element);
+        // videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(m_element);
         assert(videoprep);
         last_cuda_error = GenerateOutput(batch_meta, videoprep, in_surf, out_surf);
         if (last_cuda_error != cudaError_t::cudaSuccess) {
@@ -836,6 +837,7 @@ inline void CustomAlgorithmBase::OutputThread(void) {
 
 // Insert Custom Frame
 inline void CustomAlgorithmBase::InsertCustomFrame(PacketInfo* packetInfo) {
+#if 0
   GstBuffer* newGstOutBuf = NULL;
   GstFlowReturn result = GST_FLOW_OK;
 
@@ -890,6 +892,7 @@ inline void CustomAlgorithmBase::InsertCustomFrame(PacketInfo* packetInfo) {
     return;
   }
   return;
+#endif
 }
 
 // Helper function to dump the nvbufsurface, used for debugging purpose

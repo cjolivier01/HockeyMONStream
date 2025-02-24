@@ -515,7 +515,7 @@ static GstCaps* gst_videoprep_transform_caps(
 
 static void gst_videoprep_state_changed(GstElement* element, GstState oldstate, GstState newstate, GstState pending) {
   GstVideoPrepClass* klass = GST_VIDEOPREP_CLASS(element);
-  GstVideoPrep* videoprep = GST_VIDEOPREP(element);
+  // GstVideoPrep* videoprep = GST_VIDEOPREP(element);
   // if (oldstate == GstState::GST_STATE_NULL && newstate == GstState::GST_STATE_READY) {
   //   std::cout << "state change here" << std::endl;
   // }
@@ -609,7 +609,7 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
     GST_ERROR("Error on bus: SetInitParams Error");
     return GST_STATE_CHANGE_FAILURE;
   }
-#if 0
+#if 1
   // BEGIN BUFFER POOL SETUP
   // Pool Creation
   {

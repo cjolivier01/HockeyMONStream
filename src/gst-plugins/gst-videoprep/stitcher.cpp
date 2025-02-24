@@ -69,8 +69,8 @@ bool StitcherPriv::PostCapsInit(DSCustom_CreateParams* params) {
   // I am a little confused about the diufference between these two
   videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
 
-  assert(videoprep->num_batch_buffers % 2 == 0);
-  videoprep->num_output_buffers = videoprep->num_batch_buffers / 2;
+  // assert(videoprep->num_batch_buffers % 2 == 0);
+  // videoprep->num_output_buffers = videoprep->num_batch_buffers / 2;
 
   if (!Super::PostCapsInit(params)) {
     return false;

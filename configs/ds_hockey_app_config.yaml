@@ -198,7 +198,7 @@ sink2:
   # udp-port: 5400
 
 osd:
-  enable: 1
+  enable: 0
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -297,7 +297,7 @@ hmvideoprep:
 
   plugin-type: playcropper
   # config-file: config_dewarper_null.txt
-  num-batch-buffers: 4
+  num-batch-buffers: 2
   num-output-buffers: 4
 
   output-width: 5311
@@ -307,28 +307,28 @@ hmvideoprep:
   # num-output-buffers: 2
 
 hmstitcher:
-  enable: false
-  # enable: true
+  # enable: false
+  enable: true
   gpu-id: 0
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
   # config-file: /home/colivier/Videos/mlk-heat-1
   # Incoming
-  num-batch-buffers: 4
+  num-batch-buffers: 2
   # Outgoing
-  num-output-buffers: 2
+  num-output-buffers: 4
 
 ds-playtracker:
   enable: 1
   gpu-id: 0
   unique-id: 75
-  draw: true
-  # draw: false
+  # draw: true
+  draw: false
   # play-tracker-class-id: 99
   config-file: play_tracker_config.yaml
 
 ds-fieldmask:
-  enable: 0
+  enable: 1
   gpu-id: 0
   unique-id: 76
   # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png
