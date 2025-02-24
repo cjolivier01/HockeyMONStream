@@ -6,7 +6,7 @@
 namespace hm {
 namespace videoprep {
 
-GST_DEBUG_CATEGORY_STATIC(gst_videoprep_debug);
+// GST_DEBUG_CATEGORY_STATIC(gst_videoprep_debug);
 GST_DEBUG_CATEGORY_STATIC(gst_playcropper_debug);
 GST_DEBUG_CATEGORY_STATIC(gst_stitcher_debug);
 

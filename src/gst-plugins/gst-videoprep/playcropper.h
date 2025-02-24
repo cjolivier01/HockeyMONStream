@@ -19,15 +19,26 @@ namespace playcropper {
 #define GST_IS_VIDEOPREP_PLAY_CROPPER(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_PLAY_CROPPER))
 #define GST_IS_VIDEOPREP_PLAY_CROPPER_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_PLAY_CROPPER))
 
-class PlayCropperPriv : public videoprep::VideoPrepPriv {
+#ifdef NEW_VIDEOPREP
+using STITCH_PRIV_BASE = CustomAlgorithmBase;
+#else
+using STITCH_PRIV_BASE = hm::videoprep::VideoPrepPriv;
+#endif
+
+
+class PlayCropperPriv : public STITCH_PRIV_BASE {
+  using Super = STITCH_PRIV_BASE;
  public:
-  PlayCropperPriv(int gpu_id, size_t batch_size) : videoprep::VideoPrepPriv(gpu_id, batch_size) {}
+  PlayCropperPriv(int gpu_id, size_t batch_size) : STITCH_PRIV_BASE(gpu_id, batch_size) {}
 
   // template <typename... Args>
   // void render(Args&&... args) {
   //     // Forward all arguments to the target function
   //     render_(std::forward<Args>(args)...);
   // }
+ 
+  bool PreCapsInit(DSCustom_CreateParams* params) override;
+  bool PostCapsInit(DSCustom_CreateParams* params) override;
 
   bool render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream) {
     return render_.render(name, surface, stream);
@@ -48,10 +59,10 @@ class PlayCropperPriv : public videoprep::VideoPrepPriv {
     return strdup("");
   }
 
-  BufferResult ProcessBuffer(GstBuffer* inbuf) override {
-    assert(false);
-    return BufferResult::Buffer_Ok;
-  }
+  // BufferResult ProcessBuffer(GstBuffer* inbuf) override {
+  //   assert(false);
+  //   return BufferResult::Buffer_Ok;
+  // }
 
   // DSCustomLibraryBase-
 

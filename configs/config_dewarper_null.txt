@@ -21,8 +21,8 @@
 
 # mlk-extreme
 
-output-width=1820
-output-height=1024
+# output-width=1820
+# output-height=1024
 
 output-width=3693
 output-height=2077

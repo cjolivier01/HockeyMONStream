@@ -48,6 +48,11 @@ bool StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
     return false;
   }
 
+  // Not an in-place transform
+  m_transformMode = true;
+  m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
+  m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
+
   videoprep->output_width = stitcher_->canvas_width();
   videoprep->output_height = stitcher_->canvas_height();
 
@@ -58,10 +63,7 @@ bool StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
 }
 
 bool StitcherPriv::PostCapsInit(DSCustom_CreateParams* params) {
-  // Not an in-place transform
-  m_transformMode = true;
-  m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
-  m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
+
   videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
   if (!Super::PostCapsInit(params)) {
     return false;

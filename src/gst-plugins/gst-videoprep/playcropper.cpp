@@ -30,6 +30,19 @@
 
 namespace hm {
 namespace playcropper {
+
+bool PlayCropperPriv::PreCapsInit(DSCustom_CreateParams* params) {
+  // Not an in-place transform
+  m_transformMode = true;
+  m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
+  m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
+  return Super::PreCapsInit(params);
+};
+
+bool PlayCropperPriv::PostCapsInit(DSCustom_CreateParams* params) {
+  return Super::PostCapsInit(params);
+}
+
 gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) {
   cudaError_t cudaErr;
 
