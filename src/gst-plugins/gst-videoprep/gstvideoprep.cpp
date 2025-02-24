@@ -38,8 +38,10 @@
 
 #define DEFAULT_NUM_VIDEO_PREPPED_SURFACES (4)
 #define DEFAULT_DEWARP_DUMP_FRAMES 0
-#define DEFAULT_DEWARP_OUTPUT_WIDTH 960
-#define DEFAULT_DEWARP_OUTPUT_HEIGHT 752
+#define DEFAULT_DEWARP_OUTPUT_WIDTH 0
+#define DEFAULT_DEWARP_OUTPUT_HEIGHT 0
+// #define DEFAULT_DEWARP_OUTPUT_WIDTH 960
+// #define DEFAULT_DEWARP_OUTPUT_HEIGHT 752
 
 #define USE_CUDA_STREAM
 
@@ -110,6 +112,8 @@ enum {
   PROP_NUM_OUTPUT_BUFFERS,
   PROP_CONFIG_FILE,
   PROP_PLUGIN_TYPE,
+  PROP_OUTPUT_WIDTH,
+  PROP_OUTPUT_HEIGHT,
   PROP_DEWARP_LIB_VERSION,
   PROP_NUM_BATCH_BUFFERS,
   PROP_NVBUF_MEMORY_TYPE,
@@ -450,6 +454,7 @@ static GstCaps* gst_videoprep_transform_caps(
   GstCaps* temp_caps = NULL;
 
   if (direction == GST_PAD_SINK) {
+    assert(videoprep->output_width && videoprep->output_height);
     new_caps = gst_caps_new_simple(
         "video/x-raw",
         "format",
@@ -1012,6 +1017,30 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
+      PROP_OUTPUT_WIDTH,
+      g_param_spec_uint(
+          "output-width",
+          "Output Width",
+          "Output Width",
+          0,
+          INT_MAX,
+          0,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
+
+  g_object_class_install_property(
+      gobject_class,
+      PROP_OUTPUT_HEIGHT,
+      g_param_spec_uint(
+          "output-height",
+          "Output Height",
+          "Output Height",
+          0,
+          INT_MAX,
+          0,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
+
+  g_object_class_install_property(
+      gobject_class,
       PROP_CONFIG_FILE,
       g_param_spec_string(
           "config-file",
@@ -1182,6 +1211,12 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
     case PROP_INTERPOLATION_METHOD:
       videoprep->interpolation_method = static_cast<NvBufSurfTransform_Inter>(g_value_get_enum(value));
       break;
+    case PROP_OUTPUT_WIDTH:
+      videoprep->output_width = g_value_get_uint(value);
+      break;
+    case PROP_OUTPUT_HEIGHT:
+      videoprep->output_height = g_value_get_uint(value);
+      break;
     case PROP_CONFIG_FILE:
       if (videoprep->config_file)
         g_free(videoprep->config_file);
@@ -1229,6 +1264,12 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
       break;
     case PROP_NUM_BATCH_BUFFERS:
       g_value_set_uint(value, videoprep->num_batch_buffers);
+      break;
+    case PROP_OUTPUT_WIDTH:
+      g_value_set_uint(value, videoprep->output_width);
+      break;
+    case PROP_OUTPUT_HEIGHT:
+      g_value_set_uint(value, videoprep->output_height);
       break;
     case PROP_CONFIG_FILE:
       g_value_set_string(value, videoprep->config_file);
