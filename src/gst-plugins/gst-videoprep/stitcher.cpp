@@ -199,7 +199,7 @@ cudaError StitcherPriv::GenerateOutput(
   out_surface->batchSize = batch_size;
 
   std::vector<NvDsFrameMeta*> remove_frame_metas;
-  remove_frame_metas.reserve(in_surface->batchSize/2);
+  remove_frame_metas.reserve(in_surface->batchSize / 2);
 
   // for (size_t batch_nr = 0; batch_nr < batch_size; batch_nr++) {
   size_t out_surface_index = 0;
@@ -231,7 +231,6 @@ cudaError StitcherPriv::GenerateOutput(
       reuse_frame_meta = frame_info_right.frame_meta;
       remove_frame_metas.emplace_back(frame_info_left.frame_meta);
     }
-
 
 #ifdef __aarch64__
     hm::surface::EglSurfaceMapper incoming_left_elg_surface_mapper(
@@ -280,6 +279,8 @@ cudaError StitcherPriv::GenerateOutput(
     // render("left", left_params, videoprep->stream);
     // render("right", right_params, videoprep->stream);
 
+    err = cudaMemsetAsync(canvas->data_raw(), 0, canvas->height() * canvas->pitch() * canvas->batch_size());
+
     if (err == cudaError_t::cudaSuccess) {
       auto stitch_result = stitcher_->process(left, right, videoprep->stream, std::move(canvas));
       if (stitch_result.ok()) {
@@ -290,9 +291,9 @@ cudaError StitcherPriv::GenerateOutput(
         // TODO: Should we do this later under a batch meta lock?
         // ModifyBatchFrames frame_adder(batch_meta, remove_frame_metas);
 #if 1
-          reuse_frame_meta->source_frame_width = reuse_frame_meta->pipeline_width = canvas->width();
-          reuse_frame_meta->source_frame_height = reuse_frame_meta->pipeline_height = canvas->height();
-          reuse_frame_meta->num_surfaces_per_frame = 1;
+        reuse_frame_meta->source_frame_width = reuse_frame_meta->pipeline_width = canvas->width();
+        reuse_frame_meta->source_frame_height = reuse_frame_meta->pipeline_height = canvas->height();
+        reuse_frame_meta->num_surfaces_per_frame = 1;
 #else
         frame_adder.add_frame([&](NvDsFrameMeta* new_frame_meta) -> bool {
           // Currently we don't copy over any user or object meta because it is assumed that thsoe would be wrt an
@@ -329,7 +330,7 @@ cudaError StitcherPriv::GenerateOutput(
   }
 
   if (out_surface->numFilled) {
-    //batch_meta->num_frames_in_batch /= 2;
+    // batch_meta->num_frames_in_batch /= 2;
     ModifyBatchFrames modifier(batch_meta, remove_frame_metas);
     batch_meta->max_frames_in_batch /= 2;
     assert(batch_meta->max_frames_in_batch); // make sure we didnt do too many times and make it 0
