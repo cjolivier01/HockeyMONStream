@@ -101,8 +101,6 @@ cudaError PlayCropperPriv::GenerateOutput(
   cudaError err = cudaSuccess;
   assert(cudaGetLastError() == cudaSuccess);
 
-  // NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));
-
   assert(videoprep->stream);
 
   NppStreamContext nppStreamContext;
