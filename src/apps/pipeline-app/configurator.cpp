@@ -7,6 +7,7 @@
 #include <string>
 
 #include <opencv2/opencv.hpp>
+#include <opencv5/opencv2/videoio.hpp>
 #include <unistd.h>
 
 #include "pipeline_utils.h"
@@ -14,6 +15,38 @@
 namespace hm {
 
 namespace {
+
+struct Videoinfo {
+  int width{0};
+  int height{0};
+  double fps{0.0};
+};
+
+Videoinfo getVideoInfo(const std::string& videoPath) {
+  Videoinfo info;
+  // Open the video file.
+  cv::VideoCapture cap(videoPath);
+  if (!cap.isOpened()) {
+    std::cerr << "Error: Could not open video file: " << videoPath << std::endl;
+    return info;
+  }
+
+  // Retrieve the FPS property.
+  info.fps = cap.get(cv::CAP_PROP_FPS);
+  info.width = cap.get(cv::CAP_PROP_FRAME_WIDTH);
+  info.height = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
+  return info;
+}
+
+int as_int(const YAML::Node& node) {
+  // be less asserty than YAML-CPP
+  // std::cout << node << std::endl;
+  if (!node.IsDefined()) {
+    return 0;
+  }
+  std::string s = node.as<std::string>();
+  return std::atoi(s.c_str());
+}
 
 } // namespace
 
@@ -139,29 +172,6 @@ YAML::Node Configurator::auto_config(YAML::Node&& config) {
   return std::move(config);
 }
 
-static double getVideoFPS(const std::string& videoPath) {
-  // Open the video file.
-  cv::VideoCapture cap(videoPath);
-  if (!cap.isOpened()) {
-    std::cerr << "Error: Could not open video file: " << videoPath << std::endl;
-    return -1.0;
-  }
-
-  // Retrieve the FPS property.
-  double fps = cap.get(cv::CAP_PROP_FPS);
-  return fps;
-}
-
-static int as_int(const YAML::Node& node) {
-  // be less asserty than YAML-CPP
-  // std::cout << node << std::endl;
-  if (!node.IsDefined()) {
-    return 0;
-  }
-  std::string s = node.as<std::string>();
-  return std::atoi(s.c_str());
-}
-
 void Configurator::complete_configuration() {
   YAML::Node pipeline = config_["pipeline"];
   assert(pipeline.IsDefined());
@@ -182,19 +192,35 @@ void Configurator::complete_configuration() {
     right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
   }
 
+  long area = 0, ww = 0, hh = 0;
+
   auto offsets = config_["game"]["stitching"]["frame_offsets"];
   if (!left_files.empty()) {
-    double fps = getVideoFPS(file_maybe_in_game_dir(left_files[0]));
+    Videoinfo left_info = getVideoInfo(file_maybe_in_game_dir(left_files[0]));
     double lfo = offsets["left"].as<double>(); // this is decimal frames
     set_stream_offsets_ |= lfo != 0.0;
-    pipeline["hmstitcher"]["left-frame-offset-ns"] = std::to_string(size_t(lfo / fps * GST_SECOND));
+    pipeline["hmstitcher"]["left-frame-offset-ns"] = std::to_string(size_t(lfo / left_info.fps * GST_SECOND));
+    area = left_info.width * left_info.height;
+    ww = left_info.width;
+    hh = left_info.height;
   }
   if (!right_files.empty()) {
-    double fps = getVideoFPS(file_maybe_in_game_dir(right_files[0]));
+    Videoinfo right_info = getVideoInfo(file_maybe_in_game_dir(right_files[0]));
     double rfo = offsets["right"].as<double>(); // this is decimal frames
     set_stream_offsets_ |= rfo != 0.0;
-    pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / fps * GST_SECOND));
+    pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / right_info.fps * GST_SECOND));
+    if (right_info.width * right_info.height > area) {
+      ww = right_info.width;
+      hh = right_info.height;
+    }
   }
+
+  if (area) {
+    // Set streammux size
+    pipeline["streammux"]["width"] = std::to_string(ww);
+    pipeline["streammux"]["height"] = std::to_string(hh);
+  }
+
   std::string possible_audio_uri;
   // Source 0 files
   static const std::string ff = "file://";
