@@ -25,7 +25,7 @@
 namespace hm {
 namespace videoprep {
 
-#define NEW_VIDEOPREP
+// #define NEW_VIDEOPREP
 
 #define DISTORTION_SIZE 5 /**< Maximum number of distortion coefficients */
 #define FOCAL_LENGTH_SIZE 2 /**< Focal length array size : two values for X & Y direction */
@@ -48,7 +48,6 @@ class VideoPrepPriv : public DSCustomLibraryBase {
   }
 
   bool HandleEvent(GstEvent* event) override {
-    assert(false);
     return true;
   }
 
