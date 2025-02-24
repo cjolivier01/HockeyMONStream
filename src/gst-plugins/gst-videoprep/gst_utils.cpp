@@ -50,5 +50,57 @@ void inspect_nvbufsurface_dtype(GstBuffer* buffer) {
   // Unmap the buffer
   gst_buffer_unmap(buffer, &map_info);
 }
+
+void print_caps(const GstCaps* caps) {
+  gchar* caps_str = gst_caps_to_string(caps);
+  g_print("Caps: %s\n", caps_str);
+  g_free(caps_str);
+}
+
+void print_caps_details(const GstCaps* caps) {
+  int size = gst_caps_get_size(caps);
+  for (int i = 0; i < size; i++) {
+    const GstStructure* structure = gst_caps_get_structure(caps, i);
+    gchar* structure_str = gst_structure_to_string(structure);
+    g_print("Structure %d: %s\n", i, structure_str);
+    g_free(structure_str);
+  }
+}
+
+gint get_batch_size_from_caps(GstCaps* caps) {
+  gint batch_size = 1; // Default to 1 if not specified
+  gboolean is_batched = FALSE;
+
+  if (!caps || gst_caps_is_empty(caps)) {
+    GST_WARNING("Caps is NULL or empty");
+    return batch_size;
+  }
+
+  // Get the first structure (typically where batch info would be)
+  GstStructure* structure = gst_caps_get_structure(caps, 0);
+  if (!structure) {
+    GST_WARNING("No structure in caps");
+    return batch_size;
+  }
+
+  // First check if the stream is batched
+  if (gst_structure_get_boolean(structure, "batched", &is_batched)) {
+    if (is_batched) {
+      // If batched, try to get the batch-size field
+      if (gst_structure_get_int(structure, "batch-size", &batch_size)) {
+        GST_DEBUG("Found batch-size: %d", batch_size);
+      } else {
+        GST_WARNING("Stream is batched but no batch-size specified");
+      }
+    } else {
+      GST_DEBUG("Stream is not batched");
+    }
+  } else {
+    GST_DEBUG("No batched field in caps, assuming batch size of 1");
+  }
+
+  return batch_size;
+}
+
 } // namespace gst
 } // namespace hm

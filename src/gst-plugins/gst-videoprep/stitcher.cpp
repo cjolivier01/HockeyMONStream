@@ -49,7 +49,10 @@ bool StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
   }
 
   // Not an in-place transform
+#ifdef NEW_VIDEOPREP
   m_transformMode = true;
+#endif
+
   m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
   m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
 
@@ -63,14 +66,15 @@ bool StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
 }
 
 bool StitcherPriv::PostCapsInit(DSCustom_CreateParams* params) {
-
+  // I am a little confused about the diufference between these two
   videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
+
+  assert(videoprep->num_batch_buffers % 2 == 0);
+  videoprep->num_output_buffers = videoprep->num_batch_buffers / 2;
+
   if (!Super::PostCapsInit(params)) {
     return false;
   }
-  // I am a little confused about the diufference between these two
-  assert(videoprep->num_batch_buffers % 2 == 0);
-  videoprep->num_output_buffers = videoprep->num_batch_buffers / 2;
 
   // assert(!stitcher_);
   // hm::pano::ControlMasks control_masks;
@@ -148,8 +152,10 @@ cudaError StitcherPriv::GenerateOutput(
     videoprep::GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
+  static size_t counter = 0;
+  std::cout << "StitcherPriv::GenerateOutput: " << counter++ << std::endl;
   // Should not be necessary, debugging some issue atm
-  std::unique_lock lk(process_mu_);
+  // std::unique_lock lk(process_mu_);
 
   cudaError err = cudaSuccess;
   cudaError_t last_error = cudaGetLastError();
@@ -158,7 +164,7 @@ cudaError StitcherPriv::GenerateOutput(
   // NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));
 
   assert(in_surface->batchSize % 2 == 0);
-  if(in_surface->numFilled % 2 != 0) {
+  if (in_surface->numFilled % 2 != 0) {
     gst_printerr("Not enough filled surfaces to perform stitching\n");
     return cudaError_t::cudaErrorInvalidValue;
   }
@@ -310,6 +316,9 @@ cudaError StitcherPriv::GenerateOutput(
 
     // render("left", left_params, videoprep->stream);
     // render("right", right_params, videoprep->stream);
+    // Why suddenly now I need to clear the canvas?
+    cudaMemsetAsync(
+        canvas->data_raw(), 0, canvas->height() * canvas->pitch() * canvas->batch_size(), videoprep->stream);
 
     if (err == cudaError_t::cudaSuccess) {
       auto stitch_result = stitcher_->process(left, right, videoprep->stream, std::move(canvas));

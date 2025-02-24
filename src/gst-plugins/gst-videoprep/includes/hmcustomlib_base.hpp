@@ -71,7 +71,7 @@ class DSCustomLibraryBase : public IDSCustomLibrary {
   /* Helper function to create the custom buffer pool */
   GstBufferPool* CreateBufferPool(BufferPoolConfig* pool_config, GstCaps* outcaps);
 
- public:
+ protected:
   /* Gstreamer dsexaple2 plugin's base class reference */
   GstBaseTransform* m_element;
 

@@ -1,4 +1,5 @@
 #include "configurator.h"
+#include "controlMasks.h"
 #include "deepstream_app.h"
 
 #include <filesystem>
@@ -46,6 +47,14 @@ int as_int(const YAML::Node& node) {
   }
   std::string s = node.as<std::string>();
   return std::atoi(s.c_str());
+}
+
+std::optional<std::tuple<int, int>> get_canvas_size(const std::string& game_dir) {
+  hm::pano::ControlMasks control_masks(game_dir);
+  if (!control_masks.is_valid()) {
+    return std::nullopt;
+  }
+  return std::make_tuple(control_masks.canvas_width(), control_masks.canvas_height());
 }
 
 } // namespace
@@ -179,6 +188,7 @@ void Configurator::complete_configuration() {
   auto game_dir = get_game_dir(game_id_);
 
   pipeline["hmstitcher"]["config-file"] = std::string(game_dir);
+
   pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / "rink_mask_0.png");
   // Stitching LFO, RFO
   std::vector<std::string> left_files;
@@ -213,6 +223,22 @@ void Configurator::complete_configuration() {
       ww = right_info.width;
       hh = right_info.height;
     }
+  }
+
+  if (!left_files.empty() && !right_files.empty()) {
+    auto canvas_size_result = get_canvas_size(game_dir);
+    if (canvas_size_result) {
+      size_t canvas_width = std::get<0>(*canvas_size_result);
+      size_t canvas_height = std::get<1>(*canvas_size_result);
+      pipeline["hmstitcher"]["output-width"] = std::to_string(canvas_width);
+      pipeline["hmstitcher"]["output-height"] = std::to_string(canvas_height);
+      constexpr double ar = 16.0 / 9.0;
+      pipeline["videoprep"]["output-height"] = std::to_string(canvas_height);
+      pipeline["videoprep"]["output-width"] = std::to_string(static_cast<long>(ar * canvas_height));
+    }
+  } else {
+    pipeline["videoprep"]["output-height"] = std::to_string(ww);
+    pipeline["videoprep"]["output-width"] = std::to_string(hh);
   }
 
   if (area) {

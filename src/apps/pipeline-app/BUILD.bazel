@@ -6,6 +6,7 @@ cc_binary(
     "//src/libs/common:utils",
     "@deepstream//sources/apps/apps-common:deepstream_apps_common",
     "@deepstream//sources/apps/sample_apps/deepstream-audio:deepstream_audio",
+    "@hm-cupano//src/pano:canvas",
     "@gstreamer",
     "@yaml-cpp",
     "@json_glib",

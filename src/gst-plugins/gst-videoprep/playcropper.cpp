@@ -33,9 +33,13 @@ namespace playcropper {
 
 bool PlayCropperPriv::PreCapsInit(DSCustom_CreateParams* params) {
   // Not an in-place transform
+#ifdef NEW_VIDEOPREP
   m_transformMode = true;
+#endif
   m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
   m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
+  videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
+  videoprep->num_batch_buffers /= 2;
   return Super::PreCapsInit(params);
 };
 
@@ -93,11 +97,17 @@ gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep)
   return 0;
 }
 
+BufferResult PlayCropperPriv::ProcessBuffer(GstBuffer* inbuf) {
+  return Super::ProcessBuffer(inbuf);
+}
+
 cudaError PlayCropperPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     videoprep::GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
+  static size_t counter = 0;
+  std::cout << "PlayCropperPriv::GenerateOutput: " << counter++ << std::endl;
   cudaError err = cudaSuccess;
   assert(cudaGetLastError() == cudaSuccess);
 
@@ -146,7 +156,6 @@ cudaError PlayCropperPriv::GenerateOutput(
     FloatValue scale_w = float(videoprep->input_width) / frame_meta->source_frame_width;
     FloatValue scale_h = float(videoprep->input_height) / frame_meta->source_frame_height;
 
-#if 1
     float angle;
     const float max_angle = 30.0;
     const float half_width = float(frame_meta->source_frame_width) / 2;
@@ -158,14 +167,6 @@ cudaError PlayCropperPriv::GenerateOutput(
       float pct = (half_width - tcx) / half_width;
       angle = max_angle * pct;
     }
-    (void)angle;
-#else
-    static float angle = -1.0;
-    angle += 1;
-    if (angle > 360) {
-      angle = 0;
-    }
-#endif
 
     BBox tbox = tracking_boxes.at(batch_nr);
 

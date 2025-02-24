@@ -121,6 +121,9 @@ struct GstVideoPrep
   guint output_width;       /**<Output frame width */
   guint output_height;      /**<Output frame height */
 
+  guint input_batch_size;
+  guint output_batch_size;
+
   hm::WHDims pre_rotate_size;
 
   guint num_batch_buffers;  /**< Number of batch buffers */
@@ -158,7 +161,9 @@ struct GstVideoPrep
   guint source_id;                            /**< Source ID of the input source */
   guint num_output_buffers;                   /**< Number of Output Buffers to be allocated by buffer pool */
 
-  // GstBuffer * out_gst_buf;                    /**< Pointer to the output buffer */
+#ifndef NEW_VIDEOPREP
+  GstBuffer * out_gst_buf;                    /**< Pointer to the output buffer */
+#endif
 
   GstPadEventFunction parent_sink_event_fn;
 

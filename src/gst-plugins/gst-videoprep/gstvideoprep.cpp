@@ -14,6 +14,7 @@
 #include <iostream>
 #include "gst-nvcommon.h"
 #include "gstnvdsbufferpool.h"
+#include "gst_utils.h"
 #include "gstnvdsmeta.h"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
@@ -38,10 +39,10 @@
 
 #define DEFAULT_NUM_VIDEO_PREPPED_SURFACES (4)
 #define DEFAULT_DEWARP_DUMP_FRAMES 0
-#define DEFAULT_DEWARP_OUTPUT_WIDTH 0
-#define DEFAULT_DEWARP_OUTPUT_HEIGHT 0
-// #define DEFAULT_DEWARP_OUTPUT_WIDTH 960
-// #define DEFAULT_DEWARP_OUTPUT_HEIGHT 752
+// #define DEFAULT_DEWARP_OUTPUT_WIDTH 0
+// #define DEFAULT_DEWARP_OUTPUT_HEIGHT 0
+#define DEFAULT_DEWARP_OUTPUT_WIDTH 960
+#define DEFAULT_DEWARP_OUTPUT_HEIGHT 752
 
 #define USE_CUDA_STREAM
 
@@ -276,6 +277,8 @@ static GstCaps* gst_videoprep_fixate_caps(
 
   ins = gst_caps_get_structure(caps, 0);
   outs = gst_caps_get_structure(othercaps, 0);
+
+  assert(videoprep->output_width && videoprep->output_height);
 
   out_width = videoprep->output_width;
   out_height = videoprep->output_height;
@@ -558,6 +561,9 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
   // GstStructure* config = NULL;
   GstVideoInfo in_info = {}, out_info = {};
 
+  // videoprep->input_batch_size = gst::get_batch_size_from_caps(incaps);
+  // videoprep->output_batch_size = gst::get_batch_size_from_caps(outcaps);
+
   GST_DEBUG_OBJECT(videoprep, "set_caps");
 
   if (!gst_video_info_from_caps(&in_info, incaps)) {
@@ -596,6 +602,9 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
   videoprep->custom_create_params.m_inCaps = incaps;
   videoprep->custom_create_params.m_outCaps = outcaps;
 
+  // hm::gst::print_caps_details(incaps);
+  // hm::gst::print_caps_details(outcaps);
+
   if (!videoprep->priv->PostCapsInit(&videoprep->custom_create_params)) {
     GST_ERROR("Error on bus: SetInitParams Error");
     return GST_STATE_CHANGE_FAILURE;
@@ -606,7 +615,7 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
   {
     videoprep->pool = gst_nvds_buffer_pool_new();
 
-    config = gst_buffer_pool_get_config(videoprep->pool);
+    auto config = gst_buffer_pool_get_config(videoprep->pool);
 
     assert(videoprep->num_output_buffers > 0);
     assert(videoprep->num_batch_buffers > 0);

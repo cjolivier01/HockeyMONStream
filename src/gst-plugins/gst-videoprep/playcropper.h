@@ -40,24 +40,26 @@ class PlayCropperPriv : public STITCH_PRIV_BASE {
   bool PreCapsInit(DSCustom_CreateParams* params) override;
   bool PostCapsInit(DSCustom_CreateParams* params) override;
 
-  bool render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream) {
-    return render_.render(name, surface, stream);
-  }
+  BufferResult ProcessBuffer(GstBuffer* inbuf) override;
+
+  // bool render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream) {
+  //   return render_.render(name, surface, stream);
+  // }
 
   // -DSCustomLibraryBase
-  bool SetProperty(const Property& prop) override {
-    assert(false);
-    return true;
-  }
+  // bool SetProperty(const Property& prop) override {
+  //   assert(false);
+  //   return true;
+  // }
 
-  bool HandleEvent(GstEvent* event) override {
-    return true;
-  }
+  // bool HandleEvent(GstEvent* event) override {
+  //   return true;
+  // }
 
-  char* QueryProperties() override {
-    assert(false);
-    return strdup("");
-  }
+  // char* QueryProperties() override {
+  //   assert(false);
+  //   return strdup("");
+  // }
 
   // BufferResult ProcessBuffer(GstBuffer* inbuf) override {
   //   assert(false);

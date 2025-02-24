@@ -697,11 +697,11 @@ inline void CustomAlgorithmBase::OutputThread(void) {
     if (m_transformMode) {
       if (hw_caps == true) {
         // set surface transform session when transform mode is on
-        int err = NvBufSurfTransformSetSessionParams(&m_config_params);
-        if (err != NvBufSurfTransformError_Success) {
-          GST_ERROR_OBJECT(m_element, "Set session params failed");
-          return;
-        }
+        // int err = NvBufSurfTransformSetSessionParams(&m_config_params);
+        // if (err != NvBufSurfTransformError_Success) {
+        //   GST_ERROR_OBJECT(m_element, "Set session params failed");
+        //   return;
+        // }
         // Transform mode, hence transform input buffer to output buffer
         GstBuffer* newGstOutBuf = NULL;
         GstFlowReturn result = GST_FLOW_OK;
@@ -743,6 +743,7 @@ inline void CustomAlgorithmBase::OutputThread(void) {
         if (last_cuda_error != cudaError_t::cudaSuccess) {
           last_flow_ret_ = GST_FLOW_ERROR;
         }
+        // videoprep::videoprep_add_surface_meta(newGstOutBuf, out_surf->numFilled, videoprep->source_id);
 #else
         out_surf->numFilled = in_surf->numFilled;
         // Enable below code to copy the frame, else it will insert GREEN frame
@@ -763,6 +764,7 @@ inline void CustomAlgorithmBase::OutputThread(void) {
         // Unref the input buffer
         gst_buffer_unref(packetInfo.inbuf);
       } else if (hw_caps == false) {
+        assert(false);
         /*
          * Note: This is SRC pad of nvdsvideotemplate where SW caps are negotiated.
          * Here SW buffer pool is allocated and input buffer is copied into outgoing buffer
