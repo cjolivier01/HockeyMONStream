@@ -220,7 +220,7 @@ streammux:
   gpu-id: 0
   ##Boolean property to inform muxer that sources are live
   live-source: 0
-  buffer-pool-size: 4
+  buffer-pool-size: 8
   batch-size: 4
   # num-surfaces-per-frame: 1
   ##time out in usec, to wait after the first buffer is available
@@ -296,6 +296,7 @@ hmvideoprep:
 
   plugin-type: playcropper
   config-file: config_dewarper_null.txt
+  num-batch-buffers: 4
   num-output-buffers: 4
 
   # plugin-type: hmstitcher
@@ -309,7 +310,8 @@ hmstitcher:
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
   # config-file: /home/colivier/Videos/mlk-heat-1
-  num-output-buffers: 2
+  num-batch-buffers: 4
+  num-output-buffers: 4
 
 ds-playtracker:
   enable: 1
