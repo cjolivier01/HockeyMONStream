@@ -169,23 +169,6 @@ cudaError PlayCropperPriv::GenerateOutput(
 
     BBox tbox = tracking_boxes.at(batch_nr);
 
-    // cudaError_t err_cuda = cudaError_t::cudaSuccess;
-    // std::cout << tbox << std::endl;
-    // err_cuda = cudaDrawRect(
-    //     incoming_surface.dataptr<uchar4*>(),
-    //     incoming_surface.dataptr<uchar4*>(),
-    //     incoming_surface.pitch() / 4,
-    //     incoming_surface.height(),
-    //     tbox.left,
-    //     tbox.top,
-    //     tbox.right,
-    //     tbox.bottom,
-    //     {0, 0, 0, 0},
-    //     /*line_color=*/{255, 255, 0, 255},
-    //     /*line_width=*/3.0f,
-    //     nppStreamContext.hStream);
-    // assert(err_cuda == 0);
-
     // FloatValue tbox_aar = tbox.width() / tbox.height();
 
     tbox.left *= scale_w;
@@ -194,22 +177,6 @@ cudaError PlayCropperPriv::GenerateOutput(
     tbox.bottom *= scale_h;
 
     // tbox_aar = tbox.width() / tbox.height();
-
-    // err_cuda = cudaDrawRect(
-    //     incoming_surface.dataptr<uchar4*>(),
-    //     incoming_surface.dataptr<uchar4*>(),
-    //     incoming_surface.pitch() / 4,
-    //     incoming_surface.height(),
-    //     tbox.left,
-    //     tbox.top,
-    //     tbox.right,
-    //     tbox.bottom,
-    //     {0, 0, 0, 0},
-    //     /*line_color=*/{255, 255, 255, 255},
-    //     /*line_width=*/3.0f,
-    //     nppStreamContext.hStream);
-    // assert(err_cuda == 0);
-
     size_t tb_w = tbox.width();
     size_t tb_h = tbox.height();
     assert(tb_w <= videoprep->input_width);
