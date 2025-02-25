@@ -31,6 +31,24 @@
 namespace hm {
 namespace playcropper {
 
+namespace {
+
+static BBox make_null_tracking_box(const NvBufSurfaceParams* in_surf, const NvBufSurfaceParams* out_surf) {
+  BBox surf(0, 0, in_surf->width, in_surf->height);
+  double output_ar = double(out_surf->width) / out_surf->height;
+  double new_h = in_surf->height;
+  double new_w = in_surf->height * output_ar;
+  if (new_w > in_surf->width) {
+    new_w = in_surf->width;
+    new_h = double(in_surf->width) / output_ar;
+  }
+  assert(new_w <= in_surf->width);
+  assert(new_h <= in_surf->height);
+  return BBox(0, 0, new_w, new_h).at_center(surf.center());
+}
+
+} // namespace
+
 bool PlayCropperPriv::PreCapsInit(DSCustom_CreateParams* params) {
   // Not an in-place transform
 #ifdef NEW_VIDEOPREP
@@ -99,20 +117,6 @@ gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep)
 
 BufferResult PlayCropperPriv::ProcessBuffer(GstBuffer* inbuf) {
   return Super::ProcessBuffer(inbuf);
-}
-
-static BBox make_null_tracking_box(const NvBufSurfaceParams* in_surf, const NvBufSurfaceParams* out_surf) {
-  BBox surf(0, 0, in_surf->width, in_surf->height);
-  double output_ar = double(out_surf->width) / out_surf->height;
-  double new_h = in_surf->height;
-  double new_w = in_surf->height * output_ar;
-  if (new_w > in_surf->width) {
-    new_w = in_surf->width;
-    new_h = double(in_surf->width) / output_ar;
-  }
-  assert(new_w <= in_surf->width);
-  assert(new_h <= in_surf->height);
-  return BBox(0, 0, new_w, new_h).at_center(surf.center());
 }
 
 cudaError PlayCropperPriv::GenerateOutput(
