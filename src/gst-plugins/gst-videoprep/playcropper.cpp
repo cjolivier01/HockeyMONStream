@@ -26,6 +26,8 @@
 
 // #define SCRATCH_USE_ALIGNED_PITCH
 
+#define PLAYCROPPER_USE_ONE_KERNEL
+
 namespace hm {
 namespace playcropper {
 
@@ -74,6 +76,7 @@ bool PlayCropperPriv::PostCapsInit(DSCustom_CreateParams* params) {
 }
 
 gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) {
+#ifndef PLAYCROPPER_USE_ONE_KERNEL
   cudaError_t cudaErr;
 
   assert(videoprep->input_width && videoprep->input_height);
@@ -120,13 +123,15 @@ gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep)
         kBytesPerPixel,
         /*owns=*/true);
   }
+#endif
   return 0;
 }
 
 BufferResult PlayCropperPriv::ProcessBuffer(GstBuffer* inbuf) {
   return Super::ProcessBuffer(inbuf);
 }
-#if 1
+
+#ifdef PLAYCROPPER_USE_ONE_KERNEL
 
 cudaError PlayCropperPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
