@@ -16,7 +16,6 @@
 #include <string.h>
 #include <unistd.h>
 #include <vector>
-#include "nvbufsurface.h"
 
 #if defined(__aarch64__)
 #include <EGL/egl.h>
@@ -29,6 +28,16 @@
 
 namespace hm {
 namespace playcropper {
+
+NppStatus combinedTransform(
+    NvBufSurfaceParams* in_params,
+    const hm::BBox& src_rect,
+    float angle,
+    const hm::Point& anchor_point,
+    const hm::BBox& crop_box,
+    NvBufSurfaceParams* out_params,
+    const hm::BBox& output_rect,
+    const NppStreamContext& stream_context);
 
 namespace {
 
@@ -117,7 +126,168 @@ gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep)
 BufferResult PlayCropperPriv::ProcessBuffer(GstBuffer* inbuf) {
   return Super::ProcessBuffer(inbuf);
 }
+#if 1
 
+cudaError PlayCropperPriv::GenerateOutput(
+    NvDsBatchMeta* batch_meta,
+    videoprep::GstVideoPrep* videoprep,
+    NvBufSurface* in_surface,
+    NvBufSurface* out_surface) {
+  cudaError err = cudaSuccess;
+  assert(cudaGetLastError() == cudaSuccess);
+
+  // Setup and initialization
+  assert(in_surface->numFilled == out_surface->batchSize);
+  assert(videoprep->stream);
+
+  NppStreamContext nppStreamContext;
+  memset(&nppStreamContext, 0, sizeof(nppStreamContext));
+  nppStreamContext.hStream = videoprep->stream;
+  nppStreamContext.nStreamFlags = 0;
+  nppStreamContext.nCudaDeviceId = videoprep->gpu_id;
+
+  err = cudaSetDevice(videoprep->gpu_id);
+  assert(err == cudaSuccess);
+
+  const std::vector<BBox> tracking_boxes = get_tracking_boxes(batch_meta);
+
+  out_surface->numFilled = 0;
+
+  assert(tracking_boxes.empty() || tracking_boxes.size() == in_surface->numFilled);
+  size_t nr_surfaces_to_process = in_surface->numFilled;
+  assert(nr_surfaces_to_process <= videoprep->num_batch_buffers);
+
+  NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list;
+
+  // Process each surface in the batch
+  for (size_t batch_nr = 0; batch_nr < nr_surfaces_to_process; ++batch_nr, frame_meta_list = frame_meta_list->next) {
+    assert(frame_meta_list);
+    NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)frame_meta_list->data;
+
+    // Get input and output surfaces
+#ifdef __aarch64__
+    hm::surface::EglSurfaceMapper incoming_elg_surface_mapper(in_surface, batch_nr, /*read_only=*/true);
+    hm::surface::Surface incoming_surface = incoming_elg_surface_mapper.get_surface();
+
+    hm::surface::EglSurfaceMapper outgoing_elg_surface_mapper(out_surface, batch_nr, /*read_only=*/false);
+    hm::surface::Surface outgoing_surface = outgoing_elg_surface_mapper.get_surface();
+#else
+    hm::surface::Surface incoming_surface(&in_surface->surfaceList[batch_nr]);
+    hm::surface::Surface outgoing_surface(&out_surface->surfaceList[batch_nr]);
+#endif
+
+    // Calculate scaling factors
+    FloatValue scale_w = float(videoprep->input_width) / frame_meta->source_frame_width;
+    FloatValue scale_h = float(videoprep->input_height) / frame_meta->source_frame_height;
+
+    // Get tracking box
+    BBox tbox = !tracking_boxes.empty()
+        ? tracking_boxes.at(batch_nr)
+        : make_null_tracking_box(&in_surface->surfaceList[batch_nr], &out_surface->surfaceList[batch_nr]);
+
+    tbox.left *= scale_w;
+    tbox.right *= scale_w;
+    tbox.top *= scale_h;
+    tbox.bottom *= scale_h;
+
+    // Calculate rotation angle
+    float angle = 0.0f;
+    const float max_angle = 30.0;
+    const float half_width = float(frame_meta->source_frame_width) / 2;
+    const float tcx = tbox.center().x;
+    if (tcx < half_width) {
+      float pct = 1.0 - tcx / half_width;
+      angle = max_angle * pct;
+    } else if (tcx > half_width) {
+      float pct = (half_width - tcx) / half_width;
+      angle = max_angle * pct;
+    }
+
+    // Calculate crop regions
+    size_t tb_w = tbox.width();
+    size_t tb_h = tbox.height();
+    assert(tb_w <= videoprep->input_width);
+    assert(tb_h <= videoprep->input_height);
+
+    const BBox input_rect(0, 0, videoprep->input_width, videoprep->input_height);
+    const int x_center = tbox.center().x;
+
+    FloatValue min_width_per_side = videoprep->pre_rotate_size.width / 2;
+    min_width_per_side = std::max(min_width_per_side, tbox.width() / 2);
+    FloatValue clip_left = std::max(input_rect.left, x_center - min_width_per_side);
+    FloatValue clip_right = std::min(input_rect.right, x_center + min_width_per_side);
+    BBox extra_width_src_rect(clip_left, input_rect.top, clip_right, input_rect.bottom);
+
+    BBox new_tbox = tbox;
+    new_tbox.left -= extra_width_src_rect.left;
+    new_tbox.right -= extra_width_src_rect.left;
+    assert(new_tbox.left >= 0 && new_tbox.top >= 0);
+    assert(new_tbox.right <= extra_width_src_rect.width());
+
+    const BBox output_rect(0, 0, (FloatValue)videoprep->output_width, (FloatValue)videoprep->output_height);
+
+    Point anchor_point = new_tbox.center();
+
+    // Check if we can use our optimized path
+    NvBufSurfaceColorFormat color_format = incoming_surface->colorFormat;
+    if (color_format == NVBUF_COLOR_FORMAT_RGBA || color_format == NVBUF_COLOR_FORMAT_RGB ||
+        color_format == NVBUF_COLOR_FORMAT_GRAY8) {
+      // Use the combined transform - no scratch surfaces needed!
+      NppStatus status = combinedTransform(
+          &in_surface->surfaceList[batch_nr],
+          extra_width_src_rect,
+          angle,
+          anchor_point,
+          new_tbox,
+          &out_surface->surfaceList[batch_nr],
+          output_rect,
+          nppStreamContext);
+
+      if (status != NPP_SUCCESS) {
+        // Fall back to original implementation if optimization fails
+        goto fallback;
+      }
+    } else {
+    // Fall back to original implementation for unsupported formats
+    fallback:
+
+      // Use the original three-step approach with minimal scratch surfaces
+      hm::surface::SurfaceList::round_robin_iterator scratch_surface_iter = videoprep->priv->scratch_buffers.begin();
+
+      // Step 1: Crop
+      NppStatus np_status =
+          cropSurface(incoming_surface, extra_width_src_rect, *scratch_surface_iter, false, nppStreamContext);
+      assert(np_status == NPP_SUCCESS);
+
+      // Step 2: Rotate
+      auto in_surf_iter = scratch_surface_iter++;
+      np_status = rotateNvBufSurfaceWithNPP(
+          *in_surf_iter,
+          BBox(0, 0, extra_width_src_rect.width(), extra_width_src_rect.height()),
+          *scratch_surface_iter,
+          BBox(0, 0, extra_width_src_rect.width(), extra_width_src_rect.height()),
+          angle,
+          anchor_point,
+          nppStreamContext);
+      assert(np_status == NPP_SUCCESS);
+
+      // Step 3: Final crop and resize
+      np_status =
+          cropAndResizeNvBufSurface(*scratch_surface_iter++, new_tbox, outgoing_surface, output_rect, nppStreamContext);
+      assert(np_status == NPP_SUCCESS);
+    }
+  }
+
+  // Synchronize stream
+  if (videoprep->stream) {
+    cudaStreamSynchronize(videoprep->stream);
+  }
+
+  out_surface->numFilled = nr_surfaces_to_process;
+
+  return err;
+}
+#else
 cudaError PlayCropperPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     videoprep::GstVideoPrep* videoprep,
@@ -340,6 +510,7 @@ cudaError PlayCropperPriv::GenerateOutput(
 #endif
   return err;
 }
+#endif
 
 static void gst_playcropper_class_init(GstVideoPrepPlayCropperClass* klass) {
   gst_videoprep_class_init_base(klass);

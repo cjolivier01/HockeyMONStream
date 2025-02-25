@@ -1,3 +1,4 @@
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 load("@gst_plugin_dev//buildfiles:gst_plugin.bzl", "gst_cc_plugin")
 
 config_setting(
@@ -13,21 +14,21 @@ config_setting(
 gst_cc_plugin(
     name = "nvdsgst_videoprep",
     srcs = glob([
-      "*.cpp",
-      "customlib_impl/*.cpp",
+        "*.cpp",
+        "customlib_impl/*.cpp",
     ]),
     hdrs = glob([
-      "*.h",
-      "includes/*.hpp",
+        "*.h",
+        "includes/*.hpp",
     ]),
-    includes=[
-      "includes",
-    ],
     copts = [
         "-Iincludes",
         "-Wno-error=unused-function",
         "-Wno-error=unused-variable",
         "-Wno-error=write-strings",
+    ],
+    includes = [
+        "includes",
     ],
     linkopts = select({
         ":aarch64-linux-gnu": ["-L/usr/local/cuda/targets/aarch64-linux/lib"],
@@ -49,10 +50,40 @@ gst_cc_plugin(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        ":play_cropper_cuda_lib",
         "//src/libs/common:utils",
+        "@com_google_absl//absl/strings",
+        "@hm-cupano//src/pano:cuda_pano",
         "@jetson-utils//cuda:cuda_lib",
         "@jetson-utils//display:display",
-        "@hm-cupano//src/pano:cuda_pano",
-        "@com_google_absl//absl/strings:strings",
+    ],
+)
+
+cuda_library(
+    name = "play_cropper_cuda_lib",
+    srcs = [
+        "cudaPlayCropper.cu",
+    ],
+    hdrs = [
+    ],
+    copts = [
+        "-std=c++17",
+        "-Xcompiler=-fPIC",
+        # "-Xcompiler=-rdynamic",
+        #"-Xcompiler=-O0",
+        #"-Xcompiler=-g",
+        "-Wno-deprecated-gpu-targets",
+        #"-G",
+        #"-g",
+        "-keep",
+        #"-O0",
+    ],
+    # includes = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        # "@opencv_linux//:opencv",
+        "//src/libs/common:utils",
+        "@deepstream//:deepstream_lib",
+        "@local_cuda//:cuda_runtime",
     ],
 )
