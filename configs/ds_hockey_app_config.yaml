@@ -198,7 +198,7 @@ sink2:
   # udp-port: 5400
 
 osd:
-  enable: 1
+  enable: 0
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -253,7 +253,7 @@ hm-image-meta-merger:
   nvbuf-memory-type: 0
 
 primary-gie:
-  enable: 1
+  enable: 0
   gpu-id: 0
   batch-size: 4
   #Required by the app for OSD, not a plugin property
@@ -282,7 +282,6 @@ ds-example:
 hmvideoprep:
   # enable: false
   enable: true
-  # enable: 1
   gpu-id: 0
   # plugin-type: videoprep
   # has_queue: false
@@ -297,7 +296,8 @@ hmvideoprep:
 
   plugin-type: playcropper
   config-file: config_dewarper_null.txt
-  num-batch-buffers: 4
+  
+  num-batch-buffers: 2
   num-output-buffers: 4
 
   output-width: 5311
@@ -313,11 +313,11 @@ hmstitcher:
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
   # config-file: /home/colivier/Videos/mlk-heat-1
-  num-batch-buffers: 4
+  num-batch-buffers: 2
   num-output-buffers: 4
 
 ds-playtracker:
-  enable: 1
+  enable: 0
   gpu-id: 0
   unique-id: 75
   # draw: true
@@ -335,7 +335,7 @@ ds-fieldmask:
   # detection-mask: /home/colivier/Videos/mlk-heat-1/rink_mask_0.png
 
 tracker:
-  enable: 1
+  enable: 0
   # For NvDCF and NvDeepSORT tracker, tracker-width and tracker-height must be a multiple of 32, respectively
   tracker-width: 960
   tracker-height: 544

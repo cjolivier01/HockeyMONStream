@@ -101,6 +101,20 @@ BufferResult PlayCropperPriv::ProcessBuffer(GstBuffer* inbuf) {
   return Super::ProcessBuffer(inbuf);
 }
 
+static BBox make_null_tracking_box(const NvBufSurfaceParams* in_surf, const NvBufSurfaceParams* out_surf) {
+  BBox surf(0, 0, in_surf->width, in_surf->height);
+  double output_ar = double(out_surf->width) / out_surf->height;
+  double new_h = in_surf->height;
+  double new_w = in_surf->height * output_ar;
+  if (new_w > in_surf->width) {
+    new_w = in_surf->width;
+    new_h = double(in_surf->width) / output_ar;
+  }
+  assert(new_w <= in_surf->width);
+  assert(new_h <= in_surf->height);
+  return BBox(0, 0, new_w, new_h).at_center(surf.center());
+}
+
 cudaError PlayCropperPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     videoprep::GstVideoPrep* videoprep,
@@ -112,7 +126,7 @@ cudaError PlayCropperPriv::GenerateOutput(
   assert(cudaGetLastError() == cudaSuccess);
 
   // Debugging sanity check
-  assert(in_surface->batchSize == out_surface->batchSize);
+  assert(in_surface->numFilled == out_surface->batchSize);
 
   assert(videoprep->stream);
 
@@ -130,8 +144,9 @@ cudaError PlayCropperPriv::GenerateOutput(
   out_surface->numFilled = 0;
 
   // TODO: what do we do about this mismatch???
-  assert(tracking_boxes.size() == in_surface->numFilled);
-  const size_t nr_surfaces_to_process = std::min(tracking_boxes.size(), (size_t)out_surface->batchSize);
+  assert(tracking_boxes.empty() || tracking_boxes.size() == in_surface->numFilled);
+  // size_t nr_surfaces_to_process = std::min(tracking_boxes.size(), (size_t)out_surface->batchSize);
+  size_t nr_surfaces_to_process = in_surface->numFilled;
   assert(nr_surfaces_to_process <= videoprep->num_batch_buffers);
 
   NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list;
@@ -159,10 +174,19 @@ cudaError PlayCropperPriv::GenerateOutput(
     FloatValue scale_w = float(videoprep->input_width) / frame_meta->source_frame_width;
     FloatValue scale_h = float(videoprep->input_height) / frame_meta->source_frame_height;
 
+    BBox tbox = !tracking_boxes.empty()
+        ? tracking_boxes.at(batch_nr)
+        : make_null_tracking_box(&in_surface->surfaceList[batch_nr], &out_surface->surfaceList[batch_nr]);
+
+    tbox.left *= scale_w;
+    tbox.right *= scale_w;
+    tbox.top *= scale_h;
+    tbox.bottom *= scale_h;
+
     float angle;
     const float max_angle = 30.0;
     const float half_width = float(frame_meta->source_frame_width) / 2;
-    const float tcx = tracking_boxes.at(batch_nr).center().x;
+    const float tcx = tbox.center().x;
     if (tcx < half_width) {
       float pct = 1.0 - tcx / half_width;
       angle = max_angle * pct;
@@ -170,15 +194,6 @@ cudaError PlayCropperPriv::GenerateOutput(
       float pct = (half_width - tcx) / half_width;
       angle = max_angle * pct;
     }
-
-    BBox tbox = tracking_boxes.at(batch_nr);
-
-    // FloatValue tbox_aar = tbox.width() / tbox.height();
-
-    tbox.left *= scale_w;
-    tbox.right *= scale_w;
-    tbox.top *= scale_h;
-    tbox.bottom *= scale_h;
 
     // tbox_aar = tbox.width() / tbox.height();
     size_t tb_w = tbox.width();

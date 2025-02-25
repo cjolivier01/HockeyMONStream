@@ -60,7 +60,8 @@ std::vector<hm::BBox> get_tracking_boxes(NvDsBatchMeta* batch_meta) {
       }
     }
   }
-  assert(results.size() == batch_size);
+  // All or nothing
+  assert(results.empty() || results.size() == batch_size);
   return results;
 }
 
