@@ -744,6 +744,9 @@ inline void CustomAlgorithmBase::OutputThread(void) {
         if (last_cuda_error != cudaError_t::cudaSuccess) {
           last_flow_ret_ = GST_FLOW_ERROR;
         }
+        // if (std::string("hmstitcher") == videoprep->plugin_type) {
+        //   videoprep::gst_videoprep_hook_buffer_release(newGstOutBuf);
+        // }
         // videoprep::videoprep_add_surface_meta(newGstOutBuf, out_surf->numFilled, videoprep->source_id);
 #else
         out_surf->numFilled = in_surf->numFilled;

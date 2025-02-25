@@ -8,7 +8,6 @@
 #include <nvbufsurface.h>
 #include <cmath>
 #include "nvbufsurface.h"
-#include "nvds_dewarper_meta.h"
 #include "nvdsmeta.h"
 #include "preputils.h"
 

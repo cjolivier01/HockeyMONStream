@@ -25,9 +25,9 @@ using STITCH_PRIV_BASE = CustomAlgorithmBase;
 using STITCH_PRIV_BASE = hm::videoprep::VideoPrepPriv;
 #endif
 
-
 class PlayCropperPriv : public STITCH_PRIV_BASE {
   using Super = STITCH_PRIV_BASE;
+
  public:
   PlayCropperPriv(int gpu_id, size_t batch_size) : STITCH_PRIV_BASE(gpu_id, batch_size) {}
 
@@ -36,7 +36,7 @@ class PlayCropperPriv : public STITCH_PRIV_BASE {
   //     // Forward all arguments to the target function
   //     render_(std::forward<Args>(args)...);
   // }
- 
+
   bool PreCapsInit(DSCustom_CreateParams* params) override;
   bool PostCapsInit(DSCustom_CreateParams* params) override;
 
@@ -74,15 +74,24 @@ class PlayCropperPriv : public STITCH_PRIV_BASE {
       NvBufSurface* in_surface,
       NvBufSurface* out_surface) override;
 
-  gint AllocateScratchBuffers(videoprep::GstVideoPrep *videoprep) override;
+  gint AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) override;
 
  protected:
 };
 
 /** GStreamer boilerplate. */
-struct GstVideoPrepPlayCropper : public videoprep::GstVideoPrep {};
+struct GstVideoPrepPlayCropper : public videoprep::GstVideoPrep {
+  // Don't add stuff here
+  GstVideoPrepPlayCropper() {
+    static_assert(sizeof(GstVideoPrepPlayCropper) == sizeof(videoprep::GstVideoPrep));
+  }
+};
 
-struct GstVideoPrepPlayCropperClass : public videoprep::GstVideoPrepClass {};
+struct GstVideoPrepPlayCropperClass : public videoprep::GstVideoPrepClass {
+  GstVideoPrepPlayCropperClass() {
+    static_assert(sizeof(GstVideoPrepPlayCropperClass) == sizeof(videoprep::GstVideoPrepClass));
+  }
+};
 
 } // namespace playcropper
 } // namespace hm

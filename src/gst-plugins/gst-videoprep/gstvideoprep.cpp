@@ -7,14 +7,16 @@
 #include <gst/gst.h>
 #include <gst/video/video.h>
 #include <gstreamer-1.0/gst/gstbuffer.h>
+#include <gstreamer-1.0/gst/gstinfo.h>
 #include <gstreamer-1.0/gst/gstpad.h>
 #include <npp.h>
 #include <nvbufsurface.h>
 #include <cmath>
 #include <iostream>
+#include <mutex>
 #include "gst-nvcommon.h"
-#include "gstnvdsbufferpool.h"
 #include "gst_utils.h"
+#include "gstnvdsbufferpool.h"
 #include "gstnvdsmeta.h"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
@@ -253,6 +255,34 @@ no_transform_possible: {
 }
 }
 
+std::mutex mini_mu_;
+std::unordered_map<GstMiniObject*, GstMiniObjectDisposeFunction> mini_disposes_;
+
+static gboolean gst_videoprep_buffer_destruct_notify(GstMiniObject* mini) {
+  std::unique_lock lk(mini_mu_);
+  g_print("GstBuffer %p is being released\n", mini);
+  assert(mini_disposes_.count(mini));
+  auto fun = mini_disposes_.at(mini);
+  if (mini->dispose == &gst_videoprep_buffer_destruct_notify) {
+    mini->dispose = fun;
+  }
+  mini_disposes_.erase(mini);
+  if (fun) {
+    return (*fun)(mini);
+  }
+  return TRUE;
+}
+
+void gst_videoprep_hook_buffer_release(GstBuffer* buffer) {
+  GstMiniObject* mini = GST_MINI_OBJECT(buffer);
+  assert((size_t)mini == (size_t)buffer);
+  std::unique_lock lk(mini_mu_);
+  assert(!mini_disposes_.count(mini));
+  mini_disposes_.emplace(mini, mini->dispose);
+  mini->dispose = &gst_videoprep_buffer_destruct_notify;
+  g_print("GstBuffer %p is hooked\n", buffer);
+}
+
 static GstCaps* gst_videoprep_fixate_caps(
     GstBaseTransform* trans,
     GstPadDirection direction,
@@ -469,6 +499,9 @@ static GstCaps* gst_videoprep_transform_caps(
         "height",
         G_TYPE_INT,
         videoprep->output_height,
+        "batch-size",
+        G_TYPE_UINT,
+        videoprep->num_batch_buffers,
         NULL);
     feature = gst_caps_features_new("memory:NVMM", NULL);
     gst_caps_set_features(new_caps, 0, feature);
@@ -695,6 +728,7 @@ static GstFlowReturn gst_videoprep_submit_input_buffer(GstBaseTransform* btrans,
     default:
       return GST_FLOW_ERROR;
   }
+  assert(false);
 }
 
 /**
@@ -705,7 +739,12 @@ static GstFlowReturn gst_videoprep_submit_input_buffer(GstBaseTransform* btrans,
  */
 static GstFlowReturn gst_videoprep_generate_output(GstBaseTransform* btrans, GstBuffer** outbuf) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(btrans);
-  return videoprep->priv->get_last_flow_ret();
+  GstFlowReturn last_flow_ret = videoprep->priv->get_last_flow_ret();
+  if (last_flow_ret != GST_FLOW_OK) {
+    gst_printerr(
+        "videoprep plugin (%s) returning bad flow return value: %d\n", videoprep->plugin_type, (int)last_flow_ret);
+  }
+  return last_flow_ret;
 }
 
 #else // NEW_VIDEOPREP

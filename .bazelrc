@@ -38,6 +38,12 @@ build:gstdebug --define=gstreamer_build=gst_debug
 
 # build:opt -c opt --strip="always"
 
+build:asan --platforms=//bazel/toolchain:asan
+build:asan --strip=never
+build:asan --platform_suffix=asan
+build:asan --features=asan
+
+
 # build --define=target_platform=x86_64
 # build --action_env=target_platform="x86_64"
 build:x86_64 --cpu=k8

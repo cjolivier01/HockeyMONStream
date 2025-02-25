@@ -25,7 +25,7 @@
 namespace hm {
 namespace videoprep {
 
-// #define NEW_VIDEOPREP
+#define NEW_VIDEOPREP
 
 #define DISTORTION_SIZE 5 /**< Maximum number of distortion coefficients */
 #define FOCAL_LENGTH_SIZE 2 /**< Focal length array size : two values for X & Y direction */
@@ -84,7 +84,7 @@ class VideoPrepPriv : public DSCustomLibraryBase {
   }
 
  protected:
-  GstFlowReturn last_flow_ret_;
+  GstFlowReturn last_flow_ret_{GST_FLOW_OK};
   RenderSet render_;
 };
 
@@ -185,6 +185,8 @@ void videoprep_add_surface_meta(GstBuffer* out_gst_buf, int num_filled_surfaces,
 
 void gst_videoprep_class_init_base(GstVideoPrepClass* klass);
 void gst_videoprep_init_base(GstVideoPrep* videoprep);
+
+void gst_videoprep_hook_buffer_release(GstBuffer* buffer);
 
 G_END_DECLS
 

@@ -73,26 +73,26 @@ class DSCustomLibraryBase : public IDSCustomLibrary {
 
  protected:
   /* Gstreamer dsexaple2 plugin's base class reference */
-  GstBaseTransform* m_element;
+  GstBaseTransform* m_element{nullptr};
 
   /** GPU ID on which we expect to execute the algorithm */
-  guint m_gpuId;
+  guint m_gpuId{0};
 
-  gboolean m_dummyMetaInsert;
+  gboolean m_dummyMetaInsert{false};
 
-  gboolean m_fillDummyBatchMeta;
+  gboolean m_fillDummyBatchMeta{false};
 
   /* Video Information */
-  GstVideoInfo m_inVideoInfo;
-  GstVideoInfo m_outVideoInfo;
+  GstVideoInfo m_inVideoInfo{0,};
+  GstVideoInfo m_outVideoInfo{0,};
 
   /* Video Format Information */
-  GstVideoFormat m_inVideoFmt;
-  GstVideoFormat m_outVideoFmt;
+  GstVideoFormat m_inVideoFmt{GST_VIDEO_FORMAT_UNKNOWN};
+  GstVideoFormat m_outVideoFmt{GST_VIDEO_FORMAT_UNKNOWN};
 
   /* Gst Caps Information */
-  GstCaps* m_inCaps;
-  GstCaps* m_outCaps;
+  GstCaps* m_inCaps{nullptr};
+  GstCaps* m_outCaps{nullptr};
 };
 
 inline DSCustomLibraryBase::DSCustomLibraryBase(GstBaseTransform* btrans) : m_element(btrans) {
