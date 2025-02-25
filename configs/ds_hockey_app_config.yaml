@@ -110,9 +110,9 @@ hmaudio:
 sink0:
   enable: 1
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
-  type: 2
-  sync: 1
-  # sync: 0
+  type: 1
+  # sync: 1
+  sync: 0
   source-id: 0
   gpu-id: 0
   nvbuf-memory-type: 0
@@ -253,7 +253,7 @@ hm-image-meta-merger:
   nvbuf-memory-type: 0
 
 primary-gie:
-  enable: 0
+  enable: 1
   gpu-id: 0
   batch-size: 4
   #Required by the app for OSD, not a plugin property
@@ -317,7 +317,7 @@ hmstitcher:
   num-output-buffers: 4
 
 ds-playtracker:
-  enable: 0
+  enable: 1
   gpu-id: 0
   unique-id: 75
   # draw: true
@@ -335,7 +335,7 @@ ds-fieldmask:
   # detection-mask: /home/colivier/Videos/mlk-heat-1/rink_mask_0.png
 
 tracker:
-  enable: 0
+  enable: 1
   # For NvDCF and NvDeepSORT tracker, tracker-width and tracker-height must be a multiple of 32, respectively
   tracker-width: 960
   tracker-height: 544
