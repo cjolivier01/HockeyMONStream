@@ -97,7 +97,7 @@ bool StitcherPriv::PostCapsInit(DSCustom_CreateParams* params) {
 }
 
 bool StitcherPriv::SetProperty(const Property& prop) {
-  std::cerr << "SetProperty(" << prop.key << "=" << prop.value << ")" << std::endl;
+  // std::cerr << "SetProperty(" << prop.key << "=" << prop.value << ")" << std::endl;
   if (prop.key == "left-frame-offset-ns") {
     left_frame_offset_ns_ = std::atol(prop.value.c_str());
   }
@@ -153,7 +153,7 @@ cudaError StitcherPriv::GenerateOutput(
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
   static size_t counter = 0;
-  std::cout << "StitcherPriv::GenerateOutput: " << counter++ << std::endl;
+  // std::cout << "StitcherPriv::GenerateOutput: " << counter++ << std::endl;
   // Should not be necessary, debugging some issue atm
   // std::unique_lock lk(process_mu_);
 
@@ -375,7 +375,8 @@ cudaError StitcherPriv::GenerateOutput(
     ModifyBatchFrames modifier(batch_meta, remove_frame_metas);
     // batch_meta->max_frames_in_batch /= 2;
     // batch_meta->frame_meta_pool->max_elements_in_pool /= 2;
-    assert(batch_meta->max_frames_in_batch); // make sure we didnt do too many times and make it 0
+    batch_meta->max_frames_in_batch = batch_meta->num_frames_in_batch;
+    // assert(batch_meta->max_frames_in_batch); // make sure we didnt do too many times and make it 0
     cudaStreamSynchronize(videoprep->stream);
   }
   // videoprep::videoprep_add_surface_meta(videoprep->out_gst_buf, out_surface->numFilled, videoprep->source_id);

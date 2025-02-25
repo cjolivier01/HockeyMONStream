@@ -123,8 +123,8 @@ cudaError PlayCropperPriv::GenerateOutput(
     videoprep::GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
-  static size_t counter = 0;
-  std::cout << "PlayCropperPriv::GenerateOutput: " << counter++ << std::endl;
+  // static size_t counter = 0;
+  // std::cout << "PlayCropperPriv::GenerateOutput: " << counter++ << std::endl;
   cudaError err = cudaSuccess;
   assert(cudaGetLastError() == cudaSuccess);
 
