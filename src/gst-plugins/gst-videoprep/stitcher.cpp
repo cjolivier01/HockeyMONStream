@@ -320,6 +320,8 @@ cudaError StitcherPriv::GenerateOutput(
     cudaMemsetAsync(
         canvas->data_raw(), 0, canvas->height() * canvas->pitch() * canvas->batch_size(), videoprep->stream);
 
+    err = cudaMemsetAsync(canvas->data_raw(), 0, canvas->height() * canvas->pitch() * canvas->batch_size());
+
     if (err == cudaError_t::cudaSuccess) {
       auto stitch_result = stitcher_->process(left, right, videoprep->stream, std::move(canvas));
       if (stitch_result.ok()) {
@@ -371,11 +373,11 @@ cudaError StitcherPriv::GenerateOutput(
   if (out_surface->numFilled) {
     // batch_meta->num_frames_in_batch /= 2;
     ModifyBatchFrames modifier(batch_meta, remove_frame_metas);
-    batch_meta->max_frames_in_batch /= 2;
+    // batch_meta->max_frames_in_batch /= 2;
+    // batch_meta->frame_meta_pool->max_elements_in_pool /= 2;
     assert(batch_meta->max_frames_in_batch); // make sure we didnt do too many times and make it 0
     cudaStreamSynchronize(videoprep->stream);
   }
-
   // videoprep::videoprep_add_surface_meta(videoprep->out_gst_buf, out_surface->numFilled, videoprep->source_id);
   return err;
 }

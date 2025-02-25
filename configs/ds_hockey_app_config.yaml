@@ -198,7 +198,7 @@ sink2:
   # udp-port: 5400
 
 osd:
-  enable: 0
+  enable: 1
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -220,7 +220,7 @@ streammux:
   gpu-id: 0
   ##Boolean property to inform muxer that sources are live
   live-source: 0
-  buffer-pool-size: 4
+  buffer-pool-size: 8
   batch-size: 4
   # num-surfaces-per-frame: 1
   ##time out in usec, to wait after the first buffer is available
@@ -296,8 +296,8 @@ hmvideoprep:
   # config-file: /opt/nvidia/deepstream/deepstream/sources/apps/sample_apps/deepstream-dewarper-test/config_dewarper_rot_matrix.txt
 
   plugin-type: playcropper
-  # config-file: config_dewarper_null.txt
-  num-batch-buffers: 2
+  config-file: config_dewarper_null.txt
+  num-batch-buffers: 4
   num-output-buffers: 4
 
   output-width: 5311
@@ -313,9 +313,7 @@ hmstitcher:
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
   # config-file: /home/colivier/Videos/mlk-heat-1
-  # Incoming
-  num-batch-buffers: 2
-  # Outgoing
+  num-batch-buffers: 4
   num-output-buffers: 4
 
 ds-playtracker:
