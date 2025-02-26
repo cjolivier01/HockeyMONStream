@@ -1,7 +1,7 @@
 #include <gst/gst.h>
 #include <gst/rtsp-server/rtsp-server.h> // For RTSP mode if needed
 #include <opencv2/opencv.hpp>
-#include <cstring> // for strcmp
+#include <cstring> // for strlen
 #include <iostream>
 #include <string>
 
@@ -18,11 +18,20 @@ struct FrameCounterData {
   GstElement* pipeline;
 };
 
+// App-wide data passed to the bus callback.
+struct AppData {
+  GMainLoop* loop;
+  GstElement* pipeline;
+};
+
+// Probe function that counts frames and prints every 250 frames.
 static GstPadProbeReturn frame_count_probe(GstPad* pad, GstPadProbeInfo* info, gpointer user_data) {
   FrameCounterData* counterData = static_cast<FrameCounterData*>(user_data);
   if (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) {
     counterData->count++;
-    g_print("Frame %d processed.\n", counterData->count);
+    if (counterData->count % 250 == 0) {
+      g_print("Frame %d processed.\n", counterData->count);
+    }
     if (counterData->maxFrames > 0 && counterData->count >= counterData->maxFrames) {
       g_print("Maximum frame count (%d) reached. Sending EOS.\n", counterData->maxFrames);
       gst_element_send_event(counterData->pipeline, gst_event_new_eos());
@@ -32,6 +41,7 @@ static GstPadProbeReturn frame_count_probe(GstPad* pad, GstPadProbeInfo* info, g
   return GST_PAD_PROBE_OK;
 }
 
+// Demuxer pad-added callback.
 static void on_pad_added(GstElement* src, GstPad* new_pad, gpointer user_data) {
   DemuxData* data = static_cast<DemuxData*>(user_data);
   GstCaps* caps = gst_pad_get_current_caps(new_pad);
@@ -68,8 +78,11 @@ static void on_pad_added(GstElement* src, GstPad* new_pad, gpointer user_data) {
   gst_caps_unref(caps);
 }
 
+// Bus callback; if the pipeline (our root element) changes state to PAUSED,
+// dump the pipeline graph to a dot file.
 static gboolean bus_call(GstBus* bus, GstMessage* msg, gpointer data) {
-  GMainLoop* loop = static_cast<GMainLoop*>(data);
+  AppData* appData = static_cast<AppData*>(data);
+  GMainLoop* loop = appData->loop;
   switch (GST_MESSAGE_TYPE(msg)) {
     case GST_MESSAGE_EOS:
       g_print("End-of-stream\n");
@@ -86,14 +99,21 @@ static gboolean bus_call(GstBus* bus, GstMessage* msg, gpointer data) {
       break;
     }
     case GST_MESSAGE_STATE_CHANGED: {
-      GstElement* elem = GST_ELEMENT(msg->src);
-      GstState old_state, new_state, pending_state;
-      gst_message_parse_state_changed(msg, &old_state, &new_state, &pending_state);
-      g_print(
-          "Element %s changed state from %s to %s.\n",
-          GST_ELEMENT_NAME(elem),
-          gst_element_state_get_name(old_state),
-          gst_element_state_get_name(new_state));
+      // Only act on state changes from the pipeline element.
+      if (GST_MESSAGE_SRC(msg) == GST_OBJECT(appData->pipeline)) {
+        GstState old_state, new_state, pending_state;
+        gst_message_parse_state_changed(msg, &old_state, &new_state, &pending_state);
+        g_print(
+            "Pipeline state changed from %s to %s.\n",
+            gst_element_state_get_name(old_state),
+            gst_element_state_get_name(new_state));
+        if (new_state == GST_STATE_PAUSED) {
+          gchar* dot_file = g_strdup_printf("pipeline_paused.dot");
+          GST_DEBUG_BIN_TO_DOT_FILE(GST_BIN(appData->pipeline), GST_DEBUG_GRAPH_SHOW_ALL, dot_file);
+          g_print("Pipeline graph dumped to %s\n", dot_file);
+          g_free(dot_file);
+        }
+      }
       break;
     }
     default:
@@ -186,7 +206,7 @@ int main(int argc, char* argv[]) {
     return -1;
   }
 
-  // Set basic properties.
+  // Set properties.
   g_object_set(G_OBJECT(source), "location", inputFilename.c_str(), NULL);
   g_object_set(G_OBJECT(sink), "location", outputFilename.c_str(), NULL);
 
@@ -207,19 +227,15 @@ int main(int argc, char* argv[]) {
   g_object_set(G_OBJECT(capsfilter), "caps", caps, NULL);
   gst_caps_unref(caps);
 
-  // Configure the encoder based on bitrate or lossless option.
+  // Configure the encoder.
   if (lossless) {
     g_print("Configuring encoder for lossless encoding.\n");
-    // For lossless, assume the encoder supports a "rc-mode" property.
-    // (The enum value used here is hypothetical; adjust according to your plugin.)
-    g_object_set(G_OBJECT(encoder), "rc-mode", 2, NULL); // Assume 2 => lossless mode.
-    // Optionally, you might also set the quantization parameter to 0.
+    g_object_set(G_OBJECT(encoder), "rc-mode", 2, NULL); // Hypothetical value.
     g_object_set(G_OBJECT(encoder), "qp", 0, NULL);
   } else if (bitrate > 0) {
     g_print("Setting encoder bitrate to %d kbit/s.\n", bitrate);
     g_object_set(G_OBJECT(encoder), "bitrate", bitrate, NULL);
-    // Optionally, set a rate-control mode (e.g. CBR).
-    g_object_set(G_OBJECT(encoder), "rc-mode", 1, NULL); // Assume 1 => CBR.
+    g_object_set(G_OBJECT(encoder), "rc-mode", 1, NULL); // Hypothetical value for CBR.
   }
 
   // Add all elements to the pipeline.
@@ -258,7 +274,7 @@ int main(int argc, char* argv[]) {
     return -1;
   }
 
-  // Connect demuxer's pad-added signal.
+  // Connect demuxer pad-added signal.
   DemuxData demuxData = {videoQueue, audioQueue};
   g_signal_connect(demux, "pad-added", G_CALLBACK(on_pad_added), &demuxData);
 
@@ -298,7 +314,7 @@ int main(int argc, char* argv[]) {
   gst_object_unref(aac_src);
   gst_object_unref(muxer_audio_pad);
 
-  // If maxFrames is set, add a probe to the postParse's src pad to count frames.
+  // If a maximum frame count was specified, install a probe on the postParse's src pad.
   FrameCounterData frameData = {0, maxFrames, pipeline};
   if (maxFrames > 0) {
     GstPad* probe_pad = gst_element_get_static_pad(postParse, "src");
@@ -310,13 +326,17 @@ int main(int argc, char* argv[]) {
     gst_object_unref(probe_pad);
   }
 
-  // Add bus watch.
+  // Create an AppData structure and add a bus watch.
+  AppData appData;
+  appData.loop = loop;
+  appData.pipeline = pipeline;
   GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline));
-  gst_bus_add_watch(bus, bus_call, loop);
+  gst_bus_add_watch(bus, bus_call, &appData);
   gst_object_unref(bus);
 
   // Set pipeline state.
   gst_element_set_state(pipeline, GST_STATE_PAUSED);
+  // When the pipeline reaches PAUSED, the bus callback will dump the dot file.
   gst_element_set_state(pipeline, GST_STATE_PLAYING);
 
   g_print("Running pipeline...\n");
