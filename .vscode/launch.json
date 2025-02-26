@@ -183,8 +183,10 @@
       "program": "${workspaceFolder}/bazel-bin/src/apps/simple-pipeline/simple-pipeline",
       "args": [
         "${env:HOME}/Videos/mlk-heat-1/GX010016.MP4",
+        //"${env:HOME}/Videos/mlk-heat-1/GX010097.MP4",
+        // "/mnt/home/colivier-local/src/hstream/basic1.mp4,/mnt/home/colivier-local/src/hstream/basic2.mp4",
         "basic.mp4",
-        "--maxframes=1000",
+        "--maxframes=3000",
         "--bitrate=52000000",
         // "--rtsp",
       ],
