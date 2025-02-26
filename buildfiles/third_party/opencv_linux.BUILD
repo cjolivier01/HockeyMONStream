@@ -17,38 +17,42 @@ OPENCV_VERSION = "opencv5"
 cc_library(
     name = "opencv",
     hdrs = glob([
-        # "opencv5/opencv2/**/*.h*",
+        OPENCV_VERSION + "/opencv2/*.h*",
+        OPENCV_VERSION + "/opencv2/**/*.h*",
     ]) + select({
         ":aarch64-linux-gnu": [
             # "aarch64-linux-gnu/opencv5/opencv2/cvconfig.h"
         ] + glob([
-            OPENCV_VERSION + "/opencv2/*.h*",
-            OPENCV_VERSION + "/opencv2/**/*.h*",
+            # OPENCV_VERSION + "/opencv2/*.h*",
+            # OPENCV_VERSION + "/opencv2/**/*.h*",
         ]),
         ":x86_64-linux-gnu": [
             # "x86_64-linux-gnu/opencv5/opencv2/cvconfig.h",
         ] + glob([
-            OPENCV_VERSION + "/opencv2/*.h*",
-            OPENCV_VERSION + "/opencv2/**/*.h*",
+            # OPENCV_VERSION + "/opencv2/*.h*",
+            # OPENCV_VERSION + "/opencv2/**/*.h*",
         ]),
         "//conditions:default": [],
     }),
     includes = [
+        OPENCV_VERSION,
+        "aarch64-linux-gnu/" + OPENCV_VERSION,
+        "aarch64-linux-gnu/" + OPENCV_VERSION + "/opencv2",
     ] + select({
         ":aarch64-linux-gnu": [
-            OPENCV_VERSION,
-            "aarch64-linux-gnu/" + OPENCV_VERSION,
-            "aarch64-linux-gnu/" + OPENCV_VERSION + "/opencv2",
+            # OPENCV_VERSION,
+            # "aarch64-linux-gnu/" + OPENCV_VERSION,
+            # "aarch64-linux-gnu/" + OPENCV_VERSION + "/opencv2",
         ],
         ":x86_64-linux-gnu": [
-            OPENCV_VERSION,
-            "x86_64-linux-gnu/" + OPENCV_VERSION,
-            "x86_64-linux-gnu/" + OPENCV_VERSION + "/opencv2",
+            # OPENCV_VERSION,
+            # "x86_64-linux-gnu/" + OPENCV_VERSION,
+            # "x86_64-linux-gnu/" + OPENCV_VERSION + "/opencv2",
         ],
         "//conditions:default": [],
     }),
     linkopts = [
-        # "-L/usr/local/lib",
+        "-L/usr/local/lib",
         "-l:libopencv_core.so",
         #"-l:libopencv_calib3d.so",
         #"-l:libopencv_features2d.so",
