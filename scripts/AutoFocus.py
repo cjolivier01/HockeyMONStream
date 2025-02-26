@@ -152,7 +152,7 @@ def show_camera(device_id: int, focuser: Focuser):
         # Window
         while cv2.getWindowProperty("CSI Camera", 0) >= 0:
             ret_val, img = cap.read()
-            cv2.imshow("CSI Camera", img)
+            cv2.imshow(f"CSI Camera {device_id}", img)
 
             if skip_frame == 0:
                 skip_frame = 6
