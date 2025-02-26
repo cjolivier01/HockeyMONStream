@@ -67,7 +67,6 @@ bool PlayCropperPriv::PreCapsInit(DSCustom_CreateParams* params) {
   m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
   m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
   // videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
-  // videoprep->num_batch_buffers /= 2;
   return Super::PreCapsInit(params);
 };
 
@@ -209,10 +208,12 @@ cudaError PlayCropperPriv::GenerateOutput(
     }
 
     // Calculate crop regions
+#ifndef NDEBUG
     size_t tb_w = tbox.width();
     size_t tb_h = tbox.height();
     assert(tb_w <= videoprep->input_width);
     assert(tb_h <= videoprep->input_height);
+#endif
 
     const BBox input_rect(0, 0, videoprep->input_width, videoprep->input_height);
     const int x_center = tbox.center().x;
@@ -263,6 +264,7 @@ cudaError PlayCropperPriv::GenerateOutput(
       // Step 1: Crop
       NppStatus np_status =
           cropSurface(incoming_surface, extra_width_src_rect, *scratch_surface_iter, false, nppStreamContext);
+      (void)np_status;
       assert(np_status == NPP_SUCCESS);
 
       // Step 2: Rotate
@@ -276,11 +278,13 @@ cudaError PlayCropperPriv::GenerateOutput(
           anchor_point,
           nppStreamContext);
       assert(np_status == NPP_SUCCESS);
+      (void)np_status;
 
       // Step 3: Final crop and resize
       np_status =
           cropAndResizeNvBufSurface(*scratch_surface_iter++, new_tbox, outgoing_surface, output_rect, nppStreamContext);
       assert(np_status == NPP_SUCCESS);
+      (void)np_status;
     }
   }
 

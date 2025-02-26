@@ -31,6 +31,9 @@
 namespace hm {
 namespace stitcher {
 
+// static constexpr int kNumStitcherLaplacianLevels = 0;
+static constexpr int kNumStitcherLaplacianLevels = 6;
+
 StitcherPriv::~StitcherPriv() {
   stitcher_.reset();
 }
@@ -43,7 +46,7 @@ bool StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
     return false;
   }
   stitcher_ = std::make_unique<hm::pano::cuda::CudaStitchPano<uchar4, float3>>(
-      /*batch_size=*/1, /*num_levels=*/0, control_masks, /*match_exposure=*/true);
+      /*batch_size=*/1, /*num_levels=*/kNumStitcherLaplacianLevels, control_masks, /*match_exposure=*/true);
   if (!stitcher_->status().ok()) {
     return false;
   }
