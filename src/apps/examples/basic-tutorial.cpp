@@ -5,6 +5,8 @@
 #include <unistd.h>
 #include <iostream>
 
+#include <opencv2/opencv.hpp>
+
 // Structure to hold the pipeline data
 class AppData {
  public:

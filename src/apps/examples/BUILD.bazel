@@ -9,6 +9,7 @@ cc_binary(
     deps = [
         "@glib",
         "@gstreamer",
+        "@opencv_linux//:opencv",
     ],
     visibility = ["//visibility:public"],
 )

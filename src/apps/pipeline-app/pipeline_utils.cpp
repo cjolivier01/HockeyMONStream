@@ -4,7 +4,28 @@
 #include <iostream>
 #include <vector>
 
+#include <opencv2/opencv.hpp>
 namespace hm {
+
+Videoinfo getVideoInfo(const std::string& videoPath) {
+  Videoinfo info;
+  // Open the video file.
+  cv::VideoCapture cap(videoPath);
+  if (!cap.isOpened()) {
+    std::cerr << "Error: Could not open video file: " << videoPath << std::endl;
+    return info;
+  }
+
+  // Retrieve the FPS property.
+  info.fps = cap.get(cv::CAP_PROP_FPS);
+  info.width = cap.get(cv::CAP_PROP_FRAME_WIDTH);
+  info.height = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
+  info.video_bit_rate = cap.get(cv::CAP_PROP_BITRATE) * 1000;
+  info.audio_samples_per_second = cap.get(cv::CAP_PROP_AUDIO_SAMPLES_PER_SECOND);
+  info.num_audio_channels = cap.get(cv::CAP_PROP_AUDIO_TOTAL_CHANNELS);
+  info.num_audio_streams = cap.get(cv::CAP_PROP_AUDIO_TOTAL_STREAMS);
+  return info;
+}
 
 bool has_node(const YAML::Node& n, const std::string& dot_string) {
   if (dot_string.empty()) {

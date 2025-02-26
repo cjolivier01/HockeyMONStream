@@ -18,27 +18,6 @@ namespace hm {
 
 namespace {
 
-struct Videoinfo {
-  int width{0};
-  int height{0};
-  double fps{0.0};
-};
-
-Videoinfo getVideoInfo(const std::string& videoPath) {
-  Videoinfo info;
-  // Open the video file.
-  cv::VideoCapture cap(videoPath);
-  if (!cap.isOpened()) {
-    std::cerr << "Error: Could not open video file: " << videoPath << std::endl;
-    return info;
-  }
-
-  // Retrieve the FPS property.
-  info.fps = cap.get(cv::CAP_PROP_FPS);
-  info.width = cap.get(cv::CAP_PROP_FRAME_WIDTH);
-  info.height = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
-  return info;
-}
 
 int as_int(const YAML::Node& node) {
   // be less asserty than YAML-CPP
