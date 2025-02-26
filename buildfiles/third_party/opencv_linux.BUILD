@@ -22,11 +22,13 @@ cc_library(
         ":aarch64-linux-gnu": [
             # "aarch64-linux-gnu/opencv5/opencv2/cvconfig.h"
         ] + glob([
-            "opencv4/opencv2/**/*.h*",
+            OPENCV_VERSION + "/opencv2/*.h*",
+            OPENCV_VERSION + "/opencv2/**/*.h*",
         ]),
         ":x86_64-linux-gnu": [
             # "x86_64-linux-gnu/opencv5/opencv2/cvconfig.h",
         ] + glob([
+            OPENCV_VERSION + "/opencv2/*.h*",
             OPENCV_VERSION + "/opencv2/**/*.h*",
         ]),
         "//conditions:default": [],
@@ -34,9 +36,9 @@ cc_library(
     includes = [
     ] + select({
         ":aarch64-linux-gnu": [
-            "opencv4",
-            "x86_64-linux-gnu/opencv4/opencv2",
-            # "aarch64-linux-gnu/opencv5",
+            OPENCV_VERSION,
+            "aarch64-linux-gnu/" + OPENCV_VERSION,
+            "aarch64-linux-gnu/" + OPENCV_VERSION + "/opencv2",
         ],
         ":x86_64-linux-gnu": [
             OPENCV_VERSION,
@@ -46,7 +48,7 @@ cc_library(
         "//conditions:default": [],
     }),
     linkopts = [
-        "-L/usr/local/lib",
+        # "-L/usr/local/lib",
         "-l:libopencv_core.so",
         #"-l:libopencv_calib3d.so",
         #"-l:libopencv_features2d.so",
