@@ -1,6 +1,7 @@
 #include <gst/gst.h>
 #include <gst/rtsp-server/rtsp-server.h> // For RTSP mode if needed
 #include <opencv2/opencv.hpp>
+#include <cstring> // for strcmp
 #include <iostream>
 #include <string>
 
@@ -21,14 +22,10 @@ static GstPadProbeReturn frame_count_probe(GstPad* pad, GstPadProbeInfo* info, g
   FrameCounterData* counterData = static_cast<FrameCounterData*>(user_data);
   if (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) {
     counterData->count++;
-    // Optionally, print the current frame count.
-    if (counterData->count % 250 == 0) {
-      g_print("Frame %d processed.\n", counterData->count);
-    }
+    g_print("Frame %d processed.\n", counterData->count);
     if (counterData->maxFrames > 0 && counterData->count >= counterData->maxFrames) {
       g_print("Maximum frame count (%d) reached. Sending EOS.\n", counterData->maxFrames);
       gst_element_send_event(counterData->pipeline, gst_event_new_eos());
-      // Remove the probe after sending EOS.
       return GST_PAD_PROBE_REMOVE;
     }
   }
@@ -40,7 +37,6 @@ static void on_pad_added(GstElement* src, GstPad* new_pad, gpointer user_data) {
   GstCaps* caps = gst_pad_get_current_caps(new_pad);
   if (!caps)
     caps = gst_pad_query_caps(new_pad, NULL);
-
   const gchar* name = gst_structure_get_name(gst_caps_get_structure(caps, 0));
   if (g_str_has_prefix(name, "video/")) {
     GstPad* sink_pad = gst_element_get_static_pad(data->videoQueue, "sink");
@@ -110,15 +106,19 @@ int main(int argc, char* argv[]) {
   gst_init(&argc, &argv);
 
   // Command-line usage:
-  //   deepstream_app <input file> <output file> [--rtsp] [--maxframes=<number>]
+  //   deepstream_app <input file> <output file> [--rtsp] [--maxframes=<number>] [--bitrate=<value>] [--lossless]
   if (argc < 3) {
-    g_printerr("Usage: %s <input file> <output file> [--rtsp] [--maxframes=<number>]\n", argv[0]);
+    g_printerr(
+        "Usage: %s <input file> <output file> [--rtsp] [--maxframes=<number>] [--bitrate=<value>] [--lossless]\n",
+        argv[0]);
     return -1;
   }
   std::string inputFilename = argv[1];
   std::string outputFilename = argv[2];
   bool rtspMode = false;
   gint maxFrames = 0; // 0 means process all frames.
+  gint bitrate = 0; // 0 means not set.
+  bool lossless = false;
   // Parse additional arguments.
   for (int i = 3; i < argc; i++) {
     std::string arg = argv[i];
@@ -127,6 +127,11 @@ int main(int argc, char* argv[]) {
     else if (arg.find("--maxframes=") == 0) {
       std::string numStr = arg.substr(strlen("--maxframes="));
       maxFrames = std::stoi(numStr);
+    } else if (arg.find("--bitrate=") == 0) {
+      std::string numStr = arg.substr(strlen("--bitrate="));
+      bitrate = std::stoi(numStr);
+    } else if (arg == "--lossless") {
+      lossless = true;
     }
   }
 
@@ -181,11 +186,11 @@ int main(int argc, char* argv[]) {
     return -1;
   }
 
-  // Set element properties.
+  // Set basic properties.
   g_object_set(G_OBJECT(source), "location", inputFilename.c_str(), NULL);
   g_object_set(G_OBJECT(sink), "location", outputFilename.c_str(), NULL);
 
-  // Create caps for the video branch and set NVMM feature.
+  // Create caps for the video branch and set NVMM.
   GstCaps* caps = gst_caps_new_simple(
       "video/x-raw",
       "format",
@@ -201,6 +206,21 @@ int main(int argc, char* argv[]) {
   gst_caps_set_features(caps, 0, gst_caps_features_from_string("memory:NVMM"));
   g_object_set(G_OBJECT(capsfilter), "caps", caps, NULL);
   gst_caps_unref(caps);
+
+  // Configure the encoder based on bitrate or lossless option.
+  if (lossless) {
+    g_print("Configuring encoder for lossless encoding.\n");
+    // For lossless, assume the encoder supports a "rc-mode" property.
+    // (The enum value used here is hypothetical; adjust according to your plugin.)
+    g_object_set(G_OBJECT(encoder), "rc-mode", 2, NULL); // Assume 2 => lossless mode.
+    // Optionally, you might also set the quantization parameter to 0.
+    g_object_set(G_OBJECT(encoder), "qp", 0, NULL);
+  } else if (bitrate > 0) {
+    g_print("Setting encoder bitrate to %d kbit/s.\n", bitrate);
+    g_object_set(G_OBJECT(encoder), "bitrate", bitrate, NULL);
+    // Optionally, set a rate-control mode (e.g. CBR).
+    g_object_set(G_OBJECT(encoder), "rc-mode", 1, NULL); // Assume 1 => CBR.
+  }
 
   // Add all elements to the pipeline.
   gst_bin_add_many(
@@ -238,7 +258,7 @@ int main(int argc, char* argv[]) {
     return -1;
   }
 
-  // Connect demuxer pad-added signal.
+  // Connect demuxer's pad-added signal.
   DemuxData demuxData = {videoQueue, audioQueue};
   g_signal_connect(demux, "pad-added", G_CALLBACK(on_pad_added), &demuxData);
 
@@ -248,7 +268,6 @@ int main(int argc, char* argv[]) {
     g_printerr("Could not get postParse src pad.\n");
     return -1;
   }
-  // Use the non-deprecated function to request a video pad.
   GstPad* muxer_video_pad = gst_element_request_pad_simple(muxer, "video_%u");
   if (!muxer_video_pad) {
     g_printerr("Could not get request pad from muxer for video.\n");
@@ -279,10 +298,9 @@ int main(int argc, char* argv[]) {
   gst_object_unref(aac_src);
   gst_object_unref(muxer_audio_pad);
 
-  // If a maximum frame count was specified, install a probe on the postParse's src pad.
+  // If maxFrames is set, add a probe to the postParse's src pad to count frames.
   FrameCounterData frameData = {0, maxFrames, pipeline};
   if (maxFrames > 0) {
-    // Get the postParse src pad again (it is already linked but still accessible).
     GstPad* probe_pad = gst_element_get_static_pad(postParse, "src");
     if (!probe_pad) {
       g_printerr("Could not get postParse src pad for probe.\n");
