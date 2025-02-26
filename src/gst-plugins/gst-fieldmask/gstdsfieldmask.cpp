@@ -18,6 +18,8 @@
 #include "nvbufsurface.h"
 // #include "nvbufsurftransform.h"
 
+#include <glib-2.0/glib.h>
+#include <gstreamer-1.0/gst/gstinfo.h>
 #include <string.h>
 #include <sys/time.h>
 #include <cassert>
@@ -370,7 +372,11 @@ static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstB
       assert(!frame_meta->pipeline_height);
       NvBufSurfaceParams* params = &surface->surfaceList[0];
       // assuming no persistent resizing happenned before now
-      assert(params->width == frame_meta->source_frame_width && params->height == frame_meta->source_frame_height);
+      if (params->width != frame_meta->source_frame_width || params->height != frame_meta->source_frame_height) {
+        g_printerr("gstdsfieldmask: Source frame size and surface sizes do not match\n");
+        // Ugh, I hate using goto
+        goto error;
+      }
       frame_meta->pipeline_width = params->width;
       frame_meta->pipeline_height = params->height;
     }
