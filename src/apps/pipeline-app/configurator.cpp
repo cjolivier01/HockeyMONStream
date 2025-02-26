@@ -7,6 +7,7 @@
 #include <sstream>
 #include <string>
 
+#include <gstreamer-1.0/gst/gstelement.h>
 #include <opencv2/opencv.hpp>
 #include <opencv2/videoio.hpp>
 #include <unistd.h>
@@ -299,7 +300,7 @@ bool Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig
   // We need to do this get state for some reason
   GstState state, pending;
   GstStateChangeReturn ret = gst_element_get_state(pipeline.pipeline, &state, &pending, GST_CLOCK_TIME_NONE);
-  assert(ret == GST_STATE_CHANGE_SUCCESS);
+  assert(ret == GST_STATE_CHANGE_SUCCESS || ret == GST_STATE_CHANGE_NO_PREROLL);
   assert(state == GstState::GST_STATE_PAUSED);
 
   save_dot_file(pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline");
