@@ -196,7 +196,7 @@ cudaError PlayCropperPriv::GenerateOutput(
 
     // Calculate rotation angle
     float angle = 0.0f;
-    const float max_angle = 30.0;
+    const float max_angle = 10.0;
     const float half_width = float(frame_meta->source_frame_width) / 2;
     const float tcx = tbox.center().x;
     if (tcx < half_width) {

@@ -31,8 +31,8 @@
 namespace hm {
 namespace stitcher {
 
-static constexpr int kNumStitcherLaplacianLevels = 0;
-// static constexpr int kNumStitcherLaplacianLevels = 6;
+//static constexpr int kNumStitcherLaplacianLevels = 0;
+static constexpr int kNumStitcherLaplacianLevels = 6;
 
 StitcherPriv::~StitcherPriv() {
   stitcher_.reset();
