@@ -3,12 +3,13 @@ Utility to create bouncy camera movement in a video to simulate video which need
 """
 
 import argparse
-import cv2
 import math
+from typing import List
+
+import cv2
+import numpy as np
 import torch
 import torch.nn.functional as F
-from typing import List
-import numpy as np
 
 
 def get_offset(
@@ -126,7 +127,7 @@ def main() -> None:
     parser.add_argument(
         "--chunk-size",
         type=int,
-        default=12,
+        default=2,
         dest="chunk_size",
         help="Number of frames to process in a single batch (default: 64).",
     )

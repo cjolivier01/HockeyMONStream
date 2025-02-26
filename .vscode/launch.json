@@ -35,7 +35,7 @@
         // "${command:pickArgs}"
         "--max-frames=3000",
         "/home/colivier/Videos/mlk-heat-1/GX010016.MP4",
-        "bounce.mkv",
+        "bounce.mp4",
       ]
     },
     {
