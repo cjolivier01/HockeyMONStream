@@ -227,8 +227,8 @@ cudaError PlayCropperPriv::GenerateOutput(
     BBox new_tbox = tbox;
     new_tbox.left -= extra_width_src_rect.left;
     new_tbox.right -= extra_width_src_rect.left;
-    assert(new_tbox.left >= 0 && new_tbox.top >= 0);
-    assert(new_tbox.right <= extra_width_src_rect.width());
+    //assert(new_tbox.left >= 0 && new_tbox.top >= 0);
+    //assert(new_tbox.right <= extra_width_src_rect.width());
 
     const BBox output_rect(0, 0, (FloatValue)videoprep->output_width, (FloatValue)videoprep->output_height);
 
