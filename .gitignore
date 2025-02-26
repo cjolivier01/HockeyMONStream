@@ -10,6 +10,7 @@ bazel-testlogs
 compile_commands.json
 .registry-synced
 cuda-keyring*.deb
-out.mp4
+/*.mp4
+/*.mkv
 pipeline*.dot
 output.png

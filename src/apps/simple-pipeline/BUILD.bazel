@@ -1,7 +1,7 @@
 cc_binary(
-    name = "basic-tutorial",
+    name = "simple-pipeline",
     srcs = [
-      "basic-tutorial.cpp",
+      "simple-pipeline.cpp",
     ],
     copts = [
       "-Wno-error=write-strings",
