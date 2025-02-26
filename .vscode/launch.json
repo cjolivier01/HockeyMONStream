@@ -182,8 +182,9 @@
       "cwd": "${workspaceFolder}",
       "program": "${workspaceFolder}/bazel-bin/src/apps/examples/basic-tutorial",
       "args": [
-        "/mnt/ripper-data/Videos/mlk-heat-1/GX010016.MP4",
+        "${env:HOME}/Videos/mlk-heat-1/GX010016.MP4",
         "basic.mp4",
+        "--maxframes=1000",
       ],
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}",
@@ -201,7 +202,7 @@
         "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib",
         //"GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
         "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
-        "GST_DEBUG": "4",
+        // "GST_DEBUG": "7",
         //"DISPLAY": ":1",
         "CUDA_LAUNCH_BLOCKING": "1",
         //"USE_NEW_NVSTREAMMUX": "1",

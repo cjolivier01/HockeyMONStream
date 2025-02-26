@@ -10,6 +10,31 @@ struct DemuxData {
   GstElement* audioQueue;
 };
 
+// Structure for counting frames.
+struct FrameCounterData {
+  gint count;
+  gint maxFrames; // 0 means no limit.
+  GstElement* pipeline;
+};
+
+static GstPadProbeReturn frame_count_probe(GstPad* pad, GstPadProbeInfo* info, gpointer user_data) {
+  FrameCounterData* counterData = static_cast<FrameCounterData*>(user_data);
+  if (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) {
+    counterData->count++;
+    // Optionally, print the current frame count.
+    if (counterData->count % 250 == 0) {
+      g_print("Frame %d processed.\n", counterData->count);
+    }
+    if (counterData->maxFrames > 0 && counterData->count >= counterData->maxFrames) {
+      g_print("Maximum frame count (%d) reached. Sending EOS.\n", counterData->maxFrames);
+      gst_element_send_event(counterData->pipeline, gst_event_new_eos());
+      // Remove the probe after sending EOS.
+      return GST_PAD_PROBE_REMOVE;
+    }
+  }
+  return GST_PAD_PROBE_OK;
+}
+
 static void on_pad_added(GstElement* src, GstPad* new_pad, gpointer user_data) {
   DemuxData* data = static_cast<DemuxData*>(user_data);
   GstCaps* caps = gst_pad_get_current_caps(new_pad);
@@ -65,7 +90,6 @@ static gboolean bus_call(GstBus* bus, GstMessage* msg, gpointer data) {
       break;
     }
     case GST_MESSAGE_STATE_CHANGED: {
-      // Get the element that generated the state-changed message.
       GstElement* elem = GST_ELEMENT(msg->src);
       GstState old_state, new_state, pending_state;
       gst_message_parse_state_changed(msg, &old_state, &new_state, &pending_state);
@@ -85,15 +109,26 @@ static gboolean bus_call(GstBus* bus, GstMessage* msg, gpointer data) {
 int main(int argc, char* argv[]) {
   gst_init(&argc, &argv);
 
+  // Command-line usage:
+  //   deepstream_app <input file> <output file> [--rtsp] [--maxframes=<number>]
   if (argc < 3) {
-    g_printerr("Usage: %s <input file> <output file> [--rtsp]\n", argv[0]);
+    g_printerr("Usage: %s <input file> <output file> [--rtsp] [--maxframes=<number>]\n", argv[0]);
     return -1;
   }
   std::string inputFilename = argv[1];
   std::string outputFilename = argv[2];
   bool rtspMode = false;
-  if (argc >= 4 && std::string(argv[3]) == "--rtsp")
-    rtspMode = true;
+  gint maxFrames = 0; // 0 means process all frames.
+  // Parse additional arguments.
+  for (int i = 3; i < argc; i++) {
+    std::string arg = argv[i];
+    if (arg == "--rtsp")
+      rtspMode = true;
+    else if (arg.find("--maxframes=") == 0) {
+      std::string numStr = arg.substr(strlen("--maxframes="));
+      maxFrames = std::stoi(numStr);
+    }
+  }
 
   // Query video dimensions using OpenCV.
   cv::VideoCapture cap(inputFilename);
@@ -110,7 +145,6 @@ int main(int argc, char* argv[]) {
   cap.release();
 
   if (rtspMode) {
-    // RTSP mode is not fully implemented in this sample.
     g_print("RTSP mode not implemented in this example.\n");
     return 0;
   }
@@ -130,7 +164,7 @@ int main(int argc, char* argv[]) {
   GstElement* capsfilter = gst_element_factory_make("capsfilter", "capsfilter");
   GstElement* encoder = gst_element_factory_make("nvv4l2h265enc", "encoder");
 
-  // Insert a second parser after the encoder to convert the stream format.
+  // Insert a second parser after the encoder.
   GstElement* postParse = gst_element_factory_make("h265parse", "postParse");
 
   // Audio branch elements.
@@ -147,11 +181,11 @@ int main(int argc, char* argv[]) {
     return -1;
   }
 
-  // Set properties.
+  // Set element properties.
   g_object_set(G_OBJECT(source), "location", inputFilename.c_str(), NULL);
   g_object_set(G_OBJECT(sink), "location", outputFilename.c_str(), NULL);
 
-  // Create caps for the video branch.
+  // Create caps for the video branch and set NVMM feature.
   GstCaps* caps = gst_caps_new_simple(
       "video/x-raw",
       "format",
@@ -164,7 +198,6 @@ int main(int argc, char* argv[]) {
       G_TYPE_INT,
       newHeight,
       NULL);
-  // Set NVMM feature on the caps.
   gst_caps_set_features(caps, 0, gst_caps_features_from_string("memory:NVMM"));
   g_object_set(G_OBJECT(capsfilter), "caps", caps, NULL);
   gst_caps_unref(caps);
@@ -205,7 +238,7 @@ int main(int argc, char* argv[]) {
     return -1;
   }
 
-  // Connect the demuxer pad-added signal.
+  // Connect demuxer pad-added signal.
   DemuxData demuxData = {videoQueue, audioQueue};
   g_signal_connect(demux, "pad-added", G_CALLBACK(on_pad_added), &demuxData);
 
@@ -215,7 +248,7 @@ int main(int argc, char* argv[]) {
     g_printerr("Could not get postParse src pad.\n");
     return -1;
   }
-  // Use the non-deprecated function to request a pad.
+  // Use the non-deprecated function to request a video pad.
   GstPad* muxer_video_pad = gst_element_request_pad_simple(muxer, "video_%u");
   if (!muxer_video_pad) {
     g_printerr("Could not get request pad from muxer for video.\n");
@@ -245,6 +278,19 @@ int main(int argc, char* argv[]) {
   }
   gst_object_unref(aac_src);
   gst_object_unref(muxer_audio_pad);
+
+  // If a maximum frame count was specified, install a probe on the postParse's src pad.
+  FrameCounterData frameData = {0, maxFrames, pipeline};
+  if (maxFrames > 0) {
+    // Get the postParse src pad again (it is already linked but still accessible).
+    GstPad* probe_pad = gst_element_get_static_pad(postParse, "src");
+    if (!probe_pad) {
+      g_printerr("Could not get postParse src pad for probe.\n");
+      return -1;
+    }
+    gst_pad_add_probe(probe_pad, GST_PAD_PROBE_TYPE_BUFFER, frame_count_probe, &frameData, NULL);
+    gst_object_unref(probe_pad);
+  }
 
   // Add bus watch.
   GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline));
