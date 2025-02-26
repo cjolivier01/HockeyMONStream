@@ -8,7 +8,7 @@
 #include <string>
 
 #include <opencv2/opencv.hpp>
-#include <opencv5/opencv2/videoio.hpp>
+#include <opencv2/videoio.hpp>
 #include <unistd.h>
 
 #include "pipeline_utils.h"
