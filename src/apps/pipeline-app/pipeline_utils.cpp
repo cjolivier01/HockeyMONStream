@@ -18,6 +18,7 @@ Videoinfo getVideoInfo(const std::string& videoPath) {
 
   // Retrieve the FPS property.
   info.fps = cap.get(cv::CAP_PROP_FPS);
+  info.frame_count = cap.get(cv::CAP_PROP_FRAME_COUNT);
   info.width = cap.get(cv::CAP_PROP_FRAME_WIDTH);
   info.height = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
   info.video_bit_rate = cap.get(cv::CAP_PROP_BITRATE) * 1000;
