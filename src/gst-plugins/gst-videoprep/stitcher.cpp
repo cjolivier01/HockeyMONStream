@@ -66,33 +66,9 @@ bool StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
 }
 
 bool StitcherPriv::PostCapsInit(DSCustom_CreateParams* params) {
-  // I am a little confused about the diufference between these two
-  videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
-
-  // assert(videoprep->num_batch_buffers % 2 == 0);
-  // videoprep->num_output_buffers = videoprep->num_batch_buffers / 2;
-
   if (!Super::PostCapsInit(params)) {
     return false;
   }
-
-  // assert(!stitcher_);
-  // hm::pano::ControlMasks control_masks;
-  // if (!control_masks.load(videoprep->config_file)) {
-  //   return false;
-  // }
-  // stitcher_ = std::make_unique<hm::pano::cuda::CudaStitchPano<uchar4, float3>>(
-  //     /*batch_size=*/1, /*num_levels=*/0, control_masks, /*match_exposure=*/true);
-  // if (!stitcher_->status().ok()) {
-  //   return false;
-  // }
-
-  // videoprep->output_width = stitcher_->canvas_width();
-  // videoprep->output_height = stitcher_->canvas_height();
-
-  // // videoprep->deref_input_buffer = true;
-
-  // g_print("Stitched canvas size: %d x %d\n", (int)stitcher_->canvas_width(), (int)stitcher_->canvas_height());
   return true;
 }
 
@@ -135,26 +111,11 @@ struct ModifyBatchFrames {
   NvDsBatchMeta* batch_meta_;
 };
 
-// void show_image(std::string label, hm::surface::Surface surface, float scale = 1.0, bool wait = true) {
-//   hm::CudaMat<uchar4> mat(
-//       hm::SurfaceInfo{
-//           .width = (int)surface.width(),
-//           .height = (int)surface.height(),
-//           .pitch = (int)surface.pitch(),
-//           .data_ptr = surface.dataptr(),
-//       },
-//       /*B=*/1);
-//   hm::utils::display_scaled_image(label, mat.download(), scale, wait);
-// }
-
 cudaError StitcherPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     videoprep::GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
-  static size_t counter = 0;
-  // std::cout << "StitcherPriv::GenerateOutput: " << counter++ << std::endl;
-  // Should not be necessary, debugging some issue atm
   // std::unique_lock lk(process_mu_);
 
   cudaError err = cudaSuccess;

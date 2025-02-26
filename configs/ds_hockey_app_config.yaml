@@ -118,7 +118,7 @@ sink0:
   nvbuf-memory-type: 0
 
 sink1:
-  enable: 0
+  enable: 1
   type: 3
   #1=mp4 2=mkv
   container: 2

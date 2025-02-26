@@ -253,6 +253,7 @@ cudaError PlayCropperPriv::GenerateOutput(
         goto fallback;
       }
     } else {
+      assert(false);
     // Fall back to original implementation for unsupported formats
     fallback:
 
