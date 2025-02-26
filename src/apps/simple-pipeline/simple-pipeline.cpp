@@ -375,6 +375,9 @@ int main(int argc, char* argv[]) {
     GstElement* source = gst_element_factory_make("filesrc", "source");
     GstElement* demux = gst_element_factory_make("qtdemux", "demux");
 
+    GstElement* audio_source = gst_element_factory_make("filesrc", "audio_source");
+    GstElement* audio_demux = gst_element_factory_make("qtdemux", "audio_demux");
+
     // Video branch.
     GstElement* videoQueue = gst_element_factory_make("queue", "videoQueue");
     GstElement* h265parse = gst_element_factory_make("h265parse", "h265parse");
@@ -399,6 +402,7 @@ int main(int argc, char* argv[]) {
     }
 
     g_object_set(G_OBJECT(source), "location", inputFilename.c_str(), NULL);
+    g_object_set(G_OBJECT(audio_source), "location", inputFilename.c_str(), NULL);
     g_object_set(G_OBJECT(sink), "location", outputFilename.c_str(), NULL);
 
     GstCaps* caps = gst_caps_new_simple(
@@ -431,6 +435,8 @@ int main(int argc, char* argv[]) {
         GST_BIN(pipeline),
         source,
         demux,
+        audio_source,
+        audio_demux,
         videoQueue,
         h265parse,
         decoder,
@@ -448,6 +454,10 @@ int main(int argc, char* argv[]) {
       g_printerr("Failed to link source to demux.\n");
       return -1;
     }
+    if (!gst_element_link(audio_source, audio_demux)) {
+      g_printerr("Failed to link source to audio_demux.\n");
+      return -1;
+    }
     if (!gst_element_link_many(videoQueue, h265parse, decoder, vidConvert, capsfilter, encoder, postParse, NULL)) {
       g_printerr("Failed to link video branch elements.\n");
       return -1;
@@ -461,8 +471,14 @@ int main(int argc, char* argv[]) {
       return -1;
     }
 
-    DemuxData demuxData = {videoQueue, audioQueue};
-    g_signal_connect(demux, "pad-added", G_CALLBACK(on_pad_added), &demuxData);
+    // DemuxData demuxData = {videoQueue, audioQueue};
+    // g_signal_connect(demux, "pad-added", G_CALLBACK(on_pad_added), &demuxData);
+
+    DemuxData videoDemuxData = {videoQueue, nullptr};
+    g_signal_connect(demux, "pad-added", G_CALLBACK(on_pad_added), &videoDemuxData);
+
+    DemuxData audioDemuxData = {nullptr, audioQueue};
+    g_signal_connect(audio_demux, "pad-added", G_CALLBACK(on_pad_added), &audioDemuxData);
 
     GstPad* postParse_src = gst_element_get_static_pad(postParse, "src");
     if (!postParse_src) {
