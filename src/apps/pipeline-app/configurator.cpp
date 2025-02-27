@@ -268,7 +268,6 @@ void Configurator::complete_configuration() {
   std::string possible_audio_uri;
   // Source 0 files
   static const std::string ff = "file://";
-  size_t source_index = 0;
   if (!left_files.empty() && !right_files.empty()) {
     auto src0 = pipeline["source0"];
     auto src1 = pipeline["source1"];
@@ -284,7 +283,6 @@ void Configurator::complete_configuration() {
         assert(offsets["right"].as<double>() == 0);
         possible_audio_uri = src1["uri"].as<std::string>();
       }
-      source_index += 2;
     }
   } else {
     auto src0 = pipeline["source0"];
@@ -295,7 +293,6 @@ void Configurator::complete_configuration() {
           src0["uri"] = ff + stiched_output;
         }
       }
-      source_index += 1;
       possible_audio_uri = src0["uri"].as<std::string>();
     }
   }
