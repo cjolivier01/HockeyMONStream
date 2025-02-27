@@ -153,7 +153,7 @@ static GstElement* create_rtsp_pipeline(GstRTSPMediaFactory* factory, gpointer u
 
   // Create elements.
   GstElement* source = gst_element_factory_make("filesrc", "source");
-  g_object_set(G_OBJECT(source), "location", params->inputFilename.c_str(), NULL);
+  g_object_set(G_OBJECT(source), "location", params->inputFilename, NULL);
   GstElement* demux = gst_element_factory_make("qtdemux", "demux");
 
   // Video branch.
