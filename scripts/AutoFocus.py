@@ -32,9 +32,9 @@ class Focuser:
         value = (value << 4) & 0x3FF0
         data1 = (value >> 8) & 0x3F
         data2 = value & 0xF0
-        os.system(
-            "i2cset -y {} 0x{:02X} {} {}".format(self.bus, chip_addr, data1, data2)
-        )
+        cmd = "i2cset -y {} 0x{:02X} {} {}".format(self.bus, chip_addr, data1, data2)
+        print(cmd)
+        os.system(cmd)
 
     OPT_BASE = 0x1000
     OPT_FOCUS = OPT_BASE | 0x01
@@ -134,6 +134,8 @@ def gstreamer_pipeline(
     )
 
 
+# Bad focus: i2cset -y 2 0x0C 50 255
+
 def show_camera(device_id: int, focuser: Focuser):
     max_index = 10
     max_value = 0.0
@@ -152,6 +154,7 @@ def show_camera(device_id: int, focuser: Focuser):
         # Window
         while cv2.getWindowProperty("CSI Camera", 0) >= 0:
             ret_val, img = cap.read()
+            assert ret_val
             cv2.imshow(f"CSI Camera {device_id}", img)
 
             if skip_frame == 0:
