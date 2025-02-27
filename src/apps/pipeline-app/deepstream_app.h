@@ -71,6 +71,7 @@ typedef struct {
   NvDsPrimaryGieBin primary_gie_bin;
   NvDsOSDBin osd_bin;
   NvDsSegVisualBin segvisual_bin;
+  NvDsHmAudioBin hmaudio_bin;
   NvDsSecondaryGieBin secondary_gie_bin;
   NvDsSecondaryPreProcessBin secondary_preprocess_bin;
   NvDsTrackerBin tracker_bin;
@@ -87,7 +88,6 @@ struct NvDsPipeline {
   guint bus_id;
   GstElement* pipeline;
   NvDsSrcParentBin multi_src_bin;
-  NvDsHmAudioBin hmaudio_bin;
   NvDsInstanceBin instance_bins[MAX_SOURCE_BINS];
   NvDsInstanceBin demux_instance_bins[MAX_SOURCE_BINS];
   NvDsInstanceBin common_elements;

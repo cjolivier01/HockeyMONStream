@@ -393,7 +393,8 @@ int main(int argc, char* argv[]) {
     GstElement* aacparse = gst_element_factory_make("aacparse", "aacparse");
 
     // Muxer and sink.
-    GstElement* muxer = gst_element_factory_make("mp4mux", "muxer");
+    // GstElement* muxer = gst_element_factory_make("mp4mux", "muxer");
+    GstElement* muxer = gst_element_factory_make("qtmux", "muxer");
     GstElement* sink = gst_element_factory_make("filesink", "sink");
 
     if (!pipeline || !source || !demux || !videoQueue || !h265parse || !decoder || !vidConvert || !capsfilter ||

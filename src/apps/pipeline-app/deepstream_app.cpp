@@ -17,6 +17,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <cassert>
+#include <cstddef>
 #include <iostream>
 
 #include <gst/gstelementfactory.h>
@@ -1284,6 +1286,20 @@ static gboolean create_processing_instance(AppCtx* appCtx, guint index) {
         instance_bin);
   }
 
+  if (appCtx->config.hmaudio_config.enable) {
+    assert(index == 0); // what to do if nto 0?
+    if (!create_hmaudio_bin(
+            //GST_BIN(appCtx->pipeline.pipeline),
+            GST_BIN(instance_bin->bin),
+            &appCtx->config.hmaudio_config,
+            &instance_bin->hmaudio_bin,
+            appCtx->config.sink_bin_sub_bin_config,
+            &instance_bin->sink_bin)) {
+      goto done;
+    }
+    // gst_bin_add(GST_BIN(appCtx->pipeline.pipeline), appCtx->pipeline.hmaudio_bin.bin);
+  }
+
   ret = TRUE;
 done:
   if (!ret) {
@@ -1763,12 +1779,13 @@ gboolean create_pipeline(
   }
   gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->multi_src_bin.bin);
 
-  if (appCtx->config.hmaudio_config.enable) {
-    if (!create_hmaudio_bin(&appCtx->config.hmaudio_config, &pipeline->hmaudio_bin)) {
-      goto done;
-    }
-    gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->hmaudio_bin.bin);
-  }
+  // if (appCtx->config.hmaudio_config.enable) {
+  //   if (!create_hmaudio_bin(&appCtx->config.hmaudio_config, &pipeline->hmaudio_bin,
+  //   appCtx->config.sink_bin_sub_bin_config, NULL)) {
+  //     goto done;
+  //   }
+  //   gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->hmaudio_bin.bin);
+  // }
 
   if (config->streammux_config.is_parsed) {
     if (config->use_nvmultiurisrcbin) {
@@ -1963,7 +1980,7 @@ gboolean create_pipeline(
     }
     last_elem = pipeline->demuxer;
   }
-
+#if 0
   if (appCtx->config.hmaudio_config.enable && appCtx->config.hmaudio_config.dest == DEST_RTSP) {
     for (int k = 0; k < MAX_SINK_BINS; k++) {
       auto& sub_bin = pipeline->instance_bins[i].sink_bin.sub_bins[k];
@@ -1975,7 +1992,7 @@ gboolean create_pipeline(
       }
     }
   }
-
+#endif
   if (config->tiled_display_config.enable == NV_DS_TILED_DISPLAY_DISABLE) {
     fps_pad = gst_element_get_static_pad(pipeline->demuxer, "sink");
   } else {

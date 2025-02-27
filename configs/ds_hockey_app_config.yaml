@@ -99,18 +99,20 @@ source2:
 hmaudio:
   enable: 1
   # 0=default alsa source, 1=file
-  src: 0
+  src: 1
   # audio-location: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   audio-location: /home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   alsa-src-device: hw:0,0
   # alsa-dest-device: 
-  # 0=nullsink, 1=alsa sink, 2=rtsp server
-  dest: 1
+  # 0=nullsink, 1=alsa sink, 2=rtsp server, 3=file
+  dest: 3
+  sink_id_is_valid: 1
+  sink-id: 1
 
 sink0:
   enable: 1
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
-  type: 1
+  type: 2
   # sync: 1
   sync: 0
   source-id: 0
@@ -120,6 +122,7 @@ sink0:
 sink1:
   enable: 1
   type: 3
+  # link-to-demux: 1
   #1=mp4 2=mkv
   container: 2
   #1=h264 2=h265
@@ -128,7 +131,7 @@ sink1:
   enc-type: 0
   sync: 0
   #iframeinterval=10
-  bitrate: 2000000
+  bitrate: 55000000
   #H264 Profile - 0=Baseline 2=Main 4=High
   #H265 Profile - 0=Main 1=Main10
   # set profile only for hw encoder, sw encoder selects profile based on sw-preset
