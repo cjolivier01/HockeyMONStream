@@ -30,7 +30,7 @@ struct AppData {
 
 // Parameters for the RTSP pipeline.
 struct RTSPParams {
-  std::string inputFilename;
+  char inputFilename[1024];
   int newWidth;
   int newHeight;
   int bitrate; // in kbps; 0 means not set.
@@ -294,7 +294,7 @@ static void my_rtsp_media_factory_class_init(MyRTSPMediaFactoryClass* klass) {
 
 static void my_rtsp_media_factory_init(MyRTSPMediaFactory* factory) {
   // Initialize default parameters.
-  factory->params.inputFilename = "";
+  factory->params.inputFilename[0] = '\0';
   factory->params.newWidth = 0;
   factory->params.newHeight = 0;
   factory->params.bitrate = 0;
@@ -350,7 +350,8 @@ int main(int argc, char* argv[]) {
   if (rtspMode) {
     // RTSP Mode.
     MyRTSPMediaFactory* factory = static_cast<MyRTSPMediaFactory*>(g_object_new(MY_TYPE_RTSP_MEDIA_FACTORY, NULL));
-    factory->params.inputFilename = inputFilename;
+    strncpy(factory->params.inputFilename, inputFilename.c_str(), sizeof(factory->params.inputFilename) - 1);
+    factory->params.inputFilename[sizeof(factory->params.inputFilename) - 1] = '\0';
     factory->params.newWidth = newWidth;
     factory->params.newHeight = newHeight;
     factory->params.bitrate = bitrate;
