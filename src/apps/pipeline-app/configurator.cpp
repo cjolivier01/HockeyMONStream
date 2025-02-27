@@ -18,7 +18,6 @@ namespace hm {
 
 namespace {
 
-
 int as_int(const YAML::Node& node) {
   // be less asserty than YAML-CPP
   // std::cout << node << std::endl;
@@ -29,12 +28,51 @@ int as_int(const YAML::Node& node) {
   return std::atoi(s.c_str());
 }
 
+void remove_whitespace_in_place(std::string& input) {
+  int index = 0; // This will keep track of the position in the original string
+  for (char c : input) {
+    if (!std::isspace(static_cast<unsigned char>(c))) {
+      input[index++] = c;
+    }
+  }
+  input.resize(index); // Resize the string to the new length, removing the trailing whitespace
+}
+
+bool is_valid_yaml_value_string(std::string s) {
+  remove_whitespace_in_place(s);
+  if (s.empty()) {
+    return false;
+  }
+  if (s[0] == '#') {
+    // Comment
+    return false;
+  }
+  return true;
+}
+
 std::optional<std::tuple<int, int>> get_canvas_size(const std::string& game_dir) {
   hm::pano::ControlMasks control_masks(game_dir);
   if (!control_masks.is_valid()) {
     return std::nullopt;
   }
   return std::make_tuple(control_masks.canvas_width(), control_masks.canvas_height());
+}
+
+std::optional<YAML::Node> get_enabled_audio_uri(const YAML::Node& pipeline) {
+  size_t index = 0;
+  const std::string source_base = "source";
+  do {
+    std::string source_key = source_base + std::to_string(index);
+    if (!pipeline[source_key].IsDefined()) {
+      break;
+    }
+    YAML::Node audio = pipeline[source_key];
+    if (audio["enable"].IsDefined() && audio["enable"].as<int>() && audio["type"].as<int>() == NV_DS_SOURCE_AUDIO_URI) {
+      return audio;
+    }
+    ++index;
+  } while (true);
+  return std::nullopt;
 }
 
 } // namespace
@@ -246,7 +284,6 @@ void Configurator::complete_configuration() {
         assert(offsets["right"].as<double>() == 0);
         possible_audio_uri = src1["uri"].as<std::string>();
       }
-      // std::cout << src0 << std::endl;
       source_index += 2;
     }
   } else {
@@ -262,14 +299,11 @@ void Configurator::complete_configuration() {
       possible_audio_uri = src0["uri"].as<std::string>();
     }
   }
-  std::string audio_source_key = "source" + std::to_string(source_index);
-  if (!possible_audio_uri.empty() && pipeline[audio_source_key].IsDefined()) {
-    ++source_index;
-    auto audio0 = pipeline[audio_source_key];
-    if (audio0["enable"].IsDefined() && audio0["enable"].as<int>() &&
-        audio0["type"].as<int>() == NV_DS_SOURCE_AUDIO_URI) {
-      if (!audio0["uri"].IsDefined() || audio0["uri"].as<std::string>().empty()) {
-        audio0["uri"] = possible_audio_uri;
+  if (!possible_audio_uri.empty()) {
+    std::optional<YAML::Node> audio_uri = get_enabled_audio_uri(pipeline);
+    if (audio_uri.has_value()) {
+      if (!(*audio_uri)["uri"].IsDefined() || !is_valid_yaml_value_string((*audio_uri)["uri"].as<std::string>())) {
+        (*audio_uri)["uri"] = possible_audio_uri;
       }
     }
   }
