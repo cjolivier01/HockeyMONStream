@@ -58,6 +58,24 @@ std::optional<std::tuple<int, int>> get_canvas_size(const std::string& game_dir)
   return std::make_tuple(control_masks.canvas_width(), control_masks.canvas_height());
 }
 
+std::optional<YAML::Node> get_node_if_enabled(const YAML::Node& pipeline, const std::string& name) {
+  if (pipeline.IsDefined() && pipeline.IsMap()) {
+    YAML::Node n = pipeline[name];
+    if (n.IsDefined() && n.IsMap()) {
+      YAML::Node enabled = n["enable"];
+      if (enabled.IsDefined()) {
+        if (enabled.as<std::string>() == "true") {
+          return n;
+        }
+        if (enabled.as<int>()) {
+          return n;
+        }
+      }
+    }
+  }
+  return std::nullopt;
+}
+
 std::optional<YAML::Node> get_enabled_audio_uri(const YAML::Node& pipeline) {
   size_t index = 0;
   const std::string source_base = "source";
@@ -297,10 +315,20 @@ void Configurator::complete_configuration() {
     }
   }
   if (!possible_audio_uri.empty()) {
-    std::optional<YAML::Node> audio_uri = get_enabled_audio_uri(pipeline);
-    if (audio_uri.has_value()) {
-      if (!(*audio_uri)["uri"].IsDefined() || !is_valid_yaml_value_string((*audio_uri)["uri"].as<std::string>())) {
-        (*audio_uri)["uri"] = possible_audio_uri;
+    std::optional<YAML::Node> audio_uri_opt = get_enabled_audio_uri(pipeline);
+    if (audio_uri_opt.has_value()) {
+      YAML::Node audio_uri = *audio_uri_opt;
+      if (!audio_uri["uri"].IsDefined() || !is_valid_yaml_value_string(audio_uri["uri"].as<std::string>())) {
+        audio_uri["uri"] = possible_audio_uri;
+      }
+    }
+    audio_uri_opt = get_node_if_enabled(pipeline, "hmaudio");
+    if (audio_uri_opt.has_value()) {
+      YAML::Node audio_uri = *audio_uri_opt;
+      const std::string key = "audio-location";
+      const bool is_defined = audio_uri[key].IsDefined();
+      if (!is_defined || !is_valid_yaml_value_string(audio_uri[key].as<std::string>())) {
+        audio_uri[key] = possible_audio_uri;
       }
     }
   }

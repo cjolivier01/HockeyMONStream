@@ -79,7 +79,7 @@ source1:
   cudadec-memtype: 0
 
 source2:
-  enable: 1
+  enable: 0
   type: 7
   # uri: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   # uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
@@ -101,7 +101,7 @@ hmaudio:
   # 0=default alsa source, 1=file
   src: 1
   # audio-location: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
-  audio-location: /home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
+  # audio-location: /home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   alsa-src-device: hw:0,0
   # alsa-dest-device: 
   # 0=nullsink, 1=alsa sink, 2=rtsp server, 3=file
