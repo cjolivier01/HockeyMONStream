@@ -141,7 +141,7 @@ sink1:
 
 
 sink2:
-  enable: 1
+  enable: 0
   #Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 4
   #1=h264 2=h265
@@ -224,7 +224,7 @@ streammux:
   gpu-id: 0
   ##Boolean property to inform muxer that sources are live
   live-source: 0
-  buffer-pool-size: 8
+  buffer-pool-size: 4
   batch-size: 4
   num-surfaces-per-frame: 1
 
