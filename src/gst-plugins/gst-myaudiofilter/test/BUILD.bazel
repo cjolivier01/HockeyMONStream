@@ -8,16 +8,7 @@ cc_binary(
   deps=[
     "@glib",
     "@gstreamer",
-    "@deepstream//sources/apps/apps-common:deepstream_apps_common",
+    "//src/apps/apps-common:deepstream_apps_common_ex",
   ]
 )
 
-cc_binary(
-  name="vplay",
-  srcs=["vplay.cpp"],
-  deps=[
-    "@glib",
-    "@gstreamer",
-    "@deepstream//sources/apps/apps-common:deepstream_apps_common",
-  ]
-)

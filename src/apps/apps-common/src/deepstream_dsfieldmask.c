@@ -1,0 +1,936 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2018-2024 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved. SPDX-License-Identifier:
+ * LicenseRef-NvidiaProprietary
+ *
+ * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+ * property and proprietary rights in and to this material, related
+ * documentation and any modifications thereto. Any use, reproduction,
+ * disclosure or distribution of this material and related documentation
+ * without an express license agreement from NVIDIA CORPORATION or
+ * its affiliates is strictly prohibited.
+ */
+
+#include "deepstream_dsfieldmask.h"
+#include <glib-2.0/glib.h>
+#include <gst/gstelement.h>
+#include <gstreamer-1.0/gst/gstbin.h>
+#include <cassert>
+#include <cstring>
+#include <string>
+#include "deepstream_common.h"
+#include "deepstream_sinks.h"
+
+#include <algorithm>
+#include <atomic>
+#include <iostream>
+#include <sstream>
+#include <vector>
+
+#define HMGST_ELEMENT_MAKE(dest$, factoryname$, name$)                                 \
+  do {                                                                                 \
+    (dest$) = gst_element_factory_make(factoryname$, name$);                           \
+    if (!(dest$)) {                                                                    \
+      std::stringstream ss;                                                            \
+      ss << "Failed to create '" << (name$) << "' of type '" << (factoryname$) << "'"; \
+      std::string msg = ss.str();                                                      \
+      g_print("** ERROR: <%s:%d>: %s\n", __func__, __LINE__, msg.c_str());             \
+      goto done;                                                                       \
+    }                                                                                  \
+  } while (false)
+
+#define HMGST_ELEMENT_MAKE_BINADD(dest$, factoryname$, name$) \
+  do {                                                        \
+    HMGST_ELEMENT_MAKE(dest$, factoryname$, name$);           \
+    gst_bin_add(GST_BIN(bin->bin), dest$);                    \
+  } while (false)
+
+#undef gst_element_get_parent
+
+inline GstElement* gst_element_get_parent(GstElement* elem) {
+  return (GstElement*)gst_object_get_parent(GST_OBJECT_CAST(elem));
+}
+
+//---------------------------------------------------------------------
+// Helper: Find the lowest common ancestor (LCA) of two elements.
+//---------------------------------------------------------------------
+GstElement* findLowestCommonAncestor(GstElement* elem1, GstElement* elem2) {
+  std::vector<GstElement*> chain1, chain2;
+
+  for (GstElement* cur = elem1; cur; cur = gst_element_get_parent(cur))
+    chain1.push_back(cur);
+
+  for (GstElement* cur = elem2; cur; cur = gst_element_get_parent(cur))
+    chain2.push_back(cur);
+
+  std::reverse(chain1.begin(), chain1.end());
+  std::reverse(chain2.begin(), chain2.end());
+
+  GstElement* lca = nullptr;
+  size_t minSize = std::min(chain1.size(), chain2.size());
+  for (size_t i = 0; i < minSize; i++) {
+    if (chain1[i] == chain2[i])
+      lca = chain1[i];
+    else
+      break;
+  }
+  return lca;
+}
+
+//---------------------------------------------------------------------
+// Updated Helper: Lift a pad from an element up to just below a given
+// ancestor bin. Instead of lifting to the ancestor itself, we stop
+// when the element's parent is the ancestor, so that no ghost pad is
+// created on the least common ancestor.
+// ghost_pad_name is the name to use for the ghost pad added to the
+// immediate parent.
+//---------------------------------------------------------------------
+GstPad* liftPadToAncestor(
+    GstElement* element,
+    const char* pad_name,
+    GstElement* ancestor,
+    const std::string& ghost_pad_name) {
+  // Get the pad from the element.
+  GstPad* current_pad = gst_element_get_static_pad(element, pad_name);
+  if (!current_pad) {
+    std::cerr << "Error: Element \"" << GST_ELEMENT_NAME(element) << "\" has no pad named \"" << pad_name << "\"."
+              << std::endl;
+    return nullptr;
+  }
+
+  GstElement* current_element = element;
+  // Continue lifting until the parent is the ancestor (not the ancestor itself).
+  while (gst_element_get_parent(current_element) != ancestor) {
+    GstElement* parent = gst_element_get_parent(current_element);
+    if (!parent) {
+      std::cerr << "Error: Could not get parent of element \"" << GST_ELEMENT_NAME(current_element)
+                << "\" while lifting pad." << std::endl;
+      gst_object_unref(current_pad);
+      return nullptr;
+    }
+    // Check if the parent already has a ghost pad with the desired name.
+    GstPad* existing_pad = gst_element_get_static_pad(parent, ghost_pad_name.c_str());
+    if (existing_pad) {
+      gst_object_unref(current_pad);
+      current_pad = existing_pad;
+    } else {
+      // Create a ghost pad on the parent.
+      GstPad* ghost_pad = gst_ghost_pad_new(ghost_pad_name.c_str(), current_pad);
+      if (!ghost_pad) {
+        std::cerr << "Error: Failed to create ghost pad \"" << ghost_pad_name << "\" for element \""
+                  << GST_ELEMENT_NAME(current_element) << "\"." << std::endl;
+        gst_object_unref(current_pad);
+        return nullptr;
+      }
+      if (!gst_element_add_pad(parent, ghost_pad)) {
+        std::cerr << "Error: Failed to add ghost pad \"" << ghost_pad_name << "\" to parent \""
+                  << GST_ELEMENT_NAME(parent) << "\"." << std::endl;
+        gst_object_unref(ghost_pad);
+        gst_object_unref(current_pad);
+        return nullptr;
+      }
+      // ghost_pad becomes our new current pad.
+      current_pad = ghost_pad;
+    }
+    current_element = parent;
+  }
+  return current_pad;
+}
+
+//---------------------------------------------------------------------
+// Main function: Given two GstElements and a pad name for each, and a
+// ghost pad name, link the two pads. If the two pads are not in the same
+// bin, ghost pads are created (and “lifted”) to the common ancestor so
+// that they can be linked.
+//---------------------------------------------------------------------
+bool connectElementsWithGhostPads(
+    GstElement* elem1,
+    const char* pad1_name,
+    GstElement* elem2,
+    const char* pad2_name,
+    const std::string& ghost_pad_name) {
+  if (!elem1 || !elem2) {
+    std::cerr << "Error: One or both elements are null." << std::endl;
+    return false;
+  }
+
+  // Find the lowest common ancestor (LCA) of the two elements.
+  GstElement* lca = findLowestCommonAncestor(elem1, elem2);
+  if (!lca) {
+    std::cerr << "Error: No common ancestor found between elements \"" << GST_ELEMENT_NAME(elem1) << "\" and \""
+              << GST_ELEMENT_NAME(elem2) << "\"." << std::endl;
+    return false;
+  }
+  std::cout << "Lowest common ancestor is: " << GST_ELEMENT_NAME(lca) << std::endl;
+
+  GstPad *unref_pad1 = nullptr, *unref_pad2 = nullptr;
+  GstPad* pad1 = nullptr;
+  if (gst_element_get_parent(elem1) == lca) {
+    pad1 = gst_element_get_static_pad(elem1, pad1_name);
+    if (!pad1) {
+      std::cerr << "Error: Element \"" << GST_ELEMENT_NAME(elem1) << "\" does not have pad \"" << pad1_name << "\"."
+                << std::endl;
+      return false;
+    }
+    unref_pad1 = pad1;
+  } else {
+    pad1 = liftPadToAncestor(elem1, pad1_name, lca, ghost_pad_name);
+    if (!pad1) {
+      std::cerr << "Error: Failed to lift pad \"" << pad1_name << "\" of element \"" << GST_ELEMENT_NAME(elem1)
+                << "\" to just below the common ancestor." << std::endl;
+      return false;
+    }
+  }
+
+  // Use a different ghost pad name for the second element to avoid collisions.
+  std::string ghost_pad_name2 = std::string("ghost_") + pad2_name;
+  GstPad* pad2 = nullptr;
+  if (gst_element_get_parent(elem2) == lca) {
+    pad2 = gst_element_get_static_pad(elem2, pad2_name);
+    if (!pad2) {
+      std::cerr << "Error: Element \"" << GST_ELEMENT_NAME(elem2) << "\" does not have pad \"" << pad2_name << "\"."
+                << std::endl;
+      gst_object_unref(pad1);
+      return false;
+    }
+    unref_pad2 = pad2;
+  } else {
+    pad2 = liftPadToAncestor(elem2, pad2_name, lca, ghost_pad_name2);
+    if (!pad2) {
+      std::cerr << "Error: Failed to lift pad \"" << pad2_name << "\" of element \"" << GST_ELEMENT_NAME(elem2)
+                << "\" to just below the common ancestor." << std::endl;
+      gst_object_unref(pad1);
+      return false;
+    }
+  }
+
+  // Attempt to link the pads.
+  GstPadLinkReturn link_ret = gst_pad_link(pad1, pad2);
+  if (link_ret != GST_PAD_LINK_OK) {
+    std::cerr << "Error: Failed to link pad \"" << GST_PAD_NAME(pad1) << "\" to pad \"" << GST_PAD_NAME(pad2)
+              << "\" (gst_pad_link return: " << link_ret << ")." << std::endl;
+    gst_object_unref(pad1);
+    // gst_object_unref(pad2);
+    return false;
+  }
+
+  std::cout << "Successfully linked pad \"" << GST_PAD_NAME(pad1) << "\" to pad \"" << GST_PAD_NAME(pad2) << "\"."
+            << std::endl;
+  if (unref_pad1) {
+    gst_object_unref(pad1);
+  }
+  if (unref_pad2) {
+    gst_object_unref(pad2);
+  }
+  return true;
+}
+
+bool link_audio_pad_to_muxer(GstElement* postParse, GstElement* muxer) {
+  gboolean ret = false;
+  GstPad* muxer_audio_pad{nullptr};
+  gchar* src_pad_name = nullptr;
+  gchar* dest_pad_name = nullptr;
+  std::string ghost_pad_name;
+  static std::atomic<int> audio_in_counter = 0;
+
+  GstPad* postParse_src = gst_element_get_static_pad(postParse, "src");
+  if (!postParse_src) {
+    g_printerr("Could not get postParse src pad.\n");
+    goto done;
+  }
+  src_pad_name = gst_pad_get_name(postParse_src);
+
+  muxer_audio_pad = gst_element_request_pad_simple(muxer, "audio_%u");
+  if (!muxer_audio_pad) {
+    g_printerr("Could not get request pad from muxer for audio.\n");
+    goto done;
+  }
+  dest_pad_name = gst_pad_get_name(muxer_audio_pad);
+
+  ghost_pad_name = std::string("audio_in_") + std::to_string(audio_in_counter);
+
+  ret = connectElementsWithGhostPads(postParse, src_pad_name, muxer, dest_pad_name, ghost_pad_name);
+
+done:
+  if (postParse_src) {
+    gst_object_unref(postParse_src);
+  }
+  if (muxer_audio_pad) {
+    gst_object_unref(muxer_audio_pad);
+  }
+  if (src_pad_name) {
+    g_free(src_pad_name);
+  }
+  if (dest_pad_name) {
+    g_free(dest_pad_name);
+  }
+  return ret;
+}
+
+void setup_rgb_nvvm_caps_filter(GstCaps* caps, GstElement* cap_filter) {
+  if (!caps) {
+    caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "RGBA", NULL);
+  }
+
+  GstCapsFeatures* feature = gst_caps_features_new(MEMORY_FEATURES, NULL);
+  gst_caps_set_features(caps, 0, feature);
+  g_object_set(G_OBJECT(cap_filter), "caps", caps, NULL);
+  gst_caps_unref(caps);
+}
+
+gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
+  gboolean ret = FALSE;
+  std::stringstream ppc;
+
+  bin->bin = gst_bin_new("hmstitcher_bin");
+  if (!bin->bin) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'hmstitcher_bin'");
+    goto done;
+  }
+
+  bin->queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "hmstitcher_queue");
+  if (!bin->queue) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'hmstitcher_queue'");
+    goto done;
+  }
+
+  bin->elem_hmstitcher = gst_element_factory_make(NVDS_ELEM_HMSTITCHER_ELEMENT, "hmstitcher0");
+  if (!bin->elem_hmstitcher) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'hmstitcher0'");
+    goto done;
+  }
+
+  bin->pre_conv = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "hmstitcher_conv0");
+  if (!bin->pre_conv) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'hmstitcher_conv0'");
+    goto done;
+  }
+
+  bin->cap_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "hmstitcher_caps");
+  if (!bin->cap_filter) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'hmstitcher_caps'");
+    goto done;
+  }
+
+  gst_bin_add_many(GST_BIN(bin->bin), bin->queue, bin->pre_conv, bin->cap_filter, bin->elem_hmstitcher, NULL);
+
+  NVGSTDS_LINK_ELEMENT(bin->queue, bin->pre_conv);
+  NVGSTDS_LINK_ELEMENT(bin->pre_conv, bin->cap_filter);
+  NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->elem_hmstitcher);
+
+  NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "sink");
+  NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->elem_hmstitcher, "src");
+  // assert(false);
+  // assert(strlen(config->detection_mask_file) > 0);
+
+  ppc << "left-frame-offset-ns=" << config->left_frame_offset_ns;
+  ppc << ";";
+  ppc << "right-frame-offset-ns=" << config->right_frame_offset_ns;
+
+  g_object_set(G_OBJECT(bin->elem_hmstitcher), "unique-id", config->unique_id, "gpu-id", config->gpu_id, NULL);
+  g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-type", "hmstitcher", NULL);
+  g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-private-config", ppc.str().c_str(), NULL);
+  g_object_set(G_OBJECT(bin->elem_hmstitcher), "config-file", config->config_file, NULL);
+  g_object_set(G_OBJECT(bin->pre_conv), "gpu-id", config->gpu_id, NULL);
+  g_object_set(G_OBJECT(bin->pre_conv), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
+
+  if (config->num_output_buffers) {
+    g_object_set(G_OBJECT(bin->elem_hmstitcher), "num-output-buffers", config->num_output_buffers, NULL);
+  }
+  if (config->num_batch_buffers) {
+    g_object_set(G_OBJECT(bin->elem_hmstitcher), "num-batch-buffers", config->num_batch_buffers, NULL);
+  }
+
+  if (config->output_width) {
+    g_object_set(G_OBJECT(bin->elem_hmstitcher), "output-width", config->output_width, NULL);
+  }
+  if (config->output_height) {
+    g_object_set(G_OBJECT(bin->elem_hmstitcher), "output-height", config->output_height, NULL);
+  }
+
+  ret = TRUE;
+
+done:
+  if (!ret) {
+    NVGSTDS_ERR_MSG_V("%s failed", __func__);
+  }
+
+  return ret;
+
+  return true;
+}
+
+/**
+ *  ______  _       _     _ __  __             _
+ * |  ____|(_)     | |   | |  \/  |           | |
+ * | |__    _  ___ | | __| | \  / | __ _  ___ | | __
+ * |  __|  | |/ _ \| |/ _` | |\/| |/ _` |/ __|| |/ /
+ * | |     | |  __/| | (_| | |  | | (_| |\__ \|   <
+ * |_|     |_|\___||_|\__,_|_|  |_|\__,_||___/|_|\_\
+ *
+ */
+
+// Create bin, add queue and the element, link all elements and ghost pads,
+// Set the element properties from the parsed config
+gboolean create_dsfieldmask_bin(NvDsDsFieldMaskConfig* config, NvDsDsFieldMaskBin* bin) {
+  gboolean ret = FALSE;
+
+  bin->bin = gst_bin_new("dsfieldmask_bin");
+  if (!bin->bin) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'dsfieldmask_bin'");
+    goto done;
+  }
+
+  bin->queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "dsfieldmask_queue");
+  if (!bin->queue) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'dsfieldmask_queue'");
+    goto done;
+  }
+
+  bin->elem_dsfieldmask = gst_element_factory_make(NVDS_ELEM_DSFIELDMASK_ELEMENT, "dsfieldmask0");
+  if (!bin->elem_dsfieldmask) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'dsfieldmask0'");
+    goto done;
+  }
+
+  bin->pre_conv = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "dsfieldmask_conv0");
+  if (!bin->pre_conv) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'dsfieldmask_conv0'");
+    goto done;
+  }
+
+  bin->cap_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "dsfieldmask_caps");
+  if (!bin->cap_filter) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'dsfieldmask_caps'");
+    goto done;
+  }
+
+  gst_bin_add_many(GST_BIN(bin->bin), bin->queue, bin->pre_conv, bin->cap_filter, bin->elem_dsfieldmask, NULL);
+
+  NVGSTDS_LINK_ELEMENT(bin->queue, bin->pre_conv);
+  NVGSTDS_LINK_ELEMENT(bin->pre_conv, bin->cap_filter);
+  NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->elem_dsfieldmask);
+
+  NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "sink");
+  NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->elem_dsfieldmask, "src");
+  // assert(false);
+  // assert(strlen(config->detection_mask_file) > 0);
+  g_object_set(G_OBJECT(bin->elem_dsfieldmask), "unique-id", config->unique_id, "gpu-id", config->gpu_id, NULL);
+  g_object_set(G_OBJECT(bin->elem_dsfieldmask), "detection-mask", config->detection_mask_file, NULL);
+  g_object_set(G_OBJECT(bin->pre_conv), "gpu-id", config->gpu_id, NULL);
+
+  g_object_set(G_OBJECT(bin->pre_conv), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
+
+  ret = TRUE;
+
+done:
+  if (!ret) {
+    NVGSTDS_ERR_MSG_V("%s failed", __func__);
+  }
+
+  return ret;
+}
+
+/**
+ *  _____  _          _______              _
+ * |  __ \| |        |__   __|            | |
+ * | |__) | | __ _ _   _| |_ __  __ _  ___| | __ ___  _ __
+ * |  ___/| |/ _` | | | | | '__|/ _` |/ __| |/ // _ \| '__|
+ * | |    | | (_| | |_| | | |  | (_| | (__|   <|  __/| |
+ * |_|    |_|\__,_|\__, |_|_|   \__,_|\___|_|\_\\___||_|
+ *                  __/ |
+ *                 |___/
+ */
+
+gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTrackerBin* bin) {
+  gboolean ret = FALSE;
+
+  bin->bin = gst_bin_new("dsplaytracker_bin");
+  if (!bin->bin) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'dsplaytracker_bin'");
+    goto done;
+  }
+
+  bin->queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "dsplaytracker_queue");
+  if (!bin->queue) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'dsplaytracker_queue'");
+    goto done;
+  }
+
+  bin->elem_dsplaytracker = gst_element_factory_make(NVDS_ELEM_DSPLAYTRACKER_ELEMENT, "dsplaytracker0");
+  if (!bin->elem_dsplaytracker) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'dsplaytracker0'");
+    goto done;
+  }
+
+  bin->pre_conv = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "dsplaytracker_conv0");
+  if (!bin->pre_conv) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'dsplaytracker_conv0'");
+    goto done;
+  }
+
+  bin->cap_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "dsplaytracker_caps");
+  if (!bin->cap_filter) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'dsplaytracker_caps'");
+    goto done;
+  }
+
+  // this causes a buffer error and stuff stops
+  // setup_rgb_nvvm_caps_filter(nullptr, bin->cap_filter);
+
+  gst_bin_add_many(GST_BIN(bin->bin), bin->queue, bin->pre_conv, bin->cap_filter, bin->elem_dsplaytracker, NULL);
+
+  NVGSTDS_LINK_ELEMENT(bin->queue, bin->pre_conv);
+  NVGSTDS_LINK_ELEMENT(bin->pre_conv, bin->cap_filter);
+  NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->elem_dsplaytracker);
+
+  NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "sink");
+  NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->elem_dsplaytracker, "src");
+  assert(strlen(config->config_file) > 0);
+  g_object_set(G_OBJECT(bin->elem_dsplaytracker), "unique-id", config->unique_id, "gpu-id", config->gpu_id, NULL);
+  g_object_set(G_OBJECT(bin->elem_dsplaytracker), "config-file", config->config_file, NULL);
+  g_object_set(G_OBJECT(bin->elem_dsplaytracker), "draw", config->draw, NULL);
+  g_object_set(G_OBJECT(bin->pre_conv), "gpu-id", config->gpu_id, NULL);
+
+  g_object_set(G_OBJECT(bin->pre_conv), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
+
+  ret = TRUE;
+
+done:
+  if (!ret) {
+    NVGSTDS_ERR_MSG_V("%s failed", __func__);
+  }
+
+  return ret;
+}
+
+/**
+ * __      __ _     _             _____
+ * \ \    / /(_)   | |           |  __ \
+ *  \ \  / /  _  __| | ___   ___ | |__) |_ __  ___  _ __
+ *   \ \/ /  | |/ _` |/ _ \ / _ \|  ___/| '__|/ _ \| '_ \
+ *    \  /   | | (_| |  __/| (_) | |    | |  |  __/| |_) |
+ *     \/    |_|\__,_|\___| \___/|_|    |_|   \___|| .__/
+ *                                                 | |
+ *                                                 |_|
+ */
+gboolean create_hmvideoprep_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBin* bin) {
+  // GstCaps* caps = NULL;
+  gboolean ret = FALSE;
+  // GstCapsFeatures* feature = NULL;
+
+  bin->bin = gst_bin_new("videoprep_bin");
+  if (!bin->bin) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'videoprep_bin'");
+    goto done;
+  }
+
+  bin->nvvidconv = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "videoprep_conv");
+
+  if (!bin->nvvidconv) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'videoprep_conv'");
+    goto done;
+  }
+
+  bin->queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "videoprep_queue");
+  if (!bin->queue) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'videoprep_queue'");
+    goto done;
+  }
+
+  bin->src_queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "videoprep_src_queue");
+  if (!bin->src_queue) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'videoprep_src_queue'");
+    goto done;
+  }
+
+  bin->conv_queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "videoprep_conv_queue");
+  if (!bin->conv_queue) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'videoprep_conv_queue'");
+    goto done;
+  }
+
+  bin->cap_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "videoprep_caps");
+  if (!bin->cap_filter) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'videoprep_caps'");
+    goto done;
+  }
+
+  setup_rgb_nvvm_caps_filter(nullptr, bin->cap_filter);
+
+  // caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "RGBA", NULL);
+  // feature = gst_caps_features_new(MEMORY_FEATURES, NULL);
+  // gst_caps_set_features(caps, 0, feature);
+  // g_object_set(G_OBJECT(bin->cap_filter), "caps", caps, NULL);
+  // gst_caps_unref(caps);
+
+  bin->nvvideoprep = gst_element_factory_make("playcropper" /*NVDS_ELEM_DEWARPER*/, NULL);
+  if (!bin->nvvideoprep) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'nvvideoprep'");
+    goto done;
+  }
+
+  bin->videoprep_caps_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "videoprep_caps_filter");
+  if (!bin->videoprep_caps_filter) {
+    NVGSTDS_ERR_MSG_V("Could not create 'videoprep_caps_filter'");
+    goto done;
+  }
+
+  // We expect only RGBA images incoming (any size)
+  setup_rgb_nvvm_caps_filter(
+      gst_caps_new_simple(
+          "video/x-raw",
+          "format",
+          G_TYPE_STRING,
+          "RGBA",
+          "width",
+          GST_TYPE_INT_RANGE,
+          1,
+          G_MAXINT,
+          "height",
+          GST_TYPE_INT_RANGE,
+          1,
+          G_MAXINT,
+          NULL),
+      bin->videoprep_caps_filter);
+
+  // feature = gst_caps_features_new("memory:NVMM", NULL);
+  // gst_caps_set_features(caps, 0, feature);
+
+  // g_object_set(G_OBJECT(bin->videoprep_caps_filter), "caps", caps, NULL);
+
+  gst_bin_add_many(
+      GST_BIN(bin->bin),
+      bin->queue,
+      bin->src_queue,
+      bin->conv_queue,
+      bin->nvvidconv,
+      bin->cap_filter,
+      bin->nvvideoprep,
+      bin->videoprep_caps_filter,
+      NULL);
+
+  g_object_set(G_OBJECT(bin->nvvidconv), "gpu-id", config->gpu_id, NULL);
+  g_object_set(G_OBJECT(bin->nvvidconv), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
+
+  g_object_set(G_OBJECT(bin->nvvideoprep), "gpu-id", config->gpu_id, NULL);
+  g_object_set(G_OBJECT(bin->nvvideoprep), "config-file", config->config_file, NULL);
+  g_object_set(G_OBJECT(bin->nvvideoprep), "plugin-type", config->plugin_type, NULL);
+
+  g_object_set(G_OBJECT(bin->nvvideoprep), "source-id", config->source_id, NULL);
+  g_object_set(G_OBJECT(bin->nvvideoprep), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
+
+  if (config->num_output_buffers) {
+    g_object_set(G_OBJECT(bin->nvvideoprep), "num-output-buffers", config->num_output_buffers, NULL);
+  }
+  if (config->num_batch_buffers) {
+    g_object_set(G_OBJECT(bin->nvvideoprep), "num-batch-buffers", config->num_batch_buffers, NULL);
+  }
+  if (config->output_width) {
+    g_object_set(G_OBJECT(bin->nvvideoprep), "output-width", config->output_width, NULL);
+  }
+  if (config->output_height) {
+    g_object_set(G_OBJECT(bin->nvvideoprep), "output-height", config->output_height, NULL);
+  }
+#if 0
+  NVGSTDS_LINK_ELEMENT(bin->nvvidconv, bin->cap_filter);
+  NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->nvvideoprep);
+  NVGSTDS_LINK_ELEMENT(bin->nvvideoprep, bin->videoprep_caps_filter);
+
+  NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->nvvidconv, "sink");
+  NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->videoprep_caps_filter, "src");
+#else
+  NVGSTDS_LINK_ELEMENT(bin->queue, bin->nvvidconv);
+
+  NVGSTDS_LINK_ELEMENT(bin->nvvidconv, bin->cap_filter);
+  NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->conv_queue);
+
+  NVGSTDS_LINK_ELEMENT(bin->conv_queue, bin->nvvideoprep);
+
+  NVGSTDS_LINK_ELEMENT(bin->nvvideoprep, bin->videoprep_caps_filter);
+  NVGSTDS_LINK_ELEMENT(bin->videoprep_caps_filter, bin->src_queue);
+
+  NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "sink");
+
+  NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->src_queue, "src");
+#endif
+  ret = TRUE;
+done:
+  // if (caps) {
+  //   gst_caps_unref(caps);
+  // }
+
+  if (!ret) {
+    NVGSTDS_ERR_MSG_V("%s failed", __func__);
+  }
+  return ret;
+}
+
+//
+// HmImageMetaMerger
+//
+gboolean create_hmimagemetamerger_bin(NvDsHmImageMetaMergerConfig* config, NvDsHmImageMetaMergerBin* bin) {
+  gboolean ret = FALSE;
+
+  // GstPad *bin_src_pad, *ghost_pad, *tee_src_pad;
+  bin->bin = gst_bin_new("hm_image_meta_merger");
+  if (!bin->bin) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'hm_image_meta_merger'");
+    goto done;
+  }
+
+  g_object_set(bin->bin, "message-forward", TRUE, NULL);
+
+  bin->image_identity_in = gst_element_factory_make("identity", "image_identity_in0");
+  bin->meta_identity_in = gst_element_factory_make("identity", "meta_identity_in0");
+
+  gst_bin_add_many(GST_BIN(bin->bin), bin->image_identity_in, bin->meta_identity_in, NULL);
+
+  NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->meta_identity_in, "sink");
+
+  NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->meta_identity_in, "src");
+  // NVGSTDS_BIN_ADD_GHOST_PAD_NAMED(bin->bin, bin->meta_identity_in, "src", "src_1");
+
+  ret = TRUE;
+
+done:
+  if (!ret) {
+    NVGSTDS_ERR_MSG_V("%s failed", __func__);
+  }
+
+  return ret;
+}
+
+/**
+ *                     _  _
+ *     /\             | |(_)
+ *    /  \   _   _  __| | _  ___
+ *   / /\ \ | | | |/ _` || |/ _ \
+ *  / ____ \| |_| | (_| || | (_) |
+ * /_/    \_\\__,_|\__,_||_|\___/
+ *
+ *
+ */
+//  GstElement *audiosrc = gst_element_factory_make("alsasrc", "my_audiosource");
+
+static void on_decode_pad_added(GstElement* element, GstPad* pad, gpointer data) {
+  GstElement* convert = (GstElement*)data;
+  GstPad* sinkpad = gst_element_get_static_pad(convert, "sink");
+  GstPadLinkReturn ret;
+
+  ret = gst_pad_link(pad, sinkpad);
+  if (GST_PAD_LINK_FAILED(ret)) {
+    g_printerr("Decoder pad link failed: %d\n", ret);
+  }
+  gst_object_unref(sinkpad);
+}
+
+static void on_demuxer_pad_added(GstElement* element, GstPad* pad, gpointer data) {
+  GstElement* decoder = (GstElement*)data;
+  GstCaps* caps = gst_pad_get_current_caps(pad);
+  GstStructure* str = gst_caps_get_structure(caps, 0);
+
+  if (g_str_has_prefix(gst_structure_get_name(str), "audio/")) {
+    GstPad* sinkpad = gst_element_get_static_pad(decoder, "sink");
+    if (GST_PAD_LINK_FAILED(gst_pad_link(pad, sinkpad))) {
+      g_printerr("Failed to link demuxer to decoder\n");
+    }
+    gst_object_unref(sinkpad);
+  }
+
+  gst_caps_unref(caps);
+}
+
+bool link_elements(GstElement* elem1, GstElement* elem2) {
+  if (!gst_element_link(elem1, elem2)) {
+    GstCaps *src_caps, *sink_caps;
+    const char* src_caps_str = "none";
+    if ((elem1)->srcpads) {
+      src_caps = gst_pad_query_caps((GstPad*)(elem1)->srcpads->data, NULL);
+      src_caps_str = gst_caps_to_string(src_caps);
+    }
+    const char* sink_pad_str = "none";
+    if ((elem2)->sinkpads) {
+      sink_caps = gst_pad_query_caps((GstPad*)(elem2)->sinkpads->data, NULL);
+      sink_pad_str = gst_caps_to_string(sink_caps);
+    }
+    NVGSTDS_ERR_MSG_V(
+        "Failed to link '%s' (%s) and '%s' (%s)",
+        GST_ELEMENT_NAME(elem1),
+        src_caps_str,
+        GST_ELEMENT_NAME(elem2),
+        sink_pad_str);
+    return false;
+  }
+  return true;
+}
+
+gboolean create_hmaudio_bin(
+    GstBin* parent_bin,
+    const NvDsHmAudioConfig* config,
+    NvDsHmAudioBin* bin,
+    const NvDsSinkSubBinConfig* sink_config_array,
+    NvDsSinkBin* sink_bin) {
+  gboolean ret = FALSE;
+  bool linked = false;
+
+  const std::string file_prefix = "file://";
+  const bool is_file_prefix = !strncmp(config->audio_location, file_prefix.c_str(), file_prefix.size());
+  std::string audio_location = is_file_prefix ? &config->audio_location[file_prefix.size()] : config->audio_location;
+  const bool is_src_file = config->src == SRC_FILE || is_file_prefix;
+
+  bin->bin = gst_bin_new("hmaudio_bin");
+  if (!bin->bin) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'hm_image_meta_merger'");
+    goto done;
+  }
+
+  if (!gst_bin_add(parent_bin, bin->bin)) {
+    g_printerr("Could not add to parent bin (hmaudio_bin)");
+    goto done;
+  }
+
+  if (config->src == SRC_FILE || is_src_file) {
+    HMGST_ELEMENT_MAKE_BINADD(bin->audiosrc, "filesrc", "hmaudio_filsrc");
+    HMGST_ELEMENT_MAKE_BINADD(bin->qtdemux, "qtdemux", "hmaudio_demuxer");
+    if (config->dest != DEST_FILE) {
+      HMGST_ELEMENT_MAKE_BINADD(bin->decodebin, "decodebin", "hmaudio_decoder");
+      HMGST_ELEMENT_MAKE_BINADD(bin->audioresample, "audioresample", "hmaudio_audioresample");
+    }
+    g_object_set(G_OBJECT(bin->audiosrc), "location", audio_location.c_str(), NULL);
+
+  } else {
+    HMGST_ELEMENT_MAKE_BINADD(bin->audiosrc, NVDS_ELEM_SRC_ALSA, "hmaudio_alsasrc0");
+  }
+
+  if (bin->decodebin) {
+    bin->audioconvert = gst_element_factory_make(NVDS_ELEM_AUDIO_CONV, "hmaudio_audioconvert0");
+    if (!bin->audioconvert) {
+      NVGSTDS_ERR_MSG_V("Failed to create 'audioconvert0'");
+      goto done;
+    }
+  }
+
+  HMGST_ELEMENT_MAKE_BINADD(bin->queue, NVDS_ELEM_QUEUE, "hmaudio_audioout_queue");
+
+  if (config->dest == DEST_ALSA && !config->sink_id_is_valid) {
+    bin->audiosink = gst_element_factory_make("alsasink", "hmaudio_audiosink0");
+    if (!bin->audiosink) {
+      NVGSTDS_ERR_MSG_V("Failed to create 'audioout_queue'");
+      goto done;
+    }
+    gst_bin_add(GST_BIN(bin->bin), bin->audiosink);
+  }
+
+  if (bin->audioconvert) {
+    gst_bin_add_many(GST_BIN(bin->bin), bin->audioconvert, bin->queue, NULL);
+  }
+
+  if (config->src == SRC_FILE || is_src_file) {
+    // Handle dynamic pad creation from demuxer
+    if (bin->decodebin) {
+      g_signal_connect(bin->qtdemux, "pad-added", G_CALLBACK(on_demuxer_pad_added), bin->decodebin);
+      g_signal_connect(bin->decodebin, "pad-added", G_CALLBACK(on_decode_pad_added), bin->audioconvert);
+    } else {
+      g_signal_connect(bin->qtdemux, "pad-added", G_CALLBACK(on_demuxer_pad_added), bin->queue);
+    }
+
+    // if (!gst_element_link_many(bin->decodebin, bin->audioconvert, bin->audioresample, bin->audiosink, NULL)) {
+    //   g_print("Error linking audio pads\n");
+    //   goto done;
+    // }
+
+    NVGSTDS_LINK_ELEMENT(bin->audiosrc, bin->qtdemux);
+    // link_elements(bin->decodebin, bin->audioconvert);
+    // // NVGSTDS_LINK_ELEMENT(bin->decodebin, bin->audioconvert);
+    if (bin->audioconvert) {
+      NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->audioresample);
+      NVGSTDS_LINK_ELEMENT(bin->audioresample, bin->queue);
+    }
+  } else {
+    NVGSTDS_LINK_ELEMENT(bin->audiosrc, bin->audioconvert);
+    NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->queue);
+  }
+
+  if (config->sink_id_is_valid) {
+    // Ok lets look at the sink we're supposed to be paired with
+    const NvDsSinkSubBinConfig& sink_config = sink_config_array[config->sink_id];
+    if (sink_config.enable) {
+      if (sink_config.type == NV_DS_SINK_ENCODE_FILE) {
+        assert(config->dest == DEST_FILE);
+        assert(sink_bin->sub_bins[config->sink_id].mux);
+        HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
+        NVGSTDS_LINK_ELEMENT(bin->queue, bin->audioparse);
+        NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
+        if (!link_audio_pad_to_muxer(bin->bin, sink_bin->sub_bins[config->sink_id].mux)) {
+          goto done;
+        }
+        linked = true;
+      } else {
+        g_printerr("hmaudio doesn't know how to link to sink of type %d\n", (int)sink_config.type);
+      }
+    } else {
+      g_printerr("hmaudio can't link to sink id %d because it is disabled\n", config->sink_id);
+    }
+  }
+  if (!linked) {
+    if (config->dest != DEST_ALSA) {
+      NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "src");
+    } else {
+      if (*config->alsa_dest_device) {
+        g_object_set(
+            G_OBJECT(bin->audiosink),
+            "device",
+            config->alsa_dest_device, // Specify ALSA device
+            NULL);
+      }
+      NVGSTDS_LINK_ELEMENT(bin->queue, bin->audiosink);
+    }
+  }
+
+  // Fine-tune AV sync with latency adjustment
+  // g_object_set(G_OBJECT(audio_sink),
+  //   "ts-offset", 0,  // Adjust this value (in nanoseconds) if needed
+  //   NULL);
+
+  ret = TRUE;
+done:
+  if (!ret) {
+    NVGSTDS_ERR_MSG_V("%s failed", __func__);
+  }
+
+  return ret;
+}
+
+/**
+ * get_parent_pipeline:
+ * @element: a GstElement which may be nested inside bins.
+ *
+ * Returns: (transfer full): the parent pipeline if found, or NULL otherwise.
+ *
+ * This function walks up the parent chain by calling gst_element_get_parent()
+ * until it finds an element that is a pipeline (i.e. GST_IS_PIPELINE() is true).
+ * The returned pipeline is ref'ed so the caller is responsible for unrefing it.
+ */
+// GstElement* get_parent_pipeline(GstElement* element) {
+//   GstElement* current = element;
+
+//   while (current) {
+//     GstObject* parent_obj = gst_element_get_parent(current);
+//     if (!parent_obj)
+//       break;
+
+//     GstElement* parent_elem = GST_ELEMENT(parent_obj); // explicit cast
+
+//     if (GST_IS_PIPELINE(parent_elem)) {
+//       // Add a reference before returning.
+//       gst_object_ref(parent_elem);
+//       return parent_elem;
+//     }
+
+//     // Move up one level.
+//     current = parent_elem;
+//   }
+
+//   return NULL;
+// }

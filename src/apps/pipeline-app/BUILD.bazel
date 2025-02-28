@@ -4,8 +4,8 @@ cc_binary(
   srcs=glob(["*.c", "*.cpp", "*.h"]),
   deps=[
     "//src/libs/common:utils",
-    "@deepstream//sources/apps/apps-common:deepstream_apps_common",
-    "@deepstream//sources/apps/sample_apps/deepstream-audio:deepstream_audio",
+    "//src/apps/apps-common:deepstream_apps_common_ex",
+    # "@deepstream//sources/apps/sample_apps/deepstream-audio:deepstream_audio",
     "@hm-cupano//src/pano:canvas",
     "@gstreamer",
     "@yaml-cpp",
