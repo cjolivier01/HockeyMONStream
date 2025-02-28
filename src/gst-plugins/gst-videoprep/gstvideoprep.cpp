@@ -136,13 +136,13 @@ enum {
 
 static void gst_videoprep_finalize(GObject* object);
 
-static const gchar* print_pretty_time(gchar* ts_str, gsize ts_str_len, GstClockTime ts) {
-  if (ts == GST_CLOCK_TIME_NONE)
-    return "none";
+// static const gchar* print_pretty_time(gchar* ts_str, gsize ts_str_len, GstClockTime ts) {
+//   if (ts == GST_CLOCK_TIME_NONE)
+//     return "none";
 
-  g_snprintf(ts_str, ts_str_len, "%" GST_TIME_FORMAT, GST_TIME_ARGS(ts));
-  return ts_str;
-}
+//   g_snprintf(ts_str, ts_str_len, "%" GST_TIME_FORMAT, GST_TIME_ARGS(ts));
+//   return ts_str;
+// }
 
 inline bool NPP_CHECK_(gint e, gint iLine, const gchar* szFile) {
   if (e != NPP_SUCCESS) {
@@ -1234,9 +1234,30 @@ void VideoPrepPriv::SetPrivateConfig(const char* config_string) {
 
 static void gst_videoprep_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(object);
-  // if (videoprep->priv) {
-  //   Property prop("key", g_value_get_string(value));
-  // }
+#if 1
+  switch (prop_id) {
+    PROPERTY_SET_CASE(PROP_SILENT, videoprep->silent)
+    PROPERTY_SET_CASE(PROP_GPU_DEVICE_ID, videoprep->gpu_id)
+    PROPERTY_SET_CASE(PROP_SOURCE_ID, videoprep->source_id)
+    PROPERTY_SET_CASE(PROP_NUM_OUTPUT_BUFFERS, videoprep->num_output_buffers)
+    PROPERTY_SET_CASE(PROP_NUM_BATCH_BUFFERS, videoprep->num_batch_buffers)
+    PROPERTY_SET_CASE(PROP_NVBUF_MEMORY_TYPE, videoprep->cuda_mem_type)
+    PROPERTY_SET_CASE(PROP_INTERPOLATION_METHOD, videoprep->interpolation_method);
+    PROPERTY_SET_CASE(PROP_OUTPUT_WIDTH, videoprep->output_width);
+    PROPERTY_SET_CASE(PROP_OUTPUT_HEIGHT, videoprep->output_height);
+    PROPERTY_SET_CASE(PROP_PLUGIN_TYPE, videoprep->plugin_type);
+    PROPERTY_SET_CASE(PROP_PLUGIN_PRIVATE_CONFIG, videoprep->plugin_private_config);
+    // For properties that need special handling, you can write them out:
+    case PROP_CONFIG_FILE:
+      hm::gst::set_value(videoprep->config_file, value);
+      g_print("Stitching config: \"%s\"\n", videoprep->config_file);
+      break;
+    // Add additional cases here...
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+      break;
+  }
+#else
   switch (prop_id) {
     case PROP_SILENT:
       videoprep->silent = g_value_get_boolean(value);
@@ -1292,11 +1313,34 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
   }
+#endif
 }
 
 static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* value, GParamSpec* pspec) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(object);
-
+#if 1
+  switch (prop_id) {
+    PROPERTY_GET_CASE(PROP_SILENT, videoprep->silent)
+    PROPERTY_GET_CASE(PROP_GPU_DEVICE_ID, videoprep->gpu_id)
+    PROPERTY_GET_CASE(PROP_SOURCE_ID, videoprep->source_id)
+    PROPERTY_GET_CASE(PROP_NUM_OUTPUT_BUFFERS, videoprep->num_output_buffers)
+    PROPERTY_GET_CASE(PROP_NUM_BATCH_BUFFERS, videoprep->num_batch_buffers)
+    PROPERTY_GET_CASE(PROP_NVBUF_MEMORY_TYPE, videoprep->cuda_mem_type)
+    PROPERTY_GET_CASE(PROP_INTERPOLATION_METHOD, videoprep->interpolation_method);
+    PROPERTY_GET_CASE(PROP_OUTPUT_WIDTH, videoprep->output_width);
+    PROPERTY_GET_CASE(PROP_OUTPUT_HEIGHT, videoprep->output_height);
+    PROPERTY_GET_CASE(PROP_PLUGIN_TYPE, videoprep->plugin_type);
+    PROPERTY_GET_CASE(PROP_PLUGIN_PRIVATE_CONFIG, videoprep->plugin_private_config);
+    // Special case for string properties:
+    case PROP_CONFIG_FILE:
+      g_value_set_string(value, videoprep->config_file);
+      break;
+    // Add additional cases here...
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+      break;
+  }
+#else
   switch (prop_id) {
     case PROP_SILENT:
       g_value_set_boolean(value, videoprep->silent);
@@ -1341,6 +1385,7 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
   }
+#endif
 }
 
 } // namespace videoprep
