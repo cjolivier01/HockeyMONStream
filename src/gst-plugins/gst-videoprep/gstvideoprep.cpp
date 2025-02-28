@@ -1247,12 +1247,7 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
     PROPERTY_SET_CASE(PROP_OUTPUT_HEIGHT, videoprep->output_height);
     PROPERTY_SET_CASE(PROP_PLUGIN_TYPE, videoprep->plugin_type);
     PROPERTY_SET_CASE(PROP_PLUGIN_PRIVATE_CONFIG, videoprep->plugin_private_config);
-    // For properties that need special handling, you can write them out:
-    case PROP_CONFIG_FILE:
-      hm::gst::set_value(videoprep->config_file, value);
-      g_print("Stitching config: \"%s\"\n", videoprep->config_file);
-      break;
-    // Add additional cases here...
+    PROPERTY_SET_CASE(PROP_CONFIG_FILE, videoprep->config_file);
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
@@ -1331,10 +1326,7 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
     PROPERTY_GET_CASE(PROP_OUTPUT_HEIGHT, videoprep->output_height);
     PROPERTY_GET_CASE(PROP_PLUGIN_TYPE, videoprep->plugin_type);
     PROPERTY_GET_CASE(PROP_PLUGIN_PRIVATE_CONFIG, videoprep->plugin_private_config);
-    // Special case for string properties:
-    case PROP_CONFIG_FILE:
-      g_value_set_string(value, videoprep->config_file);
-      break;
+    PROPERTY_GET_CASE(PROP_CONFIG_FILE, videoprep->config_file);
     // Add additional cases here...
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);

@@ -226,7 +226,8 @@ streammux:
   live-source: 0
   buffer-pool-size: 8
   batch-size: 4
-  # num-surfaces-per-frame: 1
+  num-surfaces-per-frame: 1
+
   ##time out in usec, to wait after the first buffer is available
   ##to push the batch even if the complete batch is not formed
   # batched-push-timeout: 40000
