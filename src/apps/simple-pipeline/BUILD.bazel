@@ -29,3 +29,19 @@ cc_binary(
     ],
     visibility = ["//visibility:public"],
 )
+
+cc_binary(
+    name = "simple-rtmp",
+    srcs = [
+      "simple-rtmp.cpp",
+    ],
+    copts = [
+      "-Wno-error=write-strings",
+    ],
+    deps = [
+        "@glib",
+        "@gstreamer",
+        "@opencv_linux//:opencv",
+    ],
+    visibility = ["//visibility:public"],
+)
