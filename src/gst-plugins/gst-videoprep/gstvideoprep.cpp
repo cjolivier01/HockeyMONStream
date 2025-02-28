@@ -41,10 +41,10 @@
 
 #define DEFAULT_NUM_VIDEO_PREPPED_SURFACES (4)
 #define DEFAULT_DEWARP_DUMP_FRAMES 0
-// #define DEFAULT_DEWARP_OUTPUT_WIDTH 0
-// #define DEFAULT_DEWARP_OUTPUT_HEIGHT 0
-#define DEFAULT_DEWARP_OUTPUT_WIDTH 960
-#define DEFAULT_DEWARP_OUTPUT_HEIGHT 752
+#define DEFAULT_DEWARP_OUTPUT_WIDTH 0
+#define DEFAULT_DEWARP_OUTPUT_HEIGHT 0
+// #define DEFAULT_DEWARP_OUTPUT_WIDTH 960
+// #define DEFAULT_DEWARP_OUTPUT_HEIGHT 752
 
 #define USE_CUDA_STREAM
 
@@ -1264,7 +1264,7 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
       break;
     case PROP_OUTPUT_HEIGHT:
       videoprep->output_height = g_value_get_uint(value);
-      break;
+      0break;
     case PROP_CONFIG_FILE:
       if (videoprep->config_file)
         g_free(videoprep->config_file);

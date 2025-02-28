@@ -101,6 +101,25 @@ std::optional<YAML::Node> get_node_if_enabled(const YAML::Node& pipeline, const 
   return std::nullopt;
 }
 
+bool has_enabled_rtsp_sink(const YAML::Node& pipeline) {
+  for (size_t i = 0; i < MAX_SINK_BINS; ++i) {
+    std::string sinkname = "sink" + std::to_string(i);
+    if (!pipeline[sinkname].IsDefined()) {
+      continue;
+    }
+    if (!pipeline[sinkname]["enable"].IsDefined()) {
+      continue;
+    }
+    if (!pipeline[sinkname]["enable"].as<int>()) {
+      continue;
+    }
+    if (pipeline[sinkname]["type"].as<int>() == NV_DS_SINK_UDPSINK) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::optional<YAML::Node> get_enabled_audio_uri(const YAML::Node& pipeline) {
   size_t index = 0;
   const std::string source_base = "source";
@@ -288,6 +307,21 @@ void Configurator::complete_configuration() {
     }
   }
 
+  const bool is_udb_output = has_enabled_rtsp_sink(pipeline);
+
+  auto maybe_scale_down = [is_udb_output](long width, long height) -> std::tuple<int, int> {
+    if (!is_udb_output) {
+      return std::make_tuple(width, height);
+    }
+    if (width > 3840) {
+      double ar = double(width) / height;
+      width = 3840;
+      height = (long)(width / ar);
+      assert(height <= 2160);
+    }
+    return std::make_tuple(width, height);
+  };
+
   if (!left_files.empty() && !right_files.empty()) {
     auto canvas_size_result = get_canvas_size(game_dir);
     if (canvas_size_result) {
@@ -296,12 +330,14 @@ void Configurator::complete_configuration() {
       pipeline["hmstitcher"]["output-width"] = std::to_string(canvas_width);
       pipeline["hmstitcher"]["output-height"] = std::to_string(canvas_height);
       constexpr double ar = 16.0 / 9.0;
-      pipeline["videoprep"]["output-height"] = std::to_string(canvas_height);
-      pipeline["videoprep"]["output-width"] = std::to_string(static_cast<long>(ar * canvas_height));
+      auto wh_tuple = maybe_scale_down(static_cast<long>(ar * canvas_height), canvas_height);
+      pipeline["hmvideoprep"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
+      pipeline["hmvideoprep"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
     }
   } else {
-    pipeline["videoprep"]["output-height"] = std::to_string(ww);
-    pipeline["videoprep"]["output-width"] = std::to_string(hh);
+    auto wh_tuple = maybe_scale_down(ww, hh);
+    pipeline["hmvideoprep"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
+    pipeline["hmvideoprep"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
   }
 
   if (area) {
@@ -374,6 +410,11 @@ void Configurator::complete_configuration() {
       }
     }
   }
+
+  //
+  // If RTSP server is active, we may need to downscale
+  //
+
   if (true) {
     std::set<std::string> all_enabled;
     for (const auto& item : pipeline) {
