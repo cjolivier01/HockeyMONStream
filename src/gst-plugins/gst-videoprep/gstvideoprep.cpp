@@ -1264,7 +1264,7 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
       break;
     case PROP_OUTPUT_HEIGHT:
       videoprep->output_height = g_value_get_uint(value);
-      0break;
+      break;
     case PROP_CONFIG_FILE:
       if (videoprep->config_file)
         g_free(videoprep->config_file);

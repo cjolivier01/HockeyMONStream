@@ -150,7 +150,7 @@ sink2:
   enc-type: 0
   sync: 1
   # bitrate: 4000000
-  bitrate: 2000000
+  bitrate: 200000
   #NVBUF-MEMORY-TYPE: 0
   #H264 Profile - 0=Baseline 2=Main 4=High
   #H265 Profile - 0=Main 1=Main10
