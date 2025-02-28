@@ -1286,18 +1286,17 @@ static gboolean create_processing_instance(AppCtx* appCtx, guint index) {
         instance_bin);
   }
 
-  if (appCtx->config.hmaudio_config.enable) {
+  for (size_t hmaudio_index = 0; hmaudio_index < sizeof(appCtx->config.hmaudio_config) / sizeof(appCtx->config.hmaudio_config[0]); ++hmaudio_index)
+  if (appCtx->config.hmaudio_config[hmaudio_index].enable) {
     assert(index == 0); // what to do if nto 0?
     if (!create_hmaudio_bin(
-            //GST_BIN(appCtx->pipeline.pipeline),
             GST_BIN(instance_bin->bin),
-            &appCtx->config.hmaudio_config,
+            &appCtx->config.hmaudio_config[hmaudio_index],
             &instance_bin->hmaudio_bin,
             appCtx->config.sink_bin_sub_bin_config,
             &instance_bin->sink_bin)) {
       goto done;
     }
-    // gst_bin_add(GST_BIN(appCtx->pipeline.pipeline), appCtx->pipeline.hmaudio_bin.bin);
   }
 
   ret = TRUE;

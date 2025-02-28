@@ -111,6 +111,7 @@ struct NvDsConfig {
   guint num_secondary_gie_sub_bins;
   guint num_secondary_preprocess_sub_bins;
   guint num_sink_sub_bins;
+  guint num_hmaudio_sub_bins;
   guint num_message_consumers;
   guint perf_measurement_interval_sec;
   guint sgie_batch_size;
@@ -148,7 +149,7 @@ struct NvDsConfig {
   NvDsDsPlayTrackerConfig dsplaytracker_config;
   NvDsSinkMsgConvBrokerConfig msg_conv_config;
   NvDsImageSave image_save_config;
-  NvDsHmAudioConfig hmaudio_config;
+  NvDsHmAudioConfig hmaudio_config[MAX_SOURCE_BINS];
 
   /** To support nvmultiurisrcbin */
   gboolean use_nvmultiurisrcbin;

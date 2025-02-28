@@ -61,13 +61,13 @@ source0:
   # uri: file:///home/colivier/Videos/pdp/GX010087.mp4
   # mlk-extreme
   # uri: file:///home/colivier/Videos/mlk-extreme/GX010096.MP4
-  # uri: file:///home/colivier/Videos/mlk-heat-1/GX010097.MP4
+  uri: file:///home/colivier/Videos/mlk-heat-1/GX010097.MP4
   num-sources: 1
   gpu-id: 0
   cudadec-memtype: 0
 
 source1:
-  enable: 1
+  enable: 0
   type: 3
   # uri: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   # uri: file:///home/colivier/Videos/pdp/GX010003.mp4
@@ -96,8 +96,8 @@ source2:
   # ffmpeg -nostdin -threads 1 -i 'udp://@0.0.0.0:8554?overrun_nonfatal=1&fifo_size=50000000' -f:v mpegts -fflags nobuffer -vf format=yuv420p -f v4l2 /dev/video42
   # csv-file-path: gopro_udp_source.csv
 
-hmaudio:
-  enable: 1
+hmaudio0:
+  enable: 0
   # 0=default alsa source, 1=file
   src: 1
   # audio-location: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
@@ -120,7 +120,7 @@ sink0:
   nvbuf-memory-type: 0
 
 sink1:
-  enable: 1
+  enable: 0
   type: 3
   # link-to-demux: 1
   #1=mp4 2=mkv
@@ -149,7 +149,7 @@ sink2:
   #encoder type 0=Hardware 1=Software
   enc-type: 0
   sync: 0
-  bitrate: 4000000
+  bitrate: 8000000
   #NVBUF-MEMORY-TYPE: 0
   #H264 Profile - 0=Baseline 2=Main 4=High
   #H265 Profile - 0=Main 1=Main10
@@ -283,8 +283,7 @@ ds-example:
   processing-height: 480
 
 hmvideoprep:
-  # enable: false
-  enable: true
+  enable: 0
   gpu-id: 0
   # plugin-type: videoprep
   # has_queue: false
@@ -310,8 +309,8 @@ hmvideoprep:
   # num-output-buffers: 2
 
 hmstitcher:
-  # enable: false
-  enable: true
+  enable: 1
+  # enable: 0
   gpu-id: 0
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
@@ -329,7 +328,7 @@ ds-playtracker:
   config-file: play_tracker_config.yaml
 
 ds-fieldmask:
-  enable: 1
+  enable: 0
   gpu-id: 0
   unique-id: 76
   # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png

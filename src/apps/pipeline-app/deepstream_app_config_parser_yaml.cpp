@@ -13,6 +13,25 @@
 using std::cout;
 using std::endl;
 
+static int get_trailing_integer(const std::string& input) {
+  int len = input.length();
+  int end = len - 1;
+
+  // Find the last character that is a digit
+  while (end >= 0 && std::isdigit(input[end])) {
+    --end;
+  }
+
+  // If no digits were found at the end of the string
+  if (end == len - 1) {
+    return 0;
+  }
+
+  // Extract the substring from the first digit of the continuous number segment to the end
+  std::string numberStr = input.substr(end + 1, len - end - 1);
+  return std::stoi(numberStr); // Convert to integer
+}
+
 static gboolean parse_tests_yaml(NvDsConfig* config, gchar* cfg_file_path) {
   gboolean ret = FALSE;
   YAML::Node configyml = YAML::LoadFile(cfg_file_path);
@@ -95,10 +114,7 @@ gboolean parse_hmvideoprep_yaml(
   return true;
 }
 
-gboolean parse_hmstitcher_yaml(
-    HmStitcherConfig* config,
-    const YAML::Node& yaml_node,
-    const std::string& config_path) {
+gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_node, const std::string& config_path) {
   if (!parse_hmvideoprep_yaml(config, yaml_node, config_path)) {
     return false;
   }
@@ -464,7 +480,8 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, gcha
       /** if gpu_id for dsexample component is present,
        * it will override the value set using global_gpu_id in parse_fieldmask_yaml function */
       // parse_err = !parse_hmstitcher_yaml(&config->hmsticher_config, itr->second);
-      parse_err = !parse_hmstitcher_yaml(&config->hmsticher_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
+      parse_err = !parse_hmstitcher_yaml(
+          &config->hmsticher_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
     } else if (paramKey == "ds-playtracker") {
       /** set gpu_id for dsexample component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {
@@ -492,8 +509,9 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, gcha
        * it will override the value set using global_gpu_id in parse_playtracker_yaml function */
       parse_err = !parse_hmimagemetamerger_yaml(
           &config->hmimagemetamerger_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
-    } else if (paramKey == "hmaudio") {
-      parse_err = !parse_hmaudio_yaml(&config->hmaudio_config, itr->second);
+    } else if (!strncmp(paramKey.c_str(), "hmaudio", 7)) {
+      ++config->num_hmaudio_sub_bins;
+      parse_err = !parse_hmaudio_yaml(&config->hmaudio_config[get_trailing_integer(paramKey)], itr->second);
     } else if (paramKey == "message-converter") {
       parse_err = !parse_msgconv_yaml(&config->msg_conv_config, paramKey, cfg_file_path);
     } else if (paramKey == "tests") {

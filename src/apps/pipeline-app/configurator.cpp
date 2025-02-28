@@ -50,6 +50,28 @@ bool is_valid_yaml_value_string(std::string s) {
   return true;
 }
 
+bool is_enabled(YAML::Node n) {
+  if (!n.IsDefined()) {
+    return false;
+  }
+  if (!n.IsMap()) {
+    return false;
+  }
+  YAML::Node enabled = n["enable"];
+  if (enabled.IsDefined()) {
+    std::string as_str = enabled.as<std::string>();
+    if (as_str == "true") {
+      return true;
+    } else if (as_str == "false") {
+      return false;
+    }
+    if (enabled.as<int>()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::optional<std::tuple<int, int>> get_canvas_size(const std::string& game_dir) {
   hm::pano::ControlMasks control_masks(game_dir);
   if (!control_masks.is_valid()) {
@@ -61,17 +83,20 @@ std::optional<std::tuple<int, int>> get_canvas_size(const std::string& game_dir)
 std::optional<YAML::Node> get_node_if_enabled(const YAML::Node& pipeline, const std::string& name) {
   if (pipeline.IsDefined() && pipeline.IsMap()) {
     YAML::Node n = pipeline[name];
-    if (n.IsDefined() && n.IsMap()) {
-      YAML::Node enabled = n["enable"];
-      if (enabled.IsDefined()) {
-        if (enabled.as<std::string>() == "true") {
-          return n;
-        }
-        if (enabled.as<int>()) {
-          return n;
-        }
-      }
+    if (is_enabled(n)) {
+      return n;
     }
+    // if (n.IsDefined() && n.IsMap()) {
+    //   YAML::Node enabled = n["enable"];
+    //   if (enabled.IsDefined()) {
+    //     if (enabled.as<std::string>() == "true") {
+    //       return n;
+    //     }
+    //     if (enabled.as<int>()) {
+    //       return n;
+    //     }
+    //   }
+    // }
   }
   return std::nullopt;
 }
@@ -240,6 +265,8 @@ void Configurator::complete_configuration() {
 
   long area = 0, ww = 0, hh = 0;
 
+  size_t num_video_sources = 0;
+
   auto offsets = config_["game"]["stitching"]["frame_offsets"];
   if (!left_files.empty()) {
     Videoinfo left_info = getVideoInfo(file_maybe_in_game_dir(left_files[0]));
@@ -301,6 +328,7 @@ void Configurator::complete_configuration() {
         assert(offsets["right"].as<double>() == 0);
         possible_audio_uri = src1["uri"].as<std::string>();
       }
+      num_video_sources += 2;
     }
   } else {
     auto src0 = pipeline["source0"];
@@ -312,7 +340,15 @@ void Configurator::complete_configuration() {
         }
       }
       possible_audio_uri = src0["uri"].as<std::string>();
+      ++num_video_sources;
     }
+  }
+  if (num_video_sources < 2) {
+    pipeline["hmstitcher"]["enable"] = "1";
+    YAML::Node n = pipeline["hmstitcher"];
+    std::cout << n << std::endl;
+    n["enable"] = "0";
+    std::cout << pipeline["hmstitcher"] << std::endl;
   }
   if (!possible_audio_uri.empty()) {
     std::optional<YAML::Node> audio_uri_opt = get_enabled_audio_uri(pipeline);
@@ -322,14 +358,40 @@ void Configurator::complete_configuration() {
         audio_uri["uri"] = possible_audio_uri;
       }
     }
-    audio_uri_opt = get_node_if_enabled(pipeline, "hmaudio");
-    if (audio_uri_opt.has_value()) {
-      YAML::Node audio_uri = *audio_uri_opt;
-      const std::string key = "audio-location";
-      const bool is_defined = audio_uri[key].IsDefined();
-      if (!is_defined || !is_valid_yaml_value_string(audio_uri[key].as<std::string>())) {
-        audio_uri[key] = possible_audio_uri;
+    for (size_t hmaudio_index = 0; hmaudio_index < INT_MAX; ++hmaudio_index) {
+      std::string hmaudio_name = "hmaudio" + std::to_string(hmaudio_index);
+      if (!pipeline[hmaudio_name].IsDefined()) {
+        break;
       }
+      audio_uri_opt = get_node_if_enabled(pipeline, hmaudio_name);
+      if (audio_uri_opt.has_value()) {
+        YAML::Node audio_uri = *audio_uri_opt;
+        const std::string key = "audio-location";
+        const bool is_defined = audio_uri[key].IsDefined();
+        if (!is_defined || !is_valid_yaml_value_string(audio_uri[key].as<std::string>())) {
+          audio_uri[key] = possible_audio_uri;
+        }
+      }
+    }
+  }
+  if (true) {
+    std::set<std::string> all_enabled;
+    for (const auto& item : pipeline) {
+      std::string key = item.first.as<std::string>();
+      if (key == "hmstitcher") {
+        usleep(0);
+      }
+      if (is_enabled(pipeline[key])) {
+        all_enabled.emplace(key);
+      }
+    }
+    if (!all_enabled.empty()) {
+      std::stringstream ss;
+      ss << "Enabled bins: \n";
+      for (const std::string& s : all_enabled) {
+        ss << "  " << s << '\n';
+      }
+      std::cout << ss.str() << std::flush;
     }
   }
 }
