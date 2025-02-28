@@ -344,11 +344,11 @@ void Configurator::complete_configuration() {
     }
   }
   if (num_video_sources < 2) {
-    pipeline["hmstitcher"]["enable"] = "1";
-    YAML::Node n = pipeline["hmstitcher"];
-    std::cout << n << std::endl;
-    n["enable"] = "0";
-    std::cout << pipeline["hmstitcher"] << std::endl;
+    pipeline["hmstitcher"]["enable"] = "0";
+    // YAML::Node n = pipeline["hmstitcher"];
+    // std::cout << n << std::endl;
+    // n["enable"] = "0";
+    // std::cout << pipeline["hmstitcher"] << std::endl;
   }
   if (!possible_audio_uri.empty()) {
     std::optional<YAML::Node> audio_uri_opt = get_enabled_audio_uri(pipeline);
