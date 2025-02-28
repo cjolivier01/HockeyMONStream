@@ -1,3 +1,4 @@
+#include "cuda/cudaStatus.h"
 #include "gstvideoprep.h"
 
 #include <cuda_runtime.h>
@@ -19,7 +20,7 @@
 #include <vector>
 #include "nvbufsurface.h"
 
-#include "cudaMat.h"
+#include "pano/cudaMat.h"
 
 #if defined(__aarch64__)
 #include <EGL/egl.h>
@@ -31,7 +32,7 @@
 namespace hm {
 namespace stitcher {
 
-//static constexpr int kNumStitcherLaplacianLevels = 0;
+// static constexpr int kNumStitcherLaplacianLevels = 0;
 static constexpr int kNumStitcherLaplacianLevels = 6;
 
 StitcherPriv::~StitcherPriv() {
@@ -114,18 +115,12 @@ struct ModifyBatchFrames {
   NvDsBatchMeta* batch_meta_;
 };
 
-cudaError StitcherPriv::GenerateOutput(
+CudaStatus StitcherPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     videoprep::GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
   // std::unique_lock lk(process_mu_);
-
-  cudaError err = cudaSuccess;
-  cudaError_t last_error = cudaGetLastError();
-  assert(last_error == cudaSuccess);
-
-  // NvDewarperSurfaceMeta* surface_meta = (NvDewarperSurfaceMeta*)calloc(1, sizeof(NvDewarperSurfaceMeta));
 
   assert(in_surface->batchSize % 2 == 0);
   if (in_surface->numFilled % 2 != 0) {
@@ -148,8 +143,7 @@ cudaError StitcherPriv::GenerateOutput(
 
   assert(videoprep->stream);
 
-  err = cudaSetDevice(videoprep->gpu_id);
-  assert(err == cudaSuccess);
+  CUDA_RETURN_IF_ERROR(cudaSetDevice(videoprep->gpu_id));
 
   out_surface->numFilled = 0;
   out_surface->batchSize = in_surface->batchSize / 2;
@@ -281,56 +275,23 @@ cudaError StitcherPriv::GenerateOutput(
     // render("left", left_params, videoprep->stream);
     // render("right", right_params, videoprep->stream);
     // Why suddenly now I need to clear the canvas?
-    cudaMemsetAsync(
-        canvas->data_raw(), 0, canvas->height() * canvas->pitch() * canvas->batch_size(), videoprep->stream);
+    CUDA_RETURN_IF_ERROR(cudaMemsetAsync(
+        canvas->data_raw(), 0, canvas->height() * canvas->pitch() * canvas->batch_size(), videoprep->stream));
 
-    err = cudaMemsetAsync(canvas->data_raw(), 0, canvas->height() * canvas->pitch() * canvas->batch_size());
+    auto stitch_result = stitcher_->process(left, right, videoprep->stream, std::move(canvas));
+    if (stitch_result.ok()) {
+      canvas = std::move(stitch_result.ValueOrDie());
+      // render("canvas", output_params, videoprep->stream);
+      ++out_surface->numFilled;
+      // Both should have the same 'persistent_frame_meta'
+      // TODO: Should we do this later under a batch meta lock?
+      // ModifyBatchFrames frame_adder(batch_meta, remove_frame_metas);
 
-    if (err == cudaError_t::cudaSuccess) {
-      auto stitch_result = stitcher_->process(left, right, videoprep->stream, std::move(canvas));
-      if (stitch_result.ok()) {
-        canvas = std::move(stitch_result.ValueOrDie());
-        // render("canvas", output_params, videoprep->stream);
-        ++out_surface->numFilled;
-        // Both should have the same 'persistent_frame_meta'
-        // TODO: Should we do this later under a batch meta lock?
-        // ModifyBatchFrames frame_adder(batch_meta, remove_frame_metas);
-#if 1
-        reuse_frame_meta->source_frame_width = reuse_frame_meta->pipeline_width = canvas->width();
-        reuse_frame_meta->source_frame_height = reuse_frame_meta->pipeline_height = canvas->height();
-        reuse_frame_meta->num_surfaces_per_frame = 1;
-#else
-        frame_adder.add_frame([&](NvDsFrameMeta* new_frame_meta) -> bool {
-          // Currently we don't copy over any user or object meta because it is assumed that thsoe would be wrt an
-          // invalid resolution. It may come, however, that we should copy over some stuff, esp user meta,
-          // if that ever gets filled.
-          assert(!left_frame_offset_ns_ || !right_frame_offset_ns_);
-          const FrameInfo* base_frame_info = left_frame_offset_ns_ == 0 ? &frame_info_left : &frame_info_right;
-
-          assert(!base_frame_info->frame_meta->num_obj_meta);
-          assert(!base_frame_info->frame_meta->frame_user_meta_list);
-
-          new_frame_meta->frame_num = base_frame_info->frame_meta->frame_num;
-          new_frame_meta->source_frame_width = new_frame_meta->pipeline_width = canvas->width();
-          new_frame_meta->source_frame_height = new_frame_meta->pipeline_height = canvas->height();
-          // new_frame_meta->surface_index = out_surface_index;
-          new_frame_meta->pad_index = 0;
-          new_frame_meta->source_id = min_source_id;
-          new_frame_meta->surface_type = base_frame_info->frame_meta->surface_type;
-          new_frame_meta->num_surfaces_per_frame = 1;
-          new_frame_meta->batch_id = base_frame_info->frame_meta->batch_id;
-          // Use timestamp of the one that is based at 0 so that it matches the audio
-          new_frame_meta->ntp_timestamp = base_frame_info->frame_meta->ntp_timestamp;
-          assert(min_source_id == 0); // debug checking
-          return true;
-        });
-#endif
-      } else {
-        std::cerr << stitch_result.status() << std::endl;
-        GST_ERROR("%s\n", stitch_result.status().message().c_str());
-      }
+      reuse_frame_meta->source_frame_width = reuse_frame_meta->pipeline_width = canvas->width();
+      reuse_frame_meta->source_frame_height = reuse_frame_meta->pipeline_height = canvas->height();
+      reuse_frame_meta->num_surfaces_per_frame = 1;
     } else {
-      std::cerr << "oops" << std::endl;
+      return stitch_result.status();
     }
   }
 
@@ -341,10 +302,10 @@ cudaError StitcherPriv::GenerateOutput(
     // batch_meta->frame_meta_pool->max_elements_in_pool /= 2;
     batch_meta->max_frames_in_batch = batch_meta->num_frames_in_batch;
     // assert(batch_meta->max_frames_in_batch); // make sure we didnt do too many times and make it 0
-    cudaStreamSynchronize(videoprep->stream);
+    CUDA_RETURN_IF_ERROR(cudaStreamSynchronize(videoprep->stream));
   }
   // videoprep::videoprep_add_surface_meta(videoprep->out_gst_buf, out_surface->numFilled, videoprep->source_id);
-  return err;
+  return CudaStatus::OkStatus();
 }
 
 static void gst_stitcher_class_init(GstVideoPrepStitcherClass* klass) {

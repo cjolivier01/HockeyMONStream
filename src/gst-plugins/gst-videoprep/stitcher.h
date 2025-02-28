@@ -1,6 +1,6 @@
 #pragma once
 
-#include "cudaPano.h"
+#include "pano/cudaPano.h"
 #include "gstvideoprep.h"
 
 #include "custom_algorithm_base.h"
@@ -61,7 +61,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
 
   // DSCustomLibraryBase-
 
-  cudaError GenerateOutput(
+  CudaStatus GenerateOutput(
       NvDsBatchMeta* batch_meta,
       videoprep::GstVideoPrep* videoprep,
       NvBufSurface* in_surface,

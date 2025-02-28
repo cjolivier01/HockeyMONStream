@@ -7,6 +7,7 @@
 #include "glDisplay.h"
 #include "nvdsmeta.h"
 #include "src/libs/common/Surface.h"
+#include "cuda/cudaStatus.h"
 
 #include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
 
@@ -42,14 +43,13 @@ uint32_t gst_videoprep_version();
 
 std::vector<hm::BBox> get_tracking_boxes(NvDsBatchMeta* batch_meta);
 
-NppStatus cropSurface(
+CudaStatus cropSurface(
     const hm::surface::Surface& in_surface,
     const hm::BBox& src_rect,
     hm::surface::Surface out_surface,
-    bool clear_output_surface,
     const NppStreamContext& nppStreamContext);
 
-NppStatus rotateNvBufSurfaceWithNPP(
+CudaStatus rotateNvBufSurfaceWithNPP(
     const hm::surface::Surface& in_surface,
     const hm::BBox& src_rect,
     hm::surface::Surface out_surface,
@@ -58,7 +58,7 @@ NppStatus rotateNvBufSurfaceWithNPP(
     const Point& anchor_point,
     const NppStreamContext& nppStreamContext);
 
-NppStatus cropAndResizeNvBufSurface(
+CudaStatus cropAndResizeNvBufSurface(
     const hm::surface::Surface& in_surface,
     const BBox& src_rect,
     hm::surface::Surface out_surface,

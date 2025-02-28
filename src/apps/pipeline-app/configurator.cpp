@@ -1,5 +1,5 @@
 #include "configurator.h"
-#include "controlMasks.h"
+#include "pano/controlMasks.h"
 #include "deepstream_app.h"
 
 #include <filesystem>

@@ -15,3 +15,4 @@ cuda-keyring*.deb
 pipeline*.dot
 output.png
 MODULE.bazel.lock
+.cache

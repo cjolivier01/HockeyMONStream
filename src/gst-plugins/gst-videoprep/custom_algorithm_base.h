@@ -139,7 +139,7 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   std::queue<PacketInfo> m_processQ;
   std::mutex m_processLock;
   std::condition_variable m_processCV;
-  cudaError_t last_cuda_error{cudaError_t::cudaSuccess};
+  CudaStatus cuda_status;
   NvBufSurfTransformConfigParams m_config_params;
   /* Aysnc Stop Handling */
   gboolean m_stop = FALSE;
@@ -740,8 +740,9 @@ inline void CustomAlgorithmBase::OutputThread(void) {
         assert(m_element);
         // videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(m_element);
         assert(videoprep);
-        last_cuda_error = GenerateOutput(batch_meta, videoprep, in_surf, out_surf);
-        if (last_cuda_error != cudaError_t::cudaSuccess) {
+        cuda_status.Update(GenerateOutput(batch_meta, videoprep, in_surf, out_surf));
+        if (!cuda_status.ok()) {
+          std::cerr << cuda_status << std::endl;
           last_flow_ret_ = GST_FLOW_ERROR;
         }
         // if (std::string("hmstitcher") == videoprep->plugin_type) {

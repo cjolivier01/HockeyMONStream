@@ -12,6 +12,8 @@
 #include <cuda.h>
 #include <npp.h>
 
+#include "cuda/cudaStatus.h"
+
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 
@@ -64,13 +66,13 @@ class VideoPrepPriv : public DSCustomLibraryBase {
 
   // DSCustomLibraryBase-
 
-  virtual cudaError GenerateOutput(
+  virtual CudaStatus GenerateOutput(
       NvDsBatchMeta* batch_meta,
       videoprep::GstVideoPrep* videoprep,
       NvBufSurface* in_surface,
       NvBufSurface* out_surface) {
     assert(false);
-    return cudaError_t::cudaSuccess;
+    return CudaStatus::OkStatus();
   }
 
   virtual gint AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) {

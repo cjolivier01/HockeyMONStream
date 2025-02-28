@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cuda/cudaStatus.h"
 #include "gstvideoprep.h"
 
 #include "custom_algorithm_base.h"
@@ -68,7 +69,7 @@ class PlayCropperPriv : public STITCH_PRIV_BASE {
 
   // DSCustomLibraryBase-
 
-  cudaError GenerateOutput(
+  CudaStatus GenerateOutput(
       NvDsBatchMeta* batch_meta,
       videoprep::GstVideoPrep* videoprep,
       NvBufSurface* in_surface,

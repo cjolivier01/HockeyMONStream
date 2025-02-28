@@ -1,5 +1,6 @@
 #include "preputils.h"
 
+#include "cuda/cudaStatus.h"
 #include "cudaCrop.h"
 #include "cudaWarp.h"
 
@@ -12,6 +13,118 @@
 #include <npp.h>
 
 namespace hm {
+
+#include <cuda_runtime.h> // for cudaError_t and related enums
+
+// Example mapping function
+cudaError_t mapNppStatusToCudaError(const NppStatus& status) {
+  switch (status) {
+    // Success codes
+    case NPP_SUCCESS:
+      return cudaSuccess;
+
+    // Not supported / unimplemented
+    case NPP_NOT_SUPPORTED_MODE_ERROR:
+    case NPP_ZC_MODE_NOT_SUPPORTED_ERROR:
+    case NPP_ROUND_MODE_NOT_SUPPORTED_ERROR:
+    case NPP_NOT_SUFFICIENT_COMPUTE_CAPABILITY:
+      return cudaErrorNotSupported;
+
+    // Pointer errors
+    case NPP_INVALID_HOST_POINTER_ERROR:
+      return cudaErrorInvalidHostPointer;
+    case NPP_INVALID_DEVICE_POINTER_ERROR:
+      return cudaErrorInvalidDevicePointer;
+
+    // Texture binding error
+    case NPP_TEXTURE_BIND_ERROR:
+      return cudaErrorInvalidTextureBinding;
+
+    // Kernel execution error
+    case NPP_CUDA_KERNEL_EXECUTION_ERROR:
+      return cudaErrorLaunchFailure;
+
+    // Memory and allocation errors
+    case NPP_MEMORY_ALLOCATION_ERR:
+    case NPP_NO_MEMORY_ERROR:
+      return cudaErrorMemoryAllocation;
+
+    // Alignment errors
+    case NPP_ALIGNMENT_ERROR:
+      return cudaErrorMisalignedAddress;
+
+    // Many of the remaining errors indicate an invalid value or configuration:
+    case NPP_LUT_PALETTE_BITSIZE_ERROR:
+    case NPP_WRONG_INTERSECTION_ROI_ERROR:
+    case NPP_QUALITY_INDEX_ERROR:
+    case NPP_OVERFLOW_ERROR:
+    case NPP_NOT_EVEN_STEP_ERROR:
+    case NPP_HISTOGRAM_NUMBER_OF_LEVELS_ERROR:
+    case NPP_LUT_NUMBER_OF_LEVELS_ERROR:
+    case NPP_CHANNEL_ORDER_ERROR:
+    case NPP_ZERO_MASK_VALUE_ERROR:
+    case NPP_QUADRANGLE_ERROR:
+    case NPP_RECTANGLE_ERROR:
+    case NPP_COEFFICIENT_ERROR:
+    case NPP_NUMBER_OF_CHANNELS_ERROR:
+    case NPP_COI_ERROR:
+    case NPP_DIVISOR_ERROR:
+    case NPP_CHANNEL_ERROR:
+    case NPP_STRIDE_ERROR:
+    case NPP_ANCHOR_ERROR:
+    case NPP_MASK_SIZE_ERROR:
+    case NPP_RESIZE_FACTOR_ERROR:
+    case NPP_INTERPOLATION_ERROR:
+    case NPP_MIRROR_FLIP_ERROR:
+    case NPP_MOMENT_00_ZERO_ERROR:
+    case NPP_THRESHOLD_NEGATIVE_LEVEL_ERROR:
+    case NPP_THRESHOLD_ERROR:
+    case NPP_FFT_FLAG_ERROR:
+    case NPP_FFT_ORDER_ERROR:
+    case NPP_STEP_ERROR:
+    case NPP_SCALE_RANGE_ERROR:
+    case NPP_DATA_TYPE_ERROR:
+    case NPP_OUT_OFF_RANGE_ERROR:
+    case NPP_DIVIDE_BY_ZERO_ERROR:
+    case NPP_NULL_POINTER_ERROR:
+    case NPP_RANGE_ERROR:
+    case NPP_SIZE_ERROR:
+    case NPP_BAD_ARGUMENT_ERROR:
+      return cudaErrorInvalidValue;
+
+    // Context errors
+    case NPP_CONTEXT_MATCH_ERROR:
+      return cudaErrorInvalidConfiguration;
+
+    // Corrupted data
+    case NPP_CORRUPTED_DATA_ERROR:
+      return cudaErrorIllegalAddress;
+
+    // Not implemented
+    case NPP_NOT_IMPLEMENTED_ERROR:
+      return cudaErrorNotYetImplemented;
+
+    // Generic error fall-throughs
+    case NPP_ERROR:
+    case NPP_ERROR_RESERVED:
+      return cudaErrorUnknown;
+
+    // Warnings: In this example, warnings are treated as non-errors.
+    case NPP_NO_OPERATION_WARNING:
+    case NPP_DIVIDE_BY_ZERO_WARNING:
+    case NPP_AFFINE_QUAD_INCORRECT_WARNING:
+    case NPP_WRONG_INTERSECTION_ROI_WARNING:
+    case NPP_WRONG_INTERSECTION_QUAD_WARNING:
+    case NPP_DOUBLE_SIZE_WARNING:
+      return cudaSuccess;
+    case NPP_MISALIGNED_DST_ROI_WARNING:
+      return cudaErrorMisalignedAddress;
+
+    // If the status isn’t recognized, return a generic unknown error.
+    default:
+      return cudaErrorUnknown;
+  }
+}
 
 std::unique_ptr<glDisplay> RenderSet::create_video_output(
     const std::string& name,
@@ -87,27 +200,17 @@ void createAffineMatrix(double angleRadians, int width, int height, const Point&
   matrix[1][2] = cy - sinTheta * cx - cosTheta * cy; // m12 (y-translation)
 }
 
-NppStatus cropSurface(
+CudaStatus cropSurface(
     const hm::surface::Surface& in_surface,
     const hm::BBox& src_rect,
     hm::surface::Surface out_surface,
-    bool clear_output_surface,
     const NppStreamContext& nppStreamContext) {
-  NppStatus status = NppStatus::NPP_SUCCESS;
-
-  cudaError_t cuerr = cudaSuccess;
-  (void)cuerr;
   // pitch must match width alignment for the destination surface
   // assert(out_surface.pitch() == out_surface.width() * 4);
   const NppiSize src_image_size = get_nppisize(in_surface);
   (void)src_image_size;
   const NppiSize dest_image_size = get_nppisize(out_surface);
   (void)dest_image_size;
-  // if (clear_output_surface) {
-  //   assert(false); // shouldnt need if theyre the same size
-  //   cuerr = cudaMemsetAsync(
-  //       out_surface.dataptr(), 128, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
-  // }
   // Sanity check everything
   assert(src_rect.left >= 0 && src_rect.top >= 0);
   assert(src_rect.width() <= in_surface.width());
@@ -115,36 +218,28 @@ NppStatus cropSurface(
   // If not this, we need to clear
   assert((int)src_rect.width() <= dest_image_size.width);
   assert((int)src_rect.height() <= dest_image_size.height);
-  // Do we have a use-case for not startiong at 0, 0? does the resize functionw ork at all?
-  if (cuerr == cudaSuccess) {
-    const int4 roi{
-        .x = (int)src_rect.left,
-        .y = (int)src_rect.top,
-        .z = (int)src_rect.right - 1,
-        .w = (int)src_rect.bottom - 1,
-    };
-    assert((guint)src_rect.width() <= out_surface.width());
-    assert((guint)src_rect.height() <= out_surface.height());
-    cuerr = cudaCrop(
-        in_surface.dataptr<uchar4*>(),
-        out_surface.dataptr<uchar4*>(),
-        roi,
-        in_surface.width(),
-        in_surface.height(),
-        in_surface.pitch(),
-        out_surface.pitch(),
-        nppStreamContext.hStream);
-    assert(cuerr == cudaSuccess);
-  }
-  if (cuerr != 0) {
-    std::cerr << "Cuda error during crop" << std::endl;
-    assert(false);
-  }
 
-  return status;
+  const int4 roi{
+      .x = (int)src_rect.left,
+      .y = (int)src_rect.top,
+      .z = (int)src_rect.right - 1,
+      .w = (int)src_rect.bottom - 1,
+  };
+  assert((guint)src_rect.width() <= out_surface.width());
+  assert((guint)src_rect.height() <= out_surface.height());
+  CUDA_RETURN_IF_ERROR(cudaCrop(
+      in_surface.dataptr<uchar4*>(),
+      out_surface.dataptr<uchar4*>(),
+      roi,
+      in_surface.width(),
+      in_surface.height(),
+      in_surface.pitch(),
+      out_surface.pitch(),
+      nppStreamContext.hStream));
+  return CudaStatus::OkStatus();
 }
 
-NppStatus rotateNvBufSurfaceWithNPP(
+CudaStatus rotateNvBufSurfaceWithNPP(
     const hm::surface::Surface& in_surface,
     const hm::BBox& src_rect,
     hm::surface::Surface out_surface,
@@ -187,12 +282,8 @@ NppStatus rotateNvBufSurfaceWithNPP(
   // assert(dstROI.width == (int)outParams->width);
   // assert(dstROI.height == (int)outParams->height);
 
-  NppStatus status = NppStatus::NPP_SUCCESS;
-
-  // Define rotation matrix
-#if 1
-#if 1
-  cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
+  CUDA_RETURN_IF_ERROR(
+      cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream));
   float affineMatrix[2][3];
   createAffineMatrix(
       angleRadians,
@@ -202,50 +293,18 @@ NppStatus rotateNvBufSurfaceWithNPP(
       affineMatrix);
   assert(in_surface.width() == out_surface.width());
   assert(in_surface.height() == out_surface.height());
-  cudaError_t cuerr = cudaWarpAffine(
+  CUDA_RETURN_IF_ERROR(cudaWarpAffine(
       in_surface.dataptr<uchar4*>(),
       out_surface.dataptr<uchar4*>(),
       (uint32_t)in_surface.width(),
       (uint32_t)in_surface.height(),
       affineMatrix,
       /*transform_inverted=*/false,
-      nppStreamContext.hStream);
-  if (cuerr != 0) {
-    std::cerr << "NPP rotation failed with error: " << cuerr << std::endl;
-    assert(false);
-  }
-#else
-  // Wipe the destination image
-  cudaMemsetAsync(out_surface.dataptr(), 0, out_surface.pitch() * out_surface.height(), nppStreamContext.hStream);
-  double affineMatrix[2][3];
-  createAffineMatrix(
-      angleRadians,
-      static_cast<int>(src_rect2.width()),
-      static_cast<int>(src_rect2.height()),
-      anchor_point,
-      affineMatrix);
-  status = nppiWarpAffine_8u_C4R_Ctx(
-      in_surface.dataptr<Npp8u*>(), // Source pointer
-      {static_cast<int>(in_surface.width()), static_cast<int>(in_surface.height())}, // Source size
-      in_surface.pitch(), // Source pitch
-      srcROI, // Source ROI
-      out_surface.dataptr<Npp8u*>(), // Destination pointer
-      out_surface.pitch(), // Destination pitch
-      dstROI, // Destination ROI
-      affineMatrix, // Affine transformation matrix
-      NPPI_INTER_LINEAR, // Interpolation method
-      nppStreamContext);
-#endif
-#endif
-
-  if (status != NPP_SUCCESS) {
-    std::cerr << "NPP rotation failed with error: " << status << std::endl;
-    assert(false);
-  }
-  return status;
+      nppStreamContext.hStream));
+  return CudaStatus::OkStatus();
 }
 
-NppStatus cropAndResizeNvBufSurface(
+CudaStatus cropAndResizeNvBufSurface(
     const hm::surface::Surface& in_surface,
     const BBox& src_rect,
     hm::surface::Surface out_surface,
@@ -267,9 +326,7 @@ NppStatus cropAndResizeNvBufSurface(
 
   // Perform cropping and resizing using nppiResize or nppiWarpAffine (interpolation)
   // For simplicity, let's use nppiResize for resizing and interpolation
-  NppStatus status = NppStatus::NPP_SUCCESS;
-
-  status = nppiResize_8u_C4R_Ctx(
+  CUDA_RETURN_IF_ERROR(mapNppStatusToCudaError(nppiResize_8u_C4R_Ctx(
       in_surface.dataptr<Npp8u*>(),
       in_surface.pitch(), // Source image and pitch
       NppiSize{.width = (int)in_surface.width(), .height = (int)in_surface.height()},
@@ -279,13 +336,9 @@ NppStatus cropAndResizeNvBufSurface(
       NppiSize{.width = (int)out_surface.width(), .height = (int)out_surface.height()},
       dstRect, // Destination rectangle
       NPPI_INTER_LINEAR, // Interpolation method (e.g., linear)
-      nppStreamContext);
+      nppStreamContext)));
 
-  if (status != NPP_SUCCESS) {
-    std::cerr << "Error in nppiResize_8u_C4R: " << status << std::endl;
-    assert(false);
-  }
-  return status;
+  return CudaStatus::OkStatus();
 }
 
 } // namespace hm
