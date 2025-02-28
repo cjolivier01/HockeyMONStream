@@ -112,7 +112,7 @@ hmaudio0:
 sink0:
   enable: 1
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
-  type: 2
+  type: 1
   # sync: 1
   sync: 0
   source-id: 0
@@ -141,15 +141,16 @@ sink1:
 
 
 sink2:
-  enable: 0
+  enable: 1
   #Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 4
   #1=h264 2=h265
   codec: 1
   #encoder type 0=Hardware 1=Software
   enc-type: 0
-  sync: 0
-  bitrate: 8000000
+  sync: 1
+  # bitrate: 4000000
+  bitrate: 1000000
   #NVBUF-MEMORY-TYPE: 0
   #H264 Profile - 0=Baseline 2=Main 4=High
   #H265 Profile - 0=Main 1=Main10
@@ -230,12 +231,28 @@ streammux:
   ##to push the batch even if the complete batch is not formed
   # batched-push-timeout: 40000
   ## Set muxer output width and height
+
+  ######################
+  # 4k
+  ######################
+  width: 3840
+  height: 2160
+
+  ######################
+  # Tiny
+  ######################
   # width: 1784
   # height: 738
+
   #width: 8192
   #height: 2770
-  width: 5312
-  height: 2988
+
+  ######################
+  # GoPro 5k
+  ######################
+  # width: 5312
+  # height: 2988
+
   # width: 4096
   # height: 1385
   # width: 4080
@@ -256,7 +273,7 @@ hm-image-meta-merger:
   nvbuf-memory-type: 0
 
 primary-gie:
-  enable: 1
+  enable: 0
   gpu-id: 0
   batch-size: 4
   #Required by the app for OSD, not a plugin property
@@ -302,14 +319,15 @@ hmvideoprep:
   num-batch-buffers: 2
   num-output-buffers: 4
 
-  output-width: 5311
-  output-height: 2988
+  # output-width: 5311
+  # output-height: 2988
+
   # plugin-type: hmstitcher
   # config-file: /home/colivier/Videos/mlk-heat-1
   # num-output-buffers: 2
 
 hmstitcher:
-  enable: 1
+  enable: 0
   # enable: 0
   gpu-id: 0
   nvbuf-memory-type: 0
@@ -319,7 +337,7 @@ hmstitcher:
   num-output-buffers: 4
 
 ds-playtracker:
-  enable: 1
+  enable: 0
   gpu-id: 0
   unique-id: 75
   # draw: true
@@ -337,7 +355,7 @@ ds-fieldmask:
   # detection-mask: /home/colivier/Videos/mlk-heat-1/rink_mask_0.png
 
 tracker:
-  enable: 1
+  enable: 0
   # For NvDCF and NvDeepSORT tracker, tracker-width and tracker-height must be a multiple of 32, respectively
   tracker-width: 960
   tracker-height: 544
