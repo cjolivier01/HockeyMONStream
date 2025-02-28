@@ -313,11 +313,14 @@ void Configurator::complete_configuration() {
     if (!is_udb_output) {
       return std::make_tuple(width, height);
     }
-    if (width > 3840) {
+    // 4k @ 16:9
+    constexpr size_t kMaxUdpStreamingWidth = 3840;
+    constexpr size_t kMaxUdpStreamingHeight = 2160;
+    if (width > kMaxUdpStreamingWidth) {
       double ar = double(width) / height;
-      width = 3840;
+      width = kMaxUdpStreamingWidth;
       height = (long)(width / ar);
-      assert(height <= 2160);
+      assert(height <= kMaxUdpStreamingHeight);
     }
     return std::make_tuple(width, height);
   };

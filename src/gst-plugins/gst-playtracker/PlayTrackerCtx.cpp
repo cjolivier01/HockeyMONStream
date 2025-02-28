@@ -127,7 +127,7 @@ AllLivingBoxConfig create_all_living_box_config(
 const std::unordered_map<std::string, float> CAMERA_TYPE_MAX_SPEEDS = {
     {"GoPro", 200.0},
     {"Zhiwei", 200.0},
-    {"LiveBarn", 150.0},
+    {"LiveBarn", 300.0},
 };
 
 void adjust_config(const BBox& arena_box, PlayTrackerConfig& pt_config, const std::string& camera = "GoPro") {
@@ -180,6 +180,8 @@ void adjust_config(const BBox& arena_box, PlayTrackerConfig& pt_config, const st
     bcfg.sticky_sizing = true;
     bcfg.sticky_translation = true;
     bcfg.arena_box = arena_box;
+
+    bcfg.dynamic_acceleration_scaling = true; // EXPERIMENTAL
   }
 }
 
@@ -201,6 +203,11 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
     }
   }
   config.play_detector = create_play_detector_config(yaml, locator);
+
+  config.ignore_outlier_players = true;  // EXPERIMENTAL
+  config.ignore_left_and_right_extremes = false; // EXPERIMENTAL
+
+
   adjust_config(arena_box, config);
   SET_LOCATOR(locator, config, no_wide_start);
   SET_LOCATOR(locator, config, max_lost_track_age);
