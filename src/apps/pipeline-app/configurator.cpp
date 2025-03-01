@@ -462,11 +462,8 @@ bool Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig
         config.multi_source_config[i].type != NV_DS_SOURCE_URI_MULTIPLE) {
       continue;
     }
-    // src_bins.emplace_back(pipeline.multi_src_bin.sub_bins[i].src_elem);
     src_bins.emplace_back(pipeline.multi_src_bin.sub_bins[i].bin);
   }
-  // assert(src_bins.size() == 2);
-#if 1
   if (src_bins.size() == 2) {
     if (config.hmsticher_config.left_frame_offset_ns) {
       bool result = seek_element(src_bins[0], config.hmsticher_config.left_frame_offset_ns);
@@ -482,7 +479,6 @@ bool Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig
       }
     }
   }
-#endif
   return true;
 }
 
