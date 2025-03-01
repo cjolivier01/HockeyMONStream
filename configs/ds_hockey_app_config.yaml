@@ -97,7 +97,7 @@ source2:
   # csv-file-path: gopro_udp_source.csv
 
 hmaudio0:
-  enable: 0
+  enable: 1
   # 0=default alsa source, 1=file
   src: 1
   # audio-location: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
@@ -105,16 +105,16 @@ hmaudio0:
   alsa-src-device: hw:0,0
   # alsa-dest-device: 
   # 0=nullsink, 1=alsa sink, 2=rtsp server, 3=file
-  dest: 2
+  dest: 1
   sink_id_is_valid: 1
   sink-id: 1
 
 sink0:
-  enable: 0
+  enable: 1
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
-  type: 1
-  # sync: 1
-  sync: 0
+  type: 2
+  sync: 1
+  # sync: 0
   source-id: 0
   gpu-id: 0
   nvbuf-memory-type: 0
@@ -141,7 +141,7 @@ sink1:
 
 
 sink2:
-  enable: 1
+  enable: 0
   #Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 4
   #1=h264 2=h265

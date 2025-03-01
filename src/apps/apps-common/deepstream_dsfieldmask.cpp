@@ -779,6 +779,12 @@ gboolean create_hmaudio_bin(
   std::string audio_location = is_file_prefix ? &config->audio_location[file_prefix.size()] : config->audio_location;
   const bool is_src_file = config->src == SRC_FILE || is_file_prefix;
 
+  bool sink_id_is_valid = config->sink_id_is_valid;
+  if (config->dest == DEST_ALSA) {
+    // No configured sink will be an alsa
+    sink_id_is_valid = false;
+  }
+
   bin->bin = gst_bin_new("hmaudio_bin");
   if (!bin->bin) {
     NVGSTDS_ERR_MSG_V("Failed to create 'hm_image_meta_merger'");
@@ -813,7 +819,9 @@ gboolean create_hmaudio_bin(
 
   HMGST_ELEMENT_MAKE_BINADD(bin->queue, NVDS_ELEM_QUEUE, "hmaudio_audioout_queue");
 
-  if (config->dest == DEST_ALSA && !config->sink_id_is_valid) {
+
+
+  if (config->dest == DEST_ALSA && !sink_id_is_valid) {
     bin->audiosink = gst_element_factory_make("alsasink", "hmaudio_audiosink0");
     if (!bin->audiosink) {
       NVGSTDS_ERR_MSG_V("Failed to create 'audioout_queue'");
@@ -852,7 +860,7 @@ gboolean create_hmaudio_bin(
     NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->queue);
   }
 
-  if (config->sink_id_is_valid) {
+  if (sink_id_is_valid) {
     // Ok lets look at the sink we're supposed to be paired with
     const NvDsSinkSubBinConfig& sink_config = sink_config_array[config->sink_id];
     if (sink_config.enable) {
