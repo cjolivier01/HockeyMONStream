@@ -9,8 +9,8 @@
  * without an express license agreement from NVIDIA CORPORATION or
  * its affiliates is strictly prohibited.
  */
-#include "apps/apps-common/deepstream_common.h"
 #include "apps/apps-common/deepstream_app_version.h"
+#include "apps/apps-common/deepstream_common.h"
 #include "apps/apps-common/deepstream_config_file_parser.h"
 
 #include <X11/Xlib.h>

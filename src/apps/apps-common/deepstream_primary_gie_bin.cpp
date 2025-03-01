@@ -116,7 +116,7 @@ gboolean create_primary_gie_bin(NvDsGieConfig* config, NvDsPrimaryGieBin* bin) {
         "format",
         G_TYPE_STRING,
         //"{ I420, NV12, P010_10LE, BGRx, RGBA, Y444, GRAY8, GRAY16_LE, GBR, RGB, BGR, BGR10A2_LE, RGB10A2_LE, UYVP,
-        //UYVY }",
+        // UYVY }",
         "NV12",
         "width",
         G_TYPE_INT,

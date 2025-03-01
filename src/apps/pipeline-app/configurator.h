@@ -3,8 +3,8 @@
 #include "yaml-cpp/yaml.h"
 
 #include <filesystem>
-#include <string>
 #include <optional>
+#include <string>
 
 struct NvDsConfig;
 struct NvDsPipeline;

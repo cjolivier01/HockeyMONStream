@@ -10,11 +10,11 @@
  * its affiliates is strictly prohibited.
  */
 
-#include "apps/apps-common/deepstream_common.h"
 #include "apps/apps-common/deepstream_config_yaml.h"
 #include <cstring>
 #include <iostream>
 #include <string>
+#include "apps/apps-common/deepstream_common.h"
 
 #define _PATH_MAX 1024
 
