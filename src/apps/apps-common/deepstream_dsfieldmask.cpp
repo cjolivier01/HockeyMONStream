@@ -765,6 +765,21 @@ bool link_elements(GstElement* elem1, GstElement* elem2) {
   return true;
 }
 
+bool link_to_tee(GstElement* src_tee, GstElement* target) {
+  // Manually link the tee to each queue
+  auto tee_src_pad_template = gst_element_class_get_pad_template(GST_ELEMENT_GET_CLASS(src_tee), "src_%u");
+  GstPad* tee_pad = gst_element_request_pad(src_tee, tee_src_pad_template, NULL, NULL);
+  GstPad* target_pad = gst_element_get_static_pad(target, "sink");
+  bool link_ok = gst_pad_link(tee_pad, target_pad) == GST_PAD_LINK_OK;
+  gst_object_unref(target_pad);
+
+  if (!link_ok) {
+    g_printerr("Tee could not be linked to the target.\n");
+    return false;
+  }
+  return true;
+}
+
 gboolean create_hmaudio_bin(
     GstBin* parent_bin,
     const NvDsHmAudioConfig* config,
@@ -833,6 +848,8 @@ gboolean create_hmaudio_bin(
     gst_bin_add_many(GST_BIN(bin->bin), bin->audioconvert, bin->queue, NULL);
   }
 
+  HMGST_ELEMENT_MAKE_BINADD(bin->tee, "tee", "hmaudio_tee");
+
   if (config->src == SRC_FILE || is_src_file) {
     // Handle dynamic pad creation from demuxer
     if (bin->decodebin) {
@@ -841,8 +858,13 @@ gboolean create_hmaudio_bin(
     } else {
       g_signal_connect(bin->qtdemux, "pad-added", G_CALLBACK(on_demuxer_pad_added), bin->queue);
     }
+    NVGSTDS_LINK_ELEMENT(bin->audiosrc, bin->tee);
 
-    NVGSTDS_LINK_ELEMENT(bin->audiosrc, bin->qtdemux);
+    if (!link_to_tee(bin->tee, bin->qtdemux)) {
+      goto done;
+    }
+
+    // NVGSTDS_LINK_ELEMENT(bin->tee, bin->qtdemux);
     if (bin->audioconvert) {
       NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->audioresample);
       NVGSTDS_LINK_ELEMENT(bin->audioresample, bin->queue);

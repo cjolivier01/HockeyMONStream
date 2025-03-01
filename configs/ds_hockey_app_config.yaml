@@ -105,9 +105,21 @@ hmaudio0:
   alsa-src-device: hw:0,0
   # alsa-dest-device: 
   # 0=nullsink, 1=alsa sink, 2=rtsp server, 3=file
+
+  # Visual video
   dest: 1
   sink_id_is_valid: 1
-  sink-id: 1
+  sink-id: 0
+
+  # File output
+  # dest: 3
+  # sink_id_is_valid: 1
+  # sink-id: 1
+
+  # RTMP/RTSP server sink
+  # dest: 2
+  # sink_id_is_valid: 1
+  # sink-id: 2
 
 sink0:
   enable: 1

@@ -235,11 +235,14 @@ struct NvDsHmAudioBin {
   GstElement* qtdemux;
   GstElement* decodebin;
 
+  GstElement* tee;
+
   // All
   GstElement* audioconvert{nullptr};
   GstElement* audioresample{nullptr};
   GstElement* queue;
   GstElement* audioparse;
+  // GstElement* postparse_presink_tee;
   GstElement* audiosink{nullptr};
 };
 
