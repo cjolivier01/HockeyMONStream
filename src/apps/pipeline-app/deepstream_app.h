@@ -14,30 +14,27 @@
 #define __NVGSTDS_APP_H__
 
 #include <gst/gst.h>
-#include <stdio.h>
 
-#include "deepstream_app_version.h"
-#include "deepstream_c2d_msg.h"
-#include "deepstream_common.h"
-#include "deepstream_config.h"
-#include "deepstream_dsanalytics.h"
-#include "deepstream_dsexample.h"
-#include "deepstream_dsfieldmask.h"
-#include "deepstream_image_save.h"
-#include "deepstream_osd.h"
-#include "deepstream_perf.h"
-#include "deepstream_preprocess.h"
-#include "deepstream_primary_gie.h"
-#include "deepstream_secondary_gie.h"
-#include "deepstream_secondary_preprocess.h"
-#include "deepstream_segvisual.h"
-#include "deepstream_sinks.h"
-#include "deepstream_sources.h"
-#include "deepstream_streammux.h"
-#include "deepstream_tiled_display.h"
-#include "deepstream_tracker.h"
+#include "apps/apps-common/deepstream_c2d_msg.h"
+#include "apps/apps-common/deepstream_config.h"
+#include "apps/apps-common/deepstream_dsanalytics.h"
+#include "apps/apps-common/deepstream_dsexample.h"
+#include "apps/apps-common/deepstream_dsfieldmask.h"
+#include "apps/apps-common/deepstream_image_save.h"
+#include "apps/apps-common/deepstream_osd.h"
+#include "apps/apps-common/deepstream_perf.h"
+#include "apps/apps-common/deepstream_preprocess.h"
+#include "apps/apps-common/deepstream_primary_gie.h"
+#include "apps/apps-common/deepstream_secondary_gie.h"
+#include "apps/apps-common/deepstream_secondary_preprocess.h"
+#include "apps/apps-common/deepstream_segvisual.h"
+#include "apps/apps-common/deepstream_sinks.h"
+#include "apps/apps-common/deepstream_sources.h"
+#include "apps/apps-common/deepstream_streammux.h"
+#include "apps/apps-common/deepstream_tiled_display.h"
+#include "apps/apps-common/deepstream_tracker.h"
+
 #include "gst-nvdscommonconfig.h"
-#include "gst-nvdscustommessage.h"
 
 #include "configurator.h"
 
@@ -96,7 +93,7 @@ struct NvDsPipeline {
   GstElement* demuxer;
   NvDsDsExampleBin dsexample_bin;
   NvDsDsFieldMaskBin dsfieldmask_bin;
-  HmStitcherBin hmstitcher_bin; 
+  HmStitcherBin hmstitcher_bin;
   NvDsDsPlayTrackerBin dsplaytracker_bin;
   AppCtx* appCtx;
 };

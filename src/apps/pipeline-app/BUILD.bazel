@@ -1,11 +1,10 @@
 
 cc_binary(
   name="pipeline-app",
-  srcs=glob(["*.c", "*.cpp", "*.h"]),
+  srcs=glob(["*.cpp", "*.h"]),
   deps=[
     "//src/libs/common:utils",
-    "//src/apps/apps-common:deepstream_apps_common_ex",
-    # "@deepstream//sources/apps/sample_apps/deepstream-audio:deepstream_audio",
+    "//src/apps/apps-common:deepstream_apps_common",
     "@hm-cupano//src/pano:canvas",
     "@gstreamer",
     "@yaml-cpp",

@@ -1,7 +1,7 @@
 #include <gst/gst.h>
 
-#include "deepstream_common.h"
-#include "deepstream_sources.h"
+#include "apps/apps-common/deepstream_common.h"
+#include "apps/apps-common/deepstream_sources.h"
 #include "gst-nvdssr.h"
 #include "gst-nvevent.h"
 #include "nvdsgstutils.h"

@@ -35,7 +35,7 @@ cc_binary(
     ],
     deps = [
         "//src/gst-plugins/gst-nvdspreprocess:nvdsgst_preprocess_lib",
-        "//src/apps/apps-common:deepstream_apps_common_ex",
+        "//src/apps/apps-common:deepstream_apps_common",
         "@glib",
         "@gstreamer",
         "@local_cuda//:cuda_runtime",

@@ -21,7 +21,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <iostream>
-#include <map>
+//#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -31,9 +31,9 @@
 
 #include "gst-nvevent.h"
 
-#include "deepstream_tracker.h"
+#include "apps/apps-common/deepstream_tracker.h"
 
-#include "logging.h"
+//#include "logging.h"
 #include "nvtracker_proc.h"
 
 using namespace std;

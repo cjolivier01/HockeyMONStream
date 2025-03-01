@@ -1,10 +1,12 @@
+#include "apps/apps-common/deepstream_common.h"
+#include "apps/apps-common/deepstream_config_yaml.h"
+#include "deepstream_app.h"
+#include "gst-nvdscommonconfig.h"
 #include "src/libs/common/ConfigYaml.h"
 
 #include <cstring>
 #include <iostream>
 #include <string>
-#include "deepstream_app.h"
-#include "deepstream_config_yaml.h"
 
 #include <stdlib.h>
 #include <filesystem>
