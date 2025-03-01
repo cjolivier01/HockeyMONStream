@@ -304,6 +304,7 @@
       "args": [
         //"${env:HOME}/Videos/mlk-heat-1/GX010016.MP4",
         "/home/colivier/test_libx264.mp4",
+        "/home/colivier/test_libx264.mp4",
         "rtmp://localhost/live/test",
         //"rtmp://a.rtmp.youtube.com/live2/stream/7g7c-25k3-j52z-011t-7fm8",
       ],
@@ -318,8 +319,9 @@
       //"stopOnEntry": true,
       "env": {
         //"GST_DEBUG": "videoprep:7",
-        //"GST_DEBUG": "basesink:5",
-        // "GST_DEBUG": "3",
+        // "GST_DEBUG": "4",
+        //"GST_DEBUG": "voaacenc:7,aacparse:7,flvmux:7,rtmpsink:7",
+        // "GST_DEBUG": "flvmux:7,rtmpsink:7",
         // "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
         "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib",
         //"GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",

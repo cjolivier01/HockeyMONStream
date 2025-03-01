@@ -131,7 +131,7 @@ typedef struct {
   GstElement* codecparse;
   GstElement* mux;
   GstElement* sink;
-  GstElement* rtppay;
+  GstElement* rtppay_or_flvmux;
   gulong sink_buffer_probe;
 } NvDsSinkBinSubBin;
 

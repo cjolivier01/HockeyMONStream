@@ -625,16 +625,31 @@ static gboolean start_rtsp_streaming(
   return TRUE;
 }
 
+enum ServerSinkType { SST_RTSP, SST_RTMP };
+
+static enum ServerSinkType get_server_sink_type(const char* s) {
+  if (!strncmp(s, "rtmp:/", 6)) {
+    return SST_RTMP;
+  }
+  return SST_RTSP;
+}
+
 static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSubBin* bin) {
   GstCaps* caps = NULL;
   gboolean ret = FALSE;
   gchar elem_name[50];
   gchar encode_name[50];
-  gchar rtppay_name[50];
+  gchar rtppay_or_flvmux_name[50];
   int probe_id = 0;
+  enum ServerSinkType sink_type;
 
   // guint rtsp_port_num = g_rtsp_port_num++;
   uid++;
+
+  sink_type = get_server_sink_type(config->output_file_path);
+  if (sink_type == SST_RTMP) {
+    config->codec = NV_DS_ENCODER_H264;
+  }
 
   g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin%d", uid);
   bin->bin = gst_bin_new(elem_name);
@@ -672,13 +687,18 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
   }
 
   g_snprintf(encode_name, sizeof(encode_name), "sink_sub_bin_encoder%d", uid);
-  g_snprintf(rtppay_name, sizeof(rtppay_name), "sink_sub_bin_rtppay%d", uid);
 
   switch (config->codec) {
     case NV_DS_ENCODER_H264:
       bin->codecparse = gst_element_factory_make("h264parse", "h264-parser");
       g_object_set(G_OBJECT(bin->codecparse), "config-interval", -1, NULL);
-      bin->rtppay = gst_element_factory_make("rtph264pay", rtppay_name);
+      if (sink_type != SST_RTMP) {
+        g_snprintf(rtppay_or_flvmux_name, sizeof(rtppay_or_flvmux_name), "sink_sub_bin_rtppay_or_flvmux%d", uid);
+        bin->rtppay_or_flvmux = gst_element_factory_make("rtph264pay", rtppay_or_flvmux_name);
+      } else {
+        g_snprintf(rtppay_or_flvmux_name, sizeof(rtppay_or_flvmux_name), "sink_sub_bin_flvmux%d", uid);
+        bin->rtppay_or_flvmux = gst_element_factory_make("flvmux", rtppay_or_flvmux_name);
+      }
       if (config->enc_type == NV_DS_ENCODER_TYPE_SW) {
         bin->encoder = gst_element_factory_make(NVDS_ELEM_ENC_H264_SW, encode_name);
       } else {
@@ -693,7 +713,7 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
     case NV_DS_ENCODER_H265:
       bin->codecparse = gst_element_factory_make("h265parse", "h265-parser");
       g_object_set(G_OBJECT(bin->codecparse), "config-interval", -1, NULL);
-      bin->rtppay = gst_element_factory_make("rtph265pay", rtppay_name);
+      bin->rtppay_or_flvmux = gst_element_factory_make("rtph265pay", rtppay_or_flvmux_name);
       if (config->enc_type == NV_DS_ENCODER_TYPE_SW) {
         bin->encoder = gst_element_factory_make(NVDS_ELEM_ENC_H265_SW, encode_name);
       } else {
@@ -725,8 +745,8 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
 
   probe_id = probe_id;
 
-  if (!bin->rtppay) {
-    NVGSTDS_ERR_MSG_V("Failed to create '%s'", rtppay_name);
+  if (!bin->rtppay_or_flvmux) {
+    NVGSTDS_ERR_MSG_V("Failed to create '%s'", rtppay_or_flvmux_name);
     goto done;
   }
 
@@ -753,14 +773,24 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
   }
 
   g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin_udpsink%d", uid);
-  bin->sink = gst_element_factory_make("udpsink", elem_name);
+
+  if (sink_type != SST_RTMP) {
+    bin->sink = gst_element_factory_make("udpsink", elem_name);
+  } else {
+    bin->sink = gst_element_factory_make("rtmpsink", elem_name);
+  }
   if (!bin->sink) {
     NVGSTDS_ERR_MSG_V("Failed to create '%s'", elem_name);
     goto done;
   }
 
-  g_object_set(
-      G_OBJECT(bin->sink), "host", "127.0.0.1", "port", config->udp_port, "async", FALSE, "sync", config->sync, NULL);
+  if (sink_type != SST_RTMP) {
+    g_object_set(
+        G_OBJECT(bin->sink), "host", "127.0.0.1", "port", config->udp_port, "async", FALSE, "sync", config->sync, NULL);
+  } else {
+    g_object_set(G_OBJECT(bin->sink), "location", config->output_file_path, "async", FALSE, "sync", config->sync, NULL);
+    g_object_set(G_OBJECT(bin->rtppay_or_flvmux), "streamable", TRUE, NULL);
+  }
 
   gst_bin_add_many(
       GST_BIN(bin->bin),
@@ -769,7 +799,7 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
       bin->transform,
       bin->encoder,
       bin->codecparse,
-      bin->rtppay,
+      bin->rtppay_or_flvmux,
       bin->sink,
       NULL);
 
@@ -777,18 +807,26 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
   NVGSTDS_LINK_ELEMENT(bin->transform, bin->cap_filter);
   NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->encoder);
   NVGSTDS_LINK_ELEMENT(bin->encoder, bin->codecparse);
-  NVGSTDS_LINK_ELEMENT(bin->codecparse, bin->rtppay);
-  NVGSTDS_LINK_ELEMENT(bin->rtppay, bin->sink);
+  if (sink_type != SST_RTMP) {
+    NVGSTDS_LINK_ELEMENT(bin->codecparse, bin->rtppay_or_flvmux);
+  } else {
+    if (!gst_element_link_pads(bin->codecparse, "src", bin->rtppay_or_flvmux, "video")) {
+      g_printerr("Failed to link h264parse to flvmux\n");
+      goto done;
+    }
+  }
+  NVGSTDS_LINK_ELEMENT(bin->rtppay_or_flvmux, bin->sink);
 
   NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "sink");
 
   ret = TRUE;
 
-  ret = start_rtsp_streaming(config->rtsp_port, config->udp_port, config->codec, config->udp_buffer_size);
-  if (ret != TRUE) {
-    g_print("%s: start_rtsp_straming function failed\n", __func__);
+  if (sink_type != SST_RTMP) {
+    ret = start_rtsp_streaming(config->rtsp_port, config->udp_port, config->codec, config->udp_buffer_size);
+    if (ret != TRUE) {
+      g_print("%s: start_rtsp_straming function failed\n", __func__);
+    }
   }
-
 done:
   if (caps) {
     gst_caps_unref(caps);
