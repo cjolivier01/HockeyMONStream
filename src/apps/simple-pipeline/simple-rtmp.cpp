@@ -117,6 +117,21 @@ int main(int argc, char* argv[]) {
   g_object_set(G_OBJECT(videoCapsFilter), "caps", caps, NULL);
   gst_caps_unref(caps);
 
+  // Bit rates
+  g_object_set(G_OBJECT(audioEncoder), "bitrate", 128000, NULL);
+
+#if 0
+  g_object_set(
+      G_OBJECT(videoEncoder),
+      "bitrate",
+      2000, // 2000 kbps = 2 Mbps
+      "speed-preset",
+      "veryfast", // prioritize speed over compression efficiency
+      "tune",
+      "zerolatency", // optimize for low latency streaming
+      NULL);
+#endif
+
   // Add all elements into the pipeline.
   // Note: We do NOT include the muxer in the gst_element_link_many() calls below.
   gst_bin_add_many(
@@ -186,6 +201,8 @@ int main(int argc, char* argv[]) {
   gst_pad_add_probe(probe_pad, GST_PAD_PROBE_TYPE_BUFFER, video_frame_probe, NULL, NULL);
   gst_object_unref(probe_pad);
 
+  g_object_set(G_OBJECT(audioEncoder), "config-interval", 1, NULL);
+
   // IMPORTANT: Manually link the output of the video and audio branches to the muxer.
   // For flvmux, request the "video" pad and link from videoParse.
   GstPad* mux_video_pad = gst_element_request_pad_simple(muxer, "video");
@@ -199,15 +216,15 @@ int main(int argc, char* argv[]) {
   gst_object_unref(mux_video_pad);
 
   // Request and link the "audio" pad for the audio branch.
-  // GstPad* mux_audio_pad = gst_element_request_pad_simple(muxer, "audio");
-  // GstPad* audio_src_pad = gst_element_get_static_pad(audioParse, "src");
-  // if (gst_pad_link(audio_src_pad, mux_audio_pad) != GST_PAD_LINK_OK) {
-  //   g_printerr("Failed to link audio parse to muxer.\n");
-  // } else {
-  //   g_print("Audio branch linked to muxer successfully.\n");
-  // }
-  // gst_object_unref(audio_src_pad);
-  // gst_object_unref(mux_audio_pad);
+  GstPad* mux_audio_pad = gst_element_request_pad_simple(muxer, "audio");
+  GstPad* audio_src_pad = gst_element_get_static_pad(audioParse, "src");
+  if (gst_pad_link(audio_src_pad, mux_audio_pad) != GST_PAD_LINK_OK) {
+    g_printerr("Failed to link audio parse to muxer.\n");
+  } else {
+    g_print("Audio branch linked to muxer successfully.\n");
+  }
+  gst_object_unref(audio_src_pad);
+  gst_object_unref(mux_audio_pad);
 
   // Start playing the pipeline.
   GstStateChangeReturn ret = gst_element_set_state(pipeline, GST_STATE_PLAYING);
