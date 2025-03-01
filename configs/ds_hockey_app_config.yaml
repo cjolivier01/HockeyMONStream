@@ -107,9 +107,9 @@ hmaudio0:
   # 0=nullsink, 1=alsa sink, 2=rtsp server, 3=file
 
   # Visual video
-  dest: 1
-  sink_id_is_valid: 1
-  sink-id: 0
+  # dest: 1
+  # sink_id_is_valid: 1
+  # sink-id: 0
 
   # File output
   # dest: 3
@@ -117,9 +117,9 @@ hmaudio0:
   # sink-id: 1
 
   # RTMP/RTSP server sink
-  # dest: 2
-  # sink_id_is_valid: 1
-  # sink-id: 2
+  dest: 2
+  sink_id_is_valid: 1
+  sink-id: 2
 
 sink0:
   enable: 1
@@ -132,7 +132,7 @@ sink0:
   nvbuf-memory-type: 0
 
 sink1:
-  enable: 0
+  enable: 1
   type: 3
   # link-to-demux: 1
   #1=mp4 2=mkv
@@ -153,7 +153,7 @@ sink1:
 
 
 sink2:
-  enable: 0
+  enable: 1
   #Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 4
   #1=h264 2=h265

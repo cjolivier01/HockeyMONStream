@@ -225,7 +225,7 @@ bool connectElementsWithGhostPads(
   return true;
 }
 
-bool link_audio_pad_to_muxer(GstElement* postParse, GstElement* muxer) {
+bool link_audio_pad_to_muxer(GstElement* postParse, GstElement* muxer, const char* audio_pad_name = "audio_%u") {
   gboolean ret = false;
   GstPad* muxer_audio_pad{nullptr};
   gchar* src_pad_name = nullptr;
@@ -240,7 +240,7 @@ bool link_audio_pad_to_muxer(GstElement* postParse, GstElement* muxer) {
   }
   src_pad_name = gst_pad_get_name(postParse_src);
 
-  muxer_audio_pad = gst_element_request_pad_simple(muxer, "audio_%u");
+  muxer_audio_pad = gst_element_request_pad_simple(muxer, audio_pad_name);
   if (!muxer_audio_pad) {
     g_printerr("Could not get request pad from muxer for audio.\n");
     goto done;
@@ -885,6 +885,19 @@ gboolean create_hmaudio_bin(
         NVGSTDS_LINK_ELEMENT(bin->queue, bin->audioparse);
         NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
         if (!link_audio_pad_to_muxer(bin->bin, sink_bin->sub_bins[config->sink_id].mux)) {
+          goto done;
+        }
+        linked = true;
+      } else if (sink_config.type == NV_DS_SINK_UDPSINK) {
+        assert(config->dest == DEST_RTSP);
+        assert(sink_bin->sub_bins[config->sink_id].rtppay_or_flvmux);
+        HMGST_ELEMENT_MAKE_BINADD(bin->encoder, "voaacenc", "hmaudio_encoder");
+        HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
+        NVGSTDS_LINK_ELEMENT(bin->queue, bin->encoder);
+        NVGSTDS_LINK_ELEMENT(bin->encoder, bin->audioparse);
+        NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
+        if (!link_audio_pad_to_muxer(
+                bin->bin, sink_bin->sub_bins[config->sink_id].rtppay_or_flvmux, /*audio_pad_name=*/"audio")) {
           goto done;
         }
         linked = true;

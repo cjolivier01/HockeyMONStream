@@ -242,6 +242,10 @@ struct NvDsHmAudioBin {
   GstElement* audioresample{nullptr};
   GstElement* queue;
   GstElement* audioparse;
+  
+  // RTSP/RTMP
+  GstElement* encoder;
+
   // GstElement* postparse_presink_tee;
   GstElement* audiosink{nullptr};
 };
