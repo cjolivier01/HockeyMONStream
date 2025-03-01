@@ -314,6 +314,7 @@ void Configurator::complete_configuration() {
       return std::make_tuple(width, height);
     }
     // 4k @ 16:9
+#if 1
     constexpr size_t kMaxUdpStreamingWidth = 3840;
     constexpr size_t kMaxUdpStreamingHeight = 2160;
     if (width > kMaxUdpStreamingWidth) {
@@ -322,6 +323,7 @@ void Configurator::complete_configuration() {
       height = (long)(width / ar);
       assert(height <= kMaxUdpStreamingHeight);
     }
+#endif
     return std::make_tuple(width, height);
   };
 
