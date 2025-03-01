@@ -782,6 +782,7 @@ gboolean create_hmaudio_bin(
   bool sink_id_is_valid = config->sink_id_is_valid;
   if (config->dest == DEST_ALSA) {
     // No configured sink will be an alsa
+    g_print("hmaudio: disabling 'sink_id_is_valid' because destination is an ALSA sink\n");
     sink_id_is_valid = false;
   }
 
@@ -819,8 +820,6 @@ gboolean create_hmaudio_bin(
 
   HMGST_ELEMENT_MAKE_BINADD(bin->queue, NVDS_ELEM_QUEUE, "hmaudio_audioout_queue");
 
-
-
   if (config->dest == DEST_ALSA && !sink_id_is_valid) {
     bin->audiosink = gst_element_factory_make("alsasink", "hmaudio_audiosink0");
     if (!bin->audiosink) {
@@ -843,14 +842,7 @@ gboolean create_hmaudio_bin(
       g_signal_connect(bin->qtdemux, "pad-added", G_CALLBACK(on_demuxer_pad_added), bin->queue);
     }
 
-    // if (!gst_element_link_many(bin->decodebin, bin->audioconvert, bin->audioresample, bin->audiosink, NULL)) {
-    //   g_print("Error linking audio pads\n");
-    //   goto done;
-    // }
-
     NVGSTDS_LINK_ELEMENT(bin->audiosrc, bin->qtdemux);
-    // link_elements(bin->decodebin, bin->audioconvert);
-    // // NVGSTDS_LINK_ELEMENT(bin->decodebin, bin->audioconvert);
     if (bin->audioconvert) {
       NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->audioresample);
       NVGSTDS_LINK_ELEMENT(bin->audioresample, bin->queue);
