@@ -168,7 +168,8 @@ sink2:
   #H265 Profile - 0=Main 1=Main10
   # set profile only for hw encoder, sw encoder selects profile based on sw-preset
   profile: 0
-  output-file: rtmp://localhost/live/test
+  # output-file: rtmp://localhost/live/test
+  output-file: rtmp://a.rtmp.youtube.com/live2/7g7c-25k3-j52z-011t-7fm8
 
   #
   # if sending out
