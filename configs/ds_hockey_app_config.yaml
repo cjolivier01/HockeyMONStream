@@ -170,7 +170,7 @@ sink2:
   profile: 0
   # output-file: rtmp://localhost/live/test
   output-file: rtmp://a.rtmp.youtube.com/live2/7g7c-25k3-j52z-011t-7fm8
-
+  iframeinterval: 60
   #
   # if sending out
   #
