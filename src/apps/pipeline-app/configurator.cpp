@@ -264,6 +264,11 @@ YAML::Node Configurator::auto_config(YAML::Node&& config) {
 void Configurator::complete_configuration() {
   YAML::Node pipeline = config_["pipeline"];
   assert(pipeline.IsDefined());
+
+  if (game_id_.empty()) {
+    return;
+  }
+
   // Stitching config mask config dir
   auto game_dir = get_game_dir(game_id_);
 

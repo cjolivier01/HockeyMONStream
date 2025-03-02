@@ -18,6 +18,7 @@
 
 #include <stdlib.h>
 
+#include "deepstream_config.h"
 #include "deepstream_sinks.h"
 
 /**
@@ -211,7 +212,8 @@ enum EHmAudioSrc {
 
 enum EHmAudioDest {
   DEST_INDEPENDENT = 0,
-  DEST_SINK = 1,
+  DEST_SINK = 1,        // uses sink-id
+  DEST_MULTI_SINK = 1,  // uses multi-sink-ids
 };
 
 struct NvDsHmAudioConfig {
@@ -219,6 +221,8 @@ struct NvDsHmAudioConfig {
   guint src;
   guint dest;
   guint sink_id;
+  // For multiple sink destinations
+  guint multi_sink_ids[MAX_SINK_BINS];
   gchar audio_location[kMyMaxPath];
   gchar alsa_src_device[kMyMaxPath];
   gchar alsa_dest_device[kMyMaxPath];
