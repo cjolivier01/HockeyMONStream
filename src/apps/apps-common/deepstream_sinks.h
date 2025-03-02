@@ -113,6 +113,7 @@ typedef struct {
 typedef struct {
   gboolean enable;
   guint source_id;
+  guint sink_id;
   gboolean link_to_demux;
   NvDsSinkType type;
   gint sync;

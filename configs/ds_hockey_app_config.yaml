@@ -65,6 +65,7 @@ source0:
   num-sources: 1
   gpu-id: 0
   cudadec-memtype: 0
+  source-id: 0
 
 source1:
   enable: 1
@@ -77,6 +78,7 @@ source1:
   num-sources: 1
   gpu-id: 0
   cudadec-memtype: 0
+  source-id: 1
 
 source2:
   enable: 0
@@ -85,7 +87,8 @@ source2:
   # uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
   num-sources: 1
   gpu-id: 0
-  input-audio-rate: 189  
+  input-audio-rate: 189
+  source-id: 2
 
 #source:
   # csv-file-path: hockey_sources.csv
@@ -118,11 +121,12 @@ hmaudio0:
 
   # RTMP/RTSP server sink
   dest: 2
-  sink_id_is_valid: 1
+  sink-id-is-valid: 1
   sink-id: 1
 
 sink0:
   enable: 1
+  sink-id: 0
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
   type: 1
   sync: 1
@@ -133,6 +137,7 @@ sink0:
 
 sink1:
   enable: 0
+  sink-id: 1
   type: 3
   # link-to-demux: 1
   #1=mp4 2=mkv
@@ -154,6 +159,7 @@ sink1:
 
 sink2:
   enable: 1
+  sink-id: 2
   #Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 4
   #1=h264 2=h265

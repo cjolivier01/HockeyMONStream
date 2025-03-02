@@ -315,8 +315,8 @@ void Configurator::complete_configuration() {
     }
     // 4k @ 16:9
 #if 1
-    constexpr size_t kMaxUdpStreamingWidth = 3840;
-    constexpr size_t kMaxUdpStreamingHeight = 2160;
+    constexpr long kMaxUdpStreamingWidth = 3840;
+    constexpr long kMaxUdpStreamingHeight = 2160;
     if (width > kMaxUdpStreamingWidth) {
       double ar = double(width) / height;
       width = kMaxUdpStreamingWidth;

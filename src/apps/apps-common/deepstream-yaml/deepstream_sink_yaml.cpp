@@ -45,6 +45,8 @@ gboolean parse_sink_yaml(NvDsSinkSubBinConfig* config, std::string group_str, gc
 
     if (paramKey == "enable") {
       config->enable = itr->second.as<gboolean>();
+    } else if (paramKey == "sink-id") {
+      config->sink_id = itr->second.as<guint>();
     } else if (paramKey == "type") {
       config->type = (NvDsSinkType)itr->second.as<int>();
     } else if (paramKey == "link-to-demux") {
