@@ -812,10 +812,13 @@ gboolean create_hmaudio_bin(
   bool is_dest_file_sink = false;
   bool is_dest_alsa_sink = false;
 
-  if (config->dest == DEST_SINK) {
+  std::map<NvDsSinkType, const NvDsSinkSubBinConfig*> multi_sink_configs;
+
+  if (config->dest == DEST_SINK || config->dest == DEST_MULTI_SINK) {
     for (size_t i = 0; i < MAX_SINK_BINS; ++i) {
       if (sink_config_array[i].sink_id == config->sink_id) {
         sink_config = &sink_config_array[i];
+        multi_sink_configs[sink_config->type] = sink_config;
         break;
       }
     }
@@ -893,7 +896,6 @@ gboolean create_hmaudio_bin(
       goto done;
     }
 
-    // NVGSTDS_LINK_ELEMENT(bin->tee, bin->qtdemux);
     if (bin->audioconvert) {
       NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->audioresample);
       NVGSTDS_LINK_ELEMENT(bin->audioresample, bin->queue);
