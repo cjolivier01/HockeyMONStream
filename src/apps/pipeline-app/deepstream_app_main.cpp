@@ -12,6 +12,7 @@
 #include "apps/apps-common/deepstream_app_version.h"
 #include "apps/apps-common/deepstream_common.h"
 #include "apps/apps-common/deepstream_config_file_parser.h"
+#include "src/libs/common/pipeline_utils.h"
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -23,7 +24,6 @@
 #include <memory>
 #include "deepstream_app.h"
 #include "nvds_version.h"
-#include "pipeline_utils.h"
 
 #define MAX_INSTANCES 128
 #define APP_TITLE "DeepStream"

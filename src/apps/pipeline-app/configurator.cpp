@@ -12,7 +12,7 @@
 #include <opencv2/videoio.hpp>
 #include <unistd.h>
 
-#include "pipeline_utils.h"
+#include "src/libs/common/pipeline_utils.h"
 
 namespace hm {
 

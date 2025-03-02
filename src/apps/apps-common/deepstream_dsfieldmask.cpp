@@ -12,6 +12,9 @@
  */
 
 #include "deepstream_dsfieldmask.h"
+
+#include "src/libs/common/pipeline_utils.h"
+
 #include <glib-2.0/glib.h>
 #include <gst/gstelement.h>
 #include <gstreamer-1.0/gst/gstbin.h>
@@ -47,8 +50,27 @@
 
 #undef gst_element_get_parent
 
+namespace {
 inline GstElement* gst_element_get_parent(GstElement* elem) {
   return (GstElement*)gst_object_get_parent(GST_OBJECT_CAST(elem));
+}
+
+static GstElement* find_top_level_parent(GstElement* element) {
+  if (!element) {
+    return NULL;
+  }
+
+  GstElement* parent = GST_ELEMENT_CAST(gst_element_get_parent(element));
+  while (parent) {
+    GstElement* next_parent = GST_ELEMENT_CAST(gst_element_get_parent(parent));
+    if (!next_parent) {
+      break;
+    }
+    gst_object_unref(parent); // Unreference old parent
+    parent = next_parent;
+  }
+
+  return parent; // Return the top-level parent
 }
 
 //---------------------------------------------------------------------
@@ -136,6 +158,7 @@ GstPad* liftPadToAncestor(
   }
   return current_pad;
 }
+} // namespace
 
 //---------------------------------------------------------------------
 // Main function: Given two GstElements and a pad name for each, and a
@@ -925,6 +948,8 @@ gboolean create_hmaudio_bin(
         static int uid = 0;
         char ghost_pad_name[256];
         sprintf(ghost_pad_name, "hmaudio_to_fakesink_%d", uid++);
+        auto pipeline = find_top_level_parent(GST_ELEMENT(parent_bin));
+        hm::save_dot_file(pipeline, GstDebugGraphDetails::GST_DEBUG_GRAPH_SHOW_ALL, "hmaudio_to_fakesink");
         if (!connectElementsWithGhostPads(bin->bin, "src", bin->fakesink_bin.bin, "sink", ghost_pad_name)) {
           g_printerr("Failed to link hmaudio to fakesink\n");
         }

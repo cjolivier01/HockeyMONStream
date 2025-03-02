@@ -77,6 +77,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:utils",
         "@deepstream//:deepstream_lib",
         "@glib",
         "@gstreamer",
