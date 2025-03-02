@@ -803,6 +803,16 @@ bool link_to_tee(GstElement* src_tee, GstElement* target) {
   return true;
 }
 
+/**
+ *  _    _                               _  _
+ * | |  | |              /\             | |(_)
+ * | |__| |_ __ ___     /  \   _   _  __| | _  ___
+ * |  __  | '_ ` _ \   / /\ \ | | | |/ _` || |/ _ \
+ * | |  | | | | | | | / ____ \| |_| | (_| || | (_) |
+ * |_|  |_|_| |_| |_|/_/    \_\\__,_|\__,_||_|\___/
+ *
+ *
+ */
 gboolean create_hmaudio_bin(
     GstBin* parent_bin,
     const NvDsHmAudioConfig* config,
@@ -936,23 +946,14 @@ gboolean create_hmaudio_bin(
         if (!create_fakesink_bin(&sink_config->render_config, &bin->fakesink_bin)) {
           g_printerr("Failed to make fakesink bin for hmaudio\n");
         }
+        gboolean ok = gst_bin_add(parent_bin, bin->fakesink_bin.bin);
+        assert(ok);
         HMGST_ELEMENT_MAKE_BINADD(bin->encoder, "voaacenc", "hmaudio_encoder");
         HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
         NVGSTDS_LINK_ELEMENT(bin->queue, bin->encoder);
         NVGSTDS_LINK_ELEMENT(bin->encoder, bin->audioparse);
         NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
-        // if (!link_audio_pad_to_muxer(
-        //         bin->bin, sink_bin->sub_bins[config->sink_id].rtppay_or_flvmux, /*audio_pad_name=*/"audio")) {
-        //   goto done;
-        // }
-        static int uid = 0;
-        char ghost_pad_name[256];
-        sprintf(ghost_pad_name, "hmaudio_to_fakesink_%d", uid++);
-        auto pipeline = find_top_level_parent(GST_ELEMENT(parent_bin));
-        hm::save_dot_file(pipeline, GstDebugGraphDetails::GST_DEBUG_GRAPH_SHOW_ALL, "hmaudio_to_fakesink");
-        if (!connectElementsWithGhostPads(bin->bin, "src", bin->fakesink_bin.bin, "sink", ghost_pad_name)) {
-          g_printerr("Failed to link hmaudio to fakesink\n");
-        }
+        NVGSTDS_LINK_ELEMENT(bin->bin, bin->fakesink_bin.bin);
         linked = true;
       } else {
         g_printerr("hmaudio doesn't know how to link to sink of type %d\n", (int)sink_config->type);
