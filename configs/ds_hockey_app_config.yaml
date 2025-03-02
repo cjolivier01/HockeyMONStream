@@ -319,7 +319,7 @@ hm-image-meta-merger:
 dewarper0:
   enable: 1
   source-id: 6
-  config-file: /home/colivier/src/hstream/configs/config_dewarper_action1.txt
+  config-file: config_dewarper_action1.txt
   gpu-id: 0
   nvbuf-memory-type: 0
   num-output-buffers: 4
