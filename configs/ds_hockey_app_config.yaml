@@ -69,14 +69,14 @@ source0:
   # mlk-extreme
   # uri: file:///home/colivier/Videos/mlk-extreme/GX010096.MP4
   # uri: file:///home/colivier/Videos/mlk-heat-1/GX010097.MP4
-  uri: file:///home/colivier/Videos/ev-tv-1a/right.mp4
+  # uri: file:///home/colivier/Videos/ev-tv-1a/right.mp4
   num-sources: 1
   gpu-id: 0
   cudadec-memtype: 0
   source-id: 0
 
 source1:
-  enable: 0
+  enable: 1
   type: 3
   # uri: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   # uri: file:///home/colivier/Videos/pdp/GX010003.mp4
@@ -126,8 +126,8 @@ sink0:
   nvbuf-memory-type: 0
 
 sink1:
-  enable: 0
-  sink-id: 1
+  enable: 1
+  sink-id: 2
   # Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 3
   # link-to-demux: 1
@@ -149,7 +149,7 @@ sink1:
 
 
 sink2:
-  enable: 0
+  enable: 1
   sink-id: 2
   # Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 4
@@ -220,7 +220,7 @@ sink2:
 # |_|  |_|_| |_| |_|/_/    \_\\__,_|\__,_||_|\___/
 #
 hmaudio0:
-  enable: 0
+  enable: 1
   # 0=default alsa source, 1=file
   src: 1
   # audio-location: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
@@ -239,10 +239,10 @@ hmaudio0:
   # sink_id_is_valid: 1
   # sink-id: 1
 
-  # 0=indeopendent (this local config), 1=sink
+  # 0=indeopendent (this local config), 1=sink, 2=multisink
   dest: 1
   sink-id: 1
-  multi-sink-ids: 0,1
+  multi-sink-ids: 0,1,2
 
 
 osd:

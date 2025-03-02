@@ -55,24 +55,6 @@ inline GstElement* gst_element_get_parent(GstElement* elem) {
   return (GstElement*)gst_object_get_parent(GST_OBJECT_CAST(elem));
 }
 
-static GstElement* find_top_level_parent(GstElement* element) {
-  if (!element) {
-    return NULL;
-  }
-
-  GstElement* parent = GST_ELEMENT_CAST(gst_element_get_parent(element));
-  while (parent) {
-    GstElement* next_parent = GST_ELEMENT_CAST(gst_element_get_parent(parent));
-    if (!next_parent) {
-      break;
-    }
-    gst_object_unref(parent); // Unreference old parent
-    parent = next_parent;
-  }
-
-  return parent; // Return the top-level parent
-}
-
 //---------------------------------------------------------------------
 // Helper: Find the lowest common ancestor (LCA) of two elements.
 //---------------------------------------------------------------------

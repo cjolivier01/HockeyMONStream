@@ -222,7 +222,7 @@ struct NvDsHmAudioConfig {
   guint dest;
   guint sink_id;
   // For multiple sink destinations
-  guint multi_sink_ids[MAX_SINK_BINS];
+  gint multi_sink_ids[MAX_SINK_BINS];
   gchar audio_location[kMyMaxPath];
   gchar alsa_src_device[kMyMaxPath];
   gchar alsa_dest_device[kMyMaxPath];
