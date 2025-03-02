@@ -823,7 +823,11 @@ gboolean create_hmaudio_bin(
 
   if (sink_config) {
     is_dest_file_sink = sink_config->type == NvDsSinkType::NV_DS_SINK_ENCODE_FILE;
+#ifndef IS_TEGRA
     is_dest_alsa_sink = sink_config->type == NvDsSinkType::NV_DS_SINK_RENDER_EGL;
+#else
+    is_dest_alsa_sink = sink_config->type == NvDsSinkType::NV_DS_SINK_RENDER_3D;
+#endif
   }
 
   bin->bin = gst_bin_new("hmaudio_bin");

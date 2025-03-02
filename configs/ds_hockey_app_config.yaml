@@ -118,9 +118,9 @@ sink0:
   enable: 1
   sink-id: 0
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
-  type: 2
-  sync: 1
-  # sync: 0
+  type: 1
+  # sync: 1
+  sync: 0
   source-id: 0
   gpu-id: 0
   nvbuf-memory-type: 0
@@ -220,7 +220,7 @@ sink2:
 # |_|  |_|_| |_| |_|/_/    \_\\__,_|\__,_||_|\___/
 #
 hmaudio0:
-  enable: 1
+  enable: 0
   # 0=default alsa source, 1=file
   src: 1
   # audio-location: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
