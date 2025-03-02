@@ -33,12 +33,15 @@
       "console": "integratedTerminal",
       "args": [
         // "${command:pickArgs}"
-        "-i", "9", // cam 0
-        "-i", "14",  // cam 1
+        //"-i", "9", // cam 0
+        //"-i", "14",  // cam 1
         //"-i", "2",
-        "-d", "0",
+        //"-d", "0",
         // "-d", "0", "-i", "2",
         // "-d", "1", "-i", "2",
+        "/mnt/ripper-data/Videos/ev-tv-1a/right.mp4",
+        "/home/colivier/src/hstream/configs/config_dewarper_action1.txt",
+        "frame.png",
         // "--max-frames=3000",
         // "/home/colivier/Videos/mlk-heat-1/GX010016.MP4",
         // "bounce.mp4",
@@ -46,8 +49,8 @@
       "env": {
         // "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib",
         // "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
-        // "GST_DEBUG": "7",
-        "DISPLAY": ":1",
+        "GST_DEBUG": "4",
+        // "DISPLAY": ":1",
       },
     },
     {
