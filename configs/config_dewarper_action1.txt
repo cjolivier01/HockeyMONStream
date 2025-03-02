@@ -41,17 +41,4 @@ surface-index=0
 width=3840
 height=2160
 
-# distortion=-0.3721;0.1023;-0.00203;0;0
-
-# distortion=0.07;0.0;0.0;0;0
-
 focal-length=2050
-# top-angle=0.1
-# bottom-angle=-0.1
-
-# Sets the rotation as a 3X3 rotation matrix.
-# The matrix is specified in a right-handed screen space, with X to the right, Y downwards and Z outwards.
-# The example below corresponds to a Z axis rotation. Can also be achieved with
-# roll=-60
-# rot-matrix = 0.5000000; -0.8660254;  0.0000000;0.8660254;0.5000000;0.0000000;0.0000000;0.0000000;1.0000000
-
