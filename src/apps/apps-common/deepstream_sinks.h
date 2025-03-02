@@ -161,6 +161,8 @@ typedef struct {
  */
 gboolean create_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array, NvDsSinkBin* bin, guint index);
 
+gboolean create_fakesink_bin(const NvDsSinkRenderConfig* config, NvDsSinkBinSubBin* bin);
+
 void destroy_sink_bin(void);
 gboolean create_demux_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array, NvDsSinkBin* bin, guint index);
 

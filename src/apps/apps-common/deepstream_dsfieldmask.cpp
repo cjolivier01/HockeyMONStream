@@ -793,12 +793,22 @@ gboolean create_hmaudio_bin(
   const bool is_file_prefix = !strncmp(config->audio_location, file_prefix.c_str(), file_prefix.size());
   std::string audio_location = is_file_prefix ? &config->audio_location[file_prefix.size()] : config->audio_location;
   const bool is_src_file = config->src == SRC_FILE || is_file_prefix;
+  const NvDsSinkSubBinConfig* sink_config{nullptr};
+  bool is_dest_file_sink = false;
+  bool is_dest_alsa_sink = false;
 
-  bool sink_id_is_valid = config->sink_id_is_valid;
-  if (config->dest == DEST_ALSA) {
-    // No configured sink will be an alsa
-    g_print("hmaudio: disabling 'sink_id_is_valid' because destination is an ALSA sink\n");
-    sink_id_is_valid = false;
+  if (config->dest == DEST_SINK) {
+    for (size_t i = 0; i < MAX_SINK_BINS; ++i) {
+      if (sink_config_array[i].sink_id == config->sink_id) {
+        sink_config = &sink_config_array[i];
+        break;
+      }
+    }
+  }
+
+  if (sink_config) {
+    is_dest_file_sink = sink_config->type == NvDsSinkType::NV_DS_SINK_ENCODE_FILE;
+    is_dest_alsa_sink = sink_config->type == NvDsSinkType::NV_DS_SINK_RENDER_EGL;
   }
 
   bin->bin = gst_bin_new("hmaudio_bin");
@@ -815,7 +825,7 @@ gboolean create_hmaudio_bin(
   if (config->src == SRC_FILE || is_src_file) {
     HMGST_ELEMENT_MAKE_BINADD(bin->audiosrc, "filesrc", "hmaudio_filsrc");
     HMGST_ELEMENT_MAKE_BINADD(bin->qtdemux, "qtdemux", "hmaudio_demuxer");
-    if (config->dest != DEST_FILE) {
+    if (!is_dest_file_sink) {
       HMGST_ELEMENT_MAKE_BINADD(bin->decodebin, "decodebin", "hmaudio_decoder");
       HMGST_ELEMENT_MAKE_BINADD(bin->audioresample, "audioresample", "hmaudio_audioresample");
     }
@@ -835,7 +845,7 @@ gboolean create_hmaudio_bin(
 
   HMGST_ELEMENT_MAKE_BINADD(bin->queue, NVDS_ELEM_QUEUE, "hmaudio_audioout_queue");
 
-  if (config->dest == DEST_ALSA && !sink_id_is_valid) {
+  if (is_dest_alsa_sink) {
     bin->audiosink = gst_element_factory_make("alsasink", "hmaudio_audiosink0");
     if (!bin->audiosink) {
       NVGSTDS_ERR_MSG_V("Failed to create 'audioout_queue'");
@@ -874,53 +884,63 @@ gboolean create_hmaudio_bin(
     NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->queue);
   }
 
-  if (sink_id_is_valid) {
-    const NvDsSinkSubBinConfig* sink_config{nullptr};
-    for (size_t i = 0; i < MAX_SINK_BINS; ++i) {
-      if (sink_config_array[i].sink_id == config->sink_id) {
-        sink_config = &sink_config_array[i];
-        break;
-      }
-    }
-    if (sink_config) {
-      // Ok lets look at the sink we're supposed to be paired with
-      if (sink_config->enable) {
-        if (sink_config->type == NV_DS_SINK_ENCODE_FILE) {
-          assert(config->dest == DEST_FILE);
-          assert(sink_bin->sub_bins[config->sink_id].mux);
-          HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
-          NVGSTDS_LINK_ELEMENT(bin->queue, bin->audioparse);
-          NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
-          if (!link_audio_pad_to_muxer(bin->bin, sink_bin->sub_bins[config->sink_id].mux)) {
-            goto done;
-          }
-          linked = true;
-        } else if (sink_config->type == NV_DS_SINK_UDPSINK) {
-          assert(config->dest == DEST_RTSP);
-          assert(sink_bin->sub_bins[config->sink_id].rtppay_or_flvmux);
-          HMGST_ELEMENT_MAKE_BINADD(bin->encoder, "voaacenc", "hmaudio_encoder");
-          HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
-          NVGSTDS_LINK_ELEMENT(bin->queue, bin->encoder);
-          NVGSTDS_LINK_ELEMENT(bin->encoder, bin->audioparse);
-          NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
-          if (!link_audio_pad_to_muxer(
-                  bin->bin, sink_bin->sub_bins[config->sink_id].rtppay_or_flvmux, /*audio_pad_name=*/"audio")) {
-            goto done;
-          }
-          linked = true;
-        } else {
-          g_printerr("hmaudio doesn't know how to link to sink of type %d\n", (int)sink_config->type);
+  if (sink_config) {
+    // Ok lets look at the sink we're supposed to be paired with
+    if (sink_config->enable) {
+      if (sink_config->type == NV_DS_SINK_ENCODE_FILE) {
+        assert(is_dest_file_sink);
+        assert(sink_bin->sub_bins[config->sink_id].mux);
+        HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
+        NVGSTDS_LINK_ELEMENT(bin->queue, bin->audioparse);
+        NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
+        if (!link_audio_pad_to_muxer(bin->bin, sink_bin->sub_bins[config->sink_id].mux)) {
+          goto done;
         }
+        linked = true;
+      } else if (sink_config->type == NV_DS_SINK_UDPSINK) {
+        assert(sink_bin->sub_bins[config->sink_id].rtppay_or_flvmux);
+        HMGST_ELEMENT_MAKE_BINADD(bin->encoder, "voaacenc", "hmaudio_encoder");
+        HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
+        NVGSTDS_LINK_ELEMENT(bin->queue, bin->encoder);
+        NVGSTDS_LINK_ELEMENT(bin->encoder, bin->audioparse);
+        NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
+        if (!link_audio_pad_to_muxer(
+                bin->bin, sink_bin->sub_bins[config->sink_id].rtppay_or_flvmux, /*audio_pad_name=*/"audio")) {
+          goto done;
+        }
+        linked = true;
+      } else if (sink_config->type == NvDsSinkType::NV_DS_SINK_FAKE) {
+        if (!create_fakesink_bin(&sink_config->render_config, &bin->fakesink_bin)) {
+          g_printerr("Failed to make fakesink bin for hmaudio\n");
+        }
+        HMGST_ELEMENT_MAKE_BINADD(bin->encoder, "voaacenc", "hmaudio_encoder");
+        HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
+        NVGSTDS_LINK_ELEMENT(bin->queue, bin->encoder);
+        NVGSTDS_LINK_ELEMENT(bin->encoder, bin->audioparse);
+        NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
+        // if (!link_audio_pad_to_muxer(
+        //         bin->bin, sink_bin->sub_bins[config->sink_id].rtppay_or_flvmux, /*audio_pad_name=*/"audio")) {
+        //   goto done;
+        // }
+        static int uid = 0;
+        char ghost_pad_name[256];
+        sprintf(ghost_pad_name, "hmaudio_to_fakesink_%d", uid++);
+        if (!connectElementsWithGhostPads(bin->bin, "src", bin->fakesink_bin.bin, "sink", ghost_pad_name)) {
+          g_printerr("Failed to link hmaudio to fakesink\n");
+        }
+        linked = true;
       } else {
-        g_printerr("hmaudio can't link to sink id %d because it is disabled\n", config->sink_id);
+        g_printerr("hmaudio doesn't know how to link to sink of type %d\n", (int)sink_config->type);
       }
     } else {
-      g_printerr("Could not find sink-id %d referenced in hmaudio instance\n", config->sink_id);
-      goto done;
+      g_printerr("hmaudio can't link to sink id %d because it is disabled\n", config->sink_id);
     }
+  } else {
+    g_printerr("Could not find sink-id %d referenced in hmaudio instance\n", config->sink_id);
+    goto done;
   }
   if (!linked) {
-    if (config->dest != DEST_ALSA) {
+    if (!is_dest_alsa_sink) {
       NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "src");
     } else {
       if (*config->alsa_dest_device) {

@@ -210,17 +210,14 @@ enum EHmAudioSrc {
 };
 
 enum EHmAudioDest {
-  DEST_NULL = 0,
-  DEST_ALSA = 1,
-  DEST_RTSP = 2,
-  DEST_FILE = 3,
+  DEST_INDEPENDENT = 0,
+  DEST_SINK = 1,
 };
 
 struct NvDsHmAudioConfig {
   gboolean enable;
   guint src;
   guint dest;
-  gboolean sink_id_is_valid;
   guint sink_id;
   gchar audio_location[kMyMaxPath];
   gchar alsa_src_device[kMyMaxPath];
@@ -242,12 +239,15 @@ struct NvDsHmAudioBin {
   GstElement* audioresample{nullptr};
   GstElement* queue;
   GstElement* audioparse;
-  
+
   // RTSP/RTMP
   GstElement* encoder;
 
   // GstElement* postparse_presink_tee;
   GstElement* audiosink{nullptr};
+
+  // If the referenced sink is fakesink, make one similar to the video faksesink
+  NvDsSinkBinSubBin fakesink_bin;
 };
 
 // struct NvDsAudioVideoMerger {

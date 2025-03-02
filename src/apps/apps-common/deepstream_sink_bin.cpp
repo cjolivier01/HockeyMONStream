@@ -31,6 +31,79 @@ static GMutex server_cnt_lock;
 
 GST_DEBUG_CATEGORY_EXTERN(NVDS_APP);
 
+gboolean create_fakesink_bin(const NvDsSinkRenderConfig* config, NvDsSinkBinSubBin* bin) {
+  gboolean ret = FALSE;
+  gchar elem_name[50];
+  GstElement* connect_to;
+  GstCaps* caps = NULL;
+
+  uid++;
+
+  struct cudaDeviceProp prop;
+  cudaGetDeviceProperties(&prop, config->gpu_id);
+
+  g_snprintf(elem_name, sizeof(elem_name), "fakesink_sub_bin%d", uid);
+  bin->bin = gst_bin_new(elem_name);
+  if (!bin->bin) {
+    NVGSTDS_ERR_MSG_V("Failed to create '%s'", elem_name);
+    goto done;
+  }
+
+  g_snprintf(elem_name, sizeof(elem_name), "fakesink_sub_bin_sink%d", uid);
+  bin->sink = gst_element_factory_make(NVDS_ELEM_SINK_FAKESINK, elem_name);
+  g_object_set(G_OBJECT(bin->sink), "enable-last-sample", FALSE, NULL);
+
+  if (!bin->sink) {
+    NVGSTDS_ERR_MSG_V("Failed to create '%s'", elem_name);
+    goto done;
+  }
+
+  g_object_set(G_OBJECT(bin->sink), "sync", config->sync, "max-lateness", -1, "async", FALSE, "qos", config->qos, NULL);
+
+  if (!prop.integrated) {
+    g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin_cap_filter%d", uid);
+    bin->cap_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, elem_name);
+    if (!bin->cap_filter) {
+      NVGSTDS_ERR_MSG_V("Failed to create '%s'", elem_name);
+      goto done;
+    }
+    gst_bin_add(GST_BIN(bin->bin), bin->cap_filter);
+  }
+
+  g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin_transform%d", uid);
+
+  g_snprintf(elem_name, sizeof(elem_name), "render_queue%d", uid);
+  bin->queue = gst_element_factory_make(NVDS_ELEM_QUEUE, elem_name);
+  if (!bin->queue) {
+    NVGSTDS_ERR_MSG_V("Failed to create '%s'", elem_name);
+    goto done;
+  }
+
+  gst_bin_add_many(GST_BIN(bin->bin), bin->queue, bin->sink, NULL);
+
+  connect_to = bin->sink;
+
+  if (bin->cap_filter) {
+    NVGSTDS_LINK_ELEMENT(bin->cap_filter, connect_to);
+    connect_to = bin->cap_filter;
+  }
+
+  NVGSTDS_LINK_ELEMENT(bin->queue, connect_to);
+
+  NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "sink");
+
+  ret = TRUE;
+
+done:
+  if (caps) {
+    gst_caps_unref(caps);
+  }
+  if (!ret) {
+    NVGSTDS_ERR_MSG_V("%s failed", __func__);
+  }
+  return ret;
+}
+
 /**
  * Function to create sink bin for Display / Fakesink.
  */

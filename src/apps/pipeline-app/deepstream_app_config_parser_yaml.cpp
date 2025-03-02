@@ -146,7 +146,6 @@ gboolean parse_hmaudio_yaml(NvDsHmAudioConfig* config, const YAML::Node& yaml_no
   SET_LOCATOR(locator, *config, enable);
   SET_LOCATOR(locator, *config, src);
   SET_LOCATOR(locator, *config, dest);
-  SET_LOCATOR(locator, *config, sink_id_is_valid);
   SET_LOCATOR(locator, *config, sink_id);
   SET_LOCATOR_CHARS(locator, *config, alsa_src_device);
   SET_LOCATOR_CHARS(locator, *config, alsa_dest_device);
