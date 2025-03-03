@@ -1,6 +1,6 @@
 #include "configurator.h"
-#include "deepstream_app.h"
 #include "cupano/pano/controlMasks.h"
+#include "deepstream_app.h"
 
 #include <filesystem>
 #include <iostream>
