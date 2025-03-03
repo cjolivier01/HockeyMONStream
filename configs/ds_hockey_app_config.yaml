@@ -28,12 +28,12 @@ tiled-display:
   # height: 1360
   # width: 2048
   # height: 720
-  width: 1647
-  height: 740
+  # width: 1647
+  # height: 740
   # width: 888
   # height: 500
-  # width: 6142
-  # height: 2077
+  width: 6142
+  height: 2077
   # width: 640
   # height: 360
   gpu-id: 0
@@ -317,7 +317,7 @@ hm-image-meta-merger:
   nvbuf-memory-type: 0
 
 dewarper0:
-  enable: 1
+  enable: 0
   # source-id: 6
   config-file: config_dewarper_action1.txt
   gpu-id: 0
