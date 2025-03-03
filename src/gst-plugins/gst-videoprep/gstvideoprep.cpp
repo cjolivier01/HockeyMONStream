@@ -1054,7 +1054,7 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
       gobject_class,
       PROP_NUM_BATCH_BUFFERS,
       g_param_spec_uint(
-          "num-batch-buffers",
+          CONFIG_GROUP_VIDEOPREP_PROPERTY_NUM_BATCH_BUFFERS,
           "Number of Surfaces per output "
           "Buffer",
           "Number of Surfaces per output Buffer",
@@ -1067,7 +1067,7 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
       gobject_class,
       PROP_OUTPUT_WIDTH,
       g_param_spec_uint(
-          "output-width",
+          CONFIG_GROUP_VIDEOPREP_PROPERTY_OUTPUT_WIDTH,
           "Output Width",
           "Output Width",
           0,
@@ -1079,7 +1079,7 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
       gobject_class,
       PROP_OUTPUT_HEIGHT,
       g_param_spec_uint(
-          "output-height",
+          CONFIG_GROUP_VIDEOPREP_PROPERTY_OUTPUT_HEIGHT,
           "Output Height",
           "Output Height",
           0,
@@ -1091,7 +1091,7 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
       gobject_class,
       PROP_CONFIG_FILE,
       g_param_spec_string(
-          "config-file",
+          CONFIG_GROUP_VIDEOPREP_PROPERTY_CONFIG_FILE,
           "Config File",
           "Config File",
           NULL,

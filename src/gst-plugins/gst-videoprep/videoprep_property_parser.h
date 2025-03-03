@@ -1,28 +1,18 @@
 #pragma once
 
-#include <gst/gst.h>
-#include "gstvideoprep.h"
-
 namespace hm {
 namespace videoprep {
 
 /* clang-format off */
 
-/**
- * @addtogroup one Global properties
- *
- * @brief Global properties that apply to all surfaces and are specified under [property] group
- * @{
- */
-#define CONFIG_GROUP_VIDEOPREP_PROPERTY "property"                                   /**< Identifier for [property] group */
-#define CONFIG_GROUP_VIDEOPREP_PROPERTY_OUTPUT_WIDTH "output-width"                  /**< Scale dewarped surfaces to specified output width */
-#define CONFIG_GROUP_VIDEOPREP_PROPERTY_OUTPUT_HEIGHT "output-height"                /**< Scale dewarped surfaces to specified output height */
-#define CONFIG_GROUP_VIDEOPREP_PROPERTY_CUDA_MEMORY_TYPE "cuda-memory-type"          /**< NVDS CUDA memory type */
-#define CONFIG_GROUP_VIDEOPREP_PROPERTY_NUM_BATCH_BUFFERS "num-batch-buffers"        /**< Number of dewarped output surfaces per buffer */
-#define CONFIG_GROUP_VIDEOPREP_PROPERTY_DUMP_FRAMES "dewarp-dump-frames"             /**< Number of dewarped frames to dump */
-//#define CONFIG_GROUP_VIDEOPREP_PROPERTY_AISLE_CALIB_FILE "aisle-calibration-file"    /**< Pathname of the configuration file for aisle view. */
-//#define CONFIG_GROUP_VIDEOPREP_PROPERTY_SPOT_CALIB_FILE "spot-calibration-file"      /**< Pathname of the configuration file for spot view. */
-/** @} */
+// Configuration keys for the video preparation property group.
+constexpr const char* CONFIG_GROUP_VIDEOPREP_PROPERTY = "property";                                   // Identifier for [property] group
+constexpr const char* CONFIG_GROUP_VIDEOPREP_PROPERTY_CONFIG_FILE = "config-file";
+constexpr const char* CONFIG_GROUP_VIDEOPREP_PROPERTY_OUTPUT_WIDTH = "output-width";                  // Scale dewarped surfaces to specified output width
+constexpr const char* CONFIG_GROUP_VIDEOPREP_PROPERTY_OUTPUT_HEIGHT = "output-height";                // Scale dewarped surfaces to specified output height
+constexpr const char* CONFIG_GROUP_VIDEOPREP_PROPERTY_CUDA_MEMORY_TYPE = "cuda-memory-type";          // NVDS CUDA memory type
+constexpr const char* CONFIG_GROUP_VIDEOPREP_PROPERTY_NUM_BATCH_BUFFERS = "num-batch-buffers";        // Number of dewarped output surfaces per buffer
+constexpr const char* CONFIG_GROUP_VIDEOPREP_PROPERTY_DUMP_FRAMES = "dewarp-dump-frames";             // Number of dewarped frames to dump
 
 /**
  * @addtogroup two Surface properties
@@ -31,44 +21,11 @@ namespace videoprep {
  * These are specified under [surface<n>] group
  * @{
  */
-#define CONFIG_GROUP_VIDEOPREP_SURFACE_ATTRS_PREFIX "surface"                /**< Identifier for [surface<n>] group */
-#define CONFIG_GROUP_VIDEOPREP_SURFACE_INDEX "surface-index"                 /**< An index that distinguishes surfaces of the same projection type. */
-// #define CONFIG_GROUP_VIDEOPREP_SURFACE_PROJECTION_TYPE "projection-type"     /**< Surface projection of type "NvDsSurfaceType" */
-//#define CONFIG_GROUP_VIDEOPREP_SURFACE_WIDTH "width"                         /**< Dewarped surface width. */
-//#define CONFIG_GROUP_VIDEOPREP_SURFACE_HEIGHT "height"                       /**< Dewarped surface height. */
-//#define CONFIG_GROUP_VIDEOPREP_SURFACE_TOP_ANGLE "top-angle"                 /**< Desired Top field of view angle, in degrees. */
-//#define CONFIG_GROUP_VIDEOPREP_SURFACE_BOTTOM_ANGLE "bottom-angle"           /**< Desired Bottom field of view angle, in degrees. */
-//#define CONFIG_GROUP_VIDEOPREP_SURFACE_PITCH "pitch"                         /**< View selection parameter pitch in degrees. Corresponds to X axis */
-//#define CONFIG_GROUP_VIDEOPREP_SURFACE_YAW "yaw"                             /**< View selection parameter yaw in degrees. Corresponds to Y axis */
-//#define CONFIG_GROUP_VIDEOPREP_SURFACE_ROLL "roll"                           /**< View selection parameter roll in degrees. Corresponds to Z axis */
-//#define CONFIG_GROUP_VIDEOPREP_SURFACE_FOCAL_LENGTH "focal-length"           /**< Array of 2 numbers. X & Y focal length of camera lens */
-#define CONFIG_GROUP_VIDEOPREP_SURFACE_ADDRESS_MODE "cuda-address-mode"      /**< Cuda Texture addressing mode. */
-/** A four-element array of three-character C-strings terminated by \0 that
- * represent the dequence of rotation axes about which the view gets rotated based on rotation angles specified */
-//#define CONFIG_GROUP_VIDEOPREP_SURFACE_ROTATION_AXES "rot-axes"
-//#define CONFIG_GROUP_VIDEOPREP_SURFACE_CONTROL "control"                     /**< Projection-specific controls for Panini, Stereographic and Pushbroom projections */
-//#define CONFIG_GROUP_VIDEOPREP_SURFACE_ROTATION_MATRIX "rot-matrix"          /**< Conventional 9 element rotation matrix */
-
-//#define CONFIG_GROUP_VIDEOPREP_SURFACE_FIELD_OF_VIEW "src-fov"               /**< used to compute focal-length if the latter is not provided */
-//#define CONFIG_GROUP_VIDEOPREP_SURFACE_DISTORTION "distortion"               /**< distortion: up to 5 distortion parameters */
-//#define CONFIG_GROUP_VIDEOPREP_SURFACE_SRC_X0 "src-x0"                       /**< source principal point X */
-//#define CONFIG_GROUP_VIDEOPREP_SURFACE_SRC_Y0 "src-y0"                       /**< source principal point Y */
-
-/** Destination focal length : Useful to introduce zoom-in and zoom-out effect */
-//#define CONFIG_GROUP_VIDEOPREP_SURFACE_DST_FOCAL_LENGTH "dst-focal-length"
-/** Destination principal point corresponding to ""dst-focal-length" */
-//#define CONFIG_GROUP_VIDEOPREP_SURFACE_DST_PRINCIPAL_POINT "dst-principal-point"
-/** @} */
-
-#define CONFIG_GROUP_VIDEOPREP_PLUGIN_TYPE "plugin-type"
-#define CONFIG_GROUP_VIDEOPREP_PLUGIN_PRIVATE_CONFIG "plugin-private-config"
-
-gboolean
-videoprep_parse_config_file (GstVideoPrep *videoprep, gchar *cfg_file_path);
-
-gboolean
-videoprep_parse_videoprep_props (GstVideoPrep *videoprep, GKeyFile *key_file,
-    gchar *group, gchar *cfg_file_path);
+constexpr const char* CONFIG_GROUP_VIDEOPREP_SURFACE_ATTRS_PREFIX = "surface";                // Identifier for [surface<n>] group
+constexpr const char* CONFIG_GROUP_VIDEOPREP_SURFACE_INDEX = "surface-index";                 // An index that distinguishes surfaces of the same projection type.
+constexpr const char* CONFIG_GROUP_VIDEOPREP_SURFACE_ADDRESS_MODE = "cuda-address-mode";      // CUDA Texture addressing mode.
+constexpr const char* CONFIG_GROUP_VIDEOPREP_PLUGIN_TYPE = "plugin-type";
+constexpr const char* CONFIG_GROUP_VIDEOPREP_PLUGIN_PRIVATE_CONFIG = "plugin-private-config";
 
 /* clang-format on */
 
