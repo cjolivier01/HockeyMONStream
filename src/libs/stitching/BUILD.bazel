@@ -1,0 +1,16 @@
+INCLUDE_PREFIX = "hstream/libs/stitching"
+
+cc_library(
+  name = "stitching",
+  srcs = glob([
+    "*.cpp",
+  ]),
+  hdrs = glob([
+    "*.h",
+  ]),
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    "@com_google_absl//absl/status:status",
+  ],
+)
