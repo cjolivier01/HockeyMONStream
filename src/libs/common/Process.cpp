@@ -16,13 +16,24 @@
 
 namespace hm {
 
-/// run_command launches a command given by cmd (a vector of strings)
-/// in the directory working_dir, with the environment variables in env.
-/// As the command runs, it reads from its stdout and stderr (the callback’s
-/// parameters are interpreted as (stderr_line, stdout_line))—whenever a full
-/// line is available from one of these streams (i.e. terminated by a newline),
-/// the callback is invoked with that line (and the other string empty).
-/// After the process terminates, the function returns the process’s exit code.
+/**
+ * @brief Launches a command in a specified working directory with a custom environment.
+ *
+ * This function forks a child process, changes its working directory (if provided),
+ * sets the provided environment variables, and executes the command via execve().
+ * The child's stdout and stderr are captured using pipes. As data is received from either
+ * stream, it is buffered until a full line (terminated by a newline) is available.
+ * Once a full line is captured, the callback is invoked with that line. For output from stdout,
+ * the callback is called with the second parameter set, and for stderr, the first parameter is set.
+ *
+ * @param cmd A vector of strings representing the command line. The first element should be the executable.
+ * @param working_dir The directory in which the command should be executed. If empty, no directory change is performed.
+ * @param env An unordered_map representing the environment variables for the new process.
+ * @param callback A function to be called when a full line is captured from stdout or stderr.
+ *        For a stdout line, callback is called as callback("", line); for stderr, as callback(line, "").
+ *
+ * @return int The exit code of the child process, or -1 on error.
+ */
 int run_command(
     const std::vector<std::string>& cmd,
     const std::string& working_dir,
@@ -58,7 +69,7 @@ int run_command(
   }
 
   if (pid == 0) {
-    // In child process
+    // Child process
 
     // Change working directory if provided.
     if (!working_dir.empty() && chdir(working_dir.c_str()) != 0) {
@@ -106,7 +117,7 @@ int run_command(
       _exit(1);
     }
   }
-  // In parent process
+  // Parent process
 
   // Close write ends as we only need to read.
   close(pipe_stdout[1]);
@@ -214,5 +225,4 @@ int run_command(
     return WEXITSTATUS(status);
   return -1;
 }
-
 } // namespace hm
