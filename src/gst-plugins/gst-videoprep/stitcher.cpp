@@ -1,4 +1,4 @@
-#include "cuda/cudaStatus.h"
+#include "cupano/cuda/cudaStatus.h"
 #include "gstvideoprep.h"
 
 #include <cuda_runtime.h>
@@ -20,7 +20,7 @@
 #include <vector>
 #include "nvbufsurface.h"
 
-#include "pano/cudaMat.h"
+#include "cupano/pano/cudaMat.h"
 
 #if defined(__aarch64__)
 #include <EGL/egl.h>

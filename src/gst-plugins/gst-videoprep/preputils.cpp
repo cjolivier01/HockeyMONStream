@@ -1,6 +1,6 @@
 #include "preputils.h"
 
-#include "cuda/cudaStatus.h"
+#include "cupano/cuda/cudaStatus.h"
 #include "cudaCrop.h"
 #include "cudaWarp.h"
 

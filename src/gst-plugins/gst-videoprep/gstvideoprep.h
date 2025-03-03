@@ -12,7 +12,7 @@
 #include <cuda.h>
 #include <npp.h>
 
-#include "cuda/cudaStatus.h"
+#include "cupano/cuda/cudaStatus.h"
 
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"

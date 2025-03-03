@@ -1,6 +1,6 @@
 #pragma once
 
-#include "cuda/cudaStatus.h"
+#include "cupano/cuda/cudaStatus.h"
 #include "gstvideoprep.h"
 
 #include "custom_algorithm_base.h"

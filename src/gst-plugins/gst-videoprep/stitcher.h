@@ -1,6 +1,6 @@
 #pragma once
 
-#include "pano/cudaPano.h"
+#include "cupano/pano/cudaPano.h"
 #include "gstvideoprep.h"
 
 #include "custom_algorithm_base.h"

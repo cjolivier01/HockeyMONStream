@@ -1,4 +1,4 @@
-#include "cuda/cudaStatus.h"
+#include "cupano/cuda/cudaStatus.h"
 #include "gstvideoprep.h"
 
 #include <cuda_runtime.h>
