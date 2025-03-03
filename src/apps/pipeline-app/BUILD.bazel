@@ -18,7 +18,6 @@ cc_binary(
     "-std=c++17",
   ],
   linkopts=[
-    "-l:/home/colivier-local/src/hstream/lib/gst-plugins/libnvdsgst_multistream.so",
     "-lX11",
     "-ldl",
     "-lm",
