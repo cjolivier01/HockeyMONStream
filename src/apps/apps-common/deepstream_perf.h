@@ -21,12 +21,12 @@ extern "C" {
 
 #include "deepstream_config.h"
 
-typedef struct {
+struct NvDsFPSSensorInfo {
   guint source_id;
   gchar const* uri;
   gchar const* sensor_id;
   gchar const* sensor_name;
-} NvDsFPSSensorInfo;
+};
 
 typedef struct {
   guint source_id;
