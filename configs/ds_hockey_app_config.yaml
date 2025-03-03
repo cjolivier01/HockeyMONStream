@@ -17,7 +17,7 @@ application:
   ##gie-kitti-output-dir=streamscl
 
 tiled-display:
-  enable: 0
+  enable: 1
   rows: 1
   columns: 1
   # rows: 2
@@ -118,9 +118,9 @@ sink0:
   enable: 1
   sink-id: 0
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
-  type: 1
-  # sync: 1
-  sync: 0
+  type: 2
+  sync: 1
+  # sync: 0
   source-id: 0
   gpu-id: 0
   nvbuf-memory-type: 0
@@ -317,8 +317,8 @@ hm-image-meta-merger:
   nvbuf-memory-type: 0
 
 dewarper0:
-  enable: 0
-  source-id: 6
+  enable: 1
+  # source-id: 6
   config-file: config_dewarper_action1.txt
   gpu-id: 0
   nvbuf-memory-type: 0

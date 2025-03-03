@@ -67,8 +67,8 @@
         //"${workspaceFolder}/configs/deepstream_app_config.txt",   // baseline
         "${workspaceFolder}/configs/ds_hockey_app_config.yaml", // my app
         "-g",
-        "mlk-heat-1",
-        //"fremont",
+        //"mlk-heat-1",
+        "fremont",
         "-d",
       ],
       "sourceMap": {

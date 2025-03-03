@@ -215,6 +215,9 @@ CudaStatus StitcherPriv::GenerateOutput(
     // NvBufSurfaceParams* right_params = frame_info_right.surface_params;
     NvBufSurfaceParams* output_params = &out_surface->surfaceList[out_surface_index];
 
+    // render("left", frame_info_left.surface_params, videoprep->stream);
+    // render("right", frame_info_right.surface_params, videoprep->stream);
+
     NvDsFrameMeta* reuse_frame_meta{nullptr};
     assert(source_frame_metas.size() == 2);
     if (!left_frame_offset_ns_) {
