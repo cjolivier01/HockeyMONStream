@@ -297,7 +297,7 @@ void restart_pipeline(AppCtx* appCtx);
  *
  * @return true if parsed successfully.
  */
-gboolean parse_config_file(NvDsConfig* config, gchar* cfg_file_path);
+gboolean parse_config_file(NvDsConfig* config, const gchar* cfg_file_path);
 
 /**
  * Function to read properties from YML configuration file.
@@ -307,9 +307,9 @@ gboolean parse_config_file(NvDsConfig* config, gchar* cfg_file_path);
  *
  * @return true if parsed successfully.
  */
-// gboolean parse_config_file_yaml(NvDsConfig* config, gchar* cfg_file_path);
+// gboolean parse_config_file_yaml(NvDsConfig* config, const gchar* cfg_file_path);
 
-gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, gchar* cfg_file_path);
+gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, const gchar* cfg_file_path);
 
 /**
  * Function to procure the NvDsSensorInfo for the source_id

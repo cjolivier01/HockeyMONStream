@@ -8,7 +8,7 @@
 using std::cout;
 using std::endl;
 
-gboolean parse_dsanalytics_yaml(NvDsDsAnalyticsConfig* config, gchar* cfg_file_path) {
+gboolean parse_dsanalytics_yaml(NvDsDsAnalyticsConfig* config, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
 
   YAML::Node configyml = YAML::LoadFile(cfg_file_path);

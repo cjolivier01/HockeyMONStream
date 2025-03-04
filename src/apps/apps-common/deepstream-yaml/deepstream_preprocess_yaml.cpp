@@ -19,7 +19,7 @@
 using std::cout;
 using std::endl;
 
-gboolean parse_preprocess_yaml(NvDsPreProcessConfig* config, gchar* cfg_file_path) {
+gboolean parse_preprocess_yaml(NvDsPreProcessConfig* config, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
 
   YAML::Node configyml = YAML::LoadFile(cfg_file_path);

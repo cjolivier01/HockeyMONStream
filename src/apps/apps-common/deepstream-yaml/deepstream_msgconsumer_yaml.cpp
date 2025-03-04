@@ -19,7 +19,7 @@
 using std::cout;
 using std::endl;
 
-gboolean parse_msgconsumer_yaml(NvDsMsgConsumerConfig* config, std::string group, gchar* cfg_file_path) {
+gboolean parse_msgconsumer_yaml(NvDsMsgConsumerConfig* config, std::string group, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
   YAML::Node configyml = YAML::LoadFile(cfg_file_path);
   for (YAML::const_iterator itr = configyml[group].begin(); itr != configyml[group].end(); ++itr) {

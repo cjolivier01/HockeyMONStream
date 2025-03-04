@@ -19,7 +19,7 @@
 using std::cout;
 using std::endl;
 
-gboolean parse_dewarper_yaml(NvDsDewarperConfig* config, std::string group_str, gchar* cfg_file_path) {
+gboolean parse_dewarper_yaml(NvDsDewarperConfig* config, std::string group_str, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
 
   YAML::Node configyml = YAML::LoadFile(cfg_file_path);

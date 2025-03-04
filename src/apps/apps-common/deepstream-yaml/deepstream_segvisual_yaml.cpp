@@ -22,7 +22,7 @@ using std::endl;
 #define SEG_OUTPUT_WIDTH 1280
 #define SEG_OUTPUT_HEIGHT 720
 
-gboolean parse_segvisual_yaml(NvDsSegVisualConfig* config, gchar* cfg_file_path) {
+gboolean parse_segvisual_yaml(NvDsSegVisualConfig* config, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
 
   /** Default values */

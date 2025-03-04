@@ -242,7 +242,7 @@ GST_DEBUG_CATEGORY(APP_CFG_PARSER_CAT);
 #define SEG_OUTPUT_WIDTH 1280
 #define SEG_OUTPUT_HEIGHT 720
 
-gchar* get_absolute_file_path(gchar* cfg_file_path, gchar* file_path) {
+gchar* get_absolute_file_path(const gchar* cfg_file_path, gchar* file_path) {
   gchar abs_cfg_path[PATH_MAX + 1];
   gchar* abs_file_path;
   gchar* delim;
@@ -384,7 +384,7 @@ done:
   return ret;
 }
 
-gboolean parse_source(NvDsSourceConfig* config, GKeyFile* key_file, gchar* group, gchar* cfg_file_path) {
+gboolean parse_source(NvDsSourceConfig* config, GKeyFile* key_file, gchar* group, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
   gchar** keys = NULL;
   gchar** key = NULL;
@@ -610,7 +610,7 @@ done:
   return ret;
 }
 
-gboolean parse_streammux(NvDsStreammuxConfig* config, GKeyFile* key_file, gchar* cfg_file_path) {
+gboolean parse_streammux(NvDsStreammuxConfig* config, GKeyFile* key_file, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
   gchar** keys = NULL;
   gchar** key = NULL;
@@ -730,7 +730,7 @@ done:
   return ret;
 }
 
-gboolean parse_dsanalytics(NvDsDsAnalyticsConfig* config, GKeyFile* key_file, gchar* cfg_file_path) {
+gboolean parse_dsanalytics(NvDsDsAnalyticsConfig* config, GKeyFile* key_file, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
   gchar** keys = NULL;
   gchar** key = NULL;
@@ -1009,7 +1009,7 @@ done:
   return ret;
 }
 
-gboolean parse_dewarper(NvDsDewarperConfig* config, GKeyFile* key_file, gchar* cfg_file_path, gchar* dewarper) {
+gboolean parse_dewarper(NvDsDewarperConfig* config, GKeyFile* key_file, const gchar* cfg_file_path, gchar* dewarper) {
   gboolean ret = FALSE;
   gchar** keys = NULL;
   gchar** key = NULL;
@@ -1063,7 +1063,7 @@ done:
   return ret;
 }
 
-gboolean parse_preprocess(NvDsPreProcessConfig* config, GKeyFile* key_file, gchar* group, gchar* cfg_file_path) {
+gboolean parse_preprocess(NvDsPreProcessConfig* config, GKeyFile* key_file, gchar* group, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
   gchar** keys = NULL;
   gchar** key = NULL;
@@ -1102,7 +1102,7 @@ done:
   return ret;
 }
 
-gboolean parse_gie(NvDsGieConfig* config, GKeyFile* key_file, gchar* group, gchar* cfg_file_path) {
+gboolean parse_gie(NvDsGieConfig* config, GKeyFile* key_file, gchar* group, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
   gchar** keys = NULL;
   gchar** key = NULL;
@@ -1299,7 +1299,7 @@ done:
   return ret;
 }
 
-gboolean parse_tracker(NvDsTrackerConfig* config, GKeyFile* key_file, gchar* cfg_file_path) {
+gboolean parse_tracker(NvDsTrackerConfig* config, GKeyFile* key_file, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
   gchar** keys = NULL;
   gchar** key = NULL;
@@ -1419,7 +1419,7 @@ done:
   return ret;
 }
 
-gboolean parse_sink(NvDsSinkSubBinConfig* config, GKeyFile* key_file, gchar* group, gchar* cfg_file_path) {
+gboolean parse_sink(NvDsSinkSubBinConfig* config, GKeyFile* key_file, gchar* group, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
   gchar** keys = NULL;
   gchar** key = NULL;
@@ -1670,7 +1670,11 @@ done:
   return ret;
 }
 
-gboolean parse_msgconv(NvDsSinkMsgConvBrokerConfig* config, GKeyFile* key_file, gchar* group, gchar* cfg_file_path) {
+gboolean parse_msgconv(
+    NvDsSinkMsgConvBrokerConfig* config,
+    GKeyFile* key_file,
+    gchar* group,
+    const gchar* cfg_file_path) {
   gboolean ret = FALSE;
   gchar** keys = NULL;
   gchar** key = NULL;
@@ -1734,7 +1738,11 @@ done:
   return ret;
 }
 
-gboolean parse_msgconsumer(NvDsMsgConsumerConfig* config, GKeyFile* key_file, gchar* group, gchar* cfg_file_path) {
+gboolean parse_msgconsumer(
+    NvDsMsgConsumerConfig* config,
+    GKeyFile* key_file,
+    gchar* group,
+    const gchar* cfg_file_path) {
   gboolean ret = FALSE;
   gchar** keys = NULL;
   gchar** key = NULL;
@@ -1801,7 +1809,7 @@ done:
   return ret;
 }
 
-gboolean parse_image_save(NvDsImageSave* config, GKeyFile* key_file, gchar* group, gchar* cfg_file_path) {
+gboolean parse_image_save(NvDsImageSave* config, GKeyFile* key_file, gchar* group, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
   gchar** keys = NULL;
   gchar** key = NULL;

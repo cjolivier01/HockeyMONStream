@@ -18,7 +18,7 @@
 using std::cout;
 using std::endl;
 
-gboolean parse_tiled_display_yaml(NvDsTiledDisplayConfig* config, gchar* cfg_file_path) {
+gboolean parse_tiled_display_yaml(NvDsTiledDisplayConfig* config, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
 
   YAML::Node configyml = YAML::LoadFile(cfg_file_path);

@@ -19,7 +19,7 @@
 using std::cout;
 using std::endl;
 
-gboolean parse_dsexample_yaml(NvDsDsExampleConfig* config, gchar* cfg_file_path) {
+gboolean parse_dsexample_yaml(NvDsDsExampleConfig* config, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
   YAML::Node configyml = YAML::LoadFile(cfg_file_path);
 

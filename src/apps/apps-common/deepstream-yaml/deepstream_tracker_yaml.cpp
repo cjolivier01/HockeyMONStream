@@ -19,7 +19,7 @@
 using std::cout;
 using std::endl;
 
-gboolean parse_tracker_yaml(NvDsTrackerConfig* config, gchar* cfg_file_path) {
+gboolean parse_tracker_yaml(NvDsTrackerConfig* config, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
   YAML::Node configyml = YAML::LoadFile(cfg_file_path);
 

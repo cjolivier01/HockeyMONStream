@@ -35,7 +35,7 @@ static int get_trailing_integer(const std::string& input) {
   return std::stoi(numberStr); // Convert to integer
 }
 
-static gboolean parse_tests_yaml(NvDsConfig* config, gchar* cfg_file_path) {
+static gboolean parse_tests_yaml(NvDsConfig* config, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
   YAML::Node configyml = YAML::LoadFile(cfg_file_path);
 
@@ -156,7 +156,7 @@ gboolean parse_hmaudio_yaml(NvDsHmAudioConfig* config, const YAML::Node& yaml_no
   return true;
 }
 
-static gboolean parse_app_yaml(NvDsConfig* config, gchar* cfg_file_path) {
+static gboolean parse_app_yaml(NvDsConfig* config, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
   YAML::Node configyml = YAML::LoadFile(cfg_file_path);
 
@@ -235,7 +235,7 @@ static std::vector<std::string> split_csv_entries(std::string input) {
   return ret;
 }
 
-gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, gchar* cfg_file_path) {
+gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, const gchar* cfg_file_path) {
   gboolean parse_err = false;
   gboolean ret = FALSE;
   std::string source_str = "source";
@@ -312,7 +312,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, gcha
           /** if gpu_id for source component is present,
            * it will override the value set using global_gpu_id in parse_source_yaml function */
           parse_err =
-              !parse_source_yaml(&config->multi_source_config[source_id], headers, source_values, cfg_file_path);
+              !parse_source_yaml(&config->multi_source_config[source_id], headers, source_values, (char*)cfg_file_path);
           if (config->multi_source_config[source_id].enable)
             config->num_source_sub_bins++;
         }
@@ -605,7 +605,7 @@ done:
   return ret;
 }
 
-gboolean parse_config_file_yaml(NvDsConfig* config, gchar* cfg_file_path) {
+gboolean parse_config_file_yaml(NvDsConfig* config, const gchar* cfg_file_path) {
   YAML::Node configyml = YAML::LoadFile(cfg_file_path);
   return parse_config_yaml(configyml, config, cfg_file_path);
 }
