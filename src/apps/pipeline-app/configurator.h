@@ -1,6 +1,7 @@
 #pragma once
 
 #include "yaml-cpp/yaml.h"
+#include "absl/status/status.h"
 
 #include <filesystem>
 #include <optional>
@@ -31,7 +32,7 @@ class Configurator {
     return config_;
   }
 
-  void complete_configuration();
+  absl::Status complete_configuration();
 
   bool post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config);
 

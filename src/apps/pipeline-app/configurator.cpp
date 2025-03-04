@@ -12,7 +12,8 @@
 #include <opencv2/videoio.hpp>
 #include <unistd.h>
 
-#include "src/libs/common/pipeline_utils.h"
+#include "hstream/libs/common/pipeline_utils.h"
+#include "hstream/libs/stitching/ConfigureStitching.h"
 
 namespace hm {
 
@@ -261,18 +262,25 @@ YAML::Node Configurator::auto_config(YAML::Node&& config) {
   return std::move(config);
 }
 
-void Configurator::complete_configuration() {
+absl::Status Configurator::complete_configuration() {
   YAML::Node pipeline = config_["pipeline"];
   assert(pipeline.IsDefined());
 
+  absl::Status status;
+
   if (game_id_.empty()) {
-    return;
+    return absl::InvalidArgumentError("No game id specified");
   }
 
   // Stitching config mask config dir
   auto game_dir = get_game_dir(game_id_);
 
   pipeline["hmstitcher"]["config-file"] = std::string(game_dir);
+
+  if (!stitching::is_stitching_configured(game_dir).value_or(false) && stitching::can_configure_stitching(config_)) {
+    // HM_RETURN_IF_ERROR(stitching::configure_stitching(
+    //     const std::string& game_id, surface::Surface left_surface, surface::Surface right_surface)
+  }
 
   pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / "rink_mask_0.png");
   // Stitching LFO, RFO
