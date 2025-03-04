@@ -1,4 +1,4 @@
-#include "hstream/libs/common/PlotContext.h"
+#include "hstream/src/libs/common/PlotContext.h"
 
 #include <cassert>
 #include <stdexcept>

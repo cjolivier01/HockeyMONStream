@@ -10,8 +10,8 @@
  * its affiliates is strictly prohibited.
  */
 #include <string.h>
-#include "apps/apps-common/deepstream_common.h"
-#include "apps/apps-common/deepstream_config_file_parser.h"
+#include "hstream/src/apps/apps-common/deepstream_common.h"
+#include "hstream/src/apps/apps-common/deepstream_config_file_parser.h"
 #include "deepstream_app.h"
 
 #define CONFIG_GROUP_APP "application"

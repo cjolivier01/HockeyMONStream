@@ -2,7 +2,7 @@
 
 #include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
 #include "includes/hmcustomlib_interface.hpp"
-#include "src/libs/common/Surface.h"
+#include "hstream/src/libs/common/Surface.h"
 
 #include <gst/base/gstbasetransform.h>
 #include <gst/gst.h>

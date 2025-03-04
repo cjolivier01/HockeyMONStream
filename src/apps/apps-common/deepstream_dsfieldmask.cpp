@@ -13,7 +13,7 @@
 
 #include "deepstream_dsfieldmask.h"
 
-#include "src/libs/common/pipeline_utils.h"
+#include "hstream/src/libs/common/pipeline_utils.h"
 
 #include <glib-2.0/glib.h>
 #include <gst/gstelement.h>

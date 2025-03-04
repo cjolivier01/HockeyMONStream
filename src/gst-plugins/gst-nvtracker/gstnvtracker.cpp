@@ -31,7 +31,7 @@
 
 #include "gst-nvevent.h"
 
-#include "apps/apps-common/deepstream_tracker.h"
+#include "hstream/src/apps/apps-common/deepstream_tracker.h"
 
 //#include "logging.h"
 #include "nvtracker_proc.h"

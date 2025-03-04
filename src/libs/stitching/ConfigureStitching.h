@@ -1,6 +1,6 @@
 #pragma once
 
-#include "hstream/libs/common/Surface.h"
+#include "hstream/src/libs/common/Surface.h"
 
 #include "absl/status/statusor.h"
 #include "yaml-cpp/yaml.h"

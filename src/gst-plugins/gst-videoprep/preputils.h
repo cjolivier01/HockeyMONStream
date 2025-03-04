@@ -6,7 +6,7 @@
 
 #include "glDisplay.h"
 #include "nvdsmeta.h"
-#include "src/libs/common/Surface.h"
+#include "hstream/src/libs/common/Surface.h"
 #include "cupano/cuda/cudaStatus.h"
 
 #include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"

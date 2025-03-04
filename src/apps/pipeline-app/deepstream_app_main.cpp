@@ -3,11 +3,11 @@
 #include <X11/Xutil.h>
 #undef Status
 
-#include "apps/apps-common/deepstream_app_version.h"
-#include "apps/apps-common/deepstream_common.h"
-#include "apps/apps-common/deepstream_config_file_parser.h"
-#include "hstream/libs/common/pipeline_utils.h"
-#include "hstream/libs/common/Status.h"
+#include "hstream/src/apps/apps-common/deepstream_app_version.h"
+#include "hstream/src/apps/apps-common/deepstream_common.h"
+#include "hstream/src/apps/apps-common/deepstream_config_file_parser.h"
+#include "hstream/src/libs/common/pipeline_utils.h"
+#include "hstream/src/libs/common/Status.h"
 
 #include <cuda_runtime_api.h>
 #include <gst/gstbin.h>

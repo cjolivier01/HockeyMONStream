@@ -1,5 +1,5 @@
 #include "deepstream_app.h"
-#include "apps/apps-common/deepstream_common.h"
+#include "hstream/src/apps/apps-common/deepstream_common.h"
 
 #include <gst/gst.h>
 #include <math.h>

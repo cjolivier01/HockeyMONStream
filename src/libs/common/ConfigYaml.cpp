@@ -1,4 +1,4 @@
-#include "hstream/libs/common/ConfigYaml.h"
+#include "hstream/src/libs/common/ConfigYaml.h"
 
 #include <cassert>
 #include <iostream>

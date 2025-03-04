@@ -12,8 +12,8 @@
 
 #include <iostream>
 #include <string>
-#include "apps/apps-common/deepstream_common.h"
-#include "apps/apps-common/deepstream_config_yaml.h"
+#include "hstream/src/apps/apps-common/deepstream_common.h"
+#include "hstream/src/apps/apps-common/deepstream_config_yaml.h"
 
 using std::cout;
 using std::endl;

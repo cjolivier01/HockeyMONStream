@@ -14,9 +14,9 @@
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
 #include "hockeymom/csrc/play_tracker/LivingBoxImpl.h"
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
-#include "src/libs/common/ConfigYaml.h"
-#include "src/libs/common/Draw.h"
-#include "src/libs/common/PlotContext.h"
+#include "hstream/src/libs/common/ConfigYaml.h"
+#include "hstream/src/libs/common/Draw.h"
+#include "hstream/src/libs/common/PlotContext.h"
 
 #include "gstplaytracker.h"
 

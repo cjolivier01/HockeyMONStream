@@ -13,9 +13,9 @@
 #include <cstring>
 #include <iostream>
 #include <string>
-#include "apps/apps-common/deepstream_common.h"
-#include "apps/apps-common/deepstream_config_file_parser.h"
-#include "apps/apps-common/deepstream_config_yaml.h"
+#include "hstream/src/apps/apps-common/deepstream_common.h"
+#include "hstream/src/apps/apps-common/deepstream_config_file_parser.h"
+#include "hstream/src/apps/apps-common/deepstream_config_yaml.h"
 
 #include <assert.h>
 

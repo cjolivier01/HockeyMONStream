@@ -1,4 +1,4 @@
-INCLUDE_PREFIX = "apps/apps-common"
+INCLUDE_PREFIX = "hstream/src/apps/apps-common"
 
 cc_library(
     name = "deepstream_apps_common",

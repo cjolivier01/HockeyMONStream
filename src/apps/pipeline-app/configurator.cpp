@@ -12,7 +12,7 @@
 #include <opencv2/videoio.hpp>
 #include <unistd.h>
 
-#include "hstream/libs/common/pipeline_utils.h"
+#include "hstream/src/libs/common/pipeline_utils.h"
 #include "hstream/libs/stitching/ConfigureStitching.h"
 
 namespace hm {

@@ -1,4 +1,4 @@
-INCLUDE_PREFIX = "hstream/libs/common"
+INCLUDE_PREFIX = "hstream/src/libs/common/"
 
 cc_library(
     name = "utils",

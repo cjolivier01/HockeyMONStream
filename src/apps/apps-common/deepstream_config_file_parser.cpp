@@ -10,7 +10,7 @@
  * its affiliates is strictly prohibited.
  */
 
-#include "apps/apps-common/deepstream_config_file_parser.h"
+#include "hstream/src/apps/apps-common/deepstream_config_file_parser.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
