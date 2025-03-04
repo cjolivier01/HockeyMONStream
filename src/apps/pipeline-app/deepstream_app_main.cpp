@@ -6,7 +6,8 @@
 #include "apps/apps-common/deepstream_app_version.h"
 #include "apps/apps-common/deepstream_common.h"
 #include "apps/apps-common/deepstream_config_file_parser.h"
-#include "src/libs/common/pipeline_utils.h"
+#include "hstream/libs/common/pipeline_utils.h"
+#include "hstream/libs/common/Status.h"
 
 #include <cuda_runtime_api.h>
 #include <gst/gstbin.h>
@@ -634,8 +635,10 @@ absl::Status main_with_status(int argc, char* argv[]) {
         appCtx[i]->return_value = -1;
         goto done;
       }
-      appCtx[i]->complete_configuration();
-      if (!parse_config_yaml(appCtx[i]->configurator().config()["pipeline"], &appCtx[i]->config, cfg_files[i])) {
+      HM_RETURN_IF_ERROR(appCtx[i]->complete_configuration());
+      YAML::Node config = appCtx[i]->configurator().config();
+      std::cout << config << std::endl;
+      if (!config["pipeline"].IsDefined() || !parse_config_yaml(config["pipeline"], &appCtx[i]->config, cfg_files[i])) {
         NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files[i]);
         appCtx[i]->return_value = -1;
         goto done;
