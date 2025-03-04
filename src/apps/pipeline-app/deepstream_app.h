@@ -247,8 +247,8 @@ class HmApp : public _AppCtx {
   hm::Configurator& configurator() {
     return *configurator_;
   }
-  void complete_configuration() {
-    configurator_->complete_configuration();
+  absl::Status complete_configuration() {
+    return configurator_->complete_configuration();
   }
 
   bool pause();

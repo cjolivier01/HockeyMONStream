@@ -455,6 +455,7 @@ absl::Status Configurator::complete_configuration() {
       std::cout << ss.str() << std::flush;
     }
   }
+  return absl::OkStatus();
 }
 
 bool Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config) {
