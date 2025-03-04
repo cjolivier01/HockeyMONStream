@@ -84,6 +84,8 @@ gboolean enable_perf_measurement(
 void pause_perf_measurement(NvDsAppPerfStructInt* str);
 void resume_perf_measurement(NvDsAppPerfStructInt* str);
 
+void disable_perf_measurement();
+
 #ifdef __cplusplus
 }
 #endif

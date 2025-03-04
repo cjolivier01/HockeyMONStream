@@ -883,6 +883,7 @@ done:
 
 int main(int argc, char* argv[]) {
   auto status = main_with_status(argc, argv);
+  disable_perf_measurement();
   if (!status.ok()) {
     std::cerr << status << std::endl;
     return status.raw_code();
