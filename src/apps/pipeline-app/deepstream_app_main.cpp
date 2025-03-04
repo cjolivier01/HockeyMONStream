@@ -557,11 +557,12 @@ static gboolean recreate_pipeline_thread_func(gpointer arg) {
   return ret;
 }
 
-int main(int argc, char* argv[]) {
+absl::Status main_with_status(int argc, char* argv[]) {
   GOptionContext* ctx = NULL;
   GOptionGroup* group = NULL;
   GError* error = NULL;
   guint i;
+  absl::Status status;
 
   ctx = g_option_context_new("Nvidia DeepStream Demo");
   group = g_option_group_new("abc", NULL, NULL, NULL, NULL);
@@ -579,14 +580,14 @@ int main(int argc, char* argv[]) {
 
   if (!g_option_context_parse(ctx, &argc, &argv, &error)) {
     NVGSTDS_ERR_MSG_V("%s", error->message);
-    return -1;
+    return absl::InternalError(error->message);
   }
 
   if (print_version) {
     g_print(
         "deepstream-app version %d.%d.%d\n", NVDS_APP_VERSION_MAJOR, NVDS_APP_VERSION_MINOR, NVDS_APP_VERSION_MICRO);
     nvds_version_print();
-    return 0;
+    return status;
   }
 
   if (print_dependencies_version) {
@@ -594,7 +595,7 @@ int main(int argc, char* argv[]) {
         "deepstream-app version %d.%d.%d\n", NVDS_APP_VERSION_MAJOR, NVDS_APP_VERSION_MINOR, NVDS_APP_VERSION_MICRO);
     nvds_version_print();
     nvds_dependencies_version_print();
-    return 0;
+    return status;
   }
 
   if (cfg_files) {
@@ -868,10 +869,20 @@ done:
   if (return_value == 0) {
     g_print("App run successful\n");
   } else {
-    g_print("App run failed\n");
+    // g_print("App run failed\n");
+    status.Update(absl::InternalError("App run failed"));
   }
 
   gst_deinit();
 
-  return return_value;
+  return status;
+}
+
+int main(int argc, char* argv[]) {
+  auto status = main_with_status(argc, argv);
+  if (!status.ok()) {
+    std::cerr << status << std::endl;
+    return status.raw_code();
+  }
+  return 0;
 }
