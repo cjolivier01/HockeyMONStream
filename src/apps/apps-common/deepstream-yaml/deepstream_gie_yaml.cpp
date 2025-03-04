@@ -22,7 +22,7 @@
 using std::cout;
 using std::endl;
 
-gboolean parse_gie_yaml(NvDsGieConfig* config, std::string group_str, gchar* cfg_file_path) {
+gboolean parse_gie_yaml(NvDsGieConfig* config, std::string group_str, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
   YAML::Node configyml = YAML::LoadFile(cfg_file_path);
   char* group = (char*)malloc(sizeof(char) * 1024);

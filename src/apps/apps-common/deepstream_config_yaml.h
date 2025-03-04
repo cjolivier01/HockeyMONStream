@@ -46,41 +46,41 @@ std::vector<std::string> split_string(std::string input);
 
 gboolean get_absolute_file_path_yaml(const gchar* cfg_file_path, const gchar* file_path, char* abs_path_str);
 
-gboolean parse_streammux_yaml(NvDsStreammuxConfig* config, gchar* cfg_file_path);
+gboolean parse_streammux_yaml(NvDsStreammuxConfig* config, const gchar* cfg_file_path);
 
-gboolean parse_tiled_display_yaml(NvDsTiledDisplayConfig* config, gchar* cfg_file_path);
+gboolean parse_tiled_display_yaml(NvDsTiledDisplayConfig* config, const gchar* cfg_file_path);
 
-gboolean parse_osd_yaml(NvDsOSDConfig* config, gchar* cfg_file_path);
+gboolean parse_osd_yaml(NvDsOSDConfig* config, const gchar* cfg_file_path);
 
-gboolean parse_segvisual_yaml(NvDsSegVisualConfig* config, gchar* cfg_file_path);
+gboolean parse_segvisual_yaml(NvDsSegVisualConfig* config, const gchar* cfg_file_path);
 
-gboolean parse_image_save_yaml(NvDsImageSave* config, gchar* cfg_file_path);
+gboolean parse_image_save_yaml(NvDsImageSave* config, const gchar* cfg_file_path);
 
-gboolean parse_msgconsumer_yaml(NvDsMsgConsumerConfig* config, std::string group, gchar* cfg_file_path);
+gboolean parse_msgconsumer_yaml(NvDsMsgConsumerConfig* config, std::string group, const gchar* cfg_file_path);
 
-gboolean parse_msgconv_yaml(NvDsSinkMsgConvBrokerConfig* config, std::string group, gchar* cfg_file_path);
+gboolean parse_msgconv_yaml(NvDsSinkMsgConvBrokerConfig* config, std::string group, const gchar* cfg_file_path);
 
-gboolean parse_sink_yaml(NvDsSinkSubBinConfig* config, std::string group, gchar* cfg_file_path);
+gboolean parse_sink_yaml(NvDsSinkSubBinConfig* config, std::string group, const gchar* cfg_file_path);
 
 gboolean parse_source_yaml(
     NvDsSourceConfig* config,
     std::vector<std::string> headers,
     std::vector<std::string> source_values,
-    gchar* cfg_file_path);
+    const gchar* cfg_file_path);
 
-gboolean parse_tracker_yaml(NvDsTrackerConfig* config, gchar* cfg_file_path);
+gboolean parse_tracker_yaml(NvDsTrackerConfig* config, const gchar* cfg_file_path);
 
-gboolean parse_gie_yaml(NvDsGieConfig* config, std::string group, gchar* cfg_file_path);
+gboolean parse_gie_yaml(NvDsGieConfig* config, std::string group, const gchar* cfg_file_path);
 
-gboolean parse_hmvideoprep_yaml(NvDsHmVideoPrepConfig* config, std::string group, gchar* cfg_file_path);
+gboolean parse_hmvideoprep_yaml(NvDsHmVideoPrepConfig* config, std::string group, const gchar* cfg_file_path);
 
-gboolean parse_preprocess_yaml(NvDsPreProcessConfig* config, gchar* cfg_file_path);
+gboolean parse_preprocess_yaml(NvDsPreProcessConfig* config, const gchar* cfg_file_path);
 
-gboolean parse_dewarper_yaml(NvDsDewarperConfig* config, std::string group_str, gchar* cfg_file_path);
+gboolean parse_dewarper_yaml(NvDsDewarperConfig* config, std::string group_str, const gchar* cfg_file_path);
 
-gboolean parse_dsexample_yaml(NvDsDsExampleConfig* config, gchar* cfg_file_path);
+gboolean parse_dsexample_yaml(NvDsDsExampleConfig* config, const gchar* cfg_file_path);
 
-gboolean parse_dsanalytics_yaml(NvDsDsAnalyticsConfig* config, gchar* cfg_file_path);
+gboolean parse_dsanalytics_yaml(NvDsDsAnalyticsConfig* config, const gchar* cfg_file_path);
 
 #ifdef __cplusplus
 }

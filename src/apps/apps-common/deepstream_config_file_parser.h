@@ -133,7 +133,7 @@ gboolean parse_labels_file(NvDsGieConfig* config);
  *
  * @return true if parsed successfully.
  */
-gboolean parse_dewarper(NvDsDewarperConfig* config, GKeyFile* key_file, gchar* cfg_file_path, gchar* group);
+gboolean parse_dewarper(NvDsDewarperConfig* config, GKeyFile* key_file, const gchar* cfg_file_path, gchar* group);
 
 /**
  * Function to read properties of source element from configuration file.
@@ -145,7 +145,7 @@ gboolean parse_dewarper(NvDsDewarperConfig* config, GKeyFile* key_file, gchar* c
  *
  * @return true if parsed successfully.
  */
-gboolean parse_source(NvDsSourceConfig* config, GKeyFile* key_file, gchar* group, gchar* cfg_file_path);
+gboolean parse_source(NvDsSourceConfig* config, GKeyFile* key_file, gchar* group, const gchar* cfg_file_path);
 
 /**
  * Function to read properties of NvSegVisual element from configuration file.
@@ -178,7 +178,7 @@ gboolean parse_osd(NvDsOSDConfig* config, GKeyFile* key_file);
  *
  * @return true if parsed successfully.
  */
-gboolean parse_preprocess(NvDsPreProcessConfig* config, GKeyFile* key_file, gchar* group, gchar* cfg_file_path);
+gboolean parse_preprocess(NvDsPreProcessConfig* config, GKeyFile* key_file, gchar* group, const gchar* cfg_file_path);
 
 /**
  * Function to read properties of infer element from configuration file.
@@ -191,7 +191,7 @@ gboolean parse_preprocess(NvDsPreProcessConfig* config, GKeyFile* key_file, gcha
  *
  * @return true if parsed successfully.
  */
-gboolean parse_gie(NvDsGieConfig* config, GKeyFile* key_file, gchar* group, gchar* cfg_file_path);
+gboolean parse_gie(NvDsGieConfig* config, GKeyFile* key_file, gchar* group, const gchar* cfg_file_path);
 
 /**
  * Function to read properties of tracker element from configuration file.
@@ -202,7 +202,7 @@ gboolean parse_gie(NvDsGieConfig* config, GKeyFile* key_file, gchar* group, gcha
  *
  * @return true if parsed successfully.
  */
-gboolean parse_tracker(NvDsTrackerConfig* config, GKeyFile* key_file, gchar* cfg_file_path);
+gboolean parse_tracker(NvDsTrackerConfig* config, GKeyFile* key_file, const gchar* cfg_file_path);
 
 /**
  * Function to read properties of sink element from configuration file.
@@ -213,7 +213,7 @@ gboolean parse_tracker(NvDsTrackerConfig* config, GKeyFile* key_file, gchar* cfg
  *
  * @return true if parsed successfully.
  */
-gboolean parse_sink(NvDsSinkSubBinConfig* config, GKeyFile* key_file, gchar* group, gchar* cfg_file_path);
+gboolean parse_sink(NvDsSinkSubBinConfig* config, GKeyFile* key_file, gchar* group, const gchar* cfg_file_path);
 
 /**
  * Function to read properties of tiler element from configuration file.
@@ -233,7 +233,7 @@ gboolean parse_tiled_display(NvDsTiledDisplayConfig* config, GKeyFile* key_file)
  *
  * @return true if parsed successfully.
  */
-gboolean parse_dsanalytics(NvDsDsAnalyticsConfig* config, GKeyFile* key_file, gchar* cfg_file_path);
+gboolean parse_dsanalytics(NvDsDsAnalyticsConfig* config, GKeyFile* key_file, const gchar* cfg_file_path);
 
 /**
  * Function to read properties of dsexample element from configuration file.
@@ -254,7 +254,7 @@ gboolean parse_dsexample(NvDsDsExampleConfig* config, GKeyFile* key_file);
  *
  * @return true if parsed successfully.
  */
-gboolean parse_streammux(NvDsStreammuxConfig* config, GKeyFile* key_file, gchar* cfg_file_path);
+gboolean parse_streammux(NvDsStreammuxConfig* config, GKeyFile* key_file, const gchar* cfg_file_path);
 
 /**
  * Function to read properties of message converter element from configuration file.
@@ -266,7 +266,7 @@ gboolean parse_streammux(NvDsStreammuxConfig* config, GKeyFile* key_file, gchar*
  *
  * @return true if parsed successfully.
  */
-gboolean parse_msgconv(NvDsSinkMsgConvBrokerConfig* config, GKeyFile* key_file, gchar* group, gchar* cfg_file_path);
+gboolean parse_msgconv(NvDsSinkMsgConvBrokerConfig* config, GKeyFile* key_file, gchar* group, const gchar* cfg_file_path);
 
 /**
  * Function to read properties of message consumer element from configuration file.
@@ -278,7 +278,7 @@ gboolean parse_msgconv(NvDsSinkMsgConvBrokerConfig* config, GKeyFile* key_file, 
  *
  * @return true if parsed successfully.
  */
-gboolean parse_msgconsumer(NvDsMsgConsumerConfig* config, GKeyFile* key_file, gchar* group, gchar* cfg_file_path);
+gboolean parse_msgconsumer(NvDsMsgConsumerConfig* config, GKeyFile* key_file, gchar* group, const gchar* cfg_file_path);
 
 /**
  * Function to read properties of image save from configuration file.
@@ -290,7 +290,7 @@ gboolean parse_msgconsumer(NvDsMsgConsumerConfig* config, GKeyFile* key_file, gc
  *
  * @return true if parsed successfully.
  */
-gboolean parse_image_save(NvDsImageSave* config, GKeyFile* key_file, gchar* group, gchar* cfg_file_path);
+gboolean parse_image_save(NvDsImageSave* config, GKeyFile* key_file, gchar* group, const gchar* cfg_file_path);
 
 /**
  * Utility function to convert relative path in configuration file
@@ -299,7 +299,7 @@ gboolean parse_image_save(NvDsImageSave* config, GKeyFile* key_file, gchar* grou
  * @param[in] cfg_file_path path of configuration file.
  * @param[in] file_path relative path of file.
  */
-gchar* get_absolute_file_path(gchar* cfg_file_path, gchar* file_path);
+gchar* get_absolute_file_path(const gchar* cfg_file_path, gchar* file_path);
 
 #ifdef __cplusplus
 }

@@ -40,7 +40,7 @@ GST_DEBUG_CATEGORY_EXTERN(APP_CFG_PARSER_CAT);
     goto done;                                               \
   }
 
-static gboolean parse_source_list(NvDsConfig* config, GKeyFile* key_file, gchar* cfg_file_path) {
+static gboolean parse_source_list(NvDsConfig* config, GKeyFile* key_file, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
   gchar** keys = NULL;
   gchar** key = NULL;
@@ -159,7 +159,7 @@ done:
   return ret;
 }
 
-static gboolean set_source_all_configs(NvDsConfig* config, gchar* cfg_file_path) {
+static gboolean set_source_all_configs(NvDsConfig* config, const gchar* cfg_file_path) {
   guint i = 0;
   for (i = 0; i < config->total_num_sources; i++) {
     config->multi_source_config[i] = config->source_attr_all_config;
@@ -239,7 +239,7 @@ done:
   return ret;
 }
 
-static gboolean parse_app(NvDsConfig* config, GKeyFile* key_file, gchar* cfg_file_path) {
+static gboolean parse_app(NvDsConfig* config, GKeyFile* key_file, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
   gchar** keys = NULL;
   gchar** key = NULL;
@@ -306,7 +306,7 @@ done:
   return ret;
 }
 
-extern "C" gboolean parse_config_file(NvDsConfig* config, gchar* cfg_file_path) {
+extern "C" gboolean parse_config_file(NvDsConfig* config, const gchar* cfg_file_path) {
   GKeyFile* cfg_file = g_key_file_new();
   GError* error = NULL;
   gboolean ret = FALSE;

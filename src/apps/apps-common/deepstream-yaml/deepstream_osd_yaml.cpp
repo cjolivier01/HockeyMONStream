@@ -19,7 +19,7 @@
 using std::cout;
 using std::endl;
 
-gboolean parse_osd_yaml(NvDsOSDConfig* config, gchar* cfg_file_path) {
+gboolean parse_osd_yaml(NvDsOSDConfig* config, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
 
   /** Default values */

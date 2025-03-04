@@ -19,7 +19,7 @@
 using std::cout;
 using std::endl;
 
-gboolean parse_image_save_yaml(NvDsImageSave* config, gchar* cfg_file_path) {
+gboolean parse_image_save_yaml(NvDsImageSave* config, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
   /*Default Values*/
   config->enable = FALSE;

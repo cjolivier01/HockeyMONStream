@@ -27,7 +27,7 @@ gboolean parse_source_yaml(
     NvDsSourceConfig* config,
     std::vector<std::string> headers,
     std::vector<std::string> source_values,
-    gchar* cfg_file_path) {
+    const gchar* cfg_file_path) {
   gboolean ret = FALSE;
 
   config->latency = 100;

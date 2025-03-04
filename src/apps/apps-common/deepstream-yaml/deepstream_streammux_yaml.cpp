@@ -19,7 +19,7 @@
 using std::cout;
 using std::endl;
 
-gboolean parse_streammux_yaml(NvDsStreammuxConfig* config, gchar* cfg_file_path) {
+gboolean parse_streammux_yaml(NvDsStreammuxConfig* config, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
 
   config->frame_duration = -1;
