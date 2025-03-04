@@ -28,7 +28,7 @@ Videoinfo getVideoInfo(const std::string& videoPath) {
   return info;
 }
 
-bool has_node(const YAML::Node& n, const std::string& dot_string) {
+bool has_node(const YAML::Node& n, const std::string& dot_string, bool non_null) {
   if (dot_string.empty()) {
     return true;
   }
@@ -55,7 +55,7 @@ bool has_node(const YAML::Node& n, const std::string& dot_string) {
   }
 
   // If all keys are accessed and nodes are defined, return true
-  return true;
+  return non_null ? !current->IsNull() : true;
 }
 
 std::optional<YAML::Node> get_node(YAML::Node& n, const std::string& dot_string) {

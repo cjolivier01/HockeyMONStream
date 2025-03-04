@@ -52,6 +52,7 @@ gst_cc_plugin(
     deps = [
         ":play_cropper_cuda_lib",
         "//src/libs/common:utils",
+        "//src/libs/stitching:stitching",
         "@com_google_absl//absl/strings",
         "@hm-cupano//src/pano:cuda_pano",
         "@hm-cupano//src/cuda:cuda_blend_cuda_lib",

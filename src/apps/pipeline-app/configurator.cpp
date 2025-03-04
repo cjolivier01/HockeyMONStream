@@ -279,11 +279,11 @@ void Configurator::complete_configuration() {
   std::vector<std::string> left_files;
   std::vector<std::string> right_files;
 
-  if (has_node(config_, "game.videos.left")) {
+  if (has_node(config_, "game.videos.left", /*non_null=*/true)) {
     std::cout << config_["game"]["videos"]["left"] << std::endl;
     left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
   }
-  if (has_node(config_, "game.videos.right")) {
+  if (has_node(config_, "game.videos.right", /*non_null=*/true)) {
     right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
   }
 
@@ -379,13 +379,15 @@ void Configurator::complete_configuration() {
   } else {
     auto src0 = pipeline["source0"];
     if (src0.IsDefined() && as_int(src0["enable"])) {
-      if (!src0["uri"].IsDefined() || src0["uri"].as<std::string>().empty()) {
+      if (!src0["uri"].IsDefined() || src0["uri"].IsNull() || src0["uri"].as<std::string>().empty()) {
         std::string stiched_output = file_maybe_in_game_dir("stitched_output-with-audio.mp4");
         if (std::filesystem::exists(stiched_output)) {
           src0["uri"] = ff + stiched_output;
         }
       }
-      possible_audio_uri = src0["uri"].as<std::string>();
+      if (src0["uri"].IsDefined() && !src0["uri"].IsNull()) {
+        possible_audio_uri = src0["uri"].as<std::string>();
+      }
       ++num_video_sources;
     }
   }

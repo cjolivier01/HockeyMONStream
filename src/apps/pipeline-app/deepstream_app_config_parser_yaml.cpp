@@ -588,7 +588,10 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, gcha
         config->num_source_sub_bins++;
       }
       config->multi_source_config[i].type = NV_DS_SOURCE_URI;
-      config->multi_source_config[i].uri = g_strdup_printf(config->multi_source_config[i].uri, 0);
+      if (!config->multi_source_config[i].uri) {
+        config->multi_source_config[i].uri = g_strdup_printf(config->multi_source_config[i].uri, 0);
+        g_printerr("No URI configured for source id %d\n", config->multi_source_config[i].source_id);
+      }
     }
   }
 

@@ -9,7 +9,7 @@
 
 namespace hm {
 
-bool has_node(const YAML::Node& n, const std::string& dot_string);
+bool has_node(const YAML::Node& n, const std::string& dot_string, bool non_null);
 
 std::optional<YAML::Node> get_node(const YAML::Node&, const std::string& dot_string);
 

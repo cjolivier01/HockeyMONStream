@@ -70,6 +70,8 @@ class StitcherPriv : public STITCH_PRIV_BASE {
  private:
   std::unique_ptr<hm::pano::cuda::CudaStitchPano<uchar4, float3>> stitcher_;
   std::mutex process_mu_;
+  size_t process_pass_{0};
+  bool configure_only_{false};
   size_t left_frame_offset_ns_{0}, right_frame_offset_ns_{0};
 };
 

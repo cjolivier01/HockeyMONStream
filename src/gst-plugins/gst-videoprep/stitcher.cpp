@@ -1,4 +1,6 @@
 #include "cupano/cuda/cudaStatus.h"
+#include "hstream/libs/stitching/ConfigureStitching.h"
+
 #include "gstvideoprep.h"
 
 #include <cuda_runtime.h>
@@ -81,9 +83,11 @@ bool StitcherPriv::SetProperty(const Property& prop) {
   if (prop.key == "left-frame-offset-ns") {
     left_frame_offset_ns_ = std::atol(prop.value.c_str());
   }
-  if (prop.key == "right-frame-offset-ns") {
+  else if (prop.key == "right-frame-offset-ns") {
     right_frame_offset_ns_ = std::atol(prop.value.c_str());
-  }
+  } else if(prop.key == "configure-only") {
+    configure_only_ = !!std::atol(prop.value.c_str());
+  } 
   return true;
 }
 
@@ -211,8 +215,16 @@ CudaStatus StitcherPriv::GenerateOutput(
     const FrameInfo& frame_info_right = source_to_surface.rbegin()->second;
     // This tests the assumption that the source ids come in sorted
 
-    // NvBufSurfaceParams* left_params = frame_info_left.surface_params;
-    // NvBufSurfaceParams* right_params = frame_info_right.surface_params;
+    // Maybe configure stitching with these frames
+    if (!process_pass_++) {
+      absl::Status configure_status = stitching::configure_stitching(
+          videoprep->config_file, frame_info_left.surface_params, frame_info_right.surface_params);
+      if (!configure_status.ok()) {
+        return CudaStatus(
+            cudaError_t::cudaErrorLaunchFailure, (std::stringstream() << configure_status.message()).str());
+      }
+    }
+
     NvBufSurfaceParams* output_params = &out_surface->surfaceList[out_surface_index];
 
     // render("left", frame_info_left.surface_params, videoprep->stream);
