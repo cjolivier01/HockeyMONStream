@@ -12,6 +12,7 @@ cc_library(
   visibility = ["//visibility:public"],
   deps = [
     "//src/libs/common:utils",
+    "@yaml-cpp",
     "@com_google_absl//absl/status:status",
   ],
 )
