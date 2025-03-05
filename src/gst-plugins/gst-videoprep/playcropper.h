@@ -69,7 +69,7 @@ class PlayCropperPriv : public STITCH_PRIV_BASE {
 
   // DSCustomLibraryBase-
 
-  CudaStatus GenerateOutput(
+  absl::Status GenerateOutput(
       NvDsBatchMeta* batch_meta,
       videoprep::GstVideoPrep* videoprep,
       NvBufSurface* in_surface,

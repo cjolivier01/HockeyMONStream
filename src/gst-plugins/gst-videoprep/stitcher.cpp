@@ -1,5 +1,9 @@
-#include "cupano/cuda/cudaStatus.h"
+#include "stitcher.h"
 #include "hstream/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/common/Status.h"
+
+#include "cupano/cuda/cudaStatus.h"
+#include "cupano/pano/cudaMat.h"
 
 #include "gstvideoprep.h"
 
@@ -22,14 +26,11 @@
 #include <vector>
 #include "nvbufsurface.h"
 
-#include "cupano/pano/cudaMat.h"
-
 #if defined(__aarch64__)
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include "cudaEGL.h"
 #endif
-#include "stitcher.h"
 
 namespace hm {
 namespace stitcher {
@@ -82,12 +83,11 @@ bool StitcherPriv::SetProperty(const Property& prop) {
   // std::cerr << "SetProperty(" << prop.key << "=" << prop.value << ")" << std::endl;
   if (prop.key == "left-frame-offset-ns") {
     left_frame_offset_ns_ = std::atol(prop.value.c_str());
-  }
-  else if (prop.key == "right-frame-offset-ns") {
+  } else if (prop.key == "right-frame-offset-ns") {
     right_frame_offset_ns_ = std::atol(prop.value.c_str());
-  } else if(prop.key == "configure-only") {
+  } else if (prop.key == "configure-only") {
     configure_only_ = !!std::atol(prop.value.c_str());
-  } 
+  }
   return true;
 }
 
@@ -119,7 +119,7 @@ struct ModifyBatchFrames {
   NvDsBatchMeta* batch_meta_;
 };
 
-CudaStatus StitcherPriv::GenerateOutput(
+absl::Status StitcherPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     videoprep::GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
@@ -129,7 +129,7 @@ CudaStatus StitcherPriv::GenerateOutput(
   assert(in_surface->batchSize % 2 == 0);
   if (in_surface->numFilled % 2 != 0) {
     gst_printerr("Not enough filled surfaces to perform stitching\n");
-    return cudaError_t::cudaErrorInvalidValue;
+    return to_status(cudaError_t::cudaErrorInvalidValue);
   }
   // assert(in_surface->isContiguous);
 
@@ -147,7 +147,7 @@ CudaStatus StitcherPriv::GenerateOutput(
 
   assert(videoprep->stream);
 
-  CUDA_RETURN_IF_ERROR(cudaSetDevice(videoprep->gpu_id));
+  HM_RETURN_IF_ERROR(to_status(cudaSetDevice(videoprep->gpu_id)));
 
   out_surface->numFilled = 0;
   out_surface->batchSize = in_surface->batchSize / 2;
@@ -189,7 +189,7 @@ CudaStatus StitcherPriv::GenerateOutput(
   if (frame_source_surfaces.size() != in_surface->numFilled / 2) {
     // This can happen during shutdown
     g_printerr("Stitcher did nto receive the expected source/frame sequence\n");
-    return cudaError_t::cudaErrorInvalidSource;
+    return to_status(cudaError_t::cudaErrorInvalidSource);
   }
   assert(frame_source_surfaces.size() == in_surface->numFilled / 2);
   assert(frame_source_surfaces.begin()->second.size() == frame_source_surfaces.rbegin()->second.size());
@@ -217,11 +217,21 @@ CudaStatus StitcherPriv::GenerateOutput(
 
     // Maybe configure stitching with these frames
     if (!process_pass_++) {
-      absl::Status configure_status = stitching::configure_stitching(
-          videoprep->config_file, frame_info_left.surface_params, frame_info_right.surface_params);
-      if (!configure_status.ok()) {
-        return CudaStatus(
-            cudaError_t::cudaErrorLaunchFailure, (std::stringstream() << configure_status.message()).str());
+      bool is_configured;
+      HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(videoprep->config_file));
+      if (!is_configured) {
+        if (!configure_only_) {
+          return absl::FailedPreconditionError("Stitching is not configured");
+        } else {
+          absl::Status configure_status = stitching::configure_stitching(
+              videoprep->config_file, frame_info_left.surface_params, frame_info_right.surface_params);
+          if (!configure_status.ok()) {
+            return to_status(CudaStatus(
+                cudaError_t::cudaErrorLaunchFailure, (std::stringstream() << configure_status.message()).str()));
+          }
+          // we want this
+        }
+        return to_status(CudaStatus(cudaError_t::cudaErrorLaunchFailure, "Stitching configured"));
       }
     }
 
@@ -290,24 +300,19 @@ CudaStatus StitcherPriv::GenerateOutput(
     // render("left", left_params, videoprep->stream);
     // render("right", right_params, videoprep->stream);
     // Why suddenly now I need to clear the canvas?
-    CUDA_RETURN_IF_ERROR(cudaMemsetAsync(
-        canvas->data_raw(), 0, canvas->height() * canvas->pitch() * canvas->batch_size(), videoprep->stream));
+    HM_RETURN_IF_ERROR(to_status(cudaMemsetAsync(
+        canvas->data_raw(), 0, canvas->height() * canvas->pitch() * canvas->batch_size(), videoprep->stream)));
 
-    auto stitch_result = stitcher_->process(left, right, videoprep->stream, std::move(canvas));
-    if (stitch_result.ok()) {
-      canvas = std::move(stitch_result.ValueOrDie());
-      // render("canvas", output_params, videoprep->stream);
-      ++out_surface->numFilled;
-      // Both should have the same 'persistent_frame_meta'
-      // TODO: Should we do this later under a batch meta lock?
-      // ModifyBatchFrames frame_adder(batch_meta, remove_frame_metas);
+    HM_CUDA_ASSIGN_OR_RETURN(canvas, stitcher_->process(left, right, videoprep->stream, std::move(canvas)));
+    // render("canvas", output_params, videoprep->stream);
+    ++out_surface->numFilled;
+    // Both should have the same 'persistent_frame_meta'
+    // TODO: Should we do this later under a batch meta lock?
+    // ModifyBatchFrames frame_adder(batch_meta, remove_frame_metas);
 
-      reuse_frame_meta->source_frame_width = reuse_frame_meta->pipeline_width = canvas->width();
-      reuse_frame_meta->source_frame_height = reuse_frame_meta->pipeline_height = canvas->height();
-      reuse_frame_meta->num_surfaces_per_frame = 1;
-    } else {
-      return stitch_result.status();
-    }
+    reuse_frame_meta->source_frame_width = reuse_frame_meta->pipeline_width = canvas->width();
+    reuse_frame_meta->source_frame_height = reuse_frame_meta->pipeline_height = canvas->height();
+    reuse_frame_meta->num_surfaces_per_frame = 1;
   }
 
   if (out_surface->numFilled) {
@@ -317,10 +322,10 @@ CudaStatus StitcherPriv::GenerateOutput(
     // batch_meta->frame_meta_pool->max_elements_in_pool /= 2;
     batch_meta->max_frames_in_batch = batch_meta->num_frames_in_batch;
     // assert(batch_meta->max_frames_in_batch); // make sure we didnt do too many times and make it 0
-    CUDA_RETURN_IF_ERROR(cudaStreamSynchronize(videoprep->stream));
+    HM_RETURN_IF_ERROR(to_status(cudaStreamSynchronize(videoprep->stream)));
   }
   // videoprep::videoprep_add_surface_meta(videoprep->out_gst_buf, out_surface->numFilled, videoprep->source_id);
-  return CudaStatus::OkStatus();
+  return absl::OkStatus();
 }
 
 static void gst_stitcher_class_init(GstVideoPrepStitcherClass* klass) {

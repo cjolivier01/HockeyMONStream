@@ -139,7 +139,7 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   std::queue<PacketInfo> m_processQ;
   std::mutex m_processLock;
   std::condition_variable m_processCV;
-  CudaStatus cuda_status;
+  absl::Status cuda_status;
   NvBufSurfTransformConfigParams m_config_params;
   /* Aysnc Stop Handling */
   gboolean m_stop = FALSE;

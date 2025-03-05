@@ -1,5 +1,5 @@
-#include "cupano/cuda/cudaStatus.h"
 #include "gstvideoprep.h"
+#include "hstream/src/libs/common/Status.h"
 
 #include <cuda_runtime.h>
 #include <gst/base/gstbasetransform.h>
@@ -133,7 +133,7 @@ BufferResult PlayCropperPriv::ProcessBuffer(GstBuffer* inbuf) {
 
 #ifdef PLAYCROPPER_USE_ONE_KERNEL
 
-CudaStatus PlayCropperPriv::GenerateOutput(
+absl::Status PlayCropperPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     videoprep::GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
@@ -148,7 +148,7 @@ CudaStatus PlayCropperPriv::GenerateOutput(
   nppStreamContext.nStreamFlags = 0;
   nppStreamContext.nCudaDeviceId = videoprep->gpu_id;
 
-  CUDA_RETURN_IF_ERROR(cudaSetDevice(videoprep->gpu_id));
+  HM_RETURN_IF_ERROR(hm::to_status(cudaSetDevice(videoprep->gpu_id)));
 
   const std::vector<BBox> tracking_boxes = get_tracking_boxes(batch_meta);
 
@@ -259,22 +259,22 @@ CudaStatus PlayCropperPriv::GenerateOutput(
       hm::surface::SurfaceList::round_robin_iterator scratch_surface_iter = videoprep->priv->scratch_buffers.begin();
 
       // Step 1: Crop
-      CUDA_RETURN_IF_ERROR(
-          cropSurface(incoming_surface, extra_width_src_rect, *scratch_surface_iter, nppStreamContext));
+      HM_RETURN_IF_ERROR(
+          to_status(cropSurface(incoming_surface, extra_width_src_rect, *scratch_surface_iter, nppStreamContext)));
       // Step 2: Rotate
       auto in_surf_iter = scratch_surface_iter++;
-      CUDA_RETURN_IF_ERROR(rotateNvBufSurfaceWithNPP(
+      HM_RETURN_IF_ERROR(to_status(rotateNvBufSurfaceWithNPP(
           *in_surf_iter,
           BBox(0, 0, extra_width_src_rect.width(), extra_width_src_rect.height()),
           *scratch_surface_iter,
           BBox(0, 0, extra_width_src_rect.width(), extra_width_src_rect.height()),
           angle,
           anchor_point,
-          nppStreamContext));
+          nppStreamContext)));
 
       // Step 3: Final crop and resize
-      CUDA_RETURN_IF_ERROR(cropAndResizeNvBufSurface(
-          *scratch_surface_iter++, new_tbox, outgoing_surface, output_rect, nppStreamContext));
+      HM_RETURN_IF_ERROR(to_status(cropAndResizeNvBufSurface(
+          *scratch_surface_iter++, new_tbox, outgoing_surface, output_rect, nppStreamContext)));
     }
   }
 
@@ -285,7 +285,7 @@ CudaStatus PlayCropperPriv::GenerateOutput(
 
   out_surface->numFilled = nr_surfaces_to_process;
 
-  return CudaStatus::OkStatus();
+  return absl::OkStatus();
 }
 #else
 cudaError PlayCropperPriv::GenerateOutput(

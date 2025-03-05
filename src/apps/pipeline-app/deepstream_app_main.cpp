@@ -1,7 +1,9 @@
+/* clang-format off */
 // X11 stuff must come first becaus eit defined "Status"
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #undef Status
+/* clang-format on */
 
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"

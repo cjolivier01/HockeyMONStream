@@ -1,5 +1,8 @@
 #pragma once
 
+
+#include "hstream/src/libs/common/Status.h"
+
 #include "cupano/pano/cudaPano.h"
 #include "gstvideoprep.h"
 
@@ -61,7 +64,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
 
   // DSCustomLibraryBase-
 
-  CudaStatus GenerateOutput(
+  absl::Status GenerateOutput(
       NvDsBatchMeta* batch_meta,
       videoprep::GstVideoPrep* videoprep,
       NvBufSurface* in_surface,

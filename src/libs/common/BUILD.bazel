@@ -18,6 +18,7 @@ cc_library(
         "@deepstream//:deepstream_lib",
         "@gstreamer",
         "@hm//hockeymom/csrc/play_tracker",
+        "@hm-cupano//src/cuda:cuda_blend_cuda_lib",
         "@com_google_absl//absl/strings:strings",
         "@com_google_absl//absl/status:statusor",
         "@jetson-utils//cuda:cuda_lib",

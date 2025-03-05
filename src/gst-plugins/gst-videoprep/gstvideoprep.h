@@ -24,6 +24,7 @@
 
 #include <cassert>
 
+#include "absl/status/statusor.h"
 namespace hm {
 namespace videoprep {
 
@@ -66,13 +67,13 @@ class VideoPrepPriv : public DSCustomLibraryBase {
 
   // DSCustomLibraryBase-
 
-  virtual CudaStatus GenerateOutput(
+  virtual absl::Status GenerateOutput(
       NvDsBatchMeta* batch_meta,
       videoprep::GstVideoPrep* videoprep,
       NvBufSurface* in_surface,
       NvBufSurface* out_surface) {
     assert(false);
-    return CudaStatus::OkStatus();
+    return absl::OkStatus();
   }
 
   virtual gint AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) {
