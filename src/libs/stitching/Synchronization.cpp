@@ -1,15 +1,14 @@
-#include <opencv2/opencv.hpp>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
-#include <string>
 #include <utility>
 #include <vector>
 
 #include <fftw3.h>
 #include <omp.h>
+#include <opencv2/opencv.hpp>
 
 // FFmpeg headers
 extern "C" {
@@ -204,11 +203,6 @@ std::pair<double, double> get_video_fps_and_duration(const std::string& video_pa
   double duration = frame_count / fps;
   return {fps, duration};
 }
-
-#include <fftw3.h>
-#include <cmath>
-#include <limits>
-#include <vector>
 
 // Computes the full cross-correlation of two real-valued signals x and y using FFTW,
 // and returns the lag (ranging from -(N-1) to N-1) corresponding to the maximum correlation.
