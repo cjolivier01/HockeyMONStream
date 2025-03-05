@@ -7,6 +7,8 @@
 #include <utility>
 #include <vector>
 
+#include <omp.h>
+
 // FFmpeg headers
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -17,6 +19,7 @@ extern "C" {
 #include <libswresample/swresample.h>
 }
 
+namespace {
 // Loads audio from a file (or video file) using FFmpeg and returns a mono audio signal
 // as a vector of doubles along with its sample rate.
 std::pair<std::vector<double>, int> load_audio_as_tensor(
@@ -204,30 +207,41 @@ std::pair<double, double> get_video_fps_and_duration(const std::string& video_pa
 // Returns the lag (in samples) at which the correlation is maximum.
 int cross_correlate(const std::vector<double>& x, const std::vector<double>& y) {
   size_t N = x.size();
-  double max_corr = -1e308; // initialize to a very small number
-  int best_lag = 0;
+  double global_max_corr = -1e308;
+  int global_best_lag = 0;
 
-  // Lag range: from -(N-1) to N-1.
-  for (int lag = -static_cast<int>(N) + 1; lag < static_cast<int>(N); ++lag) {
-    double sum = 0.0;
-    if (lag >= 0) {
-      // For non-negative lag, sum over indices where both signals overlap.
-      for (size_t i = 0; i < N - lag; ++i) {
-        sum += x[i] * y[i + lag];
+#pragma omp parallel
+  {
+    double local_max_corr = -1e308;
+    int local_best_lag = 0;
+#pragma omp for nowait
+    for (int lag = -static_cast<int>(N) + 1; lag < static_cast<int>(N); ++lag) {
+      double sum = 0.0;
+      if (lag >= 0) {
+        for (size_t i = 0; i < N - lag; ++i) {
+          sum += x[i] * y[i + lag];
+        }
+      } else {
+        for (size_t i = 0; i < N + lag; ++i) {
+          sum += x[i - lag] * y[i];
+        }
       }
-    } else {
-      // For negative lag.
-      for (size_t i = 0; i < N + lag; ++i) {
-        sum += x[i - lag] * y[i];
+      if (sum > local_max_corr) {
+        local_max_corr = sum;
+        local_best_lag = lag;
       }
     }
-    if (sum > max_corr) {
-      max_corr = sum;
-      best_lag = lag;
+#pragma omp critical
+    {
+      if (local_max_corr > global_max_corr) {
+        global_max_corr = local_max_corr;
+        global_best_lag = local_best_lag;
+      }
     }
   }
-  return best_lag;
+  return global_best_lag;
 }
+} // namespace
 
 // Synchronize two videos by comparing their audio tracks.
 // Returns a pair (left_frame_offset, right_frame_offset) indicating the
