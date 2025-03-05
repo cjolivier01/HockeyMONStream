@@ -280,8 +280,8 @@ int cross_correlate_fft(const std::vector<double>& x, const std::vector<double>&
 std::pair<int, int> synchronize_by_audio(
     const std::string& file1_path,
     const std::string& file2_path,
-    double seconds = 15.0,
-    bool verbose = true) {
+    double seconds,
+    bool verbose) {
   if (verbose) {
     std::cout << "Opening videos..." << std::endl;
   }
