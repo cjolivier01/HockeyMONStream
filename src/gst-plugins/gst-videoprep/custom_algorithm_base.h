@@ -743,7 +743,11 @@ inline void CustomAlgorithmBase::OutputThread(void) {
         cuda_status.Update(GenerateOutput(batch_meta, videoprep, in_surf, out_surf));
         if (!cuda_status.ok()) {
           std::cerr << cuda_status << std::endl;
-          last_flow_ret_ = GST_FLOW_ERROR;
+          if (cuda_status.code() == absl::StatusCode::kCancelled) {
+            last_flow_ret_ = GST_FLOW_EOS;
+          } else {
+            last_flow_ret_ = GST_FLOW_ERROR;
+          }
         }
         // if (std::string("hmstitcher") == videoprep->plugin_type) {
         //   videoprep::gst_videoprep_hook_buffer_release(newGstOutBuf);

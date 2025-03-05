@@ -231,7 +231,7 @@ absl::Status StitcherPriv::GenerateOutput(
           }
           // we want this
         }
-        return to_status(CudaStatus(cudaError_t::cudaErrorLaunchFailure, "Stitching configured"));
+        return absl::CancelledError("Stitching has been configured");
       }
     }
 
