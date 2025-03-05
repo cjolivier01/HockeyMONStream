@@ -1,15 +1,16 @@
 #include "hstream/libs/stitching/ConfigureStitching.h"
 
-namespace hm {
-namespace stitching {
-
-namespace {
 #include <algorithm>
 #include <filesystem>
 #include <iostream>
 #include <string>
 #include <system_error>
 #include <vector>
+
+namespace hm {
+namespace stitching {
+
+namespace {
 
 namespace fs = std::filesystem;
 
