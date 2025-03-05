@@ -292,7 +292,6 @@ absl::Status Configurator::complete_configuration() {
   std::vector<std::string> right_files;
 
   if (has_node(config_, "game.videos.left", /*non_null=*/true)) {
-    std::cout << config_["game"]["videos"]["left"] << std::endl;
     left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
   }
   if (has_node(config_, "game.videos.right", /*non_null=*/true)) {
