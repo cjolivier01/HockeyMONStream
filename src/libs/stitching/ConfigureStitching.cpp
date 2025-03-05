@@ -132,7 +132,8 @@ bool test_dependency_tree() {
 } // namespace
 
 absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir) {
-  return test_dependency_tree();
+  // return test_dependency_tree();
+  return false;
 }
 
 bool can_configure_stitching(const YAML::Node& config) {
