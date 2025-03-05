@@ -3,10 +3,12 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include <fftw3.h>
 #include <omp.h>
 
 // FFmpeg headers
@@ -203,44 +205,80 @@ std::pair<double, double> get_video_fps_and_duration(const std::string& video_pa
   return {fps, duration};
 }
 
-// Naïve cross-correlation between two signals (assumed to be the same length).
-// Returns the lag (in samples) at which the correlation is maximum.
-int cross_correlate(const std::vector<double>& x, const std::vector<double>& y) {
-  size_t N = x.size();
-  double global_max_corr = -1e308;
-  int global_best_lag = 0;
+#include <fftw3.h>
+#include <cmath>
+#include <limits>
+#include <vector>
 
-#pragma omp parallel
-  {
-    double local_max_corr = -1e308;
-    int local_best_lag = 0;
-#pragma omp for nowait
-    for (int lag = -static_cast<int>(N) + 1; lag < static_cast<int>(N); ++lag) {
-      double sum = 0.0;
-      if (lag >= 0) {
-        for (size_t i = 0; i < N - lag; ++i) {
-          sum += x[i] * y[i + lag];
-        }
-      } else {
-        for (size_t i = 0; i < N + lag; ++i) {
-          sum += x[i - lag] * y[i];
-        }
-      }
-      if (sum > local_max_corr) {
-        local_max_corr = sum;
-        local_best_lag = lag;
-      }
-    }
-#pragma omp critical
-    {
-      if (local_max_corr > global_max_corr) {
-        global_max_corr = local_max_corr;
-        global_best_lag = local_best_lag;
-      }
+// Computes the full cross-correlation of two real-valued signals x and y using FFTW,
+// and returns the lag (ranging from -(N-1) to N-1) corresponding to the maximum correlation.
+int cross_correlate_fft(const std::vector<double>& x, const std::vector<double>& y) {
+  // Assume x and y have the same length.
+  size_t N = x.size();
+  // The length of the linear convolution (cross-correlation) is L = 2*N - 1.
+  size_t L = 2 * N - 1;
+
+  // Allocate arrays for padded input signals.
+  std::vector<double> x_pad(L, 0.0);
+  std::vector<double> y_pad(L, 0.0);
+  for (size_t i = 0; i < N; ++i) {
+    x_pad[i] = x[i];
+    y_pad[i] = y[i];
+  }
+
+  // Allocate output arrays for FFT: FFTW computes real-to-complex with output size L/2+1.
+  size_t Nc = L / 2 + 1;
+  fftw_complex* X = (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * Nc);
+  fftw_complex* Y = (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * Nc);
+  fftw_complex* C = (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * Nc);
+
+  // Create FFTW plans for forward transforms.
+  fftw_plan plan_x = fftw_plan_dft_r2c_1d(L, x_pad.data(), X, FFTW_ESTIMATE);
+  fftw_plan plan_y = fftw_plan_dft_r2c_1d(L, y_pad.data(), Y, FFTW_ESTIMATE);
+
+  fftw_execute(plan_x);
+  fftw_execute(plan_y);
+
+  // Compute the product: X * conj(Y) for each frequency bin.
+  for (size_t i = 0; i < Nc; ++i) {
+    double a = X[i][0], b = X[i][1]; // X = a + ib
+    double c = Y[i][0], d = Y[i][1]; // Y = c + id
+    // X * conj(Y) = (a + ib) * (c - id) = (a*c + b*d) + i(b*c - a*d)
+    C[i][0] = a * c + b * d;
+    C[i][1] = b * c - a * d;
+  }
+
+  // Allocate array for the inverse FFT result (the cross-correlation).
+  std::vector<double> corr(L, 0.0);
+  fftw_plan plan_corr = fftw_plan_dft_c2r_1d(L, C, corr.data(), FFTW_ESTIMATE);
+  fftw_execute(plan_corr);
+
+  // FFTW does not normalize the inverse FFT, so divide by L.
+  for (size_t i = 0; i < L; ++i) {
+    corr[i] /= static_cast<double>(L);
+  }
+
+  // The result is arranged such that index (N-1) corresponds to zero lag.
+  int best_lag = 0;
+  double max_corr = -std::numeric_limits<double>::infinity();
+  for (size_t i = 0; i < L; ++i) {
+    int lag = static_cast<int>(i) - static_cast<int>(N - 1);
+    if (corr[i] > max_corr) {
+      max_corr = corr[i];
+      best_lag = lag;
     }
   }
-  return global_best_lag;
+
+  fftw_destroy_plan(plan_x);
+  fftw_destroy_plan(plan_y);
+  fftw_destroy_plan(plan_corr);
+  fftw_free(X);
+  fftw_free(Y);
+  fftw_free(C);
+
+  return best_lag;
 }
+
 } // namespace
 
 // Synchronize two videos by comparing their audio tracks.
@@ -288,7 +326,7 @@ std::pair<int, int> synchronize_by_audio(
     std::cout << "Calculating cross-correlation..." << std::endl;
   }
   // Compute the cross-correlation using the first (or only) channel.
-  int lag = cross_correlate(audio1, audio2);
+  int lag = cross_correlate_fft(audio1, audio2);
   // A positive lag means audio1 lags behind audio2.
   double frame_offset = lag / audio_items_per_frame_1;
   double time_offset = frame_offset / video1_fps;
