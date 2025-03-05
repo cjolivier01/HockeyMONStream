@@ -7,7 +7,6 @@
 #include <vector>
 
 #include <fftw3.h>
-#include <omp.h>
 #include <opencv2/opencv.hpp>
 
 // FFmpeg headers
