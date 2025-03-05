@@ -23,7 +23,6 @@ std::pair<std::vector<double>, int> load_audio_as_tensor(
     const std::string& file,
     double duration_seconds,
     bool verbose = false) {
-  // In FFmpeg 4.0 and later, av_register_all() is deprecated and not needed.
   AVFormatContext* fmt_ctx = nullptr;
   if (avformat_open_input(&fmt_ctx, file.c_str(), nullptr, nullptr) < 0) {
     std::cerr << "Could not open file: " << file << std::endl;
@@ -76,9 +75,25 @@ std::pair<std::vector<double>, int> load_audio_as_tensor(
     std::exit(1);
   }
 
-  // If the channel layout is not set, use the default.
-  if (codec_ctx->channel_layout == 0) {
-    codec_ctx->channel_layout = av_get_default_channel_layout(codec_ctx->channels);
+  // Determine the input channel layout.
+  uint64_t in_channel_layout = 0;
+#if LIBAVCODEC_VERSION_MAJOR >= 61
+  uint64_t param_layout = av_codec_parameters_get_channel_layout(codecpar);
+#else
+  uint64_t param_layout = codecpar->channel_layout;
+#endif
+  if (param_layout != 0) {
+    in_channel_layout = param_layout;
+  } else {
+#if LIBAVCODEC_VERSION_MAJOR >= 61
+    int channels = av_codec_parameters_get_channels(codecpar);
+#else
+    int channels = codecpar->channels;
+#endif
+    AVChannelLayout default_layout;
+    // av_channel_layout_default fills default_layout based on the number of channels.
+    av_channel_layout_default(&default_layout, channels);
+    in_channel_layout = default_layout.u.mask;
   }
 
   // Set up the resampler to convert the audio to mono, float format.
@@ -89,11 +104,9 @@ std::pair<std::vector<double>, int> load_audio_as_tensor(
     avformat_close_input(&fmt_ctx);
     std::exit(1);
   }
-  // Input settings.
-  av_opt_set_int(swr_ctx, "in_channel_layout", codec_ctx->channel_layout, 0);
+  av_opt_set_int(swr_ctx, "in_channel_layout", in_channel_layout, 0);
   av_opt_set_int(swr_ctx, "in_sample_rate", codec_ctx->sample_rate, 0);
   av_opt_set_sample_fmt(swr_ctx, "in_sample_fmt", codec_ctx->sample_fmt, 0);
-  // Output settings: mono, same sample rate, float format.
   int64_t out_channel_layout = AV_CH_LAYOUT_MONO;
   av_opt_set_int(swr_ctx, "out_channel_layout", out_channel_layout, 0);
   av_opt_set_int(swr_ctx, "out_sample_rate", codec_ctx->sample_rate, 0);
@@ -107,12 +120,10 @@ std::pair<std::vector<double>, int> load_audio_as_tensor(
   }
 
   int out_sample_rate = codec_ctx->sample_rate;
-  // Total number of output samples we want to read.
   int64_t total_output_samples = static_cast<int64_t>(duration_seconds * out_sample_rate);
   std::vector<double> audio_samples;
   audio_samples.reserve(total_output_samples);
 
-  // Allocate packet and frame for decoding.
   AVPacket* packet = av_packet_alloc();
   AVFrame* frame = av_frame_alloc();
   bool finished = false;
@@ -132,14 +143,11 @@ std::pair<std::vector<double>, int> load_audio_as_tensor(
           std::cerr << "Error during decoding." << std::endl;
           break;
         }
-        // Number of input samples in this frame.
         int nb_samples = frame->nb_samples;
-        // Prepare output buffer for conversion (mono channel, float).
         int out_channels = 1;
         float* out_buffer = new float[nb_samples * out_channels];
         uint8_t* out_data[1] = {reinterpret_cast<uint8_t*>(out_buffer)};
 
-        // Convert samples.
         int converted_samples =
             swr_convert(swr_ctx, out_data, nb_samples, (const uint8_t**)frame->extended_data, nb_samples);
         if (converted_samples < 0) {
@@ -147,7 +155,6 @@ std::pair<std::vector<double>, int> load_audio_as_tensor(
           delete[] out_buffer;
           break;
         }
-        // Append the converted samples (only one channel) to our vector.
         for (int i = 0; i < converted_samples; i++) {
           audio_samples.push_back(static_cast<double>(out_buffer[i]));
           if (audio_samples.size() >= static_cast<size_t>(total_output_samples)) {
@@ -166,7 +173,6 @@ std::pair<std::vector<double>, int> load_audio_as_tensor(
       break;
   }
 
-  // Clean up.
   av_packet_free(&packet);
   av_frame_free(&frame);
   swr_free(&swr_ctx);
@@ -247,7 +253,7 @@ std::pair<int, int> synchronize_by_audio(
   if (verbose) {
     std::cout << "Loading audio..." << std::endl;
   }
-  // Load audio. The stub load_audio_as_tensor should return a mono signal.
+  // Load audio. The load_audio_as_tensor returns a mono signal.
   auto [audio1, sample_rate1] = load_audio_as_tensor(file1_path, seconds, verbose);
   auto [audio2, sample_rate2] = load_audio_as_tensor(file2_path, seconds, verbose);
 
@@ -269,8 +275,7 @@ std::pair<int, int> synchronize_by_audio(
   }
   // Compute the cross-correlation using the first (or only) channel.
   int lag = cross_correlate(audio1, audio2);
-  // The lag is already defined such that a positive lag means audio1 lags behind audio2.
-  // Convert lag (in audio samples) to a frame offset.
+  // A positive lag means audio1 lags behind audio2.
   double frame_offset = lag / audio_items_per_frame_1;
   double time_offset = frame_offset / video1_fps;
 
@@ -287,11 +292,11 @@ std::pair<int, int> synchronize_by_audio(
 }
 
 // Example usage:
-int main() {
-  std::string video1 = "video1.mp4";
-  std::string video2 = "video2.mp4";
-  auto [offset1, offset2] = synchronize_by_audio(video1, video2, 15.0, true);
-  std::cout << "Left video offset (frames): " << offset1 << std::endl;
-  std::cout << "Right video offset (frames): " << offset2 << std::endl;
-  return 0;
-}
+// int main() {
+//   std::string video1 = "video1.mp4";
+//   std::string video2 = "video2.mp4";
+//   auto [offset1, offset2] = synchronize_by_audio(video1, video2, 15.0, true);
+//   std::cout << "Left video offset (frames): " << offset1 << std::endl;
+//   std::cout << "Right video offset (frames): " << offset2 << std::endl;
+//   return 0;
+// }
