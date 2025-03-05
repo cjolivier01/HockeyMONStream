@@ -24,6 +24,9 @@ namespace {
 
 namespace fs = std::filesystem;
 
+const std::string lfo_prefix = "Left frame offset: ";
+const std::string rfo_prefix = "Right frame offset: ";
+
 // -----------------------------------------------------------------------------
 // FileNode: Represents one file and its dependency children.
 // A file that depends on multiple parents can simply be listed as a child
@@ -209,12 +212,24 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
   };
   std::optional<double> v1_offset, v2_offset;
   int exitcode = run_command(
-      cmd, hm_cupano_dir, get_environment(), [](const std::string& stderr, const std::string& stdout) -> void {
+      cmd,
+      hm_cupano_dir,
+      get_environment(),
+      [&v1_offset, &v2_offset](const std::string& stderr, const std::string& stdout) -> void {
         if (!stderr.empty()) {
           std::cerr << stderr << std::endl;
         }
         if (!stdout.empty()) {
-          std::cerr << stdout << std::endl;
+          if (!strncmp(stdout.c_str(), lfo_prefix.c_str(), lfo_prefix.size())) {
+            char *endptr = (char *)stdout.c_str() + stdout.size();
+            v1_offset = std::strtod(stdout.c_str() + lfo_prefix.size(), &endptr);
+            std::cout << stdout << std::endl;
+          }
+          if (!strncmp(stdout.c_str(), rfo_prefix.c_str(), rfo_prefix.size())) {
+            char *endptr = (char *)stdout.c_str() + stdout.size();
+            v2_offset = ::strtod(stdout.c_str() + rfo_prefix.size(), &endptr);
+            std::cout << stdout << std::endl;
+          }
         }
       });
   if (exitcode) {
@@ -223,7 +238,10 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
   if (!v1_offset.has_value() || !v2_offset.has_value()) {
     return absl::InternalError("Failed to parse frame offsets from output");
   }
-  return absl::OkStatus();
+  return Synchronization{
+    .video1_frame_offset = *v1_offset,
+    .video2_frame_offset = *v2_offset,
+  };
 }
 
 absl::Status create_control_points(

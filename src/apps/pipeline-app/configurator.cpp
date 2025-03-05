@@ -303,36 +303,32 @@ absl::Status Configurator::complete_configuration() {
 
   size_t num_video_sources = 0;
 
-  std::optional<double> lfo, rfo;
+  auto offsets = config_["game"]["stitching"]["frame_offsets"];
 
   if (!left_files.empty() && !right_files.empty()) {
     if (!has_node(config_, "game.stitching.frame_offsets.left", /*non_null=*/true)) {
       stitching::Synchronization sync;
       HM_ASSIGN_OR_RETURN(
           sync, stitching::calculate_stitching_synchronization(game_dir / left_files[0], game_dir / right_files[0]));
-      lfo = sync.video1_frame_offset;
-      rfo = sync.video2_frame_offset;
+      offsets["left"] = std::to_string(sync.video1_frame_offset);
+      offsets["right"] = std::to_string(sync.video2_frame_offset);
+      // TODO: save to private config
     }
   }
-  auto offsets = config_["game"]["stitching"]["frame_offsets"];
   if (!left_files.empty()) {
     Videoinfo left_info = getVideoInfo(file_maybe_in_game_dir(left_files[0]));
-    if (!lfo.has_value()) {
-      lfo = offsets["left"].as<double>(); // this is decimal frames
-      set_stream_offsets_ |= *lfo != 0.0;
-    }
-    pipeline["hmstitcher"]["left-frame-offset-ns"] = std::to_string(size_t(*lfo / left_info.fps * GST_SECOND));
+    double lfo = offsets["left"].as<double>(); // this is decimal frames
+    set_stream_offsets_ |= lfo != 0.0;
+    pipeline["hmstitcher"]["left-frame-offset-ns"] = std::to_string(size_t(lfo / left_info.fps * GST_SECOND));
     area = left_info.width * left_info.height;
     ww = left_info.width;
     hh = left_info.height;
   }
   if (!right_files.empty()) {
     Videoinfo right_info = getVideoInfo(file_maybe_in_game_dir(right_files[0]));
-    if (!rfo.has_value()) {
-      rfo = offsets["right"].as<double>(); // this is decimal frames
-      set_stream_offsets_ |= *rfo != 0.0;
-    }
-    pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(*rfo / right_info.fps * GST_SECOND));
+    double rfo = offsets["right"].as<double>(); // this is decimal frames
+    set_stream_offsets_ |= rfo != 0.0;
+    pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / right_info.fps * GST_SECOND));
     if (right_info.width * right_info.height > area) {
       ww = right_info.width;
       hh = right_info.height;
