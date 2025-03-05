@@ -11,6 +11,13 @@ cc_library(
   copts=[
     "-fopenmp",
   ],
+  linkopts = [
+    "-lfftw3",
+    "-lavformat",
+    "-lavcodec",
+    "-lavutil",
+    "-lswresample",  
+  ],
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [

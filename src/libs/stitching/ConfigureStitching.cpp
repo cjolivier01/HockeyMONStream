@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/Synchronize.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/Status.h"
 
@@ -200,6 +201,9 @@ bool can_configure_stitching(const YAML::Node& config) {
 absl::StatusOr<Synchronization> calculate_stitching_synchronization(
     const std::string& video1,
     const std::string& video2) {
+
+  auto frame_offsets = synchronize_by_audio(video1, video2);
+
   fs::path hm_cupano_dir = fs::path("external") / "hm-cupano";
   std::vector<std::string> cmd{
       "/home/colivier/miniforge3/envs/ubuntu/bin/python",
@@ -221,12 +225,12 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
         }
         if (!stdout.empty()) {
           if (!strncmp(stdout.c_str(), lfo_prefix.c_str(), lfo_prefix.size())) {
-            char *endptr = (char *)stdout.c_str() + stdout.size();
+            char* endptr = (char*)stdout.c_str() + stdout.size();
             v1_offset = std::strtod(stdout.c_str() + lfo_prefix.size(), &endptr);
             std::cout << stdout << std::endl;
           }
           if (!strncmp(stdout.c_str(), rfo_prefix.c_str(), rfo_prefix.size())) {
-            char *endptr = (char *)stdout.c_str() + stdout.size();
+            char* endptr = (char*)stdout.c_str() + stdout.size();
             v2_offset = ::strtod(stdout.c_str() + rfo_prefix.size(), &endptr);
             std::cout << stdout << std::endl;
           }
@@ -239,8 +243,8 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
     return absl::InternalError("Failed to parse frame offsets from output");
   }
   return Synchronization{
-    .video1_frame_offset = *v1_offset,
-    .video2_frame_offset = *v2_offset,
+      .video1_frame_offset = *v1_offset,
+      .video2_frame_offset = *v2_offset,
   };
 }
 

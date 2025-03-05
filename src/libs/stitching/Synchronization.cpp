@@ -18,7 +18,8 @@ extern "C" {
 #include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
 }
-
+namespace hm {
+namespace stitching {
 namespace {
 // Loads audio from a file (or video file) using FFmpeg and returns a mono audio signal
 // as a vector of doubles along with its sample rate.
@@ -336,12 +337,5 @@ std::pair<double, double> synchronize_by_audio(
   return {left_frame_offset, right_frame_offset};
 }
 
-// Example usage:
-// int main() {
-//   std::string video1 = "video1.mp4";
-//   std::string video2 = "video2.mp4";
-//   auto [offset1, offset2] = synchronize_by_audio(video1, video2, 15.0, true);
-//   std::cout << "Left video offset (frames): " << offset1 << std::endl;
-//   std::cout << "Right video offset (frames): " << offset2 << std::endl;
-//   return 0;
-// }
+} // namespace stitching
+} // namespace hm
