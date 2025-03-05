@@ -1,4 +1,4 @@
-INCLUDE_PREFIX = "hstream/libs/stitching"
+INCLUDE_PREFIX = "hstream/src/libs/stitching"
 
 cc_library(
   name = "stitching",
@@ -12,6 +12,7 @@ cc_library(
   visibility = ["//visibility:public"],
   deps = [
     "//src/libs/common:utils",
+    "@hm-cupano//src/pano:cuda_matrix",
     "@yaml-cpp",
     "@com_google_absl//absl/status:status",
   ],

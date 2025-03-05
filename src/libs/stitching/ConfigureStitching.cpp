@@ -1,4 +1,8 @@
-#include "hstream/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/common/Process.h"
+#include "hstream/src/libs/common/Status.h"
+
+#include "cupano/pano/cudaMat.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -6,6 +10,12 @@
 #include <string>
 #include <system_error>
 #include <vector>
+
+#include <opencv2/opencv.hpp>
+
+namespace fs = std::filesystem;
+
+extern "C" char** environ;
 
 namespace hm {
 namespace stitching {
@@ -129,6 +139,50 @@ bool test_dependency_tree() {
   return true;
 }
 
+absl::Status save_image(surface::Surface surf, const std::string& filename) {
+  // CudaMat<typename T>
+  if (surf.get_image_format() != IMAGE_RGBA8) {
+    return absl::InvalidArgumentError("Invalid image format");
+  }
+  CudaMat<uchar4> gpu_image(
+      SurfaceInfo{
+          .width = (int)surf.width(),
+          .height = (int)surf.height(),
+          .pitch = (int)surf.pitch(),
+          .data_ptr = surf.dataptr(),
+      },
+      /*B=*/1);
+  cv::Mat cpu_img = gpu_image.download();
+  if (cpu_img.empty()) {
+    return absl::FailedPreconditionError("Unable to download image from GPU");
+  }
+  if (!cv::imwrite(filename, cpu_img)) {
+    return absl::FailedPreconditionError("Unable to write image to file");
+  }
+  return absl::OkStatus();
+}
+
+std::string get_game_id(const std::string& game_dir) {
+  return fs::path(game_dir).filename();
+}
+
+std::unordered_map<std::string, std::string> get_environment() {
+  std::unordered_map<std::string, std::string> env_vars;
+  // extern char** environ is a global variable containing the environment variables
+
+  // Loop through the environment variables
+  for (char** env = environ; *env != nullptr; env++) {
+    std::string envEntry = *env;
+    size_t pos = envEntry.find('=');
+    if (pos != std::string::npos) {
+      std::string key = envEntry.substr(0, pos);
+      std::string value = envEntry.substr(pos + 1);
+      env_vars[key] = value;
+    }
+  }
+  return env_vars;
+}
+
 } // namespace
 
 absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir) {
@@ -140,10 +194,79 @@ bool can_configure_stitching(const YAML::Node& config) {
   return true;
 }
 
-absl::Status configure_stitching(
-    const std::string& game_id,
+absl::StatusOr<Synchronization> calculate_stitching_synchronization(
+    const std::string& video1,
+    const std::string& video2) {
+  fs::path hm_cupano_dir = fs::path("external") / "hm-cupano";
+  std::vector<std::string> cmd{
+      "/home/colivier/miniforge3/envs/ubuntu/bin/python",
+      fs::path("scripts") / "create_control_points.py",
+      "--synchronize-only",
+      "--left",
+      video1,
+      "--right",
+      video2,
+  };
+  std::optional<double> v1_offset, v2_offset;
+  int exitcode = run_command(
+      cmd, hm_cupano_dir, get_environment(), [](const std::string& stderr, const std::string& stdout) -> void {
+        if (!stderr.empty()) {
+          std::cerr << stderr << std::endl;
+        }
+        if (!stdout.empty()) {
+          std::cerr << stdout << std::endl;
+        }
+      });
+  if (exitcode) {
+    return absl::InternalError("Failed to create control points");
+  }
+  if (!v1_offset.has_value() || !v2_offset.has_value()) {
+    return absl::InternalError("Failed to parse frame offsets from output");
+  }
+  return absl::OkStatus();
+}
+
+absl::Status create_control_points(
+    const std::string& game_dir,
     surface::Surface left_surface,
     surface::Surface right_surface) {
+  fs::path left_file = fs::path(game_dir) / "left.png";
+  fs::path right_file = fs::path(game_dir) / "right.png";
+  HM_RETURN_IF_ERROR(save_image(left_surface, left_file));
+  HM_RETURN_IF_ERROR(save_image(right_surface, right_file));
+
+  fs::path hm_cupano_dir = fs::path("external") / "hm-cupano";
+
+  std::vector<std::string> cmd{
+      "/home/colivier/miniforge3/envs/ubuntu/bin/python",
+      fs::path("scripts") / "create_control_points.py",
+      "--left",
+      left_file,
+      "--right",
+      right_file,
+  };
+
+  int exitcode = run_command(
+      cmd, hm_cupano_dir, get_environment(), [](const std::string& stderr, const std::string& stdout) -> void {
+        if (!stderr.empty()) {
+          std::cerr << stderr << std::endl;
+        }
+        if (!stdout.empty()) {
+          std::cerr << stdout << std::endl;
+        }
+      });
+  if (exitcode) {
+    return absl::InternalError("Failed to create control points");
+  }
+
+  return absl::OkStatus();
+}
+
+absl::Status configure_stitching(
+    const std::string& game_dir,
+    surface::Surface left_surface,
+    surface::Surface right_surface) {
+  HM_RETURN_IF_ERROR(create_control_points(game_dir, left_surface, right_surface));
   return absl::OkStatus();
 }
 

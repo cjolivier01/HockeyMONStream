@@ -12,8 +12,11 @@
 #include <opencv2/videoio.hpp>
 #include <unistd.h>
 
+#include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
-#include "hstream/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
+
+namespace fs = std::filesystem;
 
 namespace hm {
 
@@ -273,13 +276,14 @@ absl::Status Configurator::complete_configuration() {
   }
 
   // Stitching config mask config dir
-  auto game_dir = get_game_dir(game_id_);
+  fs::path game_dir = get_game_dir(game_id_);
 
   pipeline["hmstitcher"]["config-file"] = std::string(game_dir);
 
   if (!stitching::is_stitching_configured(game_dir).value_or(false) && stitching::can_configure_stitching(config_)) {
     // HM_RETURN_IF_ERROR(stitching::configure_stitching(
     //     const std::string& game_id, surface::Surface left_surface, surface::Surface right_surface)
+    pipeline["hmstitcher"]["configure-only"] = "1";
   }
 
   pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / "rink_mask_0.png");
@@ -299,21 +303,36 @@ absl::Status Configurator::complete_configuration() {
 
   size_t num_video_sources = 0;
 
+  std::optional<double> lfo, rfo;
+
+  if (!left_files.empty() && !right_files.empty()) {
+    if (!has_node(config_, "game.stitching.frame_offsets.left", /*non_null=*/true)) {
+      stitching::Synchronization sync;
+      HM_ASSIGN_OR_RETURN(
+          sync, stitching::calculate_stitching_synchronization(game_dir / left_files[0], game_dir / right_files[0]));
+      lfo = sync.video1_frame_offset;
+      rfo = sync.video2_frame_offset;
+    }
+  }
   auto offsets = config_["game"]["stitching"]["frame_offsets"];
   if (!left_files.empty()) {
     Videoinfo left_info = getVideoInfo(file_maybe_in_game_dir(left_files[0]));
-    double lfo = offsets["left"].as<double>(); // this is decimal frames
-    set_stream_offsets_ |= lfo != 0.0;
-    pipeline["hmstitcher"]["left-frame-offset-ns"] = std::to_string(size_t(lfo / left_info.fps * GST_SECOND));
+    if (!lfo.has_value()) {
+      lfo = offsets["left"].as<double>(); // this is decimal frames
+      set_stream_offsets_ |= *lfo != 0.0;
+    }
+    pipeline["hmstitcher"]["left-frame-offset-ns"] = std::to_string(size_t(*lfo / left_info.fps * GST_SECOND));
     area = left_info.width * left_info.height;
     ww = left_info.width;
     hh = left_info.height;
   }
   if (!right_files.empty()) {
     Videoinfo right_info = getVideoInfo(file_maybe_in_game_dir(right_files[0]));
-    double rfo = offsets["right"].as<double>(); // this is decimal frames
-    set_stream_offsets_ |= rfo != 0.0;
-    pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / right_info.fps * GST_SECOND));
+    if (!rfo.has_value()) {
+      rfo = offsets["right"].as<double>(); // this is decimal frames
+      set_stream_offsets_ |= *rfo != 0.0;
+    }
+    pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(*rfo / right_info.fps * GST_SECOND));
     if (right_info.width * right_info.height > area) {
       ww = right_info.width;
       hh = right_info.height;

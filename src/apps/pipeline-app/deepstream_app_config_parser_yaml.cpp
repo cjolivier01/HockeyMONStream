@@ -122,6 +122,7 @@ gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_
     return false;
   }
   hm::utils::ConfigLocator locator;
+  SET_LOCATOR(locator, *config, configure_only);
   SET_LOCATOR(locator, *config, left_frame_offset_ns);
   SET_LOCATOR(locator, *config, right_frame_offset_ns);
   SET_LOCATOR_CHARS(locator, *config, config_file);

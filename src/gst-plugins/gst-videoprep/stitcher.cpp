@@ -1,5 +1,5 @@
 #include "stitcher.h"
-#include "hstream/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/common/Status.h"
 
 #include "cupano/cuda/cudaStatus.h"
