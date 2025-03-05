@@ -277,7 +277,7 @@ int cross_correlate_fft(const std::vector<double>& x, const std::vector<double>&
 // Synchronize two videos by comparing their audio tracks.
 // Returns a pair (left_frame_offset, right_frame_offset) indicating the
 // number of frames to skip in each video so that they are synchronized.
-std::pair<int, int> synchronize_by_audio(
+std::pair<double, double> synchronize_by_audio(
     const std::string& file1_path,
     const std::string& file2_path,
     double seconds,
@@ -292,8 +292,8 @@ std::pair<int, int> synchronize_by_audio(
   // Use a 0.5-second margin to ensure we don't exceed the available duration.
   seconds = std::min(seconds, std::min(video1_duration - 0.5, video2_duration - 0.5));
 
-  double video1_subclip_frame_count = video1_fps * seconds;
-  double video2_subclip_frame_count = video2_fps * seconds;
+  const double video1_subclip_frame_count = video1_fps * seconds;
+  const double video2_subclip_frame_count = video2_fps * seconds;
 
   if (verbose) {
     std::cout << "Loading audio..." << std::endl;
@@ -303,12 +303,12 @@ std::pair<int, int> synchronize_by_audio(
   auto [audio2, sample_rate2] = load_audio_as_tensor(file2_path, seconds, verbose);
 
   // Calculate the number of audio samples per video frame.
-  double audio_items_per_frame_1 = static_cast<double>(audio1.size()) / video1_subclip_frame_count;
-  double audio_items_per_frame_2 = static_cast<double>(audio2.size()) / video2_subclip_frame_count;
+  const double audio_items_per_frame_1 = static_cast<double>(audio1.size()) / video1_subclip_frame_count;
+  const double audio_items_per_frame_2 = static_cast<double>(audio2.size()) / video2_subclip_frame_count;
 
   // Check that the computed samples per frame match the expected value.
-  double expected_samples_per_frame1 = static_cast<double>(sample_rate1) / video1_fps;
-  double expected_samples_per_frame2 = static_cast<double>(sample_rate2) / video2_fps;
+  const double expected_samples_per_frame1 = static_cast<double>(sample_rate1) / video1_fps;
+  const double expected_samples_per_frame2 = static_cast<double>(sample_rate2) / video2_fps;
   if (std::abs(expected_samples_per_frame1 - audio_items_per_frame_1) > 1e-3 ||
       std::abs(expected_samples_per_frame2 - audio_items_per_frame_2) > 1e-3) {
     std::cerr << "Mismatch in samples per frame calculation!" << std::endl;
@@ -319,10 +319,10 @@ std::pair<int, int> synchronize_by_audio(
     std::cout << "Calculating cross-correlation..." << std::endl;
   }
   // Compute the cross-correlation using the first (or only) channel.
-  int lag = cross_correlate_fft(audio1, audio2);
+  const double lag = cross_correlate_fft(audio1, audio2);
   // A positive lag means audio1 lags behind audio2.
-  double frame_offset = lag / audio_items_per_frame_1;
-  double time_offset = frame_offset / video1_fps;
+  const double frame_offset = lag / audio_items_per_frame_1;
+  const double time_offset = frame_offset / video1_fps;
 
   if (verbose) {
     std::cout << "Calculated frame offset: " << frame_offset << std::endl;
@@ -330,8 +330,8 @@ std::pair<int, int> synchronize_by_audio(
   }
 
   // Determine the starting frame offset for each video.
-  int left_frame_offset = (frame_offset > 0) ? static_cast<int>(std::round(frame_offset)) : 0;
-  int right_frame_offset = (frame_offset < 0) ? static_cast<int>(std::round(-frame_offset)) : 0;
+  const double left_frame_offset = (frame_offset > 0.0) ? frame_offset : 0.0;
+  const double right_frame_offset = (frame_offset < 0.0) ? -frame_offset : 0.0;
 
   return {left_frame_offset, right_frame_offset};
 }
