@@ -193,7 +193,7 @@ absl::Status Configurator::save_private_config(const YAML::Node& private_config)
         "Failed to open private config file for writing: \"" << private_config_file
                                                              << "\", reason: " << strerror(errno)));
   }
-  fout << private_config;
+  fout << private_config << "\n";
   return absl::OkStatus();
 }
 
@@ -374,6 +374,15 @@ absl::Status Configurator::complete_configuration() {
           right_files.emplace_back(item.second);
         }
       }
+      if (!left_files.empty() && !right_files.empty()) {
+        private_config_["game"]["videos"]["left"] = left_files;
+        private_config_["game"]["videos"]["right"] = right_files;
+        auto spp_status = save_private_config(private_config_);
+        if (!spp_status.ok()) {
+          // We can continue, so just warn
+          std::cerr << "Warnings: failed to save private config: " << spp_status << std::endl;
+        }
+      }
     }
 
     if (!left_files.empty() && !right_files.empty()) {
@@ -384,11 +393,11 @@ absl::Status Configurator::complete_configuration() {
         offsets["left"] = std::to_string(sync.video1_frame_offset);
         offsets["right"] = std::to_string(sync.video2_frame_offset);
         private_config_["game"]["stitching"]["frame_offsets"]["left"] = std::to_string(sync.video1_frame_offset);
-        private_config_["game"]["stitching"]["frame_offsets"]["right"] = std::to_string(sync.video1_frame_offset);
+        private_config_["game"]["stitching"]["frame_offsets"]["right"] = std::to_string(sync.video2_frame_offset);
         auto spp_status = save_private_config(private_config_);
         if (!spp_status.ok()) {
           // We can continue, so just warn
-          std::cerr << "Warnings: failed to save provate config: " << spp_status << std::endl;
+          std::cerr << "Warnings: failed to save private config: " << spp_status << std::endl;
         }
       }
     }
