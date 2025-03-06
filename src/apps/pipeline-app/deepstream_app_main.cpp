@@ -7,7 +7,7 @@
 
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
-#include "hstream/src/apps/apps-common/deepstream_config_file_parser.h"
+// #include "hstream/src/apps/apps-common/deepstream_config_file_parser.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 #include "hstream/src/libs/common/Status.h"
 
@@ -52,6 +52,8 @@ static GMutex disp_lock;
 
 static guint rrow, rcol, rcfg;
 static gboolean rrowsel = FALSE, selecting = FALSE;
+
+static constexpr const char *kConfigureStitchingConfigFileName = "ds_hockey_configure_stitching.yaml";
 
 GST_DEBUG_CATEGORY(NVDS_APP);
 

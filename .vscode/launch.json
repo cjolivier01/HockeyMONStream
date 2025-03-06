@@ -134,6 +134,47 @@
       "preLaunchTask": "Build All",
     },
     {
+      "name": "(LLDB) pipeline-app configure stitching",
+      "type": "lldb",
+      "request": "launch",
+      "linux": {
+        // "envFile": "${workspaceFolder}/${config:mesonbuild.buildFolder}/meson-vscode.env",
+      },
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/bazel-bin/src/apps/pipeline-app/pipeline-app",
+      "args": [
+        "-c",
+        //"${workspaceFolder}/configs/deepstream_app_config.txt",   // baseline
+        "${workspaceFolder}/configs/ds_hockey_configure_stitching.yaml", // my app
+        "-g",
+        "mlk-heat-1",
+        //"fremont",
+        "-d",
+      ],
+      "sourceMap": {
+        "/proc/self/cwd": "${workspaceFolder}",
+        // "~/src": "${env:HOME}/src",
+        //"${workspaceFolder}/src/external/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",
+        "external/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",
+        //"external/hmdeepstream/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",
+        "home/colivier/src/jetson-utils": "${workspaceFolder}/src/external/jetson-utils",
+      },
+      //"stopOnEntry": true,
+      "env": {
+        //"GST_DEBUG": "videoprep:7",
+        //"GST_DEBUG": "basesink:5",
+        // "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
+        //"LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib",
+        "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins",
+        //"GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
+        // "GST_DEBUG": "3",
+        "DISPLAY": ":1",
+        "CUDA_LAUNCH_BLOCKING": "1",
+        //"USE_NEW_NVSTREAMMUX": "1",
+      },
+      "preLaunchTask": "Build All",
+    },
+    {
       "name": "(LLDB) cudaBlend",
       "type": "lldb",
       "request": "launch",
