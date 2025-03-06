@@ -43,6 +43,9 @@ StitcherPriv::~StitcherPriv() {
 }
 
 bool StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
+  if (configure_only_) {
+    return true;
+  }
   videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
   assert(!stitcher_);
   hm::pano::ControlMasks control_masks;
