@@ -53,6 +53,12 @@ constexpr const char* LEFT_FILE_PATTERN = R"(left\.mp4$)";
  */
 constexpr const char* RIGHT_FILE_PATTERN = R"(right\.mp4$)";
 
+/** @brief Regular expression for a pre-stitched file.
+ * 
+ * Pattern: stitched_output-with-audio\.(mp4|mkv)
+ */
+constexpr const char *STITCHED_FILE_PATTERN = R"(stitched_output-with-audio\.(mp4|mkv)$)";
+
 /**
  * @brief Extracts the video and chapter numbers from a GoPro file name.
  *
@@ -192,6 +198,14 @@ VideosDict get_available_videos(const std::string& dir_name, bool prune) {
         videos_dict["right"][part_num] = file;
       }
     }
+  }
+
+  // Process any pre-stitched files.
+  files = find_matching_files(STITCHED_FILE_PATTERN, dir_name);
+  if (!files.empty()) {
+    // We prefer mp4, which comes after mkv in the alphabet
+    std::sort(files.begin(), files.end());
+    videos_dict["stitched"][1] = *files.rbegin();
   }
 
   // Optionally prune chapters.
