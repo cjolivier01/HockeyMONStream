@@ -574,13 +574,12 @@ static GstStateChangeReturn gst_videoprep_change_state(GstElement* element, GstS
       GST_ERROR("Unable to create plugin type %s", videoprep->plugin_type);
       return GST_STATE_CHANGE_FAILURE;
     }
+    if (videoprep->plugin_private_config) {
+      videoprep->priv->SetPrivateConfig(videoprep->plugin_private_config);
+    }
     if (!videoprep->priv->PreCapsInit(&videoprep->custom_create_params)) {
       GST_ERROR("Error on bus: SetInitParams Error");
       return GST_STATE_CHANGE_FAILURE;
-    }
-
-    if (videoprep->plugin_private_config) {
-      videoprep->priv->SetPrivateConfig(videoprep->plugin_private_config);
     }
   }
   GstVideoPrepClass* klass = GST_VIDEOPREP_CLASS(element);
