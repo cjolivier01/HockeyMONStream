@@ -639,7 +639,7 @@ absl::Status main_with_status(int argc, char* argv[]) {
       }
       HM_RETURN_IF_ERROR(appCtx[i]->complete_configuration());
       YAML::Node config = appCtx[i]->configurator().config();
-      std::cout << config << std::endl;
+      // std::cout << config << std::endl;
       if (!config["pipeline"].IsDefined() || !parse_config_yaml(config["pipeline"], &appCtx[i]->config, cfg_files[i])) {
         NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files[i]);
         appCtx[i]->return_value = -1;

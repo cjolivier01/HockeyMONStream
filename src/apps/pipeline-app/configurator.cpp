@@ -288,83 +288,103 @@ absl::Status Configurator::complete_configuration() {
   }
 
   pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / "rink_mask_0.png");
-  // Stitching LFO, RFO
-  std::vector<std::string> left_files;
-  std::vector<std::string> right_files;
 
-  if (has_node(config_, "game.videos.left", /*non_null=*/true)) {
-    left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
-  }
-  if (has_node(config_, "game.videos.right", /*non_null=*/true)) {
-    right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
-  }
-
-  if (left_files.empty() && right_files.empty()) {
-    stitching::VideosDict videos = stitching::get_available_videos(game_dir);
-    const stitching::VideoChapter& left_chapter = videos["left"];
-    const stitching::VideoChapter& right_chapter = videos["right"];
-    if (!left_chapter.empty()) {
-      for (const auto& item : left_chapter) {
-        if (!right_chapter.empty()) {
-          const int chapter = item.first;
-          if (!right_chapter.count(chapter)) {
-            std::cerr << "Right vids are missing chapter " << chapter << ", skipping..." << std::endl;
-            continue;
-          }
-        }
-        left_files.emplace_back(item.second);
-      }
-    }
-    if (!right_chapter.empty()) {
-      for (const auto& item : right_chapter) {
-        if (!left_chapter.empty()) {
-          const int chapter = item.first;
-          if (!left_chapter.count(chapter)) {
-            std::cerr << "Left vids are missing chapter " << chapter << ", skipping..." << std::endl;
-            continue;
-          }
-        }
-        right_files.emplace_back(item.second);
-      }
-    }
-  }
+  YAML::Node offsets = config_["game"]["stitching"]["frame_offsets"];
 
   long area = 0, ww = 0, hh = 0;
 
   size_t num_video_sources = 0;
 
-  auto offsets = config_["game"]["stitching"]["frame_offsets"];
+  std::vector<std::string> left_files;
+  std::vector<std::string> right_files;
+  std::string stitched_file;
 
-  if (!left_files.empty() && !right_files.empty()) {
-    if (!has_node(config_, "game.stitching.frame_offsets.left", /*non_null=*/true)) {
-      stitching::Synchronization sync;
-      HM_ASSIGN_OR_RETURN(
-          sync, stitching::calculate_stitching_synchronization(game_dir / left_files[0], game_dir / right_files[0]));
-      offsets["left"] = std::to_string(sync.video1_frame_offset);
-      offsets["right"] = std::to_string(sync.video2_frame_offset);
-      // TODO: save to private config
-    }
-  }
-  if (!left_files.empty()) {
-    Videoinfo left_info = getVideoInfo(file_maybe_in_game_dir(left_files[0]));
-    double lfo = offsets["left"].as<double>(); // this is decimal frames
-    set_stream_offsets_ |= lfo != 0.0;
-    pipeline["hmstitcher"]["left-frame-offset-ns"] = std::to_string(size_t(lfo / left_info.fps * GST_SECOND));
-    area = left_info.width * left_info.height;
-    ww = left_info.width;
-    hh = left_info.height;
-  }
-  if (!right_files.empty()) {
-    Videoinfo right_info = getVideoInfo(file_maybe_in_game_dir(right_files[0]));
-    double rfo = offsets["right"].as<double>(); // this is decimal frames
-    set_stream_offsets_ |= rfo != 0.0;
-    pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / right_info.fps * GST_SECOND));
-    if (right_info.width * right_info.height > area) {
-      ww = right_info.width;
-      hh = right_info.height;
+  const std::vector<const char*> nostitch_names = {
+      // Prefer mp4 to mkv
+      "stitching_output-with-audio.mp4",
+      "stitching_output-with-audio.mkv",
+  };
+  for (const char* sf : nostitch_names) {
+    if (fs::exists(game_dir / sf)) {
+      stitched_file = game_dir / sf;
+      num_video_sources = 1;
+      Videoinfo stitched_info = getVideoInfo(file_maybe_in_game_dir(stitched_file));
+      ww = stitched_info.width;
+      hh = stitched_info.height;
+      area = ww * hh;
     }
   }
 
+  if (!stitched_file.empty()) {
+    // Stitching LFO, RFO
+
+    if (has_node(config_, "game.videos.left", /*non_null=*/true)) {
+      left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
+    }
+    if (has_node(config_, "game.videos.right", /*non_null=*/true)) {
+      right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
+    }
+
+    if (left_files.empty() && right_files.empty()) {
+      stitching::VideosDict videos = stitching::get_available_videos(game_dir);
+      const stitching::VideoChapter& left_chapter = videos["left"];
+      const stitching::VideoChapter& right_chapter = videos["right"];
+      if (!left_chapter.empty()) {
+        for (const auto& item : left_chapter) {
+          if (!right_chapter.empty()) {
+            const int chapter = item.first;
+            if (!right_chapter.count(chapter)) {
+              std::cerr << "Right vids are missing chapter " << chapter << ", skipping..." << std::endl;
+              continue;
+            }
+          }
+          left_files.emplace_back(item.second);
+        }
+      }
+      if (!right_chapter.empty()) {
+        for (const auto& item : right_chapter) {
+          if (!left_chapter.empty()) {
+            const int chapter = item.first;
+            if (!left_chapter.count(chapter)) {
+              std::cerr << "Left vids are missing chapter " << chapter << ", skipping..." << std::endl;
+              continue;
+            }
+          }
+          right_files.emplace_back(item.second);
+        }
+      }
+    }
+
+    if (!left_files.empty() && !right_files.empty()) {
+      if (!has_node(config_, "game.stitching.frame_offsets.left", /*non_null=*/true)) {
+        stitching::Synchronization sync;
+        HM_ASSIGN_OR_RETURN(
+            sync, stitching::calculate_stitching_synchronization(game_dir / left_files[0], game_dir / right_files[0]));
+        offsets["left"] = std::to_string(sync.video1_frame_offset);
+        offsets["right"] = std::to_string(sync.video2_frame_offset);
+        // TODO: save to private config
+      }
+    }
+    if (!left_files.empty()) {
+      Videoinfo left_info = getVideoInfo(file_maybe_in_game_dir(left_files[0]));
+      double lfo = offsets["left"].as<double>(); // this is decimal frames
+      set_stream_offsets_ |= lfo != 0.0;
+      pipeline["hmstitcher"]["left-frame-offset-ns"] = std::to_string(size_t(lfo / left_info.fps * GST_SECOND));
+      area = left_info.width * left_info.height;
+      ww = left_info.width;
+      hh = left_info.height;
+    }
+    if (!right_files.empty()) {
+      Videoinfo right_info = getVideoInfo(file_maybe_in_game_dir(right_files[0]));
+      double rfo = offsets["right"].as<double>(); // this is decimal frames
+      set_stream_offsets_ |= rfo != 0.0;
+      pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / right_info.fps * GST_SECOND));
+      if (right_info.width * right_info.height > area) {
+        ww = right_info.width;
+        hh = right_info.height;
+      }
+    }
+  }
   const bool is_udb_output = has_enabled_rtsp_sink(pipeline);
 
   auto maybe_scale_down = [is_udb_output](long width, long height) -> std::tuple<int, int> {
