@@ -1,5 +1,5 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
-#include "hstream/src/libs/stitching/Synchronize.h"
+#include "hstream/src/libs/stitching/Synchronization.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/Status.h"
 

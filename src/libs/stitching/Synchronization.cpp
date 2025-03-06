@@ -1,3 +1,6 @@
+#include "hstream/src/libs/stitching/Synchronization.h"
+#include "hstream/src/libs/stitching/CrossCorrelation.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -6,7 +9,6 @@
 #include <utility>
 #include <vector>
 
-#include <fftw3.h>
 #include <opencv2/opencv.hpp>
 
 // FFmpeg headers
@@ -21,9 +23,20 @@ extern "C" {
 namespace hm {
 namespace stitching {
 namespace {
-// Loads audio from a file (or video file) using FFmpeg and returns a mono audio signal
-// as a vector of doubles along with its sample rate.
-std::pair<std::vector<double>, int> load_audio_as_tensor(
+/**
+ * @brief Loads audio from a file (typically an MP4) using FFmpeg and returns a waveform
+ *        along with its sample rate.
+ *
+ * The waveform is returned as a two-dimensional vector of doubles with shape
+ * [channels][samples]. For example, if the input audio is stereo and you read 720000 samples per channel,
+ * then the waveform will have two vectors of length 720000.
+ *
+ * @param file The path to the audio (or video) file.
+ * @param duration_seconds The duration (in seconds) to read from the audio.
+ * @param verbose If true, prints debug information.
+ * @return A pair containing the waveform and the sample rate.
+ */
+std::pair<std::vector<std::vector<float>>, int> load_audio_as_tensor(
     const std::string& file,
     double duration_seconds,
     bool verbose = false) {
@@ -95,12 +108,18 @@ std::pair<std::vector<double>, int> load_audio_as_tensor(
     int channels = codecpar->channels;
 #endif
     AVChannelLayout default_layout;
-    // av_channel_layout_default fills default_layout based on the number of channels.
     av_channel_layout_default(&default_layout, channels);
     in_channel_layout = default_layout.u.mask;
   }
 
-  // Set up the resampler to convert the audio to mono, float format.
+  // Determine number of channels (preserve original channels).
+#if LIBAVCODEC_VERSION_MAJOR >= 61
+  int out_channels = av_codec_parameters_get_channels(codecpar);
+#else
+  int out_channels = codecpar->channels;
+#endif
+
+  // Set up the resampler to convert the audio to float format while preserving channel count.
   SwrContext* swr_ctx = swr_alloc();
   if (!swr_ctx) {
     std::cerr << "Could not allocate resampler context." << std::endl;
@@ -108,11 +127,12 @@ std::pair<std::vector<double>, int> load_audio_as_tensor(
     avformat_close_input(&fmt_ctx);
     std::exit(1);
   }
+  // Input options.
   av_opt_set_int(swr_ctx, "in_channel_layout", in_channel_layout, 0);
   av_opt_set_int(swr_ctx, "in_sample_rate", codec_ctx->sample_rate, 0);
   av_opt_set_sample_fmt(swr_ctx, "in_sample_fmt", codec_ctx->sample_fmt, 0);
-  int64_t out_channel_layout = AV_CH_LAYOUT_MONO;
-  av_opt_set_int(swr_ctx, "out_channel_layout", out_channel_layout, 0);
+  // Output options: preserve number of channels.
+  av_opt_set_int(swr_ctx, "out_channel_layout", in_channel_layout, 0);
   av_opt_set_int(swr_ctx, "out_sample_rate", codec_ctx->sample_rate, 0);
   av_opt_set_sample_fmt(swr_ctx, "out_sample_fmt", AV_SAMPLE_FMT_FLT, 0);
   if (swr_init(swr_ctx) < 0) {
@@ -124,14 +144,20 @@ std::pair<std::vector<double>, int> load_audio_as_tensor(
   }
 
   int out_sample_rate = codec_ctx->sample_rate;
+  // Total output samples per channel.
   int64_t total_output_samples = static_cast<int64_t>(duration_seconds * out_sample_rate);
-  std::vector<double> audio_samples;
-  audio_samples.reserve(total_output_samples);
+
+  // Create a 2D vector for storing output audio: one vector per channel.
+  std::vector<std::vector<float>> audio_samples(out_channels);
+  for (int ch = 0; ch < out_channels; ++ch) {
+    audio_samples[ch].reserve(total_output_samples);
+  }
 
   AVPacket* packet = av_packet_alloc();
   AVFrame* frame = av_frame_alloc();
   bool finished = false;
 
+  // Decode and convert audio frames.
   while (!finished && av_read_frame(fmt_ctx, packet) >= 0) {
     if (packet->stream_index == audio_stream_index) {
       int ret = avcodec_send_packet(codec_ctx, packet);
@@ -147,29 +173,35 @@ std::pair<std::vector<double>, int> load_audio_as_tensor(
           std::cerr << "Error during decoding." << std::endl;
           break;
         }
-        int nb_samples = frame->nb_samples;
-        int out_channels = 1;
-        float* out_buffer = new float[nb_samples * out_channels];
+        int nb_samples = frame->nb_samples; // number of samples per channel in this frame
+
+        // Allocate buffer for converted data: note that converted samples are interleaved.
+        // We request conversion for nb_samples.
+        int max_out_samples = nb_samples; // swr_convert returns samples per channel.
+        int buffer_size = max_out_samples * out_channels;
+        float* out_buffer = new float[buffer_size];
         uint8_t* out_data[1] = {reinterpret_cast<uint8_t*>(out_buffer)};
 
         int converted_samples =
-            swr_convert(swr_ctx, out_data, nb_samples, (const uint8_t**)frame->extended_data, nb_samples);
+            swr_convert(swr_ctx, out_data, max_out_samples, (const uint8_t**)frame->extended_data, nb_samples);
         if (converted_samples < 0) {
           std::cerr << "Error converting audio." << std::endl;
           delete[] out_buffer;
           break;
         }
+        // Deinterleave the interleaved output into separate channels.
         for (int i = 0; i < converted_samples; i++) {
-          audio_samples.push_back(static_cast<double>(out_buffer[i]));
-          if (audio_samples.size() >= static_cast<size_t>(total_output_samples)) {
-            finished = true;
-            break;
+          for (int ch = 0; ch < out_channels; ch++) {
+            audio_samples[ch].push_back(static_cast<double>(out_buffer[i * out_channels + ch]));
           }
         }
         delete[] out_buffer;
         av_frame_unref(frame);
-        if (finished)
+        // Check if we have reached the desired sample count for each channel.
+        if (audio_samples[0].size() >= static_cast<size_t>(total_output_samples)) {
+          finished = true;
           break;
+        }
       }
     }
     av_packet_unref(packet);
@@ -184,8 +216,9 @@ std::pair<std::vector<double>, int> load_audio_as_tensor(
   avformat_close_input(&fmt_ctx);
 
   if (verbose) {
-    std::cout << "Loaded audio from: " << file << ", samples: " << audio_samples.size()
-              << ", sample rate: " << out_sample_rate << std::endl;
+    std::cout << "Loaded audio from: " << file << ", channels: " << out_channels
+              << ", samples per channel: " << audio_samples[0].size() << ", sample rate: " << out_sample_rate
+              << std::endl;
   }
   return {audio_samples, out_sample_rate};
 }
@@ -204,73 +237,31 @@ std::pair<double, double> get_video_fps_and_duration(const std::string& video_pa
   return {fps, duration};
 }
 
-// Computes the full cross-correlation of two real-valued signals x and y using FFTW,
-// and returns the lag (ranging from -(N-1) to N-1) corresponding to the maximum correlation.
-int cross_correlate_fft(const std::vector<double>& x, const std::vector<double>& y) {
-  // Assume x and y have the same length.
-  size_t N = x.size();
-  // The length of the linear convolution (cross-correlation) is L = 2*N - 1.
-  size_t L = 2 * N - 1;
+/**
+ * @brief Computes the lag corresponding to the maximum correlation.
+ *
+ * This mimics the Python code:
+ * @code
+ * lag = np.argmax(correlation) - audio1.shape[0] + 1
+ * @endcode
+ *
+ * @param correlation The full cross-correlation vector.
+ * @param audio1_size The size of the first signal.
+ * @return int The computed lag.
+ */
+int get_lag(const std::vector<float>& correlation, size_t audio1_size) {
+  // Find the index of the maximum element in the correlation vector.
+  auto max_iter = std::max_element(correlation.begin(), correlation.end());
+  int max_index = std::distance(correlation.begin(), max_iter);
+  // Compute lag such that the zero lag is at index audio1_size - 1.
+  int lag = max_index - static_cast<int>(audio1_size) + 1;
+  return lag;
+}
 
-  // Allocate arrays for padded input signals.
-  std::vector<double> x_pad(L, 0.0);
-  std::vector<double> y_pad(L, 0.0);
-  for (size_t i = 0; i < N; ++i) {
-    x_pad[i] = x[i];
-    y_pad[i] = y[i];
-  }
-
-  // Allocate output arrays for FFT: FFTW computes real-to-complex with output size L/2+1.
-  size_t Nc = L / 2 + 1;
-  fftw_complex* X = (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * Nc);
-  fftw_complex* Y = (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * Nc);
-  fftw_complex* C = (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * Nc);
-
-  // Create FFTW plans for forward transforms.
-  fftw_plan plan_x = fftw_plan_dft_r2c_1d(L, x_pad.data(), X, FFTW_ESTIMATE);
-  fftw_plan plan_y = fftw_plan_dft_r2c_1d(L, y_pad.data(), Y, FFTW_ESTIMATE);
-
-  fftw_execute(plan_x);
-  fftw_execute(plan_y);
-
-  // Compute the product: X * conj(Y) for each frequency bin.
-  for (size_t i = 0; i < Nc; ++i) {
-    double a = X[i][0], b = X[i][1]; // X = a + ib
-    double c = Y[i][0], d = Y[i][1]; // Y = c + id
-    // X * conj(Y) = (a + ib) * (c - id) = (a*c + b*d) + i(b*c - a*d)
-    C[i][0] = a * c + b * d;
-    C[i][1] = b * c - a * d;
-  }
-
-  // Allocate array for the inverse FFT result (the cross-correlation).
-  std::vector<double> corr(L, 0.0);
-  fftw_plan plan_corr = fftw_plan_dft_c2r_1d(L, C, corr.data(), FFTW_ESTIMATE);
-  fftw_execute(plan_corr);
-
-  // FFTW does not normalize the inverse FFT, so divide by L.
-  for (size_t i = 0; i < L; ++i) {
-    corr[i] /= static_cast<double>(L);
-  }
-
-  // The result is arranged such that index (N-1) corresponds to zero lag.
-  int best_lag = 0;
-  double max_corr = -std::numeric_limits<double>::infinity();
-  for (size_t i = 0; i < L; ++i) {
-    int lag = static_cast<int>(i) - static_cast<int>(N - 1);
-    if (corr[i] > max_corr) {
-      max_corr = corr[i];
-      best_lag = lag;
-    }
-  }
-
-  fftw_destroy_plan(plan_x);
-  fftw_destroy_plan(plan_y);
-  fftw_destroy_plan(plan_corr);
-  fftw_free(X);
-  fftw_free(Y);
-  fftw_free(C);
-
-  return best_lag;
+double sum(const std::vector<float>& array) {
+  double sum1 = 0;
+  std::for_each(array.begin(), array.end(), [&sum1](auto v) { sum1 += v; });
+  return sum1;
 }
 
 } // namespace
@@ -303,24 +294,34 @@ std::pair<double, double> synchronize_by_audio(
   auto [audio1, sample_rate1] = load_audio_as_tensor(file1_path, seconds, verbose);
   auto [audio2, sample_rate2] = load_audio_as_tensor(file2_path, seconds, verbose);
 
+  double sum1 = sum(audio1[0]);
+  double sum2 = sum(audio2[0]);
+
   // Calculate the number of audio samples per video frame.
-  const double audio_items_per_frame_1 = static_cast<double>(audio1.size()) / video1_subclip_frame_count;
-  const double audio_items_per_frame_2 = static_cast<double>(audio2.size()) / video2_subclip_frame_count;
+  const double audio_items_per_frame_1 = static_cast<double>(audio1[0].size()) / video1_subclip_frame_count;
+  const double audio_items_per_frame_2 = static_cast<double>(audio2[0].size()) / video2_subclip_frame_count;
 
   // Check that the computed samples per frame match the expected value.
-  const double expected_samples_per_frame1 = static_cast<double>(sample_rate1) / video1_fps;
-  const double expected_samples_per_frame2 = static_cast<double>(sample_rate2) / video2_fps;
-  if (std::abs(expected_samples_per_frame1 - audio_items_per_frame_1) > 1e-3 ||
-      std::abs(expected_samples_per_frame2 - audio_items_per_frame_2) > 1e-3) {
-    std::cerr << "Mismatch in samples per frame calculation!" << std::endl;
-    std::exit(1);
-  }
+  // const double expected_samples_per_frame1 = static_cast<double>(sample_rate1) / video1_fps;
+  // const double expected_samples_per_frame2 = static_cast<double>(sample_rate2) / video2_fps;
+  // if (std::abs(expected_samples_per_frame1 - audio_items_per_frame_1) > 1e-3 ||
+  //     std::abs(expected_samples_per_frame2 - audio_items_per_frame_2) > 1e-3) {
+  //   std::cerr << "Mismatch in samples per frame calculation!" << std::endl;
+  //   std::exit(1);
+  // }
 
   if (verbose) {
     std::cout << "Calculating cross-correlation..." << std::endl;
   }
   // Compute the cross-correlation using the first (or only) channel.
-  const double lag = cross_correlate_fft(audio1, audio2);
+  // std::vector<float> correlation = full_correlate(audio1[0], audio2[0]);
+  
+  std::vector<float> correlation = full_correlate_fft(audio1[0], audio2[0]);
+
+  auto sumc = sum(correlation);
+
+  int lag = -get_lag(correlation, audio1[0].size());
+
   // A positive lag means audio1 lags behind audio2.
   const double frame_offset = lag / audio_items_per_frame_1;
   const double time_offset = frame_offset / video1_fps;
@@ -333,6 +334,11 @@ std::pair<double, double> synchronize_by_audio(
   // Determine the starting frame offset for each video.
   const double left_frame_offset = (frame_offset > 0.0) ? frame_offset : 0.0;
   const double right_frame_offset = (frame_offset < 0.0) ? -frame_offset : 0.0;
+
+  if (verbose) {
+    std::cout << "Left frame offset: " << left_frame_offset << std::endl;
+    std::cout << "Right time offset: " << right_frame_offset << std::endl;
+  }
 
   return {left_frame_offset, right_frame_offset};
 }

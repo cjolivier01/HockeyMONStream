@@ -15,6 +15,7 @@
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/Orientation.h"
 
 namespace fs = std::filesystem;
 
@@ -296,6 +297,36 @@ absl::Status Configurator::complete_configuration() {
   }
   if (has_node(config_, "game.videos.right", /*non_null=*/true)) {
     right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
+  }
+
+  if (left_files.empty() && right_files.empty()) {
+    stitching::VideosDict videos = stitching::get_available_videos(game_dir);
+    const stitching::VideoChapter& left_chapter = videos["left"];
+    const stitching::VideoChapter& right_chapter = videos["right"];
+    if (!left_chapter.empty()) {
+      for (const auto& item : left_chapter) {
+        if (!right_chapter.empty()) {
+          const int chapter = item.first;
+          if (!right_chapter.count(chapter)) {
+            std::cerr << "Right vids are missing chapter " << chapter << ", skipping..." << std::endl;
+            continue;
+          }
+        }
+        left_files.emplace_back(item.second);
+      }
+    }
+    if (!right_chapter.empty()) {
+      for (const auto& item : right_chapter) {
+        if (!left_chapter.empty()) {
+          const int chapter = item.first;
+          if (!left_chapter.count(chapter)) {
+            std::cerr << "Left vids are missing chapter " << chapter << ", skipping..." << std::endl;
+            continue;
+          }
+        }
+        right_files.emplace_back(item.second);
+      }
+    }
   }
 
   long area = 0, ww = 0, hh = 0;
