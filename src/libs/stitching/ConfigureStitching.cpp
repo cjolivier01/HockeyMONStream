@@ -201,9 +201,13 @@ bool can_configure_stitching(const YAML::Node& config) {
 absl::StatusOr<Synchronization> calculate_stitching_synchronization(
     const std::string& video1,
     const std::string& video2) {
-
+#if 1
   auto frame_offsets = synchronize_by_audio(video1, video2);
-
+  return Synchronization{
+      .video1_frame_offset = frame_offsets.first,
+      .video2_frame_offset = frame_offsets.second,
+  };
+#else
   fs::path hm_cupano_dir = fs::path("external") / "hm-cupano";
   std::vector<std::string> cmd{
       "/home/colivier/miniforge3/envs/ubuntu/bin/python",
@@ -246,6 +250,7 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
       .video1_frame_offset = *v1_offset,
       .video2_frame_offset = *v2_offset,
   };
+#endif
 }
 
 absl::Status create_control_points(
