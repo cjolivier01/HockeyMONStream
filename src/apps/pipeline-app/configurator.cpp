@@ -347,7 +347,7 @@ absl::Status Configurator::complete_configuration() {
       right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
     }
 
-    if (left_files.empty() && right_files.empty()) {
+    if (left_files.empty() && right_files.empty() && videos.count("left") && videos.count("right")) {
       const stitching::VideoChapter& left_chapter = videos.at("left");
       const stitching::VideoChapter& right_chapter = videos.at("right");
       if (!left_chapter.empty()) {
@@ -383,7 +383,13 @@ absl::Status Configurator::complete_configuration() {
             sync, stitching::calculate_stitching_synchronization(game_dir / left_files[0], game_dir / right_files[0]));
         offsets["left"] = std::to_string(sync.video1_frame_offset);
         offsets["right"] = std::to_string(sync.video2_frame_offset);
-        // TODO: save to private config
+        private_config_["game"]["stitching"]["frame_offsets"]["left"] = std::to_string(sync.video1_frame_offset);
+        private_config_["game"]["stitching"]["frame_offsets"]["right"] = std::to_string(sync.video1_frame_offset);
+        auto spp_status = save_private_config(private_config_);
+        if (!spp_status.ok()) {
+          // We can continue, so just warn
+          std::cerr << "Warnings: failed to save provate config: " << spp_status << std::endl;
+        }
       }
     }
     if (!left_files.empty()) {
