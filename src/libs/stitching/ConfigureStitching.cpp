@@ -308,6 +308,7 @@ absl::Status create_control_points(
       left_file,
       "--right",
       right_file,
+      "--max-control-points=500",
   };
 
   int exitcode = run_command(
