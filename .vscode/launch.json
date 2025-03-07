@@ -83,7 +83,7 @@
       //"stopOnEntry": true,
       "env": {
         //"GST_DEBUG": "videoprep:7",
-        // "GST_DEBUG": "4",
+        "GST_DEBUG": "1",
         // "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
         //"LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib",
         "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins",
