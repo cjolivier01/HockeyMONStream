@@ -139,6 +139,9 @@ absl::Status PlayCropperPriv::GenerateOutput(
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
   // Setup and initialization
+  if (!in_surface->numFilled) {
+    return absl::CancelledError("No surfaces were filled");
+  }
   assert(in_surface->numFilled == out_surface->batchSize);
   assert(videoprep->stream);
 

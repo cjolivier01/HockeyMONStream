@@ -224,6 +224,9 @@ std::unordered_map<std::string, std::string> get_environment() {
 
 absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir) {
   // return test_dependency_tree();
+  if (fs::exists(fs::path(game_dir) / "panorama.tif")) {
+    return true;
+  }
   return false;
 }
 

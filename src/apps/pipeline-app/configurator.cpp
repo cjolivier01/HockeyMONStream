@@ -304,7 +304,7 @@ absl::Status Configurator::complete_configuration() {
 
   pipeline["hmstitcher"]["config-file"] = std::string(game_dir);
 
-  const bool needs_stitching = does_need_stitching(game_dir);
+  // const bool needs_stitching = does_need_stitching(game_dir);
 
   // if (!stitching::is_stitching_configured(game_dir).value_or(false) && stitching::can_configure_stitching(config_)) {
   //   // HM_RETURN_IF_ERROR(stitching::configure_stitching(
