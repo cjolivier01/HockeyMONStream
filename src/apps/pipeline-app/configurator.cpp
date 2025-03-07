@@ -564,9 +564,22 @@ absl::Status Configurator::complete_configuration(bool force) {
 absl::Status Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config) {
   // We need to do this get state for some reason
   GstState state, pending;
-  GstStateChangeReturn ret = gst_element_get_state(pipeline.pipeline, &state, &pending, GST_CLOCK_TIME_NONE);
-  assert(ret == GST_STATE_CHANGE_SUCCESS || ret == GST_STATE_CHANGE_NO_PREROLL);
-  assert(state == GstState::GST_STATE_PAUSED);
+  gst_element_get_state(pipeline.pipeline, &state, &pending, GST_CLOCK_TIME_NONE);
+  if (state == GST_STATE_READY) {
+    GstStateChangeReturn ret = gst_element_set_state(pipeline.pipeline, GST_STATE_PAUSED);
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+      return absl::InternalError("Failed to get pipeline state to PAUSED");
+    }
+    // Wait indefinitely until the state change is complete.
+    ret = gst_element_get_state(pipeline.pipeline, &state, &pending, GST_CLOCK_TIME_NONE);
+    if (ret == GST_STATE_CHANGE_SUCCESS && state == GST_STATE_PAUSED) {
+      g_print("Pipeline is now paused.\n");
+    } else {
+      g_printerr("Failed to transition pipeline to PAUSED state (state: %s)\n", gstStateToString(state));
+    }
+  } else if (state != GST_STATE_PAUSED) {
+    return absl::InternalError(TO_STRING("Pipeline in unexpected state: " << gstStateToString(state)));
+  }
 
   save_dot_file(pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline");
 

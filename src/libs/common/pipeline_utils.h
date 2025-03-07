@@ -53,6 +53,8 @@ inline T get_node_value(const YAML::Node& n, const std::string& dot_string,
   return o_n.value().as<T>();
 }
 
+const char* gstStateToString(GstState state);
+
 }  // namespace hm
 
 #define TO_STRING(_stuff$) (std::stringstream() << _stuff$).str()
