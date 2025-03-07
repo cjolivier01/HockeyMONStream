@@ -304,7 +304,11 @@ absl::Status StitcherPriv::GenerateOutput(
     HM_RETURN_IF_ERROR(to_status(cudaMemsetAsync(
         canvas->data_raw(), 0, canvas->height() * canvas->pitch() * canvas->batch_size(), videoprep->stream)));
 
-    HM_CUDA_ASSIGN_OR_RETURN(canvas, stitcher_->process(left, right, videoprep->stream, std::move(canvas)));
+    if (stitcher_) {
+      HM_CUDA_ASSIGN_OR_RETURN(canvas, stitcher_->process(left, right, videoprep->stream, std::move(canvas)));
+    } else {
+      std::cout << "Stitcher was not created, so sending a blank image downstream" << std::endl;
+    }
     // render("canvas", output_params, videoprep->stream);
     ++out_surface->numFilled;
     // Both should have the same 'persistent_frame_meta'

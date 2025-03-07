@@ -327,6 +327,10 @@ absl::Status create_control_points(
   return absl::OkStatus();
 }
 
+absl::Status create_field_mask(const std::string& game_dir) {
+  return absl::OkStatus();
+}
+
 absl::Status configure_stitching(
     const std::string& game_dir,
     surface::Surface left_surface,
