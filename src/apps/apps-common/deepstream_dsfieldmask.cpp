@@ -972,6 +972,9 @@ gboolean create_hmaudio_bin(
     }
   }
 
+  // GstClock *system_clock = gst_system_clock_obtain();
+  
+
   // Fine-tune AV sync with latency adjustment
   // g_object_set(G_OBJECT(audio_sink),
   //   "ts-offset", 0,  // Adjust this value (in nanoseconds) if needed

@@ -9,6 +9,7 @@
 #include <string>
 
 #include <gstreamer-1.0/gst/gstelement.h>
+#include <gstreamer-1.0/gst/gstpipeline.h>
 #include <opencv2/opencv.hpp>
 #include <opencv2/videoio.hpp>
 #include <unistd.h>
@@ -614,6 +615,12 @@ absl::Status Configurator::post_config_pipeline(NvDsPipeline& pipeline, const Nv
       }
     }
   }
+
+  // GstClock *system_clock = gst_system_clock_obtain();
+  // gst_pipeline_use_clock(GST_PIPELINE(audio_pipeline), system_clock);
+  // gst_pipeline_use_clock(GST_PIPELINE(video_pipeline), system_clock);
+  // gst_object_unref(system_clock);
+
   return absl::OkStatus();
 }
 
