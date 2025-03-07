@@ -227,7 +227,7 @@ absl::Status DsFieldMaskProcessFrame(
     fs::path mask_path = ctx->initParams.detection_mask_file;
     if (!fs::exists(fs::path(mask_path))) {
       assert(frame_index < surface->numFilled);
-#ifdef IS_TEGRA
+#ifdef __aarch64__
       hm::surface::EglSurfaceMapper egl_surface_mapper(surface, frame_index, /*read_only=*/true);
       hm::surface::Surface this_surface = egl_surface_mapper.get_surface();
 #else

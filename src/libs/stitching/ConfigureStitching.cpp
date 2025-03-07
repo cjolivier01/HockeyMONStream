@@ -314,7 +314,7 @@ absl::Status create_control_points(
       "--right",
       right_file,
       "--max-control-points=500",
-#ifdef IS_TEGRA
+#ifdef __aarch64__
       "--scale=0.6",
 #endif
   };
@@ -345,7 +345,7 @@ absl::Status create_field_mask(const std::string& game_dir, surface::Surface sur
       fs::path("hmlib/segm/ice_rink.py"),
       "--game-id",
       game_id,
-#ifdef IS_TEGRA
+#ifdef __aarch64__
       "--device=cuda",
 #else
       "--device=cpu",
