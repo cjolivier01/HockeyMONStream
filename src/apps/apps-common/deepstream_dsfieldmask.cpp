@@ -60,7 +60,7 @@ NvDsSinkBinSubBin* find_sink_sub_bin(int sink_id, const NvDsSinkSubBinConfig* si
   size_t sink_bin_index = 0;
   for (size_t i = 0; i < MAX_SINK_BINS; ++i) {
     const NvDsSinkSubBinConfig& config = sink_config[i];
-    if (config.sink_id == sink_id) {
+    if (config.sink_id == (long)sink_id) {
       return &sink_bins->sub_bins[sink_bin_index];
     }
     if (config.enable) {
@@ -347,10 +347,10 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   ppc << ";right-frame-offset-ns=" << config->right_frame_offset_ns;
   ppc << ";configure-only=" << config->configure_only;
   ppc << ";show=" << config->show;
+  g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-private-config", ppc.str().c_str(), NULL);
 
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "unique-id", config->unique_id, "gpu-id", config->gpu_id, NULL);
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-type", "hmstitcher", NULL);
-  g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-private-config", ppc.str().c_str(), NULL);
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "config-file", config->config_file, NULL);
   g_object_set(G_OBJECT(bin->pre_conv), "gpu-id", config->gpu_id, NULL);
   g_object_set(G_OBJECT(bin->pre_conv), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
@@ -536,9 +536,8 @@ done:
  *                                                 |_|
  */
 gboolean create_hmvideoprep_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBin* bin) {
-  // GstCaps* caps = NULL;
   gboolean ret = FALSE;
-  // GstCapsFeatures* feature = NULL;
+  std::stringstream ppc;
 
   bin->bin = gst_bin_new("videoprep_bin");
   if (!bin->bin) {
@@ -579,12 +578,6 @@ gboolean create_hmvideoprep_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBi
 
   setup_rgb_nvvm_caps_filter(nullptr, bin->cap_filter);
 
-  // caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "RGBA", NULL);
-  // feature = gst_caps_features_new(MEMORY_FEATURES, NULL);
-  // gst_caps_set_features(caps, 0, feature);
-  // g_object_set(G_OBJECT(bin->cap_filter), "caps", caps, NULL);
-  // gst_caps_unref(caps);
-
   bin->nvvideoprep = gst_element_factory_make("playcropper" /*NVDS_ELEM_DEWARPER*/, NULL);
   if (!bin->nvvideoprep) {
     NVGSTDS_ERR_MSG_V("Failed to create 'nvvideoprep'");
@@ -614,11 +607,6 @@ gboolean create_hmvideoprep_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBi
           G_MAXINT,
           NULL),
       bin->videoprep_caps_filter);
-
-  // feature = gst_caps_features_new("memory:NVMM", NULL);
-  // gst_caps_set_features(caps, 0, feature);
-
-  // g_object_set(G_OBJECT(bin->videoprep_caps_filter), "caps", caps, NULL);
 
   gst_bin_add_many(
       GST_BIN(bin->bin),
@@ -653,6 +641,11 @@ gboolean create_hmvideoprep_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBi
   if (config->output_height) {
     g_object_set(G_OBJECT(bin->nvvideoprep), "output-height", config->output_height, NULL);
   }
+
+  ppc << "show=" << config->show;
+  g_object_set(G_OBJECT(bin->nvvideoprep), "plugin-private-config", ppc.str().c_str(), NULL);
+
+
 #if 0
   NVGSTDS_LINK_ELEMENT(bin->nvvidconv, bin->cap_filter);
   NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->nvvideoprep);

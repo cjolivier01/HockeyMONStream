@@ -97,6 +97,7 @@ gboolean parse_hmvideoprep_yaml(
   SET_LOCATOR(locator, *config, enable);
   SET_LOCATOR(locator, *config, unique_id);
   SET_LOCATOR(locator, *config, gpu_id);
+  SET_LOCATOR(locator, *config, show);
   SET_LOCATOR(locator, *config, has_queue);
   SET_LOCATOR(locator, *config, has_videoconvert);
   SET_LOCATOR(locator, *config, has_cameraman);

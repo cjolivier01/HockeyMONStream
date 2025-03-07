@@ -127,6 +127,14 @@ gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep)
   return 0;
 }
 
+bool PlayCropperPriv::SetProperty(const Property& prop) {
+  // std::cerr << "SetProperty(" << prop.key << "=" << prop.value << ")" << std::endl;
+  if (prop.key == "show") {
+    show_ = !!std::atol(prop.value.c_str());
+  }
+  return true;
+}
+
 BufferResult PlayCropperPriv::ProcessBuffer(GstBuffer* inbuf) {
   return Super::ProcessBuffer(inbuf);
 }
@@ -169,7 +177,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)frame_meta_list->data;
 
     // Get input and output surfaces
-#ifdef __aarch64__
+#ifdef IS_TEGRA
     hm::surface::EglSurfaceMapper incoming_elg_surface_mapper(in_surface, batch_nr, /*read_only=*/true);
     hm::surface::Surface incoming_surface = incoming_elg_surface_mapper.get_surface();
 
@@ -278,6 +286,9 @@ absl::Status PlayCropperPriv::GenerateOutput(
       // Step 3: Final crop and resize
       HM_RETURN_IF_ERROR(to_status(cropAndResizeNvBufSurface(
           *scratch_surface_iter++, new_tbox, outgoing_surface, output_rect, nppStreamContext)));
+    }
+    if (show_) {
+      render("Play Cropper", &out_surface->surfaceList[batch_nr], videoprep->stream);
     }
   }
 

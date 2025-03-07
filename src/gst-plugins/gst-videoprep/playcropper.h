@@ -32,41 +32,12 @@ class PlayCropperPriv : public STITCH_PRIV_BASE {
  public:
   PlayCropperPriv(int gpu_id, size_t batch_size) : STITCH_PRIV_BASE(gpu_id, batch_size) {}
 
-  // template <typename... Args>
-  // void render(Args&&... args) {
-  //     // Forward all arguments to the target function
-  //     render_(std::forward<Args>(args)...);
-  // }
-
   bool PreCapsInit(DSCustom_CreateParams* params) override;
   bool PostCapsInit(DSCustom_CreateParams* params) override;
 
-  BufferResult ProcessBuffer(GstBuffer* inbuf) override;
-
-  // bool render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream) {
-  //   return render_.render(name, surface, stream);
-  // }
-
   // -DSCustomLibraryBase
-  // bool SetProperty(const Property& prop) override {
-  //   assert(false);
-  //   return true;
-  // }
-
-  // bool HandleEvent(GstEvent* event) override {
-  //   return true;
-  // }
-
-  // char* QueryProperties() override {
-  //   assert(false);
-  //   return strdup("");
-  // }
-
-  // BufferResult ProcessBuffer(GstBuffer* inbuf) override {
-  //   assert(false);
-  //   return BufferResult::Buffer_Ok;
-  // }
-
+  BufferResult ProcessBuffer(GstBuffer* inbuf) override;
+  bool SetProperty(const Property& prop) override;
   // DSCustomLibraryBase-
 
   absl::Status GenerateOutput(
@@ -78,6 +49,7 @@ class PlayCropperPriv : public STITCH_PRIV_BASE {
   gint AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) override;
 
  protected:
+  bool show_{false};
 };
 
 /** GStreamer boilerplate. */

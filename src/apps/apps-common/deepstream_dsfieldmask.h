@@ -106,6 +106,7 @@ struct NvDsHmVideoPrepConfig {
   gboolean enable;
   guint unique_id;
   guint gpu_id;
+  gboolean show;
   bool has_queue;
   bool has_videoconvert;
   bool has_cameraman;

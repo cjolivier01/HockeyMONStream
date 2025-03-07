@@ -68,8 +68,8 @@
         "${workspaceFolder}/configs/ds_hockey_app_config.yaml", // my app
         "-g",
         //"mlk-heat-1",
-        "ev-cougars-2",
-        //"fremont",
+        //"ev-cougars-2",
+        "fremont",
         "-d",
       ],
       "sourceMap": {
