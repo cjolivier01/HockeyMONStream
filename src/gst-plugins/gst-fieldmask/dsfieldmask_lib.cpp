@@ -12,18 +12,26 @@
  */
 
 #include "dsfieldmask_lib.h"
+#include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
 
 #include <opencv2/opencv.hpp>
 
 #include <algorithm>
 #include <cassert>
+#include <filesystem>
 
 #include <opencv2/core/types.hpp>
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "nvbufsurface.h"
+
+namespace fs = std::filesystem;
+
 struct DsFieldMaskCtx {
   DsFieldMaskInitParams initParams;
+  size_t total_frame_count{0};
   cv::Mat detection_bit_mask;
   cv::Mat detection_u8_mask;
   cv::Point2f detection_mask_centroid;
@@ -99,7 +107,7 @@ cv::Point2f compute_centroid(const cv::Mat& mask) {
 }
 
 // Load mask from file
-cv::Mat load_mask_from_file(const std::string& filePath) {
+absl::StatusOr<cv::Mat> load_mask_from_file(const std::string& filePath) {
   // Load the image as a single-channel grayscale image
   cv::Mat mask = cv::imread(filePath, cv::IMREAD_GRAYSCALE);
   if (mask.empty()) {
@@ -197,23 +205,38 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx)
 DsFieldMaskCtx* DsFieldMaskCtxInit(DsFieldMaskInitParams* initParams) {
   DsFieldMaskCtx* ctx = new DsFieldMaskCtx();
   ctx->initParams = *initParams;
-  if (!ctx->initParams.detection_mask_file.empty()) {
-    // extra memeory used here, try to settle on but mask
-    ctx->detection_u8_mask = load_mask_from_file(ctx->initParams.detection_mask_file);
-    ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask);
-    ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
-    // cv::imshow("Mask", ctx->detection_u8_mask);
-    // cv::imshow("Mask", ctx->detection_bit_mask);
-    cv::waitKey(10);
-  }
+  // if (!ctx->initParams.detection_mask_file.empty()) {
+  //   // extra memeory used here, try to settle on but mask
+  //   ctx->detection_u8_mask = load_mask_from_file(ctx->initParams.detection_mask_file);
+  //   ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask);
+  //   ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
+  // }
   return ctx;
 }
 
-void DsFieldMaskProcessFrame(NvDsFrameMeta* frame_meta, DsFieldMaskCtx* ctx) {
+absl::Status DsFieldMaskProcessFrame(
+    NvBufSurface* surface,
+    size_t frame_index,
+    NvDsFrameMeta* frame_meta,
+    DsFieldMaskCtx* ctx) {
   if (ctx->initParams.detection_mask_file.empty()) {
-    return;
+    // We are a No-op
+    return absl::OkStatus();
+  }
+  if (ctx->total_frame_count == 0 && ctx->detection_u8_mask.empty()) {
+    fs::path mask_path = ctx->initParams.detection_mask_file;
+    if (!fs::exists(fs::path(mask_path))) {
+      assert(frame_index < surface->numFilled);
+      HM_RETURN_IF_ERROR(
+          hm::stitching::create_field_mask(mask_path.parent_path().string(), &surface->surfaceList[frame_index]));
+    }
+    HM_ASSIGN_OR_RETURN(ctx->detection_u8_mask, load_mask_from_file(ctx->initParams.detection_mask_file));
+    ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask);
+    ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
   }
   prune_detection_boxes(frame_meta, ctx);
+  ++ctx->total_frame_count;
+  return absl::OkStatus();
 }
 
 void DsFieldMaskCtxDeinit(DsFieldMaskCtx* ctx) {

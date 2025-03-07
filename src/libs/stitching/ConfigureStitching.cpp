@@ -23,8 +23,6 @@ namespace stitching {
 
 namespace {
 
-namespace fs = std::filesystem;
-
 const std::string lfo_prefix = "Left frame offset: ";
 const std::string rfo_prefix = "Right frame offset: ";
 
@@ -330,7 +328,7 @@ absl::Status create_control_points(
   return absl::OkStatus();
 }
 
-absl::Status create_field_mask(const std::string& game_dir) {
+absl::Status create_field_mask(const std::string& game_dir, surface::Surface surface) {
   return absl::OkStatus();
 }
 

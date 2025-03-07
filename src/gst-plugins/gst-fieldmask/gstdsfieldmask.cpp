@@ -25,6 +25,9 @@
 #include <cassert>
 #include <string>
 
+namespace fs = std::filesystem;
+
+
 namespace {
 GST_DEBUG_CATEGORY_STATIC(gst_dsfieldmask_debug);
 #define GST_CAT_DEFAULT gst_dsfieldmask_debug
@@ -340,6 +343,8 @@ static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstB
   NvDsFrameMeta* frame_meta = NULL;
   NvDsMetaList* l_frame = NULL;
 
+  size_t frame_index = 0;
+
   dsfieldmask->frame_num++;
   CHECK_CUDA_STATUS(cudaSetDevice(dsfieldmask->gpu_id), "Unable to set cuda device");
 
@@ -365,7 +370,7 @@ static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstB
   /* Using object crops as input to the algorithm. The objects are detected by
    * the primary detector */
 
-  for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
+  for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next, ++frame_index) {
     frame_meta = (NvDsFrameMeta*)(l_frame->data);
     // If frame pipeline w/h isn't set, then set it from the first surface
     if (!frame_meta->pipeline_width && surface->surfaceList) {
@@ -380,7 +385,7 @@ static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstB
       frame_meta->pipeline_width = params->width;
       frame_meta->pipeline_height = params->height;
     }
-    DsFieldMaskProcessFrame(frame_meta, dsfieldmask->dsfieldmasklib_ctx);
+    DsFieldMaskProcessFrame(surface, frame_index, frame_meta, dsfieldmask->dsfieldmasklib_ctx);
   }
   flow_ret = GST_FLOW_OK;
 
