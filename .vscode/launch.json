@@ -70,7 +70,7 @@
         //"mlk-heat-1",
         //"ev-cougars-2",
         "fremont",
-        "-d",
+        //"-d",
       ],
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}",
