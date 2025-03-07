@@ -1,6 +1,7 @@
 #include "stitcher.h"
-#include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
 
 #include "cupano/cuda/cudaStatus.h"
 #include "cupano/pano/cudaMat.h"
@@ -42,20 +43,40 @@ StitcherPriv::~StitcherPriv() {
   stitcher_.reset();
 }
 
-bool StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
-  videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
-  if (!configure_only_) {
-    assert(!stitcher_);
+absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher(videoprep::GstVideoPrep* videoprep) {
+  if (configure_only_) {
+    return (StitcherPriv::STITCHER*)nullptr;
+  }
+  if (!videoprep->config_file || !*videoprep->config_file) {
+    return absl::NotFoundError("No control masks to load");
+  }
+  absl::MutexLock lk(&stitcher_mu_);
+  if (!stitcher_) {
     hm::pano::ControlMasks control_masks;
     if (!control_masks.load(videoprep->config_file)) {
-      return false;
+      std::string config_file_dir = videoprep->config_file;
+      // Don;t try again
+      videoprep->config_file[0] = '\0';
+      return absl::NotFoundError(TO_STRING("Could not load control masks from " << config_file_dir));
     }
     stitcher_ = std::make_unique<hm::pano::cuda::CudaStitchPano<uchar4, float3>>(
         /*batch_size=*/1, /*num_levels=*/kNumStitcherLaplacianLevels, control_masks, /*match_exposure=*/true);
-    if (!stitcher_->status().ok()) {
-      return false;
-    }
   }
+  if (!stitcher_->status().ok()) {
+    return to_status(stitcher_->status());
+  }
+  return stitcher_.get();
+}
+
+bool StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
+  videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
+  auto res = get_stitcher(videoprep);
+  if (!res.ok()) {
+    std::cerr << res.status() << std::endl;
+    return false;
+  }
+  STITCHER* stitcher = res.value();
+
   // Not an in-place transform
 #ifdef NEW_VIDEOPREP
   m_transformMode = true;
@@ -64,11 +85,11 @@ bool StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
   m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
   m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
 
-  if (!configure_only_) {
-    videoprep->output_width = stitcher_->canvas_width();
-    videoprep->output_height = stitcher_->canvas_height();
+  if (stitcher) {
+    videoprep->output_width = stitcher->canvas_width();
+    videoprep->output_height = stitcher->canvas_height();
 
-    g_print("Stitched canvas size: %d x %d\n", (int)stitcher_->canvas_width(), (int)stitcher_->canvas_height());
+    g_print("Stitched canvas size: %d x %d\n", (int)stitcher->canvas_width(), (int)stitcher->canvas_height());
   }
   return true;
 }

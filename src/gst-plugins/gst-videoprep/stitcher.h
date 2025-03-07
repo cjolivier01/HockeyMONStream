@@ -71,7 +71,13 @@ class StitcherPriv : public STITCH_PRIV_BASE {
       NvBufSurface* out_surface) override;
 
  private:
-  std::unique_ptr<hm::pano::cuda::CudaStitchPano<uchar4, float3>> stitcher_;
+  using STITCHER = hm::pano::cuda::CudaStitchPano<uchar4, float3>;
+
+  absl::StatusOr<STITCHER*> get_stitcher(videoprep::GstVideoPrep* videoprep);
+
+  absl::Mutex stitcher_mu_;
+  std::unique_ptr<STITCHER> stitcher_ ABSL_GUARDED_BY(stitcher_mu_);
+
   std::mutex process_mu_;
   size_t process_pass_{0};
   bool configure_only_{false};

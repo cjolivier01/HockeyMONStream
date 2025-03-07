@@ -57,4 +57,4 @@ const char* gstStateToString(GstState state);
 
 }  // namespace hm
 
-#define TO_STRING(_stuff$) (std::stringstream() << _stuff$).str()
+

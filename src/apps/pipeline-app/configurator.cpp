@@ -16,6 +16,7 @@
 
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
+#include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/Orientation.h"
 
@@ -570,6 +571,7 @@ absl::Status Configurator::post_config_pipeline(NvDsPipeline& pipeline, const Nv
     if (ret == GST_STATE_CHANGE_FAILURE) {
       return absl::InternalError("Failed to get pipeline state to PAUSED");
     }
+#if 0
     // Wait indefinitely until the state change is complete.
     ret = gst_element_get_state(pipeline.pipeline, &state, &pending, GST_CLOCK_TIME_NONE);
     if (ret == GST_STATE_CHANGE_SUCCESS && state == GST_STATE_PAUSED) {
@@ -577,6 +579,7 @@ absl::Status Configurator::post_config_pipeline(NvDsPipeline& pipeline, const Nv
     } else {
       g_printerr("Failed to transition pipeline to PAUSED state (state: %s)\n", gstStateToString(state));
     }
+#endif
   } else if (state != GST_STATE_PAUSED) {
     return absl::InternalError(TO_STRING("Pipeline in unexpected state: " << gstStateToString(state)));
   }

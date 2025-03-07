@@ -58,5 +58,6 @@ inline void glist_visitor(GList *list, const std::function<void(T*)>& pred) {
 
 YAML::Node deep_copy(const YAML::Node& node);
 
+#define TO_STRING(_stuff$) (std::stringstream() << _stuff$).str()
 
 } // namespace hm

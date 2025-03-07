@@ -1,4 +1,5 @@
 #include "hstream/src/libs/common/pipeline_utils.h"
+#include "hstream/src/libs/common/utils.h"
 
 #include <fstream>
 #include <iostream>
