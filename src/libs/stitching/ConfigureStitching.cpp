@@ -1,7 +1,7 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
-#include "hstream/src/libs/stitching/Synchronization.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/stitching/Synchronization.h"
 
 #include "cupano/pano/cudaMat.h"
 
@@ -102,6 +102,39 @@ ValidationResult checkFileDependencies(const FileNode& node, int level = 0) {
   return result;
 }
 
+// Splits a colon-separated string into a vector of strings.
+std::vector<std::string> splitPaths(const std::string& paths) {
+  std::vector<std::string> result;
+  std::istringstream iss(paths);
+  std::string token;
+  while (std::getline(iss, token, ':')) {
+    if (!token.empty())
+      result.push_back(token);
+  }
+  return result;
+}
+
+// Finds the first occurrence of an executable in the paths defined by the given environment variables.
+// The environment variables are colon-separated (like PATH).
+// Returns the full path as a std::string if found, or std::nullopt otherwise.
+std::optional<std::string> findExecutable(const std::string& executable, const std::vector<std::string>& envVars) {
+  for (const auto& envVar : envVars) {
+    const char* env_value = std::getenv(envVar.c_str());
+    if (!env_value)
+      continue; // Environment variable not set.
+
+    std::vector<std::string> paths = splitPaths(env_value);
+    for (const auto& pathStr : paths) {
+      fs::path p = fs::path(pathStr) / executable;
+      // You might want to check for executability (e.g. using access() on POSIX),
+      // here we simply check if the file exists and is a regular file.
+      if (fs::exists(p) && fs::is_regular_file(p)) {
+        return p.string();
+      }
+    }
+  }
+  return std::nullopt;
+}
 // -----------------------------------------------------------------------------
 // Example usage:
 //
@@ -264,8 +297,12 @@ absl::Status create_control_points(
 
   fs::path hm_cupano_dir = fs::path("external") / "hm-cupano";
 
+  auto python_exec = findExecutable("python3", {"PATH"});
+  if (!python_exec) {
+    python_exec = "/usr/bin/python";
+  }
   std::vector<std::string> cmd{
-      "/home/colivier/miniforge3/envs/ubuntu/bin/python",
+      *python_exec,
       fs::path("scripts") / "create_control_points.py",
       "--left",
       left_file,
@@ -299,3 +336,4 @@ absl::Status configure_stitching(
 
 } // namespace stitching
 } // namespace hm
+
