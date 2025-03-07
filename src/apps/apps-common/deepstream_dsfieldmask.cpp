@@ -13,6 +13,7 @@
 
 #include "deepstream_dsfieldmask.h"
 
+#include "hstream/src/apps/apps-common/deepstream_config.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 
 #include <glib-2.0/glib.h>
@@ -53,6 +54,20 @@
 namespace {
 inline GstElement* gst_element_get_parent(GstElement* elem) {
   return (GstElement*)gst_object_get_parent(GST_OBJECT_CAST(elem));
+}
+
+NvDsSinkBinSubBin* find_sink_sub_bin(int sink_id, const NvDsSinkSubBinConfig* sink_config, NvDsSinkBin* sink_bins) {
+  size_t sink_bin_index = 0;
+  for (size_t i = 0; i < MAX_SINK_BINS; ++i) {
+    const NvDsSinkSubBinConfig& config = sink_config[i];
+    if (config.sink_id == sink_id) {
+      return &sink_bins->sub_bins[sink_bin_index];
+    }
+    if (config.enable) {
+      ++sink_bin_index;
+    }
+  }
+  return nullptr;
 }
 
 //---------------------------------------------------------------------
@@ -914,23 +929,28 @@ gboolean create_hmaudio_bin(
     if (sink_config->enable) {
       if (sink_config->type == NV_DS_SINK_ENCODE_FILE) {
         assert(is_dest_file_sink);
-        assert(sink_bin->sub_bins[config->sink_id].mux);
-        HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
-        NVGSTDS_LINK_ELEMENT(bin->queue, bin->audioparse);
-        NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
-        if (!link_audio_pad_to_muxer(bin->bin, sink_bin->sub_bins[config->sink_id].mux)) {
-          goto done;
+        NvDsSinkBinSubBin* target_sink_bin = find_sink_sub_bin(config->sink_id, sink_config_array, sink_bin);
+        if (target_sink_bin) {
+          assert(target_sink_bin->mux);
+          HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
+          NVGSTDS_LINK_ELEMENT(bin->queue, bin->audioparse);
+          NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
+          if (!link_audio_pad_to_muxer(bin->bin, target_sink_bin->mux)) {
+            goto done;
+          }
+          linked = true;
+        } else {
+          std::cerr << "No sink available for sink id " << config->sink_id << std::endl;
         }
-        linked = true;
       } else if (sink_config->type == NV_DS_SINK_UDPSINK) {
-        assert(sink_bin->sub_bins[config->sink_id].rtppay_or_flvmux);
+        NvDsSinkBinSubBin* target_sink_bin = find_sink_sub_bin(config->sink_id, sink_config_array, sink_bin);
+        assert(target_sink_bin->rtppay_or_flvmux);
         HMGST_ELEMENT_MAKE_BINADD(bin->encoder, "voaacenc", "hmaudio_encoder");
         HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
         NVGSTDS_LINK_ELEMENT(bin->queue, bin->encoder);
         NVGSTDS_LINK_ELEMENT(bin->encoder, bin->audioparse);
         NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
-        if (!link_audio_pad_to_muxer(
-                bin->bin, sink_bin->sub_bins[config->sink_id].rtppay_or_flvmux, /*audio_pad_name=*/"audio")) {
+        if (!link_audio_pad_to_muxer(bin->bin, target_sink_bin->rtppay_or_flvmux, /*audio_pad_name=*/"audio")) {
           goto done;
         }
         linked = true;
@@ -973,7 +993,6 @@ gboolean create_hmaudio_bin(
   }
 
   // GstClock *system_clock = gst_system_clock_obtain();
-  
 
   // Fine-tune AV sync with latency adjustment
   // g_object_set(G_OBJECT(audio_sink),
