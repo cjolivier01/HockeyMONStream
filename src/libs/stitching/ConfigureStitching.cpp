@@ -314,6 +314,9 @@ absl::Status create_control_points(
       "--right",
       right_file,
       "--max-control-points=500",
+#ifdef IS_TEGRA
+      "--scale=0.6",
+#endif
   };
 
   int exitcode = run_command(

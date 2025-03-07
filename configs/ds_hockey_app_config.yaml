@@ -118,7 +118,7 @@ sink0:
   enable: 1
   sink-id: 0
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
-  type: 2
+  type: 1
   sync: 1
   # sync: 0
   source-id: 0
@@ -361,7 +361,7 @@ hmvideoprep:
   nvbuf-memory-type: 0
   plot-detections: 1
   plot-tracking: 1
-  show: 1
+  show: 0
   # dewarper portion
   # source-id: 6
   # config-file: /opt/nvidia/deepstream/deepstream/sources/apps/sample_apps/deepstream-dewarper-test/config_dewarper_rot_matrix.txt
@@ -388,7 +388,7 @@ hmstitcher:
   gpu-id: 0
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
-  show: 1
+  show: 0
   num-batch-buffers: 4
   num-output-buffers: 4
 

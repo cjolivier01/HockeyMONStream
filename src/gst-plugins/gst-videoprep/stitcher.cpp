@@ -257,7 +257,7 @@ absl::Status StitcherPriv::GenerateOutput(
       remove_frame_metas.emplace_back(frame_info_left.frame_meta);
     }
 
-#ifdef __aarch64__
+#ifdef IS_TEGRA
     hm::surface::EglSurfaceMapper incoming_left_elg_surface_mapper(
         in_surface, frame_info_left.incoming_surface_index, /*read_only=*/true);
     hm::surface::Surface incoming_surface_left = incoming_left_elg_surface_mapper.get_surface();
