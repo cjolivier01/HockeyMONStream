@@ -218,7 +218,7 @@ gboolean enable_perf_measurement(
     guint num_surfaces_per_frame,
     perf_callback callback) {
   guint i;
-  g_disable_perf_measurement = true;
+  g_disable_perf_measurement = false;
 
   if (!callback) {
     return FALSE;
