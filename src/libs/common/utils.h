@@ -1,6 +1,7 @@
 #pragma once
 
 #include <gst/gst.h>
+#include <yaml-cpp/yaml.h>
 
 #include <stdio.h>
 
@@ -54,5 +55,8 @@ inline void glist_visitor(GList *list, const std::function<void(T*)>& pred) {
     list = list->next;
   }
 }
+
+YAML::Node deep_copy(const YAML::Node& node);
+
 
 } // namespace hm

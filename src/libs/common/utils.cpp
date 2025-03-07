@@ -22,4 +22,11 @@ std::optional<std::pair<int, int>> extract_width_height(GstCaps* caps) {
   return std::nullopt;
 }
 
+YAML::Node deep_copy(const YAML::Node& node) {
+    // Serialize the original node to a string
+    std::string dumped = YAML::Dump(node);
+    // Parse the string back to a new YAML::Node
+    return YAML::Load(dumped);
+}
+
 } // namespace hm

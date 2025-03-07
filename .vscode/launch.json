@@ -67,7 +67,8 @@
         //"${workspaceFolder}/configs/deepstream_app_config.txt",   // baseline
         "${workspaceFolder}/configs/ds_hockey_app_config.yaml", // my app
         "-g",
-        "mlk-heat-1",
+        //"mlk-heat-1",
+        "ev-cougars-2",
         //"fremont",
         "-d",
       ],

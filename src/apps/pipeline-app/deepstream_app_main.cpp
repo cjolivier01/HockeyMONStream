@@ -8,8 +8,8 @@
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
 // #include "hstream/src/apps/apps-common/deepstream_config_file_parser.h"
-#include "hstream/src/libs/common/pipeline_utils.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/pipeline_utils.h"
 
 #include <cuda_runtime_api.h>
 #include <gst/gstbin.h>
@@ -54,7 +54,7 @@ static GMutex disp_lock;
 static guint rrow, rcol, rcfg;
 static gboolean rrowsel = FALSE, selecting = FALSE;
 
-static constexpr const char *kConfigureStitchingConfigFileName = "ds_hockey_configure_stitching.yaml";
+static constexpr const char* kConfigureStitchingConfigFileName = "ds_hockey_configure_stitching.yaml";
 
 GST_DEBUG_CATEGORY(NVDS_APP);
 
@@ -792,43 +792,13 @@ absl::Status main_with_status(int argc, char* argv[]) {
   /* Dont try to set playing state if error is observed */
   if (return_value != -1) {
     for (i = 0; i < num_instances; i++) {
-      // if (!appCtx[i]->pause()) {
-      //   g_printerr("Could not set pipeline to paused\n");
-      //   goto done;
-      // }
-      if (!appCtx[i]->configurator().post_config_pipeline(appCtx[i]->pipeline, appCtx[i]->config)) {
+      absl::Status status = appCtx[i]->configurator().post_config_pipeline(appCtx[i]->pipeline, appCtx[i]->config);
+      if (!status.ok()) {
+        std::cerr << status << std::endl;
         g_print("\npipeline post-configuration failed.\n");
         return_value = -1;
         goto done;
       }
-
-#if 0
-      GstState state, pending;
-      GstStateChangeReturn ret =
-          gst_element_get_state(appCtx[i]->pipeline.pipeline, &state, &pending, GST_CLOCK_TIME_NONE);
-      assert(ret == GST_STATE_CHANGE_SUCCESS);
-      // GstElement *seek_element = appCtx[i]->pipeline.pipeline;
-      // GstElement *seek_element = appCtx[i]->pipeline.multi_src_bin.bin;
-      GstElement* seek_element = appCtx[i]->pipeline.multi_src_bin.sub_bins[1].bin;
-
-      // size_t seekTarget = 5 * 60 * GST_SECOND;
-      size_t seekTarget = 0.95 * GST_SECOND;
-      // size_t seekTarget = 0 * 60 * GST_SECOND;
-      if (!gst_element_seek(
-              seek_element,
-              1.0, // Normal playback rate.
-              GST_FORMAT_TIME,
-              // (GstSeekFlags)((int)GST_SEEK_FLAG_FLUSH | (int)GST_SEEK_FLAG_KEY_UNIT),
-              (GstSeekFlags)((int)GST_SEEK_FLAG_FLUSH | (int)GST_SEEK_FLAG_ACCURATE),
-              GST_SEEK_TYPE_SET, // Start from the target position.
-              seekTarget,
-              GST_SEEK_TYPE_NONE, // No specific end position.
-              GST_CLOCK_TIME_NONE)) {
-        g_printerr("Seek failed\n");
-      } else {
-        g_print("Seek successful to %" GST_TIME_FORMAT "\n", GST_TIME_ARGS(seekTarget));
-      }
-#endif
       if (gst_element_set_state(appCtx[i]->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
         g_print("\ncan't set pipeline to playing state.\n");
         return_value = -1;

@@ -304,14 +304,6 @@ absl::Status Configurator::complete_configuration(bool force) {
 
   pipeline["hmstitcher"]["config-file"] = std::string(game_dir);
 
-  // const bool needs_stitching = does_need_stitching(game_dir);
-
-  // if (!stitching::is_stitching_configured(game_dir).value_or(false) && stitching::can_configure_stitching(config_)) {
-  //   // HM_RETURN_IF_ERROR(stitching::configure_stitching(
-  //   //     const std::string& game_id, surface::Surface left_surface, surface::Surface right_surface)
-  //   pipeline["hmstitcher"]["configure-only"] = "1";
-  // }
-
   pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / kRinkMaskFilename);
 
   YAML::Node offsets = config_["game"]["stitching"]["frame_offsets"];
@@ -569,7 +561,7 @@ absl::Status Configurator::complete_configuration(bool force) {
   return absl::OkStatus();
 }
 
-bool Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config) {
+absl::Status Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config) {
   // We need to do this get state for some reason
   GstState state, pending;
   GstStateChangeReturn ret = gst_element_get_state(pipeline.pipeline, &state, &pending, GST_CLOCK_TIME_NONE);
@@ -606,7 +598,7 @@ bool Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig
       }
     }
   }
-  return true;
+  return absl::OkStatus();
 }
 
 } // namespace hm

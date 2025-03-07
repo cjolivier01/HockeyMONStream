@@ -34,7 +34,7 @@ class Configurator {
 
   absl::Status complete_configuration(bool force);
 
-  bool post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config);
+  absl::Status post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config);
 
   bool does_need_stitching(const std::string& game_dir) const;
 
