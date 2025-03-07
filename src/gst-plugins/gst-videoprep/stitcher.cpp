@@ -239,26 +239,6 @@ absl::Status StitcherPriv::GenerateOutput(
     const FrameInfo& frame_info_right = source_to_surface.rbegin()->second;
     // This tests the assumption that the source ids come in sorted
 
-    // Maybe configure stitching with these frames
-    if (!process_pass_++) {
-      bool is_configured;
-      HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(videoprep->config_file));
-      if (!is_configured) {
-        if (!configure_only_) {
-          return absl::FailedPreconditionError("Stitching is not configured");
-        } else {
-          absl::Status configure_status = stitching::configure_stitching(
-              videoprep->config_file, frame_info_left.surface_params, frame_info_right.surface_params);
-          if (!configure_status.ok()) {
-            return to_status(CudaStatus(
-                cudaError_t::cudaErrorLaunchFailure, (std::stringstream() << configure_status.message()).str()));
-          }
-          // we want this
-        }
-        return absl::CancelledError("Stitching has been configured");
-      }
-    }
-
     NvBufSurfaceParams* output_params = &out_surface->surfaceList[out_surface_index];
 
     // render("left", frame_info_left.surface_params, videoprep->stream);
@@ -291,6 +271,26 @@ absl::Status StitcherPriv::GenerateOutput(
     hm::surface::Surface incoming_surface_right(frame_info_right.surface_params);
     hm::surface::Surface outgoing_surface(&out_surface->surfaceList[out_surface_index]);
 #endif
+
+    // Maybe configure stitching with these frames
+    if (!process_pass_++) {
+      bool is_configured;
+      HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(videoprep->config_file));
+      if (!is_configured) {
+        if (!configure_only_) {
+          return absl::FailedPreconditionError("Stitching is not configured");
+        } else {
+          absl::Status configure_status =
+              stitching::configure_stitching(videoprep->config_file, incoming_surface_left, incoming_surface_right);
+          if (!configure_status.ok()) {
+            return to_status(CudaStatus(
+                cudaError_t::cudaErrorLaunchFailure, (std::stringstream() << configure_status.message()).str()));
+          }
+          // we want this
+        }
+        return absl::CancelledError("Stitching has been configured");
+      }
+    }
 
     // auto osw = outgoing_surface.width();
     // auto cvw = stitcher_->canvas_width();
