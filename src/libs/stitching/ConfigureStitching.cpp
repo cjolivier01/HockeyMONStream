@@ -342,7 +342,37 @@ absl::Status create_field_mask(const std::string& game_dir, surface::Surface sur
       fs::path("hmlib/segm/ice_rink.py"),
       "--game-id",
       game_id,
+#ifdef IS_TEGRA
+      "--device=cuda",
+#else
       "--device=cpu",
+#endif
+  };
+
+  int exitcode = run_command(
+      cmd, hockeymom_dir, get_environment(), [](const std::string& stderr, const std::string& stdout) -> void {
+        if (!stderr.empty()) {
+          std::cerr << stderr << std::endl;
+        }
+        if (!stdout.empty()) {
+          std::cerr << stdout << std::endl;
+        }
+      });
+  if (exitcode) {
+    return absl::InternalError("Failed to create control points");
+  }
+
+  return absl::OkStatus();
+}
+
+absl::Status configure_orientation(const std::string& game_dir) {
+  const fs::path hockeymom_dir = fs::path("external") / "hm";
+  std::string game_id = fs::path(game_dir).filename();
+  std::vector<std::string> cmd{
+      get_python_interp(),
+      fs::path("hmlib/orientation.py"),
+      "--game-id",
+      game_id,
   };
 
   int exitcode = run_command(

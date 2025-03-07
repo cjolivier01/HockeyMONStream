@@ -37,6 +37,7 @@ static gboolean show_bbox_text = FALSE;
 static gboolean print_dependencies_version = FALSE;
 static gboolean quit = FALSE;
 static gboolean dump_pipeline_dot = FALSE;
+static gboolean force_reconfigure = FALSE;
 static gint return_value = 0;
 static guint num_instances;
 static guint num_input_uris;
@@ -76,6 +77,15 @@ GOptionEntry entries[] = {
         G_OPTION_ARG_FILENAME_ARRAY,
         &game_id,
         "Game ID",
+        NULL,
+    },
+    {
+        "force-reconfigure",
+        'f',
+        0,
+        G_OPTION_ARG_NONE,
+        &force_reconfigure,
+        "Force reconfigure",
         NULL,
     },
     {"input-uri",
@@ -639,7 +649,7 @@ absl::Status main_with_status(int argc, char* argv[]) {
         appCtx[i]->return_value = -1;
         goto done;
       }
-      HM_RETURN_IF_ERROR(appCtx[i]->complete_configuration());
+      HM_RETURN_IF_ERROR(appCtx[i]->complete_configuration(force_reconfigure));
       YAML::Node config = appCtx[i]->configurator().config();
       // std::cout << config << std::endl;
       if (!config["pipeline"].IsDefined() || !parse_config_yaml(config["pipeline"], &appCtx[i]->config, cfg_files[i])) {

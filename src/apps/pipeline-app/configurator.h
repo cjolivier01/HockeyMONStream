@@ -32,7 +32,7 @@ class Configurator {
     return config_;
   }
 
-  absl::Status complete_configuration();
+  absl::Status complete_configuration(bool force);
 
   bool post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config);
 

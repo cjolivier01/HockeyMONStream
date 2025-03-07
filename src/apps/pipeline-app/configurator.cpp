@@ -289,7 +289,7 @@ bool Configurator::does_need_stitching(const std::string& game_dir) const {
   return false;
 }
 
-absl::Status Configurator::complete_configuration() {
+absl::Status Configurator::complete_configuration(bool force) {
   YAML::Node pipeline = config_["pipeline"];
   assert(pipeline.IsDefined());
 
@@ -324,7 +324,7 @@ absl::Status Configurator::complete_configuration() {
   std::vector<std::string> right_files;
   std::string stitched_file;
 
-  const stitching::VideosDict videos = stitching::get_available_videos(game_dir);
+  stitching::VideosDict videos = stitching::get_available_videos(game_dir);
 
   if (videos.count("stitched")) {
     if (fs::exists(videos.at("stitched").at(0))) {
@@ -340,10 +340,21 @@ absl::Status Configurator::complete_configuration() {
   if (stitched_file.empty()) {
     // Stitching LFO, RFO
 
-    if (has_node(config_, "game.videos.left", /*non_null=*/true)) {
-      left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
+    if (!force) {
+      if (has_node(config_, "game.videos.left", /*non_null=*/true)) {
+        left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
+      }
+      if (has_node(config_, "game.videos.right", /*non_null=*/true)) {
+        right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
+      }
     }
-    if (has_node(config_, "game.videos.right", /*non_null=*/true)) {
+
+    if (left_files.empty() && right_files.empty() && !videos.count("left") && !videos.count("right")) {
+      HM_RETURN_IF_ERROR(stitching::configure_orientation(game_dir));
+      underlay_config("", get_private_config_file_name(game_id_));
+      private_config_["game"]["videos"]["left"] = config_["game"]["videos"]["left"];
+      private_config_["game"]["videos"]["right"] = config_["game"]["videos"]["right"];
+      left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
       right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
     }
 
@@ -386,7 +397,7 @@ absl::Status Configurator::complete_configuration() {
     }
 
     if (!left_files.empty() && !right_files.empty()) {
-      if (!has_node(config_, "game.stitching.frame_offsets.left", /*non_null=*/true)) {
+      if (!has_node(config_, "game.stitching.frame_offsets.left", /*non_null=*/true) || force) {
         stitching::Synchronization sync;
         HM_ASSIGN_OR_RETURN(
             sync, stitching::calculate_stitching_synchronization(game_dir / left_files[0], game_dir / right_files[0]));

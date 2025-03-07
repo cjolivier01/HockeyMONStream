@@ -27,6 +27,8 @@ bool can_configure_stitching(const YAML::Node& config);
 
 absl::Status create_field_mask(const std::string& game_dir, surface::Surface surface);
 
+absl::Status configure_orientation(const std::string& game_dir);
+
 absl::Status configure_stitching(
     const std::string& game_dir,
     surface::Surface left_surface,

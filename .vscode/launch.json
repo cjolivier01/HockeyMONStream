@@ -146,8 +146,9 @@
         "-c",
         //"${workspaceFolder}/configs/deepstream_app_config.txt",   // baseline
         "${workspaceFolder}/configs/ds_hockey_configure_stitching.yaml", // my app
+        "-f",
         "-g",
-        "mlk-heat-1",
+        "ev-cougars-2",
         //"fremont",
         "-d",
       ],
