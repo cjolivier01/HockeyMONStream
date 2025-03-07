@@ -304,7 +304,7 @@ absl::Status create_control_points(
   HM_RETURN_IF_ERROR(save_image(left_surface, left_file));
   HM_RETURN_IF_ERROR(save_image(right_surface, right_file));
 
-  fs::path hm_cupano_dir = fs::path("external") / "hm-cupano";
+  const fs::path hm_cupano_dir = fs::path("external") / "hm-cupano";
 
   std::vector<std::string> cmd{
       get_python_interp(),
@@ -333,6 +333,31 @@ absl::Status create_control_points(
 }
 
 absl::Status create_field_mask(const std::string& game_dir, surface::Surface surface) {
+  const fs::path hockeymom_dir = fs::path("external") / "hm";
+  fs::path stitched_file = fs::path(game_dir) / "s.png";
+  HM_RETURN_IF_ERROR(save_image(surface, stitched_file));
+  std::string game_id = stitched_file.parent_path().filename();
+  std::vector<std::string> cmd{
+      get_python_interp(),
+      fs::path("hmlib/segm/ice_rink.py"),
+      "--game-id",
+      game_id,
+      "--device=cpu",
+  };
+
+  int exitcode = run_command(
+      cmd, hockeymom_dir, get_environment(), [](const std::string& stderr, const std::string& stdout) -> void {
+        if (!stderr.empty()) {
+          std::cerr << stderr << std::endl;
+        }
+        if (!stdout.empty()) {
+          std::cerr << stdout << std::endl;
+        }
+      });
+  if (exitcode) {
+    return absl::InternalError("Failed to create control points");
+  }
+
   return absl::OkStatus();
 }
 
