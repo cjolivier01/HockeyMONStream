@@ -218,6 +218,14 @@ std::unordered_map<std::string, std::string> get_environment() {
   return env_vars;
 }
 
+std::string get_python_interp() {
+  auto python_exec = findExecutable("python3", {"PATH"});
+  if (!python_exec) {
+    return "/usr/bin/python";
+  }
+  return *python_exec;
+}
+
 } // namespace
 
 absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir) {
@@ -298,12 +306,8 @@ absl::Status create_control_points(
 
   fs::path hm_cupano_dir = fs::path("external") / "hm-cupano";
 
-  auto python_exec = findExecutable("python3", {"PATH"});
-  if (!python_exec) {
-    python_exec = "/usr/bin/python";
-  }
   std::vector<std::string> cmd{
-      *python_exec,
+      get_python_interp(),
       fs::path("scripts") / "create_control_points.py",
       "--left",
       left_file,
@@ -342,4 +346,3 @@ absl::Status configure_stitching(
 
 } // namespace stitching
 } // namespace hm
-
