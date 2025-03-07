@@ -58,6 +58,8 @@ inline void glist_visitor(GList *list, const std::function<void(T*)>& pred) {
 
 YAML::Node deep_copy(const YAML::Node& node);
 
+std::tuple<size_t, size_t> resize_to_fit(size_t origWidth, size_t origHeight, size_t maxWidth, size_t maxHeight);
+
 #define TO_STRING(_stuff$) (std::stringstream() << _stuff$).str()
 
 } // namespace hm

@@ -27,6 +27,9 @@ namespace hm {
 
 namespace {
 
+constexpr long kMaxUdpStreamingWidth = 3840;
+constexpr long kMaxUdpStreamingHeight = 2160;
+
 constexpr const char* kRinkMaskFilename = "rink_mask_0.png";
 
 const std::vector<const char*> nostitch_video_names = {
@@ -310,7 +313,7 @@ absl::Status Configurator::complete_configuration(bool force) {
 
   YAML::Node offsets = config_["game"]["stitching"]["frame_offsets"];
 
-  long area = 0, ww = 0, hh = 0;
+  size_t area = 0, ww = 0, hh = 0;
 
   size_t num_video_sources = 0;
 
@@ -433,17 +436,7 @@ absl::Status Configurator::complete_configuration(bool force) {
       return std::make_tuple(width, height);
     }
     // 4k @ 16:9
-#if 1
-    constexpr long kMaxUdpStreamingWidth = 3840;
-    constexpr long kMaxUdpStreamingHeight = 2160;
-    if (width > kMaxUdpStreamingWidth) {
-      double ar = double(width) / height;
-      width = kMaxUdpStreamingWidth;
-      height = (long)(width / ar);
-      assert(height <= kMaxUdpStreamingHeight);
-    }
-#endif
-    return std::make_tuple(width, height);
+    return resize_to_fit(width, height, kMaxUdpStreamingWidth, kMaxUdpStreamingHeight);
   } /* lambda maybe_scale_down() */;
 
   if (!left_files.empty() && !right_files.empty()) {
@@ -463,6 +456,14 @@ absl::Status Configurator::complete_configuration(bool force) {
     pipeline["hmvideoprep"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
     pipeline["hmvideoprep"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
   }
+
+  // auto tiled_display_wh = resize_to_fit(
+  //     pipeline["hmvideoprep"]["output-width"].as<int>(),
+  //     pipeline["hmvideoprep"]["output-height"].as<int>(),
+  //     kMaxUdpStreamingWidth,
+  //     kMaxUdpStreamingHeight);
+  // pipeline["tiled-display"]["width"] = std::get<0>(tiled_display_wh);
+  // pipeline["tiled-display"]["height"] = std::get<1>(tiled_display_wh);
 
   pipeline["tiled-display"]["width"] = pipeline["hmvideoprep"]["output-width"];
   pipeline["tiled-display"]["height"] = pipeline["hmvideoprep"]["output-height"];
