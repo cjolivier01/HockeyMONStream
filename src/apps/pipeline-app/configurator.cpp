@@ -459,6 +459,9 @@ absl::Status Configurator::complete_configuration() {
     pipeline["hmvideoprep"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
   }
 
+  pipeline["tiled-display"]["width"] = pipeline["hmvideoprep"]["output-width"];
+  pipeline["tiled-display"]["height"] = pipeline["hmvideoprep"]["output-height"];
+
   if (area) {
     // Set streammux size
     pipeline["streammux"]["width"] = std::to_string(ww);
