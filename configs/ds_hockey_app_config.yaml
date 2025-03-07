@@ -115,7 +115,7 @@ source2:
 # |_____/ |_|_| |_|_|\_\|___/
 #
 sink0:
-  enable: 1
+  enable: 0
   sink-id: 0
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
   type: 2
@@ -126,7 +126,7 @@ sink0:
   nvbuf-memory-type: 0
 
 sink1:
-  enable: 0
+  enable: 1
   sink-id: 1
   # Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 3
@@ -242,7 +242,7 @@ hmaudio0:
   # 0=indeopendent (this local config), 1=sink, 2=multisink
   dest: 1
   sink-id: 0
-  multi-sink-ids: 0,1,2
+  # multi-sink-ids: 0,1,2
 
 
 osd:
