@@ -78,9 +78,7 @@ bool StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
   STITCHER* stitcher = res.value();
 
   // Not an in-place transform
-#ifdef NEW_VIDEOPREP
   m_transformMode = true;
-#endif
 
   m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
   m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
@@ -330,7 +328,7 @@ absl::Status StitcherPriv::GenerateOutput(
     if (stitcher_) {
       HM_CUDA_ASSIGN_OR_RETURN(canvas, stitcher_->process(left, right, videoprep->stream, std::move(canvas)));
     } else {
-      std::cout << "Stitcher was not created, so sending a blank image downstream" << std::endl;
+      return absl::CancelledError("Stitching has been configured");
     }
 
     if (show_) {

@@ -62,9 +62,6 @@ static BBox make_null_tracking_box(const NvBufSurfaceParams* in_surf, const NvBu
 
 bool PlayCropperPriv::PreCapsInit(DSCustom_CreateParams* params) {
   // Not an in-place transform
-#ifdef NEW_VIDEOPREP
-  m_transformMode = true;
-#endif
   m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
   m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
   // videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);

@@ -736,7 +736,6 @@ inline void CustomAlgorithmBase::OutputThread(void) {
           fill_dummy_batch_meta_on_buffer(batch_meta);
         }
 
-#if 1
         assert(m_element);
         // videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(m_element);
         assert(videoprep);
@@ -749,24 +748,7 @@ inline void CustomAlgorithmBase::OutputThread(void) {
             last_flow_ret_ = GST_FLOW_ERROR;
           }
         }
-        // if (std::string("hmstitcher") == videoprep->plugin_type) {
-        //   videoprep::gst_videoprep_hook_buffer_release(newGstOutBuf);
-        // }
-        // videoprep::videoprep_add_surface_meta(newGstOutBuf, out_surf->numFilled, videoprep->source_id);
-#else
-        out_surf->numFilled = in_surf->numFilled;
-        // Enable below code to copy the frame, else it will insert GREEN frame
-        if (0) {
-          NvBufSurfTransformParams transform_params;
-          transform_params.transform_flag = NVBUFSURF_TRANSFORM_FILTER;
-          transform_params.transform_flip = NvBufSurfTransform_None;
-          transform_params.transform_filter = NvBufSurfTransformInter_Default;
-          transform_params.src_rect = {0};
-          transform_params.dst_rect = {0};
 
-          NvBufSurfTransform(in_surf, out_surf, &transform_params);
-        }
-#endif
         outBuffer = newGstOutBuf;
 
         GST_BUFFER_PTS(outBuffer) = GST_BUFFER_PTS(packetInfo.inbuf);
@@ -823,18 +805,18 @@ inline void CustomAlgorithmBase::OutputThread(void) {
       outBuffer = packetInfo.inbuf;
       nvds_set_input_system_timestamp(outBuffer, GST_ELEMENT_NAME(m_element));
     }
-
-    nvds_set_output_system_timestamp(outBuffer, GST_ELEMENT_NAME(m_element));
-    flow_ret = gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(m_element), outBuffer);
-    GST_DEBUG_OBJECT(
-        m_element,
-        "CustomLib: %s in_surf=%p, Pushing Frame %d to downstream... flow_ret = %d TS=%" GST_TIME_FORMAT " \n",
-        __func__,
-        in_surf,
-        packetInfo.frame_num,
-        flow_ret,
-        GST_TIME_ARGS(GST_BUFFER_PTS(outBuffer)));
-
+    if (last_flow_ret_ == GST_FLOW_OK) {
+      nvds_set_output_system_timestamp(outBuffer, GST_ELEMENT_NAME(m_element));
+      flow_ret = gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(m_element), outBuffer);
+      GST_DEBUG_OBJECT(
+          m_element,
+          "CustomLib: %s in_surf=%p, Pushing Frame %d to downstream... flow_ret = %d TS=%" GST_TIME_FORMAT " \n",
+          __func__,
+          in_surf,
+          packetInfo.frame_num,
+          flow_ret,
+          GST_TIME_ARGS(GST_BUFFER_PTS(outBuffer)));
+    }
     lk.lock();
     continue;
   }

@@ -714,8 +714,6 @@ void videoprep_add_surface_meta(GstBuffer* out_gst_buf, int num_filled_surfaces,
   meta->gst_to_nvds_meta_release_func = videoprep_gst_nvds_meta_release_func;
 }
 
-#if defined(NEW_VIDEOPREP)
-
 static GstFlowReturn gst_videoprep_submit_input_buffer(GstBaseTransform* btrans, gboolean discont, GstBuffer* inbuf) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(btrans);
   BufferResult result = videoprep->priv->ProcessBuffer(inbuf);
@@ -746,151 +744,6 @@ static GstFlowReturn gst_videoprep_generate_output(GstBaseTransform* btrans, Gst
   }
   return last_flow_ret;
 }
-
-#else // NEW_VIDEOPREP
-
-static cudaError gst_videoprep_do_prep(
-    NvDsBatchMeta* batch_meta,
-    GstVideoPrep* videoprep,
-    NvBufSurface* in_surface,
-    NvBufSurface* out_surface) {
-  cudaError cudaErr = cudaSuccess;
-  gint err = 0;
-  err = err;
-  GST_LOG_OBJECT(videoprep, "SETTING CUDA DEVICE = %d in videoprep func=%s\n", videoprep->gpu_id, __func__);
-  cudaErr = cudaSetDevice(videoprep->gpu_id);
-  if (cudaErr != cudaSuccess) {
-    printf("\n *** Unable to set device in %s Line %d\n", __func__, __LINE__);
-    return cudaErr;
-  }
-
-  if (videoprep->output_fmt == GST_VIDEO_FORMAT_NV12 || videoprep->output_fmt == GST_VIDEO_FORMAT_NV21) {
-    // RGBA ---> NV12 conversion
-    g_print("RGBA to NV12 conversion is not supported in videoprep. Exiting...\n");
-    exit(-1);
-  } else if (videoprep->output_fmt == GST_VIDEO_FORMAT_RGBA || videoprep->output_fmt == GST_VIDEO_FORMAT_BGRx) {
-    cudaErr = videoprep->priv->GenerateOutput(batch_meta, videoprep, in_surface, out_surface);
-    if (cudaErr != cudaError_t::cudaSuccess) {
-      return cudaErr;
-    }
-  }
-
-  BAIL_IF_FALSE(cudaSuccess == cudaErr, err, (gint)cudaErr);
-  return cudaErr;
-
-bail:
-  g_print(
-      "%s: %s failed at line %d, Error : %d Exiting ...\n", GST_ELEMENT_NAME(videoprep), __func__, __LINE__, cudaErr);
-  // exit(-1);
-  return cudaErr;
-}
-
-static GstFlowReturn gst_videoprep_transform(GstBaseTransform* btrans, GstBuffer* inbuf, GstBuffer* outbuf) {
-  GstVideoPrep* videoprep = GST_VIDEOPREP(btrans);
-  GstMapInfo inmap = GST_MAP_INFO_INIT;
-  GstMapInfo outmap = GST_MAP_INFO_INIT;
-  NvBufSurface* in_surface = NULL;
-  NvBufSurface* out_surface = NULL;
-  cudaError cudaErr = cudaSuccess;
-  gchar pts_str[64];
-
-  NvDsBatchMeta* batch_meta = gst_buffer_get_nvds_batch_meta(inbuf);
-  assert(batch_meta);
-
-  videoprep->frame_num++;
-  GST_DEBUG_OBJECT(videoprep, "%s : Frame=%d InBuf=%p OutBuf=%p\n", __func__, videoprep->frame_num, inbuf, outbuf);
-
-  if (!gst_buffer_map(inbuf, &inmap, GST_MAP_READ))
-    goto invalid_inbuf;
-
-  if (!gst_buffer_map(outbuf, &outmap, GST_MAP_WRITE))
-    goto invalid_outbuf;
-
-  GST_DEBUG_OBJECT(videoprep, "transform");
-  if (videoprep->input_feature == MEM_FEATURE_NVMM) {
-    in_surface = (NvBufSurface*)inmap.data;
-    // TODO:
-    if (CHECK_NVDS_MEMORY_AND_GPUID(videoprep, in_surface)) {
-      gst_buffer_unmap(inbuf, &inmap);
-      gst_buffer_unmap(outbuf, &outmap);
-      return GST_FLOW_ERROR;
-    }
-  }
-
-  if (videoprep->output_feature == MEM_FEATURE_NVMM) {
-    out_surface = (NvBufSurface*)outmap.data;
-    if (CHECK_NVDS_MEMORY_AND_GPUID(videoprep, out_surface)) {
-      gst_buffer_unmap(inbuf, &inmap);
-      gst_buffer_unmap(outbuf, &outmap);
-      return GST_FLOW_ERROR;
-    }
-  }
-
-  START_PROFILE;
-  videoprep->out_gst_buf = outbuf;
-  cudaErr = gst_videoprep_do_prep(batch_meta, videoprep, in_surface, out_surface);
-  if (cudaErr != cudaSuccess) {
-    GST_ERROR_OBJECT(videoprep, "gst_videoprep_do_prep failed");
-    return GST_FLOW_ERROR;
-  }
-  STOP_PROFILE("********* TOTAL DEWARP AND SCALE TIME *********");
-
-  GST_BUFFER_PTS(outbuf) = GST_BUFFER_PTS(inbuf);
-
-  GST_INFO_OBJECT(
-      videoprep,
-      " : source_id %d Frame=%d OUT-BUFFER %s",
-      videoprep->source_id,
-      videoprep->frame_num,
-      print_pretty_time(pts_str, sizeof(pts_str), GST_BUFFER_PTS(outbuf)));
-
-  gst_buffer_unmap(inbuf, &inmap);
-  gst_buffer_unmap(outbuf, &outmap);
-
-  if (!gst_buffer_copy_into(
-          outbuf,
-          inbuf,
-          // GstBufferCopyFlags::GST_BUFFER_COPY_TIMESTAMPS,
-          (GstBufferCopyFlags)GST_BUFFER_COPY_METADATA,
-          0,
-          -1)) {
-    GST_DEBUG_OBJECT(videoprep, "Buffer metadata copy failed \n");
-  }
-
-  return GST_FLOW_OK;
-
-invalid_inbuf: {
-  GST_ERROR("input buffer mapinfo failed");
-  return GST_FLOW_ERROR;
-}
-
-invalid_outbuf: {
-  GST_ERROR_OBJECT(videoprep, "output buffer mapinfo failed");
-  gst_buffer_unmap(inbuf, &inmap);
-  return GST_FLOW_ERROR;
-}
-}
-
-static GstFlowReturn gst_videoprep_prepare_output_buffer(
-    GstBaseTransform* trans,
-    GstBuffer* inbuf,
-    GstBuffer** outbuf) {
-  GstBuffer* gstOutBuf = NULL;
-  GstFlowReturn result = GST_FLOW_OK;
-  GstVideoPrep* videoprep = GST_VIDEOPREP(trans);
-
-  result = gst_buffer_pool_acquire_buffer(videoprep->pool, &gstOutBuf, NULL);
-  GST_DEBUG_OBJECT(videoprep, "%s : Frame=%d Gst-OutBuf=%p\n", __func__, videoprep->frame_num, gstOutBuf);
-
-  if (result != GST_FLOW_OK) {
-    GST_ERROR_OBJECT(videoprep, "gst_videoprep_prepare_output_buffer failed");
-    return result;
-  }
-
-  *outbuf = gstOutBuf;
-  return result;
-}
-#endif // NEW_VIDEOPREP
 
 static gboolean gst_videoprep_start(GstBaseTransform* btrans) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(btrans);
@@ -977,13 +830,8 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
   gobject_class->get_property = GST_DEBUG_FUNCPTR(gst_videoprep_get_property);
   gobject_class->finalize = GST_DEBUG_FUNCPTR(gst_videoprep_finalize);
 
-#if defined(NEW_VIDEOPREP)
   gstbasetransform_class->submit_input_buffer = gst_videoprep_submit_input_buffer;
   gstbasetransform_class->generate_output = gst_videoprep_generate_output;
-#else
-  gstbasetransform_class->transform = GST_DEBUG_FUNCPTR(gst_videoprep_transform);
-  gstbasetransform_class->prepare_output_buffer = GST_DEBUG_FUNCPTR(gst_videoprep_prepare_output_buffer);
-#endif
 
   gstbasetransform_class->transform_caps = GST_DEBUG_FUNCPTR(gst_videoprep_transform_caps);
   gstbasetransform_class->fixate_caps = GST_DEBUG_FUNCPTR(gst_videoprep_fixate_caps);
