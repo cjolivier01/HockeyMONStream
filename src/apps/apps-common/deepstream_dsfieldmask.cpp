@@ -344,12 +344,9 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   // assert(strlen(config->detection_mask_file) > 0);
 
   ppc << "left-frame-offset-ns=" << config->left_frame_offset_ns;
-  ppc << ";";
-  ppc << "right-frame-offset-ns=" << config->right_frame_offset_ns;
-  if (config->configure_only) {
-    ppc << ";";
-    ppc << "configure-only=" << config->configure_only;
-  }
+  ppc << ";right-frame-offset-ns=" << config->right_frame_offset_ns;
+  ppc << ";configure-only=" << config->configure_only;
+  ppc << ";show=" << config->show;
 
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "unique-id", config->unique_id, "gpu-id", config->gpu_id, NULL);
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-type", "hmstitcher", NULL);

@@ -153,6 +153,7 @@ struct HmStitcherConfig : public NvDsHmVideoPrepConfig {
   gboolean configure_only;
   gulong left_frame_offset_ns;
   gulong right_frame_offset_ns;
+  gboolean show;
 };
 
 // Struct to store references to the bin and elements

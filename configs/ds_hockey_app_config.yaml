@@ -387,6 +387,7 @@ hmstitcher:
   gpu-id: 0
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
+  show: 1
   # config-file: /home/colivier/Videos/mlk-heat-1
   num-batch-buffers: 4
   num-output-buffers: 4

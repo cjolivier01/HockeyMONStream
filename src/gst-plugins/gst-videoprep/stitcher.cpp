@@ -109,6 +109,8 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     right_frame_offset_ns_ = std::atol(prop.value.c_str());
   } else if (prop.key == "configure-only") {
     configure_only_ = !!std::atol(prop.value.c_str());
+  } else if (prop.key == "show") {
+    show_ = !!std::atol(prop.value.c_str());
   }
   return true;
 }
@@ -330,6 +332,11 @@ absl::Status StitcherPriv::GenerateOutput(
     } else {
       std::cout << "Stitcher was not created, so sending a blank image downstream" << std::endl;
     }
+
+    if (show_) {
+      render("HM Stitcher", outgoing_surface, videoprep->stream);
+    }
+
     // render("canvas", output_params, videoprep->stream);
     ++out_surface->numFilled;
     // Both should have the same 'persistent_frame_meta'
