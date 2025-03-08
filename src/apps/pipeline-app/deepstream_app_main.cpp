@@ -17,7 +17,7 @@
 #include <termios.h>
 #include <unistd.h>
 #include <memory>
-#include <vector> // Added for std::vector
+#include <vector>
 #include "deepstream_app.h"
 #include "nvds_version.h"
 
@@ -26,8 +26,11 @@
 #include <signal.h>
 #include <sys/select.h>
 
-#define APP_TITLE "DeepStream"
+#include "absl/cleanup/cleanup.h"
+#include "absl/status/status.h"
 
+// Macro definitions.
+#define APP_TITLE "DeepStream"
 #define DEFAULT_X_WINDOW_WIDTH 1920
 #define DEFAULT_X_WINDOW_HEIGHT 1080
 
@@ -41,10 +44,10 @@ class PipelineApplication {
  public:
   PipelineApplication() {
     cintr = FALSE;
-    main_loop = NULL;
-    cfg_files = NULL;
-    input_uris = NULL;
-    game_id = NULL;
+    main_loop = nullptr;
+    cfg_files = nullptr;
+    input_uris = nullptr;
+    game_id = nullptr;
     print_version = FALSE;
     show_bbox_text = FALSE;
     print_dependencies_version = FALSE;
@@ -56,9 +59,9 @@ class PipelineApplication {
     num_input_uris = 0;
     memset(fps, 0, sizeof(fps));
     memset(fps_avg, 0, sizeof(fps_avg));
-    display = NULL;
-    // vectors are default-initialized; no need to memset.
-    x_event_thread = NULL;
+    display = nullptr;
+    // Vectors are default–initialized.
+    x_event_thread = nullptr;
     rrow = rcol = rcfg = 0;
     rrowsel = FALSE;
     selecting = FALSE;
@@ -71,52 +74,56 @@ class PipelineApplication {
     g_mutex_clear(&disp_lock);
   }
 
-  // Main run function (refactored from main_with_status)
+  // Main run function. All resources are wrapped in RAII cleanup lambdas.
   absl::Status run(int argc, char* argv[]) {
-    absl::Status status;
-    GOptionContext* ctx = NULL;
-    GOptionGroup* group = NULL;
-    GError* error = NULL;
-    guint i;
+    absl::Status status = absl::OkStatus();
+    GError* error = nullptr;
 
-    // Build option entries – note that the addresses are now of our member variables.
+    // Build option entries.
     GOptionEntry entries[] = {
-        {"version", 'v', 0, G_OPTION_ARG_NONE, &print_version, "Print DeepStreamSDK version", NULL},
-        {"tiledtext", 't', 0, G_OPTION_ARG_NONE, &show_bbox_text, "Display Bounding box labels in tiled mode", NULL},
+        {"version", 'v', 0, G_OPTION_ARG_NONE, &print_version, "Print DeepStreamSDK version", nullptr},
+        {"tiledtext", 't', 0, G_OPTION_ARG_NONE, &show_bbox_text, "Display Bounding box labels in tiled mode", nullptr},
         {"dump-pipeline-dot",
          'd',
          0,
          G_OPTION_ARG_NONE,
          &dump_pipeline_dot,
          "Dump graphviz dot file of pipeline",
-         NULL},
+         nullptr},
         {"version-all",
          0,
          0,
          G_OPTION_ARG_NONE,
          &print_dependencies_version,
          "Print DeepStreamSDK and dependencies version",
-         NULL},
-        {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &cfg_files, "Set the config file", NULL},
-        {"game-id", 'g', 0, G_OPTION_ARG_FILENAME_ARRAY, &game_id, "Game ID", NULL},
-        {"force-reconfigure", 'f', 0, G_OPTION_ARG_NONE, &force_reconfigure, "Force reconfigure", NULL},
+         nullptr},
+        {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &cfg_files, "Set the config file", nullptr},
+        {"game-id", 'g', 0, G_OPTION_ARG_FILENAME_ARRAY, &game_id, "Game ID", nullptr},
+        {"force-reconfigure", 'f', 0, G_OPTION_ARG_NONE, &force_reconfigure, "Force reconfigure", nullptr},
         {"input-uri",
          'i',
          0,
          G_OPTION_ARG_FILENAME_ARRAY,
          &input_uris,
          "Set the input uri (file://stream or rtsp://stream)",
-         NULL},
-        {NULL}};
+         nullptr},
+        {nullptr}};
 
-    ctx = g_option_context_new("Nvidia DeepStream Demo");
-    group = g_option_group_new("abc", NULL, NULL, NULL, NULL);
+    // Create and configure the option context.
+    GOptionContext* ctx = g_option_context_new("Nvidia DeepStream Demo");
+    auto cleanup_ctx = absl::MakeCleanup([ctx] {
+      if (ctx) {
+        g_option_context_free(ctx);
+      }
+    });
+    GOptionGroup* group = g_option_group_new("abc", nullptr, nullptr, nullptr, nullptr);
     g_option_group_add_entries(group, entries);
     g_option_context_set_main_group(ctx, group);
     g_option_context_add_group(ctx, gst_init_get_option_group());
 
-    GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, NULL);
+    GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
 
+    // Initialize CUDA.
     int current_device = -1;
     cudaGetDevice(&current_device);
     struct cudaDeviceProp prop;
@@ -148,11 +155,9 @@ class PipelineApplication {
     if (input_uris) {
       num_input_uris = g_strv_length(input_uris);
     }
-
     if (!cfg_files || num_instances == 0) {
       NVGSTDS_ERR_MSG_V("Specify config file with -c option");
-      return_value = -1;
-      goto done;
+      return absl::InternalError("Specify config file with -c option");
     }
 
     // Resize our vectors to hold exactly num_instances elements.
@@ -160,15 +165,14 @@ class PipelineApplication {
     windows.resize(num_instances, 0);
 
     // Create and initialize each HmApp instance.
-    for (i = 0; i < num_instances; i++) {
+    for (guint i = 0; i < num_instances; i++) {
       appCtx[i] = std::make_unique<HmApp>(game_id ? *game_id : "");
       appCtx[i]->person_class_id = -1;
       appCtx[i]->car_class_id = -1;
       appCtx[i]->index = i;
       appCtx[i]->active_source_index = -1;
-      if (show_bbox_text) {
+      if (show_bbox_text)
         appCtx[i]->show_bbox_text = TRUE;
-      }
       if (input_uris && input_uris[i]) {
         appCtx[i]->config.multi_source_config[0].uri = g_strdup_printf("%s", input_uris[i]);
         g_free(input_uris[i]);
@@ -179,7 +183,7 @@ class PipelineApplication {
         if (!appCtx[i]->underlay_config("pipeline", cfg_files[i])) {
           NVGSTDS_ERR_MSG_V("Failed to merge in config file '%s'", cfg_files[i]);
           appCtx[i]->return_value = -1;
-          goto done;
+          return absl::InternalError("Failed to merge in config file");
         }
         HM_RETURN_IF_ERROR(appCtx[i]->complete_configuration(force_reconfigure));
         YAML::Node config = appCtx[i]->configurator().config();
@@ -187,23 +191,22 @@ class PipelineApplication {
             !parse_config_yaml(config["pipeline"], &appCtx[i]->config, cfg_files[i])) {
           NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files[i]);
           appCtx[i]->return_value = -1;
-          goto done;
+          return absl::InternalError("Failed to parse config file");
         }
       } else if (g_str_has_suffix(cfg_files[i], ".txt")) {
         if (!parse_config_file(&appCtx[i]->config, cfg_files[i])) {
           NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files[i]);
           appCtx[i]->return_value = -1;
-          goto done;
+          return absl::InternalError("Failed to parse config file");
         }
       }
     }
 
     // Create pipelines for each instance.
-    for (i = 0; i < num_instances; i++) {
-      if (!create_pipeline(appCtx[i].get(), NULL, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
+    for (guint i = 0; i < num_instances; i++) {
+      if (!create_pipeline(appCtx[i].get(), nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
         NVGSTDS_ERR_MSG_V("Failed to create pipeline");
-        return_value = -1;
-        goto done;
+        return absl::InternalError("Failed to create pipeline");
       }
       if (dump_pipeline_dot) {
         std::string s = "pipeline";
@@ -216,46 +219,77 @@ class PipelineApplication {
       }
     }
 
-    main_loop = g_main_loop_new(NULL, FALSE);
+    // Create main loop.
+    main_loop = g_main_loop_new(nullptr, FALSE);
+    auto cleanup_main_loop = absl::MakeCleanup([this] {
+      if (main_loop)
+        g_main_loop_unref(main_loop);
+      main_loop = nullptr;
+    });
 
     _intr_setup();
-    g_timeout_add(400, check_for_interrupt_static, NULL);
+    g_timeout_add(400, check_for_interrupt_static, nullptr);
 
     g_mutex_init(&disp_lock);
-    display = XOpenDisplay(NULL);
-    for (i = 0; i < num_instances; i++) {
+    display = XOpenDisplay(nullptr);
+    if (!display) {
+      NVGSTDS_ERR_MSG_V("Could not open X Display");
+      return absl::InternalError("Could not open X Display");
+    }
+    auto cleanup_display = absl::MakeCleanup([this] {
+      g_mutex_lock(&disp_lock);
+      if (display)
+        XCloseDisplay(display);
+      display = nullptr;
+      g_mutex_unlock(&disp_lock);
+    });
+
+    // Cleanup pipelines and X windows when leaving run().
+    auto cleanup_pipelines = absl::MakeCleanup([this] {
+      for (guint i = 0; i < num_instances; i++) {
+        if (appCtx[i]) {
+          // Mark overall error if any instance flagged an error.
+          if (appCtx[i]->return_value == -1)
+            return_value = -1;
+          destroy_pipeline(appCtx[i].get());
+          g_mutex_lock(&disp_lock);
+          if (windows[i])
+            XDestroyWindow(display, windows[i]);
+          windows[i] = 0;
+          g_mutex_unlock(&disp_lock);
+          appCtx[i].reset();
+        }
+      }
+      g_mutex_lock(&disp_lock);
+      if (display)
+        XCloseDisplay(display);
+      display = nullptr;
+      g_mutex_unlock(&disp_lock);
+      g_mutex_clear(&disp_lock);
+    });
+
+    // Create X windows and set the pipeline window handles.
+    for (guint i = 0; i < num_instances; i++) {
 #if defined(__aarch64__)
       if (gst_element_set_state(appCtx[i]->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
         NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
-        return_value = -1;
-        goto done;
+        return absl::InternalError("Failed to set pipeline to PAUSED");
       }
 #endif
       for (guint j = 0; j < appCtx[i]->config.num_sink_sub_bins; j++) {
-        XTextProperty xproperty;
-        gchar* title;
-        guint width, height;
-        XSizeHints hints = {0};
-
         if (!GST_IS_VIDEO_OVERLAY(appCtx[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink))
           continue;
 
-        if (!display) {
-          NVGSTDS_ERR_MSG_V("Could not open X Display");
-          return_value = -1;
-          goto done;
-        }
-
+        guint width = 0, height = 0;
+        XSizeHints hints = {0};
         if (appCtx[i]->config.sink_bin_sub_bin_config[j].render_config.width)
           width = appCtx[i]->config.sink_bin_sub_bin_config[j].render_config.width;
         else
           width = appCtx[i]->config.tiled_display_config.width;
-
         if (appCtx[i]->config.sink_bin_sub_bin_config[j].render_config.height)
           height = appCtx[i]->config.sink_bin_sub_bin_config[j].render_config.height;
         else
           height = appCtx[i]->config.tiled_display_config.height;
-
         width = (width) ? width : DEFAULT_X_WINDOW_WIDTH;
         height = (height) ? height : DEFAULT_X_WINDOW_HEIGHT;
 
@@ -278,10 +312,8 @@ class PipelineApplication {
 
         XSetNormalHints(display, windows[i], &hints);
 
-        if (num_instances > 1)
-          title = g_strdup_printf(APP_TITLE "-%d", i);
-        else
-          title = g_strdup(APP_TITLE);
+        gchar* title = (num_instances > 1) ? g_strdup_printf(APP_TITLE "-%d", i) : g_strdup(APP_TITLE);
+        XTextProperty xproperty;
         if (XStringListToTextProperty((char**)&title, 1, &xproperty) != 0) {
           XSetWMName(display, windows[i], &xproperty);
           XFree(xproperty.value);
@@ -305,88 +337,53 @@ class PipelineApplication {
         gst_video_overlay_set_window_handle(
             GST_VIDEO_OVERLAY(appCtx[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink), (gulong)windows[i]);
         gst_video_overlay_expose(GST_VIDEO_OVERLAY(appCtx[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink));
+
         if (!x_event_thread)
-          x_event_thread = g_thread_new("nvds-window-event-thread", nvds_x_event_thread_static, NULL);
+          x_event_thread = g_thread_new("nvds-window-event-thread", nvds_x_event_thread_static, nullptr);
       }
 #if !defined(__aarch64__)
       if (!prop.integrated) {
         if (gst_element_set_state(appCtx[i]->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
           NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
-          return_value = -1;
-          goto done;
+          return absl::InternalError("Failed to set pipeline to PAUSED");
         }
       }
 #endif
     }
 
-    /* Dont try to set playing state if error is observed */
-    if (return_value != -1) {
-      for (i = 0; i < num_instances; i++) {
-        absl::Status s = appCtx[i]->configurator().post_config_pipeline(appCtx[i]->pipeline, appCtx[i]->config);
-        if (!s.ok()) {
-          std::cerr << s << std::endl;
-          g_print("\npipeline post-configuration failed.\n");
-          return_value = -1;
-          goto done;
-        }
-        if (gst_element_set_state(appCtx[i]->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
-          g_print("\ncan't set pipeline to playing state.\n");
-          return_value = -1;
-          goto done;
-        }
-#if 1
-        hm::save_dot_file(appCtx[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_running");
-#endif
-        if (appCtx[i]->config.pipeline_recreate_sec)
-          g_timeout_add_seconds(
-              appCtx[i]->config.pipeline_recreate_sec, recreate_pipeline_thread_func_static, appCtx[i].get());
+    // Set pipelines to PLAYING.
+    for (guint i = 0; i < num_instances; i++) {
+      absl::Status s = appCtx[i]->configurator().post_config_pipeline(appCtx[i]->pipeline, appCtx[i]->config);
+      if (!s.ok()) {
+        std::cerr << s << std::endl;
+        g_print("\npipeline post-configuration failed.\n");
+        return absl::InternalError("pipeline post-configuration failed");
       }
+      if (gst_element_set_state(appCtx[i]->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+        g_print("\ncan't set pipeline to playing state.\n");
+        return absl::InternalError("can't set pipeline to playing state");
+      }
+#if 1
+      hm::save_dot_file(appCtx[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_running");
+#endif
+      if (appCtx[i]->config.pipeline_recreate_sec)
+        g_timeout_add_seconds(
+            appCtx[i]->config.pipeline_recreate_sec, recreate_pipeline_thread_func_static, appCtx[i].get());
     }
 
     print_runtime_commands();
     changemode(1);
-    g_timeout_add(40, event_thread_func_static, NULL);
+    g_timeout_add(40, event_thread_func_static, nullptr);
     g_main_loop_run(main_loop);
     changemode(0);
 
-  done:
-    g_print("Quitting\n");
-    for (i = 0; i < num_instances; i++) {
-      if (!appCtx[i])
-        continue;
-      if (appCtx[i]->return_value == -1)
-        return_value = -1;
-      destroy_pipeline(appCtx[i].get());
-
-      g_mutex_lock(&disp_lock);
-      if (windows[i])
-        XDestroyWindow(display, windows[i]);
-      windows[i] = 0;
-      g_mutex_unlock(&disp_lock);
-      appCtx[i].reset();
-    }
-
-    g_mutex_lock(&disp_lock);
-    if (display)
-      XCloseDisplay(display);
-    display = NULL;
-    g_mutex_unlock(&disp_lock);
-    g_mutex_clear(&disp_lock);
-
-    if (main_loop)
-      g_main_loop_unref(main_loop);
-
-    if (ctx)
-      g_option_context_free(ctx);
-
-    if (return_value == 0)
+    // After the main loop exits, if any instance flagged an error then update status.
+    if (return_value != 0)
+      status = absl::InternalError("App run failed");
+    else
       g_print("App run successful\n");
-    else {
-      status.Update(absl::InternalError("App run failed"));
-    }
 
-    gst_deinit();
-
+    // gst_deinit();
     return status;
   }
 
@@ -394,21 +391,19 @@ class PipelineApplication {
   // Callback and helper functions (mostly static, calling member functions)
   //--------------------------------------------------------------------------
 
-  // all_bbox_generated callback (does not depend on globals)
   static void all_bbox_generated(AppCtx* appCtx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index) {
     guint num_male = 0;
     guint num_female = 0;
     guint num_objects[128];
     memset(num_objects, 0, sizeof(num_objects));
 
-    for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
-      NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)l_frame->data;
-      for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
-        NvDsObjectMeta* obj = (NvDsObjectMeta*)l_obj->data;
-        if (obj->unique_component_id == (gint)appCtx->config.primary_gie_config.unique_id) {
-          if (obj->class_id >= 0 && obj->class_id < 128) {
+    for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != nullptr; l_frame = l_frame->next) {
+      NvDsFrameMeta* frame_meta = reinterpret_cast<NvDsFrameMeta*>(l_frame->data);
+      for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != nullptr; l_obj = l_obj->next) {
+        NvDsObjectMeta* obj = reinterpret_cast<NvDsObjectMeta*>(l_obj->data);
+        if (obj->unique_component_id == static_cast<gint>(appCtx->config.primary_gie_config.unique_id)) {
+          if (obj->class_id >= 0 && obj->class_id < 128)
             num_objects[obj->class_id]++;
-          }
           if (appCtx->person_class_id > -1 && obj->class_id == appCtx->person_class_id) {
             if (strstr(obj->text_params.display_text, "Man")) {
               str_replace(obj->text_params.display_text, "Man", "");
@@ -425,7 +420,6 @@ class PipelineApplication {
     }
   }
 
-  // Signal interrupt handler (wrapped as static)
   static void _intr_handler(int signum) {
     if (instance_)
       instance_->handle_intr(signum);
@@ -435,17 +429,16 @@ class PipelineApplication {
     struct sigaction action;
     memset(&action, 0, sizeof(action));
     action.sa_handler = SIG_DFL;
-    sigaction(SIGINT, &action, NULL);
+    sigaction(SIGINT, &action, nullptr);
     cintr = TRUE;
   }
   void _intr_setup() {
     struct sigaction action;
     memset(&action, 0, sizeof(action));
     action.sa_handler = _intr_handler;
-    sigaction(SIGINT, &action, NULL);
+    sigaction(SIGINT, &action, nullptr);
   }
 
-  // Performance callback (updated signature returns void)
   static void perf_cb_static(gpointer context, NvDsAppPerfStruct* str) {
     if (instance_)
       instance_->perf_cb(context, str);
@@ -453,7 +446,7 @@ class PipelineApplication {
   void perf_cb(gpointer context, NvDsAppPerfStruct* str) {
     static guint header_print_cnt = 0;
     guint i;
-    AppCtx* appCtx = (AppCtx*)context;
+    AppCtx* appCtx = reinterpret_cast<AppCtx*>(context);
     guint numf = str->num_instances;
 
     g_mutex_lock(&fps_lock);
@@ -475,7 +468,6 @@ class PipelineApplication {
       g_print("PERF(%d): ", appCtx->index);
     else
       g_print("**PERF:  ");
-
     for (i = 0; i < numf; i++) {
       g_print("%.2f (%.2f)\t", fps[i], fps_avg[i]);
     }
@@ -483,7 +475,6 @@ class PipelineApplication {
     g_mutex_unlock(&fps_lock);
   }
 
-  // Check for interrupt (used by g_timeout_add)
   static gboolean check_for_interrupt_static(gpointer data) {
     if (instance_)
       return instance_->check_for_interrupt();
@@ -502,7 +493,6 @@ class PipelineApplication {
     return TRUE;
   }
 
-  // Simple kbhit() and changemode()
   static gboolean kbhit() {
     struct timeval tv;
     fd_set rdfs;
@@ -510,7 +500,7 @@ class PipelineApplication {
     tv.tv_usec = 0;
     FD_ZERO(&rdfs);
     FD_SET(STDIN_FILENO, &rdfs);
-    select(STDIN_FILENO + 1, &rdfs, NULL, NULL, &tv);
+    select(STDIN_FILENO + 1, &rdfs, nullptr, nullptr, &tv);
     return FD_ISSET(STDIN_FILENO, &rdfs);
   }
   static void changemode(int dir) {
@@ -524,7 +514,6 @@ class PipelineApplication {
       tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
   }
 
-  // Print runtime commands
   void print_runtime_commands() {
     g_print(
         "\nRuntime commands:\n"
@@ -540,7 +529,6 @@ class PipelineApplication {
     }
   }
 
-  // Event thread callback (keyboard and pipeline events)
   static gboolean event_thread_func_static(gpointer arg) {
     if (instance_)
       return instance_->event_thread_func();
@@ -550,7 +538,7 @@ class PipelineApplication {
     guint i;
     gboolean ret = TRUE;
 
-    // Check if all instances have quit
+    // Check if all instances have quit.
     for (i = 0; i < num_instances; i++) {
       if (appCtx[i] && !appCtx[i]->quit)
         break;
@@ -561,16 +549,15 @@ class PipelineApplication {
         g_main_loop_quit(main_loop);
       return FALSE;
     }
-    // Check for keyboard input
     if (!kbhit())
       return TRUE;
     int c = fgetc(stdin);
     g_print("\n");
 
     gint source_id = -1;
-    GstElement* tiler = (appCtx[rcfg]) ? appCtx[rcfg]->pipeline.tiled_display_bin.tiler : NULL;
+    GstElement* tiler = (appCtx[rcfg]) ? appCtx[rcfg]->pipeline.tiled_display_bin.tiler : nullptr;
     if (appCtx[rcfg] && appCtx[rcfg]->config.tiled_display_config.enable && tiler) {
-      g_object_get(G_OBJECT(tiler), "show-source", &source_id, NULL);
+      g_object_get(G_OBJECT(tiler), "show-source", &source_id, nullptr);
       if (selecting) {
         if (!rrowsel) {
           if (c >= '0' && c <= '9') {
@@ -591,12 +578,12 @@ class PipelineApplication {
               rrowsel = FALSE;
               source_id = tile_num_columns * rrow + rcol;
               g_print("--selecting source  col %d sou=%d--\n", rcol, source_id);
-              if (source_id >= (gint)appCtx[rcfg]->config.num_source_sub_bins) {
+              if (source_id >= (gint)appCtx[rcfg]->config.num_source_sub_bins)
                 source_id = -1;
-              } else {
+              else {
                 appCtx[rcfg]->show_bbox_text = TRUE;
                 appCtx[rcfg]->active_source_index = source_id;
-                g_object_set(G_OBJECT(tiler), "show-source", source_id, NULL);
+                g_object_set(G_OBJECT(tiler), "show-source", source_id, nullptr);
               }
             } else {
               g_print("--selected source  col %d out of bound, reenter\n", rcol);
@@ -631,9 +618,9 @@ class PipelineApplication {
           c = fgetc(stdin);
           if (c >= '0' && c <= '9') {
             rcfg = c - '0';
-            if (rcfg < num_instances) {
+            if (rcfg < num_instances)
               g_print("--selecting config  %d--\n", rcfg);
-            } else {
+            else {
               g_print("--selected config file %d out of bound, reenter\n", rcfg);
               rcfg = 0;
             }
@@ -648,7 +635,7 @@ class PipelineApplication {
           if (!show_bbox_text && appCtx[rcfg])
             appCtx[rcfg]->show_bbox_text = FALSE;
           if (tiler)
-            g_object_set(G_OBJECT(tiler), "show-source", -1, NULL);
+            g_object_set(G_OBJECT(tiler), "show-source", -1, nullptr);
           if (appCtx[rcfg])
             appCtx[rcfg]->active_source_index = -1;
           selecting = FALSE;
@@ -662,22 +649,20 @@ class PipelineApplication {
     return ret;
   }
 
-  // Helper to get source id from coordinates
   static int get_source_id_from_coordinates(float x_rel, float y_rel, AppCtx* appCtx) {
     int tile_num_rows = appCtx->config.tiled_display_config.rows;
     int tile_num_columns = appCtx->config.tiled_display_config.columns;
-    int source_id = (int)(x_rel * tile_num_columns);
-    source_id += ((int)(y_rel * tile_num_rows)) * tile_num_columns;
+    int source_id = static_cast<int>(x_rel * tile_num_columns);
+    source_id += (static_cast<int>(y_rel * tile_num_rows)) * tile_num_columns;
     if (source_id >= (gint)appCtx->config.num_source_sub_bins)
       source_id = -1;
     return source_id;
   }
 
-  // X event thread callback
   static gpointer nvds_x_event_thread_static(gpointer data) {
     if (instance_)
       return instance_->nvds_x_event_thread();
-    return NULL;
+    return nullptr;
   }
   gpointer nvds_x_event_thread() {
     g_mutex_lock(&disp_lock);
@@ -698,24 +683,22 @@ class PipelineApplication {
             for (index = 0; index < num_instances; index++)
               if (ev.window == windows[index])
                 break;
-            if (index < num_instances && appCtx[index])
-              tiler = appCtx[index]->pipeline.tiled_display_bin.tiler;
-            else
-              tiler = NULL;
+            tiler =
+                (index < num_instances && appCtx[index]) ? appCtx[index]->pipeline.tiled_display_bin.tiler : nullptr;
             if (ev.button == Button1 && source_id == -1 && (index < num_instances)) {
               if (appCtx[index])
                 source_id = get_source_id_from_coordinates(
-                    ev.x * 1.0 / win_attr.width, ev.y * 1.0 / win_attr.height, appCtx[index].get());
+                    ev.x * 1.0f / win_attr.width, ev.y * 1.0f / win_attr.height, appCtx[index].get());
               else
                 source_id = -1;
               if (source_id > -1 && tiler) {
-                g_object_set(G_OBJECT(tiler), "show-source", source_id, NULL);
+                g_object_set(G_OBJECT(tiler), "show-source", source_id, nullptr);
                 appCtx[index]->active_source_index = source_id;
                 appCtx[index]->show_bbox_text = TRUE;
               }
             } else if (ev.button == Button3) {
               if (tiler)
-                g_object_set(G_OBJECT(tiler), "show-source", -1, NULL);
+                g_object_set(G_OBJECT(tiler), "show-source", -1, nullptr);
               if (appCtx[index])
                 appCtx[index]->active_source_index = -1;
             }
@@ -764,10 +747,9 @@ class PipelineApplication {
       g_mutex_lock(&disp_lock);
     }
     g_mutex_unlock(&disp_lock);
-    return NULL;
+    return nullptr;
   }
 
-  // Overlay graphics callback
   static gboolean overlay_graphics_static(AppCtx* appCtx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index) {
     return instance_ ? instance_->overlay_graphics(appCtx, buf, batch_meta, index) : TRUE;
   }
@@ -775,7 +757,7 @@ class PipelineApplication {
     int srcIndex = appCtx->active_source_index;
     if (srcIndex == -1)
       return TRUE;
-    NvDsFrameLatencyInfo* latency_info = NULL;
+    NvDsFrameLatencyInfo* latency_info = nullptr;
     NvDsDisplayMeta* display_meta = nvds_acquire_display_meta_from_pool(batch_meta);
 
     display_meta->num_labels = 1;
@@ -804,31 +786,27 @@ class PipelineApplication {
       display_meta->text_params[1].set_bg_clr = 1;
       display_meta->text_params[1].text_bg_clr = (NvOSD_ColorParams){0, 0, 0, 1.0};
     }
-
     nvds_add_display_meta_to_frame(nvds_get_nth_frame_meta(batch_meta->frame_meta_list, 0), display_meta);
     return TRUE;
   }
 
-  // Pipeline recreation callback
   static gboolean recreate_pipeline_thread_func_static(gpointer arg) {
     return instance_ ? instance_->recreate_pipeline_thread_func(arg) : FALSE;
   }
   gboolean recreate_pipeline_thread_func(gpointer arg) {
     guint i;
     gboolean ret = TRUE;
-    AppCtx* appCtx_ptr = (AppCtx*)arg;
+    AppCtx* appCtx_ptr = reinterpret_cast<AppCtx*>(arg);
     g_print("Destroy pipeline\n");
     destroy_pipeline(appCtx_ptr);
     g_print("Recreate pipeline\n");
-    if (!create_pipeline(appCtx_ptr, NULL, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
+    if (!create_pipeline(appCtx_ptr, nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
       NVGSTDS_ERR_MSG_V("Failed to create pipeline");
-      return_value = -1;
-      return FALSE;
+      return absl::InternalError("Failed to create pipeline").raw_code();
     }
     if (gst_element_set_state(appCtx_ptr->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
       NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
-      return_value = -1;
-      return FALSE;
+      return absl::InternalError("Failed to set pipeline to PAUSED").raw_code();
     }
     for (i = 0; i < appCtx_ptr->config.num_sink_sub_bins; i++) {
       if (!GST_IS_VIDEO_OVERLAY(appCtx_ptr->pipeline.instance_bins[0].sink_bin.sub_bins[i].sink))
@@ -840,15 +818,14 @@ class PipelineApplication {
     }
     if (gst_element_set_state(appCtx_ptr->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
       g_print("\ncan't set pipeline to playing state.\n");
-      return_value = -1;
-      return FALSE;
+      return absl::InternalError("can't set pipeline to playing state").raw_code();
     }
     return ret;
   }
 
  private:
-  // Member variables (formerly globals)
-  std::vector<std::unique_ptr<HmApp>> appCtx; // Replaced fixed array with vector
+  // Member variables.
+  std::vector<std::unique_ptr<HmApp>> appCtx;
   guint cintr;
   GMainLoop* main_loop;
   gchar** cfg_files;
@@ -867,7 +844,7 @@ class PipelineApplication {
   gdouble fps[MAX_SOURCE_BINS];
   gdouble fps_avg[MAX_SOURCE_BINS];
   Display* display;
-  std::vector<Window> windows; // Replaced fixed array with vector
+  std::vector<Window> windows;
   GThread* x_event_thread;
   GMutex disp_lock;
   guint rrow, rcol, rcfg;
@@ -888,7 +865,7 @@ PipelineApplication* PipelineApplication::instance_ = nullptr;
 //
 int main(int argc, char* argv[]) {
   PipelineApplication app;
-  auto status = app.run(argc, argv);
+  absl::Status status = app.run(argc, argv);
   disable_perf_measurement();
   if (!status.ok()) {
     std::cerr << status << std::endl;
