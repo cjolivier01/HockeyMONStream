@@ -160,15 +160,14 @@ class PipelineApplication {
       return absl::InternalError("Specify config file with -c option");
     }
 
-    // Resize our vectors to hold exactly num_instances elements.
+    // Create and initialize each HmApp instance.
     appCtx.resize(num_instances);
     windows.resize(num_instances, 0);
 
-    // Create and initialize each HmApp instance.
     for (guint i = 0; i < num_instances; i++) {
       appCtx[i] = std::make_unique<HmApp>(game_id ? *game_id : "");
       appCtx[i]->person_class_id = -1;
-      appCtx[i]->car_class_id = -1;
+      apCtx[i]->car_class_id = -1;
       appCtx[i]->index = i;
       appCtx[i]->active_source_index = -1;
       if (show_bbox_text)
