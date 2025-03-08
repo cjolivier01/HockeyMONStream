@@ -162,6 +162,7 @@ absl::Status PipelineApplication::createPipelines(
 
 absl::Status PipelineApplication::createMainLoop(
     std::vector<std::shared_ptr<HmApp>>& app_contexts,
+    std::map<int, Window>& windows,
     CleanupStack& cleanup_stack) {
   // Section 3: Create main loop and initialize display/windows.
   main_loop_ = g_main_loop_new(nullptr, FALSE);
@@ -219,7 +220,8 @@ absl::Status PipelineApplication::createMainLoop(
       hints.width = width;
       hints.height = height;
 
-      windows_.emplace_back(XCreateSimpleWindow(
+      assert(!windows.count(i));
+      windows[i] = XCreateSimpleWindow(
           display_,
           RootWindow(display_, DefaultScreen(display_)),
           hints.x,
@@ -228,14 +230,14 @@ absl::Status PipelineApplication::createMainLoop(
           height,
           2,
           0x00000000,
-          0x00000000));
+          0x00000000);
 
-      XSetNormalHints(display_, windows_[i], &hints);
+      XSetNormalHints(display_, windows[i], &hints);
 
       gchar* title = (app_contexts.size() > 1) ? g_strdup_printf(APP_TITLE "-%d", i) : g_strdup(APP_TITLE);
       XTextProperty xproperty;
       if (XStringListToTextProperty((char**)&title, 1, &xproperty) != 0) {
-        XSetWMName(display_, windows_[i], &xproperty);
+        XSetWMName(display_, windows[i], &xproperty);
         XFree(xproperty.value);
       }
 
@@ -247,16 +249,16 @@ absl::Status PipelineApplication::createMainLoop(
         attr.event_mask = KeyPress;
       else if (app_contexts[i]->config.tiled_display_config.enable)
         attr.event_mask = ButtonPress | KeyRelease;
-      XChangeWindowAttributes(display_, windows_[i], CWEventMask, &attr);
+      XChangeWindowAttributes(display_, windows[i], CWEventMask, &attr);
 
       Atom wmDeleteMessage = XInternAtom(display_, "WM_DELETE_WINDOW", False);
       if (wmDeleteMessage != None)
-        XSetWMProtocols(display_, windows_[i], &wmDeleteMessage, 1);
+        XSetWMProtocols(display_, windows[i], &wmDeleteMessage, 1);
 
-      XMapRaised(display_, windows_[i]);
+      XMapRaised(display_, windows[i]);
       XSync(display_, 1);
       gst_video_overlay_set_window_handle(
-          GST_VIDEO_OVERLAY(app_contexts[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink), (gulong)windows_[i]);
+          GST_VIDEO_OVERLAY(app_contexts[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink), (gulong)windows[i]);
       gst_video_overlay_expose(GST_VIDEO_OVERLAY(app_contexts[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink));
 
       if (!x_event_thread_)
@@ -275,17 +277,17 @@ absl::Status PipelineApplication::createMainLoop(
     }
 #endif
   }
-  cleanup_stack.push([this, contexts = app_contexts]() mutable -> void {
+  cleanup_stack.push([this, contexts = app_contexts, windows = windows]() mutable -> void {
     for (guint i = 0; i < contexts.size(); i++) {
       if (contexts[i]) {
         if (contexts[i]->return_value == -1)
           return_value_ = -1;
         destroy_pipeline(contexts[i].get());
         g_mutex_lock(&disp_lock_);
-        if (windows_[i]) {
-          XDestroyWindow(display_, windows_[i]);
+        if (windows[i]) {
+          XDestroyWindow(display_, windows[i]);
         }
-        windows_[i] = 0;
+        windows[i] = 0;
         g_mutex_unlock(&disp_lock_);
         contexts[i].reset();
       }
@@ -446,7 +448,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     {
       CleanupStack stage_cleanup_stack;
       HM_RETURN_IF_ERROR(createPipelines(app_contexts, stage_cleanup_stack));
-      HM_RETURN_IF_ERROR(createMainLoop(app_contexts, stage_cleanup_stack));
+      HM_RETURN_IF_ERROR(createMainLoop(app_contexts, stage_windows_[current_stage_], stage_cleanup_stack));
       HM_RETURN_IF_ERROR(playPipelines(app_contexts, stage_cleanup_stack));
     }
     HM_RETURN_IF_ERROR(waitForPipelinesStopped(app_contexts));
@@ -766,7 +768,7 @@ gpointer PipelineApplication::nvds_x_event_thread() {
           memset(&win_attr, 0, sizeof(XWindowAttributes));
           XGetWindowAttributes(display_, ev.window, &win_attr);
           for (index = 0; index < app_ctx.size(); index++)
-            if (ev.window == windows_[index])
+            if (ev.window == stage_windows_.at(current_stage_)[index])
               break;
           tiler =
               (index < app_ctx.size() && app_ctx[index]) ? app_ctx[index]->pipeline.tiled_display_bin.tiler : nullptr;
@@ -816,7 +818,7 @@ gpointer PipelineApplication::nvds_x_event_thread() {
         case ClientMessage: {
           Atom wm_delete;
           for (index = 0; index < app_ctx.size(); index++)
-            if (e.xclient.window == windows_[index])
+            if (e.xclient.window == stage_windows_.at(current_stage_)[index])
               break;
           wm_delete = XInternAtom(display_, "WM_DELETE_WINDOW", 1);
           if (wm_delete != None && wm_delete == (Atom)e.xclient.data.l[0]) {
@@ -908,7 +910,7 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
       continue;
     gst_video_overlay_set_window_handle(
         GST_VIDEO_OVERLAY(app_ctx_ptr->pipeline.instance_bins[0].sink_bin.sub_bins[i].sink),
-        (gulong)windows_[app_ctx_ptr->index]);
+        (gulong)stage_windows_.at(current_stage_)[app_ctx_ptr->index]);
     gst_video_overlay_expose(GST_VIDEO_OVERLAY(app_ctx_ptr->pipeline.instance_bins[0].sink_bin.sub_bins[i].sink));
   }
   if (gst_element_set_state(app_ctx_ptr->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {

@@ -78,7 +78,7 @@ class PipelineApplication {
   // Helper functions for pipeline initialization and execution.
   absl::Status initializeInstances(CleanupStack& cleanup_stack);
   absl::Status createPipelines(std::vector<std::shared_ptr<HmApp>>& app_contexts, CleanupStack& cleanup_stack) const;
-  absl::Status createMainLoop(std::vector<std::shared_ptr<HmApp>>& app_contexts, CleanupStack& cleanup_stack);
+  absl::Status createMainLoop(std::vector<std::shared_ptr<HmApp>>& app_contexts, std::map<int, Window>& windows, CleanupStack& cleanup_stack);
   absl::Status playPipelines(std::vector<std::shared_ptr<HmApp>>& app_contexts, CleanupStack& cleanup_stack) const;
   absl::Status waitForPipelinesStopped(std::vector<std::shared_ptr<HmApp>>& app_contexts) const;
 
@@ -107,6 +107,8 @@ class PipelineApplication {
  private:
   // std::vector<std::unique_ptr<HmApp>> app_ctx_;
   std::map<long, std::vector<std::shared_ptr<HmApp>>> stage_app_contexts_;
+  std::map<long, std::map</*instance_number=*/int, Window>> stage_windows_;
+
   long current_stage_{0};
   guint cintr_;
   GMainLoop* main_loop_;
@@ -126,7 +128,6 @@ class PipelineApplication {
   gdouble fps_[MAX_SOURCE_BINS];
   gdouble fps_avg_[MAX_SOURCE_BINS];
   Display* display_;
-  std::vector<Window> windows_;
   GThread* x_event_thread_;
   GMutex disp_lock_;
   guint rrow_, rcol_, rcfg_;
