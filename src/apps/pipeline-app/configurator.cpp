@@ -1,4 +1,5 @@
 #include "configurator.h"
+#include "PipelineApp.h"
 #include "cupano/pano/controlMasks.h"
 #include "deepstream_app.h"
 
@@ -307,6 +308,16 @@ absl::Status Configurator::complete_configuration(bool force) {
   // Stitching config mask config dir
   fs::path game_dir = get_game_dir(game_id_);
 
+  // Quick out if we want to configure stitching and it's already configured
+  if (get_node_value(pipeline, "hmstitcher.enable", FALSE) &&
+      get_node_value(pipeline, "hmstitcher.configure-only", FALSE)) {
+    bool is_configured;
+    HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(game_dir));
+    if (is_configured && !force) {
+      return absl::CancelledError("Stitching is already configured.");
+    }
+  }
+
   pipeline["hmstitcher"]["config-file"] = std::string(game_dir);
 
   pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / kRinkMaskFilename);
@@ -424,7 +435,7 @@ absl::Status Configurator::complete_configuration(bool force) {
       double rfo = offsets["right"].as<double>(); // this is decimal frames
       set_stream_offsets_ |= rfo != 0.0;
       pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / right_info.fps * GST_SECOND));
-      if (right_info.width * right_info.height > area) {
+      if (right_info.width * right_info.height > (long)area) {
         ww = right_info.width;
         hh = right_info.height;
       }
@@ -457,17 +468,6 @@ absl::Status Configurator::complete_configuration(bool force) {
     pipeline["hmplaycropper"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
     pipeline["hmplaycropper"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
   }
-
-  // auto tiled_display_wh = resize_to_fit(
-  //     pipeline["hmplaycropper"]["output-width"].as<int>(),
-  //     pipeline["hmplaycropper"]["output-height"].as<int>(),
-  //     kMaxUdpStreamingWidth,
-  //     kMaxUdpStreamingHeight);
-  // pipeline["tiled-display"]["width"] = std::get<0>(tiled_display_wh);
-  // pipeline["tiled-display"]["height"] = std::get<1>(tiled_display_wh);
-
-  // pipeline["tiled-display"]["width"] = pipeline["hmplaycropper"]["output-width"];
-  // pipeline["tiled-display"]["height"] = pipeline["hmplaycropper"]["output-height"];
 
   if (area) {
     // Set streammux size
@@ -541,7 +541,6 @@ absl::Status Configurator::complete_configuration(bool force) {
   //
   // If RTSP server is active, we may need to downscale
   //
-
   if (true) {
     std::set<std::string> all_enabled;
     for (const auto& item : pipeline) {

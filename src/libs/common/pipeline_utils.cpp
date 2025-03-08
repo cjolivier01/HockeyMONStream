@@ -6,6 +6,8 @@
 #include <vector>
 
 #include <opencv2/opencv.hpp>
+#include "absl/strings/str_split.h"
+
 namespace hm {
 
 Videoinfo getVideoInfo(const std::string& videoPath) {
@@ -59,7 +61,7 @@ bool has_node(const YAML::Node& n, const std::string& dot_string, bool non_null)
   return non_null ? !current->IsNull() : true;
 }
 
-std::optional<YAML::Node> get_node(YAML::Node& n, const std::string& dot_string) {
+std::optional<YAML::Node> get_node(const YAML::Node& n, const std::string& dot_string) {
   if (dot_string.empty()) {
     return n;
   }

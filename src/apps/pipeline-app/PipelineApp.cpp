@@ -92,9 +92,8 @@ PipelineApplication::~PipelineApplication() {
 
 absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_stack*/) {
   // Section 1: Create and initialize each HmApp instance.
-  size_t i = 0;
-  // for (guint i = 0; i < num_instances_; i++) {
-  while (cfg_files_[i]) {
+  int i = -1;
+  while (cfg_files_[++i]) {
     auto app_ctx = std::make_unique<HmApp>(game_id_ ? *game_id_ : "");
     // app_ctx = std::make_unique<HmApp>(game_id_ ? *game_id_ : "");
     app_ctx->person_class_id = -1;
@@ -115,7 +114,11 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
         app_ctx->return_value = -1;
         return absl::InternalError("Failed to merge in config file");
       }
-      HM_RETURN_IF_ERROR(app_ctx->complete_configuration(force_reconfigure_));
+      absl::Status configuration_status = app_ctx->complete_configuration(force_reconfigure_);
+      if (configuration_status.code() == absl::StatusCode::kCancelled) {
+        std::cerr << configuration_status;
+        continue;
+      }
       YAML::Node config = app_ctx->configurator().config();
       if (!config["pipeline"].IsDefined() || !parse_config_yaml(config["pipeline"], &app_ctx->config, cfg_files_[i])) {
         NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files_[i]);
@@ -130,7 +133,6 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
       }
     }
     stage_app_contexts_[app_ctx->config.stage].emplace_back(std::move(app_ctx));
-    ++i;
   }
   if (!stage_app_contexts_.empty()) {
     current_stage_ = stage_app_contexts_.begin()->first;
@@ -429,9 +431,6 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     return status;
   }
 
-  // if (cfg_files_) {
-  //   num_instances_ = g_strv_length(cfg_files_);
-  // }
   if (input_uris_) {
     num_input_uris_ = g_strv_length(input_uris_);
   }
