@@ -139,7 +139,7 @@ struct NvDsHmVideoPrepBin {
   GstElement* nvvideoprep;
 };
 
-gboolean create_hmvideoprep_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBin* bin);
+gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBin* bin);
 
 /**
  *   _____ _   _  _        _

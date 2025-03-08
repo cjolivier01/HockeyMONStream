@@ -72,7 +72,7 @@ gboolean parse_tracker_yaml(NvDsTrackerConfig* config, const gchar* cfg_file_pat
 
 gboolean parse_gie_yaml(NvDsGieConfig* config, std::string group, const gchar* cfg_file_path);
 
-gboolean parse_hmvideoprep_yaml(NvDsHmVideoPrepConfig* config, std::string group, const gchar* cfg_file_path);
+gboolean parse_hmplaycropper_yaml(NvDsHmVideoPrepConfig* config, std::string group, const gchar* cfg_file_path);
 
 gboolean parse_preprocess_yaml(NvDsPreProcessConfig* config, const gchar* cfg_file_path);
 

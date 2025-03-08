@@ -449,25 +449,25 @@ absl::Status Configurator::complete_configuration(bool force) {
       pipeline["hmstitcher"]["output-height"] = std::to_string(canvas_height);
       constexpr double ar = 16.0 / 9.0;
       auto wh_tuple = maybe_scale_down(static_cast<long>(ar * canvas_height), canvas_height);
-      pipeline["hmvideoprep"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
-      pipeline["hmvideoprep"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
+      pipeline["hmplaycropper"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
+      pipeline["hmplaycropper"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
     }
   } else {
     auto wh_tuple = maybe_scale_down(ww, hh);
-    pipeline["hmvideoprep"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
-    pipeline["hmvideoprep"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
+    pipeline["hmplaycropper"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
+    pipeline["hmplaycropper"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
   }
 
   // auto tiled_display_wh = resize_to_fit(
-  //     pipeline["hmvideoprep"]["output-width"].as<int>(),
-  //     pipeline["hmvideoprep"]["output-height"].as<int>(),
+  //     pipeline["hmplaycropper"]["output-width"].as<int>(),
+  //     pipeline["hmplaycropper"]["output-height"].as<int>(),
   //     kMaxUdpStreamingWidth,
   //     kMaxUdpStreamingHeight);
   // pipeline["tiled-display"]["width"] = std::get<0>(tiled_display_wh);
   // pipeline["tiled-display"]["height"] = std::get<1>(tiled_display_wh);
 
-  // pipeline["tiled-display"]["width"] = pipeline["hmvideoprep"]["output-width"];
-  // pipeline["tiled-display"]["height"] = pipeline["hmvideoprep"]["output-height"];
+  // pipeline["tiled-display"]["width"] = pipeline["hmplaycropper"]["output-width"];
+  // pipeline["tiled-display"]["height"] = pipeline["hmplaycropper"]["output-height"];
 
   if (area) {
     // Set streammux size

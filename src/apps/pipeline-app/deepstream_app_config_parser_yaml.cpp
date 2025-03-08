@@ -89,7 +89,7 @@ gboolean parse_dsfieldmask_yaml(
   return true;
 }
 
-gboolean parse_hmvideoprep_yaml(
+gboolean parse_hmplaycropper_yaml(
     NvDsHmVideoPrepConfig* config,
     const YAML::Node& yaml_node,
     const std::string& config_path) {
@@ -119,7 +119,7 @@ gboolean parse_hmvideoprep_yaml(
 }
 
 gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_node, const std::string& config_path) {
-  if (!parse_hmvideoprep_yaml(config, yaml_node, config_path)) {
+  if (!parse_hmplaycropper_yaml(config, yaml_node, config_path)) {
     return false;
   }
   hm::utils::ConfigLocator locator;
@@ -497,15 +497,15 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
        * it will override the value set using global_gpu_id in parse_playtracker_yaml function */
       parse_err = !parse_dsplaytracker_yaml(
           &config->dsplaytracker_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
-    } else if (paramKey == "hmvideoprep") {
+    } else if (paramKey == "hmplaycropper") {
       /** set gpu_id for dsexample component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {
-        config->hmvideoprep_config.gpu_id = config->global_gpu_id;
+        config->hmplaycropper_config.gpu_id = config->global_gpu_id;
       }
       /** if gpu_id for dsexample component is present,
        * it will override the value set using global_gpu_id in parse_playtracker_yaml function */
-      parse_err = !parse_hmvideoprep_yaml(
-          &config->hmvideoprep_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
+      parse_err = !parse_hmplaycropper_yaml(
+          &config->hmplaycropper_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
     } else if (paramKey == "hm-image-meta-merger") {
       /** set gpu_id for dsexample component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {

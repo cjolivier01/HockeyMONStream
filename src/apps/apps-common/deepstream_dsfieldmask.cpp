@@ -535,7 +535,7 @@ done:
  *                                                 | |
  *                                                 |_|
  */
-gboolean create_hmvideoprep_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBin* bin) {
+gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBin* bin) {
   gboolean ret = FALSE;
   std::stringstream ppc;
 

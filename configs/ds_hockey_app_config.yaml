@@ -246,7 +246,7 @@ hmaudio0:
 
 
 osd:
-  enable: 0
+  enable: 1
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -351,8 +351,8 @@ ds-example:
   processing-width: 1312
   processing-height: 480
 
-hmvideoprep:
-  enable: 1
+hmplaycropper:
+  enable: 0
   gpu-id: 0
   # plugin-type: videoprep
   # has_queue: false
@@ -402,7 +402,7 @@ ds-playtracker:
   config-file: play_tracker_config.yaml
 
 ds-fieldmask:
-  enable: 1
+  enable: 0
   gpu-id: 0
   unique-id: 76
   # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png

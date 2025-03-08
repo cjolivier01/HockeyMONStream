@@ -61,7 +61,7 @@ typedef struct {
   GstElement* msg_conv;
 
   // BEGIN tee off downsampled streammux
-  NvDsHmVideoPrepBin hmvideoprep_bin;
+  NvDsHmVideoPrepBin hmplaycropper_bin;
   // END tee off downsampled streammux
 
   NvDsPreProcessBin preprocess_bin;
@@ -140,7 +140,7 @@ struct NvDsConfig {
   NvDsDsAnalyticsConfig dsanalytics_config;
   NvDsDsExampleConfig dsexample_config;
   NvDsHmImageMetaMergerConfig hmimagemetamerger_config;
-  NvDsHmVideoPrepConfig hmvideoprep_config;
+  NvDsHmVideoPrepConfig hmplaycropper_config;
   NvDsDsFieldMaskConfig dsfieldmask_config;
   HmStitcherConfig hmsticher_config;
   NvDsDsPlayTrackerConfig dsplaytracker_config;
