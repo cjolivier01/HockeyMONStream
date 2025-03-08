@@ -77,6 +77,7 @@ class PipelineApplication {
 
   // Helper functions for pipeline initialization and execution.
   absl::Status initializeInstances(CleanupStack& cleanup_stack);
+  absl::Status configureInstances(std::vector<std::shared_ptr<HmApp>>& app_contexts, CleanupStack& cleanup_stack);
   absl::Status createPipelines(std::vector<std::shared_ptr<HmApp>>& app_contexts, CleanupStack& cleanup_stack) const;
   absl::Status createMainLoop(std::vector<std::shared_ptr<HmApp>>& app_contexts, std::map<int, Window>& windows, CleanupStack& cleanup_stack);
   absl::Status playPipelines(std::vector<std::shared_ptr<HmApp>>& app_contexts, CleanupStack& cleanup_stack) const;

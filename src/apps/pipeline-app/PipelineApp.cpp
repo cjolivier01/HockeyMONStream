@@ -107,7 +107,6 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
       g_free(input_uris_[i]);
     }
     app_ctx->load_config();
-
     if (g_str_has_suffix(cfg_files_[i], ".yml") || g_str_has_suffix(cfg_files_[i], ".yaml")) {
       if (!app_ctx->underlay_config("pipeline", cfg_files_[i])) {
         NVGSTDS_ERR_MSG_V("Failed to merge in config file '%s'", cfg_files_[i]);
@@ -137,6 +136,26 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
   if (!stage_app_contexts_.empty()) {
     current_stage_ = stage_app_contexts_.begin()->first;
   }
+  return absl::OkStatus();
+}
+
+absl::Status PipelineApplication::configureInstances(
+    std::vector<std::shared_ptr<HmApp>>& app_contexts,
+    CleanupStack& cleanup_stack) {
+  // // Section 1: Create and initialize each HmApp instance.
+  // int i = -1;
+  // for (guint i = 0; i < app_contexts.size(); i++) {
+  //   auto& app_ctx = app_contexts[i];
+  //   // Reconfigure
+  //   HM_RETURN_IF_ERROR(app_ctx->complete_configuration(force_reconfigure_));
+  //   // Reload config into config structs
+  //   YAML::Node config = app_ctx->configurator().config();
+  //   if (!config["pipeline"].IsDefined() || !parse_config_yaml(config["pipeline"], &app_ctx->config, cfg_files_[i])) {
+  //     NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files_[i]);
+  //     app_ctx->return_value = -1;
+  //     return absl::InternalError("Failed to parse config file");
+  //   }
+  // }
   return absl::OkStatus();
 }
 
@@ -446,6 +465,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     auto& app_contexts = stage_app_contexts_.at(current_stage_);
     {
       CleanupStack stage_cleanup_stack;
+      HM_RETURN_IF_ERROR(configureInstances(app_contexts, stage_cleanup_stack));
       HM_RETURN_IF_ERROR(createPipelines(app_contexts, stage_cleanup_stack));
       HM_RETURN_IF_ERROR(createMainLoop(app_contexts, stage_windows_[current_stage_], stage_cleanup_stack));
       HM_RETURN_IF_ERROR(playPipelines(app_contexts, stage_cleanup_stack));
