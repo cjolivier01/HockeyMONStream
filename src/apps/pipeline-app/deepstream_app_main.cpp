@@ -74,317 +74,13 @@ class PipelineApplication {
     g_mutex_clear(&disp_lock);
   }
 
-  // Main run function. All resources are wrapped in RAII cleanup lambdas.
-  absl::Status run(int argc, char* argv[]) {
-    absl::Status status = absl::OkStatus();
-    GError* error = nullptr;
+  // Main run function. Cleanup objects will be declared in run().
+  absl::Status run(int argc, char* argv[]);
 
-    // Build option entries.
-    GOptionEntry entries[] = {
-        {"version", 'v', 0, G_OPTION_ARG_NONE, &print_version, "Print DeepStreamSDK version", nullptr},
-        {"tiledtext", 't', 0, G_OPTION_ARG_NONE, &show_bbox_text, "Display Bounding box labels in tiled mode", nullptr},
-        {"dump-pipeline-dot",
-         'd',
-         0,
-         G_OPTION_ARG_NONE,
-         &dump_pipeline_dot,
-         "Dump graphviz dot file of pipeline",
-         nullptr},
-        {"version-all",
-         0,
-         0,
-         G_OPTION_ARG_NONE,
-         &print_dependencies_version,
-         "Print DeepStreamSDK and dependencies version",
-         nullptr},
-        {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &cfg_files, "Set the config file", nullptr},
-        {"game-id", 'g', 0, G_OPTION_ARG_FILENAME_ARRAY, &game_id, "Game ID", nullptr},
-        {"force-reconfigure", 'f', 0, G_OPTION_ARG_NONE, &force_reconfigure, "Force reconfigure", nullptr},
-        {"input-uri",
-         'i',
-         0,
-         G_OPTION_ARG_FILENAME_ARRAY,
-         &input_uris,
-         "Set the input uri (file://stream or rtsp://stream)",
-         nullptr},
-        {nullptr}};
-
-    // Create and configure the option context.
-    GOptionContext* ctx = g_option_context_new("Nvidia DeepStream Demo");
-    auto cleanup_ctx = absl::MakeCleanup([ctx] {
-      if (ctx) {
-        g_option_context_free(ctx);
-      }
-    });
-    GOptionGroup* group = g_option_group_new("abc", nullptr, nullptr, nullptr, nullptr);
-    g_option_group_add_entries(group, entries);
-    g_option_context_set_main_group(ctx, group);
-    g_option_context_add_group(ctx, gst_init_get_option_group());
-
-    GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
-
-    // Initialize CUDA.
-    int current_device = -1;
-    cudaGetDevice(&current_device);
-    struct cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, current_device);
-
-    if (!g_option_context_parse(ctx, &argc, &argv, &error)) {
-      NVGSTDS_ERR_MSG_V("%s", error->message);
-      return absl::InternalError(error->message);
-    }
-
-    if (print_version) {
-      g_print(
-          "deepstream-app version %d.%d.%d\n", NVDS_APP_VERSION_MAJOR, NVDS_APP_VERSION_MINOR, NVDS_APP_VERSION_MICRO);
-      nvds_version_print();
-      return status;
-    }
-
-    if (print_dependencies_version) {
-      g_print(
-          "deepstream-app version %d.%d.%d\n", NVDS_APP_VERSION_MAJOR, NVDS_APP_VERSION_MINOR, NVDS_APP_VERSION_MICRO);
-      nvds_version_print();
-      nvds_dependencies_version_print();
-      return status;
-    }
-
-    if (cfg_files) {
-      num_instances = g_strv_length(cfg_files);
-    }
-    if (input_uris) {
-      num_input_uris = g_strv_length(input_uris);
-    }
-    if (!cfg_files || num_instances == 0) {
-      NVGSTDS_ERR_MSG_V("Specify config file with -c option");
-      return absl::InternalError("Specify config file with -c option");
-    }
-
-    // Create and initialize each HmApp instance.
-    appCtx.resize(num_instances);
-    windows.resize(num_instances, 0);
-
-    for (guint i = 0; i < num_instances; i++) {
-      appCtx[i] = std::make_unique<HmApp>(game_id ? *game_id : "");
-      appCtx[i]->person_class_id = -1;
-      appCtx[i]->car_class_id = -1;
-      appCtx[i]->index = i;
-      appCtx[i]->active_source_index = -1;
-      if (show_bbox_text)
-        appCtx[i]->show_bbox_text = TRUE;
-      if (input_uris && input_uris[i]) {
-        appCtx[i]->config.multi_source_config[0].uri = g_strdup_printf("%s", input_uris[i]);
-        g_free(input_uris[i]);
-      }
-      appCtx[i]->load_config();
-
-      if (g_str_has_suffix(cfg_files[i], ".yml") || g_str_has_suffix(cfg_files[i], ".yaml")) {
-        if (!appCtx[i]->underlay_config("pipeline", cfg_files[i])) {
-          NVGSTDS_ERR_MSG_V("Failed to merge in config file '%s'", cfg_files[i]);
-          appCtx[i]->return_value = -1;
-          return absl::InternalError("Failed to merge in config file");
-        }
-        HM_RETURN_IF_ERROR(appCtx[i]->complete_configuration(force_reconfigure));
-        YAML::Node config = appCtx[i]->configurator().config();
-        if (!config["pipeline"].IsDefined() ||
-            !parse_config_yaml(config["pipeline"], &appCtx[i]->config, cfg_files[i])) {
-          NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files[i]);
-          appCtx[i]->return_value = -1;
-          return absl::InternalError("Failed to parse config file");
-        }
-      } else if (g_str_has_suffix(cfg_files[i], ".txt")) {
-        if (!parse_config_file(&appCtx[i]->config, cfg_files[i])) {
-          NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files[i]);
-          appCtx[i]->return_value = -1;
-          return absl::InternalError("Failed to parse config file");
-        }
-      }
-    }
-
-    // Create pipelines for each instance.
-    for (guint i = 0; i < num_instances; i++) {
-      if (!create_pipeline(appCtx[i].get(), nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
-        NVGSTDS_ERR_MSG_V("Failed to create pipeline");
-        return absl::InternalError("Failed to create pipeline");
-      }
-      if (dump_pipeline_dot) {
-        std::string s = "pipeline";
-        if (i) {
-          s += '_';
-          s += std::to_string(i);
-        }
-        gst_debug_bin_to_dot_file_with_ts(
-            GST_BIN(appCtx[i]->pipeline.pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "/mnt/data/src/hstream/pipeline.dot");
-      }
-    }
-
-    // Create main loop.
-    main_loop = g_main_loop_new(nullptr, FALSE);
-    auto cleanup_main_loop = absl::MakeCleanup([this] {
-      if (main_loop)
-        g_main_loop_unref(main_loop);
-      main_loop = nullptr;
-    });
-
-    _intr_setup();
-    g_timeout_add(400, check_for_interrupt_static, nullptr);
-
-    g_mutex_init(&disp_lock);
-    display = XOpenDisplay(nullptr);
-    if (!display) {
-      NVGSTDS_ERR_MSG_V("Could not open X Display");
-      return absl::InternalError("Could not open X Display");
-    }
-    auto cleanup_display = absl::MakeCleanup([this] {
-      g_mutex_lock(&disp_lock);
-      if (display)
-        XCloseDisplay(display);
-      display = nullptr;
-      g_mutex_unlock(&disp_lock);
-    });
-
-    // Cleanup pipelines and X windows when leaving run().
-    auto cleanup_pipelines = absl::MakeCleanup([this] {
-      for (guint i = 0; i < num_instances; i++) {
-        if (appCtx[i]) {
-          // Mark overall error if any instance flagged an error.
-          if (appCtx[i]->return_value == -1)
-            return_value = -1;
-          destroy_pipeline(appCtx[i].get());
-          g_mutex_lock(&disp_lock);
-          if (windows[i])
-            XDestroyWindow(display, windows[i]);
-          windows[i] = 0;
-          g_mutex_unlock(&disp_lock);
-          appCtx[i].reset();
-        }
-      }
-      g_mutex_lock(&disp_lock);
-      if (display)
-        XCloseDisplay(display);
-      display = nullptr;
-      g_mutex_unlock(&disp_lock);
-      g_mutex_clear(&disp_lock);
-    });
-
-    // Create X windows and set the pipeline window handles.
-    for (guint i = 0; i < num_instances; i++) {
-#if defined(__aarch64__)
-      if (gst_element_set_state(appCtx[i]->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
-        NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
-        return absl::InternalError("Failed to set pipeline to PAUSED");
-      }
-#endif
-      for (guint j = 0; j < appCtx[i]->config.num_sink_sub_bins; j++) {
-        if (!GST_IS_VIDEO_OVERLAY(appCtx[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink))
-          continue;
-
-        guint width = 0, height = 0;
-        XSizeHints hints = {0};
-        if (appCtx[i]->config.sink_bin_sub_bin_config[j].render_config.width)
-          width = appCtx[i]->config.sink_bin_sub_bin_config[j].render_config.width;
-        else
-          width = appCtx[i]->config.tiled_display_config.width;
-        if (appCtx[i]->config.sink_bin_sub_bin_config[j].render_config.height)
-          height = appCtx[i]->config.sink_bin_sub_bin_config[j].render_config.height;
-        else
-          height = appCtx[i]->config.tiled_display_config.height;
-        width = (width) ? width : DEFAULT_X_WINDOW_WIDTH;
-        height = (height) ? height : DEFAULT_X_WINDOW_HEIGHT;
-
-        hints.flags = PPosition | PSize;
-        hints.x = appCtx[i]->config.sink_bin_sub_bin_config[j].render_config.offset_x;
-        hints.y = appCtx[i]->config.sink_bin_sub_bin_config[j].render_config.offset_y;
-        hints.width = width;
-        hints.height = height;
-
-        windows[i] = XCreateSimpleWindow(
-            display,
-            RootWindow(display, DefaultScreen(display)),
-            hints.x,
-            hints.y,
-            width,
-            height,
-            2,
-            0x00000000,
-            0x00000000);
-
-        XSetNormalHints(display, windows[i], &hints);
-
-        gchar* title = (num_instances > 1) ? g_strdup_printf(APP_TITLE "-%d", i) : g_strdup(APP_TITLE);
-        XTextProperty xproperty;
-        if (XStringListToTextProperty((char**)&title, 1, &xproperty) != 0) {
-          XSetWMName(display, windows[i], &xproperty);
-          XFree(xproperty.value);
-        }
-
-        XSetWindowAttributes attr = {0};
-        if ((appCtx[i]->config.tiled_display_config.enable &&
-             appCtx[i]->config.tiled_display_config.rows * appCtx[i]->config.tiled_display_config.columns == 1) ||
-            (appCtx[i]->config.tiled_display_config.enable == 0))
-          attr.event_mask = KeyPress;
-        else if (appCtx[i]->config.tiled_display_config.enable)
-          attr.event_mask = ButtonPress | KeyRelease;
-        XChangeWindowAttributes(display, windows[i], CWEventMask, &attr);
-
-        Atom wmDeleteMessage = XInternAtom(display, "WM_DELETE_WINDOW", False);
-        if (wmDeleteMessage != None)
-          XSetWMProtocols(display, windows[i], &wmDeleteMessage, 1);
-
-        XMapRaised(display, windows[i]);
-        XSync(display, 1);
-        gst_video_overlay_set_window_handle(
-            GST_VIDEO_OVERLAY(appCtx[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink), (gulong)windows[i]);
-        gst_video_overlay_expose(GST_VIDEO_OVERLAY(appCtx[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink));
-
-        if (!x_event_thread)
-          x_event_thread = g_thread_new("nvds-window-event-thread", nvds_x_event_thread_static, nullptr);
-      }
-#if !defined(__aarch64__)
-      if (!prop.integrated) {
-        if (gst_element_set_state(appCtx[i]->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
-          NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
-          return absl::InternalError("Failed to set pipeline to PAUSED");
-        }
-      }
-#endif
-    }
-
-    // Set pipelines to PLAYING.
-    for (guint i = 0; i < num_instances; i++) {
-      absl::Status s = appCtx[i]->configurator().post_config_pipeline(appCtx[i]->pipeline, appCtx[i]->config);
-      if (!s.ok()) {
-        std::cerr << s << std::endl;
-        g_print("\npipeline post-configuration failed.\n");
-        return absl::InternalError("pipeline post-configuration failed");
-      }
-      if (gst_element_set_state(appCtx[i]->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
-        g_print("\ncan't set pipeline to playing state.\n");
-        return absl::InternalError("can't set pipeline to playing state");
-      }
-#if 1
-      hm::save_dot_file(appCtx[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_running");
-#endif
-      if (appCtx[i]->config.pipeline_recreate_sec)
-        g_timeout_add_seconds(
-            appCtx[i]->config.pipeline_recreate_sec, recreate_pipeline_thread_func_static, appCtx[i].get());
-    }
-
-    print_runtime_commands();
-    changemode(1);
-    g_timeout_add(40, event_thread_func_static, nullptr);
-    g_main_loop_run(main_loop);
-    changemode(0);
-
-    // After the main loop exits, if any instance flagged an error then update status.
-    if (return_value != 0)
-      status = absl::InternalError("App run failed");
-    else
-      g_print("App run successful\n");
-
-    // gst_deinit();
-    return status;
-  }
+  // Helper functions that separate key sections.
+  absl::Status initializeInstances(); // Section 1
+  absl::Status createPipelines(); // Section 2
+  absl::Status createMainLoop(); // Section 3
 
   //--------------------------------------------------------------------------
   // Callback and helper functions (mostly static, calling member functions)
@@ -424,7 +120,7 @@ class PipelineApplication {
       instance_->handle_intr(signum);
   }
   void handle_intr(int signum) {
-    NVGSTDS_ERR_MSG_V("User Interrupted.. \n");
+    NVGSTDS_ERR_MSG_V("User Interrupted..\n");
     struct sigaction action;
     memset(&action, 0, sizeof(action));
     action.sa_handler = SIG_DFL;
@@ -675,7 +371,7 @@ class PipelineApplication {
           case ButtonPress: {
             XWindowAttributes win_attr;
             XButtonEvent ev = e.xbutton;
-            gint source_id;
+            gint source_id = -1;
             GstElement* tiler;
             memset(&win_attr, 0, sizeof(XWindowAttributes));
             XGetWindowAttributes(display, ev.window, &win_attr);
@@ -858,6 +554,354 @@ class PipelineApplication {
 // Define the static instance pointer
 //
 PipelineApplication* PipelineApplication::instance_ = nullptr;
+
+//-----------------------------------------------------------------------------
+// Definition of helper functions.
+//-----------------------------------------------------------------------------
+
+absl::Status PipelineApplication::initializeInstances() {
+  // Section 1: Create and initialize each HmApp instance.
+  appCtx.resize(num_instances);
+  windows.resize(num_instances, 0);
+
+  for (guint i = 0; i < num_instances; i++) {
+    appCtx[i] = std::make_unique<HmApp>(game_id ? *game_id : "");
+    appCtx[i]->person_class_id = -1;
+    appCtx[i]->car_class_id = -1;
+    appCtx[i]->index = i;
+    appCtx[i]->active_source_index = -1;
+    if (show_bbox_text)
+      appCtx[i]->show_bbox_text = TRUE;
+    if (input_uris && input_uris[i]) {
+      appCtx[i]->config.multi_source_config[0].uri = g_strdup_printf("%s", input_uris[i]);
+      g_free(input_uris[i]);
+    }
+    appCtx[i]->load_config();
+
+    if (g_str_has_suffix(cfg_files[i], ".yml") || g_str_has_suffix(cfg_files[i], ".yaml")) {
+      if (!appCtx[i]->underlay_config("pipeline", cfg_files[i])) {
+        NVGSTDS_ERR_MSG_V("Failed to merge in config file '%s'", cfg_files[i]);
+        appCtx[i]->return_value = -1;
+        return absl::InternalError("Failed to merge in config file");
+      }
+      HM_RETURN_IF_ERROR(appCtx[i]->complete_configuration(force_reconfigure));
+      YAML::Node config = appCtx[i]->configurator().config();
+      if (!config["pipeline"].IsDefined() || !parse_config_yaml(config["pipeline"], &appCtx[i]->config, cfg_files[i])) {
+        NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files[i]);
+        appCtx[i]->return_value = -1;
+        return absl::InternalError("Failed to parse config file");
+      }
+    } else if (g_str_has_suffix(cfg_files[i], ".txt")) {
+      if (!parse_config_file(&appCtx[i]->config, cfg_files[i])) {
+        NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files[i]);
+        appCtx[i]->return_value = -1;
+        return absl::InternalError("Failed to parse config file");
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+
+absl::Status PipelineApplication::createPipelines() {
+  // Section 2: Create pipelines for each instance.
+  for (guint i = 0; i < num_instances; i++) {
+    if (!create_pipeline(appCtx[i].get(), nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
+      NVGSTDS_ERR_MSG_V("Failed to create pipeline");
+      return absl::InternalError("Failed to create pipeline");
+    }
+    if (dump_pipeline_dot) {
+      std::string s = "pipeline";
+      if (i) {
+        s += '_';
+        s += std::to_string(i);
+      }
+      gst_debug_bin_to_dot_file_with_ts(
+          GST_BIN(appCtx[i]->pipeline.pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "/mnt/data/src/hstream/pipeline.dot");
+    }
+  }
+  return absl::OkStatus();
+}
+
+absl::Status PipelineApplication::createMainLoop() {
+  // Section 3: Create main loop and initialize display.
+  main_loop = g_main_loop_new(nullptr, FALSE);
+  _intr_setup();
+  g_timeout_add(400, check_for_interrupt_static, nullptr);
+
+  g_mutex_init(&disp_lock);
+  display = XOpenDisplay(nullptr);
+  if (!display) {
+    NVGSTDS_ERR_MSG_V("Could not open X Display");
+    return absl::InternalError("Could not open X Display");
+  }
+
+  // Create X windows and set the pipeline window handles.
+  // (Note: We do not create any cleanup objects here; cleanup is deferred to run().)
+  for (guint i = 0; i < num_instances; i++) {
+#if defined(__aarch64__)
+    if (gst_element_set_state(appCtx[i]->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
+      NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
+      return absl::InternalError("Failed to set pipeline to PAUSED");
+    }
+#endif
+    for (guint j = 0; j < appCtx[i]->config.num_sink_sub_bins; j++) {
+      if (!GST_IS_VIDEO_OVERLAY(appCtx[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink))
+        continue;
+
+      guint width = 0, height = 0;
+      XSizeHints hints = {0};
+      if (appCtx[i]->config.sink_bin_sub_bin_config[j].render_config.width)
+        width = appCtx[i]->config.sink_bin_sub_bin_config[j].render_config.width;
+      else
+        width = appCtx[i]->config.tiled_display_config.width;
+      if (appCtx[i]->config.sink_bin_sub_bin_config[j].render_config.height)
+        height = appCtx[i]->config.sink_bin_sub_bin_config[j].render_config.height;
+      else
+        height = appCtx[i]->config.tiled_display_config.height;
+      width = (width) ? width : DEFAULT_X_WINDOW_WIDTH;
+      height = (height) ? height : DEFAULT_X_WINDOW_HEIGHT;
+
+      hints.flags = PPosition | PSize;
+      hints.x = appCtx[i]->config.sink_bin_sub_bin_config[j].render_config.offset_x;
+      hints.y = appCtx[i]->config.sink_bin_sub_bin_config[j].render_config.offset_y;
+      hints.width = width;
+      hints.height = height;
+
+      windows[i] = XCreateSimpleWindow(
+          display,
+          RootWindow(display, DefaultScreen(display)),
+          hints.x,
+          hints.y,
+          width,
+          height,
+          2,
+          0x00000000,
+          0x00000000);
+
+      XSetNormalHints(display, windows[i], &hints);
+
+      gchar* title = (num_instances > 1) ? g_strdup_printf(APP_TITLE "-%d", i) : g_strdup(APP_TITLE);
+      XTextProperty xproperty;
+      if (XStringListToTextProperty((char**)&title, 1, &xproperty) != 0) {
+        XSetWMName(display, windows[i], &xproperty);
+        XFree(xproperty.value);
+      }
+
+      XSetWindowAttributes attr = {0};
+      if ((appCtx[i]->config.tiled_display_config.enable &&
+           appCtx[i]->config.tiled_display_config.rows * appCtx[i]->config.tiled_display_config.columns == 1) ||
+          (appCtx[i]->config.tiled_display_config.enable == 0))
+        attr.event_mask = KeyPress;
+      else if (appCtx[i]->config.tiled_display_config.enable)
+        attr.event_mask = ButtonPress | KeyRelease;
+      XChangeWindowAttributes(display, windows[i], CWEventMask, &attr);
+
+      Atom wmDeleteMessage = XInternAtom(display, "WM_DELETE_WINDOW", False);
+      if (wmDeleteMessage != None)
+        XSetWMProtocols(display, windows[i], &wmDeleteMessage, 1);
+
+      XMapRaised(display, windows[i]);
+      XSync(display, 1);
+      gst_video_overlay_set_window_handle(
+          GST_VIDEO_OVERLAY(appCtx[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink), (gulong)windows[i]);
+      gst_video_overlay_expose(GST_VIDEO_OVERLAY(appCtx[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink));
+
+      if (!x_event_thread)
+        x_event_thread = g_thread_new("nvds-window-event-thread", nvds_x_event_thread_static, nullptr);
+    }
+#if !defined(__aarch64__)
+    // For non-aarch64 platforms, check integrated GPU flag.
+    int current_device = -1;
+    cudaGetDevice(&current_device);
+    struct cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, current_device);
+    if (!prop.integrated) {
+      if (gst_element_set_state(appCtx[i]->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
+        NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
+        return absl::InternalError("Failed to set pipeline to PAUSED");
+      }
+    }
+#endif
+  }
+  return absl::OkStatus();
+}
+
+//-----------------------------------------------------------------------------
+// Main run function definition.
+//-----------------------------------------------------------------------------
+absl::Status PipelineApplication::run(int argc, char* argv[]) {
+  absl::Status status = absl::OkStatus();
+  GError* error = nullptr;
+
+  // Build option entries.
+  GOptionEntry entries[] = {
+      {"version", 'v', 0, G_OPTION_ARG_NONE, &print_version, "Print DeepStreamSDK version", nullptr},
+      {"tiledtext", 't', 0, G_OPTION_ARG_NONE, &show_bbox_text, "Display Bounding box labels in tiled mode", nullptr},
+      {"dump-pipeline-dot",
+       'd',
+       0,
+       G_OPTION_ARG_NONE,
+       &dump_pipeline_dot,
+       "Dump graphviz dot file of pipeline",
+       nullptr},
+      {"version-all",
+       0,
+       0,
+       G_OPTION_ARG_NONE,
+       &print_dependencies_version,
+       "Print DeepStreamSDK and dependencies version",
+       nullptr},
+      {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &cfg_files, "Set the config file", nullptr},
+      {"game-id", 'g', 0, G_OPTION_ARG_FILENAME_ARRAY, &game_id, "Game ID", nullptr},
+      {"force-reconfigure", 'f', 0, G_OPTION_ARG_NONE, &force_reconfigure, "Force reconfigure", nullptr},
+      {"input-uri",
+       'i',
+       0,
+       G_OPTION_ARG_FILENAME_ARRAY,
+       &input_uris,
+       "Set the input uri (file://stream or rtsp://stream)",
+       nullptr},
+      {nullptr}};
+
+  // Create and configure the option context.
+  GOptionContext* ctx = g_option_context_new("Nvidia DeepStream Demo");
+  auto cleanup_ctx = absl::MakeCleanup([ctx] {
+    if (ctx) {
+      g_option_context_free(ctx);
+    }
+  });
+  GOptionGroup* group = g_option_group_new("abc", nullptr, nullptr, nullptr, nullptr);
+  g_option_group_add_entries(group, entries);
+  g_option_context_set_main_group(ctx, group);
+  g_option_context_add_group(ctx, gst_init_get_option_group());
+
+  GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
+
+  // Initialize CUDA.
+  int current_device = -1;
+  cudaGetDevice(&current_device);
+  struct cudaDeviceProp prop;
+  cudaGetDeviceProperties(&prop, current_device);
+
+  if (!g_option_context_parse(ctx, &argc, &argv, &error)) {
+    NVGSTDS_ERR_MSG_V("%s", error->message);
+    return absl::InternalError(error->message);
+  }
+
+  if (print_version) {
+    g_print(
+        "deepstream-app version %d.%d.%d\n", NVDS_APP_VERSION_MAJOR, NVDS_APP_VERSION_MINOR, NVDS_APP_VERSION_MICRO);
+    nvds_version_print();
+    return status;
+  }
+
+  if (print_dependencies_version) {
+    g_print(
+        "deepstream-app version %d.%d.%d\n", NVDS_APP_VERSION_MAJOR, NVDS_APP_VERSION_MINOR, NVDS_APP_VERSION_MICRO);
+    nvds_version_print();
+    nvds_dependencies_version_print();
+    return status;
+  }
+
+  if (cfg_files) {
+    num_instances = g_strv_length(cfg_files);
+  }
+  if (input_uris) {
+    num_input_uris = g_strv_length(input_uris);
+  }
+  if (!cfg_files || num_instances == 0) {
+    NVGSTDS_ERR_MSG_V("Specify config file with -c option");
+    return absl::InternalError("Specify config file with -c option");
+  }
+
+  // Section 1: Create and initialize each HmApp instance.
+  status = initializeInstances();
+  if (!status.ok()) {
+    return status;
+  }
+
+  // Section 2: Create pipelines for each instance.
+  status = createPipelines();
+  if (!status.ok()) {
+    return status;
+  }
+
+  // Section 3: Create main loop and initialize display/windows.
+  status = createMainLoop();
+  if (!status.ok()) {
+    return status;
+  }
+
+  // --- RAII cleanup objects declared in the run() scope ---
+  auto cleanup_main_loop = absl::MakeCleanup([this] {
+    if (main_loop)
+      g_main_loop_unref(main_loop);
+    main_loop = nullptr;
+  });
+  auto cleanup_display = absl::MakeCleanup([this] {
+    g_mutex_lock(&disp_lock);
+    if (display)
+      XCloseDisplay(display);
+    display = nullptr;
+    g_mutex_unlock(&disp_lock);
+  });
+  auto cleanup_pipelines = absl::MakeCleanup([this] {
+    for (guint i = 0; i < num_instances; i++) {
+      if (appCtx[i]) {
+        if (appCtx[i]->return_value == -1)
+          return_value = -1;
+        destroy_pipeline(appCtx[i].get());
+        g_mutex_lock(&disp_lock);
+        if (windows[i])
+          XDestroyWindow(display, windows[i]);
+        windows[i] = 0;
+        g_mutex_unlock(&disp_lock);
+        appCtx[i].reset();
+      }
+    }
+    g_mutex_lock(&disp_lock);
+    if (display)
+      XCloseDisplay(display);
+    display = nullptr;
+    g_mutex_unlock(&disp_lock);
+    g_mutex_clear(&disp_lock);
+  });
+  // --- End cleanup objects ---
+
+  // Set pipelines to PLAYING.
+  for (guint i = 0; i < num_instances; i++) {
+    absl::Status s = appCtx[i]->configurator().post_config_pipeline(appCtx[i]->pipeline, appCtx[i]->config);
+    if (!s.ok()) {
+      std::cerr << s << std::endl;
+      g_print("\npipeline post-configuration failed.\n");
+      return absl::InternalError("pipeline post-configuration failed");
+    }
+    if (gst_element_set_state(appCtx[i]->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+      g_print("\ncan't set pipeline to playing state.\n");
+      return absl::InternalError("can't set pipeline to playing state");
+    }
+#if 1
+    hm::save_dot_file(appCtx[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_running");
+#endif
+    if (appCtx[i]->config.pipeline_recreate_sec)
+      g_timeout_add_seconds(
+          appCtx[i]->config.pipeline_recreate_sec, recreate_pipeline_thread_func_static, appCtx[i].get());
+  }
+
+  print_runtime_commands();
+  changemode(1);
+  g_timeout_add(40, event_thread_func_static, nullptr);
+  g_main_loop_run(main_loop);
+  changemode(0);
+
+  // After the main loop exits, update status if any instance flagged an error.
+  if (return_value != 0)
+    status = absl::InternalError("App run failed");
+  else
+    g_print("App run successful\n");
+
+  return status;
+}
 
 //
 // Main function: create a PipelineApplication instance and run it.
