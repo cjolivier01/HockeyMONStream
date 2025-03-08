@@ -825,6 +825,9 @@ done:
 
   g_print("Quitting\n");
   for (i = 0; i < num_instances; i++) {
+    if (!appCtx[i]) {
+      continue;
+    }
     if (appCtx[i]->return_value == -1)
       return_value = -1;
     destroy_pipeline(appCtx[i].get());
