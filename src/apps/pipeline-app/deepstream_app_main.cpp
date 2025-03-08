@@ -101,6 +101,7 @@ class PipelineApplication {
   absl::Status initializeInstances(CleanupStack& cleanup_stack); // Section 1
   absl::Status createPipelines(CleanupStack& cleanup_stack); // Section 2
   absl::Status createMainLoop(CleanupStack& cleanup_stack); // Section 3
+  absl::Status playPipelines(CleanupStack& cleanup_stack); // Section 4
 
   //--------------------------------------------------------------------------
   // Callback and helper functions (mostly static, calling member functions)
@@ -787,6 +788,44 @@ absl::Status PipelineApplication::createMainLoop(CleanupStack& cleanup_stack) {
   return absl::OkStatus();
 }
 
+absl::Status PipelineApplication::playPipelines(CleanupStack& /*cleanup_stack*/) {
+  absl::Status status;
+  // Set pipelines to PLAYING.
+  for (guint i = 0; i < num_instances_; i++) {
+    status = app_ctx_[i]->configurator().post_config_pipeline(app_ctx_[i]->pipeline, app_ctx_[i]->config);
+    if (!status.ok()) {
+      std::cerr << status << std::endl;
+      g_print("\npipeline post-configuration failed.\n");
+      return absl::InternalError("pipeline post-configuration failed");
+    }
+    if (gst_element_set_state(app_ctx_[i]->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+      g_print("\ncan't set pipeline to playing state.\n");
+      return absl::InternalError("can't set pipeline to playing state");
+    }
+#if 1
+    hm::save_dot_file(app_ctx_[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_running");
+#endif
+    if (app_ctx_[i]->config.pipeline_recreate_sec)
+      g_timeout_add_seconds(
+          app_ctx_[i]->config.pipeline_recreate_sec, recreate_pipeline_thread_func_static, app_ctx_[i].get());
+  }
+
+  print_runtime_commands();
+  changemode(1);
+  g_timeout_add(40, event_thread_func_static, nullptr);
+  g_main_loop_run(main_loop_);
+  changemode(0);
+
+  // After the main loop exits, update status if any instance flagged an error.
+  if (return_value_ != 0)
+    status = absl::InternalError("App run failed");
+  else
+    g_print("App run successful\n");
+
+  // When run() returns, cleanup_stack is destroyed (invoking the cleanups in reverse order).
+  return status;
+}
+
 //-----------------------------------------------------------------------------
 // Main run function definition.
 //-----------------------------------------------------------------------------
@@ -896,6 +935,46 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     return status;
   }
 
+//   auto playPipelines = [this](CleanupStack& cleanup_stack) -> absl::Status {
+//     absl::Status status;
+//     // Set pipelines to PLAYING.
+//     for (guint i = 0; i < num_instances_; i++) {
+//       status = app_ctx_[i]->configurator().post_config_pipeline(app_ctx_[i]->pipeline, app_ctx_[i]->config);
+//       if (!status.ok()) {
+//         std::cerr << status << std::endl;
+//         g_print("\npipeline post-configuration failed.\n");
+//         return absl::InternalError("pipeline post-configuration failed");
+//       }
+//       if (gst_element_set_state(app_ctx_[i]->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+//         g_print("\ncan't set pipeline to playing state.\n");
+//         return absl::InternalError("can't set pipeline to playing state");
+//       }
+// #if 1
+//       hm::save_dot_file(app_ctx_[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_running");
+// #endif
+//       if (app_ctx_[i]->config.pipeline_recreate_sec)
+//         g_timeout_add_seconds(
+//             app_ctx_[i]->config.pipeline_recreate_sec, recreate_pipeline_thread_func_static, app_ctx_[i].get());
+//     }
+
+//     print_runtime_commands();
+//     changemode(1);
+//     g_timeout_add(40, event_thread_func_static, nullptr);
+//     g_main_loop_run(main_loop_);
+//     changemode(0);
+
+//     // After the main loop exits, update status if any instance flagged an error.
+//     if (return_value_ != 0)
+//       status = absl::InternalError("App run failed");
+//     else
+//       g_print("App run successful\n");
+
+//     // When run() returns, cleanup_stack is destroyed (invoking the cleanups in reverse order).
+//     return status;
+//   };
+#if 1
+  HM_RETURN_IF_ERROR(playPipelines(cleanup_stack));
+#else
   // Set pipelines to PLAYING.
   for (guint i = 0; i < num_instances_; i++) {
     absl::Status s = app_ctx_[i]->configurator().post_config_pipeline(app_ctx_[i]->pipeline, app_ctx_[i]->config);
@@ -927,7 +1006,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     status = absl::InternalError("App run failed");
   else
     g_print("App run successful\n");
-
+#endif
   // When run() returns, cleanup_stack is destroyed (invoking the cleanups in reverse order).
   return status;
 }
