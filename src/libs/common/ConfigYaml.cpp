@@ -11,6 +11,9 @@ namespace hm {
 namespace utils {
 
 void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator) {
+  if (!yaml.IsDefined()) {
+    return;
+  }
   for (const auto& it : yaml) {
     std::string key = it.first.as<std::string>();
     const YAML::Node& value = it.second;

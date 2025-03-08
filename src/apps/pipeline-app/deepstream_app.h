@@ -99,6 +99,8 @@ struct NvDsPipeline {
 };
 
 struct NvDsConfig {
+  // The stage of this application
+  gint stage;
   gboolean enable_perf_measurement;
   gint file_loop;
   gint pipeline_recreate_sec;

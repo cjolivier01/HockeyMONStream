@@ -159,66 +159,23 @@ gboolean parse_hmaudio_yaml(NvDsHmAudioConfig* config, const YAML::Node& yaml_no
   return true;
 }
 
-static gboolean parse_app_yaml(NvDsConfig* config, const gchar* cfg_file_path) {
-  gboolean ret = FALSE;
-  YAML::Node configyml = YAML::LoadFile(cfg_file_path);
-
-  for (YAML::const_iterator itr = configyml["application"].begin(); itr != configyml["application"].end(); ++itr) {
-    std::string paramKey = itr->first.as<std::string>();
-    if (paramKey == "enable-perf-measurement") {
-      config->enable_perf_measurement = itr->second.as<gboolean>();
-    } else if (paramKey == "perf-measurement-interval-sec") {
-      config->perf_measurement_interval_sec = itr->second.as<guint>();
-    } else if (paramKey == "gie-kitti-output-dir") {
-      std::string temp = itr->second.as<std::string>();
-      char* str = (char*)malloc(sizeof(char) * 1024);
-      std::strncpy(str, temp.c_str(), 1023);
-      config->bbox_dir_path = (char*)malloc(sizeof(char) * 1024);
-      get_absolute_file_path_yaml(cfg_file_path, str, config->bbox_dir_path);
-      g_free(str);
-    } else if (paramKey == "kitti-track-output-dir") {
-      std::string temp = itr->second.as<std::string>();
-      char* str = (char*)malloc(sizeof(char) * 1024);
-      std::strncpy(str, temp.c_str(), 1023);
-      config->kitti_track_dir_path = (char*)malloc(sizeof(char) * 1024);
-      get_absolute_file_path_yaml(cfg_file_path, str, config->kitti_track_dir_path);
-      g_free(str);
-    } else if (paramKey == "reid-track-output-dir") {
-      std::string temp = itr->second.as<std::string>();
-      char* str = (char*)malloc(sizeof(char) * 1024);
-      std::strncpy(str, temp.c_str(), 1023);
-      config->reid_track_dir_path = (char*)malloc(sizeof(char) * 1024);
-      get_absolute_file_path_yaml(cfg_file_path, str, config->reid_track_dir_path);
-      g_free(str);
-    } else if (paramKey == "global-gpu-id") {
-      /** App Level GPU ID is set here if it is present in APP LEVEL config group
-       * if gpu_id prop is not set for any component, this global_gpu_id will be used */
-      config->global_gpu_id = itr->second.as<guint>();
-    } else if (paramKey == "terminated-track-output-dir") {
-      std::string temp = itr->second.as<std::string>();
-      char* str = (char*)malloc(sizeof(char) * 1024);
-      std::strncpy(str, temp.c_str(), 1023);
-      config->terminated_track_output_path = (char*)malloc(sizeof(char) * 1024);
-      get_absolute_file_path_yaml(cfg_file_path, str, config->terminated_track_output_path);
-      g_free(str);
-    } else if (paramKey == "shadow-track-output-dir") {
-      std::string temp = itr->second.as<std::string>();
-      char* str = (char*)malloc(sizeof(char) * 1024);
-      std::strncpy(str, temp.c_str(), 1023);
-      config->shadow_track_output_path = (char*)malloc(sizeof(char) * 1024);
-      get_absolute_file_path_yaml(cfg_file_path, str, config->shadow_track_output_path);
-      g_free(str);
-    } else {
-      cout << "Unknown key " << paramKey << " for group application" << endl;
-    }
-  }
-
-  ret = TRUE;
-
-  if (!ret) {
-    cout << __func__ << " failed" << endl;
-  }
-  return ret;
+gboolean parse_app_yaml(NvDsConfig* config, const YAML::Node& yaml_node) {
+  hm::utils::ConfigLocator locator;
+  SET_LOCATOR(locator, *config, stage);
+  SET_LOCATOR(locator, *config, global_gpu_id);
+  SET_LOCATOR(locator, *config, enable_perf_measurement);
+  SET_LOCATOR(locator, *config, source_list_enabled);
+  SET_LOCATOR(locator, *config, perf_measurement_interval_sec);
+  SET_LOCATOR(locator, *config, sgie_batch_size);
+  SET_LOCATOR(locator, *config, extract_sei_type5_data);
+  SET_LOCATOR(locator, *config, low_latency_mode);
+  SET_LOCATOR_CHARS(locator, *config, bbox_dir_path);
+  SET_LOCATOR_CHARS(locator, *config, kitti_track_dir_path);
+  SET_LOCATOR_CHARS(locator, *config, reid_track_dir_path);
+  SET_LOCATOR_CHARS(locator, *config, terminated_track_output_path);
+  SET_LOCATOR_CHARS(locator, *config, shadow_track_output_path);
+  set_config_from_yaml(yaml_node, locator);
+  return true;
 }
 
 static std::vector<std::string> split_csv_entries(std::string input) {
@@ -254,9 +211,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
 
   /** App group parsing at top level to set global_gpu_id (if available)
    * before any other group parsing */
-  if (configyml["application"]) {
-    parse_err = !parse_app_yaml(config, cfg_file_path);
-  }
+  parse_err = !parse_app_yaml(config, configyml["application"]);
 
   for (YAML::const_iterator itr = configyml.begin(); itr != configyml.end(); ++itr) {
     std::string paramKey = itr->first.as<std::string>();
