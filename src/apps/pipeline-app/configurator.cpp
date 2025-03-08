@@ -465,8 +465,8 @@ absl::Status Configurator::complete_configuration(bool force) {
   // pipeline["tiled-display"]["width"] = std::get<0>(tiled_display_wh);
   // pipeline["tiled-display"]["height"] = std::get<1>(tiled_display_wh);
 
-  pipeline["tiled-display"]["width"] = pipeline["hmvideoprep"]["output-width"];
-  pipeline["tiled-display"]["height"] = pipeline["hmvideoprep"]["output-height"];
+  // pipeline["tiled-display"]["width"] = pipeline["hmvideoprep"]["output-width"];
+  // pipeline["tiled-display"]["height"] = pipeline["hmvideoprep"]["output-height"];
 
   if (area) {
     // Set streammux size
