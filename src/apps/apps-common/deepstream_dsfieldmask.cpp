@@ -539,54 +539,54 @@ gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrep
   gboolean ret = FALSE;
   std::stringstream ppc;
 
-  bin->bin = gst_bin_new("videoprep_bin");
+  bin->bin = gst_bin_new("playtracker_bin");
   if (!bin->bin) {
-    NVGSTDS_ERR_MSG_V("Failed to create 'videoprep_bin'");
+    NVGSTDS_ERR_MSG_V("Failed to create 'playtracker_bin'");
     goto done;
   }
 
-  bin->nvvidconv = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "videoprep_conv");
+  bin->nvvidconv = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "playtracker_conv");
 
   if (!bin->nvvidconv) {
-    NVGSTDS_ERR_MSG_V("Failed to create 'videoprep_conv'");
+    NVGSTDS_ERR_MSG_V("Failed to create 'playtracker_conv'");
     goto done;
   }
 
-  bin->queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "videoprep_queue");
+  bin->queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "playtracker_queue");
   if (!bin->queue) {
-    NVGSTDS_ERR_MSG_V("Failed to create 'videoprep_queue'");
+    NVGSTDS_ERR_MSG_V("Failed to create 'playtracker_queue'");
     goto done;
   }
 
-  bin->src_queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "videoprep_src_queue");
+  bin->src_queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "playtracker_src_queue");
   if (!bin->src_queue) {
-    NVGSTDS_ERR_MSG_V("Failed to create 'videoprep_src_queue'");
+    NVGSTDS_ERR_MSG_V("Failed to create 'playtracker_src_queue'");
     goto done;
   }
 
-  bin->conv_queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "videoprep_conv_queue");
+  bin->conv_queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "playtracker_conv_queue");
   if (!bin->conv_queue) {
-    NVGSTDS_ERR_MSG_V("Failed to create 'videoprep_conv_queue'");
+    NVGSTDS_ERR_MSG_V("Failed to create 'playtracker_conv_queue'");
     goto done;
   }
 
-  bin->cap_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "videoprep_caps");
+  bin->cap_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "playtracker_caps");
   if (!bin->cap_filter) {
-    NVGSTDS_ERR_MSG_V("Failed to create 'videoprep_caps'");
+    NVGSTDS_ERR_MSG_V("Failed to create 'playtracker_caps'");
     goto done;
   }
 
   setup_rgb_nvvm_caps_filter(nullptr, bin->cap_filter);
 
-  bin->nvvideoprep = gst_element_factory_make("playcropper" /*NVDS_ELEM_DEWARPER*/, NULL);
-  if (!bin->nvvideoprep) {
-    NVGSTDS_ERR_MSG_V("Failed to create 'nvvideoprep'");
+  bin->nvplaytracker = gst_element_factory_make("playcropper" /*NVDS_ELEM_DEWARPER*/, NULL);
+  if (!bin->nvplaytracker) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'nvplaytracker'");
     goto done;
   }
 
-  bin->videoprep_caps_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "videoprep_caps_filter");
-  if (!bin->videoprep_caps_filter) {
-    NVGSTDS_ERR_MSG_V("Could not create 'videoprep_caps_filter'");
+  bin->playtracker_caps_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "playtracker_caps_filter");
+  if (!bin->playtracker_caps_filter) {
+    NVGSTDS_ERR_MSG_V("Could not create 'playtracker_caps_filter'");
     goto done;
   }
 
@@ -606,7 +606,7 @@ gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrep
           1,
           G_MAXINT,
           NULL),
-      bin->videoprep_caps_filter);
+      bin->playtracker_caps_filter);
 
   gst_bin_add_many(
       GST_BIN(bin->bin),
@@ -615,54 +615,54 @@ gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrep
       bin->conv_queue,
       bin->nvvidconv,
       bin->cap_filter,
-      bin->nvvideoprep,
-      bin->videoprep_caps_filter,
+      bin->nvplaytracker,
+      bin->playtracker_caps_filter,
       NULL);
 
   g_object_set(G_OBJECT(bin->nvvidconv), "gpu-id", config->gpu_id, NULL);
   g_object_set(G_OBJECT(bin->nvvidconv), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
 
-  g_object_set(G_OBJECT(bin->nvvideoprep), "gpu-id", config->gpu_id, NULL);
-  g_object_set(G_OBJECT(bin->nvvideoprep), "config-file", config->config_file, NULL);
-  g_object_set(G_OBJECT(bin->nvvideoprep), "plugin-type", config->plugin_type, NULL);
+  g_object_set(G_OBJECT(bin->nvplaytracker), "gpu-id", config->gpu_id, NULL);
+  g_object_set(G_OBJECT(bin->nvplaytracker), "config-file", config->config_file, NULL);
+  g_object_set(G_OBJECT(bin->nvplaytracker), "plugin-type", config->plugin_type, NULL);
 
-  g_object_set(G_OBJECT(bin->nvvideoprep), "source-id", config->source_id, NULL);
-  g_object_set(G_OBJECT(bin->nvvideoprep), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
+  g_object_set(G_OBJECT(bin->nvplaytracker), "source-id", config->source_id, NULL);
+  g_object_set(G_OBJECT(bin->nvplaytracker), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
 
   if (config->num_output_buffers) {
-    g_object_set(G_OBJECT(bin->nvvideoprep), "num-output-buffers", config->num_output_buffers, NULL);
+    g_object_set(G_OBJECT(bin->nvplaytracker), "num-output-buffers", config->num_output_buffers, NULL);
   }
   if (config->num_batch_buffers) {
-    g_object_set(G_OBJECT(bin->nvvideoprep), "num-batch-buffers", config->num_batch_buffers, NULL);
+    g_object_set(G_OBJECT(bin->nvplaytracker), "num-batch-buffers", config->num_batch_buffers, NULL);
   }
   if (config->output_width) {
-    g_object_set(G_OBJECT(bin->nvvideoprep), "output-width", config->output_width, NULL);
+    g_object_set(G_OBJECT(bin->nvplaytracker), "output-width", config->output_width, NULL);
   }
   if (config->output_height) {
-    g_object_set(G_OBJECT(bin->nvvideoprep), "output-height", config->output_height, NULL);
+    g_object_set(G_OBJECT(bin->nvplaytracker), "output-height", config->output_height, NULL);
   }
 
   ppc << "show=" << config->show;
-  g_object_set(G_OBJECT(bin->nvvideoprep), "plugin-private-config", ppc.str().c_str(), NULL);
+  g_object_set(G_OBJECT(bin->nvplaytracker), "plugin-private-config", ppc.str().c_str(), NULL);
 
 
 #if 0
   NVGSTDS_LINK_ELEMENT(bin->nvvidconv, bin->cap_filter);
-  NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->nvvideoprep);
-  NVGSTDS_LINK_ELEMENT(bin->nvvideoprep, bin->videoprep_caps_filter);
+  NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->nvplaytracker);
+  NVGSTDS_LINK_ELEMENT(bin->nvplaytracker, bin->playtracker_caps_filter);
 
   NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->nvvidconv, "sink");
-  NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->videoprep_caps_filter, "src");
+  NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->playtracker_caps_filter, "src");
 #else
   NVGSTDS_LINK_ELEMENT(bin->queue, bin->nvvidconv);
 
   NVGSTDS_LINK_ELEMENT(bin->nvvidconv, bin->cap_filter);
   NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->conv_queue);
 
-  NVGSTDS_LINK_ELEMENT(bin->conv_queue, bin->nvvideoprep);
+  NVGSTDS_LINK_ELEMENT(bin->conv_queue, bin->nvplaytracker);
 
-  NVGSTDS_LINK_ELEMENT(bin->nvvideoprep, bin->videoprep_caps_filter);
-  NVGSTDS_LINK_ELEMENT(bin->videoprep_caps_filter, bin->src_queue);
+  NVGSTDS_LINK_ELEMENT(bin->nvplaytracker, bin->playtracker_caps_filter);
+  NVGSTDS_LINK_ELEMENT(bin->playtracker_caps_filter, bin->src_queue);
 
   NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "sink");
 

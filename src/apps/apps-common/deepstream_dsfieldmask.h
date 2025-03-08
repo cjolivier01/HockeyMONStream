@@ -135,8 +135,8 @@ struct NvDsHmVideoPrepBin {
   GstElement* conv_queue;
   GstElement* nvvidconv;
   GstElement* cap_filter;
-  GstElement* videoprep_caps_filter;
-  GstElement* nvvideoprep;
+  GstElement* playtracker_caps_filter;
+  GstElement* nvplaytracker;
 };
 
 gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBin* bin);

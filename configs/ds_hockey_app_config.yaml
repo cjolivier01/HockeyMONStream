@@ -68,7 +68,7 @@ source0:
   # uri: file:///home/colivier/Videos/pdp/GX010087.mp4
   # mlk-extreme
   # uri: file:///home/colivier/Videos/mlk-extreme/GX010096.MP4
-  # uri: file:///home/colivier/Videos/mlk-heat-1/GX010097.MP4
+  uri: file:///home/colivier/Videos/mlk-heat-1/GX010097.MP4
   # uri: file:///home/colivier/Videos/ev-tv-1a/right.mp4
   num-sources: 1
   gpu-id: 0
@@ -118,7 +118,7 @@ sink0:
   enable: 1
   sink-id: 0
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
-  type: 1
+  type: 2
   # sync: 1
   sync: 0
   source-id: 0
@@ -126,13 +126,14 @@ sink0:
   nvbuf-memory-type: 0
 
 sink1:
-  enable: 1
+  enable: 0
   sink-id: 1
   # Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 3
   # link-to-demux: 1
   #1=mp4 2=mkv
-  container: 1
+  container: 2
+  output-file: out.mkv
   #1=h264 2=h265
   codec: 2
   #encoder type 0=Hardware 1=Software
@@ -144,7 +145,6 @@ sink1:
   #H265 Profile - 0=Main 1=Main10
   # set profile only for hw encoder, sw encoder selects profile based on sw-preset
   profile: 0
-  output-file: out.mp4
   source-id: 0
 
 
@@ -241,12 +241,12 @@ hmaudio0:
 
   # 0=indeopendent (this local config), 1=sink, 2=multisink
   dest: 1
-  sink-id: 0
+  sink-id: 1
   # multi-sink-ids: 0,1,2
 
 
 osd:
-  enable: 0
+  enable: 1
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -352,7 +352,7 @@ ds-example:
   processing-height: 480
 
 hmplaycropper:
-  enable: 0
+  enable: 1
   gpu-id: 0
   # plugin-type: videoprep
   # has_queue: false

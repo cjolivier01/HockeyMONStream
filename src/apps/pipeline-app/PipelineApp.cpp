@@ -26,7 +26,7 @@
 
 #include "absl/cleanup/cleanup.h"
 #include "nvds_version.h"
-
+#if 0
 //------------------------------------------------------------------------------
 // Debug category definition.
 GST_DEBUG_CATEGORY(NVDS_APP);
@@ -932,3 +932,4 @@ int main(int argc, char* argv[]) {
   }
   return 0;
 }
+#endif

@@ -69,6 +69,7 @@ bool PlayCropperPriv::PreCapsInit(DSCustom_CreateParams* params) {
 };
 
 bool PlayCropperPriv::PostCapsInit(DSCustom_CreateParams* params) {
+  m_transformMode = true;
   return Super::PostCapsInit(params);
 }
 

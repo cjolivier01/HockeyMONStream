@@ -15,11 +15,6 @@ IDSCustomLibrary* VideoPrepLibrary_Factory::CreateCustomAlgoCtx(
     GObject* object,
     int gpu_id,
     size_t batch_size) {
-  // if (libName == "videoprep") {
-  //   // Basically a no-op now
-  //   // Keeping it here to validate a minimalistic run when developing a new plugin
-  //   return new VideoPrepPriv(gpu_id, batch_size);
-  // }
   if (libName == "playcropper") {
     return new playcropper::PlayCropperPriv(gpu_id, batch_size);
   }
