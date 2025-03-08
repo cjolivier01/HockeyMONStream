@@ -97,6 +97,7 @@ gboolean parse_hmvideoprep_yaml(
   SET_LOCATOR(locator, *config, enable);
   SET_LOCATOR(locator, *config, unique_id);
   SET_LOCATOR(locator, *config, gpu_id);
+  SET_LOCATOR(locator, *config, show);
   SET_LOCATOR(locator, *config, has_queue);
   SET_LOCATOR(locator, *config, has_videoconvert);
   SET_LOCATOR(locator, *config, has_cameraman);
@@ -122,8 +123,10 @@ gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_
     return false;
   }
   hm::utils::ConfigLocator locator;
+  SET_LOCATOR(locator, *config, configure_only);
   SET_LOCATOR(locator, *config, left_frame_offset_ns);
   SET_LOCATOR(locator, *config, right_frame_offset_ns);
+  SET_LOCATOR(locator, *config, show);
   SET_LOCATOR_CHARS(locator, *config, config_file);
   set_config_from_yaml(yaml_node, locator);
   return true;

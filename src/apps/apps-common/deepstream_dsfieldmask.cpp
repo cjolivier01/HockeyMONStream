@@ -13,6 +13,7 @@
 
 #include "deepstream_dsfieldmask.h"
 
+#include "hstream/src/apps/apps-common/deepstream_config.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 
 #include <glib-2.0/glib.h>
@@ -53,6 +54,20 @@
 namespace {
 inline GstElement* gst_element_get_parent(GstElement* elem) {
   return (GstElement*)gst_object_get_parent(GST_OBJECT_CAST(elem));
+}
+
+NvDsSinkBinSubBin* find_sink_sub_bin(int sink_id, const NvDsSinkSubBinConfig* sink_config, NvDsSinkBin* sink_bins) {
+  size_t sink_bin_index = 0;
+  for (size_t i = 0; i < MAX_SINK_BINS; ++i) {
+    const NvDsSinkSubBinConfig& config = sink_config[i];
+    if (config.sink_id == (long)sink_id) {
+      return &sink_bins->sub_bins[sink_bin_index];
+    }
+    if (config.enable) {
+      ++sink_bin_index;
+    }
+  }
+  return nullptr;
 }
 
 //---------------------------------------------------------------------
@@ -329,12 +344,13 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   // assert(strlen(config->detection_mask_file) > 0);
 
   ppc << "left-frame-offset-ns=" << config->left_frame_offset_ns;
-  ppc << ";";
-  ppc << "right-frame-offset-ns=" << config->right_frame_offset_ns;
+  ppc << ";right-frame-offset-ns=" << config->right_frame_offset_ns;
+  ppc << ";configure-only=" << config->configure_only;
+  ppc << ";show=" << config->show;
+  g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-private-config", ppc.str().c_str(), NULL);
 
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "unique-id", config->unique_id, "gpu-id", config->gpu_id, NULL);
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-type", "hmstitcher", NULL);
-  g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-private-config", ppc.str().c_str(), NULL);
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "config-file", config->config_file, NULL);
   g_object_set(G_OBJECT(bin->pre_conv), "gpu-id", config->gpu_id, NULL);
   g_object_set(G_OBJECT(bin->pre_conv), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
@@ -520,9 +536,8 @@ done:
  *                                                 |_|
  */
 gboolean create_hmvideoprep_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBin* bin) {
-  // GstCaps* caps = NULL;
   gboolean ret = FALSE;
-  // GstCapsFeatures* feature = NULL;
+  std::stringstream ppc;
 
   bin->bin = gst_bin_new("videoprep_bin");
   if (!bin->bin) {
@@ -563,12 +578,6 @@ gboolean create_hmvideoprep_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBi
 
   setup_rgb_nvvm_caps_filter(nullptr, bin->cap_filter);
 
-  // caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "RGBA", NULL);
-  // feature = gst_caps_features_new(MEMORY_FEATURES, NULL);
-  // gst_caps_set_features(caps, 0, feature);
-  // g_object_set(G_OBJECT(bin->cap_filter), "caps", caps, NULL);
-  // gst_caps_unref(caps);
-
   bin->nvvideoprep = gst_element_factory_make("playcropper" /*NVDS_ELEM_DEWARPER*/, NULL);
   if (!bin->nvvideoprep) {
     NVGSTDS_ERR_MSG_V("Failed to create 'nvvideoprep'");
@@ -598,11 +607,6 @@ gboolean create_hmvideoprep_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBi
           G_MAXINT,
           NULL),
       bin->videoprep_caps_filter);
-
-  // feature = gst_caps_features_new("memory:NVMM", NULL);
-  // gst_caps_set_features(caps, 0, feature);
-
-  // g_object_set(G_OBJECT(bin->videoprep_caps_filter), "caps", caps, NULL);
 
   gst_bin_add_many(
       GST_BIN(bin->bin),
@@ -637,6 +641,11 @@ gboolean create_hmvideoprep_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBi
   if (config->output_height) {
     g_object_set(G_OBJECT(bin->nvvideoprep), "output-height", config->output_height, NULL);
   }
+
+  ppc << "show=" << config->show;
+  g_object_set(G_OBJECT(bin->nvvideoprep), "plugin-private-config", ppc.str().c_str(), NULL);
+
+
 #if 0
   NVGSTDS_LINK_ELEMENT(bin->nvvidconv, bin->cap_filter);
   NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->nvvideoprep);
@@ -910,23 +919,28 @@ gboolean create_hmaudio_bin(
     if (sink_config->enable) {
       if (sink_config->type == NV_DS_SINK_ENCODE_FILE) {
         assert(is_dest_file_sink);
-        assert(sink_bin->sub_bins[config->sink_id].mux);
-        HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
-        NVGSTDS_LINK_ELEMENT(bin->queue, bin->audioparse);
-        NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
-        if (!link_audio_pad_to_muxer(bin->bin, sink_bin->sub_bins[config->sink_id].mux)) {
-          goto done;
+        NvDsSinkBinSubBin* target_sink_bin = find_sink_sub_bin(config->sink_id, sink_config_array, sink_bin);
+        if (target_sink_bin) {
+          assert(target_sink_bin->mux);
+          HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
+          NVGSTDS_LINK_ELEMENT(bin->queue, bin->audioparse);
+          NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
+          if (!link_audio_pad_to_muxer(bin->bin, target_sink_bin->mux)) {
+            goto done;
+          }
+          linked = true;
+        } else {
+          std::cerr << "No sink available for sink id " << config->sink_id << std::endl;
         }
-        linked = true;
       } else if (sink_config->type == NV_DS_SINK_UDPSINK) {
-        assert(sink_bin->sub_bins[config->sink_id].rtppay_or_flvmux);
+        NvDsSinkBinSubBin* target_sink_bin = find_sink_sub_bin(config->sink_id, sink_config_array, sink_bin);
+        assert(target_sink_bin->rtppay_or_flvmux);
         HMGST_ELEMENT_MAKE_BINADD(bin->encoder, "voaacenc", "hmaudio_encoder");
         HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
         NVGSTDS_LINK_ELEMENT(bin->queue, bin->encoder);
         NVGSTDS_LINK_ELEMENT(bin->encoder, bin->audioparse);
         NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
-        if (!link_audio_pad_to_muxer(
-                bin->bin, sink_bin->sub_bins[config->sink_id].rtppay_or_flvmux, /*audio_pad_name=*/"audio")) {
+        if (!link_audio_pad_to_muxer(bin->bin, target_sink_bin->rtppay_or_flvmux, /*audio_pad_name=*/"audio")) {
           goto done;
         }
         linked = true;
@@ -967,6 +981,8 @@ gboolean create_hmaudio_bin(
       NVGSTDS_LINK_ELEMENT(bin->queue, bin->audiosink);
     }
   }
+
+  // GstClock *system_clock = gst_system_clock_obtain();
 
   // Fine-tune AV sync with latency adjustment
   // g_object_set(G_OBJECT(audio_sink),

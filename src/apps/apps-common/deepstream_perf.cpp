@@ -22,6 +22,8 @@
 #define TIMESPEC_DIFF_USEC(timespec1, timespec2) \
   (timespec1.tv_sec - timespec2.tv_sec) * 1000000.0 + (timespec1.tv_nsec - timespec2.tv_nsec) / 1000.0
 
+static bool g_disable_perf_measurement = false;
+
 /**
  * Buffer probe function on sink element.
  */
@@ -50,6 +52,9 @@ static GstPadProbeReturn sink_bin_buf_probe(GstPad* pad, GstPadProbeInfo* info, 
 }
 
 static gboolean perf_measurement_callback(gpointer data) {
+  if (g_disable_perf_measurement) {
+    return false;
+  }
   NvDsAppPerfStructInt* str = (NvDsAppPerfStructInt*)data;
   guint buffer_cnt[MAX_SOURCE_BINS];
   NvDsAppPerfStruct perf_struct;
@@ -183,7 +188,6 @@ void pause_perf_measurement(NvDsAppPerfStructInt* str) {
 
 void resume_perf_measurement(NvDsAppPerfStructInt* str) {
   guint i;
-
   g_mutex_lock(&str->struct_lock);
   if (!str->stop) {
     g_mutex_unlock(&str->struct_lock);
@@ -202,6 +206,10 @@ void resume_perf_measurement(NvDsAppPerfStructInt* str) {
   g_mutex_unlock(&str->struct_lock);
 }
 
+void disable_perf_measurement() {
+  g_disable_perf_measurement = true;
+}
+
 gboolean enable_perf_measurement(
     NvDsAppPerfStructInt* str,
     GstPad* sink_bin_pad,
@@ -210,6 +218,7 @@ gboolean enable_perf_measurement(
     guint num_surfaces_per_frame,
     perf_callback callback) {
   guint i;
+  g_disable_perf_measurement = false;
 
   if (!callback) {
     return FALSE;

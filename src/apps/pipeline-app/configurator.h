@@ -23,7 +23,7 @@ class Configurator {
   bool overlay_config(const std::string& node_name, const std::string& filename);
 
   std::optional<YAML::Node> load_private_config();
-  void save_private_config(const YAML::Node& private_config);
+  absl::Status save_private_config(const YAML::Node& private_config);
 
   static std::filesystem::path get_game_dir(const std::string& game_id);
   static std::filesystem::path get_private_config_file_name(const std::string& game_id);
@@ -32,11 +32,14 @@ class Configurator {
     return config_;
   }
 
-  absl::Status complete_configuration();
+  absl::Status complete_configuration(bool force);
 
-  bool post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config);
+  absl::Status post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config);
+
+  bool does_need_stitching(const std::string& game_dir) const;
 
  private:
+
   std::string file_maybe_in_game_dir(const std::string& basename);
   YAML::Node merge_nodes(const YAML::Node& base, const YAML::Node& overlay, bool warn_if_key_not_in_dest);
 
@@ -47,6 +50,7 @@ class Configurator {
 
   // The fully-realzied merged config
   YAML::Node config_;
+  YAML::Node private_config_;
 
   bool set_stream_offsets_{false};
 };

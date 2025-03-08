@@ -1,5 +1,5 @@
-#include "cupano/cuda/cudaStatus.h"
 #include "gstvideoprep.h"
+#include "hstream/src/libs/common/Status.h"
 
 #include <cuda_runtime.h>
 #include <gst/base/gstbasetransform.h>
@@ -62,9 +62,6 @@ static BBox make_null_tracking_box(const NvBufSurfaceParams* in_surf, const NvBu
 
 bool PlayCropperPriv::PreCapsInit(DSCustom_CreateParams* params) {
   // Not an in-place transform
-#ifdef NEW_VIDEOPREP
-  m_transformMode = true;
-#endif
   m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
   m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
   // videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
@@ -127,18 +124,29 @@ gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep)
   return 0;
 }
 
+bool PlayCropperPriv::SetProperty(const Property& prop) {
+  // std::cerr << "SetProperty(" << prop.key << "=" << prop.value << ")" << std::endl;
+  if (prop.key == "show") {
+    show_ = !!std::atol(prop.value.c_str());
+  }
+  return true;
+}
+
 BufferResult PlayCropperPriv::ProcessBuffer(GstBuffer* inbuf) {
   return Super::ProcessBuffer(inbuf);
 }
 
 #ifdef PLAYCROPPER_USE_ONE_KERNEL
 
-CudaStatus PlayCropperPriv::GenerateOutput(
+absl::Status PlayCropperPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     videoprep::GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
   // Setup and initialization
+  if (!in_surface->numFilled) {
+    return absl::CancelledError("No surfaces were filled");
+  }
   assert(in_surface->numFilled == out_surface->batchSize);
   assert(videoprep->stream);
 
@@ -148,7 +156,7 @@ CudaStatus PlayCropperPriv::GenerateOutput(
   nppStreamContext.nStreamFlags = 0;
   nppStreamContext.nCudaDeviceId = videoprep->gpu_id;
 
-  CUDA_RETURN_IF_ERROR(cudaSetDevice(videoprep->gpu_id));
+  HM_RETURN_IF_ERROR(hm::to_status(cudaSetDevice(videoprep->gpu_id)));
 
   const std::vector<BBox> tracking_boxes = get_tracking_boxes(batch_meta);
 
@@ -259,22 +267,25 @@ CudaStatus PlayCropperPriv::GenerateOutput(
       hm::surface::SurfaceList::round_robin_iterator scratch_surface_iter = videoprep->priv->scratch_buffers.begin();
 
       // Step 1: Crop
-      CUDA_RETURN_IF_ERROR(
-          cropSurface(incoming_surface, extra_width_src_rect, *scratch_surface_iter, nppStreamContext));
+      HM_RETURN_IF_ERROR(
+          to_status(cropSurface(incoming_surface, extra_width_src_rect, *scratch_surface_iter, nppStreamContext)));
       // Step 2: Rotate
       auto in_surf_iter = scratch_surface_iter++;
-      CUDA_RETURN_IF_ERROR(rotateNvBufSurfaceWithNPP(
+      HM_RETURN_IF_ERROR(to_status(rotateNvBufSurfaceWithNPP(
           *in_surf_iter,
           BBox(0, 0, extra_width_src_rect.width(), extra_width_src_rect.height()),
           *scratch_surface_iter,
           BBox(0, 0, extra_width_src_rect.width(), extra_width_src_rect.height()),
           angle,
           anchor_point,
-          nppStreamContext));
+          nppStreamContext)));
 
       // Step 3: Final crop and resize
-      CUDA_RETURN_IF_ERROR(cropAndResizeNvBufSurface(
-          *scratch_surface_iter++, new_tbox, outgoing_surface, output_rect, nppStreamContext));
+      HM_RETURN_IF_ERROR(to_status(cropAndResizeNvBufSurface(
+          *scratch_surface_iter++, new_tbox, outgoing_surface, output_rect, nppStreamContext)));
+    }
+    if (show_) {
+      render("Play Cropper", &out_surface->surfaceList[batch_nr], videoprep->stream);
     }
   }
 
@@ -285,7 +296,7 @@ CudaStatus PlayCropperPriv::GenerateOutput(
 
   out_surface->numFilled = nr_surfaces_to_process;
 
-  return CudaStatus::OkStatus();
+  return absl::OkStatus();
 }
 #else
 cudaError PlayCropperPriv::GenerateOutput(

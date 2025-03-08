@@ -3,21 +3,40 @@
 #include "deepstream_app.h"
 
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
 
 #include <gstreamer-1.0/gst/gstelement.h>
+#include <gstreamer-1.0/gst/gstpipeline.h>
 #include <opencv2/opencv.hpp>
 #include <opencv2/videoio.hpp>
 #include <unistd.h>
+#include <yaml-cpp/node/parse.h>
 
+#include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
-#include "hstream/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/Orientation.h"
+
+namespace fs = std::filesystem;
 
 namespace hm {
 
 namespace {
+
+constexpr long kMaxUdpStreamingWidth = 3840;
+constexpr long kMaxUdpStreamingHeight = 2160;
+
+constexpr const char* kRinkMaskFilename = "rink_mask_0.png";
+
+const std::vector<const char*> nostitch_video_names = {
+    // Prefer mp4 to mkv
+    "stitching_output-with-audio.mp4",
+    "stitching_output-with-audio.mkv",
+};
 
 int as_int(const YAML::Node& node) {
   // be less asserty than YAML-CPP
@@ -87,17 +106,6 @@ std::optional<YAML::Node> get_node_if_enabled(const YAML::Node& pipeline, const 
     if (is_enabled(n)) {
       return n;
     }
-    // if (n.IsDefined() && n.IsMap()) {
-    //   YAML::Node enabled = n["enable"];
-    //   if (enabled.IsDefined()) {
-    //     if (enabled.as<std::string>() == "true") {
-    //       return n;
-    //     }
-    //     if (enabled.as<int>()) {
-    //       return n;
-    //     }
-    //   }
-    // }
   }
   return std::nullopt;
 }
@@ -182,7 +190,17 @@ std::optional<YAML::Node> Configurator::load_private_config() {
   return YAML::LoadFile(private_config_file);
 }
 
-void Configurator::save_private_config(const YAML::Node& private_config) {}
+absl::Status Configurator::save_private_config(const YAML::Node& private_config) {
+  std::string private_config_file = get_private_config_file_name(game_id_);
+  std::ofstream fout(private_config_file, std::ios::out | std::ios::trunc);
+  if (!fout.is_open()) {
+    return absl::InternalError(TO_STRING(
+        "Failed to open private config file for writing: \"" << private_config_file
+                                                             << "\", reason: " << strerror(errno)));
+  }
+  fout << private_config << "\n";
+  return absl::OkStatus();
+}
 
 YAML::Node Configurator::load_config() {
   YAML::Node config;
@@ -194,7 +212,10 @@ YAML::Node Configurator::load_config() {
   }
   std::optional<YAML::Node> private_config = load_private_config();
   if (private_config.has_value()) {
-    config = merge_nodes(config, *private_config, /*warn_if_key_not_in_dest=*/!config);
+    private_config_ = *private_config;
+    config = merge_nodes(config, private_config_, /*warn_if_key_not_in_dest=*/!config);
+  } else {
+    private_config_ = YAML::Node();
   }
   return config;
 }
@@ -262,7 +283,18 @@ YAML::Node Configurator::auto_config(YAML::Node&& config) {
   return std::move(config);
 }
 
-absl::Status Configurator::complete_configuration() {
+bool Configurator::does_need_stitching(const std::string& game_dir) const {
+  stitching::VideosDict videos = stitching::get_available_videos(game_dir);
+  if (videos.empty()) {
+    return false;
+  }
+  if (!videos.count("stitched")) {
+    return true;
+  }
+  return false;
+}
+
+absl::Status Configurator::complete_configuration(bool force) {
   YAML::Node pipeline = config_["pipeline"];
   assert(pipeline.IsDefined());
 
@@ -273,53 +305,131 @@ absl::Status Configurator::complete_configuration() {
   }
 
   // Stitching config mask config dir
-  auto game_dir = get_game_dir(game_id_);
+  fs::path game_dir = get_game_dir(game_id_);
 
   pipeline["hmstitcher"]["config-file"] = std::string(game_dir);
 
-  if (!stitching::is_stitching_configured(game_dir).value_or(false) && stitching::can_configure_stitching(config_)) {
-    // HM_RETURN_IF_ERROR(stitching::configure_stitching(
-    //     const std::string& game_id, surface::Surface left_surface, surface::Surface right_surface)
-  }
+  pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / kRinkMaskFilename);
 
-  pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / "rink_mask_0.png");
-  // Stitching LFO, RFO
-  std::vector<std::string> left_files;
-  std::vector<std::string> right_files;
+  YAML::Node offsets = config_["game"]["stitching"]["frame_offsets"];
 
-  if (has_node(config_, "game.videos.left", /*non_null=*/true)) {
-    std::cout << config_["game"]["videos"]["left"] << std::endl;
-    left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
-  }
-  if (has_node(config_, "game.videos.right", /*non_null=*/true)) {
-    right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
-  }
-
-  long area = 0, ww = 0, hh = 0;
+  size_t area = 0, ww = 0, hh = 0;
 
   size_t num_video_sources = 0;
 
-  auto offsets = config_["game"]["stitching"]["frame_offsets"];
-  if (!left_files.empty()) {
-    Videoinfo left_info = getVideoInfo(file_maybe_in_game_dir(left_files[0]));
-    double lfo = offsets["left"].as<double>(); // this is decimal frames
-    set_stream_offsets_ |= lfo != 0.0;
-    pipeline["hmstitcher"]["left-frame-offset-ns"] = std::to_string(size_t(lfo / left_info.fps * GST_SECOND));
-    area = left_info.width * left_info.height;
-    ww = left_info.width;
-    hh = left_info.height;
-  }
-  if (!right_files.empty()) {
-    Videoinfo right_info = getVideoInfo(file_maybe_in_game_dir(right_files[0]));
-    double rfo = offsets["right"].as<double>(); // this is decimal frames
-    set_stream_offsets_ |= rfo != 0.0;
-    pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / right_info.fps * GST_SECOND));
-    if (right_info.width * right_info.height > area) {
-      ww = right_info.width;
-      hh = right_info.height;
+  std::vector<std::string> left_files;
+  std::vector<std::string> right_files;
+  std::string stitched_file;
+
+  stitching::VideosDict videos = stitching::get_available_videos(game_dir);
+
+  if (videos.count("stitched")) {
+    if (fs::exists(videos.at("stitched").at(0))) {
+      stitched_file = videos.at("stitched").at(0);
+      num_video_sources = 1;
+      Videoinfo stitched_info = getVideoInfo(file_maybe_in_game_dir(stitched_file));
+      ww = stitched_info.width;
+      hh = stitched_info.height;
+      area = ww * hh;
     }
   }
 
+  if (stitched_file.empty()) {
+    // Stitching LFO, RFO
+
+    if (!force) {
+      if (has_node(config_, "game.videos.left", /*non_null=*/true)) {
+        left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
+      }
+      if (has_node(config_, "game.videos.right", /*non_null=*/true)) {
+        right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
+      }
+    }
+
+    if (left_files.empty() && right_files.empty() && !videos.count("left") && !videos.count("right")) {
+      HM_RETURN_IF_ERROR(stitching::configure_orientation(game_dir));
+      underlay_config("", get_private_config_file_name(game_id_));
+      std::cout << config_["game"]["videos"] << std::endl;
+      private_config_["game"]["videos"]["left"] = config_["game"]["videos"]["left"];
+      private_config_["game"]["videos"]["right"] = config_["game"]["videos"]["right"];
+      left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
+      right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
+    }
+
+    if (left_files.empty() && right_files.empty() && videos.count("left") && videos.count("right")) {
+      const stitching::VideoChapter& left_chapter = videos.at("left");
+      const stitching::VideoChapter& right_chapter = videos.at("right");
+      if (!left_chapter.empty()) {
+        for (const auto& item : left_chapter) {
+          if (!right_chapter.empty()) {
+            const int chapter = item.first;
+            if (!right_chapter.count(chapter)) {
+              std::cerr << "Right vids are missing chapter " << chapter << ", skipping..." << std::endl;
+              continue;
+            }
+          }
+          left_files.emplace_back(item.second);
+        }
+      }
+      if (!right_chapter.empty()) {
+        for (const auto& item : right_chapter) {
+          if (!left_chapter.empty()) {
+            const int chapter = item.first;
+            if (!left_chapter.count(chapter)) {
+              std::cerr << "Left vids are missing chapter " << chapter << ", skipping..." << std::endl;
+              continue;
+            }
+          }
+          right_files.emplace_back(item.second);
+        }
+      }
+      if (!left_files.empty() && !right_files.empty()) {
+        private_config_["game"]["videos"]["left"] = left_files;
+        private_config_["game"]["videos"]["right"] = right_files;
+        auto spp_status = save_private_config(private_config_);
+        if (!spp_status.ok()) {
+          // We can continue, so just warn
+          std::cerr << "Warnings: failed to save private config: " << spp_status << std::endl;
+        }
+      }
+    }
+
+    if (!left_files.empty() && !right_files.empty()) {
+      if (!has_node(config_, "game.stitching.frame_offsets.left", /*non_null=*/true) || force) {
+        stitching::Synchronization sync;
+        HM_ASSIGN_OR_RETURN(
+            sync, stitching::calculate_stitching_synchronization(game_dir / left_files[0], game_dir / right_files[0]));
+        offsets["left"] = std::to_string(sync.video1_frame_offset);
+        offsets["right"] = std::to_string(sync.video2_frame_offset);
+        private_config_["game"]["stitching"]["frame_offsets"]["left"] = std::to_string(sync.video1_frame_offset);
+        private_config_["game"]["stitching"]["frame_offsets"]["right"] = std::to_string(sync.video2_frame_offset);
+        auto spp_status = save_private_config(private_config_);
+        if (!spp_status.ok()) {
+          // We can continue, so just warn
+          std::cerr << "Warnings: failed to save private config: " << spp_status << std::endl;
+        }
+      }
+    }
+    if (!left_files.empty()) {
+      Videoinfo left_info = getVideoInfo(file_maybe_in_game_dir(left_files[0]));
+      double lfo = offsets["left"].as<double>(); // this is decimal frames
+      set_stream_offsets_ |= lfo != 0.0;
+      pipeline["hmstitcher"]["left-frame-offset-ns"] = std::to_string(size_t(lfo / left_info.fps * GST_SECOND));
+      area = left_info.width * left_info.height;
+      ww = left_info.width;
+      hh = left_info.height;
+    }
+    if (!right_files.empty()) {
+      Videoinfo right_info = getVideoInfo(file_maybe_in_game_dir(right_files[0]));
+      double rfo = offsets["right"].as<double>(); // this is decimal frames
+      set_stream_offsets_ |= rfo != 0.0;
+      pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / right_info.fps * GST_SECOND));
+      if (right_info.width * right_info.height > area) {
+        ww = right_info.width;
+        hh = right_info.height;
+      }
+    }
+  }
   const bool is_udb_output = has_enabled_rtsp_sink(pipeline);
 
   auto maybe_scale_down = [is_udb_output](long width, long height) -> std::tuple<int, int> {
@@ -327,18 +437,8 @@ absl::Status Configurator::complete_configuration() {
       return std::make_tuple(width, height);
     }
     // 4k @ 16:9
-#if 1
-    constexpr long kMaxUdpStreamingWidth = 3840;
-    constexpr long kMaxUdpStreamingHeight = 2160;
-    if (width > kMaxUdpStreamingWidth) {
-      double ar = double(width) / height;
-      width = kMaxUdpStreamingWidth;
-      height = (long)(width / ar);
-      assert(height <= kMaxUdpStreamingHeight);
-    }
-#endif
-    return std::make_tuple(width, height);
-  };
+    return resize_to_fit(width, height, kMaxUdpStreamingWidth, kMaxUdpStreamingHeight);
+  } /* lambda maybe_scale_down() */;
 
   if (!left_files.empty() && !right_files.empty()) {
     auto canvas_size_result = get_canvas_size(game_dir);
@@ -357,6 +457,17 @@ absl::Status Configurator::complete_configuration() {
     pipeline["hmvideoprep"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
     pipeline["hmvideoprep"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
   }
+
+  // auto tiled_display_wh = resize_to_fit(
+  //     pipeline["hmvideoprep"]["output-width"].as<int>(),
+  //     pipeline["hmvideoprep"]["output-height"].as<int>(),
+  //     kMaxUdpStreamingWidth,
+  //     kMaxUdpStreamingHeight);
+  // pipeline["tiled-display"]["width"] = std::get<0>(tiled_display_wh);
+  // pipeline["tiled-display"]["height"] = std::get<1>(tiled_display_wh);
+
+  // pipeline["tiled-display"]["width"] = pipeline["hmvideoprep"]["output-width"];
+  // pipeline["tiled-display"]["height"] = pipeline["hmvideoprep"]["output-height"];
 
   if (area) {
     // Set streammux size
@@ -401,10 +512,6 @@ absl::Status Configurator::complete_configuration() {
   }
   if (num_video_sources < 2) {
     pipeline["hmstitcher"]["enable"] = "0";
-    // YAML::Node n = pipeline["hmstitcher"];
-    // std::cout << n << std::endl;
-    // n["enable"] = "0";
-    // std::cout << pipeline["hmstitcher"] << std::endl;
   }
   if (!possible_audio_uri.empty()) {
     std::optional<YAML::Node> audio_uri_opt = get_enabled_audio_uri(pipeline);
@@ -458,12 +565,27 @@ absl::Status Configurator::complete_configuration() {
   return absl::OkStatus();
 }
 
-bool Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config) {
+absl::Status Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config) {
   // We need to do this get state for some reason
   GstState state, pending;
-  GstStateChangeReturn ret = gst_element_get_state(pipeline.pipeline, &state, &pending, GST_CLOCK_TIME_NONE);
-  assert(ret == GST_STATE_CHANGE_SUCCESS || ret == GST_STATE_CHANGE_NO_PREROLL);
-  assert(state == GstState::GST_STATE_PAUSED);
+  gst_element_get_state(pipeline.pipeline, &state, &pending, GST_CLOCK_TIME_NONE);
+  if (state == GST_STATE_READY) {
+    GstStateChangeReturn ret = gst_element_set_state(pipeline.pipeline, GST_STATE_PAUSED);
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+      return absl::InternalError("Failed to get pipeline state to PAUSED");
+    }
+#if 0
+    // Wait indefinitely until the state change is complete.
+    ret = gst_element_get_state(pipeline.pipeline, &state, &pending, GST_CLOCK_TIME_NONE);
+    if (ret == GST_STATE_CHANGE_SUCCESS && state == GST_STATE_PAUSED) {
+      g_print("Pipeline is now paused.\n");
+    } else {
+      g_printerr("Failed to transition pipeline to PAUSED state (state: %s)\n", gstStateToString(state));
+    }
+#endif
+  } else if (state != GST_STATE_PAUSED) {
+    return absl::InternalError(TO_STRING("Pipeline in unexpected state: " << gstStateToString(state)));
+  }
 
   save_dot_file(pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline");
 
@@ -495,7 +617,13 @@ bool Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig
       }
     }
   }
-  return true;
+
+  // GstClock *system_clock = gst_system_clock_obtain();
+  // gst_pipeline_use_clock(GST_PIPELINE(audio_pipeline), system_clock);
+  // gst_pipeline_use_clock(GST_PIPELINE(video_pipeline), system_clock);
+  // gst_object_unref(system_clock);
+
+  return absl::OkStatus();
 }
 
 } // namespace hm

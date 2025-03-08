@@ -1,5 +1,8 @@
 #pragma once
 
+
+#include "hstream/src/libs/common/Status.h"
+
 #include "cupano/pano/cudaPano.h"
 #include "gstvideoprep.h"
 
@@ -20,11 +23,7 @@ namespace stitcher {
 // #define GST_IS_VIDEOPREP_PLAY_CROPPER(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_PLAY_CROPPER))
 // #define GST_IS_VIDEOPREP_PLAY_CROPPER_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_PLAY_CROPPER))
 
-#ifdef NEW_VIDEOPREP
 using STITCH_PRIV_BASE = CustomAlgorithmBase;
-#else
-using STITCH_PRIV_BASE = hm::videoprep::VideoPrepPriv;
-#endif
 
 class StitcherPriv : public STITCH_PRIV_BASE {
   using Super = STITCH_PRIV_BASE;
@@ -61,18 +60,25 @@ class StitcherPriv : public STITCH_PRIV_BASE {
 
   // DSCustomLibraryBase-
 
-  CudaStatus GenerateOutput(
+  absl::Status GenerateOutput(
       NvDsBatchMeta* batch_meta,
       videoprep::GstVideoPrep* videoprep,
       NvBufSurface* in_surface,
       NvBufSurface* out_surface) override;
 
  private:
-  std::unique_ptr<hm::pano::cuda::CudaStitchPano<uchar4, float3>> stitcher_;
+  using STITCHER = hm::pano::cuda::CudaStitchPano<uchar4, float3>;
+
+  absl::StatusOr<STITCHER*> get_stitcher(videoprep::GstVideoPrep* videoprep);
+
+  absl::Mutex stitcher_mu_;
+  std::unique_ptr<STITCHER> stitcher_ ABSL_GUARDED_BY(stitcher_mu_);
+
   std::mutex process_mu_;
   size_t process_pass_{0};
   bool configure_only_{false};
   size_t left_frame_offset_ns_{0}, right_frame_offset_ns_{0};
+  bool show_{false};
 };
 
 /** GStreamer boilerplate. */

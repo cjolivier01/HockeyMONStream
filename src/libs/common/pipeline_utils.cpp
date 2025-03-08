@@ -1,4 +1,5 @@
 #include "hstream/src/libs/common/pipeline_utils.h"
+#include "hstream/src/libs/common/utils.h"
 
 #include <fstream>
 #include <iostream>
@@ -131,4 +132,20 @@ void save_dot_file(GstElement* pipeline, GstDebugGraphDetails details, const std
   }
 }
 
+const char* gstStateToString(GstState state) {
+    switch (state) {
+        case GST_STATE_VOID_PENDING:
+            return "VOID_PENDING";
+        case GST_STATE_NULL:
+            return "NULL";
+        case GST_STATE_READY:
+            return "READY";
+        case GST_STATE_PAUSED:
+            return "PAUSED";
+        case GST_STATE_PLAYING:
+            return "PLAYING";
+        default:
+            return "UNKNOWN";
+    }
+}
 } // namespace hm

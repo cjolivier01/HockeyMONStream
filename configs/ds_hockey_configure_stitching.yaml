@@ -118,7 +118,7 @@ sink0:
   enable: 1
   sink-id: 0
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
-  type: 2
+  type: 1
   sync: 1
   # sync: 0
   source-id: 0
@@ -242,7 +242,7 @@ hmaudio0:
   # 0=indeopendent (this local config), 1=sink, 2=multisink
   dest: 1
   sink-id: 0
-  # multi-sink-ids: 0,1,2
+  multi-sink-ids: 0,1,2
 
 
 osd:
@@ -325,7 +325,7 @@ dewarper0:
   num-output-buffers: 4
 
 primary-gie:
-  enable: 1
+  enable: 0
   gpu-id: 0
   batch-size: 4
   #Required by the app for OSD, not a plugin property
@@ -352,7 +352,7 @@ ds-example:
   processing-height: 480
 
 hmvideoprep:
-  enable: 1
+  enable: 0
   gpu-id: 0
   # plugin-type: videoprep
   # has_queue: false
@@ -361,13 +361,12 @@ hmvideoprep:
   nvbuf-memory-type: 0
   plot-detections: 1
   plot-tracking: 1
-  show: 0
   # dewarper portion
   # source-id: 6
   # config-file: /opt/nvidia/deepstream/deepstream/sources/apps/sample_apps/deepstream-dewarper-test/config_dewarper_rot_matrix.txt
 
   plugin-type: playcropper
-  # config-file: config_dewarper_null.txt
+  config-file: config_dewarper_null.txt
 
   num-batch-buffers: 2
   num-output-buffers: 4
@@ -375,8 +374,8 @@ hmvideoprep:
   # RTSP needs a smaller image
   rtsp_resize: 1
 
-  # output-width: 5311
-  # output-height: 2988
+  output-width: 5311
+  output-height: 2988
 
   # plugin-type: hmstitcher
   # config-file: /home/colivier/Videos/mlk-heat-1
@@ -386,14 +385,15 @@ hmstitcher:
   enable: 1
   # enable: 0
   gpu-id: 0
+  configure-only: 1
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
-  show: 0
+  # config-file: /home/colivier/Videos/mlk-heat-1
   num-batch-buffers: 4
   num-output-buffers: 4
 
 ds-playtracker:
-  enable: 1
+  enable: 0
   gpu-id: 0
   unique-id: 75
   # draw: true
@@ -402,7 +402,7 @@ ds-playtracker:
   config-file: play_tracker_config.yaml
 
 ds-fieldmask:
-  enable: 1
+  enable: 0
   gpu-id: 0
   unique-id: 76
   # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png
@@ -411,7 +411,7 @@ ds-fieldmask:
   # detection-mask: /home/colivier/Videos/mlk-heat-1/rink_mask_0.png
 
 tracker:
-  enable: 1
+  enable: 0
   # For NvDCF and NvDeepSORT tracker, tracker-width and tracker-height must be a multiple of 32, respectively
   tracker-width: 960
   tracker-height: 544

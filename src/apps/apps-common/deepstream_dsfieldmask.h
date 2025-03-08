@@ -106,6 +106,7 @@ struct NvDsHmVideoPrepConfig {
   gboolean enable;
   guint unique_id;
   guint gpu_id;
+  gboolean show;
   bool has_queue;
   bool has_videoconvert;
   bool has_cameraman;
@@ -150,8 +151,10 @@ gboolean create_hmvideoprep_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBi
  *
  */
 struct HmStitcherConfig : public NvDsHmVideoPrepConfig {
+  gboolean configure_only;
   gulong left_frame_offset_ns;
   gulong right_frame_offset_ns;
+  gboolean show;
 };
 
 // Struct to store references to the bin and elements

@@ -18,6 +18,8 @@ gst_cc_plugin(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/stitching:stitching",
         "@opencv_linux//:opencv",
+        "@com_google_absl//absl/status:statusor",
     ],
 )

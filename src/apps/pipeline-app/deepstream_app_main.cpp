@@ -1,6 +1,9 @@
 /* clang-format off */
+// X11 stuff must come first becaus eit defined "Status"
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#undef Status
+/* clang-format on */
 
 #undef Status
 /* clang-format on */
@@ -36,6 +39,8 @@ constexpr int MAX_INSTANCES = 128;
 constexpr char APP_TITLE[] = "DeepStream";
 constexpr int DEFAULT_X_WINDOW_WIDTH = 1920;
 constexpr int DEFAULT_X_WINDOW_HEIGHT = 1080;
+
+static constexpr const char* kConfigureStitchingConfigFileName = "ds_hockey_configure_stitching.yaml";
 
 GST_DEBUG_CATEGORY(NVDS_APP);
 
@@ -341,7 +346,7 @@ bool DeepStreamApplication::initPipelines() {
         app->return_value = -1;
         return false;
       }
-      auto status = app->complete_configuration();
+      auto status = app->complete_configuration(/*force=*/false);
       if (!status.ok()) {
         std::cerr << status << std::endl;
         return false;

@@ -24,10 +24,9 @@
 
 #include <cassert>
 
+#include "absl/status/statusor.h"
 namespace hm {
 namespace videoprep {
-
-#define NEW_VIDEOPREP
 
 #define DISTORTION_SIZE 5 /**< Maximum number of distortion coefficients */
 #define FOCAL_LENGTH_SIZE 2 /**< Focal length array size : two values for X & Y direction */
@@ -66,13 +65,13 @@ class VideoPrepPriv : public DSCustomLibraryBase {
 
   // DSCustomLibraryBase-
 
-  virtual CudaStatus GenerateOutput(
+  virtual absl::Status GenerateOutput(
       NvDsBatchMeta* batch_meta,
       videoprep::GstVideoPrep* videoprep,
       NvBufSurface* in_surface,
       NvBufSurface* out_surface) {
     assert(false);
-    return CudaStatus::OkStatus();
+    return absl::OkStatus();
   }
 
   virtual gint AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) {
@@ -161,10 +160,6 @@ struct GstVideoPrep
 
   guint source_id;                            /**< Source ID of the input source */
   guint num_output_buffers;                   /**< Number of Output Buffers to be allocated by buffer pool */
-
-#ifndef NEW_VIDEOPREP
-  GstBuffer * out_gst_buf;                    /**< Pointer to the output buffer */
-#endif
 
   GstPadEventFunction parent_sink_event_fn;
 
