@@ -55,6 +55,8 @@ inline T get_node_value(const YAML::Node& n, const std::string& dot_string,
 
 const char* gstStateToString(GstState state);
 
+void waitForPipelineStop(GstElement* pipeline);
+
 }  // namespace hm
 
 

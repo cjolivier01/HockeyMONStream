@@ -133,19 +133,72 @@ void save_dot_file(GstElement* pipeline, GstDebugGraphDetails details, const std
 }
 
 const char* gstStateToString(GstState state) {
-    switch (state) {
-        case GST_STATE_VOID_PENDING:
-            return "VOID_PENDING";
-        case GST_STATE_NULL:
-            return "NULL";
-        case GST_STATE_READY:
-            return "READY";
-        case GST_STATE_PAUSED:
-            return "PAUSED";
-        case GST_STATE_PLAYING:
-            return "PLAYING";
+  switch (state) {
+    case GST_STATE_VOID_PENDING:
+      return "VOID_PENDING";
+    case GST_STATE_NULL:
+      return "NULL";
+    case GST_STATE_READY:
+      return "READY";
+    case GST_STATE_PAUSED:
+      return "PAUSED";
+    case GST_STATE_PLAYING:
+      return "PLAYING";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+void waitForPipelineStop(GstElement* pipeline) {
+  // Get the pipeline's bus
+  GstBus* bus = gst_element_get_bus(pipeline);
+
+  // Record the time of the last message print
+  auto lastPrintTime = std::chrono::steady_clock::now();
+  bool done = false;
+
+  while (!done) {
+    // Poll the bus for messages with a timeout of 1 second (in nanoseconds)
+    GstMessage* msg = gst_bus_timed_pop(bus, 1000000000);
+    if (msg) {
+      switch (GST_MESSAGE_TYPE(msg)) {
+        case GST_MESSAGE_EOS:
+          std::cout << "End-of-stream reached." << std::endl;
+          done = true;
+          break;
+        case GST_MESSAGE_ERROR: {
+          GError* err = nullptr;
+          gchar* debug = nullptr;
+          gst_message_parse_error(msg, &err, &debug);
+          std::cerr << "Error from element " << GST_OBJECT_NAME(msg->src) << ": " << err->message << std::endl;
+          if (debug)
+            std::cerr << "Debug info: " << debug << std::endl;
+          g_error_free(err);
+          g_free(debug);
+          done = true;
+          break;
+        }
         default:
-            return "UNKNOWN";
+          break;
+      }
+      gst_message_unref(msg);
     }
+
+    // Check the current state of the pipeline without blocking
+    GstState currentState, pendingState;
+    gst_element_get_state(pipeline, &currentState, &pendingState, 0);
+    if (currentState != GST_STATE_PLAYING) {
+      done = true;
+    }
+
+    // Every 5 seconds, print a waiting message
+    auto now = std::chrono::steady_clock::now();
+    if (std::chrono::duration_cast<std::chrono::seconds>(now - lastPrintTime).count() >= 5) {
+      std::cout << "Waiting for pipeline to stop..." << std::endl;
+      lastPrintTime = now;
+    }
+  }
+
+  gst_object_unref(bus);
 }
 } // namespace hm

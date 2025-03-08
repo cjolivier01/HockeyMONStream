@@ -77,9 +77,10 @@ class PipelineApplication {
 
   // Helper functions for pipeline initialization and execution.
   absl::Status initializeInstances(CleanupStack& cleanup_stack);
-  absl::Status createPipelines(std::vector<std::shared_ptr<HmApp>>& app_contexts, CleanupStack& cleanup_stack);
+  absl::Status createPipelines(std::vector<std::shared_ptr<HmApp>>& app_contexts, CleanupStack& cleanup_stack) const;
   absl::Status createMainLoop(std::vector<std::shared_ptr<HmApp>>& app_contexts, CleanupStack& cleanup_stack);
-  absl::Status playPipelines(std::vector<std::shared_ptr<HmApp>>& app_contexts, CleanupStack& cleanup_stack);
+  absl::Status playPipelines(std::vector<std::shared_ptr<HmApp>>& app_contexts, CleanupStack& cleanup_stack) const;
+  absl::Status waitForPipelinesStopped(std::vector<std::shared_ptr<HmApp>>& app_contexts) const;
 
   // Callback and helper functions.
   static void all_bbox_generated(AppCtx* app_ctx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
@@ -92,7 +93,7 @@ class PipelineApplication {
   gboolean check_for_interrupt();
   static gboolean kbhit();
   static void changemode(int dir);
-  void print_runtime_commands();
+  void print_runtime_commands() const;
   static gboolean event_thread_func_static(gpointer arg);
   gboolean event_thread_func();
   static int get_source_id_from_coordinates(float x_rel, float y_rel, AppCtx* app_ctx);

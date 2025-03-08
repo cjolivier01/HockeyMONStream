@@ -140,7 +140,7 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
 
 absl::Status PipelineApplication::createPipelines(
     std::vector<std::shared_ptr<HmApp>>& app_contexts,
-    CleanupStack& /*cleanup_stack*/) {
+    CleanupStack& /*cleanup_stack*/) const {
   // Section 2: Create pipelines for each instance.
   for (guint i = 0; i < app_contexts.size(); i++) {
     if (!create_pipeline(app_contexts[i].get(), nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
@@ -303,7 +303,7 @@ absl::Status PipelineApplication::createMainLoop(
 
 absl::Status PipelineApplication::playPipelines(
     std::vector<std::shared_ptr<HmApp>>& app_contexts,
-    CleanupStack& /*cleanup_stack*/) {
+    CleanupStack& /*cleanup_stack*/) const {
   absl::Status status;
   for (guint i = 0; i < app_contexts.size(); i++) {
     status = app_contexts[i]->configurator().post_config_pipeline(app_contexts[i]->pipeline, app_contexts[i]->config);
@@ -338,6 +338,19 @@ absl::Status PipelineApplication::playPipelines(
   return status;
 }
 
+absl::Status PipelineApplication::waitForPipelinesStopped(std::vector<std::shared_ptr<HmApp>>& app_contexts) const {
+  for (auto app_ctx : app_contexts) {
+    if (!app_ctx) {
+      continue;
+    }
+    if (!app_ctx->pipeline.pipeline) {
+      continue;
+    }
+    hm::waitForPipelineStop(app_ctx->pipeline.pipeline);
+  }
+  return absl::OkStatus();
+}
+
 //------------------------------------------------------------------------------
 // Main run function.
 //------------------------------------------------------------------------------
@@ -345,7 +358,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   absl::Status status = absl::OkStatus();
   GError* error = nullptr;
 
-  CleanupStack cleanup_stack;
+  CleanupStack global_cleanup_stack;
 
   GOptionEntry entries[] = {
       {"version", 'v', 0, G_OPTION_ARG_NONE, &print_version_, "Print DeepStreamSDK version", nullptr},
@@ -425,11 +438,19 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     return absl::InternalError("Specify config file with -c option");
   }
 
-  HM_RETURN_IF_ERROR(initializeInstances(cleanup_stack));
-  HM_RETURN_IF_ERROR(createPipelines(stage_app_contexts_.at(current_stage_), cleanup_stack));
-  HM_RETURN_IF_ERROR(createMainLoop(stage_app_contexts_.at(current_stage_), cleanup_stack));
-  HM_RETURN_IF_ERROR(playPipelines(stage_app_contexts_.at(current_stage_), cleanup_stack));
+  HM_RETURN_IF_ERROR(initializeInstances(global_cleanup_stack));
 
+  for (auto stage_item : stage_app_contexts_) {
+    current_stage_ = stage_item.first;
+    auto& app_contexts = stage_app_contexts_.at(current_stage_);
+    {
+      CleanupStack stage_cleanup_stack;
+      HM_RETURN_IF_ERROR(createPipelines(app_contexts, stage_cleanup_stack));
+      HM_RETURN_IF_ERROR(createMainLoop(app_contexts, stage_cleanup_stack));
+      HM_RETURN_IF_ERROR(playPipelines(app_contexts, stage_cleanup_stack));
+    }
+    HM_RETURN_IF_ERROR(waitForPipelinesStopped(app_contexts));
+  }
   return absl::OkStatus();
 }
 
@@ -571,7 +592,7 @@ void PipelineApplication::changemode(int dir) {
   }
 }
 
-void PipelineApplication::print_runtime_commands() {
+void PipelineApplication::print_runtime_commands() const {
   g_print(
       "\nRuntime commands:\n"
       "\th: Print this help\n"
