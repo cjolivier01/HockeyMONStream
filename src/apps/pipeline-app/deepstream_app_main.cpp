@@ -167,7 +167,7 @@ class PipelineApplication {
     for (guint i = 0; i < num_instances; i++) {
       appCtx[i] = std::make_unique<HmApp>(game_id ? *game_id : "");
       appCtx[i]->person_class_id = -1;
-      apCtx[i]->car_class_id = -1;
+      appCtx[i]->car_class_id = -1;
       appCtx[i]->index = i;
       appCtx[i]->active_source_index = -1;
       if (show_bbox_text)
