@@ -348,7 +348,7 @@ absl::Status Configurator::complete_configuration(bool force) {
 
     if (left_files.empty() && right_files.empty() && !videos.count("left") && !videos.count("right")) {
       HM_RETURN_IF_ERROR(stitching::configure_orientation(game_dir));
-      underlay_config("", get_private_config_file_name(game_id_));
+      overlay_config("", get_private_config_file_name(game_id_));
       std::cout << config_["game"]["videos"] << std::endl;
       private_config_["game"]["videos"]["left"] = config_["game"]["videos"]["left"];
       private_config_["game"]["videos"]["right"] = config_["game"]["videos"]["right"];
