@@ -198,7 +198,14 @@ absl::Status save_image(surface::Surface surf, const std::string& filename) {
 }
 
 std::string get_game_id(const std::string& game_dir) {
-  return fs::path(game_dir).filename();
+  fs::path path(game_dir);
+
+  // Handle cases where the path is empty or refers to the root directory
+  if (path.empty() || path.parent_path() == path) {
+    return path.filename().string();
+  }
+
+  return path.parent_path().filename().string();
 }
 
 std::unordered_map<std::string, std::string> get_environment() {
@@ -339,7 +346,7 @@ absl::Status create_field_mask(const std::string& game_dir, surface::Surface sur
   const fs::path hockeymom_dir = fs::path("external") / "hm";
   fs::path stitched_file = fs::path(game_dir) / "s.png";
   HM_RETURN_IF_ERROR(save_image(surface, stitched_file));
-  std::string game_id = stitched_file.parent_path().filename();
+  std::string game_id = get_game_id(game_dir);
   std::vector<std::string> cmd{
       get_python_interp(),
       fs::path("hmlib/segm/ice_rink.py"),
@@ -370,7 +377,7 @@ absl::Status create_field_mask(const std::string& game_dir, surface::Surface sur
 
 absl::Status configure_orientation(const std::string& game_dir) {
   const fs::path hockeymom_dir = fs::path("external") / "hm";
-  std::string game_id = fs::path(game_dir).filename();
+  std::string game_id = get_game_id(game_dir);
   std::vector<std::string> cmd{
       get_python_interp(),
       fs::path("hmlib/orientation.py"),
