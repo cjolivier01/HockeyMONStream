@@ -709,7 +709,10 @@ inline void CustomAlgorithmBase::OutputThread(void) {
         result = gst_buffer_pool_acquire_buffer(videoprep->pool, &newGstOutBuf, NULL);
         if (result != GST_FLOW_OK) {
           GST_ERROR_OBJECT(m_element, "InsertCustomFrame failed error = %d, exiting...", result);
-          exit(-1);
+          // exit(-1);
+           last_flow_ret_ = GST_FLOW_ERROR;
+           lk.lock();
+           break;
         }
         // Copy meta and transform if required
         if (!gst_buffer_copy_into(newGstOutBuf, packetInfo.inbuf, GST_BUFFER_COPY_META, 0, -1)) {
@@ -721,7 +724,10 @@ inline void CustomAlgorithmBase::OutputThread(void) {
         NvBufSurface* out_surf = getNvBufSurface(newGstOutBuf);
         if (!in_surf || !out_surf) {
           GST_ERROR_OBJECT(m_element, "CustomLib: NvBufSurface not found in the buffer...exiting...\n");
-          exit(-1);
+          // exit(-1);
+           last_flow_ret_ = GST_FLOW_ERROR;
+           lk.lock();
+           break;
         }
 
         batch_meta = GetNVDS_BatchMeta(newGstOutBuf);

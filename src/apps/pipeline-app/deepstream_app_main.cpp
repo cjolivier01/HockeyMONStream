@@ -17,6 +17,7 @@
 #include <termios.h>
 #include <unistd.h>
 #include <memory>
+#include <vector> // Added for std::vector
 #include "deepstream_app.h"
 #include "nvds_version.h"
 
@@ -25,7 +26,6 @@
 #include <signal.h>
 #include <sys/select.h>
 
-#define MAX_INSTANCES 128
 #define APP_TITLE "DeepStream"
 
 #define DEFAULT_X_WINDOW_WIDTH 1920
@@ -57,7 +57,7 @@ class PipelineApplication {
     memset(fps, 0, sizeof(fps));
     memset(fps_avg, 0, sizeof(fps_avg));
     display = NULL;
-    memset(windows, 0, sizeof(windows));
+    // vectors are default-initialized; no need to memset.
     x_event_thread = NULL;
     rrow = rcol = rcfg = 0;
     rrowsel = FALSE;
@@ -154,6 +154,10 @@ class PipelineApplication {
       return_value = -1;
       goto done;
     }
+
+    // Resize our vectors to hold exactly num_instances elements.
+    appCtx.resize(num_instances);
+    windows.resize(num_instances, 0);
 
     // Create and initialize each HmApp instance.
     for (i = 0; i < num_instances; i++) {
@@ -844,7 +848,7 @@ class PipelineApplication {
 
  private:
   // Member variables (formerly globals)
-  std::unique_ptr<HmApp> appCtx[MAX_INSTANCES];
+  std::vector<std::unique_ptr<HmApp>> appCtx; // Replaced fixed array with vector
   guint cintr;
   GMainLoop* main_loop;
   gchar** cfg_files;
@@ -863,7 +867,7 @@ class PipelineApplication {
   gdouble fps[MAX_SOURCE_BINS];
   gdouble fps_avg[MAX_SOURCE_BINS];
   Display* display;
-  Window windows[MAX_INSTANCES];
+  std::vector<Window> windows; // Replaced fixed array with vector
   GThread* x_event_thread;
   GMutex disp_lock;
   guint rrow, rcol, rcfg;
