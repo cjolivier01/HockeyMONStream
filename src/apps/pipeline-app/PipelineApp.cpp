@@ -214,7 +214,7 @@ absl::Status PipelineApplication::createMainLoop(CleanupStack& cleanup_stack) {
       hints.width = width;
       hints.height = height;
 
-      windows_[i] = XCreateSimpleWindow(
+      windows_.emplace_back(XCreateSimpleWindow(
           display_,
           RootWindow(display_, DefaultScreen(display_)),
           hints.x,
@@ -223,7 +223,7 @@ absl::Status PipelineApplication::createMainLoop(CleanupStack& cleanup_stack) {
           height,
           2,
           0x00000000,
-          0x00000000);
+          0x00000000));
 
       XSetNormalHints(display_, windows_[i], &hints);
 
