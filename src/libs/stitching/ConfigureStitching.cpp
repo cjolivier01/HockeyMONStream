@@ -197,8 +197,8 @@ absl::Status save_image(surface::Surface surf, const std::string& filename) {
   return absl::OkStatus();
 }
 
-std::string get_game_id(const std::string& game_dir) {
-  fs::path path(game_dir);
+std::string get_game_id(const std::string& game_path) {
+  fs::path path(game_path);
 
   // Handle cases where the path is empty or refers to the root directory
   if (path.empty() || path.parent_path() == path) {
@@ -346,7 +346,7 @@ absl::Status create_field_mask(const std::string& game_dir, surface::Surface sur
   const fs::path hockeymom_dir = fs::path("external") / "hm";
   fs::path stitched_file = fs::path(game_dir) / "s.png";
   HM_RETURN_IF_ERROR(save_image(surface, stitched_file));
-  std::string game_id = get_game_id(game_dir);
+  std::string game_id = get_game_id(stitched_file);
   std::vector<std::string> cmd{
       get_python_interp(),
       fs::path("hmlib/segm/ice_rink.py"),
