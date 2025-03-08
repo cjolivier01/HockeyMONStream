@@ -126,13 +126,13 @@ sink0:
   nvbuf-memory-type: 0
 
 sink1:
-  enable: 0
+  enable: 1
   sink-id: 1
   # Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 3
   # link-to-demux: 1
   #1=mp4 2=mkv
-  container: 2
+  container: 1
   #1=h264 2=h265
   codec: 2
   #encoder type 0=Hardware 1=Software
@@ -246,7 +246,7 @@ hmaudio0:
 
 
 osd:
-  enable: 1
+  enable: 0
   gpu-id: 0
   border-width: 1
   text-size: 15

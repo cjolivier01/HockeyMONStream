@@ -118,7 +118,6 @@ enum {
   PROP_PLUGIN_TYPE,
   PROP_OUTPUT_WIDTH,
   PROP_OUTPUT_HEIGHT,
-  PROP_DEWARP_LIB_VERSION,
   PROP_NUM_BATCH_BUFFERS,
   PROP_NVBUF_MEMORY_TYPE,
   PROP_INTERPOLATION_METHOD,
@@ -965,15 +964,6 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
           NULL,
           (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
-  g_object_class_install_property(
-      gobject_class,
-      PROP_DEWARP_LIB_VERSION,
-      g_param_spec_string(
-          "videoprep-lib-version",
-          "Library Version",
-          "Library Version",
-          NULL,
-          (GParamFlags)(G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
   PROP_NVBUF_MEMORY_TYPE_INSTALL(gobject_class);
   PROP_INTERPOLATION_METHOD_INSTALL(gobject_class);
 
