@@ -35,7 +35,7 @@ typedef struct {
   gchar const* sensor_name;
 } NvDsAppSourceDetail;
 
-typedef struct {
+typedef struct _NvDsAppPerfStruct {
   gdouble fps[MAX_SOURCE_BINS];
   gdouble fps_avg[MAX_SOURCE_BINS];
   guint num_instances;
