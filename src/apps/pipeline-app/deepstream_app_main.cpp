@@ -1,5 +1,5 @@
 /* clang-format off */
-// X11 stuff must come first because it defined "Status"
+// X11 stuff must come first because it defines "Status"
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #undef Status
@@ -7,7 +7,6 @@
 
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
-// #include "hstream/src/apps/apps-common/deepstream_config_file_parser.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 
@@ -38,30 +37,47 @@
 // Do not encapsulate this debug category per instructions.
 GST_DEBUG_CATEGORY(NVDS_APP);
 
-//
-// CleanupStack: A simple RAII container for cleanup callbacks.
-// When a CleanupStack is destroyed, all callbacks stored in it are invoked in reverse order.
-//
+/**
+ * @brief A simple RAII container for cleanup callbacks.
+ *
+ * When a CleanupStack is destroyed, all callbacks stored in it are invoked in reverse order.
+ */
 class CleanupStack {
  public:
+  /**
+   * @brief Adds a cleanup callback to the stack.
+   *
+   * @param cleanup A function to call during cleanup.
+   */
   void push(std::function<void()> cleanup) {
     cleanups_.push_back(std::move(cleanup));
   }
+
+  /**
+   * @brief Destructor that executes cleanup callbacks in reverse order.
+   */
   ~CleanupStack() {
+    // Iterate in reverse order to call cleanups.
     for (auto it = cleanups_.rbegin(); it != cleanups_.rend(); ++it) {
       (*it)();
     }
   }
 
  private:
+  /// Container for cleanup callback functions.
   std::vector<std::function<void()>> cleanups_;
 };
 
-//
-// PipelineApplication encapsulates all global state and callback functions.
-//
+/**
+ * @brief Encapsulates all global state and callback functions for the pipeline application.
+ *
+ * This class manages the creation, execution, and cleanup of pipelines.
+ */
 class PipelineApplication {
  public:
+  /**
+   * @brief Constructor that initializes member variables.
+   */
   PipelineApplication() {
     cintr_ = FALSE;
     main_loop_ = nullptr;
@@ -90,36 +106,97 @@ class PipelineApplication {
     instance_ = this;
   }
 
+  /**
+   * @brief Destructor to clear resources.
+   */
   ~PipelineApplication() {
     g_mutex_clear(&disp_lock_);
   }
 
-  // Main run function. All cleanup objects will be registered via the CleanupStack.
+  /**
+   * @brief Main run function to initialize and execute the application.
+   *
+   * @param argc Argument count.
+   * @param argv Argument vector.
+   * @return absl::Status indicating success or error.
+   */
   absl::Status run(int argc, char* argv[]);
 
-  // Helper functions that separate key sections.
+  //--------------------------------------------------------------------------
+  // Helper functions for pipeline initialization and execution.
+  //--------------------------------------------------------------------------
+
+  /**
+   * @brief Initializes application instances.
+   *
+   * Section 1: Create and initialize each HmApp instance.
+   *
+   * @param cleanup_stack Reference to a CleanupStack for registering cleanup tasks.
+   * @return absl::Status indicating success or error.
+   */
   absl::Status initializeInstances(CleanupStack& cleanup_stack); // Section 1
+
+  /**
+   * @brief Creates pipelines for each instance.
+   *
+   * Section 2: Create pipelines for each instance.
+   *
+   * @param cleanup_stack Reference to a CleanupStack for registering cleanup tasks.
+   * @return absl::Status indicating success or error.
+   */
   absl::Status createPipelines(CleanupStack& cleanup_stack); // Section 2
+
+  /**
+   * @brief Creates the main loop and initializes display/windows.
+   *
+   * Section 3: Create main loop and initialize display/windows.
+   *
+   * @param cleanup_stack Reference to a CleanupStack for registering cleanup tasks.
+   * @return absl::Status indicating success or error.
+   */
   absl::Status createMainLoop(CleanupStack& cleanup_stack); // Section 3
+
+  /**
+   * @brief Starts the pipelines and runs the main loop.
+   *
+   * Section 4: Set pipelines to PLAYING and run the main loop.
+   *
+   * @param cleanup_stack Reference to a CleanupStack for registering cleanup tasks.
+   * @return absl::Status indicating success or error.
+   */
   absl::Status playPipelines(CleanupStack& cleanup_stack); // Section 4
 
   //--------------------------------------------------------------------------
   // Callback and helper functions (mostly static, calling member functions)
   //--------------------------------------------------------------------------
 
+  /**
+   * @brief Callback invoked after bounding boxes have been generated.
+   *
+   * Processes metadata for each detected object.
+   *
+   * @param app_ctx Pointer to the application context.
+   * @param buf Pointer to the GST buffer.
+   * @param batch_meta Pointer to batch metadata.
+   * @param index Index of the current instance.
+   */
   static void all_bbox_generated(AppCtx* app_ctx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index) {
     guint num_male = 0;
     guint num_female = 0;
     guint num_objects[128];
     memset(num_objects, 0, sizeof(num_objects));
 
+    // Iterate over each frame metadata.
     for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != nullptr; l_frame = l_frame->next) {
       NvDsFrameMeta* frame_meta = reinterpret_cast<NvDsFrameMeta*>(l_frame->data);
+      // Iterate over each object in the frame.
       for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != nullptr; l_obj = l_obj->next) {
         NvDsObjectMeta* obj = reinterpret_cast<NvDsObjectMeta*>(l_obj->data);
+        // Check if the object is from the primary GIE.
         if (obj->unique_component_id == static_cast<gint>(app_ctx->config.primary_gie_config.unique_id)) {
           if (obj->class_id >= 0 && obj->class_id < 128)
             num_objects[obj->class_id]++;
+          // For person class, adjust display text for gender.
           if (app_ctx->person_class_id > -1 && obj->class_id == app_ctx->person_class_id) {
             if (strstr(obj->text_params.display_text, "Man")) {
               str_replace(obj->text_params.display_text, "Man", "");
@@ -136,10 +213,23 @@ class PipelineApplication {
     }
   }
 
+  /**
+   * @brief Static signal interrupt handler.
+   *
+   * @param signum Signal number.
+   */
   static void _intr_handler(int signum) {
     if (instance_)
       instance_->handle_intr(signum);
   }
+
+  /**
+   * @brief Handles an interrupt signal.
+   *
+   * Sets internal flag and resets signal handler to default.
+   *
+   * @param signum Signal number.
+   */
   void handle_intr(int signum) {
     NVGSTDS_ERR_MSG_V("User Interrupted..\n");
     struct sigaction action;
@@ -148,6 +238,10 @@ class PipelineApplication {
     sigaction(SIGINT, &action, nullptr);
     cintr_ = TRUE;
   }
+
+  /**
+   * @brief Sets up the interrupt signal handler.
+   */
   void _intr_setup() {
     struct sigaction action;
     memset(&action, 0, sizeof(action));
@@ -155,22 +249,39 @@ class PipelineApplication {
     sigaction(SIGINT, &action, nullptr);
   }
 
+  /**
+   * @brief Static performance callback.
+   *
+   * @param context Application context.
+   * @param str Pointer to performance structure.
+   */
   static void perf_cb_static(gpointer context, NvDsAppPerfStruct* str) {
     if (instance_)
       instance_->perf_cb(context, str);
   }
+
+  /**
+   * @brief Handles performance measurement callback.
+   *
+   * Updates FPS values and prints performance data.
+   *
+   * @param context Application context.
+   * @param str Pointer to performance structure.
+   */
   void perf_cb(gpointer context, NvDsAppPerfStruct* str) {
     static guint header_print_cnt = 0;
     guint i;
     AppCtx* app_ctx = reinterpret_cast<AppCtx*>(context);
     guint numf = str->num_instances;
 
+    // Update FPS values under lock.
     g_mutex_lock(&fps_lock_);
     for (i = 0; i < numf; i++) {
       fps_[i] = str->fps[i];
       fps_avg_[i] = str->fps_avg[i];
     }
 
+    // Print header periodically.
     if (header_print_cnt % 20 == 0) {
       g_print("\n**PERF:  ");
       for (i = 0; i < numf; i++) {
@@ -191,11 +302,25 @@ class PipelineApplication {
     g_mutex_unlock(&fps_lock_);
   }
 
+  /**
+   * @brief Static callback to check for interrupt.
+   *
+   * @param data Unused.
+   * @return gboolean TRUE if not interrupted, FALSE otherwise.
+   */
   static gboolean check_for_interrupt_static(gpointer data) {
     if (instance_)
       return instance_->check_for_interrupt();
     return TRUE;
   }
+
+  /**
+   * @brief Checks for a user interrupt.
+   *
+   * If interrupted, quits the main loop.
+   *
+   * @return gboolean TRUE if continuing, FALSE if interrupt detected.
+   */
   gboolean check_for_interrupt() {
     if (quit_)
       return FALSE;
@@ -209,6 +334,11 @@ class PipelineApplication {
     return TRUE;
   }
 
+  /**
+   * @brief Checks if a key has been pressed.
+   *
+   * @return gboolean TRUE if key pressed, FALSE otherwise.
+   */
   static gboolean kbhit() {
     struct timeval tv;
     fd_set rdfs;
@@ -219,6 +349,14 @@ class PipelineApplication {
     select(STDIN_FILENO + 1, &rdfs, nullptr, nullptr, &tv);
     return FD_ISSET(STDIN_FILENO, &rdfs);
   }
+
+  /**
+   * @brief Changes the terminal mode.
+   *
+   * When enabling non-canonical mode, terminal input is processed character-by-character.
+   *
+   * @param dir 1 to enable non-canonical mode, otherwise restore original mode.
+   */
   static void changemode(int dir) {
     static struct termios oldt, newt;
     if (dir == 1) {
@@ -230,6 +368,9 @@ class PipelineApplication {
       tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
   }
 
+  /**
+   * @brief Prints the runtime commands available to the user.
+   */
   void print_runtime_commands() {
     g_print(
         "\nRuntime commands:\n"
@@ -245,11 +386,25 @@ class PipelineApplication {
     }
   }
 
+  /**
+   * @brief Static event thread function wrapper.
+   *
+   * @param arg Unused.
+   * @return gboolean TRUE if event loop should continue.
+   */
   static gboolean event_thread_func_static(gpointer arg) {
     if (instance_)
       return instance_->event_thread_func();
     return TRUE;
   }
+
+  /**
+   * @brief Processes user input and events.
+   *
+   * Handles keyboard and mouse events, updating the pipeline accordingly.
+   *
+   * @return gboolean TRUE if event loop should continue, FALSE otherwise.
+   */
   gboolean event_thread_func() {
     guint i;
     gboolean ret = TRUE;
@@ -272,6 +427,7 @@ class PipelineApplication {
 
     gint source_id = -1;
     GstElement* tiler = (app_ctx_[rcfg_]) ? app_ctx_[rcfg_]->pipeline.tiled_display_bin.tiler : nullptr;
+    // Process source selection if tiled display is enabled.
     if (app_ctx_[rcfg_] && app_ctx_[rcfg_]->config.tiled_display_config.enable && tiler) {
       g_object_get(G_OBJECT(tiler), "show-source", &source_id, nullptr);
       if (selecting_) {
@@ -308,6 +464,7 @@ class PipelineApplication {
         }
       }
     }
+    // Process keyboard commands.
     switch (c) {
       case 'h':
         print_runtime_commands();
@@ -329,6 +486,7 @@ class PipelineApplication {
         ret = FALSE;
         break;
       case 'c':
+        // Allow selecting a different config file.
         if (app_ctx_[rcfg_] && app_ctx_[rcfg_]->config.tiled_display_config.enable && selecting_ == FALSE &&
             source_id == -1) {
           g_print("--selecting config file --\n");
@@ -345,6 +503,7 @@ class PipelineApplication {
         }
         break;
       case 'z':
+        // Toggle source selection mode.
         if (app_ctx_[rcfg_] && app_ctx_[rcfg_]->config.tiled_display_config.enable && source_id == -1 &&
             selecting_ == FALSE) {
           g_print("--selecting source --\n");
@@ -367,6 +526,14 @@ class PipelineApplication {
     return ret;
   }
 
+  /**
+   * @brief Computes the source id from normalized window coordinates.
+   *
+   * @param x_rel Relative x-coordinate (0 to 1).
+   * @param y_rel Relative y-coordinate (0 to 1).
+   * @param app_ctx Pointer to the application context.
+   * @return int The computed source id, or -1 if out of bounds.
+   */
   static int get_source_id_from_coordinates(float x_rel, float y_rel, AppCtx* app_ctx) {
     int tile_num_rows = app_ctx->config.tiled_display_config.rows;
     int tile_num_columns = app_ctx->config.tiled_display_config.columns;
@@ -377,17 +544,32 @@ class PipelineApplication {
     return source_id;
   }
 
+  /**
+   * @brief Static wrapper for the X event thread.
+   *
+   * @param data Unused.
+   * @return gpointer Always returns nullptr.
+   */
   static gpointer nvds_x_event_thread_static(gpointer data) {
     if (instance_)
       return instance_->nvds_x_event_thread();
     return nullptr;
   }
+
+  /**
+   * @brief Thread function to process X Window events.
+   *
+   * Monitors and processes X11 events like mouse clicks and key presses.
+   *
+   * @return gpointer Always returns nullptr.
+   */
   gpointer nvds_x_event_thread() {
     g_mutex_lock(&disp_lock_);
     while (display_) {
       XEvent e;
       guint index;
       memset(&e, 0, sizeof(XEvent));
+      // Process all pending X events.
       while (XPending(display_)) {
         XNextEvent(display_, &e);
         switch (e.type) {
@@ -398,11 +580,13 @@ class PipelineApplication {
             GstElement* tiler;
             memset(&win_attr, 0, sizeof(XWindowAttributes));
             XGetWindowAttributes(display_, ev.window, &win_attr);
+            // Identify which window generated the event.
             for (index = 0; index < num_instances_; index++)
               if (ev.window == windows_[index])
                 break;
             tiler = (index < num_instances_ && app_ctx_[index]) ? app_ctx_[index]->pipeline.tiled_display_bin.tiler
                                                                 : nullptr;
+            // Left mouse button: select a source.
             if (ev.button == Button1 && source_id == -1 && (index < num_instances_)) {
               if (app_ctx_[index])
                 source_id = get_source_id_from_coordinates(
@@ -414,7 +598,7 @@ class PipelineApplication {
                 app_ctx_[index]->active_source_index = source_id;
                 app_ctx_[index]->show_bbox_text = TRUE;
               }
-            } else if (ev.button == Button3) {
+            } else if (ev.button == Button3) { // Right mouse button: reset selection.
               if (tiler)
                 g_object_set(G_OBJECT(tiler), "show-source", -1, nullptr);
               if (app_ctx_[index])
@@ -448,6 +632,7 @@ class PipelineApplication {
           } break;
           case ClientMessage: {
             Atom wm_delete;
+            // Determine which window sent the client message.
             for (index = 0; index < num_instances_; index++)
               if (e.xclient.window == windows_[index])
                 break;
@@ -468,16 +653,39 @@ class PipelineApplication {
     return nullptr;
   }
 
+  /**
+   * @brief Static wrapper for overlaying graphics.
+   *
+   * @param app_ctx Pointer to the application context.
+   * @param buf Pointer to the GST buffer.
+   * @param batch_meta Pointer to batch metadata.
+   * @param index Index of the current instance.
+   * @return gboolean TRUE if successful.
+   */
   static gboolean overlay_graphics_static(AppCtx* app_ctx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index) {
     return instance_ ? instance_->overlay_graphics(app_ctx, buf, batch_meta, index) : TRUE;
   }
+
+  /**
+   * @brief Overlays graphics (e.g., display text) on the video frame.
+   *
+   * Adds metadata for source information and latency.
+   *
+   * @param app_ctx Pointer to the application context.
+   * @param buf Pointer to the GST buffer.
+   * @param batch_meta Pointer to batch metadata.
+   * @param index Index of the current instance.
+   * @return gboolean TRUE if successful.
+   */
   gboolean overlay_graphics(AppCtx* app_ctx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index) {
     int src_index = app_ctx->active_source_index;
     if (src_index == -1)
       return TRUE;
     NvDsFrameLatencyInfo* latency_info = nullptr;
+    // Acquire display meta data for overlay.
     NvDsDisplayMeta* display_meta = nvds_acquire_display_meta_from_pool(batch_meta);
 
+    // Set primary text label with source URI.
     display_meta->num_labels = 1;
     display_meta->text_params[0].display_text =
         g_strdup_printf("Source: %s", app_ctx->config.multi_source_config[src_index].uri);
@@ -489,6 +697,7 @@ class PipelineApplication {
     display_meta->text_params[0].set_bg_clr = 1;
     display_meta->text_params[0].text_bg_clr = (NvOSD_ColorParams){0, 0, 0, 1.0};
 
+    // If latency measurement is enabled, overlay latency information.
     if (nvds_enable_latency_measurement) {
       g_mutex_lock(&app_ctx->latency_lock);
       latency_info = &app_ctx->latency_info[index];
@@ -504,13 +713,29 @@ class PipelineApplication {
       display_meta->text_params[1].set_bg_clr = 1;
       display_meta->text_params[1].text_bg_clr = (NvOSD_ColorParams){0, 0, 0, 1.0};
     }
+    // Attach the display meta to the first frame.
     nvds_add_display_meta_to_frame(nvds_get_nth_frame_meta(batch_meta->frame_meta_list, 0), display_meta);
     return TRUE;
   }
 
+  /**
+   * @brief Static wrapper for the pipeline recreation thread.
+   *
+   * @param arg Pointer to the application context.
+   * @return gboolean TRUE if successful.
+   */
   static gboolean recreate_pipeline_thread_func_static(gpointer arg) {
     return instance_ ? instance_->recreate_pipeline_thread_func(arg) : FALSE;
   }
+
+  /**
+   * @brief Recreates the pipeline.
+   *
+   * Destroys and recreates the pipeline on a separate thread.
+   *
+   * @param arg Pointer to the application context.
+   * @return gboolean TRUE if successful.
+   */
   gboolean recreate_pipeline_thread_func(gpointer arg) {
     guint i;
     gboolean ret = TRUE;
@@ -522,10 +747,12 @@ class PipelineApplication {
       NVGSTDS_ERR_MSG_V("Failed to create pipeline");
       return absl::InternalError("Failed to create pipeline").raw_code();
     }
+    // Set the pipeline to PAUSED state before further configuration.
     if (gst_element_set_state(app_ctx_ptr->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
       NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
       return absl::InternalError("Failed to set pipeline to PAUSED").raw_code();
     }
+    // Reset the window handles for video overlay.
     for (i = 0; i < app_ctx_ptr->config.num_sink_sub_bins; i++) {
       if (!GST_IS_VIDEO_OVERLAY(app_ctx_ptr->pipeline.instance_bins[0].sink_bin.sub_bins[i].sink))
         continue;
@@ -534,6 +761,7 @@ class PipelineApplication {
           (gulong)windows_[app_ctx_ptr->index]);
       gst_video_overlay_expose(GST_VIDEO_OVERLAY(app_ctx_ptr->pipeline.instance_bins[0].sink_bin.sub_bins[i].sink));
     }
+    // Set the pipeline to PLAYING state.
     if (gst_element_set_state(app_ctx_ptr->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
       g_print("\ncan't set pipeline to playing state.\n");
       return absl::InternalError("can't set pipeline to playing state").raw_code();
@@ -542,34 +770,58 @@ class PipelineApplication {
   }
 
  private:
-  // Member variables (all in snake_case with trailing underscore).
+  /// Vector of application context instances.
   std::vector<std::unique_ptr<HmApp>> app_ctx_;
+  /// Flag set on SIGINT.
   guint cintr_;
+  /// Main loop pointer.
   GMainLoop* main_loop_;
+  /// Array of configuration file paths.
   gchar** cfg_files_;
+  /// Array of input URI strings.
   gchar** input_uris_;
+  /// Array of game id strings.
   gchar** game_id_;
+  /// Flag to print version.
   gboolean print_version_;
+  /// Flag to display bounding box text.
   gboolean show_bbox_text_;
+  /// Flag to print dependency versions.
   gboolean print_dependencies_version_;
+  /// Flag to quit the application.
   gboolean quit_;
+  /// Flag to dump the pipeline dot file.
   gboolean dump_pipeline_dot_;
+  /// Flag to force reconfiguration.
   gboolean force_reconfigure_;
+  /// Return value for the application.
   gint return_value_;
+  /// Number of pipeline instances.
   guint num_instances_;
+  /// Number of input URIs.
   guint num_input_uris_;
+  /// Mutex lock for FPS updates.
   GMutex fps_lock_;
+  /// Array storing instantaneous FPS values.
   gdouble fps_[MAX_SOURCE_BINS];
+  /// Array storing average FPS values.
   gdouble fps_avg_[MAX_SOURCE_BINS];
+  /// X Display pointer.
   Display* display_;
+  /// Vector of X Window handles.
   std::vector<Window> windows_;
+  /// Thread for processing X events.
   GThread* x_event_thread_;
+  /// Mutex lock for display access.
   GMutex disp_lock_;
+  /// Row, column, and config selection variables.
   guint rrow_, rcol_, rcfg_;
+  /// Flags for selection state.
   gboolean rrowsel_, selecting_;
+  /// Name of the configuration file for stitching.
   static constexpr const char* configure_stitching_config_file_name_ = "ds_hockey_configure_stitching.yaml";
 
-  // A static pointer to the one active PipelineApplication instance.
+  /// Static pointer to the active PipelineApplication instance.
   static PipelineApplication* instance_;
 };
 
@@ -582,12 +834,21 @@ PipelineApplication* PipelineApplication::instance_ = nullptr;
 // Definition of helper functions.
 //-----------------------------------------------------------------------------
 
+/**
+ * @brief Initializes all HmApp instances with their configuration.
+ *
+ * Creates and configures each application instance by loading the appropriate config files.
+ *
+ * @param cleanup_stack Reference to a CleanupStack for registering cleanup tasks.
+ * @return absl::Status indicating success or error.
+ */
 absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_stack*/) {
   // Section 1: Create and initialize each HmApp instance.
   app_ctx_.resize(num_instances_);
   windows_.resize(num_instances_, 0);
 
   for (guint i = 0; i < num_instances_; i++) {
+    // Create a new HmApp instance with game_id if available.
     app_ctx_[i] = std::make_unique<HmApp>(game_id_ ? *game_id_ : "");
     app_ctx_[i]->person_class_id = -1;
     app_ctx_[i]->car_class_id = -1;
@@ -595,12 +856,15 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
     app_ctx_[i]->active_source_index = -1;
     if (show_bbox_text_)
       app_ctx_[i]->show_bbox_text = TRUE;
+    // Set input URI if provided.
     if (input_uris_ && input_uris_[i]) {
       app_ctx_[i]->config.multi_source_config[0].uri = g_strdup_printf("%s", input_uris_[i]);
       g_free(input_uris_[i]);
     }
+    // Load the base configuration.
     app_ctx_[i]->load_config();
 
+    // Process YAML config file.
     if (g_str_has_suffix(cfg_files_[i], ".yml") || g_str_has_suffix(cfg_files_[i], ".yaml")) {
       if (!app_ctx_[i]->underlay_config("pipeline", cfg_files_[i])) {
         NVGSTDS_ERR_MSG_V("Failed to merge in config file '%s'", cfg_files_[i]);
@@ -616,6 +880,7 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
         return absl::InternalError("Failed to parse config file");
       }
     } else if (g_str_has_suffix(cfg_files_[i], ".txt")) {
+      // Process plain text config file.
       if (!parse_config_file(&app_ctx_[i]->config, cfg_files_[i])) {
         NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files_[i]);
         app_ctx_[i]->return_value = -1;
@@ -626,6 +891,14 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
   return absl::OkStatus();
 }
 
+/**
+ * @brief Creates pipelines for all instances.
+ *
+ * Iterates through each instance and creates its corresponding GStreamer pipeline.
+ *
+ * @param cleanup_stack Reference to a CleanupStack for registering cleanup tasks.
+ * @return absl::Status indicating success or error.
+ */
 absl::Status PipelineApplication::createPipelines(CleanupStack& /*cleanup_stack*/) {
   // Section 2: Create pipelines for each instance.
   for (guint i = 0; i < num_instances_; i++) {
@@ -633,6 +906,7 @@ absl::Status PipelineApplication::createPipelines(CleanupStack& /*cleanup_stack*
       NVGSTDS_ERR_MSG_V("Failed to create pipeline");
       return absl::InternalError("Failed to create pipeline");
     }
+    // Optionally dump pipeline dot file for debugging.
     if (dump_pipeline_dot_) {
       std::string s = "pipeline";
       if (i) {
@@ -646,6 +920,14 @@ absl::Status PipelineApplication::createPipelines(CleanupStack& /*cleanup_stack*
   return absl::OkStatus();
 }
 
+/**
+ * @brief Creates the main loop and initializes display windows.
+ *
+ * Sets up the X display, creates X windows for video output, and registers cleanup callbacks.
+ *
+ * @param cleanup_stack Reference to a CleanupStack for registering cleanup tasks.
+ * @return absl::Status indicating success or error.
+ */
 absl::Status PipelineApplication::createMainLoop(CleanupStack& cleanup_stack) {
   // Section 3: Create main loop and initialize display/windows.
   main_loop_ = g_main_loop_new(nullptr, FALSE);
@@ -678,17 +960,20 @@ absl::Status PipelineApplication::createMainLoop(CleanupStack& cleanup_stack) {
   // Create X windows and set pipeline window handles.
   for (guint i = 0; i < num_instances_; i++) {
 #if defined(__aarch64__)
+    // For aarch64 platforms, set pipeline to PAUSED before window creation.
     if (gst_element_set_state(app_ctx_[i]->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
       NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
       return absl::InternalError("Failed to set pipeline to PAUSED");
     }
 #endif
+    // Iterate over sink sub-bins to create and configure windows.
     for (guint j = 0; j < app_ctx_[i]->config.num_sink_sub_bins; j++) {
       if (!GST_IS_VIDEO_OVERLAY(app_ctx_[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink))
         continue;
 
       guint width = 0, height = 0;
       XSizeHints hints = {0};
+      // Determine width and height from render config or tiled display config.
       if (app_ctx_[i]->config.sink_bin_sub_bin_config[j].render_config.width)
         width = app_ctx_[i]->config.sink_bin_sub_bin_config[j].render_config.width;
       else
@@ -706,6 +991,7 @@ absl::Status PipelineApplication::createMainLoop(CleanupStack& cleanup_stack) {
       hints.width = width;
       hints.height = height;
 
+      // Create a simple X window.
       windows_[i] = XCreateSimpleWindow(
           display_,
           RootWindow(display_, DefaultScreen(display_)),
@@ -719,6 +1005,7 @@ absl::Status PipelineApplication::createMainLoop(CleanupStack& cleanup_stack) {
 
       XSetNormalHints(display_, windows_[i], &hints);
 
+      // Set window title.
       gchar* title = (num_instances_ > 1) ? g_strdup_printf(APP_TITLE "-%d", i) : g_strdup(APP_TITLE);
       XTextProperty xproperty;
       if (XStringListToTextProperty((char**)&title, 1, &xproperty) != 0) {
@@ -726,6 +1013,7 @@ absl::Status PipelineApplication::createMainLoop(CleanupStack& cleanup_stack) {
         XFree(xproperty.value);
       }
 
+      // Set event mask based on tiled display configuration.
       XSetWindowAttributes attr = {0};
       if ((app_ctx_[i]->config.tiled_display_config.enable &&
            app_ctx_[i]->config.tiled_display_config.rows * app_ctx_[i]->config.tiled_display_config.columns == 1) ||
@@ -735,21 +1023,24 @@ absl::Status PipelineApplication::createMainLoop(CleanupStack& cleanup_stack) {
         attr.event_mask = ButtonPress | KeyRelease;
       XChangeWindowAttributes(display_, windows_[i], CWEventMask, &attr);
 
+      // Set up window protocols for closing.
       Atom wmDeleteMessage = XInternAtom(display_, "WM_DELETE_WINDOW", False);
       if (wmDeleteMessage != None)
         XSetWMProtocols(display_, windows_[i], &wmDeleteMessage, 1);
 
       XMapRaised(display_, windows_[i]);
       XSync(display_, 1);
+      // Set the window handle for video overlay.
       gst_video_overlay_set_window_handle(
           GST_VIDEO_OVERLAY(app_ctx_[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink), (gulong)windows_[i]);
       gst_video_overlay_expose(GST_VIDEO_OVERLAY(app_ctx_[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink));
 
+      // Create X event thread if not already created.
       if (!x_event_thread_)
         x_event_thread_ = g_thread_new("nvds-window-event-thread", nvds_x_event_thread_static, nullptr);
     }
 #if !defined(__aarch64__)
-    // For non-aarch64 platforms, check integrated GPU flag.
+    // For non-aarch64 platforms, check if the GPU is integrated.
     int current_device = -1;
     cudaGetDevice(&current_device);
     struct cudaDeviceProp prop;
@@ -788,6 +1079,14 @@ absl::Status PipelineApplication::createMainLoop(CleanupStack& cleanup_stack) {
   return absl::OkStatus();
 }
 
+/**
+ * @brief Sets all pipelines to PLAYING and starts the main loop.
+ *
+ * Applies post-configuration, sets pipelines to PLAYING state, and registers event handlers.
+ *
+ * @param cleanup_stack Reference to a CleanupStack for registering cleanup tasks.
+ * @return absl::Status indicating success or error.
+ */
 absl::Status PipelineApplication::playPipelines(CleanupStack& /*cleanup_stack*/) {
   absl::Status status;
   // Set pipelines to PLAYING.
@@ -826,9 +1125,16 @@ absl::Status PipelineApplication::playPipelines(CleanupStack& /*cleanup_stack*/)
   return status;
 }
 
-//-----------------------------------------------------------------------------
-// Main run function definition.
-//-----------------------------------------------------------------------------
+/**
+ * @brief Main run function that orchestrates initialization and execution.
+ *
+ * Parses command-line arguments, initializes instances, creates pipelines,
+ * sets up the main loop, and then starts pipeline playback.
+ *
+ * @param argc Argument count.
+ * @param argv Argument vector.
+ * @return absl::Status indicating success or error.
+ */
 absl::Status PipelineApplication::run(int argc, char* argv[]) {
   absl::Status status = absl::OkStatus();
   GError* error = nullptr;
@@ -932,9 +1238,15 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   return absl::OkStatus();
 }
 
-//
-// Main function: create a PipelineApplication instance and run it.
-//
+/**
+ * @brief Main function.
+ *
+ * Creates a PipelineApplication instance, runs the application, and cleans up.
+ *
+ * @param argc Argument count.
+ * @param argv Argument vector.
+ * @return int Exit status.
+ */
 int main(int argc, char* argv[]) {
   PipelineApplication app;
   absl::Status status = app.run(argc, argv);
