@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <opencv2/opencv.hpp>
+#include "absl/strings/str_split.h"
 
 namespace fs = std::filesystem;
 
@@ -46,6 +47,74 @@ struct ValidationResult {
   std::vector<int> levels;
 };
 
+fs::file_time_type getMostRecentWriteTime(const std::vector<std::string>& filenames) {
+  if (filenames.empty()) {
+    throw std::invalid_argument("No filenames provided.");
+  }
+
+  bool foundValidFile = false;
+  fs::file_time_type latest;
+
+  for (const auto& filename : filenames) {
+    fs::path filePath(filename);
+    if (fs::exists(filePath)) {
+      try {
+        fs::file_time_type ftime = fs::last_write_time(filePath);
+        if (!foundValidFile) {
+          latest = ftime;
+          foundValidFile = true;
+        } else if (ftime > latest) {
+          latest = ftime;
+        }
+      } catch (const fs::filesystem_error& e) {
+        std::cerr << "Error retrieving last write time for " << filename << ": " << e.what() << std::endl;
+      }
+    } else {
+      std::cerr << "File not found: " << filename << std::endl;
+    }
+  }
+
+  if (!foundValidFile) {
+    throw std::runtime_error("No valid files found to determine write time.");
+  }
+
+  return latest;
+}
+
+fs::file_time_type getOldestWriteTime(const std::vector<std::string>& filenames) {
+  if (filenames.empty()) {
+    throw std::invalid_argument("No filenames provided.");
+  }
+
+  bool foundValidFile = false;
+  fs::file_time_type oldest;
+
+  for (const auto& filename : filenames) {
+    fs::path filePath(filename);
+    if (fs::exists(filePath)) {
+      try {
+        fs::file_time_type ftime = fs::last_write_time(filePath);
+        if (!foundValidFile) {
+          oldest = ftime;
+          foundValidFile = true;
+        } else if (ftime < oldest) {
+          oldest = ftime;
+        }
+      } catch (const fs::filesystem_error& e) {
+        std::cerr << "Error retrieving last write time for " << filename << ": " << e.what() << std::endl;
+      }
+    } else {
+      std::cerr << "File not found: " << filename << std::endl;
+    }
+  }
+
+  if (!foundValidFile) {
+    throw std::runtime_error("No valid files found to determine write time.");
+  }
+
+  return oldest;
+}
+
 // -----------------------------------------------------------------------------
 // checkFileDependencies:
 // Recursively checks that for every dependency edge, the child file's modification time
@@ -55,33 +124,44 @@ struct ValidationResult {
 // Note: If a file appears multiple times (i.e. as a child of two different parents), it will be checked
 // for each dependency. If a violation occurs in any dependency edge, that level is recorded.
 // -----------------------------------------------------------------------------
-ValidationResult checkFileDependencies(const FileNode& node, int level = 0) {
+ValidationResult checkFileDependencies(const fs::path& dir_name, const FileNode& node, int level = 0) {
   ValidationResult result{true, {}};
+
+  std::vector<std::string> filenames = absl::StrSplit(node.filename, ',');
+  if (!dir_name.empty()) {
+    for (auto& s : filenames) {
+      s = dir_name / s;
+    }
+  }
+
+  if (!std::all_of(filenames.begin(), filenames.end(), [](const std::string& f) { return fs::exists(f); })) {
+    result.valid = false;
+    result.levels.push_back(level);
+    return result;
+  }
 
   // Retrieve parent's modification time.
   std::error_code ec;
-  auto parentTime = fs::last_write_time(node.filename, ec);
-  if (ec) {
-    std::cerr << "Error reading file \"" << node.filename << "\": " << ec.message() << "\n";
-    result.valid = false;
-    result.levels.push_back(level);
-    // Even if the parent's time is not available, we continue to check its children.
-  }
+  auto parentTime = getMostRecentWriteTime(filenames);
 
   // Process each child dependency edge.
   for (const auto& child : node.children) {
     // Get the child's modification time.
-    auto childTime = fs::last_write_time(child.filename, ec);
-    if (ec) {
-      std::cerr << "Error reading file \"" << child.filename << "\": " << ec.message() << "\n";
+    std::vector<std::string> child_names = absl::StrSplit(child.filename, ',');
+    if (!dir_name.empty()) {
+      for (auto& s : child_names) {
+        s = dir_name / s;
+      }
+    }
+
+    if (!std::all_of(child_names.begin(), child_names.end(), [](const std::string& f) { return fs::exists(f); })) {
       result.valid = false;
       result.levels.push_back(level + 1);
-    } else if (!fs::exists(node.filename)) {
-      // If the parent's file does not exist.
-      std::cerr << "Parent file \"" << node.filename << "\" does not exist.\n";
-      result.valid = false;
-      result.levels.push_back(level);
-    } else if (childTime < parentTime) {
+      return result;
+    }
+
+    auto childTime = getOldestWriteTime(child_names);
+    if (childTime < parentTime) {
       // Violation: child file is not newer than the parent.
       std::cerr << "Violation: \"" << child.filename << "\" (time: " << childTime.time_since_epoch().count()
                 << ") is older than its parent \"" << node.filename
@@ -90,7 +170,7 @@ ValidationResult checkFileDependencies(const FileNode& node, int level = 0) {
       result.levels.push_back(level + 1);
     }
     // Recursively check the child's dependency subtree.
-    ValidationResult childResult = checkFileDependencies(child, level + 1);
+    ValidationResult childResult = checkFileDependencies(dir_name, child, level + 1);
     if (!childResult.valid) {
       result.valid = false;
       // Append any levels from the child.
@@ -146,22 +226,30 @@ std::optional<std::string> findExecutable(const std::string& executable, const s
 //      └── child2.txt
 //              └── grandchild1.txt
 // -----------------------------------------------------------------------------
-bool test_dependency_tree() {
-  // Build an example dependency tree.
-  FileNode tree{
-      "root.txt",
-      {{"child1.txt", {{"grandchild1.txt", {}}}},
-       {"child2.txt",
-        {
-            {"grandchild1.txt", {}} // Same file appears as a child of both child1 and child2.
-        }}}};
+
+const char* level0 = "left.png,right.png";
+const char* level1 = "hm_project.pto";
+const char* level2 = "autooptimiser_out.pto";
+const char* level3 =
+    "mapping_0000.tif,mapping_0000_x.tif,mapping_0000_y.tif,mapping_0001.tif,mapping_0001_x.tif,mapping_0001_y.tif,panorama.tif,seam_file.png";
+const char* level4 = "s.png";
+const char* level5 = "rink_mask_0.png";
+
+bool test_dependency_tree(const std::string& dir_name, bool add_rink_mask) {
+  FileNode stitching_tree;
+  stitching_tree.filename = level0;
+  stitching_tree.children.emplace_back(FileNode{.filename = level1});
+  stitching_tree.children[0].children.emplace_back(FileNode{.filename = level2});
+  stitching_tree.children[0].children[0].children.emplace_back(FileNode{.filename = level3});
+  if (add_rink_mask) {
+    stitching_tree.children[0].children[0].children[0].children.emplace_back(FileNode{.filename = level4});
+    stitching_tree.children[0].children[0].children[0].children[0].children.emplace_back(FileNode{.filename = level5});
+  }
 
   // Perform the dependency check.
-  ValidationResult res = checkFileDependencies(tree);
+  ValidationResult res = checkFileDependencies(dir_name, stitching_tree);
 
-  if (res.valid) {
-    std::cout << "All file dependencies are valid: every child's file is newer than its parent.\n";
-  } else {
+  if (!res.valid) {
     // Optionally remove duplicates and sort.
     std::sort(res.levels.begin(), res.levels.end());
     res.levels.erase(std::unique(res.levels.begin(), res.levels.end()), res.levels.end());
@@ -170,6 +258,7 @@ bool test_dependency_tree() {
       std::cout << lvl << " ";
     }
     std::cout << "\n";
+    return false;
   }
   return true;
 }
@@ -236,8 +325,8 @@ std::string get_python_interp() {
 } // namespace
 
 absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir) {
-  // return test_dependency_tree();
-  if (fs::exists(fs::path(game_dir) / "panorama.tif")) {
+  bool up_to_date = test_dependency_tree(game_dir, /*add_rink_mask=*/false);
+  if (up_to_date) {
     return true;
   }
   return false;
@@ -340,6 +429,10 @@ absl::Status create_control_points(
   }
 
   return absl::OkStatus();
+}
+
+bool is_field_mask_configured(const std::string& game_dir) {
+  return test_dependency_tree(game_dir, /*add_rink_mask=*/true);
 }
 
 absl::Status create_field_mask(const std::string& game_dir, surface::Surface surface) {

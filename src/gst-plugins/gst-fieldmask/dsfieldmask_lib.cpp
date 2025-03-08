@@ -233,7 +233,9 @@ absl::Status DsFieldMaskProcessFrame(
 #else
       hm::surface::Surface this_surface(&surface->surfaceList[frame_index]);
 #endif
-      HM_RETURN_IF_ERROR(hm::stitching::create_field_mask(mask_path.parent_path().string(), this_surface));
+      if (!hm::stitching::is_field_mask_configured(mask_path.parent_path().string())) {
+        HM_RETURN_IF_ERROR(hm::stitching::create_field_mask(mask_path.parent_path().string(), this_surface));
+      }
     }
     HM_ASSIGN_OR_RETURN(ctx->detection_u8_mask, load_mask_from_file(ctx->initParams.detection_mask_file));
     ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask);
