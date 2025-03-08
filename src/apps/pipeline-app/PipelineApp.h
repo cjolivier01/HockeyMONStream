@@ -117,7 +117,7 @@ class PipelineApplication {
   gboolean dump_pipeline_dot_;
   gboolean force_reconfigure_;
   gint return_value_;
-  guint num_instances_;
+  // guint num_instances_;
   guint num_input_uris_;
   GMutex fps_lock_;
   gdouble fps_[MAX_SOURCE_BINS];
