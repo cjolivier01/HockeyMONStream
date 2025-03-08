@@ -77,9 +77,9 @@ class PipelineApplication {
 
   // Helper functions for pipeline initialization and execution.
   absl::Status initializeInstances(CleanupStack& cleanup_stack);
-  absl::Status createPipelines(CleanupStack& cleanup_stack);
-  absl::Status createMainLoop(CleanupStack& cleanup_stack);
-  absl::Status playPipelines(CleanupStack& cleanup_stack);
+  absl::Status createPipelines(std::vector<std::shared_ptr<HmApp>>& app_contexts, CleanupStack& cleanup_stack);
+  absl::Status createMainLoop(std::vector<std::shared_ptr<HmApp>>& app_contexts, CleanupStack& cleanup_stack);
+  absl::Status playPipelines(std::vector<std::shared_ptr<HmApp>>& app_contexts, CleanupStack& cleanup_stack);
 
   // Callback and helper functions.
   static void all_bbox_generated(AppCtx* app_ctx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
@@ -104,7 +104,9 @@ class PipelineApplication {
   gboolean recreate_pipeline_thread_func(gpointer arg);
 
  private:
-  std::vector<std::unique_ptr<HmApp>> app_ctx_;
+  // std::vector<std::unique_ptr<HmApp>> app_ctx_;
+  std::map<long, std::vector<std::shared_ptr<HmApp>>> stage_app_contexts_;
+  long current_stage_{0};
   guint cintr_;
   GMainLoop* main_loop_;
   gchar** cfg_files_;

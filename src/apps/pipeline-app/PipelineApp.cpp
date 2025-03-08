@@ -92,13 +92,10 @@ PipelineApplication::~PipelineApplication() {
 
 absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_stack*/) {
   // Section 1: Create and initialize each HmApp instance.
-  // app_ctx_.resize(num_instances_);
-  // windows_.resize(num_instances_, 0);
-
   size_t i = 0;
   // for (guint i = 0; i < num_instances_; i++) {
   while (cfg_files_[i]) {
-    auto& app_ctx = app_ctx_.emplace_back(std::make_unique<HmApp>(game_id_ ? *game_id_ : ""));
+    auto app_ctx = std::make_unique<HmApp>(game_id_ ? *game_id_ : "");
     // app_ctx = std::make_unique<HmApp>(game_id_ ? *game_id_ : "");
     app_ctx->person_class_id = -1;
     app_ctx->car_class_id = -1;
@@ -132,15 +129,21 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
         return absl::InternalError("Failed to parse config file");
       }
     }
+    stage_app_contexts_[app_ctx->config.stage].emplace_back(std::move(app_ctx));
     ++i;
+  }
+  if (!stage_app_contexts_.empty()) {
+    current_stage_ = stage_app_contexts_.begin()->first;
   }
   return absl::OkStatus();
 }
 
-absl::Status PipelineApplication::createPipelines(CleanupStack& /*cleanup_stack*/) {
+absl::Status PipelineApplication::createPipelines(
+    std::vector<std::shared_ptr<HmApp>>& app_contexts,
+    CleanupStack& /*cleanup_stack*/) {
   // Section 2: Create pipelines for each instance.
-  for (guint i = 0; i < app_ctx_.size(); i++) {
-    if (!create_pipeline(app_ctx_[i].get(), nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
+  for (guint i = 0; i < app_contexts.size(); i++) {
+    if (!create_pipeline(app_contexts[i].get(), nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
       NVGSTDS_ERR_MSG_V("Failed to create pipeline");
       return absl::InternalError("Failed to create pipeline");
     }
@@ -151,13 +154,15 @@ absl::Status PipelineApplication::createPipelines(CleanupStack& /*cleanup_stack*
         s += std::to_string(i);
       }
       gst_debug_bin_to_dot_file_with_ts(
-          GST_BIN(app_ctx_[i]->pipeline.pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "/mnt/data/src/hstream/pipeline.dot");
+          GST_BIN(app_contexts[i]->pipeline.pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "/mnt/data/src/hstream/pipeline.dot");
     }
   }
   return absl::OkStatus();
 }
 
-absl::Status PipelineApplication::createMainLoop(CleanupStack& cleanup_stack) {
+absl::Status PipelineApplication::createMainLoop(
+    std::vector<std::shared_ptr<HmApp>>& app_contexts,
+    CleanupStack& cleanup_stack) {
   // Section 3: Create main loop and initialize display/windows.
   main_loop_ = g_main_loop_new(nullptr, FALSE);
   cleanup_stack.push([this] {
@@ -184,33 +189,33 @@ absl::Status PipelineApplication::createMainLoop(CleanupStack& cleanup_stack) {
     g_mutex_unlock(&disp_lock_);
   });
 
-  for (guint i = 0; i < app_ctx_.size(); i++) {
+  for (guint i = 0; i < app_contexts.size(); i++) {
 #if defined(__aarch64__)
-    if (gst_element_set_state(app_ctx_[i]->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
+    if (gst_element_set_state(app_contexts[i]->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
       NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
       return absl::InternalError("Failed to set pipeline to PAUSED");
     }
 #endif
-    for (guint j = 0; j < app_ctx_[i]->config.num_sink_sub_bins; j++) {
-      if (!GST_IS_VIDEO_OVERLAY(app_ctx_[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink))
+    for (guint j = 0; j < app_contexts[i]->config.num_sink_sub_bins; j++) {
+      if (!GST_IS_VIDEO_OVERLAY(app_contexts[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink))
         continue;
 
       guint width = 0, height = 0;
       XSizeHints hints = {0};
-      if (app_ctx_[i]->config.sink_bin_sub_bin_config[j].render_config.width)
-        width = app_ctx_[i]->config.sink_bin_sub_bin_config[j].render_config.width;
+      if (app_contexts[i]->config.sink_bin_sub_bin_config[j].render_config.width)
+        width = app_contexts[i]->config.sink_bin_sub_bin_config[j].render_config.width;
       else
-        width = app_ctx_[i]->config.tiled_display_config.width;
-      if (app_ctx_[i]->config.sink_bin_sub_bin_config[j].render_config.height)
-        height = app_ctx_[i]->config.sink_bin_sub_bin_config[j].render_config.height;
+        width = app_contexts[i]->config.tiled_display_config.width;
+      if (app_contexts[i]->config.sink_bin_sub_bin_config[j].render_config.height)
+        height = app_contexts[i]->config.sink_bin_sub_bin_config[j].render_config.height;
       else
-        height = app_ctx_[i]->config.tiled_display_config.height;
+        height = app_contexts[i]->config.tiled_display_config.height;
       width = (width) ? width : DEFAULT_X_WINDOW_WIDTH;
       height = (height) ? height : DEFAULT_X_WINDOW_HEIGHT;
 
       hints.flags = PPosition | PSize;
-      hints.x = app_ctx_[i]->config.sink_bin_sub_bin_config[j].render_config.offset_x;
-      hints.y = app_ctx_[i]->config.sink_bin_sub_bin_config[j].render_config.offset_y;
+      hints.x = app_contexts[i]->config.sink_bin_sub_bin_config[j].render_config.offset_x;
+      hints.y = app_contexts[i]->config.sink_bin_sub_bin_config[j].render_config.offset_y;
       hints.width = width;
       hints.height = height;
 
@@ -227,7 +232,7 @@ absl::Status PipelineApplication::createMainLoop(CleanupStack& cleanup_stack) {
 
       XSetNormalHints(display_, windows_[i], &hints);
 
-      gchar* title = (app_ctx_.size() > 1) ? g_strdup_printf(APP_TITLE "-%d", i) : g_strdup(APP_TITLE);
+      gchar* title = (app_contexts.size() > 1) ? g_strdup_printf(APP_TITLE "-%d", i) : g_strdup(APP_TITLE);
       XTextProperty xproperty;
       if (XStringListToTextProperty((char**)&title, 1, &xproperty) != 0) {
         XSetWMName(display_, windows_[i], &xproperty);
@@ -235,11 +240,12 @@ absl::Status PipelineApplication::createMainLoop(CleanupStack& cleanup_stack) {
       }
 
       XSetWindowAttributes attr = {0};
-      if ((app_ctx_[i]->config.tiled_display_config.enable &&
-           app_ctx_[i]->config.tiled_display_config.rows * app_ctx_[i]->config.tiled_display_config.columns == 1) ||
-          (app_ctx_[i]->config.tiled_display_config.enable == 0))
+      if ((app_contexts[i]->config.tiled_display_config.enable &&
+           app_contexts[i]->config.tiled_display_config.rows * app_contexts[i]->config.tiled_display_config.columns ==
+               1) ||
+          (app_contexts[i]->config.tiled_display_config.enable == 0))
         attr.event_mask = KeyPress;
-      else if (app_ctx_[i]->config.tiled_display_config.enable)
+      else if (app_contexts[i]->config.tiled_display_config.enable)
         attr.event_mask = ButtonPress | KeyRelease;
       XChangeWindowAttributes(display_, windows_[i], CWEventMask, &attr);
 
@@ -250,8 +256,8 @@ absl::Status PipelineApplication::createMainLoop(CleanupStack& cleanup_stack) {
       XMapRaised(display_, windows_[i]);
       XSync(display_, 1);
       gst_video_overlay_set_window_handle(
-          GST_VIDEO_OVERLAY(app_ctx_[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink), (gulong)windows_[i]);
-      gst_video_overlay_expose(GST_VIDEO_OVERLAY(app_ctx_[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink));
+          GST_VIDEO_OVERLAY(app_contexts[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink), (gulong)windows_[i]);
+      gst_video_overlay_expose(GST_VIDEO_OVERLAY(app_contexts[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink));
 
       if (!x_event_thread_)
         x_event_thread_ = g_thread_new("nvds-window-event-thread", nvds_x_event_thread_static, nullptr);
@@ -262,25 +268,26 @@ absl::Status PipelineApplication::createMainLoop(CleanupStack& cleanup_stack) {
     struct cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, current_device);
     if (!prop.integrated) {
-      if (gst_element_set_state(app_ctx_[i]->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
+      if (gst_element_set_state(app_contexts[i]->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
         NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
         return absl::InternalError("Failed to set pipeline to PAUSED");
       }
     }
 #endif
   }
-  cleanup_stack.push([this] {
-    for (guint i = 0; i < app_ctx_.size(); i++) {
-      if (app_ctx_[i]) {
-        if (app_ctx_[i]->return_value == -1)
+  cleanup_stack.push([this, contexts = app_contexts]() mutable -> void {
+    for (guint i = 0; i < contexts.size(); i++) {
+      if (contexts[i]) {
+        if (contexts[i]->return_value == -1)
           return_value_ = -1;
-        destroy_pipeline(app_ctx_[i].get());
+        destroy_pipeline(contexts[i].get());
         g_mutex_lock(&disp_lock_);
-        if (windows_[i])
+        if (windows_[i]) {
           XDestroyWindow(display_, windows_[i]);
+        }
         windows_[i] = 0;
         g_mutex_unlock(&disp_lock_);
-        app_ctx_[i].reset();
+        contexts[i].reset();
       }
     }
     g_mutex_lock(&disp_lock_);
@@ -294,25 +301,27 @@ absl::Status PipelineApplication::createMainLoop(CleanupStack& cleanup_stack) {
   return absl::OkStatus();
 }
 
-absl::Status PipelineApplication::playPipelines(CleanupStack& /*cleanup_stack*/) {
+absl::Status PipelineApplication::playPipelines(
+    std::vector<std::shared_ptr<HmApp>>& app_contexts,
+    CleanupStack& /*cleanup_stack*/) {
   absl::Status status;
-  for (guint i = 0; i < app_ctx_.size(); i++) {
-    status = app_ctx_[i]->configurator().post_config_pipeline(app_ctx_[i]->pipeline, app_ctx_[i]->config);
+  for (guint i = 0; i < app_contexts.size(); i++) {
+    status = app_contexts[i]->configurator().post_config_pipeline(app_contexts[i]->pipeline, app_contexts[i]->config);
     if (!status.ok()) {
       std::cerr << status << std::endl;
       g_print("\npipeline post-configuration failed.\n");
       return absl::InternalError("pipeline post-configuration failed");
     }
-    if (gst_element_set_state(app_ctx_[i]->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+    if (gst_element_set_state(app_contexts[i]->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
       g_print("\ncan't set pipeline to playing state.\n");
       return absl::InternalError("can't set pipeline to playing state");
     }
 #if 1
-    hm::save_dot_file(app_ctx_[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_running");
+    hm::save_dot_file(app_contexts[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_running");
 #endif
-    if (app_ctx_[i]->config.pipeline_recreate_sec)
+    if (app_contexts[i]->config.pipeline_recreate_sec)
       g_timeout_add_seconds(
-          app_ctx_[i]->config.pipeline_recreate_sec, recreate_pipeline_thread_func_static, app_ctx_[i].get());
+          app_contexts[i]->config.pipeline_recreate_sec, recreate_pipeline_thread_func_static, app_contexts[i].get());
   }
 
   print_runtime_commands();
@@ -417,9 +426,9 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   }
 
   HM_RETURN_IF_ERROR(initializeInstances(cleanup_stack));
-  HM_RETURN_IF_ERROR(createPipelines(cleanup_stack));
-  HM_RETURN_IF_ERROR(createMainLoop(cleanup_stack));
-  HM_RETURN_IF_ERROR(playPipelines(cleanup_stack));
+  HM_RETURN_IF_ERROR(createPipelines(stage_app_contexts_.at(current_stage_), cleanup_stack));
+  HM_RETURN_IF_ERROR(createMainLoop(stage_app_contexts_.at(current_stage_), cleanup_stack));
+  HM_RETURN_IF_ERROR(playPipelines(stage_app_contexts_.at(current_stage_), cleanup_stack));
 
   return absl::OkStatus();
 }
@@ -449,10 +458,12 @@ void PipelineApplication::all_bbox_generated(AppCtx* app_ctx, GstBuffer* buf, Nv
             str_replace(obj->text_params.display_text, "Man", "");
             str_replace(obj->text_params.display_text, "Person", "Man");
             num_male++;
+            (void)num_male;
           } else if (strstr(obj->text_params.display_text, "Woman")) {
             str_replace(obj->text_params.display_text, "Woman", "");
             str_replace(obj->text_params.display_text, "Person", "Woman");
             num_female++;
+            (void)num_female;
           }
         }
       }
@@ -507,7 +518,7 @@ void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
     header_print_cnt = 0;
   }
   header_print_cnt++;
-  if (app_ctx_.size() > 1)
+  if (stage_app_contexts_.at(current_stage_).size() > 1)
     g_print("PERF(%d): ", app_ctx->index);
   else
     g_print("**PERF:  ");
@@ -567,7 +578,9 @@ void PipelineApplication::print_runtime_commands() {
       "\tq: Quit\n\n"
       "\tp: Pause\n"
       "\tr: Resume\n\n");
-  if (app_ctx_[0] && app_ctx_[0]->config.tiled_display_config.enable) {
+  if (!stage_app_contexts_.empty() && !stage_app_contexts_.at(current_stage_).empty() &&
+      stage_app_contexts_.at(current_stage_)[0] &&
+      stage_app_contexts_.at(current_stage_)[0]->config.tiled_display_config.enable) {
     g_print(
         "NOTE: To expand a source in the 2D tiled display and view object details,\n"
         "      left-click on the source.\n"
@@ -585,11 +598,12 @@ gboolean PipelineApplication::event_thread_func() {
   guint i;
   gboolean ret = TRUE;
 
-  for (i = 0; i < app_ctx_.size(); i++) {
-    if (app_ctx_[i] && !app_ctx_[i]->quit)
+  auto& app_ctx = stage_app_contexts_.at(current_stage_);
+  for (i = 0; i < app_ctx.size(); i++) {
+    if (app_ctx[i] && !app_ctx[i]->quit)
       break;
   }
-  if (i == app_ctx_.size()) {
+  if (i == app_ctx.size()) {
     quit_ = TRUE;
     if (main_loop_)
       g_main_loop_quit(main_loop_);
@@ -601,14 +615,14 @@ gboolean PipelineApplication::event_thread_func() {
   g_print("\n");
 
   gint source_id = -1;
-  GstElement* tiler = (app_ctx_[rcfg_]) ? app_ctx_[rcfg_]->pipeline.tiled_display_bin.tiler : nullptr;
-  if (app_ctx_[rcfg_] && app_ctx_[rcfg_]->config.tiled_display_config.enable && tiler) {
+  GstElement* tiler = (app_ctx[rcfg_]) ? app_ctx[rcfg_]->pipeline.tiled_display_bin.tiler : nullptr;
+  if (app_ctx[rcfg_] && app_ctx[rcfg_]->config.tiled_display_config.enable && tiler) {
     g_object_get(G_OBJECT(tiler), "show-source", &source_id, nullptr);
     if (selecting_) {
       if (!rrowsel_) {
         if (c >= '0' && c <= '9') {
           rrow_ = c - '0';
-          if (rrow_ < app_ctx_[rcfg_]->config.tiled_display_config.rows) {
+          if (rrow_ < app_ctx[rcfg_]->config.tiled_display_config.rows) {
             g_print("--selecting source  row %d--\n", rrow_);
             rrowsel_ = TRUE;
           } else {
@@ -617,18 +631,18 @@ gboolean PipelineApplication::event_thread_func() {
         }
       } else {
         if (c >= '0' && c <= '9') {
-          unsigned int tile_num_columns = app_ctx_[rcfg_]->config.tiled_display_config.columns;
+          unsigned int tile_num_columns = app_ctx[rcfg_]->config.tiled_display_config.columns;
           rcol_ = c - '0';
           if (rcol_ < tile_num_columns) {
             selecting_ = FALSE;
             rrowsel_ = FALSE;
             source_id = tile_num_columns * rrow_ + rcol_;
             g_print("--selecting source  col %d sou=%d--\n", rcol_, source_id);
-            if (source_id >= (gint)app_ctx_[rcfg_]->config.num_source_sub_bins)
+            if (source_id >= (gint)app_ctx[rcfg_]->config.num_source_sub_bins)
               source_id = -1;
             else {
-              app_ctx_[rcfg_]->show_bbox_text = TRUE;
-              app_ctx_[rcfg_]->active_source_index = source_id;
+              app_ctx[rcfg_]->show_bbox_text = TRUE;
+              app_ctx[rcfg_]->active_source_index = source_id;
               g_object_set(G_OBJECT(tiler), "show-source", source_id, nullptr);
             }
           } else {
@@ -643,14 +657,14 @@ gboolean PipelineApplication::event_thread_func() {
       print_runtime_commands();
       break;
     case 'p':
-      for (i = 0; i < app_ctx_.size(); i++)
-        if (app_ctx_[i])
-          pause_pipeline(app_ctx_[i].get());
+      for (i = 0; i < app_ctx.size(); i++)
+        if (app_ctx[i])
+          pause_pipeline(app_ctx[i].get());
       break;
     case 'r':
-      for (i = 0; i < app_ctx_.size(); i++)
-        if (app_ctx_[i])
-          resume_pipeline(app_ctx_[i].get());
+      for (i = 0; i < app_ctx.size(); i++)
+        if (app_ctx[i])
+          resume_pipeline(app_ctx[i].get());
       break;
     case 'q':
       quit_ = TRUE;
@@ -659,13 +673,13 @@ gboolean PipelineApplication::event_thread_func() {
       ret = FALSE;
       break;
     case 'c':
-      if (app_ctx_[rcfg_] && app_ctx_[rcfg_]->config.tiled_display_config.enable && selecting_ == FALSE &&
+      if (app_ctx[rcfg_] && app_ctx[rcfg_]->config.tiled_display_config.enable && selecting_ == FALSE &&
           source_id == -1) {
         g_print("--selecting config file --\n");
         c = fgetc(stdin);
         if (c >= '0' && c <= '9') {
           rcfg_ = c - '0';
-          if (rcfg_ < app_ctx_.size())
+          if (rcfg_ < app_ctx.size())
             g_print("--selecting config  %d--\n", rcfg_);
           else {
             g_print("--selected config file %d out of bound, reenter\n", rcfg_);
@@ -675,17 +689,17 @@ gboolean PipelineApplication::event_thread_func() {
       }
       break;
     case 'z':
-      if (app_ctx_[rcfg_] && app_ctx_[rcfg_]->config.tiled_display_config.enable && source_id == -1 &&
+      if (app_ctx[rcfg_] && app_ctx[rcfg_]->config.tiled_display_config.enable && source_id == -1 &&
           selecting_ == FALSE) {
         g_print("--selecting source --\n");
         selecting_ = TRUE;
       } else {
-        if (!show_bbox_text_ && app_ctx_[rcfg_])
-          app_ctx_[rcfg_]->show_bbox_text = FALSE;
+        if (!show_bbox_text_ && app_ctx[rcfg_])
+          app_ctx[rcfg_]->show_bbox_text = FALSE;
         if (tiler)
           g_object_set(G_OBJECT(tiler), "show-source", -1, nullptr);
-        if (app_ctx_[rcfg_])
-          app_ctx_[rcfg_]->active_source_index = -1;
+        if (app_ctx[rcfg_])
+          app_ctx[rcfg_]->active_source_index = -1;
         selecting_ = FALSE;
         rcfg_ = 0;
         g_print("--tiled mode --\n");
@@ -721,6 +735,7 @@ gpointer PipelineApplication::nvds_x_event_thread() {
     memset(&e, 0, sizeof(XEvent));
     while (XPending(display_)) {
       XNextEvent(display_, &e);
+      auto& app_ctx = stage_app_contexts_.at(current_stage_);
       switch (e.type) {
         case ButtonPress: {
           XWindowAttributes win_attr;
@@ -729,27 +744,27 @@ gpointer PipelineApplication::nvds_x_event_thread() {
           GstElement* tiler = nullptr;
           memset(&win_attr, 0, sizeof(XWindowAttributes));
           XGetWindowAttributes(display_, ev.window, &win_attr);
-          for (index = 0; index < app_ctx_.size(); index++)
+          for (index = 0; index < app_ctx.size(); index++)
             if (ev.window == windows_[index])
               break;
-          tiler = (index < app_ctx_.size() && app_ctx_[index]) ? app_ctx_[index]->pipeline.tiled_display_bin.tiler
-                                                               : nullptr;
-          if (ev.button == Button1 && source_id == -1 && (index < app_ctx_.size())) {
-            if (app_ctx_[index])
+          tiler =
+              (index < app_ctx.size() && app_ctx[index]) ? app_ctx[index]->pipeline.tiled_display_bin.tiler : nullptr;
+          if (ev.button == Button1 && source_id == -1 && (index < app_ctx.size())) {
+            if (app_ctx[index])
               source_id = get_source_id_from_coordinates(
-                  ev.x * 1.0f / win_attr.width, ev.y * 1.0f / win_attr.height, app_ctx_[index].get());
+                  ev.x * 1.0f / win_attr.width, ev.y * 1.0f / win_attr.height, app_ctx[index].get());
             else
               source_id = -1;
             if (source_id > -1 && tiler) {
               g_object_set(G_OBJECT(tiler), "show-source", source_id, nullptr);
-              app_ctx_[index]->active_source_index = source_id;
-              app_ctx_[index]->show_bbox_text = TRUE;
+              app_ctx[index]->active_source_index = source_id;
+              app_ctx[index]->show_bbox_text = TRUE;
             }
           } else if (ev.button == Button3) {
             if (tiler)
               g_object_set(G_OBJECT(tiler), "show-source", -1, nullptr);
-            if (app_ctx_[index])
-              app_ctx_[index]->active_source_index = -1;
+            if (app_ctx[index])
+              app_ctx[index]->active_source_index = -1;
           }
         } break;
         case KeyRelease:
@@ -760,15 +775,15 @@ gpointer PipelineApplication::nvds_x_event_thread() {
           r = XKeysymToKeycode(display_, XK_R);
           q = XKeysymToKeycode(display_, XK_Q);
           if (e.xkey.keycode == p) {
-            for (i = 0; i < app_ctx_.size(); i++)
-              if (app_ctx_[i])
-                pause_pipeline(app_ctx_[i].get());
+            for (i = 0; i < app_ctx.size(); i++)
+              if (app_ctx[i])
+                pause_pipeline(app_ctx[i].get());
             break;
           }
           if (e.xkey.keycode == r) {
-            for (i = 0; i < app_ctx_.size(); i++)
-              if (app_ctx_[i])
-                resume_pipeline(app_ctx_[i].get());
+            for (i = 0; i < app_ctx.size(); i++)
+              if (app_ctx[i])
+                resume_pipeline(app_ctx[i].get());
             break;
           }
           if (e.xkey.keycode == q) {
@@ -779,7 +794,7 @@ gpointer PipelineApplication::nvds_x_event_thread() {
         } break;
         case ClientMessage: {
           Atom wm_delete;
-          for (index = 0; index < app_ctx_.size(); index++)
+          for (index = 0; index < app_ctx.size(); index++)
             if (e.xclient.window == windows_[index])
               break;
           wm_delete = XInternAtom(display_, "WM_DELETE_WINDOW", 1);
