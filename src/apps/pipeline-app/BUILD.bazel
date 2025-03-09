@@ -12,7 +12,7 @@ cc_binary(
     "@json_glib",
     "@local_cuda//:cuda_runtime",
     "@local_cuda//:cuda",
-    "@com_google_absl//absl/strings:strings",
+    "@com_google_absl//absl/strings",
     "@com_google_absl//absl/status:statusor",
     "@com_google_absl//absl/cleanup:cleanup",
   ],

@@ -1,5 +1,4 @@
 #include "configurator.h"
-#include "PipelineApp.h"
 #include "cupano/pano/controlMasks.h"
 #include "deepstream_app.h"
 
@@ -8,6 +7,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 
 #include <gstreamer-1.0/gst/gstelement.h>
 #include <gstreamer-1.0/gst/gstpipeline.h>
@@ -21,6 +21,8 @@
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/Orientation.h"
+
+#include "absl/strings/match.h"
 
 namespace fs = std::filesystem;
 
@@ -145,6 +147,38 @@ std::optional<YAML::Node> get_enabled_audio_uri(const YAML::Node& pipeline) {
     ++index;
   } while (true);
   return std::nullopt;
+}
+
+// src-id -> source node
+std::map<int, YAML::Node> get_enabled_sources(const YAML::Node& pipeline) {
+  std::map<int, YAML::Node> sources;
+  for (auto kv : pipeline) {
+    std::string key = kv.first.as<std::string>();
+    if (absl::StartsWith(key, "source")) {
+      YAML::Node src_node = kv.second;
+      if (!get_node_value(src_node, "enable", 0)) {
+        continue;
+      }
+      if (!has_node(src_node, "source-id", /*non_null=*/true)) {
+        std::cerr << "No source-id in enabled source section: " << key << std::endl;
+        continue;
+      }
+      sources.emplace(src_node["source-id"].as<int>(), src_node);
+    }
+  }
+  return sources;
+}
+
+std::map<int, YAML::Node> get_camera_sources(const YAML::Node& pipeline) {
+  std::map<int, YAML::Node> cameras;
+  std::map<int, YAML::Node> sources = get_enabled_sources(pipeline);
+  for (const auto& src_iter_item : sources) {
+    NvDsSourceType type = (NvDsSourceType)(src_iter_item.second["type"].as<int>());
+    if (type == NvDsSourceType::NV_DS_SOURCE_CAMERA_CSI || type == NvDsSourceType::NV_DS_SOURCE_CAMERA_V4L2) {
+      cameras.emplace(src_iter_item.first, src_iter_item.second);
+    }
+  }
+  return cameras;
 }
 
 } // namespace
@@ -305,6 +339,9 @@ absl::Status Configurator::complete_configuration(bool force) {
     return absl::InvalidArgumentError("No game id specified");
   }
 
+  std::map<int, YAML::Node> camera_sources = get_camera_sources(pipeline);
+  const bool is_camera_source = !camera_sources.empty();
+
   // Stitching config mask config dir
   fs::path game_dir = get_game_dir(game_id_);
 
@@ -330,114 +367,118 @@ absl::Status Configurator::complete_configuration(bool force) {
 
   std::vector<std::string> left_files;
   std::vector<std::string> right_files;
-  std::string stitched_file;
 
-  stitching::VideosDict videos = stitching::get_available_videos(game_dir);
+  if (!is_camera_source) {
+    std::string stitched_file;
 
-  if (videos.count("stitched")) {
-    if (fs::exists(videos.at("stitched").at(0))) {
-      stitched_file = videos.at("stitched").at(0);
-      num_video_sources = 1;
-      Videoinfo stitched_info = getVideoInfo(file_maybe_in_game_dir(stitched_file));
-      ww = stitched_info.width;
-      hh = stitched_info.height;
-      area = ww * hh;
-    }
-  }
+    stitching::VideosDict videos = stitching::get_available_videos(game_dir);
 
-  if (stitched_file.empty()) {
-    // Stitching LFO, RFO
-
-    if (!force) {
-      if (has_node(config_, "game.videos.left", /*non_null=*/true)) {
-        left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
+    if (videos.count("stitched")) {
+      if (fs::exists(videos.at("stitched").at(0))) {
+        stitched_file = videos.at("stitched").at(0);
+        num_video_sources = 1;
+        Videoinfo stitched_info = getVideoInfo(file_maybe_in_game_dir(stitched_file));
+        ww = stitched_info.width;
+        hh = stitched_info.height;
+        area = ww * hh;
       }
-      if (has_node(config_, "game.videos.right", /*non_null=*/true)) {
+    }
+
+    if (stitched_file.empty()) {
+      // Stitching LFO, RFO
+
+      if (!force) {
+        if (has_node(config_, "game.videos.left", /*non_null=*/true)) {
+          left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
+        }
+        if (has_node(config_, "game.videos.right", /*non_null=*/true)) {
+          right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
+        }
+      }
+
+      if (left_files.empty() && right_files.empty() && !videos.count("left") && !videos.count("right")) {
+        HM_RETURN_IF_ERROR(stitching::configure_orientation(game_dir));
+        overlay_config("", get_private_config_file_name(game_id_));
+        std::cout << config_["game"]["videos"] << std::endl;
+        private_config_["game"]["videos"]["left"] = config_["game"]["videos"]["left"];
+        private_config_["game"]["videos"]["right"] = config_["game"]["videos"]["right"];
+        left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
         right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
       }
-    }
 
-    if (left_files.empty() && right_files.empty() && !videos.count("left") && !videos.count("right")) {
-      HM_RETURN_IF_ERROR(stitching::configure_orientation(game_dir));
-      overlay_config("", get_private_config_file_name(game_id_));
-      std::cout << config_["game"]["videos"] << std::endl;
-      private_config_["game"]["videos"]["left"] = config_["game"]["videos"]["left"];
-      private_config_["game"]["videos"]["right"] = config_["game"]["videos"]["right"];
-      left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
-      right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
-    }
-
-    if (left_files.empty() && right_files.empty() && videos.count("left") && videos.count("right")) {
-      const stitching::VideoChapter& left_chapter = videos.at("left");
-      const stitching::VideoChapter& right_chapter = videos.at("right");
-      if (!left_chapter.empty()) {
-        for (const auto& item : left_chapter) {
-          if (!right_chapter.empty()) {
-            const int chapter = item.first;
-            if (!right_chapter.count(chapter)) {
-              std::cerr << "Right vids are missing chapter " << chapter << ", skipping..." << std::endl;
-              continue;
+      if (left_files.empty() && right_files.empty() && videos.count("left") && videos.count("right")) {
+        const stitching::VideoChapter& left_chapter = videos.at("left");
+        const stitching::VideoChapter& right_chapter = videos.at("right");
+        if (!left_chapter.empty()) {
+          for (const auto& item : left_chapter) {
+            if (!right_chapter.empty()) {
+              const int chapter = item.first;
+              if (!right_chapter.count(chapter)) {
+                std::cerr << "Right vids are missing chapter " << chapter << ", skipping..." << std::endl;
+                continue;
+              }
             }
+            left_files.emplace_back(item.second);
           }
-          left_files.emplace_back(item.second);
+        }
+        if (!right_chapter.empty()) {
+          for (const auto& item : right_chapter) {
+            if (!left_chapter.empty()) {
+              const int chapter = item.first;
+              if (!left_chapter.count(chapter)) {
+                std::cerr << "Left vids are missing chapter " << chapter << ", skipping..." << std::endl;
+                continue;
+              }
+            }
+            right_files.emplace_back(item.second);
+          }
+        }
+        if (!left_files.empty() && !right_files.empty()) {
+          private_config_["game"]["videos"]["left"] = left_files;
+          private_config_["game"]["videos"]["right"] = right_files;
+          auto spp_status = save_private_config(private_config_);
+          if (!spp_status.ok()) {
+            // We can continue, so just warn
+            std::cerr << "Warnings: failed to save private config: " << spp_status << std::endl;
+          }
         }
       }
-      if (!right_chapter.empty()) {
-        for (const auto& item : right_chapter) {
-          if (!left_chapter.empty()) {
-            const int chapter = item.first;
-            if (!left_chapter.count(chapter)) {
-              std::cerr << "Left vids are missing chapter " << chapter << ", skipping..." << std::endl;
-              continue;
-            }
-          }
-          right_files.emplace_back(item.second);
-        }
-      }
+
       if (!left_files.empty() && !right_files.empty()) {
-        private_config_["game"]["videos"]["left"] = left_files;
-        private_config_["game"]["videos"]["right"] = right_files;
-        auto spp_status = save_private_config(private_config_);
-        if (!spp_status.ok()) {
-          // We can continue, so just warn
-          std::cerr << "Warnings: failed to save private config: " << spp_status << std::endl;
+        if (!has_node(config_, "game.stitching.frame_offsets.left", /*non_null=*/true) || force) {
+          stitching::Synchronization sync;
+          HM_ASSIGN_OR_RETURN(
+              sync,
+              stitching::calculate_stitching_synchronization(game_dir / left_files[0], game_dir / right_files[0]));
+          offsets["left"] = std::to_string(sync.video1_frame_offset);
+          offsets["right"] = std::to_string(sync.video2_frame_offset);
+          private_config_["game"]["stitching"]["frame_offsets"]["left"] = std::to_string(sync.video1_frame_offset);
+          private_config_["game"]["stitching"]["frame_offsets"]["right"] = std::to_string(sync.video2_frame_offset);
+          auto spp_status = save_private_config(private_config_);
+          if (!spp_status.ok()) {
+            // We can continue, so just warn
+            std::cerr << "Warnings: failed to save private config: " << spp_status << std::endl;
+          }
         }
       }
-    }
-
-    if (!left_files.empty() && !right_files.empty()) {
-      if (!has_node(config_, "game.stitching.frame_offsets.left", /*non_null=*/true) || force) {
-        stitching::Synchronization sync;
-        HM_ASSIGN_OR_RETURN(
-            sync, stitching::calculate_stitching_synchronization(game_dir / left_files[0], game_dir / right_files[0]));
-        offsets["left"] = std::to_string(sync.video1_frame_offset);
-        offsets["right"] = std::to_string(sync.video2_frame_offset);
-        private_config_["game"]["stitching"]["frame_offsets"]["left"] = std::to_string(sync.video1_frame_offset);
-        private_config_["game"]["stitching"]["frame_offsets"]["right"] = std::to_string(sync.video2_frame_offset);
-        auto spp_status = save_private_config(private_config_);
-        if (!spp_status.ok()) {
-          // We can continue, so just warn
-          std::cerr << "Warnings: failed to save private config: " << spp_status << std::endl;
-        }
+      if (!left_files.empty()) {
+        Videoinfo left_info = getVideoInfo(file_maybe_in_game_dir(left_files[0]));
+        double lfo = offsets["left"].as<double>(); // this is decimal frames
+        set_stream_offsets_ |= lfo != 0.0;
+        pipeline["hmstitcher"]["left-frame-offset-ns"] = std::to_string(size_t(lfo / left_info.fps * GST_SECOND));
+        area = left_info.width * left_info.height;
+        ww = left_info.width;
+        hh = left_info.height;
       }
-    }
-    if (!left_files.empty()) {
-      Videoinfo left_info = getVideoInfo(file_maybe_in_game_dir(left_files[0]));
-      double lfo = offsets["left"].as<double>(); // this is decimal frames
-      set_stream_offsets_ |= lfo != 0.0;
-      pipeline["hmstitcher"]["left-frame-offset-ns"] = std::to_string(size_t(lfo / left_info.fps * GST_SECOND));
-      area = left_info.width * left_info.height;
-      ww = left_info.width;
-      hh = left_info.height;
-    }
-    if (!right_files.empty()) {
-      Videoinfo right_info = getVideoInfo(file_maybe_in_game_dir(right_files[0]));
-      double rfo = offsets["right"].as<double>(); // this is decimal frames
-      set_stream_offsets_ |= rfo != 0.0;
-      pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / right_info.fps * GST_SECOND));
-      if (right_info.width * right_info.height > (long)area) {
-        ww = right_info.width;
-        hh = right_info.height;
+      if (!right_files.empty()) {
+        Videoinfo right_info = getVideoInfo(file_maybe_in_game_dir(right_files[0]));
+        double rfo = offsets["right"].as<double>(); // this is decimal frames
+        set_stream_offsets_ |= rfo != 0.0;
+        pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / right_info.fps * GST_SECOND));
+        if (right_info.width * right_info.height > (long)area) {
+          ww = right_info.width;
+          hh = right_info.height;
+        }
       }
     }
   }
@@ -451,7 +492,26 @@ absl::Status Configurator::complete_configuration(bool force) {
     return resize_to_fit(width, height, kMaxUdpStreamingWidth, kMaxUdpStreamingHeight);
   } /* lambda maybe_scale_down() */;
 
-  if (!left_files.empty() && !right_files.empty()) {
+  if (is_camera_source) {
+    size_t cam_count = 0;
+    for (const auto& cam_src_item : camera_sources) {
+      if (!cam_count) {
+        ww = cam_src_item.second["camera-width"].as<int>();
+        hh = cam_src_item.second["camera-height"].as<int>();
+        area = ww * hh;
+      } else {
+        long w2 = cam_src_item.second["camera-width"].as<int>();
+        long h2 = cam_src_item.second["camera-height"].as<int>();
+        if (w2 != ww || h2 != hh) {
+          return absl::InvalidArgumentError("Camera widths and heights differ");
+        }
+      }
+      ++num_video_sources;
+    }
+    auto wh_tuple = maybe_scale_down(ww, hh);
+    pipeline["hmplaycropper"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
+    pipeline["hmplaycropper"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
+  } else if (!left_files.empty() && !right_files.empty()) {
     auto canvas_size_result = get_canvas_size(game_dir);
     if (canvas_size_result) {
       size_t canvas_width = std::get<0>(*canvas_size_result);
