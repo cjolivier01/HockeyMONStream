@@ -87,6 +87,7 @@ typedef struct {
   gchar* alsa_device;
   /** Video format to be applied at nvvideoconvert source pad. */
   gchar* video_format;
+  gchar* media_type;
 } NvDsSourceConfig;
 
 typedef struct NvDsSrcParentBin NvDsSrcParentBin;
@@ -94,6 +95,7 @@ typedef struct NvDsSrcParentBin NvDsSrcParentBin;
 typedef struct {
   GstElement* bin;
   GstElement* src_elem;
+  GstElement* src_decoder;
   GstElement* cap_filter;
   GstElement* cap_filter1;
   GstElement* depay;

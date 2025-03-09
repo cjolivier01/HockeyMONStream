@@ -65,6 +65,10 @@ gboolean parse_source_yaml(
       std::string temp = source_values[i];
       config->video_format = (char*)malloc(sizeof(char) * 1024);
       std::strncpy(config->video_format, temp.c_str(), 1023);
+    } else if (paramKey == "media-type") {
+      std::string temp = source_values[i];
+      config->media_type = (char*) malloc(sizeof(char) * 1024);
+      std::strncpy (config->media_type, temp.c_str(), 1023);
     } else if (paramKey == "uri") {
       std::string temp = source_values[i];
       char* uri = (char*)malloc(sizeof(char) * 1024);

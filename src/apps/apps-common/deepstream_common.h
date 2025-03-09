@@ -34,7 +34,7 @@ extern "C" {
       src_caps = gst_pad_query_caps((GstPad*)(elem1)->srcpads->data, NULL);   \
       sink_caps = gst_pad_query_caps((GstPad*)(elem2)->sinkpads->data, NULL); \
       NVGSTDS_ERR_MSG_V(                                                      \
-          "Failed to link '%s' (%s) and '%s' (%s)",                           \
+          "Failed to link:\n '%s' (%s)\n and\n '%s' (%s)",                    \
           GST_ELEMENT_NAME(elem1),                                            \
           gst_caps_to_string(src_caps),                                       \
           GST_ELEMENT_NAME(elem2),                                            \
@@ -43,23 +43,23 @@ extern "C" {
     }                                                                         \
   } while (0)
 
-#define NVGSTDS_LINK_ELEMENT_FULL(elem1, elem1_pad_name, elem2, elem2_pad_name) \
-  do {                                                                          \
-    GstPad* elem1_pad = gst_element_get_static_pad(elem1, elem1_pad_name);      \
-    GstPad* elem2_pad = gst_element_get_static_pad(elem2, elem2_pad_name);      \
-    GstPadLinkReturn ret = gst_pad_link(elem1_pad, elem2_pad);                  \
-    if (ret != GST_PAD_LINK_OK) {                                               \
-      gchar* n1 = gst_pad_get_name(elem1_pad);                                  \
-      gchar* n2 = gst_pad_get_name(elem2_pad);                                  \
-      NVGSTDS_ERR_MSG_V("Failed to link '%s' and '%s': %d", n1, n2, ret);       \
-      g_free(n1);                                                               \
-      g_free(n2);                                                               \
-      gst_object_unref(elem1_pad);                                              \
-      gst_object_unref(elem2_pad);                                              \
-      goto done;                                                                \
-    }                                                                           \
-    gst_object_unref(elem1_pad);                                                \
-    gst_object_unref(elem2_pad);                                                \
+#define NVGSTDS_LINK_ELEMENT_FULL(elem1, elem1_pad_name, elem2, elem2_pad_name)  \
+  do {                                                                           \
+    GstPad* elem1_pad = gst_element_get_static_pad(elem1, elem1_pad_name);       \
+    GstPad* elem2_pad = gst_element_get_static_pad(elem2, elem2_pad_name);       \
+    GstPadLinkReturn ret = gst_pad_link(elem1_pad, elem2_pad);                   \
+    if (ret != GST_PAD_LINK_OK) {                                                \
+      gchar* n1 = gst_pad_get_name(elem1_pad);                                   \
+      gchar* n2 = gst_pad_get_name(elem2_pad);                                   \
+      NVGSTDS_ERR_MSG_V("Failed to link:\n '%s'\n and\n '%s': %d", n1, n2, ret); \
+      g_free(n1);                                                                \
+      g_free(n2);                                                                \
+      gst_object_unref(elem1_pad);                                               \
+      gst_object_unref(elem2_pad);                                               \
+      goto done;                                                                 \
+    }                                                                            \
+    gst_object_unref(elem1_pad);                                                 \
+    gst_object_unref(elem2_pad);                                                 \
   } while (0)
 
 #define NVGSTDS_BIN_ADD_GHOST_PAD_NAMED(bin, elem, pad, ghost_pad_name)              \

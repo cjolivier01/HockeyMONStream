@@ -10,14 +10,18 @@
  * its affiliates is strictly prohibited.
  */
 
+#include <glib-2.0/glib-object.h>
 #include <stdio.h>
 #include <string.h>
+#include <iostream>
 
 #include <cuda_runtime_api.h>
 #include <gst/rtp/gstrtcpbuffer.h>
 #include <gst/rtsp/gstrtsptransport.h>
 #include "deepstream_common.h"
 #include "deepstream_sources.h"
+
+#include "hstream/src/libs/common/pipeline_utils.h"
 
 #include "gst-nvdssr.h"
 #include "gst-nvevent.h"
@@ -30,6 +34,55 @@ GST_DEBUG_CATEGORY_EXTERN(NVDS_APP);
 GST_DEBUG_CATEGORY_EXTERN(APP_CFG_PARSER_CAT);
 
 static gboolean install_mux_eosmonitor_probe = FALSE;
+
+/**
+ * Prints the current negotiated caps of a pad on a GstElement
+ *
+ * @param element The GstElement whose pad caps to print
+ * @param padName The name of the pad (e.g., "src", "sink")
+ * @return true if caps were successfully printed, false otherwise
+ */
+bool print_pad_caps(GstElement* element, const char* padName) {
+  if (!element) {
+    std::cerr << "Element is NULL" << std::endl;
+    return false;
+  }
+
+  // Get the pad
+  GstPad* pad = gst_element_get_static_pad(element, padName);
+  if (!pad) {
+    std::cerr << "Failed to get " << padName << " pad from element " << GST_ELEMENT_NAME(element) << std::endl;
+    return false;
+  }
+
+  // Get the current caps
+  GstCaps* caps = gst_pad_get_current_caps(pad);
+  if (!caps) {
+    std::cout << "No caps currently negotiated on " << padName << " pad of " << GST_ELEMENT_NAME(element) << std::endl;
+    gst_object_unref(pad);
+    return false;
+  }
+
+  // Convert caps to string and print
+  gchar* capsStr = gst_caps_to_string(caps);
+  std::cout << "Caps on " << GST_ELEMENT_NAME(element) << ":" << padName << " = " << capsStr << std::endl;
+
+  // Also print in a more detailed format
+  std::cout << "Detailed caps:" << std::endl;
+  for (guint i = 0; i < gst_caps_get_size(caps); i++) {
+    GstStructure* structure = gst_caps_get_structure(caps, i);
+    gchar* structStr = gst_structure_to_string(structure);
+    std::cout << "  Structure " << i << ": " << structStr << std::endl;
+    g_free(structStr);
+  }
+
+  // Free resources
+  g_free(capsStr);
+  gst_caps_unref(caps);
+  gst_object_unref(pad);
+
+  return true;
+}
 
 void print_pads(GstElement* element) {
   GstIterator* iter;
@@ -78,30 +131,53 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
   GstCaps *caps = NULL, *caps1 = NULL, *convertCaps = NULL;
   gboolean ret = FALSE;
 
+  bool is_jpeg = false;
+
   switch (config->type) {
     case NV_DS_SOURCE_CAMERA_CSI:
-      bin->src_elem = gst_element_factory_make(NVDS_ELEM_SRC_CAMERA_CSI, "src_elem");
+      bin->src_elem = gst_element_factory_make(NVDS_ELEM_SRC_CAMERA_CSI, "csi_src_elem");
       break;
     case NV_DS_SOURCE_CAMERA_V4L2:
-      bin->src_elem = gst_element_factory_make(NVDS_ELEM_SRC_CAMERA_V4L2, "src_elem");
+      bin->src_elem = gst_element_factory_make(NVDS_ELEM_SRC_CAMERA_V4L2, "v4l2_src_elem");
       bin->cap_filter1 = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "src_cap_filter1");
       if (!bin->cap_filter1) {
         NVGSTDS_ERR_MSG_V("Could not create 'src_cap_filter1'");
         goto done;
       }
-      caps1 = gst_caps_new_simple(
-          "video/x-raw",
-          "width",
-          G_TYPE_INT,
-          config->source_width,
-          "height",
-          G_TYPE_INT,
-          config->source_height,
-          "framerate",
-          GST_TYPE_FRACTION,
-          config->source_fps_n,
-          config->source_fps_d,
-          NULL);
+      is_jpeg = config->media_type && !strncmp(config->media_type, "image/jpeg", 10);
+      if (is_jpeg) {
+        caps1 = gst_caps_new_simple(
+            //config->media_type ? config->media_type : "video/x-raw",
+            "video/x-raw",
+            //"parsed",
+            //G_TYPE_BOOLEAN,
+            //TRUE,
+            "width",
+            G_TYPE_INT,
+            config->source_width,
+            "height",
+            G_TYPE_INT,
+            config->source_height,
+            "framerate",
+            GST_TYPE_FRACTION,
+            config->source_fps_n,
+            config->source_fps_d,
+            NULL);
+      } else {
+        caps1 = gst_caps_new_simple(
+            "video/x-raw",
+            "width",
+            G_TYPE_INT,
+            config->source_width,
+            "height",
+            G_TYPE_INT,
+            config->source_height,
+            "framerate",
+            GST_TYPE_FRACTION,
+            config->source_fps_n,
+            config->source_fps_d,
+            NULL);
+      }
       break;
     default:
       NVGSTDS_ERR_MSG_V("Unsupported source type");
@@ -121,6 +197,7 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
 
   if (config->video_format) {
     caps = gst_caps_new_simple(
+        // config->media_type ? config->media_type : "video/x-raw",
         "video/x-raw",
         "format",
         G_TYPE_STRING,
@@ -138,7 +215,7 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
         NULL);
   } else {
     caps = gst_caps_new_simple(
-        "video/x-raw",
+        config->media_type ? config->media_type : "video/x-raw",
         "format",
         G_TYPE_STRING,
         "NV12",
@@ -153,6 +230,15 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
         config->source_fps_n,
         config->source_fps_d,
         NULL);
+  }
+
+  if (is_jpeg) {
+    bin->src_decoder = gst_element_factory_make("jpegdec", "src_jpegdec");
+    if (!bin->src_decoder) {
+      NVGSTDS_ERR_MSG_V("Failed to create 'src_jpegdec'");
+      goto done;
+    }
+    gst_bin_add(GST_BIN(bin->bin), bin->src_decoder);
   }
 
   if (config->type == NV_DS_SOURCE_CAMERA_CSI) {
@@ -208,7 +294,14 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
       gst_bin_add_many(GST_BIN(bin->bin), bin->src_elem, bin->cap_filter1, nvvidconv2, bin->cap_filter, NULL);
     }
 
-    NVGSTDS_LINK_ELEMENT(bin->src_elem, bin->cap_filter1);
+    if (bin->src_decoder) {
+      print_pads(bin->src_elem);
+      print_pads(bin->src_decoder);
+      NVGSTDS_LINK_ELEMENT(bin->src_elem, bin->src_decoder);
+      NVGSTDS_LINK_ELEMENT(bin->src_decoder, bin->cap_filter1);
+    } else {
+      NVGSTDS_LINK_ELEMENT(bin->src_elem, bin->cap_filter1);
+    }
 
     if (!prop.integrated) {
       NVGSTDS_LINK_ELEMENT(bin->cap_filter1, nvvidconv1);
@@ -249,6 +342,8 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
       NVGSTDS_ERR_MSG_V("Unsupported source type");
       goto done;
   }
+
+  hm::save_dot_file(bin->bin, GstDebugGraphDetails::GST_DEBUG_GRAPH_SHOW_ALL, "camera_bin");
 
   ret = TRUE;
 

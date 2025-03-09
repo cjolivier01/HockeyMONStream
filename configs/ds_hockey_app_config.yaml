@@ -62,13 +62,13 @@ tiled-display:
 # |_____/ \___/ \__,_|_|   \___|\___||___/
 #
 source0:
-  enable: 1
+  enable: 0
   type: 3
   # uri: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   # uri: file:///home/colivier/Videos/pdp/GX010087.mp4
   # mlk-extreme
   # uri: file:///home/colivier/Videos/mlk-extreme/GX010096.MP4
-  uri: file:///home/colivier/Videos/mlk-heat-1/GX010097.MP4
+  # uri: file:///home/colivier/Videos/mlk-heat-1/GX010097.MP4
   # uri: file:///home/colivier/Videos/ev-tv-1a/right.mp4
   num-sources: 1
   gpu-id: 0
@@ -76,7 +76,7 @@ source0:
   source-id: 0
 
 source1:
-  enable: 1
+  enable: 0
   type: 3
   # uri: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   # uri: file:///home/colivier/Videos/pdp/GX010003.mp4
@@ -97,6 +97,28 @@ source2:
   gpu-id: 0
   input-audio-rate: 189
   source-id: 2
+  cudadec-memtype: 0
+
+# V4L2 Webcam
+source3:
+  enable: 1
+  # 1: v4l2, 5: CSI
+  type: 1
+  camera-v4l2-dev-node: 2
+  # uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
+  camera-width: 1920
+  camera-height: 1080
+  camera-fps-n: 30
+  camera-fps-d: 1
+  video-format: RGBA
+  # video-format: MJPG
+  # media-type: video/mpeg, mpegversion=(int)4
+  media-type: image/jpeg
+  num-sources: 1
+  gpu-id: 0
+  input-audio-rate: 189
+  source-id: 2
+  cudadec-memtype: 1
 
 #source:
   # csv-file-path: hockey_sources.csv
@@ -115,10 +137,10 @@ source2:
 # |_____/ |_|_| |_|_|\_\|___/
 #
 sink0:
-  enable: 0
+  enable: 1
   sink-id: 0
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
-  type: 1
+  type: 2
   # sync: 1
   sync: 0
   source-id: 0
@@ -126,7 +148,7 @@ sink0:
   nvbuf-memory-type: 0
 
 sink1:
-  enable: 1
+  enable: 0
   sink-id: 1
   # Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 3
@@ -220,7 +242,7 @@ sink2:
 # |_|  |_|_| |_| |_|/_/    \_\\__,_|\__,_||_|\___/
 #
 hmaudio0:
-  enable: 1
+  enable: 0
   # 0=default alsa source, 1=file
   src: 1
   # audio-location: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
@@ -352,7 +374,7 @@ ds-example:
   processing-height: 480
 
 hmplaycropper:
-  enable: 1
+  enable: 0
   gpu-id: 0
   # plugin-type: videoprep
   # has_queue: false
@@ -383,7 +405,7 @@ hmplaycropper:
   # num-output-buffers: 2
 
 hmstitcher:
-  enable: 1
+  enable: 0
   # enable: 0
   gpu-id: 0
   nvbuf-memory-type: 0
@@ -393,7 +415,7 @@ hmstitcher:
   num-output-buffers: 4
 
 ds-playtracker:
-  enable: 1
+  enable: 0
   gpu-id: 0
   unique-id: 75
   # draw: true
@@ -402,7 +424,7 @@ ds-playtracker:
   config-file: play_tracker_config.yaml
 
 ds-fieldmask:
-  enable: 1
+  enable: 0
   gpu-id: 0
   unique-id: 76
   # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png
