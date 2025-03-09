@@ -36,6 +36,8 @@
 
 #include "gst-nvdscommonconfig.h"
 
+#include "absl/status/statusor.h"
+
 #include "configurator.h"
 
 #include <filesystem>
@@ -290,6 +292,8 @@ void toggle_show_bbox_text(AppCtx* appCtx);
 
 void destroy_pipeline(AppCtx* appCtx);
 void restart_pipeline(AppCtx* appCtx);
+
+absl::StatusOr<YAML::Node> get_app_config(const gchar* cfg_file_path);
 
 /**
  * Function to read properties from configuration file.

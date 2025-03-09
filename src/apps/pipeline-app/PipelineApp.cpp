@@ -107,6 +107,49 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
       g_free(input_uris_[i]);
     }
     app_ctx->load_config();
+    long stage = 0;
+    if (g_str_has_suffix(cfg_files_[i], ".yml") || g_str_has_suffix(cfg_files_[i], ".yaml")) {
+      YAML::Node app_config;
+      HM_ASSIGN_OR_RETURN(app_config, get_app_config(cfg_files_[i]));
+      stage = hm::get_node_value(app_config, "stage", stage);
+    }
+    //   if (!app_ctx->underlay_config("pipeline", cfg_files_[i])) {
+    //     NVGSTDS_ERR_MSG_V("Failed to merge in config file '%s'", cfg_files_[i]);
+    //     app_ctx->return_value = -1;
+    //     return absl::InternalError("Failed to merge in config file");
+    //   }
+    //   absl::Status configuration_status = app_ctx->complete_configuration(force_reconfigure_);
+    //   if (configuration_status.code() == absl::StatusCode::kCancelled) {
+    //     std::cerr << configuration_status;
+    //     continue;
+    //   }
+    //   YAML::Node config = app_ctx->configurator().config();
+    //   if (!config["pipeline"].IsDefined() || !parse_config_yaml(config["pipeline"], &app_ctx->config, cfg_files_[i]))
+    //   {
+    //     NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files_[i]);
+    //     app_ctx->return_value = -1;
+    //     return absl::InternalError("Failed to parse config file");
+    //   }
+    // } else if (g_str_has_suffix(cfg_files_[i], ".txt")) {
+    //   if (!parse_config_file(&app_ctx->config, cfg_files_[i])) {
+    //     NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files_[i]);
+    //     app_ctx->return_value = -1;
+    //     return absl::InternalError("Failed to parse config file");
+    //   }
+    // }
+    stage_app_contexts_[stage].emplace_back(std::move(app_ctx));
+  }
+  if (!stage_app_contexts_.empty()) {
+    current_stage_ = stage_app_contexts_.begin()->first;
+  }
+  return absl::OkStatus();
+}
+
+absl::Status PipelineApplication::configureInstances(
+    std::vector<std::shared_ptr<HmApp>>& app_contexts) {
+  std::vector<std::shared_ptr<HmApp>> valid_app_contexts;
+  for (size_t i = 0; i < app_contexts.size(); ++i) {
+    auto& app_ctx = app_contexts[i];
     if (g_str_has_suffix(cfg_files_[i], ".yml") || g_str_has_suffix(cfg_files_[i], ".yaml")) {
       if (!app_ctx->underlay_config("pipeline", cfg_files_[i])) {
         NVGSTDS_ERR_MSG_V("Failed to merge in config file '%s'", cfg_files_[i]);
@@ -131,31 +174,9 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
         return absl::InternalError("Failed to parse config file");
       }
     }
-    stage_app_contexts_[app_ctx->config.stage].emplace_back(std::move(app_ctx));
+    valid_app_contexts.emplace_back(std::move(app_ctx));
   }
-  if (!stage_app_contexts_.empty()) {
-    current_stage_ = stage_app_contexts_.begin()->first;
-  }
-  return absl::OkStatus();
-}
-
-absl::Status PipelineApplication::configureInstances(
-    std::vector<std::shared_ptr<HmApp>>& app_contexts,
-    CleanupStack& cleanup_stack) {
-  // // Section 1: Create and initialize each HmApp instance.
-  // int i = -1;
-  // for (guint i = 0; i < app_contexts.size(); i++) {
-  //   auto& app_ctx = app_contexts[i];
-  //   // Reconfigure
-  //   HM_RETURN_IF_ERROR(app_ctx->complete_configuration(force_reconfigure_));
-  //   // Reload config into config structs
-  //   YAML::Node config = app_ctx->configurator().config();
-  //   if (!config["pipeline"].IsDefined() || !parse_config_yaml(config["pipeline"], &app_ctx->config, cfg_files_[i])) {
-  //     NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files_[i]);
-  //     app_ctx->return_value = -1;
-  //     return absl::InternalError("Failed to parse config file");
-  //   }
-  // }
+  app_contexts = std::move(valid_app_contexts);
   return absl::OkStatus();
 }
 
@@ -464,11 +485,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     current_stage_ = stage_item.first;
     auto& app_contexts = stage_app_contexts_.at(current_stage_);
     {
-      CleanupStack stage_cleanup_stack;
-      HM_RETURN_IF_ERROR(configureInstances(app_contexts, stage_cleanup_stack));
-      HM_RETURN_IF_ERROR(createPipelines(app_contexts, stage_cleanup_stack));
-      HM_RETURN_IF_ERROR(createMainLoop(app_contexts, stage_windows_[current_stage_], stage_cleanup_stack));
-      HM_RETURN_IF_ERROR(playPipelines(app_contexts, stage_cleanup_stack));
+      HM_RETURN_IF_ERROR(configureInstances(app_contexts));
+      if (!app_contexts.empty()) {
+        CleanupStack stage_cleanup_stack;
+        HM_RETURN_IF_ERROR(createPipelines(app_contexts, stage_cleanup_stack));
+        HM_RETURN_IF_ERROR(createMainLoop(app_contexts, stage_windows_[current_stage_], stage_cleanup_stack));
+        HM_RETURN_IF_ERROR(playPipelines(app_contexts, stage_cleanup_stack));
+      }
     }
     HM_RETURN_IF_ERROR(waitForPipelinesStopped(app_contexts));
   }

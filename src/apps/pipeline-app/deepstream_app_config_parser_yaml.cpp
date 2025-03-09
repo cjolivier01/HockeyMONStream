@@ -1,20 +1,26 @@
 #include "hstream/src/apps/apps-common/deepstream_common.h"
 #include "hstream/src/apps/apps-common/deepstream_config_yaml.h"
 #include "hstream/src/libs/common/ConfigYaml.h"
+#include "hstream/src/libs/common/utils.h"
 
 #include "deepstream_app.h"
 #include "gst-nvdscommonconfig.h"
+
+#include "absl/status/statusor.h"
 
 #include <cstring>
 #include <iostream>
 #include <string>
 
 #include <stdlib.h>
+#include <yaml-cpp/node/parse.h>
 #include <filesystem>
 #include <fstream>
 
 using std::cout;
 using std::endl;
+
+namespace fs = std::filesystem;
 
 static int get_trailing_integer(const std::string& input) {
   int len = input.length();
@@ -193,6 +199,17 @@ static std::vector<std::string> split_csv_entries(std::string input) {
   }
   ret.push_back(input.substr(prev, input.size() - prev));
   return ret;
+}
+
+absl::StatusOr<YAML::Node> get_app_config(const gchar* cfg_file_path) {
+  if (!cfg_file_path || !*cfg_file_path) {
+    return absl::InvalidArgumentError("No config file specified");
+  }
+  if (!fs::exists(cfg_file_path)) {
+    return absl::NotFoundError(TO_STRING("Could not find file: " << cfg_file_path));
+  }
+  YAML::Node config = YAML::LoadFile(cfg_file_path);
+  return config["application"];
 }
 
 gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, const gchar* cfg_file_path) {
