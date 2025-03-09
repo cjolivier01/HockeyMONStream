@@ -17,7 +17,7 @@ application:
   ##gie-kitti-output-dir=streamscl
 
 tiled-display:
-  enable: 1
+  enable: 0
   rows: 1
   columns: 2
   # rows: 2
@@ -427,7 +427,7 @@ hmstitcher:
   gpu-id: 0
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
-  show: 0
+  show: 1
   num-batch-buffers: 4
   num-output-buffers: 4
 
