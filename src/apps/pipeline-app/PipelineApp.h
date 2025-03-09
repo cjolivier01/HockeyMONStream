@@ -117,6 +117,7 @@ private:
   gchar** cfg_files_{nullptr};
   gchar** input_uris_{nullptr};
   gchar** game_id_{nullptr};
+  // TODO: how to work this into multiple configs? Maybe prefix with cfg file number?
   std::map<std::string, std::string> pipeline_options_;
   gboolean print_version_;
   gboolean show_bbox_text_;
