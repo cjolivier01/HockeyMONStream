@@ -466,11 +466,11 @@ inline BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
 
   GST_DEBUG_OBJECT(m_element, "CustomLib: ---> Inside %s frame_num = %d\n", __func__, m_frameNum++);
 
-  if (last_flow_ret_ == GST_FLOW_EOS) {
-    return BufferResult::Buffer_Eos;
-  } else if (last_flow_ret_ == GST_FLOW_ERROR) {
-    return BufferResult::Buffer_Error;
-  }
+  // if (last_flow_ret_ == GST_FLOW_EOS) {
+  //   return BufferResult::Buffer_Eos;
+  // } else if (last_flow_ret_ == GST_FLOW_ERROR) {
+  //   return BufferResult::Buffer_Error;
+  // }
 
   // TODO: End of Stream Handling
   memset(&in_map_info, 0, sizeof(in_map_info));
@@ -714,8 +714,8 @@ inline void CustomAlgorithmBase::OutputThread(void) {
           GST_ERROR_OBJECT(m_element, "InsertCustomFrame failed error = %d, exiting...", result);
           // exit(-1);
            update_last_flow_ret(GST_FLOW_ERROR);
-           lk.lock();
-           break;
+           //lk.lock();
+           //break;
         }
         // Copy meta and transform if required
         if (!gst_buffer_copy_into(newGstOutBuf, packetInfo.inbuf, GST_BUFFER_COPY_META, 0, -1)) {
@@ -728,9 +728,9 @@ inline void CustomAlgorithmBase::OutputThread(void) {
         if (!in_surf || !out_surf) {
           GST_ERROR_OBJECT(m_element, "CustomLib: NvBufSurface not found in the buffer...exiting...\n");
           // exit(-1);
-           update_last_flow_ret(last_flow_ret_);
-           lk.lock();
-           break;
+           update_last_flow_ret(GST_FLOW_ERROR);
+           //lk.lock();
+           //break;
         }
 
         batch_meta = GetNVDS_BatchMeta(newGstOutBuf);
@@ -752,12 +752,12 @@ inline void CustomAlgorithmBase::OutputThread(void) {
         if (!cuda_status.ok()) {
           std::cerr << cuda_status << std::endl;
           if (cuda_status.code() == absl::StatusCode::kCancelled) {
-            update_last_flow_ret(last_flow_ret_);
+            update_last_flow_ret(GST_FLOW_EOS);
           } else {
-            update_last_flow_ret(last_flow_ret_);
+            update_last_flow_ret(GST_FLOW_ERROR);
           }
-          lk.lock();
-          break;
+          //lk.lock();
+          //break;
         }
 
         outBuffer = newGstOutBuf;

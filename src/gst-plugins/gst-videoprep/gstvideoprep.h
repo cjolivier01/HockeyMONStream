@@ -1,8 +1,8 @@
 #pragma once
 
 #include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
-#include "includes/hmcustomlib_interface.hpp"
 #include "hstream/src/libs/common/Surface.h"
+#include "includes/hmcustomlib_interface.hpp"
 
 #include <gst/base/gstbasetransform.h>
 #include <gst/gst.h>
@@ -85,9 +85,8 @@ class VideoPrepPriv : public DSCustomLibraryBase {
   }
 
  protected:
-
   void update_last_flow_ret(GstFlowReturn r) {
-    if (last_flow_ret_ == GST_FLOW_OK) {
+    if (last_flow_ret_ != GST_FLOW_OK && last_flow_ret_ != GST_FLOW_EOS) {
       last_flow_ret_ = r;
     }
   }
