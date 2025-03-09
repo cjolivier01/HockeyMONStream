@@ -1,6 +1,7 @@
 #pragma once
 
 #include <gst/gst.h>
+#include <gstreamer-1.0/gst/gstobject.h>
 
 #include <optional>
 #include <string>
@@ -51,5 +52,45 @@ inline T get_node_value(const YAML::Node& n, const std::string& dot_string, cons
 const char* gstStateToString(GstState state);
 
 void waitForPipelineStop(GstElement* pipeline);
+
+template <typename G_OBJ>
+class GstReferencedObject {
+ public:
+  GstReferencedObject(G_OBJ obj) : obj_(obj) {}
+
+  virtual ~GstReferencedObject() {
+    if (obj_) {
+      gst_object_unref(obj_);
+    }
+  }
+  operator G_OBJ () {
+    return obj_;
+  }
+  operator const G_OBJ () const {
+    return obj_;
+  }
+  G_OBJ get() { 
+    return obj_;
+  }
+  const G_OBJ get() const { 
+    return obj_;
+  }
+  G_OBJ& operator->() {
+    assert(obj_);
+    return obj_;
+  }
+  const G_OBJ& operator->() const {
+    assert(obj_);
+    return obj_;
+  }
+  operator bool() const {
+    return obj_ != nullptr;
+  }
+
+ private:
+  G_OBJ obj_;
+};
+
+GstReferencedObject<GstElement*> GetPipelineElement(GstElement* element);
 
 } // namespace hm
