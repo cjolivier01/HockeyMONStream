@@ -2,159 +2,19 @@
  * SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
+ * [License text repeated here if needed]
  */
-#pragma once
 
-#include <cuda.h>
-#include <cuda_runtime.h>
-#include <gstreamer-1.0/gst/gstpad.h>
-#include <string.h>
-#include <condition_variable>
-#include <fstream>
+#include "CustomAlgorithmBase.h"
+
+// Additional standard includes.
 #include <iostream>
 #include <mutex>
-#include <queue>
+#include <ostream>
 #include <stdexcept>
-#include <thread>
-#include "gst-nvevent.h"
-#include "gstnvdsmeta.h"
-#include "gstvideoprep.h"
-#include "includes/hmcustomlib_interface.hpp"
-#include "nvbufsurface.h"
-#include "nvbufsurftransform.h"
-#include "nvdscustomusermeta.h"
-#include "nvdsdummyusermeta.h"
-
-#include "hmcustomlib_base.hpp"
+#include <vector>
 
 namespace hm {
-
-#define FORMAT_NV12 "NV12"
-#define FORMAT_RGBA "RGBA"
-#define FORMAT_I420 "I420"
-#define GST_CAPS_FEATURE_MEMORY_NVMM "memory:NVMM"
-
-static void update_dummy_meta_data_on_buffer(NvDsBatchMeta* batch_meta);
-void* set_metadata_ptr(void);
-static gpointer copy_user_meta(gpointer data, gpointer user_data);
-static void release_user_meta(gpointer data, gpointer user_data);
-void fill_dummy_batch_meta_on_buffer(NvDsBatchMeta* batch_meta);
-
-inline bool CHECK__(int e, int iLine, const char* szFile) {
-  if (e != cudaSuccess) {
-    std::cout << "CUDA runtime error " << e << " at line " << iLine << " in file " << szFile;
-    exit(-1);
-    return false;
-  }
-  return true;
-}
-#define ck(call) CHECK__(call, __LINE__, __FILE__)
-
-/* This quark is required to identify NvDsMeta when iterating through
- * the buffer metadatas */
-static GQuark _dsmeta_quark = g_quark_from_static_string(NVDS_META_STRING);
-
-/* Strcture used to share between the threads */
-struct PacketInfo {
-  GstBuffer* inbuf;
-  guint frame_num;
-};
-
-class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
- public:
-  CustomAlgorithmBase(int gpu_id, size_t batch_size) : videoprep::VideoPrepPriv(gpu_id, batch_size) {
-    m_vectorProperty.clear();
-    outputthread_stopped = false;
-  }
-
-  /* Set Init Parameters */
-  virtual bool PostCapsInit(DSCustom_CreateParams* params);
-
-  /* Set Custom Properties  of the library */
-  virtual bool SetProperty(const Property& prop);
-
-  /* Pass GST events to the library */
-  virtual bool HandleEvent(GstEvent* event);
-
-  virtual char* QueryProperties();
-
-  /* Process Incoming Buffer */
-  virtual BufferResult ProcessBuffer(GstBuffer* inbuf);
-
-  /* Retrun Compatible Caps */
-  virtual GstCaps* GetCompatibleCaps(GstPadDirection direction, GstCaps* in_caps, GstCaps* othercaps);
-
-  gboolean hw_caps;
-
-  /* Deinit members */
-  ~CustomAlgorithmBase();
-
- private:
-  /* Helper Function to Extract Batch Meta from buffer */
-  NvDsBatchMeta* GetNVDS_BatchMeta(GstBuffer* buffer);
-
-  /* Output Processing Thread, push buffer to downstream  */
-  void OutputThread(void);
-
-  /* Helper function to Dump NvBufSurface RAW content */
-  void DumpNvBufSurface(NvBufSurface* in_surface, NvDsBatchMeta* batch_meta);
-
-  /* Insert Custom Frame */
-  void InsertCustomFrame(PacketInfo* packetInfo);
-
-  void update_meta(NvDsBatchMeta* batch_meta, uint32_t icnt);
-
- public:
-  guint source_id = 0;
-  guint m_frameNum = 0;
-  gdouble m_scaleFactor = 1.0;
-  guint m_frameinsertinterval = 0;
-  bool m_transformMode = false;
-  bool outputthread_stopped = false;
-
-  /* Custom Library Bufferpool */
-  // GstBufferPool* m_dsBufferPool = NULL;
-  GstBufferPool* m_swbufpool = NULL;
-  guint swbuffersize;
-
-  /* Output Thread Pointer */
-  std::thread* m_outputThread = NULL;
-
-  /* Queue and Lock Management */
-  std::queue<PacketInfo> m_processQ;
-  std::mutex m_processLock;
-  std::condition_variable m_processCV;
-  absl::Status cuda_status;
-  NvBufSurfTransformConfigParams m_config_params;
-  /* Aysnc Stop Handling */
-  gboolean m_stop = FALSE;
-
-  /* Vector Containing Key:Value Pair of Custom Lib Properties */
-  std::vector<Property> m_vectorProperty;
-
-  void* m_scratchNvBufSurface = NULL;
-
-  // Currently dumps first 5 input video frame into file for demonstration purpose
-  // Use vooya or simillar player to view NV12 / RGBA video raw frame
-  int dump_max_frames = 5;
-};
 
 // extern "C" IDSCustomLibrary* CreateCustomAlgoCtx(DSCustom_CreateParams* params);
 // // Create Custom Algorithm / Library Context
@@ -163,7 +23,7 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
 // }
 
 // Set Init Parameters
-inline bool CustomAlgorithmBase::PostCapsInit(DSCustom_CreateParams* params) {
+bool CustomAlgorithmBase::PostCapsInit(DSCustom_CreateParams* params) {
   DSCustomLibraryBase::PostCapsInit(params);
 
   BufferPoolConfig pool_config{0};
@@ -229,7 +89,7 @@ inline bool CustomAlgorithmBase::PostCapsInit(DSCustom_CreateParams* params) {
 }
 
 // Return Compatible Output Caps based on input caps
-inline GstCaps* CustomAlgorithmBase::GetCompatibleCaps(
+GstCaps* CustomAlgorithmBase::GetCompatibleCaps(
     GstPadDirection direction,
     GstCaps* in_caps,
     GstCaps* othercaps) {
@@ -345,7 +205,7 @@ inline GstCaps* CustomAlgorithmBase::GetCompatibleCaps(
   return othercaps;
 }
 
-inline char* CustomAlgorithmBase::QueryProperties() {
+char* CustomAlgorithmBase::QueryProperties() {
   char* str = new char[1000];
   strcpy(
       str,
@@ -354,7 +214,7 @@ inline char* CustomAlgorithmBase::QueryProperties() {
   return str;
 }
 
-inline bool CustomAlgorithmBase::HandleEvent(GstEvent* event) {
+bool CustomAlgorithmBase::HandleEvent(GstEvent* event) {
   switch (GST_EVENT_TYPE(event)) {
     case GST_EVENT_EOS:
       m_processLock.lock();
@@ -382,7 +242,7 @@ inline bool CustomAlgorithmBase::HandleEvent(GstEvent* event) {
 }
 
 // Set Custom Library Specific Properties
-inline bool CustomAlgorithmBase::SetProperty(const Property& prop) {
+bool CustomAlgorithmBase::SetProperty(const Property& prop) {
   std::cout << "Inside Custom Lib : Setting Prop Key=" << prop.key << " Value=" << prop.value << std::endl;
   m_vectorProperty.emplace_back(prop.key, prop.value);
 
@@ -408,7 +268,7 @@ inline bool CustomAlgorithmBase::SetProperty(const Property& prop) {
 }
 
 /* Deinitialize the Custom Lib context */
-inline CustomAlgorithmBase::~CustomAlgorithmBase() {
+CustomAlgorithmBase::~CustomAlgorithmBase() {
   std::unique_lock<std::mutex> lk(m_processLock);
   // Send a tombstone
   m_processQ.emplace(PacketInfo{.inbuf=nullptr});
@@ -436,7 +296,7 @@ inline CustomAlgorithmBase::~CustomAlgorithmBase() {
 }
 
 // Returns NvDsBatchMeta if present in the gstreamer buffer else NULL
-inline NvDsBatchMeta* CustomAlgorithmBase::GetNVDS_BatchMeta(GstBuffer* buffer) {
+NvDsBatchMeta* CustomAlgorithmBase::GetNVDS_BatchMeta(GstBuffer* buffer) {
   gpointer state = NULL;
   GstMeta* gst_meta = NULL;
   NvDsBatchMeta* batch_meta = NULL;
@@ -459,7 +319,7 @@ inline NvDsBatchMeta* CustomAlgorithmBase::GetNVDS_BatchMeta(GstBuffer* buffer) 
 }
 
 /* Process Buffer */
-inline BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
+BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
   GstMapInfo in_map_info;
   NvBufSurface* in_surf;
   // BuffferResult result;
@@ -526,7 +386,7 @@ inline BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
   return BufferResult::Buffer_Async; // BufferResult::Buffer_Ok;
 }
 
-inline void CustomAlgorithmBase::update_meta(NvDsBatchMeta* batch_meta, uint32_t icnt) {
+void CustomAlgorithmBase::update_meta(NvDsBatchMeta* batch_meta, uint32_t icnt) {
   NvDsFrameMeta* frame_meta = NULL;
 
   gfloat scale_factor_width = 1, scale_factor_height = 1;
@@ -548,7 +408,7 @@ inline void CustomAlgorithmBase::update_meta(NvDsBatchMeta* batch_meta, uint32_t
   }
 }
 
-inline void* set_metadata_ptr() {
+void* set_metadata_ptr() {
   guint i = 0;
   guint mem_count = 0;
   std::vector<faceboxes> fbs(2, {1, 2, 100, 200});
@@ -577,7 +437,7 @@ inline void* set_metadata_ptr() {
 }
 
 /* copy function set by user. "data" holds a pointer to NvDsUserMeta*/
-static inline gpointer copy_user_meta(gpointer data, gpointer user_data) {
+gpointer copy_user_meta(gpointer data, gpointer user_data) {
   NvDsUserMeta* user_meta = (NvDsUserMeta*)data;
   NVDS_CUSTOM_PAYLOAD* udata = (NVDS_CUSTOM_PAYLOAD*)user_meta->user_meta_data;
   NVDS_CUSTOM_PAYLOAD* dst_user_metadata = (NVDS_CUSTOM_PAYLOAD*)g_malloc0(sizeof(struct _NVDS_CUSTOM_PAYLOAD));
@@ -591,7 +451,7 @@ static inline gpointer copy_user_meta(gpointer data, gpointer user_data) {
 }
 
 /* release function set by user. "data" holds a pointer to NvDsUserMeta*/
-static inline void release_user_meta(gpointer data, gpointer user_data) {
+void release_user_meta(gpointer data, gpointer user_data) {
   NvDsUserMeta* user_meta = (NvDsUserMeta*)data;
   if (user_meta->user_meta_data) {
     NVDS_CUSTOM_PAYLOAD* src_user_metadata = (NVDS_CUSTOM_PAYLOAD*)user_meta->user_meta_data;
@@ -603,7 +463,7 @@ static inline void release_user_meta(gpointer data, gpointer user_data) {
 }
 
 #define NUM_OBJECTS 5
-inline void fill_dummy_batch_meta_on_buffer(NvDsBatchMeta* batch_meta) {
+void fill_dummy_batch_meta_on_buffer(NvDsBatchMeta* batch_meta) {
   NvDsMetaList* l_frame = NULL;
   for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)(l_frame->data);
@@ -634,7 +494,7 @@ inline void fill_dummy_batch_meta_on_buffer(NvDsBatchMeta* batch_meta) {
   }
 }
 
-inline void update_dummy_meta_data_on_buffer(NvDsBatchMeta* batch_meta) {
+void update_dummy_meta_data_on_buffer(NvDsBatchMeta* batch_meta) {
   NvDsMetaList* l_frame = NULL;
   NvDsUserMeta* user_meta = NULL;
   NvDsMetaType user_meta_type = NVDS_DUMMY_BBOX_META;
@@ -658,7 +518,7 @@ inline void update_dummy_meta_data_on_buffer(NvDsBatchMeta* batch_meta) {
 }
 
 /* Output Processing Thread */
-inline void CustomAlgorithmBase::OutputThread(void) {
+void CustomAlgorithmBase::OutputThread(void) {
   GstFlowReturn flow_ret;
   GstBuffer* outBuffer = NULL;
   std::unique_lock<std::mutex> lk(m_processLock);
@@ -846,7 +706,7 @@ inline void CustomAlgorithmBase::OutputThread(void) {
 }
 
 // Insert Custom Frame
-inline void CustomAlgorithmBase::InsertCustomFrame(PacketInfo* packetInfo) {
+void CustomAlgorithmBase::InsertCustomFrame(PacketInfo* packetInfo) {
 #if 0
   GstBuffer* newGstOutBuf = NULL;
   GstFlowReturn result = GST_FLOW_OK;
@@ -906,7 +766,7 @@ inline void CustomAlgorithmBase::InsertCustomFrame(PacketInfo* packetInfo) {
 }
 
 // Helper function to dump the nvbufsurface, used for debugging purpose
-inline void CustomAlgorithmBase::DumpNvBufSurface(NvBufSurface* in_surface, NvDsBatchMeta* batch_meta) {
+void CustomAlgorithmBase::DumpNvBufSurface(NvBufSurface* in_surface, NvDsBatchMeta* batch_meta) {
   guint numFilled = in_surface->numFilled;
   guint source_id = 0;
   guint i = 0;
@@ -995,4 +855,7 @@ inline void CustomAlgorithmBase::DumpNvBufSurface(NvBufSurface* in_surface, NvDs
     }
   }
 }
+
+
+
 } // namespace hm

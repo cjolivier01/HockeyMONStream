@@ -3,7 +3,7 @@
 #include "cupano/cuda/cudaStatus.h"
 #include "gstvideoprep.h"
 
-#include "custom_algorithm_base.h"
+#include "CustomAlgorithmBase.h"
 
 namespace hm {
 namespace playcropper {

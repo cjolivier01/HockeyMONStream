@@ -69,7 +69,7 @@
         "${workspaceFolder}/configs/ds_hockey_configure_stitching.yaml",
         "-g",
         "mlk-heat-1",
-        //"-f",
+        "-f",
         //"ev-cougars-2",
         //"fremont",
         //"-d",`

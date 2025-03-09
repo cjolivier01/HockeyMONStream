@@ -6,7 +6,7 @@
 #include "cupano/pano/cudaPano.h"
 #include "gstvideoprep.h"
 
-#include "custom_algorithm_base.h"
+#include "CustomAlgorithmBase.h"
 
 #include <mutex>
 

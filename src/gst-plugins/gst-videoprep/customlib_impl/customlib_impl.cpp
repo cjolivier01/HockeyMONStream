@@ -43,7 +43,7 @@
 #include "hmcustomlib_base.hpp"
 
 namespace hm {
-
+namespace sample {
 #define FORMAT_NV12 "NV12"
 #define FORMAT_RGBA "RGBA"
 #define FORMAT_I420 "I420"
@@ -967,4 +967,5 @@ void SampleAlgorithm::DumpNvBufSurface(NvBufSurface* in_surface, NvDsBatchMeta* 
     }
   }
 }
+} // namespace sample
 } // namespace hm
