@@ -24,6 +24,7 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <gstreamer-1.0/gst/gstpad.h>
 #include <string.h>
 #include <condition_variable>
 #include <fstream>
@@ -35,6 +36,7 @@
 #include "gst-nvevent.h"
 #include "gstnvdsmeta.h"
 #include "gstvideoprep.h"
+#include "includes/hmcustomlib_interface.hpp"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 #include "nvdscustomusermeta.h"
@@ -419,11 +421,6 @@ inline CustomAlgorithmBase::~CustomAlgorithmBase() {
     m_outputThread->join();
   }
 
-  // if (m_dsBufferPool) {
-  //   gst_buffer_pool_set_active(m_dsBufferPool, FALSE);
-  //   gst_object_unref(m_dsBufferPool);
-  //   m_dsBufferPool = NULL;
-  // }
   if (m_swbufpool) {
     gst_buffer_pool_set_active(m_swbufpool, FALSE);
     gst_object_unref(m_swbufpool);
@@ -468,6 +465,12 @@ inline BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
   // int num_filled = 0;
 
   GST_DEBUG_OBJECT(m_element, "CustomLib: ---> Inside %s frame_num = %d\n", __func__, m_frameNum++);
+
+  if (last_flow_ret_ == GST_FLOW_EOS) {
+    return BufferResult::Buffer_Eos;
+  } else if (last_flow_ret_ == GST_FLOW_ERROR) {
+    return BufferResult::Buffer_Error;
+  }
 
   // TODO: End of Stream Handling
   memset(&in_map_info, 0, sizeof(in_map_info));
@@ -710,7 +713,7 @@ inline void CustomAlgorithmBase::OutputThread(void) {
         if (result != GST_FLOW_OK) {
           GST_ERROR_OBJECT(m_element, "InsertCustomFrame failed error = %d, exiting...", result);
           // exit(-1);
-           last_flow_ret_ = GST_FLOW_ERROR;
+           update_last_flow_ret(GST_FLOW_ERROR);
            lk.lock();
            break;
         }
@@ -725,7 +728,7 @@ inline void CustomAlgorithmBase::OutputThread(void) {
         if (!in_surf || !out_surf) {
           GST_ERROR_OBJECT(m_element, "CustomLib: NvBufSurface not found in the buffer...exiting...\n");
           // exit(-1);
-           last_flow_ret_ = GST_FLOW_ERROR;
+           update_last_flow_ret(last_flow_ret_);
            lk.lock();
            break;
         }
@@ -749,10 +752,12 @@ inline void CustomAlgorithmBase::OutputThread(void) {
         if (!cuda_status.ok()) {
           std::cerr << cuda_status << std::endl;
           if (cuda_status.code() == absl::StatusCode::kCancelled) {
-            last_flow_ret_ = GST_FLOW_EOS;
+            update_last_flow_ret(last_flow_ret_);
           } else {
-            last_flow_ret_ = GST_FLOW_ERROR;
+            update_last_flow_ret(last_flow_ret_);
           }
+          lk.lock();
+          break;
         }
 
         outBuffer = newGstOutBuf;

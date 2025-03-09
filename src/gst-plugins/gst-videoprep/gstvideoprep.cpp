@@ -721,6 +721,8 @@ static GstFlowReturn gst_videoprep_submit_input_buffer(GstBaseTransform* btrans,
     case BufferResult::Buffer_Drop:
     case BufferResult::Buffer_Async:
       return GstFlowReturn::GST_FLOW_OK;
+    case BufferResult::Buffer_Eos:
+      return GstFlowReturn::GST_FLOW_EOS;
     case BufferResult::Buffer_Error:
     default:
       return GST_FLOW_ERROR;

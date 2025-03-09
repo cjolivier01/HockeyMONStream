@@ -42,6 +42,7 @@ enum class BufferResult {
   Buffer_Ok, // Push the buffer from submit_input function
   Buffer_Drop, // Drop the buffer inside submit_input function
   Buffer_Async, // Return from submit_input function, custom lib to push the buffer
+  Buffer_Eos,  // End of stream
   Buffer_Error // Error occured
 };
 
