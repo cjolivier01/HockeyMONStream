@@ -86,11 +86,13 @@ class GstReferencedObject {
   operator bool() const {
     return obj_ != nullptr;
   }
-
+  void release() {
+    obj_ = nullptr;
+  }
  private:
   G_OBJ obj_;
 };
 
-GstReferencedObject<GstElement*> GetPipelineElement(GstElement* element);
+GstReferencedObject<GstElement*> get_pipeline_element(GstElement* element);
 
 } // namespace hm

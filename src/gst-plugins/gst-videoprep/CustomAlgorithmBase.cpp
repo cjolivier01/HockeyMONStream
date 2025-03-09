@@ -14,6 +14,8 @@
 #include <stdexcept>
 #include <vector>
 
+#include <pthread.h>
+
 namespace hm {
 
 // extern "C" IDSCustomLibrary* CreateCustomAlgoCtx(DSCustom_CreateParams* params);
@@ -269,20 +271,7 @@ bool CustomAlgorithmBase::SetProperty(const Property& prop) {
 
 /* Deinitialize the Custom Lib context */
 CustomAlgorithmBase::~CustomAlgorithmBase() {
-  std::unique_lock<std::mutex> lk(m_processLock);
-  // Send a tombstone
-  m_processQ.emplace(PacketInfo{.inbuf=nullptr});
-  // std::cout << "Process Q Empty : " << m_processQ.empty() << std::endl;
-  m_processCV.wait(lk, [&] { return m_processQ.empty(); });
-  m_stop = TRUE;
-  m_processCV.notify_all();
-  lk.unlock();
-
-  /* Wait for OutputThread to complete */
-  if (m_outputThread) {
-    m_outputThread->join();
-  }
-
+  Shutdown();
   if (m_swbufpool) {
     gst_buffer_pool_set_active(m_swbufpool, FALSE);
     gst_object_unref(m_swbufpool);
@@ -379,8 +368,10 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
     DumpNvBufSurface(in_surf, batch_meta);
 
   m_processLock.lock();
-  m_processQ.push(packetInfo);
-  m_processCV.notify_all();
+  if (!outputthread_stopped) {
+    m_processQ.push(packetInfo);
+    m_processCV.notify_all();
+  }
   m_processLock.unlock();
 
   return BufferResult::Buffer_Async; // BufferResult::Buffer_Ok;
@@ -517,10 +508,28 @@ void update_dummy_meta_data_on_buffer(NvDsBatchMeta* batch_meta) {
   }
 }
 
+void CustomAlgorithmBase::Shutdown() {
+  std::unique_lock<std::mutex> lk(m_processLock);
+  // Send a tombstone
+  if (!outputthread_stopped) {
+  // m_processQ.emplace(PacketInfo{.inbuf=nullptr});
+  // std::cout << "Process Q Empty : " << m_processQ.empty() << std::endl;
+    m_processCV.wait(lk, [&] { return m_processQ.empty(); });
+    m_stop = TRUE;
+    m_processCV.notify_all();
+    lk.unlock();
+  }
+  /* Wait for OutputThread to complete */
+  if (m_outputThread && m_outputThread->joinable()) {
+    m_outputThread->join();
+  }
+}
+
 /* Output Processing Thread */
 void CustomAlgorithmBase::OutputThread(void) {
   GstFlowReturn flow_ret;
   GstBuffer* outBuffer = NULL;
+  pthread_setname_np(pthread_self(), "VIDEOPREP-OUT");
   std::unique_lock<std::mutex> lk(m_processLock);
   NvDsBatchMeta* batch_meta = NULL;
   if (hw_caps == true) {
@@ -547,12 +556,12 @@ void CustomAlgorithmBase::OutputThread(void) {
     m_processCV.notify_all();
     lk.unlock();
 
-    if (!packetInfo.inbuf) {
-      // We received a tombstone
-      std::cout << "videoprep received a tombstone" << std::endl;
-      lk.lock();
-      break;
-    }
+    // if (!packetInfo.inbuf) {
+    //   // We received a tombstone
+    //   std::cout << "videoprep received a tombstone" << std::endl;
+    //   lk.lock();
+    //   break;
+    // }
 
     // Add custom algorithm logic here
     // Once buffer processing is done, push the buffer to the downstream by using gst_pad_push function

@@ -1,5 +1,6 @@
 #include "stitcher.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/pipeline_utils.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 
@@ -274,19 +275,28 @@ absl::Status StitcherPriv::GenerateOutput(
     if (!process_pass_++) {
       bool is_configured;
       HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(videoprep->config_file));
-      if (!is_configured) {
+      if (!is_configured || configure_only_) {
         if (!configure_only_) {
           return absl::FailedPreconditionError("Stitching is not configured");
         } else {
+#if 1
           absl::Status configure_status =
               stitching::configure_stitching(videoprep->config_file, incoming_surface_left, incoming_surface_right);
           if (!configure_status.ok()) {
             return to_status(CudaStatus(
                 cudaError_t::cudaErrorLaunchFailure, (std::stringstream() << configure_status.message()).str()));
           }
+#endif
           // we want this
         }
-        return absl::CancelledError("Stitching has been configured");
+        // Signal pipeline that we wish to EOS
+        assert(m_element);
+        GstReferencedObject<GstElement*> pipeline = get_pipeline_element(GST_ELEMENT(m_element));
+        if (pipeline) {
+          gst_element_send_event(pipeline, gst_event_new_eos());
+          pipeline.release();
+          std::cout << "Stitcher sent the pipeline an EOS event" << std::endl;
+        }
       }
     }
 
@@ -322,13 +332,15 @@ absl::Status StitcherPriv::GenerateOutput(
     // render("left", left_params, videoprep->stream);
     // render("right", right_params, videoprep->stream);
     // Why suddenly now I need to clear the canvas?
-    HM_RETURN_IF_ERROR(to_status(cudaMemsetAsync(
-        canvas->data_raw(), 0, canvas->height() * canvas->pitch() * canvas->batch_size(), videoprep->stream)));
 
     if (stitcher_) {
+      HM_RETURN_IF_ERROR(to_status(cudaMemsetAsync(
+          canvas->data_raw(), 0, canvas->height() * canvas->pitch() * canvas->batch_size(), videoprep->stream)));
       HM_CUDA_ASSIGN_OR_RETURN(canvas, stitcher_->process(left, right, videoprep->stream, std::move(canvas)));
     } else {
-      return absl::CancelledError("Stitching has been configured");
+      // Gray image
+      HM_RETURN_IF_ERROR(to_status(cudaMemsetAsync(
+          canvas->data_raw(), 128, canvas->height() * canvas->pitch() * canvas->batch_size(), videoprep->stream)));
     }
 
     if (show_) {

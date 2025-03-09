@@ -765,6 +765,9 @@ static gboolean gst_videoprep_start(GstBaseTransform* btrans) {
 
 static gboolean gst_videoprep_stop(GstBaseTransform* btrans) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(btrans);
+
+  std::cout << "gst_videoprep_stop: " << videoprep->plugin_type << std::endl;
+
   cudaError_t CUerr = cudaSuccess;
 
   GST_INFO_OBJECT(videoprep, " %s\n", __func__);
@@ -774,6 +777,10 @@ static gboolean gst_videoprep_stop(GstBaseTransform* btrans) {
   if (CUerr != cudaSuccess) {
     GST_ERROR_OBJECT(videoprep, "cudaSetDevice Failed in %s\n", __func__);
     return FALSE;
+  }
+
+  if (videoprep->priv) {
+    videoprep->priv->Shutdown();
   }
 
   if (videoprep->stream) {
@@ -1038,7 +1045,7 @@ static void gst_videoprep_finalize(GObject* object) {
   if (videoprep->priv) {
     videoprep->priv->scratch_buffers.clear();
     if (videoprep->priv) {
-      videoprep->priv->Shutdown();
+      // videoprep->priv->Shutdown();
       delete videoprep->priv;
       videoprep->priv = NULL;
     }

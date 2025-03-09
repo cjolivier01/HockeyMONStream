@@ -211,16 +211,17 @@ GstReferencedObject<GstElement*> get_pipeline_element(GstElement* element) {
     return nullptr;
 
   // Get parent of the current element (this returns a new reference)
-  GstReferencedObject<GstElement*> parent = GST_ELEMENT(gst_element_get_parent(element));
+  GstElement* parent = GST_ELEMENT(gst_element_get_parent(element));
   if (!parent)
     return nullptr;
 
-  if (GST_IS_PIPELINE(parent.get())) {
+  if (GST_IS_PIPELINE(parent)) {
     return parent; // Found the pipeline; caller must unref it.
   }
 
   // Otherwise, recursively search the parent's parent.
-  GstReferencedObject<GstElement*> pipeline = get_pipeline_element(parent);
+  GstElement* pipeline = get_pipeline_element(parent);
+  gst_object_unref(parent);
   return pipeline;
 }
 

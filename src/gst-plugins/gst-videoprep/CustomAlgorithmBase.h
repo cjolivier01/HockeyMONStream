@@ -76,6 +76,8 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   /* Process Incoming Buffer */
   virtual BufferResult ProcessBuffer(GstBuffer* inbuf);
 
+  virtual void Shutdown();
+
   /* Retrun Compatible Caps */
   virtual GstCaps* GetCompatibleCaps(GstPadDirection direction, GstCaps* in_caps, GstCaps* othercaps);
 
