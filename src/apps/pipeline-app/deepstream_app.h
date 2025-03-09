@@ -234,7 +234,13 @@ struct _AppCtx {
 
 class HmApp : public _AppCtx {
  public:
-  HmApp(std::string game_id) : game_id_(std::move(game_id)) {}
+  HmApp(std::string game_id, std::string app_config_file)
+      : game_id_(std::move(game_id)), app_config_file_(std::move(app_config_file)) {}
+
+  const std::string& app_config_file() const {
+    return app_config_file_;
+  }
+
   bool load_config() {
     std::string config_root = std::filesystem::current_path() / "external" / "hm" / "config";
     configurator_ = std::make_unique<hm::Configurator>(game_id_, config_root);
@@ -260,6 +266,7 @@ class HmApp : public _AppCtx {
  private:
   std::unique_ptr<hm::Configurator> configurator_;
   std::string game_id_;
+  std::string app_config_file_;
 };
 
 /**

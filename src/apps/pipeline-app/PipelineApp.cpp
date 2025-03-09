@@ -94,7 +94,7 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
   // Section 1: Create and initialize each HmApp instance.
   int i = -1;
   while (cfg_files_[++i]) {
-    auto app_ctx = std::make_unique<HmApp>(game_id_ ? *game_id_ : "");
+    auto app_ctx = std::make_unique<HmApp>(game_id_ ? *game_id_ : "", cfg_files_[++i]);
     // app_ctx = std::make_unique<HmApp>(game_id_ ? *game_id_ : "");
     app_ctx->person_class_id = -1;
     app_ctx->car_class_id = -1;
@@ -108,9 +108,10 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
     }
     app_ctx->load_config();
     long stage = 0;
-    if (g_str_has_suffix(cfg_files_[i], ".yml") || g_str_has_suffix(cfg_files_[i], ".yaml")) {
+    if (g_str_has_suffix(app_ctx->app_config_file().c_str(), ".yml") ||
+        g_str_has_suffix(app_ctx->app_config_file().c_str(), ".yaml")) {
       YAML::Node app_config;
-      HM_ASSIGN_OR_RETURN(app_config, get_app_config(cfg_files_[i]));
+      HM_ASSIGN_OR_RETURN(app_config, get_app_config(app_ctx->app_config_file().c_str()));
       stage = hm::get_node_value(app_config, "stage", stage);
     }
     //   if (!app_ctx->underlay_config("pipeline", cfg_files_[i])) {
@@ -145,14 +146,14 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
   return absl::OkStatus();
 }
 
-absl::Status PipelineApplication::configureInstances(
-    std::vector<std::shared_ptr<HmApp>>& app_contexts) {
+absl::Status PipelineApplication::configureInstances(std::vector<std::shared_ptr<HmApp>>& app_contexts) {
   std::vector<std::shared_ptr<HmApp>> valid_app_contexts;
   for (size_t i = 0; i < app_contexts.size(); ++i) {
     auto& app_ctx = app_contexts[i];
-    if (g_str_has_suffix(cfg_files_[i], ".yml") || g_str_has_suffix(cfg_files_[i], ".yaml")) {
-      if (!app_ctx->underlay_config("pipeline", cfg_files_[i])) {
-        NVGSTDS_ERR_MSG_V("Failed to merge in config file '%s'", cfg_files_[i]);
+    if (g_str_has_suffix(app_ctx->app_config_file().c_str(), ".yml") ||
+        g_str_has_suffix(app_ctx->app_config_file().c_str(), ".yaml")) {
+      if (!app_ctx->underlay_config("pipeline", app_ctx->app_config_file())) {
+        NVGSTDS_ERR_MSG_V("Failed to merge in config file '%s'", app_ctx->app_config_file().c_str());
         app_ctx->return_value = -1;
         return absl::InternalError("Failed to merge in config file");
       }
@@ -162,14 +163,15 @@ absl::Status PipelineApplication::configureInstances(
         continue;
       }
       YAML::Node config = app_ctx->configurator().config();
-      if (!config["pipeline"].IsDefined() || !parse_config_yaml(config["pipeline"], &app_ctx->config, cfg_files_[i])) {
-        NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files_[i]);
+      if (!config["pipeline"].IsDefined() ||
+          !parse_config_yaml(config["pipeline"], &app_ctx->config, app_ctx->app_config_file().c_str())) {
+        NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", app_ctx->app_config_file().c_str());
         app_ctx->return_value = -1;
         return absl::InternalError("Failed to parse config file");
       }
-    } else if (g_str_has_suffix(cfg_files_[i], ".txt")) {
-      if (!parse_config_file(&app_ctx->config, cfg_files_[i])) {
-        NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files_[i]);
+    } else if (g_str_has_suffix(app_ctx->app_config_file().c_str(), ".txt")) {
+      if (!parse_config_file(&app_ctx->config, app_ctx->app_config_file().c_str())) {
+        NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", app_ctx->app_config_file().c_str());
         app_ctx->return_value = -1;
         return absl::InternalError("Failed to parse config file");
       }
