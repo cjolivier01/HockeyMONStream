@@ -410,6 +410,8 @@ inline bool CustomAlgorithmBase::SetProperty(const Property& prop) {
 /* Deinitialize the Custom Lib context */
 inline CustomAlgorithmBase::~CustomAlgorithmBase() {
   std::unique_lock<std::mutex> lk(m_processLock);
+  // Send a tombstone
+  m_processQ.emplace(PacketInfo{.inbuf=nullptr});
   // std::cout << "Process Q Empty : " << m_processQ.empty() << std::endl;
   m_processCV.wait(lk, [&] { return m_processQ.empty(); });
   m_stop = TRUE;
@@ -684,6 +686,13 @@ inline void CustomAlgorithmBase::OutputThread(void) {
 
     m_processCV.notify_all();
     lk.unlock();
+
+    if (!packetInfo.inbuf) {
+      // We received a tombstone
+      std::cout << "videoprep received a tombstone" << std::endl;
+      lk.lock();
+      break;
+    }
 
     // Add custom algorithm logic here
     // Once buffer processing is done, push the buffer to the downstream by using gst_pad_push function

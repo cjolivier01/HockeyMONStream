@@ -86,7 +86,7 @@ class VideoPrepPriv : public DSCustomLibraryBase {
 
  protected:
   void update_last_flow_ret(GstFlowReturn r) {
-    if (last_flow_ret_ != GST_FLOW_OK && last_flow_ret_ != GST_FLOW_EOS) {
+    if (last_flow_ret_ == GST_FLOW_OK && last_flow_ret_ != GST_FLOW_EOS) {
       last_flow_ret_ = r;
     }
   }
