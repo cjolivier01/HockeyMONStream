@@ -17,9 +17,9 @@ application:
   ##gie-kitti-output-dir=streamscl
 
 tiled-display:
-  enable: 0
+  enable: 1
   rows: 1
-  columns: 1
+  columns: 2
   # rows: 2
   # columns: 2
   # width: 7680
@@ -99,8 +99,26 @@ source2:
   source-id: 2
   cudadec-memtype: 0
 
-# V4L2 Webcam
+# V4L2 Webcam (Actioncam1)
 source3:
+  enable: 1
+  # 1: v4l2, 5: CSI
+  type: 1
+  camera-v4l2-dev-node: 0
+  # uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
+  camera-width: 1920
+  camera-height: 1080
+  camera-fps-n: 30
+  camera-fps-d: 1
+  video-format: RGBA
+  media-type: image/jpeg
+  num-sources: 1
+  gpu-id: 0
+  input-audio-rate: 189
+  source-id: 2
+  cudadec-memtype: 1
+
+source4:
   enable: 1
   # 1: v4l2, 5: CSI
   type: 1
@@ -111,14 +129,13 @@ source3:
   camera-fps-n: 30
   camera-fps-d: 1
   video-format: RGBA
-  # video-format: MJPG
-  # media-type: video/mpeg, mpegversion=(int)4
   media-type: image/jpeg
   num-sources: 1
   gpu-id: 0
   input-audio-rate: 189
   source-id: 2
   cudadec-memtype: 1
+
 
 #source:
   # csv-file-path: hockey_sources.csv
