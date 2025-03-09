@@ -94,7 +94,7 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
   // Section 1: Create and initialize each HmApp instance.
   int i = -1;
   while (cfg_files_[++i]) {
-    auto app_ctx = std::make_unique<HmApp>(game_id_ ? *game_id_ : "", cfg_files_[++i]);
+    auto app_ctx = std::make_unique<HmApp>(game_id_ ? *game_id_ : "", cfg_files_[i]);
     // app_ctx = std::make_unique<HmApp>(game_id_ ? *game_id_ : "");
     app_ctx->person_class_id = -1;
     app_ctx->car_class_id = -1;
@@ -114,30 +114,6 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
       HM_ASSIGN_OR_RETURN(app_config, get_app_config(app_ctx->app_config_file().c_str()));
       stage = hm::get_node_value(app_config, "stage", stage);
     }
-    //   if (!app_ctx->underlay_config("pipeline", cfg_files_[i])) {
-    //     NVGSTDS_ERR_MSG_V("Failed to merge in config file '%s'", cfg_files_[i]);
-    //     app_ctx->return_value = -1;
-    //     return absl::InternalError("Failed to merge in config file");
-    //   }
-    //   absl::Status configuration_status = app_ctx->complete_configuration(force_reconfigure_);
-    //   if (configuration_status.code() == absl::StatusCode::kCancelled) {
-    //     std::cerr << configuration_status;
-    //     continue;
-    //   }
-    //   YAML::Node config = app_ctx->configurator().config();
-    //   if (!config["pipeline"].IsDefined() || !parse_config_yaml(config["pipeline"], &app_ctx->config, cfg_files_[i]))
-    //   {
-    //     NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files_[i]);
-    //     app_ctx->return_value = -1;
-    //     return absl::InternalError("Failed to parse config file");
-    //   }
-    // } else if (g_str_has_suffix(cfg_files_[i], ".txt")) {
-    //   if (!parse_config_file(&app_ctx->config, cfg_files_[i])) {
-    //     NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", cfg_files_[i]);
-    //     app_ctx->return_value = -1;
-    //     return absl::InternalError("Failed to parse config file");
-    //   }
-    // }
     stage_app_contexts_[stage].emplace_back(std::move(app_ctx));
   }
   if (!stage_app_contexts_.empty()) {
@@ -159,7 +135,7 @@ absl::Status PipelineApplication::configureInstances(std::vector<std::shared_ptr
       }
       absl::Status configuration_status = app_ctx->complete_configuration(force_reconfigure_);
       if (configuration_status.code() == absl::StatusCode::kCancelled) {
-        std::cerr << configuration_status;
+        std::cerr << configuration_status << std::endl;
         continue;
       }
       YAML::Node config = app_ctx->configurator().config();
