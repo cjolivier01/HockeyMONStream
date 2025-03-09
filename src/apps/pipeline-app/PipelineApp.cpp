@@ -23,8 +23,10 @@
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/utils.h"
 
 #include "absl/cleanup/cleanup.h"
+#include "absl/strings/str_split.h"
 #include "nvds_version.h"
 
 //------------------------------------------------------------------------------
@@ -381,7 +383,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   GError* error = nullptr;
 
   CleanupStack global_cleanup_stack;
-
+  char** pipline_options{nullptr};
   GOptionEntry entries[] = {
       {"version", 'v', 0, G_OPTION_ARG_NONE, &print_version_, "Print DeepStreamSDK version", nullptr},
       {"tiledtext", 't', 0, G_OPTION_ARG_NONE, &show_bbox_text_, "Display Bounding box labels in tiled mode", nullptr},
@@ -399,6 +401,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &print_dependencies_version_,
        "Print DeepStreamSDK and dependencies version",
        nullptr},
+      {"pipeline-option", 'p', 0, G_OPTION_ARG_FILENAME_ARRAY, &pipline_options, "Set pipeline option(s)", nullptr},
       {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &cfg_files_, "Set the config file", nullptr},
       {"game-id", 'g', 0, G_OPTION_ARG_FILENAME_ARRAY, &game_id_, "Game ID", nullptr},
       {"force-reconfigure", 'f', 0, G_OPTION_ARG_NONE, &force_reconfigure_, "Force reconfigure", nullptr},
@@ -455,6 +458,21 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   if (!cfg_files_ || g_strv_length(cfg_files_) == 0) {
     NVGSTDS_ERR_MSG_V("Specify config file with -c option");
     return absl::InternalError("Specify config file with -c option");
+  }
+
+  if (pipline_options) {
+    pipeline_options_.clear();
+    for (size_t i = 0, n = g_strv_length(pipline_options); i < n; ++i) {
+      // Individual items can split by a comma
+      std::vector<std::string> p_each = absl::StrSplit(pipline_options[i], ',');
+      for (const std::string& opt : p_each) {
+        std::vector<std::string> kv = absl::StrSplit(opt, '=');
+        if (kv.size() != 2) {
+          return absl::InvalidArgumentError(
+              TO_STRING("Pipeline options should use key/value pairs, but got: \"" << opt << "\""));
+        }
+      }
+    }
   }
 
   HM_RETURN_IF_ERROR(initializeInstances(global_cleanup_stack));

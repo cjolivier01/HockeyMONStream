@@ -113,10 +113,11 @@ private:
 
   long current_stage_{0};
   guint cintr_;
-  GMainLoop* main_loop_;
-  gchar** cfg_files_;
-  gchar** input_uris_;
-  gchar** game_id_;
+  GMainLoop* main_loop_{nullptr};
+  gchar** cfg_files_{nullptr};
+  gchar** input_uris_{nullptr};
+  gchar** game_id_{nullptr};
+  std::map<std::string, std::string> pipeline_options_;
   gboolean print_version_;
   gboolean show_bbox_text_;
   gboolean print_dependencies_version_;
