@@ -147,8 +147,9 @@ absl::Status StitcherPriv::GenerateOutput(
     videoprep::GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
-  // std::unique_lock lk(process_mu_);
-
+  if (configure_only_) {
+    std::cout << "Stitcher has received a batch to configure with" << std::endl;
+  }
   assert(in_surface->batchSize % 2 == 0);
   if (in_surface->numFilled % 2 != 0) {
     gst_printerr("Not enough filled surfaces to perform stitching\n");
