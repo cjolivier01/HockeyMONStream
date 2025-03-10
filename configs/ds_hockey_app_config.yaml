@@ -115,9 +115,10 @@ source3:
   num-sources: 1
   gpu-id: 0
   input-audio-rate: 189
-  source-id: 2
+  source-id: 0
   cudadec-memtype: 1
 
+# V4L2 Webcam (Actioncam1)
 source4:
   enable: 1
   # 1: v4l2, 5: CSI
@@ -133,7 +134,7 @@ source4:
   num-sources: 1
   gpu-id: 0
   input-audio-rate: 189
-  source-id: 2
+  source-id: 1
   cudadec-memtype: 1
 
 
@@ -422,7 +423,7 @@ hmplaycropper:
   # num-output-buffers: 2
 
 hmstitcher:
-  enable: 0
+  enable: 1
   # enable: 0
   gpu-id: 0
   nvbuf-memory-type: 0

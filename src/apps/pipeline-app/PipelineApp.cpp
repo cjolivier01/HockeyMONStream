@@ -18,6 +18,7 @@
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
@@ -477,6 +478,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
 
   HM_RETURN_IF_ERROR(initializeInstances(global_cleanup_stack));
 
+  size_t stage_count = 0;
   for (auto stage_item : stage_app_contexts_) {
     current_stage_ = stage_item.first;
     auto& app_contexts = stage_app_contexts_.at(current_stage_);
@@ -490,6 +492,10 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
       }
     }
     HM_RETURN_IF_ERROR(waitForPipelinesStopped(app_contexts));
+    if (stage_count) {
+      std::this_thread::sleep_for(std::chrono::seconds(5));
+    }
+    ++stage_count;
   }
   return absl::OkStatus();
 }

@@ -208,7 +208,7 @@ absl::Status StitcherPriv::GenerateOutput(
   }
 
   // Sanity that the surfaces are laid out as expected
-  assert(surface_index == in_surface->numFilled);
+  assert(surface_index == in_surface->numFilled); 
   if (frame_source_surfaces.size() != in_surface->numFilled / 2) {
     // This can happen during shutdown
     g_printerr("Stitcher did nto receive the expected source/frame sequence\n");
@@ -348,6 +348,8 @@ absl::Status StitcherPriv::GenerateOutput(
     }
 
     if (show_) {
+      render("HM Stitcher (LEFT)", incoming_surface_left, videoprep->stream);
+      render("HM Stitcher (RIGHT)", incoming_surface_right, videoprep->stream);
       render("HM Stitcher", outgoing_surface, videoprep->stream);
     }
 

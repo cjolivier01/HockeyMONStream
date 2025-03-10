@@ -355,6 +355,8 @@ absl::Status Configurator::complete_configuration(bool force) {
     }
   }
 
+  std::cout << pipeline["hmstitcher"] << std::endl;
+
   pipeline["hmstitcher"]["config-file"] = std::string(game_dir);
 
   pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / kRinkMaskFilename);
