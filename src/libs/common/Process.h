@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -30,4 +31,8 @@ int run_command(
     const std::string& working_dir,
     const std::unordered_map<std::string, std::string>& env,
     std::function<void(const std::string&, const std::string&)> callback);
+
+std::optional<std::string> findExecutable(const std::string& executable, const std::vector<std::string>& envVars);
+std::vector<std::string> splitPaths(const std::string& paths);
+
 } // namespace hm

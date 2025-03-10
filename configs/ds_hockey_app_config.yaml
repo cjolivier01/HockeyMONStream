@@ -428,7 +428,7 @@ hmstitcher:
   gpu-id: 0
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
-  show: 1
+  show: 0
   num-batch-buffers: 4
   num-output-buffers: 4
 

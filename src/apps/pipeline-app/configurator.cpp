@@ -7,7 +7,6 @@
 #include <iostream>
 #include <sstream>
 #include <string>
-#include <unordered_set>
 
 #include <gstreamer-1.0/gst/gstelement.h>
 #include <gstreamer-1.0/gst/gstpipeline.h>
@@ -16,6 +15,7 @@
 #include <unistd.h>
 #include <yaml-cpp/node/parse.h>
 
+#include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 #include "hstream/src/libs/common/utils.h"
@@ -113,6 +113,28 @@ std::optional<YAML::Node> get_node_if_enabled(const YAML::Node& pipeline, const 
   return std::nullopt;
 }
 
+absl::Status ready_camera(const std::string device_name) {
+  auto v4l2_ctl = findExecutable("v4l2-ctl", {"PATH"});
+  if (!v4l2_ctl) {
+    v4l2_ctl = "/usr/bin/v4l2-ctl";
+  }
+
+  std::vector<std::string> cmd{*v4l2_ctl, "--device", device_name, "--all"};
+
+  int exitcode = hm::run_command(cmd, ".", {}, [](const std::string& stderr, const std::string& stdout) -> void {
+    if (!stderr.empty()) {
+      std::cerr << stderr << std::endl;
+    }
+    // if (!stdout.empty()) {
+    //   std::cerr << stdout << std::endl;
+    // }
+  });
+  if (exitcode) {
+    return absl::InternalError("Failed to contact camera.");
+  }
+  return absl::OkStatus();
+}
+
 bool has_enabled_rtsp_sink(const YAML::Node& pipeline) {
   for (size_t i = 0; i < MAX_SINK_BINS; ++i) {
     std::string sinkname = "sink" + std::to_string(i);
@@ -169,12 +191,16 @@ std::map<int, YAML::Node> get_enabled_sources(const YAML::Node& pipeline) {
   return sources;
 }
 
-std::map<int, YAML::Node> get_camera_sources(const YAML::Node& pipeline) {
+absl::StatusOr<std::map<int, YAML::Node>> get_camera_sources(const YAML::Node& pipeline) {
   std::map<int, YAML::Node> cameras;
   std::map<int, YAML::Node> sources = get_enabled_sources(pipeline);
   for (const auto& src_iter_item : sources) {
     NvDsSourceType type = (NvDsSourceType)(src_iter_item.second["type"].as<int>());
     if (type == NvDsSourceType::NV_DS_SOURCE_CAMERA_CSI || type == NvDsSourceType::NV_DS_SOURCE_CAMERA_V4L2) {
+      if (type == NvDsSourceType::NV_DS_SOURCE_CAMERA_V4L2) {
+        HM_RETURN_IF_ERROR(
+            ready_camera(TO_STRING("/dev/video" << src_iter_item.second["camera-v4l2-dev-node"].as<int>())));
+      }
       cameras.emplace(src_iter_item.first, src_iter_item.second);
     }
   }
@@ -339,7 +365,8 @@ absl::Status Configurator::complete_configuration(bool force) {
     return absl::InvalidArgumentError("No game id specified");
   }
 
-  std::map<int, YAML::Node> camera_sources = get_camera_sources(pipeline);
+  std::map<int, YAML::Node> camera_sources;
+  HM_ASSIGN_OR_RETURN(camera_sources, get_camera_sources(pipeline));
   const bool is_camera_source = !camera_sources.empty();
 
   // Stitching config mask config dir

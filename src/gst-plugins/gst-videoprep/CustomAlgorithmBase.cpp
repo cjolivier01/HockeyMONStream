@@ -91,10 +91,7 @@ bool CustomAlgorithmBase::PostCapsInit(DSCustom_CreateParams* params) {
 }
 
 // Return Compatible Output Caps based on input caps
-GstCaps* CustomAlgorithmBase::GetCompatibleCaps(
-    GstPadDirection direction,
-    GstCaps* in_caps,
-    GstCaps* othercaps) {
+GstCaps* CustomAlgorithmBase::GetCompatibleCaps(GstPadDirection direction, GstCaps* in_caps, GstCaps* othercaps) {
   GstStructure *s1, *s2;
   gint width = 0, height = 0;
   gint i = 0, num = 0, denom = 0;
@@ -512,8 +509,8 @@ void CustomAlgorithmBase::Shutdown() {
   std::unique_lock<std::mutex> lk(m_processLock);
   // Send a tombstone
   if (!outputthread_stopped) {
-  // m_processQ.emplace(PacketInfo{.inbuf=nullptr});
-  // std::cout << "Process Q Empty : " << m_processQ.empty() << std::endl;
+    // m_processQ.emplace(PacketInfo{.inbuf=nullptr});
+    // std::cout << "Process Q Empty : " << m_processQ.empty() << std::endl;
     m_processCV.wait(lk, [&] { return m_processQ.empty(); });
     m_stop = TRUE;
     m_processCV.notify_all();
@@ -575,6 +572,8 @@ void CustomAlgorithmBase::OutputThread(void) {
       }
     }
 
+    bool send_eos = false;
+
     if (m_transformMode) {
       if (hw_caps == true) {
         // set surface transform session when transform mode is on
@@ -591,9 +590,9 @@ void CustomAlgorithmBase::OutputThread(void) {
         if (result != GST_FLOW_OK) {
           GST_ERROR_OBJECT(m_element, "InsertCustomFrame failed error = %d, exiting...", result);
           // exit(-1);
-           update_last_flow_ret(GST_FLOW_ERROR);
-           //lk.lock();
-           //break;
+          update_last_flow_ret(GST_FLOW_ERROR);
+          // lk.lock();
+          // break;
         }
         // Copy meta and transform if required
         if (!gst_buffer_copy_into(newGstOutBuf, packetInfo.inbuf, GST_BUFFER_COPY_META, 0, -1)) {
@@ -606,9 +605,9 @@ void CustomAlgorithmBase::OutputThread(void) {
         if (!in_surf || !out_surf) {
           GST_ERROR_OBJECT(m_element, "CustomLib: NvBufSurface not found in the buffer...exiting...\n");
           // exit(-1);
-           update_last_flow_ret(GST_FLOW_ERROR);
-           //lk.lock();
-           //break;
+          update_last_flow_ret(GST_FLOW_ERROR);
+          // lk.lock();
+          // break;
         }
 
         batch_meta = GetNVDS_BatchMeta(newGstOutBuf);
@@ -630,12 +629,13 @@ void CustomAlgorithmBase::OutputThread(void) {
         if (!cuda_status.ok()) {
           std::cerr << cuda_status << std::endl;
           if (cuda_status.code() == absl::StatusCode::kCancelled) {
-            update_last_flow_ret(GST_FLOW_EOS);
+            // update_last_flow_ret(GST_FLOW_EOS);
+            send_eos = true;
           } else {
             update_last_flow_ret(GST_FLOW_ERROR);
           }
-          //lk.lock();
-          //break;
+          // lk.lock();
+          // break;
         }
 
         outBuffer = newGstOutBuf;
@@ -695,16 +695,29 @@ void CustomAlgorithmBase::OutputThread(void) {
       nvds_set_input_system_timestamp(outBuffer, GST_ELEMENT_NAME(m_element));
     }
     if (last_flow_ret_ == GST_FLOW_OK) {
-      nvds_set_output_system_timestamp(outBuffer, GST_ELEMENT_NAME(m_element));
-      flow_ret = gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(m_element), outBuffer);
-      GST_DEBUG_OBJECT(
-          m_element,
-          "CustomLib: %s in_surf=%p, Pushing Frame %d to downstream... flow_ret = %d TS=%" GST_TIME_FORMAT " \n",
-          __func__,
-          in_surf,
-          packetInfo.frame_num,
-          flow_ret,
-          GST_TIME_ARGS(GST_BUFFER_PTS(outBuffer)));
+      if (!send_eos) {
+        nvds_set_output_system_timestamp(outBuffer, GST_ELEMENT_NAME(m_element));
+        flow_ret = gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(m_element), outBuffer);
+        GST_DEBUG_OBJECT(
+            m_element,
+            "CustomLib: %s in_surf=%p, Pushing Frame %d to downstream... flow_ret = %d TS=%" GST_TIME_FORMAT " \n",
+            __func__,
+            in_surf,
+            packetInfo.frame_num,
+            flow_ret,
+            GST_TIME_ARGS(GST_BUFFER_PTS(outBuffer)));
+      } else {
+        if (!eos_sent_) {
+          GstEvent* eos_event = gst_event_new_eos();
+          gboolean ret = gst_pad_push_event(GST_BASE_TRANSFORM_SRC_PAD(m_element), eos_event);
+          if (!ret) {
+            std::cerr << "Error sending EOS downstream from videoprep algorithm" << std::endl;
+          } else {
+            eos_sent_ = true;
+          }
+        }
+        gst_buffer_unref(outBuffer);
+      }
     }
     lk.lock();
     continue;
@@ -864,7 +877,5 @@ void CustomAlgorithmBase::DumpNvBufSurface(NvBufSurface* in_surface, NvDsBatchMe
     }
   }
 }
-
-
 
 } // namespace hm

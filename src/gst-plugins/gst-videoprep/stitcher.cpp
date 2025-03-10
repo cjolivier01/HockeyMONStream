@@ -293,15 +293,16 @@ absl::Status StitcherPriv::GenerateOutput(
         // trigger_pipeline_stop(GST_ELEMENT(m_element));
         // return absl::CancelledError("Stitching has been configured");
         // Signal pipeline that we wish to EOS
-        assert(m_element);
-        GstReferencedObject<GstElement*> pipeline = get_pipeline_element(GST_ELEMENT(m_element));
-        if (pipeline) {
+        //assert(m_element);
+        //GstReferencedObject<GstElement*> pipeline = get_pipeline_element(GST_ELEMENT(m_element));
+        //if (pipeline) {
           //std::cout << "Stitcher is sending the pipeline an EOS event" << std::endl;
           // gst_element_send_event(pipeline, gst_event_new_eos());
           //trigger_pipeline_stop(pipeline);
-          pipeline.release();
-          std::cout << "Stitcher sent the pipeline an EOS event" << std::endl;
-        }
+          //pipeline.release();
+          //std::cout << "Stitcher sent the pipeline an EOS event" << std::endl;
+        //}
+        return absl::CancelledError("Stitching has been configured");
       }
     }
 
