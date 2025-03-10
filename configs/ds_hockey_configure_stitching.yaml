@@ -105,7 +105,7 @@ source3:
   enable: 1
   # 1: v4l2, 5: CSI
   type: 1
-  camera-v4l2-dev-node: 0
+  camera-v4l2-dev-node: 1
   # uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
   camera-width: 1920
   camera-height: 1080
@@ -123,7 +123,7 @@ source4:
   enable: 1
   # 1: v4l2, 5: CSI
   type: 1
-  camera-v4l2-dev-node: 2
+  camera-v4l2-dev-node: 4
   # uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
   camera-width: 1920
   camera-height: 1080
