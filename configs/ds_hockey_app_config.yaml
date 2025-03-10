@@ -262,7 +262,7 @@ sink2:
 hmaudio0:
   enable: 0
   # 0=default alsa source, 1=file
-  src: 1
+  src: 0
   # audio-location: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   # audio-location: /home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   alsa-src-device: hw:0,0
@@ -279,14 +279,14 @@ hmaudio0:
   # sink_id_is_valid: 1
   # sink-id: 1
 
-  # 0=indeopendent (this local config), 1=sink, 2=multisink
-  dest: 1
-  sink-id: 1
+  # 0=independent (this local config), 1=sink, 2=multisink
+  dest: 0
+  sink-id: 0
   # multi-sink-ids: 0,1,2
 
 
 osd:
-  enable: 0
+  enable: 1
   gpu-id: 0
   border-width: 1
   text-size: 15
