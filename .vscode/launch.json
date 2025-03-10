@@ -54,7 +54,7 @@
       },
     },
     {
-      "name": "(LLDB) pipeline-app",
+      "name": "pipeline-app",
       "type": "lldb",
       "request": "launch",
       "linux": {
@@ -138,7 +138,7 @@
       "preLaunchTask": "Build All",
     },
     {
-      "name": "(LLDB) pipeline-app configure stitching",
+      "name": "pipeline-app configure stitching",
       "type": "lldb",
       "request": "launch",
       "linux": {
@@ -181,7 +181,42 @@
       "preLaunchTask": "Build All",
     },
     {
-      "name": "(LLDB) cudaBlend",
+      "name": "GstPipelineStudio",
+      "type": "lldb",
+      "request": "launch",
+      "linux": {
+        // "envFile": "${workspaceFolder}/${config:mesonbuild.buildFolder}/meson-vscode.env",
+      },
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/../GstPipelineStudio/builddir/src/gst-pipeline-studio",
+      "args": [
+        "hstream",
+      ],
+      "sourceMap": {
+        "/proc/self/cwd": "${workspaceFolder}",
+        // "~/src": "${env:HOME}/src",
+        //"${workspaceFolder}/src/external/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",
+        "external/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",
+        //"external/hmdeepstream/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",
+        "home/colivier/src/jetson-utils": "${workspaceFolder}/src/external/jetson-utils",
+      },
+      //"stopOnEntry": true,
+      "env": {
+        //"GST_DEBUG": "videoprep:7",
+        //"GST_DEBUG": "basesink:5",
+        // "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
+        //"LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib",
+        "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins",
+        //"GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
+        // "GST_DEBUG": "3",
+        "DISPLAY": ":1",
+        "CUDA_LAUNCH_BLOCKING": "1",
+        //"USE_NEW_NVSTREAMMUX": "1",
+      },
+      "preLaunchTask": "Build All",
+    },
+    {
+      "name": "cudaBlend",
       "type": "lldb",
       "request": "launch",
       "linux": {
@@ -236,7 +271,7 @@
       "preLaunchTask": "Build All",
     },
     {
-      "name": "(LLDB) simple-pipeline",
+      "name": "simple-pipeline",
       "type": "lldb",
       "request": "launch",
       "linux": {
@@ -302,7 +337,7 @@
       "preLaunchTask": "Build All",
     },
     {
-      "name": "(LLDB) simple-rtsp",
+      "name": "simple-rtsp",
       "type": "lldb",
       "request": "launch",
       "linux": {
@@ -344,7 +379,7 @@
       "preLaunchTask": "Build All",
     },
     {
-      "name": "(LLDB) simple-rtmp",
+      "name": "simple-rtmp",
       "type": "lldb",
       "request": "launch",
       "linux": {
@@ -385,7 +420,7 @@
       "preLaunchTask": "Build All",
     },
     {
-      "name": "(LLDB) kmeans",
+      "name": "kmeans",
       "type": "lldb",
       "request": "launch",
       "linux": {
@@ -424,7 +459,7 @@
       "preLaunchTask": "Build All",
     },
     {
-      "name": "(LLDB) deepstream-app",
+      "name": "deepstream-app",
       "type": "lldb",
       "request": "launch",
       "linux": {
@@ -449,7 +484,7 @@
       "preLaunchTask": "Build All",
     },
     {
-      "name": "(LLDB) myaudioapp",
+      "name": "myaudioapp",
       "type": "lldb",
       "request": "launch",
       "cwd": "${workspaceFolder}",
@@ -470,7 +505,7 @@
       "preLaunchTask": "Build All",
     },
     {
-      "name": "(LLDB) deepstream-audio",
+      "name": "deepstream-audio",
       "type": "lldb",
       "request": "launch",
       "cwd": "${workspaceFolder}",
@@ -491,7 +526,7 @@
       "preLaunchTask": "Build All",
     },
     {
-      "name": "(LLDB) vplay",
+      "name": "vplay",
       "type": "lldb",
       "request": "launch",
       "cwd": "${workspaceFolder}",
@@ -513,7 +548,7 @@
       "preLaunchTask": "Build single target (set in json)",
     },
     {
-      "name": "(LLDB) gxe",
+      "name": "gxe",
       "type": "lldb",
       "request": "launch",
       "linux": {
@@ -541,7 +576,7 @@
       // "preLaunchTask": "Meson: Build all targets",
     },
     {
-      "name": "(LLDB) gst-inspect-1.0",
+      "name": "gst-inspect-1.0",
       "type": "lldb",
       "request": "launch",
       "cwd": "${workspaceFolder}/",
