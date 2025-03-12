@@ -314,11 +314,9 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
 
   GST_DEBUG_OBJECT(m_element, "CustomLib: ---> Inside %s frame_num = %d\n", __func__, m_frameNum++);
 
-  // if (last_flow_ret_ == GST_FLOW_EOS) {
-  //   return BufferResult::Buffer_Eos;
-  // } else if (last_flow_ret_ == GST_FLOW_ERROR) {
-  //   return BufferResult::Buffer_Error;
-  // }
+  if (last_flow_ret_ == GST_FLOW_ERROR) {
+     return BufferResult::Buffer_Error;
+  }
 
   // TODO: End of Stream Handling
   memset(&in_map_info, 0, sizeof(in_map_info));

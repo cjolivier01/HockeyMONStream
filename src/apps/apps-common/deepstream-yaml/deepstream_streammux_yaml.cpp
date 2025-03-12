@@ -19,7 +19,7 @@
 using std::cout;
 using std::endl;
 
-gboolean parse_streammux_yaml(NvDsStreammuxConfig* config, const gchar* cfg_file_path) {
+gboolean parse_streammux_yaml(NvDsStreammuxConfig* config, const YAML::Node& configyml, const gchar* cfg_file_path) {
   gboolean ret = FALSE;
 
   config->frame_duration = -1;
@@ -28,7 +28,6 @@ gboolean parse_streammux_yaml(NvDsStreammuxConfig* config, const gchar* cfg_file
   config->async_process = TRUE;
   config->no_pipeline_eos = FALSE;
 
-  YAML::Node configyml = YAML::LoadFile(cfg_file_path);
   for (YAML::const_iterator itr = configyml["streammux"].begin(); itr != configyml["streammux"].end(); ++itr) {
     std::string paramKey = itr->first.as<std::string>();
     if (paramKey == "width") {
