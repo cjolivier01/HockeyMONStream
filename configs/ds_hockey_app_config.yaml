@@ -101,7 +101,7 @@ source2:
 
 # V4L2 Webcam (Actioncam1)
 source3:
-  enable: 1
+  enable: 0
   # 1: v4l2, 5: CSI
   type: 1
   camera-v4l2-dev-node: 1
@@ -120,7 +120,7 @@ source3:
 
 # V4L2 Webcam (Actioncam1)
 source4:
-  enable: 1
+  enable: 0
   # 1: v4l2, 5: CSI
   type: 1
   camera-v4l2-dev-node: 4
@@ -131,6 +131,44 @@ source4:
   camera-fps-d: 1
   video-format: RGBA
   media-type: image/jpeg
+  num-sources: 1
+  gpu-id: 0
+  input-audio-rate: 189
+  source-id: 1
+  cudadec-memtype: 1
+
+# CSI Webcam (Arducam)
+source5:
+  enable: 1
+  # 1: v4l2, 5: CSI
+  type: 5
+  camera-v4l2-dev-node: 0
+  # uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
+  camera-width: 3840
+  camera-height: 2160
+  camera-fps-n: 30
+  camera-fps-d: 1
+  video-format: NV12
+  # media-type: image/jpeg
+  num-sources: 1
+  gpu-id: 0
+  input-audio-rate: 189
+  source-id: 0
+  cudadec-memtype: 1
+
+# CSI Webcam (Arducam)
+source6:
+  enable: 0
+  # 1: v4l2, 5: CSI
+  type: 4
+  camera-v4l2-dev-node: 1
+  # uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
+  camera-width: 3840
+  camera-height: 2160
+  camera-fps-n: 30
+  camera-fps-d: 1
+  # video-format: RGBA
+  # media-type: image/jpeg
   num-sources: 1
   gpu-id: 0
   input-audio-rate: 189
@@ -158,7 +196,7 @@ sink0:
   enable: 1
   sink-id: 0
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
-  type: 2
+  type: 1
   # sync: 1
   sync: 0
   source-id: 0
@@ -286,7 +324,7 @@ hmaudio0:
 
 
 osd:
-  enable: 1
+  enable: 0
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -365,7 +403,7 @@ dewarper0:
   num-output-buffers: 4
 
 primary-gie:
-  enable: 1
+  enable: 0
   gpu-id: 0
   batch-size: 4
   #Required by the app for OSD, not a plugin property
@@ -423,7 +461,7 @@ hmplaycropper:
   # num-output-buffers: 2
 
 hmstitcher:
-  enable: 1
+  enable: 0
   # enable: 0
   gpu-id: 0
   nvbuf-memory-type: 0
@@ -433,7 +471,7 @@ hmstitcher:
   num-output-buffers: 4
 
 ds-playtracker:
-  enable: 1
+  enable: 0
   gpu-id: 0
   unique-id: 75
   draw: true
@@ -451,7 +489,7 @@ ds-fieldmask:
   # detection-mask: /home/colivier/Videos/mlk-heat-1/rink_mask_0.png
 
 tracker:
-  enable: 1
+  enable: 0
   # For NvDCF and NvDeepSORT tracker, tracker-width and tracker-height must be a multiple of 32, respectively
   tracker-width: 960
   tracker-height: 544

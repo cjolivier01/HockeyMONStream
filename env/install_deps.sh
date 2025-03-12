@@ -10,4 +10,5 @@ sudo apt-get install -y \
   gstreamer1.0-rtsp \
   libglew-dev \
   libabsl-dev \
+  libfftw3-dev \
   libgtkglext1-dev  
