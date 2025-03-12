@@ -11,4 +11,7 @@ sudo apt-get install -y \
   libglew-dev \
   libabsl-dev \
   libfftw3-dev \
+  libv4l-dev \
+  v4l-utils \
+  v4l-conf \
   libgtkglext1-dev  
