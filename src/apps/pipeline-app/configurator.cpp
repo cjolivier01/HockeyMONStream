@@ -123,11 +123,11 @@ absl::Status ready_camera(const std::string device_name) {
 
   int exitcode = hm::run_command(cmd, ".", {}, [](const std::string& stderr, const std::string& stdout) -> void {
     if (!stderr.empty()) {
-      std::cerr << stderr << std::endl;
+      std::cerr << "Failed to execute 'v4l2-ctl': " << stderr << std::endl;
     }
-    // if (!stdout.empty()) {
-    //   std::cerr << stdout << std::endl;
-    // }
+    if (!stdout.empty()) {
+      std::cerr << stdout << std::endl;
+    }
   });
   if (exitcode) {
     return absl::InternalError("Failed to contact camera.");
