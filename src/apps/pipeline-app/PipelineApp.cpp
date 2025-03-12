@@ -490,8 +490,8 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
         HM_RETURN_IF_ERROR(createMainLoop(app_contexts, stage_windows_[current_stage_], stage_cleanup_stack));
         HM_RETURN_IF_ERROR(playPipelines(app_contexts, stage_cleanup_stack));
       }
+      HM_RETURN_IF_ERROR(waitForPipelinesStopped(app_contexts));
     }
-    HM_RETURN_IF_ERROR(waitForPipelinesStopped(app_contexts));
     if (stage_count) {
       std::this_thread::sleep_for(std::chrono::seconds(5));
     }
