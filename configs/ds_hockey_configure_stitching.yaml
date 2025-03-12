@@ -170,7 +170,7 @@ source6:
   num-sources: 1
   gpu-id: 0
   input-audio-rate: 189
-  source-id: 166
+  source-id: 1
   cudadec-memtype: 1
 
 #source:
@@ -206,10 +206,10 @@ sink0:
 streammux:
   gpu-id: 0
   ##Boolean property to inform muxer that sources are live
-  live-source: 0
-  buffer-pool-size: 4
+  live-source: 1
+  buffer-pool-size: 8
   batch-size: 2
-  num-surfaces-per-frame: 1
+  num-surfaces-per-frame: 2
   ##time out in usec, to wait after the first buffer is available
   ##to push the batch even if the complete batch is not formed
   # batched-push-timeout: 40000
