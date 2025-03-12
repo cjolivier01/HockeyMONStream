@@ -25,9 +25,11 @@ Videoinfo getVideoInfo(const std::string& videoPath) {
   info.width = cap.get(cv::CAP_PROP_FRAME_WIDTH);
   info.height = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
   info.video_bit_rate = cap.get(cv::CAP_PROP_BITRATE) * 1000;
+#if 0
   info.audio_samples_per_second = cap.get(cv::CAP_PROP_AUDIO_SAMPLES_PER_SECOND);
   info.num_audio_channels = cap.get(cv::CAP_PROP_AUDIO_TOTAL_CHANNELS);
   info.num_audio_streams = cap.get(cv::CAP_PROP_AUDIO_TOTAL_STREAMS);
+#endif
   return info;
 }
 
