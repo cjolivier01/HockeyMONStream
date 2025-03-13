@@ -288,7 +288,6 @@ gst_nvstreammux_src_event (GstPad * pad, GstObject * parent, GstEvent * event)
 static GstFlowReturn
 gst_nvstreammux_chain (GstPad * pad, GstObject * parent, GstBuffer * buffer)
 {
-     assert(FALSE);
      GstFlowReturn ret = GST_FLOW_OK;
      guint stream_index = 0;
      gchar * name = gst_pad_get_name(pad);
