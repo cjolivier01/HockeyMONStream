@@ -163,7 +163,7 @@ absl::Status PipelineApplication::configureInstances(std::vector<std::shared_ptr
 
 absl::Status PipelineApplication::createPipelines(
     std::vector<std::shared_ptr<HmApp>>& app_contexts,
-    CleanupStack& /*cleanup_stack*/) const {
+    CleanupStack& cleanup_stack) const {
   // Section 2: Create pipelines for each instance.
   for (guint i = 0; i < app_contexts.size(); i++) {
     if (!create_pipeline(app_contexts[i].get(), nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
@@ -301,6 +301,7 @@ absl::Status PipelineApplication::createMainLoop(
 #endif
   }
   cleanup_stack.push([this, contexts = app_contexts, windows = windows]() mutable -> void {
+    (void)waitForPipelinesStopped(contexts);
     for (guint i = 0; i < contexts.size(); i++) {
       if (contexts[i]) {
         if (contexts[i]->return_value == -1)
