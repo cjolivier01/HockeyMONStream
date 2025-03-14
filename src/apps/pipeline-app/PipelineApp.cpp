@@ -36,6 +36,24 @@
 // Debug category definition.
 GST_DEBUG_CATEGORY(NVDS_APP);
 
+namespace {
+
+// void post_dummy_event(Display* display, Window targetWindow) {
+//   XEvent event;
+//   std::memset(&event, 0, sizeof(event));
+//   event.xclient.type = ClientMessage;
+//   event.xclient.display = display;
+//   event.xclient.window = targetWindow; // usually your window
+//   event.xclient.message_type = XInternAtom(display, "HM_EXIT_EVENT_LOOP", False);
+//   event.xclient.format = 32;
+//   event.xclient.data.l[0] = 0; // arbitrary data
+
+//   // Send the event. Adjust the event mask as needed.
+//   XSendEvent(display, targetWindow, False, 0, &event);
+//   XFlush(display);
+// }
+} // namespace
+
 //------------------------------------------------------------------------------
 // CleanupStack implementation.
 void CleanupStack::push(std::function<void()> cleanup) {
@@ -68,7 +86,6 @@ PipelineApplication::PipelineApplication()
       dump_pipeline_dot_(FALSE),
       force_reconfigure_(FALSE),
       return_value_(0),
-      // num_instances_(0),
       num_input_uris_(0),
       display_(nullptr),
       x_event_thread_(nullptr),
@@ -85,8 +102,7 @@ PipelineApplication::PipelineApplication()
 
 //------------------------------------------------------------------------------
 // PipelineApplication destructor.
-PipelineApplication::~PipelineApplication() {
-}
+PipelineApplication::~PipelineApplication() {}
 
 //------------------------------------------------------------------------------
 // Callback and helper functions implementation.
@@ -307,11 +323,16 @@ absl::Status PipelineApplication::createMainLoop(
         destroy_pipeline(contexts[i].get());
         absl::MutexLock lk(&disp_lock_);
         if (windows[i]) {
+          // post_dummy_event(display_, windows[i]);
+          XFlush(display_);
           XDestroyWindow(display_, windows[i]);
         }
         windows[i] = 0;
         // contexts[i].reset();
       }
+    }
+    if (x_event_thread_ && x_event_thread_->joinable) {
+      g_thread_join(x_event_thread_);
     }
     absl::MutexLock lk(&disp_lock_);
     if (display_)
@@ -321,7 +342,6 @@ absl::Status PipelineApplication::createMainLoop(
 
   return absl::OkStatus();
 }
-
 
 absl::Status PipelineApplication::stopPipeline(std::shared_ptr<HmApp> app_context) const {
   if (!app_context) {
@@ -813,12 +833,13 @@ gpointer PipelineApplication::nvds_x_event_thread_static(gpointer data) {
 }
 
 gpointer PipelineApplication::nvds_x_event_thread() {
+  Atom exitEventLoopAtom = XInternAtom(display_, "HM_EXIT_EVENT_LOOP", False);
   disp_lock_.Lock();
-  while (display_) {
+  while (display_ && !quit_) {
     XEvent e;
     guint index;
     memset(&e, 0, sizeof(XEvent));
-    while (display_ && XPending(display_)) {
+    while (!quit_ && display_ && XPending(display_)) {
       XNextEvent(display_, &e);
       auto& app_ctx = stage_app_contexts_.at(current_stage_);
       switch (e.type) {
@@ -878,6 +899,9 @@ gpointer PipelineApplication::nvds_x_event_thread() {
           }
         } break;
         case ClientMessage: {
+          if (e.xclient.message_type == exitEventLoopAtom) {
+            quit_ = TRUE;
+          }
           Atom wm_delete;
           for (index = 0; index < app_ctx.size(); index++)
             if (e.xclient.window == stage_windows_.at(current_stage_)[index])
