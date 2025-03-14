@@ -142,14 +142,14 @@ source5:
   enable: 1
   # 1: v4l2, 5: CSI
   type: 5
-  camera-v4l2-dev-node: 0
-  # uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
+  camera-csi-sensor-id: 0
+  camera-i2c-bus: 9
+  camera-auto-focus: 1
   camera-width: 3840
   camera-height: 2160
   camera-fps-n: 30
   camera-fps-d: 1
   video-format: NV12
-  # media-type: image/jpeg
   num-sources: 1
   gpu-id: 0
   input-audio-rate: 189
@@ -158,22 +158,22 @@ source5:
 
 # CSI Webcam (Arducam)
 source6:
-  enable: 0
+  enable: 1
   # 1: v4l2, 5: CSI
-  type: 4
-  camera-v4l2-dev-node: 1
-  # uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
+  type: 5
+  camera-csi-sensor-id: 1
+  camera-i2c-bus: 14
+  camera-auto-focus: 1
   camera-width: 3840
   camera-height: 2160
   camera-fps-n: 30
   camera-fps-d: 1
-  # video-format: RGBA
-  # media-type: image/jpeg
   num-sources: 1
   gpu-id: 0
   input-audio-rate: 189
   source-id: 1
   cudadec-memtype: 1
+
 
 
 #source:
