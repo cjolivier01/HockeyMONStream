@@ -42,6 +42,8 @@ gboolean parse_source_yaml(NvDsSourceConfig* config, const YAML::Node& yaml_node
   SET_LOCATOR(locator, *config, camera_i2c_bus); // "camera-i2c-bus"
   SET_LOCATOR(locator, *config, camera_wbmode);  // "camera-wbmode"
   SET_LOCATOR(locator, *config, camera_auto_focus); // "camera-auto-focus"
+  SET_LOCATOR(locator, *config, camera_saturation);
+  SET_LOCATOR(locator, *config, camera_exposure_compensation);
   SET_LOCATOR(locator, *config, camera_v4l2_dev_node); // "camera-v4l2-dev-node"
   SET_LOCATOR(locator, *config, udp_buffer_size); // "udp-buffer-size"
   SET_LOCATOR(locator, *config, flip_method); // "flip-method"

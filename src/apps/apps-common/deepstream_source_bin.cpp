@@ -145,7 +145,7 @@ void print_pads(GstElement* element) {
 static gboolean set_camera_csi_params(NvDsSourceConfig* config, NvDsSrcBin* bin) {
   g_object_set(G_OBJECT(bin->src_elem), "sensor-id", config->camera_csi_sensor_id, NULL);
   if (config->camera_wbmode) {
-      g_object_set(G_OBJECT(bin->src_elem), "wbmode", config->camera_wbmode, NULL);
+    g_object_set(G_OBJECT(bin->src_elem), "wbmode", config->camera_wbmode, NULL);
   }
   if (config->exposure_time_range) {
     g_object_set(G_OBJECT(bin->src_elem), "exposuretimerange", config->exposure_time_range, NULL);
@@ -153,6 +153,14 @@ static gboolean set_camera_csi_params(NvDsSourceConfig* config, NvDsSrcBin* bin)
   if (config->gain_range) {
     g_object_set(G_OBJECT(bin->src_elem), "gainrange", config->gain_range, NULL);
   }
+  if (config->camera_saturation != 0.0) {
+    g_object_set(G_OBJECT(bin->src_elem), "saturation", config->camera_saturation, NULL);
+  }
+  if (config->camera_exposure_compensation != 0.0) {
+    g_object_set(G_OBJECT(bin->src_elem), "exposurecompensation", config->camera_exposure_compensation, NULL);
+  }
+  // g_object_set(G_OBJECT(bin->src_elem), "tnr-mode", 2, NULL);
+  g_object_set(G_OBJECT(bin->src_elem), "ee-mode", 2, NULL);
   GST_CAT_DEBUG(NVDS_APP, "Setting csi camera params successful");
   return TRUE;
 }
@@ -1695,8 +1703,8 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
     }
     set_videoconvert_params(&configs[i], &bin->sub_bins[i]);
     gst_bin_add(GST_BIN(bin->bin), bin->sub_bins[i].bin);
-    //print_pads(bin->streammux);
-    //print_pads(bin->sub_bins[i].bin);
+    // print_pads(bin->streammux);
+    // print_pads(bin->sub_bins[i].bin);
     if (!link_element_to_streammux_sink_pad(bin->streammux, bin->sub_bins[i].bin, i)) {
       NVGSTDS_ERR_MSG_V("source %d cannot be linked to mux's sink pad %p\n", i, bin->streammux);
       goto done;
