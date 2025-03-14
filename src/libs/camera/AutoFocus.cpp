@@ -76,7 +76,9 @@ class Focuser {
     if (!write(CHIP_I2C_ADDR, value, verbose)) {
       return false;
     }
-    std::cout << "write: " << value << std::endl;
+    if (verbose) {
+      std::cout << "write: " << value << std::endl;
+    }
     return true;
   }
 };
@@ -168,6 +170,8 @@ absl::Status show_camera(
       }
     });
 
+    constexpr int kFocalDistanceIncrement = 4;
+
     if (show) {
       cv::namedWindow("CSI Camera", cv::WINDOW_AUTOSIZE);
     }
@@ -199,7 +203,7 @@ absl::Status show_camera(
           }
           if (dec_count < 6) {
             last_value = val;
-            focal_distance += 10;
+            focal_distance += kFocalDistanceIncrement;
           } else if (!focus_finished) {
             if (!focusing(focuser, max_index, verbose)) {
               return absl::InternalError("Could not focus camera");

@@ -229,6 +229,8 @@
         // "--device-id", "0",
         "--i2c-bus", "14",
         "--device-id", "1",
+        "--show",
+        "--interactive",
       ],
       "sourceMap": {
         // "/proc/self/cwd/external/jetson-utils" : "",
