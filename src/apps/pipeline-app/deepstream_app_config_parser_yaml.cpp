@@ -278,6 +278,14 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
             ret = FALSE;
             goto done;
           }
+
+          YAML::Node src_node;
+          assert(headers.size() == source_values.size());
+
+          for (size_t i = 0; i < headers.size(); ++i) {
+            src_node[headers.at(i)] = source_values.at(i);
+          }
+
           guint source_id = 0;
           source_id = config->num_source_sub_bins;
           /** set gpu_id for source component using global_gpu_id(if available) */
@@ -286,18 +294,20 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
           }
           /** if gpu_id for source component is present,
            * it will override the value set using global_gpu_id in parse_source_yaml function */
-          parse_err =
-              !parse_source_yaml(&config->multi_source_config[source_id], headers, source_values, (char*)cfg_file_path);
+          parse_err = !parse_source_yaml(&config->multi_source_config[source_id], src_node, (char*)cfg_file_path);
+          // parse_err =
+          //     !parse_source_yaml(&config->multi_source_config[source_id], headers, source_values,
+          //     (char*)cfg_file_path);
           if (config->multi_source_config[source_id].enable)
             config->num_source_sub_bins++;
         }
       } else {
-        YAML::Node source_node = configyml[paramKey];
-        std::vector<std::string> headers, source_values;
-        for (YAML::const_iterator itr = source_node.begin(); itr != source_node.end(); ++itr) {
-          headers.emplace_back(itr->first.as<std::string>());
-          source_values.emplace_back(itr->second.as<std::string>());
-        }
+        // YAML::Node source_node = configyml[paramKey];
+        // std::vector<std::string> headers, source_values;
+        // for (YAML::const_iterator itr = source_node.begin(); itr != source_node.end(); ++itr) {
+        //   headers.emplace_back(itr->first.as<std::string>());
+        //   source_values.emplace_back(itr->second.as<std::string>());
+        // }
         if (config->num_source_sub_bins == MAX_SOURCE_BINS) {
           NVGSTDS_ERR_MSG_V("App supports max %d sources", MAX_SOURCE_BINS);
           ret = FALSE;
@@ -311,7 +321,9 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
         }
         /** if gpu_id for source component is present,
          * it will override the value set using global_gpu_id in parse_source_yaml function */
-        parse_err = !parse_source_yaml(&config->multi_source_config[source_id], headers, source_values, cfg_file_path);
+        // parse_err = !parse_source_yaml(&config->multi_source_config[source_id], headers, source_values,
+        // cfg_file_path);
+        parse_source_yaml(&config->multi_source_config[source_id], configyml[paramKey], (char*)cfg_file_path);
         if (config->multi_source_config[source_id].enable)
           config->num_source_sub_bins++;
       }

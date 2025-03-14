@@ -1,14 +1,22 @@
 #include "hstream/src/libs/common/ConfigYaml.h"
 
-#include <cassert>
-#include <iostream>
-#include <string>
-#include <sstream>
 #include <algorithm>
+#include <cassert>
 #include <cstring>
+#include <iostream>
+#include <sstream>
+#include <string>
 
 namespace hm {
 namespace utils {
+
+// Helper for overloaded lambdas.
+template <class... Ts>
+struct overloaded : Ts... {
+  using Ts::operator()...;
+};
+template <class... Ts>
+overloaded(Ts...) -> overloaded<Ts...>;
 
 void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator) {
   if (!yaml.IsDefined()) {
@@ -21,42 +29,54 @@ void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator) 
 
     auto loc = locator.locators.find(key);
     auto loc_char = locator.char_array_locators.find(key);
+    auto loc_char_ptr = locator.char_ptr_locators.find(key);
     auto loc_int = locator.int_array_locators.find(key);
 
-    // Make sure the key is not present in more than one mapping.
-    assert((loc == locator.locators.end() ? 1 : 0)
-         + (loc_char == locator.char_array_locators.end() ? 1 : 0)
-         + (loc_int == locator.int_array_locators.end() ? 1 : 0) >= 2);
-
-    if (loc == locator.locators.end() && loc_char == locator.char_array_locators.end() && loc_int == locator.int_array_locators.end()) {
+    // If the key isn't found, try replacing '-' with '_' and check again.
+    if (loc == locator.locators.end() && loc_char == locator.char_array_locators.end() &&
+        loc_int == locator.int_array_locators.end()) {
       std::replace(key.begin(), key.end(), '-', '_');
       loc = locator.locators.find(key);
       loc_char = locator.char_array_locators.find(key);
       loc_int = locator.int_array_locators.find(key);
       ignored |= !!locator.ignored.count(key);
-      assert((loc == locator.locators.end() ? 1 : 0)
-           + (loc_char == locator.char_array_locators.end() ? 1 : 0)
-           + (loc_int == locator.int_array_locators.end() ? 1 : 0) >= 2);
+      assert(
+          (loc == locator.locators.end() ? 1 : 0) + (loc_char == locator.char_array_locators.end() ? 1 : 0) +
+              (loc_int == locator.int_array_locators.end() ? 1 : 0) >=
+          2);
     }
 
     if (loc != locator.locators.end()) {
       assert(!ignored);
       std::visit(
-          [&](auto&& target) {
-            using T = std::decay_t<decltype(*target)>;
-            try {
-              *target = value.as<T>();
-            } catch (const std::exception& e) {
-              std::cerr << "Error setting value for key '" << key << "': " << e.what() << '\n';
-            }
-          },
+          overloaded{// Handle pointer types (the original alternatives).
+                     [&](auto* target) {
+                       using T = std::decay_t<decltype(*target)>;
+                       try {
+                         *target = value.as<T>();
+                       } catch (const std::exception& e) {
+                         std::cerr << "Error setting value for key '" << key << "': " << e.what() << '\n';
+                       }
+                     },
+                     // Handle enum locators.
+                     [&](const ConfigEnumLocator& enumLoc) {
+                       try {
+                         int int_val = value.as<int>();
+                         enumLoc.assign(enumLoc.ptr, int_val);
+                       } catch (const std::exception& e) {
+                         std::cerr << "Error setting enum value for key '" << key << "': " << e.what() << '\n';
+                       }
+                     }},
           loc->second);
     } else if (loc_char != locator.char_array_locators.end()) {
       assert(!ignored);
       ::strncpy(loc_char->second.first, value.as<std::string>().c_str(), loc_char->second.second);
+    } else if (loc_char_ptr != locator.char_ptr_locators.end()) {
+      assert(!ignored);
+      *loc_char_ptr->second.first = strdup(value.as<std::string>().c_str());
     } else if (loc_int != locator.int_array_locators.end()) {
       assert(!ignored);
-      // Parse a comma-separated list of integers from the YAML node.
+      // Parse a comma-separated list of integers.
       std::string csv = value.as<std::string>();
       std::istringstream ss(csv);
       std::string token;
@@ -64,7 +84,6 @@ void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator) 
       size_t max_count = loc_int->second.second;
       size_t count = 0;
       while (std::getline(ss, token, ',') && count < max_count) {
-        // Trim leading/trailing whitespace.
         token.erase(0, token.find_first_not_of(" \t"));
         token.erase(token.find_last_not_of(" \t") + 1);
         try {
@@ -74,7 +93,7 @@ void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator) 
         }
         count++;
       }
-      // Terminate with a -1
+      // Terminate the array with -1.
       array_ptr[count] = -1;
     } else if (!ignored) {
       std::cerr << "Warning: Unrecognized key in YAML: " << key << '\n';

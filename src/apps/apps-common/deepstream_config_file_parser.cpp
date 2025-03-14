@@ -434,16 +434,16 @@ gboolean parse_source(NvDsSourceConfig* config, GKeyFile* key_file, gchar* group
       config->enable = g_key_file_get_integer(key_file, group, CONFIG_GROUP_ENABLE, &error);
       CHECK_ERROR(error);
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SOURCE_CAMERA_WIDTH)) {
-      config->source_width = g_key_file_get_integer(key_file, group, CONFIG_GROUP_SOURCE_CAMERA_WIDTH, &error);
+      config->camera_width = g_key_file_get_integer(key_file, group, CONFIG_GROUP_SOURCE_CAMERA_WIDTH, &error);
       CHECK_ERROR(error);
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SOURCE_CAMERA_HEIGHT)) {
-      config->source_height = g_key_file_get_integer(key_file, group, CONFIG_GROUP_SOURCE_CAMERA_HEIGHT, &error);
+      config->camera_height = g_key_file_get_integer(key_file, group, CONFIG_GROUP_SOURCE_CAMERA_HEIGHT, &error);
       CHECK_ERROR(error);
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SOURCE_CAMERA_FPS_N)) {
-      config->source_fps_n = g_key_file_get_integer(key_file, group, CONFIG_GROUP_SOURCE_CAMERA_FPS_N, &error);
+      config->camera_fps_n = g_key_file_get_integer(key_file, group, CONFIG_GROUP_SOURCE_CAMERA_FPS_N, &error);
       CHECK_ERROR(error);
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SOURCE_CAMERA_FPS_D)) {
-      config->source_fps_d = g_key_file_get_integer(key_file, group, CONFIG_GROUP_SOURCE_CAMERA_FPS_D, &error);
+      config->camera_fps_d = g_key_file_get_integer(key_file, group, CONFIG_GROUP_SOURCE_CAMERA_FPS_D, &error);
       CHECK_ERROR(error);
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SOURCE_CAMERA_CSI_SID)) {
       config->camera_csi_sensor_id =

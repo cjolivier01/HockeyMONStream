@@ -43,10 +43,10 @@ typedef struct {
   gboolean Intra_decode;
   gboolean low_latency_mode;
   guint smart_record;
-  gint source_width;
-  gint source_height;
-  gint source_fps_n;
-  gint source_fps_d;
+  gint camera_width;
+  gint camera_height;
+  gint camera_fps_n;
+  gint camera_fps_d;
   gint camera_csi_sensor_id;
   gint camera_i2c_bus;
   gboolean camera_auto_focus;

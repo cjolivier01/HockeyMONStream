@@ -13,7 +13,13 @@
 #include <variant>
 
 using ConfigValue = std::variant<guint, float, std::string, gboolean>;
-using ConfigValueLocator = std::variant<guint*, size_t*, float*, std::string*, gboolean*, bool*>;
+// Add a new type for enum locators.
+struct ConfigEnumLocator {
+  void* ptr; // pointer to the enum member
+  void (*assign)(void*, int); // assignment function: takes an int and assigns to the enum
+};
+
+using ConfigValueLocator = std::variant<guint*, size_t*, float*, std::string*, gboolean*, bool*, ConfigEnumLocator>;
 
 namespace hm {
 namespace utils {
@@ -32,6 +38,7 @@ struct ConfigLocator {
   std::set<std::string> ignored;
   std::map<std::string, ConfigValueLocator> locators;
   std::map<std::string, std::pair<char*, size_t>> char_array_locators;
+  std::map<std::string, std::pair<char**, size_t>> char_ptr_locators;
   std::map<std::string, std::pair<int*, size_t>> int_array_locators; // NEW: for int arrays
 };
 
@@ -49,12 +56,26 @@ struct ConfigLocator {
     config_locator$.char_array_locators[#member$] = std::make_pair(((cfg_struct$).member$), var_size$); \
   } while (false)
 
+#define SET_LOCATOR_CHAR_PTR(config_locator$, cfg_struct$, member$)                            \
+  do {                                                                                         \
+    assert(!config_locator$.locators.count(#member$));                                         \
+    config_locator$.char_ptr_locators[#member$] = std::make_pair(&((cfg_struct$).member$), 0); \
+  } while (false)
+
 // New macro to support int arrays.
 #define SET_LOCATOR_INTS(config_locator$, cfg_struct$, member$)                                         \
   do {                                                                                                  \
     assert(!config_locator$.int_array_locators.count(#member$));                                        \
     constexpr size_t var_count$ = sizeof((cfg_struct$).member$) / sizeof(int);                          \
     config_locator$.int_array_locators[#member$] = std::make_pair(((cfg_struct$).member$), var_count$); \
+  } while (false)
+
+#define SET_LOCATOR_ENUM(config_locator$, cfg_struct$, member$, enum_type$)                  \
+  do {                                                                                       \
+    assert(!config_locator$.locators.count(#member$));                                       \
+    config_locator$.locators[#member$] = ConfigEnumLocator{                                  \
+        static_cast<void*>(&(cfg_struct$).member$),                                          \
+        [](void* p, int val) -> void { *((enum_type$*)p) = static_cast<enum_type$>(val); }}; \
   } while (false)
 
 void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator);

@@ -62,11 +62,13 @@ gboolean parse_msgconv_yaml(NvDsSinkMsgConvBrokerConfig* config, std::string gro
 
 gboolean parse_sink_yaml(NvDsSinkSubBinConfig* config, std::string group, const gchar* cfg_file_path);
 
-gboolean parse_source_yaml(
-    NvDsSourceConfig* config,
-    std::vector<std::string> headers,
-    std::vector<std::string> source_values,
-    const gchar* cfg_file_path);
+// gboolean parse_source_yaml(
+//     NvDsSourceConfig* config,
+//     std::vector<std::string> headers,
+//     std::vector<std::string> source_values,
+//     const gchar* cfg_file_path);
+
+gboolean parse_source_yaml(NvDsSourceConfig* config, const YAML::Node& yaml_node, const gchar* cfg_file_path);
 
 gboolean parse_tracker_yaml(NvDsTrackerConfig* config, const gchar* cfg_file_path);
 

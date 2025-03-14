@@ -175,10 +175,10 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
         absl::Status af_status = hm::camera::auto_focus_csi_camera(
             config->camera_csi_sensor_id,
             config->camera_i2c_bus,
-            config->source_width,
-            config->source_height,
-            config->source_fps_n,
-            config->source_fps_d,
+            config->camera_width,
+            config->camera_height,
+            config->camera_fps_n,
+            config->camera_fps_d,
             /*show=*/false,
             /*interactive=*/false,
             /*verbose=*/false);
@@ -206,28 +206,28 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
             // TRUE,
             "width",
             G_TYPE_INT,
-            config->source_width,
+            config->camera_width,
             "height",
             G_TYPE_INT,
-            config->source_height,
+            config->camera_height,
             "framerate",
             GST_TYPE_FRACTION,
-            config->source_fps_n,
-            config->source_fps_d,
+            config->camera_fps_n,
+            config->camera_fps_d,
             NULL);
       } else {
         caps1 = gst_caps_new_simple(
             "video/x-raw",
             "width",
             G_TYPE_INT,
-            config->source_width,
+            config->camera_width,
             "height",
             G_TYPE_INT,
-            config->source_height,
+            config->camera_height,
             "framerate",
             GST_TYPE_FRACTION,
-            config->source_fps_n,
-            config->source_fps_d,
+            config->camera_fps_n,
+            config->camera_fps_d,
             NULL);
       }
       break;
@@ -255,14 +255,14 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
         config->video_format,
         "width",
         G_TYPE_INT,
-        config->source_width,
+        config->camera_width,
         "height",
         G_TYPE_INT,
-        config->source_height,
+        config->camera_height,
         "framerate",
         GST_TYPE_FRACTION,
-        config->source_fps_n,
-        config->source_fps_d,
+        config->camera_fps_n,
+        config->camera_fps_d,
         NULL);
   } else {
     caps = gst_caps_new_simple(
@@ -272,14 +272,14 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
         "NV12",
         "width",
         G_TYPE_INT,
-        config->source_width,
+        config->camera_width,
         "height",
         G_TYPE_INT,
-        config->source_height,
+        config->camera_height,
         "framerate",
         GST_TYPE_FRACTION,
-        config->source_fps_n,
-        config->source_fps_d,
+        config->camera_fps_n,
+        config->camera_fps_d,
         NULL);
   }
 
@@ -432,9 +432,9 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
     } else {
       NvDsSourceConfig* config = (NvDsSourceConfig*)g_object_get_data(G_OBJECT(bin->cap_filter), SRC_CONFIG_KEY);
 
-      gst_structure_get_int(str, "width", &config->source_width);
-      gst_structure_get_int(str, "height", &config->source_height);
-      gst_structure_get_fraction(str, "framerate", &config->source_fps_n, &config->source_fps_d);
+      gst_structure_get_int(str, "width", &config->camera_width);
+      gst_structure_get_int(str, "height", &config->camera_height);
+      gst_structure_get_fraction(str, "framerate", &config->camera_fps_n, &config->camera_fps_d);
 
       GST_CAT_DEBUG(NVDS_APP, "Decodebin linked to pipeline");
     }
@@ -654,9 +654,9 @@ static void cb_newpad2(GstElement* decodebin, GstPad* pad, gpointer data) {
     } else {
       NvDsSourceConfig* config = (NvDsSourceConfig*)g_object_get_data(G_OBJECT(bin->cap_filter), SRC_CONFIG_KEY);
 
-      gst_structure_get_int(str, "width", &config->source_width);
-      gst_structure_get_int(str, "height", &config->source_height);
-      gst_structure_get_fraction(str, "framerate", &config->source_fps_n, &config->source_fps_d);
+      gst_structure_get_int(str, "width", &config->camera_width);
+      gst_structure_get_int(str, "height", &config->camera_height);
+      gst_structure_get_fraction(str, "framerate", &config->camera_fps_n, &config->camera_fps_d);
 
       GST_CAT_DEBUG(NVDS_APP, "Decodebin linked to pipeline");
     }
