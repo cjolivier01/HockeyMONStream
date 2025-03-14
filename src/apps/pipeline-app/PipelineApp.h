@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "absl/status/status.h"
+#include "absl/synchronization/mutex.h"
 
 // Application and common headers.
 #include "deepstream_app.h"
@@ -136,9 +137,9 @@ class PipelineApplication {
   GMutex fps_lock_;
   gdouble fps_[MAX_SOURCE_BINS];
   gdouble fps_avg_[MAX_SOURCE_BINS];
-  Display* display_;
+  Display* display_ ABSL_GUARDED_BY(disp_lock_) {nullptr};
   GThread* x_event_thread_;
-  GMutex disp_lock_;
+  absl::Mutex disp_lock_;
   guint rrow_, rcol_, rcfg_;
   gboolean rrowsel_, selecting_;
   std::unique_ptr<std::thread> editor_thread_;

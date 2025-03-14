@@ -80,14 +80,12 @@ PipelineApplication::PipelineApplication()
   memset(fps_, 0, sizeof(fps_));
   memset(fps_avg_, 0, sizeof(fps_avg_));
   g_mutex_init(&fps_lock_);
-  g_mutex_init(&disp_lock_);
   instance_ = this;
 }
 
 //------------------------------------------------------------------------------
 // PipelineApplication destructor.
 PipelineApplication::~PipelineApplication() {
-  g_mutex_clear(&disp_lock_);
 }
 
 //------------------------------------------------------------------------------
@@ -201,18 +199,16 @@ absl::Status PipelineApplication::createMainLoop(
   _intr_setup();
   g_timeout_add(400, check_for_interrupt_static, nullptr);
 
-  g_mutex_init(&disp_lock_);
   display_ = XOpenDisplay(nullptr);
   if (!display_) {
     NVGSTDS_ERR_MSG_V("Could not open X Display");
     return absl::InternalError("Could not open X Display");
   }
   cleanup_stack.push([this] {
-    g_mutex_lock(&disp_lock_);
+    absl::MutexLock lk(&disp_lock_);
     if (display_)
       XCloseDisplay(display_);
     display_ = nullptr;
-    g_mutex_unlock(&disp_lock_);
   });
 
   for (guint i = 0; i < app_contexts.size(); i++) {
@@ -309,25 +305,23 @@ absl::Status PipelineApplication::createMainLoop(
         if (contexts[i]->return_value == -1)
           return_value_ = -1;
         destroy_pipeline(contexts[i].get());
-        g_mutex_lock(&disp_lock_);
+        absl::MutexLock lk(&disp_lock_);
         if (windows[i]) {
           XDestroyWindow(display_, windows[i]);
         }
         windows[i] = 0;
-        g_mutex_unlock(&disp_lock_);
-        contexts[i].reset();
+        // contexts[i].reset();
       }
     }
-    g_mutex_lock(&disp_lock_);
+    absl::MutexLock lk(&disp_lock_);
     if (display_)
       XCloseDisplay(display_);
     display_ = nullptr;
-    g_mutex_unlock(&disp_lock_);
-    g_mutex_clear(&disp_lock_);
   });
 
   return absl::OkStatus();
 }
+
 
 absl::Status PipelineApplication::stopPipeline(std::shared_ptr<HmApp> app_context) const {
   if (!app_context) {
@@ -819,12 +813,12 @@ gpointer PipelineApplication::nvds_x_event_thread_static(gpointer data) {
 }
 
 gpointer PipelineApplication::nvds_x_event_thread() {
-  g_mutex_lock(&disp_lock_);
+  disp_lock_.Lock();
   while (display_) {
     XEvent e;
     guint index;
     memset(&e, 0, sizeof(XEvent));
-    while (XPending(display_)) {
+    while (display_ && XPending(display_)) {
       XNextEvent(display_, &e);
       auto& app_ctx = stage_app_contexts_.at(current_stage_);
       switch (e.type) {
@@ -897,11 +891,11 @@ gpointer PipelineApplication::nvds_x_event_thread() {
         } break;
       }
     }
-    g_mutex_unlock(&disp_lock_);
+    disp_lock_.Unlock();
     g_usleep(G_USEC_PER_SEC / 20);
-    g_mutex_lock(&disp_lock_);
+    disp_lock_.Lock();
   }
-  g_mutex_unlock(&disp_lock_);
+  disp_lock_.Unlock();
   return nullptr;
 }
 
