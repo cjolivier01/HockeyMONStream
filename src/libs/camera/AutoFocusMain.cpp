@@ -11,7 +11,9 @@ int main(int argc, char** argv) {
   int capture_width = 3840;
   int capture_height = 2160;
   int fps = 30;
-  bool interactive = true;
+  bool show = false;
+  bool interactive = false;
+  bool verbose = false;
   // Basic command-line argument parsing.
   for (int i = 1; i < argc; i++) {
     std::string arg = argv[i];
@@ -25,6 +27,10 @@ int main(int argc, char** argv) {
       }
     } else if (arg == "--interative") {
       interactive = true;
+    } else if (arg == "--show") {
+      show = true;
+    } else if (arg == "-v" || arg == "--verbose") {
+      verbose = true;
     } else if (arg == "-w" || arg == "--width") {
       if (i + 1 < argc) {
         capture_width = std::stoi(argv[++i]);
@@ -53,8 +59,9 @@ int main(int argc, char** argv) {
       capture_height,
       fps,
       /*fps_d=*/1,
-      /*show=*/true,
-      interactive);
+      show,
+      interactive,
+      verbose);
   if (!status.ok()) {
     std::cerr << status << std::endl;
   }

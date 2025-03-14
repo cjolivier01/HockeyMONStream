@@ -13,7 +13,8 @@ absl::Status auto_focus_csi_camera(
     int fps_n,
     int fps_d,
     bool show,
-    bool interactive);
+    bool interactive,
+    bool verbose);
 
 }
 } // namespace hm

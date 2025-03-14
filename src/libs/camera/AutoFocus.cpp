@@ -5,6 +5,7 @@
 #include <sstream>
 #include <string>
 
+#include <absl/status/status.h>
 #include <opencv2/opencv.hpp>
 
 namespace hm {
@@ -30,7 +31,7 @@ class Focuser {
   }
 
   // Write a focus value using the i2cset command.
-  void write(int chip_addr, int value) {
+  bool write(int chip_addr, int value, bool verbose) {
     if (value < 0) {
       value = 0;
     }
@@ -45,8 +46,15 @@ class Focuser {
     cmd << "i2cset -y " << bus << " 0x" << std::hex << std::uppercase << chip_addr << " " << std::dec << data1 << " "
         << data2;
     std::string command = cmd.str();
-    std::cout << command << std::endl;
-    system(command.c_str());
+    if (verbose) {
+      std::cout << command << std::endl;
+    }
+    int rc = system(command.c_str());
+    if (rc) {
+      std::cerr << "Error running i2cset: " << strerror(errno) << std::endl;
+      return false;
+    }
+    return true;
   }
 
   void reset(int /*opt*/, int flag = 1) {
@@ -57,20 +65,23 @@ class Focuser {
     return read();
   }
 
-  void set(int /*opt*/, int value, int flag = 1) {
+  bool set(int /*opt*/, int value, bool verbose, int flag = 1) {
     if (value > MAX_VALUE) {
       value = MAX_VALUE;
     } else if (value < MIN_VALUE) {
       value = MIN_VALUE;
     }
-    write(CHIP_I2C_ADDR, value);
+    if (!write(CHIP_I2C_ADDR, value, verbose)) {
+      return false;
+    }
     std::cout << "write: " << value << std::endl;
+    return true;
   }
 };
 
 // Helper function to set focus using the Focuser.
-void focusing(Focuser& focuser, int val) {
-  focuser.set(Focuser::OPT_FOCUS, val);
+bool focusing(Focuser& focuser, int val, bool verbose) {
+  return focuser.set(Focuser::OPT_FOCUS, val, verbose);
 }
 
 // Compute the focus measure using the Laplacian operator.
@@ -116,7 +127,7 @@ std::string gstreamer_pipeline(
 }
 
 // Opens the camera stream, displays the image, and auto-adjusts the focus.
-void show_camera(
+absl::Status show_camera(
     int device_id,
     Focuser& focuser,
     int capture_width,
@@ -124,7 +135,8 @@ void show_camera(
     int fps_n,
     int fps_d,
     bool show,
-    bool interactive) {
+    bool interactive,
+    bool verbose) {
   int max_index = 10;
   double max_value = 0.0;
   double last_value = 0.0;
@@ -134,16 +146,22 @@ void show_camera(
 
   std::string pipeline = gstreamer_pipeline(
       device_id, capture_width, capture_height, capture_width / 2, capture_height / 2, fps_n, fps_d, 0);
-  std::cout << pipeline << std::endl;
+  if (verbose) {
+    std::cout << pipeline << std::endl;
+  }
 
   cv::VideoCapture cap(pipeline, cv::CAP_GSTREAMER);
   // Set an initial focus value.
-  focusing(focuser, focal_distance);
+  if (!focusing(focuser, focal_distance, verbose)) {
+    return absl::InternalError("Could not focus camera");
+  }
   int skip_frame = 6;
 
   if (cap.isOpened()) {
-    cv::namedWindow("CSI Camera", cv::WINDOW_AUTOSIZE);
-    while (cv::getWindowProperty("CSI Camera", cv::WND_PROP_AUTOSIZE) >= 0) {
+    if (show) {
+      cv::namedWindow("CSI Camera", cv::WINDOW_AUTOSIZE);
+    }
+    while (!show || cv::getWindowProperty("CSI Camera", cv::WND_PROP_AUTOSIZE) >= 0) {
       cv::Mat img;
       if (!cap.read(img)) {
         std::cerr << "Failed to capture frame." << std::endl;
@@ -156,7 +174,9 @@ void show_camera(
       if (skip_frame == 0) {
         skip_frame = 6;
         if (dec_count < 6 && focal_distance < 1000) {
-          focusing(focuser, focal_distance);
+          if (!focusing(focuser, focal_distance, verbose)) {
+            return absl::InternalError("Could not focus camera");
+          }
           double val = laplacian(img);
           if (val > max_value) {
             max_index = focal_distance;
@@ -171,7 +191,9 @@ void show_camera(
             last_value = val;
             focal_distance += 10;
           } else if (!focus_finished) {
-            focusing(focuser, max_index);
+            if (!focusing(focuser, max_index, verbose)) {
+              return absl::InternalError("Could not focus camera");
+            }
             focus_finished = true;
           }
         }
@@ -190,7 +212,9 @@ void show_camera(
           focal_distance = 10;
           focus_finished = false;
         } else if (keyCode && keyCode != 255) {
-          std::cout << "keyCode = " << keyCode << std::endl;
+          if (verbose) {
+            std::cout << "keyCode = " << keyCode << std::endl;
+          }
         }
       }
       if (!interactive && focus_finished) {
@@ -200,8 +224,9 @@ void show_camera(
     cap.release();
     cv::destroyAllWindows();
   } else {
-    std::cerr << "Unable to open camera" << std::endl;
+    return absl::InternalError("Unable to open camera");
   }
+  return absl::OkStatus();
 }
 } // namespace
 
@@ -213,10 +238,10 @@ absl::Status auto_focus_csi_camera(
     int fps_n,
     int fps_d,
     bool show,
-    bool interactive) {
+    bool interactive,
+    bool verbose) {
   Focuser focuser(i2c_bus);
-  show_camera(sensor_id, focuser, width, height, fps_n, fps_d, show, interactive);
-  return absl::OkStatus();
+  return show_camera(sensor_id, focuser, width, height, fps_n, fps_d, show, interactive, verbose);
 }
 
 } // namespace camera
