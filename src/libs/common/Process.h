@@ -3,7 +3,7 @@
 #include <functional>
 #include <optional>
 #include <string>
-#include <unordered_map>
+#include <map>
 #include <vector>
 namespace hm {
 
@@ -29,7 +29,7 @@ namespace hm {
 int run_command(
     const std::vector<std::string>& cmd,
     const std::string& working_dir,
-    const std::unordered_map<std::string, std::string>& env,
+    const std::map<std::string, std::string>& env,
     std::function<void(const std::string&, const std::string&)> callback);
 
 std::optional<std::string> findExecutable(const std::string& executable, const std::vector<std::string>& envVars);

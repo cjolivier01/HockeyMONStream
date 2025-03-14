@@ -58,6 +58,7 @@ typedef struct {
   gchar *gain_range;
   gboolean camera_auto_focus;
   gint camera_v4l2_dev_node;
+  gchar* config_file;
   gchar* uri;
   gchar* start_rec_dir_path;
   gchar* start_rec_file_prefix;

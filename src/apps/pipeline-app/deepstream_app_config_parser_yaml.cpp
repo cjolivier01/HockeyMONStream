@@ -213,7 +213,7 @@ absl::StatusOr<YAML::Node> get_app_config(const gchar* cfg_file_path) {
   return config["application"];
 }
 
-gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, const gchar* cfg_file_path) {
+gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, const gchar* cfg_file_path, bool init) {
   gboolean parse_err = false;
   gboolean ret = FALSE;
   std::string source_str = "source";
@@ -222,14 +222,15 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
   std::string msgcons_str = "message-consumer";
   std::string dewarper_str = "dewarper";
 
-  config->source_list_enabled = FALSE;
+  if (init) {
+    config->source_list_enabled = FALSE;
 
-  /** Initialize global gpu id to -1 */
-  config->global_gpu_id = -1;
-
-  /** App group parsing at top level to set global_gpu_id (if available)
-   * before any other group parsing */
-  parse_err = !parse_app_yaml(config, configyml["application"]);
+    /** Initialize global gpu id to -1 */
+    config->global_gpu_id = -1;
+    /** App group parsing at top level to set global_gpu_id (if available)
+     * before any other group parsing */
+    parse_err = !parse_app_yaml(config, configyml["application"]);
+  }
 
   for (YAML::const_iterator itr = configyml.begin(); itr != configyml.end(); ++itr) {
     std::string paramKey = itr->first.as<std::string>();
@@ -320,13 +321,40 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
         if (config->global_gpu_id != -1) {
           config->multi_source_config[source_id].gpu_id = config->global_gpu_id;
         }
+
+        std::optional<YAML::Node> maybe_sub_config_file =
+            maybe_get_config_file(configyml[paramKey], fs::path(cfg_file_path).parent_path());
+        if (maybe_sub_config_file) {
+          guint start_source_id = config->num_source_sub_bins;
+          parse_err = !parse_config_yaml(*maybe_sub_config_file, config, cfg_file_path, /*parse_config_yaml=*/false);
+          assert(!parse_err);
+          if (start_source_id == config->num_source_sub_bins) {
+            parse_err =
+                !parse_source_yaml(&config->multi_source_config[source_id], configyml[paramKey], (char*)cfg_file_path);
+            if (config->multi_source_config[source_id].enable)
+              config->num_source_sub_bins++;
+          } else {
+            for (int i = start_source_id; i < config->num_source_sub_bins; ++i) {
+              // Local config overrides config file
+              parse_err =
+                  !parse_source_yaml(&config->multi_source_config[i], configyml[paramKey], (char*)cfg_file_path);
+              assert(!parse_err);
+            }
+          }
+        } else {
+          parse_err =
+              !parse_source_yaml(&config->multi_source_config[source_id], configyml[paramKey], (char*)cfg_file_path);
+          if (config->multi_source_config[source_id].enable)
+            config->num_source_sub_bins++;
+        }
+
         /** if gpu_id for source component is present,
          * it will override the value set using global_gpu_id in parse_source_yaml function */
         // parse_err = !parse_source_yaml(&config->multi_source_config[source_id], headers, source_values,
         // cfg_file_path);
-        parse_source_yaml(&config->multi_source_config[source_id], configyml[paramKey], (char*)cfg_file_path);
-        if (config->multi_source_config[source_id].enable)
-          config->num_source_sub_bins++;
+        // parse_source_yaml(&config->multi_source_config[source_id], configyml[paramKey], (char*)cfg_file_path);
+        // if (config->multi_source_config[source_id].enable)
+        //   config->num_source_sub_bins++;
       }
     } else if (paramKey == "streammux") {
       /** set gpu_id for streammux component using global_gpu_id(if available) */

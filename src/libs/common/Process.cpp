@@ -41,7 +41,7 @@ namespace hm {
 int run_command(
     const std::vector<std::string>& cmd,
     const std::string& working_dir,
-    const std::unordered_map<std::string, std::string>& env,
+    const std::map<std::string, std::string>& env,
     std::function<void(const std::string&, const std::string&)> callback) {
   if (cmd.empty()) {
     std::cerr << "Error: command is empty." << std::endl;

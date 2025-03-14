@@ -306,7 +306,7 @@ done:
   return ret;
 }
 
-extern "C" gboolean parse_config_file(NvDsConfig* config, const gchar* cfg_file_path) {
+gboolean parse_config_file(NvDsConfig* config, const gchar* cfg_file_path) {
   GKeyFile* cfg_file = g_key_file_new();
   GError* error = NULL;
   gboolean ret = FALSE;

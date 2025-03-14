@@ -264,8 +264,8 @@ std::string get_game_id(const std::string& game_path) {
   return path.parent_path().filename().string();
 }
 
-std::unordered_map<std::string, std::string> get_environment() {
-  std::unordered_map<std::string, std::string> env_vars;
+std::map<std::string, std::string> get_environment() {
+  std::map<std::string, std::string> env_vars;
   // extern char** environ is a global variable containing the environment variables
 
   // Loop through the environment variables
@@ -287,6 +287,24 @@ std::string get_python_interp() {
     return "/usr/bin/python";
   }
   return *python_exec;
+}
+
+std::map<std::string, std::string> python_env(const std::string& add_dir, std::map<std::string, std::string> prev) {
+  std::string pythonpath = prev["PYTHONPATH"];
+  const char* p = getenv("PYTHONPATH");
+  if (p && *p) {
+    if (!pythonpath.empty()) {
+      pythonpath += ':';
+    }
+    pythonpath += p;
+  }
+  if (pythonpath.empty()) {
+    pythonpath = add_dir;
+  } else {
+    pythonpath = add_dir + ':' + pythonpath;
+  }
+  prev["PYTHONPATH"] = pythonpath;
+  return prev;
 }
 
 } // namespace
@@ -381,7 +399,6 @@ absl::Status create_control_points(
       "--scale=0.6",
 #endif
   };
-
   int exitcode = run_command(
       cmd, hm_cupano_dir, get_environment(), [](const std::string& stderr, const std::string& stdout) -> void {
         if (!stderr.empty()) {
@@ -420,7 +437,10 @@ absl::Status create_field_mask(const std::string& game_dir, surface::Surface sur
   };
 
   int exitcode = run_command(
-      cmd, hockeymom_dir, get_environment(), [](const std::string& stderr, const std::string& stdout) -> void {
+      cmd,
+      hockeymom_dir,
+      python_env(".", get_environment()),
+      [](const std::string& stderr, const std::string& stdout) -> void {
         if (!stderr.empty()) {
           std::cerr << stderr << std::endl;
         }
@@ -444,16 +464,15 @@ absl::Status configure_orientation(const std::string& game_dir) {
       "--game-id",
       game_id,
   };
-
-  int exitcode = run_command(
-      cmd, hockeymom_dir, get_environment(), [](const std::string& stderr, const std::string& stdout) -> void {
-        if (!stderr.empty()) {
-          std::cerr << stderr << std::endl;
-        }
-        if (!stdout.empty()) {
-          std::cerr << stdout << std::endl;
-        }
-      });
+  auto env = python_env(".", get_environment());
+  int exitcode = run_command(cmd, hockeymom_dir, env, [](const std::string& stderr, const std::string& stdout) -> void {
+    if (!stderr.empty()) {
+      std::cerr << stderr << std::endl;
+    }
+    if (!stdout.empty()) {
+      std::cerr << stdout << std::endl;
+    }
+  });
   if (exitcode) {
     return absl::InternalError("Failed to create control points");
   }

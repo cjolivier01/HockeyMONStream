@@ -42,11 +42,12 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+// #ifdef __cplusplus
+// extern "C" {
+// #endif
 
 typedef struct _AppCtx AppCtx;
 
@@ -300,6 +301,10 @@ void toggle_show_bbox_text(AppCtx* appCtx);
 void destroy_pipeline(AppCtx* appCtx);
 void restart_pipeline(AppCtx* appCtx);
 
+std::optional<YAML::Node> maybe_get_config_file(
+    const YAML::Node& yaml_node,
+    const std::string& config_dir);
+
 absl::StatusOr<YAML::Node> get_app_config(const gchar* cfg_file_path);
 
 /**
@@ -322,7 +327,7 @@ gboolean parse_config_file(NvDsConfig* config, const gchar* cfg_file_path);
  */
 // gboolean parse_config_file_yaml(NvDsConfig* config, const gchar* cfg_file_path);
 
-gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, const gchar* cfg_file_path);
+gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, const gchar* cfg_file_path, bool init = true);
 
 /**
  * Function to procure the NvDsSensorInfo for the source_id
@@ -340,9 +345,9 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
  */
 NvDsSensorInfo* get_sensor_info(AppCtx* appCtx, guint source_id);
 
-#ifdef __cplusplus
-}
-#endif
+// #ifdef __cplusplus
+// }
+// #endif
 
 #ifdef __cplusplus
 
