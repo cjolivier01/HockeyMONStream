@@ -593,18 +593,18 @@ static void decodebin_child_added(GstChildProxy* child_proxy, GObject* object, g
 
     g_object_set(object, "source-id", config->camera_id, NULL);
     g_object_set(object, "num-decode-surfaces", config->num_decode_surfaces, NULL);
-    if (config->Intra_decode)
-      g_object_set(object, "Intra-decode", config->Intra_decode, NULL);
+    if (config->intra_decode_enable)
+      g_object_set(object, "Intra-decode", config->intra_decode_enable, NULL);
   }
   if (g_strstr_len(name, -1, "omx") == name) {
-    if (config->Intra_decode)
+    if (config->intra_decode_enable)
       g_object_set(object, "skip-frames", 2, NULL);
     g_object_set(object, "disable-dvfs", TRUE, NULL);
   }
   if (g_strstr_len(name, -1, "nvv4l2decoder") == name) {
     if (config->low_latency_mode)
       g_object_set(object, "low-latency-mode", TRUE, NULL);
-    if (config->Intra_decode)
+    if (config->intra_decode_enable)
       g_object_set(object, "skip-frames", 2, NULL);
 #ifdef __aarch64__
     if (g_object_class_find_property(G_OBJECT_GET_CLASS(object), "enable-max-performance")) {
@@ -615,8 +615,8 @@ static void decodebin_child_added(GstChildProxy* child_proxy, GObject* object, g
     if (g_object_class_find_property(G_OBJECT_GET_CLASS(object), "gpu-id")) {
       g_object_set(object, "gpu-id", config->gpu_id, NULL);
     }
-    if (g_object_class_find_property(G_OBJECT_GET_CLASS(object), "cudadec-memtype")) {
-      g_object_set(G_OBJECT(object), "cudadec-memtype", config->cuda_memory_type, NULL);
+    if (g_object_class_find_property(G_OBJECT_GET_CLASS(object), "cuda_memory_type")) {
+      g_object_set(G_OBJECT(object), "cuda_memory_type", config->cuda_memory_type, NULL);
     }
     g_object_set(object, "drop-frame-interval", config->drop_frame_interval, NULL);
     /* extract-sei-type5-data is a valid parameter for nvv4l2decoder
@@ -1083,9 +1083,9 @@ static gboolean create_rtsp_src_bin(NvDsSourceConfig* config, NvDsSrcBin* bin) {
   if (config->smart_record) {
     NvDsSRInitParams params = {0};
     params.containerType = (NvDsSRContainerType)config->smart_rec_container;
-    if (config->file_prefix)
-      params.fileNamePrefix = g_strdup_printf("%s_%d", config->file_prefix, config->camera_id);
-    params.dirpath = config->dir_path;
+    if (config->start_rec_file_prefix)
+      params.fileNamePrefix = g_strdup_printf("%s_%d", config->start_rec_file_prefix, config->camera_id);
+    params.dirpath = config->start_rec_dir_path;
     params.cacheSize = config->smart_rec_cache_size;
     params.defaultDuration = config->smart_rec_def_duration;
     params.callback = smart_record_callback;
@@ -1712,7 +1712,7 @@ static void set_properties_nvuribin(GstElement* element_, NvDsSourceConfig const
     g_object_set(element_, "num-extra-surfaces", config->num_extra_surfaces, NULL);
   if (config->gpu_id)
     g_object_set(element_, "gpu-id", config->gpu_id, NULL);
-  g_object_set(element_, "cudadec-memtype", config->cuda_memory_type, NULL);
+  g_object_set(element_, "cuda_memory_type", config->cuda_memory_type, NULL);
   g_object_set(element_, "low-latency-mode", config->low_latency_mode, NULL);
   if (config->drop_frame_interval)
     g_object_set(element_, "drop-frame-interval", config->drop_frame_interval, NULL);

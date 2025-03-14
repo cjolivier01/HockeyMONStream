@@ -40,7 +40,7 @@ typedef struct {
   gboolean enable;
   gboolean loop;
   gboolean live_source;
-  gboolean Intra_decode;
+  gboolean intra_decode_enable;
   gboolean low_latency_mode;
   guint smart_record;
   gint camera_width;
@@ -52,8 +52,8 @@ typedef struct {
   gboolean camera_auto_focus;
   gint camera_v4l2_dev_node;
   gchar* uri;
-  gchar* dir_path;
-  gchar* file_prefix;
+  gchar* start_rec_dir_path;
+  gchar* start_rec_file_prefix;
   gint latency;
   guint smart_rec_cache_size;
   guint smart_rec_container;

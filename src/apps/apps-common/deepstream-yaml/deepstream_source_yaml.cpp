@@ -52,8 +52,8 @@ gboolean parse_source_yaml(NvDsSourceConfig* config, const YAML::Node& yaml_node
   SET_LOCATOR(locator, *config, input_audio_rate); // "input-audio-rate" or "audio-input-rate"
   SET_LOCATOR(locator, *config, rtsp_reconnect_interval_sec); // "rtsp-reconnect-interval-sec"
   SET_LOCATOR(locator, *config, rtsp_reconnect_attempts); // "rtsp-reconnect-attempts"
-  SET_LOCATOR(locator, *config, Intra_decode); // "intra-decode-enable"
-  SET_LOCATOR(locator, *config, cuda_memory_type); // "cudadec-memtype"
+  SET_LOCATOR(locator, *config, intra_decode_enable); // "intra-decode-enable"
+  SET_LOCATOR(locator, *config, cuda_memory_type); // "cuda_memory_type"
   SET_LOCATOR(locator, *config, nvbuf_memory_type); // "nvbuf-memory-type"
   SET_LOCATOR(locator, *config, select_rtp_protocol); // "select-rtp-protocol"
   SET_LOCATOR(locator, *config, source_id); // "source-id"
@@ -73,8 +73,8 @@ gboolean parse_source_yaml(NvDsSourceConfig* config, const YAML::Node& yaml_node
   SET_LOCATOR_CHAR_PTR(locator, *config, video_format); // "video-format"
   SET_LOCATOR_CHAR_PTR(locator, *config, media_type); // "media-type"
   SET_LOCATOR_CHAR_PTR(locator, *config, uri); // "uri"
-  SET_LOCATOR_CHAR_PTR(locator, *config, dir_path); // "smart-rec-dir-path"
-  SET_LOCATOR_CHAR_PTR(locator, *config, file_prefix); // "smart-rec-file-prefix"
+  SET_LOCATOR_CHAR_PTR(locator, *config, start_rec_dir_path); // "smart-rec-dir-path"
+  SET_LOCATOR_CHAR_PTR(locator, *config, start_rec_file_prefix); // "smart-rec-file-prefix"
 
   // Use the new YAML parser to set config values.
   hm::utils::set_config_from_yaml(yaml_node, locator);
@@ -90,12 +90,12 @@ gboolean parse_source_yaml(NvDsSourceConfig* config, const YAML::Node& yaml_node
   }
 
   // Validate directory path for smart recording.
-  if (config->dir_path) {
-    if (access(config->dir_path, 2)) {
+  if (config->start_rec_dir_path) {
+    if (access(config->start_rec_dir_path, 2)) {
       if (errno == ENOENT || errno == ENOTDIR) {
-        g_print("ERROR: Directory (%s) doesn't exist.\n", config->dir_path);
+        g_print("ERROR: Directory (%s) doesn't exist.\n", config->start_rec_dir_path);
       } else if (errno == EACCES) {
-        g_print("ERROR: No write permission in %s\n", config->dir_path);
+        g_print("ERROR: No write permission in %s\n", config->start_rec_dir_path);
       }
       return FALSE;
     }
@@ -194,8 +194,8 @@ gboolean parse_source_yaml(
     } else if (paramKey == "rtsp-reconnect-attempts") {
       config->rtsp_reconnect_attempts = std::stoul(source_values[i]);
     } else if (paramKey == "intra-decode-enable") {
-      config->Intra_decode = (gboolean)std::stoul(source_values[i]);
-    } else if (paramKey == "cudadec-memtype") {
+      config->intra_decode_enable = (gboolean)std::stoul(source_values[i]);
+    } else if (paramKey == "cuda_memory_type") {
       config->cuda_memory_type = std::stoul(source_values[i]);
     } else if (paramKey == "nvbuf-memory-type") {
       config->nvbuf_memory_type = std::stoul(source_values[i]);

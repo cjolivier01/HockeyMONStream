@@ -507,14 +507,14 @@ gboolean parse_source(NvDsSourceConfig* config, GKeyFile* key_file, gchar* group
           g_key_file_get_integer(key_file, group, CONFIG_GROUP_SOURCE_RTSP_RECONNECT_ATTEMPTS, &error);
       CHECK_ERROR(error);
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SOURCE_INTRA_DECODE)) {
-      config->Intra_decode = g_key_file_get_integer(key_file, group, CONFIG_GROUP_SOURCE_INTRA_DECODE, &error);
+      config->intra_decode_enable = g_key_file_get_integer(key_file, group, CONFIG_GROUP_SOURCE_INTRA_DECODE, &error);
       CHECK_ERROR(error);
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SOURCE_LOW_LATENCY_DECODE)) {
       config->low_latency_mode =
           g_key_file_get_integer(key_file, group, CONFIG_GROUP_SOURCE_LOW_LATENCY_DECODE, &error);
       CHECK_ERROR(error);
-    } else if (!g_strcmp0(*key, "cudadec-memtype")) {
-      config->cuda_memory_type = g_key_file_get_integer(key_file, group, "cudadec-memtype", &error);
+    } else if (!g_strcmp0(*key, "cuda_memory_type")) {
+      config->cuda_memory_type = g_key_file_get_integer(key_file, group, "cuda_memory_type", &error);
       CHECK_ERROR(error);
     } else if (!g_strcmp0(*key, CONFIG_NVBUF_MEMORY_TYPE)) {
       config->nvbuf_memory_type = g_key_file_get_integer(key_file, group, CONFIG_NVBUF_MEMORY_TYPE, &error);
@@ -530,19 +530,19 @@ gboolean parse_source(NvDsSourceConfig* config, GKeyFile* key_file, gchar* group
       config->smart_record = g_key_file_get_integer(key_file, group, CONFIG_GROUP_SOURCE_SMART_RECORD_ENABLE, &error);
       CHECK_ERROR(error);
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SOURCE_SMART_RECORD_DIRPATH)) {
-      config->dir_path = g_key_file_get_string(key_file, group, CONFIG_GROUP_SOURCE_SMART_RECORD_DIRPATH, &error);
+      config->start_rec_dir_path = g_key_file_get_string(key_file, group, CONFIG_GROUP_SOURCE_SMART_RECORD_DIRPATH, &error);
       CHECK_ERROR(error);
 
-      if (access(config->dir_path, W_OK)) {
+      if (access(config->start_rec_dir_path, W_OK)) {
         if (errno == ENOENT || errno == ENOTDIR) {
-          g_print("ERROR: Directory (%s) doesn't exist.\n", config->dir_path);
+          g_print("ERROR: Directory (%s) doesn't exist.\n", config->start_rec_dir_path);
         } else if (errno == EACCES) {
-          g_print("ERROR: No write permission in %s\n", config->dir_path);
+          g_print("ERROR: No write permission in %s\n", config->start_rec_dir_path);
         }
         goto done;
       }
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SOURCE_SMART_RECORD_FILE_PREFIX)) {
-      config->file_prefix =
+      config->start_rec_file_prefix =
           g_key_file_get_string(key_file, group, CONFIG_GROUP_SOURCE_SMART_RECORD_FILE_PREFIX, &error);
       CHECK_ERROR(error);
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SOURCE_SMART_RECORD_CACHE_SIZE_LEGACY)) {
