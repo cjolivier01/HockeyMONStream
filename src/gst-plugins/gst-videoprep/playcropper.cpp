@@ -27,7 +27,7 @@
 
 // #define SCRATCH_USE_ALIGNED_PITCH
 
-// #define PLAYCROPPER_USE_ONE_KERNEL
+#define PLAYCROPPER_USE_ONE_KERNEL
 
 namespace hm {
 namespace playcropper {
