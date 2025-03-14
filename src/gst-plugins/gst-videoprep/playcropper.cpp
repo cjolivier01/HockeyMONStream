@@ -31,9 +31,9 @@
 
 namespace hm {
 namespace playcropper {
-#ifndef PLAYCROPPER_USE_ONE_KERNEL
+//#ifdef PLAYCROPPER_USE_ONE_KERNEL
 NppStatus combinedTransform(
-    NvBufSurfaceParams* in_params,
+    const NvBufSurfaceParams* in_params,
     const hm::BBox& src_rect,
     float angle,
     const hm::Point& anchor_point,
@@ -41,7 +41,7 @@ NppStatus combinedTransform(
     NvBufSurfaceParams* out_params,
     const hm::BBox& output_rect,
     const NppStreamContext& stream_context);
-#endif
+//#endif
 namespace {
 
 static BBox make_null_tracking_box(const NvBufSurfaceParams* in_surf, const NvBufSurfaceParams* out_surf) {
@@ -253,12 +253,12 @@ absl::Status PlayCropperPriv::GenerateOutput(
       NppStatus status = NPP_SUCCESS;
 #if 1
       status = combinedTransform(
-          incoming_surface,
+          incoming_surface.get(),
           extra_width_src_rect,
           angle,
           anchor_point,
           new_tbox,
-          outgoing_surface,
+          outgoing_surface.get_mutable(),
           output_rect,
           nppStreamContext);
 #endif

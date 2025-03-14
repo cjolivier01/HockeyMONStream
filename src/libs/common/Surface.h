@@ -70,10 +70,13 @@ class Surface {
   BBox bbox() const {
     return BBox(0, 0, width(), height());
   }
-  constexpr const NvBufSurfaceParams* get() const {
+  NvBufSurfaceParams* get_mutable() {
     return params_;
   }
-  constexpr const NvBufSurfaceParams* operator->() const {
+  const NvBufSurfaceParams* get() const {
+    return params_;
+  }
+  const NvBufSurfaceParams* operator->() const {
     return get();
   }
 

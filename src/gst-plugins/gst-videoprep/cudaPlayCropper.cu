@@ -92,7 +92,7 @@ __global__ void cropRotateResizeKernel(
 
 // Function to launch the kernel with appropriate parameters
 NppStatus combinedTransform(
-    NvBufSurfaceParams* in_params,
+    const NvBufSurfaceParams* in_params,
     const hm::BBox& src_rect,
     float angle,
     const hm::Point& anchor_point,
