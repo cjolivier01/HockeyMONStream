@@ -280,7 +280,7 @@ absl::Status StitcherPriv::GenerateOutput(
         if (!configure_only_) {
           return absl::FailedPreconditionError("Stitching is not configured");
         } else {
-#if 0
+#if 1
           absl::Status configure_status =
               stitching::configure_stitching(videoprep->config_file, incoming_surface_left, incoming_surface_right);
           if (!configure_status.ok()) {
