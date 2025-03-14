@@ -147,8 +147,13 @@ static gboolean set_camera_csi_params(NvDsSourceConfig* config, NvDsSrcBin* bin)
   if (config->camera_wbmode) {
       g_object_set(G_OBJECT(bin->src_elem), "wbmode", config->camera_wbmode, NULL);
   }
+  if (config->exposure_time_range) {
+    g_object_set(G_OBJECT(bin->src_elem), "exposuretimerange", config->exposure_time_range, NULL);
+  }
+  if (config->gain_range) {
+    g_object_set(G_OBJECT(bin->src_elem), "gainrange", config->gain_range, NULL);
+  }
   GST_CAT_DEBUG(NVDS_APP, "Setting csi camera params successful");
-
   return TRUE;
 }
 

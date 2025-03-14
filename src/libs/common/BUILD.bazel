@@ -4,7 +4,7 @@ cc_library(
     name = "utils",
     srcs = glob([
         "*.cpp",
-    ]),
+    ], exclude = ["ModPipeline.cpp"]),
     hdrs = glob([
         "*.h",
     ]),
@@ -28,3 +28,13 @@ cc_library(
         "@yaml-cpp",
     ],
 )
+
+cc_binary(
+  name = "mod_pipeline",
+  srcs = ["ModPipeline.cpp"],
+  deps = [
+    "@gtk3",
+    "@gstreamer",
+  ],
+)
+

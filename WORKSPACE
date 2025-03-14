@@ -148,6 +148,43 @@ new_local_repository(
 )
 
 new_local_repository(
+    name = "gtk3",
+    build_file = "@//buildfiles:third_party/gtk3.BUILD",
+    path = "/usr/include/gtk-3.0",
+)
+
+new_local_repository(
+    name = "cairo",
+    build_file = "@//buildfiles:third_party/gtk3.BUILD",
+    path = "/usr/include/cairo",
+)
+
+new_local_repository(
+    name = "gdk-pixbuf",
+    build_file = "@//buildfiles:third_party/gtk3.BUILD",
+    path = "/usr/include/gdk-pixbuf-2.0",
+)
+
+new_local_repository(
+    name = "harfbuzz",
+    build_file = "@//buildfiles:third_party/gtk3.BUILD",
+    path = "/usr/include/harfbuzz",
+)
+
+new_local_repository(
+    name = "pango",
+    build_file = "@//buildfiles:third_party/gtk3.BUILD",
+    path = "/usr/include/pango-1.0",
+)
+
+new_local_repository(
+    name = "atk",
+    build_file = "@//buildfiles:third_party/gtk3.BUILD",
+    path = "/usr/include/atk-1.0",
+)
+
+
+new_local_repository(
     name = "gstreamer",
     build_file = "@//buildfiles:third_party/gstreamer_nobuild.BUILD",
     #path = "/usr/local",

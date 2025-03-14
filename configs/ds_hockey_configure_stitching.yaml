@@ -159,6 +159,7 @@ source5:
   input-audio-rate: 189
   source-id: 0
   cuda-memory-type: 1
+  exposure-time-range: 34000 358733000
 
 # CSI Webcam (Arducam)
 source6:

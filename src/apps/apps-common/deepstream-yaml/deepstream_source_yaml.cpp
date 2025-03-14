@@ -70,6 +70,9 @@ gboolean parse_source_yaml(NvDsSourceConfig* config, const YAML::Node& yaml_node
   SET_LOCATOR(locator, *config, nvvideoconvert_copy_hw); // "copy-hw"
 #endif
 
+  SET_LOCATOR_CHAR_PTR(locator, *config, exposure_time_range);
+  SET_LOCATOR_CHAR_PTR(locator, *config, gain_range);
+
   // Set string fields as character arrays (assumes members are fixed-size arrays).
   SET_LOCATOR_CHAR_PTR(locator, *config, alsa_device); // "alsa-device"
   SET_LOCATOR_CHAR_PTR(locator, *config, video_format); // "video-format"
