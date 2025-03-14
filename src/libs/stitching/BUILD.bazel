@@ -13,7 +13,6 @@ cc_library(
     "Synchronization.h",
   ],
   linkopts = [
-    "-L/usr/local/lib",
     "-lavformat",
     "-lavcodec",
     "-lavutil",

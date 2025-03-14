@@ -242,8 +242,9 @@ streammux:
   nvbuf-memory-type: 0
   sync-inputs: 0
 
+
 hmstitcher:
-  enable: 0
+  enable: 1
   # enable: 0
   gpu-id: 0
   configure-only: 1
