@@ -253,12 +253,12 @@ absl::Status PlayCropperPriv::GenerateOutput(
       NppStatus status = NPP_SUCCESS;
 #if 1
       status = combinedTransform(
-          &in_surface->surfaceList[batch_nr],
+          incoming_surface,
           extra_width_src_rect,
           angle,
           anchor_point,
           new_tbox,
-          &out_surface->surfaceList[batch_nr],
+          outgoing_surface,
           output_rect,
           nppStreamContext);
 #endif
@@ -270,7 +270,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
       // assert(false);
     // Fall back to original implementation for unsupported formats
     fallback:
-      //std::cout << "playcropper no fallback" << std::endl;
+      // std::cout << "playcropper no fallback" << std::endl;
 #if 1
       // Use the original three-step approach with minimal scratch surfaces
       hm::surface::SurfaceList::round_robin_iterator scratch_surface_iter = videoprep->priv->scratch_buffers.begin();
@@ -402,10 +402,11 @@ absl::Status PlayCropperPriv::GenerateOutput(
 //     // const FloatValue tbox_aar = tbox.width() / tbox.height();
 
 //     assert(tbox.height() <= videoprep->pre_rotate_size.height);
-//     // this means our pre-rotate allocation is smaller than the tbox, so that's a bug when calculating pre_rotate_size
-//     assert(tbox.width() <= videoprep->pre_rotate_size.width);
+//     // this means our pre-rotate allocation is smaller than the tbox, so that's a bug when calculating
+//     pre_rotate_size assert(tbox.width() <= videoprep->pre_rotate_size.width);
 
-//     // hm::WHDims src_size{.width = (FloatValue)videoprep->input_width, .height = (FloatValue)videoprep->input_height};
+//     // hm::WHDims src_size{.width = (FloatValue)videoprep->input_width, .height =
+//     (FloatValue)videoprep->input_height};
 //     // hm::WHDims output_size{.width=tbox.width(), .height=tbox.height()};
 //     // auto pre_rotate_size = get_box_size_necessary_for_rotations(src_size, output_size);
 //     // const FloatValue min_width_per_side = pre_rotate_size.width / 2;
