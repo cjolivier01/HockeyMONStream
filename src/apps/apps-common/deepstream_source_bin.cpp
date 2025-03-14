@@ -171,6 +171,7 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
     case NV_DS_SOURCE_CAMERA_CSI:
       if (config->camera_auto_focus) {
         // Auto-focus it before we create any elements that might touch the camera
+        std::cout << "Auto-focusing CSI camera device " << config->camera_csi_sensor_id << std::endl;
         absl::Status af_status = hm::camera::auto_focus_csi_camera(
             config->camera_csi_sensor_id,
             config->camera_i2c_bus,
@@ -180,7 +181,7 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
             config->source_fps_d,
             /*show=*/false,
             /*interactive=*/false,
-            /*verbose=*/true);
+            /*verbose=*/false);
         if (!af_status.ok()) {
           std::cerr << af_status << std::endl;
           return false;
