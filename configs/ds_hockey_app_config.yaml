@@ -166,7 +166,7 @@ source5:
   source-id: 0
   cuda-memory-type: 1
 
-  camera-num-buffers: 1
+  # camera-num-buffers: 1
 
 # CSI Webcam (Arducam)
 source6:
@@ -196,7 +196,7 @@ source6:
   source-id: 1
   cuda-memory-type: 1
 
-  camera-num-buffers: 1
+  # camera-num-buffers: 1
 
 
 #source:
@@ -427,7 +427,7 @@ dewarper0:
   num-output-buffers: 4
 
 primary-gie:
-  enable: 0
+  enable: 1
   gpu-id: 0
   batch-size: 4
   #Required by the app for OSD, not a plugin property
@@ -454,7 +454,7 @@ ds-example:
   processing-height: 480
 
 hmplaycropper:
-  enable: 0
+  enable: 1
   gpu-id: 0
   # plugin-type: videoprep
   # has_queue: false
@@ -485,7 +485,7 @@ hmplaycropper:
   # num-output-buffers: 2
 
 hmstitcher:
-  enable: 0
+  enable: 1
   # enable: 0
   gpu-id: 0
   nvbuf-memory-type: 0
@@ -495,7 +495,7 @@ hmstitcher:
   num-output-buffers: 4
 
 ds-playtracker:
-  enable: 0
+  enable: 1
   gpu-id: 0
   unique-id: 75
   draw: true
@@ -513,7 +513,7 @@ ds-fieldmask:
   # detection-mask: /home/colivier/Videos/mlk-heat-1/rink_mask_0.png
 
 tracker:
-  enable: 0
+  enable: 1
   # For NvDCF and NvDeepSORT tracker, tracker-width and tracker-height must be a multiple of 32, respectively
   tracker-width: 960
   tracker-height: 544
