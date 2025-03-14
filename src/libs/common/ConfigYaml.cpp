@@ -34,10 +34,11 @@ void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator) 
 
     // If the key isn't found, try replacing '-' with '_' and check again.
     if (loc == locator.locators.end() && loc_char == locator.char_array_locators.end() &&
-        loc_int == locator.int_array_locators.end()) {
+        loc_char_ptr == locator.char_ptr_locators.end() && loc_int == locator.int_array_locators.end()) {
       std::replace(key.begin(), key.end(), '-', '_');
       loc = locator.locators.find(key);
       loc_char = locator.char_array_locators.find(key);
+      loc_char_ptr = locator.char_ptr_locators.find(key);
       loc_int = locator.int_array_locators.find(key);
       ignored |= !!locator.ignored.count(key);
       assert(
