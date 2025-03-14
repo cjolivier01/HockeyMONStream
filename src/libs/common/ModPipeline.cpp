@@ -1,11 +1,19 @@
+#include "hstream/src/libs/common/ModPipeline.h"
+
 #include <glib-object.h>
 #include <gst/gst.h>
 #include <gst/gstbin.h>
 #include <gst/gstiterator.h>
+#include <gstreamer-1.0/gst/gstobject.h>
 #include <gtk/gtk.h>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <string>
+#include <thread>
+
+namespace hm {
+namespace {
 
 // Columns for the element list store.
 enum {
@@ -27,37 +35,73 @@ static GtkListStore* element_store = nullptr;
 static GtkListStore* property_store = nullptr;
 static GtkWidget* element_tree_view = nullptr;
 static GtkWidget* property_tree_view = nullptr;
-static GstElement* g_pipeline = nullptr;
+// static GstElement* g_pipeline = nullptr;
 
-GList* my_gst_bin_get_children(GstBin *bin) {
-    GList *children = nullptr;
-    
-    // Get an iterator for all elements in the bin.
-    GstIterator *it = gst_bin_iterate_elements(bin);
-    if (!it) {
-        return nullptr;
-    }
-    
-    // Prepare a GValue to hold each element.
-    GValue item = G_VALUE_INIT;
-    g_value_init(&item, G_TYPE_OBJECT);
+// Recursively traverse the element tree, accumulating a map from
+// a dot-separated name (e.g. "my_pipeline.mybin.myelement") to the GstElement pointer.
+std::map<std::string, GstElement*> get_element_tree(GstElement* element, const std::string& prefix = "") {
+  std::map<std::string, GstElement*> result;
+  if (!element)
+    return result;
 
-    // Iterate through the elements.
-    while (gst_iterator_next(it, &item) == GST_ITERATOR_OK) {
-        // Retrieve the element from the GValue.
-        GstElement *element = GST_ELEMENT(g_value_get_object(&item));
-        if (element) {
-            // Prepend the element to our list.
-            children = g_list_prepend(children, element);
+  // Get the element's name and build the fully qualified name.
+  const gchar* elem_name = gst_element_get_name(element);
+  std::string full_name = prefix.empty() ? (elem_name ? elem_name : "") : prefix + "." + (elem_name ? elem_name : "");
+
+  // Add this element to the result map.
+  result[full_name] = element;
+
+  // If the element is a bin, iterate its children.
+  if (GST_IS_BIN(element)) {
+    GstIterator* it = gst_bin_iterate_elements(GST_BIN(element));
+    if (it) {
+      GValue item = G_VALUE_INIT;
+      g_value_init(&item, G_TYPE_OBJECT);
+
+      while (gst_iterator_next(it, &item) == GST_ITERATOR_OK) {
+        GstElement* child = GST_ELEMENT(g_value_get_object(&item));
+        if (child) {
+          // Recursively get the child tree and merge it into our map.
+          std::map<std::string, GstElement*> child_map = get_element_tree(child, full_name);
+          result.insert(child_map.begin(), child_map.end());
         }
         g_value_reset(&item);
+      }
+      gst_iterator_free(it);
     }
-    gst_iterator_free(it);
-    
-    // Reverse the list so that the order is the same as the iterator order.
-    children = g_list_reverse(children);
-    return children;
+  }
+  return result;
 }
+
+// GList* my_gst_bin_get_children(GstBin* bin) {
+//   GList* children = nullptr;
+
+//   // Get an iterator for all elements in the bin.
+//   GstIterator* it = gst_bin_iterate_elements(bin);
+//   if (!it) {
+//     return nullptr;
+//   }
+
+//   // Prepare a GValue to hold each element.
+//   GValue item = G_VALUE_INIT;
+//   g_value_init(&item, G_TYPE_OBJECT);
+
+//   // Iterate through the elements.
+//   while (gst_iterator_next(it, &item) == GST_ITERATOR_OK) {
+//     // Retrieve the element from the GValue.
+//     GstElement* element = GST_ELEMENT(g_value_get_object(&item));
+//     if (element) {
+//       // Prepend the element to our list.
+//       children = g_list_prepend(children, element);
+//     }
+//     g_value_reset(&item);
+//   }
+//   gst_iterator_free(it);
+
+//   // Reverse the list so that the order is the same as the iterator order.
+//   children = g_list_reverse(children);
+//   return children;
+// }
 
 /* Helper function: Convert a GValue to a std::string using GST’s serializer */
 std::string value_to_string(const GValue* value) {
@@ -209,7 +253,97 @@ static void on_property_row_activated(
   if (prop_value)
     g_free(prop_value);
 }
+} // namespace
 
+std::unique_ptr<std::thread> edit_pipeline(GstObject* pipeline) {
+  auto gui_thread = std::make_unique<std::thread>([g_pipeline = pipeline]() {
+    int argc = 1;
+    char *argv[] = {(char *)"program", nullptr};
+    gtk_init(&argc, (char ***)&argv);
+    // Create the main window.
+    GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(window), "GStreamer Pipeline Editor");
+    gtk_window_set_default_size(GTK_WINDOW(window), 800, 600);
+    g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), nullptr);
+
+    // Create a horizontal pane.
+    GtkWidget* hpaned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_container_add(GTK_CONTAINER(window), hpaned);
+
+    // -------------------------
+    // Left pane: Element list
+    // -------------------------
+    element_store = gtk_list_store_new(NUM_ELEM_COLS, G_TYPE_POINTER, G_TYPE_STRING);
+    element_tree_view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(element_store));
+    GtkCellRenderer* elem_renderer = gtk_cell_renderer_text_new();
+    GtkTreeViewColumn* elem_column =
+        gtk_tree_view_column_new_with_attributes("Elements", elem_renderer, "text", COL_ELEMENT_NAME, nullptr);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(element_tree_view), elem_column);
+
+    // Populate the element list from the pipeline.
+
+    std::map<std::string, GstElement*> element_tree = get_element_tree(GST_ELEMENT(g_pipeline));
+    for (auto& item : element_tree) {
+      GtkTreeIter iter;
+      gtk_list_store_append(element_store, &iter);
+      gtk_list_store_set(element_store, &iter, COL_ELEMENT_PTR, item.second, COL_ELEMENT_NAME, item.first.c_str(), -1);
+    }
+
+    // GList* children = my_gst_bin_get_children(GST_BIN(g_pipeline));
+    // for (GList* l = children; l != nullptr; l = l->next) {
+    //   GstElement* element = GST_ELEMENT(l->data);
+    //   const gchar* name = gst_element_get_name(element);
+    //   GtkTreeIter iter;
+    //   gtk_list_store_append(element_store, &iter);
+    //   gtk_list_store_set(element_store, &iter, COL_ELEMENT_PTR, element, COL_ELEMENT_NAME, name, -1);
+    // }
+    // g_list_free(children);
+
+    // Connect selection changes to update the property list.
+    GtkTreeSelection* elem_selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(element_tree_view));
+    g_signal_connect(elem_selection, "changed", G_CALLBACK(on_element_selection_changed), nullptr);
+
+    // Put the element list in a scrolled window.
+    GtkWidget* elem_scrolled = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_container_add(GTK_CONTAINER(elem_scrolled), element_tree_view);
+    gtk_widget_set_vexpand(elem_scrolled, TRUE);
+    gtk_widget_set_hexpand(elem_scrolled, TRUE);
+    gtk_paned_pack1(GTK_PANED(hpaned), elem_scrolled, TRUE, FALSE);
+
+    // -------------------------
+    // Right pane: Property list
+    // -------------------------
+    property_store = gtk_list_store_new(NUM_PROP_COLS, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_POINTER, G_TYPE_POINTER);
+    property_tree_view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(property_store));
+
+    // Add two columns: one for property names, one for their values.
+    GtkCellRenderer* prop_renderer = gtk_cell_renderer_text_new();
+    GtkTreeViewColumn* prop_column =
+        gtk_tree_view_column_new_with_attributes("Property", prop_renderer, "text", COL_PROP_NAME, nullptr);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(property_tree_view), prop_column);
+    GtkCellRenderer* val_renderer = gtk_cell_renderer_text_new();
+    GtkTreeViewColumn* val_column =
+        gtk_tree_view_column_new_with_attributes("Value", val_renderer, "text", COL_PROP_VALUE, nullptr);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(property_tree_view), val_column);
+
+    // When a property row is activated (double-clicked), open the editor dialog.
+    g_signal_connect(property_tree_view, "row-activated", G_CALLBACK(on_property_row_activated), nullptr);
+
+    // Put the property list in a scrolled window.
+    GtkWidget* prop_scrolled = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_container_add(GTK_CONTAINER(prop_scrolled), property_tree_view);
+    gtk_widget_set_vexpand(prop_scrolled, TRUE);
+    gtk_widget_set_hexpand(prop_scrolled, TRUE);
+    gtk_paned_pack2(GTK_PANED(hpaned), prop_scrolled, TRUE, FALSE);
+
+    gtk_widget_show_all(window);
+    gtk_main();
+  });
+  return gui_thread;
+}
+} // namespace hm
+
+#if 0
 /* Main program: creates a pipeline, sets it to PLAYING,
    then creates a GTK window with a horizontal pane:
    the left side shows pipeline elements,
@@ -230,79 +364,91 @@ int main(int argc, char* argv[]) {
   }
   gst_element_set_state(g_pipeline, GST_STATE_PLAYING);
 
-  // Create the main window.
-  GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-  gtk_window_set_title(GTK_WINDOW(window), "GStreamer Pipeline Editor");
-  gtk_window_set_default_size(GTK_WINDOW(window), 800, 600);
-  g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), nullptr);
+  std::thread thrd = hm::edit_pipeline(GST_OBJECT(g_pipeline));
+  thrd.join();
 
-  // Create a horizontal pane.
-  GtkWidget* hpaned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
-  gtk_container_add(GTK_CONTAINER(window), hpaned);
+  // // Create the main window.
+  // GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+  // gtk_window_set_title(GTK_WINDOW(window), "GStreamer Pipeline Editor");
+  // gtk_window_set_default_size(GTK_WINDOW(window), 800, 600);
+  // g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), nullptr);
 
-  // -------------------------
-  // Left pane: Element list
-  // -------------------------
-  element_store = gtk_list_store_new(NUM_ELEM_COLS, G_TYPE_POINTER, G_TYPE_STRING);
-  element_tree_view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(element_store));
-  GtkCellRenderer* elem_renderer = gtk_cell_renderer_text_new();
-  GtkTreeViewColumn* elem_column =
-      gtk_tree_view_column_new_with_attributes("Elements", elem_renderer, "text", COL_ELEMENT_NAME, nullptr);
-  gtk_tree_view_append_column(GTK_TREE_VIEW(element_tree_view), elem_column);
+  // // Create a horizontal pane.
+  // GtkWidget* hpaned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
+  // gtk_container_add(GTK_CONTAINER(window), hpaned);
 
-  // Populate the element list from the pipeline.
-  GList* children = my_gst_bin_get_children(GST_BIN(g_pipeline));
-  for (GList* l = children; l != nullptr; l = l->next) {
-    GstElement* element = GST_ELEMENT(l->data);
-    const gchar* name = gst_element_get_name(element);
-    GtkTreeIter iter;
-    gtk_list_store_append(element_store, &iter);
-    gtk_list_store_set(element_store, &iter, COL_ELEMENT_PTR, element, COL_ELEMENT_NAME, name, -1);
-  }
-  g_list_free(children);
+  // // -------------------------
+  // // Left pane: Element list
+  // // -------------------------
+  // element_store = gtk_list_store_new(NUM_ELEM_COLS, G_TYPE_POINTER, G_TYPE_STRING);
+  // element_tree_view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(element_store));
+  // GtkCellRenderer* elem_renderer = gtk_cell_renderer_text_new();
+  // GtkTreeViewColumn* elem_column =
+  //     gtk_tree_view_column_new_with_attributes("Elements", elem_renderer, "text", COL_ELEMENT_NAME, nullptr);
+  // gtk_tree_view_append_column(GTK_TREE_VIEW(element_tree_view), elem_column);
 
-  // Connect selection changes to update the property list.
-  GtkTreeSelection* elem_selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(element_tree_view));
-  g_signal_connect(elem_selection, "changed", G_CALLBACK(on_element_selection_changed), nullptr);
+  // // Populate the element list from the pipeline.
 
-  // Put the element list in a scrolled window.
-  GtkWidget* elem_scrolled = gtk_scrolled_window_new(nullptr, nullptr);
-  gtk_container_add(GTK_CONTAINER(elem_scrolled), element_tree_view);
-  gtk_widget_set_vexpand(elem_scrolled, TRUE);
-  gtk_widget_set_hexpand(elem_scrolled, TRUE);
-  gtk_paned_pack1(GTK_PANED(hpaned), elem_scrolled, TRUE, FALSE);
+  // std::map<std::string, GstElement*> element_tree = get_element_tree(GST_ELEMENT(g_pipeline));
+  // for (auto& item : element_tree) {
+  //   GtkTreeIter iter;
+  //   gtk_list_store_append(element_store, &iter);
+  //   gtk_list_store_set(element_store, &iter, COL_ELEMENT_PTR, item.second, COL_ELEMENT_NAME, item.first.c_str(), -1);
+  // }
 
-  // -------------------------
-  // Right pane: Property list
-  // -------------------------
-  property_store = gtk_list_store_new(NUM_PROP_COLS, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_POINTER, G_TYPE_POINTER);
-  property_tree_view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(property_store));
+  // // GList* children = my_gst_bin_get_children(GST_BIN(g_pipeline));
+  // // for (GList* l = children; l != nullptr; l = l->next) {
+  // //   GstElement* element = GST_ELEMENT(l->data);
+  // //   const gchar* name = gst_element_get_name(element);
+  // //   GtkTreeIter iter;
+  // //   gtk_list_store_append(element_store, &iter);
+  // //   gtk_list_store_set(element_store, &iter, COL_ELEMENT_PTR, element, COL_ELEMENT_NAME, name, -1);
+  // // }
+  // // g_list_free(children);
 
-  // Add two columns: one for property names, one for their values.
-  GtkCellRenderer* prop_renderer = gtk_cell_renderer_text_new();
-  GtkTreeViewColumn* prop_column =
-      gtk_tree_view_column_new_with_attributes("Property", prop_renderer, "text", COL_PROP_NAME, nullptr);
-  gtk_tree_view_append_column(GTK_TREE_VIEW(property_tree_view), prop_column);
-  GtkCellRenderer* val_renderer = gtk_cell_renderer_text_new();
-  GtkTreeViewColumn* val_column =
-      gtk_tree_view_column_new_with_attributes("Value", val_renderer, "text", COL_PROP_VALUE, nullptr);
-  gtk_tree_view_append_column(GTK_TREE_VIEW(property_tree_view), val_column);
+  // // Connect selection changes to update the property list.
+  // GtkTreeSelection* elem_selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(element_tree_view));
+  // g_signal_connect(elem_selection, "changed", G_CALLBACK(on_element_selection_changed), nullptr);
 
-  // When a property row is activated (double-clicked), open the editor dialog.
-  g_signal_connect(property_tree_view, "row-activated", G_CALLBACK(on_property_row_activated), nullptr);
+  // // Put the element list in a scrolled window.
+  // GtkWidget* elem_scrolled = gtk_scrolled_window_new(nullptr, nullptr);
+  // gtk_container_add(GTK_CONTAINER(elem_scrolled), element_tree_view);
+  // gtk_widget_set_vexpand(elem_scrolled, TRUE);
+  // gtk_widget_set_hexpand(elem_scrolled, TRUE);
+  // gtk_paned_pack1(GTK_PANED(hpaned), elem_scrolled, TRUE, FALSE);
 
-  // Put the property list in a scrolled window.
-  GtkWidget* prop_scrolled = gtk_scrolled_window_new(nullptr, nullptr);
-  gtk_container_add(GTK_CONTAINER(prop_scrolled), property_tree_view);
-  gtk_widget_set_vexpand(prop_scrolled, TRUE);
-  gtk_widget_set_hexpand(prop_scrolled, TRUE);
-  gtk_paned_pack2(GTK_PANED(hpaned), prop_scrolled, TRUE, FALSE);
+  // // -------------------------
+  // // Right pane: Property list
+  // // -------------------------
+  // property_store = gtk_list_store_new(NUM_PROP_COLS, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_POINTER, G_TYPE_POINTER);
+  // property_tree_view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(property_store));
 
-  gtk_widget_show_all(window);
-  gtk_main();
+  // // Add two columns: one for property names, one for their values.
+  // GtkCellRenderer* prop_renderer = gtk_cell_renderer_text_new();
+  // GtkTreeViewColumn* prop_column =
+  //     gtk_tree_view_column_new_with_attributes("Property", prop_renderer, "text", COL_PROP_NAME, nullptr);
+  // gtk_tree_view_append_column(GTK_TREE_VIEW(property_tree_view), prop_column);
+  // GtkCellRenderer* val_renderer = gtk_cell_renderer_text_new();
+  // GtkTreeViewColumn* val_column =
+  //     gtk_tree_view_column_new_with_attributes("Value", val_renderer, "text", COL_PROP_VALUE, nullptr);
+  // gtk_tree_view_append_column(GTK_TREE_VIEW(property_tree_view), val_column);
+
+  // // When a property row is activated (double-clicked), open the editor dialog.
+  // g_signal_connect(property_tree_view, "row-activated", G_CALLBACK(on_property_row_activated), nullptr);
+
+  // // Put the property list in a scrolled window.
+  // GtkWidget* prop_scrolled = gtk_scrolled_window_new(nullptr, nullptr);
+  // gtk_container_add(GTK_CONTAINER(prop_scrolled), property_tree_view);
+  // gtk_widget_set_vexpand(prop_scrolled, TRUE);
+  // gtk_widget_set_hexpand(prop_scrolled, TRUE);
+  // gtk_paned_pack2(GTK_PANED(hpaned), prop_scrolled, TRUE, FALSE);
+
+  // gtk_widget_show_all(window);
+  // gtk_main();
 
   // Cleanup: stop the pipeline.
   gst_element_set_state(g_pipeline, GST_STATE_NULL);
   gst_object_unref(g_pipeline);
   return 0;
 }
+#endif

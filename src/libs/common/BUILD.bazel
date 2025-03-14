@@ -29,12 +29,14 @@ cc_library(
     ],
 )
 
-cc_binary(
+cc_library(
   name = "mod_pipeline",
   srcs = ["ModPipeline.cpp"],
+  hdrs = ["ModPipeline.h"],
+  include_prefix=INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
   deps = [
     "@gtk3",
     "@gstreamer",
   ],
 )
-

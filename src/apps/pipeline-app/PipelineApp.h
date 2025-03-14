@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <functional>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -79,11 +80,14 @@ class PipelineApplication {
   absl::Status initializeInstances(CleanupStack& cleanup_stack);
   absl::Status configureInstances(std::vector<std::shared_ptr<HmApp>>& app_contexts);
   absl::Status createPipelines(std::vector<std::shared_ptr<HmApp>>& app_contexts, CleanupStack& cleanup_stack) const;
-  absl::Status createMainLoop(std::vector<std::shared_ptr<HmApp>>& app_contexts, std::map<int, Window>& windows, CleanupStack& cleanup_stack);
+  absl::Status createMainLoop(
+      std::vector<std::shared_ptr<HmApp>>& app_contexts,
+      std::map<int, Window>& windows,
+      CleanupStack& cleanup_stack);
   absl::Status playPipelines(std::vector<std::shared_ptr<HmApp>>& app_contexts, CleanupStack& cleanup_stack) const;
   absl::Status waitForPipelinesStopped(std::vector<std::shared_ptr<HmApp>>& app_contexts) const;
 
-private:
+ private:
   // Callback and helper functions.
   static void all_bbox_generated(AppCtx* app_ctx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
   static void _intr_handler(int signum);
@@ -136,6 +140,7 @@ private:
   GMutex disp_lock_;
   guint rrow_, rcol_, rcfg_;
   gboolean rrowsel_, selecting_;
+  std::unique_ptr<std::thread> editor_thread_;
   static constexpr const char* configure_stitching_config_file_name_ = "ds_hockey_configure_stitching.yaml";
   static PipelineApplication* instance_;
 };
