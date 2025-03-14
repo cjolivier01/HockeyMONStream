@@ -72,7 +72,7 @@ source0:
   # uri: file:///home/colivier/Videos/ev-tv-1a/right.mp4
   num-sources: 1
   gpu-id: 0
-  cudadec-memtype: 0
+  cuda-memory-type: 0
   source-id: 0
 
 source1:
@@ -85,7 +85,7 @@ source1:
   # uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
   num-sources: 1
   gpu-id: 0
-  cudadec-memtype: 0
+  cuda-memory-type: 0
   source-id: 1
 
 source2:
@@ -97,7 +97,7 @@ source2:
   gpu-id: 0
   input-audio-rate: 189
   source-id: 2
-  cudadec-memtype: 0
+  cuda-memory-type: 0
 
 # V4L2 Webcam (Actioncam1)
 source3:
@@ -116,7 +116,7 @@ source3:
   gpu-id: 0
   input-audio-rate: 189
   source-id: 0
-  cudadec-memtype: 1
+  cuda-memory-type: 1
 
 # V4L2 Webcam (Actioncam1)
 source4:
@@ -135,7 +135,7 @@ source4:
   gpu-id: 0
   input-audio-rate: 189
   source-id: 1
-  cudadec-memtype: 1
+  cuda-memory-type: 1
 
 # CSI Webcam (Arducam)
 source5:
@@ -154,7 +154,7 @@ source5:
   gpu-id: 0
   input-audio-rate: 189
   source-id: 0
-  cudadec-memtype: 1
+  cuda-memory-type: 1
 
 # CSI Webcam (Arducam)
 source6:
@@ -172,7 +172,7 @@ source6:
   gpu-id: 0
   input-audio-rate: 189
   source-id: 1
-  cudadec-memtype: 1
+  cuda-memory-type: 1
 
 
 
