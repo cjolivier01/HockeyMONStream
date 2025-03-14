@@ -144,7 +144,7 @@ source5:
   type: 5
   camera-csi-sensor-id: 0
   camera-i2c-bus: 9
-  camera-auto-focus: 1
+  camera-auto-focus: 0
   camera-width: 3840
   camera-height: 2160
   camera-fps-n: 30
@@ -164,7 +164,7 @@ source6:
   type: 5
   camera-csi-sensor-id: 1
   camera-i2c-bus: 14
-  camera-auto-focus: 1
+  camera-auto-focus: 0
   camera-width: 3840
   camera-height: 2160
   camera-fps-n: 30
