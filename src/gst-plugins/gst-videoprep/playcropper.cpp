@@ -251,7 +251,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
         color_format == NVBUF_COLOR_FORMAT_GRAY8) {
       // Use the combined transform - no scratch surfaces needed!
       NppStatus status = NPP_SUCCESS;
-#if 0
+#if 1
       status = combinedTransform(
           &in_surface->surfaceList[batch_nr],
           extra_width_src_rect,
