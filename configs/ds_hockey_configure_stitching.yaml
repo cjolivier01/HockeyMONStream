@@ -152,7 +152,7 @@ source5:
   camera-fps-n: 30
   camera-fps-d: 1
   video-format: NV12
-  flip-method: 6
+  flip-method: 2
   # media-type: image/jpeg
   num-sources: 1
   gpu-id: 0
@@ -175,7 +175,7 @@ source6:
   camera-fps-n: 30
   camera-fps-d: 1
   video-format: NV12
-  flip-method: 6
+  flip-method: 2
   num-sources: 1
   gpu-id: 0
   input-audio-rate: 189
