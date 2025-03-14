@@ -108,7 +108,7 @@
       },
       "debuggerPath": "/usr/local/cuda/bin/cuda-gdb",
       "program": "${workspaceFolder}/bazel-bin/src/apps/pipeline-app/pipeline-app",
-      "args": "-c ${workspaceFolder}/configs/ds_hockey_app_config.yaml -g mlk-heat-1",
+      "args": "-c ${workspaceFolder}/configs/ds_hockey_app_config.yaml -g mylive",
       "initCommands": [
         "directory ${workspaceFolder}",
       ],

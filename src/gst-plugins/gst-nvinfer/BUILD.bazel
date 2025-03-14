@@ -1,26 +1,26 @@
-load("@gst_plugin_dev//buildfiles:gst_plugin.bzl", "gst_cc_plugin")
+# load("@gst_plugin_dev//buildfiles:gst_plugin.bzl", "gst_cc_plugin")
 
 
-gst_cc_plugin(
-    name = "nvdsgst_infer",
-    srcs = glob([
-        "*.cpp",
-        "*.h",
-    ]),
-    copts=[
-      "-fPIC",
-      "-Wno-error=deprecated-declarations",
-    ],
-    linkopts=[
-      #"-Lexternal/hmdeepstream/deepstream/sources/libs/nvdsinfer",
-      #"-l:external/hmdeepstream/deepstream/sources/libs/nvdsinfer/libnvds_infer.so",
-      #"-l:libnvds_infer.so",
-      #"-lnvinfer",
-      #"-lnvinfer_plugin",
-      #"-lnvonnxparser",
-    ],
-    deps = [
-      "@deepstream//sources/libs/nvdsinfer:nvdsinfer",
-    ],
-    visibility = ["//visibility:public"],
-)
+# gst_cc_plugin(
+#     name = "nvdsgst_infer",
+#     srcs = glob([
+#         "*.cpp",
+#         "*.h",
+#     ]),
+#     copts=[
+#       "-fPIC",
+#       "-Wno-error=deprecated-declarations",
+#     ],
+#     linkopts=[
+#       #"-Lexternal/hmdeepstream/deepstream/sources/libs/nvdsinfer",
+#       #"-l:external/hmdeepstream/deepstream/sources/libs/nvdsinfer/libnvds_infer.so",
+#       #"-l:libnvds_infer.so",
+#       #"-lnvinfer",
+#       #"-lnvinfer_plugin",
+#       #"-lnvonnxparser",
+#     ],
+#     deps = [
+#       "@deepstream//sources/libs/nvdsinfer:nvdsinfer",
+#     ],
+#     visibility = ["//visibility:public"],
+# )

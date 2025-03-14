@@ -450,15 +450,15 @@ ds-example:
   processing-height: 480
 
 hmplaycropper:
-  enable: 0
+  enable: 1
   gpu-id: 0
   # plugin-type: videoprep
   # has_queue: false
   # has_videoconvert: false
   # has_cameraman: true
   nvbuf-memory-type: 0
-  plot-detections: 1
-  plot-tracking: 1
+  # plot-detections: 1
+  # plot-tracking: 1
   show: 0
   # dewarper portion
   # source-id: 6
