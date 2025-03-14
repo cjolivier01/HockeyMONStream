@@ -227,9 +227,9 @@ sink0:
 streammux:
   gpu-id: 0
   ##Boolean property to inform muxer that sources are live
-  live-source: 1
+  live-source: 0
   buffer-pool-size: 8
-  batch-size: 2
+  batch-size: 4
   num-surfaces-per-frame: 1
   ##time out in usec, to wait after the first buffer is available
   ##to push the batch even if the complete batch is not formed
@@ -265,7 +265,7 @@ streammux:
 
 
 hmstitcher:
-  enable: 0
+  enable: 1
   # enable: 0
   gpu-id: 0
   configure-only: 1
