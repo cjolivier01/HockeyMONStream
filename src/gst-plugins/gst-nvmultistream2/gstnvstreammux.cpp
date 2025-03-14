@@ -289,6 +289,10 @@ static GstFlowReturn gst_nvstreammux_chain(GstPad* pad, GstObject* parent, GstBu
     g_free(name);
     return GST_FLOW_ERROR;
   }
+  std::cout << "gst_nvstreammux_chain(stream_index = " << stream_index << std::endl;
+  if (stream_index == 1) {
+    usleep(0);
+  }
   if (!mux->isAudio) {
     GstMapInfo in_info = GST_MAP_INFO_INIT;
     NvBufSurface* in_surf;
@@ -308,6 +312,8 @@ static GstFlowReturn gst_nvstreammux_chain(GstPad* pad, GstObject* parent, GstBu
       gst_buffer_unref(buffer);
       return GST_FLOW_ERROR;
     }
+  } else {
+    std::cout << "stream " << stream_index << " was audio" << std::endl;
   }
   GstSinkPad* sinkPad = (GstSinkPad*)mux->helper->get_pad(stream_index);
 
@@ -1092,6 +1098,9 @@ static gboolean gst_nvstreammux_sink_event(GstPad* pad, GstObject* parent, GstEv
         return TRUE;
       case GST_EVENT_SEGMENT:
         LOGD("Got SEGMENT\n");
+        
+        static int segm_count = 0;
+        std::cout << "Got SEGMENT" << segm_count++ << std::endl;
 
         gst_event_parse_segment(event, &segment);
         mux->synch_buffer->SetSegment(stream_index, segment);

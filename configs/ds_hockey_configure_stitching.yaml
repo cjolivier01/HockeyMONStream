@@ -142,7 +142,7 @@ source5:
   enable: 1
   # 1: v4l2, 5: CSI
   type: 5
-  camera-v4l2-dev-node: 0
+  camera-csi-sensor-id: 0
   camera-width: 3840
   camera-height: 2160
   camera-fps-n: 30
@@ -160,7 +160,7 @@ source6:
   enable: 1
   # 1: v4l2, 5: CSI
   type: 5
-  camera-v4l2-dev-node: 1
+  camera-csi-sensor-id: 1
   camera-width: 3840
   camera-height: 2160
   camera-fps-n: 30
@@ -208,8 +208,8 @@ streammux:
   ##Boolean property to inform muxer that sources are live
   live-source: 1
   buffer-pool-size: 8
-  batch-size: 4
-  num-surfaces-per-frame: 2
+  batch-size: 2
+  num-surfaces-per-frame: 1
   ##time out in usec, to wait after the first buffer is available
   ##to push the batch even if the complete batch is not formed
   # batched-push-timeout: 40000
