@@ -14,8 +14,8 @@ namespace {
 // Focuser class to control the focus via an i2cset system call.
 class Focuser {
  public:
-  int bus;
-  int focus_value;
+  int bus{-1};
+  int focus_value{0};
   static const int CHIP_I2C_ADDR = 0x0C;
   static const int OPT_BASE = 0x1000;
   static const int OPT_FOCUS = OPT_BASE | 0x01;
