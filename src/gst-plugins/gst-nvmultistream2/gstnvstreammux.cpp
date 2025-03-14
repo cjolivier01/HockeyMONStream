@@ -289,7 +289,7 @@ static GstFlowReturn gst_nvstreammux_chain(GstPad* pad, GstObject* parent, GstBu
     g_free(name);
     return GST_FLOW_ERROR;
   }
-  std::cout << "gst_nvstreammux_chain(stream_index = " << stream_index << std::endl;
+  // std::cout << "gst_nvstreammux_chain(stream_index = " << stream_index << std::endl;
   if (stream_index == 1) {
     usleep(0);
   }
