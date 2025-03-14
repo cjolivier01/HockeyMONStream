@@ -36,6 +36,185 @@ namespace {
  * @param verbose If true, prints debug information.
  * @return A pair containing the waveform and the sample rate.
  */
+#if 1
+std::pair<std::vector<std::vector<float>>, int> load_audio_as_tensor(
+    const std::string& file,
+    double duration_seconds,
+    bool verbose = false) {
+  AVFormatContext* fmt_ctx = nullptr;
+  if (avformat_open_input(&fmt_ctx, file.c_str(), nullptr, nullptr) < 0) {
+    std::cerr << "Could not open file: " << file << std::endl;
+    std::exit(1);
+  }
+  if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
+    std::cerr << "Could not retrieve stream info from: " << file << std::endl;
+    avformat_close_input(&fmt_ctx);
+    std::exit(1);
+  }
+
+  // Find the first audio stream.
+  int audio_stream_index = -1;
+  for (unsigned i = 0; i < fmt_ctx->nb_streams; i++) {
+    if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+      audio_stream_index = i;
+      break;
+    }
+  }
+  if (audio_stream_index < 0) {
+    std::cerr << "No audio stream found in: " << file << std::endl;
+    avformat_close_input(&fmt_ctx);
+    std::exit(1);
+  }
+
+  // Set up the codec context.
+  AVCodecParameters* codecpar = fmt_ctx->streams[audio_stream_index]->codecpar;
+  const AVCodec* codec = avcodec_find_decoder(codecpar->codec_id);
+  if (!codec) {
+    std::cerr << "Codec not found." << std::endl;
+    avformat_close_input(&fmt_ctx);
+    std::exit(1);
+  }
+  AVCodecContext* codec_ctx = avcodec_alloc_context3(codec);
+  if (!codec_ctx) {
+    std::cerr << "Could not allocate codec context." << std::endl;
+    avformat_close_input(&fmt_ctx);
+    std::exit(1);
+  }
+  if (avcodec_parameters_to_context(codec_ctx, codecpar) < 0) {
+    std::cerr << "Could not copy codec parameters." << std::endl;
+    avcodec_free_context(&codec_ctx);
+    avformat_close_input(&fmt_ctx);
+    std::exit(1);
+  }
+  if (avcodec_open2(codec_ctx, codec, nullptr) < 0) {
+    std::cerr << "Could not open codec." << std::endl;
+    avcodec_free_context(&codec_ctx);
+    avformat_close_input(&fmt_ctx);
+    std::exit(1);
+  }
+
+  // Determine the input channel layout.
+  uint64_t in_channel_layout = 0;
+  uint64_t param_layout = codecpar->channel_layout;
+  if (param_layout != 0) {
+    in_channel_layout = param_layout;
+  } else {
+    // Fallback: get default layout for the given number of channels.
+    in_channel_layout = av_get_default_channel_layout(codecpar->channels);
+    if (!in_channel_layout) {
+      std::cerr << "Could not get default channel layout." << std::endl;
+      avcodec_free_context(&codec_ctx);
+      avformat_close_input(&fmt_ctx);
+      std::exit(1);
+    }
+  }
+
+  // Determine number of channels (preserve original channels).
+  int out_channels = codecpar->channels;
+
+  // Set up the resampler to convert the audio to float format while preserving channel count.
+  SwrContext* swr_ctx = swr_alloc();
+  if (!swr_ctx) {
+    std::cerr << "Could not allocate resampler context." << std::endl;
+    avcodec_free_context(&codec_ctx);
+    avformat_close_input(&fmt_ctx);
+    std::exit(1);
+  }
+  // Input options.
+  av_opt_set_int(swr_ctx, "in_channel_layout", in_channel_layout, 0);
+  av_opt_set_int(swr_ctx, "in_sample_rate", codec_ctx->sample_rate, 0);
+  av_opt_set_sample_fmt(swr_ctx, "in_sample_fmt", codec_ctx->sample_fmt, 0);
+  // Output options: preserve number of channels.
+  av_opt_set_int(swr_ctx, "out_channel_layout", in_channel_layout, 0);
+  av_opt_set_int(swr_ctx, "out_sample_rate", codec_ctx->sample_rate, 0);
+  av_opt_set_sample_fmt(swr_ctx, "out_sample_fmt", AV_SAMPLE_FMT_FLT, 0);
+  if (swr_init(swr_ctx) < 0) {
+    std::cerr << "Could not initialize resampler." << std::endl;
+    swr_free(&swr_ctx);
+    avcodec_free_context(&codec_ctx);
+    avformat_close_input(&fmt_ctx);
+    std::exit(1);
+  }
+
+  int out_sample_rate = codec_ctx->sample_rate;
+  // Total output samples per channel.
+  int64_t total_output_samples = static_cast<int64_t>(duration_seconds * out_sample_rate);
+
+  // Create a 2D vector for storing output audio: one vector per channel.
+  std::vector<std::vector<float>> audio_samples(out_channels);
+  for (int ch = 0; ch < out_channels; ++ch) {
+    audio_samples[ch].reserve(total_output_samples);
+  }
+
+  AVPacket* packet = av_packet_alloc();
+  AVFrame* frame = av_frame_alloc();
+  bool finished = false;
+
+  // Decode and convert audio frames.
+  while (!finished && av_read_frame(fmt_ctx, packet) >= 0) {
+    if (packet->stream_index == audio_stream_index) {
+      int ret = avcodec_send_packet(codec_ctx, packet);
+      if (ret < 0) {
+        std::cerr << "Error sending packet for decoding." << std::endl;
+        break;
+      }
+      while (ret >= 0) {
+        ret = avcodec_receive_frame(codec_ctx, frame);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+          break;
+        if (ret < 0) {
+          std::cerr << "Error during decoding." << std::endl;
+          break;
+        }
+        int nb_samples = frame->nb_samples; // number of samples per channel in this frame
+
+        // Allocate buffer for converted data: converted samples are interleaved.
+        int max_out_samples = nb_samples; // swr_convert returns samples per channel.
+        int buffer_size = max_out_samples * out_channels;
+        float* out_buffer = new float[buffer_size];
+        uint8_t* out_data[1] = {reinterpret_cast<uint8_t*>(out_buffer)};
+
+        int converted_samples =
+            swr_convert(swr_ctx, out_data, max_out_samples, (const uint8_t**)frame->extended_data, nb_samples);
+        if (converted_samples < 0) {
+          std::cerr << "Error converting audio." << std::endl;
+          delete[] out_buffer;
+          break;
+        }
+        // Deinterleave the interleaved output into separate channels.
+        for (int i = 0; i < converted_samples; i++) {
+          for (int ch = 0; ch < out_channels; ch++) {
+            audio_samples[ch].push_back(out_buffer[i * out_channels + ch]);
+          }
+        }
+        delete[] out_buffer;
+        av_frame_unref(frame);
+        // Check if we have reached the desired sample count for each channel.
+        if (audio_samples[0].size() >= static_cast<size_t>(total_output_samples)) {
+          finished = true;
+          break;
+        }
+      }
+    }
+    av_packet_unref(packet);
+    if (finished)
+      break;
+  }
+
+  av_packet_free(&packet);
+  av_frame_free(&frame);
+  swr_free(&swr_ctx);
+  avcodec_free_context(&codec_ctx);
+  avformat_close_input(&fmt_ctx);
+
+  if (verbose) {
+    std::cout << "Loaded audio from: " << file << ", channels: " << out_channels
+              << ", samples per channel: " << audio_samples[0].size() << ", sample rate: " << out_sample_rate
+              << std::endl;
+  }
+  return {audio_samples, out_sample_rate};
+}
+#else
 std::pair<std::vector<std::vector<float>>, int> load_audio_as_tensor(
     const std::string& file,
     double duration_seconds,
@@ -222,6 +401,7 @@ std::pair<std::vector<std::vector<float>>, int> load_audio_as_tensor(
   }
   return {audio_samples, out_sample_rate};
 }
+#endif
 
 // Get video FPS and duration (in seconds) using OpenCV.
 std::pair<double, double> get_video_fps_and_duration(const std::string& video_path) {
@@ -315,7 +495,7 @@ std::pair<double, double> synchronize_by_audio(
   }
   // Compute the cross-correlation using the first (or only) channel.
   // std::vector<float> correlation = full_correlate(audio1[0], audio2[0]);
-  
+
   std::vector<float> correlation = full_correlate_fft(audio1[0], audio2[0]);
 
   auto sumc = sum(correlation);

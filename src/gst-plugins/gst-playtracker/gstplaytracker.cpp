@@ -91,7 +91,7 @@ static GstFlowReturn gst_playtracker_transform(GstBaseTransform* btrans, GstBuff
 // static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btrans, gboolean discont, GstBuffer*
 // inbuf); static GstFlowReturn gst_playtracker_generate_output(GstBaseTransform* btrans, GstBuffer** outbuf);
 
-static gpointer gst_playtracker_output_loop(gpointer data);
+// static gpointer gst_playtracker_output_loop(gpointer data);
 
 /* Install properties, set sink and src pad capabilities, override the required
  * functions of the base class, These are common to all instances of the

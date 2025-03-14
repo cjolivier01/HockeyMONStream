@@ -208,7 +208,7 @@ streammux:
   ##Boolean property to inform muxer that sources are live
   live-source: 1
   buffer-pool-size: 8
-  batch-size: 2
+  batch-size: 4
   num-surfaces-per-frame: 2
   ##time out in usec, to wait after the first buffer is available
   ##to push the batch even if the complete batch is not formed
