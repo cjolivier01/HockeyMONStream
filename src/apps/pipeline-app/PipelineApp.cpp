@@ -2,6 +2,7 @@
 // X11 stuff must come first because it defines "Status"
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <gstreamer-1.0/gst/gstelement.h>
 #undef Status
 /* clang-format on */
 
@@ -302,7 +303,7 @@ absl::Status PipelineApplication::createMainLoop(
 #endif
   }
   cleanup_stack.push([this, contexts = app_contexts, windows = windows]() mutable -> void {
-    (void)waitForPipelinesStopped(contexts);
+    // (void)waitForPipelinesStopped(contexts);
     for (guint i = 0; i < contexts.size(); i++) {
       if (contexts[i]) {
         if (contexts[i]->return_value == -1)
@@ -328,9 +329,23 @@ absl::Status PipelineApplication::createMainLoop(
   return absl::OkStatus();
 }
 
+absl::Status PipelineApplication::stopPipeline(std::shared_ptr<HmApp> app_context) const {
+  if (!app_context) {
+    return absl::OkStatus();
+  }
+  GstElement* pipeline = app_context->pipeline.pipeline;
+  if (!pipeline) {
+    return absl::OkStatus();
+  }
+  if (gst_element_set_state(pipeline, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE) {
+    return absl::FailedPreconditionError("Can't set pipeline to stopped state.\n");
+  }
+  return absl::OkStatus();
+}
+
 absl::Status PipelineApplication::playPipelines(
     std::vector<std::shared_ptr<HmApp>>& app_contexts,
-    CleanupStack& /*cleanup_stack*/) const {
+    CleanupStack& cleanup_stack) const {
   absl::Status status;
   for (guint i = 0; i < app_contexts.size(); i++) {
     status = app_contexts[i]->configurator().post_config_pipeline(app_contexts[i]->pipeline, app_contexts[i]->config);
@@ -343,6 +358,12 @@ absl::Status PipelineApplication::playPipelines(
       g_print("\ncan't set pipeline to playing state.\n");
       return absl::InternalError("can't set pipeline to playing state");
     }
+    cleanup_stack.push([this, app_ctx = app_contexts[i]]() {
+      auto status = stopPipeline(std::move(app_ctx));
+      if (!status.ok()) {
+        std::cerr << status << std::endl;
+      }
+    });
 #if 1
     hm::save_dot_file(app_contexts[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_running");
 #endif

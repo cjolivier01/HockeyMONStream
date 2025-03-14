@@ -86,6 +86,7 @@ class PipelineApplication {
       CleanupStack& cleanup_stack);
   absl::Status playPipelines(std::vector<std::shared_ptr<HmApp>>& app_contexts, CleanupStack& cleanup_stack) const;
   absl::Status waitForPipelinesStopped(std::vector<std::shared_ptr<HmApp>>& app_contexts) const;
+  absl::Status stopPipeline(std::shared_ptr<HmApp> app_context) const;
 
  private:
   // Callback and helper functions.
