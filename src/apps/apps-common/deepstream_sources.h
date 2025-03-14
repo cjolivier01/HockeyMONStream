@@ -50,6 +50,7 @@ typedef struct {
   gint camera_csi_sensor_id;
   gint camera_i2c_bus;
   gint camera_wbmode;
+  gint camera_num_buffers;
   gfloat camera_saturation;
   gfloat camera_exposure_compensation;
   gint flip_method;

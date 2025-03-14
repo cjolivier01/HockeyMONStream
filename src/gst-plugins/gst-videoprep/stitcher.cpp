@@ -302,7 +302,7 @@ absl::Status StitcherPriv::GenerateOutput(
           //pipeline.release();
           //std::cout << "Stitcher sent the pipeline an EOS event" << std::endl;
         //}
-        return absl::CancelledError("Stitching has been configured");
+        // return absl::CancelledError("Stitching has been configured");
       }
     }
 

@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <iostream>
 #include <string>
 
 #include <cuda_runtime_api.h>
@@ -861,6 +862,7 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
     g_object_set(
         G_OBJECT(bin->sink), "host", "127.0.0.1", "port", config->udp_port, "async", FALSE, "sync", config->sync, NULL);
   } else {
+    std::cout << "Setting up to stream to RTMP server at " << config->output_file_path << std::endl;
     g_object_set(G_OBJECT(bin->sink), "location", config->output_file_path, "async", FALSE, "sync", config->sync, NULL);
     g_object_set(G_OBJECT(bin->rtppay_or_flvmux), "streamable", TRUE, NULL);
   }

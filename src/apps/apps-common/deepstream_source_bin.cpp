@@ -159,7 +159,9 @@ static gboolean set_camera_csi_params(NvDsSourceConfig* config, NvDsSrcBin* bin)
   if (config->camera_exposure_compensation != 0.0) {
     g_object_set(G_OBJECT(bin->src_elem), "exposurecompensation", config->camera_exposure_compensation, NULL);
   }
-  // g_object_set(G_OBJECT(bin->src_elem), "tnr-mode", 2, NULL);
+  if (config->camera_num_buffers) {
+    g_object_set(G_OBJECT(bin->src_elem), "num-buffers", config->camera_num_buffers, NULL);
+  }
   g_object_set(G_OBJECT(bin->src_elem), "ee-mode", 2, NULL);
   GST_CAT_DEBUG(NVDS_APP, "Setting csi camera params successful");
   return TRUE;

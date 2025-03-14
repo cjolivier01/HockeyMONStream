@@ -152,11 +152,12 @@ source5:
   exposure-time-range: 34000 358733000
   gain-range: 1 16
 
-  camera-auto-focus: 0
+  camera-auto-focus: 1
   camera-width: 3840
   camera-height: 2160
   camera-fps-n: 30
   camera-fps-d: 1
+  camera-num-buffers: 1
   video-format: NV12
   flip-method: 2
   # media-type: image/jpeg
@@ -181,11 +182,12 @@ source6:
   # exposure-time-range: 34000 358733000
   # gain-range: 1 16
 
-  camera-auto-focus: 0
+  camera-auto-focus: 1
   camera-width: 3840
   camera-height: 2160
   camera-fps-n: 30
   camera-fps-d: 1
+  camera-num-buffers: 1
   video-format: NV12
   flip-method: 2
   num-sources: 1
