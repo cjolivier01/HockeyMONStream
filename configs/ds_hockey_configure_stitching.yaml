@@ -144,12 +144,15 @@ source5:
   type: 5
   camera-csi-sensor-id: 0
   camera-i2c-bus: 9
+  camera-wbmode: 5
+
   camera-auto-focus: 0
   camera-width: 3840
   camera-height: 2160
   camera-fps-n: 30
   camera-fps-d: 1
   video-format: NV12
+  flip-method: 6
   # media-type: image/jpeg
   num-sources: 1
   gpu-id: 0
@@ -164,13 +167,15 @@ source6:
   type: 5
   camera-csi-sensor-id: 1
   camera-i2c-bus: 14
+  camera-wbmode: 5
+
   camera-auto-focus: 0
   camera-width: 3840
   camera-height: 2160
   camera-fps-n: 30
   camera-fps-d: 1
-  # video-format: RGBA
-  # media-type: image/jpeg
+  video-format: NV12
+  flip-method: 6
   num-sources: 1
   gpu-id: 0
   input-audio-rate: 189

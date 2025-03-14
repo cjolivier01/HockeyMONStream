@@ -144,7 +144,9 @@ void print_pads(GstElement* element) {
 
 static gboolean set_camera_csi_params(NvDsSourceConfig* config, NvDsSrcBin* bin) {
   g_object_set(G_OBJECT(bin->src_elem), "sensor-id", config->camera_csi_sensor_id, NULL);
-
+  if (config->camera_wbmode) {
+      g_object_set(G_OBJECT(bin->src_elem), "wbmode", config->camera_wbmode, NULL);
+  }
   GST_CAT_DEBUG(NVDS_APP, "Setting csi camera params successful");
 
   return TRUE;
@@ -159,6 +161,15 @@ static gboolean set_camera_v4l2_params(NvDsSourceConfig* config, NvDsSrcBin* bin
   GST_CAT_DEBUG(NVDS_APP, "Setting v4l2 camera params successful");
 
   return TRUE;
+}
+
+static void set_videoconvert_params(const NvDsSourceConfig* config, NvDsSrcBin* bin) {
+  if (!bin->nvvidconv) {
+    return;
+  }
+  if (config->flip_method) {
+    g_object_set(G_OBJECT(bin->nvvidconv), "flip-method", config->flip_method, NULL);
+  }
 }
 
 static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* bin) {
@@ -298,10 +309,10 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
     gst_caps_set_features(caps, 0, feature);
   }
 
-  if (caps1) {
-    print_caps(caps1, "caps1");
-  }
-  print_caps(caps, "caps");
+  // if (caps1) {
+  //   print_caps(caps1, "caps1");
+  // }
+  // print_caps(caps, "caps");
 
   struct cudaDeviceProp prop;
   cudaGetDeviceProperties(&prop, config->gpu_id);
@@ -373,11 +384,16 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
     NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->cap_filter, "src");
 
   } else {
+    bin->nvvidconv = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "nvvidconv");
+
     g_object_set(G_OBJECT(bin->cap_filter), "caps", caps, NULL);
 
-    gst_bin_add_many(GST_BIN(bin->bin), bin->src_elem, bin->cap_filter, NULL);
+    gst_bin_add_many(GST_BIN(bin->bin), bin->src_elem, bin->nvvidconv, bin->cap_filter, NULL);
 
-    NVGSTDS_LINK_ELEMENT(bin->src_elem, bin->cap_filter);
+    NVGSTDS_LINK_ELEMENT(bin->src_elem, bin->nvvidconv);
+    NVGSTDS_LINK_ELEMENT(bin->nvvidconv, bin->cap_filter);
+
+    // NVGSTDS_LINK_ELEMENT(bin->src_elem, bin->cap_filter);
 
     NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->cap_filter, "src");
   }
@@ -1586,7 +1602,7 @@ gboolean create_source_bin(NvDsSourceConfig* config, NvDsSrcBin* bin) {
       NVGSTDS_ERR_MSG_V("Source type not yet implemented!\n");
       return FALSE;
   }
-
+  set_videoconvert_params(config, bin);
   GST_CAT_DEBUG(NVDS_APP, "Source bin created");
 
   return TRUE;
@@ -1672,10 +1688,10 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
         NVGSTDS_ERR_MSG_V("Source type not yet implemented!\n");
         return FALSE;
     }
-
+    set_videoconvert_params(&configs[i], &bin->sub_bins[i]);
     gst_bin_add(GST_BIN(bin->bin), bin->sub_bins[i].bin);
-    print_pads(bin->streammux);
-    print_pads(bin->sub_bins[i].bin);
+    //print_pads(bin->streammux);
+    //print_pads(bin->sub_bins[i].bin);
     if (!link_element_to_streammux_sink_pad(bin->streammux, bin->sub_bins[i].bin, i)) {
       NVGSTDS_ERR_MSG_V("source %d cannot be linked to mux's sink pad %p\n", i, bin->streammux);
       goto done;
