@@ -21,6 +21,7 @@
 #include "deepstream_common.h"
 #include "deepstream_sources.h"
 
+#include "hstream/src/libs/camera/AutoFocus.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 
 #include "gst-nvdssr.h"
@@ -37,33 +38,33 @@ static gboolean install_mux_eosmonitor_probe = FALSE;
 
 #if 1
 /* Functions below print the Capabilities in a human-friendly format */
-static gboolean print_field (GQuark field, const GValue * value, gpointer pfx) {
-  gchar *str = gst_value_serialize (value);
+static gboolean print_field(GQuark field, const GValue* value, gpointer pfx) {
+  gchar* str = gst_value_serialize(value);
 
-  g_print ("%s  %15s: %s\n", (gchar *) pfx, g_quark_to_string (field), str);
-  g_free (str);
+  g_print("%s  %15s: %s\n", (gchar*)pfx, g_quark_to_string(field), str);
+  g_free(str);
   return TRUE;
 }
 
-static void print_caps (const GstCaps * caps, const gchar * pfx) {
+static void print_caps(const GstCaps* caps, const gchar* pfx) {
   guint i;
 
-  g_return_if_fail (caps != NULL);
+  g_return_if_fail(caps != NULL);
 
-  if (gst_caps_is_any (caps)) {
-    g_print ("%sANY\n", pfx);
+  if (gst_caps_is_any(caps)) {
+    g_print("%sANY\n", pfx);
     return;
   }
-  if (gst_caps_is_empty (caps)) {
-    g_print ("%sEMPTY\n", pfx);
+  if (gst_caps_is_empty(caps)) {
+    g_print("%sEMPTY\n", pfx);
     return;
   }
 
-  for (i = 0; i < gst_caps_get_size (caps); i++) {
-    GstStructure *structure = gst_caps_get_structure (caps, i);
+  for (i = 0; i < gst_caps_get_size(caps); i++) {
+    GstStructure* structure = gst_caps_get_structure(caps, i);
 
-    g_print ("%s%s\n", pfx, gst_structure_get_name (structure));
-    gst_structure_foreach (structure, print_field, (gpointer) pfx);
+    g_print("%s%s\n", pfx, gst_structure_get_name(structure));
+    gst_structure_foreach(structure, print_field, (gpointer)pfx);
   }
 }
 #endif
@@ -168,6 +169,23 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
 
   switch (config->type) {
     case NV_DS_SOURCE_CAMERA_CSI:
+      if (config->camera_auto_focus) {
+        // Auto-focus it before we create any elements that might touch the camera
+        absl::Status af_status = hm::camera::auto_focus_csi_camera(
+            config->camera_csi_sensor_id,
+            config->camera_i2c_bus,
+            config->source_width,
+            config->source_height,
+            config->source_fps_n,
+            config->source_fps_d,
+            /*show=*/false,
+            /*interactive=*/false,
+            /*verbose=*/true);
+        if (!af_status.ok()) {
+          std::cerr << af_status << std::endl;
+          return false;
+        }
+      }
       bin->src_elem = gst_element_factory_make(NVDS_ELEM_SRC_CAMERA_CSI, "csi_src_elem");
       break;
     case NV_DS_SOURCE_CAMERA_V4L2:
@@ -180,11 +198,11 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
       is_jpeg = config->media_type && !strncmp(config->media_type, "image/jpeg", 10);
       if (is_jpeg) {
         caps1 = gst_caps_new_simple(
-            //config->media_type ? config->media_type : "video/x-raw",
+            // config->media_type ? config->media_type : "video/x-raw",
             "video/x-raw",
             //"parsed",
-            //G_TYPE_BOOLEAN,
-            //TRUE,
+            // G_TYPE_BOOLEAN,
+            // TRUE,
             "width",
             G_TYPE_INT,
             config->source_width,
