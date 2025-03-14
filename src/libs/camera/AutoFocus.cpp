@@ -5,7 +5,9 @@
 #include <sstream>
 #include <string>
 
-#include <absl/status/status.h>
+#include "absl/cleanup/cleanup.h"
+#include "absl/status/status.h"
+
 #include <opencv2/opencv.hpp>
 
 namespace hm {
@@ -151,6 +153,7 @@ absl::Status show_camera(
   }
 
   cv::VideoCapture cap(pipeline, cv::CAP_GSTREAMER);
+
   // Set an initial focus value.
   if (!focusing(focuser, focal_distance, verbose)) {
     return absl::InternalError("Could not focus camera");
@@ -158,6 +161,13 @@ absl::Status show_camera(
   int skip_frame = 6;
 
   if (cap.isOpened()) {
+    auto cleanup_cv2 = absl::Cleanup([&cap, show]() {
+      cap.release();
+      if (show) {
+        cv::destroyAllWindows();
+      }
+    });
+
     if (show) {
       cv::namedWindow("CSI Camera", cv::WINDOW_AUTOSIZE);
     }
@@ -221,8 +231,6 @@ absl::Status show_camera(
         break;
       }
     }
-    cap.release();
-    cv::destroyAllWindows();
   } else {
     return absl::InternalError("Unable to open camera");
   }
