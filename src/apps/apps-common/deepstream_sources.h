@@ -48,6 +48,8 @@ typedef struct {
   gint source_fps_n;
   gint source_fps_d;
   gint camera_csi_sensor_id;
+  gint camera_i2c_bus;
+  gboolean camera_auto_focus;
   gint camera_v4l2_dev_node;
   gchar* uri;
   gchar* dir_path;

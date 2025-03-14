@@ -52,9 +52,12 @@ gboolean parse_source_yaml(
       config->source_fps_d = std::stoi(source_values[i]);
     } else if (paramKey == "camera-csi-sensor-id") {
       config->camera_csi_sensor_id = std::stoi(source_values[i]);
+    } else if (paramKey == "camera-i2c-bus") {
+      config->camera_i2c_bus = std::stoi(source_values[i]);
+    } else if (paramKey == "camera-auto-focus") {
+      config->camera_auto_focus = std::stoi(source_values[i]);
     } else if (paramKey == "camera-v4l2-dev-node") {
       config->camera_v4l2_dev_node = std::stoi(source_values[i]);
-      ;
     } else if (paramKey == "udp-buffer-size") {
       config->udp_buffer_size = std::stoi(source_values[i]);
     } else if (paramKey == "alsa-device") {
