@@ -376,8 +376,8 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
     }
 
     if (bin->src_decoder) {
-      print_pads(bin->src_elem);
-      print_pads(bin->src_decoder);
+      // print_pads(bin->src_elem);
+      // print_pads(bin->src_decoder);
       NVGSTDS_LINK_ELEMENT(bin->src_elem, bin->src_decoder);
       NVGSTDS_LINK_ELEMENT(bin->src_decoder, bin->cap_filter1);
     } else {

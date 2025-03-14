@@ -142,8 +142,8 @@ source5:
   enable: 1
   # 1: v4l2, 5: CSI
   type: 5
-  camera-csi-sensor-id: 0
-  camera-i2c-bus: 9 
+  camera-csi-sensor-id: 1
+  camera-i2c-bus: 14
 
   # Color/Brightness/etc
   camera-wbmode: 5
@@ -171,8 +171,8 @@ source6:
   enable: 1
   # 1: v4l2, 5: CSI
   type: 5
-  camera-csi-sensor-id: 1
-  camera-i2c-bus: 14
+  camera-csi-sensor-id: 0
+  camera-i2c-bus: 9 
 
   # Color/Brightness/etc
   camera-wbmode: 5
@@ -228,8 +228,8 @@ streammux:
   gpu-id: 0
   ##Boolean property to inform muxer that sources are live
   live-source: 0
-  buffer-pool-size: 8
-  batch-size: 4
+  buffer-pool-size: 4
+  batch-size: 2
   num-surfaces-per-frame: 1
   ##time out in usec, to wait after the first buffer is available
   ##to push the batch even if the complete batch is not formed

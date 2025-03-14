@@ -1,21 +1,21 @@
-load("@gst_plugin_dev//buildfiles:gst_plugin.bzl", "gst_cc_plugin")
+# load("@gst_plugin_dev//buildfiles:gst_plugin.bzl", "gst_cc_plugin")
 
 
-gst_cc_plugin(
-    name = "nvdsgst_multistream",
-    srcs = glob([
-        "*.cpp",
-        "*.h",
-    ]),
-    copts=[
-      "-fPIC",
-      "-Wno-error=deprecated-declarations",
-      "-DENABLE_GST_NVSTREAMMUX_UNIT_TESTS=1",
-    ],
-    linkopts=[
-    ],
-    deps = [
-      "@deepstream//sources/libs/nvstreammux",
-    ],
-    visibility = ["//visibility:public"],
-)
+# gst_cc_plugin(
+#     name = "nvdsgst_multistream",
+#     srcs = glob([
+#         "*.cpp",
+#         "*.h",
+#     ]),
+#     copts=[
+#       "-fPIC",
+#       "-Wno-error=deprecated-declarations",
+#       "-DENABLE_GST_NVSTREAMMUX_UNIT_TESTS=1",
+#     ],
+#     linkopts=[
+#     ],
+#     deps = [
+#       "@deepstream//sources/libs/nvstreammux",
+#     ],
+#     visibility = ["//visibility:public"],
+# )

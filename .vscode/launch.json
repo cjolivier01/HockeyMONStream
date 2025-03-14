@@ -65,10 +65,10 @@
       "args": [
         "-c",
         "${workspaceFolder}/configs/ds_hockey_app_config.yaml",
-        //"-c",
+        // "-c",
         // "${workspaceFolder}/configs/ds_hockey_configure_stitching.yaml",
-        // "-g",
-        // "mylive",
+        "-g",
+        "mylive",
         //"mlk-heat-1",
         //"-f",
         //"ev-cougars-2",

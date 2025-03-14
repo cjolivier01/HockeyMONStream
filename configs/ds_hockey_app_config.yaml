@@ -17,9 +17,9 @@ application:
   ##gie-kitti-output-dir=streamscl
 
 tiled-display:
-  enable: 0
+  enable: 1
   rows: 1
-  columns: 2
+  columns: 1
   # rows: 2
   # columns: 2
   # width: 7680
@@ -142,14 +142,24 @@ source5:
   enable: 1
   # 1: v4l2, 5: CSI
   type: 5
-  camera-csi-sensor-id: 0
-  camera-i2c-bus: 9
-  camera-auto-focus: 1
+  camera-csi-sensor-id: 1
+  camera-i2c-bus: 14
+
+  # Color/Brightness/etc
+  camera-wbmode: 5
+  camera-exposure-compensation: 0
+  camera-saturation: 0.5
+  exposure-time-range: 34000 358733000
+  gain-range: 1 16
+
+  camera-auto-focus: 0
   camera-width: 3840
   camera-height: 2160
   camera-fps-n: 30
   camera-fps-d: 1
   video-format: NV12
+  flip-method: 2
+  # media-type: image/jpeg
   num-sources: 1
   gpu-id: 0
   input-audio-rate: 189
@@ -161,19 +171,28 @@ source6:
   enable: 1
   # 1: v4l2, 5: CSI
   type: 5
-  camera-csi-sensor-id: 1
-  camera-i2c-bus: 14
-  camera-auto-focus: 1
+  camera-csi-sensor-id: 0
+  camera-i2c-bus: 9 
+
+  # Color/Brightness/etc
+  camera-wbmode: 5
+  camera-exposure-compensation: 0
+  camera-saturation: 0.5
+  # exposure-time-range: 34000 358733000
+  # gain-range: 1 16
+
+  camera-auto-focus: 0
   camera-width: 3840
   camera-height: 2160
   camera-fps-n: 30
   camera-fps-d: 1
+  video-format: NV12
+  flip-method: 2
   num-sources: 1
   gpu-id: 0
   input-audio-rate: 189
   source-id: 1
   cuda-memory-type: 1
-
 
 
 #source:
@@ -324,7 +343,7 @@ hmaudio0:
 
 
 osd:
-  enable: 0
+  enable: 1
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -349,6 +368,7 @@ streammux:
   buffer-pool-size: 4
   batch-size: 4
   num-surfaces-per-frame: 1
+
   ##time out in usec, to wait after the first buffer is available
   ##to push the batch even if the complete batch is not formed
   # batched-push-timeout: 40000
@@ -403,7 +423,7 @@ dewarper0:
   num-output-buffers: 4
 
 primary-gie:
-  enable: 0
+  enable: 1
   gpu-id: 0
   batch-size: 4
   #Required by the app for OSD, not a plugin property
@@ -461,7 +481,7 @@ hmplaycropper:
   # num-output-buffers: 2
 
 hmstitcher:
-  enable: 0
+  enable: 1
   # enable: 0
   gpu-id: 0
   nvbuf-memory-type: 0
@@ -471,7 +491,7 @@ hmstitcher:
   num-output-buffers: 4
 
 ds-playtracker:
-  enable: 0
+  enable: 1
   gpu-id: 0
   unique-id: 75
   draw: true
@@ -489,7 +509,7 @@ ds-fieldmask:
   # detection-mask: /home/colivier/Videos/mlk-heat-1/rink_mask_0.png
 
 tracker:
-  enable: 0
+  enable: 1
   # For NvDCF and NvDeepSORT tracker, tracker-width and tracker-height must be a multiple of 32, respectively
   tracker-width: 960
   tracker-height: 544
