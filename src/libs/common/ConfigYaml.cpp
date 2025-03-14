@@ -18,7 +18,7 @@ struct overloaded : Ts... {
 template <class... Ts>
 overloaded(Ts...) -> overloaded<Ts...>;
 
-void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator) {
+void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator, bool quiet) {
   if (!yaml.IsDefined()) {
     return;
   }
@@ -97,7 +97,9 @@ void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator) 
       // Terminate the array with -1.
       array_ptr[count] = -1;
     } else if (!ignored) {
-      std::cerr << "Warning: Unrecognized key in YAML: " << key << '\n';
+      if (!quiet) {
+        std::cerr << "Warning: Unrecognized key in YAML: " << key << '\n';
+      }
     }
   }
 }

@@ -98,8 +98,9 @@ gboolean parse_dsfieldmask_yaml(
 gboolean parse_hmplaycropper_yaml(
     NvDsHmVideoPrepConfig* config,
     const YAML::Node& yaml_node,
-    const std::string& config_path) {
-  hm::utils::ConfigLocator locator{.ignored = {"config-file"}};
+    const std::string& config_path,
+    bool quiet = false) {
+  hm::utils::ConfigLocator locator{.ignored = {"config-file", "configure-only"}};
   SET_LOCATOR(locator, *config, enable);
   SET_LOCATOR(locator, *config, unique_id);
   SET_LOCATOR(locator, *config, gpu_id);
@@ -120,12 +121,12 @@ gboolean parse_hmplaycropper_yaml(
 
   hm::utils::parse_chracter_buffer(config->config_file, yaml_node, "config-file", config_path);
 
-  set_config_from_yaml(yaml_node, locator);
+  set_config_from_yaml(yaml_node, locator, quiet);
   return true;
 }
 
 gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_node, const std::string& config_path) {
-  if (!parse_hmplaycropper_yaml(config, yaml_node, config_path)) {
+  if (!parse_hmplaycropper_yaml(config, yaml_node, config_path, /*quiet=*/true)) {
     return false;
   }
   hm::utils::ConfigLocator locator;
@@ -134,7 +135,7 @@ gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_
   SET_LOCATOR(locator, *config, right_frame_offset_ns);
   SET_LOCATOR(locator, *config, show);
   SET_LOCATOR_CHARS(locator, *config, config_file);
-  set_config_from_yaml(yaml_node, locator);
+  set_config_from_yaml(yaml_node, locator, /*quiet=*/true);
   return true;
 }
 

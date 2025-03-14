@@ -78,7 +78,7 @@ struct ConfigLocator {
         [](void* p, int val) -> void { *((enum_type$*)p) = static_cast<enum_type$>(val); }}; \
   } while (false)
 
-void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator);
+void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator, bool quiet = false);
 
 #define STRNLEN(__s$) (sizeof(__s$) / sizeof((__s$)[0]))
 
