@@ -1,4 +1,4 @@
-7 /* clang-format off */
+/* clang-format off */
 // X11 stuff must come first because it defines "Status"
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -33,9 +33,9 @@
 #include "absl/strings/str_split.h"
 #include "nvds_version.h"
 
-    //------------------------------------------------------------------------------
-    // Debug category definition.
-    GST_DEBUG_CATEGORY(NVDS_APP);
+//------------------------------------------------------------------------------
+// Debug category definition.
+GST_DEBUG_CATEGORY(NVDS_APP);
 
 namespace {
 
@@ -192,6 +192,9 @@ absl::Status PipelineApplication::configureInstances(std::vector<std::shared_ptr
         NVGSTDS_ERR_MSG_V("Failed to merge in config file '%s'", app_ctx->app_config_file().c_str());
         app_ctx->return_value = -1;
         return absl::InternalError("Failed to merge in config file");
+      }
+      if (!enabled_source_types_.empty  ()) {
+        app_ctx->configurator().enable_source_types(enabled_source_types_, true);
       }
       absl::Status configuration_status = app_ctx->complete_configuration(force_reconfigure_);
       if (configuration_status.code() == absl::StatusCode::kCancelled) {
@@ -557,22 +560,22 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
 
   if (enable_sources_) {
     enabled_source_types_.clear();
-    for (size_t i = 0, n = g_strv_length(pipline_options); i < n; ++i) {
+    for (size_t i = 0, n = g_strv_length(enable_sources_); i < n; ++i) {
       // Individual items can split by a comma
-      std::vector<std::string> p_each = absl::StrSplit(pipline_options[i], ',');
+      std::vector<std::string> p_each = absl::StrSplit(enable_sources_[i], ',');
       for (const std::string& stype : p_each) {
         if (std::all_of(stype.begin(), stype.end(), ::isdigit)) {
           NvDsSourceType type = static_cast<NvDsSourceType>(std::stoi(stype.c_str()));
           if (!type) {
             return absl::InvalidArgumentError(TO_STRING("Invalid source type " << stype));
           }
-          enabled_source_types_.emplace_back(type);
+          enabled_source_types_.emplace(type);
         } else {
           auto type_enum = source_type_from_string(stype);
           if (!type_enum) {
             return absl::InvalidArgumentError(TO_STRING("Invalid source type " << stype));
           }
-          enabled_source_types_.emplace_back(*type_enum);
+          enabled_source_types_.emplace(*type_enum);
         }
       }
     }
