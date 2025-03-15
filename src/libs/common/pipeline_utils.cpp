@@ -257,7 +257,7 @@ bool gst_message_is_force_pipeline_eos(GstMessage* message) {
   CHECK_MESSAGE_TYPE(message, kHM_PIPELINE_EOS_STRUCT_NAME);
 }
 
-bool gst_message_parse_force_pipeline_eos(GstMessage* message, gboolean* force_eos) {
+bool gst_message_parse_force_pipeline_eos(GstMessage* message, bool* force_eos) {
   const GstStructure* str;
 
   if (!gst_message_is_force_pipeline_eos(message)) {
