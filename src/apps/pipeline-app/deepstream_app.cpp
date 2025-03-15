@@ -1,5 +1,6 @@
 #include "deepstream_app.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
+#include "hstream/src/libs/common/pipeline_utils.h"
 
 #include <gst/gst.h>
 #include <math.h>
@@ -338,12 +339,14 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       break;
     }
     case GST_MESSAGE_ELEMENT: {
-      if (gst_message_is_force_pipeline_eos(message)) {
-        gboolean app_quit = FALSE;
-        if (gst_message_parse_force_pipeline_eos(message, &app_quit)) {
-          if (app_quit)
+      if (hm::gst_message_is_force_pipeline_eos(message)) {
+        bool app_quit = false;
+        if (hm::gst_message_parse_force_pipeline_eos(message, &app_quit)) {
+          if (app_quit) {
             appCtx->quit = TRUE;
+          }
         }
+        break;
       }
       if (gst_nvmessage_is_stream_add(message)) {
         g_mutex_lock(&(appCtx->perf_struct).struct_lock);
@@ -371,6 +374,7 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
         s_fps_sensor_info_callback_stream_added(appCtx, &fpssensorInfo);
 
         g_mutex_unlock(&(appCtx->perf_struct).struct_lock);
+        break;
       }
       if (gst_nvmessage_is_stream_remove(message)) {
         g_mutex_lock(&(appCtx->perf_struct).struct_lock);
@@ -386,6 +390,7 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
         gst_nvmessage_parse_fps_stream_remove(message, &fpssensorInfo);
         s_fps_sensor_info_callback_stream_removed(appCtx, &fpssensorInfo);
         g_mutex_unlock(&(appCtx->perf_struct).struct_lock);
+        break;
       }
       if (gst_nvmessage_is_reconnect_attempt_exceeded(message)) {
         NvDsRtspAttemptsInfo rtsp_info = {0};
@@ -413,7 +418,9 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
             }
           }
         }
+        break;
       }
+      // Unhandled GST_MESSAGE_ELEMENT
       break;
     }
     default:

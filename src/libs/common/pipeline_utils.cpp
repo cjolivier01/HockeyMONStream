@@ -257,16 +257,22 @@ bool gst_message_is_force_pipeline_eos(GstMessage* message) {
   CHECK_MESSAGE_TYPE(message, kHM_PIPELINE_EOS_STRUCT_NAME);
 }
 
-gboolean gst_nvmessage_parse_force_pipeline_eos(GstMessage* message, gboolean* force_eos) {
+bool gst_message_parse_force_pipeline_eos(GstMessage* message, gboolean* force_eos) {
   const GstStructure* str;
 
-  if (!gst_message_is_force_pipeline_eos(message))
-    return FALSE;
+  if (!gst_message_is_force_pipeline_eos(message)) {
+    return false;
+  }
 
   str = gst_message_get_structure(message);
 
-  gst_structure_get_boolean(str, "force_eos", force_eos);
-  return TRUE;
+  gboolean b = FALSE;
+  if (!gst_structure_get_boolean(str, "force_eos", &b)) {
+    *force_eos = !!b;
+    return false;
+  }
+  *force_eos = !!b;
+  return true;
 }
 
 bool post_force_pipeline_eos(GstElement* element) {
