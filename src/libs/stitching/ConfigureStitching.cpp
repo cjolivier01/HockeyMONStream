@@ -1,6 +1,7 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/Synchronization.h"
 
 #include "cupano/pano/cudaMat.h"
@@ -36,6 +37,17 @@ struct FileNode {
   std::string filename;
   std::vector<FileNode> children;
 };
+
+std::string to_command_line(const std::vector<std::string>& cmd) {
+  std::stringstream ss;
+  for (size_t i = 0, n = cmd.size(); i < n; ++i) {
+    if (i) {
+      ss << ' ';
+    }
+    ss << cmd[i];
+  }
+  return ss.str();
+}
 
 // -----------------------------------------------------------------------------
 // ValidationResult: Returned by the checker function.
@@ -474,7 +486,9 @@ absl::Status configure_orientation(const std::string& game_dir) {
     }
   });
   if (exitcode) {
-    return absl::InternalError("Failed to create control points");
+    std::string msg = TO_STRING("Error executing command: \"" << to_command_line(cmd) << "\"");
+    std::cerr << msg << std::endl;
+    return absl::InternalError(TO_STRING("Failed to create control points: " << msg));
   }
 
   return absl::OkStatus();

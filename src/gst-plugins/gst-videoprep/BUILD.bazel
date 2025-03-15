@@ -38,6 +38,7 @@ gst_cc_plugin(
         "-l:libnppig.so",
         "-lnppc_static",
         "-lnppif_static",
+        "-lnvdsgst_customhelper",
         "-lnvdsgst_helper",
         "-lnvdsgst_meta",
         "-lnvds_meta",

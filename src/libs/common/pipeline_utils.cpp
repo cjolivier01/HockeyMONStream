@@ -6,9 +6,24 @@
 #include <vector>
 
 #include <opencv2/opencv.hpp>
+
+#include "absl/cleanup/cleanup.h"
 #include "absl/strings/str_split.h"
 
+#define CHECK_MESSAGE_TYPE(message, type)                      \
+  do {                                                         \
+    const GstStructure* str;                                   \
+    if (GST_MESSAGE_TYPE(message) != GST_MESSAGE_ELEMENT)      \
+      return FALSE;                                            \
+    str = gst_message_get_structure(message);                  \
+    return (str != NULL) && gst_structure_has_name(str, type); \
+  } while (0)
+
 namespace hm {
+
+namespace {
+constexpr const char* kHM_PIPELINE_EOS_STRUCT_NAME = "force-pipeline-eos";
+}
 
 Videoinfo getVideoInfo(const std::string& videoPath) {
   Videoinfo info;
@@ -225,6 +240,46 @@ GstReferencedObject<GstElement*> get_pipeline_element(GstElement* element) {
   GstElement* pipeline = get_pipeline_element(parent);
   gst_object_unref(parent);
   return pipeline;
+}
+
+//
+// Force EOS messages
+//
+GstMessage* gst_nvmessage_force_pipeline_eos(GstObject* obj, bool force_eos) {
+  GstStructure* str = gst_structure_new(kHM_PIPELINE_EOS_STRUCT_NAME, "force_eos", G_TYPE_BOOLEAN, force_eos, NULL);
+
+  GstMessage* message = gst_message_new_custom(GST_MESSAGE_ELEMENT, obj, str);
+
+  return message;
+}
+
+bool gst_message_is_force_pipeline_eos(GstMessage* message) {
+  CHECK_MESSAGE_TYPE(message, kHM_PIPELINE_EOS_STRUCT_NAME);
+}
+
+gboolean gst_nvmessage_parse_force_pipeline_eos(GstMessage* message, gboolean* force_eos) {
+  const GstStructure* str;
+
+  if (!gst_message_is_force_pipeline_eos(message))
+    return FALSE;
+
+  str = gst_message_get_structure(message);
+
+  gst_structure_get_boolean(str, "force_eos", force_eos);
+  return TRUE;
+}
+
+bool post_force_pipeline_eos(GstElement* element) {
+  GstReferencedObject<GstElement*> pipeline = get_pipeline_element(element);
+  absl::Cleanup cl([&pipeline]() { pipeline.release(); });
+  GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline.get()));
+  assert(bus);
+  if (bus) {
+    gst_bus_post(bus, gst_nvmessage_force_pipeline_eos(GST_OBJECT(pipeline.get()), true));
+    gst_object_unref(bus);
+    return true;
+  }
+  return false;
 }
 
 } // namespace hm

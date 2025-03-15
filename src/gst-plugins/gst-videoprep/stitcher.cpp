@@ -7,6 +7,7 @@
 #include "cupano/cuda/cudaStatus.h"
 #include "cupano/pano/cudaMat.h"
 
+#include "gst-nvdscustommessage.h"
 #include "gstvideoprep.h"
 
 #include <cuda_runtime.h>
@@ -40,6 +41,8 @@ namespace stitcher {
 // static constexpr int kNumStitcherLaplacianLevels = 0;
 static constexpr int kNumStitcherLaplacianLevels = 6;
 
+static constexpr bool kMatchExposure = true;
+
 StitcherPriv::~StitcherPriv() {
   stitcher_.reset();
 }
@@ -61,7 +64,7 @@ absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher(videoprep::Gs
       return absl::NotFoundError(TO_STRING("Could not load control masks from " << config_file_dir));
     }
     stitcher_ = std::make_unique<hm::pano::cuda::CudaStitchPano<uchar4, float3>>(
-        /*batch_size=*/1, /*num_levels=*/kNumStitcherLaplacianLevels, control_masks, /*match_exposure=*/true);
+        /*batch_size=*/1, /*num_levels=*/kNumStitcherLaplacianLevels, control_masks, kMatchExposure);
   }
   if (!stitcher_->status().ok()) {
     return to_status(stitcher_->status());
@@ -209,7 +212,7 @@ absl::Status StitcherPriv::GenerateOutput(
   }
 
   // Sanity that the surfaces are laid out as expected
-  assert(surface_index == in_surface->numFilled); 
+  assert(surface_index == in_surface->numFilled);
   if (frame_source_surfaces.size() != in_surface->numFilled / 2) {
     // This can happen during shutdown
     g_printerr("Stitcher did nto receive the expected source/frame sequence\n");
@@ -280,7 +283,7 @@ absl::Status StitcherPriv::GenerateOutput(
         if (!configure_only_) {
           return absl::FailedPreconditionError("Stitching is not configured");
         } else {
-#if 1
+#if 0
           absl::Status configure_status =
               stitching::configure_stitching(videoprep->config_file, incoming_surface_left, incoming_surface_right);
           if (!configure_status.ok()) {
@@ -293,16 +296,20 @@ absl::Status StitcherPriv::GenerateOutput(
         // trigger_pipeline_stop(GST_ELEMENT(m_element));
         // return absl::CancelledError("Stitching has been configured");
         // Signal pipeline that we wish to EOS
-        //assert(m_element);
-        //GstReferencedObject<GstElement*> pipeline = get_pipeline_element(GST_ELEMENT(m_element));
-        //if (pipeline) {
-          //std::cout << "Stitcher is sending the pipeline an EOS event" << std::endl;
-          // gst_element_send_event(pipeline, gst_event_new_eos());
-          //trigger_pipeline_stop(pipeline);
-          //pipeline.release();
-          //std::cout << "Stitcher sent the pipeline an EOS event" << std::endl;
+        // assert(m_element);
+        // GstReferencedObject<GstElement*> pipeline = get_pipeline_element(GST_ELEMENT(m_element));
+        // if (pipeline) {
+        // std::cout << "Stitcher is sending the pipeline an EOS event" << std::endl;
+        // gst_element_send_event(pipeline, gst_event_new_eos());
+        // trigger_pipeline_stop(pipeline);
+        // pipeline.release();
+        // std::cout << "Stitcher sent the pipeline an EOS event" << std::endl;
         //}
         // return absl::CancelledError("Stitching has been configured");
+        if (!post_force_pipeline_eos(GST_ELEMENT(m_element))) {
+          std::cerr << "Failed to post pipeline EOS, returning an error to stop the pipeline";
+          return absl::CancelledError("Stitching has been configured");
+        }
       }
     }
 

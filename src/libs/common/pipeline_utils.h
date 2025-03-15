@@ -8,6 +8,7 @@
 
 #include "yaml-cpp/yaml.h"
 
+
 namespace hm {
 
 bool has_node(const YAML::Node& n, const std::string& dot_string, bool non_null);
@@ -63,16 +64,16 @@ class GstReferencedObject {
       gst_object_unref(obj_);
     }
   }
-  operator G_OBJ () {
+  operator G_OBJ() {
     return obj_;
   }
-  operator const G_OBJ () const {
+  operator const G_OBJ() const {
     return obj_;
   }
-  G_OBJ get() { 
+  G_OBJ get() {
     return obj_;
   }
-  const G_OBJ get() const { 
+  const G_OBJ get() const {
     return obj_;
   }
   G_OBJ& operator->() {
@@ -89,10 +90,19 @@ class GstReferencedObject {
   void release() {
     obj_ = nullptr;
   }
+
  private:
   G_OBJ obj_;
 };
 
 GstReferencedObject<GstElement*> get_pipeline_element(GstElement* element);
+
+GstMessage* gst_nvmessage_force_pipeline_eos(GstObject* obj, bool force_eos);
+
+bool post_force_pipeline_eos(GstElement* element);
+
+bool gst_message_parse_force_pipeline_eos(GstMessage* message, bool* force_eos);
+
+bool gst_message_is_force_pipeline_eos(GstMessage* message);
 
 } // namespace hm

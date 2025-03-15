@@ -147,10 +147,10 @@ source5:
 
   # Color/Brightness/etc
   camera-wbmode: 5
-  camera-exposure-compensation: 0
-  camera-saturation: 0.5
-  exposure-time-range: 34000 358733000
-  gain-range: 1 16
+  camera-exposure-compensation: 0.1
+  camera-saturation: 0.7
+  # exposure-time-range: 34000 358733000
+  # gain-range: 1 16
 
   camera-auto-focus: 0
   camera-width: 3840
@@ -178,8 +178,8 @@ source6:
 
   # Color/Brightness/etc
   camera-wbmode: 5
-  camera-exposure-compensation: 0
-  camera-saturation: 0.5
+  camera-exposure-compensation: 0.1
+  camera-saturation: 0.7
   # exposure-time-range: 34000 358733000
   # gain-range: 1 16
 

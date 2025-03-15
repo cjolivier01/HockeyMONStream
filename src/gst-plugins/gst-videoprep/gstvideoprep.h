@@ -70,8 +70,7 @@ class VideoPrepPriv : public DSCustomLibraryBase {
       videoprep::GstVideoPrep* videoprep,
       NvBufSurface* in_surface,
       NvBufSurface* out_surface) {
-    assert(false);
-    return absl::OkStatus();
+    return absl::UnimplementedError("GenerateOutput is not implemented for VideoPrepPriv");
   }
 
   virtual gint AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) {

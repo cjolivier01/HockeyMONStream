@@ -529,8 +529,8 @@ absl::Status Configurator::complete_configuration(bool force) {
         hh = cam_src_item.second["camera-height"].as<int>();
         area = ww * hh;
       } else {
-        long w2 = cam_src_item.second["camera-width"].as<int>();
-        long h2 = cam_src_item.second["camera-height"].as<int>();
+        size_t w2 = cam_src_item.second["camera-width"].as<int>();
+        size_t h2 = cam_src_item.second["camera-height"].as<int>();
         if (w2 != ww || h2 != hh) {
           return absl::InvalidArgumentError("Camera widths and heights differ");
         }

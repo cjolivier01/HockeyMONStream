@@ -338,9 +338,9 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       break;
     }
     case GST_MESSAGE_ELEMENT: {
-      if (gst_nvmessage_is_force_pipeline_eos(message)) {
+      if (gst_message_is_force_pipeline_eos(message)) {
         gboolean app_quit = FALSE;
-        if (gst_nvmessage_parse_force_pipeline_eos(message, &app_quit)) {
+        if (gst_message_parse_force_pipeline_eos(message, &app_quit)) {
           if (app_quit)
             appCtx->quit = TRUE;
         }
