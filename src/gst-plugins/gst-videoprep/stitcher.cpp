@@ -151,7 +151,7 @@ absl::Status StitcherPriv::GenerateOutput(
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
   if (configure_only_) {
-    std::cout << "Stitcher has received a batch to configure with" << std::endl;
+    std::cout << "Stitcher has received a batch to configure..." << std::endl;
   }
   assert(in_surface->batchSize % 2 == 0);
   if (in_surface->numFilled % 2 != 0) {
