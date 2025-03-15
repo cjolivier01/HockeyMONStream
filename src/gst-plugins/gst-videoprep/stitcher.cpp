@@ -42,6 +42,7 @@ namespace stitcher {
 static constexpr int kNumStitcherLaplacianLevels = 6;
 
 static constexpr bool kMatchExposure = true;
+// static constexpr bool kMatchExposure = false;
 
 StitcherPriv::~StitcherPriv() {
   stitcher_.reset();

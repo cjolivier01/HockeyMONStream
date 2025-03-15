@@ -62,7 +62,7 @@ tiled-display:
 # |_____/ \___/ \__,_|_|   \___|\___||___/
 #
 source0:
-  enable: 0
+  enable: 1
   type: 3
   # uri: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   # uri: file:///home/colivier/Videos/pdp/GX010087.mp4
@@ -76,7 +76,7 @@ source0:
   source-id: 0
 
 source1:
-  enable: 0
+  enable: 1
   type: 3
   # uri: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   # uri: file:///home/colivier/Videos/pdp/GX010003.mp4
@@ -139,7 +139,7 @@ source4:
 
 # CSI Webcam (Arducam)
 source5:
-  enable: 1
+  enable: 0
   # 1: v4l2, 5: CSI
   type: 5
   camera-csi-sensor-id: 1
@@ -170,7 +170,7 @@ source5:
 
 # CSI Webcam (Arducam)
 source6:
-  enable: 1
+  enable: 0
   # 1: v4l2, 5: CSI
   type: 5
   camera-csi-sensor-id: 0
