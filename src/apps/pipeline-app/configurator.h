@@ -7,6 +7,8 @@
 #include <optional>
 #include <string>
 
+#include "hstream/src/apps/apps-common/deepstream_sources.h"
+
 struct NvDsConfig;
 struct NvDsPipeline;
 
@@ -27,6 +29,10 @@ class Configurator {
 
   static std::filesystem::path get_game_dir(const std::string& game_id);
   static std::filesystem::path get_private_config_file_name(const std::string& game_id);
+
+  // return vector of source id's
+  std::vector<size_t> enable_source_types(const std::set<NvDsSourceType>& source_enums, bool disable_others);
+  size_t disable_source_types(const std::set<NvDsSourceType>& source_enums);
 
   const YAML::Node& config() const {
     return config_;

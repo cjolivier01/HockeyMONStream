@@ -69,8 +69,9 @@
         "${workspaceFolder}/configs/ds_hockey_configure_stitching.yaml",
         //"-f",
         "-g",
-        //"mylive",
-        "mlk-heat-1",
+        "mylive",
+        "--enable-sources=CSI",
+        //"mlk-heat-1",
         //"ev-cougars-2",
         //"fremont",
         //"-d",`

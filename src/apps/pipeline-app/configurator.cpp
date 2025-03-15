@@ -217,6 +217,62 @@ Configurator::~Configurator() {
   // Destructor
 }
 
+std::vector<size_t> Configurator::enable_source_types(
+    const std::set<NvDsSourceType>& source_enums,
+    bool disable_others) {
+  std::vector<size_t> source_ids;
+  YAML::Node pipeline = config_["pipeline"];
+  if (!pipeline.IsDefined()) {
+    return source_ids;
+  }
+  for (auto kv : pipeline) {
+    std::string key = kv.first.as<std::string>();
+    if (absl::StartsWith(key, "source")) {
+      YAML::Node src_node = kv.second;
+      const NvDsSourceType type = static_cast<NvDsSourceType>(get_node_value(src_node, "type", 0));
+      if (!type) {
+        std::cerr << "Source entry has no type" << std::endl;
+        continue;
+      }
+      if (source_enums.count(type)) {
+        src_node["enable"] = "1";
+        if (!has_node(src_node, "source-id", /*non_null=*/true)) {
+          std::cerr << "No source-id in enabled source section: " << key << std::endl;
+          source_ids.emplace_back(std::numeric_limits<size_t>::max());
+        } else {
+          source_ids.emplace_back(src_node["source-id"].as<int>());
+        }
+      } else if (disable_others) {
+        src_node["enable"] = "0";
+      }
+    }
+  }
+  return source_ids;
+}
+
+size_t Configurator::disable_source_types(const std::set<NvDsSourceType>& source_enums) {
+  size_t count = 0;
+  YAML::Node pipeline = config_["pipeline"];
+  if (!pipeline.IsDefined()) {
+    return count;
+  }
+  for (auto kv : pipeline) {
+    std::string key = kv.first.as<std::string>();
+    if (absl::StartsWith(key, "source")) {
+      YAML::Node src_node = kv.second;
+      const NvDsSourceType type = static_cast<NvDsSourceType>(get_node_value(src_node, "type", 0));
+      if (!type) {
+        std::cerr << "Source entry has no type" << std::endl;
+        continue;
+      }
+      if (source_enums.count(type)) {
+        src_node["enable"] = "0";
+      }
+    }
+  }
+  return count;
+}
+
 std::string Configurator::file_maybe_in_game_dir(const std::string& basename) {
   if (std::find(basename.begin(), basename.end(), '/') != basename.end()) {
     return basename;

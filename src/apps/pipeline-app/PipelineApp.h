@@ -4,6 +4,7 @@
 // X11 stuff must come first because it defines "Status"
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include "hstream/src/apps/apps-common/deepstream_sources.h"
 #undef Status
 /* clang-format on */
 
@@ -123,8 +124,10 @@ class PipelineApplication {
   gchar** cfg_files_{nullptr};
   gchar** input_uris_{nullptr};
   gchar** game_id_{nullptr};
+  gchar** enable_sources_{nullptr};
   // TODO: how to work this into multiple configs? Maybe prefix with cfg file number?
   std::map<std::string, std::string> pipeline_options_;
+  std::set<NvDsSourceType> enabled_source_types_;
   gboolean print_version_;
   gboolean show_bbox_text_;
   gboolean print_dependencies_version_;

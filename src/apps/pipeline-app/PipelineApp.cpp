@@ -1,8 +1,9 @@
-/* clang-format off */
+7 /* clang-format off */
 // X11 stuff must come first because it defines "Status"
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <gstreamer-1.0/gst/gstelement.h>
+#include "hstream/src/apps/apps-common/deepstream_sources.h"
 #undef Status
 /* clang-format on */
 
@@ -32,26 +33,66 @@
 #include "absl/strings/str_split.h"
 #include "nvds_version.h"
 
-//------------------------------------------------------------------------------
-// Debug category definition.
-GST_DEBUG_CATEGORY(NVDS_APP);
+    //------------------------------------------------------------------------------
+    // Debug category definition.
+    GST_DEBUG_CATEGORY(NVDS_APP);
 
 namespace {
 
-// void post_dummy_event(Display* display, Window targetWindow) {
-//   XEvent event;
-//   std::memset(&event, 0, sizeof(event));
-//   event.xclient.type = ClientMessage;
-//   event.xclient.display = display;
-//   event.xclient.window = targetWindow; // usually your window
-//   event.xclient.message_type = XInternAtom(display, "HM_EXIT_EVENT_LOOP", False);
-//   event.xclient.format = 32;
-//   event.xclient.data.l[0] = 0; // arbitrary data
+// Converts enum value to string
+std::string to_string(const NvDsSourceType& type) {
+  switch (type) {
+    case NV_DS_SOURCE_CAMERA_V4L2:
+      return "V4L2";
+    case NV_DS_SOURCE_URI:
+      return "URI";
+    case NV_DS_SOURCE_URI_MULTIPLE:
+      return "URI_MULTIPLE";
+    case NV_DS_SOURCE_RTSP:
+      return "RTSP";
+    case NV_DS_SOURCE_CAMERA_CSI:
+      return "CSI";
+    case NV_DS_SOURCE_AUDIO_WAV:
+      return "AUDIO_WAV";
+    case NV_DS_SOURCE_AUDIO_URI:
+      return "AUDIO_URI";
+    case NV_DS_SOURCE_ALSA_SRC:
+      return "ALSA";
+    case NV_DS_SOURCE_IPC:
+      return "IPC";
+    default:
+      return "INVALID";
+  }
+}
 
-//   // Send the event. Adjust the event mask as needed.
-//   XSendEvent(display, targetWindow, False, 0, &event);
-//   XFlush(display);
-// }
+// Converts string to enum value and returns std::optional
+std::optional<NvDsSourceType> source_type_from_string(const std::string& str) {
+  // Option 1: using a series of ifs
+  if (str == "V4L2")
+    return NV_DS_SOURCE_CAMERA_V4L2;
+  if (str == "URI")
+    return NV_DS_SOURCE_URI;
+  if (str == "URI_MULTIPLE")
+    return NV_DS_SOURCE_URI_MULTIPLE;
+  if (str == "RTSP")
+    return NV_DS_SOURCE_RTSP;
+  if (str == "RTMP")
+    return NV_DS_SOURCE_RTSP;
+  if (str == "CSI")
+    return NV_DS_SOURCE_CAMERA_CSI;
+  if (str == "AUDIO_WAV")
+    return NV_DS_SOURCE_AUDIO_WAV;
+  if (str == "AUDIO_URI")
+    return NV_DS_SOURCE_AUDIO_URI;
+  if (str == "ALSA")
+    return NV_DS_SOURCE_ALSA_SRC;
+  if (str == "IPC")
+    return NV_DS_SOURCE_IPC;
+
+  // Return an empty optional if no match was found.
+  return std::nullopt;
+}
+
 } // namespace
 
 //------------------------------------------------------------------------------
@@ -441,6 +482,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        nullptr},
       {"pipeline-option", 'p', 0, G_OPTION_ARG_FILENAME_ARRAY, &pipline_options, "Set pipeline option(s)", nullptr},
       {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &cfg_files_, "Set the config file", nullptr},
+      {"enable-sources", 'e', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sources_, "Enable Sources", nullptr},
       {"game-id", 'g', 0, G_OPTION_ARG_FILENAME_ARRAY, &game_id_, "Game ID", nullptr},
       {"force-reconfigure", 'f', 0, G_OPTION_ARG_NONE, &force_reconfigure_, "Force reconfigure", nullptr},
       {"input-uri",
@@ -508,6 +550,29 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
         if (kv.size() != 2) {
           return absl::InvalidArgumentError(
               TO_STRING("Pipeline options should use key/value pairs, but got: \"" << opt << "\""));
+        }
+      }
+    }
+  }
+
+  if (enable_sources_) {
+    enabled_source_types_.clear();
+    for (size_t i = 0, n = g_strv_length(pipline_options); i < n; ++i) {
+      // Individual items can split by a comma
+      std::vector<std::string> p_each = absl::StrSplit(pipline_options[i], ',');
+      for (const std::string& stype : p_each) {
+        if (std::all_of(stype.begin(), stype.end(), ::isdigit)) {
+          NvDsSourceType type = static_cast<NvDsSourceType>(std::stoi(stype.c_str()));
+          if (!type) {
+            return absl::InvalidArgumentError(TO_STRING("Invalid source type " << stype));
+          }
+          enabled_source_types_.emplace_back(type);
+        } else {
+          auto type_enum = source_type_from_string(stype);
+          if (!type_enum) {
+            return absl::InvalidArgumentError(TO_STRING("Invalid source type " << stype));
+          }
+          enabled_source_types_.emplace_back(*type_enum);
         }
       }
     }
