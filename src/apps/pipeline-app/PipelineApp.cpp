@@ -197,12 +197,19 @@ absl::Status PipelineApplication::configureInstances(std::vector<std::shared_ptr
         return absl::InternalError("Failed to merge in config file");
       }
 
-      HM_RETURN_IF_ERROR(app_ctx->configurator().load_sub_configs(
-          "pipeline", {"source", "sink"}, fs::path(app_ctx->app_config_file()).parent_path().string()));
-
+      // Run enable-source-types in case we have any subconfigs that have 'type' set
       if (!enabled_source_types_.empty()) {
         app_ctx->configurator().enable_source_types(enabled_source_types_, true);
       }
+
+      HM_RETURN_IF_ERROR(app_ctx->configurator().load_sub_configs(
+          "pipeline", {"source", "sink"}, fs::path(app_ctx->app_config_file()).parent_path().string()));
+
+      // Run enable-source-types again
+      if (!enabled_source_types_.empty()) {
+        app_ctx->configurator().enable_source_types(enabled_source_types_, true);
+      }
+
       absl::Status configuration_status = app_ctx->complete_configuration(force_reconfigure_);
       if (configuration_status.code() == absl::StatusCode::kCancelled) {
         std::cerr << configuration_status << std::endl;
