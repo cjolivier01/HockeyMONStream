@@ -198,6 +198,7 @@ source6:
 
 source7:
   enable: 1
+  type: 5
   config-file: dual_imx_477_af_cams.yaml
 
 #source:

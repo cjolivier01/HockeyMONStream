@@ -221,7 +221,7 @@ sink0:
   enable: 1
   sink-id: 0
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
-  type: 1
+  type: 2
   # sync: 1
   sync: 0
   source-id: 0
@@ -349,7 +349,7 @@ hmaudio0:
 
 
 osd:
-  enable: 0
+  enable: 1
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -371,8 +371,8 @@ streammux:
   gpu-id: 0
   ##Boolean property to inform muxer that sources are live
   live-source: 0
-  buffer-pool-size: 16
-  batch-size: 8
+  buffer-pool-size: 8
+  batch-size: 4
   num-surfaces-per-frame: 1
 
   ##time out in usec, to wait after the first buffer is available
@@ -456,7 +456,7 @@ ds-example:
   processing-height: 480
 
 hmplaycropper:
-  enable: 1
+  enable: 0
   gpu-id: 0
   # plugin-type: videoprep
   # has_queue: false
@@ -493,8 +493,8 @@ hmstitcher:
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
   show: 0
-  num-batch-buffers: 8
-  num-output-buffers: 4
+  num-batch-buffers: 4
+  num-output-buffers: 2
 
 ds-playtracker:
   enable: 1
@@ -506,7 +506,7 @@ ds-playtracker:
   config-file: play_tracker_config.yaml
 
 ds-fieldmask:
-  enable: 0
+  enable: 1
   gpu-id: 0
   unique-id: 76
   # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png
