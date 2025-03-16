@@ -208,9 +208,9 @@ absl::Status PipelineApplication::configureInstances(std::vector<std::shared_ptr
           "pipeline", {"source", "sink"}, fs::path(app_ctx->app_config_file()).parent_path().string()));
 
       // Run enable-source-types again
-      if (!enabled_source_types_.empty()) {
-        app_ctx->configurator().enable_source_types(enabled_source_types_, true);
-      }
+      // if (!enabled_source_types_.empty()) {
+      //   app_ctx->configurator().enable_source_types(enabled_source_types_, true);
+      // }
 
       absl::Status configuration_status = app_ctx->complete_configuration(force_reconfigure_);
       if (configuration_status.code() == absl::StatusCode::kCancelled) {

@@ -264,7 +264,7 @@ absl::Status auto_focus_csi_camera(
     bool interactive,
     bool verbose,
     bool force) {
-  if (force) {
+  if (!force) {
     absl::MutexLock lk(&af_cache.mu);
     if (af_cache.focused_sensors.count(sensor_id) && af_cache.focused_sensors.at(sensor_id) == i2c_bus) {
       return absl::OkStatus();
