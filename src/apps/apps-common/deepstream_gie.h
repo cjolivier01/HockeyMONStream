@@ -19,7 +19,6 @@
 extern "C" {
 #endif
 
-#include "deepstream_config.h"
 #include "gstnvdsinfer.h"
 #include "gstnvdsmeta.h"
 
