@@ -198,7 +198,6 @@ source6:
 
 source7:
   enable: 1
-  gpu-id: 1
   config-file: dual_imx_477_af_cams.yaml
 
 #source:

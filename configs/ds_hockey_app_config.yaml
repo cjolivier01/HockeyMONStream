@@ -139,7 +139,7 @@ source4:
 
 # CSI Webcam (Arducam)
 source5:
-  enable: 1
+  enable: 0
   # 1: v4l2, 5: CSI
   type: 5
   camera-csi-sensor-id: 1
@@ -147,16 +147,17 @@ source5:
 
   # Color/Brightness/etc
   camera-wbmode: 5
-  camera-exposure-compensation: 0.1
-  camera-saturation: 0.7
-  # exposure-time-range: 34000 358733000
-  # gain-range: 1 16
+  camera-exposure-compensation: 0
+  camera-saturation: 0.5
+  exposure-time-range: 34000 358733000
+  gain-range: 1 16
 
-  camera-auto-focus: 0
+  camera-auto-focus: 1
   camera-width: 3840
   camera-height: 2160
   camera-fps-n: 30
   camera-fps-d: 1
+  camera-num-buffers: 1
   video-format: NV12
   flip-method: 2
   # media-type: image/jpeg
@@ -166,11 +167,9 @@ source5:
   source-id: 0
   cuda-memory-type: 1
 
-  # camera-num-buffers: 1
-
 # CSI Webcam (Arducam)
 source6:
-  enable: 1
+  enable: 0
   # 1: v4l2, 5: CSI
   type: 5
   camera-csi-sensor-id: 0
@@ -178,16 +177,17 @@ source6:
 
   # Color/Brightness/etc
   camera-wbmode: 5
-  camera-exposure-compensation: 0.1
-  camera-saturation: 0.7
+  camera-exposure-compensation: 0
+  camera-saturation: 0.5
   # exposure-time-range: 34000 358733000
   # gain-range: 1 16
 
-  camera-auto-focus: 0
+  camera-auto-focus: 1
   camera-width: 3840
   camera-height: 2160
   camera-fps-n: 30
   camera-fps-d: 1
+  camera-num-buffers: 1
   video-format: NV12
   flip-method: 2
   num-sources: 1
@@ -196,7 +196,9 @@ source6:
   source-id: 1
   cuda-memory-type: 1
 
-  # camera-num-buffers: 1
+source7:
+  enable: 1
+  config-file: dual_imx_477_af_cams.yaml
 
 
 #source:
