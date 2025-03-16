@@ -464,15 +464,15 @@ absl::Status Configurator::complete_configuration(bool force) {
 
   absl::Status status;
 
+  if (override_gpu_id_ != kUseConfigFileGpu) {
+    pipeline["application"]["global-gpu-id"] = override_gpu_id_;
+    set_all_field_values(pipeline, "gpu-id", std::to_string(override_gpu_id_), /*only_if_exists=*/true);
+  }
+
   if (game_id_.empty()) {
     // return absl::InvalidArgumentError("No game id specified");
     // Just go by what's in the config file(s)
     return absl::OkStatus();
-  }
-
-  if (override_gpu_id_ != kUseConfigFileGpu) {
-    pipeline["application"]["global-gpu-id"] = override_gpu_id_;
-    set_all_field_values(pipeline, "gpu-id", std::to_string(override_gpu_id_), /*only_if_exists=*/true);
   }
 
   std::map<int, YAML::Node> camera_sources;
