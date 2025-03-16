@@ -855,11 +855,9 @@ absl::Status Configurator::load_sub_configs(
   std::unordered_set<std::string> disable_nodes;
   // Now go through all the sub-configs
   for (const auto& sc_item : subconfigs) {
-    const std::string& prefix = sc_item.first;
     for (const auto& subitem : sc_item.second) {
       const std::string& section_name = subitem.first;
       const YAML::Node& section_config = subitem.second;
-      // std::cout << section_config << std::endl;
       for (const auto& subsection_section : section_config) {
         std::string subsection_key = subsection_section.first.as<std::string>();
         std::string subsection_prefix = get_section_prefix(subsection_key);
@@ -867,7 +865,6 @@ absl::Status Configurator::load_sub_configs(
         all_existing_fields.emplace(new_subsection_name);
         YAML::Node subsection_config = subsection_section.second;
         merge_nodes(subsection_config, YAML::Clone(parent_node[section_name]), /*warn_if_key_not_in_dest=*/false);
-        // std::cout << subsection_config << std::endl;
         // Remove the config file entry
         subsection_config.remove("config-file");
         parent_node[new_subsection_name] = subsection_config;
