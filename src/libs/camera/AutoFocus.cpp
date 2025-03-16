@@ -7,6 +7,7 @@
 
 #include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
+#include "absl/synchronization/mutex.h"
 
 #include <opencv2/opencv.hpp>
 
@@ -243,6 +244,13 @@ absl::Status show_camera(
   }
   return absl::OkStatus();
 }
+
+struct AutoFocusCache {
+  absl::Mutex mu;
+  std::unordered_map<int, int> focused_sensors ABSL_GUARDED_BY(mu);
+};
+AutoFocusCache af_cache;
+
 } // namespace
 
 absl::Status auto_focus_csi_camera(
@@ -254,9 +262,21 @@ absl::Status auto_focus_csi_camera(
     int fps_d,
     bool show,
     bool interactive,
-    bool verbose) {
+    bool verbose,
+    bool force) {
+  if (force) {
+    absl::MutexLock lk(&af_cache.mu);
+    if (af_cache.focused_sensors.count(sensor_id) && af_cache.focused_sensors.at(sensor_id) == i2c_bus) {
+      return absl::OkStatus();
+    }
+  }
   Focuser focuser(i2c_bus);
-  return show_camera(sensor_id, focuser, width, height, fps_n, fps_d, show, interactive, verbose);
+  auto status = show_camera(sensor_id, focuser, width, height, fps_n, fps_d, show, interactive, verbose);
+  if (status.ok()) {
+    absl::MutexLock lk(&af_cache.mu);
+    af_cache.focused_sensors[sensor_id] = i2c_bus;
+  }
+  return status;
 }
 
 } // namespace camera
