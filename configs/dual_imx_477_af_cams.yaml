@@ -10,8 +10,8 @@ source5:
   camera-wbmode: 5
   camera-exposure-compensation: 0
   camera-saturation: 0.5
-  exposure-time-range: 34000 358733000
-  gain-range: 1 16
+  # exposure-time-range: 34000 358733000
+  # gain-range: 1 16
 
   camera-auto-focus: 1
   camera-width: 3840
