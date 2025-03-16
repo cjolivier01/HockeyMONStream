@@ -20,10 +20,6 @@
 
 #include <gst/gst.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include "deepstream_c2d_msg.h"
 #include "deepstream_dewarper.h"
 #include "deepstream_dsanalytics.h"
@@ -87,9 +83,5 @@ gboolean parse_dewarper_yaml(NvDsDewarperConfig* config, std::string group_str, 
 gboolean parse_dsexample_yaml(NvDsDsExampleConfig* config, const gchar* cfg_file_path);
 
 gboolean parse_dsanalytics_yaml(NvDsDsAnalyticsConfig* config, const gchar* cfg_file_path);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* _NVGSTDS_DSEXAMPLE_H_ */

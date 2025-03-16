@@ -35,6 +35,62 @@ GST_DEBUG_CATEGORY_EXTERN(NVDS_APP);
 GST_DEBUG_CATEGORY_EXTERN(APP_CFG_PARSER_CAT);
 
 static gboolean install_mux_eosmonitor_probe = FALSE;
+namespace hm {
+
+// Converts enum value to string
+std::string to_string(const NvDsSourceType& type) {
+  switch (type) {
+    case NV_DS_SOURCE_CAMERA_V4L2:
+      return "V4L2";
+    case NV_DS_SOURCE_URI:
+      return "URI";
+    case NV_DS_SOURCE_URI_MULTIPLE:
+      return "URI-MULTIPLE";
+    case NV_DS_SOURCE_RTSP:
+      return "RTSP";
+    case NV_DS_SOURCE_CAMERA_CSI:
+      return "CSI";
+    case NV_DS_SOURCE_AUDIO_WAV:
+      return "AUDIO-WAV";
+    case NV_DS_SOURCE_AUDIO_URI:
+      return "AUDIO-URI";
+    case NV_DS_SOURCE_ALSA_SRC:
+      return "ALSA";
+    case NV_DS_SOURCE_IPC:
+      return "IPC";
+    default:
+      return "INVALID";
+  }
+}
+
+// Converts string to enum value and returns std::optional
+std::optional<NvDsSourceType> source_type_from_string(const std::string& str) {
+  // Option 1: using a series of ifs
+  if (str == "V4L2")
+    return NV_DS_SOURCE_CAMERA_V4L2;
+  if (str == "URI")
+    return NV_DS_SOURCE_URI;
+  if (str == "URI-MULTIPLE")
+    return NV_DS_SOURCE_URI_MULTIPLE;
+  if (str == "RTSP")
+    return NV_DS_SOURCE_RTSP;
+  if (str == "RTMP")
+    return NV_DS_SOURCE_RTSP;
+  if (str == "CSI")
+    return NV_DS_SOURCE_CAMERA_CSI;
+  if (str == "AUDIO-WAV")
+    return NV_DS_SOURCE_AUDIO_WAV;
+  if (str == "AUDIO-URI")
+    return NV_DS_SOURCE_AUDIO_URI;
+  if (str == "ALSA")
+    return NV_DS_SOURCE_ALSA_SRC;
+  if (str == "IPC")
+    return NV_DS_SOURCE_IPC;
+
+  // Return an empty optional if no match was found.
+  return std::nullopt;
+}
+}
 
 #if 1
 /* Functions below print the Capabilities in a human-friendly format */

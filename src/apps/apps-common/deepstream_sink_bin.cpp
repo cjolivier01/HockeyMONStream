@@ -32,6 +32,58 @@ static GMutex server_cnt_lock;
 
 GST_DEBUG_CATEGORY_EXTERN(NVDS_APP);
 
+
+namespace hm {
+// value to string for NvDsSinkType
+std::string to_string(const NvDsSinkType& type) {
+  switch (type) {
+    case NV_DS_SINK_FAKE:
+      return "FAKE";
+#ifndef IS_TEGRA
+    case NV_DS_SINK_RENDER_EGL:
+      return "RENDER_EGL";
+#else
+    case NV_DS_SINK_RENDER_3D:
+      return "RENDER_3D";
+#endif
+    case NV_DS_SINK_ENCODE_FILE:
+      return "ENCODE_FILE";
+    case NV_DS_SINK_UDPSINK:
+      return "UDPSINK";
+    case NV_DS_SINK_RENDER_DRM:
+      return "RENDER_DRM";
+    case NV_DS_SINK_MSG_CONV_BROKER:
+      return "MSG_CONV_BROKER";
+    default:
+      return "INVALID";
+  }
+}
+
+// Converts string to enum value and returns std::optional<NvDsSinkType>
+std::optional<NvDsSinkType> sink_type_from_string(const std::string& str) {
+  if (str == "FAKE")
+    return NV_DS_SINK_FAKE;
+#ifndef IS_TEGRA
+  if (str == "RENDER_EGL")
+    return NV_DS_SINK_RENDER_EGL;
+#else
+  if (str == "RENDER_3D")
+    return NV_DS_SINK_RENDER_3D;
+#endif
+  if (str == "ENCODE_FILE")
+    return NV_DS_SINK_ENCODE_FILE;
+  if (str == "UDPSINK")
+    return NV_DS_SINK_UDPSINK;
+  if (str == "RENDER_DRM")
+    return NV_DS_SINK_RENDER_DRM;
+  if (str == "MSG_CONV_BROKER")
+    return NV_DS_SINK_MSG_CONV_BROKER;
+
+  // Return an empty optional if no match was found.
+  return std::nullopt;
+}
+}
+
 gboolean create_fakesink_bin(const NvDsSinkRenderConfig* config, NvDsSinkBinSubBin* bin) {
   gboolean ret = FALSE;
   gchar elem_name[50];

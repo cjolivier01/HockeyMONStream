@@ -42,60 +42,6 @@ GST_DEBUG_CATEGORY(NVDS_APP);
 
 namespace {
 
-// Converts enum value to string
-[[maybe_unused]] std::string to_string(const NvDsSourceType& type) {
-  switch (type) {
-    case NV_DS_SOURCE_CAMERA_V4L2:
-      return "V4L2";
-    case NV_DS_SOURCE_URI:
-      return "URI";
-    case NV_DS_SOURCE_URI_MULTIPLE:
-      return "URI-MULTIPLE";
-    case NV_DS_SOURCE_RTSP:
-      return "RTSP";
-    case NV_DS_SOURCE_CAMERA_CSI:
-      return "CSI";
-    case NV_DS_SOURCE_AUDIO_WAV:
-      return "AUDIO-WAV";
-    case NV_DS_SOURCE_AUDIO_URI:
-      return "AUDIO-URI";
-    case NV_DS_SOURCE_ALSA_SRC:
-      return "ALSA";
-    case NV_DS_SOURCE_IPC:
-      return "IPC";
-    default:
-      return "INVALID";
-  }
-}
-
-// Converts string to enum value and returns std::optional
-std::optional<NvDsSourceType> source_type_from_string(const std::string& str) {
-  // Option 1: using a series of ifs
-  if (str == "V4L2")
-    return NV_DS_SOURCE_CAMERA_V4L2;
-  if (str == "URI")
-    return NV_DS_SOURCE_URI;
-  if (str == "URI-MULTIPLE")
-    return NV_DS_SOURCE_URI_MULTIPLE;
-  if (str == "RTSP")
-    return NV_DS_SOURCE_RTSP;
-  if (str == "RTMP")
-    return NV_DS_SOURCE_RTSP;
-  if (str == "CSI")
-    return NV_DS_SOURCE_CAMERA_CSI;
-  if (str == "AUDIO-WAV")
-    return NV_DS_SOURCE_AUDIO_WAV;
-  if (str == "AUDIO-URI")
-    return NV_DS_SOURCE_AUDIO_URI;
-  if (str == "ALSA")
-    return NV_DS_SOURCE_ALSA_SRC;
-  if (str == "IPC")
-    return NV_DS_SOURCE_IPC;
-
-  // Return an empty optional if no match was found.
-  return std::nullopt;
-}
-
 } // namespace
 
 //------------------------------------------------------------------------------
@@ -506,6 +452,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
       {"pipeline-option", 'p', 0, G_OPTION_ARG_FILENAME_ARRAY, &pipline_options, "Set pipeline option(s)", nullptr},
       {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &cfg_files_, "Set the config file", nullptr},
       {"enable-sources", 'e', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sources_, "Enable Sources", nullptr},
+      {"enable-sinks", 'e', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sinks_, "Enable Sinks", nullptr},
       {"game-id", 'g', 0, G_OPTION_ARG_FILENAME_ARRAY, &game_id_, "Game ID", nullptr},
       {"force-reconfigure", 'f', 0, G_OPTION_ARG_NONE, &force_reconfigure_, "Force reconfigure", nullptr},
       {"input-uri",
@@ -591,7 +538,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
           }
           enabled_source_types_.emplace(type);
         } else {
-          auto type_enum = source_type_from_string(stype);
+          auto type_enum = hm::source_type_from_string(stype);
           if (!type_enum) {
             return absl::InvalidArgumentError(TO_STRING("Invalid source type " << stype));
           }

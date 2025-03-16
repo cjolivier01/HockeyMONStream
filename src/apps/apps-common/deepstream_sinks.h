@@ -21,9 +21,8 @@
 
 #include "deepstream_config.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include <optional>
+#include <string>
 
 typedef enum {
   NV_DS_SINK_FAKE = 1,
@@ -175,8 +174,10 @@ bool link_video_pad_to_muxer(GstElement* postParse, GstElement* muxer);
 //     GstElement* muxer_bin_parent_bin,
 //     GstElement* muxer_bin);
 
-#ifdef __cplusplus
-}
-#endif
+namespace hm {
+std::optional<NvDsSinkType> sink_type_from_string(const std::string& str);
+std::string to_string(const NvDsSinkType& type);
+
+} // namespace hm
 
 #endif

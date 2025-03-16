@@ -126,9 +126,11 @@ class PipelineApplication {
   gchar** input_uris_{nullptr};
   gchar** game_id_{nullptr};
   gchar** enable_sources_{nullptr};
+  gchar** enable_sinks_{nullptr};
   // TODO: how to work this into multiple configs? Maybe prefix with cfg file number?
   std::map<std::string, std::string> pipeline_options_;
   std::set<NvDsSourceType> enabled_source_types_;
+  std::set<NvDsSinkType> enabled_sink_types_;
   gboolean print_version_;
   gboolean show_bbox_text_;
   gboolean print_dependencies_version_;

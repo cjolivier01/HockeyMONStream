@@ -1,17 +1,4 @@
-/*
- * SPDX-FileCopyrightText: Copyright (c) 2018-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: LicenseRef-NvidiaProprietary
- *
- * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
- * property and proprietary rights in and to this material, related
- * documentation and any modifications thereto. Any use, reproduction,
- * disclosure or distribution of this material and related documentation
- * without an express license agreement from NVIDIA CORPORATION or
- * its affiliates is strictly prohibited.
- */
-
-#ifndef __NVGSTDS_SOURCES_H__
-#define __NVGSTDS_SOURCES_H__
+#pragma once
 
 #include <gst/gst.h>
 #include <sys/time.h>
@@ -19,9 +6,8 @@
 #include "deepstream_config.h"
 #include "deepstream_dewarper.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include <optional>
+#include <string>
 
 typedef enum {
   NV_DS_SOURCE_CAMERA_V4L2 = 1,
@@ -54,8 +40,8 @@ typedef struct {
   gfloat camera_saturation;
   gfloat camera_exposure_compensation;
   gint flip_method;
-  gchar *exposure_time_range;
-  gchar *gain_range;
+  gchar* exposure_time_range;
+  gchar* gain_range;
   gboolean camera_auto_focus;
   gint camera_v4l2_dev_node;
   gchar* config_file;
@@ -210,8 +196,10 @@ gboolean reset_source_pipeline(gpointer data);
 gboolean set_source_to_playing(gpointer data);
 gpointer reset_encodebin(gpointer data);
 void destroy_smart_record_bin(gpointer data);
-#ifdef __cplusplus
-}
-#endif
 
-#endif
+namespace hm {
+std::optional<NvDsSourceType> source_type_from_string(const std::string& str);
+std::string to_string(const NvDsSourceType& type);
+
+} // namespace hm
+

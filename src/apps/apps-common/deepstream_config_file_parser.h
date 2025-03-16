@@ -15,10 +15,6 @@
 
 #include <gst/gst.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include "deepstream_audio_classifier.h"
 #include "deepstream_c2d_msg.h"
 #include "deepstream_config.h"
@@ -300,9 +296,5 @@ gboolean parse_image_save(NvDsImageSave* config, GKeyFile* key_file, gchar* grou
  * @param[in] file_path relative path of file.
  */
 gchar* get_absolute_file_path(const gchar* cfg_file_path, gchar* file_path);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif
