@@ -50,15 +50,15 @@ namespace {
     case NV_DS_SOURCE_URI:
       return "URI";
     case NV_DS_SOURCE_URI_MULTIPLE:
-      return "URI_MULTIPLE";
+      return "URI-MULTIPLE";
     case NV_DS_SOURCE_RTSP:
       return "RTSP";
     case NV_DS_SOURCE_CAMERA_CSI:
       return "CSI";
     case NV_DS_SOURCE_AUDIO_WAV:
-      return "AUDIO_WAV";
+      return "AUDIO-WAV";
     case NV_DS_SOURCE_AUDIO_URI:
-      return "AUDIO_URI";
+      return "AUDIO-URI";
     case NV_DS_SOURCE_ALSA_SRC:
       return "ALSA";
     case NV_DS_SOURCE_IPC:
@@ -75,7 +75,7 @@ std::optional<NvDsSourceType> source_type_from_string(const std::string& str) {
     return NV_DS_SOURCE_CAMERA_V4L2;
   if (str == "URI")
     return NV_DS_SOURCE_URI;
-  if (str == "URI_MULTIPLE")
+  if (str == "URI-MULTIPLE")
     return NV_DS_SOURCE_URI_MULTIPLE;
   if (str == "RTSP")
     return NV_DS_SOURCE_RTSP;
@@ -83,9 +83,9 @@ std::optional<NvDsSourceType> source_type_from_string(const std::string& str) {
     return NV_DS_SOURCE_RTSP;
   if (str == "CSI")
     return NV_DS_SOURCE_CAMERA_CSI;
-  if (str == "AUDIO_WAV")
+  if (str == "AUDIO-WAV")
     return NV_DS_SOURCE_AUDIO_WAV;
-  if (str == "AUDIO_URI")
+  if (str == "AUDIO-URI")
     return NV_DS_SOURCE_AUDIO_URI;
   if (str == "ALSA")
     return NV_DS_SOURCE_ALSA_SRC;

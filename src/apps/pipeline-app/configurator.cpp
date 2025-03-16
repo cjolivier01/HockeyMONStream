@@ -112,7 +112,6 @@ void set_all_field_values(
       continue;
     }
     field_node = field_value;
-    std::cout << item.second << std::endl;
   }
 }
 
@@ -444,7 +443,6 @@ absl::Status Configurator::configure() {
 }
 
 YAML::Node Configurator::auto_config(YAML::Node&& config) {
-  // std::cout << config << std::endl;
   return std::move(config);
 }
 
@@ -493,8 +491,6 @@ absl::Status Configurator::complete_configuration(bool force) {
       return absl::CancelledError("Stitching is already configured.");
     }
   }
-
-  std::cout << pipeline["hmstitcher"] << std::endl;
 
   pipeline["hmstitcher"]["config-file"] = std::string(game_dir);
 
@@ -624,10 +620,10 @@ absl::Status Configurator::complete_configuration(bool force) {
       }
     }
   }
-  const bool is_udb_output = has_enabled_rtsp_sink(pipeline);
+  const bool is_udp_output = has_enabled_rtsp_sink(pipeline);
 
-  auto maybe_scale_down = [is_udb_output](long width, long height) -> std::tuple<int, int> {
-    if (!is_udb_output) {
+  auto maybe_scale_down = [is_udp_output](long width, long height) -> std::tuple<int, int> {
+    if (!is_udp_output) {
       return std::make_tuple(width, height);
     }
     // 4k @ 16:9
@@ -665,7 +661,13 @@ absl::Status Configurator::complete_configuration(bool force) {
       pipeline["hmplaycropper"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
       pipeline["hmplaycropper"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
     } else {
-      return absl::FailedPreconditionError("Unable to determine canvas size");
+      // We don't know the canvas size since the mapping hasn't been generatewd yet, so we'll have to
+      bool configure_only = get_node_value(pipeline, "hmstitcher.configure-only", false);
+      if (!configure_only) {
+        return absl::FailedPreconditionError(
+            "Unable to determine canvas size and stitcher is not set to configure-only");
+      }
+      std::cout << "The stitched canvas size is not yet know, will determine in the ensuing pipeline run" << std::endl;
     }
   } else {
     auto wh_tuple = maybe_scale_down(ww, hh);
@@ -864,7 +866,6 @@ absl::Status Configurator::load_sub_configs(
         // Have a prefix match
         std::optional<YAML::Node> subconfig_node = maybe_get_config_file(node.second, config_path);
         if (subconfig_node.has_value()) {
-          // std::cout << *subconfig_node << std::endl;
           subconfigs[prefix].emplace_back(key, *subconfig_node);
         }
       }

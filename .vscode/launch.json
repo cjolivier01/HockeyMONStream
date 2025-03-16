@@ -65,8 +65,8 @@
       "args": [
         "-c",
         "${workspaceFolder}/configs/ds_hockey_app_config.yaml",
-        // "-c",
-        // "${workspaceFolder}/configs/ds_hockey_configure_stitching.yaml",
+        "-c",
+        "${workspaceFolder}/configs/ds_hockey_configure_stitching.yaml",
         // "-f",
         "-g",
         //"mylive",
@@ -74,9 +74,9 @@
         //"ev-cougars-2",
         //"fremont",
         "-d",
-        "--gpu-id=1",
+        //"--gpu-id=1",
         //"--enable-sources=CSI",
-        "--enable-sources=URI",
+        "--enable-sources=URI-MULTIPLE",
       ],
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}",
