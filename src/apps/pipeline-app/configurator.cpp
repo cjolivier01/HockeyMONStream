@@ -2,12 +2,14 @@
 #include "cupano/pano/controlMasks.h"
 #include "deepstream_app.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
 
+#include <absl/status/status.h>
 #include <gstreamer-1.0/gst/gstelement.h>
 #include <gstreamer-1.0/gst/gstpipeline.h>
 #include <opencv2/opencv.hpp>
@@ -15,6 +17,7 @@
 #include <unistd.h>
 #include <yaml-cpp/node/parse.h>
 
+#include "hstream/src/libs/common/ConfigYaml.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
@@ -207,6 +210,31 @@ absl::StatusOr<std::map<int, YAML::Node>> get_camera_sources(const YAML::Node& p
   return cameras;
 }
 
+struct SimpleConfig {
+  gboolean enable{false};
+  char* config_file{nullptr};
+  ~SimpleConfig() {
+    if (config_file) {
+      g_free(config_file);
+    }
+  }
+};
+
+std::optional<YAML::Node> maybe_get_config_file(const YAML::Node& yaml_node, const std::string& config_dir) {
+  hm::utils::ConfigLocator locator;
+  SimpleConfig config;
+  SET_LOCATOR(locator, config, enable); // "enable"
+  SET_LOCATOR_CHAR_PTR(locator, config, config_file);
+  hm::utils::set_config_from_yaml(yaml_node, locator, /*quiet=*/true);
+
+  if (config.enable && config.config_file && *config.config_file) {
+    fs::path subconfig_file = fs::path(config_dir) / config.config_file;
+    YAML::Node subnode = YAML::LoadFile(subconfig_file.string());
+    return subnode;
+  }
+  return std::nullopt;
+}
+
 } // namespace
 
 Configurator::Configurator(const std::string& game_id, const std::string& config_root_dir)
@@ -319,7 +347,7 @@ absl::Status Configurator::save_private_config(const YAML::Node& private_config)
   return absl::OkStatus();
 }
 
-YAML::Node Configurator::load_config() {
+absl::StatusOr<YAML::Node> Configurator::load_config() {
   YAML::Node config;
   if (!config_root_dir_.empty()) {
     std::filesystem::path baseline_path = std::filesystem::path(config_root_dir_) / "baseline.yaml";
@@ -390,9 +418,11 @@ YAML::Node Configurator::merge_nodes(const YAML::Node& base, const YAML::Node& o
   return result;
 }
 
-void Configurator::configure() {
-  YAML::Node config = Configurator::load_config();
+absl::Status Configurator::configure() {
+  YAML::Node config;
+  HM_ASSIGN_OR_RETURN(config, Configurator::load_config());
   config_ = auto_config(std::move(config));
+  return absl::OkStatus();
 }
 
 YAML::Node Configurator::auto_config(YAML::Node&& config) {
@@ -767,6 +797,90 @@ absl::Status Configurator::post_config_pipeline(NvDsPipeline& pipeline, const Nv
   // gst_pipeline_use_clock(GST_PIPELINE(video_pipeline), system_clock);
   // gst_object_unref(system_clock);
 
+  return absl::OkStatus();
+}
+
+// std::optional<YAML::Node> maybe_get_config_file(const YAML::Node& yaml_node, const std::string& config_dir)
+
+std::string get_section_prefix(const std::string& section_name) {
+  auto found_digit = std::find_if(section_name.begin(), section_name.end(), ::isdigit);
+  if (found_digit == section_name.end()) {
+    return section_name;
+  }
+  return {section_name.begin(), found_digit};
+}
+
+absl::Status Configurator::load_sub_configs(
+    const std::string& parent_node_name,
+    const std::vector<std::string>& allowed_prefixes,
+    const std::string& config_path) {
+  if (allowed_prefixes.empty()) {
+    return absl::OkStatus();
+  }
+  YAML::Node parent_node = config_[parent_node_name];
+  if (!parent_node.IsDefined()) {
+    return absl::OkStatus();
+  }
+  // prefix -> (actual section header, config yaml)
+  std::map<std::string, std::vector<std::pair<std::string, YAML::Node>>> subconfigs;
+  std::set<std::string> config_files;
+  std::unordered_set<std::string> all_existing_fields;
+  for (const auto& node : parent_node) {
+    const std::string key = node.first.as<std::string>();
+    if (!all_existing_fields.emplace(key).second) {
+      return absl::InvalidArgumentError(TO_STRING("Found duplicate YAML section: " << key));
+    }
+    for (const std::string& prefix : allowed_prefixes) {
+      if (!strncmp(key.c_str(), prefix.c_str(), prefix.size())) {
+        // Have a prefix match
+        std::optional<YAML::Node> subconfig_node = maybe_get_config_file(node.second, config_path);
+        if (subconfig_node.has_value()) {
+          // std::cout << *subconfig_node << std::endl;
+          subconfigs[prefix].emplace_back(key, *subconfig_node);
+        }
+      }
+    }
+  }
+
+  // Subfunction to get next available section name
+  auto get_next_available_name = [&all_existing_fields](const std::string& prefix) {
+    size_t c = 0;
+    std::string sn;
+    do {
+      sn = prefix + std::to_string(c++);
+    } while (all_existing_fields.count(sn));
+    return sn;
+  };
+
+  std::unordered_set<std::string> disable_nodes;
+  // Now go through all the sub-configs
+  for (const auto& sc_item : subconfigs) {
+    const std::string& prefix = sc_item.first;
+    for (const auto& subitem : sc_item.second) {
+      const std::string& section_name = subitem.first;
+      const YAML::Node& section_config = subitem.second;
+      // std::cout << section_config << std::endl;
+      for (const auto& subsection_section : section_config) {
+        std::string subsection_key = subsection_section.first.as<std::string>();
+        std::string subsection_prefix = get_section_prefix(subsection_key);
+        std::string new_subsection_name = get_next_available_name(subsection_prefix);
+        all_existing_fields.emplace(new_subsection_name);
+        YAML::Node subsection_config = subsection_section.second;
+        merge_nodes(subsection_config, YAML::Clone(parent_node[section_name]), /*warn_if_key_not_in_dest=*/false);
+        // std::cout << subsection_config << std::endl;
+        // Remove the config file entry
+        subsection_config.remove("config-file");
+        parent_node[new_subsection_name] = subsection_config;
+        disable_nodes.emplace(section_name);
+      }
+      // Now disable the original section since it has been consumed/expanded
+      parent_node[section_name]["enable"] = 0;
+    }
+  }
+  // Disable the node that had the config filew since we exploded them already
+  for (const std::string& s : disable_nodes) {
+    parent_node[s]["enable"] = "0";
+  }
   return absl::OkStatus();
 }
 

@@ -17,6 +17,7 @@
 #include <sys/select.h>
 #include <termios.h>
 #include <unistd.h>
+#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -33,6 +34,8 @@
 #include "absl/strings/str_split.h"
 #include "nvds_version.h"
 
+namespace fs = std::filesystem;
+
 //------------------------------------------------------------------------------
 // Debug category definition.
 GST_DEBUG_CATEGORY(NVDS_APP);
@@ -40,7 +43,7 @@ GST_DEBUG_CATEGORY(NVDS_APP);
 namespace {
 
 // Converts enum value to string
-std::string to_string(const NvDsSourceType& type) {
+[[maybe_unused]] std::string to_string(const NvDsSourceType& type) {
   switch (type) {
     case NV_DS_SOURCE_CAMERA_V4L2:
       return "V4L2";
@@ -166,7 +169,7 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
       app_ctx->config.multi_source_config[0].uri = g_strdup_printf("%s", input_uris_[i]);
       g_free(input_uris_[i]);
     }
-    app_ctx->load_config();
+    HM_RETURN_IF_ERROR(app_ctx->load_config());
     long stage = 0;
     if (g_str_has_suffix(app_ctx->app_config_file().c_str(), ".yml") ||
         g_str_has_suffix(app_ctx->app_config_file().c_str(), ".yaml")) {
@@ -193,7 +196,11 @@ absl::Status PipelineApplication::configureInstances(std::vector<std::shared_ptr
         app_ctx->return_value = -1;
         return absl::InternalError("Failed to merge in config file");
       }
-      if (!enabled_source_types_.empty  ()) {
+
+      HM_RETURN_IF_ERROR(app_ctx->configurator().load_sub_configs(
+          "pipeline", {"source", "sink"}, fs::path(app_ctx->app_config_file()).parent_path().string()));
+
+      if (!enabled_source_types_.empty()) {
         app_ctx->configurator().enable_source_types(enabled_source_types_, true);
       }
       absl::Status configuration_status = app_ctx->complete_configuration(force_reconfigure_);

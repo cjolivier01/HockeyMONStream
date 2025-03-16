@@ -242,11 +242,10 @@ class HmApp : public _AppCtx {
     return app_config_file_;
   }
 
-  bool load_config() {
+  absl::Status load_config() {
     std::string config_root = std::filesystem::current_path() / "external" / "hm" / "config";
     configurator_ = std::make_unique<hm::Configurator>(game_id_, config_root);
-    configurator_->configure();
-    return true;
+    return configurator_->configure();
   }
 
   bool underlay_config(const std::string& node, const std::string& file) {
@@ -301,9 +300,9 @@ void toggle_show_bbox_text(AppCtx* appCtx);
 void destroy_pipeline(AppCtx* appCtx);
 void restart_pipeline(AppCtx* appCtx);
 
-std::optional<YAML::Node> maybe_get_config_file(
-    const YAML::Node& yaml_node,
-    const std::string& config_dir);
+// std::optional<YAML::Node> maybe_get_config_file(
+//     const YAML::Node& yaml_node,
+//     const std::string& config_dir);
 
 absl::StatusOr<YAML::Node> get_app_config(const gchar* cfg_file_path);
 

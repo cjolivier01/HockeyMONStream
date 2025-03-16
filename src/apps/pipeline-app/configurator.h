@@ -1,11 +1,12 @@
 #pragma once
 
+#include "absl/status/statusor.h"
 #include "yaml-cpp/yaml.h"
-#include "absl/status/status.h"
 
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <unordered_set>
 
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
 
@@ -17,9 +18,9 @@ class Configurator {
  public:
   Configurator(const std::string& game_id, const std::string& config_root_dir);
   virtual ~Configurator();
-  YAML::Node load_config();
+  absl::StatusOr<YAML::Node> load_config();
 
-  virtual void configure();
+  virtual absl::Status configure();
 
   bool underlay_config(const std::string& node_name, const std::string& filename);
   bool overlay_config(const std::string& node_name, const std::string& filename);
@@ -44,8 +45,12 @@ class Configurator {
 
   bool does_need_stitching(const std::string& game_dir) const;
 
- private:
+  absl::Status load_sub_configs(
+      const std::string& parent_node_name,
+      const std::vector<std::string>& allowed_prefixes,
+      const std::string& config_path);
 
+ private:
   std::string file_maybe_in_game_dir(const std::string& basename);
   YAML::Node merge_nodes(const YAML::Node& base, const YAML::Node& overlay, bool warn_if_key_not_in_dest);
 

@@ -56,3 +56,7 @@ source6:
   input-audio-rate: 189
   source-id: 1
   cuda-memory-type: 1
+
+
+fakesection3:
+  enable: 1

@@ -322,6 +322,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
           config->multi_source_config[source_id].gpu_id = config->global_gpu_id;
         }
 
+#if 0
         std::optional<YAML::Node> maybe_sub_config_file =
             maybe_get_config_file(configyml[paramKey], fs::path(cfg_file_path).parent_path());
         if (maybe_sub_config_file) {
@@ -334,7 +335,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
             if (config->multi_source_config[source_id].enable)
               config->num_source_sub_bins++;
           } else {
-            for (int i = start_source_id; i < config->num_source_sub_bins; ++i) {
+            for (guint i = start_source_id; i < config->num_source_sub_bins; ++i) {
               // Local config overrides config file
               parse_err =
                   !parse_source_yaml(&config->multi_source_config[i], configyml[paramKey], (char*)cfg_file_path);
@@ -347,7 +348,12 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
           if (config->multi_source_config[source_id].enable)
             config->num_source_sub_bins++;
         }
-
+#else
+        parse_err =
+            !parse_source_yaml(&config->multi_source_config[source_id], configyml[paramKey], (char*)cfg_file_path);
+        if (config->multi_source_config[source_id].enable)
+          config->num_source_sub_bins++;
+#endif
         /** if gpu_id for source component is present,
          * it will override the value set using global_gpu_id in parse_source_yaml function */
         // parse_err = !parse_source_yaml(&config->multi_source_config[source_id], headers, source_values,

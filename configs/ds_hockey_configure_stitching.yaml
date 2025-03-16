@@ -139,7 +139,7 @@ source4:
 
 # CSI Webcam (Arducam)
 source5:
-  enable: 1
+  enable: 0
   # 1: v4l2, 5: CSI
   type: 5
   camera-csi-sensor-id: 1
@@ -169,7 +169,7 @@ source5:
 
 # CSI Webcam (Arducam)
 source6:
-  enable: 1
+  enable: 0
   # 1: v4l2, 5: CSI
   type: 5
   camera-csi-sensor-id: 0
@@ -197,7 +197,8 @@ source6:
   cuda-memory-type: 1
 
 source7:
-  enable: 0
+  enable: 1
+  gpu-id: 1
   config-file: dual_imx_477_af_cams.yaml
 
 #source:

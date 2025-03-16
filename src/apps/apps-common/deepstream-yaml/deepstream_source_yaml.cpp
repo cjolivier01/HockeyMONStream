@@ -23,32 +23,32 @@ using std::endl;
 #define N_DECODE_SURFACES 16
 #define N_EXTRA_SURFACES 1
 
-namespace {
-struct SimpleConfig {
-  gboolean enable{false};
-  char* config_file{nullptr};
-  ~SimpleConfig() {
-    if (config_file) {
-      g_free(config_file);
-    }
-  }
-};
-} // namespace
+// namespace {
+// struct SimpleConfig {
+//   gboolean enable{false};
+//   char* config_file{nullptr};
+//   ~SimpleConfig() {
+//     if (config_file) {
+//       g_free(config_file);
+//     }
+//   }
+// };
+// } // namespace
 
-std::optional<YAML::Node> maybe_get_config_file(const YAML::Node& yaml_node, const std::string& config_dir) {
-  hm::utils::ConfigLocator locator;
-  SimpleConfig config;
-  SET_LOCATOR(locator, config, enable); // "enable"
-  SET_LOCATOR_CHAR_PTR(locator, config, config_file);
-  hm::utils::set_config_from_yaml(yaml_node, locator, /*quiet=*/true);
+// std::optional<YAML::Node> maybe_get_config_file(const YAML::Node& yaml_node, const std::string& config_dir) {
+//   hm::utils::ConfigLocator locator;
+//   SimpleConfig config;
+//   SET_LOCATOR(locator, config, enable); // "enable"
+//   SET_LOCATOR_CHAR_PTR(locator, config, config_file);
+//   hm::utils::set_config_from_yaml(yaml_node, locator, /*quiet=*/true);
 
-  if (config.enable && config.config_file && *config.config_file) {
-    fs::path subconfig_file = fs::path(config_dir) / config.config_file;
-    YAML::Node subnode = YAML::LoadFile(subconfig_file.string());
-    return subnode;
-  }
-  return std::nullopt;
-}
+//   if (config.enable && config.config_file && *config.config_file) {
+//     fs::path subconfig_file = fs::path(config_dir) / config.config_file;
+//     YAML::Node subnode = YAML::LoadFile(subconfig_file.string());
+//     return subnode;
+//   }
+//   return std::nullopt;
+// }
 
 // New-style parser using ConfigYaml approach.
 gboolean parse_source_yaml(
