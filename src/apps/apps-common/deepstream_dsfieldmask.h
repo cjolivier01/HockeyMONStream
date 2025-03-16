@@ -218,8 +218,8 @@ enum EHmAudioSrc {
 
 enum EHmAudioDest {
   DEST_INDEPENDENT = 0,
-  DEST_SINK = 1,        // uses sink-id
-  DEST_MULTI_SINK = 1,  // uses multi-sink-ids
+  DEST_SINK = 1, // uses sink-id
+  DEST_MULTI_SINK = 1, // uses multi-sink-ids
 };
 
 struct NvDsHmAudioConfig {
