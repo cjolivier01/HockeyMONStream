@@ -98,6 +98,24 @@ bool is_enabled(YAML::Node n) {
   return false;
 }
 
+void set_all_field_values(
+    const YAML::Node& parent,
+    const std::string& field_name,
+    const std::string& field_value,
+    bool only_if_exists) {
+  for (auto& item : parent) {
+    if (!item.second.IsMap()) {
+      continue;
+    }
+    YAML::Node field_node = item.second[field_name];
+    if (only_if_exists && !field_node.IsDefined()) {
+      continue;
+    }
+    field_node = field_value;
+    std::cout << item.second << std::endl;
+  }
+}
+
 std::optional<std::tuple<int, int>> get_canvas_size(const std::string& game_dir) {
   hm::pano::ControlMasks control_masks(game_dir);
   if (!control_masks.is_valid()) {
@@ -456,6 +474,7 @@ absl::Status Configurator::complete_configuration(bool force) {
 
   if (override_gpu_id_ != kUseConfigFileGpu) {
     pipeline["application"]["global-gpu-id"] = override_gpu_id_;
+    set_all_field_values(pipeline, "gpu-id", std::to_string(override_gpu_id_), /*only_if_exists=*/true);
   }
 
   std::map<int, YAML::Node> camera_sources;
@@ -645,6 +664,8 @@ absl::Status Configurator::complete_configuration(bool force) {
       auto wh_tuple = maybe_scale_down(static_cast<long>(ar * canvas_height), canvas_height);
       pipeline["hmplaycropper"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
       pipeline["hmplaycropper"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
+    } else {
+      return absl::FailedPreconditionError("Unable to determine canvas size");
     }
   } else {
     auto wh_tuple = maybe_scale_down(ww, hh);
