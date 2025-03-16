@@ -114,7 +114,7 @@ absl::StatusOr<cv::Mat> load_mask_from_file(const std::string& filePath) {
   }
   // Load the image as a single-channel grayscale image
   cv::Mat mask = cv::imread(filePath, cv::IMREAD_GRAYSCALE);
-  if (mask.empty()) {`
+  if (mask.empty()) {
     return absl::InvalidArgumentError(TO_STRING("Failed to load mask from file: " << filePath));
   }
   return mask;
