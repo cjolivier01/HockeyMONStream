@@ -157,7 +157,6 @@ source5:
   camera-height: 2160
   camera-fps-n: 30
   camera-fps-d: 1
-  camera-num-buffers: 1
   video-format: NV12
   flip-method: 2
   # media-type: image/jpeg
@@ -187,7 +186,6 @@ source6:
   camera-height: 2160
   camera-fps-n: 30
   camera-fps-d: 1
-  camera-num-buffers: 1
   video-format: NV12
   flip-method: 2
   num-sources: 1

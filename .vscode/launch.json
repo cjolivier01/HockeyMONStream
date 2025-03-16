@@ -67,7 +67,7 @@
         "${workspaceFolder}/configs/ds_hockey_app_config.yaml",
         "-c",
         "${workspaceFolder}/configs/ds_hockey_configure_stitching.yaml",
-        //"-f",
+        // "-f",
         "-g",
         "mylive",
         "--enable-sources=CSI",
@@ -153,6 +153,7 @@
         "${workspaceFolder}/configs/ds_hockey_configure_stitching.yaml", // my app
         "-f",
         "-g",
+        "--enable-sources=CSI",
         //"ev-cougars-2",
         //"fremont",
         "mlk-heat-1",
