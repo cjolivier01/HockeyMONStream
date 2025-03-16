@@ -908,7 +908,8 @@ static void process_meta(AppCtx* appCtx, NvDsBatchMeta* batch_meta) {
       obj->text_params.display_text = NULL;
 
       if (gie_config != NULL) {
-        if (g_hash_table_contains(gie_config->bbox_border_color_table, class_index + (gchar*)NULL)) {
+        if (gie_config->bbox_border_color_table &&
+            g_hash_table_contains(gie_config->bbox_border_color_table, class_index + (gchar*)NULL)) {
           obj->rect_params.border_color = *(
               (NvOSD_ColorParams*)g_hash_table_lookup(gie_config->bbox_border_color_table, class_index + (gchar*)NULL));
         } else {
@@ -916,7 +917,8 @@ static void process_meta(AppCtx* appCtx, NvDsBatchMeta* batch_meta) {
         }
         obj->rect_params.border_width = appCtx->config.osd_config.border_width;
 
-        if (g_hash_table_contains(gie_config->bbox_bg_color_table, class_index + (gchar*)NULL)) {
+        if (gie_config->bbox_bg_color_table &&
+            g_hash_table_contains(gie_config->bbox_bg_color_table, class_index + (gchar*)NULL)) {
           obj->rect_params.has_bg_color = 1;
           obj->rect_params.bg_color =
               *((NvOSD_ColorParams*)g_hash_table_lookup(gie_config->bbox_bg_color_table, class_index + (gchar*)NULL));
