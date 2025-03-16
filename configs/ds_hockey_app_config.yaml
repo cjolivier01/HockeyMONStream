@@ -194,7 +194,7 @@ sink2:
   codec: 1
   #encoder type 0=Hardware 1=Software
   enc-type: 0
-  sync: 0
+  sync: 1
   # bitrate: 4000000
   # bitrate: 200000
   #NVBUF-MEMORY-TYPE: 0
@@ -202,8 +202,8 @@ sink2:
   #H265 Profile - 0=Main 1=Main10
   # set profile only for hw encoder, sw encoder selects profile based on sw-preset
   profile: 0
-  # output-file: rtmp://192.168.86.52/live/test
-  output-file: rtmp://a.rtmp.youtube.com/live2/0fq6-f4mc-j54z-escw-8bd9
+  output-file: rtmp://192.168.86.52/live/test
+  # output-file: rtmp://a.rtmp.youtube.com/live2/0fq6-f4mc-j54z-escw-8bd9
   iframeinterval: 60
   #
   # if sending out
