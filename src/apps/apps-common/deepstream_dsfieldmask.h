@@ -109,9 +109,11 @@ struct NvDsHmVideoPrepConfig {
   gboolean show;
   bool has_queue;
   bool has_videoconvert;
-  bool has_cameraman;
-
+  // bool has_cameraman;
+  bool has_videorate;
   // BEGIN dewarper flags stuff
+  guint fps_n;
+  guint fps_d;
   guint num_output_buffers;
   guint dewarper_dump_frames;
   guint source_id;
@@ -132,11 +134,12 @@ struct NvDsHmVideoPrepBin {
   GstElement* bin;
   GstElement* queue;
   GstElement* src_queue;
+  GstElement* videorate;
   GstElement* conv_queue;
   GstElement* nvvidconv;
   GstElement* cap_filter;
-  GstElement* playtracker_caps_filter;
-  GstElement* nvplaytracker;
+  GstElement* playcropper_caps_filter;
+  GstElement* playcropper;
 };
 
 gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBin* bin);

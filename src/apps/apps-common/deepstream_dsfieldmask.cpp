@@ -19,6 +19,7 @@
 #include <glib-2.0/glib.h>
 #include <gst/gstelement.h>
 #include <gstreamer-1.0/gst/gstbin.h>
+#include <gstreamer-1.0/gst/gstelementfactory.h>
 #include <cassert>
 #include <cstring>
 #include <string>
@@ -539,54 +540,65 @@ gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrep
   gboolean ret = FALSE;
   std::stringstream ppc;
 
-  bin->bin = gst_bin_new("playtracker_bin");
+  bin->bin = gst_bin_new("playcropper_bin");
   if (!bin->bin) {
-    NVGSTDS_ERR_MSG_V("Failed to create 'playtracker_bin'");
+    NVGSTDS_ERR_MSG_V("Failed to create 'playcropper_bin'");
     goto done;
   }
 
-  bin->nvvidconv = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "playtracker_conv");
+  bin->nvvidconv = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "playcropper_conv");
 
   if (!bin->nvvidconv) {
-    NVGSTDS_ERR_MSG_V("Failed to create 'playtracker_conv'");
+    NVGSTDS_ERR_MSG_V("Failed to create 'playcropper_conv'");
     goto done;
   }
 
-  bin->queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "playtracker_queue");
+  bin->queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "playcropper_queue");
   if (!bin->queue) {
-    NVGSTDS_ERR_MSG_V("Failed to create 'playtracker_queue'");
+    NVGSTDS_ERR_MSG_V("Failed to create 'playcropper_queue'");
     goto done;
   }
 
-  bin->src_queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "playtracker_src_queue");
+  bin->src_queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "playcropper_src_queue");
   if (!bin->src_queue) {
-    NVGSTDS_ERR_MSG_V("Failed to create 'playtracker_src_queue'");
+    NVGSTDS_ERR_MSG_V("Failed to create 'playcropper_src_queue'");
     goto done;
   }
 
-  bin->conv_queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "playtracker_conv_queue");
+  if (config->fps_n) {
+    assert(config->fps_d);
+    bin->videorate = gst_element_factory_make("videorate", "playcropper_videorate");
+    if (!bin->videorate) {
+      NVGSTDS_ERR_MSG_V("Failed to create 'playcropper_videorate'");
+      goto done;
+    }
+    assert(false);
+    // g_object_set(G_OBJECT(bin->videorate), "drop-only", TRUE, NULL);
+  }
+
+  bin->conv_queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "playcropper_conv_queue");
   if (!bin->conv_queue) {
-    NVGSTDS_ERR_MSG_V("Failed to create 'playtracker_conv_queue'");
+    NVGSTDS_ERR_MSG_V("Failed to create 'playcropper_conv_queue'");
     goto done;
   }
-
-  bin->cap_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "playtracker_caps");
+NVGSTDS_ERR_MSG_V("Failed to create 'playcropper_src_queue'");
+  bin->cap_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "playcropper_caps");
   if (!bin->cap_filter) {
-    NVGSTDS_ERR_MSG_V("Failed to create 'playtracker_caps'");
+    NVGSTDS_ERR_MSG_V("Failed to create 'playcropper_caps'");
     goto done;
   }
 
   setup_rgb_nvvm_caps_filter(nullptr, bin->cap_filter);
 
-  bin->nvplaytracker = gst_element_factory_make("playcropper" /*NVDS_ELEM_DEWARPER*/, NULL);
-  if (!bin->nvplaytracker) {
-    NVGSTDS_ERR_MSG_V("Failed to create 'nvplaytracker'");
+  bin->playcropper = gst_element_factory_make("playcropper" /*NVDS_ELEM_DEWARPER*/, NULL);
+  if (!bin->playcropper) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'nvplaycropper'");
     goto done;
   }
 
-  bin->playtracker_caps_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "playtracker_caps_filter");
-  if (!bin->playtracker_caps_filter) {
-    NVGSTDS_ERR_MSG_V("Could not create 'playtracker_caps_filter'");
+  bin->playcropper_caps_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "playcropper_caps_filter");
+  if (!bin->playcropper_caps_filter) {
+    NVGSTDS_ERR_MSG_V("Could not create 'playcropper_caps_filter'");
     goto done;
   }
 
@@ -606,7 +618,7 @@ gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrep
           1,
           G_MAXINT,
           NULL),
-      bin->playtracker_caps_filter);
+      bin->playcropper_caps_filter);
 
   gst_bin_add_many(
       GST_BIN(bin->bin),
@@ -615,35 +627,35 @@ gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrep
       bin->conv_queue,
       bin->nvvidconv,
       bin->cap_filter,
-      bin->nvplaytracker,
-      bin->playtracker_caps_filter,
+      bin->playcropper,
+      bin->playcropper_caps_filter,
       NULL);
 
   g_object_set(G_OBJECT(bin->nvvidconv), "gpu-id", config->gpu_id, NULL);
   g_object_set(G_OBJECT(bin->nvvidconv), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
 
-  g_object_set(G_OBJECT(bin->nvplaytracker), "gpu-id", config->gpu_id, NULL);
-  g_object_set(G_OBJECT(bin->nvplaytracker), "config-file", config->config_file, NULL);
-  g_object_set(G_OBJECT(bin->nvplaytracker), "plugin-type", config->plugin_type, NULL);
+  g_object_set(G_OBJECT(bin->playcropper), "gpu-id", config->gpu_id, NULL);
+  g_object_set(G_OBJECT(bin->playcropper), "config-file", config->config_file, NULL);
+  g_object_set(G_OBJECT(bin->playcropper), "plugin-type", config->plugin_type, NULL);
 
-  g_object_set(G_OBJECT(bin->nvplaytracker), "source-id", config->source_id, NULL);
-  g_object_set(G_OBJECT(bin->nvplaytracker), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
+  g_object_set(G_OBJECT(bin->playcropper), "source-id", config->source_id, NULL);
+  g_object_set(G_OBJECT(bin->playcropper), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
 
   if (config->num_output_buffers) {
-    g_object_set(G_OBJECT(bin->nvplaytracker), "num-output-buffers", config->num_output_buffers, NULL);
+    g_object_set(G_OBJECT(bin->playcropper), "num-output-buffers", config->num_output_buffers, NULL);
   }
   if (config->num_batch_buffers) {
-    g_object_set(G_OBJECT(bin->nvplaytracker), "num-batch-buffers", config->num_batch_buffers, NULL);
+    g_object_set(G_OBJECT(bin->playcropper), "num-batch-buffers", config->num_batch_buffers, NULL);
   }
   if (config->output_width) {
-    g_object_set(G_OBJECT(bin->nvplaytracker), "output-width", config->output_width, NULL);
+    g_object_set(G_OBJECT(bin->playcropper), "output-width", config->output_width, NULL);
   }
   if (config->output_height) {
-    g_object_set(G_OBJECT(bin->nvplaytracker), "output-height", config->output_height, NULL);
+    g_object_set(G_OBJECT(bin->playcropper), "output-height", config->output_height, NULL);
   }
 
   ppc << "show=" << config->show;
-  g_object_set(G_OBJECT(bin->nvplaytracker), "plugin-private-config", ppc.str().c_str(), NULL);
+  g_object_set(G_OBJECT(bin->playcropper), "plugin-private-config", ppc.str().c_str(), NULL);
 
 
 #if 0
@@ -659,10 +671,10 @@ gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrep
   NVGSTDS_LINK_ELEMENT(bin->nvvidconv, bin->cap_filter);
   NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->conv_queue);
 
-  NVGSTDS_LINK_ELEMENT(bin->conv_queue, bin->nvplaytracker);
+  NVGSTDS_LINK_ELEMENT(bin->conv_queue, bin->playcropper);
 
-  NVGSTDS_LINK_ELEMENT(bin->nvplaytracker, bin->playtracker_caps_filter);
-  NVGSTDS_LINK_ELEMENT(bin->playtracker_caps_filter, bin->src_queue);
+  NVGSTDS_LINK_ELEMENT(bin->playcropper, bin->playcropper_caps_filter);
+  NVGSTDS_LINK_ELEMENT(bin->playcropper_caps_filter, bin->src_queue);
 
   NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "sink");
 

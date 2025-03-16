@@ -107,7 +107,6 @@ gboolean parse_hmplaycropper_yaml(
   SET_LOCATOR(locator, *config, show);
   SET_LOCATOR(locator, *config, has_queue);
   SET_LOCATOR(locator, *config, has_videoconvert);
-  SET_LOCATOR(locator, *config, has_cameraman);
   SET_LOCATOR(locator, *config, nvbuf_memory_type);
   SET_LOCATOR(locator, *config, num_output_buffers);
   SET_LOCATOR(locator, *config, output_width);
