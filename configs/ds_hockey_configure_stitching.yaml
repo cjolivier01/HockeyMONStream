@@ -197,7 +197,7 @@ source6:
   cuda-memory-type: 1
 
 source7:
-  enable: 1
+  enable: 0
   type: 5
   config-file: dual_imx_477_af_cams.yaml
 
