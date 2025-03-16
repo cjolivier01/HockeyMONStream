@@ -13,6 +13,7 @@
 
 #include "dsfieldmask_lib.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 
 #include <opencv2/opencv.hpp>
@@ -108,12 +109,14 @@ cv::Point2f compute_centroid(const cv::Mat& mask) {
 
 // Load mask from file
 absl::StatusOr<cv::Mat> load_mask_from_file(const std::string& filePath) {
+  if (!fs::exists(filePath)) {
+    return absl::NotFoundError(TO_STRING("Mask file does not exist: " << filePath));
+  }
   // Load the image as a single-channel grayscale image
   cv::Mat mask = cv::imread(filePath, cv::IMREAD_GRAYSCALE);
-  if (mask.empty()) {
-    throw std::runtime_error("Failed to load mask from file: " + filePath);
+  if (mask.empty()) {`
+    return absl::InvalidArgumentError(TO_STRING("Failed to load mask from file: " << filePath));
   }
-
   return mask;
 }
 
