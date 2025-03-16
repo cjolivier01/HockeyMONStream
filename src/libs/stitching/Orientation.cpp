@@ -8,6 +8,8 @@
  */
 
 #include "hstream/src/libs/stitching/Orientation.h"
+#include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/utils.h"
 
 #include <algorithm>
 #include <cassert>
@@ -54,10 +56,10 @@ constexpr const char* LEFT_FILE_PATTERN = R"(left\.mp4$)";
 constexpr const char* RIGHT_FILE_PATTERN = R"(right\.mp4$)";
 
 /** @brief Regular expression for a pre-stitched file.
- * 
+ *
  * Pattern: stitched_output-with-audio\.(mp4|mkv)
  */
-constexpr const char *STITCHED_FILE_PATTERN = R"(stitched_output-with-audio\.(mp4|mkv)$)";
+constexpr const char* STITCHED_FILE_PATTERN = R"(stitched_output-with-audio\.(mp4|mkv)$)";
 
 /**
  * @brief Extracts the video and chapter numbers from a GoPro file name.
@@ -115,10 +117,14 @@ int get_lr_part_number(const std::string& filename) {
  * @param directory The directory to search.
  * @return A sorted vector of matching file paths.
  */
-std::vector<std::string> find_matching_files(const std::string& re_pattern, const std::string& directory) {
+absl::StatusOr<std::vector<std::string>> find_matching_files(
+    const std::string& re_pattern,
+    const std::string& directory) {
   std::regex pattern(re_pattern);
   std::vector<std::string> matching_files;
-
+  if (!fs::is_directory(directory)) {
+    return absl::InvalidArgumentError(TO_STRING("Directory \"" << directory << " doesn't exist or is not a directory"));
+  }
   // Iterate over each file in the directory.
   for (const auto& entry : fs::directory_iterator(directory)) {
     std::string filename = entry.path().filename().string();
@@ -155,11 +161,12 @@ std::pair<VideosDict, VideosDict> prune_chapters(const VideosDict& videos) {
  * @param prune If true, prunes videos that don't have matching chapters.
  * @return The videos dictionary.
  */
-VideosDict get_available_videos(const std::string& dir_name, bool prune) {
+absl::StatusOr<VideosDict> get_available_videos(const std::string& dir_name, bool prune) {
   VideosDict videos_dict;
 
   // Find GoPro files.
-  std::vector<std::string> gopro_files = find_matching_files(GOPRO_FILE_PATTERN, dir_name);
+  std::vector<std::string> gopro_files;
+  HM_ASSIGN_OR_RETURN(gopro_files, find_matching_files(GOPRO_FILE_PATTERN, dir_name));
   // For each GoPro file, extract video and chapter numbers.
   for (const auto& file : gopro_files) {
     auto [video, chapter] = gopro_get_video_and_chapter(file);
@@ -169,13 +176,14 @@ VideosDict get_available_videos(const std::string& dir_name, bool prune) {
   }
 
   // Process left files.
-  std::vector<std::string> files = find_matching_files(LEFT_FILE_PATTERN, dir_name);
+  std::vector<std::string> files;
+  HM_ASSIGN_OR_RETURN(files, find_matching_files(LEFT_FILE_PATTERN, dir_name));
   if (!files.empty()) {
     // Expect exactly one plain left file.
     assert(files.size() == 1);
     videos_dict["left"][1] = files[0];
   } else {
-    files = find_matching_files(LEFT_PART_FILE_PATTERN, dir_name);
+    HM_ASSIGN_OR_RETURN(files, find_matching_files(LEFT_PART_FILE_PATTERN, dir_name));
     if (!files.empty()) {
       for (const auto& file : files) {
         int part_num = get_lr_part_number(file);
@@ -185,13 +193,13 @@ VideosDict get_available_videos(const std::string& dir_name, bool prune) {
   }
 
   // Process right files.
-  files = find_matching_files(RIGHT_FILE_PATTERN, dir_name);
+  HM_ASSIGN_OR_RETURN(files, find_matching_files(RIGHT_FILE_PATTERN, dir_name));
   if (!files.empty()) {
     // Expect exactly one plain right file.
     assert(files.size() == 1);
     videos_dict["right"][1] = files[0];
   } else {
-    files = find_matching_files(RIGHT_PART_FILE_PATTERN, dir_name);
+    HM_ASSIGN_OR_RETURN(files, find_matching_files(RIGHT_PART_FILE_PATTERN, dir_name));
     if (!files.empty()) {
       for (const auto& file : files) {
         int part_num = get_lr_part_number(file);
@@ -201,7 +209,7 @@ VideosDict get_available_videos(const std::string& dir_name, bool prune) {
   }
 
   // Process any pre-stitched files.
-  files = find_matching_files(STITCHED_FILE_PATTERN, dir_name);
+  HM_ASSIGN_OR_RETURN(files, find_matching_files(STITCHED_FILE_PATTERN, dir_name));
   if (!files.empty()) {
     // We prefer mp4, which comes after mkv in the alphabet
     std::sort(files.begin(), files.end());

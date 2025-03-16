@@ -157,7 +157,9 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
   // Section 1: Create and initialize each HmApp instance.
   int i = -1;
   while (cfg_files_[++i]) {
-    auto app_ctx = std::make_unique<HmApp>(game_id_ ? *game_id_ : "", cfg_files_[i]);
+    // TODO: override_gpu_id_ could be a list/vector of them to use with each config file
+    // or pipeline-options can set each one...
+    auto app_ctx = std::make_unique<HmApp>(game_id_ ? *game_id_ : "", cfg_files_[i], override_gpu_id_);
     // app_ctx = std::make_unique<HmApp>(game_id_ ? *game_id_ : "");
     app_ctx->person_class_id = -1;
     app_ctx->car_class_id = -1;
@@ -214,6 +216,9 @@ absl::Status PipelineApplication::configureInstances(std::vector<std::shared_ptr
       if (configuration_status.code() == absl::StatusCode::kCancelled) {
         std::cerr << configuration_status << std::endl;
         continue;
+      }
+      if (!configuration_status.ok()) {
+        return configuration_status;
       }
       YAML::Node config = app_ctx->configurator().config();
       if (!config["pipeline"].IsDefined() ||
@@ -436,9 +441,9 @@ absl::Status PipelineApplication::playPipelines(
         std::cerr << status << std::endl;
       }
     });
-#if 1
-    hm::save_dot_file(app_contexts[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_running");
-#endif
+    if (dump_pipeline_dot_) {
+      hm::save_dot_file(app_contexts[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_running");
+    }
     if (app_contexts[i]->config.pipeline_recreate_sec)
       g_timeout_add_seconds(
           app_contexts[i]->config.pipeline_recreate_sec, recreate_pipeline_thread_func_static, app_contexts[i].get());
@@ -497,6 +502,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &print_dependencies_version_,
        "Print DeepStreamSDK and dependencies version",
        nullptr},
+      {"gpu-id", 'x', 0, G_OPTION_ARG_INT, &override_gpu_id_, "Set the GPU id to use", nullptr},
       {"pipeline-option", 'p', 0, G_OPTION_ARG_FILENAME_ARRAY, &pipline_options, "Set pipeline option(s)", nullptr},
       {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &cfg_files_, "Set the config file", nullptr},
       {"enable-sources", 'e', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sources_, "Enable Sources", nullptr},

@@ -16,7 +16,9 @@ struct NvDsPipeline;
 namespace hm {
 class Configurator {
  public:
-  Configurator(const std::string& game_id, const std::string& config_root_dir);
+  static constexpr int kUseConfigFileGpu = -1;
+
+  Configurator(const std::string& game_id, const std::string& config_root_dir, int override_gpu_id);
   virtual ~Configurator();
   absl::StatusOr<YAML::Node> load_config();
 
@@ -43,7 +45,7 @@ class Configurator {
 
   absl::Status post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config);
 
-  bool does_need_stitching(const std::string& game_dir) const;
+  absl::StatusOr<bool> does_need_stitching(const std::string& game_dir) const;
 
   absl::Status load_sub_configs(
       const std::string& parent_node_name,
@@ -58,12 +60,14 @@ class Configurator {
 
   const std::string game_id_;
   const std::string config_root_dir_;
+  const int override_gpu_id_;
 
   // The fully-realzied merged config
   YAML::Node config_;
   YAML::Node private_config_;
 
   bool set_stream_offsets_{false};
+
 };
 
 } // namespace hm

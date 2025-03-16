@@ -237,8 +237,8 @@ std::optional<YAML::Node> maybe_get_config_file(const YAML::Node& yaml_node, con
 
 } // namespace
 
-Configurator::Configurator(const std::string& game_id, const std::string& config_root_dir)
-    : game_id_(game_id), config_root_dir_(config_root_dir) {
+Configurator::Configurator(const std::string& game_id, const std::string& config_root_dir, int override_gpu_id)
+    : game_id_(game_id), config_root_dir_(config_root_dir), override_gpu_id_(override_gpu_id) {
   // Constructor
 }
 Configurator::~Configurator() {
@@ -430,8 +430,9 @@ YAML::Node Configurator::auto_config(YAML::Node&& config) {
   return std::move(config);
 }
 
-bool Configurator::does_need_stitching(const std::string& game_dir) const {
-  stitching::VideosDict videos = stitching::get_available_videos(game_dir);
+absl::StatusOr<bool> Configurator::does_need_stitching(const std::string& game_dir) const {
+  stitching::VideosDict videos;
+  HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir));
   if (videos.empty()) {
     return false;
   }
@@ -448,7 +449,13 @@ absl::Status Configurator::complete_configuration(bool force) {
   absl::Status status;
 
   if (game_id_.empty()) {
-    return absl::InvalidArgumentError("No game id specified");
+    // return absl::InvalidArgumentError("No game id specified");
+    // Just go by what's in the config file(s)
+    return absl::OkStatus();
+  }
+
+  if (override_gpu_id_ != kUseConfigFileGpu) {
+    pipeline["application"]["global-gpu-id"] = override_gpu_id_;
   }
 
   std::map<int, YAML::Node> camera_sources;
@@ -486,7 +493,8 @@ absl::Status Configurator::complete_configuration(bool force) {
   if (!is_camera_source) {
     std::string stitched_file;
 
-    stitching::VideosDict videos = stitching::get_available_videos(game_dir);
+    stitching::VideosDict videos;
+    HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir));
 
     if (videos.count("stitched")) {
       if (fs::exists(videos.at("stitched").at(0))) {

@@ -235,8 +235,8 @@ struct _AppCtx {
 
 class HmApp : public _AppCtx {
  public:
-  HmApp(std::string game_id, std::string app_config_file)
-      : game_id_(std::move(game_id)), app_config_file_(std::move(app_config_file)) {}
+  HmApp(std::string game_id, std::string app_config_file, int override_gpu_id)
+      : game_id_(std::move(game_id)), app_config_file_(std::move(app_config_file)), override_gpu_id_(override_gpu_id) {}
 
   const std::string& app_config_file() const {
     return app_config_file_;
@@ -244,7 +244,7 @@ class HmApp : public _AppCtx {
 
   absl::Status load_config() {
     std::string config_root = std::filesystem::current_path() / "external" / "hm" / "config";
-    configurator_ = std::make_unique<hm::Configurator>(game_id_, config_root);
+    configurator_ = std::make_unique<hm::Configurator>(game_id_, config_root, override_gpu_id_);
     return configurator_->configure();
   }
 
@@ -267,6 +267,7 @@ class HmApp : public _AppCtx {
   std::unique_ptr<hm::Configurator> configurator_;
   std::string game_id_;
   std::string app_config_file_;
+  int override_gpu_id_;
 };
 
 /**
@@ -326,7 +327,11 @@ gboolean parse_config_file(NvDsConfig* config, const gchar* cfg_file_path);
  */
 // gboolean parse_config_file_yaml(NvDsConfig* config, const gchar* cfg_file_path);
 
-gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, const gchar* cfg_file_path, bool init = true);
+gboolean parse_config_yaml(
+    const YAML::Node& configyml,
+    NvDsConfig* config,
+    const gchar* cfg_file_path,
+    bool init = true);
 
 /**
  * Function to procure the NvDsSensorInfo for the source_id

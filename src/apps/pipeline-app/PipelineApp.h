@@ -23,6 +23,7 @@
 #include "absl/synchronization/mutex.h"
 
 // Application and common headers.
+#include "configurator.h"
 #include "deepstream_app.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 
@@ -135,12 +136,12 @@ class PipelineApplication {
   gboolean dump_pipeline_dot_;
   gboolean force_reconfigure_;
   gint return_value_;
-  // guint num_instances_;
   guint num_input_uris_;
+  gint override_gpu_id_{hm::Configurator::kUseConfigFileGpu};
   GMutex fps_lock_;
   gdouble fps_[MAX_SOURCE_BINS];
   gdouble fps_avg_[MAX_SOURCE_BINS];
-  Display* display_ ABSL_GUARDED_BY(disp_lock_) {nullptr};
+  Display* display_ ABSL_GUARDED_BY(disp_lock_){nullptr};
   GThread* x_event_thread_;
   absl::Mutex disp_lock_;
   guint rrow_, rcol_, rcfg_;
