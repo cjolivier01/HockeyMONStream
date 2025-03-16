@@ -175,6 +175,7 @@ absl::Status show_camera(
     if (show) {
       cv::namedWindow("CSI Camera", cv::WINDOW_AUTOSIZE);
     }
+    std::cout << "Focusing camera sensor device " << device_id << std::flush;
     while (!show || cv::getWindowProperty("CSI Camera", cv::WND_PROP_AUTOSIZE) >= 0) {
       cv::Mat img;
       if (!cap.read(img)) {
@@ -188,6 +189,7 @@ absl::Status show_camera(
       if (skip_frame == 0) {
         skip_frame = 6;
         if (dec_count < 6 && focal_distance < 1000) {
+          std::cout << '.' << std::flush;
           if (!focusing(focuser, focal_distance, verbose)) {
             return absl::InternalError("Could not focus camera");
           }
@@ -209,6 +211,7 @@ absl::Status show_camera(
               return absl::InternalError("Could not focus camera");
             }
             focus_finished = true;
+            std::cout << "Done." << std::endl;
           }
         }
       } else {
