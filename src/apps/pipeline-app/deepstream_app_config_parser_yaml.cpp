@@ -65,7 +65,7 @@ static gboolean parse_tests_yaml(NvDsConfig* config, const gchar* cfg_file_path)
 gboolean parse_dsplaytracker_yaml(
     NvDsDsPlayTrackerConfig* config,
     const YAML::Node& yaml_node,
-    const std::string& config_path) {
+    const std::string& config_dir) {
   hm::utils::ConfigLocator locator;
   locator.ignored.emplace("config-file");
   SET_LOCATOR(locator, *config, enable);
@@ -75,7 +75,7 @@ gboolean parse_dsplaytracker_yaml(
   SET_LOCATOR(locator, *config, draw);
   SET_LOCATOR(locator, *config, plot_detections);
   SET_LOCATOR(locator, *config, plot_tracking);
-  hm::utils::parse_chracter_buffer(config->config_file, yaml_node, "config-file", config_path);
+  hm::utils::parse_chracter_buffer(config->config_file, yaml_node, "config-file", config_dir);
   set_config_from_yaml(yaml_node, locator);
   return true;
 }
@@ -83,14 +83,14 @@ gboolean parse_dsplaytracker_yaml(
 gboolean parse_dsfieldmask_yaml(
     NvDsDsFieldMaskConfig* config,
     const YAML::Node& yaml_node,
-    const std::string& config_path) {
+    const std::string& config_dir) {
   hm::utils::ConfigLocator locator{.ignored = {"detection-mask"}};
   SET_LOCATOR(locator, *config, enable);
   SET_LOCATOR(locator, *config, unique_id);
   SET_LOCATOR(locator, *config, gpu_id);
   SET_LOCATOR(locator, *config, nvbuf_memory_type);
   SET_LOCATOR_CHARS(locator, *config, detection_mask_file);
-  hm::utils::parse_chracter_buffer(config->detection_mask_file, yaml_node, "detection-mask", config_path);
+  hm::utils::parse_chracter_buffer(config->detection_mask_file, yaml_node, "detection-mask", config_dir);
   set_config_from_yaml(yaml_node, locator);
   return true;
 }
@@ -98,7 +98,7 @@ gboolean parse_dsfieldmask_yaml(
 gboolean parse_hmplaycropper_yaml(
     NvDsHmVideoPrepConfig* config,
     const YAML::Node& yaml_node,
-    const std::string& config_path,
+    const std::string& config_dir,
     bool quiet = false) {
   hm::utils::ConfigLocator locator{.ignored = {"config-file", "configure-only"}};
   SET_LOCATOR(locator, *config, enable);
@@ -118,7 +118,7 @@ gboolean parse_hmplaycropper_yaml(
   SET_LOCATOR_CHARS(locator, *config, plugin_type);
   SET_LOCATOR_CHARS(locator, *config, plugin_private_config);
 
-  hm::utils::parse_chracter_buffer(config->config_file, yaml_node, "config-file", config_path);
+  hm::utils::parse_chracter_buffer(config->config_file, yaml_node, "config-file", config_dir);
 
   set_config_from_yaml(yaml_node, locator, quiet);
   return true;
@@ -138,10 +138,7 @@ gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_
   return true;
 }
 
-gboolean parse_hmimagemetamerger_yaml(
-    NvDsHmImageMetaMergerConfig* config,
-    const YAML::Node& yaml_node,
-    const std::string& config_path) {
+gboolean parse_hmimagemetamerger_yaml(NvDsHmImageMetaMergerConfig* config, const YAML::Node& yaml_node) {
   hm::utils::ConfigLocator locator;
   SET_LOCATOR(locator, *config, enable);
   SET_LOCATOR(locator, *config, unique_id);
@@ -212,7 +209,7 @@ absl::StatusOr<YAML::Node> get_app_config(const gchar* cfg_file_path) {
   return config["application"];
 }
 
-gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, const gchar* cfg_file_path, bool init) {
+gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, const std::string& config_dir) {
   gboolean parse_err = false;
   gboolean ret = FALSE;
   std::string source_str = "source";
@@ -221,15 +218,13 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
   std::string msgcons_str = "message-consumer";
   std::string dewarper_str = "dewarper";
 
-  if (init) {
-    config->source_list_enabled = FALSE;
+  config->source_list_enabled = FALSE;
 
-    /** Initialize global gpu id to -1 */
-    config->global_gpu_id = -1;
-    /** App group parsing at top level to set global_gpu_id (if available)
-     * before any other group parsing */
-    parse_err = !parse_app_yaml(config, configyml["application"]);
-  }
+  /** Initialize global gpu id to -1 */
+  config->global_gpu_id = -1;
+  /** App group parsing at top level to set global_gpu_id (if available)
+   * before any other group parsing */
+  parse_err = !parse_app_yaml(config, configyml["application"]);
 
   for (YAML::const_iterator itr = configyml.begin(); itr != configyml.end(); ++itr) {
     std::string paramKey = itr->first.as<std::string>();
@@ -239,7 +234,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
         char* str = (char*)malloc(sizeof(char) * 1024);
         std::strncpy(str, csv_file_path.c_str(), 1023);
         char* abs_csv_path = (char*)malloc(sizeof(char) * 1024);
-        get_absolute_file_path_yaml(cfg_file_path, str, abs_csv_path);
+        get_absolute_file_path_yaml(config_dir.c_str(), str, abs_csv_path);
         g_free(str);
 
         std::ifstream inputFile(abs_csv_path);
@@ -295,10 +290,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
           }
           /** if gpu_id for source component is present,
            * it will override the value set using global_gpu_id in parse_source_yaml function */
-          parse_err = !parse_source_yaml(&config->multi_source_config[source_id], src_node, (char*)cfg_file_path);
-          // parse_err =
-          //     !parse_source_yaml(&config->multi_source_config[source_id], headers, source_values,
-          //     (char*)cfg_file_path);
+          parse_err = !parse_source_yaml(&config->multi_source_config[source_id], src_node, config_dir);
           if (config->multi_source_config[source_id].enable)
             config->num_source_sub_bins++;
         }
@@ -348,8 +340,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
             config->num_source_sub_bins++;
         }
 #else
-        parse_err =
-            !parse_source_yaml(&config->multi_source_config[source_id], configyml[paramKey], (char*)cfg_file_path);
+        parse_err = !parse_source_yaml(&config->multi_source_config[source_id], configyml[paramKey], config_dir);
         if (config->multi_source_config[source_id].enable)
           config->num_source_sub_bins++;
 #endif
@@ -368,7 +359,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
       }
       /** if gpu_id for streammux component is present,
        * it will override the value set using global_gpu_id in parse_streammux_yaml function */
-      parse_err = !parse_streammux_yaml(&config->streammux_config, configyml, cfg_file_path);
+      parse_err = !parse_streammux_yaml(&config->streammux_config, configyml, config_dir.c_str());
     } else if (paramKey == "streammux2") {
       /** set gpu_id for streammux component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {
@@ -376,7 +367,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
       }
       /** if gpu_id for streammux component is present,
        * it will override the value set using global_gpu_id in parse_streammux_yaml function */
-      parse_err = !parse_streammux_yaml(&config->streammux2_config, configyml, cfg_file_path);
+      parse_err = !parse_streammux_yaml(&config->streammux2_config, configyml, config_dir.c_str());
     } else if (paramKey == "osd") {
       /** set gpu_id for osd component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {
@@ -384,7 +375,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
       }
       /** if gpu_id for osd component is present,
        * it will override the value set using global_gpu_id in parse_osd_yaml function */
-      parse_err = !parse_osd_yaml(&config->osd_config, cfg_file_path);
+      parse_err = !parse_osd_yaml(&config->osd_config, itr->second);
     } else if (paramKey == "segvisual") {
       /**  set gpu_id for segvisual component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {
@@ -392,9 +383,9 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
       }
       /** if gpu_id for segvisual component is present,
        * it will override the value set using global_gpu_id in parse_segvisual_yaml function */
-      parse_err = !parse_segvisual_yaml(&config->segvisual_config, cfg_file_path);
+      parse_err = !parse_segvisual_yaml(&config->segvisual_config, config_dir.c_str());
     } else if (paramKey == "pre-process") {
-      parse_err = !parse_preprocess_yaml(&config->preprocess_config, cfg_file_path);
+      parse_err = !parse_preprocess_yaml(&config->preprocess_config, itr->second, config_dir);
     } else if (paramKey == "primary-gie") {
       /** set gpu_id for primary gie component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {
@@ -403,7 +394,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
       }
       /** if gpu_id for primary gie component is present,
        * it will override the value set using global_gpu_id in parse_gie_yaml function */
-      parse_err = !parse_gie_yaml(&config->primary_gie_config, paramKey, cfg_file_path);
+      parse_err = !parse_gie_yaml(&config->primary_gie_config, paramKey, itr->second, config_dir.c_str());
     } else if (paramKey == "tracker") {
       /** set gpu_id for tracker component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {
@@ -411,7 +402,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
       }
       /** if gpu_id for tracker component is present,
        * it will override the value set using global_gpu_id in parse_tracker_yaml function */
-      parse_err = !parse_tracker_yaml(&config->tracker_config, cfg_file_path);
+      parse_err = !parse_tracker_yaml(&config->tracker_config, itr->second, config_dir);
     } else if (paramKey.compare(0, sgie_str.size(), sgie_str) == 0) {
       if (config->num_secondary_gie_sub_bins == MAX_SECONDARY_GIE_BINS) {
         NVGSTDS_ERR_MSG_V("App supports max %d secondary GIEs", MAX_SECONDARY_GIE_BINS);
@@ -426,7 +417,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
       /** if gpu_id for secondary gie component is present,
        * it will override the value set using global_gpu_id in parse_gie_yaml function */
       parse_err = !parse_gie_yaml(
-          &config->secondary_gie_sub_bin_config[config->num_secondary_gie_sub_bins], paramKey, cfg_file_path);
+          &config->secondary_gie_sub_bin_config[config->num_secondary_gie_sub_bins], paramKey, itr->second, config_dir);
       if (config->secondary_gie_sub_bin_config[config->num_secondary_gie_sub_bins].enable) {
         config->num_secondary_gie_sub_bins++;
       }
@@ -444,8 +435,9 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
       }
       /**  if gpu_id for sink component is present,
        * it will override the value set using global_gpu_id in parse_sink_yaml function */
-      parse_err =
-          !parse_sink_yaml(&config->sink_bin_sub_bin_config[config->num_sink_sub_bins], paramKey, cfg_file_path);
+
+      parse_err = !parse_sink_yaml(
+          &config->sink_bin_sub_bin_config[config->num_sink_sub_bins], paramKey, configyml, config_dir);
       if (config->sink_bin_sub_bin_config[config->num_sink_sub_bins].enable) {
         config->num_sink_sub_bins++;
       }
@@ -456,7 +448,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
         goto done;
       }
       parse_err = !parse_msgconsumer_yaml(
-          &config->message_consumer_config[config->num_message_consumers], paramKey, cfg_file_path);
+          &config->message_consumer_config[config->num_message_consumers], paramKey, config_dir.c_str());
 
       if (config->message_consumer_config[config->num_message_consumers].enable) {
         config->num_message_consumers++;
@@ -468,7 +460,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
       }
       /** if gpu_id for tiled display component is present,
        * it will override the value set using global_gpu_id in parse_tiled_display_yaml function */
-      parse_err = !parse_tiled_display_yaml(&config->tiled_display_config, cfg_file_path);
+      parse_err = !parse_tiled_display_yaml(&config->tiled_display_config, itr->second);
     } else if (paramKey == "img-save") {
       /** set gpu_id for image save component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {
@@ -476,9 +468,9 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
       }
       /** if gpu_id for image save component is present,
        * it will override the value set using global_gpu_id in parse_image_save_yaml function */
-      parse_err = !parse_image_save_yaml(&config->image_save_config, cfg_file_path);
+      parse_err = !parse_image_save_yaml(&config->image_save_config, config_dir.c_str());
     } else if (paramKey == "nvds-analytics") {
-      parse_err = !parse_dsanalytics_yaml(&config->dsanalytics_config, cfg_file_path);
+      parse_err = !parse_dsanalytics_yaml(&config->dsanalytics_config, config_dir.c_str());
     } else if (paramKey == "ds-example") {
       /** set gpu_id for dsexample component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {
@@ -486,7 +478,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
       }
       /** if gpu_id for dsexample component is present,
        * it will override the value set using global_gpu_id in parse_dsexample_yaml function */
-      parse_err = !parse_dsexample_yaml(&config->dsexample_config, cfg_file_path);
+      parse_err = !parse_dsexample_yaml(&config->dsexample_config, itr->second);
     } else if (paramKey == "ds-fieldmask") {
       /** set gpu_id for dsexample component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {
@@ -494,8 +486,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
       }
       /** if gpu_id for dsexample component is present,
        * it will override the value set using global_gpu_id in parse_fieldmask_yaml function */
-      parse_err = !parse_dsfieldmask_yaml(
-          &config->dsfieldmask_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
+      parse_err = !parse_dsfieldmask_yaml(&config->dsfieldmask_config, itr->second, config_dir.c_str());
     } else if (paramKey == "hmstitcher") {
       /** set gpu_id for dsexample component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {
@@ -504,8 +495,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
       /** if gpu_id for dsexample component is present,
        * it will override the value set using global_gpu_id in parse_fieldmask_yaml function */
       // parse_err = !parse_hmstitcher_yaml(&config->hmsticher_config, itr->second);
-      parse_err = !parse_hmstitcher_yaml(
-          &config->hmsticher_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
+      parse_err = !parse_hmstitcher_yaml(&config->hmsticher_config, itr->second, config_dir.c_str());
     } else if (paramKey == "ds-playtracker") {
       /** set gpu_id for dsexample component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {
@@ -513,8 +503,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
       }
       /** if gpu_id for dsexample component is present,
        * it will override the value set using global_gpu_id in parse_playtracker_yaml function */
-      parse_err = !parse_dsplaytracker_yaml(
-          &config->dsplaytracker_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
+      parse_err = !parse_dsplaytracker_yaml(&config->dsplaytracker_config, itr->second, config_dir.c_str());
     } else if (paramKey == "hmplaycropper") {
       /** set gpu_id for dsexample component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {
@@ -522,8 +511,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
       }
       /** if gpu_id for dsexample component is present,
        * it will override the value set using global_gpu_id in parse_playtracker_yaml function */
-      parse_err = !parse_hmplaycropper_yaml(
-          &config->hmplaycropper_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
+      parse_err = !parse_hmplaycropper_yaml(&config->hmplaycropper_config, itr->second, config_dir.c_str());
     } else if (paramKey == "hm-image-meta-merger") {
       /** set gpu_id for dsexample component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {
@@ -531,15 +519,14 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
       }
       /** if gpu_id for dsexample component is present,
        * it will override the value set using global_gpu_id in parse_playtracker_yaml function */
-      parse_err = !parse_hmimagemetamerger_yaml(
-          &config->hmimagemetamerger_config, itr->second, std::filesystem::path(cfg_file_path).parent_path());
+      parse_err = !parse_hmimagemetamerger_yaml(&config->hmimagemetamerger_config, itr->second);
     } else if (!strncmp(paramKey.c_str(), "hmaudio", 7)) {
       ++config->num_hmaudio_sub_bins;
       parse_err = !parse_hmaudio_yaml(&config->hmaudio_config[get_trailing_integer(paramKey)], itr->second);
     } else if (paramKey == "message-converter") {
-      parse_err = !parse_msgconv_yaml(&config->msg_conv_config, paramKey, cfg_file_path);
+      parse_err = !parse_msgconv_yaml(&config->msg_conv_config, paramKey, config_dir.c_str());
     } else if (paramKey == "tests") {
-      parse_err = !parse_tests_yaml(config, cfg_file_path);
+      parse_err = !parse_tests_yaml(config, config_dir.c_str());
     } else if (paramKey.compare(0, dewarper_str.size(), dewarper_str) == 0) {
       size_t start = paramKey.find(dewarper_str);
       int source_id = 0;
@@ -547,7 +534,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
         std::string index_str =
             paramKey.substr(start + dewarper_str.length(), paramKey.length() - start - dewarper_str.length());
         source_id = std::stoi(index_str);
-        parse_dewarper_yaml(&config->multi_source_config[source_id].dewarper_config, paramKey, cfg_file_path);
+        parse_dewarper_yaml(&config->multi_source_config[source_id].dewarper_config, itr->second, config_dir);
       } else {
         NVGSTDS_ERR_MSG_V("Dewarper key is wrong ! ");
         parse_err = true;
@@ -626,7 +613,7 @@ done:
   return ret;
 }
 
-gboolean parse_config_file_yaml(NvDsConfig* config, const gchar* cfg_file_path) {
-  YAML::Node configyml = YAML::LoadFile(cfg_file_path);
-  return parse_config_yaml(configyml, config, cfg_file_path);
-}
+// gboolean parse_config_file_yaml(NvDsConfig* config, const gchar* cfg_file_path) {
+//   YAML::Node configyml = YAML::LoadFile(cfg_file_path);
+//   return parse_config_yaml(configyml, config, cfg_file_path);
+// }

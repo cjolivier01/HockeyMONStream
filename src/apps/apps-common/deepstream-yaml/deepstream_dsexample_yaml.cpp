@@ -19,11 +19,9 @@
 using std::cout;
 using std::endl;
 
-gboolean parse_dsexample_yaml(NvDsDsExampleConfig* config, const gchar* cfg_file_path) {
+gboolean parse_dsexample_yaml(NvDsDsExampleConfig* config, const YAML::Node& yaml_node) {
   gboolean ret = FALSE;
-  YAML::Node configyml = YAML::LoadFile(cfg_file_path);
-
-  for (YAML::const_iterator itr = configyml["ds-example"].begin(); itr != configyml["ds-example"].end(); ++itr) {
+  for (YAML::const_iterator itr = yaml_node.begin(); itr != yaml_node.end(); ++itr) {
     std::string paramKey = itr->first.as<std::string>();
     if (paramKey == "enable") {
       config->enable = itr->second.as<gboolean>();

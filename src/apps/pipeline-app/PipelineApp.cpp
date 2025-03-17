@@ -198,7 +198,7 @@ absl::Status PipelineApplication::configureInstances(
       }
       YAML::Node config = app_ctx->configurator().config();
       if (!config["pipeline"].IsDefined() ||
-          !parse_config_yaml(config["pipeline"], &app_ctx->config, app_ctx->app_config_file().c_str())) {
+          !parse_config_yaml(config["pipeline"], &app_ctx->config, fs::path(app_ctx->app_config_file()).parent_path())) {
         NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", app_ctx->app_config_file().c_str());
         app_ctx->return_value = -1;
         return absl::InternalError("Failed to parse config file");

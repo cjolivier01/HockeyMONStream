@@ -116,7 +116,7 @@ inline std::vector<size_t> Configurator::enable_sections(
       } else if (disable_others) {
         section_node["enable"] = "0";
       }
-      std::cout << "\n" << key << ":\n" << section_node << "\n" << std::endl;
+      // std::cout << "\n" << key << ":\n" << section_node << "\n" << std::endl;
     }
   }
   return enabled_ids;

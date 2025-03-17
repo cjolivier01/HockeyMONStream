@@ -18,11 +18,12 @@
 using std::cout;
 using std::endl;
 
-gboolean parse_tiled_display_yaml(NvDsTiledDisplayConfig* config, const gchar* cfg_file_path) {
+gboolean parse_tiled_display_yaml(NvDsTiledDisplayConfig* config, const YAML::Node& yaml_node) {
   gboolean ret = FALSE;
-
-  YAML::Node configyml = YAML::LoadFile(cfg_file_path);
-  for (YAML::const_iterator itr = configyml["tiled-display"].begin(); itr != configyml["tiled-display"].end(); ++itr) {
+  if (!yaml_node.IsDefined()) {
+    return false;
+  }
+  for (YAML::const_iterator itr = yaml_node.begin(); itr != yaml_node.end(); ++itr) {
     std::string paramKey = itr->first.as<std::string>();
     if (paramKey == "enable") {
       config->enable = (NvDsTiledDisplayEnable)itr->second.as<int>();

@@ -19,10 +19,8 @@
 using std::cout;
 using std::endl;
 
-gboolean parse_tracker_yaml(NvDsTrackerConfig* config, const gchar* cfg_file_path) {
+gboolean parse_tracker_yaml(NvDsTrackerConfig* config, const YAML::Node& yaml_node, const std::string& config_dir) {
   gboolean ret = FALSE;
-  YAML::Node configyml = YAML::LoadFile(cfg_file_path);
-
   config->display_tracking_id = TRUE;
   config->tracking_id_reset_mode = 0;
   config->input_tensor_meta = FALSE;
@@ -32,7 +30,7 @@ gboolean parse_tracker_yaml(NvDsTrackerConfig* config, const gchar* cfg_file_pat
   config->sub_batches = {};
   config->sub_batch_err_recovery_trial_cnt = 0;
 
-  for (YAML::const_iterator itr = configyml["tracker"].begin(); itr != configyml["tracker"].end(); ++itr) {
+  for (YAML::const_iterator itr = yaml_node.begin(); itr != yaml_node.end(); ++itr) {
     std::string paramKey = itr->first.as<std::string>();
     if (paramKey == "enable") {
       config->enable = itr->second.as<gboolean>();
@@ -53,7 +51,7 @@ gboolean parse_tracker_yaml(NvDsTrackerConfig* config, const gchar* cfg_file_pat
       char* str_out = (char*)malloc(sizeof(char) * 1024);
       while (std::getline(ss, temp, ';')) {
         std::strncpy(str, temp.c_str(), 1023);
-        if (!get_absolute_file_path_yaml(cfg_file_path, str, str_out)) {
+        if (!get_absolute_file_path_yaml(config_dir.c_str(), str, str_out)) {
           g_printerr("Error: Could not parse ll-config-file in tracker.\n");
           g_free(str);
           g_free(str_out);
@@ -69,7 +67,7 @@ gboolean parse_tracker_yaml(NvDsTrackerConfig* config, const gchar* cfg_file_pat
       char* str = (char*)malloc(sizeof(char) * 1024);
       std::strncpy(str, temp.c_str(), 1023);
       config->ll_lib_file = (char*)malloc(sizeof(char) * 1024);
-      if (!get_absolute_file_path_yaml(cfg_file_path, str, config->ll_lib_file)) {
+      if (!get_absolute_file_path_yaml(config_dir.c_str(), str, config->ll_lib_file)) {
         g_printerr("Error: Could not parse ll-lib-file in tracker.\n");
         g_free(str);
         goto done;

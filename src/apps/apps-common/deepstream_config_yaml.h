@@ -44,9 +44,9 @@ gboolean get_absolute_file_path_yaml(const gchar* cfg_file_path, const gchar* fi
 
 gboolean parse_streammux_yaml(NvDsStreammuxConfig* config, const YAML::Node& configyml, const gchar* cfg_file_path);
 
-gboolean parse_tiled_display_yaml(NvDsTiledDisplayConfig* config, const gchar* cfg_file_path);
+gboolean parse_tiled_display_yaml(NvDsTiledDisplayConfig* config, const YAML::Node& yaml_node);
 
-gboolean parse_osd_yaml(NvDsOSDConfig* config, const gchar* cfg_file_path);
+gboolean parse_osd_yaml(NvDsOSDConfig* config, const YAML::Node& yaml_node);
 
 gboolean parse_segvisual_yaml(NvDsSegVisualConfig* config, const gchar* cfg_file_path);
 
@@ -56,31 +56,25 @@ gboolean parse_msgconsumer_yaml(NvDsMsgConsumerConfig* config, std::string group
 
 gboolean parse_msgconv_yaml(NvDsSinkMsgConvBrokerConfig* config, std::string group, const gchar* cfg_file_path);
 
-gboolean parse_sink_yaml(NvDsSinkSubBinConfig* config, std::string group, const gchar* cfg_file_path);
+gboolean parse_sink_yaml(
+    NvDsSinkSubBinConfig* config,
+    std::string group_str,
+    const YAML::Node& configyml,
+    const std::string& config_dir);
 
-// gboolean parse_source_yaml(
-//     NvDsSourceConfig* config,
-//     std::vector<std::string> headers,
-//     std::vector<std::string> source_values,
-//     const gchar* cfg_file_path);
+gboolean parse_source_yaml(NvDsSourceConfig* config, const YAML::Node& yaml_node, const std::string& config_dir);
 
-gboolean parse_source_yaml(
-    NvDsSourceConfig* config,
-    const YAML::Node& yaml_node,
-    const gchar* cfg_file_path,
-    bool recursing = false);
+gboolean parse_tracker_yaml(NvDsTrackerConfig* config, const YAML::Node& yaml_node, const std::string& config_dir);
 
-gboolean parse_tracker_yaml(NvDsTrackerConfig* config, const gchar* cfg_file_path);
+gboolean parse_gie_yaml(NvDsGieConfig* config, const std::string& group, const YAML::Node& yaml_node, const std::string& config_dir);
 
-gboolean parse_gie_yaml(NvDsGieConfig* config, std::string group, const gchar* cfg_file_path);
+gboolean parse_hmplaycropper_yaml(NvDsHmVideoPrepConfig* config, const YAML::Node& yaml_node);
 
-gboolean parse_hmplaycropper_yaml(NvDsHmVideoPrepConfig* config, std::string group, const gchar* cfg_file_path);
+gboolean parse_preprocess_yaml(NvDsPreProcessConfig* config, const YAML::Node& yaml_node, const std::string& config_dir);
 
-gboolean parse_preprocess_yaml(NvDsPreProcessConfig* config, const gchar* cfg_file_path);
+gboolean parse_dewarper_yaml(NvDsDewarperConfig* config, const YAML::Node& yaml_node, const std::string& config_dir);
 
-gboolean parse_dewarper_yaml(NvDsDewarperConfig* config, std::string group_str, const gchar* cfg_file_path);
-
-gboolean parse_dsexample_yaml(NvDsDsExampleConfig* config, const gchar* cfg_file_path);
+gboolean parse_dsexample_yaml(NvDsDsExampleConfig* config, const YAML::Node& yaml_node);
 
 gboolean parse_dsanalytics_yaml(NvDsDsAnalyticsConfig* config, const gchar* cfg_file_path);
 

@@ -19,9 +19,12 @@
 using std::cout;
 using std::endl;
 
-gboolean parse_sink_yaml(NvDsSinkSubBinConfig* config, std::string group_str, const gchar* cfg_file_path) {
+gboolean parse_sink_yaml(
+    NvDsSinkSubBinConfig* config,
+    std::string group_str,
+    const YAML::Node& configyml,
+    const std::string& config_dir) {
   gboolean ret = FALSE;
-  YAML::Node configyml = YAML::LoadFile(cfg_file_path);
 
   config->encoder_config.rtsp_port = 8554;
   config->encoder_config.udp_port = 5000;
@@ -36,8 +39,10 @@ gboolean parse_sink_yaml(NvDsSinkSubBinConfig* config, std::string group_str, co
 
   if (configyml[group_str]["enable"]) {
     gboolean val = configyml[group_str]["enable"].as<gboolean>();
-    if (val == FALSE)
+    if (val == FALSE) {
+      config->enable = FALSE;
       return TRUE;
+    }
   }
 
   for (YAML::const_iterator itr = configyml[group_str].begin(); itr != configyml[group_str].end(); ++itr) {
@@ -103,7 +108,7 @@ gboolean parse_sink_yaml(NvDsSinkSubBinConfig* config, std::string group_str, co
         paramKey == "msg-conv-comp-id" || paramKey == "debug-payload-dir" || paramKey == "multiple-payloads" ||
         paramKey == "msg-conv-msg2p-new-api" || paramKey == "msg-conv-frame-interval" ||
         paramKey == "msg-conv-dummy-payload") {
-      ret = parse_msgconv_yaml(&config->msg_conv_broker_config, group_str, cfg_file_path);
+      ret = parse_msgconv_yaml(&config->msg_conv_broker_config, group_str, config_dir.c_str());
       if (!ret)
         goto done;
     } else if (paramKey == "msg-broker-proto-lib") {
@@ -123,7 +128,8 @@ gboolean parse_sink_yaml(NvDsSinkSubBinConfig* config, std::string group_str, co
       char* str = (char*)malloc(sizeof(char) * 1024);
       std::strncpy(str, temp.c_str(), 1023);
       config->msg_conv_broker_config.broker_config_file_path = (char*)malloc(sizeof(char) * 1024);
-      if (!get_absolute_file_path_yaml(cfg_file_path, str, config->msg_conv_broker_config.broker_config_file_path)) {
+      if (!get_absolute_file_path_yaml(
+              config_dir.c_str(), str, config->msg_conv_broker_config.broker_config_file_path)) {
         g_printerr("Error: Could not parse msg-broker-config in sink.\n");
         g_free(str);
         goto done;

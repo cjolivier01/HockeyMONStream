@@ -51,11 +51,7 @@ using std::endl;
 // }
 
 // New-style parser using ConfigYaml approach.
-gboolean parse_source_yaml(
-    NvDsSourceConfig* config,
-    const YAML::Node& yaml_node,
-    const gchar* cfg_file_path,
-    bool recursing) {
+gboolean parse_source_yaml(NvDsSourceConfig* config, const YAML::Node& yaml_node, const std::string& config_dir) {
   // Set default values.
   config->latency = 100;
   config->num_decode_surfaces = N_DECODE_SURFACES;
@@ -126,7 +122,7 @@ gboolean parse_source_yaml(
     // Remove the "file://" prefix and get the absolute file path.
     const char* filePart = config->uri + 7;
     char absolutePath[1024] = {0};
-    get_absolute_file_path_yaml(cfg_file_path, filePart, absolutePath);
+    get_absolute_file_path_yaml(config_dir.c_str(), filePart, absolutePath);
     // Update the URI using the new absolute path.
     config->uri = g_strdup_printf("file://%s", absolutePath);
   }

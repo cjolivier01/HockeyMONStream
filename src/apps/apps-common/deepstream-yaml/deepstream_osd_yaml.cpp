@@ -19,7 +19,7 @@
 using std::cout;
 using std::endl;
 
-gboolean parse_osd_yaml(NvDsOSDConfig* config, const gchar* cfg_file_path) {
+gboolean parse_osd_yaml(NvDsOSDConfig* config, const YAML::Node& yaml_node) {
   gboolean ret = FALSE;
 
   /** Default values */
@@ -27,8 +27,7 @@ gboolean parse_osd_yaml(NvDsOSDConfig* config, const gchar* cfg_file_path) {
   config->draw_bbox = TRUE;
   config->draw_mask = FALSE;
 
-  YAML::Node configyml = YAML::LoadFile(cfg_file_path);
-  for (YAML::const_iterator itr = configyml["osd"].begin(); itr != configyml["osd"].end(); ++itr) {
+  for (YAML::const_iterator itr = yaml_node.begin(); itr != yaml_node.end(); ++itr) {
     std::string paramKey = itr->first.as<std::string>();
 
     if (paramKey == "enable") {

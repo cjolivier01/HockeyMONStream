@@ -317,21 +317,10 @@ absl::StatusOr<YAML::Node> get_app_config(const gchar* cfg_file_path);
  */
 gboolean parse_config_file(NvDsConfig* config, const gchar* cfg_file_path);
 
-/**
- * Function to read properties from YML configuration file.
- *
- * @param[in] config pointer to @ref NvDsConfig
- * @param[in] cfg_file_path path of configuration file.
- *
- * @return true if parsed successfully.
- */
-// gboolean parse_config_file_yaml(NvDsConfig* config, const gchar* cfg_file_path);
-
 gboolean parse_config_yaml(
     const YAML::Node& configyml,
     NvDsConfig* config,
-    const gchar* cfg_file_path,
-    bool init = true);
+    const std::string& config_dir);
 
 /**
  * Function to procure the NvDsSensorInfo for the source_id

@@ -19,11 +19,10 @@
 using std::cout;
 using std::endl;
 
-gboolean parse_dewarper_yaml(NvDsDewarperConfig* config, std::string group_str, const gchar* cfg_file_path) {
+gboolean parse_dewarper_yaml(NvDsDewarperConfig* config, const YAML::Node& yaml_node, const std::string& config_dir) {
   gboolean ret = FALSE;
 
-  YAML::Node configyml = YAML::LoadFile(cfg_file_path);
-  for (YAML::const_iterator itr = configyml[group_str].begin(); itr != configyml[group_str].end(); ++itr) {
+  for (YAML::const_iterator itr = yaml_node.begin(); itr != yaml_node.end(); ++itr) {
     std::string paramKey = itr->first.as<std::string>();
     if (paramKey == "enable") {
       config->enable = itr->second.as<gboolean>();
@@ -40,7 +39,7 @@ gboolean parse_dewarper_yaml(NvDsDewarperConfig* config, std::string group_str, 
       char* str = (char*)malloc(sizeof(char) * 1024);
       std::strncpy(str, temp.c_str(), 1023);
       config->config_file = (char*)malloc(sizeof(char) * 1024);
-      if (!get_absolute_file_path_yaml(cfg_file_path, str, config->config_file)) {
+      if (!get_absolute_file_path_yaml(config_dir.c_str(), str, config->config_file)) {
         g_printerr("Error: Could not parse config-file in dewarper.\n");
         g_free(str);
         goto done;
