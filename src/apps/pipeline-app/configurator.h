@@ -6,6 +6,7 @@
 #include "yaml-cpp/yaml.h"
 
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_set>
@@ -99,15 +100,16 @@ inline std::vector<size_t> Configurator::enable_sections(
     std::string key = kv.first.as<std::string>();
     if (absl::StartsWith(key, section_prefix)) {
       YAML::Node section_node = kv.second;
-      const T_ENUM type = static_cast<T_ENUM>(get_node_value(section_node, enum_field_name, 0));
-      if (!type) {
-        std::cerr << "Source entry has no type" << std::endl;
+      constexpr int kInvalid = std::numeric_limits<int>::max();
+      const T_ENUM type = static_cast<T_ENUM>(get_node_value(section_node, enum_field_name, kInvalid));
+      if (static_cast<int>(type) == kInvalid) {
+        std::cerr << "Entry has no type" << std::endl;
         continue;
       }
       if (enable_field_values.count(type)) {
         section_node["enable"] = "1";
         if (!has_node(section_node, return_id_label, /*non_null=*/true)) {
-          std::cerr << "No source-id in enabled source section: " << key << std::endl;
+          std::cerr << "No " << return_id_label << " in enabled " << section_prefix << " section: " << key << std::endl;
           enabled_ids.emplace_back(std::numeric_limits<size_t>::max());
         } else {
           enabled_ids.emplace_back(section_node[return_id_label].as<int>());
