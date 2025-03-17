@@ -145,32 +145,37 @@ absl::Status PipelineApplication::configureInstances(
         return absl::InternalError("Failed to merge in config file");
       }
 
-      if (stage_index) {
-        if (!enabled_source_types_.empty() && enabled_source_types_.size() != 1 &&
-            stage_index >= enabled_source_types_.size()) {
-          return absl::InvalidArgumentError(TO_STRING(
-              "Number of 'enabled soruce types' must be zero, one, or st least as "
-              << "many as the number of stages, or else it's not known what to apply to this stage " << stage_index));
-        }
-      }
-
       // Run enable-source-types in case we have any subconfigs that have 'type' set
       if (!enabled_source_types_.empty()) {
-        // app_ctx->configurator().enable_source_types(enabled_source_types_.at(stage_index), true);
+        if (stage_index) {
+          if (enabled_source_types_.size() != 1 && stage_index >= enabled_source_types_.size()) {
+            return absl::InvalidArgumentError(TO_STRING(
+                "Number of 'enabled source types' must be zero, one, or st least as "
+                << "many as the number of stages, or else it's not clear what to apply to this stage " << stage_index));
+          }
+        }
+
         app_ctx->configurator().enable_sections(
             "source",
             "type",
-            enabled_source_types_.at(stage_index),
+            enabled_source_types_.size() == 1 ? enabled_source_types_.at(0) : enabled_source_types_.at(stage_index),
             /*disable_others=*/true,
             "source_id");
       }
 
       if (!enabled_sink_types_.empty()) {
-        // app_ctx->configurator().enable_source_types(enabled_source_types_.at(stage_index), true);
+        if (stage_index) {
+          if (enabled_sink_types_.size() != 1 && stage_index >= enabled_sink_types_.size()) {
+            return absl::InvalidArgumentError(TO_STRING(
+                "Number of 'enabled sink types' must be zero, one, or st least as "
+                << "many as the number of stages, or else it's not clear what to apply to this stage " << stage_index));
+          }
+        }
+
         app_ctx->configurator().enable_sections(
             "sink",
             "type",
-            enabled_sink_types_.at(stage_index),
+            enabled_sink_types_.size() == 1 ? enabled_sink_types_.at(0) : enabled_sink_types_.at(stage_index),
             /*disable_others=*/true,
             "sink_id");
       }
