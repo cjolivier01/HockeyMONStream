@@ -40,9 +40,7 @@ namespace fs = std::filesystem;
 // Debug category definition.
 GST_DEBUG_CATEGORY(NVDS_APP);
 
-namespace {
-
-} // namespace
+namespace {} // namespace
 
 //------------------------------------------------------------------------------
 // CleanupStack implementation.
@@ -133,7 +131,9 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
   return absl::OkStatus();
 }
 
-absl::Status PipelineApplication::configureInstances(std::vector<std::shared_ptr<HmApp>>& app_contexts) {
+absl::Status PipelineApplication::configureInstances(
+    size_t stage_index,
+    std::vector<std::shared_ptr<HmApp>>& app_contexts) {
   std::vector<std::shared_ptr<HmApp>> valid_app_contexts;
   for (size_t i = 0; i < app_contexts.size(); ++i) {
     auto& app_ctx = app_contexts[i];
@@ -145,9 +145,34 @@ absl::Status PipelineApplication::configureInstances(std::vector<std::shared_ptr
         return absl::InternalError("Failed to merge in config file");
       }
 
+      if (stage_index) {
+        if (!enabled_source_types_.empty() && enabled_source_types_.size() != 1 &&
+            stage_index >= enabled_source_types_.size()) {
+          return absl::InvalidArgumentError(TO_STRING(
+              "Number of 'enabled soruce types' must be zero, one, or st least as "
+              << "many as the number of stages, or else it's not known what to apply to this stage " << stage_index));
+        }
+      }
+
       // Run enable-source-types in case we have any subconfigs that have 'type' set
       if (!enabled_source_types_.empty()) {
-        app_ctx->configurator().enable_source_types(enabled_source_types_, true);
+        // app_ctx->configurator().enable_source_types(enabled_source_types_.at(stage_index), true);
+        app_ctx->configurator().enable_sections(
+            "source",
+            "type",
+            enabled_source_types_.at(stage_index),
+            /*disable_others=*/true,
+            "source_id");
+      }
+
+      if (!enabled_sink_types_.empty()) {
+        // app_ctx->configurator().enable_source_types(enabled_source_types_.at(stage_index), true);
+        app_ctx->configurator().enable_sections(
+            "sink",
+            "type",
+            enabled_sink_types_.at(stage_index),
+            /*disable_others=*/true,
+            "sink_id");
       }
 
       HM_RETURN_IF_ERROR(app_ctx->configurator().load_sub_configs(
@@ -422,6 +447,38 @@ absl::Status PipelineApplication::waitForPipelinesStopped(std::vector<std::share
   return absl::OkStatus();
 }
 
+template <typename E_TYPE>
+absl::StatusOr<std::vector<std::set<E_TYPE>>> parse_types(
+    const std::string type_name,
+    char** enable_args,
+    const std::function<std::optional<E_TYPE>(const std::string&)>& type_from_string_fn) {
+  if (!enable_args || !*enable_args) {
+    return std::vector<std::set<E_TYPE>>{};
+  }
+  std::vector<std::set<E_TYPE>> stage_enabled_types;
+  for (size_t i = 0, n = g_strv_length(enable_args); i < n; ++i) {
+    // Individual items can split by a comma
+    std::vector<std::string> p_each = absl::StrSplit(enable_args[i], ',');
+    stage_enabled_types.emplace_back();
+    for (const std::string& stype : p_each) {
+      if (std::all_of(stype.begin(), stype.end(), ::isdigit)) {
+        E_TYPE type = static_cast<E_TYPE>(std::stoi(stype.c_str()));
+        if (!type) {
+          return absl::InvalidArgumentError(TO_STRING("Invalid " << type_name << " type " << stype));
+        }
+        stage_enabled_types.rbegin()->emplace(type);
+      } else {
+        auto type_enum = type_from_string_fn(stype);
+        if (!type_enum) {
+          return absl::InvalidArgumentError(TO_STRING("Invalid " << type_name << " type " << stype));
+        }
+        stage_enabled_types.rbegin()->emplace(*type_enum);
+      }
+    }
+  }
+  return stage_enabled_types;
+}
+
 //------------------------------------------------------------------------------
 // Main run function.
 //------------------------------------------------------------------------------
@@ -525,28 +582,10 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     }
   }
 
-  if (enable_sources_) {
-    enabled_source_types_.clear();
-    for (size_t i = 0, n = g_strv_length(enable_sources_); i < n; ++i) {
-      // Individual items can split by a comma
-      std::vector<std::string> p_each = absl::StrSplit(enable_sources_[i], ',');
-      for (const std::string& stype : p_each) {
-        if (std::all_of(stype.begin(), stype.end(), ::isdigit)) {
-          NvDsSourceType type = static_cast<NvDsSourceType>(std::stoi(stype.c_str()));
-          if (!type) {
-            return absl::InvalidArgumentError(TO_STRING("Invalid source type " << stype));
-          }
-          enabled_source_types_.emplace(type);
-        } else {
-          auto type_enum = hm::source_type_from_string(stype);
-          if (!type_enum) {
-            return absl::InvalidArgumentError(TO_STRING("Invalid source type " << stype));
-          }
-          enabled_source_types_.emplace(*type_enum);
-        }
-      }
-    }
-  }
+  HM_ASSIGN_OR_RETURN(
+      enabled_source_types_, parse_types<NvDsSourceType>("source", enable_sources_, hm::source_type_from_string));
+
+  HM_ASSIGN_OR_RETURN(enabled_sink_types_, parse_types<NvDsSinkType>("sink", enable_sinks_, hm::sink_type_from_string));
 
   HM_RETURN_IF_ERROR(initializeInstances(global_cleanup_stack));
 
@@ -555,7 +594,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     current_stage_ = stage_item.first;
     auto& app_contexts = stage_app_contexts_.at(current_stage_);
     {
-      HM_RETURN_IF_ERROR(configureInstances(app_contexts));
+      HM_RETURN_IF_ERROR(configureInstances(stage_count, app_contexts));
       if (!app_contexts.empty()) {
         CleanupStack stage_cleanup_stack;
         HM_RETURN_IF_ERROR(createPipelines(app_contexts, stage_cleanup_stack));

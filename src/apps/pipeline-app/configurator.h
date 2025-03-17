@@ -1,6 +1,8 @@
 #pragma once
 
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
+
 #include "yaml-cpp/yaml.h"
 
 #include <filesystem>
@@ -9,6 +11,7 @@
 #include <unordered_set>
 
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
+#include "hstream/src/libs/common/pipeline_utils.h"
 
 struct NvDsConfig;
 struct NvDsPipeline;
@@ -32,6 +35,14 @@ class Configurator {
 
   static std::filesystem::path get_game_dir(const std::string& game_id);
   static std::filesystem::path get_private_config_file_name(const std::string& game_id);
+
+  template <typename T_ENUM>
+  std::vector<size_t> enable_sections(
+      const std::string& section_prefix,
+      const std::string& enum_field_name,
+      const std::set<T_ENUM>& enable_field_values,
+      bool disable_others,
+      const std::string& return_id_label);
 
   // return vector of source id's
   std::vector<size_t> enable_source_types(const std::set<NvDsSourceType>& source_enums, bool disable_others);
@@ -67,7 +78,46 @@ class Configurator {
   YAML::Node private_config_;
 
   bool set_stream_offsets_{false};
-
 };
+
+template <typename T_ENUM>
+inline std::vector<size_t> Configurator::enable_sections(
+    const std::string& section_prefix,
+    const std::string& enum_field_name,
+    const std::set<T_ENUM>& enable_field_values,
+    bool disable_others,
+    const std::string& return_id_label) {
+  if (enable_field_values.empty()) {
+    return {};
+  }
+  std::vector<size_t> enabled_ids;
+  YAML::Node pipeline = config_["pipeline"];
+  if (!pipeline.IsDefined()) {
+    return enabled_ids;
+  }
+  for (auto kv : pipeline) {
+    std::string key = kv.first.as<std::string>();
+    if (absl::StartsWith(key, section_prefix)) {
+      YAML::Node section_node = kv.second;
+      const T_ENUM type = static_cast<T_ENUM>(get_node_value(section_node, enum_field_name, 0));
+      if (!type) {
+        std::cerr << "Source entry has no type" << std::endl;
+        continue;
+      }
+      if (enable_field_values.count(type)) {
+        section_node["enable"] = "1";
+        if (!has_node(section_node, return_id_label, /*non_null=*/true)) {
+          std::cerr << "No source-id in enabled source section: " << key << std::endl;
+          enabled_ids.emplace_back(std::numeric_limits<size_t>::max());
+        } else {
+          enabled_ids.emplace_back(section_node[return_id_label].as<int>());
+        }
+      } else if (disable_others) {
+        section_node["enable"] = "0";
+      }
+    }
+  }
+  return enabled_ids;
+}
 
 } // namespace hm

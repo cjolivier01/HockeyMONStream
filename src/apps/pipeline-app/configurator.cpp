@@ -295,6 +295,7 @@ std::vector<size_t> Configurator::enable_source_types(
   return source_ids;
 }
 
+
 size_t Configurator::disable_source_types(const std::set<NvDsSourceType>& source_enums) {
   size_t count = 0;
   YAML::Node pipeline = config_["pipeline"];
