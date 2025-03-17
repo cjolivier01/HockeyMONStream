@@ -160,7 +160,7 @@ absl::Status PipelineApplication::configureInstances(
             "type",
             enabled_source_types_.size() == 1 ? enabled_source_types_.at(0) : enabled_source_types_.at(stage_index),
             /*disable_others=*/true,
-            "source_id");
+            "source-id");
       }
 
       if (!enabled_sink_types_.empty()) {
@@ -177,7 +177,7 @@ absl::Status PipelineApplication::configureInstances(
             "type",
             enabled_sink_types_.size() == 1 ? enabled_sink_types_.at(0) : enabled_sink_types_.at(stage_index),
             /*disable_others=*/true,
-            "sink_id");
+            "sink-id");
       }
 
       HM_RETURN_IF_ERROR(app_ctx->configurator().load_sub_configs(

@@ -159,7 +159,7 @@ sink0:
   type: 1
   sync: 0
   # sync: 0
-  source-id: 0
+  sink-id: 0
   gpu-id: 0
   nvbuf-memory-type: 0
 
@@ -171,14 +171,13 @@ sink1:
   type: 2
   sync: 0
   # sync: 0
-  source-id: 0
-  gpu-id: 0
+  sink-id: 1
   nvbuf-memory-type: 0
 
 # Encode to file
 sink2:
   enable: 0
-  sink-id: 1
+  sink-id: 2
   # Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 3
   # link-to-demux: 1
