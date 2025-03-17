@@ -15,4 +15,5 @@ sudo apt-get install -y \
   v4l-utils \
   v4l-conf \
   libgtk-3-dev \
+  libtiff5-dev \
   libgtkglext1-dev  
