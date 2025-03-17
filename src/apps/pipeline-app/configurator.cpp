@@ -1,15 +1,5 @@
 #include "configurator.h"
-#include "cupano/pano/controlMasks.h"
-#include "deepstream_app.h"
 
-#include <algorithm>
-#include <filesystem>
-#include <fstream>
-#include <iostream>
-#include <sstream>
-#include <string>
-
-#include <absl/status/status.h>
 #include <gstreamer-1.0/gst/gstelement.h>
 #include <gstreamer-1.0/gst/gstpipeline.h>
 #include <opencv2/opencv.hpp>
@@ -17,6 +7,19 @@
 #include <unistd.h>
 #include <yaml-cpp/node/parse.h>
 
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <unordered_set>
+
+#include "absl/status/status.h"
+#include "absl/strings/match.h"
+
+#include "cupano/pano/controlMasks.h"
+#include "deepstream_app.h"
 #include "hstream/src/libs/common/ConfigYaml.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/Status.h"
@@ -24,8 +27,6 @@
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/Orientation.h"
-
-#include "absl/strings/match.h"
 
 namespace fs = std::filesystem;
 
@@ -294,7 +295,6 @@ std::vector<size_t> Configurator::enable_source_types(
   }
   return source_ids;
 }
-
 
 size_t Configurator::disable_source_types(const std::set<NvDsSourceType>& source_enums) {
   size_t count = 0;
