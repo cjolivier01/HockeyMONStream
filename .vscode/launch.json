@@ -78,7 +78,8 @@
         //"--gpu-id=1",
         //"--enable-sources=CSI",
         "--enable-sources=URI-MULTIPLE",
-        "--enable-sinks=RENDER",
+        //"--enable-sinks=RENDER",
+        "--enable-sinks=FAKE",
       ],
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}",
@@ -96,7 +97,7 @@
         //"LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib",
         "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins",
         //"GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
-        "DISPLAY": ":1",
+        //"DISPLAY": ":1",
         //"CUDA_LAUNCH_BLOCKING": "1",
         //"USE_NEW_NVSTREAMMUX": "1",
         //"CUDA_VISIBLE_DEVICES": "1",
