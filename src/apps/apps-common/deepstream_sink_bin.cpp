@@ -41,10 +41,10 @@ std::string to_string(const NvDsSinkType& type) {
       return "FAKE";
 #ifndef IS_TEGRA
     case NV_DS_SINK_RENDER_EGL:
-      return "RENDER_EGL";
+      return "RENDER";
 #else
     case NV_DS_SINK_RENDER_3D:
-      return "RENDER_3D";
+      return "RENDER";
 #endif
     case NV_DS_SINK_ENCODE_FILE:
       return "ENCODE_FILE";
@@ -64,10 +64,10 @@ std::optional<NvDsSinkType> sink_type_from_string(const std::string& str) {
   if (str == "FAKE")
     return NV_DS_SINK_FAKE;
 #ifndef IS_TEGRA
-  if (str == "RENDER_EGL")
+  if (str == "RENDER")
     return NV_DS_SINK_RENDER_EGL;
 #else
-  if (str == "RENDER_3D")
+  if (str == "RENDER")
     return NV_DS_SINK_RENDER_3D;
 #endif
   if (str == "ENCODE_FILE")

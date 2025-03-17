@@ -62,7 +62,7 @@ tiled-display:
 # |_____/ \___/ \__,_|_|   \___|\___||___/
 #
 source0:
-  enable: 0
+  enable: 1
   type: 3
   # uri: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   # uri: file:///home/colivier/Videos/pdp/GX010087.mp4
@@ -76,7 +76,7 @@ source0:
   source-id: 0
 
 source1:
-  enable: 0
+  enable: 1
   type: 3
   # uri: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   # uri: file:///home/colivier/Videos/pdp/GX010003.mp4
@@ -151,6 +151,7 @@ source7:
 #  ____) || | | | |   < \__ \
 # |_____/ |_|_| |_|_|\_\|___/
 #
+# Fake
 sink0:
   enable: 0
   sink-id: 0
@@ -162,7 +163,20 @@ sink0:
   gpu-id: 0
   nvbuf-memory-type: 0
 
+# Render
 sink1:
+  enable: 1
+  sink-id: 0
+  #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
+  type: 2
+  sync: 0
+  # sync: 0
+  source-id: 0
+  gpu-id: 0
+  nvbuf-memory-type: 0
+
+# Encode to file
+sink2:
   enable: 0
   sink-id: 1
   # Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
@@ -184,9 +198,8 @@ sink1:
   profile: 0
   source-id: 0
 
-
-sink2:
-  enable: 1
+sink3:
+  enable: 0
   sink-id: 3
   # Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 4
