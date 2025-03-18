@@ -27,17 +27,14 @@ class PlayCropperPriv : public STITCH_PRIV_BASE {
   PlayCropperPriv(int gpu_id, size_t batch_size) : STITCH_PRIV_BASE(gpu_id, batch_size) {}
 
   absl::Status PreCapsInit(DSCustom_CreateParams* params) override;
-  absl::Status  PostCapsInit(DSCustom_CreateParams* params) override;
+  absl::Status PostCapsInit(DSCustom_CreateParams* params) override;
 
   // -DSCustomLibraryBase
   BufferResult ProcessBuffer(GstBuffer* inbuf) override;
   bool SetProperty(const Property& prop) override;
   // DSCustomLibraryBase-
 
-  absl::Status GenerateOutput(
-      NvDsBatchMeta* batch_meta,
-      NvBufSurface* in_surface,
-      NvBufSurface* out_surface) override;
+  absl::Status GenerateOutput(NvDsBatchMeta* batch_meta, NvBufSurface* in_surface, NvBufSurface* out_surface) override;
 
   gint AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) override;
 

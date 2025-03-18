@@ -7,9 +7,9 @@
 #include <npp.h>
 #include <nvbufsurface.h>
 #include <cmath>
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
 #include "nvbufsurface.h"
 #include "nvdsmeta.h"
-#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
 
 #include <assert.h>
 #include <cuda.h>
@@ -68,7 +68,7 @@ absl::Status PlayCropperPriv::PreCapsInit(DSCustom_CreateParams* params) {
 
 absl::Status PlayCropperPriv::PostCapsInit(DSCustom_CreateParams* params) {
   m_transformMode = true;
-  
+
   return Super::PostCapsInit(params);
 }
 
@@ -217,7 +217,6 @@ absl::Status PlayCropperPriv::GenerateOutput(
       float pct = (half_width - tcx) / half_width;
       angle = max_angle * pct;
     }
-
 
     // Calculate crop regions
 #ifndef NDEBUG

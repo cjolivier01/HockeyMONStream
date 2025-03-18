@@ -1,8 +1,8 @@
 #pragma once
 
-#include "hstream/src/libs/common/Surface.h"
-#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_interface.hpp"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_base.hpp"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_interface.hpp"
+#include "hstream/src/libs/common/Surface.h"
 
 #include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
 
@@ -19,8 +19,8 @@
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 
-#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/VideoPrepPriv.h"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
 
 #include "videoprep_plugins.h"
 

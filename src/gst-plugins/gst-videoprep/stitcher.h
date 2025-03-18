@@ -1,8 +1,7 @@
 #pragma once
 
-
-#include "hstream/src/libs/common/Status.h"
 #include "absl/status/statusor.h"
+#include "hstream/src/libs/common/Status.h"
 
 #include "cupano/pano/cudaPano.h"
 
@@ -18,10 +17,11 @@ namespace stitcher {
  * @{
  */
 // #define GST_TYPE_PLAY_CROPPER (hm::videoprep::gst_videoprep_get_type())
-// #define GST_VIDEOPREP_PLAY_CROPPER(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_PLAY_CROPPER, GstVideoPrepStitcher))
-// #define GST_VIDEOPREP_PLAY_CROPPER_CLASS(klass) (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_PLAY_CROPPER, GstVideoPrepStitcherClass))
-// #define GST_IS_VIDEOPREP_PLAY_CROPPER(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_PLAY_CROPPER))
-// #define GST_IS_VIDEOPREP_PLAY_CROPPER_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_PLAY_CROPPER))
+// #define GST_VIDEOPREP_PLAY_CROPPER(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_PLAY_CROPPER,
+// GstVideoPrepStitcher)) #define GST_VIDEOPREP_PLAY_CROPPER_CLASS(klass) (G_TYPE_CHECK_CLASS_CAST((klass),
+// GST_TYPE_PLAY_CROPPER, GstVideoPrepStitcherClass)) #define GST_IS_VIDEOPREP_PLAY_CROPPER(obj)
+// (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_PLAY_CROPPER)) #define GST_IS_VIDEOPREP_PLAY_CROPPER_CLASS(klass)
+// (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_PLAY_CROPPER))
 
 using STITCH_PRIV_BASE = CustomAlgorithmBase;
 
@@ -31,8 +31,6 @@ class StitcherPriv : public STITCH_PRIV_BASE {
  public:
   StitcherPriv(int gpu_id, size_t batch_size) : STITCH_PRIV_BASE(gpu_id, batch_size) {}
   ~StitcherPriv();
-
-  
 
   bool render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream) {
     return render_.render(name, surface, stream);
@@ -60,10 +58,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
 
   // DSCustomLibraryBase-
 
-  absl::Status GenerateOutput(
-      NvDsBatchMeta* batch_meta,
-      NvBufSurface* in_surface,
-      NvBufSurface* out_surface) override;
+  absl::Status GenerateOutput(NvDsBatchMeta* batch_meta, NvBufSurface* in_surface, NvBufSurface* out_surface) override;
 
  private:
   using STITCHER = hm::pano::cuda::CudaStitchPano<uchar4, float3>;

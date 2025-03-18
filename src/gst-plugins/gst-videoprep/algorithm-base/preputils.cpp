@@ -1,8 +1,8 @@
 #include "preputils.h"
 
-#include "cupano/cuda/cudaStatus.h"
 #include "cudaCrop.h"
 #include "cudaWarp.h"
+#include "cupano/cuda/cudaStatus.h"
 
 #include <assert.h>
 #include <string.h>

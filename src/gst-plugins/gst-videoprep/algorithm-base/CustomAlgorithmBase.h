@@ -11,9 +11,9 @@
 #include <queue>
 #include <stdexcept>
 #include <thread>
+#include "VideoPrepPriv.h"
 #include "gst-nvevent.h"
 #include "gstnvdsmeta.h"
-#include "VideoPrepPriv.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_interface.hpp"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
@@ -111,7 +111,9 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   bool outputthread_stopped = false;
 
   /* Custom Library Bufferpool */
-  BufferPoolConfig m_buffer_pool_config{0,};
+  BufferPoolConfig m_buffer_pool_config{
+      0,
+  };
   GstBufferPool* m_dsBufferPool = NULL;
   GstBufferPool* m_swbufpool = NULL;
   guint swbuffersize;

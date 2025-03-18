@@ -102,7 +102,6 @@ inline absl::Status DSCustomLibraryBase::PostCapsInit(DSCustom_CreateParams* par
   return absl::OkStatus();
 }
 
-
 inline bool getCapsDimensions(GstCaps* caps, int& width, int& height) {
   // Ensure there is at least one structure.
   if (gst_caps_get_size(caps) == 0)

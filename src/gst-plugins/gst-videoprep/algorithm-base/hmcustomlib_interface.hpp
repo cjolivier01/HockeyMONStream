@@ -32,7 +32,7 @@ struct BufferPoolConfig {
 struct DSCustom_CreateParams {
   BufferPoolConfig m_bufferPoolConfig;
   size_t output_width_height[2] = {0};
-  gchar *config_file{nullptr};
+  gchar* config_file{nullptr};
   GstBaseTransform* m_element{nullptr};
   GstCaps* m_inCaps{nullptr};
   GstCaps* m_outCaps{nullptr};
@@ -40,7 +40,7 @@ struct DSCustom_CreateParams {
   cudaStream_t m_cudaStream{nullptr};
   gboolean m_dummyMetaInsert{false};
   gboolean m_fillDummyBatchMeta{false};
-  GstBufferPool *m_bufferPool{nullptr};
+  GstBufferPool* m_bufferPool{nullptr};
 };
 
 struct Property {
@@ -63,4 +63,3 @@ class IDSCustomLibrary {
 };
 
 } // namespace hm
-

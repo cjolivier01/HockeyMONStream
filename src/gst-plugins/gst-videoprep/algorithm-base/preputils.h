@@ -4,9 +4,9 @@
 
 #include <iostream>
 
-#include "nvdsmeta.h"
-#include "hstream/src/libs/common/Surface.h"
 #include "cupano/cuda/cudaStatus.h"
+#include "hstream/src/libs/common/Surface.h"
+#include "nvdsmeta.h"
 
 #include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
 
