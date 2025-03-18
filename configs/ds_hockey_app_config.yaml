@@ -32,8 +32,8 @@ tiled-display:
   # height: 740
   # width: 888
   # height: 500
-  width: 1024
-  height: 768
+  width: 3840
+  height: 2160
   # width: 640
   # height: 360
   gpu-id: 0
@@ -166,10 +166,10 @@ sink0:
 # Render
 sink1:
   enable: 1
-  sink-id: 0
+  sink-id: 1
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
   type: 2
-  sync: 0
+  sync: 1
   # sync: 0
   sink-id: 1
   nvbuf-memory-type: 0
@@ -269,7 +269,7 @@ sink3:
 # |_|  |_|_| |_| |_|/_/    \_\\__,_|\__,_||_|\___/
 #
 hmaudio0:
-  enable: 0
+  enable: 1
   # 0=default alsa source, 1=file
   src: 0
   # audio-location: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
@@ -289,8 +289,8 @@ hmaudio0:
   # sink-id: 1
 
   # 0=independent (this local config), 1=sink, 2=multisink
-  dest: 0
-  sink-id: 0
+  dest: 1
+  sink-id: 1
   # multi-sink-ids: 0,1,2
 
 
