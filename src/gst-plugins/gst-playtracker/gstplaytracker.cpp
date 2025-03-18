@@ -34,7 +34,6 @@ inline bool CUDA_CHECK_(gint e, gint iLine, const gchar* szFile) {
 #define cuda_ck(call) CUDA_CHECK_(call, __LINE__, __FILE__)
 
 GST_DEBUG_CATEGORY_STATIC(gst_playtracker_debug);
-// #define GST_CAT_DEFAULT gst_playtracker_debug
 
 static GQuark _dsmeta_quark = 0;
 
@@ -87,11 +86,6 @@ static gboolean gst_playtracker_stop(GstBaseTransform* btrans);
 
 static GstFlowReturn gst_playtracker_transform(GstBaseTransform* btrans, GstBuffer* inbuf);
 
-// static GstFlowReturn gst_playtracker_submit_input_buffer(GstBaseTransform* btrans, gboolean discont, GstBuffer*
-// inbuf); static GstFlowReturn gst_playtracker_generate_output(GstBaseTransform* btrans, GstBuffer** outbuf);
-
-// static gpointer gst_playtracker_output_loop(gpointer data);
-
 /* Install properties, set sink and src pad capabilities, override the required
  * functions of the base class, These are common to all instances of the
  * element.
@@ -117,9 +111,6 @@ static void gst_playtracker_class_init(GstDsPlayTrackerClass* klass) {
   gstbasetransform_class->stop = GST_DEBUG_FUNCPTR(gst_playtracker_stop);
 
   gstbasetransform_class->transform_ip = GST_DEBUG_FUNCPTR(gst_playtracker_transform);
-
-  // gstbasetransform_class->submit_input_buffer = GST_DEBUG_FUNCPTR(gst_playtracker_submit_input_buffer);
-  // gstbasetransform_class->generate_output = GST_DEBUG_FUNCPTR(gst_playtracker_generate_output);
 
   /* Install properties */
   g_object_class_install_property(
