@@ -18,6 +18,7 @@
 #include "nvbufsurftransform.h"
 
 #include "preputils.h"
+#include "VideoPrepPriv.h"
 
 #include "includes/hmcustomlib_base.hpp"
 #include "videoprep_plugins.h"
@@ -33,70 +34,6 @@ namespace videoprep {
 #define ROTATION_MATRIX_SIZE 9 /**< Standard rotation matrix size */
 
 /** Data structure contaning dewarping parameters for all the output surfaces */
-class VideoPrepPriv : public DSCustomLibraryBase {
- public:
-  VideoPrepPriv(int gpu_id, size_t batch_size) : scratch_buffers(gpu_id, batch_size) {}
-  hm::surface::SurfaceList scratch_buffers;
-
-  bool render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream) {
-    return render_.render(name, surface, stream);
-  }
-
-  // -DSCustomLibraryBase
-  bool SetProperty(const Property& prop) override {
-    assert(false);
-    return true;
-  }
-
-  bool HandleEvent(GstEvent* event) override {
-    return true;
-  }
-
-  char* QueryProperties() override {
-    assert(false);
-    // ugh @ c programmers
-    return strdup("");
-  }
-
-  BufferResult ProcessBuffer(GstBuffer* inbuf) override {
-    assert(false);
-    return BufferResult::Buffer_Ok;
-  }
-
-  // DSCustomLibraryBase-
-
-  virtual absl::Status GenerateOutput(
-      NvDsBatchMeta* batch_meta,
-      videoprep::GstVideoPrep* videoprep,
-      NvBufSurface* in_surface,
-      NvBufSurface* out_surface) {
-    return absl::UnimplementedError("GenerateOutput is not implemented for VideoPrepPriv");
-  }
-
-  virtual gint AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) {
-    return 0;
-  }
-
-  void SetPrivateConfig(const char* config_string);
-
-  GstFlowReturn get_last_flow_ret() const {
-    return last_flow_ret_;
-  }
-
-  virtual void Shutdown() {}
-
- protected:
-  void update_last_flow_ret(GstFlowReturn r) {
-    if (last_flow_ret_ != GST_FLOW_ERROR) {
-      // Don't allow to set from error to non-error
-      last_flow_ret_ = r;
-    }
-  }
-
-  GstFlowReturn last_flow_ret_{GST_FLOW_OK};
-  RenderSet render_;
-};
-
 G_BEGIN_DECLS
 
 /**
@@ -141,7 +78,7 @@ struct GstVideoPrep
   gchar* plugin_type;
   gchar* plugin_private_config;
 
-  GstBufferPool *pool;            /**< Internal buffer pool for output buffers  */
+  // GstBufferPool *pool;            /**< Internal buffer pool for output buffers  */
 
   /** Input memory feature can take values MEM_FEATURE_NVMM/MEM_FEATURE_RAW
    * based on input  memory type caps*/

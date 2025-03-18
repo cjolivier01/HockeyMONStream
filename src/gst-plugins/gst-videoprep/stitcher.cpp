@@ -8,7 +8,6 @@
 #include "cupano/pano/cudaMat.h"
 
 #include "gst-nvdscustommessage.h"
-#include "gstvideoprep.h"
 
 #include <cuda_runtime.h>
 #include <gst/base/gstbasetransform.h>

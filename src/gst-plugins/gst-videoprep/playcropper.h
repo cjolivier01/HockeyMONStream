@@ -1,9 +1,7 @@
 #pragma once
 
-#include "cupano/cuda/cudaStatus.h"
-#include "gstvideoprep.h"
-
 #include "CustomAlgorithmBase.h"
+#include "hstream/src/libs/common/Status.h"
 
 namespace hm {
 namespace playcropper {

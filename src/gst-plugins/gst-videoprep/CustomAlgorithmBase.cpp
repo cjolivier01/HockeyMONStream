@@ -583,8 +583,11 @@ void CustomAlgorithmBase::OutputThread(void) {
         // Transform mode, hence transform input buffer to output buffer
         GstBuffer* newGstOutBuf = NULL;
         GstFlowReturn result = GST_FLOW_OK;
-        videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(m_element);
-        result = gst_buffer_pool_acquire_buffer(videoprep->pool, &newGstOutBuf, NULL);
+        //videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(m_element);
+        // assert(FALSE);
+        // videoprep::GstVideoPrep* videoprep = nullptr;
+        assert(m_dsBufferPool);
+        result = gst_buffer_pool_acquire_buffer(m_dsBufferPool, &newGstOutBuf, NULL);
         if (result != GST_FLOW_OK) {
           GST_ERROR_OBJECT(m_element, "InsertCustomFrame failed error = %d, exiting...", result);
           // exit(-1);
@@ -622,7 +625,7 @@ void CustomAlgorithmBase::OutputThread(void) {
 
         assert(m_element);
         // videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(m_element);
-        assert(videoprep);
+        // assert(videoprep);
         cuda_status.Update(GenerateOutput(batch_meta, videoprep, in_surf, out_surf));
         if (!cuda_status.ok()) {
           std::cerr << cuda_status << std::endl;

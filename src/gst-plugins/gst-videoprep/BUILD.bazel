@@ -1,5 +1,5 @@
-load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 load("@gst_plugin_dev//buildfiles:gst_plugin.bzl", "gst_cc_plugin")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
 config_setting(
     name = "x86_64-linux-gnu",
@@ -14,12 +14,13 @@ config_setting(
 gst_cc_plugin(
     name = "nvdsgst_videoprep",
     srcs = glob([
-        "*.cpp",
-        "customlib_impl/*.cpp",
+        "gstvideoprep.cpp",
+        "videoprep_plugins.cpp",
     ]),
     hdrs = glob([
-        "*.h",
-        "includes/*.hpp",
+        "gstvideoprep.h",
+        "videoprep_plugins.h",
+        "videoprep_property_parser.h"
     ]),
     copts = [
         "-Iincludes",
@@ -27,9 +28,9 @@ gst_cc_plugin(
         "-Wno-error=unused-variable",
         "-Wno-error=write-strings",
     ],
-    includes = [
-        "includes",
-    ],
+    # includes = [
+    #     "includes",
+    # ],
     linkopts = select({
         ":aarch64-linux-gnu": ["-L/usr/local/cuda/targets/aarch64-linux/lib"],
         ":x86_64-linux-gnu": ["-L/usr/local/cuda/targets/x86_64-linux/lib"],
@@ -51,14 +52,70 @@ gst_cc_plugin(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        ":play_cropper_cuda_lib",
+        ":playcropper_lib",
+        ":stitcher_lib",
         "//src/libs/common:utils",
-        "//src/libs/stitching:stitching",
         "@com_google_absl//absl/strings",
-        "@hm-cupano//src/pano:cuda_pano",
-        "@hm-cupano//src/cuda:cuda_blend_cuda_lib",
         "@jetson-utils//cuda:cuda_lib",
         "@jetson-utils//display:display",
+    ],
+)
+
+cc_library(
+    name = "playcropper_lib",
+    srcs = [
+      "playcropper.cpp",
+    ],
+    hdrs = [
+      "playcropper.h",
+    ],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":videoprep_common",
+    ],
+)
+
+cc_library(
+    name = "stitcher_lib",
+    srcs = [
+      "stitcher.cpp",
+    ],
+    hdrs = [
+      "stitcher.h",
+    ],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":videoprep_common",
+        "//src/libs/stitching",
+        "@hm-cupano//src/cuda:cuda_blend_cuda_lib",
+        "@hm-cupano//src/pano:cuda_pano",
+    ],
+)
+
+cc_library(
+    name = "videoprep_common",
+    srcs = [
+        "preputils.cpp",
+        "CustomAlgorithmBase.cpp",
+        "gst_utils.cpp",
+        "customlib_impl/customlib_impl.cpp",
+    ],
+    hdrs = [
+        "preputils.h",
+        "CustomAlgorithmBase.h",
+        "VideoPrepPriv.h",
+        "gst_utils.h",
+        "includes/hmcustomlib_interface.hpp",
+        "includes/hmcustomlib_factory.hpp",
+        "includes/hmcustomlib_base.hpp",
+    ],
+    includes = [
+        ".",
+        # "includes",
+    ],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":play_cropper_cuda_lib",
     ],
 )
 

@@ -13,14 +13,14 @@
 #include <thread>
 #include "gst-nvevent.h"
 #include "gstnvdsmeta.h"
-#include "gstvideoprep.h"
+#include "VideoPrepPriv.h"
 #include "includes/hmcustomlib_interface.hpp"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 #include "nvdscustomusermeta.h"
 #include "nvdsdummyusermeta.h"
 
-#include "hmcustomlib_base.hpp"
+// #include "includes/hmcustomlib_base.hpp"
 
 namespace hm {
 
@@ -102,6 +102,7 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   void update_meta(NvDsBatchMeta* batch_meta, uint32_t icnt);
 
  public:
+  videoprep::GstVideoPrep* videoprep_;
   guint source_id = 0;
   guint m_frameNum = 0;
   gdouble m_scaleFactor = 1.0;
@@ -110,7 +111,7 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   bool outputthread_stopped = false;
 
   /* Custom Library Bufferpool */
-  // GstBufferPool* m_dsBufferPool = NULL;
+  GstBufferPool* m_dsBufferPool = NULL;
   GstBufferPool* m_swbufpool = NULL;
   guint swbuffersize;
 
