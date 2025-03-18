@@ -1,12 +1,14 @@
 #pragma once
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_interface.hpp"
 
 #include "hstream/src/libs/common/pipeline_utils.h"
+
+#include "deepstream/sources/includes/nvbufsurface.h"
 
 #include <gst/base/gstbasetransform.h>
 #include <gst/video/video.h>
 
 #include "gstnvdsbufferpool.h"
-#include "hmcustomlib_interface.hpp"
 
 #include <cassert>
 

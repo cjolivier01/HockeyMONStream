@@ -5,7 +5,7 @@
 #include <functional>
 #include <stdexcept>
 
-#include "hmcustomlib_interface.hpp"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_interface.hpp"
 
 namespace hm {
 

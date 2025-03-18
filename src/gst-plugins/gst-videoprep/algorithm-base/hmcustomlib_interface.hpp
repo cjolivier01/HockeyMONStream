@@ -4,7 +4,6 @@
 #include <gst/base/gstbasetransform.h>
 #include <gst/gstbuffer.h>
 
-#include <optional>
 #include <string>
 
 #include "absl/status/status.h"

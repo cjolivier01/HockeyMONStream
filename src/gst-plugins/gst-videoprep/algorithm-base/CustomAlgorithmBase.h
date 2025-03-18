@@ -1,5 +1,7 @@
 #pragma once
 
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_interface.hpp"
+
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <gstreamer-1.0/gst/gstpad.h>
@@ -14,7 +16,6 @@
 #include "VideoPrepPriv.h"
 #include "gst-nvevent.h"
 #include "gstnvdsmeta.h"
-#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_interface.hpp"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 #include "nvdscustomusermeta.h"

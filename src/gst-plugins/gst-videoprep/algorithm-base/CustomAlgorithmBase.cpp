@@ -5,7 +5,7 @@
  * [License text repeated here if needed]
  */
 
-#include "CustomAlgorithmBase.h"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 #include "hstream/src/libs/common/Status.h"
 
 // Additional standard includes.
