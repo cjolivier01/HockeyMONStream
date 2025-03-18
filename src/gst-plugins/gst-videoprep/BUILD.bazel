@@ -69,7 +69,8 @@ cc_library(
     ],
     visibility = ["//visibility:private"],
     deps = [
-        ":videoprep_common",
+        ":play_cropper_cuda_lib",
+        "//src/gst-plugins/gst-videoprep/algorithm-base",
     ],
 )
 
@@ -83,39 +84,38 @@ cc_library(
     ],
     visibility = ["//visibility:private"],
     deps = [
-        ":videoprep_common",
+        "//src/gst-plugins/gst-videoprep/algorithm-base",
         "//src/libs/stitching",
         "@hm-cupano//src/cuda:cuda_blend_cuda_lib",
         "@hm-cupano//src/pano:cuda_pano",
     ],
 )
 
-cc_library(
-    name = "videoprep_common",
-    srcs = [
-        "preputils.cpp",
-        "CustomAlgorithmBase.cpp",
-        "gst_utils.cpp",
-        "customlib_impl/customlib_impl.cpp",
-    ],
-    hdrs = [
-        "preputils.h",
-        "CustomAlgorithmBase.h",
-        "VideoPrepPriv.h",
-        "gst_utils.h",
-        "includes/hmcustomlib_interface.hpp",
-        "includes/hmcustomlib_factory.hpp",
-        "includes/hmcustomlib_base.hpp",
-    ],
-    includes = [
-        ".",
-        # "includes",
-    ],
-    visibility = ["//visibility:private"],
-    deps = [
-        ":play_cropper_cuda_lib",
-    ],
-)
+# cc_library(
+#     name = "videoprep_common",
+#     srcs = [
+#         "preputils.cpp",
+#         "CustomAlgorithmBase.cpp",
+#         "gst_utils.cpp",
+#         "customlib_impl/customlib_impl.cpp",
+#     ],
+#     hdrs = [
+#         "preputils.h",
+#         "CustomAlgorithmBase.h",
+#         "VideoPrepPriv.h",
+#         "gst_utils.h",
+#         "includes/hmcustomlib_interface.hpp",
+#         "includes/hmcustomlib_factory.hpp",
+#         "includes/hmcustomlib_base.hpp",
+#     ],
+#     includes = [
+#         ".",
+#         # "includes",
+#     ],
+#     visibility = ["//visibility:private"],
+#     deps = [
+#     ],
+# )
 
 cuda_library(
     name = "play_cropper_cuda_lib",

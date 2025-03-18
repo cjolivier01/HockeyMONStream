@@ -14,7 +14,7 @@
 #include "gst-nvevent.h"
 #include "gstnvdsmeta.h"
 #include "VideoPrepPriv.h"
-#include "includes/hmcustomlib_interface.hpp"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_interface.hpp"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 #include "nvdscustomusermeta.h"

@@ -1,8 +1,10 @@
 #pragma once
 
-#include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
 #include "hstream/src/libs/common/Surface.h"
-#include "includes/hmcustomlib_interface.hpp"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_interface.hpp"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_base.hpp"
+
+#include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
 
 #include <gst/base/gstbasetransform.h>
 #include <gst/gst.h>
@@ -17,10 +19,9 @@
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 
-#include "preputils.h"
-#include "VideoPrepPriv.h"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/VideoPrepPriv.h"
 
-#include "includes/hmcustomlib_base.hpp"
 #include "videoprep_plugins.h"
 
 #include <cassert>

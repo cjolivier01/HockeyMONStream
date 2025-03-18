@@ -1,22 +1,24 @@
 #pragma once
 
+#include "hstream/src/libs/common/RenderSet.h"
 #include "hstream/src/libs/common/Surface.h"
-#include "includes/hmcustomlib_interface.hpp"
+// #include "includes/hmcustomlib_interface.hpp"
 
-#include <gst/base/gstbasetransform.h>
-#include <gst/gst.h>
-#include <gst/video/gstvideometa.h>
-#include <gst/video/video.h>
+// #include <gst/base/gstbasetransform.h>
+// #include <gst/gst.h>
+// #include <gst/video/gstvideometa.h>
+// #include <gst/video/video.h>
 
-#include <cuda.h>
-#include <npp.h>
+// #include <cuda.h>
+// #include <npp.h>
 
 #include "nvbufsurface.h"
-#include "nvbufsurftransform.h"
+#include "nvdsmeta.h"
+// #include "nvbufsurftransform.h"
 
-#include "preputils.h"
+// #include "preputils.h"
 
-#include "includes/hmcustomlib_base.hpp"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_base.hpp"
 
 #include "absl/status/status.h"
 
@@ -57,10 +59,7 @@ class VideoPrepPriv : public DSCustomLibraryBase {
 
   // DSCustomLibraryBase-
 
-  virtual absl::Status GenerateOutput(
-      NvDsBatchMeta* batch_meta,
-      NvBufSurface* in_surface,
-      NvBufSurface* out_surface) {
+  virtual absl::Status GenerateOutput(NvDsBatchMeta* batch_meta, NvBufSurface* in_surface, NvBufSurface* out_surface) {
     return absl::UnimplementedError("GenerateOutput is not implemented for VideoPrepPriv");
   }
 

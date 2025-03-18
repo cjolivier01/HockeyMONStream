@@ -15,10 +15,10 @@
 #include <iostream>
 #include <mutex>
 #include "gst-nvcommon.h"
-#include "gst_utils.h"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/gst_utils.h"
 #include "gstnvdsbufferpool.h"
 #include "gstnvdsmeta.h"
-#include "includes/hmcustomlib_interface.hpp"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_interface.hpp"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 #include "nvds_dewarper_meta.h"

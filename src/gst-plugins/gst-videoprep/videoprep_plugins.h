@@ -1,6 +1,6 @@
 #pragma once
 
-#include "includes/hmcustomlib_factory.hpp"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_factory.hpp"
 
 #include <string>
 

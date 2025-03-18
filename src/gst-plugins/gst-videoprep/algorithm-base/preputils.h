@@ -4,15 +4,11 @@
 
 #include <iostream>
 
-#include "glDisplay.h"
 #include "nvdsmeta.h"
 #include "hstream/src/libs/common/Surface.h"
 #include "cupano/cuda/cudaStatus.h"
 
 #include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
-
-#include <map>
-#include <mutex>
 
 namespace hm {
 
@@ -78,17 +74,5 @@ template <typename T>
 inline NppiRect get_nppirect(const T& box) {
   return NppiRect{.x = (int)box.left, .y = (int)box.top, .width = (int)box.width(), .height = (int)box.height()};
 }
-
-class RenderSet {
- public:
-  bool render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream);
-
- private:
-  static std::unique_ptr<glDisplay> create_video_output(const std::string& name, const hm::surface::Surface& surface);
-  videoOutput* get_video_output(const std::string& name, const hm::surface::Surface& surface);
-
-  std::mutex mu_;
-  std::map<std::string, std::unique_ptr<glDisplay>> video_outputs_;
-};
 
 } // namespace hm
