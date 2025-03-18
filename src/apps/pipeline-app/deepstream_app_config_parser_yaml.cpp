@@ -41,11 +41,9 @@ static int get_trailing_integer(const std::string& input) {
   return std::stoi(numberStr); // Convert to integer
 }
 
-static gboolean parse_tests_yaml(NvDsConfig* config, const gchar* cfg_file_path) {
+static gboolean parse_tests_yaml(NvDsConfig* config, const YAML::Node& yaml_ndoe) {
   gboolean ret = FALSE;
-  YAML::Node configyml = YAML::LoadFile(cfg_file_path);
-
-  for (YAML::const_iterator itr = configyml["tests"].begin(); itr != configyml["tests"].end(); ++itr) {
+  for (YAML::const_iterator itr = yaml_ndoe.begin(); itr != yaml_ndoe.end(); ++itr) {
     std::string paramKey = itr->first.as<std::string>();
     if (paramKey == "file-loop") {
       config->file_loop = itr->second.as<gint>();
@@ -526,7 +524,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
     } else if (paramKey == "message-converter") {
       parse_err = !parse_msgconv_yaml(&config->msg_conv_config, paramKey, config_dir.c_str());
     } else if (paramKey == "tests") {
-      parse_err = !parse_tests_yaml(config, config_dir.c_str());
+      parse_err = !parse_tests_yaml(config, itr->second);
     } else if (paramKey.compare(0, dewarper_str.size(), dewarper_str) == 0) {
       size_t start = paramKey.find(dewarper_str);
       int source_id = 0;

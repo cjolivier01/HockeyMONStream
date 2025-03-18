@@ -42,6 +42,8 @@ std::vector<std::string> split_string(std::string input);
 
 gboolean get_absolute_file_path_yaml(const gchar* cfg_file_path, const gchar* file_path, char* abs_path_str);
 
+bool getAbsoluteFilePathYaml(const std::string& cfgFilePath, const std::string& filePath, std::string& absPathStr);
+
 gboolean parse_streammux_yaml(NvDsStreammuxConfig* config, const YAML::Node& configyml, const gchar* cfg_file_path);
 
 gboolean parse_tiled_display_yaml(NvDsTiledDisplayConfig* config, const YAML::Node& yaml_node);
