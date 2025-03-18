@@ -10,7 +10,7 @@
 #include <gstreamer-1.0/gst/gstinfo.h>
 #include <gstreamer-1.0/gst/gstpad.h>
 #include <npp.h>
-#include <nvbufsurface.h>
+#include "deepstream/sources/includes/nvbufsurface.h"
 #include <cmath>
 #include <iostream>
 #include <mutex>

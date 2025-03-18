@@ -2,6 +2,7 @@
 #include "gstvideoprep.h"
 
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/playcropper.h"
+#include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker.h"
 #include "hstream/src/gst-plugins/gst-videoprep/stitcher/stitcher.h"
 
 namespace hm {
@@ -40,8 +41,8 @@ static gboolean videoprep_init(GstPlugin* plugin) {
 
   gboolean result = false;
   // gboolean result = gst_element_register(plugin, "videoprep", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
-  result |= gst_element_register(plugin, "playcropper", GST_RANK_NONE, GST_TYPE_PLAY_CROPPER);
-  result |= gst_element_register(plugin, "hmstitcher", GST_RANK_NONE, GST_TYPE_PLAY_CROPPER);
+  result |= gst_element_register(plugin, "playcropper", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
+  result |= gst_element_register(plugin, "hmstitcher", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
   return result;
 }
 } // namespace videoprep
@@ -51,10 +52,10 @@ static gboolean videoprep_init(GstPlugin* plugin) {
 #define PACKAGE "videoprep"
 #endif
 
-#define PACKAGE_DESCRIPTION "Gstreamer plugin to dewarp 360d surfaces"
+#define PACKAGE_DESCRIPTION "Gstreamer plugin to do stuff"
 #define PACKAGE_LICENSE "Proprietary"
-#define PACKAGE_NAME "GStreamer nVidia Dewarper Plugin"
-#define PACKAGE_URL "http://nvidia.com/"
+#define PACKAGE_NAME "GStreamer Stuff Plugin"
+#define PACKAGE_URL "http://ghute.fahrt/"
 
 GST_PLUGIN_DEFINE(
     GST_VERSION_MAJOR,

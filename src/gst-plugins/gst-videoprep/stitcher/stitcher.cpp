@@ -15,7 +15,7 @@
 #include <gst/video/video.h>
 #include <gstreamer-1.0/gst/gstinfo.h>
 #include <npp.h>
-#include <nvbufsurface.h>
+#include "deepstream/sources/includes/nvbufsurface.h"
 #include <cmath>
 #include <map>
 #include "deepstream/sources/includes/nvbufsurface.h"

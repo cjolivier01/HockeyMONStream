@@ -5,7 +5,7 @@
 #include <gst/gst.h>
 #include <gst/video/video.h>
 #include <npp.h>
-#include <nvbufsurface.h>
+#include "deepstream/sources/includes/nvbufsurface.h"
 #include <cmath>
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
 #include "deepstream/sources/includes/nvbufsurface.h"

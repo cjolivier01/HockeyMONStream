@@ -3,7 +3,7 @@
 #include <string>
 
 #include <cuda_runtime.h>
-#include <nvbufsurface.h>
+#include "deepstream/sources/includes/nvbufsurface.h"
 #include <nvdsmeta.h>
 
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
