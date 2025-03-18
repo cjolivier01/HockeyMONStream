@@ -6,6 +6,7 @@
  */
 
 #include "CustomAlgorithmBase.h"
+#include "hstream/src/libs/common/Status.h"
 
 // Additional standard includes.
 #include <iostream>
@@ -14,6 +15,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include <absl/status/status.h>
 #include <pthread.h>
 
 namespace hm {
@@ -25,13 +27,16 @@ namespace hm {
 // }
 
 // Set Init Parameters
-bool CustomAlgorithmBase::PostCapsInit(DSCustom_CreateParams* params) {
-  DSCustomLibraryBase::PostCapsInit(params);
+absl::Status CustomAlgorithmBase::PostCapsInit(DSCustom_CreateParams* params) {
+  
+  HM_RETURN_IF_ERROR(DSCustomLibraryBase::PostCapsInit(params));
 
-  BufferPoolConfig pool_config{0};
   GstStructure* s1 = NULL;
   GstCapsFeatures* feature;
   GstStructure* config = NULL;
+
+  cuda_stream_ = params->m_cudaStream;
+  assert(cuda_stream_); // temporary, maybe we dont even use cuda, just make sure its set if we do
 
   s1 = gst_caps_get_structure(m_inCaps, 0);
 
@@ -44,7 +49,7 @@ bool CustomAlgorithmBase::PostCapsInit(DSCustom_CreateParams* params) {
 
   // Create buffer pool
   // Set the params properly based on this custom library requirement
-  pool_config.cuda_mem_type = NVBUF_MEM_DEFAULT;
+  params->m_bufferPoolConfig.cuda_mem_type = NVBUF_MEM_DEFAULT;
   if (hw_caps == false) {
     // pool_config.cuda_mem_type = NVBUF_MEM_SYSTEM;
     m_swbufpool = gst_buffer_pool_new();
@@ -56,24 +61,23 @@ bool CustomAlgorithmBase::PostCapsInit(DSCustom_CreateParams* params) {
     gst_buffer_pool_config_set_params(config, m_outCaps, swbuffersize, 4, 4);
     if (!gst_buffer_pool_set_config(m_swbufpool, config)) {
       printf("FAILED TO SET CONFIG SW BUFFER POOL\n");
-      return false;
+      return absl::InternalError("FAILED TO SET CONFIG SW BUFFER POOL");
     }
     gboolean is_active = gst_buffer_pool_set_active(m_swbufpool, TRUE);
     if (!is_active) {
-      GST_WARNING(" Failed to allocate the buffers inside the output pool");
-      return false;
+      return absl::InternalError(" Failed to allocate the buffers inside the output pool");
     } else {
       GST_DEBUG_OBJECT(m_element, " Output SW buffer pool (%p) successfully created", m_swbufpool);
     }
   } else {
-    pool_config.gpu_id = params->m_gpuId;
-    pool_config.max_buffers = 4;
-    gst_structure_get_int(s1, "batch-size", &pool_config.batch_size);
+    params->m_bufferPoolConfig.gpu_id = params->m_gpuId;
+    params->m_bufferPoolConfig.max_buffers = 4;
+    gst_structure_get_int(s1, "batch-size", &params->m_bufferPoolConfig.batch_size);
 
-    if (pool_config.batch_size == 0) {
+    if (params->m_bufferPoolConfig.batch_size == 0) {
       // If this component is placed before mux, batch-size value is not set
       // In this case make batch_size = 1
-      pool_config.batch_size = 1;
+      params->m_bufferPoolConfig.batch_size = 1;
     }
 
     // m_dsBufferPool = CreateBufferPool(&pool_config, m_outCaps);
@@ -86,8 +90,8 @@ bool CustomAlgorithmBase::PostCapsInit(DSCustom_CreateParams* params) {
   }
 
   m_outputThread = new std::thread(&CustomAlgorithmBase::OutputThread, this);
-
-  return true;
+  m_buffer_pool_config = params->m_bufferPoolConfig;
+  return absl::OkStatus();
 }
 
 // Return Compatible Output Caps based on input caps
@@ -315,7 +319,7 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
   GST_DEBUG_OBJECT(m_element, "CustomLib: ---> Inside %s frame_num = %d\n", __func__, m_frameNum++);
 
   if (last_flow_ret_ == GST_FLOW_ERROR) {
-     return BufferResult::Buffer_Error;
+    return BufferResult::Buffer_Error;
   }
 
   // TODO: End of Stream Handling
@@ -583,9 +587,9 @@ void CustomAlgorithmBase::OutputThread(void) {
         // Transform mode, hence transform input buffer to output buffer
         GstBuffer* newGstOutBuf = NULL;
         GstFlowReturn result = GST_FLOW_OK;
-        //videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(m_element);
-        // assert(FALSE);
-        // videoprep::GstVideoPrep* videoprep = nullptr;
+        // videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(m_element);
+        //  assert(FALSE);
+        //  videoprep::GstVideoPrep* videoprep = nullptr;
         assert(m_dsBufferPool);
         result = gst_buffer_pool_acquire_buffer(m_dsBufferPool, &newGstOutBuf, NULL);
         if (result != GST_FLOW_OK) {
@@ -626,7 +630,8 @@ void CustomAlgorithmBase::OutputThread(void) {
         assert(m_element);
         // videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(m_element);
         // assert(videoprep);
-        cuda_status.Update(GenerateOutput(batch_meta, videoprep, in_surf, out_surf));
+        assert(cuda_stream_);
+        cuda_status.Update(GenerateOutput(batch_meta, in_surf, out_surf));
         if (!cuda_status.ok()) {
           std::cerr << cuda_status << std::endl;
           if (cuda_status.code() == absl::StatusCode::kCancelled) {

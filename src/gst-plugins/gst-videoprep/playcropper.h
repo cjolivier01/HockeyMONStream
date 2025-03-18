@@ -26,8 +26,8 @@ class PlayCropperPriv : public STITCH_PRIV_BASE {
  public:
   PlayCropperPriv(int gpu_id, size_t batch_size) : STITCH_PRIV_BASE(gpu_id, batch_size) {}
 
-  bool PreCapsInit(DSCustom_CreateParams* params) override;
-  bool PostCapsInit(DSCustom_CreateParams* params) override;
+  absl::Status PreCapsInit(DSCustom_CreateParams* params) override;
+  absl::Status  PostCapsInit(DSCustom_CreateParams* params) override;
 
   // -DSCustomLibraryBase
   BufferResult ProcessBuffer(GstBuffer* inbuf) override;
@@ -36,7 +36,6 @@ class PlayCropperPriv : public STITCH_PRIV_BASE {
 
   absl::Status GenerateOutput(
       NvDsBatchMeta* batch_meta,
-      videoprep::GstVideoPrep* videoprep,
       NvBufSurface* in_surface,
       NvBufSurface* out_surface) override;
 
@@ -47,6 +46,7 @@ class PlayCropperPriv : public STITCH_PRIV_BASE {
 };
 
 /** GStreamer boilerplate. */
+#if 0
 struct GstVideoPrepPlayCropper : public videoprep::GstVideoPrep {
   // Don't add stuff here
   GstVideoPrepPlayCropper() {
@@ -59,6 +59,7 @@ struct GstVideoPrepPlayCropperClass : public videoprep::GstVideoPrepClass {
     static_assert(sizeof(GstVideoPrepPlayCropperClass) == sizeof(videoprep::GstVideoPrepClass));
   }
 };
+#endif
 
 } // namespace playcropper
 } // namespace hm

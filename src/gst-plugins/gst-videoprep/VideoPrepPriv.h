@@ -59,7 +59,6 @@ class VideoPrepPriv : public DSCustomLibraryBase {
 
   virtual absl::Status GenerateOutput(
       NvDsBatchMeta* batch_meta,
-      videoprep::GstVideoPrep* videoprep,
       NvBufSurface* in_surface,
       NvBufSurface* out_surface) {
     return absl::UnimplementedError("GenerateOutput is not implemented for VideoPrepPriv");

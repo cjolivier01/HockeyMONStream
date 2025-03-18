@@ -63,23 +63,23 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   }
 
   /* Set Init Parameters */
-  virtual bool PostCapsInit(DSCustom_CreateParams* params);
+  absl::Status PostCapsInit(DSCustom_CreateParams* params) override;
 
   /* Set Custom Properties  of the library */
-  virtual bool SetProperty(const Property& prop);
+  bool SetProperty(const Property& prop) override;
 
   /* Pass GST events to the library */
-  virtual bool HandleEvent(GstEvent* event);
+  bool HandleEvent(GstEvent* event) override;
 
-  virtual char* QueryProperties();
+  char* QueryProperties() override;
 
   /* Process Incoming Buffer */
-  virtual BufferResult ProcessBuffer(GstBuffer* inbuf);
+  BufferResult ProcessBuffer(GstBuffer* inbuf) override;
 
-  virtual void Shutdown();
+  void Shutdown() override;
 
   /* Retrun Compatible Caps */
-  virtual GstCaps* GetCompatibleCaps(GstPadDirection direction, GstCaps* in_caps, GstCaps* othercaps);
+  GstCaps* GetCompatibleCaps(GstPadDirection direction, GstCaps* in_caps, GstCaps* othercaps) override;
 
   gboolean hw_caps;
 
@@ -111,6 +111,7 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   bool outputthread_stopped = false;
 
   /* Custom Library Bufferpool */
+  BufferPoolConfig m_buffer_pool_config{0,};
   GstBufferPool* m_dsBufferPool = NULL;
   GstBufferPool* m_swbufpool = NULL;
   guint swbuffersize;
@@ -122,6 +123,7 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   std::queue<PacketInfo> m_processQ;
   std::mutex m_processLock;
   std::condition_variable m_processCV;
+  cudaStream_t cuda_stream_{0};
   absl::Status cuda_status;
   NvBufSurfTransformConfigParams m_config_params;
   /* Aysnc Stop Handling */

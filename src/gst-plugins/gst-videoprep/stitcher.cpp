@@ -47,20 +47,20 @@ StitcherPriv::~StitcherPriv() {
   stitcher_.reset();
 }
 
-absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher(videoprep::GstVideoPrep* videoprep) {
+absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
   if (configure_only_) {
     return (StitcherPriv::STITCHER*)nullptr;
   }
-  if (!videoprep->config_file || !*videoprep->config_file) {
+  if (config_file_.empty()) {
     return absl::NotFoundError("No control masks to load");
   }
   absl::MutexLock lk(&stitcher_mu_);
   if (!stitcher_) {
     hm::pano::ControlMasks control_masks;
-    if (!control_masks.load(videoprep->config_file)) {
-      std::string config_file_dir = videoprep->config_file;
-      // Don;t try again
-      videoprep->config_file[0] = '\0';
+    if (!control_masks.load(config_file_)) {
+      std::string config_file_dir = config_file_;
+      // Don't try again
+      config_file_.clear();
       return absl::NotFoundError(TO_STRING("Could not load control masks from " << config_file_dir));
     }
     stitcher_ = std::make_unique<hm::pano::cuda::CudaStitchPano<uchar4, float3>>(
@@ -72,12 +72,15 @@ absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher(videoprep::Gs
   return stitcher_.get();
 }
 
-bool StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
-  videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
-  auto res = get_stitcher(videoprep);
+absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
+  // videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
+  if (params->config_file) {
+    config_file_ = params->config_file;
+  }
+  auto res = get_stitcher();
   if (!res.ok()) {
     std::cerr << res.status() << std::endl;
-    return false;
+    return res.status();
   }
   STITCHER* stitcher = res.value();
 
@@ -88,19 +91,18 @@ bool StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
   m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
 
   if (stitcher) {
-    videoprep->output_width = stitcher->canvas_width();
-    videoprep->output_height = stitcher->canvas_height();
-
+    // TODO: handle this through caps
+    params->output_width_height[0] = stitcher->canvas_width();
+    params->output_width_height[1] = stitcher->canvas_height();
+    // videoprep->output_width = stitcher->canvas_width();
+    // videoprep->output_height = stitcher->canvas_height();
     g_print("Stitched canvas size: %d x %d\n", (int)stitcher->canvas_width(), (int)stitcher->canvas_height());
   }
-  return true;
+  return absl::OkStatus();
 }
 
-bool StitcherPriv::PostCapsInit(DSCustom_CreateParams* params) {
-  if (!Super::PostCapsInit(params)) {
-    return false;
-  }
-  return true;
+absl::Status StitcherPriv::PostCapsInit(DSCustom_CreateParams* params) {
+  return Super::PostCapsInit(params);
 }
 
 bool StitcherPriv::SetProperty(const Property& prop) {
@@ -147,7 +149,6 @@ struct ModifyBatchFrames {
 
 absl::Status StitcherPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
-    videoprep::GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
   if (configure_only_) {
@@ -172,9 +173,9 @@ absl::Status StitcherPriv::GenerateOutput(
   //  frame_number -> source_id -> NvBufSurfaceParams*
   std::map<int, std::map<int, FrameInfo>> frame_source_surfaces;
 
-  assert(videoprep->stream);
+  assert(cuda_stream_);
 
-  HM_RETURN_IF_ERROR(to_status(cudaSetDevice(videoprep->gpu_id)));
+  HM_RETURN_IF_ERROR(to_status(cudaSetDevice(m_gpuId)));
 
   out_surface->numFilled = 0;
   out_surface->batchSize = in_surface->batchSize / 2;
@@ -244,8 +245,8 @@ absl::Status StitcherPriv::GenerateOutput(
 
     NvBufSurfaceParams* output_params = &out_surface->surfaceList[out_surface_index];
 
-    // render("left", frame_info_left.surface_params, videoprep->stream);
-    // render("right", frame_info_right.surface_params, videoprep->stream);
+    // render("left", frame_info_left.surface_params, cuda_stream_);
+    // render("right", frame_info_right.surface_params, cuda_stream_);
 
     NvDsFrameMeta* reuse_frame_meta{nullptr};
     assert(source_frame_metas.size() == 2);
@@ -278,14 +279,14 @@ absl::Status StitcherPriv::GenerateOutput(
     // Maybe configure stitching with these frames
     if (!process_pass_++) {
       bool is_configured;
-      HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(videoprep->config_file));
+      HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(config_file_));
       if (!is_configured || configure_only_) {
         if (!configure_only_) {
           return absl::FailedPreconditionError("Stitching is not configured");
         } else {
 #if 1
           absl::Status configure_status =
-              stitching::configure_stitching(videoprep->config_file, incoming_surface_left, incoming_surface_right);
+              stitching::configure_stitching(config_file_, incoming_surface_left, incoming_surface_right);
           if (!configure_status.ok()) {
             return to_status(CudaStatus(
                 cudaError_t::cudaErrorLaunchFailure, (std::stringstream() << configure_status.message()).str()));
@@ -342,27 +343,29 @@ absl::Status StitcherPriv::GenerateOutput(
         },
         /*batch_size=*/1);
 
-    // render("left", left_params, videoprep->stream);
-    // render("right", right_params, videoprep->stream);
+    // render("left", left_params, cuda_stream_);
+    // render("right", right_params, cuda_stream_);
     // Why suddenly now I need to clear the canvas?
+
+    assert(cuda_stream_);
 
     if (stitcher_) {
       HM_RETURN_IF_ERROR(to_status(cudaMemsetAsync(
-          canvas->data_raw(), 0, canvas->height() * canvas->pitch() * canvas->batch_size(), videoprep->stream)));
-      HM_CUDA_ASSIGN_OR_RETURN(canvas, stitcher_->process(left, right, videoprep->stream, std::move(canvas)));
+          canvas->data_raw(), 0, canvas->height() * canvas->pitch() * canvas->batch_size(), cuda_stream_)));
+      HM_CUDA_ASSIGN_OR_RETURN(canvas, stitcher_->process(left, right, cuda_stream_, std::move(canvas)));
     } else {
       // Gray image
       HM_RETURN_IF_ERROR(to_status(cudaMemsetAsync(
-          canvas->data_raw(), 128, canvas->height() * canvas->pitch() * canvas->batch_size(), videoprep->stream)));
+          canvas->data_raw(), 128, canvas->height() * canvas->pitch() * canvas->batch_size(), cuda_stream_)));
     }
 
     if (show_) {
-      render("HM Stitcher (LEFT)", incoming_surface_left, videoprep->stream);
-      render("HM Stitcher (RIGHT)", incoming_surface_right, videoprep->stream);
-      render("HM Stitcher", outgoing_surface, videoprep->stream);
+      render("HM Stitcher (LEFT)", incoming_surface_left, cuda_stream_);
+      render("HM Stitcher (RIGHT)", incoming_surface_right, cuda_stream_);
+      render("HM Stitcher", outgoing_surface, cuda_stream_);
     }
 
-    // render("canvas", output_params, videoprep->stream);
+    // render("canvas", output_params, cuda_stream_);
     ++out_surface->numFilled;
     // Both should have the same 'persistent_frame_meta'
     // TODO: Should we do this later under a batch meta lock?
@@ -380,22 +383,22 @@ absl::Status StitcherPriv::GenerateOutput(
     // batch_meta->frame_meta_pool->max_elements_in_pool /= 2;
     batch_meta->max_frames_in_batch = batch_meta->num_frames_in_batch;
     // assert(batch_meta->max_frames_in_batch); // make sure we didnt do too many times and make it 0
-    HM_RETURN_IF_ERROR(to_status(cudaStreamSynchronize(videoprep->stream)));
+    HM_RETURN_IF_ERROR(to_status(cudaStreamSynchronize(cuda_stream_)));
   }
   // videoprep::videoprep_add_surface_meta(videoprep->out_gst_buf, out_surface->numFilled, videoprep->source_id);
   return absl::OkStatus();
 }
 
-static void gst_stitcher_class_init(GstVideoPrepStitcherClass* klass) {
-  gst_videoprep_class_init_base(klass);
-}
+// static void gst_stitcher_class_init(GstVideoPrepStitcherClass* klass) {
+//   gst_videoprep_class_init_base(klass);
+// }
 
-static void gst_stitcher_init(GstVideoPrepStitcher* stitcher) {
-  gst_videoprep_init_base(stitcher);
-}
+// static void gst_stitcher_init(GstVideoPrepStitcher* stitcher) {
+//   gst_videoprep_init_base(stitcher);
+// }
 
-#define gst_stitcher_parent_class parent_class
-G_DEFINE_TYPE(GstVideoPrepStitcher, gst_stitcher, GST_TYPE_BASE_TRANSFORM);
+// #define gst_stitcher_parent_class parent_class
+// G_DEFINE_TYPE(GstVideoPrepStitcher, gst_stitcher, GST_TYPE_BASE_TRANSFORM);
 
 } // namespace stitcher
 } // namespace hm

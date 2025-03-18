@@ -1,28 +1,4 @@
-/*
- * SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: MIT
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
-
-#ifndef __NVDSCUSTOMLIB_BASE_HPP__
-#define __NVDSCUSTOMLIB_BASE_HPP__
+#pragma once
 
 #include <gst/base/gstbasetransform.h>
 #include <gst/video/video.h>
@@ -33,21 +9,14 @@
 namespace hm {
 
 /* Buffer Pool Configuration Parameters */
-struct BufferPoolConfig {
-  gint cuda_mem_type;
-  guint gpu_id;
-  guint max_buffers;
-  gint batch_size;
-};
-
 class DSCustomLibraryBase : public IDSCustomLibrary {
  public:
   explicit DSCustomLibraryBase(GstBaseTransform* btrans = nullptr);
 
   /* Set Init Parameters */
-  virtual bool PreCapsInit(DSCustom_CreateParams* params) { return true; };
+  absl::Status PreCapsInit(DSCustom_CreateParams* params) override { return absl::OkStatus(); };
 
-  virtual bool PostCapsInit(DSCustom_CreateParams* params);
+  absl::Status PostCapsInit(DSCustom_CreateParams* params) override;
 
   virtual ~DSCustomLibraryBase();
 
@@ -103,7 +72,7 @@ inline DSCustomLibraryBase::DSCustomLibraryBase(GstBaseTransform* btrans) : m_el
   m_fillDummyBatchMeta = false;
 }
 
-inline bool DSCustomLibraryBase::PostCapsInit(DSCustom_CreateParams* params) {
+inline absl::Status DSCustomLibraryBase::PostCapsInit(DSCustom_CreateParams* params) {
   m_element = params->m_element;
   m_inCaps = params->m_inCaps;
   m_outCaps = params->m_outCaps;
@@ -120,7 +89,7 @@ inline bool DSCustomLibraryBase::PostCapsInit(DSCustom_CreateParams* params) {
     m_outVideoFmt = GST_VIDEO_FORMAT_INFO_FORMAT(m_outVideoInfo.finfo);
   }
 
-  return true;
+  return absl::OkStatus();
 }
 
 inline DSCustomLibraryBase::~DSCustomLibraryBase() {}
@@ -256,5 +225,3 @@ inline NvBufSurface* DSCustomLibraryBase::getNvBufSurface(GstBuffer* inbuf) {
 }
 
 } // namespace hm
-
-#endif

@@ -58,7 +58,7 @@ static BBox make_null_tracking_box(const NvBufSurfaceParams* in_surf, const NvBu
 
 } // namespace
 
-bool PlayCropperPriv::PreCapsInit(DSCustom_CreateParams* params) {
+absl::Status PlayCropperPriv::PreCapsInit(DSCustom_CreateParams* params) {
   // Not an in-place transform
   m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
   m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
@@ -66,8 +66,9 @@ bool PlayCropperPriv::PreCapsInit(DSCustom_CreateParams* params) {
   return Super::PreCapsInit(params);
 };
 
-bool PlayCropperPriv::PostCapsInit(DSCustom_CreateParams* params) {
+absl::Status PlayCropperPriv::PostCapsInit(DSCustom_CreateParams* params) {
   m_transformMode = true;
+  
   return Super::PostCapsInit(params);
 }
 
@@ -77,7 +78,7 @@ gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep)
 
   assert(videoprep->input_width && videoprep->input_height);
 
-  cudaErr = cudaSetDevice(videoprep->gpu_id);
+  cudaErr = cudaSetDevice(m_gpuId);
   if (cudaErr != cudaSuccess) {
     printf("\n *** Unable to set device in %s Line %d\n", __func__, __LINE__);
     return cudaErr;
@@ -137,7 +138,6 @@ BufferResult PlayCropperPriv::ProcessBuffer(GstBuffer* inbuf) {
 
 absl::Status PlayCropperPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
-    videoprep::GstVideoPrep* videoprep,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
   // Setup and initialization
@@ -145,15 +145,15 @@ absl::Status PlayCropperPriv::GenerateOutput(
     return absl::CancelledError("No surfaces were filled");
   }
   assert(in_surface->numFilled == out_surface->batchSize);
-  assert(videoprep->stream);
+  assert(cuda_stream_);
 
   NppStreamContext nppStreamContext;
   memset(&nppStreamContext, 0, sizeof(nppStreamContext));
-  nppStreamContext.hStream = videoprep->stream;
+  nppStreamContext.hStream = cuda_stream_;
   nppStreamContext.nStreamFlags = 0;
-  nppStreamContext.nCudaDeviceId = videoprep->gpu_id;
+  nppStreamContext.nCudaDeviceId = m_gpuId;
 
-  HM_RETURN_IF_ERROR(hm::to_status(cudaSetDevice(videoprep->gpu_id)));
+  HM_RETURN_IF_ERROR(hm::to_status(cudaSetDevice(m_gpuId)));
 
   const std::vector<BBox> tracking_boxes = get_tracking_boxes(batch_meta);
 
@@ -161,7 +161,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
 
   assert(tracking_boxes.empty() || tracking_boxes.size() == in_surface->numFilled);
   size_t nr_surfaces_to_process = in_surface->numFilled;
-  assert(nr_surfaces_to_process <= videoprep->num_batch_buffers);
+  assert(nr_surfaces_to_process <= m_buffer_pool_config.max_buffers);
 
   NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list;
 
@@ -182,9 +182,17 @@ absl::Status PlayCropperPriv::GenerateOutput(
     hm::surface::Surface outgoing_surface(&out_surface->surfaceList[batch_nr]);
 #endif
 
+    const size_t input_width = incoming_surface.width();
+    const size_t input_height = incoming_surface.height();
+    // ack this may vary on jetson I think
+    const size_t output_width = outgoing_surface.width();
+    const size_t output_height = outgoing_surface.height();
+    // const size_t output_width = videoprep->output_width;
+    // const size_t output_height = videoprep->output_width;
+
     // Calculate scaling factors
-    FloatValue scale_w = float(videoprep->input_width) / frame_meta->source_frame_width;
-    FloatValue scale_h = float(videoprep->input_height) / frame_meta->source_frame_height;
+    FloatValue scale_w = float(input_width) / frame_meta->source_frame_width;
+    FloatValue scale_h = float(input_height) / frame_meta->source_frame_height;
 
     // Get tracking box
     BBox tbox = !tracking_boxes.empty()
@@ -210,18 +218,24 @@ absl::Status PlayCropperPriv::GenerateOutput(
       angle = max_angle * pct;
     }
 
+
     // Calculate crop regions
 #ifndef NDEBUG
     size_t tb_w = tbox.width();
     size_t tb_h = tbox.height();
-    assert(tb_w <= videoprep->input_width);
-    assert(tb_h <= videoprep->input_height);
+    assert(tb_w <= input_width);
+    assert(tb_h <= input_height);
 #endif
 
-    const BBox input_rect(0, 0, videoprep->input_width, videoprep->input_height);
+#ifndef PLAYCROPPER_USE_ONE_KERNEL
+    goto fallback;
+#else
+    const BBox input_rect(0, 0, input_width, input_height);
     const int x_center = tbox.center().x;
 
-    FloatValue min_width_per_side = videoprep->pre_rotate_size.width / 2;
+    long pre_rotate_size_width = 0 /* ??? */;
+    // long pre_rotate_size_width = videoprep->pre_rotate_size.width;
+    FloatValue min_width_per_side = pre_rotate_size_width / 2;
     min_width_per_side = std::max(min_width_per_side, tbox.width() / 2);
     FloatValue clip_left = std::max(input_rect.left, x_center - min_width_per_side);
     FloatValue clip_right = std::min(input_rect.right, x_center + min_width_per_side);
@@ -233,16 +247,13 @@ absl::Status PlayCropperPriv::GenerateOutput(
     // assert(new_tbox.left >= 0 && new_tbox.top >= 0);
     // assert(new_tbox.right <= extra_width_src_rect.width());
 
-    const BBox output_rect(0, 0, (FloatValue)videoprep->output_width, (FloatValue)videoprep->output_height);
+    const BBox output_rect(0, 0, (FloatValue)output_width, (FloatValue)output_height);
 
     Point anchor_point = new_tbox.center();
 
     // Check if we can use our optimized path
     NvBufSurfaceColorFormat color_format = incoming_surface->colorFormat;
-
-#ifndef PLAYCROPPER_USE_ONE_KERNEL
-    goto fallback;
-#endif
+#endif // PLAYCROPPER_USE_ONE_KERNEL
     if (color_format == NVBUF_COLOR_FORMAT_RGBA || color_format == NVBUF_COLOR_FORMAT_RGB ||
         color_format == NVBUF_COLOR_FORMAT_GRAY8) {
       // Use the combined transform - no scratch surfaces needed!
@@ -266,8 +277,8 @@ absl::Status PlayCropperPriv::GenerateOutput(
       // assert(false);
     // Fall back to original implementation for unsupported formats
     fallback:
-      // std::cout << "playcropper no fallback" << std::endl;
-#if 1
+      std::cout << "playcropper no fallback" << std::endl;
+#if 0
       // Use the original three-step approach with minimal scratch surfaces
       hm::surface::SurfaceList::round_robin_iterator scratch_surface_iter = videoprep->priv->scratch_buffers.begin();
 
@@ -291,13 +302,13 @@ absl::Status PlayCropperPriv::GenerateOutput(
 #endif
     }
     if (show_) {
-      render("Play Cropper", &out_surface->surfaceList[batch_nr], videoprep->stream);
+      render("Play Cropper", &out_surface->surfaceList[batch_nr], cuda_stream_);
     }
   }
 
   // Synchronize stream
-  if (videoprep->stream) {
-    cudaStreamSynchronize(videoprep->stream);
+  if (cuda_stream_) {
+    cudaStreamSynchronize(cuda_stream_);
   }
 
   out_surface->numFilled = nr_surfaces_to_process;
@@ -305,16 +316,16 @@ absl::Status PlayCropperPriv::GenerateOutput(
   return absl::OkStatus();
 }
 
-static void gst_playcropper_class_init(GstVideoPrepPlayCropperClass* klass) {
-  gst_videoprep_class_init_base(klass);
-}
+// static void gst_playcropper_class_init(GstVideoPrepPlayCropperClass* klass) {
+//   gst_videoprep_class_init_base(klass);
+// }
 
-static void gst_playcropper_init(GstVideoPrepPlayCropper* playcropper) {
-  gst_videoprep_init_base(playcropper);
-}
+// static void gst_playcropper_init(GstVideoPrepPlayCropper* playcropper) {
+//   gst_videoprep_init_base(playcropper);
+// }
 
-#define gst_playcropper_parent_class parent_class
-G_DEFINE_TYPE(GstVideoPrepPlayCropper, gst_playcropper, GST_TYPE_BASE_TRANSFORM);
+// #define gst_playcropper_parent_class parent_class
+// G_DEFINE_TYPE(GstVideoPrepPlayCropper, gst_playcropper, GST_TYPE_BASE_TRANSFORM);
 
 } // namespace playcropper
 } // namespace hm

@@ -2,6 +2,7 @@
 
 
 #include "hstream/src/libs/common/Status.h"
+#include "absl/status/statusor.h"
 
 #include "cupano/pano/cudaPano.h"
 
@@ -39,8 +40,8 @@ class StitcherPriv : public STITCH_PRIV_BASE {
 
   // -DSCustomLibraryBase
 
-  bool PreCapsInit(DSCustom_CreateParams* params) override;
-  bool PostCapsInit(DSCustom_CreateParams* params) override;
+  absl::Status PreCapsInit(DSCustom_CreateParams* params) override;
+  absl::Status PostCapsInit(DSCustom_CreateParams* params) override;
 
   bool SetProperty(const Property& prop) override;
 
@@ -61,18 +62,17 @@ class StitcherPriv : public STITCH_PRIV_BASE {
 
   absl::Status GenerateOutput(
       NvDsBatchMeta* batch_meta,
-      videoprep::GstVideoPrep* videoprep,
       NvBufSurface* in_surface,
       NvBufSurface* out_surface) override;
 
  private:
   using STITCHER = hm::pano::cuda::CudaStitchPano<uchar4, float3>;
 
-  absl::StatusOr<STITCHER*> get_stitcher(videoprep::GstVideoPrep* videoprep);
+  absl::StatusOr<STITCHER*> get_stitcher();
 
   absl::Mutex stitcher_mu_;
   std::unique_ptr<STITCHER> stitcher_ ABSL_GUARDED_BY(stitcher_mu_);
-
+  std::string config_file_;
   std::mutex process_mu_;
   size_t process_pass_{0};
   bool configure_only_{false};
@@ -80,6 +80,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool show_{false};
 };
 
+#if 0
 /** GStreamer boilerplate. */
 struct GstVideoPrepStitcher : public videoprep::GstVideoPrep {
   // Don't add stuff here
@@ -94,6 +95,7 @@ struct GstVideoPrepStitcherClass : public videoprep::GstVideoPrepClass {
     static_assert(sizeof(GstVideoPrepStitcherClass) == sizeof(videoprep::GstVideoPrepClass));
   }
 };
+#endif
 
 } // namespace stitcher
 } // namespace hm

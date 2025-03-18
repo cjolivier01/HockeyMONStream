@@ -1,13 +1,13 @@
-#ifndef __NVDSCUSTOMLIB_INTERFACE_HPP__
-#define __NVDSCUSTOMLIB_INTERFACE_HPP__
+#pragma once
 
 #include <cuda_runtime.h>
 #include <gst/base/gstbasetransform.h>
 #include <gst/gstbuffer.h>
 
+#include <optional>
 #include <string>
-// #include "nvbufsurface.h"
-// #include "nvdsmeta.h"
+
+#include "absl/status/status.h"
 
 namespace hm {
 
@@ -22,7 +22,17 @@ enum class BufferResult {
   Buffer_Error // Error occured
 };
 
+struct BufferPoolConfig {
+  gint cuda_mem_type{0};
+  guint gpu_id{0};
+  guint max_buffers{0};
+  gint batch_size{0};
+};
+
 struct DSCustom_CreateParams {
+  BufferPoolConfig m_bufferPoolConfig;
+  size_t output_width_height[2] = {0};
+  gchar *config_file{nullptr};
   GstBaseTransform* m_element{nullptr};
   GstCaps* m_inCaps{nullptr};
   GstCaps* m_outCaps{nullptr};
@@ -42,8 +52,8 @@ struct Property {
 
 class IDSCustomLibrary {
  public:
-  virtual bool PreCapsInit(DSCustom_CreateParams* params) = 0;
-  virtual bool PostCapsInit(DSCustom_CreateParams* params) = 0;
+  virtual absl::Status PreCapsInit(DSCustom_CreateParams* params) = 0;
+  virtual absl::Status PostCapsInit(DSCustom_CreateParams* params) = 0;
   virtual bool SetProperty(const Property& prop) = 0;
   virtual bool HandleEvent(GstEvent* event) = 0;
   virtual char* QueryProperties() = 0;
@@ -54,4 +64,3 @@ class IDSCustomLibrary {
 
 } // namespace hm
 
-#endif

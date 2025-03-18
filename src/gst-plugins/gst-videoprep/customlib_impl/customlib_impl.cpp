@@ -83,18 +83,18 @@ class SampleAlgorithm : public DSCustomLibraryBase {
   }
 
   /* Set Init Parameters */
-  virtual bool PostCapsInit(DSCustom_CreateParams* params);
+  absl::Status PostCapsInit(DSCustom_CreateParams* params) override;
 
   /* Set Custom Properties  of the library */
-  virtual bool SetProperty(const Property& prop);
+  bool SetProperty(const Property& prop) override;
 
   /* Pass GST events to the library */
-  virtual bool HandleEvent(GstEvent* event);
+  bool HandleEvent(GstEvent* event) override;
 
   virtual char* QueryProperties();
 
   /* Process Incoming Buffer */
-  virtual BufferResult ProcessBuffer(GstBuffer* inbuf);
+  BufferResult ProcessBuffer(GstBuffer* inbuf) override;
 
   /* Retrun Compatible Caps */
   virtual GstCaps* GetCompatibleCaps(GstPadDirection direction, GstCaps* in_caps, GstCaps* othercaps);
@@ -160,7 +160,7 @@ extern "C" IDSCustomLibrary* CreateCustomAlgoCtx(DSCustom_CreateParams* params) 
 }
 
 // Set Init Parameters
-bool SampleAlgorithm::PostCapsInit(DSCustom_CreateParams* params) {
+absl::Status SampleAlgorithm::PostCapsInit(DSCustom_CreateParams* params) {
   DSCustomLibraryBase::PostCapsInit(params);
 
   BufferPoolConfig pool_config = {0};
@@ -190,13 +190,11 @@ bool SampleAlgorithm::PostCapsInit(DSCustom_CreateParams* params) {
     swbuffersize = m_outVideoInfo.width * m_outVideoInfo.height * scale_factor;
     gst_buffer_pool_config_set_params(config, m_outCaps, swbuffersize, 4, 4);
     if (!gst_buffer_pool_set_config(m_swbufpool, config)) {
-      printf("FAILED TO SET CONFIG SW BUFFER POOL\n");
-      return false;
+      return absl::InternalError("FAILED TO SET CONFIG SW BUFFER POOL");
     }
     gboolean is_active = gst_buffer_pool_set_active(m_swbufpool, TRUE);
     if (!is_active) {
-      GST_WARNING(" Failed to allocate the buffers inside the output pool");
-      return false;
+      return absl::InternalError(" Failed to allocate the buffers inside the output pool");
     } else {
       GST_DEBUG_OBJECT(m_element, " Output SW buffer pool (%p) successfully created", m_swbufpool);
     }
@@ -213,7 +211,7 @@ bool SampleAlgorithm::PostCapsInit(DSCustom_CreateParams* params) {
 
     m_dsBufferPool = CreateBufferPool(&pool_config, m_outCaps);
     if (!m_dsBufferPool) {
-      throw std::runtime_error("Custom Buffer Pool Creation failed");
+      return absl::InternalError("Custom Buffer Pool Creation failed");
     }
     m_config_params.compute_mode = NvBufSurfTransformCompute_GPU;
     m_config_params.gpu_id = params->m_gpuId;
@@ -222,7 +220,7 @@ bool SampleAlgorithm::PostCapsInit(DSCustom_CreateParams* params) {
 
   m_outputThread = new std::thread(&SampleAlgorithm::OutputThread, this);
 
-  return true;
+  return absl::OkStatus();
 }
 
 // Return Compatible Output Caps based on input caps

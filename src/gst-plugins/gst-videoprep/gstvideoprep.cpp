@@ -308,8 +308,13 @@ static GstCaps* gst_videoprep_fixate_caps(
   ins = gst_caps_get_structure(caps, 0);
   outs = gst_caps_get_structure(othercaps, 0);
 
+  if (videoprep->custom_create_params.output_width_height[0]) {
+    videoprep->output_width = videoprep->custom_create_params.output_width_height[0];
+  }
+  if (videoprep->custom_create_params.output_width_height[1]) {
+    videoprep->output_height = videoprep->custom_create_params.output_width_height[1];
+  }
   assert(videoprep->output_width && videoprep->output_height);
-
   out_width = videoprep->output_width;
   out_height = videoprep->output_height;
 
@@ -576,11 +581,14 @@ static GstStateChangeReturn gst_videoprep_change_state(GstElement* element, GstS
     if (videoprep->plugin_private_config) {
       videoprep->priv->SetPrivateConfig(videoprep->plugin_private_config);
     }
-    if (!videoprep->priv->PreCapsInit(&videoprep->custom_create_params)) {
+    videoprep->custom_create_params.config_file = videoprep->config_file;
+    absl::Status status = videoprep->priv->PreCapsInit(&videoprep->custom_create_params);
+    if (!status.ok()) {
+      std::cerr << status << std::endl;
       GST_ERROR("Error on bus: SetInitParams Error");
       return GST_STATE_CHANGE_FAILURE;
     }
-  } else if(transition == GST_STATE_CHANGE_PAUSED_TO_READY) {
+  } else if (transition == GST_STATE_CHANGE_PAUSED_TO_READY) {
     std::cout << "stopping..." << std::endl;
   }
   GstVideoPrepClass* klass = GST_VIDEOPREP_CLASS(element);
@@ -636,14 +644,21 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
   videoprep->custom_create_params.m_inCaps = incaps;
   videoprep->custom_create_params.m_outCaps = outcaps;
 
+  videoprep->custom_create_params.m_bufferPoolConfig.max_buffers = videoprep->num_batch_buffers;
+  videoprep->custom_create_params.m_bufferPoolConfig.batch_size = videoprep->num_batch_buffers;
+  videoprep->custom_create_params.m_bufferPoolConfig.cuda_mem_type = videoprep->cuda_mem_type;
+  videoprep->custom_create_params.m_bufferPoolConfig.gpu_id = videoprep->gpu_id;
+
   // hm::gst::print_caps_details(incaps);
   // hm::gst::print_caps_details(outcaps);
 
-  if (!videoprep->priv->PostCapsInit(&videoprep->custom_create_params)) {
+  absl::Status status = videoprep->priv->PostCapsInit(&videoprep->custom_create_params);
+  if (!status.ok()) {
+    std::cerr << status << std::endl;
     GST_ERROR("Error on bus: SetInitParams Error");
     return GST_STATE_CHANGE_FAILURE;
   }
-#if 1
+#if 0
   // BEGIN BUFFER POOL SETUP
   // Pool Creation
   {
@@ -790,11 +805,11 @@ static gboolean gst_videoprep_stop(GstBaseTransform* btrans) {
     videoprep->stream = NULL;
   }
 
-  if (videoprep->pool) {
-    gst_buffer_pool_set_active(videoprep->pool, FALSE);
-    gst_object_unref(videoprep->pool);
-    videoprep->pool = NULL;
-  }
+  // if (videoprep->pool) {
+  //   gst_buffer_pool_set_active(videoprep->pool, FALSE);
+  //   gst_object_unref(videoprep->pool);
+  //   videoprep->pool = NULL;
+  // }
 
   GST_DEBUG_OBJECT(videoprep, "gst_videoprep_stop");
 
@@ -1002,7 +1017,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->srccaps = gst_static_pad_template_get_caps(&src_factory);
 
   videoprep->silent = FALSE;
-  videoprep->pool = NULL;
+  // videoprep->pool = NULL;
 
   videoprep->num_batch_buffers = DEFAULT_NUM_VIDEO_PREPPED_SURFACES;
   videoprep->cuda_mem_type = NVBUF_MEM_DEFAULT;
@@ -1096,11 +1111,11 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
     PROPERTY_SET_CASE(PROP_PLUGIN_TYPE, videoprep->plugin_type);
     PROPERTY_SET_CASE(PROP_CONFIG_FILE, videoprep->config_file);
     case PROP_PLUGIN_PRIVATE_CONFIG:
-        hm::gst::set_value(videoprep->plugin_private_config, value);
-        if (videoprep->priv) {
-          videoprep->priv->SetPrivateConfig(videoprep->plugin_private_config);
-        }
-        break;
+      hm::gst::set_value(videoprep->plugin_private_config, value);
+      if (videoprep->priv) {
+        videoprep->priv->SetPrivateConfig(videoprep->plugin_private_config);
+      }
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
