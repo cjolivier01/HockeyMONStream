@@ -19,14 +19,14 @@ namespace playtracker {
 namespace {} // namespace
 
 absl::Status PlayTrackerPriv::PreCapsInit(DSCustom_CreateParams* params) {
-  // Not an in-place transform
-  m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
-  m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
   return Super::PreCapsInit(params);
 };
 
 absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
-  m_transformMode = true;
+  // Transform In-Place
+  m_transformMode = false;
+  // No buffers for us
+  params->m_bufferPoolConfig.max_buffers = 0;
   return Super::PostCapsInit(params);
 }
 

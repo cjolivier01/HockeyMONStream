@@ -69,23 +69,25 @@ absl::Status CustomAlgorithmBase::PostCapsInit(DSCustom_CreateParams* params) {
       GST_DEBUG_OBJECT(m_element, " Output SW buffer pool (%p) successfully created", m_swbufpool);
     }
   } else {
-    params->m_bufferPoolConfig.gpu_id = params->m_gpuId;
-    assert(params->m_bufferPoolConfig.max_buffers);
-    gst_structure_get_int(s1, "batch-size", &params->m_bufferPoolConfig.batch_size);
+    if (params->m_bufferPoolConfig.max_buffers) {
+      params->m_bufferPoolConfig.gpu_id = params->m_gpuId;
+      assert(params->m_bufferPoolConfig.max_buffers);
+      gst_structure_get_int(s1, "batch-size", &params->m_bufferPoolConfig.batch_size);
 
-    if (params->m_bufferPoolConfig.batch_size == 0) {
-      // If this component is placed before mux, batch-size value is not set
-      // In this case make batch_size = 1
-      params->m_bufferPoolConfig.batch_size = 1;
-    }
+      if (params->m_bufferPoolConfig.batch_size == 0) {
+        // If this component is placed before mux, batch-size value is not set
+        // In this case make batch_size = 1
+        params->m_bufferPoolConfig.batch_size = 1;
+      }
 
-    m_dsBufferPool = CreateBufferPool(&params->m_bufferPoolConfig, m_outCaps);
-    if (!m_dsBufferPool) {
-      return absl::InternalError("Custom Buffer Pool Creation failed");
+      m_dsBufferPool = CreateBufferPool(&params->m_bufferPoolConfig, m_outCaps);
+      if (!m_dsBufferPool) {
+        return absl::InternalError("Custom Buffer Pool Creation failed");
+      }
+      m_config_params.compute_mode = NvBufSurfTransformCompute_GPU;
+      m_config_params.gpu_id = params->m_gpuId;
+      m_config_params.cuda_stream = params->m_cudaStream;
     }
-    m_config_params.compute_mode = NvBufSurfTransformCompute_GPU;
-    m_config_params.gpu_id = params->m_gpuId;
-    m_config_params.cuda_stream = params->m_cudaStream;
   }
 
   m_outputThread = new std::thread(&CustomAlgorithmBase::OutputThread, this);
