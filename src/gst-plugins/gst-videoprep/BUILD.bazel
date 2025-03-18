@@ -1,5 +1,4 @@
 load("@gst_plugin_dev//buildfiles:gst_plugin.bzl", "gst_cc_plugin")
-load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
 config_setting(
     name = "x86_64-linux-gnu",
@@ -50,8 +49,9 @@ gst_cc_plugin(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        ":playcropper_lib",
-        ":stitcher_lib",
+        "//src/gst-plugins/gst-videoprep/playcropper",
+        "//src/gst-plugins/gst-videoprep/stitcher",
+        "//src/gst-plugins/gst-videoprep/playtracker",
         "//src/libs/common:utils",
         "@com_google_absl//absl/strings",
         "@jetson-utils//cuda:cuda_lib",
@@ -59,89 +59,3 @@ gst_cc_plugin(
     ],
 )
 
-cc_library(
-    name = "playcropper_lib",
-    srcs = [
-      "playcropper.cpp",
-    ],
-    hdrs = [
-      "playcropper.h",
-    ],
-    visibility = ["//visibility:private"],
-    deps = [
-        ":play_cropper_cuda_lib",
-        "//src/gst-plugins/gst-videoprep/algorithm-base",
-    ],
-)
-
-cc_library(
-    name = "stitcher_lib",
-    srcs = [
-      "stitcher.cpp",
-    ],
-    hdrs = [
-      "stitcher.h",
-    ],
-    visibility = ["//visibility:private"],
-    deps = [
-        "//src/gst-plugins/gst-videoprep/algorithm-base",
-        "//src/libs/stitching",
-        "@hm-cupano//src/cuda:cuda_blend_cuda_lib",
-        "@hm-cupano//src/pano:cuda_pano",
-    ],
-)
-
-# cc_library(
-#     name = "videoprep_common",
-#     srcs = [
-#         "preputils.cpp",
-#         "CustomAlgorithmBase.cpp",
-#         "gst_utils.cpp",
-#         "customlib_impl/customlib_impl.cpp",
-#     ],
-#     hdrs = [
-#         "preputils.h",
-#         "CustomAlgorithmBase.h",
-#         "VideoPrepPriv.h",
-#         "gst_utils.h",
-#         "includes/hmcustomlib_interface.hpp",
-#         "includes/hmcustomlib_factory.hpp",
-#         "includes/hmcustomlib_base.hpp",
-#     ],
-#     includes = [
-#         ".",
-#         # "includes",
-#     ],
-#     visibility = ["//visibility:private"],
-#     deps = [
-#     ],
-# )
-
-cuda_library(
-    name = "play_cropper_cuda_lib",
-    srcs = [
-        "cudaPlayCropper.cu",
-    ],
-    hdrs = [
-    ],
-    copts = [
-        "-std=c++17",
-        "-Xcompiler=-fPIC",
-        # "-Xcompiler=-rdynamic",
-        #"-Xcompiler=-O0",
-        #"-Xcompiler=-g",
-        "-Wno-deprecated-gpu-targets",
-        #"-G",
-        #"-g",
-        "-keep",
-        #"-O0",
-    ],
-    # includes = ["."],
-    visibility = ["//visibility:private"],
-    deps = [
-        # "@opencv_linux//:opencv",
-        "//src/libs/common:utils",
-        "@deepstream//:deepstream_lib",
-        "@local_cuda//:cuda_runtime",
-    ],
-)

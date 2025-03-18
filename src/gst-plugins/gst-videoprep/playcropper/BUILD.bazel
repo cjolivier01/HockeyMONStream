@@ -1,0 +1,48 @@
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+
+INCLUDE_PREFIX = "hstream/src/gst-plugins/gst-videoprep/playcropper"
+
+cc_library(
+    name = "playcropper",
+    srcs = [
+      "playcropper.cpp",
+    ],
+    hdrs = [
+      "playcropper.h",
+    ],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":play_cropper_cuda_lib",
+        "//src/gst-plugins/gst-videoprep/algorithm-base",
+    ],
+)
+
+
+cuda_library(
+    name = "play_cropper_cuda_lib",
+    srcs = [
+        "cudaPlayCropper.cu",
+    ],
+    hdrs = [
+    ],
+    copts = [
+        "-std=c++17",
+        "-Xcompiler=-fPIC",
+        # "-Xcompiler=-rdynamic",
+        #"-Xcompiler=-O0",
+        #"-Xcompiler=-g",
+        "-Wno-deprecated-gpu-targets",
+        #"-G",
+        #"-g",
+        "-keep",
+        #"-O0",
+    ],
+    # includes = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        "//src/libs/common:utils",
+        "@deepstream//:deepstream_lib",
+        "@local_cuda//:cuda_runtime",
+    ],
+)

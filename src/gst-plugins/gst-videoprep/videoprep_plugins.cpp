@@ -1,7 +1,8 @@
 #include "videoprep_plugins.h"
 #include "gstvideoprep.h"
-#include "playcropper.h"
-#include "stitcher.h"
+
+#include "hstream/src/gst-plugins/gst-videoprep/playcropper/playcropper.h"
+#include "hstream/src/gst-plugins/gst-videoprep/stitcher/stitcher.h"
 
 namespace hm {
 namespace videoprep {

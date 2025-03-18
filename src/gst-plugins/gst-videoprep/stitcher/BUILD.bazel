@@ -1,0 +1,19 @@
+INCLUDE_PREFIX = "hstream/src/gst-plugins/gst-videoprep/stitcher"
+
+cc_library(
+    name = "stitcher",
+    srcs = [
+      "stitcher.cpp",
+    ],
+    hdrs = [
+      "stitcher.h",
+    ],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/gst-plugins/gst-videoprep/algorithm-base",
+        "//src/libs/stitching",
+        "@hm-cupano//src/cuda:cuda_blend_cuda_lib",
+        "@hm-cupano//src/pano:cuda_pano",
+    ],
+)

@@ -1,0 +1,16 @@
+INCLUDE_PREFIX = "hstream/src/gst-plugins/gst-videoprep/playtracker"
+
+cc_library(
+    name = "playtracker",
+    srcs = [
+      "playtracker.cpp",
+    ],
+    hdrs = [
+      "playtracker.h",
+    ],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/gst-plugins/gst-videoprep/algorithm-base",
+    ],
+)
