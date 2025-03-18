@@ -209,7 +209,7 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
   set_config_from_yaml(yaml, locator);
 
   // HACK HACK HACK HACK HACK HACK HACK HACK
-  config.play_detector.min_considered_group_velocity = 1.0;
+  // config.play_detector.min_considered_group_velocity = 1.0;
 
   return config;
 }
