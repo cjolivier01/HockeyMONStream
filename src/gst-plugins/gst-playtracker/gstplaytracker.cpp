@@ -403,7 +403,7 @@ static GstFlowReturn gst_playtracker_transform(GstBaseTransform* btrans, GstBuff
     frame.frame_num = frame.frame_meta->frame_num;
     frame.batch_index = i;
     frame.input_surf_params = in_surface->surfaceList + i;
-    if (DsPlayTrackerProcessFrame(frame, playtracker->playtrackerlib_ctx, playtracker->stream)) {
+    if (DsPlayTrackerProcessFrame(playtracker->playtrackerlib_ctx, frame, playtracker->stream)) {
       attach_metadata_full_frame(playtracker, frame.frame_meta, frame.play_tracker_results, frame.batch_index);
     }
   }

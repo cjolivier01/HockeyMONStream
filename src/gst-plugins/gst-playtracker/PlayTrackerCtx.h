@@ -22,18 +22,17 @@ struct DsPlayTrackerInitParams {
 };
 
 // Initialize library context
-DsPlayTrackerCtx *DsPlayTrackerCtxInit(DsPlayTrackerInitParams *init_params);
+DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* init_params);
 
-bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame &frame,
-                               DsPlayTrackerCtx *ctx, cudaStream_t stream);
+bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame, cudaStream_t stream);
 
 // Deinitialize library context
-void DsPlayTrackerCtxDeinit(DsPlayTrackerCtx *ctx);
+void DsPlayTrackerCtxDeinit(DsPlayTrackerCtx* ctx);
 
 struct GstDsPlayTrackerFrame {
   /** NvDsObjectParams belonging to the object to be classified. */
-  NvDsObjectMeta *obj_meta = nullptr;
-  NvDsFrameMeta *frame_meta = nullptr;
+  NvDsObjectMeta* obj_meta = nullptr;
+  NvDsFrameMeta* frame_meta = nullptr;
   /** Index of the frame in the batched input GstBuffer. Not required for
    * classifiers. */
   guint batch_index = 0;
@@ -43,14 +42,5 @@ struct GstDsPlayTrackerFrame {
   hm::play_tracker::PlayTrackerResults play_tracker_results;
 
   /** The buffer structure the object / frame was converted from. */
-  NvBufSurfaceParams *input_surf_params = nullptr;
+  NvBufSurfaceParams* input_surf_params = nullptr;
 };
-
-namespace gst_hm {
-
-class GstPlayTracker {
-public:
-  GstPlayTracker();
-};
-
-} // namespace gst_hm

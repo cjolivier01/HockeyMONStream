@@ -16,7 +16,6 @@
 #include "hockeymom/csrc/play_tracker/ResizingBox.h"
 #include "hockeymom/csrc/play_tracker/TranslatingBox.h"
 #include "hstream/src/libs/common/ConfigYaml.h"
-// #include "hstream/src/libs/common/Draw.h"
 #include "hstream/src/libs/common/PlotContext.h"
 
 #include <nvdsmeta.h>
@@ -36,7 +35,7 @@ struct DsPlayTrackerCtx {
   std::unordered_map<size_t, PlayTracker> play_trackers;
 };
 
-namespace gst_hm {
+namespace gst_hm_playtracker {
 
 using namespace hm;
 using namespace hm::play_tracker;
@@ -215,7 +214,7 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
   return config;
 }
 
-hm::play_tracker::PlayTracker* get_or_create_play_tracker(int source_id, const BBox& arena_box, DsPlayTrackerCtx* ctx) {
+hm::play_tracker::PlayTracker* get_or_create_play_tracker(DsPlayTrackerCtx* ctx, int source_id, const BBox& arena_box) {
   // std::cerr << "play tracker source_id = " << source_id << std::endl;
   if (ctx->play_trackers.count(source_id)) {
     return ctx->play_trackers[source_id].play_tracker.get();
@@ -352,7 +351,14 @@ void plot_living_box(
   plot_resizing_state(plotter, lbox, box_config, draw_thresholds, scale_width, scale_height, following_lbox);
 }
 
-} // namespace gst_hm
+const std::array<hm::utils::ColorRGB, 2> track_colors{
+    hm::utils::ColorRGB{0, 0, 255},
+    hm::utils::ColorRGB{255, 0, 255},
+};
+const hm::utils::ColorRGB breakway_edge_line{128, 0, 28};
+const hm::utils::ColorRGB breakway_edge_circle{128, 0, 28};
+
+} // namespace gst_hm_playtracker
 
 DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* initParams) {
   DsPlayTrackerCtx* ctx = new DsPlayTrackerCtx();
@@ -360,20 +366,13 @@ DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* initParams) {
   return ctx;
 }
 
-static const std::array<hm::utils::ColorRGB, 2> track_colors{
-    hm::utils::ColorRGB{0, 0, 255},
-    hm::utils::ColorRGB{255, 0, 255},
-};
-static const hm::utils::ColorRGB breakway_edge_line{128, 0, 28};
-static const hm::utils::ColorRGB breakway_edge_circle{128, 0, 28};
-
-bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* ctx, cudaStream_t stream) {
+bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame, cudaStream_t stream) {
   // We always do our calculations wrt the original image, since we tune based upon the camera
   // type, which is generally tied to the resolution. We scale in the play tracker when possible, but
   // it isn't perfectly scalable atm.
   hm::BBox arena_box(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
   hm::play_tracker::PlayTracker* play_tracker =
-      gst_hm::get_or_create_play_tracker(frame.frame_meta->source_id, arena_box, ctx);
+      gst_hm_playtracker::get_or_create_play_tracker(ctx, frame.frame_meta->source_id, arena_box);
   if (!play_tracker) {
     return false;
   }
@@ -426,12 +425,12 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
 
         // We scale back down for drawing, which is on the pipeline image
 
-        gst_hm::plot_living_box(
+        gst_hm_playtracker::plot_living_box(
             plotter,
             lbox.get(),
             play_tracker_ctx.play_tracker_config.living_boxes.at(i),
             /*thickness=*/4,
-            track_colors.at(i),
+            gst_hm_playtracker::track_colors.at(i),
             /*draw_thresholds=*/true,
             1.0 / scale_x,
             1.0 / scale_y,
@@ -445,12 +444,15 @@ bool DsPlayTrackerProcessFrame(GstDsPlayTrackerFrame& frame, DsPlayTrackerCtx* c
       const hm::play_tracker::PlayDetectorResults& play_detector = *frame.play_tracker_results.play_detection;
       if (play_detector.breakaway_edge_center.has_value()) {
         plotter.plot_circle(
-            *play_detector.breakaway_edge_center, /*radius=*/30, /*thickness=*/15, breakway_edge_circle);
+            *play_detector.breakaway_edge_center,
+            /*radius=*/30,
+            /*thickness=*/15,
+            gst_hm_playtracker::breakway_edge_circle);
         plotter.plot_line(
             frame.play_tracker_results.tracking_boxes.at(0).center(),
             *play_detector.breakaway_edge_center,
             3,
-            breakway_edge_line);
+            gst_hm_playtracker::breakway_edge_line);
       }
     }
   }
