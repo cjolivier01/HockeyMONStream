@@ -26,6 +26,11 @@
 #include <cassert>
 
 #include "absl/status/statusor.h"
+
+#ifndef IN_GSTVIDEOPREP_PLUGIN
+#error "Should not be including this file"
+#endif
+
 namespace hm {
 namespace videoprep {
 

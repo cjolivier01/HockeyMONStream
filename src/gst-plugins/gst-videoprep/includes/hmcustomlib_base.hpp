@@ -1,10 +1,14 @@
 #pragma once
 
+#include "hstream/src/libs/common/pipeline_utils.h"
+
 #include <gst/base/gstbasetransform.h>
 #include <gst/video/video.h>
 
 #include "gstnvdsbufferpool.h"
 #include "hmcustomlib_interface.hpp"
+
+#include <cassert>
 
 namespace hm {
 
@@ -14,7 +18,9 @@ class DSCustomLibraryBase : public IDSCustomLibrary {
   explicit DSCustomLibraryBase(GstBaseTransform* btrans = nullptr);
 
   /* Set Init Parameters */
-  absl::Status PreCapsInit(DSCustom_CreateParams* params) override { return absl::OkStatus(); };
+  absl::Status PreCapsInit(DSCustom_CreateParams* params) override {
+    return absl::OkStatus();
+  };
 
   absl::Status PostCapsInit(DSCustom_CreateParams* params) override;
 
@@ -52,8 +58,12 @@ class DSCustomLibraryBase : public IDSCustomLibrary {
   gboolean m_fillDummyBatchMeta{false};
 
   /* Video Information */
-  GstVideoInfo m_inVideoInfo{0,};
-  GstVideoInfo m_outVideoInfo{0,};
+  GstVideoInfo m_inVideoInfo{
+      0,
+  };
+  GstVideoInfo m_outVideoInfo{
+      0,
+  };
 
   /* Video Format Information */
   GstVideoFormat m_inVideoFmt{GST_VIDEO_FORMAT_UNKNOWN};
@@ -92,9 +102,43 @@ inline absl::Status DSCustomLibraryBase::PostCapsInit(DSCustom_CreateParams* par
   return absl::OkStatus();
 }
 
+
+inline bool getCapsDimensions(GstCaps* caps, int& width, int& height) {
+  // Ensure there is at least one structure.
+  if (gst_caps_get_size(caps) == 0)
+    return false;
+
+  GstStructure* structure = gst_caps_get_structure(caps, 0);
+  // Retrieve "width" and "height". Both must exist.
+  if (!gst_structure_get_int(structure, "width", &width) || !gst_structure_get_int(structure, "height", &height)) {
+    return false;
+  }
+  return true;
+}
+
+// Function to set width and height in a GstCaps.
+// It returns a pointer to a writable GstCaps (which may be a new pointer if the original was immutable).
+inline GstCaps* setCapsDimensions(GstCaps* caps, int width, int height) {
+  // If the caps aren't writable, make a writable copy.
+  if (!gst_caps_is_writable(caps)) {
+    caps = gst_caps_make_writable(caps);
+  }
+
+  // Iterate over each structure in the caps and update the fields.
+  guint n = gst_caps_get_size(caps);
+  for (guint i = 0; i < n; i++) {
+    GstStructure* structure = gst_caps_get_structure(caps, i);
+    gst_structure_set(structure, "width", G_TYPE_INT, width, "height", G_TYPE_INT, height, NULL);
+  }
+  return caps;
+}
+
 inline DSCustomLibraryBase::~DSCustomLibraryBase() {}
 
-inline GstCaps* DSCustomLibraryBase::GetCompatibleCaps(GstPadDirection direction, GstCaps* in_caps, GstCaps* othercaps) {
+inline GstCaps* DSCustomLibraryBase::GetCompatibleCaps(
+    GstPadDirection direction,
+    GstCaps* in_caps,
+    GstCaps* othercaps) {
   GstCaps* result = NULL;
   GstStructure *s1, *s2;
   gint width = 0, height = 0;
@@ -164,10 +208,14 @@ inline GstCaps* DSCustomLibraryBase::GetCompatibleCaps(GstPadDirection direction
 inline GstBufferPool* DSCustomLibraryBase::CreateBufferPool(BufferPoolConfig* pool_config, GstCaps* outcaps) {
   GstBufferPool* m_buf_pool = NULL;
   GstStructure* config = NULL;
-  
+
   m_buf_pool = gst_nvds_buffer_pool_new();
 
   config = gst_buffer_pool_get_config(m_buf_pool);
+
+  int ww = 0, hh = 0;
+  bool ok = getCapsDimensions(outcaps, ww, hh);
+  assert(ok);
 
   GST_INFO_OBJECT(m_element, "in videoconvert caps = %" GST_PTR_FORMAT "\n", outcaps);
   gst_buffer_pool_config_set_params(

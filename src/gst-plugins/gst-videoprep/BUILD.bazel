@@ -27,10 +27,8 @@ gst_cc_plugin(
         "-Wno-error=unused-function",
         "-Wno-error=unused-variable",
         "-Wno-error=write-strings",
+        "-DIN_GSTVIDEOPREP_PLUGIN=1",
     ],
-    # includes = [
-    #     "includes",
-    # ],
     linkopts = select({
         ":aarch64-linux-gnu": ["-L/usr/local/cuda/targets/aarch64-linux/lib"],
         ":x86_64-linux-gnu": ["-L/usr/local/cuda/targets/x86_64-linux/lib"],

@@ -18,6 +18,7 @@
 #include "gst_utils.h"
 #include "gstnvdsbufferpool.h"
 #include "gstnvdsmeta.h"
+#include "includes/hmcustomlib_interface.hpp"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 #include "nvds_dewarper_meta.h"
@@ -565,7 +566,7 @@ static void gst_videoprep_state_changed(GstElement* element, GstState oldstate, 
 static GstStateChangeReturn gst_videoprep_change_state(GstElement* element, GstStateChange transition) {
   if (transition == GST_STATE_CHANGE_NULL_TO_READY) {
     GstVideoPrep* videoprep = GST_VIDEOPREP(element);
-    memset(&videoprep->custom_create_params, 0, sizeof(videoprep->custom_create_params));
+    videoprep->custom_create_params = DSCustom_CreateParams();
     videoprep->custom_create_params.m_element = (GstBaseTransform*)element;
 
     assert(!videoprep->priv);

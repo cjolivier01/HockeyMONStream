@@ -288,4 +288,34 @@ bool post_force_pipeline_eos(GstElement* element) {
   return false;
 }
 
+bool getCapsDimensions(GstCaps* caps, int& width, int& height) {
+  // Ensure there is at least one structure.
+  if (gst_caps_get_size(caps) == 0)
+    return false;
+
+  GstStructure* structure = gst_caps_get_structure(caps, 0);
+  // Retrieve "width" and "height". Both must exist.
+  if (!gst_structure_get_int(structure, "width", &width) || !gst_structure_get_int(structure, "height", &height)) {
+    return false;
+  }
+  return true;
+}
+
+// Function to set width and height in a GstCaps.
+// It returns a pointer to a writable GstCaps (which may be a new pointer if the original was immutable).
+GstCaps* setCapsDimensions(GstCaps* caps, int width, int height) {
+  // If the caps aren't writable, make a writable copy.
+  if (!gst_caps_is_writable(caps)) {
+    caps = gst_caps_make_writable(caps);
+  }
+
+  // Iterate over each structure in the caps and update the fields.
+  guint n = gst_caps_get_size(caps);
+  for (guint i = 0; i < n; i++) {
+    GstStructure* structure = gst_caps_get_structure(caps, i);
+    gst_structure_set(structure, "width", G_TYPE_INT, width, "height", G_TYPE_INT, height, NULL);
+  }
+  return caps;
+}
+
 } // namespace hm
