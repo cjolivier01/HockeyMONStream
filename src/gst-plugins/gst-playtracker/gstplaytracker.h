@@ -1,18 +1,4 @@
-/*
- * SPDX-FileCopyrightText: Copyright (c) 2020-2021 NVIDIA CORPORATION &
- * AFFILIATES. All rights reserved. SPDX-License-Identifier:
- * LicenseRef-NvidiaProprietary
- *
- * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
- * property and proprietary rights in and to this material, related
- * documentation and any modifications thereto. Any use, reproduction,
- * disclosure or distribution of this material and related documentation
- * without an express license agreement from NVIDIA CORPORATION or
- * its affiliates is strictly prohibited.
- */
-
-#ifndef __GST_DSPLAYTRACKER_H__
-#define __GST_DSPLAYTRACKER_H__
+#pragma once
 
 #include <gst/base/gstbasetransform.h>
 #include <gst/video/video.h>
@@ -20,41 +6,32 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include "PlayTrackerCtx.h"
-#include "nvdsmeta.h"
-#include "nvbufsurface.h"
 #include "nvtx3/nvToolsExt.h"
 
-#include "hockeymom/csrc/play_tracker/PlayTracker.h"
-
 #include <vector>
+
+#include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 
 /* Package and library details required for plugin_init */
 #define PACKAGE "playtracker"
 #define VERSION "1.0"
 #define LICENSE "Proprietary"
-#define DESCRIPTION \
-  "NVIDIA example plugin for integration with DeepStream on DGPU/Jetson"
-#define BINARY_PACKAGE \
-  "NVIDIA DeepStream 3rdparty IP integration example plugin"
-#define URL "http://nvidia.com/"
+#define DESCRIPTION "HockeyMom Play Tracker"
+#define BINARY_PACKAGE "HockeyMom Play Tracker"
+#define URL "http://gute-fahrt/"
 
-G_BEGIN_DECLS
 /* Standard boilerplate stuff */
 typedef struct _GstDsPlayTracker GstDsPlayTracker;
 typedef struct _GstDsPlayTrackerClass GstDsPlayTrackerClass;
 
 /* Standard boilerplate stuff */
 #define GST_TYPE_DSPLAYTRACKER (gst_playtracker_get_type())
-#define GST_DSPLAYTRACKER(obj) \
-  (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_DSPLAYTRACKER, GstDsPlayTracker))
-#define GST_DSPLAYTRACKER_CLASS(klass) \
-  (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_DSPLAYTRACKER, GstDsPlayTrackerClass))
+#define GST_DSPLAYTRACKER(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_DSPLAYTRACKER, GstDsPlayTracker))
+#define GST_DSPLAYTRACKER_CLASS(klass) (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_DSPLAYTRACKER, GstDsPlayTrackerClass))
 #define GST_DSPLAYTRACKER_GET_CLASS(obj) \
   (G_TYPE_INSTANCE_GET_CLASS((obj), GST_TYPE_DSPLAYTRACKER, GstDsPlayTrackerClass))
-#define GST_IS_DSPLAYTRACKER(obj) \
-  (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_DSPLAYTRACKER))
-#define GST_IS_DSPLAYTRACKER_CLASS(klass) \
-  (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_DSPLAYTRACKER))
+#define GST_IS_DSPLAYTRACKER(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_DSPLAYTRACKER))
+#define GST_IS_DSPLAYTRACKER_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_DSPLAYTRACKER))
 #define GST_DSPLAYTRACKER_CAST(obj) ((GstDsPlayTracker*)(obj))
 
 /** Maximum batch size to be supported by playtracker. */
@@ -105,7 +82,7 @@ struct _GstDsPlayTracker {
   /** send play tracking shapes to the OSD (who may or may not drw them) */
   gboolean draw;
 
-  char play_tracker_config_file[PATH_MAX*4];
+  char play_tracker_config_file[PATH_MAX * 4];
 
   /** Current batch number of the input batch. */
   gulong current_batch_num;
@@ -115,22 +92,6 @@ struct _GstDsPlayTracker {
 
   /** The Cuda stream we use (if any) */
   cudaStream_t stream;
-};
-
-struct GstDsPlayTrackerFrame {
-  /** NvDsObjectParams belonging to the object to be classified. */
-  NvDsObjectMeta* obj_meta = nullptr;
-  NvDsFrameMeta* frame_meta = nullptr;
-  /** Index of the frame in the batched input GstBuffer. Not required for
-   * classifiers. */
-  guint batch_index = 0;
-  /** Frame number of the frame from the source. */
-  gulong frame_num = 0;
-
-  hm::play_tracker::PlayTrackerResults play_tracker_results;
-
-  /** The buffer structure the object / frame was converted from. */
-  NvBufSurfaceParams* input_surf_params = nullptr;
 };
 
 /**
@@ -164,6 +125,3 @@ struct _GstDsPlayTrackerClass {
 };
 
 GType gst_playtracker_get_type(void);
-
-G_END_DECLS
-#endif /* __GST_DSPLAYTRACKER_H__ */

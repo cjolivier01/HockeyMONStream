@@ -11,19 +11,17 @@
  * its affiliates is strictly prohibited.
  */
 
+#include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
-#include "hockeymom/csrc/play_tracker/LivingBoxImpl.h"
-#include "hockeymom/csrc/play_tracker/PlayTracker.h"
+#include "hockeymom/csrc/play_tracker/ResizingBox.h"
+#include "hockeymom/csrc/play_tracker/TranslatingBox.h"
 #include "hstream/src/libs/common/ConfigYaml.h"
-#include "hstream/src/libs/common/Draw.h"
+// #include "hstream/src/libs/common/Draw.h"
 #include "hstream/src/libs/common/PlotContext.h"
-
-#include "gstplaytracker.h"
 
 #include <nvdsmeta.h>
 
 #include <cassert>
-#include <iostream>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,8 +35,6 @@ struct DsPlayTrackerCtx {
   // source_id -> play_tracker
   std::unordered_map<size_t, PlayTracker> play_trackers;
 };
-
-namespace {} // namespace
 
 namespace gst_hm {
 
@@ -204,9 +200,8 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
   }
   config.play_detector = create_play_detector_config(yaml, locator);
 
-  config.ignore_outlier_players = true;  // EXPERIMENTAL
+  config.ignore_outlier_players = true; // EXPERIMENTAL
   config.ignore_left_and_right_extremes = false; // EXPERIMENTAL
-
 
   adjust_config(arena_box, config);
   SET_LOCATOR(locator, config, no_wide_start);

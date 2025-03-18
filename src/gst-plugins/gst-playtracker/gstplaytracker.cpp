@@ -362,7 +362,8 @@ error:
   return FALSE;
 }
 
-// static gboolean convert_batch_and_push_to_process_thread(GstDsPlayTracker* playtracker, GstDsPlayTrackerBatch* batch)
+// static gboolean convert_batch_and_push_to_process_thread(GstDsPlayTracker* playtracker, GstDsPlayTrackerBatch*
+// batch)
 // {
 //   g_mutex_lock(&playtracker->process_lock);
 
@@ -418,7 +419,8 @@ error:
 //   /* Map the buffer contents and get the pointer to NvBufSurface. */
 //   if (!gst_buffer_map(inbuf, &in_map_info, GST_MAP_READ)) {
 //     GST_ELEMENT_ERROR(
-//         playtracker, STREAM, FAILED, ("%s:gst buffer map to get pointer to NvBufSurface failed", __func__), (NULL));
+//         playtracker, STREAM, FAILED, ("%s:gst buffer map to get pointer to NvBufSurface failed", __func__),
+//         (NULL));
 //     return GST_FLOW_ERROR;
 //   }
 //   in_surf = (NvBufSurface*)in_map_info.data;

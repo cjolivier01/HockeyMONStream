@@ -1,10 +1,10 @@
 load("@gst_plugin_dev//buildfiles:gst_plugin.bzl", "gst_cc_plugin")
 
+INCLUDE_PREFIX = "hstream/src/gst-plugins/gst-playtracker"
+
 gst_cc_plugin(
     name = "gstplaytracker",
     srcs = [
-        "PlayTrackerCtx.cpp",
-        "PlayTrackerCtx.h",
         "gstplaytracker.cpp",
         "gstplaytracker.h",
     ],
@@ -14,9 +14,24 @@ gst_cc_plugin(
     ],
     linkopts = [
     ],
-    visibility = ["//visibility:public"],
+    visibility = ["//visibility:private"],
     deps = [
+        ":playtracker_context",
+    ],
+)
+
+cc_library(
+  name = "playtracker_context",
+  srcs = [
+        "PlayTrackerCtx.cpp",
+  ],
+  hdrs = [
+        "PlayTrackerCtx.h",
+  ],
+  include_prefix =   INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
         "//src/libs/common:utils",
         "@hm//hockeymom/csrc/play_tracker:play_tracker",
-    ],
+  ],
 )
