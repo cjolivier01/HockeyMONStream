@@ -1,5 +1,5 @@
 #include "gst_utils.h"
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 
 namespace hm {
 namespace gst {

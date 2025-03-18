@@ -11,7 +11,7 @@
  */
 
 #include "gstnvstreamdemux.h"
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 #include <stdio.h>
 #include <string.h>
 #include <vector>

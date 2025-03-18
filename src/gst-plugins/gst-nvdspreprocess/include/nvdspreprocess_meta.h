@@ -31,7 +31,7 @@
 
 #include <string>
 #include <vector>
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvds_roi_meta.h"
 
 /**

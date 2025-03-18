@@ -31,7 +31,7 @@
 #include "dsfieldmask_lib.h"
 // #include "gst-nvquery.h"
 // #include "gstnvdsmeta.h"
-// #include "nvbufsurface.h"
+// #include "deepstream/sources/includes/nvbufsurface.h"
 // #include "nvbufsurftransform.h"
 
 /* Package and library details required for plugin_init */

@@ -30,7 +30,7 @@
 #include "gstnvdsmeta.h"
 #include "gstnvstreammux_audio.h"
 #include "gstnvstreammux_impl.h"
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurftransform.h"
 #include "nvstreammux.h"
 #include "nvstreammux_batch.h"

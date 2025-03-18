@@ -26,7 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 
 namespace fs = std::filesystem;
 

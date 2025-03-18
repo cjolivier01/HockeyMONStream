@@ -18,7 +18,7 @@
 #include <nvbufsurface.h>
 #include <cmath>
 #include <map>
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvdsmeta.h"
 
 #include <assert.h>
@@ -26,7 +26,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <vector>
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 
 #if defined(__aarch64__)
 #include <EGL/egl.h>

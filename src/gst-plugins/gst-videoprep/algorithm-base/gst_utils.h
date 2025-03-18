@@ -1,6 +1,6 @@
 #include <gst/gst.h>
 
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurftransform.h"
 
 namespace hm {

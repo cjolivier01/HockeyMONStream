@@ -3,7 +3,7 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 #include "nppi.h"
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 
 namespace hm {
 namespace playcropper {

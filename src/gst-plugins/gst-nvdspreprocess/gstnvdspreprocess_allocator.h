@@ -17,7 +17,7 @@
 #include <gst/gst.h>
 #include <vector>
 #include "cudaEGL.h"
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 
 /**
  * This file describes the custom memory allocator for the Gstreamer TensorRT

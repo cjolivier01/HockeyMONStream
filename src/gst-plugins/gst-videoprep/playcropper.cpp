@@ -8,7 +8,7 @@
 #include <nvbufsurface.h>
 #include <cmath>
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvdsmeta.h"
 
 #include <assert.h>

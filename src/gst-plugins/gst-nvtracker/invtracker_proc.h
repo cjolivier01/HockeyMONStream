@@ -14,7 +14,7 @@
 #ifndef _INVTRACKERPROC_H
 #define _INVTRACKERPROC_H
 
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvdstracker.h"
 
 #include <string>

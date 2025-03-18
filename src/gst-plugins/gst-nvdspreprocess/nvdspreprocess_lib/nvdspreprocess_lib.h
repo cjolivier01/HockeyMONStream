@@ -28,7 +28,7 @@
 #ifndef __NVDSPREPROCESS_LIB__
 #define __NVDSPREPROCESS_LIB__
 
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurftransform.h"
 #include "nvdspreprocess_interface.h"
 

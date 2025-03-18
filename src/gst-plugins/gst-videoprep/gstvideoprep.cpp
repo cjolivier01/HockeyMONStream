@@ -19,7 +19,7 @@
 #include "gstnvdsmeta.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/gst_utils.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_interface.hpp"
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurftransform.h"
 #include "nvds_dewarper_meta.h"
 #include "nvdsmeta.h"
@@ -30,7 +30,7 @@
 #include <cuda.h>
 #include <string.h>
 #include <unistd.h>
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 
 #include "absl/strings/str_split.h"
 

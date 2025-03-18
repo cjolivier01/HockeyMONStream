@@ -12,7 +12,7 @@
 // #include <cuda.h>
 // #include <npp.h>
 
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvdsmeta.h"
 // #include "nvbufsurftransform.h"
 

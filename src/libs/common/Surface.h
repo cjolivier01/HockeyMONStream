@@ -4,7 +4,7 @@
  */
 #pragma once
 
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 
 #include "hockeymom/csrc/play_tracker/BoxUtils.h"
 

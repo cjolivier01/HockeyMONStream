@@ -21,7 +21,7 @@
 #include <queue>
 #include <vector>
 
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurftransform.h"
 
 #define MAX_BUFFER_POOL_SIZE \

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "nvdsmeta.h"
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 
 #include <string>
 

@@ -29,7 +29,7 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include "nvbufsurface.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurftransform.h"
 #include "gst-nvquery.h"
 #include "gstnvdsmeta.h"
