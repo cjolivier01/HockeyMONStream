@@ -338,9 +338,6 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
 
   gst_buffer_unmap(inbuf, &in_map_info);
 
-  // batch_meta = gst_buffer_get_nvds_batch_meta (inbuf);
-  batch_meta = GetNVDS_BatchMeta(inbuf);
-
 #if 0
   // Batch meta is attached when nvstreammux plugin is present in the pipeline and
   // it should be upstream plugin in the pipeline
@@ -364,8 +361,10 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
   // Currently its just dumping few decoded video frames
 
   // Enable for dumping the input frame, for debugging purpose
-  if (0)
+  if (0) {
+    batch_meta = GetNVDS_BatchMeta(inbuf);
     DumpNvBufSurface(in_surf, batch_meta);
+  }
 
   m_processLock.lock();
   if (!outputthread_stopped) {
@@ -422,6 +421,7 @@ void* set_metadata_ptr() {
       f++;
     }
     mem_count += (sizeof(uint32_t) + sizeof(uint32_t) + fbs.size() * (sizeof(struct faceboxes)));
+    (void)mem_count;
   }
 
   return (gpointer)custom_payload_fb;
@@ -556,13 +556,6 @@ void CustomAlgorithmBase::OutputThread(void) {
     m_processCV.notify_all();
     lk.unlock();
 
-    // if (!packetInfo.inbuf) {
-    //   // We received a tombstone
-    //   std::cout << "videoprep received a tombstone" << std::endl;
-    //   lk.lock();
-    //   break;
-    // }
-
     // Add custom algorithm logic here
     // Once buffer processing is done, push the buffer to the downstream by using gst_pad_push function
 
@@ -651,7 +644,6 @@ void CustomAlgorithmBase::OutputThread(void) {
         // Unref the input buffer
         gst_buffer_unref(packetInfo.inbuf);
       } else if (hw_caps == false) {
-        assert(false);
         /*
          * Note: This is SRC pad of nvdsvideotemplate where SW caps are negotiated.
          * Here SW buffer pool is allocated and input buffer is copied into outgoing buffer

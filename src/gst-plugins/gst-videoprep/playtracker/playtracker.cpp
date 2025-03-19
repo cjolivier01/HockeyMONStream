@@ -22,7 +22,7 @@ absl::Status PlayTrackerPriv::PreCapsInit(DSCustom_CreateParams* params) {
 };
 
 absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
-  // Transform In-Place
+  // Transform In-Place (but still asynchronously)
   m_transformMode = false;
   // No buffers for us
   params->m_bufferPoolConfig.max_buffers = 0;
