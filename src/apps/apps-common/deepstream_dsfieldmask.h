@@ -73,10 +73,6 @@ struct NvDsDsPlayTrackerConfig {
   guint gpu_id;
   bool draw;
   gchar config_file[kMyMaxPath];
-  // For nvvidconv
-  guint nvbuf_memory_type;
-  gboolean plot_detections;
-  gboolean plot_tracking;
 };
 
 // Struct to store references to the bin and elements
