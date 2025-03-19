@@ -12,5 +12,6 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/gst-plugins/gst-videoprep/algorithm-base",
+        "//src/gst-plugins/gst-playtracker:playtracker_context",
     ],
 )
