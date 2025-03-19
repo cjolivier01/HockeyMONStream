@@ -22,8 +22,6 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
 
   absl::Status GenerateOutput(NvDsBatchMeta* batch_meta, NvBufSurface* in_surface, NvBufSurface* out_surface) override;
 
-  gint AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) override;
-
  protected:
   bool show_{false};
 };

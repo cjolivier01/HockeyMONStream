@@ -16,7 +16,6 @@
 
 namespace hm {
 namespace playtracker {
-namespace {} // namespace
 
 absl::Status PlayTrackerPriv::PreCapsInit(DSCustom_CreateParams* params) {
   return Super::PreCapsInit(params);

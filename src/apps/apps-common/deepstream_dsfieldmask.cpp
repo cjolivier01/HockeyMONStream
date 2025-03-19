@@ -581,7 +581,7 @@ gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrep
     NVGSTDS_ERR_MSG_V("Failed to create 'playcropper_conv_queue'");
     goto done;
   }
-NVGSTDS_ERR_MSG_V("Failed to create 'playcropper_src_queue'");
+
   bin->cap_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "playcropper_caps");
   if (!bin->cap_filter) {
     NVGSTDS_ERR_MSG_V("Failed to create 'playcropper_caps'");
@@ -592,7 +592,7 @@ NVGSTDS_ERR_MSG_V("Failed to create 'playcropper_src_queue'");
 
   bin->playcropper = gst_element_factory_make("playcropper" /*NVDS_ELEM_DEWARPER*/, NULL);
   if (!bin->playcropper) {
-    NVGSTDS_ERR_MSG_V("Failed to create 'nvplaycropper'");
+    NVGSTDS_ERR_MSG_V("Failed to create 'playcropper'");
     goto done;
   }
 
