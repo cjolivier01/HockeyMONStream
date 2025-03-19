@@ -485,26 +485,9 @@ gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTra
     goto done;
   }
 
-  bin->pre_conv = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "dsplaytracker_conv0");
-  if (!bin->pre_conv) {
-    NVGSTDS_ERR_MSG_V("Failed to create 'dsplaytracker_conv0'");
-    goto done;
-  }
+  gst_bin_add_many(GST_BIN(bin->bin), bin->queue, bin->elem_dsplaytracker, NULL);
 
-  bin->cap_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "dsplaytracker_caps");
-  if (!bin->cap_filter) {
-    NVGSTDS_ERR_MSG_V("Failed to create 'dsplaytracker_caps'");
-    goto done;
-  }
-
-  // this causes a buffer error and stuff stops
-  // setup_rgb_nvvm_caps_filter(nullptr, bin->cap_filter);
-
-  gst_bin_add_many(GST_BIN(bin->bin), bin->queue, bin->pre_conv, bin->cap_filter, bin->elem_dsplaytracker, NULL);
-
-  NVGSTDS_LINK_ELEMENT(bin->queue, bin->pre_conv);
-  NVGSTDS_LINK_ELEMENT(bin->pre_conv, bin->cap_filter);
-  NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->elem_dsplaytracker);
+  NVGSTDS_LINK_ELEMENT(bin->queue, bin->elem_dsplaytracker);
 
   NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "sink");
   NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->elem_dsplaytracker, "src");
@@ -512,12 +495,8 @@ gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTra
   g_object_set(G_OBJECT(bin->elem_dsplaytracker), "unique-id", config->unique_id, "gpu-id", config->gpu_id, NULL);
   g_object_set(G_OBJECT(bin->elem_dsplaytracker), "config-file", config->config_file, NULL);
   g_object_set(G_OBJECT(bin->elem_dsplaytracker), "draw", config->draw, NULL);
-  g_object_set(G_OBJECT(bin->pre_conv), "gpu-id", config->gpu_id, NULL);
-
-  g_object_set(G_OBJECT(bin->pre_conv), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
 
   ret = TRUE;
-
 done:
   if (!ret) {
     NVGSTDS_ERR_MSG_V("%s failed", __func__);
@@ -526,15 +505,16 @@ done:
   return ret;
 }
 
+
 /**
- * __      __ _     _             _____
- * \ \    / /(_)   | |           |  __ \
- *  \ \  / /  _  __| | ___   ___ | |__) |_ __  ___  _ __
- *   \ \/ /  | |/ _` |/ _ \ / _ \|  ___/| '__|/ _ \| '_ \
- *    \  /   | | (_| |  __/| (_) | |    | |  |  __/| |_) |
- *     \/    |_|\__,_|\___| \___/|_|    |_|   \___|| .__/
- *                                                 | |
- *                                                 |_|
+ *  _____  _          _______              _
+ * |  __ \| |        |__   __|            | |
+ * | |__) | | __ _ _   _| |_ __  __ _  ___| | __ ___  _ __
+ * |  ___/| |/ _` | | | | | '__|/ _` |/ __| |/ // _ \| '__|
+ * | |    | | (_| | |_| | | |  | (_| | (__|   <|  __/| |
+ * |_|    |_|\__,_|\__, |_|_|   \__,_|\___|_|\_\\___||_|
+ *                  __/ |
+ *                 |___/
  */
 gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBin* bin) {
   gboolean ret = FALSE;
@@ -559,7 +539,7 @@ gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrep
     goto done;
   }
 
-  bin->src_queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "playcropper_src_queue");
+  bin->src_queue = gst_element_factory_make (NVDS_ELEM_QUEUE, "playcropper_src_queue");
   if (!bin->src_queue) {
     NVGSTDS_ERR_MSG_V("Failed to create 'playcropper_src_queue'");
     goto done;

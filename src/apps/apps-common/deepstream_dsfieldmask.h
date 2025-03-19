@@ -109,9 +109,7 @@ struct NvDsHmVideoPrepConfig {
   gboolean show;
   bool has_queue;
   bool has_videoconvert;
-  // bool has_cameraman;
   bool has_videorate;
-  // BEGIN dewarper flags stuff
   guint fps_n;
   guint fps_d;
   guint num_output_buffers;
@@ -124,7 +122,6 @@ struct NvDsHmVideoPrepConfig {
   gchar config_file[kMyMaxPath];
   gchar plugin_type[kMyMaxPath];
   gchar plugin_private_config[1024 * 1024];
-  // END dewarper flags stuff
 
   // For nvvidconv
   guint nvbuf_memory_type;
