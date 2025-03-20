@@ -89,9 +89,10 @@ struct FontGlyph {
   }
 
   FontSize size() const {
-    return FontSize {
-      .width = glyphWidth_, .height = glyphHeight_;
-    }
+    return FontSize{
+        .width = glyphWidth_,
+        .height = glyphHeight_,
+    };
   }
 
   ~FontGlyph() {
@@ -161,7 +162,7 @@ class Font {
       }
     }
     FontGlyph* g;
-    HM_ASSIGN_OR_RETURN(g, get_or_crerate_glyph(codepoint));
+    HM_ASSIGN_OR_RETURN(g, get_or_crerate_glyph(character));
     cudaError_t cerr = g->draw(surface, imgWidth, imgHeight, dest_x, dest_y, textColor);
     if (cerr != cudaError_t::cudaSuccess) {
       return to_status(cerr);
@@ -232,10 +233,27 @@ class FontCache {
  public:
   FontCache() = default;
 
-  // absl
+  absl::StatusOr<std::shared_ptr<Font>> get_or_create_font(
+      const std::string& font_path,
+      int pixel_height,
+      bool lazy_load = true) {
+    absl::MutexLock lk(&mu_);
+    std::pair<int, std::string> key = std::make_pair(pixel_height, font_path);
+    auto found = font_cache_.find(key);
+    if (found != font_cache_.end()) {
+      return found->second;
+    }
+    found = font_cache_.emplace(std::move(key), std::make_shared<Font>(font_path, pixel_height)).first;
+    // It's in there, even if the load fails, since we'll need to not try ot over and over
+    if (!lazy_load) {
+      HM_RETURN_IF_ERROR(found->second->load());
+    }
+    return found->second;
+  }
 
  private:
-  std::map<std::pair<int, std::string>, CudaBuffer> font_cache_;
+  absl::Mutex mu_;
+  std::map<std::pair<int, std::string>, std::shared_ptr<Font>> font_cache_ ABSL_GUARDED_BY(mu_);
 };
 
 //------------------------------------------------------------------------------
