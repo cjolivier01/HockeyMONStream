@@ -1,18 +1,140 @@
 #include "hstream/src/libs/draw_display/Fonts.h"
+#include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/draw_display/cudaDrawText.h"
 
 #include <cuda_runtime.h>
 #include <cassert>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <vector>
 
 // stb_truetype: include the header and define implementation in one file.
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "hstream/src/libs/draw_display/stb_truetype.h"
 
+#include "absl/status/status.h"
+
 namespace hm {
 namespace draw_display {
+
+struct CudaBuffer {
+  CudaBuffer() = default;
+  CudaBuffer(void* data, size_t size) : data(data), size(size) {}
+  ~CudaBuffer() {
+    if (data) {
+      cudaFree(data);
+    }
+  }
+  void assign(void* d, size_t z) {
+    data = d;
+    size = z;
+  }
+  void* data{nullptr};
+  size_t size{0};
+};
+
+struct FontGlyph {
+  FontGlyph(int codepoint) : codepoint_(codepoint) {}
+
+  absl::Status load(stbtt_fontinfo* font, float scale) {
+    glyphBitmap_ =
+        stbtt_GetCodepointBitmap(font, 0, scale, codepoint_, &glyphWidth_, &glyphHeight_, &xoffset_, &yoffset_);
+    if (!glyphBitmap_) {
+      return absl::InternalError(
+          TO_STRING("Error: Could not generate bitmap for character '" << char(codepoint_) << "'."));
+    }
+    //--------------------------------------------------------------------------
+    // 3. Copy the glyph bitmap to GPU memory.
+    //--------------------------------------------------------------------------
+    unsigned char* d_glyph;
+    glyphSize_ = glyphWidth_ * glyphHeight_ * sizeof(unsigned char);
+    cudaError_t err = cudaMalloc(&d_glyph, glyphSize_);
+    if (err != cudaSuccess) {
+      return absl::InternalError(TO_STRING("CUDA Error (cudaMalloc for glyph): " << cudaGetErrorString(err)));
+    }
+    cuda_buffer_.assign(d_glyph, glyphSize_);
+    cudaMemcpy(d_glyph, glyphBitmap_, glyphSize_, cudaMemcpyHostToDevice);
+    return absl::OkStatus();
+  }
+
+  cudaError_t draw(void *surface, int imgWidth, int imgHeight, int dest_x, int dest_y, uchar4 textColor) {
+    if (!cuda_buffer_.data) {
+      assert(false);
+      return cudaError_t::cudaSuccess;
+    }
+    return drawGlyph(
+        (uchar4*)surface,
+        imgWidth,
+        imgHeight,
+        (const uint8_t*)cuda_buffer_.data,
+        glyphWidth_,
+        glyphHeight_,
+        dest_x,
+        dest_y,
+        textColor,
+        /*threshold=*/128,
+        /*stream=*/nullptr);
+  }
+
+  ~FontGlyph() {
+    if (glyphBitmap_) {
+      stbtt_FreeBitmap(glyphBitmap_, nullptr);
+    }
+  }
+
+ private:
+  int codepoint_;
+  int glyphWidth_{0}, glyphHeight_{0}, xoffset_{0}, yoffset_{0};
+  uint8_t* glyphBitmap_{nullptr};
+  CudaBuffer cuda_buffer_;
+  size_t glyphSize_{0};
+};
+
+class Font {
+ public:
+  Font(const std::string& font_path, int pixel_height) : font_path_(font_path), pixel_height_(pixel_height) {}
+
+  absl::Status load() {
+    //--------------------------------------------------------------------------
+    // 1. Load the TrueType font file.
+    //--------------------------------------------------------------------------
+    std::ifstream font_file(font_path_, std::ios::binary);
+    if (!font_file) {
+      return absl::NotFoundError(TO_STRING("Error: Could not open font file: " << font_path_));
+    }
+    std::vector<unsigned char> font_buffer(
+        (std::istreambuf_iterator<char>(font_file)), std::istreambuf_iterator<char>());
+    font_file.close();
+
+    //--------------------------------------------------------------------------
+    // 2. Initialize stb_truetype and render a glyph.
+    //--------------------------------------------------------------------------
+    if (!stbtt_InitFont(&font_, font_buffer.data(), 0)) {
+      return absl::InternalError("Error: Could not initialize font.");
+    }
+
+    // Set the desired pixel height (for example, 48 pixels tall).
+    scale_ = stbtt_ScaleForPixelHeight(&font_, pixel_height_);
+    return absl::OkStatus();
+  }
+
+ private:
+  std::string font_path_;
+  int pixel_height_;
+  float scale_{0.0};
+  stbtt_fontinfo font_;
+};
+
+class FontCache {
+ public:
+  FontCache() = default;
+
+  // absl
+
+ private:
+  std::map<std::pair<int, std::string>, CudaBuffer> font_cache_;
+};
 
 //------------------------------------------------------------------------------
 // Host Code
@@ -115,7 +237,17 @@ int test_main() {
 
   // Define CUDA kernel launch dimensions based on the glyph size.
   drawGlyph(
-      d_img, imgWidth, imgHeight, d_glyph, glyphWidth, glyphHeight, destX, destY, textColor, threshold, /*stream=*/nullptr);
+      d_img,
+      imgWidth,
+      imgHeight,
+      d_glyph,
+      glyphWidth,
+      glyphHeight,
+      destX,
+      destY,
+      textColor,
+      threshold,
+      /*stream=*/nullptr);
   cudaDeviceSynchronize();
 
   //--------------------------------------------------------------------------
