@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cuda_runtime.h>
+
 #include "deepstream/sources/includes/nvdsmeta.h"
 #include "hstream/src/libs/common/Surface.h"
 
@@ -9,6 +11,32 @@ namespace hm {
 namespace draw_display {
 
 absl::Status draw_display_meta(surface::Surface surface, const NvDsDisplayMeta* display_meta, cudaStream_t stream);
+
+cudaError_t cudaDraw(
+    void* image,
+    size_t width,
+    size_t height,
+    imageFormat format,
+    const NvOSD_RectParams& rect,
+    cudaStream_t stream = 0);
+
+// Overloaded helper for circles. This version takes an NvOSD_CircleParams struct.
+cudaError_t cudaDraw(
+    void* image,
+    size_t width,
+    size_t height,
+    imageFormat format,
+    const NvOSD_CircleParams& circle,
+    cudaStream_t stream = 0);
+
+// Overloaded helper for lines. This version takes an NvOSD_LineParams struct.
+cudaError_t cudaDraw(
+    void* image,
+    size_t width,
+    size_t height,
+    imageFormat format,
+    const NvOSD_LineParams& line,
+    cudaStream_t stream = 0);
 
 } // namespace draw_display
 } // namespace hm
