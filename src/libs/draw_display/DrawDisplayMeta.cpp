@@ -1,5 +1,6 @@
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/draw_display/Fonts.h"
 #include "jetson-utils/cuda/cudaDraw.h"
 
 namespace hm {
