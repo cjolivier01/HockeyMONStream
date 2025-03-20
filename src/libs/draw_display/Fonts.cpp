@@ -397,12 +397,14 @@ absl::Mutex weak_font_cache_ptr_mu;
  *
  * @return std::unique_ptr to a FontCache instance.
  */
-std::shared_ptr<FontCache> create_font_cache() {
+std::shared_ptr<FontCache> get_or_create_font_cache(bool create_if_needed)) {
   absl::MutexLock lk(&weak_font_cache_ptr_mu);
   static std::weak_ptr<FontCache> weak_font_cache_ptr;
   auto sp = weak_font_cache_ptr.lock();
   if (sp) {
     return sp;
+  } else if (!create_if_needed) {
+    return nullptr;
   }
   sp = std::make_shared<FontCacheImpl>();
   weak_font_cache_ptr = sp;

@@ -82,11 +82,11 @@ struct FontCache {
 };
 
 /**
- * @brief Creates a new FontCache instance.
+ * @brief Get or create a font cache.
  *
- * @return A unique_ptr to a FontCache.
+ * @return A shared_ptr to a FontCache.
  */
-std::shared_ptr<FontCache> create_font_cache();
+std::shared_ptr<FontCache> get_or_create_font_cache(bool create_if_needed = true);
 
 } // namespace draw_display
 } // namespace hm
