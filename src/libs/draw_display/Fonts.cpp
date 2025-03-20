@@ -26,6 +26,68 @@ namespace draw_display {
 namespace {
 
 /**
+ * @brief Trims whitespace from both ends of a string.
+ *
+ * @param s Input string.
+ * @return A trimmed version of the input string.
+ */
+static inline std::string trim(const std::string& s) {
+  auto start = s.find_first_not_of(" \t\r\n");
+  auto end = s.find_last_not_of(" \t\r\n");
+  return (start == std::string::npos) ? "" : s.substr(start, end - start + 1);
+}
+
+/**
+ * @brief Returns a map of font family names to font file paths by running fc-list.
+ *
+ * This function calls fc-list with options to display the font file and family.
+ * It then parses each line of the output (expected format: "path: family")
+ * and returns a std::map where the key is the font family name and the value is
+ * the file path to the font.
+ *
+ * @return std::map<std::string, std::string> mapping font family name to file path.
+ */
+std::map<std::string, std::string> getFontMap() {
+  std::map<std::string, std::string> fontMap;
+
+  // fc-list with "file" and "family" fields (colon-separated)
+  // Example output line:
+  //   /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf: DejaVu Sans
+  const char* command = "fc-list : file family";
+  FILE* pipe = popen(command, "r");
+  if (!pipe) {
+    std::cerr << "Error: Could not run fc-list command." << std::endl;
+    return fontMap;
+  }
+
+  char buffer[2048];
+  while (fgets(buffer, sizeof(buffer), pipe)) {
+    std::string line(buffer);
+    // Remove any trailing newline.
+    line = trim(line);
+    if (line.empty()) {
+      continue;
+    }
+
+    // Expect line format: "<file_path>: <family>"
+    size_t colonPos = line.find(':');
+    if (colonPos == std::string::npos) {
+      continue;
+    }
+
+    std::string filePath = trim(line.substr(0, colonPos));
+    std::string family = trim(line.substr(colonPos + 1));
+    if (!filePath.empty() && !family.empty()) {
+      // Insert into map.
+      fontMap[family] = filePath;
+    }
+  }
+
+  pclose(pipe);
+  return fontMap;
+}
+
+/**
  * @brief A simple RAII wrapper for a CUDA-allocated memory buffer.
  */
 struct CudaBuffer {
@@ -354,7 +416,9 @@ class FontImpl : public Font {
  */
 class FontCacheImpl : public FontCache {
  public:
-  FontCacheImpl() = default;
+  FontCacheImpl() {
+    std::map<std::string, std::string> font_name_to_file_ = getFontMap();
+  }
 
   /**
    * @brief Retrieves a cached Font instance or creates a new one.
@@ -365,17 +429,23 @@ class FontCacheImpl : public FontCache {
    * @return absl::StatusOr containing a shared pointer to a Font instance.
    */
   absl::StatusOr<std::shared_ptr<Font>> get_or_create_font(
-      const std::string& font_path,
+      const std::string& font_name_or_path,
       int pixel_height,
       bool lazy_load) override {
+    const std::string* font_file_path = &font_name_or_path;
+    auto found_name = font_name_to_file_.find(*font_file_path);
+    if (found_name != font_name_to_file_.end()) {
+      font_file_path = &found_name->second;
+    }
+
     absl::MutexLock lk(&mu_);
-    std::pair<int, std::string> key = std::make_pair(pixel_height, font_path);
+    std::pair<int, std::string> key = std::make_pair(pixel_height, *font_file_path);
     auto found = font_cache_.find(key);
     if (found != font_cache_.end()) {
       return found->second;
     }
     // Create a new FontImpl and cache it.
-    found = font_cache_.emplace(std::move(key), std::make_shared<FontImpl>(font_path, pixel_height)).first;
+    found = font_cache_.emplace(std::move(key), std::make_shared<FontImpl>(*font_file_path, pixel_height)).first;
     // If not lazy loading, load the font immediately.
     if (!lazy_load) {
       HM_RETURN_IF_ERROR(found->second->load());
@@ -384,6 +454,7 @@ class FontCacheImpl : public FontCache {
   }
 
  private:
+  std::map<std::string, std::string> font_name_to_file_;
   absl::Mutex mu_;
   // Map from (pixel_height, font_path) to FontImpl.
   std::map<std::pair<int, std::string>, std::shared_ptr<FontImpl>> font_cache_ ABSL_GUARDED_BY(mu_);
@@ -397,7 +468,7 @@ absl::Mutex weak_font_cache_ptr_mu;
  *
  * @return std::unique_ptr to a FontCache instance.
  */
-std::shared_ptr<FontCache> get_or_create_font_cache(bool create_if_needed)) {
+std::shared_ptr<FontCache> get_or_create_font_cache(bool create_if_needed) {
   absl::MutexLock lk(&weak_font_cache_ptr_mu);
   static std::weak_ptr<FontCache> weak_font_cache_ptr;
   auto sp = weak_font_cache_ptr.lock();

@@ -1,16 +1,22 @@
 #pragma once
 
+#include "hstream/src/libs/common/Surface.h"
+#include "hstream/src/libs/draw_display/Fonts.h"
+
 #include <cuda_runtime.h>
 
 #include "deepstream/sources/includes/nvdsmeta.h"
-#include "hstream/src/libs/common/Surface.h"
 
 #include "absl/status/status.h"
 
 namespace hm {
 namespace draw_display {
 
-absl::Status draw_display_meta(surface::Surface surface, const NvDsDisplayMeta* display_meta, cudaStream_t stream);
+absl::Status draw_display_meta(
+    surface::Surface surface,
+    const NvDsDisplayMeta* display_meta,
+    std::shared_ptr<FontCache> font_cache,
+    cudaStream_t stream);
 
 cudaError_t cudaDraw(
     void* image,

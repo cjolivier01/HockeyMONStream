@@ -76,7 +76,7 @@ struct FontCache {
    * @return absl::StatusOr containing a shared pointer to a Font instance.
    */
   virtual absl::StatusOr<std::shared_ptr<Font>> get_or_create_font(
-      const std::string& font_path,
+      const std::string& font_name_or_path,
       int pixel_height,
       bool lazy_load = true) = 0;
 };

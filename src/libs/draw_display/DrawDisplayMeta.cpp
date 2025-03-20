@@ -1,6 +1,6 @@
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
+#include "deepstream/sources/includes/nvll_osd_struct.h"
 #include "hstream/src/libs/common/Status.h"
-#include "hstream/src/libs/draw_display/Fonts.h"
 #include "jetson-utils/cuda/cudaDraw.h"
 
 namespace hm {
@@ -86,7 +86,11 @@ cudaError_t cudaDraw(
   return ::cudaDrawLine(image, width, height, format, x1, y1, x2, y2, color, lineWidth, stream);
 }
 
-absl::Status draw_display_meta(surface::Surface surface, const NvDsDisplayMeta* display_meta, cudaStream_t stream) {
+absl::Status draw_display_meta(
+    surface::Surface surface,
+    const NvDsDisplayMeta* display_meta,
+    std::shared_ptr<FontCache> font_cache,
+    cudaStream_t stream) {
   // For now, we assume no extra pitch.
   assert(surface.pitch_width() == surface.width());
 
@@ -108,6 +112,30 @@ absl::Status draw_display_meta(surface::Surface surface, const NvDsDisplayMeta* 
   for (size_t i = 0; i < display_meta->num_lines; ++i) {
     const NvOSD_LineParams& line = display_meta->line_params[i];
     XCUDA_RETURN_IF_ERROR(cudaDraw(surface.dataptr(), ww, hh, format, line, stream));
+  }
+  for (size_t i = 0; i < display_meta->num_labels; ++i) {
+    const NvOSD_TextParams& text = display_meta->text_params[i];
+    if (!text.display_text || !*text.display_text) {
+      continue;
+    }
+    std::shared_ptr<Font> font;
+    HM_ASSIGN_OR_RETURN(font, font_cache->get_or_create_font(text.font_params.font_name, text.font_params.font_size));
+    std::pair<int, int> newpos;
+    HM_ASSIGN_OR_RETURN(
+        newpos,
+        font->draw(
+            text.display_text,
+            surface.dataptr(),
+            surface.width(),
+            surface.height(),
+            text.x_offset,
+            text.y_offset,
+            uchar4{
+                (uint8_t)text.font_params.font_color.red,
+                (uint8_t)text.font_params.font_color.green,
+                (uint8_t)text.font_params.font_color.blue,
+                (uint8_t)text.font_params.font_color.alpha}));
+    (void)newpos;
   }
   return absl::OkStatus();
 }
