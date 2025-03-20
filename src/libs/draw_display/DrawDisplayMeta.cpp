@@ -65,6 +65,25 @@ absl::Status draw_display_meta(surface::Surface surface, const NvDsDisplayMeta* 
             circle.circle_color.red, circle.circle_color.green, circle.circle_color.blue, circle.circle_color.alpha),
         stream));
   }
+  for (size_t i = 0; i < display_meta->num_lines; ++i) {
+    // TODO: Need a kernel to do outer line and backgrouns and visa versa
+    const NvOSD_LineParams& line = display_meta->line_params[i];
+    // cudaError_t cudaDrawLine( void* input, void* output, size_t width, size_t height, imageFormat format,
+    //                           int x1, int y1, int x2, int y2, const float4& color, float line_width=1.0,
+    //                           cudaStream_t stream=0 );
+    XCUDA_RETURN_IF_ERROR(cudaDrawLine(
+        surface.dataptr(),
+        ww,
+        hh,
+        format,
+        line.x1,
+        line.y1,
+        line.x2,
+        line.y2,
+        make_float4(line.line_color.red, line.line_color.green, line.line_color.blue, line.line_color.alpha),
+        /*line_width=*/line.line_width,
+        stream));
+  }
   return absl::OkStatus();
 }
 
