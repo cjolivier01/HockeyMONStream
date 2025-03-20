@@ -1,9 +1,11 @@
 #include "hstream/src/libs/draw_display/Fonts.h"
+#include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/draw_display/cudaDrawText.h"
 
 #include <cuda_runtime.h>
 #include <cassert>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -13,7 +15,10 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "hstream/src/libs/draw_display/stb_truetype.h"
 
-#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/synchronization/mutex.h"
+
+namespace fs = std::filesystem;
 
 namespace hm {
 namespace draw_display {
@@ -21,6 +26,7 @@ namespace draw_display {
 struct CudaBuffer {
   CudaBuffer() = default;
   CudaBuffer(void* data, size_t size) : data(data), size(size) {}
+  CudaBuffer(CudaBuffer&& other) = delete;
   ~CudaBuffer() {
     if (data) {
       cudaFree(data);
@@ -32,6 +38,11 @@ struct CudaBuffer {
   }
   void* data{nullptr};
   size_t size{0};
+};
+
+struct FontSize {
+  int width{0};
+  int height{0};
 };
 
 struct FontGlyph {
@@ -58,7 +69,7 @@ struct FontGlyph {
     return absl::OkStatus();
   }
 
-  cudaError_t draw(void *surface, int imgWidth, int imgHeight, int dest_x, int dest_y, uchar4 textColor) {
+  cudaError_t draw(void* surface, int imgWidth, int imgHeight, int dest_x, int dest_y, uchar4 textColor) {
     if (!cuda_buffer_.data) {
       assert(false);
       return cudaError_t::cudaSuccess;
@@ -77,6 +88,12 @@ struct FontGlyph {
         /*stream=*/nullptr);
   }
 
+  FontSize size() const {
+    return FontSize {
+      .width = glyphWidth_, .height = glyphHeight_;
+    }
+  }
+
   ~FontGlyph() {
     if (glyphBitmap_) {
       stbtt_FreeBitmap(glyphBitmap_, nullptr);
@@ -93,7 +110,11 @@ struct FontGlyph {
 
 class Font {
  public:
-  Font(const std::string& font_path, int pixel_height) : font_path_(font_path), pixel_height_(pixel_height) {}
+  Font(const std::string& font_path, int pixel_height) : font_path_(font_path), pixel_height_(pixel_height) {
+    if (!fs::exists(font_path)) {
+      std::cerr << "Warning: Could not find font file: " << font_path << std::endl;
+    }
+  }
 
   absl::Status load() {
     //--------------------------------------------------------------------------
@@ -119,11 +140,57 @@ class Font {
     return absl::OkStatus();
   }
 
+  absl::StatusOr<FontSize> draw(
+      int character,
+      void* surface,
+      int imgWidth,
+      int imgHeight,
+      int dest_x,
+      int dest_y,
+      uchar4 textColor) {
+    if (!status_.ok()) {
+      return status_;
+    }
+    if (!loaded_) {
+      absl::MutexLock lk(&mu_);
+      if (!loaded_) {
+        status_.Update(load());
+        if (status_.ok()) {
+          loaded_ = true;
+        }
+      }
+    }
+    FontGlyph* g;
+    HM_ASSIGN_OR_RETURN(g, get_or_crerate_glyph(codepoint));
+    cudaError_t cerr = g->draw(surface, imgWidth, imgHeight, dest_x, dest_y, textColor);
+    if (cerr != cudaError_t::cudaSuccess) {
+      return to_status(cerr);
+    }
+    return g->size();
+  }
+
+ protected:
+  absl::StatusOr<FontGlyph*> get_or_crerate_glyph(int codepoint) {
+    absl::MutexLock lk(&mu_);
+    auto found = glyphs_.find(codepoint);
+    if (found != glyphs_.end()) {
+      return found->second.get();
+    }
+    auto glyph = std::make_unique<FontGlyph>(codepoint);
+    HM_RETURN_IF_ERROR(glyph->load(&font_, scale_));
+    auto iter = glyphs_.emplace(codepoint, std::move(glyph)).first;
+    return iter->second.get();
+  }
+
  private:
   std::string font_path_;
   int pixel_height_;
   float scale_{0.0};
   stbtt_fontinfo font_;
+  absl::Mutex mu_;
+  bool loaded_ ABSL_GUARDED_BY(mu_){false};
+  std::unordered_map<int, std::unique_ptr<FontGlyph>> glyphs_ ABSL_GUARDED_BY(mu_);
+  absl::Status status_;
 };
 
 class FontCache {
