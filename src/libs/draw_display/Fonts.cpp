@@ -169,6 +169,41 @@ class Font {
     return g->size();
   }
 
+  absl::StatusOr<std::pair<int, int>> draw(
+      const std::string& text,
+      void* surface,
+      int imgWidth,
+      int imgHeight,
+      int dest_x,
+      int dest_y,
+      uchar4 textColor) {
+    int pos_x = dest_x;
+    int pos_y = dest_y;
+    int max_height = 0;
+    int space_width = 0;
+    FontSize last_size{.width = 0, .height = 0};
+    for (const auto& c : text) {
+      if (c == '\n') {
+        pos_x = 0;
+        pos_y += max_height;
+      } else if (c == ' ') {
+        if (space_width) {
+          pos_x += space_width;
+        } else {
+          HM_ASSIGN_OR_RETURN(last_size, draw(c, surface, imgWidth, imgHeight, pos_x, pos_y, textColor));
+          space_width = last_size.width;
+          pos_x += last_size.width;
+        }
+      } else if (c == '\r') {
+        pos_x = 0;
+      } else {
+        HM_ASSIGN_OR_RETURN(last_size, draw(c, surface, imgWidth, imgHeight, pos_x, pos_y, textColor));
+        pos_x += last_size.width;
+      }
+      max_height = std::max(max_height, last_size.height);
+    }
+  }
+
  protected:
   absl::StatusOr<FontGlyph*> get_or_crerate_glyph(int codepoint) {
     absl::MutexLock lk(&mu_);
