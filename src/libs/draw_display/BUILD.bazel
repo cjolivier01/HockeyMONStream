@@ -13,6 +13,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+      "//src/libs/common:utils",
       "@deepstream//sources:deepstream_includes",
       "@com_google_absl//absl/status:status",
       # ":draw_display_cuda_lib",
