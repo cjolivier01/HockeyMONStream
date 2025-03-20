@@ -1,4 +1,5 @@
 #include "hstream/src/libs/draw_display/Fonts.h"
+#include "hstream/src/libs/draw_display/cudaDrawText.h"
 
 #include <cuda_runtime.h>
 #include <cassert>
@@ -113,15 +114,8 @@ int test_main() {
   float threshold = 1.0f;
 
   // Define CUDA kernel launch dimensions based on the glyph size.
-  dim3 block(16, 16);
-  dim3 grid((glyphWidth + block.x - 1) / block.x, (glyphHeight + block.y - 1) / block.y);
-#if 1
-  // oops
-  assert(false);
-#else
-  drawGlyphKernel<<<grid, block>>>(
-      d_img, imgWidth, imgHeight, d_glyph, glyphWidth, glyphHeight, destX, destY, textColor, threshold);
-#endif
+  drawGlyph(
+      d_img, imgWidth, imgHeight, d_glyph, glyphWidth, glyphHeight, destX, destY, textColor, threshold, /*stream=*/nullptr);
   cudaDeviceSynchronize();
 
   //--------------------------------------------------------------------------
