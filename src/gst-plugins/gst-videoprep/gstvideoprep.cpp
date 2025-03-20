@@ -572,7 +572,7 @@ static GstStateChangeReturn gst_videoprep_change_state(GstElement* element, GstS
     assert(!videoprep->priv);
     GObject* object = G_OBJECT(element);
     assert(object);
-    // TODO: remove need for it to be anything but the base type
+    assert(videoprep->plugin_type);
     videoprep->priv = dynamic_cast<VideoPrepPriv*>(videoprep->priv_factory->CreateCustomAlgoCtx(
         videoprep->plugin_type, object, videoprep->gpu_id, videoprep->num_batch_buffers));
     if (!videoprep->priv) {
@@ -673,7 +673,7 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
     // assert(videoprep->num_batch_buffers == videoprep->num_output_buffers);
     // g_print ("in videoconvert caps = %s\n", gst_caps_to_string (outcaps));
     gst_buffer_pool_config_set_params(
-        config, outcaps, sizeof(NvBufSurface), videoprep->num_output_buffers, videoprep->num_output_buffers);
+        config, outcaps, sizeof(Nv{BufSurface), videoprep->num_output_buffers, videoprep->num_output_buffers);
 
     gst_structure_set(
         config,
@@ -1026,7 +1026,8 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
 
   // TODO: If CSV is not given then we should not check this
   videoprep->config_file = NULL;
-  videoprep->plugin_type = strdup("videoprep");
+  assert(!videoprep->plugin_type);
+  videoprep->plugin_type = NULL; // strdup("videoprep");
   videoprep->priv_factory = new VideoPrepLibrary_Factory();
 
   videoprep->num_output_buffers = DEFAULT_NUM_OUTPUT_BUFFERS;
@@ -1120,6 +1121,9 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
+  }
+  if (prop_id == PROP_PLUGIN_TYPE) {
+    std::cout << "plugin_type: " << videoprep->plugin_type << std::endl;
   }
 #else
   switch (prop_id) {

@@ -58,7 +58,10 @@
 #define NVDS_ELEM_DSEXAMPLE_ELEMENT "dsexample"
 #define NVDS_ELEM_DSFIELDMASK_ELEMENT "dsfieldmask"
 #define NVDS_ELEM_DSPLAYTRACKER_ELEMENT "playtracker"
-#define NVDS_ELEM_HMSTITCHER_ELEMENT "hmstitcher"
+//#define NVDS_ELEM_HMSTITCHER_ELEMENT "hmstitcher"
+//#define NVDS_ELEM_DSPLAYTRACKER_ELEMENT "videoprep"
+//#define NVDS_ELEM_PLAYCROPPER_ELEMENT "videoprep"
+//#define NVDS_ELEM_HMSTITCHER_ELEMENT "videoprep"
 
 #define NVDS_ELEM_DEWARPER "nvdewarper"
 #define NVDS_ELEM_SPOTANALYSIS "nvspot"

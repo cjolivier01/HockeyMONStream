@@ -315,7 +315,7 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
     goto done;
   }
 
-  bin->elem_hmstitcher = gst_element_factory_make(NVDS_ELEM_HMSTITCHER_ELEMENT, "hmstitcher0");
+  bin->elem_hmstitcher = gst_element_factory_make("videoprep", "hmstitcher0");
   if (!bin->elem_hmstitcher) {
     NVGSTDS_ERR_MSG_V("Failed to create 'hmstitcher0'");
     goto done;
@@ -569,7 +569,7 @@ gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrep
 
   setup_rgb_nvvm_caps_filter(nullptr, bin->cap_filter);
 
-  bin->playcropper = gst_element_factory_make("playcropper" /*NVDS_ELEM_DEWARPER*/, NULL);
+  bin->playcropper = gst_element_factory_make("videoprep", NULL);
   if (!bin->playcropper) {
     NVGSTDS_ERR_MSG_V("Failed to create 'playcropper'");
     goto done;

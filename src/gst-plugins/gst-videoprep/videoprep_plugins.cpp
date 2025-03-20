@@ -20,12 +20,13 @@ IDSCustomLibrary* VideoPrepLibrary_Factory::CreateCustomAlgoCtx(
   if (libName == "playcropper") {
     return new playcropper::PlayCropperPriv(gpu_id, batch_size);
   }
-  if (libName == "playtracker") {
+  if (libName == "vpplaytracker") {
     return new playtracker::PlayTrackerPriv(gpu_id, batch_size);
   }
   if (libName == "hmstitcher") {
     return new stitcher::StitcherPriv(gpu_id, batch_size);
   }
+  std::cerr << "Invalid videoprep plugin type: " << libName << std::endl;
   return DSCustomLibrary_Factory::CreateCustomAlgoCtx(libName, object);
 }
 
@@ -40,14 +41,14 @@ static gboolean videoprep_init(GstPlugin* plugin) {
    */
   // GST_DEBUG_CATEGORY_INIT(gst_videoprep_debug, "videoprep", 0, "videoprep");
   GST_DEBUG_CATEGORY_INIT(gst_playcropper_debug, "playcropper", 0, "playcropper");
-  //GST_DEBUG_CATEGORY_INIT(gst_playcropper_debug, "playtracker", 0, "playtracker");
+  GST_DEBUG_CATEGORY_INIT(gst_playcropper_debug, "vpplaytracker", 0, "videoprop_playtracker");
   GST_DEBUG_CATEGORY_INIT(gst_stitcher_debug, "hmstitcher", 0, "hmstitcher");
 
   gboolean result = false;
-  // gboolean result = gst_element_register(plugin, "videoprep", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
-  result |= gst_element_register(plugin, "playcropper", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
-  //result |= gst_element_register(plugin, "playtracker", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
-  result |= gst_element_register(plugin, "hmstitcher", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
+  result |= gst_element_register(plugin, "videoprep", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
+  //result |= gst_element_register(plugin, "playcropper", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
+  //result |= gst_element_register(plugin, "vpplaytracker", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
+  //result |= gst_element_register(plugin, "hmstitcher", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
   return result;
 }
 } // namespace videoprep
