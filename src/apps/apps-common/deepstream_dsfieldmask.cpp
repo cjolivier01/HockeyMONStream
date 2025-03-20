@@ -505,16 +505,15 @@ done:
   return ret;
 }
 
-
 /**
- *  _____  _          _______              _
- * |  __ \| |        |__   __|            | |
- * | |__) | | __ _ _   _| |_ __  __ _  ___| | __ ___  _ __
- * |  ___/| |/ _` | | | | | '__|/ _` |/ __| |/ // _ \| '__|
- * | |    | | (_| | |_| | | |  | (_| | (__|   <|  __/| |
- * |_|    |_|\__,_|\__, |_|_|   \__,_|\___|_|\_\\___||_|
- *                  __/ |
- *                 |___/
+ *  _____  _              _____
+ * |  __ \| |            / ____|
+ * | |__) | | __ _ _   _| |     _ __  ___  _ __  _ __   ___  _ __
+ * |  ___/| |/ _` | | | | |    | '__|/ _ \| '_ \| '_ \ / _ \| '__|
+ * | |    | | (_| | |_| | |____| |  | (_) | |_) | |_) |  __/| |
+ * |_|    |_|\__,_|\__, |\_____|_|   \___/| .__/| .__/ \___||_|
+ *                  __/ |                 | |   | |
+ *                 |___/                  |_|   |_|
  */
 gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBin* bin) {
   gboolean ret = FALSE;
@@ -539,7 +538,7 @@ gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrep
     goto done;
   }
 
-  bin->src_queue = gst_element_factory_make (NVDS_ELEM_QUEUE, "playcropper_src_queue");
+  bin->src_queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "playcropper_src_queue");
   if (!bin->src_queue) {
     NVGSTDS_ERR_MSG_V("Failed to create 'playcropper_src_queue'");
     goto done;
@@ -636,7 +635,6 @@ gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrep
 
   ppc << "show=" << config->show;
   g_object_set(G_OBJECT(bin->playcropper), "plugin-private-config", ppc.str().c_str(), NULL);
-
 
 #if 0
   NVGSTDS_LINK_ELEMENT(bin->nvvidconv, bin->cap_filter);
