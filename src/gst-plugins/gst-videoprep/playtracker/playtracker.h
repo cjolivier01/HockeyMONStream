@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
+#include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/libs/common/Status.h"
 
 namespace hm {

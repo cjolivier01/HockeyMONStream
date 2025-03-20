@@ -73,7 +73,6 @@ absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
 }
 
 absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
-  // videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
   if (params->config_file) {
     config_file_ = params->config_file;
   }
@@ -94,8 +93,6 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
     // TODO: handle this through caps
     params->output_width_height[0] = stitcher->canvas_width();
     params->output_width_height[1] = stitcher->canvas_height();
-    // videoprep->output_width = stitcher->canvas_width();
-    // videoprep->output_height = stitcher->canvas_height();
     g_print("Stitched canvas size: %d x %d\n", (int)stitcher->canvas_width(), (int)stitcher->canvas_height());
   }
   return absl::OkStatus();
@@ -106,7 +103,6 @@ absl::Status StitcherPriv::PostCapsInit(DSCustom_CreateParams* params) {
 }
 
 bool StitcherPriv::SetProperty(const Property& prop) {
-  // std::cerr << "SetProperty(" << prop.key << "=" << prop.value << ")" << std::endl;
   if (prop.key == "left-frame-offset-ns") {
     left_frame_offset_ns_ = std::atol(prop.value.c_str());
   } else if (prop.key == "right-frame-offset-ns") {

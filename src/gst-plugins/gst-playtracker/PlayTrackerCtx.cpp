@@ -21,6 +21,7 @@
 #include <nvdsmeta.h>
 
 #include <cassert>
+#include <iostream>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -222,6 +223,7 @@ hm::play_tracker::PlayTracker* get_or_create_play_tracker(DsPlayTrackerCtx* ctx,
   if (!ctx->initParams.play_tracker_config_file.empty()) {
     try {
       YAML::Node yaml = YAML::LoadFile(ctx->initParams.play_tracker_config_file);
+      std::cout << yaml << std::endl;
       if (yaml["play-tracker"]) {
         ctx->play_trackers[source_id].play_tracker_config = create_play_tracker_config(arena_box, yaml["play-tracker"]);
         ctx->play_trackers[source_id].play_tracker = std::make_unique<hm::play_tracker::PlayTracker>(
