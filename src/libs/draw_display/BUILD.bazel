@@ -1,0 +1,47 @@
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+
+INCLUDE_PREFIX = "hstream/src/libs/draw_display"
+
+cc_library(
+    name = "draw_display",
+    srcs = [
+      "DrawDisplayMeta.cpp",
+    ],
+    hdrs = [
+      "DrawDisplayMeta.h",
+    ],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+      "@deepstream//sources:deepstream_includes",
+      "@com_google_absl//absl/status:status",
+      # ":draw_display_cuda_lib",
+    ],
+)
+
+
+# cuda_library(
+#     name = "draw_display_cuda_lib",
+#     srcs = [
+#     ],
+#     hdrs = [
+#     ],
+#     copts = [
+#         "-std=c++17",
+#         "-Xcompiler=-fPIC",
+#         # "-Xcompiler=-rdynamic",
+#         #"-Xcompiler=-O0",
+#         #"-Xcompiler=-g",
+#         "-Wno-deprecated-gpu-targets",
+#         #"-G",
+#         #"-g",
+#         "-keep",
+#         #"-O0",
+#     ],
+#     # includes = ["."],
+#     visibility = ["//visibility:private"],
+#     deps = [
+#         "//src/libs/common:utils",
+#         "@local_cuda//:cuda_runtime",
+#     ],
+# )

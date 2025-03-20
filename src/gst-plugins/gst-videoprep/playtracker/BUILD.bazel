@@ -13,5 +13,6 @@ cc_library(
     deps = [
         "//src/gst-plugins/gst-videoprep/algorithm-base",
         "//src/gst-plugins/gst-playtracker:playtracker_context",
+        "//src/libs/draw_display",
     ],
 )
