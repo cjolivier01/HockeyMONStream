@@ -21,6 +21,7 @@ cc_library(
         "@deepstream//sources:deepstream_includes",
         "@com_google_absl//absl/status",
         # ":draw_display_cuda_lib",
+        "@local_cuda//:cuda_runtime",
     ],
 )
 

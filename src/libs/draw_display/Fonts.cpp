@@ -23,6 +23,7 @@ namespace fs = std::filesystem;
 namespace hm {
 namespace draw_display {
 
+namespace {
 struct CudaBuffer {
   CudaBuffer() = default;
   CudaBuffer(void* data, size_t size) : data(data), size(size) {}
@@ -109,9 +110,9 @@ struct FontGlyph {
   size_t glyphSize_{0};
 };
 
-class Font {
+class FontImpl : public Font {
  public:
-  Font(const std::string& font_path, int pixel_height) : font_path_(font_path), pixel_height_(pixel_height) {
+  FontImpl(const std::string& font_path, int pixel_height) : font_path_(font_path), pixel_height_(pixel_height) {
     if (!fs::exists(font_path)) {
       std::cerr << "Warning: Could not find font file: " << font_path << std::endl;
     }
@@ -148,7 +149,7 @@ class Font {
       int imgHeight,
       int dest_x,
       int dest_y,
-      uchar4 textColor) {
+      const uchar4& textColor) {
     if (!status_.ok()) {
       return status_;
     }
@@ -177,7 +178,7 @@ class Font {
       int imgHeight,
       int dest_x,
       int dest_y,
-      uchar4 textColor) {
+      const uchar4& textColor) {
     int pos_x = dest_x;
     int pos_y = dest_y;
     int max_height = 0;
@@ -203,6 +204,7 @@ class Font {
       }
       max_height = std::max(max_height, last_size.height);
     }
+    return std::make_pair(pos_x, pos_y);
   }
 
  protected:
@@ -229,21 +231,21 @@ class Font {
   absl::Status status_;
 };
 
-class FontCache {
+class FontCacheImpl : public FontCache {
  public:
-  FontCache() = default;
+  FontCacheImpl() = default;
 
   absl::StatusOr<std::shared_ptr<Font>> get_or_create_font(
       const std::string& font_path,
       int pixel_height,
-      bool lazy_load = true) {
+      bool lazy_load) override {
     absl::MutexLock lk(&mu_);
     std::pair<int, std::string> key = std::make_pair(pixel_height, font_path);
     auto found = font_cache_.find(key);
     if (found != font_cache_.end()) {
       return found->second;
     }
-    found = font_cache_.emplace(std::move(key), std::make_shared<Font>(font_path, pixel_height)).first;
+    found = font_cache_.emplace(std::move(key), std::make_shared<FontImpl>(font_path, pixel_height)).first;
     // It's in there, even if the load fails, since we'll need to not try ot over and over
     if (!lazy_load) {
       HM_RETURN_IF_ERROR(found->second->load());
@@ -253,8 +255,13 @@ class FontCache {
 
  private:
   absl::Mutex mu_;
-  std::map<std::pair<int, std::string>, std::shared_ptr<Font>> font_cache_ ABSL_GUARDED_BY(mu_);
+  std::map<std::pair<int, std::string>, std::shared_ptr<FontImpl>> font_cache_ ABSL_GUARDED_BY(mu_);
 };
+} // namespace
+
+std::unique_ptr<FontCache> create_font_cache() {
+  return std::make_unique<FontCacheImpl>();
+}
 
 } // namespace draw_display
 } // namespace hm
