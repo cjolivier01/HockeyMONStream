@@ -3,8 +3,8 @@
 #include <string>
 
 #include <cuda_runtime.h>
-#include "deepstream/sources/includes/nvbufsurface.h"
 #include <nvdsmeta.h>
+#include "deepstream/sources/includes/nvbufsurface.h"
 
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
 
@@ -28,6 +28,11 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
 
 // Deinitialize library context
 void DsPlayTrackerCtxDeinit(DsPlayTrackerCtx* ctx);
+
+void DsPlayTrackerAttachMetadataFullFrame(
+    NvDsFrameMeta* frame_meta,
+    const hm::play_tracker::PlayTrackerResults& play_results,
+    guint batch_id);
 
 struct GstDsPlayTrackerFrame {
   /** NvDsObjectParams belonging to the object to be classified. */

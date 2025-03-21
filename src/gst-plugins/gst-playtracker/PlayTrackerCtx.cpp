@@ -458,7 +458,41 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
       }
     }
   }
+  DsPlayTrackerAttachMetadataFullFrame(frame.frame_meta, frame.play_tracker_results, frame.batch_index);
   return true;
+}
+
+/**
+ * Attach metadata for the full frame. We will be adding a new metadata.
+ */
+void DsPlayTrackerAttachMetadataFullFrame(
+    NvDsFrameMeta* frame_meta,
+    const hm::play_tracker::PlayTrackerResults& play_results,
+    guint batch_id) {
+  NvDsBatchMeta* batch_meta = frame_meta->base_meta.batch_meta;
+  NvDsObjectMeta* object_meta = NULL;
+
+  size_t adder = 0;
+  for (int64_t i = play_results.tracking_boxes.size() - 1; i >= 0; --i, ++adder) {
+    const hm::BBox& tracking_box = play_results.tracking_boxes[i];
+    object_meta = nvds_acquire_obj_meta_from_pool(batch_meta);
+    object_meta->class_id = DsPlayTrackerInitParams::kPlayBoxClassIdBase + adder;
+
+    NvOSD_RectParams& rect_params = object_meta->rect_params;
+
+    // Assign bounding box coordinates
+    rect_params.left = tracking_box.left;
+    rect_params.top = tracking_box.top;
+    rect_params.width = tracking_box.width();
+    rect_params.height = tracking_box.height();
+
+    rect_params.border_width = 0;
+    rect_params.border_color = (NvOSD_ColorParams){1, 1, 0, 1};
+
+    object_meta->object_id = UNTRACKED_OBJECT_ID;
+
+    nvds_add_obj_meta_to_frame(frame_meta, object_meta, NULL);
+  }
 }
 
 void DsPlayTrackerCtxDeinit(DsPlayTrackerCtx* ctx) {

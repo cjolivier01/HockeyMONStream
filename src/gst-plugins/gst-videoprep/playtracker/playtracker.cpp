@@ -61,7 +61,7 @@ absl::Status PlayTrackerPriv::GenerateOutput(
   GstDsPlayTrackerFrame frame;
   NvDsFrameMetaList* fl = batch_meta->frame_meta_list;
   while (fl) {
-    assert(in_surface->numFilled < frame.batch_index);
+    assert(frame.batch_index < in_surface->numFilled);
     frame.frame_meta = (NvDsFrameMeta*)fl->data;
     frame.input_surf_params = &in_surface->surfaceList[frame.batch_index];
     if (!DsPlayTrackerProcessFrame(pt_context_, frame, cuda_stream_)) {

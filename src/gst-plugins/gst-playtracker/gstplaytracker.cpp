@@ -347,40 +347,6 @@ error:
   return FALSE;
 }
 
-/**
- * Attach metadata for the full frame. We will be adding a new metadata.
- */
-static void attach_metadata_full_frame(
-    GstDsPlayTracker* playtracker,
-    NvDsFrameMeta* frame_meta,
-    const hm::play_tracker::PlayTrackerResults& play_results,
-    guint batch_id) {
-  NvDsBatchMeta* batch_meta = frame_meta->base_meta.batch_meta;
-  NvDsObjectMeta* object_meta = NULL;
-
-  size_t adder = 0;
-  for (int64_t i = play_results.tracking_boxes.size() - 1; i >= 0; --i, ++adder) {
-    const hm::BBox& tracking_box = play_results.tracking_boxes[i];
-    object_meta = nvds_acquire_obj_meta_from_pool(batch_meta);
-    object_meta->class_id = DsPlayTrackerInitParams::kPlayBoxClassIdBase + adder;
-
-    NvOSD_RectParams& rect_params = object_meta->rect_params;
-
-    // Assign bounding box coordinates
-    rect_params.left = tracking_box.left;
-    rect_params.top = tracking_box.top;
-    rect_params.width = tracking_box.width();
-    rect_params.height = tracking_box.height();
-
-    rect_params.border_width = 0;
-    rect_params.border_color = (NvOSD_ColorParams){1, 1, 0, 1};
-
-    object_meta->object_id = UNTRACKED_OBJECT_ID;
-
-    nvds_add_obj_meta_to_frame(frame_meta, object_meta, NULL);
-  }
-}
-
 static GstFlowReturn gst_playtracker_transform(GstBaseTransform* btrans, GstBuffer* inbuf) {
   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(btrans);
   GstMapInfo inmap = GST_MAP_INFO_INIT;
@@ -401,8 +367,9 @@ static GstFlowReturn gst_playtracker_transform(GstBaseTransform* btrans, GstBuff
     frame.frame_meta = nvds_get_nth_frame_meta(batch_meta->frame_meta_list, i);
     frame.batch_index = i;
     frame.input_surf_params = in_surface->surfaceList + i;
-    if (DsPlayTrackerProcessFrame(playtracker->playtrackerlib_ctx, frame, playtracker->stream)) {
-      attach_metadata_full_frame(playtracker, frame.frame_meta, frame.play_tracker_results, frame.batch_index);
+    if (!DsPlayTrackerProcessFrame(playtracker->playtrackerlib_ctx, frame, playtracker->stream)) {
+      std::cerr << "Error calling DsPlayTrackerProcessFrame()" << std::endl;
+      goto invalid_inbuf;
     }
   }
 
