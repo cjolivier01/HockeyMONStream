@@ -447,6 +447,7 @@ ds-playtracker:
   gpu-id: 0
   unique-id: 75
   draw: true
+  plugin-type: vpplaytracker
   # draw: false
   # play-tracker-class-id: 99
   config-file: play_tracker_config.yaml

@@ -691,6 +691,13 @@ void CustomAlgorithmBase::OutputThread(void) {
     } else {
       // Transform IP case
       outBuffer = packetInfo.inbuf;
+      assert(cuda_stream_);
+      batch_meta = GetNVDS_BatchMeta(outBuffer);
+      cuda_status.Update(GenerateOutput(batch_meta, in_surf, nullptr));
+      if (!cuda_status.ok()) {
+        std::cerr << cuda_status << std::endl;
+        update_last_flow_ret(GST_FLOW_ERROR);
+      }
       nvds_set_input_system_timestamp(outBuffer, GST_ELEMENT_NAME(m_element));
     }
     if (last_flow_ret_ == GST_FLOW_OK) {

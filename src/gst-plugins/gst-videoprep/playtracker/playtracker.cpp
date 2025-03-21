@@ -57,7 +57,7 @@ BufferResult PlayTrackerPriv::ProcessBuffer(GstBuffer* inbuf) {
 absl::Status PlayTrackerPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     NvBufSurface* in_surface,
-    NvBufSurface* out_surface) {
+    NvBufSurface* /*out_surface*/) {
   GstDsPlayTrackerFrame frame;
   NvDsFrameMetaList* fl = batch_meta->frame_meta_list;
   while (fl) {

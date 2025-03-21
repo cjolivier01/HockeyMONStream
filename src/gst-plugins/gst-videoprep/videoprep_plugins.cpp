@@ -46,9 +46,9 @@ static gboolean videoprep_init(GstPlugin* plugin) {
 
   gboolean result = false;
   result |= gst_element_register(plugin, "videoprep", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
-  //result |= gst_element_register(plugin, "playcropper", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
-  //result |= gst_element_register(plugin, "vpplaytracker", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
-  //result |= gst_element_register(plugin, "hmstitcher", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
+  result |= gst_element_register(plugin, "playcropper", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
+  result |= gst_element_register(plugin, "vpplaytracker", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
+  result |= gst_element_register(plugin, "hmstitcher", GST_RANK_NONE, GST_TYPE_VIDEOPREP);
   return result;
 }
 } // namespace videoprep

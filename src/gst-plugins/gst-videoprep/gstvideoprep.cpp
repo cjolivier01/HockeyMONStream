@@ -573,6 +573,10 @@ static GstStateChangeReturn gst_videoprep_change_state(GstElement* element, GstS
     GObject* object = G_OBJECT(element);
     assert(object);
     assert(videoprep->plugin_type);
+    if (!videoprep->plugin_type || !*videoprep->plugin_type) {
+      std::cerr << "Plugin type not set (videoprep)" << std::endl;
+      return GST_STATE_CHANGE_FAILURE;
+    }
     videoprep->priv = dynamic_cast<VideoPrepPriv*>(videoprep->priv_factory->CreateCustomAlgoCtx(
         videoprep->plugin_type, object, videoprep->gpu_id, videoprep->num_batch_buffers));
     if (!videoprep->priv) {

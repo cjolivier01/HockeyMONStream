@@ -494,6 +494,7 @@ gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTra
   assert(strlen(config->config_file) > 0);
   g_object_set(G_OBJECT(bin->elem_dsplaytracker), "unique-id", config->unique_id, "gpu-id", config->gpu_id, NULL);
   g_object_set(G_OBJECT(bin->elem_dsplaytracker), "config-file", config->config_file, NULL);
+  g_object_set(G_OBJECT(bin->elem_dsplaytracker), "plugin-type", "vpplaytracker", NULL);
   g_object_set(G_OBJECT(bin->elem_dsplaytracker), "draw", config->draw, NULL);
 
   ret = TRUE;
