@@ -71,7 +71,8 @@ struct NvDsDsPlayTrackerConfig {
   // Struct members to store config / properties for the element
   guint unique_id;
   guint gpu_id;
-  bool draw;
+  gboolean draw;
+  gboolean show;
   gchar config_file[kMyMaxPath];
 };
 

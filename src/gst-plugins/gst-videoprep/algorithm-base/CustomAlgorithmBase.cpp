@@ -687,7 +687,6 @@ void CustomAlgorithmBase::OutputThread(void) {
         // Unref the input buffer
         gst_buffer_unref(packetInfo.inbuf);
       }
-
     } else {
       // Transform IP case
       outBuffer = packetInfo.inbuf;

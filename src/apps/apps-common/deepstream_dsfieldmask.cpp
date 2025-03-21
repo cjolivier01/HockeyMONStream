@@ -466,7 +466,7 @@ done:
 
 gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTrackerBin* bin) {
   gboolean ret = FALSE;
-
+  std::stringstream ppc;
   bin->bin = gst_bin_new("dsplaytracker_bin");
   if (!bin->bin) {
     NVGSTDS_ERR_MSG_V("Failed to create 'dsplaytracker_bin'");
@@ -495,7 +495,10 @@ gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTra
   g_object_set(G_OBJECT(bin->elem_dsplaytracker), "unique-id", config->unique_id, "gpu-id", config->gpu_id, NULL);
   g_object_set(G_OBJECT(bin->elem_dsplaytracker), "config-file", config->config_file, NULL);
   g_object_set(G_OBJECT(bin->elem_dsplaytracker), "plugin-type", "vpplaytracker", NULL);
-  g_object_set(G_OBJECT(bin->elem_dsplaytracker), "draw", config->draw, NULL);
+  // g_object_set(G_OBJECT(bin->elem_dsplaytracker), "draw", config->draw, NULL);
+
+  ppc << "draw=" << config->draw;
+  g_object_set(G_OBJECT(bin->elem_dsplaytracker), "plugin-private-config", ppc.str().c_str(), NULL);
 
   ret = TRUE;
 done:

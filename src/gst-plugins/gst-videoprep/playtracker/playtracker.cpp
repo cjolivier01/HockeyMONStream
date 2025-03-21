@@ -44,6 +44,8 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
 bool PlayTrackerPriv::SetProperty(const Property& prop) {
   if (prop.key == "show") {
     show_ = !!std::atol(prop.value.c_str());
+  } else if (prop.key == "draw") {
+    init_params_.draw = !!std::atol(prop.value.c_str());
   } else if (prop.key == "config-file") {
     init_params_.play_tracker_config_file = prop.value;
   }
