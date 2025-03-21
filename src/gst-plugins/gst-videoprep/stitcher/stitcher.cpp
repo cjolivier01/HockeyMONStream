@@ -385,16 +385,5 @@ absl::Status StitcherPriv::GenerateOutput(
   return absl::OkStatus();
 }
 
-// static void gst_stitcher_class_init(GstVideoPrepStitcherClass* klass) {
-//   gst_videoprep_class_init_base(klass);
-// }
-
-// static void gst_stitcher_init(GstVideoPrepStitcher* stitcher) {
-//   gst_videoprep_init_base(stitcher);
-// }
-
-// #define gst_stitcher_parent_class parent_class
-// G_DEFINE_TYPE(GstVideoPrepStitcher, gst_stitcher, GST_TYPE_BASE_TRANSFORM);
-
 } // namespace stitcher
 } // namespace hm

@@ -42,9 +42,12 @@
   lhs = std::move(statusor.ConsumeValueOrDie());
 
 namespace hm {
-inline absl::Status to_status(const CudaStatus& s) {
+inline absl::Status to_status(const CudaStatus& s, const char *prefix = nullptr) {
   if (s.ok()) {
     return absl::OkStatus();
+  }
+  if (prefix && *prefix) {
+    return absl::Status(absl::StatusCode::kFailedPrecondition, std::string(prefix) + ": " + s.message());  
   }
   return absl::Status(absl::StatusCode::kFailedPrecondition, s.message());
 }
@@ -52,7 +55,7 @@ inline absl::Status to_status(const CudaStatus& s) {
 #define XCUDA_RETURN_IF_ERROR(rexpr)        \
   cudaError_t _cerr$ = (rexpr);             \
   if (_cerr$ != cudaError_t::cudaSuccess) { \
-    return hm::to_status(_cerr$);           \
+    return hm::to_status(_cerr$, #rexpr);           \
   }
 
 inline absl::Status to_status(const cudaError_t& status) {

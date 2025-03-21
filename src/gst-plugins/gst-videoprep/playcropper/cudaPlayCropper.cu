@@ -1,9 +1,6 @@
-#include "hockeymom/csrc/play_tracker/BoxUtils.h"
+#include "hstream/src/gst-plugins/gst-videoprep/playcropper/cudaPlayCropper.h"
 
-#include <cuda_runtime.h>
 #include <cstdint>
-#include "nppi.h"
-#include "deepstream/sources/includes/nvbufsurface.h"
 
 namespace hm {
 namespace playcropper {

@@ -1,23 +1,27 @@
-#include "playcropper.h"
+#include "hstream/src/gst-plugins/gst-videoprep/playcropper/playcropper.h"
+#include "cupano/pano/cudaMat.h"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
+#include "hstream/src/gst-plugins/gst-videoprep/playcropper/cudaPlayCropper.h"
+#include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
 
+#include "deepstream/sources/includes/nvbufsurface.h"
+#include "hstream/src/libs/draw_display/Fonts.h"
+#include "nvdsmeta.h"
+
+#include <cmath>
+#include <vector>
+
+#include <absl/status/status.h>
+#include <assert.h>
+#include <cuda.h>
 #include <cuda_runtime.h>
 #include <gst/base/gstbasetransform.h>
 #include <gst/gst.h>
 #include <gst/video/video.h>
 #include <npp.h>
-#include "deepstream/sources/includes/nvbufsurface.h"
-#include <cmath>
-#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
-#include "deepstream/sources/includes/nvbufsurface.h"
-#include "nvdsmeta.h"
-
-#include <assert.h>
-#include <cuda.h>
 #include <string.h>
 #include <unistd.h>
-#include <vector>
-
-#include "hstream/src/libs/common/Status.h"
 
 #if defined(__aarch64__)
 #include <EGL/egl.h>
@@ -128,6 +132,12 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
   // std::cerr << "SetProperty(" << prop.key << "=" << prop.value << ")" << std::endl;
   if (prop.key == "show") {
     show_ = !!std::atol(prop.value.c_str());
+  } else if (prop.key == "render-scale") {
+    render_scale_ = std::atof(prop.value.c_str());
+    if (render_scale_ == 0) {
+      std::cerr << "Invalid render scale: " << render_scale_ << std::endl;
+      return false;
+    }
   }
   return true;
 }
@@ -164,6 +174,8 @@ absl::Status PlayCropperPriv::GenerateOutput(
   assert(nr_surfaces_to_process <= m_buffer_pool_config.max_buffers);
 
   NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list;
+
+  std::unique_ptr<surface::Surface> display_surface;
 
   // Process each surface in the batch
   for (size_t batch_nr = 0; batch_nr < nr_surfaces_to_process; ++batch_nr, frame_meta_list = frame_meta_list->next) {
@@ -257,7 +269,6 @@ absl::Status PlayCropperPriv::GenerateOutput(
         color_format == NVBUF_COLOR_FORMAT_GRAY8) {
       // Use the combined transform - no scratch surfaces needed!
       NppStatus status = NPP_SUCCESS;
-#if 1
       status = combinedTransform(
           incoming_surface.get(),
           extra_width_src_rect,
@@ -267,7 +278,6 @@ absl::Status PlayCropperPriv::GenerateOutput(
           outgoing_surface.get_mutable(),
           output_rect,
           nppStreamContext);
-#endif
       if (status != NPP_SUCCESS) {
         // Fall back to original implementation if optimization fails
         goto fallback;
@@ -277,6 +287,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
     // Fall back to original implementation for unsupported formats
     fallback:
       std::cout << "playcropper no fallback" << std::endl;
+      // TODO: Make the fallback work again
 #if 0
       // Use the original three-step approach with minimal scratch surfaces
       hm::surface::SurfaceList::round_robin_iterator scratch_surface_iter = videoprep->priv->scratch_buffers.begin();
@@ -300,8 +311,10 @@ absl::Status PlayCropperPriv::GenerateOutput(
           *scratch_surface_iter++, new_tbox, outgoing_surface, output_rect, nppStreamContext)));
 #endif
     }
-    if (show_) {
-      render("Play Cropper", &out_surface->surfaceList[batch_nr], cuda_stream_);
+    if (show_ && !batch_nr) {
+      // Render it inside the loop, but we'll display it after our cudaSynchronize
+      display_surface = std::make_unique<surface::Surface>(incoming_surface);
+      HM_RETURN_IF_ERROR(RenderDisplayMeta(*display_surface, frame_meta, cuda_stream_));
     }
   }
 
@@ -310,21 +323,62 @@ absl::Status PlayCropperPriv::GenerateOutput(
     cudaStreamSynchronize(cuda_stream_);
   }
 
+  if (show_ && display_surface) {
+    // If rendering, only render opne per batch and do it after the main cuda synchronize
+    // if (batch_meta->)
+    // render("Play Cropper", &out_surface->surfaceList[batch_nr], cuda_stream_);
+    cudaStreamSynchronize(cuda_stream_);
+    render("Play Tracking", &display_dest_params_, cuda_stream_);
+  }
+
   out_surface->numFilled = nr_surfaces_to_process;
 
   return absl::OkStatus();
 }
 
-// static void gst_playcropper_class_init(GstVideoPrepPlayCropperClass* klass) {
-//   gst_videoprep_class_init_base(klass);
-// }
+absl::Status PlayCropperPriv::RenderDisplayMeta(
+    surface::Surface surface,
+    const NvDsFrameMeta* frame_meta,
+    cudaStream_t stream) {
+  if (!font_cache_) {
+    font_cache_ = draw_display::get_or_create_font_cache();
+  }
+  if (!display_surface_) {
+    if (surface.get_image_format() != imageFormat::IMAGE_RGBA8) {
+      return absl::FailedPreconditionError("Unsupported image format for RenderDisplayMeta");
+    }
+    const size_t ww = static_cast<size_t>(render_scale_ * surface.width());
+    const size_t hh = static_cast<size_t>(render_scale_ * surface.height());
+    display_surface_ = std::make_unique<CudaMat<uchar4>>(/*B=*/1, ww, hh);
+    memset(&display_dest_params_, 0, sizeof(display_dest_params_));
+    display_dest_params_.width = display_surface_->width();
+    display_dest_params_.height = display_surface_->height();
+    display_dest_params_.pitch = display_surface_->pitch();
+    display_dest_params_.colorFormat = surface->colorFormat;
+    display_dest_params_.dataPtr = display_surface_->data();
+  }
 
-// static void gst_playcropper_init(GstVideoPrepPlayCropper* playcropper) {
-//   gst_videoprep_init_base(playcropper);
-// }
+  NppStreamContext nppStreamContext;
+  memset(&nppStreamContext, 0, sizeof(nppStreamContext));
+  nppStreamContext.hStream = stream;
+  nppStreamContext.nStreamFlags = 0;
+  nppStreamContext.nCudaDeviceId = m_gpuId;
 
-// #define gst_playcropper_parent_class parent_class
-// G_DEFINE_TYPE(GstVideoPrepPlayCropper, gst_playcropper, GST_TYPE_BASE_TRANSFORM);
+  HM_RETURN_IF_ERROR(to_status(cropAndResizeNvBufSurface(
+      surface,
+      hm::BBox(0, 0, surface.width(), surface.height()),
+      &display_dest_params_,
+      hm::BBox(0, 0, display_dest_params_.width, display_dest_params_.height),
+      nppStreamContext)));
+
+  NvDisplayMetaList* dm_list = frame_meta->display_meta_list;
+  while (dm_list) {
+    NvDsDisplayMeta* display_meta = (NvDsDisplayMeta*)dm_list->data;
+    HM_RETURN_IF_ERROR(draw_display_meta(&display_dest_params_, display_meta, font_cache_, render_scale_, stream));
+    dm_list = dm_list->next;
+  }
+  return absl::OkStatus();
+}
 
 } // namespace playcropper
 } // namespace hm

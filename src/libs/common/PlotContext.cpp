@@ -1,6 +1,7 @@
 #include "hstream/src/libs/common/PlotContext.h"
 
 #include <cassert>
+#include <iostream>
 #include <stdexcept>
 
 namespace hm {
@@ -306,26 +307,34 @@ void PlotContext::plot_no_corner_rect(
 
   // Draw the four corners
   // Top-left corner
-  plot_line(
-      {top_left.x + corner_width, top_left.y},
-      {top_right.x - corner_width, top_right.y},
-      thickness,
-      color); // Top Horizontal
-  plot_line(
-      {top_left.x, top_left.y + corner_height},
-      {bottom_left.x, bottom_left.y - corner_height},
-      thickness,
-      color); // Left Vertical
-  plot_line(
-      {bottom_left.x + corner_width, bottom_left.y},
-      {bottom_right.x - corner_width, bottom_right.y},
-      thickness,
-      color); // Bottom Horizontal
-  plot_line(
-      {top_right.x, top_right.y + corner_height},
-      {bottom_right.x, bottom_right.y - corner_height},
-      thickness,
-      color); // Right Vertical
+  if (top_left.y >= 0 && top_left.x >= corner_width) {
+    plot_line(
+        {top_left.x + corner_width, top_left.y},
+        {top_right.x - corner_width, top_right.y},
+        thickness,
+        color); // Top Horizontal
+  }
+  if (top_left.x >= 0 && corner_height >= top_left.y) {
+    plot_line(
+        {top_left.x, top_left.y + corner_height},
+        {bottom_left.x, bottom_left.y - corner_height},
+        thickness,
+        color); // Left Vertical
+  }
+  if (corner_width >= bottom_left.x && bottom_left.y >= 0) {
+    plot_line(
+        {bottom_left.x + corner_width, bottom_left.y},
+        {bottom_right.x - corner_width, bottom_right.y},
+        thickness,
+        color); // Bottom Horizontal
+  }
+  if (top_right.x >= 0 && corner_height >= top_right.y) {
+    plot_line(
+        {top_right.x, top_right.y + corner_height},
+        {bottom_right.x, bottom_right.y - corner_height},
+        thickness,
+        color); // Right Vertical
+  }
 }
 
 } // namespace utils

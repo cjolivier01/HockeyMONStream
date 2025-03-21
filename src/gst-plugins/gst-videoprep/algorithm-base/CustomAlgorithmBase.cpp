@@ -694,6 +694,7 @@ void CustomAlgorithmBase::OutputThread(void) {
       nvds_set_input_system_timestamp(outBuffer, GST_ELEMENT_NAME(m_element));
     }
     if (last_flow_ret_ == GST_FLOW_OK) {
+      // Do we need this anymore?
       if (!send_eos) {
         nvds_set_output_system_timestamp(outBuffer, GST_ELEMENT_NAME(m_element));
         flow_ret = gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(m_element), outBuffer);

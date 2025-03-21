@@ -1,5 +1,8 @@
 #include <cuda_runtime.h>
 
+namespace hm {
+namespace draw_display {
+namespace {
 //------------------------------------------------------------------------------
 // CUDA Kernel: drawGlyphKernel
 //------------------------------------------------------------------------------
@@ -38,6 +41,7 @@ __global__ void drawGlyphKernel(
     }
   }
 }
+} // namespace
 
 cudaError_t drawGlyph(
     uchar4* d_img,
@@ -57,3 +61,5 @@ cudaError_t drawGlyph(
       d_img, imgWidth, imgHeight, d_glyph, glyphWidth, glyphHeight, destX, destY, textColor, threshold);
   return cudaGetLastError();
 }
+} // namespace draw_display
+} // namespace hm

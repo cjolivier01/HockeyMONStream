@@ -15,9 +15,10 @@ cc_library(
     deps = [
         ":play_cropper_cuda_lib",
         "//src/gst-plugins/gst-videoprep/algorithm-base",
+        "//src/libs/draw_display",
+        "@hm-cupano//src/pano:cuda_matrix",
     ],
 )
-
 
 cuda_library(
     name = "play_cropper_cuda_lib",
@@ -40,6 +41,23 @@ cuda_library(
     ],
     # includes = ["."],
     visibility = ["//visibility:private"],
+    deps = [
+        ":play_cropper_cuda_lib_h",
+        "//src/libs/common:utils",
+        "@deepstream//:deepstream_lib",
+        "@local_cuda//:cuda_runtime",
+    ],
+)
+
+cc_library(
+    name = "play_cropper_cuda_lib_h",
+    srcs = [
+    ],
+    hdrs = [
+        "cudaPlayCropper.h",
+    ],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
     deps = [
         "//src/libs/common:utils",
         "@deepstream//:deepstream_lib",

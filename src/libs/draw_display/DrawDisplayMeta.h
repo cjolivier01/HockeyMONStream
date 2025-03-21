@@ -16,6 +16,7 @@ absl::Status draw_display_meta(
     surface::Surface surface,
     const NvDsDisplayMeta* display_meta,
     std::shared_ptr<FontCache> font_cache,
+    float scale,
     cudaStream_t stream);
 
 cudaError_t cudaDraw(

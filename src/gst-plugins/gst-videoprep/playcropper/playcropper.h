@@ -1,6 +1,8 @@
 #pragma once
 
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
+#include "hstream/src/libs/draw_display/Fonts.h"
+#include "cupano/pano/cudaMat.h"
 
 namespace hm {
 namespace playcropper {
@@ -24,7 +26,16 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   gint AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) override;
 
  protected:
+
+  absl::Status RenderDisplayMeta(surface::Surface surface, const NvDsFrameMeta* frame_meta, cudaStream_t stream);
+
+  bool use_unfused_kernels_{false};
   bool show_{false};
+  std::shared_ptr<draw_display::FontCache> font_cache_;
+  // float render_scale_{0.25};
+  float render_scale_{1.0};
+  std::unique_ptr<hm::CudaMat<uchar4>> display_surface_;
+  NvBufSurfaceParams display_dest_params_;
 };
 
 } // namespace playcropper
