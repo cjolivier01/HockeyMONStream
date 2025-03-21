@@ -1,14 +1,6 @@
-/*
- * SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: MIT
- *
- * [License text repeated here if needed]
- */
-
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 #include "hstream/src/libs/common/Status.h"
 
-// Additional standard includes.
 #include <iostream>
 #include <mutex>
 #include <ostream>
@@ -20,13 +12,6 @@
 
 namespace hm {
 
-// extern "C" IDSCustomLibrary* CreateCustomAlgoCtx(DSCustom_CreateParams* params);
-// // Create Custom Algorithm / Library Context
-// extern "C" IDSCustomLibrary* CreateCustomAlgoCtx(DSCustom_CreateParams* params) {
-//   return new CustomAlgorithmBase();
-// }
-
-// Set Init Parameters
 absl::Status CustomAlgorithmBase::PostCapsInit(DSCustom_CreateParams* params) {
   HM_RETURN_IF_ERROR(DSCustomLibraryBase::PostCapsInit(params));
 
