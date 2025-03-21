@@ -734,19 +734,19 @@ void CustomAlgorithmBase::OutputThread(void) {
 }
 
 // Insert Custom Frame
-void CustomAlgorithmBase::InsertCustomFrame(PacketInfo* packetInfo) {
-#if 0
+absl::Status CustomAlgorithmBase::InsertCustomFrame(PacketInfo* packetInfo) {
   GstBuffer* newGstOutBuf = NULL;
   GstFlowReturn result = GST_FLOW_OK;
 
   result = gst_buffer_pool_acquire_buffer(m_dsBufferPool, &newGstOutBuf, NULL);
   if (result != GST_FLOW_OK) {
     GST_ERROR_OBJECT(m_element, "InsertCustomFrame failed error = %d, exiting...", result);
-    exit(-1);
+    return absl::InternalError("InsertCustomFrame failed");
   }
   // TODO: Copy meta and transform if required
   if (!gst_buffer_copy_into(newGstOutBuf, packetInfo->inbuf, GST_BUFFER_COPY_META, 0, -1)) {
-    GST_DEBUG_OBJECT(m_element, "Buffer metadata copy failed \n");
+    GST_DEBUG_OBJECT(m_element, "Buffer metadata copy failed\n");
+    return absl::InternalError("Buffer metadata copy failed");
   }
 
   // Copy previous buffer to new buffer, repreat the frame
@@ -754,7 +754,7 @@ void CustomAlgorithmBase::InsertCustomFrame(PacketInfo* packetInfo) {
   NvBufSurface* out_surf = getNvBufSurface(newGstOutBuf);
   if (!in_surf || !out_surf) {
     GST_DEBUG_OBJECT(m_element, "CustomLib: NvBufSurface not found in the buffer...exiting...\n");
-    exit(-1);
+    return absl::InternalError("CustomLib: NvBufSurface not found in the buffer");
   }
   // Enable below code to copy the frame, else it will insert GREEN frame
   if (0) {
@@ -787,10 +787,9 @@ void CustomAlgorithmBase::InsertCustomFrame(PacketInfo* packetInfo) {
   result = gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(m_element), newGstOutBuf);
   if (result != GST_FLOW_OK) {
     GST_ERROR_OBJECT(m_element, "custom buffer pad push failed error = %d\n", result);
-    return;
+    return absl::InternalError("custom buffer pad push failed");
   }
-  return;
-#endif
+  return absl::OkStatus();
 }
 
 // Helper function to dump the nvbufsurface, used for debugging purpose

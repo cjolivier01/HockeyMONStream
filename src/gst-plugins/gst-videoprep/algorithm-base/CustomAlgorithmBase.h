@@ -98,7 +98,7 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   void DumpNvBufSurface(NvBufSurface* in_surface, NvDsBatchMeta* batch_meta);
 
   /* Insert Custom Frame */
-  void InsertCustomFrame(PacketInfo* packetInfo);
+  virtual absl::Status InsertCustomFrame(PacketInfo* packetInfo);
 
   void update_meta(NvDsBatchMeta* batch_meta, uint32_t icnt);
 
