@@ -10,6 +10,11 @@ namespace {
 
 const float4 no_color = make_float4(0, 0, 0, 0);
 
+template<typename T> inline __device__ __host__ T sqr(T x) 				    { return x*x; }
+
+inline float dist2(float x1, float y1, float x2, float y2) { return sqr(x1-x2) + sqr(y1-y2); }
+inline float dist(float x1, float y1, float x2, float y2)  { return sqrtf(dist2(x1,y1,x2,y2)); }
+
 // Helper to get the background color from a meta struct.
 template <typename T>
 inline float4 bg_color(const T& meta) {
@@ -90,13 +95,13 @@ cudaError_t cudaDraw(
   int y1 = scale * line.y1;
   int x2 = scale * line.x2;
   int y2 = scale * line.y2;
+  if (dist(x1, y1, x2, y2) < 2.0) {
+    return cudaError_t::cudaSuccess;
+  }
   float4 color = make_float4(line.line_color.red, line.line_color.green, line.line_color.blue, line.line_color.alpha);
   float lineWidth = line.line_width;
   cudaError_t cuerr = ::cudaDrawLine(
       image, width, height, format, x1, y1, x2, y2, fix_color(color), std::max(scale * lineWidth, 1.0f), stream);
-  // if (cuerr) {
-  //   usleep(0);
-  // }
   return cuerr;
 }
 

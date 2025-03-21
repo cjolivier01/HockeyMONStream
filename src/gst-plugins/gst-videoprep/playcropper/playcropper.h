@@ -32,8 +32,8 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   bool use_unfused_kernels_{false};
   bool show_{false};
   std::shared_ptr<draw_display::FontCache> font_cache_;
-  // float render_scale_{0.25};
-  float render_scale_{1.0};
+  float render_scale_{0.25};
+  // float render_scale_{1.0};
   std::unique_ptr<hm::CudaMat<uchar4>> display_surface_;
   NvBufSurfaceParams display_dest_params_;
 };
