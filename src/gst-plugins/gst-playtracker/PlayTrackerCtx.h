@@ -31,13 +31,11 @@ void DsPlayTrackerCtxDeinit(DsPlayTrackerCtx* ctx);
 
 struct GstDsPlayTrackerFrame {
   /** NvDsObjectParams belonging to the object to be classified. */
-  NvDsObjectMeta* obj_meta = nullptr;
+  // NvDsObjectMeta* obj_meta = nullptr;
   NvDsFrameMeta* frame_meta = nullptr;
   /** Index of the frame in the batched input GstBuffer. Not required for
    * classifiers. */
   guint batch_index = 0;
-  /** Frame number of the frame from the source. */
-  gulong frame_num = 0;
 
   hm::play_tracker::PlayTrackerResults play_tracker_results;
 

@@ -1,13 +1,14 @@
 #include "playtracker.h"
 
+#include <absl/status/status.h>
 #include <cuda_runtime.h>
 #include <gst/base/gstbasetransform.h>
 #include <gst/gst.h>
 #include <gst/video/video.h>
 #include <npp.h>
-#include "deepstream/sources/includes/nvbufsurface.h"
 #include <cmath>
 #include "deepstream/sources/includes/nvbufsurface.h"
+#include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "nvdsmeta.h"
 
 #include <assert.h>
@@ -16,6 +17,13 @@
 
 namespace hm {
 namespace playtracker {
+
+PlayTrackerPriv::~PlayTrackerPriv() {
+  if (pt_context_) {
+    DsPlayTrackerCtxDeinit(pt_context_);
+    pt_context_ = nullptr;
+  }
+}
 
 absl::Status PlayTrackerPriv::PreCapsInit(DSCustom_CreateParams* params) {
   return Super::PreCapsInit(params);
@@ -26,12 +34,18 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
   m_transformMode = false;
   // No buffers for us
   params->m_bufferPoolConfig.max_buffers = 0;
+  if (params->config_file && init_params_.play_tracker_config_file.empty()) {
+    init_params_.play_tracker_config_file = params->config_file;
+  }
+  pt_context_ = DsPlayTrackerCtxInit(&init_params_);
   return Super::PostCapsInit(params);
 }
 
 bool PlayTrackerPriv::SetProperty(const Property& prop) {
   if (prop.key == "show") {
     show_ = !!std::atol(prop.value.c_str());
+  } else if (prop.key == "config-file") {
+    init_params_.play_tracker_config_file = prop.value;
   }
   return true;
 }
@@ -44,6 +58,18 @@ absl::Status PlayTrackerPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
+  GstDsPlayTrackerFrame frame;
+  NvDsFrameMetaList* fl = batch_meta->frame_meta_list;
+  while (fl) {
+    assert(in_surface->numFilled < frame.batch_index);
+    frame.frame_meta = (NvDsFrameMeta*)fl->data;
+    frame.input_surf_params = &in_surface->surfaceList[frame.batch_index];
+    if (!DsPlayTrackerProcessFrame(pt_context_, frame, cuda_stream_)) {
+      return absl::InternalError("Error calling DsPlayTrackerProcessFrame()");
+    }
+    ++frame.batch_index;
+    fl = fl->next;
+  }
   return absl::OkStatus();
 }
 

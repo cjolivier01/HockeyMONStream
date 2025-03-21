@@ -12,6 +12,7 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
 
  public:
   PlayTrackerPriv(int gpu_id, size_t batch_size) : CustomAlgorithmBase(gpu_id, batch_size) {}
+  ~PlayTrackerPriv();
 
   absl::Status PreCapsInit(DSCustom_CreateParams* params) override;
   absl::Status PostCapsInit(DSCustom_CreateParams* params) override;
@@ -24,24 +25,10 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
   absl::Status GenerateOutput(NvDsBatchMeta* batch_meta, NvBufSurface* in_surface, NvBufSurface* out_surface) override;
 
  protected:
+  DsPlayTrackerInitParams init_params_;
+  DsPlayTrackerCtx* pt_context_{nullptr};
   bool show_{false};
 };
-
-/** GStreamer boilerplate. */
-#if 0
-struct GstVideoPrepPlayCropper : public videoprep::GstVideoPrep {
-  // Don't add stuff here
-  GstVideoPrepPlayCropper() {
-    static_assert(sizeof(GstVideoPrepPlayCropper) == sizeof(videoprep::GstVideoPrep));
-  }
-};
-
-struct GstVideoPrepPlayCropperClass : public videoprep::GstVideoPrepClass {
-  GstVideoPrepPlayCropperClass() {
-    static_assert(sizeof(GstVideoPrepPlayCropperClass) == sizeof(videoprep::GstVideoPrepClass));
-  }
-};
-#endif
 
 } // namespace playtracker
 } // namespace hm

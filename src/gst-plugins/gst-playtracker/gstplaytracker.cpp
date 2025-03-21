@@ -398,9 +398,7 @@ static GstFlowReturn gst_playtracker_transform(GstBaseTransform* btrans, GstBuff
 
   for (guint i = 0; i < batch_meta->num_frames_in_batch; i++) {
     GstDsPlayTrackerFrame frame;
-    frame.obj_meta = nullptr;
     frame.frame_meta = nvds_get_nth_frame_meta(batch_meta->frame_meta_list, i);
-    frame.frame_num = frame.frame_meta->frame_num;
     frame.batch_index = i;
     frame.input_surf_params = in_surface->surfaceList + i;
     if (DsPlayTrackerProcessFrame(playtracker->playtrackerlib_ctx, frame, playtracker->stream)) {
