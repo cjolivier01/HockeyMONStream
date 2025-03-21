@@ -95,7 +95,7 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
     params->output_width_height[1] = stitcher->canvas_height();
     g_print("Stitched canvas size: %d x %d\n", (int)stitcher->canvas_width(), (int)stitcher->canvas_height());
   }
-  return absl::OkStatus();
+  return Super::PreCapsInit(params);
 }
 
 absl::Status StitcherPriv::PostCapsInit(DSCustom_CreateParams* params) {

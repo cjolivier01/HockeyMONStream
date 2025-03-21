@@ -1,5 +1,6 @@
 #pragma once
 
+#include "hstream/src/libs/common/utils.h"
 #include "absl/status/status.h"
 #include "cupano/cuda/cudaStatus.h"
 
@@ -55,7 +56,10 @@ inline absl::Status to_status(const CudaStatus& s) {
   }
 
 inline absl::Status to_status(const cudaError_t& status) {
-  return absl::InternalError(cudaGetErrorString(status));
+  if (status == cudaError_t::cudaSuccess) {
+    return absl::OkStatus();
+  }
+  return absl::InternalError(TO_STRING("CUDA Error: " << cudaGetErrorString(status)));
 }
 
 } // namespace hm
