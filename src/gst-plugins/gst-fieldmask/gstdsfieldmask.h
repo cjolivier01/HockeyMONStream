@@ -1,15 +1,3 @@
-/*
- * SPDX-FileCopyrightText: Copyright (c) 2017-2024 NVIDIA CORPORATION &
- * AFFILIATES. All rights reserved. SPDX-License-Identifier:
- * LicenseRef-NvidiaProprietary
- *
- * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
- * property and proprietary rights in and to this material, related
- * documentation and any modifications thereto. Any use, reproduction,
- * disclosure or distribution of this material and related documentation
- * without an express license agreement from NVIDIA CORPORATION or
- * its affiliates is strictly prohibited.
- */
 #ifndef __GST_DSFIELDMASK_H__
 #define __GST_DSFIELDMASK_H__
 
@@ -29,10 +17,6 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include "dsfieldmask_lib.h"
-// #include "gst-nvquery.h"
-// #include "gstnvdsmeta.h"
-// #include "deepstream/sources/includes/nvbufsurface.h"
-// #include "nvbufsurftransform.h"
 
 /* Package and library details required for plugin_init */
 #define PACKAGE "dsfieldmask"
@@ -82,42 +66,16 @@ struct _GstDsFieldMask {
   // Frame number of the current input buffer
   guint64 frame_num;
 
-  // CUDA Stream used for allocating the CUDA task
-  //cudaStream_t cuda_stream;
-
-  // Host buffer to store RGB data for use by algorithm
-  //void* host_rgb_buf;
-
-  // the intermediate scratch buffer for conversions RGBA
-  //NvBufSurface* inter_buf;
-
   // Input video info (resolution, color format, framerate, etc)
   GstVideoInfo video_info;
-
-  // Resolution at which frames/objects should be processed
-  // gint processing_width;
-  // gint processing_height;
 
   // Flag which defince igpu/dgpu
   guint is_integrated;
 
-  // Maximum batch size
-  //guint batch_size;
-
   // GPU ID on which we expect to execute the task
   guint gpu_id;
 
-  // Boolean indicating if entire frame or cropped objects should be processed
-  // gboolean process_full_frame;
-
-  // Boolean indicating if to blur the detected objects
-  // gboolean blur_objects;
-
   gchar detection_mask_file[PATH_MAX * 4];
-  // std::string detection_mask_file;
-
-  /** Config params required by NvBufSurfTransform API. */
-  //NvBufSurfTransformConfigParams transform_config_params;
 };
 
 // Boiler plate stuff

@@ -1,16 +1,3 @@
-/*
- * SPDX-FileCopyrightText: Copyright (c) 2017-2020 NVIDIA CORPORATION &
- * AFFILIATES. All rights reserved. SPDX-License-Identifier:
- * LicenseRef-NvidiaProprietary
- *
- * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
- * property and proprietary rights in and to this material, related
- * documentation and any modifications thereto. Any use, reproduction,
- * disclosure or distribution of this material and related documentation
- * without an express license agreement from NVIDIA CORPORATION or
- * its affiliates is strictly prohibited.
- */
-
 #include "dsfieldmask_lib.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
@@ -208,12 +195,6 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx)
 DsFieldMaskCtx* DsFieldMaskCtxInit(DsFieldMaskInitParams* initParams) {
   DsFieldMaskCtx* ctx = new DsFieldMaskCtx();
   ctx->initParams = *initParams;
-  // if (!ctx->initParams.detection_mask_file.empty()) {
-  //   // extra memeory used here, try to settle on but mask
-  //   ctx->detection_u8_mask = load_mask_from_file(ctx->initParams.detection_mask_file);
-  //   ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask);
-  //   ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
-  // }
   return ctx;
 }
 
