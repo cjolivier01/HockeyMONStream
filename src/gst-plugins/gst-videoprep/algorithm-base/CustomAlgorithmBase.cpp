@@ -564,7 +564,12 @@ void CustomAlgorithmBase::OutputThread(void) {
     /* Insert custom buffer every after 10 frames */
     if (m_frameinsertinterval) {
       if ((packetInfo.frame_num % m_frameinsertinterval) == 0) {
-        InsertCustomFrame(&packetInfo);
+        auto status = InsertCustomFrame(&packetInfo);
+        if (!status.ok()) {
+          std::cerr << status << std::endl;
+          update_last_flow_ret(GST_FLOW_ERROR);
+          // Continue and let the last_status stop us eventually
+        }
       }
     }
 
