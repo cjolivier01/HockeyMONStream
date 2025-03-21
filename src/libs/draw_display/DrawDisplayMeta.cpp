@@ -79,7 +79,11 @@ cudaError_t cudaDraw(
   float radius = scale * static_cast<float>(circle.radius);
   float4 color = make_float4(
       circle.circle_color.red, circle.circle_color.green, circle.circle_color.blue, circle.circle_color.alpha);
-  return ::cudaDrawCircle(image, width, height, format, cx, cy, radius, fix_color(color), stream);
+  float inner_radius = radius - circle.circle_width; 
+  if (inner_radius < 0) {
+    inner_radius = 0;
+  }
+  return ::cudaDrawCircle(image, width, height, format, cx, cy, radius, inner_radius, fix_color(color), stream);
 }
 
 // Overloaded helper for lines. This version takes an NvOSD_LineParams struct.
