@@ -577,26 +577,14 @@ void CustomAlgorithmBase::OutputThread(void) {
 
     if (m_transformMode) {
       if (hw_caps == true) {
-        // set surface transform session when transform mode is on
-        // int err = NvBufSurfTransformSetSessionParams(&m_config_params);
-        // if (err != NvBufSurfTransformError_Success) {
-        //   GST_ERROR_OBJECT(m_element, "Set session params failed");
-        //   return;
-        // }
         // Transform mode, hence transform input buffer to output buffer
         GstBuffer* newGstOutBuf = NULL;
         GstFlowReturn result = GST_FLOW_OK;
-        // videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(m_element);
-        //  assert(FALSE);
-        //  videoprep::GstVideoPrep* videoprep = nullptr;
         assert(m_dsBufferPool);
         result = gst_buffer_pool_acquire_buffer(m_dsBufferPool, &newGstOutBuf, NULL);
         if (result != GST_FLOW_OK) {
           GST_ERROR_OBJECT(m_element, "InsertCustomFrame failed error = %d, exiting...", result);
-          // exit(-1);
           update_last_flow_ret(GST_FLOW_ERROR);
-          // lk.lock();
-          // break;
         }
         // Copy meta and transform if required
         if (!gst_buffer_copy_into(newGstOutBuf, packetInfo.inbuf, GST_BUFFER_COPY_META, 0, -1)) {
@@ -608,10 +596,7 @@ void CustomAlgorithmBase::OutputThread(void) {
         NvBufSurface* out_surf = getNvBufSurface(newGstOutBuf);
         if (!in_surf || !out_surf) {
           GST_ERROR_OBJECT(m_element, "CustomLib: NvBufSurface not found in the buffer...exiting...\n");
-          // exit(-1);
           update_last_flow_ret(GST_FLOW_ERROR);
-          // lk.lock();
-          // break;
         }
 
         batch_meta = GetNVDS_BatchMeta(newGstOutBuf);
@@ -627,8 +612,6 @@ void CustomAlgorithmBase::OutputThread(void) {
         }
 
         assert(m_element);
-        // videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(m_element);
-        // assert(videoprep);
         assert(cuda_stream_);
         cuda_status.Update(GenerateOutput(batch_meta, in_surf, out_surf));
         if (!cuda_status.ok()) {
@@ -639,8 +622,6 @@ void CustomAlgorithmBase::OutputThread(void) {
           } else {
             update_last_flow_ret(GST_FLOW_ERROR);
           }
-          // lk.lock();
-          // break;
         }
 
         outBuffer = newGstOutBuf;
@@ -822,7 +803,6 @@ void CustomAlgorithmBase::DumpNvBufSurface(NvBufSurface* in_surface, NvDsBatchMe
         std::to_string(in_surface->surfaceList[i].height) + "_" + "BS-" + std::to_string(source_id);
 
     input_data = in_surface->surfaceList[i].dataPtr;
-    // input_size = in_surface->surfaceList[i].dataSize;
 
     switch (m_inVideoFmt) {
       case GST_VIDEO_FORMAT_NV12: {
