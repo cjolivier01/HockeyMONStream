@@ -330,7 +330,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
     // Scoreboard
     if (!scoreboard_ && !scoreboard_perspective_polygion_.empty()) {
       scoreboard_ = std::make_unique<hm::scoreboard::Scoreboard<uchar4>>(
-          scoreboard_perspective_polygion_, outgoing_surface.width() / 8, outgoing_surface.height() / 8);
+          scoreboard_perspective_polygion_, outgoing_surface.width() / 6, outgoing_surface.height() / 6);
     }
     if (scoreboard_) {
       // const bool rewarp = frame_count_ % scoreboard_warp_interval_ == 0;
