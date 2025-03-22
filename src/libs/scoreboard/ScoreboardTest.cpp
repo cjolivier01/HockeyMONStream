@@ -51,8 +51,8 @@ int main(int argc, char** argv) {
   // cv::Mat warpedImage = scoreboard.forward(image);
 
   // Display the warped image.
-  cv::imshow("Warped Image", warpedImage);
-  cv::waitKey(0);
+  //cv::imshow("Warped Image", warpedImage);
+  //cv::waitKey(0);
 
   return 0;
 }

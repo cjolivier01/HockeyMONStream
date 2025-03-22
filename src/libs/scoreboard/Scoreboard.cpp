@@ -3,11 +3,11 @@
 #include "cupano/pano/cudaMat.h"
 #include "cupano/pano/showImage.h"
 
-#include "jetson-utils/cuda/cudaResizeRoi.h"
+#include "jetson-utils/cuda/cudaOverlay.h"
 
+#include <opencv2/cudawarping.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
-#include <opencv2/cudawarping.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -17,6 +17,47 @@
 
 namespace hm {
 namespace scoreboard {
+
+namespace {
+
+imageFormat convertCudaPixelToImageFormat(CudaPixelType pixelType) {
+  switch (pixelType) {
+    case CUDA_PIXEL_UCHAR1:
+      // Assume a single-channel 8-bit pixel represents grayscale.
+      return IMAGE_GRAY8;
+    case CUDA_PIXEL_UCHAR3:
+      // Default mapping for 3-channel unsigned char is RGB.
+      return IMAGE_RGB8;
+    case CUDA_PIXEL_UCHAR4:
+      return IMAGE_RGBA8;
+    case CUDA_PIXEL_FLOAT1:
+      // Single channel float is assumed grayscale.
+      return IMAGE_GRAY32F;
+    case CUDA_PIXEL_FLOAT3:
+      return IMAGE_RGB32F;
+    case CUDA_PIXEL_FLOAT4:
+      return IMAGE_RGBA32F;
+    // Unsupported or unmapped types.
+    case CUDA_PIXEL_USHORT1:
+    case CUDA_PIXEL_USHORT3:
+    case CUDA_PIXEL_USHORT4:
+    case CUDA_PIXEL_INT1:
+    case CUDA_PIXEL_INT3:
+    case CUDA_PIXEL_INT4:
+    case CUDA_PIXEL_HALF1:
+    case CUDA_PIXEL_HALF3:
+    case CUDA_PIXEL_HALF4:
+    case CUDA_PIXEL_BF16_1:
+    case CUDA_PIXEL_BF16_3:
+    case CUDA_PIXEL_BF16_4:
+    case CUDA_PIXEL_UNKNOWN:
+    default:
+      assert(false);
+      return IMAGE_UNKNOWN;
+  }
+}
+
+} // namespace
 
 /**
  * @brief Computes the Euclidean distance between two points.
@@ -150,14 +191,14 @@ Scoreboard::Scoreboard(
   // Compute the perspective transform matrix.
   // perspectiveMatrix_ = cv::getPerspectiveTransform(srcPts_, dstPts);
   perspectiveMatrix_ = cv::getPerspectiveTransform(srcPts, dstPts);
-  assert(perspectiveMatrix_.cols == 3);
-  assert(perspectiveMatrix_.rows == 3);
-  for (size_t i = 0; i < 3; ++i) {
-    for (size_t j = 0; j < 3; ++j) {
-      fperspectiveMatrix_[i][j] = perspectiveMatrix_.at<float>(i, j);
-      dperspectiveMatrix_[i][j] = perspectiveMatrix_.at<float>(i, j);
-    }
-  }
+  // assert(perspectiveMatrix_.cols == 3);
+  // assert(perspectiveMatrix_.rows == 3);
+  // for (size_t i = 0; i < 3; ++i) {
+  //   for (size_t j = 0; j < 3; ++j) {
+  //     fperspectiveMatrix_[i][j] = perspectiveMatrix_.at<float>(i, j);
+  //     dperspectiveMatrix_[i][j] = perspectiveMatrix_.at<float>(i, j);
+  //   }
+  // }
 }
 
 /**
@@ -191,36 +232,81 @@ cv::Mat Scoreboard::forward_cuda(const cv::Mat& inputImage) {
   cuErr = cudaStreamCreate(&stream);
 
   hm::CudaMat<uchar3> full_image(inputImage);
-  hm::CudaMat<uchar3> warped_image(/*B=*/1, destW_, destH_);
 
-  cv::cuda::GpuMat gpu_mat(full_image.height(), full_image.width(), cudaPixelTypeToCvType(full_image.cuda_pixel_type()), full_image.data_raw());
-  cv::cuda::GpuMat cv_warped_image;
-  cv::Mat showimg;
+  cv::cuda::GpuMat gpu_mat(
+      full_image.height(),
+      full_image.width(),
+      cudaPixelTypeToCvType(full_image.cuda_pixel_type()),
+      full_image.data_raw());
+
+  //if (!warped_image_scratch_buffer_) {
+    hm::CudaMat<uchar3> warped_image(/*B=*/1, destW_, destH_);
+    cv::cuda::GpuMat cv_warped_image(warped_image.height(), warped_image.width(), cudaPixelTypeToCvType(warped_image.cuda_pixel_type()), warped_image.data_raw());
+    // warped_image_scratch_buffer_ =
+    //     std::make_unique<cv::cuda::GpuMat>(destW_, destH_, cudaPixelTypeToCvType(full_image.cuda_pixel_type()));
+  //}
+  warped_image_scratch_buffer_ = std::unique_ptr<cv::cuda::GpuMat>(&cv_warped_image);
+
   cv::cuda::warpPerspective(
-      gpu_mat, cv_warped_image, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
-  cv_warped_image.download(showimg);
-  cv::imshow("cv_warped_image", showimg);
+      gpu_mat, *warped_image_scratch_buffer_, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
+
+  cv::Mat showimg;
+  warped_image_scratch_buffer_->download(showimg);
+
+  cv::imshow("showimg", showimg);
   cv::waitKey(0);
 
-  // Apply the perspective transformation.
-  // cv::Mat warpedImage;
-  // // cv::warpPerspective(resizedImage, warpedImage, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
-  // cv::warpPerspective(
-  //     resized_image.download(), warpedImage, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
+  size_t pitch = warped_image.pitch();
+  size_t cv_pitch = warped_image_scratch_buffer_->cols * warped_image_scratch_buffer_->elemSize();
+  assert(warped_image_scratch_buffer_->data == warped_image.data_raw());
 
-  // cv::imshow("warpedImage", warpedImage);
-  // cv::waitKey(0);
+  cuErr = cudaOverlayPitch(
+      warped_image.data_raw(),
+      warped_image.width(),
+      warped_image.height(),
+      warped_image.pitch(),
+      (uchar3*)full_image.data_raw(),
+      full_image.width(),
+      full_image.height(),
+      full_image.pitch(),
+      convertCudaPixelToImageFormat(full_image.cuda_pixel_type()),
+      /*x=*/0,
+      /*y=*/0,
+      stream);
 
-  // // Crop the warped image to the final desired dimensions.
-  // cv::Rect cropRect(0, 0, destWidth_, destHeight_);
-  // if (cropRect.x + cropRect.width > warpedImage.cols || cropRect.y + cropRect.height > warpedImage.rows) {
-  //   throw std::runtime_error("Warped image size is smaller than destination size.");
-  // }
-  // cv::Mat finalImage = warpedImage(cropRect).clone();
+  // cuErr = cudaOverlayPitch<uchar3>(
+  //     (uchar3*)warped_image_scratch_buffer_->data,
+  //     warped_image_scratch_buffer_->cols,
+  //     warped_image_scratch_buffer_->rows,
+  //     /*pitch=*/warped_image_scratch_buffer_->cols * warped_image_scratch_buffer_->elemSize(),
+  //     (uchar3*)full_image.data_raw(),
+  //     full_image.width(),
+  //     full_image.height(),
+  //     full_image.pitch(),
+  //     //convertCudaPixelToImageFormat(full_image.cuda_pixel_type()),
+  //     /*x=*/0,
+  //     /*y=*/0,
+  //     stream);
+
+  // cuErr = cudaOverlayPitch(
+  //     warped_image_scratch_buffer_->data,
+  //     warped_image_scratch_buffer_->cols,
+  //     warped_image_scratch_buffer_->rows,
+  //     /*pitch=*/warped_image_scratch_buffer_->cols * warped_image_scratch_buffer_->elemSize(),
+  //     full_image.data_raw(),
+  //     full_image.width(),
+  //     full_image.height(),
+  //     full_image.pitch(),
+  //     convertCudaPixelToImageFormat(full_image.cuda_pixel_type()),
+  //     /*x=*/0,
+  //     /*y=*/0,
+  //     stream);
+
+  SHOW_IMAGE(&full_image);
 
   cudaStreamDestroy(stream);
   // return finalImage;
-  return inputImage;
+  return full_image.download();
 }
 
 /**

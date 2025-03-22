@@ -2,6 +2,9 @@
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/cudawarping.hpp>
+
+#include <memory>
 #include <vector>
 
 namespace hm {
@@ -84,8 +87,7 @@ class Scoreboard {
   int destW_; ///< Intermediate width (possibly scaled).
   int destH_; ///< Intermediate height (possibly scaled).
   cv::Mat perspectiveMatrix_; ///< Perspective transformation matrix.
-  float fperspectiveMatrix_[3][3];
-  double dperspectiveMatrix_[3][3];
+  std::unique_ptr<cv::cuda::GpuMat> warped_image_scratch_buffer_;
 };
 
 } // namespace scoreboard
