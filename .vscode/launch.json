@@ -286,6 +286,34 @@
       "preLaunchTask": "Build All",
     },
     {
+      "name": "scoreboard",
+      "type": "lldb",
+      "request": "launch",
+      "linux": {
+        // "envFile": "${workspaceFolder}/${config:mesonbuild.buildFolder}/meson-vscode.env",
+      },
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/bazel-bin/src/libs/scoreboard/scoreboard",
+      "args": [
+        "mlk-heat-1",
+      ],
+      "sourceMap": {
+        // "/proc/self/cwd/external/jetson-utils" : "",
+        "/proc/self/cwd": "${workspaceFolder}",
+        "~/src": "${env:HOME}/src",
+        "external/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",
+        "home/colivier/src/jetson-utils": "${workspaceFolder}/src/external/jetson-utils",
+      },
+      //"stopOnEntry": true,
+      "env": {
+        "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib",
+        "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
+        // "DISPLAY": ":1",
+        "CUDA_LAUNCH_BLOCKING": "1",
+      },
+      "preLaunchTask": "Build All",
+    },
+    {
       "name": "cudaBlend",
       "type": "lldb",
       "request": "launch",
