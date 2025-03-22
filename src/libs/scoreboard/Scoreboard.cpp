@@ -6,6 +6,7 @@
 
 #include "jetson-utils/cuda/cudaOverlay.h"
 
+#include <absl/synchronization/mutex.h>
 #include <opencv2/cudawarping.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
@@ -181,7 +182,7 @@ cv::Mat Scoreboard<T_pixel>::forward_cv(const cv::Mat& inputImage) {
 }
 
 template <typename T_pixel>
-absl::Status Scoreboard<T_pixel>::forward_prod(const surface::Surface surface, cudaStream_t stream) {
+absl::Status Scoreboard<T_pixel>::forward_prod(const surface::Surface surface, bool rewarp, cudaStream_t stream) {
   assert(surface.bytes_per_pixel() == sizeof(T_pixel));
   assert(surface.pitch() % surface.bytes_per_pixel() == 0);
   hm::CudaMat<T_pixel> full_image(
@@ -193,36 +194,39 @@ absl::Status Scoreboard<T_pixel>::forward_prod(const surface::Surface surface, c
       },
       /*B=*/1);
 
-  if (!warped_image_scratch_buffer_) {
-    warped_image_scratch_buffer_ = std::make_unique<hm::CudaMat<T_pixel>>(/*B=*/1, destW_, destH_);
-  }
-
   cv::cuda::GpuMat gpu_mat(
       full_image.height(),
-      //full_image.width(),
+      // full_image.width(),
       surface.pitch_width(),
       cudaPixelTypeToCvType(full_image.cuda_pixel_type()),
       full_image.data_raw());
 
-  cv::cuda::GpuMat cv_warped_image(
-      warped_image_scratch_buffer_->height(),
-      warped_image_scratch_buffer_->width(),
-      cudaPixelTypeToCvType(warped_image_scratch_buffer_->cuda_pixel_type()),
-      warped_image_scratch_buffer_->data_raw());
+  absl::MutexLock lk(&mu_);
+  if (!warped_image_) {
+    rewarp = true;
+    warped_image_ = std::make_unique<hm::CudaMat<T_pixel>>(/*B=*/1, destW_, destH_);
+  }
 
-  cv::cuda::warpPerspective(gpu_mat, cv_warped_image, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
+  if (rewarp) {
+    cv::cuda::GpuMat cv_warped_image(
+        warped_image_->height(),
+        warped_image_->width(),
+        cudaPixelTypeToCvType(warped_image_->cuda_pixel_type()),
+        warped_image_->data_raw());
 
-  cv::Mat showimg;
-  cv_warped_image.download(showimg);
+    cv::cuda::warpPerspective(gpu_mat, cv_warped_image, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
+  }
 
+  // cv::Mat showimg;
+  // cv_warped_image.download(showimg);
   // cv::imshow("showimg", showimg);
   // cv::waitKey(0);
 
   XCUDA_RETURN_IF_ERROR(cudaOverlayPitch<T_pixel>(
-      warped_image_scratch_buffer_->data(),
-      warped_image_scratch_buffer_->width(),
-      warped_image_scratch_buffer_->height(),
-      warped_image_scratch_buffer_->pitch(),
+      warped_image_->data(),
+      warped_image_->width(),
+      warped_image_->height(),
+      warped_image_->pitch(),
       full_image.data(),
       full_image.width(),
       full_image.height(),
@@ -243,35 +247,35 @@ cv::Mat Scoreboard<T_pixel>::forward_cuda(const cv::Mat& inputImage) {
 
   hm::CudaMat<T_pixel> full_image(inputImage);
 
-  if (!warped_image_scratch_buffer_) {
-    warped_image_scratch_buffer_ = std::make_unique<hm::CudaMat<T_pixel>>(/*B=*/1, destW_, destH_);
-  }
-
   cv::cuda::GpuMat gpu_mat(
       full_image.height(),
       full_image.width(),
       cudaPixelTypeToCvType(full_image.cuda_pixel_type()),
       full_image.data_raw());
 
+  absl::MutexLock lk(&mu_);
+  if (!warped_image_) {
+    warped_image_ = std::make_unique<hm::CudaMat<T_pixel>>(/*B=*/1, destW_, destH_);
+  }
   cv::cuda::GpuMat cv_warped_image(
-      warped_image_scratch_buffer_->height(),
-      warped_image_scratch_buffer_->width(),
-      cudaPixelTypeToCvType(warped_image_scratch_buffer_->cuda_pixel_type()),
-      warped_image_scratch_buffer_->data_raw());
+      warped_image_->height(),
+      warped_image_->width(),
+      cudaPixelTypeToCvType(warped_image_->cuda_pixel_type()),
+      warped_image_->data_raw());
 
   cv::cuda::warpPerspective(gpu_mat, cv_warped_image, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
 
-  cv::Mat showimg;
-  cv_warped_image.download(showimg);
+  // cv::Mat showimg;
+  // cv_warped_image.download(showimg);
 
   // cv::imshow("showimg", showimg);
   // cv::waitKey(0);
 
   cuErr = cudaOverlayPitch<T_pixel>(
-      warped_image_scratch_buffer_->data(),
-      warped_image_scratch_buffer_->width(),
-      warped_image_scratch_buffer_->height(),
-      warped_image_scratch_buffer_->pitch(),
+      warped_image_->data(),
+      warped_image_->width(),
+      warped_image_->height(),
+      warped_image_->pitch(),
       full_image.data(),
       full_image.width(),
       full_image.height(),

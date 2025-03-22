@@ -8,6 +8,7 @@
 #include <opencv2/cudawarping.hpp>
 
 #include "absl/status/status.h"
+#include "absl/synchronization/mutex.h"
 
 #include <memory>
 #include <vector>
@@ -51,7 +52,7 @@ class Scoreboard {
    */
   cv::Mat forward_cv(const cv::Mat& inputImage);
   cv::Mat forward_cuda(const cv::Mat& inputImage);
-  absl::Status forward_prod(const surface::Surface surface, cudaStream_t stream);
+  absl::Status forward_prod(const surface::Surface surface, bool rewarp, cudaStream_t stream);
 
   /**
    * @brief Gets the final output width.
@@ -87,14 +88,15 @@ class Scoreboard {
    */
   static float pointDistance(const cv::Point2f& pt0, const cv::Point2f& pt1);
 
+  absl::Mutex mu_;
   std::vector<cv::Point2f> srcPts_; ///< Source points in clockwise order.
   cv::Rect bboxSrc_; ///< Bounding box of the source points.
-  int destWidth_; ///< Final output width.
-  int destHeight_; ///< Final output height.
-  int destW_; ///< Intermediate width (possibly scaled).
-  int destH_; ///< Intermediate height (possibly scaled).
+  int destWidth_{0}; ///< Final output width.
+  int destHeight_{0}; ///< Final output height.
+  int destW_{0}; ///< Intermediate width (possibly scaled).
+  int destH_{0}; ///< Intermediate height (possibly scaled).
   cv::Mat perspectiveMatrix_; ///< Perspective transformation matrix.
-  std::unique_ptr<hm::CudaMat<T_pixel>> warped_image_scratch_buffer_;
+  std::unique_ptr<hm::CudaMat<T_pixel>> warped_image_ ABSL_GUARDED_BY(mu_);
 };
 
 
