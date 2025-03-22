@@ -510,6 +510,7 @@ absl::Status Configurator::complete_configuration(bool force) {
         assert(points[i].size() == 2);
         ss << std::to_string(points[i].at(0)) << ',' << points[i].at(1);
       }
+      // std::cout << ss.str() << std::endl;
       pipeline["hmplaycropper"]["rink.scoreboard.perspective-polygon"] = ss.str();
     }
   }
