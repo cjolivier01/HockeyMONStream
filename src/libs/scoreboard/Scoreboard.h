@@ -84,6 +84,8 @@ class Scoreboard {
   int destW_; ///< Intermediate width (possibly scaled).
   int destH_; ///< Intermediate height (possibly scaled).
   cv::Mat perspectiveMatrix_; ///< Perspective transformation matrix.
+  float fperspectiveMatrix_[3][3];
+  double dperspectiveMatrix_[3][3];
 };
 
 } // namespace scoreboard

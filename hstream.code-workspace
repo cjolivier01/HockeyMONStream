@@ -14,6 +14,9 @@
       },
       {
         "path": "../MIPI_Camera"
+      },
+      {
+        "path": "../opencv-python"
       }
     ],
   "settings": {
