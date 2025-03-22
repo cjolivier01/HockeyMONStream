@@ -182,25 +182,11 @@ cv::Mat Scoreboard<T_pixel>::forward_cv(const cv::Mat& inputImage) {
 }
 
 template <typename T_pixel>
-absl::Status Scoreboard<T_pixel>::forward_prod(const surface::Surface surface, bool rewarp, cudaStream_t stream) {
-  assert(surface.bytes_per_pixel() == sizeof(T_pixel));
-  assert(surface.pitch() % surface.bytes_per_pixel() == 0);
-  hm::CudaMat<T_pixel> full_image(
-      SurfaceInfo{
-          .width = (int)surface.width(),
-          .height = (int)surface.height(),
-          .pitch = (int)surface.pitch(),
-          .data_ptr = surface.dataptr(),
-      },
-      /*B=*/1);
-
-  cv::cuda::GpuMat gpu_mat(
-      full_image.height(),
-      // full_image.width(),
-      surface.pitch_width(),
-      cudaPixelTypeToCvType(full_image.cuda_pixel_type()),
-      full_image.data_raw());
-
+absl::Status Scoreboard<T_pixel>::forward_prod(
+    const surface::Surface source_surface,
+    const surface::Surface dest_surface,
+    bool rewarp,
+    cudaStream_t stream) {
   absl::MutexLock lk(&mu_);
   if (!warped_image_) {
     rewarp = true;
@@ -208,6 +194,24 @@ absl::Status Scoreboard<T_pixel>::forward_prod(const surface::Surface surface, b
   }
 
   if (rewarp) {
+    assert(source_surface.bytes_per_pixel() == sizeof(T_pixel));
+    assert(source_surface.pitch() % source_surface.bytes_per_pixel() == 0);
+    hm::CudaMat<T_pixel> full_image(
+        SurfaceInfo{
+            .width = (int)source_surface.width(),
+            .height = (int)source_surface.height(),
+            .pitch = (int)source_surface.pitch(),
+            .data_ptr = source_surface.dataptr(),
+        },
+        /*B=*/1);
+
+    cv::cuda::GpuMat gpu_mat(
+        full_image.height(),
+        // full_image.width(),
+        source_surface.pitch_width(),
+        cudaPixelTypeToCvType(full_image.cuda_pixel_type()),
+        full_image.data_raw());
+
     cv::cuda::GpuMat cv_warped_image(
         warped_image_->height(),
         warped_image_->width(),
@@ -222,15 +226,17 @@ absl::Status Scoreboard<T_pixel>::forward_prod(const surface::Surface surface, b
   // cv::imshow("showimg", showimg);
   // cv::waitKey(0);
 
+  assert(dest_surface.bytes_per_pixel() == sizeof(T_pixel));
+
   XCUDA_RETURN_IF_ERROR(cudaOverlayPitch<T_pixel>(
       warped_image_->data(),
       warped_image_->width(),
       warped_image_->height(),
       warped_image_->pitch(),
-      full_image.data(),
-      full_image.width(),
-      full_image.height(),
-      full_image.pitch(),
+      dest_surface.dataptr<T_pixel*>(),
+      dest_surface.width(),
+      dest_surface.height(),
+      dest_surface.pitch(),
       /*x=*/0,
       /*y=*/0,
       stream));

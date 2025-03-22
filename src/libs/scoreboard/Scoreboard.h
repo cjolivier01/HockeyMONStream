@@ -52,7 +52,7 @@ class Scoreboard {
    */
   cv::Mat forward_cv(const cv::Mat& inputImage);
   cv::Mat forward_cuda(const cv::Mat& inputImage);
-  absl::Status forward_prod(const surface::Surface surface, bool rewarp, cudaStream_t stream);
+  absl::Status forward_prod(const surface::Surface source_surface, const surface::Surface dest_surface, bool rewarp, cudaStream_t stream);
 
   /**
    * @brief Gets the final output width.
