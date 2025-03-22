@@ -1,3 +1,6 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+
 INCLUDE_PREFIX = "hstream/src/libs/scoreboard"
 
 cc_library(
@@ -14,6 +17,41 @@ cc_library(
   ],
 )
 
+cc_library(
+  name = "scoreboard2",
+  srcs = ["Scoreboard2.cpp"],
+  hdrs = ["Scoreboard2.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    ":scoreboard_cuda_lib",
+    "@jetson-utils//display",
+    "@jetson-utils//cuda:cuda_lib",
+    "@hm-cupano//src/pano:cuda_matrix",
+    "@opencv_linux//:opencv",
+  ],
+)
+
+cuda_library(
+    name = "scoreboard_cuda_lib",
+    srcs=[
+        "ScoreboardKernels.cu",
+    ],
+    hdrs = [
+      "ScoreboardKernels.h",
+    ],
+    copts=[
+        "-std=c++11",
+        "-Xcompiler=-fPIC",
+        "-Xcompiler=-g",
+        "-g",
+    ],
+    deps = [
+        "@local_cuda//:cuda_runtime",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 cc_binary(
   name = "scoreboard_test",
   srcs = ["ScoreboardTest.cpp"],
@@ -21,3 +59,4 @@ cc_binary(
     ":scoreboard",
   ],
 )
+
