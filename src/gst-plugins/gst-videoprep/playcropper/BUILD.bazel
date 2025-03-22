@@ -16,6 +16,7 @@ cc_library(
         ":play_cropper_cuda_lib",
         "//src/gst-plugins/gst-videoprep/algorithm-base",
         "//src/libs/draw_display",
+        "//src/libs/scoreboard",
         "@hm-cupano//src/pano:cuda_matrix",
     ],
 )

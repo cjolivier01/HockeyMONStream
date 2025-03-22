@@ -311,11 +311,19 @@ absl::Status PlayCropperPriv::GenerateOutput(
           *scratch_surface_iter++, new_tbox, outgoing_surface, output_rect, nppStreamContext)));
 #endif
     }
+
+    // Scoreboard
+    if (scoreboard_) {
+      const bool rewarp = frame_count_ % scoreboard_warp_interval_ == 0;
+      HM_RETURN_IF_ERROR(scoreboard_->forward_prod(incoming_surface, outgoing_surface, rewarp, cuda_stream_));
+    }
+
     if (show_ && !batch_nr) {
       // Render it inside the loop, but we'll display it after our cudaSynchronize
       display_surface = std::make_unique<surface::Surface>(incoming_surface);
       HM_RETURN_IF_ERROR(RenderDisplayMeta(*display_surface, frame_meta, cuda_stream_));
     }
+    ++frame_count_;
   }
 
   // Synchronize stream

@@ -2,6 +2,7 @@
 
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 #include "hstream/src/libs/draw_display/Fonts.h"
+#include "hstream/src/libs/scoreboard/Scoreboard.h"
 #include "cupano/pano/cudaMat.h"
 
 namespace hm {
@@ -31,10 +32,13 @@ class PlayCropperPriv : public CustomAlgorithmBase {
 
   bool use_unfused_kernels_{false};
   bool show_{false};
+  size_t frame_count_{0};
   std::shared_ptr<draw_display::FontCache> font_cache_;
   float render_scale_{0.25};
   // float render_scale_{1.0};
   std::unique_ptr<hm::CudaMat<uchar4>> display_surface_;
+  std::unique_ptr<hm::scoreboard::Scoreboard<uchar4>> scoreboard_;
+  size_t scoreboard_warp_interval_{3};
   NvBufSurfaceParams display_dest_params_;
 };
 
