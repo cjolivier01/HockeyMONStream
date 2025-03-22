@@ -7,6 +7,9 @@ cc_library(
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    "@jetson-utils//display",
+    "@jetson-utils//cuda:cuda_lib",
+    "@hm-cupano//src/pano:cuda_matrix",
     "@opencv_linux//:opencv",
   ],
 )

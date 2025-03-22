@@ -40,7 +40,8 @@ class Scoreboard {
    * @param inputImage The input image.
    * @return cv::Mat The warped image.
    */
-  cv::Mat forward(const cv::Mat& inputImage);
+  cv::Mat forward_cv(const cv::Mat& inputImage);
+  cv::Mat forward_cuda(const cv::Mat& inputImage);
 
   /**
    * @brief Gets the final output width.

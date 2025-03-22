@@ -1,4 +1,5 @@
-#include "stitcher.h"
+#include "hstream/src/gst-plugins/gst-videoprep/stitcher/stitcher.h"
+
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 #include "hstream/src/libs/common/utils.h"
@@ -7,7 +8,7 @@
 #include "cupano/cuda/cudaStatus.h"
 #include "cupano/pano/cudaMat.h"
 
-#include "gst-nvdscustommessage.h"
+#include "deepstream/sources/includes/nvbufsurface.h"
 
 #include <cuda_runtime.h>
 #include <gst/base/gstbasetransform.h>
@@ -15,18 +16,13 @@
 #include <gst/video/video.h>
 #include <gstreamer-1.0/gst/gstinfo.h>
 #include <npp.h>
-#include "deepstream/sources/includes/nvbufsurface.h"
 #include <cmath>
-#include <map>
-#include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvdsmeta.h"
 
 #include <assert.h>
 #include <cuda.h>
-#include <string.h>
 #include <unistd.h>
 #include <vector>
-#include "deepstream/sources/includes/nvbufsurface.h"
 
 #if defined(__aarch64__)
 #include <EGL/egl.h>

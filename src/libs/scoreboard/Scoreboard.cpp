@@ -1,4 +1,5 @@
 #include "hstream/src/libs/scoreboard/Scoreboard.h"
+#include "cupano/pano/cudaMat.h"
 
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
@@ -145,7 +146,28 @@ Scoreboard::Scoreboard(
 /**
  * @brief Applies the perspective warp transformation to the input image.
  */
-cv::Mat Scoreboard::forward(const cv::Mat& inputImage) {
+cv::Mat Scoreboard::forward_cv(const cv::Mat& inputImage) {
+  // Extract the region of interest using the computed bounding box.
+  cv::Mat srcImage = inputImage(bboxSrc_).clone();
+
+  // Resize the source image to the intermediate dimensions.
+  cv::Mat resizedImage;
+  cv::resize(srcImage, resizedImage, cv::Size(destW_, destH_), 0, 0, cv::INTER_NEAREST);
+
+  // Apply the perspective transformation.
+  cv::Mat warpedImage;
+  cv::warpPerspective(resizedImage, warpedImage, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
+
+  // Crop the warped image to the final desired dimensions.
+  cv::Rect cropRect(0, 0, destWidth_, destHeight_);
+  if (cropRect.x + cropRect.width > warpedImage.cols || cropRect.y + cropRect.height > warpedImage.rows) {
+    throw std::runtime_error("Warped image size is smaller than destination size.");
+  }
+  cv::Mat finalImage = warpedImage(cropRect).clone();
+  return finalImage;
+}
+
+cv::Mat Scoreboard::forward_cuda(const cv::Mat& inputImage) {
   // Extract the region of interest using the computed bounding box.
   cv::Mat srcImage = inputImage(bboxSrc_).clone();
 

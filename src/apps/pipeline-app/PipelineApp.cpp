@@ -604,7 +604,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
         CleanupStack stage_cleanup_stack;
         HM_RETURN_IF_ERROR(createPipelines(app_contexts, stage_cleanup_stack));
         HM_RETURN_IF_ERROR(createMainLoop(app_contexts, stage_windows_[current_stage_], stage_cleanup_stack));
-        // editor_thread_ = hm::edit_pipeline(GST_OBJECT(app_contexts[0]->pipeline.pipeline));
+        editor_thread_ = hm::edit_pipeline(GST_OBJECT(app_contexts[0]->pipeline.pipeline));
         HM_RETURN_IF_ERROR(playPipelines(app_contexts, stage_cleanup_stack));
       }
       HM_RETURN_IF_ERROR(waitForPipelinesStopped(app_contexts));

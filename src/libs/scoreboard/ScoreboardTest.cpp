@@ -46,7 +46,8 @@ int main(int argc, char** argv) {
   hm::scoreboard::Scoreboard scoreboard(selected_points, 700, 300);
 
   // Apply the perspective transformation.
-  cv::Mat warpedImage = scoreboard.forward(image);
+  // cv::Mat warpedImage = scoreboard.forward_cv(image);
+  cv::Mat warpedImage = scoreboard.forward_cuda(image);
 
   // Display the warped image.
   cv::imshow("Warped Image", warpedImage);
