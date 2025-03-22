@@ -4,25 +4,23 @@
 #include <cuda_runtime.h>
 
 #include <vector>
+#include <opencv2/opencv.hpp>
 
 namespace sc2 {
 
 // Simple 2D point.
-struct Point2f {
-    float x;
-    float y;
-};
+using Point2f = cv::Point2f;
 
 // We use CUDA’s built‐in uchar3 for a 3‑channel (RGB) pixel.
 // (Include cuda_runtime.h in the .cu file so that uchar3 is defined.)
 
 // Simple image structure: the image data is assumed to reside in device memory.
-struct Image {
-    int width;
-    int height;
-    // Pointer to device pixel data (each pixel is uchar3)
-    uchar3* d_data;
-};
+// struct Image {
+//     int width;
+//     int height;
+//     // Pointer to device pixel data (each pixel is uchar3)
+//     uchar3* d_data;
+// };
 
 class Scoreboard {
 public:
@@ -36,7 +34,7 @@ public:
 
     // forward() applies the perspective warp to an input image (in device memory)
     // and returns a new Image (allocated on the device) containing the warped result.
-    Image forward(const Image& input);
+    cv::Mat forward(const cv::Mat& input);
 
     int width() const { return _destWidth; }
     int height() const { return _destHeight; }

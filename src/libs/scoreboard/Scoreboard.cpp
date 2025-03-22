@@ -4,17 +4,14 @@
 #include "cupano/pano/showImage.h"
 
 #include "jetson-utils/cuda/cudaResizeRoi.h"
-#include "jetson-utils/cuda/cudaWarp.h"
-#include "jetson-utils/cuda/cudaWarpPerspective.h"
 
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/cudawarping.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
-
-#include <nppi.h>
 
 #include <cuda_runtime.h>
 
@@ -150,29 +147,9 @@ Scoreboard::Scoreboard(
   dstPts.push_back(cv::Point2f(destWidth_ - 1, destHeight_ - 1)); // bottom-right
   dstPts.push_back(cv::Point2f(0, destHeight_ - 1)); // bottom-left
 
- /**
-  * Calculates perspective transform coefficients given source rectangular ROI
-  * and its destination quadrangle projection
-  *
-  * \param oSrcROI Source ROI
-  * \param quad Destination quadrangle
-  * \param aCoeffs Perspective transform coefficients
-  * \return Error codes:
-  *         - NPP_SIZE_ERROR Indicates an error condition if any image dimension
-  *           has zero or negative value
-  *         - NPP_RECTANGLE_ERROR Indicates an error condition if width or height of
-  *           the intersection of the oSrcROI and source image is less than or
-  *           equal to 1
-  *         - NPP_COEFFICIENT_ERROR Indicates an error condition if coefficient values
-  *           are invalid
-  */
-  // NppStatus status = 
-  // nppiGetPerspectiveTransform(NppiRect oSrcROI, const double quad[4][2], double aCoeffs[3][3]);
-
-
-
   // Compute the perspective transform matrix.
-  perspectiveMatrix_ = cv::getPerspectiveTransform(srcPts_, dstPts, int(cv::DECOMP_LU) | int(cv::DECOMP_NORMAL));
+  // perspectiveMatrix_ = cv::getPerspectiveTransform(srcPts_, dstPts);
+  perspectiveMatrix_ = cv::getPerspectiveTransform(srcPts, dstPts);
   assert(perspectiveMatrix_.cols == 3);
   assert(perspectiveMatrix_.rows == 3);
   for (size_t i = 0; i < 3; ++i) {
@@ -214,85 +191,25 @@ cv::Mat Scoreboard::forward_cuda(const cv::Mat& inputImage) {
   cuErr = cudaStreamCreate(&stream);
 
   hm::CudaMat<uchar3> full_image(inputImage);
-  // hm::CudaMat<uchar3> roi_image(/*B=*/1, bboxSrc_.width, bboxSrc_.height);
-  hm::CudaMat<uchar3> resized_image(/*B=*/1, destW_, destH_);
   hm::CudaMat<uchar3> warped_image(/*B=*/1, destW_, destH_);
 
-  // cuErr = cudaCrop(
-  //     full_image.data(),
-  //     roi_image.data(),
-  //     {bboxSrc_.x, bboxSrc_.y, bboxSrc_.x + bboxSrc_.width, bboxSrc_.y + bboxSrc_.height},
-  //     full_image.width(),
-  //     full_image.height(),
-  //     stream);
-
-  // SHOW_IMAGE(&roi_image);
-
-  // Extract the region of interest using the computed bounding box.
-  cv::Mat srcImage = inputImage(bboxSrc_).clone();
-
-  // Resize the source image to the intermediate dimensions.
-  cv::Mat resizedImage;
-  cv::resize(srcImage, resizedImage, cv::Size(destW_, destH_), 0, 0, cv::INTER_NEAREST);
-  // cv::imshow("resizedImage", resizedImage);
-  // cv::waitKey(0);
-
-  cuErr = cudaResizeROI(
-      full_image.data(),
-      full_image.width(),
-      full_image.height(),
-      bboxSrc_.x,
-      bboxSrc_.y,
-      bboxSrc_.width,
-      bboxSrc_.height,
-      resized_image.data(),
-      resized_image.width(),
-      resized_image.height(),
-      /*dstX=*/0,
-      /*dstY=*/0,
-      /*dstWidth=*/resized_image.width(),
-      /*dstHeight=*/resized_image.height(),
-      cudaFilterMode::FILTER_POINT,
-      stream);
-  // SHOW_IMAGE(&resized_image);
-
-  // template<typename T>
-  // cudaError_t cudaWarpPerspective( T* input, uint32_t inputWidth, uint32_t inputHeight,
-  //                                  T* output, uint32_t outputWidth, uint32_t outputHeight,
-  //                                  const float transform[3][3], bool transform_inverted=false,
-  //                                  cudaStream_t stream=0 )
-
-  // nppiWarpPerspective_8u_C3R(
-  //     resized_image.data_raw(),
-  //     {resized_image.width(), resized_image.height()},
-  //     resized_image.pitch(),
-  //     {0, 0, resized_image.width(), resized_image.height()},
-  //     warped_image.data_raw(),
-  //     warped_image.pitch(),
-  //     {0, 0, warped_image.width(), warped_image.height()},
-  //     dperspectiveMatrix_,
-  //     NPPI_INTER_LINEAR);
-
-  cuErr = cudaWarpPerspective(
-      resized_image.data(),
-      resized_image.width(),
-      resized_image.height(),
-      warped_image.data(),
-      warped_image.width(),
-      warped_image.height(),
-      fperspectiveMatrix_,
-      /*transform_inverted=*/false,
-      stream);
-  SHOW_IMAGE(&warped_image);
+  cv::cuda::GpuMat gpu_mat(full_image.height(), full_image.width(), cudaPixelTypeToCvType(full_image.cuda_pixel_type()), full_image.data_raw());
+  cv::cuda::GpuMat cv_warped_image;
+  cv::Mat showimg;
+  cv::cuda::warpPerspective(
+      gpu_mat, cv_warped_image, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
+  cv_warped_image.download(showimg);
+  cv::imshow("cv_warped_image", showimg);
+  cv::waitKey(0);
 
   // Apply the perspective transformation.
-  cv::Mat warpedImage;
-  // cv::warpPerspective(resizedImage, warpedImage, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
-  cv::warpPerspective(
-      resized_image.download(), warpedImage, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
+  // cv::Mat warpedImage;
+  // // cv::warpPerspective(resizedImage, warpedImage, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
+  // cv::warpPerspective(
+  //     resized_image.download(), warpedImage, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
 
-  cv::imshow("warpedImage", warpedImage);
-  cv::waitKey(0);
+  // cv::imshow("warpedImage", warpedImage);
+  // cv::waitKey(0);
 
   // // Crop the warped image to the final desired dimensions.
   // cv::Rect cropRect(0, 0, destWidth_, destHeight_);

@@ -4,6 +4,12 @@
 #include <cstdio>
 #include "Scoreboard2.h"
 #include "ScoreboardKernels.h"
+#include "cupano/pano/cudaMat.h"
+
+#include <opencv2/opencv.hpp>
+
+#include "cupano/pano/cudaMat.h"
+#include "cupano/pano/showImage.h"
 
 namespace sc2 {
 
@@ -143,6 +149,16 @@ Scoreboard::Scoreboard(const std::vector<Point2f>& srcPts, int destWidth, int de
       {static_cast<float>(_destWidth - 1), static_cast<float>(_destHeight - 1)},
       {0.f, static_cast<float>(_destHeight - 1)}};
   computePerspectiveTransform(_srcPts, dstPts, _H);
+#if 0
+  auto perspectiveMatrix_ = cv::getPerspectiveTransform(_srcPts, dstPts);
+  assert(perspectiveMatrix_.cols == 3);
+  assert(perspectiveMatrix_.rows == 3);
+  for (size_t i = 0; i < 3; ++i) {
+    for (size_t j = 0; j < 3; ++j) {
+      _H[i][j] = perspectiveMatrix_.at<float>(i, j);
+    }
+  }
+#endif
 }
 
 // forward() performs the following on the GPU:
@@ -150,40 +166,55 @@ Scoreboard::Scoreboard(const std::vector<Point2f>& srcPts, int destWidth, int de
 // 2. Resize the cropped ROI to (_scaledDestW x _scaledDestH).
 // 3. Apply the warp perspective (using _H) to produce an image of size (_scaledDestW x _scaledDestH).
 // 4. Crop the warped image to the final scoreboard size (_destWidth x _destHeight).
-Image Scoreboard::forward(const Image& input) {
-  int inW = input.width, inH = input.height;
+cv::Mat Scoreboard::forward(const cv::Mat& input_image) {
+
+  hm::CudaMat<uchar3> src_image(input_image);
+
+  int inW = src_image.width(), inH = src_image.height();
   // Step 1: Crop the ROI.
   int cropW = _roiWidth, cropH = _roiHeight;
-  uchar3* d_crop = nullptr;
-  cudaMalloc(&d_crop, cropW * cropH * sizeof(uchar3));
-  launchCropKernel(input.d_data, inW, inH, d_crop, cropW, cropH, _bbox[0], _bbox[1]);
+  //uchar3* d_crop = nullptr;
+  //cudaMalloc(&d_crop, cropW * cropH * sizeof(uchar3));
+  hm::CudaMat<uchar3> cropped(1, cropW, cropH);
+  launchCropKernel(src_image.data(), inW, inH, cropped.data(), cropped.width(), cropped.height(), _bbox[0], _bbox[1]);
+
+  //SHOW_IMAGE(&cropped);
+
   // Step 2: Resize the cropped ROI.
-  uchar3* d_resized = nullptr;
-  cudaMalloc(&d_resized, _scaledDestW * _scaledDestH * sizeof(uchar3));
-  launchResizeKernel(d_crop, cropW, cropH, d_resized, _scaledDestW, _scaledDestH);
-  cudaFree(d_crop);
+  //uchar3* d_resized = nullptr;
+  hm::CudaMat<uchar3> resized(1, _scaledDestW, _scaledDestH);
+  //cudaMalloc(&d_resized, _scaledDestW * _scaledDestH * sizeof(uchar3));
+  launchResizeKernel(cropped.data(), cropped.width(), cropped.height(), resized.data(), resized.width(), resized.height());
+
+  SHOW_IMAGE(&resized);
+  //cudaFree(d_crop);
   // Step 3: Warp perspective.
-  uchar3* d_warped = nullptr;
-  cudaMalloc(&d_warped, _scaledDestW * _scaledDestH * sizeof(uchar3));
+  // uchar3* d_warped = nullptr;
+  // cudaMalloc(&d_warped, _scaledDestW * _scaledDestH * sizeof(uchar3));
+  hm::CudaMat<uchar3> warped(1, _scaledDestW, _scaledDestH);
   {
     // Pack _H into three float3 rows.
     float3 m0 = {_H[0][0], _H[0][1], _H[0][2]};
     float3 m1 = {_H[1][0], _H[1][1], _H[1][2]};
     float3 m2 = {_H[2][0], _H[2][1], _H[2][2]};
     launchWarpPerspectiveKernel(
-        d_resized, _scaledDestW, _scaledDestH, d_warped, _scaledDestW, _scaledDestH, m0, m1, m2);
+        resized.data(), resized.width(), resized.height(), warped.data(), warped.width(), warped.height(), m0, m1, m2);
   }
-  cudaFree(d_resized);
+
+  SHOW_IMAGE(&warped);
+
+#if 0
+  // cudaFree(d_resized);
   // Step 4: Crop to final scoreboard dimensions.
   uchar3* d_final = nullptr;
   cudaMalloc(&d_final, _destWidth * _destHeight * sizeof(uchar3));
   launchCropKernel(d_warped, _scaledDestW, _scaledDestH, d_final, _destWidth, _destHeight, 0, 0);
   cudaFree(d_warped);
-
-  Image output;
-  output.width = _destWidth;
-  output.height = _destHeight;
-  output.d_data = d_final;
-  return output;
+#endif
+  // Image output;
+  // output.width = _destWidth;
+  // output.height = _destHeight;
+  // output.d_data = d_final;
+  return cv::Mat();
 }
 } // namespace sc2

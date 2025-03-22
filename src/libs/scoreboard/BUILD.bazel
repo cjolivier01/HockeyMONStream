@@ -8,6 +8,9 @@ cc_library(
   srcs = ["Scoreboard.cpp"],
   hdrs = ["Scoreboard.h"],
   include_prefix = INCLUDE_PREFIX,
+  linkopts = [
+    "-lopencv_cudawarping",
+  ],
   visibility = ["//visibility:public"],
   deps = [
     "@jetson-utils//display",
