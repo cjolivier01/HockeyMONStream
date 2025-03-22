@@ -1,7 +1,20 @@
-cc_binary(
+INCLUDE_PREFIX = "hstream/src/libs/scoreboard"
+
+cc_library(
   name = "scoreboard",
   srcs = ["Scoreboard.cpp"],
+  hdrs = ["Scoreboard.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
   deps = [
     "@opencv_linux//:opencv",
+  ],
+)
+
+cc_binary(
+  name = "scoreboard_test",
+  srcs = ["ScoreboardTest.cpp"],
+  deps = [
+    ":scoreboard",
   ],
 )

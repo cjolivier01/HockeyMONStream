@@ -293,7 +293,7 @@
         // "envFile": "${workspaceFolder}/${config:mesonbuild.buildFolder}/meson-vscode.env",
       },
       "cwd": "${workspaceFolder}",
-      "program": "${workspaceFolder}/bazel-bin/src/libs/scoreboard/scoreboard",
+      "program": "${workspaceFolder}/bazel-bin/src/libs/scoreboard/scoreboard_test",
       "args": [
         "mlk-heat-1",
       ],

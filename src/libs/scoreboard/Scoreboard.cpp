@@ -1,40 +1,41 @@
-#include <opencv2/opencv.hpp>
+#include "hstream/src/libs/scoreboard/Scoreboard.h"
 
+#include <opencv2/highgui.hpp>
+#include <opencv2/imgproc.hpp>
+#include <algorithm>
 #include <cmath>
-#include <cstdlib>
-#include <iostream>
 #include <stdexcept>
-#include <vector>
 
-using namespace std;
-using namespace cv;
-
-// Helper function to compute Euclidean distance between two points.
-static float pointDistance(const Point2f& pt0, const Point2f& pt1) {
-  return norm(pt0 - pt1);
+/**
+ * @brief Computes the Euclidean distance between two points.
+ */
+float Scoreboard::pointDistance(const cv::Point2f& pt0, const cv::Point2f& pt1) {
+  return cv::norm(pt0 - pt1);
 }
 
-// Order 4 points in clockwise order starting from top-left.
-// This uses the sum and difference of coordinates similar to the Python version.
-vector<Point2f> orderPointsClockwise(const vector<Point2f>& pts) {
-  if (pts.size() != 4)
-    throw runtime_error("orderPointsClockwise: exactly 4 points are required.");
+/**
+ * @brief Orders four points in clockwise order starting from the top-left.
+ */
+std::vector<cv::Point2f> Scoreboard::orderPointsClockwise(const std::vector<cv::Point2f>& pts) {
+  if (pts.size() != 4) {
+    throw std::runtime_error("orderPointsClockwise: exactly 4 points are required.");
+  }
 
-  vector<Point2f> ordered(4);
-  vector<float> sumPts, diffPts;
+  std::vector<cv::Point2f> ordered(4);
+  std::vector<float> sumPts, diffPts;
   for (const auto& pt : pts) {
     sumPts.push_back(pt.x + pt.y);
     diffPts.push_back(pt.x - pt.y);
   }
 
   // Top-left has the smallest sum.
-  int tlIdx = min_element(sumPts.begin(), sumPts.end()) - sumPts.begin();
+  int tlIdx = std::min_element(sumPts.begin(), sumPts.end()) - sumPts.begin();
   // Bottom-right has the largest sum.
-  int brIdx = max_element(sumPts.begin(), sumPts.end()) - sumPts.begin();
+  int brIdx = std::max_element(sumPts.begin(), sumPts.end()) - sumPts.begin();
   // Top-right has the smallest difference.
-  int trIdx = min_element(diffPts.begin(), diffPts.end()) - diffPts.begin();
+  int trIdx = std::min_element(diffPts.begin(), diffPts.end()) - diffPts.begin();
   // Bottom-left has the largest difference.
-  int blIdx = max_element(diffPts.begin(), diffPts.end()) - diffPts.begin();
+  int blIdx = std::max_element(diffPts.begin(), diffPts.end()) - diffPts.begin();
 
   ordered[0] = pts[tlIdx];
   ordered[1] = pts[trIdx];
@@ -44,183 +45,134 @@ vector<Point2f> orderPointsClockwise(const vector<Point2f>& pts) {
   return ordered;
 }
 
-// Scoreboard class: sets up the perspective transform given four source points.
-class Scoreboard {
- public:
-  // Constructor parameters:
-  // - srcPts: 4 points (in any order; they will be re-ordered clockwise).
-  // - destWidth, destHeight: desired output dimensions.
-  // - autoAspect: if true, adjusts dimensions to match the aspect ratio of srcPts.
-  // - clipBox: optional; if provided, it (a Rect) is subtracted from the source points.
-  Scoreboard(
-      const vector<Point2f>& srcPts,
-      int destWidth,
-      int destHeight,
-      bool autoAspect = true,
-      const Rect* clipBox = nullptr)
-      : dest_width(destWidth), dest_height(destHeight) {
-    if (srcPts.size() != 4) {
-      throw runtime_error("Scoreboard: exactly 4 source points required.");
+/**
+ * @brief Constructs a Scoreboard object.
+ */
+Scoreboard::Scoreboard(
+    const std::vector<cv::Point2f>& srcPts,
+    int destWidth,
+    int destHeight,
+    bool autoAspect,
+    const cv::Rect* clipBox)
+    : destWidth_(destWidth), destHeight_(destHeight) {
+  if (srcPts.size() != 4) {
+    throw std::runtime_error("Scoreboard: exactly 4 source points required.");
+  }
+
+  // Order the points in clockwise order.
+  // srcPts_ = orderPointsClockwise(srcPts);
+  srcPts_ = srcPts;
+
+  // Adjust the source points if a clipping rectangle is provided.
+  if (clipBox != nullptr) {
+    for (auto& pt : srcPts_) {
+      pt.x -= clipBox->x;
+      pt.y -= clipBox->y;
     }
+  }
 
-    // Order the points clockwise (top-left, top-right, bottom-right, bottom-left).
-    // src_pts = orderPointsClockwise(srcPts);
-    src_pts = srcPts;
+  // Compute the bounding box of the source points.
+  float minX = srcPts_[0].x, minY = srcPts_[0].y;
+  float maxX = srcPts_[0].x, maxY = srcPts_[0].y;
+  for (const auto& pt : srcPts_) {
+    minX = std::min(minX, pt.x);
+    minY = std::min(minY, pt.y);
+    maxX = std::max(maxX, pt.x);
+    maxY = std::max(maxY, pt.y);
+  }
+  bboxSrc_ = cv::Rect(cv::Point2f(minX, minY), cv::Point2f(maxX, maxY));
 
-    // If a clipping rectangle is provided, adjust the source points.
-    if (clipBox != nullptr) {
-      for (auto& pt : src_pts) {
-        pt.x -= clipBox->x;
-        pt.y -= clipBox->y;
-      }
-    }
+  // Adjust the source points relative to the bounding box.
+  for (auto& pt : srcPts_) {
+    pt.x -= bboxSrc_.x;
+    pt.y -= bboxSrc_.y;
+  }
 
-    // Compute the bounding box (min and max coordinates) of the source points.
-    float minX = src_pts[0].x, minY = src_pts[0].y;
-    float maxX = src_pts[0].x, maxY = src_pts[0].y;
-    for (const auto& pt : src_pts) {
-      minX = min(minX, pt.x);
-      minY = min(minY, pt.y);
-      maxX = max(maxX, pt.x);
-      maxY = max(maxY, pt.y);
-    }
-    bbox_src = Rect(Point2f(minX, minY), Point2f(maxX, maxY));
+  float srcWidth = bboxSrc_.width;
+  float srcHeight = bboxSrc_.height;
 
-    // Adjust the source points relative to the bounding box.
-    for (auto& pt : src_pts) {
-      pt.x -= bbox_src.x;
-      pt.y -= bbox_src.y;
-    }
-
-    float src_width = bbox_src.width;
-    float src_height = bbox_src.height;
-
-    // If auto_aspect is true, adjust the output dimensions based on the measured aspect ratio.
-    if (autoAspect) {
-      float w_top = pointDistance(src_pts[0], src_pts[1]);
-      float w_bottom = pointDistance(src_pts[3], src_pts[2]); // bottom-left to bottom-right
-      float h_left = pointDistance(src_pts[0], src_pts[3]);
-      float h_right = pointDistance(src_pts[1], src_pts[2]);
-      float w_avg = (w_top + w_bottom) / 2.0f;
-      float h_avg = (h_left + h_right) / 2.0f;
-      float aspect_ratio = w_avg / h_avg;
-      int dest_width_new = static_cast<int>(dest_height * aspect_ratio);
-      int dest_height_new = static_cast<int>(dest_width / aspect_ratio);
-      // Choose the adjustment that causes the least relative change.
-      if (fabs(dest_width - dest_width_new) / float(dest_width) <
-          fabs(dest_height - dest_height_new) / float(dest_height)) {
-        dest_width = dest_width_new;
-      } else {
-        dest_height = dest_height_new;
-      }
-    }
-
-    // Determine scaling factors. We scale the source points if the desired output is larger.
-    int totw = max(dest_width, static_cast<int>(src_width));
-    int toth = max(dest_height, static_cast<int>(src_height));
-    if (totw > src_width || toth > src_height) {
-      float ratio_w = totw / src_width;
-      float ratio_h = toth / src_height;
-      dest_w = totw;
-      dest_h = toth;
-      for (auto& pt : src_pts) {
-        pt.x *= ratio_w;
-        pt.y *= ratio_h;
-      }
+  // Adjust output dimensions based on the source aspect ratio if autoAspect is true.
+  if (autoAspect) {
+    float wTop = pointDistance(srcPts_[0], srcPts_[1]);
+    float wBottom = pointDistance(srcPts_[3], srcPts_[2]); // bottom-left to bottom-right
+    float hLeft = pointDistance(srcPts_[0], srcPts_[3]);
+    float hRight = pointDistance(srcPts_[1], srcPts_[2]);
+    float wAvg = (wTop + wBottom) / 2.0f;
+    float hAvg = (hLeft + hRight) / 2.0f;
+    float aspectRatio = wAvg / hAvg;
+    int destWidthNew = static_cast<int>(destHeight_ * aspectRatio);
+    int destHeightNew = static_cast<int>(destWidth_ / aspectRatio);
+    // Choose the adjustment that causes the least relative change.
+    if (std::fabs(destWidth_ - destWidthNew) / float(destWidth_) <
+        std::fabs(destHeight_ - destHeightNew) / float(destHeight_)) {
+      destWidth_ = destWidthNew;
     } else {
-      dest_w = static_cast<int>(src_width);
-      dest_h = static_cast<int>(src_height);
+      destHeight_ = destHeightNew;
     }
-
-    // Set up destination points in the order:
-    // top-left, top-right, bottom-right, bottom-left.
-    vector<Point2f> dst_pts;
-    dst_pts.push_back(Point2f(0, 0)); // top-left
-    dst_pts.push_back(Point2f(dest_width - 1, 0)); // top-right
-    dst_pts.push_back(Point2f(dest_width - 1, dest_height - 1)); // bottom-right
-    dst_pts.push_back(Point2f(0, dest_height - 1)); // bottom-left
-
-    // Compute the perspective transform matrix.
-    perspectiveMatrix = getPerspectiveTransform(src_pts, dst_pts);
   }
 
-  // forward() applies the perspective warp to the input image.
-  // It extracts the ROI defined by bbox_src, resizes it to the intermediate size,
-  // applies warpPerspective, and then crops to the final destination dimensions.
-  cv::Mat forward(const cv::Mat& input_image) {
-    // Extract the region of interest.
-    cv::Mat src_image = input_image(bbox_src).clone();
-    // Resize the source image to the intermediate dimensions.
-    cv::Mat resized_image;
-    cv::resize(src_image, resized_image, cv::Size(dest_w, dest_h), 0, 0, INTER_NEAREST);
-    // Apply the perspective transform.
-    cv::Mat warped_image;
-    cv::warpPerspective(resized_image, warped_image, perspectiveMatrix, cv::Size(dest_w, dest_h), INTER_LINEAR);
-    // Crop the warped image to the final output size.
-    cv::Rect cropRect(0, 0, dest_width, dest_height);
-    if (cropRect.x + cropRect.width > warped_image.cols || cropRect.y + cropRect.height > warped_image.rows) {
-      throw runtime_error("Warped image size is smaller than destination size.");
+  // Determine intermediate scaling dimensions.
+  int totW = std::max(destWidth_, static_cast<int>(srcWidth));
+  int totH = std::max(destHeight_, static_cast<int>(srcHeight));
+  if (totW > srcWidth || totH > srcHeight) {
+    float ratioW = totW / srcWidth;
+    float ratioH = totH / srcHeight;
+    destW_ = totW;
+    destH_ = totH;
+    for (auto& pt : srcPts_) {
+      pt.x *= ratioW;
+      pt.y *= ratioH;
     }
-    cv::Mat final_image = warped_image(cropRect).clone();
-    return final_image;
+  } else {
+    destW_ = static_cast<int>(srcWidth);
+    destH_ = static_cast<int>(srcHeight);
   }
 
-  int getWidth() const {
-    return dest_width;
+  // Define destination points: top-left, top-right, bottom-right, bottom-left.
+  std::vector<cv::Point2f> dstPts;
+  dstPts.push_back(cv::Point2f(0, 0)); // top-left
+  dstPts.push_back(cv::Point2f(destWidth_ - 1, 0)); // top-right
+  dstPts.push_back(cv::Point2f(destWidth_ - 1, destHeight_ - 1)); // bottom-right
+  dstPts.push_back(cv::Point2f(0, destHeight_ - 1)); // bottom-left
+
+  // Compute the perspective transform matrix.
+  perspectiveMatrix_ = cv::getPerspectiveTransform(srcPts_, dstPts);
+}
+
+/**
+ * @brief Applies the perspective warp transformation to the input image.
+ */
+cv::Mat Scoreboard::forward(const cv::Mat& inputImage) {
+  // Extract the region of interest using the computed bounding box.
+  cv::Mat srcImage = inputImage(bboxSrc_).clone();
+
+  // Resize the source image to the intermediate dimensions.
+  cv::Mat resizedImage;
+  cv::resize(srcImage, resizedImage, cv::Size(destW_, destH_), 0, 0, cv::INTER_NEAREST);
+
+  // Apply the perspective transformation.
+  cv::Mat warpedImage;
+  cv::warpPerspective(resizedImage, warpedImage, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
+
+  // Crop the warped image to the final desired dimensions.
+  cv::Rect cropRect(0, 0, destWidth_, destHeight_);
+  if (cropRect.x + cropRect.width > warpedImage.cols || cropRect.y + cropRect.height > warpedImage.rows) {
+    throw std::runtime_error("Warped image size is smaller than destination size.");
   }
-  int getHeight() const {
-    return dest_height;
-  }
+  cv::Mat finalImage = warpedImage(cropRect).clone();
+  return finalImage;
+}
 
- private:
-  vector<Point2f> src_pts;
-  Rect bbox_src;
-  int dest_width, dest_height; // Final output dimensions.
-  int dest_w, dest_h; // Intermediate dimensions.
-  Mat perspectiveMatrix;
-};
+/**
+ * @brief Gets the final output width.
+ */
+int Scoreboard::getWidth() const {
+  return destWidth_;
+}
 
-int main(int argc, char** argv) {
-  // For this example, we expect a game ID to be passed as a command-line argument.
-  if (argc < 2) {
-    cerr << "Usage: " << argv[0] << " <game_id>" << endl;
-    return -1;
-  }
-  string game_id = argv[1];
-
-  // Construct the image path; assumes HOME environment variable is set.
-  string home = (getenv("HOME") != nullptr) ? getenv("HOME") : ".";
-  string image_path = home + "/Videos/" + game_id + "/s.png";
-
-  // Load the image.
-  Mat image = imread(image_path);
-  if (image.empty()) {
-    cerr << "Could not open image at: " << image_path << endl;
-    return -1;
-  }
-
-  // imshow("Stitched Image", image);
-
-  // For this example, we use a hard-coded set of 4 scoreboard points.
-  // In a full implementation these might be loaded from a configuration.
-  // Format: top-left, top-right, bottom-right, bottom-left.
-  vector<Point2f> selected_points = {Point2f(864, 824), Point2f(1309, 654), Point2f(1352, 758), Point2f(922, 923)};
-
-  // Print the selected points.
-  cout << "Selected points:" << endl;
-  for (const auto& pt : selected_points) {
-    cout << "(" << pt.x << ", " << pt.y << ")" << endl;
-  }
-
-  // Create a Scoreboard instance with desired output dimensions.
-  Scoreboard scoreboard(selected_points, 700, 300);
-
-  // Apply the warp (forward transformation).
-  Mat warped_image = scoreboard.forward(image);
-
-  // Show the warped image.
-  imshow("Warped Image", warped_image);
-  waitKey(0);
-
-  return 0;
+/**
+ * @brief Gets the final output height.
+ */
+int Scoreboard::getHeight() const {
+  return destHeight_;
 }
