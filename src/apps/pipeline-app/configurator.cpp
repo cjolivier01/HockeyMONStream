@@ -497,6 +497,23 @@ absl::Status Configurator::complete_configuration(bool force) {
 
   pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / kRinkMaskFilename);
 
+  // Scoreboard perspective polygon, if there
+  if (has_node(config_, "rink.scoreboard.perspective_polygon", /*non_null=*/true)) {
+    auto points = config_["rink"]["scoreboard"]["perspective_polygon"].as<std::vector<std::vector<int>>>();
+    if (!points.empty()) {
+      assert(points.size() == 4);
+      std::stringstream ss;
+      for (size_t i = 0, n = points.size(); i < n; ++i) {
+        if (i) {
+          ss << ',';
+        }
+        assert(points[i].size() == 2);
+        ss << std::to_string(points[i].at(0)) << ',' << points[i].at(1);
+      }
+      pipeline["hmplaycropper"]["rink.scoreboard.perspective-polygon"] = ss.str();
+    }
+  }
+
   YAML::Node offsets = config_["game"]["stitching"]["frame_offsets"];
 
   size_t area = 0, ww = 0, hh = 0;

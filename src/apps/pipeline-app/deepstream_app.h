@@ -145,7 +145,7 @@ struct NvDsConfig {
   NvDsDsAnalyticsConfig dsanalytics_config;
   NvDsDsExampleConfig dsexample_config;
   NvDsHmImageMetaMergerConfig hmimagemetamerger_config;
-  NvDsHmVideoPrepConfig hmplaycropper_config;
+  HmPlayCropperConfig hmplaycropper_config;
   NvDsDsFieldMaskConfig dsfieldmask_config;
   HmStitcherConfig hmsticher_config;
   NvDsDsPlayTrackerConfig dsplaytracker_config;

@@ -90,7 +90,7 @@ gboolean parse_dsfieldmask_yaml(
   return true;
 }
 
-gboolean parse_hmplaycropper_yaml(
+gboolean parse_videoprep_yaml(
     NvDsHmVideoPrepConfig* config,
     const YAML::Node& yaml_node,
     const std::string& config_dir,
@@ -119,8 +119,23 @@ gboolean parse_hmplaycropper_yaml(
   return true;
 }
 
+gboolean parse_hmplaycropper_yaml(
+    HmPlayCropperConfig* config,
+    const YAML::Node& yaml_node,
+    const std::string& config_dir,
+    bool quiet = false) {
+  if (!parse_videoprep_yaml(config, yaml_node, config_dir, /*quiet=*/true)) {
+    return false;
+  }
+  hm::utils::ConfigLocator locator;
+  SET_LOCATOR_INTS(locator, *config, scoreboard_perspective_polygon);
+
+  set_config_from_yaml(yaml_node, locator, quiet);
+  return true;
+}
+
 gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_node, const std::string& config_path) {
-  if (!parse_hmplaycropper_yaml(config, yaml_node, config_path, /*quiet=*/true)) {
+  if (!parse_videoprep_yaml(config, yaml_node, config_path, /*quiet=*/true)) {
     return false;
   }
   hm::utils::ConfigLocator locator;

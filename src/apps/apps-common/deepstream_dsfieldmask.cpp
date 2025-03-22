@@ -519,9 +519,11 @@ done:
  *                  __/ |                 | |   | |
  *                 |___/                  |_|   |_|
  */
-gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBin* bin) {
+gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBin* bin) {
   gboolean ret = FALSE;
   std::stringstream ppc;
+  constexpr size_t poly_int_count =
+      sizeof(config->scoreboard_perspective_polygon) / sizeof(config->scoreboard_perspective_polygon[0]);
 
   bin->bin = gst_bin_new("playcropper_bin");
   if (!bin->bin) {
@@ -638,6 +640,22 @@ gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrep
   }
 
   ppc << "show=" << config->show;
+
+  if (std::any_of(
+          &config->scoreboard_perspective_polygon[0],
+          &config->scoreboard_perspective_polygon[poly_int_count],
+          [](const auto& i) { return i != 0; }) != 0) {
+    ppc << ";rink.scoreboard.perspective-polygon=";
+    for (size_t i = 0, n = poly_int_count >> 1; i < n; ++i) {
+      const size_t index = i << 1;
+      if (i) {
+        ppc << ",";
+      }
+      ppc << std::to_string(config->scoreboard_perspective_polygon[index]) << ","
+          << config->scoreboard_perspective_polygon[index + 1];
+    }
+  }
+
   g_object_set(G_OBJECT(bin->playcropper), "plugin-private-config", ppc.str().c_str(), NULL);
 
 #if 0

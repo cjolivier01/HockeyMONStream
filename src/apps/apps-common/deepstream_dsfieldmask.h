@@ -136,7 +136,12 @@ struct NvDsHmVideoPrepBin {
   GstElement* playcropper;
 };
 
-gboolean create_hmplaycropper_bin(NvDsHmVideoPrepConfig* config, NvDsHmVideoPrepBin* bin);
+struct HmPlayCropperConfig : public NvDsHmVideoPrepConfig {
+  // Four (x,y) coordinates
+  int scoreboard_perspective_polygon[8];
+};
+
+gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBin* bin);
 
 /**
  *   _____ _   _  _        _

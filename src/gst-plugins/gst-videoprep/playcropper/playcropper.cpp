@@ -138,6 +138,8 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
       std::cerr << "Invalid render scale: " << render_scale_ << std::endl;
       return false;
     }
+  } else if (prop.key == "rink.scoreboard.perspective-polygon") {
+    std::cout << "GOT rink.scoreboard.perspective-polygon!" << std::endl;
   }
   return true;
 }
