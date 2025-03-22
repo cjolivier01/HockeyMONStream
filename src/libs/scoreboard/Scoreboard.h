@@ -1,5 +1,7 @@
 #pragma once
 
+#include "cupano/pano/cudaMat.h"
+
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/cudawarping.hpp>
@@ -16,6 +18,7 @@ namespace scoreboard {
  * This class orders the source points, computes a perspective transform matrix,
  * and applies the transform to a given image to extract the scoreboard region.
  */
+template <typename T_pixel>
 class Scoreboard {
  public:
   /**
@@ -87,8 +90,25 @@ class Scoreboard {
   int destW_; ///< Intermediate width (possibly scaled).
   int destH_; ///< Intermediate height (possibly scaled).
   cv::Mat perspectiveMatrix_; ///< Perspective transformation matrix.
-  std::unique_ptr<cv::cuda::GpuMat> warped_image_scratch_buffer_;
+  std::unique_ptr<hm::CudaMat<T_pixel>> warped_image_scratch_buffer_;
 };
+
+
+/**
+ * @brief Gets the final output width.
+ */
+template <typename T_pixel>
+inline int Scoreboard<T_pixel>::getWidth() const {
+  return destWidth_;
+}
+
+/**
+ * @brief Gets the final output height.
+ */
+template <typename T_pixel>
+inline int Scoreboard<T_pixel>::getHeight() const {
+  return destHeight_;
+}
 
 } // namespace scoreboard
 } // namespace hm

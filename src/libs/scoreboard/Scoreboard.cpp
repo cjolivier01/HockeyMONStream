@@ -62,14 +62,16 @@ imageFormat convertCudaPixelToImageFormat(CudaPixelType pixelType) {
 /**
  * @brief Computes the Euclidean distance between two points.
  */
-float Scoreboard::pointDistance(const cv::Point2f& pt0, const cv::Point2f& pt1) {
+template <typename T_pixel>
+float Scoreboard<T_pixel>::pointDistance(const cv::Point2f& pt0, const cv::Point2f& pt1) {
   return cv::norm(pt0 - pt1);
 }
 
 /**
  * @brief Orders four points in clockwise order starting from the top-left.
  */
-std::vector<cv::Point2f> Scoreboard::orderPointsClockwise(const std::vector<cv::Point2f>& pts) {
+template <typename T_pixel>
+std::vector<cv::Point2f> Scoreboard<T_pixel>::orderPointsClockwise(const std::vector<cv::Point2f>& pts) {
   if (pts.size() != 4) {
     throw std::runtime_error("orderPointsClockwise: exactly 4 points are required.");
   }
@@ -101,7 +103,8 @@ std::vector<cv::Point2f> Scoreboard::orderPointsClockwise(const std::vector<cv::
 /**
  * @brief Constructs a Scoreboard object.
  */
-Scoreboard::Scoreboard(
+template <typename T_pixel>
+Scoreboard<T_pixel>::Scoreboard(
     const std::vector<cv::Point2f>& srcPts,
     int destWidth,
     int destHeight,
@@ -204,7 +207,8 @@ Scoreboard::Scoreboard(
 /**
  * @brief Applies the perspective warp transformation to the input image.
  */
-cv::Mat Scoreboard::forward_cv(const cv::Mat& inputImage) {
+template <typename T_pixel>
+cv::Mat Scoreboard<T_pixel>::forward_cv(const cv::Mat& inputImage) {
   // Extract the region of interest using the computed bounding box.
   cv::Mat srcImage = inputImage(bboxSrc_).clone();
 
@@ -225,13 +229,19 @@ cv::Mat Scoreboard::forward_cv(const cv::Mat& inputImage) {
   return finalImage;
 }
 
-cv::Mat Scoreboard::forward_cuda(const cv::Mat& inputImage) {
+template <typename T_pixel>
+cv::Mat Scoreboard<T_pixel>::forward_cuda(const cv::Mat& inputImage) {
   cudaError_t cuErr = cudaError_t::cudaSuccess;
+
   cuErr = cudaSetDevice(0);
   cudaStream_t stream;
   cuErr = cudaStreamCreate(&stream);
 
-  hm::CudaMat<uchar3> full_image(inputImage);
+  hm::CudaMat<T_pixel> full_image(inputImage);
+
+  if (!warped_image_scratch_buffer_) {
+    warped_image_scratch_buffer_ = std::make_unique<hm::CudaMat<T_pixel>>(/*B=*/1, destW_, destH_);
+  }
 
   cv::cuda::GpuMat gpu_mat(
       full_image.height(),
@@ -239,68 +249,38 @@ cv::Mat Scoreboard::forward_cuda(const cv::Mat& inputImage) {
       cudaPixelTypeToCvType(full_image.cuda_pixel_type()),
       full_image.data_raw());
 
-  //if (!warped_image_scratch_buffer_) {
-    hm::CudaMat<uchar3> warped_image(/*B=*/1, destW_, destH_);
-    cv::cuda::GpuMat cv_warped_image(warped_image.height(), warped_image.width(), cudaPixelTypeToCvType(warped_image.cuda_pixel_type()), warped_image.data_raw());
-    // warped_image_scratch_buffer_ =
-    //     std::make_unique<cv::cuda::GpuMat>(destW_, destH_, cudaPixelTypeToCvType(full_image.cuda_pixel_type()));
-  //}
-  warped_image_scratch_buffer_ = std::unique_ptr<cv::cuda::GpuMat>(&cv_warped_image);
+  cv::cuda::GpuMat cv_warped_image(
+      warped_image_scratch_buffer_->height(),
+      warped_image_scratch_buffer_->width(),
+      cudaPixelTypeToCvType(warped_image_scratch_buffer_->cuda_pixel_type()),
+      warped_image_scratch_buffer_->data_raw());
 
-  cv::cuda::warpPerspective(
-      gpu_mat, *warped_image_scratch_buffer_, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
+  cv::cuda::warpPerspective(gpu_mat, cv_warped_image, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
 
   cv::Mat showimg;
-  warped_image_scratch_buffer_->download(showimg);
+  cv_warped_image.download(showimg);
 
   cv::imshow("showimg", showimg);
   cv::waitKey(0);
 
-  size_t pitch = warped_image.pitch();
-  size_t cv_pitch = warped_image_scratch_buffer_->cols * warped_image_scratch_buffer_->elemSize();
-  assert(warped_image_scratch_buffer_->data == warped_image.data_raw());
+  // size_t pitch = warped_image.pitch();
+  // size_t cv_pitch = warped_image_scratch_buffer_->cols * warped_image_scratch_buffer_->elemSize();
+  // assert(warped_image_scratch_buffer_->data == warped_image.data_raw());
 
-  cuErr = cudaOverlayPitch(
-      warped_image.data_raw(),
-      warped_image.width(),
-      warped_image.height(),
-      warped_image.pitch(),
-      (uchar3*)full_image.data_raw(),
+  cuErr = cudaOverlayPitch<T_pixel>(
+      warped_image_scratch_buffer_->data(),
+      warped_image_scratch_buffer_->width(),
+      warped_image_scratch_buffer_->height(),
+      warped_image_scratch_buffer_->pitch(),
+      full_image.data(),
       full_image.width(),
       full_image.height(),
       full_image.pitch(),
-      convertCudaPixelToImageFormat(full_image.cuda_pixel_type()),
+      // convertCudaPixelToImageFormat(full_image.cuda_pixel_type()),
       /*x=*/0,
       /*y=*/0,
       stream);
 
-  // cuErr = cudaOverlayPitch<uchar3>(
-  //     (uchar3*)warped_image_scratch_buffer_->data,
-  //     warped_image_scratch_buffer_->cols,
-  //     warped_image_scratch_buffer_->rows,
-  //     /*pitch=*/warped_image_scratch_buffer_->cols * warped_image_scratch_buffer_->elemSize(),
-  //     (uchar3*)full_image.data_raw(),
-  //     full_image.width(),
-  //     full_image.height(),
-  //     full_image.pitch(),
-  //     //convertCudaPixelToImageFormat(full_image.cuda_pixel_type()),
-  //     /*x=*/0,
-  //     /*y=*/0,
-  //     stream);
-
-  // cuErr = cudaOverlayPitch(
-  //     warped_image_scratch_buffer_->data,
-  //     warped_image_scratch_buffer_->cols,
-  //     warped_image_scratch_buffer_->rows,
-  //     /*pitch=*/warped_image_scratch_buffer_->cols * warped_image_scratch_buffer_->elemSize(),
-  //     full_image.data_raw(),
-  //     full_image.width(),
-  //     full_image.height(),
-  //     full_image.pitch(),
-  //     convertCudaPixelToImageFormat(full_image.cuda_pixel_type()),
-  //     /*x=*/0,
-  //     /*y=*/0,
-  //     stream);
 
   SHOW_IMAGE(&full_image);
 
@@ -309,18 +289,8 @@ cv::Mat Scoreboard::forward_cuda(const cv::Mat& inputImage) {
   return full_image.download();
 }
 
-/**
- * @brief Gets the final output width.
- */
-int Scoreboard::getWidth() const {
-  return destWidth_;
-}
+template class Scoreboard<uchar3>;
+// template class Scoreboard<uchar4>;
 
-/**
- * @brief Gets the final output height.
- */
-int Scoreboard::getHeight() const {
-  return destHeight_;
-}
 } // namespace scoreboard
 } // namespace hm

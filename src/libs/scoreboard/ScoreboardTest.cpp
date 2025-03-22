@@ -43,7 +43,7 @@ int main(int argc, char** argv) {
   }
 
   // Create a Scoreboard instance with desired output dimensions.
-  hm::scoreboard::Scoreboard scoreboard(selected_points, 700, 300);
+  hm::scoreboard::Scoreboard<uchar3> scoreboard(selected_points, 700, 300);
 
   // Apply the perspective transformation.
   // cv::Mat warpedImage = scoreboard.forward_cv(image);
