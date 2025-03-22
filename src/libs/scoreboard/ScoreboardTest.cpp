@@ -1,4 +1,3 @@
-//#include "hstream/src/libs/scoreboard/Scoreboard2.h"
 #include "hstream/src/libs/scoreboard/Scoreboard.h"
 
 #include <opencv2/highgui.hpp>
@@ -45,7 +44,6 @@ int main(int argc, char** argv) {
 
   // Create a Scoreboard instance with desired output dimensions.
   hm::scoreboard::Scoreboard scoreboard(selected_points, 700, 300);
-  //sc2::Scoreboard scoreboard(selected_points, 700, 300);
 
   // Apply the perspective transformation.
   // cv::Mat warpedImage = scoreboard.forward_cv(image);
