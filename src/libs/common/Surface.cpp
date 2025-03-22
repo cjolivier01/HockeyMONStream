@@ -131,6 +131,7 @@ cudaError_t EglSurfaceMapper::map() {
   assert(!surface_->surfaceList[index_].mappedAddr.eglImage);
   auto nv_error = NvBufSurfaceMapEglImage(surface_, index_);
   if (nv_error != 0) {
+    // You may not have "DISPLAY" set in the environment
     std::cerr << "FAILED!!!" << std::endl;
     assert(false);
     return cudaSuccess;
