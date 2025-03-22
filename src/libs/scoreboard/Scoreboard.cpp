@@ -1,4 +1,5 @@
 #include "hstream/src/libs/scoreboard/Scoreboard.h"
+#include "hstream/src/libs/common/Status.h"
 
 #include "cupano/pano/cudaMat.h"
 #include "cupano/pano/showImage.h"
@@ -17,47 +18,6 @@
 
 namespace hm {
 namespace scoreboard {
-
-namespace {
-
-imageFormat convertCudaPixelToImageFormat(CudaPixelType pixelType) {
-  switch (pixelType) {
-    case CUDA_PIXEL_UCHAR1:
-      // Assume a single-channel 8-bit pixel represents grayscale.
-      return IMAGE_GRAY8;
-    case CUDA_PIXEL_UCHAR3:
-      // Default mapping for 3-channel unsigned char is RGB.
-      return IMAGE_RGB8;
-    case CUDA_PIXEL_UCHAR4:
-      return IMAGE_RGBA8;
-    case CUDA_PIXEL_FLOAT1:
-      // Single channel float is assumed grayscale.
-      return IMAGE_GRAY32F;
-    case CUDA_PIXEL_FLOAT3:
-      return IMAGE_RGB32F;
-    case CUDA_PIXEL_FLOAT4:
-      return IMAGE_RGBA32F;
-    // Unsupported or unmapped types.
-    case CUDA_PIXEL_USHORT1:
-    case CUDA_PIXEL_USHORT3:
-    case CUDA_PIXEL_USHORT4:
-    case CUDA_PIXEL_INT1:
-    case CUDA_PIXEL_INT3:
-    case CUDA_PIXEL_INT4:
-    case CUDA_PIXEL_HALF1:
-    case CUDA_PIXEL_HALF3:
-    case CUDA_PIXEL_HALF4:
-    case CUDA_PIXEL_BF16_1:
-    case CUDA_PIXEL_BF16_3:
-    case CUDA_PIXEL_BF16_4:
-    case CUDA_PIXEL_UNKNOWN:
-    default:
-      assert(false);
-      return IMAGE_UNKNOWN;
-  }
-}
-
-} // namespace
 
 /**
  * @brief Computes the Euclidean distance between two points.
@@ -192,16 +152,7 @@ Scoreboard<T_pixel>::Scoreboard(
   dstPts.push_back(cv::Point2f(0, destHeight_ - 1)); // bottom-left
 
   // Compute the perspective transform matrix.
-  // perspectiveMatrix_ = cv::getPerspectiveTransform(srcPts_, dstPts);
   perspectiveMatrix_ = cv::getPerspectiveTransform(srcPts, dstPts);
-  // assert(perspectiveMatrix_.cols == 3);
-  // assert(perspectiveMatrix_.rows == 3);
-  // for (size_t i = 0; i < 3; ++i) {
-  //   for (size_t j = 0; j < 3; ++j) {
-  //     fperspectiveMatrix_[i][j] = perspectiveMatrix_.at<float>(i, j);
-  //     dperspectiveMatrix_[i][j] = perspectiveMatrix_.at<float>(i, j);
-  //   }
-  // }
 }
 
 /**
@@ -230,12 +181,65 @@ cv::Mat Scoreboard<T_pixel>::forward_cv(const cv::Mat& inputImage) {
 }
 
 template <typename T_pixel>
-cv::Mat Scoreboard<T_pixel>::forward_cuda(const cv::Mat& inputImage) {
-  cudaError_t cuErr = cudaError_t::cudaSuccess;
+absl::Status Scoreboard<T_pixel>::forward_prod(const surface::Surface surface, cudaStream_t stream) {
+  assert(surface.bytes_per_pixel() == sizeof(T_pixel));
+  assert(surface.pitch() % surface.bytes_per_pixel() == 0);
+  hm::CudaMat<T_pixel> full_image(
+      SurfaceInfo{
+          .width = (int)surface.width(),
+          .height = (int)surface.height(),
+          .pitch = (int)surface.pitch(),
+          .data_ptr = surface.dataptr(),
+      },
+      /*B=*/1);
 
-  cuErr = cudaSetDevice(0);
+  if (!warped_image_scratch_buffer_) {
+    warped_image_scratch_buffer_ = std::make_unique<hm::CudaMat<T_pixel>>(/*B=*/1, destW_, destH_);
+  }
+
+  cv::cuda::GpuMat gpu_mat(
+      full_image.height(),
+      //full_image.width(),
+      surface.pitch_width(),
+      cudaPixelTypeToCvType(full_image.cuda_pixel_type()),
+      full_image.data_raw());
+
+  cv::cuda::GpuMat cv_warped_image(
+      warped_image_scratch_buffer_->height(),
+      warped_image_scratch_buffer_->width(),
+      cudaPixelTypeToCvType(warped_image_scratch_buffer_->cuda_pixel_type()),
+      warped_image_scratch_buffer_->data_raw());
+
+  cv::cuda::warpPerspective(gpu_mat, cv_warped_image, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
+
+  cv::Mat showimg;
+  cv_warped_image.download(showimg);
+
+  // cv::imshow("showimg", showimg);
+  // cv::waitKey(0);
+
+  XCUDA_RETURN_IF_ERROR(cudaOverlayPitch<T_pixel>(
+      warped_image_scratch_buffer_->data(),
+      warped_image_scratch_buffer_->width(),
+      warped_image_scratch_buffer_->height(),
+      warped_image_scratch_buffer_->pitch(),
+      full_image.data(),
+      full_image.width(),
+      full_image.height(),
+      full_image.pitch(),
+      /*x=*/0,
+      /*y=*/0,
+      stream));
+  return absl::OkStatus();
+}
+
+template <typename T_pixel>
+cv::Mat Scoreboard<T_pixel>::forward_cuda(const cv::Mat& inputImage) {
+  cudaError_t cuErr = cudaSetDevice(0);
+  (void)cuErr;
   cudaStream_t stream;
   cuErr = cudaStreamCreate(&stream);
+  (void)cuErr;
 
   hm::CudaMat<T_pixel> full_image(inputImage);
 
@@ -260,12 +264,8 @@ cv::Mat Scoreboard<T_pixel>::forward_cuda(const cv::Mat& inputImage) {
   cv::Mat showimg;
   cv_warped_image.download(showimg);
 
-  cv::imshow("showimg", showimg);
-  cv::waitKey(0);
-
-  // size_t pitch = warped_image.pitch();
-  // size_t cv_pitch = warped_image_scratch_buffer_->cols * warped_image_scratch_buffer_->elemSize();
-  // assert(warped_image_scratch_buffer_->data == warped_image.data_raw());
+  // cv::imshow("showimg", showimg);
+  // cv::waitKey(0);
 
   cuErr = cudaOverlayPitch<T_pixel>(
       warped_image_scratch_buffer_->data(),
@@ -276,21 +276,19 @@ cv::Mat Scoreboard<T_pixel>::forward_cuda(const cv::Mat& inputImage) {
       full_image.width(),
       full_image.height(),
       full_image.pitch(),
-      // convertCudaPixelToImageFormat(full_image.cuda_pixel_type()),
       /*x=*/0,
       /*y=*/0,
       stream);
-
+  (void)cuErr;
 
   SHOW_IMAGE(&full_image);
 
   cudaStreamDestroy(stream);
-  // return finalImage;
   return full_image.download();
 }
 
 template class Scoreboard<uchar3>;
-// template class Scoreboard<uchar4>;
+template class Scoreboard<uchar4>;
 
 } // namespace scoreboard
 } // namespace hm

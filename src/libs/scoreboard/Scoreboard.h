@@ -1,10 +1,13 @@
 #pragma once
 
+#include "hstream/src/libs/common/Surface.h"
 #include "cupano/pano/cudaMat.h"
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/cudawarping.hpp>
+
+#include "absl/status/status.h"
 
 #include <memory>
 #include <vector>
@@ -48,6 +51,7 @@ class Scoreboard {
    */
   cv::Mat forward_cv(const cv::Mat& inputImage);
   cv::Mat forward_cuda(const cv::Mat& inputImage);
+  absl::Status forward_prod(const surface::Surface surface, cudaStream_t stream);
 
   /**
    * @brief Gets the final output width.
