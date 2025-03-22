@@ -152,7 +152,7 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
           cv::Point2f(std::atof(points[index].c_str()), std::atof(points.at(index + 1).c_str())));
     }
     assert(scoreboard_perspective_polygion_.size() == 4);
-    scoreboard_ = std::make_unique<hm::scoreboard::Scoreboard<uchar4>>(scoreboard_perspective_polygion_, 700, 300);
+    // scoreboard_ = std::make_unique<hm::scoreboard::Scoreboard<uchar4>>(scoreboard_perspective_polygion_, 700, 300);
   }
   return true;
 }
@@ -328,6 +328,10 @@ absl::Status PlayCropperPriv::GenerateOutput(
     }
 
     // Scoreboard
+    if (!scoreboard_ && !scoreboard_perspective_polygion_.empty()) {
+      scoreboard_ = std::make_unique<hm::scoreboard::Scoreboard<uchar4>>(
+          scoreboard_perspective_polygion_, outgoing_surface.width() / 8, outgoing_surface.height() / 8);
+    }
     if (scoreboard_) {
       // const bool rewarp = frame_count_ % scoreboard_warp_interval_ == 0;
       bool rewarp = true;
