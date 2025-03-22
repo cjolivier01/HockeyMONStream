@@ -9,6 +9,8 @@
 #include "hstream/src/libs/draw_display/Fonts.h"
 #include "nvdsmeta.h"
 
+#include "absl/strings/str_split.h"
+
 #include <cmath>
 #include <vector>
 
@@ -20,6 +22,7 @@
 #include <gst/gst.h>
 #include <gst/video/video.h>
 #include <npp.h>
+#include <opencv4/opencv2/core/types.hpp>
 #include <string.h>
 #include <unistd.h>
 
@@ -138,8 +141,18 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
       std::cerr << "Invalid render scale: " << render_scale_ << std::endl;
       return false;
     }
-  } else if (prop.key == "rink.scoreboard.perspective-polygon") {
-    std::cout << "GOT rink.scoreboard.perspective-polygon!" << std::endl;
+  } else if (prop.key == "scoreboard-perspective-polygon") {
+    std::cout << "GOT scoreboard-perspective-polygon!" << std::endl;
+    scoreboard_perspective_polygion_.clear();
+    std::vector<std::string> points = absl::StrSplit(prop.value, ',');
+    assert(points.size() == 8);
+    for (size_t i = 0, n = points.size() >> 1; i < n; ++i) {
+      const size_t index = i << 1;
+      scoreboard_perspective_polygion_.emplace_back(
+          cv::Point2f(std::atof(points[index].c_str()), std::atof(points.at(index + 1).c_str())));
+    }
+    assert(scoreboard_perspective_polygion_.size() == 4);
+    scoreboard_ = std::make_unique<hm::scoreboard::Scoreboard<uchar4>>(scoreboard_perspective_polygion_, 700, 300);
   }
   return true;
 }
@@ -316,7 +329,8 @@ absl::Status PlayCropperPriv::GenerateOutput(
 
     // Scoreboard
     if (scoreboard_) {
-      const bool rewarp = frame_count_ % scoreboard_warp_interval_ == 0;
+      // const bool rewarp = frame_count_ % scoreboard_warp_interval_ == 0;
+      bool rewarp = true;
       HM_RETURN_IF_ERROR(scoreboard_->forward_prod(incoming_surface, outgoing_surface, rewarp, cuda_stream_));
     }
 

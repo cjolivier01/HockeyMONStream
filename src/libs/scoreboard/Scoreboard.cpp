@@ -219,12 +219,12 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
         warped_image_->data_raw());
 
     cv::cuda::warpPerspective(gpu_mat, cv_warped_image, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
-  }
 
-  // cv::Mat showimg;
-  // cv_warped_image.download(showimg);
-  // cv::imshow("showimg", showimg);
-  // cv::waitKey(0);
+    // cv::Mat showimg;
+    // cv_warped_image.download(showimg);
+    // cv::imshow("showimg", showimg);
+    // cv::waitKey(0);
+  }
 
   assert(dest_surface.bytes_per_pixel() == sizeof(T_pixel));
 
@@ -240,6 +240,7 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
       /*x=*/0,
       /*y=*/0,
       stream));
+  // SHOW_IMAGE(&hm::cudaMat<uchar4>(dest_surface));
   return absl::OkStatus();
 }
 

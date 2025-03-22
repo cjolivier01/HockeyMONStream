@@ -38,6 +38,7 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   // float render_scale_{1.0};
   std::unique_ptr<hm::CudaMat<uchar4>> display_surface_;
   std::unique_ptr<hm::scoreboard::Scoreboard<uchar4>> scoreboard_;
+  std::vector<cv::Point2f> scoreboard_perspective_polygion_;
   size_t scoreboard_warp_interval_{3};
   NvBufSurfaceParams display_dest_params_;
 };

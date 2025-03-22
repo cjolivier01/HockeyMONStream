@@ -511,7 +511,7 @@ absl::Status Configurator::complete_configuration(bool force) {
         ss << std::to_string(points[i].at(0)) << ',' << points[i].at(1);
       }
       // std::cout << ss.str() << std::endl;
-      pipeline["hmplaycropper"]["rink.scoreboard.perspective-polygon"] = ss.str();
+      pipeline["hmplaycropper"]["scoreboard-perspective-polygon"] = ss.str();
     }
   }
 

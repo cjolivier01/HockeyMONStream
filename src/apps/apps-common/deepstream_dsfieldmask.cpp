@@ -645,7 +645,7 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
           &config->scoreboard_perspective_polygon[0],
           &config->scoreboard_perspective_polygon[poly_int_count],
           [](const auto& i) { return i != 0; }) != 0) {
-    ppc << ";rink.scoreboard.perspective-polygon=";
+    ppc << ";scoreboard-perspective-polygon=";
     for (size_t i = 0, n = poly_int_count >> 1; i < n; ++i) {
       const size_t index = i << 1;
       if (i) {
