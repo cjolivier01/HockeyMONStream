@@ -6,6 +6,9 @@
 #include <cmath>
 #include <stdexcept>
 
+namespace hm {
+namespace scoreboard {
+
 /**
  * @brief Computes the Euclidean distance between two points.
  */
@@ -176,3 +179,5 @@ int Scoreboard::getWidth() const {
 int Scoreboard::getHeight() const {
   return destHeight_;
 }
+} // namespace scoreboard
+} // namespace hm

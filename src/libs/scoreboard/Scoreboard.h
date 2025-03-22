@@ -1,9 +1,11 @@
-#ifndef SCOREBOARD_H
-#define SCOREBOARD_H
+#pragma once
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <vector>
+
+namespace hm {
+namespace scoreboard {
 
 /**
  * @brief A class for applying perspective transforms to scoreboard images.
@@ -83,4 +85,5 @@ class Scoreboard {
   cv::Mat perspectiveMatrix_; ///< Perspective transformation matrix.
 };
 
-#endif // SCOREBOARD_H
+} // namespace scoreboard
+} // namespace hm
