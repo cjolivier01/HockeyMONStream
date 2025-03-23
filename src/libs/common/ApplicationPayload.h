@@ -40,20 +40,6 @@ enum HmPayloadType : long {
   HM_PAYLOAD_TYPE_PLAY_TRACKER = NVDS_START_USER_META + 8192,
 };
 
-class PlayTrackerPayload : public UserApplicationPayload {
- public:
-  int PayloadSubType() const override {
-    return HM_PAYLOAD_TYPE_PLAY_TRACKER;
-  }
-
- protected:
-  virtual UserApplicationPayload* CreateCopy() const {
-    return new PlayTrackerPayload(*this);
-  }
-
- private:
-};
-
 template <typename T, typename... Args>
 inline NVDS_CUSTOM_PAYLOAD* create(Args&&... args) {
   NVDS_CUSTOM_PAYLOAD* dst_user_metadata = (NVDS_CUSTOM_PAYLOAD*)g_malloc0(sizeof(struct _NVDS_CUSTOM_PAYLOAD));

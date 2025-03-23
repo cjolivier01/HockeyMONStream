@@ -1,4 +1,5 @@
 #include "playtracker.h"
+#include "playtracker_payload.h"
 
 #include <absl/status/status.h>
 #include <cuda_runtime.h>
@@ -9,7 +10,6 @@
 #include <cmath>
 #include "deepstream/sources/includes/nvbufsurface.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
-#include "hstream/src/libs/common/ApplicationPayload.h"
 #include "nvdsmeta.h"
 
 #include <assert.h>
