@@ -7,8 +7,8 @@ namespace playtracker {
 
 class PlayTrackerPayload : public UserApplicationPayload {
  public:
-  int PayloadSubType() const override {
-    return HM_PAYLOAD_TYPE_PLAY_TRACKER;
+  static HmPayloadType PayloadSubType() { 
+    return HmPayloadType::HM_PAYLOAD_TYPE_PLAY_TRACKER;
   }
 
   UserApplicationPayload* CreateCopy() const override {

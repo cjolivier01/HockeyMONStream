@@ -8,11 +8,16 @@
 
 namespace hm {
 
+enum HmPayloadType : long {
+  HM_PAYLOAD_TYPE_PLAY_TRACKER = NVDS_START_USER_META + 8192,
+};
+
 struct UserApplicationPayload {
   virtual ~UserApplicationPayload() = default;
 
   virtual UserApplicationPayload* CreateCopy() const = 0;
-  virtual int PayloadSubType() const = 0;
+
+  void add_to_frame(NVDS_CUSTOM_PAYLOAD* custom_payload, NvDsFrameMeta* frame_meta);
 
   template <typename T, typename... Args>
   static NVDS_CUSTOM_PAYLOAD* create(Args&&... args);
@@ -25,8 +30,6 @@ struct UserApplicationPayload {
   /* release function set by user. "data" holds a pointer to NvDsUserMeta*/
   static void release_user_meta(gpointer data, gpointer user_data);
 
-  void add_to_frame(NVDS_CUSTOM_PAYLOAD* custom_payload, NvDsFrameMeta* frame_meta);
-
  protected:
   virtual const char* PayloadTypeName() const;
 
@@ -34,10 +37,6 @@ struct UserApplicationPayload {
 
  private:
   std::optional<NvDsMetaType> meta_type_;
-};
-
-enum HmPayloadType : long {
-  HM_PAYLOAD_TYPE_PLAY_TRACKER = NVDS_START_USER_META + 8192,
 };
 
 template <typename T, typename... Args>
@@ -59,7 +58,7 @@ inline T* UserApplicationPayload::create_and_add(NvDsFrameMeta* frame_meta, Args
   auto payload = new T(std::forward<Args>(args)...);
   // Makes sure it's a derivative
   static_assert(std::is_base_of<UserApplicationPayload, T>::value);
-  dst_user_metadata->payloadType = payload->PayloadSubType();
+  dst_user_metadata->payloadType = T::PayloadSubType();
   // Nonya business
   dst_user_metadata->payloadSize = sizeof(T);
   dst_user_metadata->payload = (uint8_t*)payload;
