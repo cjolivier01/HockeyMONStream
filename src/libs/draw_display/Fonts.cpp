@@ -377,6 +377,7 @@ class FontImpl : public Font {
       int dest_x,
       int dest_y,
       const uchar4& textColor,
+      const uchar4& bgColor,
       cudaStream_t stream) override {
     HM_RETURN_IF_ERROR(maybe_load());
     if (jetson_font_) {
@@ -386,11 +387,11 @@ class FontImpl : public Font {
           imgWidth,
           imgHeight,
           pitch,
-          text,
+          text.c_str(),
           dest_x,
           dest_y,
           make_float4(textColor.x, textColor.y, textColor.z, textColor.w),
-          make_float4(0, 0, 0, 0),
+          make_float4(bgColor.x, bgColor.y, bgColor.z, bgColor.w),
           /*backgroundPadding=*/5,
           stream);
       if (!rc) {

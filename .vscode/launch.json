@@ -114,7 +114,7 @@
       },
       "debuggerPath": "/usr/local/cuda/bin/cuda-gdb",
       "program": "${workspaceFolder}/bazel-bin/src/apps/pipeline-app/pipeline-app",
-      "args": "-c ${workspaceFolder}/configs/ds_hockey_app_config.yaml -g mylive",
+      "args": "-c ${workspaceFolder}/configs/ds_hockey_app_config.yaml -g ev-cougars-2 --enable-sources=URI-MULTIPLE --enable-sinks=RENDER",
       "initCommands": [
         "directory ${workspaceFolder}",
       ],

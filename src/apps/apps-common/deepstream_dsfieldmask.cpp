@@ -656,6 +656,9 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
     }
   }
   ppc << ";show-scoreboard=" << config->show_scoreboard;
+  ppc << ";plot-play-tracking=" << config->plot_play_tracking;
+  ppc << ";plot-player-tracking=" << config->plot_player_tracking;
+
   g_object_set(G_OBJECT(bin->playcropper), "plugin-private-config", ppc.str().c_str(), NULL);
 
 #if 0

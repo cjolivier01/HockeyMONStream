@@ -278,6 +278,8 @@ absl::Status draw_display_meta(
     std::shared_ptr<Font> font;
     HM_ASSIGN_OR_RETURN(font, font_cache->get_or_create_font(text.font_params.font_name, text.font_params.font_size));
     std::pair<int, int> newpos;
+    uchar4 text_color = scale_and_clamp_color(text.font_params.font_color);
+    uchar4 bg_color = text.set_bg_clr ? scale_and_clamp_color(text.text_bg_clr) : uchar4{0,0,0,0};
     HM_ASSIGN_OR_RETURN(
         newpos,
         font->draw(
@@ -289,11 +291,8 @@ absl::Status draw_display_meta(
             surface.pitch(),
             text.x_offset,
             text.y_offset,
-            uchar4{
-                (uint8_t)text.font_params.font_color.red,
-                (uint8_t)text.font_params.font_color.green,
-                (uint8_t)text.font_params.font_color.blue,
-                (uint8_t)text.font_params.font_color.alpha},
+            text_color,
+            bg_color,
             stream));
     (void)newpos;
   }
@@ -317,6 +316,7 @@ absl::Status draw_object_meta(
   rparams.border_color.red = clr.x;
   rparams.border_color.green = clr.y;
   rparams.border_color.blue = clr.z;
+
   // It can keep its alpha
   rect_params = &rparams;
 
@@ -325,13 +325,14 @@ absl::Status draw_object_meta(
 
   if (*object_meta->obj_label) {
     const NvOSD_TextParams& text = object_meta->text_params;
-    float adapted_font_size = adaptFontSize(surface.width()) / 10.0;
+    float adapted_font_size = adaptFontSize(surface.width()) / 10.0 * scale;
     std::shared_ptr<Font> font;
     HM_ASSIGN_OR_RETURN(
         font,
         font_cache->get_or_create_font(text.font_params.font_name, text.font_params.font_size * adapted_font_size));
     std::pair<int, int> newpos;
     uchar4 text_color = scale_and_clamp_color(text.font_params.font_color);
+    uchar4 bg_color = text.set_bg_clr ? scale_and_clamp_color(text.text_bg_clr) : uchar4{0,0,0,0};
     HM_ASSIGN_OR_RETURN(
         newpos,
         font->draw(
@@ -341,9 +342,10 @@ absl::Status draw_object_meta(
             surface.width(),
             surface.height(),
             surface.pitch(),
-            text.x_offset,
-            text.y_offset,
+            scale * text.x_offset,
+            scale * text.y_offset,
             text_color,
+            bg_color,
             stream));
     (void)newpos;
   }

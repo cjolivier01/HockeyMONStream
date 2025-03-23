@@ -145,6 +145,10 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     assert(scoreboard_perspective_polygion_.size() == 4);
   } else if (prop.key == "show-scoreboard") {
     show_scoreboard_ = !!std::atoi(prop.value.c_str());
+  } else if (prop.key == "plot-play-tracking") {
+    plot_play_tracking_ = !!std::atoi(prop.value.c_str());
+  } else if (prop.key == "plot-player-tracking") {
+    plot_player_tracking_ = !!std::atoi(prop.value.c_str());
   }
   return true;
 }
@@ -286,8 +290,8 @@ absl::Status PlayCropperPriv::GenerateOutput(
           nppStreamContext));
     } else {
       // assert(false);
-    // Fall back to original implementation for unsupported formats
-    // fallback:
+      // Fall back to original implementation for unsupported formats
+      // fallback:
       std::cout << "playcropper no fallback" << std::endl;
       // TODO: Make the fallback work again
 #if 0
@@ -379,20 +383,24 @@ absl::Status PlayCropperPriv::RenderDisplayMeta(
       hm::BBox(0, 0, display_dest_params_.width, display_dest_params_.height),
       nppStreamContext)));
 
-  NvDisplayMetaList* dm_list = frame_meta->display_meta_list;
-  while (dm_list) {
-    NvDsDisplayMeta* display_meta = (NvDsDisplayMeta*)dm_list->data;
-    HM_RETURN_IF_ERROR(draw_display_meta(&display_dest_params_, display_meta, font_cache_, render_scale_, stream));
-    dm_list = dm_list->next;
+  if (plot_play_tracking_) {
+    NvDisplayMetaList* dm_list = frame_meta->display_meta_list;
+    while (dm_list) {
+      NvDsDisplayMeta* display_meta = (NvDsDisplayMeta*)dm_list->data;
+      HM_RETURN_IF_ERROR(draw_display_meta(&display_dest_params_, display_meta, font_cache_, render_scale_, stream));
+      dm_list = dm_list->next;
+    }
   }
 
-  for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
-    NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
-    if (obj_meta->object_id == UNTRACKED_OBJECT_ID) {
-      // Don't draw untracked objects
-      continue;
+  if (plot_player_tracking_) {
+    for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
+      NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
+      if (obj_meta->object_id == UNTRACKED_OBJECT_ID) {
+        // Don't draw untracked objects
+        continue;
+      }
+      HM_RETURN_IF_ERROR(draw_object_meta(&display_dest_params_, obj_meta, font_cache_, render_scale_, stream));
     }
-    HM_RETURN_IF_ERROR(draw_object_meta(&display_dest_params_, obj_meta, font_cache_, render_scale_, stream));
   }
   return absl::OkStatus();
 }

@@ -56,6 +56,7 @@ struct Font {
       int dest_x,
       int dest_y,
       const uchar4& textColor,
+      const uchar4& bgColor,
       cudaStream_t stream) = 0;
 
 };

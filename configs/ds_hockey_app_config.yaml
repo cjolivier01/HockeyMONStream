@@ -406,7 +406,8 @@ hmplaycropper:
   gpu-id: 0
   nvbuf-memory-type: 0
   # plot-detections: 1
-  # plot-tracking: 1
+  plot-play-tracking: 1
+  plot-player-tracking: 1
   show: 1
   show-scoreboard: 1
   plugin-type: playcropper

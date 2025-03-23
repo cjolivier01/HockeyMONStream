@@ -44,6 +44,8 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   std::vector<cv::Point2f> scoreboard_perspective_polygion_;
   size_t scoreboard_warp_interval_{3};
   NvBufSurfaceParams display_dest_params_;
+  bool plot_play_tracking_;
+  bool plot_player_tracking_;
 };
 
 } // namespace playcropper
