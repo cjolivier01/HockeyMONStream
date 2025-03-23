@@ -36,6 +36,7 @@ cc_library(
   include_prefix=INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    ":utils",
     "@gtk3",
     "@gstreamer",
   ],

@@ -1,4 +1,5 @@
 #include "hstream/src/libs/common/ModPipeline.h"
+#include "hstream/src/libs/common/pipeline_utils.h"
 
 #include <glib-object.h>
 #include <gst/gst.h>
@@ -37,6 +38,26 @@ static GtkWidget* element_tree_view = nullptr;
 static GtkWidget* property_tree_view = nullptr;
 // static GstElement* g_pipeline = nullptr;
 
+
+void listElementsInBin(GstBin *bin) {
+    // Get an iterator for the elements in the bin
+    GstIterator *it = gst_bin_iterate_elements(bin);
+    GValue value = G_VALUE_INIT;
+    GstElement *elem = nullptr;
+
+    // Iterate over each element in the bin
+    while (gst_iterator_next(it, &value) == GST_ITERATOR_OK) {
+        elem = GST_ELEMENT(g_value_get_object(&value));
+        if (elem) {
+            g_print("Element: %s\n", GST_ELEMENT_NAME(elem));
+        }
+        // Reset the GValue for the next iteration
+        g_value_reset(&value);
+    }
+    // Free the iterator once done
+    gst_iterator_free(it);
+}
+
 // Recursively traverse the element tree, accumulating a map from
 // a dot-separated name (e.g. "my_pipeline.mybin.myelement") to the GstElement pointer.
 std::map<std::string, GstElement*> get_element_tree(GstElement* element, const std::string& prefix = "") {
@@ -53,55 +74,26 @@ std::map<std::string, GstElement*> get_element_tree(GstElement* element, const s
 
   // If the element is a bin, iterate its children.
   if (GST_IS_BIN(element)) {
+    listElementsInBin(GST_BIN(element));
+    // hm::save_dot_file(element, GST_DEBUG_GRAPH_SHOW_ALL, "mod_pipeline");
+
     GstIterator* it = gst_bin_iterate_elements(GST_BIN(element));
     if (it) {
-      GValue item = G_VALUE_INIT;
-      g_value_init(&item, G_TYPE_OBJECT);
-
-      while (gst_iterator_next(it, &item) == GST_ITERATOR_OK) {
-        GstElement* child = GST_ELEMENT(g_value_get_object(&item));
+      GValue value = G_VALUE_INIT;
+      while (gst_iterator_next(it, &value) == GST_ITERATOR_OK) {
+        GstElement* child = GST_ELEMENT(g_value_get_object(&value));
         if (child) {
           // Recursively get the child tree and merge it into our map.
           std::map<std::string, GstElement*> child_map = get_element_tree(child, full_name);
           result.insert(child_map.begin(), child_map.end());
         }
-        g_value_reset(&item);
+        g_value_reset(&value);
       }
       gst_iterator_free(it);
     }
   }
   return result;
 }
-
-// GList* my_gst_bin_get_children(GstBin* bin) {
-//   GList* children = nullptr;
-
-//   // Get an iterator for all elements in the bin.
-//   GstIterator* it = gst_bin_iterate_elements(bin);
-//   if (!it) {
-//     return nullptr;
-//   }
-
-//   // Prepare a GValue to hold each element.
-//   GValue item = G_VALUE_INIT;
-//   g_value_init(&item, G_TYPE_OBJECT);
-
-//   // Iterate through the elements.
-//   while (gst_iterator_next(it, &item) == GST_ITERATOR_OK) {
-//     // Retrieve the element from the GValue.
-//     GstElement* element = GST_ELEMENT(g_value_get_object(&item));
-//     if (element) {
-//       // Prepend the element to our list.
-//       children = g_list_prepend(children, element);
-//     }
-//     g_value_reset(&item);
-//   }
-//   gst_iterator_free(it);
-
-//   // Reverse the list so that the order is the same as the iterator order.
-//   children = g_list_reverse(children);
-//   return children;
-// }
 
 /* Helper function: Convert a GValue to a std::string using GST’s serializer */
 std::string value_to_string(const GValue* value) {
@@ -257,6 +249,7 @@ static void on_property_row_activated(
 
 std::unique_ptr<std::thread> edit_pipeline(GstObject* pipeline) {
   auto gui_thread = std::make_unique<std::thread>([g_pipeline = pipeline]() {
+    GstReferencedObject<GstElement*> ref_pipeline(GST_ELEMENT(g_pipeline));
     int argc = 1;
     char *argv[] = {(char *)"program", nullptr};
     gtk_init(&argc, (char ***)&argv);
