@@ -35,6 +35,7 @@ struct DsPlayTrackerCtx {
   };
   // source_id -> play_tracker
   std::unordered_map<size_t, PlayTracker> play_trackers;
+  hm::BBox arena_box;
 };
 
 namespace gst_hm_playtracker {
@@ -384,25 +385,25 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
 
   hm::play_tracker::PlayTracker* play_tracker{nullptr};
   if (!gst_hm_playtracker::has_play_tracker(ctx, frame.frame_meta->source_id)) {
-    hm::BBox arena_box(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
+    ctx->arena_box = hm::BBox(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
     const hm::fieldmask::FieldMaskPayload* fieldmask_payload =
         hm::fieldmask::FieldMaskPayload::get_payload<hm::fieldmask::FieldMaskPayload>(frame.frame_meta);
     if (fieldmask_payload) {
       const cv::Rect2i& field_box = fieldmask_payload->field_box();
-      float  horizontal_expand_ratio = 0.04;
+      float horizontal_expand_ratio = 0.04;
       float horizontal_padding = horizontal_expand_ratio * field_box.width;
       float new_left = field_box.x - horizontal_padding;
-      if (new_left < arena_box.left) {
-        new_left = arena_box.left;
+      if (new_left < ctx->arena_box.left) {
+        new_left = ctx->arena_box.left;
       }
       float new_right = (field_box.x + field_box.width) + horizontal_padding;
-      if (new_right > arena_box.right) {
-        new_right = arena_box.right;
+      if (new_right > ctx->arena_box.right) {
+        new_right = ctx->arena_box.right;
       }
       // Inflate and only apply left and right
-      arena_box = hm::BBox(new_left, arena_box.top, new_right, arena_box.bottom);
+      ctx->arena_box = hm::BBox(new_left, ctx->arena_box.top, new_right, ctx->arena_box.bottom);
     }
-    play_tracker = gst_hm_playtracker::get_or_create_play_tracker(ctx, frame.frame_meta->source_id, arena_box);
+    play_tracker = gst_hm_playtracker::get_or_create_play_tracker(ctx, frame.frame_meta->source_id, ctx->arena_box);
   } else {
     play_tracker = gst_hm_playtracker::get_play_tracker(ctx, frame.frame_meta->source_id);
   }
@@ -445,6 +446,12 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
   frame.play_tracker_results = play_tracker->forward(tracking_ids, tracking_boxes);
   if (ctx->initParams.draw) {
     hm::utils::PlotContext plotter(frame.frame_meta, "");
+    // Plot any nontrivial arena box
+    if (ctx->arena_box.left > 0 || ctx->arena_box.top > 0 ||
+        ctx->arena_box.width() < frame.frame_meta->source_frame_width ||
+        ctx->arena_box.height() < frame.frame_meta->source_frame_height) {
+      plotter.plot_rect(ctx->arena_box, 2, hm::utils::ColorRGBA{255, 64, 64, 255});
+    }
     for (const auto& cluster_item : frame.play_tracker_results.cluster_boxes) {
       plotter.plot_rect(
           cluster_item.second.make_canvas_scaled(1.0 / scale_x, 1.0 / scale_y),
