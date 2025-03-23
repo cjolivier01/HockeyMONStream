@@ -49,4 +49,40 @@ std::tuple<size_t, size_t> resize_to_fit(size_t origWidth, size_t origHeight, si
   return {newWidth, newHeight};
 }
 
+uint64_t hhmmss_to_nanoseconds(const std::string& hhmmss_string) {
+  std::vector<std::string> tokens;
+  size_t start = 0;
+  size_t pos = 0;
+
+  // Split the string by colon.
+  while ((pos = hhmmss_string.find(':', start)) != std::string::npos) {
+    tokens.push_back(hhmmss_string.substr(start, pos - start));
+    start = pos + 1;
+  }
+  tokens.push_back(hhmmss_string.substr(start));
+
+  double seconds = 0.0;
+  if (tokens.size() == 3) {
+    // Format: HH:MM:SS.ssss
+    double hours = std::stod(tokens[0]);
+    double minutes = std::stod(tokens[1]);
+    double secs = std::stod(tokens[2]);
+    seconds = hours * 3600.0 + minutes * 60.0 + secs;
+  } else if (tokens.size() == 2) {
+    // Format: MM:SS.ssss
+    double minutes = std::stod(tokens[0]);
+    double secs = std::stod(tokens[1]);
+    seconds = minutes * 60.0 + secs;
+  } else if (tokens.size() == 1) {
+    // Format: SS.ssss (or just seconds)
+    seconds = std::stod(tokens[0]);
+  } else {
+    throw std::invalid_argument("Invalid time string format: " + hhmmss_string);
+  }
+
+  // Convert seconds to nanoseconds.
+  uint64_t nanoseconds = static_cast<uint64_t>(seconds * 1e9);
+  return nanoseconds;
+}
+
 } // namespace hm

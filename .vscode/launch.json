@@ -80,6 +80,7 @@
         "--enable-sources=URI-MULTIPLE",
         "--enable-sinks=RENDER",
         //"--enable-sinks=FAKE",
+        "--start-time=00:05:32.23",
       ],
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}",

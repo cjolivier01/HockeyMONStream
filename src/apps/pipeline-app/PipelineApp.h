@@ -149,6 +149,7 @@ class PipelineApplication {
   guint rrow_, rcol_, rcfg_;
   gboolean rrowsel_, selecting_;
   std::unique_ptr<std::thread> editor_thread_;
+  uint64_t start_time_ns_{0};
   static constexpr const char* configure_stitching_config_file_name_ = "ds_hockey_configure_stitching.yaml";
   static PipelineApplication* instance_;
 };

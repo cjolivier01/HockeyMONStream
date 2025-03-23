@@ -490,6 +490,7 @@ absl::StatusOr<std::vector<std::set<E_TYPE>>> parse_types(
 absl::Status PipelineApplication::run(int argc, char* argv[]) {
   absl::Status status = absl::OkStatus();
   GError* error = nullptr;
+  char *start_time{nullptr};
 
   CleanupStack global_cleanup_stack;
   char** pipline_options{nullptr};
@@ -514,9 +515,10 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
       {"pipeline-option", 'p', 0, G_OPTION_ARG_FILENAME_ARRAY, &pipline_options, "Set pipeline option(s)", nullptr},
       {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &cfg_files_, "Set the config file", nullptr},
       {"enable-sources", 'e', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sources_, "Enable Sources", nullptr},
-      {"enable-sinks", 'e', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sinks_, "Enable Sinks", nullptr},
+      {"enable-sinks", 'k', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sinks_, "Enable Sinks", nullptr},
       {"game-id", 'g', 0, G_OPTION_ARG_FILENAME_ARRAY, &game_id_, "Game ID", nullptr},
       {"force-reconfigure", 'f', 0, G_OPTION_ARG_NONE, &force_reconfigure_, "Force reconfigure", nullptr},
+      {"start-time", 's', 0, G_OPTION_ARG_STRING, &start_time, "Start time", nullptr},
       {"input-uri",
        'i',
        0,
@@ -562,6 +564,12 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     nvds_version_print();
     nvds_dependencies_version_print();
     return status;
+  }
+
+
+  if (start_time) {
+    start_time_ns_ = hm::hhmmss_to_nanoseconds(start_time);
+    g_free(start_time);
   }
 
   if (input_uris_) {
