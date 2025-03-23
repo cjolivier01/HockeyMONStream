@@ -14,8 +14,8 @@
 #include "gstdsfieldmask.h"
 
 // #include "gst-nvquery.h"
-#include "gstnvdsmeta.h"
 #include "deepstream/sources/includes/nvbufsurface.h"
+#include "gstnvdsmeta.h"
 // #include "nvbufsurftransform.h"
 
 #include <glib-2.0/glib.h>
@@ -26,7 +26,6 @@
 #include <string>
 
 namespace fs = std::filesystem;
-
 
 namespace {
 GST_DEBUG_CATEGORY_STATIC(gst_dsfieldmask_debug);
@@ -385,7 +384,11 @@ static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstB
       frame_meta->pipeline_width = params->width;
       frame_meta->pipeline_height = params->height;
     }
-    DsFieldMaskProcessFrame(surface, frame_index, frame_meta, dsfieldmask->dsfieldmasklib_ctx);
+    absl::Status status = DsFieldMaskProcessFrame(surface, frame_index, frame_meta, dsfieldmask->dsfieldmasklib_ctx);
+    if (!status.ok()) {
+      std::cerr << status << std::endl;
+      goto error;
+    }
   }
   flow_ret = GST_FLOW_OK;
 

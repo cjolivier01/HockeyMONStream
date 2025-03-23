@@ -29,5 +29,6 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
       "//src/libs/common:utils",
+      "@hm//hockeymom/csrc/play_tracker:play_tracker",
     ],
 )
