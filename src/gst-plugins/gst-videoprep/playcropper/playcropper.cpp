@@ -143,7 +143,6 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
           cv::Point2f(std::atof(points[index].c_str()), std::atof(points.at(index + 1).c_str())));
     }
     assert(scoreboard_perspective_polygion_.size() == 4);
-    // scoreboard_ = std::make_unique<hm::scoreboard::Scoreboard<uchar4>>(scoreboard_perspective_polygion_, 700, 300);
   } else if (prop.key == "show-scoreboard") {
     show_scoreboard_ = !!std::atoi(prop.value.c_str());
   }

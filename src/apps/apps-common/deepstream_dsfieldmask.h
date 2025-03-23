@@ -138,6 +138,7 @@ struct NvDsHmVideoPrepBin {
 
 struct HmPlayCropperConfig : public NvDsHmVideoPrepConfig {
   // Four (x,y) coordinates
+  gboolean show_scoreboard;
   int scoreboard_perspective_polygon[8];
 };
 

@@ -655,7 +655,7 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
           << config->scoreboard_perspective_polygon[index + 1];
     }
   }
-
+  ppc << ";show-scoreboard=" << config->show_scoreboard;
   g_object_set(G_OBJECT(bin->playcropper), "plugin-private-config", ppc.str().c_str(), NULL);
 
 #if 0
@@ -842,6 +842,11 @@ gboolean create_hmaudio_bin(
         multi_sink_configs[sink_config->type] = sink_config;
         break;
       }
+    }
+    if (!sink_config) {
+      std::cout << "HMAudio references missing or disabled sink-id " << config->sink_id << ", so disabling audio"
+                << std::endl;
+      return true;
     }
   }
 
