@@ -20,6 +20,7 @@
 #include <gst/gstelement.h>
 #include <gstreamer-1.0/gst/gstbin.h>
 #include <gstreamer-1.0/gst/gstelementfactory.h>
+#include <gstreamer-1.0/gst/gstpad.h>
 #include <cassert>
 #include <cstring>
 #include <string>
@@ -77,11 +78,15 @@ NvDsSinkBinSubBin* find_sink_sub_bin(int sink_id, const NvDsSinkSubBinConfig* si
 GstElement* findLowestCommonAncestor(GstElement* elem1, GstElement* elem2) {
   std::vector<GstElement*> chain1, chain2;
 
-  for (GstElement* cur = elem1; cur; cur = gst_element_get_parent(cur))
+  for (GstElement* cur = elem1; cur; cur = gst_element_get_parent(cur)) {
+    std::cout << GST_ELEMENT_NAME(cur) << std::endl;
     chain1.push_back(cur);
+  }
 
-  for (GstElement* cur = elem2; cur; cur = gst_element_get_parent(cur))
+  for (GstElement* cur = elem2; cur; cur = gst_element_get_parent(cur)) {
+    std::cout << GST_ELEMENT_NAME(cur) << std::endl;
     chain2.push_back(cur);
+  }
 
   std::reverse(chain1.begin(), chain1.end());
   std::reverse(chain2.begin(), chain2.end());
@@ -742,17 +747,42 @@ done:
  *
  */
 //  GstElement *audiosrc = gst_element_factory_make("alsasrc", "my_audiosource");
+bool isAudioPad(GstPad* pad) {
+  GstCaps* caps = gst_pad_get_current_caps(pad);
+  if (!caps)
+    caps = gst_pad_query_caps(pad, NULL);
+
+  if (!caps)
+    return false;
+
+  const GstStructure* structure = gst_caps_get_structure(caps, 0);
+  const gchar* mediaType = gst_structure_get_name(structure);
+
+  bool result = (g_str_has_prefix(mediaType, "audio/") != 0);
+
+  gst_caps_unref(caps);
+  return result;
+}
 
 static void on_decode_pad_added(GstElement* element, GstPad* pad, gpointer data) {
   GstElement* convert = (GstElement*)data;
-  GstPad* sinkpad = gst_element_get_static_pad(convert, "sink");
-  GstPadLinkReturn ret;
-
-  ret = gst_pad_link(pad, sinkpad);
-  if (GST_PAD_LINK_FAILED(ret)) {
-    g_printerr("Decoder pad link failed: %d\n", ret);
+  const bool is_audio_pad = isAudioPad(pad);
+  if (is_audio_pad) {
+    GstPad* sinkpad = gst_element_get_static_pad(convert, "sink");
+    GstPadLinkReturn ret;
+    ret = gst_pad_link(pad, sinkpad);
+    if (ret == GST_PAD_LINK_WRONG_HIERARCHY) {
+      if (connectElementsWithGhostPads(element, GST_PAD_NAME(pad), convert, "sink", "hmaudio_source_bin")) {
+        std::cout << "Linked " << GST_ELEMENT_NAME(element) << "." << GST_PAD_NAME(pad) << " to "
+                  << GST_ELEMENT_NAME(convert) << ".sink" << std::endl;
+        ret = GST_PAD_LINK_OK;
+      }
+    }
+    if (GST_PAD_LINK_FAILED(ret)) {
+      g_printerr("Decoder pad link failed: %d\n", ret);
+    }
+    gst_object_unref(sinkpad);
   }
-  gst_object_unref(sinkpad);
 }
 
 static void on_demuxer_pad_added(GstElement* element, GstPad* pad, gpointer data) {
@@ -824,10 +854,31 @@ gboolean create_hmaudio_bin(
     GstBin* parent_bin,
     const NvDsHmAudioConfig* config,
     NvDsHmAudioBin* bin,
+    NvDsSrcBin* src_sub_bins,
     const NvDsSinkSubBinConfig* sink_config_array,
     NvDsSinkBin* sink_bin) {
   gboolean ret = FALSE;
   bool linked = false;
+
+  NvDsSrcBin* source_bin = nullptr;
+  const NvDsSourceConfig* source_config{nullptr};
+  if (config->src == SRC_SOURCE_BIN) {
+    for (size_t i = 0; i < MAX_SOURCE_BINS; ++i) {
+      if (src_sub_bins[i].source_id == config->source_id) {
+        source_bin = &src_sub_bins[i];
+        source_config = source_bin->config;
+        assert(source_config);
+        // atm, only source uri is supported
+        assert(source_config->type == NV_DS_SOURCE_URI);
+        break;
+      }
+    }
+    if (!source_bin) {
+      std::cout << "HMAudio references missing or disabled source-id " << config->sink_id << ", so disabling audio"
+                << std::endl;
+      return true;
+    }
+  }
 
   const std::string file_prefix = "file://";
   const bool is_file_prefix = !strncmp(config->audio_location, file_prefix.c_str(), file_prefix.size());
@@ -882,12 +933,13 @@ gboolean create_hmaudio_bin(
       HMGST_ELEMENT_MAKE_BINADD(bin->audioresample, "audioresample", "hmaudio_audioresample");
     }
     g_object_set(G_OBJECT(bin->audiosrc), "location", audio_location.c_str(), NULL);
-
+  } else if (config->src == SRC_SOURCE_BIN) {
+    HMGST_ELEMENT_MAKE_BINADD(bin->audioresample, "audioresample", "hmaudio_audioresample");
   } else {
     HMGST_ELEMENT_MAKE_BINADD(bin->audiosrc, NVDS_ELEM_SRC_ALSA, "hmaudio_alsasrc0");
   }
 
-  if (bin->decodebin) {
+  if (bin->decodebin || config->src == SRC_SOURCE_BIN) {
     bin->audioconvert = gst_element_factory_make(NVDS_ELEM_AUDIO_CONV, "hmaudio_audioconvert0");
     if (!bin->audioconvert) {
       NVGSTDS_ERR_MSG_V("Failed to create 'audioconvert0'");
@@ -930,6 +982,16 @@ gboolean create_hmaudio_bin(
       NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->audioresample);
       NVGSTDS_LINK_ELEMENT(bin->audioresample, bin->queue);
     }
+  } else if (config->src == SRC_SOURCE_BIN) {
+    assert(source_bin->src_elem);
+    assert(bin->audioconvert);
+    // assert(source_bin->decodebin);
+    g_signal_connect(source_bin->src_elem, "pad-added", G_CALLBACK(on_decode_pad_added), bin->audioconvert);
+    // auto ret = connectElementsWithGhostPads(source_bin->src_elem, "src_%d", bin->audioresample, "sink",
+    // "hmaudio_source_bin"); assert(ret);
+    // NVGSTDS_LINK_ELEMENT(source_bin->src_elem, bin->audioconvert);
+    NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->audioresample);
+    NVGSTDS_LINK_ELEMENT(bin->audioresample, bin->queue);
   } else {
     NVGSTDS_LINK_ELEMENT(bin->audiosrc, bin->audioconvert);
     NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->queue);

@@ -1284,20 +1284,21 @@ static gboolean create_processing_instance(AppCtx* appCtx, guint index) {
         instance_bin);
   }
 
-  for (size_t hmaudio_index = 0;
-       hmaudio_index < sizeof(appCtx->config.hmaudio_config) / sizeof(appCtx->config.hmaudio_config[0]);
-       ++hmaudio_index)
-    if (appCtx->config.hmaudio_config[hmaudio_index].enable) {
-      assert(index == 0); // what to do if nto 0?
-      if (!create_hmaudio_bin(
-              GST_BIN(instance_bin->bin),
-              &appCtx->config.hmaudio_config[hmaudio_index],
-              &instance_bin->hmaudio_bin,
-              appCtx->config.sink_bin_sub_bin_config,
-              &instance_bin->sink_bin)) {
-        goto done;
-      }
-    }
+  // for (size_t hmaudio_index = 0;
+  //      hmaudio_index < sizeof(appCtx->config.hmaudio_config) / sizeof(appCtx->config.hmaudio_config[0]);
+  //      ++hmaudio_index)
+  //   if (appCtx->config.hmaudio_config[hmaudio_index].enable) {
+  //     assert(index == 0); // what to do if nto 0?
+  //     if (!create_hmaudio_bin(
+  //             GST_BIN(instance_bin->bin),
+  //             &appCtx->config.hmaudio_config[hmaudio_index],
+  //             &instance_bin->hmaudio_bin,
+  //             appCtx->pipeline.multi_src_bin.sub_bins,
+  //             appCtx->config.sink_bin_sub_bin_config,
+  //             &instance_bin->sink_bin)) {
+  //       goto done;
+  //     }
+  //   }
 
   ret = TRUE;
 done:
@@ -1956,6 +1957,23 @@ gboolean create_pipeline(
         goto done;
       }
       gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->instance_bins[i].bin);
+
+      // HMAudio after instance bin is added to the pipeline
+      for (size_t hmaudio_index = 0;
+          hmaudio_index < sizeof(appCtx->config.hmaudio_config) / sizeof(appCtx->config.hmaudio_config[0]);
+          ++hmaudio_index)
+        if (appCtx->config.hmaudio_config[hmaudio_index].enable) {
+          assert(i == 0); // what to do if nto 0?
+          if (!create_hmaudio_bin(
+                  GST_BIN(pipeline->instance_bins[i].bin),
+                  &appCtx->config.hmaudio_config[hmaudio_index],
+                  &pipeline->instance_bins[i].hmaudio_bin,
+                  appCtx->pipeline.multi_src_bin.sub_bins,
+                  appCtx->config.sink_bin_sub_bin_config,
+                  &pipeline->instance_bins[i].sink_bin)) {
+            goto done;
+          }
+        }
 
       g_snprintf(pad_name, 16, "src_%02d", i);
       demux_src_pad = gst_element_request_pad_simple(pipeline->demuxer, pad_name);

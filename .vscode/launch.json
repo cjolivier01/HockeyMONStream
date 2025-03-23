@@ -74,7 +74,7 @@
         "mlk-heat-1",
         //"ev-cougars-2",
         //"fremont",
-        //"-d",
+        "-d",
         //"--gpu-id=1",
         //"--enable-sources=CSI",
         "--enable-sources=URI-MULTIPLE",

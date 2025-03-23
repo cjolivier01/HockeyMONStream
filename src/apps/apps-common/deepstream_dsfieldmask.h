@@ -20,6 +20,7 @@
 
 #include "deepstream_config.h"
 #include "deepstream_sinks.h"
+#include "deepstream_sources.h"
 
 /**
  *  ______  _       _     _ __  __             _
@@ -274,6 +275,7 @@ gboolean create_hmaudio_bin(
     GstBin* parent_bin,
     const NvDsHmAudioConfig* config,
     NvDsHmAudioBin* bin,
+    NvDsSrcBin* src_sub_bins,
     const NvDsSinkSubBinConfig* config_array,
     NvDsSinkBin* sink_bin);
 
