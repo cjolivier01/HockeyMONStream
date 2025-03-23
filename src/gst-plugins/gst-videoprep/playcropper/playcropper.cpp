@@ -2,7 +2,7 @@
 #include "cupano/pano/cudaMat.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/cudaPlayCropper.h"
-#include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
+// #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
 
@@ -40,7 +40,7 @@
 namespace hm {
 namespace playcropper {
 
-using PlayTrackerPayload = hm::playtracker::PlayTrackerPayload;
+// using PlayTrackerPayload = hm::playtracker::PlayTrackerPayload;
 
 namespace {
 
@@ -231,6 +231,13 @@ absl::Status PlayCropperPriv::GenerateOutput(
     tbox.top *= scale_h;
     tbox.bottom *= scale_h;
 
+    // FloatValue width_for_ratio = 1.0;
+    // const playtracker::PlayTrackerPayload* ptpayload =
+    //     playtracker::PlayTrackerPayload::get_payload<playtracker::PlayTrackerPayload>(frame_meta);
+    // if (ptpayload) {
+    //   width_for_ratio = FloatValue(ptpayload->arena_box().width()) / frame_meta->source_frame_width;
+    // }
+
     // Calculate rotation angle
     float angle = 0.0f;
     // const float max_angle = 20.0;
@@ -397,7 +404,8 @@ absl::Status PlayCropperPriv::RenderDisplayMeta(
   }
 
   if (plot_player_tracking_) {
-    std::vector<NvDsObjectMeta*> object_metas = glist_to_vect<NvDsObjectMeta>(frame_meta->obj_meta_list, frame_meta->num_obj_meta);
+    std::vector<NvDsObjectMeta*> object_metas =
+        glist_to_vect<NvDsObjectMeta>(frame_meta->obj_meta_list, frame_meta->num_obj_meta);
     // for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
     //   NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
     //   if (obj_meta->object_id == UNTRACKED_OBJECT_ID) {
@@ -408,10 +416,10 @@ absl::Status PlayCropperPriv::RenderDisplayMeta(
     // }
   }
 
-  const PlayTrackerPayload *playtracker_payload = PlayTrackerPayload::get_payload<PlayTrackerPayload>(frame_meta);
-  if (playtracker_payload) {
-    usleep(0);
-  }
+  // const PlayTrackerPayload* playtracker_payload = PlayTrackerPayload::get_payload<PlayTrackerPayload>(frame_meta);
+  // if (playtracker_payload) {
+  //   usleep(0);
+  // }
 
   return absl::OkStatus();
 }

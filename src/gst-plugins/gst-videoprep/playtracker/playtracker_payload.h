@@ -1,7 +1,6 @@
 #pragma once
 
 #include "hstream/src/libs/common/ApplicationPayload.h"
-#include "hockeymom/csrc/play_tracker/PlayTracker.h"
 
 namespace hm {
 namespace playtracker {
