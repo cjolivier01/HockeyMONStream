@@ -145,7 +145,6 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     assert(scoreboard_perspective_polygion_.size() == 4);
     // scoreboard_ = std::make_unique<hm::scoreboard::Scoreboard<uchar4>>(scoreboard_perspective_polygion_, 700, 300);
   } else if (prop.ey == "show-scoreboard") {
-
   }
   return true;
 }
@@ -276,8 +275,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
     if (color_format == NVBUF_COLOR_FORMAT_RGBA || color_format == NVBUF_COLOR_FORMAT_RGB ||
         color_format == NVBUF_COLOR_FORMAT_GRAY8) {
       // Use the combined transform - no scratch surfaces needed!
-      NppStatus status = NPP_SUCCESS;
-      status = combinedTransform(
+      XCUDA_RETURN_IF_ERROR(combinedTransform(
           incoming_surface.get(),
           extra_width_src_rect,
           angle,
@@ -285,11 +283,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
           new_tbox,
           outgoing_surface.get_mutable(),
           output_rect,
-          nppStreamContext);
-      if (status != NPP_SUCCESS) {
-        // Fall back to original implementation if optimization fails
-        goto fallback;
-      }
+          nppStreamContext));
     } else {
       // assert(false);
     // Fall back to original implementation for unsupported formats
