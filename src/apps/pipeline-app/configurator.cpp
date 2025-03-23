@@ -704,6 +704,7 @@ absl::Status Configurator::complete_configuration(bool force) {
   }
 
   std::string possible_audio_uri;
+  size_t audio_source_id = std::numeric_limits<size_t>::max();
   // Source 0 files
   static const std::string ff = "file://";
   if (!left_files.empty() && !right_files.empty()) {
@@ -717,9 +718,11 @@ absl::Status Configurator::complete_configuration(bool force) {
       src1["uri"] = ff + file_maybe_in_game_dir(right_files[0]);
       if (offsets["left"].as<double>() == 0) {
         possible_audio_uri = src0["uri"].as<std::string>();
+        audio_source_id = src0["source-id"].as<int>();
       } else {
         assert(offsets["right"].as<double>() == 0);
         possible_audio_uri = src1["uri"].as<std::string>();
+        audio_source_id = src1["source-id"].as<int>();
       }
       num_video_sources += 2;
     }
@@ -741,7 +744,8 @@ absl::Status Configurator::complete_configuration(bool force) {
   if (num_video_sources < 2) {
     pipeline["hmstitcher"]["enable"] = "0";
   }
-  if (!possible_audio_uri.empty()) {
+  std::cout << pipeline["hmaudio"] << std::endl;
+  if (!possible_audio_uri.empty() || audio_source_id != std::numeric_limits<size_t>::max()) {
     std::optional<YAML::Node> audio_uri_opt = get_enabled_audio_uri(pipeline);
     if (audio_uri_opt.has_value()) {
       YAML::Node audio_uri = *audio_uri_opt;
@@ -755,7 +759,16 @@ absl::Status Configurator::complete_configuration(bool force) {
         break;
       }
       audio_uri_opt = get_node_if_enabled(pipeline, hmaudio_name);
-      if (audio_uri_opt.has_value()) {
+      if (!audio_uri_opt) {
+        continue;
+      }
+      if (audio_source_id != std::numeric_limits<size_t>::max() &&
+          (*audio_uri_opt)["src"].as<int>() == SRC_SOURCE_BIN) {
+        if (!(*audio_uri_opt)["source-id"].IsDefined() ||
+            !is_valid_yaml_value_string((*audio_uri_opt)["source-id"].as<std::string>())) {
+          (*audio_uri_opt)["source-id"] = audio_source_id;
+        }
+      } else {
         YAML::Node audio_uri = *audio_uri_opt;
         const std::string key = "audio-location";
         const bool is_defined = audio_uri[key].IsDefined();

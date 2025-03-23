@@ -217,6 +217,7 @@ gboolean create_hmimagemetamerger_bin(NvDsHmImageMetaMergerConfig* config, NvDsH
 enum EHmAudioSrc {
   SRC_DEFAULT = 0,
   SRC_FILE = 1,
+  SRC_SOURCE_BIN = 2,
 };
 
 enum EHmAudioDest {
@@ -228,6 +229,7 @@ enum EHmAudioDest {
 struct NvDsHmAudioConfig {
   gboolean enable;
   guint src;
+  guint source_id;
   guint dest;
   guint sink_id;
   // For multiple sink destinations

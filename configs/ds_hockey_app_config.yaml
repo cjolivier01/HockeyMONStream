@@ -270,8 +270,9 @@ sink3:
 #
 hmaudio0:
   enable: 1
-  # 0=default alsa source, 1=file
-  src: 0
+  # 0=default alsa source, 1=file, 2=src_bin(source-id)
+  src: 2
+  # source-id: 1
   # audio-location: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   # audio-location: /home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   alsa-src-device: hw:0,0
