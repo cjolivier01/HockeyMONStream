@@ -2,6 +2,7 @@
 #include "cupano/pano/cudaMat.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/cudaPlayCropper.h"
+#include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
 
@@ -38,6 +39,9 @@
 
 namespace hm {
 namespace playcropper {
+
+using PlayTrackerPayload = hm::playtracker::PlayTrackerPayload;
+
 namespace {
 
 static BBox make_null_tracking_box(const NvBufSurfaceParams* in_surf, const NvBufSurfaceParams* out_surf) {
@@ -402,6 +406,12 @@ absl::Status PlayCropperPriv::RenderDisplayMeta(
       HM_RETURN_IF_ERROR(draw_object_meta(&display_dest_params_, obj_meta, font_cache_, render_scale_, stream));
     }
   }
+
+  const PlayTrackerPayload *playtracker_payload = PlayTrackerPayload::get_payload<PlayTrackerPayload>(frame_meta);
+  if (playtracker_payload) {
+    usleep(0);
+  }
+
   return absl::OkStatus();
 }
 
