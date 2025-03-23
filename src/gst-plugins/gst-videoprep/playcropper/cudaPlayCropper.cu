@@ -95,7 +95,7 @@ cudaError_t combinedTransform(
     const hm::BBox& crop_box,
     NvBufSurfaceParams* out_params,
     const hm::BBox& output_rect,
-    const NppStreamContext& stream_context) {
+    cudaStream_t stream) {
   // Determine number of channels based on color format
   int num_channels = 0;
   switch (in_params->colorFormat) {
@@ -126,7 +126,7 @@ cudaError_t combinedTransform(
   dim3 grid((output_width + block.x - 1) / block.x, (output_height + block.y - 1) / block.y);
 
   // Launch kernel
-  cropRotateResizeKernel<uint8_t><<<grid, block, 0, stream_context.hStream>>>(
+  cropRotateResizeKernel<uint8_t><<<grid, block, 0, stream>>>(
       static_cast<uint8_t*>(in_params->dataPtr),
       in_params->pitch,
       input_width,

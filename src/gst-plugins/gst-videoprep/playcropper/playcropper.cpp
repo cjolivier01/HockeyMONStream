@@ -168,7 +168,6 @@ absl::Status PlayCropperPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
-  
   absl::ReaderMutexLock lk(&mu_process_);
 
   // Setup and initialization
@@ -178,11 +177,11 @@ absl::Status PlayCropperPriv::GenerateOutput(
   assert(in_surface->numFilled == out_surface->batchSize);
   assert(cuda_stream_);
 
-  NppStreamContext nppStreamContext;
-  memset(&nppStreamContext, 0, sizeof(nppStreamContext));
-  nppStreamContext.hStream = cuda_stream_;
-  nppStreamContext.nStreamFlags = 0;
-  nppStreamContext.nCudaDeviceId = m_gpuId;
+  // NppStreamContext nppStreamContext;
+  // memset(&nppStreamContext, 0, sizeof(nppStreamContext));
+  // nppStreamContext.hStream = cuda_stream_;
+  // nppStreamContext.nStreamFlags = 0;
+  // nppStreamContext.nCudaDeviceId = m_gpuId;
 
   HM_RETURN_IF_ERROR(hm::to_status(cudaSetDevice(m_gpuId)));
 
@@ -294,6 +293,8 @@ absl::Status PlayCropperPriv::GenerateOutput(
 #endif // PLAYCROPPER_USE_ONE_KERNEL
     if (color_format == NVBUF_COLOR_FORMAT_RGBA || color_format == NVBUF_COLOR_FORMAT_RGB ||
         color_format == NVBUF_COLOR_FORMAT_GRAY8) {
+      XCUDA_RETURN_IF_ERROR(cudaMemsetAsync(
+          outgoing_surface.dataptr(), 0, outgoing_surface.height() * outgoing_surface.pitch(), cuda_stream_));
       // Use the combined transform - no scratch surfaces needed!
       XCUDA_RETURN_IF_ERROR(combinedTransform(
           incoming_surface.get(),
@@ -303,7 +304,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
           new_tbox,
           outgoing_surface.get_mutable(),
           output_rect,
-          nppStreamContext));
+          cuda_stream_));
     } else {
       // assert(false);
       // Fall back to original implementation for unsupported formats

@@ -2,8 +2,6 @@
 
 #include <cuda_runtime.h>
 
-#include <nppi.h>
-
 #include "deepstream/sources/includes/nvbufsurface.h"
 #include "hockeymom/csrc/play_tracker/BoxUtils.h"
 
@@ -18,7 +16,7 @@ cudaError_t combinedTransform(
     const hm::BBox& crop_box,
     NvBufSurfaceParams* out_params,
     const hm::BBox& output_rect,
-    const NppStreamContext& stream_context);
+    cudaStream_t stream);
 
 }
 }

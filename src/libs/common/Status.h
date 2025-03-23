@@ -1,8 +1,8 @@
 #pragma once
 
-#include "hstream/src/libs/common/utils.h"
 #include "absl/status/status.h"
 #include "cupano/cuda/cudaStatus.h"
+#include "hstream/src/libs/common/utils.h"
 
 // HM_RETURN_IF_ERROR: Evaluates an expression that returns absl::Status,
 // and returns from the current function if the status is not ok.
@@ -25,38 +25,44 @@
   HM_ASSIGN_OR_RETURN_IMPL(HM_CONCAT(_hm_status_or_value, __COUNTER__), lhs, rexpr)
 
 #define HM_ASSIGN_OR_RETURN_IMPL(statusor, lhs, rexpr) \
-  auto statusor = (rexpr);                             \
-  if (!statusor.ok()) {                                \
-    return statusor.status();                          \
-  }                                                    \
-  lhs = std::move(statusor.value());
+  do {                                                 \
+    auto statusor = (rexpr);                           \
+    if (!statusor.ok()) {                              \
+      return statusor.status();                        \
+    }                                                  \
+    lhs = std::move(statusor.value());                 \
+  } while (false)
 
 #define HM_CUDA_ASSIGN_OR_RETURN(lhs, rexpr) \
   HM_CUDA_ASSIGN_OR_RETURN_IMPL(HM_CONCAT(_hm_status_or_value, __COUNTER__), lhs, rexpr)
 
 #define HM_CUDA_ASSIGN_OR_RETURN_IMPL(statusor, lhs, rexpr) \
-  auto statusor = (rexpr);                                  \
-  if (!statusor.ok()) {                                     \
-    return to_status(statusor.status());                    \
-  }                                                         \
-  lhs = std::move(statusor.ConsumeValueOrDie());
+  do {                                                      \
+    auto statusor = (rexpr);                                \
+    if (!statusor.ok()) {                                   \
+      return to_status(statusor.status());                  \
+    }                                                       \
+    lhs = std::move(statusor.ConsumeValueOrDie());          \
+  } while (false)
 
 namespace hm {
-inline absl::Status to_status(const CudaStatus& s, const char *prefix = nullptr) {
+inline absl::Status to_status(const CudaStatus& s, const char* prefix = nullptr) {
   if (s.ok()) {
     return absl::OkStatus();
   }
   if (prefix && *prefix) {
-    return absl::Status(absl::StatusCode::kFailedPrecondition, std::string(prefix) + ": " + s.message());  
+    return absl::Status(absl::StatusCode::kFailedPrecondition, std::string(prefix) + ": " + s.message());
   }
   return absl::Status(absl::StatusCode::kFailedPrecondition, s.message());
 }
 
-#define XCUDA_RETURN_IF_ERROR(rexpr)        \
-  cudaError_t _cerr$ = (rexpr);             \
-  if (_cerr$ != cudaError_t::cudaSuccess) { \
-    return hm::to_status(_cerr$, #rexpr);           \
-  }
+#define XCUDA_RETURN_IF_ERROR(rexpr)          \
+  do {                                        \
+    cudaError_t _cerr$ = (rexpr);             \
+    if (_cerr$ != cudaError_t::cudaSuccess) { \
+      return hm::to_status(_cerr$, #rexpr);   \
+    }                                         \
+  } while (false)
 
 inline absl::Status to_status(const cudaError_t& status) {
   if (status == cudaError_t::cudaSuccess) {
