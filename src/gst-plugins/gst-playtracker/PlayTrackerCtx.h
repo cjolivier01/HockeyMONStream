@@ -8,7 +8,6 @@
 
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
 
-typedef struct DsPlayTrackerCtx DsPlayTrackerCtx;
 typedef struct GstDsPlayTrackerFrame GstDsPlayTrackerFrame;
 
 // Init parameters structure as input, required for instantiating
@@ -19,6 +18,17 @@ struct DsPlayTrackerInitParams {
   bool draw{false};
   // The class id we will set for the play box
   static constexpr inline int kPlayBoxClassIdBase = 99;
+};
+
+struct DsPlayTrackerCtx {
+  DsPlayTrackerInitParams initParams;
+  struct PlayTracker {
+    hm::play_tracker::PlayTrackerConfig play_tracker_config;
+    std::unique_ptr<hm::play_tracker::PlayTracker> play_tracker;
+  };
+  // source_id -> play_tracker
+  std::unordered_map<size_t, PlayTracker> play_trackers;
+  hm::BBox arena_box;
 };
 
 // Initialize library context

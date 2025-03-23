@@ -70,7 +70,7 @@ absl::Status PlayTrackerPriv::GenerateOutput(
     if (!DsPlayTrackerProcessFrame(pt_context_, frame, cuda_stream_)) {
       return absl::InternalError("Error calling DsPlayTrackerProcessFrame()");
     }
-    PlayTrackerPayload::create_and_add<PlayTrackerPayload>(frame.frame_meta);
+    PlayTrackerPayload::create_and_add<PlayTrackerPayload>(frame.frame_meta, pt_context_->arena_box);
     ++frame.batch_index;
     fl = fl->next;
   }

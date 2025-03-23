@@ -157,8 +157,8 @@ sink0:
   sink-id: 0
   #Type - 1=FakeSink 2=EglSink/nv3dsink (Jetson only) 3=File
   type: 1
-  sync: 1
-  # sync: 0
+  # sync: 1
+  sync: 0
   sink-id: 0
   gpu-id: 0
   nvbuf-memory-type: 0

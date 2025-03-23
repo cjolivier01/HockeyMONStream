@@ -27,17 +27,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-struct DsPlayTrackerCtx {
-  DsPlayTrackerInitParams initParams;
-  struct PlayTracker {
-    hm::play_tracker::PlayTrackerConfig play_tracker_config;
-    std::unique_ptr<hm::play_tracker::PlayTracker> play_tracker;
-  };
-  // source_id -> play_tracker
-  std::unordered_map<size_t, PlayTracker> play_trackers;
-  hm::BBox arena_box;
-};
-
 namespace gst_hm_playtracker {
 
 using namespace hm;
