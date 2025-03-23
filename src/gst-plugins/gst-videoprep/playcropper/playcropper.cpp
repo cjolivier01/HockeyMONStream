@@ -333,8 +333,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
           scoreboard_perspective_polygion_, outgoing_surface.width() / 6, outgoing_surface.height() / 6);
     }
     if (scoreboard_) {
-      // const bool rewarp = frame_count_ % scoreboard_warp_interval_ == 0;
-      bool rewarp = true;
+      const bool rewarp = frame_count_ % scoreboard_warp_interval_ == 0;
       HM_RETURN_IF_ERROR(scoreboard_->forward_prod(incoming_surface, outgoing_surface, rewarp, cuda_stream_));
     }
 
