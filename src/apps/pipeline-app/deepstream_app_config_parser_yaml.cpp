@@ -130,6 +130,7 @@ gboolean parse_hmplaycropper_yaml(
   hm::utils::ConfigLocator locator;
   SET_LOCATOR(locator, *config, plot_play_tracking);
   SET_LOCATOR(locator, *config, plot_player_tracking);
+  SET_LOCATOR(locator, *config, fixed_edge_rotation_angle);
   SET_LOCATOR_INTS(locator, *config, scoreboard_perspective_polygon);
 
   set_config_from_yaml(yaml_node, locator, quiet);

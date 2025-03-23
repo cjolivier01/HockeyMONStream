@@ -127,6 +127,7 @@ gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep)
 }
 
 bool PlayCropperPriv::SetProperty(const Property& prop) {
+  absl::WriterMutexLock lk(&mu_process_);
   // std::cerr << "SetProperty(" << prop.key << "=" << prop.value << ")" << std::endl;
   if (prop.key == "show") {
     show_ = !!std::atol(prop.value.c_str());
@@ -153,6 +154,8 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     plot_play_tracking_ = !!std::atoi(prop.value.c_str());
   } else if (prop.key == "plot-player-tracking") {
     plot_player_tracking_ = !!std::atoi(prop.value.c_str());
+  } else if (prop.key == "fixed-edge-rotation-angle") {
+    fixed_edge_rotation_angle_ = std::atof(prop.value.c_str());
   }
   return true;
 }
@@ -165,6 +168,9 @@ absl::Status PlayCropperPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
+  
+  absl::ReaderMutexLock lk(&mu_process_);
+
   // Setup and initialization
   if (!in_surface->numFilled) {
     return absl::CancelledError("No surfaces were filled");
@@ -240,8 +246,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
 
     // Calculate rotation angle
     float angle = 0.0f;
-    // const float max_angle = 20.0;
-    const float max_angle = 10.0;
+    const float max_angle = fixed_edge_rotation_angle_;
     const float half_width = float(frame_meta->source_frame_width) / 2;
     const float tcx = tbox.center().x;
     if (tcx < half_width) {

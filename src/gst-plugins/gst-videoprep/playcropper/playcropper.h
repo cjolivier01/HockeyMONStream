@@ -31,12 +31,14 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   absl::Status RenderDisplayMeta(surface::Surface surface, const NvDsFrameMeta* frame_meta, cudaStream_t stream);
   absl::Status RenderScoreboard(surface::Surface in_surface, surface::Surface out_surface, cudaStream_t stream);
 
+  absl::Mutex mu_process_;
   bool use_unfused_kernels_{false};
   bool show_{false};
   size_t frame_count_{0};
   std::shared_ptr<draw_display::FontCache> font_cache_;
   float render_scale_{0.5};
   std::unique_ptr<hm::CudaMat<uchar4>> display_surface_;
+  float fixed_edge_rotation_angle_{20.0};
   bool show_scoreboard_{false};
   float scoreboard_width_ratio_{1.0/6};
   float scoreboard_height_ratio_{1.0/6};

@@ -141,6 +141,7 @@ struct HmPlayCropperConfig : public NvDsHmVideoPrepConfig {
   gboolean show_scoreboard;
   gboolean plot_play_tracking;
   gboolean plot_player_tracking;
+  gfloat fixed_edge_rotation_angle;
   int scoreboard_perspective_polygon[8];
 };
 

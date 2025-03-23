@@ -497,6 +497,8 @@ absl::Status Configurator::complete_configuration(bool force) {
 
   pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / kRinkMaskFilename);
 
+  pipeline["hmplaycropper"]["fixed-edge-rotation-angle"] = config_["rink"]["camera"]["fixed_edge_rotation_angle"];
+
   // Scoreboard perspective polygon, if there
   if (has_node(config_, "rink.scoreboard.perspective_polygon", /*non_null=*/true)) {
     auto points = config_["rink"]["scoreboard"]["perspective_polygon"].as<std::vector<std::vector<int>>>();
@@ -789,7 +791,10 @@ absl::Status Configurator::complete_configuration(bool force) {
   return absl::OkStatus();
 }
 
-absl::Status Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config, uint64_t start_time_ns) {
+absl::Status Configurator::post_config_pipeline(
+    NvDsPipeline& pipeline,
+    const NvDsConfig& config,
+    uint64_t start_time_ns) {
   // We need to do this get state for some reason
   GstState state, pending;
   gst_element_get_state(pipeline.pipeline, &state, &pending, GST_CLOCK_TIME_NONE);
@@ -832,7 +837,7 @@ absl::Status Configurator::post_config_pipeline(NvDsPipeline& pipeline, const Nv
       }
     }
   } else if (!src_bins.empty() && start_time_ns) {
-    for (auto *bin : src_bins) {
+    for (auto* bin : src_bins) {
       bool result = seek_element(bin, start_time_ns);
       if (!result) {
         g_printerr("Failed to seek source 0\n");
