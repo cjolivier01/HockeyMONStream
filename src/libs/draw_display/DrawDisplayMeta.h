@@ -1,10 +1,7 @@
 #pragma once
 
-#include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/Surface.h"
 #include "hstream/src/libs/draw_display/Fonts.h"
-#include "jetson-utils/cuda/cudaDraw.h"
-#include "jetson-utils/cuda/cudaFont.h"
 
 #include <cuda_runtime.h>
 
@@ -24,7 +21,7 @@ absl::Status draw_display_meta(
 
 absl::Status draw_object_meta(
     surface::Surface surface,
-    const NvDsObjectMeta* object_meta,
+    std::vector<NvDsObjectMeta*>& object_meta,
     std::shared_ptr<FontCache> font_cache,
     float scale,
     cudaStream_t stream);

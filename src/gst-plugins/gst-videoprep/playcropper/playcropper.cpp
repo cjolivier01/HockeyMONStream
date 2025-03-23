@@ -397,14 +397,15 @@ absl::Status PlayCropperPriv::RenderDisplayMeta(
   }
 
   if (plot_player_tracking_) {
-    for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
-      NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
-      if (obj_meta->object_id == UNTRACKED_OBJECT_ID) {
-        // Don't draw untracked objects
-        continue;
-      }
-      HM_RETURN_IF_ERROR(draw_object_meta(&display_dest_params_, obj_meta, font_cache_, render_scale_, stream));
-    }
+    std::vector<NvDsObjectMeta*> object_metas = glist_to_vect<NvDsObjectMeta>(frame_meta->obj_meta_list, frame_meta->num_obj_meta);
+    // for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
+    //   NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
+    //   if (obj_meta->object_id == UNTRACKED_OBJECT_ID) {
+    //     // Don't draw untracked objects
+    //     continue;
+    //   }
+    //   HM_RETURN_IF_ERROR(draw_object_meta(&display_dest_params_, obj_meta, font_cache_, render_scale_, stream));
+    // }
   }
 
   const PlayTrackerPayload *playtracker_payload = PlayTrackerPayload::get_payload<PlayTrackerPayload>(frame_meta);

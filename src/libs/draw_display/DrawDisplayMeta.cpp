@@ -279,7 +279,7 @@ absl::Status draw_display_meta(
     HM_ASSIGN_OR_RETURN(font, font_cache->get_or_create_font(text.font_params.font_name, text.font_params.font_size));
     std::pair<int, int> newpos;
     uchar4 text_color = scale_and_clamp_color(text.font_params.font_color);
-    uchar4 bg_color = text.set_bg_clr ? scale_and_clamp_color(text.text_bg_clr) : uchar4{0,0,0,0};
+    uchar4 bg_color = text.set_bg_clr ? scale_and_clamp_color(text.text_bg_clr) : uchar4{0, 0, 0, 0};
     HM_ASSIGN_OR_RETURN(
         newpos,
         font->draw(
@@ -301,55 +301,57 @@ absl::Status draw_display_meta(
 
 absl::Status draw_object_meta(
     surface::Surface surface,
-    const NvDsObjectMeta* object_meta,
+    std::vector<NvDsObjectMeta*>& object_meta,
     std::shared_ptr<FontCache> font_cache,
     float scale,
     cudaStream_t stream) {
-  if (object_meta->tracker_confidence < 0.1) {
-    std::cout << "Low confidence tracking" << std::endl;
+  // TODO: do labels as a vectror of strings 9for same other stuff like size and color)
+  for (auto* object_meta : object_meta) {
+    if (object_meta->tracker_confidence < 0.1) {
+      std::cout << "Low confidence tracking" << std::endl;
+    }
+    const NvOSD_RectParams* rect_params = &object_meta->rect_params;
+    NvOSD_RectParams rparams;
+    rparams = *rect_params;
+    rparams.border_width = 1;
+    const auto& clr = get_object_color(object_meta->object_id);
+    rparams.border_color.red = clr.x;
+    rparams.border_color.green = clr.y;
+    rparams.border_color.blue = clr.z;
+
+    // It can keep its alpha
+    rect_params = &rparams;
+
+    XCUDA_RETURN_IF_ERROR(cudaDraw(
+        surface.dataptr(), surface.width(), surface.height(), surface.get_image_format(), *rect_params, scale, stream));
+
+    if (*object_meta->obj_label) {
+      const NvOSD_TextParams& text = object_meta->text_params;
+      float adapted_font_size = adaptFontSize(surface.width()) / 10.0 * scale;
+      std::shared_ptr<Font> font;
+      HM_ASSIGN_OR_RETURN(
+          font,
+          font_cache->get_or_create_font(text.font_params.font_name, text.font_params.font_size * adapted_font_size));
+      std::pair<int, int> newpos;
+      uchar4 text_color = scale_and_clamp_color(text.font_params.font_color);
+      uchar4 bg_color = text.set_bg_clr ? scale_and_clamp_color(text.text_bg_clr) : uchar4{0, 0, 0, 0};
+      HM_ASSIGN_OR_RETURN(
+          newpos,
+          font->draw(
+              text.display_text,
+              surface.dataptr(),
+              surface.get_image_format(),
+              surface.width(),
+              surface.height(),
+              surface.pitch(),
+              scale * text.x_offset,
+              scale * text.y_offset,
+              text_color,
+              bg_color,
+              stream));
+      (void)newpos;
+    }
   }
-  const NvOSD_RectParams* rect_params = &object_meta->rect_params;
-  NvOSD_RectParams rparams;
-  rparams = *rect_params;
-  rparams.border_width = 1;
-  const auto& clr = get_object_color(object_meta->object_id);
-  rparams.border_color.red = clr.x;
-  rparams.border_color.green = clr.y;
-  rparams.border_color.blue = clr.z;
-
-  // It can keep its alpha
-  rect_params = &rparams;
-
-  XCUDA_RETURN_IF_ERROR(cudaDraw(
-      surface.dataptr(), surface.width(), surface.height(), surface.get_image_format(), *rect_params, scale, stream));
-
-  if (*object_meta->obj_label) {
-    const NvOSD_TextParams& text = object_meta->text_params;
-    float adapted_font_size = adaptFontSize(surface.width()) / 10.0 * scale;
-    std::shared_ptr<Font> font;
-    HM_ASSIGN_OR_RETURN(
-        font,
-        font_cache->get_or_create_font(text.font_params.font_name, text.font_params.font_size * adapted_font_size));
-    std::pair<int, int> newpos;
-    uchar4 text_color = scale_and_clamp_color(text.font_params.font_color);
-    uchar4 bg_color = text.set_bg_clr ? scale_and_clamp_color(text.text_bg_clr) : uchar4{0,0,0,0};
-    HM_ASSIGN_OR_RETURN(
-        newpos,
-        font->draw(
-            text.display_text,
-            surface.dataptr(),
-            surface.get_image_format(),
-            surface.width(),
-            surface.height(),
-            surface.pitch(),
-            scale * text.x_offset,
-            scale * text.y_offset,
-            text_color,
-            bg_color,
-            stream));
-    (void)newpos;
-  }
-
   return absl::OkStatus();
 }
 

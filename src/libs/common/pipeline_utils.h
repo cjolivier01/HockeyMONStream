@@ -5,6 +5,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "yaml-cpp/yaml.h"
 
@@ -26,6 +27,18 @@ inline T get_node_as(const YAML::Node& n, const std::string& dot_string, const T
     return dflt;
   }
   return o_n.value().as<T>();
+}
+
+
+template <typename T>
+inline std::vector<T*> glist_to_vect(const GList* list, size_t reserve_count = 512) {
+  std::vector<T*> results;
+  results.reserve(reserve_count);
+  while (list) {
+    results.emplace_back((T*)list->data);
+    list = list->next;
+  }
+  return results;
 }
 
 struct Videoinfo {
@@ -112,5 +125,6 @@ bool post_force_pipeline_eos(GstElement* element);
 bool gst_message_parse_force_pipeline_eos(GstMessage* message, bool* force_eos);
 
 bool gst_message_is_force_pipeline_eos(GstMessage* message);
+
 
 } // namespace hm
