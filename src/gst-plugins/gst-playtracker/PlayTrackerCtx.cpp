@@ -15,6 +15,7 @@
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
 #include "hockeymom/csrc/play_tracker/ResizingBox.h"
 #include "hockeymom/csrc/play_tracker/TranslatingBox.h"
+#include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 #include "hstream/src/libs/common/ConfigYaml.h"
 #include "hstream/src/libs/common/PlotContext.h"
 
@@ -215,10 +216,18 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
   return config;
 }
 
+bool has_play_tracker(DsPlayTrackerCtx* ctx, int source_id) {
+  return !!ctx->play_trackers.count(source_id);
+}
+
+hm::play_tracker::PlayTracker* get_play_tracker(DsPlayTrackerCtx* ctx, int source_id) {
+  return ctx->play_trackers.at(source_id).play_tracker.get();
+}
+
 hm::play_tracker::PlayTracker* get_or_create_play_tracker(DsPlayTrackerCtx* ctx, int source_id, const BBox& arena_box) {
   // std::cerr << "play tracker source_id = " << source_id << std::endl;
-  if (ctx->play_trackers.count(source_id)) {
-    return ctx->play_trackers[source_id].play_tracker.get();
+  if (has_play_tracker(ctx, source_id)) {
+    return get_play_tracker(ctx, source_id);
   }
   if (!ctx->initParams.play_tracker_config_file.empty()) {
     try {
@@ -372,9 +381,31 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
   // We always do our calculations wrt the original image, since we tune based upon the camera
   // type, which is generally tied to the resolution. We scale in the play tracker when possible, but
   // it isn't perfectly scalable atm.
-  hm::BBox arena_box(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
-  hm::play_tracker::PlayTracker* play_tracker =
-      gst_hm_playtracker::get_or_create_play_tracker(ctx, frame.frame_meta->source_id, arena_box);
+
+  hm::play_tracker::PlayTracker* play_tracker{nullptr};
+  if (!gst_hm_playtracker::has_play_tracker(ctx, frame.frame_meta->source_id)) {
+    hm::BBox arena_box(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
+    const hm::fieldmask::FieldMaskPayload* fieldmask_payload =
+        hm::fieldmask::FieldMaskPayload::get_payload<hm::fieldmask::FieldMaskPayload>(frame.frame_meta);
+    if (fieldmask_payload) {
+      const cv::Rect2i& field_box = fieldmask_payload->field_box();
+      float  horizontal_expand_ratio = 0.04;
+      float horizontal_padding = horizontal_expand_ratio * field_box.width;
+      float new_left = field_box.x - horizontal_padding;
+      if (new_left < arena_box.left) {
+        new_left = arena_box.left;
+      }
+      float new_right = (field_box.x + field_box.width) + horizontal_padding;
+      if (new_right > arena_box.right) {
+        new_right = arena_box.right;
+      }
+      // Inflate and only apply left and right
+      arena_box = hm::BBox(new_left, arena_box.top, new_right, arena_box.bottom);
+    }
+    play_tracker = gst_hm_playtracker::get_or_create_play_tracker(ctx, frame.frame_meta->source_id, arena_box);
+  } else {
+    play_tracker = gst_hm_playtracker::get_play_tracker(ctx, frame.frame_meta->source_id);
+  }
   if (!play_tracker) {
     return false;
   }

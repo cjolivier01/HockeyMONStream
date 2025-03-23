@@ -23,6 +23,10 @@ class FieldMaskPayload : public UserApplicationPayload {
     return field_box_;
   }
 
+  const cv::Point2f& centroid() const {
+    return centroid_;
+  }
+
  private:
   cv::Point2f centroid_;
   cv::Rect2i field_box_;

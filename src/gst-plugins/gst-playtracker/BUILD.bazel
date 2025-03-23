@@ -32,6 +32,7 @@ cc_library(
   visibility = ["//visibility:public"],
   deps = [
         "//src/libs/common:utils",
+        "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
         "@hm//hockeymom/csrc/play_tracker:play_tracker",
   ],
 )
