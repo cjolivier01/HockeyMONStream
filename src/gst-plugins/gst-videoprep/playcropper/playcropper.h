@@ -35,8 +35,8 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   size_t frame_count_{0};
   std::shared_ptr<draw_display::FontCache> font_cache_;
   float render_scale_{0.25};
-  // float render_scale_{1.0};
   std::unique_ptr<hm::CudaMat<uchar4>> display_surface_;
+  bool show_scoreboard_{false};
   std::unique_ptr<hm::scoreboard::Scoreboard<uchar4>> scoreboard_;
   std::vector<cv::Point2f> scoreboard_perspective_polygion_;
   size_t scoreboard_warp_interval_{3};
