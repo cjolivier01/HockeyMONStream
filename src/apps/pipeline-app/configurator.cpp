@@ -842,8 +842,6 @@ absl::Status Configurator::post_config_pipeline(NvDsPipeline& pipeline, const Nv
   return absl::OkStatus();
 }
 
-// std::optional<YAML::Node> maybe_get_config_file(const YAML::Node& yaml_node, const std::string& config_dir)
-
 std::string get_section_prefix(const std::string& section_name) {
   auto found_digit = std::find_if(section_name.begin(), section_name.end(), ::isdigit);
   if (found_digit == section_name.end()) {
