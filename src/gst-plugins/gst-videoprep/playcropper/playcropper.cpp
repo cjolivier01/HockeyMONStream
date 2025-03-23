@@ -144,7 +144,8 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     }
     assert(scoreboard_perspective_polygion_.size() == 4);
     // scoreboard_ = std::make_unique<hm::scoreboard::Scoreboard<uchar4>>(scoreboard_perspective_polygion_, 700, 300);
-  } else if (prop.ey == "show-scoreboard") {
+  } else if (prop.key == "show-scoreboard") {
+    show_scoreboard_ = !!std::atoi(prop.value.c_str());
   }
   return true;
 }
@@ -316,14 +317,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
 
     // Scoreboard
     if (show_scoreboard_) {
-      if (!scoreboard_ && !scoreboard_perspective_polygion_.empty()) {
-        scoreboard_ = std::make_unique<hm::scoreboard::Scoreboard<uchar4>>(
-            scoreboard_perspective_polygion_, outgoing_surface.width() / 6, outgoing_surface.height() / 6);
-      }
-      if (scoreboard_) {
-        const bool rewarp = frame_count_ % scoreboard_warp_interval_ == 0;
-        HM_RETURN_IF_ERROR(scoreboard_->forward_prod(incoming_surface, outgoing_surface, rewarp, cuda_stream_));
-      }
+      HM_RETURN_IF_ERROR(RenderScoreboard(incoming_surface, outgoing_surface, cuda_stream_));
     }
     if (show_ && !batch_nr) {
       // Render it inside the loop, but we'll display it after our cudaSynchronize
@@ -391,6 +385,23 @@ absl::Status PlayCropperPriv::RenderDisplayMeta(
     NvDsDisplayMeta* display_meta = (NvDsDisplayMeta*)dm_list->data;
     HM_RETURN_IF_ERROR(draw_display_meta(&display_dest_params_, display_meta, font_cache_, render_scale_, stream));
     dm_list = dm_list->next;
+  }
+  return absl::OkStatus();
+}
+
+absl::Status PlayCropperPriv::RenderScoreboard(
+    surface::Surface in_surface,
+    surface::Surface out_surface,
+    cudaStream_t stream) {
+  if (!scoreboard_ && !scoreboard_perspective_polygion_.empty()) {
+    scoreboard_ = std::make_unique<hm::scoreboard::Scoreboard<uchar4>>(
+        scoreboard_perspective_polygion_,
+        out_surface.width() * scoreboard_width_ratio_,
+        out_surface.height() * scoreboard_height_ratio_);
+  }
+  if (scoreboard_) {
+    const bool rewarp = frame_count_ % scoreboard_warp_interval_ == 0;
+    HM_RETURN_IF_ERROR(scoreboard_->forward_prod(in_surface, out_surface, rewarp, cuda_stream_));
   }
   return absl::OkStatus();
 }

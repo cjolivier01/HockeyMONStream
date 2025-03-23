@@ -29,6 +29,7 @@ class PlayCropperPriv : public CustomAlgorithmBase {
  protected:
 
   absl::Status RenderDisplayMeta(surface::Surface surface, const NvDsFrameMeta* frame_meta, cudaStream_t stream);
+  absl::Status RenderScoreboard(surface::Surface in_surface, surface::Surface out_surface, cudaStream_t stream);
 
   bool use_unfused_kernels_{false};
   bool show_{false};
@@ -37,6 +38,8 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   float render_scale_{0.25};
   std::unique_ptr<hm::CudaMat<uchar4>> display_surface_;
   bool show_scoreboard_{false};
+  float scoreboard_width_ratio_{1.0/6};
+  float scoreboard_height_ratio_{1.0/6};
   std::unique_ptr<hm::scoreboard::Scoreboard<uchar4>> scoreboard_;
   std::vector<cv::Point2f> scoreboard_perspective_polygion_;
   size_t scoreboard_warp_interval_{3};
