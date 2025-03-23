@@ -397,12 +397,16 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
 
   for (NvDsMetaList* l_obj = frame.frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
     NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
-    const NvDsComp_BboxInfo& trackler_bbox_info = obj_meta->tracker_bbox_info;
+    if (obj_meta->object_id == UNTRACKED_OBJECT_ID) {
+      // ignore untracked objects
+      continue;
+    }
+    const NvDsComp_BboxInfo& tracker_bbox_info = obj_meta->tracker_bbox_info;
     tracking_boxes.emplace_back(hm::BBox(
-        trackler_bbox_info.org_bbox_coords.left * scale_x,
-        trackler_bbox_info.org_bbox_coords.top * scale_y,
-        (trackler_bbox_info.org_bbox_coords.left + trackler_bbox_info.org_bbox_coords.width) * scale_x,
-        (trackler_bbox_info.org_bbox_coords.top + trackler_bbox_info.org_bbox_coords.height) * scale_y));
+        tracker_bbox_info.org_bbox_coords.left * scale_x,
+        tracker_bbox_info.org_bbox_coords.top * scale_y,
+        (tracker_bbox_info.org_bbox_coords.left + tracker_bbox_info.org_bbox_coords.width) * scale_x,
+        (tracker_bbox_info.org_bbox_coords.top + tracker_bbox_info.org_bbox_coords.height) * scale_y));
     size_t tracking_id = obj_meta->object_id;
     tracking_ids.push_back(tracking_id);
   }
