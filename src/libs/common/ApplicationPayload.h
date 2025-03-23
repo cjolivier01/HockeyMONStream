@@ -73,10 +73,10 @@ inline T* UserApplicationPayload::create_and_add(NvDsFrameMeta* frame_meta, Args
 // Assumption is that there is only one of this type
 template <typename T>
 inline const T* UserApplicationPayload::get_payload(const NvDsFrameMeta* frame_meta) {
-  for (NvDsUserMetaList* user_meta_list = frame_meta->frame_user_meta_list; user_meta_list != nullptr;
+  for (const NvDsUserMetaList* user_meta_list = frame_meta->frame_user_meta_list; user_meta_list != nullptr;
        user_meta_list = user_meta_list->next) {
-    NvDsUserMeta* user_meta = (NvDsUserMeta*)user_meta_list->data;
-    NVDS_CUSTOM_PAYLOAD* src_user_metadata = (NVDS_CUSTOM_PAYLOAD*)user_meta->user_meta_data;
+    const NvDsUserMeta* user_meta = (const NvDsUserMeta*)user_meta_list->data;
+    const NVDS_CUSTOM_PAYLOAD* src_user_metadata = (const NVDS_CUSTOM_PAYLOAD*)user_meta->user_meta_data;
     if (src_user_metadata->payloadType == T::PayloadSubType()) {
       return (const T*)src_user_metadata->payload;
     }
