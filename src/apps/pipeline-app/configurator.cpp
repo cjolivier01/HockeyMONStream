@@ -789,7 +789,7 @@ absl::Status Configurator::complete_configuration(bool force) {
   return absl::OkStatus();
 }
 
-absl::Status Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config) {
+absl::Status Configurator::post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config, uint64_t start_time_ns) {
   // We need to do this get state for some reason
   GstState state, pending;
   gst_element_get_state(pipeline.pipeline, &state, &pending, GST_CLOCK_TIME_NONE);
@@ -827,26 +827,27 @@ absl::Status Configurator::post_config_pipeline(NvDsPipeline& pipeline, const Nv
     src_bins.emplace_back(pipeline.multi_src_bin.sub_bins[i].bin);
   }
   if (src_bins.size() == 2) {
-    if (config.hmsticher_config.left_frame_offset_ns) {
-      bool result = seek_element(src_bins[0], config.hmsticher_config.left_frame_offset_ns);
+    if (config.hmsticher_config.left_frame_offset_ns || start_time_ns) {
+      bool result = seek_element(src_bins[0], config.hmsticher_config.left_frame_offset_ns + start_time_ns);
       if (!result) {
         g_printerr("Failed to seek source 0\n");
       }
     }
-    if (config.hmsticher_config.right_frame_offset_ns) {
-      size_t seekTarget = 0.95 * GST_SECOND;
-      bool result = seek_element(src_bins[1], seekTarget /*config.hmsticher_config.right_frame_offset_ns*/);
+    if (config.hmsticher_config.right_frame_offset_ns || start_time_ns) {
+      // size_t seekTarget = 0.95 * GST_SECOND;
+      bool result = seek_element(src_bins[1], config.hmsticher_config.right_frame_offset_ns + start_time_ns);
       if (!result) {
         g_printerr("Failed to seek source 1\n");
       }
     }
+  } else if (!src_bins.empty() && start_time_ns) {
+    for (auto *bin : src_bins) {
+      bool result = seek_element(bin, start_time_ns);
+      if (!result) {
+        g_printerr("Failed to seek source 0\n");
+      }
+    }
   }
-
-  // GstClock *system_clock = gst_system_clock_obtain();
-  // gst_pipeline_use_clock(GST_PIPELINE(audio_pipeline), system_clock);
-  // gst_pipeline_use_clock(GST_PIPELINE(video_pipeline), system_clock);
-  // gst_object_unref(system_clock);
-
   return absl::OkStatus();
 }
 

@@ -54,7 +54,7 @@ class Configurator {
 
   absl::Status complete_configuration(bool force);
 
-  absl::Status post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config);
+  absl::Status post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config, uint64_t start_time_ns);
 
   absl::StatusOr<bool> does_need_stitching(const std::string& game_dir) const;
 

@@ -401,7 +401,7 @@ absl::Status PipelineApplication::playPipelines(
     CleanupStack& cleanup_stack) const {
   absl::Status status;
   for (guint i = 0; i < app_contexts.size(); i++) {
-    status = app_contexts[i]->configurator().post_config_pipeline(app_contexts[i]->pipeline, app_contexts[i]->config);
+    status = app_contexts[i]->configurator().post_config_pipeline(app_contexts[i]->pipeline, app_contexts[i]->config, start_time_ns_);
     if (!status.ok()) {
       std::cerr << status << std::endl;
       g_print("\npipeline post-configuration failed.\n");
