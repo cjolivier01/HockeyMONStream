@@ -96,7 +96,6 @@ def run_ffmpeg_concat(input_list_file: str, output_file: str) -> None:
     """
     command = [
         "ffmpeg",
-        "-hide_banner",
         "-f",
         "concat",
         "-safe",
@@ -142,7 +141,7 @@ def process_side(
     if not video_list:
         raise ValueError(f"No videos specified for side '{side}' in config.")
 
-    # Compute total duration (optional, used here for error checking)
+    # Compute total duration (for error checking, if needed)
     total_duration: float = 0.0
     for vf in video_list:
         video_path = (base_dir / vf).resolve()
@@ -160,7 +159,7 @@ def process_side(
         os.remove(concat_list_file)
 
 
-def main(game_id: str, force: bool) -> None:
+def main(game_id: str, force: bool, parallel: bool) -> None:
     home_dir = os.environ.get("HOME")
     if home_dir is None:
         raise EnvironmentError("HOME environment variable is not set.")
@@ -168,18 +167,29 @@ def main(game_id: str, force: bool) -> None:
     base_dir = pathlib.Path(config_path).parent.resolve()
     data = parse_config(config_path)
 
-    # Launch left and right concatenations in parallel.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        futures = {
-            executor.submit(process_side, "left", data, base_dir, force): "left",
-            executor.submit(process_side, "right", data, base_dir, force): "right",
-        }
-        for future in concurrent.futures.as_completed(futures):
-            side = futures[future]
-            try:
-                future.result()
-            except Exception as exc:
-                print(f"Error processing {side} videos: {exc}", file=sys.stderr)
+    if parallel:
+        # Launch left and right concatenations in parallel.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {
+                executor.submit(process_side, "left", data, base_dir, force): "left",
+                executor.submit(process_side, "right", data, base_dir, force): "right",
+            }
+            for future in concurrent.futures.as_completed(futures):
+                side = futures[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    print(f"Error processing {side} videos: {exc}", file=sys.stderr)
+    else:
+        # Process left and right sequentially.
+        try:
+            process_side("left", data, base_dir, force)
+        except Exception as exc:
+            print(f"Error processing left videos: {exc}", file=sys.stderr)
+        try:
+            process_side("right", data, base_dir, force)
+        except Exception as exc:
+            print(f"Error processing right videos: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":
@@ -196,9 +206,14 @@ if __name__ == "__main__":
         action="store_true",
         help="Overwrite existing left.mp4 and right.mp4 if they exist.",
     )
+    parser.add_argument(
+        "--no-parallel",
+        action="store_true",
+        help="Run concatenations sequentially rather than in parallel.",
+    )
     args = parser.parse_args()
     try:
-        main(args.game_id, args.force)
+        main(args.game_id, args.force, parallel=not args.no_parallel)
     except Exception as e:
         print(f"Fatal error: {e}", file=sys.stderr)
         sys.exit(1)
