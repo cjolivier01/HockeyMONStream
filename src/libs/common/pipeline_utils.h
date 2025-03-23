@@ -8,6 +8,7 @@
 
 #include "yaml-cpp/yaml.h"
 
+
 namespace hm {
 
 bool has_node(const YAML::Node& n, const std::string& dot_string, bool non_null);

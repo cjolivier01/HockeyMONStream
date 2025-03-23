@@ -22,6 +22,7 @@ cc_library(
         "@com_google_absl//absl/strings:strings",
         "@com_google_absl//absl/status:statusor",
         "@jetson-utils//cuda:cuda_lib",
+        "@jetson-utils//display",
         "@local_cuda//:cuda",
         "@local_cuda//:cuda_runtime",
         "@opencv_linux//:opencv",
