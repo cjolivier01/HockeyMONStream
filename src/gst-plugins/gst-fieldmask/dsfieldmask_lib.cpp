@@ -1,4 +1,5 @@
 #include "dsfieldmask_lib.h"
+#include "fieldmask_payload.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
@@ -17,12 +18,15 @@
 
 namespace fs = std::filesystem;
 
+using FieldMaskPayload = hm::fieldmask::FieldMaskPayload;
+
 struct DsFieldMaskCtx {
   DsFieldMaskInitParams initParams;
   size_t total_frame_count{0};
   cv::Mat detection_bit_mask;
   cv::Mat detection_u8_mask;
   cv::Point2f detection_mask_centroid;
+  cv::Rect2i field_box;
 };
 
 namespace {
@@ -67,13 +71,16 @@ cv::Mat convert_to_bit_mask(const cv::Mat& inputMask) {
 }
 
 // Compute the centroid of a binary mask
-cv::Point2f compute_centroid(const cv::Mat& mask) {
+cv::Point2f compute_centroid(const cv::Mat& mask, cv::Rect2i& bbox) {
   if (mask.type() != CV_8UC1) {
     throw std::invalid_argument("Input mask must be a CV_8UC1 matrix.");
   }
-
+  // cv::Rect bbox(0,)
   double sumX = 0.0, sumY = 0.0;
   int count = 0;
+
+  int low_x = std::numeric_limits<int>::max(), low_y = std::numeric_limits<int>::max();
+  int high_x = -1, high_y = -1;
 
   for (int y = 0; y < mask.rows; ++y) {
     const uchar* row = mask.ptr<uchar>(y);
@@ -81,6 +88,10 @@ cv::Point2f compute_centroid(const cv::Mat& mask) {
       if (row[x] != 0) { // Check for non-zero values
         sumX += x;
         sumY += y;
+        low_x = std::min(x, low_x);
+        low_y = std::min(y, low_y);
+        high_x = std::max(x, high_x);
+        high_y = std::max(y, high_y);
         ++count;
       }
     }
@@ -88,6 +99,13 @@ cv::Point2f compute_centroid(const cv::Mat& mask) {
 
   if (count == 0) {
     throw std::runtime_error("The mask has no non-zero pixels.");
+  }
+
+  if (low_x != std::numeric_limits<int>::max() && low_y != std::numeric_limits<int>::max() && high_x > 0 &&
+      high_y > 0) {
+    bbox = cv::Rect2i(low_x, low_y, high_x - low_x, high_y - low_y);
+  } else {
+    bbox = cv::Rect2i(0, 0, 0, 0);
   }
 
   // Return the centroid as a floating-point point
@@ -222,10 +240,11 @@ absl::Status DsFieldMaskProcessFrame(
       }
     }
     HM_ASSIGN_OR_RETURN(ctx->detection_u8_mask, load_mask_from_file(ctx->initParams.detection_mask_file));
-    ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask);
+    ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask, ctx->field_box);
     ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
   }
   prune_detection_boxes(frame_meta, ctx);
+  FieldMaskPayload::create_and_add<FieldMaskPayload>(frame_meta, ctx->detection_mask_centroid, ctx->field_box);
   ++ctx->total_frame_count;
   return absl::OkStatus();
 }

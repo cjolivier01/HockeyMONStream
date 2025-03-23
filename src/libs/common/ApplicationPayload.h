@@ -10,6 +10,7 @@ namespace hm {
 
 enum HmPayloadType : long {
   HM_PAYLOAD_TYPE_PLAY_TRACKER = NVDS_START_USER_META + 8192,
+  HM_PAYLOAD_TYPE_FIELDMASK,
 };
 
 struct UserApplicationPayload {
