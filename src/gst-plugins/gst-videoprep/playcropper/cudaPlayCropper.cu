@@ -4,7 +4,7 @@
 
 namespace hm {
 namespace playcropper {
-
+namespace {
 // Combined single-kernel approach for crop, rotate, and resize operations
 template <typename T>
 __global__ void cropRotateResizeKernel(
@@ -84,9 +84,10 @@ __global__ void cropRotateResizeKernel(
     }
   }
 }
+} // namespace
 
 // Function to launch the kernel with appropriate parameters
-NppStatus combinedTransform(
+cudaError_t combinedTransform(
     const NvBufSurfaceParams* in_params,
     const hm::BBox& src_rect,
     float angle,
@@ -95,10 +96,6 @@ NppStatus combinedTransform(
     NvBufSurfaceParams* out_params,
     const hm::BBox& output_rect,
     const NppStreamContext& stream_context) {
-  // Get surface information
-  // NvBufSurfaceParams* in_params = input_surface->surfaceList;
-  // NvBufSurfaceParams* out_params = output_surface->surfaceList;
-
   // Determine number of channels based on color format
   int num_channels = 0;
   switch (in_params->colorFormat) {
@@ -113,9 +110,9 @@ NppStatus combinedTransform(
       break;
     case NVBUF_COLOR_FORMAT_NV12:
       // Special handling for YUV formats would be needed
-      return NPP_ERROR; // For now, we'll fall back to original implementation
+      return cudaError_t::cudaErrorInvalidTexture;
     default:
-      return NPP_ERROR;
+      return cudaError_t::cudaErrorInvalidTexture;
   }
 
   // Get input and output dimensions
@@ -123,10 +120,6 @@ NppStatus combinedTransform(
   int input_height = in_params->height;
   int output_width = output_rect.width();
   int output_height = output_rect.height();
-
-  // Get plane information
-  // NvBufSurfacePlaneParams* in_plane = &in_params->planeParams;
-  // NvBufSurfacePlaneParams* out_plane = &out_params->planeParams;
 
   // Set up kernel launch parameters
   dim3 block(16, 16);
@@ -154,8 +147,7 @@ NppStatus combinedTransform(
       num_channels);
 
   // Check for errors
-  cudaError_t cuda_err = cudaGetLastError();
-  return (cuda_err == cudaSuccess) ? NPP_SUCCESS : NPP_ERROR;
+  return cudaGetLastError();
 }
 } // namespace playcropper
 } // namespace hm

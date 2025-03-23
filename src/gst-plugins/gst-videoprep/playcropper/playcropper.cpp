@@ -38,15 +38,6 @@
 
 namespace hm {
 namespace playcropper {
-NppStatus combinedTransform(
-    const NvBufSurfaceParams* in_params,
-    const hm::BBox& src_rect,
-    float angle,
-    const hm::Point& anchor_point,
-    const hm::BBox& crop_box,
-    NvBufSurfaceParams* out_params,
-    const hm::BBox& output_rect,
-    const NppStreamContext& stream_context);
 namespace {
 
 static BBox make_null_tracking_box(const NvBufSurfaceParams* in_surf, const NvBufSurfaceParams* out_surf) {
@@ -153,6 +144,8 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     }
     assert(scoreboard_perspective_polygion_.size() == 4);
     // scoreboard_ = std::make_unique<hm::scoreboard::Scoreboard<uchar4>>(scoreboard_perspective_polygion_, 700, 300);
+  } else if (prop.ey == "show-scoreboard") {
+
   }
   return true;
 }

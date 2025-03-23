@@ -10,7 +10,7 @@
 namespace hm {
 namespace playcropper {
 
-NppStatus combinedTransform(
+cudaError_t combinedTransform(
     const NvBufSurfaceParams* in_params,
     const hm::BBox& src_rect,
     float angle,

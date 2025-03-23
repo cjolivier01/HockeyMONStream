@@ -412,6 +412,7 @@ hmplaycropper:
   # plot-detections: 1
   # plot-tracking: 1
   show: 0
+  show-scoreboard: 1
   # dewarper portion
   # source-id: 6
   # config-file: /opt/nvidia/deepstream/deepstream/sources/apps/sample_apps/deepstream-dewarper-test/config_dewarper_rot_matrix.txt
