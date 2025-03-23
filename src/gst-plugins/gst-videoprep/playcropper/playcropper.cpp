@@ -287,7 +287,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
     } else {
       // assert(false);
     // Fall back to original implementation for unsupported formats
-    fallback:
+    // fallback:
       std::cout << "playcropper no fallback" << std::endl;
       // TODO: Make the fallback work again
 #if 0
