@@ -20,6 +20,7 @@
 
 #include "cupano/pano/controlMasks.h"
 #include "deepstream_app.h"
+#include "hstream/src/apps/apps-common/deepstream_config.h"
 #include "hstream/src/libs/common/ConfigYaml.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/Status.h"
@@ -841,6 +842,14 @@ absl::Status Configurator::post_config_pipeline(
       bool result = seek_element(bin, start_time_ns);
       if (!result) {
         g_printerr("Failed to seek source 0\n");
+      }
+    }
+  }
+  for (size_t i = 0; i < MAX_SOURCE_BINS; ++i) {
+    if (pipeline.instance_bins[i].hmaudio_bin.bin && start_time_ns) {
+      bool result = seek_element(pipeline.instance_bins[i].hmaudio_bin.bin, start_time_ns);
+      if (!result) {
+        g_printerr("Failed to seek hmaudio\n");
       }
     }
   }
