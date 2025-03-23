@@ -77,9 +77,9 @@
         //"-d",
         //"--gpu-id=1",
         //"--enable-sources=CSI",
-        //"--enable-sources=URI-MULTIPLE",
-        //"--enable-sinks=RENDER",
-        "--enable-sinks=FAKE",
+        "--enable-sources=URI-MULTIPLE",
+        "--enable-sinks=RENDER",
+        //"--enable-sinks=FAKE",
       ],
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}",

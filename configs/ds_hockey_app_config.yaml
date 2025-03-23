@@ -404,34 +404,18 @@ ds-example:
 hmplaycropper:
   enable: 1
   gpu-id: 0
-  # plugin-type: videoprep
-  # has_queue: false
-  # has_videoconvert: false
-  # has_cameraman: true
   nvbuf-memory-type: 0
   # plot-detections: 1
   # plot-tracking: 1
-  show: 0
+  show: 1
   show-scoreboard: 1
-  # dewarper portion
-  # source-id: 6
-  # config-file: /opt/nvidia/deepstream/deepstream/sources/apps/sample_apps/deepstream-dewarper-test/config_dewarper_rot_matrix.txt
-  fps: 0
   plugin-type: playcropper
-  # config-file: config_dewarper_null.txt
 
   num-batch-buffers: 2
   num-output-buffers: 6
 
   # RTSP needs a smaller image
   rtsp_resize: 1
-
-  # output-width: 5311
-  # output-height: 2988
-
-  # plugin-type: hmstitcher
-  # config-file: /home/colivier/Videos/mlk-heat-1
-  # num-output-buffers: 2
 
 hmstitcher:
   enable: 1
