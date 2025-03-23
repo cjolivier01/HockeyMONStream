@@ -236,10 +236,12 @@ class FontImpl : public Font {
    * @param font_path Path to the TrueType font file.
    * @param pixel_height Desired pixel height.
    */
-  FontImpl(const std::string& font_path, int pixel_height) : font_path_(font_path), pixel_height_(pixel_height) {
-    if (!fs::exists(font_path)) {
-      std::cerr << "Warning: Could not find font file: " << font_path << std::endl;
-    }
+  FontImpl(const std::string& font_path, float pixel_height, bool use_jetson_font = true)
+      : font_path_(font_path), pixel_height_(pixel_height), use_jetson_font_(use_jetson_font) {
+    font_path_.clear();
+    // if (!fs::exists(font_path_)) {
+    //   std::cerr << "Warning: Could not find font file: " << font_path << std::endl;
+    // }
   }
 
   /**
@@ -248,6 +250,12 @@ class FontImpl : public Font {
    * @return absl::Status indicating success or failure.
    */
   absl::Status load() override {
+    if (use_jetson_font_) {
+      jetson_font_ = std::unique_ptr<cudaFont>(
+          font_path_.empty() ? cudaFont::Create(pixel_height_) : cudaFont::Create(font_path_.c_str(), pixel_height_));
+      assert(jetson_font_);
+      return absl::OkStatus();
+    }
     //--------------------------------------------------------------------------
     // 1. Load the TrueType font file.
     //--------------------------------------------------------------------------
@@ -270,6 +278,23 @@ class FontImpl : public Font {
     return absl::OkStatus();
   }
 
+  absl::Status maybe_load() {
+    if (!status_.ok()) {
+      return status_;
+    }
+    // Ensure the font is loaded (this call is thread-safe).
+    if (!loaded_) {
+      absl::MutexLock lk(&mu_);
+      if (!loaded_) {
+        status_.Update(load());
+        if (status_.ok()) {
+          loaded_ = true;
+        }
+      }
+    }
+    return status_;
+  }
+
   /**
    * @brief Draws a single character onto the image surface.
    *
@@ -288,32 +313,42 @@ class FontImpl : public Font {
   absl::StatusOr<FontSize> draw(
       int character,
       void* surface,
+      imageFormat image_format,
       int imgWidth,
       int imgHeight,
+      int pitch,
       int dest_x,
       int dest_y,
       const uchar4& textColor) {
-    // If a previous error occurred, return that status.
-    if (!status_.ok()) {
-      return status_;
-    }
-    // Ensure the font is loaded (this call is thread-safe).
-    if (!loaded_) {
-      absl::MutexLock lk(&mu_);
-      if (!loaded_) {
-        status_.Update(load());
-        if (status_.ok()) {
-          loaded_ = true;
-        }
+    HM_RETURN_IF_ERROR(maybe_load());
+
+    if (jetson_font_) {
+      assert(false); // try not to call this
+      char buff[2] = {(char)character, '\0'};
+      // bool rc = jetson_font_->OverlayText(
+      //     surface,
+      //     image_format,
+      //     imgWidth,
+      //     imgHeight,
+      //     pitch,
+      //     buff,
+      //     dest_x,
+      //     dest_y,
+      //     make_float4(textColor.x, textColor.y, textColor.z, textColor.w));
+      // if (!rc) {
+      //   return absl::InternalError("Error rendering text");
+      // }
+      const int4 rect = jetson_font_->TextExtents(buff);
+      return FontSize{.width = rect.z - rect.x, .height = rect.w - rect.y};
+    } else {
+      FontGlyph* g;
+      HM_ASSIGN_OR_RETURN(g, get_or_crerate_glyph(character));
+      cudaError_t cerr = g->draw(surface, imgWidth, imgHeight, dest_x, dest_y, textColor);
+      if (cerr != cudaError_t::cudaSuccess) {
+        return to_status(cerr);
       }
+      return g->size();
     }
-    FontGlyph* g;
-    HM_ASSIGN_OR_RETURN(g, get_or_crerate_glyph(character));
-    cudaError_t cerr = g->draw(surface, imgWidth, imgHeight, dest_x, dest_y, textColor);
-    if (cerr != cudaError_t::cudaSuccess) {
-      return to_status(cerr);
-    }
-    return g->size();
   }
 
   /**
@@ -335,44 +370,72 @@ class FontImpl : public Font {
   absl::StatusOr<std::pair<int, int>> draw(
       const std::string& text,
       void* surface,
+      imageFormat image_format,
       int imgWidth,
       int imgHeight,
+      int pitch,
       int dest_x,
       int dest_y,
-      const uchar4& textColor) override {
-    int pos_x = dest_x;
-    int pos_y = dest_y;
-    int max_height = 0;
-    int space_width = 0;
-    FontSize last_size{.width = 0, .height = 0};
-    // Process each character in the text.
-    for (const auto& c : text) {
-      if (c == '\n') {
-        // Newline: reset x and move y by the current maximum height.
-        pos_x = dest_x;
-        pos_y += max_height;
-        max_height = 0;
-      } else if (c == ' ') {
-        // Space: if known width, advance; otherwise draw to measure.
-        if (space_width) {
-          pos_x += space_width;
+      const uchar4& textColor,
+      cudaStream_t stream) override {
+    HM_RETURN_IF_ERROR(maybe_load());
+    if (jetson_font_) {
+      bool rc = jetson_font_->OverlayText(
+          surface,
+          image_format,
+          imgWidth,
+          imgHeight,
+          pitch,
+          text,
+          dest_x,
+          dest_y,
+          make_float4(textColor.x, textColor.y, textColor.z, textColor.w),
+          make_float4(0, 0, 0, 0),
+          /*backgroundPadding=*/5,
+          stream);
+      if (!rc) {
+        return absl::InternalError("Error rendering text");
+      }
+      const int4 rect = jetson_font_->TextExtents(text.c_str(), dest_x, dest_y);
+      // bottom-right corner?
+      return std::make_pair(rect.z, rect.w - jetson_font_->GetSize());
+    } else {
+      int pos_x = dest_x;
+      int pos_y = dest_y;
+      int max_height = 0;
+      int space_width = 0;
+      FontSize last_size{.width = 0, .height = 0};
+      // Process each character in the text.
+      for (const auto& c : text) {
+        if (c == '\n') {
+          // Newline: reset x and move y by the current maximum height.
+          pos_x = dest_x;
+          pos_y += max_height;
+          max_height = 0;
+        } else if (c == ' ') {
+          // Space: if known width, advance; otherwise draw to measure.
+          if (space_width) {
+            pos_x += space_width;
+          } else {
+            HM_ASSIGN_OR_RETURN(
+                last_size, draw(c, surface, image_format, imgWidth, imgHeight, pitch, pos_x, pos_y, textColor));
+            space_width = last_size.width;
+            pos_x += last_size.width;
+          }
+        } else if (c == '\r') {
+          // Carriage return: reset x position.
+          pos_x = dest_x;
         } else {
-          HM_ASSIGN_OR_RETURN(last_size, draw(c, surface, imgWidth, imgHeight, pos_x, pos_y, textColor));
-          space_width = last_size.width;
+          // Draw the character and advance x by the glyph width.
+          HM_ASSIGN_OR_RETURN(
+              last_size, draw(c, surface, image_format, imgWidth, imgHeight, pitch, pos_x, pos_y, textColor));
           pos_x += last_size.width;
         }
-      } else if (c == '\r') {
-        // Carriage return: reset x position.
-        pos_x = dest_x;
-      } else {
-        // Draw the character and advance x by the glyph width.
-        HM_ASSIGN_OR_RETURN(last_size, draw(c, surface, imgWidth, imgHeight, pos_x, pos_y, textColor));
-        pos_x += last_size.width;
+        // Update max height for the current line.
+        max_height = std::max(max_height, last_size.height);
       }
-      // Update max height for the current line.
-      max_height = std::max(max_height, last_size.height);
+      return std::make_pair(pos_x, pos_y);
     }
-    return std::make_pair(pos_x, pos_y);
   }
 
  protected:
@@ -399,13 +462,17 @@ class FontImpl : public Font {
 
  private:
   std::string font_path_;
-  int pixel_height_;
+  float pixel_height_;
   float scale_{0.0};
   stbtt_fontinfo font_;
   absl::Mutex mu_;
   bool loaded_ ABSL_GUARDED_BY(mu_){false};
   // Map from Unicode codepoint to its cached glyph.
   std::unordered_map<int, std::unique_ptr<FontGlyph>> glyphs_ ABSL_GUARDED_BY(mu_);
+
+  // Jetson font
+  bool use_jetson_font_{true};
+  std::unique_ptr<cudaFont> jetson_font_;
   absl::Status status_;
 };
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <jetson-utils/cuda/cudaFont.h>
+
 #include <cuda_runtime.h>
 #include <memory>
 #include <string>
@@ -47,11 +49,15 @@ struct Font {
   virtual absl::StatusOr<std::pair<int, int>> draw(
       const std::string& text,
       void* surface,
+      imageFormat image_format,
       int imgWidth,
       int imgHeight,
+      int pitch,
       int dest_x,
       int dest_y,
-      const uchar4& textColor) = 0;
+      const uchar4& textColor,
+      cudaStream_t stream) = 0;
+
 };
 
 /**

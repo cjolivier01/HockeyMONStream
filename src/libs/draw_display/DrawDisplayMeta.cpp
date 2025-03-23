@@ -38,6 +38,14 @@ inline float4 scale_and_clamp_color(const float4& clr) {
       std::clamp(clr.w * 255, 0.0f, 255.0f)};
 }
 
+inline uchar4 scale_and_clamp_color(const NvOSD_ColorParams& clr) {
+  return {
+      (uint8_t)std::clamp(clr.red * 255, 0.0, 255.0),
+      (uint8_t)std::clamp(clr.green * 255, 0.0, 255.0),
+      (uint8_t)std::clamp(clr.blue * 255, 0.0, 255.0),
+      (uint8_t)std::clamp(clr.alpha * 255, 0.0, 255.0)};
+}
+
 #if 0
 const float3 html_colors[32] = {
     {0.000f, 0.000f, 0.000f}, // Black
@@ -136,7 +144,7 @@ const float4& get_object_color(size_t object_id) {
     float value = 0.7f;
 
     // Generate colors by evenly spacing the hue around the color wheel.
-    for (int i = 0; i < kNumColors; ++i) {
+    for (size_t i = 0; i < kNumColors; ++i) {
       float hue = static_cast<float>(i) / kNumColors; // hue in [0,1)
       object_colors[i] = hsv2rgb(hue, saturation, value);
     }
@@ -275,15 +283,18 @@ absl::Status draw_display_meta(
         font->draw(
             text.display_text,
             surface.dataptr(),
+            surface.get_image_format(),
             surface.width(),
             surface.height(),
+            surface.pitch(),
             text.x_offset,
             text.y_offset,
             uchar4{
                 (uint8_t)text.font_params.font_color.red,
                 (uint8_t)text.font_params.font_color.green,
                 (uint8_t)text.font_params.font_color.blue,
-                (uint8_t)text.font_params.font_color.alpha}));
+                (uint8_t)text.font_params.font_color.alpha},
+            stream));
     (void)newpos;
   }
   return absl::OkStatus();
@@ -311,6 +322,32 @@ absl::Status draw_object_meta(
 
   XCUDA_RETURN_IF_ERROR(cudaDraw(
       surface.dataptr(), surface.width(), surface.height(), surface.get_image_format(), *rect_params, scale, stream));
+
+  if (*object_meta->obj_label) {
+    const NvOSD_TextParams& text = object_meta->text_params;
+    float adapted_font_size = adaptFontSize(surface.width()) / 10.0;
+    std::shared_ptr<Font> font;
+    HM_ASSIGN_OR_RETURN(
+        font,
+        font_cache->get_or_create_font(text.font_params.font_name, text.font_params.font_size * adapted_font_size));
+    std::pair<int, int> newpos;
+    uchar4 text_color = scale_and_clamp_color(text.font_params.font_color);
+    HM_ASSIGN_OR_RETURN(
+        newpos,
+        font->draw(
+            text.display_text,
+            surface.dataptr(),
+            surface.get_image_format(),
+            surface.width(),
+            surface.height(),
+            surface.pitch(),
+            text.x_offset,
+            text.y_offset,
+            text_color,
+            stream));
+    (void)newpos;
+  }
+
   return absl::OkStatus();
 }
 
