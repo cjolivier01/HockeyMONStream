@@ -78,9 +78,10 @@
         //"--gpu-id=1",
         //"--enable-sources=CSI",
         "--enable-sources=URI-MULTIPLE",
-        "--enable-sinks=RENDER",
+        // "--enable-sinks=RENDER",
         //"--enable-sinks=FAKE",
-        "--start-time=00:05:32.23",
+        "--enable-sinks=ENCODE_FILE",
+        //"--start-time=00:05:32.23",
       ],
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}",

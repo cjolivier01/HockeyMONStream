@@ -1005,9 +1005,13 @@ gboolean create_hmaudio_bin(
         NvDsSinkBinSubBin* target_sink_bin = find_sink_sub_bin(config->sink_id, sink_config_array, sink_bin);
         if (target_sink_bin) {
           assert(target_sink_bin->mux);
-          HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
-          NVGSTDS_LINK_ELEMENT(bin->queue, bin->audioparse);
-          NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
+          if (config->src == SRC_SOURCE_BIN) {
+            NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "src");
+          } else {
+            HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
+            NVGSTDS_LINK_ELEMENT(bin->queue, bin->audioparse);
+            NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
+          }
           if (!link_audio_pad_to_muxer(bin->bin, target_sink_bin->mux)) {
             goto done;
           }
