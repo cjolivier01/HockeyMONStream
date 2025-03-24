@@ -30,6 +30,7 @@ cc_binary(
   ],
   deps = [
     ":camera",
+    "//src/libs/common:utils",
     "@opencv_linux//:opencv",
     "@com_google_absl//absl/status:status",
   ]

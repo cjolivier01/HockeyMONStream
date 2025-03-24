@@ -1,9 +1,11 @@
 #include "hstream/src/libs/camera/AutoFocus.h"
+#include "hstream/src/libs/common/utils.h"
 
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <thread>
 
 #include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
@@ -275,6 +277,43 @@ absl::Status auto_focus_csi_camera(
   if (status.ok()) {
     absl::MutexLock lk(&af_cache.mu);
     af_cache.focused_sensors[sensor_id] = i2c_bus;
+  }
+  return status;
+}
+
+absl::Status auto_focus_cameras(
+    const std::vector<CameraConnection>& cameras,
+    bool show,
+    bool interactive,
+    bool verbose,
+    bool force) {
+  std::vector<std::unique_ptr<std::thread>> threads(cameras.size(), nullptr);
+  std::vector<absl::Status> statuses(cameras.size(), absl::OkStatus());
+  for (size_t i = 0; i < cameras.size(); ++i) {
+    const CameraConnection& camera = cameras[i];
+    threads.at(i) = std::make_unique<std::thread>(
+        TO_STRING("Camera " << camera.sensor_id << "-" << camera.ic2_bus),
+        [index = i, &statuses, show, interactive, verbose, force]() {
+          statuses.at(index) = auto_focus_csi_camera(
+              camera.sensor_id,
+              camera.i2c_bus,
+              camera.width,
+              camera.height,
+              camera.fps_n,
+              camera.fps_d,
+              show,
+              interactive,
+              verbose,
+              force);
+        });
+  }
+  absl::Status status;
+  for (size_t i = 0; i < threads.size(); ++i) {
+    auto& thread = threads[i];
+    if (thread) {
+      thread->join();
+    }
+    status.Update(statuses.at(i));
   }
   return status;
 }
