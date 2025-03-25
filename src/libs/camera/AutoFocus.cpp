@@ -287,7 +287,7 @@ absl::Status auto_focus_cameras(
     bool interactive,
     bool verbose,
     bool force) {
-  std::vector<std::unique_ptr<std::thread>> threads(cameras.size(), nullptr);
+  std::vector<std::unique_ptr<std::thread>> threads(cameras.size());
   std::vector<absl::Status> statuses(cameras.size(), absl::OkStatus());
   for (size_t i = 0; i < cameras.size(); ++i) {
     const CameraConnection& camera = cameras[i];
