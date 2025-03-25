@@ -287,13 +287,13 @@ absl::Status auto_focus_cameras(
     bool interactive,
     bool verbose,
     bool force) {
-  std::vector<std::unique_ptr<std::thread>> threads(cameras.size(), nullptr);
+  std::vector<std::unique_ptr<std::thread>> threads(cameras.size());
   std::vector<absl::Status> statuses(cameras.size(), absl::OkStatus());
   for (size_t i = 0; i < cameras.size(); ++i) {
     const CameraConnection& camera = cameras[i];
     threads.at(i) = std::make_unique<std::thread>(
-        TO_STRING("Camera " << camera.sensor_id << "-" << camera.ic2_bus),
-        [index = i, &statuses, show, interactive, verbose, force]() {
+        // TO_STRING("Camera " << camera.sensor_id << "-" << camera.i2c_bus),
+        [index = i, &camera, &statuses, show, interactive, verbose, force]() {
           statuses.at(index) = auto_focus_csi_camera(
               camera.sensor_id,
               camera.i2c_bus,
