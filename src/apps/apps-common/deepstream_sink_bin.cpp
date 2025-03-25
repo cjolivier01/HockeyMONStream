@@ -32,7 +32,6 @@ static GMutex server_cnt_lock;
 
 GST_DEBUG_CATEGORY_EXTERN(NVDS_APP);
 
-
 namespace hm {
 // value to string for NvDsSinkType
 std::string to_string(const NvDsSinkType& type) {
@@ -72,7 +71,7 @@ std::optional<NvDsSinkType> sink_type_from_string(const std::string& str) {
 #endif
   if (str == "ENCODE_FILE")
     return NV_DS_SINK_ENCODE_FILE;
-  if (str == "UDPSINK")
+  if (str == "UDPSINK" || str == "RTSP" || str == "RTMP")
     return NV_DS_SINK_UDPSINK;
   if (str == "RENDER_DRM")
     return NV_DS_SINK_RENDER_DRM;
@@ -82,7 +81,7 @@ std::optional<NvDsSinkType> sink_type_from_string(const std::string& str) {
   // Return an empty optional if no match was found.
   return std::nullopt;
 }
-}
+} // namespace hm
 
 gboolean create_fakesink_bin(const NvDsSinkRenderConfig* config, NvDsSinkBinSubBin* bin) {
   gboolean ret = FALSE;
