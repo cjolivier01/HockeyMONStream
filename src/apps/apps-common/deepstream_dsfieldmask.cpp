@@ -1,19 +1,8 @@
-/*
- * SPDX-FileCopyrightText: Copyright (c) 2018-2024 NVIDIA CORPORATION &
- * AFFILIATES. All rights reserved. SPDX-License-Identifier:
- * LicenseRef-NvidiaProprietary
- *
- * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
- * property and proprietary rights in and to this material, related
- * documentation and any modifications thereto. Any use, reproduction,
- * disclosure or distribution of this material and related documentation
- * without an express license agreement from NVIDIA CORPORATION or
- * its affiliates is strictly prohibited.
- */
-
-#include "deepstream_dsfieldmask.h"
-
+#include "hstream/src/apps/apps-common/deepstream_dsfieldmask.h"
+#include "deepstream_sinks.h"
+#include "hstream/src/apps/apps-common/deepstream_common.h"
 #include "hstream/src/apps/apps-common/deepstream_config.h"
+#include "hstream/src/apps/apps-common/deepstream_sinks.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 
 #include <glib-2.0/glib.h>
@@ -21,16 +10,14 @@
 #include <gstreamer-1.0/gst/gstbin.h>
 #include <gstreamer-1.0/gst/gstelementfactory.h>
 #include <gstreamer-1.0/gst/gstpad.h>
-#include <cassert>
-#include <cstring>
-#include <string>
-#include "deepstream_common.h"
-#include "deepstream_sinks.h"
 
 #include <algorithm>
 #include <atomic>
+#include <cassert>
+#include <cstring>
 #include <iostream>
 #include <sstream>
+#include <string>
 #include <vector>
 
 #define HMGST_ELEMENT_MAKE(dest$, factoryname$, name$)                                 \
@@ -70,6 +57,21 @@ NvDsSinkBinSubBin* find_sink_sub_bin(int sink_id, const NvDsSinkSubBinConfig* si
     }
   }
   return nullptr;
+}
+
+std::map<NvDsSinkType, std::vector<std::pair<const NvDsSinkSubBinConfig*, NvDsSinkBinSubBin*>>>
+find_enabled_sink_sub_bins(const NvDsSinkSubBinConfig* sink_config, NvDsSinkBin* sink_bins) {
+  std::map<NvDsSinkType, std::vector<std::pair<const NvDsSinkSubBinConfig*, NvDsSinkBinSubBin*>>> results;
+  size_t sink_bin_index = 0;
+  for (size_t i = 0; i < MAX_SINK_BINS; ++i) {
+    const NvDsSinkSubBinConfig& config = sink_config[i];
+    if (config.enable) {
+      NvDsSinkBinSubBin* sink_sub_bin = &sink_bins->sub_bins[sink_bin_index];
+      results[config.type].emplace_back(std::make_pair(&config, sink_sub_bin));
+      ++sink_bin_index;
+    }
+  }
+  return results;
 }
 
 //---------------------------------------------------------------------
@@ -860,6 +862,9 @@ gboolean create_hmaudio_bin(
   gboolean ret = FALSE;
   bool linked = false;
 
+  std::map<NvDsSinkType, std::vector<std::pair<const NvDsSinkSubBinConfig*, NvDsSinkBinSubBin*>>>
+      enabled_sink_sub_bins = find_enabled_sink_sub_bins(sink_config_array, sink_bin);
+
   NvDsSrcBin* source_bin = nullptr;
   const NvDsSourceConfig* source_config{nullptr};
   if (config->src == SRC_SOURCE_BIN) {
@@ -894,8 +899,12 @@ gboolean create_hmaudio_bin(
   bool is_dest_alsa_sink = false;
 
   std::map<NvDsSinkType, const NvDsSinkSubBinConfig*> multi_sink_configs;
+  NvDsSinkBinSubBin* target_sink_bin{nullptr};
 
-  if (config->dest == DEST_SINK || config->dest == DEST_MULTI_SINK) {
+  if (config->dest == DEST_SINK && config->sink_id == -1 && enabled_sink_sub_bins.size() == 1) {
+    sink_config = enabled_sink_sub_bins.begin()->second.at(0).first;
+    target_sink_bin = enabled_sink_sub_bins.begin()->second.at(0).second;
+  } else if (config->dest == DEST_SINK || config->dest == DEST_MULTI_SINK) {
     for (size_t i = 0; i < MAX_SINK_BINS; ++i) {
       if (sink_config_array[i].sink_id == config->sink_id) {
         sink_config = &sink_config_array[i];
@@ -1007,7 +1016,9 @@ gboolean create_hmaudio_bin(
     if (sink_config->enable) {
       if (sink_config->type == NV_DS_SINK_ENCODE_FILE) {
         assert(is_dest_file_sink);
-        NvDsSinkBinSubBin* target_sink_bin = find_sink_sub_bin(config->sink_id, sink_config_array, sink_bin);
+        if (!target_sink_bin) {
+          target_sink_bin = find_sink_sub_bin(config->sink_id, sink_config_array, sink_bin);
+        }
         if (target_sink_bin) {
           assert(target_sink_bin->mux);
           if (config->src == SRC_SOURCE_BIN) {
@@ -1025,7 +1036,9 @@ gboolean create_hmaudio_bin(
           std::cerr << "No sink available for sink id " << config->sink_id << std::endl;
         }
       } else if (sink_config->type == NV_DS_SINK_UDPSINK) {
-        NvDsSinkBinSubBin* target_sink_bin = find_sink_sub_bin(config->sink_id, sink_config_array, sink_bin);
+        if (!target_sink_bin) {
+          target_sink_bin = find_sink_sub_bin(config->sink_id, sink_config_array, sink_bin);
+        }
         assert(target_sink_bin->rtppay_or_flvmux);
         HMGST_ELEMENT_MAKE_BINADD(bin->encoder, "voaacenc", "hmaudio_encoder");
         HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");

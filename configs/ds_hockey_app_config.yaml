@@ -269,7 +269,7 @@ sink3:
 # |_|  |_|_| |_| |_|/_/    \_\\__,_|\__,_||_|\___/
 #
 hmaudio0:
-  enable: 0
+  enable: 1
   # 0=default alsa source, 1=file, 2=src_bin(source-id)
   src: 2
   # source-id: 1
@@ -291,7 +291,9 @@ hmaudio0:
 
   # 0=independent (this local config), 1=sink, 2=multisink
   dest: 1
-  sink-id: 2
+  # sink-id: 2
+  # 3=RTMP
+  sink-id: -1
   # multi-sink-ids: 0,1,2
 
 
