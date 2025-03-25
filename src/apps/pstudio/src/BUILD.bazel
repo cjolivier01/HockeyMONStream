@@ -1,23 +1,25 @@
-load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+load("@rules_cc//cc:defs.bzl", "cc_library")
 
-cc_binary(
-    name = "gst_pipeline_studio",
-    srcs = ["src/main.cpp"],
-    deps = [
-        ":main_window",
-        "@qt//:qt_widgets",
-        "@gstreamer//:gstreamer",
-    ],
-    copts = [
-        "-I$(GENDIR)",
-        "-fPIC",
-    ],
+# Common C++ options
+COMMON_COPTS = [
+    "-std=c++17",  # Use C++17 instead of C++11
+    "-I$(GENDIR)",
+    "-fPIC",
+]
+
+# Run Qt's MOC on GstElementWidget
+genrule(
+    name = "gst_element_widget_moc",
+    srcs = ["GstElementWidget.h"],
+    outs = ["moc_GstElementWidget.cpp"],
+    cmd = "$(location @qt//:qt_moc) $(location GstElementWidget.h) -o $@",
+    tools = ["@qt//:qt_moc"],
 )
 
 cc_library(
     name = "main_window",
-    srcs = ["src/MainWindow.cpp"],
-    hdrs = ["src/MainWindow.h"],
+    srcs = ["MainWindow.cpp"],
+    hdrs = ["MainWindow.h"],
     deps = [
         ":pipeline_editor",
         ":element_library",
@@ -25,110 +27,94 @@ cc_library(
         "@qt//:qt_widgets",
         "@gstreamer//:gstreamer",
     ],
-    copts = [
-        "-I$(GENDIR)",
-        "-fPIC",
-    ],
+    copts = COMMON_COPTS,
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
     name = "pipeline_editor",
-    srcs = ["src/PipelineEditor.cpp"],
-    hdrs = ["src/PipelineEditor.h"],
+    srcs = ["PipelineEditor.cpp"],
+    hdrs = ["PipelineEditor.h"],
     deps = [
         ":gst_element_widget",
         ":gst_pipeline_model",
         "@qt//:qt_widgets",
     ],
-    copts = [
-        "-I$(GENDIR)",
-        "-fPIC",
-    ],
+    copts = COMMON_COPTS,
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
     name = "gst_element_widget",
-    srcs = ["src/GstElementWidget.cpp"],
-    hdrs = ["src/GstElementWidget.h"],
+    srcs = [
+        "GstElementWidget.cpp",
+        ":gst_element_widget_moc",  # Include the generated MOC file
+    ],
+    hdrs = ["GstElementWidget.h"],
     deps = [
         "@qt//:qt_widgets",
     ],
-    copts = [
-        "-I$(GENDIR)",
-        "-fPIC",
-    ],
+    copts = COMMON_COPTS,
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
     name = "gst_pipeline_model",
-    srcs = ["src/GstPipelineModel.cpp"],
-    hdrs = ["src/GstPipelineModel.h"],
+    srcs = ["GstPipelineModel.cpp"],
+    hdrs = ["GstPipelineModel.h"],
     deps = [
         ":element",
         ":connection",
         "@qt//:qt_core",
         "@gstreamer//:gstreamer",
     ],
-    copts = [
-        "-I$(GENDIR)",
-        "-fPIC",
-    ],
+    copts = COMMON_COPTS,
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
     name = "element_library",
-    srcs = ["src/ElementLibrary.cpp"],
-    hdrs = ["src/ElementLibrary.h"],
+    srcs = ["ElementLibrary.cpp"],
+    hdrs = ["ElementLibrary.h"],
     deps = [
         "@qt//:qt_widgets",
         "@gstreamer//:gstreamer",
     ],
-    copts = [
-        "-I$(GENDIR)",
-        "-fPIC",
-    ],
+    copts = COMMON_COPTS,
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
     name = "pipeline",
-    srcs = ["src/Pipeline.cpp"],
-    hdrs = ["include/GstPipelineStudio/Pipeline.h"],
+    srcs = ["Pipeline.cpp"],
+    hdrs = ["Pipeline.h"],
     deps = [
         ":element",
         ":connection",
         "@qt//:qt_core",
     ],
-    includes = ["include"],
-    copts = [
-        "-I$(GENDIR)",
-        "-fPIC",
-    ],
+    copts = COMMON_COPTS,
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
     name = "element",
-    srcs = ["src/Element.cpp"],
-    hdrs = ["include/GstPipelineStudio/Element.h"],
+    srcs = ["Element.cpp"],
+    hdrs = ["Element.h"],
     deps = [
         "@qt//:qt_core",
     ],
-    includes = ["include"],
-    copts = [
-        "-I$(GENDIR)",
-        "-fPIC",
-    ],
+    copts = COMMON_COPTS,
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
     name = "connection",
-    srcs = ["src/Connection.cpp"],
-    hdrs = ["include/GstPipelineStudio/Connection.h"],
+    srcs = ["Connection.cpp"],
+    hdrs = ["Connection.h"],
     deps = [
         "@qt//:qt_core",
     ],
-    includes = ["include"],
-    copts = [
-        "-I$(GENDIR)",
-        "-fPIC",
-    ],
+    copts = COMMON_COPTS,
+    visibility = ["//visibility:public"],
 )

@@ -1,13 +1,13 @@
 #include "PipelineEditor.h"
 
-#include <QAction>
-#include <QContextMenuEvent>
-#include <QGraphicsLineItem>
-#include <QInputDialog>
-#include <QMenu>
-#include <QMessageBox>
-#include <QPen>
-#include <QVBoxLayout>
+#include <QtGui/QAction>
+#include <QtGui/QContextMenuEvent>
+#include <QtWidgets/QGraphicsLineItem>
+#include <QtWidgets/QInputDialog>
+#include <QtWidgets/QMenu>
+#include <QtWidgets/QMessageBox>
+#include <QtGui/QPen>
+#include <QtWidgets/QVBoxLayout>
 
 PipelineEditor::PipelineEditor(QWidget* parent)
     : QWidget(parent),

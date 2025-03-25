@@ -2,10 +2,10 @@
 #define GSTPIPELINEMODEL_H
 
 #include <gst/gst.h>
-#include <QList>
-#include <QMap>
-#include <QObject>
-#include <QString>
+#include <QtCore/QList>
+#include <QtCore/QMap>
+#include <QtCore/QObject>
+#include <QtCore/QString>
 
 // Forward declarations
 class Element;

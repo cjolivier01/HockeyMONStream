@@ -1,9 +1,9 @@
 #include "GstPipelineModel.h"
 
-#include <QDebug>
-#include <QRegularExpression>
-#include <QStringList>
-#include <QVariant>
+#include <QtCore/QDebug>
+#include <QtCore/QRegularExpression>
+#include <QtCore/QStringList>
+#include <QtCore/QVariant>
 
 GstPipelineModel::GstPipelineModel(QObject* parent)
     : QObject(parent), m_pipeline(nullptr), m_bus(nullptr), m_busWatchId(0), m_isBuilt(false) {

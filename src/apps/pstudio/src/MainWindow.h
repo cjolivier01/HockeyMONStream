@@ -6,11 +6,11 @@
 #include "PipelineEditor.h"
 
 #include <gst/gst.h>
-#include <QDockWidget>
-#include <QLabel>
-#include <QMainWindow>
-#include <QTextEdit>
-#include <QTimer>
+#include <QtWidgets/QDockWidget>
+#include <QtWidgets/QLabel>
+#include <QtWidgets/QMainWindow>
+#include <QtWidgets/QTextEdit>
+#include <QtCore/QTimer>
 
 class MainWindow : public QMainWindow {
   Q_OBJECT

@@ -1,11 +1,11 @@
 #include "ElementLibrary.h"
 
 #include <gst/gst.h>
-#include <QGroupBox>
-#include <QLabel>
-#include <QPushButton>
-#include <QToolTip>
-#include <QVBoxLayout>
+#include <QtWidgets/QGroupBox>
+#include <QtWidgets/QLabel>
+#include <QtWidgets/QPushButton>
+#include <QtWidgets/QToolTip>
+#include <QtWidgets/QVBoxLayout>
 
 ElementLibrary::ElementLibrary(QWidget* parent)
     : QWidget(parent), m_searchEdit(new QLineEdit(this)), m_elementList(new QListWidget(this)) {

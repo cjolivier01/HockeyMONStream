@@ -1,12 +1,12 @@
 #ifndef ELEMENTLIBRARY_H
 #define ELEMENTLIBRARY_H
 
-#include <QIcon>
-#include <QLineEdit>
-#include <QListWidget>
-#include <QMap>
-#include <QString>
-#include <QWidget>
+#include <QtWidgets/QLineEdit>
+#include <QtGui/QIcon>
+#include <QtWidgets/QListWidget>
+#include <QtCore/QMap>
+#include <QtCore/QString>
+#include <QtWidgets/QWidget>
 
 class ElementLibrary : public QWidget {
   Q_OBJECT

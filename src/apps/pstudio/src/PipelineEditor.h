@@ -4,10 +4,10 @@
 #include "GstElementWidget.h"
 #include "GstPipelineModel.h"
 
-#include <QGraphicsScene>
-#include <QGraphicsView>
-#include <QMap>
-#include <QWidget>
+#include <QtWidgets/QGraphicsScene>
+#include <QtWidgets/QGraphicsView>
+#include <QtCore/QMap>
+#include <QtWidgets/QWidget>
 
 class PipelineEditor : public QWidget {
   Q_OBJECT

@@ -14,5 +14,6 @@ cc_test(
     copts = [
         "-I$(GENDIR)",
         "-fPIC",
+        "-std=c++17",
     ],
 )

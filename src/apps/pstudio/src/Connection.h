@@ -1,7 +1,7 @@
 #ifndef CONNECTION_H
 #define CONNECTION_H
 
-#include <QString>
+#include <QtCore/QString>
 
 class Connection {
  public:

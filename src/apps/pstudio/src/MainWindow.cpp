@@ -1,15 +1,15 @@
 #include "MainWindow.h"
 
-#include <QDebug>
-#include <QFileDialog>
-#include <QMenuBar>
-#include <QMessageBox>
-#include <QProcess>
-#include <QSplitter>
-#include <QStatusBar>
-#include <QTemporaryFile>
-#include <QTextStream>
-#include <QToolBar>
+#include <QtCore/QDebug>
+#include <QtWidgets/QFileDialog>
+#include <QtWidgets/QMenuBar>
+#include <QtWidgets/QMessageBox>
+#include <QtCore/QProcess>
+#include <QtWidgets/QSplitter>
+#include <QtWidgets/QStatusBar>
+#include <QtCore/QTemporaryFile>
+#include <QtCore/QTextStream>
+#include <QtWidgets/QToolBar>
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent),

@@ -1,7 +1,10 @@
 cc_library(
     name = "qt_core",
     hdrs = glob(["include/x86_64-linux-gnu/qt6/QtCore/**"]),
-    includes = ["include/x86_64-linux-gnu/qt6"],
+    includes = [
+        "include/x86_64-linux-gnu/qt6",
+        "include",  # Add the base include directory
+    ],
     linkopts = ["-lQt6Core"],
     visibility = ["//visibility:public"],
 )
@@ -12,8 +15,11 @@ cc_library(
         "include/x86_64-linux-gnu/qt6/QtWidgets/**",
         "include/x86_64-linux-gnu/qt6/QtGui/**",
     ]),
-    includes = ["include/x86_64-linux-gnu/qt6"],
-    deps = [":qt_core"],
+    includes = [
+        "include/x86_64-linux-gnu/qt6",
+        "include",  # Add the base include directory
+    ],
+    deps = [":qt_core", ":qt_gui"],
     linkopts = [
         "-lQt6Widgets",
         "-lQt6Gui",
@@ -24,7 +30,10 @@ cc_library(
 cc_library(
     name = "qt_gui",
     hdrs = glob(["include/x86_64-linux-gnu/qt6/QtGui/**"]),
-    includes = ["include/x86_64-linux-gnu/qt6"],
+    includes = [
+        "include/x86_64-linux-gnu/qt6",
+        "include",  # Add the base include directory
+    ],
     deps = [":qt_core"],
     linkopts = ["-lQt6Gui"],
     visibility = ["//visibility:public"],
@@ -34,7 +43,10 @@ cc_library(
 cc_library(
     name = "qt_test",
     hdrs = glob(["include/x86_64-linux-gnu/qt6/QtTest/**"]),
-    includes = ["include/x86_64-linux-gnu/qt6"],
+    includes = [
+        "include/x86_64-linux-gnu/qt6",
+        "include",  # Add the base include directory
+    ],
     deps = [":qt_core", ":qt_gui"],
     linkopts = ["-lQt6Test"],
     visibility = ["//visibility:public"],
