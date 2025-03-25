@@ -14,6 +14,8 @@ int main(int argc, char** argv) {
   bool show = false;
   bool interactive = false;
   bool verbose = false;
+  bool async = false;
+  (void)async;
   // Basic command-line argument parsing.
   for (int i = 1; i < argc; i++) {
     std::string arg = argv[i];

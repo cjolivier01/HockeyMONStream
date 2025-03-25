@@ -14,6 +14,7 @@ cc_library(
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    "//src/libs/common:utils",
     "@opencv_linux//:opencv",
     "@com_google_absl//absl/cleanup",
     "@com_google_absl//absl/status:status",
@@ -30,7 +31,6 @@ cc_binary(
   ],
   deps = [
     ":camera",
-    "//src/libs/common:utils",
     "@opencv_linux//:opencv",
     "@com_google_absl//absl/status:status",
   ]
