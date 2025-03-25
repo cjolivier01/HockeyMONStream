@@ -1,0 +1,18 @@
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
+cc_test(
+    name = "test_pipeline",
+    srcs = ["test_pipeline.cpp"],
+    deps = [
+        "//:pipeline",
+        "//:element",
+        "//:connection",
+        "@qt//:qt_core",
+        "@qt//:qt_test",
+        "@gstreamer//:gstreamer",
+    ],
+    copts = [
+        "-I$(GENDIR)",
+        "-fPIC",
+    ],
+)

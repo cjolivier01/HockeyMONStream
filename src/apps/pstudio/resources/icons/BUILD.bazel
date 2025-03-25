@@ -1,0 +1,23 @@
+filegroup(
+    name = "icon_files",
+    srcs = [
+        "new.png",
+        "open.png",
+        "save.png",
+        "build.png",
+        "run.png",
+        "pause.png",
+        "stop.png",
+        "visualize.png",
+        "source.png",
+        "sink.png",
+        "filter.png",
+        "converter.png",
+        "encoder.png",
+        "decoder.png",
+        "element.png",
+        "close.png",
+        "float.png",
+    ],
+    visibility = ["//resources:__pkg__"],
+)

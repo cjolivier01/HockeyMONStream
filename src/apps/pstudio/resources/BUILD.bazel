@@ -1,0 +1,26 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+# For building Qt resources
+genrule(
+    name = "resources_qrc",
+    srcs = [
+        "resources.qrc",
+        "//resources/styles:styles_files",
+        "//resources/icons:icon_files",
+    ],
+    outs = ["resources.cc"],
+    cmd = "$(QT_RCC) -name resources $(location resources.qrc) -o $@",
+    tools = ["@qt//:qt_rcc"],
+)
+
+cc_library(
+    name = "resources",
+    srcs = [":resources_qrc"],
+    deps = [
+        "@qt//:qt_core",
+    ],
+    copts = [
+        "-fPIC",
+    ],
+    visibility = ["//visibility:public"],
+)

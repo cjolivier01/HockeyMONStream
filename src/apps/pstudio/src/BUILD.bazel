@@ -1,0 +1,134 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+
+cc_binary(
+    name = "gst_pipeline_studio",
+    srcs = ["src/main.cpp"],
+    deps = [
+        ":main_window",
+        "@qt//:qt_widgets",
+        "@gstreamer//:gstreamer",
+    ],
+    copts = [
+        "-I$(GENDIR)",
+        "-fPIC",
+    ],
+)
+
+cc_library(
+    name = "main_window",
+    srcs = ["src/MainWindow.cpp"],
+    hdrs = ["src/MainWindow.h"],
+    deps = [
+        ":pipeline_editor",
+        ":element_library",
+        ":gst_pipeline_model",
+        "@qt//:qt_widgets",
+        "@gstreamer//:gstreamer",
+    ],
+    copts = [
+        "-I$(GENDIR)",
+        "-fPIC",
+    ],
+)
+
+cc_library(
+    name = "pipeline_editor",
+    srcs = ["src/PipelineEditor.cpp"],
+    hdrs = ["src/PipelineEditor.h"],
+    deps = [
+        ":gst_element_widget",
+        ":gst_pipeline_model",
+        "@qt//:qt_widgets",
+    ],
+    copts = [
+        "-I$(GENDIR)",
+        "-fPIC",
+    ],
+)
+
+cc_library(
+    name = "gst_element_widget",
+    srcs = ["src/GstElementWidget.cpp"],
+    hdrs = ["src/GstElementWidget.h"],
+    deps = [
+        "@qt//:qt_widgets",
+    ],
+    copts = [
+        "-I$(GENDIR)",
+        "-fPIC",
+    ],
+)
+
+cc_library(
+    name = "gst_pipeline_model",
+    srcs = ["src/GstPipelineModel.cpp"],
+    hdrs = ["src/GstPipelineModel.h"],
+    deps = [
+        ":element",
+        ":connection",
+        "@qt//:qt_core",
+        "@gstreamer//:gstreamer",
+    ],
+    copts = [
+        "-I$(GENDIR)",
+        "-fPIC",
+    ],
+)
+
+cc_library(
+    name = "element_library",
+    srcs = ["src/ElementLibrary.cpp"],
+    hdrs = ["src/ElementLibrary.h"],
+    deps = [
+        "@qt//:qt_widgets",
+        "@gstreamer//:gstreamer",
+    ],
+    copts = [
+        "-I$(GENDIR)",
+        "-fPIC",
+    ],
+)
+
+cc_library(
+    name = "pipeline",
+    srcs = ["src/Pipeline.cpp"],
+    hdrs = ["include/GstPipelineStudio/Pipeline.h"],
+    deps = [
+        ":element",
+        ":connection",
+        "@qt//:qt_core",
+    ],
+    includes = ["include"],
+    copts = [
+        "-I$(GENDIR)",
+        "-fPIC",
+    ],
+)
+
+cc_library(
+    name = "element",
+    srcs = ["src/Element.cpp"],
+    hdrs = ["include/GstPipelineStudio/Element.h"],
+    deps = [
+        "@qt//:qt_core",
+    ],
+    includes = ["include"],
+    copts = [
+        "-I$(GENDIR)",
+        "-fPIC",
+    ],
+)
+
+cc_library(
+    name = "connection",
+    srcs = ["src/Connection.cpp"],
+    hdrs = ["include/GstPipelineStudio/Connection.h"],
+    deps = [
+        "@qt//:qt_core",
+    ],
+    includes = ["include"],
+    copts = [
+        "-I$(GENDIR)",
+        "-fPIC",
+    ],
+)
