@@ -1,10 +1,10 @@
 #ifndef ELEMENT_H
 #define ELEMENT_H
 
-#include <QString>
-#include <QPointF>
-#include <QMap>
-#include <QVariant>
+#include <QtCore/QString>
+#include <QtCore/QPointF>
+#include <QtCore/QMap>
+#include <QtCore/QVariant>
 
 class Element
 {

@@ -1,0 +1,8 @@
+filegroup(
+    name = "styles_files",
+    srcs = [
+        "dark.qss",
+        "light.qss",
+    ],
+    visibility = ["//resources:__pkg__"],
+)

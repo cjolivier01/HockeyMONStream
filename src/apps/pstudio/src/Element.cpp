@@ -1,7 +1,7 @@
 #include "Element.h"
 
-#include <QStringList>
-#include <QRegularExpression>
+#include <QtCore/QStringList>
+#include <QtCore/QRegularExpression>
 
 Element::Element(const QString &factoryName, const QString &name)
     : m_name(name)

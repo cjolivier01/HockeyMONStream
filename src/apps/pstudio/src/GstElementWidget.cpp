@@ -1,21 +1,19 @@
 #include "GstElementWidget.h"
 
-#include <QPainter>
-#include <QStyleOptionGraphicsItem>
-#include <QGraphicsSceneMouseEvent>
-#include <QGraphicsSceneContextMenuEvent>
-#include <QMenu>
-#include <QAction>
-#include <QGraphicsScene>
-#include <QInputDialog>
-#include <QApplication>
-
-// Since GstElementWidget can't be a QObject (multiple inheritance restrictions),
-// we need to use a different approach for signals. For a real implementation,
-// you might want to use a proxy QObject or redesign the class hierarchy.
+#include <QtGui/QAction>
+#include <QtGui/QPainter>
+#include <QtWidgets/QStyleOptionGraphicsItem>
+#include <QtWidgets/QGraphicsSceneMouseEvent>
+#include <QtWidgets/QGraphicsSceneContextMenuEvent>
+#include <QtWidgets/QMenu>
+#include <QtWidgets/QGraphicsScene>
+#include <QtWidgets/QInputDialog>
+#include <QtWidgets/QApplication>
 
 GstElementWidget::GstElementWidget(const QString &name)
-    : m_name(name)
+    : QObject(nullptr)  // Initialize QObject part with no parent
+    , QGraphicsItem()   // Initialize QGraphicsItem part
+    , m_name(name)
     , m_rect(0, 0, 120, 60)
     , m_isSelected(false)
     , m_isMoving(false)
@@ -45,7 +43,8 @@ void GstElementWidget::paint(QPainter *painter, const QStyleOptionGraphicsItem *
     
     if (option->state & QStyle::State_Selected) {
         pen.setColor(Qt::blue);
-        brush.setColor(Qt::lightBlue);
+        // Use QColor instead of Qt::lightBlue (which doesn't exist)
+        brush.setColor(QColor(173, 216, 230)); // A light blue color
     }
     
     painter->setPen(pen);
@@ -80,15 +79,7 @@ void GstElementWidget::mousePressEvent(QGraphicsSceneMouseEvent *event)
         m_initialPos = pos();
         
         // Emit selected signal
-        QVariant selectedData;
-        selectedData.setValue(m_name);
-        QByteArray signalData;
-        QDataStream ds(&signalData, QIODevice::WriteOnly);
-        ds << selectedData;
-        QCoreApplication::sendEvent(scene(), new QEvent(QEvent::User));
-        
-        // This is a hack to simulate a signal. In a real implementation,
-        // you would use the proper signal mechanism or redesign the class.
+        emit selected(m_name);
     }
     
     QGraphicsItem::mousePressEvent(event);
@@ -104,19 +95,9 @@ void GstElementWidget::mouseReleaseEvent(QGraphicsSceneMouseEvent *event)
     if (event->button() == Qt::LeftButton && m_isMoving) {
         m_isMoving = false;
         
-        // Emit moved signal
+        // Emit moved signal if position changed
         if (pos() != m_initialPos) {
-            // This is a hack to simulate a signal. In a real implementation,
-            // you would use the proper signal mechanism or redesign the class.
-            QVariant movedData;
-            QMap<QString, QVariant> dataMap;
-            dataMap["name"] = m_name;
-            dataMap["pos"] = pos();
-            movedData.setValue(dataMap);
-            QByteArray signalData;
-            QDataStream ds(&signalData, QIODevice::WriteOnly);
-            ds << movedData;
-            QCoreApplication::sendEvent(scene(), new QEvent(QEvent::User));
+            emit moved(m_name, pos());
         }
     }
     
@@ -171,29 +152,9 @@ void GstElementWidget::contextMenuEvent(QGraphicsSceneContextMenuEvent *event)
         delete this;
     } else if (selectedAction && selectedAction->parent() == connectMenu) {
         QString targetElement = selectedAction->data().toString();
-        
-        // Emit connection request signal
-        QVariant connectData;
-        QMap<QString, QVariant> dataMap;
-        dataMap["src"] = m_name;
-        dataMap["dst"] = targetElement;
-        connectData.setValue(dataMap);
-        QByteArray signalData;
-        QDataStream ds(&signalData, QIODevice::WriteOnly);
-        ds << connectData;
-        QCoreApplication::sendEvent(scene(), new QEvent(QEvent::User));
+        emit connectionRequested(m_name, targetElement);
     } else if (selectedAction && selectedAction->parent() == disconnectMenu) {
         QString targetElement = selectedAction->data().toString();
-        
-        // Emit connection remove request signal
-        QVariant disconnectData;
-        QMap<QString, QVariant> dataMap;
-        dataMap["src"] = m_name;
-        dataMap["dst"] = targetElement;
-        disconnectData.setValue(dataMap);
-        QByteArray signalData;
-        QDataStream ds(&signalData, QIODevice::WriteOnly);
-        ds << disconnectData;
-        QCoreApplication::sendEvent(scene(), new QEvent(QEvent::User));
+        emit connectionRemoveRequested(m_name, targetElement);
     }
 }

@@ -1,6 +1,6 @@
 #include "Connection.h"
 
-#include <QRegularExpression>
+#include <QtCore/QRegularExpression>
 
 Connection::Connection(const QString &srcElement, const QString &srcPad,
                      const QString &dstElement, const QString &dstPad)

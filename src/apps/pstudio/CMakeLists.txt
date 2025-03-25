@@ -30,6 +30,9 @@ set(SOURCES
     src/GstElementWidget.cpp
     src/GstPipelineModel.cpp
     src/ElementLibrary.cpp
+    src/Pipeline.cpp
+    src/Element.cpp
+    src/Connection.cpp
 )
 
 # Resource files

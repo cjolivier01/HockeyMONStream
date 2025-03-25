@@ -1,0 +1,64 @@
+workspace(name = "gst_pipeline_studio")
+
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
+
+# bazel_skylib is a dependency of rules_foreign_cc
+http_archive(
+    name = "bazel_skylib",
+    sha256 = "74d544d96f4a5bb630d465ca8bbcfe231e3594e5aae57e1edbf17a6eb3ca2506",
+    urls = [
+        "https://mirror.bazel.build/github.com/bazelbuild/bazel-skylib/releases/download/1.3.0/bazel-skylib-1.3.0.tar.gz",
+        "https://github.com/bazelbuild/bazel-skylib/releases/download/1.3.0/bazel-skylib-1.3.0.tar.gz",
+    ],
+)
+
+load("@bazel_skylib//:workspace.bzl", "bazel_skylib_workspace")
+bazel_skylib_workspace()
+
+# For building with external C/C++ dependencies
+http_archive(
+    name = "rules_foreign_cc",
+    sha256 = "2a4d07cd64b0719b39a7c12218a3e507672b82a97b98c6a89d38565894cf7c51",
+    strip_prefix = "rules_foreign_cc-0.9.0",
+    url = "https://github.com/bazelbuild/rules_foreign_cc/archive/refs/tags/0.9.0.tar.gz",
+)
+
+load("@rules_foreign_cc//foreign_cc:repositories.bzl", "rules_foreign_cc_dependencies")
+rules_foreign_cc_dependencies()
+
+# Qt needs pkg-config
+http_archive(
+    name = "rules_pkg",
+    urls = [
+        "https://github.com/bazelbuild/rules_pkg/releases/download/0.9.1/rules_pkg-0.9.1.tar.gz",
+    ],
+    sha256 = "8f9ee2dc10c1ae514ee599a8b42ed99fa262b757058f65ad3c384289ff70c4b8",
+)
+
+load("@rules_pkg//pkg:deps.bzl", "rules_pkg_dependencies")
+rules_pkg_dependencies()
+
+# External C++ Rules (needed for Qt)
+http_archive(
+    name = "rules_cc",
+    urls = ["https://github.com/bazelbuild/rules_cc/releases/download/0.0.6/rules_cc-0.0.6.tar.gz"],
+    sha256 = "3d9e271e2876ba42e114c9b9bc51454e379cbf0ec9ef9d40e2ae4cec61a31b40",
+    strip_prefix = "rules_cc-0.0.6",
+)
+
+# Qt repository
+# Note: In a real project, you would probably want to build Qt from source or use a system installation
+# Here we're showing how to set up the dependency but implementation would depend on your environment
+new_local_repository(
+    name = "qt",
+    build_file = "//third_party:qt.BUILD",
+    path = "/usr",  # Adjust this to point to your Qt installation directory
+)
+
+# GStreamer repository
+new_local_repository(
+    name = "gstreamer",
+    build_file = "//third_party:gstreamer.BUILD",
+    path = "/usr",  # Adjust this to point to your GStreamer installation directory
+)
