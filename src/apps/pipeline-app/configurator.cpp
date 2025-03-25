@@ -687,9 +687,9 @@ absl::Status Configurator::complete_configuration(bool force) {
       bool configure_only = get_node_value(pipeline, "hmstitcher.configure-only", false);
       if (!configure_only) {
         return absl::FailedPreconditionError(
-            "Unable to determine canvas size and stitcher is not set to configure-only");
+            "Unable to determine the canvas size and stitcher is not set to configure-only");
       }
-      std::cout << "The stitched canvas size is not yet know, will determine in the ensuing pipeline run" << std::endl;
+      std::cout << "The stitched canvas size is not yet known, will determine in the ensuing pipeline run" << std::endl;
     }
   } else {
     auto wh_tuple = maybe_scale_down(ww, hh);
