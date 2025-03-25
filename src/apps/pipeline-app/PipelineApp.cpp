@@ -3,6 +3,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <gstreamer-1.0/gst/gstelement.h>
+#include "hstream/src/apps/apps-common/deepstream_config.h"
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
 #undef Status
 /* clang-format on */
@@ -26,6 +27,7 @@
 
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
+#include "hstream/src/libs/camera/AutoFocus.h"
 #include "hstream/src/libs/common/ModPipeline.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
@@ -198,7 +200,8 @@ absl::Status PipelineApplication::configureInstances(
       }
       YAML::Node config = app_ctx->configurator().config();
       if (!config["pipeline"].IsDefined() ||
-          !parse_config_yaml(config["pipeline"], &app_ctx->config, fs::path(app_ctx->app_config_file()).parent_path())) {
+          !parse_config_yaml(
+              config["pipeline"], &app_ctx->config, fs::path(app_ctx->app_config_file()).parent_path())) {
         NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", app_ctx->app_config_file().c_str());
         app_ctx->return_value = -1;
         return absl::InternalError("Failed to parse config file");
@@ -235,7 +238,50 @@ absl::Status PipelineApplication::createPipelines(
           GST_BIN(app_contexts[i]->pipeline.pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "/mnt/data/src/hstream/pipeline.dot");
     }
   }
-  return absl::OkStatus();
+  return auto_focus_cameras(app_contexts);
+}
+
+/*
+struct CameraConnection {
+  int sensor_id{0};
+  int i2c_bus{0};
+  int width{0};
+  int height{0};
+  int fps_n{0};
+  int fps_d{0};
+};
+*/
+absl::Status PipelineApplication::auto_focus_cameras(const std::vector<std::shared_ptr<HmApp>>& app_contexts) const {
+  std::vector<hm::camera::CameraConnection> cameras;
+  std::set<int> sensors, bus;
+  for (const auto& app : app_contexts) {
+    for (size_t i = 0; i < app->config.num_source_sub_bins; ++i) {
+      const NvDsSourceConfig src_config = app->config.multi_source_config[i];
+      if (!src_config.enable) {
+        assert(false);
+        continue;
+      }
+      if (src_config.type != NV_DS_SOURCE_CAMERA_CSI) {
+        continue;
+      }
+      // Assert no duplicates
+      assert(sensors.emplace(src_config.camera_csi_sensor_id).second);
+      assert(bus.emplace(src_config.camera_i2c_bus).second);
+      cameras.emplace_back(hm::camera::CameraConnection{
+          .sensor_id = src_config.camera_csi_sensor_id,
+          .i2c_bus = src_config.camera_i2c_bus,
+          .width = src_config.camera_width,
+          .height = src_config.camera_height,
+          .fps_n = src_config.camera_fps_n,
+          .fps_d = src_config.camera_fps_d,
+      });
+    }
+  }
+  if (cameras.empty()) {
+    return absl::OkStatus();
+  }
+  return hm::camera::auto_focus_cameras(
+      cameras, /*show=*/false, /*interactive=*/false, /*verbose=*/false, /*force=*/force_reconfigure_);
 }
 
 absl::Status PipelineApplication::createMainLoop(
@@ -401,7 +447,8 @@ absl::Status PipelineApplication::playPipelines(
     CleanupStack& cleanup_stack) const {
   absl::Status status;
   for (guint i = 0; i < app_contexts.size(); i++) {
-    status = app_contexts[i]->configurator().post_config_pipeline(app_contexts[i]->pipeline, app_contexts[i]->config, start_time_ns_);
+    status = app_contexts[i]->configurator().post_config_pipeline(
+        app_contexts[i]->pipeline, app_contexts[i]->config, start_time_ns_);
     if (!status.ok()) {
       std::cerr << status << std::endl;
       g_print("\npipeline post-configuration failed.\n");
@@ -490,7 +537,7 @@ absl::StatusOr<std::vector<std::set<E_TYPE>>> parse_types(
 absl::Status PipelineApplication::run(int argc, char* argv[]) {
   absl::Status status = absl::OkStatus();
   GError* error = nullptr;
-  char *start_time{nullptr};
+  char* start_time{nullptr};
 
   CleanupStack global_cleanup_stack;
   char** pipline_options{nullptr};
@@ -565,7 +612,6 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     nvds_dependencies_version_print();
     return status;
   }
-
 
   if (start_time) {
     start_time_ns_ = hm::hhmmss_to_nanoseconds(start_time);

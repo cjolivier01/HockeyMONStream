@@ -867,6 +867,11 @@ gboolean create_hmaudio_bin(
       if (src_sub_bins[i].source_id == config->source_id) {
         source_bin = &src_sub_bins[i];
         source_config = source_bin->config;
+        if (!source_config) {
+          std::cerr << "Source bin with source-id " << config->source_id
+                    << " does not have the config pointer set, so aboring HMAudio" << std::endl;
+          return true;
+        }
         assert(source_config);
         // atm, only source uri is supported
         assert(source_config->type == NV_DS_SOURCE_URI);

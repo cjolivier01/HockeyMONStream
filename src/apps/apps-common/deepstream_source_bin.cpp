@@ -102,27 +102,27 @@ static gboolean print_field(GQuark field, const GValue* value, gpointer pfx) {
   return TRUE;
 }
 
-static void print_caps(const GstCaps* caps, const gchar* pfx) {
-  guint i;
+// static void print_caps(const GstCaps* caps, const gchar* pfx) {
+//   guint i;
 
-  g_return_if_fail(caps != NULL);
+//   g_return_if_fail(caps != NULL);
 
-  if (gst_caps_is_any(caps)) {
-    g_print("%sANY\n", pfx);
-    return;
-  }
-  if (gst_caps_is_empty(caps)) {
-    g_print("%sEMPTY\n", pfx);
-    return;
-  }
+//   if (gst_caps_is_any(caps)) {
+//     g_print("%sANY\n", pfx);
+//     return;
+//   }
+//   if (gst_caps_is_empty(caps)) {
+//     g_print("%sEMPTY\n", pfx);
+//     return;
+//   }
 
-  for (i = 0; i < gst_caps_get_size(caps); i++) {
-    GstStructure* structure = gst_caps_get_structure(caps, i);
+//   for (i = 0; i < gst_caps_get_size(caps); i++) {
+//     GstStructure* structure = gst_caps_get_structure(caps, i);
 
-    g_print("%s%s\n", pfx, gst_structure_get_name(structure));
-    gst_structure_foreach(structure, print_field, (gpointer)pfx);
-  }
-}
+//     g_print("%s%s\n", pfx, gst_structure_get_name(structure));
+//     gst_structure_foreach(structure, print_field, (gpointer)pfx);
+//   }
+// }
 #endif
 
 /**
@@ -255,21 +255,21 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
       if (config->camera_auto_focus) {
         // TODO: auto-focus elsewhere and in parallel
         // Auto-focus it before we create any elements that might touch the camera
-        std::cout << "Auto-focusing CSI camera device " << config->camera_csi_sensor_id << std::endl;
-        absl::Status af_status = hm::camera::auto_focus_csi_camera(
-            config->camera_csi_sensor_id,
-            config->camera_i2c_bus,
-            config->camera_width,
-            config->camera_height,
-            config->camera_fps_n,
-            config->camera_fps_d,
-            /*show=*/false,
-            /*interactive=*/false,
-            /*verbose=*/false);
-        if (!af_status.ok()) {
-          std::cerr << af_status << std::endl;
-          return false;
-        }
+        // std::cout << "Auto-focusing CSI camera device " << config->camera_csi_sensor_id << std::endl;
+        // absl::Status af_status = hm::camera::auto_focus_csi_camera(
+        //     config->camera_csi_sensor_id,
+        //     config->camera_i2c_bus,
+        //     config->camera_width,
+        //     config->camera_height,
+        //     config->camera_fps_n,
+        //     config->camera_fps_d,
+        //     /*show=*/false,
+        //     /*interactive=*/false,
+        //     /*verbose=*/false);
+        // if (!af_status.ok()) {
+        //   std::cerr << af_status << std::endl;
+        //   return false;
+        // }
       }
       bin->src_elem = gst_element_factory_make(NVDS_ELEM_SRC_CAMERA_CSI, "csi_src_elem");
       break;

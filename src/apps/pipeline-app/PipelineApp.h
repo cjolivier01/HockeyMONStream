@@ -113,6 +113,7 @@ class PipelineApplication {
   gboolean overlay_graphics(AppCtx* app_ctx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
   static gboolean recreate_pipeline_thread_func_static(gpointer arg);
   gboolean recreate_pipeline_thread_func(gpointer arg);
+  absl::Status auto_focus_cameras(const std::vector<std::shared_ptr<HmApp>>& app_contexts) const;
 
  private:
   // std::vector<std::unique_ptr<HmApp>> app_ctx_;

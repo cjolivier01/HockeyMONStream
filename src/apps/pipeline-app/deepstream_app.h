@@ -197,9 +197,9 @@ struct _AppCtx {
   NvDsConfig config{
       0,
   };
-  NvDsConfig override_config{
-      0,
-  };
+  // NvDsConfig override_config{
+  //     0,
+  // };
   NvDsInstanceData instance_data[MAX_SOURCE_BINS] = {
       0,
   };
