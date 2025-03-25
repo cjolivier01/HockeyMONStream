@@ -683,7 +683,7 @@
       "request": "launch",
       "cwd": "${workspaceFolder}/",
       //"program": "${workspaceFolder}/src/bazel-src/external/gstreamer/external/bin/gst-inspect-1.0",
-      "program": "/usr/local/bin/gst-inspect-1.0",
+      "program": "/usr/bin/gst-inspect-1.0",
       //"stopOnEntry": true,
       "args": [],
       "env": {
