@@ -60,6 +60,36 @@ void ElementLibrary::createLayout()
     setLayout(mainLayout);
 }
 
+// Helper function to categorize elements based on their name and functionality
+QString determineElementCategory(GstElementFactory *factory)
+{
+    // Default category
+    QString category = "Other";
+    
+    // Get the name and class of the factory
+    const gchar *klass = gst_element_factory_get_klass(factory);
+    QString klassStr = QString(klass);
+    
+    // Determine category based on klass string
+    if (klassStr.contains("Source") || klassStr.contains("Producer")) {
+        category = "Source";
+    } else if (klassStr.contains("Sink")) {
+        category = "Sink";
+    } else if (klassStr.contains("Filter") || klassStr.contains("Effect") || 
+              klassStr.contains("Transform")) {
+        category = "Filter";
+    } else if (klassStr.contains("Codec") || klassStr.contains("Converter") ||
+              klassStr.contains("Formatter")) {
+        category = "Converter";
+    } else if (klassStr.contains("Encoder")) {
+        category = "Encoder";
+    } else if (klassStr.contains("Decoder")) {
+        category = "Decoder";
+    }
+    
+    return category;
+}
+
 void ElementLibrary::loadElements()
 {
     // Define categories for grouping elements
@@ -76,36 +106,24 @@ void ElementLibrary::loadElements()
     }
     
     // Get all element factories
-    GList *factories = gst_element_factory_list_get_elements(
-        GST_ELEMENT_FACTORY_TYPE_ANY, GST_RANK_NONE);
+    GList *factories = gst_registry_get_feature_list(gst_registry_get(), GST_TYPE_ELEMENT_FACTORY);
     
     for (GList *f = factories; f; f = f->next) {
         GstElementFactory *factory = GST_ELEMENT_FACTORY(f->data);
         
-        QString factoryName = gst_element_factory_get_name(factory);
-        QString description = gst_element_factory_get_description(factory);
+        // Get the element factory name using gst_plugin_feature_get_name
+        const gchar *name = gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory));
+        QString factoryName = QString(name);
+        
+        // Get element description
+        const gchar *desc = gst_element_factory_get_metadata(factory, GST_ELEMENT_METADATA_DESCRIPTION);
+        QString description = desc ? QString(desc) : "No description available";
         
         // Store element description
         m_elementDescriptions[factoryName] = description;
         
         // Determine category
-        QString category = "Other";
-        GstElementFactoryListType type = gst_element_factory_get_metadata_as_uint(
-            factory, GST_ELEMENT_METADATA_TYPE);
-        
-        if (type & GST_ELEMENT_FACTORY_TYPE_SRC) {
-            category = "Source";
-        } else if (type & GST_ELEMENT_FACTORY_TYPE_SINK) {
-            category = "Sink";
-        } else if (type & GST_ELEMENT_FACTORY_TYPE_FILTER) {
-            category = "Filter";
-        } else if (type & GST_ELEMENT_FACTORY_TYPE_CONVERTER) {
-            category = "Converter";
-        } else if (type & GST_ELEMENT_FACTORY_TYPE_ENCODER) {
-            category = "Encoder";
-        } else if (type & GST_ELEMENT_FACTORY_TYPE_DECODER) {
-            category = "Decoder";
-        }
+        QString category = determineElementCategory(factory);
         
         // Add element to its category
         elementsByCategory[category].append(factoryName);
@@ -139,14 +157,18 @@ void ElementLibrary::updateElementList(const QString &filter)
     m_elementList->clear();
     
     // Get all element factories
-    GList *factories = gst_element_factory_list_get_elements(
-        GST_ELEMENT_FACTORY_TYPE_ANY, GST_RANK_NONE);
+    GList *factories = gst_registry_get_feature_list(gst_registry_get(), GST_TYPE_ELEMENT_FACTORY);
     
     for (GList *f = factories; f; f = f->next) {
         GstElementFactory *factory = GST_ELEMENT_FACTORY(f->data);
         
-        QString factoryName = gst_element_factory_get_name(factory);
-        QString description = gst_element_factory_get_description(factory);
+        // Get the element factory name using gst_plugin_feature_get_name
+        const gchar *name = gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory));
+        QString factoryName = QString(name);
+        
+        // Get element description
+        const gchar *desc = gst_element_factory_get_metadata(factory, GST_ELEMENT_METADATA_DESCRIPTION);
+        QString description = desc ? QString(desc) : "No description available";
         
         // Apply filter if provided
         if (!filter.isEmpty() && 
@@ -155,24 +177,8 @@ void ElementLibrary::updateElementList(const QString &filter)
             continue;
         }
         
-        // Determine category
-        QString category = "Other";
-        GstElementFactoryListType type = gst_element_factory_get_metadata_as_uint(
-            factory, GST_ELEMENT_METADATA_TYPE);
-        
-        if (type & GST_ELEMENT_FACTORY_TYPE_SRC) {
-            category = "Source";
-        } else if (type & GST_ELEMENT_FACTORY_TYPE_SINK) {
-            category = "Sink";
-        } else if (type & GST_ELEMENT_FACTORY_TYPE_FILTER) {
-            category = "Filter";
-        } else if (type & GST_ELEMENT_FACTORY_TYPE_CONVERTER) {
-            category = "Converter";
-        } else if (type & GST_ELEMENT_FACTORY_TYPE_ENCODER) {
-            category = "Encoder";
-        } else if (type & GST_ELEMENT_FACTORY_TYPE_DECODER) {
-            category = "Decoder";
-        }
+        // Determine category using our helper function
+        QString category = determineElementCategory(factory);
         
         // Create list item
         QListWidgetItem *item = new QListWidgetItem(factoryName);

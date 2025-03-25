@@ -58,7 +58,8 @@ signals:
     void pipelineModified();
 
 private:
-    static void onBusMessage(GstBus *bus, GstMessage *message, GstPipelineModel *model);
+    // Changed from void to gboolean to match implementation
+    static gboolean onBusMessage(GstBus *bus, GstMessage *message, GstPipelineModel *model);
     void handleBusMessage(GstMessage *message);
     void setLastError(const QString &error);
 

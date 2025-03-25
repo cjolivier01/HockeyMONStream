@@ -26,8 +26,8 @@ public:
 private slots:
     void newPipeline();
     void openPipeline();
-    void savePipeline();
-    void savePipelineAs();
+    bool savePipeline();       // Changed from void to bool
+    bool savePipelineAs();     // Changed from void to bool
     void runPipeline();
     void stopPipeline();
     void pausePipeline();

@@ -138,14 +138,28 @@ bool GstPipelineModel::loadFromString(const QString &pipelineString)
                         // Determine which is source and which is sink
                         if (gst_pad_get_direction(pad) == GST_PAD_SRC) {
                             srcName = it.key();
-                            srcPad = gst_pad_get_name(pad);
+                            // Get pad name and convert to QString
+                            gchar *srcPadChars = gst_pad_get_name(pad);
+                            srcPad = QString(srcPadChars);
+                            g_free(srcPadChars);
+                            
                             sinkName = gst_element_get_name(peerElement);
-                            sinkPad = gst_pad_get_name(peer);
+                            // Get pad name and convert to QString
+                            gchar *sinkPadChars = gst_pad_get_name(peer);
+                            sinkPad = QString(sinkPadChars);
+                            g_free(sinkPadChars);
                         } else {
                             sinkName = it.key();
-                            sinkPad = gst_pad_get_name(pad);
+                            // Get pad name and convert to QString
+                            gchar *sinkPadChars = gst_pad_get_name(pad);
+                            sinkPad = QString(sinkPadChars);
+                            g_free(sinkPadChars);
+                            
                             srcName = gst_element_get_name(peerElement);
-                            srcPad = gst_pad_get_name(peer);
+                            // Get pad name and convert to QString
+                            gchar *srcPadChars = gst_pad_get_name(peer);
+                            srcPad = QString(srcPadChars);
+                            g_free(srcPadChars);
                         }
                         
                         // Add connection
@@ -156,8 +170,6 @@ bool GstPipelineModel::loadFromString(const QString &pipelineString)
                             m_connections.append(conn);
                         }
                         
-                        g_free(srcPad);
-                        g_free(sinkPad);
                         gst_object_unref(peerElement);
                     }
                     
@@ -202,7 +214,8 @@ QString GstPipelineModel::toString() const
     for (auto it = m_elements.constBegin(); it != m_elements.constEnd(); ++it) {
         QString elementName = it.key();
         GstElement *element = it.value();
-        QString factoryName = gst_element_factory_get_name(gst_element_get_factory(element));
+        GstElementFactory *factory = gst_element_get_factory(element);
+        QString factoryName = gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory));
         
         result += QString("%1=%2 ").arg(elementName, factoryName);
         
@@ -279,7 +292,9 @@ bool GstPipelineModel::buildPipeline()
     // Create all elements and add them to the pipeline
     for (auto it = m_elements.begin(); it != m_elements.end(); ++it) {
         QString elementName = it.key();
-        QString factoryName = gst_element_factory_get_name(gst_element_get_factory(it.value()));
+        GstElement *oldElement = it.value();
+        GstElementFactory *factory = gst_element_get_factory(oldElement);
+        QString factoryName = gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory));
         
         GstElement *element = gst_element_factory_make(factoryName.toUtf8().constData(), 
                                                     elementName.toUtf8().constData());
@@ -773,7 +788,7 @@ void GstPipelineModel::setLastError(const QString &error)
     qDebug() << "GstPipelineModel error:" << error;
 }
 
-void GstPipelineModel::onBusMessage(GstBus *bus, GstMessage *message, GstPipelineModel *model)
+gboolean GstPipelineModel::onBusMessage(GstBus *bus, GstMessage *message, GstPipelineModel *model)
 {
     model->handleBusMessage(message);
     return TRUE; // Continue watching

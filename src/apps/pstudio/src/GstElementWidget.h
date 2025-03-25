@@ -2,11 +2,17 @@
 #define GSTELEMENTWIDGET_H
 
 #include <QGraphicsItem>
+#include <QObject>
 #include <QString>
 #include <QPointF>
 
-class GstElementWidget : public QGraphicsItem
+// Use multiple inheritance to make GstElementWidget both a QObject and a QGraphicsItem
+class GstElementWidget : public QObject, public QGraphicsItem
 {
+    Q_OBJECT
+    // This macro is required to use multiple inheritance with QGraphicsItem
+    Q_INTERFACES(QGraphicsItem)
+
 public:
     explicit GstElementWidget(const QString &name);
     ~GstElementWidget();
@@ -19,7 +25,7 @@ public:
     QString name() const;
     
 signals:
-    // Signal declarations (cannot be directly implemented as this is not a QObject)
+    // Proper Qt signals
     void moved(const QString &elementName, const QPointF &pos);
     void selected(const QString &elementName);
     void connectionRequested(const QString &srcElement, const QString &dstElement);
