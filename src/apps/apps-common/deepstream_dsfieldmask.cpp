@@ -999,11 +999,7 @@ gboolean create_hmaudio_bin(
   } else if (config->src == SRC_SOURCE_BIN) {
     assert(source_bin->src_elem);
     assert(bin->audioconvert);
-    // assert(source_bin->decodebin);
     g_signal_connect(source_bin->src_elem, "pad-added", G_CALLBACK(on_decode_pad_added), bin->audioconvert);
-    // auto ret = connectElementsWithGhostPads(source_bin->src_elem, "src_%d", bin->audioresample, "sink",
-    // "hmaudio_source_bin"); assert(ret);
-    // NVGSTDS_LINK_ELEMENT(source_bin->src_elem, bin->audioconvert);
     NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->audioresample);
     NVGSTDS_LINK_ELEMENT(bin->audioresample, bin->queue);
   } else {
@@ -1086,13 +1082,6 @@ gboolean create_hmaudio_bin(
       NVGSTDS_LINK_ELEMENT(bin->queue, bin->audiosink);
     }
   }
-
-  // GstClock *system_clock = gst_system_clock_obtain();
-
-  // Fine-tune AV sync with latency adjustment
-  // g_object_set(G_OBJECT(audio_sink),
-  //   "ts-offset", 0,  // Adjust this value (in nanoseconds) if needed
-  //   NULL);
 
   ret = TRUE;
 done:
