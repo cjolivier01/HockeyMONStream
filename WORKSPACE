@@ -92,7 +92,8 @@ new_local_repository(
 new_git_repository(
     name = "yaml-cpp",
     build_file = "@//buildfiles:third_party/yaml-cpp.BUILD",
-    tag="0.8.0",
+    # tag="0.8.0",
+    commit = "f7320141120f720aecc4c32be25586e7da9eb978",
     remote = "https://github.com/jbeder/yaml-cpp.git",
 )
 
@@ -124,7 +125,8 @@ git_repository(
 git_repository(
     name = "com_google_absl",
     remote = "https://github.com/abseil/abseil-cpp.git",
-    tag = "20250127.0",
+    # tag = "20250127.0",
+    commit = "9ac7062b1860d895fb5a8cbf58c3e9ef8f674b5f",
 )
 
 new_local_repository(
