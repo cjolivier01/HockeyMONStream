@@ -95,8 +95,8 @@
       //"stopOnEntry": true,
       "env": {
         //"GST_DEBUG": "nvvideoconvert:7",
-        //"GST_DEBUG": "0",
-        // "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
+        "GST_DEBUG": "4",
+        "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
         //"LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib",
         "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins",
         //"GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
@@ -240,8 +240,10 @@
       "args": [
         // "--i2c-bus", "9",
         // "--device-id", "0",
-        "--i2c-bus", "14",
-        "--device-id", "1",
+        "--i2c-bus",
+        "14",
+        "--device-id",
+        "1",
         "--show",
         "--interactive",
       ],
@@ -270,8 +272,7 @@
       },
       "cwd": "${workspaceFolder}",
       "program": "${workspaceFolder}/bazel-bin/src/libs/common/mod_pipeline",
-      "args": [
-      ],
+      "args": [],
       "sourceMap": {
         // "/proc/self/cwd/external/jetson-utils" : "",
         "/proc/self/cwd": "${workspaceFolder}",

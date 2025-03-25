@@ -1697,6 +1697,7 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
 
   bin->streammux = gst_element_factory_make(NVDS_ELEM_STREAM_MUX, "src_bin_muxer");
   if (!bin->streammux) {
+    std::cout << "Could not create element " << NVDS_ELEM_STREAM_MUX << ", are all plugins registered properly, or possible libyaml-cpp.so.7 is not installed?" << std::endl;
     NVGSTDS_ERR_MSG_V("Failed to create element 'src_bin_muxer'");
     goto done;
   }
