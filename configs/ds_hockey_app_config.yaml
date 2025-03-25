@@ -208,7 +208,7 @@ sink3:
   enc-type: 0
   sync: 1
   # bitrate: 4000000
-  # bitrate: 200000
+  bitrate: 200000
   #NVBUF-MEMORY-TYPE: 0
   #H264 Profile - 0=Baseline 2=Main 4=High
   #H265 Profile - 0=Main 1=Main10
@@ -269,7 +269,7 @@ sink3:
 # |_|  |_|_| |_| |_|/_/    \_\\__,_|\__,_||_|\___/
 #
 hmaudio0:
-  enable: 1
+  enable: 0
   # 0=default alsa source, 1=file, 2=src_bin(source-id)
   src: 2
   # source-id: 1
@@ -438,7 +438,7 @@ ds-playtracker:
   config-file: play_tracker_config.yaml
 
 ds-fieldmask:
-  enable: 0
+  enable: 1
   gpu-id: 0
   unique-id: 76
   # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png
