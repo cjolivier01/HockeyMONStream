@@ -9,7 +9,7 @@ genrule(
         "//resources/icons:icon_files",
     ],
     outs = ["resources.cc"],
-    cmd = "$(QT_RCC) -name resources $(location resources.qrc) -o $@",
+    cmd = "$(location @qt//:qt_rcc) -name resources $(location resources.qrc) -o $@",
     tools = ["@qt//:qt_rcc"],
 )
 

@@ -30,6 +30,16 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+# Adding Qt Test module
+cc_library(
+    name = "qt_test",
+    hdrs = glob(["include/x86_64-linux-gnu/qt6/QtTest/**"]),
+    includes = ["include/x86_64-linux-gnu/qt6"],
+    deps = [":qt_core", ":qt_gui"],
+    linkopts = ["-lQt6Test"],
+    visibility = ["//visibility:public"],
+)
+
 filegroup(
     name = "qt_rcc",
     srcs = ["bin/rcc"],

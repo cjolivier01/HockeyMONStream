@@ -4,9 +4,9 @@ cc_test(
     name = "test_pipeline",
     srcs = ["test_pipeline.cpp"],
     deps = [
-        "//:pipeline",
-        "//:element",
-        "//:connection",
+        "//src:pipeline",
+        "//src:element",
+        "//src:connection",
         "@qt//:qt_core",
         "@qt//:qt_test",
         "@gstreamer//:gstreamer",
