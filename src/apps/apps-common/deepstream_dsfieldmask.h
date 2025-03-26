@@ -259,6 +259,8 @@ struct NvDsHmAudioBin {
   // RTSP/RTMP
   GstElement* encoder;
 
+  GstElement* post_queue;
+
   // GstElement* postparse_presink_tee;
   GstElement* audiosink{nullptr};
 

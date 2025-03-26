@@ -1026,7 +1026,14 @@ gboolean create_hmaudio_bin(
         if (target_sink_bin) {
           assert(target_sink_bin->mux);
           if (config->src == SRC_SOURCE_BIN) {
-            NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "src");
+            // We need to encode it back to aac and not save it raw to the video file
+            HMGST_ELEMENT_MAKE_BINADD(bin->encoder, "voaacenc", "hmaudio_encoder");
+            HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
+            HMGST_ELEMENT_MAKE_BINADD(bin->post_queue, NVDS_ELEM_QUEUE, "hmaudio_post_queue");
+            NVGSTDS_LINK_ELEMENT(bin->queue, bin->encoder);
+            NVGSTDS_LINK_ELEMENT(bin->encoder, bin->audioparse);
+            NVGSTDS_LINK_ELEMENT(bin->audioparse, bin->post_queue);
+            NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->post_queue, "src");
           } else {
             HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
             NVGSTDS_LINK_ELEMENT(bin->queue, bin->audioparse);
