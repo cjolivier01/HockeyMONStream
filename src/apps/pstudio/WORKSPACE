@@ -1,7 +1,7 @@
 workspace(name = "gst_pipeline_studio")
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
-load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
+# load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
 
 # bazel_skylib is a dependency of rules_foreign_cc
 http_archive(
