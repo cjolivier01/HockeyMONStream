@@ -22,9 +22,9 @@ MainWindow::MainWindow(QWidget* parent)
   // Setup UI
   setCentralWidget(m_pipelineEditor);
   createActions();
+  createDockWindows();
   createMenus();
   createToolbars();
-  createDockWindows();
   createStatusBar();
   setupConnections();
 

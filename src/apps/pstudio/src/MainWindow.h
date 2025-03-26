@@ -49,19 +49,19 @@ class MainWindow : public QMainWindow {
   void updateWindowTitle();
 
   // UI Components
-  PipelineEditor* m_pipelineEditor;
-  ElementLibrary* m_elementLibrary;
-  QTextEdit* m_logViewer;
-  QTextEdit* m_propertyEditor;
-  QDockWidget* m_elementDock;
-  QDockWidget* m_logDock;
-  QDockWidget* m_propertyDock;
-  QLabel* m_statusLabel;
+  PipelineEditor* m_pipelineEditor{nullptr};
+  ElementLibrary* m_elementLibrary{nullptr};
+  QTextEdit* m_logViewer{nullptr};
+  QTextEdit* m_propertyEditor{nullptr};
+  QDockWidget* m_elementDock{nullptr};
+  QDockWidget* m_logDock{nullptr};
+  QDockWidget* m_propertyDock{nullptr};
+  QLabel* m_statusLabel{nullptr};
 
   // Pipeline Management
-  GstPipelineModel* m_pipelineModel;
+  GstPipelineModel* m_pipelineModel{nullptr};
   QString m_currentFilename;
-  bool m_isModified;
+  bool m_isModified{false};
   QTimer m_statusTimer;
 };
 
