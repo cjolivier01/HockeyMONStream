@@ -28,6 +28,25 @@
       "preLaunchTask": "Build All",
     },
     {
+      "name": "gst-pipeline-studio",
+      "type": "lldb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/bazel-bin/src/gst_pipeline_studio",
+      "args": [
+      ],
+      "sourceMap": {
+        "/proc/self/cwd": "${workspaceFolder}",
+      },
+      //"stopOnEntry": true,
+      "env": {
+        "GST_DEBUG": "1",
+        "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
+        "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins",
+      },
+      "preLaunchTask": "Build All",
+    },
+    {
       "name": "(CUDA) pipeline-app",
       "type": "cuda-gdb",
       "request": "launch",
