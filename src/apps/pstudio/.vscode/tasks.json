@@ -1,0 +1,164 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build single target (set in json)",
+      "type": "shell",
+      "command": "./bld",
+      // "command": "bazel",
+      "args": [
+        // "cquery"
+        //"//apps/examples:basic-tutorial",
+        //"//src/gst-plugins/gst-dsexample:nvdsgst_dsexample",
+        // "--output=starlark",
+        // "--starlark:expr='target'",
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": false,
+      },
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "showReuseMessage": true,
+        "clear": true,
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Build All",
+      "type": "shell",
+      "command": "./bld",
+      "args": [
+        "//...",
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true,
+      },
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "showReuseMessage": true,
+        "clear": true,
+      },
+      "problemMatcher": [],
+    },
+    {
+      "label": "Rebuild All",
+      "type": "shell",
+      "command": "./rebuild",
+      "args": [],
+      "group": {
+        "kind": "build",
+        "isDefault": false,
+      },
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "showReuseMessage": true,
+        "clear": true,
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Build deepstream",
+      "type": "shell",
+      "command": "./bld",
+      "args": [
+        "@deepstream//sources/...",
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": false,
+      },
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "showReuseMessage": true,
+        "clear": true,
+      },
+      "problemMatcher": [],
+    },
+    {
+      // Repo: https://github.com/grailbio/bazel-compilation-database
+      "label": "Rebuild compile DB",
+      "type": "shell",
+      "command": "python3",
+      "args": [
+        // Installed by scripts/install_compdb.sh
+        "/usr/local/bin/bazel-compdb",
+        "--",
+        "--config=debug",
+      ],
+      "cwd": "${workspaceRoot}",
+      "group": {
+        "kind": "build",
+        "isDefault": false,
+      },
+      "options": {
+        "cwd": "${workspaceRoot}",
+        "env": {
+          "USE_BAZEL_VERSION": "6.5.0",
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "showReuseMessage": true,
+        "clear": true,
+      },
+      "problemMatcher": [],
+    },
+    {
+      "label": "Build deepstream libs",
+      "type": "shell",
+      "command": "./deepstream_build",
+      "args": [
+        "CUDA_VER=12.8",
+        "DEBUG=1",
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": false,
+      },
+      "problemMatcher": [
+        "$gcc"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true,
+      },
+    },
+    {
+      "label": "Meson: Build all targets",
+      "type": "shell",
+      "command": "meson compile -C builddir",
+      "group": {
+        "kind": "build",
+        "isDefault": false,
+      },
+      "problemMatcher": [
+        "$gcc"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true,
+      }
+    },
+  ]
+}
