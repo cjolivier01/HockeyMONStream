@@ -159,4 +159,5 @@ GstElement* TestPipeline::createTestPipeline()
     return pipeline;
 }
 
-// No include of test_pipeline.moc here - it will be included by the genrule
+
+QTEST_MAIN(TestPipeline)

@@ -1,20 +1,5 @@
 load("@rules_cc//cc:defs.bzl", "cc_test")
 
-# Create a wrapper that brings together the test code and its moc output
-# genrule(
-#     name = "test_pipeline_with_moc",
-#     srcs = [
-#         "test_pipeline.cpp",
-#     ],
-#     outs = ["test_pipeline_with_moc.cpp"],
-#     cmd = """
-#         cp $(location test_pipeline.cpp) $@
-#         echo '#include "test_pipeline.moc"' >> $@
-#         $(location @qt//:qt_moc) -o $(GENDIR)/tests/test_pipeline.moc $(location test_pipeline.cpp)
-#     """,
-#     tools = ["@qt//:qt_moc"],
-# )
-
 genrule(
     name = "test_pipeline_moc",
     srcs = ["test_pipeline.h"],
