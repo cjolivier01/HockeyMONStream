@@ -948,16 +948,20 @@ gboolean create_hmaudio_bin(
     }
     g_object_set(G_OBJECT(bin->audiosrc), "location", audio_location.c_str(), NULL);
   } else if (config->src == SRC_SOURCE_BIN) {
-    HMGST_ELEMENT_MAKE_BINADD(bin->audioresample, "audioresample", "hmaudio_audioresample");
+    if (!is_dest_file_sink) {
+      HMGST_ELEMENT_MAKE_BINADD(bin->audioresample, "audioresample", "hmaudio_audioresample");
+    }
   } else {
     HMGST_ELEMENT_MAKE_BINADD(bin->audiosrc, NVDS_ELEM_SRC_ALSA, "hmaudio_alsasrc0");
   }
 
   if (bin->decodebin || config->src == SRC_SOURCE_BIN) {
-    bin->audioconvert = gst_element_factory_make(NVDS_ELEM_AUDIO_CONV, "hmaudio_audioconvert0");
-    if (!bin->audioconvert) {
-      NVGSTDS_ERR_MSG_V("Failed to create 'audioconvert0'");
-      goto done;
+    if (!is_dest_file_sink) {
+      bin->audioconvert = gst_element_factory_make(NVDS_ELEM_AUDIO_CONV, "hmaudio_audioconvert0");
+      if (!bin->audioconvert) {
+        NVGSTDS_ERR_MSG_V("Failed to create 'audioconvert0'");
+        goto done;
+      }
     }
   }
 
@@ -998,10 +1002,14 @@ gboolean create_hmaudio_bin(
     }
   } else if (config->src == SRC_SOURCE_BIN) {
     assert(source_bin->src_elem);
-    assert(bin->audioconvert);
-    g_signal_connect(source_bin->src_elem, "pad-added", G_CALLBACK(on_decode_pad_added), bin->audioconvert);
-    NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->audioresample);
-    NVGSTDS_LINK_ELEMENT(bin->audioresample, bin->queue);
+    if (bin->audioconvert)  {
+      g_signal_connect(source_bin->src_elem, "pad-added", G_CALLBACK(on_decode_pad_added), bin->audioconvert);
+      NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->audioresample);
+      NVGSTDS_LINK_ELEMENT(bin->audioresample, bin->queue);
+    } else {
+      assert(!bin->audioresample);
+      g_signal_connect(source_bin->src_elem, "pad-added", G_CALLBACK(on_decode_pad_added), bin->queue);
+    }
   } else {
     NVGSTDS_LINK_ELEMENT(bin->audiosrc, bin->audioconvert);
     NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->queue);

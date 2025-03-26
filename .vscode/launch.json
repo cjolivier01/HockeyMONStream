@@ -79,9 +79,9 @@
         //"--enable-sources=CSI",
         "--enable-sources=URI-MULTIPLE",
         //"--enable-sinks=RENDER",
-        "--enable-sinks=RTMP",
+        //"--enable-sinks=RTMP",
         //"--enable-sinks=FAKE",
-        //"--enable-sinks=ENCODE_FILE",
+        "--enable-sinks=ENCODE_FILE",
         //"--start-time=00:05:32.23",
       ],
       "sourceMap": {
