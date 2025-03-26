@@ -23,8 +23,8 @@ MainWindow::MainWindow(QWidget* parent)
   setCentralWidget(m_pipelineEditor);
   createActions();
   createDockWindows();
-  createMenus();
   createToolbars();
+  createMenus();
   createStatusBar();
   setupConnections();
 
