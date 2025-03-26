@@ -1,4 +1,4 @@
-load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 
 # Common C++ options
 COMMON_COPTS = [
@@ -7,17 +7,25 @@ COMMON_COPTS = [
     "-fPIC",
 ]
 
-load("@rules_cc//cc:defs.bzl", "cc_binary")
+# cc_library(
+#     name = "qt_moc_files",
+#     srcs = ["@qt//:qt_moc"],
+#     hdrs = ["MainWindow.h", "PipelineEditor.h", "ElementLibrary.h", "GstPipelineModel.h"],
+#     includes = ["$(GENDIR)"],
+#     visibility = ["//visibility:public"],
+# )
 
 cc_binary(
     name = "gst_pipeline_studio",
     srcs = ["main.cpp"],
+    copts = COMMON_COPTS,
     deps = [
         ":main_window",
+        #":element_library",
+        #":gst_pipeline_model",
         "@qt//:qt_widgets",
-        "@gstreamer//:gstreamer",
+        "@gstreamer",
     ],
-    copts = COMMON_COPTS,
 )
 
 # Run Qt's MOC on GstElementWidget
@@ -29,32 +37,70 @@ genrule(
     tools = ["@qt//:qt_moc"],
 )
 
+genrule(
+    name = "main_window_moc",
+    srcs = ["MainWindow.h"],
+    outs = ["moc_MainWindow.cpp"],
+    cmd = "$(location @qt//:qt_moc) $(location MainWindow.h) -o $@",
+    tools = ["@qt//:qt_moc"],
+)
+
+genrule(
+    name = "pipeline_editor_moc",
+    srcs = ["PipelineEditor.h"],
+    outs = ["moc_PipelineEditor.cpp"],
+    cmd = "$(location @qt//:qt_moc) $(location PipelineEditor.h) -o $@",
+    tools = ["@qt//:qt_moc"],
+)
+
+genrule(
+    name = "element_library_moc",
+    srcs = ["ElementLibrary.h"],
+    outs = ["moc_ElementLibrary.cpp"],
+    cmd = "$(location @qt//:qt_moc) $(location ElementLibrary.h) -o $@",
+    tools = ["@qt//:qt_moc"],
+)
+
+genrule(
+    name = "gst_pipeline_model_moc",
+    srcs = ["GstPipelineModel.h"],
+    outs = ["moc_GstPipelineModel.cpp"],
+    cmd = "$(location @qt//:qt_moc) $(location GstPipelineModel.h) -o $@",
+    tools = ["@qt//:qt_moc"],
+)
+
 cc_library(
     name = "main_window",
-    srcs = ["MainWindow.cpp"],
-    hdrs = ["MainWindow.h"],
-    deps = [
-        ":pipeline_editor",
-        ":element_library",
-        ":gst_pipeline_model",
-        "@qt//:qt_widgets",
-        "@gstreamer//:gstreamer",
+    srcs = [
+        "MainWindow.cpp",
+        ":main_window_moc",
     ],
+    hdrs = ["MainWindow.h"],
     copts = COMMON_COPTS,
     visibility = ["//visibility:public"],
+    deps = [
+        ":element_library",
+        ":gst_pipeline_model",
+        ":pipeline_editor",
+        "@gstreamer",
+        "@qt//:qt_widgets",
+    ],
 )
 
 cc_library(
     name = "pipeline_editor",
-    srcs = ["PipelineEditor.cpp"],
+    srcs = [
+        "PipelineEditor.cpp",
+        ":pipeline_editor_moc",
+    ],
     hdrs = ["PipelineEditor.h"],
+    copts = COMMON_COPTS,
+    visibility = ["//visibility:public"],
     deps = [
         ":gst_element_widget",
         ":gst_pipeline_model",
         "@qt//:qt_widgets",
     ],
-    copts = COMMON_COPTS,
-    visibility = ["//visibility:public"],
 )
 
 cc_library(
@@ -64,70 +110,76 @@ cc_library(
         ":gst_element_widget_moc",  # Include the generated MOC file
     ],
     hdrs = ["GstElementWidget.h"],
+    copts = COMMON_COPTS,
+    visibility = ["//visibility:public"],
     deps = [
         "@qt//:qt_widgets",
     ],
-    copts = COMMON_COPTS,
-    visibility = ["//visibility:public"],
 )
 
 cc_library(
     name = "gst_pipeline_model",
-    srcs = ["GstPipelineModel.cpp"],
-    hdrs = ["GstPipelineModel.h"],
-    deps = [
-        ":element",
-        ":connection",
-        "@qt//:qt_core",
-        "@gstreamer//:gstreamer",
+    srcs = [
+        "GstPipelineModel.cpp",
+        ":gst_pipeline_model_moc",
     ],
+    hdrs = ["GstPipelineModel.h"],
     copts = COMMON_COPTS,
     visibility = ["//visibility:public"],
+    deps = [
+        ":connection",
+        ":element",
+        "@gstreamer",
+        "@qt//:qt_core",
+    ],
 )
 
 cc_library(
     name = "element_library",
-    srcs = ["ElementLibrary.cpp"],
-    hdrs = ["ElementLibrary.h"],
-    deps = [
-        "@qt//:qt_widgets",
-        "@gstreamer//:gstreamer",
+    srcs = [
+        "ElementLibrary.cpp",
+        ":element_library_moc",
     ],
+    hdrs = ["ElementLibrary.h"],
     copts = COMMON_COPTS,
     visibility = ["//visibility:public"],
+    deps = [
+        "@gstreamer",
+        "@qt//:qt_widgets",
+    ],
 )
 
 cc_library(
     name = "pipeline",
     srcs = ["Pipeline.cpp"],
     hdrs = ["Pipeline.h"],
-    deps = [
-        ":element",
-        ":connection",
-        "@qt//:qt_core",
-    ],
     copts = COMMON_COPTS,
     visibility = ["//visibility:public"],
+    deps = [
+        ":connection",
+        ":element",
+        "@qt//:qt_core",
+    ],
 )
 
 cc_library(
     name = "element",
     srcs = ["Element.cpp"],
     hdrs = ["Element.h"],
+    copts = COMMON_COPTS,
+    visibility = ["//visibility:public"],
     deps = [
         "@qt//:qt_core",
     ],
-    copts = COMMON_COPTS,
-    visibility = ["//visibility:public"],
 )
 
 cc_library(
     name = "connection",
     srcs = ["Connection.cpp"],
     hdrs = ["Connection.h"],
+    copts = COMMON_COPTS,
+    visibility = ["//visibility:public"],
     deps = [
         "@qt//:qt_core",
     ],
-    copts = COMMON_COPTS,
-    visibility = ["//visibility:public"],
 )
