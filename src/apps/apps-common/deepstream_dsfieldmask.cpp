@@ -1002,7 +1002,7 @@ gboolean create_hmaudio_bin(
     }
   } else if (config->src == SRC_SOURCE_BIN) {
     assert(source_bin->src_elem);
-    if (bin->audioconvert)  {
+    if (bin->audioconvert) {
       g_signal_connect(source_bin->src_elem, "pad-added", G_CALLBACK(on_decode_pad_added), bin->audioconvert);
       NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->audioresample);
       NVGSTDS_LINK_ELEMENT(bin->audioresample, bin->queue);
@@ -1029,7 +1029,6 @@ gboolean create_hmaudio_bin(
             // We need to encode it back to aac and not save it raw to the video file
             HMGST_ELEMENT_MAKE_BINADD(bin->encoder, "voaacenc", "hmaudio_encoder");
             HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
-            HMGST_ELEMENT_MAKE_BINADD(bin->post_queue, NVDS_ELEM_QUEUE, "hmaudio_post_queue");
             NVGSTDS_LINK_ELEMENT(bin->queue, bin->encoder);
             NVGSTDS_LINK_ELEMENT(bin->encoder, bin->audioparse);
             NVGSTDS_LINK_ELEMENT(bin->audioparse, bin->post_queue);
