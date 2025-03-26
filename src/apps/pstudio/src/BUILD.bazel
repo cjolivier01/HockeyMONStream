@@ -7,6 +7,19 @@ COMMON_COPTS = [
     "-fPIC",
 ]
 
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+cc_binary(
+    name = "gst_pipeline_studio",
+    srcs = ["main.cpp"],
+    deps = [
+        ":main_window",
+        "@qt//:qt_widgets",
+        "@gstreamer//:gstreamer",
+    ],
+    copts = COMMON_COPTS,
+)
+
 # Run Qt's MOC on GstElementWidget
 genrule(
     name = "gst_element_widget_moc",

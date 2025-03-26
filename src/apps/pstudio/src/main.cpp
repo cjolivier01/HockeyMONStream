@@ -1,8 +1,8 @@
 #include "MainWindow.h"
 
 #include <gst/gst.h>
-#include <QApplication>
-#include <QCommandLineParser>
+#include <QtCore/QCommandLineParser>
+#include <QtWidgets/QApplication>
 
 int main(int argc, char* argv[]) {
   // Initialize GStreamer

@@ -1,8 +1,8 @@
-load("@rules_cc//cc:defs.bzl", "cc_binary")
+# load("@rules_cc//cc:defs.bzl", "cc_binary")
 
 # cc_binary(
 #     name = "gst_pipeline_studio",
-#     srcs = ["/src:main.cpp"],
+#     srcs = ["//src/main.cpp"],
 #     deps = [
 #         "//src:main_window",
 #         "@qt//:qt_widgets",
