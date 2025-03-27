@@ -1,0 +1,35 @@
+# V4L2 Webcam (Actioncam1)
+source0:
+  enable: 1
+  # 1: v4l2, 5: CSI
+  type: 1
+  camera-v4l2-dev-node: 0
+  camera-width: 1920
+  camera-height: 1080
+  camera-fps-n: 30
+  camera-fps-d: 1
+  video-format: RGBA
+  media-type: image/jpeg
+  num-sources: 1
+  gpu-id: 0
+  input-audio-rate: 189
+  source-id: 0
+  cuda-memory-type: 1
+
+# V4L2 Webcam (Actioncam1)
+source1:
+  enable: 1
+  # 1: v4l2, 5: CSI
+  type: 1
+  camera-v4l2-dev-node: 2
+  camera-width: 1920
+  camera-height: 1080
+  camera-fps-n: 30
+  camera-fps-d: 1
+  video-format: RGBA
+  media-type: image/jpeg
+  num-sources: 1
+  gpu-id: 0
+  input-audio-rate: 189
+  source-id: 1
+  cuda-memory-type: 1
