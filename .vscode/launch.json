@@ -76,7 +76,7 @@
         //"fremont",
         "-d",
         //"--gpu-id=1",
-        //"--enable-sources=CSI",
+        "--enable-sources=CSI",
         //"--enable-sources=V4L2",
         //"--enable-sources=URI-MULTIPLE",
         "--enable-sinks=RENDER",

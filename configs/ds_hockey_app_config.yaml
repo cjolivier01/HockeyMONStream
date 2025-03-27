@@ -221,7 +221,7 @@ sink3:
   # set profile only for hw encoder, sw encoder selects profile based on sw-preset
   profile: 0
   # output-file: rtmp://192.168.86.52/live/test
-  output-file: rtmp://a.rtmp.youtube.com/live2/0fq6-f4mc-j54z-escw-8bd9
+  output-file: 
   # iframeinterval: 60
   #
   # if sending out
@@ -446,7 +446,7 @@ ds-playtracker:
   config-file: play_tracker_config.yaml
 
 ds-fieldmask:
-  enable: 1
+  enable: 0
   gpu-id: 0
   unique-id: 76
   # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png
