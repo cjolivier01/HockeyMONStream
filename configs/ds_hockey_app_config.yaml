@@ -143,7 +143,7 @@ source7:
   type: 1
   config-file: dual_usb_webcams.yaml
 
-source7:
+source8:
   enable: 0
   # 1: v4l2, 5: CSI
   type: 5
