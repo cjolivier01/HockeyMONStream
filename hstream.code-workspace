@@ -20,6 +20,9 @@
       },
       {
         "path": "../opencv-python/opencv_contrib/modules/cudacodec"
+      },
+      {
+        "path": "../opencv-python/opencv"
       }
     ],
   "settings": {
