@@ -91,6 +91,7 @@ typedef struct NvDsSrcParentBin NvDsSrcParentBin;
 typedef struct {
   GstElement* bin;
   GstElement* src_elem;
+  GstElement* src_parser;
   GstElement* src_decoder;
   GstElement* cap_filter;
   GstElement* cap_filter1;

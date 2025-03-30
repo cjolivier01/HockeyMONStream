@@ -100,42 +100,11 @@ source2:
   source-id: 2
   cuda-memory-type: 0
 
-# V4L2 Webcam (Actioncam1)
-source3:
+source6:
   enable: 0
   # 1: v4l2, 5: CSI
   type: 1
-  camera-v4l2-dev-node: 0
-  # uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
-  camera-width: 1920
-  camera-height: 1080
-  camera-fps-n: 30
-  camera-fps-d: 1
-  video-format: RGBA
-  media-type: image/jpeg
-  num-sources: 1
-  gpu-id: 0
-  input-audio-rate: 189
-  source-id: 0
-  cuda-memory-type: 1
-
-source4:
-  enable: 0
-  # 1: v4l2, 5: CSI
-  type: 1
-  camera-v4l2-dev-node: 1
-  # uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
-  camera-width: 1920
-  camera-height: 1080
-  camera-fps-n: 30
-  camera-fps-d: 1
-  video-format: RGBA
-  media-type: image/jpeg
-  num-sources: 1
-  gpu-id: 0
-  input-audio-rate: 189
-  source-id: 1
-  cuda-memory-type: 1
+  config-file: dual_usb_webcams.yaml
 
 source7:
   enable: 0
