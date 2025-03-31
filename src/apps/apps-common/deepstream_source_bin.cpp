@@ -330,7 +330,8 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
         NULL);
   } else {
     caps = gst_caps_new_simple(
-        config->media_type ? config->media_type : "video/x-raw",
+        //config->media_type ? config->media_type : "video/x-raw",
+        "video/x-raw",
         "format",
         G_TYPE_STRING,
         "NV12",
@@ -354,15 +355,15 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
       goto done;
     }
     gst_bin_add(GST_BIN(bin->bin), bin->src_decoder);
-  } else if (config->media_type && !strcmp(config->media_type, "H264")) {
+  } else if (config->media_type && strstr(config->media_type, "h264")) {
     // assert(!bin->src_parser);
-    // bin->src_parser = gst_element_factory_make("h264parse", "cam_h264parse");
-    // if(!bin->src_parser) {
-    //   NVGSTDS_ERR_MSG_V("Failed to create 'cam_h264parse'");
-    //   goto done;
-    // }
-    // gst_bin_add(GST_BIN(bin->bin), bin->src_parser);
-    bin->src_decoder = gst_element_factory_make("decodebin", "cam_decodebin");
+    bin->src_parser = gst_element_factory_make("h264parse", "cam_h264parse");
+    if(!bin->src_parser) {
+      NVGSTDS_ERR_MSG_V("Failed to create 'cam_h264parse'");
+      goto done;
+    }
+    gst_bin_add(GST_BIN(bin->bin), bin->src_parser);
+    bin->src_decoder = gst_element_factory_make("avdec_h264", "cam_h264_decoder");
     if (!bin->src_decoder) {
       NVGSTDS_ERR_MSG_V("Failed to create 'cam_decodebin'");
       goto done;

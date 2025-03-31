@@ -3,13 +3,13 @@ source0:
   enable: 1
   # 1: v4l2, 5: CSI
   type: 1
-  camera-v4l2-dev-node: 0
+  camera-v4l2-dev-node: 2
   camera-width: 1920
   camera-height: 1080
   camera-fps-n: 30
   camera-fps-d: 1
   # video-format: RGBA
-  media-type: H264
+  media-type: video/x-h264
   num-sources: 1
   gpu-id: 0
   input-audio-rate: 189
@@ -21,13 +21,13 @@ source1:
   enable: 1
   # 1: v4l2, 5: CSI
   type: 1
-  camera-v4l2-dev-node: 2
+  camera-v4l2-dev-node: 0
   camera-width: 1920
   camera-height: 1080
   camera-fps-n: 30
   camera-fps-d: 1
   # video-format: RGBA
-  media-type: H264
+  media-type: video/x-h264
   num-sources: 1
   gpu-id: 0
   input-audio-rate: 189
