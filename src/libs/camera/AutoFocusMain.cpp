@@ -2,7 +2,6 @@
 
 #include <cstdlib>
 #include <iostream>
-#include <sstream>
 #include <string>
 
 int main(int argc, char** argv) {
@@ -52,8 +51,6 @@ int main(int argc, char** argv) {
     }
   }
 
-  // Focuser focuser(i2c_bus);
-  // show_camera(device_id, focuser, capture_width, capture_height, fps);
   absl::Status status = hm::camera::auto_focus_csi_camera(
       device_id,
       i2c_bus,
