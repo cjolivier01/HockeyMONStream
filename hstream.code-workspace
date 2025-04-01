@@ -8,6 +8,9 @@
       },
       {
         "path": "../MIPI_Camera"
+      },
+      {
+        "path": "../simpleble"
       }
     ],
   "settings": {

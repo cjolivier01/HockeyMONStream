@@ -1,5 +1,4 @@
 #include <SimpleBLE.h>
-// #include <SimpleDBus.h>
 #include <chrono>
 #include <iostream>
 #include <string>
@@ -33,9 +32,31 @@ class GoProBLEController {
         return false;
       }
 
-      goProService.write_characteristic(GOPRO_COMMAND_CHARACTERISTIC, command);
-      std::cout << "Command sent successfully" << std::endl;
-      return true;
+      // Find the correct UUID for the characteristic
+      for (auto& service : camera.services()) {
+        if (service.uuid() == GOPRO_BASE_UUID) {
+          for (auto& characteristic : service.characteristics()) {
+            if (characteristic.uuid() == GOPRO_COMMAND_CHARACTERISTIC) {
+              // Write to the characteristic using the peripheral object
+              if (characteristic.can_write_request()) {
+                camera.write_request(service.uuid(), characteristic.uuid(), command);
+                std::cout << "Command sent successfully" << std::endl;
+                return true;
+              } else if (characteristic.can_write_command()) {
+                camera.write_command(service.uuid(), characteristic.uuid(), command);
+                std::cout << "Command sent successfully" << std::endl;
+                return true;
+              } else {
+                std::cerr << "Characteristic doesn't support writing" << std::endl;
+                return false;
+              }
+            }
+          }
+        }
+      }
+
+      std::cerr << "Command characteristic not found" << std::endl;
+      return false;
     } catch (const std::exception& e) {
       std::cerr << "Error sending command: " << e.what() << std::endl;
       return false;
