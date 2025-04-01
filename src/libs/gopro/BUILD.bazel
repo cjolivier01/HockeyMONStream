@@ -1,0 +1,12 @@
+# cc_binary(
+#   name = "gopro_ble",
+#   srcs = ["GoProBle.cpp"],
+#   copts = [
+#     "-I/usr/local/include/simpleble",
+#     "-I/usr/local/include/simpledbus",
+#   ],
+#   linkopts = [
+#     "-lsimpleble",
+#     "-lsimpledbus",
+#   ],
+# )
