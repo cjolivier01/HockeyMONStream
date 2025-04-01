@@ -1,14 +1,14 @@
-cc_binary(
-  name = "gopro_ble",
-  srcs = ["GoProBle.cpp"],
-  copts = [
-    "-I/usr/local/include/simpleble",
-    "-I/usr/local/include/simpledbus",
-  ],
-  linkopts = [
-    "-ldbus-1",
-    "-l:/usr/local/lib/libsimpleble-c.a",
-    "-l:/usr/local/lib/libsimpleble.a",
-    "-l:/usr/local/lib/libsimpledbus.a",
-  ],
-)
+# cc_binary(
+#   name = "gopro_ble",
+#   srcs = ["GoProBle.cpp"],
+#   copts = [
+#     "-I/usr/local/include/simpleble",
+#     "-I/usr/local/include/simpledbus",
+#   ],
+#   linkopts = [
+#     "-ldbus-1",
+#     # "-l:/usr/local/lib/libsimpleble-c-debug.a",
+#     "-l:/usr/local/lib/libsimpleble-debug.a",
+#     "-l:/usr/local/lib/libsimpledbus.a",
+#   ],
+# )
