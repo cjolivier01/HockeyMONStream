@@ -392,9 +392,9 @@ bool Configurator::underlay_config(const std::string& node_name, const std::stri
   if (node_name.empty()) {
     config_ = merge_nodes(underlaid_config, config_, /*warn_if_key_not_in_dest=*/false);
   } else {
-    std::cout << config_ << std::endl;
+    // std::cout << config_ << std::endl;
     config_[node_name] = merge_nodes(underlaid_config, config_[node_name], /*warn_if_key_not_in_dest=*/false);
-    std::cout << config_ << std::endl;
+    // std::cout << config_ << std::endl;
   }
   return true;
 }
@@ -403,14 +403,14 @@ bool Configurator::overlay_config(const std::string& node_name, const std::strin
   if (!std::filesystem::exists(filename)) {
     return false;
   }
-  std::cout << config_ << std::endl;
+  // std::cout << config_ << std::endl;
   YAML::Node overlaid_config = YAML::LoadFile(filename);
   if (node_name.empty()) {
     config_ = merge_nodes(config_, overlaid_config, /*warn_if_key_not_in_dest=*/false);
   } else {
     config_[node_name] = merge_nodes(config_[node_name], overlaid_config, /*warn_if_key_not_in_dest=*/false);
   }
-  std::cout << config_ << std::endl;
+  // std::cout << config_ << std::endl;
   return true;
 }
 
@@ -465,7 +465,6 @@ absl::StatusOr<bool> Configurator::does_need_stitching(const std::string& game_d
 }
 
 absl::Status Configurator::complete_configuration(bool force) {
-  std::cout << config_ << std::endl;
   YAML::Node pipeline = config_["pipeline"];
   assert(pipeline.IsDefined());
 
@@ -749,7 +748,7 @@ absl::Status Configurator::complete_configuration(bool force) {
   if (num_video_sources < 2) {
     pipeline["hmstitcher"]["enable"] = "0";
   }
-  std::cout << pipeline["hmaudio"] << std::endl;
+  // std::cout << pipeline["hmaudio"] << std::endl;
   if (!possible_audio_uri.empty() || audio_source_id != std::numeric_limits<size_t>::max()) {
     std::optional<YAML::Node> audio_uri_opt = get_enabled_audio_uri(pipeline);
     if (audio_uri_opt.has_value()) {
@@ -810,12 +809,13 @@ absl::Status Configurator::complete_configuration(bool force) {
   return absl::OkStatus();
 }
 
-absl::Status Configurator::apply_config_item(const std::string& key, const std::string& value, bool is_private) {
-  // set_node_value(config_, key, value);
-  std::cout << config_ << std::endl;
-  // if (is_private) {
-  //   set_node_value(private_config_, key, value);
-  // }
+absl::Status Configurator::apply_config_item(const std::string& key, const std::string& value) {
+  YAML::Node overlaid_config = YAML::Node(YAML::NodeType::Map);
+  overlaid_config = set_node_value(overlaid_config, key, value);
+  // std::cout << overlaid_config << std::endl;
+  // std::cout << config_ << std::endl;
+  config_ = merge_nodes(config_, overlaid_config, /*warn_if_key_not_in_dest=*/false);
+  // std::cout << config_ << std::endl;
   return absl::OkStatus();
 }
 

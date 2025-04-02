@@ -202,7 +202,7 @@ absl::Status PipelineApplication::configureInstances(
         const std::map<std::string, std::string>& options =
             pipeline_options_.size() == 1 ? pipeline_options_.at(0) : pipeline_options_.at(stage_index);
         for (const auto& kv_item : options) {
-          HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(kv_item.first, kv_item.second, /*is_private=*/false));
+          HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(kv_item.first, kv_item.second));
         }
       }
 

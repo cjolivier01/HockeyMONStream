@@ -1,6 +1,7 @@
 #include "hstream/src/libs/common/pipeline_utils.h"
 #include "hstream/src/libs/common/utils.h"
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <stack>
@@ -114,14 +115,13 @@ std::vector<std::string> split_by_dot(const std::string& input) {
  * @param dot_string A dot-delimited string representing the path to the value
  * @param value The string value to set
  */
-void set_node_value(YAML::Node node, const std::string& dot_string, const std::string& value) {
-
-  std::cout << node << std::endl;
+YAML::Node set_node_value(YAML::Node node, const std::string& dot_string, const std::string& value) {
+  //std::cout << node << std::endl;
 
   std::vector<std::string> path = split_by_dot(dot_string);
 
   if (path.empty()) {
-    return; // Nothing to do with an empty path
+    return node; // Nothing to do with an empty path
   }
 
   YAML::Node current = node;
@@ -129,9 +129,9 @@ void set_node_value(YAML::Node node, const std::string& dot_string, const std::s
   // Navigate to the second-to-last element in the path, creating nodes as needed
   for (size_t i = 0; i < path.size() - 1; ++i) {
     const std::string& key = path[i];
-    if (key == "hmplaycropper") {
-      usleep(0);
-    }
+    // if (key == "hmplaycropper") {
+    //   usleep(0);
+    // }
     // Check if the key exists and is a map
     if (!current[key] || !current[key].IsMap()) {
       // Create a new map node if it doesn't exist or isn't a map
@@ -139,11 +139,13 @@ void set_node_value(YAML::Node node, const std::string& dot_string, const std::s
     }
 
     current = current[key];
+    //std::cout << node << std::endl;
   }
 
   // Set the value at the final path element
   current[path.back()] = value;
-  std::cout << node << std::endl;
+  //std::cout << node << std::endl;
+  return node;
 }
 
 std::optional<YAML::Node> get_node(const YAML::Node& n, const std::string& dot_string) {
