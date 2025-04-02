@@ -813,7 +813,7 @@ absl::Status Configurator::apply_config_item(const std::string& key, const std::
   YAML::Node overlaid_config = YAML::Node(YAML::NodeType::Map);
   overlaid_config = set_node_value(overlaid_config, key, value);
   // std::cout << overlaid_config << std::endl;
-  // std::cout << config_ << std::endl;
+  //  std::cout << config_ << std::endl;
   config_ = merge_nodes(config_, overlaid_config, /*warn_if_key_not_in_dest=*/false);
   // std::cout << config_ << std::endl;
   return absl::OkStatus();

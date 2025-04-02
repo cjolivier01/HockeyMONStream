@@ -124,7 +124,9 @@ YAML::Node set_node_value(YAML::Node node, const std::string& dot_string, const 
     return node; // Nothing to do with an empty path
   }
 
-  YAML::Node current = node;
+  // YAML::Node current = node;
+  std::vector<YAML::Node> current_node;
+  current_node.push_back(node);
 
   // Navigate to the second-to-last element in the path, creating nodes as needed
   for (size_t i = 0; i < path.size() - 1; ++i) {
@@ -132,19 +134,23 @@ YAML::Node set_node_value(YAML::Node node, const std::string& dot_string, const 
     // if (key == "hmplaycropper") {
     //   usleep(0);
     // }
+    YAML::Node& current = current_node.back();
     // Check if the key exists and is a map
     if (!current[key] || !current[key].IsMap()) {
       // Create a new map node if it doesn't exist or isn't a map
       current[key] = YAML::Node(YAML::NodeType::Map);
     }
-
-    current = current[key];
-    //std::cout << node << std::endl;
+    // std::cout << node << std::endl;
+    // std::cout << current << std::endl;
+    // current = current[key];
+    current_node.push_back(current[key]);
+    // std::cout << current_node.back() << std::endl;
+    // std::cout << node << std::endl;
   }
 
   // Set the value at the final path element
-  current[path.back()] = value;
-  //std::cout << node << std::endl;
+  current_node.back()[path.back()] = value;
+  // std::cout << node << std::endl;
   return node;
 }
 
