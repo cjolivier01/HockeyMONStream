@@ -3,6 +3,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <stack>
 #include <vector>
 
 #include <opencv2/opencv.hpp>
@@ -76,6 +77,73 @@ bool has_node(const YAML::Node& n, const std::string& dot_string, bool non_null)
 
   // If all keys are accessed and nodes are defined, return true
   return non_null ? !current->IsNull() : true;
+}
+
+/**
+ * Split a dot-delimited string into its component parts
+ *
+ * @param input The dot-delimited string to split
+ * @return A vector of string components
+ */
+std::vector<std::string> split_by_dot(const std::string& input) {
+  std::vector<std::string> result;
+  std::string current;
+
+  for (char c : input) {
+    if (c == '.') {
+      if (!current.empty()) {
+        result.push_back(current);
+        current.clear();
+      }
+    } else {
+      current += c;
+    }
+  }
+
+  if (!current.empty()) {
+    result.push_back(current);
+  }
+
+  return result;
+}
+
+/**
+ * Set a value in a YAML node based on a dot-delimited path
+ *
+ * @param node The YAML node to modify
+ * @param dot_string A dot-delimited string representing the path to the value
+ * @param value The string value to set
+ */
+void set_node_value(YAML::Node node, const std::string& dot_string, const std::string& value) {
+
+  std::cout << node << std::endl;
+
+  std::vector<std::string> path = split_by_dot(dot_string);
+
+  if (path.empty()) {
+    return; // Nothing to do with an empty path
+  }
+
+  YAML::Node current = node;
+
+  // Navigate to the second-to-last element in the path, creating nodes as needed
+  for (size_t i = 0; i < path.size() - 1; ++i) {
+    const std::string& key = path[i];
+    if (key == "hmplaycropper") {
+      usleep(0);
+    }
+    // Check if the key exists and is a map
+    if (!current[key] || !current[key].IsMap()) {
+      // Create a new map node if it doesn't exist or isn't a map
+      current[key] = YAML::Node(YAML::NodeType::Map);
+    }
+
+    current = current[key];
+  }
+
+  // Set the value at the final path element
+  current[path.back()] = value;
+  std::cout << node << std::endl;
 }
 
 std::optional<YAML::Node> get_node(const YAML::Node& n, const std::string& dot_string) {

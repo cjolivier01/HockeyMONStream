@@ -392,7 +392,9 @@ bool Configurator::underlay_config(const std::string& node_name, const std::stri
   if (node_name.empty()) {
     config_ = merge_nodes(underlaid_config, config_, /*warn_if_key_not_in_dest=*/false);
   } else {
+    std::cout << config_ << std::endl;
     config_[node_name] = merge_nodes(underlaid_config, config_[node_name], /*warn_if_key_not_in_dest=*/false);
+    std::cout << config_ << std::endl;
   }
   return true;
 }
@@ -401,12 +403,14 @@ bool Configurator::overlay_config(const std::string& node_name, const std::strin
   if (!std::filesystem::exists(filename)) {
     return false;
   }
+  std::cout << config_ << std::endl;
   YAML::Node overlaid_config = YAML::LoadFile(filename);
   if (node_name.empty()) {
     config_ = merge_nodes(config_, overlaid_config, /*warn_if_key_not_in_dest=*/false);
   } else {
     config_[node_name] = merge_nodes(config_[node_name], overlaid_config, /*warn_if_key_not_in_dest=*/false);
   }
+  std::cout << config_ << std::endl;
   return true;
 }
 
@@ -461,6 +465,7 @@ absl::StatusOr<bool> Configurator::does_need_stitching(const std::string& game_d
 }
 
 absl::Status Configurator::complete_configuration(bool force) {
+  std::cout << config_ << std::endl;
   YAML::Node pipeline = config_["pipeline"];
   assert(pipeline.IsDefined());
 
@@ -802,6 +807,15 @@ absl::Status Configurator::complete_configuration(bool force) {
       std::cout << ss.str() << std::flush;
     }
   }
+  return absl::OkStatus();
+}
+
+absl::Status Configurator::apply_config_item(const std::string& key, const std::string& value, bool is_private) {
+  // set_node_value(config_, key, value);
+  std::cout << config_ << std::endl;
+  // if (is_private) {
+  //   set_node_value(private_config_, key, value);
+  // }
   return absl::OkStatus();
 }
 

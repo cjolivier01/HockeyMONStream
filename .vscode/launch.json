@@ -84,6 +84,7 @@
         //"--enable-sinks=FAKE",
         //"--enable-sinks=ENCODE_FILE",
         //"--start-time=00:05:32.23",
+        "--options=pipeline.hmplaycropper.show=1,pipeline.hmplaycropper.show-scoreboard=1",
       ],
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}",

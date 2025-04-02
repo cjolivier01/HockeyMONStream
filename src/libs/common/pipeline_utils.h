@@ -29,6 +29,7 @@ inline T get_node_as(const YAML::Node& n, const std::string& dot_string, const T
   return o_n.value().as<T>();
 }
 
+void set_node_value(YAML::Node node, const std::string& dot_string, const std::string& value);
 
 template <typename T>
 inline std::vector<T*> glist_to_vect(const GList* list, size_t reserve_count = 512) {

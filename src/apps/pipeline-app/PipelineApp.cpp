@@ -152,7 +152,7 @@ absl::Status PipelineApplication::configureInstances(
         if (stage_index) {
           if (enabled_source_types_.size() != 1 && stage_index >= enabled_source_types_.size()) {
             return absl::InvalidArgumentError(TO_STRING(
-                "Number of 'enabled source types' must be zero, one, or st least as "
+                "Number of 'enabled source types' must be zero, one, or at least as "
                 << "many as the number of stages, or else it's not clear what to apply to this stage " << stage_index));
           }
         }
@@ -169,7 +169,7 @@ absl::Status PipelineApplication::configureInstances(
         if (stage_index) {
           if (enabled_sink_types_.size() != 1 && stage_index >= enabled_sink_types_.size()) {
             return absl::InvalidArgumentError(TO_STRING(
-                "Number of 'enabled sink types' must be zero, one, or st least as "
+                "Number of 'enabled sink types' must be zero, one, or at least as "
                 << "many as the number of stages, or else it's not clear what to apply to this stage " << stage_index));
           }
         }
@@ -190,6 +190,23 @@ absl::Status PipelineApplication::configureInstances(
       //   app_ctx->configurator().enable_source_types(enabled_source_types_, true);
       // }
 
+      // Finally, command-line config overrides (pipeline or otherwise)
+      if (!pipeline_options_.empty()) {
+        if (stage_index) {
+          if (pipeline_options_.size() != 1 && stage_index >= pipeline_options_.size()) {
+            return absl::InvalidArgumentError(TO_STRING(
+                "Number of 'pipeline options' must be zero, one, or at least as "
+                << "many as the number of stages, or else it's not clear what to apply to this stage " << stage_index));
+          }
+        }
+        const std::map<std::string, std::string>& options =
+            pipeline_options_.size() == 1 ? pipeline_options_.at(0) : pipeline_options_.at(stage_index);
+        for (const auto& kv_item : options) {
+          HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(kv_item.first, kv_item.second, /*is_private=*/false));
+        }
+      }
+
+      // Now auto-configure stuff as needed, i.e. dependent pipelines or stitching (if needed)
       absl::Status configuration_status = app_ctx->complete_configuration(force_reconfigure_);
       if (configuration_status.code() == absl::StatusCode::kCancelled) {
         std::cerr << configuration_status << std::endl;
@@ -559,7 +576,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        "Print DeepStreamSDK and dependencies version",
        nullptr},
       {"gpu-id", 'x', 0, G_OPTION_ARG_INT, &override_gpu_id_, "Set the GPU id to use", nullptr},
-      {"pipeline-option", 'p', 0, G_OPTION_ARG_FILENAME_ARRAY, &pipline_options, "Set pipeline option(s)", nullptr},
+      {"options", 'p', 0, G_OPTION_ARG_FILENAME_ARRAY, &pipline_options, "Set arbitrary option(s)", nullptr},
       {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &cfg_files_, "Set the config file", nullptr},
       {"enable-sources", 'e', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sources_, "Enable Sources", nullptr},
       {"enable-sinks", 'k', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sinks_, "Enable Sinks", nullptr},
@@ -629,6 +646,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   if (pipline_options) {
     pipeline_options_.clear();
     for (size_t i = 0, n = g_strv_length(pipline_options); i < n; ++i) {
+      pipeline_options_.emplace_back();
       // Individual items can split by a comma
       std::vector<std::string> p_each = absl::StrSplit(pipline_options[i], ',');
       for (const std::string& opt : p_each) {
@@ -637,6 +655,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
           return absl::InvalidArgumentError(
               TO_STRING("Pipeline options should use key/value pairs, but got: \"" << opt << "\""));
         }
+        pipeline_options_[i].emplace(kv.at(0), kv.at(1));
       }
     }
   }

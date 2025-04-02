@@ -29,6 +29,8 @@ class Configurator {
 
   bool underlay_config(const std::string& node_name, const std::string& filename);
   bool overlay_config(const std::string& node_name, const std::string& filename);
+  
+  absl::Status apply_config_item(const std::string& key, const std::string& value, bool is_private = false);
 
   std::optional<YAML::Node> load_private_config();
   absl::Status save_private_config(const YAML::Node& private_config);
