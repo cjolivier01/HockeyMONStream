@@ -130,8 +130,11 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx)
     return;
   }
 
-  assert(guint(ctx->detection_u8_mask.cols) >= frame_meta->source_frame_width);
-  assert(guint(ctx->detection_u8_mask.rows) >= frame_meta->source_frame_height);
+  // assert(guint(ctx->detection_u8_mask.cols) >= frame_meta->source_frame_width);
+  // assert(guint(ctx->detection_u8_mask.rows) >= frame_meta->source_frame_height);
+
+  assert(guint(ctx->detection_u8_mask.cols) == frame_meta->source_frame_width);
+  assert(guint(ctx->detection_u8_mask.rows) == frame_meta->source_frame_height);
 
   assert(frame_meta->pipeline_height);
   assert(frame_meta->pipeline_width);
@@ -225,7 +228,15 @@ absl::Status DsFieldMaskProcessFrame(
     // We are a No-op
     return absl::OkStatus();
   }
-  if (ctx->total_frame_count == 0 && ctx->detection_u8_mask.empty()) {
+
+  bool is_obsolete_detection_mask = false;
+  if (guint(ctx->detection_u8_mask.cols) != frame_meta->source_frame_width ||
+      guint(ctx->detection_u8_mask.rows) != frame_meta->source_frame_height) {
+    std::cout << "Obsolete detection mask(s)" << std::endl;
+    is_obsolete_detection_mask = true;
+  }
+
+  if (ctx->total_frame_count == 0 && (ctx->detection_u8_mask.empty() || is_obsolete_detection_mask)) {
     fs::path mask_path = ctx->initParams.detection_mask_file;
     if (!fs::exists(fs::path(mask_path))) {
       assert(frame_index < surface->numFilled);
