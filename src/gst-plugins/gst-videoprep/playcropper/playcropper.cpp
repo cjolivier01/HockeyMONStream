@@ -2,7 +2,6 @@
 #include "cupano/pano/cudaMat.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/cudaPlayCropper.h"
-// #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
 
@@ -356,7 +355,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
     // If rendering, only render opne per batch and do it after the main cuda synchronize
     // if (batch_meta->)
     // render("Play Cropper", &out_surface->surfaceList[batch_nr], cuda_stream_);
-    cudaStreamSynchronize(cuda_stream_);
+    // cudaStreamSynchronize(cuda_stream_);
     render("Play Tracking", &display_dest_params_, cuda_stream_);
   }
 
