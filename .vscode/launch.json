@@ -68,7 +68,7 @@
         "--enable-sinks=FAKE",        
         "-c",
         "${workspaceFolder}/configs/ds_hockey_app_config.yaml",
-        //"-f",
+        "-f",
         "-g",
         //"mylive",
         "mlk-heat-1",
@@ -84,7 +84,7 @@
         //"--enable-sinks=FAKE",
         //"--enable-sinks=ENCODE_FILE",
         "--start-time=00:05:32.23",
-        "--options=pipeline.hmplaycropper.show=1,pipeline.hmplaycropper.show-scoreboard=1,pipeline.ds-playtracker.draw=1,pipeline.hmplaycropper.plot-play-tracking=1,pipeline.hmplaycropper.plot-player-tracking=0",
+        //"--options=pipeline.hmplaycropper.show=1,pipeline.hmplaycropper.show-scoreboard=1,pipeline.ds-playtracker.draw=1,pipeline.hmplaycropper.plot-play-tracking=1,pipeline.hmplaycropper.plot-player-tracking=0",
       ],
       "sourceMap": {
         "/proc/self/cwd": "${workspaceFolder}",
