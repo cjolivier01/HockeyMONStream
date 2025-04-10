@@ -240,10 +240,8 @@ static gboolean gst_videoprep_accept_caps(GstBaseTransform* btrans, GstPadDirect
     videoprep->input_height = vid_info.height;
   } else {
     allowed = videoprep->srccaps;
-    assert(!videoprep->output_width || videoprep->output_width == vid_info.width);
-    assert(!videoprep->output_height || videoprep->output_height == vid_info.height);
-    videoprep->output_width = vid_info.width;
-    videoprep->output_height = vid_info.height;
+    assert(videoprep->output_width == vid_info.width);
+    assert(videoprep->output_height == vid_info.height);
   }
 
   if (!allowed) {
