@@ -505,10 +505,6 @@ static GstCaps* gst_videoprep_transform_caps(
   GstCaps* new_caps = NULL;
   GstCaps* temp_caps = NULL;
 
-  if (!strcmp(videoprep->plugin_type, "vpplaytracker")) {
-    usleep(0);
-  }
-
   if (direction == GST_PAD_SINK) {
     assert(videoprep->output_width && videoprep->output_height);
     new_caps = gst_caps_new_simple(
