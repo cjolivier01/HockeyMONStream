@@ -606,7 +606,7 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
   GstVideoPrep* videoprep = GST_VIDEOPREP(trans);
   GstCapsFeatures* ift = NULL;
   // GstStructure* config = NULL;
-  GstVideoInfo in_info = {}, out_info = {};
+  GstVideoInfo in_info = {0,}, out_info = {0,};
 
   // videoprep->input_batch_size = gst::get_batch_size_from_caps(incaps);
   // videoprep->output_batch_size = gst::get_batch_size_from_caps(outcaps);
