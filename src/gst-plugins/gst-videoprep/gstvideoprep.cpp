@@ -226,11 +226,21 @@ static gboolean gst_videoprep_accept_caps(GstBaseTransform* btrans, GstPadDirect
 
   GST_DEBUG_OBJECT(videoprep, "accept caps %" GST_PTR_FORMAT, caps);
 
+  GstVideoInfo vid_info = {0,};
+  if (!gst_video_info_from_caps(&vid_info, caps)) {
+    GST_ERROR("invalid input caps");
+    return FALSE;
+  }
+
   /* get all the formats we can handle on this pad */
-  if (direction == GST_PAD_SINK)
+  if (direction == GST_PAD_SINK) {
     allowed = videoprep->sinkcaps;
-  else
+    videoprep->input_width = vid_info.width;
+    videoprep->input_height = vid_info.height;
+  } else {
     allowed = videoprep->srccaps;
+  }
+  
 
   if (!allowed) {
     GST_DEBUG_OBJECT(videoprep, "failed to get allowed caps");
