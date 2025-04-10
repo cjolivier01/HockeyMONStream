@@ -130,11 +130,11 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx)
     return;
   }
 
-  assert(guint(ctx->detection_u8_mask.cols) <= frame_meta->source_frame_width);
-  assert(guint(ctx->detection_u8_mask.rows) <= frame_meta->source_frame_height);
+  // assert(guint(ctx->detection_u8_mask.cols) <= frame_meta->source_frame_width);
+  // assert(guint(ctx->detection_u8_mask.rows) <= frame_meta->source_frame_height);
 
-  // assert(guint(ctx->detection_u8_mask.cols) == frame_meta->source_frame_width);
-  // assert(guint(ctx->detection_u8_mask.rows) == frame_meta->source_frame_height);
+  assert(guint(ctx->detection_u8_mask.cols) == frame_meta->source_frame_width);
+  assert(guint(ctx->detection_u8_mask.rows) == frame_meta->source_frame_height);
 
   assert(frame_meta->pipeline_height);
   assert(frame_meta->pipeline_width);
@@ -229,27 +229,27 @@ absl::Status DsFieldMaskProcessFrame(
     return absl::OkStatus();
   }
 
-  bool is_obsolete_detection_mask = false;
+  bool is_obsolete_detection_mask = false; // TODO: only check first frame
   if (guint(ctx->detection_u8_mask.cols) != frame_meta->source_frame_width ||
       guint(ctx->detection_u8_mask.rows) != frame_meta->source_frame_height) {
-    std::cout << "Obsolete detection mask(s)" << std::endl;
+    // std::cout << "Obsolete detection mask(s)" << std::endl;
     is_obsolete_detection_mask = true;
   }
 
   if (ctx->total_frame_count == 0 && (ctx->detection_u8_mask.empty() || is_obsolete_detection_mask)) {
     fs::path mask_path = ctx->initParams.detection_mask_file;
-    if (!fs::exists(fs::path(mask_path))) {
-      assert(frame_index < surface->numFilled);
+    // if (!fs::exists(fs::path(mask_path))) {
+    assert(frame_index < surface->numFilled);
 #ifdef __aarch64__
-      hm::surface::EglSurfaceMapper egl_surface_mapper(surface, frame_index, /*read_only=*/true);
-      hm::surface::Surface this_surface = egl_surface_mapper.get_surface();
+    hm::surface::EglSurfaceMapper egl_surface_mapper(surface, frame_index, /*read_only=*/true);
+    hm::surface::Surface this_surface = egl_surface_mapper.get_surface();
 #else
-      hm::surface::Surface this_surface(&surface->surfaceList[frame_index]);
+    hm::surface::Surface this_surface(&surface->surfaceList[frame_index]);
 #endif
-      if (!hm::stitching::is_field_mask_configured(mask_path.parent_path().string())) {
-        HM_RETURN_IF_ERROR(hm::stitching::create_field_mask(mask_path.parent_path().string(), this_surface));
-      }
+    if (!hm::stitching::is_field_mask_configured(mask_path.parent_path().string())) {
+      HM_RETURN_IF_ERROR(hm::stitching::create_field_mask(mask_path.parent_path().string(), this_surface));
     }
+    //}
     HM_ASSIGN_OR_RETURN(ctx->detection_u8_mask, load_mask_from_file(ctx->initParams.detection_mask_file));
     ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask, ctx->field_box);
     ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
