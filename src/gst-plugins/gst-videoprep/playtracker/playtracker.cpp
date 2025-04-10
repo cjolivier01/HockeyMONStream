@@ -74,14 +74,14 @@ absl::Status PlayTrackerPriv::GenerateOutput(
       return absl::InternalError("Error calling DsPlayTrackerProcessFrame()");
     }
     PlayTrackerPayload::create_and_add<PlayTrackerPayload>(frame.frame_meta, pt_context_->arena_box);
-
-    NvDisplayMetaList* dm_list = frame.frame_meta->display_meta_list;
-    while (dm_list) {
-      NvDsDisplayMeta* display_meta = (NvDsDisplayMeta*)dm_list->data;
-      HM_RETURN_IF_ERROR(draw_display_meta(frame.input_surf_params, display_meta, font_cache, 1.0f, cuda_stream_));
-      dm_list = dm_list->next;
+    if (show_) {
+      NvDisplayMetaList* dm_list = frame.frame_meta->display_meta_list;
+      while (dm_list) {
+        NvDsDisplayMeta* display_meta = (NvDsDisplayMeta*)dm_list->data;
+        HM_RETURN_IF_ERROR(draw_display_meta(frame.input_surf_params, display_meta, font_cache, 1.0f, cuda_stream_));
+        dm_list = dm_list->next;
+      }
     }
-
     ++frame.batch_index;
     fl = fl->next;
   }

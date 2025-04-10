@@ -505,6 +505,7 @@ gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTra
   // g_object_set(G_OBJECT(bin->elem_dsplaytracker), "draw", config->draw, NULL);
 
   ppc << "draw=" << config->draw;
+  ppc << ";show=" << config->show;
   g_object_set(G_OBJECT(bin->elem_dsplaytracker), "plugin-private-config", ppc.str().c_str(), NULL);
 
   ret = TRUE;
