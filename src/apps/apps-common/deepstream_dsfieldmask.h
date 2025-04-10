@@ -139,6 +139,7 @@ struct NvDsHmVideoPrepBin {
 
 struct HmPlayCropperConfig : public NvDsHmVideoPrepConfig {
   // Four (x,y) coordinates
+  gboolean no_crop;
   gboolean show_scoreboard;
   gboolean plot_play_tracking;
   gboolean plot_player_tracking;

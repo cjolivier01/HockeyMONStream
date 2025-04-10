@@ -34,6 +34,7 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   absl::Mutex mu_process_;
   bool use_unfused_kernels_{false};
   bool show_{false};
+  bool no_crop_{false};
   size_t frame_count_{0};
   std::shared_ptr<draw_display::FontCache> font_cache_;
   float render_scale_{0.5};

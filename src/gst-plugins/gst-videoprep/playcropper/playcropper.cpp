@@ -155,6 +155,9 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     plot_player_tracking_ = !!std::atoi(prop.value.c_str());
   } else if (prop.key == "fixed-edge-rotation-angle") {
     fixed_edge_rotation_angle_ = std::atof(prop.value.c_str());
+  } else if (prop.key == "no-crop") {
+    // TODO: implement, needs to change caps too
+    no_crop_ = !!std::atoi(prop.value.c_str());
   }
   return true;
 }
