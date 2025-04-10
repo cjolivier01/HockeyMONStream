@@ -1,5 +1,4 @@
 #include "gstvideoprep.h"
-#include "gstnvdsbufferpool.h"
 
 #include <cuda_runtime.h>
 #include <glib-2.0/glib.h>
@@ -10,16 +9,14 @@
 #include <gstreamer-1.0/gst/gstinfo.h>
 #include <gstreamer-1.0/gst/gstpad.h>
 #include <npp.h>
-#include "deepstream/sources/includes/nvbufsurface.h"
 #include <cmath>
 #include <iostream>
 #include <mutex>
+#include "deepstream/sources/includes/nvbufsurface.h"
 #include "gst-nvcommon.h"
-#include "gstnvdsbufferpool.h"
 #include "gstnvdsmeta.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/gst_utils.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_interface.hpp"
-#include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurftransform.h"
 #include "nvds_dewarper_meta.h"
 #include "nvdsmeta.h"
@@ -226,7 +223,9 @@ static gboolean gst_videoprep_accept_caps(GstBaseTransform* btrans, GstPadDirect
 
   GST_DEBUG_OBJECT(videoprep, "accept caps %" GST_PTR_FORMAT, caps);
 
-  GstVideoInfo vid_info = {0,};
+  GstVideoInfo vid_info = {
+      0,
+  };
   if (!gst_video_info_from_caps(&vid_info, caps)) {
     GST_ERROR("invalid input caps");
     return FALSE;
@@ -240,7 +239,6 @@ static gboolean gst_videoprep_accept_caps(GstBaseTransform* btrans, GstPadDirect
   } else {
     allowed = videoprep->srccaps;
   }
-  
 
   if (!allowed) {
     GST_DEBUG_OBJECT(videoprep, "failed to get allowed caps");
@@ -616,7 +614,13 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
   GstVideoPrep* videoprep = GST_VIDEOPREP(trans);
   GstCapsFeatures* ift = NULL;
   // GstStructure* config = NULL;
-  GstVideoInfo in_info = {0,}, out_info = {0,};
+  GstVideoInfo in_info =
+                   {
+                       0,
+                   },
+               out_info = {
+                   0,
+               };
 
   // videoprep->input_batch_size = gst::get_batch_size_from_caps(incaps);
   // videoprep->output_batch_size = gst::get_batch_size_from_caps(outcaps);
