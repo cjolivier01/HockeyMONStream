@@ -39,6 +39,7 @@
 
 #define DEFAULT_NUM_VIDEO_PREPPED_SURFACES (4)
 #define DEFAULT_DEWARP_DUMP_FRAMES 0
+
 // #define DEFAULT_DEWARP_OUTPUT_WIDTH 0
 // #define DEFAULT_DEWARP_OUTPUT_HEIGHT 0
 
@@ -503,6 +504,10 @@ static GstCaps* gst_videoprep_transform_caps(
   GstCapsFeatures* feature = NULL;
   GstCaps* new_caps = NULL;
   GstCaps* temp_caps = NULL;
+
+  if (!strcmp(videoprep->plugin_type, "vpplaytracker")) {
+    usleep(0);
+  }
 
   if (direction == GST_PAD_SINK) {
     assert(videoprep->output_width && videoprep->output_height);
