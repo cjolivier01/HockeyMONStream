@@ -1,19 +1,4 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/playcropper.h"
-#include "cupano/pano/cudaMat.h"
-#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
-#include "hstream/src/gst-plugins/gst-videoprep/playcropper/cudaPlayCropper.h"
-#include "hstream/src/libs/common/Status.h"
-#include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
-
-#include "deepstream/sources/includes/nvbufsurface.h"
-#include "hstream/src/libs/draw_display/Fonts.h"
-#include "nvdsmeta.h"
-
-#include "absl/strings/str_split.h"
-
-#include <cmath>
-#include <vector>
-
 #include <absl/status/status.h>
 #include <assert.h>
 #include <cuda.h>
@@ -25,6 +10,16 @@
 #include <opencv4/opencv2/core/types.hpp>
 #include <string.h>
 #include <unistd.h>
+#include <cmath>
+#include <vector>
+#include "absl/strings/str_split.h"
+#include "cupano/pano/cudaMat.h"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
+#include "hstream/src/gst-plugins/gst-videoprep/playcropper/cudaPlayCropper.h"
+#include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
+#include "hstream/src/libs/draw_display/Fonts.h"
+#include "nvdsmeta.h"
 
 #if defined(__aarch64__)
 #include <EGL/egl.h>

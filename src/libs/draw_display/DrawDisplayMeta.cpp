@@ -249,10 +249,12 @@ absl::Status draw_display_meta(
     float scale,
     cudaStream_t stream) {
   // For now, we assume no extra pitch.
-  assert(surface.pitch_width() == surface.width());
+  // assert(surface.pitch_width() == surface.width());
 
   const imageFormat format = surface.get_image_format();
-  const int ww = surface.width();
+  //const int ww = surface.width();
+  assert(surface.pitch() % surface.bytes_per_pixel() == 0);
+  const int ww = surface.pitch_width();
   const int hh = surface.height();
 
   // Draw each rectangle.
