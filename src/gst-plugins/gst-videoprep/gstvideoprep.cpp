@@ -40,11 +40,11 @@
 #define DEFAULT_NUM_VIDEO_PREPPED_SURFACES (4)
 #define DEFAULT_DEWARP_DUMP_FRAMES 0
 
-// #define DEFAULT_DEWARP_OUTPUT_WIDTH 0
-// #define DEFAULT_DEWARP_OUTPUT_HEIGHT 0
+#define DEFAULT_DEWARP_OUTPUT_WIDTH 0
+#define DEFAULT_DEWARP_OUTPUT_HEIGHT 0
 
-#define DEFAULT_DEWARP_OUTPUT_WIDTH 256
-#define DEFAULT_DEWARP_OUTPUT_HEIGHT 128
+// #define DEFAULT_DEWARP_OUTPUT_WIDTH 256
+// #define DEFAULT_DEWARP_OUTPUT_HEIGHT 128
 
 #define USE_CUDA_STREAM
 
@@ -328,7 +328,12 @@ static GstCaps* gst_videoprep_fixate_caps(
   if (videoprep->custom_create_params.output_width_height[1]) {
     videoprep->output_height = videoprep->custom_create_params.output_width_height[1];
   }
-  assert(videoprep->output_width && videoprep->output_height);
+  if (!videoprep->output_width && !videoprep->output_height) {
+    videoprep->output_width = videoprep->input_width;
+    videoprep->output_height = videoprep->input_height;
+    assert(videoprep->output_width && videoprep->output_height);
+  }
+
   out_width = videoprep->output_width;
   out_height = videoprep->output_height;
 
@@ -506,22 +511,42 @@ static GstCaps* gst_videoprep_transform_caps(
   GstCaps* temp_caps = NULL;
 
   if (direction == GST_PAD_SINK) {
-    assert(videoprep->output_width && videoprep->output_height);
-    new_caps = gst_caps_new_simple(
-        "video/x-raw",
-        "format",
-        G_TYPE_STRING,
-        "RGBA",
-        "width",
-        G_TYPE_INT,
-        videoprep->output_width,
-        "height",
-        G_TYPE_INT,
-        videoprep->output_height,
-        "batch-size",
-        G_TYPE_UINT,
-        videoprep->num_batch_buffers,
-        NULL);
+    if (!videoprep->output_width && !videoprep->output_height) {
+      new_caps = gst_caps_new_simple(
+          "video/x-raw",
+          "format",
+          G_TYPE_STRING,
+          "RGBA",
+          "width",
+          GST_TYPE_INT_RANGE,
+          1,
+          G_MAXINT,
+          "height",
+          GST_TYPE_INT_RANGE,
+          1,
+          G_MAXINT,
+          "batch-size",
+          G_TYPE_UINT,
+          videoprep->num_batch_buffers,
+          NULL);
+    } else {
+      assert(videoprep->output_width && videoprep->output_height);
+      new_caps = gst_caps_new_simple(
+          "video/x-raw",
+          "format",
+          G_TYPE_STRING,
+          "RGBA",
+          "width",
+          G_TYPE_INT,
+          videoprep->output_width,
+          "height",
+          G_TYPE_INT,
+          videoprep->output_height,
+          "batch-size",
+          G_TYPE_UINT,
+          videoprep->num_batch_buffers,
+          NULL);
+    }
     feature = gst_caps_features_new("memory:NVMM", NULL);
     gst_caps_set_features(new_caps, 0, feature);
   }
