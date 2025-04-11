@@ -156,6 +156,14 @@ void PlotContext::plot_text(
   }
 }
 
+void PlotContext::nv_ds_release_func(gpointer data, gpointer user_data) {
+  // It has been verified that the normal cleanup will cal free() on the display text pointer,
+  // so we need do nothing.
+  if (release_display_meta_fn != nullptr) {
+    release_display_meta_fn(data, user_data);
+  }
+}
+
 std::pair<NvDsDisplayMeta*, size_t> PlotContext::allocate_display_meta(PLOT_TYPE type) {
   std::unique_lock lk(mu_);
   size_t current_count = plot_type_counts_.at(type);
@@ -164,6 +172,16 @@ std::pair<NvDsDisplayMeta*, size_t> PlotContext::allocate_display_meta(PLOT_TYPE
   if (current_meta >= display_metas_.size() && !new_index) {
     // Allocate a new one
     NvDsDisplayMeta* display_meta = nvds_acquire_display_meta_from_pool(frame_meta_->base_meta.batch_meta);
+#if 0
+    // Currently we don't expect a copy func, but this could be easily supported if necessary
+    assert(!display_meta->base_meta.copy_func);
+    if (release_display_meta_fn) {
+      assert(release_display_meta_fn == display_meta->base_meta.release_func);
+    } else {
+      release_display_meta_fn = display_meta->base_meta.release_func;
+    }
+    display_meta->base_meta.release_func = nv_ds_release_func;
+#endif
     display_metas_.emplace_back(display_meta);
   }
   ++plot_type_counts_.at(type);

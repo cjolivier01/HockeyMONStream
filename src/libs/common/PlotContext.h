@@ -71,9 +71,12 @@ class PlotContext {
  public:
   enum PLOT_TYPE { RECT = 0, CIRCLE, LINE, TEXT, ARROW, NR_PLOT_TYPES };
 
+  static void nv_ds_release_func(gpointer data, gpointer user_data);
+
   std::pair<NvDsDisplayMeta*, size_t> allocate_display_meta(PLOT_TYPE type);
 
   static inline constexpr size_t kMaxElementsInDisplayMeta = MAX_ELEMENTS_IN_DISPLAY_META;
+  static inline NvDsMetaReleaseFunc release_display_meta_fn{nullptr};
   NvDsFrameMeta* frame_meta_;
   const std::string font_name_;
   std::mutex mu_;
