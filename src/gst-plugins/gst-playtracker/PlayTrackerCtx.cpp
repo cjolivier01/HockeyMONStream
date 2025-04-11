@@ -242,7 +242,7 @@ void plot_progress_bar(
   plotter.plot_rect(bbox, /*thickness=*/kThickness, line_color, /*fill_color=*/unfilled_color);
   hm::BBox inner_rect(bbox.left + kThickness, bbox.top + kThickness, bbox.right - kThickness, bbox.bottom - kThickness);
   hm::FloatValue ww = inner_rect.width() * filled_ratio;
-  inner_rect.right = std::min(inner_rect.right, ww);
+  inner_rect.right = std::min(inner_rect.right, inner_rect.left + ww);
   if (inner_rect.width() <= 0 || inner_rect.height() <= 0) {
     return;
   }
@@ -340,10 +340,14 @@ void plot_translation_state(
           /*thickness=*/3,
           hm::utils::ColorRGB{255, 255, 0});
       // Translation edge scale
-      char buf[256];
-      sprintf(buf, "%.21g", translation_state.last_edge_position_scale);
-      plotter.plot_text(buf, my_center, /*font_size=*/32, hm::utils::ColorRGB{255, 255, 0});
-      // std::cout << buf << '\n';
+      hm::BBox prog(my_center, hm::WHDims{.width = sticky / 2, .height = 25});
+      plot_progress_bar(
+          plotter,
+          prog,
+          translation_state.last_edge_position_scale,
+          hm::utils::ColorRGB{128, 128, 128},
+          hm::utils::ColorRGB{64, 64, 64},
+          hm::utils::ColorRGB{128, 255, 255});
     }
   }
 }
