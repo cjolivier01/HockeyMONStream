@@ -12,17 +12,6 @@
 namespace hm {
 namespace stitcher {
 
-/**
- * @addtogroup three Standard GStreamer boilerplate
- * @{
- */
-// #define GST_TYPE_PLAY_CROPPER (hm::videoprep::gst_videoprep_get_type())
-// #define GST_VIDEOPREP_PLAY_CROPPER(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_PLAY_CROPPER,
-// GstVideoPrepStitcher)) #define GST_VIDEOPREP_PLAY_CROPPER_CLASS(klass) (G_TYPE_CHECK_CLASS_CAST((klass),
-// GST_TYPE_PLAY_CROPPER, GstVideoPrepStitcherClass)) #define GST_IS_VIDEOPREP_PLAY_CROPPER(obj)
-// (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_PLAY_CROPPER)) #define GST_IS_VIDEOPREP_PLAY_CROPPER_CLASS(klass)
-// (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_PLAY_CROPPER))
-
 using STITCH_PRIV_BASE = CustomAlgorithmBase;
 
 class StitcherPriv : public STITCH_PRIV_BASE {
@@ -74,23 +63,6 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   size_t left_frame_offset_ns_{0}, right_frame_offset_ns_{0};
   bool show_{false};
 };
-
-#if 0
-/** GStreamer boilerplate. */
-struct GstVideoPrepStitcher : public videoprep::GstVideoPrep {
-  // Don't add stuff here
-  GstVideoPrepStitcher() {
-    static_assert(sizeof(GstVideoPrepStitcher) == sizeof(videoprep::GstVideoPrep));
-  }
-};
-
-struct GstVideoPrepStitcherClass : public videoprep::GstVideoPrepClass {
-  // Don't add stuff here
-  GstVideoPrepStitcherClass() {
-    static_assert(sizeof(GstVideoPrepStitcherClass) == sizeof(videoprep::GstVideoPrepClass));
-  }
-};
-#endif
 
 } // namespace stitcher
 } // namespace hm
