@@ -83,7 +83,7 @@
         //"--enable-sinks=RTMP",
         //"--enable-sinks=FAKE",
         //"--enable-sinks=ENCODE_FILE",
-        "--start-time=00:10:40",
+        "--start-time=00:10:30",
         //"--options=pipeline.hmplaycropper.show=1,pipeline.hmplaycropper.show-scoreboard=1,pipeline.ds-playtracker.draw=1,pipeline.hmplaycropper.plot-play-tracking=1,pipeline.hmplaycropper.plot-player-tracking=0",
       ],
       "sourceMap": {
