@@ -6,7 +6,6 @@
 #include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 #include "hstream/src/libs/common/ConfigYaml.h"
 #include "hstream/src/libs/common/PlotContext.h"
-#include "hstream/src/libs/common/Status.h"
 
 #include <nvdsmeta.h>
 
