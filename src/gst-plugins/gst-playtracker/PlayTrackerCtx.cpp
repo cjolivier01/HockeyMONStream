@@ -453,7 +453,7 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
       return false;
     }
   }
-  DsPlayTrackerAttachMetadataFullFrame(frame.frame_meta, frame.play_tracker_results, frame.batch_index);
+  DsPlayTrackerAttachMetadataFullFrame(frame.frame_meta, frame.play_tracker_results);
   return true;
 }
 
@@ -521,12 +521,12 @@ absl::Status DsPlayTrackerDrawToDisplayMeta(DsPlayTrackerCtx* ctx, GstDsPlayTrac
  */
 void DsPlayTrackerAttachMetadataFullFrame(
     NvDsFrameMeta* frame_meta,
-    const hm::play_tracker::PlayTrackerResults& play_results,
-    guint batch_id) {
+    const hm::play_tracker::PlayTrackerResults& play_results) {
   NvDsBatchMeta* batch_meta = frame_meta->base_meta.batch_meta;
   NvDsObjectMeta* object_meta = NULL;
 
   size_t adder = 0;
+  // Start with base vlass id being the last following box
   for (int64_t i = play_results.tracking_boxes.size() - 1; i >= 0; --i, ++adder) {
     const hm::BBox& tracking_box = play_results.tracking_boxes[i];
     object_meta = nvds_acquire_obj_meta_from_pool(batch_meta);

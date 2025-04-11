@@ -14,6 +14,7 @@
 #include <vector>
 #include "absl/strings/str_split.h"
 #include "cupano/pano/cudaMat.h"
+#include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/cudaPlayCropper.h"
 #include "hstream/src/libs/common/Status.h"
@@ -182,7 +183,8 @@ absl::Status PlayCropperPriv::GenerateOutput(
 
   HM_RETURN_IF_ERROR(hm::to_status(cudaSetDevice(m_gpuId)));
 
-  const std::vector<BBox> tracking_boxes = get_tracking_boxes(batch_meta);
+  const std::vector<BBox> tracking_boxes = get_object_boxes(
+      batch_meta, DsPlayTrackerInitParams::kPlayBoxClassIdBase, DsPlayTrackerInitParams::kPlayBoxClassIdBase);
 
   out_surface->numFilled = 0;
 

@@ -26,6 +26,22 @@ cc_library(
         "PlayTrackerCtx.cpp",
   ],
   hdrs = [
+  ],
+  include_prefix =   INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+        ":playtracker_context_header",
+        "//src/libs/common:utils",
+        "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
+        "@hm//hockeymom/csrc/play_tracker:play_tracker",
+  ],
+)
+
+cc_library(
+  name = "playtracker_context_header",
+  srcs = [
+  ],
+  hdrs = [
         "PlayTrackerCtx.h",
   ],
   include_prefix =   INCLUDE_PREFIX,

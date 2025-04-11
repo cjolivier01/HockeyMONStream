@@ -16,7 +16,7 @@ struct DsPlayTrackerInitParams {
   std::string play_tracker_config_file;
 
   bool draw{false};
-  // The class id we will set for the play box
+  // // The class id we will set for the play box
   static constexpr inline int kPlayBoxClassIdBase = 99;
 };
 
@@ -43,8 +43,7 @@ void DsPlayTrackerCtxDeinit(DsPlayTrackerCtx* ctx);
 
 void DsPlayTrackerAttachMetadataFullFrame(
     NvDsFrameMeta* frame_meta,
-    const hm::play_tracker::PlayTrackerResults& play_results,
-    guint batch_id);
+    const hm::play_tracker::PlayTrackerResults& play_results);
 
 struct GstDsPlayTrackerFrame {
   /** NvDsObjectParams belonging to the object to be classified. */

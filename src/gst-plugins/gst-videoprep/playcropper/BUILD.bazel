@@ -15,7 +15,7 @@ cc_library(
     deps = [
         ":play_cropper_cuda_lib",
         "//src/gst-plugins/gst-videoprep/algorithm-base",
-        # "//src/gst-plugins/gst-videoprep/playtracker:playtracker_payload",
+        "//src/gst-plugins/gst-playtracker:playtracker_context_header",
         "//src/libs/draw_display",
         "//src/libs/scoreboard",
         "@hm-cupano//src/pano:cuda_matrix",

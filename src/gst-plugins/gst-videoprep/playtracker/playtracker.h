@@ -30,7 +30,7 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
   DsPlayTrackerCtx* pt_context_{nullptr};
   hm::play_tracker::PlayTrackerResults prev_play_tracker_results_;
   size_t frame_counter_{0};
-  size_t frame_calculation_interval_{1};
+  size_t frame_calculation_interval_{2};
   bool show_{false};
 };
 
