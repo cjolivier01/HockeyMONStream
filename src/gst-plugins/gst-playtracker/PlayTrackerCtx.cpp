@@ -284,7 +284,7 @@ void plot_translation_state(
     double scale_height,
     std::optional<ILivingBox*> following_lbox = std::nullopt) {
   const hm::play_tracker::TranslationState& translation_state = lbox->get_translation_state();
-  (void)translation_state;
+  // (void)translation_state;
   BBox my_bbox = lbox->bounding_box().make_canvas_scaled(scale_width, scale_height);
   plotter.plot_rect(
       my_bbox, thickness, translation_state.translation_is_frozen ? hm::utils::ColorRGB{128, 128, 128} : color);
@@ -321,6 +321,10 @@ void plot_translation_state(
           Point{.x = my_center.x, .y = following_bbox_center.y},
           /*thickness=*/3,
           hm::utils::ColorRGB{255, 255, 0});
+      // Translation edge scale
+      // char buf[256];
+      // sprintf(buf, "%.01g", translation_state.last_edge_position_scale);
+      // plotter.plot_text(buf, my_center, /*font_size=*/24, hm::utils::ColorRGB{255, 255, 0});
     }
   }
 }
@@ -499,6 +503,8 @@ absl::Status DsPlayTrackerDrawToDisplayMeta(DsPlayTrackerCtx* ctx, GstDsPlayTrac
           gst_hm_playtracker::breakway_edge_line);
     }
   }
+  // Finally, print the translation scaling value
+  // frame.play_tracker_results.
   return absl::OkStatus();
 }
 
