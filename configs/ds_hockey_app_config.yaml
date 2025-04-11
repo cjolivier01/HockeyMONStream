@@ -237,7 +237,7 @@ sink3:
 # |_|  |_|_| |_| |_|/_/    \_\\__,_|\__,_||_|\___/
 #
 hmaudio0:
-  enable: 1
+  enable: 0
   # 0=default alsa source, 1=file, 2=src_bin(source-id)
   src: 2
   # source-id: 1
@@ -376,10 +376,10 @@ hmplaycropper:
   enable: 1
   gpu-id: 0
   nvbuf-memory-type: 0
-  # plot-play-tracking: 1
+  plot-play-tracking: 1
   # plot-player-tracking: 0
   no-crop: 0
-  show: 0
+  show: 1
   show-scoreboard: 1
   plugin-type: playcropper
 
@@ -403,7 +403,7 @@ ds-playtracker:
   enable: 1
   gpu-id: 0
   unique-id: 75
-  draw: 0
+  draw: 1
   show: 0
   plugin-type: vpplaytracker
   config-file: play_tracker_config.yaml
