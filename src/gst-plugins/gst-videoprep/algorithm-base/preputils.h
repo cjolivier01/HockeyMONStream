@@ -37,7 +37,7 @@ inline bool CUDA_CHECK_(gint e, gint iLine, const gchar* szFile) {
  */
 uint32_t gst_videoprep_version();
 
-std::vector<hm::BBox> get_object_boxes(NvDsBatchMeta* batch_meta, size_t class_id_low, size_t class_id_hi);
+std::vector<hm::BBox> get_object_boxes(NvDsBatchMeta* batch_meta, int class_id_low, int class_id_hi);
 
 CudaStatus cropSurface(
     const hm::surface::Surface& in_surface,
