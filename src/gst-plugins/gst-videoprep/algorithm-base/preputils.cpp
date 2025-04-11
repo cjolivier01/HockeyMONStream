@@ -1,16 +1,11 @@
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
-
+#include <assert.h>
+#include <npp.h>
+#include <string.h>
+#include <cassert>
 #include "cudaCrop.h"
 #include "cudaWarp.h"
 #include "cupano/cuda/cudaStatus.h"
-
-#include <assert.h>
-#include <string.h>
-
-#include <cassert>
-#include <iostream>
-
-#include <npp.h>
 
 namespace hm {
 
