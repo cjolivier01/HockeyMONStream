@@ -86,6 +86,7 @@ absl::Status PlayTrackerPriv::GenerateOutput(
       prev_play_tracker_results_ = frame.play_tracker_results;
     } else {
       frame.play_tracker_results = prev_play_tracker_results_;
+      DsPlayTrackerAttachMetadataFullFrame(frame.frame_meta, frame.play_tracker_results, frame.batch_index);
     }
     ++frame.batch_index;
     ++frame_counter_;
