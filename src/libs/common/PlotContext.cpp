@@ -144,7 +144,7 @@ void PlotContext::plot_text(
   text_params.font_params.font_color = to_color_params(color);
   std::unique_ptr<char[]> text = std::make_unique<char[]>(label.size() + 1);
   strcpy(text.get(), label.c_str());
-  text_params.display_text = text.get();
+  text_params.display_text = strdup(text.get());
   {
     std::unique_lock lk(mu_);
     text_data_.emplace_back(std::move(text));

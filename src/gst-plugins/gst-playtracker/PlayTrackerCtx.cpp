@@ -322,9 +322,10 @@ void plot_translation_state(
           /*thickness=*/3,
           hm::utils::ColorRGB{255, 255, 0});
       // Translation edge scale
-      // char buf[256];
-      // sprintf(buf, "%.01g", translation_state.last_edge_position_scale);
-      // plotter.plot_text(buf, my_center, /*font_size=*/24, hm::utils::ColorRGB{255, 255, 0});
+      char buf[256];
+      sprintf(buf, "%.21g", translation_state.last_edge_position_scale);
+      plotter.plot_text(buf, my_center, /*font_size=*/32, hm::utils::ColorRGB{255, 255, 0});
+      // std::cout << buf << '\n';
     }
   }
 }
