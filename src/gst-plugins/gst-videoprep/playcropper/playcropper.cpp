@@ -185,6 +185,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
 
   const std::vector<BBox> tracking_boxes = get_object_boxes(
       batch_meta, DsPlayTrackerInitParams::kPlayBoxClassIdBase, DsPlayTrackerInitParams::kPlayBoxClassIdBase);
+  assert(tracking_boxes.empty() || tracking_boxes.size() == batch_meta->num_frames_in_batch);
 
   out_surface->numFilled = 0;
 

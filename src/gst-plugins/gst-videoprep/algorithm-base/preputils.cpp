@@ -123,7 +123,9 @@ cudaError_t mapNppStatusToCudaError(const NppStatus& status) {
 
 std::vector<hm::BBox> get_object_boxes(NvDsBatchMeta* batch_meta, int class_id_low, int class_id_hi) {
   std::vector<hm::BBox> results;
-  const size_t batch_size = g_list_length(batch_meta->frame_meta_list);
+  const size_t batch_size = batch_meta->num_frames_in_batch;
+  // Debug-only assert sanity check
+  assert(batch_size == g_list_length(batch_meta->frame_meta_list));
   results.reserve(batch_size);
   for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != nullptr; l_frame = l_frame->next) {
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)l_frame->data;
@@ -140,7 +142,6 @@ std::vector<hm::BBox> get_object_boxes(NvDsBatchMeta* batch_meta, int class_id_l
     }
   }
   // All or nothing
-  assert(results.empty() || results.size() == batch_size);
   return results;
 }
 
