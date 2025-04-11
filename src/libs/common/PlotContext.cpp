@@ -271,12 +271,12 @@ void PlotContext::plot_corner_rect(
   const Point bottom_right = {rect.right, rect.bottom};
 
   // Extract rectangle dimensions
-  int width = bottom_right.x - top_left.x;
-  int height = bottom_right.y - top_left.y;
+  const int width = bottom_right.x - top_left.x;
+  const int height = bottom_right.y - top_left.y;
 
   // Calculate lengths of corner segments
-  int corner_width = static_cast<int>(width * width_ratio);
-  int corner_height = static_cast<int>(height * height_ratio);
+  const int corner_width = static_cast<int>(width * width_ratio);
+  const int corner_height = static_cast<int>(height * height_ratio);
 
   // Draw the four corners
   // Top-left corner
