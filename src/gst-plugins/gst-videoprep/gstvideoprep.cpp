@@ -235,14 +235,14 @@ static gboolean gst_videoprep_accept_caps(GstBaseTransform* btrans, GstPadDirect
   /* get all the formats we can handle on this pad */
   if (direction == GST_PAD_SINK) {
     allowed = videoprep->sinkcaps;
-    assert(!videoprep->input_width || videoprep->input_width == vid_info.width);
-    assert(!videoprep->input_height || videoprep->input_height == vid_info.height);
+    assert(!videoprep->input_width || videoprep->input_width == (guint)vid_info.width);
+    assert(!videoprep->input_height || videoprep->input_height == (guint)vid_info.height);
     videoprep->input_width = vid_info.width;
     videoprep->input_height = vid_info.height;
   } else {
     allowed = videoprep->srccaps;
-    assert(videoprep->output_width == vid_info.width);
-    assert(videoprep->output_height == vid_info.height);
+    assert(videoprep->output_width == (guint)vid_info.width);
+    assert(videoprep->output_height == (guint)vid_info.height);
   }
 
   if (!allowed) {
