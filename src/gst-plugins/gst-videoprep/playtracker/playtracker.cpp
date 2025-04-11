@@ -86,6 +86,9 @@ absl::Status PlayTrackerPriv::GenerateOutput(
       prev_play_tracker_results_ = frame.play_tracker_results;
     } else {
       frame.play_tracker_results = prev_play_tracker_results_;
+      if (pt_context_->initParams.draw) {
+        HM_RETURN_IF_ERROR(DsPlayTrackerDrawToDisplayMeta(pt_context_, frame));
+      }
       DsPlayTrackerAttachMetadataFullFrame(frame.frame_meta, frame.play_tracker_results, frame.batch_index);
     }
     ++frame.batch_index;

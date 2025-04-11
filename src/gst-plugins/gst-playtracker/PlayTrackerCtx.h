@@ -4,8 +4,8 @@
 
 #include <cuda_runtime.h>
 #include <nvdsmeta.h>
+#include "absl/status/status.h"
 #include "deepstream/sources/includes/nvbufsurface.h"
-
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
 
 typedef struct GstDsPlayTrackerFrame GstDsPlayTrackerFrame;
@@ -35,6 +35,8 @@ struct DsPlayTrackerCtx {
 DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* init_params);
 
 bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame, cudaStream_t stream);
+
+absl::Status DsPlayTrackerDrawToDisplayMeta(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame);
 
 // Deinitialize library context
 void DsPlayTrackerCtxDeinit(DsPlayTrackerCtx* ctx);
