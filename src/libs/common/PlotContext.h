@@ -82,7 +82,7 @@ class PlotContext {
   std::mutex mu_;
   std::array<size_t, NR_PLOT_TYPES> plot_type_counts_;
   std::vector<NvDsDisplayMeta*> display_metas_;
-  std::list<std::unique_ptr<char[]>> text_data_;
+  // std::list<std::unique_ptr<char[]>> text_data_;
 };
 
 } // namespace utils

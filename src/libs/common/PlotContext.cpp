@@ -50,7 +50,7 @@ void PlotContext::reset() {
     v = 0;
   }
   display_metas_.clear();
-  text_data_.clear();
+  // text_data_.clear();
 }
 
 void PlotContext::apply() {
@@ -142,14 +142,7 @@ void PlotContext::plot_text(
   text_params.y_offset = top_left.y;
   text_params.font_params.font_name = const_cast<char*>(font_name_.c_str());
   text_params.font_params.font_color = to_color_params(color);
-  std::unique_ptr<char[]> text = std::make_unique<char[]>(label.size() + 1);
-  strcpy(text.get(), label.c_str());
-  text_params.display_text = strdup(text.get());
-  {
-    std::unique_lock lk(mu_);
-    text_data_.emplace_back(std::move(text));
-  }
-  // text_params.display_text
+  text_params.display_text = strdup(label.c_str());
   if (bg_color.has_value()) {
     text_params.set_bg_clr = true;
     text_params.text_bg_clr = to_color_params(*bg_color);
