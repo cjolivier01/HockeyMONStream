@@ -231,6 +231,24 @@ hm::play_tracker::PlayTracker* get_or_create_play_tracker(DsPlayTrackerCtx* ctx,
   return nullptr;
 }
 
+void plot_progress_bar(
+    hm::utils::PlotContext& plotter,
+    const hm::BBox& bbox,
+    float filled_ratio,
+    const hm::utils::ColorRGB& line_color,
+    const hm::utils::ColorRGB& unfilled_color,
+    const hm::utils::ColorRGB& fill_color) {
+  constexpr int kThickness = 1;
+  plotter.plot_rect(bbox, /*thickness=*/kThickness, line_color, /*fill_color=*/unfilled_color);
+  hm::BBox inner_rect(bbox.left + kThickness, bbox.top + kThickness, bbox.right - kThickness, bbox.bottom - kThickness);
+  hm::FloatValue ww = inner_rect.width() * filled_ratio;
+  inner_rect.right = std::min(inner_rect.right, ww);
+  if (inner_rect.width() <= 0 || inner_rect.height() <= 0) {
+    return;
+  }
+  plotter.plot_rect(inner_rect, /*thickness=*/0, fill_color, fill_color);
+}
+
 void plot_resizing_state(
     hm::utils::PlotContext& plotter,
     const ILivingBox* lbox,
