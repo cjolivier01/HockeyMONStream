@@ -77,6 +77,7 @@ absl::Status PlayTrackerPriv::GenerateOutput(
       PlayTrackerPayload::create_and_add<PlayTrackerPayload>(frame.frame_meta, pt_context_->arena_box);
       prev_play_tracker_results_ = frame.play_tracker_results;
     } else {
+      assert(false);
       frame.play_tracker_results = prev_play_tracker_results_;
       if (pt_context_->initParams.draw) {
         HM_RETURN_IF_ERROR(DsPlayTrackerDrawToDisplayMeta(pt_context_, frame));
