@@ -67,22 +67,28 @@ absl::Status PlayTrackerPriv::GenerateOutput(
   auto font_cache = draw_display::get_or_create_font_cache();
   NvDsFrameMetaList* fl = batch_meta->frame_meta_list;
   while (fl) {
-    assert(frame.batch_index < in_surface->numFilled);
-    frame.frame_meta = (NvDsFrameMeta*)fl->data;
-    frame.input_surf_params = &in_surface->surfaceList[frame.batch_index];
-    if (!DsPlayTrackerProcessFrame(pt_context_, frame, cuda_stream_)) {
-      return absl::InternalError("Error calling DsPlayTrackerProcessFrame()");
-    }
-    PlayTrackerPayload::create_and_add<PlayTrackerPayload>(frame.frame_meta, pt_context_->arena_box);
-    if (show_) {
-      NvDisplayMetaList* dm_list = frame.frame_meta->display_meta_list;
-      while (dm_list) {
-        NvDsDisplayMeta* display_meta = (NvDsDisplayMeta*)dm_list->data;
-        HM_RETURN_IF_ERROR(draw_display_meta(frame.input_surf_params, display_meta, font_cache, 1.0f, cuda_stream_));
-        dm_list = dm_list->next;
+    if (frame_counter_ % frame_calculation_interval_ == 0) {
+      assert(frame.batch_index < in_surface->numFilled);
+      frame.frame_meta = (NvDsFrameMeta*)fl->data;
+      frame.input_surf_params = &in_surface->surfaceList[frame.batch_index];
+      if (!DsPlayTrackerProcessFrame(pt_context_, frame, cuda_stream_)) {
+        return absl::InternalError("Error calling DsPlayTrackerProcessFrame()");
       }
+      PlayTrackerPayload::create_and_add<PlayTrackerPayload>(frame.frame_meta, pt_context_->arena_box);
+      if (show_) {
+        NvDisplayMetaList* dm_list = frame.frame_meta->display_meta_list;
+        while (dm_list) {
+          NvDsDisplayMeta* display_meta = (NvDsDisplayMeta*)dm_list->data;
+          HM_RETURN_IF_ERROR(draw_display_meta(frame.input_surf_params, display_meta, font_cache, 1.0f, cuda_stream_));
+          dm_list = dm_list->next;
+        }
+      }
+      prev_play_tracker_results_ = frame.play_tracker_results;
+    } else {
+      frame.play_tracker_results = prev_play_tracker_results_;
     }
     ++frame.batch_index;
+    ++frame_counter_;
     fl = fl->next;
   }
   return absl::OkStatus();
