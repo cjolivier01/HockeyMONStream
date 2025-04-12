@@ -667,6 +667,14 @@ absl::Status Configurator::complete_configuration(bool force) {
           ww = right_info.width;
           hh = right_info.height;
         }
+        if (rfo == 0.0) {
+          const double lfo = offsets["left"].as<double>();
+          // Change the source id of sinks that reference the left video to now reference the right video
+          if (lfo != 0.0) {
+            // TODO: Do this better instead of all the assumptions made here
+            replace_sink_source_id(pipeline, 0, 1);
+          }
+        }
       }
     }
   }
