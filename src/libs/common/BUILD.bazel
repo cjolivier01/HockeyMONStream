@@ -42,3 +42,13 @@ cc_library(
     "@gstreamer",
   ],
 )
+
+cc_library(
+  name = "perspective",
+  srcs = ["Perspective.cpp"],
+  hdrs = ["Perspective.h"],
+  include_prefix=INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+  ],
+)

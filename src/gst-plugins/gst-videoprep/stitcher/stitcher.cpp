@@ -242,7 +242,7 @@ absl::Status StitcherPriv::GenerateOutput(
 
     NvDsFrameMeta* reuse_frame_meta{nullptr};
     assert(source_frame_metas.size() == 2);
-    if (true || !left_frame_offset_ns_) {
+    if (!left_frame_offset_ns_) {
       // left frame has correct timestamps
       reuse_frame_meta = frame_info_left.frame_meta;
       remove_frame_metas.emplace_back(frame_info_right.frame_meta);
@@ -368,6 +368,7 @@ absl::Status StitcherPriv::GenerateOutput(
     reuse_frame_meta->source_frame_width = reuse_frame_meta->pipeline_width = canvas->width();
     reuse_frame_meta->source_frame_height = reuse_frame_meta->pipeline_height = canvas->height();
     reuse_frame_meta->num_surfaces_per_frame = 1;
+    reuse_frame_meta->source_id = min_source_id;
   }
 
   if (out_surface->numFilled) {
