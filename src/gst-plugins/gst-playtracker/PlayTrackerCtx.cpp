@@ -240,8 +240,8 @@ void plot_progress_bar(
     const hm::utils::ColorRGB& fill_color) {
   constexpr int kThickness = 1;
   plotter.plot_rect(bbox, /*thickness=*/kThickness, line_color, /*fill_color=*/unfilled_color);
-  hm::BBox inner_rect(bbox.left + kThickness, bbox.top + kThickness, bbox.right - kThickness, bbox.bottom - kThickness);
-  hm::FloatValue ww = inner_rect.width() * filled_ratio;
+  hm::BBox inner_rect = bbox.deflate(kThickness, kThickness);
+  hm::FloatValue ww = inner_rect.width() * std::abs(filled_ratio);
   inner_rect.right = std::min(inner_rect.right, inner_rect.left + ww);
   if (inner_rect.width() <= 0 || inner_rect.height() <= 0) {
     return;
@@ -344,7 +344,7 @@ void plot_translation_state(
       plot_progress_bar(
           plotter,
           prog,
-          translation_state.last_edge_position_scale,
+          translation_state.last_arena_edge_center_position_scale,
           hm::utils::ColorRGB{128, 128, 128},
           hm::utils::ColorRGB{64, 64, 64},
           hm::utils::ColorRGB{128, 255, 255});

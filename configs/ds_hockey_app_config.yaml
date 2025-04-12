@@ -266,7 +266,7 @@ hmaudio0:
 
 
 osd:
-  enable: 0
+  enable: 1
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -403,7 +403,7 @@ ds-playtracker:
   enable: 1
   gpu-id: 0
   unique-id: 75
-  draw: 1
+  draw: 0
   show: 0
   plugin-type: vpplaytracker
   config-file: play_tracker_config.yaml

@@ -240,22 +240,22 @@ absl::Status PlayCropperPriv::GenerateOutput(
     // Calculate rotation angle
     float angle = 0.0f;
 
-    // FloatValue width_for_ratio = 1.0;
-    const playtracker::PlayTrackerPayload* ptpayload =
-        playtracker::PlayTrackerPayload::get_payload<playtracker::PlayTrackerPayload>(frame_meta);
-    // if (ptpayload) {
-    //   width_for_ratio = FloatValue(ptpayload->arena_box().width()) / frame_meta->source_frame_width;
-    // }
-
     const float max_angle = fixed_edge_rotation_angle_;
-    const float half_width = float(frame_meta->source_frame_width) / 2;
-    const float tcx = tbox.center().x;
-    if (tcx < half_width) {
-      float pct = 1.0 - tcx / half_width;
-      angle = max_angle * pct;
-    } else if (tcx > half_width) {
-      float pct = (half_width - tcx) / half_width;
-      angle = max_angle * pct;
+
+    // const playtracker::PlayTrackerPayload* ptpayload =
+    //     playtracker::PlayTrackerPayload::get_payload<playtracker::PlayTrackerPayload>(frame_meta);
+    if (false /*ptpayload*/) {
+      //angle = max_angle * ptpayload->`
+    } else {
+      const float half_width = float(frame_meta->source_frame_width) / 2;
+      const float tcx = tbox.center().x;
+      if (tcx < half_width) {
+        float pct = 1.0 - tcx / half_width;
+        angle = max_angle * pct;
+      } else if (tcx > half_width) {
+        float pct = (half_width - tcx) / half_width;
+        angle = max_angle * pct;
+      }
     }
 
     // Calculate crop regions
