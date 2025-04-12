@@ -139,6 +139,7 @@ sink1:
   type: 2
   sync: 1
   # sync: 0
+  # source-id: 1
   sink-id: 1
   nvbuf-memory-type: 0
 

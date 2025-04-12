@@ -242,11 +242,13 @@ absl::Status StitcherPriv::GenerateOutput(
 
     NvDsFrameMeta* reuse_frame_meta{nullptr};
     assert(source_frame_metas.size() == 2);
-    if (!left_frame_offset_ns_) {
+    if (true || !left_frame_offset_ns_) {
       // left frame has correct timestamps
       reuse_frame_meta = frame_info_left.frame_meta;
       remove_frame_metas.emplace_back(frame_info_right.frame_meta);
     } else {
+      // Can't get renderer to pick up source-id 1 automatically, even if I change in frame meta
+
       // right frame has correct timestamps
       assert(!right_frame_offset_ns_);
       reuse_frame_meta = frame_info_right.frame_meta;
