@@ -63,9 +63,9 @@
       "cwd": "${workspaceFolder}",
       "program": "${workspaceFolder}/bazel-bin/src/apps/pipeline-app/pipeline-app",
       "args": [
-        "-c",
-        "${workspaceFolder}/configs/ds_hockey_configure_stitching.yaml",
-        "--enable-sinks=FAKE",        
+        // "-c",
+        // "${workspaceFolder}/configs/ds_hockey_configure_stitching.yaml",
+        // "--enable-sinks=FAKE",        
         "-c",
         "${workspaceFolder}/configs/ds_hockey_app_config.yaml",
         //"-f",

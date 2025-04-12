@@ -25,7 +25,7 @@
 #include "deepstream_common.h"
 #include "deepstream_sinks.h"
 
-static guint uid = 0;
+static std::atomic<guint> next_uid = 1;
 static GstRTSPServer* server[MAX_SINK_BINS];
 static guint server_count = 0;
 static GMutex server_cnt_lock;
@@ -89,7 +89,7 @@ gboolean create_fakesink_bin(const NvDsSinkRenderConfig* config, NvDsSinkBinSubB
   GstElement* connect_to;
   GstCaps* caps = NULL;
 
-  uid++;
+  const guint uid = next_uid++;
 
   struct cudaDeviceProp prop;
   cudaGetDeviceProperties(&prop, config->gpu_id);
@@ -165,7 +165,7 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
   GstElement* connect_to;
   GstCaps* caps = NULL;
 
-  uid++;
+  const guint uid = next_uid++;
 
   struct cudaDeviceProp prop;
   cudaGetDeviceProperties(&prop, config->gpu_id);
@@ -338,7 +338,7 @@ static gboolean create_msg_conv_broker_bin(NvDsSinkMsgConvBrokerConfig* config, 
   gboolean ret = FALSE;
   gchar elem_name[50];
 
-  uid++;
+  const guint uid = next_uid++;
 
   g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin%d", uid);
   bin->bin = gst_bin_new(elem_name);
