@@ -213,6 +213,30 @@ std::map<int, YAML::Node> get_enabled_sources(const YAML::Node& pipeline) {
   return sources;
 }
 
+std::map<int, YAML::Node> replace_sink_source_id(const YAML::Node& pipeline, int from_source_id, int to_source_id) {
+  std::map<int, YAML::Node> sinks;
+  for (auto kv : pipeline) {
+    std::string key = kv.first.as<std::string>();
+    if (absl::StartsWith(key, "sink")) {
+      YAML::Node sink_node = kv.second;
+      if (!get_node_value(sink_node, "enable", 0)) {
+        continue;
+      }
+      if (!has_node(sink_node, "source-id", /*non_null=*/true)) {
+        // Default would be zero
+        if (from_source_id != 0)
+          continue;
+        sink_node["source-id"] = from_source_id;
+      }
+      if (sink_node["source-id"].as<gint>() == from_source_id) {
+        sink_node["source-id"] = to_source_id;
+      }
+      sinks.emplace(sink_node["sink-id"].as<int>(), sink_node);
+    }
+  }
+  return sinks;
+}
+
 absl::StatusOr<std::map<int, YAML::Node>> get_camera_sources(const YAML::Node& pipeline) {
   std::map<int, YAML::Node> cameras;
   std::map<int, YAML::Node> sources = get_enabled_sources(pipeline);
