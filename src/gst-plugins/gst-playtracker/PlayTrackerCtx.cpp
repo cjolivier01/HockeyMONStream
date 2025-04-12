@@ -156,7 +156,8 @@ void adjust_config(const BBox& arena_box, PlayTrackerConfig& pt_config, const st
     bcfg.sticky_translation = true;
     bcfg.arena_box = arena_box;
 
-    bcfg.dynamic_acceleration_scaling = true; // EXPERIMENTAL
+    bcfg.dynamic_acceleration_scaling = true; // EXPERIMENTA
+    // bcfg.dynamic_acceleration_scaling = false;
   }
 }
 
