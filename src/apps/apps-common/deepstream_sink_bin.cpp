@@ -485,7 +485,7 @@ static gboolean create_encode_file_bin(NvDsSinkEncoderConfig* config, NvDsSinkBi
   guint profile = config->profile;
   const gchar* latency = g_getenv("NVDS_ENABLE_LATENCY_MEASUREMENT");
 
-  uid++;
+  const guint uid = next_uid++;
 
   g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin%d", uid);
   bin->bin = gst_bin_new(elem_name);
@@ -769,7 +769,7 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
   enum ServerSinkType sink_type;
 
   // guint rtsp_port_num = g_rtsp_port_num++;
-  uid++;
+  const guint uid = next_uid++;
 
   sink_type = get_server_sink_type(config->output_file_path);
   if (sink_type == SST_RTMP) {
