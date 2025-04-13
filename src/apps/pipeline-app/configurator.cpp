@@ -408,6 +408,19 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
   return config;
 }
 
+bool set_if_not_set(YAML::Node node, const std::string& dest_key, const std::string& src_key) {
+  std::optional<YAML::Node> dest_node = get_node(node, dest_key);
+  if (dest_node && dest_node->IsDefined() && !dest_node->IsNull()) {
+    return false;
+  }
+  std::optional<YAML::Node> src_node = get_node(node, src_key);
+  if (!src_node || !src_node->IsDefined() || src_node->IsNull()) {
+    return false;
+  }
+  set_node_value(node, dest_key, src_node->as<std::string>());
+  return true;
+}
+
 bool Configurator::underlay_config(const std::string& node_name, const std::string& filename) {
   if (!std::filesystem::exists(filename)) {
     return false;
@@ -526,7 +539,9 @@ absl::Status Configurator::complete_configuration(bool force) {
 
   pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / kRinkMaskFilename);
 
-  pipeline["hmplaycropper"]["fixed-edge-rotation-angle"] = config_["rink"]["camera"]["fixed_edge_rotation_angle"];
+  // pipeline["hmplaycropper"]["fixed-edge-rotation-angle"] = config_["rink"]["camera"]["fixed_edge_rotation_angle"];_
+  set_if_not_set(config_, "pipeline.hmplaycropper.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle");
+  set_if_not_set(config_, "pipeline.ds-playtracker.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle");
 
   // Scoreboard perspective polygon, if there
   if (has_node(config_, "rink.scoreboard.perspective_polygon", /*non_null=*/true)) {
