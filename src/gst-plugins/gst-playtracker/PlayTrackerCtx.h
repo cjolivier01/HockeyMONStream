@@ -14,7 +14,6 @@ typedef struct GstDsPlayTrackerFrame GstDsPlayTrackerFrame;
 // playtracker_lib
 struct DsPlayTrackerInitParams {
   std::string play_tracker_config_file;
-
   bool draw{false};
   // // The class id we will set for the play box
   static constexpr inline int kPlayBoxClassIdBase = 99;

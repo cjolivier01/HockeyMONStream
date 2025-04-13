@@ -50,6 +50,8 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     init_params_.draw = !!std::atol(prop.value.c_str());
   } else if (prop.key == "fixed-edge-rotation-angle") {
     fixed_edge_rotation_angle_ = std::atof(prop.value.c_str());
+  } else if (prop.key == "dynamic-acceleration-scaling") {
+    dynamic_acceleration_scaling_ = std::atof(prop.value.c_str());
   } else if (prop.key == "config-file") {
     init_params_.play_tracker_config_file = prop.value;
   }

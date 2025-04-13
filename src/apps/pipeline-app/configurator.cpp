@@ -542,6 +542,8 @@ absl::Status Configurator::complete_configuration(bool force) {
   // pipeline["hmplaycropper"]["fixed-edge-rotation-angle"] = config_["rink"]["camera"]["fixed_edge_rotation_angle"];_
   set_if_not_set(config_, "pipeline.hmplaycropper.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle");
   set_if_not_set(config_, "pipeline.ds-playtracker.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle");
+  set_if_not_set(config_, "pipeline.ds-playtracker.dynamic-acceleration-scaling", "rink.camera.dynamic_acceleration_scaling");
+
 
   // Scoreboard perspective polygon, if there
   if (has_node(config_, "rink.scoreboard.perspective_polygon", /*non_null=*/true)) {

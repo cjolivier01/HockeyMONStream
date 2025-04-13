@@ -509,6 +509,7 @@ gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTra
   if (config->fixed_edge_rotation_angle != 0) {
     ppc << ";fixed-edge-rotation-angle=" << config->fixed_edge_rotation_angle;
   }
+  ppc << ";dynamic-acceleration-scaling=" << config->dynamic_acceleration_scaling;
   g_object_set(G_OBJECT(bin->elem_dsplaytracker), "plugin-private-config", ppc.str().c_str(), NULL);
 
   ret = TRUE;
@@ -1009,7 +1010,7 @@ gboolean create_hmaudio_bin(
     }
   } else if (config->src == SRC_SOURCE_BIN) {
     assert(source_bin->src_elem);
-    if (bin->audioconvert)  {
+    if (bin->audioconvert) {
       g_signal_connect(source_bin->src_elem, "pad-added", G_CALLBACK(on_decode_pad_added), bin->audioconvert);
       NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->audioresample);
       NVGSTDS_LINK_ELEMENT(bin->audioresample, bin->queue);

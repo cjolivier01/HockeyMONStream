@@ -69,6 +69,7 @@ TranslatingBoxConfig create_translating_box_config(
   SET_LOCATOR(locator, config, sticky_size_ratio_to_frame_width);
   SET_LOCATOR(locator, config, sticky_translation_gaussian_mult);
   SET_LOCATOR(locator, config, unsticky_translation_size_ratio);
+  SET_LOCATOR(locator, config, dynamic_acceleration_scaling);
   config.arena_box = arena_box;
   return config;
 }
@@ -89,6 +90,10 @@ AllLivingBoxConfig create_all_living_box_config(
     const BBox& arena_box,
     const YAML::Node& yaml,
     std::optional<FloatValue> fixed_aspect_ratio = std::nullopt) {
+
+  std::cout << std::endl;
+  std::cout << yaml << std::endl;
+
   AllLivingBoxConfig config;
   hm::utils::ConfigLocator locator;
   SET_LOCATOR(locator, config, name);

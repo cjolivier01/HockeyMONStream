@@ -75,6 +75,7 @@ struct NvDsDsPlayTrackerConfig {
   gboolean draw;
   gboolean show;
   gfloat fixed_edge_rotation_angle;
+  gfloat dynamic_acceleration_scaling;
   gchar config_file[kMyMaxPath];
 };
 
