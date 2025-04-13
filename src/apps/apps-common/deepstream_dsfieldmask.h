@@ -74,6 +74,7 @@ struct NvDsDsPlayTrackerConfig {
   guint gpu_id;
   gboolean draw;
   gboolean show;
+  gfloat fixed_edge_rotation_angle;
   gchar config_file[kMyMaxPath];
 };
 
