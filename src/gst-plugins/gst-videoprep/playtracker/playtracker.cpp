@@ -132,6 +132,7 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
   }
   if (!live_boxes.empty()) {
     (*live_boxes.rbegin())["dynamic-acceleration-scaling"] = std::to_string(dynamic_acceleration_scaling_);
+    (*live_boxes.rbegin())["arena-angle-from-vertical"] = std::to_string(fixed_edge_rotation_angle_);
   }
 
   std::unique_ptr<TempFile> temp_yaml_file = std::make_unique<TempFile>(/*autoRemove=*/true);

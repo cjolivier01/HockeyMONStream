@@ -74,6 +74,7 @@ TranslatingBoxConfig create_translating_box_config(
   SET_LOCATOR(locator, config, sticky_translation_gaussian_mult);
   SET_LOCATOR(locator, config, unsticky_translation_size_ratio);
   SET_LOCATOR(locator, config, dynamic_acceleration_scaling);
+  SET_LOCATOR(locator, config, arena_angle_from_vertical);
   config.arena_box = arena_box;
   return config;
 }
