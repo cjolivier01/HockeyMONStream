@@ -406,6 +406,7 @@ ds-playtracker:
   unique-id: 75
   draw: 0
   show: 0
+  dynamic-acceleration-scaling: 1.0
   plugin-type: vpplaytracker
   config-file: play_tracker_config.yaml
 

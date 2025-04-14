@@ -20,8 +20,10 @@ namespace gst_hm_playtracker {
 using namespace hm;
 using namespace hm::play_tracker;
 
-PlayDetectorConfig create_play_detector_config(const YAML::Node& yaml, hm::utils::ConfigLocator& locator) {
-  PlayDetectorConfig config;
+PlayDetectorConfig create_play_detector_config(
+    PlayDetectorConfig& config,
+    const YAML::Node& yaml,
+    hm::utils::ConfigLocator& locator) {
   SET_LOCATOR(locator, config, max_positions);
   SET_LOCATOR(locator, config, max_velocity_positions);
   SET_LOCATOR(locator, config, frame_step);
@@ -35,8 +37,10 @@ PlayDetectorConfig create_play_detector_config(const YAML::Node& yaml, hm::utils
   return config;
 }
 
-ResizingConfig create_resizing_config(const YAML::Node& yaml, hm::utils::ConfigLocator& locator) {
-  ResizingConfig config;
+ResizingConfig create_resizing_config(
+    ResizingConfig& config,
+    const YAML::Node& yaml,
+    hm::utils::ConfigLocator& locator) {
   SET_LOCATOR(locator, config, resizing_enabled);
   SET_LOCATOR(locator, config, max_speed_w);
   SET_LOCATOR(locator, config, max_speed_h);
@@ -56,9 +60,9 @@ ResizingConfig create_resizing_config(const YAML::Node& yaml, hm::utils::ConfigL
 }
 TranslatingBoxConfig create_translating_box_config(
     const BBox& arena_box,
+    TranslatingBoxConfig& config,
     const YAML::Node& yaml,
     hm::utils::ConfigLocator& locator) {
-  TranslatingBoxConfig config;
   SET_LOCATOR(locator, config, translation_enabled);
   SET_LOCATOR(locator, config, max_speed_x);
   SET_LOCATOR(locator, config, max_speed_y);
@@ -75,10 +79,10 @@ TranslatingBoxConfig create_translating_box_config(
 }
 
 LivingBoxConfig create_living_box_config(
+    LivingBoxConfig& config,
     const YAML::Node& yaml,
     hm::utils::ConfigLocator& locator,
     std::optional<FloatValue> fixed_aspect_ratio = std::nullopt) {
-  LivingBoxConfig config;
   SET_LOCATOR(locator, config, scale_dest_width);
   SET_LOCATOR(locator, config, scale_dest_height);
   SET_LOCATOR(locator, config, clamp_scaled_input_box);
@@ -90,16 +94,15 @@ AllLivingBoxConfig create_all_living_box_config(
     const BBox& arena_box,
     const YAML::Node& yaml,
     std::optional<FloatValue> fixed_aspect_ratio = std::nullopt) {
-
   std::cout << std::endl;
   std::cout << yaml << std::endl;
 
   AllLivingBoxConfig config;
   hm::utils::ConfigLocator locator;
   SET_LOCATOR(locator, config, name);
-  *((ResizingConfig*)&config) = create_resizing_config(yaml, locator);
-  *((TranslatingBoxConfig*)&config) = create_translating_box_config(arena_box, yaml, locator);
-  *((LivingBoxConfig*)&config) = create_living_box_config(yaml, locator, fixed_aspect_ratio);
+  *((ResizingConfig*)&config) = create_resizing_config(config, yaml, locator);
+  *((TranslatingBoxConfig*)&config) = create_translating_box_config(arena_box, config, yaml, locator);
+  *((LivingBoxConfig*)&config) = create_living_box_config(config, yaml, locator, fixed_aspect_ratio);
   set_config_from_yaml(yaml, locator);
   return config;
 }
@@ -183,7 +186,7 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
       config.living_boxes.back().fixed_aspect_ratio = 16.0 / 9.0;
     }
   }
-  config.play_detector = create_play_detector_config(yaml, locator);
+  config.play_detector = create_play_detector_config(config.play_detector, yaml, locator);
 
   config.ignore_outlier_players = true; // EXPERIMENTAL
   config.ignore_left_and_right_extremes = false; // EXPERIMENTAL

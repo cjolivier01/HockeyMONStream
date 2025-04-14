@@ -1,18 +1,26 @@
 #pragma once
 
-#include <string>
-
 #include <cuda_runtime.h>
 #include <nvdsmeta.h>
+
+#include <list>
+#include <memory>
+#include <string>
+
 #include "absl/status/status.h"
 #include "deepstream/sources/includes/nvbufsurface.h"
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
 
 typedef struct GstDsPlayTrackerFrame GstDsPlayTrackerFrame;
 
+struct DsPlayTrackerInitObject {
+  virtual ~DsPlayTrackerInitObject() = default;
+};
+
 // Init parameters structure as input, required for instantiating
 // playtracker_lib
 struct DsPlayTrackerInitParams {
+  std::vector<std::shared_ptr<DsPlayTrackerInitObject>> owned_objects;
   std::string play_tracker_config_file;
   bool draw{false};
   // // The class id we will set for the play box
@@ -33,9 +41,12 @@ struct DsPlayTrackerCtx {
 // Initialize library context
 DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* init_params);
 
-bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame, cudaStream_t stream);
+bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx,
+                               GstDsPlayTrackerFrame& frame,
+                               cudaStream_t stream);
 
-absl::Status DsPlayTrackerDrawToDisplayMeta(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame);
+absl::Status DsPlayTrackerDrawToDisplayMeta(DsPlayTrackerCtx* ctx,
+                                            GstDsPlayTrackerFrame& frame);
 
 // Deinitialize library context
 void DsPlayTrackerCtxDeinit(DsPlayTrackerCtx* ctx);
