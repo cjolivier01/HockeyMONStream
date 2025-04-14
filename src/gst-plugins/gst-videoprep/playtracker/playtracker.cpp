@@ -128,18 +128,21 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
   std::cout << config << std::endl;
   std::vector<YAML::Node> live_boxes;
   for (YAML::Node box : config["play-tracker"]["live-boxes"]) {
+    box["arena-angle-from-vertical"] = std::to_string(fixed_edge_rotation_angle_);
     live_boxes.push_back(box);
   }
   if (!live_boxes.empty()) {
     (*live_boxes.rbegin())["dynamic-acceleration-scaling"] = std::to_string(dynamic_acceleration_scaling_);
-    (*live_boxes.rbegin())["arena-angle-from-vertical"] = std::to_string(fixed_edge_rotation_angle_);
   }
 
+  // std::cout << config << std::endl;
+
   std::unique_ptr<TempFile> temp_yaml_file = std::make_unique<TempFile>(/*autoRemove=*/true);
-  std::cout << "Temporary play tracker conrfig file: " << temp_yaml_file->getPath() << std::endl;
+  // std::cout << "Temporary play tracker conrfig file: " << temp_yaml_file->getPath() << std::endl;
   std::ofstream ofile(temp_yaml_file->getPath());
   ofile << config;
   ofile.close();
+  init_params_.play_tracker_config_file = temp_yaml_file->getPath();
   init_params_.owned_objects.emplace_back(std::move(temp_yaml_file));
   pt_context_ = DsPlayTrackerCtxInit(&init_params_);
   return Super::PostCapsInit(params);
