@@ -21,6 +21,7 @@
 #include "cupano/pano/controlMasks.h"
 #include "deepstream_app.h"
 #include "hstream/src/apps/apps-common/deepstream_config.h"
+#include "hstream/src/apps/apps-common/deepstream_sources.h"
 #include "hstream/src/libs/common/ConfigYaml.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/Status.h"
@@ -793,11 +794,15 @@ absl::Status Configurator::complete_configuration(bool force) {
     }
   } else {
     auto src0 = pipeline["source0"];
-    if (src0.IsDefined() && as_int(src0["enable"])) {
+    if (src0.IsDefined() && as_int(src0["enable"]) &&
+        as_int(src0["type"]) == NvDsSourceType::NV_DS_SOURCE_URI_MULTIPLE) {
+          // TODO: Use VideoDict
       if (!src0["uri"].IsDefined() || src0["uri"].IsNull() || src0["uri"].as<std::string>().empty()) {
         std::string stiched_output = file_maybe_in_game_dir("stitched_output-with-audio.mp4");
         if (std::filesystem::exists(stiched_output)) {
           src0["uri"] = ff + stiched_output;
+          disable_source_types({NvDsSourceType::NV_DS_SOURCE_URI, NvDsSourceType::NV_DS_SOURCE_URI_MULTIPLE});
+          src0["enabled"] = "1";
         }
       }
       if (src0["uri"].IsDefined() && !src0["uri"].IsNull()) {
