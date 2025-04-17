@@ -542,8 +542,8 @@ absl::Status Configurator::complete_configuration(bool force) {
   // pipeline["hmplaycropper"]["fixed-edge-rotation-angle"] = config_["rink"]["camera"]["fixed_edge_rotation_angle"];_
   set_if_not_set(config_, "pipeline.hmplaycropper.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle");
   set_if_not_set(config_, "pipeline.ds-playtracker.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle");
-  // set_if_not_set(config_, "pipeline.ds-playtracker.dynamic-acceleration-scaling", "rink.camera.dynamic_acceleration_scaling");
-
+  // set_if_not_set(config_, "pipeline.ds-playtracker.dynamic-acceleration-scaling",
+  // "rink.camera.dynamic_acceleration_scaling");
 
   // Scoreboard perspective polygon, if there
   if (has_node(config_, "rink.scoreboard.perspective_polygon", /*non_null=*/true)) {
@@ -579,8 +579,20 @@ absl::Status Configurator::complete_configuration(bool force) {
     HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir));
 
     if (videos.count("stitched")) {
-      if (fs::exists(videos.at("stitched").at(0))) {
-        stitched_file = videos.at("stitched").at(0);
+      assert(videos.at("stitched").size() == 1);
+      bool all_exist = false;
+      const auto& stitched_chapters = videos.at("stitched");
+      for (const auto& stitched_item : stitched_chapters) {
+        if (fs::exists(stitched_item.second)) {
+          all_exist = true;
+        } else {
+          all_exist = false;
+          break;
+        }
+      }
+      if (all_exist) {
+        // We assume all files are same resolution/fps
+        stitched_file = stitched_chapters.begin()->second;
         num_video_sources = 1;
         Videoinfo stitched_info = getVideoInfo(file_maybe_in_game_dir(stitched_file));
         ww = stitched_info.width;
