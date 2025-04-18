@@ -13,6 +13,9 @@
 application:
   enable-perf-measurement: 1
   perf-measurement-interval-sec: 5
+  # TODO: Draw indications of subtle events like when hitting extremes and/or edge cases
+  # These drawings should not interfere with normal viewing (ie don't draw in the center of the image -- maybe change the color of some text somewhere or something like that)
+  subtle-event-drawing: 1
   # use-nvmultiurisrcbin: 1  < -- doesnt seem to pick this up
   ##gie-kitti-output-dir=streamscl
 
