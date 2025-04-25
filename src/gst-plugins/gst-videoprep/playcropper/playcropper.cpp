@@ -146,7 +146,6 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     assert(scoreboard_perspective_polygion_.size() == 4);
   } else if (prop.key == "show-scoreboard") {
     show_scoreboard_ = !!std::atoi(prop.value.c_str());
-    show_scoreboard_ = true;
   } else if (prop.key == "plot-play-tracking") {
     plot_play_tracking_ = !!std::atoi(prop.value.c_str());
   } else if (prop.key == "plot-player-tracking") {
