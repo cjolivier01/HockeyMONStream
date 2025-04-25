@@ -68,7 +68,7 @@
         "--enable-sinks=FAKE",        
         "-c",
         "${workspaceFolder}/configs/ds_hockey_app_config.yaml",
-        //"-f",
+        "-f",
         "-g",
         //"mylive",
         //"mlk-heat-1",
