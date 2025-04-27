@@ -175,12 +175,12 @@ sink3:
   # Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 4
   #1=h264 2=h265
-  codec: 1
+  codec: 2
   #encoder type 0=Hardware 1=Software
   enc-type: 0
-  sync: 1
-  # bitrate: 4000000
-  bitrate: 200000
+  sync: 0
+  bitrate: 4000000
+  # bitrate: 200000
   #NVBUF-MEMORY-TYPE: 0
   #H264 Profile - 0=Baseline 2=Main 4=High
   #H265 Profile - 0=Main 1=Main10
@@ -241,7 +241,7 @@ sink3:
 # |_|  |_|_| |_| |_|/_/    \_\\__,_|\__,_||_|\___/
 #
 hmaudio0:
-  enable: 0
+  enable: 1
   # 0=default alsa source, 1=file, 2=src_bin(source-id)
   src: 2
   # source-id: 1
