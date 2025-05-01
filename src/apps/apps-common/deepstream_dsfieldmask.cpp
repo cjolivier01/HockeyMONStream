@@ -1019,8 +1019,14 @@ gboolean create_hmaudio_bin(
       g_signal_connect(source_bin->src_elem, "pad-added", G_CALLBACK(on_decode_pad_added), bin->queue);
     }
   } else {
+    assert(bin->audiosrc);
+    // if (bin->audioconvert) {
+    assert(bin->audioconvert);
     NVGSTDS_LINK_ELEMENT(bin->audiosrc, bin->audioconvert);
     NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->queue);
+    //} else {
+    // NVGSTDS_LINK_ELEMENT(bin->audiosrc, bin->queue);
+    //}
   }
 
   if (sink_config) {
