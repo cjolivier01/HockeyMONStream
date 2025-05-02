@@ -540,9 +540,21 @@ absl::Status Configurator::complete_configuration(bool force) {
 
   pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / kRinkMaskFilename);
 
+  const std::map<std::string, std::string> map_dest_from_src{
+      {"pipeline.hmplaycropper.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle"},
+      {"pipeline.ds-playtracker.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle"},
+  };
+
+  for (const auto& dest_from_src : map_dest_from_src) {
+    const std::string& dest_key = dest_from_src.first;
+    const std::string& src_key = dest_from_src.second;
+    set_if_not_set(config_, dest_key, src_key);
+  }
+
   // pipeline["hmplaycropper"]["fixed-edge-rotation-angle"] = config_["rink"]["camera"]["fixed_edge_rotation_angle"];_
-  set_if_not_set(config_, "pipeline.hmplaycropper.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle");
-  set_if_not_set(config_, "pipeline.ds-playtracker.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle");
+  // set_if_not_set(config_, "pipeline.hmplaycropper.fixed-edge-rotation-angle",
+  // "rink.camera.fixed_edge_rotation_angle"); set_if_not_set(config_,
+  // "pipeline.ds-playtracker.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle");
   // set_if_not_set(config_, "pipeline.ds-playtracker.dynamic-acceleration-scaling",
   // "rink.camera.dynamic_acceleration_scaling");
 
@@ -796,7 +808,7 @@ absl::Status Configurator::complete_configuration(bool force) {
     auto src0 = pipeline["source0"];
     if (src0.IsDefined() && as_int(src0["enable"]) &&
         as_int(src0["type"]) == NvDsSourceType::NV_DS_SOURCE_URI_MULTIPLE) {
-          // TODO: Use VideoDict
+      // TODO: Use VideoDict
       if (!src0["uri"].IsDefined() || src0["uri"].IsNull() || src0["uri"].as<std::string>().empty()) {
         std::string stiched_output = file_maybe_in_game_dir("stitched_output-with-audio.mp4");
         if (std::filesystem::exists(stiched_output)) {
