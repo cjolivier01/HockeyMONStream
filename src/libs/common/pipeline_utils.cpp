@@ -116,7 +116,7 @@ std::vector<std::string> split_by_dot(const std::string& input) {
  * @param value The string value to set
  */
 YAML::Node set_node_value(YAML::Node node, const std::string& dot_string, const std::string& value) {
-  //std::cout << node << std::endl;
+  // std::cout << node << std::endl;
 
   std::vector<std::string> path = split_by_dot(dot_string);
 
@@ -153,25 +153,115 @@ YAML::Node set_node_value(YAML::Node node, const std::string& dot_string, const 
   // std::cout << node << std::endl;
   return node;
 }
+#if 0
+std::optional<YAML::Node> get_node(const YAML::Node& root, const std::string& dot_string) {
+  // empty path → return the root itself
+  if (dot_string.empty()) {
+    return root;
+  }
 
+  // split on '.'
+  std::vector<std::string> parts = absl::StrSplit(dot_string, '.');
+  YAML::Node current = root;
+
+  for (const auto& part : parts) {
+    // parse "key" and optional "index"
+    std::string key = part;
+    std::optional<std::size_t> idx;
+    auto colon_pos = part.find(':');
+    if (colon_pos != std::string::npos) {
+      key = part.substr(0, colon_pos);
+      std::string idx_str = part.substr(colon_pos + 1);
+      try {
+        idx = static_cast<std::size_t>(std::stoul(idx_str));
+      } catch (const std::exception&) {
+        // invalid integer
+        return std::nullopt;
+      }
+    }
+
+    // if there's a non-empty key, descend into the map
+    if (!key.empty()) {
+      if (!current.IsMap()) {
+        return std::nullopt;
+      }
+      current = current[key];
+      if (!current.IsDefined()) {
+        return std::nullopt;
+      }
+    }
+
+    // if an index was specified, descend into the sequence
+    if (idx.has_value()) {
+      if (!current.IsSequence()) {
+        return std::nullopt;
+      }
+      std::size_t i = *idx;
+      if (i >= current.size()) {
+        return std::nullopt;
+      }
+      current = current[i];
+      if (!current.IsDefined()) {
+        return std::nullopt;
+      }
+    }
+  }
+
+  return current;
+}
+#else
 std::optional<YAML::Node> get_node(const YAML::Node& n, const std::string& dot_string) {
   if (dot_string.empty()) {
     return n;
   }
-  std::vector<std::string> keys = absl::StrSplit(dot_string, '.');
+  std::vector<std::string> parts = absl::StrSplit(dot_string, '.');
 
   // Start from the root node
   const YAML::Node* current = &n;
 
+  YAML::Node outer_tmp;
+
   // Traverse the node tree according to the keys
-  for (const auto& key : keys) {
+  for (const auto& part : parts) {
+    std::string key = part;
+    std::optional<std::size_t> idx;
+    auto colon_pos = part.find(':');
+    if (colon_pos != std::string::npos) {
+      key = part.substr(0, colon_pos);
+      std::string idx_str = part.substr(colon_pos + 1);
+      try {
+        idx = static_cast<std::size_t>(std::stoul(idx_str));
+      } catch (const std::exception&) {
+        // invalid integer
+        return std::nullopt;
+      }
+    }
+
+    if (idx.has_value()) {
+      // DOES NOT CURRENT WORK
+      std::cout << *current << std::endl;
+      if (!current->IsSequence()) {
+        return std::nullopt;
+      }
+      std::size_t i = *idx;
+      if (i >= current->size()) {
+        return std::nullopt;
+      }
+      auto tmp = (*current)[i];
+      current = &tmp;
+      if (!current->IsDefined()) {
+        return std::nullopt;
+      }
+      continue;
+    }
+
     if (!current->IsMap()) {
       // If the current node is not a map, no further keys can be accessed
       return std::nullopt;
     }
 
     // Access the next node in the path
-    auto tmp = (*current)[key];
+    YAML::Node tmp = (*current)[key];
     current = &tmp;
 
     // Check if the current node is defined
@@ -183,7 +273,7 @@ std::optional<YAML::Node> get_node(const YAML::Node& n, const std::string& dot_s
   // If all keys are accessed and nodes are defined, return true
   return *current;
 }
-
+#endif
 bool seek_element(GstElement* seek_element, size_t seek_to_nanoseconds) {
   // size_t seekTarget = static_cast<size_t>(abs_seconds * 60 * GST_SECOND);
   size_t seekTarget = seek_to_nanoseconds;

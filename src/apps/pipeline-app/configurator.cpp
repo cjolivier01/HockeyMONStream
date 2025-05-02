@@ -17,6 +17,7 @@
 
 #include "absl/status/status.h"
 #include "absl/strings/match.h"
+#include "absl/strings/str_split.h"
 
 #include "cupano/pano/controlMasks.h"
 #include "deepstream_app.h"
@@ -418,7 +419,11 @@ bool set_if_not_set(YAML::Node node, const std::string& dest_key, const std::str
   if (!src_node || !src_node->IsDefined() || src_node->IsNull()) {
     return false;
   }
-  set_node_value(node, dest_key, src_node->as<std::string>());
+  if (dest_key.find(':') != std::string::npos) {
+    usleep(0);
+  } else {
+    set_node_value(node, dest_key, src_node->as<std::string>());
+  }
   return true;
 }
 
@@ -502,6 +507,14 @@ absl::StatusOr<bool> Configurator::does_need_stitching(const std::string& game_d
   return false;
 }
 
+void map_key_configs(YAML::Node yaml, const std::map<std::string, std::string>& map_dest_from_src) {
+  for (const auto& dest_from_src : map_dest_from_src) {
+    const std::string& dest_key = dest_from_src.first;
+    const std::string& src_key = dest_from_src.second;
+    set_if_not_set(yaml, dest_key, src_key);
+  }
+}
+
 absl::Status Configurator::complete_configuration(bool force) {
   YAML::Node pipeline = config_["pipeline"];
   assert(pipeline.IsDefined());
@@ -544,17 +557,19 @@ absl::Status Configurator::complete_configuration(bool force) {
       {"pipeline.hmplaycropper.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle"},
       {"pipeline.ds-playtracker.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle"},
   };
+  map_key_configs(config_, map_dest_from_src);
 
-  for (const auto& dest_from_src : map_dest_from_src) {
-    const std::string& dest_key = dest_from_src.first;
-    const std::string& src_key = dest_from_src.second;
-    set_if_not_set(config_, dest_key, src_key);
-  }
+  // Live box mappings
+  const std::map<std::string, std::string> live_box_map_dest_from_src{
+      {"pipeline.ds-playtracker.play-tracker.live-boxes:1", "rink.camera.follower_box_scale_width"},
+      {"pipeline.ds-playtracker.play-tracker.live-boxes:1", "rink.camera.follower_box_scale_height"},
+  };
+  // TODO: this needs to go into or replace the play tracker config, but currently just coming from the file
+  // later in parsing (these value mapings arent currently applied anywhere)
+  //map_key_configs(config_, live_box_map_dest_from_src);
 
-  // pipeline["hmplaycropper"]["fixed-edge-rotation-angle"] = config_["rink"]["camera"]["fixed_edge_rotation_angle"];_
-  // set_if_not_set(config_, "pipeline.hmplaycropper.fixed-edge-rotation-angle",
-  // "rink.camera.fixed_edge_rotation_angle"); set_if_not_set(config_,
-  // "pipeline.ds-playtracker.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle");
+  //std::cout << config_["pipeline.ds-playtracker"] << std::endl;
+
   // set_if_not_set(config_, "pipeline.ds-playtracker.dynamic-acceleration-scaling",
   // "rink.camera.dynamic_acceleration_scaling");
 
