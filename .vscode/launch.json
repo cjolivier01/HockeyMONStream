@@ -90,6 +90,7 @@
         //"--options=pipeline.hmplaycropper.show=1,pipeline.hmplaycropper.show-scoreboard=1,pipeline.ds-playtracker.draw=1,pipeline.hmplaycropper.plot-play-tracking=1,pipeline.hmplaycropper.plot-player-tracking=0",
       ],
       "sourceMap": {
+        "/proc/self/cwd/external": "${workspaceFolder}/bazel-hstream/external",
         "/proc/self/cwd": "${workspaceFolder}",
         // "~/src": "${env:HOME}/src",
         //"${workspaceFolder}/src/external/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",`
