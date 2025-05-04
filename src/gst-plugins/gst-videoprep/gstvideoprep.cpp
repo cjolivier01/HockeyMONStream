@@ -632,7 +632,7 @@ static GstStateChangeReturn gst_videoprep_change_state(GstElement* element, GstS
       return GST_STATE_CHANGE_FAILURE;
     }
   } else if (transition == GST_STATE_CHANGE_PAUSED_TO_READY) {
-    std::cout << "stopping..." << std::endl;
+    // std::cout << "stopping..." << std::endl;
   }
   GstVideoPrepClass* klass = GST_VIDEOPREP_CLASS(element);
   assert(GST_IS_VIDEOPREP_CLASS(klass));
@@ -832,7 +832,7 @@ static gboolean gst_videoprep_start(GstBaseTransform* btrans) {
 static gboolean gst_videoprep_stop(GstBaseTransform* btrans) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(btrans);
 
-  std::cout << "gst_videoprep_stop: " << videoprep->plugin_type << std::endl;
+  // std::cout << "gst_videoprep_stop: " << videoprep->plugin_type << std::endl;
 
   cudaError_t CUerr = cudaSuccess;
 
