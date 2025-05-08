@@ -14,7 +14,7 @@ USER root
 RUN apt-get update
 
 # Will upgrade a bunch of the NVidia packages
-RUN apt-get upgrade -y
+# RUN apt-get upgrade -y
 
 RUN apt-get install -y \
   sudo \
@@ -53,99 +53,99 @@ USER root
 # WORKDIR /home/$USERNAME/src
 # RUN rm -rf nv-codec-headers
 
-WORKDIR /root
-RUN git clone https://github.com/FFmpeg/FFmpeg.git ffmpeg && cd ffmpeg && git checkout n5.1.4
+# WORKDIR /root
+# RUN git clone https://github.com/FFmpeg/FFmpeg.git ffmpeg && cd ffmpeg && git checkout n5.1.4
 
 # Configure FFmpeg with the desired codecs and options
-WORKDIR /root/ffmpeg
-RUN ./configure \
-  --prefix="/usr/local" \
-  --extra-cflags='-I/usr/local/cuda/include' \
-  --extra-ldflags='-L/usr/local/cuda/lib64' \
-  --disable-doc \
-  --enable-decoder=aac \
-  --enable-decoder=h264 \
-  --enable-decoder=h264_cuvid \
-  --enable-decoder=hevc_cuvid \
-  --enable-decoder=av1_cuvid \
-  --enable-decoder=rawvideo \
-  --enable-indev=lavfi \
-  --enable-encoder=libx264 \
-  --enable-encoder=h264_nvenc \
-  --enable-encoder=hevc_nvenc \
-  --enable-encoder=av1_nvenc \
-  --enable-demuxer=mov \
-  --enable-muxer=mp4 \
-  --enable-filter=scale \
-  --enable-filter=testsrc2 \
-  --enable-protocol=file \
-  --enable-protocol=https \
-  --enable-gnutls \
-  --enable-shared \
-  --enable-gpl \
-  --enable-nonfree \
-  --enable-cuda-nvcc \
-  --enable-libx264 \
-  --enable-libnpp \
-  --enable-nvenc \
-  --enable-cuvid \
-  --enable-nvdec \
-  --enable-pic \
-  --enable-rpath \
-  --extra-cflags=-I/usr/local/cuda/include \
-  --extra-ldflags=-L/usr/local/cuda/lib64 \
-  && make -j$(nproc)
+# WORKDIR /root/ffmpeg
+# RUN ./configure \
+#   --prefix="/usr/local" \
+#   --extra-cflags='-I/usr/local/cuda/include' \
+#   --extra-ldflags='-L/usr/local/cuda/lib64' \
+#   --disable-doc \
+#   --enable-decoder=aac \
+#   --enable-decoder=h264 \
+#   --enable-decoder=h264_cuvid \
+#   --enable-decoder=hevc_cuvid \
+#   --enable-decoder=av1_cuvid \
+#   --enable-decoder=rawvideo \
+#   --enable-indev=lavfi \
+#   --enable-encoder=libx264 \
+#   --enable-encoder=h264_nvenc \
+#   --enable-encoder=hevc_nvenc \
+#   --enable-encoder=av1_nvenc \
+#   --enable-demuxer=mov \
+#   --enable-muxer=mp4 \
+#   --enable-filter=scale \
+#   --enable-filter=testsrc2 \
+#   --enable-protocol=file \
+#   --enable-protocol=https \
+#   --enable-gnutls \
+#   --enable-shared \
+#   --enable-gpl \
+#   --enable-nonfree \
+#   --enable-cuda-nvcc \
+#   --enable-libx264 \
+#   --enable-libnpp \
+#   --enable-nvenc \
+#   --enable-cuvid \
+#   --enable-nvdec \
+#   --enable-pic \
+#   --enable-rpath \
+#   --extra-cflags=-I/usr/local/cuda/include \
+#   --extra-ldflags=-L/usr/local/cuda/lib64 \
+#   && make -j$(nproc)
 
-RUN make -j $(nproc) install
-RUN rm -rf ffmpeg
+# RUN make -j $(nproc) install
+# RUN rm -rf ffmpeg
 
 #-------------------------------------------------------------
 # BEGIN VSCode Dev Containers packages
 #-------------------------------------------------------------
 RUN apt-get install -y \
-	apt-utils \
-        bash-completion \
-        openssh-client \
-        gnupg2 \
-        dirmngr \
-        iproute2 \
-        procps \
-        lsof \
-        htop \
-        net-tools \
-        psmisc \
-        curl \
-        tree \
-        wget \
-        rsync \
-        ca-certificates \
-        unzip \
-        bzip2 \
-        xz-utils \
-        zip \
-        nano \
-        vim-tiny \
-        less \
-        jq \
-        lsb-release \
-        apt-transport-https \
-        dialog \
-        libc6 \
-        libgcc1 \
-        libkrb5-3 \
-        libgssapi-krb5-2 \
-        libicu[0-9][0-9] \
-        liblttng-ust[0-9] \
-        libstdc++6 \
-        zlib1g \
-        locales \
-        sudo \
-        ncdu \
-        man-db \
-        strace \
-        manpages \
-        manpages-dev \
-        init-system-helpers
+  apt-utils \
+  bash-completion \
+  openssh-client \
+  gnupg2 \
+  dirmngr \
+  iproute2 \
+  procps \
+  lsof \
+  htop \
+  net-tools \
+  psmisc \
+  curl \
+  tree \
+  wget \
+  rsync \
+  ca-certificates \
+  unzip \
+  bzip2 \
+  xz-utils \
+  zip \
+  nano \
+  vim-tiny \
+  less \
+  jq \
+  lsb-release \
+  apt-transport-https \
+  dialog \
+  libc6 \
+  libgcc1 \
+  libkrb5-3 \
+  libgssapi-krb5-2 \
+  libicu[0-9][0-9] \
+  liblttng-ust[0-9] \
+  libstdc++6 \
+  zlib1g \
+  locales \
+  sudo \
+  ncdu \
+  man-db \
+  strace \
+  manpages \
+  manpages-dev \
+  init-system-helpers
 #-------------------------------------------------------------
 # END VSCode Dev Containers packages
 #-------------------------------------------------------------
@@ -227,6 +227,7 @@ RUN make install
 WORKDIR /home/$USERNAME/src
 RUN rm -rf vigra
 
+RUN pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 
 ##############################################################
 # END HM Dependencies
