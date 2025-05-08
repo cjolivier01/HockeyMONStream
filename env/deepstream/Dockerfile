@@ -1,5 +1,5 @@
-FROM nvcr.io/nvidia/deepstream:7.1-gc-triton-devel
-# FROM nvcr.io/nvidia/deepstream:6.4-triton-multiarch
+# FROM nvcr.io/nvidia/deepstream:7.1-gc-triton-devel
+FROM nvcr.io/nvidia/deepstream:7.1-triton-multiarch
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -14,7 +14,7 @@ USER root
 RUN apt-get update
 
 # Will upgrade a bunch of the NVidia packages
-# RUN apt-get upgrade -y
+RUN apt-get upgrade -y
 
 RUN apt-get install -y \
   sudo \
