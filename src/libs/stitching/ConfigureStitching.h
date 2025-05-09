@@ -3,6 +3,7 @@
 #include <string>
 #include "absl/status/statusor.h"
 #include "hstream/src/libs/common/Surface.h"
+#include "yaml-cpp/node/node.h"
 
 namespace hm {
 namespace stitching {
