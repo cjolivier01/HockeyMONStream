@@ -1,11 +1,8 @@
 #pragma once
 
-#include "hstream/src/libs/common/Surface.h"
-
-#include "absl/status/statusor.h"
-#include "yaml-cpp/yaml.h"
-
 #include <string>
+#include "absl/status/statusor.h"
+#include "hstream/src/libs/common/Surface.h"
 
 namespace hm {
 namespace stitching {
