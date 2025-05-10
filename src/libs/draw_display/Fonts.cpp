@@ -1,14 +1,13 @@
 #include "hstream/src/libs/draw_display/Fonts.h"
+
 #include <cuda_runtime.h>
 #include <cassert>
-#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
 #include <unordered_map>
 #include <vector>
 #include "hstream/src/libs/common/Status.h"
-#include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/draw_display/cudaDrawText.h" // Provides drawGlyph(...)
 
 // stb_truetype: include the header and define its implementation in this translation unit.
@@ -17,6 +16,10 @@
 
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
+
+#ifndef TO_STRING
+#define TO_STRING(_stuff$) (std::stringstream() << _stuff$).str()
+#endif
 
 namespace fs = std::filesystem;
 
