@@ -52,7 +52,7 @@ struct NvDsDsFieldMaskBin {
 };
 
 // Function to create the bin and set properties
-gboolean create_dsfieldmask_bin(NvDsDsFieldMaskConfig* config, NvDsDsFieldMaskBin* bin);
+gboolean create_dsfieldmask_bin(const NvDsDsFieldMaskConfig* config, NvDsDsFieldMaskBin* bin);
 
 constexpr size_t kMyMaxPath = PATH_MAX * 4;
 

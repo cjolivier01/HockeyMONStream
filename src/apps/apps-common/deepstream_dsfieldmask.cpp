@@ -401,9 +401,8 @@ done:
 
 // Create bin, add queue and the element, link all elements and ghost pads,
 // Set the element properties from the parsed config
-gboolean create_dsfieldmask_bin(NvDsDsFieldMaskConfig* config, NvDsDsFieldMaskBin* bin) {
+gboolean create_dsfieldmask_bin(const NvDsDsFieldMaskConfig* config, NvDsDsFieldMaskBin* bin) {
   gboolean ret = FALSE;
-
   bin->bin = gst_bin_new("dsfieldmask_bin");
   if (!bin->bin) {
     NVGSTDS_ERR_MSG_V("Failed to create 'dsfieldmask_bin'");

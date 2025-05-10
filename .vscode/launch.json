@@ -210,17 +210,14 @@
         "${workspaceFolder}/configs/dual_save_video.yaml",
         "-g",
         //"mylive",
-        "mlk-heat-1",
+        "undera-1",
         //"-d",
         //"--options=pipeline.hmaudio.enable=0",
       ],
       "sourceMap": {
-        "/proc/self/cwd/external": "${workspaceFolder}/bazel-hstream/external",
-        "/proc/self/cwd": "${workspaceFolder}",
-        // "~/src": "${env:HOME}/src",
-        //"${workspaceFolder}/src/external/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",`
+        //"/proc/self/cwd/external": "${workspaceFolder}/bazel-hstream/external",5
+        "/proc/self/cwd": "${workspaceRoot}",
         "external/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",
-        //"external/hmdeepstream/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",
         "home/colivier/src/jetson-utils": "${workspaceFolder}/src/external/jetson-utils",
       },
       //"stopOnEntry": true,
