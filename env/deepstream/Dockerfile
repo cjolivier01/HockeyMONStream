@@ -196,6 +196,28 @@ RUN useradd -r -g $USERNAME -G $USERNAME,docker,sudo $USERNAME
 RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
 
 # libvigraimpex-dev
+RUN apt-get install -y \
+  curl \
+  libva-dev \
+  libsoup2.4-dev \
+  libjson-glib-dev \
+  libjsoncpp-dev \
+  protobuf-compiler \
+  libgstrtspserver-1.0-dev \
+  gstreamer1.0-rtsp \
+  libglew-dev \
+  libabsl-dev \
+  libfftw3-dev \
+  libv4l-dev \
+  v4l-utils \
+  v4l-conf \
+  libgtk-3-dev \
+  libtiff5-dev \
+  libgtkglext1-dev \
+  tensorrt-dev \
+  libyaml-cpp-dev \
+  apt-file \
+  aptitude
 
 ##############################################################
 # BEGIN HM Dependencies
@@ -275,29 +297,6 @@ RUN apt-get upgrade -y
 
 RUN apt-get install -y \
   viewnior
-
-RUN apt-get install -y \
-  curl \
-  libva-dev \
-  libsoup2.4-dev \
-  libjson-glib-dev \
-  libjsoncpp-dev \
-  protobuf-compiler \
-  libgstrtspserver-1.0-dev \
-  gstreamer1.0-rtsp \
-  libglew-dev \
-  libabsl-dev \
-  libfftw3-dev \
-  libv4l-dev \
-  v4l-utils \
-  v4l-conf \
-  libgtk-3-dev \
-  libtiff5-dev \
-  libgtkglext1-dev \
-  tensorrt-dev \
-  libyaml-cpp-dev \
-  apt-file \
-  aptitude
 
 RUN apt clean
 
