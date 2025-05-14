@@ -266,13 +266,38 @@ RUN pip3 install torch torchvision torchaudio --index-url https://download.pytor
 USER root
 
 # Fix wrong version in distribution bazel file
-RUN sed -i 's/6\.2\.1/7.1/g' /opt/nvidia/graph-composer/extension-dev/build/registry.bzl
+RUN if [ -f /opt/nvidia/graph-composer/extension-dev/build/registry.bzl ]; then \
+      sed -i 's/6\.2\.1/7.1/g' /opt/nvidia/graph-composer/extension-dev/build/registry.bzl; \
+    fi
 
 # In case any upgrades were missed?  Ideally, should do nothing.
 RUN apt-get upgrade -y
 
 RUN apt-get install -y \
   viewnior
+
+RUN apt-get install -y \
+  curl \
+  libva-dev \
+  libsoup2.4-dev \
+  libjson-glib-dev \
+  libjsoncpp-dev \
+  protobuf-compiler \
+  libgstrtspserver-1.0-dev \
+  gstreamer1.0-rtsp \
+  libglew-dev \
+  libabsl-dev \
+  libfftw3-dev \
+  libv4l-dev \
+  v4l-utils \
+  v4l-conf \
+  libgtk-3-dev \
+  libtiff5-dev \
+  libgtkglext1-dev \
+  tensorrt-dev \
+  libyaml-cpp-dev \
+  apt-file \
+  aptitude
 
 RUN apt clean
 
