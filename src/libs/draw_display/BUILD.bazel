@@ -65,7 +65,7 @@ cuda_library(
     hdrs = [
     ],
     copts = [
-        "-std=c++17",
+        # "-std=c++17",
         "-Xcompiler=-fPIC",
         "-Wno-deprecated-gpu-targets",
         "-keep",
