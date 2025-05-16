@@ -3,7 +3,7 @@ cc_binary(
   name="pipeline-app",
   srcs=glob(["*.cpp", "*.h"]),
   deps=[
-    "//src/libs/common:mod_pipeline",
+    # "//src/libs/common:mod_pipeline",
     "//src/libs/common:utils",
     "//src/libs/stitching",
     "//src/apps/apps-common:deepstream_apps_common",

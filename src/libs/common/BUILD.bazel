@@ -45,18 +45,18 @@ cc_library(
   ],
 )
 
-cc_library(
-  name = "mod_pipeline",
-  srcs = ["ModPipeline.cpp"],
-  hdrs = ["ModPipeline.h"],
-  include_prefix=INCLUDE_PREFIX,
-  visibility = ["//visibility:public"],
-  deps = [
-    ":utils",
-    "@gtk3",
-    "@gstreamer",
-  ],
-)
+# cc_library(
+#   name = "mod_pipeline",
+#   srcs = ["ModPipeline.cpp"],
+#   hdrs = ["ModPipeline.h"],
+#   include_prefix=INCLUDE_PREFIX,
+#   visibility = ["//visibility:public"],
+#   deps = [
+#     ":utils",
+#     "@gtk3",
+#     "@gstreamer",
+#   ],
+# )
 
 cc_library(
   name = "perspective",
