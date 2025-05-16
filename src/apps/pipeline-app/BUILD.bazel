@@ -7,6 +7,7 @@ cc_binary(
     "//src/libs/common:utils",
     "//src/libs/stitching",
     "//src/apps/apps-common:deepstream_apps_common",
+    "@deepstream//:deepstream_lib",
     "@hm-cupano//src/pano:canvas",
     "@gstreamer",
     "@yaml-cpp",

@@ -12,7 +12,8 @@
 #include <cmath>
 #include <iostream>
 #include <mutex>
-#include "deepstream/sources/includes/nvbufsurface.h"
+// #include "deepstream/sources/includes/nvbufsurface.h"
+#include "nvbufsurface.h"
 #include "gst-nvcommon.h"
 #include "gstnvdsmeta.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/gst_utils.h"
@@ -27,7 +28,6 @@
 #include <cuda.h>
 #include <string.h>
 #include <unistd.h>
-#include "deepstream/sources/includes/nvbufsurface.h"
 
 #include "absl/strings/str_split.h"
 

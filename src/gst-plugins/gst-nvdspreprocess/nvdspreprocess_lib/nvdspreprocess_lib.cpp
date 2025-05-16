@@ -20,7 +20,8 @@
 #include <stdexcept>
 #include <thread>
 
-#include "deepstream/sources/includes/nvbufsurface.h"
+// #include "deepstream/sources/includes/nvbufsurface.h"
+#include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 
 #include "nvdspreprocess_impl.h"

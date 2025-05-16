@@ -4,7 +4,9 @@
 #include <optional>
 #include <type_traits>
 
-#include "deepstream/sources/includes/nvdscustomusermeta.h"
+// #include "deepstream/sources/includes/nvdscustomusermeta.h"
+#include "nvbufsurface.h"
+#include "nvdscustomusermeta.h"
 
 namespace hm {
 

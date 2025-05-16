@@ -8,7 +8,8 @@
 #include "cupano/cuda/cudaStatus.h"
 #include "cupano/pano/cudaMat.h"
 
-#include "deepstream/sources/includes/nvbufsurface.h"
+// #include "deepstream/sources/includes/nvbufsurface.h"
+#include "nvbufsurface.h"
 
 #include <cuda_runtime.h>
 #include <gst/base/gstbasetransform.h>

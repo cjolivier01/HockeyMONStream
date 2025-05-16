@@ -16,7 +16,8 @@
 
 #include "cupano/cuda/cudaStatus.h"
 
-#include "deepstream/sources/includes/nvbufsurface.h"
+// #include "deepstream/sources/includes/nvbufsurface.h"
+#include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/VideoPrepPriv.h"

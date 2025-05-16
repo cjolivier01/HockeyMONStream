@@ -1,5 +1,6 @@
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
-#include "deepstream/sources/includes/nvll_osd_struct.h"
+// #include "deepstream/sources/includes/nvll_osd_struct.h"
+#include "nvll_osd_struct.h"
 #include "hstream/src/libs/common/Status.h"
 #include "jetson-utils/cuda/cudaDraw.h"
 

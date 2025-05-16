@@ -14,7 +14,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "deepstream/sources/includes/nvbufsurface.h"
+// #include "deepstream/sources/includes/nvbufsurface.h"
+#include "nvbufsurface.h"
 
 namespace fs = std::filesystem;
 

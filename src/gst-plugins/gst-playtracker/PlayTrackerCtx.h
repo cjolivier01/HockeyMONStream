@@ -8,7 +8,9 @@
 #include <string>
 
 #include "absl/status/status.h"
-#include "deepstream/sources/includes/nvbufsurface.h"
+//#include "deepstream/sources/includes/nvbufsurface.h"
+#include "nvbufsurface.h"
+
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
 
 typedef struct GstDsPlayTrackerFrame GstDsPlayTrackerFrame;

@@ -5,15 +5,16 @@ workspace(name = _workspace_name)
 load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository", "new_git_repository")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
-local_repository(
-    name = "com_extension_dev",
-    path = "external/deepstream/graph-composer/extension-dev",
-)
+# local_repository(
+#     name = "com_extension_dev",
+#     # path = "external/deepstream/graph-composer/extension-dev",
+#     path = "/opt/nvidia/graph-composer/extension-dev",
+# )
 
-local_repository(
-    name = "deepstream",
-    path = "external/deepstream",
-)
+# local_repository(
+#     name = "deepstream",
+#     path = "external/deepstream",
+# )
 
 local_repository(
   name = "jetson-utils",
@@ -35,13 +36,13 @@ local_repository(
     path = "external/hm",
 )
 
-load(
-    "@com_extension_dev//build:graph_extension.bzl",
-    "graph_nvidia_extension",
-    "load_extension_dev_workspace",
-)
+# load(
+#     "@com_extension_dev//build:graph_extension.bzl",
+#     "graph_nvidia_extension",
+#     "load_extension_dev_workspace",
+# )
 
-load_extension_dev_workspace()
+# load_extension_dev_workspace()
 
 git_repository(
     name = "rules_cuda",
@@ -56,19 +57,25 @@ rules_cuda_dependencies()
 
 register_detected_cuda_toolchains()
 
-graph_nvidia_extension(
-    name = "NvDsInterfaceExt",
-    version = "1.6.0",
-)
+# graph_nvidia_extension(
+#     name = "NvDsInterfaceExt",
+#     version = "1.6.0",
+# )
 
-graph_nvidia_extension(
-    name = "NvDsBaseExt",
-    version = "1.6.0",
-)
+# graph_nvidia_extension(
+#     name = "NvDsBaseExt",
+#     version = "1.6.0",
+# )
 
-graph_nvidia_extension(
-    name = "StandardExtension",
-    version = "2.6.0",
+# graph_nvidia_extension(
+#     name = "StandardExtension",
+#     version = "2.6.0",
+# )
+
+new_local_repository(
+    name = "deepstream",
+    build_file = "@//buildfiles:third_party/deepstream.BUILD",
+    path = "/opt/nvidia/deepstream/deepstream",
 )
 
 new_local_repository(

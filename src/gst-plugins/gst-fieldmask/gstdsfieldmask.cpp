@@ -14,7 +14,8 @@
 #include "gstdsfieldmask.h"
 
 // #include "gst-nvquery.h"
-#include "deepstream/sources/includes/nvbufsurface.h"
+// #include "deepstream/sources/includes/nvbufsurface.h"
+#include "nvbufsurface.h"
 #include "gstnvdsmeta.h"
 // #include "nvbufsurftransform.h"
 

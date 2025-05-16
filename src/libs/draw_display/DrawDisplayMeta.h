@@ -5,7 +5,8 @@
 
 #include <cuda_runtime.h>
 
-#include "deepstream/sources/includes/nvdsmeta.h"
+// #include "deepstream/sources/includes/nvdsmeta.h"
+#include "nvdsmeta.h"
 
 #include "absl/status/status.h"
 

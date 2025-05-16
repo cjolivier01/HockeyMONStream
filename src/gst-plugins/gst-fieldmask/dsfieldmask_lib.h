@@ -1,7 +1,8 @@
 #pragma once
 
 #include "nvdsmeta.h"
-#include "deepstream/sources/includes/nvbufsurface.h"
+//#include "deepstream/sources/includes/nvbufsurface.h"
+#include "nvbufsurface.h"
 #include "src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 
 #include <string>

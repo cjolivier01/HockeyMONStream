@@ -41,8 +41,6 @@ cc_library(
     "@hm//hockeymom/csrc/play_tracker",
     "@deepstream//:deepstream_lib",
     "@jetson-utils//image:image_format",
-    # ":utils",
-    # "@gtk3",
     "@glib",
   ],
 )
