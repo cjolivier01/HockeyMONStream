@@ -28,7 +28,6 @@
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
 #include "hstream/src/libs/camera/AutoFocus.h"
-#include "hstream/src/libs/common/ModPipeline.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 
