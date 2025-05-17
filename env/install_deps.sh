@@ -18,7 +18,8 @@ sudo apt-get install -y \
   libgtk-3-dev \
   libtiff5-dev \
   libgtkglext1-dev \
-  tensorrt-dev \
   libyaml-cpp-dev \
   apt-file \
   aptitude
+
+sudo apt-get install -y tensorrt-dev
