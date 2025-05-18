@@ -87,6 +87,10 @@ PipelineApplication::PipelineApplication()
   memset(fps_avg_, 0, sizeof(fps_avg_));
   g_mutex_init(&fps_lock_);
   instance_ = this;
+  const char* plugin_path = getenv("GST_PLUGIN_PATH");
+  if (plugin_path) {
+    std::cout << "GST_PLUGIN_PATH=\"" << plugin_path << "\"\n" << std::flush;
+  }
 }
 
 //------------------------------------------------------------------------------
