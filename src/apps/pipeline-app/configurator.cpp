@@ -701,7 +701,7 @@ absl::Status Configurator::complete_configuration(bool force) {
           !videos.count("right")) {
         HM_RETURN_IF_ERROR(stitching::configure_orientation(game_dir));
         overlay_config("", get_private_config_file_name(game_id_));
-        std::cout << config_["game"]["videos"] << std::endl;
+        // std::cout << config_["game"]["videos"] << std::endl;
         private_config_["game"]["videos"]["left"] =
             config_["game"]["videos"]["left"];
         private_config_["game"]["videos"]["right"] =

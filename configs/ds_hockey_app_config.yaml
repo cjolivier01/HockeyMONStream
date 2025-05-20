@@ -270,7 +270,7 @@ hmaudio0:
 
 
 osd:
-  enable: 0
+  enable: 1
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -377,7 +377,7 @@ ds-example:
   processing-height: 480
 
 hmplaycropper:
-  enable: 1
+  enable: 0
   gpu-id: 0
   nvbuf-memory-type: 0
   plot-play-tracking: 1
@@ -407,7 +407,7 @@ ds-playtracker:
   enable: 1
   gpu-id: 0
   unique-id: 75
-  draw: 0
+  draw: 1
   show: 0
   dynamic-acceleration-scaling: 1.0
   plugin-type: vpplaytracker

@@ -586,7 +586,7 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
 
   setup_rgb_nvvm_caps_filter(nullptr, bin->cap_filter);
 
-  bin->playcropper = gst_element_factory_make("videoprep", NULL);
+  bin->playcropper = gst_element_factory_make("playcropper", NULL);
   if (!bin->playcropper) {
     NVGSTDS_ERR_MSG_V("Failed to create 'playcropper'");
     goto done;

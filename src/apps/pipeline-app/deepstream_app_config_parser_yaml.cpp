@@ -237,8 +237,6 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
   std::string msgcons_str = "message-consumer";
   std::string dewarper_str = "dewarper";
 
-  std::cout << "89fhy39ghfhg034" << configyml << std::endl;
-
   config->source_list_enabled = FALSE;
 
   /** Initialize global gpu id to -1 */
