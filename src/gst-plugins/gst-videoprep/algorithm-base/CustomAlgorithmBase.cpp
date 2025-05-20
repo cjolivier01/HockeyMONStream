@@ -598,20 +598,24 @@ void CustomAlgorithmBase::OutputThread(void) {
 
         assert(m_element);
         assert(cuda_stream_);
-        cuda_status.Update(GenerateOutput(batch_meta, in_surf, out_surf));
-        if (!cuda_status.ok()) {
-          std::cerr << cuda_status << std::endl;
-          if (cuda_status.code() == absl::StatusCode::kCancelled) {
-            // update_last_flow_ret(GST_FLOW_EOS);
-            send_eos = true;
-          } else {
-            update_last_flow_ret(GST_FLOW_ERROR);
+        if (in_surf && out_surf) {
+          cuda_status.Update(GenerateOutput(batch_meta, in_surf, out_surf));
+          if (!cuda_status.ok()) {
+            std::cerr << cuda_status << std::endl;
+            if (cuda_status.code() == absl::StatusCode::kCancelled) {
+              // update_last_flow_ret(GST_FLOW_EOS);
+              send_eos = true;
+            } else {
+              update_last_flow_ret(GST_FLOW_ERROR);
+            }
           }
         }
 
         outBuffer = newGstOutBuf;
 
-        GST_BUFFER_PTS(outBuffer) = GST_BUFFER_PTS(packetInfo.inbuf);
+        if (newGstOutBuf) {
+          GST_BUFFER_PTS(outBuffer) = GST_BUFFER_PTS(packetInfo.inbuf);
+        }
         // Unref the input buffer
         gst_buffer_unref(packetInfo.inbuf);
       } else if (hw_caps == false) {

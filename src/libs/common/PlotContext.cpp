@@ -35,8 +35,8 @@ NvOSD_ColorParams to_color_params(const ColorT& color) {
   }
 }
 
-PlotContext::PlotContext(NvDsFrameMeta* frame_meta, const std::string& font_name)
-    : frame_meta_(frame_meta), font_name_(font_name) {
+PlotContext::PlotContext(NvDsFrameMeta* frame_meta, std::string font_name)
+    : frame_meta_(frame_meta), font_name_(std::move(font_name)) {
   reset();
 }
 

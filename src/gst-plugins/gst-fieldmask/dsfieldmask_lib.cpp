@@ -154,15 +154,8 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx,
   for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_next) {
     l_next = l_obj->next;
 
-  // void plot_circle(
-  //     const Point center,
-  //     int radius,
-  //     int thickness,
-  //     const ColorT& color,
-  //     const std::optional<ColorT>& fill_color = std::nullopt);
-
     if (draw && !plot_context) {
-      // plot_context = std::make_unique<hm::utils::PlotContext>(frame_meta);
+      plot_context = std::make_unique<hm::utils::PlotContext>(frame_meta);
     }
 
     NvDsMetaList* remove_me{nullptr};
@@ -178,17 +171,34 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx,
 
     const int lower_center_height_amount =
         float(detector_bbox_info.org_bbox_coords.height) * lower_bbox_center_by_height_ratio;
-    // const int raise_bottom_height_amount =
-    //     float(detector_bbox_info.org_bbox_coords.height) * raise_bbox_bottom_by_height_ratio;
+    const int raise_bottom_height_amount =
+        float(detector_bbox_info.org_bbox_coords.height) * raise_bbox_bottom_by_height_ratio;
 
     // Center of bounding box
     cv::Point2f ptCenter =
         cv::Point2f(bbox_center_x, detector_bbox_info.org_bbox_coords.top + half_height - lower_center_height_amount);
 
+    if (plot_context) {
+      plot_context->plot_circle(
+          hm::Point{.x = ptCenter.x, .y = ptCenter.y},
+          /*radius=*/lower_center_height_amount,
+          /*thickness=*/lower_center_height_amount / 2,
+          hm::utils::ColorRGB{0, 255, 0});
+    }
+
     // Bottom of bounding box (for testing if their feet are on the ice)
     cv::Point2f ptBottom =
         cv::Point2f(bbox_center_x, detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height);
-    ptBottom.y -= float(detector_bbox_info.org_bbox_coords.height) * raise_bbox_bottom_by_height_ratio;
+
+    ptBottom.y -= raise_bottom_height_amount;
+
+    if (plot_context) {
+      plot_context->plot_circle(
+          hm::Point{.x = ptBottom.x, .y = ptBottom.y},
+          /*radius=*/raise_bottom_height_amount,
+          /*thickness=*/raise_bottom_height_amount / 2,
+          hm::utils::ColorRGB{255, 0, 0});
+    }
 
     if (ptBottom.x <= ctx->detection_mask_centroid.x) {
       // left side, so move right just a little bit
