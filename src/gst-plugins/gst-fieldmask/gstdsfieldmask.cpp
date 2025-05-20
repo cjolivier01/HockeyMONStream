@@ -15,8 +15,8 @@
 
 // #include "gst-nvquery.h"
 // #include "deepstream/sources/includes/nvbufsurface.h"
-#include "nvbufsurface.h"
 #include "gstnvdsmeta.h"
+#include "nvbufsurface.h"
 // #include "nvbufsurftransform.h"
 
 #include <glib-2.0/glib.h>
@@ -385,7 +385,14 @@ static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstB
       frame_meta->pipeline_width = params->width;
       frame_meta->pipeline_height = params->height;
     }
-    absl::Status status = DsFieldMaskProcessFrame(surface, frame_index, frame_meta, dsfieldmask->dsfieldmasklib_ctx);
+#ifdef __aarch64__
+    // Don't waste the CPU power on debug-drawing (this isn't a config option yet)
+    constexpr bool kDraw = false;
+#else
+    constexpr bool kDraw = true;
+#endif
+    absl::Status status =
+        DsFieldMaskProcessFrame(surface, frame_index, frame_meta, dsfieldmask->dsfieldmasklib_ctx, kDraw);
     if (!status.ok()) {
       std::cerr << status << std::endl;
       goto error;

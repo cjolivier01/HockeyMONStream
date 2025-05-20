@@ -1,9 +1,7 @@
 #pragma once
 
 #include "nvdsmeta.h"
-//#include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurface.h"
-#include "src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 
 #include <string>
 
@@ -21,7 +19,7 @@ typedef struct {
 // Initialize library context
 DsFieldMaskCtx* DsFieldMaskCtxInit(DsFieldMaskInitParams* init_params);
 
-absl::Status DsFieldMaskProcessFrame(NvBufSurface* surface, size_t frame_index, NvDsFrameMeta* frame_meta, DsFieldMaskCtx* ctx);
+absl::Status DsFieldMaskProcessFrame(NvBufSurface* surface, size_t frame_index, NvDsFrameMeta* frame_meta, DsFieldMaskCtx* ctx, bool draw);
 
 // Deinitialize library context
 void DsFieldMaskCtxDeinit(DsFieldMaskCtx* ctx);

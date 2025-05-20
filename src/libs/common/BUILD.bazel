@@ -2,12 +2,26 @@ INCLUDE_PREFIX = "hstream/src/libs/common/"
 
 cc_library(
     name = "utils",
-    srcs = glob([
-        "*.cpp",
-    ], exclude = ["ModPipeline.cpp", "Surface.cpp"]),
-    hdrs = glob([
-        "*.h",
-    ], exclude = ["ModPipeline.h", "Surface.h"]),
+    srcs = [
+        "ApplicationPayload.cpp",
+        "ConfigYaml.cpp",
+        "PlotContext.cpp",
+        "Process.cpp",
+        "RenderSet.cpp",
+        "pipeline_utils.cpp",
+        "utils.cpp",
+    ],
+    hdrs = [
+        "ApplicationPayload.h",
+        "ConfigYaml.h",
+        "PlotContext.h",
+        "Process.h",
+        "RenderSet.h",
+        "Status.h",
+        "TempFile.h",
+        "pipeline_utils.h",
+        "utils.h",
+    ],
     copts = [
         "-fPIC",
         "-std=c++20",
@@ -15,13 +29,14 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        ":managed_object",
         ":surface",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
-        "@hm//hockeymom/csrc/play_tracker",
         "@hm-cupano//src/cuda:cuda_blend_cuda_lib",
-        "@com_google_absl//absl/strings:strings",
-        "@com_google_absl//absl/status:statusor",
+        "@hm//hockeymom/csrc/play_tracker",
         "@jetson-utils//cuda:cuda_lib",
         "@jetson-utils//display",
         "@local_cuda//:cuda",
@@ -32,17 +47,27 @@ cc_library(
 )
 
 cc_library(
-  name = "surface",
-  srcs = ["Surface.cpp"],
-  hdrs = ["Surface.h"],
-  include_prefix=INCLUDE_PREFIX,
-  visibility = ["//visibility:public"],
-  deps = [
-    "@hm//hockeymom/csrc/play_tracker",
-    "@deepstream//:deepstream_lib",
-    "@jetson-utils//image:image_format",
-    "@glib",
-  ],
+    name = "surface",
+    srcs = ["Surface.cpp"],
+    hdrs = ["Surface.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@deepstream//:deepstream_lib",
+        "@glib",
+        "@hm//hockeymom/csrc/play_tracker",
+        "@jetson-utils//image:image_format",
+    ],
+)
+
+cc_library(
+    name = "managed_object",
+    srcs = [],
+    hdrs = ["ManagedObject.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+    ],
 )
 
 # cc_library(
@@ -59,11 +84,11 @@ cc_library(
 # )
 
 cc_library(
-  name = "perspective",
-  srcs = ["Perspective.cpp"],
-  hdrs = ["Perspective.h"],
-  include_prefix=INCLUDE_PREFIX,
-  visibility = ["//visibility:public"],
-  deps = [
-  ],
+    name = "perspective",
+    srcs = ["Perspective.cpp"],
+    hdrs = ["Perspective.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+    ],
 )
