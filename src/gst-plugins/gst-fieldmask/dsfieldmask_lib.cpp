@@ -33,7 +33,7 @@ struct DsFieldMaskCtx {
 namespace {
 
 constexpr float lower_bbox_center_by_height_ratio = 0.1;
-constexpr float raise_bbox_bottom_by_height_ratio = 0.1;
+constexpr float raise_bbox_bottom_by_height_ratio = -0.15;
 constexpr float side_edges_bbox_by_half_width_ratio = 0.2;
 
 bool is_bit_set(const cv::Mat& mask, const cv::Point& point) {
