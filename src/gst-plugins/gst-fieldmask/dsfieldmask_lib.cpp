@@ -32,7 +32,6 @@ struct DsFieldMaskCtx {
 
 namespace {
 
-// I dont understand why this is backwards (negative)
 constexpr float lower_bbox_center_by_height_ratio = 0.1;
 constexpr float raise_bbox_bottom_by_height_ratio = 0.1;
 constexpr float side_edges_bbox_by_half_width_ratio = 0.2;
@@ -144,8 +143,8 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx)
   const float scale_width = float(frame_meta->source_frame_width) / frame_meta->pipeline_width;
 
   NvDsMetaList* l_next = nullptr;
-  static float max_y = 0;
-  static float max_x = 0;
+  // static float max_y = 0;
+  // static float max_x = 0;
   for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_next) {
     l_next = l_obj->next;
     NvDsMetaList* remove_me{nullptr};
@@ -155,8 +154,9 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx)
     const float center_x = detector_bbox_info.org_bbox_coords.left + half_width;
     const float half_height = detector_bbox_info.org_bbox_coords.height / 2;
 
-    max_x = std::max(max_x, detector_bbox_info.org_bbox_coords.left + detector_bbox_info.org_bbox_coords.width);
-    max_y = std::max(max_y, detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height);
+    // Keep track of extremes for debugging
+    // max_x = std::max(max_x, detector_bbox_info.org_bbox_coords.left + detector_bbox_info.org_bbox_coords.width);
+    // max_y = std::max(max_y, detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height);
 
     const int lower_center_height_amount =
         float(detector_bbox_info.org_bbox_coords.height) * lower_bbox_center_by_height_ratio;
@@ -164,10 +164,10 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx)
         float(detector_bbox_info.org_bbox_coords.height) * raise_bbox_bottom_by_height_ratio;
 
     cv::Point2f ptCenter =
-        cv::Point2f(center_x, detector_bbox_info.org_bbox_coords.top + half_height + lower_center_height_amount);
+        cv::Point2f(center_x, detector_bbox_info.org_bbox_coords.top + half_height - lower_center_height_amount);
     cv::Point2f ptBottom = cv::Point2f(
         center_x,
-        detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height -
+        detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height +
             raise_bottom_height_amount);
 
     if (ptBottom.x <= ctx->detection_mask_centroid.x) {
