@@ -20,7 +20,7 @@ application:
   ##gie-kitti-output-dir=streamscl
 
 tiled-display:
-  enable: 1
+  enable: 0
   rows: 1
   columns: 1
   # rows: 2
@@ -29,16 +29,16 @@ tiled-display:
   # height: 3176
   # width: 4080
   # height: 1360
-  # width: 2048
-  # height: 720
+  width: 2048
+  height: 720
   # width: 1647
   # height: 740
   # width: 888
   # height: 500
   # width: 3840
   # height: 2160
-  width: 640
-  height: 360
+  # width: 640
+  # height: 360
   gpu-id: 0
   #(0): nvbuf-mem-default - Default memory allocated, specific to particular platform
   #(1): nvbuf-mem-cuda-pinned - Allocate Pinned/Host cuda memory, applicable for Tesla
@@ -377,7 +377,7 @@ ds-example:
   processing-height: 480
 
 hmplaycropper:
-  enable: 0
+  enable: 1
   gpu-id: 0
   nvbuf-memory-type: 0
   plot-play-tracking: 1
@@ -403,7 +403,7 @@ hmstitcher:
   num-output-buffers: 2
 
 ds-playtracker:
-  enable: 0
+  enable: 1
   gpu-id: 0
   unique-id: 75
   draw: 1
@@ -422,7 +422,7 @@ ds-playtracker:
         scale_dest_height: 1.4
 
 ds-fieldmask:
-  enable: 0
+  enable: 1
   gpu-id: 0
   unique-id: 76
   # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png

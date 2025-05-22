@@ -389,7 +389,7 @@ static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstB
     // Don't waste the CPU power on debug-drawing (this isn't a config option yet)
     constexpr bool kDraw = false;
 #else
-    constexpr bool kDraw = true;
+    constexpr bool kDraw = false;
 #endif
     absl::Status status =
         DsFieldMaskProcessFrame(surface, frame_index, frame_meta, dsfieldmask->dsfieldmasklib_ctx, kDraw);
