@@ -22,7 +22,6 @@
 #include <functional>
 #include <iostream>
 #include <memory>
-#include <thread>
 #include <vector>
 
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
@@ -87,10 +86,10 @@ PipelineApplication::PipelineApplication()
   memset(fps_avg_, 0, sizeof(fps_avg_));
   g_mutex_init(&fps_lock_);
   instance_ = this;
-  const char* plugin_path = getenv("GST_PLUGIN_PATH");
-  if (plugin_path) {
-    std::cout << "GST_PLUGIN_PATH=\"" << plugin_path << "\"\n" << std::flush;
-  }
+  // const char* plugin_path = getenv("GST_PLUGIN_PATH");
+  // if (plugin_path) {
+  //   std::cout << "GST_PLUGIN_PATH=\"" << plugin_path << "\"\n" << std::flush;
+  // }
 }
 
 //------------------------------------------------------------------------------
@@ -607,11 +606,6 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   g_option_context_add_group(ctx, gst_init_get_option_group());
 
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
-
-  int current_device = -1;
-  cudaGetDevice(&current_device);
-  struct cudaDeviceProp prop;
-  cudaGetDeviceProperties(&prop, current_device);
 
   if (!g_option_context_parse(ctx, &argc, &argv, &error)) {
     NVGSTDS_ERR_MSG_V("%s", error->message);
