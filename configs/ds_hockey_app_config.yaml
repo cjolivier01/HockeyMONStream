@@ -29,14 +29,14 @@ tiled-display:
   # height: 3176
   # width: 4080
   # height: 1360
-  width: 2048
-  height: 720
+  # width: 2048
+  # height: 720
   # width: 1647
   # height: 740
   # width: 888
   # height: 500
-  # width: 3840
-  # height: 2160
+  width: 3840
+  height: 2160
   # width: 640
   # height: 360
   gpu-id: 0
@@ -241,7 +241,7 @@ sink3:
 # |_|  |_|_| |_| |_|/_/    \_\\__,_|\__,_||_|\___/
 #
 hmaudio0:
-  enable: 1
+  enable: 0
   # 0=default alsa source, 1=file, 2=src_bin(source-id)
   src: 1
   # source-id: 1
@@ -270,7 +270,7 @@ hmaudio0:
 
 
 osd:
-  enable: 1
+  enable: 0
   gpu-id: 0
   border-width: 1
   text-size: 15
@@ -406,7 +406,7 @@ ds-playtracker:
   enable: 1
   gpu-id: 0
   unique-id: 75
-  draw: 1
+  draw: 0
   show: 0
   dynamic-acceleration-scaling: 1.0
   plugin-type: vpplaytracker
