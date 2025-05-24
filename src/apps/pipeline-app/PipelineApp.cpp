@@ -201,10 +201,14 @@ absl::Status PipelineApplication::configureInstances(
                 << "many as the number of stages, or else it's not clear what to apply to this stage " << stage_index));
           }
         }
-        const std::map<std::string, std::string>& options =
-            pipeline_options_.size() == 1 ? pipeline_options_.at(0) : pipeline_options_.at(stage_index);
-        for (const auto& kv_item : options) {
-          HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(kv_item.first, kv_item.second));
+        // const std::map<std::string, std::string>& options =
+        //     pipeline_options_.size() == 1 ? pipeline_options_.at(0) : pipeline_options_.at(stage_index);
+        if (stage_index) {
+          for (const std::map<std::string, std::string>& options : pipeline_options_) {
+            for (const auto& kv_item : options) {
+              HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(kv_item.first, kv_item.second));
+            }
+          }
         }
       }
 
