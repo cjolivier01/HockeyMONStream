@@ -87,7 +87,7 @@
         //"--enable-sinks=FAKE",
         //"--enable-sinks=ENCODE_FILE",
         //"--start-time=00:05:20",
-        //"--options=pipeline.hmaudio0.enable=1",
+        "--options=pipeline.hmaudio0.enable=1",
         "--options=pipeline.hmplaycropper.enable=0",
         //"--options=pipeline.osd.enable=1",
         "--options=pipeline.hmplaycropper.show-scoreboard=0",

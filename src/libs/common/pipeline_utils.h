@@ -3,12 +3,12 @@
 #include <gst/gst.h>
 #include <gstreamer-1.0/gst/gstobject.h>
 
+#include <iostream>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "yaml-cpp/yaml.h"
-
 
 namespace hm {
 
@@ -57,6 +57,7 @@ Videoinfo getVideoInfo(const std::string& videoPath);
 
 template <typename T>
 inline T get_node_value(const YAML::Node& n, const std::string& dot_string, const T& default_value) {
+  std::cout << n << std::endl;
   std::optional<YAML::Node> o_n = hm::get_node(n, dot_string);
   if (!o_n.has_value()) {
     return default_value;
@@ -126,6 +127,5 @@ bool post_force_pipeline_eos(GstElement* element);
 bool gst_message_parse_force_pipeline_eos(GstMessage* message, bool* force_eos);
 
 bool gst_message_is_force_pipeline_eos(GstMessage* message);
-
 
 } // namespace hm

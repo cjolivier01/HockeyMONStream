@@ -41,6 +41,8 @@ constexpr long kMaxUdpStreamingHeight = 2160;
 
 constexpr const char* kRinkMaskFilename = "rink_mask_0.png";
 
+constexpr const char* kEnableFlagField = "enable";
+
 const std::vector<const char*> nostitch_video_names = {
     // Prefer mp4 to mkv
     "stitching_output-with-audio.mp4",
@@ -66,7 +68,7 @@ bool is_enabled(const YAML::Node& config, const std::string& dot_string) {
   if (!node.IsDefined()) {
     return false;
   }
-  return get_node_value(node, "enabled", static_cast<int>(false));
+  return get_node_value(node, kEnableFlagField, static_cast<int>(false));
 }
 
 void remove_whitespace_in_place(std::string& input) {
@@ -99,7 +101,7 @@ bool is_enabled(YAML::Node n) {
   if (!n.IsMap()) {
     return false;
   }
-  YAML::Node enabled = n["enable"];
+  YAML::Node enabled = n[kEnableFlagField];
   if (enabled.IsDefined()) {
     std::string as_str = enabled.as<std::string>();
     if (as_str == "true") {
@@ -177,10 +179,10 @@ bool has_enabled_rtsp_sink(const YAML::Node& pipeline) {
     if (!pipeline[sinkname].IsDefined()) {
       continue;
     }
-    if (!pipeline[sinkname]["enable"].IsDefined()) {
+    if (!pipeline[sinkname][kEnableFlagField].IsDefined()) {
       continue;
     }
-    if (!pipeline[sinkname]["enable"].as<int>()) {
+    if (!pipeline[sinkname][kEnableFlagField].as<int>()) {
       continue;
     }
     if (pipeline[sinkname]["type"].as<int>() == NV_DS_SINK_UDPSINK) {
@@ -199,7 +201,8 @@ std::optional<YAML::Node> get_enabled_audio_uri(const YAML::Node& pipeline) {
       break;
     }
     YAML::Node audio = pipeline[source_key];
-    if (audio["enable"].IsDefined() && audio["enable"].as<int>() && audio["type"].as<int>() == NV_DS_SOURCE_AUDIO_URI) {
+    if (audio[kEnableFlagField].IsDefined() && audio[kEnableFlagField].as<int>() &&
+        audio["type"].as<int>() == NV_DS_SOURCE_AUDIO_URI) {
       return audio;
     }
     ++index;
@@ -214,7 +217,7 @@ std::map<int, YAML::Node> get_enabled_sources(const YAML::Node& pipeline) {
     std::string key = kv.first.as<std::string>();
     if (absl::StartsWith(key, "source")) {
       YAML::Node src_node = kv.second;
-      if (!get_node_value(src_node, "enable", 0)) {
+      if (!get_node_value(src_node, kEnableFlagField, 0)) {
         continue;
       }
       if (!has_node(src_node, "source-id", /*non_null=*/true)) {
@@ -233,7 +236,7 @@ std::map<int, YAML::Node> replace_sink_source_id(const YAML::Node& pipeline, int
     std::string key = kv.first.as<std::string>();
     if (absl::StartsWith(key, "sink")) {
       YAML::Node sink_node = kv.second;
-      if (!get_node_value(sink_node, "enable", 0)) {
+      if (!get_node_value(sink_node, kEnableFlagField, 0)) {
         continue;
       }
       if (!has_node(sink_node, "source-id", /*non_null=*/true)) {
@@ -280,7 +283,7 @@ struct SimpleConfig {
 std::optional<YAML::Node> maybe_get_config_file(const YAML::Node& yaml_node, const std::string& config_dir) {
   hm::utils::ConfigLocator locator;
   SimpleConfig config;
-  SET_LOCATOR(locator, config, enable); // "enable"
+  SET_LOCATOR(locator, config, enable); // kEnableFlagField
   SET_LOCATOR_CHAR_PTR(locator, config, config_file);
   hm::utils::set_config_from_yaml(yaml_node, locator, /*quiet=*/true);
 
@@ -320,7 +323,7 @@ std::vector<size_t> Configurator::enable_source_types(
         continue;
       }
       if (source_enums.count(type)) {
-        src_node["enable"] = "1";
+        src_node[kEnableFlagField] = "1";
         if (!has_node(src_node, "source-id", /*non_null=*/true)) {
           std::cerr << "No source-id in enabled source section: " << key << std::endl;
           source_ids.emplace_back(std::numeric_limits<size_t>::max());
@@ -328,7 +331,7 @@ std::vector<size_t> Configurator::enable_source_types(
           source_ids.emplace_back(src_node["source-id"].as<int>());
         }
       } else if (disable_others) {
-        src_node["enable"] = "0";
+        src_node[kEnableFlagField] = "0";
       }
     }
   }
@@ -351,7 +354,7 @@ size_t Configurator::disable_source_types(const std::set<NvDsSourceType>& source
         continue;
       }
       if (source_enums.count(type)) {
-        src_node["enable"] = "0";
+        src_node[kEnableFlagField] = "0";
       }
     }
   }
@@ -853,8 +856,8 @@ absl::Status Configurator::complete_configuration(bool force) {
   if (!left_files.empty() && !right_files.empty()) {
     auto src0 = pipeline["source0"];
     auto src1 = pipeline["source1"];
-    if (src0.IsDefined() && as_int(src0["enable"]) && as_int(src0["type"]) == NV_DS_SOURCE_URI_MULTIPLE &&
-        src1.IsDefined() && as_int(src1["enable"]) && as_int(src1["type"]) == NV_DS_SOURCE_URI_MULTIPLE) {
+    if (src0.IsDefined() && as_int(src0[kEnableFlagField]) && as_int(src0["type"]) == NV_DS_SOURCE_URI_MULTIPLE &&
+        src1.IsDefined() && as_int(src1[kEnableFlagField]) && as_int(src1["type"]) == NV_DS_SOURCE_URI_MULTIPLE) {
       // Two uri sources, so set them to the stitching files
       // TODO: how to set all of the files and roll them?
       src0["uri"] = ff + file_maybe_in_game_dir(left_files[0]);
@@ -868,10 +871,15 @@ absl::Status Configurator::complete_configuration(bool force) {
         audio_source_id = src1["source-id"].as<int>();
       }
       num_video_sources += 2;
+    } else if (src0.IsDefined() && get_node_value<int>(src0, kEnableFlagField, false)) {
+      possible_audio_uri = get_node_value<std::string>(pipeline, "uri", "");
+    } else {
+      // TODO: we need to not be hard-coding source0,1,etc
+      assert(false);
     }
   } else {
     auto src0 = pipeline["source0"];
-    // if (src0.IsDefined() && as_int(src0["enable"]) &&
+    // if (src0.IsDefined() && as_int(src0[kEnableFlagField]) &&
     if (is_enabled(config_, "pipeline.source0") && as_int(src0["type"]) == NvDsSourceType::NV_DS_SOURCE_URI_MULTIPLE) {
       // TODO: Use VideoDict
       if (!src0["uri"].IsDefined() || src0["uri"].IsNull() || src0["uri"].as<std::string>().empty()) {
@@ -879,7 +887,7 @@ absl::Status Configurator::complete_configuration(bool force) {
         if (std::filesystem::exists(stiched_output)) {
           src0["uri"] = ff + stiched_output;
           disable_source_types({NvDsSourceType::NV_DS_SOURCE_URI, NvDsSourceType::NV_DS_SOURCE_URI_MULTIPLE});
-          src0["enabled"] = "1";
+          src0[kEnableFlagField] = "1";
         }
       }
       if (src0["uri"].IsDefined() && !src0["uri"].IsNull()) {
@@ -889,7 +897,7 @@ absl::Status Configurator::complete_configuration(bool force) {
     }
   }
   if (num_video_sources < 2 && pipeline_has_hmstitcher) {
-    pipeline["hmstitcher"]["enable"] = "0";
+    pipeline["hmstitcher"][kEnableFlagField] = "0";
   }
   // std::cout << pipeline["hmaudio"] << std::endl;
   if (!possible_audio_uri.empty() || audio_source_id != std::numeric_limits<size_t>::max()) {
@@ -1097,12 +1105,12 @@ absl::Status Configurator::load_sub_configs(
         disable_nodes.emplace(section_name);
       }
       // Now disable the original section since it has been consumed/expanded
-      parent_node[section_name]["enable"] = 0;
+      parent_node[section_name][kEnableFlagField] = 0;
     }
   }
   // Disable the node that had the config filew since we exploded them already
   for (const std::string& s : disable_nodes) {
-    parent_node[s]["enable"] = "0";
+    parent_node[s][kEnableFlagField] = "0";
   }
   return absl::OkStatus();
 }
