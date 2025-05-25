@@ -192,6 +192,24 @@ bool has_enabled_rtsp_sink(const YAML::Node& pipeline) {
   return false;
 }
 
+[[maybe_unused]] std::map<size_t, YAML::Node> get_enabled_indexed_sections_with_prefix(
+    const YAML::Node& parent_node,
+    const std::string& section_prefix,
+    size_t max_indexes = 10) {
+  std::map<size_t, YAML::Node> results;
+  for (size_t index = 0; index < max_indexes; ++index) {
+    std::string source_key = section_prefix + std::to_string(index);
+    YAML::Node section_node = parent_node[source_key];
+    if (!section_node.IsDefined()) {
+      continue;
+    }
+    if (section_node[kEnableFlagField].IsDefined() && section_node[kEnableFlagField].as<int>()) {
+      results.emplace(index, section_node);
+    }
+  };
+  return results;
+}
+
 std::optional<YAML::Node> get_enabled_audio_uri(const YAML::Node& pipeline) {
   size_t index = 0;
   const std::string source_base = "source";
@@ -872,7 +890,7 @@ absl::Status Configurator::complete_configuration(bool force) {
       }
       num_video_sources += 2;
     } else if (src0.IsDefined() && get_node_value<int>(src0, kEnableFlagField, false)) {
-      possible_audio_uri = get_node_value<std::string>(pipeline, "uri", "");
+      possible_audio_uri = get_node_value<std::string>(src0, "uri", "");
     } else {
       // TODO: we need to not be hard-coding source0,1,etc
       assert(false);
