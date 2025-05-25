@@ -891,6 +891,7 @@ absl::Status Configurator::complete_configuration(bool force) {
       num_video_sources += 2;
     } else if (src0.IsDefined() && get_node_value<int>(src0, kEnableFlagField, false)) {
       possible_audio_uri = get_node_value<std::string>(src0, "uri", "");
+      audio_source_id = src0["source-id"].as<int>();
     } else {
       // TODO: we need to not be hard-coding source0,1,etc
       assert(false);
