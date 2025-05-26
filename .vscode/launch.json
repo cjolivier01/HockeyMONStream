@@ -77,7 +77,7 @@
         //"unrl-1",
         //"bolts-1b",
         //"fremont",
-        //"-d",
+        "-d",
         //"--gpu-id=1",
         //"--enable-sources=CSI",
         //"--enable-sources=V4L2",

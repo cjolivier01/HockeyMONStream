@@ -249,6 +249,7 @@ struct NvDsHmAudioBin {
 
   // File only
   GstElement* qtdemux;
+  GstElement* demux_queue;
   GstElement* decodebin;
 
   GstElement* tee;
