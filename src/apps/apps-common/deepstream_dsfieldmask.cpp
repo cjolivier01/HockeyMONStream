@@ -785,10 +785,14 @@ static void on_decode_pad_added(GstElement* element, GstPad* pad, gpointer data)
         std::cout << "Linked " << GST_ELEMENT_NAME(element) << "." << GST_PAD_NAME(pad) << " to "
                   << GST_ELEMENT_NAME(convert) << ".sink" << std::endl;
         ret = GST_PAD_LINK_OK;
+      } else {
+        std::cout << "Failed linked " << GST_ELEMENT_NAME(element) << "." << GST_PAD_NAME(pad) << " to "
+                  << GST_ELEMENT_NAME(convert) << ".sink, reason: " << gst_pad_link_get_name(ret) << std::endl;
       }
     }
     if (GST_PAD_LINK_FAILED(ret)) {
       g_printerr("Decoder pad link failed: %d\n", ret);
+      assert(false);
     }
     gst_object_unref(sinkpad);
   }

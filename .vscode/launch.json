@@ -82,7 +82,7 @@
         //"--enable-sources=CSI",
         //"--enable-sources=V4L2",
         //"--enable-sources=URI-MULTIPLE",
-        "--enable-sinks=RENDER",
+        //"--enable-sinks=RENDER",
         //"--enable-sinks=RTMP",
         //"--enable-sinks=FAKE",
         "--enable-sinks=ENCODE_FILE",
