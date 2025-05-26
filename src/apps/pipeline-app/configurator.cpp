@@ -1004,8 +1004,7 @@ absl::Status Configurator::post_config_pipeline(
   } else if (state != GST_STATE_PAUSED) {
     return absl::InternalError(TO_STRING("Pipeline in unexpected state: " << gstStateToString(state)));
   }
-
-  save_dot_file(pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline");
+  save_dot_file(pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_paused");
 
   // Seek pre-stitching streams to the proper offsets so that they're in sync
   std::vector<GstElement*> src_bins;
