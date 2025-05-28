@@ -389,11 +389,10 @@ void waitForPipelineStop(GstElement* pipeline) {
 
 // Returns a new reference to the pipeline element or nullptr if not found.
 // Caller is responsible for unref'ing the returned pipeline.
-GstReferencedObject<GstElement*> get_pipeline_element(GstElement* element) {
+GstElement* get_pipeline_element_raw(GstElement* element) {
   if (!element)
     return nullptr;
 
-  // Get parent of the current element (this returns a new reference)
   GstElement* parent = GST_ELEMENT(gst_element_get_parent(element));
   if (!parent)
     return nullptr;
@@ -403,9 +402,14 @@ GstReferencedObject<GstElement*> get_pipeline_element(GstElement* element) {
   }
 
   // Otherwise, recursively search the parent's parent.
-  GstElement* pipeline = get_pipeline_element(parent);
+  GstElement* pipeline = get_pipeline_element_raw(parent);
+
   gst_object_unref(parent);
   return pipeline;
+}
+
+GstReferencedObject<GstElement*> get_pipeline_element(GstElement* element) {
+  return get_pipeline_element_raw(element);
 }
 
 //

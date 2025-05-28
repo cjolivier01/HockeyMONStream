@@ -9,6 +9,7 @@
 #include <gst/gstelement.h>
 #include <gstreamer-1.0/gst/gstbin.h>
 #include <gstreamer-1.0/gst/gstelementfactory.h>
+#include <gstreamer-1.0/gst/gstobject.h>
 #include <gstreamer-1.0/gst/gstpad.h>
 
 #include <algorithm>
@@ -777,6 +778,15 @@ static void on_decode_pad_added(GstElement* element, GstPad* pad, gpointer data)
   GstElement* convert = (GstElement*)data;
   const bool is_audio_pad = isAudioPad(pad);
   if (is_audio_pad) {
+    {
+      hm::GstReferencedObject<GstElement*> pipeline = hm::get_pipeline_element(element);
+      int count1 = GST_OBJECT_REFCOUNT(pipeline.get());
+      hm::GstReferencedObject<GstElement*> pipeline2 = hm::get_pipeline_element(element);
+      int count2 = GST_OBJECT_REFCOUNT(pipeline2.get());
+      hm::save_dot_file(pipeline.get(), GST_DEBUG_GRAPH_SHOW_ALL, "on_audio_decode_pad_added");
+      
+    }
+
     GstPad* sinkpad = gst_element_get_static_pad(convert, "sink");
     GstPadLinkReturn ret;
     ret = gst_pad_link(pad, sinkpad);
@@ -791,7 +801,7 @@ static void on_decode_pad_added(GstElement* element, GstPad* pad, gpointer data)
       }
     }
     if (GST_PAD_LINK_FAILED(ret)) {
-      g_printerr("Decoder pad link failed: %d\n", ret);
+      g_printerr("Decoder pad link failed: %d: %s\n", ret, gst_pad_link_get_name(ret));
       assert(false);
     }
     gst_object_unref(sinkpad);
@@ -814,7 +824,7 @@ static void on_demuxer_pad_added(GstElement* element, GstPad* pad, gpointer data
   gst_caps_unref(caps);
 }
 
-bool link_elements(GstElement* elem1, GstElement* elem2) {
+static bool link_elements(GstElement* elem1, GstElement* elem2) {
   if (!gst_element_link(elem1, elem2)) {
     GstCaps *src_caps, *sink_caps;
     const char* src_caps_str = "none";
@@ -838,7 +848,7 @@ bool link_elements(GstElement* elem1, GstElement* elem2) {
   return true;
 }
 
-bool link_to_tee(GstElement* src_tee, GstElement* target) {
+static bool link_to_tee(GstElement* src_tee, GstElement* target) {
   // Manually link the tee to each queue
   auto tee_src_pad_template = gst_element_class_get_pad_template(GST_ELEMENT_GET_CLASS(src_tee), "src_%u");
   GstPad* tee_pad = gst_element_request_pad(src_tee, tee_src_pad_template, NULL, NULL);

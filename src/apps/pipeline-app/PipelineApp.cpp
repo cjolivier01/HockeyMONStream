@@ -257,8 +257,6 @@ absl::Status PipelineApplication::createPipelines(
         s += '_';
         s += std::to_string(i);
       }
-      // gst_debug_bin_to_dot_file_with_ts(
-      // GST_BIN(app_contexts[i]->pipeline.pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "pipeline.dot");
       hm::save_dot_file(app_contexts[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_created" + s);
     }
   }

@@ -80,10 +80,10 @@ bool getCapsDimensions(GstCaps* caps, int& width, int& height);
 template <typename G_OBJ>
 class GstReferencedObject {
  public:
-  GstReferencedObject(G_OBJ obj) : obj_(obj) {}
+  GstReferencedObject(G_OBJ obj, bool unref = true) : obj_(obj), unref_(unref) {}
 
   virtual ~GstReferencedObject() {
-    if (obj_) {
+    if (obj_ && unref_) {
       gst_object_unref(obj_);
     }
   }
@@ -116,6 +116,7 @@ class GstReferencedObject {
 
  private:
   G_OBJ obj_;
+  bool unref_;
 };
 
 GstReferencedObject<GstElement*> get_pipeline_element(GstElement* element);
