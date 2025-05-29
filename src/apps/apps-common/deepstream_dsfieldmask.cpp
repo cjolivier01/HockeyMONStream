@@ -780,11 +780,7 @@ static void on_decode_pad_added(GstElement* element, GstPad* pad, gpointer data)
   if (is_audio_pad) {
     {
       hm::GstReferencedObject<GstElement*> pipeline = hm::get_pipeline_element(element);
-      int count1 = GST_OBJECT_REFCOUNT(pipeline.get());
-      hm::GstReferencedObject<GstElement*> pipeline2 = hm::get_pipeline_element(element);
-      int count2 = GST_OBJECT_REFCOUNT(pipeline2.get());
       hm::save_dot_file(pipeline.get(), GST_DEBUG_GRAPH_SHOW_ALL, "on_audio_decode_pad_added");
-      
     }
 
     GstPad* sinkpad = gst_element_get_static_pad(convert, "sink");
