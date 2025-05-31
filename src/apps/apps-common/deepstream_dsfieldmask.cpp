@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cassert>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -42,6 +43,14 @@
 #undef gst_element_get_parent
 
 namespace {
+
+[[maybe_unused]] void save_pipeline(const std::string& label, GstElement* any_element) {
+  hm::GstReferencedObject<GstElement*> pipeline = hm::get_pipeline_element(any_element);
+  if (pipeline) {
+    hm::save_dot_file(pipeline.get(), GST_DEBUG_GRAPH_SHOW_ALL, label);
+  }
+}
+
 inline GstElement* gst_element_get_parent(GstElement* elem) {
   return (GstElement*)gst_object_get_parent(GST_OBJECT_CAST(elem));
 }
@@ -237,9 +246,10 @@ bool connectElementsWithGhostPads(
   GstPadLinkReturn link_ret = gst_pad_link(pad1, pad2);
   if (link_ret != GST_PAD_LINK_OK) {
     std::cerr << "Error: Failed to link pad \"" << GST_PAD_NAME(pad1) << "\" to pad \"" << GST_PAD_NAME(pad2)
-              << "\" (gst_pad_link return: " << link_ret << ")." << std::endl;
+              << "\" (gst_pad_link return: " << gst_pad_link_get_name(link_ret) << ")." << std::endl;
+    save_pipeline("link_failed", elem1);
     gst_object_unref(pad1);
-    // gst_object_unref(pad2);
+    gst_object_unref(pad2);
     return false;
   }
 
@@ -714,9 +724,9 @@ done:
 //
 // HmImageMetaMerger
 //
+// OBSOLETE
 gboolean create_hmimagemetamerger_bin(NvDsHmImageMetaMergerConfig* config, NvDsHmImageMetaMergerBin* bin) {
   gboolean ret = FALSE;
-
   // GstPad *bin_src_pad, *ghost_pad, *tee_src_pad;
   bin->bin = gst_bin_new("hm_image_meta_merger");
   if (!bin->bin) {
@@ -774,7 +784,8 @@ bool isAudioPad(GstPad* pad) {
   return result;
 }
 
-static void on_decode_pad_added(GstElement* element, GstPad* pad, gpointer data) {
+// template <typename DATA_T = GstElement*>
+static void on_decode_pad_added(GstElement* element, GstPad* pad, gpointer* data) {
   GstElement* convert = (GstElement*)data;
   const bool is_audio_pad = isAudioPad(pad);
   if (is_audio_pad) {
@@ -965,15 +976,15 @@ gboolean create_hmaudio_bin(
     }
     g_object_set(G_OBJECT(bin->audiosrc), "location", audio_location.c_str(), NULL);
   } else if (config->src == SRC_SOURCE_BIN) {
-    if (!is_dest_file_sink) {
+    //if (!is_dest_file_sink) {
       HMGST_ELEMENT_MAKE_BINADD(bin->audioresample, "audioresample", "hmaudio_audioresample");
-    }
+    //}
   } else {
     HMGST_ELEMENT_MAKE_BINADD(bin->audiosrc, NVDS_ELEM_SRC_ALSA, "hmaudio_alsasrc0");
   }
 
   if (bin->decodebin || config->src == SRC_SOURCE_BIN) {
-    if (!is_dest_file_sink) {
+    if (!is_dest_file_sink || config->src == SRC_SOURCE_BIN) {
       bin->audioconvert = gst_element_factory_make(NVDS_ELEM_AUDIO_CONV, "hmaudio_audioconvert0");
       if (!bin->audioconvert) {
         NVGSTDS_ERR_MSG_V("Failed to create 'audioconvert0'");
