@@ -65,13 +65,13 @@ tiled-display:
 # |_____/ \___/ \__,_|_|   \___|\___||___/
 #
 source0:
-  enable: 1
+  enable: 0
   type: 3
   # uri: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   # uri: file:///home/colivier/Videos/pdp/GX010087.mp4
   # mlk-extreme
   # uri: file:///home/colivier/Videos/mlk-extreme/GX010096.MP4
-  uri: file:///home/colivier/Videos/foxes/left.mp4
+  # uri: file:///home/colivier/Videos/foxes/left.mp4
   # uri: file:///home/colivier/Videos/ev-tv-1a/right.mp4
   num-sources: 1
   gpu-id: 0
@@ -350,7 +350,7 @@ dewarper0:
   num-output-buffers: 4
 
 primary-gie:
-  enable: 0
+  enable: 1
   gpu-id: 0
   batch-size: 2
   #Required by the app for OSD, not a plugin property
@@ -377,7 +377,7 @@ ds-example:
   processing-height: 480
 
 hmplaycropper:
-  enable: 0
+  enable: 1
   gpu-id: 0
   nvbuf-memory-type: 0
   plot-play-tracking: 1
@@ -394,7 +394,7 @@ hmplaycropper:
   rtsp_resize: 1
 
 hmstitcher:
-  enable: 0
+  enable: 1
   gpu-id: 0
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
@@ -403,7 +403,7 @@ hmstitcher:
   num-output-buffers: 2
 
 ds-playtracker:
-  enable: 0
+  enable: 1
   gpu-id: 0
   unique-id: 75
   draw: 0
@@ -422,7 +422,7 @@ ds-playtracker:
         scale_dest_height: 1.4
 
 ds-fieldmask:
-  enable: 0
+  enable: 1
   gpu-id: 0
   unique-id: 76
   # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png
@@ -431,7 +431,7 @@ ds-fieldmask:
   # detection-mask: /home/colivier/Videos/mlk-heat-1/rink_mask_0.png
 
 tracker:
-  enable: 0
+  enable: 1
   # For NvDCF and NvDeepSORT tracker, tracker-width and tracker-height must be a multiple of 32, respectively
   tracker-width: 960
   tracker-height: 544
