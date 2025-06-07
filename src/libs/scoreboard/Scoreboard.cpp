@@ -2,7 +2,7 @@
 #include "hstream/src/libs/common/Status.h"
 
 #include "cupano/pano/cudaMat.h"
-#include "cupano/pano/showImage.h"
+#include "cupano/utils/showImage.h"
 
 #include "jetson-utils/cuda/cudaOverlay.h"
 

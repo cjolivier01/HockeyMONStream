@@ -13,7 +13,6 @@ cc_library(
   visibility = ["//visibility:public"],
   deps = [
     "//src/libs/common:utils",
-    # "@jetson-utils//display",
     "@jetson-utils//cuda:cuda_lib",
     "@hm-cupano//src/pano:cuda_matrix",
     "@opencv_linux//:opencv",
