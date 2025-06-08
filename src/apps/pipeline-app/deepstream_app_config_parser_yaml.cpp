@@ -1,4 +1,5 @@
 #include "hstream/src/apps/apps-common/deepstream_common.h"
+#include "hstream/src/apps/apps-common/deepstream_config.h"
 #include "hstream/src/apps/apps-common/deepstream_config_yaml.h"
 #include "hstream/src/libs/common/ConfigYaml.h"
 #include "hstream/src/libs/common/utils.h"
@@ -247,6 +248,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
 
   for (YAML::const_iterator itr = configyml.begin(); itr != configyml.end(); ++itr) {
     std::string paramKey = itr->first.as<std::string>();
+    assert(config->dsfieldmask_config.enable == 0);
     if (paramKey == "source" || (paramKey.size() > 6 && paramKey.substr(0, 6) == "source")) {
       if (configyml[paramKey]["csv-file-path"].IsDefined()) {
         std::string csv_file_path = configyml["source"]["csv-file-path"].as<std::string>();
@@ -359,6 +361,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
             config->num_source_sub_bins++;
         }
 #else
+        assert(source_id >= 0 && source_id < MAX_SOURCE_BINS);
         parse_err = !parse_source_yaml(&config->multi_source_config[source_id], configyml[paramKey], config_dir);
         if (config->multi_source_config[source_id].enable)
           config->num_source_sub_bins++;
