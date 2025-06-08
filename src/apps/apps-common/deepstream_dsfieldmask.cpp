@@ -903,6 +903,7 @@ gboolean create_hmaudio_bin(
           g_printerr("Failed to make fakesink bin for hmaudio\n");
         }
         gboolean ok = gst_bin_add(parent_bin, bin->fakesink_bin.bin);
+        (void)ok;
         assert(ok);
         HMGST_ELEMENT_MAKE_BINADD(bin->encoder, "voaacenc", "hmaudio_encoder");
         HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
