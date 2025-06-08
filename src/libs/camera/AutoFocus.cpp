@@ -231,6 +231,7 @@ absl::Status show_camera(
             return absl::InternalError("Could not focus camera");
           }
           const double val = laplacian(img);
+          std::cout << "laplacian: " << val << std::endl;
           if (val > max_value) {
             max_index = focal_distance;
             max_value = val;
@@ -346,7 +347,7 @@ absl::Status auto_focus_cameras(
           verbose,
           force);
     });
-    // threads.at(i)->join();
+    threads.at(i)->join();
   }
   absl::Status status;
   for (size_t i = 0; i < threads.size(); ++i) {
