@@ -17,6 +17,8 @@
 #include "absl/synchronization/mutex.h"
 
 #include <opencv2/opencv.hpp>
+#include <pthread.h>
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 
@@ -180,6 +182,8 @@ absl::Status show_camera(
 
   cv::VideoCapture cap(pipeline, cv::CAP_GSTREAMER);
 
+  const std::string window_name = std::string("CSI /dev/video") + std::to_string(device_id);
+
   if (focuser.bus == -1) {
     int bus_check = find_working_bus(0, 16, {});
     if (bus_check < 0) {
@@ -226,7 +230,7 @@ absl::Status show_camera(
           if (!focusing(focuser, focal_distance, verbose)) {
             return absl::InternalError("Could not focus camera");
           }
-          double val = laplacian(img);
+          const double val = laplacian(img);
           if (val > max_value) {
             max_index = focal_distance;
             max_value = val;
@@ -250,6 +254,7 @@ absl::Status show_camera(
       } else {
         skip_frame--;
       }
+      // Wait for a key, or just delay
       const int keyCode = cv::waitKey(16) & 0xFF;
       if (interactive) {
         if (keyCode == 27) { // ESC key to exit
@@ -275,6 +280,10 @@ absl::Status show_camera(
     return absl::InternalError("Unable to open camera");
   }
   return absl::OkStatus();
+}
+
+void setThreadName(const std::string& name) {
+  pthread_setname_np(pthread_self(), name.substr(0, 15).c_str());
 }
 
 struct AutoFocusCache {
@@ -317,11 +326,14 @@ absl::Status auto_focus_cameras(
     bool interactive,
     bool verbose,
     bool force) {
+  // show = true;
+  // verbose = true;
   std::vector<std::unique_ptr<std::thread>> threads(cameras.size());
   std::vector<absl::Status> statuses(cameras.size(), absl::OkStatus());
   for (size_t i = 0; i < cameras.size(); ++i) {
     const CameraConnection& camera = cameras[i];
     threads.at(i) = std::make_unique<std::thread>([index = i, &camera, &statuses, show, interactive, verbose, force]() {
+      setThreadName(std::string("AutoFocus-") + std::to_string(camera.sensor_id));
       statuses.at(index) = auto_focus_csi_camera(
           camera.sensor_id,
           camera.i2c_bus,
@@ -334,11 +346,12 @@ absl::Status auto_focus_cameras(
           verbose,
           force);
     });
+    threads.at(i)->join();
   }
   absl::Status status;
   for (size_t i = 0; i < threads.size(); ++i) {
     auto& thread = threads[i];
-    if (thread) {
+    if (thread && thread->joinable()) {
       thread->join();
     }
     status.Update(statuses.at(i));

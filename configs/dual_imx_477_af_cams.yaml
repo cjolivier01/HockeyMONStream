@@ -4,7 +4,7 @@ source5:
   # 1: v4l2, 5: CSI
   type: 5
   camera-csi-sensor-id: 1
-  camera-i2c-bus: 14
+  camera-i2c-bus: 9
 
   # Color/Brightness/etc
   camera-wbmode: 5
@@ -33,7 +33,7 @@ source6:
   # 1: v4l2, 5: CSI
   type: 5
   camera-csi-sensor-id: 0
-  camera-i2c-bus: 9 
+  camera-i2c-bus: 10
 
   # Color/Brightness/etc
   camera-wbmode: 5
@@ -54,7 +54,3 @@ source6:
   input-audio-rate: 189
   source-id: 1
   cuda-memory-type: 1
-
-
-fakesection3:
-  enable: 1
