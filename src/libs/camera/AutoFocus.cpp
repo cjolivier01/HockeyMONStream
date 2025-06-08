@@ -1,8 +1,13 @@
 #include "hstream/src/libs/camera/AutoFocus.h"
+#include "hstream/src/libs/camera/MediaCtl.h"
 #include "hstream/src/libs/common/utils.h"
 
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <optional>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -12,6 +17,8 @@
 #include "absl/synchronization/mutex.h"
 
 #include <opencv2/opencv.hpp>
+
+namespace fs = std::filesystem;
 
 namespace hm {
 namespace camera {
@@ -314,20 +321,19 @@ absl::Status auto_focus_cameras(
   std::vector<absl::Status> statuses(cameras.size(), absl::OkStatus());
   for (size_t i = 0; i < cameras.size(); ++i) {
     const CameraConnection& camera = cameras[i];
-    threads.at(i) = std::make_unique<std::thread>(
-        [index = i, &camera, &statuses, show, interactive, verbose, force]() {
-          statuses.at(index) = auto_focus_csi_camera(
-              camera.sensor_id,
-              camera.i2c_bus,
-              camera.width,
-              camera.height,
-              camera.fps_n,
-              camera.fps_d,
-              show,
-              interactive,
-              verbose,
-              force);
-        });
+    threads.at(i) = std::make_unique<std::thread>([index = i, &camera, &statuses, show, interactive, verbose, force]() {
+      statuses.at(index) = auto_focus_csi_camera(
+          camera.sensor_id,
+          camera.i2c_bus,
+          camera.width,
+          camera.height,
+          camera.fps_n,
+          camera.fps_d,
+          show,
+          interactive,
+          verbose,
+          force);
+    });
   }
   absl::Status status;
   for (size_t i = 0; i < threads.size(); ++i) {
@@ -338,6 +344,27 @@ absl::Status auto_focus_cameras(
     status.Update(statuses.at(i));
   }
   return status;
+}
+
+std::optional<int> findI2CBusForVideoDevice(int videoDeviceIndex) {
+  char cmd[256];
+  snprintf(cmd, sizeof(cmd), "media-ctl -d /dev/media0 -p | grep -B 5 '/dev/video%d'", videoDeviceIndex);
+
+  std::array<char, 256> buffer;
+  std::string result;
+  FILE* pipe = popen(cmd, "r");
+  if (!pipe)
+    return std::nullopt;
+
+  while (fgets(buffer.data(), buffer.size(), pipe) != nullptr) {
+    result += buffer.data();
+  }
+
+  pclose(pipe);
+
+  std::vector<MediaEntity> entities = parseMediaCtlOutput(result);
+
+  return std::nullopt;
 }
 
 } // namespace camera

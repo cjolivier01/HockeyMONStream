@@ -5,9 +5,11 @@ cc_library(
   name = "camera",
   srcs = [
     "AutoFocus.cpp",
+    "MediaCtl.cpp",
   ],
   hdrs = [
     "AutoFocus.h",
+    "MediaCtl.h",
   ],
   linkopts = [
   ],

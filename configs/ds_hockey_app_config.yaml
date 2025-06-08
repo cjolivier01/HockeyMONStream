@@ -102,12 +102,18 @@ source2:
   source-id: 2
   cuda-memory-type: 0
 
+#
+# USB Cameras (V4L2)
+#
 source7:
   enable: 0
   # 1: v4l2, 5: CSI
   type: 1
   config-file: dual_usb_webcams.yaml
 
+#
+# CSI Cameras
+#
 source8:
   enable: 0
   # 1: v4l2, 5: CSI
