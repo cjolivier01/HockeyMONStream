@@ -326,7 +326,7 @@ absl::Status auto_focus_cameras(
     bool interactive,
     bool verbose,
     bool force) {
-  // show = true;
+  show = true;
   // verbose = true;
   std::vector<std::unique_ptr<std::thread>> threads(cameras.size());
   std::vector<absl::Status> statuses(cameras.size(), absl::OkStatus());
