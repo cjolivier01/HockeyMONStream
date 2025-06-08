@@ -1539,7 +1539,7 @@ static gboolean create_common_elements(
     if (!create_hmstitcher_bin(&config->hmsticher_config, &pipeline->hmstitcher_bin)) {
       goto done;
     }
-    // Add dsfieldmask bin to instance bin
+    // Add hmstitcher bin to instance bin
     gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->hmstitcher_bin.bin);
     if (!*src_elem) {
       *src_elem = pipeline->hmstitcher_bin.bin;

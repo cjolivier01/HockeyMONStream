@@ -611,7 +611,9 @@ absl::Status Configurator::complete_configuration(bool force) {
     pipeline["hmstitcher"]["config-file"] = std::string(game_dir);
   }
 
-  pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / kRinkMaskFilename);
+  if (pipeline["ds-fieldmask"].IsDefined()) {
+    pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / kRinkMaskFilename);
+  }
 
   const std::map<std::string, std::string> map_dest_from_src{
       {"pipeline.hmplaycropper.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle"},
@@ -639,7 +641,8 @@ absl::Status Configurator::complete_configuration(bool force) {
   if (has_node(
           config_,
           "rink.scoreboard.perspective_polygon",
-          /*non_null=*/true)) {
+          /*non_null=*/true) &&
+      pipeline["hmplaycropper"].IsDefined()) {
     auto points = config_["rink"]["scoreboard"]["perspective_polygon"].as<std::vector<std::vector<int>>>();
     if (!points.empty()) {
       assert(points.size() == 4);
