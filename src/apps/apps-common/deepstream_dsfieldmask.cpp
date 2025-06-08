@@ -40,20 +40,7 @@
     gst_bin_add(GST_BIN(bin->bin), dest$);                    \
   } while (false)
 
-#undef gst_element_get_parent
-
 namespace {
-
-[[maybe_unused]] void save_pipeline(const std::string& label, GstElement* any_element) {
-  hm::GstReferencedObject<GstElement*> pipeline = hm::get_pipeline_element(any_element);
-  if (pipeline) {
-    hm::save_dot_file(pipeline.get(), GST_DEBUG_GRAPH_SHOW_ALL, label);
-  }
-}
-
-inline GstElement* gst_element_get_parent(GstElement* elem) {
-  return (GstElement*)gst_object_get_parent(GST_OBJECT_CAST(elem));
-}
 
 NvDsSinkBinSubBin* find_sink_sub_bin(int sink_id, const NvDsSinkSubBinConfig* sink_config, NvDsSinkBin* sink_bins) {
   size_t sink_bin_index = 0;
@@ -84,186 +71,6 @@ find_enabled_sink_sub_bins(const NvDsSinkSubBinConfig* sink_config, NvDsSinkBin*
   return results;
 }
 
-//---------------------------------------------------------------------
-// Helper: Find the lowest common ancestor (LCA) of two elements.
-//---------------------------------------------------------------------
-GstElement* findLowestCommonAncestor(GstElement* elem1, GstElement* elem2) {
-  std::vector<GstElement*> chain1, chain2;
-
-  for (GstElement* cur = elem1; cur; cur = gst_element_get_parent(cur)) {
-    std::cout << GST_ELEMENT_NAME(cur) << std::endl;
-    chain1.push_back(cur);
-  }
-
-  for (GstElement* cur = elem2; cur; cur = gst_element_get_parent(cur)) {
-    std::cout << GST_ELEMENT_NAME(cur) << std::endl;
-    chain2.push_back(cur);
-  }
-
-  std::reverse(chain1.begin(), chain1.end());
-  std::reverse(chain2.begin(), chain2.end());
-
-  GstElement* lca = nullptr;
-  size_t minSize = std::min(chain1.size(), chain2.size());
-  for (size_t i = 0; i < minSize; i++) {
-    if (chain1[i] == chain2[i])
-      lca = chain1[i];
-    else
-      break;
-  }
-  return lca;
-}
-
-//---------------------------------------------------------------------
-// Updated Helper: Lift a pad from an element up to just below a given
-// ancestor bin. Instead of lifting to the ancestor itself, we stop
-// when the element's parent is the ancestor, so that no ghost pad is
-// created on the least common ancestor.
-// ghost_pad_name is the name to use for the ghost pad added to the
-// immediate parent.
-//---------------------------------------------------------------------
-GstPad* liftPadToAncestor(
-    GstElement* element,
-    const char* pad_name,
-    GstElement* ancestor,
-    const std::string& ghost_pad_name) {
-  // Get the pad from the element.
-  GstPad* current_pad = gst_element_get_static_pad(element, pad_name);
-  if (!current_pad) {
-    std::cerr << "Error: Element \"" << GST_ELEMENT_NAME(element) << "\" has no pad named \"" << pad_name << "\"."
-              << std::endl;
-    return nullptr;
-  }
-
-  GstElement* current_element = element;
-  // Continue lifting until the parent is the ancestor (not the ancestor itself).
-  while (gst_element_get_parent(current_element) != ancestor) {
-    GstElement* parent = gst_element_get_parent(current_element);
-    if (!parent) {
-      std::cerr << "Error: Could not get parent of element \"" << GST_ELEMENT_NAME(current_element)
-                << "\" while lifting pad." << std::endl;
-      gst_object_unref(current_pad);
-      return nullptr;
-    }
-    // Check if the parent already has a ghost pad with the desired name.
-    GstPad* existing_pad = gst_element_get_static_pad(parent, ghost_pad_name.c_str());
-    if (existing_pad) {
-      gst_object_unref(current_pad);
-      current_pad = existing_pad;
-    } else {
-      // Create a ghost pad on the parent.
-      GstPad* ghost_pad = gst_ghost_pad_new(ghost_pad_name.c_str(), current_pad);
-      if (!ghost_pad) {
-        std::cerr << "Error: Failed to create ghost pad \"" << ghost_pad_name << "\" for element \""
-                  << GST_ELEMENT_NAME(current_element) << "\"." << std::endl;
-        gst_object_unref(current_pad);
-        return nullptr;
-      }
-      if (!gst_element_add_pad(parent, ghost_pad)) {
-        std::cerr << "Error: Failed to add ghost pad \"" << ghost_pad_name << "\" to parent \""
-                  << GST_ELEMENT_NAME(parent) << "\"." << std::endl;
-        gst_object_unref(ghost_pad);
-        gst_object_unref(current_pad);
-        return nullptr;
-      }
-      // ghost_pad becomes our new current pad.
-      current_pad = ghost_pad;
-    }
-    current_element = parent;
-  }
-  return current_pad;
-}
-} // namespace
-
-//---------------------------------------------------------------------
-// Main function: Given two GstElements and a pad name for each, and a
-// ghost pad name, link the two pads. If the two pads are not in the same
-// bin, ghost pads are created (and “lifted”) to the common ancestor so
-// that they can be linked.
-//---------------------------------------------------------------------
-bool connectElementsWithGhostPads(
-    GstElement* elem1,
-    const char* pad1_name,
-    GstElement* elem2,
-    const char* pad2_name,
-    const std::string& ghost_pad_name) {
-  if (!elem1 || !elem2) {
-    std::cerr << "Error: One or both elements are null." << std::endl;
-    return false;
-  }
-
-  // Find the lowest common ancestor (LCA) of the two elements.
-  GstElement* lca = findLowestCommonAncestor(elem1, elem2);
-  if (!lca) {
-    std::cerr << "Error: No common ancestor found between elements \"" << GST_ELEMENT_NAME(elem1) << "\" and \""
-              << GST_ELEMENT_NAME(elem2) << "\"." << std::endl;
-    return false;
-  }
-  std::cout << "Lowest common ancestor is: " << GST_ELEMENT_NAME(lca) << std::endl;
-
-  GstPad *unref_pad1 = nullptr, *unref_pad2 = nullptr;
-  GstPad* pad1 = nullptr;
-  if (gst_element_get_parent(elem1) == lca) {
-    pad1 = gst_element_get_static_pad(elem1, pad1_name);
-    if (!pad1) {
-      std::cerr << "Error: Element \"" << GST_ELEMENT_NAME(elem1) << "\" does not have pad \"" << pad1_name << "\"."
-                << std::endl;
-      return false;
-    }
-    unref_pad1 = pad1;
-  } else {
-    pad1 = liftPadToAncestor(elem1, pad1_name, lca, ghost_pad_name);
-    if (!pad1) {
-      std::cerr << "Error: Failed to lift pad \"" << pad1_name << "\" of element \"" << GST_ELEMENT_NAME(elem1)
-                << "\" to just below the common ancestor." << std::endl;
-      return false;
-    }
-  }
-
-  // Use a different ghost pad name for the second element to avoid collisions.
-  std::string ghost_pad_name2 = std::string("ghost_") + pad2_name;
-  GstPad* pad2 = nullptr;
-  if (gst_element_get_parent(elem2) == lca) {
-    pad2 = gst_element_get_static_pad(elem2, pad2_name);
-    if (!pad2) {
-      std::cerr << "Error: Element \"" << GST_ELEMENT_NAME(elem2) << "\" does not have pad \"" << pad2_name << "\"."
-                << std::endl;
-      gst_object_unref(pad1);
-      return false;
-    }
-    unref_pad2 = pad2;
-  } else {
-    pad2 = liftPadToAncestor(elem2, pad2_name, lca, ghost_pad_name2);
-    if (!pad2) {
-      std::cerr << "Error: Failed to lift pad \"" << pad2_name << "\" of element \"" << GST_ELEMENT_NAME(elem2)
-                << "\" to just below the common ancestor." << std::endl;
-      gst_object_unref(pad1);
-      return false;
-    }
-  }
-
-  // Attempt to link the pads.
-  GstPadLinkReturn link_ret = gst_pad_link(pad1, pad2);
-  if (link_ret != GST_PAD_LINK_OK) {
-    std::cerr << "Error: Failed to link pad \"" << GST_PAD_NAME(pad1) << "\" to pad \"" << GST_PAD_NAME(pad2)
-              << "\" (gst_pad_link return: " << gst_pad_link_get_name(link_ret) << ")." << std::endl;
-    save_pipeline("link_failed", elem1);
-    gst_object_unref(pad1);
-    gst_object_unref(pad2);
-    return false;
-  }
-
-  std::cout << "Successfully linked pad \"" << GST_PAD_NAME(pad1) << "\" to pad \"" << GST_PAD_NAME(pad2) << "\"."
-            << std::endl;
-  if (unref_pad1) {
-    gst_object_unref(pad1);
-  }
-  if (unref_pad2) {
-    gst_object_unref(pad2);
-  }
-  return true;
-}
-
 bool link_audio_pad_to_muxer(GstElement* postParse, GstElement* muxer, const char* audio_pad_name = "audio_%u") {
   gboolean ret = false;
   GstPad* muxer_audio_pad{nullptr};
@@ -288,7 +95,7 @@ bool link_audio_pad_to_muxer(GstElement* postParse, GstElement* muxer, const cha
 
   ghost_pad_name = std::string("audio_in_") + std::to_string(audio_in_counter);
 
-  ret = connectElementsWithGhostPads(postParse, src_pad_name, muxer, dest_pad_name, ghost_pad_name);
+  ret = hm::connectElementsWithGhostPads(postParse, src_pad_name, muxer, dest_pad_name, ghost_pad_name);
 
 done:
   if (postParse_src) {
@@ -315,6 +122,7 @@ void setup_rgb_nvvm_caps_filter(GstCaps* caps, GstElement* cap_filter) {
   gst_caps_set_features(caps, 0, feature);
   g_object_set(G_OBJECT(cap_filter), "caps", caps, NULL);
   gst_caps_unref(caps);
+}
 }
 
 gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
@@ -798,7 +606,7 @@ static void on_decode_pad_added(GstElement* element, GstPad* pad, gpointer* data
     GstPadLinkReturn ret;
     ret = gst_pad_link(pad, sinkpad);
     if (ret == GST_PAD_LINK_WRONG_HIERARCHY) {
-      if (connectElementsWithGhostPads(element, GST_PAD_NAME(pad), convert, "sink", "hmaudio_source_bin")) {
+      if (hm::connectElementsWithGhostPads(element, GST_PAD_NAME(pad), convert, "sink", "hmaudio_source_bin")) {
         std::cout << "Linked " << GST_ELEMENT_NAME(element) << "." << GST_PAD_NAME(pad) << " to "
                   << GST_ELEMENT_NAME(convert) << ".sink" << std::endl;
         ret = GST_PAD_LINK_OK;
@@ -1137,35 +945,3 @@ done:
   return ret;
 }
 
-/**
- * get_parent_pipeline:
- * @element: a GstElement which may be nested inside bins.
- *
- * Returns: (transfer full): the parent pipeline if found, or NULL otherwise.
- *
- * This function walks up the parent chain by calling gst_element_get_parent()
- * until it finds an element that is a pipeline (i.e. GST_IS_PIPELINE() is true).
- * The returned pipeline is ref'ed so the caller is responsible for unrefing it.
- */
-// GstElement* get_parent_pipeline(GstElement* element) {
-//   GstElement* current = element;
-
-//   while (current) {
-//     GstObject* parent_obj = gst_element_get_parent(current);
-//     if (!parent_obj)
-//       break;
-
-//     GstElement* parent_elem = GST_ELEMENT(parent_obj); // explicit cast
-
-//     if (GST_IS_PIPELINE(parent_elem)) {
-//       // Add a reference before returning.
-//       gst_object_ref(parent_elem);
-//       return parent_elem;
-//     }
-
-//     // Move up one level.
-//     current = parent_elem;
-//   }
-
-//   return NULL;
-// }

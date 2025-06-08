@@ -564,7 +564,7 @@ void map_key_configs(YAML::Node yaml, const std::map<std::string, std::string>& 
 }
 
 absl::Status Configurator::complete_configuration(bool force) {
-  if (!get_node_value(config_, "application.complete-configuration", false)) {
+  if (!get_node_value(config_, "pipeline.application.complete-configuration", false)) {
     return absl::OkStatus();
   }
 

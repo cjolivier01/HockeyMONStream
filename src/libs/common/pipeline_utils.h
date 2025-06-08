@@ -76,6 +76,13 @@ void waitForPipelineStop(GstElement* pipeline);
 GstCaps* setCapsDimensions(GstCaps* caps, int width, int height);
 bool getCapsDimensions(GstCaps* caps, int& width, int& height);
 
+bool connectElementsWithGhostPads(
+    GstElement* elem1,
+    const char* pad1_name,
+    GstElement* elem2,
+    const char* pad2_name,
+    const std::string& ghost_pad_name);
+
 template <typename G_OBJ>
 class GstReferencedObject {
  public:
