@@ -222,7 +222,7 @@ absl::Status PipelineApplication::configureInstances(
         return configuration_status;
       }
       YAML::Node config = app_ctx->configurator().config();
-      std::cout << config["pipeline"] << "\n";
+      // std::cout << config["pipeline"] << "\n";
       if (!config["pipeline"].IsDefined() ||
           !parse_config_yaml(
               config["pipeline"], &app_ctx->config, fs::path(app_ctx->app_config_file()).parent_path())) {
