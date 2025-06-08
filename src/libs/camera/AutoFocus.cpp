@@ -346,7 +346,7 @@ absl::Status auto_focus_cameras(
           verbose,
           force);
     });
-    threads.at(i)->join();
+    // threads.at(i)->join();
   }
   absl::Status status;
   for (size_t i = 0; i < threads.size(); ++i) {
