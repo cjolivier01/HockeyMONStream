@@ -639,7 +639,7 @@ static void on_demuxer_pad_added(GstElement* element, GstPad* pad, gpointer data
   gst_caps_unref(caps);
 }
 
-static bool link_elements(GstElement* elem1, GstElement* elem2) {
+[[maybe_unused]] static bool link_elements(GstElement* elem1, GstElement* elem2) {
   if (!gst_element_link(elem1, elem2)) {
     GstCaps *src_caps, *sink_caps;
     const char* src_caps_str = "none";
