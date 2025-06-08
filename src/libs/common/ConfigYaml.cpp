@@ -94,8 +94,6 @@ void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator, 
         }
         count++;
       }
-      // Terminate the array with -1.
-      array_ptr[count] = -1;
     } else if (!ignored) {
       if (!quiet) {
         std::cerr << "Warning: Unrecognized key in YAML: " << key << '\n';
