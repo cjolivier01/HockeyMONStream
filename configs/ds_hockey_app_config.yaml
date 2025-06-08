@@ -18,6 +18,7 @@ application:
   subtle-event-drawing: 1
   # use-nvmultiurisrcbin: 1  < -- doesnt seem to pick this up
   ##gie-kitti-output-dir=streamscl
+  complete-configuration: 1
 
 tiled-display:
   enable: 0

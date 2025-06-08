@@ -57,7 +57,6 @@ Videoinfo getVideoInfo(const std::string& videoPath);
 
 template <typename T>
 inline T get_node_value(const YAML::Node& n, const std::string& dot_string, const T& default_value) {
-  std::cout << n << std::endl;
   std::optional<YAML::Node> o_n = hm::get_node(n, dot_string);
   if (!o_n.has_value()) {
     return default_value;
