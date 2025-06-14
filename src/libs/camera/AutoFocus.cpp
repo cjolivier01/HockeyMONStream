@@ -327,37 +327,37 @@ absl::Status auto_focus_cameras(
     bool interactive,
     bool verbose,
     bool force) {
-  // show = true;
-  // verbose = true;
+  show = true;
+  verbose = true;
 
-  // std::vector<std::unique_ptr<std::thread>> threads(cameras.size());
-  // std::vector<absl::Status> statuses(cameras.size(), absl::OkStatus());
-  // for (size_t i = 0; i < cameras.size(); ++i) {
-  //   const CameraConnection& camera = cameras[i];
-  //   threads.at(i) = std::make_unique<std::thread>([index = i, &camera, &statuses, show, interactive, verbose, force]() {
-  //     setThreadName(std::string("AutoFocus-") + std::to_string(camera.sensor_id));
-  //     statuses.at(index) = auto_focus_csi_camera(
-  //         camera.sensor_id,
-  //         camera.i2c_bus,
-  //         camera.width,
-  //         camera.height,
-  //         camera.fps_n,
-  //         camera.fps_d,
-  //         show,
-  //         interactive,
-  //         verbose,
-  //         force);
-  //   });
-  //   threads.at(i)->join();
-  // }
+  std::vector<std::unique_ptr<std::thread>> threads(cameras.size());
+  std::vector<absl::Status> statuses(cameras.size(), absl::OkStatus());
+  for (size_t i = 0; i < cameras.size(); ++i) {
+    const CameraConnection& camera = cameras[i];
+    threads.at(i) = std::make_unique<std::thread>([index = i, &camera, &statuses, show, interactive, verbose, force]() {
+      setThreadName(std::string("AutoFocus-") + std::to_string(camera.sensor_id));
+      statuses.at(index) = auto_focus_csi_camera(
+          camera.sensor_id,
+          camera.i2c_bus,
+          camera.width,
+          camera.height,
+          camera.fps_n,
+          camera.fps_d,
+          show,
+          interactive,
+          verbose,
+          force);
+    });
+    threads.at(i)->join();
+  }
   absl::Status status;
-  // for (size_t i = 0; i < threads.size(); ++i) {
-  //   auto& thread = threads[i];
-  //   if (thread && thread->joinable()) {
-  //     thread->join();
-  //   }
-  //   status.Update(statuses.at(i));
-  // }
+  for (size_t i = 0; i < threads.size(); ++i) {
+    auto& thread = threads[i];
+    if (thread && thread->joinable()) {
+      thread->join();
+    }
+    status.Update(statuses.at(i));
+  }
   return status;
 }
 

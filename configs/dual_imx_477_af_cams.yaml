@@ -34,7 +34,7 @@ source6:
   # 1: v4l2, 5: CSI
   type: 5
   camera-csi-sensor-id: 0
-  camera-i2c-bus: 10
+  camera-i2c-bus: 2
 
   # Color/Brightness/etc
   # camera-wbmode: 5
