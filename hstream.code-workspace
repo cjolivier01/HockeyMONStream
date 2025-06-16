@@ -17,6 +17,9 @@
       },
       {
         "path": "../multiblend"
+      },
+      {
+        "path": "../enblend-enfuse"
       }
     ],
   "settings": {
