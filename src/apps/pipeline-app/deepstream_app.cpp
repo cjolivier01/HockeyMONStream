@@ -273,7 +273,7 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
     case GST_MESSAGE_STATE_CHANGED: {
       GstState oldstate, newstate;
       gst_message_parse_state_changed(message, &oldstate, &newstate, NULL);
-      if (GST_ELEMENT(GST_MESSAGE_SRC(message)) == appCtx->pipeline.pipeline) {
+      if (appCtx && GST_ELEMENT(GST_MESSAGE_SRC(message)) == appCtx->pipeline.pipeline) {
         switch (newstate) {
           case GST_STATE_PLAYING:
             NVGSTDS_INFO_MSG_V("Pipeline running\n");
