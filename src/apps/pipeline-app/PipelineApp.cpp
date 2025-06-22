@@ -5,6 +5,8 @@
 #include <gstreamer-1.0/gst/gstelement.h>
 #include "hstream/src/apps/apps-common/deepstream_config.h"
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
+#include "hstream/src/libs/wireless/StreamControl.h"
+
 #undef Status
 /* clang-format on */
 

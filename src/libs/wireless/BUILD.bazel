@@ -1,3 +1,5 @@
+INCLUDE_PREFIX = "hstream/src/libs/wireless"
+
 cc_library(
   name = "stream_control",
   srcs = [

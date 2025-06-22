@@ -6,6 +6,7 @@ cc_binary(
     # "//src/libs/common:mod_pipeline",
     "//src/libs/common:utils",
     "//src/libs/stitching",
+    "//src/libs/wireless:stream_control",
     "//src/apps/apps-common:deepstream_apps_common",
     "@deepstream//:deepstream_lib",
     "@hm-cupano//src/pano:canvas",
