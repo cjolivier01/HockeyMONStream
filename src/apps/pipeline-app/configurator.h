@@ -5,13 +5,13 @@
 
 #include "yaml-cpp/yaml.h"
 
-#include <filesystem>
 #include <limits>
 #include <optional>
 #include <string>
 
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
+#include "hstream/src/libs/common/filesystem.h"
 
 struct NvDsConfig;
 struct NvDsPipeline;

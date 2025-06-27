@@ -10,7 +10,6 @@ sudo apt-get install -y \
   libgstreamer-plugins-bad1.0-dev \
   gstreamer1.0-rtsp \
   libglew-dev \
-  libabsl-dev \
   libfftw3-dev \
   libv4l-dev \
   v4l-utils \

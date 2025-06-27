@@ -24,7 +24,7 @@ cc_library(
     ],
     copts = [
         "-fPIC",
-        "-std=c++20",
+        "-std=c++17",
     ],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
@@ -44,6 +44,14 @@ cc_library(
         "@opencv_linux//:opencv",
         "@yaml-cpp",
     ],
+)
+
+cc_library(
+  name = "fs",
+  srcs = [],
+  hdrs = ["filesystem.h",],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
 )
 
 cc_library(
