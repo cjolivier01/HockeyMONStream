@@ -68,6 +68,6 @@ inline std::string as_string_stream(const std::ostream& ss) {
 }
 
 //#define TO_STRING(_stuff$) (std::stringstream() << _stuff$).str()
-#define TO_STRING(_stuff$) as_string_stream(std::stringstream() << _stuff$)
+#define TO_STRING(_stuff$) ::hm::as_string_stream(std::stringstream() << _stuff$)
 
 } // namespace hm

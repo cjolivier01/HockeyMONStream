@@ -105,7 +105,9 @@ void PlotContext::plot_circle(
   circle_params.xc = center.x;
   circle_params.yc = center.y;
   circle_params.radius = radius;
+#if NVDS_VERSION_MAJOR > 6 || (NVDS_VERSION_MAJOR == 6 && NVDS_VERSION_MINOR >= 2)
   circle_params.circle_width = thickness;
+#endif
   circle_params.circle_color = to_color_params(color);
   if (fill_color.has_value()) {
     circle_params.has_bg_color = true;

@@ -6,6 +6,8 @@
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 
+#include "absl/status/status.h"
+
 #include <opencv2/opencv.hpp>
 
 #include <algorithm>
