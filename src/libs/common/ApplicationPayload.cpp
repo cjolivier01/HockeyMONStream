@@ -1,6 +1,6 @@
 #include "hstream/src/libs/common/ApplicationPayload.h"
 
-#if HAS_NVDS_CUSTOMUSERMETA
+#ifdef HAS_NVDS_CUSTOMUSERMETA
 namespace hm {
 
 const char* UserApplicationPayload::PayloadTypeName() const {
