@@ -16,12 +16,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// #include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurface.h"
 
 namespace fs = std::filesystem;
 
+#ifdef HAS_NVDS_CUSTOMUSERMETA
 using FieldMaskPayload = hm::fieldmask::FieldMaskPayload;
+#endif
 
 struct DsFieldMaskCtx {
   DsFieldMaskInitParams initParams;
@@ -287,7 +288,9 @@ absl::Status DsFieldMaskProcessFrame(
     ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
   }
   prune_detection_boxes(frame_meta, ctx, draw);
+#ifdef HAS_NVDS_CUSTOMUSERMETA
   FieldMaskPayload::create_and_add<FieldMaskPayload>(frame_meta, ctx->detection_mask_centroid, ctx->field_box);
+#endif
   ++ctx->total_frame_count;
   return absl::OkStatus();
 }
