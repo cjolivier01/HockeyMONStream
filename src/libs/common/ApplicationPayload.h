@@ -1,11 +1,18 @@
 #pragma once
 
+#include <nvds_version.h>
+
 #include <cassert>
 #include <optional>
 #include <type_traits>
 
-// #include "deepstream/sources/includes/nvdscustomusermeta.h"
 #include "nvbufsurface.h"
+
+#if NVDS_VERSION_MAJOR > 6 || (NVDS_VERSION_MAJOR == 6 && NVDS_VERSION_MINOR >= 2)
+#define HAS_NVDS_CUSTOMUSERMETA
+#endif
+
+#ifdef HAS_NVDS_CUSTOMUSERMETA
 #include "nvdscustomusermeta.h"
 
 namespace hm {
@@ -20,8 +27,7 @@ struct UserApplicationPayload {
 
   virtual UserApplicationPayload* CreateCopy() const = 0;
 
-  void add_to_frame(NVDS_CUSTOM_PAYLOAD* custom_payload,
-                    NvDsFrameMeta* frame_meta);
+  void add_to_frame(NVDS_CUSTOM_PAYLOAD* custom_payload, NvDsFrameMeta* frame_meta);
 
   template <typename T, typename... Args>
   static NVDS_CUSTOM_PAYLOAD* create(Args&&... args);
@@ -49,8 +55,7 @@ struct UserApplicationPayload {
 
 template <typename T, typename... Args>
 inline NVDS_CUSTOM_PAYLOAD* create(Args&&... args) {
-  NVDS_CUSTOM_PAYLOAD* dst_user_metadata =
-      (NVDS_CUSTOM_PAYLOAD*)g_malloc0(sizeof(struct _NVDS_CUSTOM_PAYLOAD));
+  NVDS_CUSTOM_PAYLOAD* dst_user_metadata = (NVDS_CUSTOM_PAYLOAD*)g_malloc0(sizeof(struct _NVDS_CUSTOM_PAYLOAD));
   auto payload = new T(std::forward<Args>(args)...);
   // Makes sure it's a derivative
   static_assert(std::is_base_of<UserApplicationPayload, T>::value);
@@ -62,10 +67,8 @@ inline NVDS_CUSTOM_PAYLOAD* create(Args&&... args) {
 }
 
 template <typename T, typename... Args>
-inline T* UserApplicationPayload::create_and_add(NvDsFrameMeta* frame_meta,
-                                                 Args&&... args) {
-  NVDS_CUSTOM_PAYLOAD* dst_user_metadata =
-      (NVDS_CUSTOM_PAYLOAD*)g_malloc0(sizeof(struct _NVDS_CUSTOM_PAYLOAD));
+inline T* UserApplicationPayload::create_and_add(NvDsFrameMeta* frame_meta, Args&&... args) {
+  NVDS_CUSTOM_PAYLOAD* dst_user_metadata = (NVDS_CUSTOM_PAYLOAD*)g_malloc0(sizeof(struct _NVDS_CUSTOM_PAYLOAD));
   auto payload = new T(std::forward<Args>(args)...);
   // Makes sure it's a derivative
   static_assert(std::is_base_of<UserApplicationPayload, T>::value);
@@ -79,15 +82,12 @@ inline T* UserApplicationPayload::create_and_add(NvDsFrameMeta* frame_meta,
 
 // Assumption is that there is only one of this type
 template <typename T>
-inline const T* UserApplicationPayload::get_payload(
-    const NvDsFrameMeta* frame_meta) {
+inline const T* UserApplicationPayload::get_payload(const NvDsFrameMeta* frame_meta) {
   const T* result = nullptr;
-  for (const NvDsUserMetaList* user_meta_list =
-           frame_meta->frame_user_meta_list;
-       user_meta_list != nullptr; user_meta_list = user_meta_list->next) {
+  for (const NvDsUserMetaList* user_meta_list = frame_meta->frame_user_meta_list; user_meta_list != nullptr;
+       user_meta_list = user_meta_list->next) {
     const NvDsUserMeta* user_meta = (const NvDsUserMeta*)user_meta_list->data;
-    const NVDS_CUSTOM_PAYLOAD* src_user_metadata =
-        (const NVDS_CUSTOM_PAYLOAD*)user_meta->user_meta_data;
+    const NVDS_CUSTOM_PAYLOAD* src_user_metadata = (const NVDS_CUSTOM_PAYLOAD*)user_meta->user_meta_data;
     if (src_user_metadata->payloadType == T::PayloadSubType()) {
 #ifdef NDEBUG
       // Return first one we find (assume no others of this type)
@@ -102,5 +102,6 @@ inline const T* UserApplicationPayload::get_payload(
   }
   return result;
 }
+#endif
 
-}  // namespace hm
+} // namespace hm

@@ -1,7 +1,5 @@
 #pragma once
 
-#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_interface.hpp"
-
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <gstreamer-1.0/gst/gstpad.h>
@@ -16,13 +14,16 @@
 #include "VideoPrepPriv.h"
 #include "gst-nvevent.h"
 #include "gstnvdsmeta.h"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_interface.hpp"
+#include "hstream/src/libs/common/ApplicationPayload.h"
 // #include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
-#include "nvdscustomusermeta.h"
 #include "nvdsdummyusermeta.h"
 
-// #include "includes/hmcustomlib_base.hpp"
+#ifdef HAS_NVDS_CUSTOMUSERMETA
+#include "nvdscustomusermeta.h"
+#endif
 
 namespace hm {
 
