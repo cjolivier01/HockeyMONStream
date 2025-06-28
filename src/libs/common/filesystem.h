@@ -19,15 +19,15 @@
   using error_code_t = boost::system::error_code;
 #endif
 
-// inline std::string normalize_path(const fs::path& p) {
-// #if defined(__cpp_lib_filesystem) || defined(__cpp_lib_experimental_filesystem)
-//     // std::filesystem or experimental
-//     return p.lexically_normal().string();
-// #else
-//     // Boost fallback (Boost has lexically_normal too)
-//     return p.lexically_normal().string();
-// #endif
-// }
+inline std::string normalize_path(const fs::path& p) {
+#if defined(__cpp_lib_filesystem)
+    // std::filesystem or experimental
+    return p.lexically_normal().string();
+#else
+    // Boost fallback (Boost has lexically_normal too)
+    return p.lexically_normal().string();
+#endif
+}
 
 bool getAbsoluteFilePath(const std::string& cfgFilePath, const std::string& relativeFilePath, std::string& absPathStr) {
   fs::path fileP(relativeFilePath);

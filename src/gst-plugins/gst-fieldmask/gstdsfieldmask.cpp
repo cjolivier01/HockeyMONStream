@@ -17,7 +17,13 @@
 // #include "deepstream/sources/includes/nvbufsurface.h"
 #include "gstnvdsmeta.h"
 #include "nvbufsurface.h"
-// #include "nvbufsurftransform.h"
+
+#if __has_include("nvdscustomusermeta.h")
+    #define HAS_CUSTOM_USER_META 1
+    #include "nvdscustomusermeta.h"
+#else
+    #define HAS_CUSTOM_USER_META 0
+#endif
 
 #include <glib-2.0/glib.h>
 #include <gstreamer-1.0/gst/gstinfo.h>
@@ -26,7 +32,7 @@
 #include <cassert>
 #include <string>
 
-namespace fs = std::filesystem;
+// namespace fs = std::filesystem;
 
 namespace {
 GST_DEBUG_CATEGORY_STATIC(gst_dsfieldmask_debug);
