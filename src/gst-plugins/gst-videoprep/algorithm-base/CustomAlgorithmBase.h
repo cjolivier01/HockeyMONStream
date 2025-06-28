@@ -19,7 +19,6 @@
 // #include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
-#include "nvdsdummyusermeta.h"
 
 #ifdef HAS_NVDS_CUSTOMUSERMETA
 #include "nvdscustomusermeta.h"

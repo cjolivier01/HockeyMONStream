@@ -426,6 +426,7 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
 
   if (!gst_hm_playtracker::has_play_tracker(ctx, frame.frame_meta->source_id)) {
     ctx->arena_box = hm::BBox(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
+#ifdef HAS_NVDS_CUSTOMUSERMETA
     const hm::fieldmask::FieldMaskPayload* fieldmask_payload =
         hm::fieldmask::FieldMaskPayload::get_payload<hm::fieldmask::FieldMaskPayload>(frame.frame_meta);
     if (fieldmask_payload) {
@@ -449,6 +450,7 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
           hm::utils::ColorRGB{0, 255, 128});
 #endif
     }
+#endif 
     play_tracker = gst_hm_playtracker::get_or_create_play_tracker(ctx, frame.frame_meta->source_id, ctx->arena_box);
   } else {
     play_tracker = gst_hm_playtracker::get_play_tracker(ctx, frame.frame_meta->source_id);

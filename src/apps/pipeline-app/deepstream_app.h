@@ -34,7 +34,7 @@
 #include "hstream/src/apps/apps-common/deepstream_tiled_display.h"
 #include "hstream/src/apps/apps-common/deepstream_tracker.h"
 
-#include "gst-nvdscommonconfig.h"
+// #include "gst-nvdscommonconfig.h"
 
 #include "absl/status/statusor.h"
 
