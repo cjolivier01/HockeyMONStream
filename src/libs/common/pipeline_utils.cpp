@@ -4,13 +4,13 @@
 #include <algorithm>
 #include <fstream>
 #include <iostream>
-#include <stack>
-#include <vector>
+// #include <stack>
+// #include <vector>
 
 #include <opencv2/opencv.hpp>
 
-#include "absl/strings/str_split.h"
-#include "absl/cleanup/cleanup.h"
+//#include "absl/strings/str_split.h"
+//#include "absl/cleanup/cleanup.h"
 
 #define CHECK_MESSAGE_TYPE(message, type)                      \
   do {                                                         \
@@ -551,7 +551,7 @@ bool gst_message_parse_force_pipeline_eos(GstMessage* message, bool* force_eos) 
 
 bool post_force_pipeline_eos(GstElement* element) {
   GstReferencedObject<GstElement*> pipeline = get_pipeline_element(element);
-  absl::Cleanup cl([&pipeline]() { pipeline.release(); });
+  // absl::Cleanup cl([&pipeline]() { pipeline.release(); });
   GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline.get()));
   assert(bus);
   if (bus) {

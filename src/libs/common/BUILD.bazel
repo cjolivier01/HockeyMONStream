@@ -33,6 +33,7 @@ cc_library(
         ":surface",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/cleanup",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
         "@hm-cupano//src/cuda:cuda_blend_cuda_lib",
