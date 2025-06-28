@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "hstream/src/libs/common/Surface.h"
 #include "yaml-cpp/node/node.h"
