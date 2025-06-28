@@ -4,10 +4,12 @@ build --nokeep_going --color=yes
 # build --crosstool_top=@toolchain//crosstool:toolchain
 build --copt=-fPIC
 build --copt=-std=c++17
+# build --copt=-fdiagnostics-path-format=absolute
 # Add full path to all C++ compilations
 # build --copt=-H  # or --copt=-full-path depending on your compiler
 # build --copt=-H
 # build --copt=-full-path
+build --copt=-mcpu=native
 
 # Only for C++ files
 # build --per_file_copt=.*\\.cpp$@-H

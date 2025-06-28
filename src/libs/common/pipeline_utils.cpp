@@ -9,8 +9,8 @@
 
 #include <opencv2/opencv.hpp>
 
-#include "absl/cleanup/cleanup.h"
 #include "absl/strings/str_split.h"
+#include "absl/cleanup/cleanup.h"
 
 #define CHECK_MESSAGE_TYPE(message, type)                      \
   do {                                                         \

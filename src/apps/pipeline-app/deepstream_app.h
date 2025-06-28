@@ -336,7 +336,7 @@ gboolean parse_config_yaml(
  * Please note that the returned pointer
  * will be valid only until the stream is removed.
  */
-NvDsSensorInfo* get_sensor_info(AppCtx* appCtx, guint source_id);
+// NvDsSensorInfo* get_sensor_info(AppCtx* appCtx, guint source_id);
 
 // #ifdef __cplusplus
 // }

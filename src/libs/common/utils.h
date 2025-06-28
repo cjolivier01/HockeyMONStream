@@ -8,6 +8,7 @@
 #include <iostream>
 #include <functional>
 #include <optional>
+#include <sstream>
 
 namespace hm {
 class GPrintStreamBuffer : public std::streambuf {
@@ -62,6 +63,11 @@ std::tuple<size_t, size_t> resize_to_fit(size_t origWidth, size_t origHeight, si
 
 uint64_t hhmmss_to_nanoseconds(const std::string& hhmmss_string);
 
-#define TO_STRING(_stuff$) (std::stringstream() << _stuff$).str()
+inline std::string as_string_stream(const std::ostream& ss) {
+  return static_cast<const std::stringstream&>(ss).str();
+}
+
+//#define TO_STRING(_stuff$) (std::stringstream() << _stuff$).str()
+#define TO_STRING(_stuff$) as_string_stream(std::stringstream() << _stuff$)
 
 } // namespace hm
