@@ -102,6 +102,6 @@ inline const T* UserApplicationPayload::get_payload(const NvDsFrameMeta* frame_m
   }
   return result;
 }
-#endif
 
 } // namespace hm
+#endif
