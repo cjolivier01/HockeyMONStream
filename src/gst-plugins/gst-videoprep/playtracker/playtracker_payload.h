@@ -6,6 +6,8 @@
 namespace hm {
 namespace playtracker {
 
+#ifdef HAS_USER_APPLICATION_PAYLOAD
+
 class PlayTrackerPayload : public UserApplicationPayload {
  public:
   PlayTrackerPayload(const hm::BBox& arena_box) : arena_box_(arena_box) {}
@@ -24,6 +26,8 @@ class PlayTrackerPayload : public UserApplicationPayload {
  private:
   hm::BBox arena_box_;
 };
+
+#endif // HAS_USER_APPLICATION_PAYLOAD
 
 } // namespace playtracker
 } // namespace hm

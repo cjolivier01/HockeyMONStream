@@ -15,6 +15,8 @@
 #ifdef HAS_NVDS_CUSTOMUSERMETA
 #include "nvdscustomusermeta.h"
 
+#define HAS_USER_APPLICATION_PAYLOAD
+
 namespace hm {
 
 enum HmPayloadType : long {
