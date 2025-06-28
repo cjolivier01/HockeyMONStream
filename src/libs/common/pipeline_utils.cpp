@@ -9,7 +9,7 @@
 
 #include <opencv2/opencv.hpp>
 
-//#include "absl/strings/str_split.h"
+#include "absl/strings/str_split.h"
 //#include "absl/cleanup/cleanup.h"
 
 #define CHECK_MESSAGE_TYPE(message, type)                      \
@@ -145,7 +145,10 @@ Videoinfo getVideoInfo(const std::string& videoPath) {
   info.frame_count = cap.get(cv::CAP_PROP_FRAME_COUNT);
   info.width = cap.get(cv::CAP_PROP_FRAME_WIDTH);
   info.height = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
+#if (CV_VERSION_MAJOR > 4) || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR > 5) || \
+    (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR == 5 && CV_VERSION_REVISION >= 1)
   info.video_bit_rate = cap.get(cv::CAP_PROP_BITRATE) * 1000;
+#endif
 #if 0
   info.audio_samples_per_second = cap.get(cv::CAP_PROP_AUDIO_SAMPLES_PER_SECOND);
   info.num_audio_channels = cap.get(cv::CAP_PROP_AUDIO_TOTAL_CHANNELS);

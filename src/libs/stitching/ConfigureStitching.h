@@ -1,5 +1,7 @@
 #pragma once
 
+#undef Status // XLib.h defines this, which is annoying
+
 #include <string>
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
