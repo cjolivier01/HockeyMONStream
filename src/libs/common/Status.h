@@ -1,5 +1,10 @@
 #pragma once
 
+/* clang-format off */
+#include <X11/Xlib.h>
+#undef Status
+/* clang-format on */
+
 #include "absl/status/status.h"
 #include "cupano/cuda/cudaStatus.h"
 #include "hstream/src/libs/common/utils.h"

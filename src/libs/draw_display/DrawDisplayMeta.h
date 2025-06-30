@@ -1,5 +1,10 @@
 #pragma once
 
+/* clang-format off */
+#include <X11/Xlib.h>
+#undef Status
+/* clang-format on */
+
 #include "hstream/src/libs/common/Surface.h"
 #include "hstream/src/libs/draw_display/Fonts.h"
 

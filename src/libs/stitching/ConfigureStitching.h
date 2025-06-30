@@ -1,6 +1,8 @@
 #pragma once
 
-#undef Status // XLib.h defines this, which is annoying
+/* clang-format off */
+#include "src/libs/common/Status.h"
+/* clang-format on */
 
 #include <string>
 #include "absl/status/status.h"

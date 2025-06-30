@@ -16,6 +16,9 @@
 #include "deepstream_common.h"
 #include "deepstream_secondary_gie.h"
 
+#include <nvdsinfer.h>
+
+
 #define SECONDARY_GIE_CONFIG_KEY "secondary-gie-config"
 #define SECONDARY_GIE_BIN_KEY "secondary-gie-bin"
 

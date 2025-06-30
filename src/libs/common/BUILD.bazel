@@ -17,7 +17,6 @@ cc_library(
         "PlotContext.h",
         "Process.h",
         "RenderSet.h",
-        "Status.h",
         "TempFile.h",
         "pipeline_utils.h",
         "utils.h",
@@ -29,6 +28,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        ":status",
         ":managed_object",
         ":surface",
         "@com_google_absl//absl/status:statusor",
@@ -45,6 +45,14 @@ cc_library(
         "@opencv_linux//:opencv",
         "@yaml-cpp",
     ],
+)
+
+cc_library(
+  name = "status",
+  srcs = [],
+  hdrs = ["Status.h",],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
 )
 
 cc_library(
