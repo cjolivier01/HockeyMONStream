@@ -100,6 +100,11 @@ static void s_sensor_info_callback_stream_added(AppCtx* appCtx, NvDsSensorInfo* 
   g_hash_table_insert(appCtx->sensorInfoHash, sensorInfo->source_id + (char*)NULL, sensorInfoToHash);
 }
 
+NvDsSensorInfo* get_sensor_info(AppCtx* appCtx, guint source_id) {
+  NvDsSensorInfo* sensorInfo = (NvDsSensorInfo*)g_hash_table_lookup(appCtx->sensorInfoHash, source_id + (gchar*)NULL);
+  return sensorInfo;
+}
+
 static void s_sensor_info_callback_stream_removed(AppCtx* appCtx, NvDsSensorInfo* sensorInfo) {
   NvDsSensorInfo* sensorInfoFromHash = get_sensor_info(appCtx, sensorInfo->source_id);
   /** remove the sensor info from the hash map */
@@ -107,11 +112,6 @@ static void s_sensor_info_callback_stream_removed(AppCtx* appCtx, NvDsSensorInfo
     g_hash_table_remove(appCtx->sensorInfoHash, sensorInfo->source_id + (gchar*)NULL);
     s_sensor_info_destroy(sensorInfoFromHash);
   }
-}
-
-NvDsSensorInfo* get_sensor_info(AppCtx* appCtx, guint source_id) {
-  NvDsSensorInfo* sensorInfo = (NvDsSensorInfo*)g_hash_table_lookup(appCtx->sensorInfoHash, source_id + (gchar*)NULL);
-  return sensorInfo;
 }
 
 /*Note: Below callbacks/functions defined for FPS logging,

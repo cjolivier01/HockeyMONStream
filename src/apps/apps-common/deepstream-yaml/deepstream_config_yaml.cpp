@@ -63,7 +63,7 @@ bool getAbsoluteFilePathYaml(const std::string& cfgFilePath, const std::string& 
     fs::path canonicalPath = fs::canonical(fileP, ec);
     if (ec) {
       // If the error is because the file does not exist, use the normalized path.
-#if defined(__cpp_lib_filesystem) // || defined(__cpp_lib_experimental_filesystem)
+#if defined(__cpp_lib_filesystem)
       if (ec.value() != static_cast<int>(std::errc::no_such_file_or_directory))
 #else
       if (ec.value() != static_cast<int>(boost::system::errc::no_such_file_or_directory))
@@ -89,14 +89,14 @@ bool getAbsoluteFilePathYaml(const std::string& cfgFilePath, const std::string& 
   // Construct the combined path.
   fs::path combinedPath = cfgDir / fileP;
 
-#if defined(__cpp_lib_filesystem) || defined(__cpp_lib_experimental_filesystem)
+#if defined(__cpp_lib_filesystem)
   fs::path canonicalCombined = fs::canonical(combinedPath, ec);
 #else
   fs::path canonicalCombined = fs::canonical(combinedPath, cfgDir, ec); // Boost needs base path
 #endif
 
   if (ec) {
-#if defined(__cpp_lib_filesystem) // || defined(__cpp_lib_experimental_filesystem)
+#if defined(__cpp_lib_filesystem)
     if (ec.value() == static_cast<int>(std::errc::no_such_file_or_directory))
 #else
     if (ec.value() == static_cast<int>(boost::system::errc::no_such_file_or_directory))

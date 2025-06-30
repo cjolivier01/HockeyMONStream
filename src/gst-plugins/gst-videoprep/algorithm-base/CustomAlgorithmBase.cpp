@@ -1,6 +1,8 @@
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 #include "hstream/src/libs/common/Status.h"
 
+#include <nvdsdummyusermeta.h>
+
 #include <iostream>
 #include <mutex>
 #include <ostream>

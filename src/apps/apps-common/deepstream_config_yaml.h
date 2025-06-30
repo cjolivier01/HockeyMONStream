@@ -36,6 +36,8 @@
 #include "deepstream_tiled_display.h"
 #include "deepstream_tracker.h"
 
+#include "src/libs/common/filesystem.h"
+
 #define _MAX_STR_LENGTH 1024
 
 std::vector<std::string> split_string(std::string input);

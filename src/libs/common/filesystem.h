@@ -29,27 +29,3 @@ inline std::string normalize_path(const fs::path& p) {
 #endif
 }
 
-bool getAbsoluteFilePath(const std::string& cfgFilePath, const std::string& relativeFilePath, std::string& absPathStr) {
-  fs::path fileP(relativeFilePath);
-
-  if (fileP.is_absolute()) {
-    absPathStr = normalize_path(fileP);
-    return true;
-  }
-
-  fs::path base(cfgFilePath);
-  fs::path dir = base.parent_path();
-  fs::path combinedPath = dir / fileP;
-
-#if defined(__cpp_lib_filesystem) // || defined(__cpp_lib_experimental_filesystem)
-  std::error_code ec;
-  fs::path canonicalCombined = fs::canonical(combinedPath, ec);
-  absPathStr = canonicalCombined.empty() ? normalize_path(combinedPath) : canonicalCombined.string();
-#else
-  boost::system::error_code ec;
-  fs::path canonicalCombined = fs::canonical(combinedPath, dir, ec);
-  absPathStr = canonicalCombined.empty() ? normalize_path(combinedPath) : canonicalCombined.string();
-#endif
-
-  return true;
-}
