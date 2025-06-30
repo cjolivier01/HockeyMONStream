@@ -9,7 +9,8 @@ build --copt=-std=c++17
 # build --copt=-H  # or --copt=-full-path depending on your compiler
 # build --copt=-H
 # build --copt=-full-path
-build --copt=-mcpu=native
+# build --copt=-mcpu=native
+build --copt=-mtune=native
 
 # Only for C++ files
 # build --per_file_copt=.*\\.cpp$@-H
