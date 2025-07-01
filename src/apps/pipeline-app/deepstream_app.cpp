@@ -10,7 +10,6 @@
 
 #include <cassert>
 #include <cstddef>
-#include <iostream>
 
 #include <gst/gstelementfactory.h>
 #include "gst-nvdscustommessage.h"

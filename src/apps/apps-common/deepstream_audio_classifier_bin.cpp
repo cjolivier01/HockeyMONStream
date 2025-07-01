@@ -11,10 +11,16 @@
  */
 
 #include <linux/limits.h> /* For PATH_MAX */
+#include <nvds_version.h>
+#include <nvdsinfer.h>
 #include <stdio.h>
 #include <string.h>
 #include "deepstream_audio_classifier.h"
 #include "deepstream_common.h"
+
+#if NVDS_VERSION_MAJOR > 6 || (NVDS_VERSION_MAJOR == 6 && NVDS_VERSION_MINOR >= 2)
+#define HAS_INT64
+#endif
 
 static void write_infer_output_to_file(
     GstBuffer* buf,
@@ -50,9 +56,11 @@ static void write_infer_output_to_file(
       case INT8:
         element_size = 1;
         break;
+#ifdef HAS_INT64
       case INT64:
         element_size = 8;
         break;
+#endif
     }
 
     g_strlcpy(layer_name, info->layerName, 128);

@@ -5,7 +5,7 @@
 #include "hstream/src/libs/common/utils.h"
 
 #include "deepstream_app.h"
-#include "gst-nvdscommonconfig.h"
+// #include "gst-nvdscommonconfig.h"
 
 #include "absl/status/statusor.h"
 

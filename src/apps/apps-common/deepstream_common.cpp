@@ -14,6 +14,14 @@
 #include <gst/gst.h>
 #include <string.h>
 
+#if GST_VERSION_MAJOR == 1 && GST_VERSION_MINOR < 16
+static GstPad* gst_element_request_pad_simple(GstElement* element, const gchar* name) {
+  // Use the older API
+  GstPadTemplate* templ = gst_element_class_get_pad_template(GST_ELEMENT_GET_CLASS(element), name);
+  GstPad* pad = gst_element_get_request_pad(element, templ, NULL, NULL);
+  return pad;
+}
+#endif
 gboolean link_element_to_tee_src_pad(GstElement* tee, GstElement* sinkelem) {
   gboolean ret = FALSE;
   GstPad* tee_src_pad = NULL;
