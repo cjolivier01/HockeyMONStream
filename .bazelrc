@@ -64,3 +64,4 @@ build:jetson --define=target_platform=jetson
 build:jetson --action_env=target_platform="jetson"
 build:jetson --copt=-DIS_TEGRA=1
 build:jetson --copt=-mtune=native
+build:jetson --copt=-DABSL_NO_XPACLRI

@@ -12,8 +12,8 @@
 #include <stdexcept>
 #include <vector>
 
-#include <absl/status/status.h>
 #include <pthread.h>
+#include "absl/status/status.h"
 
 namespace hm {
 
@@ -388,6 +388,7 @@ void CustomAlgorithmBase::update_meta(NvDsBatchMeta* batch_meta, uint32_t icnt) 
   }
 }
 
+#ifdef HAS_NVDS_CUSTOMUSERMETA
 void* set_metadata_ptr() {
   guint i = 0;
   guint mem_count = 0;
@@ -497,6 +498,7 @@ void update_dummy_meta_data_on_buffer(NvDsBatchMeta* batch_meta) {
     nvds_add_user_meta_to_frame(frame_meta, user_meta);
   }
 }
+#endif // HAS_NVDS_CUSTOMUSERMETA
 
 void CustomAlgorithmBase::Shutdown() {
   std::unique_lock<std::mutex> lk(m_processLock);
@@ -594,13 +596,14 @@ void CustomAlgorithmBase::OutputThread(void) {
           if (batch_meta)
             update_meta(batch_meta, icnt);
         }
+#ifdef HAS_NVDS_CUSTOMUSERMETA
         if (m_dummyMetaInsert && batch_meta) {
           update_dummy_meta_data_on_buffer(batch_meta);
         }
         if (m_fillDummyBatchMeta && batch_meta) {
           fill_dummy_batch_meta_on_buffer(batch_meta);
         }
-
+#endif // HAS_NVDS_CUSTOMUSERMETA
         assert(m_element);
         assert(cuda_stream_);
         if (in_surf && out_surf) {
