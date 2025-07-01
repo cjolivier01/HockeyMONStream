@@ -1,6 +1,7 @@
 #pragma once
 
 /* clang-format off */
+#include <cuda_egl_interop.h>
 #include <X11/Xlib.h>
 #undef Status
 /* clang-format on */
