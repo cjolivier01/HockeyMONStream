@@ -12,7 +12,7 @@
 #include <cstddef>
 
 #include <gst/gstelementfactory.h>
-#include "gst-nvdscustommessage.h"
+// #include "gst-nvdscustommessage.h"
 
 #define MAX_DISPLAY_LEN 64
 static guint demux_batch_num = 0;

@@ -135,4 +135,34 @@ bool gst_message_parse_force_pipeline_eos(GstMessage* message, bool* force_eos);
 
 bool gst_message_is_force_pipeline_eos(GstMessage* message);
 
+/* On GStreamer < 1.20, define request_pad_simple in terms of the
+ * old gst_element_get_request_pad().
+ *
+ * gst_element_get_request_pad():
+ *   GstPad* gst_element_get_request_pad(GstElement *element,
+ *                                       const gchar *name);
+ *   — retrieves a request pad by name; release with gst_element_release_request_pad() :contentReference[oaicite:0]{index=0}
+ *
+ * gst_element_request_pad_simple():
+ *   GstPad* gst_element_request_pad_simple(GstElement *element,
+ *                                          const gchar *name);
+ *   — introduced in 1.20 as a more explicit name for the same functionality :contentReference[oaicite:1]{index=1}
+ */
+#if !GST_CHECK_VERSION(1,20,0)
+
+/* Inline function shim */
+static inline GstPad *
+gst_element_request_pad_simple(GstElement *element, const gchar *name)
+{
+    return gst_element_get_request_pad(element, name);
+}
+
+/* Optional alias if you really want “get” in the name */
+// static inline GstPad *
+// gst_element_get_request_pad_simple(GstElement *element, const gchar *name)
+// {
+//     return gst_element_request_pad_simple(element, name);
+// }
+
+#endif
 } // namespace hm

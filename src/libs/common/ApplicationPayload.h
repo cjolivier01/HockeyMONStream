@@ -3,10 +3,9 @@
 #include <nvds_version.h>
 
 #include <cassert>
+#include <cstdint>
 #include <optional>
 #include <type_traits>
-
-#include "nvbufsurface.h"
 
 #if NVDS_VERSION_MAJOR > 6 || (NVDS_VERSION_MAJOR == 6 && NVDS_VERSION_MINOR >= 2)
 #define HAS_NVDS_CUSTOMUSERMETA
