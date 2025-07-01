@@ -3,7 +3,7 @@
 #include "hstream/src/apps/apps-common/deepstream_common.h"
 #include "hstream/src/apps/apps-common/deepstream_config.h"
 #include "hstream/src/apps/apps-common/deepstream_sinks.h"
-#include "hstream/src/libs/common/pipeline_utils.h"
+#include "hstream/src/libs/common/pipeline_utils.h" // For gst_element_request_pad_simple on jetson
 
 #include <glib-2.0/glib.h>
 #include <gst/gstelement.h>

@@ -149,7 +149,6 @@ bool gst_message_is_force_pipeline_eos(GstMessage* message);
  *   — introduced in 1.20 as a more explicit name for the same functionality :contentReference[oaicite:1]{index=1}
  */
 #if !GST_CHECK_VERSION(1,20,0)
-
 /* Inline function shim */
 static inline GstPad *
 gst_element_request_pad_simple(GstElement *element, const gchar *name)
