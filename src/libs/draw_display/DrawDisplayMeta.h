@@ -1,8 +1,7 @@
 #pragma once
 
 /* clang-format off */
-#include <X11/Xlib.h>
-#undef Status
+#include "src/libs/common/Status.h"
 /* clang-format on */
 
 #include "hstream/src/libs/common/Surface.h"
@@ -10,7 +9,6 @@
 
 #include <cuda_runtime.h>
 
-// #include "deepstream/sources/includes/nvdsmeta.h"
 #include "nvdsmeta.h"
 
 #include "absl/status/status.h"

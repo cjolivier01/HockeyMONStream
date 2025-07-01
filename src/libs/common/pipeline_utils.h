@@ -157,12 +157,5 @@ gst_element_request_pad_simple(GstElement *element, const gchar *name)
     return gst_element_get_request_pad(element, name);
 }
 
-/* Optional alias if you really want “get” in the name */
-// static inline GstPad *
-// gst_element_get_request_pad_simple(GstElement *element, const gchar *name)
-// {
-//     return gst_element_request_pad_simple(element, name);
-// }
-
 #endif
 } // namespace hm
