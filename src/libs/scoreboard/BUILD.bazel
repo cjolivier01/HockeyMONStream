@@ -16,6 +16,7 @@ cc_library(
     "@jetson-utils//cuda:cuda_lib",
     "@hm-cupano//src/pano:cuda_matrix",
     "@opencv_linux//:opencv",
+    "@com_google_absl//absl/synchronization",
   ],
 )
 
