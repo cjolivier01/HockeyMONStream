@@ -1,7 +1,10 @@
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
+#include "hstream/src/libs/common/ApplicationPayload.h"
 #include "hstream/src/libs/common/Status.h"
 
+#ifdef HAS_NVDS_CUSTOMUSERMETA
 #include <nvdsdummyusermeta.h>
+#endif
 
 #include <iostream>
 #include <mutex>
