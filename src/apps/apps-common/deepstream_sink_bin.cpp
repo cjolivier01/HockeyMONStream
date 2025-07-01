@@ -25,6 +25,8 @@
 #include "deepstream_common.h"
 #include "deepstream_sinks.h"
 
+#include "src/libs/common/pipeline_utils.h" // For gst_element_request_pad_simple on jetson
+
 static std::atomic<guint> next_uid = 1;
 static GstRTSPServer* server[MAX_SINK_BINS];
 static guint server_count = 0;

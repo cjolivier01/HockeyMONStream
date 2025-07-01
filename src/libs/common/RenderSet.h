@@ -1,7 +1,5 @@
 #pragma once
 
-#include <cuda_runtime.h>
-
 #include "hstream/src/libs/common/Surface.h"
 #include "jetson-utils/display/glDisplay.h"
 

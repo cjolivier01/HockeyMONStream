@@ -4,6 +4,13 @@
  */
 #pragma once
 
+/* clang-format off */
+// #include <cuda_egl_interop.h>
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#undef Status
+/* clang-format on */
+
 // #include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurface.h"
 
@@ -12,10 +19,8 @@
 #include "imageFormat.h"
 #include "nvdsmeta.h"
 
-#include <cuda_egl_interop.h>
 #include <cuda_runtime.h>
 
-#include <memory>
 #include <vector>
 
 namespace hm {
