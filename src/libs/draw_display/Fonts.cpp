@@ -21,8 +21,6 @@
 #define TO_STRING(_stuff$) (std::stringstream() << _stuff$).str()
 #endif
 
-namespace fs = std::filesystem;
-
 namespace hm {
 namespace draw_display {
 
