@@ -1,20 +1,13 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker.h"
-#include <absl/status/status.h>
 #include <cuda_runtime.h>
 #include <gst/base/gstbasetransform.h>
 #include <gst/gst.h>
 #include <gst/video/video.h>
 #include <npp.h>
 #include <cmath>
-#include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <random>
-#include <sstream>
-#include <stdexcept>
-#include <system_error>
-#include <system_error> // for std::error_code
-// #include "deepstream/sources/includes/nvbufsurface.h"
+#include "absl/status/status.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
 #include "hstream/src/libs/common/Status.h"

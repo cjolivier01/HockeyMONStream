@@ -1,16 +1,13 @@
 /* clang-format off */
-// X11 stuff must come first because it defines "Status"
-#include <X11/Xlib.h>
-#include <X11/Xutil.h>
+#include "src/libs/common/Status.h"
+/* clang-format on */
+
+#include "PipelineApp.h"
+
 #include <gstreamer-1.0/gst/gstelement.h>
 #include "hstream/src/apps/apps-common/deepstream_config.h"
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
 #include "hstream/src/libs/wireless/StreamControl.h"
-
-#undef Status
-/* clang-format on */
-
-#include "PipelineApp.h"
 
 #include <cuda_runtime_api.h>
 #include <gst/gstbin.h>
