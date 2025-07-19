@@ -101,7 +101,7 @@
         //"--options=pipeline.hmplaycropper.plot-play-tracking=1",
         //"--options=pipeline.hmplaycropper.plot-player-tracking=1",
       ],
-      "sourceMap": {q
+      "sourceMap": {
         "/proc/self/cwd/external": "${workspaceFolder}/bazel-hstream/external",
         "/proc/self/cwd": "${workspaceFolder}",
         // "~/src": "${env:HOME}/src",
