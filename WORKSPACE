@@ -90,7 +90,7 @@ git_repository(
     remote = "ssh://git@github.com/cjolivier01/jetson-utils",
 )
 
-local_repository(
+git_repository(
     name = "hm",
     branch = "colivier/hm",
     remote = "ssh://git@github.com/cjolivier01/hockeymom2",
