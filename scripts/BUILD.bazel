@@ -12,3 +12,20 @@
 #     """,
 #     visibility = ["//visibility:public"],
 # )
+
+# genrule(
+#     name = "link_hm_cupano_scripts",
+#     srcs = [
+#         "@hm-cupano//scripts:all_scripts",
+#     ],
+#     outs = [
+#         "scripts/create_control_points.py",
+#     ],
+#     cmd = """
+#       mkdir -p $(@D)
+#       for f in $(locations @hm-cupano//scripts:all_scripts); do
+#         echo ln -sf $$f scripts/$$(basename $$f)
+#       done
+#     """,
+#     visibility = ["//visibility:public"],
+# )
