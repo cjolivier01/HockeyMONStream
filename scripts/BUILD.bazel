@@ -1,0 +1,31 @@
+# genrule(
+#     name = "link_create_control_points_py",
+#     # point at the file in the external repo
+#     srcs = ["@hm-cupano//scripts:create_control_points.py"],
+#     # this is where you want it under bazel-bin
+#     outs = ["scripts/create_control_points.py"],
+#     # make sure the directory exists, then symlink
+#     cmd = """
+#       mkdir -p $(@D)
+#       echo ln -sf $(location @hm-cupano//scripts:create_control_points.py) $@
+#       ln -sf $(location @hm-cupano//scripts:create_control_points.py) $@
+#     """,
+#     visibility = ["//visibility:public"],
+# )
+
+# genrule(
+#     name = "link_hm_cupano_scripts",
+#     srcs = [
+#         "@hm-cupano//scripts:all_scripts",
+#     ],
+#     outs = [
+#         "scripts/create_control_points.py",
+#     ],
+#     cmd = """
+#       mkdir -p $(@D)
+#       for f in $(locations @hm-cupano//scripts:all_scripts); do
+#         echo ln -sf $$f scripts/$$(basename $$f)
+#       done
+#     """,
+#     visibility = ["//visibility:public"],
+# )

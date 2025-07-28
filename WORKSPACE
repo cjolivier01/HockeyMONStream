@@ -5,22 +5,6 @@ workspace(name = _workspace_name)
 load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository", "new_git_repository")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
-# local_repository(
-#     name = "com_extension_dev",
-#     # path = "external/deepstream/graph-composer/extension-dev",
-#     path = "/opt/nvidia/graph-composer/extension-dev",
-# )
-
-# local_repository(
-#     name = "deepstream",
-#     path = "external/deepstream",
-# )
-
-local_repository(
-  name = "jetson-utils",
-  path = "external/jetson-utils",
-)
-
 local_repository(
     name = "gst_plugin_dev",
     path = ".",
@@ -30,19 +14,6 @@ local_repository(
     name = "rules_compdb",
     path = "/home/colivier/src/hstream/bazel",
 )
-
-local_repository(
-    name = "hm",
-    path = "external/hm",
-)
-
-# load(
-#     "@com_extension_dev//build:graph_extension.bzl",
-#     "graph_nvidia_extension",
-#     "load_extension_dev_workspace",
-# )
-
-# load_extension_dev_workspace()
 
 git_repository(
     name = "rules_cuda",
@@ -56,21 +27,6 @@ load("@rules_cuda//cuda:repositories.bzl", "register_detected_cuda_toolchains", 
 rules_cuda_dependencies()
 
 register_detected_cuda_toolchains()
-
-# graph_nvidia_extension(
-#     name = "NvDsInterfaceExt",
-#     version = "1.6.0",
-# )
-
-# graph_nvidia_extension(
-#     name = "NvDsBaseExt",
-#     version = "1.6.0",
-# )
-
-# graph_nvidia_extension(
-#     name = "StandardExtension",
-#     version = "2.6.0",
-# )
 
 new_local_repository(
     name = "deepstream",
@@ -103,12 +59,6 @@ new_git_repository(
     remote = "https://github.com/jbeder/yaml-cpp.git",
 )
 
-# git_repository(
-#     name = "rules_python",
-#     remote = "https://github.com/bazelbuild/rules_python.git",
-#     tag = "0.1.0",  # Use the tag corresponding to version 0.1.0
-# )
-
 http_archive(
     name = "rules_python",
     sha256 = "9c6e26911a79fbf510a8f06d8eedb40f412023cf7fa6d1461def27116bff022c",
@@ -126,6 +76,27 @@ git_repository(
     strip_prefix = "",  # No need for strip_prefix since Git directly clones the repository
     tag = "v0.9.3",  # Use the tag corresponding to version 0.9.3
 )
+
+################################ HockeyMOM Sub-Modules ################################
+git_repository(
+    name = "hm-cupano",
+    commit = "613919cc5f214407f10c0acbd5d543adc8dfeb96",
+    remote = "ssh://git@github.com/cjolivier01/hm-cupano",
+)
+
+git_repository(
+    name = "jetson-utils",
+    branch = "colivier/hm",
+    remote = "ssh://git@github.com/cjolivier01/jetson-utils",
+)
+
+git_repository(
+    name = "hm",
+    branch = "colivier/hm",
+    remote = "ssh://git@github.com/cjolivier01/hockeymom2",
+)
+
+################################ Other Modules ################################
 
 # Abseil Library
 git_repository(
@@ -201,9 +172,4 @@ new_local_repository(
     name = "libsoup",
     build_file = "@//buildfiles:third_party/libsoup.BUILD",
     path = "/usr",
-)
-
-local_repository(
-  name = "hm-cupano",
-  path = "external/hm/external/hm-cupano",
 )

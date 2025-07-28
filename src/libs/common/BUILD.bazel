@@ -9,7 +9,6 @@ cc_library(
         "Process.cpp",
         "RenderSet.cpp",
         "pipeline_utils.cpp",
-        "utils.cpp",
     ],
     hdrs = [
         "ApplicationPayload.h",
@@ -19,7 +18,6 @@ cc_library(
         "RenderSet.h",
         "TempFile.h",
         "pipeline_utils.h",
-        "utils.h",
     ],
     copts = [
         "-fPIC",
@@ -28,6 +26,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        ":utils_base",
         ":status",
         ":managed_object",
         ":surface",
@@ -53,6 +52,9 @@ cc_library(
   hdrs = ["Status.h",],
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
+  deps = [
+    ":utils_base",
+  ]
 )
 
 cc_library(
@@ -61,6 +63,21 @@ cc_library(
   hdrs = ["filesystem.h",],
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "utils_base",
+    srcs = ["utils.cpp"],
+    hdrs = ["utils.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@gstreamer",
+        "@deepstream//:deepstream_lib",
+        "@hm//hockeymom/csrc/play_tracker",
+        "@hm-cupano//src/cuda:cuda_status",
+        "@jetson-utils//image:image_format",
+    ],
 )
 
 cc_library(
@@ -74,6 +91,7 @@ cc_library(
         "@deepstream//:deepstream_lib",
         "@glib",
         "@hm//hockeymom/csrc/play_tracker",
+        "@hm-cupano//src/cuda:cuda_status",
         "@jetson-utils//image:image_format",
     ],
 )
