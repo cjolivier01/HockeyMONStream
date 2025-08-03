@@ -248,7 +248,6 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
 
   for (YAML::const_iterator itr = configyml.begin(); itr != configyml.end(); ++itr) {
     std::string paramKey = itr->first.as<std::string>();
-    assert(config->dsfieldmask_config.enable == 0);
     if (paramKey == "source" || (paramKey.size() > 6 && paramKey.substr(0, 6) == "source")) {
       if (configyml[paramKey]["csv-file-path"].IsDefined()) {
         std::string csv_file_path = configyml["source"]["csv-file-path"].as<std::string>();
