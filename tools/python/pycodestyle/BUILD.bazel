@@ -1,5 +1,0 @@
-exports_files(
-    [
-        "pycodestyle_wrapper.py"
-    ]
-)
