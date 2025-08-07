@@ -23,7 +23,6 @@ cc_library(
   deps = [
     ":correlation",
     "//src/libs/common:utils",
-    # "//scripts:link_create_control_points_py",
     "@hm-cupano//src/pano:cuda_matrix",
     "@yaml-cpp",
     "@com_google_absl//absl/status:status",

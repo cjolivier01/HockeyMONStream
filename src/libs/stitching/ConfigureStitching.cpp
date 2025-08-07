@@ -438,8 +438,7 @@ absl::Status create_field_mask(const std::string& game_dir, surface::Surface sur
   HM_RETURN_IF_ERROR(save_image(surface, stitched_file));
   std::string game_id = get_game_id(stitched_file);
   std::vector<std::string> cmd{
-      get_python_interp(),
-      fs::path("scripts/find_ice_rink.py"),
+      fs::path("hmfind_ice_rink"),
       "--game-id",
       game_id,
 #ifdef __aarch64__

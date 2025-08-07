@@ -10,9 +10,6 @@
         "path": "../MIPI_Camera"
       },
       {
-        "path": "../simpleble"
-      },
-      {
         "path": "../gstreamer"
       },
       {
