@@ -401,15 +401,25 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
 #endif
 }
 
+absl::StatusOr<std::string> find_and_validate_executable(
+    const std::string& executable_name,
+    const std::string& package = "hmlib") {
+  auto hmcreate_control_points = resolve_executable(executable_name);
+  if (!hmcreate_control_points.has_value()) {
+    return absl::NotFoundError(TO_STRING(
+        "Could not find executable: \"" << executable_name << "\", did you forget to install the \"" << package
+                                        << "\" package?"));
+  }
+  return *hmcreate_control_points;
+}
+
 absl::Status create_control_points(
     const std::string& game_dir,
     surface::Surface left_surface,
     surface::Surface right_surface) {
-  constexpr const char* kExe = "hmcreate_control_points";
-  auto hmcreate_control_points = resolve_executable(kExe);
-  if (!hmcreate_control_points.has_value()) {
-    return absl::NotFoundError(
-        TO_STRING("Could not find executable: \"" << kExe << "\", did you forget to install the \"hmlib\" package?"));
+  auto exe_name_result = find_and_validate_executable("hmcreate_control_points");
+  if (!exe_name_result.ok()) {
+    return exe_name_result.status();
   }
 
   fs::path left_file = fs::path(game_dir) / "left.png";
@@ -420,7 +430,7 @@ absl::Status create_control_points(
   size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", 500UL);
 
   std::vector<std::string> cmd{
-      *hmcreate_control_points,
+      exe_name_result.value(),
       "--left",
       left_file,
       "--right",
@@ -430,8 +440,8 @@ absl::Status create_control_points(
       "--scale=0.6",
 #endif
   };
-  int exitcode = run_command(
-      cmd, "", get_environment(), [](const std::string& stderr, const std::string& stdout) -> void {
+  int exitcode =
+      run_command(cmd, "", get_environment(), [](const std::string& stderr, const std::string& stdout) -> void {
         if (!stderr.empty()) {
           std::cerr << stderr << std::endl;
         }
