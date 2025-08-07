@@ -11,9 +11,9 @@
 #include <cassert>
 #include <cstddef>
 
-#include <gst/gstelementfactory.h>
 #include <gst-nvdscommonconfig.h>
 #include <gst-nvdscustommessage.h>
+#include <gst/gstelementfactory.h>
 
 #define MAX_DISPLAY_LEN 64
 static guint demux_batch_num = 0;
@@ -1341,7 +1341,7 @@ static gboolean create_common_elements(
 
   if (config->hmplaycropper_config.enable) {
     if (!create_hmplaycropper_bin(&config->hmplaycropper_config, &pipeline->common_elements.hmplaycropper_bin)) {
-      g_print("creating streammux_split bin failed\n");
+      g_print("creating hmplaycropper bin failed\n");
       goto done;
     }
     gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->common_elements.hmplaycropper_bin.bin);
@@ -1960,8 +1960,8 @@ gboolean create_pipeline(
 
       // HMAudio after instance bin is added to the pipeline
       for (size_t hmaudio_index = 0;
-          hmaudio_index < sizeof(appCtx->config.hmaudio_config) / sizeof(appCtx->config.hmaudio_config[0]);
-          ++hmaudio_index)
+           hmaudio_index < sizeof(appCtx->config.hmaudio_config) / sizeof(appCtx->config.hmaudio_config[0]);
+           ++hmaudio_index)
         if (appCtx->config.hmaudio_config[hmaudio_index].enable) {
           // assert(i == 0); // what to do if not 0?
           if (!create_hmaudio_bin(
