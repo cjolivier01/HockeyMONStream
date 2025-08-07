@@ -405,17 +405,17 @@ absl::Status create_control_points(
     const std::string& game_dir,
     surface::Surface left_surface,
     surface::Surface right_surface) {
-  fs::path left_file = fs::path(game_dir) / "left.png";
-  fs::path right_file = fs::path(game_dir) / "right.png";
-  HM_RETURN_IF_ERROR(save_image(left_surface, left_file));
-  HM_RETURN_IF_ERROR(save_image(right_surface, right_file));
-
   constexpr const char* kExe = "hmcreate_control_points";
   auto hmcreate_control_points = resolve_executable(kExe);
   if (!hmcreate_control_points.has_value()) {
     return absl::NotFoundError(
         TO_STRING("Could not find executable: \"" << kExe << "\", did you forget to install the \"hmlib\" package?"));
   }
+
+  fs::path left_file = fs::path(game_dir) / "left.png";
+  fs::path right_file = fs::path(game_dir) / "right.png";
+  HM_RETURN_IF_ERROR(save_image(left_surface, left_file));
+  HM_RETURN_IF_ERROR(save_image(right_surface, right_file));
 
   size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", 500UL);
 
@@ -431,7 +431,7 @@ absl::Status create_control_points(
 #endif
   };
   int exitcode = run_command(
-      cmd, hm_cupano_dir, get_environment(), [](const std::string& stderr, const std::string& stdout) -> void {
+      cmd, "", get_environment(), [](const std::string& stderr, const std::string& stdout) -> void {
         if (!stderr.empty()) {
           std::cerr << stderr << std::endl;
         }
