@@ -85,4 +85,87 @@ uint64_t hhmmss_to_nanoseconds(const std::string& hhmmss_string) {
   return nanoseconds;
 }
 
+// size_t
+size_t getenv(const std::string& name, const size_t& default_value) {
+  const char* value = std::getenv(name.c_str());
+  if (value) {
+    try {
+      return std::stoul(value);
+    } catch (const std::invalid_argument&) {
+      return default_value;
+    } catch (const std::out_of_range&) {
+      return default_value;
+    }
+  }
+  return default_value;
+}
+
+// long
+long getenv(const std::string& name, const long& default_value) {
+  const char* value = std::getenv(name.c_str());
+  if (value) {
+    try {
+      return std::stol(value);
+    } catch (const std::invalid_argument&) {
+      return default_value;
+    } catch (const std::out_of_range&) {
+      return default_value;
+    }
+  }
+  return default_value;
+}
+
+// int
+int getenv(const std::string& name, const int& default_value) {
+  const char* value = std::getenv(name.c_str());
+  if (value) {
+    try {
+      return std::stoi(value);
+    } catch (const std::invalid_argument&) {
+      return default_value;
+    } catch (const std::out_of_range&) {
+      return default_value;
+    }
+  }
+  return default_value;
+}
+
+// double
+double getenv(const std::string& name, const double& default_value) {
+  const char* value = std::getenv(name.c_str());
+  if (value) {
+    try {
+      return std::stod(value);
+    } catch (const std::invalid_argument&) {
+      return default_value;
+    } catch (const std::out_of_range&) {
+      return default_value;
+    }
+  }
+  return default_value;
+}
+
+// std::string
+std::string getenv(const std::string& name, const std::string& default_value) {
+  const char* value = std::getenv(name.c_str());
+  return value ? std::string(value) : default_value;
+}
+
+// bool (accepts "1","true","yes","on","y" → true; "0","false","no","off","n" → false)
+bool getenv(const std::string& name, const bool& default_value) {
+  const char* raw = std::getenv(name.c_str());
+  if (!raw) {
+    return default_value;
+  }
+  std::string v(raw);
+  std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return std::tolower(c); });
+  static const std::vector<std::string> true_vals = {"1", "true", "yes", "on", "y"};
+  static const std::vector<std::string> false_vals = {"0", "false", "no", "off", "n"};
+  if (std::find(true_vals.begin(), true_vals.end(), v) != true_vals.end())
+    return true;
+  if (std::find(false_vals.begin(), false_vals.end(), v) != false_vals.end())
+    return false;
+  return default_value;
+}
+
 } // namespace hm

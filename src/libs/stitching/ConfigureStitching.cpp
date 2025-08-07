@@ -399,14 +399,16 @@ absl::Status create_control_points(
 
   const fs::path hm_cupano_dir;  // = fs::path("external") / "hm-cupano";
 
+  size_t max_control_points = getenv("HM_MAX_CONTROL_POINTS", 500UL);
+
   std::vector<std::string> cmd{
       get_python_interp(),
-      fs::path("scripts") / "create_control_points.py",
+      "create_control_points.py",
       "--left",
       left_file,
       "--right",
       right_file,
-      "--max-control-points=500",
+      TO_STRING("--max-control-points=" << max_control_points),
       //"--max-control-points=1500",
 #ifdef __aarch64__
       "--scale=0.6",

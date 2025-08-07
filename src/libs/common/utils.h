@@ -67,6 +67,13 @@ inline std::string as_string_stream(const std::ostream& ss) {
   return static_cast<const std::stringstream&>(ss).str();
 }
 
+size_t getenv(const std::string& name, const std::size_t& default_value);
+long getenv(const std::string& name, const long& default_value);
+int getenv(const std::string& name, const int& default_value);
+bool getenv(const std::string& name, const bool& default_value);
+std::string getenv(const std::string& name, const std::string& default_value);
+
+
 //#define TO_STRING(_stuff$) (std::stringstream() << _stuff$).str()
 #define TO_STRING(_stuff$) ::hm::as_string_stream(std::stringstream() << _stuff$)
 
