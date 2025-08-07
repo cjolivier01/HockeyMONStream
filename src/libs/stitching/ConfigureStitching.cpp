@@ -461,12 +461,18 @@ bool is_field_mask_configured(const std::string& game_dir) {
 }
 
 absl::Status create_field_mask(const std::string& game_dir, surface::Surface surface) {
+  auto exe_name_result = find_and_validate_executable("hmfind_ice_rink");
+  if (!exe_name_result.ok()) {
+    return exe_name_result.status();
+  }
+
   const fs::path hockeymom_dir = fs::path("external") / "hm";
   fs::path stitched_file = fs::path(game_dir) / "s.png";
   HM_RETURN_IF_ERROR(save_image(surface, stitched_file));
   std::string game_id = get_game_id(stitched_file);
+
   std::vector<std::string> cmd{
-      fs::path("hmfind_ice_rink"),
+      fs::path(exe_name_result.value()),
       "--game-id",
       game_id,
 #ifdef __aarch64__
@@ -477,10 +483,7 @@ absl::Status create_field_mask(const std::string& game_dir, surface::Surface sur
   };
 
   int exitcode = run_command(
-      cmd,
-      hockeymom_dir,
-      python_env(".", get_environment()),
-      [](const std::string& stderr, const std::string& stdout) -> void {
+      cmd, "", python_env(".", get_environment()), [](const std::string& stderr, const std::string& stdout) -> void {
         if (!stderr.empty()) {
           std::cerr << stderr << std::endl;
         }
