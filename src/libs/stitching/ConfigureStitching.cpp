@@ -466,7 +466,6 @@ absl::Status create_field_mask(const std::string& game_dir, surface::Surface sur
     return exe_name_result.status();
   }
 
-  const fs::path hockeymom_dir = fs::path("external") / "hm";
   fs::path stitched_file = fs::path(game_dir) / "s.png";
   HM_RETURN_IF_ERROR(save_image(surface, stitched_file));
   std::string game_id = get_game_id(stitched_file);
@@ -499,16 +498,19 @@ absl::Status create_field_mask(const std::string& game_dir, surface::Surface sur
 }
 
 absl::Status configure_orientation(const std::string& game_dir) {
-  const fs::path hockeymom_dir = fs::path("external") / "hm";
+  auto exe_name_result = find_and_validate_executable("hmorientation");
+  if (!exe_name_result.ok()) {
+    return exe_name_result.status();
+  }
+
   std::string game_id = get_game_id(game_dir);
   std::vector<std::string> cmd{
-      get_python_interp(),
-      fs::path("hmlib/orientation.py"),
+      fs::path("hmorientation"),
       "--game-id",
       game_id,
   };
   auto env = python_env(".", get_environment());
-  int exitcode = run_command(cmd, hockeymom_dir, env, [](const std::string& stderr, const std::string& stdout) -> void {
+  int exitcode = run_command(cmd, "", env, [](const std::string& stderr, const std::string& stdout) -> void {
     if (!stderr.empty()) {
       std::cerr << stderr << std::endl;
     }
