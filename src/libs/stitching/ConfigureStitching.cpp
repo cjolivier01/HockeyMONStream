@@ -301,6 +301,19 @@ std::string get_python_interp() {
   return *python_exec;
 }
 
+std::optional<std::string> resolve_executable(const std::string& executable) {
+  if (executable.empty()) {
+    return std::nullopt;
+  }
+  if (executable[0] == '/' || executable[0] == '\\') {
+    if (!std::filesystem::exists(executable)) {
+      return std::nullopt;
+    }
+    return executable;
+  }
+  return findExecutable(executable, {"PATH"});
+}
+
 std::map<std::string, std::string> python_env(const std::string& add_dir, std::map<std::string, std::string> prev) {
   std::string pythonpath = prev["PYTHONPATH"];
   const char* p = getenv("PYTHONPATH");
@@ -397,18 +410,22 @@ absl::Status create_control_points(
   HM_RETURN_IF_ERROR(save_image(left_surface, left_file));
   HM_RETURN_IF_ERROR(save_image(right_surface, right_file));
 
-  const fs::path hm_cupano_dir;  // = fs::path("external") / "hm-cupano";
+  constexpr const char* kExe = "hmcreate_control_points";
+  auto hmcreate_control_points = resolve_executable(kExe);
+  if (!hmcreate_control_points.has_value()) {
+    return absl::NotFoundError(
+        TO_STRING("Could not find executable: \"" << kExe << "\", did you forget to install the \"hmlib\" package?"));
+  }
 
   size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", 500UL);
 
   std::vector<std::string> cmd{
-      "hmcreate_control_points",
+      *hmcreate_control_points,
       "--left",
       left_file,
       "--right",
       right_file,
       TO_STRING("--max-control-points=" << max_control_points),
-      //"--max-control-points=1500",
 #ifdef __aarch64__
       "--scale=0.6",
 #endif
