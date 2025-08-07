@@ -85,6 +85,8 @@ uint64_t hhmmss_to_nanoseconds(const std::string& hhmmss_string) {
   return nanoseconds;
 }
 
+namespace utils {
+
 // size_t
 size_t getenv(const std::string& name, const size_t& default_value) {
   const char* value = std::getenv(name.c_str());
@@ -167,5 +169,6 @@ bool getenv(const std::string& name, const bool& default_value) {
     return false;
   return default_value;
 }
+} // namespace utils
 
 } // namespace hm
