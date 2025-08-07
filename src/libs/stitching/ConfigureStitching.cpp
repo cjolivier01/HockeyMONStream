@@ -397,7 +397,7 @@ absl::Status create_control_points(
   HM_RETURN_IF_ERROR(save_image(left_surface, left_file));
   HM_RETURN_IF_ERROR(save_image(right_surface, right_file));
 
-  const fs::path hm_cupano_dir = fs::path("external") / "hm-cupano";
+  const fs::path hm_cupano_dir;  // = fs::path("external") / "hm-cupano";
 
   std::vector<std::string> cmd{
       get_python_interp(),
@@ -422,7 +422,7 @@ absl::Status create_control_points(
         }
       });
   if (exitcode) {
-    return absl::InternalError("Failed to create control points");
+    return absl::InternalError(TO_STRING("Failed to create control points: " << strerror(errno)));
   }
 
   return absl::OkStatus();

@@ -279,28 +279,14 @@ absl::Status StitcherPriv::GenerateOutput(
         if (!configure_only_) {
           return absl::FailedPreconditionError("Stitching is not configured");
         } else {
-#if 1
           absl::Status configure_status =
               stitching::configure_stitching(config_file_, incoming_surface_left, incoming_surface_right);
           if (!configure_status.ok()) {
+            std::cerr << configure_status << "\n" << std::flush;
             return to_status(CudaStatus(
                 cudaError_t::cudaErrorLaunchFailure, (std::stringstream() << configure_status.message()).str()));
           }
-#endif
-          // we want this
         }
-        // trigger_pipeline_stop(GST_ELEMENT(m_element));
-        // return absl::CancelledError("Stitching has been configured");
-        // Signal pipeline that we wish to EOS
-        // assert(m_element);
-        // GstReferencedObject<GstElement*> pipeline = get_pipeline_element(GST_ELEMENT(m_element));
-        // if (pipeline) {
-        // std::cout << "Stitcher is sending the pipeline an EOS event" << std::endl;
-        // gst_element_send_event(pipeline, gst_event_new_eos());
-        // trigger_pipeline_stop(pipeline);
-        // pipeline.release();
-        // std::cout << "Stitcher sent the pipeline an EOS event" << std::endl;
-        //}
         // return absl::CancelledError("Stitching has been configured");
         if (!post_force_pipeline_eos(GST_ELEMENT(m_element))) {
           std::cerr << "Failed to post pipeline EOS, returning an error to stop the pipeline";
