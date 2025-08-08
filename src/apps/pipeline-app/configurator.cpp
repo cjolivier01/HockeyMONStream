@@ -316,6 +316,370 @@ std::optional<YAML::Node> maybe_get_config_file(const YAML::Node& yaml_node, con
 
 } // namespace
 
+// Forward declaration for helper defined later in this file
+void map_key_configs(YAML::Node yaml, const std::map<std::string, std::string>& map_dest_from_src);
+
+void Configurator::apply_gpu_override(YAML::Node& pipeline) {
+  if (override_gpu_id_ != kUseConfigFileGpu) {
+    pipeline["application"]["global-gpu-id"] = override_gpu_id_;
+    set_all_field_values(pipeline, "gpu-id", std::to_string(override_gpu_id_), /*only_if_exists=*/true);
+  }
+}
+
+absl::Status Configurator::setup_stitcher_and_masks(
+    YAML::Node& pipeline, const fs::path& game_dir, bool force, bool& has_hmstitcher) {
+  has_hmstitcher = get_node(pipeline, "hmstitcher")->IsDefined();
+  if (has_hmstitcher) {
+    if (get_node_value(pipeline, "hmstitcher.enable", FALSE) &&
+        get_node_value(pipeline, "hmstitcher.configure-only", FALSE)) {
+      bool is_configured;
+      HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(game_dir));
+      if (is_configured && !force) {
+        return absl::CancelledError("Stitching is already configured.");
+      }
+    }
+    pipeline["hmstitcher"]["config-file"] = std::string(game_dir);
+  }
+  if (pipeline["ds-fieldmask"].IsDefined()) {
+    pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / kRinkMaskFilename);
+  }
+  return absl::OkStatus();
+}
+
+void Configurator::map_common_config_keys() {
+  const std::map<std::string, std::string> map_dest_from_src{
+      {"pipeline.hmplaycropper.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle"},
+      {"pipeline.ds-playtracker.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle"},
+  };
+  map_key_configs(config_, map_dest_from_src);
+}
+
+void Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
+  if (has_node(config_, "rink.scoreboard.perspective_polygon", /*non_null=*/true) &&
+      pipeline["hmplaycropper"].IsDefined()) {
+    auto points = config_["rink"]["scoreboard"]["perspective_polygon"].as<std::vector<std::vector<int>>>();
+    if (!points.empty()) {
+      assert(points.size() == 4);
+      std::stringstream ss;
+      for (size_t i = 0, n = points.size(); i < n; ++i) {
+        if (i) ss << ',';
+        assert(points[i].size() == 2);
+        ss << std::to_string(points[i].at(0)) << ',' << points[i].at(1);
+      }
+      pipeline["hmplaycropper"]["scoreboard-perspective-polygon"] = ss.str();
+    }
+  }
+}
+
+absl::Status Configurator::gather_stitching_videos(
+    const fs::path& game_dir,
+    bool force,
+    std::vector<std::string>& left_files,
+    std::vector<std::string>& right_files,
+    YAML::Node& offsets) {
+  // Prefer explicit config unless forcing
+  if (!force) {
+    if (has_node(config_, "game.videos.left", /*non_null=*/true)) {
+      left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
+    }
+    if (has_node(config_, "game.videos.right", /*non_null=*/true)) {
+      right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
+    }
+  }
+
+  stitching::VideosDict videos;
+  HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir));
+
+  if (left_files.empty() && right_files.empty() && !videos.count("left") && !videos.count("right")) {
+    HM_RETURN_IF_ERROR(stitching::configure_orientation(game_dir));
+    overlay_config("", get_private_config_file_name(game_id_));
+    private_config_["game"]["videos"]["left"] = config_["game"]["videos"]["left"];
+    private_config_["game"]["videos"]["right"] = config_["game"]["videos"]["right"];
+    left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
+    right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
+  }
+
+  if (left_files.empty() && right_files.empty() && videos.count("left") && videos.count("right")) {
+    const stitching::VideoChapter& left_chapter = videos.at("left");
+    const stitching::VideoChapter& right_chapter = videos.at("right");
+    if (!left_chapter.empty()) {
+      for (const auto& item : left_chapter) {
+        if (!right_chapter.empty()) {
+          const int chapter = item.first;
+          if (!right_chapter.count(chapter)) {
+            std::cerr << "Right vids are missing chapter " << chapter << ", skipping..." << std::endl;
+            continue;
+          }
+        }
+        left_files.emplace_back(item.second);
+      }
+    }
+    if (!right_chapter.empty()) {
+      for (const auto& item : right_chapter) {
+        if (!left_chapter.empty()) {
+          const int chapter = item.first;
+          if (!left_chapter.count(chapter)) {
+            std::cerr << "Left vids are missing chapter " << chapter << ", skipping..." << std::endl;
+            continue;
+          }
+        }
+        right_files.emplace_back(item.second);
+      }
+    }
+    if (!left_files.empty() && !right_files.empty()) {
+      private_config_["game"]["videos"]["left"] = left_files;
+      private_config_["game"]["videos"]["right"] = right_files;
+      auto spp_status = save_private_config(private_config_);
+      if (!spp_status.ok()) {
+        std::cerr << "Warnings: failed to save private config: " << spp_status << std::endl;
+      }
+    }
+  }
+
+  if (!left_files.empty() && !right_files.empty()) {
+    if (!has_node(config_, "game.stitching.frame_offsets.left", /*non_null=*/true) || force) {
+      stitching::Synchronization sync;
+      HM_ASSIGN_OR_RETURN(sync, stitching::calculate_stitching_synchronization(game_dir / left_files[0], game_dir / right_files[0]));
+      offsets["left"] = std::to_string(sync.video1_frame_offset);
+      offsets["right"] = std::to_string(sync.video2_frame_offset);
+      private_config_["game"]["stitching"]["frame_offsets"]["left"] = std::to_string(sync.video1_frame_offset);
+      private_config_["game"]["stitching"]["frame_offsets"]["right"] = std::to_string(sync.video2_frame_offset);
+      auto spp_status = save_private_config(private_config_);
+      if (!spp_status.ok()) {
+        std::cerr << "Warnings: failed to save private config: " << spp_status << std::endl;
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+
+void Configurator::apply_frame_offsets_and_sizes(
+    const std::vector<std::string>& left_files,
+    const std::vector<std::string>& right_files,
+    const YAML::Node& offsets,
+    size_t& ww,
+    size_t& hh,
+    size_t& area,
+    YAML::Node& pipeline) {
+  if (!left_files.empty()) {
+    Videoinfo left_info = getVideoInfo(file_maybe_in_game_dir(left_files[0]));
+    double lfo = offsets["left"].as<double>(); // decimal frames
+    set_stream_offsets_ |= lfo != 0.0;
+    pipeline["hmstitcher"]["left-frame-offset-ns"] = std::to_string(size_t(lfo / left_info.fps * GST_SECOND));
+    area = left_info.width * left_info.height;
+    ww = left_info.width;
+    hh = left_info.height;
+  }
+  if (!right_files.empty()) {
+    Videoinfo right_info = getVideoInfo(file_maybe_in_game_dir(right_files[0]));
+    double rfo = offsets["right"].as<double>(); // decimal frames
+    set_stream_offsets_ |= rfo != 0.0;
+    pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / right_info.fps * GST_SECOND));
+    if (right_info.width * right_info.height > (long)area) {
+      ww = right_info.width;
+      hh = right_info.height;
+    }
+    if (rfo == 0.0) {
+      const double lfo = offsets["left"].as<double>();
+      if (lfo != 0.0) {
+        replace_sink_source_id(pipeline, 0, 1);
+      }
+    }
+  }
+}
+
+std::tuple<long,long> Configurator::scaled_for_udp(bool is_udp_output, long width, long height) const {
+  if (!is_udp_output) return std::make_tuple(width, height);
+  return resize_to_fit(width, height, kMaxUdpStreamingWidth, kMaxUdpStreamingHeight);
+}
+
+absl::Status Configurator::set_output_dimensions(
+    YAML::Node& pipeline,
+    bool is_camera_source,
+    const std::map<int, YAML::Node>& camera_sources,
+    const std::vector<std::string>& left_files,
+    const std::vector<std::string>& right_files,
+    bool has_hmstitcher,
+    const fs::path& game_dir,
+    size_t& ww,
+    size_t& hh,
+    size_t& area,
+    size_t& num_video_sources) {
+  const bool is_udp_output = has_enabled_rtsp_sink(pipeline);
+  auto maybe_scale_down = [this, is_udp_output](long width, long height) { return this->scaled_for_udp(is_udp_output, width, height); };
+
+  if (is_camera_source) {
+    size_t cam_count = 0;
+    for (const auto& cam_src_item : camera_sources) {
+      if (!cam_count) {
+        ww = cam_src_item.second["camera-width"].as<int>();
+        hh = cam_src_item.second["camera-height"].as<int>();
+        area = ww * hh;
+      } else {
+        size_t w2 = cam_src_item.second["camera-width"].as<int>();
+        size_t h2 = cam_src_item.second["camera-height"].as<int>();
+        if (w2 != ww || h2 != hh) {
+          return absl::InvalidArgumentError("Camera widths and heights differ");
+        }
+      }
+      ++num_video_sources;
+    }
+    auto wh_tuple = maybe_scale_down(ww, hh);
+    pipeline["hmplaycropper"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
+    pipeline["hmplaycropper"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
+  } else if (!left_files.empty() && !right_files.empty() && has_hmstitcher) {
+    auto canvas_size_result = get_canvas_size(game_dir);
+    if (canvas_size_result) {
+      size_t canvas_width = std::get<0>(*canvas_size_result);
+      size_t canvas_height = std::get<1>(*canvas_size_result);
+      pipeline["hmstitcher"]["output-width"] = std::to_string(canvas_width);
+      pipeline["hmstitcher"]["output-height"] = std::to_string(canvas_height);
+      constexpr double ar = 16.0 / 9.0;
+      auto wh_tuple = maybe_scale_down(static_cast<long>(ar * canvas_height), canvas_height);
+      pipeline["hmplaycropper"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
+      pipeline["hmplaycropper"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
+    } else {
+      bool configure_only = get_node_value(pipeline, "hmstitcher.configure-only", false);
+      if (!configure_only) {
+        return absl::FailedPreconditionError(
+            "Unable to determine the canvas size and stitcher is not set to configure-only");
+      }
+      std::cout << "The stitched canvas size is not yet known, will determine in the ensuing pipeline run" << std::endl;
+    }
+  } else {
+    // If we don't have left/right files, we may still know dimensions from a stitched output
+    if (ww == 0 || hh == 0) {
+      stitching::VideosDict videos;
+      HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir));
+      if (videos.count("stitched")) {
+        const auto& stitched_chapters = videos.at("stitched");
+        bool all_exist = true;
+        for (const auto& stitched_item : stitched_chapters) {
+          if (!fs::exists(stitched_item.second)) { all_exist = false; break; }
+        }
+        if (all_exist && !stitched_chapters.empty()) {
+          auto stitched_file = stitched_chapters.begin()->second;
+          Videoinfo stitched_info = getVideoInfo(file_maybe_in_game_dir(stitched_file));
+          ww = stitched_info.width;
+          hh = stitched_info.height;
+          area = ww * hh;
+          num_video_sources = 1;
+        }
+      }
+    }
+    auto wh_tuple = maybe_scale_down(ww, hh);
+    pipeline["hmplaycropper"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
+    pipeline["hmplaycropper"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
+  }
+
+  if (area) {
+    pipeline["streammux"]["width"] = std::to_string(ww);
+    pipeline["streammux"]["height"] = std::to_string(hh);
+  }
+  return absl::OkStatus();
+}
+
+void Configurator::configure_audio(
+    YAML::Node& pipeline,
+    const std::vector<std::string>& left_files,
+    const std::vector<std::string>& right_files,
+    const YAML::Node& offsets,
+    size_t& num_video_sources) {
+  std::string possible_audio_uri;
+  size_t audio_source_id = std::numeric_limits<size_t>::max();
+  static const std::string ff = "file://";
+
+  if (!left_files.empty() && !right_files.empty()) {
+    auto src0 = pipeline["source0"];
+    auto src1 = pipeline["source1"];
+    if (src0.IsDefined() && as_int(src0[kEnableFlagField]) && as_int(src0["type"]) == NV_DS_SOURCE_URI_MULTIPLE &&
+        src1.IsDefined() && as_int(src1[kEnableFlagField]) && as_int(src1["type"]) == NV_DS_SOURCE_URI_MULTIPLE) {
+      src0["uri"] = ff + file_maybe_in_game_dir(left_files[0]);
+      src1["uri"] = ff + file_maybe_in_game_dir(right_files[0]);
+      if (offsets["left"].as<double>() == 0) {
+        possible_audio_uri = src0["uri"].as<std::string>();
+        audio_source_id = src0["source-id"].as<int>();
+      } else {
+        assert(offsets["right"].as<double>() == 0);
+        possible_audio_uri = src1["uri"].as<std::string>();
+        audio_source_id = src1["source-id"].as<int>();
+      }
+      num_video_sources += 2;
+    } else if (src0.IsDefined() && get_node_value<int>(src0, kEnableFlagField, false)) {
+      possible_audio_uri = get_node_value<std::string>(src0, "uri", "");
+      audio_source_id = src0["source-id"].as<int>();
+    } else {
+      assert(false);
+    }
+  } else {
+    auto src0 = pipeline["source0"];
+    if (is_enabled(config_, "pipeline.source0") && as_int(src0["type"]) == NvDsSourceType::NV_DS_SOURCE_URI_MULTIPLE) {
+      if (!src0["uri"].IsDefined() || src0["uri"].IsNull() || src0["uri"].as<std::string>().empty()) {
+        std::string stiched_output = file_maybe_in_game_dir("stitched_output-with-audio.mp4");
+        if (std::filesystem::exists(stiched_output)) {
+          src0["uri"] = ff + stiched_output;
+          disable_source_types({NvDsSourceType::NV_DS_SOURCE_URI, NvDsSourceType::NV_DS_SOURCE_URI_MULTIPLE});
+          src0[kEnableFlagField] = "1";
+        }
+      }
+      if (src0["uri"].IsDefined() && !src0["uri"].IsNull()) {
+        possible_audio_uri = src0["uri"].as<std::string>();
+      }
+      ++num_video_sources;
+    }
+  }
+
+  if (num_video_sources < 2 && get_node(pipeline, "hmstitcher")->IsDefined()) {
+    pipeline["hmstitcher"][kEnableFlagField] = "0";
+  }
+
+  if (!possible_audio_uri.empty() || audio_source_id != std::numeric_limits<size_t>::max()) {
+    std::optional<YAML::Node> audio_uri_opt = get_enabled_audio_uri(pipeline);
+    if (audio_uri_opt.has_value()) {
+      YAML::Node audio_uri = *audio_uri_opt;
+      if (!audio_uri["uri"].IsDefined() || !is_valid_yaml_value_string(audio_uri["uri"].as<std::string>())) {
+        audio_uri["uri"] = possible_audio_uri;
+      }
+    }
+    for (size_t hmaudio_index = 0; hmaudio_index < INT_MAX; ++hmaudio_index) {
+      std::string hmaudio_name = "hmaudio" + std::to_string(hmaudio_index);
+      if (!pipeline[hmaudio_name].IsDefined()) break;
+      audio_uri_opt = get_node_if_enabled(pipeline, hmaudio_name);
+      if (!audio_uri_opt) continue;
+      if (audio_source_id != std::numeric_limits<size_t>::max() && (*audio_uri_opt)["src"].as<int>() == SRC_SOURCE_BIN) {
+        if (!(*audio_uri_opt)["source-id"].IsDefined() || !is_valid_yaml_value_string((*audio_uri_opt)["source-id"].as<std::string>())) {
+          (*audio_uri_opt)["source-id"] = audio_source_id;
+        }
+      } else {
+        YAML::Node audio_uri = *audio_uri_opt;
+        const std::string key = "audio-location";
+        const bool is_defined = audio_uri[key].IsDefined();
+        if (!is_defined || !is_valid_yaml_value_string(audio_uri[key].as<std::string>())) {
+          audio_uri[key] = possible_audio_uri;
+        }
+      }
+    }
+  }
+}
+
+void Configurator::log_enabled_bins(const YAML::Node& pipeline) const {
+  std::set<std::string> all_enabled;
+  for (const auto& item : pipeline) {
+    std::string key = item.first.as<std::string>();
+    if (is_enabled(pipeline[key])) {
+      all_enabled.emplace(key);
+    }
+  }
+  if (!all_enabled.empty()) {
+    std::stringstream ss;
+    ss << "Enabled bins: \n";
+    for (const std::string& s : all_enabled) {
+      ss << "  " << s << '\n';
+    }
+    std::cout << ss.str() << std::flush;
+  }
+}
+
 Configurator::Configurator(const std::string& game_id, const std::string& config_root_dir, int override_gpu_id)
     : game_id_(game_id), config_root_dir_(config_root_dir), override_gpu_id_(override_gpu_id) {
   // Constructor
@@ -573,14 +937,7 @@ absl::Status Configurator::complete_configuration(bool force) {
   assert(pipeline.IsDefined());
   absl::Status status;
 
-  if (override_gpu_id_ != kUseConfigFileGpu) {
-    pipeline["application"]["global-gpu-id"] = override_gpu_id_;
-    set_all_field_values(
-        pipeline,
-        "gpu-id",
-        std::to_string(override_gpu_id_),
-        /*only_if_exists=*/true);
-  }
+  apply_gpu_override(pipeline);
 
   if (game_id_.empty()) {
     // return absl::InvalidArgumentError("No game id specified");
@@ -595,32 +952,10 @@ absl::Status Configurator::complete_configuration(bool force) {
   // Stitching config mask config dir
   fs::path game_dir = get_game_dir(game_id_);
 
-  // If no 'hmstitcher' in pipeline config, then don;t even consider it
-  const bool pipeline_has_hmstitcher = get_node(pipeline, "hmstitcher")->IsDefined();
+  bool pipeline_has_hmstitcher = false;
+  HM_RETURN_IF_ERROR(setup_stitcher_and_masks(pipeline, game_dir, force, pipeline_has_hmstitcher));
 
-  if (pipeline_has_hmstitcher) {
-    // Quick out if we want to configure stitching and it's already configured
-    if (get_node_value(pipeline, "hmstitcher.enable", FALSE) &&
-        get_node_value(pipeline, "hmstitcher.configure-only", FALSE)) {
-      bool is_configured;
-      HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(game_dir));
-      if (is_configured && !force) {
-        return absl::CancelledError("Stitching is already configured.");
-      }
-    }
-
-    pipeline["hmstitcher"]["config-file"] = std::string(game_dir);
-  }
-
-  if (pipeline["ds-fieldmask"].IsDefined()) {
-    pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / kRinkMaskFilename);
-  }
-
-  const std::map<std::string, std::string> map_dest_from_src{
-      {"pipeline.hmplaycropper.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle"},
-      {"pipeline.ds-playtracker.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle"},
-  };
-  map_key_configs(config_, map_dest_from_src);
+  map_common_config_keys();
 
   // Live box mappings
   const std::map<std::string, std::string> live_box_map_dest_from_src{
@@ -638,27 +973,7 @@ absl::Status Configurator::complete_configuration(bool force) {
   // "pipeline.ds-playtracker.dynamic-acceleration-scaling",
   // "rink.camera.dynamic_acceleration_scaling");
 
-  // Scoreboard perspective polygon, if there
-  if (has_node(
-          config_,
-          "rink.scoreboard.perspective_polygon",
-          /*non_null=*/true) &&
-      pipeline["hmplaycropper"].IsDefined()) {
-    auto points = config_["rink"]["scoreboard"]["perspective_polygon"].as<std::vector<std::vector<int>>>();
-    if (!points.empty()) {
-      assert(points.size() == 4);
-      std::stringstream ss;
-      for (size_t i = 0, n = points.size(); i < n; ++i) {
-        if (i) {
-          ss << ',';
-        }
-        assert(points[i].size() == 2);
-        ss << std::to_string(points[i].at(0)) << ',' << points[i].at(1);
-      }
-      // std::cout << ss.str() << std::endl;
-      pipeline["hmplaycropper"]["scoreboard-perspective-polygon"] = ss.str();
-    }
-  }
+  apply_scoreboard_perspective(pipeline);
 
   YAML::Node offsets = config_["game"]["stitching"]["frame_offsets"];
 
@@ -670,320 +985,18 @@ absl::Status Configurator::complete_configuration(bool force) {
   std::vector<std::string> right_files;
 
   if (!is_camera_source) {
-    std::string stitched_file;
-
-    stitching::VideosDict videos;
-    HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir));
-
-    if (videos.count("stitched")) {
-      assert(videos.at("stitched").size() == 1);
-      bool all_exist = false;
-      const auto& stitched_chapters = videos.at("stitched");
-      for (const auto& stitched_item : stitched_chapters) {
-        if (fs::exists(stitched_item.second)) {
-          all_exist = true;
-        } else {
-          all_exist = false;
-          break;
-        }
-      }
-      if (all_exist) {
-        // We assume all files are same resolution/fps
-        stitched_file = stitched_chapters.begin()->second;
-        num_video_sources = 1;
-        Videoinfo stitched_info = getVideoInfo(file_maybe_in_game_dir(stitched_file));
-        ww = stitched_info.width;
-        hh = stitched_info.height;
-        area = ww * hh;
-      }
-    }
-
-    if (stitched_file.empty()) {
-      // Stitching LFO, RFO
-
-      if (!force) {
-        if (has_node(config_, "game.videos.left", /*non_null=*/true)) {
-          left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
-        }
-        if (has_node(config_, "game.videos.right", /*non_null=*/true)) {
-          right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
-        }
-      }
-
-      if (left_files.empty() && right_files.empty() && !videos.count("left") && !videos.count("right")) {
-        HM_RETURN_IF_ERROR(stitching::configure_orientation(game_dir));
-        overlay_config("", get_private_config_file_name(game_id_));
-        // std::cout << config_["game"]["videos"] << std::endl;
-        private_config_["game"]["videos"]["left"] = config_["game"]["videos"]["left"];
-        private_config_["game"]["videos"]["right"] = config_["game"]["videos"]["right"];
-        left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
-        right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
-      }
-
-      if (left_files.empty() && right_files.empty() && videos.count("left") && videos.count("right")) {
-        const stitching::VideoChapter& left_chapter = videos.at("left");
-        const stitching::VideoChapter& right_chapter = videos.at("right");
-        if (!left_chapter.empty()) {
-          for (const auto& item : left_chapter) {
-            if (!right_chapter.empty()) {
-              const int chapter = item.first;
-              if (!right_chapter.count(chapter)) {
-                std::cerr << "Right vids are missing chapter " << chapter << ", skipping..." << std::endl;
-                continue;
-              }
-            }
-            left_files.emplace_back(item.second);
-          }
-        }
-        if (!right_chapter.empty()) {
-          for (const auto& item : right_chapter) {
-            if (!left_chapter.empty()) {
-              const int chapter = item.first;
-              if (!left_chapter.count(chapter)) {
-                std::cerr << "Left vids are missing chapter " << chapter << ", skipping..." << std::endl;
-                continue;
-              }
-            }
-            right_files.emplace_back(item.second);
-          }
-        }
-        if (!left_files.empty() && !right_files.empty()) {
-          private_config_["game"]["videos"]["left"] = left_files;
-          private_config_["game"]["videos"]["right"] = right_files;
-          auto spp_status = save_private_config(private_config_);
-          if (!spp_status.ok()) {
-            // We can continue, so just warn
-            std::cerr << "Warnings: failed to save private config: " << spp_status << std::endl;
-          }
-        }
-      }
-
-      if (!left_files.empty() && !right_files.empty()) {
-        if (!has_node(
-                config_,
-                "game.stitching.frame_offsets.left",
-                /*non_null=*/true) ||
-            force) {
-          stitching::Synchronization sync;
-          HM_ASSIGN_OR_RETURN(
-              sync,
-              stitching::calculate_stitching_synchronization(game_dir / left_files[0], game_dir / right_files[0]));
-          offsets["left"] = std::to_string(sync.video1_frame_offset);
-          offsets["right"] = std::to_string(sync.video2_frame_offset);
-          private_config_["game"]["stitching"]["frame_offsets"]["left"] = std::to_string(sync.video1_frame_offset);
-          private_config_["game"]["stitching"]["frame_offsets"]["right"] = std::to_string(sync.video2_frame_offset);
-          auto spp_status = save_private_config(private_config_);
-          if (!spp_status.ok()) {
-            // We can continue, so just warn
-            std::cerr << "Warnings: failed to save private config: " << spp_status << std::endl;
-          }
-        }
-      }
-      if (!left_files.empty()) {
-        Videoinfo left_info = getVideoInfo(file_maybe_in_game_dir(left_files[0]));
-        double lfo = offsets["left"].as<double>(); // this is decimal frames
-        set_stream_offsets_ |= lfo != 0.0;
-        pipeline["hmstitcher"]["left-frame-offset-ns"] = std::to_string(size_t(lfo / left_info.fps * GST_SECOND));
-        area = left_info.width * left_info.height;
-        ww = left_info.width;
-        hh = left_info.height;
-      }
-      if (!right_files.empty()) {
-        Videoinfo right_info = getVideoInfo(file_maybe_in_game_dir(right_files[0]));
-        double rfo = offsets["right"].as<double>(); // this is decimal frames
-        set_stream_offsets_ |= rfo != 0.0;
-        pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / right_info.fps * GST_SECOND));
-        if (right_info.width * right_info.height > (long)area) {
-          ww = right_info.width;
-          hh = right_info.height;
-        }
-        if (rfo == 0.0) {
-          const double lfo = offsets["left"].as<double>();
-          // Change the source id of sinks that reference the left video to now
-          // reference the right video
-          if (lfo != 0.0) {
-            // TODO: Do this better instead of all the assumptions made here
-            replace_sink_source_id(pipeline, 0, 1);
-          }
-        }
-      }
-    }
+    HM_RETURN_IF_ERROR(gather_stitching_videos(game_dir, force, left_files, right_files, offsets));
+    apply_frame_offsets_and_sizes(left_files, right_files, offsets, ww, hh, area, pipeline);
   }
-  const bool is_udp_output = has_enabled_rtsp_sink(pipeline);
+  HM_RETURN_IF_ERROR(
+      set_output_dimensions(pipeline, is_camera_source, camera_sources, left_files, right_files, pipeline_has_hmstitcher, game_dir, ww, hh, area, num_video_sources));
 
-  auto maybe_scale_down = [is_udp_output](long width, long height) -> std::tuple<int, int> {
-    if (!is_udp_output) {
-      return std::make_tuple(width, height);
-    }
-    // 4k @ 16:9
-    return resize_to_fit(width, height, kMaxUdpStreamingWidth, kMaxUdpStreamingHeight);
-  } /* lambda maybe_scale_down() */;
-
-  if (is_camera_source) {
-    size_t cam_count = 0;
-    for (const auto& cam_src_item : camera_sources) {
-      if (!cam_count) {
-        ww = cam_src_item.second["camera-width"].as<int>();
-        hh = cam_src_item.second["camera-height"].as<int>();
-        area = ww * hh;
-      } else {
-        size_t w2 = cam_src_item.second["camera-width"].as<int>();
-        size_t h2 = cam_src_item.second["camera-height"].as<int>();
-        if (w2 != ww || h2 != hh) {
-          return absl::InvalidArgumentError("Camera widths and heights differ");
-        }
-      }
-      ++num_video_sources;
-    }
-    auto wh_tuple = maybe_scale_down(ww, hh);
-    pipeline["hmplaycropper"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
-    pipeline["hmplaycropper"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
-  } else if (!left_files.empty() && !right_files.empty() && pipeline_has_hmstitcher) {
-    auto canvas_size_result = get_canvas_size(game_dir);
-    if (canvas_size_result) {
-      size_t canvas_width = std::get<0>(*canvas_size_result);
-      size_t canvas_height = std::get<1>(*canvas_size_result);
-      pipeline["hmstitcher"]["output-width"] = std::to_string(canvas_width);
-      pipeline["hmstitcher"]["output-height"] = std::to_string(canvas_height);
-      constexpr double ar = 16.0 / 9.0;
-      auto wh_tuple = maybe_scale_down(static_cast<long>(ar * canvas_height), canvas_height);
-      pipeline["hmplaycropper"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
-      pipeline["hmplaycropper"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
-    } else {
-      // We don't know the canvas size since the mapping hasn't been generatewd
-      // yet, so we'll have to
-      bool configure_only = get_node_value(pipeline, "hmstitcher.configure-only", false);
-      if (!configure_only) {
-        return absl::FailedPreconditionError(
-            "Unable to determine the canvas size and stitcher is not set to "
-            "configure-only");
-      }
-      std::cout << "The stitched canvas size is not yet known, will determine "
-                   "in the ensuing pipeline run"
-                << std::endl;
-    }
-  } else {
-    auto wh_tuple = maybe_scale_down(ww, hh);
-    pipeline["hmplaycropper"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
-    pipeline["hmplaycropper"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
-  }
-
-  if (area) {
-    // Set streammux size
-    assert(ww && hh);
-    pipeline["streammux"]["width"] = std::to_string(ww);
-    pipeline["streammux"]["height"] = std::to_string(hh);
-  }
-
-  std::string possible_audio_uri;
-  size_t audio_source_id = std::numeric_limits<size_t>::max();
-  // Source 0 files
-  static const std::string ff = "file://";
-  if (!left_files.empty() && !right_files.empty()) {
-    auto src0 = pipeline["source0"];
-    auto src1 = pipeline["source1"];
-    if (src0.IsDefined() && as_int(src0[kEnableFlagField]) && as_int(src0["type"]) == NV_DS_SOURCE_URI_MULTIPLE &&
-        src1.IsDefined() && as_int(src1[kEnableFlagField]) && as_int(src1["type"]) == NV_DS_SOURCE_URI_MULTIPLE) {
-      // Two uri sources, so set them to the stitching files
-      // TODO: how to set all of the files and roll them?
-      src0["uri"] = ff + file_maybe_in_game_dir(left_files[0]);
-      src1["uri"] = ff + file_maybe_in_game_dir(right_files[0]);
-      if (offsets["left"].as<double>() == 0) {
-        possible_audio_uri = src0["uri"].as<std::string>();
-        audio_source_id = src0["source-id"].as<int>();
-      } else {
-        assert(offsets["right"].as<double>() == 0);
-        possible_audio_uri = src1["uri"].as<std::string>();
-        audio_source_id = src1["source-id"].as<int>();
-      }
-      num_video_sources += 2;
-    } else if (src0.IsDefined() && get_node_value<int>(src0, kEnableFlagField, false)) {
-      possible_audio_uri = get_node_value<std::string>(src0, "uri", "");
-      audio_source_id = src0["source-id"].as<int>();
-    } else {
-      // TODO: we need to not be hard-coding source0,1,etc
-      assert(false);
-    }
-  } else {
-    auto src0 = pipeline["source0"];
-    // if (src0.IsDefined() && as_int(src0[kEnableFlagField]) &&
-    if (is_enabled(config_, "pipeline.source0") && as_int(src0["type"]) == NvDsSourceType::NV_DS_SOURCE_URI_MULTIPLE) {
-      // TODO: Use VideoDict
-      if (!src0["uri"].IsDefined() || src0["uri"].IsNull() || src0["uri"].as<std::string>().empty()) {
-        std::string stiched_output = file_maybe_in_game_dir("stitched_output-with-audio.mp4");
-        if (std::filesystem::exists(stiched_output)) {
-          src0["uri"] = ff + stiched_output;
-          disable_source_types({NvDsSourceType::NV_DS_SOURCE_URI, NvDsSourceType::NV_DS_SOURCE_URI_MULTIPLE});
-          src0[kEnableFlagField] = "1";
-        }
-      }
-      if (src0["uri"].IsDefined() && !src0["uri"].IsNull()) {
-        possible_audio_uri = src0["uri"].as<std::string>();
-      }
-      ++num_video_sources;
-    }
-  }
-  if (num_video_sources < 2 && pipeline_has_hmstitcher) {
-    pipeline["hmstitcher"][kEnableFlagField] = "0";
-  }
-  // std::cout << pipeline["hmaudio"] << std::endl;
-  if (!possible_audio_uri.empty() || audio_source_id != std::numeric_limits<size_t>::max()) {
-    std::optional<YAML::Node> audio_uri_opt = get_enabled_audio_uri(pipeline);
-    if (audio_uri_opt.has_value()) {
-      YAML::Node audio_uri = *audio_uri_opt;
-      if (!audio_uri["uri"].IsDefined() || !is_valid_yaml_value_string(audio_uri["uri"].as<std::string>())) {
-        audio_uri["uri"] = possible_audio_uri;
-      }
-    }
-    for (size_t hmaudio_index = 0; hmaudio_index < INT_MAX; ++hmaudio_index) {
-      std::string hmaudio_name = "hmaudio" + std::to_string(hmaudio_index);
-      if (!pipeline[hmaudio_name].IsDefined()) {
-        break;
-      }
-      audio_uri_opt = get_node_if_enabled(pipeline, hmaudio_name);
-      if (!audio_uri_opt) {
-        continue;
-      }
-      if (audio_source_id != std::numeric_limits<size_t>::max() &&
-          (*audio_uri_opt)["src"].as<int>() == SRC_SOURCE_BIN) {
-        if (!(*audio_uri_opt)["source-id"].IsDefined() ||
-            !is_valid_yaml_value_string((*audio_uri_opt)["source-id"].as<std::string>())) {
-          (*audio_uri_opt)["source-id"] = audio_source_id;
-        }
-      } else {
-        YAML::Node audio_uri = *audio_uri_opt;
-        const std::string key = "audio-location";
-        const bool is_defined = audio_uri[key].IsDefined();
-        if (!is_defined || !is_valid_yaml_value_string(audio_uri[key].as<std::string>())) {
-          audio_uri[key] = possible_audio_uri;
-        }
-      }
-    }
-  }
+  configure_audio(pipeline, left_files, right_files, offsets, num_video_sources);
 
   //
   // If RTSP server is active, we may need to downscale
   //
-  if (true) {
-    std::set<std::string> all_enabled;
-    for (const auto& item : pipeline) {
-      std::string key = item.first.as<std::string>();
-      if (key == "hmstitcher") {
-        usleep(0);
-      }
-      if (is_enabled(pipeline[key])) {
-        all_enabled.emplace(key);
-      }
-    }
-    if (!all_enabled.empty()) {
-      std::stringstream ss;
-      ss << "Enabled bins: \n";
-      for (const std::string& s : all_enabled) {
-        ss << "  " << s << '\n';
-      }
-      std::cout << ss.str() << std::flush;
-    }
-  }
+  log_enabled_bins(pipeline);
   return absl::OkStatus();
 }
 
