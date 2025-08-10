@@ -6,7 +6,6 @@
 
 #include "jetson-utils/cuda/cudaOverlay.h"
 
-#include <opencv2/cudawarping.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 #include "absl/synchronization/mutex.h"
@@ -16,6 +15,14 @@
 #include <stdexcept>
 
 #include <cuda_runtime.h>
+
+#define USE_PRIVATE_WARP
+
+#ifdef USE_PRIVATE_WARP
+#include "jetson-utils/cuda/cudaWarp.h"
+#else
+#include <opencv2/cudawarping.hpp>
+#endif
 
 namespace hm {
 namespace scoreboard {
@@ -205,6 +212,27 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
         },
         /*B=*/1);
 
+#ifdef USE_PRIVATE_WARP
+    static const float border[] = {0, 0, 0, 0};
+    assert(perspectiveMatrix_.type() == CV_32F && perspectiveMatrix_.rows == 3 && perspectiveMatrix_.cols == 3);
+    cudaError_t cuerr = warpPerspectiveCudaRaw(
+        full_image.data_raw(),
+        full_image.pitch(),
+        full_image.width(),
+        full_image.height(),
+        warped_image_->data_raw(),
+        warped_image_->pitch(),
+        warped_image_->width(),
+        warped_image_->height(),
+        (const float*)perspectiveMatrix_.data,
+        full_image.channels(),
+        full_image.channels(),
+        cv::INTER_LINEAR,
+        cv::BORDER_CONSTANT,
+        &border[0],
+        stream);
+    assert(cuerr == cudaSuccess);
+#else
     cv::cuda::GpuMat gpu_mat(
         full_image.height(),
         // full_image.width(),
@@ -217,9 +245,8 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
         warped_image_->width(),
         cudaPixelTypeToCvType(warped_image_->cuda_pixel_type()),
         warped_image_->data_raw());
-
     cv::cuda::warpPerspective(gpu_mat, cv_warped_image, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
-
+#endif
     // cv::Mat showimg;
     // cv_warped_image.download(showimg);
     // cv::imshow("showimg", showimg);
@@ -228,7 +255,7 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
 
   assert(dest_surface.bytes_per_pixel() == sizeof(T_pixel));
 
-  XCUDA_RETURN_IF_ERROR(cudaOverlayPitch<T_pixel>(
+  cudaError_t cuErr = cudaOverlayPitch<T_pixel>(
       warped_image_->data(),
       warped_image_->width(),
       warped_image_->height(),
@@ -239,7 +266,8 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
       dest_surface.pitch(),
       /*x=*/0,
       /*y=*/0,
-      stream));
+      stream);
+  (void)cuErr;
   // SHOW_IMAGE(&hm::cudaMat<uchar4>(dest_surface));
   return absl::OkStatus();
 }
@@ -254,16 +282,39 @@ cv::Mat Scoreboard<T_pixel>::forward_cuda(const cv::Mat& inputImage) {
 
   hm::CudaMat<T_pixel> full_image(inputImage);
 
+  absl::MutexLock lk(&mu_);
+  if (!warped_image_) {
+    warped_image_ = std::make_unique<hm::CudaMat<T_pixel>>(/*B=*/1, destW_, destH_);
+  }
+
+#ifdef USE_PRIVATE_WARP
+  static const float border[] = {0, 0, 0, 0};
+  assert(perspectiveMatrix_.type() == CV_32F && perspectiveMatrix_.rows == 3 && perspectiveMatrix_.cols == 3);
+  cuErr = warpPerspectiveCudaRaw(
+      full_image.data_raw(),
+      full_image.pitch(),
+      full_image.width(),
+      full_image.height(),
+      warped_image_->data_raw(),
+      warped_image_->pitch(),
+      warped_image_->width(),
+      warped_image_->height(),
+      (const float*)perspectiveMatrix_.data,
+      full_image.channels(),
+      full_image.channels(),
+      cv::INTER_LINEAR,
+      cv::BORDER_CONSTANT,
+      &border[0],
+      stream);
+  (void)cuErr;
+
+#else
   cv::cuda::GpuMat gpu_mat(
       full_image.height(),
       full_image.width(),
       cudaPixelTypeToCvType(full_image.cuda_pixel_type()),
       full_image.data_raw());
 
-  absl::MutexLock lk(&mu_);
-  if (!warped_image_) {
-    warped_image_ = std::make_unique<hm::CudaMat<T_pixel>>(/*B=*/1, destW_, destH_);
-  }
   cv::cuda::GpuMat cv_warped_image(
       warped_image_->height(),
       warped_image_->width(),
@@ -271,7 +322,7 @@ cv::Mat Scoreboard<T_pixel>::forward_cuda(const cv::Mat& inputImage) {
       warped_image_->data_raw());
 
   cv::cuda::warpPerspective(gpu_mat, cv_warped_image, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
-
+#endif
   // cv::Mat showimg;
   // cv_warped_image.download(showimg);
 

@@ -5,7 +5,6 @@
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
-#include <opencv2/cudawarping.hpp>
 
 #include "absl/status/status.h"
 #include "absl/synchronization/mutex.h"
