@@ -97,6 +97,13 @@ git_repository(
     remote = "ssh://git@github.com/cjolivier01/hockeymom2",
 )
 
+################################ Multiblend ################################
+git_repository(
+    name = "multiblend",
+    commit = "4fe978fbd6b89a61dbcc290e22e656e5ed0cefd8",
+    remote = "ssh://git@github.com/cjolivier01/multiblend",
+)
+
 ################################ Other Modules ################################
 
 # Abseil Library
