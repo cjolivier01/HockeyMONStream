@@ -86,7 +86,7 @@ git_repository(
 
 git_repository(
     name = "jetson-utils",
-    commit = "7d2c4c38d6a7c62e17f6f0190f38ebac6923e8d4",
+    commit = "f4b85fbd89262e60deba1ab580d421f9614e8ca6",
     # branch = "colivier/codex",
     remote = "ssh://git@github.com/cjolivier01/jetson-utils",
 )
