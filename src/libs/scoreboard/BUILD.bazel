@@ -8,7 +8,7 @@ cc_library(
     hdrs = ["Scoreboard.h"],
     include_prefix = INCLUDE_PREFIX,
     linkopts = [
-        # "-lopencv_cudawarping",
+        "-lopencv_cudawarping",
     ],
     visibility = ["//visibility:public"],
     deps = [
