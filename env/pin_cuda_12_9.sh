@@ -1,4 +1,7 @@
 #!/bin/bash
+sudo apt purge 'libnvinfer*' 'tensorrt*' 'libnvonnxparsers*'
+sudo apt clean
+sudo apt update
 sudo apt install \
   tensorrt-dev=10.13.2.6-1+cuda12.9 \
   libnvinfer-dev=10.13.2.6-1+cuda12.9 \
