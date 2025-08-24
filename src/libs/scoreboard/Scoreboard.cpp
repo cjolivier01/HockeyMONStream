@@ -16,7 +16,7 @@
 
 #include <cuda_runtime.h>
 
-#define USE_PRIVATE_WARP
+// #define USE_PRIVATE_WARP
 
 #ifdef USE_PRIVATE_WARP
 #include "jetson-utils/cuda/cudaWarp.h"
