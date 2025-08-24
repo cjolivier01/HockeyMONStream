@@ -161,6 +161,9 @@ Scoreboard<T_pixel>::Scoreboard(
 
   // Compute the perspective transform matrix.
   perspectiveMatrix_ = cv::getPerspectiveTransform(srcPts, dstPts);
+  if (perspectiveMatrix_.type() == CV_64F) {
+    perspectiveMatrix_.convertTo(perspectiveMatrix_, CV_32F);
+  }
 }
 
 /**
