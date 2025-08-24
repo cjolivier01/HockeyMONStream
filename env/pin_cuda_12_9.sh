@@ -1,22 +1,25 @@
 #!/bin/bash
+
+export TRT_VERSION=10.13.2.6-1+cuda12.9
+
 sudo apt purge 'libnvinfer*' 'tensorrt*' 'libnvonnxparsers*'
 sudo apt clean
 sudo apt update
 sudo apt install \
-  tensorrt-dev=10.13.2.6-1+cuda12.9 \
-  libnvinfer-dev=10.13.2.6-1+cuda12.9 \
-  libnvinfer-lean-dev=10.13.2.6-1+cuda12.9 \
-  libnvinfer-dispatch-dev=10.13.2.6-1+cuda12.9 \
-  libnvinfer-plugin-dev=10.13.2.6-1+cuda12.9 \
-  libnvinfer-vc-plugin-dev=10.13.2.6-1+cuda12.9 \
-  libnvonnxparsers-dev=10.13.2.6-1+cuda12.9 \
-  libnvinfer-win-builder-resource10=10.13.2.6-1+cuda12.9 \
-  libnvinfer-headers-python-plugin-dev=10.13.2.6-1+cuda12.9 \
-  libnvinfer-headers-dev=10.13.2.6-1+cuda12.9 \
-  libnvinfer10=10.13.2.6-1+cuda12.9 \
-  libnvinfer-dispatch10=10.13.2.6-1+cuda12.9 \
-  libnvinfer-headers-plugin-dev=10.13.2.6-1+cuda12.9 \
-  libnvinfer-plugin10=10.13.2.6-1+cuda12.9 \
-  libnvinfer-vc-plugin10=10.13.2.6-1+cuda12.9 \
-  libnvinfer-lean10=10.13.2.6-1+cuda12.9 \
-  libnvonnxparsers10=10.13.2.6-1+cuda12.9
+  tensorrt-dev=$TRT_VERSION \
+  libnvinfer-dev=$TRT_VERSION \
+  libnvinfer-lean-dev=$TRT_VERSION \
+  libnvinfer-dispatch-dev=$TRT_VERSION \
+  libnvinfer-plugin-dev=$TRT_VERSION \
+  libnvinfer-vc-plugin-dev=$TRT_VERSION \
+  libnvonnxparsers-dev=$TRT_VERSION \
+  libnvinfer-win-builder-resource10=$TRT_VERSION \
+  libnvinfer-headers-python-plugin-dev=$TRT_VERSION \
+  libnvinfer-headers-dev=$TRT_VERSION \
+  libnvinfer10=$TRT_VERSION \
+  libnvinfer-dispatch10=$TRT_VERSION \
+  libnvinfer-headers-plugin-dev=$TRT_VERSION \
+  libnvinfer-plugin10=$TRT_VERSION \
+  libnvinfer-vc-plugin10=$TRT_VERSION \
+  libnvinfer-lean10=$TRT_VERSION \
+  libnvonnxparsers10=$TRT_VERSION
