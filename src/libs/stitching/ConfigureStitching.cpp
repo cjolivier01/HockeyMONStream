@@ -293,10 +293,26 @@ std::map<std::string, std::string> get_environment() {
   return env_vars;
 }
 
+std::optional<fs::path> find_executable_maybe_conda(const std::string& exec) {
+  auto found_exec = findExecutable(exec, {"PATH"});
+  if (found_exec) {
+    return *found_exec;
+  }
+  const char* s = getenv("CONDA_PREFIX");
+  if (!s) {
+    return std::nullopt;
+  }
+  auto path = fs::path(s) / "bin" / exec;
+  if (!fs::exists(path)) {
+    return std::nullopt;
+  }
+  return path;
+}
+
 std::string get_python_interp() {
   auto python_exec = findExecutable("python3", {"PATH"});
   if (!python_exec) {
-    return "/usr/bin/python";
+    return "/usr/bin/python3";
   }
   return *python_exec;
 }
@@ -502,10 +518,11 @@ absl::Status configure_orientation(const std::string& game_dir) {
   if (!exe_name_result.ok()) {
     return exe_name_result.status();
   }
-
   std::string game_id = get_game_id(game_dir);
+
+  std::optional<fs::path> exec = find_executable_maybe_conda("hmorientation");
   std::vector<std::string> cmd{
-      fs::path("hmorientation"),
+      fs::path(exec.has_value() ? *exec : "hmorientation"),
       "--game-id",
       game_id,
   };
