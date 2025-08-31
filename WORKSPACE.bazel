@@ -87,13 +87,12 @@ git_repository(
 git_repository(
     name = "jetson-utils",
     commit = "f4b85fbd89262e60deba1ab580d421f9614e8ca6",
-    # branch = "colivier/codex",
     remote = "ssh://git@github.com/cjolivier01/jetson-utils",
 )
 
 git_repository(
     name = "hm",
-    branch = "colivier/hm",
+    commit = "b9f54ff8c8a9f88ea275a9a924c77498c83b7c89",
     remote = "ssh://git@github.com/cjolivier01/hockeymom2",
 )
 
