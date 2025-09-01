@@ -60,7 +60,7 @@ absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
       config_file_.clear();
       return absl::NotFoundError(TO_STRING("Could not load control masks from " << config_file_dir));
     }
-    stitcher_ = std::make_unique<hm::pano::cuda::CudaStitchPano<uchar4, float3>>(
+    stitcher_ = std::make_unique<hm::pano::cuda::CudaStitchPano<uchar4, float4>>(
         /*batch_size=*/1, /*num_levels=*/kNumStitcherLaplacianLevels, control_masks, kMatchExposure);
   }
   if (!stitcher_->status().ok()) {
