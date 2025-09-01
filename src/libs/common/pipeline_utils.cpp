@@ -25,6 +25,7 @@ namespace hm {
 
 namespace {
 constexpr const char* kHM_PIPELINE_EOS_STRUCT_NAME = "force-pipeline-eos";
+constexpr const char* kHM_STITCH_CONFIGURED_STRUCT_NAME = "hm-stitch-configured";
 
 #undef gst_element_get_parent
 
@@ -563,6 +564,86 @@ bool post_force_pipeline_eos(GstElement* element) {
     return true;
   }
   return false;
+}
+
+GstMessage* gst_nvmessage_stitch_configured(GstObject* obj, int width, int height, const char* config_dir) {
+  GstStructure* str = gst_structure_new(
+      kHM_STITCH_CONFIGURED_STRUCT_NAME,
+      "width",
+      G_TYPE_INT,
+      width,
+      "height",
+      G_TYPE_INT,
+      height,
+      "config-dir",
+      G_TYPE_STRING,
+      config_dir ? config_dir : "",
+      NULL);
+  GstMessage* message = gst_message_new_custom(GST_MESSAGE_ELEMENT, obj, str);
+  return message;
+}
+
+bool gst_message_is_stitch_configured(GstMessage* message) {
+  CHECK_MESSAGE_TYPE(message, kHM_STITCH_CONFIGURED_STRUCT_NAME);
+}
+
+bool gst_message_parse_stitch_configured(GstMessage* message, int* width, int* height, const char** config_dir) {
+  const GstStructure* str;
+
+  if (!gst_message_is_stitch_configured(message)) {
+    return false;
+  }
+
+  str = gst_message_get_structure(message);
+
+  gboolean ok = TRUE;
+  gint w = 0, h = 0;
+  const gchar* dir = nullptr;
+  ok = ok && gst_structure_get_int(str, "width", &w);
+  ok = ok && gst_structure_get_int(str, "height", &h);
+  dir = gst_structure_get_string(str, "config-dir");
+  if (!ok) {
+    return false;
+  }
+  if (width) *width = (int)w;
+  if (height) *height = (int)h;
+  if (config_dir) *config_dir = dir;
+  return true;
+}
+
+bool post_stitch_configured(GstElement* element, int width, int height, const std::string& config_dir) {
+  GstReferencedObject<GstElement*> pipeline = get_pipeline_element(element);
+  GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline.get()));
+  if (bus) {
+    gst_bus_post(bus, gst_nvmessage_stitch_configured(GST_OBJECT(pipeline.get()), width, height, config_dir.c_str()));
+    gst_object_unref(bus);
+    return true;
+  }
+  return false;
+}
+
+bool push_reconfigure_and_caps_on_pad(GstPad* pad, int width, int height, const char* format, bool nvmm) {
+  if (!pad) return false;
+  gst_pad_push_event(pad, gst_event_new_reconfigure());
+  GstCaps* caps = gst_caps_new_simple(
+      "video/x-raw",
+      "format",
+      G_TYPE_STRING,
+      format ? format : "RGBA",
+      "width",
+      G_TYPE_INT,
+      width,
+      "height",
+      G_TYPE_INT,
+      height,
+      NULL);
+  if (nvmm) {
+    GstCapsFeatures* f = gst_caps_features_new("memory:NVMM", NULL);
+    gst_caps_set_features(caps, 0, f);
+  }
+  gboolean ok = gst_pad_push_event(pad, gst_event_new_caps(caps));
+  gst_caps_unref(caps);
+  return !!ok;
 }
 
 bool getCapsDimensions(GstCaps* caps, int& width, int& height) {

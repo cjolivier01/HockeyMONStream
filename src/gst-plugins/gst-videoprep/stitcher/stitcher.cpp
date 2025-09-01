@@ -275,25 +275,67 @@ absl::Status StitcherPriv::GenerateOutput(
     if (!process_pass_++) {
       bool is_configured;
       HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(config_file_));
-      if (!is_configured || configure_only_) {
-        if (!configure_only_) {
-          return absl::FailedPreconditionError("Stitching is not configured");
-        } else {
-          absl::Status configure_status =
-              stitching::configure_stitching(config_file_, incoming_surface_left, incoming_surface_right);
-          if (!configure_status.ok()) {
-            std::cerr << configure_status << "\n" << std::flush;
-            return to_status(CudaStatus(
-                cudaError_t::cudaErrorLaunchFailure, (std::stringstream() << configure_status.message()).str()));
-          }
+    if (!is_configured || configure_only_) {
+      if (!configure_only_) {
+        // If not in configure-only mode and not configured yet, attempt config now
+        // so we can continue without forcing a pipeline restart.
+        absl::Status configure_status =
+            stitching::configure_stitching(config_file_, incoming_surface_left, incoming_surface_right);
+        if (!configure_status.ok()) {
+          std::cerr << configure_status << "\n" << std::flush;
+          return to_status(CudaStatus(
+              cudaError_t::cudaErrorLaunchFailure, (std::stringstream() << configure_status.message()).str()));
         }
-        // return absl::CancelledError("Stitching has been configured");
-        if (!post_force_pipeline_eos(GST_ELEMENT(m_element))) {
-          std::cerr << "Failed to post pipeline EOS, returning an error to stop the pipeline";
-          return absl::CancelledError("Stitching has been configured");
+      } else {
+        // Explicit configure-only requested: run configuration now.
+        absl::Status configure_status =
+            stitching::configure_stitching(config_file_, incoming_surface_left, incoming_surface_right);
+        if (!configure_status.ok()) {
+          std::cerr << configure_status << "\n" << std::flush;
+          return to_status(CudaStatus(
+              cudaError_t::cudaErrorLaunchFailure, (std::stringstream() << configure_status.message()).str()));
         }
       }
+      // Load stitcher to determine final canvas size.
+      auto stitcher_res = get_stitcher();
+      if (!stitcher_res.ok()) {
+        std::cerr << stitcher_res.status() << std::endl;
+        return stitcher_res.status();
+      }
+      STITCHER* stitcher = stitcher_res.value();
+      int canvas_w = stitcher ? (int)stitcher->canvas_width() : (int)out_surface->surfaceList[0].width;
+      int canvas_h = stitcher ? (int)stitcher->canvas_height() : (int)out_surface->surfaceList[0].height;
+
+      // Notify app via bus message and trigger renegotiation on src pad.
+      post_stitch_configured(GST_ELEMENT(m_element), canvas_w, canvas_h, config_file_);
+      // Push RECONFIGURE and CAPS on the src pad to drive renegotiation now.
+      {
+        GstPad* srcpad = GST_BASE_TRANSFORM_SRC_PAD(m_element);
+        if (srcpad) {
+          gst_pad_push_event(srcpad, gst_event_new_reconfigure());
+          GstCaps* caps = gst_caps_new_simple(
+              "video/x-raw",
+              "format",
+              G_TYPE_STRING,
+              "RGBA",
+              "width",
+              G_TYPE_INT,
+              canvas_w,
+              "height",
+              G_TYPE_INT,
+              canvas_h,
+              NULL);
+          GstCapsFeatures* f = gst_caps_features_new("memory:NVMM", NULL);
+          gst_caps_set_features(caps, 0, f);
+          gst_pad_push_event(srcpad, gst_event_new_caps(caps));
+          gst_caps_unref(caps);
+        }
+      }
+
+      // If we were only configuring, flip flag off so subsequent frames render normally.
+      configure_only_ = false;
     }
+  }
 
     // auto osw = outgoing_surface.width();
     // auto cvw = stitcher_->canvas_width();

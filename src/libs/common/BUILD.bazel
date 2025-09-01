@@ -130,3 +130,22 @@ cc_library(
     deps = [
     ],
 )
+cc_test(
+    name = "pipeline_utils_message_test",
+    srcs = ["pipeline_utils_message_test.cc"],
+    copts = ["-std=c++17"],
+    deps = [
+        ":utils",
+        "@gstreamer",
+    ],
+)
+
+cc_test(
+    name = "pipeline_utils_caps_test",
+    srcs = ["pipeline_utils_caps_test.cc"],
+    copts = ["-std=c++17"],
+    deps = [
+        ":utils",
+        "@gstreamer",
+    ],
+)

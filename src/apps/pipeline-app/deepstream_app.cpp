@@ -1,6 +1,7 @@
 #include "deepstream_app.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
+#include "yaml-cpp/yaml.h"
 
 #include <gst/gst.h>
 #include <math.h>
@@ -372,7 +373,60 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       break;
     }
     case GST_MESSAGE_ELEMENT: {
-      if (hm::gst_message_is_force_pipeline_eos(message)) {
+      if (hm::gst_message_is_stitch_configured(message)) {
+        int width = 0, height = 0;
+        const char* cfg_dir = nullptr;
+        if (hm::gst_message_parse_stitch_configured(message, &width, &height, &cfg_dir)) {
+          g_print("hm-stitch-configured: canvas=%dx%d, dir=%s\n", width, height, cfg_dir ? cfg_dir : "");
+          // Dynamic caps path behind YAML flag: pipeline.application.dynamic-stitch-link
+          bool dynamic_stitch_link = false;
+          HmApp* h = static_cast<HmApp*>(appCtx);
+          if (h) {
+            const YAML::Node& root = h->configurator().config();
+            dynamic_stitch_link = hm::get_node_value(root, "pipeline.application.dynamic-stitch-link", false);
+          }
+          if (dynamic_stitch_link) {
+            GstElement* stitch_elem = appCtx->pipeline.hmstitcher_bin.elem_hmstitcher;
+            if (stitch_elem) {
+              GstPad* srcpad = gst_element_get_static_pad(stitch_elem, "src");
+              if (srcpad) {
+                struct ProbeData {
+                  int w;
+                  int h;
+                } *pdata = g_new0(ProbeData, 1);
+                pdata->w = width;
+                pdata->h = height;
+                auto probe_cb = [](GstPad* pad, GstPadProbeInfo* info, gpointer user_data) -> GstPadProbeReturn {
+                  ProbeData* pd = reinterpret_cast<ProbeData*>(user_data);
+                  GstCaps* caps = gst_caps_new_simple(
+                      "video/x-raw",
+                      "format",
+                      G_TYPE_STRING,
+                      "RGBA",
+                      "width",
+                      G_TYPE_INT,
+                      pd->w,
+                      "height",
+                      G_TYPE_INT,
+                      pd->h,
+                      NULL);
+                  GstCapsFeatures* f = gst_caps_features_new("memory:NVMM", NULL);
+                  gst_caps_set_features(caps, 0, f);
+                  // Push reconfigure first, then caps, then remove probe
+                  gst_pad_push_event(pad, gst_event_new_reconfigure());
+                  gst_pad_push_event(pad, gst_event_new_caps(caps));
+                  gst_caps_unref(caps);
+                  g_free(pd);
+                  return GST_PAD_PROBE_REMOVE;
+                };
+                gst_pad_add_probe(srcpad, (GstPadProbeType)(GST_PAD_PROBE_TYPE_BLOCK_DOWNSTREAM), probe_cb, pdata, NULL);
+                gst_object_unref(srcpad);
+              }
+            }
+          }
+        }
+        return TRUE;
+      } else if (hm::gst_message_is_force_pipeline_eos(message)) {
         bool app_quit = false;
         if (hm::gst_message_parse_force_pipeline_eos(message, &app_quit)) {
           if (app_quit) {

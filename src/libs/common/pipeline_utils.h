@@ -135,6 +135,22 @@ bool gst_message_parse_force_pipeline_eos(GstMessage* message, bool* force_eos);
 
 bool gst_message_is_force_pipeline_eos(GstMessage* message);
 
+// Stitch configured message helpers
+// Posts a custom element message carrying the final stitched canvas width/height
+// and configuration directory (if applicable).
+GstMessage* gst_nvmessage_stitch_configured(GstObject* obj, int width, int height, const char* config_dir);
+
+bool post_stitch_configured(GstElement* element, int width, int height, const std::string& config_dir);
+
+bool gst_message_is_stitch_configured(GstMessage* message);
+
+bool gst_message_parse_stitch_configured(GstMessage* message, int* width, int* height, const char** config_dir);
+
+// Push a RECONFIGURE event followed by a CAPS event on a given pad with
+// the provided dimensions and format. If nvmm is true, attaches memory:NVMM
+// caps feature. Returns true if events were sent.
+bool push_reconfigure_and_caps_on_pad(GstPad* pad, int width, int height, const char* format = "RGBA", bool nvmm = true);
+
 /* On GStreamer < 1.20, define request_pad_simple in terms of the
  * old gst_element_get_request_pad().
  *
