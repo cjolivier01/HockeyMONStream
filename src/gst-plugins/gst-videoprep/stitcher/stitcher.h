@@ -50,7 +50,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   absl::Status GenerateOutput(NvDsBatchMeta* batch_meta, NvBufSurface* in_surface, NvBufSurface* out_surface) override;
 
  private:
-  using STITCHER = hm::pano::cuda::CudaStitchPano<uchar4, float3>;
+  using STITCHER = hm::pano::cuda::CudaStitchPano<uchar4, float4>;
 
   absl::StatusOr<STITCHER*> get_stitcher();
 

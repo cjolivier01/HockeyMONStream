@@ -913,7 +913,7 @@ gboolean create_hmaudio_bin(
         NVGSTDS_LINK_ELEMENT(bin->bin, bin->fakesink_bin.bin);
         linked = true;
       } else {
-        g_printerr("hmaudio doesn't know how to link to sink of type %d\n", (int)sink_config->type);
+        g_printerr("hmaudio doesn't know how to link to sink of type %d (yet)\n", (int)sink_config->type);
       }
     } else {
       g_printerr("hmaudio can't link to sink id %d because it is disabled\n", config->sink_id);
