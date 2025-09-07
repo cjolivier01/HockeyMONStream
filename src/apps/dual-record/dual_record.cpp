@@ -63,7 +63,7 @@ static void print_usage(const char *prog) {
   g_print(
       "Usage: %s [--sensor0 N] [--sensor1 N] [--out0 file.mkv] [--out1 file.mkv]\\n"
       "            [--width W] [--height H] [--fps 30] [--bitrate kbps] [--sensor-mode M] [--duration-sec N]\\n"
-      "            [--out-dir DIR] [--sync true|false]\\n"
+      "            [--out-dir DIR] [--sync true|false] [--container mkv|mp4] [--exposure-us N] [--gain F]\\n"
       "Notes: Defaults assume IMX477 on Jetson (3840x2160@30).\\n"
       "       If unsure of sensor-mode, leave unset and use caps.\\n",
       prog);
@@ -89,6 +89,9 @@ int main(int argc, char *argv[]) {
   gint duration_sec = 0;     // 0 means run until Ctrl+C or EOS
   const gchar *out_dir = nullptr;
   gboolean filesink_sync = FALSE; // default: do not clock-sync file writing
+  const gchar *container = "mkv"; // mkv|mp4
+  gint exposure_us = 0;           // 0: leave auto-exposure
+  gdouble analog_gain = 0.0;      // 0: leave auto-gain
   const gchar *out0 = "cam0.mkv";
   const gchar *out1 = "cam1.mkv";
   gboolean out0_set = FALSE;
@@ -112,6 +115,12 @@ int main(int argc, char *argv[]) {
     else if ((!strcmp(argv[i], "--sync") || !strcmp(argv[i], "--filesink-sync")) && i + 1 < argc) {
       const char *v = argv[++i];
       filesink_sync = (!g_ascii_strcasecmp(v, "true") || !strcmp(v, "1") || !g_ascii_strcasecmp(v, "yes"));
+    } else if (!strcmp(argv[i], "--container") && i + 1 < argc) {
+      container = argv[++i];
+    } else if (!strcmp(argv[i], "--exposure-us") && i + 1 < argc) {
+      exposure_us = atoi(argv[++i]);
+    } else if (!strcmp(argv[i], "--gain") && i + 1 < argc) {
+      analog_gain = g_ascii_strtod(argv[++i], NULL);
     }
     else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) { print_usage(argv[0]); return 0; }
   }
@@ -125,14 +134,15 @@ int main(int argc, char *argv[]) {
     GDateTime *now = g_date_time_new_now_local();
     gchar *ts = g_date_time_format(now, "%Y%m%d_%H%M%S");
     g_date_time_unref(now);
+    const char *ext = (!g_ascii_strcasecmp(container, "mp4")) ? ".mp4" : ".mkv";
     if (!out0_set) {
-      gchar *name0 = g_strdup_printf("cam%d_%s.mkv", sensor0, ts);
+      gchar *name0 = g_strdup_printf("cam%d_%s%s", sensor0, ts, ext);
       auto_out0 = g_build_filename(out_dir, name0, NULL);
       g_free(name0);
       out0 = auto_out0;
     }
     if (!out1_set) {
-      gchar *name1 = g_strdup_printf("cam%d_%s.mkv", sensor1, ts);
+      gchar *name1 = g_strdup_printf("cam%d_%s%s", sensor1, ts, ext);
       auto_out1 = g_build_filename(out_dir, name1, NULL);
       g_free(name1);
       out1 = auto_out1;
@@ -174,6 +184,16 @@ int main(int argc, char *argv[]) {
     g_object_set(cams[i].src, "sensor-id", cams[i].sensor_id, NULL);
     if (sensor_mode >= 0) {
       g_object_set(cams[i].src, "sensor-mode", sensor_mode, NULL);
+    }
+    if (exposure_us > 0) {
+      gchar *v = g_strdup_printf("%d %d", exposure_us, exposure_us);
+      g_object_set(cams[i].src, "exposuretimerange", v, NULL);
+      g_free(v);
+    }
+    if (analog_gain > 0.0) {
+      gchar *v = g_strdup_printf("%.2f %.2f", analog_gain, analog_gain);
+      g_object_set(cams[i].src, "gainrange", v, NULL);
+      g_free(v);
     }
 
     // Caps filter to request NVMM NV12 at desired resolution and fps
@@ -226,13 +246,21 @@ int main(int argc, char *argv[]) {
     }
 
     snprintf(name, sizeof(name), "mux%d", i);
-    cams[i].mux = gst_element_factory_make("matroskamux", name);
+    if (!g_ascii_strcasecmp(container, "mp4")) {
+      cams[i].mux = gst_element_factory_make("qtmux", name);
+    } else {
+      cams[i].mux = gst_element_factory_make("matroskamux", name);
+    }
     if (!cams[i].mux) {
-      g_printerr("Failed to create matroskamux for cam %d\n", i);
+      g_printerr("Failed to create mux for cam %d\n", i);
       return -1;
     }
-    // Optional: make file playable before EOS
-    g_object_set(cams[i].mux, "writing-app", "dual-record", "streamable", TRUE, NULL);
+    // Optional container knobs
+    if (!g_ascii_strcasecmp(container, "mp4")) {
+      g_object_set(cams[i].mux, "faststart", TRUE, NULL);
+    } else {
+      g_object_set(cams[i].mux, "writing-app", "dual-record", "streamable", TRUE, NULL);
+    }
 
     // File sink
     snprintf(name, sizeof(name), "sink%d", i);
