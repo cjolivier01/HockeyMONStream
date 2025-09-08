@@ -87,11 +87,16 @@ int main(int argc, char *argv[]) {
   gint bitrate_kbps = 40000; // 40 Mbps per stream (tweak as needed)
   gint sensor_mode = -1;     // -1: don't set (use caps)
   gint duration_sec = 0;     // 0 means run until Ctrl+C or EOS
+  gboolean auto_30fps = FALSE; // prefer 3840x2160@30 for IMX477 when >=30fps requested
   const gchar *out_dir = nullptr;
   gboolean filesink_sync = FALSE; // default: do not clock-sync file writing
   const gchar *container = "mkv"; // mkv|mp4
-  gint exposure_us = 0;           // 0: leave auto-exposure
-  gdouble analog_gain = 0.0;      // 0: leave auto-gain
+  gint exposure_us = 0;           // 0: leave auto-exposure (global)
+  gdouble analog_gain = 0.0;      // 0: leave auto-gain (global)
+  gint exposure0_us = 0;
+  gint exposure1_us = 0;
+  gdouble gain0 = 0.0;
+  gdouble gain1 = 0.0;
   const gchar *out0 = "cam0.mkv";
   const gchar *out1 = "cam1.mkv";
   gboolean out0_set = FALSE;
@@ -121,8 +126,24 @@ int main(int argc, char *argv[]) {
       exposure_us = atoi(argv[++i]);
     } else if (!strcmp(argv[i], "--gain") && i + 1 < argc) {
       analog_gain = g_ascii_strtod(argv[++i], NULL);
+    } else if (!strcmp(argv[i], "--auto-30fps")) {
+      auto_30fps = TRUE;
+    } else if (!strcmp(argv[i], "--exposure0-us") && i + 1 < argc) {
+      exposure0_us = atoi(argv[++i]);
+    } else if (!strcmp(argv[i], "--exposure1-us") && i + 1 < argc) {
+      exposure1_us = atoi(argv[++i]);
+    } else if (!strcmp(argv[i], "--gain0") && i + 1 < argc) {
+      gain0 = g_ascii_strtod(argv[++i], NULL);
+    } else if (!strcmp(argv[i], "--gain1") && i + 1 < argc) {
+      gain1 = g_ascii_strtod(argv[++i], NULL);
     }
     else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) { print_usage(argv[0]); return 0; }
+  }
+
+  if (auto_30fps) {
+    if ((width >= 4000 && height >= 3000 && fps_n >= 30) || (width == 0 && height == 0)) {
+      width = 3840; height = 2160;
+    }
   }
 
   // If out-dir provided, build timestamped filenames for unspecified outputs
@@ -185,13 +206,19 @@ int main(int argc, char *argv[]) {
     if (sensor_mode >= 0) {
       g_object_set(cams[i].src, "sensor-mode", sensor_mode, NULL);
     }
-    if (exposure_us > 0) {
-      gchar *v = g_strdup_printf("%d %d", exposure_us, exposure_us);
+    int cam_exp = exposure_us;
+    if (i == 0 && exposure0_us > 0) cam_exp = exposure0_us;
+    if (i == 1 && exposure1_us > 0) cam_exp = exposure1_us;
+    if (cam_exp > 0) {
+      gchar *v = g_strdup_printf("%d %d", cam_exp, cam_exp);
       g_object_set(cams[i].src, "exposuretimerange", v, NULL);
       g_free(v);
     }
-    if (analog_gain > 0.0) {
-      gchar *v = g_strdup_printf("%.2f %.2f", analog_gain, analog_gain);
+    double cam_gain = analog_gain;
+    if (i == 0 && gain0 > 0.0) cam_gain = gain0;
+    if (i == 1 && gain1 > 0.0) cam_gain = gain1;
+    if (cam_gain > 0.0) {
+      gchar *v = g_strdup_printf("%.2f %.2f", cam_gain, cam_gain);
       g_object_set(cams[i].src, "gainrange", v, NULL);
       g_free(v);
     }
