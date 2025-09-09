@@ -36,6 +36,7 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 cp configs/systemd/dual-recordd.service "$tmpdir/dual-recordd.service"
 cp configs/systemd/gopro-remote-bridge.service "$tmpdir/gopro-remote-bridge.service"
+cp configs/systemd/gopro-remote-bridge.default "$tmpdir/gopro-remote-bridge.default"
 
 # Inject socket path into ExecStart
 sudo sed -i "s#--sock /run/dual-record.sock#--sock ${SOCK_PATH//#/\\#}#g" "$tmpdir/dual-recordd.service"
@@ -43,6 +44,10 @@ sudo sed -i "s#--sock /run/dual-record.sock#--sock ${SOCK_PATH//#/\\#}#g" "$tmpd
 
 sudo install -m 0644 "$tmpdir/dual-recordd.service" /etc/systemd/system/dual-recordd.service
 sudo install -m 0644 "$tmpdir/gopro-remote-bridge.service" /etc/systemd/system/gopro-remote-bridge.service
+if [[ ! -f /etc/default/gopro-remote-bridge ]]; then
+  echo "Installing /etc/default/gopro-remote-bridge (edit BRIDGE_ARGS to set shutter UUIDs)"
+  sudo install -m 0644 "$tmpdir/gopro-remote-bridge.default" /etc/default/gopro-remote-bridge
+fi
 
 sudo systemctl daemon-reload
 sudo systemctl enable dual-recordd.service
@@ -54,4 +59,3 @@ if [[ "$START_SERVICES" -eq 1 ]]; then
 fi
 
 echo "Installed dual-recordd + gopro-remote-bridge. Socket: $SOCK_PATH"
-
