@@ -49,15 +49,9 @@ cc_binary(
     copts = [
         "-std=c++17",
         "-DHSTREAM_HAVE_SIMPLEBLE",
-        "-I/usr/local/include",
     ],
-    linkopts = [
-        "-ldbus-1",
-        "-l:/usr/local/lib/libsimpleble.a",
-        "-l:/usr/local/lib/libsimpledbus.a",
-        "-lbluetooth",
-        "-lpthread",
-        "-ldl",
+    deps = [
+        "@simpleble//:simpleble",
     ],
     visibility = ["//visibility:public"],
 )
