@@ -16,7 +16,7 @@ This app targets Jetson (nvarguscamerasrc + NVENC) and defaults to the highest 3
   - `bazelisk build --config=jetson //src/apps/dual-record:dual-recordd //src/apps/dual-record:dualctl`
   - `bazelisk build --config=jetson //src/apps/dual-record:gopro_remote_bridge`
 
-Prereqs: GStreamer/DeepStream present on the system (see project WORKSPACE), and for BLE: SimpleBLE headers/libs installed under `/usr/local` (headers in `/usr/local/include/simpleble`, libs in `/usr/local/lib/libsimpleble.a` and `/usr/local/lib/libsimpledbus.a`), BlueZ (`libbluetooth-dev`), and DBus.
+Prereqs: GStreamer/DeepStream present on the system (see project WORKSPACE). For BLE, BlueZ (`libbluetooth-dev`) and DBus (`libdbus-1-dev`) development packages must be installed. SimpleBLE and its subprojects (SimpleDBus, SimpleBluez) are now fetched and built automatically by Bazel.
 
 ## `dual-record` (CLI)
 
@@ -89,9 +89,7 @@ Examples:
 - Subscribe to a specific characteristic:
   - `bazelisk run //src/apps/dual-record:gopro_remote_bridge -- --remote-name Remote --svc <SERVICE-UUID> --char <CHAR-UUID>`
 
-Note: You need SimpleBLE installed under `/usr/local`. We link against:
-- `/usr/local/lib/libsimpleble.a` and `/usr/local/lib/libsimpledbus.a`
-- `-lbluetooth -ldbus-1 -lpthread -ldl`
+Note: SimpleBLE is built automatically via Bazel. Ensure the system has `libbluetooth-dev` and `libdbus-1-dev` installed so headers and system libs are available when compiling/linking.
 
 ## Systemd install
 
@@ -126,4 +124,3 @@ Manage:
 ---
 
 If you want, we can bake your GoPro "The Remote" shutter UUIDs into default `BRIDGE_ARGS` once you confirm them from `--list`.
-

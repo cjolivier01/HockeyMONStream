@@ -1,0 +1,161 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@bazel_skylib//rules:write_file.bzl", "write_file")
+
+# CPU config for arch-specific DBus include directories
+config_setting(
+    name = "aarch64",
+    constraint_values = ["@platforms//cpu:aarch64"],
+)
+
+config_setting(
+    name = "x86_64",
+    constraint_values = ["@platforms//cpu:x86_64"],
+)
+
+# SimpleDBus
+cc_library(
+    name = "simpledbus",
+    hdrs = glob([
+        "simpledbus/include/**/*.h",
+    ]),
+    srcs = glob([
+        "simpledbus/src/**/*.cpp",
+    ]),
+    includes = [
+        # Allow includes like <simpledbus/...>
+        "simpledbus/include",
+    ],
+    copts = [
+        "-std=c++17",
+    ],
+    defines = [
+        "FMT_HEADER_ONLY=1",
+    ],
+    linkopts = [
+        "-ldbus-1",
+        "-lpthread",
+        "-ldl",
+    ],
+    deps = [
+        "@dbus//:dbus",
+        "@com_github_fmtlib_fmt//:fmt",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# SimpleBluez (depends on SimpleDBus and BlueZ)
+cc_library(
+    name = "simplebluez",
+    hdrs = glob([
+        "simplebluez/include/**/*.h",
+        "simplebluez/src/**/*.h",
+        "simplebluez/src/**/*.hpp",
+        "dependencies/external/**/*.h",
+    ]),
+    srcs = glob([
+        "simplebluez/src/**/*.cpp",
+    ]),
+    includes = [
+        # Public headers
+        "simplebluez/include",
+        # Private headers reside in src tree and are included as "Header.h"
+        "simplebluez/src",
+        # External single-header deps used by Types.h
+        "dependencies/external",
+    ],
+    copts = [
+        "-std=c++17",
+        # Provide a version string expected by Utils.cpp
+        "-DSIMPLEBLE_VERSION=\"bazel\"",
+    ],
+    defines = [
+        # Select Linux backend
+        'SIMPLEBLE_BACKEND_LINUX=1',
+        'SIMPLEBLE_BACKEND_WINDOWS=0',
+        'SIMPLEBLE_BACKEND_ANDROID=0',
+        'SIMPLEBLE_BACKEND_MACOS=0',
+        'SIMPLEBLE_BACKEND_IOS=0',
+        'SIMPLEBLE_BACKEND_PLAIN=0',
+    ],
+    linkopts = [
+        "-lbluetooth",
+    ],
+    deps = [
+        ":simpledbus",
+        "@bluez//:bluez",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# Generate a minimal export header to satisfy include <simpleble/export.h>
+write_file(
+    name = "simpleble_export_header",
+    out = "simpleble/export.h",
+    content = [
+        "#pragma once\n",
+        "#ifndef SIMPLEBLE_EXPORT\n",
+        "#define SIMPLEBLE_EXPORT\n",
+        "#endif\n",
+    ],
+)
+
+# SimpleBLE (Linux backend uses SimpleBluez)
+cc_library(
+    name = "simpleble",
+    hdrs = glob([
+        "simpleble/include/**/*.h",
+        "simpleble/src/**/*.h",
+        "simpleble/src/**/*.hpp",
+        "dependencies/external/**/*.h",
+    ]) + [
+        ":simpleble_export_header",
+    ],
+    srcs = glob([
+        # All common sources
+        "simpleble/src/**/*.cpp",
+    ], exclude = [
+        # Exclude non-Linux backends
+        "simpleble/src/backends/darwin/**",
+        "simpleble/src/backends/macos/**",
+        "simpleble/src/backends/corebluetooth/**",
+        "simpleble/src/backends/windows/**",
+        "simpleble/src/backends/winrt/**",
+        "simpleble/src/backends/android/**",
+        "simpleble/src/backends/plain/**",
+        # Exclude C API and Utils that require version macro
+        "simpleble/src_c/**",
+        "simpleble/src/Utils.cpp",
+    ]),
+    includes = [
+        ".",
+        # Allow includes like <simpleble/...>
+        "simpleble/include",
+        # Private headers reside in src tree and are included as "Header.h"
+        "simpleble/src",
+        # Some headers are under a dedicated external dir (e.g., kvn_safe_callback.hpp)
+        "simpleble/src/external",
+        # Builder utilities referenced as local includes
+        "simpleble/src/builders",
+        # External single-header deps used by Types.h
+        "dependencies/external",
+        # Common backend private headers
+        "simpleble/src/backends/common",
+        # Linux legacy backend exposes headers under this prefix
+        "simpleble/src/backends/linux_legacy/include",
+    ],
+    copts = [
+        "-std=c++17",
+    ],
+    defines = [
+        "FMT_HEADER_ONLY=1",
+    ],
+    linkopts = [
+        # Transitively pull in common system libs
+        "-lpthread",
+        "-ldl",
+    ],
+    deps = [
+        ":simplebluez",
+    ],
+    visibility = ["//visibility:public"],
+)
