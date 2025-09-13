@@ -1,3 +1,11 @@
+/**
+ * @file gopro_remote_bridge.cpp
+ * @brief Optional BLE bridge that maps GoPro Remote notifications to START/STOP.
+ *
+ * Uses SimpleBLE (if available) to subscribe to a GoPro Remote's notifiable
+ * characteristic(s). Each notification toggles recording by sending START/STOP
+ * to the dual-recordd Unix domain socket control interface.
+ */
 #ifdef HSTREAM_HAVE_SIMPLEBLE
 #include <simpleble/SimpleBLE.h>
 #endif
@@ -12,12 +20,18 @@
 #include <string>
 #include <thread>
 
+/** Default path for the control socket used to talk to dual-recordd. */
 static const char* kDefaultSockPath = "/tmp/dual-record.sock";
 
+/** Print usage information for the bridge. */
 static void usage() {
   std::cerr << "Usage: gopro_remote_bridge [--sock PATH] [--remote-name SUBSTR] [--svc UUID --char UUID] [--list]" << std::endl;
 }
 
+/**
+ * @brief Send a single command line (START/STOP/STATUS) to dual-recordd.
+ * @return true if the command was written successfully.
+ */
 static bool send_cmd(const std::string& cmd, const char* sock_path) {
   int fd = socket(AF_UNIX, SOCK_STREAM, 0);
   if (fd < 0) { perror("socket"); return false; }
@@ -30,6 +44,12 @@ static bool send_cmd(const std::string& cmd, const char* sock_path) {
   return true;
 }
 
+/**
+ * @brief Entry point for the BLE-to-socket bridge.
+ *
+ * Without explicit service/char UUIDs, subscribes to all notifiable
+ * characteristics and toggles START/STOP on any notification.
+ */
 int main(int argc, char** argv) {
   const char* sock_path = kDefaultSockPath;
   const char* remote_name_sub = "Remote";
