@@ -1,3 +1,14 @@
+/**
+ * @file dual-recordd.cpp
+ * @brief Simple Unix domain socket daemon controlling DualRecorderService.
+ *
+ * Listens on a UDS path (default /tmp/dual-record.sock) for commands:
+ * - START key=value ...
+ * - STOP
+ * - STATUS
+ *
+ * In non-debug mode, the process daemonizes (double-fork, stdio -> /dev/null).
+ */
 #include "dual_record_service.h"
 
 #include <sys/socket.h>
@@ -12,11 +23,15 @@
 #include <map>
 #include <sstream>
 
+/** Default path for the control socket. */
 static const char *kDefaultSockPath = "/tmp/dual-record.sock";
 static volatile sig_atomic_t g_stop = 0;
 
 static void on_signal(int) { g_stop = 1; }
 
+/**
+ * @brief Parse a space-separated list of key=value tokens into a map.
+ */
 static std::map<std::string, std::string> parse_kv(const std::string &line) {
   std::map<std::string, std::string> kv;
   std::istringstream iss(line);
@@ -30,6 +45,9 @@ static std::map<std::string, std::string> parse_kv(const std::string &line) {
   return kv;
 }
 
+/**
+ * @brief Apply key-value options to DualRecordOptions.
+ */
 static void apply_opts(const std::map<std::string, std::string> &kv, DualRecordOptions *o) {
   auto get = [&](const char *k) -> const char * { auto it = kv.find(k); return (it==kv.end())?nullptr:it->second.c_str(); };
   if (auto v = get("sensor0")) o->sensor0 = atoi(v);
@@ -52,6 +70,9 @@ static void apply_opts(const std::map<std::string, std::string> &kv, DualRecordO
   if (auto v = get("gain1")) o->gain1 = atof(v);
 }
 
+/**
+ * @brief Daemonize the process (double-fork) unless debug mode is requested.
+ */
 static void daemonize_if_needed(bool debug_mode) {
   if (debug_mode) return;
   pid_t pid = fork();
@@ -73,6 +94,9 @@ static void daemonize_if_needed(bool debug_mode) {
   }
 }
 
+/**
+ * @brief Entry point for the dual-recordd control daemon.
+ */
 int main(int argc, char** argv) {
   bool debug_mode = false;
   const char* sock_path = kDefaultSockPath;
