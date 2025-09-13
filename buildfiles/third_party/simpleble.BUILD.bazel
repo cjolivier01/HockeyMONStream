@@ -12,21 +12,88 @@ config_setting(
     constraint_values = ["@platforms//cpu:x86_64"],
 )
 
+# Provide a minimal kvn_safe_callback.hpp in case the vendored location is missing
+# write_file(
+#     name = "kvn_safe_callback_header",
+#     out = "simpledbus/include/kvn/kvn_safe_callback.hpp",
+#     content = [
+#         "#pragma once\n",
+#         "#if __has_include(<simpleble/src/external/kvn_safe_callback.hpp>)\n",
+#         "#include <simpleble/src/external/kvn_safe_callback.hpp>\n",
+#         "#else\n",
+#         "#include <functional>\n",
+#         "#include <type_traits>\n",
+#         "namespace kvn {\n",
+#         "template <typename Signature> class safe_callback;\n",
+#         "template <typename R, typename... Args>\n",
+#         "class safe_callback<R(Args...)> {\n",
+#         " public:\n",
+#         "  safe_callback() = default;\n",
+#         "  template <typename F> explicit safe_callback(F&& f) : fn_(std::forward<F>(f)) {}\n",
+#         "  void load(std::function<R(Args...)> f) { fn_ = std::move(f); }\n",
+#         "  void unload() { fn_ = nullptr; }\n",
+#         "  explicit operator bool() const { return static_cast<bool>(fn_); }\n",
+#         "  R operator()(Args... args) const {\n",
+#         "    if (fn_) return fn_(std::forward<Args>(args)...);\n",
+#         "    if constexpr (!std::is_void<R>::value) return R();\n",
+#         "  }\n",
+#         " private:\n",
+#         "  std::function<R(Args...)> fn_;\n",
+#         "};\n",
+#         "}\n",
+#         "#endif\n",
+#     ],
+# )
+
+# Minimal stub for kvn/logfwd.hpp expected by some sources
+# write_file(
+#     name = "kvn_logfwd_header",
+#     out = "simpledbus/include/kvn/logfwd.hpp",
+#     content = [
+#         "#pragma once\n",
+#         "namespace logfwd {\n",
+#         "enum class level { FATAL, ERROR, WARN, INFO, DEBUG, TRACE };\n",
+#         "}\n",
+#     ],
+# )
+
 # SimpleDBus
 cc_library(
     name = "simpledbus",
     hdrs = glob([
         "simpledbus/include/**/*.h",
-    ]),
+        "simpledbus/include/**/*.hpp",
+        # External helper used by SimpleDBus (present in repo deps)
+        "dependencies/external/kvn/kvn_safe_callback.hpp",
+        "dependencies/external/kvn/logfwd.hpp",
+    ]) + [
+        # ":kvn_safe_callback_header",
+        # ":kvn_logfwd_header",
+    ],
     srcs = glob([
         "simpledbus/src/**/*.cpp",
     ]),
     includes = [
         # Allow includes like <simpledbus/...>
         "simpledbus/include",
+        # External utilities (kvn_safe_callback.hpp)
+        "dependencies/external",
+        # Some upstream revisions reference headers under this path
+        "simpleble/src/external",
+        # External utilities (kvn_safe_callback.hpp)
+        # "simpleble/src/external",
     ],
     copts = [
         "-std=c++17",
+        # Add paths for kvn helpers referenced by Proxy.h
+        "-Isimpledbus/include",
+        "-Idependencies/external",
+        "-Isimpleble/src/external",
+        # "-Iexternal/simpleble",
+        # "-Iexternal/simpleble/simpleble/src/external",
+        # "-Iexternal/simpleble/dependencies/external",
+        # "-Iexternal/simpleble/simpledbus/include",
+        # "-Isimpledbus/include",
     ],
     defines = [
         "FMT_HEADER_ONLY=1",
@@ -51,7 +118,10 @@ cc_library(
         "simplebluez/src/**/*.h",
         "simplebluez/src/**/*.hpp",
         "dependencies/external/**/*.h",
-    ]),
+    ]) + [
+        # ":kvn_safe_callback_header",
+        # ":kvn_logfwd_header",
+    ],
     srcs = glob([
         "simplebluez/src/**/*.cpp",
     ]),
@@ -60,6 +130,8 @@ cc_library(
         "simplebluez/include",
         # Private headers reside in src tree and are included as "Header.h"
         "simplebluez/src",
+        # External utilities (kvn_safe_callback.hpp)
+        "simpleble/src/external",
         # External single-header deps used by Types.h
         "dependencies/external",
     ],
@@ -67,6 +139,8 @@ cc_library(
         "-std=c++17",
         # Provide a version string expected by Utils.cpp
         "-DSIMPLEBLE_VERSION=\"bazel\"",
+        # Search package root for generated kvn headers with <kvn/...> includes
+        "-Iexternal/simpleble",
     ],
     defines = [
         # Select Linux backend
@@ -88,16 +162,16 @@ cc_library(
 )
 
 # Generate a minimal export header to satisfy include <simpleble/export.h>
-write_file(
-    name = "simpleble_export_header",
-    out = "simpleble/export.h",
-    content = [
-        "#pragma once\n",
-        "#ifndef SIMPLEBLE_EXPORT\n",
-        "#define SIMPLEBLE_EXPORT\n",
-        "#endif\n",
-    ],
-)
+# write_file(
+#     name = "simpleble_export_header",
+#     out = "simpleble/export.h",
+#     content = [
+#         "#pragma once\n",
+#         "#ifndef SIMPLEBLE_EXPORT\n",
+#         "#define SIMPLEBLE_EXPORT\n",
+#         "#endif\n",
+#     ],
+# )
 
 # SimpleBLE (Linux backend uses SimpleBluez)
 cc_library(
@@ -108,7 +182,9 @@ cc_library(
         "simpleble/src/**/*.hpp",
         "dependencies/external/**/*.h",
     ]) + [
-        ":simpleble_export_header",
+        # ":simpleble_export_header",
+        # ":kvn_safe_callback_header",
+        # ":kvn_logfwd_header",
     ],
     srcs = glob([
         # All common sources
@@ -145,9 +221,18 @@ cc_library(
     ],
     copts = [
         "-std=c++17",
+        # Search package root for generated kvn headers with <kvn/...> includes
+        "-Iexternal/simpleble",
     ],
     defines = [
         "FMT_HEADER_ONLY=1",
+        # Select Linux backend explicitly to avoid accidental cross-backend includes
+        'SIMPLEBLE_BACKEND_LINUX=1',
+        'SIMPLEBLE_BACKEND_WINDOWS=0',
+        'SIMPLEBLE_BACKEND_ANDROID=0',
+        'SIMPLEBLE_BACKEND_MACOS=0',
+        'SIMPLEBLE_BACKEND_IOS=0',
+        'SIMPLEBLE_BACKEND_PLAIN=0',
     ],
     linkopts = [
         # Transitively pull in common system libs
@@ -155,7 +240,9 @@ cc_library(
         "-ldl",
     ],
     deps = [
+        ":simpledbus",
         ":simplebluez",
+        "@//buildfiles/third_party/simpleble:export_header",
     ],
     visibility = ["//visibility:public"],
 )

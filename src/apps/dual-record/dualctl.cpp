@@ -38,7 +38,7 @@ int main(int argc, char **argv) {
   std::ostringstream oss;
   oss << argv[idx++];
   for (int i = idx; i < argc; ++i) oss << ' ' << argv[i];
-  oss << '\\n';
+  oss << '\n';
   std::string msg = oss.str();
 
   int fd = socket(AF_UNIX, SOCK_STREAM, 0);

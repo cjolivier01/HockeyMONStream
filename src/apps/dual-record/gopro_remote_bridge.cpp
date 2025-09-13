@@ -6,9 +6,7 @@
  * characteristic(s). Each notification toggles recording by sending START/STOP
  * to the dual-recordd Unix domain socket control interface.
  */
-#ifdef HSTREAM_HAVE_SIMPLEBLE
 #include <simpleble/SimpleBLE.h>
-#endif
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -72,10 +70,6 @@ int main(int argc, char** argv) {
     }
   }
 
-#ifndef HSTREAM_HAVE_SIMPLEBLE
-  std::cerr << "gopro_remote_bridge built without SimpleBLE. Rebuild with -DHSTREAM_HAVE_SIMPLEBLE and SimpleBLE libs." << std::endl;
-  return 1;
-#else
   try {
     auto adapters = SimpleBLE::Adapter::get_adapters();
     if (adapters.empty()) { std::cerr << "No BLE adapters found" << std::endl; return 1; }
@@ -143,5 +137,4 @@ int main(int argc, char** argv) {
     std::cerr << "BLE error: " << e.what() << std::endl; return 1;
   }
   return 0;
-#endif
 }

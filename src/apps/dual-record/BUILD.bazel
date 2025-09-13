@@ -37,7 +37,8 @@ cc_binary(
         "dualctl.cpp",
     ],
     copts = ["-std=c++17"],
-    deps = [],
+    deps = [
+    ],
     visibility = ["//visibility:public"],
 )
 
@@ -48,7 +49,6 @@ cc_binary(
     ],
     copts = [
         "-std=c++17",
-        "-DHSTREAM_HAVE_SIMPLEBLE",
     ],
     deps = [
         "@simpleble//:simpleble",

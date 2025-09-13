@@ -235,7 +235,9 @@
       "request": "launch",
       "cwd": "${workspaceFolder}",
       "program": "${workspaceFolder}/bazel-bin/src/apps/dual-record/gopro_remote_bridge",
-      "args": [],
+      "args": [
+        "--remote-name=ATUMTEK",
+      ],
       "sourceMap": {
         "/proc/self/cwd": "${workspaceRoot}",
         "external/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",
