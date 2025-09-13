@@ -236,7 +236,8 @@
       "cwd": "${workspaceFolder}",
       "program": "${workspaceFolder}/bazel-bin/src/apps/dual-record/gopro_remote_bridge",
       "args": [
-        "--remote-name=ATUMTEK",
+        "--remote-name",
+        "ATUMTEK",
       ],
       "sourceMap": {
         "/proc/self/cwd": "${workspaceRoot}",

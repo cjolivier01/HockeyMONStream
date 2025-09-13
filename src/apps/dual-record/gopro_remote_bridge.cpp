@@ -23,7 +23,8 @@ static const char* kDefaultSockPath = "/tmp/dual-record.sock";
 
 /** Print usage information for the bridge. */
 static void usage() {
-  std::cerr << "Usage: gopro_remote_bridge [--sock PATH] [--remote-name SUBSTR] [--svc UUID --char UUID] [--list]" << std::endl;
+  std::cerr << "Usage: gopro_remote_bridge [--sock PATH] [--remote-name SUBSTR] [--svc UUID --char UUID] [--list]"
+            << std::endl;
 }
 
 /**
@@ -32,12 +33,26 @@ static void usage() {
  */
 static bool send_cmd(const std::string& cmd, const char* sock_path) {
   int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (fd < 0) { perror("socket"); return false; }
-  sockaddr_un addr{}; addr.sun_family = AF_UNIX; strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path)-1);
-  if (connect(fd, (sockaddr*)&addr, sizeof(addr)) < 0) { perror("connect"); close(fd); return false; }
+  if (fd < 0) {
+    perror("socket");
+    return false;
+  }
+  sockaddr_un addr{};
+  addr.sun_family = AF_UNIX;
+  strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
+  if (connect(fd, (sockaddr*)&addr, sizeof(addr)) < 0) {
+    perror("connect");
+    close(fd);
+    return false;
+  }
   std::string line = cmd + "\n";
-  if (write(fd, line.c_str(), line.size()) < 0) { perror("write"); close(fd); return false; }
-  char buf[256]; read(fd, buf, sizeof(buf));
+  if (write(fd, line.c_str(), line.size()) < 0) {
+    perror("write");
+    close(fd);
+    return false;
+  }
+  char buf[256];
+  read(fd, buf, sizeof(buf));
   close(fd);
   return true;
 }
@@ -56,23 +71,47 @@ int main(int argc, char** argv) {
   bool list_only = false;
   for (int i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "-s") || !strcmp(argv[i], "--sock")) {
-      if (i + 1 < argc) sock_path = argv[++i]; else { usage(); return 1; }
+      if (i + 1 < argc)
+        sock_path = argv[++i];
+      else {
+        usage();
+        return 1;
+      }
     } else if (!strcmp(argv[i], "--remote-name")) {
-      if (i + 1 < argc) remote_name_sub = argv[++i]; else { usage(); return 1; }
+      if (i + 1 < argc)
+        remote_name_sub = argv[++i];
+      else {
+        usage();
+        return 1;
+      }
     } else if (!strcmp(argv[i], "--svc")) {
-      if (i + 1 < argc) svc_uuid = argv[++i]; else { usage(); return 1; }
+      if (i + 1 < argc)
+        svc_uuid = argv[++i];
+      else {
+        usage();
+        return 1;
+      }
     } else if (!strcmp(argv[i], "--char")) {
-      if (i + 1 < argc) char_uuid = argv[++i]; else { usage(); return 1; }
+      if (i + 1 < argc)
+        char_uuid = argv[++i];
+      else {
+        usage();
+        return 1;
+      }
     } else if (!strcmp(argv[i], "--list")) {
       list_only = true;
     } else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
-      usage(); return 0;
+      usage();
+      return 0;
     }
   }
 
   try {
     auto adapters = SimpleBLE::Adapter::get_adapters();
-    if (adapters.empty()) { std::cerr << "No BLE adapters found" << std::endl; return 1; }
+    if (adapters.empty()) {
+      std::cerr << "No BLE adapters found" << std::endl;
+      return 1;
+    }
     auto adapter = adapters[0];
     std::cout << "Scanning for GoPro remote..." << std::endl;
     adapter.scan_for(8000);
@@ -81,11 +120,16 @@ int main(int argc, char** argv) {
     bool found = false;
     for (auto& p : results) {
       auto name = p.identifier();
-      if (name.find("GoPro") != std::string::npos && name.find("Remote") != std::string::npos) {
-        remote = p; found = true; break;
+      if (name.find(remote_name_sub) != std::string::npos) {
+        remote = p;
+        found = true;
+        break;
       }
     }
-    if (!found) { std::cerr << "GoPro remote not found" << std::endl; return 1; }
+    if (!found) {
+      std::cerr << "GoPro remote not found" << std::endl;
+      return 1;
+    }
     remote.connect();
     std::cout << "Connected to: " << remote.identifier() << std::endl;
 
@@ -93,13 +137,9 @@ int main(int argc, char** argv) {
       for (auto& svc : remote.services()) {
         std::cout << "Service " << svc.uuid() << std::endl;
         for (auto& ch : svc.characteristics()) {
-          std::cout << "  Char  " << ch.uuid() << " props:"
-                    << (ch.can_read()?" R":"")
-                    << (ch.can_write_request()?" W":"")
-                    << (ch.can_write_command()?" w":"")
-                    << (ch.can_notify()?" N":"")
-                    << (ch.can_indicate()?" I":"")
-                    << std::endl;
+          std::cout << "  Char  " << ch.uuid() << " props:" << (ch.can_read() ? " R" : "")
+                    << (ch.can_write_request() ? " W" : "") << (ch.can_write_command() ? " w" : "")
+                    << (ch.can_notify() ? " N" : "") << (ch.can_indicate() ? " I" : "") << std::endl;
         }
       }
       return 0;
@@ -132,9 +172,11 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "Listening for remote notifications. Press Ctrl+C to exit." << std::endl;
-    for (;;) std::this_thread::sleep_for(std::chrono::seconds(1));
+    for (;;)
+      std::this_thread::sleep_for(std::chrono::seconds(1));
   } catch (const std::exception& e) {
-    std::cerr << "BLE error: " << e.what() << std::endl; return 1;
+    std::cerr << "BLE error: " << e.what() << std::endl;
+    return 1;
   }
   return 0;
 }
