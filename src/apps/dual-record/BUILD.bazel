@@ -55,3 +55,16 @@ cc_binary(
     ],
     visibility = ["//visibility:public"],
 )
+
+cc_binary(
+    name = "evdev_remote_bridge",
+    srcs = [
+        "evdev_remote_bridge.cpp",
+    ],
+    copts = [
+        "-std=c++17",
+    ],
+    deps = [
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -23,8 +23,11 @@ static const char* kDefaultSockPath = "/tmp/dual-record.sock";
 
 /** Print usage information for the bridge. */
 static void usage() {
-  std::cerr << "Usage: gopro_remote_bridge [--sock PATH] [--remote-name SUBSTR] [--svc UUID --char UUID] [--list]"
+  std::cerr << "Usage: gopro_remote_bridge [--sock PATH] [--remote-name SUBSTR] [--addr MAC] [--svc UUID --char UUID] [--generic] [--list] [--list-devices]"
             << std::endl;
+  std::cerr << "  --list           List services/characteristics of the matched device and exit" << std::endl;
+  std::cerr << "  --list-devices   List paired devices (and quick scan) then exit" << std::endl;
+  std::cerr << "  --generic        Ignore defaults and subscribe to all notifiable characteristics" << std::endl;
 }
 
 /**
@@ -68,7 +71,10 @@ int main(int argc, char** argv) {
   const char* remote_name_sub = "ATUMTEK";
   std::string svc_uuid;
   std::string char_uuid;
+  std::string remote_addr;  // Optional: connect by MAC address directly
   bool list_only = false;
+  bool list_devices = false;
+  bool generic_mode = false;
   for (int i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "-s") || !strcmp(argv[i], "--sock")) {
       if (i + 1 < argc)
@@ -80,6 +86,13 @@ int main(int argc, char** argv) {
     } else if (!strcmp(argv[i], "--remote-name")) {
       if (i + 1 < argc)
         remote_name_sub = argv[++i];
+      else {
+        usage();
+        return 1;
+      }
+    } else if (!strcmp(argv[i], "--addr") || !strcmp(argv[i], "--address")) {
+      if (i + 1 < argc)
+        remote_addr = argv[++i];
       else {
         usage();
         return 1;
@@ -100,6 +113,10 @@ int main(int argc, char** argv) {
       }
     } else if (!strcmp(argv[i], "--list")) {
       list_only = true;
+    } else if (!strcmp(argv[i], "--list-devices")) {
+      list_devices = true;
+    } else if (!strcmp(argv[i], "--generic")) {
+      generic_mode = true;
     } else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
       usage();
       return 0;
@@ -113,27 +130,77 @@ int main(int argc, char** argv) {
       return 1;
     }
     auto adapter = adapters[0];
-    std::cout << "Scanning for " << remote_name_sub << " remote..." << std::endl;
-    adapter.scan_for(8000);
-    auto results = adapter.scan_get_results();
+    if (list_devices) {
+      std::cout << "Paired devices:" << std::endl;
+      for (auto& p : adapter.get_paired_peripherals()) {
+        std::cout << "  " << p.identifier() << " [" << p.address() << "]" << std::endl;
+      }
+      std::cout << "\nScanning briefly (4s) for advertising devices..." << std::endl;
+      adapter.scan_for(4000);
+      for (auto& p : adapter.scan_get_results()) {
+        std::cout << "  " << p.identifier() << " [" << p.address() << "]" << (p.is_paired() ? " (paired)" : "")
+                  << std::endl;
+      }
+      return 0;
+    }
     SimpleBLE::Peripheral remote;
-    bool found = false;
-    for (auto& p : results) {
-      auto name = p.identifier();
-      std::cout << "Found device: \"" << name << "\" [" << p.address() << "]"
-                << (p.is_paired() ? " (paired)" : "") << std::endl;
-      if (!p.is_paired())
-        continue;
-      if (name.find(remote_name_sub) != std::string::npos) {
-        remote = p;
-        found = true;
-        break;
+
+    // If an explicit address was provided, prefer that and skip scanning.
+    if (!remote_addr.empty()) {
+      std::cout << "Looking up device by address: " << remote_addr << std::endl;
+      for (auto& p : adapter.get_paired_peripherals()) {
+        if (p.address() == remote_addr) {
+          remote = p;
+          break;
+        }
+      }
+      if (!remote.initialized()) {
+        // As a fallback, try to find it via a quick scan.
+        std::cout << "Not found in paired list; scanning briefly..." << std::endl;
+        adapter.scan_for(4000);
+        for (auto& p : adapter.scan_get_results()) {
+          if (p.address() == remote_addr) {
+            remote = p;
+            break;
+          }
+        }
+      }
+      if (!remote.initialized()) {
+        std::cerr << "Device with address " << remote_addr << " not found" << std::endl;
+        return 1;
+      }
+    } else {
+      // Default path: search by name substring. Start with a scan, but fall back to paired devices
+      // since already-connected HID devices may not be advertising.
+      std::cout << "Scanning for devices (8s)..." << std::endl;
+      adapter.scan_for(8000);
+      auto results = adapter.scan_get_results();
+      for (auto& p : results) {
+        auto name = p.identifier();
+        std::cout << "Found device: \"" << name << "\" [" << p.address() << "]"
+                  << (p.is_paired() ? " (paired)" : "") << std::endl;
+        if (name.find(remote_name_sub) != std::string::npos) {
+          remote = p;
+          break;
+        }
+      }
+      if (!remote.initialized()) {
+        std::cout << "Not found via scan; checking paired devices..." << std::endl;
+        for (auto& p : adapter.get_paired_peripherals()) {
+          auto name = p.identifier();
+          std::cout << "Paired: \"" << name << "\" [" << p.address() << "]" << std::endl;
+          if (name.find(remote_name_sub) != std::string::npos) {
+            remote = p;
+            break;
+          }
+        }
+      }
+      if (!remote.initialized()) {
+        std::cerr << "Remote matching \"" << remote_name_sub << "\" not found" << std::endl;
+        return 1;
       }
     }
-    if (!found) {
-      std::cerr << "Remote \"" << remote_name_sub << "\" not found" << std::endl;
-      return 1;
-    }
+
     remote.connect();
     std::cout << "Connected to: " << remote.identifier() << std::endl;
 
@@ -150,6 +217,15 @@ int main(int argc, char** argv) {
     }
 
     std::atomic<bool> started{false};
+    // If no explicit service/char provided and not in generic mode,
+    // default to Battery Service / Battery Level characteristic.
+    if (svc_uuid.empty() && char_uuid.empty() && !generic_mode) {
+      svc_uuid = "0000180f-0000-1000-8000-00805f9b34fb";   // Battery Service
+      char_uuid = "00002a19-0000-1000-8000-00805f9b34fb";  // Battery Level
+      std::cout << "Defaulting to Battery Level notifications (" << svc_uuid << " / " << char_uuid
+                << ")" << std::endl;
+    }
+
     int subs = 0;
     if (!svc_uuid.empty() && !char_uuid.empty()) {
       remote.notify(svc_uuid, char_uuid, [&](SimpleBLE::ByteArray /*bytes*/) {
