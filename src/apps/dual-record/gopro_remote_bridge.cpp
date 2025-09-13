@@ -65,7 +65,7 @@ static bool send_cmd(const std::string& cmd, const char* sock_path) {
  */
 int main(int argc, char** argv) {
   const char* sock_path = kDefaultSockPath;
-  const char* remote_name_sub = "Remote";
+  const char* remote_name_sub = "ATUMTEK";
   std::string svc_uuid;
   std::string char_uuid;
   bool list_only = false;
@@ -113,13 +113,17 @@ int main(int argc, char** argv) {
       return 1;
     }
     auto adapter = adapters[0];
-    std::cout << "Scanning for GoPro remote..." << std::endl;
+    std::cout << "Scanning for " << remote_name_sub << " remote..." << std::endl;
     adapter.scan_for(8000);
     auto results = adapter.scan_get_results();
     SimpleBLE::Peripheral remote;
     bool found = false;
     for (auto& p : results) {
       auto name = p.identifier();
+      std::cout << "Found device: \"" << name << "\" [" << p.address() << "]"
+                << (p.is_paired() ? " (paired)" : "") << std::endl;
+      if (!p.is_paired())
+        continue;
       if (name.find(remote_name_sub) != std::string::npos) {
         remote = p;
         found = true;
@@ -127,7 +131,7 @@ int main(int argc, char** argv) {
       }
     }
     if (!found) {
-      std::cerr << "GoPro remote not found" << std::endl;
+      std::cerr << "Remote \"" << remote_name_sub << "\" not found" << std::endl;
       return 1;
     }
     remote.connect();
