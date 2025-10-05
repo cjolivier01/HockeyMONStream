@@ -1,3 +1,10 @@
+/**
+ * @file dualctl.cpp
+ * @brief Tiny CLI client to control dual-recordd via Unix domain socket.
+ *
+ * Usage:
+ *   dualctl [-s|--sock PATH] <START|STOP|STATUS> [key=value ...]
+ */
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -6,8 +13,12 @@
 #include <iostream>
 #include <sstream>
 
+/** Default path for the control socket. */
 static const char *kDefaultSockPath = "/tmp/dual-record.sock";
 
+/**
+ * @brief CLI entry point for sending a single command to dual-recordd.
+ */
 int main(int argc, char **argv) {
   if (argc < 2) {
     std::cerr << "Usage: dualctl [-s|--sock PATH] <START|STOP|STATUS> [key=value ...]\\n";
@@ -27,7 +38,7 @@ int main(int argc, char **argv) {
   std::ostringstream oss;
   oss << argv[idx++];
   for (int i = idx; i < argc; ++i) oss << ' ' << argv[i];
-  oss << '\\n';
+  oss << '\n';
   std::string msg = oss.str();
 
   int fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -40,4 +51,3 @@ int main(int argc, char **argv) {
   close(fd);
   return 0;
 }
-

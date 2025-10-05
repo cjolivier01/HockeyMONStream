@@ -1,3 +1,8 @@
+/**
+ * @file dual_record_service.cpp
+ * @brief Implementation of a dual-camera recording service using GStreamer.
+ */
+
 #include "dual_record_service.h"
 
 #include <sys/stat.h>
@@ -5,6 +10,9 @@
 #include <sstream>
 
 namespace {
+/**
+ * @brief Helper to set a capsfilter requesting NVMM NV12 and target geometry/fps.
+ */
 static void set_capsfilter(GstElement *caps_elem, int width, int height, int fps_n, int fps_d) {
   gchar *caps_str = g_strdup_printf(
       "video/x-raw(memory:NVMM), format=NV12, width=%d, height=%d, framerate=%d/%d",
@@ -15,11 +23,13 @@ static void set_capsfilter(GstElement *caps_elem, int width, int height, int fps
   gst_caps_unref(caps);
 }
 
+/** Create the directory path if non-empty (mkdir -p style). */
 static void ensure_dir(const std::string &dir) {
   if (dir.empty()) return;
   g_mkdir_with_parents(dir.c_str(), 0755);
 }
 
+/** Build a camX_YYYYmmdd_HHMMSS.{mkv|mp4} full path in dir. */
 static std::string timestamped_name(int sensor_id, const std::string &dir, const std::string &ext) {
   GDateTime *now = g_date_time_new_now_local();
   gchar *ts = g_date_time_format(now, "%Y%m%d_%H%M%S");
@@ -38,6 +48,9 @@ DualRecorderService::DualRecorderService() {}
 
 DualRecorderService::~DualRecorderService() { std::string err; Stop(&err); }
 
+/**
+ * @brief Handle pipeline bus messages; quit main loop on EOS/ERROR.
+ */
 gboolean DualRecorderService::BusCall(GstBus *, GstMessage *msg, gpointer data) {
   DualRecorderService *self = static_cast<DualRecorderService *>(data);
   switch (GST_MESSAGE_TYPE(msg)) {
@@ -60,12 +73,18 @@ gboolean DualRecorderService::BusCall(GstBus *, GstMessage *msg, gpointer data) 
   return TRUE;
 }
 
+/**
+ * @brief GLib timeout callback that injects an EOS event into the pipeline.
+ */
 gboolean DualRecorderService::SendEosCb(gpointer data) {
   GstElement *pipeline = GST_ELEMENT(data);
   gst_element_send_event(pipeline, gst_event_new_eos());
   return G_SOURCE_REMOVE;
 }
 
+/**
+ * @brief Construct two symmetric branches: source -> caps -> queue -> enc -> parse -> mux -> sink.
+ */
 bool DualRecorderService::BuildPipeline(const DualRecordOptions &opt, std::string *err) {
   if (pipeline_) return true;
 
@@ -77,6 +96,7 @@ bool DualRecorderService::BuildPipeline(const DualRecordOptions &opt, std::strin
     }
   }
 
+  // Create the root pipeline
   pipeline_ = gst_pipeline_new("dual-recorderd");
   if (!pipeline_) { if (err) *err = "Failed to create pipeline"; return false; }
 
@@ -121,6 +141,7 @@ bool DualRecorderService::BuildPipeline(const DualRecordOptions &opt, std::strin
     snprintf(name, sizeof(name), "queue%d", i);
     b[i].queue = gst_element_factory_make("queue", name);
     if (!b[i].queue) { if (err) *err = "queue create failed"; return false; }
+    // Set unbounded queue sizes to avoid backpressure from downstream disk IO
     g_object_set(b[i].queue, "max-size-buffers", 0, "max-size-bytes", 0, "max-size-time", 0, NULL);
 
     snprintf(name, sizeof(name), "enc%d", i);
@@ -157,11 +178,13 @@ bool DualRecorderService::BuildPipeline(const DualRecordOptions &opt, std::strin
     if (!b[i].sink) { if (err) *err = "filesink create failed"; return false; }
     g_object_set(b[i].sink, "location", outs[i].c_str(), "sync", opt.filesink_sync, "async", FALSE, NULL);
 
+    // Add branch elements to the pipeline and link in-order
     gst_bin_add_many(GST_BIN(pipeline_), b[i].src, b[i].caps, b[i].queue, b[i].enc, b[i].parser, b[i].mux, b[i].sink, NULL);
     if (!gst_element_link_many(b[i].src, b[i].caps, b[i].queue, b[i].enc, b[i].parser, b[i].mux, b[i].sink, NULL)) {
       if (err) *err = "link failed"; return false; }
   }
 
+  // Use NONE start-time so both branches start from the same running time
   gst_element_set_start_time(pipeline_, GST_CLOCK_TIME_NONE);
 
   loop_ = g_main_loop_new(NULL, FALSE);
@@ -175,8 +198,10 @@ bool DualRecorderService::BuildPipeline(const DualRecordOptions &opt, std::strin
   return true;
 }
 
+/** Run the GLib main loop for the pipeline on a background thread. */
 void DualRecorderService::LoopThread() { g_main_loop_run(loop_); }
 
+/** Start the pipeline and spawn the loop thread. */
 bool DualRecorderService::Start(const DualRecordOptions &opt, std::string *err) {
   if (running_) { if (err) *err = "already running"; return false; }
   if (!pipeline_) {
@@ -189,6 +214,9 @@ bool DualRecorderService::Start(const DualRecordOptions &opt, std::string *err) 
   return true;
 }
 
+/**
+ * @brief Stop recording by sending EOS, joining main loop, and tearing down.
+ */
 bool DualRecorderService::Stop(std::string * /*err*/) {
   if (!pipeline_) return true;
   gst_element_send_event(pipeline_, gst_event_new_eos());
@@ -204,9 +232,9 @@ bool DualRecorderService::Stop(std::string * /*err*/) {
   return true;
 }
 
+/** Return a simple status string describing lifecycle state. */
 std::string DualRecorderService::Status() const {
   if (running_) return "RUNNING";
   if (pipeline_) return "READY";
   return "IDLE";
 }
-

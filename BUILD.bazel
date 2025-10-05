@@ -1,0 +1,19 @@
+filegroup(
+    name = "all_source",
+    srcs = glob([
+        "src/**/*.h",
+        "src/**/*.hh",
+        "src/**/*.hpp",
+        "src/**/*.c",
+        "src/**/*.cc",
+        "src/**/*.cpp",
+        "src/**/*.cxx",
+        "src/**/*.cu",
+        "src/**/*.cuh",
+    ], exclude=[
+        "src/**/third_party/**",
+        "src/**/external/**",
+    ]),
+    visibility = ["//visibility:public"],
+)
+

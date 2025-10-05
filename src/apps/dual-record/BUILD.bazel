@@ -37,7 +37,8 @@ cc_binary(
         "dualctl.cpp",
     ],
     copts = ["-std=c++17"],
-    deps = [],
+    deps = [
+    ],
     visibility = ["//visibility:public"],
 )
 
@@ -48,10 +49,22 @@ cc_binary(
     ],
     copts = [
         "-std=c++17",
-        "-DHSTREAM_HAVE_SIMPLEBLE",
     ],
     deps = [
         "@simpleble//:simpleble",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_binary(
+    name = "evdev_remote_bridge",
+    srcs = [
+        "evdev_remote_bridge.cpp",
+    ],
+    copts = [
+        "-std=c++17",
+    ],
+    deps = [
     ],
     visibility = ["//visibility:public"],
 )

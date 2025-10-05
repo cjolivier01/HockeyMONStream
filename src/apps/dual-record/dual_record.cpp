@@ -1,6 +1,11 @@
-// Dual IMX477 recorder: capture two CSI cameras with nvarguscamerasrc
-// and record to two H.265 MKV files at up to 30fps at the highest
-// resolution supported by the sensor.
+/**
+ * @file dual_record.cpp
+ * @brief Standalone dual-camera recorder using GStreamer on Jetson.
+ *
+ * Captures from two CSI sensors via `nvarguscamerasrc` and records to two
+ * files (H.265 in MKV/MP4). Each camera branch is independent within the same
+ * pipeline to share a common clock. Suitable for simple two-stream capture.
+ */
 
 #include <gst/gst.h>
 #include <glib.h>
@@ -8,21 +13,36 @@
 #include <string.h>
 #include <signal.h>
 
+/**
+ * @brief Per-camera elements and settings for a single pipeline branch.
+ */
 struct CamBranch {
+  /** Argus sensor index for this branch. */
   int sensor_id = 0;
+  /** Output filename (owned). */
   gchar *outfile = nullptr;
+  /** Source: nvarguscamerasrc. */
   GstElement *src = nullptr;
+  /** Caps filter to request format/geometry/framerate. */
   GstElement *caps = nullptr;
+  /** Queue to decouple downstream IO latency. */
   GstElement *queue = nullptr;
+  /** Hardware encoder (nvv4l2h265enc). */
   GstElement *enc = nullptr;
+  /** Parser (h265parse). */
   GstElement *parser = nullptr;
+  /** Container muxer (matroskamux or qtmux). */
   GstElement *mux = nullptr;
+  /** File sink. */
   GstElement *sink = nullptr;
 };
 
 static GMainLoop *main_loop = nullptr;
 static GstElement *g_pipeline = nullptr;
 
+/**
+ * @brief GStreamer bus watch; exits the main loop on EOS/ERROR.
+ */
 static gboolean bus_call(GstBus *bus, GstMessage *msg, gpointer data) {
   (void)bus;
   GMainLoop *loop = (GMainLoop *)data;
@@ -53,12 +73,14 @@ static gboolean bus_call(GstBus *bus, GstMessage *msg, gpointer data) {
   return TRUE;
 }
 
+/** SIGINT/SIGTERM handler to quit the main loop cleanly. */
 static void handle_sigint(int) {
   if (main_loop) {
     g_main_loop_quit(main_loop);
   }
 }
 
+/** Print CLI usage. */
 static void print_usage(const char *prog) {
   g_print(
       "Usage: %s [--sensor0 N] [--sensor1 N] [--out0 file.mkv] [--out1 file.mkv]\\n"
@@ -69,6 +91,7 @@ static void print_usage(const char *prog) {
       prog);
 }
 
+/** Timeout callback: inject EOS after --duration-sec elapses. */
 static gboolean send_eos_cb(gpointer data) {
   GstElement *pipeline = GST_ELEMENT(data);
   g_print("Duration elapsed; sending EOS...\n");
@@ -76,6 +99,12 @@ static gboolean send_eos_cb(gpointer data) {
   return G_SOURCE_REMOVE; // run once
 }
 
+/**
+ * @brief CLI entry point for dual camera recording.
+ *
+ * Parses command-line options, builds a 2-branch pipeline, and records until
+ * EOS or a signal is received. See print_usage() for available flags.
+ */
 int main(int argc, char *argv[]) {
   // Defaults for IMX477: highest 30fps mode (commonly 3840x2160@30)
   gint sensor0 = 0;
@@ -195,7 +224,7 @@ int main(int argc, char *argv[]) {
   for (int i = 0; i < 2; ++i) {
     gchar name[64];
 
-    // nvarguscamerasrc
+    // Source: nvarguscamerasrc
     snprintf(name, sizeof(name), "src%d", i);
     cams[i].src = gst_element_factory_make("nvarguscamerasrc", name);
     if (!cams[i].src) {
@@ -238,7 +267,7 @@ int main(int argc, char *argv[]) {
     g_object_set(cams[i].caps, "caps", caps, NULL);
     gst_caps_unref(caps);
 
-    // Queue for isolation
+    // Queue for isolation between source/encode and file IO
     snprintf(name, sizeof(name), "queue%d", i);
     cams[i].queue = gst_element_factory_make("queue", name);
     if (!cams[i].queue) {
