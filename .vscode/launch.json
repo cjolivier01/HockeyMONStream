@@ -65,11 +65,11 @@
       "args": [
         "-c",
         "${workspaceFolder}/configs/ds_hockey_configure_stitching.yaml",
-        "-c",
-        "${workspaceFolder}/configs/ds_hockey_app_config.yaml",
+        // "-c",
+        // "${workspaceFolder}/configs/ds_hockey_app_config.yaml",
         // "-c",
         // "${workspaceFolder}/configs/dual_save_video.yaml",
-        //"-f",
+        "-f",
         "-g",
         //"mylive",
         //"dh-test",
@@ -107,9 +107,9 @@
         "/proc/self/cwd": "${workspaceFolder}",
         // "~/src": "${env:HOME}/src",
         //"${workspaceFolder}/src/external/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",`
-        "external/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",
+        //"external/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",
         //"external/hmdeepstream/deepstream/sources": "${env:HOME}/src/hstream/external/deepstream/sources",
-        "home/colivier/src/jetson-utils": "${workspaceFolder}/src/external/jetson-utils",
+        //"home/colivier/src/jetson-utils": "${workspaceFolder}/src/external/jetson-utils",
       },
       //"stopOnEntry": true,
       "env": {
