@@ -69,7 +69,7 @@
         // "${workspaceFolder}/configs/ds_hockey_app_config.yaml",
         // "-c",
         // "${workspaceFolder}/configs/dual_save_video.yaml",
-        "-f",
+        //"-f",
         "-g",
         //"mylive",
         //"dh-test",
