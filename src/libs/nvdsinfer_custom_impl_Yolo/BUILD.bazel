@@ -9,7 +9,7 @@ cc_binary(
     ]),
     copts = [
         "-Wall",
-        "-std=c++11",
+        "-std=c++17",
         "-fPIC",
         "-Wno-error=deprecated-declarations",
         "-DWITH_CUDA",
@@ -50,7 +50,7 @@ cuda_library(
         "*.cu",
     ]),
     copts=[
-        "-std=c++11",
+        "-std=c++17",
         "-Xcompiler=-fPIC",
         "-Xcompiler=-g",
         "-DWITH_CUDA",
