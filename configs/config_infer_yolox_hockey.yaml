@@ -3,7 +3,7 @@ property:
   net-scale-factor: 1
   model-color-format: 1
   onnx-file: /mnt/data/pretrained/deepstream/yolox/test_output_yolox_s_coco300_ch80.pth.onnx
-  model-engine-file: /home/colivier/src/hstream/model_b4_gpu0_fp32.engine
+  model-engine-file: /home/colivier/src/hstream/model_b2_gpu0_fp32.engine
   labelfile-path: /mnt/data/pretrained/deepstream/yolox/labels_coco.txt
   batch-size: 4
   network-mode: 0

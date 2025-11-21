@@ -14,15 +14,6 @@
       },
       {
         "path": "../MIPI_Camera"
-      },
-      {
-        "path": "../opencv-python"
-      },
-      {
-        "path": "../opencv-python/opencv_contrib/modules/cudacodec"
-      },
-      {
-        "path": "../opencv-python/opencv"
       }
     ],
   "settings": {

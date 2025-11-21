@@ -86,6 +86,20 @@ class Focuser {
   }
 };
 
+int find_working_bus(int low, int hi, const std::set<int>& dont_use) {
+  const int focal_distance = 10;
+  for (int i = std::min(low, hi), n = std::max(low, hi); i < n; ++i) {
+    if (dont_use.count(i)) {
+      continue;
+    }
+    Focuser focuser(i);
+    if (focuser.set(Focuser::OPT_FOCUS, focal_distance, /*verbose=*/true)) {
+      return i;
+    }
+  }
+  return -1;
+}
+
 // Helper function to set focus using the Focuser.
 bool focusing(Focuser& focuser, int val, bool verbose) {
   return focuser.set(Focuser::OPT_FOCUS, val, verbose);
@@ -158,6 +172,15 @@ absl::Status show_camera(
   }
 
   cv::VideoCapture cap(pipeline, cv::CAP_GSTREAMER);
+
+  if (focuser.bus == -1) {
+    int bus_check = find_working_bus(0, 16, {});
+    if (bus_check < 0) {
+      return absl::InternalError("Could not find bus");
+    }
+    std::cout << "Found working bus: " << bus_check << std::endl;
+    return absl::OkStatus();
+  }
 
   // Set an initial focus value.
   if (!focusing(focuser, focal_distance, verbose)) {
