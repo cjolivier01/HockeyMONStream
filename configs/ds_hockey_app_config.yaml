@@ -13,6 +13,9 @@
 application:
   enable-perf-measurement: 1
   perf-measurement-interval-sec: 5
+  # TODO: Draw indications of subtle events like when hitting extremes and/or edge cases
+  # These drawings should not interfere with normal viewing (ie don't draw in the center of the image -- maybe change the color of some text somewhere or something like that)
+  subtle-event-drawing: 1
   # use-nvmultiurisrcbin: 1  < -- doesnt seem to pick this up
   ##gie-kitti-output-dir=streamscl
 
@@ -99,44 +102,6 @@ source2:
   source-id: 2
   cuda-memory-type: 0
 
-# V4L2 Webcam (Actioncam1)
-# source3:
-#   enable: 0
-#   # 1: v4l2, 5: CSI
-#   type: 1
-#   camera-v4l2-dev-node: 1
-#   # uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
-#   camera-width: 1920
-#   camera-height: 1080
-#   camera-fps-n: 30
-#   camera-fps-d: 1
-#   video-format: RGBA
-#   media-type: image/jpeg
-#   num-sources: 1
-#   gpu-id: 0
-#   input-audio-rate: 189
-#   source-id: 0
-#   cuda-memory-type: 1
-
-# # V4L2 Webcam (Actioncam1)
-# source4:
-#   enable: 0
-#   # 1: v4l2, 5: CSI
-#   type: 1
-#   camera-v4l2-dev-node: 4
-#   # uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
-#   camera-width: 1920
-#   camera-height: 1080
-#   camera-fps-n: 30
-#   camera-fps-d: 1
-#   video-format: RGBA
-#   media-type: image/jpeg
-#   num-sources: 1
-#   gpu-id: 0
-#   input-audio-rate: 189
-#   source-id: 1
-#   cuda-memory-type: 1
-
 source7:
   enable: 0
   # 1: v4l2, 5: CSI
@@ -177,12 +142,13 @@ sink1:
   type: 2
   sync: 1
   # sync: 0
+  # source-id: 1
   sink-id: 1
   nvbuf-memory-type: 0
 
 # Encode to file
 sink2:
-  enable: 1
+  enable: 0
   sink-id: 2
   # Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 3
@@ -209,12 +175,12 @@ sink3:
   # Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
   type: 4
   #1=h264 2=h265
-  codec: 1
+  codec: 2
   #encoder type 0=Hardware 1=Software
   enc-type: 0
-  sync: 1
-  # bitrate: 4000000
-  bitrate: 200000
+  sync: 0
+  bitrate: 4000000
+  # bitrate: 200000
   #NVBUF-MEMORY-TYPE: 0
   #H264 Profile - 0=Baseline 2=Main 4=High
   #H265 Profile - 0=Main 1=Main10
@@ -414,9 +380,10 @@ hmplaycropper:
   enable: 1
   gpu-id: 0
   nvbuf-memory-type: 0
-  # plot-play-tracking: 1
+  plot-play-tracking: 1
   # plot-player-tracking: 0
-  # show: 1
+  no-crop: 0
+  show: 0
   show-scoreboard: 1
   plugin-type: playcropper
 
@@ -441,12 +408,22 @@ ds-playtracker:
   gpu-id: 0
   unique-id: 75
   draw: 0
+  show: 0
+  dynamic-acceleration-scaling: 1.0
   plugin-type: vpplaytracker
-  # play-tracker-class-id: 99
   config-file: play_tracker_config.yaml
+  # TOD: Make it work this way
+  play-tracker:
+    live-boxes:
+      - name: current_roi
+        dynamic-acceleration-scaling: 0
+      - name: current_roi_aspect
+        dynamic-acceleration-scaling: 1.0
+        scale_dest_width: 1.4
+        scale_dest_height: 1.4
 
 ds-fieldmask:
-  enable: 0
+  enable: 1
   gpu-id: 0
   unique-id: 76
   # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png

@@ -27,8 +27,9 @@ fi
 
 # Local zfs pool dir (if any) in case some symlinks go there (large storage pool)
 LOCAL_POOL=""
-if [ -d "/${USER}-pool" ]; then
-  LOCAL_POOL="-v /${USER}-pool:/${USER}-pool"
+POOL_USER_NAME=olivier
+if [ -d "/${POOL_USER_NAME}-pool" ]; then
+  LOCAL_POOL="-v /${POOL_USER_NAME}-pool:/${POOL_USER_NAME}-pool"
 fi
 
 docker run ${GPU_FLAGS} --privileged --user=$(id -u):$(id -g) -it \
@@ -39,6 +40,7 @@ docker run ${GPU_FLAGS} --privileged --user=$(id -u):$(id -g) -it \
   -p 22298:22298 \
   --runtime nvidia \
   -v /mnt:/mnt \
+  -v /dev/bus/usb:/dev/bus/usb/ -v /dev:/dev -v /media/$USER:/media/nvidia:slave \
   ${LOCAL_POOL} \
   -v ${HOME}:${HOME} \
   -v ${HOME}/.ssh:${HOME}/.ssh \

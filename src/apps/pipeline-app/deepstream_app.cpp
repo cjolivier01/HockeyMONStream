@@ -1963,7 +1963,7 @@ gboolean create_pipeline(
           hmaudio_index < sizeof(appCtx->config.hmaudio_config) / sizeof(appCtx->config.hmaudio_config[0]);
           ++hmaudio_index)
         if (appCtx->config.hmaudio_config[hmaudio_index].enable) {
-          assert(i == 0); // what to do if nto 0?
+          // assert(i == 0); // what to do if not 0?
           if (!create_hmaudio_bin(
                   GST_BIN(pipeline->instance_bins[i].bin),
                   &appCtx->config.hmaudio_config[hmaudio_index],

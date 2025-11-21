@@ -4,10 +4,10 @@ cc_library(
     name = "utils",
     srcs = glob([
         "*.cpp",
-    ], exclude = ["ModPipeline.cpp"]),
+    ], exclude = ["ModPipeline.cpp", "Surface.cpp"]),
     hdrs = glob([
         "*.h",
-    ]),
+    ], exclude = ["ModPipeline.h", "Surface.h"]),
     copts = [
         "-fPIC",
         "-std=c++20",
@@ -15,6 +15,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        ":surface",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
         "@hm//hockeymom/csrc/play_tracker",
@@ -31,6 +32,22 @@ cc_library(
 )
 
 cc_library(
+  name = "surface",
+  srcs = ["Surface.cpp"],
+  hdrs = ["Surface.h"],
+  include_prefix=INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    "@hm//hockeymom/csrc/play_tracker",
+    "@deepstream//:deepstream_lib",
+    "@jetson-utils//image:image_format",
+    # ":utils",
+    # "@gtk3",
+    "@glib",
+  ],
+)
+
+cc_library(
   name = "mod_pipeline",
   srcs = ["ModPipeline.cpp"],
   hdrs = ["ModPipeline.h"],
@@ -40,5 +57,15 @@ cc_library(
     ":utils",
     "@gtk3",
     "@gstreamer",
+  ],
+)
+
+cc_library(
+  name = "perspective",
+  srcs = ["Perspective.cpp"],
+  hdrs = ["Perspective.h"],
+  include_prefix=INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
   ],
 )

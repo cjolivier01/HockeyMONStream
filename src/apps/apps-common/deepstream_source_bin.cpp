@@ -251,26 +251,6 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
 
   switch (config->type) {
     case NV_DS_SOURCE_CAMERA_CSI:
-    assert(config->camera_fps_d);
-      if (config->camera_auto_focus) {
-        // TODO: auto-focus elsewhere and in parallel
-        // Auto-focus it before we create any elements that might touch the camera
-        // std::cout << "Auto-focusing CSI camera device " << config->camera_csi_sensor_id << std::endl;
-        // absl::Status af_status = hm::camera::auto_focus_csi_camera(
-        //     config->camera_csi_sensor_id,
-        //     config->camera_i2c_bus,
-        //     config->camera_width,
-        //     config->camera_height,
-        //     config->camera_fps_n,
-        //     config->camera_fps_d,
-        //     /*show=*/false,
-        //     /*interactive=*/false,
-        //     /*verbose=*/false);
-        // if (!af_status.ok()) {
-        //   std::cerr << af_status << std::endl;
-        //   return false;
-        // }
-      }
       bin->src_elem = gst_element_factory_make(NVDS_ELEM_SRC_CAMERA_CSI, "csi_src_elem");
       break;
     case NV_DS_SOURCE_CAMERA_V4L2:
@@ -350,7 +330,8 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
         NULL);
   } else {
     caps = gst_caps_new_simple(
-        config->media_type ? config->media_type : "video/x-raw",
+        //config->media_type ? config->media_type : "video/x-raw",
+        "video/x-raw",
         "format",
         G_TYPE_STRING,
         "NV12",
@@ -374,6 +355,21 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
       goto done;
     }
     gst_bin_add(GST_BIN(bin->bin), bin->src_decoder);
+  } else if (config->media_type && strstr(config->media_type, "h264")) {
+    // assert(!bin->src_parser);
+    bin->src_parser = gst_element_factory_make("h264parse", "cam_h264parse");
+    if(!bin->src_parser) {
+      NVGSTDS_ERR_MSG_V("Failed to create 'cam_h264parse'");
+      goto done;
+    }
+    gst_bin_add(GST_BIN(bin->bin), bin->src_parser);
+    bin->src_decoder = gst_element_factory_make("avdec_h264", "cam_h264_decoder");
+    if (!bin->src_decoder) {
+      NVGSTDS_ERR_MSG_V("Failed to create 'cam_decodebin'");
+      goto done;
+    }
+    gst_bin_add(GST_BIN(bin->bin), bin->src_decoder);
+    // NVGSTDS_LINK_ELEMENT(bin->parser, bin->src_decoder);
   }
 
   if (config->type == NV_DS_SOURCE_CAMERA_CSI) {
@@ -438,7 +434,12 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
     if (bin->src_decoder) {
       // print_pads(bin->src_elem);
       // print_pads(bin->src_decoder);
-      NVGSTDS_LINK_ELEMENT(bin->src_elem, bin->src_decoder);
+      if (bin->src_parser) {
+        NVGSTDS_LINK_ELEMENT(bin->src_elem, bin->src_parser);
+        NVGSTDS_LINK_ELEMENT(bin->src_parser, bin->src_decoder);
+      } else {
+        NVGSTDS_LINK_ELEMENT(bin->src_elem, bin->src_decoder);
+      }
       NVGSTDS_LINK_ELEMENT(bin->src_decoder, bin->cap_filter1);
     } else {
       NVGSTDS_LINK_ELEMENT(bin->src_elem, bin->cap_filter1);

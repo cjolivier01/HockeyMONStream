@@ -1,5 +1,4 @@
 #include "gstvideoprep.h"
-#include "gstnvdsbufferpool.h"
 
 #include <cuda_runtime.h>
 #include <glib-2.0/glib.h>
@@ -10,16 +9,14 @@
 #include <gstreamer-1.0/gst/gstinfo.h>
 #include <gstreamer-1.0/gst/gstpad.h>
 #include <npp.h>
-#include "deepstream/sources/includes/nvbufsurface.h"
 #include <cmath>
 #include <iostream>
 #include <mutex>
+#include "deepstream/sources/includes/nvbufsurface.h"
 #include "gst-nvcommon.h"
-#include "gstnvdsbufferpool.h"
 #include "gstnvdsmeta.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/gst_utils.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_interface.hpp"
-#include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurftransform.h"
 #include "nvds_dewarper_meta.h"
 #include "nvdsmeta.h"
@@ -42,11 +39,12 @@
 
 #define DEFAULT_NUM_VIDEO_PREPPED_SURFACES (4)
 #define DEFAULT_DEWARP_DUMP_FRAMES 0
-// #define DEFAULT_DEWARP_OUTPUT_WIDTH 0
-// #define DEFAULT_DEWARP_OUTPUT_HEIGHT 0
 
-#define DEFAULT_DEWARP_OUTPUT_WIDTH 256
-#define DEFAULT_DEWARP_OUTPUT_HEIGHT 128
+#define DEFAULT_DEWARP_OUTPUT_WIDTH 0
+#define DEFAULT_DEWARP_OUTPUT_HEIGHT 0
+
+// #define DEFAULT_DEWARP_OUTPUT_WIDTH 256
+// #define DEFAULT_DEWARP_OUTPUT_HEIGHT 128
 
 #define USE_CUDA_STREAM
 
@@ -226,11 +224,26 @@ static gboolean gst_videoprep_accept_caps(GstBaseTransform* btrans, GstPadDirect
 
   GST_DEBUG_OBJECT(videoprep, "accept caps %" GST_PTR_FORMAT, caps);
 
+  GstVideoInfo vid_info = {
+      0,
+  };
+  if (!gst_video_info_from_caps(&vid_info, caps)) {
+    GST_ERROR("invalid input caps");
+    return FALSE;
+  }
+
   /* get all the formats we can handle on this pad */
-  if (direction == GST_PAD_SINK)
+  if (direction == GST_PAD_SINK) {
     allowed = videoprep->sinkcaps;
-  else
+    assert(!videoprep->input_width || videoprep->input_width == (guint)vid_info.width);
+    assert(!videoprep->input_height || videoprep->input_height == (guint)vid_info.height);
+    videoprep->input_width = vid_info.width;
+    videoprep->input_height = vid_info.height;
+  } else {
     allowed = videoprep->srccaps;
+    assert(videoprep->output_width == (guint)vid_info.width);
+    assert(videoprep->output_height == (guint)vid_info.height);
+  }
 
   if (!allowed) {
     GST_DEBUG_OBJECT(videoprep, "failed to get allowed caps");
@@ -315,7 +328,12 @@ static GstCaps* gst_videoprep_fixate_caps(
   if (videoprep->custom_create_params.output_width_height[1]) {
     videoprep->output_height = videoprep->custom_create_params.output_width_height[1];
   }
-  assert(videoprep->output_width && videoprep->output_height);
+  if (!videoprep->output_width && !videoprep->output_height) {
+    videoprep->output_width = videoprep->input_width;
+    videoprep->output_height = videoprep->input_height;
+    assert(videoprep->output_width && videoprep->output_height);
+  }
+
   out_width = videoprep->output_width;
   out_height = videoprep->output_height;
 
@@ -493,22 +511,42 @@ static GstCaps* gst_videoprep_transform_caps(
   GstCaps* temp_caps = NULL;
 
   if (direction == GST_PAD_SINK) {
-    assert(videoprep->output_width && videoprep->output_height);
-    new_caps = gst_caps_new_simple(
-        "video/x-raw",
-        "format",
-        G_TYPE_STRING,
-        "RGBA",
-        "width",
-        G_TYPE_INT,
-        videoprep->output_width,
-        "height",
-        G_TYPE_INT,
-        videoprep->output_height,
-        "batch-size",
-        G_TYPE_UINT,
-        videoprep->num_batch_buffers,
-        NULL);
+    if (!videoprep->output_width && !videoprep->output_height) {
+      new_caps = gst_caps_new_simple(
+          "video/x-raw",
+          "format",
+          G_TYPE_STRING,
+          "RGBA",
+          "width",
+          GST_TYPE_INT_RANGE,
+          1,
+          G_MAXINT,
+          "height",
+          GST_TYPE_INT_RANGE,
+          1,
+          G_MAXINT,
+          "batch-size",
+          G_TYPE_UINT,
+          videoprep->num_batch_buffers,
+          NULL);
+    } else {
+      assert(videoprep->output_width && videoprep->output_height);
+      new_caps = gst_caps_new_simple(
+          "video/x-raw",
+          "format",
+          G_TYPE_STRING,
+          "RGBA",
+          "width",
+          G_TYPE_INT,
+          videoprep->output_width,
+          "height",
+          G_TYPE_INT,
+          videoprep->output_height,
+          "batch-size",
+          G_TYPE_UINT,
+          videoprep->num_batch_buffers,
+          NULL);
+    }
     feature = gst_caps_features_new("memory:NVMM", NULL);
     gst_caps_set_features(new_caps, 0, feature);
   }
@@ -594,7 +632,7 @@ static GstStateChangeReturn gst_videoprep_change_state(GstElement* element, GstS
       return GST_STATE_CHANGE_FAILURE;
     }
   } else if (transition == GST_STATE_CHANGE_PAUSED_TO_READY) {
-    std::cout << "stopping..." << std::endl;
+    // std::cout << "stopping..." << std::endl;
   }
   GstVideoPrepClass* klass = GST_VIDEOPREP_CLASS(element);
   assert(GST_IS_VIDEOPREP_CLASS(klass));
@@ -606,7 +644,13 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
   GstVideoPrep* videoprep = GST_VIDEOPREP(trans);
   GstCapsFeatures* ift = NULL;
   // GstStructure* config = NULL;
-  GstVideoInfo in_info = {}, out_info = {};
+  GstVideoInfo in_info =
+                   {
+                       0,
+                   },
+               out_info = {
+                   0,
+               };
 
   // videoprep->input_batch_size = gst::get_batch_size_from_caps(incaps);
   // videoprep->output_batch_size = gst::get_batch_size_from_caps(outcaps);
@@ -788,7 +832,7 @@ static gboolean gst_videoprep_start(GstBaseTransform* btrans) {
 static gboolean gst_videoprep_stop(GstBaseTransform* btrans) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(btrans);
 
-  std::cout << "gst_videoprep_stop: " << videoprep->plugin_type << std::endl;
+  // std::cout << "gst_videoprep_stop: " << videoprep->plugin_type << std::endl;
 
   cudaError_t CUerr = cudaSuccess;
 

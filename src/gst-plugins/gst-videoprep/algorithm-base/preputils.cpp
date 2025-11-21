@@ -1,16 +1,11 @@
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
-
+#include <assert.h>
+#include <npp.h>
+#include <string.h>
+#include <cassert>
 #include "cudaCrop.h"
 #include "cudaWarp.h"
 #include "cupano/cuda/cudaStatus.h"
-
-#include <assert.h>
-#include <string.h>
-
-#include <cassert>
-#include <iostream>
-
-#include <npp.h>
 
 namespace hm {
 
@@ -126,19 +121,17 @@ cudaError_t mapNppStatusToCudaError(const NppStatus& status) {
   }
 }
 
-/**
- * @brief Wrapper over the Warp360 library calls.
- */
-
-std::vector<hm::BBox> get_tracking_boxes(NvDsBatchMeta* batch_meta) {
+std::vector<hm::BBox> get_object_boxes(NvDsBatchMeta* batch_meta, int class_id_low, int class_id_hi) {
   std::vector<hm::BBox> results;
-  const size_t batch_size = g_list_length(batch_meta->frame_meta_list);
+  const size_t batch_size = batch_meta->num_frames_in_batch;
+  // Debug-only assert sanity check
+  assert(batch_size == g_list_length(batch_meta->frame_meta_list));
   results.reserve(batch_size);
   for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != nullptr; l_frame = l_frame->next) {
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)l_frame->data;
     for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
       NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
-      if (obj_meta->class_id == 99) {
+      if (obj_meta->class_id >= class_id_low && obj_meta->class_id <= class_id_hi) {
         results.emplace_back(hm::BBox(
             obj_meta->rect_params.left,
             obj_meta->rect_params.top,
@@ -149,7 +142,6 @@ std::vector<hm::BBox> get_tracking_boxes(NvDsBatchMeta* batch_meta) {
     }
   }
   // All or nothing
-  assert(results.empty() || results.size() == batch_size);
   return results;
 }
 

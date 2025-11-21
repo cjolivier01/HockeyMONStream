@@ -1,5 +1,5 @@
-FROM nvcr.io/nvidia/deepstream:7.1-gc-triton-devel
-# FROM nvcr.io/nvidia/deepstream:6.4-triton-multiarch
+# FROM nvcr.io/nvidia/deepstream:7.1-gc-triton-devel
+FROM nvcr.io/nvidia/deepstream:7.1-triton-multiarch
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -53,101 +53,131 @@ USER root
 # WORKDIR /home/$USERNAME/src
 # RUN rm -rf nv-codec-headers
 
-WORKDIR /root
-RUN git clone https://github.com/FFmpeg/FFmpeg.git ffmpeg && cd ffmpeg && git checkout n5.1.4
+# WORKDIR /root
+# RUN git clone https://github.com/FFmpeg/FFmpeg.git ffmpeg && cd ffmpeg && git checkout n5.1.4
 
 # Configure FFmpeg with the desired codecs and options
-WORKDIR /root/ffmpeg
-RUN ./configure \
-  --prefix="/usr/local" \
-  --extra-cflags='-I/usr/local/cuda/include' \
-  --extra-ldflags='-L/usr/local/cuda/lib64' \
-  --disable-doc \
-  --enable-decoder=aac \
-  --enable-decoder=h264 \
-  --enable-decoder=h264_cuvid \
-  --enable-decoder=hevc_cuvid \
-  --enable-decoder=av1_cuvid \
-  --enable-decoder=rawvideo \
-  --enable-indev=lavfi \
-  --enable-encoder=libx264 \
-  --enable-encoder=h264_nvenc \
-  --enable-encoder=hevc_nvenc \
-  --enable-encoder=av1_nvenc \
-  --enable-demuxer=mov \
-  --enable-muxer=mp4 \
-  --enable-filter=scale \
-  --enable-filter=testsrc2 \
-  --enable-protocol=file \
-  --enable-protocol=https \
-  --enable-gnutls \
-  --enable-shared \
-  --enable-gpl \
-  --enable-nonfree \
-  --enable-cuda-nvcc \
-  --enable-libx264 \
-  --enable-libnpp \
-  --enable-nvenc \
-  --enable-cuvid \
-  --enable-nvdec \
-  --enable-pic \
-  --enable-rpath \
-  --extra-cflags=-I/usr/local/cuda/include \
-  --extra-ldflags=-L/usr/local/cuda/lib64 \
-  && make -j$(nproc)
+# WORKDIR /root/ffmpeg
+# RUN ./configure \
+#   --prefix="/usr/local" \
+#   --extra-cflags='-I/usr/local/cuda/include' \
+#   --extra-ldflags='-L/usr/local/cuda/lib64' \
+#   --disable-doc \
+#   --enable-decoder=aac \
+#   --enable-decoder=h264 \
+#   --enable-decoder=h264_cuvid \
+#   --enable-decoder=hevc_cuvid \
+#   --enable-decoder=av1_cuvid \
+#   --enable-decoder=rawvideo \
+#   --enable-indev=lavfi \
+#   --enable-encoder=libx264 \
+#   --enable-encoder=h264_nvenc \
+#   --enable-encoder=hevc_nvenc \
+#   --enable-encoder=av1_nvenc \
+#   --enable-demuxer=mov \
+#   --enable-muxer=mp4 \
+#   --enable-filter=scale \
+#   --enable-filter=testsrc2 \
+#   --enable-protocol=file \
+#   --enable-protocol=https \
+#   --enable-gnutls \
+#   --enable-shared \
+#   --enable-gpl \
+#   --enable-nonfree \
+#   --enable-cuda-nvcc \
+#   --enable-libx264 \
+#   --enable-libnpp \
+#   --enable-nvenc \
+#   --enable-cuvid \
+#   --enable-nvdec \
+#   --enable-pic \
+#   --enable-rpath \
+#   --extra-cflags=-I/usr/local/cuda/include \
+#   --extra-ldflags=-L/usr/local/cuda/lib64 \
+#   && make -j$(nproc)
 
-RUN make -j $(nproc) install
-RUN rm -rf ffmpeg
+# RUN make -j $(nproc) install
+# RUN rm -rf ffmpeg
 
 #-------------------------------------------------------------
 # BEGIN VSCode Dev Containers packages
 #-------------------------------------------------------------
 RUN apt-get install -y \
-	apt-utils \
-        bash-completion \
-        openssh-client \
-        gnupg2 \
-        dirmngr \
-        iproute2 \
-        procps \
-        lsof \
-        htop \
-        net-tools \
-        psmisc \
-        curl \
-        tree \
-        wget \
-        rsync \
-        ca-certificates \
-        unzip \
-        bzip2 \
-        xz-utils \
-        zip \
-        nano \
-        vim-tiny \
-        less \
-        jq \
-        lsb-release \
-        apt-transport-https \
-        dialog \
-        libc6 \
-        libgcc1 \
-        libkrb5-3 \
-        libgssapi-krb5-2 \
-        libicu[0-9][0-9] \
-        liblttng-ust[0-9] \
-        libstdc++6 \
-        zlib1g \
-        locales \
-        sudo \
-        ncdu \
-        man-db \
-        strace \
-        manpages \
-        manpages-dev \
-        init-system-helpers
+  apt-utils \
+  bash-completion \
+  openssh-client \
+  gnupg2 \
+  dirmngr \
+  iproute2 \
+  procps \
+  lsof \
+  htop \
+  net-tools \
+  psmisc \
+  curl \
+  tree \
+  wget \
+  rsync \
+  ca-certificates \
+  unzip \
+  bzip2 \
+  xz-utils \
+  zip \
+  nano \
+  vim-tiny \
+  less \
+  jq \
+  lsb-release \
+  apt-transport-https \
+  dialog \
+  libc6 \
+  libgcc1 \
+  libkrb5-3 \
+  libgssapi-krb5-2 \
+  libicu[0-9][0-9] \
+  liblttng-ust[0-9] \
+  libstdc++6 \
+  zlib1g \
+  locales \
+  sudo \
+  ncdu \
+  man-db \
+  strace \
+  manpages \
+  manpages-dev \
+  init-system-helpers
 #-------------------------------------------------------------
 # END VSCode Dev Containers packages
+#-------------------------------------------------------------
+
+#-------------------------------------------------------------
+# BEGIN HStream Dev Containers packages
+#-------------------------------------------------------------
+# RUN apt-get install -y \
+#   curl \
+#   libva-dev \
+#   libsoup2.4-dev \
+#   libjson-glib-dev \
+#   libjsoncpp-dev \
+#   protobuf-compiler \
+#   libgstrtspserver-1.0-dev \
+#   libgstreamer-plugins-bad1.0-dev \
+#   gstreamer1.0-rtsp \
+#   libglew-dev \
+#   libabsl-dev \
+#   libfftw3-dev \
+#   libv4l-dev \
+#   v4l-utils \
+#   v4l-conf \
+#   libgtk-3-dev \
+#   libtiff5-dev \
+#   libgtkglext1-dev \
+#   tensorrt-dev \
+#   libyaml-cpp-dev \
+#   apt-file \
+#   aptitude
+#-------------------------------------------------------------
+# END HStream Dev Containers packages
 #-------------------------------------------------------------
 
 # Set the root password (for demo purposes, use a secure password in production)
@@ -165,6 +195,29 @@ RUN useradd -r -g $USERNAME -G $USERNAME,docker,sudo $USERNAME
 # Allow root login via SSH (for demo purposes)
 RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
 
+# libvigraimpex-dev
+RUN apt-get install -y \
+  curl \
+  libva-dev \
+  libsoup2.4-dev \
+  libjson-glib-dev \
+  libjsoncpp-dev \
+  protobuf-compiler \
+  libgstrtspserver-1.0-dev \
+  gstreamer1.0-rtsp \
+  libglew-dev \
+  libabsl-dev \
+  libfftw3-dev \
+  libv4l-dev \
+  v4l-utils \
+  v4l-conf \
+  libgtk-3-dev \
+  libtiff5-dev \
+  libgtkglext1-dev \
+  tensorrt-dev \
+  libyaml-cpp-dev \
+  apt-file \
+  aptitude
 
 ##############################################################
 # BEGIN HM Dependencies
@@ -227,6 +280,7 @@ RUN make install
 WORKDIR /home/$USERNAME/src
 RUN rm -rf vigra
 
+RUN pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 
 ##############################################################
 # END HM Dependencies
@@ -234,7 +288,9 @@ RUN rm -rf vigra
 USER root
 
 # Fix wrong version in distribution bazel file
-RUN sed -i 's/6\.2\.1/7.1/g' /opt/nvidia/graph-composer/extension-dev/build/registry.bzl
+RUN if [ -f /opt/nvidia/graph-composer/extension-dev/build/registry.bzl ]; then \
+      sed -i 's/6\.2\.1/7.1/g' /opt/nvidia/graph-composer/extension-dev/build/registry.bzl; \
+    fi
 
 # In case any upgrades were missed?  Ideally, should do nothing.
 RUN apt-get upgrade -y

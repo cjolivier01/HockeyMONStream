@@ -25,7 +25,7 @@
 #include "deepstream_common.h"
 #include "deepstream_sinks.h"
 
-static guint uid = 0;
+static std::atomic<guint> next_uid = 1;
 static GstRTSPServer* server[MAX_SINK_BINS];
 static guint server_count = 0;
 static GMutex server_cnt_lock;
@@ -89,7 +89,7 @@ gboolean create_fakesink_bin(const NvDsSinkRenderConfig* config, NvDsSinkBinSubB
   GstElement* connect_to;
   GstCaps* caps = NULL;
 
-  uid++;
+  const guint uid = next_uid++;
 
   struct cudaDeviceProp prop;
   cudaGetDeviceProperties(&prop, config->gpu_id);
@@ -165,7 +165,7 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
   GstElement* connect_to;
   GstCaps* caps = NULL;
 
-  uid++;
+  const guint uid = next_uid++;
 
   struct cudaDeviceProp prop;
   cudaGetDeviceProperties(&prop, config->gpu_id);
@@ -338,7 +338,7 @@ static gboolean create_msg_conv_broker_bin(NvDsSinkMsgConvBrokerConfig* config, 
   gboolean ret = FALSE;
   gchar elem_name[50];
 
-  uid++;
+  const guint uid = next_uid++;
 
   g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin%d", uid);
   bin->bin = gst_bin_new(elem_name);
@@ -485,7 +485,7 @@ static gboolean create_encode_file_bin(NvDsSinkEncoderConfig* config, NvDsSinkBi
   guint profile = config->profile;
   const gchar* latency = g_getenv("NVDS_ENABLE_LATENCY_MEASUREMENT");
 
-  uid++;
+  const guint uid = next_uid++;
 
   g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin%d", uid);
   bin->bin = gst_bin_new(elem_name);
@@ -769,7 +769,7 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
   enum ServerSinkType sink_type;
 
   // guint rtsp_port_num = g_rtsp_port_num++;
-  uid++;
+  const guint uid = next_uid++;
 
   sink_type = get_server_sink_type(config->output_file_path);
   if (sink_type == SST_RTMP) {

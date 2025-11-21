@@ -7,13 +7,10 @@
         "path": "../jetson-utils"
       },
       {
-        "path": "../gopro_as_webcam_on_linux"
-      },
-      {
-        "path": "../gstreamer"
-      },
-      {
         "path": "../MIPI_Camera"
+      },
+      {
+        "path": "../simpleble"
       }
     ],
   "settings": {

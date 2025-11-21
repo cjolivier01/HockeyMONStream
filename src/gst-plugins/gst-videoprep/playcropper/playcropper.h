@@ -34,14 +34,15 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   absl::Mutex mu_process_;
   bool use_unfused_kernels_{false};
   bool show_{false};
+  bool no_crop_{false};
   size_t frame_count_{0};
   std::shared_ptr<draw_display::FontCache> font_cache_;
   float render_scale_{0.5};
   std::unique_ptr<hm::CudaMat<uchar4>> display_surface_;
   float fixed_edge_rotation_angle_{20.0};
   bool show_scoreboard_{false};
-  float scoreboard_width_ratio_{1.0/6};
-  float scoreboard_height_ratio_{1.0/6};
+  float scoreboard_width_ratio_{1.0/8};
+  float scoreboard_height_ratio_{1.0/8};
   std::unique_ptr<hm::scoreboard::Scoreboard<uchar4>> scoreboard_;
   std::vector<cv::Point2f> scoreboard_perspective_polygion_;
   size_t scoreboard_warp_interval_{3};

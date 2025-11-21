@@ -407,6 +407,7 @@ absl::Status create_control_points(
       "--right",
       right_file,
       "--max-control-points=500",
+      //"--max-control-points=1500",
 #ifdef __aarch64__
       "--scale=0.6",
 #endif
@@ -438,7 +439,7 @@ absl::Status create_field_mask(const std::string& game_dir, surface::Surface sur
   std::string game_id = get_game_id(stitched_file);
   std::vector<std::string> cmd{
       get_python_interp(),
-      fs::path("hmlib/segm/ice_rink.py"),
+      fs::path("scripts/find_ice_rink.py"),
       "--game-id",
       game_id,
 #ifdef __aarch64__

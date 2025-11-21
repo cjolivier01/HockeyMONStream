@@ -1,17 +1,5 @@
-/*
- * SPDX-FileCopyrightText: Copyright (c) 2017-2020 NVIDIA CORPORATION &
- * AFFILIATES. All rights reserved. SPDX-License-Identifier:
- * LicenseRef-NvidiaProprietary
- *
- * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
- * property and proprietary rights in and to this material, related
- * documentation and any modifications thereto. Any use, reproduction,
- * disclosure or distribution of this material and related documentation
- * without an express license agreement from NVIDIA CORPORATION or
- * its affiliates is strictly prohibited.
- */
-
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
+#include "absl/status/status.h"
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
 #include "hockeymom/csrc/play_tracker/ResizingBox.h"
 #include "hockeymom/csrc/play_tracker/TranslatingBox.h"
@@ -32,8 +20,10 @@ namespace gst_hm_playtracker {
 using namespace hm;
 using namespace hm::play_tracker;
 
-PlayDetectorConfig create_play_detector_config(const YAML::Node& yaml, hm::utils::ConfigLocator& locator) {
-  PlayDetectorConfig config;
+PlayDetectorConfig create_play_detector_config(
+    PlayDetectorConfig& config,
+    const YAML::Node& yaml,
+    hm::utils::ConfigLocator& locator) {
   SET_LOCATOR(locator, config, max_positions);
   SET_LOCATOR(locator, config, max_velocity_positions);
   SET_LOCATOR(locator, config, frame_step);
@@ -47,8 +37,10 @@ PlayDetectorConfig create_play_detector_config(const YAML::Node& yaml, hm::utils
   return config;
 }
 
-ResizingConfig create_resizing_config(const YAML::Node& yaml, hm::utils::ConfigLocator& locator) {
-  ResizingConfig config;
+ResizingConfig create_resizing_config(
+    ResizingConfig& config,
+    const YAML::Node& yaml,
+    hm::utils::ConfigLocator& locator) {
   SET_LOCATOR(locator, config, resizing_enabled);
   SET_LOCATOR(locator, config, max_speed_w);
   SET_LOCATOR(locator, config, max_speed_h);
@@ -68,9 +60,9 @@ ResizingConfig create_resizing_config(const YAML::Node& yaml, hm::utils::ConfigL
 }
 TranslatingBoxConfig create_translating_box_config(
     const BBox& arena_box,
+    TranslatingBoxConfig& config,
     const YAML::Node& yaml,
     hm::utils::ConfigLocator& locator) {
-  TranslatingBoxConfig config;
   SET_LOCATOR(locator, config, translation_enabled);
   SET_LOCATOR(locator, config, max_speed_x);
   SET_LOCATOR(locator, config, max_speed_y);
@@ -81,15 +73,17 @@ TranslatingBoxConfig create_translating_box_config(
   SET_LOCATOR(locator, config, sticky_size_ratio_to_frame_width);
   SET_LOCATOR(locator, config, sticky_translation_gaussian_mult);
   SET_LOCATOR(locator, config, unsticky_translation_size_ratio);
+  SET_LOCATOR(locator, config, dynamic_acceleration_scaling);
+  SET_LOCATOR(locator, config, arena_angle_from_vertical);
   config.arena_box = arena_box;
   return config;
 }
 
 LivingBoxConfig create_living_box_config(
+    LivingBoxConfig& config,
     const YAML::Node& yaml,
     hm::utils::ConfigLocator& locator,
     std::optional<FloatValue> fixed_aspect_ratio = std::nullopt) {
-  LivingBoxConfig config;
   SET_LOCATOR(locator, config, scale_dest_width);
   SET_LOCATOR(locator, config, scale_dest_height);
   SET_LOCATOR(locator, config, clamp_scaled_input_box);
@@ -101,12 +95,15 @@ AllLivingBoxConfig create_all_living_box_config(
     const BBox& arena_box,
     const YAML::Node& yaml,
     std::optional<FloatValue> fixed_aspect_ratio = std::nullopt) {
+  std::cout << std::endl;
+  std::cout << yaml << std::endl;
+
   AllLivingBoxConfig config;
   hm::utils::ConfigLocator locator;
   SET_LOCATOR(locator, config, name);
-  *((ResizingConfig*)&config) = create_resizing_config(yaml, locator);
-  *((TranslatingBoxConfig*)&config) = create_translating_box_config(arena_box, yaml, locator);
-  *((LivingBoxConfig*)&config) = create_living_box_config(yaml, locator, fixed_aspect_ratio);
+  *((ResizingConfig*)&config) = create_resizing_config(config, yaml, locator);
+  *((TranslatingBoxConfig*)&config) = create_translating_box_config(arena_box, config, yaml, locator);
+  *((LivingBoxConfig*)&config) = create_living_box_config(config, yaml, locator, fixed_aspect_ratio);
   set_config_from_yaml(yaml, locator);
   return config;
 }
@@ -168,7 +165,8 @@ void adjust_config(const BBox& arena_box, PlayTrackerConfig& pt_config, const st
     bcfg.sticky_translation = true;
     bcfg.arena_box = arena_box;
 
-    bcfg.dynamic_acceleration_scaling = true; // EXPERIMENTAL
+    bcfg.dynamic_acceleration_scaling = true; // EXPERIMENTA
+    // bcfg.dynamic_acceleration_scaling = false;
   }
 }
 
@@ -189,7 +187,7 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
       config.living_boxes.back().fixed_aspect_ratio = 16.0 / 9.0;
     }
   }
-  config.play_detector = create_play_detector_config(yaml, locator);
+  config.play_detector = create_play_detector_config(config.play_detector, yaml, locator);
 
   config.ignore_outlier_players = true; // EXPERIMENTAL
   config.ignore_left_and_right_extremes = false; // EXPERIMENTAL
@@ -241,6 +239,24 @@ hm::play_tracker::PlayTracker* get_or_create_play_tracker(DsPlayTrackerCtx* ctx,
   }
 
   return nullptr;
+}
+
+void plot_progress_bar(
+    hm::utils::PlotContext& plotter,
+    const hm::BBox& bbox,
+    float filled_ratio,
+    const hm::utils::ColorRGB& line_color,
+    const hm::utils::ColorRGB& unfilled_color,
+    const hm::utils::ColorRGB& fill_color) {
+  constexpr int kThickness = 1;
+  plotter.plot_rect(bbox, /*thickness=*/kThickness, line_color, /*fill_color=*/unfilled_color);
+  hm::BBox inner_rect = bbox.deflate(kThickness, kThickness);
+  hm::FloatValue ww = inner_rect.width() * std::abs(filled_ratio);
+  inner_rect.right = std::min(inner_rect.right, inner_rect.left + ww);
+  if (inner_rect.width() <= 0 || inner_rect.height() <= 0) {
+    return;
+  }
+  plotter.plot_rect(inner_rect, /*thickness=*/0, fill_color, fill_color);
 }
 
 void plot_resizing_state(
@@ -296,7 +312,7 @@ void plot_translation_state(
     double scale_height,
     std::optional<ILivingBox*> following_lbox = std::nullopt) {
   const hm::play_tracker::TranslationState& translation_state = lbox->get_translation_state();
-  (void)translation_state;
+  // (void)translation_state;
   BBox my_bbox = lbox->bounding_box().make_canvas_scaled(scale_width, scale_height);
   plotter.plot_rect(
       my_bbox, thickness, translation_state.translation_is_frozen ? hm::utils::ColorRGB{128, 128, 128} : color);
@@ -333,6 +349,15 @@ void plot_translation_state(
           Point{.x = my_center.x, .y = following_bbox_center.y},
           /*thickness=*/3,
           hm::utils::ColorRGB{255, 255, 0});
+      // Translation edge scale
+      hm::BBox prog(my_center, hm::WHDims{.width = sticky / 2, .height = 25});
+      plot_progress_bar(
+          plotter,
+          prog,
+          translation_state.last_arena_edge_center_position_scale,
+          hm::utils::ColorRGB{128, 128, 128},
+          hm::utils::ColorRGB{64, 64, 64},
+          hm::utils::ColorRGB{128, 255, 255});
     }
   }
 }
@@ -360,6 +385,22 @@ const hm::utils::ColorRGB breakway_edge_line{128, 0, 28};
 const hm::utils::ColorRGB breakway_edge_circle{128, 0, 28};
 
 } // namespace gst_hm_playtracker
+
+namespace {
+struct ScaleXY {
+  double scale_x{1.0};
+  double scale_y{1.0};
+};
+
+ScaleXY get_scale_xy(const GstDsPlayTrackerFrame& frame) {
+  double pipeline_width = frame.input_surf_params->width;
+  double pipeline_height = frame.input_surf_params->height;
+  const double scale_x = double(frame.frame_meta->source_frame_width) / pipeline_width;
+  const double scale_y = double(frame.frame_meta->source_frame_height) / pipeline_height;
+  return ScaleXY{.scale_x = scale_x, .scale_y = scale_y};
+}
+
+} // namespace
 
 DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* initParams) {
   DsPlayTrackerCtx* ctx = new DsPlayTrackerCtx();
@@ -409,12 +450,9 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
 
   // assert(frame.frame_meta->pipeline_width && frame.frame_meta->pipeline_height);
 
-  double pipeline_width = frame.input_surf_params->width;
-  double pipeline_height = frame.input_surf_params->height;
-  const double scale_x = double(frame.frame_meta->source_frame_width) / pipeline_width;
-  const double scale_y = double(frame.frame_meta->source_frame_height) / pipeline_height;
-
-  size_t draw_count = 0;
+  ScaleXY scale_xy = get_scale_xy(frame);
+  const auto& scale_x = scale_xy.scale_x;
+  const auto& scale_y = scale_xy.scale_y;
 
   for (NvDsMetaList* l_obj = frame.frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
     NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
@@ -434,63 +472,73 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
 
   frame.play_tracker_results = play_tracker->forward(tracking_ids, tracking_boxes);
   if (ctx->initParams.draw) {
-    hm::utils::PlotContext plotter(frame.frame_meta, "");
-    // Plot any nontrivial arena box
-    if (ctx->arena_box.left > 0 || ctx->arena_box.top > 0 ||
-        ctx->arena_box.width() < frame.frame_meta->source_frame_width ||
-        ctx->arena_box.height() < frame.frame_meta->source_frame_height) {
-      plotter.plot_rect(ctx->arena_box, 2, hm::utils::ColorRGBA{255, 64, 64, 255});
-    }
-    for (const auto& cluster_item : frame.play_tracker_results.cluster_boxes) {
-      plotter.plot_rect(
-          cluster_item.second.make_canvas_scaled(1.0 / scale_x, 1.0 / scale_y),
-          1,
-          hm::utils::ColorRGB{0, 0, 0},
-          hm::utils::ColorRGBA{128, 128, 128, 75});
-    }
-    for (size_t i = 0, n = frame.play_tracker_results.tracking_boxes.size(); i < n; ++i) {
-      // plotter.plot_rect(frame.play_tracker_results.tracking_boxes[i], 5, track_colors.at(i));
-      auto& play_tracker_ctx = ctx->play_trackers[frame.frame_meta->source_id];
-      if (play_tracker_ctx.play_tracker) {
-        std::shared_ptr<hm::play_tracker::ILivingBox> lbox = play_tracker_ctx.play_tracker->get_live_box(i);
-        hm::play_tracker::ILivingBox* following_box =
-            i ? play_tracker_ctx.play_tracker->get_live_box(i - 1).get() : nullptr;
-
-        // We scale back down for drawing, which is on the pipeline image
-
-        gst_hm_playtracker::plot_living_box(
-            plotter,
-            lbox.get(),
-            play_tracker_ctx.play_tracker_config.living_boxes.at(i),
-            /*thickness=*/4,
-            gst_hm_playtracker::track_colors.at(i),
-            /*draw_thresholds=*/true,
-            1.0 / scale_x,
-            1.0 / scale_y,
-            following_box);
-      }
-    }
-    if (draw_count) {
-      cudaStreamSynchronize(stream);
-    }
-    if (frame.play_tracker_results.play_detection.has_value()) {
-      const hm::play_tracker::PlayDetectorResults& play_detector = *frame.play_tracker_results.play_detection;
-      if (play_detector.breakaway_edge_center.has_value()) {
-        plotter.plot_circle(
-            *play_detector.breakaway_edge_center,
-            /*radius=*/30,
-            /*thickness=*/15,
-            gst_hm_playtracker::breakway_edge_circle);
-        plotter.plot_line(
-            frame.play_tracker_results.tracking_boxes.at(0).center(),
-            *play_detector.breakaway_edge_center,
-            3,
-            gst_hm_playtracker::breakway_edge_line);
-      }
+    if (!DsPlayTrackerDrawToDisplayMeta(ctx, frame).ok()) {
+      return false;
     }
   }
-  DsPlayTrackerAttachMetadataFullFrame(frame.frame_meta, frame.play_tracker_results, frame.batch_index);
+  DsPlayTrackerAttachMetadataFullFrame(frame.frame_meta, frame.play_tracker_results);
   return true;
+}
+
+absl::Status DsPlayTrackerDrawToDisplayMeta(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame) {
+  ScaleXY scale_xy = get_scale_xy(frame);
+  const auto& scale_x = scale_xy.scale_x;
+  const auto& scale_y = scale_xy.scale_y;
+
+  hm::utils::PlotContext plotter(frame.frame_meta, "");
+  // Plot any nontrivial arena box
+  if (ctx->arena_box.left > 0 || ctx->arena_box.top > 0 ||
+      ctx->arena_box.width() < frame.frame_meta->source_frame_width ||
+      ctx->arena_box.height() < frame.frame_meta->source_frame_height) {
+    plotter.plot_rect(ctx->arena_box, 2, hm::utils::ColorRGBA{255, 64, 64, 255});
+  }
+  for (const auto& cluster_item : frame.play_tracker_results.cluster_boxes) {
+    plotter.plot_rect(
+        cluster_item.second.make_canvas_scaled(1.0 / scale_x, 1.0 / scale_y),
+        1,
+        hm::utils::ColorRGB{0, 0, 0},
+        hm::utils::ColorRGBA{128, 128, 128, 75});
+  }
+  for (size_t i = 0, n = frame.play_tracker_results.tracking_boxes.size(); i < n; ++i) {
+    // plotter.plot_rect(frame.play_tracker_results.tracking_boxes[i], 5, track_colors.at(i));
+    auto& play_tracker_ctx = ctx->play_trackers[frame.frame_meta->source_id];
+    if (play_tracker_ctx.play_tracker) {
+      std::shared_ptr<hm::play_tracker::ILivingBox> lbox = play_tracker_ctx.play_tracker->get_live_box(i);
+      hm::play_tracker::ILivingBox* following_box =
+          i ? play_tracker_ctx.play_tracker->get_live_box(i - 1).get() : nullptr;
+
+      // We scale back down for drawing, which is on the pipeline image
+
+      gst_hm_playtracker::plot_living_box(
+          plotter,
+          lbox.get(),
+          play_tracker_ctx.play_tracker_config.living_boxes.at(i),
+          /*thickness=*/4,
+          gst_hm_playtracker::track_colors.at(i),
+          /*draw_thresholds=*/true,
+          1.0 / scale_x,
+          1.0 / scale_y,
+          following_box);
+    }
+  }
+  if (frame.play_tracker_results.play_detection.has_value()) {
+    const hm::play_tracker::PlayDetectorResults& play_detector = *frame.play_tracker_results.play_detection;
+    if (play_detector.breakaway_edge_center.has_value()) {
+      plotter.plot_circle(
+          *play_detector.breakaway_edge_center,
+          /*radius=*/30,
+          /*thickness=*/15,
+          gst_hm_playtracker::breakway_edge_circle);
+      plotter.plot_line(
+          frame.play_tracker_results.tracking_boxes.at(0).center(),
+          *play_detector.breakaway_edge_center,
+          3,
+          gst_hm_playtracker::breakway_edge_line);
+    }
+  }
+  // Finally, print the translation scaling value
+  // frame.play_tracker_results.
+  return absl::OkStatus();
 }
 
 /**
@@ -498,12 +546,12 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
  */
 void DsPlayTrackerAttachMetadataFullFrame(
     NvDsFrameMeta* frame_meta,
-    const hm::play_tracker::PlayTrackerResults& play_results,
-    guint batch_id) {
+    const hm::play_tracker::PlayTrackerResults& play_results) {
   NvDsBatchMeta* batch_meta = frame_meta->base_meta.batch_meta;
   NvDsObjectMeta* object_meta = NULL;
 
   size_t adder = 0;
+  // Start with base vlass id being the last following box
   for (int64_t i = play_results.tracking_boxes.size() - 1; i >= 0; --i, ++adder) {
     const hm::BBox& tracking_box = play_results.tracking_boxes[i];
     object_meta = nvds_acquire_obj_meta_from_pool(batch_meta);

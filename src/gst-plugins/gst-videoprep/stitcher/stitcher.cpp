@@ -247,6 +247,8 @@ absl::Status StitcherPriv::GenerateOutput(
       reuse_frame_meta = frame_info_left.frame_meta;
       remove_frame_metas.emplace_back(frame_info_right.frame_meta);
     } else {
+      // Can't get renderer to pick up source-id 1 automatically, even if I change in frame meta
+
       // right frame has correct timestamps
       assert(!right_frame_offset_ns_);
       reuse_frame_meta = frame_info_right.frame_meta;
@@ -366,6 +368,7 @@ absl::Status StitcherPriv::GenerateOutput(
     reuse_frame_meta->source_frame_width = reuse_frame_meta->pipeline_width = canvas->width();
     reuse_frame_meta->source_frame_height = reuse_frame_meta->pipeline_height = canvas->height();
     reuse_frame_meta->num_surfaces_per_frame = 1;
+    reuse_frame_meta->source_id = min_source_id;
   }
 
   if (out_surface->numFilled) {

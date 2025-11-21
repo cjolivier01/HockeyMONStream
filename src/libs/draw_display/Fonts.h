@@ -1,16 +1,17 @@
 #pragma once
 
-#include <jetson-utils/cuda/cudaFont.h>
-
 #include <cuda_runtime.h>
+
 #include <memory>
 #include <string>
 #include <utility>
+
 #include "absl/status/statusor.h"
+#include "jetson-utils/cuda/cudaFont.h"
+#include "jetson-utils/image/imageFormat.h"
 
 namespace hm {
 namespace draw_display {
-
 /**
  * @brief Interface for a font used for rendering text onto a CUDA surface.
  *
@@ -43,22 +44,13 @@ struct Font {
    * @param dest_x X-coordinate (in pixels) where text drawing begins.
    * @param dest_y Y-coordinate (in pixels) where text drawing begins.
    * @param textColor Color (uchar4) for the rendered text.
-   * @return absl::StatusOr a pair (final_x, final_y) representing the end position
-   *         after drawing the text.
+   * @return absl::StatusOr a pair (final_x, final_y) representing the end
+   * position after drawing the text.
    */
   virtual absl::StatusOr<std::pair<int, int>> draw(
-      const std::string& text,
-      void* surface,
-      imageFormat image_format,
-      int imgWidth,
-      int imgHeight,
-      int pitch,
-      int dest_x,
-      int dest_y,
-      const uchar4& textColor,
-      const uchar4& bgColor,
-      cudaStream_t stream) = 0;
-
+      const std::string& text, void* surface, imageFormat image_format,
+      int imgWidth, int imgHeight, int pitch, int dest_x, int dest_y,
+      const uchar4& textColor, const uchar4& bgColor, cudaStream_t stream) = 0;
 };
 
 /**
@@ -73,9 +65,9 @@ struct FontCache {
   /**
    * @brief Returns a cached Font instance or creates a new one if needed.
    *
-   * If the font with the specified file path and pixel height is already in the cache,
-   * the cached instance is returned. Otherwise, a new Font is created and cached.
-   * If lazy_load is true, the font is not immediately loaded.
+   * If the font with the specified file path and pixel height is already in the
+   * cache, the cached instance is returned. Otherwise, a new Font is created
+   * and cached. If lazy_load is true, the font is not immediately loaded.
    *
    * @param font_path Path to the TrueType font file.
    * @param pixel_height Desired pixel height for the font.
@@ -83,8 +75,7 @@ struct FontCache {
    * @return absl::StatusOr containing a shared pointer to a Font instance.
    */
   virtual absl::StatusOr<std::shared_ptr<Font>> get_or_create_font(
-      const std::string& font_name_or_path,
-      int pixel_height,
+      const std::string& font_name_or_path, int pixel_height,
       bool lazy_load = true) = 0;
 };
 
@@ -93,7 +84,7 @@ struct FontCache {
  *
  * @return A shared_ptr to a FontCache.
  */
-std::shared_ptr<FontCache> get_or_create_font_cache(bool create_if_needed = true);
-
-} // namespace draw_display
-} // namespace hm
+std::shared_ptr<FontCache> get_or_create_font_cache(
+    bool create_if_needed = true);
+}  // namespace draw_display
+}  // namespace hm

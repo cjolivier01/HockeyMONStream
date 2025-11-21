@@ -70,6 +70,9 @@ gboolean parse_dsplaytracker_yaml(
   SET_LOCATOR(locator, *config, unique_id);
   SET_LOCATOR(locator, *config, gpu_id);
   SET_LOCATOR(locator, *config, draw);
+  SET_LOCATOR(locator, *config, show);
+  SET_LOCATOR(locator, *config, fixed_edge_rotation_angle);
+  SET_LOCATOR(locator, *config, dynamic_acceleration_scaling);
   hm::utils::parse_chracter_buffer(config->config_file, yaml_node, "config-file", config_dir);
   set_config_from_yaml(yaml_node, locator);
   return true;
@@ -131,6 +134,8 @@ gboolean parse_hmplaycropper_yaml(
   SET_LOCATOR(locator, *config, plot_play_tracking);
   SET_LOCATOR(locator, *config, plot_player_tracking);
   SET_LOCATOR(locator, *config, fixed_edge_rotation_angle);
+  SET_LOCATOR(locator, *config, no_crop);
+  SET_LOCATOR(locator, *config, show_scoreboard);
   SET_LOCATOR_INTS(locator, *config, scoreboard_perspective_polygon);
 
   set_config_from_yaml(yaml_node, locator, quiet);
@@ -231,6 +236,8 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
   std::string sgie_str = "secondary-gie";
   std::string msgcons_str = "message-consumer";
   std::string dewarper_str = "dewarper";
+
+  std::cout << "89fhy39ghfhg034" << configyml << std::endl;
 
   config->source_list_enabled = FALSE;
 

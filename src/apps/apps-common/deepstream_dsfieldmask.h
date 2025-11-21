@@ -52,7 +52,7 @@ struct NvDsDsFieldMaskBin {
 };
 
 // Function to create the bin and set properties
-gboolean create_dsfieldmask_bin(NvDsDsFieldMaskConfig* config, NvDsDsFieldMaskBin* bin);
+gboolean create_dsfieldmask_bin(const NvDsDsFieldMaskConfig* config, NvDsDsFieldMaskBin* bin);
 
 constexpr size_t kMyMaxPath = PATH_MAX * 4;
 
@@ -74,6 +74,8 @@ struct NvDsDsPlayTrackerConfig {
   guint gpu_id;
   gboolean draw;
   gboolean show;
+  gfloat fixed_edge_rotation_angle;
+  gfloat dynamic_acceleration_scaling;
   gchar config_file[kMyMaxPath];
 };
 
@@ -139,6 +141,7 @@ struct NvDsHmVideoPrepBin {
 
 struct HmPlayCropperConfig : public NvDsHmVideoPrepConfig {
   // Four (x,y) coordinates
+  gboolean no_crop;
   gboolean show_scoreboard;
   gboolean plot_play_tracking;
   gboolean plot_player_tracking;

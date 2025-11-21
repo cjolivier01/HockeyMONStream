@@ -1,20 +1,4 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/playcropper.h"
-#include "cupano/pano/cudaMat.h"
-#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
-#include "hstream/src/gst-plugins/gst-videoprep/playcropper/cudaPlayCropper.h"
-// #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
-#include "hstream/src/libs/common/Status.h"
-#include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
-
-#include "deepstream/sources/includes/nvbufsurface.h"
-#include "hstream/src/libs/draw_display/Fonts.h"
-#include "nvdsmeta.h"
-
-#include "absl/strings/str_split.h"
-
-#include <cmath>
-#include <vector>
-
 #include <absl/status/status.h>
 #include <assert.h>
 #include <cuda.h>
@@ -26,6 +10,18 @@
 #include <opencv4/opencv2/core/types.hpp>
 #include <string.h>
 #include <unistd.h>
+#include <cmath>
+#include <vector>
+#include "absl/strings/str_split.h"
+#include "cupano/pano/cudaMat.h"
+#include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
+#include "hstream/src/gst-plugins/gst-videoprep/playcropper/cudaPlayCropper.h"
+#include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
+#include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
+#include "hstream/src/libs/draw_display/Fonts.h"
+#include "nvdsmeta.h"
 
 #if defined(__aarch64__)
 #include <EGL/egl.h>
@@ -156,6 +152,9 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     plot_player_tracking_ = !!std::atoi(prop.value.c_str());
   } else if (prop.key == "fixed-edge-rotation-angle") {
     fixed_edge_rotation_angle_ = std::atof(prop.value.c_str());
+  } else if (prop.key == "no-crop") {
+    // TODO: implement, needs to change caps too
+    no_crop_ = !!std::atoi(prop.value.c_str());
   }
   return true;
 }
@@ -185,7 +184,9 @@ absl::Status PlayCropperPriv::GenerateOutput(
 
   HM_RETURN_IF_ERROR(hm::to_status(cudaSetDevice(m_gpuId)));
 
-  const std::vector<BBox> tracking_boxes = get_tracking_boxes(batch_meta);
+  const std::vector<BBox> tracking_boxes = get_object_boxes(
+      batch_meta, DsPlayTrackerInitParams::kPlayBoxClassIdBase, DsPlayTrackerInitParams::kPlayBoxClassIdBase);
+  assert(tracking_boxes.empty() || tracking_boxes.size() == batch_meta->num_frames_in_batch);
 
   out_surface->numFilled = 0;
 
@@ -236,24 +237,25 @@ absl::Status PlayCropperPriv::GenerateOutput(
     tbox.top *= scale_h;
     tbox.bottom *= scale_h;
 
-    // FloatValue width_for_ratio = 1.0;
-    // const playtracker::PlayTrackerPayload* ptpayload =
-    //     playtracker::PlayTrackerPayload::get_payload<playtracker::PlayTrackerPayload>(frame_meta);
-    // if (ptpayload) {
-    //   width_for_ratio = FloatValue(ptpayload->arena_box().width()) / frame_meta->source_frame_width;
-    // }
-
     // Calculate rotation angle
     float angle = 0.0f;
+
     const float max_angle = fixed_edge_rotation_angle_;
-    const float half_width = float(frame_meta->source_frame_width) / 2;
-    const float tcx = tbox.center().x;
-    if (tcx < half_width) {
-      float pct = 1.0 - tcx / half_width;
-      angle = max_angle * pct;
-    } else if (tcx > half_width) {
-      float pct = (half_width - tcx) / half_width;
-      angle = max_angle * pct;
+
+    // const playtracker::PlayTrackerPayload* ptpayload =
+    //     playtracker::PlayTrackerPayload::get_payload<playtracker::PlayTrackerPayload>(frame_meta);
+    if (false /*ptpayload*/) {
+      //angle = max_angle * ptpayload->`
+    } else {
+      const float half_width = float(frame_meta->source_frame_width) / 2;
+      const float tcx = tbox.center().x;
+      if (tcx < half_width) {
+        float pct = 1.0 - tcx / half_width;
+        angle = max_angle * pct;
+      } else if (tcx > half_width) {
+        float pct = (half_width - tcx) / half_width;
+        angle = max_angle * pct;
+      }
     }
 
     // Calculate crop regions
@@ -356,7 +358,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
     // If rendering, only render opne per batch and do it after the main cuda synchronize
     // if (batch_meta->)
     // render("Play Cropper", &out_surface->surfaceList[batch_nr], cuda_stream_);
-    cudaStreamSynchronize(cuda_stream_);
+    // cudaStreamSynchronize(cuda_stream_);
     render("Play Tracking", &display_dest_params_, cuda_stream_);
   }
 
@@ -410,8 +412,8 @@ absl::Status PlayCropperPriv::RenderDisplayMeta(
   }
 
   if (plot_player_tracking_) {
-    std::vector<NvDsObjectMeta*> object_metas =
-        glist_to_vect<NvDsObjectMeta>(frame_meta->obj_meta_list, frame_meta->num_obj_meta);
+    // std::vector<NvDsObjectMeta*> object_metas =
+    //     glist_to_vect<NvDsObjectMeta>(frame_meta->obj_meta_list, frame_meta->num_obj_meta);
     // for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
     //   NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
     //   if (obj_meta->object_id == UNTRACKED_OBJECT_ID) {

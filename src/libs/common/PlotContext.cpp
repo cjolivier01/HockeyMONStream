@@ -50,7 +50,7 @@ void PlotContext::reset() {
     v = 0;
   }
   display_metas_.clear();
-  text_data_.clear();
+  // text_data_.clear();
 }
 
 void PlotContext::apply() {
@@ -142,17 +142,18 @@ void PlotContext::plot_text(
   text_params.y_offset = top_left.y;
   text_params.font_params.font_name = const_cast<char*>(font_name_.c_str());
   text_params.font_params.font_color = to_color_params(color);
-  std::unique_ptr<char[]> text = std::make_unique<char[]>(label.size() + 1);
-  strcpy(text.get(), label.c_str());
-  text_params.display_text = text.get();
-  {
-    std::unique_lock lk(mu_);
-    text_data_.emplace_back(std::move(text));
-  }
-  // text_params.display_text
+  text_params.display_text = strdup(label.c_str());
   if (bg_color.has_value()) {
     text_params.set_bg_clr = true;
     text_params.text_bg_clr = to_color_params(*bg_color);
+  }
+}
+
+void PlotContext::nv_ds_release_func(gpointer data, gpointer user_data) {
+  // It has been verified that the normal cleanup will cal free() on the display text pointer,
+  // so we need do nothing.
+  if (release_display_meta_fn != nullptr) {
+    release_display_meta_fn(data, user_data);
   }
 }
 
@@ -164,6 +165,16 @@ std::pair<NvDsDisplayMeta*, size_t> PlotContext::allocate_display_meta(PLOT_TYPE
   if (current_meta >= display_metas_.size() && !new_index) {
     // Allocate a new one
     NvDsDisplayMeta* display_meta = nvds_acquire_display_meta_from_pool(frame_meta_->base_meta.batch_meta);
+#if 0
+    // Currently we don't expect a copy func, but this could be easily supported if necessary
+    assert(!display_meta->base_meta.copy_func);
+    if (release_display_meta_fn) {
+      assert(release_display_meta_fn == display_meta->base_meta.release_func);
+    } else {
+      release_display_meta_fn = display_meta->base_meta.release_func;
+    }
+    display_meta->base_meta.release_func = nv_ds_release_func;
+#endif
     display_metas_.emplace_back(display_meta);
   }
   ++plot_type_counts_.at(type);
@@ -260,12 +271,12 @@ void PlotContext::plot_corner_rect(
   const Point bottom_right = {rect.right, rect.bottom};
 
   // Extract rectangle dimensions
-  int width = bottom_right.x - top_left.x;
-  int height = bottom_right.y - top_left.y;
+  const int width = bottom_right.x - top_left.x;
+  const int height = bottom_right.y - top_left.y;
 
   // Calculate lengths of corner segments
-  int corner_width = static_cast<int>(width * width_ratio);
-  int corner_height = static_cast<int>(height * height_ratio);
+  const int corner_width = static_cast<int>(width * width_ratio);
+  const int corner_height = static_cast<int>(height * height_ratio);
 
   // Draw the four corners
   // Top-left corner

@@ -401,9 +401,8 @@ done:
 
 // Create bin, add queue and the element, link all elements and ghost pads,
 // Set the element properties from the parsed config
-gboolean create_dsfieldmask_bin(NvDsDsFieldMaskConfig* config, NvDsDsFieldMaskBin* bin) {
+gboolean create_dsfieldmask_bin(const NvDsDsFieldMaskConfig* config, NvDsDsFieldMaskBin* bin) {
   gboolean ret = FALSE;
-
   bin->bin = gst_bin_new("dsfieldmask_bin");
   if (!bin->bin) {
     NVGSTDS_ERR_MSG_V("Failed to create 'dsfieldmask_bin'");
@@ -505,6 +504,11 @@ gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTra
   // g_object_set(G_OBJECT(bin->elem_dsplaytracker), "draw", config->draw, NULL);
 
   ppc << "draw=" << config->draw;
+  ppc << ";show=" << config->show;
+  if (config->fixed_edge_rotation_angle != 0) {
+    ppc << ";fixed-edge-rotation-angle=" << config->fixed_edge_rotation_angle;
+  }
+  ppc << ";dynamic-acceleration-scaling=" << config->dynamic_acceleration_scaling;
   g_object_set(G_OBJECT(bin->elem_dsplaytracker), "plugin-private-config", ppc.str().c_str(), NULL);
 
   ret = TRUE;
@@ -665,7 +669,10 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
   ppc << ";show-scoreboard=" << config->show_scoreboard;
   ppc << ";plot-play-tracking=" << config->plot_play_tracking;
   ppc << ";plot-player-tracking=" << config->plot_player_tracking;
-  ppc << ";fixed-edge-rotation-angle=" << config->fixed_edge_rotation_angle;
+  if (config->fixed_edge_rotation_angle != 0) {
+    ppc << ";fixed-edge-rotation-angle=" << config->fixed_edge_rotation_angle;
+  }
+  ppc << ";no-crop=" << config->no_crop;
 
   g_object_set(G_OBJECT(bin->playcropper), "plugin-private-config", ppc.str().c_str(), NULL);
 
@@ -1002,7 +1009,7 @@ gboolean create_hmaudio_bin(
     }
   } else if (config->src == SRC_SOURCE_BIN) {
     assert(source_bin->src_elem);
-    if (bin->audioconvert)  {
+    if (bin->audioconvert) {
       g_signal_connect(source_bin->src_elem, "pad-added", G_CALLBACK(on_decode_pad_added), bin->audioconvert);
       NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->audioresample);
       NVGSTDS_LINK_ELEMENT(bin->audioresample, bin->queue);
@@ -1011,8 +1018,14 @@ gboolean create_hmaudio_bin(
       g_signal_connect(source_bin->src_elem, "pad-added", G_CALLBACK(on_decode_pad_added), bin->queue);
     }
   } else {
+    assert(bin->audiosrc);
+    // if (bin->audioconvert) {
+    assert(bin->audioconvert);
     NVGSTDS_LINK_ELEMENT(bin->audiosrc, bin->audioconvert);
     NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->queue);
+    //} else {
+    // NVGSTDS_LINK_ELEMENT(bin->audiosrc, bin->queue);
+    //}
   }
 
   if (sink_config) {
