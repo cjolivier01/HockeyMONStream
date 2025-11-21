@@ -20,7 +20,8 @@
 #include "gstnvdsosd.h"
 
 #include "gst-nvdscustomevent.h"
-#include "deepstream/sources/includes/nvbufsurface.h"
+// #include "deepstream/sources/includes/nvbufsurface.h"
+#include "nvbufsurface.h"
 #include "nvtx3/nvToolsExt.h"
 
 #include <cassert>

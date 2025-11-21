@@ -10,7 +10,13 @@
         "path": "../MIPI_Camera"
       },
       {
-        "path": "../simpleble"
+        "path": "../gstreamer"
+      },
+      {
+        "path": "../multiblend"
+      },
+      {
+        "path": "../enblend-enfuse"
       }
     ],
   "settings": {

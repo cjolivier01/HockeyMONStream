@@ -4,17 +4,20 @@
  */
 #pragma once
 
-#include "deepstream/sources/includes/nvbufsurface.h"
+/* clang-format off */
+#include "hstream/src/libs/common/Status.h"
+/* clang-format on */
+
+// #include "deepstream/sources/includes/nvbufsurface.h"
+#include "nvbufsurface.h"
 
 #include "hockeymom/csrc/play_tracker/BoxUtils.h"
 
 #include "imageFormat.h"
 #include "nvdsmeta.h"
 
-#include <cuda_egl_interop.h>
 #include <cuda_runtime.h>
 
-#include <memory>
 #include <vector>
 
 namespace hm {

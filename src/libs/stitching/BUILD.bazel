@@ -27,6 +27,9 @@ cc_library(
     "@yaml-cpp",
     "@com_google_absl//absl/status:status",
   ],
+  data = [
+    "@hm-cupano//scripts:all_scripts",
+  ],
 )
 
 cc_library(

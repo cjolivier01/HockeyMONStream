@@ -18,6 +18,7 @@ application:
   subtle-event-drawing: 1
   # use-nvmultiurisrcbin: 1  < -- doesnt seem to pick this up
   ##gie-kitti-output-dir=streamscl
+  complete-configuration: 1
 
 tiled-display:
   enable: 0
@@ -34,7 +35,7 @@ tiled-display:
   # width: 1647
   # height: 740
   # width: 888
-  # height: 500
+   # height: 500
   width: 3840
   height: 2160
   # width: 640
@@ -65,13 +66,13 @@ tiled-display:
 # |_____/ \___/ \__,_|_|   \___|\___||___/
 #
 source0:
-  enable: 1
+  enable: 0
   type: 3
   # uri: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   # uri: file:///home/colivier/Videos/pdp/GX010087.mp4
   # mlk-extreme
   # uri: file:///home/colivier/Videos/mlk-extreme/GX010096.MP4
-  # uri: file:///home/colivier/Videos/mlk-heat-1/GX010097.MP4
+  # uri: file:///home/colivier/Videos/foxes/left.mp4
   # uri: file:///home/colivier/Videos/ev-tv-1a/right.mp4
   num-sources: 1
   gpu-id: 0
@@ -79,7 +80,7 @@ source0:
   source-id: 0
 
 source1:
-  enable: 1
+  enable: 0
   type: 3
   # uri: file:///home/colivier/Videos/mlk-extreme/stitched_output-partial-with-audio.mp4
   # uri: file:///home/colivier/Videos/pdp/GX010003.mp4
@@ -102,12 +103,18 @@ source2:
   source-id: 2
   cuda-memory-type: 0
 
+#
+# USB Cameras (V4L2)
+#
 source7:
   enable: 0
   # 1: v4l2, 5: CSI
   type: 1
   config-file: dual_usb_webcams.yaml
 
+#
+# CSI Cameras
+#
 source8:
   enable: 0
   # 1: v4l2, 5: CSI
@@ -241,7 +248,7 @@ sink3:
 # |_|  |_|_| |_| |_|/_/    \_\\__,_|\__,_||_|\___/
 #
 hmaudio0:
-  enable: 0
+  enable: 1
   # 0=default alsa source, 1=file, 2=src_bin(source-id)
   src: 2
   # source-id: 1
@@ -395,7 +402,6 @@ hmplaycropper:
 
 hmstitcher:
   enable: 1
-  # enable: 0
   gpu-id: 0
   nvbuf-memory-type: 0
   plugin-type: hmstitcher

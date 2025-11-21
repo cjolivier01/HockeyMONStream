@@ -1,6 +1,19 @@
 #pragma once
 
+/* clang-format off */
+#include <cuda_egl_interop.h>
+#include <GL/glew.h>
+#include <GL/glx.h>
+#include <GL/glxext.h>
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#undef Status
+
+/* clang-format on */
+
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
+
 #include "cupano/cuda/cudaStatus.h"
 #include "hstream/src/libs/common/utils.h"
 

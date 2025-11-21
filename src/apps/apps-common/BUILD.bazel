@@ -74,9 +74,13 @@ cc_library(
         "-std=c++17",
         "-Wno-error=write-strings",
     ],
+    includes = [
+      ".",
+    ],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:fs",
         "//src/libs/common:utils",
         "//src/libs/camera",
         "@deepstream//:deepstream_lib",

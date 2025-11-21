@@ -8,19 +8,19 @@
 #include <string>
 
 #include "absl/status/status.h"
-#include "deepstream/sources/includes/nvbufsurface.h"
+#include "hstream/src/libs/common/ManagedObject.h"
+//#include "deepstream/sources/includes/nvbufsurface.h"
+#include "nvbufsurface.h"
+
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
 
 typedef struct GstDsPlayTrackerFrame GstDsPlayTrackerFrame;
 
-struct DsPlayTrackerInitObject {
-  virtual ~DsPlayTrackerInitObject() = default;
-};
-
 // Init parameters structure as input, required for instantiating
 // playtracker_lib
 struct DsPlayTrackerInitParams {
-  std::vector<std::shared_ptr<DsPlayTrackerInitObject>> owned_objects;
+  // Stuff we own, even if we don;t know (or care) what it is
+  std::vector<std::shared_ptr<hm::ManagedObject>> owned_objects;
   std::string play_tracker_config_file;
   bool draw{false};
   // // The class id we will set for the play box

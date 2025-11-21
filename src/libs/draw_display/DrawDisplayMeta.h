@@ -1,11 +1,15 @@
 #pragma once
 
+/* clang-format off */
+#include "src/libs/common/Status.h"
+/* clang-format on */
+
 #include "hstream/src/libs/common/Surface.h"
 #include "hstream/src/libs/draw_display/Fonts.h"
 
 #include <cuda_runtime.h>
 
-#include "deepstream/sources/includes/nvdsmeta.h"
+#include "nvdsmeta.h"
 
 #include "absl/status/status.h"
 

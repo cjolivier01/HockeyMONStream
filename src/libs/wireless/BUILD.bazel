@@ -1,0 +1,19 @@
+INCLUDE_PREFIX = "hstream/src/libs/wireless"
+
+cc_library(
+  name = "stream_control",
+  srcs = [
+    "StreamControl.cpp",
+  ],
+  hdrs = [
+    "StreamControl.h",
+  ],
+  copts=[
+  ],
+  linkopts = [
+  ],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+  ],
+)

@@ -293,12 +293,41 @@ std::map<std::string, std::string> get_environment() {
   return env_vars;
 }
 
+std::optional<fs::path> find_executable_maybe_conda(const std::string& exec) {
+  auto found_exec = findExecutable(exec, {"PATH"});
+  if (found_exec) {
+    return *found_exec;
+  }
+  const char* s = getenv("CONDA_PREFIX");
+  if (!s) {
+    return std::nullopt;
+  }
+  auto path = fs::path(s) / "bin" / exec;
+  if (!fs::exists(path)) {
+    return std::nullopt;
+  }
+  return path;
+}
+
 std::string get_python_interp() {
   auto python_exec = findExecutable("python3", {"PATH"});
   if (!python_exec) {
-    return "/usr/bin/python";
+    return "/usr/bin/python3";
   }
   return *python_exec;
+}
+
+std::optional<std::string> resolve_executable(const std::string& executable) {
+  if (executable.empty()) {
+    return std::nullopt;
+  }
+  if (executable[0] == '/' || executable[0] == '\\') {
+    if (!std::filesystem::exists(executable)) {
+      return std::nullopt;
+    }
+    return executable;
+  }
+  return findExecutable(executable, {"PATH"});
 }
 
 std::map<std::string, std::string> python_env(const std::string& add_dir, std::map<std::string, std::string> prev) {
@@ -388,32 +417,47 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
 #endif
 }
 
+absl::StatusOr<std::string> find_and_validate_executable(
+    const std::string& executable_name,
+    const std::string& package = "hmlib") {
+  auto hmcreate_control_points = resolve_executable(executable_name);
+  if (!hmcreate_control_points.has_value()) {
+    return absl::NotFoundError(TO_STRING(
+        "Could not find executable: \"" << executable_name << "\", did you forget to install the \"" << package
+                                        << "\" package?"));
+  }
+  return *hmcreate_control_points;
+}
+
 absl::Status create_control_points(
     const std::string& game_dir,
     surface::Surface left_surface,
     surface::Surface right_surface) {
+  auto exe_name_result = find_and_validate_executable("hmcreate_control_points");
+  if (!exe_name_result.ok()) {
+    return exe_name_result.status();
+  }
+
   fs::path left_file = fs::path(game_dir) / "left.png";
   fs::path right_file = fs::path(game_dir) / "right.png";
   HM_RETURN_IF_ERROR(save_image(left_surface, left_file));
   HM_RETURN_IF_ERROR(save_image(right_surface, right_file));
 
-  const fs::path hm_cupano_dir = fs::path("external") / "hm-cupano";
+  size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", 500UL);
 
   std::vector<std::string> cmd{
-      get_python_interp(),
-      fs::path("scripts") / "create_control_points.py",
+      exe_name_result.value(),
       "--left",
       left_file,
       "--right",
       right_file,
-      "--max-control-points=500",
-      //"--max-control-points=1500",
+      TO_STRING("--max-control-points=" << max_control_points),
 #ifdef __aarch64__
       "--scale=0.6",
 #endif
   };
-  int exitcode = run_command(
-      cmd, hm_cupano_dir, get_environment(), [](const std::string& stderr, const std::string& stdout) -> void {
+  int exitcode =
+      run_command(cmd, "", get_environment(), [](const std::string& stderr, const std::string& stdout) -> void {
         if (!stderr.empty()) {
           std::cerr << stderr << std::endl;
         }
@@ -422,7 +466,7 @@ absl::Status create_control_points(
         }
       });
   if (exitcode) {
-    return absl::InternalError("Failed to create control points");
+    return absl::InternalError(TO_STRING("Failed to create control points: " << strerror(errno)));
   }
 
   return absl::OkStatus();
@@ -433,13 +477,17 @@ bool is_field_mask_configured(const std::string& game_dir) {
 }
 
 absl::Status create_field_mask(const std::string& game_dir, surface::Surface surface) {
-  const fs::path hockeymom_dir = fs::path("external") / "hm";
+  auto exe_name_result = find_and_validate_executable("hmfind_ice_rink");
+  if (!exe_name_result.ok()) {
+    return exe_name_result.status();
+  }
+
   fs::path stitched_file = fs::path(game_dir) / "s.png";
   HM_RETURN_IF_ERROR(save_image(surface, stitched_file));
   std::string game_id = get_game_id(stitched_file);
+
   std::vector<std::string> cmd{
-      get_python_interp(),
-      fs::path("scripts/find_ice_rink.py"),
+      fs::path(exe_name_result.value()),
       "--game-id",
       game_id,
 #ifdef __aarch64__
@@ -450,10 +498,7 @@ absl::Status create_field_mask(const std::string& game_dir, surface::Surface sur
   };
 
   int exitcode = run_command(
-      cmd,
-      hockeymom_dir,
-      python_env(".", get_environment()),
-      [](const std::string& stderr, const std::string& stdout) -> void {
+      cmd, "", python_env(".", get_environment()), [](const std::string& stderr, const std::string& stdout) -> void {
         if (!stderr.empty()) {
           std::cerr << stderr << std::endl;
         }
@@ -469,16 +514,20 @@ absl::Status create_field_mask(const std::string& game_dir, surface::Surface sur
 }
 
 absl::Status configure_orientation(const std::string& game_dir) {
-  const fs::path hockeymom_dir = fs::path("external") / "hm";
+  auto exe_name_result = find_and_validate_executable("hmorientation");
+  if (!exe_name_result.ok()) {
+    return exe_name_result.status();
+  }
   std::string game_id = get_game_id(game_dir);
+
+  std::optional<fs::path> exec = find_executable_maybe_conda("hmorientation");
   std::vector<std::string> cmd{
-      get_python_interp(),
-      fs::path("hmlib/orientation.py"),
+      fs::path(exec.has_value() ? *exec : "hmorientation"),
       "--game-id",
       game_id,
   };
   auto env = python_env(".", get_environment());
-  int exitcode = run_command(cmd, hockeymom_dir, env, [](const std::string& stderr, const std::string& stdout) -> void {
+  int exitcode = run_command(cmd, "", env, [](const std::string& stderr, const std::string& stdout) -> void {
     if (!stderr.empty()) {
       std::cerr << stderr << std::endl;
     }

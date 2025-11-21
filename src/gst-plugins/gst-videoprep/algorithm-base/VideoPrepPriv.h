@@ -3,7 +3,8 @@
 #include "hstream/src/libs/common/RenderSet.h"
 #include "hstream/src/libs/common/Surface.h"
 
-#include "deepstream/sources/includes/nvbufsurface.h"
+// #include "deepstream/sources/includes/nvbufsurface.h"
+#include "nvbufsurface.h"
 #include <cassert>
 
 #include "absl/status/status.h"

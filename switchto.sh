@@ -1,1 +1,0 @@
-external/hm/switchto.sh

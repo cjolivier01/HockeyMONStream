@@ -16,10 +16,16 @@
 #include "deepstream_common.h"
 #include "deepstream_secondary_gie.h"
 
+#include <nvdsinfer.h>
+
 #define SECONDARY_GIE_CONFIG_KEY "secondary-gie-config"
 #define SECONDARY_GIE_BIN_KEY "secondary-gie-bin"
 
 #define GET_FILE_PATH(path) ((path) + (((path) && strstr((path), "file://")) ? 7 : 0))
+
+#if NVDS_VERSION_MAJOR > 6 || (NVDS_VERSION_MAJOR == 6 && NVDS_VERSION_MINOR >= 2)
+#define HAS_INT64
+#endif
 
 /**
  * Wait for all secondary inferences to complete the processing and then send
@@ -101,9 +107,11 @@ static void write_infer_output_to_file(
       case INT8:
         element_size = 1;
         break;
+#ifdef HAS_INT64
       case INT64:
         element_size = 8;
         break;
+#endif
     }
 
     g_strlcpy(layer_name, info->layerName, 128);

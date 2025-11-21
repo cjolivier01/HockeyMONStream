@@ -5,7 +5,7 @@
 #include <string>
 
 int main(int argc, char** argv) {
-  int i2c_bus = 2;
+  int i2c_bus = -1;
   int device_id = 0;
   int capture_width = 3840;
   int capture_height = 2160;
@@ -48,6 +48,14 @@ int main(int argc, char** argv) {
       std::cout << "Usage: " << argv[0] << " [-i i2c_bus] [-d device_id] [-w width] [--height height] [-f fps]"
                 << std::endl;
       return 0;
+    }
+  }
+
+  if (i2c_bus == -1) {
+    auto res = hm::camera::findI2CBusForVideoDevice(device_id);
+    if (!res.has_value()) {
+      std::cerr << "Could not determine i2c bus for /dev/device" << device_id << '\n';
+      return ENOENT;
     }
   }
 

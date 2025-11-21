@@ -1,8 +1,12 @@
 #include "dsfieldmask_lib.h"
 #include "fieldmask_payload.h"
+#include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
+#include "hstream/src/libs/common/PlotContext.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+
+#include "absl/status/status.h"
 
 #include <opencv2/opencv.hpp>
 
@@ -14,11 +18,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "deepstream/sources/includes/nvbufsurface.h"
+#include "nvbufsurface.h"
 
 namespace fs = std::filesystem;
 
+#ifdef HAS_NVDS_CUSTOMUSERMETA
 using FieldMaskPayload = hm::fieldmask::FieldMaskPayload;
+#endif
 
 struct DsFieldMaskCtx {
   DsFieldMaskInitParams initParams;
@@ -31,9 +37,10 @@ struct DsFieldMaskCtx {
 
 namespace {
 
-// I dont understand why this is backwards (negative)
 constexpr float lower_bbox_center_by_height_ratio = 0.1;
-constexpr float raise_bbox_bottom_by_height_ratio = 0.1;
+// In order to avoid picking up players on the bench, we raise the bounding box up a little in order to have some buffer
+// that they need to be lower on the ice than just at the top edge
+constexpr float raise_bbox_bottom_by_height_ratio = 0.15;
 constexpr float side_edges_bbox_by_half_width_ratio = 0.2;
 
 bool is_bit_set(const cv::Mat& mask, const cv::Point& point) {
@@ -125,10 +132,12 @@ absl::StatusOr<cv::Mat> load_mask_from_file(const std::string& filePath) {
   return mask;
 }
 
-void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx) {
+void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx, bool draw) {
   if (!frame_meta->obj_meta_list || !frame_meta->bInferDone) {
     return;
   }
+
+  std::unique_ptr<hm::utils::PlotContext> plot_context;
 
   // assert(guint(ctx->detection_u8_mask.cols) <= frame_meta->source_frame_width);
   // assert(guint(ctx->detection_u8_mask.rows) <= frame_meta->source_frame_height);
@@ -143,31 +152,56 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx)
   const float scale_width = float(frame_meta->source_frame_width) / frame_meta->pipeline_width;
 
   NvDsMetaList* l_next = nullptr;
-  static float max_y = 0;
-  static float max_x = 0;
+  // static float max_y = 0;
+  // static float max_x = 0;
   for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_next) {
     l_next = l_obj->next;
+
+    if (draw && !plot_context) {
+      plot_context = std::make_unique<hm::utils::PlotContext>(frame_meta);
+    }
+
     NvDsMetaList* remove_me{nullptr};
     NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
     const NvDsComp_BboxInfo& detector_bbox_info = obj_meta->detector_bbox_info;
     const float half_width = detector_bbox_info.org_bbox_coords.width / 2;
-    const float center_x = detector_bbox_info.org_bbox_coords.left + half_width;
+    const float bbox_center_x = detector_bbox_info.org_bbox_coords.left + half_width;
     const float half_height = detector_bbox_info.org_bbox_coords.height / 2;
 
-    max_x = std::max(max_x, detector_bbox_info.org_bbox_coords.left + detector_bbox_info.org_bbox_coords.width);
-    max_y = std::max(max_y, detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height);
+    // Keep track of extremes for debugging
+    // max_x = std::max(max_x, detector_bbox_info.org_bbox_coords.left + detector_bbox_info.org_bbox_coords.width);
+    // max_y = std::max(max_y, detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height);
 
     const int lower_center_height_amount =
         float(detector_bbox_info.org_bbox_coords.height) * lower_bbox_center_by_height_ratio;
     const int raise_bottom_height_amount =
         float(detector_bbox_info.org_bbox_coords.height) * raise_bbox_bottom_by_height_ratio;
 
+    // Center of bounding box
     cv::Point2f ptCenter =
-        cv::Point2f(center_x, detector_bbox_info.org_bbox_coords.top + half_height + lower_center_height_amount);
-    cv::Point2f ptBottom = cv::Point2f(
-        center_x,
-        detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height -
-            raise_bottom_height_amount);
+        cv::Point2f(bbox_center_x, detector_bbox_info.org_bbox_coords.top + half_height - lower_center_height_amount);
+
+    if (plot_context) {
+      plot_context->plot_circle(
+          hm::Point{.x = ptCenter.x, .y = ptCenter.y},
+          /*radius=*/lower_center_height_amount,
+          /*thickness=*/lower_center_height_amount / 2,
+          hm::utils::ColorRGB{0, 255, 0});
+    }
+
+    // Bottom of bounding box (for testing if their feet are on the ice)
+    cv::Point2f ptBottom =
+        cv::Point2f(bbox_center_x, detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height);
+
+    ptBottom.y -= raise_bottom_height_amount;
+
+    if (plot_context) {
+      plot_context->plot_circle(
+          hm::Point{.x = ptBottom.x, .y = ptBottom.y},
+          /*radius=*/raise_bottom_height_amount,
+          /*thickness=*/raise_bottom_height_amount / 2,
+          hm::utils::ColorRGB{255, 0, 0});
+    }
 
     if (ptBottom.x <= ctx->detection_mask_centroid.x) {
       // left side, so move right just a little bit
@@ -223,7 +257,8 @@ absl::Status DsFieldMaskProcessFrame(
     NvBufSurface* surface,
     size_t frame_index,
     NvDsFrameMeta* frame_meta,
-    DsFieldMaskCtx* ctx) {
+    DsFieldMaskCtx* ctx,
+    bool draw) {
   if (ctx->initParams.detection_mask_file.empty()) {
     // We are a No-op
     return absl::OkStatus();
@@ -254,8 +289,10 @@ absl::Status DsFieldMaskProcessFrame(
     ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask, ctx->field_box);
     ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
   }
-  prune_detection_boxes(frame_meta, ctx);
+  prune_detection_boxes(frame_meta, ctx, draw);
+#ifdef HAS_NVDS_CUSTOMUSERMETA
   FieldMaskPayload::create_and_add<FieldMaskPayload>(frame_meta, ctx->detection_mask_centroid, ctx->field_box);
+#endif
   ++ctx->total_frame_count;
   return absl::OkStatus();
 }

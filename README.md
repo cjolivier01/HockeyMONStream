@@ -58,6 +58,13 @@ NVIDIA DeepStream SDK 7.1 / 7.0 / 6.4 / 6.3 / 6.2 / 6.1.1 / 6.1 / 6.0.1 / 6.0 / 
 
 ##
 
+### Additional Apps
+
+* Dual IMX477 recorder (DeepStream/GStreamer) — docs and usage:
+  `src/apps/dual-record/README.md`
+
+##
+
 ### Requirements
 
 #### DeepStream 7.1 on x86 platform

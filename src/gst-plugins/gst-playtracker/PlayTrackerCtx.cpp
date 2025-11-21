@@ -198,8 +198,7 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
   SET_LOCATOR(locator, config, ignore_largest_bbox);
   set_config_from_yaml(yaml, locator);
 
-  // HACK HACK HACK HACK HACK HACK HACK HACK
-  // config.play_detector.min_considered_group_velocity = 1.0;
+  config.no_wide_start = true;
 
   return config;
 }
@@ -414,8 +413,20 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
   // it isn't perfectly scalable atm.
 
   hm::play_tracker::PlayTracker* play_tracker{nullptr};
+
+#if 1 && !defined(NDEBUG)
+    hm::utils::PlotContext plot_context(frame.frame_meta);
+    plot_context.plot_rect(
+        //hm::BBox(field_box.x, field_box.y, field_box.x + field_box.width, field_box.y + field_box.height),
+        ctx->arena_box,
+        20,
+        hm::utils::ColorRGB{255, 0, 0});
+#endif
+
+
   if (!gst_hm_playtracker::has_play_tracker(ctx, frame.frame_meta->source_id)) {
     ctx->arena_box = hm::BBox(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
+#ifdef HAS_NVDS_CUSTOMUSERMETA
     const hm::fieldmask::FieldMaskPayload* fieldmask_payload =
         hm::fieldmask::FieldMaskPayload::get_payload<hm::fieldmask::FieldMaskPayload>(frame.frame_meta);
     if (fieldmask_payload) {
@@ -432,7 +443,14 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
       }
       // Inflate and only apply left and right
       ctx->arena_box = hm::BBox(new_left, ctx->arena_box.top, new_right, ctx->arena_box.bottom);
+#if 0 && !defined(NDEBUG)
+      plot_context.plot_rect(
+          ctx->arena_box,
+          20,
+          hm::utils::ColorRGB{0, 255, 128});
+#endif
     }
+#endif 
     play_tracker = gst_hm_playtracker::get_or_create_play_tracker(ctx, frame.frame_meta->source_id, ctx->arena_box);
   } else {
     play_tracker = gst_hm_playtracker::get_play_tracker(ctx, frame.frame_meta->source_id);

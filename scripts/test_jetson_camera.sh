@@ -1,0 +1,1 @@
+../src/libs/camera/test_jetson.sh

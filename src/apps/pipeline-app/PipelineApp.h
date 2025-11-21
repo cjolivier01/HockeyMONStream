@@ -38,7 +38,7 @@ typedef struct _NvDsBatchMeta NvDsBatchMeta;
 typedef struct _NvDsFrameMeta NvDsFrameMeta;
 typedef struct _NvDsObjectMeta NvDsObjectMeta;
 typedef struct _NvDsAppPerfStruct NvDsAppPerfStruct;
-typedef struct _NvDsFrameLatencyInfo NvDsFrameLatencyInfo;
+// typedef struct _NvDsFrameLatencyInfo NvDsFrameLatencyInfo;
 struct NvDsDisplayMeta;
 
 //------------------------------------------------------------------------------

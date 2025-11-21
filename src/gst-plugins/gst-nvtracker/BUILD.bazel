@@ -15,31 +15,30 @@
 #
 ################################################################################
 
-load("@com_extension_dev//build:graph_extension.bzl", "graph_cc_extension")
-load("@com_extension_dev//build:registry.bzl", "register_extension")
-load("@rules_cuda//cuda:defs.bzl", "cuda_library", "requires_cuda")
+# load("@com_extension_dev//build:registry.bzl", "register_extension")
+# load("@rules_cuda//cuda:defs.bzl", "cuda_library", "requires_cuda")
 
-exports_files(["LICENSE"])
+# exports_files(["LICENSE"])
 
-cc_binary(
-    name = "nvdsgst_tracker",
-    srcs = [
-      "convbufmanager.cpp", "gstnvtracker.cpp", "miscdatabufmanager.cpp", "nvtracker_proc.cpp",
-      "convbufmanager.h", "gstnvtracker.h", "invtracker_proc.h", "logging.h", "miscdatabufmanager.h", "nvtracker_proc.h"
-    ],
-    copts=[
-      "-fPIC",
-    ],
-    linkopts=[
-      "-shared",
-    ],
-    deps = [
-        "//src/gst-plugins/gst-nvdspreprocess:nvdsgst_preprocess_lib",
-        "//src/apps/apps-common:deepstream_apps_common",
-        "@glib",
-        "@gstreamer",
-        "@local_cuda//:cuda_runtime",
-    ],
-    visibility = ["//visibility:public"],
-    linkshared = True,
-)
+# cc_binary(
+#     name = "nvdsgst_tracker",
+#     srcs = [
+#       "convbufmanager.cpp", "gstnvtracker.cpp", "miscdatabufmanager.cpp", "nvtracker_proc.cpp",
+#       "convbufmanager.h", "gstnvtracker.h", "invtracker_proc.h", "logging.h", "miscdatabufmanager.h", "nvtracker_proc.h"
+#     ],
+#     copts=[
+#       "-fPIC",
+#     ],
+#     linkopts=[
+#       "-shared",
+#     ],
+#     deps = [
+#         "//src/gst-plugins/gst-nvdspreprocess:nvdsgst_preprocess_lib",
+#         "//src/apps/apps-common:deepstream_apps_common",
+#         "@glib",
+#         "@gstreamer",
+#         "@local_cuda//:cuda_runtime",
+#     ],
+#     visibility = ["//visibility:public"],
+#     linkshared = True,
+# )

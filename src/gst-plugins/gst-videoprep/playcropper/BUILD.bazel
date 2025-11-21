@@ -31,7 +31,7 @@ cuda_library(
     hdrs = [
     ],
     copts = [
-        "-std=c++17",
+        # "-std=c++17",
         "-Xcompiler=-fPIC",
         # "-Xcompiler=-rdynamic",
         #"-Xcompiler=-O0",

@@ -4,10 +4,16 @@ build --nokeep_going --color=yes
 # build --crosstool_top=@toolchain//crosstool:toolchain
 build --copt=-fPIC
 build --copt=-std=c++17
+build --copt=-DABSL_NO_XPACLRI
+build --copt=-fmax-errors=4
+
+# build --copt=-fdiagnostics-path-format=absolute
 # Add full path to all C++ compilations
 # build --copt=-H  # or --copt=-full-path depending on your compiler
 # build --copt=-H
 # build --copt=-full-path
+# build --copt=-mcpu=native
+# build --copt=-mtune=native
 
 # Only for C++ files
 # build --per_file_copt=.*\\.cpp$@-H
@@ -53,9 +59,13 @@ build:x86_64 --action_env=target_platform="x86_64"
 build:aarch64 --cpu=aarch64
 build:aarch64 --define=target_platform=aarch64
 build:aarch64 --action_env=target_platform="aarch64"
+build:aarch64 --copt=-DABSL_NO_XPACLRI
 
 
 build:jetson --config=aarch64
 build:jetson --define=target_platform=jetson
 build:jetson --action_env=target_platform="jetson"
 build:jetson --copt=-DIS_TEGRA=1
+build:jetson --copt=-mtune=native
+build:jetson --copt=-DABSL_NO_XPACLRI
+build:jetson --copt=-mbranch-protection=none

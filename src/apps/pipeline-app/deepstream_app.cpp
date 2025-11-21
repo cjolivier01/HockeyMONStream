@@ -10,10 +10,10 @@
 
 #include <cassert>
 #include <cstddef>
-#include <iostream>
 
+#include <gst-nvdscommonconfig.h>
+#include <gst-nvdscustommessage.h>
 #include <gst/gstelementfactory.h>
-#include "gst-nvdscustommessage.h"
 
 #define MAX_DISPLAY_LEN 64
 static guint demux_batch_num = 0;
@@ -23,6 +23,39 @@ GST_DEBUG_CATEGORY_EXTERN(NVDS_APP);
 GQuark _dsmeta_quark;
 
 #define CEIL(a, b) ((a + b - 1) / b)
+
+// Small helpers to reduce repetition and improve readability
+static inline void make_output_path(char* out, size_t out_size, const char* dir, guint app_index, guint stream_id, gulong frame_num) {
+  g_snprintf(out, out_size - 1, "%s/%02u_%03u_%06lu.txt", dir, app_index, stream_id, frame_num);
+}
+
+// Forward declaration for probe function used below
+static GstPadProbeReturn gie_processing_done_buf_prob(GstPad* pad, GstPadProbeInfo* info, gpointer u_data);
+
+static inline gboolean add_osd_if_enabled(NvDsConfig* config, NvDsInstanceBin* instance_bin, GstElement** last_elem) {
+  if (!config->osd_config.enable) return TRUE;
+  if (!create_osd_bin(&config->osd_config, &instance_bin->osd_bin)) {
+    return FALSE;
+  }
+  gst_bin_add(GST_BIN(instance_bin->bin), instance_bin->osd_bin.bin);
+  if (!gst_element_link(instance_bin->osd_bin.bin, *last_elem)) {
+    return FALSE;
+  }
+  *last_elem = instance_bin->osd_bin.bin;
+  return TRUE;
+}
+
+static inline void add_bbox_probe(NvDsConfig* config, NvDsInstanceBin* instance_bin, GstElement* last_elem) {
+  GstElement* target_elem = config->osd_config.enable ? instance_bin->osd_bin.nvosd : last_elem;
+  GstPad* gstpad = gst_element_get_static_pad(target_elem, "sink");
+  if (!gstpad) {
+    NVGSTDS_ERR_MSG_V("Could not find 'sink' in '%s'", GST_ELEMENT_NAME(target_elem));
+    return;
+  }
+  instance_bin->all_bbox_buffer_probe_id =
+      gst_pad_add_probe(gstpad, GST_PAD_PROBE_TYPE_BUFFER, gie_processing_done_buf_prob, instance_bin, NULL);
+  gst_object_unref(gstpad);
+}
 
 /**
  * @brief  Add the (nvmsgconv->nvmsgbroker) sink-bin to the
@@ -100,6 +133,11 @@ static void s_sensor_info_callback_stream_added(AppCtx* appCtx, NvDsSensorInfo* 
   g_hash_table_insert(appCtx->sensorInfoHash, sensorInfo->source_id + (char*)NULL, sensorInfoToHash);
 }
 
+NvDsSensorInfo* get_sensor_info(AppCtx* appCtx, guint source_id) {
+  NvDsSensorInfo* sensorInfo = (NvDsSensorInfo*)g_hash_table_lookup(appCtx->sensorInfoHash, source_id + (gchar*)NULL);
+  return sensorInfo;
+}
+
 static void s_sensor_info_callback_stream_removed(AppCtx* appCtx, NvDsSensorInfo* sensorInfo) {
   NvDsSensorInfo* sensorInfoFromHash = get_sensor_info(appCtx, sensorInfo->source_id);
   /** remove the sensor info from the hash map */
@@ -107,11 +145,6 @@ static void s_sensor_info_callback_stream_removed(AppCtx* appCtx, NvDsSensorInfo
     g_hash_table_remove(appCtx->sensorInfoHash, sensorInfo->source_id + (gchar*)NULL);
     s_sensor_info_destroy(sensorInfoFromHash);
   }
-}
-
-NvDsSensorInfo* get_sensor_info(AppCtx* appCtx, guint source_id) {
-  NvDsSensorInfo* sensorInfo = (NvDsSensorInfo*)g_hash_table_lookup(appCtx->sensorInfoHash, source_id + (gchar*)NULL);
-  return sensorInfo;
 }
 
 /*Note: Below callbacks/functions defined for FPS logging,
@@ -273,7 +306,7 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
     case GST_MESSAGE_STATE_CHANGED: {
       GstState oldstate, newstate;
       gst_message_parse_state_changed(message, &oldstate, &newstate, NULL);
-      if (GST_ELEMENT(GST_MESSAGE_SRC(message)) == appCtx->pipeline.pipeline) {
+      if (appCtx && GST_ELEMENT(GST_MESSAGE_SRC(message)) == appCtx->pipeline.pipeline) {
         switch (newstate) {
           case GST_STATE_PLAYING:
             NVGSTDS_INFO_MSG_V("Pipeline running\n");
@@ -444,10 +477,9 @@ static void write_kitti_output(AppCtx* appCtx, NvDsBatchMeta* batch_meta) {
   for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)l_frame->data;
     guint stream_id = frame_meta->pad_index;
-    g_snprintf(
+    make_output_path(
         bbox_file,
-        sizeof(bbox_file) - 1,
-        "%s/%02u_%03u_%06lu.txt",
+        sizeof(bbox_file),
         appCtx->config.bbox_dir_path,
         appCtx->index,
         stream_id,
@@ -557,10 +589,9 @@ static void write_kitti_track_output(AppCtx* appCtx, NvDsBatchMeta* batch_meta) 
   for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)l_frame->data;
     guint stream_id = frame_meta->pad_index;
-    g_snprintf(
+    make_output_path(
         bbox_file,
-        sizeof(bbox_file) - 1,
-        "%s/%02u_%03u_%06lu.txt",
+        sizeof(bbox_file),
         appCtx->config.kitti_track_dir_path,
         appCtx->index,
         stream_id,
@@ -644,10 +675,9 @@ static void write_reid_track_output(AppCtx* appCtx, NvDsBatchMeta* batch_meta) {
 
     /** Create dump file name. */
     guint stream_id = frame_meta->pad_index;
-    g_snprintf(
+    make_output_path(
         reid_file,
-        sizeof(reid_file) - 1,
-        "%s/%02u_%03u_%06lu.txt",
+        sizeof(reid_file),
         appCtx->config.reid_track_dir_path,
         appCtx->index,
         stream_id,
@@ -721,10 +751,9 @@ static void write_terminated_track_output(AppCtx* appCtx, NvDsBatchMeta* batch_m
         if (frame_meta->pad_index != stream_id)
           continue;
 
-        g_snprintf(
+        make_output_path(
             term_file,
-            sizeof(term_file) - 1,
-            "%s/%02u_%03u_%06lu.txt",
+            sizeof(term_file),
             appCtx->config.terminated_track_output_path,
             appCtx->index,
             stream_id,
@@ -1072,55 +1101,41 @@ static GstPadProbeReturn analytics_done_buf_prob(GstPad* pad, GstPadProbeInfo* i
   return GST_PAD_PROBE_OK;
 }
 
+static inline void print_latencies(AppCtx* appCtx, GstBuffer* buf) {
+  NvDsFrameLatencyInfo* latency_info = NULL;
+  g_mutex_lock(&appCtx->latency_lock);
+  latency_info = appCtx->latency_info;
+  guint num_sources_in_batch = nvds_measure_buffer_latency(buf, latency_info);
+  for (guint i = 0; i < num_sources_in_batch; i++) {
+    g_print(
+        "Source id = %d Frame_num = %d Frame latency = %lf (ms) \n",
+        latency_info[i].source_id,
+        latency_info[i].frame_num,
+        latency_info[i].latency);
+  }
+  g_mutex_unlock(&appCtx->latency_lock);
+}
+
 static GstPadProbeReturn latency_measurement_buf_prob(GstPad* pad, GstPadProbeInfo* info, gpointer u_data) {
   AppCtx* appCtx = (AppCtx*)u_data;
-  guint i = 0, num_sources_in_batch = 0;
   if (nvds_enable_latency_measurement) {
     GstBuffer* buf = (GstBuffer*)info->data;
-    NvDsFrameLatencyInfo* latency_info = NULL;
-    g_mutex_lock(&appCtx->latency_lock);
-    latency_info = appCtx->latency_info;
     guint64 batch_num = GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(pad), "latency-batch-num"));
     g_print("\n************BATCH-NUM = %lu**************\n", batch_num);
-
-    num_sources_in_batch = nvds_measure_buffer_latency(buf, latency_info);
-
-    for (i = 0; i < num_sources_in_batch; i++) {
-      g_print(
-          "Source id = %d Frame_num = %d Frame latency = %lf (ms) \n",
-          latency_info[i].source_id,
-          latency_info[i].frame_num,
-          latency_info[i].latency);
-    }
-    g_mutex_unlock(&appCtx->latency_lock);
+    print_latencies(appCtx, buf);
     g_object_set_data(G_OBJECT(pad), "latency-batch-num", GSIZE_TO_POINTER(batch_num + 1));
   }
-
   return GST_PAD_PROBE_OK;
 }
 
 static GstPadProbeReturn demux_latency_measurement_buf_prob(GstPad* pad, GstPadProbeInfo* info, gpointer u_data) {
   AppCtx* appCtx = (AppCtx*)u_data;
-  guint i = 0, num_sources_in_batch = 0;
   if (nvds_enable_latency_measurement) {
     GstBuffer* buf = (GstBuffer*)info->data;
-    NvDsFrameLatencyInfo* latency_info = NULL;
-    g_mutex_lock(&appCtx->latency_lock);
-    latency_info = appCtx->latency_info;
     g_print("\n************DEMUX BATCH-NUM = %d**************\n", demux_batch_num);
-    num_sources_in_batch = nvds_measure_buffer_latency(buf, latency_info);
-
-    for (i = 0; i < num_sources_in_batch; i++) {
-      g_print(
-          "Source id = %d Frame_num = %d Frame latency = %lf (ms) \n",
-          latency_info[i].source_id,
-          latency_info[i].frame_num,
-          latency_info[i].latency);
-    }
-    g_mutex_unlock(&appCtx->latency_lock);
+    print_latencies(appCtx, buf);
     demux_batch_num++;
   }
-
   return GST_PAD_PROBE_OK;
 }
 
@@ -1188,36 +1203,10 @@ static gboolean create_demux_pipeline(AppCtx* appCtx, guint index) {
   gst_bin_add(GST_BIN(instance_bin->bin), instance_bin->demux_sink_bin.bin);
   last_elem = instance_bin->demux_sink_bin.bin;
 
-  if (config->osd_config.enable) {
-    if (!create_osd_bin(&config->osd_config, &instance_bin->osd_bin)) {
-      goto done;
-    }
-
-    gst_bin_add(GST_BIN(instance_bin->bin), instance_bin->osd_bin.bin);
-
-    NVGSTDS_LINK_ELEMENT(instance_bin->osd_bin.bin, last_elem);
-
-    last_elem = instance_bin->osd_bin.bin;
-  }
+  if (!add_osd_if_enabled(config, instance_bin, &last_elem)) goto done;
 
   NVGSTDS_BIN_ADD_GHOST_PAD(instance_bin->bin, last_elem, "sink");
-  if (config->osd_config.enable) {
-    NVGSTDS_ELEM_ADD_PROBE(
-        instance_bin->all_bbox_buffer_probe_id,
-        instance_bin->osd_bin.nvosd,
-        "sink",
-        gie_processing_done_buf_prob,
-        GST_PAD_PROBE_TYPE_BUFFER,
-        instance_bin);
-  } else {
-    NVGSTDS_ELEM_ADD_PROBE(
-        instance_bin->all_bbox_buffer_probe_id,
-        instance_bin->demux_sink_bin.bin,
-        "sink",
-        gie_processing_done_buf_prob,
-        GST_PAD_PROBE_TYPE_BUFFER,
-        instance_bin);
-  }
+  add_bbox_probe(config, instance_bin, instance_bin->demux_sink_bin.bin);
 
   ret = TRUE;
 done:
@@ -1253,36 +1242,10 @@ static gboolean create_processing_instance(AppCtx* appCtx, guint index) {
   gst_bin_add(GST_BIN(instance_bin->bin), instance_bin->sink_bin.bin);
   last_elem = instance_bin->sink_bin.bin;
 
-  if (config->osd_config.enable) {
-    if (!create_osd_bin(&config->osd_config, &instance_bin->osd_bin)) {
-      goto done;
-    }
-
-    gst_bin_add(GST_BIN(instance_bin->bin), instance_bin->osd_bin.bin);
-
-    NVGSTDS_LINK_ELEMENT(instance_bin->osd_bin.bin, last_elem);
-
-    last_elem = instance_bin->osd_bin.bin;
-  }
+  if (!add_osd_if_enabled(config, instance_bin, &last_elem)) goto done;
 
   NVGSTDS_BIN_ADD_GHOST_PAD(instance_bin->bin, last_elem, "sink");
-  if (config->osd_config.enable) {
-    NVGSTDS_ELEM_ADD_PROBE(
-        instance_bin->all_bbox_buffer_probe_id,
-        instance_bin->osd_bin.nvosd,
-        "sink",
-        gie_processing_done_buf_prob,
-        GST_PAD_PROBE_TYPE_BUFFER,
-        instance_bin);
-  } else {
-    NVGSTDS_ELEM_ADD_PROBE(
-        instance_bin->all_bbox_buffer_probe_id,
-        instance_bin->sink_bin.bin,
-        "sink",
-        gie_processing_done_buf_prob,
-        GST_PAD_PROBE_TYPE_BUFFER,
-        instance_bin);
-  }
+  add_bbox_probe(config, instance_bin, instance_bin->sink_bin.bin);
 
   // for (size_t hmaudio_index = 0;
   //      hmaudio_index < sizeof(appCtx->config.hmaudio_config) / sizeof(appCtx->config.hmaudio_config[0]);
@@ -1341,7 +1304,7 @@ static gboolean create_common_elements(
 
   if (config->hmplaycropper_config.enable) {
     if (!create_hmplaycropper_bin(&config->hmplaycropper_config, &pipeline->common_elements.hmplaycropper_bin)) {
-      g_print("creating streammux_split bin failed\n");
+      g_print("creating hmplaycropper bin failed\n");
       goto done;
     }
     gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->common_elements.hmplaycropper_bin.bin);
@@ -1539,7 +1502,7 @@ static gboolean create_common_elements(
     if (!create_hmstitcher_bin(&config->hmsticher_config, &pipeline->hmstitcher_bin)) {
       goto done;
     }
-    // Add dsfieldmask bin to instance bin
+    // Add hmstitcher bin to instance bin
     gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->hmstitcher_bin.bin);
     if (!*src_elem) {
       *src_elem = pipeline->hmstitcher_bin.bin;
@@ -1960,8 +1923,8 @@ gboolean create_pipeline(
 
       // HMAudio after instance bin is added to the pipeline
       for (size_t hmaudio_index = 0;
-          hmaudio_index < sizeof(appCtx->config.hmaudio_config) / sizeof(appCtx->config.hmaudio_config[0]);
-          ++hmaudio_index)
+           hmaudio_index < sizeof(appCtx->config.hmaudio_config) / sizeof(appCtx->config.hmaudio_config[0]);
+           ++hmaudio_index)
         if (appCtx->config.hmaudio_config[hmaudio_index].enable) {
           // assert(i == 0); // what to do if not 0?
           if (!create_hmaudio_bin(

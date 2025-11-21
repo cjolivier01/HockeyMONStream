@@ -14,6 +14,7 @@ application:
   stage: -1
   enable-perf-measurement: 0
   perf-measurement-interval-sec: 5
+  complete-configuration: 1
   # use-nvmultiurisrcbin: 1  < -- doesnt seem to pick this up
   ##gie-kitti-output-dir=streamscl
 

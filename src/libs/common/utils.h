@@ -5,9 +5,10 @@
 
 #include <stdio.h>
 
-#include <iostream>
 #include <functional>
+#include <iostream>
 #include <optional>
+#include <sstream>
 
 namespace hm {
 class GPrintStreamBuffer : public std::streambuf {
@@ -44,12 +45,12 @@ class GPrintOStream : public std::ostream {
 };
 extern GPrintOStream gout;
 
-#define STRSIZE(str$) (sizeof(str$)/sizeof(str$[0]))
+#define STRSIZE(str$) (sizeof(str$) / sizeof(str$[0]))
 
 std::optional<std::pair<int, int>> extract_width_height(GstCaps* caps);
 
 template <typename T>
-inline void glist_visitor(GList *list, const std::function<void(T*)>& pred) {
+inline void glist_visitor(GList* list, const std::function<void(T*)>& pred) {
   while (list) {
     pred(static_cast<T*>(list->data));
     list = list->next;
@@ -62,6 +63,21 @@ std::tuple<size_t, size_t> resize_to_fit(size_t origWidth, size_t origHeight, si
 
 uint64_t hhmmss_to_nanoseconds(const std::string& hhmmss_string);
 
-#define TO_STRING(_stuff$) (std::stringstream() << _stuff$).str()
+inline std::string as_string_stream(const std::ostream& ss) {
+  return static_cast<const std::stringstream&>(ss).str();
+}
+
+namespace utils {
+
+size_t getenv(const std::string& name, const std::size_t& default_value);
+long getenv(const std::string& name, const long& default_value);
+int getenv(const std::string& name, const int& default_value);
+bool getenv(const std::string& name, const bool& default_value);
+std::string getenv(const std::string& name, const std::string& default_value);
+
+} // namespace utils
+
+// #define TO_STRING(_stuff$) (std::stringstream() << _stuff$).str()
+#define TO_STRING(_stuff$) ::hm::as_string_stream(std::stringstream() << _stuff$)
 
 } // namespace hm

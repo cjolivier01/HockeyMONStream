@@ -1,10 +1,11 @@
 #include "hstream/src/apps/apps-common/deepstream_common.h"
+#include "hstream/src/apps/apps-common/deepstream_config.h"
 #include "hstream/src/apps/apps-common/deepstream_config_yaml.h"
 #include "hstream/src/libs/common/ConfigYaml.h"
 #include "hstream/src/libs/common/utils.h"
 
 #include "deepstream_app.h"
-#include "gst-nvdscommonconfig.h"
+// #include "gst-nvdscommonconfig.h"
 
 #include "absl/status/statusor.h"
 
@@ -237,8 +238,6 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
   std::string msgcons_str = "message-consumer";
   std::string dewarper_str = "dewarper";
 
-  std::cout << "89fhy39ghfhg034" << configyml << std::endl;
-
   config->source_list_enabled = FALSE;
 
   /** Initialize global gpu id to -1 */
@@ -361,6 +360,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
             config->num_source_sub_bins++;
         }
 #else
+        assert(source_id >= 0 && source_id < MAX_SOURCE_BINS);
         parse_err = !parse_source_yaml(&config->multi_source_config[source_id], configyml[paramKey], config_dir);
         if (config->multi_source_config[source_id].enable)
           config->num_source_sub_bins++;

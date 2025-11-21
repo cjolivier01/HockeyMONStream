@@ -1,14 +1,13 @@
 /* clang-format off */
-// X11 stuff must come first because it defines "Status"
-#include <X11/Xlib.h>
-#include <X11/Xutil.h>
-#include <gstreamer-1.0/gst/gstelement.h>
-#include "hstream/src/apps/apps-common/deepstream_config.h"
-#include "hstream/src/apps/apps-common/deepstream_sources.h"
-#undef Status
+#include "src/libs/common/Status.h"
 /* clang-format on */
 
 #include "PipelineApp.h"
+
+#include <gstreamer-1.0/gst/gstelement.h>
+#include "hstream/src/apps/apps-common/deepstream_config.h"
+#include "hstream/src/apps/apps-common/deepstream_sources.h"
+#include "hstream/src/libs/wireless/StreamControl.h"
 
 #include <cuda_runtime_api.h>
 #include <gst/gstbin.h>
@@ -22,13 +21,11 @@
 #include <functional>
 #include <iostream>
 #include <memory>
-#include <thread>
 #include <vector>
 
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
 #include "hstream/src/libs/camera/AutoFocus.h"
-#include "hstream/src/libs/common/ModPipeline.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 
@@ -88,6 +85,10 @@ PipelineApplication::PipelineApplication()
   memset(fps_avg_, 0, sizeof(fps_avg_));
   g_mutex_init(&fps_lock_);
   instance_ = this;
+  // const char* plugin_path = getenv("GST_PLUGIN_PATH");
+  // if (plugin_path) {
+  //   std::cout << "GST_PLUGIN_PATH=\"" << plugin_path << "\"\n" << std::flush;
+  // }
 }
 
 //------------------------------------------------------------------------------
@@ -199,10 +200,14 @@ absl::Status PipelineApplication::configureInstances(
                 << "many as the number of stages, or else it's not clear what to apply to this stage " << stage_index));
           }
         }
-        const std::map<std::string, std::string>& options =
-            pipeline_options_.size() == 1 ? pipeline_options_.at(0) : pipeline_options_.at(stage_index);
-        for (const auto& kv_item : options) {
-          HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(kv_item.first, kv_item.second));
+        // const std::map<std::string, std::string>& options =
+        //     pipeline_options_.size() == 1 ? pipeline_options_.at(0) : pipeline_options_.at(stage_index);
+        if (stage_index) {
+          for (const std::map<std::string, std::string>& options : pipeline_options_) {
+            for (const auto& kv_item : options) {
+              HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(kv_item.first, kv_item.second));
+            }
+          }
         }
       }
 
@@ -216,6 +221,7 @@ absl::Status PipelineApplication::configureInstances(
         return configuration_status;
       }
       YAML::Node config = app_ctx->configurator().config();
+      // std::cout << config["pipeline"] << "\n";
       if (!config["pipeline"].IsDefined() ||
           !parse_config_yaml(
               config["pipeline"], &app_ctx->config, fs::path(app_ctx->app_config_file()).parent_path())) {
@@ -251,8 +257,7 @@ absl::Status PipelineApplication::createPipelines(
         s += '_';
         s += std::to_string(i);
       }
-      gst_debug_bin_to_dot_file_with_ts(
-          GST_BIN(app_contexts[i]->pipeline.pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "/mnt/data/src/hstream/pipeline.dot");
+      hm::save_dot_file(app_contexts[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_created" + s);
     }
   }
   return auto_focus_cameras(app_contexts);
@@ -604,11 +609,6 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   g_option_context_add_group(ctx, gst_init_get_option_group());
 
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
-
-  int current_device = -1;
-  cudaGetDevice(&current_device);
-  struct cudaDeviceProp prop;
-  cudaGetDeviceProperties(&prop, current_device);
 
   if (!g_option_context_parse(ctx, &argc, &argv, &error)) {
     NVGSTDS_ERR_MSG_V("%s", error->message);

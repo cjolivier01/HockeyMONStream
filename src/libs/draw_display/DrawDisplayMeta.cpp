@@ -1,5 +1,6 @@
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
-#include "deepstream/sources/includes/nvll_osd_struct.h"
+// #include "deepstream/sources/includes/nvll_osd_struct.h"
+#include "nvll_osd_struct.h"
 #include "hstream/src/libs/common/Status.h"
 #include "jetson-utils/cuda/cudaDraw.h"
 
@@ -201,7 +202,11 @@ cudaError_t cudaDraw(
   float radius = scale * static_cast<float>(circle.radius);
   float4 color = make_float4(
       circle.circle_color.red, circle.circle_color.green, circle.circle_color.blue, circle.circle_color.alpha);
+#if NVDS_VERSION_MAJOR > 6 || (NVDS_VERSION_MAJOR == 6 && NVDS_VERSION_MINOR >= 2)
   float inner_radius = radius - circle.circle_width;
+#else
+  float inner_radius = radius - 1;
+#endif
   if (inner_radius < 0) {
     inner_radius = 0;
   }

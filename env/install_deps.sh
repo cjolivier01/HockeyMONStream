@@ -5,12 +5,12 @@ sudo apt-get install -y \
   libsoup2.4-dev \
   libjson-glib-dev \
   libjsoncpp-dev \
+  libglfw3-dev \
   protobuf-compiler \
   libgstrtspserver-1.0-dev \
   libgstreamer-plugins-bad1.0-dev \
   gstreamer1.0-rtsp \
   libglew-dev \
-  libabsl-dev \
   libfftw3-dev \
   libv4l-dev \
   v4l-utils \
@@ -18,7 +18,8 @@ sudo apt-get install -y \
   libgtk-3-dev \
   libtiff5-dev \
   libgtkglext1-dev \
-  tensorrt-dev \
   libyaml-cpp-dev \
   apt-file \
   aptitude
+
+sudo apt-get install -y tensorrt-dev

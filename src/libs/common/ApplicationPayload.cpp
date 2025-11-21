@@ -1,5 +1,6 @@
 #include "hstream/src/libs/common/ApplicationPayload.h"
 
+#ifdef HAS_NVDS_CUSTOMUSERMETA
 namespace hm {
 
 const char* UserApplicationPayload::PayloadTypeName() const {
@@ -59,3 +60,4 @@ void UserApplicationPayload::add_to_frame(NVDS_CUSTOM_PAYLOAD* custom_payload, N
 }
 
 } // namespace hm
+#endif

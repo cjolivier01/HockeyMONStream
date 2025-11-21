@@ -1,6 +1,11 @@
 #pragma once
 
+/* clang-format off */
+#include "src/libs/common/Status.h"
+/* clang-format on */
+
 #include <string>
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "hstream/src/libs/common/Surface.h"
 #include "yaml-cpp/node/node.h"

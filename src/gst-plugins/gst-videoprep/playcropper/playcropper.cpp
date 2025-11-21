@@ -1,5 +1,4 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/playcropper.h"
-#include <absl/status/status.h>
 #include <assert.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -12,6 +11,7 @@
 #include <unistd.h>
 #include <cmath>
 #include <vector>
+#include "absl/status/status.h"
 #include "absl/strings/str_split.h"
 #include "cupano/pano/cudaMat.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
@@ -245,7 +245,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
     // const playtracker::PlayTrackerPayload* ptpayload =
     //     playtracker::PlayTrackerPayload::get_payload<playtracker::PlayTrackerPayload>(frame_meta);
     if (false /*ptpayload*/) {
-      //angle = max_angle * ptpayload->`
+      // angle = max_angle * ptpayload->`
     } else {
       const float half_width = float(frame_meta->source_frame_width) / 2;
       const float tcx = tbox.center().x;

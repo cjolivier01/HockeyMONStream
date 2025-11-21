@@ -5,9 +5,13 @@
 cc_binary(
   name="myaudioapp",
   srcs=["myaudioapp.cpp"],
+  linkopts = [
+    "-lGL",
+  ],
   deps=[
     "@glib",
     "@gstreamer",
+    "@jetson-utils//display",
     "//src/apps/apps-common:deepstream_apps_common",
   ]
 )

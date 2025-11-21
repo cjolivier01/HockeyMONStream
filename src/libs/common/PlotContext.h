@@ -6,8 +6,6 @@
 
 #include <array>
 #include <cstdint>
-#include <list>
-#include <memory>
 #include <mutex>
 #include <optional>
 #include <variant>
@@ -22,7 +20,7 @@ using ColorT = std::variant<ColorRGB, ColorRGBA>;
 
 class PlotContext {
  public:
-  PlotContext(NvDsFrameMeta* frame_meta, const std::string& font_name);
+  PlotContext(NvDsFrameMeta* frame_meta, std::string font_name = "");
   virtual ~PlotContext();
 
   void plot_rect(

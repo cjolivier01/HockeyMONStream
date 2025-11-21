@@ -14,9 +14,16 @@
 #include "gstdsfieldmask.h"
 
 // #include "gst-nvquery.h"
-#include "deepstream/sources/includes/nvbufsurface.h"
+// #include "deepstream/sources/includes/nvbufsurface.h"
 #include "gstnvdsmeta.h"
-// #include "nvbufsurftransform.h"
+#include "nvbufsurface.h"
+
+#if __has_include("nvdscustomusermeta.h")
+    #define HAS_CUSTOM_USER_META 1
+    #include "nvdscustomusermeta.h"
+#else
+    #define HAS_CUSTOM_USER_META 0
+#endif
 
 #include <glib-2.0/glib.h>
 #include <gstreamer-1.0/gst/gstinfo.h>
@@ -25,7 +32,7 @@
 #include <cassert>
 #include <string>
 
-namespace fs = std::filesystem;
+// namespace fs = std::filesystem;
 
 namespace {
 GST_DEBUG_CATEGORY_STATIC(gst_dsfieldmask_debug);
@@ -384,7 +391,14 @@ static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstB
       frame_meta->pipeline_width = params->width;
       frame_meta->pipeline_height = params->height;
     }
-    absl::Status status = DsFieldMaskProcessFrame(surface, frame_index, frame_meta, dsfieldmask->dsfieldmasklib_ctx);
+#ifdef __aarch64__
+    // Don't waste the CPU power on debug-drawing (this isn't a config option yet)
+    constexpr bool kDraw = false;
+#else
+    constexpr bool kDraw = false;
+#endif
+    absl::Status status =
+        DsFieldMaskProcessFrame(surface, frame_index, frame_meta, dsfieldmask->dsfieldmasklib_ctx, kDraw);
     if (!status.ok()) {
       std::cerr << status << std::endl;
       goto error;

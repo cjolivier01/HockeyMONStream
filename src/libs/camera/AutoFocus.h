@@ -2,10 +2,13 @@
 
 #include "absl/status/status.h"
 
+#include <optional>
 #include <vector>
 
 namespace hm {
 namespace camera {
+
+std::optional<int> findI2CBusForVideoDevice(int videoDeviceIndex);
 
 struct CameraConnection {
   int sensor_id{0};

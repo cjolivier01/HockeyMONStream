@@ -94,7 +94,7 @@ std::optional<NvDsSourceType> source_type_from_string(const std::string& str) {
 
 #if 1
 /* Functions below print the Capabilities in a human-friendly format */
-static gboolean print_field(GQuark field, const GValue* value, gpointer pfx) {
+[[maybe_unused]] static gboolean print_field(GQuark field, const GValue* value, gpointer pfx) {
   gchar* str = gst_value_serialize(value);
 
   g_print("%s  %15s: %s\n", (gchar*)pfx, g_quark_to_string(field), str);

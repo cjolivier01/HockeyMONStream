@@ -12,11 +12,12 @@
 #include <cmath>
 #include <iostream>
 #include <mutex>
-#include "deepstream/sources/includes/nvbufsurface.h"
+// #include "deepstream/sources/includes/nvbufsurface.h"
 #include "gst-nvcommon.h"
 #include "gstnvdsmeta.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/gst_utils.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_interface.hpp"
+#include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 #include "nvds_dewarper_meta.h"
 #include "nvdsmeta.h"
@@ -27,7 +28,6 @@
 #include <cuda.h>
 #include <string.h>
 #include <unistd.h>
-#include "deepstream/sources/includes/nvbufsurface.h"
 
 #include "absl/strings/str_split.h"
 
@@ -1147,7 +1147,6 @@ void VideoPrepPriv::SetPrivateConfig(const char* config_string) {
 
 static void gst_videoprep_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(object);
-#if 1
   switch (prop_id) {
     PROPERTY_SET_CASE(PROP_SILENT, videoprep->silent)
     PROPERTY_SET_CASE(PROP_GPU_DEVICE_ID, videoprep->gpu_id)
@@ -1173,68 +1172,10 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
   if (prop_id == PROP_PLUGIN_TYPE) {
     std::cout << "plugin_type: " << videoprep->plugin_type << std::endl;
   }
-#else
-  switch (prop_id) {
-    case PROP_SILENT:
-      videoprep->silent = g_value_get_boolean(value);
-      break;
-    case PROP_GPU_DEVICE_ID:
-      videoprep->gpu_id = g_value_get_uint(value);
-      break;
-    case PROP_SOURCE_ID:
-      videoprep->source_id = g_value_get_uint(value);
-      break;
-    case PROP_NUM_OUTPUT_BUFFERS:
-      videoprep->num_output_buffers = g_value_get_uint(value);
-      break;
-    case PROP_NUM_BATCH_BUFFERS:
-      videoprep->num_batch_buffers = g_value_get_uint(value);
-      break;
-    case PROP_NVBUF_MEMORY_TYPE:
-      videoprep->cuda_mem_type = static_cast<NvBufSurfaceMemType>(g_value_get_enum(value));
-      break;
-    case PROP_INTERPOLATION_METHOD:
-      videoprep->interpolation_method = static_cast<NvBufSurfTransform_Inter>(g_value_get_enum(value));
-      break;
-    case PROP_OUTPUT_WIDTH:
-      videoprep->output_width = g_value_get_uint(value);
-      break;
-    case PROP_OUTPUT_HEIGHT:
-      videoprep->output_height = g_value_get_uint(value);
-      break;
-    case PROP_CONFIG_FILE:
-      if (videoprep->config_file)
-        g_free(videoprep->config_file);
-      videoprep->config_file = (gchar*)g_value_dup_string(value);
-      g_print("Stitching config: \"%s\"\n", videoprep->config_file);
-      // if (videoprep_parse_config_file(videoprep, videoprep->config_file) != TRUE) {
-      //   g_print("%s: Failed to parse config file %s\n", GST_ELEMENT_NAME(videoprep), videoprep->config_file);
-      //   abort();
-      // }
-      break;
-    case PROP_PLUGIN_TYPE:
-      if (videoprep->plugin_type)
-        g_free(videoprep->plugin_type);
-      videoprep->plugin_type = (gchar*)g_value_dup_string(value);
-      break;
-    case PROP_PLUGIN_PRIVATE_CONFIG:
-      if (videoprep->plugin_private_config)
-        g_free(videoprep->plugin_private_config);
-      videoprep->plugin_private_config = (gchar*)g_value_dup_string(value);
-      if (videoprep->priv) {
-        videoprep->priv->SetPrivateConfig(videoprep->plugin_private_config);
-      }
-      break;
-    default:
-      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
-      break;
-  }
-#endif
 }
 
 static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* value, GParamSpec* pspec) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(object);
-#if 1
   switch (prop_id) {
     PROPERTY_GET_CASE(PROP_SILENT, videoprep->silent)
     PROPERTY_GET_CASE(PROP_GPU_DEVICE_ID, videoprep->gpu_id)
@@ -1253,52 +1194,6 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
   }
-#else
-  switch (prop_id) {
-    case PROP_SILENT:
-      g_value_set_boolean(value, videoprep->silent);
-      break;
-    case PROP_GPU_DEVICE_ID:
-      g_value_set_uint(value, videoprep->gpu_id);
-      break;
-    case PROP_SOURCE_ID:
-      g_value_set_uint(value, videoprep->source_id);
-      break;
-    case PROP_NUM_OUTPUT_BUFFERS:
-      g_value_set_uint(value, videoprep->num_output_buffers);
-      break;
-    case PROP_NUM_BATCH_BUFFERS:
-      g_value_set_uint(value, videoprep->num_batch_buffers);
-      break;
-    case PROP_OUTPUT_WIDTH:
-      g_value_set_uint(value, videoprep->output_width);
-      break;
-    case PROP_OUTPUT_HEIGHT:
-      g_value_set_uint(value, videoprep->output_height);
-      break;
-    case PROP_CONFIG_FILE:
-      g_value_set_string(value, videoprep->config_file);
-      break;
-    case PROP_PLUGIN_TYPE:
-      g_value_set_string(value, videoprep->plugin_type);
-      break;
-    case PROP_PLUGIN_PRIVATE_CONFIG:
-      g_value_set_string(value, videoprep->plugin_private_config);
-      break;
-    case PROP_DEWARP_LIB_VERSION:
-      g_value_set_static_string(value, VIDEOPREP_LIB_VERSION);
-      break;
-    case PROP_NVBUF_MEMORY_TYPE:
-      g_value_set_enum(value, videoprep->cuda_mem_type);
-      break;
-    case PROP_INTERPOLATION_METHOD:
-      g_value_set_enum(value, videoprep->interpolation_method);
-      break;
-    default:
-      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
-      break;
-  }
-#endif
 }
 
 } // namespace videoprep

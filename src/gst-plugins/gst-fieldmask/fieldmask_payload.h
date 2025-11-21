@@ -7,6 +7,7 @@
 namespace hm {
 namespace fieldmask {
 
+#ifdef HAS_NVDS_CUSTOMUSERMETA
 class FieldMaskPayload : public UserApplicationPayload {
  public:
   FieldMaskPayload(cv::Point2f centroid, const cv::Rect2i& field_box) : centroid_(centroid), field_box_(field_box) {}
@@ -31,6 +32,6 @@ class FieldMaskPayload : public UserApplicationPayload {
   cv::Point2f centroid_;
   cv::Rect2i field_box_;
 };
-
+#endif
 } // namespace fieldmask
 } // namespace hm
