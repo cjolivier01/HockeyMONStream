@@ -20,6 +20,7 @@ sudo apt-get install -y \
   libgtkglext1-dev \
   libyaml-cpp-dev \
   apt-file \
+  libbluetooth-dev \
   aptitude
 
 sudo apt-get install -y tensorrt-dev
