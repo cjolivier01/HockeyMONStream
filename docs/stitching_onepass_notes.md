@@ -182,3 +182,62 @@ When you come back to this work:
 
 This summary is intentionally high-level so it stays valid even if some details shift as the code evolves.
 
+## Incremental One-Pass Refactor Plan (continued)
+
+Use these steps to take the high-level plan into concrete, low-risk changes.
+
+1. **Instrument and observe (no behavior change)**:
+   - Add verbose logging (gated by env var or debug flag) in hmstitcher for:
+     - Whether control masks are found on startup.
+     - When `configure_stitching` runs and how long it takes.
+     - When `PreCapsInit` decides output caps and what sizes it picks.
+   - Add a debug metric or trace in `Configurator::set_output_dimensions` when it cannot resolve canvas size.
+   - Goal: capture baseline behavior on current two-pass runs.
+
+2. **Introduce a guarded one-pass mode in hmstitcher**:
+   - Add a plugin property (e.g., `one-pass-mode` or reuse `configure-only` to mean "configure in-pipeline, do not EOS").
+   - On first batch with missing masks:
+     - Run `configure_stitching`.
+     - Reload `ControlMasks` and rebuild the stitcher instance without tearing down the pipeline.
+   - Keep legacy behavior as default; wire the new property from the pipeline YAML.
+
+3. **Handle caps negotiation after configuration**:
+   - Ensure `PreCapsInit` (or equivalent) runs after the stitcher is rebuilt and publishes real `output_width_height`.
+   - Allow caps renegotiation when the size changes from "unknown/placeholder" to the real canvas:
+     - Consider starting with a conservative placeholder caps (e.g., same as input size) to let the pipeline start.
+     - Trigger renegotiation once the canvas is known; verify downstream bins accept it.
+   - Add guardrails to avoid renegotiation loops (one-shot flag once caps are fixed).
+
+4. **Propagate size downstream without Configurator hard-coding**:
+   - For `hmplaycropper` / `streammux`, prefer reading upstream caps or a pad probe to size themselves.
+   - In `Configurator`, make canvas-size lookup optional:
+     - If the size is unknown and one-pass is enabled, skip failure and rely on runtime caps.
+     - Keep the old failure path only when legacy mode is selected.
+   - Consider a small helper to watch the hmstitcher src pad caps and update dependent bins if they still need explicit sizes.
+
+5. **Add tests or reproducible scenarios**:
+   - Add a synthetic test (or small integration binary) that:
+     - Runs hmstitcher in one-pass mode against tiny left/right fixtures.
+     - Verifies it does not EOS and that output caps are set after configuration.
+   - Optionally add a bazel test target under `src/gst-plugins/gst-videoprep/stitcher` guarded by `--config=jetson`/`k8` availability.
+
+6. **Rollout and cleanup**:
+   - Default the YAML to one-pass only after manual validation on real games.
+   - Remove configure-only pipeline paths and doc references once confident.
+   - Update scripts (`configure_game.sh`, etc.) to keep offline config as an alternative, not a requirement.
+
+### Edge cases to consider
+
+- Masks exist but are stale relative to videos → decide whether to force regeneration or honor them.
+- Caps renegotiation failure downstream (e.g., sinks that cannot renegotiate) → add a flag to fall back to legacy two-pass for those cases.
+- Frame offset calculations should remain unchanged; ensure the plugin reuses the already-computed offsets when reloading the stitcher.
+- Camera sources vs. file sources: camera sizing may still need an explicit default if caps are not fixed at start.
+
+### Quick validation checklist
+
+- Run a legacy two-pass flow and confirm logs/metrics show "legacy mode".
+- Enable one-pass flag on a known game dir:
+  - Pipeline should not EOS on first batch.
+  - Canvas size should appear in hmstitcher caps after first frames.
+  - Downstream bins (cropper/mux/sinks) should reflect the negotiated size.
+- Re-run without deleting masks to ensure the one-pass path behaves identically to legacy when masks are already present.
