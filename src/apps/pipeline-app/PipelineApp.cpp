@@ -103,10 +103,37 @@ PipelineApplication::~PipelineApplication() {}
 absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_stack*/) {
   // Section 1: Create and initialize each HmApp instance.
   int i = -1;
+  std::vector<std::string> extra_config_files;
+  if (extra_cfg_files_) {
+    int j = -1;
+    while (extra_cfg_files_[++j]) {
+      for (absl::string_view part : absl::StrSplit(extra_cfg_files_[j], ',')) {
+        std::string path(part);
+        path = std::string(absl::StripAsciiWhitespace(path));
+        if (!path.empty()) {
+          extra_config_files.emplace_back(std::move(path));
+        }
+      }
+    }
+  }
   while (cfg_files_[++i]) {
+    std::vector<std::string> app_config_files;
+    for (absl::string_view part : absl::StrSplit(cfg_files_[i], ',')) {
+      std::string path(part);
+      path = std::string(absl::StripAsciiWhitespace(path));
+      if (!path.empty()) {
+        app_config_files.emplace_back(std::move(path));
+      }
+    }
+    if (app_config_files.empty()) {
+      continue;
+    }
     // TODO: override_gpu_id_ could be a list/vector of them to use with each config file
     // or pipeline-options can set each one...
-    auto app_ctx = std::make_unique<HmApp>(game_id_ ? *game_id_ : "", cfg_files_[i], override_gpu_id_);
+    auto app_ctx = std::make_unique<HmApp>(game_id_ ? *game_id_ : "", std::move(app_config_files), override_gpu_id_);
+    if (!extra_config_files.empty()) {
+      app_ctx->set_extra_config_files(extra_config_files);
+    }
     // app_ctx = std::make_unique<HmApp>(game_id_ ? *game_id_ : "");
     app_ctx->person_class_id = -1;
     app_ctx->car_class_id = -1;
@@ -142,10 +169,16 @@ absl::Status PipelineApplication::configureInstances(
     auto& app_ctx = app_contexts[i];
     if (g_str_has_suffix(app_ctx->app_config_file().c_str(), ".yml") ||
         g_str_has_suffix(app_ctx->app_config_file().c_str(), ".yaml")) {
-      if (!app_ctx->underlay_config("pipeline", app_ctx->app_config_file())) {
-        NVGSTDS_ERR_MSG_V("Failed to merge in config file '%s'", app_ctx->app_config_file().c_str());
-        app_ctx->return_value = -1;
-        return absl::InternalError("Failed to merge in config file");
+      const auto& app_config_files = app_ctx->app_config_files();
+      for (size_t cfg_index = 0; cfg_index < app_config_files.size(); ++cfg_index) {
+        const std::string& cfg_path = app_config_files[cfg_index];
+        bool ok = cfg_index == 0 ? app_ctx->underlay_config("pipeline", cfg_path)
+                                 : app_ctx->overlay_config("pipeline", cfg_path);
+        if (!ok) {
+          NVGSTDS_ERR_MSG_V("Failed to merge in config file '%s'", cfg_path.c_str());
+          app_ctx->return_value = -1;
+          return absl::InternalError("Failed to merge in config file");
+        }
       }
 
       // Run enable-source-types in case we have any subconfigs that have 'type' set
@@ -594,6 +627,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &time_limit_seconds_,
        "Stop after processing this many seconds of video",
        "N"},
+      {"config",
+       0,
+       0,
+       G_OPTION_ARG_FILENAME_ARRAY,
+       &extra_cfg_files_,
+       "Additional HM config YAML(s) (comma-separated or repeated)",
+       nullptr},
       {"options", 'p', 0, G_OPTION_ARG_FILENAME_ARRAY, &pipline_options, "Set arbitrary option(s)", nullptr},
       {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &cfg_files_, "Set the config file", nullptr},
       {"enable-sources", 'e', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sources_, "Enable Sources", nullptr},

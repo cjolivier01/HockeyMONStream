@@ -235,21 +235,35 @@ struct _AppCtx {
 
 class HmApp : public _AppCtx {
  public:
-  HmApp(std::string game_id, std::string app_config_file, int override_gpu_id)
-      : game_id_(std::move(game_id)), app_config_file_(std::move(app_config_file)), override_gpu_id_(override_gpu_id) {}
+  HmApp(std::string game_id, std::vector<std::string> app_config_files, int override_gpu_id)
+      : game_id_(std::move(game_id)),
+        app_config_files_(std::move(app_config_files)),
+        override_gpu_id_(override_gpu_id) {}
 
   const std::string& app_config_file() const {
-    return app_config_file_;
+    // For compatibility, return the first config file.
+    assert(!app_config_files_.empty());
+    return app_config_files_.front();
+  }
+
+  const std::vector<std::string>& app_config_files() const {
+    return app_config_files_;
   }
 
   absl::Status load_config() {
     std::string config_root = std::filesystem::current_path() / "external" / "hm" / "config";
     configurator_ = std::make_unique<hm::Configurator>(game_id_, config_root, override_gpu_id_);
+    if (!extra_config_files_.empty()) {
+      configurator_->set_extra_config_files(extra_config_files_);
+    }
     return configurator_->configure();
   }
 
   bool underlay_config(const std::string& node, const std::string& file) {
     return configurator_->underlay_config(node, file);
+  }
+  bool overlay_config(const std::string& node, const std::string& file) {
+    return configurator_->overlay_config(node, file);
   }
   const hm::Configurator& configurator() const {
     return *configurator_;
@@ -261,12 +275,17 @@ class HmApp : public _AppCtx {
     return configurator_->complete_configuration(force);
   }
 
+  void set_extra_config_files(std::vector<std::string> files) {
+    extra_config_files_ = std::move(files);
+  }
+
   bool pause();
 
  private:
   std::unique_ptr<hm::Configurator> configurator_;
   std::string game_id_;
-  std::string app_config_file_;
+  std::vector<std::string> app_config_files_;
+  std::vector<std::string> extra_config_files_;
   int override_gpu_id_;
 };
 

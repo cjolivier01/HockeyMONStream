@@ -8,6 +8,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
@@ -65,6 +66,10 @@ class Configurator {
       const std::vector<std::string>& allowed_prefixes,
       const std::string& config_path);
 
+  void set_extra_config_files(const std::vector<std::string>& files) {
+    extra_config_files_ = files;
+  }
+
  private:
   // Refactoring helpers to keep complete_configuration() readable
   void apply_gpu_override(YAML::Node& pipeline);
@@ -92,6 +97,7 @@ class Configurator {
   YAML::Node private_config_;
 
   bool set_stream_offsets_{false};
+  std::vector<std::string> extra_config_files_;
 };
 
 template <typename T_ENUM>

@@ -50,6 +50,8 @@ const std::vector<const char*> nostitch_video_names = {
     "stitching_output-with-audio.mkv",
 };
 
+constexpr const char* kGlobalRefPrefix = "GLOBAL.";
+
 int as_int(const YAML::Node& node) {
   // be less asserty than YAML-CPP
   // std::cout << node << std::endl;
@@ -115,6 +117,92 @@ bool is_enabled(YAML::Node n) {
     }
   }
   return false;
+}
+
+bool lookup_path(const YAML::Node& root, const std::vector<std::string>& parts, YAML::Node& out) {
+  YAML::Node cur = root;
+  for (const std::string& key : parts) {
+    if (!cur.IsMap()) {
+      return false;
+    }
+    YAML::Node next = cur[key];
+    if (!next.IsDefined()) {
+      return false;
+    }
+    cur = next;
+  }
+  out = cur;
+  return true;
+}
+
+std::vector<std::string> split_by_dot_local(const std::string& input) {
+  std::vector<std::string> parts;
+  std::string current;
+  for (char c : input) {
+    if (c == '.') {
+      if (!current.empty()) {
+        parts.emplace_back(std::move(current));
+        current.clear();
+      }
+    } else {
+      current.push_back(c);
+    }
+  }
+  if (!current.empty()) {
+    parts.emplace_back(std::move(current));
+  }
+  return parts;
+}
+
+void resolve_global_value(
+    const YAML::Node& root,
+    YAML::Node& node,
+    std::unordered_set<std::string>& seen) {
+  if (!node.IsScalar()) {
+    return;
+  }
+  std::string value = node.as<std::string>();
+  if (!absl::StartsWith(value, kGlobalRefPrefix)) {
+    return;
+  }
+  std::string path_str = value.substr(std::strlen(kGlobalRefPrefix));
+  if (path_str.empty() || seen.count(path_str)) {
+    return;
+  }
+  seen.insert(path_str);
+  std::vector<std::string> parts = split_by_dot_local(path_str);
+  YAML::Node target;
+  if (!lookup_path(root, parts, target)) {
+    return;
+  }
+  // Support chained GLOBAL.* references.
+  resolve_global_value(root, target, seen);
+  node = target;
+}
+
+void resolve_global_refs_inplace(YAML::Node& root) {
+  std::unordered_set<std::string> seen;
+  std::function<void(YAML::Node&)> walk = [&](YAML::Node& node) {
+    if (!node.IsDefined()) {
+      return;
+    }
+    if (node.IsMap()) {
+      for (auto kv : node) {
+        YAML::Node child = kv.second;
+        walk(child);
+      }
+      return;
+    }
+    if (node.IsSequence()) {
+      for (std::size_t i = 0; i < node.size(); ++i) {
+        YAML::Node child = node[i];
+        walk(child);
+      }
+      return;
+    }
+    resolve_global_value(root, node, seen);
+  };
+  walk(root);
 }
 
 void set_all_field_values(
@@ -900,7 +988,26 @@ YAML::Node Configurator::merge_nodes(const YAML::Node& base, const YAML::Node& o
 absl::Status Configurator::configure() {
   YAML::Node config;
   HM_ASSIGN_OR_RETURN(config, Configurator::load_config());
+  // Overlay any extra HM config files (later files override earlier ones).
+  for (const std::string& path : extra_config_files_) {
+    if (path.empty()) {
+      continue;
+    }
+    if (!std::filesystem::exists(path)) {
+      std::cerr << "Warning: extra config file \"" << path << "\" does not exist, skipping\n";
+      continue;
+    }
+    YAML::Node extra = YAML::LoadFile(path);
+    config = merge_nodes(
+        config,
+        extra,
+        /*warn_if_key_not_in_dest=*/false);
+  }
   config_ = auto_config(std::move(config));
+  // Resolve any GLOBAL.* references after baseline/private merge.
+  if (config_.IsDefined()) {
+    resolve_global_refs_inplace(config_);
+  }
   return absl::OkStatus();
 }
 

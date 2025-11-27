@@ -125,6 +125,7 @@ class PipelineApplication {
   GMainLoop* main_loop_{nullptr};
   // Command-line options / configuration
   gchar** cfg_files_{nullptr};
+  gchar** extra_cfg_files_{nullptr};
   gchar** input_uris_{nullptr};
   gchar** game_id_{nullptr};
   gchar** enable_sources_{nullptr};

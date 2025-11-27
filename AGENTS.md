@@ -15,6 +15,7 @@
   - Display only: `bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_app_config.yaml --enable-sources=URI-MULTIPLE --enable-sinks=RENDER --options=pipeline.hmaudio.enable=1 -g <game-id>`
   - Encode to file: `bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_app_config.yaml --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_FILE --options=pipeline.hmaudio.enable=1 -g <game-id>`
   - Both commands support an optional time limit: append `-t N` (or `--time-limit=N`) to stop after processing `N` seconds of video (e.g., `-t 15`).
+  - Multiple pipeline config files can be supplied for a single `-c` by separating paths with commas (e.g., `-c base.yaml,override.yaml`); later files override earlier ones.
 - Run a test binary (pattern):
   - `bazelisk run //src/libs/scoreboard:scoreboard_test`
 
