@@ -50,6 +50,7 @@ Notes:
 - Apps: primary entrypoint is `pipeline-app` under `src/apps/pipeline-app`, which wires sources, inference, overlays, and sinks via GStreamer/DeepStream.
 - Libraries: modular C++ in `src/libs/*`:
   - `camera/` (capture/control), `stitching/` (sync/correspondence), `draw_display/` (CUDA text/overlays), `scoreboard/` (rendering/logic), `gopro/` (BLE control), and `nvdsinfer_custom_impl_Yolo/` (YOLO parser/plugins).
+- Stitching video discovery mirrors `hmlib/orientation.py`: supports GoPro and Insta360 chapter patterns, and camera-specific subdirectories named `cam1`, `cam2`, etc. under a game directory.
 - CUDA: GPU kernels live next to libs (e.g., `*.cu`), built with Bazel `cuda_library` and linked into `cc_library` targets.
 - External deps: resolved in `WORKSPACE.bazel` (DeepStream, GStreamer, OpenCV, Abseil, CUDA, jetson-utils, hm-cupano, magic_enum).
 - Data flow (typical): sources → decode → inference/tracking → stitching/aggregation → overlays (draw_display/scoreboard) → sinks (encode/file/rtp).

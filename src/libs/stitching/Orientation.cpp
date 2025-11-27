@@ -13,10 +13,12 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cctype>
 #include <filesystem>
 #include <iostream>
 #include <regex>
 #include <string>
+#include <vector>
 
 namespace hm {
 namespace stitching {
@@ -30,6 +32,12 @@ namespace {
  * Pattern: ^G[A-Z][0-9]{6}\.(MP4|mp4)$
  */
 constexpr const char* GOPRO_FILE_PATTERN = R"(^G[A-Z][0-9]{6}\.(MP4|mp4)$)";
+
+/** @brief Regular expression for Insta360 files.
+ *
+ * Pattern: ^VID_[0-9]{8}_[0-9]{6}_[0-9]{3}\.(MP4|mp4)$
+ */
+constexpr const char* INSTA360_FILE_PATTERN = R"(^(VID_[0-9]{8}_[0-9]{6}_[0-9]{3}\.(MP4|mp4))$)";
 
 /** @brief Regular expression for left part files.
  *
@@ -87,6 +95,47 @@ std::pair<int, int> gopro_get_video_and_chapter(const fs::path& filename) {
 }
 
 /**
+ * @brief Extracts the video identifier and chapter number from an Insta360 file name.
+ *
+ * Expected pattern (stem): VID_<YYYYMMDD>_<HHMMSS>_<chapter>
+ *
+ * @param filename The path of the file.
+ * @param out_video_id Output parameter for the combined video identifier.
+ * @param out_chapter Output parameter for the chapter number.
+ * @return true if parsing succeeded, false otherwise.
+ */
+bool insta360_get_video_and_chapter(const fs::path& filename, int& out_video_id, int& out_chapter) {
+  std::string name = filename.stem().string();
+  std::vector<std::string> tokens;
+  size_t start = 0;
+  while (true) {
+    size_t pos = name.find('_', start);
+    if (pos == std::string::npos) {
+      tokens.emplace_back(name.substr(start));
+      break;
+    }
+    tokens.emplace_back(name.substr(start, pos - start));
+    start = pos + 1;
+  }
+  if (tokens.size() < 4) {
+    return false;
+  }
+  if (tokens[0] != "VID") {
+    return false;
+  }
+  const std::string& date_token = tokens[1];
+  const std::string& video_token = tokens[2];
+  const std::string& chapter_token = tokens[3];
+  try {
+    out_video_id = std::stoi(date_token + video_token);
+    out_chapter = std::stoi(chapter_token);
+  } catch (const std::exception&) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * @brief Gets the left/right part number from a file name.
  *
  * The function splits the file stem on '-' and returns the last token as an integer.
@@ -99,12 +148,12 @@ int get_lr_part_number(const std::string& filename) {
   std::string name = p.stem().string();
   // Split the name by '-' using find and substr.
   size_t pos = 0;
-  size_t lastPos = 0;
-  while ((pos = name.find('-', lastPos)) != std::string::npos) {
-    lastPos = pos + 1;
+  size_t last_pos = 0;
+  while ((pos = name.find('-', last_pos)) != std::string::npos) {
+    last_pos = pos + 1;
   }
   // The last token is after the final '-'
-  return std::stoi(name.substr(lastPos));
+  return std::stoi(name.substr(last_pos));
 }
 
 /**
@@ -149,6 +198,142 @@ std::pair<VideosDict, VideosDict> prune_chapters(const VideosDict& videos) {
   // Placeholder: no pruning is performed.
   return {videos, VideosDict{}};
 }
+
+/**
+ * @brief Find vendor-specific (GoPro / Insta360) chapter files in a directory.
+ *
+ * Returns a list of ((video_id, chapter), full_path) sorted by (video_id, chapter).
+ */
+absl::StatusOr<std::vector<std::pair<std::pair<int, int>, std::string>>> find_vendor_chapter_pairs(
+    const std::string& directory) {
+  std::vector<std::pair<std::pair<int, int>, std::string>> pairs;
+
+  // GoPro
+  std::vector<std::string> files;
+  HM_ASSIGN_OR_RETURN(files, find_matching_files(GOPRO_FILE_PATTERN, directory));
+  for (const auto& f : files) {
+    try {
+      auto vc = gopro_get_video_and_chapter(fs::path(f));
+      pairs.emplace_back(vc, f);
+    } catch (const std::exception&) {
+      continue;
+    }
+  }
+
+  // Insta360
+  HM_ASSIGN_OR_RETURN(files, find_matching_files(INSTA360_FILE_PATTERN, directory));
+  for (const auto& f : files) {
+    int video_id = 0;
+    int chapter = 0;
+    if (!insta360_get_video_and_chapter(fs::path(f), video_id, chapter)) {
+      continue;
+    }
+    pairs.emplace_back(std::make_pair(video_id, chapter), f);
+  }
+
+  std::sort(pairs.begin(), pairs.end());
+  return pairs;
+}
+
+/**
+ * @brief Flatten vendor chapter pairs into a 1..N -> file map.
+ */
+VideoChapter pairs_to_linear_chapter_map(const std::vector<std::pair<std::pair<int, int>, std::string>>& pairs) {
+  VideoChapter chapter_map;
+  int chapter_index = 1;
+  for (const auto& item : pairs) {
+    chapter_map[chapter_index++] = item.second;
+  }
+  return chapter_map;
+}
+
+/**
+ * @brief Collect left/right single or part files into a chapter map.
+ *
+ * If renumber is true, chapters are returned as 1..N in file order; otherwise
+ * they retain the part number from the filename (e.g., left-3.mp4 -> 3).
+ */
+absl::StatusOr<VideoChapter> collect_lr_chapters(
+    const std::string& directory,
+    bool left_side,
+    bool renumber) {
+  VideoChapter chapter_map;
+  const char* single_pattern = left_side ? LEFT_FILE_PATTERN : RIGHT_FILE_PATTERN;
+  const char* parts_pattern = left_side ? LEFT_PART_FILE_PATTERN : RIGHT_PART_FILE_PATTERN;
+
+  // Single file (left.mp4 / right.mp4)
+  std::vector<std::string> files;
+  HM_ASSIGN_OR_RETURN(files, find_matching_files(single_pattern, directory));
+  if (!files.empty()) {
+    // Expect exactly one plain file; use the first.
+    chapter_map[1] = files.front();
+    return chapter_map;
+  }
+
+  // Parts (left-1.mp4, left-2.mp4, ...)
+  HM_ASSIGN_OR_RETURN(files, find_matching_files(parts_pattern, directory));
+  if (!files.empty()) {
+    std::sort(
+        files.begin(),
+        files.end(),
+        [](const std::string& a, const std::string& b) { return get_lr_part_number(a) < get_lr_part_number(b); });
+
+    if (renumber) {
+      int chapter_index = 1;
+      for (const auto& f : files) {
+        chapter_map[chapter_index++] = f;
+      }
+    } else {
+      for (const auto& f : files) {
+        chapter_map[get_lr_part_number(f)] = f;
+      }
+    }
+  }
+
+  return chapter_map;
+}
+
+/**
+ * @brief Collect and order chapter files inside a directory.
+ *
+ * Strategy: prefer vendor-specific patterns (GoPro, Insta360) if found;
+ * otherwise fall back to left/right patterns. Output keys are 1..N in
+ * the discovered order.
+ */
+absl::StatusOr<VideoChapter> collect_chapters_for_dir(const std::string& directory) {
+  // Vendor-specific (GoPro, Insta360)
+  std::vector<std::pair<std::pair<int, int>, std::string>> pairs;
+  HM_ASSIGN_OR_RETURN(pairs, find_vendor_chapter_pairs(directory));
+  if (!pairs.empty()) {
+    return pairs_to_linear_chapter_map(pairs);
+  }
+
+  // Plain left/right within this directory, renumbered 1..N
+  VideoChapter chapter_map;
+  HM_ASSIGN_OR_RETURN(chapter_map, collect_lr_chapters(directory, /*left_side=*/true, /*renumber=*/true));
+  if (!chapter_map.empty()) {
+    return chapter_map;
+  }
+  HM_ASSIGN_OR_RETURN(chapter_map, collect_lr_chapters(directory, /*left_side=*/false, /*renumber=*/true));
+  return chapter_map;
+}
+
+int cam_index(const std::string& name) {
+  for (size_t i = 0; i < name.size(); ++i) {
+    if (std::isdigit(static_cast<unsigned char>(name[i]))) {
+      size_t j = i;
+      while (j < name.size() && std::isdigit(static_cast<unsigned char>(name[j]))) {
+        ++j;
+      }
+      try {
+        return std::stoi(name.substr(i, j - i));
+      } catch (const std::exception&) {
+        return 0;
+      }
+    }
+  }
+  return 0;
+}
 } // namespace
 
 /**
@@ -162,58 +347,84 @@ std::pair<VideosDict, VideosDict> prune_chapters(const VideosDict& videos) {
  * @return The videos dictionary.
  */
 absl::StatusOr<VideosDict> get_available_videos(const std::string& dir_name, bool prune) {
+  if (!fs::is_directory(dir_name)) {
+    return absl::InvalidArgumentError(TO_STRING("Directory \"" << dir_name << "\" doesn't exist or is not a directory"));
+  }
+
   VideosDict videos_dict;
 
-  // Find GoPro files.
-  std::vector<std::string> gopro_files;
-  HM_ASSIGN_OR_RETURN(gopro_files, find_matching_files(GOPRO_FILE_PATTERN, dir_name));
-  // For each GoPro file, extract video and chapter numbers.
-  for (const auto& file : gopro_files) {
-    auto [video, chapter] = gopro_get_video_and_chapter(file);
-    // Use the video number as a string key.
-    std::string video_key = std::to_string(video);
+  // Prefer camera-specific subdirectories cam1, cam2, ... when present.
+  std::vector<std::string> cam_dirs;
+  std::regex cam_pattern(R"(cam[0-9]+)", std::regex::icase);
+  for (const auto& entry : fs::directory_iterator(dir_name)) {
+    if (!entry.is_directory()) {
+      continue;
+    }
+    const std::string name = entry.path().filename().string();
+    if (std::regex_match(name, cam_pattern)) {
+      cam_dirs.push_back(name);
+    }
+  }
+
+  if (!cam_dirs.empty()) {
+    std::sort(
+        cam_dirs.begin(),
+        cam_dirs.end(),
+        [](const std::string& a, const std::string& b) { return cam_index(a) < cam_index(b); });
+
+    for (const auto& cam_name : cam_dirs) {
+      std::string cam_path = (fs::path(dir_name) / cam_name).string();
+      VideoChapter chapter_map;
+      HM_ASSIGN_OR_RETURN(chapter_map, collect_chapters_for_dir(cam_path));
+      if (!chapter_map.empty()) {
+        videos_dict[cam_name] = std::move(chapter_map);
+      }
+    }
+
+    if (!videos_dict.empty()) {
+      if (prune) {
+        auto [pruned, discarded] = prune_chapters(videos_dict);
+        if (!discarded.empty()) {
+          std::cout << "Discarding videos:" << std::endl;
+          for (const auto& [key, _] : discarded) {
+            std::cout << "Key: " << key << std::endl;
+          }
+        }
+        return pruned;
+      }
+      return videos_dict;
+    }
+  }
+
+  // Fallback: scan the root directory.
+  std::vector<std::pair<std::pair<int, int>, std::string>> vendor_pairs;
+  HM_ASSIGN_OR_RETURN(vendor_pairs, find_vendor_chapter_pairs(dir_name));
+  for (const auto& item : vendor_pairs) {
+    int video_id = item.first.first;
+    int chapter = item.first.second;
+    const std::string& file = item.second;
+    std::string video_key = std::to_string(video_id);
     videos_dict[video_key][chapter] = file;
   }
 
-  // Process left files.
-  std::vector<std::string> files;
-  HM_ASSIGN_OR_RETURN(files, find_matching_files(LEFT_FILE_PATTERN, dir_name));
-  if (!files.empty()) {
-    // Expect exactly one plain left file.
-    assert(files.size() == 1);
-    videos_dict["left"][1] = files[0];
-  } else {
-    HM_ASSIGN_OR_RETURN(files, find_matching_files(LEFT_PART_FILE_PATTERN, dir_name));
-    if (!files.empty()) {
-      for (const auto& file : files) {
-        int part_num = get_lr_part_number(file);
-        videos_dict["left"][part_num] = file;
-      }
-    }
+  // Plain left/right in the root directory (non-renumbered chapters).
+  VideoChapter left_map;
+  HM_ASSIGN_OR_RETURN(left_map, collect_lr_chapters(dir_name, /*left_side=*/true, /*renumber=*/false));
+  if (!left_map.empty()) {
+    videos_dict["left"] = left_map;
   }
-
-  // Process right files.
-  HM_ASSIGN_OR_RETURN(files, find_matching_files(RIGHT_FILE_PATTERN, dir_name));
-  if (!files.empty()) {
-    // Expect exactly one plain right file.
-    assert(files.size() == 1);
-    videos_dict["right"][1] = files[0];
-  } else {
-    HM_ASSIGN_OR_RETURN(files, find_matching_files(RIGHT_PART_FILE_PATTERN, dir_name));
-    if (!files.empty()) {
-      for (const auto& file : files) {
-        int part_num = get_lr_part_number(file);
-        videos_dict["right"][part_num] = file;
-      }
-    }
+  VideoChapter right_map;
+  HM_ASSIGN_OR_RETURN(right_map, collect_lr_chapters(dir_name, /*left_side=*/false, /*renumber=*/false));
+  if (!right_map.empty()) {
+    videos_dict["right"] = right_map;
   }
 
   // Process any pre-stitched files.
-  HM_ASSIGN_OR_RETURN(files, find_matching_files(STITCHED_FILE_PATTERN, dir_name));
-  if (!files.empty()) {
-    // We prefer mp4, which comes after mkv in the alphabet
-    std::sort(files.begin(), files.end());
-    videos_dict["stitched"][1] = *files.rbegin();
+  std::vector<std::string> stitched_files;
+  HM_ASSIGN_OR_RETURN(stitched_files, find_matching_files(STITCHED_FILE_PATTERN, dir_name));
+  if (!stitched_files.empty()) {
+    std::sort(stitched_files.begin(), stitched_files.end());
+    videos_dict["stitched"][1] = stitched_files.back();
   }
 
   // Optionally prune chapters.
