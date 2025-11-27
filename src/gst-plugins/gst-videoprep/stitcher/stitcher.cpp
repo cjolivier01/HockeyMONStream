@@ -35,7 +35,7 @@ namespace hm {
 namespace stitcher {
 
 // static constexpr int kNumStitcherLaplacianLevels = 0;
-static constexpr int kNumStitcherLaplacianLevels = 6;
+static constexpr int kNumStitcherLaplacianLevels = 11;
 
 static constexpr bool kMatchExposure = true;
 // static constexpr bool kMatchExposure = false;
