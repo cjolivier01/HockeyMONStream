@@ -565,7 +565,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   char** pipline_options{nullptr};
   GOptionEntry entries[] = {
       {"version", 'v', 0, G_OPTION_ARG_NONE, &print_version_, "Print DeepStreamSDK version", nullptr},
-      {"tiledtext", 't', 0, G_OPTION_ARG_NONE, &show_bbox_text_, "Display Bounding box labels in tiled mode", nullptr},
+      {"tiledtext",
+       0,
+       0,
+       G_OPTION_ARG_NONE,
+       &show_bbox_text_,
+       "Display Bounding box labels in tiled mode",
+       nullptr},
       {"dump-pipeline-dot",
        'd',
        0,
@@ -581,6 +587,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        "Print DeepStreamSDK and dependencies version",
        nullptr},
       {"gpu-id", 'x', 0, G_OPTION_ARG_INT, &override_gpu_id_, "Set the GPU id to use", nullptr},
+      {"time-limit",
+       't',
+       0,
+       G_OPTION_ARG_INT,
+       &time_limit_seconds_,
+       "Stop after processing this many seconds of video",
+       "N"},
       {"options", 'p', 0, G_OPTION_ARG_FILENAME_ARRAY, &pipline_options, "Set arbitrary option(s)", nullptr},
       {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &cfg_files_, "Set the config file", nullptr},
       {"enable-sources", 'e', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sources_, "Enable Sources", nullptr},
@@ -1088,6 +1101,27 @@ gboolean PipelineApplication::overlay_graphics(
     GstBuffer* buf,
     NvDsBatchMeta* batch_meta,
     guint index) {
+  if (time_limit_seconds_ > 0 && buf) {
+    GstClockTime pts = GST_BUFFER_PTS(buf);
+    if (GST_CLOCK_TIME_IS_VALID(pts)) {
+      uint64_t pts_ns = static_cast<uint64_t>(pts);
+      if (!have_first_pts_) {
+        first_pts_ns_ = pts_ns;
+        have_first_pts_ = true;
+      }
+      uint64_t elapsed_ns = pts_ns - first_pts_ns_;
+      uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
+      if (elapsed_ns >= limit_ns) {
+        if (!quit_) {
+          quit_ = TRUE;
+          if (main_loop_) {
+            g_main_loop_quit(main_loop_);
+          }
+        }
+      }
+    }
+  }
+
   int src_index = app_ctx->active_source_index;
   if (src_index == -1)
     return TRUE;

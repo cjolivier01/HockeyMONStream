@@ -11,8 +11,10 @@
 - Release build (all): `./perf` or `bazelisk build --config=opt //...`.
 - x86_64 build: `bazelisk build --config=opt --cpu=k8 //...`.
 - Jetson (aarch64) build: `bazelisk build --config=jetson //...`.
-- Run pipeline app (example):
-  - `bazelisk run //src/apps/pipeline-app:pipeline-app -- -c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_FILE`
+- Canonical pipeline-app runs:
+  - Display only: `bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml --enable-sources=URI-MULTIPLE --enable-sinks=RENDER --options=pipeline.hmaudio.enable=1`
+  - Encode to file: `bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_FILE --options=pipeline.hmaudio.enable=1`
+  - Both commands support an optional time limit: append `-t N` (or `--time-limit=N`) to stop after processing `N` seconds of video.
 - Run a test binary (pattern):
   - `bazelisk run //src/libs/scoreboard:scoreboard_test`
 

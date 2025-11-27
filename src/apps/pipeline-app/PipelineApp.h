@@ -123,6 +123,7 @@ class PipelineApplication {
   long current_stage_{0};
   guint cintr_;
   GMainLoop* main_loop_{nullptr};
+  // Command-line options / configuration
   gchar** cfg_files_{nullptr};
   gchar** input_uris_{nullptr};
   gchar** game_id_{nullptr};
@@ -135,6 +136,8 @@ class PipelineApplication {
   gboolean print_version_;
   gboolean show_bbox_text_;
   gboolean print_dependencies_version_;
+  // Stop conditions
+  gint time_limit_seconds_{0};
   gboolean quit_;
   gboolean dump_pipeline_dot_;
   gboolean force_reconfigure_;
@@ -144,6 +147,7 @@ class PipelineApplication {
   GMutex fps_lock_;
   gdouble fps_[MAX_SOURCE_BINS];
   gdouble fps_avg_[MAX_SOURCE_BINS];
+  // Display / event loop
   Display* display_ ABSL_GUARDED_BY(disp_lock_){nullptr};
   GThread* x_event_thread_;
   absl::Mutex disp_lock_;
@@ -151,6 +155,8 @@ class PipelineApplication {
   gboolean rrowsel_, selecting_;
   std::unique_ptr<std::thread> editor_thread_;
   uint64_t start_time_ns_{0};
+  uint64_t first_pts_ns_{0};
+  bool have_first_pts_{false};
   static constexpr const char* configure_stitching_config_file_name_ = "ds_hockey_configure_stitching.yaml";
   static PipelineApplication* instance_;
 };

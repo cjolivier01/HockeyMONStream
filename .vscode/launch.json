@@ -73,7 +73,7 @@
         "-g",
         //"mylive",
         //"dh-test",
-        "foxes",
+        "chicago-3",
         //"dh-bh-1",
         //"mlk-heat-1",
         //"ev-cougars-2",
@@ -114,7 +114,7 @@
       //"stopOnEntry": true,
       "env": {
         //"GST_DEBUG": "nvvideoconvert:7",
-        "GST_DEBUG": "2",
+        "GST_DEBUG": "3",
         "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
         //"LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib",
         "GST_PLUGIN_PATH": "${workspaceFolder}/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
