@@ -11,12 +11,9 @@ ARG GID
 ENV SHELL=/bin/bash
 
 USER root
-RUN apt-get update
+RUN apt-get update && apt-get upgrade -y
 
-# Will upgrade a bunch of the NVidia packages
-RUN apt-get upgrade -y
-
-RUN apt-get install -y \
+RUN apt-get update && apt-get install -y \
   sudo \
   nasm \
   gnutls-dev \
@@ -33,7 +30,7 @@ RUN apt-get install -y \
   git-lfs
 
 # why is this necessary?
-RUN apt-get install -y --reinstall libx264-dev libx264-163 x264
+RUN apt-get update && apt-get install -y --reinstall libx264-dev libx264-163 x264
 
 ####################################################################
 #
@@ -102,7 +99,7 @@ USER root
 #-------------------------------------------------------------
 # BEGIN VSCode Dev Containers packages
 #-------------------------------------------------------------
-RUN apt-get install -y \
+RUN apt-get update && apt-get install -y \
   apt-utils \
   bash-completion \
   openssh-client \
@@ -196,7 +193,7 @@ RUN useradd -r -g $USERNAME -G $USERNAME,docker,sudo $USERNAME
 RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
 
 # libvigraimpex-dev
-RUN apt-get install -y \
+RUN apt-get update && apt-get install -y \
   curl \
   libva-dev \
   libsoup2.4-dev \
@@ -224,8 +221,7 @@ RUN apt-get install -y \
 ##############################################################
 
 # Install Vigra/Hugin dependencies
-RUN apt-get update
-RUN apt-get install -y \
+RUN apt-get update && apt-get install -y \
   ccache \
   libpano13-dev \
   libglew-dev \
