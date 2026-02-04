@@ -1,0 +1,21 @@
+cc_binary(
+  name = "video-player",
+  srcs = [
+    "video-player.cpp",
+  ],
+  deps = [
+    "@glib",
+    "@gstreamer",
+    "@gtk3",
+  ],
+  copts = [
+    "-std=c++17",
+    "-Wno-error=write-strings",
+  ],
+  linkopts = [
+    "-lX11",
+    "-ldl",
+    "-lm",
+  ],
+  visibility = ["//visibility:public"],
+)
