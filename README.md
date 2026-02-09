@@ -32,6 +32,7 @@ NVIDIA DeepStream SDK 7.1 / 7.0 / 6.4 / 6.3 / 6.2 / 6.1.1 / 6.1 / 6.0.1 / 6.0 / 
 * [Supported models](#supported-models)
 * [Benchmarks](docs/benchmarks.md)
 * [dGPU installation](docs/dGPUInstalation.md)
+* [Jetson cross-build from x86](docs/jetson-cross-build.md)
 * [Basic usage](#basic-usage)
 * [Docker usage](#docker-usage)
 * [NMS configuration](#nms-configuration)

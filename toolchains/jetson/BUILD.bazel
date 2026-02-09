@@ -1,0 +1,106 @@
+load("@bazel_tools//tools/cpp:unix_cc_toolchain_config.bzl", "cc_toolchain_config")
+
+JETSON_SYSROOT = "/opt/jetson-sysroot"
+
+JETSON_CXX_INCLUDES = [
+  JETSON_SYSROOT + "/usr/include",
+  JETSON_SYSROOT + "/usr/include/aarch64-linux-gnu",
+  JETSON_SYSROOT + "/usr/include/c++/11",
+  JETSON_SYSROOT + "/usr/include/aarch64-linux-gnu/c++/11",
+  JETSON_SYSROOT + "/usr/include/c++/12",
+  JETSON_SYSROOT + "/usr/include/aarch64-linux-gnu/c++/12",
+  JETSON_SYSROOT + "/usr/include/c++/13",
+  JETSON_SYSROOT + "/usr/include/aarch64-linux-gnu/c++/13",
+  JETSON_SYSROOT + "/usr/lib/gcc/aarch64-linux-gnu/11/include",
+  JETSON_SYSROOT + "/usr/lib/gcc/aarch64-linux-gnu/11/include-fixed",
+  JETSON_SYSROOT + "/usr/lib/gcc/aarch64-linux-gnu/12/include",
+  JETSON_SYSROOT + "/usr/lib/gcc/aarch64-linux-gnu/12/include-fixed",
+  JETSON_SYSROOT + "/usr/lib/gcc/aarch64-linux-gnu/13/include",
+  JETSON_SYSROOT + "/usr/lib/gcc/aarch64-linux-gnu/13/include-fixed",
+]
+
+cc_toolchain_config(
+  name = "jetson_cc_config",
+  cpu = "aarch64",
+  compiler = "gcc",
+  toolchain_identifier = "jetson-aarch64",
+  host_system_name = "local",
+  target_system_name = "aarch64-unknown-linux-gnu",
+  target_libc = "glibc",
+  abi_version = "aarch64",
+  abi_libc_version = "glibc",
+  cxx_builtin_include_directories = JETSON_CXX_INCLUDES,
+  tool_paths = {
+    "ar": "/usr/bin/aarch64-linux-gnu-ar",
+    "cpp": "/usr/bin/aarch64-linux-gnu-cpp",
+    "dwp": "/bin/false",
+    "gcc": "/usr/bin/aarch64-linux-gnu-gcc",
+    "gcov": "/usr/bin/aarch64-linux-gnu-gcov",
+    "ld": "/usr/bin/aarch64-linux-gnu-ld",
+    "nm": "/usr/bin/aarch64-linux-gnu-nm",
+    "objcopy": "/usr/bin/aarch64-linux-gnu-objcopy",
+    "objdump": "/usr/bin/aarch64-linux-gnu-objdump",
+    "strip": "/usr/bin/aarch64-linux-gnu-strip",
+    "llvm-cov": "/bin/false",
+    "llvm-profdata": "/bin/false",
+  },
+  compile_flags = [
+    "-no-canonical-prefixes",
+  ],
+  dbg_compile_flags = ["-g"],
+  opt_compile_flags = ["-O2"],
+  cxx_flags = [],
+  unfiltered_compile_flags = [
+    "--sysroot=" + JETSON_SYSROOT,
+    "-fPIC",
+  ],
+  link_flags = [
+    "--sysroot=" + JETSON_SYSROOT,
+    "-no-canonical-prefixes",
+    "-L" + JETSON_SYSROOT + "/lib",
+    "-L" + JETSON_SYSROOT + "/lib/aarch64-linux-gnu",
+    "-L" + JETSON_SYSROOT + "/usr/lib",
+    "-L" + JETSON_SYSROOT + "/usr/lib/aarch64-linux-gnu",
+    "-Wl,-rpath-link=" + JETSON_SYSROOT + "/lib/aarch64-linux-gnu",
+    "-Wl,-rpath-link=" + JETSON_SYSROOT + "/usr/lib/aarch64-linux-gnu",
+  ],
+  supports_start_end_lib = True,
+  builtin_sysroot = JETSON_SYSROOT,
+)
+
+filegroup(
+  name = "empty",
+  srcs = [],
+  visibility = ["//visibility:public"],
+)
+
+cc_toolchain(
+  name = "jetson_toolchain_impl",
+  all_files = ":empty",
+  ar_files = ":empty",
+  as_files = ":empty",
+  compiler_files = ":empty",
+  dwp_files = ":empty",
+  linker_files = ":empty",
+  strip_files = ":empty",
+  objcopy_files = ":empty",
+  supports_param_files = 1,
+  toolchain_identifier = "jetson-aarch64",
+  toolchain_config = ":jetson_cc_config",
+  visibility = ["//visibility:public"],
+)
+
+toolchain(
+  name = "jetson_toolchain",
+  toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+  exec_compatible_with = [
+    "@platforms//cpu:x86_64",
+    "@platforms//os:linux",
+  ],
+  target_compatible_with = [
+    "@platforms//cpu:aarch64",
+    "@platforms//os:linux",
+  ],
+  toolchain = ":jetson_toolchain_impl",
+  visibility = ["//visibility:public"],
+)

@@ -28,6 +28,8 @@ rules_cuda_dependencies()
 
 register_detected_cuda_toolchains()
 
+register_toolchains("//toolchains/jetson:jetson_toolchain")
+
 new_local_repository(
     name = "deepstream",
     build_file = "@//buildfiles:third_party/deepstream.BUILD",

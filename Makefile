@@ -1,5 +1,7 @@
 TOPDIR := $(shell pwd)
 BAZEL ?= bazelisk
+JETSON_SYSROOT ?= /opt/jetson-sysroot
+HOST_ARCH := $(shell uname -m)
 
 all: print_targets
 
@@ -19,7 +21,15 @@ x86_64:
 	$(BAZEL) build --config=opt --cpu=k8 //...
 
 jetson:
-	$(BAZEL) build --config=jetson //...
+	@if [ "$(HOST_ARCH)" = "aarch64" ] && [ ! -e "$(JETSON_SYSROOT)" ]; then \
+		echo "Creating symlink $(JETSON_SYSROOT) -> / for native Jetson build"; \
+		sudo ln -sfn / "$(JETSON_SYSROOT)"; \
+	fi
+	@if [ "$(HOST_ARCH)" != "aarch64" ] && [ ! -d "$(JETSON_SYSROOT)/usr/include" ]; then \
+		echo "Jetson sysroot not found at $(JETSON_SYSROOT). Run JETSON_HOST=<user@jetson> scripts/sync_jetson_sysroot.sh [DEST]." >&2; \
+		exit 1; \
+	fi
+	$(BAZEL) build --config=jetson --action_env=JETSON_SYSROOT=$(JETSON_SYSROOT) --define=JETSON_SYSROOT=$(JETSON_SYSROOT) //...
 
 test:
 	$(BAZEL) test --config=opt //...
@@ -57,7 +67,7 @@ print_targets:
 		'debug          Build everything with --config=debug.' \
 		'gstdebug       Build debug with extra GStreamer debug defines (--config=gstdebug).' \
 		'x86_64         Build optimized for x86_64 (--cpu=k8).' \
-		'jetson         Build optimized for Jetson (--config=jetson).' \
+		'jetson         Build optimized for Jetson (--config=jetson, needs $(JETSON_SYSROOT)).' \
 		'' \
 		'Apps' \
 		'----' \
