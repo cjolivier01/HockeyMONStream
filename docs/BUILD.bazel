@@ -1,0 +1,21 @@
+load("//buildfiles/doxygen:doxygen.bzl", "doxygen_docs")
+
+sh_binary(
+    name = "doxygen_tool",
+    srcs = ["doxygen.sh"],
+)
+
+filegroup(
+    name = "pages",
+    srcs = ["mainpage.md"],
+)
+
+# Build the documentation site from all workspace source files.
+doxygen_docs(
+    name = "site",
+    srcs = ["//:all_source", ":pages"],
+    project_name = "hstream",
+    doxygen = ":doxygen_tool",
+    mainpage = "mainpage.md",
+    visibility = ["//visibility:public"],
+)

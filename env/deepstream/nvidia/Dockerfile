@@ -1,0 +1,196 @@
+FROM nvcr.io/nvidia/cuda:11.8.0-devel-ubuntu18.04
+# FROM nvcr.io/nvidia/cuda:11.2.2-cudnn8-runtime-ubuntu16.04
+# FROM nvcr.io/nvidia/jetpack-linux-aarch64-crosscompile-x86:5.0.2
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+
+ARG USERNAME
+ARG UID
+ARG GID
+
+ENV SHELL=/bin/bash
+
+USER root
+COPY ./sdkmanager_2.2.0-12021_amd64.deb /
+RUN apt-get update
+RUN apt-get upgrade -y
+RUN apt-get install -y sudo vim
+RUN apt install -y /sdkmanager_2.2.0-12021_amd64.deb
+RUN apt-get upgrade -y
+RUN apt install -y openssh-client usbutils
+RUN apt install -y udev gedit aptitude
+# RUN apt install -y nvidia-jetpack
+# RUN apt install -y update-binfmts qemu-user-static
+
+RUN apt-get install -y \
+   abootimg \
+   adduser \
+   apt \
+   apt-utils \
+   base-files \
+   base-passwd \
+   bash \
+   bc \
+   binfmt-support \
+   binutils \
+   bison \
+   bsdutils \
+   build-essential \
+   bzip2 \
+   ca-certificates \
+   coreutils \
+   cpio \
+   cpp \
+   cuda-cccl-cross-aarch64-11-4 \
+   cuda-cross-aarch64 \
+   cuda-cross-aarch64-11-4 \
+   cuda-cudart-cross-aarch64-11-4 \
+   cuda-cupti-cross-aarch64-11-4 \
+   cuda-driver-cross-aarch64-11-4 \
+   cuda-nsight-compute-addon-l4t-11-4 \
+   cuda-nvcc-11-4 \
+   cuda-nvcc-cross-aarch64-11-4 \
+   cuda-nvml-cross-aarch64-11-4 \
+   cuda-nvrtc-cross-aarch64-11-4 \
+   cuda-nvtx-cross-aarch64-11-4 \
+   cuda-profiler-api-cross-aarch64-11-4 \
+   cuda-repo-cross-aarch64-ubuntu2004-11-4-local \
+   cuda-repo-ubuntu2004-11-4-local \
+   cuda-toolkit-11-4 \
+   cuda-toolkit-11-4-config-common \
+   cuda-toolkit-11-config-common \
+   cuda-toolkit-config-common \
+   dash \
+   debconf \
+   debianutils \
+   device-tree-compiler \
+   diffutils \
+   dosfstools \
+   dpkg \
+   dpkg-dev \
+   e2fsprogs \
+   fdisk \
+   findutils \
+   flex \
+   gcc \
+   gcc-10-base \
+   gcc-aarch64-linux-gnu \
+   git \
+   gnupg \
+   gpgv \
+   grep \
+   gzip \
+   hostname \
+   init-system-helpers \
+   lbzip2 \
+   libacl1 \
+   libapt-pkg6.0 \
+   libattr1 \
+   libaudit-common \
+   libaudit1 \
+   libblkid1 \
+   libbz2-1.0 \
+   libc-bin \
+   libc6 \
+   libcap-ng0 \
+   libcom-err2 \
+   libcrypt1 \
+   libcublas-cross-aarch64-11-4 \
+   libcudla-cross-aarch64-11-4 \
+   libcufft-cross-aarch64-11-4 \
+   libcurand-cross-aarch64-11-4 \
+   libcusolver-cross-aarch64-11-4 \
+   libcusparse-cross-aarch64-11-4 \
+   libdb5.3 \
+   libdebconfclient0 \
+   libext2fs2 \
+   libfdisk1 \
+   libffi7 \
+   libgcc-s1 \
+   libgcrypt20 \
+   libgmp10 \
+   libgnutls30 \
+   libgpg-error0 \
+   libhogweed5 \
+   libidn2-0 \
+   liblz4-1 \
+   liblzma5 \
+   libmount1 \
+   libncurses6 \
+   libncursesw6 \
+   libnettle7 \
+   libnpp-cross-aarch64-11-4 \
+   libp11-kit0 \
+   libpam-modules \
+   libpam-modules-bin \
+   libpam-runtime \
+   libpam0g \
+   libpcre2-8-0 \
+   libpcre3 \
+   libprocps8 \
+   libseccomp2 \
+   libselinux1 \
+   libsemanage-common \
+   libsemanage1 \
+   libsepol1 \
+   libsmartcols1 \
+   libss2 \
+   libssl-dev \
+   libstdc++6 \
+   libsystemd0 \
+   libtasn1-6 \
+   libtinfo6 \
+   libudev1 \
+   libunistring2 \
+   libuuid1 \
+   libxml2-utils \
+   libzstd1 \
+   login \
+   logsave \
+   lsb-base \
+   lz4 \
+   mawk \
+   mono-devel \
+   mount \
+   ncurses-base \
+   ncurses-bin \
+   nfs-kernel-server \
+   nsight-compute-addon-l4t-2021.2.5 \
+   openssh-client \
+   passwd \
+   perl \
+   perl-base \
+   procps \
+   python-is-python2 \
+   python3 \
+   python3-crypto \
+   python3-minimal \
+   python3-pip \
+   python3-pycryptodome \
+   python3-pyelftools \
+   python3-yaml \
+   qemu-user-static \
+   sed \
+   sensible-utils \
+   sshpass \
+   sudo \
+   sysvinit-utils \
+   tar \
+   ubuntu-keyring \
+   util-linux \
+   uuid-dev \
+   virtualenv \
+   vpi2-cross-aarch64-l4t \
+   vpi2-dev \
+   vpi2-samples \
+   whois \
+   xxd \
+   zlib1g
+
+RUN echo '%sudo   ALL=(ALL:ALL) ALL' >> /etc/sudoers
+RUN echo "$USERNAME ALL=(ALL:ALL) ALL" >> /etc/sudoers
+
+ENV SHELL=/bin/bash
+
+

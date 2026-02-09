@@ -1,0 +1,5 @@
+#/bin/bash
+g++ -Wall -O3 -std=c++14 -DNDEBUG -I/usr/local/cuda/include -I./headers -I../../bpplib/include  -L/usr/local/cuda/lib64  -lcudart -lcuda /usr/local/cuda/lib64/libcudart.so ./kernels/kernels.cuobj ./kmcuda/kmeans.cuobj ./kmcuda/transpose.cuobj ./kmcuda/knn.cuobj ./kmcuda_adapter.obj ./k-means.obj ./kmcuda/kmcuda.o -o k-means
+
+
+

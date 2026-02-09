@@ -1,0 +1,70 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+cc_binary(
+    name = "dual-record",
+    srcs = [
+        "dual_record.cpp",
+    ],
+    copts = [
+        "-std=c++17",
+        "-Wno-error=write-strings",
+    ],
+    deps = [
+        "@glib",
+        "@gstreamer",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_binary(
+    name = "dual-recordd",
+    srcs = [
+        "dual_record_service.cpp",
+        "dual_record_service.h",
+        "dual-recordd.cpp",
+    ],
+    copts = ["-std=c++17"],
+    deps = [
+        "@glib",
+        "@gstreamer",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_binary(
+    name = "dualctl",
+    srcs = [
+        "dualctl.cpp",
+    ],
+    copts = ["-std=c++17"],
+    deps = [
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_binary(
+    name = "gopro_remote_bridge",
+    srcs = [
+        "gopro_remote_bridge.cpp",
+    ],
+    copts = [
+        "-std=c++17",
+    ],
+    deps = [
+        "@simpleble//:simpleble",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_binary(
+    name = "evdev_remote_bridge",
+    srcs = [
+        "evdev_remote_bridge.cpp",
+    ],
+    copts = [
+        "-std=c++17",
+    ],
+    deps = [
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,73 @@
+# load("@rules_cc//cc:defs.bzl", "cc_library")
+# load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+
+# cc_binary(
+#     name = "nvdstracker_bytetrack",
+#     srcs = glob([
+#         "*.cpp",
+#     ]),
+#     copts = [
+#         "-Wall",
+#         "-std=c++11",
+#         "-fPIC",
+#         "-Wno-error=deprecated-declarations",
+#         "-DWITH_CUDA",
+#     ],
+#     linkopts = [
+#         "-shared",
+#         "-Wl,-z,defs",
+#         "-Wno-error=deprecated-declarations",
+#         "-Wl,--start-group",
+#         "-lnvinfer_plugin",
+#         "-lnvinfer",
+#         "-lnvonnxparser",
+#         "-L/usr/local/cuda/lib64",
+#         "-lcudart",
+#         "-lcublas",
+#         "-lstdc++fs",
+#         "-Wl,--end-group",
+#     ],
+#     linkshared = True,
+#     visibility = ["//visibility:public"],
+#     deps = [
+#         ":nvdstracker_bytetrack_cuda_lib",
+#         "@NvDsBaseExt",
+#         "@NvDsInterfaceExt",
+#         "@StandardExtension",
+#         "@deepstream//sources:deepstream_includes",
+#         "@deepstream//sources/libs/nvdsinfer",
+#         "@glib",
+#         "@gstreamer",
+#         # "@hm//hockeymom/csrc/bytetrack",
+#         "@local_cuda//:cuda_runtime",
+#         "@opencv_linux//:opencv",
+#     ],
+# )
+
+# cuda_library(
+#     name = "nvdstracker_bytetrack_cuda_lib",
+#     srcs = glob([
+#         "*.cu",
+#     ]),
+#     copts = [
+#         "-std=c++11",
+#         "-Xcompiler=-fPIC",
+#         "-Xcompiler=-g",
+#         "-DWITH_CUDA",
+#         "-g",
+#     ],
+#     visibility = ["//visibility:public"],
+#     deps = [
+#         ":nvdstracker_bytetrack_headers",
+#         "@deepstream//sources:deepstream_includes",
+#         "@local_cuda//:cuda_runtime",
+#     ],
+# )
+
+# cc_library(
+#     name = "nvdstracker_bytetrack_headers",
+#     hdrs = glob([
+#         "*.h",
+#     ]),
+#     visibility = ["//visibility:public"],
+# )

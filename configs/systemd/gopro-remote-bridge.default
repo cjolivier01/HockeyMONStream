@@ -1,0 +1,11 @@
+# Environment overrides for gopro-remote-bridge
+# Copy to /etc/default/gopro-remote-bridge and edit BRIDGE_ARGS below.
+
+# Example: point to the specific notification characteristic for GoPro "The Remote".
+# Discover UUIDs by running:
+#   gopro_remote_bridge --list --remote-name "Remote"
+# Then set:
+#   BRIDGE_ARGS="--remote-name Remote --svc <SERVICE-UUID> --char <CHAR-UUID>"
+
+BRIDGE_ARGS="--remote-name Remote"
+

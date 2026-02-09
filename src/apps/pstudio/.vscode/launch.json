@@ -1,0 +1,102 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  //
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "----------------- pstudio -----------------",
+    },
+    {
+      "name": "test-pipeline",
+      "type": "lldb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/bazel-bin/tests/test_pipeline",
+      "args": [
+      ],
+      "sourceMap": {
+        "/proc/self/cwd": "${workspaceFolder}",
+      },
+      //"stopOnEntry": true,
+      "env": {
+        "GST_DEBUG": "1",
+        "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
+        "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins",
+      },
+      "preLaunchTask": "Build All",
+    },
+    {
+      "name": "gst-pipeline-studio",
+      "type": "lldb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/bazel-bin/src/gst_pipeline_studio",
+      "args": [
+      ],
+      "sourceMap": {
+        "/proc/self/cwd": "${workspaceFolder}",
+      },
+      //"stopOnEntry": true,
+      "env": {
+        "GST_DEBUG": "1",
+        "LD_LIBRARY_PATH": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
+        "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins",
+      },
+      "preLaunchTask": "Build All",
+    },
+    {
+      "name": "(CUDA) pipeline-app",
+      "type": "cuda-gdb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "debuggerPath": "/usr/local/cuda/bin/cuda-gdb",
+      "program": "${workspaceFolder}/bazel-bin/src/apps/pipeline-app/pipeline-app",
+      "args": "-c ${workspaceFolder}/configs/ds_hockey_app_config.yaml -g ev-cougars-2 --enable-sources=URI-MULTIPLE --enable-sinks=RENDER",
+      "initCommands": [
+        "directory ${workspaceFolder}",
+      ],
+      "environment": [
+        // {
+        //   "name": "GST_DEBUG",
+        //   "value": "7",
+        // },
+        {
+          "name": "LD_LIBRARY_PATH",
+          "value": "${env:HOME}/src/hstream/lib:${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib",
+        },
+        {
+          "name": "GST_PLUGIN_PATH",
+          "value": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
+        },
+        // {
+        //   "name": "DISPLAY",
+        //   "value": ":1",
+        // },
+        {
+          "name": "CUDA_LAUNCH_BLOCKING",
+          "value": "1",
+        }
+      ],
+      "additionalSOLibSearchPath": "${env:HOME}/src/hstream/external/deepstream/lib:/opt/nvidia/deepstream/deepstream/lib:${env:HOME}/miniforge3/envs/ubuntu/lib:${env:HOME}/miniforge3/envs/ubuntu/lib/x86_64-linux-gnu",
+      "preLaunchTask": "Build All",
+    },
+    {
+      "name": "gst-inspect-1.0",
+      "type": "lldb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/",
+      //"program": "${workspaceFolder}/src/bazel-src/external/gstreamer/external/bin/gst-inspect-1.0",
+      "program": "/usr/bin/gst-inspect-1.0",
+      //"stopOnEntry": true,
+      "args": [],
+      "env": {
+        "LD_LIBRARY_PATH": "/usr/local/lib/x86_64-linux-gnu/:/usr/local/lib:/opt/nvidia/deepstream/deepstream/lib",
+        "GST_PLUGIN_PATH": "${env:HOME}/src/hstream/lib/gst-plugins:${env:HOME}/src/hstream/external/deepstream/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
+        "GST_DEBUG": "4",
+      },
+      // "preLaunchTask": "Meson: Build all targets",
+    },
+  ]
+}

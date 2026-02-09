@@ -1,0 +1,3 @@
+external/hm           colivier/bazel2
+external/deepstream   colivier/hm
+external/jetson-utils colivier/hm

@@ -1,0 +1,32 @@
+
+cc_binary(
+  name="pipeline-app",
+  srcs=glob(["*.cpp", "*.h"]),
+  deps=[
+    # "//src/libs/common:mod_pipeline",
+    "//src/libs/common:utils",
+    "//src/libs/common:fs",
+    "//src/libs/stitching",
+    "//src/libs/wireless:stream_control",
+    "//src/apps/apps-common:deepstream_apps_common",
+    "@deepstream//:deepstream_lib",
+    "@hm-cupano//src/pano:canvas",
+    "@gstreamer",
+    "@yaml-cpp",
+    "@json_glib",
+    "@local_cuda//:cuda_runtime",
+    "@local_cuda//:cuda",
+    "@com_google_absl//absl/strings",
+    "@com_google_absl//absl/status:statusor",
+    "@com_google_absl//absl/cleanup:cleanup",
+  ],
+  copts=[
+    "-x", "c++",
+    "-std=c++17",
+  ],
+  linkopts=[
+    "-lX11",
+    "-ldl",
+    "-lm",
+  ],
+)

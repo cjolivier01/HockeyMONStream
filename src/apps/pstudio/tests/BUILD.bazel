@@ -1,0 +1,31 @@
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
+genrule(
+    name = "test_pipeline_moc",
+    srcs = ["test_pipeline.h"],
+    outs = ["moc_test_pipeline.cpp"],
+    cmd = "$(location @qt//:qt_moc) $(location test_pipeline.h) -o $@",
+    tools = ["@qt//:qt_moc"],
+)
+
+cc_test(
+    name = "test_pipeline",
+    srcs = [
+      "test_pipeline.cpp",
+      "test_pipeline.h",
+      ":test_pipeline_moc"
+    ],
+    deps = [
+        "//src:pipeline",
+        "//src:element",
+        "//src:connection",
+        "@qt//:qt_core",
+        "@qt//:qt_test",
+        "@gstreamer//:gstreamer",
+    ],
+    copts = [
+        "-std=c++17",
+        "-I$(GENDIR)",
+        "-fPIC",
+    ],
+)

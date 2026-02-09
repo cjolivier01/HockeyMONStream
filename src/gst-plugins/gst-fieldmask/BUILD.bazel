@@ -1,0 +1,38 @@
+load("@gst_plugin_dev//buildfiles:gst_plugin.bzl", "gst_cc_plugin")
+
+INCLUDE_PREFIX = "hstream/src/gst-plugins/gst-fieldmask"
+
+gst_cc_plugin(
+    name = "nvdsgst_dsfieldmask",
+    srcs = [
+        "dsfieldmask_lib.cpp",
+        "gstdsfieldmask.cpp",
+    ],
+    hdrs = [
+        "dsfieldmask_lib.h",
+        "gstdsfieldmask.h",
+    ],
+    copts = [
+        "-Wno-error=unused-function",
+        "-Wno-error=unused-variable",
+    ],
+    linkopts = [
+    ],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":fieldmask_payload",
+        "//src/libs/stitching:stitching",
+        "@opencv_linux//:opencv",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+cc_library (
+  name = "fieldmask_payload",
+  hdrs = ["fieldmask_payload.h",],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    "//src/libs/common:utils",
+  ],
+)

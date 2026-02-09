@@ -1,0 +1,47 @@
+# cc_binary(
+#     name = "simple-pipeline",
+#     srcs = [
+#       "simple-pipeline.cpp",
+#     ],
+#     copts = [
+#       "-Wno-error=write-strings",
+#     ],
+#     deps = [
+#         "@glib",
+#         "@gstreamer",
+#         "@opencv_linux//:opencv",
+#     ],
+#     visibility = ["//visibility:public"],
+# )
+
+# cc_binary(
+#     name = "simple-rtsp",
+#     srcs = [
+#       "simple-rtsp.cpp",
+#     ],
+#     copts = [
+#       "-Wno-error=write-strings",
+#     ],
+#     deps = [
+#         "@glib",
+#         "@gstreamer",
+#         "@opencv_linux//:opencv",
+#     ],
+#     visibility = ["//visibility:public"],
+# )
+
+# cc_binary(
+#     name = "simple-rtmp",
+#     srcs = [
+#       "simple-rtmp.cpp",
+#     ],
+#     copts = [
+#       "-Wno-error=write-strings",
+#     ],
+#     deps = [
+#         "@glib",
+#         "@gstreamer",
+#         "@opencv_linux//:opencv",
+#     ],
+#     visibility = ["//visibility:public"],
+# )

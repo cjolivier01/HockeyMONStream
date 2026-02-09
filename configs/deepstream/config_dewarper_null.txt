@@ -1,0 +1,36 @@
+################################################################################
+# SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+################################################################################
+
+[property]
+#dewarp-dump-frames=10
+# output-width=1312
+# output-height=738
+
+# ev-reno-1
+# output-width=2418
+# output-height=1360
+
+# mlk-extreme
+
+# output-width=1820
+# output-height=1024
+
+output-width=3693
+output-height=2077
+#output-width=4924
+#output-height=2770
+
+# ev-stockton-2
+# output-width=5646
+# output-height=3176
+
+num-batch-buffers=4

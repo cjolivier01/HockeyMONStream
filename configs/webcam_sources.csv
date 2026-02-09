@@ -1,0 +1,2 @@
+enable,type,uri,num-sources,gpu-id,cudadec-memtype,camera-fps-n,camera-fps-d,camera-width,camera-height,video-format
+1,5,/dev/video0,1,0,0,30000,1001,3840,2160,NV12

@@ -1,0 +1,36 @@
+INCLUDE_PREFIX = "hstream/src/libs/camera"
+
+cc_library(
+    name = "camera",
+    srcs = [
+        "AutoFocus.cpp",
+        "MediaCtl.cpp",
+    ],
+    hdrs = [
+        "AutoFocus.h",
+        "MediaCtl.h",
+    ],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/libs/common:utils",
+        "@com_google_absl//absl/cleanup",
+        "@com_google_absl//absl/status",
+        "@opencv_linux//:opencv",
+    ],
+)
+
+cc_binary(
+    name = "auto_focus_main",
+    srcs = [
+        "AutoFocusMain.cpp",
+    ],
+    copts = [
+        "-DAUTOFOCUS_MAIN=1",
+    ],
+    deps = [
+        ":camera",
+        "@com_google_absl//absl/status",
+        "@opencv_linux//:opencv",
+    ],
+)

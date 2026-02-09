@@ -1,0 +1,144 @@
+/* Dark theme for GstPipelineStudio */
+
+QMainWindow, QDialog, QWidget {
+    background-color: #2D2D30;
+    color: #E6E6E6;
+}
+
+QMenuBar {
+    background-color: #1E1E1E;
+    color: #E6E6E6;
+}
+
+QMenuBar::item {
+    background-color: transparent;
+    padding: 4px 8px;
+}
+
+QMenuBar::item:selected {
+    background-color: #3E3E40;
+}
+
+QMenu {
+    background-color: #1E1E1E;
+    color: #E6E6E6;
+    border: 1px solid #3E3E40;
+}
+
+QMenu::item:selected {
+    background-color: #3E3E40;
+}
+
+QToolBar {
+    background-color: #2D2D30;
+    border-bottom: 1px solid #3E3E40;
+}
+
+QStatusBar {
+    background-color: #1E1E1E;
+    color: #E6E6E6;
+}
+
+QDockWidget {
+    color: #E6E6E6;
+    titlebar-close-icon: url(:/icons/close.png);
+    titlebar-normal-icon: url(:/icons/float.png);
+}
+
+QDockWidget::title {
+    background-color: #1E1E1E;
+    padding-left: 5px;
+    padding-top: 2px;
+}
+
+QTabWidget::pane {
+    border: 1px solid #3E3E40;
+}
+
+QTabBar::tab {
+    background-color: #2D2D30;
+    color: #E6E6E6;
+    padding: 6px 12px;
+    border-right: 1px solid #3E3E40;
+}
+
+QTabBar::tab:selected {
+    background-color: #3E3E40;
+}
+
+QTabBar::tab:hover {
+    background-color: #3E3E40;
+}
+
+QLineEdit, QTextEdit, QPlainTextEdit {
+    background-color: #1E1E1E;
+    color: #E6E6E6;
+    border: 1px solid #3E3E40;
+    padding: 2px;
+}
+
+QPushButton {
+    background-color: #3E3E40;
+    color: #E6E6E6;
+    border: 1px solid #555555;
+    padding: 5px 10px;
+}
+
+QPushButton:hover {
+    background-color: #555555;
+}
+
+QPushButton:pressed {
+    background-color: #444444;
+}
+
+QTreeView, QListView, QTableView {
+    background-color: #1E1E1E;
+    color: #E6E6E6;
+    border: 1px solid #3E3E40;
+}
+
+QTreeView::item:selected, QListView::item:selected, QTableView::item:selected {
+    background-color: #3E3E40;
+}
+
+QScrollBar:vertical {
+    background-color: #2D2D30;
+    width: 12px;
+    margin: 0px;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #3E3E40;
+    min-height: 20px;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    background: none;
+}
+
+QScrollBar:horizontal {
+    background-color: #2D2D30;
+    height: 12px;
+    margin: 0px;
+}
+
+QScrollBar::handle:horizontal {
+    background-color: #3E3E40;
+    min-width: 20px;
+}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    background: none;
+}
+
+QGraphicsView {
+    background-color: #1E1E1E;
+    border: 1px solid #3E3E40;
+}
+
+QToolTip {
+    background-color: #2D2D30;
+    color: #E6E6E6;
+    border: 1px solid #3E3E40;
+}

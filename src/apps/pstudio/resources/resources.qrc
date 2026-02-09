@@ -1,0 +1,27 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/icons">
+        <file>icons/new.png</file>
+        <file>icons/open.png</file>
+        <file>icons/save.png</file>
+        <file>icons/build.png</file>
+        <file>icons/run.png</file>
+        <file>icons/pause.png</file>
+        <file>icons/stop.png</file>
+        <file>icons/visualize.png</file>
+        
+        <!-- Element type icons -->
+        <file>icons/source.png</file>
+        <file>icons/sink.png</file>
+        <file>icons/filter.png</file>
+        <file>icons/converter.png</file>
+        <file>icons/encoder.png</file>
+        <file>icons/decoder.png</file>
+        <file>icons/element.png</file>
+    </qresource>
+    
+    <qresource prefix="/styles">
+        <file>styles/dark.qss</file>
+        <file>styles/light.qss</file>
+    </qresource>
+</RCC>

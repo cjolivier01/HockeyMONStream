@@ -1,0 +1,56 @@
+INCLUDE_PREFIX = "hstream/src/libs/stitching"
+
+cc_library(
+  name = "stitching",
+  srcs = [
+    "ConfigureStitching.cpp",
+    "Orientation.cpp",
+    "Synchronization.cpp",
+  ],
+  hdrs = [
+    "ConfigureStitching.h",
+    "Orientation.h",
+    "Synchronization.h",
+  ],
+  linkopts = [
+    "-L/usr/local/lib",	  
+    "-lavformat",
+    "-lavcodec",
+    "-lavutil",
+    "-lswresample",  
+  ],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    ":correlation",
+    "//src/libs/common:utils",
+    "@hm-cupano//src/pano:cuda_matrix",
+    "@yaml-cpp",
+    "@com_google_absl//absl/status:status",
+  ],
+  data = [
+    "@hm-cupano//scripts:all_scripts",
+  ],
+)
+
+cc_library(
+  name = "correlation",
+  srcs = [
+    "CrossCorrelation.cpp",
+  ],
+  hdrs = [
+    "CrossCorrelation.h",
+  ],
+  copts=[
+    "-fopenmp",
+    "-O3",
+  ],
+  linkopts = [
+    "-lfftw3f",
+    "-lm",
+  ],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+  ],
+)

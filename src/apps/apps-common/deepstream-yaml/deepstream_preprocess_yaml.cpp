@@ -1,0 +1,51 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+ *
+ * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+ * property and proprietary rights in and to this material, related
+ * documentation and any modifications thereto. Any use, reproduction,
+ * disclosure or distribution of this material and related documentation
+ * without an express license agreement from NVIDIA CORPORATION or
+ * its affiliates is strictly prohibited.
+ */
+
+#include <cstring>
+#include <iostream>
+#include <string>
+#include "hstream/src/apps/apps-common/deepstream_common.h"
+#include "hstream/src/apps/apps-common/deepstream_config_yaml.h"
+
+using std::cout;
+using std::endl;
+
+gboolean parse_preprocess_yaml(NvDsPreProcessConfig* config, const YAML::Node& yaml_node, const std::string& config_dir) {
+  gboolean ret = FALSE;
+
+  for (YAML::const_iterator itr = yaml_node.begin(); itr != yaml_node.end(); ++itr) {
+    std::string paramKey = itr->first.as<std::string>();
+    if (paramKey == "enable") {
+      config->enable = itr->second.as<gboolean>();
+    } else if (paramKey == "config-file") {
+      std::string temp = itr->second.as<std::string>();
+      char* str = (char*)malloc(sizeof(char) * 1024);
+      std::strncpy(str, temp.c_str(), 1023);
+      config->config_file_path = (char*)malloc(sizeof(char) * 1024);
+      if (!get_absolute_file_path_yaml(config_dir.c_str(), str, config->config_file_path)) {
+        g_printerr("Error: Could not parse config-file-path in preprocess.\n");
+        g_free(str);
+        goto done;
+      }
+      g_free(str);
+    } else {
+      cout << "[WARNING] Unknown param found in preprocess: " << paramKey << endl;
+    }
+  }
+
+  ret = TRUE;
+done:
+  if (!ret) {
+    cout << __func__ << " failed" << endl;
+  }
+  return ret;
+}

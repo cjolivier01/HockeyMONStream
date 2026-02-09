@@ -1,0 +1,17 @@
+[Unit]
+Description=Dual IMX477 Recorder Service
+After=network.target
+Wants=bluetooth.target
+After=bluetooth.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dual-recordd --sock /run/dual-record.sock
+Restart=on-failure
+RestartSec=2s
+RuntimeDirectory=dual-record
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target
+

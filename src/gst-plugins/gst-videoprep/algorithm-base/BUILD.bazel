@@ -1,0 +1,29 @@
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+
+INCLUDE_PREFIX = "hstream/src/gst-plugins/gst-videoprep/algorithm-base"
+
+cc_library (
+  name = "algorithm-base",
+    srcs = [
+        "preputils.cpp",
+        "CustomAlgorithmBase.cpp",
+        "gst_utils.cpp",
+    ],
+    hdrs = [
+        "preputils.h",
+        "CustomAlgorithmBase.h",
+        "VideoPrepPriv.h",
+        "gst_utils.h",
+        "hmcustomlib_interface.hpp",
+        "hmcustomlib_factory.hpp",
+        "hmcustomlib_base.hpp",
+    ],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+        "//src/libs/common:utils",
+        "@deepstream//:deepstream_lib",
+        "@com_google_absl//absl/status",
+        "@local_cuda//:cuda_runtime",
+  ],
+)

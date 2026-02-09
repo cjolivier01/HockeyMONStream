@@ -1,0 +1,14 @@
+[Unit]
+Description=GoPro BLE Remote Bridge for Dual Recorder
+Wants=bluetooth.target dual-recordd.service
+After=bluetooth.target dual-recordd.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/gopro-remote-bridge
+ExecStart=/usr/local/bin/gopro_remote_bridge --sock /run/dual-record.sock $BRIDGE_ARGS
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

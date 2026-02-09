@@ -1,0 +1,7 @@
+platform(
+  name = "jetson",
+  constraint_values = [
+    "@platforms//cpu:aarch64",
+    "@platforms//os:linux",
+  ],
+)

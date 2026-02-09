@@ -32,6 +32,7 @@ NVIDIA DeepStream SDK 7.1 / 7.0 / 6.4 / 6.3 / 6.2 / 6.1.1 / 6.1 / 6.0.1 / 6.0 / 
 * [Supported models](#supported-models)
 * [Benchmarks](docs/benchmarks.md)
 * [dGPU installation](docs/dGPUInstalation.md)
+* [Jetson cross-build from x86](docs/jetson-cross-build.md)
 * [Basic usage](#basic-usage)
 * [Docker usage](#docker-usage)
 * [NMS configuration](#nms-configuration)
@@ -55,6 +56,13 @@ NVIDIA DeepStream SDK 7.1 / 7.0 / 6.4 / 6.3 / 6.2 / 6.1.1 / 6.1 / 6.0.1 / 6.0 / 
 * [RT-DETR Ultralytics usage](docs/RTDETR_Ultralytics.md)
 * [Using your custom model](docs/customModels.md)
 * [Multiple YOLO GIEs](docs/multipleGIEs.md)
+
+##
+
+### Additional Apps
+
+* Dual IMX477 recorder (DeepStream/GStreamer) — docs and usage:
+  `src/apps/dual-record/README.md`
 
 ##
 

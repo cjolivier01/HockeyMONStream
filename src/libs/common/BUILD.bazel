@@ -1,0 +1,132 @@
+INCLUDE_PREFIX = "hstream/src/libs/common/"
+
+cc_library(
+    name = "utils",
+    srcs = [
+        "ApplicationPayload.cpp",
+        "ConfigYaml.cpp",
+        "PlotContext.cpp",
+        "Process.cpp",
+        "RenderSet.cpp",
+        "pipeline_utils.cpp",
+    ],
+    hdrs = [
+        "ApplicationPayload.h",
+        "ConfigYaml.h",
+        "PlotContext.h",
+        "Process.h",
+        "RenderSet.h",
+        "TempFile.h",
+        "pipeline_utils.h",
+    ],
+    copts = [
+        "-fPIC",
+        "-std=c++17",
+    ],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":utils_base",
+        ":status",
+        ":managed_object",
+        ":surface",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/cleanup",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+        "@hm-cupano//src/cuda:cuda_blend_cuda_lib",
+        "@hm//hockeymom/csrc/play_tracker",
+        "@jetson-utils//cuda:cuda_lib",
+        "@jetson-utils//display",
+        "@local_cuda//:cuda",
+        "@local_cuda//:cuda_runtime",
+        "@opencv_linux//:opencv",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
+  name = "status",
+  srcs = [],
+  hdrs = ["Status.h",],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    ":utils_base",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ]
+)
+
+cc_library(
+  name = "fs",
+  srcs = [],
+  hdrs = ["filesystem.h",],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "utils_base",
+    srcs = ["utils.cpp"],
+    hdrs = ["utils.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@gstreamer",
+        "@deepstream//:deepstream_lib",
+        "@hm//hockeymom/csrc/play_tracker",
+        "@hm-cupano//src/cuda:cuda_status",
+        "@jetson-utils//image:image_format",
+    ],
+)
+
+cc_library(
+    name = "surface",
+    srcs = ["Surface.cpp"],
+    hdrs = ["Surface.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":status",
+        "@deepstream//:deepstream_lib",
+        "@glib",
+        "@hm//hockeymom/csrc/play_tracker",
+        "@hm-cupano//src/cuda:cuda_status",
+        "@jetson-utils//image:image_format",
+    ],
+)
+
+cc_library(
+    name = "managed_object",
+    srcs = [],
+    hdrs = ["ManagedObject.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+    ],
+)
+
+# cc_library(
+#   name = "mod_pipeline",
+#   srcs = ["ModPipeline.cpp"],
+#   hdrs = ["ModPipeline.h"],
+#   include_prefix=INCLUDE_PREFIX,
+#   visibility = ["//visibility:public"],
+#   deps = [
+#     ":utils",
+#     "@gtk3",
+#     "@gstreamer",
+#   ],
+# )
+
+cc_library(
+    name = "perspective",
+    srcs = ["Perspective.cpp"],
+    hdrs = ["Perspective.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+    ],
+)

@@ -1,0 +1,10 @@
+play-tracker:
+  live-boxes:
+    - name: current_roi
+      dynamic-acceleration-scaling: 0
+    - name: current_roi_aspect
+      dynamic-acceleration-scaling: 1.0
+      scale_dest_width: 1.4
+      scale_dest_height: 1.4
+  no-wide-start: 1
+
