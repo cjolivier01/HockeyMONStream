@@ -65,7 +65,12 @@ build:aarch64 --copt=-DABSL_NO_XPACLRI
 build:jetson --config=aarch64
 build:jetson --define=target_platform=jetson
 build:jetson --action_env=target_platform="jetson"
+build:jetson --platforms=//bazel/platforms:jetson
+build:jetson --crosstool_top=//bazel/toolchains:aarch64_suite
+build:jetson --compiler=gcc
+build:jetson --cpu=aarch64
+build:jetson --extra_toolchains=//bazel/toolchains:aarch64_gcc_toolchain
+build:jetson --incompatible_enable_cc_toolchain_resolution=true
 build:jetson --copt=-DIS_TEGRA=1
-build:jetson --copt=-mtune=native
 build:jetson --copt=-DABSL_NO_XPACLRI
 build:jetson --copt=-mbranch-protection=none
