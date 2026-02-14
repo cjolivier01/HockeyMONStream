@@ -93,13 +93,52 @@ std::pair<std::vector<std::vector<float>>, int> load_audio_as_tensor(
     std::exit(1);
   }
 
-  // Determine the input channel layout.
+  // Set up the resampler to convert the audio to float while preserving channels.
+  SwrContext* swr_ctx = nullptr;
+  int out_channels = 0;
+#if LIBAVCODEC_VERSION_MAJOR >= 59
+  AVChannelLayout in_ch_layout = {};
+  if (codecpar->ch_layout.nb_channels > 0) {
+    if (av_channel_layout_copy(&in_ch_layout, &codecpar->ch_layout) < 0) {
+      std::cerr << "Could not copy input channel layout." << std::endl;
+      avcodec_free_context(&codec_ctx);
+      avformat_close_input(&fmt_ctx);
+      std::exit(1);
+    }
+  } else if (codec_ctx->ch_layout.nb_channels > 0) {
+    if (av_channel_layout_copy(&in_ch_layout, &codec_ctx->ch_layout) < 0) {
+      std::cerr << "Could not copy codec channel layout." << std::endl;
+      avcodec_free_context(&codec_ctx);
+      avformat_close_input(&fmt_ctx);
+      std::exit(1);
+    }
+  } else {
+    av_channel_layout_default(&in_ch_layout, 1);
+  }
+  out_channels = in_ch_layout.nb_channels;
+  if (swr_alloc_set_opts2(
+          &swr_ctx,
+          &in_ch_layout,
+          AV_SAMPLE_FMT_FLT,
+          codec_ctx->sample_rate,
+          &in_ch_layout,
+          codec_ctx->sample_fmt,
+          codec_ctx->sample_rate,
+          0,
+          nullptr) < 0) {
+    std::cerr << "Could not configure resampler." << std::endl;
+    av_channel_layout_uninit(&in_ch_layout);
+    avcodec_free_context(&codec_ctx);
+    avformat_close_input(&fmt_ctx);
+    std::exit(1);
+  }
+  av_channel_layout_uninit(&in_ch_layout);
+#else
   uint64_t in_channel_layout = 0;
   uint64_t param_layout = codecpar->channel_layout;
   if (param_layout != 0) {
     in_channel_layout = param_layout;
   } else {
-    // Fallback: get default layout for the given number of channels.
     in_channel_layout = av_get_default_channel_layout(codecpar->channels);
     if (!in_channel_layout) {
       std::cerr << "Could not get default channel layout." << std::endl;
@@ -108,26 +147,27 @@ std::pair<std::vector<std::vector<float>>, int> load_audio_as_tensor(
       std::exit(1);
     }
   }
-
-  // Determine number of channels (preserve original channels).
-  int out_channels = codecpar->channels;
-
-  // Set up the resampler to convert the audio to float format while preserving channel count.
-  SwrContext* swr_ctx = swr_alloc();
+  out_channels = codecpar->channels;
+  swr_ctx = swr_alloc();
   if (!swr_ctx) {
     std::cerr << "Could not allocate resampler context." << std::endl;
     avcodec_free_context(&codec_ctx);
     avformat_close_input(&fmt_ctx);
     std::exit(1);
   }
-  // Input options.
   av_opt_set_int(swr_ctx, "in_channel_layout", in_channel_layout, 0);
   av_opt_set_int(swr_ctx, "in_sample_rate", codec_ctx->sample_rate, 0);
   av_opt_set_sample_fmt(swr_ctx, "in_sample_fmt", codec_ctx->sample_fmt, 0);
-  // Output options: preserve number of channels.
   av_opt_set_int(swr_ctx, "out_channel_layout", in_channel_layout, 0);
   av_opt_set_int(swr_ctx, "out_sample_rate", codec_ctx->sample_rate, 0);
   av_opt_set_sample_fmt(swr_ctx, "out_sample_fmt", AV_SAMPLE_FMT_FLT, 0);
+#endif
+  if (!swr_ctx) {
+    std::cerr << "Could not allocate resampler context." << std::endl;
+    avcodec_free_context(&codec_ctx);
+    avformat_close_input(&fmt_ctx);
+    std::exit(1);
+  }
   if (swr_init(swr_ctx) < 0) {
     std::cerr << "Could not initialize resampler." << std::endl;
     swr_free(&swr_ctx);
