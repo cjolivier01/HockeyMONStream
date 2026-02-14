@@ -10,12 +10,25 @@ ifeq ($(CPU),x86_64)
 CPU := k8
 endif
 
+PERF_DEFINES :=
+PERF_CUDA_COPTS :=
+# glibc >= 2.38 on x86_64 conflicts with CUDA's rsqrt declarations unless this
+# define enables the jetson-utils workaround.
+ifeq ($(CPU),k8)
+PERF_DEFINES += --define=glibc_math_rsqrt_conflict=1
+PERF_CUDA_COPTS += --@rules_cuda//cuda:copts=-Xcompiler=-U_GNU_SOURCE
+PERF_CUDA_COPTS += --@rules_cuda//cuda:copts=-Xcompiler=-D_POSIX_C_SOURCE=200809L
+PERF_CUDA_COPTS += --@rules_cuda//cuda:copts=-Xcompiler=-D_XOPEN_SOURCE=700
+PERF_CUDA_COPTS += --@rules_cuda//cuda:copts=-Xcompiler=-include
+PERF_CUDA_COPTS += --@rules_cuda//cuda:copts=-Xcompiler=$(CURDIR)/buildfiles/compat/pthread_clock_compat.h
+endif
+
 all: print_targets
 
 .PHONY: print_targets perf debug jetson pipeline_app pipeline_app_debug pipeline_app_jetson scoreboard_test test clean distclean expunge
 
 perf:
-	$(BAZELISK) build --config=opt --cpu=$(CPU) //...
+	$(BAZELISK) build --config=opt --cpu=$(CPU) $(PERF_DEFINES) $(PERF_CUDA_COPTS) //...
 
 debug:
 	$(BAZELISK) build --config=debug //...

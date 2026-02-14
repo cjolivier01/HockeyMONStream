@@ -8,19 +8,6 @@ config_setting(
   constraint_values = ["@platforms//cpu:x86_64"],
 )
 
-cc_binary(
-    name = "libgstreamer-1.0.so",
-    srcs = ["gst_stub"],
-    linkopts = ["-Wl,-soname,libgstreamer-1.0.so.0"],
-    linkshared = True,
-    visibility = ["//visibility:public"],
-)
-
-cc_import(
-    name = "libgstreamer",
-    shared_library = "libgstreamer-1.0.so",
-)
-
 cc_library(
     name = "gstreamer",
     hdrs = glob([
@@ -50,7 +37,6 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        "libgstreamer",
         "@glib",
     ],
 )

@@ -2,6 +2,13 @@ load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
 INCLUDE_PREFIX = "hstream/src/gst-plugins/gst-videoprep/playcropper"
 
+config_setting(
+    name = "glibc_math_rsqrt_conflict",
+    define_values = {
+        "glibc_math_rsqrt_conflict": "1",
+    },
+)
+
 cc_library(
     name = "playcropper",
     srcs = [
@@ -41,7 +48,14 @@ cuda_library(
         #"-g",
         "-keep",
         #"-O0",
-    ],
+    ] + select({
+        ":glibc_math_rsqrt_conflict": [
+            "-Xcompiler=-U_GNU_SOURCE",
+            "-Xcompiler=-D_POSIX_C_SOURCE=200809L",
+            "-Xcompiler=-D_XOPEN_SOURCE=700",
+        ],
+        "//conditions:default": [],
+    }),
     # includes = ["."],
     visibility = ["//visibility:private"],
     deps = [
