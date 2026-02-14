@@ -31,7 +31,7 @@ register_detected_cuda_toolchains()
 new_local_repository(
     name = "deepstream",
     build_file = "@//buildfiles:third_party/deepstream.BUILD",
-    path = "/opt/nvidia/deepstream/deepstream",
+    path = "/opt/nvidia/deepstream/deepstream-8.0",
 )
 
 new_local_repository(
@@ -97,7 +97,7 @@ git_repository(
 
 git_repository(
     name = "jetson-utils",
-    commit = "f4b85fbd89262e60deba1ab580d421f9614e8ca6",
+    commit = "c52bb29dddec6ef15052c0a8dbf714595d91f74b",
     remote = "ssh://git@github.com/cjolivier01/jetson-utils",
 )
 
@@ -133,7 +133,8 @@ new_local_repository(
 new_local_repository(
     name = "opencv_linux",
     build_file = "@//buildfiles:third_party/opencv_linux.BUILD",
-    path = "/usr/include",
+    path = "/home/colivier/miniforge3/envs/ubuntu/include",
+    # path = "/usr/include",
     # path = "/usr/local/include",
 )
 
