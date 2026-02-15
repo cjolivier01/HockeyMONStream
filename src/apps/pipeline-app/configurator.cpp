@@ -596,6 +596,22 @@ void Configurator::configure_audio(
         src1.IsDefined() && as_int(src1[kEnableFlagField]) && as_int(src1["type"]) == NV_DS_SOURCE_URI_MULTIPLE) {
       src0["uri"] = ff + file_maybe_in_game_dir(left_files[0]);
       src1["uri"] = ff + file_maybe_in_game_dir(right_files[0]);
+      if (left_files.size() > 1) {
+        std::vector<std::string> uri_list;
+        uri_list.reserve(left_files.size());
+        for (const auto& f : left_files) {
+          uri_list.emplace_back(ff + file_maybe_in_game_dir(f));
+        }
+        src0["uri-list"] = uri_list;
+      }
+      if (right_files.size() > 1) {
+        std::vector<std::string> uri_list;
+        uri_list.reserve(right_files.size());
+        for (const auto& f : right_files) {
+          uri_list.emplace_back(ff + file_maybe_in_game_dir(f));
+        }
+        src1["uri-list"] = uri_list;
+      }
       if (offsets["left"].as<double>() == 0) {
         possible_audio_uri = src0["uri"].as<std::string>();
         audio_source_id = src0["source-id"].as<int>();

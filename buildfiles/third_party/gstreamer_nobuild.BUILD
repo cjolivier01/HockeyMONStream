@@ -36,7 +36,10 @@ cc_library(
         "//conditions:default": [],
     }) + [
         "-Wl,--start-group",
-        "-l:libgstreamer-1.0.so",
+        # Avoid accidentally linking against the Bazel-built stub
+        # (`@gstreamer//:libgstreamer-1.0.so`). The stub is named `libgstreamer-1.0.so`,
+        # while the real system library is `libgstreamer-1.0.so.0`.
+        "-l:libgstreamer-1.0.so.0",
         "-l:libgstbase-1.0.so",
         "-l:libgstvideo-1.0.so",
         "-l:libgstaudio-1.0.so",
@@ -50,7 +53,6 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        "libgstreamer",
         "@glib",
     ],
 )

@@ -25,6 +25,12 @@ typedef struct {
   NvDsSourceType type;
   gboolean enable;
   gboolean loop;
+  /** When set, the source will play each URI in sequence, switching on EOS.
+   * Format: semicolon-separated URI list (e.g. "file:///a.mp4;file:///b.mp4").
+   * Prefer configuring via YAML `uri-list:` (sequence), which is normalized into this string. */
+  gchar* uri_list;
+  /** If true, wrap to the first entry after the last URI completes (no pipeline EOS). */
+  gboolean uri_list_loop;
   gboolean live_source;
   gboolean intra_decode_enable;
   gboolean low_latency_mode;
@@ -144,6 +150,12 @@ typedef struct {
   NvDsSourceConfig* config;
   NvDsSrcParentBin* parent_bin;
   gpointer recordCtx;
+  /** Optional playlist state (for file sources). */
+  gchar** uri_list;
+  guint num_uri_list;
+  guint uri_list_index;
+  guint uri_switch_count;
+  gboolean uri_switch_pending;
 } NvDsSrcBin;
 
 struct NvDsSrcParentBin {
@@ -203,4 +215,3 @@ std::optional<NvDsSourceType> source_type_from_string(const std::string& str);
 std::string to_string(const NvDsSourceType& type);
 
 } // namespace hm
-
