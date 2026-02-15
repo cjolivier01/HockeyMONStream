@@ -9,6 +9,7 @@ This repo contains a DeepStream-style C++ app (`pipeline-app`) plus custom GStre
 1. Install system deps:
    - DeepStream installed under `/opt/nvidia/deepstream/deepstream-8.0` (see `WORKSPACE.bazel`).
    - CUDA/TensorRT/OpenCV headers available.
+   - Runtime deps used by some DeepStream components (e.g. tracker): `libmosquitto1`.
    - Bazelisk (`scripts/install_bazelisk.sh` or let `./bld` prompt).
 
 2. Build:
@@ -59,4 +60,3 @@ Config root (HockeyMOM baseline):
 ## Acknowledgements
 
 This repo contains code and build patterns derived from the DeepStream-Yolo ecosystem (see `LICENSE.md`).
-

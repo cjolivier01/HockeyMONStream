@@ -25,6 +25,7 @@
 
 Notes:
 - This repo assumes CUDA/DeepStream/OpenCV and other system headers are installed; see `WORKSPACE.bazel` for local_repository paths (e.g., DeepStream under `/opt/nvidia/deepstream/deepstream-8.0`).
+- Some DeepStream components have extra runtime shared-lib deps (e.g. tracker needs `libmosquitto1`).
 - Game directories default to `$HOME/Videos/<game_id>`. Override with `HM_GAME_DIR=/path/to/games_root` (game dir becomes `${HM_GAME_DIR}/<game_id>`).
 - HockeyMOM baseline config is auto-detected from a sibling `../hm` checkout when present; override explicitly via `HM_CONFIG_ROOT=/path/to/hm/hmlib/config`.
 - Install Bazelisk once via `scripts/install_bazelisk.sh` (the `bld` script will prompt if missing).
