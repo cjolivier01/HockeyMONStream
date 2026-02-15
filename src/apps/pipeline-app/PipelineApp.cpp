@@ -124,6 +124,8 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
         g_str_has_suffix(app_ctx->app_config_file().c_str(), ".yaml")) {
       YAML::Node app_config;
       HM_ASSIGN_OR_RETURN(app_config, get_app_config(app_ctx->app_config_file().c_str()));
+      // Support both the legacy top-level `stage` key and DeepStream-style `application.stage`.
+      stage = hm::get_node_value(app_config, "application.stage", stage);
       stage = hm::get_node_value(app_config, "stage", stage);
     }
     stage_app_contexts_[stage].emplace_back(std::move(app_ctx));

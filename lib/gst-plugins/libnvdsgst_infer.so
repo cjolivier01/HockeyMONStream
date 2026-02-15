@@ -1,1 +1,1 @@
-../../bazel-bin/src/gst-plugins/gst-nvinfer/libnvdsgst_infer.so
+/opt/nvidia/deepstream/deepstream-8.0/lib/gst-plugins/libnvdsgst_infer.so
