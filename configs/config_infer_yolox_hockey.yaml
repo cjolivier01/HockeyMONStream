@@ -2,13 +2,14 @@ property:
   gpu-id: 0
   net-scale-factor: 1
   model-color-format: 1
-  onnx-file: /mnt/data/pretrained/deepstream/yolox/test_output_yolox_s_coco300_ch80.pth.onnx
-  model-engine-file: /home/colivier/src/hstream/model_b2_gpu0_fp32.engine
-  labelfile-path: /mnt/data/pretrained/deepstream/yolox/labels_coco.txt
-  batch-size: 4
+  # Relative to this config file's directory.
+  onnx-file: ../pretrained/deepstream/yolox/yolox_s.pth.onnx
+  # Avoid writing large engines into the repo; keep it in /tmp.
+  model-engine-file: /tmp/hstream_yolox_s_b2_gpu0_fp32.engine
+  labelfile-path: ../pretrained/deepstream/yolox/labels_coco.txt
+  batch-size: 2
   network-mode: 0
-  # num-detected-classes: 80
-  num-detected-classes: 1
+  num-detected-classes: 80
   interval: 0
   gie-unique-id: 1
   process-mode: 1
@@ -18,7 +19,8 @@ property:
   symmetric-padding: 0
   parse-bbox-func-name: NvDsInferParseYolo
   custom-lib-path: ../lib/libnvdsinfer_custom_impl_Yolo.so
-  engine-create-func-name: NvDsInferYoloCudaEngineGet
+  # Let DeepStream/TensorRT build+serialize the engine from the ONNX.
+  # The YOLO custom engine builder path is for Darknet-style weights and prevents engine caching here.
 
 class-attrs-all:
   # nms-iou-threshold: 0.60
