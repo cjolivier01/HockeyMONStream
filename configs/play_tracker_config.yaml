@@ -1,10 +1,17 @@
 play-tracker:
+  # Keep these defaults aligned with ../hm/hmlib/config/baseline.yaml (rink.camera.breakaway_detection)
+  min-considered-group-velocity: 3.0
+  group-ratio-threshold: 0.5
+  group-velocity-speed-ratio: 0.3
+  scale-speed-constraints: 3.0
+  nonstop-delay-count: 2
+  overshoot-scale-speed-ratio: 0.7
+
   live-boxes:
     - name: current_roi
       dynamic-acceleration-scaling: 0
     - name: current_roi_aspect
       dynamic-acceleration-scaling: 1.0
-      scale_dest_width: 1.4
-      scale_dest_height: 1.4
+      scale-dest-width: 1.45
+      scale-dest-height: 1.45
   no-wide-start: 1
-

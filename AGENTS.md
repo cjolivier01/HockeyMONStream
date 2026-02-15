@@ -11,15 +11,23 @@
 - Release build (all): `./perf` or `bazelisk build --config=opt //...`.
 - x86_64 build: `bazelisk build --config=opt --cpu=k8 //...`.
 - Jetson (aarch64) build: `bazelisk build --config=jetson //...`.
-- Canonical pipeline-app runs:
-  - Display only: `bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml --enable-sources=URI-MULTIPLE --enable-sinks=RENDER --options=pipeline.hmaudio.enable=1`
-  - Encode to file: `bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_FILE --options=pipeline.hmaudio.enable=1`
-  - Both commands support an optional time limit: append `-t N` (or `--time-limit=N`) to stop after processing `N` seconds of video.
+- Canonical runs:
+  - End-to-end wrapper (recommended): `./run.sh --game-id=<game_id> -t=5`
+    - Runs stage `-1` (stitching + rink mask configuration) with a `FAKE` sink, then stage `0` (main pipeline) with default `RENDER` sink.
+    - Supports `-t N`, `-t=N`, or `--time-limit=N`.
+    - If the default YOLOX assets are missing, it will invoke `scripts/setup_yolox_s_pretrained.sh`.
+  - Direct `pipeline-app` invocation (useful for debugging configs):
+    - Display only: `bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml --enable-sources=URI-MULTIPLE --enable-sinks=RENDER --options=pipeline.hmaudio.enable=1`
+    - Encode to file: `bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_FILE --options=pipeline.hmaudio.enable=1`
+    - Both commands support an optional time limit: append `-t N` (or `--time-limit=N`) to stop after processing `N` seconds of video.
 - Run a test binary (pattern):
   - `bazelisk run //src/libs/scoreboard:scoreboard_test`
 
 Notes:
 - This repo assumes CUDA/DeepStream/OpenCV and other system headers are installed; see `WORKSPACE.bazel` for local_repository paths (e.g., DeepStream under `/opt/nvidia/deepstream/deepstream`).
+- Some DeepStream components have extra runtime shared-lib deps (e.g. tracker needs `libmosquitto1`).
+- Game directories default to `$HOME/Videos/<game_id>`. Override with `HM_GAME_DIR=/path/to/games_root` (game dir becomes `${HM_GAME_DIR}/<game_id>`).
+- HockeyMOM baseline config is auto-detected from a sibling `../hm` checkout when present; override explicitly via `HM_CONFIG_ROOT=/path/to/hm/hmlib/config`.
 - Install Bazelisk once via `scripts/install_bazelisk.sh` (the `bld` script will prompt if missing).
 
 ## Coding Style & Naming
