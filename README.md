@@ -9,7 +9,9 @@ This repo also includes DeepStream-Yolo-derived model conversion/config docs und
 ## Quick Start
 
 1. Install system deps:
-   - DeepStream/CUDA/TensorRT/OpenCV headers available (see `WORKSPACE.bazel` for the expected DeepStream root).
+   - DeepStream installed under `/opt/nvidia/deepstream/deepstream` (see `WORKSPACE.bazel`).
+   - CUDA/TensorRT/OpenCV headers available.
+   - Some DeepStream components have extra runtime deps (e.g. tracker needs `libmosquitto1`).
    - Bazelisk (`scripts/install_bazelisk.sh` or let `./bld` prompt).
 
 2. Build:
