@@ -745,25 +745,29 @@ size_t Configurator::disable_source_types(const std::set<NvDsSourceType>& source
 }
 
 std::string Configurator::file_maybe_in_game_dir(const std::string& basename) {
-  if (std::find(basename.begin(), basename.end(), '/') != basename.end()) {
+  if (basename.empty()) {
     return basename;
   }
-  return get_game_dir(game_id_) / basename;
+  const fs::path p(basename);
+  if (p.is_absolute()) {
+    return p.string();
+  }
+  return (get_game_dir(game_id_) / p).string();
 }
 
 std::filesystem::path Configurator::get_game_dir(const std::string& game_id) {
-  std::stringstream ss;
-  const char* sprefix = ::getenv("HM_GAME_DIR");
-  if (!sprefix) {
-    const char* homedir = ::getenv("HOME");
-    if (homedir) {
-      ss << homedir << '/' << "Videos/";
-    } else {
-      ss << "/games/";
-    }
+  if (game_id.empty()) {
+    return {};
   }
-  ss << game_id << '/';
-  return ss.str();
+  const char* sprefix = ::getenv("HM_GAME_DIR");
+  if (sprefix && *sprefix) {
+    return fs::path(sprefix) / game_id;
+  }
+  const char* homedir = ::getenv("HOME");
+  if (homedir && *homedir) {
+    return fs::path(homedir) / "Videos" / game_id;
+  }
+  return fs::path("/games") / game_id;
 }
 
 std::filesystem::path Configurator::get_private_config_file_name(const std::string& game_id) {
