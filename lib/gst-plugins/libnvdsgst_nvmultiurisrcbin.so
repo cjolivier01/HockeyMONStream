@@ -1,1 +1,1 @@
-../../external/deepstream/lib/gst-plugins/libnvdsgst_nvmultiurisrcbin.so
+/opt/nvidia/deepstream/deepstream-8.0/lib/gst-plugins/libnvdsgst_nvmultiurisrcbin.so
