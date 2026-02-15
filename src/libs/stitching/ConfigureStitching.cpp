@@ -210,7 +210,10 @@ const char* level0 = "left.png,right.png";
 const char* level1 = "hm_project.pto";
 const char* level2 = "autooptimiser_out.pto";
 const char* level3 =
-    "mapping_0000.tif,mapping_0000_x.tif,mapping_0000_y.tif,mapping_0001.tif,mapping_0001_x.tif,mapping_0001_y.tif,panorama.tif,seam_file.png";
+    // Runtime stitcher uses the per-camera mapping files; the panorama/seam preview artifacts are optional and may not
+    // be generated in some environments (e.g. missing enblend deps). Keep the dependency check focused on required
+    // runtime outputs so we can still run end-to-end.
+    "mapping_0000.tif,mapping_0000_x.tif,mapping_0000_y.tif,mapping_0001.tif,mapping_0001_x.tif,mapping_0001_y.tif";
 const char* level4 = "s.png";
 const char* level5 = "rink_mask_0.png";
 
@@ -331,21 +334,70 @@ std::optional<std::string> resolve_executable(const std::string& executable) {
 }
 
 std::map<std::string, std::string> python_env(const std::string& add_dir, std::map<std::string, std::string> prev) {
-  std::string pythonpath = prev["PYTHONPATH"];
-  const char* p = getenv("PYTHONPATH");
-  if (p && *p) {
-    if (!pythonpath.empty()) {
-      pythonpath += ':';
+  if (!add_dir.empty()) {
+    std::string pythonpath;
+    auto it = prev.find("PYTHONPATH");
+    if (it != prev.end()) {
+      pythonpath = it->second;
     }
-    pythonpath += p;
+    if (pythonpath.empty()) {
+      pythonpath = add_dir;
+    } else {
+      pythonpath = add_dir + ':' + pythonpath;
+    }
+    prev["PYTHONPATH"] = pythonpath;
   }
-  if (pythonpath.empty()) {
-    pythonpath = add_dir;
-  } else {
-    pythonpath = add_dir + ':' + pythonpath;
+
+  // Match hm_run.sh behavior: ensure conda libs are visible to python tools.
+  const char* conda_prefix = ::getenv("CONDA_PREFIX");
+  if (conda_prefix && *conda_prefix) {
+    const std::string conda_lib = (fs::path(conda_prefix) / "lib").string();
+    std::string ld = prev["LD_LIBRARY_PATH"];
+    if (!conda_lib.empty() && ld.find(conda_lib) == std::string::npos) {
+      ld = conda_lib + (ld.empty() ? "" : ":") + ld;
+      prev["LD_LIBRARY_PATH"] = ld;
+    }
   }
-  prev["PYTHONPATH"] = pythonpath;
   return prev;
+}
+
+bool is_hmlib_repo_root(const fs::path& p) {
+  std::error_code ec;
+  return fs::is_directory(p / "hmlib", ec);
+}
+
+std::optional<fs::path> find_hmlib_repo_root() {
+  if (const char* s = ::getenv("HMLIB_ROOT"); s && *s && is_hmlib_repo_root(s)) {
+    return fs::path(s);
+  }
+  if (const char* s = ::getenv("HM_ROOT"); s && *s && is_hmlib_repo_root(s)) {
+    return fs::path(s);
+  }
+
+  const fs::path cwd = fs::current_path();
+  const std::vector<fs::path> candidates = {
+      cwd / ".." / "hm",
+      cwd / "bazel-hstream" / "external" / "hm",
+      cwd / "external" / "hm",
+  };
+  for (const auto& cand : candidates) {
+    if (is_hmlib_repo_root(cand)) {
+      return cand;
+    }
+  }
+  return std::nullopt;
+}
+
+std::map<std::string, std::string> hmlib_python_env(std::map<std::string, std::string> prev) {
+  const auto hm_root = find_hmlib_repo_root();
+  if (!hm_root.has_value()) {
+    return python_env("", std::move(prev));
+  }
+  std::string pythonpath_prefix = hm_root->string();
+  if (fs::is_directory(*hm_root / "src")) {
+    pythonpath_prefix += ':' + (fs::path(*hm_root) / "src").string();
+  }
+  return python_env(pythonpath_prefix, std::move(prev));
 }
 
 } // namespace
@@ -433,11 +485,6 @@ absl::Status create_control_points(
     const std::string& game_dir,
     surface::Surface left_surface,
     surface::Surface right_surface) {
-  auto exe_name_result = find_and_validate_executable("hmcreate_control_points");
-  if (!exe_name_result.ok()) {
-    return exe_name_result.status();
-  }
-
   fs::path left_file = fs::path(game_dir) / "left.png";
   fs::path right_file = fs::path(game_dir) / "right.png";
   HM_RETURN_IF_ERROR(save_image(left_surface, left_file));
@@ -445,28 +492,57 @@ absl::Status create_control_points(
 
   size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", 500UL);
 
-  std::vector<std::string> cmd{
-      exe_name_result.value(),
-      "--left",
-      left_file,
-      "--right",
-      right_file,
-      TO_STRING("--max-control-points=" << max_control_points),
+  std::vector<std::string> cmd;
+  std::string working_dir;
+  auto env = get_environment();
+
+  const auto hmcreate_control_points = resolve_executable("hmcreate_control_points");
+  if (hmcreate_control_points.has_value()) {
+    cmd = {
+        *hmcreate_control_points,
+        "--left",
+        left_file,
+        "--right",
+        right_file,
+        TO_STRING("--max-control-points=" << max_control_points),
 #ifdef __aarch64__
-      "--scale=0.6",
+        "--scale=0.6",
 #endif
-  };
-  int exitcode =
-      run_command(cmd, "", get_environment(), [](const std::string& stderr, const std::string& stdout) -> void {
-        if (!stderr.empty()) {
-          std::cerr << stderr << std::endl;
-        }
-        if (!stdout.empty()) {
-          std::cerr << stdout << std::endl;
-        }
-      });
+    };
+  } else {
+    const auto python_exec = find_executable_maybe_conda("python3");
+    if (!python_exec.has_value()) {
+      return absl::NotFoundError("Could not find python3 for hmcreate_control_points fallback");
+    }
+    cmd = {
+        python_exec->string(),
+        "-m",
+        "hmlib.cli.create_control_points",
+        "--left",
+        left_file,
+        "--right",
+        right_file,
+        TO_STRING("--max-control-points=" << max_control_points),
+#ifdef __aarch64__
+        "--scale=0.6",
+#endif
+    };
+    env = hmlib_python_env(std::move(env));
+    if (auto hm_root = find_hmlib_repo_root(); hm_root.has_value()) {
+      working_dir = hm_root->string();
+    }
+  }
+
+  int exitcode = run_command(cmd, working_dir, env, [](const std::string& stderr, const std::string& stdout) -> void {
+    if (!stderr.empty()) {
+      std::cerr << stderr << std::endl;
+    }
+    if (!stdout.empty()) {
+      std::cerr << stdout << std::endl;
+    }
+  });
   if (exitcode) {
-    return absl::InternalError(TO_STRING("Failed to create control points: " << strerror(errno)));
+    return absl::InternalError(TO_STRING("Failed to create control points: " << to_command_line(cmd)));
   }
 
   return absl::OkStatus();
@@ -477,28 +553,50 @@ bool is_field_mask_configured(const std::string& game_dir) {
 }
 
 absl::Status create_field_mask(const std::string& game_dir, surface::Surface surface) {
-  auto exe_name_result = find_and_validate_executable("hmfind_ice_rink");
-  if (!exe_name_result.ok()) {
-    return exe_name_result.status();
-  }
-
   fs::path stitched_file = fs::path(game_dir) / "s.png";
   HM_RETURN_IF_ERROR(save_image(surface, stitched_file));
   std::string game_id = get_game_id(stitched_file);
 
-  std::vector<std::string> cmd{
-      fs::path(exe_name_result.value()),
-      "--game-id",
-      game_id,
-#ifdef __aarch64__
-      "--device=cuda",
-#else
-      "--device=cpu",
-#endif
-  };
+  std::vector<std::string> cmd;
+  std::string working_dir;
+  auto env = hmlib_python_env(get_environment());
 
-  int exitcode = run_command(
-      cmd, "", python_env(".", get_environment()), [](const std::string& stderr, const std::string& stdout) -> void {
+  const auto hmfind_ice_rink = resolve_executable("hmfind_ice_rink");
+  if (hmfind_ice_rink.has_value()) {
+    cmd = {
+        *hmfind_ice_rink,
+        "--game-id",
+        game_id,
+#ifdef __aarch64__
+        "--device=cuda",
+#else
+        "--device=cpu",
+#endif
+    };
+  } else {
+    const auto python_exec = find_executable_maybe_conda("python3");
+    if (!python_exec.has_value()) {
+      return absl::NotFoundError("Could not find python3 for hmfind_ice_rink fallback");
+    }
+    cmd = {
+        python_exec->string(),
+        "-m",
+        "hmlib.cli.find_ice_rink",
+        "--game-id",
+        game_id,
+#ifdef __aarch64__
+        "--device=cuda",
+#else
+        "--device=cpu",
+#endif
+    };
+    if (auto hm_root = find_hmlib_repo_root(); hm_root.has_value()) {
+      working_dir = hm_root->string();
+    }
+  }
+
+  int exitcode =
+      run_command(cmd, working_dir, env, [](const std::string& stderr, const std::string& stdout) -> void {
         if (!stderr.empty()) {
           std::cerr << stderr << std::endl;
         }
@@ -514,20 +612,37 @@ absl::Status create_field_mask(const std::string& game_dir, surface::Surface sur
 }
 
 absl::Status configure_orientation(const std::string& game_dir) {
-  auto exe_name_result = find_and_validate_executable("hmorientation");
-  if (!exe_name_result.ok()) {
-    return exe_name_result.status();
-  }
   std::string game_id = get_game_id(game_dir);
 
+  std::vector<std::string> cmd;
+  std::string working_dir;
+  auto env = hmlib_python_env(get_environment());
+
   std::optional<fs::path> exec = find_executable_maybe_conda("hmorientation");
-  std::vector<std::string> cmd{
-      fs::path(exec.has_value() ? *exec : "hmorientation"),
-      "--game-id",
-      game_id,
-  };
-  auto env = python_env(".", get_environment());
-  int exitcode = run_command(cmd, "", env, [](const std::string& stderr, const std::string& stdout) -> void {
+  if (exec.has_value()) {
+    cmd = {
+        exec->string(),
+        "--game-id",
+        game_id,
+    };
+  } else {
+    const auto python_exec = find_executable_maybe_conda("python3");
+    if (!python_exec.has_value()) {
+      return absl::NotFoundError("Could not find python3 for hmorientation fallback");
+    }
+    cmd = {
+        python_exec->string(),
+        "-m",
+        "hmlib.orientation",
+        "--game-id",
+        game_id,
+    };
+    if (auto hm_root = find_hmlib_repo_root(); hm_root.has_value()) {
+      working_dir = hm_root->string();
+    }
+  }
+
+  int exitcode = run_command(cmd, working_dir, env, [](const std::string& stderr, const std::string& stdout) -> void {
     if (!stderr.empty()) {
       std::cerr << stderr << std::endl;
     }
