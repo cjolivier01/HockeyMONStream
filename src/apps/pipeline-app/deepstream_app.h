@@ -44,6 +44,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <cstdlib>
 
 // #ifdef __cplusplus
 // extern "C" {
@@ -243,8 +244,30 @@ class HmApp : public _AppCtx {
   }
 
   absl::Status load_config() {
-    std::string config_root = std::filesystem::current_path() / "external" / "hm" / "config";
-    configurator_ = std::make_unique<hm::Configurator>(game_id_, config_root, override_gpu_id_);
+    std::filesystem::path config_root;
+    if (const char* s = ::getenv("HM_CONFIG_ROOT"); s && *s) {
+      config_root = s;
+    }
+    // Auto-detect HockeyMOM config roots when not explicitly set.
+    // Prefer a sibling ../hm checkout, then Bazel's external repo, then an optional submodule.
+    if (config_root.empty() || !std::filesystem::exists(config_root / "baseline.yaml")) {
+      const std::filesystem::path cwd = std::filesystem::current_path();
+      const std::filesystem::path sibling_hm = cwd / ".." / "hm" / "hmlib" / "config";
+      const std::filesystem::path bazel_hm = cwd / "bazel-hstream" / "external" / "hm" / "hmlib" / "config";
+      const std::filesystem::path submodule_hm = cwd / "external" / "hm" / "hmlib" / "config";
+
+      if (std::filesystem::exists(sibling_hm / "baseline.yaml")) {
+        config_root = sibling_hm;
+      } else if (std::filesystem::exists(bazel_hm / "baseline.yaml")) {
+        config_root = bazel_hm;
+      } else if (std::filesystem::exists(submodule_hm / "baseline.yaml")) {
+        config_root = submodule_hm;
+      } else {
+        config_root.clear();
+      }
+    }
+
+    configurator_ = std::make_unique<hm::Configurator>(game_id_, config_root.string(), override_gpu_id_);
     return configurator_->configure();
   }
 
