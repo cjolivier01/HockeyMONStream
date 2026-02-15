@@ -14,6 +14,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <iostream>
+#include <string>
+#include <vector>
 
 #include <cuda_runtime_api.h>
 #include <gst/rtp/gstrtcpbuffer.h>
@@ -617,6 +619,102 @@ static gboolean seek_decode(gpointer data) {
   return FALSE;
 }
 
+static std::vector<std::string> split_semicolon_list(const gchar* input) {
+  std::vector<std::string> out;
+  if (!input || !*input) {
+    return out;
+  }
+  std::string s(input);
+  size_t start = 0;
+  while (true) {
+    size_t pos = s.find(';', start);
+    std::string token = (pos == std::string::npos) ? s.substr(start) : s.substr(start, pos - start);
+    // Trim spaces.
+    while (!token.empty() && (token.front() == ' ' || token.front() == '\t')) token.erase(token.begin());
+    while (!token.empty() && (token.back() == ' ' || token.back() == '\t')) token.pop_back();
+    if (!token.empty()) {
+      out.emplace_back(std::move(token));
+    }
+    if (pos == std::string::npos) {
+      break;
+    }
+    start = pos + 1;
+  }
+  return out;
+}
+
+static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
+  if (!bin || !config || !config->uri_list || !*config->uri_list) {
+    return;
+  }
+  std::vector<std::string> uris = split_semicolon_list(config->uri_list);
+  if (uris.size() < 2) {
+    return;
+  }
+  bin->num_uri_list = static_cast<guint>(uris.size());
+  bin->uri_list = (gchar**)g_malloc0(sizeof(gchar*) * bin->num_uri_list);
+  for (guint i = 0; i < bin->num_uri_list; ++i) {
+    bin->uri_list[i] = g_strdup(uris[i].c_str());
+  }
+  bin->uri_list_index = 0;
+  bin->uri_switch_count = 0;
+  bin->uri_switch_pending = FALSE;
+
+  // Keep config->uri in sync with the current entry to match file/live detection elsewhere.
+  config->uri = g_strdup(bin->uri_list[0]);
+}
+
+static gboolean switch_to_next_uri(gpointer data) {
+  NvDsSrcBin* bin = (NvDsSrcBin*)data;
+  if (!bin || !bin->config || !bin->src_elem || !bin->bin || !bin->uri_list || bin->num_uri_list < 2) {
+    return FALSE;
+  }
+  NvDsSourceConfig* config = bin->config;
+
+  guint next_index = bin->uri_list_index + 1;
+  if (next_index >= bin->num_uri_list) {
+    if (config->uri_list_loop) {
+      next_index = 0;
+    } else {
+      // No next URI to switch to.
+      bin->uri_switch_pending = FALSE;
+      return FALSE;
+    }
+  }
+
+  // Flush downstream to clear any queued data before restarting the source bin.
+  GstElement* send_event_element = (bin->dewarper_bin.bin != NULL) ? bin->dewarper_bin.bin : bin->cap_filter1;
+  if (send_event_element) {
+    gst_element_send_event(GST_ELEMENT(send_event_element), gst_event_new_flush_start());
+    gst_element_send_event(GST_ELEMENT(send_event_element), gst_event_new_flush_stop(TRUE));
+  }
+
+  if (gst_element_set_state(bin->bin, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE) {
+    GST_ERROR_OBJECT(bin->bin, "Can't set source bin to NULL for uri switch");
+    bin->uri_switch_pending = FALSE;
+    return FALSE;
+  }
+
+  // decodebin will destroy and recreate decoder elements when the URI changes. Reset the probe id so
+  // decodebin_child_added() can install a fresh probe on the new decoder.
+  bin->src_buffer_probe = 0;
+
+  bin->uri_list_index = next_index;
+  ++bin->uri_switch_count;
+
+  // Update config->uri and uridecodebin "uri" property.
+  config->uri = g_strdup(bin->uri_list[bin->uri_list_index]);
+  g_object_set(G_OBJECT(bin->src_elem), "uri", config->uri, NULL);
+
+  // Restart this source bin without tearing down the full pipeline.
+  if (!gst_element_sync_state_with_parent(bin->bin)) {
+    GST_ERROR_OBJECT(bin->bin, "Couldn't sync state with parent after uri switch");
+  }
+
+  bin->uri_switch_pending = FALSE;
+  return FALSE;
+}
+
 /**
  * Probe function to drop certain events to support custom
  * logic of looping of each source stream.
@@ -656,6 +754,72 @@ static GstPadProbeReturn restart_stream_buf_prob(GstPad* pad, GstPadProbeInfo* i
         break;
     }
   }
+  return GST_PAD_PROBE_OK;
+}
+
+/**
+ * Probe function to implement URI playlist switching for file sources.
+ *
+ * Installed on the decoder sink pad so we can:
+ * - drop QOS events coming from downstream sinks (prevents frame drops after timestamp discontinuities)
+ * - drop EOS/SEGMENT/FLUSH events while we reconfigure to the next URI
+ * - keep timestamps monotonic by applying an accumulated base offset.
+ */
+static GstPadProbeReturn uri_list_stream_buf_prob(GstPad* pad, GstPadProbeInfo* info, gpointer u_data) {
+  GstEvent* event = GST_EVENT(info->data);
+  NvDsSrcBin* bin = (NvDsSrcBin*)u_data;
+  if (!bin) {
+    return GST_PAD_PROBE_OK;
+  }
+
+  if ((info->type & GST_PAD_PROBE_TYPE_BUFFER)) {
+    GST_BUFFER_PTS(GST_BUFFER(info->data)) += bin->prev_accumulated_base;
+  }
+
+  if ((info->type & GST_PAD_PROBE_TYPE_EVENT_BOTH)) {
+    if (GST_EVENT_TYPE(event) == GST_EVENT_EOS) {
+      const bool has_next =
+          (bin->uri_list && bin->num_uri_list >= 2 && (bin->uri_list_index + 1 < bin->num_uri_list));
+      const bool will_loop = (bin->config && bin->config->uri_list_loop);
+      if (has_next || will_loop) {
+        if (!bin->uri_switch_pending) {
+          bin->uri_switch_pending = TRUE;
+          g_timeout_add(1, switch_to_next_uri, bin);
+        }
+        return GST_PAD_PROBE_DROP;
+      }
+      // End of playlist: allow EOS to propagate so the overall pipeline can terminate.
+      return GST_PAD_PROBE_OK;
+    }
+
+    if (GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
+      GstSegment* segment = NULL;
+      gst_event_parse_segment(event, (const GstSegment**)&segment);
+      if (segment) {
+        bin->prev_accumulated_base = bin->accumulated_base;
+        // Accumulate the segment length so we can keep timestamps monotonic across files.
+        // Prefer `stop` (end position) and fall back to `duration` if needed.
+        guint64 seg_len = segment->stop;
+        if (seg_len == GST_CLOCK_TIME_NONE) {
+          seg_len = segment->duration;
+        }
+        if (seg_len != GST_CLOCK_TIME_NONE) {
+          bin->accumulated_base += seg_len;
+        }
+      }
+    }
+
+    switch (GST_EVENT_TYPE(event)) {
+      case GST_EVENT_EOS:
+      case GST_EVENT_QOS:
+      case GST_EVENT_FLUSH_START:
+      case GST_EVENT_FLUSH_STOP:
+        return GST_PAD_PROBE_DROP;
+      default:
+        break;
+    }
+  }
+
   return GST_PAD_PROBE_OK;
 }
 
@@ -723,6 +887,23 @@ static void decodebin_child_added(GstChildProxy* child_proxy, GObject* object, g
           GST_ELEMENT(object),
           "sink",
           restart_stream_buf_prob,
+          (GstPadProbeType)(GST_PAD_PROBE_TYPE_EVENT_BOTH | GST_PAD_PROBE_TYPE_EVENT_FLUSH | GST_PAD_PROBE_TYPE_BUFFER),
+          bin);
+    }
+  }
+
+  // Playlist switching: install on any video decoder (not just nvv4l2decoder).
+  if (!config->loop && bin->uri_list && bin->num_uri_list >= 2 && config->uri &&
+      g_strstr_len(config->uri, -1, "file:/") == config->uri && !bin->src_buffer_probe) {
+    GstElementFactory* factory = GST_ELEMENT_GET_CLASS(GST_ELEMENT(object))->elementfactory;
+    const gchar* klass = factory ? gst_element_factory_get_klass(factory) : nullptr;
+    const bool is_video_decoder = (klass && g_strrstr(klass, "Decoder") && g_strrstr(klass, "Video"));
+    if (is_video_decoder) {
+      NVGSTDS_ELEM_ADD_PROBE(
+          bin->src_buffer_probe,
+          GST_ELEMENT(object),
+          "sink",
+          uri_list_stream_buf_prob,
           (GstPadProbeType)(GST_PAD_PROBE_TYPE_EVENT_BOTH | GST_PAD_PROBE_TYPE_EVENT_FLUSH | GST_PAD_PROBE_TYPE_BUFFER),
           bin);
     }
@@ -1521,6 +1702,9 @@ static gboolean create_uridecode_src_bin(NvDsSourceConfig* config, NvDsSrcBin* b
   }
   bin->latency = config->latency;
   bin->udp_buffer_size = config->udp_buffer_size;
+
+  // Initialize optional playlist support before setting properties on uridecodebin.
+  init_uri_playlist(bin, config);
 
   if (g_strrstr(config->uri, "file:/")) {
     config->live_source = FALSE;

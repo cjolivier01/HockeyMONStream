@@ -90,3 +90,11 @@ cc_library(
         "@local_cuda//:cuda_runtime",
     ],
 )
+
+cc_binary(
+    name = "uri_playlist_switch_test",
+    srcs = ["UriPlaylistSwitchTest.cpp"],
+    deps = [
+        ":deepstream_apps_common",
+    ],
+)

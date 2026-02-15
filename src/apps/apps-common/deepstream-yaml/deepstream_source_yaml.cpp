@@ -4,6 +4,7 @@
 
 #include <unistd.h>
 #include <yaml-cpp/node/parse.h>
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
@@ -59,10 +60,13 @@ gboolean parse_source_yaml(NvDsSourceConfig* config, const YAML::Node& yaml_node
 
   // Create a configuration locator.
   hm::utils::ConfigLocator locator;
+  // Parsed manually below because YAML may provide a sequence, not a scalar string.
+  locator.ignored.emplace("uri_list");
 
   // Set numeric fields.
   SET_LOCATOR_ENUM(locator, *config, type, NvDsSourceType); // "type"
   SET_LOCATOR(locator, *config, enable); // "enable"
+  SET_LOCATOR(locator, *config, uri_list_loop); // "uri-list-loop"
   SET_LOCATOR(locator, *config, camera_width); // "camera-width" (dash replaced to underscore)
   SET_LOCATOR(locator, *config, camera_height); // "camera-height"
   SET_LOCATOR(locator, *config, camera_fps_n); // "camera-fps-n"
@@ -125,6 +129,51 @@ gboolean parse_source_yaml(NvDsSourceConfig* config, const YAML::Node& yaml_node
     get_absolute_file_path_yaml(config_dir.c_str(), filePart, absolutePath);
     // Update the URI using the new absolute path.
     config->uri = g_strdup_printf("file://%s", absolutePath);
+  }
+
+  // Optional playlist support (`uri-list` in YAML), normalized into a semicolon-separated string.
+  if (yaml_node["uri-list"] || yaml_node["uri_list"]) {
+    YAML::Node uri_list_node = yaml_node["uri-list"] ? yaml_node["uri-list"] : yaml_node["uri_list"];
+    std::vector<std::string> uris;
+    if (uri_list_node.IsSequence()) {
+      for (const auto& item : uri_list_node) {
+        uris.emplace_back(item.as<std::string>());
+      }
+    } else {
+      // Allow a scalar string for convenience (semicolon-separated).
+      uris = split_string(uri_list_node.as<std::string>());
+    }
+
+    // Normalize file:// URIs to absolute paths like the single `uri` field.
+    for (std::string& uri : uris) {
+      if (uri.rfind("file://", 0) == 0) {
+        const std::string filePart = uri.substr(7);
+        if (!filePart.empty() && filePart[0] != '/') {
+          char absolutePath[1024] = {0};
+          get_absolute_file_path_yaml(config_dir.c_str(), filePart.c_str(), absolutePath);
+          uri = std::string("file://") + absolutePath;
+        }
+      }
+    }
+
+    // Drop empty entries.
+    uris.erase(std::remove_if(uris.begin(), uris.end(), [](const std::string& s) { return s.empty(); }), uris.end());
+
+    if (!uris.empty()) {
+      std::string joined;
+      for (size_t i = 0; i < uris.size(); ++i) {
+        if (i) {
+          joined.push_back(';');
+        }
+        joined.append(uris[i]);
+      }
+      config->uri_list = strdup(joined.c_str());
+
+      // Ensure `uri` is set to the first entry so downstream logic (e.g. file/live detection) is consistent.
+      if (!config->uri || !*config->uri) {
+        config->uri = strdup(uris[0].c_str());
+      }
+    }
   }
 
   // Validate directory path for smart recording.
