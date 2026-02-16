@@ -7,6 +7,60 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Runtime environment:
+# - Our GStreamer plugins are loaded by gst-plugin-scanner (not via Bazel runfiles), so we must
+#   expose any non-system shared library deps (e.g. conda OpenCV5) via LD_LIBRARY_PATH.
+# - DeepStream plugins can depend on other plugins' shared objects, so include the gst-plugins dir too.
+prepend_path() {
+  local var_name="$1"
+  local dir="$2"
+  local cur="${!var_name-}"
+  if [ -z "${dir}" ] || [ ! -d "${dir}" ]; then
+    return
+  fi
+  if [ -z "${cur}" ]; then
+    export "${var_name}=${dir}"
+    return
+  fi
+  case ":${cur}:" in
+    *":${dir}:"*) ;;
+    *) export "${var_name}=${dir}:${cur}" ;;
+  esac
+}
+
+append_path() {
+  local var_name="$1"
+  local dir="$2"
+  local cur="${!var_name-}"
+  if [ -z "${dir}" ] || [ ! -d "${dir}" ]; then
+    return
+  fi
+  if [ -z "${cur}" ]; then
+    export "${var_name}=${dir}"
+    return
+  fi
+  case ":${cur}:" in
+    *":${dir}:"*) ;;
+    *) export "${var_name}=${cur}:${dir}" ;;
+  esac
+}
+
+# Use a repo-local registry so stale blacklists in ~/.cache don't break local plugins.
+GST_REGISTRY_DIR="${SCRIPT_DIR}/.cache/gstreamer-1.0"
+mkdir -p "${GST_REGISTRY_DIR}"
+export GST_REGISTRY="${GST_REGISTRY_DIR}/registry.hstream.$(uname -m).bin"
+
+prepend_path GST_PLUGIN_PATH "${SCRIPT_DIR}/lib/gst-plugins"
+prepend_path GST_PLUGIN_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
+
+prepend_path LD_LIBRARY_PATH "${SCRIPT_DIR}/lib"
+prepend_path LD_LIBRARY_PATH "${SCRIPT_DIR}/lib/gst-plugins"
+prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib"
+prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
+if [ -n "${CONDA_PREFIX:-}" ]; then
+  append_path LD_LIBRARY_PATH "${CONDA_PREFIX}/lib"
+fi
+
 # Default model assets are not committed; set them up on-demand for the default configs.
 DEFAULT_WEIGHTS="${SCRIPT_DIR}/pretrained/deepstream/yolox/yolox_s.pth"
 DEFAULT_LABELS="${SCRIPT_DIR}/pretrained/deepstream/yolox/labels_coco.txt"
