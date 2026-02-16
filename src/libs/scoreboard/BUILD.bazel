@@ -7,9 +7,6 @@ cc_library(
     srcs = ["Scoreboard.cpp"],
     hdrs = ["Scoreboard.h"],
     include_prefix = INCLUDE_PREFIX,
-    # Ubuntu's system OpenCV packages often omit the CUDA modules/headers (e.g. `opencv2/cudawarping.hpp`).
-    # Use our CUDA warp implementation from jetson-utils by default so `//...` builds out of the box.
-    defines = ["USE_PRIVATE_WARP"],
     visibility = ["//visibility:public"],
     deps = [
         "//src/libs/common:utils",

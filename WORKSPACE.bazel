@@ -132,11 +132,10 @@ new_local_repository(
     path = "/usr",
 )
 
-new_local_repository(
+load("//bazel:opencv_configure.bzl", "opencv_configure")
+
+opencv_configure(
     name = "opencv_linux",
-    build_file = "@//buildfiles:third_party/opencv_linux.BUILD",
-    path = "/usr/include",
-    # path = "/usr/local/include",
 )
 
 new_local_repository(
