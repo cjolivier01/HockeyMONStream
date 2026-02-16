@@ -1,6 +1,35 @@
 def _path_exists(ctx, p):
     return ctx.path(p).exists
 
+def _looks_like_soname_suffix(s):
+    # Starlark strings aren't iterable in Bazel, so keep this simple.
+    # We want to prefer the ABI symlink (e.g. `.so.500`) over the full version file (e.g. `.so.5.0.0`).
+    return bool(s) and s.find(".") == -1
+
+def _basename(p):
+    s = str(p)
+    i = s.rfind("/")
+    return s[i + 1:] if i != -1 else s
+
+def _detect_opencv_soname_suffix(ctx, root):
+    lib_dir = root + "/lib"
+    if not _path_exists(ctx, lib_dir):
+        return None
+
+    # Conda packages typically provide:
+    # - libopencv_core.so      -> libopencv_core.so.<ABI>
+    # - libopencv_core.so.<ABI> -> libopencv_core.so.<MAJOR>.<MINOR>.<PATCH>
+    #
+    # We want the `<ABI>` file name because the binary's DT_NEEDED entry uses it.
+    prefix = "libopencv_core.so."
+    for entry in ctx.path(lib_dir).readdir():
+        name = _basename(entry)
+        if name.startswith(prefix):
+            suffix = name[len(prefix):]
+            if _looks_like_soname_suffix(suffix):
+                return suffix
+    return None
+
 def _detect_opencv(ctx, root):
     # Prefer newer OpenCV first, if present.
     for version in ["opencv5", "opencv4"]:
@@ -21,7 +50,12 @@ def _detect_opencv(ctx, root):
             }
     return None
 
-def _build_file_content(opencv_version, use_conda, has_cudawarping, conda_lib_dir = None):
+def _build_file_content(
+        opencv_version,
+        use_conda,
+        has_cudawarping,
+        conda_lib_dir = None,
+        conda_soname_suffix = None):
     libs = [
         "libopencv_core.so",
         "libopencv_highgui.so",
@@ -33,19 +67,50 @@ def _build_file_content(opencv_version, use_conda, has_cudawarping, conda_lib_di
     if has_cudawarping:
         libs.append("libopencv_cudawarping.so")
 
-    linkopts = []
-
-    # Conda OpenCV must be selected explicitly, otherwise the linker can pick up system OpenCV
-    # (e.g. from /usr/lib/x86_64-linux-gnu) and cause ABI mismatches (OpenCV4 vs OpenCV5).
     if use_conda:
-        if not conda_lib_dir:
-            fail("conda_lib_dir is required when use_conda=True")
-        linkopts = [conda_lib_dir + "/" + lib for lib in libs]
-    else:
-        linkopts = ["-l:" + lib for lib in libs]
+        # For conda OpenCV, use cc_import so Bazel sets up rpaths/runfiles correctly.
+        # This avoids binaries failing at runtime with `libopencv_*.so.* => not found`.
+        imports = []
+        deps = []
+        for lib in libs:
+            # e.g. libopencv_imgproc.so -> opencv_imgproc
+            rule_name = lib
+            if rule_name.startswith("lib"):
+                rule_name = rule_name[len("lib"):]
+            if rule_name.endswith(".so"):
+                rule_name = rule_name[:-len(".so")]
 
-    # Note: the repo rule symlinks the OpenCV headers to `<opencv_version>/...`,
-    # so includes just needs to add that directory.
+            lib_file = lib
+            if conda_soname_suffix:
+                lib_file = lib + "." + conda_soname_suffix
+            imports.append("""\
+cc_import(
+    name = "{name}",
+    shared_library = "lib/{lib_file}",
+    visibility = ["//visibility:private"],
+)
+""".format(name = rule_name, lib_file = lib_file))
+            deps.append(":" + rule_name)
+
+        return """\
+{imports}
+cc_library(
+    name = "opencv",
+    hdrs = glob([
+        "{v}/opencv2/*.h*",
+        "{v}/opencv2/**/*.h*",
+    ]),
+    includes = [
+        "{v}",
+    ],
+    deps = {deps},
+    visibility = ["//visibility:public"],
+)
+""".format(imports = "\n".join(imports), v = opencv_version, deps = repr(deps))
+
+    linkopts = ["-l:" + lib for lib in libs]
+
+    # System OpenCV: rely on the system linker search path.
     return """\
 cc_library(
     name = "opencv",
@@ -105,6 +170,7 @@ def _opencv_configure_impl(ctx):
             use_conda,
             has_cudawarping,
             conda_lib_dir = (chosen["root"] + "/lib") if use_conda else None,
+            conda_soname_suffix = _detect_opencv_soname_suffix(ctx, chosen["root"]) if use_conda else None,
         ),
     )
 
