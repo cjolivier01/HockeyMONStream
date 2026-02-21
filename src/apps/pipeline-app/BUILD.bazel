@@ -1,7 +1,10 @@
 
 cc_binary(
   name="pipeline-app",
-  srcs=glob(["*.cpp", "*.h"]),
+  srcs=glob(
+    ["*.cpp", "*.h"],
+    exclude=["*Test.cpp"],
+  ),
   deps=[
     # "//src/libs/common:mod_pipeline",
     "//src/libs/common:utils",
@@ -19,6 +22,27 @@ cc_binary(
     "@com_google_absl//absl/strings",
     "@com_google_absl//absl/status:statusor",
     "@com_google_absl//absl/cleanup:cleanup",
+  ],
+  copts=[
+    "-x", "c++",
+    "-std=c++17",
+  ],
+  linkopts=[
+    "-lX11",
+    "-ldl",
+    "-lm",
+  ],
+)
+
+cc_binary(
+  name="stitcher_sizing_config_test",
+  srcs=[
+    "StitcherOnePassConfig.h",
+    "StitcherSizingConfigTest.cpp",
+  ],
+  deps=[
+    "//src/libs/common:utils",
+    "@yaml-cpp",
   ],
   copts=[
     "-x", "c++",

@@ -17,3 +17,30 @@ cc_library(
         "@hm-cupano//src/pano:cuda_pano",
     ],
 )
+
+cc_binary(
+    name = "one_pass_stitcher_test",
+    srcs = [
+        "OnePassStitcherTest.cpp",
+    ],
+    deps = [
+        ":stitcher",
+        "//src/gst-plugins/gst-videoprep/algorithm-base",
+        "//src/libs/common:utils",
+        "//src/libs/stitching",
+        "@deepstream//:deepstream_lib",
+        "@hm-cupano//src/cuda:cuda_blend_cuda_lib",
+        "@hm-cupano//src/pano:cuda_pano",
+        "@local_cuda//:cuda_runtime",
+        "@gstreamer",
+    ],
+    copts = [
+        "-x", "c++",
+        "-std=c++17",
+    ],
+    linkopts = [
+        "-ldl",
+        "-lm",
+        "-lnvdsbufferpool",
+    ],
+)

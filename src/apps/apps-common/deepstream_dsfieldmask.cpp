@@ -71,6 +71,16 @@ find_enabled_sink_sub_bins(const NvDsSinkSubBinConfig* sink_config, NvDsSinkBin*
   return results;
 }
 
+void set_unique_id_if_supported(GstElement* elem, guint unique_id, guint gpu_id) {
+  if (!elem) return;
+  GParamSpec* pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(elem), "unique-id");
+  if (pspec) {
+    g_object_set(G_OBJECT(elem), "unique-id", unique_id, "gpu-id", gpu_id, NULL);
+  } else {
+    g_object_set(G_OBJECT(elem), "gpu-id", gpu_id, NULL);
+  }
+}
+
 bool link_audio_pad_to_muxer(GstElement* postParse, GstElement* muxer, const char* audio_pad_name = "audio_%u") {
   gboolean ret = false;
   GstPad* muxer_audio_pad{nullptr};
@@ -176,7 +186,7 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   ppc << ";show=" << config->show;
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-private-config", ppc.str().c_str(), NULL);
 
-  g_object_set(G_OBJECT(bin->elem_hmstitcher), "unique-id", config->unique_id, "gpu-id", config->gpu_id, NULL);
+  set_unique_id_if_supported(bin->elem_hmstitcher, config->unique_id, config->gpu_id);
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-type", "hmstitcher", NULL);
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "config-file", config->config_file, NULL);
   g_object_set(G_OBJECT(bin->pre_conv), "gpu-id", config->gpu_id, NULL);
@@ -262,7 +272,7 @@ gboolean create_dsfieldmask_bin(const NvDsDsFieldMaskConfig* config, NvDsDsField
   NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->elem_dsfieldmask, "src");
   // assert(false);
   // assert(strlen(config->detection_mask_file) > 0);
-  g_object_set(G_OBJECT(bin->elem_dsfieldmask), "unique-id", config->unique_id, "gpu-id", config->gpu_id, NULL);
+  set_unique_id_if_supported(bin->elem_dsfieldmask, config->unique_id, config->gpu_id);
   g_object_set(G_OBJECT(bin->elem_dsfieldmask), "detection-mask", config->detection_mask_file, NULL);
   g_object_set(G_OBJECT(bin->pre_conv), "gpu-id", config->gpu_id, NULL);
 
@@ -317,7 +327,7 @@ gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTra
   NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "sink");
   NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->elem_dsplaytracker, "src");
   assert(strlen(config->config_file) > 0);
-  g_object_set(G_OBJECT(bin->elem_dsplaytracker), "unique-id", config->unique_id, "gpu-id", config->gpu_id, NULL);
+  set_unique_id_if_supported(bin->elem_dsplaytracker, config->unique_id, config->gpu_id);
   g_object_set(G_OBJECT(bin->elem_dsplaytracker), "config-file", config->config_file, NULL);
   g_object_set(G_OBJECT(bin->elem_dsplaytracker), "plugin-type", "vpplaytracker", NULL);
   // g_object_set(G_OBJECT(bin->elem_dsplaytracker), "draw", config->draw, NULL);
@@ -945,4 +955,3 @@ done:
 
   return ret;
 }
-

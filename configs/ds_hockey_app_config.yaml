@@ -412,7 +412,6 @@ hmstitcher:
 ds-playtracker:
   enable: 1
   gpu-id: 0
-  unique-id: 75
   draw: 0
   show: 0
   dynamic-acceleration-scaling: 1.0
@@ -431,7 +430,6 @@ ds-playtracker:
 ds-fieldmask:
   enable: 1
   gpu-id: 0
-  unique-id: 76
   # detection-mask: /home/colivier/Videos/ev-bs-stitched/rink_mask_0.png
   # detection-mask: /home/colivier/Videos/ev-reno-1/rink_mask_0.png
   # detection-mask: /home/colivier/Videos/mlk-extreme/rink_mask_0.png

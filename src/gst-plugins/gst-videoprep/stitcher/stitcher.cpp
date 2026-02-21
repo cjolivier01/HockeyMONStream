@@ -7,6 +7,7 @@
 
 #include "cupano/cuda/cudaStatus.h"
 #include "cupano/pano/cudaMat.h"
+#include "absl/status/status.h"
 
 // #include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurface.h"
@@ -34,6 +35,27 @@
 namespace hm {
 namespace stitcher {
 
+namespace {
+
+std::pair<size_t, size_t> fallback_canvas_from_caps(GstCaps* in_caps) {
+  int in_width = 0;
+  int in_height = 0;
+  if (!in_caps || !getCapsDimensions(in_caps, in_width, in_height)) {
+    return {0, 0};
+  }
+  // Assume side-by-side sources; double the width to keep enough room.
+  return {static_cast<size_t>(2 * in_width), static_cast<size_t>(in_height)};
+}
+
+void log_canvas_hint(const std::string& prefix, size_t width, size_t height) {
+  if (!width || !height) {
+    return;
+  }
+  g_print("%s canvas hint: %zu x %zu\n", prefix.c_str(), width, height);
+}
+
+} // namespace
+
 // static constexpr int kNumStitcherLaplacianLevels = 0;
 static constexpr int kNumStitcherLaplacianLevels = 11;
 
@@ -45,7 +67,7 @@ StitcherPriv::~StitcherPriv() {
 }
 
 absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
-  if (configure_only_) {
+  if (configure_only_ && !one_pass_mode_) {
     return (StitcherPriv::STITCHER*)nullptr;
   }
   if (config_file_.empty()) {
@@ -56,10 +78,20 @@ absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
     hm::pano::ControlMasks control_masks;
     if (!control_masks.load(config_file_)) {
       std::string config_file_dir = config_file_;
-      // Don't try again
-      config_file_.clear();
-      return absl::NotFoundError(TO_STRING("Could not load control masks from " << config_file_dir));
+      if (one_pass_mode_) {
+        // In one-pass mode, allow the pipeline to bootstrap without masks.
+        if (!logged_missing_masks_) {
+          g_print("hmstitcher: missing control masks in %s\n", config_file_dir.c_str());
+          logged_missing_masks_ = true;
+        }
+        return (StitcherPriv::STITCHER*)nullptr;
+      } else {
+        // Don't try again unless one-pass mode wants to re-attempt after configure.
+        config_file_.clear();
+        return absl::NotFoundError(TO_STRING("Could not load control masks from " << config_file_dir));
+      }
     }
+    update_canvas_hints(control_masks.canvas_width(), control_masks.canvas_height());
     stitcher_ = std::make_unique<hm::pano::cuda::CudaStitchPano<uchar4, float4>>(
         /*batch_size=*/1, /*num_levels=*/kNumStitcherLaplacianLevels, control_masks, kMatchExposure);
   }
@@ -69,16 +101,38 @@ absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
   return stitcher_.get();
 }
 
+absl::Status StitcherPriv::reload_stitcher() {
+  auto res = get_stitcher();
+  if (!res.ok()) {
+    return res.status();
+  }
+  STITCHER* stitcher = res.ok() ? res.value() : nullptr;
+  if (stitcher) {
+    update_canvas_hints(stitcher->canvas_width(), stitcher->canvas_height());
+    log_canvas_hint("hmstitcher", canvas_width_hint_, canvas_height_hint_);
+  }
+  return absl::OkStatus();
+}
+
 absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
   if (params->config_file) {
     config_file_ = params->config_file;
   }
   auto res = get_stitcher();
   if (!res.ok()) {
-    std::cerr << res.status() << std::endl;
-    return res.status();
+    if (one_pass_mode_ && absl::IsNotFound(res.status())) {
+      if (!logged_missing_masks_) {
+        g_print(
+            "hmstitcher: control masks not found in %s; enabling one-pass configure on first batch\n",
+            config_file_.c_str());
+        logged_missing_masks_ = true;
+      }
+    } else {
+      std::cerr << res.status() << std::endl;
+      return res.status();
+    }
   }
-  STITCHER* stitcher = res.value();
+  STITCHER* stitcher = res.ok() ? res.value() : nullptr;
 
   // Not an in-place transform
   m_transformMode = true;
@@ -91,6 +145,17 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
     params->output_width_height[0] = stitcher->canvas_width();
     params->output_width_height[1] = stitcher->canvas_height();
     g_print("Stitched canvas size: %d x %d\n", (int)stitcher->canvas_width(), (int)stitcher->canvas_height());
+    update_canvas_hints(stitcher->canvas_width(), stitcher->canvas_height());
+  } else if (one_pass_mode_) {
+    auto fallback = fallback_canvas_from_caps(params->m_inCaps);
+    if (fallback.first && fallback.second) {
+      params->output_width_height[0] = fallback.first;
+      params->output_width_height[1] = fallback.second;
+      update_canvas_hints(fallback.first, fallback.second);
+      log_canvas_hint("hmstitcher (fallback)", canvas_width_hint_, canvas_height_hint_);
+    } else {
+      g_print("hmstitcher: no fallback canvas size detected; using passthrough sizing\n");
+    }
   }
   return Super::PreCapsInit(params);
 }
@@ -106,6 +171,8 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     right_frame_offset_ns_ = std::atol(prop.value.c_str());
   } else if (prop.key == "configure-only") {
     configure_only_ = !!std::atol(prop.value.c_str());
+  } else if (prop.key == "one-pass-mode") {
+    one_pass_mode_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "show") {
     show_ = !!std::atol(prop.value.c_str());
   }
@@ -144,9 +211,6 @@ absl::Status StitcherPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
-  if (configure_only_) {
-    std::cout << "Stitcher has received a batch to configure..." << std::endl;
-  }
   assert(in_surface->batchSize % 2 == 0);
   if (in_surface->numFilled % 2 != 0) {
     gst_printerr("Not enough filled surfaces to perform stitching\n");
@@ -276,9 +340,16 @@ absl::Status StitcherPriv::GenerateOutput(
       bool is_configured;
       HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(config_file_));
       if (!is_configured || configure_only_) {
-        if (!configure_only_) {
-          return absl::FailedPreconditionError("Stitching is not configured");
-        } else {
+        if (one_pass_mode_ && !is_configured) {
+          g_print("hmstitcher: configuring stitching in one-pass mode\n");
+          if (!orientation_ran_) {
+            absl::Status orientation_status = stitching::configure_orientation(config_file_);
+            if (!orientation_status.ok()) {
+              std::cerr << orientation_status << "\n" << std::flush;
+              return orientation_status;
+            }
+            orientation_ran_ = true;
+          }
           absl::Status configure_status =
               stitching::configure_stitching(config_file_, incoming_surface_left, incoming_surface_right);
           if (!configure_status.ok()) {
@@ -286,13 +357,50 @@ absl::Status StitcherPriv::GenerateOutput(
             return to_status(CudaStatus(
                 cudaError_t::cudaErrorLaunchFailure, (std::stringstream() << configure_status.message()).str()));
           }
+          configured_during_run_ = true;
+          absl::Status reload_status = reload_stitcher();
+          if (!reload_status.ok()) {
+            return reload_status;
+          }
+        } else if (!configure_only_) {
+          return absl::FailedPreconditionError("Stitching is not configured");
+        } else {
+          if (!orientation_ran_) {
+            absl::Status orientation_status = stitching::configure_orientation(config_file_);
+            if (!orientation_status.ok()) {
+              std::cerr << orientation_status << "\n" << std::flush;
+              return orientation_status;
+            }
+            orientation_ran_ = true;
+          }
+          absl::Status configure_status =
+              stitching::configure_stitching(config_file_, incoming_surface_left, incoming_surface_right);
+          if (!configure_status.ok()) {
+            std::cerr << configure_status << "\n" << std::flush;
+            return to_status(CudaStatus(
+                cudaError_t::cudaErrorLaunchFailure, (std::stringstream() << configure_status.message()).str()));
+          }
+          // return absl::CancelledError("Stitching has been configured");
+          if (!post_force_pipeline_eos(GST_ELEMENT(m_element))) {
+            std::cerr << "Failed to post pipeline EOS, returning an error to stop the pipeline";
+            return absl::CancelledError("Stitching has been configured");
+          }
         }
-        // return absl::CancelledError("Stitching has been configured");
-        if (!post_force_pipeline_eos(GST_ELEMENT(m_element))) {
-          std::cerr << "Failed to post pipeline EOS, returning an error to stop the pipeline";
-          return absl::CancelledError("Stitching has been configured");
+      } else if (one_pass_mode_ && !stitcher_) {
+        // Masks existed but we had no stitcher due to earlier failure; retry once in one-pass mode.
+        absl::Status reload_status = reload_stitcher();
+        if (!reload_status.ok()) {
+          return reload_status;
         }
       }
+    }
+
+    if (canvas_width_hint_ && canvas_height_hint_) {
+      if (canvas_width_hint_ > outgoing_surface.width() || canvas_height_hint_ > outgoing_surface.height()) {
+        return absl::FailedPreconditionError("Output surface is smaller than expected stitched canvas");
+      }
+      output_params->width = canvas_width_hint_;
+      output_params->height = canvas_height_hint_;
     }
 
     // auto osw = outgoing_surface.width();
@@ -338,6 +446,17 @@ absl::Status StitcherPriv::GenerateOutput(
       // Gray image
       HM_RETURN_IF_ERROR(to_status(cudaMemsetAsync(
           canvas->data_raw(), 128, canvas->height() * canvas->pitch() * canvas->batch_size(), cuda_stream_)));
+    }
+
+    if (one_pass_mode_ && !field_mask_attempted_) {
+      field_mask_attempted_ = true;
+      bool mask_configured = stitching::is_field_mask_configured(config_file_);
+      if (!mask_configured) {
+        absl::Status mask_status = stitching::create_field_mask(config_file_, outgoing_surface);
+        if (!mask_status.ok()) {
+          std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
+        }
+      }
     }
 
     if (show_) {
