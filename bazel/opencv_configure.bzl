@@ -11,6 +11,18 @@ def _basename(p):
     i = s.rfind("/")
     return s[i + 1:] if i != -1 else s
 
+def _has_shared_lib(ctx, dirs, lib_stem):
+    # Accept unversioned (.so) and versioned (.so.*) names.
+    prefix = "lib" + lib_stem + ".so"
+    for d in dirs:
+        if not _path_exists(ctx, d):
+            continue
+        for entry in ctx.path(d).readdir():
+            name = _basename(entry)
+            if name == prefix or name.startswith(prefix + "."):
+                return True
+    return False
+
 def _detect_opencv_soname_suffix(ctx, root):
     lib_dir = root + "/lib"
     if not _path_exists(ctx, lib_dir):
@@ -41,11 +53,14 @@ def _detect_opencv(ctx, root):
                 "version": version,
                 "include_dir": include_dir,
                 "has_cudawarping": _path_exists(ctx, include_dir + "/opencv2/cudawarping.hpp"),
-                "has_cudawarping_lib": (
-                    _path_exists(ctx, root + "/lib/libopencv_cudawarping.so") or
-                    _path_exists(ctx, root + "/lib/libopencv_cudawarping.so.500") or
-                    _path_exists(ctx, root + "/lib/x86_64-linux-gnu/libopencv_cudawarping.so") or
-                    _path_exists(ctx, root + "/lib/aarch64-linux-gnu/libopencv_cudawarping.so")
+                "has_cudawarping_lib": _has_shared_lib(
+                    ctx,
+                    [
+                        root + "/lib",
+                        root + "/lib/x86_64-linux-gnu",
+                        root + "/lib/aarch64-linux-gnu",
+                    ],
+                    "opencv_cudawarping",
                 ),
             }
     return None

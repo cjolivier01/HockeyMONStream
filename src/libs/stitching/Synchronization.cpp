@@ -110,8 +110,25 @@ std::pair<std::vector<std::vector<float>>, int> load_audio_as_tensor(
       std::exit(1);
     }
   } else {
-    // Last-ditch fallback: assume stereo.
-    av_channel_layout_default(&in_ch_layout, 2);
+    int fallback_channels = 0;
+#if LIBAVCODEC_VERSION_MAJOR >= 61
+    fallback_channels = av_codec_parameters_get_channels(codecpar);
+#else
+    fallback_channels = codecpar->channels;
+#endif
+    if (fallback_channels <= 0) {
+      fallback_channels = codec_ctx->ch_layout.nb_channels;
+    }
+#if LIBAVCODEC_VERSION_MAJOR < 61
+    if (fallback_channels <= 0) {
+      fallback_channels = codec_ctx->channels;
+    }
+#endif
+    // Last-ditch fallback for malformed metadata.
+    if (fallback_channels <= 0) {
+      fallback_channels = 2;
+    }
+    av_channel_layout_default(&in_ch_layout, fallback_channels);
   }
 
   // Determine number of channels (preserve original channels).
