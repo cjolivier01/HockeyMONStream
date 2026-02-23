@@ -324,17 +324,32 @@ absl::Status PipelineApplication::createMainLoop(
   _intr_setup();
   g_timeout_add(400, check_for_interrupt_static, nullptr);
 
-  display_ = XOpenDisplay(nullptr);
-  if (!display_) {
-    NVGSTDS_ERR_MSG_V("Could not open X Display");
-    return absl::InternalError("Could not open X Display");
+  bool has_video_overlay_sink = false;
+  for (const auto& app_ctx : app_contexts) {
+    for (guint j = 0; j < app_ctx->config.num_sink_sub_bins; j++) {
+      if (GST_IS_VIDEO_OVERLAY(app_ctx->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink)) {
+        has_video_overlay_sink = true;
+        break;
+      }
+    }
+    if (has_video_overlay_sink) {
+      break;
+    }
   }
-  cleanup_stack.push([this] {
-    absl::MutexLock lk(&disp_lock_);
-    if (display_)
-      XCloseDisplay(display_);
-    display_ = nullptr;
-  });
+
+  if (has_video_overlay_sink) {
+    display_ = XOpenDisplay(nullptr);
+    if (!display_) {
+      NVGSTDS_ERR_MSG_V("Could not open X Display");
+      return absl::InternalError("Could not open X Display");
+    }
+    cleanup_stack.push([this] {
+      absl::MutexLock lk(&disp_lock_);
+      if (display_)
+        XCloseDisplay(display_);
+      display_ = nullptr;
+    });
+  }
 
   for (guint i = 0; i < app_contexts.size(); i++) {
 #if defined(__aarch64__)
