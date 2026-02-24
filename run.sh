@@ -101,18 +101,27 @@ for arg in "$@"; do
   esac
 done
 
+default_main_sink="RENDER"
+if [ -z "${DISPLAY:-}" ]; then
+  # Headless / SSH shells often have no X server. Avoid defaulting to a video overlay sink.
+  default_main_sink="ENCODE_FILE"
+  if [ "${have_sink_arg}" -eq 0 ]; then
+    echo "DISPLAY is not set and no sink was specified; defaulting to --enable-sinks=${default_main_sink} (override with --enable-sinks=RENDER)"
+  fi
+fi
+
 sink_args=()
 config_args=()
 if [ "${one_pass_only}" -eq 1 ]; then
   config_args=(-c configs/ds_hockey_app_config.yaml)
   if [ "${have_sink_arg}" -eq 0 ]; then
-    sink_args+=(--enable-sinks=RENDER)
+    sink_args+=(--enable-sinks="${default_main_sink}")
   fi
 else
   config_args=(-c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml)
   sink_args+=(--enable-sinks=FAKE)
   if [ "${have_sink_arg}" -eq 0 ]; then
-    sink_args+=(--enable-sinks=RENDER)
+    sink_args+=(--enable-sinks="${default_main_sink}")
   fi
 fi
 
