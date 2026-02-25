@@ -173,6 +173,7 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   ppc << "left-frame-offset-ns=" << config->left_frame_offset_ns;
   ppc << ";right-frame-offset-ns=" << config->right_frame_offset_ns;
   ppc << ";configure-only=" << config->configure_only;
+  ppc << ";one-pass-mode=" << config->one_pass_mode;
   ppc << ";show=" << config->show;
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-private-config", ppc.str().c_str(), NULL);
 
@@ -945,4 +946,3 @@ done:
 
   return ret;
 }
-

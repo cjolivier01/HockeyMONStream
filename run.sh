@@ -1,9 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
-# Two-stage run:
+# Default: two-stage run
 # - Stage -1: stitching configuration (FAKE sink)
 # - Stage 0: main app (default RENDER sink unless overridden by user)
+#
+# To test the one-pass stitcher (stage 0 only, config in-process when control masks are missing):
+#   ./run.sh --one-pass-only --game-id=<game_id>
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -70,15 +73,23 @@ if [ ! -f "${DEFAULT_ONNX}" ] || [ ! -f "${DEFAULT_LABELS}" ] || [ ! -f "${DEFAU
   bash "${SCRIPT_DIR}/scripts/setup_yolox_s_pretrained.sh"
 fi
 
+one_pass_only=0
 have_sink_arg=0
 rewritten_args=()
 for arg in "$@"; do
   case "$arg" in
-    --enable-sinks|--enable-sinks=*|-k|-k*) have_sink_arg=1; break ;;
+    --one-pass-only|--stage0-only) one_pass_only=1 ;;
+    --enable-sinks|--enable-sinks=*|-k|-k*) have_sink_arg=1 ;;
   esac
 done
 
 for arg in "$@"; do
+  case "$arg" in
+    --one-pass-only|--stage0-only)
+      # run.sh-only flag; do not forward to pipeline-app
+      continue
+      ;;
+  esac
   # hm_run.sh historically supports `-t=N`; glib's GOption expects `-t N`.
   case "$arg" in
     -t=*)
@@ -90,14 +101,32 @@ for arg in "$@"; do
   esac
 done
 
-sink_args=(--enable-sinks=FAKE)
-if [ "${have_sink_arg}" -eq 0 ]; then
-  sink_args+=(--enable-sinks=RENDER)
+default_main_sink="RENDER"
+if [ -z "${DISPLAY:-}" ]; then
+  # Headless / SSH shells often have no X server. Avoid defaulting to a video overlay sink.
+  default_main_sink="ENCODE_FILE"
+  if [ "${have_sink_arg}" -eq 0 ]; then
+    echo "DISPLAY is not set and no sink was specified; defaulting to --enable-sinks=${default_main_sink} (override with --enable-sinks=RENDER)"
+  fi
+fi
+
+sink_args=()
+config_args=()
+if [ "${one_pass_only}" -eq 1 ]; then
+  config_args=(-c configs/ds_hockey_app_config.yaml)
+  if [ "${have_sink_arg}" -eq 0 ]; then
+    sink_args+=(--enable-sinks="${default_main_sink}")
+  fi
+else
+  config_args=(-c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml)
+  sink_args+=(--enable-sinks=FAKE)
+  if [ "${have_sink_arg}" -eq 0 ]; then
+    sink_args+=(--enable-sinks="${default_main_sink}")
+  fi
 fi
 
 bazel-bin/src/apps/pipeline-app/pipeline-app \
-  -c configs/ds_hockey_configure_stitching.yaml \
-  -c configs/ds_hockey_app_config.yaml \
+  "${config_args[@]}" \
   --enable-sources=URI-MULTIPLE \
   "${sink_args[@]}" \
   --options=pipeline.hmaudio.enable=1 \

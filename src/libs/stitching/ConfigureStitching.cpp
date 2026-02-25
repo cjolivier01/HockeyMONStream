@@ -270,13 +270,34 @@ absl::Status save_image(surface::Surface surf, const std::string& filename) {
 
 std::string get_game_id(const std::string& game_path) {
   fs::path path(game_path);
-
-  // Handle cases where the path is empty or refers to the root directory
-  if (path.empty() || path.parent_path() == path) {
-    return path.filename().string();
+  if (path.empty()) {
+    return std::string{};
   }
 
-  return path.parent_path().filename().string();
+  fs::path normalized = path.lexically_normal();
+  std::error_code ec;
+
+  // If the path exists, prefer the filesystem type over heuristics.
+  if (fs::exists(normalized, ec) && !ec) {
+    if (fs::is_directory(normalized, ec) && !ec) {
+      std::string leaf = normalized.filename().string();
+      if (!leaf.empty()) {
+        return leaf;
+      }
+      return normalized.parent_path().filename().string();
+    }
+    return normalized.parent_path().filename().string();
+  }
+
+  // Fallback when path doesn't exist yet: infer file vs directory shape.
+  std::string leaf = normalized.filename().string();
+  if (leaf.empty()) {
+    return normalized.parent_path().filename().string();
+  }
+  if (normalized.has_extension()) {
+    return normalized.parent_path().filename().string();
+  }
+  return leaf;
 }
 
 std::map<std::string, std::string> get_environment() {

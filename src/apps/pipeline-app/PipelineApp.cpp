@@ -195,16 +195,9 @@ absl::Status PipelineApplication::configureInstances(
 
       // Finally, command-line config overrides (pipeline or otherwise)
       if (!pipeline_options_.empty()) {
-        if (stage_index) {
-          if (pipeline_options_.size() != 1 && stage_index >= pipeline_options_.size()) {
-            return absl::InvalidArgumentError(TO_STRING(
-                "Number of 'pipeline options' must be zero, one, or at least as "
-                << "many as the number of stages, or else it's not clear what to apply to this stage " << stage_index));
-          }
-        }
-        // const std::map<std::string, std::string>& options =
-        //     pipeline_options_.size() == 1 ? pipeline_options_.at(0) : pipeline_options_.at(stage_index);
-        if (stage_index) {
+        // Historically we avoided applying pipeline options to stage -1 (stitch config), but we do want them for the
+        // main stage (stage >= 0). This also ensures single-stage runs (only stage 0) get CLI options.
+        if (current_stage_ >= 0) {
           for (const std::map<std::string, std::string>& options : pipeline_options_) {
             for (const auto& kv_item : options) {
               HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(kv_item.first, kv_item.second));

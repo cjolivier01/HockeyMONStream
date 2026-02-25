@@ -20,6 +20,7 @@
 #include "absl/strings/str_split.h"
 #include "cupano/pano/controlMasks.h"
 #include "deepstream_app.h"
+#include "StitcherOnePassConfig.h"
 #include "hstream/src/apps/apps-common/deepstream_config.h"
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
 #include "hstream/src/libs/common/ConfigYaml.h"
@@ -528,6 +529,7 @@ absl::Status Configurator::set_output_dimensions(
     pipeline["hmplaycropper"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
     pipeline["hmplaycropper"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
   } else if (!left_files.empty() && !right_files.empty() && has_hmstitcher) {
+    StitcherSizingConfig sizing_cfg = ParseStitcherSizingConfig(pipeline);
     auto canvas_size_result = get_canvas_size(game_dir);
     if (canvas_size_result) {
       size_t canvas_width = std::get<0>(*canvas_size_result);
@@ -539,12 +541,29 @@ absl::Status Configurator::set_output_dimensions(
       pipeline["hmplaycropper"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
       pipeline["hmplaycropper"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
     } else {
-      bool configure_only = get_node_value(pipeline, "hmstitcher.configure-only", false);
-      if (!configure_only) {
+      if (!sizing_cfg.allow_runtime_canvas()) {
         return absl::FailedPreconditionError(
-            "Unable to determine the canvas size and stitcher is not set to configure-only");
+            "Unable to determine the canvas size and runtime stitching configuration is disabled");
       }
-      std::cout << "The stitched canvas size is not yet known, will determine in the ensuing pipeline run" << std::endl;
+      if (sizing_cfg.one_pass_mode) {
+        // One-pass mode configures stitching after the pipeline starts, but the `videoprep` element needs a fixed
+        // output size up front to allocate buffers. Use a conservative oversize based on the input dimensions so the
+        // stitched canvas will fit once control masks are generated.
+        if (ww && hh) {
+          const size_t pad_h = std::max<size_t>(hh / 10, 256);
+          const size_t fallback_width = 2 * ww;
+          const size_t fallback_height = hh + pad_h;
+          pipeline["hmstitcher"]["output-width"] = std::to_string(fallback_width);
+          pipeline["hmstitcher"]["output-height"] = std::to_string(fallback_height);
+          std::cout << "hmstitcher one-pass mode enabled: using fallback output size " << fallback_width << " x "
+                    << fallback_height << " (canvas will be sized at runtime)" << std::endl;
+        } else {
+          std::cout << "hmstitcher one-pass mode enabled: deferring stitched canvas sizing to runtime" << std::endl;
+        }
+      } else {
+        std::cout << "The stitched canvas size is not yet known, will determine in the ensuing pipeline run"
+                  << std::endl;
+      }
     }
   } else {
     // If we don't have left/right files, we may still know dimensions from a stitched output
@@ -555,7 +574,10 @@ absl::Status Configurator::set_output_dimensions(
         const auto& stitched_chapters = videos.at("stitched");
         bool all_exist = true;
         for (const auto& stitched_item : stitched_chapters) {
-          if (!fs::exists(stitched_item.second)) { all_exist = false; break; }
+          if (!fs::exists(stitched_item.second)) {
+            all_exist = false;
+            break;
+          }
         }
         if (all_exist && !stitched_chapters.empty()) {
           auto stitched_file = stitched_chapters.begin()->second;

@@ -162,6 +162,7 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
  */
 struct HmStitcherConfig : public NvDsHmVideoPrepConfig {
   gboolean configure_only;
+  gboolean one_pass_mode;
   gulong left_frame_offset_ns;
   gulong right_frame_offset_ns;
   gboolean show;

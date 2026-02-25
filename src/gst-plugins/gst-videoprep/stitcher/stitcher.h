@@ -53,6 +53,11 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   using STITCHER = hm::pano::cuda::CudaStitchPano<uchar4, float4>;
 
   absl::StatusOr<STITCHER*> get_stitcher();
+  absl::Status reload_stitcher();
+  void update_canvas_hints(size_t width, size_t height) {
+    canvas_width_hint_ = width;
+    canvas_height_hint_ = height;
+  }
 
   absl::Mutex stitcher_mu_;
   std::unique_ptr<STITCHER> stitcher_ ABSL_GUARDED_BY(stitcher_mu_);
@@ -60,6 +65,13 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   std::mutex process_mu_;
   size_t process_pass_{0};
   bool configure_only_{false};
+  bool one_pass_mode_{false};
+  size_t canvas_width_hint_{0};
+  size_t canvas_height_hint_{0};
+  bool configured_during_run_{false};
+  bool logged_missing_masks_{false};
+  bool orientation_ran_{false};
+  bool field_mask_attempted_{false};
   size_t left_frame_offset_ns_{0}, right_frame_offset_ns_{0};
   bool show_{false};
 };

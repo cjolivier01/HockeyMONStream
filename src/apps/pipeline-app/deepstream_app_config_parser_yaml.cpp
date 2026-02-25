@@ -99,7 +99,7 @@ gboolean parse_videoprep_yaml(
     const YAML::Node& yaml_node,
     const std::string& config_dir,
     bool quiet = false) {
-  hm::utils::ConfigLocator locator{.ignored = {"config-file", "configure-only"}};
+  hm::utils::ConfigLocator locator{.ignored = {"config-file", "configure-only", "one-pass-mode"}};
   SET_LOCATOR(locator, *config, enable);
   SET_LOCATOR(locator, *config, unique_id);
   SET_LOCATOR(locator, *config, gpu_id);
@@ -149,6 +149,7 @@ gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_
   }
   hm::utils::ConfigLocator locator;
   SET_LOCATOR(locator, *config, configure_only);
+  SET_LOCATOR(locator, *config, one_pass_mode);
   SET_LOCATOR(locator, *config, left_frame_offset_ns);
   SET_LOCATOR(locator, *config, right_frame_offset_ns);
   SET_LOCATOR(locator, *config, show);
