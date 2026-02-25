@@ -4,6 +4,7 @@ sudo apt-get install -y \
   libva-dev \
   libsoup2.4-dev \
   libjson-glib-dev \
+  libmosquitto-dev \
   libjsoncpp-dev \
   libglfw3-dev \
   protobuf-compiler \
