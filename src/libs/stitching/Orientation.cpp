@@ -104,7 +104,7 @@ std::pair<int, int> gopro_get_video_and_chapter(const fs::path& filename) {
  * @param out_chapter Output parameter for the chapter number.
  * @return true if parsing succeeded, false otherwise.
  */
-bool insta360_get_video_and_chapter(const fs::path& filename, int& out_video_id, int& out_chapter) {
+bool insta360_get_video_and_chapter(const fs::path& filename, long& out_video_id, int& out_chapter) {
   std::string name = filename.stem().string();
   std::vector<std::string> tokens;
   size_t start = 0;
@@ -127,7 +127,7 @@ bool insta360_get_video_and_chapter(const fs::path& filename, int& out_video_id,
   const std::string& video_token = tokens[2];
   const std::string& chapter_token = tokens[3];
   try {
-    out_video_id = std::stoi(date_token + video_token);
+    out_video_id = std::stol(date_token + video_token);
     out_chapter = std::stoi(chapter_token);
   } catch (const std::exception&) {
     return false;
@@ -204,9 +204,9 @@ std::pair<VideosDict, VideosDict> prune_chapters(const VideosDict& videos) {
  *
  * Returns a list of ((video_id, chapter), full_path) sorted by (video_id, chapter).
  */
-absl::StatusOr<std::vector<std::pair<std::pair<int, int>, std::string>>> find_vendor_chapter_pairs(
+absl::StatusOr<std::vector<std::pair<std::pair<long, int>, std::string>>> find_vendor_chapter_pairs(
     const std::string& directory) {
-  std::vector<std::pair<std::pair<int, int>, std::string>> pairs;
+  std::vector<std::pair<std::pair<long, int>, std::string>> pairs;
 
   // GoPro
   std::vector<std::string> files;
@@ -223,7 +223,7 @@ absl::StatusOr<std::vector<std::pair<std::pair<int, int>, std::string>>> find_ve
   // Insta360
   HM_ASSIGN_OR_RETURN(files, find_matching_files(INSTA360_FILE_PATTERN, directory));
   for (const auto& f : files) {
-    int video_id = 0;
+    long video_id = 0;
     int chapter = 0;
     if (!insta360_get_video_and_chapter(fs::path(f), video_id, chapter)) {
       continue;
@@ -238,7 +238,7 @@ absl::StatusOr<std::vector<std::pair<std::pair<int, int>, std::string>>> find_ve
 /**
  * @brief Flatten vendor chapter pairs into a 1..N -> file map.
  */
-VideoChapter pairs_to_linear_chapter_map(const std::vector<std::pair<std::pair<int, int>, std::string>>& pairs) {
+VideoChapter pairs_to_linear_chapter_map(const std::vector<std::pair<std::pair<long, int>, std::string>>& pairs) {
   VideoChapter chapter_map;
   int chapter_index = 1;
   for (const auto& item : pairs) {
@@ -302,7 +302,7 @@ absl::StatusOr<VideoChapter> collect_lr_chapters(
  */
 absl::StatusOr<VideoChapter> collect_chapters_for_dir(const std::string& directory) {
   // Vendor-specific (GoPro, Insta360)
-  std::vector<std::pair<std::pair<int, int>, std::string>> pairs;
+  std::vector<std::pair<std::pair<long, int>, std::string>> pairs;
   HM_ASSIGN_OR_RETURN(pairs, find_vendor_chapter_pairs(directory));
   if (!pairs.empty()) {
     return pairs_to_linear_chapter_map(pairs);
@@ -397,10 +397,10 @@ absl::StatusOr<VideosDict> get_available_videos(const std::string& dir_name, boo
   }
 
   // Fallback: scan the root directory.
-  std::vector<std::pair<std::pair<int, int>, std::string>> vendor_pairs;
+  std::vector<std::pair<std::pair<long, int>, std::string>> vendor_pairs;
   HM_ASSIGN_OR_RETURN(vendor_pairs, find_vendor_chapter_pairs(dir_name));
   for (const auto& item : vendor_pairs) {
-    int video_id = item.first.first;
+    long video_id = item.first.first;
     int chapter = item.first.second;
     const std::string& file = item.second;
     std::string video_key = std::to_string(video_id);
