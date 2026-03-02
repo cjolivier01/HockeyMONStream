@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <opencv2/opencv.hpp>
+#include <tiffio.h>
 #include "absl/strings/str_split.h"
 
 namespace fs = std::filesystem;
@@ -27,6 +28,51 @@ namespace {
 
 const std::string lfo_prefix = "Left frame offset: ";
 const std::string rfo_prefix = "Right frame offset: ";
+
+struct TiffPlacement {
+  float x_px{0.0f};
+  float y_px{0.0f};
+  int width{0};
+  int height{0};
+};
+
+absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
+  TIFF* tif = TIFFOpen(path.c_str(), "r");
+  if (!tif) {
+    return absl::NotFoundError(TO_STRING("Could not open TIFF: " << path.string()));
+  }
+
+  uint32_t width = 0;
+  uint32_t height = 0;
+  float xres = 0.0f;
+  float yres = 0.0f;
+  float xpos = 0.0f;
+  float ypos = 0.0f;
+
+  const bool have_dims =
+      TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width) && TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height);
+  const bool have_res =
+      TIFFGetField(tif, TIFFTAG_XRESOLUTION, &xres) && TIFFGetField(tif, TIFFTAG_YRESOLUTION, &yres);
+
+  (void)TIFFGetField(tif, TIFFTAG_XPOSITION, &xpos);
+  (void)TIFFGetField(tif, TIFFTAG_YPOSITION, &ypos);
+
+  TIFFClose(tif);
+
+  if (!have_dims || !width || !height) {
+    return absl::InvalidArgumentError(TO_STRING("Missing TIFF dimensions: " << path.string()));
+  }
+  if (!have_res || xres <= 0.0f || yres <= 0.0f) {
+    return absl::InvalidArgumentError(TO_STRING("Missing TIFF resolution: " << path.string()));
+  }
+
+  return TiffPlacement{
+      .x_px = xpos * xres,
+      .y_px = ypos * yres,
+      .width = static_cast<int>(width),
+      .height = static_cast<int>(height),
+  };
+}
 
 // -----------------------------------------------------------------------------
 // FileNode: Represents one file and its dependency children.
@@ -431,6 +477,101 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir) {
   return false;
 }
 
+absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
+  if (game_dir.empty()) {
+    return absl::InvalidArgumentError("Game dir is empty");
+  }
+
+  const fs::path root = fs::path(game_dir);
+  const fs::path seam_path = root / "seam_file.png";
+  if (fs::exists(seam_path)) {
+    return absl::OkStatus();
+  }
+
+  const fs::path mapping0_path = root / "mapping_0000.tif";
+  const fs::path mapping1_path = root / "mapping_0001.tif";
+  if (!fs::exists(mapping0_path) || !fs::exists(mapping1_path)) {
+    return absl::NotFoundError(
+        TO_STRING("Cannot create default seam_file.png; missing mapping TIFFs under " << root.string()));
+  }
+
+  TiffPlacement p0;
+  TiffPlacement p1;
+  HM_ASSIGN_OR_RETURN(p0, read_tiff_placement(mapping0_path));
+  HM_ASSIGN_OR_RETURN(p1, read_tiff_placement(mapping1_path));
+
+  const float min_x = std::min(p0.x_px, p1.x_px);
+  const float min_y = std::min(p0.y_px, p1.y_px);
+  p0.x_px -= min_x;
+  p1.x_px -= min_x;
+  p0.y_px -= min_y;
+  p1.y_px -= min_y;
+
+  // Match hm::pano::ControlMasks::canvas_width/height semantics (float + int, then truncation).
+  const int canvas_width = static_cast<int>(std::max(p0.x_px + p0.width, p1.x_px + p1.width));
+  const int canvas_height = static_cast<int>(std::max(p0.y_px + p0.height, p1.y_px + p1.height));
+  if (canvas_width <= 0 || canvas_height <= 0) {
+    return absl::FailedPreconditionError(TO_STRING(
+        "Invalid canvas size computed from mapping TIFFs: " << canvas_width << "x" << canvas_height));
+  }
+
+  const int x0 = static_cast<int>(p0.x_px);
+  const int y0 = static_cast<int>(p0.y_px);
+  const int x1 = static_cast<int>(p1.x_px);
+  const int y1 = static_cast<int>(p1.y_px);
+
+  const int x0_end = x0 + p0.width;
+  const int x1_end = x1 + p1.width;
+
+  const int overlap_start = std::max(x0, x1);
+  const int overlap_end = std::min(x0_end, x1_end);
+
+  int seam_x = canvas_width / 2;
+  if (overlap_end > overlap_start) {
+    seam_x = overlap_start + (overlap_end - overlap_start) / 2;
+  } else if (x1 > x0) {
+    seam_x = x1;
+  }
+  seam_x = std::clamp(seam_x, 0, canvas_width);
+
+  // NOTE: hm-cupano inverts the seam mask at load time and uses 1 for image 0 (left) and 0 for image 1 (right).
+  // Creating {0,255} (then inverted) yields {1,0} respectively.
+  cv::Mat mask(canvas_height, canvas_width, CV_8U, cv::Scalar(0));
+  if (seam_x < canvas_width) {
+    mask.colRange(seam_x, canvas_width).setTo(255);
+  }
+
+  const int y0_end = y0 + p0.height;
+  const int y1_end = y1 + p1.height;
+  const int x0_clamped = std::clamp(x0, 0, canvas_width);
+  const int x0_end_clamped = std::clamp(x0_end, 0, canvas_width);
+  const int x1_clamped = std::clamp(x1, 0, canvas_width);
+  const int x1_end_clamped = std::clamp(x1_end, 0, canvas_width);
+
+  for (int y = 0; y < canvas_height; ++y) {
+    const bool in0 = y >= y0 && y < y0_end;
+    const bool in1 = y >= y1 && y < y1_end;
+    if (!in0 && !in1) {
+      continue;
+    }
+
+    uint8_t* row = mask.ptr<uint8_t>(y);
+    if (in0 && !in1) {
+      std::fill(row + x0_clamped, row + x0_end_clamped, static_cast<uint8_t>(0));
+    } else if (in1 && !in0) {
+      std::fill(row + x1_clamped, row + x1_end_clamped, static_cast<uint8_t>(255));
+    }
+  }
+
+  if (!cv::imwrite(seam_path.string(), mask)) {
+    return absl::InternalError(TO_STRING("Failed to write seam mask: " << seam_path.string()));
+  }
+
+  std::cout << "Created fallback seam mask: " << seam_path.string() << " (" << canvas_width << "x" << canvas_height
+            << ")" << std::endl;
+  return absl::OkStatus();
+}
+
 bool can_configure_stitching(const YAML::Node& config) {
   return true;
 }
@@ -570,7 +711,20 @@ absl::Status create_control_points(
 }
 
 bool is_field_mask_configured(const std::string& game_dir) {
-  return test_dependency_tree(game_dir, /*add_rink_mask=*/true);
+  if (game_dir.empty()) {
+    return false;
+  }
+
+  const fs::path mask_path = fs::path(game_dir) / "rink_mask_0.png";
+  std::error_code ec;
+  if (!fs::exists(mask_path, ec) || ec) {
+    return false;
+  }
+  const auto bytes = fs::file_size(mask_path, ec);
+  if (ec || bytes == 0) {
+    return false;
+  }
+  return true;
 }
 
 absl::Status create_field_mask(const std::string& game_dir, surface::Surface surface) {

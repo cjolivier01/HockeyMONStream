@@ -156,6 +156,9 @@ typedef struct {
   guint uri_list_index;
   guint uri_switch_count;
   gboolean uri_switch_pending;
+  /** URI playlist timestamp continuity state (nanoseconds). */
+  guint64 uri_list_segment_stop;
+  guint64 uri_list_last_pts;
 } NvDsSrcBin;
 
 struct NvDsSrcParentBin {

@@ -73,6 +73,13 @@ absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
   if (config_file_.empty()) {
     return absl::NotFoundError("No control masks to load");
   }
+
+  // In one-pass mode we want to be resilient to partial stitcher artifacts (e.g. mapping TIFFs exist but seam_file.png
+  // is missing). Without a seam file, hm-cupano will fail to load control masks and we would output a gray canvas.
+  if (one_pass_mode_) {
+    (void)hm::stitching::maybe_create_default_seam_file(config_file_);
+  }
+
   absl::MutexLock lk(&stitcher_mu_);
   if (!stitcher_) {
     hm::pano::ControlMasks control_masks;
@@ -482,6 +489,16 @@ absl::Status StitcherPriv::GenerateOutput(
     reuse_frame_meta->source_frame_width = reuse_frame_meta->pipeline_width = canvas->width();
     reuse_frame_meta->source_frame_height = reuse_frame_meta->pipeline_height = canvas->height();
     reuse_frame_meta->num_surfaces_per_frame = 1;
+    // This transform reduces two input sources (left/right) into a single stitched stream.
+    // Downstream elements (nvstreamdemux, perf measurement, sinks) route using `pad_index`/`batch_id`.
+    // When we reuse the right frame meta, `pad_index` and `batch_id` would otherwise remain `1` and route the stitched
+    // output to source 1 (often unlinked), resulting in a "gray box" / no visible output.
+    //
+    // Normalize all stitched output frames to the first stream (min pad index) and to the current output surface slot.
+    const guint out_pad_index = std::min(frame_info_left.frame_meta->pad_index, frame_info_right.frame_meta->pad_index);
+    reuse_frame_meta->pad_index = out_pad_index;
+    reuse_frame_meta->batch_id = static_cast<guint>(out_surface_index);
+    reuse_frame_meta->surface_index = 0;
     reuse_frame_meta->source_id = min_source_id;
   }
 

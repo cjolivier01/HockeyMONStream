@@ -16,6 +16,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <cctype>
 #include <atomic>
 #include <iostream>
 #include <string>
@@ -35,6 +37,18 @@ static GMutex server_cnt_lock;
 GST_DEBUG_CATEGORY_EXTERN(NVDS_APP);
 
 namespace hm {
+
+namespace {
+std::string normalize_type_string(std::string s) {
+  auto is_space = [](unsigned char c) { return std::isspace(c); };
+  s.erase(s.begin(), std::find_if_not(s.begin(), s.end(), is_space));
+  s.erase(std::find_if_not(s.rbegin(), s.rend(), is_space).base(), s.end());
+  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::toupper(c); });
+  std::replace(s.begin(), s.end(), '-', '_');
+  return s;
+}
+} // namespace
+
 // value to string for NvDsSinkType
 std::string to_string(const NvDsSinkType& type) {
   switch (type) {
@@ -62,22 +76,23 @@ std::string to_string(const NvDsSinkType& type) {
 
 // Converts string to enum value and returns std::optional<NvDsSinkType>
 std::optional<NvDsSinkType> sink_type_from_string(const std::string& str) {
-  if (str == "FAKE")
+  const std::string s = normalize_type_string(str);
+  if (s == "FAKE")
     return NV_DS_SINK_FAKE;
 #ifndef IS_TEGRA
-  if (str == "RENDER")
+  if (s == "RENDER")
     return NV_DS_SINK_RENDER_EGL;
 #else
-  if (str == "RENDER")
+  if (s == "RENDER")
     return NV_DS_SINK_RENDER_3D;
 #endif
-  if (str == "ENCODE_FILE")
+  if (s == "ENCODE_FILE" || s == "ENCODE_FIL")
     return NV_DS_SINK_ENCODE_FILE;
-  if (str == "UDPSINK" || str == "RTSP" || str == "RTMP")
+  if (s == "UDPSINK" || s == "RTSP" || s == "RTMP")
     return NV_DS_SINK_UDPSINK;
-  if (str == "RENDER_DRM")
+  if (s == "RENDER_DRM")
     return NV_DS_SINK_RENDER_DRM;
-  if (str == "MSG_CONV_BROKER")
+  if (s == "MSG_CONV_BROKER")
     return NV_DS_SINK_MSG_CONV_BROKER;
 
   // Return an empty optional if no match was found.

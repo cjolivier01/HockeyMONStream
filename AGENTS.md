@@ -17,9 +17,11 @@
     - Supports `-t N`, `-t=N`, or `--time-limit=N`.
     - If the default YOLOX assets are missing, it will invoke `scripts/setup_yolox_s_pretrained.sh`.
   - Direct `pipeline-app` invocation (useful for debugging configs):
-    - Display only: `bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml --enable-sources=URI-MULTIPLE --enable-sinks=RENDER --options=pipeline.hmaudio.enable=1`
-    - Encode to file: `bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_FILE --options=pipeline.hmaudio.enable=1`
-    - Both commands support an optional time limit: append `-t N` (or `--time-limit=N`) to stop after processing `N` seconds of video.
+    - Display only: `bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml -g <game_id> --enable-sources=URI-MULTIPLE --enable-sinks=RENDER --options=pipeline.hmaudio.enable=1`
+    - Encode to file: `bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml -g <game_id> --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_FILE --options=pipeline.hmaudio.enable=1`
+    - Fake sink (no UI): `bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml -g <game_id> --enable-sources=URI-MULTIPLE --enable-sinks=FAKE --options=pipeline.hmaudio.enable=1`
+    - Multi-sink (comma-separated): `... --enable-sinks=RENDER,ENCODE_FILE`
+    - All commands support an optional time limit: append `-t N` (or `--time-limit=N`) to stop after processing `N` seconds of video.
 - Run a test binary (pattern):
   - `bazelisk run //src/libs/scoreboard:scoreboard_test`
 

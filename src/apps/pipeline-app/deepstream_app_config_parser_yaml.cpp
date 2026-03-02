@@ -67,6 +67,8 @@ gboolean parse_dsplaytracker_yaml(
     const std::string& config_dir) {
   hm::utils::ConfigLocator locator;
   locator.ignored.emplace("config-file");
+  // Nested config consumed by the vpplaytracker plugin.
+  locator.ignored.emplace("play-tracker");
   SET_LOCATOR(locator, *config, enable);
   SET_LOCATOR(locator, *config, unique_id);
   SET_LOCATOR(locator, *config, gpu_id);
@@ -132,6 +134,28 @@ gboolean parse_hmplaycropper_yaml(
     return false;
   }
   hm::utils::ConfigLocator locator;
+  // Base videoprep fields were parsed above; ignore them here so we only warn on truly unknown keys.
+  locator.ignored = {
+      "enable",
+      "unique_id",
+      "gpu_id",
+      "show",
+      "has_queue",
+      "has_videoconvert",
+      "nvbuf_memory_type",
+      "num_output_buffers",
+      "output_width",
+      "output_height",
+      "dewarper_dump_frames",
+      "source_id",
+      "num_surfaces_per_frame",
+      "num_batch_buffers",
+      "plugin_type",
+      "plugin_private_config",
+      "config_file",
+      "configure_only",
+      "one_pass_mode",
+  };
   SET_LOCATOR(locator, *config, plot_play_tracking);
   SET_LOCATOR(locator, *config, plot_player_tracking);
   SET_LOCATOR(locator, *config, fixed_edge_rotation_angle);
@@ -192,12 +216,22 @@ gboolean parse_app_yaml(NvDsConfig* config, const YAML::Node& yaml_node) {
   SET_LOCATOR(locator, *config, perf_measurement_interval_sec);
   SET_LOCATOR(locator, *config, sgie_batch_size);
   SET_LOCATOR(locator, *config, extract_sei_type5_data);
+  SET_LOCATOR_CHAR_PTR(locator, *config, sei_uuid);
   SET_LOCATOR(locator, *config, low_latency_mode);
-  SET_LOCATOR_CHARS(locator, *config, bbox_dir_path);
-  SET_LOCATOR_CHARS(locator, *config, kitti_track_dir_path);
-  SET_LOCATOR_CHARS(locator, *config, reid_track_dir_path);
-  SET_LOCATOR_CHARS(locator, *config, terminated_track_output_path);
-  SET_LOCATOR_CHARS(locator, *config, shadow_track_output_path);
+
+  // nvmultiurisrcbin support (YAML: use-nvmultiurisrcbin, stream-name-display, max-batch-size, http-ip, http-port).
+  SET_LOCATOR(locator, *config, use_nvmultiurisrcbin);
+  SET_LOCATOR(locator, *config, stream_name_display);
+  SET_LOCATOR(locator, *config, max_batch_size);
+  SET_LOCATOR_CHAR_PTR(locator, *config, http_ip);
+  SET_LOCATOR_CHAR_PTR(locator, *config, http_port);
+
+  // Optional output paths.
+  SET_LOCATOR_CHAR_PTR(locator, *config, bbox_dir_path);
+  SET_LOCATOR_CHAR_PTR(locator, *config, kitti_track_dir_path);
+  SET_LOCATOR_CHAR_PTR(locator, *config, reid_track_dir_path);
+  SET_LOCATOR_CHAR_PTR(locator, *config, terminated_track_output_path);
+  SET_LOCATOR_CHAR_PTR(locator, *config, shadow_track_output_path);
   set_config_from_yaml(yaml_node, locator);
   return true;
 }
