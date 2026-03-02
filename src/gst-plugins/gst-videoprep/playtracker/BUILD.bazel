@@ -32,3 +32,28 @@ cc_library(
       "//src/libs/common:utils",
     ],
 )
+
+cc_test(
+    name = "playtracker_priv_init_test",
+    srcs = [
+        "PlayTrackerPrivInitTest.cpp",
+    ],
+    deps = [
+        ":playtracker",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+        "@local_cuda//:cuda_runtime",
+        "@local_cuda//:nppc",
+        "@local_cuda//:nppif",
+        "@local_cuda//:nppig",
+    ],
+    copts = [
+        "-x",
+        "c++",
+        "-std=c++17",
+    ],
+    linkopts = [
+        "-lnvdsbufferpool",
+        "-Wl,-rpath,/opt/nvidia/deepstream/deepstream/lib",
+    ],
+)
