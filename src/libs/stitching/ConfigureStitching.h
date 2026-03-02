@@ -39,5 +39,14 @@ absl::Status configure_stitching(
     surface::Surface left_surface,
     surface::Surface right_surface);
 
+// Ensure `${game_dir}/seam_file.png` exists.
+//
+// Some environments produce the mapping TIFFs but fail to generate `seam_file.png` (e.g. missing enblend/multiblend).
+// The runtime stitcher requires a seam mask; without it the pipeline will render a gray canvas.
+//
+// When missing, this creates a simple "hard seam" mask based on the mapping TIFF placements.
+// It is intended as a robust fallback for debugging; higher-quality seams can still be generated offline.
+absl::Status maybe_create_default_seam_file(const std::string& game_dir);
+
 } // namespace stitching
 } // namespace hm

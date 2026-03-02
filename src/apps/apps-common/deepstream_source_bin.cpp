@@ -13,6 +13,8 @@
 #include <glib-2.0/glib-object.h>
 #include <stdio.h>
 #include <string.h>
+#include <algorithm>
+#include <cctype>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -38,6 +40,17 @@ GST_DEBUG_CATEGORY_EXTERN(APP_CFG_PARSER_CAT);
 
 static gboolean install_mux_eosmonitor_probe = FALSE;
 namespace hm {
+
+namespace {
+std::string normalize_type_string(std::string s) {
+  auto is_space = [](unsigned char c) { return std::isspace(c); };
+  s.erase(s.begin(), std::find_if_not(s.begin(), s.end(), is_space));
+  s.erase(std::find_if_not(s.rbegin(), s.rend(), is_space).base(), s.end());
+  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::toupper(c); });
+  std::replace(s.begin(), s.end(), '-', '_');
+  return s;
+}
+} // namespace
 
 // Converts enum value to string
 std::string to_string(const NvDsSourceType& type) {
@@ -67,26 +80,26 @@ std::string to_string(const NvDsSourceType& type) {
 
 // Converts string to enum value and returns std::optional
 std::optional<NvDsSourceType> source_type_from_string(const std::string& str) {
-  // Option 1: using a series of ifs
-  if (str == "V4L2")
+  const std::string s = normalize_type_string(str);
+  if (s == "V4L2")
     return NV_DS_SOURCE_CAMERA_V4L2;
-  if (str == "URI")
+  if (s == "URI")
     return NV_DS_SOURCE_URI;
-  if (str == "URI-MULTIPLE")
+  if (s == "URI_MULTIPLE")
     return NV_DS_SOURCE_URI_MULTIPLE;
-  if (str == "RTSP")
+  if (s == "RTSP")
     return NV_DS_SOURCE_RTSP;
-  if (str == "RTMP")
+  if (s == "RTMP")
     return NV_DS_SOURCE_RTSP;
-  if (str == "CSI")
+  if (s == "CSI")
     return NV_DS_SOURCE_CAMERA_CSI;
-  if (str == "AUDIO-WAV")
+  if (s == "AUDIO_WAV")
     return NV_DS_SOURCE_AUDIO_WAV;
-  if (str == "AUDIO-URI")
+  if (s == "AUDIO_URI")
     return NV_DS_SOURCE_AUDIO_URI;
-  if (str == "ALSA")
+  if (s == "ALSA")
     return NV_DS_SOURCE_ALSA_SRC;
-  if (str == "IPC")
+  if (s == "IPC")
     return NV_DS_SOURCE_IPC;
 
   // Return an empty optional if no match was found.
@@ -659,6 +672,10 @@ static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
   bin->uri_list_index = 0;
   bin->uri_switch_count = 0;
   bin->uri_switch_pending = FALSE;
+  bin->accumulated_base = 0;
+  bin->prev_accumulated_base = 0;
+  bin->uri_list_segment_stop = GST_CLOCK_TIME_NONE;
+  bin->uri_list_last_pts = GST_CLOCK_TIME_NONE;
 
   // Keep config->uri in sync with the current entry to match file/live detection elsewhere.
   config->uri = g_strdup(bin->uri_list[0]);
@@ -710,6 +727,10 @@ static gboolean switch_to_next_uri(gpointer data) {
   if (!gst_element_sync_state_with_parent(bin->bin)) {
     GST_ERROR_OBJECT(bin->bin, "Couldn't sync state with parent after uri switch");
   }
+
+  // Reset per-URI duration/PTS hints so the next file can update them via SEGMENT/buffers.
+  bin->uri_list_segment_stop = GST_CLOCK_TIME_NONE;
+  bin->uri_list_last_pts = GST_CLOCK_TIME_NONE;
 
   bin->uri_switch_pending = FALSE;
   return FALSE;
@@ -773,7 +794,14 @@ static GstPadProbeReturn uri_list_stream_buf_prob(GstPad* pad, GstPadProbeInfo* 
   }
 
   if ((info->type & GST_PAD_PROBE_TYPE_BUFFER)) {
-    GST_BUFFER_PTS(GST_BUFFER(info->data)) += bin->prev_accumulated_base;
+    GstBuffer* buf = GST_BUFFER(info->data);
+    GstClockTime pts = GST_BUFFER_PTS(buf);
+    if (GST_CLOCK_TIME_IS_VALID(pts)) {
+      bin->uri_list_last_pts = pts;
+      if (bin->prev_accumulated_base) {
+        GST_BUFFER_PTS(buf) = pts + bin->prev_accumulated_base;
+      }
+    }
   }
 
   if ((info->type & GST_PAD_PROBE_TYPE_EVENT_BOTH)) {
@@ -782,6 +810,23 @@ static GstPadProbeReturn uri_list_stream_buf_prob(GstPad* pad, GstPadProbeInfo* 
           (bin->uri_list && bin->num_uri_list >= 2 && (bin->uri_list_index + 1 < bin->num_uri_list));
       const bool will_loop = (bin->config && bin->config->uri_list_loop);
       if (has_next || will_loop) {
+        // Advance the base timestamp so the next URI's PTS continues monotonically.
+        // IMPORTANT: do not advance this on SEGMENT events (seeks emit SEGMENT), only on EOS (file boundary).
+        GstClockTime stop = bin->uri_list_segment_stop;
+        if (stop == GST_CLOCK_TIME_NONE && bin->src_elem) {
+          gint64 qdur = GST_CLOCK_TIME_NONE;
+          if (gst_element_query_duration(bin->src_elem, GST_FORMAT_TIME, &qdur) && qdur > 0) {
+            stop = static_cast<GstClockTime>(qdur);
+          }
+        }
+        if (stop == GST_CLOCK_TIME_NONE && GST_CLOCK_TIME_IS_VALID(bin->uri_list_last_pts)) {
+          stop = bin->uri_list_last_pts;
+        }
+        if (stop != GST_CLOCK_TIME_NONE) {
+          bin->accumulated_base = bin->prev_accumulated_base + stop;
+          bin->prev_accumulated_base = bin->accumulated_base;
+        }
+
         if (!bin->uri_switch_pending) {
           bin->uri_switch_pending = TRUE;
           g_timeout_add(1, switch_to_next_uri, bin);
@@ -796,25 +841,25 @@ static GstPadProbeReturn uri_list_stream_buf_prob(GstPad* pad, GstPadProbeInfo* 
       GstSegment* segment = NULL;
       gst_event_parse_segment(event, (const GstSegment**)&segment);
       if (segment) {
-        bin->prev_accumulated_base = bin->accumulated_base;
-        // Accumulate the segment length so we can keep timestamps monotonic across files.
-        // Prefer `stop` (end position) and fall back to `duration` if needed.
-        guint64 seg_len = segment->stop;
-        if (seg_len == GST_CLOCK_TIME_NONE) {
-          seg_len = segment->duration;
+        // Cache the segment stop/duration as a hint for how far to advance the PTS base on EOS.
+        // (SEEK also emits SEGMENT events, so we must not advance bases here.)
+        guint64 seg_stop = segment->stop;
+        if (seg_stop == GST_CLOCK_TIME_NONE) {
+          seg_stop = segment->duration;
         }
-        if (seg_len != GST_CLOCK_TIME_NONE) {
-          bin->accumulated_base += seg_len;
+        if (seg_stop != GST_CLOCK_TIME_NONE) {
+          bin->uri_list_segment_stop = seg_stop;
         }
       }
     }
 
     switch (GST_EVENT_TYPE(event)) {
-      case GST_EVENT_EOS:
       case GST_EVENT_QOS:
+        return GST_PAD_PROBE_DROP;
       case GST_EVENT_FLUSH_START:
       case GST_EVENT_FLUSH_STOP:
-        return GST_PAD_PROBE_DROP;
+        // Allow flush events for normal pipeline seeks. During a URI switch we will reset the source bin anyway.
+        return bin->uri_switch_pending ? GST_PAD_PROBE_DROP : GST_PAD_PROBE_OK;
       default:
         break;
     }
@@ -1846,6 +1891,7 @@ gboolean create_source_bin(NvDsSourceConfig* config, NvDsSrcBin* bin) {
       }
       break;
     case NV_DS_SOURCE_URI:
+    case NV_DS_SOURCE_URI_MULTIPLE:
       if (!create_uridecode_src_bin(config, bin)) {
         return FALSE;
       }
@@ -1917,6 +1963,7 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
         }
         break;
       case NV_DS_SOURCE_URI:
+      case NV_DS_SOURCE_URI_MULTIPLE:
         if (!create_uridecode_src_bin(&configs[i], &bin->sub_bins[i])) {
           return FALSE;
         }

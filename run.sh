@@ -61,7 +61,17 @@ prepend_path LD_LIBRARY_PATH "${SCRIPT_DIR}/lib/gst-plugins"
 prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib"
 prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 if [ -n "${CONDA_PREFIX:-}" ]; then
-  append_path LD_LIBRARY_PATH "${CONDA_PREFIX}/lib"
+  # Conda environments often ship their own GLib/GStreamer stack. Adding `${CONDA_PREFIX}/lib` ahead of system
+  # libraries can cause hard-to-debug runtime aborts (e.g. GLib pthread TLS errors) when DeepStream/GStreamer load.
+  #
+  # Opt-in to using conda's shared libs by setting `HM_USE_CONDA_LD_LIBRARY_PATH=1`.
+  if [ "${HM_USE_CONDA_LD_LIBRARY_PATH:-0}" = "1" ]; then
+    append_path LD_LIBRARY_PATH "${CONDA_PREFIX}/lib"
+  elif [ -f "${CONDA_PREFIX}/lib/libglib-2.0.so.0" ] || [ -f "${CONDA_PREFIX}/lib/libgobject-2.0.so.0" ]; then
+    echo "CONDA_PREFIX is set but skipping ${CONDA_PREFIX}/lib in LD_LIBRARY_PATH to avoid GLib/GStreamer conflicts (set HM_USE_CONDA_LD_LIBRARY_PATH=1 to force)"
+  else
+    append_path LD_LIBRARY_PATH "${CONDA_PREFIX}/lib"
+  fi
 fi
 
 # Default model assets are not committed; set them up on-demand for the default configs.

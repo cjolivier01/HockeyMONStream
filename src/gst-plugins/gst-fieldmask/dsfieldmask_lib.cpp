@@ -33,6 +33,7 @@ struct DsFieldMaskCtx {
   cv::Mat detection_u8_mask;
   cv::Point2f detection_mask_centroid;
   cv::Rect2i field_box;
+  bool logged_mask_size_mismatch{false};
 };
 
 namespace {
@@ -139,11 +140,20 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx,
 
   std::unique_ptr<hm::utils::PlotContext> plot_context;
 
-  // assert(guint(ctx->detection_u8_mask.cols) <= frame_meta->source_frame_width);
-  // assert(guint(ctx->detection_u8_mask.rows) <= frame_meta->source_frame_height);
-
-  assert(guint(ctx->detection_u8_mask.cols) == frame_meta->source_frame_width);
-  assert(guint(ctx->detection_u8_mask.rows) == frame_meta->source_frame_height);
+  if (guint(ctx->detection_u8_mask.cols) != frame_meta->source_frame_width ||
+      guint(ctx->detection_u8_mask.rows) != frame_meta->source_frame_height) {
+    auto* ctx_mut = const_cast<DsFieldMaskCtx*>(ctx);
+    if (!ctx_mut->logged_mask_size_mismatch) {
+      ctx_mut->logged_mask_size_mismatch = true;
+      g_printerr(
+          "ds-fieldmask: detection mask size %dx%d does not match frame %ux%u; skipping prune\n",
+          ctx->detection_u8_mask.cols,
+          ctx->detection_u8_mask.rows,
+          frame_meta->source_frame_width,
+          frame_meta->source_frame_height);
+    }
+    return;
+  }
 
   assert(frame_meta->pipeline_height);
   assert(frame_meta->pipeline_width);
@@ -264,10 +274,13 @@ absl::Status DsFieldMaskProcessFrame(
     return absl::OkStatus();
   }
 
+  // Only consider the mask "obsolete" if we've already loaded one but it no longer matches the current frame size.
+  // On first frame, `detection_u8_mask` is empty and has (cols, rows) = (0, 0); treating that as obsolete would
+  // unnecessarily regenerate the rink mask and block the whole pipeline.
   bool is_obsolete_detection_mask = false; // TODO: only check first frame
-  if (guint(ctx->detection_u8_mask.cols) != frame_meta->source_frame_width ||
-      guint(ctx->detection_u8_mask.rows) != frame_meta->source_frame_height) {
-    // std::cout << "Obsolete detection mask(s)" << std::endl;
+  if (!ctx->detection_u8_mask.empty() &&
+      (guint(ctx->detection_u8_mask.cols) != frame_meta->source_frame_width ||
+       guint(ctx->detection_u8_mask.rows) != frame_meta->source_frame_height)) {
     is_obsolete_detection_mask = true;
   }
 
@@ -281,7 +294,7 @@ absl::Status DsFieldMaskProcessFrame(
 #else
     hm::surface::Surface this_surface(&surface->surfaceList[frame_index]);
 #endif
-    if (!hm::stitching::is_field_mask_configured(mask_path.parent_path().string())) {
+    if (is_obsolete_detection_mask || !hm::stitching::is_field_mask_configured(mask_path.parent_path().string())) {
       HM_RETURN_IF_ERROR(hm::stitching::create_field_mask(mask_path.parent_path().string(), this_surface));
     }
     //}
@@ -291,7 +304,9 @@ absl::Status DsFieldMaskProcessFrame(
   }
   prune_detection_boxes(frame_meta, ctx, draw);
 #ifdef HAS_NVDS_CUSTOMUSERMETA
-  FieldMaskPayload::create_and_add<FieldMaskPayload>(frame_meta, ctx->detection_mask_centroid, ctx->field_box);
+  if (frame_meta && frame_meta->base_meta.batch_meta) {
+    FieldMaskPayload::create_and_add<FieldMaskPayload>(frame_meta, ctx->detection_mask_centroid, ctx->field_box);
+  }
 #endif
   ++ctx->total_frame_count;
   return absl::OkStatus();

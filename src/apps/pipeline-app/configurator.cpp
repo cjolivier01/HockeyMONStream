@@ -136,6 +136,9 @@ void set_all_field_values(
 }
 
 std::optional<std::tuple<int, int>> get_canvas_size(const std::string& game_dir) {
+  // Control masks require `seam_file.png`. If it is missing, create a simple hard-seam fallback so we can still
+  // determine canvas sizing and avoid the pipeline booting into a gray passthrough mode.
+  (void)stitching::maybe_create_default_seam_file(game_dir);
   hm::pano::ControlMasks control_masks(game_dir);
   if (!control_masks.is_valid()) {
     return std::nullopt;
@@ -248,30 +251,6 @@ std::map<int, YAML::Node> get_enabled_sources(const YAML::Node& pipeline) {
     }
   }
   return sources;
-}
-
-std::map<int, YAML::Node> replace_sink_source_id(const YAML::Node& pipeline, int from_source_id, int to_source_id) {
-  std::map<int, YAML::Node> sinks;
-  for (auto kv : pipeline) {
-    std::string key = kv.first.as<std::string>();
-    if (absl::StartsWith(key, "sink")) {
-      YAML::Node sink_node = kv.second;
-      if (!get_node_value(sink_node, kEnableFlagField, 0)) {
-        continue;
-      }
-      if (!has_node(sink_node, "source-id", /*non_null=*/true)) {
-        // Default would be zero
-        if (from_source_id != 0)
-          continue;
-        sink_node["source-id"] = from_source_id;
-      }
-      if (sink_node["source-id"].as<gint>() == from_source_id) {
-        sink_node["source-id"] = to_source_id;
-      }
-      sinks.emplace(sink_node["sink-id"].as<int>(), sink_node);
-    }
-  }
-  return sinks;
 }
 
 absl::StatusOr<std::map<int, YAML::Node>> get_camera_sources(const YAML::Node& pipeline) {
@@ -480,12 +459,6 @@ void Configurator::apply_frame_offsets_and_sizes(
       ww = right_info.width;
       hh = right_info.height;
     }
-    if (rfo == 0.0) {
-      const double lfo = offsets["left"].as<double>();
-      if (lfo != 0.0) {
-        replace_sink_source_id(pipeline, 0, 1);
-      }
-    }
   }
 }
 
@@ -508,6 +481,12 @@ absl::Status Configurator::set_output_dimensions(
     size_t& num_video_sources) {
   const bool is_udp_output = has_enabled_rtsp_sink(pipeline);
   auto maybe_scale_down = [this, is_udp_output](long width, long height) { return this->scaled_for_udp(is_udp_output, width, height); };
+  auto round_down_even = [](long value) -> long {
+    if (value <= 2) {
+      return 2;
+    }
+    return (value / 2) * 2;
+  };
 
   if (is_camera_source) {
     size_t cam_count = 0;
@@ -526,8 +505,8 @@ absl::Status Configurator::set_output_dimensions(
       ++num_video_sources;
     }
     auto wh_tuple = maybe_scale_down(ww, hh);
-    pipeline["hmplaycropper"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
-    pipeline["hmplaycropper"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
+    pipeline["hmplaycropper"]["output-width"] = std::to_string(round_down_even(std::get<0>(wh_tuple)));
+    pipeline["hmplaycropper"]["output-height"] = std::to_string(round_down_even(std::get<1>(wh_tuple)));
   } else if (!left_files.empty() && !right_files.empty() && has_hmstitcher) {
     StitcherSizingConfig sizing_cfg = ParseStitcherSizingConfig(pipeline);
     auto canvas_size_result = get_canvas_size(game_dir);
@@ -537,9 +516,10 @@ absl::Status Configurator::set_output_dimensions(
       pipeline["hmstitcher"]["output-width"] = std::to_string(canvas_width);
       pipeline["hmstitcher"]["output-height"] = std::to_string(canvas_height);
       constexpr double ar = 16.0 / 9.0;
-      auto wh_tuple = maybe_scale_down(static_cast<long>(ar * canvas_height), canvas_height);
-      pipeline["hmplaycropper"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
-      pipeline["hmplaycropper"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
+      const auto even_canvas_height = static_cast<long>(round_down_even(static_cast<long>(canvas_height)));
+      auto wh_tuple = maybe_scale_down(static_cast<long>(ar * even_canvas_height), even_canvas_height);
+      pipeline["hmplaycropper"]["output-width"] = std::to_string(round_down_even(std::get<0>(wh_tuple)));
+      pipeline["hmplaycropper"]["output-height"] = std::to_string(round_down_even(std::get<1>(wh_tuple)));
     } else {
       if (!sizing_cfg.allow_runtime_canvas()) {
         return absl::FailedPreconditionError(
@@ -590,8 +570,8 @@ absl::Status Configurator::set_output_dimensions(
       }
     }
     auto wh_tuple = maybe_scale_down(ww, hh);
-    pipeline["hmplaycropper"]["output-width"] = std::to_string(std::get<0>(wh_tuple));
-    pipeline["hmplaycropper"]["output-height"] = std::to_string(std::get<1>(wh_tuple));
+    pipeline["hmplaycropper"]["output-width"] = std::to_string(round_down_even(std::get<0>(wh_tuple)));
+    pipeline["hmplaycropper"]["output-height"] = std::to_string(round_down_even(std::get<1>(wh_tuple)));
   }
 
   if (area) {
@@ -1056,16 +1036,34 @@ absl::Status Configurator::post_config_pipeline(
     NvDsPipeline& pipeline,
     const NvDsConfig& config,
     uint64_t start_time_ns) {
-  // We need to do this get state for some reason
+  // Only pause/wait/seek when needed. Importantly, avoid an unbounded wait here because the GLib main loop is not
+  // running yet (so bus watches won't fire), which can look like a "hang" at startup.
+  const bool needs_seek = start_time_ns || config.hmsticher_config.left_frame_offset_ns ||
+                          config.hmsticher_config.right_frame_offset_ns;
+  if (!needs_seek) {
+    return absl::OkStatus();
+  }
+
   GstState state, pending;
-  gst_element_get_state(pipeline.pipeline, &state, &pending, GST_CLOCK_TIME_NONE);
-  if (state == GST_STATE_READY) {
-    GstStateChangeReturn ret = gst_element_set_state(pipeline.pipeline, GST_STATE_PAUSED);
-    if (ret == GST_STATE_CHANGE_FAILURE) {
-      return absl::InternalError("Failed to get pipeline state to PAUSED");
+  // Quick, non-blocking query.
+  (void)gst_element_get_state(pipeline.pipeline, &state, &pending, 0);
+
+  if (state == GST_STATE_NULL || state == GST_STATE_READY) {
+    if (gst_element_set_state(pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
+      return absl::InternalError("Failed to set pipeline to PAUSED");
     }
-  } else if (state != GST_STATE_PAUSED) {
-    return absl::InternalError(TO_STRING("Pipeline in unexpected state: " << gstStateToString(state)));
+  }
+
+  constexpr GstClockTime kPauseWaitTimeout = 5 * GST_SECOND;
+  GstStateChangeReturn wait_ret = gst_element_get_state(pipeline.pipeline, &state, &pending, kPauseWaitTimeout);
+  if (wait_ret == GST_STATE_CHANGE_FAILURE) {
+    return absl::InternalError("Failed while waiting for pipeline to PAUSED");
+  }
+  if (state != GST_STATE_PAUSED) {
+    std::cerr << "Warning: pipeline did not reach PAUSED within " << (kPauseWaitTimeout / GST_SECOND) << "s"
+              << " (state=" << gstStateToString(state) << ", pending=" << gstStateToString(pending)
+              << "). Skipping initial seeks." << std::endl;
+    return absl::OkStatus();
   }
   save_dot_file(pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_paused");
 

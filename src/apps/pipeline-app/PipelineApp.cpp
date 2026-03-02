@@ -17,6 +17,7 @@
 #include <sys/select.h>
 #include <termios.h>
 #include <unistd.h>
+#include <cctype>
 #include <filesystem>
 #include <functional>
 #include <iostream>
@@ -539,22 +540,32 @@ absl::StatusOr<std::vector<std::set<E_TYPE>>> parse_types(
   if (!enable_args || !*enable_args) {
     return std::vector<std::set<E_TYPE>>{};
   }
+  auto trim_ascii = [](std::string s) {
+    auto is_space = [](unsigned char c) { return std::isspace(c); };
+    s.erase(s.begin(), std::find_if_not(s.begin(), s.end(), is_space));
+    s.erase(std::find_if_not(s.rbegin(), s.rend(), is_space).base(), s.end());
+    return s;
+  };
   std::vector<std::set<E_TYPE>> stage_enabled_types;
   for (size_t i = 0, n = g_strv_length(enable_args); i < n; ++i) {
     // Individual items can split by a comma
     std::vector<std::string> p_each = absl::StrSplit(enable_args[i], ',');
     stage_enabled_types.emplace_back();
     for (const std::string& stype : p_each) {
-      if (std::all_of(stype.begin(), stype.end(), ::isdigit)) {
-        E_TYPE type = static_cast<E_TYPE>(std::stoi(stype.c_str()));
+      const std::string token = trim_ascii(stype);
+      if (token.empty()) {
+        continue;
+      }
+      if (std::all_of(token.begin(), token.end(), [](unsigned char c) { return std::isdigit(c); })) {
+        E_TYPE type = static_cast<E_TYPE>(std::stoi(token.c_str()));
         if (!type) {
-          return absl::InvalidArgumentError(TO_STRING("Invalid " << type_name << " type " << stype));
+          return absl::InvalidArgumentError(TO_STRING("Invalid " << type_name << " type " << token));
         }
         stage_enabled_types.rbegin()->emplace(type);
       } else {
-        auto type_enum = type_from_string_fn(stype);
+        auto type_enum = type_from_string_fn(token);
         if (!type_enum) {
-          return absl::InvalidArgumentError(TO_STRING("Invalid " << type_name << " type " << stype));
+          return absl::InvalidArgumentError(TO_STRING("Invalid " << type_name << " type " << token));
         }
         stage_enabled_types.rbegin()->emplace(*type_enum);
       }
