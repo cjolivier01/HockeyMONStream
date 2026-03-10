@@ -40,7 +40,7 @@ cc_library(
         "@jetson-utils//cuda:cuda_lib",
         "@jetson-utils//display",
         "@local_cuda//:cuda",
-        "@local_cuda//:cuda_runtime",
+        "//toolchains/jetson:cuda_runtime",
         "@opencv_linux//:opencv",
         "@yaml-cpp",
     ],

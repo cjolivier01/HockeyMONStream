@@ -17,7 +17,7 @@ cc_binary(
     "@gstreamer",
     "@yaml-cpp",
     "@json_glib",
-    "@local_cuda//:cuda_runtime",
+    "//toolchains/jetson:cuda_runtime",
     "@local_cuda//:cuda",
     "@com_google_absl//absl/strings",
     "@com_google_absl//absl/status:statusor",

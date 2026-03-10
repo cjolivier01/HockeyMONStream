@@ -24,6 +24,6 @@ cc_library (
         "//src/libs/common:utils",
         "@deepstream//:deepstream_lib",
         "@com_google_absl//absl/status",
-        "@local_cuda//:cuda_runtime",
+        "//toolchains/jetson:cuda_runtime",
   ],
 )

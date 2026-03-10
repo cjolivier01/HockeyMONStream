@@ -19,7 +19,7 @@ cc_library(
         "@jetson-utils//cuda:cuda_lib",
         # "@deepstream//sources:deepstream_includes",
         "@com_google_absl//absl/status",
-        "@local_cuda//:cuda_runtime",
+        "//toolchains/jetson:cuda_runtime",
     ],
 )
 
@@ -44,7 +44,7 @@ cc_library(
         "//src/libs/common:utils",
         # "@deepstream//sources:deepstream_includes",
         "@com_google_absl//absl/status",
-        "@local_cuda//:cuda_runtime",
+        "//toolchains/jetson:cuda_runtime",
     ],
 )
 
@@ -75,6 +75,6 @@ cuda_library(
     visibility = ["//visibility:private"],
     deps = [
         # "//src/libs/common:utils",
-        "@local_cuda//:cuda_runtime",
+        "//toolchains/jetson:cuda_runtime",
     ],
 )

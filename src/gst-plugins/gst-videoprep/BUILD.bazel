@@ -29,7 +29,7 @@ gst_cc_plugin(
         "-DIN_GSTVIDEOPREP_PLUGIN=1",
     ],
     linkopts = select({
-        ":aarch64-linux-gnu": ["-L/usr/local/cuda/targets/aarch64-linux/lib"],
+        ":aarch64-linux-gnu": ["-L/opt/jetson-sysroot/usr/local/cuda/targets/aarch64-linux/lib"],
         ":x86_64-linux-gnu": ["-L/usr/local/cuda/targets/x86_64-linux/lib"],
         "//conditions:default": [],
     }) + [
@@ -58,4 +58,3 @@ gst_cc_plugin(
         "@jetson-utils//display:display",
     ],
 )
-
