@@ -1,5 +1,15 @@
 INCLUDE_PREFIX="deepstream"
 
+config_setting(
+    name = "aarch64-linux-gnu",
+    constraint_values = ["@platforms//cpu:aarch64"],
+)
+
+config_setting(
+    name = "x86_64-linux-gnu",
+    constraint_values = ["@platforms//cpu:x86_64"],
+)
+
 cc_library(
     name = "deepstream_lib",
     hdrs = glob([
@@ -7,7 +17,11 @@ cc_library(
     ],
     linkopts = [
         "-L./lib",
-        "-L/opt/nvidia/deepstream/deepstream/lib",
+    ] + select({
+        ":aarch64-linux-gnu": ["-L/opt/jetson-sysroot/opt/nvidia/deepstream/deepstream/lib"],
+        ":x86_64-linux-gnu": ["-L/opt/nvidia/deepstream/deepstream/lib"],
+        "//conditions:default": [],
+    }) + [
         "-l:libnvdsgst_meta.so",
         "-l:libnvbufsurface.so",
         "-l:libnvdsgst_inferbase.so",
@@ -18,6 +32,7 @@ cc_library(
         "-l:libnvds_nvtxhelper.so",
         "-l:libnvdsgst_smartrecord.so",
         "-l:libnvds_utils.so",
+        "-l:libnvds_logger.so",
         "-l:libnvds_msgbroker.so",
     ],
     visibility = ["//visibility:public"],
@@ -65,6 +80,6 @@ cc_library(
     deps=[
       # "@deepstream//sources:deepstream_includes",
       ":deepstream_includes",
-      "@local_cuda//:cuda_runtime",
+      "@gst_plugin_dev//toolchains/jetson:cuda_runtime",
     ],
 )

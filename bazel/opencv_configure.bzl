@@ -23,8 +23,14 @@ def _has_shared_lib(ctx, dirs, lib_stem):
                 return True
     return False
 
-def _detect_opencv_soname_suffix(ctx, root):
-    lib_dir = root + "/lib"
+def _pick_opencv_lib_dir(ctx, root):
+    for rel in ["lib", "lib/aarch64-linux-gnu", "lib/x86_64-linux-gnu"]:
+        lib_dir = root + "/" + rel
+        if _has_shared_lib(ctx, [lib_dir], "opencv_core"):
+            return rel
+    return None
+
+def _detect_opencv_soname_suffix(ctx, lib_dir):
     if not _path_exists(ctx, lib_dir):
         return None
 
@@ -34,13 +40,17 @@ def _detect_opencv_soname_suffix(ctx, root):
     #
     # We want the `<ABI>` file name because the binary's DT_NEEDED entry uses it.
     prefix = "libopencv_core.so."
+    best = None
     for entry in ctx.path(lib_dir).readdir():
         name = _basename(entry)
         if name.startswith(prefix):
             suffix = name[len(prefix):]
             if _looks_like_soname_suffix(suffix):
-                return suffix
-    return None
+                if best == None:
+                    best = suffix
+                elif len(suffix) > len(best) or (len(suffix) == len(best) and suffix > best):
+                    best = suffix
+    return best
 
 def _detect_opencv(ctx, root):
     # Prefer newer OpenCV first, if present.
@@ -48,18 +58,16 @@ def _detect_opencv(ctx, root):
         include_dir = root + "/include/" + version
         core_hpp = include_dir + "/opencv2/core.hpp"
         if _path_exists(ctx, core_hpp):
+            lib_dir_rel = _pick_opencv_lib_dir(ctx, root)
             return {
                 "root": root,
                 "version": version,
                 "include_dir": include_dir,
+                "lib_dir_rel": lib_dir_rel,
                 "has_cudawarping": _path_exists(ctx, include_dir + "/opencv2/cudawarping.hpp"),
                 "has_cudawarping_lib": _has_shared_lib(
                     ctx,
-                    [
-                        root + "/lib",
-                        root + "/lib/x86_64-linux-gnu",
-                        root + "/lib/aarch64-linux-gnu",
-                    ],
+                    [root + "/" + lib_dir_rel] if lib_dir_rel else [],
                     "opencv_cudawarping",
                 ),
             }
@@ -69,8 +77,8 @@ def _build_file_content(
         opencv_version,
         use_conda,
         has_cudawarping,
-        conda_lib_dir = None,
-        conda_soname_suffix = None):
+        lib_dir = "lib",
+        soname_suffix = None):
     libs = [
         "libopencv_core.so",
         "libopencv_highgui.so",
@@ -96,8 +104,8 @@ def _build_file_content(
                 rule_name = rule_name[:-len(".so")]
 
             lib_file = lib
-            if conda_soname_suffix:
-                lib_file = lib + "." + conda_soname_suffix
+            if soname_suffix:
+                lib_file = lib + "." + soname_suffix
             imports.append("""\
 cc_import(
     name = "{name}",
@@ -123,7 +131,11 @@ cc_library(
 )
 """.format(imports = "\n".join(imports), v = opencv_version, deps = repr(deps))
 
-    linkopts = ["-l:" + lib for lib in libs]
+    linkopts = ["-L" + lib_dir]
+    if soname_suffix:
+        linkopts += ["-l:" + lib + "." + soname_suffix for lib in libs]
+    else:
+        linkopts += ["-l:" + lib for lib in libs]
 
     # System OpenCV: rely on the system linker search path.
     return """\
@@ -143,9 +155,12 @@ cc_library(
 
 def _opencv_configure_impl(ctx):
     conda_prefix = ctx.os.environ.get("CONDA_PREFIX")
+    opencv_root = ctx.os.environ.get("OPENCV_ROOT")
 
     # Probe candidates in priority order.
     candidates = []
+    if opencv_root:
+        candidates.append(("override", opencv_root))
     if conda_prefix:
         candidates.append(("conda", conda_prefix))
     candidates.append(("system", "/usr"))
@@ -160,7 +175,7 @@ def _opencv_configure_impl(ctx):
             break
 
     if not chosen:
-        fail("OpenCV headers not found under CONDA_PREFIX or /usr (expected include/opencv4|opencv5/opencv2/core.hpp)")
+        fail("OpenCV headers not found under OPENCV_ROOT, CONDA_PREFIX, or /usr (expected include/opencv4|opencv5/opencv2/core.hpp)")
 
     opencv_version = chosen["version"]
     use_conda = (chosen_kind == "conda")
@@ -171,10 +186,8 @@ def _opencv_configure_impl(ctx):
     # Keep the repository small: only expose the OpenCV include tree and lib dir.
     ctx.symlink(chosen["root"] + "/include/" + opencv_version, opencv_version)
 
-    # For conda OpenCV, libs live in `<prefix>/lib`.
-    # For system OpenCV, we still create `lib` so downstream users can add `-L` if desired.
-    if _path_exists(ctx, chosen["root"] + "/lib"):
-        ctx.symlink(chosen["root"] + "/lib", "lib")
+    if chosen["lib_dir_rel"] and _path_exists(ctx, chosen["root"] + "/" + chosen["lib_dir_rel"]):
+        ctx.symlink(chosen["root"] + "/" + chosen["lib_dir_rel"], "lib")
 
     # Write the repository BUILD/WORKSPACE files.
     ctx.file("WORKSPACE", "workspace(name = \"{name}\")\n".format(name = ctx.name))
@@ -184,13 +197,13 @@ def _opencv_configure_impl(ctx):
             opencv_version,
             use_conda,
             has_cudawarping,
-            conda_lib_dir = (chosen["root"] + "/lib") if use_conda else None,
-            conda_soname_suffix = _detect_opencv_soname_suffix(ctx, chosen["root"]) if use_conda else None,
+            lib_dir = "lib",
+            soname_suffix = _detect_opencv_soname_suffix(ctx, chosen["root"] + "/" + chosen["lib_dir_rel"]) if chosen["lib_dir_rel"] else None,
         ),
     )
 
 opencv_configure = repository_rule(
     implementation = _opencv_configure_impl,
-    environ = ["CONDA_PREFIX"],
+    environ = ["CONDA_PREFIX", "OPENCV_ROOT"],
     doc = "Autoconfigures OpenCV headers/libs, preferring CONDA_PREFIX OpenCV5 when available.",
 )

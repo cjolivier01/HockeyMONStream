@@ -31,7 +31,7 @@ cc_test(
         "@deepstream//:deepstream_lib",
         "@hm-cupano//src/cuda:cuda_blend_cuda_lib",
         "@hm-cupano//src/pano:cuda_pano",
-        "@local_cuda//:cuda_runtime",
+        "//toolchains/jetson:cuda_runtime",
         "@local_cuda//:nppc",
         "@local_cuda//:nppig",
         "@gstreamer",
@@ -45,6 +45,5 @@ cc_test(
         "-ldl",
         "-lm",
         "-lnvdsbufferpool",
-        "-Wl,-rpath,/opt/nvidia/deepstream/deepstream/lib",
     ],
 )

@@ -16,7 +16,7 @@ def gst_cc_plugin(
             "@deepstream//:deepstream_lib",
             "@gstreamer",
             "@yaml-cpp",
-            "@local_cuda//:cuda_runtime",
+            "//toolchains/jetson:cuda_runtime",
             "@local_cuda//:cuda",
         ],
         copts=[

@@ -38,7 +38,7 @@ cc_binary(
         "@glib",
         "@gstreamer",
         "@opencv_linux//:opencv",
-        "@local_cuda//:cuda_runtime",
+        "//toolchains/jetson:cuda_runtime",
     ],
     linkshared = True,
     visibility = ["//visibility:public"],
@@ -59,7 +59,7 @@ cuda_library(
     deps = [
         "@deepstream//:deepstream_includes",
         ":nvdsinfer_custom_impl_Yolo_headers",
-        "@local_cuda//:cuda_runtime",
+        "//toolchains/jetson:cuda_runtime",
     ],
     visibility = ["//visibility:public"],
 )

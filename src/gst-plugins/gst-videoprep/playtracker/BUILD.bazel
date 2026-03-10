@@ -42,7 +42,7 @@ cc_test(
         ":playtracker",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
-        "@local_cuda//:cuda_runtime",
+        "//toolchains/jetson:cuda_runtime",
         "@local_cuda//:nppc",
         "@local_cuda//:nppif",
         "@local_cuda//:nppig",
@@ -54,6 +54,5 @@ cc_test(
     ],
     linkopts = [
         "-lnvdsbufferpool",
-        "-Wl,-rpath,/opt/nvidia/deepstream/deepstream/lib",
     ],
 )

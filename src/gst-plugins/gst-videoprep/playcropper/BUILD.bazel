@@ -48,7 +48,7 @@ cuda_library(
         ":play_cropper_cuda_lib_h",
         "//src/libs/common:utils",
         "@deepstream//:deepstream_lib",
-        "@local_cuda//:cuda_runtime",
+        "//toolchains/jetson:cuda_runtime",
     ],
 )
 
@@ -64,6 +64,6 @@ cc_library(
     deps = [
         "//src/libs/common:utils",
         "@deepstream//:deepstream_lib",
-        "@local_cuda//:cuda_runtime",
+        "//toolchains/jetson:cuda_runtime",
     ],
 )

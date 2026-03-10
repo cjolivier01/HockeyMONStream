@@ -67,7 +67,6 @@ cc_test(
         "-std=c++17",
     ],
     linkopts = [
-        "-Wl,-rpath,/opt/nvidia/deepstream/deepstream/lib",
     ],
 )
 
@@ -85,6 +84,5 @@ cc_test(
         "-std=c++17",
     ],
     linkopts = [
-        "-Wl,-rpath,/opt/nvidia/deepstream/deepstream/lib",
     ],
 )
