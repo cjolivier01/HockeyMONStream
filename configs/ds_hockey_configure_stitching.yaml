@@ -190,6 +190,7 @@ hmstitcher:
   configure-only: 1
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
+  minimize-blend: 0
   # config-file: /home/colivier/Videos/mlk-heat-1
   num-batch-buffers: 4
   num-output-buffers: 4

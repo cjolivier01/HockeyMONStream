@@ -99,7 +99,12 @@ absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
     }
     update_canvas_hints(control_masks.canvas_width(), control_masks.canvas_height());
     stitcher_ = std::make_unique<hm::pano::cuda::CudaStitchPano<uchar4, float4>>(
-        /*batch_size=*/1, /*num_levels=*/kNumStitcherLaplacianLevels, control_masks, kMatchExposure);
+        /*batch_size=*/1,
+        /*num_levels=*/kNumStitcherLaplacianLevels,
+        control_masks,
+        /*match_exposure=*/kMatchExposure,
+        /*quiet=*/false,
+        /*minimize_blend=*/minimize_blend_);
   }
   if (!stitcher_->status().ok()) {
     return to_status(stitcher_->status());
@@ -181,6 +186,8 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     one_pass_mode_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "show") {
     show_ = !!std::atol(prop.value.c_str());
+  } else if (prop.key == "minimize-blend" || prop.key == "minimize_blend") {
+    minimize_blend_ = !!std::atol(prop.value.c_str());
   }
   return true;
 }
