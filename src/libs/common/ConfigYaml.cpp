@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cctype>
 #include <cstring>
 #include <iostream>
 #include <sstream>
@@ -9,6 +10,32 @@
 
 namespace hm {
 namespace utils {
+
+namespace {
+
+bool parse_bool_value(const YAML::Node& value) {
+  if (!value || !value.IsScalar()) {
+    throw YAML::BadConversion(value.Mark());
+  }
+
+  const std::string raw = value.as<std::string>();
+  std::string lowered;
+  lowered.reserve(raw.size());
+  for (char c : raw) {
+    lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  }
+
+  if (lowered == "1" || lowered == "true" || lowered == "yes" || lowered == "on") {
+    return true;
+  }
+  if (lowered == "0" || lowered == "false" || lowered == "no" || lowered == "off") {
+    return false;
+  }
+
+  return value.as<bool>();
+}
+
+} // namespace
 
 // Helper for overloaded lambdas.
 template <class... Ts>
@@ -54,7 +81,11 @@ void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator, 
                      [&](auto* target) {
                        using T = std::decay_t<decltype(*target)>;
                        try {
-                         *target = value.as<T>();
+                         if constexpr (std::is_same_v<T, bool>) {
+                           *target = parse_bool_value(value);
+                         } else {
+                           *target = value.as<T>();
+                         }
                        } catch (const std::exception& e) {
                          std::cerr << "Error setting value for key '" << key << "': " << e.what() << '\n';
                        }

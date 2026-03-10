@@ -33,7 +33,7 @@ register_toolchains("//toolchains/jetson:jetson_toolchain")
 new_local_repository(
     name = "deepstream",
     build_file = "@//buildfiles:third_party/deepstream.BUILD",
-    path = "/opt/jetson-sysroot/opt/nvidia/deepstream/deepstream",
+    path = "/opt/nvidia/deepstream/deepstream",
 )
 
 new_local_repository(
