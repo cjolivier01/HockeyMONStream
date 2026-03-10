@@ -5,6 +5,12 @@ JETSON_SYSROOT = "/opt/jetson-sysroot"
 JETSON_CXX_INCLUDES = [
   JETSON_SYSROOT + "/usr/include",
   JETSON_SYSROOT + "/usr/include/aarch64-linux-gnu",
+  JETSON_SYSROOT + "/usr/lib/aarch64-linux-gnu/dbus-1.0/include",
+  "/usr/aarch64-linux-gnu/include",
+  "/usr/aarch64-linux-gnu/include/c++/13",
+  "/usr/aarch64-linux-gnu/include/c++/13/aarch64-linux-gnu",
+  "/usr/lib/gcc-cross/aarch64-linux-gnu/13/include",
+  "/usr/lib/gcc-cross/aarch64-linux-gnu/13/include-fixed",
   JETSON_SYSROOT + "/usr/include/c++/11",
   JETSON_SYSROOT + "/usr/include/aarch64-linux-gnu/c++/11",
   JETSON_SYSROOT + "/usr/include/c++/12",
@@ -46,6 +52,12 @@ cc_toolchain_config(
   },
   compile_flags = [
     "-no-canonical-prefixes",
+    "-isystem",
+    JETSON_SYSROOT + "/usr/include/aarch64-linux-gnu",
+    "-isystem",
+    JETSON_SYSROOT + "/usr/include",
+    "-isystem",
+    JETSON_SYSROOT + "/usr/lib/aarch64-linux-gnu/dbus-1.0/include",
   ],
   dbg_compile_flags = ["-g"],
   opt_compile_flags = ["-O2"],
@@ -57,15 +69,49 @@ cc_toolchain_config(
   link_flags = [
     "--sysroot=" + JETSON_SYSROOT,
     "-no-canonical-prefixes",
+    "-L" + JETSON_SYSROOT + "/usr/lib/gcc/aarch64-linux-gnu/12",
+    "-L" + JETSON_SYSROOT + "/usr/lib/gcc/aarch64-linux-gnu/11",
     "-L" + JETSON_SYSROOT + "/lib",
     "-L" + JETSON_SYSROOT + "/lib/aarch64-linux-gnu",
     "-L" + JETSON_SYSROOT + "/usr/lib",
     "-L" + JETSON_SYSROOT + "/usr/lib/aarch64-linux-gnu",
+    "-L" + JETSON_SYSROOT + "/usr/lib/aarch64-linux-gnu/nvidia",
+    "-L" + JETSON_SYSROOT + "/usr/local/cuda/targets/aarch64-linux/lib",
+    "-L" + JETSON_SYSROOT + "/usr/local/cuda/targets/aarch64-linux/lib/stubs",
     "-Wl,-rpath-link=" + JETSON_SYSROOT + "/lib/aarch64-linux-gnu",
     "-Wl,-rpath-link=" + JETSON_SYSROOT + "/usr/lib/aarch64-linux-gnu",
+    "-Wl,-rpath-link=" + JETSON_SYSROOT + "/usr/lib/aarch64-linux-gnu/nvidia",
+    "-Wl,-rpath-link=" + JETSON_SYSROOT + "/opt/nvidia/deepstream/deepstream/lib",
+    "-Wl,-rpath-link=" + JETSON_SYSROOT + "/usr/local/cuda/targets/aarch64-linux/lib",
+    "-Wl,-rpath-link=" + JETSON_SYSROOT + "/usr/local/cuda/targets/aarch64-linux/lib/stubs",
+    "-lm",
   ],
-  supports_start_end_lib = True,
+  supports_start_end_lib = False,
   builtin_sysroot = JETSON_SYSROOT,
+)
+
+config_setting(
+  name = "jetson_build",
+  values = {
+    "define": "target_platform=jetson",
+  },
+)
+
+cc_library(
+  name = "cuda_runtime",
+  deps = select({
+    ":jetson_build": [],
+    "//conditions:default": ["@local_cuda//:cuda_runtime"],
+  }),
+  linkopts = select({
+    ":jetson_build": [
+      "-L" + JETSON_SYSROOT + "/usr/local/cuda/targets/aarch64-linux/lib",
+      "-Wl,-rpath-link=" + JETSON_SYSROOT + "/usr/local/cuda/targets/aarch64-linux/lib",
+      "-lcudart",
+    ],
+    "//conditions:default": [],
+  }),
+  visibility = ["//visibility:public"],
 )
 
 filegroup(

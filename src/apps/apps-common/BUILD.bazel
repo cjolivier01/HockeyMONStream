@@ -87,7 +87,7 @@ cc_library(
         "@glib",
         "@gstreamer",
         "@json_glib",
-        "@local_cuda//:cuda_runtime",
+        "//toolchains/jetson:cuda_runtime",
     ],
 )
 

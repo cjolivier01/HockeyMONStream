@@ -15,8 +15,7 @@ cuda_library(
     ],
     deps = [
         "//src/libs/k-means:headers",
-        "@local_cuda//:cuda_runtime",
+        "//toolchains/jetson:cuda_runtime",
     ],
     visibility = ["//visibility:public"],
 )
-

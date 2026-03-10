@@ -62,13 +62,16 @@ build:aarch64 --action_env=target_platform="aarch64"
 build:aarch64 --copt=-DABSL_NO_XPACLRI
 
 
-build:jetson --config=aarch64
 build:jetson --define=target_platform=jetson
 build:jetson --action_env=target_platform="jetson"
 build:jetson --platforms=//platforms:jetson
 build:jetson --extra_toolchains=//toolchains/jetson:jetson_toolchain
 build:jetson --incompatible_enable_cc_toolchain_resolution
 build:jetson --copt=-DIS_TEGRA=1
-build:jetson --copt=-mtune=native
 build:jetson --copt=-DABSL_NO_XPACLRI
 build:jetson --copt=-mbranch-protection=none
+build:jetson --linkopt=-l:libstdc++.so.6
+build:jetson --linkopt=-l:libsystemd.so.0
+build:jetson --linkopt=-lm
+build:jetson --repo_env=OPENCV_ROOT=/opt/jetson-sysroot/usr
+build:jetson --repo_env=CUDA_PATH=/opt/jetson-sysroot/usr/local/cuda
