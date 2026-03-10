@@ -4,19 +4,7 @@
         "path": "."
       },
       {
-        "path": "../jetson-utils"
-      },
-      {
         "path": "../MIPI_Camera"
-      },
-      {
-        "path": "../gstreamer"
-      },
-      {
-        "path": "../multiblend"
-      },
-      {
-        "path": "../enblend-enfuse"
       }
     ],
   "settings": {
