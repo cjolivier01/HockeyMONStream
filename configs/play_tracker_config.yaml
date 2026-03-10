@@ -6,12 +6,22 @@ play-tracker:
   scale-speed-constraints: 3.0
   nonstop-delay-count: 2
   overshoot-scale-speed-ratio: 0.7
+  ignore-largest-bbox: 1
 
   live-boxes:
     - name: current_roi
+      stop-translation-on-dir-change: 0
+      stop-resizing-on-dir-change: 0
       dynamic-acceleration-scaling: 0
     - name: current_roi_aspect
+      stop-translation-on-dir-change: 1
+      stop-resizing-on-dir-change: 1
       dynamic-acceleration-scaling: 1.0
+      sticky-translation: 1
+      sticky-sizing: 1
+      sticky-size-ratio-to-frame-width: 10.0
+      sticky-translation-gaussian-mult: 5.0
+      unsticky-translation-size-ratio: 0.75
       scale-dest-width: 1.45
       scale-dest-height: 1.45
   no-wide-start: 1

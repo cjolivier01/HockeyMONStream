@@ -91,20 +91,25 @@ LivingBoxConfig create_living_box_config(
   return config;
 }
 
-AllLivingBoxConfig create_all_living_box_config(
+void apply_all_living_box_config(
     const BBox& arena_box,
+    AllLivingBoxConfig& config,
     const YAML::Node& yaml,
     std::optional<FloatValue> fixed_aspect_ratio = std::nullopt) {
-  std::cout << std::endl;
-  std::cout << yaml << std::endl;
-
-  AllLivingBoxConfig config;
   hm::utils::ConfigLocator locator;
   SET_LOCATOR(locator, config, name);
   *((ResizingConfig*)&config) = create_resizing_config(config, yaml, locator);
   *((TranslatingBoxConfig*)&config) = create_translating_box_config(arena_box, config, yaml, locator);
   *((LivingBoxConfig*)&config) = create_living_box_config(config, yaml, locator, fixed_aspect_ratio);
   set_config_from_yaml(yaml, locator);
+}
+
+AllLivingBoxConfig create_all_living_box_config(
+    const BBox& arena_box,
+    const YAML::Node& yaml,
+    std::optional<FloatValue> fixed_aspect_ratio = std::nullopt) {
+  AllLivingBoxConfig config;
+  apply_all_living_box_config(arena_box, config, yaml, fixed_aspect_ratio);
   return config;
 }
 
@@ -175,11 +180,13 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
   hm::utils::ConfigLocator locator{
       .ignored{"live-boxes"},
   };
+  std::vector<YAML::Node> live_box_yamls;
 
   if (yaml["live-boxes"]) {
     YAML::Node live_boxes = yaml["live-boxes"];
     // Iterate over the list
     for (const auto& box_yaml : live_boxes) {
+      live_box_yamls.emplace_back(box_yaml);
       config.living_boxes.emplace_back(create_all_living_box_config(arena_box, box_yaml));
     }
     if (!config.living_boxes.empty()) {
@@ -193,6 +200,11 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
   config.ignore_left_and_right_extremes = false; // EXPERIMENTAL
 
   adjust_config(arena_box, config);
+  for (size_t i = 0; i < live_box_yamls.size() && i < config.living_boxes.size(); ++i) {
+    const std::optional<FloatValue> fixed_aspect_ratio =
+        i + 1 == config.living_boxes.size() ? std::optional<FloatValue>(16.0 / 9.0) : std::nullopt;
+    apply_all_living_box_config(arena_box, config.living_boxes[i], live_box_yamls[i], fixed_aspect_ratio);
+  }
   SET_LOCATOR(locator, config, no_wide_start);
   SET_LOCATOR(locator, config, max_lost_track_age);
   SET_LOCATOR(locator, config, ignore_largest_bbox);

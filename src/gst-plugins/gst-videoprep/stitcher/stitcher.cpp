@@ -59,8 +59,7 @@ void log_canvas_hint(const std::string& prefix, size_t width, size_t height) {
 // static constexpr int kNumStitcherLaplacianLevels = 0;
 static constexpr int kNumStitcherLaplacianLevels = 11;
 
-static constexpr bool kMatchExposure = true;
-// static constexpr bool kMatchExposure = false;
+static constexpr bool kMatchExposure = false;
 
 StitcherPriv::~StitcherPriv() {
   stitcher_.reset();

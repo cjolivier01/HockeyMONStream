@@ -29,7 +29,7 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
   DsPlayTrackerInitParams init_params_;
   DsPlayTrackerCtx* pt_context_{nullptr};
   hm::play_tracker::PlayTrackerResults prev_play_tracker_results_;
-  float fixed_edge_rotation_angle_{20.0};
+  float fixed_edge_rotation_angle_{10.0};
   // Dynamic acceleration scaling (usually to slower) on the last live-box only
   float dynamic_acceleration_scaling_{1.0};
   size_t frame_counter_{0};

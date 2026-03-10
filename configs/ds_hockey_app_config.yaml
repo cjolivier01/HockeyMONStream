@@ -387,7 +387,7 @@ hmplaycropper:
   enable: 1
   gpu-id: 0
   nvbuf-memory-type: 0
-  plot-play-tracking: 1
+  plot-play-tracking: 0
   # plot-player-tracking: 0
   no-crop: 0
   show: 0
@@ -427,8 +427,8 @@ ds-playtracker:
         dynamic-acceleration-scaling: 0
       - name: current_roi_aspect
         dynamic-acceleration-scaling: 1.0
-        scale_dest_width: 1.4
-        scale_dest_height: 1.4
+        scale_dest_width: 1.45
+        scale_dest_height: 1.45
 
 ds-fieldmask:
   enable: 1
