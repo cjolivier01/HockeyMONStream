@@ -74,6 +74,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool field_mask_attempted_{false};
   size_t left_frame_offset_ns_{0}, right_frame_offset_ns_{0};
   bool show_{false};
+  bool match_exposure_{false};
   bool minimize_blend_{false};
 };
 

@@ -56,10 +56,7 @@ void log_canvas_hint(const std::string& prefix, size_t width, size_t height) {
 
 } // namespace
 
-// static constexpr int kNumStitcherLaplacianLevels = 0;
 static constexpr int kNumStitcherLaplacianLevels = 11;
-
-static constexpr bool kMatchExposure = false;
 
 StitcherPriv::~StitcherPriv() {
   stitcher_.reset();
@@ -102,7 +99,7 @@ absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
         /*batch_size=*/1,
         /*num_levels=*/kNumStitcherLaplacianLevels,
         control_masks,
-        /*match_exposure=*/kMatchExposure,
+        /*match_exposure=*/match_exposure_,
         /*quiet=*/false,
         /*minimize_blend=*/minimize_blend_);
   }
@@ -186,6 +183,12 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     one_pass_mode_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "show") {
     show_ = !!std::atol(prop.value.c_str());
+  } else if (
+      prop.key == "stitch-auto-adjust-exposure" ||
+      prop.key == "stitch_auto_adjust_exposure" ||
+      prop.key == "match-exposure" ||
+      prop.key == "match_exposure") {
+    match_exposure_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "minimize-blend" || prop.key == "minimize_blend") {
     minimize_blend_ = !!std::atol(prop.value.c_str());
   }

@@ -405,6 +405,7 @@ hmstitcher:
   gpu-id: 0
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
+  stitch-auto-adjust-exposure: 0
   minimize-blend: 0
   # Configure/reload stitching in-process when control masks are missing.
   one-pass-mode: 1
