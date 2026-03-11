@@ -4,6 +4,7 @@ workspace(name = _workspace_name)
 
 load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository", "new_git_repository")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+load("//bazel:conditional_local_repository.bzl", "conditional_local_repository")
 
 local_repository(
     name = "gst_plugin_dev",
@@ -30,16 +31,22 @@ register_detected_cuda_toolchains()
 
 register_toolchains("//toolchains/jetson:jetson_toolchain")
 
-new_local_repository(
+conditional_local_repository(
     name = "deepstream",
     build_file = "@//buildfiles:third_party/deepstream.BUILD",
-    path = "/opt/jetson-sysroot/opt/nvidia/deepstream/deepstream",
+    paths = [
+        "/opt/jetson-sysroot/opt/nvidia/deepstream/deepstream",
+        "/opt/nvidia/deepstream/deepstream",
+    ],
 )
 
-new_local_repository(
+conditional_local_repository(
     name = "misc",
     build_file = "//buildfiles:third_party/misc.BUILD",
-    path = "/opt/jetson-sysroot/usr/include",
+    paths = [
+        "/opt/jetson-sysroot/usr/include",
+        "/usr/include",
+    ],
 )
 
 new_local_repository(
@@ -48,10 +55,13 @@ new_local_repository(
     path = "/usr/lib/x86_64-linux-gnu/glib-2.0/include",
 )
 
-new_local_repository(
+conditional_local_repository(
     name = "glibconfig_aarch64",
     build_file = "//buildfiles:third_party/glibconfig.BUILD",
-    path = "/opt/jetson-sysroot/usr/lib/aarch64-linux-gnu/glib-2.0/include",
+    paths = [
+        "/opt/jetson-sysroot/usr/lib/aarch64-linux-gnu/glib-2.0/include",
+        "/usr/lib/x86_64-linux-gnu/glib-2.0/include",
+    ],
 )
 
 new_git_repository(
@@ -126,10 +136,13 @@ git_repository(
     commit = "9ac7062b1860d895fb5a8cbf58c3e9ef8f674b5f",
 )
 
-new_local_repository(
+conditional_local_repository(
     name = "glib",
     build_file = "//buildfiles:third_party/glib_nobuild.BUILD",
-    path = "/opt/jetson-sysroot/usr",
+    paths = [
+        "/opt/jetson-sysroot/usr",
+        "/usr",
+    ],
 )
 
 load("//bazel:opencv_configure.bzl", "opencv_configure")
@@ -138,59 +151,86 @@ opencv_configure(
     name = "opencv_linux",
 )
 
-new_local_repository(
+conditional_local_repository(
     name = "json_glib",
     build_file = "@//buildfiles:third_party/json_glib.BUILD",
-    path = "/opt/jetson-sysroot/usr",
+    paths = [
+        "/opt/jetson-sysroot/usr",
+        "/usr",
+    ],
 )
 
-new_local_repository(
+conditional_local_repository(
     name = "gtk3",
     build_file = "@//buildfiles:third_party/gtk3.BUILD",
-    path = "/opt/jetson-sysroot/usr/include/gtk-3.0",
+    paths = [
+        "/opt/jetson-sysroot/usr/include/gtk-3.0",
+        "/usr/include/gtk-3.0",
+    ],
 )
 
-new_local_repository(
+conditional_local_repository(
     name = "cairo",
     build_file = "@//buildfiles:third_party/gtk3.BUILD",
-    path = "/opt/jetson-sysroot/usr/include/cairo",
+    paths = [
+        "/opt/jetson-sysroot/usr/include/cairo",
+        "/usr/include/cairo",
+    ],
 )
 
-new_local_repository(
+conditional_local_repository(
     name = "gdk-pixbuf",
     build_file = "@//buildfiles:third_party/gtk3.BUILD",
-    path = "/opt/jetson-sysroot/usr/include/gdk-pixbuf-2.0",
+    paths = [
+        "/opt/jetson-sysroot/usr/include/gdk-pixbuf-2.0",
+        "/usr/include/gdk-pixbuf-2.0",
+    ],
 )
 
-new_local_repository(
+conditional_local_repository(
     name = "harfbuzz",
     build_file = "@//buildfiles:third_party/gtk3.BUILD",
-    path = "/opt/jetson-sysroot/usr/include/harfbuzz",
+    paths = [
+        "/opt/jetson-sysroot/usr/include/harfbuzz",
+        "/usr/include/harfbuzz",
+    ],
 )
 
-new_local_repository(
+conditional_local_repository(
     name = "pango",
     build_file = "@//buildfiles:third_party/gtk3.BUILD",
-    path = "/opt/jetson-sysroot/usr/include/pango-1.0",
+    paths = [
+        "/opt/jetson-sysroot/usr/include/pango-1.0",
+        "/usr/include/pango-1.0",
+    ],
 )
 
-new_local_repository(
+conditional_local_repository(
     name = "atk",
     build_file = "@//buildfiles:third_party/gtk3.BUILD",
-    path = "/opt/jetson-sysroot/usr/include/atk-1.0",
+    paths = [
+        "/opt/jetson-sysroot/usr/include/atk-1.0",
+        "/usr/include/atk-1.0",
+    ],
 )
 
 
-new_local_repository(
+conditional_local_repository(
     name = "gstreamer",
     build_file = "@//buildfiles:third_party/gstreamer_nobuild.BUILD",
-    path = "/opt/jetson-sysroot/usr",
+    paths = [
+        "/opt/jetson-sysroot/usr",
+        "/usr",
+    ],
 )
 
-new_local_repository(
+conditional_local_repository(
     name = "libsoup",
     build_file = "@//buildfiles:third_party/libsoup.BUILD",
-    path = "/opt/jetson-sysroot/usr",
+    paths = [
+        "/opt/jetson-sysroot/usr",
+        "/usr",
+    ],
 )
 
 # SimpleBLE (and subprojects SimpleDBus, SimpleBluez)
@@ -204,14 +244,20 @@ git_repository(
 )
 
 # System headers for DBus and BlueZ as local repositories
-new_local_repository(
+conditional_local_repository(
     name = "dbus",
     build_file = "@//buildfiles:third_party/dbus.BUILD",
-    path = "/opt/jetson-sysroot/usr",
+    paths = [
+        "/opt/jetson-sysroot/usr",
+        "/usr",
+    ],
 )
 
-new_local_repository(
+conditional_local_repository(
     name = "bluez",
     build_file = "@//buildfiles:third_party/bluez.BUILD",
-    path = "/opt/jetson-sysroot/usr",
+    paths = [
+        "/opt/jetson-sysroot/usr",
+        "/usr",
+    ],
 )

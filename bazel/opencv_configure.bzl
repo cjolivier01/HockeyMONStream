@@ -198,7 +198,9 @@ def _opencv_configure_impl(ctx):
             use_conda,
             has_cudawarping,
             lib_dir = "lib",
-            soname_suffix = _detect_opencv_soname_suffix(ctx, chosen["root"] + "/" + chosen["lib_dir_rel"]) if chosen["lib_dir_rel"] else None,
+            # System installs can carry multiple OpenCV ABIs side-by-side.
+            # Prefer the unversioned linker symlinks there so headers and libs stay aligned.
+            soname_suffix = _detect_opencv_soname_suffix(ctx, chosen["root"] + "/" + chosen["lib_dir_rel"]) if use_conda and chosen["lib_dir_rel"] else None,
         ),
     )
 
