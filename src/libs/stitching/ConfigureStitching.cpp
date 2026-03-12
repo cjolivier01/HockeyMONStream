@@ -488,6 +488,9 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
     return absl::OkStatus();
   }
 
+#if 1
+  return absl::InvalidArgumentError("No seam file found");
+#else
   const fs::path mapping0_path = root / "mapping_0000.tif";
   const fs::path mapping1_path = root / "mapping_0001.tif";
   if (!fs::exists(mapping0_path) || !fs::exists(mapping1_path)) {
@@ -570,6 +573,7 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
   std::cout << "Created fallback seam mask: " << seam_path.string() << " (" << canvas_width << "x" << canvas_height
             << ")" << std::endl;
   return absl::OkStatus();
+#endif
 }
 
 bool can_configure_stitching(const YAML::Node& config) {

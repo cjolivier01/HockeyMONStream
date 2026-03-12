@@ -73,7 +73,7 @@ absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
   // In one-pass mode we want to be resilient to partial stitcher artifacts (e.g. mapping TIFFs exist but seam_file.png
   // is missing). Without a seam file, hm-cupano will fail to load control masks and we would output a gray canvas.
   if (one_pass_mode_) {
-    (void)hm::stitching::maybe_create_default_seam_file(config_file_);
+    HM_RETURN_IF_ERROR(hm::stitching::maybe_create_default_seam_file(config_file_));
   }
 
   absl::MutexLock lk(&stitcher_mu_);
