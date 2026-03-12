@@ -70,29 +70,14 @@ absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
     return absl::NotFoundError("No control masks to load");
   }
 
-  // In one-pass mode we want to be resilient to partial stitcher artifacts (e.g. mapping TIFFs exist but seam_file.png
-  // is missing). Without a seam file, hm-cupano will fail to load control masks and we would output a gray canvas.
-  if (one_pass_mode_) {
-    HM_RETURN_IF_ERROR(hm::stitching::maybe_create_default_seam_file(config_file_));
-  }
-
   absl::MutexLock lk(&stitcher_mu_);
   if (!stitcher_) {
     hm::pano::ControlMasks control_masks;
     if (!control_masks.load(config_file_)) {
       std::string config_file_dir = config_file_;
-      if (one_pass_mode_) {
-        // In one-pass mode, allow the pipeline to bootstrap without masks.
-        if (!logged_missing_masks_) {
-          g_print("hmstitcher: missing control masks in %s\n", config_file_dir.c_str());
-          logged_missing_masks_ = true;
-        }
-        return (StitcherPriv::STITCHER*)nullptr;
-      } else {
-        // Don't try again unless one-pass mode wants to re-attempt after configure.
-        config_file_.clear();
-        return absl::NotFoundError(TO_STRING("Could not load control masks from " << config_file_dir));
-      }
+      // Missing seam file or control masks is fatal for stitcher startup.
+      config_file_.clear();
+      return absl::NotFoundError(TO_STRING("Could not load control masks from " << config_file_dir));
     }
     update_canvas_hints(control_masks.canvas_width(), control_masks.canvas_height());
     stitcher_ = std::make_unique<hm::pano::cuda::CudaStitchPano<uchar4, float4>>(
@@ -128,17 +113,8 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
   }
   auto res = get_stitcher();
   if (!res.ok()) {
-    if (one_pass_mode_ && absl::IsNotFound(res.status())) {
-      if (!logged_missing_masks_) {
-        g_print(
-            "hmstitcher: control masks not found in %s; enabling one-pass configure on first batch\n",
-            config_file_.c_str());
-        logged_missing_masks_ = true;
-      }
-    } else {
-      std::cerr << res.status() << std::endl;
-      return res.status();
-    }
+    std::cerr << res.status() << std::endl;
+    return res.status();
   }
   STITCHER* stitcher = res.ok() ? res.value() : nullptr;
 

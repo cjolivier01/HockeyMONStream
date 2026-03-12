@@ -69,7 +69,6 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   size_t canvas_width_hint_{0};
   size_t canvas_height_hint_{0};
   bool configured_during_run_{false};
-  bool logged_missing_masks_{false};
   bool orientation_ran_{false};
   bool field_mask_attempted_{false};
   size_t left_frame_offset_ns_{0}, right_frame_offset_ns_{0};
