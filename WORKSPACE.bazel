@@ -101,10 +101,15 @@ git_repository(
 )
 
 ################################ HockeyMOM Sub-Modules ################################
-git_repository(
+# git_repository(
+#     name = "hm-cupano",
+#     commit = "0f7934a7137ee5adcd7c5844fe786e8e6f6dfa6b",
+#     remote = "ssh://git@github.com/cjolivier01/hm-cupano",
+# )
+
+local_repository(
     name = "hm-cupano",
-    commit = "0f7934a7137ee5adcd7c5844fe786e8e6f6dfa6b",
-    remote = "ssh://git@github.com/cjolivier01/hm-cupano",
+    path = "../hm-cupano",
 )
 
 git_repository(
@@ -112,6 +117,11 @@ git_repository(
     commit = "f4b85fbd89262e60deba1ab580d421f9614e8ca6",
     remote = "ssh://git@github.com/cjolivier01/jetson-utils",
 )
+
+# local_repository(
+#    name = "jetson-utils",
+#    path = "../jetson-utils",
+# )
 
 git_repository(
     name = "hm",

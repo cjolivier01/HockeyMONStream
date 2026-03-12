@@ -6,7 +6,8 @@ HOST_ARCH := $(shell uname -m)
 all: print_targets
 
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 jetson gstdebug \
-	pipeline-app run-pipeline-app video-player run-video-player
+	pipeline-app run-pipeline-app video-player run-video-player \
+	deb x86-deb amd64-deb jetson-deb arm64-deb
 
 perf:
 	$(BAZEL) build --config=opt //...
@@ -30,6 +31,34 @@ jetson:
 		exit 1; \
 	fi
 	$(BAZEL) build --config=jetson --action_env=JETSON_SYSROOT=$(JETSON_SYSROOT) --define=JETSON_SYSROOT=$(JETSON_SYSROOT) //...
+
+deb:
+	@if [ "$(HOST_ARCH)" = "x86_64" ]; then \
+		$(MAKE) x86-deb; \
+	elif [ "$(HOST_ARCH)" = "aarch64" ]; then \
+		$(MAKE) jetson-deb; \
+	else \
+		echo "Unsupported host architecture for deb target: $(HOST_ARCH)" >&2; \
+		exit 1; \
+	fi
+
+x86-deb:
+	./scripts/build_deb.sh --target=x86_64 --bazel=$(BAZEL)
+
+amd64-deb: x86-deb
+
+jetson-deb:
+	@if [ "$(HOST_ARCH)" = "aarch64" ] && [ ! -e "$(JETSON_SYSROOT)" ]; then \
+		echo "Creating symlink $(JETSON_SYSROOT) -> / for native Jetson build"; \
+		sudo ln -sfn / "$(JETSON_SYSROOT)"; \
+	fi
+	@if [ "$(HOST_ARCH)" != "aarch64" ] && [ ! -d "$(JETSON_SYSROOT)/usr/include" ]; then \
+		echo "Jetson sysroot not found at $(JETSON_SYSROOT). Run JETSON_HOST=<user@jetson> scripts/sync_jetson_sysroot.sh [DEST]." >&2; \
+		exit 1; \
+	fi
+	./scripts/build_deb.sh --target=jetson --bazel=$(BAZEL) --jetson-sysroot=$(JETSON_SYSROOT)
+
+arm64-deb: jetson-deb
 
 test:
 	$(BAZEL) test --config=opt //...
@@ -68,6 +97,9 @@ print_targets:
 		'gstdebug       Build debug with extra GStreamer debug defines (--config=gstdebug).' \
 		'x86_64         Build optimized for x86_64 (--cpu=k8).' \
 		'jetson         Build optimized for Jetson (--config=jetson, needs $(JETSON_SYSROOT)).' \
+		'deb            Build a Debian package for the current host architecture into ./dist.' \
+		'x86-deb        Build an amd64 Debian package into ./dist.' \
+		'jetson-deb     Build an arm64/Jetson Debian package into ./dist.' \
 		'' \
 		'Apps' \
 		'----' \

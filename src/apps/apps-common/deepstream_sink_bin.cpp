@@ -173,6 +173,91 @@ done:
   return ret;
 }
 
+static const NvDsSinkRenderConfig* get_output_transform_config(
+    guint num_sub_bins,
+    NvDsSinkSubBinConfig* config_array,
+    guint index,
+    gboolean require_demux) {
+  for (guint i = 0; i < num_sub_bins; ++i) {
+    if (!config_array[i].enable || config_array[i].link_to_demux != require_demux) {
+      continue;
+    }
+    if (!require_demux && config_array[i].source_id != index) {
+      continue;
+    }
+    if (config_array[i].type == NV_DS_SINK_MSG_CONV_BROKER) {
+      continue;
+    }
+    const NvDsSinkRenderConfig* candidate = &config_array[i].render_config;
+    if (candidate->output_frame_width <= 0 || candidate->output_frame_height <= 0) {
+      continue;
+    }
+    return candidate;
+  }
+  return nullptr;
+}
+
+static gboolean add_output_transform_stage(const NvDsSinkRenderConfig* config, NvDsSinkBin* bin) {
+  if (!config || config->output_frame_width <= 0 || config->output_frame_height <= 0) {
+    return TRUE;
+  }
+
+  GstCaps* caps = nullptr;
+  bin->output_transform = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "sink_bin_output_transform");
+  if (!bin->output_transform) {
+    NVGSTDS_ERR_MSG_V("Failed to create sink output transform");
+    return FALSE;
+  }
+  g_object_set(
+      G_OBJECT(bin->output_transform),
+      "gpu-id",
+      config->gpu_id,
+      "nvbuf-memory-type",
+      config->nvbuf_memory_type,
+      "disable-passthrough",
+      TRUE,
+      NULL);
+  if (config->output_dest_crop[0] != '\0') {
+    g_object_set(G_OBJECT(bin->output_transform), "dest-crop", config->output_dest_crop, NULL);
+  }
+
+  bin->output_cap_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "sink_bin_output_caps");
+  if (!bin->output_cap_filter) {
+    NVGSTDS_ERR_MSG_V("Failed to create sink output caps filter");
+    return FALSE;
+  }
+
+  caps = gst_caps_new_empty_simple("video/x-raw");
+  gst_caps_set_simple(
+      caps,
+      "width",
+      G_TYPE_INT,
+      config->output_frame_width,
+      "height",
+      G_TYPE_INT,
+      config->output_frame_height,
+      NULL);
+  GstCapsFeatures* feature = gst_caps_features_new(MEMORY_FEATURES, NULL);
+  gst_caps_set_features(caps, 0, feature);
+  g_object_set(G_OBJECT(bin->output_cap_filter), "caps", caps, NULL);
+  gst_caps_unref(caps);
+
+  gst_bin_add_many(GST_BIN(bin->bin), bin->output_transform, bin->output_cap_filter, NULL);
+  if (!gst_element_link(bin->queue, bin->output_transform)) {
+    NVGSTDS_ERR_MSG_V("Failed to link sink output queue to transform");
+    return FALSE;
+  }
+  if (!gst_element_link(bin->output_transform, bin->output_cap_filter)) {
+    NVGSTDS_ERR_MSG_V("Failed to link sink output transform to caps filter");
+    return FALSE;
+  }
+  if (!gst_element_link(bin->output_cap_filter, bin->tee)) {
+    NVGSTDS_ERR_MSG_V("Failed to link sink output caps filter to tee");
+    return FALSE;
+  }
+  return TRUE;
+}
+
 /**
  * Function to create sink bin for Display / Fakesink.
  */
@@ -1008,7 +1093,12 @@ gboolean create_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array,
 
   gst_bin_add(GST_BIN(bin->bin), bin->tee);
 
-  NVGSTDS_LINK_ELEMENT(bin->queue, bin->tee);
+  if (!add_output_transform_stage(get_output_transform_config(num_sub_bins, config_array, index, FALSE), bin)) {
+    goto done;
+  }
+  if (!bin->output_transform) {
+    NVGSTDS_LINK_ELEMENT(bin->queue, bin->tee);
+  }
 
   g_object_set(G_OBJECT(bin->tee), "allow-not-linked", TRUE, NULL);
 
@@ -1064,7 +1154,7 @@ gboolean create_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array,
   }
 
   if (bin->num_bins == 0) {
-    NvDsSinkRenderConfig config;
+    NvDsSinkRenderConfig config{};
     config.type = NV_DS_SINK_FAKE;
     if (!create_render_bin(&config, &bin->sub_bins[0]))
       goto done;
@@ -1111,7 +1201,12 @@ gboolean create_demux_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_
 
   gst_bin_add(GST_BIN(bin->bin), bin->tee);
 
-  NVGSTDS_LINK_ELEMENT(bin->queue, bin->tee);
+  if (!add_output_transform_stage(get_output_transform_config(num_sub_bins, config_array, index, TRUE), bin)) {
+    goto done;
+  }
+  if (!bin->output_transform) {
+    NVGSTDS_LINK_ELEMENT(bin->queue, bin->tee);
+  }
 
   for (i = 0; i < num_sub_bins; i++) {
     if (!config_array[i].enable) {
@@ -1161,7 +1256,7 @@ gboolean create_demux_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_
   }
 
   if (bin->num_bins == 0) {
-    NvDsSinkRenderConfig config;
+    NvDsSinkRenderConfig config{};
     config.type = NV_DS_SINK_FAKE;
     if (!create_render_bin(&config, &bin->sub_bins[0]))
       goto done;

@@ -22,6 +22,7 @@
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
@@ -128,6 +129,11 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
       // Support both the legacy top-level `stage` key and DeepStream-style `application.stage`.
       stage = hm::get_node_value(app_config, "application.stage", stage);
       stage = hm::get_node_value(app_config, "stage", stage);
+    }
+    if (stage >= 0 && (output_width_override_ > 0 || output_height_override_ > 0)) {
+      app_ctx->configurator().set_output_overrides(
+          output_width_override_ > 0 ? std::optional<int>(output_width_override_) : std::nullopt,
+          output_height_override_ > 0 ? std::optional<int>(output_height_override_) : std::nullopt);
     }
     stage_app_contexts_[stage].emplace_back(std::move(app_ctx));
   }
@@ -615,6 +621,27 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &time_limit_seconds_,
        "Stop after processing this many seconds of video",
        "N"},
+      {"output-width",
+       0,
+       0,
+       G_OPTION_ARG_INT,
+       &output_width_override_,
+       "Resize the rendered output video to this width (keeps aspect ratio)",
+       "PX"},
+      {"output-height",
+       0,
+       0,
+       G_OPTION_ARG_INT,
+       &output_height_override_,
+       "Resize/letterbox the rendered output video to this height (keeps aspect ratio unless --output-width is also provided)",
+       "PX"},
+      {"output-heigth",
+       0,
+       G_OPTION_FLAG_HIDDEN,
+       G_OPTION_ARG_INT,
+       &output_height_override_,
+       nullptr,
+       "PX"},
       {"options", 'p', 0, G_OPTION_ARG_FILENAME_ARRAY, &pipline_options, "Set arbitrary option(s)", nullptr},
       {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &cfg_files_, "Set the config file", nullptr},
       {"enable-sources", 'e', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sources_, "Enable Sources", nullptr},
@@ -667,6 +694,10 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   if (start_time) {
     start_time_ns_ = hm::hhmmss_to_nanoseconds(start_time);
     g_free(start_time);
+  }
+
+  if (output_width_override_ < 0 || output_height_override_ < 0) {
+    return absl::InvalidArgumentError("output width and height overrides must be non-negative");
   }
 
   if (input_uris_) {

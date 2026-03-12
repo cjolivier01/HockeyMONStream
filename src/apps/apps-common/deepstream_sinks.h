@@ -83,6 +83,9 @@ typedef struct {
   guint conn_id;
   guint plane_id;
   gboolean set_mode;
+  gint output_frame_width;
+  gint output_frame_height;
+  gchar output_dest_crop[64];
 } NvDsSinkRenderConfig;
 
 typedef struct {
@@ -138,6 +141,8 @@ typedef struct {
 typedef struct {
   GstElement* bin;
   GstElement* queue;
+  GstElement* output_transform;
+  GstElement* output_cap_filter;
   GstElement* tee;
 
   gint num_bins;

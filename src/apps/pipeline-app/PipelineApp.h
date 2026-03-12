@@ -138,6 +138,8 @@ class PipelineApplication {
   gboolean print_dependencies_version_;
   // Stop conditions
   gint time_limit_seconds_{0};
+  gint output_width_override_{0};
+  gint output_height_override_{0};
   gboolean quit_;
   gboolean dump_pipeline_dot_;
   gboolean force_reconfigure_;

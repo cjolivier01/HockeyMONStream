@@ -24,6 +24,7 @@ class Configurator {
   Configurator(const std::string& game_id, const std::string& config_root_dir, int override_gpu_id);
   virtual ~Configurator();
   absl::StatusOr<YAML::Node> load_config();
+  void set_output_overrides(const std::optional<int>& output_width, const std::optional<int>& output_height);
 
   virtual absl::Status configure();
 
@@ -92,6 +93,8 @@ class Configurator {
   YAML::Node private_config_;
 
   bool set_stream_offsets_{false};
+  std::optional<int> output_width_override_;
+  std::optional<int> output_height_override_;
 };
 
 template <typename T_ENUM>

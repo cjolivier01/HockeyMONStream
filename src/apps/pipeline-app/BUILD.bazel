@@ -53,3 +53,23 @@ cc_test(
     "-lm",
   ],
 )
+
+cc_test(
+  name="output_sizing_test",
+  srcs=[
+    "OutputSizing.h",
+    "OutputSizingTest.cpp",
+  ],
+  deps=[
+    "@com_google_absl//absl/status:statusor",
+  ],
+  copts=[
+    "-x", "c++",
+    "-std=c++17",
+  ],
+  linkopts=[
+    "-lX11",
+    "-ldl",
+    "-lm",
+  ],
+)

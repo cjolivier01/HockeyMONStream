@@ -32,6 +32,9 @@ gboolean parse_sink_yaml(
   config->encoder_config.container = NV_DS_CONTAINER_MP4;
   config->encoder_config.compute_hw = 0;
   config->render_config.qos = FALSE;
+  config->render_config.output_frame_width = 0;
+  config->render_config.output_frame_height = 0;
+  config->render_config.output_dest_crop[0] = '\0';
   config->link_to_demux = FALSE;
   config->msg_conv_broker_config.new_api = FALSE;
   config->msg_conv_broker_config.conv_msg2p_new_api = FALSE;
@@ -60,6 +63,17 @@ gboolean parse_sink_yaml(
       config->render_config.width = itr->second.as<gint>();
     } else if (paramKey == "height") {
       config->render_config.height = itr->second.as<gint>();
+    } else if (paramKey == "output-frame-width") {
+      config->render_config.output_frame_width = itr->second.as<gint>();
+    } else if (paramKey == "output-frame-height") {
+      config->render_config.output_frame_height = itr->second.as<gint>();
+    } else if (paramKey == "output-dest-crop") {
+      std::string crop = itr->second.as<std::string>();
+      std::strncpy(
+          config->render_config.output_dest_crop,
+          crop.c_str(),
+          sizeof(config->render_config.output_dest_crop) - 1);
+      config->render_config.output_dest_crop[sizeof(config->render_config.output_dest_crop) - 1] = '\0';
     } else if (paramKey == "qos") {
       config->render_config.qos = itr->second.as<gboolean>();
       config->render_config.qos_value_specified = TRUE;

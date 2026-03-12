@@ -146,6 +146,9 @@ GST_DEBUG_CATEGORY(APP_CFG_PARSER_CAT);
 #define CONFIG_GROUP_SINK_TYPE "type"
 #define CONFIG_GROUP_SINK_WIDTH "width"
 #define CONFIG_GROUP_SINK_HEIGHT "height"
+#define CONFIG_GROUP_SINK_OUTPUT_FRAME_WIDTH "output-frame-width"
+#define CONFIG_GROUP_SINK_OUTPUT_FRAME_HEIGHT "output-frame-height"
+#define CONFIG_GROUP_SINK_OUTPUT_DEST_CROP "output-dest-crop"
 #define CONFIG_GROUP_SINK_SYNC "sync"
 #define CONFIG_GROUP_SINK_QOS "qos"
 #define CONFIG_GROUP_SINK_CONTAINER "container"
@@ -1433,6 +1436,9 @@ gboolean parse_sink(NvDsSinkSubBinConfig* config, GKeyFile* key_file, gchar* gro
   config->render_config.qos = FALSE;
   config->render_config.color_range = -1;
   config->render_config.set_mode = -1;
+  config->render_config.output_frame_width = 0;
+  config->render_config.output_frame_height = 0;
+  config->render_config.output_dest_crop[0] = '\0';
   config->link_to_demux = FALSE;
   config->msg_conv_broker_config.new_api = FALSE;
   config->msg_conv_broker_config.conv_msg2p_new_api = FALSE;
@@ -1459,6 +1465,19 @@ gboolean parse_sink(NvDsSinkSubBinConfig* config, GKeyFile* key_file, gchar* gro
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SINK_HEIGHT)) {
       config->render_config.height = g_key_file_get_integer(key_file, group, CONFIG_GROUP_SINK_HEIGHT, &error);
       CHECK_ERROR(error);
+    } else if (!g_strcmp0(*key, CONFIG_GROUP_SINK_OUTPUT_FRAME_WIDTH)) {
+      config->render_config.output_frame_width =
+          g_key_file_get_integer(key_file, group, CONFIG_GROUP_SINK_OUTPUT_FRAME_WIDTH, &error);
+      CHECK_ERROR(error);
+    } else if (!g_strcmp0(*key, CONFIG_GROUP_SINK_OUTPUT_FRAME_HEIGHT)) {
+      config->render_config.output_frame_height =
+          g_key_file_get_integer(key_file, group, CONFIG_GROUP_SINK_OUTPUT_FRAME_HEIGHT, &error);
+      CHECK_ERROR(error);
+    } else if (!g_strcmp0(*key, CONFIG_GROUP_SINK_OUTPUT_DEST_CROP)) {
+      gchar* crop = g_key_file_get_string(key_file, group, CONFIG_GROUP_SINK_OUTPUT_DEST_CROP, &error);
+      CHECK_ERROR(error);
+      g_strlcpy(config->render_config.output_dest_crop, crop, sizeof(config->render_config.output_dest_crop));
+      g_free(crop);
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SINK_QOS)) {
       config->render_config.qos = g_key_file_get_boolean(key_file, group, CONFIG_GROUP_SINK_QOS, &error);
       config->render_config.qos_value_specified = TRUE;

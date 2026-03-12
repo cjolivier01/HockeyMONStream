@@ -20,6 +20,7 @@
 #include "absl/strings/str_split.h"
 #include "cupano/pano/controlMasks.h"
 #include "deepstream_app.h"
+#include "OutputSizing.h"
 #include "StitcherOnePassConfig.h"
 #include "hstream/src/apps/apps-common/deepstream_config.h"
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
@@ -487,6 +488,40 @@ absl::Status Configurator::set_output_dimensions(
     }
     return (value / 2) * 2;
   };
+  auto set_sink_output_frame =
+      [&pipeline](long frame_width, long frame_height, bool enable_output_transform, const std::string& dest_crop) {
+    for (size_t i = 0; i < MAX_SINK_BINS; ++i) {
+      std::string sinkname = "sink" + std::to_string(i);
+      if (!pipeline[sinkname].IsDefined()) {
+        continue;
+      }
+      YAML::Node sink = pipeline[sinkname];
+      if (!get_node_value(sink, kEnableFlagField, 0)) {
+        continue;
+      }
+      if (sink["type"].IsDefined() && sink["type"].as<int>() == NV_DS_SINK_MSG_CONV_BROKER) {
+        continue;
+      }
+      sink["width"] = std::to_string(frame_width);
+      sink["height"] = std::to_string(frame_height);
+      if (enable_output_transform) {
+        sink["output-frame-width"] = std::to_string(frame_width);
+        sink["output-frame-height"] = std::to_string(frame_height);
+        if (!dest_crop.empty()) {
+          sink["output-dest-crop"] = dest_crop;
+        } else {
+          sink.remove("output-dest-crop");
+        }
+      } else {
+        sink.remove("output-frame-width");
+        sink.remove("output-frame-height");
+        sink.remove("output-dest-crop");
+      }
+    }
+  };
+
+  long base_output_width = 0;
+  long base_output_height = 0;
 
   if (is_camera_source) {
     size_t cam_count = 0;
@@ -505,8 +540,8 @@ absl::Status Configurator::set_output_dimensions(
       ++num_video_sources;
     }
     auto wh_tuple = maybe_scale_down(ww, hh);
-    pipeline["hmplaycropper"]["output-width"] = std::to_string(round_down_even(std::get<0>(wh_tuple)));
-    pipeline["hmplaycropper"]["output-height"] = std::to_string(round_down_even(std::get<1>(wh_tuple)));
+    base_output_width = round_down_even(std::get<0>(wh_tuple));
+    base_output_height = round_down_even(std::get<1>(wh_tuple));
   } else if (!left_files.empty() && !right_files.empty() && has_hmstitcher) {
     StitcherSizingConfig sizing_cfg = ParseStitcherSizingConfig(pipeline);
     auto canvas_size_result = get_canvas_size(game_dir);
@@ -518,8 +553,8 @@ absl::Status Configurator::set_output_dimensions(
       constexpr double ar = 16.0 / 9.0;
       const auto even_canvas_height = static_cast<long>(round_down_even(static_cast<long>(canvas_height)));
       auto wh_tuple = maybe_scale_down(static_cast<long>(ar * even_canvas_height), even_canvas_height);
-      pipeline["hmplaycropper"]["output-width"] = std::to_string(round_down_even(std::get<0>(wh_tuple)));
-      pipeline["hmplaycropper"]["output-height"] = std::to_string(round_down_even(std::get<1>(wh_tuple)));
+      base_output_width = round_down_even(std::get<0>(wh_tuple));
+      base_output_height = round_down_even(std::get<1>(wh_tuple));
     } else {
       if (!sizing_cfg.allow_runtime_canvas()) {
         return absl::FailedPreconditionError(
@@ -570,8 +605,49 @@ absl::Status Configurator::set_output_dimensions(
       }
     }
     auto wh_tuple = maybe_scale_down(ww, hh);
-    pipeline["hmplaycropper"]["output-width"] = std::to_string(round_down_even(std::get<0>(wh_tuple)));
-    pipeline["hmplaycropper"]["output-height"] = std::to_string(round_down_even(std::get<1>(wh_tuple)));
+    base_output_width = round_down_even(std::get<0>(wh_tuple));
+    base_output_height = round_down_even(std::get<1>(wh_tuple));
+  }
+
+  if (base_output_width > 0 && base_output_height > 0 && pipeline["hmplaycropper"].IsDefined()) {
+    pipeline["hmplaycropper"]["output-width"] = std::to_string(base_output_width);
+    pipeline["hmplaycropper"]["output-height"] = std::to_string(base_output_height);
+  }
+
+  if (base_output_width > 0 && base_output_height > 0 &&
+      (output_width_override_.has_value() || output_height_override_.has_value())) {
+    OutputSizing sizing;
+    HM_ASSIGN_OR_RETURN(
+        sizing, compute_output_sizing(base_output_width, base_output_height, output_width_override_, output_height_override_));
+    const long requested_final_width = sizing.final_width();
+    const long requested_final_height = sizing.final_height();
+
+    if (is_udp_output &&
+        (requested_final_width > kMaxUdpStreamingWidth || requested_final_height > kMaxUdpStreamingHeight)) {
+      auto udp_wh = resize_to_fit(
+          requested_final_width, requested_final_height, kMaxUdpStreamingWidth, kMaxUdpStreamingHeight);
+      HM_ASSIGN_OR_RETURN(
+          sizing,
+          compute_output_sizing(
+              base_output_width,
+              base_output_height,
+              static_cast<int>(std::get<0>(udp_wh)),
+              static_cast<int>(std::get<1>(udp_wh))));
+      std::cout << "Clamped output sizing for UDP to " << sizing.final_width() << "x" << sizing.final_height()
+                << std::endl;
+    }
+
+    if (pipeline["hmplaycropper"].IsDefined()) {
+      pipeline["hmplaycropper"]["output-width"] = std::to_string(sizing.content_width);
+      pipeline["hmplaycropper"]["output-height"] = std::to_string(sizing.content_height);
+    }
+
+    const bool need_sink_transform = !pipeline["hmplaycropper"].IsDefined() || sizing.has_letterbox();
+    set_sink_output_frame(
+        sizing.final_width(),
+        sizing.final_height(),
+        need_sink_transform,
+        centered_dest_crop_string(sizing));
   }
 
   if (area) {
@@ -704,6 +780,11 @@ Configurator::Configurator(const std::string& game_id, const std::string& config
 }
 Configurator::~Configurator() {
   // Destructor
+}
+
+void Configurator::set_output_overrides(const std::optional<int>& output_width, const std::optional<int>& output_height) {
+  output_width_override_ = output_width;
+  output_height_override_ = output_height;
 }
 
 std::vector<size_t> Configurator::enable_source_types(
