@@ -6,6 +6,8 @@ build --copt=-fPIC
 build --copt=-std=c++17
 build --copt=-DABSL_NO_XPACLRI
 build --copt=-fmax-errors=4
+build --linkopt=-Wl,-rpath,/opt/nvidia/deepstream/deepstream/lib
+build --linkopt=-Wl,-rpath,/opt/nvidia/deepstream/deepstream/lib/gst-plugins
 
 # build --copt=-fdiagnostics-path-format=absolute
 # Add full path to all C++ compilations
