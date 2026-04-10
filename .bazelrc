@@ -58,10 +58,13 @@ build:x86_64 --cpu=k8
 build:x86_64 --define=target_platform=x86_64
 build:x86_64 --action_env=target_platform="x86_64"
 
-build:aarch64 --cpu=aarch64
-build:aarch64 --define=target_platform=aarch64
-build:aarch64 --action_env=target_platform="aarch64"
-build:aarch64 --copt=-DABSL_NO_XPACLRI
+build:arm64 --define=target_platform=arm64
+build:arm64 --action_env=target_platform="arm64"
+build:arm64 --copt=-DABSL_NO_XPACLRI
+build:arm64 --copt=-DAARCH64_IS_SBSA=1
+
+# Backward-compatible alias.
+build:aarch64 --config=arm64
 
 
 build:jetson --define=target_platform=jetson

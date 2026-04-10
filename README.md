@@ -16,6 +16,8 @@ This repo also includes DeepStream-Yolo-derived model conversion/config docs und
 
 2. Build:
    - `./perf` (release) or `./bld` (debug)
+   - `make arm64` for native non-Jetson ARM64/SBSA hosts (for example GB300)
+   - `make jetson` for Jetson targets/cross-builds
 
 3. Prepare a game directory:
    - Default: `$HOME/Videos/<game_id>`

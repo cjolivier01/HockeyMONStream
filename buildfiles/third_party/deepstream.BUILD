@@ -1,8 +1,13 @@
 INCLUDE_PREFIX="deepstream"
 
 config_setting(
-    name = "aarch64-linux-gnu",
-    constraint_values = ["@platforms//cpu:aarch64"],
+    name = "jetson",
+    values = {"define": "target_platform=jetson"},
+)
+
+config_setting(
+    name = "arm64-sbsa",
+    values = {"define": "target_platform=arm64"},
 )
 
 config_setting(
@@ -18,7 +23,8 @@ cc_library(
     linkopts = [
         "-L./lib",
     ] + select({
-        ":aarch64-linux-gnu": ["-L/opt/jetson-sysroot/opt/nvidia/deepstream/deepstream/lib"],
+        ":jetson": ["-L/opt/jetson-sysroot/opt/nvidia/deepstream/deepstream/lib"],
+        ":arm64-sbsa": ["-L/opt/nvidia/deepstream/deepstream/lib"],
         ":x86_64-linux-gnu": ["-L/opt/nvidia/deepstream/deepstream/lib"],
         "//conditions:default": [],
     }) + [

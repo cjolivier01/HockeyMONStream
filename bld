@@ -12,8 +12,17 @@ if [ ! -e "$(which bazelisk)" ]; then
   ./scripts/install_bazelisk.sh
 fi
 
-#BAZEL_FLAGS="--config=debug --cpu=${CPU}"
 BAZEL_FLAGS="--config=debug"
+HOST_ARCH="$(uname -m)"
+IS_JETSON=0
+if [ -e /etc/nv_tegra_release ]; then
+  IS_JETSON=1
+elif [ -r /proc/device-tree/compatible ] && tr '\0' '\n' < /proc/device-tree/compatible | grep -qi tegra; then
+  IS_JETSON=1
+fi
+if [ "${HOST_ARCH}" = "aarch64" ] && [ "${IS_JETSON}" = "0" ]; then
+  BAZEL_FLAGS="${BAZEL_FLAGS} --config=arm64"
+fi
 
 TARGET="$@"
 if [ -z "${TARGET}" ]; then

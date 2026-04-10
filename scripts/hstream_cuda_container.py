@@ -206,6 +206,8 @@ def _container_home_for_user(user: str | None, fallback_username: str) -> str:
 def _default_bazel_flags_for_target(target: str) -> list[str]:
     if target == "x86_64":
         return ["--config=opt", "--cpu=k8"]
+    if target == "arm64":
+        return ["--config=opt", "--config=arm64"]
     return ["--config=opt"]
 
 
