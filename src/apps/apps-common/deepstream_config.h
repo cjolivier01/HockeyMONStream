@@ -13,7 +13,7 @@
 #ifndef __NVGSTDS_CONFIG_H__
 #define __NVGSTDS_CONFIG_H__
 
-#ifdef __aarch64__
+#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
 #define IS_TEGRA
 #endif
 

@@ -2,23 +2,45 @@ TOPDIR := $(shell pwd)
 BAZEL ?= bazelisk
 JETSON_SYSROOT ?= /opt/jetson-sysroot
 HOST_ARCH := $(shell uname -m)
+IS_JETSON_HOST := $(shell \
+	if [ -f /etc/nv_tegra_release ]; then \
+		echo 1; \
+	elif [ -r /proc/device-tree/compatible ] && tr '\0' '\n' < /proc/device-tree/compatible | grep -qi tegra; then \
+		echo 1; \
+	else \
+		echo 0; \
+	fi)
+
+HOST_PLATFORM_FLAGS :=
+ifeq ($(HOST_ARCH),aarch64)
+ifeq ($(IS_JETSON_HOST),0)
+HOST_PLATFORM_FLAGS := --config=arm64
+endif
+endif
 
 all: print_targets
 
-.PHONY: all print_targets perf debug test clean distclean expunge x86_64 jetson gstdebug \
+.PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
 	pipeline-app run-pipeline-app video-player run-video-player
 
 perf:
-	$(BAZEL) build --config=opt //...
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) //...
 
 debug:
-	$(BAZEL) build --config=debug //...
+	$(BAZEL) build --config=debug $(HOST_PLATFORM_FLAGS) //...
 
 gstdebug:
-	$(BAZEL) build --config=gstdebug //...
+	$(BAZEL) build --config=gstdebug $(HOST_PLATFORM_FLAGS) //...
 
 x86_64:
 	$(BAZEL) build --config=opt --cpu=k8 //...
+
+arm64:
+	@if [ "$(HOST_ARCH)" != "aarch64" ]; then \
+		echo "arm64 target is for native non-Jetson arm64/SBSA hosts (for example GB300)." >&2; \
+		exit 1; \
+	fi
+	$(BAZEL) build --config=opt --config=arm64 //...
 
 jetson:
 	@if [ "$(HOST_ARCH)" = "aarch64" ] && [ ! -e "$(JETSON_SYSROOT)" ]; then \
@@ -32,10 +54,10 @@ jetson:
 	$(BAZEL) build --config=jetson --action_env=JETSON_SYSROOT=$(JETSON_SYSROOT) --define=JETSON_SYSROOT=$(JETSON_SYSROOT) //...
 
 test:
-	$(BAZEL) test --config=opt //...
+	$(BAZEL) test --config=opt $(HOST_PLATFORM_FLAGS) //...
 
 pipeline-app:
-	$(BAZEL) build --config=opt //src/apps/pipeline-app:pipeline-app
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) //src/apps/pipeline-app:pipeline-app
 
 run-pipeline-app: pipeline-app
 	bazel-bin/src/apps/pipeline-app/pipeline-app \
@@ -46,7 +68,7 @@ run-pipeline-app: pipeline-app
 		--options=pipeline.hmaudio.enable=1
 
 video-player:
-	$(BAZEL) build --config=opt //src/apps/video-player:video-player
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) //src/apps/video-player:video-player
 
 run-video-player: video-player
 	bazel-bin/src/apps/video-player/video-player --help
@@ -63,10 +85,11 @@ print_targets:
 		'' \
 		'Build Outputs' \
 		'-------------' \
-		'perf           Build everything with --config=opt.' \
+		'perf           Build everything with --config=opt (auto-adds --config=arm64 on non-Jetson aarch64 hosts).' \
 		'debug          Build everything with --config=debug.' \
 		'gstdebug       Build debug with extra GStreamer debug defines (--config=gstdebug).' \
 		'x86_64         Build optimized for x86_64 (--cpu=k8).' \
+		'arm64          Build optimized for native non-Jetson arm64/SBSA hosts (--config=arm64).' \
 		'jetson         Build optimized for Jetson (--config=jetson, needs $(JETSON_SYSROOT)).' \
 		'' \
 		'Apps' \

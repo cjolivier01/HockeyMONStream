@@ -10,6 +10,7 @@
 - Debug build (all): `./bld` or `bazelisk build --config=debug //...`.
 - Release build (all): `./perf` or `bazelisk build --config=opt //...`.
 - x86_64 build: `bazelisk build --config=opt --cpu=k8 //...`.
+- ARM64/SBSA build (native non-Jetson, e.g. GB300): `make arm64` or `bazelisk build --config=opt --config=arm64 //...`.
 - Jetson (aarch64) build: `bazelisk build --config=jetson //...`.
 - Canonical runs:
   - End-to-end wrapper (recommended): `./run.sh --game-id=<game_id> -t=5`
@@ -45,6 +46,7 @@ Notes:
 ## Commit & PR Guidelines
 - Commits: imperative and scoped (preferred Conventional Commits). Example: `feat(stitching): improve synchronization for dual-camera`.
 - PRs: include purpose, configs/commands used to validate, relevant logs/output or screenshots, and linked issues. Note any platform constraints (Jetson vs x86).
+- PR default: open normal (ready-for-review) PRs. Only open draft PRs when explicitly requested.
 
 ## Security & Configuration Tips
 - Do not commit new large binaries (e.g., TensorRT `*.engine`); store externally and reference paths in configs.
@@ -52,7 +54,12 @@ Notes:
 
 ## Jetson Notes
 - Environment: JetPack 6.x with DeepStream installed at `/opt/nvidia/deepstream/deepstream`.
-- Flags: prefer `--config=jetson` (sets `aarch64` and Jetson-specific copts) or `--cpu=aarch64` explicitly.
+- Target split:
+  - `--config=jetson`: Jetson-only build/cross-build path (Jetson sysroot/toolchain assumptions).
+  - `--config=arm64`: non-Jetson ARM64/SBSA path (for example GB300), defines `AARCH64_IS_SBSA`.
+- Cross-compiling:
+  - Use `make jetson` for x86_64 -> Jetson cross-builds after syncing a Jetson sysroot (see `docs/jetson-cross-build.md`).
+  - `make arm64` is for native non-Jetson ARM64/SBSA hosts, not x86_64 cross-compiles.
 - Memory: build specific targets when RAM is constrained, e.g., `bazelisk build --config=jetson //src/libs/scoreboard:scoreboard`.
 - Debug: use `--config=gstdebug` for GStreamer-heavy debugging builds.
 
