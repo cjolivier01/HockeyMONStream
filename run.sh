@@ -60,6 +60,29 @@ prepend_path LD_LIBRARY_PATH "${SCRIPT_DIR}/lib"
 prepend_path LD_LIBRARY_PATH "${SCRIPT_DIR}/lib/gst-plugins"
 prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib"
 prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
+
+# Bazel-built GStreamer plugins live under per-plugin output directories. Keep those visible so running a focused
+# target build, such as pipeline-app plus gst-videoprep, is enough for local runs without manually staging .so
+# files.
+BAZEL_GST_PLUGIN_ROOT="${SCRIPT_DIR}/bazel-bin/src/gst-plugins"
+if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
+  for plugin_dir in "${BAZEL_GST_PLUGIN_ROOT}"/*; do
+    if [ -d "${plugin_dir}" ]; then
+      prepend_path GST_PLUGIN_PATH "${plugin_dir}"
+      prepend_path LD_LIBRARY_PATH "${plugin_dir}"
+    fi
+  done
+fi
+
+YOLO_CUSTOM_IMPL="${SCRIPT_DIR}/bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"
+YOLO_CUSTOM_IMPL_LINK="${SCRIPT_DIR}/lib/libnvdsinfer_custom_impl_Yolo.so"
+if [ -e "${YOLO_CUSTOM_IMPL}" ]; then
+  mkdir -p "${SCRIPT_DIR}/lib"
+  if [ ! -e "${YOLO_CUSTOM_IMPL_LINK}" ] || [ -L "${YOLO_CUSTOM_IMPL_LINK}" ]; then
+    ln -sfn "../bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so" \
+      "${YOLO_CUSTOM_IMPL_LINK}"
+  fi
+fi
 if [ -n "${CONDA_PREFIX:-}" ]; then
   # Conda environments often ship their own GLib/GStreamer stack. Adding `${CONDA_PREFIX}/lib` ahead of system
   # libraries can cause hard-to-debug runtime aborts (e.g. GLib pthread TLS errors) when DeepStream/GStreamer load.
@@ -72,15 +95,6 @@ if [ -n "${CONDA_PREFIX:-}" ]; then
   else
     append_path LD_LIBRARY_PATH "${CONDA_PREFIX}/lib"
   fi
-fi
-
-# Default model assets are not committed; set them up on-demand for the default configs.
-DEFAULT_WEIGHTS="${SCRIPT_DIR}/pretrained/deepstream/yolox/yolox_s.pth"
-DEFAULT_LABELS="${SCRIPT_DIR}/pretrained/deepstream/yolox/labels_coco.txt"
-DEFAULT_ONNX="${SCRIPT_DIR}/pretrained/deepstream/yolox/yolox_s.pth.onnx"
-if [ ! -f "${DEFAULT_ONNX}" ] || [ ! -f "${DEFAULT_LABELS}" ] || [ ! -f "${DEFAULT_WEIGHTS}" ]; then
-  echo "Missing default YOLOX pretrained assets; running scripts/setup_yolox_s_pretrained.sh"
-  bash "${SCRIPT_DIR}/scripts/setup_yolox_s_pretrained.sh"
 fi
 
 one_pass_only=0
@@ -133,6 +147,39 @@ else
   if [ "${have_sink_arg}" -eq 0 ]; then
     sink_args+=(--enable-sinks="${default_main_sink}")
   fi
+fi
+
+asset_config_files=()
+collect_asset_config_files() {
+  local -n args_ref="$1"
+  local arg cfg i
+  for ((i = 0; i < ${#args_ref[@]}; i++)); do
+    arg="${args_ref[$i]}"
+    cfg=""
+    case "${arg}" in
+      -c|--config)
+        i=$((i + 1))
+        if [ "${i}" -lt "${#args_ref[@]}" ]; then
+          cfg="${args_ref[$i]}"
+        fi
+        ;;
+      -c=*|--config=*)
+        cfg="${arg#*=}"
+        ;;
+    esac
+    if [ -n "${cfg}" ]; then
+      case "${cfg}" in
+        /*) asset_config_files+=("${cfg}") ;;
+        *) asset_config_files+=("${SCRIPT_DIR}/${cfg}") ;;
+      esac
+    fi
+  done
+}
+
+collect_asset_config_files config_args
+collect_asset_config_files rewritten_args
+if [ "${#asset_config_files[@]}" -gt 0 ]; then
+  "${PYTHON_BIN:-python3}" "${SCRIPT_DIR}/scripts/setup_pretrained_assets.py" "${asset_config_files[@]}"
 fi
 
 bazel-bin/src/apps/pipeline-app/pipeline-app \

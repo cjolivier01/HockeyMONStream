@@ -36,11 +36,12 @@ This repo also includes DeepStream-Yolo-derived model conversion/config docs und
 
 ## Models / Pretrained Assets
 
-The default `configs/config_infer_yolox_hockey.yaml` expects YOLOX-s COCO assets under `pretrained/deepstream/yolox/`.
+The default `configs/config_infer_yolox_hockey.yaml` declares the YOLOX-s COCO assets it needs under
+`pretrained/deepstream/yolox/`.
 
-- `run.sh` will automatically invoke `scripts/setup_yolox_s_pretrained.sh` if the default weights/labels/ONNX are missing.
-- Model artifacts are not committed. The setup script downloads YOLOX weights + COCO labels and exports an ONNX model via `utils/export_yolox.py`.
-- `pretrained/` is often a symlink to a large mounted volume; the script can `sudo`-create/chown the needed subdirectory when required.
+- `run.sh` scans the configured YAML files and downloads missing `pretrained-assets` before starting the pipeline.
+- Model artifacts are not committed. The default config downloads the YOLOX-s ONNX model and COCO labels on demand.
+- `pretrained/` is often a symlink to a large mounted volume; the setup helper can `sudo`-create/chown the needed subdirectory when required.
 
 ## Configuration
 
@@ -59,7 +60,7 @@ HockeyMOM baseline config root:
 - `src/gst-plugins`: custom plugins (videoprep/stitcher/playtracker/fieldmask/etc)
 - `src/libs/*`: C++ libraries (stitching, overlays, scoreboard, camera utilities, etc)
 - `configs/`: YAML configs
-- `scripts/`: helper scripts (e.g. pretrained setup)
+- `scripts/`: helper scripts (e.g. pretrained asset setup)
 
 ## Pointers
 

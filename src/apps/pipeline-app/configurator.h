@@ -29,7 +29,7 @@ class Configurator {
 
   bool underlay_config(const std::string& node_name, const std::string& filename);
   bool overlay_config(const std::string& node_name, const std::string& filename);
-  
+
   absl::Status apply_config_item(const std::string& key, const std::string& value);
 
   std::optional<YAML::Node> load_private_config();
@@ -76,6 +76,7 @@ class Configurator {
   std::tuple<long,long> scaled_for_udp(bool is_udp_output, long width, long height) const;
   absl::Status set_output_dimensions(YAML::Node& pipeline, bool is_camera_source, const std::map<int, YAML::Node>& camera_sources, const std::vector<std::string>& left_files, const std::vector<std::string>& right_files, bool has_hmstitcher, const std::filesystem::path& game_dir, size_t& ww, size_t& hh, size_t& area, size_t& num_video_sources);
   void configure_audio(YAML::Node& pipeline, const std::vector<std::string>& left_files, const std::vector<std::string>& right_files, const YAML::Node& offsets, size_t& num_video_sources);
+  absl::Status configure_encode_file_outputs(YAML::Node& pipeline) const;
   void log_enabled_bins(const YAML::Node& pipeline) const;
 
   std::string file_maybe_in_game_dir(const std::string& basename);

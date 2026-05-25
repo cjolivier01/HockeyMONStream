@@ -16,7 +16,7 @@
   - End-to-end wrapper (recommended): `./run.sh --game-id=<game_id> -t=5`
     - Runs stage `-1` (stitching + rink mask configuration) with a `FAKE` sink, then stage `0` (main pipeline) with default `RENDER` sink.
     - Supports `-t N`, `-t=N`, or `--time-limit=N`.
-    - If the default YOLOX assets are missing, it will invoke `scripts/setup_yolox_s_pretrained.sh`.
+    - If configured pretrained assets are missing, it will download the assets declared in YAML `pretrained-assets`.
   - Direct `pipeline-app` invocation (useful for debugging configs):
     - Display only: `bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml -g <game_id> --enable-sources=URI-MULTIPLE --enable-sinks=RENDER --options=pipeline.hmaudio.enable=1`
     - Encode to file: `bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml -g <game_id> --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_FILE --options=pipeline.hmaudio.enable=1`
