@@ -95,6 +95,12 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   /* Output Processing Thread, push buffer to downstream  */
   void OutputThread(void);
 
+  absl::Status CreateDsOutputBufferPool(GstCaps* outcaps);
+  absl::Status EnsureDsOutputBufferPool(NvDsBatchMeta* batch_meta, NvBufSurface* in_surf);
+  GstCaps* CreateRuntimeOutputCaps(const videoprep::RuntimeOutputSize& size);
+  void ReleaseDsOutputBufferPool();
+  void ReleaseSwOutputBufferPool();
+
   /* Helper function to Dump NvBufSurface RAW content */
   void DumpNvBufSurface(NvBufSurface* in_surface, NvDsBatchMeta* batch_meta);
 
@@ -118,6 +124,7 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   };
   GstBufferPool* m_dsBufferPool = NULL;
   GstBufferPool* m_swbufpool = NULL;
+  GstCaps* m_runtimeOutputCaps = NULL;
   guint swbuffersize;
 
   /* Output Thread Pointer */

@@ -624,7 +624,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        "Stop after processing this many seconds of video",
        "N"},
       {"options", 'p', 0, G_OPTION_ARG_FILENAME_ARRAY, &pipline_options, "Set arbitrary option(s)", nullptr},
-      {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &cfg_files_, "Set the config file", nullptr},
+      {"cfg-file",
+       'c',
+       0,
+       G_OPTION_ARG_FILENAME_ARRAY,
+       &cfg_files_,
+       "Set the config file",
+       "FILE"},
       {"enable-sources", 'e', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sources_, "Enable Sources", nullptr},
       {"enable-sinks", 'k', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sinks_, "Enable Sinks", nullptr},
       {"game-id", 'g', 0, G_OPTION_ARG_FILENAME_ARRAY, &game_id_, "Game ID", nullptr},
@@ -681,8 +687,12 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     num_input_uris_ = g_strv_length(input_uris_);
   }
   if (!cfg_files_ || g_strv_length(cfg_files_) == 0) {
-    NVGSTDS_ERR_MSG_V("Specify config file with -c option");
-    return absl::InternalError("Specify config file with -c option");
+    cfg_files_ = g_new0(gchar*, 2);
+    cfg_files_[0] = g_strdup(default_config_file_name_);
+    global_cleanup_stack.push([this] {
+      g_strfreev(cfg_files_);
+      cfg_files_ = nullptr;
+    });
   }
 
   if (pipline_options) {

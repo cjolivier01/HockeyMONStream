@@ -1,12 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-# Default: two-stage run
-# - Stage -1: stitching configuration (FAKE sink)
-# - Stage 0: main app (default RENDER sink unless overridden by user)
+# Default: one-pass stage 0 run, configuring stitching in-process when control masks are missing.
 #
-# To test the one-pass stitcher (stage 0 only, config in-process when control masks are missing):
-#   ./run.sh --one-pass-only --game-id=<game_id>
+# To run the legacy two-stage stitch/configure flow:
+#   ./run.sh --two-stage --game-id=<game_id>
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -97,19 +95,20 @@ if [ -n "${CONDA_PREFIX:-}" ]; then
   fi
 fi
 
-one_pass_only=0
+one_pass_only=1
 have_sink_arg=0
 rewritten_args=()
 for arg in "$@"; do
   case "$arg" in
     --one-pass-only|--stage0-only) one_pass_only=1 ;;
+    --two-stage|--configure-first) one_pass_only=0 ;;
     --enable-sinks|--enable-sinks=*|-k|-k*) have_sink_arg=1 ;;
   esac
 done
 
 for arg in "$@"; do
   case "$arg" in
-    --one-pass-only|--stage0-only)
+    --one-pass-only|--stage0-only|--two-stage|--configure-first)
       # run.sh-only flag; do not forward to pipeline-app
       continue
       ;;

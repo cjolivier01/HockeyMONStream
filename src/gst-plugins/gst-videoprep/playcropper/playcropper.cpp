@@ -10,6 +10,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <cmath>
+#include <tuple>
 #include <vector>
 #include "absl/status/status.h"
 #include "absl/strings/str_split.h"
@@ -19,6 +20,7 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/cudaPlayCropper.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
 #include "hstream/src/libs/draw_display/Fonts.h"
 #include "nvdsmeta.h"
@@ -40,6 +42,13 @@ namespace playcropper {
 
 namespace {
 
+size_t round_down_even(size_t value) {
+  if (value <= 2) {
+    return 2;
+  }
+  return (value / 2) * 2;
+}
+
 static BBox make_null_tracking_box(const NvBufSurfaceParams* in_surf, const NvBufSurfaceParams* out_surf) {
   BBox surf(0, 0, in_surf->width, in_surf->height);
   double output_ar = double(out_surf->width) / out_surf->height;
@@ -60,7 +69,10 @@ absl::Status PlayCropperPriv::PreCapsInit(DSCustom_CreateParams* params) {
   // Not an in-place transform
   m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
   m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
-  // videoprep::GstVideoPrep* videoprep = GST_VIDEOPREP(params->m_element);
+  guint output_width = 0;
+  guint output_height = 0;
+  g_object_get(G_OBJECT(params->m_element), "output-width", &output_width, "output-height", &output_height, NULL);
+  runtime_output_size_ = !(output_width && output_height);
   return Super::PreCapsInit(params);
 };
 
@@ -68,6 +80,32 @@ absl::Status PlayCropperPriv::PostCapsInit(DSCustom_CreateParams* params) {
   m_transformMode = true;
 
   return Super::PostCapsInit(params);
+}
+
+bool PlayCropperPriv::UsesRuntimeOutputSize() const {
+  return runtime_output_size_;
+}
+
+absl::StatusOr<videoprep::RuntimeOutputSize> PlayCropperPriv::PrepareRuntimeOutputSize(
+    NvDsBatchMeta* /*batch_meta*/,
+    NvBufSurface* in_surface) {
+  if (!in_surface || !in_surface->surfaceList || !in_surface->numFilled) {
+    return absl::InvalidArgumentError("Cannot determine playcropper output size without input surface");
+  }
+
+  constexpr double kOutputAspectRatio = 16.0 / 9.0;
+  const size_t input_height = in_surface->surfaceList[0].height;
+  size_t output_height = round_down_even(input_height);
+  size_t output_width = round_down_even(static_cast<size_t>(kOutputAspectRatio * output_height));
+
+  if (runtime_output_max_width_ && runtime_output_max_height_) {
+    std::tie(output_width, output_height) =
+        resize_to_fit(output_width, output_height, runtime_output_max_width_, runtime_output_max_height_);
+    output_width = round_down_even(output_width);
+    output_height = round_down_even(output_height);
+  }
+
+  return videoprep::RuntimeOutputSize{output_width, output_height};
 }
 
 gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) {
@@ -150,6 +188,10 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     plot_play_tracking_ = !!std::atoi(prop.value.c_str());
   } else if (prop.key == "plot-player-tracking") {
     plot_player_tracking_ = !!std::atoi(prop.value.c_str());
+  } else if (prop.key == "runtime-output-max-width") {
+    runtime_output_max_width_ = std::atol(prop.value.c_str());
+  } else if (prop.key == "runtime-output-max-height") {
+    runtime_output_max_height_ = std::atol(prop.value.c_str());
   } else if (prop.key == "fixed-edge-rotation-angle") {
     fixed_edge_rotation_angle_ = std::atof(prop.value.c_str());
   } else if (prop.key == "no-crop") {

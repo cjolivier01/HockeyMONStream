@@ -235,14 +235,16 @@ static gboolean gst_videoprep_accept_caps(GstBaseTransform* btrans, GstPadDirect
   /* get all the formats we can handle on this pad */
   if (direction == GST_PAD_SINK) {
     allowed = videoprep->sinkcaps;
-    assert(!videoprep->input_width || videoprep->input_width == (guint)vid_info.width);
-    assert(!videoprep->input_height || videoprep->input_height == (guint)vid_info.height);
     videoprep->input_width = vid_info.width;
     videoprep->input_height = vid_info.height;
   } else {
     allowed = videoprep->srccaps;
-    assert(videoprep->output_width == (guint)vid_info.width);
-    assert(videoprep->output_height == (guint)vid_info.height);
+    if (videoprep->output_width && videoprep->output_width != (guint)vid_info.width) {
+      goto no_transform_possible;
+    }
+    if (videoprep->output_height && videoprep->output_height != (guint)vid_info.height) {
+      goto no_transform_possible;
+    }
   }
 
   if (!allowed) {
@@ -308,6 +310,7 @@ static GstCaps* gst_videoprep_fixate_caps(
   GstVideoPrep* videoprep = GST_VIDEOPREP(trans);
 
   guint out_width, out_height;
+  const bool runtime_output_size = videoprep->priv && videoprep->priv->UsesRuntimeOutputSize();
 
   othercaps = gst_caps_truncate(othercaps);
   othercaps = gst_caps_make_writable(othercaps);
@@ -322,13 +325,13 @@ static GstCaps* gst_videoprep_fixate_caps(
   ins = gst_caps_get_structure(caps, 0);
   outs = gst_caps_get_structure(othercaps, 0);
 
-  if (videoprep->custom_create_params.output_width_height[0]) {
+  if (!runtime_output_size && videoprep->custom_create_params.output_width_height[0]) {
     videoprep->output_width = videoprep->custom_create_params.output_width_height[0];
   }
-  if (videoprep->custom_create_params.output_width_height[1]) {
+  if (!runtime_output_size && videoprep->custom_create_params.output_width_height[1]) {
     videoprep->output_height = videoprep->custom_create_params.output_width_height[1];
   }
-  if (!videoprep->output_width && !videoprep->output_height) {
+  if (!runtime_output_size && !videoprep->output_width && !videoprep->output_height) {
     videoprep->output_width = videoprep->input_width;
     videoprep->output_height = videoprep->input_height;
     assert(videoprep->output_width && videoprep->output_height);
@@ -336,6 +339,14 @@ static GstCaps* gst_videoprep_fixate_caps(
 
   out_width = videoprep->output_width;
   out_height = videoprep->output_height;
+  if (runtime_output_size) {
+    gint input_width = 0;
+    gint input_height = 0;
+    gst_structure_get_int(ins, "width", &input_width);
+    gst_structure_get_int(ins, "height", &input_height);
+    out_width = input_width;
+    out_height = input_height;
+  }
 
   gst_structure_remove_fields(outs, "width", "height", NULL);
 

@@ -6,13 +6,22 @@
 // #include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurface.h"
 #include <cassert>
+#include <cstddef>
 
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_base.hpp"
 #include "nvdsmeta.h"
 
 namespace hm {
 namespace videoprep {
+
+struct RuntimeOutputSize {
+  size_t width{0};
+  size_t height{0};
+
+  bool valid() const { return width > 0 && height > 0; }
+};
 
 class VideoPrepPriv : public DSCustomLibraryBase {
  public:
@@ -55,6 +64,16 @@ class VideoPrepPriv : public DSCustomLibraryBase {
 
   virtual gint AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) {
     return 0;
+  }
+
+  virtual bool UsesRuntimeOutputSize() const {
+    return false;
+  }
+
+  virtual absl::StatusOr<RuntimeOutputSize> PrepareRuntimeOutputSize(
+      NvDsBatchMeta* batch_meta,
+      NvBufSurface* in_surface) {
+    return RuntimeOutputSize{};
   }
 
   void SetPrivateConfig(const char* config_string);

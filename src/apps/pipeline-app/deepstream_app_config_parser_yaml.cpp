@@ -161,6 +161,8 @@ gboolean parse_hmplaycropper_yaml(
   SET_LOCATOR(locator, *config, fixed_edge_rotation_angle);
   SET_LOCATOR(locator, *config, no_crop);
   SET_LOCATOR(locator, *config, show_scoreboard);
+  SET_LOCATOR(locator, *config, runtime_output_max_width);
+  SET_LOCATOR(locator, *config, runtime_output_max_height);
   SET_LOCATOR_INTS(locator, *config, scoreboard_perspective_polygon);
 
   set_config_from_yaml(yaml_node, locator, quiet);

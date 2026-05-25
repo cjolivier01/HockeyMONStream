@@ -25,6 +25,7 @@ namespace hm {
 namespace playtracker {
 
 PlayTrackerPriv::~PlayTrackerPriv() {
+  std::lock_guard<std::mutex> lk(context_mu_);
   if (pt_context_) {
     DsPlayTrackerCtxDeinit(pt_context_);
     pt_context_ = nullptr;
@@ -41,31 +42,40 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
   // No buffers for us
   params->m_bufferPoolConfig.max_buffers = 0;
 
-  if (params->config_file && init_params_.play_tracker_config_file.empty()) {
-    init_params_.play_tracker_config_file = params->config_file;
+  if (params->config_file && play_tracker_config_source_file_.empty()) {
+    play_tracker_config_source_file_ = params->config_file;
+  }
+  if (play_tracker_config_source_file_.empty()) {
+    play_tracker_config_source_file_ = init_params_.play_tracker_config_file;
   }
 
-  YAML::Node config = YAML::LoadFile(init_params_.play_tracker_config_file);
-  std::cout << config << std::endl;
-  std::vector<YAML::Node> live_boxes;
-  for (YAML::Node box : config["play-tracker"]["live-boxes"]) {
-    box["arena-angle-from-vertical"] = std::to_string(fixed_edge_rotation_angle_);
-    live_boxes.push_back(box);
-  }
-  if (!live_boxes.empty()) {
-    (*live_boxes.rbegin())["dynamic-acceleration-scaling"] = std::to_string(dynamic_acceleration_scaling_);
-  }
+  {
+    std::lock_guard<std::mutex> lk(context_mu_);
+    if (pt_context_) {
+      DsPlayTrackerCtxDeinit(pt_context_);
+      pt_context_ = nullptr;
+    }
+    init_params_.owned_objects.clear();
 
-  // std::cout << config << std::endl;
+    YAML::Node config = YAML::LoadFile(play_tracker_config_source_file_);
+    std::cout << config << std::endl;
+    std::vector<YAML::Node> live_boxes;
+    for (YAML::Node box : config["play-tracker"]["live-boxes"]) {
+      box["arena-angle-from-vertical"] = std::to_string(fixed_edge_rotation_angle_);
+      live_boxes.push_back(box);
+    }
+    if (!live_boxes.empty()) {
+      (*live_boxes.rbegin())["dynamic-acceleration-scaling"] = std::to_string(dynamic_acceleration_scaling_);
+    }
 
-  auto temp_yaml_file = std::make_unique<hm::utils::TempFile>(/*autoRemove=*/true);
-  // std::cout << "Temporary play tracker conrfig file: " << temp_yaml_file->getPath() << std::endl;
-  std::ofstream ofile(temp_yaml_file->getPath());
-  ofile << config;
-  ofile.close();
-  init_params_.play_tracker_config_file = temp_yaml_file->getPath();
-  init_params_.owned_objects.emplace_back(std::move(temp_yaml_file));
-  pt_context_ = DsPlayTrackerCtxInit(&init_params_);
+    auto temp_yaml_file = std::make_unique<hm::utils::TempFile>(/*autoRemove=*/true);
+    std::ofstream ofile(temp_yaml_file->getPath());
+    ofile << config;
+    ofile.close();
+    init_params_.play_tracker_config_file = temp_yaml_file->getPath();
+    init_params_.owned_objects.emplace_back(std::move(temp_yaml_file));
+    pt_context_ = DsPlayTrackerCtxInit(&init_params_);
+  }
   return Super::PostCapsInit(params);
 }
 
@@ -80,6 +90,7 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     dynamic_acceleration_scaling_ = std::atof(prop.value.c_str());
   } else if (prop.key == "config-file") {
     init_params_.play_tracker_config_file = prop.value;
+    play_tracker_config_source_file_ = prop.value;
   }
   return true;
 }
@@ -92,6 +103,7 @@ absl::Status PlayTrackerPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     NvBufSurface* in_surface,
     NvBufSurface* /*out_surface*/) {
+  std::lock_guard<std::mutex> lk(context_mu_);
   GstDsPlayTrackerFrame frame;
   auto font_cache = draw_display::get_or_create_font_cache();
   NvDsFrameMetaList* fl = batch_meta->frame_meta_list;
