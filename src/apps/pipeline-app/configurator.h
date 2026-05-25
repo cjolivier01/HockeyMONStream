@@ -73,7 +73,7 @@ class Configurator {
   void apply_scoreboard_perspective(YAML::Node& pipeline);
   absl::Status gather_stitching_videos(const std::filesystem::path& game_dir, bool force, std::vector<std::string>& left_files, std::vector<std::string>& right_files, YAML::Node& offsets);
   void apply_frame_offsets_and_sizes(const std::vector<std::string>& left_files, const std::vector<std::string>& right_files, const YAML::Node& offsets, size_t& ww, size_t& hh, size_t& area, YAML::Node& pipeline);
-  std::tuple<long,long> scaled_for_udp(bool is_udp_output, long width, long height) const;
+  std::tuple<long,long> cap_playcropper_output(long width, long height) const;
   absl::Status set_output_dimensions(YAML::Node& pipeline, bool is_camera_source, const std::map<int, YAML::Node>& camera_sources, const std::vector<std::string>& left_files, const std::vector<std::string>& right_files, bool has_hmstitcher, const std::filesystem::path& game_dir, size_t& ww, size_t& hh, size_t& area, size_t& num_video_sources);
   void configure_audio(YAML::Node& pipeline, const std::vector<std::string>& left_files, const std::vector<std::string>& right_files, const YAML::Node& offsets, size_t& num_video_sources);
   absl::Status configure_encode_file_outputs(YAML::Node& pipeline) const;

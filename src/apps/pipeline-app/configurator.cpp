@@ -40,8 +40,8 @@ namespace hm {
 
 namespace {
 
-constexpr long kMaxUdpStreamingWidth = 3840;
-constexpr long kMaxUdpStreamingHeight = 2160;
+constexpr long kMaxPlayCropperOutputWidth = 7680;
+constexpr long kMaxPlayCropperOutputHeight = 4320;
 
 constexpr const char* kRinkMaskFilename = "rink_mask_0.png";
 
@@ -218,25 +218,6 @@ absl::Status ready_camera(const std::string device_name) {
     return absl::InternalError("Failed to contact camera.");
   }
   return absl::OkStatus();
-}
-
-bool has_enabled_rtsp_sink(const YAML::Node& pipeline) {
-  for (size_t i = 0; i < MAX_SINK_BINS; ++i) {
-    std::string sinkname = "sink" + std::to_string(i);
-    if (!pipeline[sinkname].IsDefined()) {
-      continue;
-    }
-    if (!pipeline[sinkname][kEnableFlagField].IsDefined()) {
-      continue;
-    }
-    if (!pipeline[sinkname][kEnableFlagField].as<int>()) {
-      continue;
-    }
-    if (pipeline[sinkname]["type"].as<int>() == NV_DS_SINK_UDPSINK) {
-      return true;
-    }
-  }
-  return false;
 }
 
 [[maybe_unused]] std::map<size_t, YAML::Node> get_enabled_indexed_sections_with_prefix(
@@ -505,9 +486,8 @@ void Configurator::apply_frame_offsets_and_sizes(
   }
 }
 
-std::tuple<long,long> Configurator::scaled_for_udp(bool is_udp_output, long width, long height) const {
-  if (!is_udp_output) return std::make_tuple(width, height);
-  return resize_to_fit(width, height, kMaxUdpStreamingWidth, kMaxUdpStreamingHeight);
+std::tuple<long,long> Configurator::cap_playcropper_output(long width, long height) const {
+  return resize_to_fit(width, height, kMaxPlayCropperOutputWidth, kMaxPlayCropperOutputHeight);
 }
 
 absl::Status Configurator::set_output_dimensions(
@@ -522,8 +502,7 @@ absl::Status Configurator::set_output_dimensions(
     size_t& hh,
     size_t& area,
     size_t& num_video_sources) {
-  const bool is_udp_output = has_enabled_rtsp_sink(pipeline);
-  auto maybe_scale_down = [this, is_udp_output](long width, long height) { return this->scaled_for_udp(is_udp_output, width, height); };
+  auto cap_output = [this](long width, long height) { return this->cap_playcropper_output(width, height); };
   auto round_down_even = [](long value) -> long {
     if (value <= 2) {
       return 2;
@@ -547,7 +526,7 @@ absl::Status Configurator::set_output_dimensions(
       }
       ++num_video_sources;
     }
-    auto wh_tuple = maybe_scale_down(ww, hh);
+    auto wh_tuple = cap_output(ww, hh);
     pipeline["hmplaycropper"]["output-width"] = std::to_string(round_down_even(std::get<0>(wh_tuple)));
     pipeline["hmplaycropper"]["output-height"] = std::to_string(round_down_even(std::get<1>(wh_tuple)));
   } else if (!left_files.empty() && !right_files.empty() && has_hmstitcher) {
@@ -560,7 +539,7 @@ absl::Status Configurator::set_output_dimensions(
       pipeline["hmstitcher"]["output-height"] = std::to_string(canvas_height);
       constexpr double ar = 16.0 / 9.0;
       const auto even_canvas_height = static_cast<long>(round_down_even(static_cast<long>(canvas_height)));
-      auto wh_tuple = maybe_scale_down(static_cast<long>(ar * even_canvas_height), even_canvas_height);
+      auto wh_tuple = cap_output(static_cast<long>(ar * even_canvas_height), even_canvas_height);
       pipeline["hmplaycropper"]["output-width"] = std::to_string(round_down_even(std::get<0>(wh_tuple)));
       pipeline["hmplaycropper"]["output-height"] = std::to_string(round_down_even(std::get<1>(wh_tuple)));
     } else {
@@ -570,10 +549,8 @@ absl::Status Configurator::set_output_dimensions(
       }
       if (sizing_cfg.one_pass_mode) {
         std::cout << "hmstitcher one-pass mode enabled: deferring stitched canvas sizing to runtime" << std::endl;
-        if (is_udp_output) {
-          pipeline["hmplaycropper"]["runtime-output-max-width"] = std::to_string(kMaxUdpStreamingWidth);
-          pipeline["hmplaycropper"]["runtime-output-max-height"] = std::to_string(kMaxUdpStreamingHeight);
-        }
+        pipeline["hmplaycropper"]["runtime-output-max-width"] = std::to_string(kMaxPlayCropperOutputWidth);
+        pipeline["hmplaycropper"]["runtime-output-max-height"] = std::to_string(kMaxPlayCropperOutputHeight);
       } else {
         std::cout << "The stitched canvas size is not yet known, will determine in the ensuing pipeline run"
                   << std::endl;
@@ -603,7 +580,7 @@ absl::Status Configurator::set_output_dimensions(
         }
       }
     }
-    auto wh_tuple = maybe_scale_down(ww, hh);
+    auto wh_tuple = cap_output(ww, hh);
     pipeline["hmplaycropper"]["output-width"] = std::to_string(round_down_even(std::get<0>(wh_tuple)));
     pipeline["hmplaycropper"]["output-height"] = std::to_string(round_down_even(std::get<1>(wh_tuple)));
   }
