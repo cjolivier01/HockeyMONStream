@@ -151,9 +151,6 @@ cc_library(
         'SIMPLEBLE_BACKEND_IOS=0',
         'SIMPLEBLE_BACKEND_PLAIN=0',
     ],
-    linkopts = [
-        "-lbluetooth",
-    ],
     deps = [
         ":simpledbus",
         "@bluez//:bluez",

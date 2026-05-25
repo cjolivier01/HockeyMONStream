@@ -59,6 +59,8 @@ def _detect_opencv(ctx, root):
         core_hpp = include_dir + "/opencv2/core.hpp"
         if _path_exists(ctx, core_hpp):
             lib_dir_rel = _pick_opencv_lib_dir(ctx, root)
+            if lib_dir_rel == None:
+                return None
             return {
                 "root": root,
                 "version": version,
@@ -67,7 +69,7 @@ def _detect_opencv(ctx, root):
                 "has_cudawarping": _path_exists(ctx, include_dir + "/opencv2/cudawarping.hpp"),
                 "has_cudawarping_lib": _has_shared_lib(
                     ctx,
-                    [root + "/" + lib_dir_rel] if lib_dir_rel else [],
+                    [root + "/" + lib_dir_rel],
                     "opencv_cudawarping",
                 ),
             }
