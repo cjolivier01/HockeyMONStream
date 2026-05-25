@@ -48,12 +48,19 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   // DSCustomLibraryBase-
 
   absl::Status GenerateOutput(NvDsBatchMeta* batch_meta, NvBufSurface* in_surface, NvBufSurface* out_surface) override;
+  bool UsesRuntimeOutputSize() const override;
+  absl::StatusOr<videoprep::RuntimeOutputSize> PrepareRuntimeOutputSize(
+      NvDsBatchMeta* batch_meta,
+      NvBufSurface* in_surface) override;
 
  private:
   using STITCHER = hm::pano::cuda::CudaStitchPano<uchar4, float4>;
 
   absl::StatusOr<STITCHER*> get_stitcher();
   absl::Status reload_stitcher();
+  absl::Status configure_one_pass_from_surfaces(
+      hm::surface::Surface incoming_surface_left,
+      hm::surface::Surface incoming_surface_right);
   void update_canvas_hints(size_t width, size_t height) {
     canvas_width_hint_ = width;
     canvas_height_hint_ = height;

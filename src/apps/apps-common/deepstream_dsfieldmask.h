@@ -147,6 +147,8 @@ struct HmPlayCropperConfig : public NvDsHmVideoPrepConfig {
   gboolean plot_player_tracking;
   gfloat fixed_edge_rotation_angle;
   int scoreboard_perspective_polygon[8];
+  guint runtime_output_max_width;
+  guint runtime_output_max_height;
 };
 
 gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBin* bin);

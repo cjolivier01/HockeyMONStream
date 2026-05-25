@@ -23,6 +23,10 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   // DSCustomLibraryBase-
 
   absl::Status GenerateOutput(NvDsBatchMeta* batch_meta, NvBufSurface* in_surface, NvBufSurface* out_surface) override;
+  bool UsesRuntimeOutputSize() const override;
+  absl::StatusOr<videoprep::RuntimeOutputSize> PrepareRuntimeOutputSize(
+      NvDsBatchMeta* batch_meta,
+      NvBufSurface* in_surface) override;
 
   gint AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) override;
 
@@ -49,6 +53,9 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   NvBufSurfaceParams display_dest_params_;
   bool plot_play_tracking_{false};
   bool plot_player_tracking_{false};
+  bool runtime_output_size_{false};
+  size_t runtime_output_max_width_{0};
+  size_t runtime_output_max_height_{0};
 };
 
 } // namespace playcropper

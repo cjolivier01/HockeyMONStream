@@ -40,6 +40,7 @@ absl::Status CustomAlgorithmBase::PostCapsInit(DSCustom_CreateParams* params) {
   // Set the params properly based on this custom library requirement
   params->m_bufferPoolConfig.cuda_mem_type = NVBUF_MEM_DEFAULT;
   if (hw_caps == false) {
+    ReleaseSwOutputBufferPool();
     // pool_config.cuda_mem_type = NVBUF_MEM_SYSTEM;
     m_swbufpool = gst_buffer_pool_new();
     config = gst_buffer_pool_get_config(m_swbufpool);
@@ -70,18 +71,111 @@ absl::Status CustomAlgorithmBase::PostCapsInit(DSCustom_CreateParams* params) {
         params->m_bufferPoolConfig.batch_size = 1;
       }
 
-      m_dsBufferPool = CreateBufferPool(&params->m_bufferPoolConfig, m_outCaps);
-      if (!m_dsBufferPool) {
-        return absl::InternalError("Custom Buffer Pool Creation failed");
+      m_buffer_pool_config = params->m_bufferPoolConfig;
+      if (m_transformMode && UsesRuntimeOutputSize()) {
+        ReleaseDsOutputBufferPool();
+        GST_INFO_OBJECT(m_element, "Deferring output buffer pool creation until runtime output size is known");
+      } else {
+        HM_RETURN_IF_ERROR(CreateDsOutputBufferPool(m_outCaps));
       }
-      m_config_params.compute_mode = NvBufSurfTransformCompute_GPU;
-      m_config_params.gpu_id = params->m_gpuId;
-      m_config_params.cuda_stream = params->m_cudaStream;
     }
   }
 
-  m_outputThread = new std::thread(&CustomAlgorithmBase::OutputThread, this);
+  if (!m_outputThread) {
+    m_outputThread = new std::thread(&CustomAlgorithmBase::OutputThread, this);
+  }
   m_buffer_pool_config = params->m_bufferPoolConfig;
+  return absl::OkStatus();
+}
+
+void CustomAlgorithmBase::ReleaseDsOutputBufferPool() {
+  if (m_dsBufferPool) {
+    gst_buffer_pool_set_active(m_dsBufferPool, FALSE);
+    gst_object_unref(m_dsBufferPool);
+    m_dsBufferPool = NULL;
+  }
+}
+
+void CustomAlgorithmBase::ReleaseSwOutputBufferPool() {
+  if (m_swbufpool) {
+    gst_buffer_pool_set_active(m_swbufpool, FALSE);
+    gst_object_unref(m_swbufpool);
+    m_swbufpool = NULL;
+  }
+}
+
+absl::Status CustomAlgorithmBase::CreateDsOutputBufferPool(GstCaps* outcaps) {
+  if (!outcaps) {
+    return absl::InvalidArgumentError("Cannot create output buffer pool without caps");
+  }
+  if (!m_buffer_pool_config.max_buffers) {
+    return absl::FailedPreconditionError("Cannot create output buffer pool without max_buffers");
+  }
+
+  ReleaseDsOutputBufferPool();
+  m_dsBufferPool = CreateBufferPool(&m_buffer_pool_config, outcaps);
+  if (!m_dsBufferPool) {
+    return absl::InternalError("Custom Buffer Pool Creation failed");
+  }
+  gst_video_info_from_caps(&m_outVideoInfo, outcaps);
+  m_config_params.compute_mode = NvBufSurfTransformCompute_GPU;
+  m_config_params.gpu_id = m_gpuId;
+  m_config_params.cuda_stream = cuda_stream_;
+  return absl::OkStatus();
+}
+
+GstCaps* CustomAlgorithmBase::CreateRuntimeOutputCaps(const videoprep::RuntimeOutputSize& size) {
+  if (!size.valid() || !m_outCaps) {
+    return NULL;
+  }
+  GstCaps* caps = gst_caps_copy(m_outCaps);
+  caps = gst_caps_make_writable(caps);
+  const gint width = static_cast<gint>(size.width);
+  const gint height = static_cast<gint>(size.height);
+  for (guint i = 0; i < gst_caps_get_size(caps); ++i) {
+    GstStructure* structure = gst_caps_get_structure(caps, i);
+    gst_structure_set(structure, "width", G_TYPE_INT, width, "height", G_TYPE_INT, height, NULL);
+  }
+  return gst_caps_fixate(caps);
+}
+
+absl::Status CustomAlgorithmBase::EnsureDsOutputBufferPool(NvDsBatchMeta* batch_meta, NvBufSurface* in_surf) {
+  if (m_dsBufferPool) {
+    return absl::OkStatus();
+  }
+  if (!UsesRuntimeOutputSize()) {
+    return absl::FailedPreconditionError("Output buffer pool has not been created");
+  }
+
+  videoprep::RuntimeOutputSize output_size;
+  HM_ASSIGN_OR_RETURN(output_size, PrepareRuntimeOutputSize(batch_meta, in_surf));
+  if (!output_size.valid()) {
+    return absl::FailedPreconditionError("Runtime output size was not provided");
+  }
+
+  GstCaps* runtime_caps = CreateRuntimeOutputCaps(output_size);
+  if (!runtime_caps) {
+    return absl::InternalError("Failed to create runtime output caps");
+  }
+
+  absl::Status status = CreateDsOutputBufferPool(runtime_caps);
+  if (!status.ok()) {
+    gst_caps_unref(runtime_caps);
+    return status;
+  }
+
+  GstEvent* caps_event = gst_event_new_caps(runtime_caps);
+  if (!gst_pad_push_event(GST_BASE_TRANSFORM_SRC_PAD(m_element), caps_event)) {
+    ReleaseDsOutputBufferPool();
+    gst_caps_unref(runtime_caps);
+    return absl::InternalError("Failed to push runtime output caps downstream");
+  }
+
+  if (m_runtimeOutputCaps) {
+    gst_caps_unref(m_runtimeOutputCaps);
+  }
+  m_runtimeOutputCaps = runtime_caps;
+  GST_INFO_OBJECT(m_element, "Runtime output caps fixed to %" GST_PTR_FORMAT, m_runtimeOutputCaps);
   return absl::OkStatus();
 }
 
@@ -264,10 +358,11 @@ bool CustomAlgorithmBase::SetProperty(const Property& prop) {
 /* Deinitialize the Custom Lib context */
 CustomAlgorithmBase::~CustomAlgorithmBase() {
   Shutdown();
-  if (m_swbufpool) {
-    gst_buffer_pool_set_active(m_swbufpool, FALSE);
-    gst_object_unref(m_swbufpool);
-    m_swbufpool = NULL;
+  ReleaseSwOutputBufferPool();
+  ReleaseDsOutputBufferPool();
+  if (m_runtimeOutputCaps) {
+    gst_caps_unref(m_runtimeOutputCaps);
+    m_runtimeOutputCaps = NULL;
   }
 
   if (m_scratchNvBufSurface) {
@@ -552,6 +647,7 @@ void CustomAlgorithmBase::OutputThread(void) {
     // Once buffer processing is done, push the buffer to the downstream by using gst_pad_push function
 
     NvBufSurface* in_surf = getNvBufSurface(packetInfo.inbuf);
+    batch_meta = GetNVDS_BatchMeta(packetInfo.inbuf);
 
     /* Insert custom buffer every after 10 frames */
     if (m_frameinsertinterval) {
@@ -572,6 +668,16 @@ void CustomAlgorithmBase::OutputThread(void) {
         // Transform mode, hence transform input buffer to output buffer
         GstBuffer* newGstOutBuf = NULL;
         GstFlowReturn result = GST_FLOW_OK;
+        cuda_status.Update(EnsureDsOutputBufferPool(batch_meta, in_surf));
+        if (!cuda_status.ok()) {
+          std::cerr << cuda_status << std::endl;
+          update_last_flow_ret(GST_FLOW_ERROR);
+        }
+        if (last_flow_ret_ != GST_FLOW_OK) {
+          gst_buffer_unref(packetInfo.inbuf);
+          lk.lock();
+          continue;
+        }
         assert(m_dsBufferPool);
         result = gst_buffer_pool_acquire_buffer(m_dsBufferPool, &newGstOutBuf, NULL);
         if (result != GST_FLOW_OK) {

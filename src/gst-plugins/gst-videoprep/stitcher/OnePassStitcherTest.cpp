@@ -44,8 +44,9 @@ bool run_precaps(
   }
 
   if (params.output_width_height[0] != expected_width || params.output_width_height[1] != expected_height) {
-    std::cerr << "Unexpected fallback size: " << params.output_width_height[0] << "x" << params.output_width_height[1]
-              << ", expected: " << expected_width << "x" << expected_height << std::endl;
+    std::cerr << "Unexpected PreCapsInit size: " << params.output_width_height[0] << "x"
+              << params.output_width_height[1] << ", expected: " << expected_width << "x" << expected_height
+              << std::endl;
     return false;
   }
 
@@ -65,7 +66,7 @@ int main() {
   if (!run_precaps(config_dir, /*one_pass_mode=*/false, /*expect_ok=*/false, 0, 0)) {
     return 1;
   }
-  if (!run_precaps(config_dir, /*one_pass_mode=*/true, /*expect_ok=*/true, 2560, 720)) {
+  if (!run_precaps(config_dir, /*one_pass_mode=*/true, /*expect_ok=*/true, 0, 0)) {
     return 2;
   }
 

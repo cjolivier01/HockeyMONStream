@@ -489,6 +489,12 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
   ppc << ";show-scoreboard=" << config->show_scoreboard;
   ppc << ";plot-play-tracking=" << config->plot_play_tracking;
   ppc << ";plot-player-tracking=" << config->plot_player_tracking;
+  if (config->runtime_output_max_width) {
+    ppc << ";runtime-output-max-width=" << config->runtime_output_max_width;
+  }
+  if (config->runtime_output_max_height) {
+    ppc << ";runtime-output-max-height=" << config->runtime_output_max_height;
+  }
   if (config->fixed_edge_rotation_angle != 0) {
     ppc << ";fixed-edge-rotation-angle=" << config->fixed_edge_rotation_angle;
   }

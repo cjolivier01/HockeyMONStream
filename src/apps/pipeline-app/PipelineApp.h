@@ -158,6 +158,6 @@ class PipelineApplication {
   uint64_t start_time_ns_{0};
   uint64_t first_pts_ns_{0};
   bool have_first_pts_{false};
-  static constexpr const char* configure_stitching_config_file_name_ = "ds_hockey_configure_stitching.yaml";
+  static constexpr const char* default_config_file_name_ = "configs/ds_hockey_app_config.yaml";
   static PipelineApplication* instance_;
 };

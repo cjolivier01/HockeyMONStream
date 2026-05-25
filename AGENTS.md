@@ -14,13 +14,15 @@
 - Jetson (aarch64) build: `bazelisk build --config=jetson //...`.
 - Canonical runs:
   - End-to-end wrapper (recommended): `./run.sh --game-id=<game_id> -t=5`
-    - Runs stage `-1` (stitching + rink mask configuration) with a `FAKE` sink, then stage `0` (main pipeline) with default `RENDER` sink.
+    - Runs stage `0` (main pipeline) by default; if stitching artifacts are missing, one-pass stitching configures them in-process before allocating the `hmstitcher` output pool.
+    - To run the older two-stage flow, pass `--two-stage` (stage `-1` stitching/rink-mask configuration with `FAKE`, then stage `0` main pipeline).
     - Supports `-t N`, `-t=N`, or `--time-limit=N`.
     - If configured pretrained assets are missing, it will download the assets declared in YAML `pretrained-assets`.
   - Direct `pipeline-app` invocation (useful for debugging configs):
-    - Display only: `bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml -g <game_id> --enable-sources=URI-MULTIPLE --enable-sinks=RENDER --options=pipeline.hmaudio.enable=1`
-    - Encode to file: `bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml -g <game_id> --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_FILE --options=pipeline.hmaudio.enable=1`
-    - Fake sink (no UI): `bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml -g <game_id> --enable-sources=URI-MULTIPLE --enable-sinks=FAKE --options=pipeline.hmaudio.enable=1`
+    - Display only: `bazel-bin/src/apps/pipeline-app/pipeline-app -g <game_id> --enable-sources=URI-MULTIPLE --enable-sinks=RENDER --options=pipeline.hmaudio.enable=1`
+    - Encode to file: `bazel-bin/src/apps/pipeline-app/pipeline-app -g <game_id> --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_FILE --options=pipeline.hmaudio.enable=1`
+    - Fake sink (no UI): `bazel-bin/src/apps/pipeline-app/pipeline-app -g <game_id> --enable-sources=URI-MULTIPLE --enable-sinks=FAKE --options=pipeline.hmaudio.enable=1`
+    - Explicit two-stage debugging: add `-c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml`.
     - Multi-sink (comma-separated): `... --enable-sinks=RENDER,ENCODE_FILE`
     - All commands support an optional time limit: append `-t N` (or `--time-limit=N`) to stop after processing `N` seconds of video.
 - Run a test binary (pattern):
@@ -32,6 +34,7 @@ Notes:
 - Game directories default to `$HOME/Videos/<game_id>`. Override with `HM_GAME_DIR=/path/to/games_root` (game dir becomes `${HM_GAME_DIR}/<game_id>`).
 - HockeyMOM baseline config is auto-detected from a sibling `../hm` checkout when present; override explicitly via `HM_CONFIG_ROOT=/path/to/hm/hmlib/config`.
 - Install Bazelisk once via `scripts/install_bazelisk.sh` (the `bld` script will prompt if missing).
+- One-pass stitching delays `hmstitcher` output caps and buffer-pool allocation until the first input batch generates/loads control masks and reveals the actual stitched canvas size. If CUDA OOM appears in one-pass runs, inspect the runtime canvas dimensions and downstream caps/pool reallocation path rather than tuning guessed width/height padding.
 
 ## Coding Style & Naming
 - Language: C++17 (see `.bazelrc`); format with `.clang-format`.

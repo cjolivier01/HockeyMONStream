@@ -4,6 +4,7 @@
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 
 #include "absl/status/status.h"
+#include <mutex>
 
 namespace hm {
 namespace playtracker {
@@ -27,6 +28,8 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
 
  protected:
   DsPlayTrackerInitParams init_params_;
+  std::string play_tracker_config_source_file_;
+  std::mutex context_mu_;
   DsPlayTrackerCtx* pt_context_{nullptr};
   hm::play_tracker::PlayTrackerResults prev_play_tracker_results_;
   float fixed_edge_rotation_angle_{10.0};

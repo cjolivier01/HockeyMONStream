@@ -87,8 +87,16 @@ inline DSCustomLibraryBase::DSCustomLibraryBase(GstBaseTransform* btrans) : m_el
 
 inline absl::Status DSCustomLibraryBase::PostCapsInit(DSCustom_CreateParams* params) {
   m_element = params->m_element;
-  m_inCaps = params->m_inCaps;
-  m_outCaps = params->m_outCaps;
+  GstCaps* in_caps = params->m_inCaps ? gst_caps_ref(params->m_inCaps) : nullptr;
+  GstCaps* out_caps = params->m_outCaps ? gst_caps_ref(params->m_outCaps) : nullptr;
+  if (m_inCaps) {
+    gst_caps_unref(m_inCaps);
+  }
+  if (m_outCaps) {
+    gst_caps_unref(m_outCaps);
+  }
+  m_inCaps = in_caps;
+  m_outCaps = out_caps;
   m_gpuId = params->m_gpuId;
   m_dummyMetaInsert = params->m_dummyMetaInsert;
   m_fillDummyBatchMeta = params->m_fillDummyBatchMeta;
@@ -105,7 +113,16 @@ inline absl::Status DSCustomLibraryBase::PostCapsInit(DSCustom_CreateParams* par
   return absl::OkStatus();
 }
 
-inline DSCustomLibraryBase::~DSCustomLibraryBase() {}
+inline DSCustomLibraryBase::~DSCustomLibraryBase() {
+  if (m_inCaps) {
+    gst_caps_unref(m_inCaps);
+    m_inCaps = nullptr;
+  }
+  if (m_outCaps) {
+    gst_caps_unref(m_outCaps);
+    m_outCaps = nullptr;
+  }
+}
 
 inline GstCaps* DSCustomLibraryBase::GetCompatibleCaps(
     GstPadDirection direction,

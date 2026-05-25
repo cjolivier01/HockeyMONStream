@@ -17,9 +17,32 @@ cc_library(
         "//src/gst-plugins/gst-videoprep/algorithm-base",
         "//src/gst-plugins/gst-playtracker:playtracker_context_header",
         "//src/gst-plugins/gst-videoprep/playtracker:playtracker_payload",
+        "//src/libs/common:utils",
         "//src/libs/draw_display",
         "//src/libs/scoreboard",
         "@hm-cupano//src/pano:cuda_matrix",
+    ],
+)
+
+cc_test(
+    name = "playcropper_runtime_sizing_test",
+    srcs = ["PlayCropperRuntimeSizingTest.cpp"],
+    deps = [
+        ":playcropper",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+        "@local_cuda//:nppc",
+        "@local_cuda//:nppif",
+        "@local_cuda//:nppig",
+        "//toolchains/jetson:cuda_runtime",
+    ],
+    copts = [
+        "-x",
+        "c++",
+        "-std=c++17",
+    ],
+    linkopts = [
+        "-lnvdsbufferpool",
     ],
 )
 

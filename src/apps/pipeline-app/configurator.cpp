@@ -569,19 +569,10 @@ absl::Status Configurator::set_output_dimensions(
             "Unable to determine the canvas size and runtime stitching configuration is disabled");
       }
       if (sizing_cfg.one_pass_mode) {
-        // One-pass mode configures stitching after the pipeline starts, but the `videoprep` element needs a fixed
-        // output size up front to allocate buffers. Use a conservative oversize based on the input dimensions so the
-        // stitched canvas will fit once control masks are generated.
-        if (ww && hh) {
-          const size_t pad_h = std::max<size_t>(hh / 10, 256);
-          const size_t fallback_width = 2 * ww;
-          const size_t fallback_height = hh + pad_h;
-          pipeline["hmstitcher"]["output-width"] = std::to_string(fallback_width);
-          pipeline["hmstitcher"]["output-height"] = std::to_string(fallback_height);
-          std::cout << "hmstitcher one-pass mode enabled: using fallback output size " << fallback_width << " x "
-                    << fallback_height << " (canvas will be sized at runtime)" << std::endl;
-        } else {
-          std::cout << "hmstitcher one-pass mode enabled: deferring stitched canvas sizing to runtime" << std::endl;
+        std::cout << "hmstitcher one-pass mode enabled: deferring stitched canvas sizing to runtime" << std::endl;
+        if (is_udp_output) {
+          pipeline["hmplaycropper"]["runtime-output-max-width"] = std::to_string(kMaxUdpStreamingWidth);
+          pipeline["hmplaycropper"]["runtime-output-max-height"] = std::to_string(kMaxUdpStreamingHeight);
         }
       } else {
         std::cout << "The stitched canvas size is not yet known, will determine in the ensuing pipeline run"
