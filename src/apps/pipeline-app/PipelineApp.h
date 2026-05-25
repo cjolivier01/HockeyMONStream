@@ -134,6 +134,7 @@ class PipelineApplication {
   std::vector<std::set<NvDsSourceType>> enabled_source_types_;
   std::vector<std::set<NvDsSinkType>> enabled_sink_types_;
   gboolean print_version_;
+  gboolean show_;
   gboolean show_bbox_text_;
   gboolean print_dependencies_version_;
   // Stop conditions

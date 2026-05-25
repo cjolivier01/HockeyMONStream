@@ -68,6 +68,7 @@ PipelineApplication::PipelineApplication()
       input_uris_(nullptr),
       game_id_(nullptr),
       print_version_(FALSE),
+      show_(FALSE),
       show_bbox_text_(FALSE),
       print_dependencies_version_(FALSE),
       quit_(FALSE),
@@ -586,6 +587,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   char** pipline_options{nullptr};
   GOptionEntry entries[] = {
       {"version", 'v', 0, G_OPTION_ARG_NONE, &print_version_, "Print DeepStreamSDK version", nullptr},
+      {"show",
+       0,
+       0,
+       G_OPTION_ARG_NONE,
+       &show_,
+       "Enable hmstitcher and hmplaycropper display outputs",
+       nullptr},
       {"tiledtext",
        0,
        0,
@@ -692,6 +700,12 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
         pipeline_options_[i].emplace(kv.at(0), kv.at(1));
       }
     }
+  }
+  if (show_) {
+    std::map<std::string, std::string> show_options;
+    show_options.emplace("pipeline.hmstitcher.show", "1");
+    show_options.emplace("pipeline.hmplaycropper.show", "1");
+    pipeline_options_.push_back(std::move(show_options));
   }
 
   HM_ASSIGN_OR_RETURN(

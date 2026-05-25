@@ -8,11 +8,13 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/videoio.hpp>
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <unordered_set>
 
 #include "absl/status/status.h"
@@ -44,6 +46,9 @@ constexpr long kMaxUdpStreamingHeight = 2160;
 constexpr const char* kRinkMaskFilename = "rink_mask_0.png";
 
 constexpr const char* kEnableFlagField = "enable";
+
+constexpr const char* kDefaultOutputVideoName = "tracking_output.mkv";
+constexpr const char* kLegacyDefaultOutputName = "out.mkv";
 
 const std::vector<const char*> nostitch_video_names = {
     // Prefer mp4 to mkv
@@ -116,6 +121,43 @@ bool is_enabled(YAML::Node n) {
     }
   }
   return false;
+}
+
+std::string to_lower_ascii(std::string s) {
+  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return s;
+}
+
+std::string add_audio_suffix_to_output_path(const std::string& output_path) {
+  if (output_path.empty()) {
+    return output_path;
+  }
+  fs::path p(output_path);
+  std::string stem = p.stem().string();
+  if (!absl::EndsWith(stem, "-with-audio")) {
+    stem += "-with-audio";
+    p = p.parent_path() / (stem + p.extension().string());
+  }
+  return p.string();
+}
+
+void set_container_from_output_extension(YAML::Node& sink_node, const fs::path& output_path) {
+  const std::string ext = to_lower_ascii(output_path.extension().string());
+  if (ext == ".mp4") {
+    sink_node["container"] = static_cast<int>(NV_DS_CONTAINER_MP4);
+  } else if (ext == ".mkv") {
+    sink_node["container"] = static_cast<int>(NV_DS_CONTAINER_MKV);
+  }
+}
+
+YAML::Node ensure_game_frame_offsets_node(YAML::Node& config) {
+  std::optional<YAML::Node> game_offsets = get_node(config, "game.stitching.frame_offsets");
+  if (!game_offsets.has_value() || !game_offsets->IsMap()) {
+    std::optional<YAML::Node> legacy_offsets = get_node(config, "stitching.frame_offsets");
+    config["game"]["stitching"]["frame_offsets"] =
+        legacy_offsets.has_value() && legacy_offsets->IsMap() ? *legacy_offsets : YAML::Node(YAML::NodeType::Map);
+  }
+  return config["game"]["stitching"]["frame_offsets"];
 }
 
 void set_all_field_values(
@@ -417,7 +459,8 @@ absl::Status Configurator::gather_stitching_videos(
   }
 
   if (!left_files.empty() && !right_files.empty()) {
-    if (!has_node(config_, "game.stitching.frame_offsets.left", /*non_null=*/true) || force) {
+    if (!has_node(config_, "game.stitching.frame_offsets.left", /*non_null=*/true) ||
+        !has_node(config_, "game.stitching.frame_offsets.right", /*non_null=*/true) || force) {
       stitching::Synchronization sync;
       HM_ASSIGN_OR_RETURN(sync, stitching::calculate_stitching_synchronization(game_dir / left_files[0], game_dir / right_files[0]));
       offsets["left"] = std::to_string(sync.video1_frame_offset);
@@ -443,7 +486,7 @@ void Configurator::apply_frame_offsets_and_sizes(
     YAML::Node& pipeline) {
   if (!left_files.empty()) {
     Videoinfo left_info = getVideoInfo(file_maybe_in_game_dir(left_files[0]));
-    double lfo = offsets["left"].as<double>(); // decimal frames
+    double lfo = get_node_value<double>(offsets, "left", 0.0); // decimal frames
     set_stream_offsets_ |= lfo != 0.0;
     pipeline["hmstitcher"]["left-frame-offset-ns"] = std::to_string(size_t(lfo / left_info.fps * GST_SECOND));
     area = left_info.width * left_info.height;
@@ -452,7 +495,7 @@ void Configurator::apply_frame_offsets_and_sizes(
   }
   if (!right_files.empty()) {
     Videoinfo right_info = getVideoInfo(file_maybe_in_game_dir(right_files[0]));
-    double rfo = offsets["right"].as<double>(); // decimal frames
+    double rfo = get_node_value<double>(offsets, "right", 0.0); // decimal frames
     set_stream_offsets_ |= rfo != 0.0;
     pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / right_info.fps * GST_SECOND));
     if (right_info.width * right_info.height > (long)area) {
@@ -614,11 +657,11 @@ void Configurator::configure_audio(
         }
         src1["uri-list"] = uri_list;
       }
-      if (offsets["left"].as<double>() == 0) {
+      if (get_node_value<double>(offsets, "left", 0.0) == 0) {
         possible_audio_uri = src0["uri"].as<std::string>();
         audio_source_id = src0["source-id"].as<int>();
       } else {
-        assert(offsets["right"].as<double>() == 0);
+        assert(get_node_value<double>(offsets, "right", 0.0) == 0);
         possible_audio_uri = src1["uri"].as<std::string>();
         audio_source_id = src1["source-id"].as<int>();
       }
@@ -678,6 +721,100 @@ void Configurator::configure_audio(
       }
     }
   }
+}
+
+absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) const {
+  if (game_id_.empty()) {
+    return absl::OkStatus();
+  }
+
+  std::vector<int> enabled_sink_ids;
+  for (auto kv : pipeline) {
+    const std::string key = kv.first.as<std::string>();
+    if (!absl::StartsWith(key, "sink")) {
+      continue;
+    }
+    YAML::Node sink_node = kv.second;
+    if (!is_enabled(sink_node)) {
+      continue;
+    }
+    const int sink_type = get_node_value<int>(sink_node, "type", 0);
+    if (!sink_type) {
+      continue;
+    }
+    enabled_sink_ids.push_back(get_node_value<int>(sink_node, "sink-id", -1));
+  }
+
+  const auto has_audio_for_sink = [&](int sink_id) {
+    for (auto kv : pipeline) {
+      const std::string key = kv.first.as<std::string>();
+      if (!absl::StartsWith(key, "hmaudio")) {
+        continue;
+      }
+      YAML::Node audio_node = kv.second;
+      if (!is_enabled(audio_node)) {
+        continue;
+      }
+      const int dest = get_node_value<int>(audio_node, "dest", static_cast<int>(DEST_INDEPENDENT));
+      if (dest != static_cast<int>(DEST_SINK) && dest != static_cast<int>(DEST_MULTI_SINK)) {
+        continue;
+      }
+      const int audio_sink_id = get_node_value<int>(audio_node, "sink-id", -1);
+      if (audio_sink_id == sink_id) {
+        return true;
+      }
+      if (audio_sink_id == -1 && enabled_sink_ids.size() == 1 && enabled_sink_ids.front() == sink_id) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const fs::path output_work_dir = fs::path(".") / "output_workdirs" / game_id_;
+
+  for (auto kv : pipeline) {
+    const std::string key = kv.first.as<std::string>();
+    if (!absl::StartsWith(key, "sink")) {
+      continue;
+    }
+    YAML::Node sink_node = kv.second;
+    if (!is_enabled(sink_node)) {
+      continue;
+    }
+    if (static_cast<NvDsSinkType>(get_node_value<int>(sink_node, "type", 0)) != NV_DS_SINK_ENCODE_FILE) {
+      continue;
+    }
+
+    const int sink_id = get_node_value<int>(sink_node, "sink-id", -1);
+    std::string output_file = get_node_value<std::string>(sink_node, "output-file", "");
+    if (!is_valid_yaml_value_string(output_file) || output_file == kLegacyDefaultOutputName) {
+      output_file = kDefaultOutputVideoName;
+    }
+
+    fs::path output_path(output_file);
+    const bool output_was_rebased = !output_path.has_parent_path();
+    if (output_was_rebased) {
+      output_path = output_work_dir / output_path;
+    }
+    if (output_was_rebased && has_audio_for_sink(sink_id)) {
+      output_path = add_audio_suffix_to_output_path(output_path.string());
+    }
+
+    set_container_from_output_extension(sink_node, output_path);
+    sink_node["output-file"] = output_path.string();
+
+    const fs::path parent = output_path.parent_path();
+    if (!parent.empty()) {
+      std::error_code ec;
+      fs::create_directories(parent, ec);
+      if (ec) {
+        return absl::InternalError(
+            TO_STRING("Failed to create output directory \"" << parent.string() << "\": " << ec.message()));
+      }
+    }
+  }
+
+  return absl::OkStatus();
 }
 
 void Configurator::log_enabled_bins(const YAML::Node& pipeline) const {
@@ -997,7 +1134,7 @@ absl::Status Configurator::complete_configuration(bool force) {
 
   apply_scoreboard_perspective(pipeline);
 
-  YAML::Node offsets = config_["game"]["stitching"]["frame_offsets"];
+  YAML::Node offsets = ensure_game_frame_offsets_node(config_);
 
   size_t area = 0, ww = 0, hh = 0;
 
@@ -1014,6 +1151,7 @@ absl::Status Configurator::complete_configuration(bool force) {
       set_output_dimensions(pipeline, is_camera_source, camera_sources, left_files, right_files, pipeline_has_hmstitcher, game_dir, ww, hh, area, num_video_sources));
 
   configure_audio(pipeline, left_files, right_files, offsets, num_video_sources);
+  HM_RETURN_IF_ERROR(configure_encode_file_outputs(pipeline));
 
   //
   // If RTSP server is active, we may need to downscale

@@ -60,6 +60,29 @@ prepend_path LD_LIBRARY_PATH "${SCRIPT_DIR}/lib"
 prepend_path LD_LIBRARY_PATH "${SCRIPT_DIR}/lib/gst-plugins"
 prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib"
 prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
+
+# Bazel-built GStreamer plugins live under per-plugin output directories. Keep those visible so running a focused
+# target build, such as pipeline-app plus gst-videoprep, is enough for local runs without manually staging .so
+# files.
+BAZEL_GST_PLUGIN_ROOT="${SCRIPT_DIR}/bazel-bin/src/gst-plugins"
+if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
+  for plugin_dir in "${BAZEL_GST_PLUGIN_ROOT}"/*; do
+    if [ -d "${plugin_dir}" ]; then
+      prepend_path GST_PLUGIN_PATH "${plugin_dir}"
+      prepend_path LD_LIBRARY_PATH "${plugin_dir}"
+    fi
+  done
+fi
+
+YOLO_CUSTOM_IMPL="${SCRIPT_DIR}/bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"
+YOLO_CUSTOM_IMPL_LINK="${SCRIPT_DIR}/lib/libnvdsinfer_custom_impl_Yolo.so"
+if [ -e "${YOLO_CUSTOM_IMPL}" ]; then
+  mkdir -p "${SCRIPT_DIR}/lib"
+  if [ ! -e "${YOLO_CUSTOM_IMPL_LINK}" ] || [ -L "${YOLO_CUSTOM_IMPL_LINK}" ]; then
+    ln -sfn "../bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so" \
+      "${YOLO_CUSTOM_IMPL_LINK}"
+  fi
+fi
 if [ -n "${CONDA_PREFIX:-}" ]; then
   # Conda environments often ship their own GLib/GStreamer stack. Adding `${CONDA_PREFIX}/lib` ahead of system
   # libraries can cause hard-to-debug runtime aborts (e.g. GLib pthread TLS errors) when DeepStream/GStreamer load.
