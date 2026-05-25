@@ -74,15 +74,6 @@ if [ -n "${CONDA_PREFIX:-}" ]; then
   fi
 fi
 
-# Default model assets are not committed; set them up on-demand for the default configs.
-DEFAULT_WEIGHTS="${SCRIPT_DIR}/pretrained/deepstream/yolox/yolox_s.pth"
-DEFAULT_LABELS="${SCRIPT_DIR}/pretrained/deepstream/yolox/labels_coco.txt"
-DEFAULT_ONNX="${SCRIPT_DIR}/pretrained/deepstream/yolox/yolox_s.pth.onnx"
-if [ ! -f "${DEFAULT_ONNX}" ] || [ ! -f "${DEFAULT_LABELS}" ] || [ ! -f "${DEFAULT_WEIGHTS}" ]; then
-  echo "Missing default YOLOX pretrained assets; running scripts/setup_yolox_s_pretrained.sh"
-  bash "${SCRIPT_DIR}/scripts/setup_yolox_s_pretrained.sh"
-fi
-
 one_pass_only=0
 have_sink_arg=0
 rewritten_args=()
@@ -133,6 +124,39 @@ else
   if [ "${have_sink_arg}" -eq 0 ]; then
     sink_args+=(--enable-sinks="${default_main_sink}")
   fi
+fi
+
+asset_config_files=()
+collect_asset_config_files() {
+  local -n args_ref="$1"
+  local arg cfg i
+  for ((i = 0; i < ${#args_ref[@]}; i++)); do
+    arg="${args_ref[$i]}"
+    cfg=""
+    case "${arg}" in
+      -c|--config)
+        i=$((i + 1))
+        if [ "${i}" -lt "${#args_ref[@]}" ]; then
+          cfg="${args_ref[$i]}"
+        fi
+        ;;
+      -c=*|--config=*)
+        cfg="${arg#*=}"
+        ;;
+    esac
+    if [ -n "${cfg}" ]; then
+      case "${cfg}" in
+        /*) asset_config_files+=("${cfg}") ;;
+        *) asset_config_files+=("${SCRIPT_DIR}/${cfg}") ;;
+      esac
+    fi
+  done
+}
+
+collect_asset_config_files config_args
+collect_asset_config_files rewritten_args
+if [ "${#asset_config_files[@]}" -gt 0 ]; then
+  "${PYTHON_BIN:-python3}" "${SCRIPT_DIR}/scripts/setup_pretrained_assets.py" "${asset_config_files[@]}"
 fi
 
 bazel-bin/src/apps/pipeline-app/pipeline-app \
