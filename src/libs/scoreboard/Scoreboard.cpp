@@ -16,16 +16,37 @@
 
 #include <cuda_runtime.h>
 
-// #define USE_PRIVATE_WARP
-
-#ifdef USE_PRIVATE_WARP
-#include "jetson-utils/cuda/cudaWarp.h"
-#else
+#if __has_include(<opencv2/cudawarping.hpp>)
+#define HSTREAM_SCOREBOARD_USE_OPENCV_CUDA_WARP 1
 #include <opencv2/cudawarping.hpp>
+#else
+#define HSTREAM_SCOREBOARD_USE_OPENCV_CUDA_WARP 0
+#include "jetson-utils/cuda/cudaWarp.h"
 #endif
 
 namespace hm {
 namespace scoreboard {
+
+#if !HSTREAM_SCOREBOARD_USE_OPENCV_CUDA_WARP
+namespace {
+
+cv::Mat inversePerspectiveMatrix(const cv::Mat& perspective_matrix) {
+  cv::Mat inverse_matrix;
+  if (!cv::invert(perspective_matrix, inverse_matrix)) {
+    throw std::runtime_error("Scoreboard: perspective matrix is not invertible.");
+  }
+  if (inverse_matrix.type() != CV_32F) {
+    inverse_matrix.convertTo(inverse_matrix, CV_32F);
+  }
+  return inverse_matrix;
+}
+
+int cvDepth(CudaPixelType pixel_type) {
+  return CV_MAT_DEPTH(cudaPixelTypeToCvType(pixel_type));
+}
+
+} // namespace
+#endif
 
 /**
  * @brief Computes the Euclidean distance between two points.
@@ -215,9 +236,10 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
         },
         /*B=*/1);
 
-#ifdef USE_PRIVATE_WARP
+#if !HSTREAM_SCOREBOARD_USE_OPENCV_CUDA_WARP
     static const float border[] = {0, 0, 0, 0};
     assert(perspectiveMatrix_.type() == CV_32F && perspectiveMatrix_.rows == 3 && perspectiveMatrix_.cols == 3);
+    cv::Mat inverse_matrix = inversePerspectiveMatrix(perspectiveMatrix_);
     cudaError_t cuerr = warpPerspectiveCudaRaw(
         full_image.data_raw(),
         full_image.pitch(),
@@ -227,13 +249,14 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
         warped_image_->pitch(),
         warped_image_->width(),
         warped_image_->height(),
-        (const float*)perspectiveMatrix_.data,
-        full_image.channels(),
+        inverse_matrix.ptr<float>(),
+        cvDepth(full_image.cuda_pixel_type()),
         full_image.channels(),
         cv::INTER_LINEAR,
         cv::BORDER_CONSTANT,
         &border[0],
         stream);
+    (void)cuerr;
     assert(cuerr == cudaSuccess);
 #else
     cv::cuda::GpuMat gpu_mat(
@@ -290,9 +313,10 @@ cv::Mat Scoreboard<T_pixel>::forward_cuda(const cv::Mat& inputImage) {
     warped_image_ = std::make_unique<hm::CudaMat<T_pixel>>(/*B=*/1, destW_, destH_);
   }
 
-#ifdef USE_PRIVATE_WARP
+#if !HSTREAM_SCOREBOARD_USE_OPENCV_CUDA_WARP
   static const float border[] = {0, 0, 0, 0};
   assert(perspectiveMatrix_.type() == CV_32F && perspectiveMatrix_.rows == 3 && perspectiveMatrix_.cols == 3);
+  cv::Mat inverse_matrix = inversePerspectiveMatrix(perspectiveMatrix_);
   cuErr = warpPerspectiveCudaRaw(
       full_image.data_raw(),
       full_image.pitch(),
@@ -302,8 +326,8 @@ cv::Mat Scoreboard<T_pixel>::forward_cuda(const cv::Mat& inputImage) {
       warped_image_->pitch(),
       warped_image_->width(),
       warped_image_->height(),
-      (const float*)perspectiveMatrix_.data,
-      full_image.channels(),
+      inverse_matrix.ptr<float>(),
+      cvDepth(full_image.cuda_pixel_type()),
       full_image.channels(),
       cv::INTER_LINEAR,
       cv::BORDER_CONSTANT,

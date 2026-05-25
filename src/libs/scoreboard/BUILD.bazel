@@ -2,33 +2,12 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 
 INCLUDE_PREFIX = "hstream/src/libs/scoreboard"
 
-config_setting(
-    name = "jetson",
-    values = {"define": "target_platform=jetson"},
-)
-
-config_setting(
-    name = "arm64-sbsa",
-    values = {"define": "target_platform=arm64"},
-)
-
 cc_library(
     name = "scoreboard",
     srcs = ["Scoreboard.cpp"],
     hdrs = ["Scoreboard.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    linkopts = select({
-        ":jetson": [
-            "-L/opt/jetson-sysroot/usr/lib/aarch64-linux-gnu",
-            "-l:libopencv_cudawarping.so",
-        ],
-        ":arm64-sbsa": [
-            "-L/usr/lib/aarch64-linux-gnu",
-            "-l:libopencv_cudawarping.so",
-        ],
-        "//conditions:default": [],
-    }),
     deps = [
         "//src/libs/common:utils",
         "@com_google_absl//absl/synchronization",

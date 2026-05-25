@@ -115,8 +115,8 @@ git_repository(
 
 git_repository(
     name = "hm",
-    commit = "b9f54ff8c8a9f88ea275a9a924c77498c83b7c89",
-    remote = "ssh://git@github.com/cjolivier01/hockeymom2",
+    commit = "177a0076ba7a6fdd45105e926984f6a727d0ca64",
+    remote = "ssh://git@github.com/cjolivier01/HockeyMOM",
 )
 
 ################################ Multiblend ################################
