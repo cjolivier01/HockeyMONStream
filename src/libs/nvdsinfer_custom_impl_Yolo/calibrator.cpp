@@ -8,7 +8,7 @@
 #include <fstream>
 #include <iterator>
 
-#if NV_TENSORRT_MAJOR < 10
+#if NV_TENSORRT_MAJOR < 11
 Int8EntropyCalibrator2::Int8EntropyCalibrator2(
     const int& batchSize,
     const int& channels,

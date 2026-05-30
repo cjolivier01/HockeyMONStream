@@ -22,7 +22,7 @@
     }                                                                 \
   }
 
-#if NV_TENSORRT_MAJOR < 10
+#if NV_TENSORRT_MAJOR < 11
 class Int8EntropyCalibrator2 : public nvinfer1::IInt8EntropyCalibrator2 {
  public:
   Int8EntropyCalibrator2(

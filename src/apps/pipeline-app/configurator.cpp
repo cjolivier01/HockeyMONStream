@@ -1371,6 +1371,18 @@ absl::Status Configurator::complete_configuration(bool force, bool clean_stitchi
   // "pipeline.ds-playtracker.dynamic-acceleration-scaling",
   // "rink.camera.dynamic_acceleration_scaling");
 
+  const bool wants_scoreboard = pipeline["hmplaycropper"].IsDefined() &&
+      get_node_value(pipeline["hmplaycropper"], "show-scoreboard", false);
+  if (wants_scoreboard && (force || !has_node(config_, "rink.scoreboard.perspective_polygon", /*non_null=*/true))) {
+    HM_RETURN_IF_ERROR(stitching::configure_scoreboard(game_dir.string()));
+    std::optional<YAML::Node> reloaded_private_config = load_private_config();
+    if (reloaded_private_config.has_value()) {
+      private_config_ = *reloaded_private_config;
+      config_ = merge_nodes(config_, private_config_, /*warn_if_key_not_in_dest=*/false);
+      pipeline = config_["pipeline"];
+    }
+  }
+
   apply_scoreboard_perspective(pipeline);
 
   YAML::Node offsets = ensure_game_frame_offsets_node(config_);

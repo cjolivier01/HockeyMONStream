@@ -1,5 +1,6 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/playcropper.h"
 #include <assert.h>
+#include <cerrno>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <gst/base/gstbasetransform.h>
@@ -492,31 +493,40 @@ absl::Status PlayCropperPriv::RenderScoreboard(
     surface::Surface out_surface,
     cudaStream_t stream) {
   if (!scoreboard_ && !scoreboard_perspective_polygion_.empty()) {
-    const auto resolve_dimension = [](const std::string& value, float fallback, guint extent) {
+    const auto resolve_dimension = [](const std::string& value, float fallback, guint extent) -> absl::StatusOr<int> {
       if (value.empty()) {
-        return static_cast<int>(fallback);
+        return std::max(1, static_cast<int>(fallback));
       }
-      if (value[0] == '%') {
-        return static_cast<int>((std::atof(value.c_str() + 1) / 100.0) * extent);
+      const bool is_percent = value[0] == '%';
+      const char* start = value.c_str() + (is_percent ? 1 : 0);
+      char* end = nullptr;
+      errno = 0;
+      const float parsed = std::strtof(start, &end);
+      if (start == end || errno != 0 || end == nullptr || *end != '\0' || parsed <= 0) {
+        return absl::InvalidArgumentError(TO_STRING("Invalid scoreboard dimension: " << value));
       }
-      return static_cast<int>(std::atof(value.c_str()));
+      const float pixels = is_percent ? (parsed / 100.0f) * extent : parsed;
+      if (pixels <= 0) {
+        return absl::InvalidArgumentError(TO_STRING("Invalid scoreboard dimension: " << value));
+      }
+      return std::max(1, static_cast<int>(pixels));
     };
-    const int scoreboard_width = std::max(
-        1,
-        static_cast<int>(
-            scoreboard_scale_ *
-            resolve_dimension(
-                scoreboard_projected_width_,
-                out_surface.width() * scoreboard_width_ratio_,
-                out_surface.width())));
-    const int scoreboard_height = std::max(
-        1,
-        static_cast<int>(
-            scoreboard_scale_ *
-            resolve_dimension(
-                scoreboard_projected_height_,
-                out_surface.height() * scoreboard_height_ratio_,
-                out_surface.height())));
+    auto scoreboard_width_or = resolve_dimension(
+        scoreboard_projected_width_,
+        out_surface.width() * scoreboard_width_ratio_,
+        out_surface.width());
+    if (!scoreboard_width_or.ok()) {
+      return scoreboard_width_or.status();
+    }
+    auto scoreboard_height_or = resolve_dimension(
+        scoreboard_projected_height_,
+        out_surface.height() * scoreboard_height_ratio_,
+        out_surface.height());
+    if (!scoreboard_height_or.ok()) {
+      return scoreboard_height_or.status();
+    }
+    const int scoreboard_width = std::max(1, static_cast<int>(scoreboard_scale_ * scoreboard_width_or.value()));
+    const int scoreboard_height = std::max(1, static_cast<int>(scoreboard_scale_ * scoreboard_height_or.value()));
     scoreboard_ = std::make_unique<hm::scoreboard::Scoreboard<uchar4>>(
         scoreboard_perspective_polygion_,
         scoreboard_width,

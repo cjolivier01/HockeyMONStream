@@ -83,7 +83,7 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
 #endif
 
   nvinfer1::NetworkDefinitionCreationFlags flags = 0;
-#if NV_TENSORRT_MAJOR < 10
+#if NV_TENSORRT_MAJOR < 11
   flags =
       1U << static_cast<uint32_t>(
           nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
@@ -182,7 +182,7 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
 
   if (m_NetworkMode == "FP16") {
     assert(builder->platformHasFastFp16());
-#if NV_TENSORRT_MAJOR < 10
+#if NV_TENSORRT_MAJOR < 11
     config->setFlag(nvinfer1::BuilderFlag::kFP16);
 #else
     std::cerr
@@ -192,7 +192,7 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
 #endif
   } else if (m_NetworkMode == "INT8") {
     assert(builder->platformHasFastInt8());
-#if NV_TENSORRT_MAJOR < 10
+#if NV_TENSORRT_MAJOR < 11
     config->setFlag(nvinfer1::BuilderFlag::kINT8);
 #else
     std::cerr
@@ -218,7 +218,7 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
         std::cerr << "INT8_CALIB_BATCH_SIZE not set" << std::endl;
         assert(0);
       }
-#if NV_TENSORRT_MAJOR < 10
+#if NV_TENSORRT_MAJOR < 11
       nvinfer1::IInt8EntropyCalibrator2* calibrator =
           new Int8EntropyCalibrator2(
               calib_batch_size,

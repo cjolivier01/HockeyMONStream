@@ -234,7 +234,7 @@ absl::Status PipelineApplication::configureInstances(
 
       // Now auto-configure stuff as needed, i.e. dependent pipelines or stitching (if needed)
       absl::Status configuration_status = app_ctx->complete_configuration(
-          force_reconfigure_, clean_stitching_artifacts_, show_, show_render_scale_);
+          force_reconfigure_, clean_stitching_artifacts_, show_ || show_render_scale_ == 0.0, show_render_scale_);
       if (configuration_status.code() == absl::StatusCode::kCancelled) {
         std::cerr << configuration_status << std::endl;
         continue;
