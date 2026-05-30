@@ -1326,6 +1326,9 @@ absl::Status Configurator::complete_configuration(bool force, bool clean_stitchi
     YAML::Node preserved_pipeline = config_["pipeline"];
     absl::Status clean_status = stitching::clean_stitching_artifacts(game_dir.string());
     if (!clean_status.ok()) {
+      if (clean_stitching_artifacts) {
+        return clean_status;
+      }
       std::cerr << "Warning: failed to clean stitching artifacts: " << clean_status << std::endl;
     } else {
       remove_cleanable_stitching_cache_keys(config_);

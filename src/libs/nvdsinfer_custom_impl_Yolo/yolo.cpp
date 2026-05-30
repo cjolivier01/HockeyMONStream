@@ -210,13 +210,13 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
         calib_image_list = getenv("INT8_CALIB_IMG_PATH");
       } else {
         std::cerr << "INT8_CALIB_IMG_PATH not set" << std::endl;
-        assert(0);
+        return nullptr;
       }
       if (getenv("INT8_CALIB_BATCH_SIZE")) {
         calib_batch_size = std::stoi(getenv("INT8_CALIB_BATCH_SIZE"));
       } else {
         std::cerr << "INT8_CALIB_BATCH_SIZE not set" << std::endl;
-        assert(0);
+        return nullptr;
       }
 #if NV_TENSORRT_MAJOR < 11
       nvinfer1::IInt8EntropyCalibrator2* calibrator =
@@ -236,10 +236,11 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
           << "INT8 calibration cache generation is not supported with TensorRT "
           << NV_TENSORRT_MAJOR << "." << NV_TENSORRT_MINOR
           << "; provide a prebuilt INT8 engine or use FP16/FP32" << std::endl;
-      assert(0);
+      return nullptr;
 #endif
 #else
-      assert(0 && "OpenCV is required to run INT8 calibrator\n");
+      std::cerr << "OpenCV is required to run INT8 calibrator" << std::endl;
+      return nullptr;
 #endif
     }
   }
