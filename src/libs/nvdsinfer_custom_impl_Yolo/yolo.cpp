@@ -82,9 +82,12 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
   }
 #endif
 
-  nvinfer1::NetworkDefinitionCreationFlags flags =
+  nvinfer1::NetworkDefinitionCreationFlags flags = 0;
+#if NV_TENSORRT_MAJOR < 10
+  flags =
       1U << static_cast<uint32_t>(
           nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
+#endif
 
   nvinfer1::INetworkDefinition* network = builder->createNetworkV2(flags);
   assert(network);
@@ -179,10 +182,24 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
 
   if (m_NetworkMode == "FP16") {
     assert(builder->platformHasFastFp16());
+#if NV_TENSORRT_MAJOR < 10
     config->setFlag(nvinfer1::BuilderFlag::kFP16);
+#else
+    std::cerr
+        << "TensorRT " << NV_TENSORRT_MAJOR << "." << NV_TENSORRT_MINOR
+        << " no longer supports the legacy FP16 builder flag; using strongly typed network defaults"
+        << std::endl;
+#endif
   } else if (m_NetworkMode == "INT8") {
     assert(builder->platformHasFastInt8());
+#if NV_TENSORRT_MAJOR < 10
     config->setFlag(nvinfer1::BuilderFlag::kINT8);
+#else
+    std::cerr
+        << "TensorRT " << NV_TENSORRT_MAJOR << "." << NV_TENSORRT_MINOR
+        << " no longer supports the legacy INT8 builder flag; using strongly typed network defaults"
+        << std::endl;
+#endif
     if (m_Int8CalibPath != "") {
 #ifdef OPENCV
       fileExists(m_Int8CalibPath);
@@ -201,6 +218,7 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
         std::cerr << "INT8_CALIB_BATCH_SIZE not set" << std::endl;
         assert(0);
       }
+#if NV_TENSORRT_MAJOR < 10
       nvinfer1::IInt8EntropyCalibrator2* calibrator =
           new Int8EntropyCalibrator2(
               calib_batch_size,
@@ -213,6 +231,13 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
               calib_image_list,
               m_Int8CalibPath);
       config->setInt8Calibrator(calibrator);
+#else
+      std::cerr
+          << "INT8 calibration cache generation is not supported with TensorRT "
+          << NV_TENSORRT_MAJOR << "." << NV_TENSORRT_MINOR
+          << "; provide a prebuilt INT8 engine or use FP16/FP32" << std::endl;
+      assert(0);
+#endif
 #else
       assert(0 && "OpenCV is required to run INT8 calibrator\n");
 #endif

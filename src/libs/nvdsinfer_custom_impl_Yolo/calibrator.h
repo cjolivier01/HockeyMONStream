@@ -22,6 +22,7 @@
     }                                                                 \
   }
 
+#if NV_TENSORRT_MAJOR < 10
 class Int8EntropyCalibrator2 : public nvinfer1::IInt8EntropyCalibrator2 {
  public:
   Int8EntropyCalibrator2(
@@ -65,6 +66,7 @@ class Int8EntropyCalibrator2 : public nvinfer1::IInt8EntropyCalibrator2 {
   bool readCache;
   std::vector<char> calibrationCache;
 };
+#endif
 
 std::vector<float> prepareImage(
     cv::Mat& img,

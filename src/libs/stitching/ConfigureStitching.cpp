@@ -4,13 +4,21 @@
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/Synchronization.h"
 
+#include <yaml-cpp/yaml.h>
+
 #include "cupano/pano/cudaMat.h"
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <regex>
+#include <set>
+#include <sstream>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include <opencv2/opencv.hpp>
@@ -28,6 +36,182 @@ namespace {
 
 const std::string lfo_prefix = "Left frame offset: ";
 const std::string rfo_prefix = "Right frame offset: ";
+
+bool remove_file_if_present(const fs::path& path) {
+  std::error_code ec;
+  if (!fs::exists(path, ec)) {
+    if (ec) {
+      std::cerr << "Failed to check if file exists \"" << path.string() << "\": " << ec.message() << std::endl;
+    }
+    return false;
+  }
+  if (!fs::remove(path, ec)) {
+    if (ec) {
+      std::cerr << "Failed to delete file \"" << path.string() << "\": " << ec.message() << std::endl;
+    }
+    return false;
+  }
+  return true;
+}
+
+std::string to_regex_pattern(const std::string& wildcard_pattern) {
+  std::string out;
+  out.reserve(wildcard_pattern.size() + 8);
+  out.push_back('^');
+  for (unsigned char c : wildcard_pattern) {
+    switch (c) {
+      case '*':
+        out += ".*";
+        break;
+      case '.':
+      case '^':
+      case '$':
+      case '+':
+      case '?':
+      case '(':
+      case ')':
+      case '[':
+      case ']':
+      case '{':
+      case '}':
+      case '|':
+      case '\\':
+        out.push_back('\\');
+        out.push_back(c);
+        break;
+      default:
+        out.push_back(c);
+        break;
+    }
+  }
+  out.push_back('$');
+  return out;
+}
+
+size_t clean_files_matching(const fs::path& game_dir, const std::string& pattern) {
+  size_t removed = 0;
+  if (pattern.find('*') == std::string::npos) {
+    if (remove_file_if_present(game_dir / pattern)) {
+      ++removed;
+    }
+    return removed;
+  }
+
+  std::regex rgx(to_regex_pattern(pattern));
+  std::error_code ec;
+  if (!fs::exists(game_dir, ec) || !fs::is_directory(game_dir, ec)) {
+    return 0;
+  }
+
+  for (const auto& entry : fs::directory_iterator(game_dir, ec)) {
+    if (!entry.is_regular_file(ec)) {
+      if (ec) {
+        std::cerr << "Failed to query file type for \"" << entry.path().string() << "\": " << ec.message() << std::endl;
+        ec.clear();
+      }
+      continue;
+    }
+    if (!std::regex_match(entry.path().filename().string(), rgx)) {
+      continue;
+    }
+    if (remove_file_if_present(entry.path())) {
+      ++removed;
+    }
+  }
+  return removed;
+}
+
+size_t delete_extracted_frames(const fs::path& game_dir) {
+  static const std::set<std::string> kVideoExtensions = {".mp4", ".mkv", ".m4v", ".mov", ".avi"};
+  size_t removed = 0;
+  std::error_code ec;
+  for (auto it = fs::recursive_directory_iterator(game_dir, ec); it != fs::recursive_directory_iterator(); it.increment(ec)) {
+    if (ec) {
+      std::cerr << "Failed to iterate stitch game directory \"" << game_dir.string() << "\": " << ec.message() << std::endl;
+      return removed;
+    }
+    const fs::path p = it->path();
+    if (!it->is_regular_file(ec)) {
+      if (ec) {
+        ec.clear();
+      }
+      continue;
+    }
+    std::string ext = p.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (kVideoExtensions.find(ext) == kVideoExtensions.end()) {
+      continue;
+    }
+    fs::path png = p;
+    png.replace_extension(".png");
+    if (remove_file_if_present(png)) {
+      ++removed;
+    }
+  }
+  return removed;
+}
+
+std::optional<YAML::Node> map_child(const YAML::Node& node, const std::string& key) {
+  if (!node.IsMap()) {
+    return std::nullopt;
+  }
+  for (const auto& item : node) {
+    if (item.first.as<std::string>() == key) {
+      return item.second;
+    }
+  }
+  return std::nullopt;
+}
+
+bool remove_yaml_key_path(YAML::Node& root, const std::initializer_list<std::string>& path) {
+  if (!root.IsMap() || path.size() == 0) {
+    return false;
+  }
+  std::vector<std::string> keys(path.begin(), path.end());
+  YAML::Node current = root;
+  std::vector<std::pair<YAML::Node, std::string>> path_nodes;
+  for (size_t i = 0, n = keys.size(); i + 1 < n; ++i) {
+    if (!current.IsMap()) {
+      return false;
+    }
+    std::optional<YAML::Node> next = map_child(current, keys.at(i));
+    if (!next.has_value() || !next->IsDefined()) {
+      return false;
+    }
+    path_nodes.emplace_back(current, keys.at(i));
+    current = *next;
+  }
+  if (!current.IsMap()) {
+    return false;
+  }
+  const std::string& leaf_key = keys.back();
+  std::optional<YAML::Node> leaf = map_child(current, leaf_key);
+  if (!leaf.has_value() || !leaf->IsDefined()) {
+    return false;
+  }
+  current.remove(leaf_key);
+  for (auto it = path_nodes.rbegin(); it != path_nodes.rend(); ++it) {
+    YAML::Node parent = it->first;
+    const std::string& key = it->second;
+    YAML::Node child = parent[key];
+    if (!child.IsMap() || child.size() != 0) {
+      break;
+    }
+    parent.remove(key);
+  }
+  return true;
+}
+
+void remove_cleanable_stitching_cache_keys(YAML::Node& config) {
+  remove_yaml_key_path(config, {"stitching", "frame_offsets"});
+  remove_yaml_key_path(config, {"game", "stitching", "frame_offsets"});
+  remove_yaml_key_path(config, {"stitching", "control_points"});
+  remove_yaml_key_path(config, {"game", "stitching", "control_points"});
+  remove_yaml_key_path(config, {"rink", "scoreboard", "perspective_polygon"});
+  remove_yaml_key_path(config, {"rink", "ice_contours_mask_count"});
+  remove_yaml_key_path(config, {"rink", "ice_contours_mask_centroid"});
+  remove_yaml_key_path(config, {"rink", "ice_contours_combined_bbox"});
+}
 
 struct TiffPlacement {
   float x_px{0.0f};
@@ -469,6 +653,55 @@ std::map<std::string, std::string> hmlib_python_env(std::map<std::string, std::s
 
 } // namespace
 
+absl::Status clean_stitching_artifacts(const std::string& game_dir) {
+  if (game_dir.empty()) {
+    return absl::InvalidArgumentError("Missing game directory");
+  }
+
+  const fs::path game_dir_path(game_dir);
+  std::error_code ec;
+  if (!fs::exists(game_dir_path, ec) || ec) {
+    return absl::NotFoundError(TO_STRING("Game directory does not exist: " << game_dir));
+  }
+
+  size_t removed_files = 0;
+  removed_files += clean_files_matching(game_dir_path, "hm_project.pto");
+  removed_files += clean_files_matching(game_dir_path, "autooptimiser_out.pto");
+  removed_files += clean_files_matching(game_dir_path, "*.pto");
+  removed_files += clean_files_matching(game_dir_path, "mapping_*.tif");
+  removed_files += clean_files_matching(game_dir_path, "mapping_*.tiff");
+  removed_files += clean_files_matching(game_dir_path, "panorama.tif");
+  removed_files += clean_files_matching(game_dir_path, "seam_file.png");
+  removed_files += clean_files_matching(game_dir_path, "matches.png");
+  removed_files += clean_files_matching(game_dir_path, "keypoints.png");
+  removed_files += clean_files_matching(game_dir_path, "s.png");
+  removed_files += clean_files_matching(game_dir_path, "rink_mask_*.png");
+  removed_files += delete_extracted_frames(game_dir_path);
+
+  const fs::path cfg_file_path = game_dir_path / "config.yaml";
+  if (fs::exists(cfg_file_path)) {
+    try {
+      YAML::Node cfg = YAML::LoadFile(cfg_file_path.string());
+      remove_cleanable_stitching_cache_keys(cfg);
+      std::ofstream out(cfg_file_path, std::ios::out | std::ios::trunc);
+      if (!out.is_open()) {
+        return absl::InternalError(
+            TO_STRING("Failed to open private config for writing: \"" << cfg_file_path.string() << '"'));
+      }
+      out << cfg << "\n";
+    } catch (const YAML::Exception& ex) {
+      std::cerr << "Failed to clean private config \"" << cfg_file_path.string() << "\": " << ex.what() << std::endl;
+    } catch (...) {
+      std::cerr << "Unknown error while cleaning private config \"" << cfg_file_path.string() << "\"\n";
+    }
+  }
+
+  if (removed_files) {
+    std::cout << "Removed " << removed_files << " stitch artifact file(s) from \"" << game_dir << "\"\n";
+  }
+  return absl::OkStatus();
+}
+
 absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir) {
   bool up_to_date = test_dependency_tree(game_dir, /*add_rink_mask=*/false);
   if (up_to_date) {
@@ -831,6 +1064,62 @@ absl::Status configure_orientation(const std::string& game_dir) {
     return absl::InternalError(TO_STRING("Failed to create control points: " << msg));
   }
 
+  return absl::OkStatus();
+}
+
+bool is_scoreboard_configured(const std::string& game_dir) {
+  const fs::path config_file = fs::path(game_dir) / "config.yaml";
+  if (!fs::exists(config_file)) {
+    return false;
+  }
+  try {
+    YAML::Node cfg = YAML::LoadFile(config_file.string());
+    const auto& rink = cfg["rink"];
+    if (!rink || !rink.IsMap()) return false;
+    const auto& scoreboard = rink["scoreboard"];
+    if (!scoreboard || !scoreboard.IsMap()) return false;
+    const auto& polygon = scoreboard["perspective_polygon"];
+    return polygon && polygon.IsSequence() && polygon.size() == 4;
+  } catch (...) {
+    return false;
+  }
+}
+
+absl::Status configure_scoreboard(const std::string& game_dir) {
+  std::string game_id = get_game_id(game_dir);
+  if (game_id.empty()) {
+    return absl::InvalidArgumentError("Could not determine game_id from: " + game_dir);
+  }
+
+  std::vector<std::string> cmd;
+  std::string working_dir;
+  auto env = hmlib_python_env(get_environment());
+
+  std::optional<fs::path> exec = find_executable_maybe_conda("hmscoreboard");
+  if (exec.has_value()) {
+    cmd = {exec->string(), "--game-id", game_id};
+  } else {
+    const auto python_exec = find_executable_maybe_conda("python3");
+    if (!python_exec.has_value()) {
+      return absl::NotFoundError("Could not find python3 for scoreboard selector");
+    }
+    cmd = {python_exec->string(), "-m", "hmlib.scoreboard.selector", "--game-id", game_id};
+    if (auto hm_root = find_hmlib_repo_root(); hm_root.has_value()) {
+      working_dir = hm_root->string();
+    }
+  }
+
+  std::cerr << "Scoreboard corners not configured - launching selector for game: " << game_id << "\n" << std::flush;
+  int exitcode = run_command(cmd, working_dir, env, [](const std::string& err, const std::string& out) {
+    if (!err.empty()) std::cerr << err << "\n" << std::flush;
+    if (!out.empty()) std::cerr << out << "\n" << std::flush;
+  });
+  if (exitcode) {
+    return absl::InternalError(TO_STRING("Scoreboard selector failed with exit code " << exitcode));
+  }
+  if (!is_scoreboard_configured(game_dir)) {
+    return absl::InternalError("Scoreboard selector completed without writing perspective_polygon");
+  }
   return absl::OkStatus();
 }
 

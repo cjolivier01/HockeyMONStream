@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iterator>
 
+#if NV_TENSORRT_MAJOR < 10
 Int8EntropyCalibrator2::Int8EntropyCalibrator2(
     const int& batchSize,
     const int& channels,
@@ -111,6 +112,7 @@ void Int8EntropyCalibrator2::writeCalibrationCache(
   std::ofstream output(calibTablePath, std::ios::binary);
   output.write(reinterpret_cast<const char*>(cache), length);
 }
+#endif
 
 std::vector<float> prepareImage(
     cv::Mat& img,

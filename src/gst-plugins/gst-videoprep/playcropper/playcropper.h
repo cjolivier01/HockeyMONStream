@@ -5,6 +5,8 @@
 #include "hstream/src/libs/scoreboard/Scoreboard.h"
 #include "cupano/pano/cudaMat.h"
 
+#include <string>
+
 namespace hm {
 namespace playcropper {
 
@@ -47,6 +49,9 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   bool show_scoreboard_{false};
   float scoreboard_width_ratio_{1.0/8};
   float scoreboard_height_ratio_{1.0/8};
+  std::string scoreboard_projected_width_;
+  std::string scoreboard_projected_height_;
+  float scoreboard_scale_{1.0};
   std::unique_ptr<hm::scoreboard::Scoreboard<uchar4>> scoreboard_;
   std::vector<cv::Point2f> scoreboard_perspective_polygion_;
   size_t scoreboard_warp_interval_{3};

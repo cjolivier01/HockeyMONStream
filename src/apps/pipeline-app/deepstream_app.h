@@ -280,8 +280,12 @@ class HmApp : public _AppCtx {
   hm::Configurator& configurator() {
     return *configurator_;
   }
-  absl::Status complete_configuration(bool force) {
-    return configurator_->complete_configuration(force);
+  absl::Status complete_configuration(
+      bool force,
+      bool clean_stitching_artifacts = false,
+      bool show_render_sink = false,
+      double show_render_scale = -1.0) {
+    return configurator_->complete_configuration(force, clean_stitching_artifacts, show_render_sink, show_render_scale);
   }
 
   bool pause();

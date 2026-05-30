@@ -10,6 +10,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <cmath>
+#include <cstdlib>
 #include <tuple>
 #include <vector>
 #include "absl/status/status.h"
@@ -184,6 +185,18 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     assert(scoreboard_perspective_polygion_.size() == 4);
   } else if (prop.key == "show-scoreboard") {
     show_scoreboard_ = !!std::atoi(prop.value.c_str());
+  } else if (prop.key == "scoreboard-projected-width") {
+    scoreboard_projected_width_ = prop.value;
+    scoreboard_.reset();
+  } else if (prop.key == "scoreboard-projected-height") {
+    scoreboard_projected_height_ = prop.value;
+    scoreboard_.reset();
+  } else if (prop.key == "scoreboard-scale") {
+    scoreboard_scale_ = std::atof(prop.value.c_str());
+    if (scoreboard_scale_ <= 0) {
+      scoreboard_scale_ = 1.0;
+    }
+    scoreboard_.reset();
   } else if (prop.key == "plot-play-tracking") {
     plot_play_tracking_ = !!std::atoi(prop.value.c_str());
   } else if (prop.key == "plot-player-tracking") {
@@ -479,10 +492,35 @@ absl::Status PlayCropperPriv::RenderScoreboard(
     surface::Surface out_surface,
     cudaStream_t stream) {
   if (!scoreboard_ && !scoreboard_perspective_polygion_.empty()) {
+    const auto resolve_dimension = [](const std::string& value, float fallback, guint extent) {
+      if (value.empty()) {
+        return static_cast<int>(fallback);
+      }
+      if (value[0] == '%') {
+        return static_cast<int>((std::atof(value.c_str() + 1) / 100.0) * extent);
+      }
+      return static_cast<int>(std::atof(value.c_str()));
+    };
+    const int scoreboard_width = std::max(
+        1,
+        static_cast<int>(
+            scoreboard_scale_ *
+            resolve_dimension(
+                scoreboard_projected_width_,
+                out_surface.width() * scoreboard_width_ratio_,
+                out_surface.width())));
+    const int scoreboard_height = std::max(
+        1,
+        static_cast<int>(
+            scoreboard_scale_ *
+            resolve_dimension(
+                scoreboard_projected_height_,
+                out_surface.height() * scoreboard_height_ratio_,
+                out_surface.height())));
     scoreboard_ = std::make_unique<hm::scoreboard::Scoreboard<uchar4>>(
         scoreboard_perspective_polygion_,
-        out_surface.width() * scoreboard_width_ratio_,
-        out_surface.height() * scoreboard_height_ratio_);
+        scoreboard_width,
+        scoreboard_height);
   }
   if (scoreboard_) {
     const bool rewarp = frame_count_ % scoreboard_warp_interval_ == 0;

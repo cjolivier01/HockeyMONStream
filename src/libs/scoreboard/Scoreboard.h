@@ -95,6 +95,7 @@ class Scoreboard {
   int destW_{0}; ///< Intermediate width (possibly scaled).
   int destH_{0}; ///< Intermediate height (possibly scaled).
   cv::Mat perspectiveMatrix_; ///< Perspective transformation matrix.
+  std::unique_ptr<hm::CudaMat<T_pixel>> working_image_ ABSL_GUARDED_BY(mu_);
   std::unique_ptr<hm::CudaMat<T_pixel>> warped_image_ ABSL_GUARDED_BY(mu_);
 };
 

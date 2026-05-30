@@ -143,6 +143,9 @@ struct HmPlayCropperConfig : public NvDsHmVideoPrepConfig {
   // Four (x,y) coordinates
   gboolean no_crop;
   gboolean show_scoreboard;
+  gchar scoreboard_projected_width[32];
+  gchar scoreboard_projected_height[32];
+  gfloat scoreboard_scale;
   gboolean plot_play_tracking;
   gboolean plot_player_tracking;
   gfloat fixed_edge_rotation_angle;
@@ -168,6 +171,7 @@ struct HmStitcherConfig : public NvDsHmVideoPrepConfig {
   gulong left_frame_offset_ns;
   gulong right_frame_offset_ns;
   gboolean show;
+  gboolean force_scoreboard_config;
 };
 
 // Struct to store references to the bin and elements

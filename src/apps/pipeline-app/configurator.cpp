@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <yaml-cpp/node/parse.h>
 
+#include <cmath>
 #include <opencv2/opencv.hpp>
 #include <opencv2/videoio.hpp>
 #include <algorithm>
@@ -16,6 +17,7 @@
 #include <string>
 #include <system_error>
 #include <unordered_set>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/strings/match.h"
@@ -25,6 +27,7 @@
 #include "StitcherOnePassConfig.h"
 #include "hstream/src/apps/apps-common/deepstream_config.h"
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
+#include "hstream/src/apps/apps-common/deepstream_sinks.h"
 #include "hstream/src/libs/common/ConfigYaml.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/Status.h"
@@ -121,6 +124,228 @@ bool is_enabled(YAML::Node n) {
     }
   }
   return false;
+}
+
+std::optional<YAML::Node> map_child(const YAML::Node& node, const std::string& key) {
+  if (!node.IsMap()) {
+    return std::nullopt;
+  }
+  for (const auto& item : node) {
+    if (item.first.as<std::string>() == key) {
+      return item.second;
+    }
+  }
+  return std::nullopt;
+}
+
+bool remove_yaml_key_path(YAML::Node& root, const std::initializer_list<std::string>& path) {
+  if (!root.IsMap() || path.size() == 0) {
+    return false;
+  }
+  std::vector<std::string> keys(path.begin(), path.end());
+  YAML::Node current = root;
+  std::vector<std::pair<YAML::Node, std::string>> path_nodes;
+  for (size_t i = 0, n = keys.size(); i + 1 < n; ++i) {
+    if (!current.IsMap()) {
+      return false;
+    }
+    std::optional<YAML::Node> next = map_child(current, keys.at(i));
+    if (!next.has_value() || !next->IsDefined()) {
+      return false;
+    }
+    path_nodes.emplace_back(current, keys.at(i));
+    current = *next;
+  }
+  if (!current.IsMap()) {
+    return false;
+  }
+  const std::string& leaf_key = keys.back();
+  std::optional<YAML::Node> leaf = map_child(current, leaf_key);
+  if (!leaf.has_value() || !leaf->IsDefined()) {
+    return false;
+  }
+  current.remove(leaf_key);
+  for (auto it = path_nodes.rbegin(); it != path_nodes.rend(); ++it) {
+    YAML::Node parent = it->first;
+    const std::string& key = it->second;
+    YAML::Node child = parent[key];
+    if (!child.IsMap() || child.size() != 0) {
+      break;
+    }
+    parent.remove(key);
+  }
+  return true;
+}
+
+void remove_cleanable_stitching_cache_keys(YAML::Node& config) {
+  remove_yaml_key_path(config, {"stitching", "frame_offsets"});
+  remove_yaml_key_path(config, {"game", "stitching", "frame_offsets"});
+  remove_yaml_key_path(config, {"stitching", "control_points"});
+  remove_yaml_key_path(config, {"game", "stitching", "control_points"});
+  remove_yaml_key_path(config, {"rink", "scoreboard", "perspective_polygon"});
+  remove_yaml_key_path(config, {"rink", "ice_contours_mask_count"});
+  remove_yaml_key_path(config, {"rink", "ice_contours_mask_centroid"});
+  remove_yaml_key_path(config, {"rink", "ice_contours_combined_bbox"});
+}
+
+bool is_render_sink_type(int sink_type) {
+  const int kRenderSinkType =
+#if defined(IS_TEGRA)
+      static_cast<int>(NV_DS_SINK_RENDER_3D);
+#else
+      static_cast<int>(NV_DS_SINK_RENDER_EGL);
+#endif
+  return sink_type == kRenderSinkType ||
+         sink_type == static_cast<int>(NV_DS_SINK_RENDER_DRM);
+}
+
+int get_render_sink_type() {
+#if defined(IS_TEGRA)
+  return static_cast<int>(NV_DS_SINK_RENDER_3D);
+#else
+  return static_cast<int>(NV_DS_SINK_RENDER_EGL);
+#endif
+}
+
+std::optional<size_t> get_sink_index(const std::string& key) {
+  if (!absl::StartsWith(key, "sink")) {
+    return std::nullopt;
+  }
+  if (key.size() == 4) {
+    return std::nullopt;
+  }
+
+  std::string suffix = key.substr(4);
+  if (suffix.find_first_not_of("0123456789") != std::string::npos) {
+    return std::nullopt;
+  }
+  try {
+    return std::stoull(suffix);
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
+long round_down_even(long value) {
+  if (value <= 2) {
+    return 2;
+  }
+  return (value / 2) * 2;
+}
+
+long scaled_render_dimension(long value, double scale) {
+  if (value <= 0 || scale <= 0.0) {
+    return value;
+  }
+  long scaled = std::llround(static_cast<double>(value) * scale);
+  return round_down_even(std::max<long>(scaled, 2));
+}
+
+std::optional<std::pair<long, long>> get_default_render_base_size(const YAML::Node& pipeline) {
+  std::vector<std::string> width_height_sources = {
+      "hmplaycropper.output-width",
+      "hmplaycropper.output-height",
+      "streammux.width",
+      "streammux.height",
+      "hmstitcher.output-width",
+      "hmstitcher.output-height",
+  };
+
+  auto maybe_stream_width = get_node_value<long>(pipeline, width_height_sources.at(0), -1);
+  auto maybe_stream_height = get_node_value<long>(pipeline, width_height_sources.at(1), -1);
+  if (maybe_stream_width > 0 && maybe_stream_height > 0) {
+    return std::make_pair(maybe_stream_width, maybe_stream_height);
+  }
+
+  maybe_stream_width = get_node_value<long>(pipeline, width_height_sources.at(2), -1);
+  maybe_stream_height = get_node_value<long>(pipeline, width_height_sources.at(3), -1);
+  if (maybe_stream_width > 0 && maybe_stream_height > 0) {
+    return std::make_pair(maybe_stream_width, maybe_stream_height);
+  }
+
+  maybe_stream_width = get_node_value<long>(pipeline, width_height_sources.at(4), -1);
+  maybe_stream_height = get_node_value<long>(pipeline, width_height_sources.at(5), -1);
+  if (maybe_stream_width > 0 && maybe_stream_height > 0) {
+    return std::make_pair(maybe_stream_width, maybe_stream_height);
+  }
+
+  return std::nullopt;
+}
+
+absl::Status ensure_render_sink_with_scale(YAML::Node& pipeline, double show_render_scale) {
+  constexpr const char* kSinkKeyPrefix = "sink";
+
+  bool has_render_sink = false;
+  size_t max_sink_index = 0;
+  int max_sink_id = -1;
+
+  const bool show_render_sink = show_render_scale != 0.0;
+  const bool has_render_scale = show_render_scale > 0.0;
+  std::optional<std::pair<long, long>> base_size;
+  if (has_render_scale) {
+    base_size = get_default_render_base_size(pipeline);
+    if (!base_size.has_value()) {
+      std::cerr << "Warning: --show-scaled requested but no base render dimensions found; using defaults\n";
+    }
+  }
+
+  for (auto kv : pipeline) {
+    const std::string key = kv.first.as<std::string>();
+    if (!absl::StartsWith(key, kSinkKeyPrefix)) {
+      continue;
+    }
+    std::optional<size_t> index = get_sink_index(key);
+    if (index.has_value()) {
+      max_sink_index = std::max(max_sink_index, *index + 1);
+    }
+
+    YAML::Node sink_node = kv.second;
+    int sink_id = get_node_value(sink_node, "sink-id", -1);
+    if (sink_id >= 0) {
+      max_sink_id = std::max<int>(max_sink_id, sink_id);
+    }
+
+    int sink_type = get_node_value(sink_node, "type", 0);
+    if (!is_render_sink_type(sink_type)) {
+      continue;
+    }
+
+    has_render_sink = true;
+
+    if (!show_render_sink) {
+      sink_node[kEnableFlagField] = "0";
+      continue;
+    }
+
+    sink_node[kEnableFlagField] = "1";
+    if (has_render_scale && base_size.has_value()) {
+      sink_node["width"] = std::to_string(scaled_render_dimension(base_size.value().first, show_render_scale));
+      sink_node["height"] = std::to_string(scaled_render_dimension(base_size.value().second, show_render_scale));
+    }
+  }
+
+  if (!show_render_sink) {
+    return absl::OkStatus();
+  }
+
+  if (has_render_sink) {
+    return absl::OkStatus();
+  }
+
+  std::string new_key = kSinkKeyPrefix + std::to_string(max_sink_index);
+  YAML::Node render_sink = pipeline[new_key];
+  render_sink = YAML::Node(YAML::NodeType::Map);
+
+  render_sink[kEnableFlagField] = "1";
+  render_sink["sink-id"] = std::to_string(std::max<int>(max_sink_id, 0) + 1);
+  render_sink["type"] = get_render_sink_type();
+  render_sink["sync"] = "1";
+  if (has_render_scale && base_size.has_value()) {
+    render_sink["width"] = std::to_string(scaled_render_dimension(base_size.value().first, show_render_scale));
+    render_sink["height"] = std::to_string(scaled_render_dimension(base_size.value().second, show_render_scale));
+  }
+
+  return absl::OkStatus();
 }
 
 std::string to_lower_ascii(std::string s) {
@@ -358,8 +583,24 @@ void Configurator::map_common_config_keys() {
 }
 
 void Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
-  if (has_node(config_, "rink.scoreboard.perspective_polygon", /*non_null=*/true) &&
-      pipeline["hmplaycropper"].IsDefined()) {
+  if (!pipeline["hmplaycropper"].IsDefined()) {
+    return;
+  }
+  const auto set_playcropper_if_not_set = [&](const std::string& dest_key, const std::string& src_key) {
+    YAML::Node dest_node = pipeline["hmplaycropper"][dest_key];
+    if (dest_node.IsDefined() && !dest_node.IsNull()) {
+      return;
+    }
+    std::optional<YAML::Node> src_node = get_node(config_, src_key);
+    if (!src_node || !src_node->IsDefined() || src_node->IsNull()) {
+      return;
+    }
+    pipeline["hmplaycropper"][dest_key] = src_node->as<std::string>();
+  };
+  set_playcropper_if_not_set("scoreboard-projected-width", "rink.scoreboard.projected_width");
+  set_playcropper_if_not_set("scoreboard-projected-height", "rink.scoreboard.projected_height");
+  set_playcropper_if_not_set("scoreboard-scale", "rink.scoreboard.scoreboard_scale");
+  if (has_node(config_, "rink.scoreboard.perspective_polygon", /*non_null=*/true)) {
     auto points = config_["rink"]["scoreboard"]["perspective_polygon"].as<std::vector<std::vector<int>>>();
     if (!points.empty()) {
       assert(points.size() == 4);
@@ -1055,20 +1296,22 @@ void map_key_configs(YAML::Node yaml, const std::map<std::string, std::string>& 
   }
 }
 
-absl::Status Configurator::complete_configuration(bool force) {
+absl::Status Configurator::complete_configuration(bool force, bool clean_stitching_artifacts, bool show_render_sink, double show_render_scale) {
   if (!get_node_value(config_, "pipeline.application.complete-configuration", false)) {
     return absl::OkStatus();
   }
 
   YAML::Node pipeline = config_["pipeline"];
   assert(pipeline.IsDefined());
-  absl::Status status;
 
   apply_gpu_override(pipeline);
 
   if (game_id_.empty()) {
     // return absl::InvalidArgumentError("No game id specified");
     // Just go by what's in the config file(s)
+    if (clean_stitching_artifacts) {
+      return absl::CancelledError("No game id specified for cleaning");
+    }
     return absl::OkStatus();
   }
 
@@ -1078,6 +1321,34 @@ absl::Status Configurator::complete_configuration(bool force) {
 
   // Stitching config mask config dir
   fs::path game_dir = get_game_dir(game_id_);
+  const bool has_hmstitcher = has_node(pipeline, "hmstitcher", false);
+  if (has_hmstitcher && (force || clean_stitching_artifacts)) {
+    YAML::Node preserved_pipeline = config_["pipeline"];
+    absl::Status clean_status = stitching::clean_stitching_artifacts(game_dir.string());
+    if (!clean_status.ok()) {
+      std::cerr << "Warning: failed to clean stitching artifacts: " << clean_status << std::endl;
+    } else {
+      remove_cleanable_stitching_cache_keys(config_);
+      remove_cleanable_stitching_cache_keys(private_config_);
+      if (preserved_pipeline.IsDefined()) {
+        config_["pipeline"] = preserved_pipeline;
+      }
+      if (private_config_.IsDefined()) {
+        auto save_status = save_private_config(private_config_);
+        if (!save_status.ok()) {
+          std::cerr << "Warning: failed to save private config: " << save_status << std::endl;
+        }
+      }
+    }
+  }
+
+  if (has_hmstitcher) {
+    pipeline["hmstitcher"]["force-scoreboard-config"] = force ? "1" : "0";
+  }
+
+  if (clean_stitching_artifacts) {
+    return absl::CancelledError("Stitching artifacts cleaned");
+  }
 
   bool pipeline_has_hmstitcher = false;
   HM_RETURN_IF_ERROR(setup_stitcher_and_masks(pipeline, game_dir, force, pipeline_has_hmstitcher));
@@ -1120,6 +1391,10 @@ absl::Status Configurator::complete_configuration(bool force) {
 
   configure_audio(pipeline, left_files, right_files, offsets, num_video_sources);
   HM_RETURN_IF_ERROR(configure_encode_file_outputs(pipeline));
+
+  if (show_render_sink) {
+    HM_RETURN_IF_ERROR(ensure_render_sink_with_scale(pipeline, show_render_scale));
+  }
 
   //
   // If RTSP server is active, we may need to downscale

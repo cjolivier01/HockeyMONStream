@@ -175,6 +175,7 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   ppc << ";configure-only=" << config->configure_only;
   ppc << ";one-pass-mode=" << config->one_pass_mode;
   ppc << ";show=" << config->show;
+  ppc << ";force-scoreboard-config=" << config->force_scoreboard_config;
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-private-config", ppc.str().c_str(), NULL);
 
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "unique-id", config->unique_id, "gpu-id", config->gpu_id, NULL);
@@ -487,6 +488,15 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
     }
   }
   ppc << ";show-scoreboard=" << config->show_scoreboard;
+  if (config->scoreboard_projected_width[0]) {
+    ppc << ";scoreboard-projected-width=" << config->scoreboard_projected_width;
+  }
+  if (config->scoreboard_projected_height[0]) {
+    ppc << ";scoreboard-projected-height=" << config->scoreboard_projected_height;
+  }
+  if (config->scoreboard_scale > 0) {
+    ppc << ";scoreboard-scale=" << config->scoreboard_scale;
+  }
   ppc << ";plot-play-tracking=" << config->plot_play_tracking;
   ppc << ";plot-player-tracking=" << config->plot_player_tracking;
   if (config->runtime_output_max_width) {

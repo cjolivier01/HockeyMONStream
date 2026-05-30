@@ -5,6 +5,7 @@
 #include "cupano/utils/showImage.h"
 
 #include "jetson-utils/cuda/cudaOverlay.h"
+#include "jetson-utils/cuda/cudaResizeRoi.h"
 
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
@@ -180,8 +181,9 @@ Scoreboard<T_pixel>::Scoreboard(
   dstPts.push_back(cv::Point2f(destWidth_ - 1, destHeight_ - 1)); // bottom-right
   dstPts.push_back(cv::Point2f(0, destHeight_ - 1)); // bottom-left
 
-  // Compute the perspective transform matrix.
-  perspectiveMatrix_ = cv::getPerspectiveTransform(srcPts, dstPts);
+  // Compute the perspective transform matrix in the same crop-relative working
+  // coordinate space used by the Python hmtrack scoreboard transform.
+  perspectiveMatrix_ = cv::getPerspectiveTransform(srcPts_, dstPts);
   if (perspectiveMatrix_.type() == CV_64F) {
     perspectiveMatrix_.convertTo(perspectiveMatrix_, CV_32F);
   }
@@ -221,30 +223,45 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
   absl::MutexLock lk(&mu_);
   if (!warped_image_) {
     rewarp = true;
+    working_image_ = std::make_unique<hm::CudaMat<T_pixel>>(/*B=*/1, destW_, destH_);
     warped_image_ = std::make_unique<hm::CudaMat<T_pixel>>(/*B=*/1, destW_, destH_);
   }
 
   if (rewarp) {
     assert(source_surface.bytes_per_pixel() == sizeof(T_pixel));
     assert(source_surface.pitch() % source_surface.bytes_per_pixel() == 0);
-    hm::CudaMat<T_pixel> full_image(
-        SurfaceInfo{
-            .width = (int)source_surface.width(),
-            .height = (int)source_surface.height(),
-            .pitch = (int)source_surface.pitch(),
-            .data_ptr = source_surface.dataptr(),
-        },
-        /*B=*/1);
+    assert(working_image_);
+
+    cudaError_t cuerr = cudaResizeROI(
+        source_surface.dataptr<T_pixel*>(),
+        source_surface.pitch_width(),
+        source_surface.height(),
+        bboxSrc_.x,
+        bboxSrc_.y,
+        bboxSrc_.width,
+        bboxSrc_.height,
+        working_image_->data(),
+        working_image_->width(),
+        working_image_->height(),
+        0,
+        0,
+        working_image_->width(),
+        working_image_->height(),
+        source_surface.get_image_format(),
+        FILTER_POINT,
+        stream);
+    (void)cuerr;
+    assert(cuerr == cudaSuccess);
 
 #if !HSTREAM_SCOREBOARD_USE_OPENCV_CUDA_WARP
     static const float border[] = {0, 0, 0, 0};
     assert(perspectiveMatrix_.type() == CV_32F && perspectiveMatrix_.rows == 3 && perspectiveMatrix_.cols == 3);
     cv::Mat inverse_matrix = inversePerspectiveMatrix(perspectiveMatrix_);
-    cudaError_t cuerr = warpPerspectiveCudaRaw(
-        full_image.data_raw(),
-        full_image.pitch(),
-        full_image.width(),
-        full_image.height(),
+    cuerr = warpPerspectiveCudaRaw(
+        working_image_->data_raw(),
+        working_image_->pitch(),
+        working_image_->width(),
+        working_image_->height(),
         warped_image_->data_raw(),
         warped_image_->pitch(),
         warped_image_->width(),
@@ -260,11 +277,10 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
     assert(cuerr == cudaSuccess);
 #else
     cv::cuda::GpuMat gpu_mat(
-        full_image.height(),
-        // full_image.width(),
-        source_surface.pitch_width(),
-        cudaPixelTypeToCvType(full_image.cuda_pixel_type()),
-        full_image.data_raw());
+        working_image_->height(),
+        working_image_->width(),
+        cudaPixelTypeToCvType(working_image_->cuda_pixel_type()),
+        working_image_->data_raw());
 
     cv::cuda::GpuMat cv_warped_image(
         warped_image_->height(),
@@ -283,8 +299,8 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
 
   cudaError_t cuErr = cudaOverlayPitch<T_pixel>(
       warped_image_->data(),
-      warped_image_->width(),
-      warped_image_->height(),
+      destWidth_,
+      destHeight_,
       warped_image_->pitch(),
       dest_surface.dataptr<T_pixel*>(),
       dest_surface.width(),

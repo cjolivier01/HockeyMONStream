@@ -161,6 +161,9 @@ gboolean parse_hmplaycropper_yaml(
   SET_LOCATOR(locator, *config, fixed_edge_rotation_angle);
   SET_LOCATOR(locator, *config, no_crop);
   SET_LOCATOR(locator, *config, show_scoreboard);
+  SET_LOCATOR_CHARS(locator, *config, scoreboard_projected_width);
+  SET_LOCATOR_CHARS(locator, *config, scoreboard_projected_height);
+  SET_LOCATOR(locator, *config, scoreboard_scale);
   SET_LOCATOR(locator, *config, runtime_output_max_width);
   SET_LOCATOR(locator, *config, runtime_output_max_height);
   SET_LOCATOR_INTS(locator, *config, scoreboard_perspective_polygon);
@@ -179,6 +182,7 @@ gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_
   SET_LOCATOR(locator, *config, left_frame_offset_ns);
   SET_LOCATOR(locator, *config, right_frame_offset_ns);
   SET_LOCATOR(locator, *config, show);
+  SET_LOCATOR(locator, *config, force_scoreboard_config);
   SET_LOCATOR_CHARS(locator, *config, config_file);
   set_config_from_yaml(yaml_node, locator, /*quiet=*/true);
   return true;
@@ -600,7 +604,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
     }
 
     if (parse_err) {
-      cout << "failed parsing" << endl;
+      std::cerr << "Failed parsing YAML section: " << paramKey << std::endl;
       goto done;
     }
   }
@@ -619,6 +623,8 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
   for (i = 0; i < config->num_secondary_gie_sub_bins; i++) {
     if (config->secondary_gie_sub_bin_config[i].unique_id == config->primary_gie_config.unique_id) {
       NVGSTDS_ERR_MSG_V("Non unique gie ids found");
+      std::cerr << "Non unique gie id shared by primary and secondary gie: "
+                << config->primary_gie_config.unique_id << std::endl;
       ret = FALSE;
       goto done;
     }
@@ -628,6 +634,8 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
     for (j = i + 1; j < config->num_secondary_gie_sub_bins; j++) {
       if (config->secondary_gie_sub_bin_config[i].unique_id == config->secondary_gie_sub_bin_config[j].unique_id) {
         NVGSTDS_ERR_MSG_V("Non unique gie id %d found", config->secondary_gie_sub_bin_config[i].unique_id);
+        std::cerr << "Non unique secondary gie id: " << config->secondary_gie_sub_bin_config[i].unique_id
+                  << std::endl;
         ret = FALSE;
         goto done;
       }
@@ -657,6 +665,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
       config->multi_source_config[i].type = NV_DS_SOURCE_URI;
       if (!config->multi_source_config[i].uri) {
         g_printerr("No URI configured for source id %d\n", config->multi_source_config[i].source_id);
+        std::cerr << "No URI configured for source id " << config->multi_source_config[i].source_id << std::endl;
         goto done;
       }
       config->multi_source_config[i].uri = g_strdup_printf(config->multi_source_config[i].uri, 0);

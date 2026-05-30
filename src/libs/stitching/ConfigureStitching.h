@@ -32,7 +32,13 @@ bool is_field_mask_configured(const std::string& game_dir);
 
 absl::Status create_field_mask(const std::string& game_dir, surface::Surface surface);
 
+absl::Status clean_stitching_artifacts(const std::string& game_dir);
+
 absl::Status configure_orientation(const std::string& game_dir);
+
+bool is_scoreboard_configured(const std::string& game_dir);
+
+absl::Status configure_scoreboard(const std::string& game_dir);
 
 absl::Status configure_stitching(
     const std::string& game_dir,
