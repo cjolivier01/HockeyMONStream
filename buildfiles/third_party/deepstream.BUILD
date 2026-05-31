@@ -30,6 +30,7 @@ cc_library(
     ] + select({
         ":jetson": ["-L/opt/jetson-sysroot/opt/nvidia/deepstream/deepstream/lib"],
         ":arm64-sbsa": ["-L/opt/nvidia/deepstream/deepstream/lib"],
+        ":aarch64-linux-gnu": ["-L/opt/nvidia/deepstream/deepstream/lib"],
         ":x86_64-linux-gnu": ["-L/opt/nvidia/deepstream/deepstream/lib"],
         "//conditions:default": [],
     }) + [
