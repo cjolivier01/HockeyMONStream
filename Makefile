@@ -21,7 +21,7 @@ endif
 all: print_targets
 
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
-	pipeline-app run-pipeline-app video-player run-video-player
+	pipeline-app run-pipeline-app video-player run-video-player deb
 
 perf:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) //...
@@ -73,6 +73,9 @@ video-player:
 run-video-player: video-player
 	bazel-bin/src/apps/video-player/video-player --help
 
+deb: pipeline-app
+	scripts/make_deb.sh
+
 clean:
 	$(BAZEL) clean
 
@@ -98,6 +101,7 @@ print_targets:
 		'run-pipeline-app  Run pipeline-app with the canonical hockey config (RENDER sink).' \
 		'video-player   Build //src/apps/video-player:video-player.' \
 		'run-video-player  Run video-player --help (smoke check).' \
+		'deb            Build pipeline-app then package everything into dist/<pkg>.deb.' \
 		'' \
 		'Tests' \
 		'-----' \

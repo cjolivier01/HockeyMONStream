@@ -1,0 +1,439 @@
+#!/bin/bash
+# Build a self-contained .deb that installs hstream to /opt/hstream.
+# The installed run.sh launches pipeline-app without needing the source tree.
+#
+# Usage:
+#   scripts/make_deb.sh [--build] [--version X.Y.Z] [--output-dir DIR]
+#
+#   --build          Run 'make pipeline-app' before packaging (default: skip, use existing artifacts).
+#   --version X.Y.Z  Override package version (default: git describe --tags --always).
+#   --output-dir DIR Where to write the .deb (default: dist/).
+#
+# Requirements: patchelf, dpkg-deb (auto-installed from apt if missing).
+set -euo pipefail
+
+TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+INSTALL_PREFIX="/opt/hstream"
+PKG_NAME="hstream"
+PKG_ARCH="${PKG_ARCH:-$(dpkg --print-architecture 2>/dev/null || echo amd64)}"
+
+# ---------- arg parsing ----------
+DO_BUILD=0
+PKG_VERSION=""
+OUTPUT_DIR="${TOPDIR}/dist"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --build) DO_BUILD=1 ;;
+    --version) PKG_VERSION="$2"; shift ;;
+    --version=*) PKG_VERSION="${1#--version=}" ;;
+    --output-dir) OUTPUT_DIR="$2"; shift ;;
+    --output-dir=*) OUTPUT_DIR="${1#--output-dir=}" ;;
+    *) echo "Unknown option: $1" >&2; exit 1 ;;
+  esac
+  shift
+done
+
+if [[ -z "$PKG_VERSION" ]]; then
+  PKG_VERSION="$(git -C "${TOPDIR}" describe --tags --always 2>/dev/null || echo "0.0.0")"
+  # dpkg needs versions that start with a digit; strip a leading 'v'
+  PKG_VERSION="${PKG_VERSION#v}"
+fi
+
+# ---------- optional build ----------
+if [[ "$DO_BUILD" -eq 1 ]]; then
+  echo "[make_deb] Building pipeline-app..."
+  make -C "${TOPDIR}" pipeline-app
+fi
+
+# ---------- verify artifacts ----------
+PIPELINE_APP="${TOPDIR}/bazel-bin/src/apps/pipeline-app/pipeline-app"
+if [[ ! -f "${PIPELINE_APP}" ]]; then
+  echo "ERROR: ${PIPELINE_APP} not found. Run 'make pipeline-app' first, or pass --build." >&2
+  exit 1
+fi
+
+# ---------- ensure tools ----------
+if ! command -v patchelf &>/dev/null; then
+  echo "[make_deb] patchelf not found; installing via apt..."
+  sudo apt-get install -y patchelf
+fi
+if ! command -v dpkg-deb &>/dev/null; then
+  echo "[make_deb] dpkg-deb not found; installing via apt..."
+  sudo apt-get install -y dpkg
+fi
+
+# ---------- staging tree ----------
+STAGING="${TOPDIR}/dist-staging/${PKG_NAME}_${PKG_VERSION}_${PKG_ARCH}"
+rm -rf "${STAGING}"
+
+mkdir -p \
+  "${STAGING}/DEBIAN" \
+  "${STAGING}${INSTALL_PREFIX}/bin" \
+  "${STAGING}${INSTALL_PREFIX}/lib/gst-plugins" \
+  "${STAGING}${INSTALL_PREFIX}/configs" \
+  "${STAGING}${INSTALL_PREFIX}/scripts" \
+  "${STAGING}/usr/local/bin"
+
+# ---------- helpers ----------
+INSTALL_RPATH="${INSTALL_PREFIX}/lib:/opt/nvidia/deepstream/deepstream/lib:/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib"
+
+patchelf_rpath() {
+  local elf="$1"
+  patchelf --set-rpath "${INSTALL_RPATH}" "${elf}"
+}
+
+# Collect non-system shared lib paths from ldd output.
+# Excludes: standard system ld paths, DeepStream, and CUDA (all assumed present on target).
+collect_bundled_libs() {
+  local elf="$1"
+  ldd "${elf}" 2>/dev/null \
+    | awk '{print $3}' \
+    | grep -v '^$' \
+    | grep -v '^not$' \
+    | while read -r lib; do
+        case "${lib}" in
+          /lib/x86_64-linux-gnu/*) ;;
+          /lib/aarch64-linux-gnu/*) ;;
+          /usr/lib/x86_64-linux-gnu/*) ;;
+          /usr/lib/aarch64-linux-gnu/*) ;;
+          /usr/lib/*)  ;;
+          /lib/*)      ;;
+          /opt/nvidia/*) ;;
+          /usr/local/cuda/*) ;;
+          *) echo "${lib}" ;;
+        esac
+      done
+}
+
+# Returns true if $1 (a real/resolved path) is a system lib we should NOT bundle.
+is_system_lib() {
+  local real="$1"
+  case "${real}" in
+    /lib/x86_64-linux-gnu/*) return 0 ;;
+    /lib/aarch64-linux-gnu/*) return 0 ;;
+    /usr/lib/x86_64-linux-gnu/*) return 0 ;;
+    /usr/lib/aarch64-linux-gnu/*) return 0 ;;
+    /usr/lib/*) return 0 ;;
+    /lib/*) return 0 ;;
+    /opt/nvidia/*) return 0 ;;
+    /usr/local/cuda*) return 0 ;;
+  esac
+  return 1
+}
+
+# Copy a shared lib (resolving symlinks) and create the SONAME symlink.
+# Silently skips libs whose resolved path is a system/CUDA/DeepStream lib.
+install_lib() {
+  local src="$1"
+  local dest_dir="$2"
+  local real
+  real="$(realpath "${src}" 2>/dev/null)" || return 0
+  [[ -f "${real}" ]] || return 0
+
+  is_system_lib "${real}" && return 0
+
+  local real_base
+  real_base="$(basename "${real}")"
+  local soname_base
+  soname_base="$(basename "${src}")"
+
+  if [[ ! -f "${dest_dir}/${real_base}" ]]; then
+    cp "${real}" "${dest_dir}/${real_base}"
+    patchelf_rpath "${dest_dir}/${real_base}"
+  fi
+  # Create SONAME symlink if different from the real filename
+  if [[ "${soname_base}" != "${real_base}" && ! -e "${dest_dir}/${soname_base}" ]]; then
+    ln -s "${real_base}" "${dest_dir}/${soname_base}"
+  fi
+}
+
+# ---------- binary ----------
+echo "[make_deb] Staging pipeline-app binary..."
+cp "${PIPELINE_APP}" "${STAGING}${INSTALL_PREFIX}/bin/pipeline-app"
+patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/pipeline-app"
+
+# ---------- bundled shared libs (OpenCV etc.) ----------
+echo "[make_deb] Collecting bundled shared libs..."
+declare -A seen_libs
+
+# Collect from binary first, then from our own gst-plugins
+all_elfs=("${PIPELINE_APP}")
+for plugin_dir in "${TOPDIR}/bazel-bin/src/gst-plugins"/*/; do
+  for so in "${plugin_dir}"lib*.so; do
+    [[ -f "${so}" ]] && all_elfs+=("${so}")
+  done
+done
+
+for elf in "${all_elfs[@]}"; do
+  while IFS= read -r lib_path; do
+    real="$(realpath "${lib_path}" 2>/dev/null)" || continue
+    [[ -f "${real}" ]] || continue
+    is_system_lib "${real}" && continue
+    if [[ -z "${seen_libs[${real}]+set}" ]]; then
+      seen_libs["${real}"]=1
+      install_lib "${lib_path}" "${STAGING}${INSTALL_PREFIX}/lib"
+    fi
+  done < <(collect_bundled_libs "${elf}")
+done
+
+# ---------- GStreamer plugins ----------
+echo "[make_deb] Staging GStreamer plugins..."
+
+# lib/gst-plugins/ — pre-staged NVIDIA/DeepStream plugins
+for so in "${TOPDIR}/lib/gst-plugins/"lib*.so; do
+  [[ -f "${so}" ]] || continue
+  dest="${STAGING}${INSTALL_PREFIX}/lib/gst-plugins/$(basename "${so}")"
+  cp "${so}" "${dest}"
+  patchelf_rpath "${dest}"
+done
+
+# bazel-bin gst-plugins — our custom-built plugins
+for plugin_dir in "${TOPDIR}/bazel-bin/src/gst-plugins"/*/; do
+  for so in "${plugin_dir}"lib*.so; do
+    [[ -f "${so}" ]] || continue
+    dest="${STAGING}${INSTALL_PREFIX}/lib/gst-plugins/$(basename "${so}")"
+    cp "${so}" "${dest}"
+    patchelf_rpath "${dest}"
+  done
+done
+
+# ---------- YOLO custom inference lib ----------
+YOLO_SO="${TOPDIR}/bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"
+if [[ -f "${YOLO_SO}" ]]; then
+  echo "[make_deb] Staging libnvdsinfer_custom_impl_Yolo.so..."
+  cp "${YOLO_SO}" "${STAGING}${INSTALL_PREFIX}/lib/libnvdsinfer_custom_impl_Yolo.so"
+  patchelf_rpath "${STAGING}${INSTALL_PREFIX}/lib/libnvdsinfer_custom_impl_Yolo.so"
+fi
+
+# ---------- configs ----------
+echo "[make_deb] Staging configs..."
+cp -r "${TOPDIR}/configs/." "${STAGING}${INSTALL_PREFIX}/configs/"
+# Remove the systemd unit files — those belong to a separate package/install step
+rm -rf "${STAGING}${INSTALL_PREFIX}/configs/systemd"
+
+# ---------- scripts ----------
+echo "[make_deb] Staging scripts..."
+cp "${TOPDIR}/scripts/setup_pretrained_assets.py" "${STAGING}${INSTALL_PREFIX}/scripts/"
+
+# ---------- installed run.sh ----------
+echo "[make_deb] Writing installed run.sh..."
+cat > "${STAGING}${INSTALL_PREFIX}/run.sh" <<'RUNSH'
+#!/bin/bash
+set -euo pipefail
+
+INSTALL_DIR=/opt/hstream
+
+prepend_path() {
+  local var_name="$1"
+  local dir="$2"
+  local cur="${!var_name-}"
+  if [ -z "${dir}" ] || [ ! -d "${dir}" ]; then return; fi
+  if [ -z "${cur}" ]; then export "${var_name}=${dir}"; return; fi
+  case ":${cur}:" in
+    *":${dir}:"*) ;;
+    *) export "${var_name}=${dir}:${cur}" ;;
+  esac
+}
+
+append_path() {
+  local var_name="$1"
+  local dir="$2"
+  local cur="${!var_name-}"
+  if [ -z "${dir}" ] || [ ! -d "${dir}" ]; then return; fi
+  if [ -z "${cur}" ]; then export "${var_name}=${dir}"; return; fi
+  case ":${cur}:" in
+    *":${dir}:"*) ;;
+    *) export "${var_name}=${cur}:${dir}" ;;
+  esac
+}
+
+# Per-user registry so the read-only install dir stays clean.
+GST_REGISTRY_DIR="${HOME}/.cache/gstreamer-1.0"
+mkdir -p "${GST_REGISTRY_DIR}"
+export GST_REGISTRY="${GST_REGISTRY_DIR}/registry.hstream.$(uname -m).bin"
+
+prepend_path GST_PLUGIN_PATH "${INSTALL_DIR}/lib/gst-plugins"
+prepend_path GST_PLUGIN_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
+
+# Bundled libs (OpenCV etc.) are embedded in /opt/hstream/lib; the binary's
+# RPATH already includes this dir, but gst-plugins are dlopen'd at runtime so
+# LD_LIBRARY_PATH is still needed for them.
+prepend_path LD_LIBRARY_PATH "${INSTALL_DIR}/lib"
+prepend_path LD_LIBRARY_PATH "${INSTALL_DIR}/lib/gst-plugins"
+prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib"
+prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
+
+one_pass_only=1
+have_sink_arg=0
+rewritten_args=()
+for arg in "$@"; do
+  case "$arg" in
+    --one-pass-only|--stage0-only) one_pass_only=1 ;;
+    --two-stage|--configure-first) one_pass_only=0 ;;
+    --enable-sinks|--enable-sinks=*|-k|-k*) have_sink_arg=1 ;;
+  esac
+done
+
+for arg in "$@"; do
+  case "$arg" in
+    --one-pass-only|--stage0-only|--two-stage|--configure-first)
+      continue
+      ;;
+  esac
+  case "$arg" in
+    -t=*)
+      rewritten_args+=("-t" "${arg#-t=}")
+      ;;
+    *)
+      rewritten_args+=("$arg")
+      ;;
+  esac
+done
+
+default_main_sink="ENCODE_FILE"
+if [ -z "${DISPLAY:-}" ]; then
+  default_main_sink="ENCODE_FILE"
+  if [ "${have_sink_arg}" -eq 0 ]; then
+    echo "DISPLAY is not set and no sink was specified; defaulting to --enable-sinks=${default_main_sink} (override with --enable-sinks=RENDER)"
+  fi
+fi
+
+sink_args=()
+config_args=()
+if [ "${one_pass_only}" -eq 1 ]; then
+  config_args=(-c "${INSTALL_DIR}/configs/ds_hockey_app_config.yaml")
+  if [ "${have_sink_arg}" -eq 0 ]; then
+    sink_args+=(--enable-sinks="${default_main_sink}")
+  fi
+else
+  config_args=(
+    -c "${INSTALL_DIR}/configs/ds_hockey_configure_stitching.yaml"
+    -c "${INSTALL_DIR}/configs/ds_hockey_app_config.yaml"
+  )
+  sink_args+=(--enable-sinks=FAKE)
+  if [ "${have_sink_arg}" -eq 0 ]; then
+    sink_args+=(--enable-sinks="${default_main_sink}")
+  fi
+fi
+
+# Collect any -c/--config arguments from user-provided args so pretrained asset
+# setup runs for them too.
+asset_config_files=()
+collect_asset_config_files() {
+  local -n args_ref="$1"
+  local arg cfg i
+  for ((i = 0; i < ${#args_ref[@]}; i++)); do
+    arg="${args_ref[$i]}"
+    cfg=""
+    case "${arg}" in
+      -c|--config)
+        i=$((i + 1))
+        if [ "${i}" -lt "${#args_ref[@]}" ]; then cfg="${args_ref[$i]}"; fi
+        ;;
+      -c=*|--config=*)
+        cfg="${arg#*=}"
+        ;;
+    esac
+    if [ -n "${cfg}" ]; then
+      case "${cfg}" in
+        /*) asset_config_files+=("${cfg}") ;;
+        *) asset_config_files+=("${INSTALL_DIR}/${cfg}") ;;
+      esac
+    fi
+  done
+}
+
+collect_asset_config_files config_args
+collect_asset_config_files rewritten_args
+if [ "${#asset_config_files[@]}" -gt 0 ]; then
+  "${PYTHON_BIN:-python3}" "${INSTALL_DIR}/scripts/setup_pretrained_assets.py" "${asset_config_files[@]}"
+fi
+
+# cd so that relative paths in DeepStream config files (e.g. custom-lib-path=lib/...)
+# resolve against the install directory.
+cd "${INSTALL_DIR}"
+
+exec "${INSTALL_DIR}/bin/pipeline-app" \
+  "${config_args[@]}" \
+  --enable-sources=URI-MULTIPLE \
+  "${sink_args[@]}" \
+  --options=pipeline.hmaudio.enable=1 \
+  "${rewritten_args[@]}"
+RUNSH
+chmod 755 "${STAGING}${INSTALL_PREFIX}/run.sh"
+
+# ---------- /usr/local/bin symlink via postinst ----------
+# (symlink created at install time so it lands outside the staging INSTALL_PREFIX)
+
+# ---------- DEBIAN/control ----------
+echo "[make_deb] Writing DEBIAN/control..."
+INSTALLED_SIZE=$(du -sk "${STAGING}" | awk '{print $1}')
+cat > "${STAGING}/DEBIAN/control" <<CONTROL
+Package: ${PKG_NAME}
+Version: ${PKG_VERSION}
+Architecture: ${PKG_ARCH}
+Maintainer: hstream <noreply@hstream>
+Installed-Size: ${INSTALLED_SIZE}
+Depends: libgstreamer1.0-0 (>= 1.20),
+ libgstreamer-plugins-base1.0-0 (>= 1.20),
+ libglib2.0-0,
+ libgomp1,
+ libgl1,
+ libglu1-mesa,
+ libglew2.2,
+ libglfw3,
+ libavformat60 | libavformat-extra60,
+ libavcodec60 | libavcodec-extra60,
+ libavutil58,
+ libswresample4,
+ libfftw3-3,
+ libx11-6,
+ libsoup2.4-1,
+ libtiff6,
+ libpng16-16,
+ python3,
+ python3-yaml
+Description: hstream video pipeline application
+ Installs the hstream pipeline-app binary, bundled shared libraries
+ (OpenCV 4.13), GStreamer plugins, and configs to ${INSTALL_PREFIX}.
+ .
+ External requirements (not expressed as Depends):
+   - NVIDIA DeepStream (>= 6.3) at /opt/nvidia/deepstream/deepstream
+   - NVIDIA CUDA Toolkit (>= 12) at /usr/local/cuda
+ .
+ Launch with: /opt/hstream/run.sh [args...]
+ or via the hstream wrapper in /usr/local/bin/hstream.
+CONTROL
+
+# ---------- DEBIAN/postinst ----------
+cat > "${STAGING}/DEBIAN/postinst" <<'POSTINST'
+#!/bin/bash
+set -e
+ln -sfn /opt/hstream/run.sh /usr/local/bin/hstream
+POSTINST
+chmod 755 "${STAGING}/DEBIAN/postinst"
+
+# ---------- DEBIAN/prerm ----------
+cat > "${STAGING}/DEBIAN/prerm" <<'PRERM'
+#!/bin/bash
+set -e
+rm -f /usr/local/bin/hstream
+PRERM
+chmod 755 "${STAGING}/DEBIAN/prerm"
+
+# ---------- build deb ----------
+mkdir -p "${OUTPUT_DIR}"
+DEB_PATH="${OUTPUT_DIR}/${PKG_NAME}_${PKG_VERSION}_${PKG_ARCH}.deb"
+echo "[make_deb] Building ${DEB_PATH}..."
+dpkg-deb --build --root-owner-group "${STAGING}" "${DEB_PATH}"
+
+echo ""
+echo "Done: ${DEB_PATH}"
+echo ""
+echo "Install with:"
+echo "  sudo dpkg -i ${DEB_PATH}"
+echo ""
+echo "Run with:"
+echo "  /opt/hstream/run.sh [args...]"
+echo "  hstream [args...]   (after install)"
