@@ -1159,17 +1159,19 @@ void VideoPrepPriv::SetPrivateConfig(const char* config_string) {
 static void gst_videoprep_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(object);
   switch (prop_id) {
-    PROPERTY_SET_CASE(PROP_SILENT, videoprep->silent)
-    PROPERTY_SET_CASE(PROP_GPU_DEVICE_ID, videoprep->gpu_id)
-    PROPERTY_SET_CASE(PROP_SOURCE_ID, videoprep->source_id)
-    PROPERTY_SET_CASE(PROP_NUM_OUTPUT_BUFFERS, videoprep->num_output_buffers)
-    PROPERTY_SET_CASE(PROP_NUM_BATCH_BUFFERS, videoprep->num_batch_buffers)
-    PROPERTY_SET_CASE(PROP_NVBUF_MEMORY_TYPE, videoprep->cuda_mem_type)
-    PROPERTY_SET_CASE(PROP_INTERPOLATION_METHOD, videoprep->interpolation_method);
-    PROPERTY_SET_CASE(PROP_OUTPUT_WIDTH, videoprep->output_width);
-    PROPERTY_SET_CASE(PROP_OUTPUT_HEIGHT, videoprep->output_height);
-    PROPERTY_SET_CASE(PROP_PLUGIN_TYPE, videoprep->plugin_type);
-    PROPERTY_SET_CASE(PROP_CONFIG_FILE, videoprep->config_file);
+    case PROP_SILENT:
+      videoprep->silent = g_value_get_boolean(value);
+      break;
+      PROPERTY_SET_CASE(PROP_GPU_DEVICE_ID, videoprep->gpu_id)
+      PROPERTY_SET_CASE(PROP_SOURCE_ID, videoprep->source_id)
+      PROPERTY_SET_CASE(PROP_NUM_OUTPUT_BUFFERS, videoprep->num_output_buffers)
+      PROPERTY_SET_CASE(PROP_NUM_BATCH_BUFFERS, videoprep->num_batch_buffers)
+      PROPERTY_SET_CASE(PROP_NVBUF_MEMORY_TYPE, videoprep->cuda_mem_type)
+      PROPERTY_SET_CASE(PROP_INTERPOLATION_METHOD, videoprep->interpolation_method);
+      PROPERTY_SET_CASE(PROP_OUTPUT_WIDTH, videoprep->output_width);
+      PROPERTY_SET_CASE(PROP_OUTPUT_HEIGHT, videoprep->output_height);
+      PROPERTY_SET_CASE(PROP_PLUGIN_TYPE, videoprep->plugin_type);
+      PROPERTY_SET_CASE(PROP_CONFIG_FILE, videoprep->config_file);
     case PROP_PLUGIN_PRIVATE_CONFIG:
       hm::gst::set_value(videoprep->plugin_private_config, value);
       if (videoprep->priv) {
@@ -1188,18 +1190,20 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
 static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* value, GParamSpec* pspec) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(object);
   switch (prop_id) {
-    PROPERTY_GET_CASE(PROP_SILENT, videoprep->silent)
-    PROPERTY_GET_CASE(PROP_GPU_DEVICE_ID, videoprep->gpu_id)
-    PROPERTY_GET_CASE(PROP_SOURCE_ID, videoprep->source_id)
-    PROPERTY_GET_CASE(PROP_NUM_OUTPUT_BUFFERS, videoprep->num_output_buffers)
-    PROPERTY_GET_CASE(PROP_NUM_BATCH_BUFFERS, videoprep->num_batch_buffers)
-    PROPERTY_GET_CASE(PROP_NVBUF_MEMORY_TYPE, videoprep->cuda_mem_type)
-    PROPERTY_GET_CASE(PROP_INTERPOLATION_METHOD, videoprep->interpolation_method);
-    PROPERTY_GET_CASE(PROP_OUTPUT_WIDTH, videoprep->output_width);
-    PROPERTY_GET_CASE(PROP_OUTPUT_HEIGHT, videoprep->output_height);
-    PROPERTY_GET_CASE(PROP_PLUGIN_TYPE, videoprep->plugin_type);
-    PROPERTY_GET_CASE(PROP_PLUGIN_PRIVATE_CONFIG, videoprep->plugin_private_config);
-    PROPERTY_GET_CASE(PROP_CONFIG_FILE, videoprep->config_file);
+    case PROP_SILENT:
+      g_value_set_boolean(value, videoprep->silent);
+      break;
+      PROPERTY_GET_CASE(PROP_GPU_DEVICE_ID, videoprep->gpu_id)
+      PROPERTY_GET_CASE(PROP_SOURCE_ID, videoprep->source_id)
+      PROPERTY_GET_CASE(PROP_NUM_OUTPUT_BUFFERS, videoprep->num_output_buffers)
+      PROPERTY_GET_CASE(PROP_NUM_BATCH_BUFFERS, videoprep->num_batch_buffers)
+      PROPERTY_GET_CASE(PROP_NVBUF_MEMORY_TYPE, videoprep->cuda_mem_type)
+      PROPERTY_GET_CASE(PROP_INTERPOLATION_METHOD, videoprep->interpolation_method);
+      PROPERTY_GET_CASE(PROP_OUTPUT_WIDTH, videoprep->output_width);
+      PROPERTY_GET_CASE(PROP_OUTPUT_HEIGHT, videoprep->output_height);
+      PROPERTY_GET_CASE(PROP_PLUGIN_TYPE, videoprep->plugin_type);
+      PROPERTY_GET_CASE(PROP_PLUGIN_PRIVATE_CONFIG, videoprep->plugin_private_config);
+      PROPERTY_GET_CASE(PROP_CONFIG_FILE, videoprep->config_file);
     // Add additional cases here...
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);

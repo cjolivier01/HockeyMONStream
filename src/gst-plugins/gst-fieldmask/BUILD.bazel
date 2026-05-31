@@ -15,7 +15,7 @@ cc_library(
     deps = [
         ":fieldmask_payload",
         "//src/libs/common:utils",
-        "//src/libs/stitching:stitching",
+        "//src/libs/stitching",
         "@com_google_absl//absl/status:statusor",
         "@deepstream//:deepstream_lib",
         "@opencv_linux//:opencv",
@@ -43,14 +43,33 @@ gst_cc_plugin(
     ],
 )
 
-cc_library (
-  name = "fieldmask_payload",
-  hdrs = ["fieldmask_payload.h",],
-  include_prefix = INCLUDE_PREFIX,
-  visibility = ["//visibility:public"],
-  deps = [
-    "//src/libs/common:utils",
-  ],
+cc_library(
+    name = "fieldmask_payload",
+    hdrs = ["fieldmask_payload.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/libs/common:utils",
+    ],
+)
+
+cc_test(
+    name = "dsfieldmask_plugin_test",
+    srcs = [
+        "GstDsFieldMaskPluginTest.cpp",
+    ],
+    copts = [
+        "-x",
+        "c++",
+        "-std=c++17",
+    ],
+    data = [
+        ":libnvdsgst_dsfieldmask.so",
+    ],
+    deps = [
+        "//src/gst-plugins/testutils:gst_plugin_test_harness",
+        "@gstreamer",
+    ],
 )
 
 cc_test(
@@ -58,15 +77,15 @@ cc_test(
     srcs = [
         "DsFieldMaskNoopTest.cpp",
     ],
-    deps = [
-        ":dsfieldmask_lib",
-    ],
     copts = [
         "-x",
         "c++",
         "-std=c++17",
     ],
     linkopts = [
+    ],
+    deps = [
+        ":dsfieldmask_lib",
     ],
 )
 
@@ -75,14 +94,14 @@ cc_test(
     srcs = [
         "DsFieldMaskLoadExistingMaskTest.cpp",
     ],
-    deps = [
-        ":dsfieldmask_lib",
-    ],
     copts = [
         "-x",
         "c++",
         "-std=c++17",
     ],
     linkopts = [
+    ],
+    deps = [
+        ":dsfieldmask_lib",
     ],
 )

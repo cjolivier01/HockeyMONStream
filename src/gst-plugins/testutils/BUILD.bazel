@@ -1,0 +1,16 @@
+cc_library(
+    name = "gst_plugin_test_harness",
+    srcs = ["GstPluginTestHarness.cpp"],
+    hdrs = ["GstPluginTestHarness.h"],
+    copts = [
+        "-x",
+        "c++",
+        "-std=c++17",
+    ],
+    include_prefix = "hstream/src/gst-plugins/testutils",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/apps/apps-common:gst_plugin_properties",
+        "@gstreamer",
+    ],
+)

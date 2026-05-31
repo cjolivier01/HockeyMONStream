@@ -67,6 +67,8 @@ gboolean parse_dsplaytracker_yaml(
     const std::string& config_dir) {
   hm::utils::ConfigLocator locator;
   locator.ignored.emplace("config-file");
+  locator.ignored.emplace("properties");
+  locator.ignored.emplace("private-properties");
   // Nested config consumed by the vpplaytracker plugin.
   locator.ignored.emplace("play-tracker");
   SET_LOCATOR(locator, *config, enable);
@@ -77,6 +79,11 @@ gboolean parse_dsplaytracker_yaml(
   SET_LOCATOR(locator, *config, fixed_edge_rotation_angle);
   SET_LOCATOR(locator, *config, dynamic_acceleration_scaling);
   hm::utils::parse_chracter_buffer(config->config_file, yaml_node, "config-file", config_dir);
+  if (!hm::gst::append_plugin_properties_from_yaml(yaml_node, "properties", &config->plugin_properties) ||
+      !hm::gst::append_plugin_private_properties_from_yaml(
+          yaml_node, "private-properties", &config->private_properties)) {
+    return false;
+  }
   set_config_from_yaml(yaml_node, locator);
   return true;
 }
@@ -85,13 +92,16 @@ gboolean parse_dsfieldmask_yaml(
     NvDsDsFieldMaskConfig* config,
     const YAML::Node& yaml_node,
     const std::string& config_dir) {
-  hm::utils::ConfigLocator locator{.ignored = {"detection-mask"}};
+  hm::utils::ConfigLocator locator{.ignored = {"detection-mask", "properties"}};
   SET_LOCATOR(locator, *config, enable);
   SET_LOCATOR(locator, *config, unique_id);
   SET_LOCATOR(locator, *config, gpu_id);
   SET_LOCATOR(locator, *config, nvbuf_memory_type);
   SET_LOCATOR_CHARS(locator, *config, detection_mask_file);
   hm::utils::parse_chracter_buffer(config->detection_mask_file, yaml_node, "detection-mask", config_dir);
+  if (!hm::gst::append_plugin_properties_from_yaml(yaml_node, "properties", &config->plugin_properties)) {
+    return false;
+  }
   set_config_from_yaml(yaml_node, locator);
   return true;
 }
@@ -101,7 +111,8 @@ gboolean parse_videoprep_yaml(
     const YAML::Node& yaml_node,
     const std::string& config_dir,
     bool quiet = false) {
-  hm::utils::ConfigLocator locator{.ignored = {"config-file", "configure-only", "one-pass-mode"}};
+  hm::utils::ConfigLocator locator{
+      .ignored = {"config-file", "configure-only", "one-pass-mode", "properties", "private-properties"}};
   SET_LOCATOR(locator, *config, enable);
   SET_LOCATOR(locator, *config, unique_id);
   SET_LOCATOR(locator, *config, gpu_id);
@@ -120,6 +131,11 @@ gboolean parse_videoprep_yaml(
   SET_LOCATOR_CHARS(locator, *config, plugin_private_config);
 
   hm::utils::parse_chracter_buffer(config->config_file, yaml_node, "config-file", config_dir);
+  if (!hm::gst::append_plugin_properties_from_yaml(yaml_node, "properties", &config->plugin_properties) ||
+      !hm::gst::append_plugin_private_properties_from_yaml(
+          yaml_node, "private-properties", &config->private_properties)) {
+    return false;
+  }
 
   set_config_from_yaml(yaml_node, locator, quiet);
   return true;
@@ -155,6 +171,9 @@ gboolean parse_hmplaycropper_yaml(
       "config_file",
       "configure_only",
       "one_pass_mode",
+      "properties",
+      "private_properties",
+      "private-properties",
   };
   SET_LOCATOR(locator, *config, plot_play_tracking);
   SET_LOCATOR(locator, *config, plot_player_tracking);
@@ -184,6 +203,8 @@ gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_
   SET_LOCATOR(locator, *config, show);
   SET_LOCATOR(locator, *config, force_scoreboard_config);
   SET_LOCATOR_CHARS(locator, *config, config_file);
+  locator.ignored.emplace("properties");
+  locator.ignored.emplace("private-properties");
   set_config_from_yaml(yaml_node, locator, /*quiet=*/true);
   return true;
 }
@@ -623,8 +644,8 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
   for (i = 0; i < config->num_secondary_gie_sub_bins; i++) {
     if (config->secondary_gie_sub_bin_config[i].unique_id == config->primary_gie_config.unique_id) {
       NVGSTDS_ERR_MSG_V("Non unique gie ids found");
-      std::cerr << "Non unique gie id shared by primary and secondary gie: "
-                << config->primary_gie_config.unique_id << std::endl;
+      std::cerr << "Non unique gie id shared by primary and secondary gie: " << config->primary_gie_config.unique_id
+                << std::endl;
       ret = FALSE;
       goto done;
     }
@@ -634,8 +655,7 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
     for (j = i + 1; j < config->num_secondary_gie_sub_bins; j++) {
       if (config->secondary_gie_sub_bin_config[i].unique_id == config->secondary_gie_sub_bin_config[j].unique_id) {
         NVGSTDS_ERR_MSG_V("Non unique gie id %d found", config->secondary_gie_sub_bin_config[i].unique_id);
-        std::cerr << "Non unique secondary gie id: " << config->secondary_gie_sub_bin_config[i].unique_id
-                  << std::endl;
+        std::cerr << "Non unique secondary gie id: " << config->secondary_gie_sub_bin_config[i].unique_id << std::endl;
         ret = FALSE;
         goto done;
       }

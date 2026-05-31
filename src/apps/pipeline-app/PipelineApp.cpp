@@ -252,7 +252,8 @@ absl::Status PipelineApplication::configureInstances(
         app_ctx->return_value = -1;
         return absl::InternalError("Failed to parse config file");
       }
-      if (!parse_config_yaml(config["pipeline"], &app_ctx->config, fs::path(app_ctx->app_config_file()).parent_path())) {
+      if (!parse_config_yaml(
+              config["pipeline"], &app_ctx->config, fs::path(app_ctx->app_config_file()).parent_path())) {
         NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", app_ctx->app_config_file().c_str());
         app_ctx->return_value = -1;
         return absl::InternalError("Failed to parse config file");
@@ -625,13 +626,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   char** pipline_options{nullptr};
   GOptionEntry entries[] = {
       {"version", 'v', 0, G_OPTION_ARG_NONE, &print_version_, "Print DeepStreamSDK version", nullptr},
-      {"show",
-       0,
-       0,
-       G_OPTION_ARG_NONE,
-       &show_,
-       "Enable render sink output",
-       nullptr},
+      {"show", 0, 0, G_OPTION_ARG_NONE, &show_, "Enable render sink output", nullptr},
       {"show-stitching",
        0,
        0,
@@ -653,13 +648,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &show_scaled_scale_,
        "Scale final render window for --show (`0` disables, `N` is scale ratio)",
        "RATIO"},
-      {"tiledtext",
-       0,
-       0,
-       G_OPTION_ARG_NONE,
-       &show_bbox_text_,
-       "Display Bounding box labels in tiled mode",
-       nullptr},
+      {"tiledtext", 0, 0, G_OPTION_ARG_NONE, &show_bbox_text_, "Display Bounding box labels in tiled mode", nullptr},
       {"dump-pipeline-dot",
        'd',
        0,
@@ -683,13 +672,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        "Stop after processing this many seconds of video",
        "N"},
       {"options", 'p', 0, G_OPTION_ARG_FILENAME_ARRAY, &pipline_options, "Set arbitrary option(s)", nullptr},
-      {"cfg-file",
-       'c',
-       0,
-       G_OPTION_ARG_FILENAME_ARRAY,
-       &cfg_files_,
-       "Set the config file",
-       "FILE"},
+      {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &cfg_files_, "Set the config file", "FILE"},
       {"enable-sources", 'e', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sources_, "Enable Sources", nullptr},
       {"enable-sinks", 'k', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sinks_, "Enable Sinks", nullptr},
       {"game-id", 'g', 0, G_OPTION_ARG_FILENAME_ARRAY, &game_id_, "Game ID", nullptr},
@@ -1242,17 +1225,17 @@ gboolean PipelineApplication::overlay_graphics(
         } else {
           if (pts_ns < first_pts_ns_) {
             first_pts_ns_ = pts_ns;
-            continue;
-          }
-          uint64_t elapsed_ns = pts_ns - first_pts_ns_;
-          if (elapsed_ns >= limit_ns) {
-            if (!quit_) {
-              quit_ = TRUE;
-              if (main_loop_) {
-                g_main_loop_quit(main_loop_);
+          } else {
+            uint64_t elapsed_ns = pts_ns - first_pts_ns_;
+            if (elapsed_ns >= limit_ns) {
+              if (!quit_) {
+                quit_ = TRUE;
+                if (main_loop_) {
+                  g_main_loop_quit(main_loop_);
+                }
               }
+              return TRUE;
             }
-            return TRUE;
           }
         }
       }
@@ -1270,18 +1253,22 @@ gboolean PipelineApplication::overlay_graphics(
       if (fps_n <= 0 || fps_d <= 0) {
         continue;
       }
+      if (frame_meta->frame_num < 0) {
+        continue;
+      }
+      const uint64_t frame_num = static_cast<uint64_t>(frame_meta->frame_num);
       if (!have_first_frame_by_source_[source_id]) {
         have_first_frame_by_source_[source_id] = true;
-        first_frame_numbers_by_source_[source_id] = frame_meta->frame_num;
+        first_frame_numbers_by_source_[source_id] = frame_num;
         continue;
       }
-      if (frame_meta->frame_num < first_frame_numbers_by_source_[source_id]) {
-        first_frame_numbers_by_source_[source_id] = frame_meta->frame_num;
+      if (frame_num < first_frame_numbers_by_source_[source_id]) {
+        first_frame_numbers_by_source_[source_id] = frame_num;
         continue;
       }
-      const uint64_t frame_delta = frame_meta->frame_num - first_frame_numbers_by_source_[source_id];
-      const uint64_t elapsed_ns =
-          (frame_delta * static_cast<uint64_t>(GST_SECOND) * static_cast<uint64_t>(fps_d)) / static_cast<uint64_t>(fps_n);
+      const uint64_t frame_delta = frame_num - first_frame_numbers_by_source_[source_id];
+      const uint64_t elapsed_ns = (frame_delta * static_cast<uint64_t>(GST_SECOND) * static_cast<uint64_t>(fps_d)) /
+          static_cast<uint64_t>(fps_n);
       if (elapsed_ns > elapsed_from_frames_ns) {
         elapsed_from_frames_ns = elapsed_ns;
       }

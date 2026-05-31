@@ -21,34 +21,53 @@ gst_cc_plugin(
 )
 
 cc_library(
-  name = "playtracker_context",
-  srcs = [
+    name = "playtracker_context",
+    srcs = [
         "PlayTrackerCtx.cpp",
-  ],
-  hdrs = [
-  ],
-  include_prefix =   INCLUDE_PREFIX,
-  visibility = ["//visibility:public"],
-  deps = [
+    ],
+    hdrs = [
+    ],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
         ":playtracker_context_header",
-        "//src/libs/common:utils",
         "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
-        "@hm//hockeymom/csrc/play_tracker:play_tracker",
-  ],
+        "//src/libs/common:utils",
+        "@hm//hockeymom/csrc/play_tracker",
+    ],
 )
 
 cc_library(
-  name = "playtracker_context_header",
-  srcs = [
-  ],
-  hdrs = [
+    name = "playtracker_context_header",
+    srcs = [
+    ],
+    hdrs = [
         "PlayTrackerCtx.h",
-  ],
-  include_prefix =   INCLUDE_PREFIX,
-  visibility = ["//visibility:public"],
-  deps = [
-        "//src/libs/common:utils",
+    ],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
         "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
-        "@hm//hockeymom/csrc/play_tracker:play_tracker",
-  ],
+        "//src/libs/common:utils",
+        "@hm//hockeymom/csrc/play_tracker",
+    ],
+)
+
+cc_test(
+    name = "playtracker_plugin_test",
+    srcs = [
+        "GstPlayTrackerPluginTest.cpp",
+    ],
+    copts = [
+        "-x",
+        "c++",
+        "-std=c++17",
+    ],
+    data = [
+        ":libgstplaytracker.so",
+    ],
+    deps = [
+        "//src/gst-plugins/testutils:gst_plugin_test_harness",
+        "@gstreamer",
+    ],
 )

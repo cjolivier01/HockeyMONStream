@@ -1,4 +1,4 @@
-INCLUDE_PREFIX="deepstream"
+INCLUDE_PREFIX = "deepstream"
 
 config_setting(
     name = "jetson",
@@ -30,7 +30,6 @@ cc_library(
     ] + select({
         ":jetson": ["-L/opt/jetson-sysroot/opt/nvidia/deepstream/deepstream/lib"],
         ":arm64-sbsa": ["-L/opt/nvidia/deepstream/deepstream/lib"],
-        ":aarch64-linux-gnu": ["-L/opt/nvidia/deepstream/deepstream/lib"],
         ":x86_64-linux-gnu": ["-L/opt/nvidia/deepstream/deepstream/lib"],
         "//conditions:default": [],
     }) + [
@@ -53,7 +52,6 @@ cc_library(
     ],
 )
 
-
 cc_library(
     name = "deepstream_includes",
     srcs = [],
@@ -61,11 +59,11 @@ cc_library(
         "sources/includes/**/*.h*",
         "sources/includes/nvdsinferserver/*.h",
     ]),
+    include_prefix = "deepstream/sources/includes",
     includes = [
         "sources/includes",
         "sources/includes/nvdsinferserver",
     ],
-    include_prefix = "deepstream/sources/includes",
     visibility = ["//visibility:public"],
     deps = [
     ],
@@ -76,7 +74,7 @@ cc_library(
     hdrs = glob([
         "sources/libs/nvdsinfer/*.h",
     ]) + [
-      # "nvdsinfer_context_impl.h",
+        # "nvdsinfer_context_impl.h",
     ],
     copts = [
     ],
@@ -84,14 +82,14 @@ cc_library(
         "sources/libs/nvdsinfer",
     ],
     linkopts = [
-      "-lnvinfer_plugin",
-      "-lnvinfer",
-      "-lnvonnxparser",
+        "-lnvinfer_plugin",
+        "-lnvinfer",
+        "-lnvonnxparser",
     ],
     visibility = ["//visibility:public"],
-    deps=[
-      # "@deepstream//sources:deepstream_includes",
-      ":deepstream_includes",
-      "@gst_plugin_dev//toolchains/jetson:cuda_runtime",
+    deps = [
+        # "@deepstream//sources:deepstream_includes",
+        ":deepstream_includes",
+        "@gst_plugin_dev//toolchains/jetson:cuda_runtime",
     ],
 )

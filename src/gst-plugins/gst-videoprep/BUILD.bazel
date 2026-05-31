@@ -24,7 +24,7 @@ gst_cc_plugin(
     hdrs = glob([
         "gstvideoprep.h",
         "videoprep_plugins.h",
-        "videoprep_property_parser.h"
+        "videoprep_property_parser.h",
     ]),
     copts = [
         "-Iincludes",
@@ -40,8 +40,7 @@ gst_cc_plugin(
             "-L/usr/local/cuda/targets/aarch64-linux/lib",
             "-L/usr/local/cuda/lib64",
         ],
-        ":x86_64-linux-gnu": ["-L/usr/local/cuda/targets/x86_64-linux/lib"],
-        "//conditions:default": [],
+        "//conditions:default": ["-L/usr/local/cuda/targets/x86_64-linux/lib"],
     }) + [
         "-l:libnppig.so",
         "-lnppc_static",
@@ -60,11 +59,30 @@ gst_cc_plugin(
     visibility = ["//visibility:public"],
     deps = [
         "//src/gst-plugins/gst-videoprep/playcropper",
-        "//src/gst-plugins/gst-videoprep/stitcher",
         "//src/gst-plugins/gst-videoprep/playtracker",
+        "//src/gst-plugins/gst-videoprep/stitcher",
         "//src/libs/common:utils",
         "@com_google_absl//absl/strings",
         "@jetson-utils//cuda:cuda_lib",
         "@jetson-utils//display:display",
+    ],
+)
+
+cc_test(
+    name = "videoprep_plugin_test",
+    srcs = [
+        "GstVideoPrepPluginTest.cpp",
+    ],
+    copts = [
+        "-x",
+        "c++",
+        "-std=c++17",
+    ],
+    data = [
+        ":libnvdsgst_videoprep.so",
+    ],
+    deps = [
+        "//src/gst-plugins/testutils:gst_plugin_test_harness",
+        "@gstreamer",
     ],
 )
