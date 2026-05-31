@@ -424,7 +424,7 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
   // type, which is generally tied to the resolution. We scale in the play tracker when possible, but
   // it isn't perfectly scalable atm.
 
-  hm::play_tracker::PlayTracker* play_tracker{nullptr};
+  DsPlayTrackerCtx::PlayTracker* play_tracker_ctx{nullptr};
 
 #if 1 && !defined(NDEBUG)
     hm::utils::PlotContext plot_context(frame.frame_meta);
@@ -463,13 +463,15 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
 #endif
     }
 #endif 
-    play_tracker = gst_hm_playtracker::get_or_create_play_tracker(ctx, frame.frame_meta->source_id, ctx->arena_box);
+    gst_hm_playtracker::get_or_create_play_tracker(ctx, frame.frame_meta->source_id, ctx->arena_box);
+    play_tracker_ctx = &ctx->play_trackers.at(frame.frame_meta->source_id);
   } else {
-    play_tracker = gst_hm_playtracker::get_play_tracker(ctx, frame.frame_meta->source_id);
+    play_tracker_ctx = &ctx->play_trackers.at(frame.frame_meta->source_id);
   }
-  if (!play_tracker) {
+  if (!play_tracker_ctx || !play_tracker_ctx->play_tracker) {
     return false;
   }
+  hm::play_tracker::PlayTracker* play_tracker = play_tracker_ctx->play_tracker.get();
 
   std::vector<size_t> tracking_ids;
   std::vector<hm::BBox> tracking_boxes;
@@ -486,6 +488,9 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
 
   for (NvDsMetaList* l_obj = frame.frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
     NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
+    if (obj_meta->class_id != 0) {
+      continue;
+    }
     if (obj_meta->object_id == UNTRACKED_OBJECT_ID) {
       // ignore untracked objects
       continue;
@@ -498,6 +503,22 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
         (tracker_bbox_info.org_bbox_coords.top + tracker_bbox_info.org_bbox_coords.height) * scale_y));
     size_t tracking_id = obj_meta->object_id;
     tracking_ids.push_back(tracking_id);
+  }
+
+  if (tracking_boxes.empty() && !play_tracker_ctx->has_received_tracks) {
+    hm::play_tracker::PlayTrackerResults waiting_results;
+    const float frame_width = frame.frame_meta->source_frame_width > 0 ? frame.frame_meta->source_frame_width
+                                                                       : frame.frame_meta->pipeline_width;
+    const float frame_height = frame.frame_meta->source_frame_height > 0 ? frame.frame_meta->source_frame_height
+                                                                         : frame.frame_meta->pipeline_height;
+    waiting_results.tracking_boxes.emplace_back(hm::BBox(0, 0, frame_width, frame_height));
+    frame.play_tracker_results = std::move(waiting_results);
+    DsPlayTrackerAttachMetadataFullFrame(frame.frame_meta, frame.play_tracker_results);
+    return true;
+  }
+
+  if (!tracking_boxes.empty()) {
+    play_tracker_ctx->has_received_tracks = true;
   }
 
   frame.play_tracker_results = play_tracker->forward(tracking_ids, tracking_boxes);

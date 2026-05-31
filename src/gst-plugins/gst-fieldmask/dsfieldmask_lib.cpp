@@ -48,7 +48,7 @@ bool is_bit_set(const cv::Mat& mask, const cv::Point& point) {
   int byteIndex = (point.y * mask.cols + point.x / 8); // Byte index in the data
   int bitIndex = point.x % 8; // Bit index within the byte
   // int bitIndex = point.x & 7;
-  return (mask.data[byteIndex] & (1 << bitIndex)) != 0;
+  return (mask.data[byteIndex] & (1 << (7 - bitIndex))) != 0;
   // int bitIndex = point.x % 8; // Bit index within the byte
   // uchar val = mask.at<uchar>(cv::Point2l(point.x/8, point.y));
   // return (val & (1 << bitIndex)) != 0;
@@ -173,23 +173,29 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx,
 
     NvDsMetaList* remove_me{nullptr};
     NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
-    const NvDsComp_BboxInfo& detector_bbox_info = obj_meta->detector_bbox_info;
-    const float half_width = detector_bbox_info.org_bbox_coords.width / 2;
-    const float bbox_center_x = detector_bbox_info.org_bbox_coords.left + half_width;
-    const float half_height = detector_bbox_info.org_bbox_coords.height / 2;
+    NvBbox_Coords bbox_coords = obj_meta->detector_bbox_info.org_bbox_coords;
+    if (bbox_coords.width <= 0.0F || bbox_coords.height <= 0.0F) {
+      bbox_coords.left = obj_meta->rect_params.left;
+      bbox_coords.top = obj_meta->rect_params.top;
+      bbox_coords.width = obj_meta->rect_params.width;
+      bbox_coords.height = obj_meta->rect_params.height;
+    }
+    const float half_width = bbox_coords.width / 2;
+    const float bbox_center_x = bbox_coords.left + half_width;
+    const float half_height = bbox_coords.height / 2;
 
     // Keep track of extremes for debugging
     // max_x = std::max(max_x, detector_bbox_info.org_bbox_coords.left + detector_bbox_info.org_bbox_coords.width);
     // max_y = std::max(max_y, detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height);
 
     const int lower_center_height_amount =
-        float(detector_bbox_info.org_bbox_coords.height) * lower_bbox_center_by_height_ratio;
+        float(bbox_coords.height) * lower_bbox_center_by_height_ratio;
     const int raise_bottom_height_amount =
-        float(detector_bbox_info.org_bbox_coords.height) * raise_bbox_bottom_by_height_ratio;
+        float(bbox_coords.height) * raise_bbox_bottom_by_height_ratio;
 
     // Center of bounding box
     cv::Point2f ptCenter =
-        cv::Point2f(bbox_center_x, detector_bbox_info.org_bbox_coords.top + half_height - lower_center_height_amount);
+        cv::Point2f(bbox_center_x, bbox_coords.top + half_height - lower_center_height_amount);
 
     if (plot_context) {
       plot_context->plot_circle(
@@ -201,7 +207,7 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx,
 
     // Bottom of bounding box (for testing if their feet are on the ice)
     cv::Point2f ptBottom =
-        cv::Point2f(bbox_center_x, detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height);
+        cv::Point2f(bbox_center_x, bbox_coords.top + bbox_coords.height);
 
     ptBottom.y -= raise_bottom_height_amount;
 

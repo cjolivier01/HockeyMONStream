@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -147,6 +148,38 @@ def _download(url: str, path: Path, timeout: float) -> None:
         raise
 
 
+def _asset_command(spec: dict[str, Any]) -> list[str]:
+    raw_command = spec.get("command") or spec.get("generate-command") or spec.get("generate_command")
+    if not raw_command:
+        return []
+    if isinstance(raw_command, str):
+        return shlex.split(raw_command)
+    if isinstance(raw_command, list):
+        return [str(item) for item in raw_command]
+    raise ValueError("asset command must be a string or list")
+
+
+def _generate_asset(command: list[str], target: Path, config_path: Path, args: argparse.Namespace) -> None:
+    _ensure_parent_dir(target)
+    repo_root = config_path.parent.parent
+    substitutions = {
+        "target": str(target),
+        "config_dir": str(config_path.parent),
+        "repo_root": str(repo_root),
+    }
+    formatted = [part.format(**substitutions) for part in command]
+    if formatted and not Path(formatted[0]).is_absolute() and ("/" in formatted[0] or formatted[0].startswith(".")):
+        formatted[0] = str((config_path.parent / formatted[0]).resolve(strict=False))
+
+    print(f"Generating pretrained asset: {target}", flush=True)
+    print("  " + " ".join(shlex.quote(part) for part in formatted), flush=True)
+    if args.dry_run:
+        return
+    subprocess.run(formatted, cwd=str(repo_root), check=True)
+    if not target.exists() or target.stat().st_size == 0:
+        raise RuntimeError(f"{config_path}: command did not generate expected asset {target}")
+
+
 def _patch_onnx_dynamic_batch(path: Path) -> bool:
     try:
         import numpy as np
@@ -186,16 +219,20 @@ def _patch_onnx_dynamic_batch(path: Path) -> bool:
 
 def _process_asset(spec: dict[str, Any], config: Any, config_path: Path, args: argparse.Namespace) -> bool:
     url = str(spec.get("url") or spec.get("source") or "")
-    if not url:
-        raise ValueError(f"{config_path}: asset needs 'url' or 'source'")
+    command = _asset_command(spec)
+    if not url and not command:
+        raise ValueError(f"{config_path}: asset needs 'url', 'source', or 'command'")
 
     target = _asset_target_path(spec, config, config_path)
     downloaded = False
     if not target.exists() or target.stat().st_size == 0:
-        print(f"Downloading pretrained asset: {target}")
-        if args.dry_run:
-            return True
-        _download(url, target, args.timeout)
+        if command:
+            _generate_asset(command, target, config_path, args)
+        else:
+            print(f"Downloading pretrained asset: {target}")
+            if args.dry_run:
+                return True
+            _download(url, target, args.timeout)
         downloaded = True
 
     expected_sha256 = spec.get("sha256")

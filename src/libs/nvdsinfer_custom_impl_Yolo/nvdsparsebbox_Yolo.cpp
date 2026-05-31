@@ -25,6 +25,8 @@
 
 #include "nvdsinfer_custom_impl.h"
 
+#include <cmath>
+
 #include "utils.h"
 
 extern "C" bool NvDsInferParseYolo(
@@ -108,6 +110,77 @@ static std::vector<NvDsInferParseObjectInfo> decodeTensorYolo(
   return binfo;
 }
 
+static std::vector<NvDsInferParseObjectInfo> decodeTensorYoloX(
+    const float* output,
+    const uint& outputSize,
+    const uint& elementSize,
+    const uint& netW,
+    const uint& netH,
+    const std::vector<float>& preclusterThreshold) {
+  std::vector<NvDsInferParseObjectInfo> binfo;
+
+  if (elementSize < 6) {
+    return binfo;
+  }
+
+  const uint classCount = elementSize - 5;
+  const uint strides[] = {8, 16, 32};
+  for (uint b = 0; b < outputSize; ++b) {
+    const float* proposal = output + b * elementSize;
+    const float objectConfidence = proposal[4];
+    int maxIndex = 0;
+    float maxClassConfidence = proposal[5];
+    for (uint c = 1; c < classCount; ++c) {
+      const float classConfidence = proposal[5 + c];
+      if (classConfidence > maxClassConfidence) {
+        maxClassConfidence = classConfidence;
+        maxIndex = static_cast<int>(c);
+      }
+    }
+
+    const float maxProb = objectConfidence * maxClassConfidence;
+    if (maxIndex >= static_cast<int>(preclusterThreshold.size()) || maxProb < preclusterThreshold[maxIndex]) {
+      continue;
+    }
+
+    uint stride = strides[2];
+    uint gridOffset = 0;
+    uint gridWidth = 0;
+    uint levelOffset = 0;
+    for (uint candidateStride : strides) {
+      gridWidth = netW / candidateStride;
+      const uint gridHeight = netH / candidateStride;
+      const uint levelSize = gridWidth * gridHeight;
+      if (b < levelOffset + levelSize) {
+        stride = candidateStride;
+        gridOffset = levelOffset;
+        break;
+      }
+      levelOffset += levelSize;
+    }
+
+    const uint gridIndex = b - gridOffset;
+    const float gridX = static_cast<float>(gridIndex % gridWidth);
+    const float gridY = static_cast<float>(gridIndex / gridWidth);
+    const float centerX = (proposal[0] + gridX) * stride;
+    const float centerY = (proposal[1] + gridY) * stride;
+    const float width = std::exp(proposal[2]) * stride;
+    const float height = std::exp(proposal[3]) * stride;
+    addBBoxProposal(
+        centerX - width / 2.0F,
+        centerY - height / 2.0F,
+        centerX + width / 2.0F,
+        centerY + height / 2.0F,
+        netW,
+        netH,
+        maxIndex,
+        maxProb,
+        binfo);
+  }
+
+  return binfo;
+}
+
 static bool NvDsInferParseCustomYolo(
     std::vector<NvDsInferLayerInfo> const& outputLayersInfo,
     NvDsInferNetworkInfo const& networkInfo,
@@ -124,12 +197,23 @@ static bool NvDsInferParseCustomYolo(
   const NvDsInferLayerInfo& output = outputLayersInfo[0];
   const uint outputSize = output.inferDims.d[0];
 
-  std::vector<NvDsInferParseObjectInfo> outObjs = decodeTensorYolo(
-      (const float*)(output.buffer),
-      outputSize,
-      networkInfo.width,
-      networkInfo.height,
-      detectionParams.perClassPreclusterThreshold);
+  std::vector<NvDsInferParseObjectInfo> outObjs;
+  if (output.inferDims.numDims >= 2 && output.inferDims.d[1] > 6) {
+    outObjs = decodeTensorYoloX(
+        (const float*)(output.buffer),
+        output.inferDims.d[0],
+        output.inferDims.d[1],
+        networkInfo.width,
+        networkInfo.height,
+        detectionParams.perClassPreclusterThreshold);
+  } else {
+    outObjs = decodeTensorYolo(
+        (const float*)(output.buffer),
+        outputSize,
+        networkInfo.width,
+        networkInfo.height,
+        detectionParams.perClassPreclusterThreshold);
+  }
 
   objects.insert(objects.end(), outObjs.begin(), outObjs.end());
 

@@ -32,6 +32,7 @@ struct DsPlayTrackerCtx {
   struct PlayTracker {
     hm::play_tracker::PlayTrackerConfig play_tracker_config;
     std::unique_ptr<hm::play_tracker::PlayTracker> play_tracker;
+    bool has_received_tracks{false};
   };
   // source_id -> play_tracker
   std::unordered_map<size_t, PlayTracker> play_trackers;

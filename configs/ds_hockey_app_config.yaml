@@ -372,7 +372,7 @@ primary-gie:
   # processing-height: 480
   gie-unique-id: 1
   nvbuf-memory-type: 0
-  config-file: config_infer_yolox_hockey.yaml
+  config-file: config_infer_yolov8_hockey.yaml
 
 ds-example:
   enable: 0
@@ -389,6 +389,7 @@ hmplaycropper:
   nvbuf-memory-type: 0
   plot-play-tracking: 0
   # plot-player-tracking: 0
+  # transform-object-meta: 0
   no-crop: 0
   show: 0
   show-scoreboard: 1
@@ -450,7 +451,7 @@ tracker:
   # ll-config-file required to set different tracker types
   # ll-config-file: /home/colivier/src/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_IOU.yml
   # ll-config-file: /home/colivier/src/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_NvSORT.yml
-  ll-config-file: /home/colivier/src/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml
+  ll-config-file: /opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml
   # ll-config-file: /home/colivier/src/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_NvDCF_accuracy.yml
   # ll-config-file: /home/colivier/src/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_NvDeepSORT.yml
   gpu-id: 0

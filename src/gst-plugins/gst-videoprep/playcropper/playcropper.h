@@ -38,6 +38,15 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   absl::Status RenderDisplayMeta(surface::Surface surface, const NvDsFrameMeta* frame_meta, cudaStream_t stream);
   absl::Status RenderScoreboard(surface::Surface in_surface, surface::Surface out_surface, cudaStream_t stream);
   absl::Status LoadScoreboardPerspectiveFromConfig();
+  void TransformObjectMetaForOutput(
+      NvDsFrameMeta* frame_meta,
+      float scale_w,
+      float scale_h,
+      const BBox& src_rect,
+      float angle,
+      const Point& anchor_point,
+      const BBox& crop_box,
+      const BBox& output_rect);
 
   absl::Mutex mu_process_;
   bool use_unfused_kernels_{false};
@@ -62,6 +71,7 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   NvBufSurfaceParams display_dest_params_;
   bool plot_play_tracking_{false};
   bool plot_player_tracking_{false};
+  bool transform_object_meta_{false};
   bool runtime_output_size_{false};
   size_t runtime_output_max_width_{0};
   size_t runtime_output_max_height_{0};

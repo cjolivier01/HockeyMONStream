@@ -215,6 +215,7 @@ rm -rf "${STAGING}${INSTALL_PREFIX}/configs/systemd"
 # ---------- scripts ----------
 echo "[make_deb] Staging scripts..."
 cp "${TOPDIR}/scripts/setup_pretrained_assets.py" "${STAGING}${INSTALL_PREFIX}/scripts/"
+cp "${TOPDIR}/scripts/export_hm_yolov8_onnx.py" "${STAGING}${INSTALL_PREFIX}/scripts/"
 
 # ---------- installed run.sh ----------
 echo "[make_deb] Writing installed run.sh..."
@@ -266,19 +267,73 @@ prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 
 one_pass_only=1
 have_sink_arg=0
+show_arg=0
+stream_sink_arg=0
 rewritten_args=()
+
+sink_value_is_streaming() {
+  local raw="$1"
+  local item normalized
+  IFS=',' read -ra sink_items <<< "${raw}"
+  for item in "${sink_items[@]}"; do
+    normalized="$(echo "${item}" | tr '[:lower:]' '[:upper:]' | tr -cd 'A-Z0-9_')"
+    case "${normalized}" in
+      RTSP|RTMP|UDPSINK) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+next_arg_is_sink_value=0
 for arg in "$@"; do
+  if [ "${next_arg_is_sink_value}" -eq 1 ]; then
+    if sink_value_is_streaming "${arg}"; then
+      stream_sink_arg=1
+    fi
+    next_arg_is_sink_value=0
+    continue
+  fi
   case "$arg" in
     --one-pass-only|--stage0-only) one_pass_only=1 ;;
     --two-stage|--configure-first) one_pass_only=0 ;;
-    --enable-sinks|--enable-sinks=*|-k|-k*) have_sink_arg=1 ;;
+    --enable-sinks|-k)
+      have_sink_arg=1
+      next_arg_is_sink_value=1
+      ;;
+    --enable-sinks=*)
+      have_sink_arg=1
+      if sink_value_is_streaming "${arg#*=}"; then
+        stream_sink_arg=1
+      fi
+      ;;
+    -k*)
+      have_sink_arg=1
+      if sink_value_is_streaming "${arg#-k}"; then
+        stream_sink_arg=1
+      fi
+      ;;
+    --show) show_arg=1 ;;
   esac
 done
+
+has_display=0
+if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+  has_display=1
+fi
+headless_show_rtsp=0
+if [ "${show_arg}" -eq 1 ] && [ "${has_display}" -eq 0 ]; then
+  headless_show_rtsp=1
+fi
 
 for arg in "$@"; do
   case "$arg" in
     --one-pass-only|--stage0-only|--two-stage|--configure-first)
       continue
+      ;;
+    --show)
+      if [ "${headless_show_rtsp}" -eq 1 ]; then
+        continue
+      fi
       ;;
   esac
   case "$arg" in
@@ -291,8 +346,60 @@ for arg in "$@"; do
   esac
 done
 
-default_main_sink="ENCODE_FILE"
-if [ -z "${DISPLAY:-}" ]; then
+print_rtsp_access_urls() {
+  local port="${1:-8554}"
+  local path="${2:-/ds-test}"
+  local addresses=()
+  local seen=" "
+  local candidate
+
+  add_address() {
+    local addr="$1"
+    if [[ ! "${addr}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+      return
+    fi
+    case "${addr}" in
+      ""|127.*|0.0.0.0) return ;;
+    esac
+    case " ${seen} " in
+      *" ${addr} "*) return ;;
+    esac
+    seen="${seen}${addr} "
+    addresses+=("${addr}")
+  }
+
+  if command -v hostname >/dev/null 2>&1; then
+    for candidate in $(hostname -I 2>/dev/null || true); do
+      add_address "${candidate}"
+    done
+  fi
+  if command -v ip >/dev/null 2>&1; then
+    while IFS= read -r candidate; do
+      add_address "${candidate}"
+    done < <(ip -o -4 addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+  fi
+  if command -v ifconfig >/dev/null 2>&1; then
+    while IFS= read -r candidate; do
+      add_address "${candidate}"
+    done < <(ifconfig 2>/dev/null | awk '/inet / {print $2}')
+  fi
+
+  echo "Headless --show requested; streaming RTSP on 0.0.0.0:${port}${path}"
+  if [ "${#addresses[@]}" -eq 0 ]; then
+    echo "  No non-loopback IPv4 address detected; try rtsp://localhost:${port}${path} from this host."
+    return
+  fi
+  echo "Open one of:"
+  for candidate in "${addresses[@]}"; do
+    echo "  rtsp://${candidate}:${port}${path}"
+  done
+}
+
+default_main_sink="RENDER"
+if [ "${headless_show_rtsp}" -eq 1 ] && [ "${have_sink_arg}" -eq 0 ]; then
+  default_main_sink="RTSP"
+  print_rtsp_access_urls 8554 /ds-test
+elif [ "${has_display}" -eq 0 ]; then
   default_main_sink="ENCODE_FILE"
   if [ "${have_sink_arg}" -eq 0 ]; then
     echo "DISPLAY is not set and no sink was specified; defaulting to --enable-sinks=${default_main_sink} (override with --enable-sinks=RENDER)"
@@ -315,6 +422,11 @@ else
   if [ "${have_sink_arg}" -eq 0 ]; then
     sink_args+=(--enable-sinks="${default_main_sink}")
   fi
+fi
+
+hmaudio_enable=1
+if { [ "${headless_show_rtsp}" -eq 1 ] && [ "${have_sink_arg}" -eq 0 ]; } || [ "${stream_sink_arg}" -eq 1 ]; then
+  hmaudio_enable=0
 fi
 
 # Collect any -c/--config arguments from user-provided args so pretrained asset
@@ -358,7 +470,7 @@ exec "${INSTALL_DIR}/bin/pipeline-app" \
   "${config_args[@]}" \
   --enable-sources=URI-MULTIPLE \
   "${sink_args[@]}" \
-  --options=pipeline.hmaudio.enable=1 \
+  --options=pipeline.hmaudio.enable="${hmaudio_enable}" \
   "${rewritten_args[@]}"
 RUNSH
 chmod 755 "${STAGING}${INSTALL_PREFIX}/run.sh"

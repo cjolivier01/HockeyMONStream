@@ -513,6 +513,7 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
   }
   ppc << ";plot-play-tracking=" << config->plot_play_tracking;
   ppc << ";plot-player-tracking=" << config->plot_player_tracking;
+  ppc << ";transform-object-meta=" << config->transform_object_meta;
   if (config->runtime_output_max_width) {
     ppc << ";runtime-output-max-width=" << config->runtime_output_max_width;
   }
