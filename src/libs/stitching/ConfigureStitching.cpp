@@ -690,9 +690,11 @@ absl::Status clean_stitching_artifacts(const std::string& game_dir) {
       }
       out << cfg << "\n";
     } catch (const YAML::Exception& ex) {
-      std::cerr << "Failed to clean private config \"" << cfg_file_path.string() << "\": " << ex.what() << std::endl;
+      return absl::InternalError(
+          TO_STRING("Failed to clean private config \"" << cfg_file_path.string() << "\": " << ex.what()));
     } catch (...) {
-      std::cerr << "Unknown error while cleaning private config \"" << cfg_file_path.string() << "\"\n";
+      return absl::InternalError(
+          TO_STRING("Unknown error while cleaning private config \"" << cfg_file_path.string() << '"'));
     }
   }
 

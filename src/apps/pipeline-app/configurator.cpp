@@ -1310,7 +1310,7 @@ absl::Status Configurator::complete_configuration(bool force, bool clean_stitchi
     // return absl::InvalidArgumentError("No game id specified");
     // Just go by what's in the config file(s)
     if (clean_stitching_artifacts) {
-      return absl::CancelledError("No game id specified for cleaning");
+      return absl::InvalidArgumentError("No game id specified for cleaning");
     }
     return absl::OkStatus();
   }
@@ -1322,6 +1322,9 @@ absl::Status Configurator::complete_configuration(bool force, bool clean_stitchi
   // Stitching config mask config dir
   fs::path game_dir = get_game_dir(game_id_);
   const bool has_hmstitcher = has_node(pipeline, "hmstitcher", false);
+  if (clean_stitching_artifacts && !has_hmstitcher) {
+    return absl::FailedPreconditionError("No hmstitcher section is configured; nothing to clean");
+  }
   if (has_hmstitcher && (force || clean_stitching_artifacts)) {
     YAML::Node preserved_pipeline = config_["pipeline"];
     absl::Status clean_status = stitching::clean_stitching_artifacts(game_dir.string());
@@ -1339,6 +1342,9 @@ absl::Status Configurator::complete_configuration(bool force, bool clean_stitchi
       if (private_config_.IsDefined()) {
         auto save_status = save_private_config(private_config_);
         if (!save_status.ok()) {
+          if (clean_stitching_artifacts) {
+            return save_status;
+          }
           std::cerr << "Warning: failed to save private config: " << save_status << std::endl;
         }
       }

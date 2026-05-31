@@ -250,8 +250,9 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
         source_surface.get_image_format(),
         FILTER_POINT,
         stream);
-    (void)cuerr;
-    assert(cuerr == cudaSuccess);
+    if (cuerr != cudaSuccess) {
+      return absl::InternalError(TO_STRING("Scoreboard cudaResizeROI failed: " << cudaGetErrorString(cuerr)));
+    }
 
 #if !HSTREAM_SCOREBOARD_USE_OPENCV_CUDA_WARP
     static const float border[] = {0, 0, 0, 0};
@@ -273,8 +274,9 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
         cv::BORDER_CONSTANT,
         &border[0],
         stream);
-    (void)cuerr;
-    assert(cuerr == cudaSuccess);
+    if (cuerr != cudaSuccess) {
+      return absl::InternalError(TO_STRING("Scoreboard warpPerspectiveCudaRaw failed: " << cudaGetErrorString(cuerr)));
+    }
 #else
     cv::cuda::GpuMat gpu_mat(
         working_image_->height(),
@@ -309,7 +311,9 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
       /*x=*/0,
       /*y=*/0,
       stream);
-  (void)cuErr;
+  if (cuErr != cudaSuccess) {
+    return absl::InternalError(TO_STRING("Scoreboard cudaOverlayPitch failed: " << cudaGetErrorString(cuErr)));
+  }
   // SHOW_IMAGE(&hm::cudaMat<uchar4>(dest_surface));
   return absl::OkStatus();
 }

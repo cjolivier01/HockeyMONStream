@@ -236,6 +236,9 @@ absl::Status PipelineApplication::configureInstances(
       absl::Status configuration_status = app_ctx->complete_configuration(
           force_reconfigure_, clean_stitching_artifacts_, show_ || show_render_scale_ == 0.0, show_render_scale_);
       if (configuration_status.code() == absl::StatusCode::kCancelled) {
+        if (!clean_stitching_artifacts_) {
+          return configuration_status;
+        }
         std::cerr << configuration_status << std::endl;
         continue;
       }
@@ -1237,6 +1240,10 @@ gboolean PipelineApplication::overlay_graphics(
           first_pts_ns_ = pts_ns;
           have_first_pts_ = true;
         } else {
+          if (pts_ns < first_pts_ns_) {
+            first_pts_ns_ = pts_ns;
+            continue;
+          }
           uint64_t elapsed_ns = pts_ns - first_pts_ns_;
           if (elapsed_ns >= limit_ns) {
             if (!quit_) {
@@ -1265,6 +1272,10 @@ gboolean PipelineApplication::overlay_graphics(
       }
       if (!have_first_frame_by_source_[source_id]) {
         have_first_frame_by_source_[source_id] = true;
+        first_frame_numbers_by_source_[source_id] = frame_meta->frame_num;
+        continue;
+      }
+      if (frame_meta->frame_num < first_frame_numbers_by_source_[source_id]) {
         first_frame_numbers_by_source_[source_id] = frame_meta->frame_num;
         continue;
       }

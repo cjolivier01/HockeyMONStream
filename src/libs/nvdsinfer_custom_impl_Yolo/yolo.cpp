@@ -197,8 +197,10 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
 #else
     std::cerr
         << "TensorRT " << NV_TENSORRT_MAJOR << "." << NV_TENSORRT_MINOR
-        << " no longer supports the legacy INT8 builder flag; using strongly typed network defaults"
+        << " no longer supports the legacy INT8 builder flag in this builder path; provide a prebuilt INT8 engine or "
+           "use FP16/FP32"
         << std::endl;
+    return nullptr;
 #endif
     if (m_Int8CalibPath != "") {
 #ifdef OPENCV

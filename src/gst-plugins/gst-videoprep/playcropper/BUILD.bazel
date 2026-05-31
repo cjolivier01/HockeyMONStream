@@ -21,6 +21,7 @@ cc_library(
         "//src/libs/draw_display",
         "//src/libs/scoreboard",
         "@hm-cupano//src/pano:cuda_matrix",
+        "@yaml-cpp",
     ],
 )
 

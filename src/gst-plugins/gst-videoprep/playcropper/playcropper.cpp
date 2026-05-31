@@ -14,6 +14,8 @@
 #include <cstdlib>
 #include <tuple>
 #include <vector>
+#include <filesystem>
+#include <sstream>
 #include "absl/status/status.h"
 #include "absl/strings/str_split.h"
 #include "cupano/pano/cudaMat.h"
@@ -26,6 +28,7 @@
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
 #include "hstream/src/libs/draw_display/Fonts.h"
 #include "nvdsmeta.h"
+#include "yaml-cpp/yaml.h"
 
 #if defined(__aarch64__)
 #include <EGL/egl.h>
@@ -71,6 +74,9 @@ absl::Status PlayCropperPriv::PreCapsInit(DSCustom_CreateParams* params) {
   // Not an in-place transform
   m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
   m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
+  if (params && params->config_file) {
+    config_file_ = params->config_file;
+  }
   guint output_width = 0;
   guint output_height = 0;
   g_object_get(G_OBJECT(params->m_element), "output-width", &output_width, "output-height", &output_height, NULL);
@@ -223,7 +229,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
-  absl::ReaderMutexLock lk(&mu_process_);
+  absl::WriterMutexLock lk(&mu_process_);
 
   // Setup and initialization
   if (!in_surface->numFilled) {
@@ -423,6 +429,55 @@ absl::Status PlayCropperPriv::GenerateOutput(
   return absl::OkStatus();
 }
 
+absl::Status PlayCropperPriv::LoadScoreboardPerspectiveFromConfig() {
+  if (config_file_.empty()) {
+    return absl::NotFoundError("No playcropper config-file is available for scoreboard reload");
+  }
+  std::filesystem::path config_path(config_file_);
+  if (std::filesystem::is_directory(config_path)) {
+    config_path /= "config.yaml";
+  }
+  if (!std::filesystem::exists(config_path)) {
+    return absl::NotFoundError(TO_STRING("Scoreboard config file does not exist: " << config_path.string()));
+  }
+
+  try {
+    YAML::Node cfg = YAML::LoadFile(config_path.string());
+    YAML::Node polygon = cfg["rink"]["scoreboard"]["perspective_polygon"];
+    if (!polygon || !polygon.IsSequence() || polygon.size() != 4) {
+      return absl::NotFoundError("Scoreboard perspective_polygon is not configured yet");
+    }
+
+    std::stringstream ss;
+    for (size_t i = 0; i < polygon.size(); ++i) {
+      YAML::Node point = polygon[i];
+      if (!point || !point.IsSequence() || point.size() != 2) {
+        return absl::InvalidArgumentError("Scoreboard perspective_polygon must contain four x,y points");
+      }
+      if (i) {
+        ss << ',';
+      }
+      ss << point[0].as<float>() << ',' << point[1].as<float>();
+    }
+    scoreboard_perspective_polygion_.clear();
+    std::vector<std::string> points = absl::StrSplit(ss.str(), ',');
+    if (points.size() != 8) {
+      return absl::InternalError("Scoreboard perspective_polygon reload produced an invalid point list");
+    }
+    for (size_t i = 0, n = points.size() >> 1; i < n; ++i) {
+      const size_t index = i << 1;
+      scoreboard_perspective_polygion_.emplace_back(
+          cv::Point2f(std::atof(points[index].c_str()), std::atof(points.at(index + 1).c_str())));
+    }
+    scoreboard_.reset();
+    std::cout << "GOT scoreboard-perspective-polygon from config reload!" << std::endl;
+    return absl::OkStatus();
+  } catch (const YAML::Exception& ex) {
+    return absl::InternalError(
+        TO_STRING("Failed to load scoreboard perspective from \"" << config_path.string() << "\": " << ex.what()));
+  }
+}
+
 absl::Status PlayCropperPriv::RenderDisplayMeta(
     surface::Surface surface,
     const NvDsFrameMeta* frame_meta,
@@ -492,6 +547,13 @@ absl::Status PlayCropperPriv::RenderScoreboard(
     surface::Surface in_surface,
     surface::Surface out_surface,
     cudaStream_t stream) {
+  if (scoreboard_perspective_polygion_.empty() && !scoreboard_config_reload_attempted_) {
+    scoreboard_config_reload_attempted_ = true;
+    absl::Status reload_status = LoadScoreboardPerspectiveFromConfig();
+    if (!reload_status.ok() && reload_status.code() != absl::StatusCode::kNotFound) {
+      return reload_status;
+    }
+  }
   if (!scoreboard_ && !scoreboard_perspective_polygion_.empty()) {
     const auto resolve_dimension = [](const std::string& value, float fallback, guint extent) -> absl::StatusOr<int> {
       if (value.empty()) {

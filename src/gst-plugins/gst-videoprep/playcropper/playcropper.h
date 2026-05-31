@@ -6,6 +6,7 @@
 #include "cupano/pano/cudaMat.h"
 
 #include <string>
+#include <vector>
 
 namespace hm {
 namespace playcropper {
@@ -36,6 +37,7 @@ class PlayCropperPriv : public CustomAlgorithmBase {
 
   absl::Status RenderDisplayMeta(surface::Surface surface, const NvDsFrameMeta* frame_meta, cudaStream_t stream);
   absl::Status RenderScoreboard(surface::Surface in_surface, surface::Surface out_surface, cudaStream_t stream);
+  absl::Status LoadScoreboardPerspectiveFromConfig();
 
   absl::Mutex mu_process_;
   bool use_unfused_kernels_{false};
@@ -54,6 +56,8 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   float scoreboard_scale_{1.0};
   std::unique_ptr<hm::scoreboard::Scoreboard<uchar4>> scoreboard_;
   std::vector<cv::Point2f> scoreboard_perspective_polygion_;
+  bool scoreboard_config_reload_attempted_{false};
+  std::string config_file_;
   size_t scoreboard_warp_interval_{3};
   NvBufSurfaceParams display_dest_params_;
   bool plot_play_tracking_{false};
