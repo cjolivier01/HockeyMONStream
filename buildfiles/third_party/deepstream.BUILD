@@ -11,6 +11,11 @@ config_setting(
 )
 
 config_setting(
+    name = "aarch64-linux-gnu",
+    constraint_values = ["@platforms//cpu:aarch64"],
+)
+
+config_setting(
     name = "x86_64-linux-gnu",
     constraint_values = ["@platforms//cpu:x86_64"],
 )
@@ -25,6 +30,7 @@ cc_library(
     ] + select({
         ":jetson": ["-L/opt/jetson-sysroot/opt/nvidia/deepstream/deepstream/lib"],
         ":arm64-sbsa": ["-L/opt/nvidia/deepstream/deepstream/lib"],
+        ":aarch64-linux-gnu": ["-L/opt/nvidia/deepstream/deepstream/lib"],
         ":x86_64-linux-gnu": ["-L/opt/nvidia/deepstream/deepstream/lib"],
         "//conditions:default": [],
     }) + [
