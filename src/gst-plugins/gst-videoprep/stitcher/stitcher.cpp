@@ -271,6 +271,8 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     configure_only_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "one-pass-mode") {
     one_pass_mode_ = !!std::atol(prop.value.c_str());
+  } else if (prop.key == "force-scoreboard-config" || prop.key == "force_scoreboard_config") {
+    force_scoreboard_config_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "show") {
     show_ = !!std::atol(prop.value.c_str());
   } else if (
@@ -542,6 +544,15 @@ absl::Status StitcherPriv::GenerateOutput(
         absl::Status mask_status = stitching::create_field_mask(config_file_, outgoing_surface);
         if (!mask_status.ok()) {
           std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
+        }
+      }
+      if (!stitching::is_scoreboard_configured(config_file_)) {
+        absl::Status sb_status = stitching::configure_scoreboard(config_file_);
+        if (!sb_status.ok()) {
+          std::cerr << "Failed to configure scoreboard: " << sb_status << "\n" << std::flush;
+          if (force_scoreboard_config_) {
+            return sb_status;
+          }
         }
       }
     }

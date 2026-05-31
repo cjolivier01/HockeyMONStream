@@ -54,7 +54,11 @@ class Configurator {
     return config_;
   }
 
-  absl::Status complete_configuration(bool force);
+  absl::Status complete_configuration(
+      bool force,
+      bool clean_stitching_artifacts = false,
+      bool show_render_sink = false,
+      double show_render_scale = -1.0);
 
   absl::Status post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config, uint64_t start_time_ns);
 

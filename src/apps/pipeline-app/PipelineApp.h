@@ -14,6 +14,7 @@
 #include <sys/select.h>
 #include <termios.h>
 #include <unistd.h>
+#include <array>
 #include <functional>
 #include <memory>
 #include <thread>
@@ -135,6 +136,10 @@ class PipelineApplication {
   std::vector<std::set<NvDsSinkType>> enabled_sink_types_;
   gboolean print_version_;
   gboolean show_;
+  gdouble show_stitching_scale_{-1};
+  gdouble show_playtracker_scale_{-1};
+  gdouble show_scaled_scale_{-1};
+  gdouble show_render_scale_{-1};
   gboolean show_bbox_text_;
   gboolean print_dependencies_version_;
   // Stop conditions
@@ -142,6 +147,7 @@ class PipelineApplication {
   gboolean quit_;
   gboolean dump_pipeline_dot_;
   gboolean force_reconfigure_;
+  gboolean clean_stitching_artifacts_{FALSE};
   gint return_value_;
   guint num_input_uris_;
   gint override_gpu_id_{hm::Configurator::kUseConfigFileGpu};
@@ -158,6 +164,8 @@ class PipelineApplication {
   uint64_t start_time_ns_{0};
   uint64_t first_pts_ns_{0};
   bool have_first_pts_{false};
+  std::array<uint64_t, MAX_SOURCE_BINS> first_frame_numbers_by_source_{};
+  std::array<bool, MAX_SOURCE_BINS> have_first_frame_by_source_{};
   static constexpr const char* default_config_file_name_ = "configs/ds_hockey_app_config.yaml";
   static PipelineApplication* instance_;
 };

@@ -1,5 +1,6 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/playcropper.h"
 #include <assert.h>
+#include <cerrno>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <gst/base/gstbasetransform.h>
@@ -10,8 +11,11 @@
 #include <string.h>
 #include <unistd.h>
 #include <cmath>
+#include <cstdlib>
 #include <tuple>
 #include <vector>
+#include <filesystem>
+#include <sstream>
 #include "absl/status/status.h"
 #include "absl/strings/str_split.h"
 #include "cupano/pano/cudaMat.h"
@@ -24,6 +28,7 @@
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
 #include "hstream/src/libs/draw_display/Fonts.h"
 #include "nvdsmeta.h"
+#include "yaml-cpp/yaml.h"
 
 #if defined(__aarch64__)
 #include <EGL/egl.h>
@@ -69,6 +74,9 @@ absl::Status PlayCropperPriv::PreCapsInit(DSCustom_CreateParams* params) {
   // Not an in-place transform
   m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
   m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
+  if (params && params->config_file) {
+    config_file_ = params->config_file;
+  }
   guint output_width = 0;
   guint output_height = 0;
   g_object_get(G_OBJECT(params->m_element), "output-width", &output_width, "output-height", &output_height, NULL);
@@ -184,6 +192,18 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     assert(scoreboard_perspective_polygion_.size() == 4);
   } else if (prop.key == "show-scoreboard") {
     show_scoreboard_ = !!std::atoi(prop.value.c_str());
+  } else if (prop.key == "scoreboard-projected-width") {
+    scoreboard_projected_width_ = prop.value;
+    scoreboard_.reset();
+  } else if (prop.key == "scoreboard-projected-height") {
+    scoreboard_projected_height_ = prop.value;
+    scoreboard_.reset();
+  } else if (prop.key == "scoreboard-scale") {
+    scoreboard_scale_ = std::atof(prop.value.c_str());
+    if (scoreboard_scale_ <= 0) {
+      scoreboard_scale_ = 1.0;
+    }
+    scoreboard_.reset();
   } else if (prop.key == "plot-play-tracking") {
     plot_play_tracking_ = !!std::atoi(prop.value.c_str());
   } else if (prop.key == "plot-player-tracking") {
@@ -209,7 +229,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
-  absl::ReaderMutexLock lk(&mu_process_);
+  absl::WriterMutexLock lk(&mu_process_);
 
   // Setup and initialization
   if (!in_surface->numFilled) {
@@ -409,6 +429,55 @@ absl::Status PlayCropperPriv::GenerateOutput(
   return absl::OkStatus();
 }
 
+absl::Status PlayCropperPriv::LoadScoreboardPerspectiveFromConfig() {
+  if (config_file_.empty()) {
+    return absl::NotFoundError("No playcropper config-file is available for scoreboard reload");
+  }
+  std::filesystem::path config_path(config_file_);
+  if (std::filesystem::is_directory(config_path)) {
+    config_path /= "config.yaml";
+  }
+  if (!std::filesystem::exists(config_path)) {
+    return absl::NotFoundError(TO_STRING("Scoreboard config file does not exist: " << config_path.string()));
+  }
+
+  try {
+    YAML::Node cfg = YAML::LoadFile(config_path.string());
+    YAML::Node polygon = cfg["rink"]["scoreboard"]["perspective_polygon"];
+    if (!polygon || !polygon.IsSequence() || polygon.size() != 4) {
+      return absl::NotFoundError("Scoreboard perspective_polygon is not configured yet");
+    }
+
+    std::stringstream ss;
+    for (size_t i = 0; i < polygon.size(); ++i) {
+      YAML::Node point = polygon[i];
+      if (!point || !point.IsSequence() || point.size() != 2) {
+        return absl::InvalidArgumentError("Scoreboard perspective_polygon must contain four x,y points");
+      }
+      if (i) {
+        ss << ',';
+      }
+      ss << point[0].as<float>() << ',' << point[1].as<float>();
+    }
+    scoreboard_perspective_polygion_.clear();
+    std::vector<std::string> points = absl::StrSplit(ss.str(), ',');
+    if (points.size() != 8) {
+      return absl::InternalError("Scoreboard perspective_polygon reload produced an invalid point list");
+    }
+    for (size_t i = 0, n = points.size() >> 1; i < n; ++i) {
+      const size_t index = i << 1;
+      scoreboard_perspective_polygion_.emplace_back(
+          cv::Point2f(std::atof(points[index].c_str()), std::atof(points.at(index + 1).c_str())));
+    }
+    scoreboard_.reset();
+    std::cout << "GOT scoreboard-perspective-polygon from config reload!" << std::endl;
+    return absl::OkStatus();
+  } catch (const YAML::Exception& ex) {
+    return absl::InternalError(
+        TO_STRING("Failed to load scoreboard perspective from \"" << config_path.string() << "\": " << ex.what()));
+  }
+}
+
 absl::Status PlayCropperPriv::RenderDisplayMeta(
     surface::Surface surface,
     const NvDsFrameMeta* frame_meta,
@@ -478,11 +547,52 @@ absl::Status PlayCropperPriv::RenderScoreboard(
     surface::Surface in_surface,
     surface::Surface out_surface,
     cudaStream_t stream) {
+  if (scoreboard_perspective_polygion_.empty() && !scoreboard_config_reload_attempted_) {
+    scoreboard_config_reload_attempted_ = true;
+    absl::Status reload_status = LoadScoreboardPerspectiveFromConfig();
+    if (!reload_status.ok() && reload_status.code() != absl::StatusCode::kNotFound) {
+      return reload_status;
+    }
+  }
   if (!scoreboard_ && !scoreboard_perspective_polygion_.empty()) {
+    const auto resolve_dimension = [](const std::string& value, float fallback, guint extent) -> absl::StatusOr<int> {
+      if (value.empty()) {
+        return std::max(1, static_cast<int>(fallback));
+      }
+      const bool is_percent = value[0] == '%';
+      const char* start = value.c_str() + (is_percent ? 1 : 0);
+      char* end = nullptr;
+      errno = 0;
+      const float parsed = std::strtof(start, &end);
+      if (start == end || errno != 0 || end == nullptr || *end != '\0' || parsed <= 0) {
+        return absl::InvalidArgumentError(TO_STRING("Invalid scoreboard dimension: " << value));
+      }
+      const float pixels = is_percent ? (parsed / 100.0f) * extent : parsed;
+      if (pixels <= 0) {
+        return absl::InvalidArgumentError(TO_STRING("Invalid scoreboard dimension: " << value));
+      }
+      return std::max(1, static_cast<int>(pixels));
+    };
+    auto scoreboard_width_or = resolve_dimension(
+        scoreboard_projected_width_,
+        out_surface.width() * scoreboard_width_ratio_,
+        out_surface.width());
+    if (!scoreboard_width_or.ok()) {
+      return scoreboard_width_or.status();
+    }
+    auto scoreboard_height_or = resolve_dimension(
+        scoreboard_projected_height_,
+        out_surface.height() * scoreboard_height_ratio_,
+        out_surface.height());
+    if (!scoreboard_height_or.ok()) {
+      return scoreboard_height_or.status();
+    }
+    const int scoreboard_width = std::max(1, static_cast<int>(scoreboard_scale_ * scoreboard_width_or.value()));
+    const int scoreboard_height = std::max(1, static_cast<int>(scoreboard_scale_ * scoreboard_height_or.value()));
     scoreboard_ = std::make_unique<hm::scoreboard::Scoreboard<uchar4>>(
         scoreboard_perspective_polygion_,
-        out_surface.width() * scoreboard_width_ratio_,
-        out_surface.height() * scoreboard_height_ratio_);
+        scoreboard_width,
+        scoreboard_height);
   }
   if (scoreboard_) {
     const bool rewarp = frame_count_ % scoreboard_warp_interval_ == 0;

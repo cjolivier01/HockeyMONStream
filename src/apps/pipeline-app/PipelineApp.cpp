@@ -40,7 +40,31 @@ namespace fs = std::filesystem;
 // Debug category definition.
 GST_DEBUG_CATEGORY(NVDS_APP);
 
-namespace {} // namespace
+namespace {
+
+std::vector<std::string> normalize_cli_args(int argc, char* argv[]) {
+  std::vector<std::string> args;
+  args.reserve(argc);
+  for (int i = 0; i < argc; ++i) {
+    std::string arg = argv[i] ? argv[i] : "";
+    if (arg.rfind("-t=", 0) == 0) {
+      arg = "--time-limit=" + arg.substr(3);
+    }
+    args.push_back(std::move(arg));
+  }
+  return args;
+}
+
+std::vector<char*> make_mutable_argv(std::vector<std::string>& args) {
+  std::vector<char*> mutable_argv;
+  mutable_argv.reserve(args.size());
+  for (std::string& arg : args) {
+    mutable_argv.push_back(arg.data());
+  }
+  return mutable_argv;
+}
+
+} // namespace
 
 //------------------------------------------------------------------------------
 // CleanupStack implementation.
@@ -209,8 +233,12 @@ absl::Status PipelineApplication::configureInstances(
       }
 
       // Now auto-configure stuff as needed, i.e. dependent pipelines or stitching (if needed)
-      absl::Status configuration_status = app_ctx->complete_configuration(force_reconfigure_);
+      absl::Status configuration_status = app_ctx->complete_configuration(
+          force_reconfigure_, clean_stitching_artifacts_, show_ || show_render_scale_ == 0.0, show_render_scale_);
       if (configuration_status.code() == absl::StatusCode::kCancelled) {
+        if (!clean_stitching_artifacts_) {
+          return configuration_status;
+        }
         std::cerr << configuration_status << std::endl;
         continue;
       }
@@ -219,9 +247,12 @@ absl::Status PipelineApplication::configureInstances(
       }
       YAML::Node config = app_ctx->configurator().config();
       // std::cout << config["pipeline"] << "\n";
-      if (!config["pipeline"].IsDefined() ||
-          !parse_config_yaml(
-              config["pipeline"], &app_ctx->config, fs::path(app_ctx->app_config_file()).parent_path())) {
+      if (!config["pipeline"].IsDefined()) {
+        NVGSTDS_ERR_MSG_V("Config file '%s' did not produce a pipeline section", app_ctx->app_config_file().c_str());
+        app_ctx->return_value = -1;
+        return absl::InternalError("Failed to parse config file");
+      }
+      if (!parse_config_yaml(config["pipeline"], &app_ctx->config, fs::path(app_ctx->app_config_file()).parent_path())) {
         NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", app_ctx->app_config_file().c_str());
         app_ctx->return_value = -1;
         return absl::InternalError("Failed to parse config file");
@@ -317,6 +348,10 @@ absl::Status PipelineApplication::createMainLoop(
   });
 
   _intr_setup();
+  have_first_pts_ = false;
+  first_pts_ns_ = 0;
+  have_first_frame_by_source_.fill(false);
+  first_frame_numbers_by_source_.fill(0);
   g_timeout_add(400, check_for_interrupt_static, nullptr);
 
   bool has_video_overlay_sink = false;
@@ -582,6 +617,9 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   absl::Status status = absl::OkStatus();
   GError* error = nullptr;
   char* start_time{nullptr};
+  std::vector<std::string> normalized_args = normalize_cli_args(argc, argv);
+  std::vector<char*> normalized_argv = make_mutable_argv(normalized_args);
+  int normalized_argc = static_cast<int>(normalized_argv.size());
 
   CleanupStack global_cleanup_stack;
   char** pipline_options{nullptr};
@@ -592,8 +630,29 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        0,
        G_OPTION_ARG_NONE,
        &show_,
-       "Enable hmstitcher and hmplaycropper display outputs",
+       "Enable render sink output",
        nullptr},
+      {"show-stitching",
+       0,
+       0,
+       G_OPTION_ARG_DOUBLE,
+       &show_stitching_scale_,
+       "Show hmstitcher display output (`0` disables, `N` scales render window)",
+       "RATIO"},
+      {"show-playtracker",
+       0,
+       0,
+       G_OPTION_ARG_DOUBLE,
+       &show_playtracker_scale_,
+       "Show ds-playtracker display output (`0` disables, `N` scales render window)",
+       "RATIO"},
+      {"show-scaled",
+       0,
+       0,
+       G_OPTION_ARG_DOUBLE,
+       &show_scaled_scale_,
+       "Scale final render window for --show (`0` disables, `N` is scale ratio)",
+       "RATIO"},
       {"tiledtext",
        0,
        0,
@@ -635,6 +694,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
       {"enable-sinks", 'k', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sinks_, "Enable Sinks", nullptr},
       {"game-id", 'g', 0, G_OPTION_ARG_FILENAME_ARRAY, &game_id_, "Game ID", nullptr},
       {"force-reconfigure", 'f', 0, G_OPTION_ARG_NONE, &force_reconfigure_, "Force reconfigure", nullptr},
+      {"clean", 0, 0, G_OPTION_ARG_NONE, &clean_stitching_artifacts_, "Clean stitching artifacts and exit", nullptr},
       {"start-time", 's', 0, G_OPTION_ARG_STRING, &start_time, "Start time", nullptr},
       {"input-uri",
        'i',
@@ -658,7 +718,8 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
 
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
 
-  if (!g_option_context_parse(ctx, &argc, &argv, &error)) {
+  char** normalized_argv_data = normalized_argv.data();
+  if (!g_option_context_parse(ctx, &normalized_argc, &normalized_argv_data, &error)) {
     NVGSTDS_ERR_MSG_V("%s", error->message);
     return absl::InternalError(error->message);
   }
@@ -711,11 +772,34 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
       }
     }
   }
-  if (show_) {
-    std::map<std::string, std::string> show_options;
-    show_options.emplace("pipeline.hmstitcher.show", "1");
-    show_options.emplace("pipeline.hmplaycropper.show", "1");
+  std::map<std::string, std::string> show_options;
+  if (show_stitching_scale_ >= 0) {
+    show_options.emplace("pipeline.hmstitcher.show", show_stitching_scale_ == 0.0 ? "0" : "1");
+  }
+  if (show_playtracker_scale_ >= 0) {
+    show_options.emplace("pipeline.ds-playtracker.show", show_playtracker_scale_ == 0.0 ? "0" : "1");
+  }
+  if (!show_options.empty()) {
     pipeline_options_.push_back(std::move(show_options));
+  }
+
+  gdouble render_scale = -1.0;
+  const bool show_stitching_set = show_stitching_scale_ >= 0;
+  const bool show_playtracker_set = show_playtracker_scale_ >= 0;
+  if (show_scaled_scale_ >= 0) {
+    render_scale = show_scaled_scale_;
+  } else if (show_stitching_scale_ > 0) {
+    render_scale = show_stitching_scale_;
+  } else if (show_playtracker_scale_ > 0) {
+    render_scale = show_playtracker_scale_;
+  } else if (show_stitching_set && show_playtracker_set) {
+    // Both plugin-specific selectors were explicitly provided but did not enable any output.
+    render_scale = 0.0;
+  }
+  show_render_scale_ = render_scale;
+  show_ = show_ || show_scaled_scale_ > 0 || show_stitching_scale_ > 0 || show_playtracker_scale_ > 0;
+  if (show_scaled_scale_ == 0.0) {
+    show_ = FALSE;
   }
 
   HM_ASSIGN_OR_RETURN(
@@ -1146,22 +1230,67 @@ gboolean PipelineApplication::overlay_graphics(
     GstBuffer* buf,
     NvDsBatchMeta* batch_meta,
     guint index) {
-  if (time_limit_seconds_ > 0 && buf) {
-    GstClockTime pts = GST_BUFFER_PTS(buf);
-    if (GST_CLOCK_TIME_IS_VALID(pts)) {
-      uint64_t pts_ns = static_cast<uint64_t>(pts);
-      if (!have_first_pts_) {
-        first_pts_ns_ = pts_ns;
-        have_first_pts_ = true;
-      }
-      uint64_t elapsed_ns = pts_ns - first_pts_ns_;
-      uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
-      if (elapsed_ns >= limit_ns) {
-        if (!quit_) {
-          quit_ = TRUE;
-          if (main_loop_) {
-            g_main_loop_quit(main_loop_);
+  if (time_limit_seconds_ > 0 && batch_meta) {
+    const uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
+    if (buf) {
+      GstClockTime pts = GST_BUFFER_PTS(buf);
+      if (GST_CLOCK_TIME_IS_VALID(pts)) {
+        uint64_t pts_ns = static_cast<uint64_t>(pts);
+        if (!have_first_pts_) {
+          first_pts_ns_ = pts_ns;
+          have_first_pts_ = true;
+        } else {
+          if (pts_ns < first_pts_ns_) {
+            first_pts_ns_ = pts_ns;
+            continue;
           }
+          uint64_t elapsed_ns = pts_ns - first_pts_ns_;
+          if (elapsed_ns >= limit_ns) {
+            if (!quit_) {
+              quit_ = TRUE;
+              if (main_loop_) {
+                g_main_loop_quit(main_loop_);
+              }
+            }
+            return TRUE;
+          }
+        }
+      }
+    }
+
+    uint64_t elapsed_from_frames_ns = 0;
+    for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != nullptr; l_frame = l_frame->next) {
+      NvDsFrameMeta* frame_meta = reinterpret_cast<NvDsFrameMeta*>(l_frame->data);
+      if (!frame_meta || frame_meta->source_id >= MAX_SOURCE_BINS) {
+        continue;
+      }
+      const int source_id = static_cast<int>(frame_meta->source_id);
+      const int fps_n = app_ctx->config.multi_source_config[source_id].camera_fps_n;
+      const int fps_d = app_ctx->config.multi_source_config[source_id].camera_fps_d;
+      if (fps_n <= 0 || fps_d <= 0) {
+        continue;
+      }
+      if (!have_first_frame_by_source_[source_id]) {
+        have_first_frame_by_source_[source_id] = true;
+        first_frame_numbers_by_source_[source_id] = frame_meta->frame_num;
+        continue;
+      }
+      if (frame_meta->frame_num < first_frame_numbers_by_source_[source_id]) {
+        first_frame_numbers_by_source_[source_id] = frame_meta->frame_num;
+        continue;
+      }
+      const uint64_t frame_delta = frame_meta->frame_num - first_frame_numbers_by_source_[source_id];
+      const uint64_t elapsed_ns =
+          (frame_delta * static_cast<uint64_t>(GST_SECOND) * static_cast<uint64_t>(fps_d)) / static_cast<uint64_t>(fps_n);
+      if (elapsed_ns > elapsed_from_frames_ns) {
+        elapsed_from_frames_ns = elapsed_ns;
+      }
+    }
+    if (elapsed_from_frames_ns >= limit_ns) {
+      if (!quit_) {
+        quit_ = TRUE;
+        if (main_loop_) {
+          g_main_loop_quit(main_loop_);
         }
       }
     }
