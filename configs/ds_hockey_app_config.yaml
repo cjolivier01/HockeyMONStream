@@ -389,6 +389,7 @@ hmplaycropper:
   nvbuf-memory-type: 0
   plot-play-tracking: 0
   # plot-player-tracking: 0
+  # transform-object-meta: 0
   no-crop: 0
   show: 0
   show-scoreboard: 1

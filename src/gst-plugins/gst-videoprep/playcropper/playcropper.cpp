@@ -10,8 +10,11 @@
 #include <opencv4/opencv2/core/types.hpp>
 #include <string.h>
 #include <unistd.h>
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <tuple>
 #include <vector>
 #include <filesystem>
@@ -66,6 +69,86 @@ static BBox make_null_tracking_box(const NvBufSurfaceParams* in_surf, const NvBu
   assert(new_w <= in_surf->width);
   assert(new_h <= in_surf->height);
   return BBox(0, 0, new_w, new_h).at_center(surf.center());
+}
+
+Point rotate_point(const Point& point, const Point& anchor_point, float angle_degrees) {
+  const float radians = angle_degrees * (M_PI / 180.0f);
+  const float sin_theta = std::sin(radians);
+  const float cos_theta = std::cos(radians);
+  const float dx = point.x - anchor_point.x;
+  const float dy = point.y - anchor_point.y;
+  return Point{
+      .x = anchor_point.x + (dx * cos_theta - dy * sin_theta),
+      .y = anchor_point.y + (dx * sin_theta + dy * cos_theta)};
+}
+
+Point input_point_to_output(
+    const Point& input_point,
+    const BBox& src_rect,
+    float angle,
+    const Point& anchor_point,
+    const BBox& crop_box,
+    const BBox& output_rect) {
+  const Point cropped_point{.x = input_point.x - src_rect.left, .y = input_point.y - src_rect.top};
+  const Point crop_space_point = rotate_point(cropped_point, anchor_point, angle);
+  return Point{
+      .x = output_rect.left + ((crop_space_point.x - crop_box.left) / crop_box.width()) * output_rect.width(),
+      .y = output_rect.top + ((crop_space_point.y - crop_box.top) / crop_box.height()) * output_rect.height()};
+}
+
+bool transform_box_to_output(
+    const BBox& source_box,
+    float scale_w,
+    float scale_h,
+    const BBox& src_rect,
+    float angle,
+    const Point& anchor_point,
+    const BBox& crop_box,
+    const BBox& output_rect,
+    BBox* transformed_box) {
+  const BBox input_box = source_box.make_canvas_scaled(scale_w, scale_h);
+  const std::array<Point, 4> points = {
+      Point{.x = input_box.left, .y = input_box.top},
+      Point{.x = input_box.right, .y = input_box.top},
+      Point{.x = input_box.right, .y = input_box.bottom},
+      Point{.x = input_box.left, .y = input_box.bottom},
+  };
+
+  float left = std::numeric_limits<float>::max();
+  float top = std::numeric_limits<float>::max();
+  float right = std::numeric_limits<float>::lowest();
+  float bottom = std::numeric_limits<float>::lowest();
+  for (const Point& point : points) {
+    const Point output_point = input_point_to_output(point, src_rect, angle, anchor_point, crop_box, output_rect);
+    left = std::min(left, output_point.x);
+    top = std::min(top, output_point.y);
+    right = std::max(right, output_point.x);
+    bottom = std::max(bottom, output_point.y);
+  }
+
+  transformed_box->left = std::max(left, output_rect.left);
+  transformed_box->top = std::max(top, output_rect.top);
+  transformed_box->right = std::min(right, output_rect.right);
+  transformed_box->bottom = std::min(bottom, output_rect.bottom);
+  return transformed_box->right > transformed_box->left && transformed_box->bottom > transformed_box->top;
+}
+
+void set_bbox_coords(NvBbox_Coords& coords, const BBox& box) {
+  coords.left = box.left;
+  coords.top = box.top;
+  coords.width = box.width();
+  coords.height = box.height();
+}
+
+void clear_bbox_coords(NvBbox_Coords& coords) {
+  coords.left = 0;
+  coords.top = 0;
+  coords.width = 0;
+  coords.height = 0;
+}
+
+bool bbox_coords_are_valid(const NvBbox_Coords& coords) {
+  return coords.width > 0 && coords.height > 0;
 }
 
 } // namespace
@@ -208,6 +291,8 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     plot_play_tracking_ = !!std::atoi(prop.value.c_str());
   } else if (prop.key == "plot-player-tracking") {
     plot_player_tracking_ = !!std::atoi(prop.value.c_str());
+  } else if (prop.key == "transform-object-meta") {
+    transform_object_meta_ = !!std::atoi(prop.value.c_str());
   } else if (prop.key == "runtime-output-max-width") {
     runtime_output_max_width_ = std::atol(prop.value.c_str());
   } else if (prop.key == "runtime-output-max-height") {
@@ -223,6 +308,80 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
 
 BufferResult PlayCropperPriv::ProcessBuffer(GstBuffer* inbuf) {
   return Super::ProcessBuffer(inbuf);
+}
+
+void PlayCropperPriv::TransformObjectMetaForOutput(
+    NvDsFrameMeta* frame_meta,
+    float scale_w,
+    float scale_h,
+    const BBox& src_rect,
+    float angle,
+    const Point& anchor_point,
+    const BBox& crop_box,
+    const BBox& output_rect) {
+  for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
+    NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
+    const NvOSD_RectParams original_rect_params = obj_meta->rect_params;
+    const BBox source_box(
+        original_rect_params.left,
+        original_rect_params.top,
+        original_rect_params.left + original_rect_params.width,
+        original_rect_params.top + original_rect_params.height);
+
+    BBox transformed_box;
+    if (transform_box_to_output(
+            source_box, scale_w, scale_h, src_rect, angle, anchor_point, crop_box, output_rect, &transformed_box)) {
+      obj_meta->rect_params.left = transformed_box.left;
+      obj_meta->rect_params.top = transformed_box.top;
+      obj_meta->rect_params.width = transformed_box.width();
+      obj_meta->rect_params.height = transformed_box.height();
+      obj_meta->text_params.x_offset = transformed_box.left;
+      obj_meta->text_params.y_offset = std::max(0.0f, transformed_box.top - 10.0f);
+    } else {
+      obj_meta->rect_params.left = 0;
+      obj_meta->rect_params.top = 0;
+      obj_meta->rect_params.width = 0;
+      obj_meta->rect_params.height = 0;
+      obj_meta->rect_params.border_width = 0;
+      obj_meta->text_params.x_offset = 0;
+      obj_meta->text_params.y_offset = 0;
+    }
+
+    NvBbox_Coords& detector_bbox_coords = obj_meta->detector_bbox_info.org_bbox_coords;
+    if (bbox_coords_are_valid(detector_bbox_coords)) {
+      const BBox detector_box(
+          detector_bbox_coords.left,
+          detector_bbox_coords.top,
+          detector_bbox_coords.left + detector_bbox_coords.width,
+          detector_bbox_coords.top + detector_bbox_coords.height);
+      if (transform_box_to_output(
+              detector_box, scale_w, scale_h, src_rect, angle, anchor_point, crop_box, output_rect, &transformed_box)) {
+        set_bbox_coords(detector_bbox_coords, transformed_box);
+      } else {
+        clear_bbox_coords(detector_bbox_coords);
+      }
+    }
+
+    NvBbox_Coords& tracker_bbox_coords = obj_meta->tracker_bbox_info.org_bbox_coords;
+    if (bbox_coords_are_valid(tracker_bbox_coords)) {
+      const BBox tracker_box(
+          tracker_bbox_coords.left,
+          tracker_bbox_coords.top,
+          tracker_bbox_coords.left + tracker_bbox_coords.width,
+          tracker_bbox_coords.top + tracker_bbox_coords.height);
+      if (transform_box_to_output(
+              tracker_box, scale_w, scale_h, src_rect, angle, anchor_point, crop_box, output_rect, &transformed_box)) {
+        set_bbox_coords(tracker_bbox_coords, transformed_box);
+      } else {
+        clear_bbox_coords(tracker_bbox_coords);
+      }
+    }
+  }
+
+  frame_meta->source_frame_width = static_cast<guint>(output_rect.width());
+  frame_meta->source_frame_height = static_cast<guint>(output_rect.height());
+  frame_meta->pipeline_width = static_cast<guint>(output_rect.width());
+  frame_meta->pipeline_height = static_cast<guint>(output_rect.height());
 }
 
 absl::Status PlayCropperPriv::GenerateOutput(
@@ -408,6 +567,10 @@ absl::Status PlayCropperPriv::GenerateOutput(
       display_surface = std::make_unique<surface::Surface>(incoming_surface);
       HM_RETURN_IF_ERROR(RenderDisplayMeta(*display_surface, frame_meta, cuda_stream_));
     }
+    if (transform_object_meta_) {
+      TransformObjectMetaForOutput(
+          frame_meta, scale_w, scale_h, extra_width_src_rect, angle, anchor_point, new_tbox, output_rect);
+    }
     ++frame_count_;
   }
 
@@ -523,16 +686,19 @@ absl::Status PlayCropperPriv::RenderDisplayMeta(
   }
 
   if (plot_player_tracking_) {
-    // std::vector<NvDsObjectMeta*> object_metas =
-    //     glist_to_vect<NvDsObjectMeta>(frame_meta->obj_meta_list, frame_meta->num_obj_meta);
-    // for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
-    //   NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
-    //   if (obj_meta->object_id == UNTRACKED_OBJECT_ID) {
-    //     // Don't draw untracked objects
-    //     continue;
-    //   }
-    //   HM_RETURN_IF_ERROR(draw_object_meta(&display_dest_params_, obj_meta, font_cache_, render_scale_, stream));
-    // }
+    std::vector<NvDsObjectMeta*> tracked_player_metas;
+    tracked_player_metas.reserve(frame_meta->num_obj_meta);
+    for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
+      NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
+      if (obj_meta->object_id == UNTRACKED_OBJECT_ID || obj_meta->class_id != 0) {
+        continue;
+      }
+      tracked_player_metas.push_back(obj_meta);
+    }
+    if (!tracked_player_metas.empty()) {
+      HM_RETURN_IF_ERROR(
+          draw_object_meta(&display_dest_params_, tracked_player_metas, font_cache_, render_scale_, stream));
+    }
   }
 
   // const PlayTrackerPayload* playtracker_payload = PlayTrackerPayload::get_payload<PlayTrackerPayload>(frame_meta);
