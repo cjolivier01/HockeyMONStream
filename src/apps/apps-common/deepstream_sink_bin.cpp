@@ -744,6 +744,7 @@ static gboolean start_rtsp_streaming(
   g_mutex_lock(&server_cnt_lock);
 
   server[server_count] = gst_rtsp_server_new();
+  g_object_set(server[server_count], "address", "0.0.0.0", NULL);
   g_object_set(server[server_count], "service", port_num_Str, NULL);
 
   mounts = gst_rtsp_server_get_mount_points(server[server_count]);
@@ -762,7 +763,7 @@ static gboolean start_rtsp_streaming(
 
   g_mutex_unlock(&server_cnt_lock);
 
-  g_print("\n *** DeepStream: Launched RTSP Streaming at rtsp://localhost:%d/ds-test ***\n\n", rtsp_port_num);
+  g_print("\n *** DeepStream: Launched RTSP Streaming on 0.0.0.0:%d at /ds-test ***\n\n", rtsp_port_num);
 
   return TRUE;
 }
