@@ -24,7 +24,7 @@ def _has_shared_lib(ctx, dirs, lib_stem):
     return False
 
 def _pick_opencv_lib_dir(ctx, root):
-    for rel in ["lib", "lib/aarch64-linux-gnu", "lib/x86_64-linux-gnu"]:
+    for rel in ["lib/aarch64-linux-gnu", "lib/x86_64-linux-gnu", "lib"]:
         lib_dir = root + "/" + rel
         if _has_shared_lib(ctx, [lib_dir], "opencv_core"):
             return rel
