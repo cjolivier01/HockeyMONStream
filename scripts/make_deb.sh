@@ -215,6 +215,7 @@ rm -rf "${STAGING}${INSTALL_PREFIX}/configs/systemd"
 # ---------- scripts ----------
 echo "[make_deb] Staging scripts..."
 cp "${TOPDIR}/scripts/setup_pretrained_assets.py" "${STAGING}${INSTALL_PREFIX}/scripts/"
+cp "${TOPDIR}/scripts/export_hm_yolov8_onnx.py" "${STAGING}${INSTALL_PREFIX}/scripts/"
 
 # ---------- installed run.sh ----------
 echo "[make_deb] Writing installed run.sh..."
@@ -267,12 +268,50 @@ prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 one_pass_only=1
 have_sink_arg=0
 show_arg=0
+stream_sink_arg=0
 rewritten_args=()
+
+sink_value_is_streaming() {
+  local raw="$1"
+  local item normalized
+  IFS=',' read -ra sink_items <<< "${raw}"
+  for item in "${sink_items[@]}"; do
+    normalized="$(echo "${item}" | tr '[:lower:]' '[:upper:]' | tr -cd 'A-Z0-9_')"
+    case "${normalized}" in
+      RTSP|RTMP|UDPSINK) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+next_arg_is_sink_value=0
 for arg in "$@"; do
+  if [ "${next_arg_is_sink_value}" -eq 1 ]; then
+    if sink_value_is_streaming "${arg}"; then
+      stream_sink_arg=1
+    fi
+    next_arg_is_sink_value=0
+    continue
+  fi
   case "$arg" in
     --one-pass-only|--stage0-only) one_pass_only=1 ;;
     --two-stage|--configure-first) one_pass_only=0 ;;
-    --enable-sinks|--enable-sinks=*|-k|-k*) have_sink_arg=1 ;;
+    --enable-sinks|-k)
+      have_sink_arg=1
+      next_arg_is_sink_value=1
+      ;;
+    --enable-sinks=*)
+      have_sink_arg=1
+      if sink_value_is_streaming "${arg#*=}"; then
+        stream_sink_arg=1
+      fi
+      ;;
+    -k*)
+      have_sink_arg=1
+      if sink_value_is_streaming "${arg#-k}"; then
+        stream_sink_arg=1
+      fi
+      ;;
     --show) show_arg=1 ;;
   esac
 done
@@ -386,7 +425,7 @@ else
 fi
 
 hmaudio_enable=1
-if [ "${headless_show_rtsp}" -eq 1 ] && [ "${have_sink_arg}" -eq 0 ]; then
+if { [ "${headless_show_rtsp}" -eq 1 ] && [ "${have_sink_arg}" -eq 0 ]; } || [ "${stream_sink_arg}" -eq 1 ]; then
   hmaudio_enable=0
 fi
 

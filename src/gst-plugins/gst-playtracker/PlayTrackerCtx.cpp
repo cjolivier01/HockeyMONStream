@@ -506,6 +506,14 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
   }
 
   if (tracking_boxes.empty() && !play_tracker_ctx->has_received_tracks) {
+    hm::play_tracker::PlayTrackerResults waiting_results;
+    const float frame_width = frame.frame_meta->source_frame_width > 0 ? frame.frame_meta->source_frame_width
+                                                                       : frame.frame_meta->pipeline_width;
+    const float frame_height = frame.frame_meta->source_frame_height > 0 ? frame.frame_meta->source_frame_height
+                                                                         : frame.frame_meta->pipeline_height;
+    waiting_results.tracking_boxes.emplace_back(hm::BBox(0, 0, frame_width, frame_height));
+    frame.play_tracker_results = std::move(waiting_results);
+    DsPlayTrackerAttachMetadataFullFrame(frame.frame_meta, frame.play_tracker_results);
     return true;
   }
 

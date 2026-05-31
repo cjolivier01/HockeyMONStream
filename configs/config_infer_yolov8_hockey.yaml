@@ -1,4 +1,9 @@
 pretrained-assets:
+  - property: onnx-file
+    command:
+      - ../scripts/export_hm_yolov8_onnx.py
+      - --output
+      - "{target}"
   - property: labelfile-path
     url: https://raw.githubusercontent.com/pjreddie/darknet/master/data/coco.names
 
