@@ -21,6 +21,7 @@
 #include "deepstream_config.h"
 #include "deepstream_sinks.h"
 #include "deepstream_sources.h"
+#include "gst_plugin_properties.h"
 
 /**
  *  ______  _       _     _ __  __             _
@@ -38,6 +39,7 @@ struct NvDsDsFieldMaskConfig {
   guint unique_id;
   guint gpu_id;
   gchar detection_mask_file[PATH_MAX * 4];
+  hm::gst::PluginProperties plugin_properties;
   // For nvvidconv
   guint nvbuf_memory_type;
 };
@@ -77,6 +79,8 @@ struct NvDsDsPlayTrackerConfig {
   gfloat fixed_edge_rotation_angle;
   gfloat dynamic_acceleration_scaling;
   gchar config_file[kMyMaxPath];
+  hm::gst::PluginProperties plugin_properties;
+  hm::gst::PluginProperties private_properties;
 };
 
 // Struct to store references to the bin and elements
@@ -122,6 +126,8 @@ struct NvDsHmVideoPrepConfig {
   gchar config_file[kMyMaxPath];
   gchar plugin_type[kMyMaxPath];
   gchar plugin_private_config[1024 * 1024];
+  hm::gst::PluginProperties plugin_properties;
+  hm::gst::PluginProperties private_properties;
 
   // For nvvidconv
   guint nvbuf_memory_type;

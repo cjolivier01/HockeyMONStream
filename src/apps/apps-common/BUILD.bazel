@@ -1,6 +1,24 @@
 INCLUDE_PREFIX = "hstream/src/apps/apps-common"
 
 cc_library(
+    name = "gst_plugin_properties",
+    srcs = ["gst_plugin_properties.cpp"],
+    hdrs = ["gst_plugin_properties.h"],
+    copts = [
+        "-x",
+        "c++",
+        "-std=c++17",
+    ],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@glib",
+        "@gstreamer",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
     name = "deepstream_apps_common",
     srcs = [
         "deepstream-yaml/deepstream_config_yaml.cpp",
@@ -68,26 +86,29 @@ cc_library(
         "deepstream_streammux.h",
         "deepstream_tiled_display.h",
         "deepstream_tracker.h",
+        "gst_plugin_properties.h",
     ],
     copts = [
-        "-x", "c++",
+        "-x",
+        "c++",
         "-std=c++17",
         "-Wno-error=write-strings",
     ],
-    includes = [
-      ".",
-    ],
     include_prefix = INCLUDE_PREFIX,
+    includes = [
+        ".",
+    ],
     visibility = ["//visibility:public"],
     deps = [
+        ":gst_plugin_properties",
+        "//src/libs/camera",
         "//src/libs/common:fs",
         "//src/libs/common:utils",
-        "//src/libs/camera",
+        "//toolchains/jetson:cuda_runtime",
         "@deepstream//:deepstream_lib",
         "@glib",
         "@gstreamer",
         "@json_glib",
-        "//toolchains/jetson:cuda_runtime",
     ],
 )
 
@@ -96,5 +117,15 @@ cc_binary(
     srcs = ["UriPlaylistSwitchTest.cpp"],
     deps = [
         ":deepstream_apps_common",
+    ],
+)
+
+cc_test(
+    name = "gst_plugin_properties_test",
+    srcs = ["GstPluginPropertiesTest.cpp"],
+    deps = [
+        ":gst_plugin_properties",
+        "@gstreamer",
+        "@yaml-cpp",
     ],
 )

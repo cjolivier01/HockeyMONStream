@@ -1,55 +1,89 @@
-
 cc_binary(
-  name="pipeline-app",
-  srcs=glob(
-    ["*.cpp", "*.h"],
-    exclude=["*Test.cpp"],
-  ),
-  deps=[
-    # "//src/libs/common:mod_pipeline",
-    "//src/libs/common:utils",
-    "//src/libs/common:fs",
-    "//src/libs/stitching",
-    "//src/libs/wireless:stream_control",
-    "//src/apps/apps-common:deepstream_apps_common",
-    "@deepstream//:deepstream_lib",
-    "@hm-cupano//src/pano:canvas",
-    "@gstreamer",
-    "@yaml-cpp",
-    "@json_glib",
-    "//toolchains/jetson:cuda_runtime",
-    "@local_cuda//:cuda",
-    "@com_google_absl//absl/strings",
-    "@com_google_absl//absl/status:statusor",
-    "@com_google_absl//absl/cleanup:cleanup",
-  ],
-  copts=[
-    "-x", "c++",
-    "-std=c++17",
-  ],
-  linkopts=[
-    "-lX11",
-    "-ldl",
-    "-lm",
-  ],
+    name = "pipeline-app",
+    srcs = glob(
+        [
+            "*.cpp",
+            "*.h",
+        ],
+        exclude = ["*Test.cpp"],
+    ),
+    copts = [
+        "-x",
+        "c++",
+        "-std=c++17",
+    ],
+    linkopts = [
+        "-lX11",
+        "-ldl",
+        "-lm",
+    ],
+    deps = [
+        # "//src/libs/common:mod_pipeline",
+        "//src/libs/common:utils",
+        "//src/libs/common:fs",
+        "//src/libs/stitching",
+        "//src/libs/wireless:stream_control",
+        "//src/apps/apps-common:deepstream_apps_common",
+        "@deepstream//:deepstream_lib",
+        "@hm-cupano//src/pano:canvas",
+        "@gstreamer",
+        "@yaml-cpp",
+        "@json_glib",
+        "//toolchains/jetson:cuda_runtime",
+        "@local_cuda//:cuda",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/cleanup",
+    ],
 )
 
 cc_test(
-  name="stitcher_sizing_config_test",
-  srcs=[
-    "StitcherOnePassConfig.h",
-    "StitcherSizingConfigTest.cpp",
-  ],
-  deps=[
-    "@yaml-cpp",
-  ],
-  copts=[
-    "-x", "c++",
-    "-std=c++17",
-  ],
-  linkopts=[
-    "-lX11",
-    "-ldl",
-    "-lm",
-  ],
+    name = "plugin_property_yaml_parser_test",
+    srcs = [
+        "PluginPropertyYamlParserTest.cpp",
+        "deepstream_app_config_parser_yaml.cpp",
+    ] + glob(["*.h"]),
+    copts = [
+        "-x",
+        "c++",
+        "-std=c++17",
+        "-Isrc/apps/pipeline-app",
+    ],
+    includes = [
+        ".",
+    ],
+    linkopts = [
+        "-lX11",
+        "-ldl",
+        "-lm",
+    ],
+    deps = [
+        "//src/apps/apps-common:deepstream_apps_common",
+        "//src/libs/common:utils",
+        "@com_google_absl//absl/status:statusor",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+        "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "stitcher_sizing_config_test",
+    srcs = [
+        "StitcherOnePassConfig.h",
+        "StitcherSizingConfigTest.cpp",
+    ],
+    copts = [
+        "-x",
+        "c++",
+        "-std=c++17",
+    ],
+    linkopts = [
+        "-lX11",
+        "-ldl",
+        "-lm",
+    ],
+    deps = [
+        "@yaml-cpp",
+    ],
 )

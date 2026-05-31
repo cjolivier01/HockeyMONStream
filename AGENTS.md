@@ -12,6 +12,7 @@
 - x86_64 build: `bazelisk build --config=opt --cpu=k8 //...`.
 - ARM64/SBSA build (native non-Jetson, e.g. GB300): `make arm64` or `bazelisk build --config=opt --config=arm64 //...`.
 - Jetson (aarch64) build: `bazelisk build --config=jetson //...`.
+- Before opening or updating PRs, validate changes on this machine with the x86_64 build and also validate ARM64/Jetson builds. A Jetson host is available at `stubby` for Jetson-specific build checks.
 - Canonical runs:
   - End-to-end wrapper (recommended): `./run.sh --game-id=<game_id> -t=5`
     - Runs stage `0` (main pipeline) by default; if stitching artifacts are missing, one-pass stitching configures them in-process before allocating the `hmstitcher` output pool.

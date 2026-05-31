@@ -123,11 +123,12 @@ void setup_rgb_nvvm_caps_filter(GstCaps* caps, GstElement* cap_filter) {
   g_object_set(G_OBJECT(cap_filter), "caps", caps, NULL);
   gst_caps_unref(caps);
 }
-}
+} // namespace
 
 gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   gboolean ret = FALSE;
   std::stringstream ppc;
+  std::string private_config;
 
   bin->bin = gst_bin_new("hmstitcher_bin");
   if (!bin->bin) {
@@ -176,7 +177,8 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   ppc << ";one-pass-mode=" << config->one_pass_mode;
   ppc << ";show=" << config->show;
   ppc << ";force-scoreboard-config=" << config->force_scoreboard_config;
-  g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-private-config", ppc.str().c_str(), NULL);
+  private_config = hm::gst::serialize_plugin_properties(config->private_properties, ppc.str());
+  g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-private-config", private_config.c_str(), NULL);
 
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "unique-id", config->unique_id, "gpu-id", config->gpu_id, NULL);
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-type", "hmstitcher", NULL);
@@ -196,6 +198,9 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   }
   if (config->output_height) {
     g_object_set(G_OBJECT(bin->elem_hmstitcher), "output-height", config->output_height, NULL);
+  }
+  if (!hm::gst::apply_plugin_properties(G_OBJECT(bin->elem_hmstitcher), config->plugin_properties)) {
+    goto done;
   }
 
   ret = TRUE;
@@ -266,6 +271,9 @@ gboolean create_dsfieldmask_bin(const NvDsDsFieldMaskConfig* config, NvDsDsField
   // assert(strlen(config->detection_mask_file) > 0);
   g_object_set(G_OBJECT(bin->elem_dsfieldmask), "unique-id", config->unique_id, "gpu-id", config->gpu_id, NULL);
   g_object_set(G_OBJECT(bin->elem_dsfieldmask), "detection-mask", config->detection_mask_file, NULL);
+  if (!hm::gst::apply_plugin_properties(G_OBJECT(bin->elem_dsfieldmask), config->plugin_properties)) {
+    goto done;
+  }
   g_object_set(G_OBJECT(bin->pre_conv), "gpu-id", config->gpu_id, NULL);
 
   g_object_set(G_OBJECT(bin->pre_conv), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
@@ -294,6 +302,7 @@ done:
 gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTrackerBin* bin) {
   gboolean ret = FALSE;
   std::stringstream ppc;
+  std::string private_config;
   bin->bin = gst_bin_new("dsplaytracker_bin");
   if (!bin->bin) {
     NVGSTDS_ERR_MSG_V("Failed to create 'dsplaytracker_bin'");
@@ -330,7 +339,11 @@ gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTra
     ppc << ";fixed-edge-rotation-angle=" << config->fixed_edge_rotation_angle;
   }
   ppc << ";dynamic-acceleration-scaling=" << config->dynamic_acceleration_scaling;
-  g_object_set(G_OBJECT(bin->elem_dsplaytracker), "plugin-private-config", ppc.str().c_str(), NULL);
+  private_config = hm::gst::serialize_plugin_properties(config->private_properties, ppc.str());
+  g_object_set(G_OBJECT(bin->elem_dsplaytracker), "plugin-private-config", private_config.c_str(), NULL);
+  if (!hm::gst::apply_plugin_properties(G_OBJECT(bin->elem_dsplaytracker), config->plugin_properties)) {
+    goto done;
+  }
 
   ret = TRUE;
 done:
@@ -354,6 +367,7 @@ done:
 gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBin* bin) {
   gboolean ret = FALSE;
   std::stringstream ppc;
+  std::string private_config;
   constexpr size_t poly_int_count =
       sizeof(config->scoreboard_perspective_polygon) / sizeof(config->scoreboard_perspective_polygon[0]);
 
@@ -510,7 +524,11 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
   }
   ppc << ";no-crop=" << config->no_crop;
 
-  g_object_set(G_OBJECT(bin->playcropper), "plugin-private-config", ppc.str().c_str(), NULL);
+  private_config = hm::gst::serialize_plugin_properties(config->private_properties, ppc.str());
+  g_object_set(G_OBJECT(bin->playcropper), "plugin-private-config", private_config.c_str(), NULL);
+  if (!hm::gst::apply_plugin_properties(G_OBJECT(bin->playcropper), config->plugin_properties)) {
+    goto done;
+  }
 
 #if 0
   NVGSTDS_LINK_ELEMENT(bin->nvvidconv, bin->cap_filter);
@@ -801,8 +819,8 @@ gboolean create_hmaudio_bin(
     }
     g_object_set(G_OBJECT(bin->audiosrc), "location", audio_location.c_str(), NULL);
   } else if (config->src == SRC_SOURCE_BIN) {
-    //if (!is_dest_file_sink) {
-      HMGST_ELEMENT_MAKE_BINADD(bin->audioresample, "audioresample", "hmaudio_audioresample");
+    // if (!is_dest_file_sink) {
+    HMGST_ELEMENT_MAKE_BINADD(bin->audioresample, "audioresample", "hmaudio_audioresample");
     //}
   } else {
     HMGST_ELEMENT_MAKE_BINADD(bin->audiosrc, NVDS_ELEM_SRC_ALSA, "hmaudio_alsasrc0");
