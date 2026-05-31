@@ -124,7 +124,7 @@ for arg in "$@"; do
   esac
 done
 
-default_main_sink="RENDER"
+default_main_sink="ENCODE_FILE"
 if [ -z "${DISPLAY:-}" ]; then
   # Headless / SSH shells often have no X server. Avoid defaulting to a video overlay sink.
   default_main_sink="ENCODE_FILE"
