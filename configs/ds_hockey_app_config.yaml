@@ -372,7 +372,7 @@ primary-gie:
   # processing-height: 480
   gie-unique-id: 1
   nvbuf-memory-type: 0
-  config-file: config_infer_yolox_hockey.yaml
+  config-file: config_infer_yolov8_hockey.yaml
 
 ds-example:
   enable: 0
