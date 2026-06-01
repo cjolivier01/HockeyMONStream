@@ -24,13 +24,25 @@
 
 static bool g_disable_perf_measurement = false;
 
-static void update_instance_perf_counter(NvDsInstancePerfStruct* str) {
+static guint count_frame_meta(NvDsBatchMeta* batch_meta) {
+  guint frame_count = batch_meta->num_frames_in_batch;
+  if (frame_count == 0) {
+    for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame; l_frame = l_frame->next) {
+      frame_count++;
+    }
+  }
+  return frame_count;
+}
+
+static void update_instance_perf_counter(NvDsInstancePerfStruct* str, guint frame_count = 1) {
   gettimeofday(&str->last_fps_time, NULL);
   if (str->start_fps_time.tv_sec == 0 && str->start_fps_time.tv_usec == 0) {
     str->start_fps_time = str->last_fps_time;
-  } else {
-    str->buffer_cnt++;
+    if (frame_count > 0) {
+      frame_count--;
+    }
   }
+  str->buffer_cnt += frame_count;
 }
 
 /**
@@ -47,7 +59,7 @@ static GstPadProbeReturn sink_bin_buf_probe(GstPad* pad, GstPadProbeInfo* info, 
     g_mutex_lock(&str->struct_lock);
     if (str->aggregate_output_fps) {
       if (str->num_instances > 0) {
-        update_instance_perf_counter(&str->instance_str[0]);
+        update_instance_perf_counter(&str->instance_str[0], count_frame_meta(batch_meta));
       }
       g_mutex_unlock(&str->struct_lock);
       return GST_PAD_PROBE_OK;
