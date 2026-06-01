@@ -44,6 +44,14 @@ void log_canvas_hint(const std::string& prefix, size_t width, size_t height) {
   g_print("%s canvas hint: %zu x %zu\n", prefix.c_str(), width, height);
 }
 
+bool log_batches_enabled() {
+  static const bool enabled = [] {
+    const char* value = g_getenv("HMSTITCHER_LOG_BATCHES");
+    return value && value[0] != '\0' && g_strcmp0(value, "0") != 0;
+  }();
+  return enabled;
+}
+
 } // namespace
 
 static constexpr int kNumStitcherLaplacianLevels = 11;
@@ -389,6 +397,18 @@ absl::Status StitcherPriv::GenerateOutput(
   const size_t batch_size = frame_source_surfaces.size();
   out_surface->batchSize = batch_size;
 
+  if (log_batches_enabled()) {
+    g_print(
+        "hmstitcher batch in: surface batchSize=%u numFilled=%u frame_meta_count=%u frame_meta_list_len=%u "
+        "frame_pairs=%zu planned_out_batchSize=%u\n",
+        in_surface->batchSize,
+        in_surface->numFilled,
+        batch_meta->num_frames_in_batch,
+        g_list_length(batch_meta->frame_meta_list),
+        batch_size,
+        out_surface->batchSize);
+  }
+
   std::vector<NvDsFrameMeta*> remove_frame_metas;
   remove_frame_metas.reserve(in_surface->batchSize / 2);
 
@@ -584,6 +604,14 @@ absl::Status StitcherPriv::GenerateOutput(
     batch_meta->max_frames_in_batch = batch_meta->num_frames_in_batch;
     // assert(batch_meta->max_frames_in_batch); // make sure we didnt do too many times and make it 0
     HM_RETURN_IF_ERROR(to_status(cudaStreamSynchronize(cuda_stream_)));
+  }
+  if (log_batches_enabled()) {
+    g_print(
+        "hmstitcher batch out: surface batchSize=%u numFilled=%u frame_meta_count=%u frame_meta_list_len=%u\n",
+        out_surface->batchSize,
+        out_surface->numFilled,
+        batch_meta->num_frames_in_batch,
+        g_list_length(batch_meta->frame_meta_list));
   }
   // videoprep::videoprep_add_surface_meta(videoprep->out_gst_buf, out_surface->numFilled, videoprep->source_id);
   return absl::OkStatus();

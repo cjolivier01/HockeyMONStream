@@ -17,11 +17,17 @@
 #include <sys/select.h>
 #include <termios.h>
 #include <unistd.h>
+#include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <memory>
+#include <optional>
+#include <sstream>
 #include <vector>
 
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
@@ -32,6 +38,7 @@
 
 #include "absl/cleanup/cleanup.h"
 #include "absl/strings/str_split.h"
+#include "absl/strings/string_view.h"
 #include "nvds_version.h"
 
 namespace fs = std::filesystem;
@@ -62,6 +69,124 @@ std::vector<char*> make_mutable_argv(std::vector<std::string>& args) {
     mutable_argv.push_back(arg.data());
   }
   return mutable_argv;
+}
+
+std::string format_duration_ns(uint64_t ns) {
+  if (ns == GST_CLOCK_TIME_NONE) {
+    return "--:--:--";
+  }
+  uint64_t total_seconds = ns / GST_SECOND;
+  const uint64_t hours = total_seconds / 3600;
+  total_seconds %= 3600;
+  const uint64_t minutes = total_seconds / 60;
+  const uint64_t seconds = total_seconds % 60;
+
+  std::ostringstream out;
+  out << std::setfill('0') << std::setw(2) << hours << ":" << std::setw(2) << minutes << ":" << std::setw(2)
+      << seconds;
+  return out.str();
+}
+
+std::string format_progress_bar(double fraction, size_t width = 24) {
+  if (!std::isfinite(fraction)) {
+    fraction = 0.0;
+  }
+  fraction = std::clamp(fraction, 0.0, 1.0);
+  const size_t filled = static_cast<size_t>(std::round(fraction * static_cast<double>(width)));
+  std::string bar;
+  bar.reserve(width + 2);
+  bar.push_back('[');
+  for (size_t i = 0; i < width; ++i) {
+    bar.push_back(i < filled ? '=' : '-');
+  }
+  bar.push_back(']');
+  return bar;
+}
+
+std::vector<std::string> split_uri_list(const gchar* uri_list) {
+  std::vector<std::string> uris;
+  if (!uri_list || !*uri_list) {
+    return uris;
+  }
+  for (absl::string_view item : absl::StrSplit(uri_list, ';', absl::SkipEmpty())) {
+    std::string uri(item);
+    uri.erase(uri.begin(), std::find_if(uri.begin(), uri.end(), [](unsigned char c) { return !std::isspace(c); }));
+    uri.erase(std::find_if(uri.rbegin(), uri.rend(), [](unsigned char c) { return !std::isspace(c); }).base(), uri.end());
+    if (!uri.empty()) {
+      uris.emplace_back(std::move(uri));
+    }
+  }
+  return uris;
+}
+
+std::optional<std::string> file_uri_to_path(const char* uri) {
+  if (!uri || !*uri || !g_str_has_prefix(uri, "file://")) {
+    return std::nullopt;
+  }
+  GError* error = nullptr;
+  gchar* filename = g_filename_from_uri(uri, nullptr, &error);
+  if (error) {
+    g_error_free(error);
+  }
+  if (!filename) {
+    return std::nullopt;
+  }
+  std::string path(filename);
+  g_free(filename);
+  return path;
+}
+
+uint64_t duration_for_file_uri_ns(const char* uri) {
+  std::optional<std::string> path = file_uri_to_path(uri);
+  if (!path) {
+    return GST_CLOCK_TIME_NONE;
+  }
+  hm::Videoinfo info = hm::getVideoInfo(*path);
+  if (info.fps <= 0.0 || info.frame_count == 0) {
+    return GST_CLOCK_TIME_NONE;
+  }
+  const double seconds = static_cast<double>(info.frame_count) / info.fps;
+  if (!std::isfinite(seconds) || seconds <= 0.0) {
+    return GST_CLOCK_TIME_NONE;
+  }
+  return static_cast<uint64_t>(seconds * static_cast<double>(GST_SECOND));
+}
+
+uint64_t duration_for_source_ns(const NvDsSourceConfig& source_config) {
+  std::vector<std::string> uris = split_uri_list(source_config.uri_list);
+  if (uris.empty() && source_config.uri && *source_config.uri) {
+    uris.emplace_back(source_config.uri);
+  }
+  if (uris.empty()) {
+    return GST_CLOCK_TIME_NONE;
+  }
+
+  uint64_t total_ns = 0;
+  for (const std::string& uri : uris) {
+    uint64_t duration_ns = duration_for_file_uri_ns(uri.c_str());
+    if (duration_ns == GST_CLOCK_TIME_NONE) {
+      return GST_CLOCK_TIME_NONE;
+    }
+    total_ns += duration_ns;
+  }
+  return total_ns;
+}
+
+uint64_t hmstitcher_source_offset_ns(const HmStitcherConfig& stitcher_config, guint source_index) {
+  if (source_index == 0) {
+    return stitcher_config.left_frame_offset_ns;
+  }
+  if (source_index == 1) {
+    return stitcher_config.right_frame_offset_ns;
+  }
+  return 0;
+}
+
+uint64_t subtract_duration_ns(uint64_t duration_ns, uint64_t offset_ns) {
+  if (duration_ns == GST_CLOCK_TIME_NONE) {
+    return GST_CLOCK_TIME_NONE;
+  }
+  return duration_ns > offset_ns ? duration_ns - offset_ns : 0;
 }
 
 } // namespace
@@ -879,6 +1004,124 @@ void PipelineApplication::perf_cb_static(gpointer context, NvDsAppPerfStruct* st
     instance_->perf_cb(context, str);
 }
 
+std::string PipelineApplication::format_progress_status(AppCtx* app_ctx) {
+  if (!app_ctx || !app_ctx->pipeline.pipeline) {
+    return "";
+  }
+
+  ProgressState& state = progress_states_[app_ctx->index];
+  if (!state.initialized) {
+    std::vector<uint64_t> source_durations;
+    source_durations.reserve(app_ctx->config.num_source_sub_bins);
+    guint enabled_uri_sources = 0;
+    const bool stitched_output = app_ctx->config.hmsticher_config.enable;
+    for (guint i = 0; i < app_ctx->config.num_source_sub_bins; ++i) {
+      const NvDsSourceConfig& source_config = app_ctx->config.multi_source_config[i];
+      if (!source_config.enable ||
+          (source_config.type != NV_DS_SOURCE_URI && source_config.type != NV_DS_SOURCE_URI_MULTIPLE)) {
+        continue;
+      }
+      enabled_uri_sources++;
+      uint64_t source_duration_ns = duration_for_source_ns(source_config);
+      if (source_duration_ns != GST_CLOCK_TIME_NONE) {
+        if (stitched_output) {
+          source_duration_ns =
+              subtract_duration_ns(source_duration_ns, hmstitcher_source_offset_ns(app_ctx->config.hmsticher_config, i));
+        }
+        source_durations.emplace_back(source_duration_ns);
+      }
+    }
+
+    const bool have_complete_stitched_source_durations =
+        stitched_output && enabled_uri_sources > 0 && source_durations.size() == enabled_uri_sources;
+    if (!source_durations.empty() && (!stitched_output || have_complete_stitched_source_durations)) {
+      if (stitched_output && source_durations.size() > 1) {
+        state.total_video_ns = *std::min_element(source_durations.begin(), source_durations.end());
+      } else {
+        state.total_video_ns = *std::max_element(source_durations.begin(), source_durations.end());
+      }
+    } else {
+      gint64 queried_duration = 0;
+      if (gst_element_query_duration(app_ctx->pipeline.pipeline, GST_FORMAT_TIME, &queried_duration) &&
+          queried_duration > 0) {
+        state.total_video_ns = static_cast<uint64_t>(queried_duration);
+      }
+    }
+
+    if (state.total_video_ns != GST_CLOCK_TIME_NONE && start_time_ns_ > 0) {
+      state.total_video_ns = state.total_video_ns > start_time_ns_ ? state.total_video_ns - start_time_ns_ : 0;
+    }
+    if (time_limit_seconds_ > 0) {
+      const uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
+      state.total_video_ns =
+          state.total_video_ns == GST_CLOCK_TIME_NONE ? limit_ns : std::min(state.total_video_ns, limit_ns);
+    }
+    state.initialized = true;
+  }
+
+  gint64 queried_position = 0;
+  uint64_t processed_ns = GST_CLOCK_TIME_NONE;
+  if (gst_element_query_position(app_ctx->pipeline.pipeline, GST_FORMAT_TIME, &queried_position) &&
+      queried_position >= 0) {
+    processed_ns = static_cast<uint64_t>(queried_position);
+    if (start_time_ns_ > 0 && processed_ns >= start_time_ns_) {
+      processed_ns -= start_time_ns_;
+    }
+  }
+
+  if (processed_ns == GST_CLOCK_TIME_NONE) {
+    return "";
+  }
+  if (state.total_video_ns != GST_CLOCK_TIME_NONE) {
+    processed_ns = std::min(processed_ns, state.total_video_ns);
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  uint64_t eta_ns = GST_CLOCK_TIME_NONE;
+  double speed_x = 0.0;
+  if (!state.have_speed_sample) {
+    state.speed_base_processed_ns = processed_ns;
+    state.speed_base_wall = now;
+    state.have_speed_sample = true;
+  } else {
+    const double wall_seconds =
+        std::chrono::duration_cast<std::chrono::duration<double>>(now - state.speed_base_wall).count();
+    const uint64_t processed_delta_ns =
+        processed_ns >= state.speed_base_processed_ns ? processed_ns - state.speed_base_processed_ns : 0;
+    if (wall_seconds > 0.0 && processed_delta_ns > 0) {
+      speed_x = (static_cast<double>(processed_delta_ns) / static_cast<double>(GST_SECOND)) / wall_seconds;
+      if (state.total_video_ns != GST_CLOCK_TIME_NONE && speed_x > 0.0) {
+        const uint64_t remaining_ns =
+            state.total_video_ns > processed_ns ? state.total_video_ns - processed_ns : 0;
+        eta_ns = static_cast<uint64_t>((static_cast<double>(remaining_ns) / speed_x));
+      }
+    }
+  }
+
+  uint64_t remaining_video_ns = GST_CLOCK_TIME_NONE;
+  double fraction = 0.0;
+  if (state.total_video_ns != GST_CLOCK_TIME_NONE) {
+    remaining_video_ns = state.total_video_ns > processed_ns ? state.total_video_ns - processed_ns : 0;
+    if (state.total_video_ns > 0) {
+      fraction = static_cast<double>(processed_ns) / static_cast<double>(state.total_video_ns);
+    }
+  }
+
+  std::ostringstream out;
+  out << " | Video " << format_duration_ns(processed_ns) << "/" << format_duration_ns(state.total_video_ns)
+      << " | Left " << format_duration_ns(remaining_video_ns) << " | ETA " << format_duration_ns(eta_ns);
+  if (speed_x > 0.0) {
+    out << " | " << std::fixed << std::setprecision(2) << speed_x << "x";
+  } else {
+    out << " | warming up";
+  }
+  if (state.total_video_ns != GST_CLOCK_TIME_NONE) {
+    out << " | " << format_progress_bar(fraction) << " " << std::fixed << std::setprecision(1)
+        << (std::clamp(fraction, 0.0, 1.0) * 100.0) << "%";
+  }
+  return out.str();
+}
+
 void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
   static guint header_print_cnt = 0;
   guint i;
@@ -894,8 +1137,13 @@ void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
   if (header_print_cnt % 20 == 0) {
     g_print("\n**PERF:  ");
     for (i = 0; i < numf; i++) {
-      g_print("FPS %d (Avg)\t", i);
+      if (str->aggregate_output_fps && numf == 1) {
+        g_print("Output FPS (Avg)\t");
+      } else {
+        g_print("FPS %d (Avg)\t", i);
+      }
     }
+    g_print("Progress\tRemaining\tETA\tSpeed\t");
     g_print("\n");
     header_print_cnt = 0;
   }
@@ -906,6 +1154,10 @@ void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
     g_print("**PERF:  ");
   for (i = 0; i < numf; i++) {
     g_print("%.2f (%.2f)\t", fps_[i], fps_avg_[i]);
+  }
+  const std::string progress_status = format_progress_status(app_ctx);
+  if (!progress_status.empty()) {
+    g_print("%s", progress_status.c_str());
   }
   g_print("\n");
   g_mutex_unlock(&fps_lock_);

@@ -15,7 +15,9 @@
 #include <termios.h>
 #include <unistd.h>
 #include <array>
+#include <chrono>
 #include <functional>
+#include <map>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -100,6 +102,7 @@ class PipelineApplication {
   void _intr_setup();
   static void perf_cb_static(gpointer context, NvDsAppPerfStruct* str);
   void perf_cb(gpointer context, NvDsAppPerfStruct* str);
+  std::string format_progress_status(AppCtx* app_ctx);
   static gboolean check_for_interrupt_static(gpointer data);
   gboolean check_for_interrupt();
   static gboolean kbhit();
@@ -154,6 +157,14 @@ class PipelineApplication {
   GMutex fps_lock_;
   gdouble fps_[MAX_SOURCE_BINS];
   gdouble fps_avg_[MAX_SOURCE_BINS];
+  struct ProgressState {
+    bool initialized{false};
+    bool have_speed_sample{false};
+    uint64_t total_video_ns{GST_CLOCK_TIME_NONE};
+    uint64_t speed_base_processed_ns{0};
+    std::chrono::steady_clock::time_point speed_base_wall;
+  };
+  std::map<int, ProgressState> progress_states_;
   // Display / event loop
   Display* display_ ABSL_GUARDED_BY(disp_lock_){nullptr};
   GThread* x_event_thread_;

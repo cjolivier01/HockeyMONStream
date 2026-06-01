@@ -24,6 +24,35 @@
 
 static bool g_disable_perf_measurement = false;
 
+static guint count_frame_meta(NvDsBatchMeta* batch_meta) {
+  guint frame_count = batch_meta->num_frames_in_batch;
+  if (frame_count == 0) {
+    for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame; l_frame = l_frame->next) {
+      frame_count++;
+    }
+  }
+  return frame_count;
+}
+
+static void update_instance_perf_counter(NvDsInstancePerfStruct* str, guint frame_count = 1) {
+  gettimeofday(&str->last_fps_time, NULL);
+  if (str->start_fps_time.tv_sec == 0 && str->start_fps_time.tv_usec == 0) {
+    str->start_fps_time = str->last_fps_time;
+    if (frame_count > 0) {
+      frame_count--;
+    }
+  }
+  str->buffer_cnt += frame_count;
+}
+
+static gdouble calculate_fps(guint buffer_cnt, gdouble seconds) {
+  if (seconds <= 0.0) {
+    return 0.0;
+  }
+  gdouble fps = buffer_cnt / seconds;
+  return isfinite(fps) ? fps : 0.0;
+}
+
 /**
  * Buffer probe function on sink element.
  */
@@ -36,15 +65,20 @@ static GstPadProbeReturn sink_bin_buf_probe(GstPad* pad, GstPadProbeInfo* info, 
 
   if (!str->stop) {
     g_mutex_lock(&str->struct_lock);
+    if (str->aggregate_output_fps) {
+      if (str->num_instances > 0) {
+        update_instance_perf_counter(&str->instance_str[0], count_frame_meta(batch_meta));
+      }
+      g_mutex_unlock(&str->struct_lock);
+      return GST_PAD_PROBE_OK;
+    }
+
     for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame; l_frame = l_frame->next) {
       NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)l_frame->data;
-      NvDsInstancePerfStruct* str1 = &str->instance_str[frame_meta->pad_index];
-      gettimeofday(&str1->last_fps_time, NULL);
-      if (str1->start_fps_time.tv_sec == 0 && str1->start_fps_time.tv_usec == 0) {
-        str1->start_fps_time = str1->last_fps_time;
-      } else {
-        str1->buffer_cnt++;
+      if (frame_meta->pad_index >= str->num_instances || frame_meta->pad_index >= MAX_SOURCE_BINS) {
+        continue;
       }
+      update_instance_perf_counter(&str->instance_str[frame_meta->pad_index]);
     }
     g_mutex_unlock(&str->struct_lock);
   }
@@ -65,10 +99,16 @@ static gboolean perf_measurement_callback(gpointer data) {
     g_mutex_unlock(&str->struct_lock);
     return FALSE;
   }
+  memset(buffer_cnt, 0, sizeof(buffer_cnt));
+  memset(&perf_struct, 0, sizeof(perf_struct));
   perf_struct.use_nvmultiurisrcbin = str->use_nvmultiurisrcbin;
   perf_struct.stream_name_display = str->stream_name_display;
+  perf_struct.aggregate_output_fps = str->aggregate_output_fps;
 
-  if (!str->use_nvmultiurisrcbin) {
+  if (str->aggregate_output_fps) {
+    buffer_cnt[0] = str->instance_str[0].buffer_cnt / str->dewarper_surfaces_per_frame;
+    str->instance_str[0].buffer_cnt = 0;
+  } else if (!str->use_nvmultiurisrcbin) {
     for (i = 0; i < str->num_instances; i++) {
       buffer_cnt[i] = str->instance_str[i].buffer_cnt / str->dewarper_surfaces_per_frame;
       str->instance_str[i].buffer_cnt = 0;
@@ -103,7 +143,7 @@ static gboolean perf_measurement_callback(gpointer data) {
   perf_struct.num_instances = str->num_instances;
   gettimeofday(&current_fps_time, NULL);
 
-  if (!str->use_nvmultiurisrcbin) {
+  if (str->aggregate_output_fps || !str->use_nvmultiurisrcbin) {
     for (i = 0; i < str->num_instances; i++) {
       NvDsInstancePerfStruct* str1 = &str->instance_str[i];
       gdouble time1 = (str1->total_fps_time.tv_sec + str1->total_fps_time.tv_usec / 1000000.0) +
@@ -120,13 +160,8 @@ static gboolean perf_measurement_callback(gpointer data) {
             (str1->last_sample_fps_time.tv_sec + str1->last_sample_fps_time.tv_usec / 1000000.0);
       }
       str1->total_buffer_cnt += buffer_cnt[i];
-      perf_struct.fps[i] = buffer_cnt[i] / time2;
-      if (isnan(perf_struct.fps[i]))
-        perf_struct.fps[i] = 0;
-
-      perf_struct.fps_avg[i] = str1->total_buffer_cnt / time1;
-      if (isnan(perf_struct.fps_avg[i]))
-        perf_struct.fps_avg[i] = 0;
+      perf_struct.fps[i] = calculate_fps(buffer_cnt[i], time2);
+      perf_struct.fps_avg[i] = calculate_fps(str1->total_buffer_cnt, time1);
 
       str1->last_sample_fps_time = str1->last_fps_time;
     }
@@ -148,13 +183,8 @@ static gboolean perf_measurement_callback(gpointer data) {
             (str1->last_sample_fps_time.tv_sec + str1->last_sample_fps_time.tv_usec / 1000000.0);
       }
       str1->total_buffer_cnt += buffer_cnt[i];
-      perf_struct.fps[i] = buffer_cnt[i] / time2;
-      if (isnan(perf_struct.fps[i]))
-        perf_struct.fps[i] = 0;
-
-      perf_struct.fps_avg[i] = str1->total_buffer_cnt / time1;
-      if (isnan(perf_struct.fps_avg[i]))
-        perf_struct.fps_avg[i] = 0;
+      perf_struct.fps[i] = calculate_fps(buffer_cnt[i], time2);
+      perf_struct.fps_avg[i] = calculate_fps(str1->total_buffer_cnt, time1);
 
       str1->last_sample_fps_time = str1->last_fps_time;
     }
