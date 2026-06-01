@@ -166,6 +166,7 @@ void destroy_sink_bin(void);
 gboolean create_demux_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array, NvDsSinkBin* bin, guint index);
 
 void set_rtsp_udp_port_num(guint rtsp_port_num, guint udp_port_num);
+void set_rtsp_audio_enabled(gboolean enabled);
 
 bool link_video_pad_to_muxer(GstElement* postParse, GstElement* muxer);
 // bool link_audio_pad_to_muxer(
@@ -175,6 +176,11 @@ bool link_video_pad_to_muxer(GstElement* postParse, GstElement* muxer);
 //     GstElement* muxer_bin);
 
 namespace hm {
+constexpr guint kRtspAudioUdpPortOffset = 1;
+constexpr guint kRtspAudioPayloadType = 97;
+constexpr guint kRtspAudioRate = 48000;
+constexpr guint kRtspAudioChannels = 2;
+
 std::optional<NvDsSinkType> sink_type_from_string(const std::string& str);
 std::string to_string(const NvDsSinkType& type);
 

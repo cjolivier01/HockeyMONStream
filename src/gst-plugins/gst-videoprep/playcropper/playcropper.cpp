@@ -30,6 +30,7 @@
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
 #include "hstream/src/libs/draw_display/Fonts.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "nvdsmeta.h"
 #include "yaml-cpp/yaml.h"
 
@@ -641,6 +642,46 @@ absl::Status PlayCropperPriv::LoadScoreboardPerspectiveFromConfig() {
   }
 }
 
+absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(surface::Surface stitched_surface) {
+  if (!scoreboard_perspective_polygion_.empty()) {
+    return absl::OkStatus();
+  }
+
+  absl::Status reload_status = LoadScoreboardPerspectiveFromConfig();
+  if (reload_status.ok()) {
+    return absl::OkStatus();
+  }
+  if (reload_status.code() != absl::StatusCode::kNotFound) {
+    return reload_status;
+  }
+  if (scoreboard_configure_attempted_) {
+    return absl::OkStatus();
+  }
+  scoreboard_configure_attempted_ = true;
+
+  if (config_file_.empty()) {
+    return absl::NotFoundError("No playcropper config-file is available for scoreboard configuration");
+  }
+
+  std::filesystem::path game_dir(config_file_);
+  std::error_code ec;
+  if (!std::filesystem::is_directory(game_dir, ec) &&
+      (game_dir.extension() == ".yaml" || game_dir.extension() == ".yml")) {
+    game_dir = game_dir.parent_path();
+  }
+  if (game_dir.empty()) {
+    return absl::InvalidArgumentError("Could not determine game directory from playcropper config-file");
+  }
+
+  const std::filesystem::path stitched_image = game_dir / "s.png";
+  if (!std::filesystem::exists(stitched_image, ec) || ec || std::filesystem::file_size(stitched_image, ec) == 0 || ec) {
+    HM_RETURN_IF_ERROR(stitching::save_stitched_image(game_dir.string(), stitched_surface));
+  }
+
+  HM_RETURN_IF_ERROR(stitching::configure_scoreboard(game_dir.string()));
+  return LoadScoreboardPerspectiveFromConfig();
+}
+
 absl::Status PlayCropperPriv::RenderDisplayMeta(
     surface::Surface surface,
     const NvDsFrameMeta* frame_meta,
@@ -713,12 +754,8 @@ absl::Status PlayCropperPriv::RenderScoreboard(
     surface::Surface in_surface,
     surface::Surface out_surface,
     cudaStream_t stream) {
-  if (scoreboard_perspective_polygion_.empty() && !scoreboard_config_reload_attempted_) {
-    scoreboard_config_reload_attempted_ = true;
-    absl::Status reload_status = LoadScoreboardPerspectiveFromConfig();
-    if (!reload_status.ok() && reload_status.code() != absl::StatusCode::kNotFound) {
-      return reload_status;
-    }
+  if (scoreboard_perspective_polygion_.empty()) {
+    HM_RETURN_IF_ERROR(EnsureScoreboardPerspectiveConfigured(in_surface));
   }
   if (!scoreboard_ && !scoreboard_perspective_polygion_.empty()) {
     const auto resolve_dimension = [](const std::string& value, float fallback, guint extent) -> absl::StatusOr<int> {

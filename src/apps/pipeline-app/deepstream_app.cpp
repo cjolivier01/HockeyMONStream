@@ -1235,6 +1235,16 @@ static gboolean create_processing_instance(AppCtx* appCtx, guint index) {
   g_snprintf(elem_name, 32, "processing_bin_%d", index);
   instance_bin->bin = gst_bin_new(elem_name);
 
+  gboolean enable_rtsp_audio = FALSE;
+  for (size_t hmaudio_index = 0; hmaudio_index < sizeof(config->hmaudio_config) / sizeof(config->hmaudio_config[0]);
+       ++hmaudio_index) {
+    if (config->hmaudio_config[hmaudio_index].enable && config->hmaudio_config[hmaudio_index].dest == DEST_SINK) {
+      enable_rtsp_audio = TRUE;
+      break;
+    }
+  }
+  set_rtsp_audio_enabled(enable_rtsp_audio);
+
   if (!create_sink_bin(config->num_sink_sub_bins, config->sink_bin_sub_bin_config, &instance_bin->sink_bin, index)) {
     goto done;
   }

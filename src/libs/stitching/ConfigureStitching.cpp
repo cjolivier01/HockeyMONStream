@@ -213,6 +213,10 @@ void remove_cleanable_stitching_cache_keys(YAML::Node& config) {
   remove_yaml_key_path(config, {"rink", "ice_contours_combined_bbox"});
 }
 
+bool is_empty_yaml_document(const YAML::Node& node) {
+  return !node.IsDefined() || node.IsNull() || ((node.IsMap() || node.IsSequence()) && node.size() == 0);
+}
+
 struct TiffPlacement {
   float x_px{0.0f};
   float y_px{0.0f};
@@ -653,6 +657,18 @@ std::map<std::string, std::string> hmlib_python_env(std::map<std::string, std::s
 
 } // namespace
 
+absl::Status save_stitched_image(const std::string& game_dir, surface::Surface surface) {
+  if (game_dir.empty()) {
+    return absl::InvalidArgumentError("Cannot save stitched scoreboard image without a game directory");
+  }
+  std::error_code ec;
+  fs::create_directories(game_dir, ec);
+  if (ec) {
+    return absl::InternalError(TO_STRING("Failed to create game directory \"" << game_dir << "\": " << ec.message()));
+  }
+  return save_image(surface, (fs::path(game_dir) / "s.png").string());
+}
+
 absl::Status clean_stitching_artifacts(const std::string& game_dir) {
   if (game_dir.empty()) {
     return absl::InvalidArgumentError("Missing game directory");
@@ -688,7 +704,9 @@ absl::Status clean_stitching_artifacts(const std::string& game_dir) {
         return absl::InternalError(
             TO_STRING("Failed to open private config for writing: \"" << cfg_file_path.string() << '"'));
       }
-      out << cfg << "\n";
+      if (!is_empty_yaml_document(cfg)) {
+        out << cfg << "\n";
+      }
     } catch (const YAML::Exception& ex) {
       return absl::InternalError(
           TO_STRING("Failed to clean private config \"" << cfg_file_path.string() << "\": " << ex.what()));
@@ -964,7 +982,7 @@ bool is_field_mask_configured(const std::string& game_dir) {
 
 absl::Status create_field_mask(const std::string& game_dir, surface::Surface surface) {
   fs::path stitched_file = fs::path(game_dir) / "s.png";
-  HM_RETURN_IF_ERROR(save_image(surface, stitched_file));
+  HM_RETURN_IF_ERROR(save_stitched_image(game_dir, surface));
   std::string game_id = get_game_id(stitched_file);
 
   std::vector<std::string> cmd;
