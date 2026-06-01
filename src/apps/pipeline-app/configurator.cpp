@@ -181,15 +181,60 @@ bool remove_yaml_key_path(YAML::Node& root, const std::initializer_list<std::str
   return true;
 }
 
+void remove_rotation_dependent_rink_cache_keys(YAML::Node& config);
+
 void remove_cleanable_stitching_cache_keys(YAML::Node& config) {
   remove_yaml_key_path(config, {"stitching", "frame_offsets"});
   remove_yaml_key_path(config, {"game", "stitching", "frame_offsets"});
   remove_yaml_key_path(config, {"stitching", "control_points"});
   remove_yaml_key_path(config, {"game", "stitching", "control_points"});
+  remove_rotation_dependent_rink_cache_keys(config);
+}
+
+void remove_rotation_dependent_rink_cache_keys(YAML::Node& config) {
   remove_yaml_key_path(config, {"rink", "scoreboard", "perspective_polygon"});
   remove_yaml_key_path(config, {"rink", "ice_contours_mask_count"});
   remove_yaml_key_path(config, {"rink", "ice_contours_mask_centroid"});
   remove_yaml_key_path(config, {"rink", "ice_contours_combined_bbox"});
+}
+
+std::optional<double> get_optional_double(const YAML::Node& node, const std::string& key) {
+  std::optional<YAML::Node> value = get_node(node, key);
+  if (!value.has_value() || !value->IsDefined() || value->IsNull()) {
+    return std::nullopt;
+  }
+  return value->as<double>();
+}
+
+double get_rotation_or_default(const YAML::Node& node, const std::string& key, double default_value) {
+  std::optional<double> value = get_optional_double(node, key);
+  return value.value_or(default_value);
+}
+
+absl::Status remove_rink_mask_files(const fs::path& game_dir) {
+  if (!fs::exists(game_dir)) {
+    return absl::OkStatus();
+  }
+  std::error_code ec;
+  for (const auto& entry : fs::directory_iterator(game_dir, ec)) {
+    if (ec) {
+      return absl::InternalError(TO_STRING("Failed to scan rink mask files in " << game_dir << ": " << ec.message()));
+    }
+    if (!entry.is_regular_file(ec) || ec) {
+      ec.clear();
+      continue;
+    }
+    const std::string filename = entry.path().filename().string();
+    if (!absl::StartsWith(filename, "rink_mask_") || !absl::EndsWith(filename, ".png")) {
+      continue;
+    }
+    fs::remove(entry.path(), ec);
+    if (ec) {
+      return absl::InternalError(
+          TO_STRING("Failed to remove stale rink mask " << entry.path() << ": " << ec.message()));
+    }
+  }
+  return absl::OkStatus();
 }
 
 bool is_render_sink_type(int sink_type) {
@@ -549,7 +594,7 @@ std::optional<YAML::Node> maybe_get_config_file(const YAML::Node& yaml_node, con
 } // namespace
 
 // Forward declaration for helper defined later in this file
-void map_key_configs(YAML::Node yaml, const std::map<std::string, std::string>& map_dest_from_src);
+void map_key_configs(YAML::Node yaml, const std::vector<std::pair<std::string, std::string>>& map_dest_from_src);
 
 void Configurator::apply_gpu_override(YAML::Node& pipeline) {
   if (override_gpu_id_ != kUseConfigFileGpu) {
@@ -579,11 +624,52 @@ absl::Status Configurator::setup_stitcher_and_masks(
 }
 
 void Configurator::map_common_config_keys() {
-  const std::map<std::string, std::string> map_dest_from_src{
+  map_key_configs(
+      config_,
+      {
+          {"stitching.post_stitch_rotate_degrees", "stitching.stitch_rotate_degrees"},
+          {"stitching.post_stitch_rotate_degrees", "stitching.stitch-rotate-degrees"},
+          {"stitching.post_stitch_rotate_degrees", "game.stitching.post_stitch_rotate_degrees"},
+          {"stitching.post_stitch_rotate_degrees", "game.stitching.stitch_rotate_degrees"},
+          {"stitching.post_stitch_rotate_degrees", "game.stitching.stitch-rotate-degrees"},
+      });
+  const std::vector<std::pair<std::string, std::string>> map_dest_from_src{
+      {"pipeline.hmstitcher.post-stitch-rotate-degrees", "stitching.post_stitch_rotate_degrees"},
       {"pipeline.hmplaycropper.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle"},
       {"pipeline.ds-playtracker.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle"},
   };
   map_key_configs(config_, map_dest_from_src);
+}
+
+absl::Status Configurator::invalidate_rotation_dependent_cache_if_needed(const fs::path& game_dir) {
+  const double desired_rotation = get_rotation_or_default(
+      config_,
+      "pipeline.hmstitcher.post-stitch-rotate-degrees",
+      get_rotation_or_default(config_, "stitching.post_stitch_rotate_degrees", 0.0));
+  constexpr double kRotationEpsilon = 1e-6;
+  const bool has_marker = has_node(private_config_, "stitching.generated_field_mask_post_stitch_rotate_degrees", true);
+  bool should_invalidate = std::abs(desired_rotation) > kRotationEpsilon;
+  if (has_marker) {
+    const double generated_rotation = get_rotation_or_default(
+        private_config_, "stitching.generated_field_mask_post_stitch_rotate_degrees", 0.0);
+    should_invalidate = std::abs(desired_rotation - generated_rotation) > kRotationEpsilon;
+  } else if (std::abs(desired_rotation) <= kRotationEpsilon) {
+    const std::optional<double> previous_rotation = get_optional_double(private_config_, "stitching.post_stitch_rotate_degrees");
+    should_invalidate = previous_rotation.has_value() && std::abs(*previous_rotation) > kRotationEpsilon;
+  }
+  if (!should_invalidate) {
+    return absl::OkStatus();
+  }
+
+  HM_RETURN_IF_ERROR(remove_rink_mask_files(game_dir));
+  remove_rotation_dependent_rink_cache_keys(config_);
+  remove_rotation_dependent_rink_cache_keys(private_config_);
+  private_config_["stitching"]["generated_field_mask_post_stitch_rotate_degrees"] = desired_rotation;
+  auto save_status = save_private_config(private_config_);
+  if (!save_status.ok()) {
+    std::cerr << "Warning: failed to save post-stitch rotation cache marker: " << save_status << std::endl;
+  }
+  return absl::OkStatus();
 }
 
 void Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
@@ -1294,7 +1380,7 @@ absl::StatusOr<bool> Configurator::does_need_stitching(const std::string& game_d
   return false;
 }
 
-void map_key_configs(YAML::Node yaml, const std::map<std::string, std::string>& map_dest_from_src) {
+void map_key_configs(YAML::Node yaml, const std::vector<std::pair<std::string, std::string>>& map_dest_from_src) {
   for (const auto& dest_from_src : map_dest_from_src) {
     const std::string& dest_key = dest_from_src.first;
     const std::string& src_key = dest_from_src.second;
@@ -1372,6 +1458,9 @@ absl::Status Configurator::complete_configuration(bool force, bool clean_stitchi
   HM_RETURN_IF_ERROR(setup_stitcher_and_masks(pipeline, game_dir, force, pipeline_has_hmstitcher));
 
   map_common_config_keys();
+  if (pipeline_has_hmstitcher) {
+    HM_RETURN_IF_ERROR(invalidate_rotation_dependent_cache_if_needed(game_dir));
+  }
 
   // Live box mappings
   const std::map<std::string, std::string> live_box_map_dest_from_src{

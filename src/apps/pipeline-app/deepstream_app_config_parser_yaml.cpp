@@ -203,6 +203,7 @@ gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_
   SET_LOCATOR(locator, *config, right_frame_offset_ns);
   SET_LOCATOR(locator, *config, show);
   SET_LOCATOR(locator, *config, force_scoreboard_config);
+  SET_LOCATOR(locator, *config, post_stitch_rotate_degrees);
   SET_LOCATOR_CHARS(locator, *config, config_file);
   locator.ignored.emplace("properties");
   locator.ignored.emplace("private-properties");

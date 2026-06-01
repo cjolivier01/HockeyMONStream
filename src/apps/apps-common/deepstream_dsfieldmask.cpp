@@ -182,6 +182,7 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   ppc << ";one-pass-mode=" << config->one_pass_mode;
   ppc << ";show=" << config->show;
   ppc << ";force-scoreboard-config=" << config->force_scoreboard_config;
+  ppc << ";post-stitch-rotate-degrees=" << config->post_stitch_rotate_degrees;
   private_config = hm::gst::serialize_plugin_properties(config->private_properties, ppc.str());
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-private-config", private_config.c_str(), NULL);
 

@@ -19,8 +19,10 @@
 #include <unistd.h>
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <functional>
 #include <iomanip>
@@ -117,6 +119,22 @@ std::vector<std::string> split_uri_list(const gchar* uri_list) {
     }
   }
   return uris;
+}
+
+bool parse_finite_double(const char* value, double& parsed) {
+  if (!value || !*value) {
+    return false;
+  }
+  errno = 0;
+  char* end = nullptr;
+  parsed = std::strtod(value, &end);
+  if (value == end || errno == ERANGE || !std::isfinite(parsed)) {
+    return false;
+  }
+  while (end && *end && std::isspace(static_cast<unsigned char>(*end))) {
+    ++end;
+  }
+  return end && *end == '\0';
 }
 
 std::optional<std::string> file_uri_to_path(const char* uri) {
@@ -773,6 +791,24 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &show_scaled_scale_,
        "Scale final render window for --show (`0` disables, `N` is scale ratio)",
        "RATIO"},
+      {"stitch-rotate-degrees",
+       0,
+       0,
+       G_OPTION_ARG_CALLBACK,
+       (gpointer) + [](const gchar*, const gchar* value, gpointer data, GError** error) -> gboolean {
+         auto* app = static_cast<PipelineApplication*>(data);
+         double degrees = 0.0;
+         if (!parse_finite_double(value, degrees)) {
+           g_set_error(
+               error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE, "Invalid --stitch-rotate-degrees value: %s", value);
+           return FALSE;
+         }
+         app->stitch_rotate_degrees_ = degrees;
+         app->stitch_rotate_degrees_set_ = TRUE;
+         return TRUE;
+       },
+       "Rotate stitched panorama about its center after stitching",
+       "DEGREES"},
       {"tiledtext", 0, 0, G_OPTION_ARG_NONE, &show_bbox_text_, "Display Bounding box labels in tiled mode", nullptr},
       {"dump-pipeline-dot",
        'd',
@@ -819,7 +855,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
       g_option_context_free(ctx);
     }
   });
-  GOptionGroup* group = g_option_group_new("abc", nullptr, nullptr, nullptr, nullptr);
+  GOptionGroup* group = g_option_group_new("abc", nullptr, nullptr, this, nullptr);
   g_option_group_add_entries(group, entries);
   g_option_context_set_main_group(ctx, group);
   g_option_context_add_group(ctx, gst_init_get_option_group());
@@ -889,6 +925,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   }
   if (!show_options.empty()) {
     pipeline_options_.push_back(std::move(show_options));
+  }
+  if (stitch_rotate_degrees_set_) {
+    const std::string degrees = std::to_string(stitch_rotate_degrees_);
+    pipeline_options_.push_back({
+        {"stitching.post_stitch_rotate_degrees", degrees},
+        {"pipeline.hmstitcher.post-stitch-rotate-degrees", degrees},
+    });
   }
 
   gdouble render_scale = -1.0;

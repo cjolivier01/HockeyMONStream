@@ -179,6 +179,7 @@ struct HmStitcherConfig : public NvDsHmVideoPrepConfig {
   gulong right_frame_offset_ns;
   gboolean show;
   gboolean force_scoreboard_config;
+  gfloat post_stitch_rotate_degrees;
 };
 
 // Struct to store references to the bin and elements

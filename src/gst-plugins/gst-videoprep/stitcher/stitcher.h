@@ -35,6 +35,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool HandleEvent(GstEvent* event) override {
     return true;
   }
+  void Shutdown() override;
 
   char* QueryProperties() override {
     assert(false);
@@ -61,6 +62,9 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   absl::Status configure_one_pass_from_surfaces(
       hm::surface::Surface incoming_surface_left,
       hm::surface::Surface incoming_surface_right);
+  absl::Status apply_post_stitch_rotation(hm::surface::Surface surface, size_t width, size_t height);
+  absl::Status ensure_rotation_scratch(const hm::surface::Surface& surface, size_t width, size_t height);
+  void release_rotation_scratch();
   void update_canvas_hints(size_t width, size_t height) {
     canvas_width_hint_ = width;
     canvas_height_hint_ = height;
@@ -84,6 +88,12 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool show_{false};
   bool match_exposure_{false};
   bool minimize_blend_{false};
+  double post_stitch_rotate_degrees_{0.0};
+  void* rotation_scratch_data_{nullptr};
+  size_t rotation_scratch_pitch_{0};
+  size_t rotation_scratch_width_{0};
+  size_t rotation_scratch_height_{0};
+  NvBufSurfaceParams rotation_scratch_params_{};
 };
 
 } // namespace stitcher
