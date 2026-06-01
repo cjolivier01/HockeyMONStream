@@ -45,6 +45,14 @@ static void update_instance_perf_counter(NvDsInstancePerfStruct* str, guint fram
   str->buffer_cnt += frame_count;
 }
 
+static gdouble calculate_fps(guint buffer_cnt, gdouble seconds) {
+  if (seconds <= 0.0) {
+    return 0.0;
+  }
+  gdouble fps = buffer_cnt / seconds;
+  return isfinite(fps) ? fps : 0.0;
+}
+
 /**
  * Buffer probe function on sink element.
  */
@@ -152,13 +160,8 @@ static gboolean perf_measurement_callback(gpointer data) {
             (str1->last_sample_fps_time.tv_sec + str1->last_sample_fps_time.tv_usec / 1000000.0);
       }
       str1->total_buffer_cnt += buffer_cnt[i];
-      perf_struct.fps[i] = buffer_cnt[i] / time2;
-      if (isnan(perf_struct.fps[i]))
-        perf_struct.fps[i] = 0;
-
-      perf_struct.fps_avg[i] = str1->total_buffer_cnt / time1;
-      if (isnan(perf_struct.fps_avg[i]))
-        perf_struct.fps_avg[i] = 0;
+      perf_struct.fps[i] = calculate_fps(buffer_cnt[i], time2);
+      perf_struct.fps_avg[i] = calculate_fps(str1->total_buffer_cnt, time1);
 
       str1->last_sample_fps_time = str1->last_fps_time;
     }
@@ -180,13 +183,8 @@ static gboolean perf_measurement_callback(gpointer data) {
             (str1->last_sample_fps_time.tv_sec + str1->last_sample_fps_time.tv_usec / 1000000.0);
       }
       str1->total_buffer_cnt += buffer_cnt[i];
-      perf_struct.fps[i] = buffer_cnt[i] / time2;
-      if (isnan(perf_struct.fps[i]))
-        perf_struct.fps[i] = 0;
-
-      perf_struct.fps_avg[i] = str1->total_buffer_cnt / time1;
-      if (isnan(perf_struct.fps_avg[i]))
-        perf_struct.fps_avg[i] = 0;
+      perf_struct.fps[i] = calculate_fps(buffer_cnt[i], time2);
+      perf_struct.fps_avg[i] = calculate_fps(str1->total_buffer_cnt, time1);
 
       str1->last_sample_fps_time = str1->last_fps_time;
     }

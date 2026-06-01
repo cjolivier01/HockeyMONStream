@@ -172,6 +172,23 @@ uint64_t duration_for_source_ns(const NvDsSourceConfig& source_config) {
   return total_ns;
 }
 
+uint64_t hmstitcher_source_offset_ns(const HmStitcherConfig& stitcher_config, guint source_index) {
+  if (source_index == 0) {
+    return stitcher_config.left_frame_offset_ns;
+  }
+  if (source_index == 1) {
+    return stitcher_config.right_frame_offset_ns;
+  }
+  return 0;
+}
+
+uint64_t subtract_duration_ns(uint64_t duration_ns, uint64_t offset_ns) {
+  if (duration_ns == GST_CLOCK_TIME_NONE) {
+    return GST_CLOCK_TIME_NONE;
+  }
+  return duration_ns > offset_ns ? duration_ns - offset_ns : 0;
+}
+
 } // namespace
 
 //------------------------------------------------------------------------------
@@ -996,20 +1013,29 @@ std::string PipelineApplication::format_progress_status(AppCtx* app_ctx) {
   if (!state.initialized) {
     std::vector<uint64_t> source_durations;
     source_durations.reserve(app_ctx->config.num_source_sub_bins);
+    guint enabled_uri_sources = 0;
+    const bool stitched_output = app_ctx->config.hmsticher_config.enable;
     for (guint i = 0; i < app_ctx->config.num_source_sub_bins; ++i) {
       const NvDsSourceConfig& source_config = app_ctx->config.multi_source_config[i];
       if (!source_config.enable ||
           (source_config.type != NV_DS_SOURCE_URI && source_config.type != NV_DS_SOURCE_URI_MULTIPLE)) {
         continue;
       }
+      enabled_uri_sources++;
       uint64_t source_duration_ns = duration_for_source_ns(source_config);
       if (source_duration_ns != GST_CLOCK_TIME_NONE) {
+        if (stitched_output) {
+          source_duration_ns =
+              subtract_duration_ns(source_duration_ns, hmstitcher_source_offset_ns(app_ctx->config.hmsticher_config, i));
+        }
         source_durations.emplace_back(source_duration_ns);
       }
     }
 
-    if (!source_durations.empty()) {
-      if (app_ctx->config.hmsticher_config.enable && source_durations.size() > 1) {
+    const bool have_complete_stitched_source_durations =
+        stitched_output && enabled_uri_sources > 0 && source_durations.size() == enabled_uri_sources;
+    if (!source_durations.empty() && (!stitched_output || have_complete_stitched_source_durations)) {
+      if (stitched_output && source_durations.size() > 1) {
         state.total_video_ns = *std::min_element(source_durations.begin(), source_durations.end());
       } else {
         state.total_video_ns = *std::max_element(source_durations.begin(), source_durations.end());
