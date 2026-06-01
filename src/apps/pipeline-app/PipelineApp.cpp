@@ -1111,8 +1111,8 @@ void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
   if (header_print_cnt % 20 == 0) {
     g_print("\n**PERF:  ");
     for (i = 0; i < numf; i++) {
-      if (str->aggregate_frame_fps && numf == 1) {
-        g_print("Total FPS (Avg)\t");
+      if (str->aggregate_output_fps && numf == 1) {
+        g_print("Output FPS (Avg)\t");
       } else {
         g_print("FPS %d (Avg)\t", i);
       }

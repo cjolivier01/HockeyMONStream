@@ -43,7 +43,7 @@ typedef struct _NvDsAppPerfStruct {
   guint active_source_size;
   gboolean stream_name_display;
   gboolean use_nvmultiurisrcbin;
-  gboolean aggregate_frame_fps;
+  gboolean aggregate_output_fps;
 } NvDsAppPerfStruct;
 
 typedef void (*perf_callback)(gpointer ctx, NvDsAppPerfStruct* str);
@@ -72,7 +72,7 @@ typedef struct {
   GHashTable* FPSInfoHash;
   gboolean stream_name_display;
   gboolean use_nvmultiurisrcbin;
-  gboolean aggregate_frame_fps;
+  gboolean aggregate_output_fps;
 } NvDsAppPerfStructInt;
 
 gboolean enable_perf_measurement(
