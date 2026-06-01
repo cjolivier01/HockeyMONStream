@@ -2027,13 +2027,15 @@ gboolean create_pipeline(
   // performance data.
   if (config->enable_perf_measurement) {
     appCtx->perf_struct.context = appCtx;
+    appCtx->perf_struct.aggregate_frame_fps = config->hmsticher_config.enable;
+    const guint perf_num_instances = appCtx->perf_struct.aggregate_frame_fps ? 1 : pipeline->multi_src_bin.num_bins;
     if (config->use_nvmultiurisrcbin) {
       appCtx->perf_struct.stream_name_display = config->stream_name_display;
       appCtx->perf_struct.use_nvmultiurisrcbin = config->use_nvmultiurisrcbin;
       enable_perf_measurement(
           &appCtx->perf_struct,
           fps_pad,
-          config->max_batch_size,
+          appCtx->perf_struct.aggregate_frame_fps ? 1 : config->max_batch_size,
           config->perf_measurement_interval_sec,
           config->multi_source_config[0].dewarper_config.num_surfaces_per_frame,
           perf_cb);
@@ -2041,7 +2043,7 @@ gboolean create_pipeline(
       enable_perf_measurement(
           &appCtx->perf_struct,
           fps_pad,
-          pipeline->multi_src_bin.num_bins,
+          perf_num_instances,
           config->perf_measurement_interval_sec,
           config->multi_source_config[0].dewarper_config.num_surfaces_per_frame,
           perf_cb);

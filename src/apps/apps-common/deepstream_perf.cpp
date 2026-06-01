@@ -24,6 +24,15 @@
 
 static bool g_disable_perf_measurement = false;
 
+static void update_instance_perf_counter(NvDsInstancePerfStruct* str) {
+  gettimeofday(&str->last_fps_time, NULL);
+  if (str->start_fps_time.tv_sec == 0 && str->start_fps_time.tv_usec == 0) {
+    str->start_fps_time = str->last_fps_time;
+  } else {
+    str->buffer_cnt++;
+  }
+}
+
 /**
  * Buffer probe function on sink element.
  */
@@ -36,15 +45,21 @@ static GstPadProbeReturn sink_bin_buf_probe(GstPad* pad, GstPadProbeInfo* info, 
 
   if (!str->stop) {
     g_mutex_lock(&str->struct_lock);
+    if (str->aggregate_frame_fps) {
+      NvDsInstancePerfStruct* str1 = str->num_instances > 0 ? &str->instance_str[0] : NULL;
+      for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; str1 && l_frame; l_frame = l_frame->next) {
+        update_instance_perf_counter(str1);
+      }
+      g_mutex_unlock(&str->struct_lock);
+      return GST_PAD_PROBE_OK;
+    }
+
     for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame; l_frame = l_frame->next) {
       NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)l_frame->data;
-      NvDsInstancePerfStruct* str1 = &str->instance_str[frame_meta->pad_index];
-      gettimeofday(&str1->last_fps_time, NULL);
-      if (str1->start_fps_time.tv_sec == 0 && str1->start_fps_time.tv_usec == 0) {
-        str1->start_fps_time = str1->last_fps_time;
-      } else {
-        str1->buffer_cnt++;
+      if (frame_meta->pad_index >= str->num_instances || frame_meta->pad_index >= MAX_SOURCE_BINS) {
+        continue;
       }
+      update_instance_perf_counter(&str->instance_str[frame_meta->pad_index]);
     }
     g_mutex_unlock(&str->struct_lock);
   }
@@ -65,10 +80,16 @@ static gboolean perf_measurement_callback(gpointer data) {
     g_mutex_unlock(&str->struct_lock);
     return FALSE;
   }
+  memset(buffer_cnt, 0, sizeof(buffer_cnt));
+  memset(&perf_struct, 0, sizeof(perf_struct));
   perf_struct.use_nvmultiurisrcbin = str->use_nvmultiurisrcbin;
   perf_struct.stream_name_display = str->stream_name_display;
+  perf_struct.aggregate_frame_fps = str->aggregate_frame_fps;
 
-  if (!str->use_nvmultiurisrcbin) {
+  if (str->aggregate_frame_fps) {
+    buffer_cnt[0] = str->instance_str[0].buffer_cnt / str->dewarper_surfaces_per_frame;
+    str->instance_str[0].buffer_cnt = 0;
+  } else if (!str->use_nvmultiurisrcbin) {
     for (i = 0; i < str->num_instances; i++) {
       buffer_cnt[i] = str->instance_str[i].buffer_cnt / str->dewarper_surfaces_per_frame;
       str->instance_str[i].buffer_cnt = 0;
@@ -103,7 +124,7 @@ static gboolean perf_measurement_callback(gpointer data) {
   perf_struct.num_instances = str->num_instances;
   gettimeofday(&current_fps_time, NULL);
 
-  if (!str->use_nvmultiurisrcbin) {
+  if (str->aggregate_frame_fps || !str->use_nvmultiurisrcbin) {
     for (i = 0; i < str->num_instances; i++) {
       NvDsInstancePerfStruct* str1 = &str->instance_str[i];
       gdouble time1 = (str1->total_fps_time.tv_sec + str1->total_fps_time.tv_usec / 1000000.0) +
