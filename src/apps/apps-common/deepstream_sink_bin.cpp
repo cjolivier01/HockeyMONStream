@@ -20,6 +20,7 @@
 #include <cctype>
 #include <atomic>
 #include <iostream>
+#include <set>
 #include <string>
 
 #include <cuda_runtime_api.h>
@@ -33,6 +34,11 @@ static std::atomic<guint> next_uid = 1;
 static GstRTSPServer* server[MAX_SINK_BINS];
 static guint server_count = 0;
 static GMutex server_cnt_lock;
+static gboolean rtsp_audio_enabled = FALSE;
+
+void set_rtsp_audio_enabled(gboolean enabled) {
+  rtsp_audio_enabled = enabled;
+}
 
 GST_DEBUG_CATEGORY_EXTERN(NVDS_APP);
 
@@ -709,12 +715,14 @@ done:
 
 static gboolean start_rtsp_streaming(
     guint rtsp_port_num,
-    guint updsink_port_num,
+    guint video_udpsink_port_num,
+    guint audio_udpsink_port_num,
+    gboolean enable_audio,
     NvDsEncoderType enctype,
     guint64 udp_buffer_size) {
   GstRTSPMountPoints* mounts;
   GstRTSPMediaFactory* factory;
-  char udpsrc_pipeline[512];
+  char udpsrc_pipeline[1024];
 
   char port_num_Str[64] = {0};
   const char* encoder_name;
@@ -731,13 +739,32 @@ static gboolean start_rtsp_streaming(
   if (udp_buffer_size == 0)
     udp_buffer_size = 512 * 1024;
 
-  sprintf(
-      udpsrc_pipeline,
-      "( udpsrc name=pay0 port=%d buffer-size=%lu caps=\"application/x-rtp, media=video, "
-      "clock-rate=90000, encoding-name=%s, payload=96 \" )",
-      updsink_port_num,
-      udp_buffer_size,
-      encoder_name);
+  if (enable_audio) {
+    g_snprintf(
+        udpsrc_pipeline,
+        sizeof(udpsrc_pipeline),
+        "( udpsrc name=pay0 port=%d buffer-size=%lu caps=\"application/x-rtp, media=video, "
+        "clock-rate=90000, encoding-name=%s, payload=96 \" )"
+        " ( udpsrc name=pay1 port=%d buffer-size=%lu caps=\"application/x-rtp, media=audio, "
+        "clock-rate=%u, encoding-name=L16, payload=%u, channels=(int)%u \" )",
+        video_udpsink_port_num,
+        udp_buffer_size,
+        encoder_name,
+        audio_udpsink_port_num,
+        udp_buffer_size,
+        hm::kRtspAudioRate,
+        hm::kRtspAudioPayloadType,
+        hm::kRtspAudioChannels);
+  } else {
+    g_snprintf(
+        udpsrc_pipeline,
+        sizeof(udpsrc_pipeline),
+        "( udpsrc name=pay0 port=%d buffer-size=%lu caps=\"application/x-rtp, media=video, "
+        "clock-rate=90000, encoding-name=%s, payload=96 \" )",
+        video_udpsink_port_num,
+        udp_buffer_size,
+        encoder_name);
+  }
 
   sprintf(port_num_Str, "%d", rtsp_port_num);
 
@@ -763,7 +790,20 @@ static gboolean start_rtsp_streaming(
 
   g_mutex_unlock(&server_cnt_lock);
 
-  g_print("\n *** DeepStream: Launched RTSP Streaming on 0.0.0.0:%d at /ds-test ***\n\n", rtsp_port_num);
+  if (enable_audio) {
+    g_print(
+        "\n *** DeepStream: Launched RTSP Streaming on 0.0.0.0:%d at /ds-test "
+        "(video UDP %u, audio UDP %u) ***\n\n",
+        rtsp_port_num,
+        video_udpsink_port_num,
+        audio_udpsink_port_num);
+  } else {
+    g_print(
+        "\n *** DeepStream: Launched RTSP Streaming on 0.0.0.0:%d at /ds-test "
+        "(video UDP %u) ***\n\n",
+        rtsp_port_num,
+        video_udpsink_port_num);
+  }
 
   return TRUE;
 }
@@ -856,6 +896,7 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
     case NV_DS_ENCODER_H265:
       bin->codecparse = gst_element_factory_make("h265parse", "h265-parser");
       g_object_set(G_OBJECT(bin->codecparse), "config-interval", -1, NULL);
+      g_snprintf(rtppay_or_flvmux_name, sizeof(rtppay_or_flvmux_name), "sink_sub_bin_rtppay_or_flvmux%d", uid);
       bin->rtppay_or_flvmux = gst_element_factory_make("rtph265pay", rtppay_or_flvmux_name);
       if (config->enc_type == NV_DS_ENCODER_TYPE_SW) {
         bin->encoder = gst_element_factory_make(NVDS_ELEM_ENC_H265_SW, encode_name);
@@ -966,7 +1007,13 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
   ret = TRUE;
 
   if (sink_type != SST_RTMP) {
-    ret = start_rtsp_streaming(config->rtsp_port, config->udp_port, config->codec, config->udp_buffer_size);
+    ret = start_rtsp_streaming(
+        config->rtsp_port,
+        config->udp_port,
+        config->udp_port + hm::kRtspAudioUdpPortOffset,
+        rtsp_audio_enabled,
+        config->codec,
+        config->udp_buffer_size);
     if (ret != TRUE) {
       g_print("%s: start_rtsp_straming function failed\n", __func__);
     }
@@ -984,6 +1031,7 @@ done:
 gboolean create_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array, NvDsSinkBin* bin, guint index) {
   gboolean ret = FALSE;
   guint i;
+  std::set<guint> rtsp_udp_ports;
 
   bin->bin = gst_bin_new("sink_bin");
   if (!bin->bin) {
@@ -1012,6 +1060,28 @@ gboolean create_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array,
   NVGSTDS_LINK_ELEMENT(bin->queue, bin->tee);
 
   g_object_set(G_OBJECT(bin->tee), "allow-not-linked", TRUE, NULL);
+
+  for (i = 0; i < num_sub_bins; i++) {
+    if (!config_array[i].enable || config_array[i].source_id != index || config_array[i].link_to_demux ||
+        config_array[i].type != NV_DS_SINK_UDPSINK) {
+      continue;
+    }
+    if (get_server_sink_type(config_array[i].encoder_config.output_file_path) == SST_RTMP) {
+      continue;
+    }
+    const guint video_port = config_array[i].encoder_config.udp_port;
+    if (!rtsp_udp_ports.insert(video_port).second) {
+      NVGSTDS_ERR_MSG_V("Duplicate RTSP UDP video port %u", video_port);
+      goto done;
+    }
+    if (rtsp_audio_enabled) {
+      const guint audio_port = video_port + hm::kRtspAudioUdpPortOffset;
+      if (!rtsp_udp_ports.insert(audio_port).second) {
+        NVGSTDS_ERR_MSG_V("RTSP UDP audio port %u collides with another configured RTSP UDP port", audio_port);
+        goto done;
+      }
+    }
+  }
 
   for (i = 0; i < num_sub_bins; i++) {
     if (!config_array[i].enable) {

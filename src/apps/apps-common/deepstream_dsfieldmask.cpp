@@ -113,6 +113,11 @@ done:
   return ret;
 }
 
+bool is_rtmp_server_sink(const NvDsSinkSubBinConfig* sink_config) {
+  const char* output_file_path = sink_config ? sink_config->encoder_config.output_file_path : nullptr;
+  return output_file_path && !strncmp(output_file_path, "rtmp:/", 6);
+}
+
 void setup_rgb_nvvm_caps_filter(GstCaps* caps, GstElement* cap_filter) {
   if (!caps) {
     caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "RGBA", NULL);
@@ -924,14 +929,71 @@ gboolean create_hmaudio_bin(
         if (!target_sink_bin) {
           target_sink_bin = find_sink_sub_bin(config->sink_id, sink_config_array, sink_bin);
         }
-        assert(target_sink_bin->rtppay_or_flvmux);
-        HMGST_ELEMENT_MAKE_BINADD(bin->encoder, "voaacenc", "hmaudio_encoder");
-        HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
-        NVGSTDS_LINK_ELEMENT(bin->queue, bin->encoder);
-        NVGSTDS_LINK_ELEMENT(bin->encoder, bin->audioparse);
-        NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
-        if (!link_audio_pad_to_muxer(bin->bin, target_sink_bin->rtppay_or_flvmux, /*audio_pad_name=*/"audio")) {
+        if (!target_sink_bin || !target_sink_bin->rtppay_or_flvmux) {
+          g_printerr("HMAudio could not find a server sink for sink id %d\n", config->sink_id);
           goto done;
+        }
+        if (is_rtmp_server_sink(sink_config)) {
+          HMGST_ELEMENT_MAKE_BINADD(bin->encoder, "voaacenc", "hmaudio_encoder");
+          HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
+          NVGSTDS_LINK_ELEMENT(bin->queue, bin->encoder);
+          NVGSTDS_LINK_ELEMENT(bin->encoder, bin->audioparse);
+          NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
+          if (!link_audio_pad_to_muxer(bin->bin, target_sink_bin->rtppay_or_flvmux, /*audio_pad_name=*/"audio")) {
+            goto done;
+          }
+        } else {
+          GstElement* rtsp_audioconvert{nullptr};
+          GstElement* rtsp_audioresample{nullptr};
+          GstElement* rtsp_capsfilter{nullptr};
+          GstElement* rtsp_payloader{nullptr};
+          GstElement* rtsp_udpsink{nullptr};
+
+          HMGST_ELEMENT_MAKE_BINADD(rtsp_audioconvert, NVDS_ELEM_AUDIO_CONV, "hmaudio_rtsp_audioconvert");
+          HMGST_ELEMENT_MAKE_BINADD(rtsp_audioresample, "audioresample", "hmaudio_rtsp_audioresample");
+          HMGST_ELEMENT_MAKE_BINADD(rtsp_capsfilter, "capsfilter", "hmaudio_rtsp_caps");
+          HMGST_ELEMENT_MAKE_BINADD(rtsp_payloader, "rtpL16pay", "hmaudio_rtsp_l16pay");
+          HMGST_ELEMENT_MAKE_BINADD(rtsp_udpsink, "udpsink", "hmaudio_rtsp_udpsink");
+
+          GstCaps* rtsp_audio_caps = gst_caps_new_simple(
+              "audio/x-raw",
+              "format",
+              G_TYPE_STRING,
+              "S16BE",
+              "layout",
+              G_TYPE_STRING,
+              "interleaved",
+              "rate",
+              G_TYPE_INT,
+              hm::kRtspAudioRate,
+              "channels",
+              G_TYPE_INT,
+              hm::kRtspAudioChannels,
+              NULL);
+          if (!rtsp_audio_caps) {
+            g_printerr("Failed to create RTSP audio caps\n");
+            goto done;
+          }
+          g_object_set(G_OBJECT(rtsp_capsfilter), "caps", rtsp_audio_caps, NULL);
+          gst_caps_unref(rtsp_audio_caps);
+          g_object_set(G_OBJECT(rtsp_payloader), "pt", hm::kRtspAudioPayloadType, NULL);
+          g_object_set(
+              G_OBJECT(rtsp_udpsink),
+              "host",
+              "127.0.0.1",
+              "port",
+              sink_config->encoder_config.udp_port + hm::kRtspAudioUdpPortOffset,
+              "async",
+              FALSE,
+              "sync",
+              sink_config->sync,
+              NULL);
+
+          NVGSTDS_LINK_ELEMENT(bin->queue, rtsp_audioconvert);
+          NVGSTDS_LINK_ELEMENT(rtsp_audioconvert, rtsp_audioresample);
+          NVGSTDS_LINK_ELEMENT(rtsp_audioresample, rtsp_capsfilter);
+          NVGSTDS_LINK_ELEMENT(rtsp_capsfilter, rtsp_payloader);
+          NVGSTDS_LINK_ELEMENT(rtsp_payloader, rtsp_udpsink);
         }
         linked = true;
       } else if (sink_config->type == NvDsSinkType::NV_DS_SINK_FAKE) {

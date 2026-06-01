@@ -98,28 +98,11 @@ fi
 one_pass_only=1
 have_sink_arg=0
 show_arg=0
-stream_sink_arg=0
 rewritten_args=()
-
-sink_value_is_streaming() {
-  local raw="$1"
-  local item normalized
-  IFS=',' read -ra sink_items <<< "${raw}"
-  for item in "${sink_items[@]}"; do
-    normalized="$(echo "${item}" | tr '[:lower:]' '[:upper:]' | tr -cd 'A-Z0-9_')"
-    case "${normalized}" in
-      RTSP|RTMP|UDPSINK) return 0 ;;
-    esac
-  done
-  return 1
-}
 
 next_arg_is_sink_value=0
 for arg in "$@"; do
   if [ "${next_arg_is_sink_value}" -eq 1 ]; then
-    if sink_value_is_streaming "${arg}"; then
-      stream_sink_arg=1
-    fi
     next_arg_is_sink_value=0
     continue
   fi
@@ -132,15 +115,9 @@ for arg in "$@"; do
       ;;
     --enable-sinks=*)
       have_sink_arg=1
-      if sink_value_is_streaming "${arg#*=}"; then
-        stream_sink_arg=1
-      fi
       ;;
     -k*)
       have_sink_arg=1
-      if sink_value_is_streaming "${arg#-k}"; then
-        stream_sink_arg=1
-      fi
       ;;
     --show) show_arg=1 ;;
   esac
@@ -256,10 +233,6 @@ else
 fi
 
 hmaudio_enable=1
-if { [ "${headless_show_rtsp}" -eq 1 ] && [ "${have_sink_arg}" -eq 0 ]; } || [ "${stream_sink_arg}" -eq 1 ]; then
-  # The built-in RTSP video sink is video-only; hmaudio expects an audio mux pad and fails otherwise.
-  hmaudio_enable=0
-fi
 
 asset_config_files=()
 collect_asset_config_files() {

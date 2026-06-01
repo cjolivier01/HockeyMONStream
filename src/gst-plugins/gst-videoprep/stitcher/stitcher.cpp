@@ -546,15 +546,6 @@ absl::Status StitcherPriv::GenerateOutput(
           std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
         }
       }
-      if (!stitching::is_scoreboard_configured(config_file_)) {
-        absl::Status sb_status = stitching::configure_scoreboard(config_file_);
-        if (!sb_status.ok()) {
-          std::cerr << "Failed to configure scoreboard: " << sb_status << "\n" << std::flush;
-          if (force_scoreboard_config_) {
-            return sb_status;
-          }
-        }
-      }
     }
 
     if (show_) {

@@ -104,6 +104,10 @@ bool is_valid_yaml_value_string(std::string s) {
   return true;
 }
 
+bool is_empty_yaml_document(const YAML::Node& node) {
+  return !node.IsDefined() || node.IsNull() || ((node.IsMap() || node.IsSequence()) && node.size() == 0);
+}
+
 bool is_enabled(YAML::Node n) {
   if (!n.IsDefined()) {
     return false;
@@ -1154,7 +1158,9 @@ absl::Status Configurator::save_private_config(const YAML::Node& private_config)
         "Failed to open private config file for writing: \"" << private_config_file
                                                              << "\", reason: " << strerror(errno)));
   }
-  fout << private_config << "\n";
+  if (!is_empty_yaml_document(private_config)) {
+    fout << private_config << "\n";
+  }
   return absl::OkStatus();
 }
 
@@ -1354,6 +1360,9 @@ absl::Status Configurator::complete_configuration(bool force, bool clean_stitchi
   if (has_hmstitcher) {
     pipeline["hmstitcher"]["force-scoreboard-config"] = force ? "1" : "0";
   }
+  if (pipeline["hmplaycropper"].IsDefined()) {
+    pipeline["hmplaycropper"]["config-file"] = std::string(game_dir);
+  }
 
   if (clean_stitching_artifacts) {
     return absl::CancelledError("Stitching artifacts cleaned");
@@ -1379,18 +1388,6 @@ absl::Status Configurator::complete_configuration(bool force, bool clean_stitchi
   // set_if_not_set(config_,
   // "pipeline.ds-playtracker.dynamic-acceleration-scaling",
   // "rink.camera.dynamic_acceleration_scaling");
-
-  const bool wants_scoreboard = pipeline["hmplaycropper"].IsDefined() &&
-      get_node_value(pipeline["hmplaycropper"], "show-scoreboard", false);
-  if (wants_scoreboard && (force || !has_node(config_, "rink.scoreboard.perspective_polygon", /*non_null=*/true))) {
-    HM_RETURN_IF_ERROR(stitching::configure_scoreboard(game_dir.string()));
-    std::optional<YAML::Node> reloaded_private_config = load_private_config();
-    if (reloaded_private_config.has_value()) {
-      private_config_ = *reloaded_private_config;
-      config_ = merge_nodes(config_, private_config_, /*warn_if_key_not_in_dest=*/false);
-      pipeline = config_["pipeline"];
-    }
-  }
 
   apply_scoreboard_perspective(pipeline);
 

@@ -17,7 +17,9 @@
 
 #include <cuda_runtime.h>
 
-#if __has_include(<opencv2/cudawarping.hpp>)
+// OpenCV's CUDA warp path can abort in createTextureObject on large stitched
+// scoreboard inputs. Prefer the jetson-utils raw CUDA warp path for runtime.
+#if 0 && __has_include(<opencv2/cudawarping.hpp>)
 #define HSTREAM_SCOREBOARD_USE_OPENCV_CUDA_WARP 1
 #include <opencv2/cudawarping.hpp>
 #else
@@ -278,18 +280,25 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
       return absl::InternalError(TO_STRING("Scoreboard warpPerspectiveCudaRaw failed: " << cudaGetErrorString(cuerr)));
     }
 #else
-    cv::cuda::GpuMat gpu_mat(
-        working_image_->height(),
-        working_image_->width(),
-        cudaPixelTypeToCvType(working_image_->cuda_pixel_type()),
-        working_image_->data_raw());
+    try {
+      cv::cuda::GpuMat gpu_mat(
+          working_image_->height(),
+          working_image_->width(),
+          cudaPixelTypeToCvType(working_image_->cuda_pixel_type()),
+          working_image_->data_raw(),
+          working_image_->pitch());
 
-    cv::cuda::GpuMat cv_warped_image(
-        warped_image_->height(),
-        warped_image_->width(),
-        cudaPixelTypeToCvType(warped_image_->cuda_pixel_type()),
-        warped_image_->data_raw());
-    cv::cuda::warpPerspective(gpu_mat, cv_warped_image, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
+      cv::cuda::GpuMat cv_warped_image(
+          warped_image_->height(),
+          warped_image_->width(),
+          cudaPixelTypeToCvType(warped_image_->cuda_pixel_type()),
+          warped_image_->data_raw(),
+          warped_image_->pitch());
+      cv::cuda::warpPerspective(
+          gpu_mat, cv_warped_image, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
+    } catch (const cv::Exception& ex) {
+      return absl::InternalError(TO_STRING("Scoreboard cv::cuda::warpPerspective failed: " << ex.what()));
+    }
 #endif
     // cv::Mat showimg;
     // cv_warped_image.download(showimg);
@@ -360,13 +369,15 @@ cv::Mat Scoreboard<T_pixel>::forward_cuda(const cv::Mat& inputImage) {
       full_image.height(),
       full_image.width(),
       cudaPixelTypeToCvType(full_image.cuda_pixel_type()),
-      full_image.data_raw());
+      full_image.data_raw(),
+      full_image.pitch());
 
   cv::cuda::GpuMat cv_warped_image(
       warped_image_->height(),
       warped_image_->width(),
       cudaPixelTypeToCvType(warped_image_->cuda_pixel_type()),
-      warped_image_->data_raw());
+      warped_image_->data_raw(),
+      warped_image_->pitch());
 
   cv::cuda::warpPerspective(gpu_mat, cv_warped_image, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
 #endif
