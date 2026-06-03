@@ -1,5 +1,6 @@
 #include "hstream/src/gst-plugins/gst-videoprep/stitcher/stitcher.h"
 
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
@@ -17,7 +18,11 @@
 #include <gst/video/video.h>
 #include <gstreamer-1.0/gst/gstinfo.h>
 #include <npp.h>
+#include <cctype>
+#include <cerrno>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include "nvdsmeta.h"
 
 #include <assert.h>
@@ -52,12 +57,34 @@ bool log_batches_enabled() {
   return enabled;
 }
 
+bool parse_finite_double(const std::string& value, double& parsed) {
+  if (value.empty()) {
+    return false;
+  }
+  errno = 0;
+  char* end = nullptr;
+  parsed = std::strtod(value.c_str(), &end);
+  if (value.c_str() == end || errno == ERANGE || !std::isfinite(parsed)) {
+    return false;
+  }
+  while (end && *end && std::isspace(static_cast<unsigned char>(*end))) {
+    ++end;
+  }
+  return end && *end == '\0';
+}
+
 } // namespace
 
 static constexpr int kNumStitcherLaplacianLevels = 11;
 
 StitcherPriv::~StitcherPriv() {
+  Shutdown();
+}
+
+void StitcherPriv::Shutdown() {
+  Super::Shutdown();
   stitcher_.reset();
+  release_rotation_scratch();
 }
 
 absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
@@ -71,6 +98,17 @@ absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
   // In one-pass mode we want to be resilient to partial stitcher artifacts (e.g. mapping TIFFs exist but seam_file.png
   // is missing). Without a seam file, hm-cupano will fail to load control masks and we would output a gray canvas.
   if (one_pass_mode_) {
+    auto is_configured = hm::stitching::is_stitching_configured(config_file_);
+    if (!is_configured.ok()) {
+      return is_configured.status();
+    }
+    if (!is_configured.value()) {
+      if (!logged_missing_masks_) {
+        g_print("hmstitcher: control masks in %s are missing or need regeneration\n", config_file_.c_str());
+        logged_missing_masks_ = true;
+      }
+      return (StitcherPriv::STITCHER*)nullptr;
+    }
     (void)hm::stitching::maybe_create_default_seam_file(config_file_);
   }
 
@@ -254,9 +292,11 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
 #ifdef __aarch64__
     hm::surface::EglSurfaceMapper incoming_left_elg_surface_mapper(
         in_surface, frame_info_left.incoming_surface_index, /*read_only=*/true);
+    HM_RETURN_IF_ERROR(to_status(incoming_left_elg_surface_mapper.status()));
     hm::surface::Surface incoming_surface_left = incoming_left_elg_surface_mapper.get_surface();
     hm::surface::EglSurfaceMapper incoming_right_elg_surface_mapper(
         in_surface, frame_info_right.incoming_surface_index, /*read_only=*/true);
+    HM_RETURN_IF_ERROR(to_status(incoming_right_elg_surface_mapper.status()));
     hm::surface::Surface incoming_surface_right = incoming_right_elg_surface_mapper.get_surface();
 #else
     hm::surface::Surface incoming_surface_left(frame_info_left.surface_params);
@@ -289,8 +329,111 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     match_exposure_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "minimize-blend" || prop.key == "minimize_blend") {
     minimize_blend_ = !!std::atol(prop.value.c_str());
+  } else if (
+      prop.key == "post-stitch-rotate-degrees" || prop.key == "post_stitch_rotate_degrees" ||
+      prop.key == "stitch-rotate-degrees" || prop.key == "stitch_rotate_degrees") {
+    if (!parse_finite_double(prop.value, post_stitch_rotate_degrees_)) {
+      std::cerr << "Invalid post-stitch rotation value: " << prop.value << std::endl;
+      return false;
+    }
   }
   return true;
+}
+
+void StitcherPriv::release_rotation_scratch() {
+  if (rotation_scratch_data_) {
+    cudaFree(rotation_scratch_data_);
+  }
+  rotation_scratch_data_ = nullptr;
+  rotation_scratch_pitch_ = 0;
+  rotation_scratch_width_ = 0;
+  rotation_scratch_height_ = 0;
+  std::memset(&rotation_scratch_params_, 0, sizeof(rotation_scratch_params_));
+}
+
+absl::Status StitcherPriv::ensure_rotation_scratch(const hm::surface::Surface& surface, size_t width, size_t height) {
+  if (surface->colorFormat != NVBUF_COLOR_FORMAT_RGBA) {
+    return absl::FailedPreconditionError("post-stitch rotation only supports RGBA surfaces");
+  }
+  if (width > surface.width() || height > surface.height()) {
+    return absl::FailedPreconditionError("post-stitch rotation dimensions exceed output surface");
+  }
+  if (rotation_scratch_data_ && rotation_scratch_width_ == width && rotation_scratch_height_ == height &&
+      rotation_scratch_pitch_ == surface.pitch()) {
+    return absl::OkStatus();
+  }
+
+  release_rotation_scratch();
+  rotation_scratch_width_ = width;
+  rotation_scratch_height_ = height;
+  rotation_scratch_pitch_ = surface.pitch();
+  XCUDA_RETURN_IF_ERROR(cudaMalloc(&rotation_scratch_data_, rotation_scratch_pitch_ * rotation_scratch_height_));
+
+  std::memset(&rotation_scratch_params_, 0, sizeof(rotation_scratch_params_));
+  rotation_scratch_params_.pitch = rotation_scratch_pitch_;
+  rotation_scratch_params_.colorFormat = surface->colorFormat;
+  rotation_scratch_params_.width = rotation_scratch_width_;
+  rotation_scratch_params_.height = rotation_scratch_height_;
+  rotation_scratch_params_.planeParams.num_planes = 1;
+  rotation_scratch_params_.planeParams.width[0] = rotation_scratch_width_;
+  rotation_scratch_params_.planeParams.height[0] = rotation_scratch_height_;
+  rotation_scratch_params_.planeParams.pitch[0] = rotation_scratch_pitch_;
+  rotation_scratch_params_.planeParams.psize[0] = rotation_scratch_pitch_ * rotation_scratch_height_;
+  rotation_scratch_params_.planeParams.bytesPerPix[0] = 4;
+  rotation_scratch_params_.dataSize = rotation_scratch_params_.planeParams.psize[0];
+  rotation_scratch_params_.dataPtr = rotation_scratch_data_;
+  rotation_scratch_params_.layout = NVBUF_LAYOUT_PITCH;
+  return absl::OkStatus();
+}
+
+absl::Status StitcherPriv::apply_post_stitch_rotation(hm::surface::Surface surface, size_t width, size_t height) {
+  if (std::abs(post_stitch_rotate_degrees_) < 1e-6) {
+    return absl::OkStatus();
+  }
+  HM_RETURN_IF_ERROR(ensure_rotation_scratch(surface, width, height));
+
+  hm::surface::Surface scratch_surface(&rotation_scratch_params_);
+  NppStreamContext npp_stream_context;
+  std::memset(&npp_stream_context, 0, sizeof(npp_stream_context));
+  npp_stream_context.hStream = cuda_stream_;
+  npp_stream_context.nStreamFlags = 0;
+  npp_stream_context.nCudaDeviceId = m_gpuId;
+
+  const double radians = -post_stitch_rotate_degrees_ * M_PI / 180.0;
+  const double cos_angle = std::cos(radians);
+  const double sin_angle = std::sin(radians);
+  const double cx = (static_cast<double>(width) - 1.0) / 2.0;
+  const double cy = (static_cast<double>(height) - 1.0) / 2.0;
+  const double coeffs[2][3] = {
+      {cos_angle, sin_angle, (1.0 - cos_angle) * cx - sin_angle * cy},
+      {-sin_angle, cos_angle, sin_angle * cx + (1.0 - cos_angle) * cy},
+  };
+  const NppiSize image_size{static_cast<int>(width), static_cast<int>(height)};
+  const NppiRect roi{0, 0, static_cast<int>(width), static_cast<int>(height)};
+
+  XCUDA_RETURN_IF_ERROR(
+      cudaMemsetAsync(scratch_surface.dataptr(), 0, scratch_surface.pitch() * scratch_surface.height(), cuda_stream_));
+  XCUDA_RETURN_IF_ERROR(mapNppStatusToCudaError(nppiWarpAffineBack_8u_C4R_Ctx(
+      surface.dataptr<Npp8u*>(),
+      image_size,
+      surface.pitch(),
+      roi,
+      scratch_surface.dataptr<Npp8u*>(),
+      scratch_surface.pitch(),
+      roi,
+      coeffs,
+      NPPI_INTER_LINEAR,
+      npp_stream_context)));
+  XCUDA_RETURN_IF_ERROR(cudaMemcpy2DAsync(
+      surface.dataptr(),
+      surface.pitch(),
+      scratch_surface.dataptr(),
+      scratch_surface.pitch(),
+      width * surface.bytes_per_pixel(),
+      height,
+      cudaMemcpyDeviceToDevice,
+      cuda_stream_));
+  return absl::OkStatus();
 }
 
 struct ModifyBatchFrames {
@@ -449,11 +592,14 @@ absl::Status StitcherPriv::GenerateOutput(
 #ifdef __aarch64__
     hm::surface::EglSurfaceMapper incoming_left_elg_surface_mapper(
         in_surface, frame_info_left.incoming_surface_index, /*read_only=*/true);
+    HM_RETURN_IF_ERROR(to_status(incoming_left_elg_surface_mapper.status()));
     hm::surface::Surface incoming_surface_left = incoming_left_elg_surface_mapper.get_surface();
     hm::surface::EglSurfaceMapper incoming_right_elg_surface_mapper(
         in_surface, frame_info_right.incoming_surface_index, /*read_only=*/true);
+    HM_RETURN_IF_ERROR(to_status(incoming_right_elg_surface_mapper.status()));
     hm::surface::Surface incoming_surface_right = incoming_right_elg_surface_mapper.get_surface();
     hm::surface::EglSurfaceMapper outgoing_elg_surface_mapper(out_surface, out_surface_index, /*read_only=*/false);
+    HM_RETURN_IF_ERROR(to_status(outgoing_elg_surface_mapper.status()));
     hm::surface::Surface outgoing_surface = outgoing_elg_surface_mapper.get_surface();
 #else
     hm::surface::Surface incoming_surface_left(frame_info_left.surface_params);
@@ -556,12 +702,20 @@ absl::Status StitcherPriv::GenerateOutput(
       HM_RETURN_IF_ERROR(to_status(cudaMemsetAsync(
           canvas->data_raw(), 128, canvas->height() * canvas->pitch() * canvas->batch_size(), cuda_stream_)));
     }
+    NvBufSurfaceParams logical_output_params = *outgoing_surface.get_mutable();
+    logical_output_params.width = canvas->width();
+    logical_output_params.height = canvas->height();
+    logical_output_params.planeParams.width[0] = canvas->width();
+    logical_output_params.planeParams.height[0] = canvas->height();
+    hm::surface::Surface logical_output_surface(&logical_output_params);
+
+    HM_RETURN_IF_ERROR(apply_post_stitch_rotation(logical_output_surface, canvas->width(), canvas->height()));
 
     if (one_pass_mode_ && !field_mask_attempted_) {
       field_mask_attempted_ = true;
       bool mask_configured = stitching::is_field_mask_configured(config_file_);
       if (!mask_configured) {
-        absl::Status mask_status = stitching::create_field_mask(config_file_, outgoing_surface);
+        absl::Status mask_status = stitching::create_field_mask(config_file_, logical_output_surface);
         if (!mask_status.ok()) {
           std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
         }
@@ -571,7 +725,7 @@ absl::Status StitcherPriv::GenerateOutput(
     if (show_) {
       render("HM Stitcher (LEFT)", incoming_surface_left, cuda_stream_);
       render("HM Stitcher (RIGHT)", incoming_surface_right, cuda_stream_);
-      render("HM Stitcher", outgoing_surface, cuda_stream_);
+      render("HM Stitcher", logical_output_surface, cuda_stream_);
     }
 
     // render("canvas", output_params, cuda_stream_);

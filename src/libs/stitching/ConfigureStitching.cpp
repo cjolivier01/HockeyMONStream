@@ -10,9 +10,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -36,6 +38,7 @@ namespace {
 
 const std::string lfo_prefix = "Left frame offset: ";
 const std::string rfo_prefix = "Right frame offset: ";
+constexpr size_t kDefaultJetsonMaxLiveStitchCanvasDimension = 8192;
 
 bool remove_file_if_present(const fs::path& path) {
   std::error_code ec;
@@ -224,6 +227,46 @@ struct TiffPlacement {
   int height{0};
 };
 
+struct CanvasSize {
+  size_t width{0};
+  size_t height{0};
+};
+
+std::optional<size_t> get_positive_env_size(const char* name) {
+  const char* value = std::getenv(name);
+  if (!value || !*value) {
+    return std::nullopt;
+  }
+  try {
+    const unsigned long long parsed = std::stoull(value);
+    if (parsed > 0) {
+      return static_cast<size_t>(parsed);
+    }
+  } catch (const std::exception&) {
+  }
+  std::cerr << "Warning: ignoring invalid " << name << "=" << value << std::endl;
+  return std::nullopt;
+}
+
+std::optional<size_t> live_stitch_max_canvas_dimension() {
+  const char* allow_oversized = std::getenv("HM_ALLOW_OVERSIZED_LIVE_STITCH");
+  if (allow_oversized && std::string(allow_oversized) == "1") {
+    return std::nullopt;
+  }
+  if (auto from_env = get_positive_env_size("HM_MAX_LIVE_STITCH_EGL_DIMENSION"); from_env.has_value()) {
+    return from_env;
+  }
+#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
+  return kDefaultJetsonMaxLiveStitchCanvasDimension;
+#else
+  return std::nullopt;
+#endif
+}
+
+bool canvas_exceeds_max_dimension(const CanvasSize& canvas, size_t max_dimension) {
+  return canvas.width > max_dimension || canvas.height > max_dimension;
+}
+
 absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
   TIFF* tif = TIFFOpen(path.c_str(), "r");
   if (!tif) {
@@ -259,6 +302,40 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
       .y_px = ypos * yres,
       .width = static_cast<int>(width),
       .height = static_cast<int>(height),
+  };
+}
+
+absl::StatusOr<CanvasSize> get_mapping_canvas_size(const fs::path& game_dir) {
+  const fs::path mapping0_path = game_dir / "mapping_0000.tif";
+  const fs::path mapping1_path = game_dir / "mapping_0001.tif";
+  if (!fs::exists(mapping0_path) || !fs::exists(mapping1_path)) {
+    return absl::NotFoundError(
+        TO_STRING("Cannot determine stitched canvas size; missing mapping TIFFs under " << game_dir.string()));
+  }
+
+  TiffPlacement p0;
+  TiffPlacement p1;
+  HM_ASSIGN_OR_RETURN(p0, read_tiff_placement(mapping0_path));
+  HM_ASSIGN_OR_RETURN(p1, read_tiff_placement(mapping1_path));
+
+  const float min_x = std::min(p0.x_px, p1.x_px);
+  const float min_y = std::min(p0.y_px, p1.y_px);
+  p0.x_px -= min_x;
+  p1.x_px -= min_x;
+  p0.y_px -= min_y;
+  p1.y_px -= min_y;
+
+  // Match hm::pano::ControlMasks::canvas_width/height semantics (float + int, then truncation).
+  const int canvas_width = static_cast<int>(std::max(p0.x_px + p0.width, p1.x_px + p1.width));
+  const int canvas_height = static_cast<int>(std::max(p0.y_px + p0.height, p1.y_px + p1.height));
+  if (canvas_width <= 0 || canvas_height <= 0) {
+    return absl::FailedPreconditionError(TO_STRING(
+        "Invalid canvas size computed from mapping TIFFs: " << canvas_width << "x" << canvas_height));
+  }
+
+  return CanvasSize{
+      .width = static_cast<size_t>(canvas_width),
+      .height = static_cast<size_t>(canvas_height),
   };
 }
 
@@ -652,6 +729,9 @@ std::map<std::string, std::string> hmlib_python_env(std::map<std::string, std::s
   if (fs::is_directory(*hm_root / "src")) {
     pythonpath_prefix += ':' + (fs::path(*hm_root) / "src").string();
   }
+  if (fs::is_directory(*hm_root / "xmodels" / "LightGlue")) {
+    pythonpath_prefix += ':' + (fs::path(*hm_root) / "xmodels" / "LightGlue").string();
+  }
   return python_env(pythonpath_prefix, std::move(prev));
 }
 
@@ -724,10 +804,26 @@ absl::Status clean_stitching_artifacts(const std::string& game_dir) {
 
 absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir) {
   bool up_to_date = test_dependency_tree(game_dir, /*add_rink_mask=*/false);
-  if (up_to_date) {
+  if (!up_to_date) {
+    return false;
+  }
+  const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
+  if (!max_canvas_dimension.has_value()) {
     return true;
   }
-  return false;
+  auto canvas_size = get_mapping_canvas_size(fs::path(game_dir));
+  if (!canvas_size.ok()) {
+    std::cerr << "Warning: stitching artifacts exist but canvas size could not be read: " << canvas_size.status()
+              << std::endl;
+    return false;
+  }
+  if (canvas_exceeds_max_dimension(canvas_size.value(), *max_canvas_dimension)) {
+    std::cout << "Stitching artifacts canvas " << canvas_size->width << "x" << canvas_size->height
+              << " exceeds live-stitch max dimension " << *max_canvas_dimension << "; regenerating at a smaller scale"
+              << std::endl;
+    return false;
+  }
+  return true;
 }
 
 absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
@@ -737,9 +833,7 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
 
   const fs::path root = fs::path(game_dir);
   const fs::path seam_path = root / "seam_file.png";
-  if (fs::exists(seam_path)) {
-    return absl::OkStatus();
-  }
+  const bool seam_exists = fs::exists(seam_path);
 
   const fs::path mapping0_path = root / "mapping_0000.tif";
   const fs::path mapping1_path = root / "mapping_0001.tif";
@@ -766,6 +860,14 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
   if (canvas_width <= 0 || canvas_height <= 0) {
     return absl::FailedPreconditionError(TO_STRING(
         "Invalid canvas size computed from mapping TIFFs: " << canvas_width << "x" << canvas_height));
+  }
+  if (seam_exists) {
+    cv::Mat existing = cv::imread(seam_path.string(), cv::IMREAD_UNCHANGED);
+    if (!existing.empty() && existing.cols == canvas_width && existing.rows == canvas_height) {
+      return absl::OkStatus();
+    }
+    std::cerr << "Existing seam mask does not match stitched canvas; regenerating " << seam_path.string()
+              << " for " << canvas_width << "x" << canvas_height << std::endl;
   }
 
   const int x0 = static_cast<int>(p0.x_px);
@@ -906,10 +1008,14 @@ absl::Status create_control_points(
   HM_RETURN_IF_ERROR(save_image(right_surface, right_file));
 
   size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", 500UL);
+  const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
 
   std::vector<std::string> cmd;
   std::string working_dir;
-  auto env = get_environment();
+  auto env = hmlib_python_env(get_environment());
+  if (auto hm_root = find_hmlib_repo_root(); hm_root.has_value()) {
+    working_dir = hm_root->string();
+  }
 
   const auto hmcreate_control_points = resolve_executable("hmcreate_control_points");
   if (hmcreate_control_points.has_value()) {
@@ -920,9 +1026,6 @@ absl::Status create_control_points(
         "--right",
         right_file,
         TO_STRING("--max-control-points=" << max_control_points),
-#ifdef __aarch64__
-        "--scale=0.6",
-#endif
     };
   } else {
     const auto python_exec = find_executable_maybe_conda("python3");
@@ -938,14 +1041,10 @@ absl::Status create_control_points(
         "--right",
         right_file,
         TO_STRING("--max-control-points=" << max_control_points),
-#ifdef __aarch64__
-        "--scale=0.6",
-#endif
     };
-    env = hmlib_python_env(std::move(env));
-    if (auto hm_root = find_hmlib_repo_root(); hm_root.has_value()) {
-      working_dir = hm_root->string();
-    }
+  }
+  if (max_canvas_dimension.has_value()) {
+    cmd.emplace_back(TO_STRING("--max-output-dimension=" << *max_canvas_dimension));
   }
 
   int exitcode = run_command(cmd, working_dir, env, [](const std::string& stderr, const std::string& stdout) -> void {
@@ -976,6 +1075,29 @@ bool is_field_mask_configured(const std::string& game_dir) {
   const auto bytes = fs::file_size(mask_path, ec);
   if (ec || bytes == 0) {
     return false;
+  }
+  cv::Mat mask = cv::imread(mask_path.string(), cv::IMREAD_UNCHANGED);
+  if (mask.empty()) {
+    return false;
+  }
+  if (const auto max_canvas_dimension = live_stitch_max_canvas_dimension(); max_canvas_dimension.has_value()) {
+    const CanvasSize mask_size{
+        .width = static_cast<size_t>(mask.cols),
+        .height = static_cast<size_t>(mask.rows),
+    };
+    if (canvas_exceeds_max_dimension(mask_size, *max_canvas_dimension)) {
+      std::cout << "Field mask canvas " << mask_size.width << "x" << mask_size.height
+                << " exceeds live-stitch max dimension " << *max_canvas_dimension << "; regenerating" << std::endl;
+      return false;
+    }
+  }
+  auto canvas_size = get_mapping_canvas_size(fs::path(game_dir));
+  if (canvas_size.ok()) {
+    if (mask.cols != static_cast<int>(canvas_size->width) || mask.rows != static_cast<int>(canvas_size->height)) {
+      std::cout << "Field mask size " << mask.cols << "x" << mask.rows << " does not match stitched canvas "
+                << canvas_size->width << "x" << canvas_size->height << "; regenerating" << std::endl;
+      return false;
+    }
   }
   return true;
 }
