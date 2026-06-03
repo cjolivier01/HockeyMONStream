@@ -428,9 +428,11 @@ absl::Status PlayCropperPriv::GenerateOutput(
     // Get input and output surfaces
 #ifdef __aarch64__
     hm::surface::EglSurfaceMapper incoming_elg_surface_mapper(in_surface, batch_nr, /*read_only=*/true);
+    HM_RETURN_IF_ERROR(hm::to_status(incoming_elg_surface_mapper.status()));
     hm::surface::Surface incoming_surface = incoming_elg_surface_mapper.get_surface();
 
     hm::surface::EglSurfaceMapper outgoing_elg_surface_mapper(out_surface, batch_nr, /*read_only=*/false);
+    HM_RETURN_IF_ERROR(hm::to_status(outgoing_elg_surface_mapper.status()));
     hm::surface::Surface outgoing_surface = outgoing_elg_surface_mapper.get_surface();
 #else
     hm::surface::Surface incoming_surface(&in_surface->surfaceList[batch_nr]);

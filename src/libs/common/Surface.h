@@ -221,7 +221,14 @@ class EglSurfaceMapper {
   EglSurfaceMapper(NvBufSurface* surface, int index, bool read_only);
   ~EglSurfaceMapper();
 
+  bool ok() const {
+    return status_ == cudaSuccess;
+  }
+  cudaError_t status() const {
+    return status_;
+  }
   Surface get_surface() {
+    assert(ok());
     assert(surface_list_);
     return (*surface_list_)[0];
   }
@@ -232,6 +239,8 @@ class EglSurfaceMapper {
   NvBufSurface* surface_{nullptr};
   int index_;
   bool read_only_;
+  bool egl_image_mapped_{false};
+  cudaError_t status_{cudaSuccess};
   cudaGraphicsResource* cuResource_{nullptr};
   cudaEglFrame eglFrame_{
       0,

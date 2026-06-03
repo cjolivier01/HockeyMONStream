@@ -59,17 +59,43 @@ prepend_path LD_LIBRARY_PATH "${SCRIPT_DIR}/lib/gst-plugins"
 prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib"
 prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 
-# Bazel-built GStreamer plugins live under per-plugin output directories. Keep those visible so running a focused
-# target build, such as pipeline-app plus gst-videoprep, is enough for local runs without manually staging .so
-# files.
+# Bazel-built GStreamer plugin entrypoints live next to support libraries and test runfiles. Do not add those output
+# directories directly to GST_PLUGIN_PATH: GStreamer scans recursively and will try to dlopen test/support .so files as
+# plugins. Stage only plugin entrypoint libraries into a clean runtime plugin directory, while keeping their original
+# directories on LD_LIBRARY_PATH so dependent support libraries remain visible.
 BAZEL_GST_PLUGIN_ROOT="${SCRIPT_DIR}/bazel-bin/src/gst-plugins"
 if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
-  for plugin_dir in "${BAZEL_GST_PLUGIN_ROOT}"/*; do
-    if [ -d "${plugin_dir}" ]; then
-      prepend_path GST_PLUGIN_PATH "${plugin_dir}"
-      prepend_path LD_LIBRARY_PATH "${plugin_dir}"
-    fi
-  done
+  BAZEL_GST_RUNTIME_PLUGIN_DIR="${SCRIPT_DIR}/.cache/gst-plugin-path/$(uname -m)"
+  mkdir -p "${BAZEL_GST_RUNTIME_PLUGIN_DIR}"
+  find "${BAZEL_GST_RUNTIME_PLUGIN_DIR}" -maxdepth 1 -type l -name '*.so' -delete
+
+  while IFS= read -r plugin_so; do
+    ln -sfn "${plugin_so}" "${BAZEL_GST_RUNTIME_PLUGIN_DIR}/$(basename "${plugin_so}")"
+    prepend_path LD_LIBRARY_PATH "$(dirname "${plugin_so}")"
+  done < <(
+    find "${BAZEL_GST_PLUGIN_ROOT}" \
+      -mindepth 2 \
+      -maxdepth 3 \
+      -type f \
+      \( -name 'libnvdsgst_*.so' -o -name 'libgst*.so' \) \
+      ! -path '*/testutils/*' \
+      ! -path '*.runfiles/*' \
+      -print | sort
+  )
+
+  while IFS= read -r lib_dir; do
+    prepend_path LD_LIBRARY_PATH "${lib_dir}"
+  done < <(
+    find "${BAZEL_GST_PLUGIN_ROOT}" \
+      -mindepth 2 \
+      -maxdepth 4 \
+      -type f \
+      -name '*.so' \
+      ! -path '*.runfiles/*' \
+      -printf '%h\n' | sort -u
+  )
+
+  prepend_path GST_PLUGIN_PATH "${BAZEL_GST_RUNTIME_PLUGIN_DIR}"
 fi
 
 YOLO_CUSTOM_IMPL="${SCRIPT_DIR}/bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"
@@ -126,6 +152,16 @@ done
 has_display=0
 if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
   has_display=1
+fi
+ssh_forwarded_display=0
+case "${DISPLAY:-}" in
+  localhost:*|127.0.0.1:*|::1:*)
+    ssh_forwarded_display=1
+    ;;
+esac
+if [ "${ssh_forwarded_display}" -eq 1 ] && [ "${HM_ALLOW_SSH_RENDER:-0}" != "1" ]; then
+  # SSH-forwarded X displays are technically present, but DeepStream EGL/nv3dsink output is not a reliable default.
+  has_display=0
 fi
 headless_show_rtsp=0
 if [ "${show_arg}" -eq 1 ] && [ "${has_display}" -eq 0 ]; then
@@ -213,7 +249,11 @@ elif [ "${has_display}" -eq 0 ]; then
   # Headless / SSH shells often have no X server. Avoid defaulting to a video overlay sink.
   default_main_sink="ENCODE_FILE"
   if [ "${have_sink_arg}" -eq 0 ]; then
-    echo "DISPLAY is not set and no sink was specified; defaulting to --enable-sinks=${default_main_sink} (override with --enable-sinks=RENDER)"
+    if [ "${ssh_forwarded_display}" -eq 1 ] && [ "${HM_ALLOW_SSH_RENDER:-0}" != "1" ]; then
+      echo "DISPLAY=${DISPLAY} looks SSH-forwarded and no sink was specified; defaulting to --enable-sinks=${default_main_sink} (set HM_ALLOW_SSH_RENDER=1 or pass --enable-sinks=RENDER to force render)"
+    else
+      echo "DISPLAY is not set and no sink was specified; defaulting to --enable-sinks=${default_main_sink} (override with --enable-sinks=RENDER)"
+    fi
   fi
 fi
 

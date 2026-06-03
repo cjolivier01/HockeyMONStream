@@ -10,9 +10,11 @@
 #include <opencv2/videoio.hpp>
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -53,12 +55,6 @@ constexpr const char* kEnableFlagField = "enable";
 constexpr const char* kDefaultOutputVideoName = "tracking_output.mkv";
 constexpr const char* kLegacyDefaultOutputName = "out.mkv";
 
-const std::vector<const char*> nostitch_video_names = {
-    // Prefer mp4 to mkv
-    "stitching_output-with-audio.mp4",
-    "stitching_output-with-audio.mkv",
-};
-
 int as_int(const YAML::Node& node) {
   // be less asserty than YAML-CPP
   // std::cout << node << std::endl;
@@ -80,6 +76,7 @@ bool is_enabled(const YAML::Node& config, const std::string& dot_string) {
   }
   return get_node_value(node, kEnableFlagField, static_cast<int>(false));
 }
+
 
 void remove_whitespace_in_place(std::string& input) {
   int index = 0; // This will keep track of the position in the original string
@@ -862,7 +859,14 @@ absl::Status Configurator::set_output_dimensions(
     pipeline["hmplaycropper"]["output-height"] = std::to_string(round_down_even(std::get<1>(wh_tuple)));
   } else if (!left_files.empty() && !right_files.empty() && has_hmstitcher) {
     StitcherSizingConfig sizing_cfg = ParseStitcherSizingConfig(pipeline);
-    auto canvas_size_result = get_canvas_size(game_dir);
+    std::optional<std::tuple<int, int>> canvas_size_result;
+    auto stitching_configured = stitching::is_stitching_configured(game_dir.string());
+    if (!stitching_configured.ok()) {
+      return stitching_configured.status();
+    }
+    if (stitching_configured.value()) {
+      canvas_size_result = get_canvas_size(game_dir);
+    }
     if (canvas_size_result) {
       size_t canvas_width = std::get<0>(*canvas_size_result);
       size_t canvas_height = std::get<1>(*canvas_size_result);
@@ -984,6 +988,9 @@ void Configurator::configure_audio(
       }
       if (src0["uri"].IsDefined() && !src0["uri"].IsNull()) {
         possible_audio_uri = src0["uri"].as<std::string>();
+      }
+      if (src0["source-id"].IsDefined() && !src0["source-id"].IsNull()) {
+        audio_source_id = src0["source-id"].as<int>();
       }
       ++num_video_sources;
     }

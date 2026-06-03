@@ -296,6 +296,7 @@ absl::Status DsFieldMaskProcessFrame(
     assert(frame_index < surface->numFilled);
 #ifdef __aarch64__
     hm::surface::EglSurfaceMapper egl_surface_mapper(surface, frame_index, /*read_only=*/true);
+    HM_RETURN_IF_ERROR(hm::to_status(egl_surface_mapper.status()));
     hm::surface::Surface this_surface = egl_surface_mapper.get_surface();
 #else
     hm::surface::Surface this_surface(&surface->surfaceList[frame_index]);

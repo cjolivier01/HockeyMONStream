@@ -98,6 +98,17 @@ absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
   // In one-pass mode we want to be resilient to partial stitcher artifacts (e.g. mapping TIFFs exist but seam_file.png
   // is missing). Without a seam file, hm-cupano will fail to load control masks and we would output a gray canvas.
   if (one_pass_mode_) {
+    auto is_configured = hm::stitching::is_stitching_configured(config_file_);
+    if (!is_configured.ok()) {
+      return is_configured.status();
+    }
+    if (!is_configured.value()) {
+      if (!logged_missing_masks_) {
+        g_print("hmstitcher: control masks in %s are missing or need regeneration\n", config_file_.c_str());
+        logged_missing_masks_ = true;
+      }
+      return (StitcherPriv::STITCHER*)nullptr;
+    }
     (void)hm::stitching::maybe_create_default_seam_file(config_file_);
   }
 
@@ -281,9 +292,11 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
 #ifdef __aarch64__
     hm::surface::EglSurfaceMapper incoming_left_elg_surface_mapper(
         in_surface, frame_info_left.incoming_surface_index, /*read_only=*/true);
+    HM_RETURN_IF_ERROR(to_status(incoming_left_elg_surface_mapper.status()));
     hm::surface::Surface incoming_surface_left = incoming_left_elg_surface_mapper.get_surface();
     hm::surface::EglSurfaceMapper incoming_right_elg_surface_mapper(
         in_surface, frame_info_right.incoming_surface_index, /*read_only=*/true);
+    HM_RETURN_IF_ERROR(to_status(incoming_right_elg_surface_mapper.status()));
     hm::surface::Surface incoming_surface_right = incoming_right_elg_surface_mapper.get_surface();
 #else
     hm::surface::Surface incoming_surface_left(frame_info_left.surface_params);
@@ -579,11 +592,14 @@ absl::Status StitcherPriv::GenerateOutput(
 #ifdef __aarch64__
     hm::surface::EglSurfaceMapper incoming_left_elg_surface_mapper(
         in_surface, frame_info_left.incoming_surface_index, /*read_only=*/true);
+    HM_RETURN_IF_ERROR(to_status(incoming_left_elg_surface_mapper.status()));
     hm::surface::Surface incoming_surface_left = incoming_left_elg_surface_mapper.get_surface();
     hm::surface::EglSurfaceMapper incoming_right_elg_surface_mapper(
         in_surface, frame_info_right.incoming_surface_index, /*read_only=*/true);
+    HM_RETURN_IF_ERROR(to_status(incoming_right_elg_surface_mapper.status()));
     hm::surface::Surface incoming_surface_right = incoming_right_elg_surface_mapper.get_surface();
     hm::surface::EglSurfaceMapper outgoing_elg_surface_mapper(out_surface, out_surface_index, /*read_only=*/false);
+    HM_RETURN_IF_ERROR(to_status(outgoing_elg_surface_mapper.status()));
     hm::surface::Surface outgoing_surface = outgoing_elg_surface_mapper.get_surface();
 #else
     hm::surface::Surface incoming_surface_left(frame_info_left.surface_params);

@@ -111,7 +111,7 @@ imageFormat Surface::get_image_format() const {
 
 EglSurfaceMapper::EglSurfaceMapper(NvBufSurface* surface, int index, bool read_only)
     : surface_(surface), index_(index), read_only_(read_only) {
-  map();
+  status_ = map();
 }
 
 EglSurfaceMapper::~EglSurfaceMapper() {
@@ -131,11 +131,13 @@ cudaError_t EglSurfaceMapper::map() {
   assert(!surface_->surfaceList[index_].mappedAddr.eglImage);
   auto nv_error = NvBufSurfaceMapEglImage(surface_, index_);
   if (nv_error != 0) {
-    // You may not have "DISPLAY" set in the environment
-    std::cerr << "FAILED!!!" << std::endl;
-    assert(false);
-    return cudaSuccess;
+    const NvBufSurfaceParams* params = &surface_->surfaceList[index_];
+    std::cerr << "NvBufSurfaceMapEglImage failed for surface index " << index_ << " (" << params->width << "x"
+              << params->height << ", memType=" << surface_->memType << ", colorFormat=" << params->colorFormat
+              << ")" << std::endl;
+    return cudaErrorUnknown;
   }
+  egl_image_mapped_ = true;
   NvBufSurfaceParams* surface_params = &surface_->surfaceList[index_];
 
   auto egl_image = surface_params->mappedAddr.eglImage;
@@ -146,15 +148,13 @@ cudaError_t EglSurfaceMapper::map() {
       egl_image,
       read_only_ ? CU_GRAPHICS_MAP_RESOURCE_FLAGS_READ_ONLY : CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE);
   if (cuerr_result != cudaSuccess) {
-    std::cerr << "FAILED!!!" << std::endl;
-    assert(false);
+    std::cerr << "cudaGraphicsEGLRegisterImage failed: " << cudaGetErrorString(cuerr_result) << std::endl;
     return cuerr_result;
   }
 
   cuerr_result = cudaGraphicsResourceGetMappedEglFrame(&eglFrame_, cuResource_, 0, 0);
   if (cuerr_result != cudaSuccess) {
-    std::cerr << "FAILED!!!" << std::endl;
-    assert(false);
+    std::cerr << "cudaGraphicsResourceGetMappedEglFrame failed: " << cudaGetErrorString(cuerr_result) << std::endl;
     return cuerr_result;
   }
 
@@ -192,20 +192,19 @@ cudaError_t EglSurfaceMapper::unmap() {
   if (cuResource_) {
     cuerr_result = cudaGraphicsUnregisterResource(cuResource_);
     if (cuerr_result != cudaSuccess) {
-      std::cerr << "FAILED!!!" << std::endl;
-      assert(false);
+      std::cerr << "cudaGraphicsUnregisterResource failed: " << cudaGetErrorString(cuerr_result) << std::endl;
       return cuerr_result;
     }
     cuResource_ = nullptr;
   }
-  if (surface_) {
+  if (surface_ && egl_image_mapped_) {
     /* Destroy the EGLImage */
     auto nvresult = NvBufSurfaceUnMapEglImage(surface_, index_);
     if (nvresult != 0) {
-      std::cerr << "FAILED!!!" << std::endl;
-      assert(false);
+      std::cerr << "NvBufSurfaceUnMapEglImage failed for surface index " << index_ << std::endl;
       return cudaErrorAssert;
     }
+    egl_image_mapped_ = false;
   }
   memset(&pitch_memory_, 0, sizeof(pitch_memory_));
   surface_list_.reset();
