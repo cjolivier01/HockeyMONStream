@@ -109,7 +109,10 @@ absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
       }
       return (StitcherPriv::STITCHER*)nullptr;
     }
-    (void)hm::stitching::maybe_create_default_seam_file(config_file_);
+    const absl::Status seam_status = hm::stitching::maybe_create_default_seam_file(config_file_);
+    if (!seam_status.ok()) {
+      return seam_status;
+    }
   }
 
   absl::MutexLock lk(&stitcher_mu_);

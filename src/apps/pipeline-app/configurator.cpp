@@ -669,6 +669,23 @@ absl::Status Configurator::invalidate_rotation_dependent_cache_if_needed(const f
   return absl::OkStatus();
 }
 
+absl::Status Configurator::invalidate_canvas_dependent_cache_if_needed(const fs::path& game_dir) {
+  bool exceeds_limit = false;
+  HM_ASSIGN_OR_RETURN(exceeds_limit, stitching::stitching_artifacts_exceed_live_canvas_limit(game_dir.string()));
+  if (!exceeds_limit) {
+    return absl::OkStatus();
+  }
+
+  std::cout << "Stitching canvas exceeds live-stitch max dimension; clearing canvas-dependent cached rink geometry"
+            << std::endl;
+  remove_rotation_dependent_rink_cache_keys(config_);
+  remove_rotation_dependent_rink_cache_keys(private_config_);
+  if (private_config_.IsDefined()) {
+    HM_RETURN_IF_ERROR(save_private_config(private_config_));
+  }
+  return absl::OkStatus();
+}
+
 void Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
   if (!pipeline["hmplaycropper"].IsDefined()) {
     return;
@@ -1467,6 +1484,7 @@ absl::Status Configurator::complete_configuration(bool force, bool clean_stitchi
   map_common_config_keys();
   if (pipeline_has_hmstitcher) {
     HM_RETURN_IF_ERROR(invalidate_rotation_dependent_cache_if_needed(game_dir));
+    HM_RETURN_IF_ERROR(invalidate_canvas_dependent_cache_if_needed(game_dir));
   }
 
   // Live box mappings

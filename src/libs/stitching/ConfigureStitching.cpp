@@ -826,6 +826,20 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir) {
   return true;
 }
 
+absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(const std::string& game_dir) {
+  bool up_to_date = test_dependency_tree(game_dir, /*add_rink_mask=*/false);
+  if (!up_to_date) {
+    return false;
+  }
+  const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
+  if (!max_canvas_dimension.has_value()) {
+    return false;
+  }
+  CanvasSize canvas_size;
+  HM_ASSIGN_OR_RETURN(canvas_size, get_mapping_canvas_size(fs::path(game_dir)));
+  return canvas_exceeds_max_dimension(canvas_size, *max_canvas_dimension);
+}
+
 absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
   if (game_dir.empty()) {
     return absl::InvalidArgumentError("Game dir is empty");
@@ -864,10 +878,18 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
   if (seam_exists) {
     cv::Mat existing = cv::imread(seam_path.string(), cv::IMREAD_UNCHANGED);
     if (!existing.empty() && existing.cols == canvas_width && existing.rows == canvas_height) {
-      return absl::OkStatus();
+      double min_value = 0.0;
+      double max_value = 0.0;
+      cv::minMaxLoc(existing, &min_value, &max_value);
+      if (max_value > min_value) {
+        return absl::OkStatus();
+      }
+      std::cerr << "Existing seam mask is uniform; regenerating " << seam_path.string() << std::endl;
     }
-    std::cerr << "Existing seam mask does not match stitched canvas; regenerating " << seam_path.string()
-              << " for " << canvas_width << "x" << canvas_height << std::endl;
+    if (existing.empty() || existing.cols != canvas_width || existing.rows != canvas_height) {
+      std::cerr << "Existing seam mask does not match stitched canvas; regenerating " << seam_path.string()
+                << " for " << canvas_width << "x" << canvas_height << std::endl;
+    }
   }
 
   const int x0 = static_cast<int>(p0.x_px);

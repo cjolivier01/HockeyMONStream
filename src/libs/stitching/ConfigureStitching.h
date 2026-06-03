@@ -26,6 +26,8 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
 
 absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir);
 
+absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(const std::string& game_dir);
+
 bool can_configure_stitching(const YAML::Node& config);
 
 bool is_field_mask_configured(const std::string& game_dir);

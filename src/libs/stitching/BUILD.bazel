@@ -33,6 +33,24 @@ cc_library(
   ],
 )
 
+cc_test(
+  name = "configure_stitching_test",
+  srcs = [
+    "ConfigureStitchingTest.cpp",
+  ],
+  copts = [
+    "-x",
+    "c++",
+    "-std=c++17",
+  ],
+  linkopts = [
+    "-ltiff",
+  ],
+  deps = [
+    ":stitching",
+  ],
+)
+
 cc_library(
   name = "correlation",
   srcs = [

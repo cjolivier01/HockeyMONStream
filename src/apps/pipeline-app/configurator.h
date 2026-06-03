@@ -75,6 +75,7 @@ class Configurator {
   absl::Status setup_stitcher_and_masks(YAML::Node& pipeline, const std::filesystem::path& game_dir, bool force, bool& has_hmstitcher);
   void map_common_config_keys();
   absl::Status invalidate_rotation_dependent_cache_if_needed(const std::filesystem::path& game_dir);
+  absl::Status invalidate_canvas_dependent_cache_if_needed(const std::filesystem::path& game_dir);
   void apply_scoreboard_perspective(YAML::Node& pipeline);
   absl::Status gather_stitching_videos(const std::filesystem::path& game_dir, bool force, std::vector<std::string>& left_files, std::vector<std::string>& right_files, YAML::Node& offsets);
   void apply_frame_offsets_and_sizes(const std::vector<std::string>& left_files, const std::vector<std::string>& right_files, const YAML::Node& offsets, size_t& ww, size_t& hh, size_t& area, YAML::Node& pipeline);
