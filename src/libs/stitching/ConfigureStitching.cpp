@@ -23,8 +23,13 @@
 #include <utility>
 #include <vector>
 
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <netinet/in.h>
 #include <opencv2/opencv.hpp>
+#include <sys/socket.h>
 #include <tiffio.h>
+#include <unistd.h>
 #include "absl/strings/str_split.h"
 
 namespace fs = std::filesystem;
@@ -720,6 +725,98 @@ std::optional<fs::path> find_hmlib_repo_root() {
   return std::nullopt;
 }
 
+std::optional<int> find_available_tcp_port() {
+  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) {
+    return std::nullopt;
+  }
+
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  addr.sin_port = htons(0);
+
+  if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+    ::close(fd);
+    return std::nullopt;
+  }
+
+  socklen_t len = sizeof(addr);
+  if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) < 0) {
+    ::close(fd);
+    return std::nullopt;
+  }
+
+  const int port = ntohs(addr.sin_port);
+  ::close(fd);
+  if (port <= 0) {
+    return std::nullopt;
+  }
+  return port;
+}
+
+std::vector<std::string> local_ipv4_addresses() {
+  std::set<std::string> addresses;
+  ifaddrs* ifaddr = nullptr;
+  if (::getifaddrs(&ifaddr) != 0) {
+    return {};
+  }
+
+  for (ifaddrs* ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+    if (ifa->ifa_addr == nullptr || ifa->ifa_addr->sa_family != AF_INET) {
+      continue;
+    }
+    char buf[INET_ADDRSTRLEN] = {};
+    const auto* addr = reinterpret_cast<sockaddr_in*>(ifa->ifa_addr);
+    if (::inet_ntop(AF_INET, &addr->sin_addr, buf, sizeof(buf)) == nullptr) {
+      continue;
+    }
+    const std::string ip(buf);
+    if (ip.empty() || ip == "0.0.0.0" || ip.rfind("127.", 0) == 0) {
+      continue;
+    }
+    addresses.insert(ip);
+  }
+
+  ::freeifaddrs(ifaddr);
+  return {addresses.begin(), addresses.end()};
+}
+
+std::vector<std::string> scoreboard_selector_access_urls(int port) {
+  std::vector<std::string> urls;
+  std::set<std::string> seen;
+
+  auto add = [&](const std::string& host) {
+    if (host.empty()) {
+      return;
+    }
+    const std::string url = TO_STRING("http://" << host << ":" << port << "/");
+    if (seen.insert(url).second) {
+      urls.push_back(url);
+    }
+  };
+
+  char hostname[256] = {};
+  if (::gethostname(hostname, sizeof(hostname)) == 0) {
+    hostname[sizeof(hostname) - 1] = '\0';
+    add(hostname);
+  }
+  add("localhost");
+  add("127.0.0.1");
+  for (const auto& address : local_ipv4_addresses()) {
+    add(address);
+  }
+  return urls;
+}
+
+void print_scoreboard_selector_access_urls(int port) {
+  std::cerr << "Scoreboard selector will listen on 0.0.0.0:" << port << ". Open one of:\n";
+  for (const auto& url : scoreboard_selector_access_urls(port)) {
+    std::cerr << "  " << url << "\n";
+  }
+  std::cerr << std::flush;
+}
+
 std::map<std::string, std::string> hmlib_python_env(std::map<std::string, std::string> prev) {
   const auto hm_root = find_hmlib_repo_root();
   if (!hm_root.has_value()) {
@@ -1258,22 +1355,43 @@ absl::Status configure_scoreboard(const std::string& game_dir) {
   std::vector<std::string> cmd;
   std::string working_dir;
   auto env = hmlib_python_env(get_environment());
+  env["PYTHONUNBUFFERED"] = "1";
 
-  std::optional<fs::path> exec = find_executable_maybe_conda("hmscoreboard");
-  if (exec.has_value()) {
-    cmd = {exec->string(), "--game-id", game_id};
-  } else {
+  const auto hm_root = find_hmlib_repo_root();
+  const auto selector_port = find_available_tcp_port();
+
+  if (hm_root.has_value()) {
     const auto python_exec = find_executable_maybe_conda("python3");
     if (!python_exec.has_value()) {
       return absl::NotFoundError("Could not find python3 for scoreboard selector");
     }
-    cmd = {python_exec->string(), "-m", "hmlib.scoreboard.selector", "--game-id", game_id};
-    if (auto hm_root = find_hmlib_repo_root(); hm_root.has_value()) {
-      working_dir = hm_root->string();
+    cmd = {python_exec->string(), "-u", "-m", "hmlib.scoreboard.selector", "--game-id", game_id};
+    working_dir = hm_root->string();
+    if (selector_port.has_value()) {
+      cmd.insert(
+          cmd.end(),
+          {"--selector-bind-host", "0.0.0.0", "--selector-port", std::to_string(selector_port.value())});
+    }
+  } else {
+    std::optional<fs::path> exec = find_executable_maybe_conda("hmscoreboard");
+    if (exec.has_value()) {
+      cmd = {exec->string(), "--game-id", game_id};
+    } else {
+      const auto python_exec = find_executable_maybe_conda("python3");
+      if (!python_exec.has_value()) {
+        return absl::NotFoundError("Could not find python3 for scoreboard selector");
+      }
+      cmd = {python_exec->string(), "-u", "-m", "hmlib.scoreboard.selector", "--game-id", game_id};
     }
   }
 
   std::cerr << "Scoreboard corners not configured - launching selector for game: " << game_id << "\n" << std::flush;
+  if (selector_port.has_value() && hm_root.has_value()) {
+    print_scoreboard_selector_access_urls(selector_port.value());
+  } else {
+    std::cerr << "If a browser does not open automatically, use one of the selector URLs printed below.\n"
+              << std::flush;
+  }
   int exitcode = run_command(cmd, working_dir, env, [](const std::string& err, const std::string& out) {
     if (!err.empty()) std::cerr << err << "\n" << std::flush;
     if (!out.empty()) std::cerr << out << "\n" << std::flush;
