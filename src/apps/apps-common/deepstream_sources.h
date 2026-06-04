@@ -150,6 +150,12 @@ typedef struct {
   NvDsSourceConfig* config;
   NvDsSrcParentBin* parent_bin;
   gpointer recordCtx;
+  GstElement* uri_audio_tee;
+  gulong uri_audio_probe;
+  guint uri_audio_link_count;
+  gboolean uri_audio_final_eos_allowed;
+  gboolean uri_audio_has_pad;
+  guint uri_audio_pad_uri_index;
   /** Optional playlist state (for file sources). */
   gchar** uri_list;
   guint num_uri_list;
@@ -177,6 +183,7 @@ struct NvDsSrcParentBin {
 
 gboolean create_source_bin(NvDsSourceConfig* config, NvDsSrcBin* bin);
 gboolean create_audio_source_bin(NvDsSourceConfig* config, NvDsSrcBin* bin);
+gboolean link_uri_source_audio_src(NvDsSrcBin* bin, GstElement* sinkelem);
 
 /**
  * Initialize @ref NvDsSrcParentBin. It creates and adds source and

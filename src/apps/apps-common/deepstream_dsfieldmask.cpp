@@ -646,6 +646,13 @@ static void on_decode_pad_added(GstElement* element, GstPad* pad, gpointer* data
 
     GstPad* sinkpad = gst_element_get_static_pad(convert, "sink");
     GstPadLinkReturn ret;
+    if (gst_pad_is_linked(sinkpad)) {
+      GstPad* peer = gst_pad_get_peer(sinkpad);
+      if (peer) {
+        gst_pad_unlink(peer, sinkpad);
+        gst_object_unref(peer);
+      }
+    }
     ret = gst_pad_link(pad, sinkpad);
     if (ret == GST_PAD_LINK_WRONG_HIERARCHY) {
       if (hm::connectElementsWithGhostPads(element, GST_PAD_NAME(pad), convert, "sink", "hmaudio_source_bin")) {
@@ -756,8 +763,10 @@ gboolean create_hmaudio_bin(
           return true;
         }
         assert(source_config);
-        // atm, only source uri is supported
-        assert(source_config->type == NV_DS_SOURCE_URI);
+        if (source_config->type != NV_DS_SOURCE_URI && source_config->type != NV_DS_SOURCE_URI_MULTIPLE) {
+          std::cerr << "HMAudio source-bin mode only supports URI sources, so disabling audio" << std::endl;
+          return true;
+        }
         break;
       }
     }
@@ -879,14 +888,27 @@ gboolean create_hmaudio_bin(
       NVGSTDS_LINK_ELEMENT(bin->audioresample, bin->queue);
     }
   } else if (config->src == SRC_SOURCE_BIN) {
-    assert(source_bin->src_elem);
     if (bin->audioconvert) {
-      g_signal_connect(source_bin->src_elem, "pad-added", G_CALLBACK(on_decode_pad_added), bin->audioconvert);
+      assert(source_bin->src_elem);
+      if (source_bin->uri_audio_tee) {
+        if (!link_uri_source_audio_src(source_bin, bin->audioconvert)) {
+          goto done;
+        }
+      } else {
+        g_signal_connect(source_bin->src_elem, "pad-added", G_CALLBACK(on_decode_pad_added), bin->audioconvert);
+      }
       NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->audioresample);
       NVGSTDS_LINK_ELEMENT(bin->audioresample, bin->queue);
     } else {
       assert(!bin->audioresample);
-      g_signal_connect(source_bin->src_elem, "pad-added", G_CALLBACK(on_decode_pad_added), bin->queue);
+      assert(source_bin->src_elem);
+      if (source_bin->uri_audio_tee) {
+        if (!link_uri_source_audio_src(source_bin, bin->queue)) {
+          goto done;
+        }
+      } else {
+        g_signal_connect(source_bin->src_elem, "pad-added", G_CALLBACK(on_decode_pad_added), bin->queue);
+      }
     }
   } else {
     assert(bin->audiosrc);
