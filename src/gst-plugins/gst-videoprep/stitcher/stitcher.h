@@ -8,6 +8,8 @@
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 
 #include <mutex>
+#include <set>
+#include <unordered_map>
 
 namespace hm {
 namespace stitcher {
@@ -32,9 +34,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
 
   bool SetProperty(const Property& prop) override;
 
-  bool HandleEvent(GstEvent* event) override {
-    return true;
-  }
+  bool HandleEvent(GstEvent* event) override;
   void Shutdown() override;
 
   char* QueryProperties() override {
@@ -42,9 +42,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
     return strdup("");
   }
 
-  BufferResult ProcessBuffer(GstBuffer* inbuf) override {
-    return Super::ProcessBuffer(inbuf);
-  }
+  BufferResult ProcessBuffer(GstBuffer* inbuf) override;
 
   // DSCustomLibraryBase-
 
@@ -56,6 +54,10 @@ class StitcherPriv : public STITCH_PRIV_BASE {
 
  private:
   using STITCHER = hm::pano::cuda::CudaStitchPano<uchar4, float4>;
+  struct EosSnapshot {
+    bool pipeline_eos_seen{false};
+    std::set<guint> source_ids;
+  };
 
   absl::StatusOr<STITCHER*> get_stitcher();
   absl::Status reload_stitcher();
@@ -65,6 +67,8 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   absl::Status apply_post_stitch_rotation(hm::surface::Surface surface, size_t width, size_t height);
   absl::Status ensure_rotation_scratch(const hm::surface::Surface& surface, size_t width, size_t height);
   void release_rotation_scratch();
+  EosSnapshot snapshot_eos_for_buffer(GstBuffer* inbuf);
+  EosSnapshot snapshot_eos_for_surface(NvBufSurface* in_surface);
   void update_canvas_hints(size_t width, size_t height) {
     canvas_width_hint_ = width;
     canvas_height_hint_ = height;
@@ -88,6 +92,10 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool show_{false};
   bool match_exposure_{false};
   bool minimize_blend_{false};
+  std::mutex eos_mu_;
+  bool pipeline_eos_seen_{false};
+  std::set<guint> eos_source_ids_;
+  std::unordered_map<NvBufSurface*, EosSnapshot> eos_snapshot_by_surface_;
   double post_stitch_rotate_degrees_{0.0};
   void* rotation_scratch_data_{nullptr};
   size_t rotation_scratch_pitch_{0};
