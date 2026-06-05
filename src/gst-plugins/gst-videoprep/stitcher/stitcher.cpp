@@ -29,6 +29,7 @@
 #include <cuda.h>
 #include <unistd.h>
 #include <map>
+#include <sstream>
 #include <vector>
 
 #if defined(__aarch64__)
@@ -83,9 +84,186 @@ StitcherPriv::~StitcherPriv() {
 
 void StitcherPriv::Shutdown() {
   Super::Shutdown();
+  {
+    std::lock_guard<std::mutex> lock(eos_mu_);
+    eos_snapshot_by_surface_.clear();
+  }
   stitcher_.reset();
   release_rotation_scratch();
 }
+
+bool StitcherPriv::HandleEvent(GstEvent* event) {
+  if (!event) {
+    return true;
+  }
+  if ((GstNvEventType)GST_EVENT_TYPE(event) == GST_NVEVENT_STREAM_EOS) {
+    guint source_id = 0;
+    gst_nvevent_parse_stream_eos(event, &source_id);
+    {
+      std::lock_guard<std::mutex> lock(eos_mu_);
+      eos_source_ids_.insert(source_id);
+    }
+    return Super::HandleEvent(event);
+  }
+  if ((GstNvEventType)GST_EVENT_TYPE(event) == GST_NVEVENT_STREAM_START) {
+    guint source_id = 0;
+    gchar* stream_id = nullptr;
+    gst_nvevent_parse_stream_start(event, &source_id, &stream_id);
+    {
+      std::lock_guard<std::mutex> lock(eos_mu_);
+      eos_source_ids_.erase(source_id);
+      eos_snapshot_by_surface_.clear();
+      pipeline_eos_seen_ = false;
+    }
+    return Super::HandleEvent(event);
+  }
+  if ((GstNvEventType)GST_EVENT_TYPE(event) == GST_NVEVENT_STREAM_RESET) {
+    guint source_id = 0;
+    gst_nvevent_parse_stream_reset(event, &source_id);
+    {
+      std::lock_guard<std::mutex> lock(eos_mu_);
+      eos_source_ids_.erase(source_id);
+      eos_snapshot_by_surface_.clear();
+    }
+    return Super::HandleEvent(event);
+  }
+  if ((GstNvEventType)GST_EVENT_TYPE(event) == GST_NVEVENT_PAD_ADDED) {
+    guint source_id = 0;
+    gst_nvevent_parse_pad_added(event, &source_id);
+    {
+      std::lock_guard<std::mutex> lock(eos_mu_);
+      eos_source_ids_.erase(source_id);
+      eos_snapshot_by_surface_.clear();
+      pipeline_eos_seen_ = false;
+    }
+    return Super::HandleEvent(event);
+  }
+  if (GST_EVENT_TYPE(event) == GST_EVENT_STREAM_START) {
+    {
+      std::lock_guard<std::mutex> lock(eos_mu_);
+      eos_source_ids_.clear();
+      eos_snapshot_by_surface_.clear();
+      pipeline_eos_seen_ = false;
+    }
+    return Super::HandleEvent(event);
+  }
+  if (GST_EVENT_TYPE(event) == GST_EVENT_EOS) {
+    {
+      std::lock_guard<std::mutex> lock(eos_mu_);
+      pipeline_eos_seen_ = true;
+    }
+    const bool handled = Super::HandleEvent(event);
+    return handled;
+  }
+  return Super::HandleEvent(event);
+}
+
+StitcherPriv::EosSnapshot StitcherPriv::snapshot_eos_for_buffer(GstBuffer* inbuf) {
+  EosSnapshot snapshot;
+  {
+    std::lock_guard<std::mutex> lock(eos_mu_);
+    snapshot.pipeline_eos_seen = pipeline_eos_seen_;
+    snapshot.source_ids = eos_source_ids_;
+  }
+
+  GstMapInfo in_map_info = GST_MAP_INFO_INIT;
+  if (!inbuf || !gst_buffer_map(inbuf, &in_map_info, GST_MAP_READ)) {
+    return snapshot;
+  }
+
+  auto* in_surface = reinterpret_cast<NvBufSurface*>(in_map_info.data);
+  if (in_surface) {
+    std::lock_guard<std::mutex> lock(eos_mu_);
+    eos_snapshot_by_surface_[in_surface] = snapshot;
+  }
+  gst_buffer_unmap(inbuf, &in_map_info);
+  return snapshot;
+}
+
+StitcherPriv::EosSnapshot StitcherPriv::snapshot_eos_for_surface(NvBufSurface* in_surface) {
+  std::lock_guard<std::mutex> lock(eos_mu_);
+  auto snapshot = EosSnapshot{
+      .pipeline_eos_seen = pipeline_eos_seen_,
+      .source_ids = eos_source_ids_,
+  };
+  auto iter = eos_snapshot_by_surface_.find(in_surface);
+  if (iter != eos_snapshot_by_surface_.end()) {
+    snapshot = iter->second;
+    snapshot.pipeline_eos_seen = snapshot.pipeline_eos_seen || pipeline_eos_seen_;
+    eos_snapshot_by_surface_.erase(iter);
+  }
+  return snapshot;
+}
+
+BufferResult StitcherPriv::ProcessBuffer(GstBuffer* inbuf) {
+  snapshot_eos_for_buffer(inbuf);
+  const BufferResult result = Super::ProcessBuffer(inbuf);
+  if (result != BufferResult::Buffer_Async) {
+    GstMapInfo in_map_info = GST_MAP_INFO_INIT;
+    if (inbuf && gst_buffer_map(inbuf, &in_map_info, GST_MAP_READ)) {
+      auto* in_surface = reinterpret_cast<NvBufSurface*>(in_map_info.data);
+      {
+        std::lock_guard<std::mutex> lock(eos_mu_);
+        eos_snapshot_by_surface_.erase(in_surface);
+      }
+      gst_buffer_unmap(inbuf, &in_map_info);
+    }
+  }
+  return result;
+}
+
+namespace {
+
+std::string format_source_ids(const std::set<guint>& source_ids) {
+  std::stringstream out;
+  out << "{";
+  bool first = true;
+  for (guint source_id : source_ids) {
+    if (!first) {
+      out << ",";
+    }
+    out << source_id;
+    first = false;
+  }
+  out << "}";
+  return out.str();
+}
+
+absl::Status frame_sequence_mismatch_status(
+    const std::string& reason,
+    size_t frame_groups,
+    size_t num_filled,
+    size_t frame_meta_count,
+    size_t duplicate_frame_sources,
+    size_t incomplete_frame_groups,
+    size_t inconsistent_source_groups,
+    size_t invalid_surfaces_per_frame,
+    const std::set<guint>& observed_source_ids,
+    const std::set<guint>& missing_eos_source_ids,
+    const std::set<guint>& eos_source_ids,
+    bool source_eos_explains_mismatch,
+    bool pipeline_eos_seen) {
+  std::stringstream message;
+  message << "Stitcher did not receive the expected source/frame sequence"
+          << " (reason=" << reason << ", frame_groups=" << frame_groups << ", num_filled=" << num_filled
+          << ", frame_meta_count=" << frame_meta_count << ", duplicate_frame_sources=" << duplicate_frame_sources
+          << ", incomplete_frame_groups=" << incomplete_frame_groups
+          << ", inconsistent_source_groups=" << inconsistent_source_groups
+          << ", invalid_surfaces_per_frame=" << invalid_surfaces_per_frame
+          << ", observed_sources=" << format_source_ids(observed_source_ids)
+          << ", source_eos_seen=" << eos_source_ids.size()
+          << ", missing_eos_sources=" << format_source_ids(missing_eos_source_ids)
+          << ", pipeline_eos_seen=" << pipeline_eos_seen << ")";
+
+  const bool pipeline_eos_explains_mismatch =
+      pipeline_eos_seen && eos_source_ids.empty() && duplicate_frame_sources == 0 && incomplete_frame_groups > 0;
+  if (source_eos_explains_mismatch || pipeline_eos_explains_mismatch) {
+    return absl::CancelledError(message.str());
+  }
+  return absl::FailedPreconditionError(message.str());
+}
+
+} // namespace
 
 absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
   if (configure_only_ && !one_pass_mode_) {
@@ -471,10 +649,8 @@ absl::Status StitcherPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
-  assert(in_surface->batchSize % 2 == 0);
-  if (in_surface->numFilled % 2 != 0) {
-    gst_printerr("Not enough filled surfaces to perform stitching\n");
-    return to_status(cudaError_t::cudaErrorInvalidValue);
+  if (!batch_meta || !in_surface || !out_surface) {
+    return absl::InvalidArgumentError("Stitcher GenerateOutput requires batch meta, input surface, and output surface");
   }
   // assert(in_surface->isContiguous);
 
@@ -490,29 +666,38 @@ absl::Status StitcherPriv::GenerateOutput(
   //  frame_number -> source_id -> NvBufSurfaceParams*
   std::map<int, std::map<int, FrameInfo>> frame_source_surfaces;
 
-  assert(cuda_stream_);
-
-  HM_RETURN_IF_ERROR(to_status(cudaSetDevice(m_gpuId)));
-
-  out_surface->numFilled = 0;
-  out_surface->batchSize = in_surface->batchSize / 2;
+  const EosSnapshot eos_snapshot = snapshot_eos_for_surface(in_surface);
 
   std::map<guint, NvDsFrameMeta*> source_frame_metas;
+  std::set<guint> observed_source_ids;
 
   guint min_source_id = std::numeric_limits<guint>::max();
   guint max_source_id = 0;
   size_t surface_index = 0;
+  size_t frame_meta_count = 0;
+  size_t duplicate_frame_sources = 0;
+  size_t invalid_surfaces_per_frame = 0;
   for (NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list; frame_meta_list != nullptr;
        frame_meta_list = frame_meta_list->next) {
-    assert(frame_meta_list);
+    ++frame_meta_count;
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)frame_meta_list->data;
-    assert(frame_meta->num_surfaces_per_frame == 1);
+    if (!frame_meta) {
+      ++invalid_surfaces_per_frame;
+      continue;
+    }
+    if (frame_meta->num_surfaces_per_frame != 1) {
+      ++invalid_surfaces_per_frame;
+    }
+    if (surface_index >= in_surface->numFilled) {
+      continue;
+    }
     auto* surface_params = &in_surface->surfaceList[surface_index];
     // assert(seen_surface_indexes.emplace(frame_meta->surface_index).second);
     // std::cout << "source_id=" << frame_meta->source_id << ", frame_num=" << frame_meta->frame_num << std::endl;
     auto& frame_sources = frame_source_surfaces[frame_meta->frame_num];
     min_source_id = std::min(min_source_id, frame_meta->source_id);
     max_source_id = std::max(max_source_id, frame_meta->source_id);
+    observed_source_ids.insert(frame_meta->source_id);
 
     source_frame_metas.emplace(frame_meta->source_id, frame_meta);
 
@@ -525,19 +710,115 @@ absl::Status StitcherPriv::GenerateOutput(
                                       .incoming_surface_index = surface_index,
                                   })
                               .second;
-    assert(inserted);
+    if (!inserted) {
+      ++duplicate_frame_sources;
+    }
     ++surface_index;
   }
 
-  // Sanity that the surfaces are laid out as expected
-  assert(surface_index == in_surface->numFilled);
-  if (frame_source_surfaces.size() != in_surface->numFilled / 2) {
-    // This can happen during shutdown
-    g_printerr("Stitcher did nto receive the expected source/frame sequence\n");
-    return to_status(cudaError_t::cudaErrorInvalidSource);
+  std::set<guint> expected_source_ids;
+  size_t incomplete_frame_groups = 0;
+  size_t source_eos_explained_incomplete_groups = 0;
+  size_t unexplained_incomplete_groups = 0;
+  size_t inconsistent_source_groups = 0;
+  std::set<guint> missing_eos_source_ids;
+  for (const auto& [frame_number, source_to_surface] : frame_source_surfaces) {
+    (void)frame_number;
+    if (source_to_surface.size() != 2) {
+      ++incomplete_frame_groups;
+      bool group_has_eos_source = false;
+      std::set<guint> group_missing_eos_source_ids;
+      for (const auto& [source_id, frame_info] : source_to_surface) {
+        (void)frame_info;
+        if (eos_snapshot.source_ids.count(source_id)) {
+          group_has_eos_source = true;
+        }
+      }
+      for (guint eos_source_id : eos_snapshot.source_ids) {
+        if (!source_to_surface.count(eos_source_id)) {
+          group_missing_eos_source_ids.insert(eos_source_id);
+        }
+      }
+      if (!group_has_eos_source && !group_missing_eos_source_ids.empty()) {
+        ++source_eos_explained_incomplete_groups;
+        missing_eos_source_ids.insert(group_missing_eos_source_ids.begin(), group_missing_eos_source_ids.end());
+      } else {
+        ++unexplained_incomplete_groups;
+      }
+      continue;
+    }
+
+    std::set<guint> group_source_ids;
+    for (const auto& [source_id, frame_info] : source_to_surface) {
+      (void)frame_info;
+      group_source_ids.insert(source_id);
+    }
+    if (expected_source_ids.empty()) {
+      expected_source_ids = group_source_ids;
+    } else if (group_source_ids != expected_source_ids) {
+      ++inconsistent_source_groups;
+      for (guint expected_source_id : expected_source_ids) {
+        if (!group_source_ids.count(expected_source_id) && eos_snapshot.source_ids.count(expected_source_id)) {
+          missing_eos_source_ids.insert(expected_source_id);
+        }
+      }
+    }
   }
-  assert(frame_source_surfaces.size() == in_surface->numFilled / 2);
-  assert(frame_source_surfaces.begin()->second.size() == frame_source_surfaces.rbegin()->second.size());
+  if (observed_source_ids.size() < 2) {
+    for (guint eos_source_id : eos_snapshot.source_ids) {
+      if (!observed_source_ids.count(eos_source_id)) {
+        missing_eos_source_ids.insert(eos_source_id);
+      }
+    }
+  }
+  std::set<guint> observed_or_eos_source_ids = observed_source_ids;
+  observed_or_eos_source_ids.insert(eos_snapshot.source_ids.begin(), eos_snapshot.source_ids.end());
+  const bool source_eos_explains_mismatch =
+      observed_or_eos_source_ids.size() == 2 && duplicate_frame_sources == 0 && invalid_surfaces_per_frame == 0 &&
+      surface_index == in_surface->numFilled && frame_meta_count == in_surface->numFilled &&
+      incomplete_frame_groups > 0 && source_eos_explained_incomplete_groups == incomplete_frame_groups &&
+      unexplained_incomplete_groups == 0 && inconsistent_source_groups == 0 && !missing_eos_source_ids.empty();
+
+  const bool invalid_frame_sequence =
+      (in_surface->batchSize % 2 != 0) || (in_surface->numFilled % 2 != 0) || surface_index != in_surface->numFilled ||
+      frame_meta_count != in_surface->numFilled || duplicate_frame_sources > 0 || invalid_surfaces_per_frame > 0 ||
+      observed_source_ids.size() != 2 || frame_source_surfaces.size() != in_surface->numFilled / 2 ||
+      incomplete_frame_groups > 0 || inconsistent_source_groups > 0;
+  if (invalid_frame_sequence) {
+    std::string reason = "invalid_frame_sequence";
+    if (in_surface->numFilled % 2 != 0) {
+      reason = "odd_num_filled";
+    } else if (duplicate_frame_sources > 0) {
+      reason = "duplicate_frame_source";
+    } else if (incomplete_frame_groups > 0) {
+      reason = "incomplete_frame_group";
+    } else if (inconsistent_source_groups > 0 || observed_source_ids.size() != 2) {
+      reason = "inconsistent_sources";
+    } else if (frame_meta_count != in_surface->numFilled || surface_index != in_surface->numFilled) {
+      reason = "surface_metadata_mismatch";
+    }
+    return frame_sequence_mismatch_status(
+        reason,
+        frame_source_surfaces.size(),
+        in_surface->numFilled,
+        frame_meta_count,
+        duplicate_frame_sources,
+        incomplete_frame_groups,
+        inconsistent_source_groups,
+        invalid_surfaces_per_frame,
+        observed_source_ids,
+        missing_eos_source_ids,
+        eos_snapshot.source_ids,
+        source_eos_explains_mismatch,
+        eos_snapshot.pipeline_eos_seen);
+  }
+
+  assert(cuda_stream_);
+
+  HM_RETURN_IF_ERROR(to_status(cudaSetDevice(m_gpuId)));
+
+  out_surface->numFilled = 0;
+  out_surface->batchSize = in_surface->batchSize / 2;
 
   // We will have this many output frames
   const size_t batch_size = frame_source_surfaces.size();
