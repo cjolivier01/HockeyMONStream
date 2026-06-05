@@ -2,6 +2,7 @@ INCLUDE_PREFIX = "deepstream"
 
 config_setting(
     name = "jetson",
+    constraint_values = ["@platforms//cpu:aarch64"],
     values = {"define": "target_platform=jetson"},
 )
 

@@ -640,8 +640,9 @@ bool connectElementsWithGhostPads(
     }
   }
 
-  // Use a different ghost pad name for the second element to avoid collisions.
-  std::string ghost_pad_name2 = std::string("ghost_") + pad2_name;
+  // Use a related caller-provided prefix for the second lift so repeated links under the same
+  // ancestor do not collide on generic names like "ghost_sink".
+  std::string ghost_pad_name2 = ghost_pad_name + "_peer_" + pad2_name;
   GstPad* pad2 = nullptr;
   if (gst_element_get_parent(elem2) == lca) {
     pad2 = gst_element_get_static_pad(elem2, pad2_name);

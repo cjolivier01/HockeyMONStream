@@ -121,6 +121,15 @@ cc_binary(
 )
 
 cc_test(
+    name = "uri_multiple_pipeline_test",
+    srcs = ["UriMultiplePipelineTest.cpp"],
+    deps = [
+        ":deepstream_apps_common",
+        "@gstreamer",
+    ],
+)
+
+cc_test(
     name = "gst_plugin_properties_test",
     srcs = ["GstPluginPropertiesTest.cpp"],
     deps = [
