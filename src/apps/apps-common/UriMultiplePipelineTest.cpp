@@ -202,7 +202,11 @@ void configure_uri_multiple_source(NvDsSourceConfig& cfg, const std::vector<std:
   cfg.uri = g_strdup(uris.front().c_str());
 }
 
-int expect_encoded_file(const fs::path& path, bool expect_audio, double min_audio_pts_seconds = 0.0) {
+int expect_encoded_file(
+    const fs::path& path,
+    bool expect_audio,
+    double min_audio_pts_seconds = 0.0,
+    double min_video_pts_seconds = 0.0) {
   std::error_code ec;
   const auto size = fs::file_size(path, ec);
   if (ec || size < 1024) {
@@ -231,6 +235,17 @@ int expect_encoded_file(const fs::path& path, bool expect_audio, double min_audi
       return 4;
     }
   }
+  if (min_video_pts_seconds > 0.0) {
+    std::stringstream cmd;
+    cmd << "ffprobe -v error -select_streams v:0 -show_packets -show_entries packet=pts_time "
+        << "-of csv=p=0 " << shell_quote(path)
+        << " | awk 'BEGIN { ok = 0 } { if (($1 + 0) >= " << min_video_pts_seconds
+        << ") ok = 1 } END { exit ok ? 0 : 1 }'";
+    if (!run_shell(cmd.str())) {
+      std::cerr << "Expected video packets after " << min_video_pts_seconds << "s in " << path << "\n";
+      return 5;
+    }
+  }
   return 0;
 }
 
@@ -238,7 +253,8 @@ int run_decode_encode(
     const fs::path& tmpdir,
     const std::vector<std::string>& uris,
     const std::string& output_name = "decode_encode.mkv",
-    double min_audio_pts_seconds = 1.5) {
+    double min_audio_pts_seconds = 1.5,
+    double min_video_pts_seconds = 1.5) {
   NvDsSourceConfig cfg{};
   configure_uri_multiple_source(cfg, uris, /*source_id=*/0);
 
@@ -302,7 +318,7 @@ int run_decode_encode(
     std::cerr << "Expected URI-MULTIPLE video buffers\n";
     return 7;
   }
-  return expect_encoded_file(out, /*expect_audio=*/true, min_audio_pts_seconds);
+  return expect_encoded_file(out, /*expect_audio=*/true, min_audio_pts_seconds, min_video_pts_seconds);
 }
 
 int run_decode_compose_encode(
@@ -431,7 +447,8 @@ int main(int argc, char** argv) {
       tmpdir,
       final_without_audio_uris,
       "decode_encode_final_without_audio.mkv",
-      /*min_audio_pts_seconds=*/0.5);
+      /*min_audio_pts_seconds=*/0.5,
+      /*min_video_pts_seconds=*/1.5);
   if (rc != 0) {
     fs::remove_all(tmpdir);
     return rc;

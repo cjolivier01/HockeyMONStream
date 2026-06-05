@@ -40,11 +40,13 @@ GST_DEBUG_CATEGORY_EXTERN(APP_CFG_PARSER_CAT);
 
 static gboolean install_mux_eosmonitor_probe = FALSE;
 
-struct UriAudioPadProbeData {
+struct UriListPadProbeData {
   NvDsSrcBin* bin;
   guint uri_index;
   GstClockTime base;
 };
+
+static gboolean maybe_send_final_uri_audio_eos(NvDsSrcBin* bin, gboolean log_failure);
 
 namespace hm {
 
@@ -531,9 +533,9 @@ done:
   return ret;
 }
 
-static GstPadProbeReturn uri_list_audio_pad_event_probe(GstPad* pad, GstPadProbeInfo* info, gpointer u_data) {
+static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbeInfo* info, gpointer u_data) {
   (void)pad;
-  auto* probe_data = static_cast<UriAudioPadProbeData*>(u_data);
+  auto* probe_data = static_cast<UriListPadProbeData*>(u_data);
   NvDsSrcBin* bin = probe_data ? probe_data->bin : nullptr;
   if (!bin) {
     return GST_PAD_PROBE_OK;
@@ -546,6 +548,15 @@ static GstPadProbeReturn uri_list_audio_pad_event_probe(GstPad* pad, GstPadProbe
     }
     if (GST_CLOCK_TIME_IS_VALID(GST_BUFFER_DTS(buf))) {
       GST_BUFFER_DTS(buf) += probe_data->base;
+    }
+  }
+  if ((info->type & GST_PAD_PROBE_TYPE_BUFFER) != 0) {
+    const bool is_playlist = (bin->uri_list && bin->num_uri_list >= 2);
+    const bool is_final_uri = is_playlist && (probe_data->uri_index + 1 >= bin->num_uri_list);
+    const bool current_uri_has_audio = bin->uri_audio_has_pad && bin->uri_audio_pad_uri_index == probe_data->uri_index;
+    if (is_final_uri && !current_uri_has_audio && !bin->uri_audio_final_eos_allowed &&
+        maybe_send_final_uri_audio_eos(bin, FALSE)) {
+      bin->uri_audio_final_eos_allowed = TRUE;
     }
   }
 
@@ -569,14 +580,28 @@ static GstPadProbeReturn uri_list_audio_pad_event_probe(GstPad* pad, GstPadProbe
       }
       return GST_PAD_PROBE_OK;
     }
+  }
+  return GST_PAD_PROBE_OK;
+}
+
+static GstPadProbeReturn uri_list_audio_pad_event_probe(GstPad* pad, GstPadProbeInfo* info, gpointer u_data) {
+  GstPadProbeReturn ret = uri_list_video_pad_event_probe(pad, info, u_data);
+  auto* probe_data = static_cast<UriListPadProbeData*>(u_data);
+  NvDsSrcBin* bin = probe_data ? probe_data->bin : nullptr;
+  if (!bin) {
+    return ret;
+  }
+
+  if ((info->type & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) != 0) {
+    GstEvent* event = GST_EVENT(info->data);
 
     if (GST_EVENT_TYPE(event) != GST_EVENT_EOS) {
-      return GST_PAD_PROBE_OK;
+      return ret;
     }
 
     const bool is_playlist = (bin->uri_list && bin->num_uri_list >= 2);
     if (!is_playlist) {
-      return GST_PAD_PROBE_OK;
+      return ret;
     }
 
     const bool will_loop = (bin->config && bin->config->uri_list_loop);
@@ -587,7 +612,7 @@ static GstPadProbeReturn uri_list_audio_pad_event_probe(GstPad* pad, GstPadProbe
 
     bin->uri_audio_final_eos_allowed = TRUE;
   }
-  return GST_PAD_PROBE_OK;
+  return ret;
 }
 
 static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
@@ -597,6 +622,18 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
 
   if (!strncmp(name, "video", 5)) {
     NvDsSrcBin* bin = (NvDsSrcBin*)data;
+    if (bin->uri_list && bin->num_uri_list >= 2) {
+      auto* probe_data = g_new0(UriListPadProbeData, 1);
+      probe_data->bin = bin;
+      probe_data->uri_index = bin->uri_list_index;
+      probe_data->base = bin->prev_accumulated_base;
+      gst_pad_add_probe(
+          pad,
+          (GstPadProbeType)(GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM | GST_PAD_PROBE_TYPE_BUFFER),
+          uri_list_video_pad_event_probe,
+          probe_data,
+          reinterpret_cast<GDestroyNotify>(g_free));
+    }
     GstPad* sinkpad = gst_element_get_static_pad(bin->tee, "sink");
     if (gst_pad_is_linked(sinkpad)) {
       GstPad* peer = gst_pad_get_peer(sinkpad);
@@ -622,7 +659,7 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
 
     if (bin->uri_audio_tee) {
       if (bin->uri_list && bin->num_uri_list >= 2) {
-        auto* probe_data = g_new0(UriAudioPadProbeData, 1);
+        auto* probe_data = g_new0(UriListPadProbeData, 1);
         probe_data->bin = bin;
         probe_data->uri_index = bin->uri_list_index;
         probe_data->base = bin->prev_accumulated_base;
@@ -840,23 +877,25 @@ static gboolean switch_to_next_uri(gpointer data) {
   bin->uri_list_segment_stop = GST_CLOCK_TIME_NONE;
   bin->uri_list_last_pts = GST_CLOCK_TIME_NONE;
   bin->uri_audio_final_eos_allowed = FALSE;
+  bin->uri_audio_has_pad = FALSE;
+  bin->uri_audio_pad_uri_index = bin->uri_list_index;
 
   bin->uri_switch_pending = FALSE;
   return FALSE;
 }
 
-static void maybe_send_final_uri_audio_eos(NvDsSrcBin* bin) {
+static gboolean maybe_send_final_uri_audio_eos(NvDsSrcBin* bin, gboolean log_failure) {
   if (!bin || !bin->uri_audio_tee || !bin->uri_list || bin->num_uri_list < 2) {
-    return;
+    return FALSE;
   }
   if (bin->config && bin->config->uri_list_loop) {
-    return;
+    return FALSE;
   }
   if (bin->uri_audio_link_count == 0) {
-    return;
+    return FALSE;
   }
   if (bin->uri_audio_has_pad && bin->uri_audio_pad_uri_index == bin->uri_list_index) {
-    return;
+    return FALSE;
   }
 
   gboolean sent = FALSE;
@@ -887,8 +926,23 @@ static void maybe_send_final_uri_audio_eos(NvDsSrcBin* bin) {
   }
   gst_iterator_free(it);
 
-  if (!sent) {
-    NVGSTDS_ERR_MSG_V("Failed to send final URI source audio EOS");
+  if (!sent && log_failure) {
+    GST_DEBUG_OBJECT(bin->uri_audio_tee, "No URI audio tee src pad accepted synthetic final EOS");
+  }
+  return sent;
+}
+
+static void cb_no_more_pads(GstElement* decodebin, gpointer data) {
+  (void)decodebin;
+  NvDsSrcBin* bin = (NvDsSrcBin*)data;
+  if (!bin || !bin->uri_list || bin->num_uri_list < 2 || !bin->config || bin->config->uri_list_loop) {
+    return;
+  }
+  const bool is_final_uri = (bin->uri_list_index + 1 >= bin->num_uri_list);
+  const bool current_uri_has_audio = bin->uri_audio_has_pad && bin->uri_audio_pad_uri_index == bin->uri_list_index;
+  if (is_final_uri && !current_uri_has_audio && !bin->uri_audio_final_eos_allowed &&
+      maybe_send_final_uri_audio_eos(bin, FALSE)) {
+    bin->uri_audio_final_eos_allowed = TRUE;
   }
 }
 
@@ -940,7 +994,7 @@ static GstPadProbeReturn restart_stream_buf_prob(GstPad* pad, GstPadProbeInfo* i
  * Installed on the decoder sink pad so we can:
  * - drop QOS events coming from downstream sinks (prevents frame drops after timestamp discontinuities)
  * - drop EOS/SEGMENT/FLUSH events while we reconfigure to the next URI
- * - keep timestamps monotonic by applying an accumulated base offset.
+ * - advance the accumulated base used by per-URI decoded pad timestamp probes.
  */
 static GstPadProbeReturn uri_list_stream_buf_prob(GstPad* pad, GstPadProbeInfo* info, gpointer u_data) {
   GstEvent* event = GST_EVENT(info->data);
@@ -954,9 +1008,6 @@ static GstPadProbeReturn uri_list_stream_buf_prob(GstPad* pad, GstPadProbeInfo* 
     GstClockTime pts = GST_BUFFER_PTS(buf);
     if (GST_CLOCK_TIME_IS_VALID(pts)) {
       bin->uri_list_last_pts = pts;
-      if (bin->prev_accumulated_base) {
-        GST_BUFFER_PTS(buf) = pts + bin->prev_accumulated_base;
-      }
     }
   }
 
@@ -990,13 +1041,13 @@ static GstPadProbeReturn uri_list_stream_buf_prob(GstPad* pad, GstPadProbeInfo* 
         return GST_PAD_PROBE_DROP;
       }
       // End of playlist: allow EOS to propagate so the overall pipeline can terminate.
-      maybe_send_final_uri_audio_eos(bin);
+      maybe_send_final_uri_audio_eos(bin, TRUE);
       return GST_PAD_PROBE_OK;
     }
 
     if (GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
-      GstSegment* segment = NULL;
-      gst_event_parse_segment(event, (const GstSegment**)&segment);
+      const GstSegment* segment = NULL;
+      gst_event_parse_segment(event, &segment);
       if (segment) {
         // Cache the segment stop/duration as a hint for how far to advance the PTS base on EOS.
         // (SEEK also emits SEGMENT events, so we must not advance bases here.)
@@ -1163,8 +1214,8 @@ gboolean link_uri_source_audio_src(NvDsSrcBin* bin, GstElement* sinkelem) {
     return FALSE;
   }
 
-  gchar lift_name[64];
-  g_snprintf(lift_name, sizeof(lift_name), "hmaudio_uri_source_bin_%u", link_id);
+  gchar lift_name[96];
+  g_snprintf(lift_name, sizeof(lift_name), "hmaudio_uri_%s_%u", GST_ELEMENT_NAME(bin->bin), link_id);
   return hm::connectElementsWithGhostPads(bin->bin, ghost_name, sinkelem, "sink", lift_name);
 }
 
@@ -1971,6 +2022,7 @@ static gboolean create_uridecode_src_bin(NvDsSourceConfig* config, NvDsSrcBin* b
 
   g_object_set(G_OBJECT(bin->src_elem), "uri", config->uri, NULL);
   g_signal_connect(G_OBJECT(bin->src_elem), "pad-added", G_CALLBACK(cb_newpad), bin);
+  g_signal_connect(G_OBJECT(bin->src_elem), "no-more-pads", G_CALLBACK(cb_no_more_pads), bin);
   g_signal_connect(G_OBJECT(bin->src_elem), "child-added", G_CALLBACK(decodebin_child_added), bin);
   g_signal_connect(G_OBJECT(bin->src_elem), "source-setup", G_CALLBACK(cb_sourcesetup), bin);
   bin->cap_filter = gst_element_factory_make(NVDS_ELEM_QUEUE, "queue");
