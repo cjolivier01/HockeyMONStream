@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -364,6 +365,52 @@ YAML
   return true;
 }
 
+bool expect_dependency_invalidation_report(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "stale_dependency_report";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir)) {
+    std::cerr << "dependency invalidation report: failed to write test artifacts" << std::endl;
+    return false;
+  }
+  set_write_time(dir / "hm_project.pto", -10);
+
+  std::ostringstream captured;
+  std::streambuf* old_cout = std::cout.rdbuf(captured.rdbuf());
+  std::streambuf* old_cerr = std::cerr.rdbuf(captured.rdbuf());
+  auto configured = hm::stitching::is_stitching_configured(dir.string());
+  std::cout.rdbuf(old_cout);
+  std::cerr.rdbuf(old_cerr);
+
+  if (!configured.ok()) {
+    std::cerr << "dependency invalidation report: unexpected status " << configured.status() << std::endl;
+    return false;
+  }
+  if (configured.value()) {
+    std::cerr << "dependency invalidation report: stale artifacts reported as configured" << std::endl;
+    return false;
+  }
+
+  const std::string output = captured.str();
+  const std::vector<std::string> expected = {
+      "Dependency violations found at level(s): 1",
+      "Dependency invalidation tree:",
+      "hm_project.pto [invalid]",
+      "oldest output",
+      "is older than dependency",
+      "autooptimiser_out.pto [invalidated downstream]",
+      "mapping_0000.tif,mapping_0000_x.tif,mapping_0000_y.tif",
+      "[invalidated downstream]",
+      "depends on invalid upstream item",
+  };
+  for (const auto& needle : expected) {
+    if (output.find(needle) == std::string::npos) {
+      std::cerr << "dependency invalidation report: missing \"" << needle << "\" in output:\n" << output << std::endl;
+      return false;
+    }
+  }
+  return true;
+}
+
 void finish(const fs::path& tmpdir, int code) {
   fs::remove_all(tmpdir);
   _exit(code);
@@ -398,6 +445,10 @@ int main() {
 
   if (!run_scoreboard_selector_python_args_child(tmpdir)) {
     finish(tmpdir, 6);
+  }
+
+  if (!expect_dependency_invalidation_report(tmpdir)) {
+    finish(tmpdir, 7);
   }
 
   finish(tmpdir, 0);

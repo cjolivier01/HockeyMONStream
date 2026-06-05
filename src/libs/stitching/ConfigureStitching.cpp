@@ -370,77 +370,164 @@ std::string to_command_line(const std::vector<std::string>& cmd) {
 //   - valid: true if every child is newer than its parent for every dependency edge.
 //   - levels: a list of tree depths (starting at 0 for the root) where at least one violation occurred.
 // -----------------------------------------------------------------------------
-struct ValidationResult {
-  bool valid;
-  std::vector<int> levels;
+struct TimestampedFile {
+  std::string filename;
+  fs::file_time_type time;
 };
 
-fs::file_time_type getMostRecentWriteTime(const std::vector<std::string>& filenames) {
-  if (filenames.empty()) {
-    throw std::invalid_argument("No filenames provided.");
+struct DependencyReportNode {
+  std::string filename;
+  int level = 0;
+  bool direct_invalid = false;
+  bool invalidated_by_upstream = false;
+  std::vector<std::string> reasons;
+  std::vector<DependencyReportNode> children;
+
+  bool has_invalid_subtree() const {
+    if (direct_invalid || invalidated_by_upstream) {
+      return true;
+    }
+    return std::any_of(children.begin(), children.end(), [](const DependencyReportNode& child) {
+      return child.has_invalid_subtree();
+    });
   }
+};
 
-  bool foundValidFile = false;
-  fs::file_time_type latest;
+struct ValidationResult {
+  bool valid = true;
+  std::vector<int> levels;
+  DependencyReportNode report;
+};
 
-  for (const auto& filename : filenames) {
-    fs::path filePath(filename);
-    if (fs::exists(filePath)) {
-      try {
-        fs::file_time_type ftime = fs::last_write_time(filePath);
-        if (!foundValidFile) {
-          latest = ftime;
-          foundValidFile = true;
-        } else if (ftime > latest) {
-          latest = ftime;
-        }
-      } catch (const fs::filesystem_error& e) {
-        std::cerr << "Error retrieving last write time for " << filename << ": " << e.what() << std::endl;
-      }
-    } else {
-      std::cerr << "File not found: " << filename << std::endl;
+std::vector<std::string> resolved_dependency_filenames(const fs::path& dir_name, const std::string& filename) {
+  std::vector<std::string> filenames = absl::StrSplit(filename, ',');
+  if (!dir_name.empty()) {
+    for (auto& s : filenames) {
+      s = (dir_name / s).string();
     }
   }
+  return filenames;
+}
 
-  if (!foundValidFile) {
-    throw std::runtime_error("No valid files found to determine write time.");
+std::string time_for_log(fs::file_time_type time) {
+  return std::to_string(time.time_since_epoch().count());
+}
+
+std::string quote(const std::string& s) {
+  return "\"" + s + "\"";
+}
+
+std::vector<std::string> missing_filenames(const std::vector<std::string>& filenames) {
+  std::vector<std::string> missing;
+  for (const auto& filename : filenames) {
+    std::error_code ec;
+    if (!fs::exists(filename, ec) || ec) {
+      missing.push_back(filename);
+    }
   }
+  return missing;
+}
 
+std::optional<TimestampedFile> most_recent_write_time(const std::vector<std::string>& filenames) {
+  std::optional<TimestampedFile> latest;
+  for (const auto& filename : filenames) {
+    std::error_code ec;
+    const fs::file_time_type ftime = fs::last_write_time(filename, ec);
+    if (ec) {
+      std::cerr << "Error retrieving last write time for " << filename << ": " << ec.message() << std::endl;
+      continue;
+    }
+    if (!latest.has_value() || ftime > latest->time) {
+      TimestampedFile timestamped_file;
+      timestamped_file.filename = filename;
+      timestamped_file.time = ftime;
+      latest = timestamped_file;
+    }
+  }
   return latest;
 }
 
-fs::file_time_type getOldestWriteTime(const std::vector<std::string>& filenames) {
-  if (filenames.empty()) {
-    throw std::invalid_argument("No filenames provided.");
+std::optional<TimestampedFile> oldest_write_time(const std::vector<std::string>& filenames) {
+  std::optional<TimestampedFile> oldest;
+  for (const auto& filename : filenames) {
+    std::error_code ec;
+    const fs::file_time_type ftime = fs::last_write_time(filename, ec);
+    if (ec) {
+      std::cerr << "Error retrieving last write time for " << filename << ": " << ec.message() << std::endl;
+      continue;
+    }
+    if (!oldest.has_value() || ftime < oldest->time) {
+      TimestampedFile timestamped_file;
+      timestamped_file.filename = filename;
+      timestamped_file.time = ftime;
+      oldest = timestamped_file;
+    }
+  }
+  return oldest;
+}
+
+void collect_direct_violation_levels(const DependencyReportNode& node, std::vector<int>* levels) {
+  if (node.direct_invalid) {
+    levels->push_back(node.level);
+  }
+  for (const auto& child : node.children) {
+    collect_direct_violation_levels(child, levels);
+  }
+}
+
+void print_dependency_report_node(
+    const DependencyReportNode& node,
+    const std::string& prefix,
+    bool is_last,
+    std::ostream& out) {
+  const std::string connector = is_last ? "`- " : "+- ";
+  out << prefix << connector << node.filename << " [";
+  if (node.direct_invalid) {
+    out << "invalid";
+    if (node.invalidated_by_upstream) {
+      out << ", invalidated downstream";
+    }
+  } else {
+    out << "invalidated downstream";
+  }
+  out << "]\n";
+
+  const std::string child_prefix = prefix + (is_last ? "   " : "|  ");
+  for (const auto& reason : node.reasons) {
+    out << child_prefix << "reason: " << reason << "\n";
   }
 
-  bool foundValidFile = false;
-  fs::file_time_type oldest;
+  std::vector<const DependencyReportNode*> invalid_children;
+  for (const auto& child : node.children) {
+    if (child.has_invalid_subtree()) {
+      invalid_children.push_back(&child);
+    }
+  }
+  for (size_t i = 0; i < invalid_children.size(); ++i) {
+    print_dependency_report_node(*invalid_children[i], child_prefix, i + 1 == invalid_children.size(), out);
+  }
+}
 
-  for (const auto& filename : filenames) {
-    fs::path filePath(filename);
-    if (fs::exists(filePath)) {
-      try {
-        fs::file_time_type ftime = fs::last_write_time(filePath);
-        if (!foundValidFile) {
-          oldest = ftime;
-          foundValidFile = true;
-        } else if (ftime < oldest) {
-          oldest = ftime;
-        }
-      } catch (const fs::filesystem_error& e) {
-        std::cerr << "Error retrieving last write time for " << filename << ": " << e.what() << std::endl;
+void print_dependency_report(const DependencyReportNode& root, std::ostream& out) {
+  std::vector<const DependencyReportNode*> report_roots;
+  if (root.direct_invalid || root.invalidated_by_upstream) {
+    report_roots.push_back(&root);
+  } else {
+    for (const auto& child : root.children) {
+      if (child.has_invalid_subtree()) {
+        report_roots.push_back(&child);
       }
-    } else {
-      std::cerr << "File not found: " << filename << std::endl;
     }
   }
 
-  if (!foundValidFile) {
-    throw std::runtime_error("No valid files found to determine write time.");
+  if (report_roots.empty()) {
+    return;
   }
 
-  return oldest;
+  out << "Dependency invalidation tree:\n";
+  for (size_t i = 0; i < report_roots.size(); ++i) {
+    print_dependency_report_node(*report_roots[i], "", i + 1 == report_roots.size(), out);
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -452,59 +539,69 @@ fs::file_time_type getOldestWriteTime(const std::vector<std::string>& filenames)
 // Note: If a file appears multiple times (i.e. as a child of two different parents), it will be checked
 // for each dependency. If a violation occurs in any dependency edge, that level is recorded.
 // -----------------------------------------------------------------------------
-ValidationResult checkFileDependencies(const fs::path& dir_name, const FileNode& node, int level = 0) {
-  ValidationResult result{true, {}};
+DependencyReportNode build_dependency_report(
+    const fs::path& dir_name,
+    const FileNode& node,
+    int level,
+    const std::optional<TimestampedFile>& parent_latest,
+    bool invalidated_by_upstream,
+    const std::string& invalid_upstream_item) {
+  DependencyReportNode report;
+  report.filename = node.filename;
+  report.level = level;
+  report.invalidated_by_upstream = invalidated_by_upstream;
 
-  std::vector<std::string> filenames = absl::StrSplit(node.filename, ',');
-  if (!dir_name.empty()) {
-    for (auto& s : filenames) {
-      s = dir_name / s;
+  if (invalidated_by_upstream) {
+    report.reasons.push_back("depends on invalid upstream item " + quote(invalid_upstream_item));
+  }
+
+  const std::vector<std::string> filenames = resolved_dependency_filenames(dir_name, node.filename);
+  const std::vector<std::string> missing = missing_filenames(filenames);
+  for (const auto& filename : missing) {
+    report.direct_invalid = true;
+    report.reasons.push_back("missing file " + quote(filename));
+  }
+
+  std::optional<TimestampedFile> node_oldest;
+  std::optional<TimestampedFile> node_latest;
+  if (missing.empty()) {
+    node_oldest = oldest_write_time(filenames);
+    node_latest = most_recent_write_time(filenames);
+    if (!node_oldest.has_value() || !node_latest.has_value()) {
+      report.direct_invalid = true;
+      report.reasons.push_back("could not read modification time for " + quote(node.filename));
     }
   }
 
-  if (!std::all_of(filenames.begin(), filenames.end(), [](const std::string& f) { return fs::exists(f); })) {
-    result.valid = false;
-    result.levels.push_back(level);
-    return result;
+  if (parent_latest.has_value() && node_oldest.has_value() && node_oldest->time < parent_latest->time) {
+    report.direct_invalid = true;
+    report.reasons.push_back(
+        "oldest output " + quote(node_oldest->filename) + " (mtime=" + time_for_log(node_oldest->time) +
+        ") is older than dependency " + quote(parent_latest->filename) + " (mtime=" +
+        time_for_log(parent_latest->time) + ")");
   }
 
-  // Retrieve parent's modification time.
-  std::error_code ec;
-  auto parentTime = getMostRecentWriteTime(filenames);
-
-  // Process each child dependency edge.
+  const bool child_invalidated_by_upstream = invalidated_by_upstream || report.direct_invalid;
+  const std::string child_invalid_upstream_item = report.direct_invalid ? node.filename : invalid_upstream_item;
   for (const auto& child : node.children) {
-    // Get the child's modification time.
-    std::vector<std::string> child_names = absl::StrSplit(child.filename, ',');
-    if (!dir_name.empty()) {
-      for (auto& s : child_names) {
-        s = dir_name / s;
-      }
-    }
-
-    if (!std::all_of(child_names.begin(), child_names.end(), [](const std::string& f) { return fs::exists(f); })) {
-      result.valid = false;
-      result.levels.push_back(level + 1);
-      return result;
-    }
-
-    auto childTime = getOldestWriteTime(child_names);
-    if (childTime < parentTime) {
-      // Violation: child file is not newer than the parent.
-      std::cerr << "Violation: \"" << child.filename << "\" (time: " << childTime.time_since_epoch().count()
-                << ") is older than its parent \"" << node.filename
-                << "\" (time: " << parentTime.time_since_epoch().count() << ").\n";
-      result.valid = false;
-      result.levels.push_back(level + 1);
-    }
-    // Recursively check the child's dependency subtree.
-    ValidationResult childResult = checkFileDependencies(dir_name, child, level + 1);
-    if (!childResult.valid) {
-      result.valid = false;
-      // Append any levels from the child.
-      result.levels.insert(result.levels.end(), childResult.levels.begin(), childResult.levels.end());
-    }
+    report.children.push_back(build_dependency_report(
+        dir_name, child, level + 1, node_latest, child_invalidated_by_upstream, child_invalid_upstream_item));
   }
+
+  return report;
+}
+
+ValidationResult checkFileDependencies(const fs::path& dir_name, const FileNode& node, int level = 0) {
+  ValidationResult result;
+  result.report = build_dependency_report(
+      dir_name,
+      node,
+      level,
+      /*parent_latest=*/std::nullopt,
+      /*invalidated_by_upstream=*/false,
+      /*invalid_upstream_item=*/"");
+  collect_direct_violation_levels(result.report, &result.levels);
+  result.valid = result.levels.empty();
   return result;
 }
 
@@ -556,6 +653,7 @@ bool test_dependency_tree(const std::string& dir_name, bool add_rink_mask) {
       std::cout << lvl << " ";
     }
     std::cout << "\n";
+    print_dependency_report(res.report, std::cout);
     return false;
   }
   return true;

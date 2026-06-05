@@ -292,19 +292,21 @@ absl::Status DsFieldMaskProcessFrame(
 
   if (ctx->total_frame_count == 0 && (ctx->detection_u8_mask.empty() || is_obsolete_detection_mask)) {
     fs::path mask_path = ctx->initParams.detection_mask_file;
-    // if (!fs::exists(fs::path(mask_path))) {
-    assert(frame_index < surface->numFilled);
+    const bool field_mask_configured = hm::stitching::is_field_mask_configured(mask_path.parent_path().string());
+    if (is_obsolete_detection_mask || !field_mask_configured) {
+      if (!surface) {
+        return absl::FailedPreconditionError("Cannot create field mask without an input surface");
+      }
+      assert(frame_index < surface->numFilled);
 #ifdef __aarch64__
-    hm::surface::EglSurfaceMapper egl_surface_mapper(surface, frame_index, /*read_only=*/true);
-    HM_RETURN_IF_ERROR(hm::to_status(egl_surface_mapper.status()));
-    hm::surface::Surface this_surface = egl_surface_mapper.get_surface();
+      hm::surface::EglSurfaceMapper egl_surface_mapper(surface, frame_index, /*read_only=*/true);
+      HM_RETURN_IF_ERROR(hm::to_status(egl_surface_mapper.status()));
+      hm::surface::Surface this_surface = egl_surface_mapper.get_surface();
 #else
-    hm::surface::Surface this_surface(&surface->surfaceList[frame_index]);
+      hm::surface::Surface this_surface(&surface->surfaceList[frame_index]);
 #endif
-    if (is_obsolete_detection_mask || !hm::stitching::is_field_mask_configured(mask_path.parent_path().string())) {
       HM_RETURN_IF_ERROR(hm::stitching::create_field_mask(mask_path.parent_path().string(), this_surface));
     }
-    //}
     HM_ASSIGN_OR_RETURN(ctx->detection_u8_mask, load_mask_from_file(ctx->initParams.detection_mask_file));
     ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask, ctx->field_box);
     ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
