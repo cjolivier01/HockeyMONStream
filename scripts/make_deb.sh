@@ -383,11 +383,20 @@ print_rtsp_access_urls() {
 }
 
 sink_value_has_render() {
-  local value=",${1},"
-  case "${value}" in
-    *,RENDER,*|*,render,*) return 0 ;;
-    *) return 1 ;;
-  esac
+  local value="$1"
+  local token normalized
+  local -a sink_tokens
+  IFS=',' read -r -a sink_tokens <<< "${value}"
+  for token in "${sink_tokens[@]}"; do
+    token="${token#"${token%%[![:space:]]*}"}"
+    token="${token%"${token##*[![:space:]]}"}"
+    normalized="${token//-/_}"
+    normalized="${normalized^^}"
+    if [ "${normalized}" = "RENDER" ] || [ "${normalized}" = "2" ]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 args_request_render_sink() {

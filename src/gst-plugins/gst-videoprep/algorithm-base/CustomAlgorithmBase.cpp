@@ -17,17 +17,37 @@
 
 namespace hm {
 
+namespace {
+
+guint get_caps_batch_size(GstCaps* caps) {
+  if (!caps || gst_caps_is_any(caps) || gst_caps_is_empty(caps) || gst_caps_get_size(caps) == 0) {
+    return 0;
+  }
+
+  GstStructure* structure = gst_caps_get_structure(caps, 0);
+  guint batch_size = 0;
+  if (gst_structure_get_uint(structure, "batch-size", &batch_size)) {
+    return batch_size;
+  }
+
+  gint signed_batch_size = 0;
+  if (gst_structure_get_int(structure, "batch-size", &signed_batch_size) && signed_batch_size > 0) {
+    return static_cast<guint>(signed_batch_size);
+  }
+
+  return 0;
+}
+
+} // namespace
+
 absl::Status CustomAlgorithmBase::PostCapsInit(DSCustom_CreateParams* params) {
   HM_RETURN_IF_ERROR(DSCustomLibraryBase::PostCapsInit(params));
 
-  GstStructure* s1 = NULL;
   GstCapsFeatures* feature;
   GstStructure* config = NULL;
 
   cuda_stream_ = params->m_cudaStream;
   assert(cuda_stream_); // temporary, maybe we dont even use cuda, just make sure its set if we do
-
-  s1 = gst_caps_get_structure(m_inCaps, 0);
 
   feature = gst_caps_get_features(m_outCaps, 0);
   if (gst_caps_features_contains(feature, GST_CAPS_FEATURE_MEMORY_NVMM)) {
@@ -63,11 +83,15 @@ absl::Status CustomAlgorithmBase::PostCapsInit(DSCustom_CreateParams* params) {
     if (params->m_bufferPoolConfig.max_buffers) {
       params->m_bufferPoolConfig.gpu_id = params->m_gpuId;
       assert(params->m_bufferPoolConfig.max_buffers);
-      gst_structure_get_int(s1, "batch-size", &params->m_bufferPoolConfig.batch_size);
+      params->m_bufferPoolConfig.batch_size = get_caps_batch_size(m_outCaps);
 
       if (params->m_bufferPoolConfig.batch_size == 0) {
-        // If this component is placed before mux, batch-size value is not set
-        // In this case make batch_size = 1
+        params->m_bufferPoolConfig.batch_size = get_caps_batch_size(m_inCaps);
+      }
+
+      if (params->m_bufferPoolConfig.batch_size == 0) {
+        // If this component is placed before mux, batch-size value is not set.
+        // In this case make batch_size = 1.
         params->m_bufferPoolConfig.batch_size = 1;
       }
 

@@ -474,13 +474,6 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
     ++surface_index;
   }
 
-  guint paired_frame_count = 0;
-  for (const auto& frame_item : frame_source_surfaces) {
-    if (frame_item.second.size() >= 2) {
-      ++paired_frame_count;
-    }
-  }
-
   for (auto& frame_item : frame_source_surfaces) {
     auto& source_to_surface = frame_item.second;
     if (source_to_surface.size() < 2) {
@@ -504,7 +497,8 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
 #endif
 
     HM_RETURN_IF_ERROR(configure_one_pass_from_surfaces(incoming_surface_left, incoming_surface_right));
-    return videoprep::RuntimeOutputSize{canvas_width_hint_, canvas_height_hint_, paired_frame_count};
+    return videoprep::RuntimeOutputSize{
+        canvas_width_hint_, canvas_height_hint_, GetOutputBatchSize(in_surface->batchSize, 0)};
   }
 
   return absl::FailedPreconditionError("Could not find a paired left/right frame to determine stitched canvas size");

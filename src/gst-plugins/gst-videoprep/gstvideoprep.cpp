@@ -95,7 +95,13 @@ static guint get_output_batch_size(GstVideoPrep* videoprep, GstCaps* input_caps)
   if (input_caps && !gst_caps_is_any(input_caps) && !gst_caps_is_empty(input_caps) &&
       gst_caps_get_size(input_caps) > 0) {
     GstStructure* input_structure = gst_caps_get_structure(input_caps, 0);
-    gst_structure_get_uint(input_structure, "batch-size", &input_batch_size);
+    if (!gst_structure_get_uint(input_structure, "batch-size", &input_batch_size)) {
+      gint signed_input_batch_size = 0;
+      if (gst_structure_get_int(input_structure, "batch-size", &signed_input_batch_size) &&
+          signed_input_batch_size > 0) {
+        input_batch_size = static_cast<guint>(signed_input_batch_size);
+      }
+    }
   }
   if (videoprep->priv) {
     const guint output_batch_size =
