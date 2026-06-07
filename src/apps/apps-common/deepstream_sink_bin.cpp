@@ -17,8 +17,8 @@
 #include <unistd.h>
 
 #include <algorithm>
-#include <cctype>
 #include <atomic>
+#include <cctype>
 #include <iostream>
 #include <set>
 #include <string>
@@ -722,15 +722,24 @@ static gboolean start_rtsp_streaming(
     guint64 udp_buffer_size) {
   GstRTSPMountPoints* mounts;
   GstRTSPMediaFactory* factory;
-  char udpsrc_pipeline[1024];
+  char udpsrc_pipeline[2048];
 
   char port_num_Str[64] = {0};
   const char* encoder_name;
+  const char* depay_name;
+  const char* parse_name;
+  const char* pay_name;
 
   if (enctype == NV_DS_ENCODER_H264) {
     encoder_name = "H264";
+    depay_name = "rtph264depay";
+    parse_name = "h264parse";
+    pay_name = "rtph264pay";
   } else if (enctype == NV_DS_ENCODER_H265) {
     encoder_name = "H265";
+    depay_name = "rtph265depay";
+    parse_name = "h265parse";
+    pay_name = "rtph265pay";
   } else {
     NVGSTDS_ERR_MSG_V("%s failed", __func__);
     return FALSE;
@@ -743,27 +752,42 @@ static gboolean start_rtsp_streaming(
     g_snprintf(
         udpsrc_pipeline,
         sizeof(udpsrc_pipeline),
-        "( udpsrc name=pay0 port=%d buffer-size=%lu caps=\"application/x-rtp, media=video, "
-        "clock-rate=90000, encoding-name=%s, payload=96 \" )"
-        " ( udpsrc name=pay1 port=%d buffer-size=%lu caps=\"application/x-rtp, media=audio, "
-        "clock-rate=%u, encoding-name=L16, payload=%u, channels=(int)%u \" )",
+        "( udpsrc port=%d buffer-size=%lu caps=\"application/x-rtp, media=(string)video, "
+        "clock-rate=(int)90000, encoding-name=(string)%s, payload=(int)96\" ! "
+        "%s ! %s config-interval=1 ! %s name=pay0 pt=96 config-interval=1 )"
+        " ( udpsrc port=%d buffer-size=%lu caps=\"application/x-rtp, media=(string)audio, "
+        "clock-rate=(int)%u, encoding-name=(string)L16, payload=(int)%u, channels=(int)%u, "
+        "encoding-params=(string)%u\" ! "
+        "rtpL16depay ! audio/x-raw, format=(string)S16BE, layout=(string)interleaved, "
+        "rate=(int)%u, channels=(int)%u ! rtpL16pay name=pay1 pt=%u )",
         video_udpsink_port_num,
         udp_buffer_size,
         encoder_name,
+        depay_name,
+        parse_name,
+        pay_name,
         audio_udpsink_port_num,
         udp_buffer_size,
         hm::kRtspAudioRate,
         hm::kRtspAudioPayloadType,
-        hm::kRtspAudioChannels);
+        hm::kRtspAudioChannels,
+        hm::kRtspAudioChannels,
+        hm::kRtspAudioRate,
+        hm::kRtspAudioChannels,
+        hm::kRtspAudioPayloadType);
   } else {
     g_snprintf(
         udpsrc_pipeline,
         sizeof(udpsrc_pipeline),
-        "( udpsrc name=pay0 port=%d buffer-size=%lu caps=\"application/x-rtp, media=video, "
-        "clock-rate=90000, encoding-name=%s, payload=96 \" )",
+        "( udpsrc port=%d buffer-size=%lu caps=\"application/x-rtp, media=(string)video, "
+        "clock-rate=(int)90000, encoding-name=(string)%s, payload=(int)96\" ! "
+        "%s ! %s config-interval=1 ! %s name=pay0 pt=96 config-interval=1 )",
         video_udpsink_port_num,
         udp_buffer_size,
-        encoder_name);
+        encoder_name,
+        depay_name,
+        parse_name,
+        pay_name);
   }
 
   sprintf(port_num_Str, "%d", rtsp_port_num);
@@ -778,6 +802,11 @@ static gboolean start_rtsp_streaming(
 
   factory = gst_rtsp_media_factory_new();
   gst_rtsp_media_factory_set_shared(factory, TRUE);
+  gst_rtsp_media_factory_set_transport_mode(factory, GST_RTSP_TRANSPORT_MODE_PLAY);
+  gst_rtsp_media_factory_set_protocols(
+      factory,
+      static_cast<GstRTSPLowerTrans>(
+          GST_RTSP_LOWER_TRANS_UDP | GST_RTSP_LOWER_TRANS_UDP_MCAST | GST_RTSP_LOWER_TRANS_TCP));
   gst_rtsp_media_factory_set_launch(factory, udpsrc_pipeline);
 
   gst_rtsp_mount_points_add_factory(mounts, "/ds-test", factory);
@@ -825,6 +854,8 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
   gchar rtppay_or_flvmux_name[50];
   int probe_id = 0;
   enum ServerSinkType sink_type;
+  bool resize_rtsp_output = false;
+  std::string caps_string;
 
   // guint rtsp_port_num = g_rtsp_port_num++;
   const guint uid = next_uid++;
@@ -874,7 +905,7 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
   switch (config->codec) {
     case NV_DS_ENCODER_H264:
       bin->codecparse = gst_element_factory_make("h264parse", "h264-parser");
-      g_object_set(G_OBJECT(bin->codecparse), "config-interval", -1, NULL);
+      g_object_set(G_OBJECT(bin->codecparse), "config-interval", sink_type == SST_RTMP ? -1 : 1, NULL);
       if (sink_type != SST_RTMP) {
         g_snprintf(rtppay_or_flvmux_name, sizeof(rtppay_or_flvmux_name), "sink_sub_bin_rtppay_or_flvmux%d", uid);
         bin->rtppay_or_flvmux = gst_element_factory_make("rtph264pay", rtppay_or_flvmux_name);
@@ -895,7 +926,7 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
       break;
     case NV_DS_ENCODER_H265:
       bin->codecparse = gst_element_factory_make("h265parse", "h265-parser");
-      g_object_set(G_OBJECT(bin->codecparse), "config-interval", -1, NULL);
+      g_object_set(G_OBJECT(bin->codecparse), "config-interval", 1, NULL);
       g_snprintf(rtppay_or_flvmux_name, sizeof(rtppay_or_flvmux_name), "sink_sub_bin_rtppay_or_flvmux%d", uid);
       bin->rtppay_or_flvmux = gst_element_factory_make("rtph265pay", rtppay_or_flvmux_name);
       if (config->enc_type == NV_DS_ENCODER_TYPE_SW) {
@@ -918,10 +949,13 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
     goto done;
   }
 
-  if (config->enc_type == NV_DS_ENCODER_TYPE_SW)
-    caps = gst_caps_from_string("video/x-raw, format=I420");
-  else
-    caps = gst_caps_from_string("video/x-raw(memory:NVMM), format=I420");
+  resize_rtsp_output = sink_type != SST_RTMP && config->width && config->height;
+  caps_string =
+      config->enc_type == NV_DS_ENCODER_TYPE_SW ? "video/x-raw, format=I420" : "video/x-raw(memory:NVMM), format=I420";
+  if (resize_rtsp_output) {
+    caps_string += ", width=(int)" + std::to_string(config->width) + ", height=(int)" + std::to_string(config->height);
+  }
+  caps = gst_caps_from_string(caps_string.c_str());
 
   g_object_set(G_OBJECT(bin->cap_filter), "caps", caps, NULL);
 
@@ -933,14 +967,26 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
     NVGSTDS_ERR_MSG_V("Failed to create '%s'", rtppay_or_flvmux_name);
     goto done;
   }
+  if (sink_type != SST_RTMP) {
+    g_object_set(G_OBJECT(bin->rtppay_or_flvmux), "pt", 96, "config-interval", 1, NULL);
+  }
 
   if (config->enc_type == NV_DS_ENCODER_TYPE_SW) {
     // bitrate is in kbits/sec for software encoder x264enc and x265enc
     g_object_set(G_OBJECT(bin->encoder), "bitrate", config->bitrate / 1000, NULL);
   } else {
+    const guint iframe_interval = config->iframeinterval ? config->iframeinterval : 30;
     g_object_set(G_OBJECT(bin->encoder), "bitrate", config->bitrate, NULL);
     g_object_set(G_OBJECT(bin->encoder), "profile", config->profile, NULL);
-    g_object_set(G_OBJECT(bin->encoder), "iframeinterval", config->iframeinterval, NULL);
+    g_object_set(G_OBJECT(bin->encoder), "iframeinterval", iframe_interval, NULL);
+    if (sink_type != SST_RTMP) {
+      if (g_object_class_find_property(G_OBJECT_GET_CLASS(bin->encoder), "idrinterval")) {
+        g_object_set(G_OBJECT(bin->encoder), "idrinterval", iframe_interval, NULL);
+      }
+      if (g_object_class_find_property(G_OBJECT_GET_CLASS(bin->encoder), "insert-sps-pps")) {
+        g_object_set(G_OBJECT(bin->encoder), "insert-sps-pps", 1, NULL);
+      }
+    }
   }
 
   struct cudaDeviceProp prop;

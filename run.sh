@@ -231,11 +231,12 @@ print_rtsp_access_urls() {
   fi
 
   echo "Headless --show requested; streaming RTSP on 0.0.0.0:${port}${path}"
+  echo "Use VLC/ffplay; Chrome does not play RTSP URLs. If playback does not start, force RTSP-over-TCP."
   if [ "${#addresses[@]}" -eq 0 ]; then
-    echo "  No non-loopback IPv4 address detected; try rtsp://localhost:${port}${path} from this host."
+    echo "  No non-loopback IPv4 address detected; try: ffplay -rtsp_transport tcp rtsp://localhost:${port}${path}"
     return
   fi
-  echo "Open one of:"
+  echo "Open one of these URLs:"
   for candidate in "${addresses[@]}"; do
     echo "  rtsp://${candidate}:${port}${path}"
   done

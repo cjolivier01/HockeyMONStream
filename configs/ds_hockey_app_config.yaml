@@ -188,6 +188,11 @@ sink3:
   sync: 0
   bitrate: 4000000
   # bitrate: 200000
+  # RTSP preview is resized only inside the RTSP sink branch.
+  compute-hw: 1
+  width: 1280
+  height: 720
+  iframeinterval: 5
   #NVBUF-MEMORY-TYPE: 0
   #H264 Profile - 0=Baseline 2=Main 4=High
   #H265 Profile - 0=Main 1=Main10
@@ -397,9 +402,6 @@ hmplaycropper:
 
   num-batch-buffers: 2
   num-output-buffers: 6
-
-  # RTSP needs a smaller image
-  rtsp_resize: 1
 
 hmstitcher:
   enable: 1

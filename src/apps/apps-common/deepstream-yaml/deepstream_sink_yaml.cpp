@@ -31,6 +31,9 @@ gboolean parse_sink_yaml(
   config->encoder_config.codec = NV_DS_ENCODER_H264;
   config->encoder_config.container = NV_DS_CONTAINER_MP4;
   config->encoder_config.compute_hw = 0;
+  config->encoder_config.iframeinterval = 30;
+  config->encoder_config.width = 0;
+  config->encoder_config.height = 0;
   config->render_config.qos = FALSE;
   config->link_to_demux = FALSE;
   config->msg_conv_broker_config.new_api = FALSE;
@@ -58,8 +61,10 @@ gboolean parse_sink_yaml(
       config->link_to_demux = itr->second.as<gboolean>();
     } else if (paramKey == "width") {
       config->render_config.width = itr->second.as<gint>();
+      config->encoder_config.width = config->render_config.width;
     } else if (paramKey == "height") {
       config->render_config.height = itr->second.as<gint>();
+      config->encoder_config.height = config->render_config.height;
     } else if (paramKey == "qos") {
       config->render_config.qos = itr->second.as<gboolean>();
       config->render_config.qos_value_specified = TRUE;

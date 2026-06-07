@@ -59,6 +59,8 @@ typedef struct {
   gint sync;
   gchar* output_file_path;
   guint gpu_id;
+  guint width;
+  guint height;
   guint rtsp_port;
   guint udp_port;
   guint64 udp_buffer_size;
