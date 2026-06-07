@@ -231,7 +231,9 @@ print_rtsp_access_urls() {
   fi
 
   echo "Headless --show requested; streaming RTSP on 0.0.0.0:${port}${path}"
-  echo "Use VLC/ffplay; Chrome does not play RTSP URLs. If playback does not start, force RTSP-over-TCP."
+  echo "Chrome does not play RTSP URLs."
+  echo "Known-good test client: ffplay -rtsp_transport tcp rtsp://<address>:${port}${path}"
+  echo "VLC needs a generic RTSP client plugin such as live555; VLC builds that fall back to SAT>IP will not open this stream."
   if [ "${#addresses[@]}" -eq 0 ]; then
     echo "  No non-loopback IPv4 address detected; try: ffplay -rtsp_transport tcp rtsp://localhost:${port}${path}"
     return
