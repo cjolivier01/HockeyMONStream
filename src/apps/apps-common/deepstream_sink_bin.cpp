@@ -803,10 +803,7 @@ static gboolean start_rtsp_streaming(
   factory = gst_rtsp_media_factory_new();
   gst_rtsp_media_factory_set_shared(factory, TRUE);
   gst_rtsp_media_factory_set_transport_mode(factory, GST_RTSP_TRANSPORT_MODE_PLAY);
-  gst_rtsp_media_factory_set_protocols(
-      factory,
-      static_cast<GstRTSPLowerTrans>(
-          GST_RTSP_LOWER_TRANS_UDP | GST_RTSP_LOWER_TRANS_UDP_MCAST | GST_RTSP_LOWER_TRANS_TCP));
+  gst_rtsp_media_factory_set_protocols(factory, GST_RTSP_LOWER_TRANS_TCP);
   gst_rtsp_media_factory_set_launch(factory, udpsrc_pipeline);
 
   gst_rtsp_mount_points_add_factory(mounts, "/ds-test", factory);
