@@ -9,8 +9,10 @@
 
 #include "absl/status/statusor.h"
 
+#include <algorithm>
 #include <cstring>
 #include <iostream>
+#include <iterator>
 #include <string>
 
 #include <stdlib.h>
@@ -222,6 +224,7 @@ gboolean parse_hmimagemetamerger_yaml(NvDsHmImageMetaMergerConfig* config, const
 }
 
 gboolean parse_hmaudio_yaml(NvDsHmAudioConfig* config, const YAML::Node& yaml_node) {
+  std::fill(std::begin(config->multi_sink_ids), std::end(config->multi_sink_ids), -1);
   hm::utils::ConfigLocator locator;
   SET_LOCATOR(locator, *config, enable);
   SET_LOCATOR(locator, *config, src);

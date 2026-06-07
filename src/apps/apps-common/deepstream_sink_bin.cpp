@@ -40,10 +40,15 @@ static std::atomic<guint> next_uid = 1;
 static GstRTSPServer* server[MAX_SINK_BINS];
 static guint server_count = 0;
 static GMutex server_cnt_lock;
-static gboolean rtsp_audio_enabled = FALSE;
+static std::set<guint> rtsp_audio_sink_ids;
 
-void set_rtsp_audio_enabled(gboolean enabled) {
-  rtsp_audio_enabled = enabled;
+void set_rtsp_audio_sink_ids(const gint* sink_ids, guint num_sink_ids) {
+  rtsp_audio_sink_ids.clear();
+  for (guint i = 0; i < num_sink_ids; ++i) {
+    if (sink_ids[i] >= 0) {
+      rtsp_audio_sink_ids.insert(static_cast<guint>(sink_ids[i]));
+    }
+  }
 }
 
 GST_DEBUG_CATEGORY_EXTERN(NVDS_APP);
@@ -84,17 +89,20 @@ const char kWebRtcClientHtml[] = R"html(<!doctype html>
   </style>
 </head>
 <body>
-  <video id="video" autoplay playsinline muted controls></video>
+  <video id="video" autoplay playsinline controls></video>
   <div id="status">Connecting...</div>
   <script>
     const video = document.getElementById('video');
     const status = document.getElementById('status');
     const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
     const pc = new RTCPeerConnection();
+    const inboundStream = new MediaStream();
+    video.srcObject = inboundStream;
 
     pc.addTransceiver('video', {direction: 'recvonly'});
+    pc.addTransceiver('audio', {direction: 'recvonly'});
     pc.ontrack = (event) => {
-      video.srcObject = event.streams[0];
+      inboundStream.addTrack(event.track);
       status.textContent = 'Connected';
     };
     pc.onconnectionstatechange = () => {
@@ -398,7 +406,7 @@ void on_webrtc_http_request(
   soup_message_set_status(msg, SOUP_STATUS_OK);
 }
 
-gboolean start_webrtc_signaling(GstElement* webrtc, NvDsSinkEncoderConfig* config) {
+gboolean start_webrtc_signaling(GstElement* webrtc, const NvDsSinkEncoderConfig* config) {
   GError* error = nullptr;
   WebRtcSignalServer* signal_server = new WebRtcSignalServer();
   g_mutex_init(&signal_server->lock);
@@ -447,6 +455,10 @@ bool have_webrtc_ice_plugin() {
     gst_object_unref(nice_sink_factory);
   }
   return available;
+}
+
+bool rtsp_audio_enabled_for_sink_id(guint sink_id) {
+  return rtsp_audio_sink_ids.count(sink_id) > 0;
 }
 
 GstPad* find_webrtc_transceiver_sink_pad(GstElement* webrtc, GstWebRTCRTPTransceiver* transceiver) {
@@ -515,6 +527,74 @@ void destroy_webrtc_signal_servers() {
 }
 
 } // namespace
+
+gboolean start_webrtc_signaling_for_sink(GstElement* webrtc, const NvDsSinkEncoderConfig* config) {
+  return start_webrtc_signaling(webrtc, config);
+}
+
+gboolean link_webrtc_rtp_src_to_sink(
+    GstElement* webrtc,
+    GstElement* rtp_src_element,
+    GstCaps* rtp_caps,
+    const char* track_name) {
+  static std::atomic<int> webrtc_in_counter = 0;
+  GstWebRTCRTPTransceiver* transceiver = nullptr;
+  GstPad* webrtc_sink_pad = nullptr;
+  GstPadTemplate* webrtc_sink_pad_template = nullptr;
+  gchar* webrtc_sink_pad_name = nullptr;
+  gboolean ret = FALSE;
+
+  if (!webrtc || !rtp_src_element || !rtp_caps) {
+    g_printerr("Cannot link WebRTC RTP track '%s': missing element or caps\n", track_name ? track_name : "unknown");
+    goto done;
+  }
+
+  g_signal_emit_by_name(
+      webrtc, "add-transceiver", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY, rtp_caps, &transceiver);
+  if (!transceiver) {
+    g_printerr("Failed to add WebRTC %s transceiver\n", track_name ? track_name : "RTP");
+    goto done;
+  }
+
+  webrtc_sink_pad = find_webrtc_transceiver_sink_pad(webrtc, transceiver);
+  if (!webrtc_sink_pad) {
+    webrtc_sink_pad_template = gst_element_class_get_pad_template(GST_ELEMENT_GET_CLASS(webrtc), "sink_%u");
+  }
+  if (!webrtc_sink_pad && webrtc_sink_pad_template) {
+    webrtc_sink_pad = gst_element_request_pad(webrtc, webrtc_sink_pad_template, NULL, rtp_caps);
+  }
+  if (!webrtc_sink_pad) {
+    webrtc_sink_pad = gst_element_request_pad_simple(webrtc, "sink_%u");
+  }
+  if (!webrtc_sink_pad) {
+    g_printerr("Failed to request WebRTC %s RTP sink pad\n", track_name ? track_name : "RTP");
+    goto done;
+  }
+
+  webrtc_sink_pad_name = gst_pad_get_name(webrtc_sink_pad);
+  if (!webrtc_sink_pad_name) {
+    g_printerr("Failed to name WebRTC %s RTP sink pad\n", track_name ? track_name : "RTP");
+    goto done;
+  }
+
+  {
+    std::string ghost_pad_name = std::string("webrtc_") + (track_name ? track_name : "rtp") + "_in_" +
+        std::to_string(webrtc_in_counter++);
+    ret = hm::connectElementsWithGhostPads(rtp_src_element, "src", webrtc, webrtc_sink_pad_name, ghost_pad_name);
+  }
+
+done:
+  if (webrtc_sink_pad_name) {
+    g_free(webrtc_sink_pad_name);
+  }
+  if (webrtc_sink_pad) {
+    gst_object_unref(webrtc_sink_pad);
+  }
+  if (transceiver) {
+    gst_object_unref(transceiver);
+  }
+  return ret;
+}
 
 namespace hm {
 
@@ -1321,7 +1401,7 @@ static enum ServerSinkType get_server_sink_type(const char* s) {
   return SST_RTSP;
 }
 
-static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSubBin* bin) {
+static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSubBin* bin, gboolean enable_rtsp_audio) {
   GstCaps* caps = NULL;
   gboolean ret = FALSE;
   gchar elem_name[50];
@@ -1535,7 +1615,7 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
         config->rtsp_port,
         config->udp_port,
         config->udp_port + hm::kRtspAudioUdpPortOffset,
-        rtsp_audio_enabled,
+        enable_rtsp_audio,
         config->codec,
         config->udp_buffer_size);
     if (ret != TRUE) {
@@ -1797,9 +1877,6 @@ static gboolean create_webrtc_sink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBi
   }
 
   NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "sink");
-  if (!start_webrtc_signaling(bin->sink, config)) {
-    goto done;
-  }
 
   ret = TRUE;
 done:
@@ -1870,7 +1947,7 @@ gboolean create_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array,
       NVGSTDS_ERR_MSG_V("Duplicate RTSP UDP video port %u", video_port);
       goto done;
     }
-    if (rtsp_audio_enabled) {
+    if (rtsp_audio_enabled_for_sink_id(config_array[i].sink_id)) {
       const guint audio_port = video_port + hm::kRtspAudioUdpPortOffset;
       if (!rtsp_udp_ports.insert(audio_port).second) {
         NVGSTDS_ERR_MSG_V("RTSP UDP audio port %u collides with another configured RTSP UDP port", audio_port);
@@ -1909,7 +1986,10 @@ gboolean create_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array,
         break;
       case NV_DS_SINK_UDPSINK:
         config_array[i].encoder_config.sync = config_array[i].sync;
-        if (!create_udpsink_bin(&config_array[i].encoder_config, &bin->sub_bins[i]))
+        if (!create_udpsink_bin(
+                &config_array[i].encoder_config,
+                &bin->sub_bins[i],
+                rtsp_audio_enabled_for_sink_id(config_array[i].sink_id)))
           goto done;
         break;
       case NV_DS_SINK_WEBRTC:
@@ -2011,7 +2091,10 @@ gboolean create_demux_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_
           goto done;
         break;
       case NV_DS_SINK_UDPSINK:
-        if (!create_udpsink_bin(&config_array[i].encoder_config, &bin->sub_bins[i]))
+        if (!create_udpsink_bin(
+                &config_array[i].encoder_config,
+                &bin->sub_bins[i],
+                rtsp_audio_enabled_for_sink_id(config_array[i].sink_id)))
           goto done;
         break;
       case NV_DS_SINK_WEBRTC:

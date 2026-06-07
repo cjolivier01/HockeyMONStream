@@ -18,6 +18,8 @@
 #include <cstring>
 #include <functional>
 #include <iostream>
+#include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -42,30 +44,88 @@
 
 namespace {
 
-NvDsSinkBinSubBin* find_sink_sub_bin(int sink_id, const NvDsSinkSubBinConfig* sink_config, NvDsSinkBin* sink_bins) {
-  size_t sink_bin_index = 0;
+struct HmAudioSinkTarget {
+  const NvDsSinkSubBinConfig* config{nullptr};
+  NvDsSinkBinSubBin* sub_bin{nullptr};
+};
+
+bool link_elements(GstElement* elem1, GstElement* elem2) {
+  if (!gst_element_link(elem1, elem2)) {
+    GstCaps* src_caps = nullptr;
+    GstCaps* sink_caps = nullptr;
+    gchar* src_caps_str = nullptr;
+    gchar* sink_caps_str = nullptr;
+    if ((elem1)->srcpads) {
+      src_caps = gst_pad_query_caps((GstPad*)(elem1)->srcpads->data, NULL);
+      src_caps_str = gst_caps_to_string(src_caps);
+    }
+    if ((elem2)->sinkpads) {
+      sink_caps = gst_pad_query_caps((GstPad*)(elem2)->sinkpads->data, NULL);
+      sink_caps_str = gst_caps_to_string(sink_caps);
+    }
+    NVGSTDS_ERR_MSG_V(
+        "Failed to link '%s' (%s) and '%s' (%s)",
+        GST_ELEMENT_NAME(elem1),
+        src_caps_str ? src_caps_str : "none",
+        GST_ELEMENT_NAME(elem2),
+        sink_caps_str ? sink_caps_str : "none");
+    if (src_caps) {
+      gst_caps_unref(src_caps);
+    }
+    if (sink_caps) {
+      gst_caps_unref(sink_caps);
+    }
+    if (src_caps_str) {
+      g_free(src_caps_str);
+    }
+    if (sink_caps_str) {
+      g_free(sink_caps_str);
+    }
+    return false;
+  }
+  return true;
+}
+
+bool link_to_tee(GstElement* src_tee, GstElement* target) {
+  auto tee_src_pad_template = gst_element_class_get_pad_template(GST_ELEMENT_GET_CLASS(src_tee), "src_%u");
+  GstPad* tee_pad = gst_element_request_pad(src_tee, tee_src_pad_template, NULL, NULL);
+  GstPad* target_pad = gst_element_get_static_pad(target, "sink");
+  bool link_ok = tee_pad && target_pad && gst_pad_link(tee_pad, target_pad) == GST_PAD_LINK_OK;
+  if (target_pad) {
+    gst_object_unref(target_pad);
+  }
+  if (tee_pad) {
+    gst_object_unref(tee_pad);
+  }
+
+  if (!link_ok) {
+    g_printerr("Tee could not be linked to the target.\n");
+    return false;
+  }
+  return true;
+}
+
+[[maybe_unused]] NvDsSinkBinSubBin* find_sink_sub_bin(
+    int sink_id,
+    const NvDsSinkSubBinConfig* sink_config,
+    NvDsSinkBin* sink_bins) {
   for (size_t i = 0; i < MAX_SINK_BINS; ++i) {
     const NvDsSinkSubBinConfig& config = sink_config[i];
     if (config.sink_id == (long)sink_id) {
-      return &sink_bins->sub_bins[sink_bin_index];
-    }
-    if (config.enable) {
-      ++sink_bin_index;
+      return &sink_bins->sub_bins[i];
     }
   }
   return nullptr;
 }
 
-std::map<NvDsSinkType, std::vector<std::pair<const NvDsSinkSubBinConfig*, NvDsSinkBinSubBin*>>>
+[[maybe_unused]] std::map<NvDsSinkType, std::vector<std::pair<const NvDsSinkSubBinConfig*, NvDsSinkBinSubBin*>>>
 find_enabled_sink_sub_bins(const NvDsSinkSubBinConfig* sink_config, NvDsSinkBin* sink_bins) {
   std::map<NvDsSinkType, std::vector<std::pair<const NvDsSinkSubBinConfig*, NvDsSinkBinSubBin*>>> results;
-  size_t sink_bin_index = 0;
   for (size_t i = 0; i < MAX_SINK_BINS; ++i) {
     const NvDsSinkSubBinConfig& config = sink_config[i];
     if (config.enable) {
-      NvDsSinkBinSubBin* sink_sub_bin = &sink_bins->sub_bins[sink_bin_index];
+      NvDsSinkBinSubBin* sink_sub_bin = &sink_bins->sub_bins[i];
       results[config.type].emplace_back(std::make_pair(&config, sink_sub_bin));
-      ++sink_bin_index;
     }
   }
   return results;
@@ -93,7 +153,7 @@ bool link_audio_pad_to_muxer(GstElement* postParse, GstElement* muxer, const cha
   }
   dest_pad_name = gst_pad_get_name(muxer_audio_pad);
 
-  ghost_pad_name = std::string("audio_in_") + std::to_string(audio_in_counter);
+  ghost_pad_name = std::string("audio_in_") + std::to_string(audio_in_counter++);
 
   ret = hm::connectElementsWithGhostPads(postParse, src_pad_name, muxer, dest_pad_name, ghost_pad_name);
 
@@ -116,6 +176,401 @@ done:
 bool is_rtmp_server_sink(const NvDsSinkSubBinConfig* sink_config) {
   const char* output_file_path = sink_config ? sink_config->encoder_config.output_file_path : nullptr;
   return output_file_path && !strncmp(output_file_path, "rtmp:/", 6);
+}
+
+bool is_render_audio_sink(const NvDsSinkSubBinConfig* sink_config) {
+#ifndef IS_TEGRA
+  return sink_config->type == NvDsSinkType::NV_DS_SINK_RENDER_EGL;
+#else
+  return sink_config->type == NvDsSinkType::NV_DS_SINK_RENDER_3D;
+#endif
+}
+
+bool hmaudio_supports_sink(const NvDsSinkSubBinConfig* sink_config) {
+  if (!sink_config) {
+    return false;
+  }
+  switch (sink_config->type) {
+    case NV_DS_SINK_ENCODE_FILE:
+    case NV_DS_SINK_UDPSINK:
+    case NV_DS_SINK_WEBRTC:
+    case NV_DS_SINK_FAKE:
+      return true;
+    default:
+      return is_render_audio_sink(sink_config);
+  }
+}
+
+bool hmaudio_sink_requires_raw_audio(const NvDsSinkSubBinConfig* sink_config) {
+  if (!sink_config) {
+    return false;
+  }
+  if (is_render_audio_sink(sink_config)) {
+    return true;
+  }
+  switch (sink_config->type) {
+    case NV_DS_SINK_UDPSINK:
+    case NV_DS_SINK_WEBRTC:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool sink_sub_bin_is_created(const NvDsSinkBinSubBin* sub_bin) {
+  return sub_bin && (sub_bin->bin || sub_bin->mux || sub_bin->sink || sub_bin->rtppay_or_flvmux);
+}
+
+std::set<gint> configured_multi_sink_ids(const NvDsHmAudioConfig* config) {
+  std::set<gint> sink_ids;
+  if (config->dest != DEST_MULTI_SINK) {
+    return sink_ids;
+  }
+  for (size_t i = 0; i < MAX_SINK_BINS; ++i) {
+    if (config->multi_sink_ids[i] >= 0) {
+      sink_ids.insert(config->multi_sink_ids[i]);
+    }
+  }
+  return sink_ids;
+}
+
+std::vector<HmAudioSinkTarget> collect_hmaudio_sink_targets(
+    const NvDsHmAudioConfig* config,
+    const NvDsSinkSubBinConfig* sink_config_array,
+    NvDsSinkBin* sink_bin) {
+  std::vector<HmAudioSinkTarget> targets;
+  const std::set<gint> multi_sink_ids = configured_multi_sink_ids(config);
+
+  if (config->dest != DEST_SINK && config->dest != DEST_MULTI_SINK) {
+    return targets;
+  }
+  if (config->dest == DEST_MULTI_SINK && multi_sink_ids.empty()) {
+    return targets;
+  }
+
+  for (size_t i = 0; i < MAX_SINK_BINS; ++i) {
+    const NvDsSinkSubBinConfig* sink_config = &sink_config_array[i];
+    NvDsSinkBinSubBin* sub_bin = &sink_bin->sub_bins[i];
+    if (!sink_config->enable || sink_config->link_to_demux || !hmaudio_supports_sink(sink_config)) {
+      continue;
+    }
+    if (!sink_sub_bin_is_created(sub_bin)) {
+      continue;
+    }
+
+    if (!multi_sink_ids.empty()) {
+      if (!multi_sink_ids.count(sink_config->sink_id)) {
+        continue;
+      }
+    } else if (config->sink_id >= 0 && static_cast<guint>(config->sink_id) != sink_config->sink_id) {
+      continue;
+    }
+
+    targets.push_back({sink_config, sub_bin});
+  }
+  return targets;
+}
+
+bool hmaudio_targets_require_raw_audio(const std::vector<HmAudioSinkTarget>& targets) {
+  return std::any_of(targets.begin(), targets.end(), [](const HmAudioSinkTarget& target) {
+    return hmaudio_sink_requires_raw_audio(target.config);
+  });
+}
+
+std::string branch_element_name(const char* prefix, const NvDsSinkSubBinConfig* sink_config, const char* suffix) {
+  std::stringstream ss;
+  ss << "hmaudio_" << prefix << "_sink" << sink_config->sink_id << "_" << suffix;
+  return ss.str();
+}
+
+bool make_audio_bin_element(
+    NvDsHmAudioBin* bin,
+    GstElement** element,
+    const char* factory_name,
+    const std::string& element_name) {
+  *element = gst_element_factory_make(factory_name, element_name.c_str());
+  if (!*element) {
+    g_printerr("Failed to create '%s' of type '%s'\n", element_name.c_str(), factory_name);
+    return false;
+  }
+  gst_bin_add(GST_BIN(bin->bin), *element);
+  return true;
+}
+
+bool create_audio_branch_queue(NvDsHmAudioBin* bin, const NvDsSinkSubBinConfig* sink_config, GstElement** queue) {
+  if (!make_audio_bin_element(bin, queue, NVDS_ELEM_QUEUE, branch_element_name("branch", sink_config, "queue"))) {
+    return false;
+  }
+  if (sink_config->type != NV_DS_SINK_ENCODE_FILE) {
+    g_object_set(G_OBJECT(*queue), "leaky", 2, "max-size-buffers", 30, "max-size-time", 0, "max-size-bytes", 0, NULL);
+  }
+  return link_to_tee(bin->tee, *queue);
+}
+
+bool link_audio_elements(std::initializer_list<GstElement*> elements) {
+  if (elements.size() < 2) {
+    return true;
+  }
+  auto it = elements.begin();
+  GstElement* previous = *it;
+  ++it;
+  for (; it != elements.end(); ++it) {
+    if (!link_elements(previous, *it)) {
+      return false;
+    }
+    previous = *it;
+  }
+  return true;
+}
+
+bool create_file_audio_branch(NvDsHmAudioBin* bin, const HmAudioSinkTarget& target, bool input_encoded_aac) {
+  if (!target.sub_bin->mux) {
+    g_printerr("HMAudio could not find file muxer for sink id %u\n", target.config->sink_id);
+    return false;
+  }
+
+  GstElement* queue{nullptr};
+  GstElement* encoder{nullptr};
+  GstElement* parser{nullptr};
+  if (!create_audio_branch_queue(bin, target.config, &queue)) {
+    return false;
+  }
+  if (input_encoded_aac) {
+    if (!make_audio_bin_element(bin, &parser, "aacparse", branch_element_name("file", target.config, "aacparse"))) {
+      return false;
+    }
+    if (!link_audio_elements({queue, parser})) {
+      return false;
+    }
+  } else {
+    if (!make_audio_bin_element(bin, &encoder, "voaacenc", branch_element_name("file", target.config, "encoder")) ||
+        !make_audio_bin_element(bin, &parser, "aacparse", branch_element_name("file", target.config, "aacparse"))) {
+      return false;
+    }
+    if (!link_audio_elements({queue, encoder, parser})) {
+      return false;
+    }
+  }
+  return link_audio_pad_to_muxer(parser, target.sub_bin->mux);
+}
+
+bool create_rtmp_audio_branch(NvDsHmAudioBin* bin, const HmAudioSinkTarget& target) {
+  if (!target.sub_bin->rtppay_or_flvmux) {
+    g_printerr("HMAudio could not find RTMP muxer for sink id %u\n", target.config->sink_id);
+    return false;
+  }
+
+  GstElement* queue{nullptr};
+  GstElement* encoder{nullptr};
+  GstElement* parser{nullptr};
+  if (!create_audio_branch_queue(bin, target.config, &queue) ||
+      !make_audio_bin_element(bin, &encoder, "voaacenc", branch_element_name("rtmp", target.config, "encoder")) ||
+      !make_audio_bin_element(bin, &parser, "aacparse", branch_element_name("rtmp", target.config, "aacparse"))) {
+    return false;
+  }
+  if (!link_audio_elements({queue, encoder, parser})) {
+    return false;
+  }
+  return link_audio_pad_to_muxer(parser, target.sub_bin->rtppay_or_flvmux, /*audio_pad_name=*/"audio");
+}
+
+bool create_rtsp_audio_branch(NvDsHmAudioBin* bin, const HmAudioSinkTarget& target) {
+  if (!target.sub_bin->rtppay_or_flvmux) {
+    g_printerr("HMAudio could not find RTSP video payloader for sink id %u\n", target.config->sink_id);
+    return false;
+  }
+
+  GstElement* queue{nullptr};
+  GstElement* audioconvert{nullptr};
+  GstElement* audioresample{nullptr};
+  GstElement* capsfilter{nullptr};
+  GstElement* payloader{nullptr};
+  GstElement* udpsink{nullptr};
+  if (!create_audio_branch_queue(bin, target.config, &queue) ||
+      !make_audio_bin_element(
+          bin, &audioconvert, NVDS_ELEM_AUDIO_CONV, branch_element_name("rtsp", target.config, "audioconvert")) ||
+      !make_audio_bin_element(bin, &audioresample, "audioresample", branch_element_name("rtsp", target.config, "resample")) ||
+      !make_audio_bin_element(bin, &capsfilter, "capsfilter", branch_element_name("rtsp", target.config, "caps")) ||
+      !make_audio_bin_element(bin, &payloader, "rtpL16pay", branch_element_name("rtsp", target.config, "l16pay")) ||
+      !make_audio_bin_element(bin, &udpsink, "udpsink", branch_element_name("rtsp", target.config, "udpsink"))) {
+    return false;
+  }
+
+  GstCaps* rtsp_audio_caps = gst_caps_new_simple(
+      "audio/x-raw",
+      "format",
+      G_TYPE_STRING,
+      "S16BE",
+      "layout",
+      G_TYPE_STRING,
+      "interleaved",
+      "rate",
+      G_TYPE_INT,
+      hm::kRtspAudioRate,
+      "channels",
+      G_TYPE_INT,
+      hm::kRtspAudioChannels,
+      NULL);
+  if (!rtsp_audio_caps) {
+    g_printerr("Failed to create RTSP audio caps\n");
+    return false;
+  }
+  g_object_set(G_OBJECT(capsfilter), "caps", rtsp_audio_caps, NULL);
+  gst_caps_unref(rtsp_audio_caps);
+
+  g_object_set(G_OBJECT(payloader), "pt", hm::kRtspAudioPayloadType, NULL);
+  g_object_set(
+      G_OBJECT(udpsink),
+      "host",
+      "127.0.0.1",
+      "port",
+      target.config->encoder_config.udp_port + hm::kRtspAudioUdpPortOffset,
+      "async",
+      FALSE,
+      "sync",
+      target.config->sync,
+      NULL);
+
+  return link_audio_elements({queue, audioconvert, audioresample, capsfilter, payloader, udpsink});
+}
+
+bool create_webrtc_audio_branch(NvDsHmAudioBin* bin, const HmAudioSinkTarget& target) {
+  constexpr guint kWebRtcAudioPayloadType = 97;
+  if (!target.sub_bin->sink) {
+    g_printerr("HMAudio could not find WebRTC sink for sink id %u\n", target.config->sink_id);
+    return false;
+  }
+
+  GstElement* queue{nullptr};
+  GstElement* audioconvert{nullptr};
+  GstElement* audioresample{nullptr};
+  GstElement* raw_capsfilter{nullptr};
+  GstElement* opusenc{nullptr};
+  GstElement* rtppay{nullptr};
+  if (!create_audio_branch_queue(bin, target.config, &queue) ||
+      !make_audio_bin_element(
+          bin, &audioconvert, NVDS_ELEM_AUDIO_CONV, branch_element_name("webrtc", target.config, "audioconvert")) ||
+      !make_audio_bin_element(bin, &audioresample, "audioresample", branch_element_name("webrtc", target.config, "resample")) ||
+      !make_audio_bin_element(bin, &raw_capsfilter, "capsfilter", branch_element_name("webrtc", target.config, "rawcaps")) ||
+      !make_audio_bin_element(bin, &opusenc, "opusenc", branch_element_name("webrtc", target.config, "opusenc")) ||
+      !make_audio_bin_element(bin, &rtppay, "rtpopuspay", branch_element_name("webrtc", target.config, "rtpopuspay"))) {
+    return false;
+  }
+
+  GstCaps* raw_caps = gst_caps_new_simple(
+      "audio/x-raw",
+      "format",
+      G_TYPE_STRING,
+      "S16LE",
+      "layout",
+      G_TYPE_STRING,
+      "interleaved",
+      "rate",
+      G_TYPE_INT,
+      48000,
+      "channels",
+      G_TYPE_INT,
+      2,
+      NULL);
+  if (!raw_caps) {
+    g_printerr("Failed to create WebRTC raw audio caps\n");
+    return false;
+  }
+  g_object_set(G_OBJECT(raw_capsfilter), "caps", raw_caps, NULL);
+  gst_caps_unref(raw_caps);
+
+  g_object_set(G_OBJECT(opusenc), "bitrate", 128000, NULL);
+  g_object_set(G_OBJECT(rtppay), "pt", kWebRtcAudioPayloadType, NULL);
+
+  if (!link_audio_elements({queue, audioconvert, audioresample, raw_capsfilter, opusenc, rtppay})) {
+    return false;
+  }
+
+  GstCaps* rtp_caps = gst_caps_new_simple(
+      "application/x-rtp",
+      "media",
+      G_TYPE_STRING,
+      "audio",
+      "encoding-name",
+      G_TYPE_STRING,
+      "OPUS",
+      "payload",
+      G_TYPE_INT,
+      kWebRtcAudioPayloadType,
+      "clock-rate",
+      G_TYPE_INT,
+      48000,
+      NULL);
+  if (!rtp_caps) {
+    g_printerr("Failed to create WebRTC RTP audio caps\n");
+    return false;
+  }
+  const gboolean linked = link_webrtc_rtp_src_to_sink(target.sub_bin->sink, rtppay, rtp_caps, "audio");
+  gst_caps_unref(rtp_caps);
+  return linked;
+}
+
+bool create_render_audio_branch(
+    NvDsHmAudioBin* bin,
+    const HmAudioSinkTarget& target,
+    const NvDsHmAudioConfig* hmaudio_config) {
+  GstElement* queue{nullptr};
+  GstElement* audioconvert{nullptr};
+  GstElement* audioresample{nullptr};
+  GstElement* audiosink{nullptr};
+  if (!create_audio_branch_queue(bin, target.config, &queue) ||
+      !make_audio_bin_element(
+          bin, &audioconvert, NVDS_ELEM_AUDIO_CONV, branch_element_name("render", target.config, "audioconvert")) ||
+      !make_audio_bin_element(bin, &audioresample, "audioresample", branch_element_name("render", target.config, "resample")) ||
+      !make_audio_bin_element(bin, &audiosink, "alsasink", branch_element_name("render", target.config, "alsasink"))) {
+    return false;
+  }
+  if (*hmaudio_config->alsa_dest_device) {
+    g_object_set(G_OBJECT(audiosink), "device", hmaudio_config->alsa_dest_device, NULL);
+  }
+  return link_audio_elements({queue, audioconvert, audioresample, audiosink});
+}
+
+bool create_fake_audio_branch(NvDsHmAudioBin* bin, const HmAudioSinkTarget& target) {
+  GstElement* queue{nullptr};
+  GstElement* fakesink{nullptr};
+  if (!create_audio_branch_queue(bin, target.config, &queue) ||
+      !make_audio_bin_element(bin, &fakesink, "fakesink", branch_element_name("fake", target.config, "sink"))) {
+    return false;
+  }
+  g_object_set(G_OBJECT(fakesink), "sync", FALSE, "async", FALSE, NULL);
+  return link_audio_elements({queue, fakesink});
+}
+
+bool create_audio_branch_for_target(
+    NvDsHmAudioBin* bin,
+    const HmAudioSinkTarget& target,
+    const NvDsHmAudioConfig* hmaudio_config,
+    bool input_encoded_aac) {
+  if (input_encoded_aac && hmaudio_sink_requires_raw_audio(target.config)) {
+    g_printerr(
+        "HMAudio sink id %u requires raw audio, but the shared audio branch is encoded AAC\n", target.config->sink_id);
+    return false;
+  }
+
+  if (target.config->type == NV_DS_SINK_ENCODE_FILE) {
+    return create_file_audio_branch(bin, target, input_encoded_aac);
+  }
+  if (target.config->type == NV_DS_SINK_UDPSINK) {
+    return is_rtmp_server_sink(target.config) ? create_rtmp_audio_branch(bin, target) : create_rtsp_audio_branch(bin, target);
+  }
+  if (target.config->type == NV_DS_SINK_WEBRTC) {
+    return create_webrtc_audio_branch(bin, target);
+  }
+  if (target.config->type == NV_DS_SINK_FAKE) {
+    return create_fake_audio_branch(bin, target);
+  }
+  if (is_render_audio_sink(target.config)) {
+    return create_render_audio_branch(bin, target, hmaudio_config);
+  }
+
+  g_printerr("hmaudio doesn't know how to link to sink of type %d\n", static_cast<int>(target.config->type));
+  return false;
 }
 
 void setup_rgb_nvvm_caps_filter(GstCaps* caps, GstElement* cap_filter) {
@@ -688,45 +1143,6 @@ static void on_demuxer_pad_added(GstElement* element, GstPad* pad, gpointer data
   gst_caps_unref(caps);
 }
 
-[[maybe_unused]] static bool link_elements(GstElement* elem1, GstElement* elem2) {
-  if (!gst_element_link(elem1, elem2)) {
-    GstCaps *src_caps, *sink_caps;
-    const char* src_caps_str = "none";
-    if ((elem1)->srcpads) {
-      src_caps = gst_pad_query_caps((GstPad*)(elem1)->srcpads->data, NULL);
-      src_caps_str = gst_caps_to_string(src_caps);
-    }
-    const char* sink_pad_str = "none";
-    if ((elem2)->sinkpads) {
-      sink_caps = gst_pad_query_caps((GstPad*)(elem2)->sinkpads->data, NULL);
-      sink_pad_str = gst_caps_to_string(sink_caps);
-    }
-    NVGSTDS_ERR_MSG_V(
-        "Failed to link '%s' (%s) and '%s' (%s)",
-        GST_ELEMENT_NAME(elem1),
-        src_caps_str,
-        GST_ELEMENT_NAME(elem2),
-        sink_pad_str);
-    return false;
-  }
-  return true;
-}
-
-static bool link_to_tee(GstElement* src_tee, GstElement* target) {
-  // Manually link the tee to each queue
-  auto tee_src_pad_template = gst_element_class_get_pad_template(GST_ELEMENT_GET_CLASS(src_tee), "src_%u");
-  GstPad* tee_pad = gst_element_request_pad(src_tee, tee_src_pad_template, NULL, NULL);
-  GstPad* target_pad = gst_element_get_static_pad(target, "sink");
-  bool link_ok = gst_pad_link(tee_pad, target_pad) == GST_PAD_LINK_OK;
-  gst_object_unref(target_pad);
-
-  if (!link_ok) {
-    g_printerr("Tee could not be linked to the target.\n");
-    return false;
-  }
-  return true;
-}
-
 /**
  *  _    _                               _  _
  * | |  | |              /\             | |(_)
@@ -745,10 +1161,6 @@ gboolean create_hmaudio_bin(
     const NvDsSinkSubBinConfig* sink_config_array,
     NvDsSinkBin* sink_bin) {
   gboolean ret = FALSE;
-  bool linked = false;
-
-  std::map<NvDsSinkType, std::vector<std::pair<const NvDsSinkSubBinConfig*, NvDsSinkBinSubBin*>>>
-      enabled_sink_sub_bins = find_enabled_sink_sub_bins(sink_config_array, sink_bin);
 
   NvDsSrcBin* source_bin = nullptr;
   const NvDsSourceConfig* source_config{nullptr};
@@ -781,39 +1193,16 @@ gboolean create_hmaudio_bin(
   const bool is_file_prefix = !strncmp(config->audio_location, file_prefix.c_str(), file_prefix.size());
   std::string audio_location = is_file_prefix ? &config->audio_location[file_prefix.size()] : config->audio_location;
   const bool is_src_file = config->src == SRC_FILE || is_file_prefix;
-  const NvDsSinkSubBinConfig* sink_config{nullptr};
-  bool is_dest_file_sink = false;
-  bool is_dest_alsa_sink = false;
 
-  std::map<NvDsSinkType, const NvDsSinkSubBinConfig*> multi_sink_configs;
-  NvDsSinkBinSubBin* target_sink_bin{nullptr};
-
-  if (config->dest == DEST_SINK && config->sink_id == -1 && enabled_sink_sub_bins.size() == 1) {
-    sink_config = enabled_sink_sub_bins.begin()->second.at(0).first;
-    target_sink_bin = enabled_sink_sub_bins.begin()->second.at(0).second;
-  } else if (config->dest == DEST_SINK || config->dest == DEST_MULTI_SINK) {
-    for (size_t i = 0; i < MAX_SINK_BINS; ++i) {
-      if (sink_config_array[i].sink_id == config->sink_id) {
-        sink_config = &sink_config_array[i];
-        multi_sink_configs[sink_config->type] = sink_config;
-        break;
-      }
-    }
-    if (!sink_config) {
-      std::cout << "HMAudio references missing or disabled sink-id " << config->sink_id << ", so disabling audio"
-                << std::endl;
-      return true;
-    }
+  const std::vector<HmAudioSinkTarget> targets = collect_hmaudio_sink_targets(config, sink_config_array, sink_bin);
+  if (targets.empty()) {
+    std::cout << "HMAudio found no enabled compatible sink targets for sink-id " << config->sink_id
+              << ", so disabling audio" << std::endl;
+    return true;
   }
-
-  if (sink_config) {
-    is_dest_file_sink = sink_config->type == NvDsSinkType::NV_DS_SINK_ENCODE_FILE;
-#ifndef IS_TEGRA
-    is_dest_alsa_sink = sink_config->type == NvDsSinkType::NV_DS_SINK_RENDER_EGL;
-#else
-    is_dest_alsa_sink = sink_config->type == NvDsSinkType::NV_DS_SINK_RENDER_3D;
-#endif
-  }
+  const bool source_audio_needs_decode = is_src_file && hmaudio_targets_require_raw_audio(targets);
+  const bool shared_audio_is_encoded_aac = is_src_file && !source_audio_needs_decode;
+  const bool shared_audio_is_raw = !shared_audio_is_encoded_aac;
 
   bin->bin = gst_bin_new("hmaudio_bin");
   if (!bin->bin) {
@@ -829,45 +1218,24 @@ gboolean create_hmaudio_bin(
   if (config->src == SRC_FILE || is_src_file) {
     HMGST_ELEMENT_MAKE_BINADD(bin->audiosrc, "filesrc", "hmaudio_filsrc");
     HMGST_ELEMENT_MAKE_BINADD(bin->qtdemux, "qtdemux", "hmaudio_demuxer");
-    if (!is_dest_file_sink) {
+    if (source_audio_needs_decode) {
       HMGST_ELEMENT_MAKE_BINADD(bin->decodebin, "decodebin", "hmaudio_decoder");
-      HMGST_ELEMENT_MAKE_BINADD(bin->audioresample, "audioresample", "hmaudio_audioresample");
     }
     g_object_set(G_OBJECT(bin->audiosrc), "location", audio_location.c_str(), NULL);
   } else if (config->src == SRC_SOURCE_BIN) {
-    // if (!is_dest_file_sink) {
-    HMGST_ELEMENT_MAKE_BINADD(bin->audioresample, "audioresample", "hmaudio_audioresample");
-    //}
+    // Source-bin audio arrives from the URI source's audio tee or decodebin pad.
   } else {
     HMGST_ELEMENT_MAKE_BINADD(bin->audiosrc, NVDS_ELEM_SRC_ALSA, "hmaudio_alsasrc0");
   }
 
-  if (bin->decodebin || config->src == SRC_SOURCE_BIN) {
-    if (!is_dest_file_sink || config->src == SRC_SOURCE_BIN) {
-      bin->audioconvert = gst_element_factory_make(NVDS_ELEM_AUDIO_CONV, "hmaudio_audioconvert0");
-      if (!bin->audioconvert) {
-        NVGSTDS_ERR_MSG_V("Failed to create 'audioconvert0'");
-        goto done;
-      }
-    }
+  if (shared_audio_is_raw) {
+    HMGST_ELEMENT_MAKE_BINADD(bin->audioconvert, NVDS_ELEM_AUDIO_CONV, "hmaudio_audioconvert0");
+    HMGST_ELEMENT_MAKE_BINADD(bin->audioresample, "audioresample", "hmaudio_audioresample");
   }
 
   HMGST_ELEMENT_MAKE_BINADD(bin->queue, NVDS_ELEM_QUEUE, "hmaudio_audioout_queue");
-
-  if (is_dest_alsa_sink) {
-    bin->audiosink = gst_element_factory_make("alsasink", "hmaudio_audiosink0");
-    if (!bin->audiosink) {
-      NVGSTDS_ERR_MSG_V("Failed to create 'audioout_queue'");
-      goto done;
-    }
-    gst_bin_add(GST_BIN(bin->bin), bin->audiosink);
-  }
-
-  if (bin->audioconvert) {
-    gst_bin_add_many(GST_BIN(bin->bin), bin->audioconvert, bin->queue, NULL);
-  }
-
   HMGST_ELEMENT_MAKE_BINADD(bin->tee, "tee", "hmaudio_tee");
+  g_object_set(G_OBJECT(bin->tee), "allow-not-linked", TRUE, NULL);
 
   if (config->src == SRC_FILE || is_src_file) {
     // Handle dynamic pad creation from demuxer
@@ -877,11 +1245,7 @@ gboolean create_hmaudio_bin(
     } else {
       g_signal_connect(bin->qtdemux, "pad-added", G_CALLBACK(on_demuxer_pad_added), bin->queue);
     }
-    NVGSTDS_LINK_ELEMENT(bin->audiosrc, bin->tee);
-
-    if (!link_to_tee(bin->tee, bin->qtdemux)) {
-      goto done;
-    }
+    NVGSTDS_LINK_ELEMENT(bin->audiosrc, bin->qtdemux);
 
     if (bin->audioconvert) {
       NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->audioresample);
@@ -914,158 +1278,15 @@ gboolean create_hmaudio_bin(
     assert(bin->audiosrc);
     assert(bin->audioconvert);
     NVGSTDS_LINK_ELEMENT(bin->audiosrc, bin->audioconvert);
-    NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->queue);
+    NVGSTDS_LINK_ELEMENT(bin->audioconvert, bin->audioresample);
+    NVGSTDS_LINK_ELEMENT(bin->audioresample, bin->queue);
   }
 
-  if (sink_config) {
-    // Ok lets look at the sink we're supposed to be paired with
-    if (sink_config->enable) {
-      if (sink_config->type == NV_DS_SINK_ENCODE_FILE) {
-        assert(is_dest_file_sink);
-        if (!target_sink_bin) {
-          target_sink_bin = find_sink_sub_bin(config->sink_id, sink_config_array, sink_bin);
-        }
-        if (target_sink_bin) {
-          assert(target_sink_bin->mux);
-          if (config->src == SRC_SOURCE_BIN) {
-            // We need to encode it back to aac and not save it raw to the video file
-            HMGST_ELEMENT_MAKE_BINADD(bin->encoder, "voaacenc", "hmaudio_encoder");
-            HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
-            HMGST_ELEMENT_MAKE_BINADD(bin->post_queue, NVDS_ELEM_QUEUE, "hmaudio_post_queue");
-            NVGSTDS_LINK_ELEMENT(bin->queue, bin->encoder);
-            NVGSTDS_LINK_ELEMENT(bin->encoder, bin->audioparse);
-            NVGSTDS_LINK_ELEMENT(bin->audioparse, bin->post_queue);
-            NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->post_queue, "src");
-          } else {
-            HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
-            NVGSTDS_LINK_ELEMENT(bin->queue, bin->audioparse);
-            NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
-          }
-          if (!link_audio_pad_to_muxer(bin->bin, target_sink_bin->mux)) {
-            goto done;
-          }
-          linked = true;
-        } else {
-          std::cerr << "No sink available for sink id " << config->sink_id << std::endl;
-        }
-      } else if (sink_config->type == NV_DS_SINK_UDPSINK) {
-        if (!target_sink_bin) {
-          target_sink_bin = find_sink_sub_bin(config->sink_id, sink_config_array, sink_bin);
-        }
-        if (!target_sink_bin || !target_sink_bin->rtppay_or_flvmux) {
-          g_printerr("HMAudio could not find a server sink for sink id %d\n", config->sink_id);
-          goto done;
-        }
-        if (is_rtmp_server_sink(sink_config)) {
-          HMGST_ELEMENT_MAKE_BINADD(bin->encoder, "voaacenc", "hmaudio_encoder");
-          HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
-          NVGSTDS_LINK_ELEMENT(bin->queue, bin->encoder);
-          NVGSTDS_LINK_ELEMENT(bin->encoder, bin->audioparse);
-          NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
-          if (!link_audio_pad_to_muxer(bin->bin, target_sink_bin->rtppay_or_flvmux, /*audio_pad_name=*/"audio")) {
-            goto done;
-          }
-        } else {
-          GstElement* rtsp_audioconvert{nullptr};
-          GstElement* rtsp_audioresample{nullptr};
-          GstElement* rtsp_capsfilter{nullptr};
-          GstElement* rtsp_payloader{nullptr};
-          GstElement* rtsp_udpsink{nullptr};
+  NVGSTDS_LINK_ELEMENT(bin->queue, bin->tee);
 
-          HMGST_ELEMENT_MAKE_BINADD(rtsp_audioconvert, NVDS_ELEM_AUDIO_CONV, "hmaudio_rtsp_audioconvert");
-          HMGST_ELEMENT_MAKE_BINADD(rtsp_audioresample, "audioresample", "hmaudio_rtsp_audioresample");
-          HMGST_ELEMENT_MAKE_BINADD(rtsp_capsfilter, "capsfilter", "hmaudio_rtsp_caps");
-          HMGST_ELEMENT_MAKE_BINADD(rtsp_payloader, "rtpL16pay", "hmaudio_rtsp_l16pay");
-          HMGST_ELEMENT_MAKE_BINADD(rtsp_udpsink, "udpsink", "hmaudio_rtsp_udpsink");
-
-          GstCaps* rtsp_audio_caps = gst_caps_new_simple(
-              "audio/x-raw",
-              "format",
-              G_TYPE_STRING,
-              "S16BE",
-              "layout",
-              G_TYPE_STRING,
-              "interleaved",
-              "rate",
-              G_TYPE_INT,
-              hm::kRtspAudioRate,
-              "channels",
-              G_TYPE_INT,
-              hm::kRtspAudioChannels,
-              NULL);
-          if (!rtsp_audio_caps) {
-            g_printerr("Failed to create RTSP audio caps\n");
-            goto done;
-          }
-          g_object_set(G_OBJECT(rtsp_capsfilter), "caps", rtsp_audio_caps, NULL);
-          gst_caps_unref(rtsp_audio_caps);
-          g_object_set(G_OBJECT(rtsp_payloader), "pt", hm::kRtspAudioPayloadType, NULL);
-          g_object_set(
-              G_OBJECT(rtsp_udpsink),
-              "host",
-              "127.0.0.1",
-              "port",
-              sink_config->encoder_config.udp_port + hm::kRtspAudioUdpPortOffset,
-              "async",
-              FALSE,
-              "sync",
-              sink_config->sync,
-              NULL);
-
-          NVGSTDS_LINK_ELEMENT(bin->queue, rtsp_audioconvert);
-          NVGSTDS_LINK_ELEMENT(rtsp_audioconvert, rtsp_audioresample);
-          NVGSTDS_LINK_ELEMENT(rtsp_audioresample, rtsp_capsfilter);
-          NVGSTDS_LINK_ELEMENT(rtsp_capsfilter, rtsp_payloader);
-          NVGSTDS_LINK_ELEMENT(rtsp_payloader, rtsp_udpsink);
-        }
-        linked = true;
-      } else if (sink_config->type == NV_DS_SINK_WEBRTC) {
-        g_printerr("HMAudio is not wired to WEBRTC yet; dropping audio for sink id %d\n", config->sink_id);
-        bin->audiosink = gst_element_factory_make("fakesink", "hmaudio_webrtc_fakesink");
-        if (!bin->audiosink) {
-          NVGSTDS_ERR_MSG_V("Failed to create 'hmaudio_webrtc_fakesink'");
-          goto done;
-        }
-        gst_bin_add(GST_BIN(bin->bin), bin->audiosink);
-        g_object_set(G_OBJECT(bin->audiosink), "sync", FALSE, "async", FALSE, NULL);
-        NVGSTDS_LINK_ELEMENT(bin->queue, bin->audiosink);
-        linked = true;
-      } else if (sink_config->type == NvDsSinkType::NV_DS_SINK_FAKE) {
-        if (!create_fakesink_bin(&sink_config->render_config, &bin->fakesink_bin)) {
-          g_printerr("Failed to make fakesink bin for hmaudio\n");
-        }
-        gboolean ok = gst_bin_add(parent_bin, bin->fakesink_bin.bin);
-        (void)ok;
-        assert(ok);
-        HMGST_ELEMENT_MAKE_BINADD(bin->encoder, "voaacenc", "hmaudio_encoder");
-        HMGST_ELEMENT_MAKE_BINADD(bin->audioparse, "aacparse", "hmaudio_aacparse");
-        NVGSTDS_LINK_ELEMENT(bin->queue, bin->encoder);
-        NVGSTDS_LINK_ELEMENT(bin->encoder, bin->audioparse);
-        NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->audioparse, "src");
-        NVGSTDS_LINK_ELEMENT(bin->bin, bin->fakesink_bin.bin);
-        linked = true;
-      } else {
-        g_printerr("hmaudio doesn't know how to link to sink of type %d (yet)\n", (int)sink_config->type);
-      }
-    } else {
-      g_printerr("hmaudio can't link to sink id %d because it is disabled\n", config->sink_id);
-    }
-  } else {
-    g_printerr("Could not find sink-id %d referenced in hmaudio instance\n", config->sink_id);
-    goto done;
-  }
-  if (!linked) {
-    if (!is_dest_alsa_sink) {
-      NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "src");
-    } else {
-      if (*config->alsa_dest_device) {
-        g_object_set(
-            G_OBJECT(bin->audiosink),
-            "device",
-            config->alsa_dest_device, // Specify ALSA device
-            NULL);
-      }
-      NVGSTDS_LINK_ELEMENT(bin->queue, bin->audiosink);
+  for (const HmAudioSinkTarget& target : targets) {
+    if (!create_audio_branch_for_target(bin, target, config, shared_audio_is_encoded_aac)) {
+      goto done;
     }
   }
 

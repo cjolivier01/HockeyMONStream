@@ -1051,23 +1051,6 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
     return absl::OkStatus();
   }
 
-  std::vector<int> enabled_sink_ids;
-  for (auto kv : pipeline) {
-    const std::string key = kv.first.as<std::string>();
-    if (!absl::StartsWith(key, "sink")) {
-      continue;
-    }
-    YAML::Node sink_node = kv.second;
-    if (!is_enabled(sink_node)) {
-      continue;
-    }
-    const int sink_type = get_node_value<int>(sink_node, "type", 0);
-    if (!sink_type) {
-      continue;
-    }
-    enabled_sink_ids.push_back(get_node_value<int>(sink_node, "sink-id", -1));
-  }
-
   const auto has_audio_for_sink = [&](int sink_id) {
     for (auto kv : pipeline) {
       const std::string key = kv.first.as<std::string>();
@@ -1086,7 +1069,16 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
       if (audio_sink_id == sink_id) {
         return true;
       }
-      if (audio_sink_id == -1 && enabled_sink_ids.size() == 1 && enabled_sink_ids.front() == sink_id) {
+      if (dest == static_cast<int>(DEST_MULTI_SINK) && audio_node["multi-sink-ids"].IsDefined()) {
+        const std::string multi_sink_ids = get_node_value<std::string>(audio_node, "multi-sink-ids", "");
+        for (const absl::string_view token : absl::StrSplit(multi_sink_ids, ',', absl::SkipWhitespace())) {
+          if (!token.empty() && std::stoi(std::string(token)) == sink_id) {
+            return true;
+          }
+        }
+        continue;
+      }
+      if (audio_sink_id == -1) {
         return true;
       }
     }

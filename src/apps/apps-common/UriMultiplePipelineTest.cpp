@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -249,6 +250,257 @@ int expect_encoded_file(
   return 0;
 }
 
+int expect_audio_file(const fs::path& path) {
+  std::error_code ec;
+  const auto size = fs::file_size(path, ec);
+  if (ec || size < 512) {
+    std::cerr << "Expected audio output file at " << path << ", got size=" << (ec ? 0 : size) << "\n";
+    return 1;
+  }
+  if (!run_shell("ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 " +
+                 shell_quote(path) + " | grep -qx audio")) {
+    std::cerr << "Expected audio stream in " << path << "\n";
+    return 2;
+  }
+  return 0;
+}
+
+bool add_audio_mux_chain(GstElement* pipeline, const fs::path& output_path, GstElement** mux_out) {
+  GstElement* mux = gst_element_factory_make("matroskamux", nullptr);
+  GstElement* sink = gst_element_factory_make("filesink", nullptr);
+  if (!mux || !sink) {
+    std::cerr << "Failed to create audio mux chain\n";
+    return false;
+  }
+  g_object_set(G_OBJECT(sink), "location", output_path.c_str(), "sync", FALSE, "async", FALSE, NULL);
+  gst_bin_add_many(GST_BIN(pipeline), mux, sink, NULL);
+  if (!gst_element_link(mux, sink)) {
+    std::cerr << "Failed to link audio mux chain\n";
+    return false;
+  }
+  *mux_out = mux;
+  return true;
+}
+
+void configure_file_hmaudio(NvDsHmAudioConfig& audio_cfg, const fs::path& audio_path) {
+  audio_cfg = {};
+  audio_cfg.enable = TRUE;
+  audio_cfg.src = SRC_FILE;
+  audio_cfg.dest = DEST_SINK;
+  audio_cfg.sink_id = -1;
+  for (gint& sink_id : audio_cfg.multi_sink_ids) {
+    sink_id = -1;
+  }
+  std::strncpy(audio_cfg.audio_location, fs::absolute(audio_path).c_str(), sizeof(audio_cfg.audio_location) - 1);
+}
+
+int run_file_audio_fanout_to_two_file_sinks(const fs::path& tmpdir, const fs::path& audio_path) {
+  GstElement* pipeline = gst_pipeline_new("hmaudio-file-fanout-test");
+  GstElement* mux0 = nullptr;
+  GstElement* mux1 = nullptr;
+  const fs::path out0 = tmpdir / "audio_fanout_0.mkv";
+  const fs::path out1 = tmpdir / "audio_fanout_1.mkv";
+  if (!pipeline || !add_audio_mux_chain(pipeline, out0, &mux0) || !add_audio_mux_chain(pipeline, out1, &mux1)) {
+    return 2;
+  }
+
+  NvDsHmAudioConfig audio_cfg{};
+  configure_file_hmaudio(audio_cfg, audio_path);
+
+  NvDsSinkSubBinConfig sink_configs[MAX_SINK_BINS]{};
+  sink_configs[0].enable = TRUE;
+  sink_configs[0].sink_id = 0;
+  sink_configs[0].type = NV_DS_SINK_ENCODE_FILE;
+  sink_configs[1].enable = TRUE;
+  sink_configs[1].sink_id = 1;
+  sink_configs[1].type = NV_DS_SINK_ENCODE_FILE;
+
+  NvDsSinkBin sink_bin{};
+  sink_bin.sub_bins[0].mux = mux0;
+  sink_bin.sub_bins[1].mux = mux1;
+
+  NvDsSrcBin src_bins[MAX_SOURCE_BINS]{};
+  NvDsHmAudioBin audio_bin{};
+  if (!create_hmaudio_bin(GST_BIN(pipeline), &audio_cfg, &audio_bin, src_bins, sink_configs, &sink_bin)) {
+    std::cerr << "Failed to create HMAudio fanout bin for two file sinks\n";
+    return 3;
+  }
+
+  int rc = run_pipeline(pipeline, 15);
+  if (rc != 0) {
+    return rc;
+  }
+  rc = expect_audio_file(out0);
+  if (rc != 0) {
+    return rc;
+  }
+  return expect_audio_file(out1);
+}
+
+int run_file_audio_fanout_to_file_and_rtsp(const fs::path& tmpdir, const fs::path& audio_path) {
+  GstElement* pipeline = gst_pipeline_new("hmaudio-file-rtsp-fanout-test");
+  GstElement* mux = nullptr;
+  const fs::path out = tmpdir / "audio_fanout_file_rtsp.mkv";
+  if (!pipeline || !add_audio_mux_chain(pipeline, out, &mux)) {
+    return 2;
+  }
+
+  NvDsHmAudioConfig audio_cfg{};
+  configure_file_hmaudio(audio_cfg, audio_path);
+
+  NvDsSinkSubBinConfig sink_configs[MAX_SINK_BINS]{};
+  sink_configs[0].enable = TRUE;
+  sink_configs[0].sink_id = 0;
+  sink_configs[0].type = NV_DS_SINK_ENCODE_FILE;
+  sink_configs[1].enable = TRUE;
+  sink_configs[1].sink_id = 1;
+  sink_configs[1].type = NV_DS_SINK_UDPSINK;
+  sink_configs[1].encoder_config.udp_port = 15000 + (::getpid() % 10000);
+
+  GstElement* dummy_video_payloader = gst_element_factory_make("identity", "dummy_rtsp_video_payloader");
+  if (!dummy_video_payloader) {
+    std::cerr << "Failed to create dummy RTSP video payloader\n";
+    return 3;
+  }
+
+  NvDsSinkBin sink_bin{};
+  sink_bin.sub_bins[0].mux = mux;
+  sink_bin.sub_bins[1].rtppay_or_flvmux = dummy_video_payloader;
+
+  NvDsSrcBin src_bins[MAX_SOURCE_BINS]{};
+  NvDsHmAudioBin audio_bin{};
+  if (!create_hmaudio_bin(GST_BIN(pipeline), &audio_cfg, &audio_bin, src_bins, sink_configs, &sink_bin)) {
+    std::cerr << "Failed to create HMAudio fanout bin for file plus RTSP sinks\n";
+    gst_object_unref(dummy_video_payloader);
+    return 4;
+  }
+  gst_object_unref(dummy_video_payloader);
+
+  int rc = run_pipeline(pipeline, 15);
+  if (rc != 0) {
+    return rc;
+  }
+  return expect_audio_file(out);
+}
+
+int run_multi_sink_without_ids_disables_audio(const fs::path& tmpdir, const fs::path& audio_path) {
+  GstElement* pipeline = gst_pipeline_new("hmaudio-empty-multi-sink-test");
+  GstElement* mux = nullptr;
+  const fs::path out = tmpdir / "empty_multi_sink.mkv";
+  if (!pipeline || !add_audio_mux_chain(pipeline, out, &mux)) {
+    return 2;
+  }
+
+  NvDsHmAudioConfig audio_cfg{};
+  configure_file_hmaudio(audio_cfg, audio_path);
+  audio_cfg.dest = DEST_MULTI_SINK;
+
+  NvDsSinkSubBinConfig sink_configs[MAX_SINK_BINS]{};
+  sink_configs[0].enable = TRUE;
+  sink_configs[0].sink_id = 0;
+  sink_configs[0].type = NV_DS_SINK_ENCODE_FILE;
+
+  NvDsSinkBin sink_bin{};
+  sink_bin.sub_bins[0].mux = mux;
+
+  NvDsSrcBin src_bins[MAX_SOURCE_BINS]{};
+  NvDsHmAudioBin audio_bin{};
+  if (!create_hmaudio_bin(GST_BIN(pipeline), &audio_cfg, &audio_bin, src_bins, sink_configs, &sink_bin)) {
+    std::cerr << "Failed while creating HMAudio with empty multi-sink-ids\n";
+    gst_object_unref(GST_OBJECT(pipeline));
+    return 3;
+  }
+  if (audio_bin.bin) {
+    std::cerr << "Expected empty multi-sink-ids to disable HMAudio instead of falling back to sink-id\n";
+    gst_object_unref(GST_OBJECT(pipeline));
+    return 4;
+  }
+  gst_object_unref(GST_OBJECT(pipeline));
+  return 0;
+}
+
+int count_linked_sink_pads(GstElement* element) {
+  int count = 0;
+  GstIterator* iterator = gst_element_iterate_sink_pads(element);
+  GValue item = G_VALUE_INIT;
+  bool done = false;
+  while (!done) {
+    switch (gst_iterator_next(iterator, &item)) {
+      case GST_ITERATOR_OK: {
+        GstPad* pad = GST_PAD(g_value_get_object(&item));
+        if (gst_pad_is_linked(pad)) {
+          ++count;
+        }
+        g_value_reset(&item);
+        break;
+      }
+      case GST_ITERATOR_RESYNC:
+        gst_iterator_resync(iterator);
+        break;
+      case GST_ITERATOR_ERROR:
+      case GST_ITERATOR_DONE:
+        done = true;
+        break;
+    }
+  }
+  g_value_unset(&item);
+  gst_iterator_free(iterator);
+  return count;
+}
+
+bool have_gst_factory(const char* factory_name) {
+  GstElementFactory* factory = gst_element_factory_find(factory_name);
+  if (!factory) {
+    return false;
+  }
+  gst_object_unref(factory);
+  return true;
+}
+
+int run_webrtc_audio_branch_graph_test(const fs::path& audio_path) {
+  if (!have_gst_factory("webrtcbin") || !have_gst_factory("opusenc") || !have_gst_factory("rtpopuspay")) {
+    std::cerr << "Skipping WebRTC audio graph test because required GStreamer factories are missing\n";
+    return 0;
+  }
+
+  GstElement* pipeline = gst_pipeline_new("hmaudio-webrtc-graph-test");
+  GstElement* webrtc_parent = gst_bin_new("test_webrtc_parent");
+  GstElement* webrtc = gst_element_factory_make("webrtcbin", "test_webrtcbin");
+  if (!pipeline || !webrtc_parent || !webrtc) {
+    std::cerr << "Failed to create WebRTC graph test elements\n";
+    return 2;
+  }
+  gst_bin_add(GST_BIN(pipeline), webrtc_parent);
+  gst_bin_add(GST_BIN(webrtc_parent), webrtc);
+
+  NvDsHmAudioConfig audio_cfg{};
+  configure_file_hmaudio(audio_cfg, audio_path);
+
+  NvDsSinkSubBinConfig sink_configs[MAX_SINK_BINS]{};
+  sink_configs[0].enable = TRUE;
+  sink_configs[0].sink_id = 4;
+  sink_configs[0].type = NV_DS_SINK_WEBRTC;
+
+  NvDsSinkBin sink_bin{};
+  sink_bin.sub_bins[0].bin = webrtc_parent;
+  sink_bin.sub_bins[0].sink = webrtc;
+
+  NvDsSrcBin src_bins[MAX_SOURCE_BINS]{};
+  NvDsHmAudioBin audio_bin{};
+  if (!create_hmaudio_bin(GST_BIN(pipeline), &audio_cfg, &audio_bin, src_bins, sink_configs, &sink_bin)) {
+    std::cerr << "Failed to create HMAudio WebRTC audio branch\n";
+    gst_object_unref(GST_OBJECT(pipeline));
+    return 3;
+  }
+  if (count_linked_sink_pads(webrtc) == 0) {
+    std::cerr << "Expected HMAudio to link an RTP audio pad into webrtcbin\n";
+    gst_object_unref(GST_OBJECT(pipeline));
+    return 4;
+  }
+  gst_object_unref(GST_OBJECT(pipeline));
+  return 0;
+}
+
 int run_decode_encode(
     const fs::path& tmpdir,
     const std::vector<std::string>& uris,
@@ -455,6 +707,30 @@ int main(int argc, char** argv) {
   }
 
   rc = run_decode_compose_encode(tmpdir, left_uris, right_uris);
+  if (rc != 0) {
+    fs::remove_all(tmpdir);
+    return rc;
+  }
+
+  rc = run_file_audio_fanout_to_two_file_sinks(tmpdir, a0);
+  if (rc != 0) {
+    fs::remove_all(tmpdir);
+    return rc;
+  }
+
+  rc = run_file_audio_fanout_to_file_and_rtsp(tmpdir, a0);
+  if (rc != 0) {
+    fs::remove_all(tmpdir);
+    return rc;
+  }
+
+  rc = run_multi_sink_without_ids_disables_audio(tmpdir, a0);
+  if (rc != 0) {
+    fs::remove_all(tmpdir);
+    return rc;
+  }
+
+  rc = run_webrtc_audio_branch_graph_test(a0);
   fs::remove_all(tmpdir);
   return rc;
 }
