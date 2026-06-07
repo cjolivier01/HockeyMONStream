@@ -125,6 +125,12 @@ cc_binary(
 cc_test(
     name = "uri_multiple_pipeline_test",
     srcs = ["UriMultiplePipelineTest.cpp"],
+    size = "medium",
+    tags = [
+        "local",
+        "no-cache",
+    ],
+    timeout = "moderate",
     deps = [
         ":deepstream_apps_common",
         "@gstreamer",

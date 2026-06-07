@@ -244,6 +244,9 @@ std::vector<HmAudioSinkTarget> collect_hmaudio_sink_targets(
   if (config->dest != DEST_SINK && config->dest != DEST_MULTI_SINK) {
     return targets;
   }
+  if (config->dest == DEST_MULTI_SINK && multi_sink_ids.empty()) {
+    return targets;
+  }
 
   for (size_t i = 0; i < MAX_SINK_BINS; ++i) {
     const NvDsSinkSubBinConfig* sink_config = &sink_config_array[i];
@@ -297,6 +300,9 @@ bool make_audio_bin_element(
 bool create_audio_branch_queue(NvDsHmAudioBin* bin, const NvDsSinkSubBinConfig* sink_config, GstElement** queue) {
   if (!make_audio_bin_element(bin, queue, NVDS_ELEM_QUEUE, branch_element_name("branch", sink_config, "queue"))) {
     return false;
+  }
+  if (sink_config->type != NV_DS_SINK_ENCODE_FILE) {
+    g_object_set(G_OBJECT(*queue), "leaky", 2, "max-size-buffers", 30, "max-size-time", 0, "max-size-bytes", 0, NULL);
   }
   return link_to_tee(bin->tee, *queue);
 }

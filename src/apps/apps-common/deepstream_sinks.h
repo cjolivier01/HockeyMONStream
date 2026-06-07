@@ -171,7 +171,8 @@ void destroy_sink_bin(void);
 gboolean create_demux_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array, NvDsSinkBin* bin, guint index);
 
 void set_rtsp_udp_port_num(guint rtsp_port_num, guint udp_port_num);
-void set_rtsp_audio_enabled(gboolean enabled);
+void set_rtsp_audio_sink_ids(const gint* sink_ids, guint num_sink_ids);
+gboolean start_webrtc_signaling_for_sink(GstElement* webrtc, const NvDsSinkEncoderConfig* config);
 gboolean link_webrtc_rtp_src_to_sink(
     GstElement* webrtc,
     GstElement* rtp_src_element,

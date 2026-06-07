@@ -288,6 +288,9 @@ void configure_file_hmaudio(NvDsHmAudioConfig& audio_cfg, const fs::path& audio_
   audio_cfg.src = SRC_FILE;
   audio_cfg.dest = DEST_SINK;
   audio_cfg.sink_id = -1;
+  for (gint& sink_id : audio_cfg.multi_sink_ids) {
+    sink_id = -1;
+  }
   std::strncpy(audio_cfg.audio_location, fs::absolute(audio_path).c_str(), sizeof(audio_cfg.audio_location) - 1);
 }
 
@@ -378,6 +381,42 @@ int run_file_audio_fanout_to_file_and_rtsp(const fs::path& tmpdir, const fs::pat
     return rc;
   }
   return expect_audio_file(out);
+}
+
+int run_multi_sink_without_ids_disables_audio(const fs::path& tmpdir, const fs::path& audio_path) {
+  GstElement* pipeline = gst_pipeline_new("hmaudio-empty-multi-sink-test");
+  GstElement* mux = nullptr;
+  const fs::path out = tmpdir / "empty_multi_sink.mkv";
+  if (!pipeline || !add_audio_mux_chain(pipeline, out, &mux)) {
+    return 2;
+  }
+
+  NvDsHmAudioConfig audio_cfg{};
+  configure_file_hmaudio(audio_cfg, audio_path);
+  audio_cfg.dest = DEST_MULTI_SINK;
+
+  NvDsSinkSubBinConfig sink_configs[MAX_SINK_BINS]{};
+  sink_configs[0].enable = TRUE;
+  sink_configs[0].sink_id = 0;
+  sink_configs[0].type = NV_DS_SINK_ENCODE_FILE;
+
+  NvDsSinkBin sink_bin{};
+  sink_bin.sub_bins[0].mux = mux;
+
+  NvDsSrcBin src_bins[MAX_SOURCE_BINS]{};
+  NvDsHmAudioBin audio_bin{};
+  if (!create_hmaudio_bin(GST_BIN(pipeline), &audio_cfg, &audio_bin, src_bins, sink_configs, &sink_bin)) {
+    std::cerr << "Failed while creating HMAudio with empty multi-sink-ids\n";
+    gst_object_unref(GST_OBJECT(pipeline));
+    return 3;
+  }
+  if (audio_bin.bin) {
+    std::cerr << "Expected empty multi-sink-ids to disable HMAudio instead of falling back to sink-id\n";
+    gst_object_unref(GST_OBJECT(pipeline));
+    return 4;
+  }
+  gst_object_unref(GST_OBJECT(pipeline));
+  return 0;
 }
 
 int count_linked_sink_pads(GstElement* element) {
@@ -680,6 +719,12 @@ int main(int argc, char** argv) {
   }
 
   rc = run_file_audio_fanout_to_file_and_rtsp(tmpdir, a0);
+  if (rc != 0) {
+    fs::remove_all(tmpdir);
+    return rc;
+  }
+
+  rc = run_multi_sink_without_ids_disables_audio(tmpdir, a0);
   if (rc != 0) {
     fs::remove_all(tmpdir);
     return rc;

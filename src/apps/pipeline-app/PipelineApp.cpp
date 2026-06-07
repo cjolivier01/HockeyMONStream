@@ -496,6 +496,12 @@ absl::Status PipelineApplication::createMainLoop(
   first_pts_ns_ = 0;
   have_first_frame_by_source_.fill(false);
   first_frame_numbers_by_source_.fill(0);
+  timed_run_last_progress_ns_ = GST_CLOCK_TIME_NONE;
+  if (time_limit_seconds_ > 0) {
+    timed_run_last_progress_wall_ = std::chrono::steady_clock::now();
+  } else {
+    timed_run_last_progress_wall_ = {};
+  }
   g_timeout_add(400, check_for_interrupt_static, nullptr);
 
   bool has_video_overlay_sink = false;
@@ -1055,6 +1061,16 @@ void PipelineApplication::perf_cb_static(gpointer context, NvDsAppPerfStruct* st
     instance_->perf_cb(context, str);
 }
 
+void PipelineApplication::record_timed_run_progress(uint64_t processed_ns) {
+  if (time_limit_seconds_ <= 0 || processed_ns == GST_CLOCK_TIME_NONE) {
+    return;
+  }
+  if (timed_run_last_progress_ns_ == GST_CLOCK_TIME_NONE || processed_ns > timed_run_last_progress_ns_) {
+    timed_run_last_progress_ns_ = processed_ns;
+    timed_run_last_progress_wall_ = std::chrono::steady_clock::now();
+  }
+}
+
 std::string PipelineApplication::format_progress_status(AppCtx* app_ctx) {
   if (!app_ctx || !app_ctx->pipeline.pipeline) {
     return "";
@@ -1123,6 +1139,7 @@ std::string PipelineApplication::format_progress_status(AppCtx* app_ctx) {
   if (processed_ns == GST_CLOCK_TIME_NONE) {
     return "";
   }
+  record_timed_run_progress(processed_ns);
   if (time_limit_seconds_ > 0) {
     const uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
     if (processed_ns >= limit_ns && !quit_) {
@@ -1238,6 +1255,22 @@ gboolean PipelineApplication::check_for_interrupt() {
     if (main_loop_)
       g_main_loop_quit(main_loop_);
     return FALSE;
+  }
+  if (time_limit_seconds_ > 0 && timed_run_last_progress_wall_ != std::chrono::steady_clock::time_point{}) {
+    constexpr int kTimedRunNoProgressTimeoutSeconds = 60;
+    const auto stalled_seconds = std::chrono::duration_cast<std::chrono::seconds>(
+                                     std::chrono::steady_clock::now() - timed_run_last_progress_wall_)
+                                     .count();
+    if (stalled_seconds >= kTimedRunNoProgressTimeoutSeconds) {
+      g_printerr(
+          "Timed run saw no video-time progress for %d wall-clock seconds; stopping\n",
+          kTimedRunNoProgressTimeoutSeconds);
+      quit_ = TRUE;
+      if (main_loop_) {
+        g_main_loop_quit(main_loop_);
+      }
+      return FALSE;
+    }
   }
   return TRUE;
 }
@@ -1539,6 +1572,7 @@ gboolean PipelineApplication::overlay_graphics(
             first_pts_ns_ = pts_ns;
           } else {
             uint64_t elapsed_ns = pts_ns - first_pts_ns_;
+            record_timed_run_progress(elapsed_ns);
             if (elapsed_ns >= limit_ns) {
               if (!quit_) {
                 quit_ = TRUE;
@@ -1585,6 +1619,7 @@ gboolean PipelineApplication::overlay_graphics(
         elapsed_from_frames_ns = elapsed_ns;
       }
     }
+    record_timed_run_progress(elapsed_from_frames_ns);
     if (elapsed_from_frames_ns >= limit_ns) {
       if (!quit_) {
         quit_ = TRUE;

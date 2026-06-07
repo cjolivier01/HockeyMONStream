@@ -102,6 +102,7 @@ class PipelineApplication {
   void _intr_setup();
   static void perf_cb_static(gpointer context, NvDsAppPerfStruct* str);
   void perf_cb(gpointer context, NvDsAppPerfStruct* str);
+  void record_timed_run_progress(uint64_t processed_ns);
   std::string format_progress_status(AppCtx* app_ctx);
   static gboolean check_for_interrupt_static(gpointer data);
   gboolean check_for_interrupt();
@@ -167,6 +168,8 @@ class PipelineApplication {
     std::chrono::steady_clock::time_point speed_base_wall;
   };
   std::map<int, ProgressState> progress_states_;
+  std::chrono::steady_clock::time_point timed_run_last_progress_wall_;
+  uint64_t timed_run_last_progress_ns_{GST_CLOCK_TIME_NONE};
   // Display / event loop
   Display* display_ ABSL_GUARDED_BY(disp_lock_){nullptr};
   GThread* x_event_thread_;
