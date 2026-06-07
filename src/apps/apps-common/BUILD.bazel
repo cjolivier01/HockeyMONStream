@@ -92,6 +92,7 @@ cc_library(
         "-x",
         "c++",
         "-std=c++17",
+        "-DGST_USE_UNSTABLE_API",
         "-Wno-error=write-strings",
     ],
     include_prefix = INCLUDE_PREFIX,
@@ -109,6 +110,7 @@ cc_library(
         "@glib",
         "@gstreamer",
         "@json_glib",
+        "@libsoup",
     ],
 )
 

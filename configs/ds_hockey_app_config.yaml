@@ -157,7 +157,7 @@ sink1:
 sink2:
   enable: 0
   sink-id: 2
-  # Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
+  # Type - 1=FakeSink 2=EglSink/nv3dsink 3=File 4=RTSP/RTMP 5=DRM 6=MsgBroker 7=WebRTC
   type: 3
   # link-to-demux: 1
   #1=mp4 2=mkv
@@ -179,7 +179,7 @@ sink2:
 sink3:
   enable: 0
   sink-id: 3
-  # Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming
+  # Type - 1=FakeSink 2=EglSink/nv3dsink 3=File 4=RTSP/RTMP 5=DRM 6=MsgBroker 7=WebRTC
   type: 4
   #1=h264 2=h265
   codec: 1
@@ -214,6 +214,26 @@ sink3:
   # set below properties in case of RTSPStreaming
   rtsp-port: 8554
   udp-port: 5400
+
+sink4:
+  enable: 0
+  sink-id: 4
+  # Type - 1=FakeSink 2=EglSink/nv3dsink 3=File 4=RTSP/RTMP 5=DRM 6=MsgBroker 7=WebRTC
+  type: 7
+  # WebRTC preview is video-only for now and uses browser-compatible H.264 RTP.
+  codec: 1
+  enc-type: 0
+  sync: 0
+  bitrate: 4000000
+  compute-hw: 1
+  width: 1280
+  height: 720
+  iframeinterval: 5
+  profile: 0
+  # Browser signaling page and websocket endpoint.
+  webrtc-port: 8080
+  # Optional STUN server, for example: stun://stun.l.google.com:19302
+  # webrtc-stun-server:
 
 # sink2:
 #   enable: 1

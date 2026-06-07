@@ -1019,6 +1019,17 @@ gboolean create_hmaudio_bin(
           NVGSTDS_LINK_ELEMENT(rtsp_payloader, rtsp_udpsink);
         }
         linked = true;
+      } else if (sink_config->type == NV_DS_SINK_WEBRTC) {
+        g_printerr("HMAudio is not wired to WEBRTC yet; dropping audio for sink id %d\n", config->sink_id);
+        bin->audiosink = gst_element_factory_make("fakesink", "hmaudio_webrtc_fakesink");
+        if (!bin->audiosink) {
+          NVGSTDS_ERR_MSG_V("Failed to create 'hmaudio_webrtc_fakesink'");
+          goto done;
+        }
+        gst_bin_add(GST_BIN(bin->bin), bin->audiosink);
+        g_object_set(G_OBJECT(bin->audiosink), "sync", FALSE, "async", FALSE, NULL);
+        NVGSTDS_LINK_ELEMENT(bin->queue, bin->audiosink);
+        linked = true;
       } else if (sink_config->type == NvDsSinkType::NV_DS_SINK_FAKE) {
         if (!create_fakesink_bin(&sink_config->render_config, &bin->fakesink_bin)) {
           g_printerr("Failed to make fakesink bin for hmaudio\n");

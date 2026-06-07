@@ -28,6 +28,7 @@ gboolean parse_sink_yaml(
 
   config->encoder_config.rtsp_port = 8554;
   config->encoder_config.udp_port = 5000;
+  config->encoder_config.webrtc_port = 8080;
   config->encoder_config.codec = NV_DS_ENCODER_H264;
   config->encoder_config.container = NV_DS_CONTAINER_MP4;
   config->encoder_config.compute_hw = 0;
@@ -96,6 +97,12 @@ gboolean parse_sink_yaml(
       config->encoder_config.rtsp_port = itr->second.as<guint>();
     } else if (paramKey == "udp-port") {
       config->encoder_config.udp_port = itr->second.as<guint>();
+    } else if (paramKey == "webrtc-port") {
+      config->encoder_config.webrtc_port = itr->second.as<guint>();
+    } else if (paramKey == "webrtc-stun-server") {
+      std::string temp = itr->second.as<std::string>();
+      config->encoder_config.webrtc_stun_server = (char*)malloc(sizeof(char) * 1024);
+      std::strncpy(config->encoder_config.webrtc_stun_server, temp.c_str(), 1023);
     } else if (paramKey == "udp-buffer-size") {
       config->encoder_config.udp_buffer_size = itr->second.as<guint64>();
     } else if (paramKey == "color-range") {

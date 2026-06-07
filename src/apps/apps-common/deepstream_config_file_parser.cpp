@@ -161,6 +161,8 @@ GST_DEBUG_CATEGORY(APP_CFG_PARSER_CAT);
 #define CONFIG_GROUP_SINK_SOURCE_ID "source-id"
 #define CONFIG_GROUP_SINK_RTSP_PORT "rtsp-port"
 #define CONFIG_GROUP_SINK_UDP_PORT "udp-port"
+#define CONFIG_GROUP_SINK_WEBRTC_PORT "webrtc-port"
+#define CONFIG_GROUP_SINK_WEBRTC_STUN_SERVER "webrtc-stun-server"
 #define CONFIG_GROUP_SINK_UDP_BUFFER_SIZE "udp-buffer-size"
 #define CONFIG_GROUP_SINK_COLOR_RANGE "color-range"
 #define CONFIG_GROUP_SINK_CONN_ID "conn-id"
@@ -1427,6 +1429,7 @@ gboolean parse_sink(NvDsSinkSubBinConfig* config, GKeyFile* key_file, gchar* gro
 
   config->encoder_config.rtsp_port = 8554;
   config->encoder_config.udp_port = 5000;
+  config->encoder_config.webrtc_port = 8080;
   config->encoder_config.codec = NV_DS_ENCODER_H264;
   config->encoder_config.container = NV_DS_CONTAINER_MP4;
   config->encoder_config.compute_hw = 0;
@@ -1519,6 +1522,14 @@ gboolean parse_sink(NvDsSinkSubBinConfig* config, GKeyFile* key_file, gchar* gro
       CHECK_ERROR(error);
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SINK_UDP_PORT)) {
       config->encoder_config.udp_port = g_key_file_get_integer(key_file, group, CONFIG_GROUP_SINK_UDP_PORT, &error);
+      CHECK_ERROR(error);
+    } else if (!g_strcmp0(*key, CONFIG_GROUP_SINK_WEBRTC_PORT)) {
+      config->encoder_config.webrtc_port =
+          g_key_file_get_integer(key_file, group, CONFIG_GROUP_SINK_WEBRTC_PORT, &error);
+      CHECK_ERROR(error);
+    } else if (!g_strcmp0(*key, CONFIG_GROUP_SINK_WEBRTC_STUN_SERVER)) {
+      config->encoder_config.webrtc_stun_server =
+          g_key_file_get_string(key_file, group, CONFIG_GROUP_SINK_WEBRTC_STUN_SERVER, &error);
       CHECK_ERROR(error);
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SINK_UDP_BUFFER_SIZE)) {
       config->encoder_config.udp_buffer_size =
