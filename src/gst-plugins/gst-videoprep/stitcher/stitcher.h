@@ -48,6 +48,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
 
   absl::Status GenerateOutput(NvDsBatchMeta* batch_meta, NvBufSurface* in_surface, NvBufSurface* out_surface) override;
   bool UsesRuntimeOutputSize() const override;
+  guint GetOutputBatchSize(guint input_batch_size, guint configured_batch_size) const override;
   absl::StatusOr<videoprep::RuntimeOutputSize> PrepareRuntimeOutputSize(
       NvDsBatchMeta* batch_meta,
       NvBufSurface* in_surface) override;

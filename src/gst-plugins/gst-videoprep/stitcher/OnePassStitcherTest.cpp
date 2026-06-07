@@ -62,6 +62,18 @@ bool run_precaps(
   return true;
 }
 
+bool expect_output_batch_size(guint input_batch_size, guint configured_batch_size, guint expected_batch_size) {
+  hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
+  const guint actual_batch_size = stitcher.GetOutputBatchSize(input_batch_size, configured_batch_size);
+  if (actual_batch_size != expected_batch_size) {
+    std::cerr << "Unexpected stitcher output batch size for input_batch_size=" << input_batch_size
+              << ", configured_batch_size=" << configured_batch_size << ": " << actual_batch_size
+              << ", expected: " << expected_batch_size << std::endl;
+    return false;
+  }
+  return true;
+}
+
 bool expect_generate_status(
     const std::vector<FrameDesc>& frames,
     const std::vector<guint>& eos_source_ids,
@@ -146,11 +158,17 @@ int main() {
   if (!run_precaps(config_dir, /*one_pass_mode=*/true, /*expect_ok=*/true, 0, 0)) {
     return 2;
   }
-  if (!expect_generate_status({{0, 0}}, {}, absl::StatusCode::kFailedPrecondition, "odd batch without eos")) {
+  if (!expect_output_batch_size(/*input_batch_size=*/2, /*configured_batch_size=*/4, /*expected_batch_size=*/1)) {
     return 3;
   }
-  if (!expect_generate_status({{0, 0}}, {1}, absl::StatusCode::kCancelled, "odd batch after source eos")) {
+  if (!expect_output_batch_size(/*input_batch_size=*/4, /*configured_batch_size=*/4, /*expected_batch_size=*/2)) {
     return 4;
+  }
+  if (!expect_generate_status({{0, 0}}, {}, absl::StatusCode::kFailedPrecondition, "odd batch without eos")) {
+    return 5;
+  }
+  if (!expect_generate_status({{0, 0}}, {1}, absl::StatusCode::kCancelled, "odd batch after source eos")) {
+    return 6;
   }
   if (!expect_generate_status(
           {{0, 0}},
@@ -159,7 +177,7 @@ int main() {
           "odd batch after cleared source eos",
           /*pipeline_eos=*/false,
           /*stream_start_source_ids=*/{1})) {
-    return 5;
+    return 7;
   }
   if (!expect_generate_status(
           {{0, 0}},
@@ -167,35 +185,35 @@ int main() {
           absl::StatusCode::kCancelled,
           "odd batch after pipeline eos",
           /*pipeline_eos=*/true)) {
-    return 6;
+    return 8;
   }
   if (!expect_generate_status(
           {{0, 0}, {0, 0}},
           {},
           absl::StatusCode::kFailedPrecondition,
           "duplicate frame/source without eos")) {
-    return 7;
+    return 9;
   }
   if (!expect_generate_status(
           {{0, 0}, {0, 0}},
           {1},
           absl::StatusCode::kFailedPrecondition,
           "duplicate after source eos")) {
-    return 8;
+    return 10;
   }
   if (!expect_generate_status(
           {{0, 0}, {1, 1}},
           {},
           absl::StatusCode::kFailedPrecondition,
           "even unpaired frames without eos")) {
-    return 9;
+    return 11;
   }
   if (!expect_generate_status(
           {{0, 0}, {1, 1}},
           {1},
           absl::StatusCode::kFailedPrecondition,
           "even unpaired after source eos")) {
-    return 10;
+    return 12;
   }
 
   return 0;

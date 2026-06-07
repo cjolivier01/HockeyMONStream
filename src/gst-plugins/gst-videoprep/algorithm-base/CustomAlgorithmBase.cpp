@@ -135,6 +135,9 @@ GstCaps* CustomAlgorithmBase::CreateRuntimeOutputCaps(const videoprep::RuntimeOu
   for (guint i = 0; i < gst_caps_get_size(caps); ++i) {
     GstStructure* structure = gst_caps_get_structure(caps, i);
     gst_structure_set(structure, "width", G_TYPE_INT, width, "height", G_TYPE_INT, height, NULL);
+    if (size.batch_size > 0) {
+      gst_structure_set(structure, "batch-size", G_TYPE_UINT, size.batch_size, NULL);
+    }
   }
   return gst_caps_fixate(caps);
 }
@@ -151,6 +154,9 @@ absl::Status CustomAlgorithmBase::EnsureDsOutputBufferPool(NvDsBatchMeta* batch_
   HM_ASSIGN_OR_RETURN(output_size, PrepareRuntimeOutputSize(batch_meta, in_surf));
   if (!output_size.valid()) {
     return absl::FailedPreconditionError("Runtime output size was not provided");
+  }
+  if (output_size.batch_size > 0) {
+    m_buffer_pool_config.batch_size = output_size.batch_size;
   }
 
   GstCaps* runtime_caps = CreateRuntimeOutputCaps(output_size);

@@ -241,6 +241,40 @@ print_rtsp_access_urls() {
   done
 }
 
+sink_value_has_render() {
+  local value=",${1},"
+  case "${value}" in
+    *,RENDER,*|*,render,*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+args_request_render_sink() {
+  local args=("$@")
+  local arg i
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    arg="${args[$i]}"
+    case "${arg}" in
+      --enable-sinks|-k)
+        if [ "$((i + 1))" -lt "${#args[@]}" ] && sink_value_has_render "${args[$((i + 1))]}"; then
+          return 0
+        fi
+        ;;
+      --enable-sinks=*)
+        if sink_value_has_render "${arg#*=}"; then
+          return 0
+        fi
+        ;;
+      -k*)
+        if sink_value_has_render "${arg#-k}"; then
+          return 0
+        fi
+        ;;
+    esac
+  done
+  return 1
+}
+
 default_main_sink="RENDER"
 if [ "${headless_show_rtsp}" -eq 1 ] && [ "${have_sink_arg}" -eq 0 ]; then
   default_main_sink="RTSP"
@@ -307,10 +341,19 @@ if [ "${#asset_config_files[@]}" -gt 0 ]; then
   "${PYTHON_BIN:-python3}" "${SCRIPT_DIR}/scripts/setup_pretrained_assets.py" "${asset_config_files[@]}"
 fi
 
-bazel-bin/src/apps/pipeline-app/pipeline-app \
-  "${config_args[@]}" \
-  --enable-sources=URI-MULTIPLE \
-  "${sink_args[@]}" \
-  --options=pipeline.hmaudio.enable="${hmaudio_enable}" \
+pipeline_args=(
+  "${config_args[@]}"
+  --enable-sources=URI-MULTIPLE
+  "${sink_args[@]}"
+  --options=pipeline.hmaudio.enable="${hmaudio_enable}"
   "${rewritten_args[@]}"
+)
+
+if [ "${ssh_forwarded_display}" -eq 1 ] && [ "${HM_ALLOW_SSH_RENDER:-0}" != "1" ] &&
+  ! args_request_render_sink "${pipeline_args[@]}"; then
+  echo "Unsetting SSH-forwarded DISPLAY=${DISPLAY} for non-render sinks so DeepStream EGL uses headless mode"
+  unset DISPLAY
+fi
+
+bazel-bin/src/apps/pipeline-app/pipeline-app "${pipeline_args[@]}"
 # bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_app_config.yaml --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_FILE --options=pipeline.hmaudio.enable=1 $@

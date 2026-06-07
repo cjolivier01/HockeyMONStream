@@ -297,6 +297,16 @@ has_display=0
 if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
   has_display=1
 fi
+ssh_forwarded_display=0
+case "${DISPLAY:-}" in
+  localhost:*|127.0.0.1:*|::1:*)
+    ssh_forwarded_display=1
+    ;;
+esac
+if [ "${ssh_forwarded_display}" -eq 1 ] && [ "${HM_ALLOW_SSH_RENDER:-0}" != "1" ]; then
+  # SSH-forwarded X displays are technically present, but DeepStream EGL/nv3dsink output is not a reliable default.
+  has_display=0
+fi
 headless_show_rtsp=0
 if [ "${show_arg}" -eq 1 ] && [ "${has_display}" -eq 0 ]; then
   headless_show_rtsp=1
@@ -372,6 +382,40 @@ print_rtsp_access_urls() {
   done
 }
 
+sink_value_has_render() {
+  local value=",${1},"
+  case "${value}" in
+    *,RENDER,*|*,render,*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+args_request_render_sink() {
+  local args=("$@")
+  local arg i
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    arg="${args[$i]}"
+    case "${arg}" in
+      --enable-sinks|-k)
+        if [ "$((i + 1))" -lt "${#args[@]}" ] && sink_value_has_render "${args[$((i + 1))]}"; then
+          return 0
+        fi
+        ;;
+      --enable-sinks=*)
+        if sink_value_has_render "${arg#*=}"; then
+          return 0
+        fi
+        ;;
+      -k*)
+        if sink_value_has_render "${arg#-k}"; then
+          return 0
+        fi
+        ;;
+    esac
+  done
+  return 1
+}
+
 default_main_sink="RENDER"
 if [ "${headless_show_rtsp}" -eq 1 ] && [ "${have_sink_arg}" -eq 0 ]; then
   default_main_sink="RTSP"
@@ -379,7 +423,11 @@ if [ "${headless_show_rtsp}" -eq 1 ] && [ "${have_sink_arg}" -eq 0 ]; then
 elif [ "${has_display}" -eq 0 ]; then
   default_main_sink="ENCODE_FILE"
   if [ "${have_sink_arg}" -eq 0 ]; then
-    echo "DISPLAY is not set and no sink was specified; defaulting to --enable-sinks=${default_main_sink} (override with --enable-sinks=RENDER)"
+    if [ "${ssh_forwarded_display}" -eq 1 ] && [ "${HM_ALLOW_SSH_RENDER:-0}" != "1" ]; then
+      echo "DISPLAY=${DISPLAY} looks SSH-forwarded and no sink was specified; defaulting to --enable-sinks=${default_main_sink} (set HM_ALLOW_SSH_RENDER=1 or pass --enable-sinks=RENDER to force render)"
+    else
+      echo "DISPLAY is not set and no sink was specified; defaulting to --enable-sinks=${default_main_sink} (override with --enable-sinks=RENDER)"
+    fi
   fi
 fi
 
@@ -440,12 +488,21 @@ fi
 # resolve against the install directory.
 cd "${INSTALL_DIR}"
 
-exec "${INSTALL_DIR}/bin/pipeline-app" \
-  "${config_args[@]}" \
-  --enable-sources=URI-MULTIPLE \
-  "${sink_args[@]}" \
-  --options=pipeline.hmaudio.enable="${hmaudio_enable}" \
+pipeline_args=(
+  "${config_args[@]}"
+  --enable-sources=URI-MULTIPLE
+  "${sink_args[@]}"
+  --options=pipeline.hmaudio.enable="${hmaudio_enable}"
   "${rewritten_args[@]}"
+)
+
+if [ "${ssh_forwarded_display}" -eq 1 ] && [ "${HM_ALLOW_SSH_RENDER:-0}" != "1" ] &&
+  ! args_request_render_sink "${pipeline_args[@]}"; then
+  echo "Unsetting SSH-forwarded DISPLAY=${DISPLAY} for non-render sinks so DeepStream EGL uses headless mode"
+  unset DISPLAY
+fi
+
+exec "${INSTALL_DIR}/bin/pipeline-app" "${pipeline_args[@]}"
 RUNSH
 chmod 755 "${STAGING}${INSTALL_PREFIX}/run.sh"
 
