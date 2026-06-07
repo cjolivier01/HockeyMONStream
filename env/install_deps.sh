@@ -11,6 +11,7 @@ sudo apt-get install -y \
   libgstrtspserver-1.0-dev \
   libgstreamer-plugins-bad1.0-dev \
   gstreamer1.0-rtsp \
+  gstreamer1.0-nice \
   libglew-dev \
   libfftw3-dev \
   libv4l-dev \

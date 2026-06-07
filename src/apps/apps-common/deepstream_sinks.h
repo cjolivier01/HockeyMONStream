@@ -35,6 +35,7 @@ typedef enum {
   NV_DS_SINK_UDPSINK,
   NV_DS_SINK_RENDER_DRM,
   NV_DS_SINK_MSG_CONV_BROKER,
+  NV_DS_SINK_WEBRTC,
 } NvDsSinkType;
 
 typedef enum { NV_DS_CONTAINER_MP4 = 1, NV_DS_CONTAINER_MKV } NvDsContainerType;
@@ -63,6 +64,8 @@ typedef struct {
   guint height;
   guint rtsp_port;
   guint udp_port;
+  guint webrtc_port;
+  gchar* webrtc_stun_server;
   guint64 udp_buffer_size;
   guint iframeinterval;
   guint copy_meta;

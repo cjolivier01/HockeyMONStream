@@ -386,6 +386,67 @@ print_rtsp_access_urls() {
   done
 }
 
+print_webrtc_access_urls() {
+  local port="${1:-8080}"
+  local addresses=()
+  local seen=" "
+  local candidate
+
+  if command -v hostname >/dev/null 2>&1; then
+    while IFS= read -r candidate; do
+      candidate="${candidate%% *}"
+      if [ -z "${candidate}" ] || [[ "${candidate}" == 127.* ]]; then
+        continue
+      fi
+      if [[ "${seen}" != *" ${candidate} "* ]]; then
+        addresses+=("${candidate}")
+        seen="${seen}${candidate} "
+      fi
+    done < <(hostname -I 2>/dev/null | tr ' ' '\n')
+  fi
+
+  if [ "${#addresses[@]}" -eq 0 ] && command -v ip >/dev/null 2>&1; then
+    while IFS= read -r candidate; do
+      candidate="${candidate%/*}"
+      if [ -z "${candidate}" ] || [[ "${candidate}" == 127.* ]]; then
+        continue
+      fi
+      if [[ "${seen}" != *" ${candidate} "* ]]; then
+        addresses+=("${candidate}")
+        seen="${seen}${candidate} "
+      fi
+    done < <(ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}')
+  fi
+
+  if [ "${#addresses[@]}" -eq 0 ] && command -v ifconfig >/dev/null 2>&1; then
+    while IFS= read -r candidate; do
+      if [ -z "${candidate}" ] || [[ "${candidate}" == 127.* ]]; then
+        continue
+      fi
+      if [[ "${seen}" != *" ${candidate} "* ]]; then
+        addresses+=("${candidate}")
+        seen="${seen}${candidate} "
+      fi
+    done < <(ifconfig 2>/dev/null | awk '/inet / {print $2}')
+  fi
+
+  echo "WEBRTC sink requested; browser preview signaling on 0.0.0.0:${port}"
+  if [ "${#addresses[@]}" -eq 0 ]; then
+    echo "  http://localhost:${port}/"
+    return
+  fi
+  for candidate in "${addresses[@]}"; do
+    echo "  http://${candidate}:${port}/"
+  done
+}
+
+check_webrtc_runtime() {
+  if command -v gst-inspect-1.0 >/dev/null 2>&1 &&
+    ! gst-inspect-1.0 nicesrc >/dev/null 2>&1; then
+    echo "WEBRTC sink requires the GStreamer libnice plugin; install package: gstreamer1.0-nice"
+  fi
+}
+
 sink_value_has_any() {
   local value="$1"
   shift
@@ -417,6 +478,10 @@ sink_value_has_rtsp() {
 
 sink_value_has_server() {
   sink_value_has_any "$1" RTSP UDPSINK RTMP 4
+}
+
+sink_value_has_webrtc() {
+  sink_value_has_any "$1" WEBRTC 7
 }
 
 args_request_sink_matching() {
@@ -459,6 +524,10 @@ args_request_server_sink() {
   args_request_sink_matching sink_value_has_server "$@"
 }
 
+args_request_webrtc_sink() {
+  args_request_sink_matching sink_value_has_webrtc "$@"
+}
+
 default_main_sink="RENDER"
 if [ "${headless_show_rtsp}" -eq 1 ] && [ "${have_sink_arg}" -eq 0 ]; then
   default_main_sink="RTSP"
@@ -476,6 +545,10 @@ elif [ "${has_display}" -eq 0 ]; then
       echo "DISPLAY is not set and no sink was specified; defaulting to --enable-sinks=${default_main_sink} (override with --enable-sinks=RENDER)"
     fi
   fi
+fi
+if [ "${have_sink_arg}" -eq 1 ] && args_request_webrtc_sink "${rewritten_args[@]}"; then
+  print_webrtc_access_urls 8080
+  check_webrtc_runtime
 fi
 
 sink_args=()
@@ -567,6 +640,8 @@ Maintainer: hstream <noreply@hstream>
 Installed-Size: ${INSTALLED_SIZE}
 Depends: libgstreamer1.0-0 (>= 1.20),
  libgstreamer-plugins-base1.0-0 (>= 1.20),
+ gstreamer1.0-plugins-bad,
+ gstreamer1.0-nice,
  libglib2.0-0,
  libgomp1,
  libgl1,

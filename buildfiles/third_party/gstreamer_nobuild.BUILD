@@ -46,6 +46,8 @@ cc_library(
         "-l:libgstrtsp-1.0.so",
         "-l:libgstapp-1.0.so",
         "-l:libgstrtsp-1.0.so",
+        "-l:libgstsdp-1.0.so",
+        "-l:libgstrtp-1.0.so",
         # No idea why there isn't a simple ".so" files in /usr/lib/x86_64-linux-gnu
         "-l:libgstwebrtc-1.0.so.0",
         "-l:libgstrtspserver-1.0.so.0",
