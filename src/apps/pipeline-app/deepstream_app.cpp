@@ -1237,14 +1237,12 @@ static gboolean create_processing_instance(AppCtx* appCtx, guint index) {
   g_snprintf(elem_name, 32, "processing_bin_%d", index);
   instance_bin->bin = gst_bin_new(elem_name);
 
-  std::vector<gint> enabled_sink_ids;
   std::set<gint> rtsp_sink_ids;
   for (size_t sink_index = 0; sink_index < config->num_sink_sub_bins; ++sink_index) {
     const NvDsSinkSubBinConfig& sink_config = config->sink_bin_sub_bin_config[sink_index];
     if (!sink_config.enable || sink_config.source_id != index || sink_config.link_to_demux) {
       continue;
     }
-    enabled_sink_ids.push_back(sink_config.sink_id);
     const char* output_file = sink_config.encoder_config.output_file_path;
     const bool is_rtmp = output_file && !strncmp(output_file, "rtmp:/", 6);
     if (sink_config.type == NV_DS_SINK_UDPSINK && !is_rtmp) {
@@ -1256,15 +1254,34 @@ static gboolean create_processing_instance(AppCtx* appCtx, guint index) {
   for (size_t hmaudio_index = 0; hmaudio_index < sizeof(config->hmaudio_config) / sizeof(config->hmaudio_config[0]);
        ++hmaudio_index) {
     const NvDsHmAudioConfig& hmaudio_config = config->hmaudio_config[hmaudio_index];
-    if (!hmaudio_config.enable || hmaudio_config.dest != DEST_SINK) {
+    if (!hmaudio_config.enable || (hmaudio_config.dest != DEST_SINK && hmaudio_config.dest != DEST_MULTI_SINK)) {
       continue;
+    }
+    bool has_multi_sink_ids = false;
+    if (hmaudio_config.dest == DEST_MULTI_SINK) {
+      for (size_t sink_index = 0; sink_index < MAX_SINK_BINS; ++sink_index) {
+        const gint sink_id = hmaudio_config.multi_sink_ids[sink_index];
+        if (sink_id < 0) {
+          continue;
+        }
+        has_multi_sink_ids = true;
+        if (rtsp_sink_ids.count(sink_id)) {
+          enable_rtsp_audio = TRUE;
+          break;
+        }
+      }
+      if (enable_rtsp_audio) {
+        break;
+      }
+      if (has_multi_sink_ids) {
+        continue;
+      }
     }
     if (rtsp_sink_ids.count(hmaudio_config.sink_id)) {
       enable_rtsp_audio = TRUE;
       break;
     }
-    if (hmaudio_config.sink_id == -1 && enabled_sink_ids.size() == 1 &&
-        rtsp_sink_ids.count(enabled_sink_ids.front())) {
+    if (hmaudio_config.sink_id == -1 && !rtsp_sink_ids.empty()) {
       enable_rtsp_audio = TRUE;
       break;
     }
@@ -1979,18 +1996,23 @@ gboolean create_pipeline(
       NVGSTDS_LINK_ELEMENT_FULL(pipeline->demuxer, pad_name, pipeline->instance_bins[i].bin, "sink");
       gst_object_unref(demux_src_pad);
 
-      for (int k = 0; k < MAX_SINK_BINS; k++) {
-        if (pipeline->instance_bins[i].sink_bin.sub_bins[k].sink) {
-          NVGSTDS_ELEM_ADD_PROBE(
-              latency_probe_id,
-              pipeline->instance_bins[i].sink_bin.sub_bins[k].sink,
-              "sink",
-              latency_measurement_buf_prob,
-              GST_PAD_PROBE_TYPE_BUFFER,
-              appCtx);
-          break;
-        }
-      }
+	      for (int k = 0; k < MAX_SINK_BINS; k++) {
+	        if (pipeline->instance_bins[i].sink_bin.sub_bins[k].sink) {
+	          GstElement* probe_element = pipeline->instance_bins[i].sink_bin.sub_bins[k].sink;
+	          GstPad* probe_pad = gst_element_get_static_pad(probe_element, "sink");
+	          if (!probe_pad && pipeline->instance_bins[i].sink_bin.sub_bins[k].bin) {
+	            probe_element = pipeline->instance_bins[i].sink_bin.sub_bins[k].bin;
+	            probe_pad = gst_element_get_static_pad(probe_element, "sink");
+	          }
+	          if (!probe_pad) {
+	            continue;
+	          }
+	          latency_probe_id = gst_pad_add_probe(
+	              probe_pad, GST_PAD_PROBE_TYPE_BUFFER, latency_measurement_buf_prob, appCtx, NULL);
+	          gst_object_unref(probe_pad);
+	          break;
+	        }
+	      }
 
       latency_probe_id = latency_probe_id;
     }

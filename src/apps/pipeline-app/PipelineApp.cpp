@@ -1123,6 +1123,15 @@ std::string PipelineApplication::format_progress_status(AppCtx* app_ctx) {
   if (processed_ns == GST_CLOCK_TIME_NONE) {
     return "";
   }
+  if (time_limit_seconds_ > 0) {
+    const uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
+    if (processed_ns >= limit_ns && !quit_) {
+      quit_ = TRUE;
+      if (main_loop_) {
+        g_main_loop_quit(main_loop_);
+      }
+    }
+  }
   if (state.total_video_ns != GST_CLOCK_TIME_NONE) {
     processed_ns = std::min(processed_ns, state.total_video_ns);
   }

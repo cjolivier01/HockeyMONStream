@@ -84,17 +84,20 @@ const char kWebRtcClientHtml[] = R"html(<!doctype html>
   </style>
 </head>
 <body>
-  <video id="video" autoplay playsinline muted controls></video>
+  <video id="video" autoplay playsinline controls></video>
   <div id="status">Connecting...</div>
   <script>
     const video = document.getElementById('video');
     const status = document.getElementById('status');
     const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
     const pc = new RTCPeerConnection();
+    const inboundStream = new MediaStream();
+    video.srcObject = inboundStream;
 
     pc.addTransceiver('video', {direction: 'recvonly'});
+    pc.addTransceiver('audio', {direction: 'recvonly'});
     pc.ontrack = (event) => {
-      video.srcObject = event.streams[0];
+      inboundStream.addTrack(event.track);
       status.textContent = 'Connected';
     };
     pc.onconnectionstatechange = () => {
@@ -515,6 +518,70 @@ void destroy_webrtc_signal_servers() {
 }
 
 } // namespace
+
+gboolean link_webrtc_rtp_src_to_sink(
+    GstElement* webrtc,
+    GstElement* rtp_src_element,
+    GstCaps* rtp_caps,
+    const char* track_name) {
+  static std::atomic<int> webrtc_in_counter = 0;
+  GstWebRTCRTPTransceiver* transceiver = nullptr;
+  GstPad* webrtc_sink_pad = nullptr;
+  GstPadTemplate* webrtc_sink_pad_template = nullptr;
+  gchar* webrtc_sink_pad_name = nullptr;
+  gboolean ret = FALSE;
+
+  if (!webrtc || !rtp_src_element || !rtp_caps) {
+    g_printerr("Cannot link WebRTC RTP track '%s': missing element or caps\n", track_name ? track_name : "unknown");
+    goto done;
+  }
+
+  g_signal_emit_by_name(
+      webrtc, "add-transceiver", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY, rtp_caps, &transceiver);
+  if (!transceiver) {
+    g_printerr("Failed to add WebRTC %s transceiver\n", track_name ? track_name : "RTP");
+    goto done;
+  }
+
+  webrtc_sink_pad = find_webrtc_transceiver_sink_pad(webrtc, transceiver);
+  if (!webrtc_sink_pad) {
+    webrtc_sink_pad_template = gst_element_class_get_pad_template(GST_ELEMENT_GET_CLASS(webrtc), "sink_%u");
+  }
+  if (!webrtc_sink_pad && webrtc_sink_pad_template) {
+    webrtc_sink_pad = gst_element_request_pad(webrtc, webrtc_sink_pad_template, NULL, rtp_caps);
+  }
+  if (!webrtc_sink_pad) {
+    webrtc_sink_pad = gst_element_request_pad_simple(webrtc, "sink_%u");
+  }
+  if (!webrtc_sink_pad) {
+    g_printerr("Failed to request WebRTC %s RTP sink pad\n", track_name ? track_name : "RTP");
+    goto done;
+  }
+
+  webrtc_sink_pad_name = gst_pad_get_name(webrtc_sink_pad);
+  if (!webrtc_sink_pad_name) {
+    g_printerr("Failed to name WebRTC %s RTP sink pad\n", track_name ? track_name : "RTP");
+    goto done;
+  }
+
+  {
+    std::string ghost_pad_name = std::string("webrtc_") + (track_name ? track_name : "rtp") + "_in_" +
+        std::to_string(webrtc_in_counter++);
+    ret = hm::connectElementsWithGhostPads(rtp_src_element, "src", webrtc, webrtc_sink_pad_name, ghost_pad_name);
+  }
+
+done:
+  if (webrtc_sink_pad_name) {
+    g_free(webrtc_sink_pad_name);
+  }
+  if (webrtc_sink_pad) {
+    gst_object_unref(webrtc_sink_pad);
+  }
+  if (transceiver) {
+    gst_object_unref(transceiver);
+  }
+  return ret;
+}
 
 namespace hm {
 

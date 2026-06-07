@@ -220,7 +220,7 @@ sink4:
   sink-id: 4
   # Type - 1=FakeSink 2=EglSink/nv3dsink 3=File 4=RTSP/RTMP 5=DRM 6=MsgBroker 7=WebRTC
   type: 7
-  # WebRTC preview is video-only for now and uses browser-compatible H.264 RTP.
+  # WebRTC preview uses browser-compatible H.264 video and Opus audio RTP.
   codec: 1
   enc-type: 0
   sync: 0

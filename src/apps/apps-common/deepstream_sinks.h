@@ -172,6 +172,11 @@ gboolean create_demux_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_
 
 void set_rtsp_udp_port_num(guint rtsp_port_num, guint udp_port_num);
 void set_rtsp_audio_enabled(gboolean enabled);
+gboolean link_webrtc_rtp_src_to_sink(
+    GstElement* webrtc,
+    GstElement* rtp_src_element,
+    GstCaps* rtp_caps,
+    const char* track_name);
 
 bool link_video_pad_to_muxer(GstElement* postParse, GstElement* muxer);
 // bool link_audio_pad_to_muxer(
