@@ -193,5 +193,6 @@ hmstitcher:
   stitch-auto-adjust-exposure: 0
   minimize-blend: 0
   # config-file: /home/colivier/Videos/mlk-heat-1
-  num-batch-buffers: 4
+  # Stitching collapses the two camera surfaces into one stitched output surface.
+  num-batch-buffers: 1
   num-output-buffers: 4

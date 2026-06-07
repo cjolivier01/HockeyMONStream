@@ -411,8 +411,9 @@ hmstitcher:
   # Configure/reload stitching in-process when control masks are missing.
   one-pass-mode: 1
   show: 0
-  num-batch-buffers: 4
-  num-output-buffers: 2
+  # Stitching collapses the two camera surfaces into one stitched output surface.
+  num-batch-buffers: 1
+  num-output-buffers: 4
 
 ds-playtracker:
   enable: 1

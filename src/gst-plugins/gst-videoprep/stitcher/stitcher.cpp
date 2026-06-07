@@ -38,6 +38,8 @@
 #include "cudaEGL.h"
 #endif
 
+#include <algorithm>
+
 namespace hm {
 namespace stitcher {
 
@@ -385,6 +387,16 @@ bool StitcherPriv::UsesRuntimeOutputSize() const {
   return one_pass_mode_ && (!canvas_width_hint_ || !canvas_height_hint_);
 }
 
+guint StitcherPriv::GetOutputBatchSize(guint input_batch_size, guint configured_batch_size) const {
+  if (input_batch_size >= 2) {
+    return std::max<guint>(1, input_batch_size / 2);
+  }
+  if (configured_batch_size >= 2) {
+    return std::max<guint>(1, configured_batch_size / 2);
+  }
+  return 1;
+}
+
 absl::Status StitcherPriv::configure_one_pass_from_surfaces(
     hm::surface::Surface incoming_surface_left,
     hm::surface::Surface incoming_surface_right) {
@@ -431,7 +443,7 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
     NvDsBatchMeta* batch_meta,
     NvBufSurface* in_surface) {
   if (!UsesRuntimeOutputSize()) {
-    return videoprep::RuntimeOutputSize{canvas_width_hint_, canvas_height_hint_};
+    return videoprep::RuntimeOutputSize{canvas_width_hint_, canvas_height_hint_, 0};
   }
   if (!batch_meta || !in_surface) {
     return absl::InvalidArgumentError("Cannot determine stitched canvas size without batch metadata and input surface");
@@ -485,7 +497,8 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
 #endif
 
     HM_RETURN_IF_ERROR(configure_one_pass_from_surfaces(incoming_surface_left, incoming_surface_right));
-    return videoprep::RuntimeOutputSize{canvas_width_hint_, canvas_height_hint_};
+    return videoprep::RuntimeOutputSize{
+        canvas_width_hint_, canvas_height_hint_, GetOutputBatchSize(in_surface->batchSize, 0)};
   }
 
   return absl::FailedPreconditionError("Could not find a paired left/right frame to determine stitched canvas size");

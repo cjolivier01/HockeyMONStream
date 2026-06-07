@@ -19,6 +19,7 @@ namespace videoprep {
 struct RuntimeOutputSize {
   size_t width{0};
   size_t height{0};
+  guint batch_size{0};
 
   bool valid() const { return width > 0 && height > 0; }
 };
@@ -68,6 +69,11 @@ class VideoPrepPriv : public DSCustomLibraryBase {
 
   virtual bool UsesRuntimeOutputSize() const {
     return false;
+  }
+
+  virtual guint GetOutputBatchSize(guint input_batch_size,
+                                   guint configured_batch_size) const {
+    return configured_batch_size;
   }
 
   virtual absl::StatusOr<RuntimeOutputSize> PrepareRuntimeOutputSize(

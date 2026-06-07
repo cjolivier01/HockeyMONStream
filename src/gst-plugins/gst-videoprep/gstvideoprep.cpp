@@ -90,6 +90,29 @@
 namespace hm {
 namespace videoprep {
 
+static guint get_output_batch_size(GstVideoPrep* videoprep, GstCaps* input_caps) {
+  guint input_batch_size = 0;
+  if (input_caps && !gst_caps_is_any(input_caps) && !gst_caps_is_empty(input_caps) &&
+      gst_caps_get_size(input_caps) > 0) {
+    GstStructure* input_structure = gst_caps_get_structure(input_caps, 0);
+    if (!gst_structure_get_uint(input_structure, "batch-size", &input_batch_size)) {
+      gint signed_input_batch_size = 0;
+      if (gst_structure_get_int(input_structure, "batch-size", &signed_input_batch_size) &&
+          signed_input_batch_size > 0) {
+        input_batch_size = static_cast<guint>(signed_input_batch_size);
+      }
+    }
+  }
+  if (videoprep->priv) {
+    const guint output_batch_size =
+        videoprep->priv->GetOutputBatchSize(input_batch_size, videoprep->num_batch_buffers);
+    if (output_batch_size > 0) {
+      return output_batch_size;
+    }
+  }
+  return videoprep->num_batch_buffers ? videoprep->num_batch_buffers : 1;
+}
+
 // Helper macros for alignment
 #define NVBUF_ALIGN_VAL (256)
 #define NVBUF_ALIGN_PITCH(pitch, align_val) ((pitch % align_val == 0) ? pitch : ((pitch / align_val + 1) * align_val))
@@ -324,6 +347,9 @@ static GstCaps* gst_videoprep_fixate_caps(
 
   ins = gst_caps_get_structure(caps, 0);
   outs = gst_caps_get_structure(othercaps, 0);
+  if (direction == GST_PAD_SINK) {
+    gst_structure_set(outs, "batch-size", G_TYPE_UINT, get_output_batch_size(videoprep, caps), NULL);
+  }
 
   if (!runtime_output_size && videoprep->custom_create_params.output_width_height[0]) {
     videoprep->output_width = videoprep->custom_create_params.output_width_height[0];
@@ -522,6 +548,7 @@ static GstCaps* gst_videoprep_transform_caps(
   GstCaps* temp_caps = NULL;
 
   if (direction == GST_PAD_SINK) {
+    const guint output_batch_size = get_output_batch_size(videoprep, caps);
     if (!videoprep->output_width && !videoprep->output_height) {
       new_caps = gst_caps_new_simple(
           "video/x-raw",
@@ -538,7 +565,7 @@ static GstCaps* gst_videoprep_transform_caps(
           G_MAXINT,
           "batch-size",
           G_TYPE_UINT,
-          videoprep->num_batch_buffers,
+          output_batch_size,
           NULL);
     } else {
       assert(videoprep->output_width && videoprep->output_height);
@@ -555,7 +582,7 @@ static GstCaps* gst_videoprep_transform_caps(
           videoprep->output_height,
           "batch-size",
           G_TYPE_UINT,
-          videoprep->num_batch_buffers,
+          output_batch_size,
           NULL);
     }
     feature = gst_caps_features_new("memory:NVMM", NULL);
@@ -704,7 +731,7 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
   videoprep->custom_create_params.m_inCaps = incaps;
   videoprep->custom_create_params.m_outCaps = outcaps;
 
-  videoprep->custom_create_params.m_bufferPoolConfig.max_buffers = videoprep->num_batch_buffers;
+  videoprep->custom_create_params.m_bufferPoolConfig.max_buffers = videoprep->num_output_buffers;
   videoprep->custom_create_params.m_bufferPoolConfig.batch_size = videoprep->num_batch_buffers;
   videoprep->custom_create_params.m_bufferPoolConfig.cuda_mem_type = videoprep->cuda_mem_type;
   videoprep->custom_create_params.m_bufferPoolConfig.gpu_id = videoprep->gpu_id;
