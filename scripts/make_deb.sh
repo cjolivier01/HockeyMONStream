@@ -336,6 +336,7 @@ done
 print_rtsp_access_urls() {
   local port="${1:-8554}"
   local path="${2:-/ds-test}"
+  local reason="${3:-RTSP sink requested}"
   local addresses=()
   local seen=" "
   local candidate
@@ -371,17 +372,17 @@ print_rtsp_access_urls() {
     done < <(ifconfig 2>/dev/null | awk '/inet / {print $2}')
   fi
 
-  echo "Headless --show requested; streaming RTSP on 0.0.0.0:${port}${path}"
+  echo "${reason}; streaming RTSP on 0.0.0.0:${port}${path}"
   echo "Chrome does not play RTSP URLs."
-  echo "Known-good test client: ffplay -rtsp_transport tcp rtsp://<address>:${port}${path}"
+  echo "Open with a TCP-capable RTSP client, for example:"
   echo "VLC needs a generic RTSP client plugin such as live555; VLC builds that fall back to SAT>IP will not open this stream."
   if [ "${#addresses[@]}" -eq 0 ]; then
     echo "  No non-loopback IPv4 address detected; try: ffplay -rtsp_transport tcp rtsp://localhost:${port}${path}"
     return
   fi
-  echo "Open one of these URLs:"
   for candidate in "${addresses[@]}"; do
-    echo "  rtsp://${candidate}:${port}${path}"
+    echo "  ffplay -rtsp_transport tcp rtsp://${candidate}:${port}${path}"
+    echo "  vlc rtsp://${candidate}:${port}${path}"
   done
 }
 
@@ -396,6 +397,23 @@ sink_value_has_render() {
     normalized="${token//-/_}"
     normalized="${normalized^^}"
     if [ "${normalized}" = "RENDER" ] || [ "${normalized}" = "2" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+sink_value_has_rtsp() {
+  local value="$1"
+  local token normalized
+  local -a sink_tokens
+  IFS=',' read -r -a sink_tokens <<< "${value}"
+  for token in "${sink_tokens[@]}"; do
+    token="${token#"${token%%[![:space:]]*}"}"
+    token="${token%"${token##*[![:space:]]}"}"
+    normalized="${token//-/_}"
+    normalized="${normalized^^}"
+    if [ "${normalized}" = "RTSP" ] || [ "${normalized}" = "UDPSINK" ]; then
       return 0
     fi
   done
@@ -428,10 +446,38 @@ args_request_render_sink() {
   return 1
 }
 
+args_request_rtsp_sink() {
+  local args=("$@")
+  local arg i
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    arg="${args[$i]}"
+    case "${arg}" in
+      --enable-sinks|-k)
+        if [ "$((i + 1))" -lt "${#args[@]}" ] && sink_value_has_rtsp "${args[$((i + 1))]}"; then
+          return 0
+        fi
+        ;;
+      --enable-sinks=*)
+        if sink_value_has_rtsp "${arg#*=}"; then
+          return 0
+        fi
+        ;;
+      -k*)
+        if sink_value_has_rtsp "${arg#-k}"; then
+          return 0
+        fi
+        ;;
+    esac
+  done
+  return 1
+}
+
 default_main_sink="RENDER"
 if [ "${headless_show_rtsp}" -eq 1 ] && [ "${have_sink_arg}" -eq 0 ]; then
   default_main_sink="RTSP"
-  print_rtsp_access_urls 8554 /ds-test
+  print_rtsp_access_urls 8554 /ds-test "Headless --show requested"
+elif [ "${have_sink_arg}" -eq 1 ] && args_request_rtsp_sink "${rewritten_args[@]}"; then
+  print_rtsp_access_urls 8554 /ds-test "RTSP sink requested"
 elif [ "${has_display}" -eq 0 ]; then
   default_main_sink="ENCODE_FILE"
   if [ "${have_sink_arg}" -eq 0 ]; then

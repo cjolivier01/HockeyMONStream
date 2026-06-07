@@ -853,6 +853,7 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
   enum ServerSinkType sink_type;
   bool resize_rtsp_output = false;
   std::string caps_string;
+  const guint iframe_interval = config->iframeinterval ? config->iframeinterval : 30;
 
   // guint rtsp_port_num = g_rtsp_port_num++;
   const guint uid = next_uid++;
@@ -971,8 +972,10 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
   if (config->enc_type == NV_DS_ENCODER_TYPE_SW) {
     // bitrate is in kbits/sec for software encoder x264enc and x265enc
     g_object_set(G_OBJECT(bin->encoder), "bitrate", config->bitrate / 1000, NULL);
+    if (sink_type != SST_RTMP && g_object_class_find_property(G_OBJECT_GET_CLASS(bin->encoder), "key-int-max")) {
+      g_object_set(G_OBJECT(bin->encoder), "key-int-max", iframe_interval, NULL);
+    }
   } else {
-    const guint iframe_interval = config->iframeinterval ? config->iframeinterval : 30;
     g_object_set(G_OBJECT(bin->encoder), "bitrate", config->bitrate, NULL);
     g_object_set(G_OBJECT(bin->encoder), "profile", config->profile, NULL);
     g_object_set(G_OBJECT(bin->encoder), "iframeinterval", iframe_interval, NULL);

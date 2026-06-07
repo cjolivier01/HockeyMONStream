@@ -840,8 +840,8 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        0,
        G_OPTION_ARG_FILENAME_ARRAY,
        &enable_sinks_,
-       "Enable sinks: FAKE=discard, RENDER=display, ENCODE_FILE=write video, RTSP/UDPSINK=serve RTSP or push "
-       "rtmp:// output, RTMP=alias for RTMP-configured server sink, RENDER_DRM=DRM display, "
+       "Enable sinks: FAKE=discard, RENDER=display, ENCODE_FILE=write video, RTSP/UDPSINK/RTMP=server sink "
+       "(RTSP unless output-file starts with rtmp://; aliases enable the same sink type), RENDER_DRM=DRM display, "
        "MSG_CONV_BROKER=message broker",
        "SINK[,SINK...]"},
       {"game-id", 'g', 0, G_OPTION_ARG_FILENAME_ARRAY, &game_id_, "Game ID", nullptr},
