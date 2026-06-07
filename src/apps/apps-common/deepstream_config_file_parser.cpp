@@ -1430,6 +1430,9 @@ gboolean parse_sink(NvDsSinkSubBinConfig* config, GKeyFile* key_file, gchar* gro
   config->encoder_config.codec = NV_DS_ENCODER_H264;
   config->encoder_config.container = NV_DS_CONTAINER_MP4;
   config->encoder_config.compute_hw = 0;
+  config->encoder_config.iframeinterval = 30;
+  config->encoder_config.width = 0;
+  config->encoder_config.height = 0;
   config->render_config.qos = FALSE;
   config->render_config.color_range = -1;
   config->render_config.set_mode = -1;
@@ -1455,9 +1458,11 @@ gboolean parse_sink(NvDsSinkSubBinConfig* config, GKeyFile* key_file, gchar* gro
       CHECK_ERROR(error);
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SINK_WIDTH)) {
       config->render_config.width = g_key_file_get_integer(key_file, group, CONFIG_GROUP_SINK_WIDTH, &error);
+      config->encoder_config.width = config->render_config.width;
       CHECK_ERROR(error);
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SINK_HEIGHT)) {
       config->render_config.height = g_key_file_get_integer(key_file, group, CONFIG_GROUP_SINK_HEIGHT, &error);
+      config->encoder_config.height = config->render_config.height;
       CHECK_ERROR(error);
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SINK_QOS)) {
       config->render_config.qos = g_key_file_get_boolean(key_file, group, CONFIG_GROUP_SINK_QOS, &error);

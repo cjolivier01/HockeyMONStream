@@ -835,7 +835,15 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
       {"options", 'p', 0, G_OPTION_ARG_FILENAME_ARRAY, &pipline_options, "Set arbitrary option(s)", nullptr},
       {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &cfg_files_, "Set the config file", "FILE"},
       {"enable-sources", 'e', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sources_, "Enable Sources", nullptr},
-      {"enable-sinks", 'k', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sinks_, "Enable Sinks", nullptr},
+      {"enable-sinks",
+       'k',
+       0,
+       G_OPTION_ARG_FILENAME_ARRAY,
+       &enable_sinks_,
+       "Enable sinks: FAKE=discard, RENDER=display, ENCODE_FILE=write video, RTSP/UDPSINK/RTMP=server sink "
+       "(RTSP unless output-file starts with rtmp://; aliases enable the same sink type), RENDER_DRM=DRM display, "
+       "MSG_CONV_BROKER=message broker",
+       "SINK[,SINK...]"},
       {"game-id", 'g', 0, G_OPTION_ARG_FILENAME_ARRAY, &game_id_, "Game ID", nullptr},
       {"force-reconfigure", 'f', 0, G_OPTION_ARG_NONE, &force_reconfigure_, "Force reconfigure", nullptr},
       {"clean", 0, 0, G_OPTION_ARG_NONE, &clean_stitching_artifacts_, "Clean stitching artifacts and exit", nullptr},
