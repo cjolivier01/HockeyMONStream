@@ -10,6 +10,8 @@
 
 #include <cassert>
 #include <cstddef>
+#include <set>
+#include <vector>
 
 #include <gst-nvdscommonconfig.h>
 #include <gst-nvdscustommessage.h>
@@ -1235,10 +1237,34 @@ static gboolean create_processing_instance(AppCtx* appCtx, guint index) {
   g_snprintf(elem_name, 32, "processing_bin_%d", index);
   instance_bin->bin = gst_bin_new(elem_name);
 
+  std::vector<gint> enabled_sink_ids;
+  std::set<gint> rtsp_sink_ids;
+  for (size_t sink_index = 0; sink_index < config->num_sink_sub_bins; ++sink_index) {
+    const NvDsSinkSubBinConfig& sink_config = config->sink_bin_sub_bin_config[sink_index];
+    if (!sink_config.enable || sink_config.source_id != index || sink_config.link_to_demux) {
+      continue;
+    }
+    enabled_sink_ids.push_back(sink_config.sink_id);
+    const char* output_file = sink_config.encoder_config.output_file_path;
+    const bool is_rtmp = output_file && !strncmp(output_file, "rtmp:/", 6);
+    if (sink_config.type == NV_DS_SINK_UDPSINK && !is_rtmp) {
+      rtsp_sink_ids.insert(sink_config.sink_id);
+    }
+  }
+
   gboolean enable_rtsp_audio = FALSE;
   for (size_t hmaudio_index = 0; hmaudio_index < sizeof(config->hmaudio_config) / sizeof(config->hmaudio_config[0]);
        ++hmaudio_index) {
-    if (config->hmaudio_config[hmaudio_index].enable && config->hmaudio_config[hmaudio_index].dest == DEST_SINK) {
+    const NvDsHmAudioConfig& hmaudio_config = config->hmaudio_config[hmaudio_index];
+    if (!hmaudio_config.enable || hmaudio_config.dest != DEST_SINK) {
+      continue;
+    }
+    if (rtsp_sink_ids.count(hmaudio_config.sink_id)) {
+      enable_rtsp_audio = TRUE;
+      break;
+    }
+    if (hmaudio_config.sink_id == -1 && enabled_sink_ids.size() == 1 &&
+        rtsp_sink_ids.count(enabled_sink_ids.front())) {
       enable_rtsp_audio = TRUE;
       break;
     }
