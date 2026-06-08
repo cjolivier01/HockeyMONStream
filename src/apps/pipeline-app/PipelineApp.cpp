@@ -30,6 +30,7 @@
 #include <memory>
 #include <optional>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
@@ -103,6 +104,15 @@ std::string format_progress_bar(double fraction, size_t width = 24) {
   }
   bar.push_back(']');
   return bar;
+}
+
+std::string format_fixed(double value, int precision = 2) {
+  if (!std::isfinite(value)) {
+    return "--";
+  }
+  std::ostringstream out;
+  out << std::fixed << std::setprecision(precision) << value;
+  return out.str();
 }
 
 std::vector<std::string> split_uri_list(const gchar* uri_list) {
@@ -411,6 +421,9 @@ absl::Status PipelineApplication::configureInstances(
     valid_app_contexts.emplace_back(std::move(app_ctx));
   }
   app_contexts = std::move(valid_app_contexts);
+  if (progress_ui_ && progress_ui_->started()) {
+    progress_ui_->setGraphSnapshot(build_progress_graph_snapshot(app_contexts));
+  }
   return absl::OkStatus();
 }
 
@@ -838,6 +851,62 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &time_limit_seconds_,
        "Stop after processing this many seconds of video",
        "N"},
+      {"progress-ui",
+       0,
+       0,
+       G_OPTION_ARG_NONE,
+       &progress_ui_enabled_,
+       "Enable HM-style full-screen terminal progress UI with status table, progress bar, log window, and graph",
+       nullptr},
+      {"progress-bar-lines",
+       0,
+       0,
+       G_OPTION_ARG_INT,
+       &progress_ui_lines_,
+       "Number of log lines to show in --progress-ui",
+       "N"},
+      {"progress-ui-lines",
+       0,
+       0,
+       G_OPTION_ARG_INT,
+       &progress_ui_lines_,
+       "Alias for --progress-bar-lines",
+       "N"},
+      {"progress-ui-refresh-ms",
+       0,
+       0,
+       G_OPTION_ARG_INT,
+       &progress_ui_refresh_ms_,
+       "Minimum terminal refresh interval for --progress-ui",
+       "MS"},
+      {"progress-ui-start-threshold",
+       0,
+       0,
+       G_OPTION_ARG_INT,
+       &progress_ui_start_threshold_,
+       "Perf updates to wait before drawing --progress-ui",
+       "N"},
+      {"progress-ui-graph",
+       0,
+       0,
+       G_OPTION_ARG_NONE,
+       &progress_ui_graph_,
+       "Show the pipeline graph panel in --progress-ui",
+       nullptr},
+      {"progress-ui-no-graph",
+       0,
+       0,
+       G_OPTION_ARG_NONE,
+       &progress_ui_no_graph_,
+       "Hide the pipeline graph panel in --progress-ui",
+       nullptr},
+      {"progress-ui-no-capture",
+       0,
+       0,
+       G_OPTION_ARG_NONE,
+       &progress_ui_no_capture_,
+       "Do not capture terminal output into the --progress-ui log window",
+       nullptr},
       {"options", 'p', 0, G_OPTION_ARG_FILENAME_ARRAY, &pipline_options, "Set arbitrary option(s)", nullptr},
       {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &cfg_files_, "Set the config file", "FILE"},
       {"enable-sources", 'e', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sources_, "Enable Sources", nullptr},
@@ -900,6 +969,31 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   if (start_time) {
     start_time_ns_ = hm::hhmmss_to_nanoseconds(start_time);
     g_free(start_time);
+  }
+
+  if (progress_ui_enabled_) {
+    hm::TerminalProgressOptions progress_options;
+    progress_options.log_lines = progress_ui_lines_;
+    progress_options.refresh_ms = progress_ui_refresh_ms_;
+    progress_options.start_threshold = progress_ui_start_threshold_;
+    progress_options.show_graph = progress_ui_graph_ && !progress_ui_no_graph_;
+    progress_options.capture_output = !progress_ui_no_capture_;
+    progress_ui_ = std::make_unique<hm::TerminalProgressUi>(progress_options);
+    if (progress_ui_->start()) {
+      hm::TerminalProgressSnapshot initial_snapshot;
+      initial_snapshot.title = game_id_ && *game_id_ ? *game_id_ : "hstream";
+      initial_snapshot.stats.push_back({"Status", "starting"});
+      initial_snapshot.stats.push_back({"Stage", "configuration"});
+      initial_snapshot.completed_text = "00:00:00";
+      initial_snapshot.total_text = "--:--:--";
+      progress_ui_->update(std::move(initial_snapshot));
+      global_cleanup_stack.push([this] {
+        progress_ui_.reset();
+      });
+    } else {
+      progress_ui_.reset();
+      g_printerr("--progress-ui requested, but stderr is not an interactive terminal; using regular output\n");
+    }
   }
 
   if (input_uris_) {
@@ -1042,6 +1136,9 @@ void PipelineApplication::_intr_handler(int signum) {
 
 void PipelineApplication::handle_intr(int signum) {
   NVGSTDS_ERR_MSG_V("User Interrupted..\n");
+  if (progress_ui_) {
+    progress_ui_->restoreTerminalForInterrupt();
+  }
   struct sigaction action;
   memset(&action, 0, sizeof(action));
   action.sa_handler = SIG_DFL;
@@ -1071,9 +1168,10 @@ void PipelineApplication::record_timed_run_progress(uint64_t processed_ns) {
   }
 }
 
-std::string PipelineApplication::format_progress_status(AppCtx* app_ctx) {
+PipelineApplication::ProgressMetrics PipelineApplication::collect_progress_metrics(AppCtx* app_ctx) {
+  ProgressMetrics metrics;
   if (!app_ctx || !app_ctx->pipeline.pipeline) {
-    return "";
+    return metrics;
   }
 
   ProgressState& state = progress_states_[app_ctx->index];
@@ -1137,7 +1235,7 @@ std::string PipelineApplication::format_progress_status(AppCtx* app_ctx) {
   }
 
   if (processed_ns == GST_CLOCK_TIME_NONE) {
-    return "";
+    return metrics;
   }
   record_timed_run_progress(processed_ns);
   if (time_limit_seconds_ > 0) {
@@ -1184,19 +1282,194 @@ std::string PipelineApplication::format_progress_status(AppCtx* app_ctx) {
     }
   }
 
+  metrics.valid = true;
+  metrics.processed_ns = processed_ns;
+  metrics.total_ns = state.total_video_ns;
+  metrics.remaining_ns = remaining_video_ns;
+  metrics.eta_ns = eta_ns;
+  metrics.speed_x = speed_x;
+  metrics.fraction = fraction;
+  return metrics;
+}
+
+std::string PipelineApplication::format_progress_status(const ProgressMetrics& metrics) const {
+  if (!metrics.valid) {
+    return "";
+  }
   std::ostringstream out;
-  out << " | Video " << format_duration_ns(processed_ns) << "/" << format_duration_ns(state.total_video_ns)
-      << " | Left " << format_duration_ns(remaining_video_ns) << " | ETA " << format_duration_ns(eta_ns);
-  if (speed_x > 0.0) {
-    out << " | " << std::fixed << std::setprecision(2) << speed_x << "x";
+  out << " | Video " << format_duration_ns(metrics.processed_ns) << "/" << format_duration_ns(metrics.total_ns)
+      << " | Left " << format_duration_ns(metrics.remaining_ns) << " | ETA " << format_duration_ns(metrics.eta_ns);
+  if (metrics.speed_x > 0.0) {
+    out << " | " << std::fixed << std::setprecision(2) << metrics.speed_x << "x";
   } else {
     out << " | warming up";
   }
-  if (state.total_video_ns != GST_CLOCK_TIME_NONE) {
-    out << " | " << format_progress_bar(fraction) << " " << std::fixed << std::setprecision(1)
-        << (std::clamp(fraction, 0.0, 1.0) * 100.0) << "%";
+  if (metrics.total_ns != GST_CLOCK_TIME_NONE) {
+    out << " | " << format_progress_bar(metrics.fraction) << " " << std::fixed << std::setprecision(1)
+        << (std::clamp(metrics.fraction, 0.0, 1.0) * 100.0) << "%";
   }
   return out.str();
+}
+
+hm::TerminalProgressSnapshot PipelineApplication::make_terminal_progress_snapshot(
+    AppCtx* app_ctx,
+    NvDsAppPerfStruct* str,
+    const ProgressMetrics& metrics) const {
+  hm::TerminalProgressSnapshot snapshot;
+  snapshot.title = game_id_ && *game_id_ ? *game_id_ : "hstream";
+  if (current_stage_ != 0) {
+    snapshot.title += " stage ";
+    snapshot.title += std::to_string(current_stage_);
+  }
+
+  const guint numf = str ? str->num_instances : 0;
+  for (guint i = 0; i < numf; ++i) {
+    std::string label = (str->aggregate_output_fps && numf == 1) ? "Output FPS" : ("FPS " + std::to_string(i));
+    snapshot.stats.push_back({std::move(label), format_fixed(fps_[i]) + " (" + format_fixed(fps_avg_[i]) + ")"});
+  }
+  snapshot.stats.push_back({"Dataset length", format_duration_ns(metrics.total_ns)});
+  snapshot.stats.push_back({"Processed", format_duration_ns(metrics.processed_ns)});
+  snapshot.stats.push_back({"Remaining", format_duration_ns(metrics.remaining_ns)});
+  snapshot.stats.push_back({"ETA", format_duration_ns(metrics.eta_ns)});
+  snapshot.stats.push_back({"Speed", metrics.speed_x > 0.0 ? format_fixed(metrics.speed_x) + "x" : "warming up"});
+  snapshot.stats.push_back({"Stage", std::to_string(current_stage_)});
+  if (app_ctx) {
+    snapshot.stats.push_back({"Sources", std::to_string(app_ctx->config.num_source_sub_bins)});
+    snapshot.stats.push_back({"Sinks", std::to_string(app_ctx->config.num_sink_sub_bins)});
+    if (app_ctx->config.hmsticher_config.enable) {
+      snapshot.stats.push_back({"Stitching", "ENABLED"});
+    }
+    guint audio_bins = 0;
+    for (guint i = 0; i < MAX_SOURCE_BINS; ++i) {
+      if (app_ctx->config.hmaudio_config[i].enable) {
+        ++audio_bins;
+      }
+    }
+    if (audio_bins > 0) {
+      snapshot.stats.push_back({"Audio", std::to_string(audio_bins) + " bin" + (audio_bins == 1 ? "" : "s")});
+    }
+  }
+
+  snapshot.completed_text = format_duration_ns(metrics.processed_ns);
+  snapshot.total_text = format_duration_ns(metrics.total_ns);
+  if (metrics.processed_ns != GST_CLOCK_TIME_NONE) {
+    snapshot.completed = metrics.processed_ns / GST_SECOND;
+  }
+  if (metrics.total_ns != GST_CLOCK_TIME_NONE) {
+    snapshot.total = std::max<uint64_t>(1, metrics.total_ns / GST_SECOND);
+  }
+  snapshot.complete = metrics.total_ns != GST_CLOCK_TIME_NONE && metrics.processed_ns >= metrics.total_ns;
+  return snapshot;
+}
+
+hm::TerminalProgressGraphSnapshot PipelineApplication::build_progress_graph_snapshot(
+    const std::vector<std::shared_ptr<HmApp>>& app_contexts) const {
+  hm::TerminalProgressGraphSnapshot graph;
+  std::set<std::string> node_names;
+  auto add_node = [&graph, &node_names](std::string name, int degree, bool active = true) -> std::string {
+    if (node_names.emplace(name).second) {
+      graph.nodes.push_back({name, degree, active, std::nullopt});
+      graph.order.push_back(name);
+      graph.max_degree = std::max(graph.max_degree, degree);
+    }
+    return name;
+  };
+  auto add_edge = [&graph](const std::string& from, const std::string& to) {
+    if (!from.empty() && !to.empty()) {
+      graph.edges.push_back({from, to});
+    }
+  };
+
+  const bool multi_app = app_contexts.size() > 1;
+  for (const auto& app_ctx : app_contexts) {
+    if (!app_ctx) {
+      continue;
+    }
+    const std::string prefix = multi_app ? ("app" + std::to_string(app_ctx->index) + "/") : "";
+    std::vector<std::string> source_nodes;
+    for (guint i = 0; i < app_ctx->config.num_source_sub_bins; ++i) {
+      const NvDsSourceConfig& source_config = app_ctx->config.multi_source_config[i];
+      if (!source_config.enable) {
+        continue;
+      }
+      source_nodes.push_back(add_node(prefix + "source" + std::to_string(i), 0));
+    }
+
+    std::string last_video = add_node(prefix + "streammux", 1);
+    for (const std::string& source_node : source_nodes) {
+      add_edge(source_node, last_video);
+    }
+
+    int degree = 2;
+    auto add_video_stage = [&](bool enabled, const std::string& name) {
+      if (!enabled) {
+        return;
+      }
+      const std::string node = add_node(prefix + name, degree++);
+      add_edge(last_video, node);
+      last_video = node;
+    };
+    add_video_stage(app_ctx->config.hmplaycropper_config.enable, "hmplaycropper");
+    add_video_stage(app_ctx->config.dsfieldmask_config.enable, "ds-fieldmask");
+    add_video_stage(app_ctx->config.primary_gie_config.enable, "primary-gie");
+    add_video_stage(app_ctx->config.tracker_config.enable, "tracker");
+    add_video_stage(app_ctx->config.dsplaytracker_config.enable, "ds-playtracker");
+    add_video_stage(app_ctx->config.hmsticher_config.enable, "hmstitcher");
+
+    std::vector<std::pair<gint, std::string>> sink_nodes;
+    const int sink_degree = degree;
+    for (guint i = 0; i < app_ctx->config.num_sink_sub_bins; ++i) {
+      const NvDsSinkSubBinConfig& sink_config = app_ctx->config.sink_bin_sub_bin_config[i];
+      if (!sink_config.enable) {
+        continue;
+      }
+      const std::string sink_name =
+          add_node(prefix + "sink" + std::to_string(sink_config.sink_id) + ":" + hm::to_string(sink_config.type),
+                   sink_degree);
+      sink_nodes.push_back({sink_config.sink_id, sink_name});
+      add_edge(last_video, sink_name);
+    }
+
+    for (guint i = 0; i < MAX_SOURCE_BINS; ++i) {
+      const NvDsHmAudioConfig& audio_config = app_ctx->config.hmaudio_config[i];
+      if (!audio_config.enable) {
+        continue;
+      }
+      const std::string audio_node = add_node(prefix + "hmaudio" + std::to_string(i), std::max(0, degree - 1));
+
+      auto add_audio_sink_edge = [&](gint sink_id) {
+        for (const auto& sink_item : sink_nodes) {
+          if (sink_item.first == sink_id) {
+            add_edge(audio_node, sink_item.second);
+            return;
+          }
+        }
+      };
+      if (audio_config.dest == DEST_SINK) {
+        add_audio_sink_edge(audio_config.sink_id);
+      } else if (audio_config.dest == DEST_MULTI_SINK) {
+        for (guint sink_index = 0; sink_index < MAX_SINK_BINS; ++sink_index) {
+          if (audio_config.multi_sink_ids[sink_index] >= 0) {
+            add_audio_sink_edge(audio_config.multi_sink_ids[sink_index]);
+          }
+        }
+      } else {
+        for (const auto& sink_item : sink_nodes) {
+          add_edge(audio_node, sink_item.second);
+        }
+      }
+    }
+  }
+
+  if (graph.nodes.empty()) {
+    add_node("pipeline", 0, false);
+  }
+  graph.concurrency_current = static_cast<int>(std::count_if(graph.nodes.begin(), graph.nodes.end(), [](const auto& n) {
+    return n.active;
+  }));
+  graph.concurrency_max = static_cast<int>(graph.nodes.size());
+  graph.threaded = true;
+  return graph;
 }
 
 void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
@@ -1209,6 +1482,15 @@ void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
   for (i = 0; i < numf; i++) {
     fps_[i] = str->fps[i];
     fps_avg_[i] = str->fps_avg[i];
+  }
+
+  const ProgressMetrics progress_metrics = collect_progress_metrics(app_ctx);
+  if (progress_ui_ && progress_ui_->started()) {
+    progress_ui_->update(make_terminal_progress_snapshot(app_ctx, str, progress_metrics));
+    if (progress_metrics.valid) {
+      g_mutex_unlock(&fps_lock_);
+      return;
+    }
   }
 
   if (header_print_cnt % 20 == 0) {
@@ -1232,7 +1514,7 @@ void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
   for (i = 0; i < numf; i++) {
     g_print("%.2f (%.2f)\t", fps_[i], fps_avg_[i]);
   }
-  const std::string progress_status = format_progress_status(app_ctx);
+  const std::string progress_status = format_progress_status(progress_metrics);
   if (!progress_status.empty()) {
     g_print("%s", progress_status.c_str());
   }
