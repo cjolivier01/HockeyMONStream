@@ -38,6 +38,20 @@ cc_binary(
 )
 
 cc_test(
+    name = "terminal_progress_ui_test",
+    srcs = [
+        "TerminalProgressUi.cpp",
+        "TerminalProgressUi.h",
+        "TerminalProgressUiTest.cpp",
+    ],
+    copts = [
+        "-x",
+        "c++",
+        "-std=c++17",
+    ],
+)
+
+cc_test(
     name = "plugin_property_yaml_parser_test",
     srcs = [
         "PluginPropertyYamlParserTest.cpp",

@@ -19,6 +19,8 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -29,6 +31,7 @@
 #include "configurator.h"
 #include "deepstream_app.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
+#include "TerminalProgressUi.h"
 
 // Macro definitions.
 #define APP_TITLE "DeepStream"
@@ -103,7 +106,23 @@ class PipelineApplication {
   static void perf_cb_static(gpointer context, NvDsAppPerfStruct* str);
   void perf_cb(gpointer context, NvDsAppPerfStruct* str);
   void record_timed_run_progress(uint64_t processed_ns);
-  std::string format_progress_status(AppCtx* app_ctx);
+  struct ProgressMetrics {
+    bool valid{false};
+    uint64_t processed_ns{GST_CLOCK_TIME_NONE};
+    uint64_t total_ns{GST_CLOCK_TIME_NONE};
+    uint64_t remaining_ns{GST_CLOCK_TIME_NONE};
+    uint64_t eta_ns{GST_CLOCK_TIME_NONE};
+    double speed_x{0.0};
+    double fraction{0.0};
+  };
+  ProgressMetrics collect_progress_metrics(AppCtx* app_ctx);
+  std::string format_progress_status(const ProgressMetrics& metrics) const;
+  hm::TerminalProgressSnapshot make_terminal_progress_snapshot(
+      AppCtx* app_ctx,
+      NvDsAppPerfStruct* str,
+      const ProgressMetrics& metrics) const;
+  hm::TerminalProgressGraphSnapshot build_progress_graph_snapshot(
+      const std::vector<std::shared_ptr<HmApp>>& app_contexts) const;
   static gboolean check_for_interrupt_static(gpointer data);
   gboolean check_for_interrupt();
   static gboolean kbhit();
@@ -154,6 +173,13 @@ class PipelineApplication {
   gboolean dump_pipeline_dot_;
   gboolean force_reconfigure_;
   gboolean clean_stitching_artifacts_{FALSE};
+  gboolean progress_ui_enabled_{FALSE};
+  gboolean progress_ui_graph_{TRUE};
+  gboolean progress_ui_no_graph_{FALSE};
+  gboolean progress_ui_no_capture_{FALSE};
+  gint progress_ui_lines_{11};
+  gint progress_ui_refresh_ms_{1000};
+  gint progress_ui_start_threshold_{0};
   gint return_value_;
   guint num_input_uris_;
   gint override_gpu_id_{hm::Configurator::kUseConfigFileGpu};
@@ -168,6 +194,7 @@ class PipelineApplication {
     std::chrono::steady_clock::time_point speed_base_wall;
   };
   std::map<int, ProgressState> progress_states_;
+  std::unique_ptr<hm::TerminalProgressUi> progress_ui_;
   std::chrono::steady_clock::time_point timed_run_last_progress_wall_;
   uint64_t timed_run_last_progress_ns_{GST_CLOCK_TIME_NONE};
   // Display / event loop
