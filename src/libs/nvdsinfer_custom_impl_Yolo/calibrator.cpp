@@ -14,11 +14,12 @@ Int8EntropyCalibrator2::Int8EntropyCalibrator2(
     const int& channels,
     const int& height,
     const int& width,
-    const float& scaleFactor,
-    const float* offsets,
-    const int& inputFormat,
-    const std::string& imgPath,
-    const std::string& calibTablePath)
+      const float& scaleFactor,
+      const float* offsets,
+      const int& inputFormat,
+      const std::string& inputBlobName,
+      const std::string& imgPath,
+      const std::string& calibTablePath)
     : batchSize(batchSize),
       inputC(channels),
       inputH(height),
@@ -26,16 +27,22 @@ Int8EntropyCalibrator2::Int8EntropyCalibrator2(
       scaleFactor(scaleFactor),
       offsets(offsets),
       inputFormat(inputFormat),
+      inputBlobName(inputBlobName),
       calibTablePath(calibTablePath),
-      imageIndex(0) {
+      imageIndex(0),
+      readCache(false) {
   inputCount = batchSize * channels * height * width;
   std::fstream f(imgPath);
   if (f.is_open()) {
     std::string temp;
     while (std::getline(f, temp)) {
-      imgPaths.push_back(temp);
+      if (!temp.empty()) {
+        imgPaths.push_back(temp);
+      }
     }
   }
+  std::ifstream cache(calibTablePath, std::ios::binary | std::ios::ate);
+  readCache = cache.good() && cache.tellg() > 0;
   batchData = new float[inputCount];
   CUDA_CHECK(cudaMalloc(&deviceInput, inputCount * sizeof(float)));
 }
@@ -86,9 +93,16 @@ bool Int8EntropyCalibrator2::getBatch(
       batchData,
       inputCount * sizeof(float),
       cudaMemcpyHostToDevice));
-  bindings[0] = deviceInput;
+  for (int binding = 0; binding < nbBindings; ++binding) {
+    if (names[binding] && inputBlobName == names[binding]) {
+      bindings[binding] = deviceInput;
+      return true;
+    }
+  }
 
-  return true;
+  std::cerr << "Failed to find INT8 calibration input binding: " << inputBlobName
+            << std::endl;
+  return false;
 }
 
 const void* Int8EntropyCalibrator2::readCalibrationCache(

@@ -33,6 +33,7 @@ class Int8EntropyCalibrator2 : public nvinfer1::IInt8EntropyCalibrator2 {
       const float& scaleFactor,
       const float* offsets,
       const int& inputFormat,
+      const std::string& inputBlobName,
       const std::string& imgPath,
       const std::string& calibTablePath);
 
@@ -57,6 +58,7 @@ class Int8EntropyCalibrator2 : public nvinfer1::IInt8EntropyCalibrator2 {
   float scaleFactor;
   const float* offsets;
   int inputFormat;
+  std::string inputBlobName;
   std::string calibTablePath;
   size_t imageIndex;
   size_t inputCount;

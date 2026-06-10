@@ -180,6 +180,8 @@ struct HmStitcherConfig : public NvDsHmVideoPrepConfig {
   gboolean show;
   gboolean force_scoreboard_config;
   gfloat post_stitch_rotate_degrees;
+  gboolean minimize_blend;
+  gchar stitch_compute_precision[32];
 };
 
 // Struct to store references to the bin and elements

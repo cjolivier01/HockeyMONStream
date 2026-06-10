@@ -1,0 +1,50 @@
+diff --git a/src/cuda/cudaImageAdjust.cuh b/src/cuda/cudaImageAdjust.cuh
+--- a/src/cuda/cudaImageAdjust.cuh
++++ b/src/cuda/cudaImageAdjust.cuh
+@@ -2,6 +2,8 @@
+
+ #include <cuda_runtime.h>
+
++#include "cupano/cuda/cudaTypes.h"
++
+ template <typename T>
+ void adjustImageCudaBatch(T* d_image, int batchSize, int width, int height, const float3& adjustment);
+
+@@ -69,6 +71,18 @@
+     return out;
+   }
+ };
++
++// Specialization for half3 (3-channel half-precision pixel)
++template <>
++struct PixelAdjuster<half3> {
++  __device__ static half3 adjust(const half3& pixel, const float3& adjustment) {
++    half3 out;
++    out.x = __float2half(__half2float(pixel.x) + adjustment.x);
++    out.y = __float2half(__half2float(pixel.y) + adjustment.y);
++    out.z = __float2half(__half2float(pixel.z) + adjustment.z);
++    return out;
++  }
++};
+
+ // Specialization for float4 (4-channel floating-point pixel)
+ template <>
+diff --git a/src/cuda/cudaRemap.cu b/src/cuda/cudaRemap.cu
+--- a/src/cuda/cudaRemap.cu
++++ b/src/cuda/cudaRemap.cu
+@@ -727,6 +727,7 @@
+ INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET(float1, float1)
+ INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET(float4, float4)
+ INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET(uchar4, float4)
++INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET(uchar4, half3)
+ INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET(uchar4, uchar4)
+ // INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET(__half, __half)
+
+@@ -742,6 +743,7 @@
+ INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_ADJUST(uchar3, uchar3)
+ INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_ADJUST(float4, float4)
+ INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_ADJUST(uchar4, float4)
++INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_ADJUST(uchar4, half3)
+ INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_ADJUST(uchar4, uchar4)
+
+ // For batched_remap_kernel_ex

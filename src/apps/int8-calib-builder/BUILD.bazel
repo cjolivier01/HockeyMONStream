@@ -1,0 +1,23 @@
+cc_binary(
+    name = "int8-calib-builder",
+    srcs = ["int8_calib_builder.cpp"],
+    copts = [
+        "-Wall",
+        "-std=c++17",
+        "-Wno-error=deprecated-declarations",
+    ],
+    linkopts = [
+        "-Wno-error=deprecated-declarations",
+        "-Wl,--start-group",
+        "-lnvinfer",
+        "-lnvonnxparser",
+        "-L/usr/local/cuda/lib64",
+        "-lcudart",
+        "-Wl,--end-group",
+    ],
+    deps = [
+        "@deepstream//:deepstream_includes",
+        "@opencv_linux//:opencv",
+        "//toolchains/jetson:cuda_runtime",
+    ],
+)
