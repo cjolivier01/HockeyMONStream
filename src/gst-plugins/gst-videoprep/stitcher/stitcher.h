@@ -4,6 +4,7 @@
 #include "hstream/src/libs/common/Status.h"
 
 #include "cupano/pano/cudaPano.h"
+#include "cupano/cuda/cudaTypes.h"
 
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 
@@ -54,13 +55,18 @@ class StitcherPriv : public STITCH_PRIV_BASE {
       NvBufSurface* in_surface) override;
 
  private:
-  using STITCHER = hm::pano::cuda::CudaStitchPano<uchar4, float4>;
+  using STITCHER_FP32 = hm::pano::cuda::CudaStitchPano<uchar4, float4>;
+  using STITCHER_FP16 = hm::pano::cuda::CudaStitchPano<uchar4, half3>;
+  enum class StitchComputePrecision {
+    kFp32,
+    kFp16,
+  };
   struct EosSnapshot {
     bool pipeline_eos_seen{false};
     std::set<guint> source_ids;
   };
 
-  absl::StatusOr<STITCHER*> get_stitcher();
+  absl::Status ensure_stitcher();
   absl::Status reload_stitcher();
   absl::Status configure_one_pass_from_surfaces(
       hm::surface::Surface incoming_surface_left,
@@ -74,9 +80,13 @@ class StitcherPriv : public STITCH_PRIV_BASE {
     canvas_width_hint_ = width;
     canvas_height_hint_ = height;
   }
+  bool has_stitcher() const ABSL_EXCLUSIVE_LOCKS_REQUIRED(stitcher_mu_) {
+    return stitcher_fp32_ || stitcher_fp16_;
+  }
 
   absl::Mutex stitcher_mu_;
-  std::unique_ptr<STITCHER> stitcher_ ABSL_GUARDED_BY(stitcher_mu_);
+  std::unique_ptr<STITCHER_FP32> stitcher_fp32_ ABSL_GUARDED_BY(stitcher_mu_);
+  std::unique_ptr<STITCHER_FP16> stitcher_fp16_ ABSL_GUARDED_BY(stitcher_mu_);
   std::string config_file_;
   std::mutex process_mu_;
   size_t process_pass_{0};
@@ -93,6 +103,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool show_{false};
   bool match_exposure_{false};
   bool minimize_blend_{false};
+  StitchComputePrecision stitch_compute_precision_{StitchComputePrecision::kFp32};
   std::mutex eos_mu_;
   bool pipeline_eos_seen_{false};
   std::set<guint> eos_source_ids_;

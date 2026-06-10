@@ -13,6 +13,7 @@ cc_binary(
         "-fPIC",
         "-Wno-error=deprecated-declarations",
         "-DWITH_CUDA",
+        "-DOPENCV",
     ],
     linkopts = [
         "-shared",

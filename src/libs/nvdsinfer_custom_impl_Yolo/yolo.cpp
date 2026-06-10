@@ -135,6 +135,7 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
     }
   }
 
+  nvinfer1::IOptimizationProfile* calibrationProfile = nullptr;
   if ((m_NetworkType == "darknet" && !m_ImplicitBatch) ||
       network->getInput(0)->getDimensions().d[0] == -1) {
     nvinfer1::IOptimizationProfile* profile =
@@ -155,6 +156,7 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
           input->getName(), nvinfer1::OptProfileSelector::kMAX, dims);
     }
     config->addOptimizationProfile(profile);
+    calibrationProfile = profile;
   }
 
   std::cout << "\nBuilding the TensorRT Engine\n" << std::endl;
@@ -230,9 +232,13 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
               m_ScaleFactor,
               m_Offsets,
               m_InputFormat,
+              m_InputBlobName,
               calib_image_list,
               m_Int8CalibPath);
       config->setInt8Calibrator(calibrator);
+      if (calibrationProfile) {
+        config->setCalibrationProfile(calibrationProfile);
+      }
 #else
       std::cerr
           << "INT8 calibration cache generation is not supported with TensorRT "

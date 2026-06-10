@@ -638,6 +638,10 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   ppc << ";show=" << config->show;
   ppc << ";force-scoreboard-config=" << config->force_scoreboard_config;
   ppc << ";post-stitch-rotate-degrees=" << config->post_stitch_rotate_degrees;
+  ppc << ";minimize-blend=" << config->minimize_blend;
+  if (config->stitch_compute_precision[0] != '\0') {
+    ppc << ";stitch-compute-precision=" << config->stitch_compute_precision;
+  }
   private_config = hm::gst::serialize_plugin_properties(config->private_properties, ppc.str());
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-private-config", private_config.c_str(), NULL);
 

@@ -30,6 +30,7 @@
 #include <unistd.h>
 #include <map>
 #include <sstream>
+#include <string>
 #include <vector>
 
 #if defined(__aarch64__)
@@ -76,6 +77,16 @@ bool parse_finite_double(const std::string& value, double& parsed) {
   return end && *end == '\0';
 }
 
+std::string normalized_property_value(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+    if (c == '_') {
+      return '-';
+    }
+    return static_cast<char>(std::tolower(c));
+  });
+  return value;
+}
+
 } // namespace
 
 static constexpr int kNumStitcherLaplacianLevels = 11;
@@ -90,7 +101,11 @@ void StitcherPriv::Shutdown() {
     std::lock_guard<std::mutex> lock(eos_mu_);
     eos_snapshot_by_surface_.clear();
   }
-  stitcher_.reset();
+  {
+    absl::MutexLock lk(&stitcher_mu_);
+    stitcher_fp32_.reset();
+    stitcher_fp16_.reset();
+  }
   release_rotation_scratch();
 }
 
@@ -267,9 +282,9 @@ absl::Status frame_sequence_mismatch_status(
 
 } // namespace
 
-absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
+absl::Status StitcherPriv::ensure_stitcher() {
   if (configure_only_ && !one_pass_mode_) {
-    return (StitcherPriv::STITCHER*)nullptr;
+    return absl::OkStatus();
   }
   if (config_file_.empty()) {
     return absl::NotFoundError("No control masks to load");
@@ -287,7 +302,7 @@ absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
         g_print("hmstitcher: control masks in %s are missing or need regeneration\n", config_file_.c_str());
         logged_missing_masks_ = true;
       }
-      return (StitcherPriv::STITCHER*)nullptr;
+      return absl::OkStatus();
     }
     const absl::Status seam_status = hm::stitching::maybe_create_default_seam_file(config_file_);
     if (!seam_status.ok()) {
@@ -296,7 +311,7 @@ absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
   }
 
   absl::MutexLock lk(&stitcher_mu_);
-  if (!stitcher_) {
+  if (!has_stitcher()) {
     hm::pano::ControlMasks control_masks;
     if (!control_masks.load(config_file_)) {
       std::string config_file_dir = config_file_;
@@ -306,7 +321,7 @@ absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
           g_print("hmstitcher: missing control masks in %s\n", config_file_dir.c_str());
           logged_missing_masks_ = true;
         }
-        return (StitcherPriv::STITCHER*)nullptr;
+        return absl::OkStatus();
       } else {
         // Don't try again unless one-pass mode wants to re-attempt after configure.
         config_file_.clear();
@@ -314,28 +329,43 @@ absl::StatusOr<StitcherPriv::STITCHER*> StitcherPriv::get_stitcher() {
       }
     }
     update_canvas_hints(control_masks.canvas_width(), control_masks.canvas_height());
-    stitcher_ = std::make_unique<hm::pano::cuda::CudaStitchPano<uchar4, float4>>(
-        /*batch_size=*/1,
-        /*num_levels=*/kNumStitcherLaplacianLevels,
-        control_masks,
-        /*match_exposure=*/match_exposure_,
-        /*quiet=*/false,
-        /*minimize_blend=*/minimize_blend_);
+    if (stitch_compute_precision_ == StitchComputePrecision::kFp16) {
+      g_print("hmstitcher: using fp16 stitch compute\n");
+      stitcher_fp16_ = std::make_unique<STITCHER_FP16>(
+          /*batch_size=*/1,
+          /*num_levels=*/kNumStitcherLaplacianLevels,
+          control_masks,
+          /*match_exposure=*/match_exposure_,
+          /*quiet=*/false,
+          /*minimize_blend=*/minimize_blend_);
+    } else {
+      g_print("hmstitcher: using fp32 stitch compute\n");
+      stitcher_fp32_ = std::make_unique<STITCHER_FP32>(
+          /*batch_size=*/1,
+          /*num_levels=*/kNumStitcherLaplacianLevels,
+          control_masks,
+          /*match_exposure=*/match_exposure_,
+          /*quiet=*/false,
+          /*minimize_blend=*/minimize_blend_);
+    }
   }
-  if (!stitcher_->status().ok()) {
-    return to_status(stitcher_->status());
+  if (stitcher_fp16_ && !stitcher_fp16_->status().ok()) {
+    return to_status(stitcher_fp16_->status());
   }
-  return stitcher_.get();
+  if (stitcher_fp32_ && !stitcher_fp32_->status().ok()) {
+    return to_status(stitcher_fp32_->status());
+  }
+  return absl::OkStatus();
 }
 
 absl::Status StitcherPriv::reload_stitcher() {
-  auto res = get_stitcher();
-  if (!res.ok()) {
-    return res.status();
-  }
-  STITCHER* stitcher = res.ok() ? res.value() : nullptr;
-  if (stitcher) {
-    update_canvas_hints(stitcher->canvas_width(), stitcher->canvas_height());
+  HM_RETURN_IF_ERROR(ensure_stitcher());
+  absl::MutexLock lk(&stitcher_mu_);
+  if (stitcher_fp16_) {
+    update_canvas_hints(stitcher_fp16_->canvas_width(), stitcher_fp16_->canvas_height());
+    log_canvas_hint("hmstitcher", canvas_width_hint_, canvas_height_hint_);
+  } else if (stitcher_fp32_) {
+    update_canvas_hints(stitcher_fp32_->canvas_width(), stitcher_fp32_->canvas_height());
     log_canvas_hint("hmstitcher", canvas_width_hint_, canvas_height_hint_);
   }
   return absl::OkStatus();
@@ -345,9 +375,9 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
   if (params->config_file) {
     config_file_ = params->config_file;
   }
-  auto res = get_stitcher();
-  if (!res.ok()) {
-    if (one_pass_mode_ && absl::IsNotFound(res.status())) {
+  absl::Status status = ensure_stitcher();
+  if (!status.ok()) {
+    if (one_pass_mode_ && absl::IsNotFound(status)) {
       if (!logged_missing_masks_) {
         g_print(
             "hmstitcher: control masks not found in %s; enabling one-pass configure on first batch\n",
@@ -355,11 +385,10 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
         logged_missing_masks_ = true;
       }
     } else {
-      std::cerr << res.status() << std::endl;
-      return res.status();
+      std::cerr << status << std::endl;
+      return status;
     }
   }
-  STITCHER* stitcher = res.ok() ? res.value() : nullptr;
 
   // Not an in-place transform
   m_transformMode = true;
@@ -367,14 +396,23 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
   m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
   m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
 
-  if (stitcher) {
-    // TODO: handle this through caps
-    params->output_width_height[0] = stitcher->canvas_width();
-    params->output_width_height[1] = stitcher->canvas_height();
-    g_print("Stitched canvas size: %d x %d\n", (int)stitcher->canvas_width(), (int)stitcher->canvas_height());
-    update_canvas_hints(stitcher->canvas_width(), stitcher->canvas_height());
-  } else if (one_pass_mode_) {
-    g_print("hmstitcher: deferring stitched canvas sizing until the first input batch\n");
+  {
+    absl::MutexLock lk(&stitcher_mu_);
+    if (stitcher_fp16_) {
+      // TODO: handle this through caps
+      params->output_width_height[0] = stitcher_fp16_->canvas_width();
+      params->output_width_height[1] = stitcher_fp16_->canvas_height();
+      g_print("Stitched canvas size: %d x %d\n", (int)stitcher_fp16_->canvas_width(), (int)stitcher_fp16_->canvas_height());
+      update_canvas_hints(stitcher_fp16_->canvas_width(), stitcher_fp16_->canvas_height());
+    } else if (stitcher_fp32_) {
+      // TODO: handle this through caps
+      params->output_width_height[0] = stitcher_fp32_->canvas_width();
+      params->output_width_height[1] = stitcher_fp32_->canvas_height();
+      g_print("Stitched canvas size: %d x %d\n", (int)stitcher_fp32_->canvas_width(), (int)stitcher_fp32_->canvas_height());
+      update_canvas_hints(stitcher_fp32_->canvas_width(), stitcher_fp32_->canvas_height());
+    } else if (one_pass_mode_) {
+      g_print("hmstitcher: deferring stitched canvas sizing until the first input batch\n");
+    }
   }
   return Super::PreCapsInit(params);
 }
@@ -424,13 +462,22 @@ absl::Status StitcherPriv::configure_one_pass_from_surfaces(
     configured_during_run_ = true;
   }
 
-  if (!stitcher_) {
+  bool stitcher_ready = false;
+  {
+    absl::MutexLock lk(&stitcher_mu_);
+    stitcher_ready = has_stitcher();
+  }
+  if (!stitcher_ready) {
     absl::Status reload_status = reload_stitcher();
     if (!reload_status.ok()) {
       return reload_status;
     }
   }
-  if (!stitcher_) {
+  {
+    absl::MutexLock lk(&stitcher_mu_);
+    stitcher_ready = has_stitcher();
+  }
+  if (!stitcher_ready) {
     return absl::FailedPreconditionError("One-pass stitching configured but control masks could not be loaded");
   }
   if (!canvas_width_hint_ || !canvas_height_hint_) {
@@ -523,6 +570,25 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     match_exposure_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "minimize-blend" || prop.key == "minimize_blend") {
     minimize_blend_ = !!std::atol(prop.value.c_str());
+  } else if (
+      prop.key == "stitch-compute-precision" || prop.key == "stitch_compute_precision" ||
+      prop.key == "stitcher-compute-precision" || prop.key == "stitcher_compute_precision") {
+    const std::string value = normalized_property_value(prop.value);
+    StitchComputePrecision requested_precision;
+    if (value == "fp32" || value == "float32") {
+      requested_precision = StitchComputePrecision::kFp32;
+    } else if (value == "fp16" || value == "float16" || value == "half") {
+      requested_precision = StitchComputePrecision::kFp16;
+    } else {
+      std::cerr << "Invalid stitch compute precision: " << prop.value << std::endl;
+      return false;
+    }
+    absl::MutexLock lk(&stitcher_mu_);
+    if (has_stitcher() && requested_precision != stitch_compute_precision_) {
+      std::cerr << "Cannot change stitch compute precision after stitcher initialization" << std::endl;
+      return false;
+    }
+    stitch_compute_precision_ = requested_precision;
   } else if (
       prop.key == "post-stitch-rotate-degrees" || prop.key == "post_stitch_rotate_degrees" ||
       prop.key == "stitch-rotate-degrees" || prop.key == "stitch_rotate_degrees") {
@@ -935,14 +1001,24 @@ absl::Status StitcherPriv::GenerateOutput(
             return absl::CancelledError("Stitching has been configured");
           }
         }
-      } else if (one_pass_mode_ && !stitcher_) {
+      } else if (one_pass_mode_) {
         // Masks existed but we had no stitcher due to earlier failure; retry once in one-pass mode.
-        absl::Status reload_status = reload_stitcher();
-        if (!reload_status.ok()) {
-          return reload_status;
+        bool needs_reload = false;
+        {
+          absl::MutexLock lk(&stitcher_mu_);
+          needs_reload = !has_stitcher();
         }
-        if (configured_during_run_ && !stitcher_) {
-          return absl::FailedPreconditionError("One-pass stitching configured but control masks could not be loaded");
+        if (needs_reload) {
+          absl::Status reload_status = reload_stitcher();
+          if (!reload_status.ok()) {
+            return reload_status;
+          }
+        }
+        {
+          absl::MutexLock lk(&stitcher_mu_);
+          if (configured_during_run_ && !has_stitcher()) {
+            return absl::FailedPreconditionError("One-pass stitching configured but control masks could not be loaded");
+          }
         }
       }
     }
@@ -990,10 +1066,14 @@ absl::Status StitcherPriv::GenerateOutput(
 
     assert(cuda_stream_);
 
-    if (stitcher_) {
+    if (stitcher_fp16_) {
       HM_RETURN_IF_ERROR(to_status(cudaMemsetAsync(
           canvas->data_raw(), 0, canvas->height() * canvas->pitch() * canvas->batch_size(), cuda_stream_)));
-      HM_CUDA_ASSIGN_OR_RETURN(canvas, stitcher_->process(left, right, cuda_stream_, std::move(canvas)));
+      HM_CUDA_ASSIGN_OR_RETURN(canvas, stitcher_fp16_->process(left, right, cuda_stream_, std::move(canvas)));
+    } else if (stitcher_fp32_) {
+      HM_RETURN_IF_ERROR(to_status(cudaMemsetAsync(
+          canvas->data_raw(), 0, canvas->height() * canvas->pitch() * canvas->batch_size(), cuda_stream_)));
+      HM_CUDA_ASSIGN_OR_RETURN(canvas, stitcher_fp32_->process(left, right, cuda_stream_, std::move(canvas)));
     } else {
       // Gray image
       HM_RETURN_IF_ERROR(to_status(cudaMemsetAsync(
