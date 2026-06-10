@@ -451,6 +451,11 @@ def main() -> int:
       help="Build missing INT8 calibration artifacts before running INT8 variants.",
   )
   parser.add_argument("--build-bf16", action="store_true", help="Build missing BF16 engine before running BF16 variants.")
+  parser.add_argument(
+      "--allow-skipped",
+      action="store_true",
+      help="Exit successfully when requested variants are skipped due to unsupported or missing artifacts.",
+  )
   parser.add_argument("--int8-calib-frames", type=int, default=64)
   parser.add_argument("--int8-calib-batch-size", type=int, default=2)
   parser.add_argument("--int8-calib-start-seconds", type=float)
@@ -488,7 +493,9 @@ def main() -> int:
   )
   print_report(results, args.baseline, gate_ok, gate_reason)
   print(f"\nJSON summary: {report_path}")
-  return 1 if any(r.get("status") == "failed" for r in results) or not gate_ok else 0
+  any_failed = any(r.get("status") == "failed" for r in results)
+  any_skipped = any(r.get("status") == "skipped" for r in results)
+  return 1 if any_failed or (any_skipped and not args.allow_skipped) or not gate_ok else 0
 
 
 if __name__ == "__main__":

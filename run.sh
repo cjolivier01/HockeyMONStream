@@ -55,7 +55,7 @@ Related:
 
 Notes:
   Game directories default to ~/Videos/<game_id>. Set HM_GAME_DIR to override the games root.
-  Unrecognized arguments are forwarded to bazel-bin/src/apps/pipeline-app/pipeline-app.
+  Unrecognized arguments are forwarded to pipeline-app.
 EOF
 }
 
@@ -130,6 +130,7 @@ if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
   find "${BAZEL_GST_RUNTIME_PLUGIN_DIR}" -maxdepth 1 -type l -name '*.so' -delete
 
   while IFS= read -r plugin_so; do
+    plugin_so="$(readlink -f "${plugin_so}")"
     ln -sfn "${plugin_so}" "${BAZEL_GST_RUNTIME_PLUGIN_DIR}/$(basename "${plugin_so}")"
     prepend_path LD_LIBRARY_PATH "$(dirname "${plugin_so}")"
   done < <(
@@ -144,6 +145,7 @@ if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
   )
 
   while IFS= read -r lib_dir; do
+    lib_dir="$(readlink -f "${lib_dir}")"
     prepend_path LD_LIBRARY_PATH "${lib_dir}"
   done < <(
     find "${BAZEL_GST_PLUGIN_ROOT}" \
@@ -161,11 +163,16 @@ fi
 YOLO_CUSTOM_IMPL="${SCRIPT_DIR}/bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"
 YOLO_CUSTOM_IMPL_LINK="${SCRIPT_DIR}/lib/libnvdsinfer_custom_impl_Yolo.so"
 if [ -e "${YOLO_CUSTOM_IMPL}" ]; then
+  YOLO_CUSTOM_IMPL="$(readlink -f "${YOLO_CUSTOM_IMPL}")"
   mkdir -p "${SCRIPT_DIR}/lib"
   if [ ! -e "${YOLO_CUSTOM_IMPL_LINK}" ] || [ -L "${YOLO_CUSTOM_IMPL_LINK}" ]; then
-    ln -sfn "../bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so" \
-      "${YOLO_CUSTOM_IMPL_LINK}"
+    ln -sfn "${YOLO_CUSTOM_IMPL}" "${YOLO_CUSTOM_IMPL_LINK}"
   fi
+fi
+
+PIPELINE_APP_BIN="${SCRIPT_DIR}/bazel-bin/src/apps/pipeline-app/pipeline-app"
+if [ -x "${PIPELINE_APP_BIN}" ]; then
+  PIPELINE_APP_BIN="$(readlink -f "${PIPELINE_APP_BIN}")"
 fi
 if [ -n "${CONDA_PREFIX:-}" ]; then
   # Conda environments often ship their own GLib/GStreamer stack. Adding `${CONDA_PREFIX}/lib` ahead of system
@@ -1018,5 +1025,10 @@ if [ "${ssh_forwarded_display}" -eq 1 ] && [ "${HM_ALLOW_SSH_RENDER:-0}" != "1" 
   unset DISPLAY
 fi
 
-bazel-bin/src/apps/pipeline-app/pipeline-app "${pipeline_args[@]}"
+if [ ! -x "${PIPELINE_APP_BIN}" ]; then
+  echo "pipeline-app is not built at ${PIPELINE_APP_BIN}; build //src/apps/pipeline-app:pipeline-app first"
+  exit 2
+fi
+
+"${PIPELINE_APP_BIN}" "${pipeline_args[@]}"
 # bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_app_config.yaml --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_FILE --options=pipeline.hmaudio.enable=1 $@
