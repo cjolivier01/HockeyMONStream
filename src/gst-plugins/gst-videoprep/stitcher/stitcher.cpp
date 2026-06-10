@@ -574,17 +574,21 @@ bool StitcherPriv::SetProperty(const Property& prop) {
       prop.key == "stitch-compute-precision" || prop.key == "stitch_compute_precision" ||
       prop.key == "stitcher-compute-precision" || prop.key == "stitcher_compute_precision") {
     const std::string value = normalized_property_value(prop.value);
+    StitchComputePrecision requested_precision;
     if (value == "fp32" || value == "float32") {
-      stitch_compute_precision_ = StitchComputePrecision::kFp32;
+      requested_precision = StitchComputePrecision::kFp32;
     } else if (value == "fp16" || value == "float16" || value == "half") {
-      stitch_compute_precision_ = StitchComputePrecision::kFp16;
+      requested_precision = StitchComputePrecision::kFp16;
     } else {
       std::cerr << "Invalid stitch compute precision: " << prop.value << std::endl;
       return false;
     }
     absl::MutexLock lk(&stitcher_mu_);
-    stitcher_fp32_.reset();
-    stitcher_fp16_.reset();
+    if (has_stitcher() && requested_precision != stitch_compute_precision_) {
+      std::cerr << "Cannot change stitch compute precision after stitcher initialization" << std::endl;
+      return false;
+    }
+    stitch_compute_precision_ = requested_precision;
   } else if (
       prop.key == "post-stitch-rotate-degrees" || prop.key == "post_stitch_rotate_degrees" ||
       prop.key == "stitch-rotate-degrees" || prop.key == "stitch_rotate_degrees") {

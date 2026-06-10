@@ -277,6 +277,13 @@ def evaluate_production_gate(args: argparse.Namespace, results: list[dict[str, o
   if candidate.get("status") != "ok":
     return False, f"production candidate '{args.production_candidate}' did not complete: {candidate.get('reason', '')}"
 
+  required_nonzero_metrics = ("track_files", "tracked_observations", "unique_tracked_objects", "avg_active_tracks_per_frame")
+  for metric in required_nonzero_metrics:
+    if float(baseline.get(metric, 0) or 0) <= 0:
+      return False, f"baseline variant '{args.baseline}' produced zero {metric}"
+    if float(candidate.get(metric, 0) or 0) <= 0:
+      return False, f"production candidate '{args.production_candidate}' produced zero {metric}"
+
   deltas = compare_to_baseline(candidate, baseline)
   failures = []
   checks = [

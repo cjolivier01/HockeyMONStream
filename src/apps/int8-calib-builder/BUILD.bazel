@@ -17,6 +17,7 @@ cc_binary(
     ],
     deps = [
         "@deepstream//:deepstream_includes",
+        "@local_cuda//:cuda",
         "@opencv_linux//:opencv",
         "//toolchains/jetson:cuda_runtime",
     ],

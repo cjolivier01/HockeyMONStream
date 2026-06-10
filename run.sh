@@ -33,7 +33,6 @@ Model precision:
   --models-int8-calibrate,
   --int8-calibrate, --calibrate-int8   Extract calibration frames, build a TensorRT INT8 calibration table and
                                        engine offline, then run from timestamp zero.
-  --int8-calib-file PATH               Override calibration table path.
   --int8-calib-frames N                Number of frames to sample for INT8 calibration. Default: 64.
   --int8-calib-batch-size N            INT8 calibration batch size. Default: 2.
   --int8-calib-start-seconds S         Start offset for calibration frame extraction. Default: 0.
@@ -191,7 +190,6 @@ models_int8=0
 models_int8_calibrate=0
 models_bf16=0
 models_bf16_build=0
-int8_calib_file=""
 int8_calib_frames=64
 int8_calib_batch_size=2
 int8_calib_start_seconds=0
@@ -228,14 +226,6 @@ for ((i = 0; i < ${#args[@]}; i++)); do
     --models-bf16-build|--bf16-build)
       models_bf16=1
       models_bf16_build=1
-      ;;
-    --int8-calib-file=*)
-      int8_calib_file="${arg#*=}"
-      ;;
-    --int8-calib-file)
-      if [ "$((i + 1))" -lt "${#args[@]}" ]; then
-        int8_calib_file="${args[$((i + 1))]}"
-      fi
       ;;
     --int8-calib-frames=*)
       int8_calib_frames="${arg#*=}"
@@ -359,12 +349,12 @@ for ((i = 0; i < ${#args[@]}; i++)); do
       # run.sh-only flag; do not forward to pipeline-app
       continue
       ;;
-    --int8-calib-file|--int8-calib-frames|--int8-calib-batch-size|--int8-calib-start-seconds|--stitcher-compute|--stitcher-compute-precision)
+    --int8-calib-frames|--int8-calib-batch-size|--int8-calib-start-seconds|--stitcher-compute|--stitcher-compute-precision)
       # run.sh-only flag with a separate value; the value is consumed below.
       skip_next_rewritten_arg=1
       continue
       ;;
-    --int8-calib-file=*|--int8-calib-frames=*|--int8-calib-batch-size=*|--int8-calib-start-seconds=*|--stitcher-compute=*|--stitcher-compute-precision=*)
+    --int8-calib-frames=*|--int8-calib-batch-size=*|--int8-calib-start-seconds=*|--stitcher-compute=*|--stitcher-compute-precision=*)
       # run.sh-only flag; do not forward to pipeline-app
       continue
       ;;
@@ -628,15 +618,9 @@ fi
 if [ "${models_int8}" -eq 1 ]; then
   extra_options+=(--options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_int8.yaml)
   int8_asset_config_file="${SCRIPT_DIR}/configs/config_infer_yolov8_hockey_int8.yaml"
-  if [ -n "${int8_calib_file}" ]; then
-    extra_options+=(--options=pipeline.primary-gie.int8-calib-file="${int8_calib_file}")
-  fi
 elif [ "${models_bf16}" -eq 1 ]; then
   extra_options+=(--options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_bf16.yaml)
   bf16_asset_config_file="${SCRIPT_DIR}/configs/config_infer_yolov8_hockey_bf16.yaml"
-elif [ -n "${int8_calib_file}" ]; then
-  echo "--int8-calib-file requires --models-int8"
-  exit 2
 fi
 
 if [ -n "${stitcher_compute_precision}" ]; then
@@ -736,11 +720,7 @@ abs_cwd_path() {
 int8_artifact_paths() {
   int8_config_file="${int8_asset_config_file}"
   int8_engine_file="$(abs_config_path "${int8_config_file}" "$(yaml_property "${int8_config_file}" model-engine-file)")"
-  if [ -n "${int8_calib_file}" ]; then
-    int8_calib_table="$(abs_cwd_path "${int8_calib_file}")"
-  else
-    int8_calib_table="$(abs_config_path "${int8_config_file}" "$(yaml_property "${int8_config_file}" int8-calib-file)")"
-  fi
+  int8_calib_table="$(abs_config_path "${int8_config_file}" "$(yaml_property "${int8_config_file}" int8-calib-file)")"
 }
 
 bf16_artifact_paths() {
@@ -848,6 +828,7 @@ build_int8_calibration_artifacts() {
   local image_list="$1"
   local onnx_file
   local scale
+  local infer_batch_size
   local builder_bin="${SCRIPT_DIR}/bazel-bin/src/apps/int8-calib-builder/int8-calib-builder"
   local tmp_engine
   local tmp_calib_table
@@ -858,8 +839,17 @@ build_int8_calibration_artifacts() {
 
   onnx_file="$(abs_config_path "${int8_config_file}" "$(yaml_property "${int8_config_file}" onnx-file)")"
   scale="$(yaml_property "${int8_config_file}" net-scale-factor)"
+  infer_batch_size="$(yaml_property "${int8_config_file}" batch-size)"
   if [ -z "${scale}" ]; then
     scale="0.0039215697906911373"
+  fi
+  if [ -z "${infer_batch_size}" ]; then
+    infer_batch_size=1
+  fi
+  if [ "${int8_calib_batch_size}" -ne "${infer_batch_size}" ]; then
+    echo "--int8-calib-batch-size=${int8_calib_batch_size} does not match ${int8_config_file} batch-size=${infer_batch_size}"
+    echo "The TensorRT engine profile must match the DeepStream nvinfer batch size."
+    exit 2
   fi
 
   echo "Building INT8 calibration builder"
@@ -922,8 +912,18 @@ build_bf16_engine_artifact() {
   local manifest_file
   local tmp_manifest_file
   local onnx_sha
+  local infer_batch_size
 
   onnx_file="$(abs_config_path "${bf16_asset_config_file}" "$(yaml_property "${bf16_asset_config_file}" onnx-file)")"
+  infer_batch_size="$(yaml_property "${bf16_asset_config_file}" batch-size)"
+  if [ -z "${infer_batch_size}" ]; then
+    infer_batch_size=1
+  fi
+  if [ "${int8_calib_batch_size}" -ne "${infer_batch_size}" ]; then
+    echo "--int8-calib-batch-size=${int8_calib_batch_size} does not match ${bf16_asset_config_file} batch-size=${infer_batch_size}"
+    echo "The TensorRT engine profile must match the DeepStream nvinfer batch size."
+    exit 2
+  fi
 
   echo "Building BF16 engine builder"
   bazelisk build --config=opt //src/apps/int8-calib-builder:int8-calib-builder
@@ -939,7 +939,7 @@ build_bf16_engine_artifact() {
     --precision=bf16 \
     --onnx="${onnx_file}" \
     --engine="${tmp_engine}" \
-    --batch-size="${int8_calib_batch_size}" \
+    --batch-size="${infer_batch_size}" \
     --min-batch-size=1
 
   if [ ! -s "${tmp_engine}" ]; then
@@ -954,7 +954,7 @@ build_bf16_engine_artifact() {
   "precision": "bf16",
   "onnx_file": "${onnx_file}",
   "onnx_sha256": "${onnx_sha}",
-  "batch_size": ${int8_calib_batch_size},
+  "batch_size": ${infer_batch_size},
   "min_batch_size": 1,
   "engine_file": "${bf16_engine_file}"
 }
