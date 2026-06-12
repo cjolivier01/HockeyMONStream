@@ -19,3 +19,4 @@ MODULE.bazel.lock
 .cache
 camera_bin.dot
 output_workdirs
+/dist-staging
