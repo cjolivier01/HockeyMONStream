@@ -128,7 +128,9 @@ cc_test(
     size = "medium",
     tags = [
         "local",
+        "manual",
         "no-cache",
+        "requires-deepstream-hw",
     ],
     timeout = "moderate",
     deps = [

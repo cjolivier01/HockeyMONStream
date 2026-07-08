@@ -1,5 +1,6 @@
 #include <cuda_runtime_api.h>
 #include <NvInfer.h>
+#include <NvInferVersion.h>
 #include <NvOnnxParser.h>
 #include <opencv2/opencv.hpp>
 
@@ -15,6 +16,13 @@
 
 namespace {
 
+#if NV_TENSORRT_MAJOR < 10
+#define HSTREAM_HAS_TRT_LEGACY_INT8_CALIBRATOR 1
+#else
+#define HSTREAM_HAS_TRT_LEGACY_INT8_CALIBRATOR 0
+#endif
+
+#if HSTREAM_HAS_TRT_LEGACY_INT8_CALIBRATOR
 class Logger : public nvinfer1::ILogger {
  public:
   void log(Severity severity, const char* msg) noexcept override {
@@ -23,6 +31,7 @@ class Logger : public nvinfer1::ILogger {
     }
   }
 };
+#endif
 
 struct Args {
   std::string onnx;
@@ -38,12 +47,6 @@ struct Args {
   bool rgb = true;
   bool fp16 = true;
 };
-
-void check_cuda(cudaError_t status, const char* what) {
-  if (status != cudaSuccess) {
-    throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(status));
-  }
-}
 
 std::string require_value(int& i, int argc, char** argv) {
   if (i + 1 >= argc) {
@@ -69,6 +72,7 @@ Args parse_args(int argc, char** argv) {
           << "Usage: int8-calib-builder --precision int8|bf16 --onnx FILE --engine FILE [options]\n"
           << "Options:\n"
           << "  --precision P        Engine precision to build: int8 or bf16. Default: int8\n"
+          << "                       INT8 calibration requires TensorRT's legacy calibrator API.\n"
           << "  --image-list FILE    Required for int8 calibration\n"
           << "  --calib-table FILE   Required for int8 calibration\n"
           << "  --batch-size N       Calibration/build batch size. Default: 2\n"
@@ -124,6 +128,13 @@ Args parse_args(int argc, char** argv) {
     throw std::runtime_error("--min-batch-size must be positive and no larger than --batch-size");
   }
   return args;
+}
+
+#if HSTREAM_HAS_TRT_LEGACY_INT8_CALIBRATOR
+void check_cuda(cudaError_t status, const char* what) {
+  if (status != cudaSuccess) {
+    throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(status));
+  }
 }
 
 std::vector<std::string> read_lines(const std::string& path) {
@@ -323,9 +334,11 @@ void write_file(const std::string& path, const void* data, size_t size) {
     throw std::runtime_error("failed to write output file: " + path);
   }
 }
+#endif
 
 } // namespace
 
+#if HSTREAM_HAS_TRT_LEGACY_INT8_CALIBRATOR
 int main(int argc, char** argv) {
   try {
     Args args = parse_args(argc, argv);
@@ -387,17 +400,21 @@ int main(int argc, char** argv) {
       profile->setDimensions(trt_input_name, nvinfer1::OptProfileSelector::kOPT, dims);
       profile->setDimensions(trt_input_name, nvinfer1::OptProfileSelector::kMAX, dims);
       config->addOptimizationProfile(profile);
+#if HSTREAM_HAS_TRT_LEGACY_INT8_CALIBRATOR
       if (args.precision == "int8") {
         config->setCalibrationProfile(profile);
       }
+#endif
     }
 
+#if HSTREAM_HAS_TRT_LEGACY_INT8_CALIBRATOR
     std::unique_ptr<ImageEntropyCalibrator> calibrator;
     if (args.precision == "int8") {
       calibrator = std::make_unique<ImageEntropyCalibrator>(
           args.batch_size, channels, height, width, input_name, std::move(image_paths), args.calib_table, args.rgb, args.scale);
       config->setInt8Calibrator(calibrator.get());
     }
+#endif
 
     std::cout << "Building " << args.precision << " engine from " << args.onnx << "\n"
               << "  input: " << input_name << " batch=" << args.batch_size << " chw=" << channels << "x" << height << "x"
@@ -411,9 +428,11 @@ int main(int argc, char** argv) {
     if (!serialized) {
       throw std::runtime_error("TensorRT failed to build serialized " + args.precision + " network");
     }
+#if HSTREAM_HAS_TRT_LEGACY_INT8_CALIBRATOR
     if (calibrator) {
       calibrator->verifyComplete();
     }
+#endif
 
     write_file(args.engine, serialized->data(), serialized->size());
     std::cout << "Wrote " << args.precision << " engine: " << args.engine << " (" << serialized->size() << " bytes)\n";
@@ -423,3 +442,17 @@ int main(int argc, char** argv) {
     return 2;
   }
 }
+#else
+int main(int argc, char** argv) {
+  try {
+    (void)parse_args(argc, argv);
+    throw std::runtime_error(
+        "this utility currently uses TensorRT 9.x builder/calibration APIs and is not supported with TensorRT " +
+        std::to_string(NV_TENSORRT_MAJOR) + "." + std::to_string(NV_TENSORRT_MINOR) +
+        ". Use TensorRT 9.x or older, or update this utility to TensorRT's explicit quantization APIs.");
+  } catch (const std::exception& exc) {
+    std::cerr << "int8-calib-builder: " << exc.what() << "\n";
+    return 2;
+  }
+}
+#endif

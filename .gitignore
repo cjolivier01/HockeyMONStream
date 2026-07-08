@@ -20,3 +20,4 @@ MODULE.bazel.lock
 camera_bin.dot
 output_workdirs
 /dist-staging
+/dist

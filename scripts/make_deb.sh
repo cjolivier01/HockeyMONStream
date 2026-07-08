@@ -1,11 +1,11 @@
 #!/bin/bash
-# Build a self-contained .deb that installs hstream to /opt/hstream.
-# The installed run.sh launches pipeline-app without needing the source tree.
+# Build a self-contained .deb that installs HMStream to /opt/hmstream.
+# The installed run.sh launches hmstream-cli without needing the source tree.
 #
 # Usage:
 #   scripts/make_deb.sh [--build] [--version X.Y.Z] [--output-dir DIR]
 #
-#   --build          Run 'make pipeline-app' before packaging (default: skip, use existing artifacts).
+#   --build          Run 'make hmstream-cli hmstream-ui' before packaging (default: skip, use existing artifacts).
 #   --version X.Y.Z  Override package version (default: git describe --tags --always).
 #   --output-dir DIR Where to write the .deb (default: dist/).
 #
@@ -13,8 +13,8 @@
 set -euo pipefail
 
 TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-INSTALL_PREFIX="/opt/hstream"
-PKG_NAME="hstream"
+INSTALL_PREFIX="/opt/hmstream"
+PKG_NAME="hmstream"
 PKG_ARCH="${PKG_ARCH:-$(dpkg --print-architecture 2>/dev/null || echo amd64)}"
 
 # ---------- arg parsing ----------
@@ -42,14 +42,19 @@ fi
 
 # ---------- optional build ----------
 if [[ "$DO_BUILD" -eq 1 ]]; then
-  echo "[make_deb] Building pipeline-app..."
-  make -C "${TOPDIR}" pipeline-app
+  echo "[make_deb] Building hmstream-cli and hmstream-ui..."
+  make -C "${TOPDIR}" hmstream-cli hmstream-ui
 fi
 
 # ---------- verify artifacts ----------
-PIPELINE_APP="${TOPDIR}/bazel-bin/src/apps/pipeline-app/pipeline-app"
-if [[ ! -f "${PIPELINE_APP}" ]]; then
-  echo "ERROR: ${PIPELINE_APP} not found. Run 'make pipeline-app' first, or pass --build." >&2
+HMSTREAM_CLI="${TOPDIR}/bazel-bin/src/apps/pipeline-app/hmstream-cli"
+HMSTREAM_UI="${TOPDIR}/bazel-bin/src/apps/hmstream-ui/hmstream-ui"
+if [[ ! -f "${HMSTREAM_CLI}" ]]; then
+  echo "ERROR: ${HMSTREAM_CLI} not found. Run 'make hmstream-cli' first, or pass --build." >&2
+  exit 1
+fi
+if [[ ! -f "${HMSTREAM_UI}" ]]; then
+  echo "ERROR: ${HMSTREAM_UI} not found. Run 'make hmstream-ui' first, or pass --build." >&2
   exit 1
 fi
 
@@ -80,6 +85,7 @@ INSTALL_RPATH="${INSTALL_PREFIX}/lib:/opt/nvidia/deepstream/deepstream/lib:/usr/
 
 patchelf_rpath() {
   local elf="$1"
+  chmod u+w "${elf}"
   patchelf --set-rpath "${INSTALL_RPATH}" "${elf}"
 }
 
@@ -148,17 +154,20 @@ install_lib() {
   fi
 }
 
-# ---------- binary ----------
-echo "[make_deb] Staging pipeline-app binary..."
-cp "${PIPELINE_APP}" "${STAGING}${INSTALL_PREFIX}/bin/pipeline-app"
-patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/pipeline-app"
+# ---------- binaries ----------
+echo "[make_deb] Staging hmstream binaries..."
+cp "${HMSTREAM_CLI}" "${STAGING}${INSTALL_PREFIX}/bin/hmstream-cli"
+patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hmstream-cli"
+cp "${HMSTREAM_UI}" "${STAGING}${INSTALL_PREFIX}/bin/hmstream-ui"
+patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hmstream-ui"
+ln -s hmstream-cli "${STAGING}${INSTALL_PREFIX}/bin/pipeline-app"
 
 # ---------- bundled shared libs (OpenCV etc.) ----------
 echo "[make_deb] Collecting bundled shared libs..."
 declare -A seen_libs
 
 # Collect from binary first, then from our own gst-plugins
-all_elfs=("${PIPELINE_APP}")
+all_elfs=("${HMSTREAM_CLI}" "${HMSTREAM_UI}")
 for plugin_dir in "${TOPDIR}/bazel-bin/src/gst-plugins"/*/; do
   for so in "${plugin_dir}"lib*.so; do
     [[ -f "${so}" ]] && all_elfs+=("${so}")
@@ -223,7 +232,7 @@ cat > "${STAGING}${INSTALL_PREFIX}/run.sh" <<'RUNSH'
 #!/bin/bash
 set -euo pipefail
 
-INSTALL_DIR=/opt/hstream
+INSTALL_DIR=/opt/hmstream
 
 prepend_path() {
   local var_name="$1"
@@ -257,7 +266,7 @@ export GST_REGISTRY="${GST_REGISTRY_DIR}/registry.hstream.$(uname -m).bin"
 prepend_path GST_PLUGIN_PATH "${INSTALL_DIR}/lib/gst-plugins"
 prepend_path GST_PLUGIN_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 
-# Bundled libs (OpenCV etc.) are embedded in /opt/hstream/lib; the binary's
+# Bundled libs (OpenCV etc.) are embedded in /opt/hmstream/lib; the binary's
 # RPATH already includes this dir, but gst-plugins are dlopen'd at runtime so
 # LD_LIBRARY_PATH is still needed for them.
 prepend_path LD_LIBRARY_PATH "${INSTALL_DIR}/lib"
@@ -622,9 +631,39 @@ if [ "${ssh_forwarded_display}" -eq 1 ] && [ "${HM_ALLOW_SSH_RENDER:-0}" != "1" 
   unset DISPLAY
 fi
 
-exec "${INSTALL_DIR}/bin/pipeline-app" "${pipeline_args[@]}"
+exec "${INSTALL_DIR}/bin/hmstream-cli" "${pipeline_args[@]}"
 RUNSH
 chmod 755 "${STAGING}${INSTALL_PREFIX}/run.sh"
+
+# ---------- installed UI wrapper ----------
+cat > "${STAGING}${INSTALL_PREFIX}/hmstream-ui.sh" <<'UISH'
+#!/bin/bash
+set -euo pipefail
+
+INSTALL_DIR=/opt/hmstream
+
+prepend_path() {
+  local var_name="$1"
+  local dir="$2"
+  local cur="${!var_name-}"
+  if [ -z "${dir}" ] || [ ! -d "${dir}" ]; then return; fi
+  if [ -z "${cur}" ]; then export "${var_name}=${dir}"; return; fi
+  case ":${cur}:" in
+    *":${dir}:"*) ;;
+    *) export "${var_name}=${dir}:${cur}" ;;
+  esac
+}
+
+prepend_path GST_PLUGIN_PATH "${INSTALL_DIR}/lib/gst-plugins"
+prepend_path GST_PLUGIN_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
+prepend_path LD_LIBRARY_PATH "${INSTALL_DIR}/lib"
+prepend_path LD_LIBRARY_PATH "${INSTALL_DIR}/lib/gst-plugins"
+prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib"
+prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
+
+exec "${INSTALL_DIR}/bin/hmstream-ui" "$@"
+UISH
+chmod 755 "${STAGING}${INSTALL_PREFIX}/hmstream-ui.sh"
 
 # ---------- /usr/local/bin symlink via postinst ----------
 # (symlink created at install time so it lands outside the staging INSTALL_PREFIX)
@@ -636,7 +675,7 @@ cat > "${STAGING}/DEBIAN/control" <<CONTROL
 Package: ${PKG_NAME}
 Version: ${PKG_VERSION}
 Architecture: ${PKG_ARCH}
-Maintainer: hstream <noreply@hstream>
+Maintainer: hmstream <noreply@hmstream>
 Installed-Size: ${INSTALLED_SIZE}
 Depends: libgstreamer1.0-0 (>= 1.20),
  libgstreamer-plugins-base1.0-0 (>= 1.20),
@@ -654,28 +693,36 @@ Depends: libgstreamer1.0-0 (>= 1.20),
  libswresample4,
  libfftw3-3,
  libx11-6,
+ libqt6core6t64 | libqt6core6,
+ libqt6gui6t64 | libqt6gui6,
+ libqt6widgets6t64 | libqt6widgets6,
  libsoup2.4-1,
  libtiff6,
  libpng16-16,
  python3,
  python3-yaml
-Description: hstream video pipeline application
- Installs the hstream pipeline-app binary, bundled shared libraries
+Description: HMStream video pipeline application and UI
+ Installs the HMStream CLI/UI binaries, bundled shared libraries
  (OpenCV 4.13), GStreamer plugins, and configs to ${INSTALL_PREFIX}.
  .
  External requirements (not expressed as Depends):
    - NVIDIA DeepStream (>= 6.3) at /opt/nvidia/deepstream/deepstream
    - NVIDIA CUDA Toolkit (>= 12) at /usr/local/cuda
  .
- Launch with: /opt/hstream/run.sh [args...]
- or via the hstream wrapper in /usr/local/bin/hstream.
+ Launch the CLI with: ${INSTALL_PREFIX}/run.sh [args...]
+ or via the hmstream-cli wrapper in /usr/local/bin/hmstream-cli.
+ Launch the UI with: ${INSTALL_PREFIX}/hmstream-ui.sh
+ or via the hmstream-ui wrapper in /usr/local/bin/hmstream-ui.
 CONTROL
 
 # ---------- DEBIAN/postinst ----------
 cat > "${STAGING}/DEBIAN/postinst" <<'POSTINST'
 #!/bin/bash
 set -e
-ln -sfn /opt/hstream/run.sh /usr/local/bin/hstream
+ln -sfn /opt/hmstream/run.sh /usr/local/bin/hmstream-cli
+ln -sfn /opt/hmstream/hmstream-ui.sh /usr/local/bin/hmstream-ui
+ln -sfn /opt/hmstream/run.sh /usr/local/bin/hstream
+ln -sfn /opt/hmstream/run.sh /usr/local/bin/pipeline-app
 POSTINST
 chmod 755 "${STAGING}/DEBIAN/postinst"
 
@@ -683,7 +730,10 @@ chmod 755 "${STAGING}/DEBIAN/postinst"
 cat > "${STAGING}/DEBIAN/prerm" <<'PRERM'
 #!/bin/bash
 set -e
+rm -f /usr/local/bin/hmstream-cli
+rm -f /usr/local/bin/hmstream-ui
 rm -f /usr/local/bin/hstream
+rm -f /usr/local/bin/pipeline-app
 PRERM
 chmod 755 "${STAGING}/DEBIAN/prerm"
 
@@ -700,5 +750,7 @@ echo "Install with:"
 echo "  sudo dpkg -i ${DEB_PATH}"
 echo ""
 echo "Run with:"
-echo "  /opt/hstream/run.sh [args...]"
-echo "  hstream [args...]   (after install)"
+echo "  /opt/hmstream/run.sh [args...]"
+echo "  hmstream-cli [args...]   (after install)"
+echo "  hmstream-ui              (after install)"
+echo "  hstream [args...]        (compatibility wrapper after install)"
