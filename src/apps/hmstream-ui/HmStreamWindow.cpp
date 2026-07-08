@@ -53,7 +53,7 @@ bool is_video_file(const QString& path) {
 bool is_auto_chapter_file(const QString& file_name) {
   static const QRegularExpression gopro("^G[A-Z][0-9]{6}\\.(MP4|mp4)$");
   static const QRegularExpression insta360("^VID_[0-9]{8}_[0-9]{6}_[0-9]{3}\\.(MP4|mp4)$");
-  static const QRegularExpression left_right("^(left|right)(-[0-9]+)?\\.mp4$");
+  static const QRegularExpression left_right("^(left|right)(-[0-9])?\\.mp4$");
   return gopro.match(file_name).hasMatch() || insta360.match(file_name).hasMatch() ||
          left_right.match(file_name).hasMatch();
 }
@@ -101,9 +101,19 @@ QString normalized_config_video_path(const QDir& game_dir, const QString& path) 
   return path;
 }
 
-void clear_stitching_frame_offsets(YAML::Node& config) {
-  config["game"]["stitching"].remove("frame_offsets");
-  config["stitching"].remove("frame_offsets");
+bool clear_stitching_frame_offsets(YAML::Node& config) {
+  bool changed = false;
+  YAML::Node game_stitching = config["game"]["stitching"];
+  if (game_stitching && game_stitching["frame_offsets"]) {
+    game_stitching.remove("frame_offsets");
+    changed = true;
+  }
+  YAML::Node stitching = config["stitching"];
+  if (stitching && stitching["frame_offsets"]) {
+    stitching.remove("frame_offsets");
+    changed = true;
+  }
+  return changed;
 }
 
 } // namespace
@@ -940,7 +950,7 @@ bool HmStreamWindow::savePrivateConfigForRole(const QString& role, const QString
       list.push_back(relative_path.toStdString());
       changed = true;
     }
-    clear_stitching_frame_offsets(config);
+    changed = clear_stitching_frame_offsets(config) || changed;
   }
 
   if (role == "left" || role == "right") {
@@ -1034,10 +1044,10 @@ bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QStri
   if (role == "auto") {
     remove_from_list(config["game"]["videos"], "left");
     remove_from_list(config["game"]["videos"], "right");
-    clear_stitching_frame_offsets(config);
+    changed = clear_stitching_frame_offsets(config) || changed;
   } else if (role == "left" || role == "right") {
     remove_from_list(config["game"]["videos"], role);
-    clear_stitching_frame_offsets(config);
+    changed = clear_stitching_frame_offsets(config) || changed;
   }
   if (!changed) {
     return true;

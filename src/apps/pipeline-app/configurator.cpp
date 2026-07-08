@@ -855,24 +855,8 @@ absl::Status Configurator::gather_stitching_videos(
   }
 
   if ((explicit_left || explicit_right) && (left_files.empty() || right_files.empty())) {
-    HM_RETURN_IF_ERROR(stitching::configure_orientation(game_dir));
-    overlay_config("", get_private_config_file_name(game_id_));
-    if (explicit_left) {
-      left_files = explicit_left_files;
-      config_["game"]["videos"]["left"] = left_files;
-      private_config_["game"]["videos"]["left"] = left_files;
-    } else if (has_node(config_, "game.videos.left", /*non_null=*/true)) {
-      left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
-      private_config_["game"]["videos"]["left"] = left_files;
-    }
-    if (explicit_right) {
-      right_files = explicit_right_files;
-      config_["game"]["videos"]["right"] = right_files;
-      private_config_["game"]["videos"]["right"] = right_files;
-    } else if (has_node(config_, "game.videos.right", /*non_null=*/true)) {
-      right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
-      private_config_["game"]["videos"]["right"] = right_files;
-    }
+    return absl::InvalidArgumentError(
+        "Mixed explicit/Auto video selection could not resolve both sides. Select both Left and Right explicitly, or use Auto for all video sets.");
   }
 
   if ((explicit_left || explicit_right) && !left_files.empty() && !right_files.empty()) {

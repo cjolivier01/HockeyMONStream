@@ -140,11 +140,14 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
 
   activate(automatic);
   const QString undiscoverable_auto = source_dir + "/clip.mov";
+  const QString undiscoverable_part = source_dir + "/left-10.mp4";
   if (!write_fake_video(undiscoverable_auto)) {
     return false;
   }
   const int before_undiscoverable = list->count();
   video_path->setText(undiscoverable_auto);
+  activate(add_video);
+  video_path->setText(undiscoverable_part);
   activate(add_video);
   if (!expect(
           list->count() == before_undiscoverable,
@@ -233,6 +236,8 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   const QString auto_import = window->gameDirectoryText() + "/cam2/GX010001.MP4";
   generated["game"]["videos"]["left"] = YAML::Node(YAML::NodeType::Sequence);
   generated["game"]["videos"]["left"].push_back(auto_import.toStdString());
+  generated["game"]["stitching"]["frame_offsets"]["left"] = "90";
+  generated["stitching"]["frame_offsets"]["left"] = "91";
   {
     std::ofstream out(config);
     out << generated << "\n";
@@ -249,8 +254,9 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   activate(remove_video);
   YAML::Node removed_auto = YAML::LoadFile(config.string());
   if (!expect(
-          !removed_auto["game"]["videos"]["left"] || removed_auto["game"]["videos"]["left"].size() == 0,
-          "Removing Auto config entries should clear stale generated private config")) {
+          (!removed_auto["game"]["videos"]["left"] || removed_auto["game"]["videos"]["left"].size() == 0) &&
+              !removed_auto["game"]["stitching"]["frame_offsets"] && !removed_auto["stitching"]["frame_offsets"],
+          "Removing Auto config entries should clear stale generated private config and offsets")) {
     return false;
   }
   if (!expect(!list_contains(list, "GX010001.MP4"), "Removed Auto imports should not reappear from config")) {
