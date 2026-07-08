@@ -50,6 +50,19 @@ bool is_video_file(const QString& path) {
   return suffix == "mp4" || suffix == "mkv" || suffix == "mov" || suffix == "avi";
 }
 
+bool is_auto_chapter_file(const QString& file_name) {
+  static const QRegularExpression gopro("^G[A-Z][0-9]{6}\\.(MP4|mp4)$");
+  static const QRegularExpression insta360("^VID_[0-9]{8}_[0-9]{6}_[0-9]{3}\\.(MP4|mp4)$");
+  static const QRegularExpression left_right("^(left|right)(-[0-9]+)?\\.mp4$");
+  return gopro.match(file_name).hasMatch() || insta360.match(file_name).hasMatch() ||
+         left_right.match(file_name).hasMatch();
+}
+
+bool is_root_auto_file(const QString& file_name) {
+  static const QRegularExpression stitched("^stitched_output-with-audio\\.(mp4|mkv)$");
+  return is_auto_chapter_file(file_name) || stitched.match(file_name).hasMatch();
+}
+
 QString sanitized_game_id(QString value) {
   value = value.trimmed();
   value.replace(QRegularExpression("[^A-Za-z0-9_.-]"), "-");
@@ -564,7 +577,7 @@ void HmStreamWindow::addVideoPath() {
   }
 
   if (!savePrivateConfigForRole(role, imported_relative_path)) {
-    removeImportedVideoPath(imported_relative_path);
+    removeImportedVideoPath(imported_relative_path, isCopiedImport(imported_relative_path));
     return;
   }
   refreshVideoSets();
@@ -600,11 +613,11 @@ void HmStreamWindow::removeSelectedVideoSet() {
   const QString relative_path = item->data(Qt::UserRole + 1).toString();
   const bool copied_import = isCopiedImport(relative_path);
 
-  if (!removePrivateConfigForRole(role, relative_path)) {
+  if (!removeImportedVideoPath(relative_path, copied_import)) {
     video_set_list_->insertItem(row, item);
     return;
   }
-  if (!removeImportedVideoPath(relative_path, copied_import)) {
+  if (!removePrivateConfigForRole(role, relative_path)) {
     video_set_list_->insertItem(row, item);
     return;
   }
@@ -693,7 +706,7 @@ void HmStreamWindow::refreshVideoSets() {
     const QFileInfoList files = QDir(cam_dir.filePath()).entryInfoList(QDir::Files | QDir::System | QDir::Readable, QDir::Name);
     for (const QFileInfo& file : files) {
       const QString relative_path = game_dir.relativeFilePath(file.filePath());
-      if (is_video_file(file.fileName()) && !configured_paths.count(relative_path)) {
+      if (is_auto_chapter_file(file.fileName()) && !configured_paths.count(relative_path)) {
         add_item("auto", relative_path);
         listed_cam_video = true;
       }
@@ -704,7 +717,7 @@ void HmStreamWindow::refreshVideoSets() {
     const QFileInfoList files = game_dir.entryInfoList(QDir::Files | QDir::System | QDir::Readable, QDir::Name);
     for (const QFileInfo& file : files) {
       const QString relative_path = game_dir.relativeFilePath(file.filePath());
-      if (is_video_file(file.fileName()) && !configured_paths.count(relative_path)) {
+      if (is_root_auto_file(file.fileName()) && !configured_paths.count(relative_path)) {
         add_item("auto", relative_path);
       }
     }
@@ -780,6 +793,10 @@ bool HmStreamWindow::importVideoPath(const QString& source_path, QString* import
   }
   if (!is_video_file(source.fileName())) {
     appendLog(QString("unsupported video extension %1").arg(source.fileName()));
+    return false;
+  }
+  if (selectedVideoRole() == "auto" && !is_auto_chapter_file(source.fileName())) {
+    appendLog(QString("auto video file name is not discoverable by the pipeline %1").arg(source.fileName()));
     return false;
   }
 
@@ -918,6 +935,7 @@ bool HmStreamWindow::savePrivateConfigForRole(const QString& role, const QString
       list.push_back(relative_path.toStdString());
       changed = true;
     }
+    config["game"]["stitching"].remove("frame_offsets");
   }
 
   if (role == "left" || role == "right") {
@@ -1012,8 +1030,10 @@ bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QStri
   if (role == "auto") {
     remove_from_list(config["game"]["videos"], "left");
     remove_from_list(config["game"]["videos"], "right");
+    config["game"]["stitching"].remove("frame_offsets");
   } else if (role == "left" || role == "right") {
     remove_from_list(config["game"]["videos"], role);
+    config["game"]["stitching"].remove("frame_offsets");
   }
   if (!changed) {
     return true;

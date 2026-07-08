@@ -137,6 +137,19 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   }
 
   activate(automatic);
+  const QString undiscoverable_auto = source_dir + "/clip.mov";
+  if (!write_fake_video(undiscoverable_auto)) {
+    return false;
+  }
+  const int before_undiscoverable = list->count();
+  video_path->setText(undiscoverable_auto);
+  activate(add_video);
+  if (!expect(
+          list->count() == before_undiscoverable,
+          "Auto should reject filenames that pipeline discovery cannot consume")) {
+    return false;
+  }
+
   video_path->setText(auto_video);
   activate(add_video);
   if (!expect(window->videoSetCount() >= 1, "Adding an auto video should populate the video set list")) {
@@ -155,10 +168,18 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
     return false;
   }
 
+  fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  YAML::Node stale_offsets = YAML::LoadFile(config.string());
+  stale_offsets["game"]["stitching"]["frame_offsets"]["left"] = "12";
+  stale_offsets["game"]["stitching"]["frame_offsets"]["right"] = "34";
+  {
+    std::ofstream out(config);
+    out << stale_offsets << "\n";
+  }
+
   activate(right);
   video_path->setText(right_video);
   activate(add_video);
-  const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
   std::ifstream input(config);
   const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
   YAML::Node yaml = YAML::LoadFile(config.string());
@@ -166,8 +187,8 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
           yaml["hmstream_ui"]["video_roles"]["center"] &&
               yaml["hmstream_ui"]["video_roles"]["center"][0].as<std::string>() == "GX010003.MP4" &&
               !yaml["game"]["videos"]["center"] && text.find("right") != std::string::npos &&
-              text.find("GX010002.MP4") != std::string::npos,
-          "Explicit Center should be UI metadata while Right remains pipeline config")) {
+              text.find("GX010002.MP4") != std::string::npos && !yaml["game"]["stitching"]["frame_offsets"],
+          "Explicit Center should be UI metadata while Right remains pipeline config and stale offsets are cleared")) {
     return false;
   }
 

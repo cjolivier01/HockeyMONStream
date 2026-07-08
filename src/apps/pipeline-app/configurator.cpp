@@ -787,15 +787,19 @@ absl::Status Configurator::gather_stitching_videos(
     return available;
   };
 
-  auto filter_explicit_files = [](const std::vector<std::string>& files,
-                                  const stitching::VideoChapter& chapters,
-                                  const std::set<int>& wanted) {
+  auto explicit_files_for_chapters = [](const std::vector<std::string>& files,
+                                        const stitching::VideoChapter& chapters,
+                                        const std::set<int>& wanted) {
     std::vector<std::string> filtered;
-    for (const std::string& file : files) {
-      const fs::path file_path(file);
-      for (const auto& [chapter, discovered_file] : chapters) {
-        const fs::path discovered_path(discovered_file);
-        if (wanted.count(chapter) && (file_path == discovered_path || file_path.filename() == discovered_path.filename())) {
+    for (int chapter : wanted) {
+      auto discovered = chapters.find(chapter);
+      if (discovered == chapters.end()) {
+        continue;
+      }
+      const fs::path discovered_path(discovered->second);
+      for (const std::string& file : files) {
+        const fs::path file_path(file);
+        if (file_path == discovered_path || file_path.filename() == discovered_path.filename()) {
           filtered.emplace_back(file);
           break;
         }
@@ -810,7 +814,7 @@ absl::Status Configurator::gather_stitching_videos(
     if (!wanted.empty()) {
       const std::set<int> paired = available_chapters(videos.at("left"), wanted);
       append_matching_chapters(videos.at("left"), paired, left_files);
-      right_files = filter_explicit_files(explicit_right_files, videos.at("right"), paired);
+      right_files = explicit_files_for_chapters(explicit_right_files, videos.at("right"), paired);
     } else if (!explicit_right || videos.at("left").size() == 1) {
       append_chapters(videos.at("left"), left_files);
     }
@@ -821,7 +825,7 @@ absl::Status Configurator::gather_stitching_videos(
     if (!wanted.empty()) {
       const std::set<int> paired = available_chapters(videos.at("right"), wanted);
       append_matching_chapters(videos.at("right"), paired, right_files);
-      left_files = filter_explicit_files(explicit_left_files, videos.at("left"), paired);
+      left_files = explicit_files_for_chapters(explicit_left_files, videos.at("left"), paired);
     } else if (!explicit_left || videos.at("right").size() == 1) {
       append_chapters(videos.at("right"), right_files);
     }
