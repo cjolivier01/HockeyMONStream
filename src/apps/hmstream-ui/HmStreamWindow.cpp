@@ -27,6 +27,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <optional>
 #include <set>
 
 namespace fs = std::filesystem;
@@ -66,17 +68,41 @@ QString auto_file_family(const QString& file_name) {
   static const QRegularExpression gopro("^G[A-Z][0-9]{6}\\.(MP4|mp4)$");
   static const QRegularExpression insta360("^VID_[0-9]{8}_[0-9]{6}_[0-9]{3}\\.(MP4|mp4)$");
   static const QRegularExpression left_right("(left|right)(-[0-9])?\\.mp4$");
-  if (gopro.match(file_name).hasMatch()) {
-    return "gopro";
+  const QRegularExpressionMatch gopro_match = gopro.match(file_name);
+  if (gopro_match.hasMatch()) {
+    return "gopro-" + file_name.mid(4, 4);
   }
-  if (insta360.match(file_name).hasMatch()) {
-    return "insta360";
+  const QRegularExpressionMatch insta360_match = insta360.match(file_name);
+  if (insta360_match.hasMatch()) {
+    return "insta360-" + file_name.mid(4, 15);
   }
   const QRegularExpressionMatch lr_match = left_right.match(file_name);
   if (lr_match.hasMatch()) {
     return "lr-" + lr_match.captured(1).toLower();
   }
   return {};
+}
+
+std::optional<QString> explicit_chapter_key(const QString& path) {
+  const QString file_name = QFileInfo(path).fileName();
+  static const QRegularExpression gopro("^G[A-Z]([0-9]{2})([0-9]{4})\\.(MP4|mp4)$");
+  static const QRegularExpression insta360("^VID_([0-9]{8})_([0-9]{6})_([0-9]{3})\\.(MP4|mp4)$");
+  static const QRegularExpression left_right("(left|right)(?:-([0-9]))?\\.mp4$");
+
+  const QRegularExpressionMatch gopro_match = gopro.match(file_name);
+  if (gopro_match.hasMatch()) {
+    return QString("gopro:%1").arg(gopro_match.captured(1));
+  }
+  const QRegularExpressionMatch insta360_match = insta360.match(file_name);
+  if (insta360_match.hasMatch()) {
+    return QString("insta360:%1").arg(insta360_match.captured(3));
+  }
+  const QRegularExpressionMatch lr_match = left_right.match(file_name);
+  if (lr_match.hasMatch()) {
+    const QString chapter = lr_match.captured(2).isEmpty() ? "1" : lr_match.captured(2);
+    return QString("lr:%1").arg(chapter);
+  }
+  return std::nullopt;
 }
 
 QString canonical_dir_path(const QString& path) {
@@ -1006,24 +1032,54 @@ bool HmStreamWindow::syncRuntimeExplicitVideoConfig(YAML::Node& config) {
   YAML::Node explicit_right = config["hmstream_ui"]["video_roles"]["right"];
   const bool has_left = explicit_left && explicit_left.IsSequence() && explicit_left.size() > 0;
   const bool has_right = explicit_right && explicit_right.IsSequence() && explicit_right.size() > 0;
-  if (has_left && has_right && explicit_left.size() == explicit_right.size()) {
-    YAML::Node left_list(YAML::NodeType::Sequence);
+  if (has_left && has_right) {
+    std::map<QString, QString> left_by_chapter;
+    std::map<QString, QString> right_by_chapter;
+    bool parsed = true;
     for (const auto& item : explicit_left) {
-      left_list.push_back(item.as<std::string>());
+      const QString path = QString::fromStdString(item.as<std::string>());
+      const std::optional<QString> chapter = explicit_chapter_key(path);
+      if (!chapter || left_by_chapter.count(*chapter)) {
+        parsed = false;
+        break;
+      }
+      left_by_chapter[*chapter] = path;
     }
-    YAML::Node right_list(YAML::NodeType::Sequence);
     for (const auto& item : explicit_right) {
-      right_list.push_back(item.as<std::string>());
+      const QString path = QString::fromStdString(item.as<std::string>());
+      const std::optional<QString> chapter = explicit_chapter_key(path);
+      if (!chapter || right_by_chapter.count(*chapter)) {
+        parsed = false;
+        break;
+      }
+      right_by_chapter[*chapter] = path;
     }
-    config["game"]["videos"]["left"] = left_list;
-    config["game"]["videos"]["right"] = right_list;
-    return true;
+    if (parsed && !left_by_chapter.empty() && left_by_chapter.size() == right_by_chapter.size()) {
+      bool same_chapters = true;
+      for (const auto& [chapter, _] : left_by_chapter) {
+        if (!right_by_chapter.count(chapter)) {
+          same_chapters = false;
+          break;
+        }
+      }
+      if (same_chapters) {
+        YAML::Node left_list(YAML::NodeType::Sequence);
+        YAML::Node right_list(YAML::NodeType::Sequence);
+        for (const auto& [chapter, left_path] : left_by_chapter) {
+          left_list.push_back(left_path.toStdString());
+          right_list.push_back(right_by_chapter.at(chapter).toStdString());
+        }
+        config["game"]["videos"]["left"] = left_list;
+        config["game"]["videos"]["right"] = right_list;
+        return true;
+      }
+    }
   }
 
   changed = remove_yaml_key(config["game"]["videos"], "left") || changed;
   changed = remove_yaml_key(config["game"]["videos"], "right") || changed;
   if (has_left && has_right) {
-    appendLog("explicit Left/Right runtime config will apply after both sides have matching chapter counts");
+    appendLog("explicit Left/Right runtime config will apply after both sides have matching chapter sets");
   } else {
     appendLog("explicit Left/Right selection will apply after both sides are assigned");
   }
@@ -1069,6 +1125,8 @@ bool HmStreamWindow::savePrivateConfigForRole(const QString& role, const QString
   }
 
   if (role == "auto") {
+    changed = remove_yaml_key(config["hmstream_ui"]["video_roles"], "left") || changed;
+    changed = remove_yaml_key(config["hmstream_ui"]["video_roles"], "right") || changed;
     changed = remove_yaml_key(config["game"]["videos"], "left") || changed;
     changed = remove_yaml_key(config["game"]["videos"], "right") || changed;
     changed = clear_stitching_frame_offsets(config) || changed;
@@ -1140,6 +1198,8 @@ bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QStri
   }
   remove_from_list(config["hmstream_ui"], "copied_imports");
   if (role == "auto") {
+    changed = remove_yaml_key(config["hmstream_ui"]["video_roles"], "left") || changed;
+    changed = remove_yaml_key(config["hmstream_ui"]["video_roles"], "right") || changed;
     changed = remove_yaml_key(config["game"]["videos"], "left") || changed;
     changed = remove_yaml_key(config["game"]["videos"], "right") || changed;
     changed = clear_stitching_frame_offsets(config) || changed;

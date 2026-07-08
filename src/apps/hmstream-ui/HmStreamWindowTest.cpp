@@ -114,11 +114,12 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   const QString center_video = source_dir + "/GX010003.MP4";
   const QString left_video = source_dir + "/GX010005.MP4";
   const QString left_video_2 = source_dir + "/GX020005.MP4";
+  const QString left_video_3 = source_dir + "/GX030005.MP4";
   const QString right_video = source_dir + "/GX010002.MP4";
   const QString right_video_2 = source_dir + "/GX020002.MP4";
   if (!write_fake_video(auto_video) || !write_fake_video(suffix_auto_video) || !write_fake_video(center_video) ||
       !write_fake_video(left_video) || !write_fake_video(left_video_2) || !write_fake_video(right_video) ||
-      !write_fake_video(right_video_2)) {
+      !write_fake_video(right_video_2) || !write_fake_video(left_video_3)) {
     return false;
   }
 
@@ -309,6 +310,15 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
           "Matching explicit Left/Right chapter counts should write runtime video config")) {
     return false;
   }
+  activate(left);
+  video_path->setText(left_video_3);
+  activate(add_video);
+  YAML::Node mismatched_chapters = YAML::LoadFile(config.string());
+  if (!expect(
+          !mismatched_chapters["game"]["videos"]["left"] && !mismatched_chapters["game"]["videos"]["right"],
+          "Mismatched explicit Left/Right chapter sets should clear runtime video config")) {
+    return false;
+  }
 
   if (!select_list_item(list, "Right  .hmstream-ui/right/GX010002.MP4")) {
     return false;
@@ -331,6 +341,10 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   generated["game"]["videos"]["left"].push_back(auto_import.toStdString());
   generated["game"]["videos"]["right"] = YAML::Node(YAML::NodeType::Sequence);
   generated["game"]["videos"]["right"].push_back("stale-generated-right.mp4");
+  generated["hmstream_ui"]["video_roles"]["left"] = YAML::Node(YAML::NodeType::Sequence);
+  generated["hmstream_ui"]["video_roles"]["left"].push_back(".hmstream-ui/left/GX010005.MP4");
+  generated["hmstream_ui"]["video_roles"]["right"] = YAML::Node(YAML::NodeType::Sequence);
+  generated["hmstream_ui"]["video_roles"]["right"].push_back(".hmstream-ui/right/GX020002.MP4");
   generated["game"]["stitching"]["frame_offsets"]["left"] = "90";
   generated["stitching"]["frame_offsets"]["left"] = "91";
   {
@@ -350,8 +364,10 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   YAML::Node removed_auto = YAML::LoadFile(config.string());
   if (!expect(
           !removed_auto["game"]["videos"]["left"] && !removed_auto["game"]["videos"]["right"] &&
+              !removed_auto["hmstream_ui"]["video_roles"]["left"] &&
+              !removed_auto["hmstream_ui"]["video_roles"]["right"] &&
               !removed_auto["game"]["stitching"]["frame_offsets"] && !removed_auto["stitching"]["frame_offsets"],
-          "Removing Auto config entries should clear stale generated private config for both sides and offsets")) {
+          "Removing Auto config entries should clear stale generated runtime and explicit role config")) {
     return false;
   }
   if (!expect(!list_contains(list, "GX010001.MP4"), "Removed Auto imports should not reappear from config")) {
@@ -364,8 +380,10 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   fs::create_directories(duplicate_source_b);
   const QString duplicate_a = QString::fromStdString((duplicate_source_a / "GX020001.MP4").string());
   const QString duplicate_a_2 = QString::fromStdString((duplicate_source_a / "GX030001.MP4").string());
+  const QString duplicate_a_other_camera = QString::fromStdString((duplicate_source_a / "GX020002.MP4").string());
   const QString duplicate_b = QString::fromStdString((duplicate_source_b / "GX020001.MP4").string());
-  if (!write_fake_video(duplicate_a) || !write_fake_video(duplicate_a_2) || !write_fake_video(duplicate_b)) {
+  if (!write_fake_video(duplicate_a) || !write_fake_video(duplicate_a_2) ||
+      !write_fake_video(duplicate_a_other_camera) || !write_fake_video(duplicate_b)) {
     return false;
   }
   game_id->setText("ui-empty-auto-game");
@@ -375,6 +393,8 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   activate(add_video);
   video_path->setText(duplicate_a_2);
   activate(add_video);
+  video_path->setText(duplicate_a_other_camera);
+  activate(add_video);
   video_path->setText(duplicate_b);
   activate(add_video);
   return expect(
@@ -382,7 +402,9 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
              "First Auto import in an empty game should create cam1 with the original file name") &&
       expect(fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "cam1" / "GX030001.MP4"),
              "Auto imports from the same camera folder should reuse the same camN directory") &&
-      expect(fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "cam2" / "GX020001.MP4"),
+      expect(fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "cam2" / "GX020002.MP4"),
+             "Auto imports for a different vendor video id should create a separate camN directory") &&
+      expect(fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "cam3" / "GX020001.MP4"),
              "Auto imports from a different camera folder should create a new camN without renaming");
 }
 
