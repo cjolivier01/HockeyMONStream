@@ -14,6 +14,8 @@
 #include <QtWidgets/QRadioButton>
 #include <QtWidgets/QSlider>
 
+#include <yaml-cpp/yaml.h>
+
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -56,6 +58,15 @@ bool select_list_item(QListWidget* list, const QString& text) {
   return false;
 }
 
+bool list_contains(QListWidget* list, const QString& text) {
+  for (int i = 0; i < list->count(); ++i) {
+    if (list->item(i)->text().contains(text)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool write_fake_video(const QString& path) {
   QFile file(path);
   if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -79,6 +90,12 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
     return false;
   }
 
+  game_id->setText("..");
+  activate(create);
+  if (!expect(window->gameIdText().isEmpty(), "Unsafe game IDs should be rejected")) {
+    return false;
+  }
+
   const QString auto_video = source_dir + "/GX010001.MP4";
   const QString center_video = source_dir + "/GX010003.MP4";
   const QString right_video = source_dir + "/GX010002.MP4";
@@ -89,6 +106,16 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   game_id->setText("ui-test-game");
   activate(create);
   if (!expect(window->gameIdText() == "ui-test-game", "Game ID field should define the selected game")) {
+    return false;
+  }
+
+  const fs::path cam_dir = fs::path(window->gameDirectoryText().toStdString()) / "cam1";
+  fs::create_directories(cam_dir);
+  if (!write_fake_video(QString::fromStdString((cam_dir / "GX010004.MP4").string()))) {
+    return false;
+  }
+  activate(create);
+  if (!expect(list_contains(list, "Auto  cam1/GX010004.MP4"), "Auto listing should include camN video sets")) {
     return false;
   }
 
@@ -116,10 +143,13 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
   std::ifstream input(config);
   const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+  YAML::Node yaml = YAML::LoadFile(config.string());
   if (!expect(
-          text.find("center") != std::string::npos && text.find("GX010003.MP4") != std::string::npos &&
-              text.find("right") != std::string::npos && text.find("GX010002.MP4") != std::string::npos,
-          "Explicit Center and Right assignments should be saved in private config")) {
+          yaml["hmstream_ui"]["video_roles"]["center"] &&
+              yaml["hmstream_ui"]["video_roles"]["center"][0].as<std::string>() == "GX010003.MP4" &&
+              !yaml["game"]["videos"]["center"] && text.find("right") != std::string::npos &&
+              text.find("GX010002.MP4") != std::string::npos,
+          "Explicit Center should be UI metadata while Right remains pipeline config")) {
     return false;
   }
 
@@ -131,8 +161,9 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   const std::string updated_text(
       (std::istreambuf_iterator<char>(updated_input)), std::istreambuf_iterator<char>());
   return expect(
-      updated_text.find("GX010002.MP4") == std::string::npos,
-      "Removing an explicit role should update private config");
+             updated_text.find("GX010002.MP4") == std::string::npos,
+             "Removing an explicit role should update private config") &&
+         expect(!list_contains(list, "GX010002.MP4"), "Removed explicit imports should not reappear as Auto");
 }
 
 bool test_pipeline_buttons(HmStreamWindow* window) {

@@ -51,5 +51,6 @@ cc_test(
         ":hmstream_window",
         "@qt//:qt_test",
         "@qt//:qt_widgets",
+        "@yaml-cpp",
     ],
 )

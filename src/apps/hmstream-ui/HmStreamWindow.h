@@ -57,6 +57,7 @@ class HmStreamWindow : public QMainWindow {
   bool importVideoPath(const QString& source_path, QString* imported_relative_path);
   bool savePrivateConfigForRole(const QString& role, const QString& relative_path);
   bool removePrivateConfigForRole(const QString& role, const QString& relative_path);
+  bool removeImportedVideoPath(const QString& relative_path);
   void toggleOutput(const QString& id, bool enabled);
   void redirectYoutube();
   void addRtspOutput();

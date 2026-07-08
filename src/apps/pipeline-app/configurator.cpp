@@ -726,17 +726,68 @@ absl::Status Configurator::gather_stitching_videos(
     std::vector<std::string>& right_files,
     YAML::Node& offsets) {
   // Prefer explicit config unless forcing
+  bool explicit_left = false;
+  bool explicit_right = false;
+  std::vector<std::string> explicit_left_files;
+  std::vector<std::string> explicit_right_files;
   if (!force) {
     if (has_node(config_, "game.videos.left", /*non_null=*/true)) {
       left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
+      explicit_left = !left_files.empty();
+      explicit_left_files = left_files;
     }
     if (has_node(config_, "game.videos.right", /*non_null=*/true)) {
       right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
+      explicit_right = !right_files.empty();
+      explicit_right_files = right_files;
     }
   }
 
   stitching::VideosDict videos;
   HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir));
+
+  auto append_chapters = [](const stitching::VideoChapter& chapters, std::vector<std::string>& files) {
+    for (const auto& item : chapters) {
+      files.emplace_back(item.second);
+    }
+  };
+
+  if ((explicit_left || explicit_right) && left_files.empty() && videos.count("left")) {
+    append_chapters(videos.at("left"), left_files);
+  }
+  if ((explicit_left || explicit_right) && right_files.empty() && videos.count("right")) {
+    append_chapters(videos.at("right"), right_files);
+  }
+
+  if ((explicit_left || explicit_right) && (left_files.empty() || right_files.empty())) {
+    HM_RETURN_IF_ERROR(stitching::configure_orientation(game_dir));
+    overlay_config("", get_private_config_file_name(game_id_));
+    if (explicit_left) {
+      left_files = explicit_left_files;
+      config_["game"]["videos"]["left"] = left_files;
+      private_config_["game"]["videos"]["left"] = left_files;
+    } else if (has_node(config_, "game.videos.left", /*non_null=*/true)) {
+      left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
+      private_config_["game"]["videos"]["left"] = left_files;
+    }
+    if (explicit_right) {
+      right_files = explicit_right_files;
+      config_["game"]["videos"]["right"] = right_files;
+      private_config_["game"]["videos"]["right"] = right_files;
+    } else if (has_node(config_, "game.videos.right", /*non_null=*/true)) {
+      right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
+      private_config_["game"]["videos"]["right"] = right_files;
+    }
+  }
+
+  if ((explicit_left || explicit_right) && !left_files.empty() && !right_files.empty()) {
+    private_config_["game"]["videos"]["left"] = left_files;
+    private_config_["game"]["videos"]["right"] = right_files;
+    auto spp_status = save_private_config(private_config_);
+    if (!spp_status.ok()) {
+      std::cerr << "Warnings: failed to save private config: " << spp_status << std::endl;
+    }
+  }
 
   if (left_files.empty() && right_files.empty() && !videos.count("left") && !videos.count("right")) {
     HM_RETURN_IF_ERROR(stitching::configure_orientation(game_dir));
