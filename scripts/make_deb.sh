@@ -39,6 +39,7 @@ if [[ -z "$PKG_VERSION" ]]; then
 fi
 # dpkg needs versions that start with a digit; strip a leading 'v'
 PKG_VERSION="${PKG_VERSION#v}"
+PKG_VERSION="$(printf '%s' "${PKG_VERSION}" | sed -E 's/[^A-Za-z0-9.+:~_-]+/./g; s/[.]+/./g; s/^[.]+//; s/[.]+$//')"
 if [[ ! "${PKG_VERSION}" =~ ^[0-9] ]]; then
   PKG_VERSION="0.0+git.${PKG_VERSION}"
 fi

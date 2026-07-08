@@ -101,6 +101,11 @@ QString normalized_config_video_path(const QDir& game_dir, const QString& path) 
   return path;
 }
 
+void clear_stitching_frame_offsets(YAML::Node& config) {
+  config["game"]["stitching"].remove("frame_offsets");
+  config["stitching"].remove("frame_offsets");
+}
+
 } // namespace
 
 HmStreamWindow::HmStreamWindow(QWidget* parent) : QMainWindow(parent) {
@@ -935,12 +940,19 @@ bool HmStreamWindow::savePrivateConfigForRole(const QString& role, const QString
       list.push_back(relative_path.toStdString());
       changed = true;
     }
-    config["game"]["stitching"].remove("frame_offsets");
+    clear_stitching_frame_offsets(config);
   }
 
   if (role == "left" || role == "right") {
     YAML::Node list(YAML::NodeType::Sequence);
-    list.push_back(relative_path.toStdString());
+    YAML::Node explicit_list = config["hmstream_ui"]["video_roles"][role.toStdString()];
+    if (explicit_list && explicit_list.IsSequence()) {
+      for (const auto& item : explicit_list) {
+        list.push_back(item.as<std::string>());
+      }
+    } else {
+      list.push_back(relative_path.toStdString());
+    }
     config["game"]["videos"][role.toStdString()] = list;
     changed = true;
   }
@@ -1017,10 +1029,10 @@ bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QStri
   if (role == "auto") {
     remove_from_list(config["game"]["videos"], "left");
     remove_from_list(config["game"]["videos"], "right");
-    config["game"]["stitching"].remove("frame_offsets");
+    clear_stitching_frame_offsets(config);
   } else if (role == "left" || role == "right") {
     remove_from_list(config["game"]["videos"], role);
-    config["game"]["stitching"].remove("frame_offsets");
+    clear_stitching_frame_offsets(config);
   }
   if (!changed) {
     return true;

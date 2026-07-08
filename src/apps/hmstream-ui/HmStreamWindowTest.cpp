@@ -110,7 +110,9 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   const QString auto_video = source_dir + "/GX010001.MP4";
   const QString center_video = source_dir + "/GX010003.MP4";
   const QString right_video = source_dir + "/GX010002.MP4";
-  if (!write_fake_video(auto_video) || !write_fake_video(center_video) || !write_fake_video(right_video)) {
+  const QString right_video_2 = source_dir + "/GX020002.MP4";
+  if (!write_fake_video(auto_video) || !write_fake_video(center_video) || !write_fake_video(right_video) ||
+      !write_fake_video(right_video_2)) {
     return false;
   }
 
@@ -172,6 +174,8 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   YAML::Node stale_offsets = YAML::LoadFile(config.string());
   stale_offsets["game"]["stitching"]["frame_offsets"]["left"] = "12";
   stale_offsets["game"]["stitching"]["frame_offsets"]["right"] = "34";
+  stale_offsets["stitching"]["frame_offsets"]["left"] = "56";
+  stale_offsets["stitching"]["frame_offsets"]["right"] = "78";
   stale_offsets["game"]["videos"]["right"] = YAML::Node(YAML::NodeType::Sequence);
   stale_offsets["game"]["videos"]["right"].push_back("stale-generated-right.mp4");
   {
@@ -182,6 +186,8 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   activate(right);
   video_path->setText(right_video);
   activate(add_video);
+  video_path->setText(right_video_2);
+  activate(add_video);
   std::ifstream input(config);
   const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
   YAML::Node yaml = YAML::LoadFile(config.string());
@@ -190,10 +196,12 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
               yaml["hmstream_ui"]["video_roles"]["center"][0].as<std::string>() == "GX010003.MP4" &&
               !yaml["game"]["videos"]["center"] && text.find("right") != std::string::npos &&
               text.find("GX010002.MP4") != std::string::npos &&
-              yaml["game"]["videos"]["right"].size() == 1 &&
+              text.find("GX020002.MP4") != std::string::npos &&
+              yaml["game"]["videos"]["right"].size() == 2 &&
               yaml["game"]["videos"]["right"][0].as<std::string>() == "GX010002.MP4" &&
-              !yaml["game"]["stitching"]["frame_offsets"],
-          "Explicit roles should replace stale pipeline config and clear stale offsets")) {
+              yaml["game"]["videos"]["right"][1].as<std::string>() == "GX020002.MP4" &&
+              !yaml["game"]["stitching"]["frame_offsets"] && !yaml["stitching"]["frame_offsets"],
+          "Explicit roles should replace stale pipeline config, keep all chapters, and clear stale offsets")) {
     return false;
   }
 
@@ -201,13 +209,20 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
     return false;
   }
   activate(remove_video);
+  if (!select_list_item(list, "Right  GX020002.MP4")) {
+    return false;
+  }
+  activate(remove_video);
   std::ifstream updated_input(config);
   const std::string updated_text(
       (std::istreambuf_iterator<char>(updated_input)), std::istreambuf_iterator<char>());
   if (!expect(
-          updated_text.find("GX010002.MP4") == std::string::npos,
+          updated_text.find("GX010002.MP4") == std::string::npos &&
+              updated_text.find("GX020002.MP4") == std::string::npos,
           "Removing an explicit role should update private config") ||
-      !expect(!list_contains(list, "GX010002.MP4"), "Removed explicit imports should not reappear as Auto")) {
+      !expect(
+          !list_contains(list, "GX010002.MP4") && !list_contains(list, "GX020002.MP4"),
+          "Removed explicit imports should not reappear as Auto")) {
     return false;
   }
 
