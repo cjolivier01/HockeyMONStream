@@ -752,11 +752,47 @@ absl::Status Configurator::gather_stitching_videos(
     }
   };
 
+  auto matching_chapters = [](const std::vector<std::string>& explicit_files, const stitching::VideoChapter& chapters) {
+    std::set<int> matches;
+    for (const std::string& explicit_file : explicit_files) {
+      const fs::path explicit_path(explicit_file);
+      for (const auto& [chapter, discovered_file] : chapters) {
+        const fs::path discovered_path(discovered_file);
+        if (explicit_path == discovered_path || explicit_path.filename() == discovered_path.filename()) {
+          matches.insert(chapter);
+        }
+      }
+    }
+    return matches;
+  };
+
+  auto append_matching_chapters =
+      [](const stitching::VideoChapter& chapters, const std::set<int>& wanted, std::vector<std::string>& files) {
+        for (int chapter : wanted) {
+          auto found = chapters.find(chapter);
+          if (found != chapters.end()) {
+            files.emplace_back(found->second);
+          }
+        }
+      };
+
   if ((explicit_left || explicit_right) && left_files.empty() && videos.count("left")) {
-    append_chapters(videos.at("left"), left_files);
+    const std::set<int> wanted =
+        explicit_right && videos.count("right") ? matching_chapters(explicit_right_files, videos.at("right")) : std::set<int>();
+    if (!wanted.empty()) {
+      append_matching_chapters(videos.at("left"), wanted, left_files);
+    } else if (!explicit_right || videos.at("left").size() == 1) {
+      append_chapters(videos.at("left"), left_files);
+    }
   }
   if ((explicit_left || explicit_right) && right_files.empty() && videos.count("right")) {
-    append_chapters(videos.at("right"), right_files);
+    const std::set<int> wanted =
+        explicit_left && videos.count("left") ? matching_chapters(explicit_left_files, videos.at("left")) : std::set<int>();
+    if (!wanted.empty()) {
+      append_matching_chapters(videos.at("right"), wanted, right_files);
+    } else if (!explicit_left || videos.at("right").size() == 1) {
+      append_chapters(videos.at("right"), right_files);
+    }
   }
 
   if ((explicit_left || explicit_right) && (left_files.empty() || right_files.empty())) {

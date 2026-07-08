@@ -24,6 +24,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -75,6 +76,17 @@ QString role_label(const QString& role) {
 
 bool is_explicit_role(const QString& role) {
   return role == "left" || role == "center" || role == "right";
+}
+
+QString normalized_config_video_path(const QDir& game_dir, const QString& path) {
+  QFileInfo file(path);
+  if (file.isAbsolute()) {
+    const QString relative = game_dir.relativeFilePath(file.absoluteFilePath());
+    if (!relative.startsWith("../") && relative != "..") {
+      return relative;
+    }
+  }
+  return path;
 }
 
 } // namespace
@@ -532,6 +544,9 @@ void HmStreamWindow::addVideoPath() {
     return;
   }
   const QString role = selectedVideoRole();
+  if (!ensureGameDirectory()) {
+    return;
+  }
   if (is_explicit_role(role)) {
     const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
     if (fs::exists(config_path)) {
@@ -585,7 +600,7 @@ void HmStreamWindow::removeSelectedVideoSet() {
   const QString role = item->data(Qt::UserRole).toString();
   const QString relative_path = item->data(Qt::UserRole + 1).toString();
 
-  if (is_explicit_role(role) && !removePrivateConfigForRole(role, relative_path)) {
+  if (!removePrivateConfigForRole(role, relative_path)) {
     video_set_list_->insertItem(row, item);
     return;
   }
@@ -626,6 +641,7 @@ void HmStreamWindow::refreshVideoSets() {
     video_set_list_->addItem(item);
   };
 
+  QDir game_dir(dir);
   const fs::path config_path = fs::path(dir.toStdString()) / "config.yaml";
   if (fs::exists(config_path)) {
     try {
@@ -635,7 +651,7 @@ void HmStreamWindow::refreshVideoSets() {
         YAML::Node role_videos = explicit_roles[role.toStdString()];
         if (role_videos && role_videos.IsSequence()) {
           for (const auto& item : role_videos) {
-            const QString path = QString::fromStdString(item.as<std::string>());
+            const QString path = normalized_config_video_path(game_dir, QString::fromStdString(item.as<std::string>()));
             configured_paths.insert(path);
             add_item(role, path);
           }
@@ -646,7 +662,7 @@ void HmStreamWindow::refreshVideoSets() {
         YAML::Node role_videos = videos[role.toStdString()];
         if (role_videos && role_videos.IsSequence()) {
           for (const auto& item : role_videos) {
-            const QString path = QString::fromStdString(item.as<std::string>());
+            const QString path = normalized_config_video_path(game_dir, QString::fromStdString(item.as<std::string>()));
             if (!configured_paths.count(path)) {
               add_item("auto", path);
             }
@@ -658,7 +674,6 @@ void HmStreamWindow::refreshVideoSets() {
     }
   }
 
-  QDir game_dir(dir);
   QDirIterator files(dir, QDir::Files | QDir::System | QDir::Readable, QDirIterator::Subdirectories);
   while (files.hasNext()) {
     files.next();
@@ -748,12 +763,32 @@ bool HmStreamWindow::importVideoPath(const QString& source_path, QString* import
   }
 
   const QString game_dir = gameDirectory(game_id_edit_->text());
+  QDir target_dir(game_dir);
+  if (selectedVideoRole() == "auto") {
+    int max_cam_index = 0;
+    const QFileInfoList dirs = target_dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+    const QRegularExpression cam_pattern("^cam([0-9]+)$", QRegularExpression::CaseInsensitiveOption);
+    for (const QFileInfo& dir : dirs) {
+      const QRegularExpressionMatch match = cam_pattern.match(dir.fileName());
+      if (match.hasMatch()) {
+        max_cam_index = std::max(max_cam_index, match.captured(1).toInt());
+      }
+    }
+    if (max_cam_index > 0) {
+      const QString cam_dir = QString("cam%1").arg(max_cam_index + 1);
+      if (!target_dir.exists(cam_dir) && !target_dir.mkdir(cam_dir)) {
+        appendLog(QString("failed to create video set directory %1").arg(cam_dir));
+        return false;
+      }
+      target_dir.cd(cam_dir);
+    }
+  }
   QString dest_name = source.fileName();
-  QString dest_path = QDir(game_dir).filePath(dest_name);
+  QString dest_path = target_dir.filePath(dest_name);
   int suffix = 2;
   while (QFileInfo::exists(dest_path) && QFileInfo(dest_path).canonicalFilePath() != source.canonicalFilePath()) {
     dest_name = QString("%1-%2.%3").arg(source.completeBaseName()).arg(suffix++).arg(source.suffix());
-    dest_path = QDir(game_dir).filePath(dest_name);
+    dest_path = target_dir.filePath(dest_name);
   }
 
   if (!QFileInfo::exists(dest_path)) {
@@ -846,7 +881,7 @@ bool HmStreamWindow::savePrivateConfigForRole(const QString& role, const QString
 }
 
 bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QString& relative_path) {
-  if (!is_explicit_role(role)) {
+  if (!is_explicit_role(role) && role != "auto") {
     return true;
   }
 
@@ -864,6 +899,14 @@ bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QStri
   }
 
   bool changed = false;
+  auto matches_path = [&](const QString& value) {
+    if (value == relative_path) {
+      return true;
+    }
+    const QString normalized = normalized_config_video_path(QDir(gameDirectory(game_id_edit_->text())), value);
+    return normalized == relative_path;
+  };
+
   auto remove_from_list = [&](YAML::Node parent, const QString& key) {
     YAML::Node list = parent[key.toStdString()];
     if (!list || !list.IsSequence()) {
@@ -873,7 +916,7 @@ bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QStri
     YAML::Node replacement(YAML::NodeType::Sequence);
     for (const auto& item : list) {
       const QString value = QString::fromStdString(item.as<std::string>());
-      if (value == relative_path) {
+      if (matches_path(value)) {
         changed = true;
       } else {
         replacement.push_back(value.toStdString());
@@ -882,8 +925,13 @@ bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QStri
     parent[key.toStdString()] = replacement;
   };
 
-  remove_from_list(config["hmstream_ui"]["video_roles"], role);
-  if (role == "left" || role == "right") {
+  if (is_explicit_role(role)) {
+    remove_from_list(config["hmstream_ui"]["video_roles"], role);
+  }
+  if (role == "auto") {
+    remove_from_list(config["game"]["videos"], "left");
+    remove_from_list(config["game"]["videos"], "right");
+  } else if (role == "left" || role == "right") {
     remove_from_list(config["game"]["videos"], role);
   }
   if (!changed) {
@@ -900,7 +948,16 @@ bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QStri
 }
 
 bool HmStreamWindow::removeImportedVideoPath(const QString& relative_path) {
-  const QString imported_path = QDir(gameDirectory(game_id_edit_->text())).filePath(relative_path);
+  const QDir game_dir(gameDirectory(game_id_edit_->text()));
+  const QString game_root = QDir::cleanPath(game_dir.absolutePath());
+  const QFileInfo requested(relative_path);
+  const QString imported_path =
+      requested.isAbsolute() ? requested.absoluteFilePath() : game_dir.absoluteFilePath(relative_path);
+  const QString normalized_path = QDir::cleanPath(QFileInfo(imported_path).absoluteFilePath());
+  if (normalized_path != game_root && !normalized_path.startsWith(game_root + "/")) {
+    appendLog(QString("not deleting video outside game directory %1").arg(relative_path));
+    return true;
+  }
   const QFileInfo imported(imported_path);
   if (!imported.exists()) {
     return true;

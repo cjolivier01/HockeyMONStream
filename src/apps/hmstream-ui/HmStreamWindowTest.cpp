@@ -67,6 +67,16 @@ bool list_contains(QListWidget* list, const QString& text) {
   return false;
 }
 
+int list_match_count(QListWidget* list, const QString& text) {
+  int matches = 0;
+  for (int i = 0; i < list->count(); ++i) {
+    if (list->item(i)->text().contains(text)) {
+      ++matches;
+    }
+  }
+  return matches;
+}
+
 bool write_fake_video(const QString& path) {
   QFile file(path);
   if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -125,7 +135,7 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
     return false;
   }
   if (!expect(
-          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "GX010001.MP4"),
+          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "cam2" / "GX010001.MP4"),
           "Auto video should be imported into the game directory for existing discovery")) {
     return false;
   }
@@ -160,10 +170,38 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   std::ifstream updated_input(config);
   const std::string updated_text(
       (std::istreambuf_iterator<char>(updated_input)), std::istreambuf_iterator<char>());
-  return expect(
-             updated_text.find("GX010002.MP4") == std::string::npos,
-             "Removing an explicit role should update private config") &&
-         expect(!list_contains(list, "GX010002.MP4"), "Removed explicit imports should not reappear as Auto");
+  if (!expect(
+          updated_text.find("GX010002.MP4") == std::string::npos,
+          "Removing an explicit role should update private config") ||
+      !expect(!list_contains(list, "GX010002.MP4"), "Removed explicit imports should not reappear as Auto")) {
+    return false;
+  }
+
+  YAML::Node generated = YAML::LoadFile(config.string());
+  const QString auto_import = window->gameDirectoryText() + "/cam2/GX010001.MP4";
+  generated["game"]["videos"]["left"] = YAML::Node(YAML::NodeType::Sequence);
+  generated["game"]["videos"]["left"].push_back(auto_import.toStdString());
+  {
+    std::ofstream out(config);
+    out << generated << "\n";
+  }
+  activate(create);
+  if (!expect(
+          list_match_count(list, "GX010001.MP4") == 1,
+          "Absolute generated config paths should not duplicate scanned Auto files")) {
+    return false;
+  }
+  if (!select_list_item(list, "Auto  cam2/GX010001.MP4")) {
+    return false;
+  }
+  activate(remove_video);
+  YAML::Node removed_auto = YAML::LoadFile(config.string());
+  if (!expect(
+          !removed_auto["game"]["videos"]["left"] || removed_auto["game"]["videos"]["left"].size() == 0,
+          "Removing Auto config entries should clear stale generated private config")) {
+    return false;
+  }
+  return expect(!list_contains(list, "GX010001.MP4"), "Removed Auto imports should not reappear from config");
 }
 
 bool test_pipeline_buttons(HmStreamWindow* window) {

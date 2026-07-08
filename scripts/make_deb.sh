@@ -38,6 +38,9 @@ if [[ -z "$PKG_VERSION" ]]; then
   PKG_VERSION="$(git -C "${TOPDIR}" describe --tags --always 2>/dev/null || echo "0.0.0")"
   # dpkg needs versions that start with a digit; strip a leading 'v'
   PKG_VERSION="${PKG_VERSION#v}"
+  if [[ ! "${PKG_VERSION}" =~ ^[0-9] ]]; then
+    PKG_VERSION="0.0+git.${PKG_VERSION}"
+  fi
 fi
 
 # ---------- optional build ----------
