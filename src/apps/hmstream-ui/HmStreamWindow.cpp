@@ -2,7 +2,6 @@
 
 #include <QtCore/QDateTime>
 #include <QtCore/QDir>
-#include <QtCore/QDirIterator>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QRegularExpression>
@@ -599,12 +598,13 @@ void HmStreamWindow::removeSelectedVideoSet() {
   }
   const QString role = item->data(Qt::UserRole).toString();
   const QString relative_path = item->data(Qt::UserRole + 1).toString();
+  const bool copied_import = isCopiedImport(relative_path);
 
   if (!removePrivateConfigForRole(role, relative_path)) {
     video_set_list_->insertItem(row, item);
     return;
   }
-  if (!removeImportedVideoPath(relative_path)) {
+  if (!removeImportedVideoPath(relative_path, copied_import)) {
     video_set_list_->insertItem(row, item);
     return;
   }
@@ -674,18 +674,39 @@ void HmStreamWindow::refreshVideoSets() {
     }
   }
 
-  QDirIterator files(dir, QDir::Files | QDir::System | QDir::Readable, QDirIterator::Subdirectories);
-  while (files.hasNext()) {
-    files.next();
-    const QFileInfo file = files.fileInfo();
-    const QString relative_path = game_dir.relativeFilePath(file.filePath());
-    const QString top_level = relative_path.section('/', 0, 0);
-    if (relative_path.contains('/') &&
-        !top_level.contains(QRegularExpression("^cam[0-9]+$", QRegularExpression::CaseInsensitiveOption))) {
-      continue;
+  const QFileInfoList dirs = game_dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+  std::vector<QFileInfo> cam_dirs;
+  const QRegularExpression cam_pattern("^cam([0-9]+)$", QRegularExpression::CaseInsensitiveOption);
+  for (const QFileInfo& dir_info : dirs) {
+    if (cam_pattern.match(dir_info.fileName()).hasMatch()) {
+      cam_dirs.push_back(dir_info);
     }
-    if (is_video_file(file.fileName()) && !configured_paths.count(relative_path)) {
-      add_item("auto", relative_path);
+  }
+  std::sort(cam_dirs.begin(), cam_dirs.end(), [](const QFileInfo& a, const QFileInfo& b) {
+    const QRegularExpression cam_pattern("^cam([0-9]+)$", QRegularExpression::CaseInsensitiveOption);
+    return cam_pattern.match(a.fileName()).captured(1).toInt() <
+           cam_pattern.match(b.fileName()).captured(1).toInt();
+  });
+
+  bool listed_cam_video = false;
+  for (const QFileInfo& cam_dir : cam_dirs) {
+    const QFileInfoList files = QDir(cam_dir.filePath()).entryInfoList(QDir::Files | QDir::System | QDir::Readable, QDir::Name);
+    for (const QFileInfo& file : files) {
+      const QString relative_path = game_dir.relativeFilePath(file.filePath());
+      if (is_video_file(file.fileName()) && !configured_paths.count(relative_path)) {
+        add_item("auto", relative_path);
+        listed_cam_video = true;
+      }
+    }
+  }
+
+  if (!listed_cam_video) {
+    const QFileInfoList files = game_dir.entryInfoList(QDir::Files | QDir::System | QDir::Readable, QDir::Name);
+    for (const QFileInfo& file : files) {
+      const QString relative_path = game_dir.relativeFilePath(file.filePath());
+      if (is_video_file(file.fileName()) && !configured_paths.count(relative_path)) {
+        add_item("auto", relative_path);
+      }
     }
   }
 }
@@ -774,14 +795,12 @@ bool HmStreamWindow::importVideoPath(const QString& source_path, QString* import
         max_cam_index = std::max(max_cam_index, match.captured(1).toInt());
       }
     }
-    if (max_cam_index > 0) {
-      const QString cam_dir = QString("cam%1").arg(max_cam_index + 1);
-      if (!target_dir.exists(cam_dir) && !target_dir.mkdir(cam_dir)) {
-        appendLog(QString("failed to create video set directory %1").arg(cam_dir));
-        return false;
-      }
-      target_dir.cd(cam_dir);
+    const QString cam_dir = QString("cam%1").arg(max_cam_index + 1);
+    if (!target_dir.exists(cam_dir) && !target_dir.mkdir(cam_dir)) {
+      appendLog(QString("failed to create video set directory %1").arg(cam_dir));
+      return false;
     }
+    target_dir.cd(cam_dir);
   }
   QString dest_name = source.fileName();
   QString dest_path = target_dir.filePath(dest_name);
@@ -799,12 +818,73 @@ bool HmStreamWindow::importVideoPath(const QString& source_path, QString* import
         appendLog(QString("failed to import video link or copy: %1").arg(exc.what()));
         return false;
       }
+      if (!saveCopiedImport(relativeToGameDir(dest_path))) {
+        QFile::remove(dest_path);
+        return false;
+      }
       appendLog(QString("video symlink unavailable; copied import to %1").arg(dest_name));
     }
   }
 
   *imported_relative_path = relativeToGameDir(dest_path);
   return true;
+}
+
+bool HmStreamWindow::saveCopiedImport(const QString& relative_path) {
+  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  YAML::Node config;
+  if (fs::exists(config_path)) {
+    try {
+      config = YAML::LoadFile(config_path.string());
+    } catch (const std::exception& exc) {
+      appendLog(QString("could not update copied import metadata: %1").arg(exc.what()));
+      return false;
+    }
+  }
+
+  YAML::Node list = config["hmstream_ui"]["copied_imports"];
+  if (!list || !list.IsSequence()) {
+    config["hmstream_ui"]["copied_imports"] = YAML::Node(YAML::NodeType::Sequence);
+    list = config["hmstream_ui"]["copied_imports"];
+  }
+  for (const auto& item : list) {
+    if (QString::fromStdString(item.as<std::string>()) == relative_path) {
+      return true;
+    }
+  }
+  list.push_back(relative_path.toStdString());
+
+  std::ofstream out(config_path);
+  if (!out) {
+    appendLog(QString("failed to write copied import metadata %1").arg(QString::fromStdString(config_path.string())));
+    return false;
+  }
+  out << config << "\n";
+  return true;
+}
+
+bool HmStreamWindow::isCopiedImport(const QString& relative_path) {
+  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  if (!fs::exists(config_path)) {
+    return false;
+  }
+  try {
+    YAML::Node config = YAML::LoadFile(config_path.string());
+    YAML::Node list = config["hmstream_ui"]["copied_imports"];
+    if (!list || !list.IsSequence()) {
+      return false;
+    }
+    const QDir game_dir(gameDirectory(game_id_edit_->text()));
+    for (const auto& item : list) {
+      const QString path = normalized_config_video_path(game_dir, QString::fromStdString(item.as<std::string>()));
+      if (path == relative_path) {
+        return true;
+      }
+    }
+  } catch (const std::exception&) {
+    return false;
+  }
+  return false;
 }
 
 bool HmStreamWindow::savePrivateConfigForRole(const QString& role, const QString& relative_path) {
@@ -928,6 +1008,7 @@ bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QStri
   if (is_explicit_role(role)) {
     remove_from_list(config["hmstream_ui"]["video_roles"], role);
   }
+  remove_from_list(config["hmstream_ui"], "copied_imports");
   if (role == "auto") {
     remove_from_list(config["game"]["videos"], "left");
     remove_from_list(config["game"]["videos"], "right");
@@ -947,7 +1028,7 @@ bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QStri
   return true;
 }
 
-bool HmStreamWindow::removeImportedVideoPath(const QString& relative_path) {
+bool HmStreamWindow::removeImportedVideoPath(const QString& relative_path, bool allow_regular_delete) {
   const QDir game_dir(gameDirectory(game_id_edit_->text()));
   const QString game_root = QDir::cleanPath(game_dir.absolutePath());
   const QFileInfo requested(relative_path);
@@ -962,7 +1043,7 @@ bool HmStreamWindow::removeImportedVideoPath(const QString& relative_path) {
   if (!imported.exists()) {
     return true;
   }
-  if (!imported.isSymLink()) {
+  if (!imported.isSymLink() && !allow_regular_delete) {
     appendLog(QString("not deleting regular video file %1").arg(relative_path));
     return true;
   }

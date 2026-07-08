@@ -36,11 +36,15 @@ done
 
 if [[ -z "$PKG_VERSION" ]]; then
   PKG_VERSION="$(git -C "${TOPDIR}" describe --tags --always 2>/dev/null || echo "0.0.0")"
-  # dpkg needs versions that start with a digit; strip a leading 'v'
-  PKG_VERSION="${PKG_VERSION#v}"
-  if [[ ! "${PKG_VERSION}" =~ ^[0-9] ]]; then
-    PKG_VERSION="0.0+git.${PKG_VERSION}"
-  fi
+fi
+# dpkg needs versions that start with a digit; strip a leading 'v'
+PKG_VERSION="${PKG_VERSION#v}"
+if [[ ! "${PKG_VERSION}" =~ ^[0-9] ]]; then
+  PKG_VERSION="0.0+git.${PKG_VERSION}"
+fi
+if ! dpkg --validate-version "${PKG_VERSION}" >/dev/null 2>&1; then
+  echo "ERROR: invalid Debian package version: ${PKG_VERSION}" >&2
+  exit 1
 fi
 
 # ---------- optional build ----------

@@ -55,9 +55,11 @@ class HmStreamWindow : public QMainWindow {
   QString relativeToGameDir(const QString& path) const;
   bool ensureGameDirectory();
   bool importVideoPath(const QString& source_path, QString* imported_relative_path);
+  bool saveCopiedImport(const QString& relative_path);
+  bool isCopiedImport(const QString& relative_path);
   bool savePrivateConfigForRole(const QString& role, const QString& relative_path);
   bool removePrivateConfigForRole(const QString& role, const QString& relative_path);
-  bool removeImportedVideoPath(const QString& relative_path);
+  bool removeImportedVideoPath(const QString& relative_path, bool allow_regular_delete = false);
   void toggleOutput(const QString& id, bool enabled);
   void redirectYoutube();
   void addRtspOutput();

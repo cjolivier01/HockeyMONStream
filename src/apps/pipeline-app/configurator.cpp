@@ -15,6 +15,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <set>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -776,11 +777,40 @@ absl::Status Configurator::gather_stitching_videos(
         }
       };
 
+  auto available_chapters = [](const stitching::VideoChapter& chapters, const std::set<int>& wanted) {
+    std::set<int> available;
+    for (int chapter : wanted) {
+      if (chapters.count(chapter)) {
+        available.insert(chapter);
+      }
+    }
+    return available;
+  };
+
+  auto filter_explicit_files = [](const std::vector<std::string>& files,
+                                  const stitching::VideoChapter& chapters,
+                                  const std::set<int>& wanted) {
+    std::vector<std::string> filtered;
+    for (const std::string& file : files) {
+      const fs::path file_path(file);
+      for (const auto& [chapter, discovered_file] : chapters) {
+        const fs::path discovered_path(discovered_file);
+        if (wanted.count(chapter) && (file_path == discovered_path || file_path.filename() == discovered_path.filename())) {
+          filtered.emplace_back(file);
+          break;
+        }
+      }
+    }
+    return filtered;
+  };
+
   if ((explicit_left || explicit_right) && left_files.empty() && videos.count("left")) {
     const std::set<int> wanted =
         explicit_right && videos.count("right") ? matching_chapters(explicit_right_files, videos.at("right")) : std::set<int>();
     if (!wanted.empty()) {
-      append_matching_chapters(videos.at("left"), wanted, left_files);
+      const std::set<int> paired = available_chapters(videos.at("left"), wanted);
+      append_matching_chapters(videos.at("left"), paired, left_files);
+      right_files = filter_explicit_files(explicit_right_files, videos.at("right"), paired);
     } else if (!explicit_right || videos.at("left").size() == 1) {
       append_chapters(videos.at("left"), left_files);
     }
@@ -789,7 +819,9 @@ absl::Status Configurator::gather_stitching_videos(
     const std::set<int> wanted =
         explicit_left && videos.count("left") ? matching_chapters(explicit_left_files, videos.at("left")) : std::set<int>();
     if (!wanted.empty()) {
-      append_matching_chapters(videos.at("right"), wanted, right_files);
+      const std::set<int> paired = available_chapters(videos.at("right"), wanted);
+      append_matching_chapters(videos.at("right"), paired, right_files);
+      left_files = filter_explicit_files(explicit_left_files, videos.at("left"), paired);
     } else if (!explicit_left || videos.at("right").size() == 1) {
       append_chapters(videos.at("right"), right_files);
     }
@@ -817,6 +849,11 @@ absl::Status Configurator::gather_stitching_videos(
   }
 
   if ((explicit_left || explicit_right) && !left_files.empty() && !right_files.empty()) {
+    if (left_files.size() != right_files.size()) {
+      return absl::InvalidArgumentError(TO_STRING(
+          "Mismatched explicit/auto video chapters: " << left_files.size() << " left file(s), " << right_files.size()
+                                                      << " right file(s)"));
+    }
     private_config_["game"]["videos"]["left"] = left_files;
     private_config_["game"]["videos"]["right"] = right_files;
     auto spp_status = save_private_config(private_config_);

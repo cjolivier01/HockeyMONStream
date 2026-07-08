@@ -93,10 +93,11 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   auto* video_path = require_child<QLineEdit>(window, "videoPathEdit");
   auto* add_video = require_child<QPushButton>(window, "addVideoButton");
   auto* remove_video = require_child<QPushButton>(window, "removeVideoButton");
+  auto* automatic = require_child<QRadioButton>(window, "videoRole_auto");
   auto* center = require_child<QRadioButton>(window, "videoRole_center");
   auto* right = require_child<QRadioButton>(window, "videoRole_right");
   auto* list = require_child<QListWidget>(window, "videoSetList");
-  if (!game_id || !create || !video_path || !add_video || !remove_video || !center || !right || !list) {
+  if (!game_id || !create || !video_path || !add_video || !remove_video || !automatic || !center || !right || !list) {
     return false;
   }
 
@@ -124,11 +125,18 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   if (!write_fake_video(QString::fromStdString((cam_dir / "GX010004.MP4").string()))) {
     return false;
   }
+  if (!write_fake_video(window->gameDirectoryText() + "/GX019999.MP4")) {
+    return false;
+  }
   activate(create);
   if (!expect(list_contains(list, "Auto  cam1/GX010004.MP4"), "Auto listing should include camN video sets")) {
     return false;
   }
+  if (!expect(!list_contains(list, "GX019999.MP4"), "Root Auto files should be hidden when camN sets exist")) {
+    return false;
+  }
 
+  activate(automatic);
   video_path->setText(auto_video);
   activate(add_video);
   if (!expect(window->videoSetCount() >= 1, "Adding an auto video should populate the video set list")) {
@@ -201,7 +209,32 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
           "Removing Auto config entries should clear stale generated private config")) {
     return false;
   }
-  return expect(!list_contains(list, "GX010001.MP4"), "Removed Auto imports should not reappear from config");
+  if (!expect(!list_contains(list, "GX010001.MP4"), "Removed Auto imports should not reappear from config")) {
+    return false;
+  }
+
+  const fs::path duplicate_source_a = fs::path(source_dir.toStdString()) / "source-a";
+  const fs::path duplicate_source_b = fs::path(source_dir.toStdString()) / "source-b";
+  fs::create_directories(duplicate_source_a);
+  fs::create_directories(duplicate_source_b);
+  const QString duplicate_a = QString::fromStdString((duplicate_source_a / "GX020001.MP4").string());
+  const QString duplicate_b = QString::fromStdString((duplicate_source_b / "GX020001.MP4").string());
+  if (!write_fake_video(duplicate_a) || !write_fake_video(duplicate_b)) {
+    return false;
+  }
+  game_id->setText("ui-empty-auto-game");
+  activate(create);
+  activate(automatic);
+  video_path->setText(duplicate_a);
+  activate(add_video);
+  video_path->setText(duplicate_b);
+  activate(add_video);
+  return expect(
+             fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "cam1" / "GX020001.MP4"),
+             "First Auto import in an empty game should create cam1 with the original file name") &&
+         expect(
+             fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "cam2" / "GX020001.MP4"),
+             "Second Auto import with the same file name should create cam2 without renaming");
 }
 
 bool test_pipeline_buttons(HmStreamWindow* window) {
