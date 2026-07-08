@@ -94,10 +94,12 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   auto* add_video = require_child<QPushButton>(window, "addVideoButton");
   auto* remove_video = require_child<QPushButton>(window, "removeVideoButton");
   auto* automatic = require_child<QRadioButton>(window, "videoRole_auto");
+  auto* left = require_child<QRadioButton>(window, "videoRole_left");
   auto* center = require_child<QRadioButton>(window, "videoRole_center");
   auto* right = require_child<QRadioButton>(window, "videoRole_right");
   auto* list = require_child<QListWidget>(window, "videoSetList");
-  if (!game_id || !create || !video_path || !add_video || !remove_video || !automatic || !center || !right || !list) {
+  if (!game_id || !create || !video_path || !add_video || !remove_video || !automatic || !left || !center || !right ||
+      !list) {
     return false;
   }
 
@@ -108,11 +110,12 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   }
 
   const QString auto_video = source_dir + "/GX010001.MP4";
+  const QString suffix_auto_video = source_dir + "/game-left-1.mp4";
   const QString center_video = source_dir + "/GX010003.MP4";
+  const QString left_video = source_dir + "/GX010005.MP4";
   const QString right_video = source_dir + "/GX010002.MP4";
-  const QString right_video_2 = source_dir + "/GX020002.MP4";
-  if (!write_fake_video(auto_video) || !write_fake_video(center_video) || !write_fake_video(right_video) ||
-      !write_fake_video(right_video_2)) {
+  if (!write_fake_video(auto_video) || !write_fake_video(suffix_auto_video) || !write_fake_video(center_video) ||
+      !write_fake_video(left_video) || !write_fake_video(right_video)) {
     return false;
   }
 
@@ -141,7 +144,7 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   activate(automatic);
   const QString undiscoverable_auto = source_dir + "/clip.mov";
   const QString undiscoverable_part = source_dir + "/left-10.mp4";
-  if (!write_fake_video(undiscoverable_auto)) {
+  if (!write_fake_video(undiscoverable_auto) || !write_fake_video(undiscoverable_part)) {
     return false;
   }
   const int before_undiscoverable = list->count();
@@ -155,25 +158,67 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
     return false;
   }
 
+  video_path->setText(suffix_auto_video);
+  activate(add_video);
+  if (!expect(
+          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "cam2" / "game-left-1.mp4"),
+          "Auto should accept the same left/right suffix patterns as pipeline discovery")) {
+    return false;
+  }
+
   video_path->setText(auto_video);
   activate(add_video);
   if (!expect(window->videoSetCount() >= 1, "Adding an auto video should populate the video set list")) {
     return false;
   }
   if (!expect(
-          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "cam2" / "GX010001.MP4"),
+          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "cam3" / "GX010001.MP4"),
           "Auto video should be imported into the game directory for existing discovery")) {
+    return false;
+  }
+
+  fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  YAML::Node stale_auto = fs::exists(config) ? YAML::LoadFile(config.string()) : YAML::Node();
+  stale_auto["game"]["videos"]["left"] = YAML::Node(YAML::NodeType::Sequence);
+  stale_auto["game"]["videos"]["left"].push_back("stale-generated-left.mp4");
+  stale_auto["game"]["videos"]["right"] = YAML::Node(YAML::NodeType::Sequence);
+  stale_auto["game"]["videos"]["right"].push_back("stale-generated-right.mp4");
+  stale_auto["game"]["stitching"]["frame_offsets"]["left"] = "11";
+  stale_auto["stitching"]["frame_offsets"]["right"] = "22";
+  {
+    std::ofstream out(config);
+    out << stale_auto << "\n";
+  }
+  const QString auto_video_2 = source_dir + "/GX020001.MP4";
+  if (!write_fake_video(auto_video_2)) {
+    return false;
+  }
+  video_path->setText(auto_video_2);
+  activate(add_video);
+  YAML::Node auto_cleared = YAML::LoadFile(config.string());
+  if (!expect(
+          !auto_cleared["game"]["videos"]["left"] && !auto_cleared["game"]["videos"]["right"] &&
+              !auto_cleared["game"]["stitching"]["frame_offsets"] && !auto_cleared["stitching"]["frame_offsets"],
+          "Adding Auto videos should clear stale generated video config and offsets")) {
     return false;
   }
 
   activate(center);
   video_path->setText(center_video);
   activate(add_video);
-  if (!expect(select_list_item(list, "Center  GX010003.MP4"), "Explicit Center assignment should remain visible")) {
+  if (!expect(
+          select_list_item(list, "Center  .hmstream-ui/center/GX010003.MP4"),
+          "Explicit Center assignment should remain visible")) {
+    return false;
+  }
+  if (!expect(
+          fs::exists(
+              fs::path(window->gameDirectoryText().toStdString()) / ".hmstream-ui" / "center" / "GX010003.MP4") &&
+              !fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "GX010003.MP4"),
+          "Center imports should stay outside runtime Auto discovery paths")) {
     return false;
   }
 
-  fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
   YAML::Node stale_offsets = YAML::LoadFile(config.string());
   stale_offsets["game"]["stitching"]["frame_offsets"]["left"] = "12";
   stale_offsets["game"]["stitching"]["frame_offsets"]["right"] = "34";
@@ -191,21 +236,28 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   activate(right);
   video_path->setText(right_video);
   activate(add_video);
-  video_path->setText(right_video_2);
+  YAML::Node one_sided = YAML::LoadFile(config.string());
+  if (!expect(
+          !one_sided["game"]["videos"]["left"] && !one_sided["game"]["videos"]["right"] &&
+              !one_sided["game"]["stitching"]["frame_offsets"] && !one_sided["stitching"]["frame_offsets"],
+          "A single explicit Left/Right side should not write a partial runtime video config")) {
+    return false;
+  }
+  activate(left);
+  video_path->setText(left_video);
   activate(add_video);
   std::ifstream input(config);
   const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
   YAML::Node yaml = YAML::LoadFile(config.string());
   if (!expect(
           yaml["hmstream_ui"]["video_roles"]["center"] &&
-              yaml["hmstream_ui"]["video_roles"]["center"][0].as<std::string>() == "GX010003.MP4" &&
-              !yaml["game"]["videos"]["center"] && text.find("right") != std::string::npos &&
-              text.find("GX010002.MP4") != std::string::npos &&
-              text.find("GX020002.MP4") != std::string::npos &&
-              !yaml["game"]["videos"]["left"] &&
-              yaml["game"]["videos"]["right"].size() == 2 &&
+              yaml["hmstream_ui"]["video_roles"]["center"][0].as<std::string>() == ".hmstream-ui/center/GX010003.MP4" &&
+              !yaml["game"]["videos"]["center"] && text.find("left") != std::string::npos &&
+              text.find("GX010005.MP4") != std::string::npos && text.find("right") != std::string::npos &&
+              text.find("GX010002.MP4") != std::string::npos && yaml["game"]["videos"]["left"].size() == 1 &&
+              yaml["game"]["videos"]["left"][0].as<std::string>() == "GX010005.MP4" &&
+              yaml["game"]["videos"]["right"].size() == 1 &&
               yaml["game"]["videos"]["right"][0].as<std::string>() == "GX010002.MP4" &&
-              yaml["game"]["videos"]["right"][1].as<std::string>() == "GX020002.MP4" &&
               !yaml["game"]["stitching"]["frame_offsets"] && !yaml["stitching"]["frame_offsets"],
           "Explicit roles should replace stale pipeline config, keep all chapters, and clear stale offsets")) {
     return false;
@@ -215,25 +267,19 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
     return false;
   }
   activate(remove_video);
-  if (!select_list_item(list, "Right  GX020002.MP4")) {
-    return false;
-  }
-  activate(remove_video);
   std::ifstream updated_input(config);
-  const std::string updated_text(
-      (std::istreambuf_iterator<char>(updated_input)), std::istreambuf_iterator<char>());
+  const std::string updated_text((std::istreambuf_iterator<char>(updated_input)), std::istreambuf_iterator<char>());
+  YAML::Node after_right_remove = YAML::LoadFile(config.string());
   if (!expect(
-          updated_text.find("GX010002.MP4") == std::string::npos &&
-              updated_text.find("GX020002.MP4") == std::string::npos,
-          "Removing an explicit role should update private config") ||
-      !expect(
-          !list_contains(list, "GX010002.MP4") && !list_contains(list, "GX020002.MP4"),
-          "Removed explicit imports should not reappear as Auto")) {
+          updated_text.find("GX010002.MP4") == std::string::npos && !after_right_remove["game"]["videos"]["left"] &&
+              !after_right_remove["game"]["videos"]["right"],
+          "Removing an explicit role should clear incomplete runtime video config") ||
+      !expect(!list_contains(list, "GX010002.MP4"), "Removed explicit imports should not reappear as Auto")) {
     return false;
   }
 
   YAML::Node generated = YAML::LoadFile(config.string());
-  const QString auto_import = window->gameDirectoryText() + "/cam2/GX010001.MP4";
+  const QString auto_import = window->gameDirectoryText() + "/cam3/GX010001.MP4";
   generated["game"]["videos"]["left"] = YAML::Node(YAML::NodeType::Sequence);
   generated["game"]["videos"]["left"].push_back(auto_import.toStdString());
   generated["game"]["stitching"]["frame_offsets"]["left"] = "90";
@@ -248,7 +294,7 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
           "Absolute generated config paths should not duplicate scanned Auto files")) {
     return false;
   }
-  if (!select_list_item(list, "Auto  cam2/GX010001.MP4")) {
+  if (!select_list_item(list, "Auto  cam3/GX010001.MP4")) {
     return false;
   }
   activate(remove_video);
@@ -282,8 +328,7 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   return expect(
              fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "cam1" / "GX020001.MP4"),
              "First Auto import in an empty game should create cam1 with the original file name") &&
-         expect(
-             fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "cam2" / "GX020001.MP4"),
+      expect(fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "cam2" / "GX020001.MP4"),
              "Second Auto import with the same file name should create cam2 without renaming");
 }
 

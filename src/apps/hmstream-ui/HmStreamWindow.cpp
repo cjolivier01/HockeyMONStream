@@ -53,9 +53,9 @@ bool is_video_file(const QString& path) {
 bool is_auto_chapter_file(const QString& file_name) {
   static const QRegularExpression gopro("^G[A-Z][0-9]{6}\\.(MP4|mp4)$");
   static const QRegularExpression insta360("^VID_[0-9]{8}_[0-9]{6}_[0-9]{3}\\.(MP4|mp4)$");
-  static const QRegularExpression left_right("^(left|right)(-[0-9])?\\.mp4$");
+  static const QRegularExpression left_right("(left|right)(-[0-9])?\\.mp4$");
   return gopro.match(file_name).hasMatch() || insta360.match(file_name).hasMatch() ||
-         left_right.match(file_name).hasMatch();
+      left_right.match(file_name).hasMatch();
 }
 
 bool is_root_auto_file(const QString& file_name) {
@@ -114,6 +114,14 @@ bool clear_stitching_frame_offsets(YAML::Node& config) {
     changed = true;
   }
   return changed;
+}
+
+bool remove_yaml_key(YAML::Node parent, const char* key) {
+  if (!parent || !parent[key]) {
+    return false;
+  }
+  parent.remove(key);
+  return true;
 }
 
 } // namespace
@@ -712,13 +720,13 @@ void HmStreamWindow::refreshVideoSets() {
   }
   std::sort(cam_dirs.begin(), cam_dirs.end(), [](const QFileInfo& a, const QFileInfo& b) {
     const QRegularExpression cam_pattern("^cam([0-9]+)$", QRegularExpression::CaseInsensitiveOption);
-    return cam_pattern.match(a.fileName()).captured(1).toInt() <
-           cam_pattern.match(b.fileName()).captured(1).toInt();
+    return cam_pattern.match(a.fileName()).captured(1).toInt() < cam_pattern.match(b.fileName()).captured(1).toInt();
   });
 
   bool listed_cam_video = false;
   for (const QFileInfo& cam_dir : cam_dirs) {
-    const QFileInfoList files = QDir(cam_dir.filePath()).entryInfoList(QDir::Files | QDir::System | QDir::Readable, QDir::Name);
+    const QFileInfoList files =
+        QDir(cam_dir.filePath()).entryInfoList(QDir::Files | QDir::System | QDir::Readable, QDir::Name);
     for (const QFileInfo& file : files) {
       const QString relative_path = game_dir.relativeFilePath(file.filePath());
       if (is_auto_chapter_file(file.fileName()) && !configured_paths.count(relative_path)) {
@@ -810,14 +818,15 @@ bool HmStreamWindow::importVideoPath(const QString& source_path, QString* import
     appendLog(QString("unsupported video extension %1").arg(source.fileName()));
     return false;
   }
-  if (selectedVideoRole() == "auto" && !is_auto_chapter_file(source.fileName())) {
+  const QString role = selectedVideoRole();
+  if (role == "auto" && !is_auto_chapter_file(source.fileName())) {
     appendLog(QString("auto video file name is not discoverable by the pipeline %1").arg(source.fileName()));
     return false;
   }
 
   const QString game_dir = gameDirectory(game_id_edit_->text());
   QDir target_dir(game_dir);
-  if (selectedVideoRole() == "auto") {
+  if (role == "auto") {
     int max_cam_index = 0;
     const QFileInfoList dirs = target_dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
     const QRegularExpression cam_pattern("^cam([0-9]+)$", QRegularExpression::CaseInsensitiveOption);
@@ -833,6 +842,18 @@ bool HmStreamWindow::importVideoPath(const QString& source_path, QString* import
       return false;
     }
     target_dir.cd(cam_dir);
+  } else if (role == "center") {
+    const QString ui_dir = ".hmstream-ui";
+    const QString center_dir = ui_dir + "/center";
+    if (!target_dir.exists(ui_dir) && !target_dir.mkdir(ui_dir)) {
+      appendLog(QString("failed to create UI metadata directory %1").arg(ui_dir));
+      return false;
+    }
+    if (!target_dir.exists(center_dir) && !target_dir.mkpath(center_dir)) {
+      appendLog(QString("failed to create Center video directory %1").arg(center_dir));
+      return false;
+    }
+    target_dir.cd(center_dir);
   }
   QString dest_name = source.fileName();
   QString dest_path = target_dir.filePath(dest_name);
@@ -954,26 +975,33 @@ bool HmStreamWindow::savePrivateConfigForRole(const QString& role, const QString
   }
 
   if (role == "left" || role == "right") {
-    YAML::Node list(YAML::NodeType::Sequence);
-    YAML::Node explicit_list = config["hmstream_ui"]["video_roles"][role.toStdString()];
-    if (explicit_list && explicit_list.IsSequence()) {
-      for (const auto& item : explicit_list) {
-        list.push_back(item.as<std::string>());
+    YAML::Node explicit_left = config["hmstream_ui"]["video_roles"]["left"];
+    YAML::Node explicit_right = config["hmstream_ui"]["video_roles"]["right"];
+    const bool has_left = explicit_left && explicit_left.IsSequence() && explicit_left.size() > 0;
+    const bool has_right = explicit_right && explicit_right.IsSequence() && explicit_right.size() > 0;
+    if (has_left && has_right) {
+      YAML::Node left_list(YAML::NodeType::Sequence);
+      for (const auto& item : explicit_left) {
+        left_list.push_back(item.as<std::string>());
       }
+      YAML::Node right_list(YAML::NodeType::Sequence);
+      for (const auto& item : explicit_right) {
+        right_list.push_back(item.as<std::string>());
+      }
+      config["game"]["videos"]["left"] = left_list;
+      config["game"]["videos"]["right"] = right_list;
     } else {
-      list.push_back(relative_path.toStdString());
-    }
-    config["game"]["videos"][role.toStdString()] = list;
-    const QString opposite_role = role == "left" ? "right" : "left";
-    YAML::Node opposite_explicit = config["hmstream_ui"]["video_roles"][opposite_role.toStdString()];
-    if (!opposite_explicit || !opposite_explicit.IsSequence() || opposite_explicit.size() == 0) {
-      config["game"]["videos"].remove(opposite_role.toStdString());
+      changed = remove_yaml_key(config["game"]["videos"], "left") || changed;
+      changed = remove_yaml_key(config["game"]["videos"], "right") || changed;
+      appendLog("explicit Left/Right selection will apply after both sides are assigned");
     }
     changed = true;
   }
 
   if (role == "auto") {
-    // Auto intentionally relies on the existing video discovery/orientation path.
+    changed = remove_yaml_key(config["game"]["videos"], "left") || changed;
+    changed = remove_yaml_key(config["game"]["videos"], "right") || changed;
+    changed = clear_stitching_frame_offsets(config) || changed;
     appendLog("auto video set will be discovered from the game directory");
   }
 
@@ -1046,7 +1074,26 @@ bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QStri
     remove_from_list(config["game"]["videos"], "right");
     changed = clear_stitching_frame_offsets(config) || changed;
   } else if (role == "left" || role == "right") {
-    remove_from_list(config["game"]["videos"], role);
+    YAML::Node explicit_left = config["hmstream_ui"]["video_roles"]["left"];
+    YAML::Node explicit_right = config["hmstream_ui"]["video_roles"]["right"];
+    const bool has_left = explicit_left && explicit_left.IsSequence() && explicit_left.size() > 0;
+    const bool has_right = explicit_right && explicit_right.IsSequence() && explicit_right.size() > 0;
+    if (has_left && has_right) {
+      YAML::Node left_list(YAML::NodeType::Sequence);
+      for (const auto& item : explicit_left) {
+        left_list.push_back(item.as<std::string>());
+      }
+      YAML::Node right_list(YAML::NodeType::Sequence);
+      for (const auto& item : explicit_right) {
+        right_list.push_back(item.as<std::string>());
+      }
+      config["game"]["videos"]["left"] = left_list;
+      config["game"]["videos"]["right"] = right_list;
+      changed = true;
+    } else {
+      changed = remove_yaml_key(config["game"]["videos"], "left") || changed;
+      changed = remove_yaml_key(config["game"]["videos"], "right") || changed;
+    }
     changed = clear_stitching_frame_offsets(config) || changed;
   }
   if (!changed) {
