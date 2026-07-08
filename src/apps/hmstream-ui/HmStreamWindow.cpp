@@ -1,17 +1,34 @@
 #include "src/apps/hmstream-ui/HmStreamWindow.h"
 
 #include <QtCore/QDateTime>
+#include <QtCore/QDir>
+#include <QtCore/QFile>
+#include <QtCore/QFileInfo>
+#include <QtCore/QRegularExpression>
+#include <QtCore/QStandardPaths>
 #include <QtCore/Qt>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QButtonGroup>
 #include <QtWidgets/QComboBox>
+#include <QtWidgets/QFileDialog>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QRadioButton>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QStyle>
+
+#include <yaml-cpp/yaml.h>
+
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <set>
+
+namespace fs = std::filesystem;
 
 namespace {
 
@@ -27,10 +44,36 @@ QLabel* make_value_label(const QString& object_name, const QString& value) {
   return label;
 }
 
+bool is_video_file(const QString& path) {
+  const QString suffix = QFileInfo(path).suffix().toLower();
+  return suffix == "mp4" || suffix == "mkv" || suffix == "mov" || suffix == "avi";
+}
+
+QString sanitized_game_id(QString value) {
+  value = value.trimmed();
+  value.replace(QRegularExpression("[^A-Za-z0-9_.-]"), "-");
+  value.replace(QRegularExpression("-+"), "-");
+  return value;
+}
+
+QString role_label(const QString& role) {
+  if (role == "left") {
+    return "Left";
+  }
+  if (role == "center") {
+    return "Center";
+  }
+  if (role == "right") {
+    return "Right";
+  }
+  return "Auto";
+}
+
 } // namespace
 
 HmStreamWindow::HmStreamWindow(QWidget* parent) : QMainWindow(parent) {
   buildUi();
+  refreshGames();
   setPipelineRunning(false);
   appendLog("hmstream-ui started with disconnected demo backend");
 }
@@ -46,6 +89,18 @@ QString HmStreamWindow::outputStateText(const QString& id) const {
 
 QString HmStreamWindow::logText() const {
   return log_ ? log_->toPlainText() : QString();
+}
+
+QString HmStreamWindow::gameIdText() const {
+  return game_id_edit_ ? game_id_edit_->text() : QString();
+}
+
+QString HmStreamWindow::gameDirectoryText() const {
+  return game_path_label_ ? game_path_label_->text() : QString();
+}
+
+int HmStreamWindow::videoSetCount() const {
+  return video_set_list_ ? video_set_list_->count() : 0;
 }
 
 int HmStreamWindow::cameraControlValue(const QString& id) const {
@@ -127,6 +182,7 @@ void HmStreamWindow::buildMainArea(QVBoxLayout* root) {
   auto* left = new QWidget();
   auto* left_layout = new QVBoxLayout(left);
   left_layout->setContentsMargins(0, 0, 0, 0);
+  buildGameControls(left_layout);
   buildPreviewPane(left_layout);
 
   auto* right = new QWidget();
@@ -141,6 +197,109 @@ void HmStreamWindow::buildMainArea(QVBoxLayout* root) {
   splitter->setStretchFactor(0, 3);
   splitter->setStretchFactor(1, 1);
   root->addWidget(splitter, 1);
+}
+
+void HmStreamWindow::buildGameControls(QVBoxLayout* root) {
+  auto* group = new QGroupBox("Game");
+  group->setObjectName("gameSetupGroup");
+  auto* layout = new QGridLayout(group);
+  layout->setColumnStretch(1, 1);
+
+  game_selector_ = new QComboBox();
+  game_selector_->setObjectName("gameSelector");
+  connect(game_selector_, &QComboBox::currentTextChanged, this, [this](const QString& game_id) {
+    if (!game_id.isEmpty() && game_id != game_id_edit_->text()) {
+      selectGame(game_id);
+    }
+  });
+
+  game_id_edit_ = new QLineEdit();
+  game_id_edit_->setObjectName("gameIdEdit");
+  game_id_edit_->setPlaceholderText("game-id");
+  connect(game_id_edit_, &QLineEdit::editingFinished, this, [this]() {
+    game_id_edit_->setText(sanitized_game_id(game_id_edit_->text()));
+    refreshVideoSets();
+  });
+
+  auto* create = new QPushButton(style()->standardIcon(QStyle::SP_DialogApplyButton), "Create / Load");
+  create->setObjectName("createGameButton");
+  connect(create, &QPushButton::clicked, this, [this]() { createOrLoadGame(); });
+
+  auto* refresh = new QPushButton(style()->standardIcon(QStyle::SP_BrowserReload), "Refresh");
+  refresh->setObjectName("refreshGamesButton");
+  connect(refresh, &QPushButton::clicked, this, [this]() { refreshGames(); });
+
+  game_path_label_ = new QLabel(gameRoot());
+  game_path_label_->setObjectName("gamePathLabel");
+  game_path_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+  layout->addWidget(new QLabel("Existing"), 0, 0);
+  layout->addWidget(game_selector_, 0, 1);
+  layout->addWidget(refresh, 0, 2);
+  layout->addWidget(new QLabel("Game ID"), 1, 0);
+  layout->addWidget(game_id_edit_, 1, 1);
+  layout->addWidget(create, 1, 2);
+  layout->addWidget(new QLabel("Path"), 2, 0);
+  layout->addWidget(game_path_label_, 2, 1, 1, 2);
+
+  auto* video_group = new QGroupBox("Video Sets");
+  video_group->setObjectName("videoSetsGroup");
+  auto* video_layout = new QGridLayout(video_group);
+  video_layout->setColumnStretch(0, 1);
+
+  video_path_edit_ = new QLineEdit();
+  video_path_edit_->setObjectName("videoPathEdit");
+  video_path_edit_->setPlaceholderText("/path/to/video.mp4");
+
+  auto* browse = new QPushButton(style()->standardIcon(QStyle::SP_DirOpenIcon), "Browse");
+  browse->setObjectName("browseVideoButton");
+  connect(browse, &QPushButton::clicked, this, [this]() { browseVideoPath(); });
+
+  auto* add = new QPushButton(style()->standardIcon(QStyle::SP_FileDialogNewFolder), "Add");
+  add->setObjectName("addVideoButton");
+  connect(add, &QPushButton::clicked, this, [this]() { addVideoPath(); });
+
+  auto* remove = new QPushButton(style()->standardIcon(QStyle::SP_TrashIcon), "Remove");
+  remove->setObjectName("removeVideoButton");
+  connect(remove, &QPushButton::clicked, this, [this]() { removeSelectedVideoSet(); });
+
+  role_auto_ = new QRadioButton("Auto");
+  role_auto_->setObjectName("videoRole_auto");
+  role_auto_->setChecked(true);
+  role_left_ = new QRadioButton("Left");
+  role_left_->setObjectName("videoRole_left");
+  role_center_ = new QRadioButton("Center");
+  role_center_->setObjectName("videoRole_center");
+  role_right_ = new QRadioButton("Right");
+  role_right_->setObjectName("videoRole_right");
+
+  auto* role_group = new QButtonGroup(video_group);
+  role_group->addButton(role_auto_);
+  role_group->addButton(role_left_);
+  role_group->addButton(role_center_);
+  role_group->addButton(role_right_);
+
+  auto* roles = new QHBoxLayout();
+  roles->setSpacing(12);
+  roles->addWidget(role_auto_);
+  roles->addWidget(role_left_);
+  roles->addWidget(role_center_);
+  roles->addWidget(role_right_);
+  roles->addStretch(1);
+
+  video_set_list_ = new QListWidget();
+  video_set_list_->setObjectName("videoSetList");
+  video_set_list_->setMinimumHeight(92);
+
+  video_layout->addWidget(video_path_edit_, 0, 0);
+  video_layout->addWidget(browse, 0, 1);
+  video_layout->addWidget(add, 0, 2);
+  video_layout->addLayout(roles, 1, 0, 1, 3);
+  video_layout->addWidget(video_set_list_, 2, 0, 1, 2);
+  video_layout->addWidget(remove, 2, 2);
+
+  layout->addWidget(video_group, 3, 0, 1, 3);
+  root->addWidget(group);
 }
 
 void HmStreamWindow::buildPreviewPane(QVBoxLayout* root) {
@@ -271,7 +430,11 @@ void HmStreamWindow::buildLog(QVBoxLayout* root) {
 void HmStreamWindow::setPipelineRunning(bool running) {
   pipeline_state_->setText(running ? "DEMO PLAYING" : "DEMO STOPPED");
   preview_status_->setText(running ? "Demo backend running - preview not attached" : "Demo backend stopped");
-  appendLog(running ? "demo pipeline started" : "demo pipeline stopped");
+  if (running) {
+    appendLog(QString("demo pipeline started --game-id=%1").arg(game_id_edit_ ? game_id_edit_->text() : QString()));
+  } else {
+    appendLog("demo pipeline stopped");
+  }
 }
 
 void HmStreamWindow::restartStage() {
@@ -303,6 +466,382 @@ void HmStreamWindow::resetCameraControls() {
     }
   }
   appendLog("camera controls reset to defaults");
+}
+
+void HmStreamWindow::refreshGames() {
+  if (!game_selector_) {
+    return;
+  }
+  const QString current = game_id_edit_ ? game_id_edit_->text() : QString();
+  const bool blocked = game_selector_->blockSignals(true);
+  game_selector_->clear();
+
+  QDir root(gameRoot());
+  if (!root.exists()) {
+    root.mkpath(".");
+  }
+  const QFileInfoList dirs = root.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+  for (const QFileInfo& dir : dirs) {
+    game_selector_->addItem(dir.fileName());
+  }
+  game_selector_->blockSignals(blocked);
+
+  if (!current.isEmpty()) {
+    const int index = game_selector_->findText(current);
+    if (index >= 0) {
+      game_selector_->setCurrentIndex(index);
+    }
+  } else if (game_selector_->count() > 0) {
+    selectGame(game_selector_->currentText());
+  } else if (game_path_label_) {
+    game_path_label_->setText(gameRoot());
+  }
+}
+
+void HmStreamWindow::selectGame(const QString& game_id) {
+  if (!game_id_edit_) {
+    return;
+  }
+  game_id_edit_->setText(sanitized_game_id(game_id));
+  if (game_path_label_) {
+    game_path_label_->setText(gameDirectory(game_id_edit_->text()));
+  }
+  refreshVideoSets();
+  appendLog(QString("game selected %1").arg(game_id_edit_->text()));
+}
+
+void HmStreamWindow::createOrLoadGame() {
+  if (!ensureGameDirectory()) {
+    return;
+  }
+  refreshGames();
+  refreshVideoSets();
+  appendLog(QString("game ready %1").arg(game_id_edit_->text()));
+}
+
+void HmStreamWindow::addVideoPath() {
+  if (!video_path_edit_) {
+    return;
+  }
+  QString imported_relative_path;
+  if (!importVideoPath(video_path_edit_->text(), &imported_relative_path)) {
+    return;
+  }
+
+  const QString role = selectedVideoRole();
+  if (!savePrivateConfigForRole(role, imported_relative_path)) {
+    return;
+  }
+  refreshVideoSets();
+  appendLog(QString("video set added role=%1 path=%2").arg(role_label(role), imported_relative_path));
+}
+
+void HmStreamWindow::browseVideoPath() {
+  const QString start_dir = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
+  const QString path = QFileDialog::getOpenFileName(
+      this,
+      "Add Video",
+      start_dir.isEmpty() ? QDir::homePath() : start_dir,
+      "Videos (*.mp4 *.MP4 *.mkv *.MKV *.mov *.MOV *.avi *.AVI)");
+  if (!path.isEmpty() && video_path_edit_) {
+    video_path_edit_->setText(path);
+  }
+}
+
+void HmStreamWindow::removeSelectedVideoSet() {
+  if (!video_set_list_) {
+    return;
+  }
+  const int row = video_set_list_->currentRow();
+  if (row < 0) {
+    appendLog("select a video set before removing");
+    return;
+  }
+  auto* item = video_set_list_->takeItem(row);
+  if (!item) {
+    return;
+  }
+  const QString role = item->data(Qt::UserRole).toString();
+  const QString relative_path = item->data(Qt::UserRole + 1).toString();
+  const QString imported_path = QDir(gameDirectory(game_id_edit_->text())).filePath(relative_path);
+  const QFileInfo imported(imported_path);
+
+  if ((role == "left" || role == "center" || role == "right") && !removePrivateConfigForRole(role, relative_path)) {
+    video_set_list_->insertItem(row, item);
+    return;
+  }
+
+  if (role == "auto" && imported.exists()) {
+    if (imported.isSymLink()) {
+      if (!QFile::remove(imported_path)) {
+        appendLog(QString("failed to remove imported video link %1").arg(relative_path));
+        video_set_list_->insertItem(row, item);
+        return;
+      }
+    } else {
+      appendLog(QString("not deleting regular video file %1").arg(relative_path));
+    }
+  }
+
+  appendLog(QString("video set removed role=%1 path=%2").arg(role_label(role), relative_path));
+  delete item;
+  refreshVideoSets();
+}
+
+void HmStreamWindow::refreshVideoSets() {
+  if (!video_set_list_ || !game_id_edit_) {
+    return;
+  }
+  video_set_list_->clear();
+  const QString dir = gameDirectory(game_id_edit_->text());
+  if (game_path_label_) {
+    game_path_label_->setText(dir);
+  }
+  if (game_id_edit_->text().isEmpty() || !QDir(dir).exists()) {
+    return;
+  }
+
+  std::set<QString> seen;
+  std::set<QString> configured_paths;
+  auto add_item = [&](const QString& role, const QString& path) {
+    const QString key = role + "\n" + path;
+    if (seen.count(key)) {
+      return;
+    }
+    seen.insert(key);
+    auto* item = new QListWidgetItem(QString("%1  %2").arg(role_label(role), path));
+    item->setData(Qt::UserRole, role);
+    item->setData(Qt::UserRole + 1, path);
+    video_set_list_->addItem(item);
+  };
+
+  const fs::path config_path = fs::path(dir.toStdString()) / "config.yaml";
+  if (fs::exists(config_path)) {
+    try {
+      YAML::Node config = YAML::LoadFile(config_path.string());
+      YAML::Node videos = config["game"]["videos"];
+      for (const QString& role : {QString("left"), QString("center"), QString("right")}) {
+        YAML::Node role_videos = videos[role.toStdString()];
+        if (role_videos && role_videos.IsSequence()) {
+          for (const auto& item : role_videos) {
+            const QString path = QString::fromStdString(item.as<std::string>());
+            configured_paths.insert(path);
+            add_item(role, path);
+          }
+        }
+      }
+    } catch (const std::exception& exc) {
+      appendLog(QString("could not read private config: %1").arg(exc.what()));
+    }
+  }
+
+  QDir game_dir(dir);
+  const QFileInfoList files = game_dir.entryInfoList(QDir::Files | QDir::NoSymLinks | QDir::Readable, QDir::Name);
+  const QFileInfoList symlinks = game_dir.entryInfoList(QDir::Files | QDir::System | QDir::Readable, QDir::Name);
+  for (const QFileInfoList& list : {files, symlinks}) {
+    for (const QFileInfo& file : list) {
+      if (is_video_file(file.fileName()) && !configured_paths.count(file.fileName())) {
+        add_item("auto", file.fileName());
+      }
+    }
+  }
+}
+
+QString HmStreamWindow::selectedVideoRole() const {
+  if (role_left_ && role_left_->isChecked()) {
+    return "left";
+  }
+  if (role_center_ && role_center_->isChecked()) {
+    return "center";
+  }
+  if (role_right_ && role_right_->isChecked()) {
+    return "right";
+  }
+  return "auto";
+}
+
+QString HmStreamWindow::gameRoot() const {
+  const QByteArray env = qgetenv("HM_GAME_DIR");
+  if (!env.isEmpty()) {
+    return QString::fromLocal8Bit(env);
+  }
+  return QDir::home().filePath("Videos");
+}
+
+QString HmStreamWindow::gameDirectory(const QString& game_id) const {
+  if (game_id.isEmpty()) {
+    return gameRoot();
+  }
+  return QDir(gameRoot()).filePath(game_id);
+}
+
+QString HmStreamWindow::relativeToGameDir(const QString& path) const {
+  const QDir dir(gameDirectory(game_id_edit_->text()));
+  return dir.relativeFilePath(path);
+}
+
+bool HmStreamWindow::ensureGameDirectory() {
+  if (!game_id_edit_) {
+    return false;
+  }
+  const QString game_id = sanitized_game_id(game_id_edit_->text());
+  game_id_edit_->setText(game_id);
+  if (game_id.isEmpty()) {
+    appendLog("game id is required");
+    return false;
+  }
+  QDir root(gameRoot());
+  if (!root.exists() && !root.mkpath(".")) {
+    appendLog(QString("failed to create game root %1").arg(root.path()));
+    return false;
+  }
+  if (!root.exists(game_id) && !root.mkdir(game_id)) {
+    appendLog(QString("failed to create game %1").arg(game_id));
+    return false;
+  }
+  if (game_path_label_) {
+    game_path_label_->setText(gameDirectory(game_id));
+  }
+  return true;
+}
+
+bool HmStreamWindow::importVideoPath(const QString& source_path, QString* imported_relative_path) {
+  if (!ensureGameDirectory()) {
+    return false;
+  }
+  const QFileInfo source(source_path);
+  if (!source.exists() || !source.isFile()) {
+    appendLog(QString("video file not found %1").arg(source_path));
+    return false;
+  }
+  if (!is_video_file(source.fileName())) {
+    appendLog(QString("unsupported video extension %1").arg(source.fileName()));
+    return false;
+  }
+
+  const QString game_dir = gameDirectory(game_id_edit_->text());
+  QString dest_name = source.fileName();
+  QString dest_path = QDir(game_dir).filePath(dest_name);
+  int suffix = 2;
+  while (QFileInfo::exists(dest_path) && QFileInfo(dest_path).canonicalFilePath() != source.canonicalFilePath()) {
+    dest_name = QString("%1-%2.%3").arg(source.completeBaseName()).arg(suffix++).arg(source.suffix());
+    dest_path = QDir(game_dir).filePath(dest_name);
+  }
+
+  if (!QFileInfo::exists(dest_path)) {
+    try {
+      fs::create_symlink(fs::path(source.absoluteFilePath().toStdString()), fs::path(dest_path.toStdString()));
+    } catch (const std::exception& exc) {
+      if (!QFile::copy(source.absoluteFilePath(), dest_path)) {
+        appendLog(QString("failed to import video link or copy: %1").arg(exc.what()));
+        return false;
+      }
+      appendLog(QString("video symlink unavailable; copied import to %1").arg(dest_name));
+    }
+  }
+
+  *imported_relative_path = relativeToGameDir(dest_path);
+  return true;
+}
+
+bool HmStreamWindow::savePrivateConfigForRole(const QString& role, const QString& relative_path) {
+  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  YAML::Node config;
+  if (fs::exists(config_path)) {
+    try {
+      config = YAML::LoadFile(config_path.string());
+    } catch (const std::exception& exc) {
+      appendLog(QString("could not update private config: %1").arg(exc.what()));
+      return false;
+    }
+  }
+
+  bool changed = false;
+  if (role == "left" || role == "center" || role == "right") {
+    YAML::Node list = config["game"]["videos"][role.toStdString()];
+    if (!list || !list.IsSequence()) {
+      config["game"]["videos"][role.toStdString()] = YAML::Node(YAML::NodeType::Sequence);
+      list = config["game"]["videos"][role.toStdString()];
+      changed = true;
+    }
+    bool exists = false;
+    for (const auto& item : list) {
+      if (QString::fromStdString(item.as<std::string>()) == relative_path) {
+        exists = true;
+        break;
+      }
+    }
+    if (!exists) {
+      list.push_back(relative_path.toStdString());
+      changed = true;
+    }
+  }
+
+  if (role == "auto") {
+    // Auto intentionally relies on the existing video discovery/orientation path.
+    appendLog("auto video set will be discovered from the game directory");
+  }
+
+  if (!changed) {
+    return true;
+  }
+
+  std::ofstream out(config_path);
+  if (!out) {
+    appendLog(QString("failed to write private config %1").arg(QString::fromStdString(config_path.string())));
+    return false;
+  }
+  if (config.IsDefined() && !config.IsNull()) {
+    out << config << "\n";
+  }
+  return true;
+}
+
+bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QString& relative_path) {
+  if (role != "left" && role != "center" && role != "right") {
+    return true;
+  }
+
+  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  if (!fs::exists(config_path)) {
+    return true;
+  }
+
+  YAML::Node config;
+  try {
+    config = YAML::LoadFile(config_path.string());
+  } catch (const std::exception& exc) {
+    appendLog(QString("could not update private config: %1").arg(exc.what()));
+    return false;
+  }
+
+  YAML::Node list = config["game"]["videos"][role.toStdString()];
+  if (!list || !list.IsSequence()) {
+    return true;
+  }
+
+  YAML::Node replacement(YAML::NodeType::Sequence);
+  bool changed = false;
+  for (const auto& item : list) {
+    const QString value = QString::fromStdString(item.as<std::string>());
+    if (value == relative_path) {
+      changed = true;
+    } else {
+      replacement.push_back(value.toStdString());
+    }
+  }
+  if (!changed) {
+    return true;
+  }
+
+  config["game"]["videos"][role.toStdString()] = replacement;
+  std::ofstream out(config_path);
+  if (!out) {
+    appendLog(QString("failed to write private config %1").arg(QString::fromStdString(config_path.string())));
+    return false;
+  }
+  out << config << "\n";
+  return true;
 }
 
 void HmStreamWindow::toggleOutput(const QString& id, bool enabled) {

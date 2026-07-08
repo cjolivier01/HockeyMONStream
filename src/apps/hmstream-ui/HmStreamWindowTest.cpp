@@ -2,15 +2,24 @@
 
 #include <QtTest/qtest_widgets.h>
 #include <QtTest/qtestmouse.h>
+#include <QtCore/QFile>
+#include <QtCore/QTemporaryDir>
 #include <QtTest/QTest>
 #include <QtWidgets/QAbstractButton>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
+#include <QtWidgets/QLineEdit>
+#include <QtWidgets/QListWidget>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QRadioButton>
 #include <QtWidgets/QSlider>
 
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
+
+namespace fs = std::filesystem;
 
 namespace {
 
@@ -34,6 +43,96 @@ T* require_child(HmStreamWindow* window, const char* name) {
 void activate(QAbstractButton* button) {
   button->click();
   QApplication::processEvents();
+}
+
+bool select_list_item(QListWidget* list, const QString& text) {
+  for (int i = 0; i < list->count(); ++i) {
+    if (list->item(i)->text().contains(text)) {
+      list->setCurrentRow(i);
+      return true;
+    }
+  }
+  std::cerr << "Missing list item containing: " << text.toStdString() << '\n';
+  return false;
+}
+
+bool write_fake_video(const QString& path) {
+  QFile file(path);
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    std::cerr << "Failed to create fake video: " << path.toStdString() << '\n';
+    return false;
+  }
+  file.write("hmstream-ui-test-video");
+  return true;
+}
+
+bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
+  auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
+  auto* create = require_child<QPushButton>(window, "createGameButton");
+  auto* video_path = require_child<QLineEdit>(window, "videoPathEdit");
+  auto* add_video = require_child<QPushButton>(window, "addVideoButton");
+  auto* remove_video = require_child<QPushButton>(window, "removeVideoButton");
+  auto* center = require_child<QRadioButton>(window, "videoRole_center");
+  auto* right = require_child<QRadioButton>(window, "videoRole_right");
+  auto* list = require_child<QListWidget>(window, "videoSetList");
+  if (!game_id || !create || !video_path || !add_video || !remove_video || !center || !right || !list) {
+    return false;
+  }
+
+  const QString auto_video = source_dir + "/GX010001.MP4";
+  const QString center_video = source_dir + "/GX010003.MP4";
+  const QString right_video = source_dir + "/GX010002.MP4";
+  if (!write_fake_video(auto_video) || !write_fake_video(center_video) || !write_fake_video(right_video)) {
+    return false;
+  }
+
+  game_id->setText("ui-test-game");
+  activate(create);
+  if (!expect(window->gameIdText() == "ui-test-game", "Game ID field should define the selected game")) {
+    return false;
+  }
+
+  video_path->setText(auto_video);
+  activate(add_video);
+  if (!expect(window->videoSetCount() >= 1, "Adding an auto video should populate the video set list")) {
+    return false;
+  }
+  if (!expect(
+          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "GX010001.MP4"),
+          "Auto video should be imported into the game directory for existing discovery")) {
+    return false;
+  }
+
+  activate(center);
+  video_path->setText(center_video);
+  activate(add_video);
+  if (!expect(select_list_item(list, "Center  GX010003.MP4"), "Explicit Center assignment should remain visible")) {
+    return false;
+  }
+
+  activate(right);
+  video_path->setText(right_video);
+  activate(add_video);
+  const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  std::ifstream input(config);
+  const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+  if (!expect(
+          text.find("center") != std::string::npos && text.find("GX010003.MP4") != std::string::npos &&
+              text.find("right") != std::string::npos && text.find("GX010002.MP4") != std::string::npos,
+          "Explicit Center and Right assignments should be saved in private config")) {
+    return false;
+  }
+
+  if (!select_list_item(list, "Right  GX010002.MP4")) {
+    return false;
+  }
+  activate(remove_video);
+  std::ifstream updated_input(config);
+  const std::string updated_text(
+      (std::istreambuf_iterator<char>(updated_input)), std::istreambuf_iterator<char>());
+  return expect(
+      updated_text.find("GX010002.MP4") == std::string::npos,
+      "Removing an explicit role should update private config");
 }
 
 bool test_pipeline_buttons(HmStreamWindow* window) {
@@ -116,11 +215,19 @@ bool test_camera_controls(HmStreamWindow* window) {
 } // namespace
 
 int main(int argc, char** argv) {
+  QTemporaryDir game_root;
+  QTemporaryDir source_root;
+  if (!game_root.isValid() || !source_root.isValid()) {
+    return 1;
+  }
+  qputenv("HM_GAME_DIR", game_root.path().toLocal8Bit());
+
   QApplication app(argc, argv);
   HmStreamWindow window;
   window.show();
 
-  if (!test_pipeline_buttons(&window) || !test_output_controls(&window) || !test_camera_controls(&window)) {
+  if (!test_game_setup(&window, source_root.path()) || !test_pipeline_buttons(&window) ||
+      !test_output_controls(&window) || !test_camera_controls(&window)) {
     return 1;
   }
   return 0;
