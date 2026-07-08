@@ -176,6 +176,8 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   stale_offsets["game"]["stitching"]["frame_offsets"]["right"] = "34";
   stale_offsets["stitching"]["frame_offsets"]["left"] = "56";
   stale_offsets["stitching"]["frame_offsets"]["right"] = "78";
+  stale_offsets["game"]["videos"]["left"] = YAML::Node(YAML::NodeType::Sequence);
+  stale_offsets["game"]["videos"]["left"].push_back("stale-generated-left.mp4");
   stale_offsets["game"]["videos"]["right"] = YAML::Node(YAML::NodeType::Sequence);
   stale_offsets["game"]["videos"]["right"].push_back("stale-generated-right.mp4");
   {
@@ -197,6 +199,7 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
               !yaml["game"]["videos"]["center"] && text.find("right") != std::string::npos &&
               text.find("GX010002.MP4") != std::string::npos &&
               text.find("GX020002.MP4") != std::string::npos &&
+              !yaml["game"]["videos"]["left"] &&
               yaml["game"]["videos"]["right"].size() == 2 &&
               yaml["game"]["videos"]["right"][0].as<std::string>() == "GX010002.MP4" &&
               yaml["game"]["videos"]["right"][1].as<std::string>() == "GX020002.MP4" &&

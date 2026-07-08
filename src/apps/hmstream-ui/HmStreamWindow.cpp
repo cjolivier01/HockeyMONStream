@@ -954,6 +954,11 @@ bool HmStreamWindow::savePrivateConfigForRole(const QString& role, const QString
       list.push_back(relative_path.toStdString());
     }
     config["game"]["videos"][role.toStdString()] = list;
+    const QString opposite_role = role == "left" ? "right" : "left";
+    YAML::Node opposite_explicit = config["hmstream_ui"]["video_roles"][opposite_role.toStdString()];
+    if (!opposite_explicit || !opposite_explicit.IsSequence() || opposite_explicit.size() == 0) {
+      config["game"]["videos"].remove(opposite_role.toStdString());
+    }
     changed = true;
   }
 
