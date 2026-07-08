@@ -939,23 +939,10 @@ bool HmStreamWindow::savePrivateConfigForRole(const QString& role, const QString
   }
 
   if (role == "left" || role == "right") {
-    YAML::Node list = config["game"]["videos"][role.toStdString()];
-    if (!list || !list.IsSequence()) {
-      config["game"]["videos"][role.toStdString()] = YAML::Node(YAML::NodeType::Sequence);
-      list = config["game"]["videos"][role.toStdString()];
-      changed = true;
-    }
-    bool exists = false;
-    for (const auto& item : list) {
-      if (QString::fromStdString(item.as<std::string>()) == relative_path) {
-        exists = true;
-        break;
-      }
-    }
-    if (!exists) {
-      list.push_back(relative_path.toStdString());
-      changed = true;
-    }
+    YAML::Node list(YAML::NodeType::Sequence);
+    list.push_back(relative_path.toStdString());
+    config["game"]["videos"][role.toStdString()] = list;
+    changed = true;
   }
 
   if (role == "auto") {

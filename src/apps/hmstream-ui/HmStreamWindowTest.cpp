@@ -172,6 +172,8 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   YAML::Node stale_offsets = YAML::LoadFile(config.string());
   stale_offsets["game"]["stitching"]["frame_offsets"]["left"] = "12";
   stale_offsets["game"]["stitching"]["frame_offsets"]["right"] = "34";
+  stale_offsets["game"]["videos"]["right"] = YAML::Node(YAML::NodeType::Sequence);
+  stale_offsets["game"]["videos"]["right"].push_back("stale-generated-right.mp4");
   {
     std::ofstream out(config);
     out << stale_offsets << "\n";
@@ -187,8 +189,11 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
           yaml["hmstream_ui"]["video_roles"]["center"] &&
               yaml["hmstream_ui"]["video_roles"]["center"][0].as<std::string>() == "GX010003.MP4" &&
               !yaml["game"]["videos"]["center"] && text.find("right") != std::string::npos &&
-              text.find("GX010002.MP4") != std::string::npos && !yaml["game"]["stitching"]["frame_offsets"],
-          "Explicit Center should be UI metadata while Right remains pipeline config and stale offsets are cleared")) {
+              text.find("GX010002.MP4") != std::string::npos &&
+              yaml["game"]["videos"]["right"].size() == 1 &&
+              yaml["game"]["videos"]["right"][0].as<std::string>() == "GX010002.MP4" &&
+              !yaml["game"]["stitching"]["frame_offsets"],
+          "Explicit roles should replace stale pipeline config and clear stale offsets")) {
     return false;
   }
 
