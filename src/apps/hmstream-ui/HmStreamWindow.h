@@ -12,6 +12,8 @@
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QVBoxLayout>
 
+#include <yaml-cpp/yaml.h>
+
 #include <map>
 #include <string>
 
@@ -57,6 +59,7 @@ class HmStreamWindow : public QMainWindow {
   bool importVideoPath(const QString& source_path, QString* imported_relative_path);
   bool saveCopiedImport(const QString& relative_path);
   bool isCopiedImport(const QString& relative_path);
+  bool syncRuntimeExplicitVideoConfig(YAML::Node& config);
   bool savePrivateConfigForRole(const QString& role, const QString& relative_path);
   bool removePrivateConfigForRole(const QString& role, const QString& relative_path);
   bool removeImportedVideoPath(const QString& relative_path, bool allow_regular_delete = false);
