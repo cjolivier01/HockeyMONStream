@@ -21,7 +21,7 @@ endif
 all: print_targets
 
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
-	pipeline-app run-pipeline-app video-player run-video-player deb
+	hmstream-cli run-hmstream-cli hmstream-ui run-hmstream-ui pipeline-app run-pipeline-app video-player run-video-player deb wsl-deb
 
 perf:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) //...
@@ -59,6 +59,23 @@ test:
 pipeline-app:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) //src/apps/pipeline-app:pipeline-app
 
+hmstream-cli:
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) //src/apps/pipeline-app:hmstream-cli
+
+hmstream-ui:
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) //src/apps/hmstream-ui:hmstream-ui
+
+run-hmstream-cli: hmstream-cli
+	bazel-bin/src/apps/pipeline-app/hmstream-cli \
+		-c configs/ds_hockey_configure_stitching.yaml \
+		-c configs/ds_hockey_app_config.yaml \
+		--enable-sources=URI-MULTIPLE \
+		--enable-sinks=RENDER \
+		--options=pipeline.hmaudio.enable=1
+
+run-hmstream-ui: hmstream-ui
+	bazel-bin/src/apps/hmstream-ui/hmstream-ui
+
 run-pipeline-app: pipeline-app
 	bazel-bin/src/apps/pipeline-app/pipeline-app \
 		-c configs/ds_hockey_configure_stitching.yaml \
@@ -73,8 +90,10 @@ video-player:
 run-video-player: video-player
 	bazel-bin/src/apps/video-player/video-player --help
 
-deb: pipeline-app
+deb: hmstream-cli hmstream-ui
 	scripts/make_deb.sh
+
+wsl-deb: deb
 
 clean:
 	$(BAZEL) clean
@@ -97,11 +116,16 @@ print_targets:
 		'' \
 		'Apps' \
 		'----' \
+		'hmstream-cli   Build //src/apps/pipeline-app:hmstream-cli.' \
+		'run-hmstream-cli  Run hmstream-cli with the canonical hockey config (RENDER sink).' \
+		'hmstream-ui    Build //src/apps/hmstream-ui:hmstream-ui.' \
+		'run-hmstream-ui   Run the hmstream-ui desktop control surface.' \
 		'pipeline-app   Build //src/apps/pipeline-app:pipeline-app.' \
-		'run-pipeline-app  Run pipeline-app with the canonical hockey config (RENDER sink).' \
+		'run-pipeline-app  Run legacy pipeline-app with the canonical hockey config (RENDER sink).' \
 		'video-player   Build //src/apps/video-player:video-player.' \
 		'run-video-player  Run video-player --help (smoke check).' \
-		'deb            Build pipeline-app then package everything into dist/<pkg>.deb.' \
+		'deb            Build hmstream-cli and hmstream-ui, then package everything into dist/<pkg>.deb (Linux/WSL installable).' \
+		'wsl-deb        Alias for deb; Windows installer is a later WSL wrapper, not a .deb.' \
 		'' \
 		'Tests' \
 		'-----' \

@@ -183,8 +183,8 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
   }
 
   if (m_NetworkMode == "FP16") {
-    assert(builder->platformHasFastFp16());
 #if NV_TENSORRT_MAJOR < 11
+    assert(builder->platformHasFastFp16());
     config->setFlag(nvinfer1::BuilderFlag::kFP16);
 #else
     std::cerr
@@ -193,8 +193,8 @@ Yolo::createEngine(nvinfer1::IBuilder* builder)
         << std::endl;
 #endif
   } else if (m_NetworkMode == "INT8") {
-    assert(builder->platformHasFastInt8());
 #if NV_TENSORRT_MAJOR < 11
+    assert(builder->platformHasFastInt8());
     config->setFlag(nvinfer1::BuilderFlag::kINT8);
 #else
     std::cerr
