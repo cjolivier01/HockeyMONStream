@@ -1,0 +1,785 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pipeline Runtime Control Mockup</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101316;
+      --panel: #181d22;
+      --panel-2: #20262c;
+      --line: #343d45;
+      --line-soft: #263039;
+      --text: #edf2f6;
+      --muted: #9aa8b5;
+      --green: #2fc875;
+      --yellow: #e7b847;
+      --red: #e35f5f;
+      --blue: #59a7ff;
+      --cyan: #42c7d9;
+      --orange: #e18c52;
+      --control: #252c33;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font: 13px/1.35 Inter, "Segoe UI", Roboto, Arial, sans-serif;
+      letter-spacing: 0;
+    }
+
+    .app {
+      display: grid;
+      grid-template-rows: 48px 1fr 92px;
+      height: 900px;
+      width: 1440px;
+      overflow: hidden;
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: 260px 1fr auto;
+      align-items: center;
+      gap: 18px;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--line);
+      background: #15191d;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 650;
+      font-size: 15px;
+    }
+
+    .mark {
+      width: 24px;
+      height: 24px;
+      display: grid;
+      place-items: center;
+      border-radius: 5px;
+      background: var(--green);
+      color: #04110a;
+      font-weight: 800;
+    }
+
+    .runline {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      color: var(--muted);
+    }
+
+    .runline strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      height: 24px;
+      padding: 0 9px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .pill.ok {
+      color: #c7f8dc;
+      border-color: rgba(47, 200, 117, 0.48);
+      background: rgba(47, 200, 117, 0.12);
+    }
+
+    .pill.warn {
+      color: #ffe7aa;
+      border-color: rgba(231, 184, 71, 0.48);
+      background: rgba(231, 184, 71, 0.12);
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    button {
+      height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: var(--control);
+      color: var(--text);
+      padding: 0 10px;
+      font: inherit;
+      font-weight: 600;
+    }
+
+    button.primary {
+      border-color: rgba(47, 200, 117, 0.58);
+      background: #1f7f4d;
+    }
+
+    button.danger {
+      border-color: rgba(227, 95, 95, 0.55);
+      background: #733536;
+    }
+
+    .main {
+      display: grid;
+      grid-template-columns: 236px 1fr 358px;
+      min-height: 0;
+    }
+
+    .sidebar,
+    .inspector {
+      min-height: 0;
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+      overflow: hidden;
+    }
+
+    .inspector {
+      border-right: 0;
+      border-left: 1px solid var(--line);
+    }
+
+    .section {
+      padding: 14px;
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    h2 {
+      margin: 0 0 10px;
+      font-size: 11px;
+      line-height: 1;
+      color: var(--muted);
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+
+    .source-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .source {
+      display: grid;
+      grid-template-columns: 9px 1fr auto;
+      align-items: center;
+      gap: 8px;
+      height: 36px;
+      padding: 0 9px;
+      border: 1px solid var(--line-soft);
+      border-radius: 6px;
+      background: var(--panel-2);
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+    }
+
+    .dot.yellow {
+      background: var(--yellow);
+    }
+
+    .source span {
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .meter {
+      height: 6px;
+      border-radius: 999px;
+      background: #101417;
+      overflow: hidden;
+      border: 1px solid #2b333b;
+    }
+
+    .meter > i {
+      display: block;
+      height: 100%;
+      background: var(--green);
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 7px 12px;
+      color: var(--muted);
+    }
+
+    .kv b {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .stage-list {
+      display: grid;
+      gap: 7px;
+    }
+
+    .stage {
+      display: grid;
+      grid-template-columns: 72px 1fr;
+      gap: 8px;
+      color: var(--muted);
+    }
+
+    .stage b {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-rows: 1fr 160px;
+      min-width: 0;
+      min-height: 0;
+      background: #0d0f11;
+    }
+
+    .preview-shell {
+      display: grid;
+      grid-template-rows: 36px 1fr;
+      min-height: 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .preview-tabs {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 12px;
+      background: #14181c;
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    .tab {
+      height: 25px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 10px;
+      border-radius: 5px;
+      color: var(--muted);
+    }
+
+    .tab.active {
+      color: var(--text);
+      background: var(--control);
+      border: 1px solid var(--line);
+    }
+
+    .video {
+      position: relative;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      background:
+        linear-gradient(0deg, rgba(0, 0, 0, 0.32), rgba(0, 0, 0, 0.04)),
+        linear-gradient(120deg, #1c242a, #26343a 45%, #1b2227);
+    }
+
+    .rink {
+      width: min(96%, 900px);
+      aspect-ratio: 16 / 9;
+      position: relative;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background:
+        linear-gradient(90deg, transparent 49.85%, rgba(230, 95, 95, 0.86) 49.85%, rgba(230, 95, 95, 0.86) 50.15%, transparent 50.15%),
+        radial-gradient(ellipse at center, transparent 0 12%, rgba(89, 167, 255, 0.65) 12.2% 12.8%, transparent 13%),
+        linear-gradient(#dfe8ef, #d7e1e8);
+      box-shadow: 0 18px 46px rgba(0, 0, 0, 0.36);
+    }
+
+    .rink::before,
+    .rink::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 1px;
+      background: rgba(89, 167, 255, 0.75);
+    }
+
+    .rink::before {
+      left: 26%;
+    }
+
+    .rink::after {
+      right: 26%;
+    }
+
+    .camera-window {
+      position: absolute;
+      border: 2px solid rgba(66, 199, 217, 0.95);
+      background: rgba(66, 199, 217, 0.08);
+    }
+
+    .camera-window.a {
+      left: 7%;
+      top: 14%;
+      width: 44%;
+      height: 46%;
+    }
+
+    .camera-window.b {
+      right: 9%;
+      bottom: 16%;
+      width: 39%;
+      height: 43%;
+      border-color: rgba(225, 140, 82, 0.95);
+      background: rgba(225, 140, 82, 0.08);
+    }
+
+    .overlay-label {
+      position: absolute;
+      left: 12px;
+      top: 10px;
+      height: 25px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 8px;
+      border-radius: 4px;
+      background: rgba(16, 19, 22, 0.78);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      color: #f4f7fa;
+      font-weight: 650;
+    }
+
+    .stats-strip {
+      position: absolute;
+      left: 14px;
+      right: 14px;
+      bottom: 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      height: 34px;
+      padding: 0 12px;
+      border-radius: 5px;
+      background: rgba(16, 19, 22, 0.76);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      color: #dce5ec;
+    }
+
+    .timeline {
+      padding: 12px 14px;
+      background: var(--panel);
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 12px;
+    }
+
+    .scrub {
+      height: 32px;
+      display: grid;
+      grid-template-columns: 68px 1fr 70px;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .track {
+      height: 8px;
+      border-radius: 999px;
+      background: #101417;
+      border: 1px solid #2c363f;
+      overflow: hidden;
+    }
+
+    .track i {
+      display: block;
+      width: 62%;
+      height: 100%;
+      background: var(--blue);
+    }
+
+    .events {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+    }
+
+    .event {
+      min-width: 0;
+      padding: 9px;
+      border: 1px solid var(--line-soft);
+      border-radius: 6px;
+      background: var(--panel-2);
+    }
+
+    .event b {
+      display: block;
+      margin-bottom: 3px;
+      font-size: 12px;
+    }
+
+    .event span {
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .controls {
+      height: 100%;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+    }
+
+    .output-list {
+      display: grid;
+      gap: 9px;
+    }
+
+    .output {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 6px 10px;
+      padding: 10px;
+      border: 1px solid var(--line-soft);
+      border-radius: 6px;
+      background: var(--panel-2);
+    }
+
+    .output b {
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .output small {
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .switch {
+      width: 38px;
+      height: 20px;
+      border-radius: 999px;
+      border: 1px solid #416052;
+      background: rgba(47, 200, 117, 0.32);
+      padding: 2px;
+    }
+
+    .switch i {
+      display: block;
+      margin-left: 16px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #dff8e9;
+    }
+
+    .switch.off {
+      background: #252b31;
+      border-color: var(--line);
+    }
+
+    .switch.off i {
+      margin-left: 0;
+      background: #87939d;
+    }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      background: var(--line);
+    }
+
+    .segmented span {
+      height: 28px;
+      display: grid;
+      place-items: center;
+      background: var(--control);
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .segmented span.active {
+      color: var(--text);
+      background: #29445f;
+    }
+
+    .property-list {
+      display: grid;
+      gap: 11px;
+      padding-right: 4px;
+    }
+
+    .property {
+      display: grid;
+      gap: 6px;
+    }
+
+    .property label {
+      display: flex;
+      justify-content: space-between;
+      color: var(--muted);
+    }
+
+    .property label b {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--green);
+    }
+
+    .select,
+    .input {
+      height: 29px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: var(--control);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 9px;
+    }
+
+    .bottom {
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      border-top: 1px solid var(--line);
+      background: #14181c;
+      min-height: 0;
+    }
+
+    .log {
+      padding: 10px 14px;
+      font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+      color: #b9c4ce;
+      overflow: hidden;
+    }
+
+    .log div {
+      white-space: nowrap;
+      height: 18px;
+    }
+
+    .queue {
+      border-left: 1px solid var(--line);
+      padding: 10px 14px;
+      display: grid;
+      gap: 6px;
+      align-content: start;
+    }
+
+    .queue-row {
+      display: grid;
+      grid-template-columns: 86px 1fr auto;
+      gap: 8px;
+      color: var(--muted);
+    }
+
+    .queue-row b {
+      color: var(--text);
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand"><div class="mark">H</div>Pipeline Runtime Control</div>
+      <div class="runline">
+        <span class="pill ok">PLAYING</span>
+        <span><strong>game_2026_07_08</strong></span>
+        <span>sources URI-MULTIPLE</span>
+        <span>sinks RENDER, RTMP</span>
+        <span class="pill warn">camera 3 exposure pending</span>
+      </div>
+      <div class="toolbar">
+        <button>Restart Stage</button>
+        <button>Save Preset</button>
+        <button class="danger">Stop</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <aside class="sidebar">
+        <section class="section">
+          <h2>Inputs</h2>
+          <div class="source-list">
+            <div class="source"><i class="dot"></i><span>cam1 GoPro 4K</span><b>59.9</b></div>
+            <div class="source"><i class="dot"></i><span>cam2 GoPro 4K</span><b>59.9</b></div>
+            <div class="source"><i class="dot yellow"></i><span>cam3 Insta360</span><b>29.9</b></div>
+            <div class="source"><i class="dot"></i><span>audio rink</span><b>48k</b></div>
+          </div>
+        </section>
+        <section class="section">
+          <h2>Pipeline</h2>
+          <div class="stage-list">
+            <div class="stage"><b>decode</b><span>7.6 ms</span></div>
+            <div class="stage"><b>stitch</b><span>canvas 6048 x 3024</span></div>
+            <div class="stage"><b>infer</b><span>tracker active</span></div>
+            <div class="stage"><b>overlay</b><span>scoreboard on</span></div>
+            <div class="stage"><b>encode</b><span>12 Mbps</span></div>
+          </div>
+        </section>
+        <section class="section">
+          <h2>Health</h2>
+          <div class="kv">
+            <span>GPU</span><b>72%</b>
+            <span>VRAM</span><b>9.4 GB</b>
+            <span>Dropped</span><b>3</b>
+            <span>Latency</span><b>184 ms</b>
+          </div>
+          <div style="height: 12px"></div>
+          <div class="meter"><i style="width:72%"></i></div>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <div class="preview-shell">
+          <div class="preview-tabs">
+            <span class="tab active">Program</span>
+            <span class="tab">Stitched</span>
+            <span class="tab">Camera 1</span>
+            <span class="tab">Camera 2</span>
+            <span class="tab">Camera 3</span>
+          </div>
+          <div class="video">
+            <div class="rink">
+              <div class="camera-window a"></div>
+              <div class="camera-window b"></div>
+              <div class="overlay-label">Embedded --show View</div>
+            </div>
+            <div class="stats-strip">
+              <span>00:42:18.633</span>
+              <span>scoreboard visible - tracking 14 players - audio synced</span>
+              <span>1920 x 1080 59.94</span>
+            </div>
+          </div>
+        </div>
+        <div class="timeline">
+          <div class="scrub">
+            <button class="primary">Live</button>
+            <div class="track"><i></i></div>
+            <span>+184 ms</span>
+          </div>
+          <div class="events">
+            <div class="event"><b>RTMP push</b><span>youtube primary active</span></div>
+            <div class="event"><b>RTSP server</b><span>/rink mounted on 8554</span></div>
+            <div class="event"><b>Recording</b><span>period_02.mkv writing</span></div>
+            <div class="event"><b>WebRTC</b><span>2 preview sessions</span></div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="inspector">
+        <div class="controls">
+          <section class="section">
+            <h2>Output Routing</h2>
+            <div class="output-list">
+              <div class="output">
+                <b>YouTube Primary</b><div class="switch"><i></i></div>
+                <small>rtmp://a.rtmp.youtube.com/live2/...</small><small>8.5 Mbps</small>
+              </div>
+              <div class="output">
+                <b>RTSP Local</b><div class="switch"><i></i></div>
+                <small>rtsp://0.0.0.0:8554/rink</small><small>3 sessions</small>
+              </div>
+              <div class="output">
+                <b>Archive File</b><div class="switch"><i></i></div>
+                <small>/games/game_2026_07_08/output.mkv</small><small>12.8 GB</small>
+              </div>
+              <div class="output">
+                <b>Spare RTMP</b><div class="switch off"><i></i></div>
+                <small>configured, stopped</small><small>0 Mbps</small>
+              </div>
+            </div>
+          </section>
+
+          <section class="section">
+            <h2>Camera Set</h2>
+            <div class="segmented">
+              <span class="active">cam1</span>
+              <span>cam2</span>
+              <span>cam3</span>
+            </div>
+          </section>
+
+          <section class="section" style="overflow: hidden">
+            <h2>Camera Controls</h2>
+            <div class="segmented" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 12px">
+              <span class="active">Exposure</span>
+              <span>Color</span>
+              <span>Stitch</span>
+              <span>Plugin</span>
+            </div>
+            <div class="property-list">
+              <div class="property">
+                <label><span>Exposure</span><b>-1.3 EV</b></label>
+                <input type="range" min="-4" max="4" value="-1">
+              </div>
+              <div class="property">
+                <label><span>White balance</span><b>4300 K</b></label>
+                <input type="range" min="2500" max="9000" value="4300">
+              </div>
+              <div class="property">
+                <label><span>ISO limit</span><b>1600</b></label>
+                <input type="range" min="100" max="6400" value="1600">
+              </div>
+              <div class="property">
+                <label><span>Shutter</span><b>1/120</b></label>
+                <div class="select"><span>1/120</span><span>v</span></div>
+              </div>
+              <div class="property">
+                <label><span>Lens mode</span><b>Wide</b></label>
+                <div class="select"><span>Wide</span><span>v</span></div>
+              </div>
+              <div class="property">
+                <label><span>Stitch yaw</span><b>+2.4 deg</b></label>
+                <input type="range" min="-15" max="15" value="2">
+              </div>
+              <div class="property">
+                <label><span>Plugin property</span><b>live</b></label>
+                <div class="input">nvarguscamerasrc.exposuretimerange</div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </aside>
+    </main>
+
+    <footer class="bottom">
+      <div class="log">
+        <div>13:24:09.733 runtime-output youtube-primary changed state CONNECTING -> STREAMING</div>
+        <div>13:24:10.114 camera cam1 set exposure-compensation=-1.3 apply=live</div>
+        <div>13:24:10.202 gst-property nvarguscamerasrc.whitebalance=4300 accepted while PLAYING</div>
+        <div>13:24:10.884 rtsp-server added mount /bench source=program bitrate=4500000</div>
+      </div>
+      <div class="queue">
+        <div class="queue-row"><b>Pending</b><span>cam3 exposure</span><span>restart</span></div>
+        <div class="queue-row"><b>Saved</b><span>rink-night preset</span><span>local</span></div>
+        <div class="queue-row"><b>Package</b><span>Debian install profile</span><span>ready</span></div>
+      </div>
+    </footer>
+  </div>
+</body>
+</html>

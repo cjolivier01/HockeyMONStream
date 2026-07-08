@@ -1,0 +1,39 @@
+INCLUDE_PREFIX = "hstream/src/libs/pipeline_controller"
+
+cc_library(
+    name = "runtime_types",
+    hdrs = ["RuntimeTypes.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "gst_property_service",
+    srcs = ["GstPropertyService.cpp"],
+    hdrs = ["GstPropertyService.h"],
+    copts = [
+        "-x",
+        "c++",
+        "-std=c++17",
+    ],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":runtime_types",
+        "@com_google_absl//absl/status:status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@glib",
+        "@gstreamer",
+    ],
+)
+
+cc_test(
+    name = "gst_property_service_test",
+    srcs = ["GstPropertyServiceTest.cpp"],
+    deps = [
+        ":gst_property_service",
+        "@com_google_absl//absl/status:status",
+        "@gstreamer",
+    ],
+)

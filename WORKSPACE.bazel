@@ -227,6 +227,15 @@ conditional_local_repository(
 )
 
 conditional_local_repository(
+    name = "qt",
+    build_file = "@//buildfiles:third_party/qt6.BUILD",
+    paths = [
+        "/opt/jetson-sysroot/usr",
+        "/usr",
+    ],
+)
+
+conditional_local_repository(
     name = "libsoup",
     build_file = "@//buildfiles:third_party/libsoup.BUILD",
     paths = [

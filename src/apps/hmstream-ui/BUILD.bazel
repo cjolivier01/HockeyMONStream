@@ -1,0 +1,54 @@
+COMMON_COPTS = [
+    "-x",
+    "c++",
+    "-std=c++17",
+    "-fPIC",
+]
+
+config_setting(
+    name = "jetson_build",
+    values = {"define": "target_platform=jetson"},
+)
+
+QT_UI_COMPATIBILITY = select({
+    ":jetson_build": ["@platforms//:incompatible"],
+    "//conditions:default": [],
+})
+
+cc_library(
+    name = "hmstream_window",
+    srcs = ["HmStreamWindow.cpp"],
+    hdrs = ["HmStreamWindow.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@qt//:qt_widgets",
+    ],
+)
+
+cc_binary(
+    name = "hmstream-ui",
+    srcs = ["main.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":hmstream_window",
+        "@qt//:qt_widgets",
+    ],
+)
+
+cc_test(
+    name = "hmstream_ui_test",
+    srcs = ["HmStreamWindowTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {
+        "QT_QPA_PLATFORM": "offscreen",
+    },
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":hmstream_window",
+        "@qt//:qt_test",
+        "@qt//:qt_widgets",
+    ],
+)
