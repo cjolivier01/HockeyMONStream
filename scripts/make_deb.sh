@@ -87,7 +87,7 @@ fi
 validate_elf_arch() {
   local elf="$1"
   local description
-  description="$(file -b "${elf}")"
+  description="$(file -Lb "${elf}")"
   case "${PKG_ARCH}" in
     amd64)
       [[ "${description}" == *"x86-64"* ]] ;;
@@ -193,6 +193,7 @@ install_lib() {
   soname_base="$(basename "${src}")"
 
   if [[ ! -f "${dest_dir}/${real_base}" ]]; then
+    validate_elf_arch "${real}"
     cp "${real}" "${dest_dir}/${real_base}"
     patchelf_rpath "${dest_dir}/${real_base}"
   fi
@@ -241,6 +242,7 @@ echo "[make_deb] Staging GStreamer plugins..."
 for so in "${TOPDIR}/lib/gst-plugins/"lib*.so; do
   [[ -f "${so}" ]] || continue
   dest="${STAGING}${INSTALL_PREFIX}/lib/gst-plugins/$(basename "${so}")"
+  validate_elf_arch "${so}"
   cp "${so}" "${dest}"
   patchelf_rpath "${dest}"
 done
@@ -250,6 +252,7 @@ for plugin_dir in "${TOPDIR}/bazel-bin/src/gst-plugins"/*/; do
   for so in "${plugin_dir}"lib*.so; do
     [[ -f "${so}" ]] || continue
     dest="${STAGING}${INSTALL_PREFIX}/lib/gst-plugins/$(basename "${so}")"
+    validate_elf_arch "${so}"
     cp "${so}" "${dest}"
     patchelf_rpath "${dest}"
   done
@@ -259,6 +262,7 @@ done
 YOLO_SO="${TOPDIR}/bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"
 if [[ -f "${YOLO_SO}" ]]; then
   echo "[make_deb] Staging libnvdsinfer_custom_impl_Yolo.so..."
+  validate_elf_arch "${YOLO_SO}"
   cp "${YOLO_SO}" "${STAGING}${INSTALL_PREFIX}/lib/libnvdsinfer_custom_impl_Yolo.so"
   patchelf_rpath "${STAGING}${INSTALL_PREFIX}/lib/libnvdsinfer_custom_impl_Yolo.so"
 fi

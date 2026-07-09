@@ -143,7 +143,7 @@ QString existing_auto_cam_dir_for_source(const QDir& game_dir, const QFileInfo& 
   const QFileInfoList dirs = game_dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
   const QRegularExpression cam_pattern("^cam([0-9]+)$", QRegularExpression::CaseInsensitiveOption);
   for (const QFileInfo& dir : dirs) {
-    if (cam_pattern.match(dir.fileName()).hasMatch()) {
+    if (cam_pattern.match(dir.fileName()).hasMatch() && !dir.isSymLink()) {
       cam_dirs.push_back(dir);
     }
   }
@@ -233,6 +233,19 @@ QString role_label(const QString& role) {
 
 bool is_explicit_role(const QString& role) {
   return role == "left" || role == "center" || role == "right";
+}
+
+bool is_cam_relative_path(const QString& path) {
+  const QString clean = QDir::cleanPath(path);
+  if (clean.startsWith("../") || QFileInfo(clean).isAbsolute()) {
+    return false;
+  }
+  const int slash = clean.indexOf('/');
+  if (slash < 0) {
+    return false;
+  }
+  static const QRegularExpression cam_pattern("^cam[0-9]+$", QRegularExpression::CaseInsensitiveOption);
+  return cam_pattern.match(clean.left(slash)).hasMatch();
 }
 
 QString normalized_config_video_path(const QDir& game_dir, const QString& path) {
@@ -802,6 +815,11 @@ void HmStreamWindow::removeSelectedVideoSet() {
     video_set_list_->insertItem(row, item);
     return;
   }
+  if (role == "auto" && !removeClearedCopiedExplicitImports(original_config, had_config)) {
+    video_set_list_->insertItem(row, item);
+    refreshVideoSets();
+    return;
+  }
   if (!removeImportedVideoPath(relative_path, copied_import)) {
     if (had_config) {
       QFile file(config_file);
@@ -851,6 +869,34 @@ void HmStreamWindow::refreshVideoSets() {
   };
 
   QDir game_dir(dir);
+  const QFileInfoList dirs = game_dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+  std::vector<QFileInfo> cam_dirs;
+  const QRegularExpression cam_pattern("^cam([0-9]+)$", QRegularExpression::CaseInsensitiveOption);
+  for (const QFileInfo& dir_info : dirs) {
+    if (cam_pattern.match(dir_info.fileName()).hasMatch() && !dir_info.isSymLink()) {
+      cam_dirs.push_back(dir_info);
+    }
+  }
+  std::sort(cam_dirs.begin(), cam_dirs.end(), [](const QFileInfo& a, const QFileInfo& b) {
+    const QRegularExpression cam_pattern("^cam([0-9]+)$", QRegularExpression::CaseInsensitiveOption);
+    return cam_pattern.match(a.fileName()).captured(1).toInt() < cam_pattern.match(b.fileName()).captured(1).toInt();
+  });
+
+  bool listed_cam_video = false;
+  for (const QFileInfo& cam_dir : cam_dirs) {
+    const QFileInfoList files =
+        QDir(cam_dir.filePath()).entryInfoList(QDir::Files | QDir::System | QDir::Readable, QDir::Name);
+    for (const QFileInfo& file : files) {
+      if (is_auto_chapter_file(file.fileName())) {
+        listed_cam_video = true;
+        break;
+      }
+    }
+    if (listed_cam_video) {
+      break;
+    }
+  }
+
   const fs::path config_path = fs::path(dir.toStdString()) / "config.yaml";
   if (fs::exists(config_path)) {
     try {
@@ -872,7 +918,7 @@ void HmStreamWindow::refreshVideoSets() {
         if (role_videos && role_videos.IsSequence()) {
           for (const auto& item : role_videos) {
             const QString path = normalized_config_video_path(game_dir, QString::fromStdString(item.as<std::string>()));
-            if (!configured_paths.count(path)) {
+            if (!configured_paths.count(path) && (!listed_cam_video || is_cam_relative_path(path))) {
               add_item("auto", path);
             }
           }
@@ -883,27 +929,12 @@ void HmStreamWindow::refreshVideoSets() {
     }
   }
 
-  const QFileInfoList dirs = game_dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
-  std::vector<QFileInfo> cam_dirs;
-  const QRegularExpression cam_pattern("^cam([0-9]+)$", QRegularExpression::CaseInsensitiveOption);
-  for (const QFileInfo& dir_info : dirs) {
-    if (cam_pattern.match(dir_info.fileName()).hasMatch() && !dir_info.isSymLink()) {
-      cam_dirs.push_back(dir_info);
-    }
-  }
-  std::sort(cam_dirs.begin(), cam_dirs.end(), [](const QFileInfo& a, const QFileInfo& b) {
-    const QRegularExpression cam_pattern("^cam([0-9]+)$", QRegularExpression::CaseInsensitiveOption);
-    return cam_pattern.match(a.fileName()).captured(1).toInt() < cam_pattern.match(b.fileName()).captured(1).toInt();
-  });
-
-  bool listed_cam_video = false;
   for (const QFileInfo& cam_dir : cam_dirs) {
     const QFileInfoList files =
         QDir(cam_dir.filePath()).entryInfoList(QDir::Files | QDir::System | QDir::Readable, QDir::Name);
     for (const QFileInfo& file : files) {
       const QString relative_path = game_dir.relativeFilePath(file.filePath());
       if (is_auto_chapter_file(file.fileName())) {
-        listed_cam_video = true;
         if (!configured_paths.count(relative_path)) {
           add_item("auto", relative_path);
         }
@@ -1223,40 +1254,69 @@ bool HmStreamWindow::removeClearedCopiedExplicitImports(const QByteArray& origin
     }
   }
 
-  if (!cleanup_paths.empty()) {
+  auto restore_original_config = [&]() {
+    QFile file(config_file);
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+      file.write(original_config);
+    } else {
+      appendLog(QString("failed to restore private config after cleanup failure %1").arg(config_file));
+    }
+  };
+  auto remove_cleanup_metadata = [&](const std::set<QString>& removed_paths) {
     YAML::Node copied_imports = current_config["hmstream_ui"]["copied_imports"];
     YAML::Node copied_replacement(YAML::NodeType::Sequence);
     if (copied_imports && copied_imports.IsSequence()) {
       for (const auto& item : copied_imports) {
         const QString path = normalized_config_video_path(game_dir, QString::fromStdString(item.as<std::string>()));
-        if (!cleanup_paths.count(path)) {
+        if (!removed_paths.count(path)) {
           copied_replacement.push_back(item.as<std::string>());
         }
       }
     }
     current_config["hmstream_ui"]["copied_imports"] = copied_replacement;
+
+    YAML::Node sources = current_config["hmstream_ui"]["auto_import_sources"];
+    if (sources && sources.IsSequence()) {
+      YAML::Node source_replacement(YAML::NodeType::Sequence);
+      for (const auto& item : sources) {
+        if (item["path"]) {
+          const QString path = normalized_config_video_path(game_dir, QString::fromStdString(item["path"].as<std::string>()));
+          if (removed_paths.count(path)) {
+            continue;
+          }
+        }
+        source_replacement.push_back(item);
+      }
+      current_config["hmstream_ui"]["auto_import_sources"] = source_replacement;
+    }
+  };
+
+  std::set<QString> removed_paths;
+  for (const QString& path : cleanup_paths) {
+    if (!removeImportedVideoPath(path, true)) {
+      if (removed_paths.empty()) {
+        restore_original_config();
+      } else {
+        remove_cleanup_metadata(removed_paths);
+        std::ofstream out(config_file.toStdString());
+        if (out) {
+          out << current_config << "\n";
+        } else {
+          appendLog(QString("failed to update copied import metadata %1").arg(config_file));
+        }
+      }
+      return false;
+    }
+    removed_paths.insert(path);
+  }
+  if (!removed_paths.empty()) {
+    remove_cleanup_metadata(removed_paths);
     std::ofstream out(config_file.toStdString());
     if (!out) {
-      QFile file(config_file);
-      if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        file.write(original_config);
-      }
       appendLog(QString("failed to update copied import metadata %1").arg(config_file));
       return false;
     }
     out << current_config << "\n";
-  }
-
-  for (const QString& path : cleanup_paths) {
-    if (!removeImportedVideoPath(path, true)) {
-      QFile file(config_file);
-      if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        file.write(original_config);
-      } else {
-        appendLog(QString("failed to restore private config after cleanup failure %1").arg(config_file));
-      }
-      return false;
-    }
   }
   return true;
 }

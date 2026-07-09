@@ -199,6 +199,12 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
     std::ofstream out(config);
     out << stale_auto << "\n";
   }
+  activate(create);
+  if (!expect(
+          !list_contains(list, "stale-generated-left.mp4") && !list_contains(list, "stale-generated-right.mp4"),
+          "Stale root generated video config should be hidden when camN sets exist")) {
+    return false;
+  }
   const QString auto_video_2 = source_dir + "/GX020001.MP4";
   if (!write_fake_video(auto_video_2)) {
     return false;
@@ -464,6 +470,48 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   if (!expect(
           fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "cam1" / "GX030001.MP4"),
           "Copied Auto import metadata should allow later chapters to reuse the same camN directory")) {
+    return false;
+  }
+
+  game_id->setText("ui-symlink-auto-game");
+  activate(create);
+  fs::create_directory_symlink(duplicate_source_a, fs::path(window->gameDirectoryText().toStdString()) / "cam1");
+  activate(automatic);
+  video_path->setText(duplicate_a);
+  activate(add_video);
+  if (!expect(
+          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "cam2" / "GX020001.MP4"),
+          "Symlinked camN directories should not block Auto import reuse")) {
+    return false;
+  }
+
+  game_id->setText("ui-auto-remove-cleanup-game");
+  activate(create);
+  fs::path cleanup_game = fs::path(window->gameDirectoryText().toStdString());
+  fs::create_directories(cleanup_game / "cam1");
+  fs::create_directories(cleanup_game / ".hmstream-ui" / "left");
+  fs::create_symlink(auto_video.toStdString(), cleanup_game / "cam1" / "GX010001.MP4");
+  if (!write_fake_video(QString::fromStdString((cleanup_game / ".hmstream-ui" / "left" / "copied-left.mp4").string()))) {
+    return false;
+  }
+  YAML::Node cleanup_config;
+  cleanup_config["hmstream_ui"]["video_roles"]["left"].push_back(".hmstream-ui/left/copied-left.mp4");
+  cleanup_config["hmstream_ui"]["copied_imports"].push_back(".hmstream-ui/left/copied-left.mp4");
+  {
+    std::ofstream out(cleanup_game / "config.yaml");
+    out << cleanup_config << "\n";
+  }
+  activate(create);
+  if (!select_list_item(list, "Auto  cam1/GX010001.MP4")) {
+    return false;
+  }
+  activate(remove_video);
+  YAML::Node cleanup_after = YAML::LoadFile((cleanup_game / "config.yaml").string());
+  if (!expect(
+          !fs::exists(cleanup_game / ".hmstream-ui" / "left" / "copied-left.mp4") &&
+              !cleanup_after["hmstream_ui"]["video_roles"]["left"] &&
+              cleanup_after["hmstream_ui"]["copied_imports"].size() == 0,
+          "Removing Auto should clean copied explicit imports hidden by role reset")) {
     return false;
   }
 
