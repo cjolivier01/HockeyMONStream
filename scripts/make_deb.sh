@@ -277,15 +277,33 @@ cp -r "${TOPDIR}/configs/." "${STAGING}${INSTALL_PREFIX}/configs/"
 rm -rf "${STAGING}${INSTALL_PREFIX}/configs/systemd"
 
 # ---------- pretrained assets ----------
-if [[ -d "${TOPDIR}/pretrained" ]]; then
-  echo "[make_deb] Staging non-engine pretrained assets..."
-  while IFS= read -r -d '' asset; do
-    rel="${asset#${TOPDIR}/pretrained/}"
-    dest="${STAGING}${INSTALL_PREFIX}/pretrained/${rel}"
-    mkdir -p "$(dirname "${dest}")"
-    cp "${asset}" "${dest}"
-  done < <(find -L "${TOPDIR}/pretrained" -type f ! -name '*.engine' -print0)
-fi
+echo "[make_deb] Staging declared non-engine pretrained assets..."
+asset_manifest="$(mktemp)"
+python3 "${TOPDIR}/scripts/setup_pretrained_assets.py" --print-targets "${TOPDIR}/configs/ds_hockey_app_config.yaml" \
+  > "${asset_manifest}"
+pretrained_root="$(readlink -f "${TOPDIR}/pretrained")"
+while IFS= read -r asset; do
+  [[ -n "${asset}" ]] || continue
+  [[ "${asset}" != *.engine ]] || continue
+  if [[ ! -f "${asset}" ]]; then
+    echo "[make_deb] WARNING: declared pretrained asset missing, not staged: ${asset}" >&2
+    continue
+  fi
+  asset_real="$(readlink -f "${asset}")"
+  case "${asset_real}" in
+    "${pretrained_root}/"*)
+      rel="${asset_real#${pretrained_root}/}"
+      ;;
+    *)
+      echo "[make_deb] WARNING: declared pretrained asset outside repo pretrained dir, not staged: ${asset}" >&2
+      continue
+      ;;
+  esac
+  dest="${STAGING}${INSTALL_PREFIX}/pretrained/${rel}"
+  mkdir -p "$(dirname "${dest}")"
+  cp "${asset_real}" "${dest}"
+done < "${asset_manifest}"
+rm -f "${asset_manifest}"
 
 # ---------- scripts ----------
 echo "[make_deb] Staging scripts..."

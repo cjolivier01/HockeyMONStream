@@ -187,8 +187,15 @@ void stage_bazel_gst_plugins(const fs::path& root) {
 void configure_pipeline_runtime_environment(const char* argv0) {
   const fs::path root = pipeline_runtime_root(argv0);
   std::error_code ec;
-  const fs::path registry_dir = root / ".cache/gstreamer-1.0";
+  fs::path registry_dir = root / ".cache/gstreamer-1.0";
   fs::create_directories(registry_dir, ec);
+  if (ec) {
+    if (const char* home = std::getenv("HOME"); home && *home) {
+      registry_dir = fs::path(home) / ".cache/gstreamer-1.0";
+      ec.clear();
+      fs::create_directories(registry_dir, ec);
+    }
+  }
   if (!ec) {
     const std::string registry = (registry_dir / ("registry.hstream." + host_arch_name() + ".bin")).string();
     setenv("GST_REGISTRY", registry.c_str(), 1);
@@ -2120,6 +2127,17 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
 //------------------------------------------------------------------------------
 int main(int argc, char* argv[]) {
   configure_pipeline_runtime_environment(argc > 0 ? argv[0] : nullptr);
+  if (!std::getenv("HMSTREAM_RUNTIME_ENV_READY")) {
+    setenv("HMSTREAM_RUNTIME_ENV_READY", "1", 1);
+    if (argc > 0 && argv[0]) {
+      if (std::strchr(argv[0], '/')) {
+        execv(argv[0], argv);
+      } else {
+        execvp(argv[0], argv);
+      }
+      std::perror("hmstream-cli re-exec failed");
+    }
+  }
   PipelineApplication app;
   absl::Status status = app.run(argc, argv);
   disable_perf_measurement();

@@ -193,6 +193,9 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_di
 
 void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QString& working_dir) {
   QDir registry_dir(QDir(working_dir).filePath(".cache/gstreamer-1.0"));
+  if (!registry_dir.mkpath(".")) {
+    registry_dir = QDir(QDir::home().filePath(".cache/gstreamer-1.0"));
+  }
   if (registry_dir.mkpath(".")) {
     const QString arch =
         QSysInfo::currentCpuArchitecture().isEmpty() ? QString("unknown") : QSysInfo::currentCpuArchitecture();
@@ -253,11 +256,11 @@ QString asset_setup_python() {
   if (!venv.isEmpty()) {
     candidates.push_back(QDir(venv).filePath("bin/python3"));
   }
-  candidates.push_back("python3");
   const QString home = QDir::homePath();
   candidates.push_back(QDir(home).filePath("miniforge3/envs/ubuntu/bin/python3"));
   candidates.push_back(QDir(home).filePath("miniconda3/envs/ubuntu/bin/python3"));
   candidates.push_back(QDir(home).filePath(".conda/envs/ubuntu/bin/python3"));
+  candidates.push_back("python3");
 
   std::set<std::string> seen;
   for (const QString& candidate : candidates) {

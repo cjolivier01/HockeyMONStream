@@ -271,13 +271,17 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("configs", nargs="+", help="YAML config files to scan")
     parser.add_argument("--dry-run", action="store_true", help="print downloads without writing files")
+    parser.add_argument("--print-targets", action="store_true", help="print declared asset target paths and exit")
     parser.add_argument("--timeout", type=float, default=60.0, help="download timeout in seconds")
     args = parser.parse_args(argv)
 
     for config_path in _collect_config_files(args.configs):
         config = _load_yaml(config_path)
         for spec in _iter_asset_specs(config):
-            _process_asset(spec, config, config_path, args)
+            if args.print_targets:
+                print(_asset_target_path(spec, config, config_path))
+            else:
+                _process_asset(spec, config, config_path, args)
 
     return 0
 
