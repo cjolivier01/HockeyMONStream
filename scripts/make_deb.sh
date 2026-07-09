@@ -15,7 +15,7 @@ set -euo pipefail
 TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALL_PREFIX="/opt/hmstream"
 PKG_NAME="hmstream"
-PKG_ARCH="${PKG_ARCH:-$(dpkg --print-architecture 2>/dev/null || echo amd64)}"
+PKG_ARCH="${PKG_ARCH:-}"
 
 # ---------- arg parsing ----------
 DO_BUILD=0
@@ -42,6 +42,17 @@ PKG_VERSION="${PKG_VERSION#v}"
 PKG_VERSION="$(printf '%s' "${PKG_VERSION}" | sed -E 's/[^A-Za-z0-9.+:~-]+/./g; s/[.]+/./g; s/^[.]+//; s/[.]+$//')"
 if [[ ! "${PKG_VERSION}" =~ ^[0-9] ]]; then
   PKG_VERSION="0.0+git.${PKG_VERSION}"
+fi
+if ! command -v dpkg &>/dev/null; then
+  echo "[make_deb] dpkg not found; installing via apt..."
+  sudo apt-get install -y dpkg
+fi
+if [[ -z "${PKG_ARCH}" ]]; then
+  PKG_ARCH="$(dpkg --print-architecture)"
+fi
+if ! dpkg --validate-version "${PKG_VERSION}" >/dev/null 2>&1; then
+  echo "ERROR: invalid Debian package version: ${PKG_VERSION}" >&2
+  exit 1
 fi
 
 # ---------- optional build ----------
@@ -70,14 +81,6 @@ fi
 if ! command -v dpkg-deb &>/dev/null; then
   echo "[make_deb] dpkg-deb not found; installing via apt..."
   sudo apt-get install -y dpkg
-fi
-if ! command -v dpkg &>/dev/null; then
-  echo "[make_deb] dpkg not found; installing via apt..."
-  sudo apt-get install -y dpkg
-fi
-if ! dpkg --validate-version "${PKG_VERSION}" >/dev/null 2>&1; then
-  echo "ERROR: invalid Debian package version: ${PKG_VERSION}" >&2
-  exit 1
 fi
 
 # ---------- staging tree ----------

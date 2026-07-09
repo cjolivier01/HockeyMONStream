@@ -379,7 +379,10 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
 
   const QString arbitrary_left = source_dir + "/left-camera.mov";
   const QString arbitrary_right = source_dir + "/right-camera.mov";
-  if (!write_fake_video(arbitrary_left) || !write_fake_video(arbitrary_right)) {
+  const QString arbitrary_left_2 = source_dir + "/left-camera-alt.mov";
+  const QString arbitrary_right_2 = source_dir + "/right-camera-alt.mov";
+  if (!write_fake_video(arbitrary_left) || !write_fake_video(arbitrary_right) || !write_fake_video(arbitrary_left_2) ||
+      !write_fake_video(arbitrary_right_2)) {
     return false;
   }
   game_id->setText("ui-explicit-single-file-game");
@@ -398,6 +401,31 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
               arbitrary_config["game"]["videos"]["left"][0].as<std::string>() == ".hmstream-ui/left/left-camera.mov" &&
               arbitrary_config["game"]["videos"]["right"][0].as<std::string>() == ".hmstream-ui/right/right-camera.mov",
           "Single-file explicit Left/Right pairs with arbitrary filenames should run as chapter 1")) {
+    return false;
+  }
+  activate(left);
+  video_path->setText(arbitrary_left_2);
+  activate(add_video);
+  YAML::Node arbitrary_mismatched =
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+  if (!expect(
+          !arbitrary_mismatched["game"]["videos"]["left"] && !arbitrary_mismatched["game"]["videos"]["right"],
+          "Mismatched arbitrary explicit counts should clear runtime video config")) {
+    return false;
+  }
+  activate(right);
+  video_path->setText(arbitrary_right_2);
+  activate(add_video);
+  YAML::Node arbitrary_multi =
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+  if (!expect(
+          arbitrary_multi["game"]["videos"]["left"].size() == 2 &&
+              arbitrary_multi["game"]["videos"]["right"].size() == 2 &&
+              arbitrary_multi["game"]["videos"]["left"][1].as<std::string>() ==
+                  ".hmstream-ui/left/left-camera-alt.mov" &&
+              arbitrary_multi["game"]["videos"]["right"][1].as<std::string>() ==
+                  ".hmstream-ui/right/right-camera-alt.mov",
+          "Equal-length arbitrary explicit lists should run in insertion order")) {
     return false;
   }
 

@@ -5,16 +5,18 @@
 #include <unistd.h>
 #include <yaml-cpp/node/parse.h>
 
-#include <cmath>
 #include <opencv2/opencv.hpp>
 #include <opencv2/videoio.hpp>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <map>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -22,15 +24,15 @@
 #include <unordered_set>
 #include <vector>
 
+#include "StitcherOnePassConfig.h"
 #include "absl/status/status.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_split.h"
 #include "cupano/pano/controlMasks.h"
 #include "deepstream_app.h"
-#include "StitcherOnePassConfig.h"
 #include "hstream/src/apps/apps-common/deepstream_config.h"
-#include "hstream/src/apps/apps-common/deepstream_sources.h"
 #include "hstream/src/apps/apps-common/deepstream_sinks.h"
+#include "hstream/src/apps/apps-common/deepstream_sources.h"
 #include "hstream/src/libs/common/ConfigYaml.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/Status.h"
@@ -77,7 +79,6 @@ bool is_enabled(const YAML::Node& config, const std::string& dot_string) {
   }
   return get_node_value(node, kEnableFlagField, static_cast<int>(false));
 }
-
 
 void remove_whitespace_in_place(std::string& input) {
   int index = 0; // This will keep track of the position in the original string
@@ -242,8 +243,7 @@ bool is_render_sink_type(int sink_type) {
 #else
       static_cast<int>(NV_DS_SINK_RENDER_EGL);
 #endif
-  return sink_type == kRenderSinkType ||
-         sink_type == static_cast<int>(NV_DS_SINK_RENDER_DRM);
+  return sink_type == kRenderSinkType || sink_type == static_cast<int>(NV_DS_SINK_RENDER_DRM);
 }
 
 int get_render_sink_type() {
@@ -602,7 +602,10 @@ void Configurator::apply_gpu_override(YAML::Node& pipeline) {
 }
 
 absl::Status Configurator::setup_stitcher_and_masks(
-    YAML::Node& pipeline, const fs::path& game_dir, bool force, bool& has_hmstitcher) {
+    YAML::Node& pipeline,
+    const fs::path& game_dir,
+    bool force,
+    bool& has_hmstitcher) {
   has_hmstitcher = get_node(pipeline, "hmstitcher")->IsDefined();
   if (has_hmstitcher) {
     if (get_node_value(pipeline, "hmstitcher.enable", FALSE) &&
@@ -648,11 +651,12 @@ absl::Status Configurator::invalidate_rotation_dependent_cache_if_needed(const f
   const bool has_marker = has_node(private_config_, "stitching.generated_field_mask_post_stitch_rotate_degrees", true);
   bool should_invalidate = std::abs(desired_rotation) > kRotationEpsilon;
   if (has_marker) {
-    const double generated_rotation = get_rotation_or_default(
-        private_config_, "stitching.generated_field_mask_post_stitch_rotate_degrees", 0.0);
+    const double generated_rotation =
+        get_rotation_or_default(private_config_, "stitching.generated_field_mask_post_stitch_rotate_degrees", 0.0);
     should_invalidate = std::abs(desired_rotation - generated_rotation) > kRotationEpsilon;
   } else if (std::abs(desired_rotation) <= kRotationEpsilon) {
-    const std::optional<double> previous_rotation = get_optional_double(private_config_, "stitching.post_stitch_rotate_degrees");
+    const std::optional<double> previous_rotation =
+        get_optional_double(private_config_, "stitching.post_stitch_rotate_degrees");
     should_invalidate = previous_rotation.has_value() && std::abs(*previous_rotation) > kRotationEpsilon;
   }
   if (!should_invalidate) {
@@ -711,7 +715,8 @@ void Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
       assert(points.size() == 4);
       std::stringstream ss;
       for (size_t i = 0, n = points.size(); i < n; ++i) {
-        if (i) ss << ',';
+        if (i)
+          ss << ',';
         assert(points[i].size() == 2);
         ss << std::to_string(points[i].at(0)) << ',' << points[i].at(1);
       }
@@ -767,6 +772,49 @@ absl::Status Configurator::gather_stitching_videos(
     return matches;
   };
 
+  auto explicit_file_chapter = [](const std::string& file) {
+    const std::string filename = fs::path(file).filename().string();
+    std::smatch match;
+    static const std::regex gopro_pattern(R"(^G[A-Z]([0-9]{2})([0-9]{4})\.(MP4|mp4)$)");
+    static const std::regex insta360_pattern(R"(^VID_[0-9]{8}_[0-9]{6}_([0-9]{3})\.(MP4|mp4)$)");
+    static const std::regex left_right_pattern(R"((left|right)(?:-([0-9]))?\.mp4$)");
+    try {
+      if (std::regex_search(filename, match, gopro_pattern)) {
+        return std::stoi(match[1].str());
+      }
+      if (std::regex_search(filename, match, insta360_pattern)) {
+        return std::stoi(match[1].str());
+      }
+      if (std::regex_search(filename, match, left_right_pattern)) {
+        return match[2].matched ? std::stoi(match[2].str()) : 1;
+      }
+    } catch (const std::exception&) {
+      return -1;
+    }
+    return -1;
+  };
+
+  auto explicit_files_by_chapter = [&](const std::vector<std::string>& files) {
+    std::map<int, std::string> by_chapter;
+    for (const std::string& file : files) {
+      const int chapter = explicit_file_chapter(file);
+      if (chapter <= 0 || by_chapter.count(chapter)) {
+        by_chapter.clear();
+        return by_chapter;
+      }
+      by_chapter[chapter] = file;
+    }
+    return by_chapter;
+  };
+
+  auto chapter_keys = [](const std::map<int, std::string>& files) {
+    std::set<int> keys;
+    for (const auto& [chapter, _] : files) {
+      keys.insert(chapter);
+    }
+    return keys;
+  };
+
   auto append_matching_chapters =
       [](const stitching::VideoChapter& chapters, const std::set<int>& wanted, std::vector<std::string>& files) {
         for (int chapter : wanted) {
@@ -800,55 +848,86 @@ absl::Status Configurator::gather_stitching_videos(
     return ss.str();
   };
 
-  auto explicit_files_for_chapters = [](const std::vector<std::string>& files,
-                                        const stitching::VideoChapter& chapters,
-                                        const std::set<int>& wanted) {
+  auto explicit_files_for_chapters =
+      [](const std::vector<std::string>& files, const stitching::VideoChapter& chapters, const std::set<int>& wanted) {
+        std::vector<std::string> filtered;
+        for (int chapter : wanted) {
+          auto discovered = chapters.find(chapter);
+          if (discovered == chapters.end()) {
+            continue;
+          }
+          const fs::path discovered_path(discovered->second);
+          for (const std::string& file : files) {
+            const fs::path file_path(file);
+            if (file_path == discovered_path || file_path.filename() == discovered_path.filename()) {
+              filtered.emplace_back(file);
+              break;
+            }
+          }
+        }
+        return filtered;
+      };
+
+  auto explicit_files_for_parsed_chapters = [](const std::map<int, std::string>& files_by_chapter,
+                                               const std::set<int>& wanted) {
     std::vector<std::string> filtered;
     for (int chapter : wanted) {
-      auto discovered = chapters.find(chapter);
-      if (discovered == chapters.end()) {
-        continue;
-      }
-      const fs::path discovered_path(discovered->second);
-      for (const std::string& file : files) {
-        const fs::path file_path(file);
-        if (file_path == discovered_path || file_path.filename() == discovered_path.filename()) {
-          filtered.emplace_back(file);
-          break;
-        }
+      auto found = files_by_chapter.find(chapter);
+      if (found != files_by_chapter.end()) {
+        filtered.emplace_back(found->second);
       }
     }
     return filtered;
   };
 
   if ((explicit_left || explicit_right) && left_files.empty() && videos.count("left")) {
-    const std::set<int> wanted =
-        explicit_right && videos.count("right") ? matching_chapters(explicit_right_files, videos.at("right")) : std::set<int>();
+    const std::map<int, std::string> explicit_right_by_chapter =
+        explicit_right ? explicit_files_by_chapter(explicit_right_files) : std::map<int, std::string>();
+    std::set<int> wanted = explicit_right && videos.count("right")
+        ? matching_chapters(explicit_right_files, videos.at("right"))
+        : std::set<int>();
+    if (wanted.empty() && !explicit_right_by_chapter.empty()) {
+      wanted = chapter_keys(explicit_right_by_chapter);
+    }
     if (!wanted.empty()) {
       const std::set<int> paired = available_chapters(videos.at("left"), wanted);
       if (paired != wanted) {
-        return absl::InvalidArgumentError(
-            TO_STRING("Auto left videos are missing chapter(s) for explicit right selection: wanted "
-                      << format_chapters(wanted) << ", found " << format_chapters(paired)));
+        return absl::InvalidArgumentError(TO_STRING(
+            "Auto left videos are missing chapter(s) for explicit right selection: wanted "
+            << format_chapters(wanted) << ", found " << format_chapters(paired)));
       }
       append_matching_chapters(videos.at("left"), paired, left_files);
-      right_files = explicit_files_for_chapters(explicit_right_files, videos.at("right"), paired);
+      if (!explicit_right_by_chapter.empty()) {
+        right_files = explicit_files_for_parsed_chapters(explicit_right_by_chapter, paired);
+      } else if (videos.count("right")) {
+        right_files = explicit_files_for_chapters(explicit_right_files, videos.at("right"), paired);
+      }
     } else if (!explicit_right || videos.at("left").size() == 1) {
       append_chapters(videos.at("left"), left_files);
     }
   }
   if ((explicit_left || explicit_right) && right_files.empty() && videos.count("right")) {
-    const std::set<int> wanted =
-        explicit_left && videos.count("left") ? matching_chapters(explicit_left_files, videos.at("left")) : std::set<int>();
+    const std::map<int, std::string> explicit_left_by_chapter =
+        explicit_left ? explicit_files_by_chapter(explicit_left_files) : std::map<int, std::string>();
+    std::set<int> wanted = explicit_left && videos.count("left")
+        ? matching_chapters(explicit_left_files, videos.at("left"))
+        : std::set<int>();
+    if (wanted.empty() && !explicit_left_by_chapter.empty()) {
+      wanted = chapter_keys(explicit_left_by_chapter);
+    }
     if (!wanted.empty()) {
       const std::set<int> paired = available_chapters(videos.at("right"), wanted);
       if (paired != wanted) {
-        return absl::InvalidArgumentError(
-            TO_STRING("Auto right videos are missing chapter(s) for explicit left selection: wanted "
-                      << format_chapters(wanted) << ", found " << format_chapters(paired)));
+        return absl::InvalidArgumentError(TO_STRING(
+            "Auto right videos are missing chapter(s) for explicit left selection: wanted "
+            << format_chapters(wanted) << ", found " << format_chapters(paired)));
       }
       append_matching_chapters(videos.at("right"), paired, right_files);
-      left_files = explicit_files_for_chapters(explicit_left_files, videos.at("left"), paired);
+      if (!explicit_left_by_chapter.empty()) {
+        left_files = explicit_files_for_parsed_chapters(explicit_left_by_chapter, paired);
+      } else if (videos.count("left")) {
+        left_files = explicit_files_for_chapters(explicit_left_files, videos.at("left"), paired);
+      }
     } else if (!explicit_left || videos.at("right").size() == 1) {
       append_chapters(videos.at("right"), right_files);
     }
@@ -923,7 +1002,8 @@ absl::Status Configurator::gather_stitching_videos(
     if (!has_node(config_, "game.stitching.frame_offsets.left", /*non_null=*/true) ||
         !has_node(config_, "game.stitching.frame_offsets.right", /*non_null=*/true) || force) {
       stitching::Synchronization sync;
-      HM_ASSIGN_OR_RETURN(sync, stitching::calculate_stitching_synchronization(game_dir / left_files[0], game_dir / right_files[0]));
+      HM_ASSIGN_OR_RETURN(
+          sync, stitching::calculate_stitching_synchronization(game_dir / left_files[0], game_dir / right_files[0]));
       offsets["left"] = std::to_string(sync.video1_frame_offset);
       offsets["right"] = std::to_string(sync.video2_frame_offset);
       private_config_["game"]["stitching"]["frame_offsets"]["left"] = std::to_string(sync.video1_frame_offset);
@@ -966,7 +1046,7 @@ void Configurator::apply_frame_offsets_and_sizes(
   }
 }
 
-std::tuple<long,long> Configurator::cap_playcropper_output(long width, long height) const {
+std::tuple<long, long> Configurator::cap_playcropper_output(long width, long height) const {
   return resize_to_fit(width, height, kMaxPlayCropperOutputWidth, kMaxPlayCropperOutputHeight);
 }
 
@@ -1162,11 +1242,15 @@ void Configurator::configure_audio(
     }
     for (size_t hmaudio_index = 0; hmaudio_index < INT_MAX; ++hmaudio_index) {
       std::string hmaudio_name = "hmaudio" + std::to_string(hmaudio_index);
-      if (!pipeline[hmaudio_name].IsDefined()) break;
+      if (!pipeline[hmaudio_name].IsDefined())
+        break;
       audio_uri_opt = get_node_if_enabled(pipeline, hmaudio_name);
-      if (!audio_uri_opt) continue;
-      if (audio_source_id != std::numeric_limits<size_t>::max() && (*audio_uri_opt)["src"].as<int>() == SRC_SOURCE_BIN) {
-        if (!(*audio_uri_opt)["source-id"].IsDefined() || !is_valid_yaml_value_string((*audio_uri_opt)["source-id"].as<std::string>())) {
+      if (!audio_uri_opt)
+        continue;
+      if (audio_source_id != std::numeric_limits<size_t>::max() &&
+          (*audio_uri_opt)["src"].as<int>() == SRC_SOURCE_BIN) {
+        if (!(*audio_uri_opt)["source-id"].IsDefined() ||
+            !is_valid_yaml_value_string((*audio_uri_opt)["source-id"].as<std::string>())) {
           (*audio_uri_opt)["source-id"] = audio_source_id;
         }
       } else {
@@ -1539,7 +1623,11 @@ void map_key_configs(YAML::Node yaml, const std::vector<std::pair<std::string, s
   }
 }
 
-absl::Status Configurator::complete_configuration(bool force, bool clean_stitching_artifacts, bool show_render_sink, double show_render_scale) {
+absl::Status Configurator::complete_configuration(
+    bool force,
+    bool clean_stitching_artifacts,
+    bool show_render_sink,
+    double show_render_scale) {
   if (!get_node_value(config_, "pipeline.application.complete-configuration", false)) {
     return absl::OkStatus();
   }
@@ -1645,8 +1733,18 @@ absl::Status Configurator::complete_configuration(bool force, bool clean_stitchi
     HM_RETURN_IF_ERROR(gather_stitching_videos(game_dir, force, left_files, right_files, offsets));
     apply_frame_offsets_and_sizes(left_files, right_files, offsets, ww, hh, area, pipeline);
   }
-  HM_RETURN_IF_ERROR(
-      set_output_dimensions(pipeline, is_camera_source, camera_sources, left_files, right_files, pipeline_has_hmstitcher, game_dir, ww, hh, area, num_video_sources));
+  HM_RETURN_IF_ERROR(set_output_dimensions(
+      pipeline,
+      is_camera_source,
+      camera_sources,
+      left_files,
+      right_files,
+      pipeline_has_hmstitcher,
+      game_dir,
+      ww,
+      hh,
+      area,
+      num_video_sources));
 
   configure_audio(pipeline, left_files, right_files, offsets, num_video_sources);
   HM_RETURN_IF_ERROR(configure_encode_file_outputs(pipeline));
@@ -1678,8 +1776,8 @@ absl::Status Configurator::post_config_pipeline(
     uint64_t start_time_ns) {
   // Only pause/wait/seek when needed. Importantly, avoid an unbounded wait here because the GLib main loop is not
   // running yet (so bus watches won't fire), which can look like a "hang" at startup.
-  const bool needs_seek = start_time_ns || config.hmsticher_config.left_frame_offset_ns ||
-                          config.hmsticher_config.right_frame_offset_ns;
+  const bool needs_seek =
+      start_time_ns || config.hmsticher_config.left_frame_offset_ns || config.hmsticher_config.right_frame_offset_ns;
   if (!needs_seek) {
     return absl::OkStatus();
   }

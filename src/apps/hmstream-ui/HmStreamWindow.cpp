@@ -749,12 +749,31 @@ void HmStreamWindow::removeSelectedVideoSet() {
   const QString role = item->data(Qt::UserRole).toString();
   const QString relative_path = item->data(Qt::UserRole + 1).toString();
   const bool copied_import = isCopiedImport(relative_path);
+  const QString config_file = QDir(gameDirectory(game_id_edit_->text())).filePath("config.yaml");
+  const bool had_config = QFile::exists(config_file);
+  QByteArray original_config;
+  if (had_config) {
+    QFile file(config_file);
+    if (file.open(QIODevice::ReadOnly)) {
+      original_config = file.readAll();
+    }
+  }
 
   if (!removePrivateConfigForRole(role, relative_path)) {
     video_set_list_->insertItem(row, item);
     return;
   }
   if (!removeImportedVideoPath(relative_path, copied_import)) {
+    if (had_config) {
+      QFile file(config_file);
+      if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        file.write(original_config);
+      } else {
+        appendLog(QString("failed to restore private config after remove failure %1").arg(config_file));
+      }
+    } else {
+      QFile::remove(config_file);
+    }
     video_set_list_->insertItem(row, item);
     refreshVideoSets();
     return;
@@ -1140,11 +1159,31 @@ bool HmStreamWindow::syncRuntimeExplicitVideoConfig(YAML::Node& config) {
     if (explicit_left.size() == 1 && explicit_right.size() == 1) {
       const QString left_path = QString::fromStdString(explicit_left[0].as<std::string>());
       const QString right_path = QString::fromStdString(explicit_right[0].as<std::string>());
-      if (!explicit_chapter_key(left_path) || !explicit_chapter_key(right_path)) {
+      if (!explicit_chapter_key(left_path) && !explicit_chapter_key(right_path)) {
         YAML::Node left_list(YAML::NodeType::Sequence);
         YAML::Node right_list(YAML::NodeType::Sequence);
         left_list.push_back(left_path.toStdString());
         right_list.push_back(right_path.toStdString());
+        config["game"]["videos"]["left"] = left_list;
+        config["game"]["videos"]["right"] = right_list;
+        return true;
+      }
+    }
+    if (explicit_left.size() == explicit_right.size()) {
+      YAML::Node left_list(YAML::NodeType::Sequence);
+      YAML::Node right_list(YAML::NodeType::Sequence);
+      bool all_unparseable = true;
+      for (size_t i = 0; i < explicit_left.size(); ++i) {
+        const QString left_path = QString::fromStdString(explicit_left[i].as<std::string>());
+        const QString right_path = QString::fromStdString(explicit_right[i].as<std::string>());
+        if (explicit_chapter_key(left_path) || explicit_chapter_key(right_path)) {
+          all_unparseable = false;
+          break;
+        }
+        left_list.push_back(left_path.toStdString());
+        right_list.push_back(right_path.toStdString());
+      }
+      if (all_unparseable && explicit_left.size() > 0) {
         config["game"]["videos"]["left"] = left_list;
         config["game"]["videos"]["right"] = right_list;
         return true;
