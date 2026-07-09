@@ -624,7 +624,20 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
   const bool restart_logged =
       expect(window->logText().contains("stage restart requested"), "Restart button should log a stage restart");
   activate(stop);
-  return restart_logged;
+  if (!restart_logged) {
+    return false;
+  }
+
+  const QByteArray original_runner = qgetenv("HMSTREAM_UI_TEST_RUNNER");
+  qputenv("HMSTREAM_UI_TEST_RUNNER", "/tmp/hmstream-ui-missing-runner");
+  activate(start);
+  for (int i = 0; i < 50 && !window->logText().contains("pipeline process error"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qputenv("HMSTREAM_UI_TEST_RUNNER", original_runner);
+  return expect(window->pipelineStateText() == "STOPPED", "Failed runner should restore stopped state") &&
+      expect(window->logText().contains("pipeline process error"), "Failed runner should log process error");
 }
 
 bool test_output_controls(HmStreamWindow* window) {
@@ -662,7 +675,8 @@ bool test_camera_controls(HmStreamWindow* window) {
   auto* left_gamma = require_child<QSlider>(window, "cameraSlider_Left_Gamma_Multiplier_x100");
   auto* reset = require_child<QPushButton>(window, "resetCameraButton");
   auto* save = require_child<QPushButton>(window, "savePresetButton");
-  if (!exposure || !rotate || !left_gamma || !reset || !save) {
+  auto* create = require_child<QPushButton>(window, "createGameButton");
+  if (!exposure || !rotate || !left_gamma || !reset || !save || !create) {
     return false;
   }
 
@@ -698,7 +712,25 @@ bool test_camera_controls(HmStreamWindow* window) {
   }
 
   activate(reset);
-  return expect(window->cameraControlValue("Exposure_EV_x10") == 40, "Reset should restore exposure default");
+  if (!expect(window->cameraControlValue("Exposure_EV_x10") == 40, "Reset should restore exposure default")) {
+    return false;
+  }
+
+  activate(create);
+  if (!expect(window->cameraControlValue("Exposure_EV_x10") == 47, "Create/Load should restore saved controls") ||
+      !expect(window->cameraControlValue("Stitch_Rotate_Degrees") == 72, "Create/Load should restore stitch control")) {
+    return false;
+  }
+
+  activate(reset);
+  activate(save);
+  YAML::Node cleaned = YAML::LoadFile(config.string());
+  return expect(
+             cleaned["hmstream_ui"]["camera_controls"].size() == 0,
+             "Saving defaults should clear saved camera controls") &&
+      expect(!cleaned["stitching"]["post_stitch_rotate_degrees"],
+             "Saving defaults should clear UI-generated stitch runtime override") &&
+      expect(!cleaned["stitching"]["left"]["color"], "Saving defaults should clear UI-generated side color override");
 }
 
 } // namespace

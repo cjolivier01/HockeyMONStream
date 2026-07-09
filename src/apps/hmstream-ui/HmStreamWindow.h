@@ -49,6 +49,7 @@ class HmStreamWindow : public QMainWindow {
   void stopPipeline();
   void handlePipelineStarted();
   void handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status);
+  void handlePipelineError(QProcess::ProcessError error);
   void readPipelineOutput();
   void restartStage();
   void savePreset();
@@ -81,11 +82,14 @@ class HmStreamWindow : public QMainWindow {
   void addRtspOutput();
   void appendLog(const QString& message);
   QString pipelineRunnerPath() const;
+  QString pipelineConfigPath(const QString& config_name) const;
+  QString pipelineWorkingDirectory() const;
   QStringList pipelineArguments() const;
   QStringList enabledSinkNames() const;
   bool isCalibrationRun() const;
   void updateRunControls();
   void applySavedControlConfig(YAML::Node& config);
+  void loadSavedControlConfig();
   QSlider* addSlider(QVBoxLayout* layout, const QString& id, const QString& label, int minimum, int maximum, int value);
 
   QLabel* backend_mode_{nullptr};

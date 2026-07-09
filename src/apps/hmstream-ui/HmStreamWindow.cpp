@@ -299,6 +299,21 @@ bool remove_yaml_key(YAML::Node parent, const char* key) {
   return true;
 }
 
+bool remove_yaml_path(YAML::Node root, std::initializer_list<const char*> path) {
+  if (path.size() == 0) {
+    return false;
+  }
+  YAML::Node node = root;
+  auto it = path.begin();
+  for (size_t i = 0; i + 1 < path.size(); ++i, ++it) {
+    if (!node || !node[*it]) {
+      return false;
+    }
+    node = node[*it];
+  }
+  return remove_yaml_key(node, *it);
+}
+
 double slider_to_exposure_ev(int position) {
   return static_cast<double>(std::max(0, std::min(80, position)) - 40) / 10.0;
 }
@@ -317,6 +332,9 @@ HmStreamWindow::HmStreamWindow(QWidget* parent) : QMainWindow(parent) {
       QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
       this,
       [this](int exit_code, QProcess::ExitStatus exit_status) { handlePipelineFinished(exit_code, exit_status); });
+  connect(pipeline_process_, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
+    handlePipelineError(error);
+  });
   connect(pipeline_process_, &QProcess::readyReadStandardOutput, this, [this]() { readPipelineOutput(); });
   connect(pipeline_process_, &QProcess::readyReadStandardError, this, [this]() { readPipelineOutput(); });
 
@@ -769,6 +787,10 @@ QString HmStreamWindow::pipelineRunnerPath() const {
   if (!test_runner.isEmpty()) {
     return QString::fromLocal8Bit(test_runner);
   }
+  const QString installed_runner = "/opt/hmstream/bin/hmstream-cli";
+  if (QFileInfo::exists(installed_runner)) {
+    return installed_runner;
+  }
   const QString bazel_runner = QDir::current().filePath("bazel-bin/src/apps/pipeline-app/hmstream-cli");
   if (QFileInfo::exists(bazel_runner)) {
     return bazel_runner;
@@ -778,6 +800,21 @@ QString HmStreamWindow::pipelineRunnerPath() const {
     return legacy_bazel_runner;
   }
   return "hmstream-cli";
+}
+
+QString HmStreamWindow::pipelineConfigPath(const QString& config_name) const {
+  const QString installed_config = QDir("/opt/hmstream/configs").filePath(config_name);
+  if (QFileInfo::exists(installed_config)) {
+    return installed_config;
+  }
+  return QDir("configs").filePath(config_name);
+}
+
+QString HmStreamWindow::pipelineWorkingDirectory() const {
+  if (QFileInfo::exists("/opt/hmstream/bin/hmstream-cli")) {
+    return "/opt/hmstream";
+  }
+  return QDir::currentPath();
 }
 
 QStringList HmStreamWindow::enabledSinkNames() const {
@@ -810,11 +847,11 @@ QStringList HmStreamWindow::pipelineArguments() const {
   QStringList args;
   args << "-g" << game_id << "--enable-sources=URI-MULTIPLE";
   if (isCalibrationRun()) {
-    args << "-c" << "configs/ds_hockey_configure_stitching.yaml";
+    args << "-c" << pipelineConfigPath("ds_hockey_configure_stitching.yaml");
     args << "--enable-sinks=RENDER";
     args << "--show-stitching" << "1";
   } else {
-    args << "-c" << "configs/ds_hockey_app_config.yaml";
+    args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
     args << QString("--enable-sinks=%1").arg(enabledSinkNames().join(","));
     args << "--show";
   }
@@ -841,7 +878,7 @@ void HmStreamWindow::startPipeline() {
     appendLog(QString("stitching calibration control points=%1").arg(control_points));
   }
   pipeline_process_->setProcessEnvironment(env);
-  pipeline_process_->setWorkingDirectory(QDir::currentPath());
+  pipeline_process_->setWorkingDirectory(pipelineWorkingDirectory());
   pipeline_process_->setProgram(runner);
   pipeline_process_->setArguments(args);
   pipeline_paused_ = false;
@@ -904,8 +941,14 @@ void HmStreamWindow::stopPipeline() {
     ::kill(static_cast<pid_t>(pipeline_process_->processId()), SIGCONT);
     pipeline_paused_ = false;
   }
-#endif
+  if (pipeline_process_->processId() > 0) {
+    ::kill(static_cast<pid_t>(pipeline_process_->processId()), SIGINT);
+  } else {
+    pipeline_process_->terminate();
+  }
+#else
   pipeline_process_->terminate();
+#endif
   if (!pipeline_process_->waitForFinished(3000)) {
     appendLog("pipeline did not exit after terminate; killing");
     pipeline_process_->kill();
@@ -927,6 +970,16 @@ void HmStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus 
   appendLog(QString("pipeline finished exit=%1 status=%2")
                 .arg(exit_code)
                 .arg(exit_status == QProcess::NormalExit ? "normal" : "crashed"));
+  updateRunControls();
+}
+
+void HmStreamWindow::handlePipelineError(QProcess::ProcessError error) {
+  pipeline_paused_ = false;
+  pipeline_state_->setText("STOPPED");
+  preview_status_->setText("Pipeline failed to start");
+  appendLog(QString("pipeline process error=%1 message=%2")
+                .arg(static_cast<int>(error))
+                .arg(pipeline_process_ ? pipeline_process_->errorString() : QString()));
   updateRunControls();
 }
 
@@ -1013,7 +1066,64 @@ void HmStreamWindow::resetCameraControls() {
   appendLog("camera controls reset to defaults");
 }
 
+void HmStreamWindow::loadSavedControlConfig() {
+  if (!game_id_edit_ || game_id_edit_->text().isEmpty()) {
+    return;
+  }
+  for (const auto& [id, value] : camera_defaults_) {
+    const auto slider_it = camera_sliders_.find(id);
+    if (slider_it == camera_sliders_.end()) {
+      continue;
+    }
+    const bool blocked = slider_it->second->blockSignals(true);
+    slider_it->second->setValue(value);
+    slider_it->second->blockSignals(blocked);
+  }
+
+  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  if (!fs::exists(config_path)) {
+    return;
+  }
+  try {
+    YAML::Node config = YAML::LoadFile(config_path.string());
+    YAML::Node controls = config["hmstream_ui"]["camera_controls"];
+    if (!controls || !controls.IsMap()) {
+      return;
+    }
+    int loaded = 0;
+    for (const auto& entry : controls) {
+      const QString id = QString::fromStdString(entry.first.as<std::string>());
+      const auto slider_it = camera_sliders_.find(id);
+      if (slider_it == camera_sliders_.end()) {
+        continue;
+      }
+      const bool blocked = slider_it->second->blockSignals(true);
+      slider_it->second->setValue(entry.second.as<int>());
+      slider_it->second->blockSignals(blocked);
+      ++loaded;
+    }
+    appendLog(QString("loaded %1 saved camera controls").arg(loaded));
+  } catch (const std::exception& exc) {
+    appendLog(QString("could not load saved camera controls: %1").arg(exc.what()));
+  }
+}
+
 void HmStreamWindow::applySavedControlConfig(YAML::Node& config) {
+  remove_yaml_path(config, {"stitching", "post_stitch_rotate_degrees"});
+  remove_yaml_path(config, {"rink", "camera", "color"});
+  remove_yaml_path(config, {"stitching", "left", "color"});
+  remove_yaml_path(config, {"stitching", "right", "color"});
+  remove_yaml_path(config, {"rink", "camera", "stop_on_dir_change_delay"});
+  remove_yaml_path(config, {"rink", "camera", "cancel_stop_on_opposite_dir"});
+  remove_yaml_path(config, {"rink", "camera", "stop_cancel_hysteresis_frames"});
+  remove_yaml_path(config, {"rink", "camera", "stop_delay_cooldown_frames"});
+  remove_yaml_path(config, {"rink", "camera", "breakaway_detection", "overshoot_stop_delay_count"});
+  remove_yaml_path(config, {"rink", "camera", "breakaway_detection", "post_nonstop_stop_delay_count"});
+  remove_yaml_path(config, {"rink", "camera", "breakaway_detection", "overshoot_scale_speed_ratio"});
+  remove_yaml_path(config, {"rink", "camera", "time_to_dest_speed_limit_frames"});
+  remove_yaml_path(config, {"hmstream_ui", "camera_control_targets", "apply_to_fast_box"});
+  remove_yaml_path(config, {"hmstream_ui", "camera_control_targets", "apply_to_follower_box"});
+
   YAML::Node controls(YAML::NodeType::Map);
   int changed = 0;
   for (const auto& [id, slider] : camera_sliders_) {
@@ -1167,6 +1277,7 @@ void HmStreamWindow::selectGame(const QString& game_id) {
     video_sets_path_label_->setText(gameDirectory(game_id_edit_->text()));
   }
   refreshVideoSets();
+  loadSavedControlConfig();
   appendLog(QString("game selected %1").arg(game_id_edit_->text()));
 }
 
@@ -1176,6 +1287,7 @@ void HmStreamWindow::createOrLoadGame() {
   }
   refreshGames();
   refreshVideoSets();
+  loadSavedControlConfig();
   appendLog(QString("game ready %1").arg(game_id_edit_->text()));
 }
 
