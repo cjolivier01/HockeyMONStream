@@ -185,19 +185,26 @@ bool is_cam_video_key(const std::string& key) {
   return std::regex_match(key, cam_pattern);
 }
 
-bool has_nonempty_sequence_path(const YAML::Node& root, const std::initializer_list<std::string>& path) {
+std::vector<std::string> sequence_path_values(const YAML::Node& root, const std::initializer_list<std::string>& path) {
   YAML::Node current = root;
   for (const std::string& key : path) {
     if (!current.IsMap()) {
-      return false;
+      return {};
     }
     std::optional<YAML::Node> next = map_child(current, key);
     if (!next.has_value() || !next->IsDefined()) {
-      return false;
+      return {};
     }
     current = *next;
   }
-  return current.IsSequence() && current.size() > 0;
+  if (!current.IsSequence()) {
+    return {};
+  }
+  return current.as<std::vector<std::string>>();
+}
+
+bool same_sequence_values(const std::vector<std::string>& a, const std::vector<std::string>& b) {
+  return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin());
 }
 
 void remove_rotation_dependent_rink_cache_keys(YAML::Node& config);
@@ -774,10 +781,14 @@ absl::Status Configurator::gather_stitching_videos(
   const bool has_cam_auto =
       std::any_of(videos.begin(), videos.end(), [](const auto& item) { return is_cam_video_key(item.first); });
   const bool has_left_right_auto = videos.count("left") || videos.count("right");
-  const bool has_ui_explicit_roles =
-      has_nonempty_sequence_path(config_, {"hmstream_ui", "video_roles", "left"}) ||
-      has_nonempty_sequence_path(config_, {"hmstream_ui", "video_roles", "right"});
-  if (!force && has_cam_auto && !has_left_right_auto && !has_ui_explicit_roles && (explicit_left || explicit_right)) {
+  const std::vector<std::string> ui_left_files =
+      sequence_path_values(config_, {"hmstream_ui", "video_roles", "left"});
+  const std::vector<std::string> ui_right_files =
+      sequence_path_values(config_, {"hmstream_ui", "video_roles", "right"});
+  const bool runtime_videos_owned_by_ui_roles = explicit_left && explicit_right &&
+      same_sequence_values(left_files, ui_left_files) && same_sequence_values(right_files, ui_right_files);
+  if (!force && has_cam_auto && !has_left_right_auto && !runtime_videos_owned_by_ui_roles &&
+      (explicit_left || explicit_right)) {
     std::cerr << "Ignoring stale generated game.videos left/right because camN Auto video sets are available"
               << std::endl;
     left_files.clear();
