@@ -490,7 +490,9 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   fs::path cleanup_game = fs::path(window->gameDirectoryText().toStdString());
   fs::create_directories(cleanup_game / "cam1");
   fs::create_directories(cleanup_game / ".hmstream-ui" / "left");
-  fs::create_symlink(auto_video.toStdString(), cleanup_game / "cam1" / "GX010001.MP4");
+  if (!write_fake_video(QString::fromStdString((cleanup_game / "cam1" / "GX010001.MP4").string()))) {
+    return false;
+  }
   if (!write_fake_video(QString::fromStdString((cleanup_game / ".hmstream-ui" / "left" / "copied-left.mp4").string()))) {
     return false;
   }
@@ -508,10 +510,11 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   activate(remove_video);
   YAML::Node cleanup_after = YAML::LoadFile((cleanup_game / "config.yaml").string());
   if (!expect(
-          !fs::exists(cleanup_game / ".hmstream-ui" / "left" / "copied-left.mp4") &&
+          fs::exists(cleanup_game / "cam1" / "GX010001.MP4") &&
+              !fs::exists(cleanup_game / ".hmstream-ui" / "left" / "copied-left.mp4") &&
               !cleanup_after["hmstream_ui"]["video_roles"]["left"] &&
               cleanup_after["hmstream_ui"]["copied_imports"].size() == 0,
-          "Removing Auto should clean copied explicit imports hidden by role reset")) {
+          "Removing Auto should clean copied explicit imports when regular Auto delete is refused")) {
     return false;
   }
 

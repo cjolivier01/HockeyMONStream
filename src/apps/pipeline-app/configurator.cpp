@@ -180,6 +180,26 @@ bool remove_yaml_key_path(YAML::Node& root, const std::initializer_list<std::str
   return true;
 }
 
+bool is_cam_video_key(const std::string& key) {
+  static const std::regex cam_pattern(R"(cam[0-9]+)", std::regex::icase);
+  return std::regex_match(key, cam_pattern);
+}
+
+bool has_nonempty_sequence_path(const YAML::Node& root, const std::initializer_list<std::string>& path) {
+  YAML::Node current = root;
+  for (const std::string& key : path) {
+    if (!current.IsMap()) {
+      return false;
+    }
+    std::optional<YAML::Node> next = map_child(current, key);
+    if (!next.has_value() || !next->IsDefined()) {
+      return false;
+    }
+    current = *next;
+  }
+  return current.IsSequence() && current.size() > 0;
+}
+
 void remove_rotation_dependent_rink_cache_keys(YAML::Node& config);
 
 void remove_cleanable_stitching_cache_keys(YAML::Node& config) {
@@ -751,6 +771,36 @@ absl::Status Configurator::gather_stitching_videos(
 
   stitching::VideosDict videos;
   HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir));
+  const bool has_cam_auto =
+      std::any_of(videos.begin(), videos.end(), [](const auto& item) { return is_cam_video_key(item.first); });
+  const bool has_left_right_auto = videos.count("left") || videos.count("right");
+  const bool has_ui_explicit_roles =
+      has_nonempty_sequence_path(config_, {"hmstream_ui", "video_roles", "left"}) ||
+      has_nonempty_sequence_path(config_, {"hmstream_ui", "video_roles", "right"});
+  if (!force && has_cam_auto && !has_left_right_auto && !has_ui_explicit_roles && (explicit_left || explicit_right)) {
+    std::cerr << "Ignoring stale generated game.videos left/right because camN Auto video sets are available"
+              << std::endl;
+    left_files.clear();
+    right_files.clear();
+    explicit_left_files.clear();
+    explicit_right_files.clear();
+    explicit_left = false;
+    explicit_right = false;
+    remove_yaml_key_path(config_, {"game", "videos", "left"});
+    remove_yaml_key_path(config_, {"game", "videos", "right"});
+    remove_yaml_key_path(config_, {"game", "stitching", "frame_offsets"});
+    remove_yaml_key_path(config_, {"stitching", "frame_offsets"});
+    bool private_changed = remove_yaml_key_path(private_config_, {"game", "videos", "left"});
+    private_changed = remove_yaml_key_path(private_config_, {"game", "videos", "right"}) || private_changed;
+    private_changed = remove_yaml_key_path(private_config_, {"game", "stitching", "frame_offsets"}) || private_changed;
+    private_changed = remove_yaml_key_path(private_config_, {"stitching", "frame_offsets"}) || private_changed;
+    if (private_changed) {
+      auto spp_status = save_private_config(private_config_);
+      if (!spp_status.ok()) {
+        std::cerr << "Warnings: failed to save private config: " << spp_status << std::endl;
+      }
+    }
+  }
 
   auto append_chapters = [](const stitching::VideoChapter& chapters, std::vector<std::string>& files) {
     for (const auto& item : chapters) {
@@ -934,8 +984,6 @@ absl::Status Configurator::gather_stitching_videos(
   }
 
   if ((explicit_left || explicit_right) && (left_files.empty() || right_files.empty())) {
-    const bool has_cam_auto =
-        std::any_of(videos.begin(), videos.end(), [](const auto& item) { return item.first.rfind("cam", 0) == 0; });
     if (has_cam_auto && !videos.count("left") && !videos.count("right")) {
       return absl::InvalidArgumentError(
           "Mixed explicit/Auto video selection cannot infer Left/Right sides from camN Auto video sets. Select both Left and Right explicitly, or use Auto for all video sets.");

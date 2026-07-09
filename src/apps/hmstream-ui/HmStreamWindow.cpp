@@ -821,14 +821,14 @@ void HmStreamWindow::removeSelectedVideoSet() {
     return;
   }
   if (!removeImportedVideoPath(relative_path, copied_import)) {
-    if (had_config) {
+    if (had_config && role != "auto") {
       QFile file(config_file);
       if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         file.write(original_config);
       } else {
         appendLog(QString("failed to restore private config after remove failure %1").arg(config_file));
       }
-    } else {
+    } else if (!had_config) {
       QFile::remove(config_file);
     }
     video_set_list_->insertItem(row, item);
