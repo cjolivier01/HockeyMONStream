@@ -1223,6 +1223,30 @@ bool HmStreamWindow::removeClearedCopiedExplicitImports(const QByteArray& origin
     }
   }
 
+  if (!cleanup_paths.empty()) {
+    YAML::Node copied_imports = current_config["hmstream_ui"]["copied_imports"];
+    YAML::Node copied_replacement(YAML::NodeType::Sequence);
+    if (copied_imports && copied_imports.IsSequence()) {
+      for (const auto& item : copied_imports) {
+        const QString path = normalized_config_video_path(game_dir, QString::fromStdString(item.as<std::string>()));
+        if (!cleanup_paths.count(path)) {
+          copied_replacement.push_back(item.as<std::string>());
+        }
+      }
+    }
+    current_config["hmstream_ui"]["copied_imports"] = copied_replacement;
+    std::ofstream out(config_file.toStdString());
+    if (!out) {
+      QFile file(config_file);
+      if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        file.write(original_config);
+      }
+      appendLog(QString("failed to update copied import metadata %1").arg(config_file));
+      return false;
+    }
+    out << current_config << "\n";
+  }
+
   for (const QString& path : cleanup_paths) {
     if (!removeImportedVideoPath(path, true)) {
       QFile file(config_file);

@@ -934,6 +934,12 @@ absl::Status Configurator::gather_stitching_videos(
   }
 
   if ((explicit_left || explicit_right) && (left_files.empty() || right_files.empty())) {
+    const bool has_cam_auto =
+        std::any_of(videos.begin(), videos.end(), [](const auto& item) { return item.first.rfind("cam", 0) == 0; });
+    if (has_cam_auto && !videos.count("left") && !videos.count("right")) {
+      return absl::InvalidArgumentError(
+          "Mixed explicit/Auto video selection cannot infer Left/Right sides from camN Auto video sets. Select both Left and Right explicitly, or use Auto for all video sets.");
+    }
     return absl::InvalidArgumentError(
         "Mixed explicit/Auto video selection could not resolve both sides. Select both Left and Right explicitly, or use Auto for all video sets.");
   }

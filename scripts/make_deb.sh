@@ -80,6 +80,31 @@ if [[ ! -f "${HMSTREAM_UI}" ]]; then
   echo "ERROR: ${HMSTREAM_UI} not found. Run 'make hmstream-ui' first, or pass --build." >&2
   exit 1
 fi
+if ! command -v file &>/dev/null; then
+  echo "[make_deb] file not found; installing via apt..."
+  sudo apt-get install -y file
+fi
+validate_elf_arch() {
+  local elf="$1"
+  local description
+  description="$(file -b "${elf}")"
+  case "${PKG_ARCH}" in
+    amd64)
+      [[ "${description}" == *"x86-64"* ]] ;;
+    arm64)
+      [[ "${description}" == *"aarch64"* || "${description}" == *"ARM aarch64"* ]] ;;
+    armhf)
+      [[ "${description}" == *"ARM"* && "${description}" == *"32-bit"* ]] ;;
+    *)
+      echo "ERROR: unsupported package architecture for ELF validation: ${PKG_ARCH}" >&2
+      return 1 ;;
+  esac || {
+    echo "ERROR: ${elf} does not match package architecture ${PKG_ARCH}: ${description}" >&2
+    return 1
+  }
+}
+validate_elf_arch "${HMSTREAM_CLI}"
+validate_elf_arch "${HMSTREAM_UI}"
 
 # ---------- ensure tools ----------
 if ! command -v patchelf &>/dev/null; then

@@ -253,10 +253,7 @@ VideoChapter pairs_to_linear_chapter_map(const std::vector<std::pair<std::pair<l
  * If renumber is true, chapters are returned as 1..N in file order; otherwise
  * they retain the part number from the filename (e.g., left-3.mp4 -> 3).
  */
-absl::StatusOr<VideoChapter> collect_lr_chapters(
-    const std::string& directory,
-    bool left_side,
-    bool renumber) {
+absl::StatusOr<VideoChapter> collect_lr_chapters(const std::string& directory, bool left_side, bool renumber) {
   VideoChapter chapter_map;
   const char* single_pattern = left_side ? LEFT_FILE_PATTERN : RIGHT_FILE_PATTERN;
   const char* parts_pattern = left_side ? LEFT_PART_FILE_PATTERN : RIGHT_PART_FILE_PATTERN;
@@ -273,10 +270,9 @@ absl::StatusOr<VideoChapter> collect_lr_chapters(
   // Parts (left-1.mp4, left-2.mp4, ...)
   HM_ASSIGN_OR_RETURN(files, find_matching_files(parts_pattern, directory));
   if (!files.empty()) {
-    std::sort(
-        files.begin(),
-        files.end(),
-        [](const std::string& a, const std::string& b) { return get_lr_part_number(a) < get_lr_part_number(b); });
+    std::sort(files.begin(), files.end(), [](const std::string& a, const std::string& b) {
+      return get_lr_part_number(a) < get_lr_part_number(b);
+    });
 
     if (renumber) {
       int chapter_index = 1;
@@ -348,7 +344,8 @@ int cam_index(const std::string& name) {
  */
 absl::StatusOr<VideosDict> get_available_videos(const std::string& dir_name, bool prune) {
   if (!fs::is_directory(dir_name)) {
-    return absl::InvalidArgumentError(TO_STRING("Directory \"" << dir_name << "\" doesn't exist or is not a directory"));
+    return absl::InvalidArgumentError(
+        TO_STRING("Directory \"" << dir_name << "\" doesn't exist or is not a directory"));
   }
 
   VideosDict videos_dict;
@@ -357,7 +354,7 @@ absl::StatusOr<VideosDict> get_available_videos(const std::string& dir_name, boo
   std::vector<std::string> cam_dirs;
   std::regex cam_pattern(R"(cam[0-9]+)", std::regex::icase);
   for (const auto& entry : fs::directory_iterator(dir_name)) {
-    if (!entry.is_directory()) {
+    if (entry.is_symlink() || !entry.is_directory()) {
       continue;
     }
     const std::string name = entry.path().filename().string();
@@ -367,10 +364,9 @@ absl::StatusOr<VideosDict> get_available_videos(const std::string& dir_name, boo
   }
 
   if (!cam_dirs.empty()) {
-    std::sort(
-        cam_dirs.begin(),
-        cam_dirs.end(),
-        [](const std::string& a, const std::string& b) { return cam_index(a) < cam_index(b); });
+    std::sort(cam_dirs.begin(), cam_dirs.end(), [](const std::string& a, const std::string& b) {
+      return cam_index(a) < cam_index(b);
+    });
 
     for (const auto& cam_name : cam_dirs) {
       std::string cam_path = (fs::path(dir_name) / cam_name).string();
