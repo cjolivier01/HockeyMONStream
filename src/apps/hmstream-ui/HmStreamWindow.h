@@ -57,7 +57,10 @@ class HmStreamWindow : public QMainWindow {
   QString relativeToGameDir(const QString& path) const;
   bool ensureGameDirectory();
   bool importVideoPath(const QString& source_path, QString* imported_relative_path);
-  bool saveCopiedImport(const QString& relative_path);
+  bool saveCopiedImport(
+      const QString& relative_path,
+      const QString& auto_group_family = {},
+      const QString& source_parent = {});
   bool isCopiedImport(const QString& relative_path);
   bool syncRuntimeExplicitVideoConfig(YAML::Node& config);
   bool savePrivateConfigForRole(const QString& role, const QString& relative_path);

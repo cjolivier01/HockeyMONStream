@@ -118,6 +118,27 @@ QString existing_auto_cam_dir_for_source(const QDir& game_dir, const QFileInfo& 
     return {};
   }
 
+  std::map<QString, std::pair<QString, QString>> copied_auto_sources;
+  const fs::path config_path = fs::path(game_dir.absolutePath().toStdString()) / "config.yaml";
+  if (fs::exists(config_path)) {
+    try {
+      YAML::Node config = YAML::LoadFile(config_path.string());
+      YAML::Node entries = config["hmstream_ui"]["auto_import_sources"];
+      if (entries && entries.IsSequence()) {
+        for (const auto& entry : entries) {
+          if (!entry["path"] || !entry["family"] || !entry["source_parent"]) {
+            continue;
+          }
+          copied_auto_sources[QString::fromStdString(entry["path"].as<std::string>())] = {
+              QString::fromStdString(entry["family"].as<std::string>()),
+              QString::fromStdString(entry["source_parent"].as<std::string>())};
+        }
+      }
+    } catch (const std::exception&) {
+      copied_auto_sources.clear();
+    }
+  }
+
   std::vector<QFileInfo> cam_dirs;
   const QFileInfoList dirs = game_dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
   const QRegularExpression cam_pattern("^cam([0-9]+)$", QRegularExpression::CaseInsensitiveOption);
@@ -134,10 +155,20 @@ QString existing_auto_cam_dir_for_source(const QDir& game_dir, const QFileInfo& 
     const QFileInfoList files =
         QDir(cam_dir.filePath()).entryInfoList(QDir::Files | QDir::System | QDir::Readable, QDir::Name);
     for (const QFileInfo& file : files) {
-      if (auto_file_family(file.fileName()) != family || !file.isSymLink()) {
+      if (auto_file_family(file.fileName()) != family) {
         continue;
       }
-      const QString target_parent = canonical_dir_path(QFileInfo(file.symLinkTarget()).absolutePath());
+      QString target_parent;
+      if (file.isSymLink()) {
+        target_parent = canonical_dir_path(QFileInfo(file.symLinkTarget()).absolutePath());
+      } else {
+        const QString relative_path = game_dir.relativeFilePath(file.filePath());
+        const auto metadata = copied_auto_sources.find(relative_path);
+        if (metadata == copied_auto_sources.end() || metadata->second.first != family) {
+          continue;
+        }
+        target_parent = metadata->second.second;
+      }
       if (target_parent == source_parent) {
         return cam_dir.fileName();
       }
@@ -719,12 +750,13 @@ void HmStreamWindow::removeSelectedVideoSet() {
   const QString relative_path = item->data(Qt::UserRole + 1).toString();
   const bool copied_import = isCopiedImport(relative_path);
 
-  if (!removeImportedVideoPath(relative_path, copied_import)) {
+  if (!removePrivateConfigForRole(role, relative_path)) {
     video_set_list_->insertItem(row, item);
     return;
   }
-  if (!removePrivateConfigForRole(role, relative_path)) {
+  if (!removeImportedVideoPath(relative_path, copied_import)) {
     video_set_list_->insertItem(row, item);
+    refreshVideoSets();
     return;
   }
 
@@ -957,7 +989,9 @@ bool HmStreamWindow::importVideoPath(const QString& source_path, QString* import
         appendLog(QString("failed to import video link or copy: %1").arg(exc.what()));
         return false;
       }
-      if (!saveCopiedImport(relativeToGameDir(dest_path))) {
+      const QString auto_group_family = role == "auto" ? auto_file_family(source.fileName()) : QString();
+      const QString source_parent = role == "auto" ? canonical_dir_path(source.absolutePath()) : QString();
+      if (!saveCopiedImport(relativeToGameDir(dest_path), auto_group_family, source_parent)) {
         QFile::remove(dest_path);
         return false;
       }
@@ -969,7 +1003,10 @@ bool HmStreamWindow::importVideoPath(const QString& source_path, QString* import
   return true;
 }
 
-bool HmStreamWindow::saveCopiedImport(const QString& relative_path) {
+bool HmStreamWindow::saveCopiedImport(
+    const QString& relative_path,
+    const QString& auto_group_family,
+    const QString& source_parent) {
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
   YAML::Node config;
   if (fs::exists(config_path)) {
@@ -986,12 +1023,38 @@ bool HmStreamWindow::saveCopiedImport(const QString& relative_path) {
     config["hmstream_ui"]["copied_imports"] = YAML::Node(YAML::NodeType::Sequence);
     list = config["hmstream_ui"]["copied_imports"];
   }
+  bool copied_exists = false;
   for (const auto& item : list) {
     if (QString::fromStdString(item.as<std::string>()) == relative_path) {
-      return true;
+      copied_exists = true;
+      break;
     }
   }
-  list.push_back(relative_path.toStdString());
+  if (!copied_exists) {
+    list.push_back(relative_path.toStdString());
+  }
+
+  if (!auto_group_family.isEmpty() && !source_parent.isEmpty()) {
+    YAML::Node sources = config["hmstream_ui"]["auto_import_sources"];
+    if (!sources || !sources.IsSequence()) {
+      config["hmstream_ui"]["auto_import_sources"] = YAML::Node(YAML::NodeType::Sequence);
+      sources = config["hmstream_ui"]["auto_import_sources"];
+    }
+    bool source_exists = false;
+    for (const auto& item : sources) {
+      if (item["path"] && QString::fromStdString(item["path"].as<std::string>()) == relative_path) {
+        source_exists = true;
+        break;
+      }
+    }
+    if (!source_exists) {
+      YAML::Node entry(YAML::NodeType::Map);
+      entry["path"] = relative_path.toStdString();
+      entry["family"] = auto_group_family.toStdString();
+      entry["source_parent"] = source_parent.toStdString();
+      sources.push_back(entry);
+    }
+  }
 
   std::ofstream out(config_path);
   if (!out) {
@@ -1074,6 +1137,19 @@ bool HmStreamWindow::syncRuntimeExplicitVideoConfig(YAML::Node& config) {
         return true;
       }
     }
+    if (explicit_left.size() == 1 && explicit_right.size() == 1) {
+      const QString left_path = QString::fromStdString(explicit_left[0].as<std::string>());
+      const QString right_path = QString::fromStdString(explicit_right[0].as<std::string>());
+      if (!explicit_chapter_key(left_path) || !explicit_chapter_key(right_path)) {
+        YAML::Node left_list(YAML::NodeType::Sequence);
+        YAML::Node right_list(YAML::NodeType::Sequence);
+        left_list.push_back(left_path.toStdString());
+        right_list.push_back(right_path.toStdString());
+        config["game"]["videos"]["left"] = left_list;
+        config["game"]["videos"]["right"] = right_list;
+        return true;
+      }
+    }
   }
 
   changed = remove_yaml_key(config["game"]["videos"], "left") || changed;
@@ -1126,6 +1202,7 @@ bool HmStreamWindow::savePrivateConfigForRole(const QString& role, const QString
 
   if (role == "auto") {
     changed = remove_yaml_key(config["hmstream_ui"]["video_roles"], "left") || changed;
+    changed = remove_yaml_key(config["hmstream_ui"]["video_roles"], "center") || changed;
     changed = remove_yaml_key(config["hmstream_ui"]["video_roles"], "right") || changed;
     changed = remove_yaml_key(config["game"]["videos"], "left") || changed;
     changed = remove_yaml_key(config["game"]["videos"], "right") || changed;
@@ -1193,12 +1270,31 @@ bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QStri
     parent[key.toStdString()] = replacement;
   };
 
+  auto remove_auto_source_metadata = [&]() {
+    YAML::Node list = config["hmstream_ui"]["auto_import_sources"];
+    if (!list || !list.IsSequence()) {
+      return;
+    }
+
+    YAML::Node replacement(YAML::NodeType::Sequence);
+    for (const auto& item : list) {
+      if (item["path"] && matches_path(QString::fromStdString(item["path"].as<std::string>()))) {
+        changed = true;
+      } else {
+        replacement.push_back(item);
+      }
+    }
+    config["hmstream_ui"]["auto_import_sources"] = replacement;
+  };
+
   if (is_explicit_role(role)) {
     remove_from_list(config["hmstream_ui"]["video_roles"], role);
   }
   remove_from_list(config["hmstream_ui"], "copied_imports");
+  remove_auto_source_metadata();
   if (role == "auto") {
     changed = remove_yaml_key(config["hmstream_ui"]["video_roles"], "left") || changed;
+    changed = remove_yaml_key(config["hmstream_ui"]["video_roles"], "center") || changed;
     changed = remove_yaml_key(config["hmstream_ui"]["video_roles"], "right") || changed;
     changed = remove_yaml_key(config["game"]["videos"], "left") || changed;
     changed = remove_yaml_key(config["game"]["videos"], "right") || changed;

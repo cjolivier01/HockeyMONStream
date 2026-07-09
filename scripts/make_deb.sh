@@ -43,10 +43,6 @@ PKG_VERSION="$(printf '%s' "${PKG_VERSION}" | sed -E 's/[^A-Za-z0-9.+:~-]+/./g; 
 if [[ ! "${PKG_VERSION}" =~ ^[0-9] ]]; then
   PKG_VERSION="0.0+git.${PKG_VERSION}"
 fi
-if ! dpkg --validate-version "${PKG_VERSION}" >/dev/null 2>&1; then
-  echo "ERROR: invalid Debian package version: ${PKG_VERSION}" >&2
-  exit 1
-fi
 
 # ---------- optional build ----------
 if [[ "$DO_BUILD" -eq 1 ]]; then
@@ -74,6 +70,14 @@ fi
 if ! command -v dpkg-deb &>/dev/null; then
   echo "[make_deb] dpkg-deb not found; installing via apt..."
   sudo apt-get install -y dpkg
+fi
+if ! command -v dpkg &>/dev/null; then
+  echo "[make_deb] dpkg not found; installing via apt..."
+  sudo apt-get install -y dpkg
+fi
+if ! dpkg --validate-version "${PKG_VERSION}" >/dev/null 2>&1; then
+  echo "ERROR: invalid Debian package version: ${PKG_VERSION}" >&2
+  exit 1
 fi
 
 # ---------- staging tree ----------
