@@ -10,7 +10,7 @@
 #   --version X.Y.Z  Override package version (default: git describe --tags --always).
 #   --output-dir DIR Where to write the .deb (default: dist/).
 #
-# Requirements: patchelf, dpkg-deb (auto-installed from apt if missing).
+# Requirements: patchelf, dpkg-deb, python3-yaml (auto-installed from apt if missing).
 set -euo pipefail
 
 TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -47,6 +47,10 @@ fi
 if ! command -v dpkg &>/dev/null; then
   echo "[make_deb] dpkg not found; installing via apt..."
   sudo apt-get install -y dpkg
+fi
+if ! command -v python3 &>/dev/null || ! python3 -c 'import yaml' >/dev/null 2>&1; then
+  echo "[make_deb] python3-yaml not found; installing via apt..."
+  sudo apt-get install -y python3 python3-yaml
 fi
 if [[ -z "${PKG_ARCH}" ]]; then
   PKG_ARCH="$(dpkg --print-architecture)"
