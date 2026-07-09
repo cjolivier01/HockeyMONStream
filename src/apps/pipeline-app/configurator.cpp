@@ -207,6 +207,75 @@ bool same_sequence_values(const std::vector<std::string>& a, const std::vector<s
   return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin());
 }
 
+int explicit_file_chapter(const std::string& file) {
+  const std::string filename = fs::path(file).filename().string();
+  std::smatch match;
+  static const std::regex gopro_pattern(R"(^G[A-Z]([0-9]{2})([0-9]{4})\.(MP4|mp4)$)");
+  static const std::regex insta360_pattern(R"(^VID_[0-9]{8}_[0-9]{6}_([0-9]{3})\.(MP4|mp4)$)");
+  static const std::regex left_right_pattern(R"((left|right)(?:-([0-9]))?\.mp4$)");
+  try {
+    if (std::regex_search(filename, match, gopro_pattern)) {
+      return std::stoi(match[1].str());
+    }
+    if (std::regex_search(filename, match, insta360_pattern)) {
+      return std::stoi(match[1].str());
+    }
+    if (std::regex_search(filename, match, left_right_pattern)) {
+      return match[2].matched ? std::stoi(match[2].str()) : 1;
+    }
+  } catch (const std::exception&) {
+    return -1;
+  }
+  return -1;
+}
+
+std::map<int, std::string> files_by_explicit_chapter(const std::vector<std::string>& files) {
+  std::map<int, std::string> by_chapter;
+  for (const std::string& file : files) {
+    const int chapter = explicit_file_chapter(file);
+    if (chapter <= 0 || by_chapter.count(chapter)) {
+      by_chapter.clear();
+      return by_chapter;
+    }
+    by_chapter[chapter] = file;
+  }
+  return by_chapter;
+}
+
+bool explicit_runtime_videos_match_ui_roles(
+    const std::vector<std::string>& runtime_left,
+    const std::vector<std::string>& runtime_right,
+    const std::vector<std::string>& ui_left,
+    const std::vector<std::string>& ui_right) {
+  if (runtime_left.empty() || runtime_right.empty() || ui_left.empty() || ui_right.empty()) {
+    return false;
+  }
+  const std::map<int, std::string> left_by_chapter = files_by_explicit_chapter(ui_left);
+  const std::map<int, std::string> right_by_chapter = files_by_explicit_chapter(ui_right);
+  if (!left_by_chapter.empty() && !right_by_chapter.empty()) {
+    if (left_by_chapter.size() != right_by_chapter.size()) {
+      return false;
+    }
+    std::vector<std::string> sorted_left;
+    std::vector<std::string> sorted_right;
+    for (const auto& [chapter, left_file] : left_by_chapter) {
+      auto right_found = right_by_chapter.find(chapter);
+      if (right_found == right_by_chapter.end()) {
+        return false;
+      }
+      sorted_left.emplace_back(left_file);
+      sorted_right.emplace_back(right_found->second);
+    }
+    return same_sequence_values(runtime_left, sorted_left) && same_sequence_values(runtime_right, sorted_right);
+  }
+  auto is_unparseable = [](const std::string& file) { return explicit_file_chapter(file) <= 0; };
+  if (ui_left.size() == ui_right.size() && std::all_of(ui_left.begin(), ui_left.end(), is_unparseable) &&
+      std::all_of(ui_right.begin(), ui_right.end(), is_unparseable)) {
+    return same_sequence_values(runtime_left, ui_left) && same_sequence_values(runtime_right, ui_right);
+  }
+  return false;
+}
+
 void remove_rotation_dependent_rink_cache_keys(YAML::Node& config);
 
 void remove_cleanable_stitching_cache_keys(YAML::Node& config) {
@@ -785,8 +854,8 @@ absl::Status Configurator::gather_stitching_videos(
       sequence_path_values(config_, {"hmstream_ui", "video_roles", "left"});
   const std::vector<std::string> ui_right_files =
       sequence_path_values(config_, {"hmstream_ui", "video_roles", "right"});
-  const bool runtime_videos_owned_by_ui_roles = explicit_left && explicit_right &&
-      same_sequence_values(left_files, ui_left_files) && same_sequence_values(right_files, ui_right_files);
+  const bool runtime_videos_owned_by_ui_roles =
+      explicit_runtime_videos_match_ui_roles(left_files, right_files, ui_left_files, ui_right_files);
   if (!force && has_cam_auto && !has_left_right_auto && !runtime_videos_owned_by_ui_roles &&
       (explicit_left || explicit_right)) {
     std::cerr << "Ignoring stale generated game.videos left/right because camN Auto video sets are available"
@@ -833,39 +902,8 @@ absl::Status Configurator::gather_stitching_videos(
     return matches;
   };
 
-  auto explicit_file_chapter = [](const std::string& file) {
-    const std::string filename = fs::path(file).filename().string();
-    std::smatch match;
-    static const std::regex gopro_pattern(R"(^G[A-Z]([0-9]{2})([0-9]{4})\.(MP4|mp4)$)");
-    static const std::regex insta360_pattern(R"(^VID_[0-9]{8}_[0-9]{6}_([0-9]{3})\.(MP4|mp4)$)");
-    static const std::regex left_right_pattern(R"((left|right)(?:-([0-9]))?\.mp4$)");
-    try {
-      if (std::regex_search(filename, match, gopro_pattern)) {
-        return std::stoi(match[1].str());
-      }
-      if (std::regex_search(filename, match, insta360_pattern)) {
-        return std::stoi(match[1].str());
-      }
-      if (std::regex_search(filename, match, left_right_pattern)) {
-        return match[2].matched ? std::stoi(match[2].str()) : 1;
-      }
-    } catch (const std::exception&) {
-      return -1;
-    }
-    return -1;
-  };
-
   auto explicit_files_by_chapter = [&](const std::vector<std::string>& files) {
-    std::map<int, std::string> by_chapter;
-    for (const std::string& file : files) {
-      const int chapter = explicit_file_chapter(file);
-      if (chapter <= 0 || by_chapter.count(chapter)) {
-        by_chapter.clear();
-        return by_chapter;
-      }
-      by_chapter[chapter] = file;
-    }
-    return by_chapter;
+    return files_by_explicit_chapter(files);
   };
 
   auto chapter_keys = [](const std::map<int, std::string>& files) {
