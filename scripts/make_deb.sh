@@ -50,6 +50,10 @@ fi
 if [[ -z "${PKG_ARCH}" ]]; then
   PKG_ARCH="$(dpkg --print-architecture)"
 fi
+if ! dpkg --validate-archname "${PKG_ARCH}" >/dev/null 2>&1; then
+  echo "ERROR: invalid Debian package architecture: ${PKG_ARCH}" >&2
+  exit 1
+fi
 if ! dpkg --validate-version "${PKG_VERSION}" >/dev/null 2>&1; then
   echo "ERROR: invalid Debian package version: ${PKG_VERSION}" >&2
   exit 1

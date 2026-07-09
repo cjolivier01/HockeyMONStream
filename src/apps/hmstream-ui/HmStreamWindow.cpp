@@ -960,8 +960,8 @@ bool HmStreamWindow::importVideoPath(const QString& source_path, QString* import
 
   const QString game_dir = gameDirectory(game_id_edit_->text());
   QDir target_dir(game_dir);
+  int max_cam_index = 0;
   if (role == "auto") {
-    int max_cam_index = 0;
     const QFileInfoList dirs = target_dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
     const QRegularExpression cam_pattern("^cam([0-9]+)$", QRegularExpression::CaseInsensitiveOption);
     for (const QFileInfo& dir : dirs) {
@@ -995,7 +995,20 @@ bool HmStreamWindow::importVideoPath(const QString& source_path, QString* import
   QString dest_name = source.fileName();
   QString dest_path = target_dir.filePath(dest_name);
   int suffix = 2;
-  while (QFileInfo::exists(dest_path) && QFileInfo(dest_path).canonicalFilePath() != source.canonicalFilePath()) {
+  while (QFileInfo::exists(dest_path) && QFileInfo(dest_path).canonicalFilePath() != source.canonicalFilePath() &&
+         role == "auto") {
+    target_dir = QDir(game_dir);
+    const QString cam_dir = QString("cam%1").arg(++max_cam_index);
+    if (!target_dir.exists(cam_dir) && !target_dir.mkdir(cam_dir)) {
+      appendLog(QString("failed to create video set directory %1").arg(cam_dir));
+      return false;
+    }
+    target_dir.cd(cam_dir);
+    dest_name = source.fileName();
+    dest_path = target_dir.filePath(dest_name);
+  }
+  while (QFileInfo::exists(dest_path) && QFileInfo(dest_path).canonicalFilePath() != source.canonicalFilePath() &&
+         role != "auto") {
     dest_name = QString("%1-%2.%3").arg(source.completeBaseName()).arg(suffix++).arg(source.suffix());
     dest_path = target_dir.filePath(dest_name);
   }
