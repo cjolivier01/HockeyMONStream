@@ -1328,6 +1328,7 @@ void HmStreamWindow::applySavedControlConfig(YAML::Node& config) {
   YAML::Node previous_hmstream_ui = map_value(config, "hmstream_ui");
   YAML::Node previous_generated = map_value(previous_hmstream_ui, "generated_runtime_keys");
   YAML::Node previous_generated_values = map_value(previous_hmstream_ui, "generated_runtime_values");
+  YAML::Node previous_playtracker_config_base = map_value(previous_hmstream_ui, "playtracker_config_base");
   if (yaml_defined(previous_generated) && previous_generated.IsSequence()) {
     for (const auto& item : previous_generated) {
       const QString path = QString::fromStdString(item.as<std::string>());
@@ -1343,6 +1344,12 @@ void HmStreamWindow::applySavedControlConfig(YAML::Node& config) {
   }
   remove_yaml_path(config, {"hmstream_ui", "generated_runtime_keys"});
   remove_yaml_path(config, {"hmstream_ui", "generated_runtime_values"});
+  remove_yaml_path(config, {"hmstream_ui", "playtracker_config_base"});
+  YAML::Node current_playtracker_config;
+  if (previous_playtracker_config_base && previous_playtracker_config_base.IsScalar() &&
+      !lookup_yaml_path(config, "pipeline.ds-playtracker.config-file", &current_playtracker_config)) {
+    config["pipeline"]["ds-playtracker"]["config-file"] = previous_playtracker_config_base.as<std::string>();
+  }
   remove_yaml_path_if_empty_map(config, {"stitching", "left", "color"});
   remove_yaml_path_if_empty_map(config, {"stitching", "right", "color"});
   remove_yaml_path_if_empty_map(config, {"rink", "camera", "color"});
@@ -1500,54 +1507,93 @@ void HmStreamWindow::applySavedControlConfig(YAML::Node& config) {
   apply_ratio_control("Max_Accel_Y_x10", "max_accel_ratio_y");
   const bool has_live_box_runtime_controls = has_control(controls, "Max_Speed_X_x10") ||
       has_control(controls, "Max_Speed_Y_x10") || has_control(controls, "Max_Accel_X_x10") ||
-      has_control(controls, "Max_Accel_Y_x10") || has_control(controls, "Apply_To_Fast_Box") ||
-      has_control(controls, "Apply_To_Follower_Box");
+      has_control(controls, "Max_Accel_Y_x10");
   if (has_live_box_runtime_controls && game_id_edit_) {
     const QString game_dir = gameDirectory(game_id_edit_->text());
     QDir runtime_dir(QDir(game_dir).filePath(".hmstream-ui"));
-    if (!runtime_dir.exists()) {
-      runtime_dir.mkpath(".");
-    }
-    const QString runtime_config_path = runtime_dir.filePath("play_tracker_config.yaml");
-    try {
-      const QString base_playtracker_config = pipelineConfigPath("play_tracker_config.yaml");
-      YAML::Node play_tracker_config = QFileInfo::exists(base_playtracker_config)
-          ? YAML::LoadFile(base_playtracker_config.toStdString())
-          : YAML::Node(YAML::NodeType::Map);
-      if (!play_tracker_config["play-tracker"] || !play_tracker_config["play-tracker"].IsMap()) {
-        play_tracker_config["play-tracker"] = YAML::Node(YAML::NodeType::Map);
-      }
-      if (!play_tracker_config["play-tracker"]["live-boxes"] ||
-          !play_tracker_config["play-tracker"]["live-boxes"].IsSequence()) {
-        play_tracker_config["play-tracker"]["live-boxes"] = YAML::Node(YAML::NodeType::Sequence);
-      }
-      YAML::Node live_boxes = play_tracker_config["play-tracker"]["live-boxes"];
-      while (live_boxes.size() < 2) {
-        YAML::Node box(YAML::NodeType::Map);
-        box["name"] = live_boxes.size() == 0 ? "current_roi" : "current_roi_aspect";
-        live_boxes.push_back(box);
-      }
+    if (!runtime_dir.exists() && !runtime_dir.mkpath(".")) {
+      appendLog(QString("could not create playtracker runtime config directory %1").arg(runtime_dir.path()));
+    } else {
+      const QString runtime_config_path = runtime_dir.filePath("play_tracker_config.yaml");
+      try {
+        QString base_playtracker_config = pipelineConfigPath("play_tracker_config.yaml");
+        QString configured_playtracker_config;
+        YAML::Node configured_config_file;
+        if (lookup_yaml_path(config, "pipeline.ds-playtracker.config-file", &configured_config_file) &&
+            configured_config_file.IsScalar()) {
+          const QString configured = QString::fromStdString(configured_config_file.as<std::string>());
+          const QStringList candidates = {
+              configured,
+              QDir(game_dir).filePath(configured),
+              QDir(pipelineWorkingDirectory()).filePath(configured),
+              QDir(QDir(pipelineWorkingDirectory()).filePath("configs")).filePath(configured),
+          };
+          for (const QString& candidate : candidates) {
+            if (QFileInfo::exists(candidate)) {
+              base_playtracker_config = candidate;
+              configured_playtracker_config = configured;
+              break;
+            }
+          }
+        }
+        YAML::Node play_tracker_config = QFileInfo::exists(base_playtracker_config)
+            ? YAML::LoadFile(base_playtracker_config.toStdString())
+            : YAML::Node(YAML::NodeType::Map);
+        if (!play_tracker_config["play-tracker"] || !play_tracker_config["play-tracker"].IsMap()) {
+          play_tracker_config["play-tracker"] = YAML::Node(YAML::NodeType::Map);
+        }
+        if (!play_tracker_config["play-tracker"]["live-boxes"] ||
+            !play_tracker_config["play-tracker"]["live-boxes"].IsSequence()) {
+          play_tracker_config["play-tracker"]["live-boxes"] = YAML::Node(YAML::NodeType::Sequence);
+        }
+        YAML::Node live_boxes = play_tracker_config["play-tracker"]["live-boxes"];
+        while (live_boxes.size() < 2) {
+          YAML::Node box(YAML::NodeType::Map);
+          box["name"] = live_boxes.size() == 0 ? "current_roi" : "current_roi_aspect";
+          live_boxes.push_back(box);
+        }
 
-      auto apply_live_box = [&](int index) {
-        live_boxes[index]["max-speed-x"] = static_cast<double>(slider_value("Max_Speed_X_x10")) / 10.0;
-        live_boxes[index]["max-speed-y"] = static_cast<double>(slider_value("Max_Speed_Y_x10")) / 10.0;
-        live_boxes[index]["max-accel-x"] = static_cast<double>(slider_value("Max_Accel_X_x10")) / 10.0;
-        live_boxes[index]["max-accel-y"] = static_cast<double>(slider_value("Max_Accel_Y_x10")) / 10.0;
-      };
-      if (slider_value("Apply_To_Fast_Box") != 0) {
-        apply_live_box(0);
-      }
-      if (slider_value("Apply_To_Follower_Box") != 0) {
-        apply_live_box(1);
-      }
+        auto apply_live_box = [&](int index) {
+          if (has_control(controls, "Max_Speed_X_x10")) {
+            live_boxes[index]["max-speed-x"] = static_cast<double>(slider_value("Max_Speed_X_x10")) / 10.0;
+          }
+          if (has_control(controls, "Max_Speed_Y_x10")) {
+            live_boxes[index]["max-speed-y"] = static_cast<double>(slider_value("Max_Speed_Y_x10")) / 10.0;
+          }
+          if (has_control(controls, "Max_Accel_X_x10")) {
+            live_boxes[index]["max-accel-x"] = static_cast<double>(slider_value("Max_Accel_X_x10")) / 10.0;
+          }
+          if (has_control(controls, "Max_Accel_Y_x10")) {
+            live_boxes[index]["max-accel-y"] = static_cast<double>(slider_value("Max_Accel_Y_x10")) / 10.0;
+          }
+        };
+        if (slider_value("Apply_To_Fast_Box") != 0) {
+          apply_live_box(0);
+        }
+        if (slider_value("Apply_To_Follower_Box") != 0) {
+          apply_live_box(1);
+        }
 
-      std::ofstream tracker_out(runtime_config_path.toStdString());
-      tracker_out << play_tracker_config << "\n";
-      config["pipeline"]["ds-playtracker"]["config-file"] = runtime_config_path.toStdString();
-      mark_runtime_key("pipeline.ds-playtracker.config-file");
-      appendLog(QString("playtracker runtime config saved %1").arg(runtime_config_path));
-    } catch (const std::exception& exc) {
-      appendLog(QString("could not save playtracker runtime config: %1").arg(exc.what()));
+        std::ofstream tracker_out(runtime_config_path.toStdString());
+        if (!tracker_out) {
+          appendLog(QString("could not open playtracker runtime config %1").arg(runtime_config_path));
+        } else {
+          tracker_out << play_tracker_config << "\n";
+          tracker_out.close();
+          if (!tracker_out) {
+            appendLog(QString("could not write playtracker runtime config %1").arg(runtime_config_path));
+          } else {
+            config["pipeline"]["ds-playtracker"]["config-file"] = runtime_config_path.toStdString();
+            if (!configured_playtracker_config.isEmpty() && configured_playtracker_config != runtime_config_path) {
+              config["hmstream_ui"]["playtracker_config_base"] = configured_playtracker_config.toStdString();
+            }
+            mark_runtime_key("pipeline.ds-playtracker.config-file");
+            appendLog(QString("playtracker runtime config saved %1").arg(runtime_config_path));
+          }
+        }
+      } catch (const std::exception& exc) {
+        appendLog(QString("could not save playtracker runtime config: %1").arg(exc.what()));
+      }
     }
   }
   if (has_control(controls, "Apply_To_Fast_Box")) {

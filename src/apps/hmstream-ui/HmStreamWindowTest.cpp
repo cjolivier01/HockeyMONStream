@@ -64,7 +64,17 @@ bool lookup_yaml_path_at(
     return true;
   }
   YAML::Node next;
-  if (!lookup_yaml_key(node, path[index], &next)) {
+  if (node.IsSequence()) {
+    std::string segment(path[index]);
+    if (segment.empty() || segment.find_first_not_of("0123456789") != std::string::npos) {
+      return false;
+    }
+    const size_t sequence_index = static_cast<size_t>(std::stoul(segment));
+    if (sequence_index >= node.size()) {
+      return false;
+    }
+    next = node[sequence_index];
+  } else if (!lookup_yaml_key(node, path[index], &next)) {
     return false;
   }
   return lookup_yaml_path_at(next, path, index + 1, value);
@@ -772,10 +782,19 @@ bool test_camera_controls(HmStreamWindow* window) {
   YAML::Node live_boxes;
   const bool has_live_boxes = lookup_yaml_path(playtracker_config, {"play-tracker", "live-boxes"}, &live_boxes);
   YAML::Node follower_max_speed_x;
+  YAML::Node follower_max_speed_y;
+  YAML::Node follower_max_accel_x;
+  YAML::Node follower_max_accel_y;
   YAML::Node fast_max_speed_x;
   const bool saved_follower_max_speed_x = has_live_boxes && live_boxes.IsSequence() && live_boxes.size() > 1 &&
       lookup_yaml_key(live_boxes[1], "max-speed-x", &follower_max_speed_x) && follower_max_speed_x.IsScalar() &&
       follower_max_speed_x.as<double>() == 45.0;
+  const bool saved_follower_max_speed_y = has_live_boxes && live_boxes.IsSequence() && live_boxes.size() > 1 &&
+      lookup_yaml_key(live_boxes[1], "max-speed-y", &follower_max_speed_y);
+  const bool saved_follower_max_accel_x = has_live_boxes && live_boxes.IsSequence() && live_boxes.size() > 1 &&
+      lookup_yaml_key(live_boxes[1], "max-accel-x", &follower_max_accel_x);
+  const bool saved_follower_max_accel_y = has_live_boxes && live_boxes.IsSequence() && live_boxes.size() > 1 &&
+      lookup_yaml_key(live_boxes[1], "max-accel-y", &follower_max_accel_y);
   const bool saved_fast_max_speed_x = has_live_boxes && live_boxes.IsSequence() && live_boxes.size() > 0 &&
       lookup_yaml_key(live_boxes[0], "max-speed-x", &fast_max_speed_x);
   const bool has_default_follower =
@@ -789,10 +808,12 @@ bool test_camera_controls(HmStreamWindow* window) {
       !expect(has_saved_rotation && saved_rotation_ok, "Stitch slider should save the runtime rotation config") ||
       !expect(has_saved_max_speed_x && saved_max_speed_x_ok, "Speed slider should save runtime ratio config") ||
       !expect(
-          has_saved_playtracker_config_path && saved_follower_max_speed_x && !saved_fast_max_speed_x,
-          "Speed slider should save follower playtracker runtime config")) {
+          has_saved_playtracker_config_path && saved_follower_max_speed_x && !saved_follower_max_speed_y &&
+              !saved_follower_max_accel_x && !saved_follower_max_accel_y && !saved_fast_max_speed_x,
+          "Speed slider should save only changed follower playtracker runtime config")) {
     if (!has_saved_rotation || !saved_rotation_ok || !has_saved_max_speed_x || !saved_max_speed_x_ok ||
-        !saved_follower_max_speed_x || saved_fast_max_speed_x) {
+        !saved_follower_max_speed_x || saved_follower_max_speed_y || saved_follower_max_accel_x ||
+        saved_follower_max_accel_y || saved_fast_max_speed_x) {
       std::cerr << saved << '\n';
       std::cerr << playtracker_config << '\n';
     }
@@ -821,6 +842,23 @@ bool test_camera_controls(HmStreamWindow* window) {
   left_copy["color"] = left_color_copy;
   stitching_copy["left"] = left_copy;
   saved["stitching"] = stitching_copy;
+  const fs::path custom_playtracker_config =
+      fs::path(window->gameDirectoryText().toStdString()) / "custom_playtracker.yaml";
+  {
+    YAML::Node custom_tracker(YAML::NodeType::Map);
+    YAML::Node live_boxes_custom(YAML::NodeType::Sequence);
+    YAML::Node fast_box(YAML::NodeType::Map);
+    fast_box["name"] = "current_roi";
+    YAML::Node follower_box(YAML::NodeType::Map);
+    follower_box["name"] = "current_roi_aspect";
+    follower_box["sticky-translation-gaussian-mult"] = 9.5;
+    live_boxes_custom.push_back(fast_box);
+    live_boxes_custom.push_back(follower_box);
+    custom_tracker["play-tracker"]["live-boxes"] = live_boxes_custom;
+    std::ofstream out(custom_playtracker_config);
+    out << custom_tracker << "\n";
+  }
+  saved["pipeline"]["ds-playtracker"]["config-file"] = custom_playtracker_config.string();
   {
     std::ofstream out(config);
     out << saved << "\n";
@@ -850,9 +888,31 @@ bool test_camera_controls(HmStreamWindow* window) {
   const bool saved_left_brightness =
       lookup_yaml_path(same_prefix, {"stitching", "left", "color", "brightness"}, &same_prefix_left_brightness) &&
       same_prefix_left_brightness.IsScalar() && same_prefix_left_brightness.as<double>() == 1.1;
+  YAML::Node same_prefix_tracker_path;
+  const bool has_same_prefix_tracker_path =
+      lookup_yaml_path(same_prefix, {"pipeline", "ds-playtracker", "config-file"}, &same_prefix_tracker_path);
+  YAML::Node same_prefix_tracker =
+      has_same_prefix_tracker_path && fs::exists(same_prefix_tracker_path.as<std::string>())
+      ? YAML::LoadFile(same_prefix_tracker_path.as<std::string>())
+      : YAML::Node();
+  YAML::Node preserved_custom_tracker_value;
+  const bool preserved_custom_tracker_config =
+      lookup_yaml_path(
+          same_prefix_tracker,
+          {"play-tracker", "live-boxes", "1", "sticky-translation-gaussian-mult"},
+          &preserved_custom_tracker_value) &&
+      preserved_custom_tracker_value.IsScalar() && preserved_custom_tracker_value.as<double>() == 9.5;
+  YAML::Node saved_playtracker_base;
+  const bool remembered_custom_tracker_base =
+      lookup_yaml_path(same_prefix, {"hmstream_ui", "playtracker_config_base"}, &saved_playtracker_base) &&
+      saved_playtracker_base.IsScalar() &&
+      saved_playtracker_base.as<std::string>() == custom_playtracker_config.string();
   if (!expect(preserved_left_gamma, "Saving one color leaf should preserve manual same-prefix color edits") ||
-      !expect(saved_left_brightness, "Saving one color leaf should persist that leaf")) {
+      !expect(saved_left_brightness, "Saving one color leaf should persist that leaf") ||
+      !expect(preserved_custom_tracker_config, "Generated playtracker config should preserve custom base config") ||
+      !expect(remembered_custom_tracker_base, "Generated playtracker config should remember custom base path")) {
     std::cerr << same_prefix << '\n';
+    std::cerr << same_prefix_tracker << '\n';
     return false;
   }
 
@@ -870,6 +930,11 @@ bool test_camera_controls(HmStreamWindow* window) {
   const bool preserved_manual_left_gamma =
       lookup_yaml_path(cleaned, {"stitching", "left", "color", "gamma"}, &preserved_left_gamma_node) &&
       preserved_left_gamma_node.IsScalar() && preserved_left_gamma_node.as<double>() == 1.75;
+  YAML::Node restored_playtracker_config_path;
+  const bool restored_custom_playtracker_config =
+      lookup_yaml_path(cleaned, {"pipeline", "ds-playtracker", "config-file"}, &restored_playtracker_config_path) &&
+      restored_playtracker_config_path.IsScalar() &&
+      restored_playtracker_config_path.as<std::string>() == custom_playtracker_config.string();
   if (!preserved_manual_gamma || !preserved_manual_left_gamma) {
     std::cerr << cleaned << '\n';
   }
@@ -878,8 +943,7 @@ bool test_camera_controls(HmStreamWindow* window) {
              "Saving defaults should clear saved camera controls") &&
       expect(!lookup_yaml_path(cleaned, {"stitching", "post_stitch_rotate_degrees"}, nullptr),
              "Saving defaults should clear UI-generated stitch runtime override") &&
-      expect(!lookup_yaml_path(cleaned, {"pipeline", "ds-playtracker", "config-file"}, nullptr),
-             "Saving defaults should clear UI-generated playtracker config override") &&
+      expect(restored_custom_playtracker_config, "Saving defaults should restore custom playtracker config override") &&
       expect(!lookup_yaml_path(cleaned, {"stitching", "left", "color", "brightness"}, nullptr),
              "Saving defaults should clear UI-generated side color leaf") &&
       expect(preserved_manual_gamma, "Saving defaults should preserve non-UI-authored runtime config") &&

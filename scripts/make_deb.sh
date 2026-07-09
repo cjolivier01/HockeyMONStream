@@ -5,7 +5,8 @@
 # Usage:
 #   scripts/make_deb.sh [--build] [--version X.Y.Z] [--output-dir DIR]
 #
-#   --build          Run 'make hmstream-cli hmstream-ui' before packaging (default: skip, use existing artifacts).
+#   --build          Run 'make hmstream-cli hmstream-ui yolo-custom-lib' before packaging
+#                    (default: skip, use existing artifacts).
 #   --version X.Y.Z  Override package version (default: git describe --tags --always).
 #   --output-dir DIR Where to write the .deb (default: dist/).
 #
@@ -65,8 +66,8 @@ fi
 
 # ---------- optional build ----------
 if [[ "$DO_BUILD" -eq 1 ]]; then
-  echo "[make_deb] Building hmstream-cli and hmstream-ui..."
-  make -C "${TOPDIR}" hmstream-cli hmstream-ui
+  echo "[make_deb] Building hmstream-cli, hmstream-ui, and YOLO custom inference lib..."
+  make -C "${TOPDIR}" hmstream-cli hmstream-ui yolo-custom-lib
 fi
 
 # ---------- verify artifacts ----------
