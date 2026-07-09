@@ -23,6 +23,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -34,6 +35,43 @@ bool expect(bool condition, const std::string& message) {
     return false;
   }
   return true;
+}
+
+bool lookup_yaml_key(YAML::Node parent, const char* key, YAML::Node* value) {
+  if (!parent.IsMap()) {
+    return false;
+  }
+  for (const auto& entry : parent) {
+    if (entry.first.IsScalar() && entry.first.as<std::string>() == key) {
+      if (value) {
+        *value = entry.second;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+bool lookup_yaml_path_at(
+    const YAML::Node& node,
+    const std::vector<const char*>& path,
+    size_t index,
+    YAML::Node* value) {
+  if (index >= path.size()) {
+    if (value) {
+      *value = node;
+    }
+    return true;
+  }
+  YAML::Node next;
+  if (!lookup_yaml_key(node, path[index], &next)) {
+    return false;
+  }
+  return lookup_yaml_path_at(next, path, index + 1, value);
+}
+
+bool lookup_yaml_path(YAML::Node root, std::initializer_list<const char*> path, YAML::Node* value) {
+  return lookup_yaml_path_at(root, std::vector<const char*>(path), 0, value);
 }
 
 template <typename T>
@@ -671,14 +709,19 @@ bool test_camera_controls(HmStreamWindow* window) {
   }
 
   auto* exposure = require_child<QSlider>(window, "cameraSlider_Exposure_EV_x10");
+  auto* exposure_value = require_child<QLabel>(window, "cameraValue_Exposure_EV_x10");
   auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
   auto* left_gamma = require_child<QSlider>(window, "cameraSlider_Left_Gamma_Multiplier_x100");
   auto* reset = require_child<QPushButton>(window, "resetCameraButton");
   auto* save = require_child<QPushButton>(window, "savePresetButton");
   auto* create = require_child<QPushButton>(window, "createGameButton");
-  if (!exposure || !rotate || !left_gamma || !reset || !save || !create) {
+  auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
+  if (!exposure || !exposure_value || !rotate || !left_gamma || !reset || !save || !create || !game_id) {
     return false;
   }
+
+  game_id->setText("ui-camera-control-game");
+  activate(create);
 
   exposure->setValue(47);
   rotate->setValue(72);
@@ -696,19 +739,48 @@ bool test_camera_controls(HmStreamWindow* window) {
   activate(save);
   const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
   YAML::Node saved = YAML::LoadFile(config.string());
+  auto saved_int = [&](const char* key, int expected) {
+    YAML::Node value;
+    if (!lookup_yaml_path(saved, {"hmstream_ui", "camera_controls", key}, &value)) {
+      return false;
+    }
+    return value && value.IsScalar() && value.as<int>() == expected;
+  };
+  const bool saved_controls_ok = saved_int("Exposure_EV_x10", 47) && saved_int("Stitch_Rotate_Degrees", 72) &&
+      saved_int("Left_Gamma_Multiplier_x100", 125);
+  YAML::Node saved_rotation;
+  const bool has_saved_rotation = lookup_yaml_path(saved, {"stitching", "post_stitch_rotate_degrees"}, &saved_rotation);
+  const bool saved_rotation_ok = saved_rotation && saved_rotation.IsScalar() && saved_rotation.as<int>() == 18;
+  const bool has_default_follower =
+      lookup_yaml_path(saved, {"hmstream_ui", "camera_controls", "Apply_To_Follower_Box"}, nullptr);
+  if (!saved_controls_ok) {
+    std::cerr << saved << '\n';
+  }
   if (!expect(window->logText().contains("preset saved"), "Save preset button should log persistence") ||
-      !expect(
-          saved["hmstream_ui"]["camera_controls"]["Exposure_EV_x10"].as<int>() == 47 &&
-              saved["hmstream_ui"]["camera_controls"]["Stitch_Rotate_Degrees"].as<int>() == 72 &&
-              saved["hmstream_ui"]["camera_controls"]["Left_Gamma_Multiplier_x100"].as<int>() == 125,
-          "Save preset should persist non-default control values") ||
-      !expect(
-          !saved["hmstream_ui"]["camera_controls"]["Apply_To_Follower_Box"],
-          "Save preset should omit default control values") ||
-      !expect(
-          saved["stitching"]["post_stitch_rotate_degrees"].as<int>() == 18,
-          "Stitch slider should save the runtime rotation config")) {
+      !expect(saved_controls_ok, "Save preset should persist non-default control values") ||
+      !expect(!has_default_follower, "Save preset should omit default control values") ||
+      !expect(has_saved_rotation && saved_rotation_ok, "Stitch slider should save the runtime rotation config")) {
+    if (!has_saved_rotation || !saved_rotation_ok) {
+      std::cerr << saved << '\n';
+    }
     return false;
+  }
+  YAML::Node stitching;
+  lookup_yaml_path(saved, {"stitching"}, &stitching);
+  YAML::Node stitching_copy = stitching && stitching.IsMap() ? YAML::Clone(stitching) : YAML::Node(YAML::NodeType::Map);
+  YAML::Node right;
+  lookup_yaml_path(stitching_copy, {"right"}, &right);
+  YAML::Node right_copy = right && right.IsMap() ? YAML::Clone(right) : YAML::Node(YAML::NodeType::Map);
+  YAML::Node color;
+  lookup_yaml_path(right_copy, {"color"}, &color);
+  YAML::Node color_copy = color && color.IsMap() ? YAML::Clone(color) : YAML::Node(YAML::NodeType::Map);
+  color_copy["gamma"] = 1.75;
+  right_copy["color"] = color_copy;
+  stitching_copy["right"] = right_copy;
+  saved["stitching"] = stitching_copy;
+  {
+    std::ofstream out(config);
+    out << saved << "\n";
   }
 
   activate(reset);
@@ -718,19 +790,32 @@ bool test_camera_controls(HmStreamWindow* window) {
 
   activate(create);
   if (!expect(window->cameraControlValue("Exposure_EV_x10") == 47, "Create/Load should restore saved controls") ||
-      !expect(window->cameraControlValue("Stitch_Rotate_Degrees") == 72, "Create/Load should restore stitch control")) {
+      !expect(window->cameraControlValue("Stitch_Rotate_Degrees") == 72, "Create/Load should restore stitch control") ||
+      !expect(exposure_value->text() == "47", "Create/Load should refresh visible camera value labels")) {
     return false;
   }
 
   activate(reset);
   activate(save);
   YAML::Node cleaned = YAML::LoadFile(config.string());
+  YAML::Node cleaned_controls;
+  const bool has_cleaned_controls = lookup_yaml_path(cleaned, {"hmstream_ui", "camera_controls"}, &cleaned_controls);
+  YAML::Node preserved_gamma;
+  const bool has_preserved_gamma =
+      lookup_yaml_path(cleaned, {"stitching", "right", "color", "gamma"}, &preserved_gamma);
+  const bool preserved_manual_gamma =
+      has_preserved_gamma && preserved_gamma.IsScalar() && preserved_gamma.as<double>() == 1.75;
+  if (!preserved_manual_gamma) {
+    std::cerr << cleaned << '\n';
+  }
   return expect(
-             cleaned["hmstream_ui"]["camera_controls"].size() == 0,
+             has_cleaned_controls && cleaned_controls.IsMap() && cleaned_controls.size() == 0,
              "Saving defaults should clear saved camera controls") &&
-      expect(!cleaned["stitching"]["post_stitch_rotate_degrees"],
+      expect(!lookup_yaml_path(cleaned, {"stitching", "post_stitch_rotate_degrees"}, nullptr),
              "Saving defaults should clear UI-generated stitch runtime override") &&
-      expect(!cleaned["stitching"]["left"]["color"], "Saving defaults should clear UI-generated side color override");
+      expect(!lookup_yaml_path(cleaned, {"stitching", "left", "color"}, nullptr),
+             "Saving defaults should clear UI-generated side color override") &&
+      expect(preserved_manual_gamma, "Saving defaults should preserve non-UI-authored runtime config");
 }
 
 } // namespace
@@ -752,8 +837,20 @@ int main(int argc, char** argv) {
   HmStreamWindow window;
   window.show();
 
-  if (!test_game_setup(&window, source_root.path()) || !test_pipeline_buttons(&window) ||
-      !test_output_controls(&window) || !test_camera_controls(&window)) {
+  if (!test_game_setup(&window, source_root.path())) {
+    std::cerr << "test_game_setup failed\n";
+    return 1;
+  }
+  if (!test_pipeline_buttons(&window)) {
+    std::cerr << "test_pipeline_buttons failed\n";
+    return 1;
+  }
+  if (!test_output_controls(&window)) {
+    std::cerr << "test_output_controls failed\n";
+    return 1;
+  }
+  if (!test_camera_controls(&window)) {
+    std::cerr << "test_camera_controls failed\n";
     return 1;
   }
   return 0;

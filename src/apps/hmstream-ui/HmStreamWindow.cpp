@@ -37,6 +37,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -291,27 +292,129 @@ bool clear_stitching_frame_offsets(YAML::Node& config) {
   return changed;
 }
 
+bool yaml_defined(YAML::Node node) {
+  return node.IsDefined();
+}
+
 bool remove_yaml_key(YAML::Node parent, const char* key) {
-  if (!parent || !parent[key]) {
+  if (!yaml_defined(parent) || !parent.IsMap()) {
+    return false;
+  }
+  for (const auto& entry : parent) {
+    if (entry.first.IsScalar() && entry.first.as<std::string>() == key) {
+      parent.remove(key);
+      return true;
+    }
+  }
+  return false;
+}
+
+YAML::Node map_value(YAML::Node parent, const char* key) {
+  if (!parent.IsMap()) {
+    return YAML::Node();
+  }
+  for (const auto& entry : parent) {
+    if (entry.first.IsScalar() && entry.first.as<std::string>() == key) {
+      return entry.second;
+    }
+  }
+  return YAML::Node();
+}
+
+bool lookup_yaml_key(YAML::Node parent, const char* key, YAML::Node* value) {
+  if (!parent.IsMap()) {
+    return false;
+  }
+  for (const auto& entry : parent) {
+    if (entry.first.IsScalar() && entry.first.as<std::string>() == key) {
+      if (value) {
+        *value = entry.second;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+bool has_yaml_key(YAML::Node parent, const char* key) {
+  return lookup_yaml_key(parent, key, nullptr);
+}
+
+bool has_control(YAML::Node controls, const char* key) {
+  return has_yaml_key(controls, key);
+}
+
+bool remove_yaml_key_mutating(YAML::Node parent, const char* key) {
+  if (!parent.IsMap() || !has_yaml_key(parent, key)) {
     return false;
   }
   parent.remove(key);
   return true;
 }
 
+bool remove_yaml_path_at(YAML::Node node, const std::vector<const char*>& path, size_t index) {
+  if (index + 1 == path.size()) {
+    return remove_yaml_key_mutating(node, path[index]);
+  }
+  YAML::Node next;
+  if (!lookup_yaml_key(node, path[index], &next)) {
+    return false;
+  }
+  return remove_yaml_path_at(next, path, index + 1);
+}
+
 bool remove_yaml_path(YAML::Node root, std::initializer_list<const char*> path) {
   if (path.size() == 0) {
     return false;
   }
-  YAML::Node node = root;
-  auto it = path.begin();
-  for (size_t i = 0; i + 1 < path.size(); ++i, ++it) {
-    if (!node || !node[*it]) {
-      return false;
-    }
-    node = node[*it];
+  return remove_yaml_path_at(root, std::vector<const char*>(path), 0);
+}
+
+bool remove_yaml_path(YAML::Node root, const QString& dotted_path) {
+  const QStringList parts = dotted_path.split('.', Qt::SkipEmptyParts);
+  if (parts.isEmpty()) {
+    return false;
   }
-  return remove_yaml_key(node, *it);
+  std::vector<std::string> storage;
+  std::vector<const char*> path;
+  storage.reserve(parts.size());
+  path.reserve(parts.size());
+  for (const QString& part : parts) {
+    storage.push_back(part.toStdString());
+    path.push_back(storage.back().c_str());
+  }
+  return remove_yaml_path_at(root, path, 0);
+}
+
+bool lookup_yaml_path_at(const YAML::Node& node, const QStringList& parts, int index, YAML::Node* value) {
+  if (index >= parts.size()) {
+    if (value) {
+      *value = node;
+    }
+    return true;
+  }
+  const std::string key = parts[index].toStdString();
+  YAML::Node next;
+  if (!lookup_yaml_key(node, key.c_str(), &next)) {
+    return false;
+  }
+  return lookup_yaml_path_at(next, parts, index + 1, value);
+}
+
+bool lookup_yaml_path(YAML::Node root, const QString& dotted_path, YAML::Node* value) {
+  const QStringList parts = dotted_path.split('.', Qt::SkipEmptyParts);
+  return lookup_yaml_path_at(root, parts, 0, value);
+}
+
+void remove_yaml_path_if_empty_map(YAML::Node root, std::initializer_list<const char*> path) {
+  QStringList parts;
+  for (const char* part : path) {
+    parts.push_back(part);
+  }
+  YAML::Node value;
+  if (lookup_yaml_path(root, parts.join('.'), &value) && value.IsMap() && value.size() == 0) {
+    remove_yaml_path(root, path);
+  }
 }
 
 double slider_to_exposure_ev(int position) {
@@ -817,6 +920,59 @@ QString HmStreamWindow::pipelineWorkingDirectory() const {
   return QDir::currentPath();
 }
 
+bool HmStreamWindow::setupPretrainedAssets(const QStringList& pipeline_args) {
+  if (!qgetenv("HMSTREAM_UI_TEST_RUNNER").isEmpty()) {
+    return true;
+  }
+
+  QString script = "/opt/hmstream/scripts/setup_pretrained_assets.py";
+  if (!QFileInfo::exists(script)) {
+    script = QDir("scripts").filePath("setup_pretrained_assets.py");
+  }
+  if (!QFileInfo::exists(script)) {
+    return true;
+  }
+
+  QStringList config_files;
+  for (int i = 0; i < pipeline_args.size(); ++i) {
+    const QString arg = pipeline_args[i];
+    if ((arg == "-c" || arg == "--config") && i + 1 < pipeline_args.size()) {
+      config_files.push_back(pipeline_args[++i]);
+    } else if (arg.startsWith("-c=") || arg.startsWith("--config=")) {
+      config_files.push_back(arg.mid(arg.indexOf('=') + 1));
+    }
+  }
+  if (config_files.isEmpty()) {
+    return true;
+  }
+
+  const QString python = qEnvironmentVariable("PYTHON_BIN", "python3");
+  QStringList setup_args;
+  setup_args << script;
+  setup_args << config_files;
+  appendLog(QString("checking pretrained assets %1").arg(config_files.join(' ')));
+
+  QProcess setup;
+  setup.setWorkingDirectory(pipelineWorkingDirectory());
+  setup.start(python, setup_args);
+  if (!setup.waitForStarted(5000)) {
+    appendLog(QString("failed to start asset setup: %1").arg(setup.errorString()));
+    return false;
+  }
+  setup.waitForFinished(-1);
+  const QString output = QString::fromLocal8Bit(setup.readAllStandardOutput() + setup.readAllStandardError()).trimmed();
+  if (!output.isEmpty()) {
+    for (const QString& line : output.split('\n')) {
+      appendLog(line.trimmed());
+    }
+  }
+  if (setup.exitStatus() != QProcess::NormalExit || setup.exitCode() != 0) {
+    appendLog(QString("asset setup failed exit=%1").arg(setup.exitCode()));
+    return false;
+  }
+  return true;
+}
+
 QStringList HmStreamWindow::enabledSinkNames() const {
   QStringList sinks;
   for (const auto& [id, toggle] : output_toggles_) {
@@ -871,6 +1027,20 @@ void HmStreamWindow::startPipeline() {
 
   const QString runner = pipelineRunnerPath();
   const QStringList args = pipelineArguments();
+  if (QFileInfo(runner).isAbsolute() && !QFileInfo::exists(runner)) {
+    pipeline_state_->setText("STOPPED");
+    preview_status_->setText("Pipeline failed to start");
+    appendLog(QString("pipeline process error=missing runner %1").arg(runner));
+    updateRunControls();
+    return;
+  }
+  if (!setupPretrainedAssets(args)) {
+    pipeline_state_->setText("STOPPED");
+    preview_status_->setText("Asset setup failed");
+    updateRunControls();
+    return;
+  }
+
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   if (isCalibrationRun()) {
     const int control_points = control_points_spin_ ? control_points_spin_->value() : 500;
@@ -879,8 +1049,25 @@ void HmStreamWindow::startPipeline() {
   }
   pipeline_process_->setProcessEnvironment(env);
   pipeline_process_->setWorkingDirectory(pipelineWorkingDirectory());
+#ifdef Q_OS_UNIX
+  const QString setsid = "/usr/bin/setsid";
+  if (QFileInfo::exists(setsid)) {
+    QStringList wrapped_args;
+    wrapped_args << runner;
+    wrapped_args << args;
+    pipeline_process_->setProgram(setsid);
+    pipeline_process_->setArguments(wrapped_args);
+    pipeline_uses_process_group_ = true;
+  } else {
+    pipeline_process_->setProgram(runner);
+    pipeline_process_->setArguments(args);
+    pipeline_uses_process_group_ = false;
+  }
+#else
   pipeline_process_->setProgram(runner);
   pipeline_process_->setArguments(args);
+  pipeline_uses_process_group_ = false;
+#endif
   pipeline_paused_ = false;
 
   pipeline_state_->setText("STARTING");
@@ -913,7 +1100,8 @@ void HmStreamWindow::pauseOrResumePipeline() {
     return;
   }
   const int signal = pipeline_paused_ ? SIGCONT : SIGSTOP;
-  if (::kill(static_cast<pid_t>(pid), signal) != 0) {
+  const pid_t target = pipeline_uses_process_group_ ? -static_cast<pid_t>(pid) : static_cast<pid_t>(pid);
+  if (::kill(target, signal) != 0) {
     appendLog("failed to signal pipeline process for pause/resume");
     return;
   }
@@ -937,20 +1125,27 @@ void HmStreamWindow::stopPipeline() {
   }
   appendLog("pipeline stop requested");
 #ifdef Q_OS_UNIX
-  if (pipeline_paused_ && pipeline_process_->processId() > 0) {
-    ::kill(static_cast<pid_t>(pipeline_process_->processId()), SIGCONT);
+  const qint64 pid = pipeline_process_->processId();
+  const pid_t target = pipeline_uses_process_group_ ? -static_cast<pid_t>(pid) : static_cast<pid_t>(pid);
+  if (pipeline_paused_ && pid > 0) {
+    ::kill(target, SIGCONT);
     pipeline_paused_ = false;
   }
-  if (pipeline_process_->processId() > 0) {
-    ::kill(static_cast<pid_t>(pipeline_process_->processId()), SIGINT);
+  if (pid > 0) {
+    ::kill(target, SIGINT);
   } else {
     pipeline_process_->terminate();
   }
 #else
   pipeline_process_->terminate();
 #endif
-  if (!pipeline_process_->waitForFinished(3000)) {
+  if (!pipeline_process_->waitForFinished(15000)) {
     appendLog("pipeline did not exit after terminate; killing");
+#ifdef Q_OS_UNIX
+    if (pid > 0 && pipeline_uses_process_group_) {
+      ::kill(target, SIGKILL);
+    }
+#endif
     pipeline_process_->kill();
   }
 }
@@ -965,6 +1160,7 @@ void HmStreamWindow::handlePipelineStarted() {
 void HmStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status) {
   readPipelineOutput();
   pipeline_paused_ = false;
+  pipeline_uses_process_group_ = false;
   pipeline_state_->setText("STOPPED");
   preview_status_->setText("Pipeline stopped");
   appendLog(QString("pipeline finished exit=%1 status=%2")
@@ -975,6 +1171,7 @@ void HmStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus 
 
 void HmStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   pipeline_paused_ = false;
+  pipeline_uses_process_group_ = false;
   pipeline_state_->setText("STOPPED");
   preview_status_->setText("Pipeline failed to start");
   appendLog(QString("pipeline process error=%1 message=%2")
@@ -1078,6 +1275,10 @@ void HmStreamWindow::loadSavedControlConfig() {
     const bool blocked = slider_it->second->blockSignals(true);
     slider_it->second->setValue(value);
     slider_it->second->blockSignals(blocked);
+    const auto label_it = camera_value_labels_.find(id);
+    if (label_it != camera_value_labels_.end()) {
+      label_it->second->setText(QString::number(value));
+    }
   }
 
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
@@ -1098,8 +1299,13 @@ void HmStreamWindow::loadSavedControlConfig() {
         continue;
       }
       const bool blocked = slider_it->second->blockSignals(true);
-      slider_it->second->setValue(entry.second.as<int>());
+      const int value = entry.second.as<int>();
+      slider_it->second->setValue(value);
       slider_it->second->blockSignals(blocked);
+      const auto label_it = camera_value_labels_.find(id);
+      if (label_it != camera_value_labels_.end()) {
+        label_it->second->setText(QString::number(value));
+      }
       ++loaded;
     }
     appendLog(QString("loaded %1 saved camera controls").arg(loaded));
@@ -1109,20 +1315,40 @@ void HmStreamWindow::loadSavedControlConfig() {
 }
 
 void HmStreamWindow::applySavedControlConfig(YAML::Node& config) {
-  remove_yaml_path(config, {"stitching", "post_stitch_rotate_degrees"});
-  remove_yaml_path(config, {"rink", "camera", "color"});
-  remove_yaml_path(config, {"stitching", "left", "color"});
-  remove_yaml_path(config, {"stitching", "right", "color"});
-  remove_yaml_path(config, {"rink", "camera", "stop_on_dir_change_delay"});
-  remove_yaml_path(config, {"rink", "camera", "cancel_stop_on_opposite_dir"});
-  remove_yaml_path(config, {"rink", "camera", "stop_cancel_hysteresis_frames"});
-  remove_yaml_path(config, {"rink", "camera", "stop_delay_cooldown_frames"});
-  remove_yaml_path(config, {"rink", "camera", "breakaway_detection", "overshoot_stop_delay_count"});
-  remove_yaml_path(config, {"rink", "camera", "breakaway_detection", "post_nonstop_stop_delay_count"});
-  remove_yaml_path(config, {"rink", "camera", "breakaway_detection", "overshoot_scale_speed_ratio"});
-  remove_yaml_path(config, {"rink", "camera", "time_to_dest_speed_limit_frames"});
-  remove_yaml_path(config, {"hmstream_ui", "camera_control_targets", "apply_to_fast_box"});
-  remove_yaml_path(config, {"hmstream_ui", "camera_control_targets", "apply_to_follower_box"});
+  if (!yaml_defined(config) || config.IsNull()) {
+    config = YAML::Node(YAML::NodeType::Map);
+  }
+  YAML::Node previous_hmstream_ui = map_value(config, "hmstream_ui");
+  YAML::Node previous_generated = map_value(previous_hmstream_ui, "generated_runtime_keys");
+  YAML::Node previous_generated_values = map_value(previous_hmstream_ui, "generated_runtime_values");
+  if (yaml_defined(previous_generated) && previous_generated.IsSequence()) {
+    for (const auto& item : previous_generated) {
+      const QString path = QString::fromStdString(item.as<std::string>());
+      YAML::Node current;
+      const bool current_found = lookup_yaml_path(config, path, &current);
+      const std::string previous_key = path.toStdString();
+      YAML::Node previous_value;
+      const bool previous_found = lookup_yaml_key(previous_generated_values, previous_key.c_str(), &previous_value);
+      if (!previous_found || !current_found || YAML::Dump(current) == previous_value.as<std::string>()) {
+        remove_yaml_path(config, path);
+      }
+    }
+  }
+  remove_yaml_path(config, {"hmstream_ui", "generated_runtime_keys"});
+  remove_yaml_path(config, {"hmstream_ui", "generated_runtime_values"});
+  remove_yaml_path_if_empty_map(config, {"stitching", "left", "color"});
+  remove_yaml_path_if_empty_map(config, {"stitching", "right", "color"});
+  remove_yaml_path_if_empty_map(config, {"rink", "camera", "color"});
+
+  YAML::Node generated_runtime_keys(YAML::NodeType::Sequence);
+  YAML::Node generated_runtime_values(YAML::NodeType::Map);
+  std::set<std::string> generated_key_set;
+  auto mark_runtime_key = [&](const QString& path) {
+    const std::string key = path.toStdString();
+    if (generated_key_set.insert(key).second) {
+      generated_runtime_keys.push_back(key);
+    }
+  };
 
   YAML::Node controls(YAML::NodeType::Map);
   int changed = 0;
@@ -1131,7 +1357,8 @@ void HmStreamWindow::applySavedControlConfig(YAML::Node& config) {
     if (!slider || default_it == camera_defaults_.end() || slider->value() == default_it->second) {
       continue;
     }
-    controls[id.toStdString()] = slider->value();
+    const std::string key = id.toStdString();
+    controls[key.c_str()] = slider->value();
     ++changed;
   }
   config["hmstream_ui"]["camera_controls"] = controls;
@@ -1146,7 +1373,11 @@ void HmStreamWindow::applySavedControlConfig(YAML::Node& config) {
     return slider_it != camera_sliders_.end() && default_it != camera_defaults_.end() &&
         slider_it->second->value() != default_it->second;
   };
-  auto apply_color_prefix = [&](const QString& prefix, YAML::Node target) {
+  if (has_control(controls, "Stitch_Rotate_Degrees")) {
+    config["stitching"]["post_stitch_rotate_degrees"] = 90 - slider_value("Stitch_Rotate_Degrees");
+    mark_runtime_key("stitching.post_stitch_rotate_degrees");
+  }
+  auto make_color = [&](const QString& prefix) -> std::optional<YAML::Node> {
     const QString name_prefix = prefix.isEmpty() ? QString() : prefix + "_";
     const QStringList ids = {
         name_prefix + "White_Balance_Kelvin_Enable",
@@ -1164,70 +1395,107 @@ void HmStreamWindow::applySavedControlConfig(YAML::Node& config) {
       any_changed = any_changed || slider_changed(id);
     }
     if (!any_changed) {
-      return;
+      return std::nullopt;
     }
+    YAML::Node color(YAML::NodeType::Map);
     const int kelvin_enabled = slider_value(name_prefix + "White_Balance_Kelvin_Enable");
     const int kelvin = slider_value(name_prefix + "White_Balance_Kelvin_Temperature");
     const int red = slider_value(name_prefix + "White_Balance_Red_Gain_x100");
     const int green = slider_value(name_prefix + "White_Balance_Green_Gain_x100");
     const int blue = slider_value(name_prefix + "White_Balance_Blue_Gain_x100");
-    target["brightness"] = ratio_x100(slider_value(name_prefix + "Brightness_Multiplier_x100"));
-    target["exposure_ev"] = slider_to_exposure_ev(slider_value(name_prefix + "Exposure_EV_x10"));
-    target["contrast"] = ratio_x100(slider_value(name_prefix + "Contrast_Multiplier_x100"));
-    target["gamma"] = ratio_x100(slider_value(name_prefix + "Gamma_Multiplier_x100"));
+    color["brightness"] = ratio_x100(slider_value(name_prefix + "Brightness_Multiplier_x100"));
+    color["exposure_ev"] = slider_to_exposure_ev(slider_value(name_prefix + "Exposure_EV_x10"));
+    color["contrast"] = ratio_x100(slider_value(name_prefix + "Contrast_Multiplier_x100"));
+    color["gamma"] = ratio_x100(slider_value(name_prefix + "Gamma_Multiplier_x100"));
     if (kelvin_enabled > 0) {
-      target["white_balance_temp"] = QString("%1k").arg(kelvin).toStdString();
-      remove_yaml_key(target, "white_balance");
+      color["white_balance_temp"] = QString("%1k").arg(kelvin).toStdString();
     } else {
       YAML::Node white_balance(YAML::NodeType::Sequence);
       white_balance.push_back(ratio_x100(blue));
       white_balance.push_back(ratio_x100(green));
       white_balance.push_back(ratio_x100(red));
-      target["white_balance"] = white_balance;
-      remove_yaml_key(target, "white_balance_temp");
+      color["white_balance"] = white_balance;
     }
+    return color;
   };
+  auto apply_color_prefix = [&](const QString& prefix) {
+    std::optional<YAML::Node> color = make_color(prefix);
+    if (!color) {
+      return;
+    }
+    const QString config_prefix =
+        prefix.isEmpty() ? QString("rink.camera.color") : QString("stitching.%1.color").arg(prefix.toLower());
+    if (prefix.isEmpty()) {
+      config["rink"]["camera"]["color"] = *color;
+    } else {
+      const char* side_key = prefix.compare("Left", Qt::CaseInsensitive) == 0 ? "left" : "right";
+      config["stitching"][side_key]["color"] = *color;
+    }
+    mark_runtime_key(config_prefix + ".brightness");
+    mark_runtime_key(config_prefix + ".exposure_ev");
+    mark_runtime_key(config_prefix + ".contrast");
+    mark_runtime_key(config_prefix + ".gamma");
+    mark_runtime_key(
+        config_prefix + (has_yaml_key(*color, "white_balance_temp") ? ".white_balance_temp" : ".white_balance"));
+  };
+  apply_color_prefix("");
+  apply_color_prefix("Left");
+  apply_color_prefix("Right");
 
-  if (controls["Stitch_Rotate_Degrees"]) {
-    config["stitching"]["post_stitch_rotate_degrees"] = 90 - slider_value("Stitch_Rotate_Degrees");
-  }
-  apply_color_prefix("", config["rink"]["camera"]["color"]);
-  apply_color_prefix("Left", config["stitching"]["left"]["color"]);
-  apply_color_prefix("Right", config["stitching"]["right"]["color"]);
-
-  if (controls["Stop_Direction_Change_Delay_Frames"]) {
+  if (has_control(controls, "Stop_Direction_Change_Delay_Frames")) {
     config["rink"]["camera"]["stop_on_dir_change_delay"] = slider_value("Stop_Direction_Change_Delay_Frames");
+    mark_runtime_key("rink.camera.stop_on_dir_change_delay");
   }
-  if (controls["Cancel_Stop_On_Opposite_Direction"]) {
+  if (has_control(controls, "Cancel_Stop_On_Opposite_Direction")) {
     config["rink"]["camera"]["cancel_stop_on_opposite_dir"] = slider_value("Cancel_Stop_On_Opposite_Direction") != 0;
+    mark_runtime_key("rink.camera.cancel_stop_on_opposite_dir");
   }
-  if (controls["Stop_Cancel_Hysteresis_Frames"]) {
+  if (has_control(controls, "Stop_Cancel_Hysteresis_Frames")) {
     config["rink"]["camera"]["stop_cancel_hysteresis_frames"] = slider_value("Stop_Cancel_Hysteresis_Frames");
+    mark_runtime_key("rink.camera.stop_cancel_hysteresis_frames");
   }
-  if (controls["Stop_Delay_Cooldown_Frames"]) {
+  if (has_control(controls, "Stop_Delay_Cooldown_Frames")) {
     config["rink"]["camera"]["stop_delay_cooldown_frames"] = slider_value("Stop_Delay_Cooldown_Frames");
+    mark_runtime_key("rink.camera.stop_delay_cooldown_frames");
   }
-  if (controls["Overshoot_Stop_Delay_Frames"]) {
+  if (has_control(controls, "Overshoot_Stop_Delay_Frames")) {
     config["rink"]["camera"]["breakaway_detection"]["overshoot_stop_delay_count"] =
         slider_value("Overshoot_Stop_Delay_Frames");
+    mark_runtime_key("rink.camera.breakaway_detection.overshoot_stop_delay_count");
   }
-  if (controls["Post_Nonstop_Stop_Delay_Frames"]) {
+  if (has_control(controls, "Post_Nonstop_Stop_Delay_Frames")) {
     config["rink"]["camera"]["breakaway_detection"]["post_nonstop_stop_delay_count"] =
         slider_value("Post_Nonstop_Stop_Delay_Frames");
+    mark_runtime_key("rink.camera.breakaway_detection.post_nonstop_stop_delay_count");
   }
-  if (controls["Overshoot_Speed_Ratio_x100"]) {
+  if (has_control(controls, "Overshoot_Speed_Ratio_x100")) {
     config["rink"]["camera"]["breakaway_detection"]["overshoot_scale_speed_ratio"] =
         ratio_x100(slider_value("Overshoot_Speed_Ratio_x100"));
+    mark_runtime_key("rink.camera.breakaway_detection.overshoot_scale_speed_ratio");
   }
-  if (controls["Time_To_Dest_Speed_Limit_Frames"]) {
+  if (has_control(controls, "Time_To_Dest_Speed_Limit_Frames")) {
     config["rink"]["camera"]["time_to_dest_speed_limit_frames"] = slider_value("Time_To_Dest_Speed_Limit_Frames");
+    mark_runtime_key("rink.camera.time_to_dest_speed_limit_frames");
   }
-  if (controls["Apply_To_Fast_Box"]) {
+  if (has_control(controls, "Apply_To_Fast_Box")) {
     config["hmstream_ui"]["camera_control_targets"]["apply_to_fast_box"] = slider_value("Apply_To_Fast_Box") != 0;
+    mark_runtime_key("hmstream_ui.camera_control_targets.apply_to_fast_box");
   }
-  if (controls["Apply_To_Follower_Box"]) {
+  if (has_control(controls, "Apply_To_Follower_Box")) {
     config["hmstream_ui"]["camera_control_targets"]["apply_to_follower_box"] =
         slider_value("Apply_To_Follower_Box") != 0;
+    mark_runtime_key("hmstream_ui.camera_control_targets.apply_to_follower_box");
+  }
+  if (generated_runtime_keys.size() > 0) {
+    for (const auto& path_node : generated_runtime_keys) {
+      const std::string key = path_node.as<std::string>();
+      YAML::Node value;
+      if (lookup_yaml_path(config, QString::fromStdString(key), &value)) {
+        generated_runtime_values[key.c_str()] = YAML::Dump(value);
+      }
+    }
+    config["hmstream_ui"]["generated_runtime_keys"] = generated_runtime_keys;
+    config["hmstream_ui"]["generated_runtime_values"] = generated_runtime_values;
   }
   appendLog(QString("preset captured %1 non-default camera controls").arg(changed));
 }
@@ -2225,6 +2493,7 @@ QSlider* HmStreamWindow::addSlider(
   slider->setRange(minimum, maximum);
   slider->setValue(value);
   camera_sliders_[id] = slider;
+  camera_value_labels_[id] = value_label;
   camera_defaults_[id] = value;
   connect(slider, &QSlider::valueChanged, this, [this, id, value_label](int new_value) {
     value_label->setText(QString::number(new_value));

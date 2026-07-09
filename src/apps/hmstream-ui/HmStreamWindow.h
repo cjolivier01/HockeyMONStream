@@ -85,6 +85,7 @@ class HmStreamWindow : public QMainWindow {
   QString pipelineConfigPath(const QString& config_name) const;
   QString pipelineWorkingDirectory() const;
   QStringList pipelineArguments() const;
+  bool setupPretrainedAssets(const QStringList& pipeline_args);
   QStringList enabledSinkNames() const;
   bool isCalibrationRun() const;
   void updateRunControls();
@@ -117,9 +118,11 @@ class HmStreamWindow : public QMainWindow {
   QPushButton* pause_button_{nullptr};
   QPushButton* stop_button_{nullptr};
   bool pipeline_paused_{false};
+  bool pipeline_uses_process_group_{false};
   int dynamic_rtsp_count_{0};
   std::map<QString, QLabel*> output_states_;
   std::map<QString, QCheckBox*> output_toggles_;
   std::map<QString, QSlider*> camera_sliders_;
+  std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, int> camera_defaults_;
 };
