@@ -2,11 +2,13 @@
 
 #include <QtCore/QDateTime>
 #include <QtCore/QDir>
+#include <QtCore/QDirIterator>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QProcessEnvironment>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QStandardPaths>
+#include <QtCore/QSysInfo>
 #include <QtCore/Qt>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QButtonGroup>
@@ -130,12 +132,102 @@ QString canonical_dir_path(const QString& path) {
   return canonical.isEmpty() ? info.absoluteFilePath() : canonical;
 }
 
+void prepend_env_path(QProcessEnvironment& env, const QString& name, const QString& dir) {
+  if (dir.isEmpty() || !QDir(dir).exists()) {
+    return;
+  }
+  const QString current = env.value(name);
+  if (current.isEmpty()) {
+    env.insert(name, dir);
+    return;
+  }
+  const QStringList parts = current.split(':', Qt::SkipEmptyParts);
+  if (!parts.contains(dir)) {
+    env.insert(name, dir + ":" + current);
+  }
+}
+
+void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_dir) {
+  const QDir root(QDir(working_dir).filePath("bazel-bin/src/gst-plugins"));
+  if (!root.exists()) {
+    return;
+  }
+
+  const QString arch =
+      QSysInfo::currentCpuArchitecture().isEmpty() ? QString("unknown") : QSysInfo::currentCpuArchitecture();
+  QDir runtime_dir(QDir(working_dir).filePath(QString(".cache/gst-plugin-path/%1").arg(arch)));
+  if (!runtime_dir.exists() && !runtime_dir.mkpath(".")) {
+    return;
+  }
+  const QFileInfoList stale_links = runtime_dir.entryInfoList(QStringList("*.so"), QDir::Files | QDir::System);
+  for (const QFileInfo& stale : stale_links) {
+    if (stale.isSymLink()) {
+      QFile::remove(stale.absoluteFilePath());
+    }
+  }
+
+  QDirIterator plugin_it(
+      root.absolutePath(), QStringList({"libnvdsgst_*.so", "libgst*.so"}), QDir::Files, QDirIterator::Subdirectories);
+  while (plugin_it.hasNext()) {
+    const QFileInfo plugin(plugin_it.next());
+    const QString path = plugin.absoluteFilePath();
+    if (path.contains("/testutils/") || path.contains(".runfiles/")) {
+      continue;
+    }
+    const QString link_path = runtime_dir.filePath(plugin.fileName());
+    QFile::remove(link_path);
+    QFile::link(plugin.canonicalFilePath(), link_path);
+    prepend_env_path(env, "LD_LIBRARY_PATH", plugin.absolutePath());
+  }
+
+  QDirIterator lib_it(root.absolutePath(), QStringList("*.so"), QDir::Files, QDirIterator::Subdirectories);
+  while (lib_it.hasNext()) {
+    const QFileInfo lib(lib_it.next());
+    const QString path = lib.absoluteFilePath();
+    if (!path.contains(".runfiles/")) {
+      prepend_env_path(env, "LD_LIBRARY_PATH", lib.absolutePath());
+    }
+  }
+  prepend_env_path(env, "GST_PLUGIN_PATH", runtime_dir.absolutePath());
+}
+
+void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QString& working_dir) {
+  QDir registry_dir(QDir(working_dir).filePath(".cache/gstreamer-1.0"));
+  if (registry_dir.mkpath(".")) {
+    const QString arch =
+        QSysInfo::currentCpuArchitecture().isEmpty() ? QString("unknown") : QSysInfo::currentCpuArchitecture();
+    env.insert("GST_REGISTRY", registry_dir.filePath(QString("registry.hstream.%1.bin").arg(arch)));
+  }
+
+  prepend_env_path(env, "GST_PLUGIN_PATH", QDir(working_dir).filePath("lib/gst-plugins"));
+  prepend_env_path(env, "GST_PLUGIN_PATH", "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
+  prepend_env_path(env, "LD_LIBRARY_PATH", QDir(working_dir).filePath("lib"));
+  prepend_env_path(env, "LD_LIBRARY_PATH", QDir(working_dir).filePath("lib/gst-plugins"));
+  prepend_env_path(env, "LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib");
+  prepend_env_path(env, "LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
+  stage_bazel_gst_plugins(env, working_dir);
+
+  const QString yolo_so =
+      QDir(working_dir).filePath("bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so");
+  if (QFileInfo::exists(yolo_so)) {
+    QDir lib_dir(QDir(working_dir).filePath("lib"));
+    if (lib_dir.mkpath(".")) {
+      const QString link_path = lib_dir.filePath("libnvdsinfer_custom_impl_Yolo.so");
+      const QFileInfo link_info(link_path);
+      if (!link_info.exists() || link_info.isSymLink()) {
+        QFile::remove(link_path);
+        QFile::link(QFileInfo(yolo_so).canonicalFilePath(), link_path);
+      }
+    }
+  }
+}
+
 bool python_can_run_asset_setup(const QString& python) {
   if (python.isEmpty()) {
     return false;
   }
   QProcess check;
-  check.start(python, {"-c", "import yaml, onnx, torch, mmdet"});
+  check.start(python, {"-c", "import yaml, onnx, torch"});
   if (!check.waitForStarted(3000)) {
     return false;
   }
@@ -1100,13 +1192,15 @@ void HmStreamWindow::startPipeline() {
   }
 
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+  const QString working_dir = pipelineWorkingDirectory();
+  configure_pipeline_runtime_environment(env, working_dir);
   if (isCalibrationRun()) {
     const int control_points = control_points_spin_ ? control_points_spin_->value() : 500;
     env.insert("HM_MAX_CONTROL_POINTS", QString::number(control_points));
     appendLog(QString("stitching calibration control points=%1").arg(control_points));
   }
   pipeline_process_->setProcessEnvironment(env);
-  pipeline_process_->setWorkingDirectory(pipelineWorkingDirectory());
+  pipeline_process_->setWorkingDirectory(working_dir);
 #ifdef Q_OS_UNIX
   const QString setsid = "/usr/bin/setsid";
   if (QFileInfo::exists(setsid)) {

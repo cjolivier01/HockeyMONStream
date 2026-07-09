@@ -28,13 +28,11 @@ build --linkopt=-Wl,-rpath,/opt/nvidia/deepstream/deepstream/lib/gst-plugins
 #build -c opt
 build:opt -c opt
 build:opt --copt=-O3
-build:opt --@rules_cuda//cuda:archs=sm_75,sm_120
 
 build:debug -c dbg --strip="never"
 build:debug --copt=-g3
 build:debug --copt=-O0
 build:debug --copt=-UNDEBUG
-build:debug --@rules_cuda//cuda:archs=sm_75,sm_120
 # build:debug --copt=-v
 build:debug --copt=-fdiagnostics-color=always
 # build:debug --linkopt=-v
@@ -59,7 +57,10 @@ build:asan --features=asan
 build:x86_64 --cpu=k8
 build:x86_64 --define=target_platform=x86_64
 build:x86_64 --action_env=target_platform="x86_64"
-build:x86_64 --@rules_cuda//cuda:archs=sm_75,sm_120
+
+# Opt-in host config for RTX 50xx / Blackwell systems. Do not include this in
+# default opt/debug configs; older CUDA toolchains cannot compile sm_120.
+build:blackwell --@rules_cuda//cuda:archs=sm_75;sm_120
 
 build:arm64 --define=target_platform=arm64
 build:arm64 --action_env=target_platform="arm64"

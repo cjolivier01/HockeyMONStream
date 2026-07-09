@@ -950,9 +950,88 @@ bool test_camera_controls(HmStreamWindow* window) {
       expect(preserved_manual_left_gamma, "Saving defaults should preserve same-prefix manual color config");
 }
 
+bool run_real_pipeline_e2e(HmStreamWindow* window, const QString& game_id) {
+  auto* game_id_edit = require_child<QLineEdit>(window, "gameIdEdit");
+  auto* create = require_child<QPushButton>(window, "createGameButton");
+  auto* start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
+  auto* mode = require_child<QComboBox>(window, "runModeCombo");
+  auto* control_points = require_child<QSpinBox>(window, "controlPointsSpin");
+  if (!game_id_edit || !create || !start || !stop || !mode || !control_points) {
+    return false;
+  }
+
+  game_id_edit->setText(game_id);
+  activate(create);
+
+  const QString run_mode = QString::fromLocal8Bit(qgetenv("HMSTREAM_UI_E2E_RUN_MODE"));
+  if (!run_mode.isEmpty()) {
+    const int mode_index = mode->findData(run_mode);
+    if (mode_index < 0) {
+      std::cerr << "Missing e2e run mode: " << run_mode.toStdString() << '\n';
+      return false;
+    }
+    mode->setCurrentIndex(mode_index);
+  }
+  const int configured_control_points = qEnvironmentVariableIntValue("HMSTREAM_UI_E2E_CONTROL_POINTS");
+  if (configured_control_points > 0) {
+    control_points->setValue(configured_control_points);
+  }
+  activate(start);
+
+  const int timeout_ms = qEnvironmentVariableIntValue("HMSTREAM_UI_E2E_TIMEOUT_MS");
+  const int deadline_ms = timeout_ms > 0 ? timeout_ms : 120000;
+  QElapsedTimer timer;
+  timer.start();
+  bool observed_running = false;
+  while (timer.elapsed() < deadline_ms) {
+    QApplication::processEvents();
+    QTest::qWait(100);
+    const QString log = window->logText();
+    if (log.contains("asset setup failed") || log.contains("pipeline process error")) {
+      std::cerr << log.toStdString() << '\n';
+      activate(stop);
+      return false;
+    }
+    if (log.contains("** INFO: <bus_callback:314>: Pipeline running") || log.contains("**PERF:")) {
+      observed_running = true;
+      break;
+    }
+  }
+
+  const QString log = window->logText();
+  const bool observed_asset_python = log.contains("using asset setup python");
+  const bool observed_command = log.contains("pipeline command");
+  activate(stop);
+  for (int i = 0; i < 300 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(100);
+  }
+
+  if (!expect(observed_asset_python, "Real UI run should execute pretrained asset setup probe") ||
+      !expect(observed_command, "Real UI run should launch hmstream-cli") ||
+      !expect(observed_running, "Real UI run should reach GStreamer PLAYING/PERF output")) {
+    std::cerr << log.toStdString() << '\n';
+    return false;
+  }
+  return expect(window->pipelineStateText() == "STOPPED", "Real UI run should stop cleanly after e2e smoke");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
+  const QByteArray e2e_game_id = qgetenv("HMSTREAM_UI_E2E_GAME_ID");
+  if (!e2e_game_id.isEmpty()) {
+    QApplication app(argc, argv);
+    HmStreamWindow window;
+    window.show();
+    if (!run_real_pipeline_e2e(&window, QString::fromLocal8Bit(e2e_game_id))) {
+      std::cerr << "run_real_pipeline_e2e failed\n";
+      return 1;
+    }
+    return 0;
+  }
+
   QTemporaryDir game_root;
   QTemporaryDir source_root;
   if (!game_root.isValid() || !source_root.isValid()) {

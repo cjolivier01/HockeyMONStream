@@ -17,6 +17,7 @@ ifeq ($(IS_JETSON_HOST),0)
 HOST_PLATFORM_FLAGS := --config=arm64
 endif
 endif
+HOST_CUDA_FLAGS := $(shell scripts/bazel_cuda_host_config.sh 2>/dev/null)
 
 all: print_targets
 
@@ -25,16 +26,16 @@ all: print_targets
 	video-player run-video-player yolo-custom-lib deb wsl-deb
 
 perf:
-	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) //...
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //...
 
 debug:
-	$(BAZEL) build --config=debug $(HOST_PLATFORM_FLAGS) //...
+	$(BAZEL) build --config=debug $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //...
 
 gstdebug:
-	$(BAZEL) build --config=gstdebug $(HOST_PLATFORM_FLAGS) //...
+	$(BAZEL) build --config=gstdebug $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //...
 
 x86_64:
-	$(BAZEL) build --config=opt --cpu=k8 //...
+	$(BAZEL) build --config=opt --cpu=k8 $(HOST_CUDA_FLAGS) //...
 
 arm64:
 	@if [ "$(HOST_ARCH)" != "aarch64" ]; then \
@@ -55,19 +56,19 @@ jetson:
 	$(BAZEL) build --config=jetson --action_env=JETSON_SYSROOT=$(JETSON_SYSROOT) --define=JETSON_SYSROOT=$(JETSON_SYSROOT) //...
 
 test:
-	$(BAZEL) test --config=opt $(HOST_PLATFORM_FLAGS) //...
+	$(BAZEL) test --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //...
 
 pipeline-app:
-	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) //src/apps/pipeline-app:pipeline-app
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/pipeline-app:pipeline-app
 
 hmstream-cli:
-	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) //src/apps/pipeline-app:hmstream-cli
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/pipeline-app:hmstream-cli
 
 hmstream-ui:
-	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) //src/apps/hmstream-ui:hmstream-ui
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/hmstream-ui:hmstream-ui
 
 yolo-custom-lib:
-	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo
 
 run-hmstream-cli: hmstream-cli
 	bazel-bin/src/apps/pipeline-app/hmstream-cli \
@@ -89,7 +90,7 @@ run-pipeline-app: pipeline-app
 		--options=pipeline.hmaudio.enable=1
 
 video-player:
-	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) //src/apps/video-player:video-player
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/video-player:video-player
 
 run-video-player: video-player
 	bazel-bin/src/apps/video-player/video-player --help
@@ -111,10 +112,10 @@ print_targets:
 		'' \
 		'Build Outputs' \
 		'-------------' \
-		'perf           Build everything with --config=opt (auto-adds --config=arm64 on non-Jetson aarch64 hosts).' \
-		'debug          Build everything with --config=debug.' \
+		'perf           Build everything with --config=opt (auto-adds arm64/Blackwell host flags when needed).' \
+		'debug          Build everything with --config=debug (auto-adds Blackwell host flags when needed).' \
 		'gstdebug       Build debug with extra GStreamer debug defines (--config=gstdebug).' \
-		'x86_64         Build optimized for x86_64 (--cpu=k8).' \
+		'x86_64         Build optimized for x86_64 (--cpu=k8, auto-adds Blackwell host flags when needed).' \
 		'arm64          Build optimized for native non-Jetson arm64/SBSA hosts (--config=arm64).' \
 		'jetson         Build optimized for Jetson (--config=jetson, needs $(JETSON_SYSROOT)).' \
 		'' \

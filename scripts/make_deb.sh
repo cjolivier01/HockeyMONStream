@@ -276,6 +276,17 @@ cp -r "${TOPDIR}/configs/." "${STAGING}${INSTALL_PREFIX}/configs/"
 # Remove the systemd unit files — those belong to a separate package/install step
 rm -rf "${STAGING}${INSTALL_PREFIX}/configs/systemd"
 
+# ---------- pretrained assets ----------
+if [[ -d "${TOPDIR}/pretrained" ]]; then
+  echo "[make_deb] Staging non-engine pretrained assets..."
+  while IFS= read -r -d '' asset; do
+    rel="${asset#${TOPDIR}/pretrained/}"
+    dest="${STAGING}${INSTALL_PREFIX}/pretrained/${rel}"
+    mkdir -p "$(dirname "${dest}")"
+    cp "${asset}" "${dest}"
+  done < <(find -L "${TOPDIR}/pretrained" -type f ! -name '*.engine' -print0)
+fi
+
 # ---------- scripts ----------
 echo "[make_deb] Staging scripts..."
 cp "${TOPDIR}/scripts/setup_pretrained_assets.py" "${STAGING}${INSTALL_PREFIX}/scripts/"
@@ -665,7 +676,28 @@ collect_asset_config_files() {
 collect_asset_config_files config_args
 collect_asset_config_files rewritten_args
 if [ "${#asset_config_files[@]}" -gt 0 ]; then
-  "${PYTHON_BIN:-python3}" "${INSTALL_DIR}/scripts/setup_pretrained_assets.py" "${asset_config_files[@]}"
+  asset_setup_python() {
+    local candidates=()
+    local candidate
+    if [ -n "${PYTHON_BIN:-}" ]; then candidates+=("${PYTHON_BIN}"); fi
+    if [ -n "${CONDA_PREFIX:-}" ]; then candidates+=("${CONDA_PREFIX}/bin/python3"); fi
+    if [ -n "${VIRTUAL_ENV:-}" ]; then candidates+=("${VIRTUAL_ENV}/bin/python3"); fi
+    candidates+=("${HOME}/miniforge3/envs/ubuntu/bin/python3")
+    candidates+=("${HOME}/miniconda3/envs/ubuntu/bin/python3")
+    candidates+=("${HOME}/.conda/envs/ubuntu/bin/python3")
+    candidates+=("python3")
+    for candidate in "${candidates[@]}"; do
+      if command -v "${candidate}" >/dev/null 2>&1 &&
+        "${candidate}" -c 'import yaml' >/dev/null 2>&1; then
+        printf '%s\n' "${candidate}"
+        return 0
+      fi
+    done
+    printf '%s\n' "${PYTHON_BIN:-python3}"
+  }
+  asset_python="$(asset_setup_python)"
+  echo "checking pretrained assets with ${asset_python}"
+  "${asset_python}" "${INSTALL_DIR}/scripts/setup_pretrained_assets.py" "${asset_config_files[@]}"
 fi
 
 # cd so that relative paths in DeepStream config files (e.g. custom-lib-path=lib/...)
@@ -758,11 +790,14 @@ Depends: libgstreamer1.0-0 (>= 1.20),
  python3-yaml
 Description: HMStream video pipeline application and UI
  Installs the HMStream CLI/UI binaries, bundled shared libraries
- (OpenCV 4.13), GStreamer plugins, and configs to ${INSTALL_PREFIX}.
+ (OpenCV 4.13), GStreamer plugins, configs, and non-engine pretrained
+ assets to ${INSTALL_PREFIX}.
  .
  External requirements (not expressed as Depends):
    - NVIDIA DeepStream (>= 6.3) at /opt/nvidia/deepstream/deepstream
    - NVIDIA CUDA Toolkit (>= 12) at /usr/local/cuda
+   - Python ML packages such as torch/onnx only if missing pretrained
+     assets must be regenerated
  .
  Launch the CLI with: ${INSTALL_PREFIX}/run.sh [args...]
  or via the hmstream-cli wrapper in /usr/local/bin/hmstream-cli.

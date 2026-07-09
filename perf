@@ -1,5 +1,6 @@
 #!/bin/bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOST_ARCH="$(uname -m)"
 BAZEL_FLAGS="--config=opt"
 IS_JETSON=0
@@ -13,6 +14,12 @@ if [ "${HOST_ARCH}" = "x86_64" ]; then
 fi
 if [ "${HOST_ARCH}" = "aarch64" ] && [ "${IS_JETSON}" = "0" ]; then
   BAZEL_FLAGS="${BAZEL_FLAGS} --config=arm64"
+fi
+if [ -x "${SCRIPT_DIR}/scripts/bazel_cuda_host_config.sh" ]; then
+  HOST_CUDA_FLAGS="$("${SCRIPT_DIR}/scripts/bazel_cuda_host_config.sh")"
+  if [ -n "${HOST_CUDA_FLAGS}" ]; then
+    BAZEL_FLAGS="${BAZEL_FLAGS} ${HOST_CUDA_FLAGS}"
+  fi
 fi
 
 bazelisk build ${BAZEL_FLAGS} //...
