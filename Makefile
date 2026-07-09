@@ -21,7 +21,8 @@ endif
 all: print_targets
 
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
-	hmstream-cli run-hmstream-cli hmstream-ui run-hmstream-ui pipeline-app run-pipeline-app video-player run-video-player deb wsl-deb
+	hmstream-cli run-hmstream-cli hmstream-ui run-hmstream-ui pipeline-app run-pipeline-app \
+	video-player run-video-player yolo-custom-lib deb wsl-deb
 
 perf:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) //...
@@ -65,6 +66,9 @@ hmstream-cli:
 hmstream-ui:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) //src/apps/hmstream-ui:hmstream-ui
 
+yolo-custom-lib:
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo
+
 run-hmstream-cli: hmstream-cli
 	bazel-bin/src/apps/pipeline-app/hmstream-cli \
 		-c configs/ds_hockey_configure_stitching.yaml \
@@ -90,7 +94,7 @@ video-player:
 run-video-player: video-player
 	bazel-bin/src/apps/video-player/video-player --help
 
-deb: hmstream-cli hmstream-ui
+deb: hmstream-cli hmstream-ui yolo-custom-lib
 	scripts/make_deb.sh
 
 wsl-deb: deb
@@ -124,6 +128,7 @@ print_targets:
 		'run-pipeline-app  Run legacy pipeline-app with the canonical hockey config (RENDER sink).' \
 		'video-player   Build //src/apps/video-player:video-player.' \
 		'run-video-player  Run video-player --help (smoke check).' \
+		'yolo-custom-lib Build //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo.' \
 		'deb            Build hmstream-cli and hmstream-ui, then package everything into dist/<pkg>.deb (Linux/WSL installable).' \
 		'wsl-deb        Alias for deb; Windows installer is a later WSL wrapper, not a .deb.' \
 		'' \

@@ -1147,6 +1147,9 @@ void HmStreamWindow::stopPipeline() {
     }
 #endif
     pipeline_process_->kill();
+    if (!pipeline_process_->waitForFinished(5000)) {
+      appendLog("pipeline still running after kill");
+    }
   }
 }
 
@@ -1224,6 +1227,10 @@ void HmStreamWindow::restartStage() {
   appendLog("stage restart requested");
   if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
     stopPipeline();
+  }
+  if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
+    appendLog("restart skipped because pipeline is still stopping");
+    return;
   }
   startPipeline();
 }
@@ -1377,66 +1384,63 @@ void HmStreamWindow::applySavedControlConfig(YAML::Node& config) {
     config["stitching"]["post_stitch_rotate_degrees"] = 90 - slider_value("Stitch_Rotate_Degrees");
     mark_runtime_key("stitching.post_stitch_rotate_degrees");
   }
-  auto make_color = [&](const QString& prefix) -> std::optional<YAML::Node> {
+  auto apply_color_prefix = [&](const QString& prefix) {
     const QString name_prefix = prefix.isEmpty() ? QString() : prefix + "_";
-    const QStringList ids = {
+    const char* side_key = prefix.compare("Left", Qt::CaseInsensitive) == 0 ? "left" : "right";
+    const QString config_prefix =
+        prefix.isEmpty() ? QString("rink.camera.color") : QString("stitching.%1.color").arg(prefix.toLower());
+    auto set_color_leaf = [&](const char* leaf, const auto& value) {
+      if (prefix.isEmpty()) {
+        config["rink"]["camera"]["color"][leaf] = value;
+      } else {
+        config["stitching"][side_key]["color"][leaf] = value;
+      }
+      mark_runtime_key(config_prefix + "." + leaf);
+    };
+    auto remove_color_leaf = [&](const char* leaf) { remove_yaml_path(config, config_prefix + "." + leaf); };
+
+    if (slider_changed(name_prefix + "Brightness_Multiplier_x100")) {
+      set_color_leaf("brightness", ratio_x100(slider_value(name_prefix + "Brightness_Multiplier_x100")));
+    }
+    if (slider_changed(name_prefix + "Exposure_EV_x10")) {
+      set_color_leaf("exposure_ev", slider_to_exposure_ev(slider_value(name_prefix + "Exposure_EV_x10")));
+    }
+    if (slider_changed(name_prefix + "Contrast_Multiplier_x100")) {
+      set_color_leaf("contrast", ratio_x100(slider_value(name_prefix + "Contrast_Multiplier_x100")));
+    }
+    if (slider_changed(name_prefix + "Gamma_Multiplier_x100")) {
+      set_color_leaf("gamma", ratio_x100(slider_value(name_prefix + "Gamma_Multiplier_x100")));
+    }
+
+    const QStringList white_balance_ids = {
         name_prefix + "White_Balance_Kelvin_Enable",
         name_prefix + "White_Balance_Kelvin_Temperature",
         name_prefix + "White_Balance_Red_Gain_x100",
         name_prefix + "White_Balance_Green_Gain_x100",
         name_prefix + "White_Balance_Blue_Gain_x100",
-        name_prefix + "Brightness_Multiplier_x100",
-        name_prefix + "Exposure_EV_x10",
-        name_prefix + "Contrast_Multiplier_x100",
-        name_prefix + "Gamma_Multiplier_x100",
     };
-    bool any_changed = false;
-    for (const QString& id : ids) {
-      any_changed = any_changed || slider_changed(id);
+    bool white_balance_changed = false;
+    for (const QString& id : white_balance_ids) {
+      white_balance_changed = white_balance_changed || slider_changed(id);
     }
-    if (!any_changed) {
-      return std::nullopt;
-    }
-    YAML::Node color(YAML::NodeType::Map);
-    const int kelvin_enabled = slider_value(name_prefix + "White_Balance_Kelvin_Enable");
-    const int kelvin = slider_value(name_prefix + "White_Balance_Kelvin_Temperature");
-    const int red = slider_value(name_prefix + "White_Balance_Red_Gain_x100");
-    const int green = slider_value(name_prefix + "White_Balance_Green_Gain_x100");
-    const int blue = slider_value(name_prefix + "White_Balance_Blue_Gain_x100");
-    color["brightness"] = ratio_x100(slider_value(name_prefix + "Brightness_Multiplier_x100"));
-    color["exposure_ev"] = slider_to_exposure_ev(slider_value(name_prefix + "Exposure_EV_x10"));
-    color["contrast"] = ratio_x100(slider_value(name_prefix + "Contrast_Multiplier_x100"));
-    color["gamma"] = ratio_x100(slider_value(name_prefix + "Gamma_Multiplier_x100"));
-    if (kelvin_enabled > 0) {
-      color["white_balance_temp"] = QString("%1k").arg(kelvin).toStdString();
-    } else {
+    if (white_balance_changed) {
+      const int kelvin_enabled = slider_value(name_prefix + "White_Balance_Kelvin_Enable");
+      const int kelvin = slider_value(name_prefix + "White_Balance_Kelvin_Temperature");
+      const int red = slider_value(name_prefix + "White_Balance_Red_Gain_x100");
+      const int green = slider_value(name_prefix + "White_Balance_Green_Gain_x100");
+      const int blue = slider_value(name_prefix + "White_Balance_Blue_Gain_x100");
+      if (kelvin_enabled > 0) {
+        set_color_leaf("white_balance_temp", QString("%1k").arg(kelvin).toStdString());
+        remove_color_leaf("white_balance");
+        return;
+      }
       YAML::Node white_balance(YAML::NodeType::Sequence);
       white_balance.push_back(ratio_x100(blue));
       white_balance.push_back(ratio_x100(green));
       white_balance.push_back(ratio_x100(red));
-      color["white_balance"] = white_balance;
+      set_color_leaf("white_balance", white_balance);
+      remove_color_leaf("white_balance_temp");
     }
-    return color;
-  };
-  auto apply_color_prefix = [&](const QString& prefix) {
-    std::optional<YAML::Node> color = make_color(prefix);
-    if (!color) {
-      return;
-    }
-    const QString config_prefix =
-        prefix.isEmpty() ? QString("rink.camera.color") : QString("stitching.%1.color").arg(prefix.toLower());
-    if (prefix.isEmpty()) {
-      config["rink"]["camera"]["color"] = *color;
-    } else {
-      const char* side_key = prefix.compare("Left", Qt::CaseInsensitive) == 0 ? "left" : "right";
-      config["stitching"][side_key]["color"] = *color;
-    }
-    mark_runtime_key(config_prefix + ".brightness");
-    mark_runtime_key(config_prefix + ".exposure_ev");
-    mark_runtime_key(config_prefix + ".contrast");
-    mark_runtime_key(config_prefix + ".gamma");
-    mark_runtime_key(
-        config_prefix + (has_yaml_key(*color, "white_balance_temp") ? ".white_balance_temp" : ".white_balance"));
   };
   apply_color_prefix("");
   apply_color_prefix("Left");
@@ -1476,6 +1480,75 @@ void HmStreamWindow::applySavedControlConfig(YAML::Node& config) {
   if (has_control(controls, "Time_To_Dest_Speed_Limit_Frames")) {
     config["rink"]["camera"]["time_to_dest_speed_limit_frames"] = slider_value("Time_To_Dest_Speed_Limit_Frames");
     mark_runtime_key("rink.camera.time_to_dest_speed_limit_frames");
+  }
+  auto apply_ratio_control = [&](const QString& id, const char* yaml_key) {
+    const std::string control_key = id.toStdString();
+    if (!has_control(controls, control_key.c_str())) {
+      return;
+    }
+    const auto default_it = camera_defaults_.find(id);
+    const double default_value = default_it == camera_defaults_.end() ? 0.0 : static_cast<double>(default_it->second);
+    if (default_value <= 0.0) {
+      return;
+    }
+    config["rink"]["camera"][yaml_key] = static_cast<double>(slider_value(id)) / default_value;
+    mark_runtime_key(QString("rink.camera.") + yaml_key);
+  };
+  apply_ratio_control("Max_Speed_X_x10", "max_speed_ratio_x");
+  apply_ratio_control("Max_Speed_Y_x10", "max_speed_ratio_y");
+  apply_ratio_control("Max_Accel_X_x10", "max_accel_ratio_x");
+  apply_ratio_control("Max_Accel_Y_x10", "max_accel_ratio_y");
+  const bool has_live_box_runtime_controls = has_control(controls, "Max_Speed_X_x10") ||
+      has_control(controls, "Max_Speed_Y_x10") || has_control(controls, "Max_Accel_X_x10") ||
+      has_control(controls, "Max_Accel_Y_x10") || has_control(controls, "Apply_To_Fast_Box") ||
+      has_control(controls, "Apply_To_Follower_Box");
+  if (has_live_box_runtime_controls && game_id_edit_) {
+    const QString game_dir = gameDirectory(game_id_edit_->text());
+    QDir runtime_dir(QDir(game_dir).filePath(".hmstream-ui"));
+    if (!runtime_dir.exists()) {
+      runtime_dir.mkpath(".");
+    }
+    const QString runtime_config_path = runtime_dir.filePath("play_tracker_config.yaml");
+    try {
+      const QString base_playtracker_config = pipelineConfigPath("play_tracker_config.yaml");
+      YAML::Node play_tracker_config = QFileInfo::exists(base_playtracker_config)
+          ? YAML::LoadFile(base_playtracker_config.toStdString())
+          : YAML::Node(YAML::NodeType::Map);
+      if (!play_tracker_config["play-tracker"] || !play_tracker_config["play-tracker"].IsMap()) {
+        play_tracker_config["play-tracker"] = YAML::Node(YAML::NodeType::Map);
+      }
+      if (!play_tracker_config["play-tracker"]["live-boxes"] ||
+          !play_tracker_config["play-tracker"]["live-boxes"].IsSequence()) {
+        play_tracker_config["play-tracker"]["live-boxes"] = YAML::Node(YAML::NodeType::Sequence);
+      }
+      YAML::Node live_boxes = play_tracker_config["play-tracker"]["live-boxes"];
+      while (live_boxes.size() < 2) {
+        YAML::Node box(YAML::NodeType::Map);
+        box["name"] = live_boxes.size() == 0 ? "current_roi" : "current_roi_aspect";
+        live_boxes.push_back(box);
+      }
+
+      auto apply_live_box = [&](int index) {
+        live_boxes[index]["max-speed-x"] = static_cast<double>(slider_value("Max_Speed_X_x10")) / 10.0;
+        live_boxes[index]["max-speed-y"] = static_cast<double>(slider_value("Max_Speed_Y_x10")) / 10.0;
+        live_boxes[index]["max-accel-x"] = static_cast<double>(slider_value("Max_Accel_X_x10")) / 10.0;
+        live_boxes[index]["max-accel-y"] = static_cast<double>(slider_value("Max_Accel_Y_x10")) / 10.0;
+      };
+      if (slider_value("Apply_To_Fast_Box") != 0) {
+        apply_live_box(0);
+      }
+      if (slider_value("Apply_To_Follower_Box") != 0) {
+        apply_live_box(1);
+      }
+
+      std::ofstream tracker_out(runtime_config_path.toStdString());
+      tracker_out << play_tracker_config << "\n";
+      config["pipeline"]["ds-playtracker"]["config-file"] = runtime_config_path.toStdString();
+      mark_runtime_key("pipeline.ds-playtracker.config-file");
+      appendLog(QString("playtracker runtime config saved %1").arg(runtime_config_path));
+    } catch (const std::exception& exc) {
+      appendLog(QString("could not save playtracker runtime config: %1").arg(exc.what()));
+    }
   }
   if (has_control(controls, "Apply_To_Fast_Box")) {
     config["hmstream_ui"]["camera_control_targets"]["apply_to_fast_box"] = slider_value("Apply_To_Fast_Box") != 0;

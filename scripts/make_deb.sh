@@ -260,12 +260,14 @@ done
 
 # ---------- YOLO custom inference lib ----------
 YOLO_SO="${TOPDIR}/bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"
-if [[ -f "${YOLO_SO}" ]]; then
-  echo "[make_deb] Staging libnvdsinfer_custom_impl_Yolo.so..."
-  validate_elf_arch "${YOLO_SO}"
-  cp "${YOLO_SO}" "${STAGING}${INSTALL_PREFIX}/lib/libnvdsinfer_custom_impl_Yolo.so"
-  patchelf_rpath "${STAGING}${INSTALL_PREFIX}/lib/libnvdsinfer_custom_impl_Yolo.so"
+if [[ ! -f "${YOLO_SO}" ]]; then
+  echo "[make_deb] ERROR: missing ${YOLO_SO}; run 'make yolo-custom-lib' before packaging." >&2
+  exit 1
 fi
+echo "[make_deb] Staging libnvdsinfer_custom_impl_Yolo.so..."
+validate_elf_arch "${YOLO_SO}"
+cp "${YOLO_SO}" "${STAGING}${INSTALL_PREFIX}/lib/libnvdsinfer_custom_impl_Yolo.so"
+patchelf_rpath "${STAGING}${INSTALL_PREFIX}/lib/libnvdsinfer_custom_impl_Yolo.so"
 
 # ---------- configs ----------
 echo "[make_deb] Staging configs..."

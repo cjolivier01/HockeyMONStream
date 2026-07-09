@@ -711,12 +711,15 @@ bool test_camera_controls(HmStreamWindow* window) {
   auto* exposure = require_child<QSlider>(window, "cameraSlider_Exposure_EV_x10");
   auto* exposure_value = require_child<QLabel>(window, "cameraValue_Exposure_EV_x10");
   auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
+  auto* left_brightness = require_child<QSlider>(window, "cameraSlider_Left_Brightness_Multiplier_x100");
   auto* left_gamma = require_child<QSlider>(window, "cameraSlider_Left_Gamma_Multiplier_x100");
+  auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
   auto* reset = require_child<QPushButton>(window, "resetCameraButton");
   auto* save = require_child<QPushButton>(window, "savePresetButton");
   auto* create = require_child<QPushButton>(window, "createGameButton");
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
-  if (!exposure || !exposure_value || !rotate || !left_gamma || !reset || !save || !create || !game_id) {
+  if (!exposure || !exposure_value || !rotate || !left_brightness || !left_gamma || !max_speed_x || !reset || !save ||
+      !create || !game_id) {
     return false;
   }
 
@@ -726,13 +729,15 @@ bool test_camera_controls(HmStreamWindow* window) {
   exposure->setValue(47);
   rotate->setValue(72);
   left_gamma->setValue(125);
+  max_speed_x->setValue(450);
   if (!expect(window->cameraControlValue("Exposure_EV_x10") == 47, "Exposure slider should update controller state") ||
       !expect(
           window->cameraControlValue("Stitch_Rotate_Degrees") == 72,
           "Stitch rotation slider should update controller state") ||
       !expect(
           window->cameraControlValue("Left_Gamma_Multiplier_x100") == 125,
-          "Side color slider should update controller state")) {
+          "Side color slider should update controller state") ||
+      !expect(window->cameraControlValue("Max_Speed_X_x10") == 450, "Speed slider should update controller state")) {
     return false;
   }
 
@@ -751,6 +756,28 @@ bool test_camera_controls(HmStreamWindow* window) {
   YAML::Node saved_rotation;
   const bool has_saved_rotation = lookup_yaml_path(saved, {"stitching", "post_stitch_rotate_degrees"}, &saved_rotation);
   const bool saved_rotation_ok = saved_rotation && saved_rotation.IsScalar() && saved_rotation.as<int>() == 18;
+  YAML::Node saved_max_speed_x;
+  const bool has_saved_max_speed_x =
+      lookup_yaml_path(saved, {"rink", "camera", "max_speed_ratio_x"}, &saved_max_speed_x);
+  const bool saved_max_speed_x_ok =
+      has_saved_max_speed_x && saved_max_speed_x.IsScalar() && saved_max_speed_x.as<double>() == 1.5;
+  YAML::Node saved_playtracker_config_path;
+  const bool has_saved_playtracker_config_path =
+      lookup_yaml_path(saved, {"pipeline", "ds-playtracker", "config-file"}, &saved_playtracker_config_path);
+  const fs::path playtracker_config_path =
+      has_saved_playtracker_config_path ? fs::path(saved_playtracker_config_path.as<std::string>()) : fs::path();
+  YAML::Node playtracker_config = has_saved_playtracker_config_path && fs::exists(playtracker_config_path)
+      ? YAML::LoadFile(playtracker_config_path.string())
+      : YAML::Node();
+  YAML::Node live_boxes;
+  const bool has_live_boxes = lookup_yaml_path(playtracker_config, {"play-tracker", "live-boxes"}, &live_boxes);
+  YAML::Node follower_max_speed_x;
+  YAML::Node fast_max_speed_x;
+  const bool saved_follower_max_speed_x = has_live_boxes && live_boxes.IsSequence() && live_boxes.size() > 1 &&
+      lookup_yaml_key(live_boxes[1], "max-speed-x", &follower_max_speed_x) && follower_max_speed_x.IsScalar() &&
+      follower_max_speed_x.as<double>() == 45.0;
+  const bool saved_fast_max_speed_x = has_live_boxes && live_boxes.IsSequence() && live_boxes.size() > 0 &&
+      lookup_yaml_key(live_boxes[0], "max-speed-x", &fast_max_speed_x);
   const bool has_default_follower =
       lookup_yaml_path(saved, {"hmstream_ui", "camera_controls", "Apply_To_Follower_Box"}, nullptr);
   if (!saved_controls_ok) {
@@ -759,9 +786,15 @@ bool test_camera_controls(HmStreamWindow* window) {
   if (!expect(window->logText().contains("preset saved"), "Save preset button should log persistence") ||
       !expect(saved_controls_ok, "Save preset should persist non-default control values") ||
       !expect(!has_default_follower, "Save preset should omit default control values") ||
-      !expect(has_saved_rotation && saved_rotation_ok, "Stitch slider should save the runtime rotation config")) {
-    if (!has_saved_rotation || !saved_rotation_ok) {
+      !expect(has_saved_rotation && saved_rotation_ok, "Stitch slider should save the runtime rotation config") ||
+      !expect(has_saved_max_speed_x && saved_max_speed_x_ok, "Speed slider should save runtime ratio config") ||
+      !expect(
+          has_saved_playtracker_config_path && saved_follower_max_speed_x && !saved_fast_max_speed_x,
+          "Speed slider should save follower playtracker runtime config")) {
+    if (!has_saved_rotation || !saved_rotation_ok || !has_saved_max_speed_x || !saved_max_speed_x_ok ||
+        !saved_follower_max_speed_x || saved_fast_max_speed_x) {
       std::cerr << saved << '\n';
+      std::cerr << playtracker_config << '\n';
     }
     return false;
   }
@@ -777,6 +810,16 @@ bool test_camera_controls(HmStreamWindow* window) {
   color_copy["gamma"] = 1.75;
   right_copy["color"] = color_copy;
   stitching_copy["right"] = right_copy;
+  YAML::Node left;
+  lookup_yaml_path(stitching_copy, {"left"}, &left);
+  YAML::Node left_copy = left && left.IsMap() ? YAML::Clone(left) : YAML::Node(YAML::NodeType::Map);
+  YAML::Node left_color;
+  lookup_yaml_path(left_copy, {"color"}, &left_color);
+  YAML::Node left_color_copy =
+      left_color && left_color.IsMap() ? YAML::Clone(left_color) : YAML::Node(YAML::NodeType::Map);
+  left_color_copy["gamma"] = 1.75;
+  left_copy["color"] = left_color_copy;
+  stitching_copy["left"] = left_copy;
   saved["stitching"] = stitching_copy;
   {
     std::ofstream out(config);
@@ -795,6 +838,24 @@ bool test_camera_controls(HmStreamWindow* window) {
     return false;
   }
 
+  left_gamma->setValue(100);
+  left_brightness->setValue(110);
+  activate(save);
+  YAML::Node same_prefix = YAML::LoadFile(config.string());
+  YAML::Node same_prefix_left_gamma;
+  YAML::Node same_prefix_left_brightness;
+  const bool preserved_left_gamma =
+      lookup_yaml_path(same_prefix, {"stitching", "left", "color", "gamma"}, &same_prefix_left_gamma) &&
+      same_prefix_left_gamma.IsScalar() && same_prefix_left_gamma.as<double>() == 1.75;
+  const bool saved_left_brightness =
+      lookup_yaml_path(same_prefix, {"stitching", "left", "color", "brightness"}, &same_prefix_left_brightness) &&
+      same_prefix_left_brightness.IsScalar() && same_prefix_left_brightness.as<double>() == 1.1;
+  if (!expect(preserved_left_gamma, "Saving one color leaf should preserve manual same-prefix color edits") ||
+      !expect(saved_left_brightness, "Saving one color leaf should persist that leaf")) {
+    std::cerr << same_prefix << '\n';
+    return false;
+  }
+
   activate(reset);
   activate(save);
   YAML::Node cleaned = YAML::LoadFile(config.string());
@@ -805,7 +866,11 @@ bool test_camera_controls(HmStreamWindow* window) {
       lookup_yaml_path(cleaned, {"stitching", "right", "color", "gamma"}, &preserved_gamma);
   const bool preserved_manual_gamma =
       has_preserved_gamma && preserved_gamma.IsScalar() && preserved_gamma.as<double>() == 1.75;
-  if (!preserved_manual_gamma) {
+  YAML::Node preserved_left_gamma_node;
+  const bool preserved_manual_left_gamma =
+      lookup_yaml_path(cleaned, {"stitching", "left", "color", "gamma"}, &preserved_left_gamma_node) &&
+      preserved_left_gamma_node.IsScalar() && preserved_left_gamma_node.as<double>() == 1.75;
+  if (!preserved_manual_gamma || !preserved_manual_left_gamma) {
     std::cerr << cleaned << '\n';
   }
   return expect(
@@ -813,9 +878,12 @@ bool test_camera_controls(HmStreamWindow* window) {
              "Saving defaults should clear saved camera controls") &&
       expect(!lookup_yaml_path(cleaned, {"stitching", "post_stitch_rotate_degrees"}, nullptr),
              "Saving defaults should clear UI-generated stitch runtime override") &&
-      expect(!lookup_yaml_path(cleaned, {"stitching", "left", "color"}, nullptr),
-             "Saving defaults should clear UI-generated side color override") &&
-      expect(preserved_manual_gamma, "Saving defaults should preserve non-UI-authored runtime config");
+      expect(!lookup_yaml_path(cleaned, {"pipeline", "ds-playtracker", "config-file"}, nullptr),
+             "Saving defaults should clear UI-generated playtracker config override") &&
+      expect(!lookup_yaml_path(cleaned, {"stitching", "left", "color", "brightness"}, nullptr),
+             "Saving defaults should clear UI-generated side color leaf") &&
+      expect(preserved_manual_gamma, "Saving defaults should preserve non-UI-authored runtime config") &&
+      expect(preserved_manual_left_gamma, "Saving defaults should preserve same-prefix manual color config");
 }
 
 } // namespace
