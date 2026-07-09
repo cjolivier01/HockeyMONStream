@@ -1,12 +1,18 @@
 #pragma once
 
 #include <QtWidgets/QCheckBox>
+#include <QtWidgets/QComboBox>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QLineEdit>
+#include <QtWidgets/QListWidget>
 #include <QtWidgets/QMainWindow>
 #include <QtWidgets/QPlainTextEdit>
+#include <QtWidgets/QRadioButton>
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QVBoxLayout>
+
+#include <yaml-cpp/yaml.h>
 
 #include <map>
 #include <string>
@@ -18,6 +24,9 @@ class HmStreamWindow : public QMainWindow {
   QString pipelineStateText() const;
   QString outputStateText(const QString& id) const;
   QString logText() const;
+  QString gameIdText() const;
+  QString gameDirectoryText() const;
+  int videoSetCount() const;
   int cameraControlValue(const QString& id) const;
   int cameraTabCount() const;
 
@@ -25,6 +34,7 @@ class HmStreamWindow : public QMainWindow {
   void buildUi();
   void buildTopBar(QVBoxLayout* root);
   void buildMainArea(QVBoxLayout* root);
+  void buildGameControls(QVBoxLayout* root);
   void buildPreviewPane(QVBoxLayout* root);
   void buildOutputControls(QVBoxLayout* parent);
   void buildCameraControls(QVBoxLayout* parent);
@@ -34,6 +44,29 @@ class HmStreamWindow : public QMainWindow {
   void restartStage();
   void savePreset();
   void resetCameraControls();
+  void refreshGames();
+  void selectGame(const QString& game_id);
+  void createOrLoadGame();
+  void addVideoPath();
+  void browseVideoPath();
+  void removeSelectedVideoSet();
+  void refreshVideoSets();
+  QString selectedVideoRole() const;
+  QString gameRoot() const;
+  QString gameDirectory(const QString& game_id) const;
+  QString relativeToGameDir(const QString& path) const;
+  bool ensureGameDirectory();
+  bool importVideoPath(const QString& source_path, QString* imported_relative_path);
+  bool saveCopiedImport(
+      const QString& relative_path,
+      const QString& auto_group_family = {},
+      const QString& source_parent = {});
+  bool isCopiedImport(const QString& relative_path);
+  bool removeClearedCopiedExplicitImports(const QByteArray& original_config, bool had_config);
+  bool syncRuntimeExplicitVideoConfig(YAML::Node& config);
+  bool savePrivateConfigForRole(const QString& role, const QString& relative_path);
+  bool removePrivateConfigForRole(const QString& role, const QString& relative_path);
+  bool removeImportedVideoPath(const QString& relative_path, bool allow_regular_delete = false);
   void toggleOutput(const QString& id, bool enabled);
   void redirectYoutube();
   void addRtspOutput();
@@ -43,6 +76,15 @@ class HmStreamWindow : public QMainWindow {
   QLabel* backend_mode_{nullptr};
   QLabel* pipeline_state_{nullptr};
   QLabel* preview_status_{nullptr};
+  QLabel* game_path_label_{nullptr};
+  QComboBox* game_selector_{nullptr};
+  QLineEdit* game_id_edit_{nullptr};
+  QLineEdit* video_path_edit_{nullptr};
+  QListWidget* video_set_list_{nullptr};
+  QRadioButton* role_auto_{nullptr};
+  QRadioButton* role_left_{nullptr};
+  QRadioButton* role_center_{nullptr};
+  QRadioButton* role_right_{nullptr};
   QPlainTextEdit* log_{nullptr};
   QTabWidget* camera_tabs_{nullptr};
   QVBoxLayout* output_list_{nullptr};

@@ -15,7 +15,7 @@ set -euo pipefail
 TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALL_PREFIX="/opt/hmstream"
 PKG_NAME="hmstream"
-PKG_ARCH="${PKG_ARCH:-$(dpkg --print-architecture 2>/dev/null || echo amd64)}"
+PKG_ARCH="${PKG_ARCH:-}"
 
 # ---------- arg parsing ----------
 DO_BUILD=0
@@ -36,8 +36,31 @@ done
 
 if [[ -z "$PKG_VERSION" ]]; then
   PKG_VERSION="$(git -C "${TOPDIR}" describe --tags --always 2>/dev/null || echo "0.0.0")"
-  # dpkg needs versions that start with a digit; strip a leading 'v'
-  PKG_VERSION="${PKG_VERSION#v}"
+fi
+# dpkg needs versions that start with a digit; strip a leading 'v'
+PKG_VERSION="${PKG_VERSION#v}"
+PKG_VERSION="$(printf '%s' "${PKG_VERSION}" | sed -E 's/[^A-Za-z0-9.+:~-]+/./g; s/[.]+/./g; s/^[.]+//; s/[.]+$//')"
+if [[ ! "${PKG_VERSION}" =~ ^[0-9] ]]; then
+  PKG_VERSION="0.0+git.${PKG_VERSION}"
+fi
+if ! command -v dpkg &>/dev/null; then
+  echo "[make_deb] dpkg not found; installing via apt..."
+  sudo apt-get install -y dpkg
+fi
+if [[ -z "${PKG_ARCH}" ]]; then
+  PKG_ARCH="$(dpkg --print-architecture)"
+fi
+if ! dpkg --validate-archname "${PKG_ARCH}" >/dev/null 2>&1; then
+  echo "ERROR: invalid Debian package architecture: ${PKG_ARCH}" >&2
+  exit 1
+fi
+if [[ "${PKG_ARCH}" == "all" || "${PKG_ARCH}" == "any" || "${PKG_ARCH}" == "source" || "${PKG_ARCH}" == *any* ]]; then
+  echo "ERROR: unsupported binary package architecture: ${PKG_ARCH}" >&2
+  exit 1
+fi
+if ! dpkg --validate-version "${PKG_VERSION}" >/dev/null 2>&1; then
+  echo "ERROR: invalid Debian package version: ${PKG_VERSION}" >&2
+  exit 1
 fi
 
 # ---------- optional build ----------
@@ -57,6 +80,31 @@ if [[ ! -f "${HMSTREAM_UI}" ]]; then
   echo "ERROR: ${HMSTREAM_UI} not found. Run 'make hmstream-ui' first, or pass --build." >&2
   exit 1
 fi
+if ! command -v file &>/dev/null; then
+  echo "[make_deb] file not found; installing via apt..."
+  sudo apt-get install -y file
+fi
+validate_elf_arch() {
+  local elf="$1"
+  local description
+  description="$(file -Lb "${elf}")"
+  case "${PKG_ARCH}" in
+    amd64)
+      [[ "${description}" == *"x86-64"* ]] ;;
+    arm64)
+      [[ "${description}" == *"aarch64"* || "${description}" == *"ARM aarch64"* ]] ;;
+    armhf)
+      [[ "${description}" == *"ARM"* && "${description}" == *"32-bit"* ]] ;;
+    *)
+      echo "ERROR: unsupported package architecture for ELF validation: ${PKG_ARCH}" >&2
+      return 1 ;;
+  esac || {
+    echo "ERROR: ${elf} does not match package architecture ${PKG_ARCH}: ${description}" >&2
+    return 1
+  }
+}
+validate_elf_arch "${HMSTREAM_CLI}"
+validate_elf_arch "${HMSTREAM_UI}"
 
 # ---------- ensure tools ----------
 if ! command -v patchelf &>/dev/null; then
@@ -145,6 +193,7 @@ install_lib() {
   soname_base="$(basename "${src}")"
 
   if [[ ! -f "${dest_dir}/${real_base}" ]]; then
+    validate_elf_arch "${real}"
     cp "${real}" "${dest_dir}/${real_base}"
     patchelf_rpath "${dest_dir}/${real_base}"
   fi
@@ -193,6 +242,7 @@ echo "[make_deb] Staging GStreamer plugins..."
 for so in "${TOPDIR}/lib/gst-plugins/"lib*.so; do
   [[ -f "${so}" ]] || continue
   dest="${STAGING}${INSTALL_PREFIX}/lib/gst-plugins/$(basename "${so}")"
+  validate_elf_arch "${so}"
   cp "${so}" "${dest}"
   patchelf_rpath "${dest}"
 done
@@ -202,6 +252,7 @@ for plugin_dir in "${TOPDIR}/bazel-bin/src/gst-plugins"/*/; do
   for so in "${plugin_dir}"lib*.so; do
     [[ -f "${so}" ]] || continue
     dest="${STAGING}${INSTALL_PREFIX}/lib/gst-plugins/$(basename "${so}")"
+    validate_elf_arch "${so}"
     cp "${so}" "${dest}"
     patchelf_rpath "${dest}"
   done
@@ -211,6 +262,7 @@ done
 YOLO_SO="${TOPDIR}/bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"
 if [[ -f "${YOLO_SO}" ]]; then
   echo "[make_deb] Staging libnvdsinfer_custom_impl_Yolo.so..."
+  validate_elf_arch "${YOLO_SO}"
   cp "${YOLO_SO}" "${STAGING}${INSTALL_PREFIX}/lib/libnvdsinfer_custom_impl_Yolo.so"
   patchelf_rpath "${STAGING}${INSTALL_PREFIX}/lib/libnvdsinfer_custom_impl_Yolo.so"
 fi
