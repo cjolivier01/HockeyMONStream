@@ -170,6 +170,8 @@ def _generate_asset(command: list[str], target: Path, config_path: Path, args: a
     formatted = [part.format(**substitutions) for part in command]
     if formatted and not Path(formatted[0]).is_absolute() and ("/" in formatted[0] or formatted[0].startswith(".")):
         formatted[0] = str((config_path.parent / formatted[0]).resolve(strict=False))
+    if formatted and Path(formatted[0]).suffix == ".py":
+        formatted.insert(0, sys.executable)
 
     print(f"Generating pretrained asset: {target}", flush=True)
     print("  " + " ".join(shlex.quote(part) for part in formatted), flush=True)

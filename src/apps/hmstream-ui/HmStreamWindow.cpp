@@ -20,6 +20,7 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QRadioButton>
 #include <QtWidgets/QScrollArea>
+#include <QtWidgets/QSizePolicy>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QStyle>
@@ -127,6 +128,56 @@ QString canonical_dir_path(const QString& path) {
   const QFileInfo info(path);
   const QString canonical = info.canonicalFilePath();
   return canonical.isEmpty() ? info.absoluteFilePath() : canonical;
+}
+
+bool python_can_run_asset_setup(const QString& python) {
+  if (python.isEmpty()) {
+    return false;
+  }
+  QProcess check;
+  check.start(python, {"-c", "import yaml, onnx, torch, mmdet"});
+  if (!check.waitForStarted(3000)) {
+    return false;
+  }
+  if (!check.waitForFinished(15000)) {
+    check.kill();
+    check.waitForFinished(3000);
+    return false;
+  }
+  return check.exitStatus() == QProcess::NormalExit && check.exitCode() == 0;
+}
+
+QString asset_setup_python() {
+  QStringList candidates;
+  const QString configured = qEnvironmentVariable("PYTHON_BIN");
+  if (!configured.isEmpty()) {
+    candidates.push_back(configured);
+  }
+  const QString conda_prefix = qEnvironmentVariable("CONDA_PREFIX");
+  if (!conda_prefix.isEmpty()) {
+    candidates.push_back(QDir(conda_prefix).filePath("bin/python3"));
+  }
+  const QString venv = qEnvironmentVariable("VIRTUAL_ENV");
+  if (!venv.isEmpty()) {
+    candidates.push_back(QDir(venv).filePath("bin/python3"));
+  }
+  candidates.push_back("python3");
+  const QString home = QDir::homePath();
+  candidates.push_back(QDir(home).filePath("miniforge3/envs/ubuntu/bin/python3"));
+  candidates.push_back(QDir(home).filePath("miniconda3/envs/ubuntu/bin/python3"));
+  candidates.push_back(QDir(home).filePath(".conda/envs/ubuntu/bin/python3"));
+
+  std::set<std::string> seen;
+  for (const QString& candidate : candidates) {
+    const std::string key = candidate.toStdString();
+    if (!seen.insert(key).second) {
+      continue;
+    }
+    if (python_can_run_asset_setup(candidate)) {
+      return candidate;
+    }
+  }
+  return configured.isEmpty() ? QString("python3") : configured;
 }
 
 QString existing_auto_cam_dir_for_source(const QDir& game_dir, const QFileInfo& source) {
@@ -586,7 +637,6 @@ void HmStreamWindow::buildMainArea(QVBoxLayout* root) {
   right_layout->setContentsMargins(0, 0, 0, 0);
   buildOutputControls(right_layout);
   buildCameraControls(right_layout);
-  right_layout->addStretch(1);
 
   splitter->addWidget(left);
   splitter->addWidget(right);
@@ -784,24 +834,31 @@ void HmStreamWindow::buildOutputControls(QVBoxLayout* parent) {
 void HmStreamWindow::buildCameraControls(QVBoxLayout* parent) {
   auto* group = new QGroupBox("Camera Controls");
   group->setObjectName("cameraControlsGroup");
+  group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
   auto* layout = new QVBoxLayout(group);
 
   camera_tabs_ = new QTabWidget();
   camera_tabs_->setObjectName("cameraControlTabs");
+  camera_tabs_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
 
   auto add_slider_tab = [this](const std::vector<CameraSliderSpec>& specs) {
     auto* page = new QWidget();
+    page->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto* page_layout = new QVBoxLayout(page);
+    page_layout->setContentsMargins(0, 0, 0, 0);
     auto* scroll = new QScrollArea();
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     scroll->setWidgetResizable(true);
     auto* content = new QWidget();
+    content->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto* content_layout = new QVBoxLayout(content);
     for (const CameraSliderSpec& spec : specs) {
       addSlider(content_layout, spec.id, spec.label, spec.minimum, spec.maximum, spec.default_value);
     }
     content_layout->addStretch(1);
     scroll->setWidget(content);
-    page_layout->addWidget(scroll);
+    page_layout->addWidget(scroll, 1);
     return page;
   };
 
@@ -872,7 +929,7 @@ void HmStreamWindow::buildCameraControls(QVBoxLayout* parent) {
   camera_tabs_->addTab(add_slider_tab(left_color_controls), "Side Color");
   camera_tabs_->addTab(add_slider_tab(stitch_controls), "Stitch");
   camera_tabs_->addTab(plugin, "Plugin");
-  layout->addWidget(camera_tabs_);
+  layout->addWidget(camera_tabs_, 1);
   parent->addWidget(group, 1);
 }
 
@@ -946,11 +1003,12 @@ bool HmStreamWindow::setupPretrainedAssets(const QStringList& pipeline_args) {
     return true;
   }
 
-  const QString python = qEnvironmentVariable("PYTHON_BIN", "python3");
+  const QString python = asset_setup_python();
   QStringList setup_args;
   setup_args << script;
   setup_args << config_files;
   appendLog(QString("checking pretrained assets %1").arg(config_files.join(' ')));
+  appendLog(QString("using asset setup python %1").arg(python));
 
   QProcess setup;
   setup.setWorkingDirectory(pipelineWorkingDirectory());
