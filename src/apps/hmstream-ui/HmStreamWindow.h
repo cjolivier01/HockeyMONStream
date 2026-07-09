@@ -62,6 +62,7 @@ class HmStreamWindow : public QMainWindow {
       const QString& auto_group_family = {},
       const QString& source_parent = {});
   bool isCopiedImport(const QString& relative_path);
+  bool removeClearedCopiedExplicitImports(const QByteArray& original_config, bool had_config);
   bool syncRuntimeExplicitVideoConfig(YAML::Node& config);
   bool savePrivateConfigForRole(const QString& role, const QString& relative_path);
   bool removePrivateConfigForRole(const QString& role, const QString& relative_path);
