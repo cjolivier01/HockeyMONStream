@@ -8,11 +8,14 @@
 #include <QtWidgets/QAbstractButton>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
+#include <QtWidgets/QComboBox>
+#include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QListWidget>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QRadioButton>
 #include <QtWidgets/QSlider>
+#include <QtWidgets/QSpinBox>
 
 #include <yaml-cpp/yaml.h>
 
@@ -85,6 +88,22 @@ bool write_fake_video(const QString& path) {
   }
   file.write("hmstream-ui-test-video");
   return true;
+}
+
+bool write_fake_runner(const QString& path) {
+  QFile file(path);
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    std::cerr << "Failed to create fake runner: " << path.toStdString() << '\n';
+    return false;
+  }
+  file.write("#!/bin/sh\n");
+  file.write("printf '%s\\n' \"$@\"\n");
+  file.write("sleep 5\n");
+  file.close();
+  return QFile::setPermissions(
+      path,
+      QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner | QFileDevice::ReadGroup |
+          QFileDevice::ExeGroup | QFileDevice::ReadOther | QFileDevice::ExeOther);
 }
 
 bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
@@ -493,7 +512,8 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   if (!write_fake_video(QString::fromStdString((cleanup_game / "cam1" / "GX010001.MP4").string()))) {
     return false;
   }
-  if (!write_fake_video(QString::fromStdString((cleanup_game / ".hmstream-ui" / "left" / "copied-left.mp4").string()))) {
+  if (!write_fake_video(
+          QString::fromStdString((cleanup_game / ".hmstream-ui" / "left" / "copied-left.mp4").string()))) {
     return false;
   }
   YAML::Node cleanup_config;
@@ -543,23 +563,68 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
 bool test_pipeline_buttons(HmStreamWindow* window) {
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* pause = require_child<QPushButton>(window, "pausePipelineButton");
   auto* restart = require_child<QPushButton>(window, "restartStageButton");
-  if (!stop || !start || !restart) {
+  auto* mode = require_child<QComboBox>(window, "runModeCombo");
+  auto* control_points = require_child<QSpinBox>(window, "controlPointsSpin");
+  if (!stop || !start || !pause || !restart || !mode || !control_points) {
     return false;
   }
 
   activate(stop);
-  if (!expect(window->pipelineStateText() == "DEMO STOPPED", "Stop button should stop the demo pipeline")) {
+  if (!expect(window->pipelineStateText() == "STOPPED", "Stop button should stop the pipeline")) {
     return false;
   }
 
+  const int calibration_index = mode->findData("stitch-calibration");
+  mode->setCurrentIndex(calibration_index);
+  control_points->setValue(750);
   activate(start);
-  if (!expect(window->pipelineStateText() == "DEMO PLAYING", "Start button should start the demo pipeline")) {
+  for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          window->logText().contains("ds_hockey_configure_stitching.yaml"),
+          "Calibration should use stitching config") ||
+      !expect(window->logText().contains("--show-stitching 1"), "Calibration should request stitched display") ||
+      !expect(window->pipelineStateText() == "PLAYING", "Test runner should keep calibration process running")) {
     return false;
   }
+
+  activate(pause);
+  if (!expect(window->pipelineStateText() == "PAUSED", "Pause button should pause the process")) {
+    return false;
+  }
+  activate(pause);
+  if (!expect(window->pipelineStateText() == "PLAYING", "Pause button should resume the process")) {
+    return false;
+  }
+  activate(stop);
+  for (int i = 0; i < 50 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(window->pipelineStateText() == "STOPPED", "Stop should terminate calibration process")) {
+    return false;
+  }
+
+  mode->setCurrentIndex(mode->findData("program"));
+  activate(start);
+  for (int i = 0; i < 50 && !window->logText().contains("ds_hockey_app_config.yaml"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(window->logText().contains("--show"), "Program run should request render output")) {
+    return false;
+  }
+  activate(stop);
 
   activate(restart);
-  return expect(window->logText().contains("stage restart requested"), "Restart button should log a stage restart");
+  const bool restart_logged =
+      expect(window->logText().contains("stage restart requested"), "Restart button should log a stage restart");
+  activate(stop);
+  return restart_logged;
 }
 
 bool test_output_controls(HmStreamWindow* window) {
@@ -571,7 +636,7 @@ bool test_output_controls(HmStreamWindow* window) {
   }
 
   activate(spare);
-  if (!expect(window->outputStateText("spare-rtmp") == "DEMO LIVE", "Spare RTMP toggle should start the output")) {
+  if (!expect(window->outputStateText("spare-rtmp") == "ENABLED", "Spare RTMP toggle should enable the output")) {
     return false;
   }
 
@@ -584,37 +649,56 @@ bool test_output_controls(HmStreamWindow* window) {
 
   activate(add_rtsp);
   return expect(
-      window->outputStateText("rtsp-dynamic-1") == "DEMO LIVE",
-      "Add RTSP button should create a live dynamic RTSP output");
+      window->outputStateText("rtsp-dynamic-1") == "ENABLED", "Add RTSP button should create an enabled RTSP output");
 }
 
 bool test_camera_controls(HmStreamWindow* window) {
-  if (!expect(window->cameraTabCount() >= 4, "Camera controls should be grouped on tabs")) {
+  if (!expect(window->cameraTabCount() >= 6, "Camera controls should be grouped on tabs")) {
     return false;
   }
 
-  auto* exposure = require_child<QSlider>(window, "cameraSlider_exposure");
-  auto* yaw = require_child<QSlider>(window, "cameraSlider_stitchYaw");
+  auto* exposure = require_child<QSlider>(window, "cameraSlider_Exposure_EV_x10");
+  auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
+  auto* left_gamma = require_child<QSlider>(window, "cameraSlider_Left_Gamma_Multiplier_x100");
   auto* reset = require_child<QPushButton>(window, "resetCameraButton");
   auto* save = require_child<QPushButton>(window, "savePresetButton");
-  if (!exposure || !yaw || !reset || !save) {
+  if (!exposure || !rotate || !left_gamma || !reset || !save) {
     return false;
   }
 
-  exposure->setValue(5);
-  yaw->setValue(-20);
-  if (!expect(window->cameraControlValue("exposure") == 5, "Exposure slider should update controller state") ||
-      !expect(window->cameraControlValue("stitchYaw") == -20, "Stitch yaw slider should update controller state")) {
+  exposure->setValue(47);
+  rotate->setValue(72);
+  left_gamma->setValue(125);
+  if (!expect(window->cameraControlValue("Exposure_EV_x10") == 47, "Exposure slider should update controller state") ||
+      !expect(
+          window->cameraControlValue("Stitch_Rotate_Degrees") == 72,
+          "Stitch rotation slider should update controller state") ||
+      !expect(
+          window->cameraControlValue("Left_Gamma_Multiplier_x100") == 125,
+          "Side color slider should update controller state")) {
     return false;
   }
 
   activate(save);
-  if (!expect(window->logText().contains("preset saved"), "Save preset button should log persistence")) {
+  const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  YAML::Node saved = YAML::LoadFile(config.string());
+  if (!expect(window->logText().contains("preset saved"), "Save preset button should log persistence") ||
+      !expect(
+          saved["hmstream_ui"]["camera_controls"]["Exposure_EV_x10"].as<int>() == 47 &&
+              saved["hmstream_ui"]["camera_controls"]["Stitch_Rotate_Degrees"].as<int>() == 72 &&
+              saved["hmstream_ui"]["camera_controls"]["Left_Gamma_Multiplier_x100"].as<int>() == 125,
+          "Save preset should persist non-default control values") ||
+      !expect(
+          !saved["hmstream_ui"]["camera_controls"]["Apply_To_Follower_Box"],
+          "Save preset should omit default control values") ||
+      !expect(
+          saved["stitching"]["post_stitch_rotate_degrees"].as<int>() == 18,
+          "Stitch slider should save the runtime rotation config")) {
     return false;
   }
 
   activate(reset);
-  return expect(window->cameraControlValue("exposure") == -13, "Reset should restore exposure default");
+  return expect(window->cameraControlValue("Exposure_EV_x10") == 40, "Reset should restore exposure default");
 }
 
 } // namespace
@@ -626,6 +710,11 @@ int main(int argc, char** argv) {
     return 1;
   }
   qputenv("HM_GAME_DIR", game_root.path().toLocal8Bit());
+  const QString fake_runner = source_root.path() + "/hmstream-ui-fake-runner.sh";
+  if (!write_fake_runner(fake_runner)) {
+    return 1;
+  }
+  qputenv("HMSTREAM_UI_TEST_RUNNER", fake_runner.toLocal8Bit());
 
   QApplication app(argc, argv);
   HmStreamWindow window;
