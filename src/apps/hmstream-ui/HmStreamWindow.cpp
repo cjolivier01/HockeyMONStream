@@ -1257,6 +1257,11 @@ void HmStreamWindow::savePreset() {
     return;
   }
   out << config << "\n";
+  out.close();
+  if (!out) {
+    appendLog(QString("failed to write preset %1").arg(QString::fromStdString(config_path.string())));
+    return;
+  }
   appendLog(QString("preset saved %1").arg(QString::fromStdString(config_path.string())));
 }
 
