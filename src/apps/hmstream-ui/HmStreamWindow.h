@@ -13,6 +13,7 @@
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QVBoxLayout>
+#include <QtWidgets/QWidget>
 
 #include <QtCore/QProcess>
 
@@ -112,6 +113,8 @@ class HmStreamWindow : public QMainWindow {
   QRadioButton* role_right_{nullptr};
   QPlainTextEdit* log_{nullptr};
   QTabWidget* preview_tabs_{nullptr};
+  QWidget* preview_surface_{nullptr};
+  QWidget* stitched_surface_{nullptr};
   QTabWidget* camera_tabs_{nullptr};
   QVBoxLayout* output_list_{nullptr};
   QProcess* pipeline_process_{nullptr};

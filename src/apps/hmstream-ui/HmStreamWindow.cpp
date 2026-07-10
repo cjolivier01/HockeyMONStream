@@ -895,27 +895,32 @@ void HmStreamWindow::buildPreviewPane(QVBoxLayout* root) {
 
   auto* program = new QWidget();
   auto* layout = new QVBoxLayout(program);
-  auto* preview = new QLabel("Program preview");
-  preview->setObjectName("previewSurface");
-  preview->setAlignment(Qt::AlignCenter);
-  preview->setMinimumHeight(420);
-  preview->setFrameShape(QFrame::StyledPanel);
-  preview->setStyleSheet("QLabel#previewSurface { background: #12171c; color: #dce6ef; }");
+  preview_surface_ = new QWidget();
+  preview_surface_->setObjectName("previewSurface");
+  preview_surface_->setMinimumHeight(420);
+  preview_surface_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+  preview_surface_->setAttribute(Qt::WA_NativeWindow);
+  preview_surface_->setAttribute(Qt::WA_DontCreateNativeAncestors);
+  preview_surface_->setStyleSheet("QWidget#previewSurface { background: #12171c; }");
 
   preview_status_ = new QLabel("Pipeline stopped");
   preview_status_->setObjectName("previewStatusLabel");
-  layout->addWidget(preview, 1);
+  layout->addWidget(preview_surface_, 1);
   layout->addWidget(preview_status_);
 
   auto* stitched = new QWidget();
   auto* stitched_layout = new QVBoxLayout(stitched);
+  stitched_surface_ = new QWidget();
+  stitched_surface_->setObjectName("stitchedPreviewSurface");
+  stitched_surface_->setMinimumHeight(420);
+  stitched_surface_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+  stitched_surface_->setAttribute(Qt::WA_NativeWindow);
+  stitched_surface_->setAttribute(Qt::WA_DontCreateNativeAncestors);
+  stitched_surface_->setStyleSheet("QWidget#stitchedPreviewSurface { background: #10151a; }");
   stitched_status_ = new QLabel("Stitched canvas preview");
-  stitched_status_->setObjectName("stitchedPreviewSurface");
-  stitched_status_->setAlignment(Qt::AlignCenter);
-  stitched_status_->setMinimumHeight(420);
-  stitched_status_->setFrameShape(QFrame::StyledPanel);
-  stitched_status_->setStyleSheet("QLabel#stitchedPreviewSurface { background: #10151a; color: #dce6ef; }");
-  stitched_layout->addWidget(stitched_status_, 1);
+  stitched_status_->setObjectName("stitchedPreviewStatusLabel");
+  stitched_layout->addWidget(stitched_surface_, 1);
+  stitched_layout->addWidget(stitched_status_);
 
   preview_tabs_->addTab(program, "Program");
   preview_tabs_->addTab(stitched, "Stitched");
@@ -1249,10 +1254,16 @@ QStringList HmStreamWindow::pipelineArguments() const {
     args << "-c" << pipelineConfigPath("ds_hockey_configure_stitching.yaml");
     args << "--enable-sinks=RENDER";
     args << "--show-stitching" << "1";
+    if (stitched_surface_) {
+      args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(stitched_surface_->winId()));
+    }
   } else {
     args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
     args << QString("--enable-sinks=%1").arg(enabledSinkNames().join(","));
     args << "--show";
+    if (preview_surface_) {
+      args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(preview_surface_->winId()));
+    }
   }
   args << "--options=pipeline.hmaudio.enable=1";
   return args;

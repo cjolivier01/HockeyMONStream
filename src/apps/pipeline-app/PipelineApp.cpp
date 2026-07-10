@@ -695,6 +695,7 @@ absl::Status PipelineApplication::createMainLoop(
     });
   }
 
+  std::set<Window> owned_windows;
   for (guint i = 0; i < app_contexts.size(); i++) {
 #if defined(__aarch64__)
     if (gst_element_set_state(app_contexts[i]->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
@@ -726,47 +727,54 @@ absl::Status PipelineApplication::createMainLoop(
       hints.height = height;
 
       assert(!windows.count(i));
-      windows[i] = XCreateSimpleWindow(
-          display_,
-          RootWindow(display_, DefaultScreen(display_)),
-          hints.x,
-          hints.y,
-          width,
-          height,
-          2,
-          0x00000000,
-          0x00000000);
+      const bool use_external_window = render_window_id_ > 0 && i == 0;
+      if (use_external_window) {
+        windows[i] = static_cast<Window>(render_window_id_);
+        g_print("Using external render window id: %" G_GINT64_FORMAT "\n", render_window_id_);
+      } else {
+        windows[i] = XCreateSimpleWindow(
+            display_,
+            RootWindow(display_, DefaultScreen(display_)),
+            hints.x,
+            hints.y,
+            width,
+            height,
+            2,
+            0x00000000,
+            0x00000000);
+        owned_windows.insert(windows[i]);
 
-      XSetNormalHints(display_, windows[i], &hints);
+        XSetNormalHints(display_, windows[i], &hints);
 
-      gchar* title = (app_contexts.size() > 1) ? g_strdup_printf(APP_TITLE "-%d", i) : g_strdup(APP_TITLE);
-      XTextProperty xproperty;
-      if (XStringListToTextProperty((char**)&title, 1, &xproperty) != 0) {
-        XSetWMName(display_, windows[i], &xproperty);
-        XFree(xproperty.value);
+        gchar* title = (app_contexts.size() > 1) ? g_strdup_printf(APP_TITLE "-%d", i) : g_strdup(APP_TITLE);
+        XTextProperty xproperty;
+        if (XStringListToTextProperty((char**)&title, 1, &xproperty) != 0) {
+          XSetWMName(display_, windows[i], &xproperty);
+          XFree(xproperty.value);
+        }
+
+        XSetWindowAttributes attr = {0};
+        if ((app_contexts[i]->config.tiled_display_config.enable &&
+             app_contexts[i]->config.tiled_display_config.rows * app_contexts[i]->config.tiled_display_config.columns ==
+                 1) ||
+            (app_contexts[i]->config.tiled_display_config.enable == 0))
+          attr.event_mask = KeyPress;
+        else if (app_contexts[i]->config.tiled_display_config.enable)
+          attr.event_mask = ButtonPress | KeyRelease;
+        XChangeWindowAttributes(display_, windows[i], CWEventMask, &attr);
+
+        Atom wmDeleteMessage = XInternAtom(display_, "WM_DELETE_WINDOW", False);
+        if (wmDeleteMessage != None)
+          XSetWMProtocols(display_, windows[i], &wmDeleteMessage, 1);
+
+        XMapRaised(display_, windows[i]);
+        XSync(display_, 1);
       }
-
-      XSetWindowAttributes attr = {0};
-      if ((app_contexts[i]->config.tiled_display_config.enable &&
-           app_contexts[i]->config.tiled_display_config.rows * app_contexts[i]->config.tiled_display_config.columns ==
-               1) ||
-          (app_contexts[i]->config.tiled_display_config.enable == 0))
-        attr.event_mask = KeyPress;
-      else if (app_contexts[i]->config.tiled_display_config.enable)
-        attr.event_mask = ButtonPress | KeyRelease;
-      XChangeWindowAttributes(display_, windows[i], CWEventMask, &attr);
-
-      Atom wmDeleteMessage = XInternAtom(display_, "WM_DELETE_WINDOW", False);
-      if (wmDeleteMessage != None)
-        XSetWMProtocols(display_, windows[i], &wmDeleteMessage, 1);
-
-      XMapRaised(display_, windows[i]);
-      XSync(display_, 1);
       gst_video_overlay_set_window_handle(
           GST_VIDEO_OVERLAY(app_contexts[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink), (gulong)windows[i]);
       gst_video_overlay_expose(GST_VIDEO_OVERLAY(app_contexts[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink));
 
-      if (!x_event_thread_)
+      if (!use_external_window && !x_event_thread_)
         x_event_thread_ = g_thread_new("nvds-window-event-thread", nvds_x_event_thread_static, nullptr);
     }
 #if !defined(__aarch64__)
@@ -782,7 +790,7 @@ absl::Status PipelineApplication::createMainLoop(
     }
 #endif
   }
-  cleanup_stack.push([this, contexts = app_contexts, windows = windows]() mutable -> void {
+  cleanup_stack.push([this, contexts = app_contexts, windows = windows, owned_windows]() mutable -> void {
     // (void)waitForPipelinesStopped(contexts);
     for (guint i = 0; i < contexts.size(); i++) {
       if (contexts[i]) {
@@ -790,7 +798,7 @@ absl::Status PipelineApplication::createMainLoop(
           return_value_ = -1;
         destroy_pipeline(contexts[i].get());
         absl::MutexLock lk(&disp_lock_);
-        if (windows[i]) {
+        if (windows[i] && owned_windows.count(windows[i])) {
           // post_dummy_event(display_, windows[i]);
           XFlush(display_);
           XDestroyWindow(display_, windows[i]);
@@ -961,6 +969,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &show_scaled_scale_,
        "Scale final render window for --show (`0` disables, `N` is scale ratio)",
        "RATIO"},
+      {"render-window-id",
+       0,
+       0,
+       G_OPTION_ARG_INT64,
+       &render_window_id_,
+       "Native X11 window id to use for the render sink instead of creating a DeepStream window",
+       "XID"},
       {"stitch-rotate-degrees",
        0,
        0,

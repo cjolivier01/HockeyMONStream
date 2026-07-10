@@ -28,10 +28,10 @@
 #include "absl/synchronization/mutex.h"
 
 // Application and common headers.
+#include "TerminalProgressUi.h"
 #include "configurator.h"
 #include "deepstream_app.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
-#include "TerminalProgressUi.h"
 
 // Macro definitions.
 #define APP_TITLE "DeepStream"
@@ -163,6 +163,7 @@ class PipelineApplication {
   gdouble show_playtracker_scale_{-1};
   gdouble show_scaled_scale_{-1};
   gdouble show_render_scale_{-1};
+  gint64 render_window_id_{0};
   gdouble stitch_rotate_degrees_{0.0};
   gboolean stitch_rotate_degrees_set_{FALSE};
   gboolean show_bbox_text_;
