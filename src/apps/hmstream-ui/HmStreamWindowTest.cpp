@@ -637,6 +637,7 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
           window->logText().contains("ds_hockey_configure_stitching.yaml"),
           "Calibration should use stitching config") ||
       !expect(window->logText().contains("--show-stitching 1"), "Calibration should request stitched display") ||
+      !expect(window->logText().contains("--render-window-id="), "Calibration should embed the render sink") ||
       !expect(window->pipelineStateText() == "PLAYING", "Test runner should keep calibration process running")) {
     return false;
   }
@@ -664,7 +665,8 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
-  if (!expect(window->logText().contains("--show"), "Program run should request render output")) {
+  if (!expect(window->logText().contains("--show"), "Program run should request render output") ||
+      !expect(window->logText().contains("--render-window-id="), "Program run should embed the render sink")) {
     return false;
   }
   activate(stop);
