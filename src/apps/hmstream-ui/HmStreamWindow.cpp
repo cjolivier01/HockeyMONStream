@@ -272,7 +272,7 @@ QString asset_setup_python() {
       return candidate;
     }
   }
-  return configured.isEmpty() ? QString("python3") : configured;
+  return {};
 }
 
 QString existing_auto_cam_dir_for_source(const QDir& game_dir, const QFileInfo& source) {
@@ -1103,6 +1103,12 @@ bool HmStreamWindow::setupPretrainedAssets(const QStringList& pipeline_args) {
   setup_args << script;
   setup_args << config_files;
   appendLog(QString("checking pretrained assets %1").arg(config_files.join(' ')));
+  if (python.isEmpty()) {
+    appendLog("asset setup failed: no Python interpreter with yaml, onnx, and torch is available");
+    appendLog("install missing packages in your active env or set PYTHON_BIN to the correct Python");
+    appendLog("example: python3 -m pip install onnx torch");
+    return false;
+  }
   appendLog(QString("using asset setup python %1").arg(python));
 
   QProcess setup;
