@@ -552,6 +552,45 @@ bool lookup_yaml_path(YAML::Node root, const QString& dotted_path, YAML::Node* v
   return lookup_yaml_path_at(root, parts, 0, value);
 }
 
+QStringList pipeline_config_files_from_args(const QStringList& pipeline_args) {
+  QStringList config_files;
+  for (int i = 0; i < pipeline_args.size(); ++i) {
+    const QString arg = pipeline_args[i];
+    if ((arg == "-c" || arg == "--config") && i + 1 < pipeline_args.size()) {
+      config_files.push_back(pipeline_args[++i]);
+    } else if (arg.startsWith("-c=") || arg.startsWith("--config=")) {
+      config_files.push_back(arg.mid(arg.indexOf('=') + 1));
+    }
+  }
+  return config_files;
+}
+
+QString resolve_config_path(const QString& path, const QString& base_dir) {
+  const QFileInfo info(path);
+  if (info.isAbsolute()) {
+    return info.absoluteFilePath();
+  }
+  return QFileInfo(QDir(base_dir).filePath(path)).absoluteFilePath();
+}
+
+bool yaml_scalar_bool(YAML::Node node, bool default_value) {
+  if (!node || !node.IsScalar()) {
+    return default_value;
+  }
+  try {
+    return node.as<bool>();
+  } catch (const std::exception&) {
+    const QString value = QString::fromStdString(node.as<std::string>()).trimmed().toLower();
+    if (value == "1" || value == "true" || value == "yes" || value == "on") {
+      return true;
+    }
+    if (value == "0" || value == "false" || value == "no" || value == "off") {
+      return false;
+    }
+  }
+  return default_value;
+}
+
 void remove_yaml_path_if_empty_map(YAML::Node root, std::initializer_list<const char*> path) {
   QStringList parts;
   for (const char* part : path) {
@@ -1085,15 +1124,7 @@ bool HmStreamWindow::setupPretrainedAssets(const QStringList& pipeline_args) {
     return true;
   }
 
-  QStringList config_files;
-  for (int i = 0; i < pipeline_args.size(); ++i) {
-    const QString arg = pipeline_args[i];
-    if ((arg == "-c" || arg == "--config") && i + 1 < pipeline_args.size()) {
-      config_files.push_back(pipeline_args[++i]);
-    } else if (arg.startsWith("-c=") || arg.startsWith("--config=")) {
-      config_files.push_back(arg.mid(arg.indexOf('=') + 1));
-    }
-  }
+  const QStringList config_files = pipeline_config_files_from_args(pipeline_args);
   if (config_files.isEmpty()) {
     return true;
   }
@@ -1129,6 +1160,60 @@ bool HmStreamWindow::setupPretrainedAssets(const QStringList& pipeline_args) {
     return false;
   }
   return true;
+}
+
+void HmStreamWindow::logMissingTensorRtEngineCaches(const QStringList& pipeline_args) {
+  const QString working_dir = pipelineWorkingDirectory();
+  const QStringList config_files = pipeline_config_files_from_args(pipeline_args);
+  std::set<std::string> logged_engines;
+  for (const QString& config_file_arg : config_files) {
+    const QString config_file = resolve_config_path(config_file_arg, working_dir);
+    if (!QFileInfo::exists(config_file)) {
+      continue;
+    }
+
+    try {
+      const YAML::Node pipeline = YAML::LoadFile(config_file.toStdString());
+      YAML::Node primary_gie;
+      if (!lookup_yaml_key(pipeline, "primary-gie", &primary_gie) || !primary_gie.IsMap()) {
+        continue;
+      }
+      if (!yaml_scalar_bool(map_value(primary_gie, "enable"), true)) {
+        continue;
+      }
+      YAML::Node infer_config_node;
+      if (!lookup_yaml_key(primary_gie, "config-file", &infer_config_node) || !infer_config_node.IsScalar()) {
+        continue;
+      }
+
+      const QString infer_config = resolve_config_path(
+          QString::fromStdString(infer_config_node.as<std::string>()), QFileInfo(config_file).absolutePath());
+      if (!QFileInfo::exists(infer_config)) {
+        continue;
+      }
+      const YAML::Node infer = YAML::LoadFile(infer_config.toStdString());
+      YAML::Node engine_node;
+      if (!lookup_yaml_path(infer, "property.model-engine-file", &engine_node) || !engine_node.IsScalar()) {
+        continue;
+      }
+
+      const QString engine_file = resolve_config_path(
+          QString::fromStdString(engine_node.as<std::string>()), QFileInfo(infer_config).absolutePath());
+      if (QFileInfo::exists(engine_file)) {
+        continue;
+      }
+      if (!logged_engines.insert(engine_file.toStdString()).second) {
+        continue;
+      }
+
+      appendLog(QString("TensorRT engine cache missing: %1").arg(engine_file));
+      appendLog(
+          "first run will build/cache the primary-gie engine before video appears; the render window may stay black during this step");
+      appendLog("DeepStream may also log a model-engine-file open/deserialize warning while it builds the engine");
+    } catch (const std::exception& e) {
+      appendLog(QString("could not inspect TensorRT engine cache from %1: %2").arg(config_file, e.what()));
+    }
+  }
 }
 
 QStringList HmStreamWindow::enabledSinkNames() const {
@@ -1198,6 +1283,7 @@ void HmStreamWindow::startPipeline() {
     updateRunControls();
     return;
   }
+  logMissingTensorRtEngineCaches(args);
 
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   const QString working_dir = pipelineWorkingDirectory();

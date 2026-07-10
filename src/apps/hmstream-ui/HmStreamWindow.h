@@ -86,6 +86,7 @@ class HmStreamWindow : public QMainWindow {
   QString pipelineWorkingDirectory() const;
   QStringList pipelineArguments() const;
   bool setupPretrainedAssets(const QStringList& pipeline_args);
+  void logMissingTensorRtEngineCaches(const QStringList& pipeline_args);
   QStringList enabledSinkNames() const;
   bool isCalibrationRun() const;
   void updateRunControls();
