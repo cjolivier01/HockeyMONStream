@@ -92,32 +92,33 @@ def _build_file_content(
     if has_cudawarping:
         libs.append("libopencv_cudawarping.so")
 
-    if use_conda:
-        # For conda OpenCV, use cc_import so Bazel sets up rpaths/runfiles correctly.
-        # This avoids binaries failing at runtime with `libopencv_*.so.* => not found`.
-        imports = []
-        deps = []
-        for lib in libs:
-            # e.g. libopencv_imgproc.so -> opencv_imgproc
-            rule_name = lib
-            if rule_name.startswith("lib"):
-                rule_name = rule_name[len("lib"):]
-            if rule_name.endswith(".so"):
-                rule_name = rule_name[:-len(".so")]
+    # Use cc_import for both conda and system OpenCV so the final link uses the
+    # exact library directory detected above. Raw `-Llib -l:...` linkopts are
+    # interpreted relative to the consuming workspace/sandbox and can pick up a
+    # different OpenCV from /usr/local/lib before the configured one.
+    imports = []
+    deps = []
+    for lib in libs:
+        # e.g. libopencv_imgproc.so -> opencv_imgproc
+        rule_name = lib
+        if rule_name.startswith("lib"):
+            rule_name = rule_name[len("lib"):]
+        if rule_name.endswith(".so"):
+            rule_name = rule_name[:-len(".so")]
 
-            lib_file = lib
-            if soname_suffix:
-                lib_file = lib + "." + soname_suffix
-            imports.append("""\
+        lib_file = lib
+        if soname_suffix:
+            lib_file = lib + "." + soname_suffix
+        imports.append("""\
 cc_import(
     name = "{name}",
     shared_library = "lib/{lib_file}",
     visibility = ["//visibility:private"],
 )
 """.format(name = rule_name, lib_file = lib_file))
-            deps.append(":" + rule_name)
+        deps.append(":" + rule_name)
 
-        return """\
+    return """\
 {imports}
 cc_library(
     name = "opencv",
@@ -132,28 +133,6 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 """.format(imports = "\n".join(imports), v = opencv_version, deps = repr(deps))
-
-    linkopts = ["-L" + lib_dir]
-    if soname_suffix:
-        linkopts += ["-l:" + lib + "." + soname_suffix for lib in libs]
-    else:
-        linkopts += ["-l:" + lib for lib in libs]
-
-    # System OpenCV: rely on the system linker search path.
-    return """\
-cc_library(
-    name = "opencv",
-    hdrs = glob([
-        "{v}/opencv2/*.h*",
-        "{v}/opencv2/**/*.h*",
-    ]),
-    includes = [
-        "{v}",
-    ],
-    linkopts = {linkopts},
-    visibility = ["//visibility:public"],
-)
-""".format(v = opencv_version, linkopts = repr(linkopts))
 
 def _opencv_configure_impl(ctx):
     conda_prefix = ctx.os.environ.get("CONDA_PREFIX")
