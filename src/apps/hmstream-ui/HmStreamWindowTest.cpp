@@ -2,6 +2,7 @@
 
 #include <QtTest/qtest_widgets.h>
 #include <QtTest/qtestmouse.h>
+#include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
 #include <QtTest/QTest>
