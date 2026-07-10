@@ -230,7 +230,7 @@ bool python_can_run_asset_setup(const QString& python) {
     return false;
   }
   QProcess check;
-  check.start(python, {"-c", "import yaml, onnx, torch"});
+  check.start(python, {"-c", "import yaml"});
   if (!check.waitForStarted(3000)) {
     return false;
   }
@@ -1104,9 +1104,8 @@ bool HmStreamWindow::setupPretrainedAssets(const QStringList& pipeline_args) {
   setup_args << config_files;
   appendLog(QString("checking pretrained assets %1").arg(config_files.join(' ')));
   if (python.isEmpty()) {
-    appendLog("asset setup failed: no Python interpreter with yaml, onnx, and torch is available");
-    appendLog("install missing packages in your active env or set PYTHON_BIN to the correct Python");
-    appendLog("example: python3 -m pip install onnx torch");
+    appendLog("asset setup failed: no Python interpreter with PyYAML is available");
+    appendLog("install python3-yaml or set PYTHON_BIN to the correct Python");
     return false;
   }
   appendLog(QString("using asset setup python %1").arg(python));

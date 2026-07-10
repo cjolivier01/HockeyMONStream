@@ -1,9 +1,7 @@
 pretrained-assets:
   - property: onnx-file
-    command:
-      - ../scripts/export_hm_yolov8_onnx.py
-      - --output
-      - "{target}"
+    url: https://github.com/cjolivier01/hstream/releases/download/pretrained-assets-v1/hm_crowdhuman_e85_yolov8_m_1984_736_b2_1984x736.onnx
+    sha256: 30159bbb1aada700135572e93897994f721989836e30c0bcd347b21426b5e367
   - property: labelfile-path
     url: https://raw.githubusercontent.com/pjreddie/darknet/master/data/coco.names
 
