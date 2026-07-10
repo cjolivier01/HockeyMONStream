@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Iterable
@@ -132,9 +133,35 @@ def _verify_sha256(path: Path, expected: str) -> None:
         raise ValueError(f"{path}: sha256 mismatch: expected {expected}, got {actual}")
 
 
+def _github_token() -> str:
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        token = os.environ.get(name, "").strip()
+        if token:
+            return token
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "token"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return ""
+    return result.stdout.strip()
+
+
 def _download(url: str, path: Path, timeout: float) -> None:
     _ensure_parent_dir(path)
-    request = urllib.request.Request(url, headers={"User-Agent": "hstream-asset-setup"})
+    headers = {"User-Agent": "hstream-asset-setup"}
+    parsed_url = urllib.parse.urlparse(url)
+    if parsed_url.netloc == "api.github.com":
+        headers["Accept"] = "application/octet-stream"
+        token = _github_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
     tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     os.close(tmp_fd)
     tmp_path = Path(tmp_name)
