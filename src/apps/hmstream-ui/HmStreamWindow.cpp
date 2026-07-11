@@ -194,11 +194,17 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_di
   if (bazel_bin_path.isEmpty()) {
     bazel_bin_path = bazel_bin_info.absoluteFilePath();
   }
-  QDirIterator solib_it(bazel_bin_path, QDir::Dirs | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
-  while (solib_it.hasNext()) {
-    const QFileInfo solib_dir(solib_it.next());
-    if (solib_dir.absoluteFilePath().contains("/_solib_")) {
-      prepend_env_path(env, "LD_LIBRARY_PATH", solib_dir.absoluteFilePath());
+  const QDir bazel_bin_dir(bazel_bin_path);
+  const QFileInfoList solib_roots =
+      bazel_bin_dir.entryInfoList(QStringList() << "_solib_*", QDir::Dirs | QDir::NoDotAndDotDot);
+  for (const QFileInfo& solib_root : solib_roots) {
+    prepend_env_path(env, "LD_LIBRARY_PATH", solib_root.absoluteFilePath());
+    const QDir solib_dir(solib_root.absoluteFilePath());
+    const QFileInfoList solib_children = solib_dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QFileInfo& solib_child : solib_children) {
+      if (!solib_child.fileName().contains("Sstubs")) {
+        prepend_env_path(env, "LD_LIBRARY_PATH", solib_child.absoluteFilePath());
+      }
     }
   }
 

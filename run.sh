@@ -164,8 +164,10 @@ if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
       prepend_path LD_LIBRARY_PATH "${solib_dir}"
     done < <(
       find "${BAZEL_BIN_REAL}" \
-        -path '*/_solib_*/*' \
+        -maxdepth 2 \
         -type d \
+        \( -name '_solib_*' -o -path "${BAZEL_BIN_REAL}/_solib_*/*" \) \
+        ! -path '*Sstubs*' \
         -printf '%p\n' | sort -u
     )
   fi
