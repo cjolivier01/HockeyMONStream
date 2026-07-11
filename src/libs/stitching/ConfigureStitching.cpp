@@ -757,6 +757,57 @@ bool is_executable_usable(const fs::path& path) {
 }
 
 std::optional<fs::path> find_executable_maybe_conda(const std::string& exec) {
+  if (exec == "python3") {
+    std::vector<fs::path> python_candidates;
+    auto add_python_candidate = [&python_candidates](const fs::path& candidate) {
+      if (candidate.empty()) {
+        return;
+      }
+      for (const auto& existing : python_candidates) {
+        if (existing == candidate) {
+          return;
+        }
+      }
+      python_candidates.push_back(candidate);
+    };
+
+    if (const char* s = getenv("HM_PYTHON"); s && *s) {
+      add_python_candidate(s);
+    }
+    if (const char* s = getenv("CONDA_PREFIX"); s && *s) {
+      add_python_candidate(fs::path(s) / "bin" / "python3");
+    }
+    if (const char* s = getenv("CONDA_DEFAULT_ENV"); s && *s) {
+      if (const char* home = getenv("HOME"); home && *home) {
+        add_python_candidate(fs::path(home) / ".conda" / "envs" / s / "bin" / "python3");
+      }
+    }
+    if (const char* home = getenv("HOME"); home && *home) {
+      const fs::path envs_dir = fs::path(home) / ".conda" / "envs";
+      std::error_code ec;
+      if (fs::is_directory(envs_dir, ec)) {
+        for (const auto& entry : fs::directory_iterator(envs_dir, ec)) {
+          if (!entry.is_directory(ec)) {
+            continue;
+          }
+          add_python_candidate(entry.path() / "bin" / "python3");
+        }
+      }
+    }
+    auto found_python = findExecutable("python3", {"PATH"});
+    if (found_python) {
+      add_python_candidate(*found_python);
+    }
+    add_python_candidate("/usr/bin/python3");
+
+    for (const auto& candidate : python_candidates) {
+      if (is_executable_usable(candidate)) {
+        return candidate;
+      }
+    }
+    return std::nullopt;
+  }
+
   auto found_exec = findExecutable(exec, {"PATH"});
   if (found_exec && is_executable_usable(*found_exec)) {
     return *found_exec;
@@ -770,14 +821,6 @@ std::optional<fs::path> find_executable_maybe_conda(const std::string& exec) {
     return std::nullopt;
   }
   return path;
-}
-
-std::string get_python_interp() {
-  auto python_exec = findExecutable("python3", {"PATH"});
-  if (!python_exec) {
-    return "/usr/bin/python3";
-  }
-  return *python_exec;
 }
 
 std::optional<std::string> resolve_executable(const std::string& executable) {
