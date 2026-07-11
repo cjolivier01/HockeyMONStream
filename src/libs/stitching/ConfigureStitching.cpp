@@ -784,13 +784,19 @@ std::optional<fs::path> find_executable_maybe_conda(const std::string& exec) {
     }
     if (const char* home = getenv("HOME"); home && *home) {
       const fs::path envs_dir = fs::path(home) / ".conda" / "envs";
+      add_python_candidate(envs_dir / "ubuntu" / "bin" / "python3");
       std::error_code ec;
       if (fs::is_directory(envs_dir, ec)) {
+        std::vector<fs::path> conda_envs;
         for (const auto& entry : fs::directory_iterator(envs_dir, ec)) {
           if (!entry.is_directory(ec)) {
             continue;
           }
-          add_python_candidate(entry.path() / "bin" / "python3");
+          conda_envs.push_back(entry.path());
+        }
+        std::sort(conda_envs.begin(), conda_envs.end());
+        for (const auto& conda_env : conda_envs) {
+          add_python_candidate(conda_env / "bin" / "python3");
         }
       }
     }
