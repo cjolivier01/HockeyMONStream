@@ -10,6 +10,7 @@
 #include <QtCore/QStandardPaths>
 #include <QtCore/QSysInfo>
 #include <QtCore/Qt>
+#include <QtGui/QWheelEvent>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QButtonGroup>
 #include <QtWidgets/QComboBox>
@@ -67,6 +68,14 @@ QLabel* make_value_label(const QString& object_name, const QString& value) {
   label->setMinimumWidth(92);
   return label;
 }
+
+class WheelPassthroughSlider : public QSlider {
+ public:
+  explicit WheelPassthroughSlider(Qt::Orientation orientation, QWidget* parent = nullptr) : QSlider(orientation, parent) {}
+
+ protected:
+  void wheelEvent(QWheelEvent* event) override { event->ignore(); }
+};
 
 bool is_video_file(const QString& path) {
   const QString suffix = QFileInfo(path).suffix().toLower();
@@ -2889,7 +2898,7 @@ QSlider* HmStreamWindow::addSlider(
   auto* row = new QGridLayout();
   auto* name = new QLabel(label);
   auto* value_label = make_value_label("cameraValue_" + id, QString::number(value));
-  auto* slider = new QSlider(Qt::Horizontal);
+  auto* slider = new WheelPassthroughSlider(Qt::Horizontal);
   slider->setObjectName("cameraSlider_" + id);
   slider->setRange(minimum, maximum);
   slider->setValue(value);

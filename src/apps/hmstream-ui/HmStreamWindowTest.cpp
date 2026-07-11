@@ -6,6 +6,7 @@
 #include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
 #include <QtTest/QTest>
+#include <QtGui/QWheelEvent>
 #include <QtWidgets/QAbstractButton>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
@@ -751,6 +752,24 @@ bool test_camera_controls(HmStreamWindow* window) {
           window->cameraControlValue("Left_Gamma_Multiplier_x100") == 125,
           "Side color slider should update controller state") ||
       !expect(window->cameraControlValue("Max_Speed_X_x10") == 450, "Speed slider should update controller state")) {
+    return false;
+  }
+
+  const int gamma_before_wheel = left_gamma->value();
+  QWheelEvent wheel_event(
+      left_gamma->rect().center(),
+      left_gamma->mapToGlobal(left_gamma->rect().center()),
+      QPoint(),
+      QPoint(0, 120),
+      Qt::NoButton,
+      Qt::NoModifier,
+      Qt::ScrollUpdate,
+      false);
+  QApplication::sendEvent(left_gamma, &wheel_event);
+  QApplication::processEvents();
+  if (!expect(
+          left_gamma->value() == gamma_before_wheel,
+          "Mouse wheel over camera slider should not change live camera control")) {
     return false;
   }
 
