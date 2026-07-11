@@ -188,6 +188,20 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_di
       prepend_env_path(env, "LD_LIBRARY_PATH", lib.absolutePath());
     }
   }
+
+  QFileInfo bazel_bin_info(QDir(working_dir).filePath("bazel-bin"));
+  QString bazel_bin_path = bazel_bin_info.canonicalFilePath();
+  if (bazel_bin_path.isEmpty()) {
+    bazel_bin_path = bazel_bin_info.absoluteFilePath();
+  }
+  QDirIterator solib_it(bazel_bin_path, QDir::Dirs | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+  while (solib_it.hasNext()) {
+    const QFileInfo solib_dir(solib_it.next());
+    if (solib_dir.absoluteFilePath().contains("/_solib_")) {
+      prepend_env_path(env, "LD_LIBRARY_PATH", solib_dir.absoluteFilePath());
+    }
+  }
+
   prepend_env_path(env, "GST_PLUGIN_PATH", runtime_dir.absolutePath());
 }
 

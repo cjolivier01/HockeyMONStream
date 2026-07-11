@@ -157,6 +157,19 @@ if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
       -printf '%h\n' | sort -u
   )
 
+  BAZEL_BIN_REAL="$(readlink -f "${SCRIPT_DIR}/bazel-bin" 2>/dev/null || true)"
+  if [ -n "${BAZEL_BIN_REAL}" ] && [ -d "${BAZEL_BIN_REAL}" ]; then
+    while IFS= read -r solib_dir; do
+      solib_dir="$(readlink -f "${solib_dir}")"
+      prepend_path LD_LIBRARY_PATH "${solib_dir}"
+    done < <(
+      find "${BAZEL_BIN_REAL}" \
+        -path '*/_solib_*/*' \
+        -type d \
+        -printf '%p\n' | sort -u
+    )
+  fi
+
   prepend_path GST_PLUGIN_PATH "${BAZEL_GST_RUNTIME_PLUGIN_DIR}"
 fi
 
