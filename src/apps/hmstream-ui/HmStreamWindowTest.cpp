@@ -741,6 +741,34 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
       return false;
     }
   }
+  {
+    const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+    YAML::Node complete = YAML::LoadFile(config.string());
+    complete["hmstream_ui"]["stitching_calibration"]["status"] = "complete";
+    {
+      std::ofstream out(config);
+      out << complete << "\n";
+    }
+    activate(start);
+    for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    activate(stop);
+    for (int i = 0; i < 50 && window->pipelineStateText() != "STOPPED"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    const YAML::Node after_stop = YAML::LoadFile(config.string());
+    YAML::Node saved_status;
+    const bool has_saved_status =
+        lookup_yaml_path(after_stop, {"hmstream_ui", "stitching_calibration", "status"}, &saved_status);
+    if (!expect(
+            has_saved_status && saved_status.IsScalar() && saved_status.as<std::string>() == "pending",
+            "Starting calibration from complete state should mark pending before any user stop")) {
+      return false;
+    }
+  }
 
   mode->setCurrentIndex(mode->findData("program"));
   activate(start);

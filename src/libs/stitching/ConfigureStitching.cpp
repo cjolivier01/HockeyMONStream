@@ -108,19 +108,23 @@ absl::StatusOr<size_t> clean_files_matching(const fs::path& game_dir, const std:
     return 0;
   }
 
-  for (const auto& entry : fs::directory_iterator(game_dir, ec)) {
-    if (!entry.is_regular_file(ec)) {
+  for (auto it = fs::directory_iterator(game_dir, ec); it != fs::directory_iterator(); it.increment(ec)) {
+    if (ec) {
+      return absl::InternalError(
+          TO_STRING("Failed to iterate stitch game directory \"" << game_dir.string() << "\": " << ec.message()));
+    }
+    if (!it->is_regular_file(ec)) {
       if (ec) {
         return absl::InternalError(
-            TO_STRING("Failed to query file type for \"" << entry.path().string() << "\": " << ec.message()));
+            TO_STRING("Failed to query file type for \"" << it->path().string() << "\": " << ec.message()));
       }
       continue;
     }
-    if (!std::regex_match(entry.path().filename().string(), rgx)) {
+    if (!std::regex_match(it->path().filename().string(), rgx)) {
       continue;
     }
     size_t entry_removed = 0;
-    HM_ASSIGN_OR_RETURN(entry_removed, remove_file_if_present(entry.path()));
+    HM_ASSIGN_OR_RETURN(entry_removed, remove_file_if_present(it->path()));
     removed += entry_removed;
   }
   if (ec) {

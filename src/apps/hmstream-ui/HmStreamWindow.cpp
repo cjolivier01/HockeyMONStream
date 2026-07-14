@@ -1641,17 +1641,15 @@ bool HmStreamWindow::prepareStitchingCalibrationRun(
     }
   }
 
-  if (saved_found && saved_control_points == control_points && saved_status == "complete") {
-    return true;
-  }
-
-  const QString previous = saved_found ? QString::number(saved_control_points) : QString("unset");
-  appendLog(QString("stitching calibration control points changed %1 -> %2 status=%3; cleaning stitch artifacts")
-                .arg(previous)
-                .arg(control_points)
-                .arg(saved_status.isEmpty() ? "unset" : saved_status));
-  if (!runStitchingClean(runner, working_dir, env)) {
-    return false;
+  if (!saved_found || saved_control_points != control_points || saved_status != "complete") {
+    const QString previous = saved_found ? QString::number(saved_control_points) : QString("unset");
+    appendLog(QString("stitching calibration control points changed %1 -> %2 status=%3; cleaning stitch artifacts")
+                  .arg(previous)
+                  .arg(control_points)
+                  .arg(saved_status.isEmpty() ? "unset" : saved_status));
+    if (!runStitchingClean(runner, working_dir, env)) {
+      return false;
+    }
   }
   return saveStitchingCalibrationState(control_points, "pending");
 }
