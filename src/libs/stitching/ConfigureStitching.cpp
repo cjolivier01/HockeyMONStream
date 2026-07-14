@@ -133,9 +133,11 @@ size_t delete_extracted_frames(const fs::path& game_dir) {
   static const std::set<std::string> kVideoExtensions = {".mp4", ".mkv", ".m4v", ".mov", ".avi"};
   size_t removed = 0;
   std::error_code ec;
-  for (auto it = fs::recursive_directory_iterator(game_dir, ec); it != fs::recursive_directory_iterator(); it.increment(ec)) {
+  for (auto it = fs::recursive_directory_iterator(game_dir, ec); it != fs::recursive_directory_iterator();
+       it.increment(ec)) {
     if (ec) {
-      std::cerr << "Failed to iterate stitch game directory \"" << game_dir.string() << "\": " << ec.message() << std::endl;
+      std::cerr << "Failed to iterate stitch game directory \"" << game_dir.string() << "\": " << ec.message()
+                << std::endl;
       return removed;
     }
     const fs::path p = it->path();
@@ -146,7 +148,8 @@ size_t delete_extracted_frames(const fs::path& game_dir) {
       continue;
     }
     std::string ext = p.extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::transform(
+        ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     if (kVideoExtensions.find(ext) == kVideoExtensions.end()) {
       continue;
     }
@@ -287,8 +290,7 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
 
   const bool have_dims =
       TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width) && TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height);
-  const bool have_res =
-      TIFFGetField(tif, TIFFTAG_XRESOLUTION, &xres) && TIFFGetField(tif, TIFFTAG_YRESOLUTION, &yres);
+  const bool have_res = TIFFGetField(tif, TIFFTAG_XRESOLUTION, &xres) && TIFFGetField(tif, TIFFTAG_YRESOLUTION, &yres);
 
   (void)TIFFGetField(tif, TIFFTAG_XPOSITION, &xpos);
   (void)TIFFGetField(tif, TIFFTAG_YPOSITION, &ypos);
@@ -334,8 +336,8 @@ absl::StatusOr<CanvasSize> get_mapping_canvas_size(const fs::path& game_dir) {
   const int canvas_width = static_cast<int>(std::max(p0.x_px + p0.width, p1.x_px + p1.width));
   const int canvas_height = static_cast<int>(std::max(p0.y_px + p0.height, p1.y_px + p1.height));
   if (canvas_width <= 0 || canvas_height <= 0) {
-    return absl::FailedPreconditionError(TO_STRING(
-        "Invalid canvas size computed from mapping TIFFs: " << canvas_width << "x" << canvas_height));
+    return absl::FailedPreconditionError(
+        TO_STRING("Invalid canvas size computed from mapping TIFFs: " << canvas_width << "x" << canvas_height));
   }
 
   return CanvasSize{
@@ -577,8 +579,8 @@ DependencyReportNode build_dependency_report(
     report.direct_invalid = true;
     report.reasons.push_back(
         "oldest output " + quote(node_oldest->filename) + " (mtime=" + time_for_log(node_oldest->time) +
-        ") is older than dependency " + quote(parent_latest->filename) + " (mtime=" +
-        time_for_log(parent_latest->time) + ")");
+        ") is older than dependency " + quote(parent_latest->filename) +
+        " (mtime=" + time_for_log(parent_latest->time) + ")");
   }
 
   const bool child_invalidated_by_upstream = invalidated_by_upstream || report.direct_invalid;
@@ -731,9 +733,89 @@ std::map<std::string, std::string> get_environment() {
   return env_vars;
 }
 
+bool is_executable_usable(const fs::path& path) {
+  std::error_code ec;
+  if (!fs::exists(path, ec) || ec || ::access(path.c_str(), X_OK) != 0) {
+    return false;
+  }
+
+  std::ifstream in(path);
+  std::string first_line;
+  if (!std::getline(in, first_line) || first_line.rfind("#!", 0) != 0) {
+    return true;
+  }
+
+  std::string interpreter = first_line.substr(2);
+  const auto first_space = interpreter.find_first_of(" \t\r");
+  if (first_space != std::string::npos) {
+    interpreter = interpreter.substr(0, first_space);
+  }
+  if (interpreter.empty() || interpreter == "/usr/bin/env") {
+    return true;
+  }
+  return fs::exists(interpreter, ec) && !ec;
+}
+
 std::optional<fs::path> find_executable_maybe_conda(const std::string& exec) {
+  if (exec == "python3") {
+    std::vector<fs::path> python_candidates;
+    auto add_python_candidate = [&python_candidates](const fs::path& candidate) {
+      if (candidate.empty()) {
+        return;
+      }
+      for (const auto& existing : python_candidates) {
+        if (existing == candidate) {
+          return;
+        }
+      }
+      python_candidates.push_back(candidate);
+    };
+
+    if (const char* s = getenv("HM_PYTHON"); s && *s) {
+      add_python_candidate(s);
+    }
+    if (const char* s = getenv("CONDA_PREFIX"); s && *s) {
+      add_python_candidate(fs::path(s) / "bin" / "python3");
+    }
+    if (const char* s = getenv("CONDA_DEFAULT_ENV"); s && *s) {
+      if (const char* home = getenv("HOME"); home && *home) {
+        add_python_candidate(fs::path(home) / ".conda" / "envs" / s / "bin" / "python3");
+      }
+    }
+    if (const char* home = getenv("HOME"); home && *home) {
+      const fs::path envs_dir = fs::path(home) / ".conda" / "envs";
+      add_python_candidate(envs_dir / "ubuntu" / "bin" / "python3");
+      std::error_code ec;
+      if (fs::is_directory(envs_dir, ec)) {
+        std::vector<fs::path> conda_envs;
+        for (const auto& entry : fs::directory_iterator(envs_dir, ec)) {
+          if (!entry.is_directory(ec)) {
+            continue;
+          }
+          conda_envs.push_back(entry.path());
+        }
+        std::sort(conda_envs.begin(), conda_envs.end());
+        for (const auto& conda_env : conda_envs) {
+          add_python_candidate(conda_env / "bin" / "python3");
+        }
+      }
+    }
+    auto found_python = findExecutable("python3", {"PATH"});
+    if (found_python) {
+      add_python_candidate(*found_python);
+    }
+    add_python_candidate("/usr/bin/python3");
+
+    for (const auto& candidate : python_candidates) {
+      if (is_executable_usable(candidate)) {
+        return candidate;
+      }
+    }
+    return std::nullopt;
+  }
+
   auto found_exec = findExecutable(exec, {"PATH"});
-  if (found_exec) {
+  if (found_exec && is_executable_usable(*found_exec)) {
     return *found_exec;
   }
   const char* s = getenv("CONDA_PREFIX");
@@ -741,18 +823,10 @@ std::optional<fs::path> find_executable_maybe_conda(const std::string& exec) {
     return std::nullopt;
   }
   auto path = fs::path(s) / "bin" / exec;
-  if (!fs::exists(path)) {
+  if (!is_executable_usable(path)) {
     return std::nullopt;
   }
   return path;
-}
-
-std::string get_python_interp() {
-  auto python_exec = findExecutable("python3", {"PATH"});
-  if (!python_exec) {
-    return "/usr/bin/python3";
-  }
-  return *python_exec;
 }
 
 std::optional<std::string> resolve_executable(const std::string& executable) {
@@ -760,12 +834,16 @@ std::optional<std::string> resolve_executable(const std::string& executable) {
     return std::nullopt;
   }
   if (executable[0] == '/' || executable[0] == '\\') {
-    if (!std::filesystem::exists(executable)) {
+    if (!is_executable_usable(executable)) {
       return std::nullopt;
     }
     return executable;
   }
-  return findExecutable(executable, {"PATH"});
+  auto found = findExecutable(executable, {"PATH"});
+  if (!found || !is_executable_usable(*found)) {
+    return std::nullopt;
+  }
+  return found;
 }
 
 std::map<std::string, std::string> python_env(const std::string& add_dir, std::map<std::string, std::string> prev) {
@@ -1067,8 +1145,8 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
   const int canvas_width = static_cast<int>(std::max(p0.x_px + p0.width, p1.x_px + p1.width));
   const int canvas_height = static_cast<int>(std::max(p0.y_px + p0.height, p1.y_px + p1.height));
   if (canvas_width <= 0 || canvas_height <= 0) {
-    return absl::FailedPreconditionError(TO_STRING(
-        "Invalid canvas size computed from mapping TIFFs: " << canvas_width << "x" << canvas_height));
+    return absl::FailedPreconditionError(
+        TO_STRING("Invalid canvas size computed from mapping TIFFs: " << canvas_width << "x" << canvas_height));
   }
   if (seam_exists) {
     cv::Mat existing = cv::imread(seam_path.string(), cv::IMREAD_UNCHANGED);
@@ -1082,8 +1160,8 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
       std::cerr << "Existing seam mask is uniform; regenerating " << seam_path.string() << std::endl;
     }
     if (existing.empty() || existing.cols != canvas_width || existing.rows != canvas_height) {
-      std::cerr << "Existing seam mask does not match stitched canvas; regenerating " << seam_path.string()
-                << " for " << canvas_width << "x" << canvas_height << std::endl;
+      std::cerr << "Existing seam mask does not match stitched canvas; regenerating " << seam_path.string() << " for "
+                << canvas_width << "x" << canvas_height << std::endl;
     }
   }
 
@@ -1362,15 +1440,14 @@ absl::Status create_field_mask(const std::string& game_dir, surface::Surface sur
     }
   }
 
-  int exitcode =
-      run_command(cmd, working_dir, env, [](const std::string& stderr, const std::string& stdout) -> void {
-        if (!stderr.empty()) {
-          std::cerr << stderr << std::endl;
-        }
-        if (!stdout.empty()) {
-          std::cerr << stdout << std::endl;
-        }
-      });
+  int exitcode = run_command(cmd, working_dir, env, [](const std::string& stderr, const std::string& stdout) -> void {
+    if (!stderr.empty()) {
+      std::cerr << stderr << std::endl;
+    }
+    if (!stdout.empty()) {
+      std::cerr << stdout << std::endl;
+    }
+  });
   if (exitcode) {
     return absl::InternalError("Failed to create control points");
   }
@@ -1400,7 +1477,7 @@ absl::Status configure_orientation(const std::string& game_dir) {
     cmd = {
         python_exec->string(),
         "-m",
-        "hmlib.orientation",
+        "hmlib.cli.hmorientation",
         "--game-id",
         game_id,
     };
@@ -1434,9 +1511,11 @@ bool is_scoreboard_configured(const std::string& game_dir) {
   try {
     YAML::Node cfg = YAML::LoadFile(config_file.string());
     const auto& rink = cfg["rink"];
-    if (!rink || !rink.IsMap()) return false;
+    if (!rink || !rink.IsMap())
+      return false;
     const auto& scoreboard = rink["scoreboard"];
-    if (!scoreboard || !scoreboard.IsMap()) return false;
+    if (!scoreboard || !scoreboard.IsMap())
+      return false;
     const auto& polygon = scoreboard["perspective_polygon"];
     return polygon && polygon.IsSequence() && polygon.size() == 4;
   } catch (...) {
@@ -1467,8 +1546,7 @@ absl::Status configure_scoreboard(const std::string& game_dir) {
     working_dir = hm_root->string();
     if (selector_port.has_value()) {
       cmd.insert(
-          cmd.end(),
-          {"--selector-bind-host", "0.0.0.0", "--selector-port", std::to_string(selector_port.value())});
+          cmd.end(), {"--selector-bind-host", "0.0.0.0", "--selector-port", std::to_string(selector_port.value())});
     }
   } else {
     std::optional<fs::path> exec = find_executable_maybe_conda("hmscoreboard");
@@ -1491,8 +1569,10 @@ absl::Status configure_scoreboard(const std::string& game_dir) {
               << std::flush;
   }
   int exitcode = run_command(cmd, working_dir, env, [](const std::string& err, const std::string& out) {
-    if (!err.empty()) std::cerr << err << "\n" << std::flush;
-    if (!out.empty()) std::cerr << out << "\n" << std::flush;
+    if (!err.empty())
+      std::cerr << err << "\n" << std::flush;
+    if (!out.empty())
+      std::cerr << out << "\n" << std::flush;
   });
   if (exitcode) {
     return absl::InternalError(TO_STRING("Scoreboard selector failed with exit code " << exitcode));

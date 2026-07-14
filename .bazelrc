@@ -58,6 +58,10 @@ build:x86_64 --cpu=k8
 build:x86_64 --define=target_platform=x86_64
 build:x86_64 --action_env=target_platform="x86_64"
 
+# Opt-in host config for RTX 50xx / Blackwell systems. Do not include this in
+# default opt/debug configs; older CUDA toolchains cannot compile sm_120.
+build:blackwell --@rules_cuda//cuda:archs=sm_75;sm_120
+
 build:arm64 --define=target_platform=arm64
 build:arm64 --action_env=target_platform="arm64"
 build:arm64 --copt=-DABSL_NO_XPACLRI

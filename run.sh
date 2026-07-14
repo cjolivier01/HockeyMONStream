@@ -157,6 +157,21 @@ if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
       -printf '%h\n' | sort -u
   )
 
+  BAZEL_BIN_REAL="$(readlink -f "${SCRIPT_DIR}/bazel-bin" 2>/dev/null || true)"
+  if [ -n "${BAZEL_BIN_REAL}" ] && [ -d "${BAZEL_BIN_REAL}" ]; then
+    while IFS= read -r solib_dir; do
+      solib_dir="$(readlink -f "${solib_dir}")"
+      prepend_path LD_LIBRARY_PATH "${solib_dir}"
+    done < <(
+      find "${BAZEL_BIN_REAL}" \
+        -maxdepth 2 \
+        -type d \
+        \( -name '_solib_*' -o -path "${BAZEL_BIN_REAL}/_solib_*/*" \) \
+        ! -path '*Sstubs*' \
+        -printf '%p\n' | sort -u
+    )
+  fi
+
   prepend_path GST_PLUGIN_PATH "${BAZEL_GST_RUNTIME_PLUGIN_DIR}"
 fi
 
@@ -170,7 +185,7 @@ if [ -e "${YOLO_CUSTOM_IMPL}" ]; then
   fi
 fi
 
-PIPELINE_APP_BIN="${SCRIPT_DIR}/bazel-bin/src/apps/pipeline-app/pipeline-app"
+PIPELINE_APP_BIN="${SCRIPT_DIR}/bazel-bin/src/apps/pipeline-app/hmstream-cli"
 if [ -x "${PIPELINE_APP_BIN}" ]; then
   PIPELINE_APP_BIN="$(readlink -f "${PIPELINE_APP_BIN}")"
 fi
@@ -1026,9 +1041,9 @@ if [ "${ssh_forwarded_display}" -eq 1 ] && [ "${HM_ALLOW_SSH_RENDER:-0}" != "1" 
 fi
 
 if [ ! -x "${PIPELINE_APP_BIN}" ]; then
-  echo "pipeline-app is not built at ${PIPELINE_APP_BIN}; build //src/apps/pipeline-app:pipeline-app first"
+  echo "hmstream-cli is not built at ${PIPELINE_APP_BIN}; build //src/apps/pipeline-app:hmstream-cli first"
   exit 2
 fi
 
 "${PIPELINE_APP_BIN}" "${pipeline_args[@]}"
-# bazel-bin/src/apps/pipeline-app/pipeline-app -c configs/ds_hockey_app_config.yaml --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_FILE --options=pipeline.hmaudio.enable=1 $@
+# bazel-bin/src/apps/pipeline-app/hmstream-cli -c configs/ds_hockey_app_config.yaml --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_FILE --options=pipeline.hmaudio.enable=1 $@

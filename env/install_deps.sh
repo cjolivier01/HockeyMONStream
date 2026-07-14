@@ -20,6 +20,9 @@ sudo apt-get install -y \
   libgtk-3-dev \
   libtiff5-dev \
   libgtkglext1-dev \
+  qt6-base-dev \
+  qt6-base-dev-tools \
+  qt6-qpa-plugins \
   libyaml-cpp-dev \
   apt-file \
   libbluetooth-dev \

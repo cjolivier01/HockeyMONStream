@@ -5,11 +5,12 @@
 # Usage:
 #   scripts/make_deb.sh [--build] [--version X.Y.Z] [--output-dir DIR]
 #
-#   --build          Run 'make hmstream-cli hmstream-ui' before packaging (default: skip, use existing artifacts).
+#   --build          Run 'make hmstream-cli hmstream-ui yolo-custom-lib' before packaging
+#                    (default: skip, use existing artifacts).
 #   --version X.Y.Z  Override package version (default: git describe --tags --always).
 #   --output-dir DIR Where to write the .deb (default: dist/).
 #
-# Requirements: patchelf, dpkg-deb (auto-installed from apt if missing).
+# Requirements: patchelf, dpkg-deb, python3-yaml (auto-installed from apt if missing).
 set -euo pipefail
 
 TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -47,6 +48,10 @@ if ! command -v dpkg &>/dev/null; then
   echo "[make_deb] dpkg not found; installing via apt..."
   sudo apt-get install -y dpkg
 fi
+if ! command -v python3 &>/dev/null || ! python3 -c 'import yaml' >/dev/null 2>&1; then
+  echo "[make_deb] python3-yaml not found; installing via apt..."
+  sudo apt-get install -y python3 python3-yaml
+fi
 if [[ -z "${PKG_ARCH}" ]]; then
   PKG_ARCH="$(dpkg --print-architecture)"
 fi
@@ -65,8 +70,8 @@ fi
 
 # ---------- optional build ----------
 if [[ "$DO_BUILD" -eq 1 ]]; then
-  echo "[make_deb] Building hmstream-cli and hmstream-ui..."
-  make -C "${TOPDIR}" hmstream-cli hmstream-ui
+  echo "[make_deb] Building hmstream-cli, hmstream-ui, and YOLO custom inference lib..."
+  make -C "${TOPDIR}" hmstream-cli hmstream-ui yolo-custom-lib
 fi
 
 # ---------- verify artifacts ----------
@@ -260,18 +265,49 @@ done
 
 # ---------- YOLO custom inference lib ----------
 YOLO_SO="${TOPDIR}/bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"
-if [[ -f "${YOLO_SO}" ]]; then
-  echo "[make_deb] Staging libnvdsinfer_custom_impl_Yolo.so..."
-  validate_elf_arch "${YOLO_SO}"
-  cp "${YOLO_SO}" "${STAGING}${INSTALL_PREFIX}/lib/libnvdsinfer_custom_impl_Yolo.so"
-  patchelf_rpath "${STAGING}${INSTALL_PREFIX}/lib/libnvdsinfer_custom_impl_Yolo.so"
+if [[ ! -f "${YOLO_SO}" ]]; then
+  echo "[make_deb] ERROR: missing ${YOLO_SO}; run 'make yolo-custom-lib' before packaging." >&2
+  exit 1
 fi
+echo "[make_deb] Staging libnvdsinfer_custom_impl_Yolo.so..."
+validate_elf_arch "${YOLO_SO}"
+cp "${YOLO_SO}" "${STAGING}${INSTALL_PREFIX}/lib/libnvdsinfer_custom_impl_Yolo.so"
+patchelf_rpath "${STAGING}${INSTALL_PREFIX}/lib/libnvdsinfer_custom_impl_Yolo.so"
 
 # ---------- configs ----------
 echo "[make_deb] Staging configs..."
 cp -r "${TOPDIR}/configs/." "${STAGING}${INSTALL_PREFIX}/configs/"
 # Remove the systemd unit files — those belong to a separate package/install step
 rm -rf "${STAGING}${INSTALL_PREFIX}/configs/systemd"
+
+# ---------- pretrained assets ----------
+echo "[make_deb] Staging declared non-engine pretrained assets..."
+asset_manifest="$(mktemp)"
+python3 "${TOPDIR}/scripts/setup_pretrained_assets.py" --print-targets "${TOPDIR}/configs/ds_hockey_app_config.yaml" \
+  > "${asset_manifest}"
+pretrained_root="$(readlink -f "${TOPDIR}/pretrained")"
+while IFS= read -r asset; do
+  [[ -n "${asset}" ]] || continue
+  [[ "${asset}" != *.engine ]] || continue
+  if [[ ! -f "${asset}" ]]; then
+    echo "[make_deb] WARNING: declared pretrained asset missing, not staged: ${asset}" >&2
+    continue
+  fi
+  asset_real="$(readlink -f "${asset}")"
+  case "${asset_real}" in
+    "${pretrained_root}/"*)
+      rel="${asset_real#${pretrained_root}/}"
+      ;;
+    *)
+      echo "[make_deb] WARNING: declared pretrained asset outside repo pretrained dir, not staged: ${asset}" >&2
+      continue
+      ;;
+  esac
+  dest="${STAGING}${INSTALL_PREFIX}/pretrained/${rel}"
+  mkdir -p "$(dirname "${dest}")"
+  cp "${asset_real}" "${dest}"
+done < "${asset_manifest}"
+rm -f "${asset_manifest}"
 
 # ---------- scripts ----------
 echo "[make_deb] Staging scripts..."
@@ -662,7 +698,28 @@ collect_asset_config_files() {
 collect_asset_config_files config_args
 collect_asset_config_files rewritten_args
 if [ "${#asset_config_files[@]}" -gt 0 ]; then
-  "${PYTHON_BIN:-python3}" "${INSTALL_DIR}/scripts/setup_pretrained_assets.py" "${asset_config_files[@]}"
+  asset_setup_python() {
+    local candidates=()
+    local candidate
+    if [ -n "${PYTHON_BIN:-}" ]; then candidates+=("${PYTHON_BIN}"); fi
+    if [ -n "${CONDA_PREFIX:-}" ]; then candidates+=("${CONDA_PREFIX}/bin/python3"); fi
+    if [ -n "${VIRTUAL_ENV:-}" ]; then candidates+=("${VIRTUAL_ENV}/bin/python3"); fi
+    candidates+=("${HOME}/miniforge3/envs/ubuntu/bin/python3")
+    candidates+=("${HOME}/miniconda3/envs/ubuntu/bin/python3")
+    candidates+=("${HOME}/.conda/envs/ubuntu/bin/python3")
+    candidates+=("python3")
+    for candidate in "${candidates[@]}"; do
+      if command -v "${candidate}" >/dev/null 2>&1 &&
+        "${candidate}" -c 'import yaml' >/dev/null 2>&1; then
+        printf '%s\n' "${candidate}"
+        return 0
+      fi
+    done
+    printf '%s\n' "${PYTHON_BIN:-python3}"
+  }
+  asset_python="$(asset_setup_python)"
+  echo "checking pretrained assets with ${asset_python}"
+  "${asset_python}" "${INSTALL_DIR}/scripts/setup_pretrained_assets.py" "${asset_config_files[@]}"
 fi
 
 # cd so that relative paths in DeepStream config files (e.g. custom-lib-path=lib/...)
@@ -755,11 +812,14 @@ Depends: libgstreamer1.0-0 (>= 1.20),
  python3-yaml
 Description: HMStream video pipeline application and UI
  Installs the HMStream CLI/UI binaries, bundled shared libraries
- (OpenCV 4.13), GStreamer plugins, and configs to ${INSTALL_PREFIX}.
+ (OpenCV 4.13), GStreamer plugins, configs, and non-engine pretrained
+ assets to ${INSTALL_PREFIX}.
  .
  External requirements (not expressed as Depends):
    - NVIDIA DeepStream (>= 6.3) at /opt/nvidia/deepstream/deepstream
    - NVIDIA CUDA Toolkit (>= 12) at /usr/local/cuda
+   - Python ML packages such as torch/onnx only if missing pretrained
+     assets must be regenerated
  .
  Launch the CLI with: ${INSTALL_PREFIX}/run.sh [args...]
  or via the hmstream-cli wrapper in /usr/local/bin/hmstream-cli.

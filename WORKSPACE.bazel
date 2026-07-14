@@ -18,8 +18,11 @@ local_repository(
 
 git_repository(
     name = "rules_cuda",
-    # v0.2.3 breaks some lubcupti for our version of bazel
+    # v0.2.3 breaks some lubcupti for our version of bazel.
+    # Keep the older pin but patch the arch allow-list for RTX 50xx / sm_120 hosts.
     commit = "3f2429254ec956220557e79ea9d5f5e8871c2907",
+    patch_args = ["-p1"],
+    patches = ["//third_party/patches:rules_cuda_sm120.patch"],
     remote = "https://github.com/bazel-contrib/rules_cuda",
 )
 

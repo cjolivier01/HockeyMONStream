@@ -74,6 +74,157 @@ std::vector<char*> make_mutable_argv(std::vector<std::string>& args) {
   return mutable_argv;
 }
 
+std::string host_arch_name() {
+#if defined(__x86_64__)
+  return "x86_64";
+#elif defined(__aarch64__)
+  return "aarch64";
+#else
+  return "unknown";
+#endif
+}
+
+void prepend_env_path(const char* name, const fs::path& dir) {
+  if (dir.empty() || !fs::is_directory(dir)) {
+    return;
+  }
+  const std::string dir_str = dir.string();
+  const char* existing_env = std::getenv(name);
+  if (!existing_env || std::string(existing_env).empty()) {
+    setenv(name, dir_str.c_str(), 1);
+    return;
+  }
+  const std::string existing(existing_env);
+  for (const auto& part : absl::StrSplit(existing, ':')) {
+    if (part == dir_str) {
+      return;
+    }
+  }
+  const std::string updated = dir_str + ":" + existing;
+  setenv(name, updated.c_str(), 1);
+}
+
+std::optional<fs::path> runtime_root_from_executable(const char* argv0) {
+  std::error_code ec;
+  fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+  if (ec && argv0 && std::string(argv0).find('/') != std::string::npos) {
+    exe = fs::canonical(argv0, ec);
+  }
+  if (ec || exe.empty()) {
+    return std::nullopt;
+  }
+  for (fs::path cursor = exe.parent_path(); !cursor.empty(); cursor = cursor.parent_path()) {
+    if (cursor.filename() == "bazel-bin") {
+      return cursor.parent_path();
+    }
+    if (cursor.filename() == "bin" && fs::exists(cursor.parent_path() / "configs")) {
+      return cursor.parent_path();
+    }
+    if (cursor == cursor.root_path()) {
+      break;
+    }
+  }
+  return std::nullopt;
+}
+
+fs::path pipeline_runtime_root(const char* argv0) {
+  std::error_code ec;
+  const fs::path cwd = fs::current_path(ec);
+  if (!ec && (fs::is_directory(cwd / "bazel-bin/src/gst-plugins") || fs::is_directory(cwd / "lib/gst-plugins"))) {
+    return cwd;
+  }
+  if (auto exe_root = runtime_root_from_executable(argv0)) {
+    return *exe_root;
+  }
+  return cwd;
+}
+
+void stage_bazel_gst_plugins(const fs::path& root) {
+  const fs::path bazel_plugin_root = root / "bazel-bin/src/gst-plugins";
+  if (!fs::is_directory(bazel_plugin_root)) {
+    return;
+  }
+
+  std::error_code ec;
+  const fs::path runtime_plugin_dir = root / ".cache/gst-plugin-path" / host_arch_name();
+  fs::create_directories(runtime_plugin_dir, ec);
+  if (ec) {
+    return;
+  }
+  for (const fs::directory_entry& entry : fs::directory_iterator(runtime_plugin_dir, ec)) {
+    if (!ec && entry.path().extension() == ".so" && fs::is_symlink(entry.symlink_status())) {
+      fs::remove(entry.path(), ec);
+    }
+  }
+
+  for (const fs::directory_entry& entry : fs::recursive_directory_iterator(bazel_plugin_root, ec)) {
+    if (ec || !entry.is_regular_file()) {
+      continue;
+    }
+    const fs::path path = entry.path();
+    const std::string path_str = path.string();
+    const std::string filename = path.filename().string();
+    if (path_str.find("/testutils/") != std::string::npos || path_str.find(".runfiles/") != std::string::npos) {
+      continue;
+    }
+    if (path.extension() == ".so") {
+      prepend_env_path("LD_LIBRARY_PATH", path.parent_path());
+    }
+    if ((filename.rfind("libnvdsgst_", 0) == 0 || filename.rfind("libgst", 0) == 0) && path.extension() == ".so") {
+      std::error_code link_ec;
+      const fs::path canonical = fs::canonical(path, link_ec);
+      if (link_ec) {
+        continue;
+      }
+      const fs::path link_path = runtime_plugin_dir / path.filename();
+      fs::remove(link_path, link_ec);
+      fs::create_symlink(canonical, link_path, link_ec);
+    }
+  }
+  prepend_env_path("GST_PLUGIN_PATH", runtime_plugin_dir);
+}
+
+void configure_pipeline_runtime_environment(const char* argv0) {
+  const fs::path root = pipeline_runtime_root(argv0);
+  std::error_code ec;
+  fs::path registry_dir = root / ".cache/gstreamer-1.0";
+  fs::create_directories(registry_dir, ec);
+  if (ec) {
+    if (const char* home = std::getenv("HOME"); home && *home) {
+      registry_dir = fs::path(home) / ".cache/gstreamer-1.0";
+      ec.clear();
+      fs::create_directories(registry_dir, ec);
+    }
+  }
+  if (!ec) {
+    const std::string registry = (registry_dir / ("registry.hstream." + host_arch_name() + ".bin")).string();
+    setenv("GST_REGISTRY", registry.c_str(), 1);
+  }
+
+  prepend_env_path("GST_PLUGIN_PATH", root / "lib/gst-plugins");
+  prepend_env_path("GST_PLUGIN_PATH", "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
+  prepend_env_path("LD_LIBRARY_PATH", root / "lib");
+  prepend_env_path("LD_LIBRARY_PATH", root / "lib/gst-plugins");
+  prepend_env_path("LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib");
+  prepend_env_path("LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
+  stage_bazel_gst_plugins(root);
+
+  const fs::path yolo_so = root / "bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so";
+  if (fs::exists(yolo_so)) {
+    const fs::path lib_dir = root / "lib";
+    fs::create_directories(lib_dir, ec);
+    const fs::path link_path = lib_dir / "libnvdsinfer_custom_impl_Yolo.so";
+    if (!fs::exists(link_path) || fs::is_symlink(fs::symlink_status(link_path))) {
+      std::error_code link_ec;
+      const fs::path canonical = fs::canonical(yolo_so, link_ec);
+      if (!link_ec) {
+        fs::remove(link_path, link_ec);
+        fs::create_symlink(canonical, link_path, link_ec);
+      }
+    }
+  }
+}
+
 std::string format_duration_ns(uint64_t ns) {
   if (ns == GST_CLOCK_TIME_NONE) {
     return "--:--:--";
@@ -85,8 +236,7 @@ std::string format_duration_ns(uint64_t ns) {
   const uint64_t seconds = total_seconds % 60;
 
   std::ostringstream out;
-  out << std::setfill('0') << std::setw(2) << hours << ":" << std::setw(2) << minutes << ":" << std::setw(2)
-      << seconds;
+  out << std::setfill('0') << std::setw(2) << hours << ":" << std::setw(2) << minutes << ":" << std::setw(2) << seconds;
   return out.str();
 }
 
@@ -123,7 +273,8 @@ std::vector<std::string> split_uri_list(const gchar* uri_list) {
   for (absl::string_view item : absl::StrSplit(uri_list, ';', absl::SkipEmpty())) {
     std::string uri(item);
     uri.erase(uri.begin(), std::find_if(uri.begin(), uri.end(), [](unsigned char c) { return !std::isspace(c); }));
-    uri.erase(std::find_if(uri.rbegin(), uri.rend(), [](unsigned char c) { return !std::isspace(c); }).base(), uri.end());
+    uri.erase(
+        std::find_if(uri.rbegin(), uri.rend(), [](unsigned char c) { return !std::isspace(c); }).base(), uri.end());
     if (!uri.empty()) {
       uris.emplace_back(std::move(uri));
     }
@@ -544,6 +695,7 @@ absl::Status PipelineApplication::createMainLoop(
     });
   }
 
+  std::set<Window> owned_windows;
   for (guint i = 0; i < app_contexts.size(); i++) {
 #if defined(__aarch64__)
     if (gst_element_set_state(app_contexts[i]->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
@@ -575,47 +727,54 @@ absl::Status PipelineApplication::createMainLoop(
       hints.height = height;
 
       assert(!windows.count(i));
-      windows[i] = XCreateSimpleWindow(
-          display_,
-          RootWindow(display_, DefaultScreen(display_)),
-          hints.x,
-          hints.y,
-          width,
-          height,
-          2,
-          0x00000000,
-          0x00000000);
+      const bool use_external_window = render_window_id_ > 0 && i == 0;
+      if (use_external_window) {
+        windows[i] = static_cast<Window>(render_window_id_);
+        g_print("Using external render window id: %" G_GINT64_FORMAT "\n", render_window_id_);
+      } else {
+        windows[i] = XCreateSimpleWindow(
+            display_,
+            RootWindow(display_, DefaultScreen(display_)),
+            hints.x,
+            hints.y,
+            width,
+            height,
+            2,
+            0x00000000,
+            0x00000000);
+        owned_windows.insert(windows[i]);
 
-      XSetNormalHints(display_, windows[i], &hints);
+        XSetNormalHints(display_, windows[i], &hints);
 
-      gchar* title = (app_contexts.size() > 1) ? g_strdup_printf(APP_TITLE "-%d", i) : g_strdup(APP_TITLE);
-      XTextProperty xproperty;
-      if (XStringListToTextProperty((char**)&title, 1, &xproperty) != 0) {
-        XSetWMName(display_, windows[i], &xproperty);
-        XFree(xproperty.value);
+        gchar* title = (app_contexts.size() > 1) ? g_strdup_printf(APP_TITLE "-%d", i) : g_strdup(APP_TITLE);
+        XTextProperty xproperty;
+        if (XStringListToTextProperty((char**)&title, 1, &xproperty) != 0) {
+          XSetWMName(display_, windows[i], &xproperty);
+          XFree(xproperty.value);
+        }
+
+        XSetWindowAttributes attr = {0};
+        if ((app_contexts[i]->config.tiled_display_config.enable &&
+             app_contexts[i]->config.tiled_display_config.rows * app_contexts[i]->config.tiled_display_config.columns ==
+                 1) ||
+            (app_contexts[i]->config.tiled_display_config.enable == 0))
+          attr.event_mask = KeyPress;
+        else if (app_contexts[i]->config.tiled_display_config.enable)
+          attr.event_mask = ButtonPress | KeyRelease;
+        XChangeWindowAttributes(display_, windows[i], CWEventMask, &attr);
+
+        Atom wmDeleteMessage = XInternAtom(display_, "WM_DELETE_WINDOW", False);
+        if (wmDeleteMessage != None)
+          XSetWMProtocols(display_, windows[i], &wmDeleteMessage, 1);
+
+        XMapRaised(display_, windows[i]);
+        XSync(display_, 1);
       }
-
-      XSetWindowAttributes attr = {0};
-      if ((app_contexts[i]->config.tiled_display_config.enable &&
-           app_contexts[i]->config.tiled_display_config.rows * app_contexts[i]->config.tiled_display_config.columns ==
-               1) ||
-          (app_contexts[i]->config.tiled_display_config.enable == 0))
-        attr.event_mask = KeyPress;
-      else if (app_contexts[i]->config.tiled_display_config.enable)
-        attr.event_mask = ButtonPress | KeyRelease;
-      XChangeWindowAttributes(display_, windows[i], CWEventMask, &attr);
-
-      Atom wmDeleteMessage = XInternAtom(display_, "WM_DELETE_WINDOW", False);
-      if (wmDeleteMessage != None)
-        XSetWMProtocols(display_, windows[i], &wmDeleteMessage, 1);
-
-      XMapRaised(display_, windows[i]);
-      XSync(display_, 1);
       gst_video_overlay_set_window_handle(
           GST_VIDEO_OVERLAY(app_contexts[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink), (gulong)windows[i]);
       gst_video_overlay_expose(GST_VIDEO_OVERLAY(app_contexts[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink));
 
-      if (!x_event_thread_)
+      if (!use_external_window && !x_event_thread_)
         x_event_thread_ = g_thread_new("nvds-window-event-thread", nvds_x_event_thread_static, nullptr);
     }
 #if !defined(__aarch64__)
@@ -631,7 +790,7 @@ absl::Status PipelineApplication::createMainLoop(
     }
 #endif
   }
-  cleanup_stack.push([this, contexts = app_contexts, windows = windows]() mutable -> void {
+  cleanup_stack.push([this, contexts = app_contexts, windows = windows, owned_windows]() mutable -> void {
     // (void)waitForPipelinesStopped(contexts);
     for (guint i = 0; i < contexts.size(); i++) {
       if (contexts[i]) {
@@ -639,7 +798,7 @@ absl::Status PipelineApplication::createMainLoop(
           return_value_ = -1;
         destroy_pipeline(contexts[i].get());
         absl::MutexLock lk(&disp_lock_);
-        if (windows[i]) {
+        if (windows[i] && owned_windows.count(windows[i])) {
           // post_dummy_event(display_, windows[i]);
           XFlush(display_);
           XDestroyWindow(display_, windows[i]);
@@ -810,6 +969,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &show_scaled_scale_,
        "Scale final render window for --show (`0` disables, `N` is scale ratio)",
        "RATIO"},
+      {"render-window-id",
+       0,
+       0,
+       G_OPTION_ARG_INT64,
+       &render_window_id_,
+       "Native X11 window id to use for the render sink instead of creating a DeepStream window",
+       "XID"},
       {"stitch-rotate-degrees",
        0,
        0,
@@ -865,13 +1031,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &progress_ui_lines_,
        "Number of log lines to show in --progress-ui",
        "N"},
-      {"progress-ui-lines",
-       0,
-       0,
-       G_OPTION_ARG_INT,
-       &progress_ui_lines_,
-       "Alias for --progress-bar-lines",
-       "N"},
+      {"progress-ui-lines", 0, 0, G_OPTION_ARG_INT, &progress_ui_lines_, "Alias for --progress-bar-lines", "N"},
       {"progress-ui-refresh-ms",
        0,
        0,
@@ -987,9 +1147,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
       initial_snapshot.completed_text = "00:00:00";
       initial_snapshot.total_text = "--:--:--";
       progress_ui_->update(std::move(initial_snapshot));
-      global_cleanup_stack.push([this] {
-        progress_ui_.reset();
-      });
+      global_cleanup_stack.push([this] { progress_ui_.reset(); });
     } else {
       progress_ui_.reset();
       g_printerr("--progress-ui requested, but stderr is not an interactive terminal; using regular output\n");
@@ -1190,8 +1348,8 @@ PipelineApplication::ProgressMetrics PipelineApplication::collect_progress_metri
       uint64_t source_duration_ns = duration_for_source_ns(source_config);
       if (source_duration_ns != GST_CLOCK_TIME_NONE) {
         if (stitched_output) {
-          source_duration_ns =
-              subtract_duration_ns(source_duration_ns, hmstitcher_source_offset_ns(app_ctx->config.hmsticher_config, i));
+          source_duration_ns = subtract_duration_ns(
+              source_duration_ns, hmstitcher_source_offset_ns(app_ctx->config.hmsticher_config, i));
         }
         source_durations.emplace_back(source_duration_ns);
       }
@@ -1266,8 +1424,7 @@ PipelineApplication::ProgressMetrics PipelineApplication::collect_progress_metri
     if (wall_seconds > 0.0 && processed_delta_ns > 0) {
       speed_x = (static_cast<double>(processed_delta_ns) / static_cast<double>(GST_SECOND)) / wall_seconds;
       if (state.total_video_ns != GST_CLOCK_TIME_NONE && speed_x > 0.0) {
-        const uint64_t remaining_ns =
-            state.total_video_ns > processed_ns ? state.total_video_ns - processed_ns : 0;
+        const uint64_t remaining_ns = state.total_video_ns > processed_ns ? state.total_video_ns - processed_ns : 0;
         eta_ns = static_cast<uint64_t>((static_cast<double>(remaining_ns) / speed_x));
       }
     }
@@ -1423,9 +1580,8 @@ hm::TerminalProgressGraphSnapshot PipelineApplication::build_progress_graph_snap
       if (!sink_config.enable) {
         continue;
       }
-      const std::string sink_name =
-          add_node(prefix + "sink" + std::to_string(sink_config.sink_id) + ":" + hm::to_string(sink_config.type),
-                   sink_degree);
+      const std::string sink_name = add_node(
+          prefix + "sink" + std::to_string(sink_config.sink_id) + ":" + hm::to_string(sink_config.type), sink_degree);
       sink_nodes.push_back({sink_config.sink_id, sink_name});
       add_edge(last_video, sink_name);
     }
@@ -1464,9 +1620,8 @@ hm::TerminalProgressGraphSnapshot PipelineApplication::build_progress_graph_snap
   if (graph.nodes.empty()) {
     add_node("pipeline", 0, false);
   }
-  graph.concurrency_current = static_cast<int>(std::count_if(graph.nodes.begin(), graph.nodes.end(), [](const auto& n) {
-    return n.active;
-  }));
+  graph.concurrency_current =
+      static_cast<int>(std::count_if(graph.nodes.begin(), graph.nodes.end(), [](const auto& n) { return n.active; }));
   graph.concurrency_max = static_cast<int>(graph.nodes.size());
   graph.threaded = true;
   return graph;
@@ -1986,6 +2141,18 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
 // Main function.
 //------------------------------------------------------------------------------
 int main(int argc, char* argv[]) {
+  configure_pipeline_runtime_environment(argc > 0 ? argv[0] : nullptr);
+  if (!std::getenv("HMSTREAM_RUNTIME_ENV_READY")) {
+    setenv("HMSTREAM_RUNTIME_ENV_READY", "1", 1);
+    if (argc > 0 && argv[0]) {
+      if (std::strchr(argv[0], '/')) {
+        execv(argv[0], argv);
+      } else {
+        execvp(argv[0], argv);
+      }
+      std::perror("hmstream-cli re-exec failed");
+    }
+  }
   PipelineApplication app;
   absl::Status status = app.run(argc, argv);
   disable_perf_measurement();

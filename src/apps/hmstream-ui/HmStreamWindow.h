@@ -7,10 +7,15 @@
 #include <QtWidgets/QListWidget>
 #include <QtWidgets/QMainWindow>
 #include <QtWidgets/QPlainTextEdit>
+#include <QtWidgets/QPushButton>
 #include <QtWidgets/QRadioButton>
 #include <QtWidgets/QSlider>
+#include <QtWidgets/QSpinBox>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QVBoxLayout>
+#include <QtWidgets/QWidget>
+
+#include <QtCore/QProcess>
 
 #include <yaml-cpp/yaml.h>
 
@@ -40,7 +45,13 @@ class HmStreamWindow : public QMainWindow {
   void buildCameraControls(QVBoxLayout* parent);
   void buildLog(QVBoxLayout* root);
 
-  void setPipelineRunning(bool running);
+  void startPipeline();
+  void pauseOrResumePipeline();
+  void stopPipeline();
+  void handlePipelineStarted();
+  void handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status);
+  void handlePipelineError(QProcess::ProcessError error);
+  void readPipelineOutput();
   void restartStage();
   void savePreset();
   void resetCameraControls();
@@ -71,13 +82,28 @@ class HmStreamWindow : public QMainWindow {
   void redirectYoutube();
   void addRtspOutput();
   void appendLog(const QString& message);
+  QString pipelineRunnerPath() const;
+  QString pipelineConfigPath(const QString& config_name) const;
+  QString pipelineWorkingDirectory() const;
+  QStringList pipelineArguments() const;
+  bool setupPretrainedAssets(const QStringList& pipeline_args);
+  void logMissingTensorRtEngineCaches(const QStringList& pipeline_args);
+  QStringList enabledSinkNames() const;
+  bool isCalibrationRun() const;
+  void updateRunControls();
+  void applySavedControlConfig(YAML::Node& config);
+  void loadSavedControlConfig();
   QSlider* addSlider(QVBoxLayout* layout, const QString& id, const QString& label, int minimum, int maximum, int value);
 
   QLabel* backend_mode_{nullptr};
   QLabel* pipeline_state_{nullptr};
   QLabel* preview_status_{nullptr};
+  QLabel* stitched_status_{nullptr};
   QLabel* game_path_label_{nullptr};
+  QLabel* video_sets_path_label_{nullptr};
   QComboBox* game_selector_{nullptr};
+  QComboBox* run_mode_selector_{nullptr};
+  QSpinBox* control_points_spin_{nullptr};
   QLineEdit* game_id_edit_{nullptr};
   QLineEdit* video_path_edit_{nullptr};
   QListWidget* video_set_list_{nullptr};
@@ -86,10 +112,21 @@ class HmStreamWindow : public QMainWindow {
   QRadioButton* role_center_{nullptr};
   QRadioButton* role_right_{nullptr};
   QPlainTextEdit* log_{nullptr};
+  QTabWidget* preview_tabs_{nullptr};
+  QWidget* preview_surface_{nullptr};
+  QWidget* stitched_surface_{nullptr};
   QTabWidget* camera_tabs_{nullptr};
   QVBoxLayout* output_list_{nullptr};
+  QProcess* pipeline_process_{nullptr};
+  QPushButton* start_button_{nullptr};
+  QPushButton* pause_button_{nullptr};
+  QPushButton* stop_button_{nullptr};
+  bool pipeline_paused_{false};
+  bool pipeline_uses_process_group_{false};
   int dynamic_rtsp_count_{0};
   std::map<QString, QLabel*> output_states_;
   std::map<QString, QCheckBox*> output_toggles_;
   std::map<QString, QSlider*> camera_sliders_;
+  std::map<QString, QLabel*> camera_value_labels_;
+  std::map<QString, int> camera_defaults_;
 };

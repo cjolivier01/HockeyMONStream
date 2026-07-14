@@ -2,17 +2,22 @@
 
 #include <QtTest/qtest_widgets.h>
 #include <QtTest/qtestmouse.h>
+#include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
 #include <QtTest/QTest>
+#include <QtGui/QWheelEvent>
 #include <QtWidgets/QAbstractButton>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
+#include <QtWidgets/QComboBox>
+#include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QListWidget>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QRadioButton>
 #include <QtWidgets/QSlider>
+#include <QtWidgets/QSpinBox>
 
 #include <yaml-cpp/yaml.h>
 
@@ -20,6 +25,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -31,6 +37,53 @@ bool expect(bool condition, const std::string& message) {
     return false;
   }
   return true;
+}
+
+bool lookup_yaml_key(YAML::Node parent, const char* key, YAML::Node* value) {
+  if (!parent.IsMap()) {
+    return false;
+  }
+  for (const auto& entry : parent) {
+    if (entry.first.IsScalar() && entry.first.as<std::string>() == key) {
+      if (value) {
+        *value = entry.second;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+bool lookup_yaml_path_at(
+    const YAML::Node& node,
+    const std::vector<const char*>& path,
+    size_t index,
+    YAML::Node* value) {
+  if (index >= path.size()) {
+    if (value) {
+      *value = node;
+    }
+    return true;
+  }
+  YAML::Node next;
+  if (node.IsSequence()) {
+    std::string segment(path[index]);
+    if (segment.empty() || segment.find_first_not_of("0123456789") != std::string::npos) {
+      return false;
+    }
+    const size_t sequence_index = static_cast<size_t>(std::stoul(segment));
+    if (sequence_index >= node.size()) {
+      return false;
+    }
+    next = node[sequence_index];
+  } else if (!lookup_yaml_key(node, path[index], &next)) {
+    return false;
+  }
+  return lookup_yaml_path_at(next, path, index + 1, value);
+}
+
+bool lookup_yaml_path(YAML::Node root, std::initializer_list<const char*> path, YAML::Node* value) {
+  return lookup_yaml_path_at(root, std::vector<const char*>(path), 0, value);
 }
 
 template <typename T>
@@ -85,6 +138,22 @@ bool write_fake_video(const QString& path) {
   }
   file.write("hmstream-ui-test-video");
   return true;
+}
+
+bool write_fake_runner(const QString& path) {
+  QFile file(path);
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    std::cerr << "Failed to create fake runner: " << path.toStdString() << '\n';
+    return false;
+  }
+  file.write("#!/bin/sh\n");
+  file.write("printf '%s\\n' \"$@\"\n");
+  file.write("sleep 5\n");
+  file.close();
+  return QFile::setPermissions(
+      path,
+      QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner | QFileDevice::ReadGroup |
+          QFileDevice::ExeGroup | QFileDevice::ReadOther | QFileDevice::ExeOther);
 }
 
 bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
@@ -493,7 +562,8 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   if (!write_fake_video(QString::fromStdString((cleanup_game / "cam1" / "GX010001.MP4").string()))) {
     return false;
   }
-  if (!write_fake_video(QString::fromStdString((cleanup_game / ".hmstream-ui" / "left" / "copied-left.mp4").string()))) {
+  if (!write_fake_video(
+          QString::fromStdString((cleanup_game / ".hmstream-ui" / "left" / "copied-left.mp4").string()))) {
     return false;
   }
   YAML::Node cleanup_config;
@@ -543,23 +613,83 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
 bool test_pipeline_buttons(HmStreamWindow* window) {
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* pause = require_child<QPushButton>(window, "pausePipelineButton");
   auto* restart = require_child<QPushButton>(window, "restartStageButton");
-  if (!stop || !start || !restart) {
+  auto* mode = require_child<QComboBox>(window, "runModeCombo");
+  auto* control_points = require_child<QSpinBox>(window, "controlPointsSpin");
+  if (!stop || !start || !pause || !restart || !mode || !control_points) {
     return false;
   }
 
   activate(stop);
-  if (!expect(window->pipelineStateText() == "DEMO STOPPED", "Stop button should stop the demo pipeline")) {
+  if (!expect(window->pipelineStateText() == "STOPPED", "Stop button should stop the pipeline")) {
     return false;
   }
 
+  const int calibration_index = mode->findData("stitch-calibration");
+  mode->setCurrentIndex(calibration_index);
+  control_points->setValue(750);
   activate(start);
-  if (!expect(window->pipelineStateText() == "DEMO PLAYING", "Start button should start the demo pipeline")) {
+  for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          window->logText().contains("ds_hockey_configure_stitching.yaml"),
+          "Calibration should use stitching config") ||
+      !expect(window->logText().contains("--show-stitching 1"), "Calibration should request stitched display") ||
+      !expect(window->logText().contains("--render-window-id="), "Calibration should embed the render sink") ||
+      !expect(window->pipelineStateText() == "PLAYING", "Test runner should keep calibration process running")) {
     return false;
   }
+
+  activate(pause);
+  if (!expect(window->pipelineStateText() == "PAUSED", "Pause button should pause the process")) {
+    return false;
+  }
+  activate(pause);
+  if (!expect(window->pipelineStateText() == "PLAYING", "Pause button should resume the process")) {
+    return false;
+  }
+  activate(stop);
+  for (int i = 0; i < 50 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(window->pipelineStateText() == "STOPPED", "Stop should terminate calibration process")) {
+    return false;
+  }
+
+  mode->setCurrentIndex(mode->findData("program"));
+  activate(start);
+  for (int i = 0; i < 50 && !window->logText().contains("ds_hockey_app_config.yaml"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(window->logText().contains("--show"), "Program run should request render output") ||
+      !expect(window->logText().contains("--render-window-id="), "Program run should embed the render sink")) {
+    return false;
+  }
+  activate(stop);
 
   activate(restart);
-  return expect(window->logText().contains("stage restart requested"), "Restart button should log a stage restart");
+  const bool restart_logged =
+      expect(window->logText().contains("stage restart requested"), "Restart button should log a stage restart");
+  activate(stop);
+  if (!restart_logged) {
+    return false;
+  }
+
+  const QByteArray original_runner = qgetenv("HMSTREAM_UI_TEST_RUNNER");
+  qputenv("HMSTREAM_UI_TEST_RUNNER", "/tmp/hmstream-ui-missing-runner");
+  activate(start);
+  for (int i = 0; i < 50 && !window->logText().contains("pipeline process error"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qputenv("HMSTREAM_UI_TEST_RUNNER", original_runner);
+  return expect(window->pipelineStateText() == "STOPPED", "Failed runner should restore stopped state") &&
+      expect(window->logText().contains("pipeline process error"), "Failed runner should log process error");
 }
 
 bool test_output_controls(HmStreamWindow* window) {
@@ -571,7 +701,7 @@ bool test_output_controls(HmStreamWindow* window) {
   }
 
   activate(spare);
-  if (!expect(window->outputStateText("spare-rtmp") == "DEMO LIVE", "Spare RTMP toggle should start the output")) {
+  if (!expect(window->outputStateText("spare-rtmp") == "ENABLED", "Spare RTMP toggle should enable the output")) {
     return false;
   }
 
@@ -584,55 +714,376 @@ bool test_output_controls(HmStreamWindow* window) {
 
   activate(add_rtsp);
   return expect(
-      window->outputStateText("rtsp-dynamic-1") == "DEMO LIVE",
-      "Add RTSP button should create a live dynamic RTSP output");
+      window->outputStateText("rtsp-dynamic-1") == "ENABLED", "Add RTSP button should create an enabled RTSP output");
 }
 
 bool test_camera_controls(HmStreamWindow* window) {
-  if (!expect(window->cameraTabCount() >= 4, "Camera controls should be grouped on tabs")) {
+  if (!expect(window->cameraTabCount() >= 6, "Camera controls should be grouped on tabs")) {
     return false;
   }
 
-  auto* exposure = require_child<QSlider>(window, "cameraSlider_exposure");
-  auto* yaw = require_child<QSlider>(window, "cameraSlider_stitchYaw");
+  auto* exposure = require_child<QSlider>(window, "cameraSlider_Exposure_EV_x10");
+  auto* exposure_value = require_child<QLabel>(window, "cameraValue_Exposure_EV_x10");
+  auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
+  auto* left_brightness = require_child<QSlider>(window, "cameraSlider_Left_Brightness_Multiplier_x100");
+  auto* left_gamma = require_child<QSlider>(window, "cameraSlider_Left_Gamma_Multiplier_x100");
+  auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
   auto* reset = require_child<QPushButton>(window, "resetCameraButton");
   auto* save = require_child<QPushButton>(window, "savePresetButton");
-  if (!exposure || !yaw || !reset || !save) {
+  auto* create = require_child<QPushButton>(window, "createGameButton");
+  auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
+  if (!exposure || !exposure_value || !rotate || !left_brightness || !left_gamma || !max_speed_x || !reset || !save ||
+      !create || !game_id) {
     return false;
   }
 
-  exposure->setValue(5);
-  yaw->setValue(-20);
-  if (!expect(window->cameraControlValue("exposure") == 5, "Exposure slider should update controller state") ||
-      !expect(window->cameraControlValue("stitchYaw") == -20, "Stitch yaw slider should update controller state")) {
+  game_id->setText("ui-camera-control-game");
+  activate(create);
+
+  exposure->setValue(47);
+  rotate->setValue(72);
+  left_gamma->setValue(125);
+  max_speed_x->setValue(450);
+  if (!expect(window->cameraControlValue("Exposure_EV_x10") == 47, "Exposure slider should update controller state") ||
+      !expect(
+          window->cameraControlValue("Stitch_Rotate_Degrees") == 72,
+          "Stitch rotation slider should update controller state") ||
+      !expect(
+          window->cameraControlValue("Left_Gamma_Multiplier_x100") == 125,
+          "Side color slider should update controller state") ||
+      !expect(window->cameraControlValue("Max_Speed_X_x10") == 450, "Speed slider should update controller state")) {
+    return false;
+  }
+
+  const int gamma_before_wheel = left_gamma->value();
+  QWheelEvent wheel_event(
+      left_gamma->rect().center(),
+      left_gamma->mapToGlobal(left_gamma->rect().center()),
+      QPoint(),
+      QPoint(0, 120),
+      Qt::NoButton,
+      Qt::NoModifier,
+      Qt::ScrollUpdate,
+      false);
+  QApplication::sendEvent(left_gamma, &wheel_event);
+  QApplication::processEvents();
+  if (!expect(
+          left_gamma->value() == gamma_before_wheel,
+          "Mouse wheel over camera slider should not change live camera control")) {
     return false;
   }
 
   activate(save);
-  if (!expect(window->logText().contains("preset saved"), "Save preset button should log persistence")) {
+  const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  YAML::Node saved = YAML::LoadFile(config.string());
+  auto saved_int = [&](const char* key, int expected) {
+    YAML::Node value;
+    if (!lookup_yaml_path(saved, {"hmstream_ui", "camera_controls", key}, &value)) {
+      return false;
+    }
+    return value && value.IsScalar() && value.as<int>() == expected;
+  };
+  const bool saved_controls_ok = saved_int("Exposure_EV_x10", 47) && saved_int("Stitch_Rotate_Degrees", 72) &&
+      saved_int("Left_Gamma_Multiplier_x100", 125);
+  YAML::Node saved_rotation;
+  const bool has_saved_rotation = lookup_yaml_path(saved, {"stitching", "post_stitch_rotate_degrees"}, &saved_rotation);
+  const bool saved_rotation_ok = saved_rotation && saved_rotation.IsScalar() && saved_rotation.as<int>() == 18;
+  YAML::Node saved_max_speed_x;
+  const bool has_saved_max_speed_x =
+      lookup_yaml_path(saved, {"rink", "camera", "max_speed_ratio_x"}, &saved_max_speed_x);
+  const bool saved_max_speed_x_ok =
+      has_saved_max_speed_x && saved_max_speed_x.IsScalar() && saved_max_speed_x.as<double>() == 1.5;
+  YAML::Node saved_playtracker_config_path;
+  const bool has_saved_playtracker_config_path =
+      lookup_yaml_path(saved, {"pipeline", "ds-playtracker", "config-file"}, &saved_playtracker_config_path);
+  const fs::path playtracker_config_path =
+      has_saved_playtracker_config_path ? fs::path(saved_playtracker_config_path.as<std::string>()) : fs::path();
+  YAML::Node playtracker_config = has_saved_playtracker_config_path && fs::exists(playtracker_config_path)
+      ? YAML::LoadFile(playtracker_config_path.string())
+      : YAML::Node();
+  YAML::Node live_boxes;
+  const bool has_live_boxes = lookup_yaml_path(playtracker_config, {"play-tracker", "live-boxes"}, &live_boxes);
+  YAML::Node follower_max_speed_x;
+  YAML::Node follower_max_speed_y;
+  YAML::Node follower_max_accel_x;
+  YAML::Node follower_max_accel_y;
+  YAML::Node fast_max_speed_x;
+  const bool saved_follower_max_speed_x = has_live_boxes && live_boxes.IsSequence() && live_boxes.size() > 1 &&
+      lookup_yaml_key(live_boxes[1], "max-speed-x", &follower_max_speed_x) && follower_max_speed_x.IsScalar() &&
+      follower_max_speed_x.as<double>() == 45.0;
+  const bool saved_follower_max_speed_y = has_live_boxes && live_boxes.IsSequence() && live_boxes.size() > 1 &&
+      lookup_yaml_key(live_boxes[1], "max-speed-y", &follower_max_speed_y);
+  const bool saved_follower_max_accel_x = has_live_boxes && live_boxes.IsSequence() && live_boxes.size() > 1 &&
+      lookup_yaml_key(live_boxes[1], "max-accel-x", &follower_max_accel_x);
+  const bool saved_follower_max_accel_y = has_live_boxes && live_boxes.IsSequence() && live_boxes.size() > 1 &&
+      lookup_yaml_key(live_boxes[1], "max-accel-y", &follower_max_accel_y);
+  const bool saved_fast_max_speed_x = has_live_boxes && live_boxes.IsSequence() && live_boxes.size() > 0 &&
+      lookup_yaml_key(live_boxes[0], "max-speed-x", &fast_max_speed_x);
+  const bool has_default_follower =
+      lookup_yaml_path(saved, {"hmstream_ui", "camera_controls", "Apply_To_Follower_Box"}, nullptr);
+  if (!saved_controls_ok) {
+    std::cerr << saved << '\n';
+  }
+  if (!expect(window->logText().contains("preset saved"), "Save preset button should log persistence") ||
+      !expect(saved_controls_ok, "Save preset should persist non-default control values") ||
+      !expect(!has_default_follower, "Save preset should omit default control values") ||
+      !expect(has_saved_rotation && saved_rotation_ok, "Stitch slider should save the runtime rotation config") ||
+      !expect(has_saved_max_speed_x && saved_max_speed_x_ok, "Speed slider should save runtime ratio config") ||
+      !expect(
+          has_saved_playtracker_config_path && saved_follower_max_speed_x && !saved_follower_max_speed_y &&
+              !saved_follower_max_accel_x && !saved_follower_max_accel_y && !saved_fast_max_speed_x,
+          "Speed slider should save only changed follower playtracker runtime config")) {
+    if (!has_saved_rotation || !saved_rotation_ok || !has_saved_max_speed_x || !saved_max_speed_x_ok ||
+        !saved_follower_max_speed_x || saved_follower_max_speed_y || saved_follower_max_accel_x ||
+        saved_follower_max_accel_y || saved_fast_max_speed_x) {
+      std::cerr << saved << '\n';
+      std::cerr << playtracker_config << '\n';
+    }
+    return false;
+  }
+  YAML::Node stitching;
+  lookup_yaml_path(saved, {"stitching"}, &stitching);
+  YAML::Node stitching_copy = stitching && stitching.IsMap() ? YAML::Clone(stitching) : YAML::Node(YAML::NodeType::Map);
+  YAML::Node right;
+  lookup_yaml_path(stitching_copy, {"right"}, &right);
+  YAML::Node right_copy = right && right.IsMap() ? YAML::Clone(right) : YAML::Node(YAML::NodeType::Map);
+  YAML::Node color;
+  lookup_yaml_path(right_copy, {"color"}, &color);
+  YAML::Node color_copy = color && color.IsMap() ? YAML::Clone(color) : YAML::Node(YAML::NodeType::Map);
+  color_copy["gamma"] = 1.75;
+  right_copy["color"] = color_copy;
+  stitching_copy["right"] = right_copy;
+  YAML::Node left;
+  lookup_yaml_path(stitching_copy, {"left"}, &left);
+  YAML::Node left_copy = left && left.IsMap() ? YAML::Clone(left) : YAML::Node(YAML::NodeType::Map);
+  YAML::Node left_color;
+  lookup_yaml_path(left_copy, {"color"}, &left_color);
+  YAML::Node left_color_copy =
+      left_color && left_color.IsMap() ? YAML::Clone(left_color) : YAML::Node(YAML::NodeType::Map);
+  left_color_copy["gamma"] = 1.75;
+  left_copy["color"] = left_color_copy;
+  stitching_copy["left"] = left_copy;
+  saved["stitching"] = stitching_copy;
+  const fs::path custom_playtracker_config =
+      fs::path(window->gameDirectoryText().toStdString()) / "custom_playtracker.yaml";
+  {
+    YAML::Node custom_tracker(YAML::NodeType::Map);
+    YAML::Node live_boxes_custom(YAML::NodeType::Sequence);
+    YAML::Node fast_box(YAML::NodeType::Map);
+    fast_box["name"] = "current_roi";
+    YAML::Node follower_box(YAML::NodeType::Map);
+    follower_box["name"] = "current_roi_aspect";
+    follower_box["sticky-translation-gaussian-mult"] = 9.5;
+    live_boxes_custom.push_back(fast_box);
+    live_boxes_custom.push_back(follower_box);
+    custom_tracker["play-tracker"]["live-boxes"] = live_boxes_custom;
+    std::ofstream out(custom_playtracker_config);
+    out << custom_tracker << "\n";
+  }
+  saved["pipeline"]["ds-playtracker"]["config-file"] = custom_playtracker_config.string();
+  {
+    std::ofstream out(config);
+    out << saved << "\n";
+  }
+
+  activate(reset);
+  if (!expect(window->cameraControlValue("Exposure_EV_x10") == 40, "Reset should restore exposure default")) {
+    return false;
+  }
+
+  activate(create);
+  if (!expect(window->cameraControlValue("Exposure_EV_x10") == 47, "Create/Load should restore saved controls") ||
+      !expect(window->cameraControlValue("Stitch_Rotate_Degrees") == 72, "Create/Load should restore stitch control") ||
+      !expect(exposure_value->text() == "47", "Create/Load should refresh visible camera value labels")) {
+    return false;
+  }
+
+  left_gamma->setValue(100);
+  left_brightness->setValue(110);
+  activate(save);
+  YAML::Node same_prefix = YAML::LoadFile(config.string());
+  YAML::Node same_prefix_left_gamma;
+  YAML::Node same_prefix_left_brightness;
+  const bool preserved_left_gamma =
+      lookup_yaml_path(same_prefix, {"stitching", "left", "color", "gamma"}, &same_prefix_left_gamma) &&
+      same_prefix_left_gamma.IsScalar() && same_prefix_left_gamma.as<double>() == 1.75;
+  const bool saved_left_brightness =
+      lookup_yaml_path(same_prefix, {"stitching", "left", "color", "brightness"}, &same_prefix_left_brightness) &&
+      same_prefix_left_brightness.IsScalar() && same_prefix_left_brightness.as<double>() == 1.1;
+  YAML::Node same_prefix_tracker_path;
+  const bool has_same_prefix_tracker_path =
+      lookup_yaml_path(same_prefix, {"pipeline", "ds-playtracker", "config-file"}, &same_prefix_tracker_path);
+  YAML::Node same_prefix_tracker =
+      has_same_prefix_tracker_path && fs::exists(same_prefix_tracker_path.as<std::string>())
+      ? YAML::LoadFile(same_prefix_tracker_path.as<std::string>())
+      : YAML::Node();
+  YAML::Node preserved_custom_tracker_value;
+  const bool preserved_custom_tracker_config =
+      lookup_yaml_path(
+          same_prefix_tracker,
+          {"play-tracker", "live-boxes", "1", "sticky-translation-gaussian-mult"},
+          &preserved_custom_tracker_value) &&
+      preserved_custom_tracker_value.IsScalar() && preserved_custom_tracker_value.as<double>() == 9.5;
+  YAML::Node saved_playtracker_base;
+  const bool remembered_custom_tracker_base =
+      lookup_yaml_path(same_prefix, {"hmstream_ui", "playtracker_config_base"}, &saved_playtracker_base) &&
+      saved_playtracker_base.IsScalar() &&
+      saved_playtracker_base.as<std::string>() == custom_playtracker_config.string();
+  if (!expect(preserved_left_gamma, "Saving one color leaf should preserve manual same-prefix color edits") ||
+      !expect(saved_left_brightness, "Saving one color leaf should persist that leaf") ||
+      !expect(preserved_custom_tracker_config, "Generated playtracker config should preserve custom base config") ||
+      !expect(remembered_custom_tracker_base, "Generated playtracker config should remember custom base path")) {
+    std::cerr << same_prefix << '\n';
+    std::cerr << same_prefix_tracker << '\n';
     return false;
   }
 
   activate(reset);
-  return expect(window->cameraControlValue("exposure") == -13, "Reset should restore exposure default");
+  activate(save);
+  YAML::Node cleaned = YAML::LoadFile(config.string());
+  YAML::Node cleaned_controls;
+  const bool has_cleaned_controls = lookup_yaml_path(cleaned, {"hmstream_ui", "camera_controls"}, &cleaned_controls);
+  YAML::Node preserved_gamma;
+  const bool has_preserved_gamma =
+      lookup_yaml_path(cleaned, {"stitching", "right", "color", "gamma"}, &preserved_gamma);
+  const bool preserved_manual_gamma =
+      has_preserved_gamma && preserved_gamma.IsScalar() && preserved_gamma.as<double>() == 1.75;
+  YAML::Node preserved_left_gamma_node;
+  const bool preserved_manual_left_gamma =
+      lookup_yaml_path(cleaned, {"stitching", "left", "color", "gamma"}, &preserved_left_gamma_node) &&
+      preserved_left_gamma_node.IsScalar() && preserved_left_gamma_node.as<double>() == 1.75;
+  YAML::Node restored_playtracker_config_path;
+  const bool restored_custom_playtracker_config =
+      lookup_yaml_path(cleaned, {"pipeline", "ds-playtracker", "config-file"}, &restored_playtracker_config_path) &&
+      restored_playtracker_config_path.IsScalar() &&
+      restored_playtracker_config_path.as<std::string>() == custom_playtracker_config.string();
+  if (!preserved_manual_gamma || !preserved_manual_left_gamma) {
+    std::cerr << cleaned << '\n';
+  }
+  return expect(
+             has_cleaned_controls && cleaned_controls.IsMap() && cleaned_controls.size() == 0,
+             "Saving defaults should clear saved camera controls") &&
+      expect(!lookup_yaml_path(cleaned, {"stitching", "post_stitch_rotate_degrees"}, nullptr),
+             "Saving defaults should clear UI-generated stitch runtime override") &&
+      expect(restored_custom_playtracker_config, "Saving defaults should restore custom playtracker config override") &&
+      expect(!lookup_yaml_path(cleaned, {"stitching", "left", "color", "brightness"}, nullptr),
+             "Saving defaults should clear UI-generated side color leaf") &&
+      expect(preserved_manual_gamma, "Saving defaults should preserve non-UI-authored runtime config") &&
+      expect(preserved_manual_left_gamma, "Saving defaults should preserve same-prefix manual color config");
+}
+
+bool run_real_pipeline_e2e(HmStreamWindow* window, const QString& game_id) {
+  auto* game_id_edit = require_child<QLineEdit>(window, "gameIdEdit");
+  auto* create = require_child<QPushButton>(window, "createGameButton");
+  auto* start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
+  auto* mode = require_child<QComboBox>(window, "runModeCombo");
+  auto* control_points = require_child<QSpinBox>(window, "controlPointsSpin");
+  if (!game_id_edit || !create || !start || !stop || !mode || !control_points) {
+    return false;
+  }
+
+  game_id_edit->setText(game_id);
+  activate(create);
+
+  const QString run_mode = QString::fromLocal8Bit(qgetenv("HMSTREAM_UI_E2E_RUN_MODE"));
+  if (!run_mode.isEmpty()) {
+    const int mode_index = mode->findData(run_mode);
+    if (mode_index < 0) {
+      std::cerr << "Missing e2e run mode: " << run_mode.toStdString() << '\n';
+      return false;
+    }
+    mode->setCurrentIndex(mode_index);
+  }
+  const int configured_control_points = qEnvironmentVariableIntValue("HMSTREAM_UI_E2E_CONTROL_POINTS");
+  if (configured_control_points > 0) {
+    control_points->setValue(configured_control_points);
+  }
+  activate(start);
+
+  const int timeout_ms = qEnvironmentVariableIntValue("HMSTREAM_UI_E2E_TIMEOUT_MS");
+  const int deadline_ms = timeout_ms > 0 ? timeout_ms : 120000;
+  QElapsedTimer timer;
+  timer.start();
+  bool observed_running = false;
+  while (timer.elapsed() < deadline_ms) {
+    QApplication::processEvents();
+    QTest::qWait(100);
+    const QString log = window->logText();
+    if (log.contains("asset setup failed") || log.contains("pipeline process error")) {
+      std::cerr << log.toStdString() << '\n';
+      activate(stop);
+      return false;
+    }
+    if (log.contains("** INFO: <bus_callback:314>: Pipeline running") || log.contains("**PERF:")) {
+      observed_running = true;
+      break;
+    }
+  }
+
+  const QString log = window->logText();
+  const bool observed_asset_python = log.contains("using asset setup python");
+  const bool observed_command = log.contains("pipeline command");
+  activate(stop);
+  for (int i = 0; i < 300 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(100);
+  }
+
+  if (!expect(observed_asset_python, "Real UI run should execute pretrained asset setup probe") ||
+      !expect(observed_command, "Real UI run should launch hmstream-cli") ||
+      !expect(observed_running, "Real UI run should reach GStreamer PLAYING/PERF output")) {
+    std::cerr << log.toStdString() << '\n';
+    return false;
+  }
+  return expect(window->pipelineStateText() == "STOPPED", "Real UI run should stop cleanly after e2e smoke");
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
+  const QByteArray e2e_game_id = qgetenv("HMSTREAM_UI_E2E_GAME_ID");
+  if (!e2e_game_id.isEmpty()) {
+    QApplication app(argc, argv);
+    HmStreamWindow window;
+    window.show();
+    if (!run_real_pipeline_e2e(&window, QString::fromLocal8Bit(e2e_game_id))) {
+      std::cerr << "run_real_pipeline_e2e failed\n";
+      return 1;
+    }
+    return 0;
+  }
+
   QTemporaryDir game_root;
   QTemporaryDir source_root;
   if (!game_root.isValid() || !source_root.isValid()) {
     return 1;
   }
   qputenv("HM_GAME_DIR", game_root.path().toLocal8Bit());
+  const QString fake_runner = source_root.path() + "/hmstream-ui-fake-runner.sh";
+  if (!write_fake_runner(fake_runner)) {
+    return 1;
+  }
+  qputenv("HMSTREAM_UI_TEST_RUNNER", fake_runner.toLocal8Bit());
 
   QApplication app(argc, argv);
   HmStreamWindow window;
   window.show();
 
-  if (!test_game_setup(&window, source_root.path()) || !test_pipeline_buttons(&window) ||
-      !test_output_controls(&window) || !test_camera_controls(&window)) {
+  if (!test_game_setup(&window, source_root.path())) {
+    std::cerr << "test_game_setup failed\n";
+    return 1;
+  }
+  if (!test_pipeline_buttons(&window)) {
+    std::cerr << "test_pipeline_buttons failed\n";
+    return 1;
+  }
+  if (!test_output_controls(&window)) {
+    std::cerr << "test_output_controls failed\n";
+    return 1;
+  }
+  if (!test_camera_controls(&window)) {
+    std::cerr << "test_camera_controls failed\n";
     return 1;
   }
   return 0;
