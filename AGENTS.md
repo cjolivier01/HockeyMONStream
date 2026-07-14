@@ -51,7 +51,7 @@ Notes:
 - Commits: imperative and scoped (preferred Conventional Commits). Example: `feat(stitching): improve synchronization for dual-camera`.
 - PRs: include purpose, configs/commands used to validate, relevant logs/output or screenshots, and linked issues. Note any platform constraints (Jetson vs x86).
 - PR default: open normal (ready-for-review) PRs. Only open draft PRs when explicitly requested.
-- Review cycle: after opening a PR, ask two high-reasoning agents to review the current PR in parallel. Address actionable findings, then ask another two high-reasoning agents to review the updated PR. Repeat this review/fix cycle until the reviewers report no necessary fixes or only non-blocking suggestions remain. Summarize each round's findings, fixes, and remaining risks in the PR or handoff.
+- Review cycle: after opening a PR, ask two high-reasoning Codex subagents to review the current PR in parallel when the subagent tool is available. Address actionable findings, then ask another two high-reasoning subagents to review the updated PR. Repeat this review/fix cycle until reviewers report no necessary fixes or only non-blocking suggestions remain; if reviewers or tools are unavailable or repeatedly stall, document that limitation and the completed validation instead of blocking indefinitely. Summarize each round's findings, fixes, and remaining risks in the PR or handoff.
 
 ## Security & Configuration Tips
 - Do not commit new large binaries (e.g., TensorRT `*.engine`); store externally and reference paths in configs.

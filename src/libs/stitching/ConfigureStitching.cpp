@@ -163,6 +163,10 @@ absl::StatusOr<size_t> delete_extracted_frames(const fs::path& game_dir) {
     HM_ASSIGN_OR_RETURN(png_removed, remove_file_if_present(png));
     removed += png_removed;
   }
+  if (ec) {
+    return absl::InternalError(
+        TO_STRING("Failed to iterate stitch game directory \"" << game_dir.string() << "\": " << ec.message()));
+  }
   return removed;
 }
 

@@ -102,7 +102,7 @@ class HmStreamWindow : public QMainWindow {
   QStringList enabledSinkNames() const;
   bool isCalibrationRun() const;
   void updateRunControls();
-  void applySavedControlConfig(YAML::Node& config);
+  bool applySavedControlConfig(YAML::Node& config);
   void loadSavedControlConfig();
   bool sendLiveCameraControl(const QString& id, int value);
   QSlider* addSlider(QVBoxLayout* layout, const QString& id, const QString& label, int minimum, int maximum, int value);

@@ -859,7 +859,13 @@ bool yaml_sequence_contains(YAML::Node node, const char* value) {
   return false;
 }
 
-int invalidate_rotation_dependent_artifacts(YAML::Node& config, const QString& game_dir) {
+struct ArtifactInvalidationResult {
+  int invalidated = 0;
+  QString error;
+};
+
+ArtifactInvalidationResult invalidate_rotation_dependent_artifacts(YAML::Node& config, const QString& game_dir) {
+  ArtifactInvalidationResult result;
   int invalidated = 0;
   invalidated += remove_yaml_path(config, {"rink", "scoreboard", "perspective_polygon"}) ? 1 : 0;
   invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_count"}) ? 1 : 0;
@@ -871,9 +877,13 @@ int invalidate_rotation_dependent_artifacts(YAML::Node& config, const QString& g
   for (const QString& mask : masks) {
     if (dir.remove(mask)) {
       ++invalidated;
+    } else {
+      result.error = QString("failed to delete %1").arg(dir.filePath(mask));
+      return result;
     }
   }
-  return invalidated;
+  result.invalidated = invalidated;
+  return result;
 }
 
 double slider_to_exposure_ev(int position) {
@@ -1559,6 +1569,7 @@ bool HmStreamWindow::runStitchingClean(
 
   appendLog(QString("stitching calibration clean command %1 %2").arg(runner, clean_args.join(' ')));
   QProcess clean;
+  clean.setProcessChannelMode(QProcess::MergedChannels);
   clean.setProcessEnvironment(env);
   clean.setWorkingDirectory(working_dir);
   clean.start(runner, clean_args);
@@ -1566,10 +1577,18 @@ bool HmStreamWindow::runStitchingClean(
     appendLog(QString("failed to start stitching clean: %1").arg(clean.errorString()));
     return false;
   }
-  clean.waitForFinished(-1);
-  const QString output = QString::fromLocal8Bit(clean.readAllStandardOutput() + clean.readAllStandardError()).trimmed();
-  if (!output.isEmpty()) {
-    for (const QString& line : output.split('\n')) {
+  QByteArray output;
+  while (clean.state() != QProcess::NotRunning) {
+    if (!clean.waitForReadyRead(250) && clean.error() != QProcess::Timedout) {
+      break;
+    }
+    output += clean.readAll();
+  }
+  clean.waitForFinished(0);
+  output += clean.readAll();
+  const QString output_text = QString::fromLocal8Bit(output).trimmed();
+  if (!output_text.isEmpty()) {
+    for (const QString& line : output_text.split('\n')) {
       appendLog(line.trimmed());
     }
   }
@@ -1968,7 +1987,9 @@ void HmStreamWindow::savePreset() {
     }
   }
 
-  applySavedControlConfig(config);
+  if (!applySavedControlConfig(config)) {
+    return;
+  }
   std::ofstream out(config_path);
   if (!out) {
     appendLog(QString("failed to write preset %1").arg(QString::fromStdString(config_path.string())));
@@ -2057,7 +2078,7 @@ void HmStreamWindow::loadSavedControlConfig() {
   }
 }
 
-void HmStreamWindow::applySavedControlConfig(YAML::Node& config) {
+bool HmStreamWindow::applySavedControlConfig(YAML::Node& config) {
   if (!yaml_defined(config) || config.IsNull()) {
     config = YAML::Node(YAML::NodeType::Map);
   }
@@ -2161,8 +2182,14 @@ void HmStreamWindow::applySavedControlConfig(YAML::Node& config) {
     rotation_changed_for_artifacts = true;
   }
   if (rotation_changed_for_artifacts) {
-    const int invalidated = invalidate_rotation_dependent_artifacts(config, gameDirectory(game_id_edit_->text()));
-    appendLog(QString("stitch rotation saved; invalidated %1 scoreboard/ice-mask artifact(s)").arg(invalidated));
+    const ArtifactInvalidationResult invalidation =
+        invalidate_rotation_dependent_artifacts(config, gameDirectory(game_id_edit_->text()));
+    if (!invalidation.error.isEmpty()) {
+      appendLog(QString("stitch rotation save aborted: %1").arg(invalidation.error));
+      return false;
+    }
+    appendLog(
+        QString("stitch rotation saved; invalidated %1 scoreboard/ice-mask artifact(s)").arg(invalidation.invalidated));
   }
   auto apply_color_prefix = [&](const QString& prefix) {
     const QString name_prefix = prefix.isEmpty() ? QString() : prefix + "_";
@@ -2400,6 +2427,7 @@ void HmStreamWindow::applySavedControlConfig(YAML::Node& config) {
     config["hmstream_ui"]["generated_runtime_values"] = generated_runtime_values;
   }
   appendLog(QString("preset captured %1 non-default camera controls").arg(changed));
+  return true;
 }
 
 void HmStreamWindow::refreshGames() {
