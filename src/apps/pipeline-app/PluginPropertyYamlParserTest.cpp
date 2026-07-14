@@ -126,5 +126,45 @@ private-properties:
     return 1;
   }
 
+  HmPlayCropperConfig bad_playcropper_numeric{};
+  const YAML::Node bad_playcropper_fixed_edge = YAML::Load(R"yaml(
+enable: true
+fixed-edge-rotation-angle: abc
+)yaml");
+  if (parse_hmplaycropper_yaml(&bad_playcropper_numeric, bad_playcropper_fixed_edge, "/tmp", true)) {
+    std::cerr << "Expected invalid hmplaycropper fixed-edge-rotation-angle to fail parsing\n";
+    return 1;
+  }
+
+  NvDsDsPlayTrackerConfig bad_playtracker_fixed_edge{};
+  const YAML::Node bad_playtracker_numeric = YAML::Load(R"yaml(
+enable: true
+fixed_edge_rotation_angle: .nan
+)yaml");
+  if (parse_dsplaytracker_yaml(&bad_playtracker_fixed_edge, bad_playtracker_numeric, "/tmp")) {
+    std::cerr << "Expected invalid ds-playtracker fixed_edge_rotation_angle to fail parsing\n";
+    return 1;
+  }
+
+  NvDsDsPlayTrackerConfig bad_playtracker_dynamic{};
+  const YAML::Node bad_playtracker_dynamic_scaling = YAML::Load(R"yaml(
+enable: true
+dynamic-acceleration-scaling: .inf
+)yaml");
+  if (parse_dsplaytracker_yaml(&bad_playtracker_dynamic, bad_playtracker_dynamic_scaling, "/tmp")) {
+    std::cerr << "Expected invalid ds-playtracker dynamic-acceleration-scaling to fail parsing\n";
+    return 1;
+  }
+
+  HmStitcherConfig bad_stitcher_numeric{};
+  const YAML::Node bad_stitcher_rotation = YAML::Load(R"yaml(
+enable: true
+post-stitch-rotate-degrees: nope
+)yaml");
+  if (parse_hmstitcher_yaml(&bad_stitcher_numeric, bad_stitcher_rotation, "/tmp")) {
+    std::cerr << "Expected invalid post-stitch-rotate-degrees to fail parsing\n";
+    return 1;
+  }
+
   return 0;
 }

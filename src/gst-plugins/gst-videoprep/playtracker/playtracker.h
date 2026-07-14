@@ -27,6 +27,8 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
   absl::Status GenerateOutput(NvDsBatchMeta* batch_meta, NvBufSurface* in_surface, NvBufSurface* out_surface) override;
 
  protected:
+  absl::Status ReloadContextFromConfig();
+
   DsPlayTrackerInitParams init_params_;
   std::string play_tracker_config_source_file_;
   std::mutex context_mu_;

@@ -8,6 +8,7 @@
 
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 
+#include <atomic>
 #include <mutex>
 #include <set>
 #include <unordered_map>
@@ -108,7 +109,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool pipeline_eos_seen_{false};
   std::set<guint> eos_source_ids_;
   std::unordered_map<NvBufSurface*, EosSnapshot> eos_snapshot_by_surface_;
-  double post_stitch_rotate_degrees_{0.0};
+  std::atomic<double> post_stitch_rotate_degrees_{0.0};
   void* rotation_scratch_data_{nullptr};
   size_t rotation_scratch_pitch_{0};
   size_t rotation_scratch_width_{0};

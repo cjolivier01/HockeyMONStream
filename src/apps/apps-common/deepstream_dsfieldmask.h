@@ -77,6 +77,7 @@ struct NvDsDsPlayTrackerConfig {
   gboolean draw;
   gboolean show;
   gfloat fixed_edge_rotation_angle;
+  gboolean fixed_edge_rotation_angle_set;
   gfloat dynamic_acceleration_scaling;
   gchar config_file[kMyMaxPath];
   hm::gst::PluginProperties plugin_properties;
@@ -156,6 +157,7 @@ struct HmPlayCropperConfig : public NvDsHmVideoPrepConfig {
   gboolean plot_player_tracking;
   gboolean transform_object_meta;
   gfloat fixed_edge_rotation_angle;
+  gboolean fixed_edge_rotation_angle_set;
   int scoreboard_perspective_polygon[8];
   guint runtime_output_max_width;
   guint runtime_output_max_height;

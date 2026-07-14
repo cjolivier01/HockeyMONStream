@@ -1741,7 +1741,8 @@ void PipelineApplication::print_runtime_commands() const {
       "\th: Print this help\n"
       "\tq: Quit\n\n"
       "\tp: Pause\n"
-      "\tr: Resume\n\n");
+      "\tr: Resume\n"
+      "\t@set-property <element> <property=value>: Set an allowlisted runtime GStreamer property\n\n");
   if (!stage_app_contexts_.empty() && !stage_app_contexts_.at(current_stage_).empty() &&
       stage_app_contexts_.at(current_stage_)[0] &&
       stage_app_contexts_.at(current_stage_)[0]->config.tiled_display_config.enable) {
@@ -1750,6 +1751,296 @@ void PipelineApplication::print_runtime_commands() const {
         "      left-click on the source.\n"
         "      To go back to the tiled display, right-click anywhere on the window.\n\n");
   }
+}
+
+bool PipelineApplication::read_stdin_char(char* out) const {
+  if (!out || !kbhit()) {
+    return false;
+  }
+  char c = 0;
+  const ssize_t bytes = ::read(STDIN_FILENO, &c, 1);
+  if (bytes != 1) {
+    return false;
+  }
+  *out = c;
+  return true;
+}
+
+bool PipelineApplication::read_runtime_command_line(std::string* line) {
+  char c = 0;
+  while (read_stdin_char(&c)) {
+    if (c == '\n' || c == '\r') {
+      if (line) {
+        *line = runtime_command_buffer_;
+      }
+      runtime_command_buffer_.clear();
+      runtime_command_active_ = false;
+      return true;
+    }
+    if (runtime_command_buffer_.size() >= 4096) {
+      g_printerr("runtime command failed: command too long\n");
+      runtime_command_buffer_.clear();
+      runtime_command_active_ = false;
+      return false;
+    }
+    runtime_command_buffer_.push_back(c);
+  }
+  return false;
+}
+
+namespace {
+bool is_allowlisted_runtime_property(const std::string& element_name, const std::string& property_name) {
+  return (element_name == "hmstitcher0" && property_name == "post-stitch-rotate-degrees") ||
+      (element_name == "dsplaytracker0" &&
+       (property_name == "config-file" || property_name == "fixed-edge-rotation-angle" ||
+        property_name == "dynamic-acceleration-scaling")) ||
+      ((element_name == "playcropper0" || element_name == "playcropper") &&
+       property_name == "fixed-edge-rotation-angle");
+}
+
+std::string trim_ascii(std::string value) {
+  const auto first = value.find_first_not_of(" \t");
+  if (first == std::string::npos) {
+    return "";
+  }
+  const auto last = value.find_last_not_of(" \t");
+  return value.substr(first, last - first + 1);
+}
+
+bool parse_runtime_set_property(
+    const std::string& line,
+    std::string* element_name,
+    std::string* property_name,
+    std::string* value) {
+  constexpr absl::string_view kCommand = "set-property";
+  const std::string trimmed = trim_ascii(line);
+  if (trimmed.rfind(std::string(kCommand), 0) != 0 ||
+      (trimmed.size() > kCommand.size() && !std::isspace(static_cast<unsigned char>(trimmed[kCommand.size()])))) {
+    return false;
+  }
+  std::string rest = trim_ascii(trimmed.substr(kCommand.size()));
+  const size_t element_end = rest.find_first_of(" \t");
+  if (element_end == std::string::npos) {
+    return false;
+  }
+  *element_name = rest.substr(0, element_end);
+  rest = trim_ascii(rest.substr(element_end + 1));
+  const size_t equals = rest.find('=');
+  if (equals == std::string::npos || equals == 0) {
+    return false;
+  }
+  *property_name = trim_ascii(rest.substr(0, equals));
+  *value = trim_ascii(rest.substr(equals + 1));
+  return !element_name->empty() && !property_name->empty();
+}
+
+bool parse_double_strict(const std::string& value, gdouble* out) {
+  if (!out || value.empty()) {
+    return false;
+  }
+  char* end = nullptr;
+  errno = 0;
+  const gdouble parsed = g_ascii_strtod(value.c_str(), &end);
+  if (value.c_str() == end || errno == ERANGE || !std::isfinite(parsed)) {
+    return false;
+  }
+  while (end && *end && std::isspace(static_cast<unsigned char>(*end))) {
+    ++end;
+  }
+  if (!end || *end != '\0') {
+    return false;
+  }
+  *out = parsed;
+  return true;
+}
+
+bool parse_int64_strict(const std::string& value, gint64* out) {
+  if (!out || value.empty()) {
+    return false;
+  }
+  char* end = nullptr;
+  errno = 0;
+  const gint64 parsed = g_ascii_strtoll(value.c_str(), &end, 10);
+  if (value.c_str() == end || errno == ERANGE) {
+    return false;
+  }
+  while (end && *end && std::isspace(static_cast<unsigned char>(*end))) {
+    ++end;
+  }
+  if (!end || *end != '\0') {
+    return false;
+  }
+  *out = parsed;
+  return true;
+}
+
+bool parse_uint64_strict(const std::string& value, guint64* out) {
+  if (!out || value.empty() || value[0] == '-') {
+    return false;
+  }
+  char* end = nullptr;
+  errno = 0;
+  const guint64 parsed = g_ascii_strtoull(value.c_str(), &end, 10);
+  if (value.c_str() == end || errno == ERANGE) {
+    return false;
+  }
+  while (end && *end && std::isspace(static_cast<unsigned char>(*end))) {
+    ++end;
+  }
+  if (!end || *end != '\0') {
+    return false;
+  }
+  *out = parsed;
+  return true;
+}
+
+bool set_gvalue_from_string(GValue* gvalue, GParamSpec* pspec, const std::string& value) {
+  if (!gvalue || !pspec) {
+    return false;
+  }
+  const GType value_type = G_PARAM_SPEC_VALUE_TYPE(pspec);
+  g_value_init(gvalue, value_type);
+  if (value_type == G_TYPE_STRING) {
+    g_value_set_string(gvalue, value.c_str());
+    return true;
+  }
+  if (value_type == G_TYPE_BOOLEAN) {
+    if (value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "on") {
+      g_value_set_boolean(gvalue, true);
+      return true;
+    }
+    if (value == "0" || value == "false" || value == "FALSE" || value == "no" || value == "off") {
+      g_value_set_boolean(gvalue, false);
+      return true;
+    }
+    return false;
+  }
+  if (value_type == G_TYPE_DOUBLE) {
+    gdouble parsed = 0.0;
+    if (!parse_double_strict(value, &parsed)) {
+      return false;
+    }
+    g_value_set_double(gvalue, parsed);
+    return true;
+  }
+  if (value_type == G_TYPE_FLOAT) {
+    gdouble parsed = 0.0;
+    if (!parse_double_strict(value, &parsed)) {
+      return false;
+    }
+    g_value_set_float(gvalue, static_cast<gfloat>(parsed));
+    return true;
+  }
+  if (value_type == G_TYPE_INT) {
+    gint64 parsed = 0;
+    if (!parse_int64_strict(value, &parsed) || parsed < G_MININT || parsed > G_MAXINT) {
+      return false;
+    }
+    g_value_set_int(gvalue, static_cast<gint>(parsed));
+    return true;
+  }
+  if (value_type == G_TYPE_UINT) {
+    guint64 parsed = 0;
+    if (!parse_uint64_strict(value, &parsed) || parsed > G_MAXUINT) {
+      return false;
+    }
+    g_value_set_uint(gvalue, static_cast<guint>(parsed));
+    return true;
+  }
+  if (value_type == G_TYPE_INT64) {
+    gint64 parsed = 0;
+    if (!parse_int64_strict(value, &parsed)) {
+      return false;
+    }
+    g_value_set_int64(gvalue, parsed);
+    return true;
+  }
+  if (value_type == G_TYPE_UINT64) {
+    guint64 parsed = 0;
+    if (!parse_uint64_strict(value, &parsed)) {
+      return false;
+    }
+    g_value_set_uint64(gvalue, parsed);
+    return true;
+  }
+  return false;
+}
+} // namespace
+
+bool PipelineApplication::set_element_property_runtime(
+    const std::string& element_name,
+    const std::string& property_name,
+    const std::string& value) {
+  if (element_name.empty() || property_name.empty()) {
+    g_printerr("runtime command failed: missing element or property\n");
+    return false;
+  }
+  if (!is_allowlisted_runtime_property(element_name, property_name)) {
+    g_printerr(
+        "runtime command failed: property is not live-mutable here: %s.%s\n",
+        element_name.c_str(),
+        property_name.c_str());
+    return false;
+  }
+  auto& app_ctx = stage_app_contexts_.at(current_stage_);
+  for (const auto& app : app_ctx) {
+    if (!app || !app->pipeline.pipeline) {
+      continue;
+    }
+    GstElement* element = gst_bin_get_by_name(GST_BIN(app->pipeline.pipeline), element_name.c_str());
+    if (!element) {
+      continue;
+    }
+    GParamSpec* pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(element), property_name.c_str());
+    if (!pspec) {
+      gst_object_unref(element);
+      g_printerr("runtime command failed: element %s has no property %s\n", element_name.c_str(), property_name.c_str());
+      return false;
+    }
+    GValue gvalue = G_VALUE_INIT;
+    if (!set_gvalue_from_string(&gvalue, pspec, value)) {
+      if (G_IS_VALUE(&gvalue)) {
+        g_value_unset(&gvalue);
+      }
+      gst_object_unref(element);
+      g_printerr("runtime command failed: unsupported property type for %s.%s\n", element_name.c_str(), property_name.c_str());
+      return false;
+    }
+    if (g_param_value_validate(pspec, &gvalue)) {
+      g_value_unset(&gvalue);
+      gst_object_unref(element);
+      g_printerr("runtime command failed: value out of range for %s.%s=%s\n", element_name.c_str(), property_name.c_str(), value.c_str());
+      return false;
+    }
+    g_object_set_property(G_OBJECT(element), property_name.c_str(), &gvalue);
+    g_value_unset(&gvalue);
+    GParamSpec* status_pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(element), "last-property-set-ok");
+    if (status_pspec && G_PARAM_SPEC_VALUE_TYPE(status_pspec) == G_TYPE_BOOLEAN) {
+      gboolean accepted = TRUE;
+      g_object_get(G_OBJECT(element), "last-property-set-ok", &accepted, nullptr);
+      if (!accepted) {
+        gst_object_unref(element);
+        g_printerr("runtime command failed: plugin rejected %s.%s=%s\n", element_name.c_str(), property_name.c_str(), value.c_str());
+        return false;
+      }
+    }
+    gst_object_unref(element);
+    g_print("runtime property %s %s=%s\n", element_name.c_str(), property_name.c_str(), value.c_str());
+    return true;
+  }
+  g_printerr("runtime command failed: element not found: %s\n", element_name.c_str());
+  return false;
+}
+
+bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
+  std::string element_name;
+  std::string property_name;
+  std::string value;
+  if (!parse_runtime_set_property(line, &element_name, &property_name, &value)) {
+    g_printerr("runtime command failed: expected: set-property <element> <property=value>\n");
+    return false;
+  }
+  return set_element_property_runtime(element_name, property_name, value);
 }
 
 gboolean PipelineApplication::event_thread_func_static(gpointer arg) {
@@ -1773,10 +2064,33 @@ gboolean PipelineApplication::event_thread_func() {
       g_main_loop_quit(main_loop_);
     return FALSE;
   }
-  if (!kbhit())
+  char c = 0;
+  if (runtime_command_active_) {
+    std::string line;
+    if (read_runtime_command_line(&line)) {
+      handle_runtime_command_line(line);
+    }
     return TRUE;
-  int c = fgetc(stdin);
+  }
+  if (!read_stdin_char(&c))
+    return TRUE;
   g_print("\n");
+
+  if (config_selection_active_) {
+    config_selection_active_ = false;
+    if (c >= '0' && c <= '9') {
+      rcfg_ = c - '0';
+      if (rcfg_ < app_ctx.size()) {
+        g_print("--selecting config  %d--\n", rcfg_);
+      } else {
+        g_print("--selected config file %d out of bound, reenter\n", rcfg_);
+        rcfg_ = 0;
+      }
+    } else {
+      g_print("--config selection cancelled--\n");
+    }
+    return TRUE;
+  }
 
   gint source_id = -1;
   GstElement* tiler = (app_ctx[rcfg_]) ? app_ctx[rcfg_]->pipeline.tiled_display_bin.tiler : nullptr;
@@ -1817,6 +2131,16 @@ gboolean PipelineApplication::event_thread_func() {
     }
   }
   switch (c) {
+    case '@':
+      runtime_command_active_ = true;
+      runtime_command_buffer_.clear();
+      {
+        std::string line;
+        if (read_runtime_command_line(&line)) {
+          handle_runtime_command_line(line);
+        }
+      }
+      break;
     case 'h':
       print_runtime_commands();
       break;
@@ -1840,16 +2164,7 @@ gboolean PipelineApplication::event_thread_func() {
       if (app_ctx[rcfg_] && app_ctx[rcfg_]->config.tiled_display_config.enable && selecting_ == FALSE &&
           source_id == -1) {
         g_print("--selecting config file --\n");
-        c = fgetc(stdin);
-        if (c >= '0' && c <= '9') {
-          rcfg_ = c - '0';
-          if (rcfg_ < app_ctx.size())
-            g_print("--selecting config  %d--\n", rcfg_);
-          else {
-            g_print("--selected config file %d out of bound, reenter\n", rcfg_);
-            rcfg_ = 0;
-          }
-        }
+        config_selection_active_ = true;
       }
       break;
     case 'z':

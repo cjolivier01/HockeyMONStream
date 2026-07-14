@@ -42,6 +42,8 @@ struct DsPlayTrackerCtx {
 // Initialize library context
 DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* init_params);
 
+absl::Status DsPlayTrackerValidateConfigFile(const std::string& config_file);
+
 bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx,
                                GstDsPlayTrackerFrame& frame,
                                cudaStream_t stream);

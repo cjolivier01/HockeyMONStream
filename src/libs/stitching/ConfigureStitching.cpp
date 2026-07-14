@@ -44,6 +44,7 @@ namespace {
 const std::string lfo_prefix = "Left frame offset: ";
 const std::string rfo_prefix = "Right frame offset: ";
 constexpr size_t kDefaultJetsonMaxLiveStitchCanvasDimension = 8192;
+constexpr size_t kDefaultMaxControlPoints = 1500;
 
 bool remove_file_if_present(const fs::path& path) {
   std::error_code ec;
@@ -1302,7 +1303,7 @@ absl::Status create_control_points(
   HM_RETURN_IF_ERROR(save_image(left_surface, left_file));
   HM_RETURN_IF_ERROR(save_image(right_surface, right_file));
 
-  size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", 500UL);
+  size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", kDefaultMaxControlPoints);
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
 
   std::vector<std::string> cmd;

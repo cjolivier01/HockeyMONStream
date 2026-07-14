@@ -16,6 +16,7 @@
 #include "gstplaytracker.h"
 #include "gstnvdsmeta.h"
 
+#include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/libs/common/utils.h"
 
 #include <sys/time.h>
@@ -252,6 +253,12 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
       .play_tracker_config_file = playtracker->play_tracker_config_file,
       .draw = !!playtracker->draw,
   };
+
+  absl::Status validation_status = DsPlayTrackerValidateConfigFile(init_params.play_tracker_config_file);
+  if (!validation_status.ok()) {
+    GST_ERROR_OBJECT(playtracker, "invalid playtracker config: %s", validation_status.ToString().c_str());
+    return FALSE;
+  }
 
   /* Algorithm specific initializations and resource allocation. */
   playtracker->playtrackerlib_ctx = DsPlayTrackerCtxInit(&init_params);

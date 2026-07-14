@@ -6,12 +6,12 @@
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QListWidget>
 #include <QtWidgets/QMainWindow>
-#include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QRadioButton>
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QTabWidget>
+#include <QtWidgets/QTextEdit>
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidget>
 
@@ -21,6 +21,8 @@
 
 #include <map>
 #include <string>
+
+class QProcessEnvironment;
 
 class HmStreamWindow : public QMainWindow {
  public:
@@ -52,6 +54,7 @@ class HmStreamWindow : public QMainWindow {
   void handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status);
   void handlePipelineError(QProcess::ProcessError error);
   void readPipelineOutput();
+  void togglePreviewFullscreen(int tab_index);
   void restartStage();
   void savePreset();
   void resetCameraControls();
@@ -82,17 +85,26 @@ class HmStreamWindow : public QMainWindow {
   void redirectYoutube();
   void addRtspOutput();
   void appendLog(const QString& message);
+  QString writePlaytrackerRuntimeConfig();
   QString pipelineRunnerPath() const;
   QString pipelineConfigPath(const QString& config_name) const;
   QString pipelineWorkingDirectory() const;
   QStringList pipelineArguments() const;
   bool setupPretrainedAssets(const QStringList& pipeline_args);
   void logMissingTensorRtEngineCaches(const QStringList& pipeline_args);
+  int stitchingCalibrationControlPoints() const;
+  bool prepareStitchingCalibrationRun(
+      const QString& runner,
+      const QString& working_dir,
+      const QProcessEnvironment& env);
+  bool runStitchingClean(const QString& runner, const QString& working_dir, const QProcessEnvironment& env);
+  bool saveStitchingCalibrationControlPoints(int control_points);
   QStringList enabledSinkNames() const;
   bool isCalibrationRun() const;
   void updateRunControls();
   void applySavedControlConfig(YAML::Node& config);
   void loadSavedControlConfig();
+  bool sendLiveCameraControl(const QString& id, int value);
   QSlider* addSlider(QVBoxLayout* layout, const QString& id, const QString& label, int minimum, int maximum, int value);
 
   QLabel* backend_mode_{nullptr};
@@ -111,7 +123,7 @@ class HmStreamWindow : public QMainWindow {
   QRadioButton* role_left_{nullptr};
   QRadioButton* role_center_{nullptr};
   QRadioButton* role_right_{nullptr};
-  QPlainTextEdit* log_{nullptr};
+  QTextEdit* log_{nullptr};
   QTabWidget* preview_tabs_{nullptr};
   QWidget* preview_surface_{nullptr};
   QWidget* stitched_surface_{nullptr};
@@ -123,6 +135,9 @@ class HmStreamWindow : public QMainWindow {
   QPushButton* stop_button_{nullptr};
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
+  bool preview_fullscreen_{false};
+  QString pipeline_stdout_buffer_;
+  QString pipeline_stderr_buffer_;
   int dynamic_rtsp_count_{0};
   std::map<QString, QLabel*> output_states_;
   std::map<QString, QCheckBox*> output_toggles_;

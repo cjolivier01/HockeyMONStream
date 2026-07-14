@@ -82,7 +82,7 @@ class VideoPrepPriv : public DSCustomLibraryBase {
     return RuntimeOutputSize{};
   }
 
-  void SetPrivateConfig(const char* config_string);
+  bool SetPrivateConfig(const char* config_string);
 
   GstFlowReturn get_last_flow_ret() const { return last_flow_ret_; }
 
