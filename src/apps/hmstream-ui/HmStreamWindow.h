@@ -98,7 +98,7 @@ class HmStreamWindow : public QMainWindow {
       const QString& working_dir,
       const QProcessEnvironment& env);
   bool runStitchingClean(const QString& runner, const QString& working_dir, const QProcessEnvironment& env);
-  bool saveStitchingCalibrationControlPoints(int control_points);
+  bool saveStitchingCalibrationState(int control_points, const QString& status);
   QStringList enabledSinkNames() const;
   bool isCalibrationRun() const;
   void updateRunControls();

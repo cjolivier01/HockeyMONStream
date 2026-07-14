@@ -687,9 +687,15 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
     YAML::Node saved_control_points;
     const bool has_saved_control_points =
         lookup_yaml_path(saved, {"hmstream_ui", "stitching_calibration", "control_points"}, &saved_control_points);
+    YAML::Node saved_status;
+    const bool has_saved_status =
+        lookup_yaml_path(saved, {"hmstream_ui", "stitching_calibration", "status"}, &saved_status);
     if (!expect(
             has_saved_control_points && saved_control_points.IsScalar() && saved_control_points.as<int>() == 750,
-            "Calibration CP count should be saved to private config")) {
+            "Calibration CP count should be saved to private config") ||
+        !expect(
+            has_saved_status && saved_status.IsScalar() && saved_status.as<std::string>() == "pending",
+            "Calibration CP state should remain pending while the calibration process is running")) {
       return false;
     }
   }

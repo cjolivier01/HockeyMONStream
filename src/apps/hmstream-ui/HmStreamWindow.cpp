@@ -1580,7 +1580,7 @@ bool HmStreamWindow::runStitchingClean(
   return true;
 }
 
-bool HmStreamWindow::saveStitchingCalibrationControlPoints(int control_points) {
+bool HmStreamWindow::saveStitchingCalibrationState(int control_points, const QString& status) {
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
   YAML::Node config(YAML::NodeType::Map);
   if (fs::exists(config_path)) {
@@ -1596,6 +1596,7 @@ bool HmStreamWindow::saveStitchingCalibrationControlPoints(int control_points) {
   }
 
   config["hmstream_ui"]["stitching_calibration"]["control_points"] = control_points;
+  config["hmstream_ui"]["stitching_calibration"]["status"] = status.toStdString();
   std::ofstream out(config_path);
   if (!out) {
     appendLog(
@@ -1609,7 +1610,7 @@ bool HmStreamWindow::saveStitchingCalibrationControlPoints(int control_points) {
         QString("failed to write stitching calibration settings %1").arg(QString::fromStdString(config_path.string())));
     return false;
   }
-  appendLog(QString("stitching calibration control points saved %1").arg(control_points));
+  appendLog(QString("stitching calibration control points saved %1 status=%2").arg(control_points).arg(status));
   return true;
 }
 
@@ -1621,6 +1622,7 @@ bool HmStreamWindow::prepareStitchingCalibrationRun(
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
   bool saved_found = false;
   int saved_control_points = 0;
+  QString saved_status;
   if (fs::exists(config_path)) {
     try {
       const YAML::Node config = YAML::LoadFile(config_path.string());
@@ -1629,24 +1631,29 @@ bool HmStreamWindow::prepareStitchingCalibrationRun(
         saved_control_points = saved.as<int>();
         saved_found = true;
       }
+      YAML::Node status;
+      if (lookup_yaml_path(config, "hmstream_ui.stitching_calibration.status", &status) && status.IsScalar()) {
+        saved_status = QString::fromStdString(status.as<std::string>());
+      }
     } catch (const std::exception& exc) {
       appendLog(QString("could not read stitching calibration settings: %1").arg(exc.what()));
       return false;
     }
   }
 
-  if (saved_found && saved_control_points == control_points) {
+  if (saved_found && saved_control_points == control_points && saved_status == "complete") {
     return true;
   }
 
   const QString previous = saved_found ? QString::number(saved_control_points) : QString("unset");
-  appendLog(QString("stitching calibration control points changed %1 -> %2; cleaning stitch artifacts")
+  appendLog(QString("stitching calibration control points changed %1 -> %2 status=%3; cleaning stitch artifacts")
                 .arg(previous)
-                .arg(control_points));
+                .arg(control_points)
+                .arg(saved_status.isEmpty() ? "unset" : saved_status));
   if (!runStitchingClean(runner, working_dir, env)) {
     return false;
   }
-  return saveStitchingCalibrationControlPoints(control_points);
+  return saveStitchingCalibrationState(control_points, "pending");
 }
 
 QStringList HmStreamWindow::pipelineArguments() const {
@@ -1843,6 +1850,9 @@ void HmStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus 
   }
   pipeline_paused_ = false;
   pipeline_uses_process_group_ = false;
+  if (isCalibrationRun() && exit_status == QProcess::NormalExit && exit_code == 0) {
+    saveStitchingCalibrationState(stitchingCalibrationControlPoints(), "complete");
+  }
   pipeline_state_->setText("STOPPED");
   preview_status_->setText("Pipeline stopped");
   appendLog(QString("pipeline finished exit=%1 status=%2")
