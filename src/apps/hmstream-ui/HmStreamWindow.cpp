@@ -1747,6 +1747,7 @@ void HmStreamWindow::startPipeline() {
   pipeline_uses_process_group_ = false;
 #endif
   pipeline_paused_ = false;
+  pipeline_stop_requested_ = false;
 
   pipeline_state_->setText("STARTING");
   preview_status_->setText(
@@ -1802,6 +1803,7 @@ void HmStreamWindow::stopPipeline() {
     return;
   }
   appendLog("pipeline stop requested");
+  pipeline_stop_requested_ = true;
 #ifdef Q_OS_UNIX
   const qint64 pid = pipeline_process_->processId();
   const pid_t target = pipeline_uses_process_group_ ? -static_cast<pid_t>(pid) : static_cast<pid_t>(pid);
@@ -1850,7 +1852,9 @@ void HmStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus 
   }
   pipeline_paused_ = false;
   pipeline_uses_process_group_ = false;
-  if (isCalibrationRun() && exit_status == QProcess::NormalExit && exit_code == 0) {
+  const bool stopped_by_user = pipeline_stop_requested_;
+  pipeline_stop_requested_ = false;
+  if (isCalibrationRun() && !stopped_by_user && exit_status == QProcess::NormalExit && exit_code == 0) {
     saveStitchingCalibrationState(stitchingCalibrationControlPoints(), "complete");
   }
   pipeline_state_->setText("STOPPED");
@@ -1864,6 +1868,7 @@ void HmStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus 
 void HmStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   pipeline_paused_ = false;
   pipeline_uses_process_group_ = false;
+  pipeline_stop_requested_ = false;
   pipeline_state_->setText("STOPPED");
   preview_status_->setText("Pipeline failed to start");
   appendLog(QString("pipeline process error=%1 message=%2")

@@ -729,6 +729,18 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
   if (!expect(window->pipelineStateText() == "STOPPED", "Stop should terminate calibration process")) {
     return false;
   }
+  {
+    const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+    const YAML::Node saved = YAML::LoadFile(config.string());
+    YAML::Node saved_status;
+    const bool has_saved_status =
+        lookup_yaml_path(saved, {"hmstream_ui", "stitching_calibration", "status"}, &saved_status);
+    if (!expect(
+            has_saved_status && saved_status.IsScalar() && saved_status.as<std::string>() == "pending",
+            "User-stopped calibration should remain pending so the next run cleans again")) {
+      return false;
+    }
+  }
 
   mode->setCurrentIndex(mode->findData("program"));
   activate(start);
