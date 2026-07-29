@@ -128,6 +128,13 @@ class PipelineApplication {
   static gboolean kbhit();
   static void changemode(int dir);
   void print_runtime_commands() const;
+  bool read_stdin_char(char* out) const;
+  bool read_runtime_command_line(std::string* line);
+  bool handle_runtime_command_line(const std::string& line);
+  bool set_element_property_runtime(
+      const std::string& element_name,
+      const std::string& property_name,
+      const std::string& value);
   static gboolean event_thread_func_static(gpointer arg);
   gboolean event_thread_func();
   static int get_source_id_from_coordinates(float x_rel, float y_rel, AppCtx* app_ctx);
@@ -210,6 +217,9 @@ class PipelineApplication {
   bool have_first_pts_{false};
   std::array<uint64_t, MAX_SOURCE_BINS> first_frame_numbers_by_source_{};
   std::array<bool, MAX_SOURCE_BINS> have_first_frame_by_source_{};
+  bool runtime_command_active_{false};
+  bool config_selection_active_{false};
+  std::string runtime_command_buffer_;
   static constexpr const char* default_config_file_name_ = "configs/ds_hockey_app_config.yaml";
   static PipelineApplication* instance_;
 };

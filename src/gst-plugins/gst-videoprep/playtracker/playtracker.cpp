@@ -4,10 +4,15 @@
 #include <gst/gst.h>
 #include <gst/video/video.h>
 #include <npp.h>
+#include <algorithm>
+#include <cerrno>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
 #include "hstream/src/libs/common/Status.h"
@@ -23,6 +28,29 @@
 
 namespace hm {
 namespace playtracker {
+namespace {
+
+bool parse_finite_float(const std::string& value, float* out) {
+  if (!out || value.empty()) {
+    return false;
+  }
+  char* end = nullptr;
+  errno = 0;
+  const float parsed = std::strtof(value.c_str(), &end);
+  if (value.c_str() == end || errno == ERANGE || !std::isfinite(parsed)) {
+    return false;
+  }
+  while (end && *end && std::isspace(static_cast<unsigned char>(*end))) {
+    ++end;
+  }
+  if (!end || *end != '\0') {
+    return false;
+  }
+  *out = parsed;
+  return true;
+}
+
+} // namespace
 
 PlayTrackerPriv::~PlayTrackerPriv() {
   std::lock_guard<std::mutex> lk(context_mu_);
@@ -51,46 +79,99 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
 
   {
     std::lock_guard<std::mutex> lk(context_mu_);
-    if (pt_context_) {
-      DsPlayTrackerCtxDeinit(pt_context_);
-      pt_context_ = nullptr;
-    }
-    init_params_.owned_objects.clear();
-
-    YAML::Node config = YAML::LoadFile(play_tracker_config_source_file_);
-    std::cout << config << std::endl;
-    std::vector<YAML::Node> live_boxes;
-    for (YAML::Node box : config["play-tracker"]["live-boxes"]) {
-      box["arena-angle-from-vertical"] = std::to_string(fixed_edge_rotation_angle_);
-      live_boxes.push_back(box);
-    }
-    if (!live_boxes.empty()) {
-      (*live_boxes.rbegin())["dynamic-acceleration-scaling"] = std::to_string(dynamic_acceleration_scaling_);
-    }
-
-    auto temp_yaml_file = std::make_unique<hm::utils::TempFile>(/*autoRemove=*/true);
-    std::ofstream ofile(temp_yaml_file->getPath());
-    ofile << config;
-    ofile.close();
-    init_params_.play_tracker_config_file = temp_yaml_file->getPath();
-    init_params_.owned_objects.emplace_back(std::move(temp_yaml_file));
-    pt_context_ = DsPlayTrackerCtxInit(&init_params_);
+    HM_RETURN_IF_ERROR(ReloadContextFromConfig());
   }
   return Super::PostCapsInit(params);
 }
 
+absl::Status PlayTrackerPriv::ReloadContextFromConfig() {
+  if (play_tracker_config_source_file_.empty()) {
+    return absl::NotFoundError("vpplaytracker config-file is not set");
+  }
+
+  DsPlayTrackerInitParams next_params = init_params_;
+  next_params.owned_objects.clear();
+  YAML::Node config;
+  try {
+    config = YAML::LoadFile(play_tracker_config_source_file_);
+    YAML::Node live_boxes = config["play-tracker"]["live-boxes"];
+    if (!live_boxes || !live_boxes.IsSequence()) {
+      return absl::InvalidArgumentError("vpplaytracker config missing play-tracker.live-boxes");
+    }
+    if (live_boxes.size() == 0) {
+      return absl::InvalidArgumentError("vpplaytracker config play-tracker.live-boxes must not be empty");
+    }
+    for (YAML::Node box : live_boxes) {
+      box["arena-angle-from-vertical"] = std::to_string(fixed_edge_rotation_angle_);
+    }
+    if (live_boxes.size() > 0) {
+      live_boxes[live_boxes.size() - 1]["dynamic-acceleration-scaling"] =
+          std::to_string(dynamic_acceleration_scaling_);
+    }
+  } catch (const std::exception& exc) {
+    return absl::InvalidArgumentError(absl::StrCat("failed to load vpplaytracker config: ", exc.what()));
+  }
+  auto temp_yaml_file = std::make_unique<hm::utils::TempFile>(/*autoRemove=*/true);
+  std::ofstream ofile(temp_yaml_file->getPath());
+  ofile << config;
+  ofile.close();
+  if (!ofile) {
+    return absl::InternalError("Failed to write generated vpplaytracker runtime config");
+  }
+  next_params.play_tracker_config_file = temp_yaml_file->getPath();
+  next_params.owned_objects.emplace_back(std::move(temp_yaml_file));
+  HM_RETURN_IF_ERROR(DsPlayTrackerValidateConfigFile(next_params.play_tracker_config_file));
+  DsPlayTrackerCtx* next_context = DsPlayTrackerCtxInit(&next_params);
+  if (!next_context) {
+    return absl::InternalError("Failed to reload vpplaytracker context");
+  }
+  if (pt_context_) {
+    DsPlayTrackerCtxDeinit(pt_context_);
+  }
+  init_params_ = std::move(next_params);
+  pt_context_ = next_context;
+  return absl::OkStatus();
+}
+
 bool PlayTrackerPriv::SetProperty(const Property& prop) {
-  if (prop.key == "show") {
+  bool reload_context = false;
+  const float previous_fixed_edge_rotation_angle = fixed_edge_rotation_angle_;
+  const float previous_dynamic_acceleration_scaling = dynamic_acceleration_scaling_;
+  std::string key = prop.key;
+  std::replace(key.begin(), key.end(), '_', '-');
+  if (key == "show") {
     show_ = !!std::atol(prop.value.c_str());
-  } else if (prop.key == "draw") {
+  } else if (key == "draw") {
     init_params_.draw = !!std::atol(prop.value.c_str());
-  } else if (prop.key == "fixed-edge-rotation-angle") {
-    fixed_edge_rotation_angle_ = std::atof(prop.value.c_str());
-  } else if (prop.key == "dynamic-acceleration-scaling") {
-    dynamic_acceleration_scaling_ = std::atof(prop.value.c_str());
-  } else if (prop.key == "config-file") {
-    init_params_.play_tracker_config_file = prop.value;
-    play_tracker_config_source_file_ = prop.value;
+  } else if (key == "fixed-edge-rotation-angle") {
+    if (!parse_finite_float(prop.value, &fixed_edge_rotation_angle_)) {
+      return false;
+    }
+    reload_context = true;
+  } else if (key == "dynamic-acceleration-scaling") {
+    if (!parse_finite_float(prop.value, &dynamic_acceleration_scaling_)) {
+      return false;
+    }
+    reload_context = true;
+  } else if (key == "config-file") {
+    reload_context = true;
+  }
+  if (reload_context) {
+    std::lock_guard<std::mutex> lk(context_mu_);
+    const std::string previous_config_source_file = play_tracker_config_source_file_;
+    if (key == "config-file") {
+      play_tracker_config_source_file_ = prop.value;
+    }
+    if (pt_context_) {
+      const absl::Status status = ReloadContextFromConfig();
+      if (!status.ok()) {
+        play_tracker_config_source_file_ = previous_config_source_file;
+        fixed_edge_rotation_angle_ = previous_fixed_edge_rotation_angle;
+        dynamic_acceleration_scaling_ = previous_dynamic_acceleration_scaling;
+        std::cerr << status << std::endl;
+        return false;
+      }
+    }
   }
   return true;
 }
@@ -104,6 +185,9 @@ absl::Status PlayTrackerPriv::GenerateOutput(
     NvBufSurface* in_surface,
     NvBufSurface* /*out_surface*/) {
   std::lock_guard<std::mutex> lk(context_mu_);
+  if (!pt_context_) {
+    return absl::FailedPreconditionError("vpplaytracker context is not initialized");
+  }
   GstDsPlayTrackerFrame frame;
   auto font_cache = draw_display::get_or_create_font_cache();
   NvDsFrameMetaList* fl = batch_meta->frame_meta_list;

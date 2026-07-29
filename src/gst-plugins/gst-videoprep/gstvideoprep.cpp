@@ -144,6 +144,10 @@ enum {
   PROP_NVBUF_MEMORY_TYPE,
   PROP_INTERPOLATION_METHOD,
   PROP_PLUGIN_PRIVATE_CONFIG,
+  PROP_POST_STITCH_ROTATE_DEGREES,
+  PROP_FIXED_EDGE_ROTATION_ANGLE,
+  PROP_DYNAMIC_ACCELERATION_SCALING,
+  PROP_LAST_PROPERTY_SET_OK,
   PROP_SILENT,
 };
 
@@ -157,6 +161,7 @@ enum {
   } while (0)
 
 static void gst_videoprep_finalize(GObject* object);
+static bool gst_videoprep_apply_typed_properties(GstVideoPrep* videoprep);
 
 // static const gchar* print_pretty_time(gchar* ts_str, gsize ts_str_len, GstClockTime ts) {
 //   if (ts == GST_CLOCK_TIME_NONE)
@@ -639,6 +644,14 @@ static void gst_videoprep_state_changed(GstElement* element, GstState oldstate, 
   }
 }
 
+static void gst_videoprep_clear_priv(GstVideoPrep* videoprep) {
+  if (!videoprep || !videoprep->priv) {
+    return;
+  }
+  delete videoprep->priv;
+  videoprep->priv = nullptr;
+}
+
 static GstStateChangeReturn gst_videoprep_change_state(GstElement* element, GstStateChange transition) {
   if (transition == GST_STATE_CHANGE_NULL_TO_READY) {
     GstVideoPrep* videoprep = GST_VIDEOPREP(element);
@@ -660,13 +673,23 @@ static GstStateChangeReturn gst_videoprep_change_state(GstElement* element, GstS
       return GST_STATE_CHANGE_FAILURE;
     }
     if (videoprep->plugin_private_config) {
-      videoprep->priv->SetPrivateConfig(videoprep->plugin_private_config);
+      if (!videoprep->priv->SetPrivateConfig(videoprep->plugin_private_config)) {
+        GST_ERROR("Invalid plugin private config for %s", videoprep->plugin_type);
+        gst_videoprep_clear_priv(videoprep);
+        return GST_STATE_CHANGE_FAILURE;
+      }
+    }
+    if (!gst_videoprep_apply_typed_properties(videoprep)) {
+      GST_ERROR("Invalid typed property for %s", videoprep->plugin_type);
+      gst_videoprep_clear_priv(videoprep);
+      return GST_STATE_CHANGE_FAILURE;
     }
     videoprep->custom_create_params.config_file = videoprep->config_file;
     absl::Status status = videoprep->priv->PreCapsInit(&videoprep->custom_create_params);
     if (!status.ok()) {
       std::cerr << status << std::endl;
       GST_ERROR("Error on bus: SetInitParams Error");
+      gst_videoprep_clear_priv(videoprep);
       return GST_STATE_CHANGE_FAILURE;
     }
   } else if (transition == GST_STATE_CHANGE_PAUSED_TO_READY) {
@@ -1051,9 +1074,9 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
       g_param_spec_string(
           CONFIG_GROUP_VIDEOPREP_PROPERTY_CONFIG_FILE,
           "Config File",
-          "Config File",
-          NULL,
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+	          "Config File",
+	          NULL,
+	          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
 
   g_object_class_install_property(
       gobject_class,
@@ -1074,6 +1097,52 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
           "Plugin Privatye Config \"key1=val1;key2=val2;...\"",
           NULL,
           (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+
+  g_object_class_install_property(
+      gobject_class,
+      PROP_POST_STITCH_ROTATE_DEGREES,
+      g_param_spec_double(
+          "post-stitch-rotate-degrees",
+          "Post-stitch rotate degrees",
+          "Runtime rotation applied by hmstitcher after stitching",
+          -360.0,
+          360.0,
+          0.0,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+
+  g_object_class_install_property(
+      gobject_class,
+      PROP_FIXED_EDGE_ROTATION_ANGLE,
+      g_param_spec_double(
+          "fixed-edge-rotation-angle",
+          "Fixed edge rotation angle",
+          "Runtime fixed-edge rotation angle consumed by playcropper and vpplaytracker",
+          -180.0,
+          180.0,
+          10.0,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+
+  g_object_class_install_property(
+      gobject_class,
+      PROP_DYNAMIC_ACCELERATION_SCALING,
+      g_param_spec_double(
+          "dynamic-acceleration-scaling",
+          "Dynamic acceleration scaling",
+          "Runtime dynamic acceleration scaling consumed by vpplaytracker",
+          0.0,
+          100.0,
+          1.0,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+
+  g_object_class_install_property(
+      gobject_class,
+      PROP_LAST_PROPERTY_SET_OK,
+      g_param_spec_boolean(
+          "last-property-set-ok",
+          "Last property set ok",
+          "Whether the most recent videoprep private property update was accepted",
+          TRUE,
+          GParamFlags(G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
 
   PROP_NVBUF_MEMORY_TYPE_INSTALL(gobject_class);
   PROP_INTERPOLATION_METHOD_INSTALL(gobject_class);
@@ -1114,6 +1183,18 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->config_file = NULL;
   assert(!videoprep->plugin_type);
   videoprep->plugin_type = NULL; // strdup("videoprep");
+  videoprep->post_stitch_rotate_degrees = 0.0;
+  videoprep->fixed_edge_rotation_angle = 10.0;
+  videoprep->dynamic_acceleration_scaling = 1.0;
+  videoprep->last_property_set_ok = TRUE;
+  videoprep->post_stitch_rotate_degrees_set = FALSE;
+  videoprep->fixed_edge_rotation_angle_set = FALSE;
+  videoprep->dynamic_acceleration_scaling_set = FALSE;
+  videoprep->property_set_sequence = 0;
+  videoprep->plugin_private_config_sequence = 0;
+  videoprep->post_stitch_rotate_degrees_sequence = 0;
+  videoprep->fixed_edge_rotation_angle_sequence = 0;
+  videoprep->dynamic_acceleration_scaling_sequence = 0;
   videoprep->priv_factory = new VideoPrepLibrary_Factory();
 
   videoprep->num_output_buffers = DEFAULT_NUM_OUTPUT_BUFFERS;
@@ -1165,10 +1246,11 @@ static void gst_videoprep_init(GstVideoPrep* videoprep) {
   gst_videoprep_init_base(videoprep);
 }
 
-void VideoPrepPriv::SetPrivateConfig(const char* config_string) {
+bool VideoPrepPriv::SetPrivateConfig(const char* config_string) {
   if (!config_string) {
-    return;
+    return true;
   }
+  bool ok = true;
   std::string all_string = config_string;
   std::vector<std::string> kv_pairs = absl::StrSplit(std::move(all_string), ';');
   for (const std::string& kv : kv_pairs) {
@@ -1176,15 +1258,28 @@ void VideoPrepPriv::SetPrivateConfig(const char* config_string) {
     if (!kv_tokens.empty() && !kv_tokens[0].empty()) {
       if (kv_tokens.size() != 2) {
         g_printerr("Error parsing key-value pair: \"%s\"\n", kv.c_str());
+        ok = false;
         continue;
       }
-      SetProperty(Property(kv_tokens.at(0), kv_tokens.at(1)));
+      ok = SetProperty(Property(kv_tokens.at(0), kv_tokens.at(1))) && ok;
     }
   }
+  return ok;
 }
 
 static void gst_videoprep_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
   GstVideoPrep* videoprep = GST_VIDEOPREP(object);
+  auto set_priv_property = [videoprep](const char* key, const std::string& val) -> bool {
+    if (videoprep->priv) {
+      videoprep->last_property_set_ok = videoprep->priv->SetProperty(Property(key, val));
+      if (!videoprep->last_property_set_ok) {
+        g_printerr("videoprep property update rejected: %s=%s\n", key, val.c_str());
+      }
+    } else {
+      videoprep->last_property_set_ok = TRUE;
+    }
+    return videoprep->last_property_set_ok;
+  };
   switch (prop_id) {
     case PROP_SILENT:
       videoprep->silent = g_value_get_boolean(value);
@@ -1198,12 +1293,72 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
       PROPERTY_SET_CASE(PROP_OUTPUT_WIDTH, videoprep->output_width);
       PROPERTY_SET_CASE(PROP_OUTPUT_HEIGHT, videoprep->output_height);
       PROPERTY_SET_CASE(PROP_PLUGIN_TYPE, videoprep->plugin_type);
-      PROPERTY_SET_CASE(PROP_CONFIG_FILE, videoprep->config_file);
+    case PROP_CONFIG_FILE:
+    {
+      gchar* previous_config_file = videoprep->config_file ? g_strdup(videoprep->config_file) : nullptr;
+      hm::gst::set_value(videoprep->config_file, value);
+      if (videoprep->config_file && !set_priv_property("config-file", videoprep->config_file)) {
+        g_free(videoprep->config_file);
+        videoprep->config_file = previous_config_file;
+        previous_config_file = nullptr;
+      }
+      g_free(previous_config_file);
+      break;
+    }
     case PROP_PLUGIN_PRIVATE_CONFIG:
       hm::gst::set_value(videoprep->plugin_private_config, value);
+      videoprep->plugin_private_config_sequence = ++videoprep->property_set_sequence;
       if (videoprep->priv) {
-        videoprep->priv->SetPrivateConfig(videoprep->plugin_private_config);
+        videoprep->last_property_set_ok = videoprep->priv->SetPrivateConfig(videoprep->plugin_private_config);
       }
+      break;
+    case PROP_POST_STITCH_ROTATE_DEGREES:
+    {
+      const gdouble previous = videoprep->post_stitch_rotate_degrees;
+      const gboolean previous_set = videoprep->post_stitch_rotate_degrees_set;
+      const guint previous_sequence = videoprep->post_stitch_rotate_degrees_sequence;
+      videoprep->post_stitch_rotate_degrees = g_value_get_double(value);
+      videoprep->post_stitch_rotate_degrees_set = TRUE;
+      videoprep->post_stitch_rotate_degrees_sequence = ++videoprep->property_set_sequence;
+      if (!set_priv_property("post-stitch-rotate-degrees", std::to_string(videoprep->post_stitch_rotate_degrees))) {
+        videoprep->post_stitch_rotate_degrees = previous;
+        videoprep->post_stitch_rotate_degrees_set = previous_set;
+        videoprep->post_stitch_rotate_degrees_sequence = previous_sequence;
+      }
+      break;
+    }
+    case PROP_FIXED_EDGE_ROTATION_ANGLE:
+    {
+      const gdouble previous = videoprep->fixed_edge_rotation_angle;
+      const gboolean previous_set = videoprep->fixed_edge_rotation_angle_set;
+      const guint previous_sequence = videoprep->fixed_edge_rotation_angle_sequence;
+      videoprep->fixed_edge_rotation_angle = g_value_get_double(value);
+      videoprep->fixed_edge_rotation_angle_set = TRUE;
+      videoprep->fixed_edge_rotation_angle_sequence = ++videoprep->property_set_sequence;
+      if (!set_priv_property("fixed-edge-rotation-angle", std::to_string(videoprep->fixed_edge_rotation_angle))) {
+        videoprep->fixed_edge_rotation_angle = previous;
+        videoprep->fixed_edge_rotation_angle_set = previous_set;
+        videoprep->fixed_edge_rotation_angle_sequence = previous_sequence;
+      }
+      break;
+    }
+    case PROP_DYNAMIC_ACCELERATION_SCALING:
+    {
+      const gdouble previous = videoprep->dynamic_acceleration_scaling;
+      const gboolean previous_set = videoprep->dynamic_acceleration_scaling_set;
+      const guint previous_sequence = videoprep->dynamic_acceleration_scaling_sequence;
+      videoprep->dynamic_acceleration_scaling = g_value_get_double(value);
+      videoprep->dynamic_acceleration_scaling_set = TRUE;
+      videoprep->dynamic_acceleration_scaling_sequence = ++videoprep->property_set_sequence;
+      if (!set_priv_property("dynamic-acceleration-scaling", std::to_string(videoprep->dynamic_acceleration_scaling))) {
+        videoprep->dynamic_acceleration_scaling = previous;
+        videoprep->dynamic_acceleration_scaling_set = previous_set;
+        videoprep->dynamic_acceleration_scaling_sequence = previous_sequence;
+      }
+      break;
+    }
+    case PROP_LAST_PROPERTY_SET_OK:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
@@ -1212,6 +1367,55 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
   if (prop_id == PROP_PLUGIN_TYPE) {
     std::cout << "plugin_type: " << videoprep->plugin_type << std::endl;
   }
+}
+
+static bool plugin_private_config_has_key(const gchar* config_string, const char* key) {
+  if (!config_string || !key || !*key) {
+    return false;
+  }
+  std::vector<std::string> kv_pairs = absl::StrSplit(std::string(config_string), ';');
+  for (const std::string& kv : kv_pairs) {
+    std::vector<std::string> kv_tokens = absl::StrSplit(kv, '=');
+    if (!kv_tokens.empty() && kv_tokens[0] == key) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool typed_property_wins_over_private_config(GstVideoPrep* videoprep, guint typed_sequence, const char* key) {
+  return typed_sequence > videoprep->plugin_private_config_sequence ||
+      !plugin_private_config_has_key(videoprep->plugin_private_config, key);
+}
+
+static bool gst_videoprep_apply_typed_properties(GstVideoPrep* videoprep) {
+  if (!videoprep || !videoprep->priv) {
+    return true;
+  }
+  bool ok = true;
+  if (videoprep->post_stitch_rotate_degrees_set &&
+      typed_property_wins_over_private_config(
+          videoprep, videoprep->post_stitch_rotate_degrees_sequence, "post-stitch-rotate-degrees")) {
+    ok = videoprep->priv->SetProperty(
+             Property("post-stitch-rotate-degrees", std::to_string(videoprep->post_stitch_rotate_degrees))) &&
+        ok;
+  }
+  if (videoprep->fixed_edge_rotation_angle_set &&
+      typed_property_wins_over_private_config(
+          videoprep, videoprep->fixed_edge_rotation_angle_sequence, "fixed-edge-rotation-angle")) {
+    ok = videoprep->priv->SetProperty(
+             Property("fixed-edge-rotation-angle", std::to_string(videoprep->fixed_edge_rotation_angle))) &&
+        ok;
+  }
+  if (videoprep->dynamic_acceleration_scaling_set &&
+      typed_property_wins_over_private_config(
+          videoprep, videoprep->dynamic_acceleration_scaling_sequence, "dynamic-acceleration-scaling")) {
+    ok = videoprep->priv->SetProperty(
+             Property("dynamic-acceleration-scaling", std::to_string(videoprep->dynamic_acceleration_scaling))) &&
+        ok;
+  }
+  videoprep->last_property_set_ok = ok;
+  return ok;
 }
 
 static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* value, GParamSpec* pspec) {
@@ -1231,6 +1435,18 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
       PROPERTY_GET_CASE(PROP_PLUGIN_TYPE, videoprep->plugin_type);
       PROPERTY_GET_CASE(PROP_PLUGIN_PRIVATE_CONFIG, videoprep->plugin_private_config);
       PROPERTY_GET_CASE(PROP_CONFIG_FILE, videoprep->config_file);
+    case PROP_POST_STITCH_ROTATE_DEGREES:
+      g_value_set_double(value, videoprep->post_stitch_rotate_degrees);
+      break;
+    case PROP_FIXED_EDGE_ROTATION_ANGLE:
+      g_value_set_double(value, videoprep->fixed_edge_rotation_angle);
+      break;
+    case PROP_DYNAMIC_ACCELERATION_SCALING:
+      g_value_set_double(value, videoprep->dynamic_acceleration_scaling);
+      break;
+    case PROP_LAST_PROPERTY_SET_OK:
+      g_value_set_boolean(value, videoprep->last_property_set_ok);
+      break;
     // Add additional cases here...
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);

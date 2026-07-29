@@ -642,6 +642,11 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   if (config->stitch_compute_precision[0] != '\0') {
     ppc << ";stitch-compute-precision=" << config->stitch_compute_precision;
   }
+  g_object_set(
+      G_OBJECT(bin->elem_hmstitcher),
+      "post-stitch-rotate-degrees",
+      static_cast<gdouble>(config->post_stitch_rotate_degrees),
+      NULL);
   private_config = hm::gst::serialize_plugin_properties(config->private_properties, ppc.str());
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-private-config", private_config.c_str(), NULL);
 
@@ -800,10 +805,22 @@ gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTra
 
   ppc << "draw=" << config->draw;
   ppc << ";show=" << config->show;
-  if (config->fixed_edge_rotation_angle != 0) {
+  if (config->fixed_edge_rotation_angle_set) {
     ppc << ";fixed-edge-rotation-angle=" << config->fixed_edge_rotation_angle;
   }
   ppc << ";dynamic-acceleration-scaling=" << config->dynamic_acceleration_scaling;
+  if (config->fixed_edge_rotation_angle_set) {
+    g_object_set(
+        G_OBJECT(bin->elem_dsplaytracker),
+        "fixed-edge-rotation-angle",
+        static_cast<gdouble>(config->fixed_edge_rotation_angle),
+        NULL);
+  }
+  g_object_set(
+      G_OBJECT(bin->elem_dsplaytracker),
+      "dynamic-acceleration-scaling",
+      static_cast<gdouble>(config->dynamic_acceleration_scaling),
+      NULL);
   private_config = hm::gst::serialize_plugin_properties(config->private_properties, ppc.str());
   g_object_set(G_OBJECT(bin->elem_dsplaytracker), "plugin-private-config", private_config.c_str(), NULL);
   if (!hm::gst::apply_plugin_properties(G_OBJECT(bin->elem_dsplaytracker), config->plugin_properties)) {
@@ -985,11 +1002,18 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
   if (config->runtime_output_max_height) {
     ppc << ";runtime-output-max-height=" << config->runtime_output_max_height;
   }
-  if (config->fixed_edge_rotation_angle != 0) {
+  if (config->fixed_edge_rotation_angle_set) {
     ppc << ";fixed-edge-rotation-angle=" << config->fixed_edge_rotation_angle;
   }
   ppc << ";no-crop=" << config->no_crop;
 
+  if (config->fixed_edge_rotation_angle_set) {
+    g_object_set(
+        G_OBJECT(bin->playcropper),
+        "fixed-edge-rotation-angle",
+        static_cast<gdouble>(config->fixed_edge_rotation_angle),
+        NULL);
+  }
   private_config = hm::gst::serialize_plugin_properties(config->private_properties, ppc.str());
   g_object_set(G_OBJECT(bin->playcropper), "plugin-private-config", private_config.c_str(), NULL);
   if (!hm::gst::apply_plugin_properties(G_OBJECT(bin->playcropper), config->plugin_properties)) {

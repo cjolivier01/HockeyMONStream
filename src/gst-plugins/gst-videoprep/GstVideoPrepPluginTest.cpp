@@ -2,6 +2,7 @@
 
 #include <gst/gst.h>
 
+#include <cmath>
 #include <iostream>
 
 namespace {
@@ -20,6 +21,10 @@ bool expect_videoprep_factory(const char* factory_name) {
           {"config-file", G_TYPE_STRING, true},
           {"plugin-type", G_TYPE_STRING, true},
           {"plugin-private-config", G_TYPE_STRING, true},
+          {"post-stitch-rotate-degrees", G_TYPE_DOUBLE, true},
+          {"fixed-edge-rotation-angle", G_TYPE_DOUBLE, true},
+          {"dynamic-acceleration-scaling", G_TYPE_DOUBLE, true},
+          {"last-property-set-ok", G_TYPE_BOOLEAN, false},
       },
       {
           {"sink", GST_PAD_SINK, GST_PAD_ALWAYS},
@@ -56,6 +61,8 @@ int main(int argc, char** argv) {
               {"output-height", "1080"},
               {"plugin-type", "playcropper"},
               {"plugin-private-config", "show=1;runtime-output-max-width=3840"},
+              {"fixed-edge-rotation-angle", "12.5"},
+              {"dynamic-acceleration-scaling", "1.25"},
           })) {
     gst_object_unref(element);
     return 1;
@@ -66,6 +73,9 @@ int main(int argc, char** argv) {
   guint output_width = 0;
   gchar* plugin_type = nullptr;
   gchar* private_config = nullptr;
+  gdouble fixed_edge_rotation_angle = 0.0;
+  gdouble dynamic_acceleration_scaling = 0.0;
+  gboolean last_property_set_ok = FALSE;
   g_object_get(
       G_OBJECT(element),
       "silent",
@@ -78,11 +88,19 @@ int main(int argc, char** argv) {
       &plugin_type,
       "plugin-private-config",
       &private_config,
+      "fixed-edge-rotation-angle",
+      &fixed_edge_rotation_angle,
+      "dynamic-acceleration-scaling",
+      &dynamic_acceleration_scaling,
+      "last-property-set-ok",
+      &last_property_set_ok,
       NULL);
 
   const bool ok = silent == TRUE && source_id == 3 && output_width == 1920 && plugin_type &&
       std::string(plugin_type) == "playcropper" && private_config &&
-      std::string(private_config) == "show=1;runtime-output-max-width=3840";
+      std::string(private_config) == "show=1;runtime-output-max-width=3840" &&
+      std::abs(fixed_edge_rotation_angle - 12.5) < 1e-6 &&
+      std::abs(dynamic_acceleration_scaling - 1.25) < 1e-6 && last_property_set_ok == TRUE;
   g_free(plugin_type);
   g_free(private_config);
   gst_object_unref(element);

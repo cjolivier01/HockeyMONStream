@@ -5,8 +5,8 @@
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
-#include <QtTest/QTest>
 #include <QtGui/QWheelEvent>
+#include <QtTest/QTest>
 #include <QtWidgets/QAbstractButton>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
@@ -18,6 +18,7 @@
 #include <QtWidgets/QRadioButton>
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QSpinBox>
+#include <QtWidgets/QTextEdit>
 
 #include <yaml-cpp/yaml.h>
 
@@ -146,9 +147,29 @@ bool write_fake_runner(const QString& path) {
     std::cerr << "Failed to create fake runner: " << path.toStdString() << '\n';
     return false;
   }
-  file.write("#!/bin/sh\n");
-  file.write("printf '%s\\n' \"$@\"\n");
-  file.write("sleep 5\n");
+  file.write("#!/usr/bin/env python3\n");
+  file.write("import select\n");
+  file.write("import sys\n");
+  file.write("import time\n");
+  file.write("for arg in sys.argv[1:]:\n");
+  file.write("    print(arg, flush=True)\n");
+  file.write("if '--clean' in sys.argv[1:]:\n");
+  file.write("    print('clean runner exiting', flush=True)\n");
+  file.write("    sys.exit(0)\n");
+  file.write("sys.stdout.write('\\033[34mANSI')\n");
+  file.write("sys.stdout.flush()\n");
+  file.write("time.sleep(0.05)\n");
+  file.write("sys.stdout.write(' blue runner line\\033[0m\\n')\n");
+  file.write("sys.stdout.flush()\n");
+  file.write("deadline = time.monotonic() + 5.0\n");
+  file.write("while time.monotonic() < deadline:\n");
+  file.write("    readable, _, _ = select.select([sys.stdin], [], [], 0.05)\n");
+  file.write("    if not readable:\n");
+  file.write("        continue\n");
+  file.write("    line = sys.stdin.readline()\n");
+  file.write("    if line == '':\n");
+  file.write("        break\n");
+  file.write("    print('stdin:' + line.rstrip('\\n'), flush=True)\n");
   file.close();
   return QFile::setPermissions(
       path,
@@ -617,12 +638,17 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
   auto* restart = require_child<QPushButton>(window, "restartStageButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* control_points = require_child<QSpinBox>(window, "controlPointsSpin");
-  if (!stop || !start || !pause || !restart || !mode || !control_points) {
+  auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
+  auto* log = require_child<QTextEdit>(window, "runtimeLog");
+  if (!stop || !start || !pause || !restart || !mode || !control_points || !rotate || !log) {
     return false;
   }
 
   activate(stop);
   if (!expect(window->pipelineStateText() == "STOPPED", "Stop button should stop the pipeline")) {
+    return false;
+  }
+  if (!expect(control_points->value() == 1500, "Stitching calibration CP default should be 1500")) {
     return false;
   }
 
@@ -634,12 +660,56 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
+  for (int i = 0; i < 50 && !window->logText().contains("ANSI blue runner line"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
   if (!expect(
           window->logText().contains("ds_hockey_configure_stitching.yaml"),
           "Calibration should use stitching config") ||
+      !expect(window->logText().contains("--clean"), "Changed calibration CP count should clean stitching artifacts") ||
+      !expect(
+          window->logText().contains("stitching calibration control points changed unset -> 750"),
+          "Calibration CP change should be logged") ||
       !expect(window->logText().contains("--show-stitching 1"), "Calibration should request stitched display") ||
       !expect(window->logText().contains("--render-window-id="), "Calibration should embed the render sink") ||
+      !expect(
+          window->logText().contains("ANSI blue runner line"), "ANSI-colored runner output should remain visible") ||
+      !expect(
+          !window->logText().contains(QChar(0x1b)), "ANSI control characters should not appear in plain log text") ||
+      !expect(log->toHtml().contains("#81a1c1"), "ANSI foreground color should render as rich log text") ||
       !expect(window->pipelineStateText() == "PLAYING", "Test runner should keep calibration process running")) {
+    return false;
+  }
+  {
+    const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+    const YAML::Node saved = YAML::LoadFile(config.string());
+    YAML::Node saved_control_points;
+    const bool has_saved_control_points =
+        lookup_yaml_path(saved, {"hmstream_ui", "stitching_calibration", "control_points"}, &saved_control_points);
+    YAML::Node saved_status;
+    const bool has_saved_status =
+        lookup_yaml_path(saved, {"hmstream_ui", "stitching_calibration", "status"}, &saved_status);
+    if (!expect(
+            has_saved_control_points && saved_control_points.IsScalar() && saved_control_points.as<int>() == 750,
+            "Calibration CP count should be saved to private config") ||
+        !expect(
+            has_saved_status && saved_status.IsScalar() && saved_status.as<std::string>() == "pending",
+            "Calibration CP state should remain pending while the calibration process is running")) {
+      return false;
+    }
+  }
+
+  rotate->setValue(74);
+  for (int i = 0;
+       i < 50 && !window->logText().contains("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=16");
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          window->logText().contains("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=16"),
+          "Live stitch rotation should be sent to the running pipeline over stdin")) {
     return false;
   }
 
@@ -658,6 +728,46 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
   }
   if (!expect(window->pipelineStateText() == "STOPPED", "Stop should terminate calibration process")) {
     return false;
+  }
+  {
+    const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+    const YAML::Node saved = YAML::LoadFile(config.string());
+    YAML::Node saved_status;
+    const bool has_saved_status =
+        lookup_yaml_path(saved, {"hmstream_ui", "stitching_calibration", "status"}, &saved_status);
+    if (!expect(
+            has_saved_status && saved_status.IsScalar() && saved_status.as<std::string>() == "pending",
+            "User-stopped calibration should remain pending so the next run cleans again")) {
+      return false;
+    }
+  }
+  {
+    const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+    YAML::Node complete = YAML::LoadFile(config.string());
+    complete["hmstream_ui"]["stitching_calibration"]["status"] = "complete";
+    {
+      std::ofstream out(config);
+      out << complete << "\n";
+    }
+    activate(start);
+    for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    activate(stop);
+    for (int i = 0; i < 50 && window->pipelineStateText() != "STOPPED"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    const YAML::Node after_stop = YAML::LoadFile(config.string());
+    YAML::Node saved_status;
+    const bool has_saved_status =
+        lookup_yaml_path(after_stop, {"hmstream_ui", "stitching_calibration", "status"}, &saved_status);
+    if (!expect(
+            has_saved_status && saved_status.IsScalar() && saved_status.as<std::string>() == "pending",
+            "Starting calibration from complete state should mark pending before any user stop")) {
+      return false;
+    }
   }
 
   mode->setCurrentIndex(mode->findData("program"));
@@ -728,12 +838,16 @@ bool test_camera_controls(HmStreamWindow* window) {
   auto* left_brightness = require_child<QSlider>(window, "cameraSlider_Left_Brightness_Multiplier_x100");
   auto* left_gamma = require_child<QSlider>(window, "cameraSlider_Left_Gamma_Multiplier_x100");
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
+  auto* max_speed_y = require_child<QSlider>(window, "cameraSlider_Max_Speed_Y_x10");
   auto* reset = require_child<QPushButton>(window, "resetCameraButton");
   auto* save = require_child<QPushButton>(window, "savePresetButton");
   auto* create = require_child<QPushButton>(window, "createGameButton");
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
-  if (!exposure || !exposure_value || !rotate || !left_brightness || !left_gamma || !max_speed_x || !reset || !save ||
-      !create || !game_id) {
+  auto* start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
+  auto* mode = require_child<QComboBox>(window, "runModeCombo");
+  if (!exposure || !exposure_value || !rotate || !left_brightness || !left_gamma || !max_speed_x || !max_speed_y ||
+      !reset || !save || !create || !game_id || !start || !stop || !mode) {
     return false;
   }
 
@@ -773,9 +887,33 @@ bool test_camera_controls(HmStreamWindow* window) {
     return false;
   }
 
-  activate(save);
   const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  const fs::path rink_mask = fs::path(window->gameDirectoryText().toStdString()) / "rink_mask_0.png";
+  {
+    YAML::Node seeded(YAML::NodeType::Map);
+    YAML::Node polygon(YAML::NodeType::Sequence);
+    polygon.push_back(0);
+    polygon.push_back(1);
+    seeded["rink"]["scoreboard"]["perspective_polygon"] = polygon;
+    seeded["rink"]["ice_contours_mask_count"] = 1;
+    seeded["rink"]["ice_contours_mask_centroid"] = "10,20";
+    seeded["rink"]["ice_contours_combined_bbox"] = "0,0,100,50";
+    std::ofstream out(config);
+    out << seeded << "\n";
+  }
+  {
+    std::ofstream out(rink_mask);
+    out << "stale-mask";
+  }
+
+  activate(save);
   YAML::Node saved = YAML::LoadFile(config.string());
+  const bool removed_rink_mask = !fs::exists(rink_mask);
+  const bool removed_scoreboard_polygon =
+      !lookup_yaml_path(saved, {"rink", "scoreboard", "perspective_polygon"}, nullptr);
+  const bool removed_ice_mask_keys = !lookup_yaml_path(saved, {"rink", "ice_contours_mask_count"}, nullptr) &&
+      !lookup_yaml_path(saved, {"rink", "ice_contours_mask_centroid"}, nullptr) &&
+      !lookup_yaml_path(saved, {"rink", "ice_contours_combined_bbox"}, nullptr);
   auto saved_int = [&](const char* key, int expected) {
     YAML::Node value;
     if (!lookup_yaml_path(saved, {"hmstream_ui", "camera_controls", key}, &value)) {
@@ -828,6 +966,9 @@ bool test_camera_controls(HmStreamWindow* window) {
       !expect(saved_controls_ok, "Save preset should persist non-default control values") ||
       !expect(!has_default_follower, "Save preset should omit default control values") ||
       !expect(has_saved_rotation && saved_rotation_ok, "Stitch slider should save the runtime rotation config") ||
+      !expect(removed_rink_mask, "Saving stitch rotation should remove stale rink mask image") ||
+      !expect(removed_scoreboard_polygon, "Saving stitch rotation should invalidate scoreboard perspective") ||
+      !expect(removed_ice_mask_keys, "Saving stitch rotation should invalidate cached ice-mask metadata") ||
       !expect(has_saved_max_speed_x && saved_max_speed_x_ok, "Speed slider should save runtime ratio config") ||
       !expect(
           has_saved_playtracker_config_path && saved_follower_max_speed_x && !saved_follower_max_speed_y &&
@@ -841,6 +982,42 @@ bool test_camera_controls(HmStreamWindow* window) {
     }
     return false;
   }
+
+  {
+    YAML::Node same_rotation = saved;
+    YAML::Node polygon(YAML::NodeType::Sequence);
+    polygon.push_back(2);
+    polygon.push_back(3);
+    same_rotation["rink"]["scoreboard"]["perspective_polygon"] = polygon;
+    same_rotation["rink"]["ice_contours_mask_count"] = 1;
+    same_rotation["rink"]["ice_contours_mask_centroid"] = "30,40";
+    same_rotation["rink"]["ice_contours_combined_bbox"] = "0,0,120,60";
+    {
+      std::ofstream out(config);
+      out << same_rotation << "\n";
+    }
+    {
+      std::ofstream out(rink_mask);
+      out << "fresh-mask";
+    }
+    activate(save);
+    YAML::Node after_same_rotation_save = YAML::LoadFile(config.string());
+    const bool kept_rink_mask = fs::exists(rink_mask);
+    const bool kept_scoreboard_polygon =
+        lookup_yaml_path(after_same_rotation_save, {"rink", "scoreboard", "perspective_polygon"}, nullptr);
+    const bool kept_ice_mask_keys =
+        lookup_yaml_path(after_same_rotation_save, {"rink", "ice_contours_mask_count"}, nullptr) &&
+        lookup_yaml_path(after_same_rotation_save, {"rink", "ice_contours_mask_centroid"}, nullptr) &&
+        lookup_yaml_path(after_same_rotation_save, {"rink", "ice_contours_combined_bbox"}, nullptr);
+    if (!expect(kept_rink_mask, "Saving unchanged stitch rotation should preserve rink mask image") ||
+        !expect(kept_scoreboard_polygon, "Saving unchanged stitch rotation should preserve scoreboard perspective") ||
+        !expect(kept_ice_mask_keys, "Saving unchanged stitch rotation should preserve cached ice-mask metadata")) {
+      std::cerr << after_same_rotation_save << '\n';
+      return false;
+    }
+    saved = after_same_rotation_save;
+  }
+
   YAML::Node stitching;
   lookup_yaml_path(saved, {"stitching"}, &stitching);
   YAML::Node stitching_copy = stitching && stitching.IsMap() ? YAML::Clone(stitching) : YAML::Node(YAML::NodeType::Map);
@@ -873,6 +1050,7 @@ bool test_camera_controls(HmStreamWindow* window) {
     fast_box["name"] = "current_roi";
     YAML::Node follower_box(YAML::NodeType::Map);
     follower_box["name"] = "current_roi_aspect";
+    follower_box["max-speed-y"] = 77.0;
     follower_box["sticky-translation-gaussian-mult"] = 9.5;
     live_boxes_custom.push_back(fast_box);
     live_boxes_custom.push_back(follower_box);
@@ -897,6 +1075,122 @@ bool test_camera_controls(HmStreamWindow* window) {
       !expect(exposure_value->text() == "47", "Create/Load should refresh visible camera value labels")) {
     return false;
   }
+
+  YAML::Node relative_runtime_config = YAML::LoadFile(config.string());
+  relative_runtime_config["pipeline"]["ds-playtracker"]["config-file"] = ".hmstream-ui/play_tracker_config.yaml";
+  relative_runtime_config["hmstream_ui"]["playtracker_config_base"] = custom_playtracker_config.string();
+  {
+    std::ofstream out(config);
+    out << relative_runtime_config << "\n";
+  }
+  mode->setCurrentIndex(mode->findData("program"));
+  activate(start);
+  for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(window->pipelineStateText() == "PLAYING", "Fake runner should start for live playtracker control test")) {
+    return false;
+  }
+  max_speed_x->setValue(460);
+  for (int i = 0; i < 50 && !window->logText().contains("stdin:@set-property dsplaytracker0 config-file="); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const fs::path live_playtracker_config =
+      fs::path(window->gameDirectoryText().toStdString()) / ".hmstream-ui" / "play_tracker_config.yaml";
+  YAML::Node live_playtracker =
+      fs::exists(live_playtracker_config) ? YAML::LoadFile(live_playtracker_config.string()) : YAML::Node();
+  YAML::Node live_custom_tracker_value;
+  YAML::Node live_follower_max_speed_x;
+  YAML::Node live_follower_max_speed_y;
+  const bool live_preserved_custom_tracker_config =
+      lookup_yaml_path(
+          live_playtracker,
+          {"play-tracker", "live-boxes", "1", "sticky-translation-gaussian-mult"},
+          &live_custom_tracker_value) &&
+      live_custom_tracker_value.IsScalar() && live_custom_tracker_value.as<double>() == 9.5;
+  const bool live_saved_follower_speed =
+      lookup_yaml_path(
+          live_playtracker, {"play-tracker", "live-boxes", "1", "max-speed-x"}, &live_follower_max_speed_x) &&
+      live_follower_max_speed_x.IsScalar() && live_follower_max_speed_x.as<double>() == 46.0;
+  const bool live_preserved_follower_y_speed =
+      lookup_yaml_path(
+          live_playtracker, {"play-tracker", "live-boxes", "1", "max-speed-y"}, &live_follower_max_speed_y) &&
+      live_follower_max_speed_y.IsScalar() && live_follower_max_speed_y.as<double>() == 77.0;
+  if (!expect(
+          window->logText().contains("stdin:@set-property dsplaytracker0 config-file="),
+          "Live speed slider should send playtracker config-file update to the running pipeline") ||
+      !expect(
+          live_preserved_custom_tracker_config,
+          "Live playtracker update should preserve the custom base tracker config") ||
+      !expect(live_saved_follower_speed, "Live playtracker update should write the new follower speed") ||
+      !expect(live_preserved_follower_y_speed, "Live playtracker update should preserve untouched motion limits")) {
+    std::cerr << live_playtracker << '\n';
+    activate(stop);
+    return false;
+  }
+  max_speed_y->setValue(480);
+  for (int i = 0; i < 50; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+    live_playtracker =
+        fs::exists(live_playtracker_config) ? YAML::LoadFile(live_playtracker_config.string()) : YAML::Node();
+    YAML::Node sequential_x;
+    YAML::Node sequential_y;
+    if (lookup_yaml_path(live_playtracker, {"play-tracker", "live-boxes", "1", "max-speed-x"}, &sequential_x) &&
+        lookup_yaml_path(live_playtracker, {"play-tracker", "live-boxes", "1", "max-speed-y"}, &sequential_y) &&
+        sequential_x.IsScalar() && sequential_y.IsScalar() && sequential_x.as<double>() == 46.0 &&
+        sequential_y.as<double>() == 48.0) {
+      break;
+    }
+  }
+  live_playtracker =
+      fs::exists(live_playtracker_config) ? YAML::LoadFile(live_playtracker_config.string()) : YAML::Node();
+  YAML::Node sequential_x;
+  YAML::Node sequential_y;
+  const bool live_kept_prior_x_speed =
+      lookup_yaml_path(live_playtracker, {"play-tracker", "live-boxes", "1", "max-speed-x"}, &sequential_x) &&
+      sequential_x.IsScalar() && sequential_x.as<double>() == 46.0;
+  const bool live_saved_y_speed =
+      lookup_yaml_path(live_playtracker, {"play-tracker", "live-boxes", "1", "max-speed-y"}, &sequential_y) &&
+      sequential_y.IsScalar() && sequential_y.as<double>() == 48.0;
+  if (!expect(live_kept_prior_x_speed, "Second live playtracker update should preserve prior X override") ||
+      !expect(live_saved_y_speed, "Second live playtracker update should write Y override")) {
+    std::cerr << live_playtracker << '\n';
+    return false;
+  }
+  max_speed_y->setValue(300);
+  for (int i = 0; i < 50; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+    live_playtracker =
+        fs::exists(live_playtracker_config) ? YAML::LoadFile(live_playtracker_config.string()) : YAML::Node();
+    YAML::Node reset_x;
+    YAML::Node reset_y;
+    if (lookup_yaml_path(live_playtracker, {"play-tracker", "live-boxes", "1", "max-speed-x"}, &reset_x) &&
+        lookup_yaml_path(live_playtracker, {"play-tracker", "live-boxes", "1", "max-speed-y"}, &reset_y) &&
+        reset_x.IsScalar() && reset_y.IsScalar() && reset_x.as<double>() == 46.0 && reset_y.as<double>() == 77.0) {
+      break;
+    }
+  }
+  live_playtracker =
+      fs::exists(live_playtracker_config) ? YAML::LoadFile(live_playtracker_config.string()) : YAML::Node();
+  YAML::Node reset_x;
+  YAML::Node reset_y;
+  const bool live_kept_x_after_y_reset =
+      lookup_yaml_path(live_playtracker, {"play-tracker", "live-boxes", "1", "max-speed-x"}, &reset_x) &&
+      reset_x.IsScalar() && reset_x.as<double>() == 46.0;
+  const bool live_restored_base_y_on_reset =
+      lookup_yaml_path(live_playtracker, {"play-tracker", "live-boxes", "1", "max-speed-y"}, &reset_y) &&
+      reset_y.IsScalar() && reset_y.as<double>() == 77.0;
+  if (!expect(live_kept_x_after_y_reset, "Resetting Y should preserve prior live X override") ||
+      !expect(live_restored_base_y_on_reset, "Resetting Y should restore custom base Y speed")) {
+    std::cerr << live_playtracker << '\n';
+    activate(stop);
+    return false;
+  }
+  activate(stop);
 
   left_gamma->setValue(100);
   left_brightness->setValue(110);

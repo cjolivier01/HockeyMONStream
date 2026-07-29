@@ -44,22 +44,15 @@ namespace {
 const std::string lfo_prefix = "Left frame offset: ";
 const std::string rfo_prefix = "Right frame offset: ";
 constexpr size_t kDefaultJetsonMaxLiveStitchCanvasDimension = 8192;
+constexpr size_t kDefaultMaxControlPoints = 1500;
 
-bool remove_file_if_present(const fs::path& path) {
+absl::StatusOr<size_t> remove_file_if_present(const fs::path& path) {
   std::error_code ec;
-  if (!fs::exists(path, ec)) {
-    if (ec) {
-      std::cerr << "Failed to check if file exists \"" << path.string() << "\": " << ec.message() << std::endl;
-    }
-    return false;
+  const bool removed = fs::remove(path, ec);
+  if (ec) {
+    return absl::InternalError(TO_STRING("Failed to delete file \"" << path.string() << "\": " << ec.message()));
   }
-  if (!fs::remove(path, ec)) {
-    if (ec) {
-      std::cerr << "Failed to delete file \"" << path.string() << "\": " << ec.message() << std::endl;
-    }
-    return false;
-  }
-  return true;
+  return removed ? 1 : 0;
 }
 
 std::string to_regex_pattern(const std::string& wildcard_pattern) {
@@ -96,49 +89,60 @@ std::string to_regex_pattern(const std::string& wildcard_pattern) {
   return out;
 }
 
-size_t clean_files_matching(const fs::path& game_dir, const std::string& pattern) {
+absl::StatusOr<size_t> clean_files_matching(const fs::path& game_dir, const std::string& pattern) {
   size_t removed = 0;
   if (pattern.find('*') == std::string::npos) {
-    if (remove_file_if_present(game_dir / pattern)) {
-      ++removed;
-    }
+    size_t direct_removed = 0;
+    HM_ASSIGN_OR_RETURN(direct_removed, remove_file_if_present(game_dir / pattern));
+    removed += direct_removed;
     return removed;
   }
 
   std::regex rgx(to_regex_pattern(pattern));
   std::error_code ec;
-  if (!fs::exists(game_dir, ec) || !fs::is_directory(game_dir, ec)) {
+  if (!fs::exists(game_dir, ec) || !fs::is_directory(game_dir, ec) || ec) {
+    if (ec) {
+      return absl::InternalError(
+          TO_STRING("Failed to inspect game directory \"" << game_dir.string() << "\": " << ec.message()));
+    }
     return 0;
   }
 
-  for (const auto& entry : fs::directory_iterator(game_dir, ec)) {
-    if (!entry.is_regular_file(ec)) {
+  for (auto it = fs::directory_iterator(game_dir, ec); it != fs::directory_iterator(); it.increment(ec)) {
+    if (ec) {
+      return absl::InternalError(
+          TO_STRING("Failed to iterate stitch game directory \"" << game_dir.string() << "\": " << ec.message()));
+    }
+    if (!it->is_regular_file(ec)) {
       if (ec) {
-        std::cerr << "Failed to query file type for \"" << entry.path().string() << "\": " << ec.message() << std::endl;
-        ec.clear();
+        return absl::InternalError(
+            TO_STRING("Failed to query file type for \"" << it->path().string() << "\": " << ec.message()));
       }
       continue;
     }
-    if (!std::regex_match(entry.path().filename().string(), rgx)) {
+    if (!std::regex_match(it->path().filename().string(), rgx)) {
       continue;
     }
-    if (remove_file_if_present(entry.path())) {
-      ++removed;
-    }
+    size_t entry_removed = 0;
+    HM_ASSIGN_OR_RETURN(entry_removed, remove_file_if_present(it->path()));
+    removed += entry_removed;
+  }
+  if (ec) {
+    return absl::InternalError(
+        TO_STRING("Failed to iterate stitch game directory \"" << game_dir.string() << "\": " << ec.message()));
   }
   return removed;
 }
 
-size_t delete_extracted_frames(const fs::path& game_dir) {
+absl::StatusOr<size_t> delete_extracted_frames(const fs::path& game_dir) {
   static const std::set<std::string> kVideoExtensions = {".mp4", ".mkv", ".m4v", ".mov", ".avi"};
   size_t removed = 0;
   std::error_code ec;
   for (auto it = fs::recursive_directory_iterator(game_dir, ec); it != fs::recursive_directory_iterator();
        it.increment(ec)) {
     if (ec) {
-      std::cerr << "Failed to iterate stitch game directory \"" << game_dir.string() << "\": " << ec.message()
-                << std::endl;
-      return removed;
+      return absl::InternalError(
+          TO_STRING("Failed to iterate stitch game directory \"" << game_dir.string() << "\": " << ec.message()));
     }
     const fs::path p = it->path();
     if (!it->is_regular_file(ec)) {
@@ -155,9 +159,13 @@ size_t delete_extracted_frames(const fs::path& game_dir) {
     }
     fs::path png = p;
     png.replace_extension(".png");
-    if (remove_file_if_present(png)) {
-      ++removed;
-    }
+    size_t png_removed = 0;
+    HM_ASSIGN_OR_RETURN(png_removed, remove_file_if_present(png));
+    removed += png_removed;
+  }
+  if (ec) {
+    return absl::InternalError(
+        TO_STRING("Failed to iterate stitch game directory \"" << game_dir.string() << "\": " << ec.message()));
   }
   return removed;
 }
@@ -1034,18 +1042,26 @@ absl::Status clean_stitching_artifacts(const std::string& game_dir) {
   }
 
   size_t removed_files = 0;
-  removed_files += clean_files_matching(game_dir_path, "hm_project.pto");
-  removed_files += clean_files_matching(game_dir_path, "autooptimiser_out.pto");
-  removed_files += clean_files_matching(game_dir_path, "*.pto");
-  removed_files += clean_files_matching(game_dir_path, "mapping_*.tif");
-  removed_files += clean_files_matching(game_dir_path, "mapping_*.tiff");
-  removed_files += clean_files_matching(game_dir_path, "panorama.tif");
-  removed_files += clean_files_matching(game_dir_path, "seam_file.png");
-  removed_files += clean_files_matching(game_dir_path, "matches.png");
-  removed_files += clean_files_matching(game_dir_path, "keypoints.png");
-  removed_files += clean_files_matching(game_dir_path, "s.png");
-  removed_files += clean_files_matching(game_dir_path, "rink_mask_*.png");
-  removed_files += delete_extracted_frames(game_dir_path);
+  auto clean_pattern = [&](const std::string& pattern) -> absl::Status {
+    size_t removed = 0;
+    HM_ASSIGN_OR_RETURN(removed, clean_files_matching(game_dir_path, pattern));
+    removed_files += removed;
+    return absl::OkStatus();
+  };
+  HM_RETURN_IF_ERROR(clean_pattern("hm_project.pto"));
+  HM_RETURN_IF_ERROR(clean_pattern("autooptimiser_out.pto"));
+  HM_RETURN_IF_ERROR(clean_pattern("*.pto"));
+  HM_RETURN_IF_ERROR(clean_pattern("mapping_*.tif"));
+  HM_RETURN_IF_ERROR(clean_pattern("mapping_*.tiff"));
+  HM_RETURN_IF_ERROR(clean_pattern("panorama.tif"));
+  HM_RETURN_IF_ERROR(clean_pattern("seam_file.png"));
+  HM_RETURN_IF_ERROR(clean_pattern("matches.png"));
+  HM_RETURN_IF_ERROR(clean_pattern("keypoints.png"));
+  HM_RETURN_IF_ERROR(clean_pattern("s.png"));
+  HM_RETURN_IF_ERROR(clean_pattern("rink_mask_*.png"));
+  size_t removed_extracted_frames = 0;
+  HM_ASSIGN_OR_RETURN(removed_extracted_frames, delete_extracted_frames(game_dir_path));
+  removed_files += removed_extracted_frames;
 
   const fs::path cfg_file_path = game_dir_path / "config.yaml";
   if (fs::exists(cfg_file_path)) {
@@ -1302,7 +1318,7 @@ absl::Status create_control_points(
   HM_RETURN_IF_ERROR(save_image(left_surface, left_file));
   HM_RETURN_IF_ERROR(save_image(right_surface, right_file));
 
-  size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", 500UL);
+  size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", kDefaultMaxControlPoints);
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
 
   std::vector<std::string> cmd;

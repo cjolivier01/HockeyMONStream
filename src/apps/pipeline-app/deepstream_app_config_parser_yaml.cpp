@@ -10,6 +10,7 @@
 #include "absl/status/statusor.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <iostream>
 #include <iterator>
@@ -24,6 +25,61 @@ using std::cout;
 using std::endl;
 
 namespace fs = std::filesystem;
+
+namespace {
+
+bool find_yaml_alias(
+    const YAML::Node& yaml_node,
+    const char* dashed_key,
+    const char* underscored_key,
+    YAML::Node* out) {
+  if (!out) {
+    return false;
+  }
+  if (yaml_node[dashed_key].IsDefined()) {
+    *out = yaml_node[dashed_key];
+    return true;
+  }
+  if (underscored_key) {
+    if (yaml_node[underscored_key].IsDefined()) {
+      *out = yaml_node[underscored_key];
+      return true;
+    }
+  }
+  return false;
+}
+
+bool parse_finite_yaml_double(
+    const YAML::Node& yaml_node,
+    const char* dashed_key,
+    const char* underscored_key,
+    double* out,
+    bool* present = nullptr) {
+  YAML::Node node;
+  const bool found = find_yaml_alias(yaml_node, dashed_key, underscored_key, &node);
+  if (present) {
+    *present = found;
+  }
+  if (!found) {
+    return true;
+  }
+  try {
+    const double value = node.as<double>();
+    if (!std::isfinite(value)) {
+      cout << "Invalid non-finite value for " << dashed_key << endl;
+      return false;
+    }
+    if (out) {
+      *out = value;
+    }
+  } catch (const std::exception& exc) {
+    cout << "Invalid numeric value for " << dashed_key << ": " << exc.what() << endl;
+    return false;
+  }
+  return true;
+}
+
+} // namespace
 
 static int get_trailing_integer(const std::string& input) {
   int len = input.length();
@@ -78,6 +134,36 @@ gboolean parse_dsplaytracker_yaml(
   SET_LOCATOR(locator, *config, gpu_id);
   SET_LOCATOR(locator, *config, draw);
   SET_LOCATOR(locator, *config, show);
+  bool fixed_edge_rotation_angle_present = false;
+  double fixed_edge_rotation_angle = 0.0;
+  if (!parse_finite_yaml_double(
+          yaml_node,
+          "fixed-edge-rotation-angle",
+          "fixed_edge_rotation_angle",
+          &fixed_edge_rotation_angle,
+          &fixed_edge_rotation_angle_present)) {
+    return false;
+  }
+  if (fixed_edge_rotation_angle_present) {
+    config->fixed_edge_rotation_angle = static_cast<gfloat>(fixed_edge_rotation_angle);
+  }
+  double dynamic_acceleration_scaling = 0.0;
+  if (!parse_finite_yaml_double(
+          yaml_node,
+          "dynamic-acceleration-scaling",
+          "dynamic_acceleration_scaling",
+          &dynamic_acceleration_scaling)) {
+    return false;
+  }
+  YAML::Node dynamic_acceleration_scaling_node;
+  if (find_yaml_alias(
+          yaml_node,
+          "dynamic-acceleration-scaling",
+          "dynamic_acceleration_scaling",
+          &dynamic_acceleration_scaling_node)) {
+    config->dynamic_acceleration_scaling = static_cast<gfloat>(dynamic_acceleration_scaling);
+  }
+  config->fixed_edge_rotation_angle_set = fixed_edge_rotation_angle_present;
   SET_LOCATOR(locator, *config, fixed_edge_rotation_angle);
   SET_LOCATOR(locator, *config, dynamic_acceleration_scaling);
   hm::utils::parse_chracter_buffer(config->config_file, yaml_node, "config-file", config_dir);
@@ -180,6 +266,20 @@ gboolean parse_hmplaycropper_yaml(
   SET_LOCATOR(locator, *config, plot_play_tracking);
   SET_LOCATOR(locator, *config, plot_player_tracking);
   SET_LOCATOR(locator, *config, transform_object_meta);
+  bool fixed_edge_rotation_angle_present = false;
+  double fixed_edge_rotation_angle = 0.0;
+  if (!parse_finite_yaml_double(
+          yaml_node,
+          "fixed-edge-rotation-angle",
+          "fixed_edge_rotation_angle",
+          &fixed_edge_rotation_angle,
+          &fixed_edge_rotation_angle_present)) {
+    return false;
+  }
+  if (fixed_edge_rotation_angle_present) {
+    config->fixed_edge_rotation_angle = static_cast<gfloat>(fixed_edge_rotation_angle);
+  }
+  config->fixed_edge_rotation_angle_set = fixed_edge_rotation_angle_present;
   SET_LOCATOR(locator, *config, fixed_edge_rotation_angle);
   SET_LOCATOR(locator, *config, no_crop);
   SET_LOCATOR(locator, *config, show_scoreboard);
@@ -205,6 +305,22 @@ gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_
   SET_LOCATOR(locator, *config, right_frame_offset_ns);
   SET_LOCATOR(locator, *config, show);
   SET_LOCATOR(locator, *config, force_scoreboard_config);
+  double post_stitch_rotate_degrees = 0.0;
+  if (!parse_finite_yaml_double(
+          yaml_node,
+          "post-stitch-rotate-degrees",
+          "post_stitch_rotate_degrees",
+          &post_stitch_rotate_degrees)) {
+    return false;
+  }
+  YAML::Node post_stitch_rotate_degrees_node;
+  if (find_yaml_alias(
+          yaml_node,
+          "post-stitch-rotate-degrees",
+          "post_stitch_rotate_degrees",
+          &post_stitch_rotate_degrees_node)) {
+    config->post_stitch_rotate_degrees = static_cast<gfloat>(post_stitch_rotate_degrees);
+  }
   SET_LOCATOR(locator, *config, post_stitch_rotate_degrees);
   SET_LOCATOR(locator, *config, minimize_blend);
   SET_LOCATOR_CHARS(locator, *config, stitch_compute_precision);

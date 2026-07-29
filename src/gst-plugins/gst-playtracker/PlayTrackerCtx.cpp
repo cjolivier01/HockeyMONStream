@@ -1,5 +1,6 @@
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
 #include "hockeymom/csrc/play_tracker/ResizingBox.h"
 #include "hockeymom/csrc/play_tracker/TranslatingBox.h"
@@ -9,8 +10,11 @@
 
 #include <nvdsmeta.h>
 
+#include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <iostream>
+#include <set>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +23,87 @@ namespace gst_hm_playtracker {
 
 using namespace hm;
 using namespace hm::play_tracker;
+
+bool validate_numeric_yaml_fields(const YAML::Node& node, std::string* error) {
+  static const std::set<std::string> kNumericKeys = {
+      "arena-angle-from-vertical",
+      "dynamic-acceleration-scaling",
+      "fps-speed-scale",
+      "frame-step",
+      "group-ratio-threshold",
+      "group-velocity-speed-ratio",
+      "max-accel-h",
+      "max-accel-w",
+      "max-accel-x",
+      "max-accel-y",
+      "max-lost-track-age",
+      "max-positions",
+      "max-speed-h",
+      "max-speed-w",
+      "max-speed-x",
+      "max-speed-y",
+      "max-velocity-positions",
+      "max-width",
+      "max-height",
+      "min-considered-group-velocity",
+      "min-width",
+      "min-height",
+      "nonstop-delay-count",
+      "overshoot-scale-speed-ratio",
+      "scale-dest-height",
+      "scale-dest-width",
+      "scale-speed-constraints",
+      "size-ratio-thresh-grow-dh",
+      "size-ratio-thresh-grow-dw",
+      "size-ratio-thresh-shrink-dh",
+      "size-ratio-thresh-shrink-dw",
+      "sticky-size-ratio-to-frame-width",
+      "sticky-translation-gaussian-mult",
+      "unsticky-translation-size-ratio",
+  };
+  if (!node) {
+    return true;
+  }
+  if (node.IsSequence()) {
+    for (const auto& item : node) {
+      if (!validate_numeric_yaml_fields(item, error)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (!node.IsMap()) {
+    return true;
+  }
+  for (const auto& entry : node) {
+    if (!entry.first.IsScalar()) {
+      continue;
+    }
+    std::string key = entry.first.as<std::string>();
+    std::replace(key.begin(), key.end(), '_', '-');
+    const YAML::Node value = entry.second;
+    if (kNumericKeys.count(key) && value && value.IsScalar()) {
+      try {
+        const double parsed = value.as<double>();
+        if (!std::isfinite(parsed)) {
+          if (error) {
+            *error = absl::StrCat("invalid non-finite numeric value for ", key);
+          }
+          return false;
+        }
+      } catch (const std::exception& exc) {
+        if (error) {
+          *error = absl::StrCat("invalid numeric value for ", key, ": ", exc.what());
+        }
+        return false;
+      }
+    }
+    if (!validate_numeric_yaml_fields(value, error)) {
+      return false;
+    }
+  }
+  return true;
+}
 
 PlayDetectorConfig create_play_detector_config(
     PlayDetectorConfig& config,
@@ -231,7 +316,6 @@ hm::play_tracker::PlayTracker* get_or_create_play_tracker(DsPlayTrackerCtx* ctx,
   if (!ctx->initParams.play_tracker_config_file.empty()) {
     try {
       YAML::Node yaml = YAML::LoadFile(ctx->initParams.play_tracker_config_file);
-      std::cout << yaml << std::endl;
       if (yaml["play-tracker"]) {
         ctx->play_trackers[source_id].play_tracker_config = create_play_tracker_config(arena_box, yaml["play-tracker"]);
         ctx->play_trackers[source_id].play_tracker = std::make_unique<hm::play_tracker::PlayTracker>(
@@ -417,6 +501,30 @@ DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* initParams) {
   DsPlayTrackerCtx* ctx = new DsPlayTrackerCtx();
   ctx->initParams = *initParams;
   return ctx;
+}
+
+absl::Status DsPlayTrackerValidateConfigFile(const std::string& config_file) {
+  if (config_file.empty()) {
+    return absl::InvalidArgumentError("playtracker config-file is empty");
+  }
+  try {
+    YAML::Node yaml = YAML::LoadFile(config_file);
+    if (!yaml["play-tracker"]) {
+      return absl::InvalidArgumentError(absl::StrCat("missing play-tracker in config file: ", config_file));
+    }
+    YAML::Node live_boxes = yaml["play-tracker"]["live-boxes"];
+    if (!live_boxes || !live_boxes.IsSequence() || live_boxes.size() == 0) {
+      return absl::InvalidArgumentError("playtracker config play-tracker.live-boxes must be a non-empty sequence");
+    }
+    std::string numeric_error;
+    if (!gst_hm_playtracker::validate_numeric_yaml_fields(yaml["play-tracker"], &numeric_error)) {
+      return absl::InvalidArgumentError(numeric_error);
+    }
+    (void)gst_hm_playtracker::create_play_tracker_config(hm::BBox(0, 0, 1920, 1080), yaml["play-tracker"]);
+  } catch (const std::exception& exc) {
+    return absl::InvalidArgumentError(absl::StrCat("invalid playtracker config file: ", exc.what()));
+  }
+  return absl::OkStatus();
 }
 
 bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame, cudaStream_t stream) {

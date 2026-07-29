@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <limits>
@@ -50,6 +51,26 @@ namespace playcropper {
 // using PlayTrackerPayload = hm::playtracker::PlayTrackerPayload;
 
 namespace {
+
+bool parse_finite_float(const std::string& value, float* out) {
+  if (!out || value.empty()) {
+    return false;
+  }
+  char* end = nullptr;
+  errno = 0;
+  const float parsed = std::strtof(value.c_str(), &end);
+  if (value.c_str() == end || errno == ERANGE || !std::isfinite(parsed)) {
+    return false;
+  }
+  while (end && *end && std::isspace(static_cast<unsigned char>(*end))) {
+    ++end;
+  }
+  if (!end || *end != '\0') {
+    return false;
+  }
+  *out = parsed;
+  return true;
+}
 
 size_t round_down_even(size_t value) {
   if (value <= 2) {
@@ -255,15 +276,17 @@ gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep)
 bool PlayCropperPriv::SetProperty(const Property& prop) {
   absl::WriterMutexLock lk(&mu_process_);
   // std::cerr << "SetProperty(" << prop.key << "=" << prop.value << ")" << std::endl;
-  if (prop.key == "show") {
+  std::string key = prop.key;
+  std::replace(key.begin(), key.end(), '_', '-');
+  if (key == "show") {
     show_ = !!std::atol(prop.value.c_str());
-  } else if (prop.key == "render-scale") {
+  } else if (key == "render-scale") {
     render_scale_ = std::atof(prop.value.c_str());
     if (render_scale_ == 0) {
       std::cerr << "Invalid render scale: " << render_scale_ << std::endl;
       return false;
     }
-  } else if (prop.key == "scoreboard-perspective-polygon") {
+  } else if (key == "scoreboard-perspective-polygon") {
     std::cout << "GOT scoreboard-perspective-polygon!" << std::endl;
     scoreboard_perspective_polygion_.clear();
     std::vector<std::string> points = absl::StrSplit(prop.value, ',');
@@ -274,33 +297,35 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
           cv::Point2f(std::atof(points[index].c_str()), std::atof(points.at(index + 1).c_str())));
     }
     assert(scoreboard_perspective_polygion_.size() == 4);
-  } else if (prop.key == "show-scoreboard") {
+  } else if (key == "show-scoreboard") {
     show_scoreboard_ = !!std::atoi(prop.value.c_str());
-  } else if (prop.key == "scoreboard-projected-width") {
+  } else if (key == "scoreboard-projected-width") {
     scoreboard_projected_width_ = prop.value;
     scoreboard_.reset();
-  } else if (prop.key == "scoreboard-projected-height") {
+  } else if (key == "scoreboard-projected-height") {
     scoreboard_projected_height_ = prop.value;
     scoreboard_.reset();
-  } else if (prop.key == "scoreboard-scale") {
+  } else if (key == "scoreboard-scale") {
     scoreboard_scale_ = std::atof(prop.value.c_str());
     if (scoreboard_scale_ <= 0) {
       scoreboard_scale_ = 1.0;
     }
     scoreboard_.reset();
-  } else if (prop.key == "plot-play-tracking") {
+  } else if (key == "plot-play-tracking") {
     plot_play_tracking_ = !!std::atoi(prop.value.c_str());
-  } else if (prop.key == "plot-player-tracking") {
+  } else if (key == "plot-player-tracking") {
     plot_player_tracking_ = !!std::atoi(prop.value.c_str());
-  } else if (prop.key == "transform-object-meta") {
+  } else if (key == "transform-object-meta") {
     transform_object_meta_ = !!std::atoi(prop.value.c_str());
-  } else if (prop.key == "runtime-output-max-width") {
+  } else if (key == "runtime-output-max-width") {
     runtime_output_max_width_ = std::atol(prop.value.c_str());
-  } else if (prop.key == "runtime-output-max-height") {
+  } else if (key == "runtime-output-max-height") {
     runtime_output_max_height_ = std::atol(prop.value.c_str());
-  } else if (prop.key == "fixed-edge-rotation-angle") {
-    fixed_edge_rotation_angle_ = std::atof(prop.value.c_str());
-  } else if (prop.key == "no-crop") {
+  } else if (key == "fixed-edge-rotation-angle") {
+    if (!parse_finite_float(prop.value, &fixed_edge_rotation_angle_)) {
+      return false;
+    }
+  } else if (key == "no-crop") {
     // TODO: implement, needs to change caps too
     no_crop_ = !!std::atoi(prop.value.c_str());
   }

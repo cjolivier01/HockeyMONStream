@@ -592,10 +592,12 @@ bool StitcherPriv::SetProperty(const Property& prop) {
   } else if (
       prop.key == "post-stitch-rotate-degrees" || prop.key == "post_stitch_rotate_degrees" ||
       prop.key == "stitch-rotate-degrees" || prop.key == "stitch_rotate_degrees") {
-    if (!parse_finite_double(prop.value, post_stitch_rotate_degrees_)) {
+    double parsed_rotation = 0.0;
+    if (!parse_finite_double(prop.value, parsed_rotation)) {
       std::cerr << "Invalid post-stitch rotation value: " << prop.value << std::endl;
       return false;
     }
+    post_stitch_rotate_degrees_.store(parsed_rotation, std::memory_order_relaxed);
   }
   return true;
 }
@@ -647,7 +649,8 @@ absl::Status StitcherPriv::ensure_rotation_scratch(const hm::surface::Surface& s
 }
 
 absl::Status StitcherPriv::apply_post_stitch_rotation(hm::surface::Surface surface, size_t width, size_t height) {
-  if (std::abs(post_stitch_rotate_degrees_) < 1e-6) {
+  const double post_stitch_rotate_degrees = post_stitch_rotate_degrees_.load(std::memory_order_relaxed);
+  if (std::abs(post_stitch_rotate_degrees) < 1e-6) {
     return absl::OkStatus();
   }
   HM_RETURN_IF_ERROR(ensure_rotation_scratch(surface, width, height));
@@ -659,7 +662,7 @@ absl::Status StitcherPriv::apply_post_stitch_rotation(hm::surface::Surface surfa
   npp_stream_context.nStreamFlags = 0;
   npp_stream_context.nCudaDeviceId = m_gpuId;
 
-  const double radians = -post_stitch_rotate_degrees_ * M_PI / 180.0;
+  const double radians = -post_stitch_rotate_degrees * M_PI / 180.0;
   const double cos_angle = std::cos(radians);
   const double sin_angle = std::sin(radians);
   const double cx = (static_cast<double>(width) - 1.0) / 2.0;
