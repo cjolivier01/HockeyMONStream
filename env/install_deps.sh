@@ -25,6 +25,7 @@ sudo apt-get install -y \
   libyaml-cpp-dev \
   apt-file \
   libbluetooth-dev \
-  aptitude
+  aptitude \
+  tensorrt-dev
 
 sudo apt-get install -y tensorrt-dev
