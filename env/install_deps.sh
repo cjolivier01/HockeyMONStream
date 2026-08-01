@@ -19,7 +19,6 @@ sudo apt-get install -y \
   v4l-conf \
   libgtk-3-dev \
   libtiff5-dev \
-  libgtkglext1-dev \
   qt6-base-dev \
   qt6-base-dev-tools \
   qt6-qpa-plugins \
