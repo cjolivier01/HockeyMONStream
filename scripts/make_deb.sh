@@ -164,6 +164,7 @@ mkdir -p \
   "${STAGING}${INSTALL_PREFIX}/configs" \
   "${STAGING}${INSTALL_PREFIX}/hm/xmodels/LightGlue" \
   "${STAGING}${INSTALL_PREFIX}/python" \
+  "${STAGING}${INSTALL_PREFIX}/share/licenses/libnccl2" \
   "${STAGING}${INSTALL_PREFIX}/scripts" \
   "${STAGING}/usr/bin"
 
@@ -278,6 +279,22 @@ for elf in "${all_elfs[@]}"; do
     fi
   done < <(collect_bundled_libs "${elf}")
 done
+
+# PyTorch needs NCCL, but Ubuntu 24's V100-capable CUDA-12 build and Ubuntu
+# 26's CUDA-13 build share the same system package name. Keep the builder's
+# target-specific runtime private instead of downgrading/upgrading host NCCL.
+NCCL_SONAME_SOURCE="/usr/lib/x86_64-linux-gnu/libnccl.so.2"
+if [[ ! -f "${NCCL_SONAME_SOURCE}" ]]; then
+  echo "ERROR: target-specific NCCL runtime not found: ${NCCL_SONAME_SOURCE}" >&2
+  exit 1
+fi
+NCCL_REAL_SOURCE="$(readlink -f "${NCCL_SONAME_SOURCE}")"
+NCCL_PACKAGE_PATH="${STAGING}${INSTALL_PREFIX}/lib/libnccl.so.2"
+validate_elf_arch "${NCCL_REAL_SOURCE}"
+install -m 0644 "${NCCL_REAL_SOURCE}" "${NCCL_PACKAGE_PATH}"
+package_elfs+=("${NCCL_PACKAGE_PATH}")
+install -m 0644 /usr/share/doc/libnccl2/copyright \
+  "${STAGING}${INSTALL_PREFIX}/share/licenses/libnccl2/copyright"
 
 # ---------- HMStream GStreamer plugins ----------
 echo "[make_deb] Staging GStreamer plugins..."
@@ -1120,17 +1137,6 @@ for elf in "${dependency_elfs[@]}"; do
       *) continue ;;
     esac
     cuda_dependency="${cuda_package}"
-    # NCCL packages from different CUDA lines share the same Debian package
-    # name but do not carry the same native GPU coverage. Keep the exact
-    # builder-selected variant (notably CUDA 12's sm_70 code on Ubuntu 24).
-    if [[ "${cuda_package}" == "libnccl2" ]]; then
-      cuda_package_version="$(dpkg-query -W -f='${Version}' "${cuda_package}")"
-      if ! dpkg --validate-version "${cuda_package_version}" >/dev/null 2>&1; then
-        echo "ERROR: invalid installed NCCL package version: ${cuda_package_version}" >&2
-        exit 1
-      fi
-      cuda_dependency="${cuda_package} (= ${cuda_package_version})"
-    fi
     if [[ "${needed}" =~ ^(lib.+)[.]so[.]([0-9]+) ]]; then
       printf '%s %s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${cuda_dependency}"
     elif [[ "${needed}" =~ ^(lib.+)[.]so$ ]]; then
