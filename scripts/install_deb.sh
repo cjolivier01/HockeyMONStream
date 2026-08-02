@@ -88,6 +88,12 @@ case "${VERSION_ID:-}" in
 esac
 
 HMSTREAM_DEPENDS="$(dpkg-deb -f "${HMSTREAM_DEB}" Depends)"
+nccl_version="$(printf '%s\n' "${HMSTREAM_DEPENDS}" | tr ',' '\n' \
+  | sed -n 's/^[[:space:]]*libnccl2 (= \([^)]*\))[[:space:]]*$/\1/p')"
+if [[ -z "${nccl_version}" ]] || ! dpkg --validate-version "${nccl_version}" >/dev/null 2>&1; then
+  echo "ERROR: the HMStream artifact does not declare a valid exact libnccl2 dependency." >&2
+  exit 1
+fi
 if [[ "${VERSION_ID}" == "24.04" && "${HMSTREAM_DEPENDS}" == *"libc6 (>= 2.43)"* ]]; then
   echo "ERROR: the selected HMStream artifact targets Ubuntu 26.04, not 24.04." >&2
   exit 1
@@ -148,10 +154,15 @@ printf '%s\n' \
   "Pin: version ${trt_version}" \
   'Pin-Priority: 1001' \
   >/etc/apt/preferences.d/hmstream-tensorrt10
+printf '%s\n' \
+  'Package: libnccl2' \
+  "Pin: version ${nccl_version}" \
+  'Pin-Priority: 1001' \
+  >/etc/apt/preferences.d/hmstream-nccl
 
 apt_args=(-y --no-install-recommends --allow-downgrades)
 if [[ "${SIMULATE}" -eq 1 ]]; then apt_args+=(--simulate); fi
-apt-get install "${apt_args[@]}" "${DEEPSTREAM_DEB}" "${HMSTREAM_DEB}"
+apt-get install "${apt_args[@]}" "libnccl2=${nccl_version}" "${DEEPSTREAM_DEB}" "${HMSTREAM_DEB}"
 
 if [[ "${SIMULATE}" -eq 1 ]]; then
   echo "Dependency resolution succeeded for Ubuntu ${VERSION_ID}."
