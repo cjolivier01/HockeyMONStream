@@ -6,13 +6,14 @@ set -euo pipefail
 
 HMSTREAM_DEB=""
 DEEPSTREAM_DEB=""
+EXPECTED_DEEPSTREAM_VERSION="9.1.0-1+resolute2"
 SIMULATE=0
 
 usage() {
   cat <<'USAGE'
 Usage:
   sudo ./install-hmstream-deb \
-    --deepstream-deb=/path/to/deepstream-9.1_9.1.0-1+*_amd64.deb \
+    --deepstream-deb=/path/to/deepstream-9.1_9.1.0-1+resolute2_amd64.deb \
     --hmstream-deb=/path/to/hmstream_*_amd64.deb
 
 Options:
@@ -60,6 +61,10 @@ if [[ "$(dpkg-deb -f "${HMSTREAM_DEB}" Package)" != "hmstream" ]]; then
 fi
 if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Package)" != "deepstream-9.1" ]]; then
   echo "ERROR: not a deepstream-9.1 package: ${DEEPSTREAM_DEB}" >&2
+  exit 1
+fi
+if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Version)" != "${EXPECTED_DEEPSTREAM_VERSION}" ]]; then
+  echo "ERROR: DeepStream ${EXPECTED_DEEPSTREAM_VERSION} is required: ${DEEPSTREAM_DEB}" >&2
   exit 1
 fi
 

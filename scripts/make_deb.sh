@@ -19,6 +19,7 @@ TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALL_PREFIX="/opt/hmstream"
 PKG_NAME="hmstream"
 PKG_ARCH="${PKG_ARCH:-}"
+DEEPSTREAM_REQUIRED_VERSION="9.1.0-1+resolute2"
 
 # ---------- arg parsing ----------
 DO_BUILD=0
@@ -306,7 +307,7 @@ validate_elf_arch "${YOLO_SO}"
 TENSORRT_NEEDED="$(patchelf --print-needed "${YOLO_SO}" | grep -E '^lib(nvinfer|nvonnxparser)' || true)"
 if [[ -z "${TENSORRT_NEEDED}" ]] || grep -Ev '^lib(nvinfer|nvinfer_plugin|nvonnxparser)[.]so[.]10$' <<< "${TENSORRT_NEEDED}" >/dev/null; then
   echo "[make_deb] ERROR: DeepStream 9.1 requires TensorRT ABI 10, but ${YOLO_SO} needs:" >&2
-  printf '  %s\n' ${TENSORRT_NEEDED:-"(no TensorRT libraries found)"} >&2
+  printf '  %s\n' "${TENSORRT_NEEDED:-(no TensorRT libraries found)}" >&2
   echo "Build in a target-OS container or install the pinned TensorRT 10 development package." >&2
   exit 1
 fi
@@ -336,7 +337,7 @@ while IFS= read -r asset; do
   asset_real="$(readlink -f "${asset}")"
   case "${asset_real}" in
     "${pretrained_root}/"*)
-      rel="${asset_real#${pretrained_root}/}"
+      rel="${asset_real#"${pretrained_root}"/}"
       ;;
     *)
       echo "[make_deb] WARNING: declared pretrained asset outside repo pretrained dir, not staged: ${asset}" >&2
@@ -392,8 +393,10 @@ RUNTIME_RSYNC_EXCLUDES=(
   --exclude='.cache/'
   --exclude='tests/'
   --exclude='test/'
-  --exclude='build/'
-  --exclude='dist/'
+  # Anchor checkout build artifacts to the transfer root. Runtime packages
+  # legitimately contain nested modules such as mmengine/dist/.
+  --exclude='/build/'
+  --exclude='/dist/'
   --exclude='*.egg-info/'
   --exclude='BUILD'
   --exclude='BUILD.bazel'
@@ -451,11 +454,12 @@ export USE_NEW_NVSTREAMMUX="${USE_NEW_NVSTREAMMUX:-yes}"
 
 # Use the pinned bundled hmlib runtime unless the caller explicitly overrides
 # HMLIB_ROOT/HM_ROOT.
-if [ -z "${HMLIB_ROOT:-}" ] && [ -d "${INSTALL_DIR}/hm/hmlib" ]; then
+if [ -z "${HMLIB_ROOT:-}" ] && [ -z "${HM_ROOT:-}" ] && [ -d "${INSTALL_DIR}/hm/hmlib" ]; then
   export HMLIB_ROOT="${INSTALL_DIR}/hm"
 fi
-if [ -z "${HM_CONFIG_ROOT:-}" ] && [ -n "${HMLIB_ROOT:-}" ] && [ -f "${HMLIB_ROOT}/hmlib/config/baseline.yaml" ]; then
-  export HM_CONFIG_ROOT="${HMLIB_ROOT}/hmlib/config"
+hm_runtime_root="${HMLIB_ROOT:-${HM_ROOT:-}}"
+if [ -z "${HM_CONFIG_ROOT:-}" ] && [ -n "${hm_runtime_root}" ] && [ -f "${hm_runtime_root}/hmlib/config/baseline.yaml" ]; then
+  export HM_CONFIG_ROOT="${hm_runtime_root}/hmlib/config"
 fi
 
 prepend_path() {
@@ -916,11 +920,12 @@ INSTALL_DIR=/opt/hmstream
 
 export USE_NEW_NVSTREAMMUX="${USE_NEW_NVSTREAMMUX:-yes}"
 
-if [ -z "${HMLIB_ROOT:-}" ] && [ -d "${INSTALL_DIR}/hm/hmlib" ]; then
+if [ -z "${HMLIB_ROOT:-}" ] && [ -z "${HM_ROOT:-}" ] && [ -d "${INSTALL_DIR}/hm/hmlib" ]; then
   export HMLIB_ROOT="${INSTALL_DIR}/hm"
 fi
-if [ -z "${HM_CONFIG_ROOT:-}" ] && [ -n "${HMLIB_ROOT:-}" ] && [ -f "${HMLIB_ROOT}/hmlib/config/baseline.yaml" ]; then
-  export HM_CONFIG_ROOT="${HMLIB_ROOT}/hmlib/config"
+hm_runtime_root="${HMLIB_ROOT:-${HM_ROOT:-}}"
+if [ -z "${HM_CONFIG_ROOT:-}" ] && [ -n "${hm_runtime_root}" ] && [ -f "${hm_runtime_root}/hmlib/config/baseline.yaml" ]; then
+  export HM_CONFIG_ROOT="${hm_runtime_root}/hmlib/config"
 fi
 
 prepend_path() {
@@ -1128,9 +1133,9 @@ for elf in "${dependency_elfs[@]}"; do
     done
     [[ -n "${ds_library}" ]] || continue
     if [[ "${needed}" =~ ^(lib.+)[.]so[.]([0-9]+) ]]; then
-      printf '%s %s deepstream-9.1 (>= 9.1.0-1)\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+      printf '%s %s deepstream-9.1 (= %s)\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${DEEPSTREAM_REQUIRED_VERSION}"
     elif [[ "${needed}" =~ ^(lib.+)[.]so$ ]]; then
-      printf '%s 0 deepstream-9.1 (>= 9.1.0-1)\n' "${BASH_REMATCH[1]}"
+      printf '%s 0 deepstream-9.1 (= %s)\n' "${BASH_REMATCH[1]}" "${DEEPSTREAM_REQUIRED_VERSION}"
     fi
   done < <(patchelf --print-needed "${elf}")
 done | sort -u >> "${SHLIBS_LOCAL}"
@@ -1177,7 +1182,7 @@ Architecture: ${PKG_ARCH}
 Maintainer: Christopher Olivier <cjolivier01@gmail.com>
 Installed-Size: ${INSTALLED_SIZE}
 Depends: ${SHLIB_DEPENDS},
- deepstream-9.1 (>= 9.1.0-1),
+ deepstream-9.1 (= ${DEEPSTREAM_REQUIRED_VERSION}),
  ffmpeg,
  gstreamer1.0-plugins-bad,
  gstreamer1.0-nice,
@@ -1222,7 +1227,7 @@ echo "Done: ${DEB_PATH}"
 echo ""
 echo "Install with:"
 printf '  sudo %s \\\n' "${INSTALLER_PATH}"
-printf '%s\n' '    --deepstream-deb=/path/to/deepstream-9.1_9.1.0-1+*_amd64.deb \'
+printf '    --deepstream-deb=%s \\\n' '/path/to/deepstream-9.1_9.1.0-1+resolute2_amd64.deb'
 echo "    --hmstream-deb=${DEB_PATH}"
 echo "  (the installer configures NVIDIA repositories; DeepStream itself remains a local release artifact)"
 echo ""
