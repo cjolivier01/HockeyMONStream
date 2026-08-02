@@ -198,7 +198,7 @@ bool remove_yaml_key_path(YAML::Node& root, const std::initializer_list<std::str
       return false;
     }
     path_nodes.emplace_back(current, keys.at(i));
-    current = *next;
+    current.reset(*next);
   }
   if (!current.IsMap()) {
     return false;
@@ -1484,6 +1484,8 @@ absl::Status configure_orientation(const std::string& game_dir) {
         exec->string(),
         "--game-id",
         game_id,
+        "--ice-rink-inference-scale",
+        "0.5",
     };
   } else {
     const auto python_exec = find_executable_maybe_conda("python3");
@@ -1496,6 +1498,8 @@ absl::Status configure_orientation(const std::string& game_dir) {
         "hmlib.cli.hmorientation",
         "--game-id",
         game_id,
+        "--ice-rink-inference-scale",
+        "0.5",
     };
     if (auto hm_root = find_hmlib_repo_root(); hm_root.has_value()) {
       working_dir = hm_root->string();

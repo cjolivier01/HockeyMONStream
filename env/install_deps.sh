@@ -25,7 +25,18 @@ sudo apt-get install -y \
   libyaml-cpp-dev \
   apt-file \
   libbluetooth-dev \
-  aptitude \
-  tensorrt-dev
+  aptitude
 
-sudo apt-get install -y tensorrt-dev
+# DeepStream 9.1 uses TensorRT ABI 10. The unversioned NVIDIA metapackage now
+# selects TensorRT 11, which makes HMStream's custom inference library
+# incompatible with the DeepStream runtime. Select the newest CUDA 13.2 build
+# that retains the TensorRT 10 ABI.
+TENSORRT_VERSION="$(
+  apt-cache madison tensorrt-dev |
+    awk '$3 ~ /^10\./ && $3 ~ /[+]cuda13[.]2$/ { print $3; exit }'
+)"
+if [ -z "${TENSORRT_VERSION}" ]; then
+  echo "Could not find a TensorRT 10 CUDA 13.2 development package." >&2
+  exit 1
+fi
+sudo apt-get install -y "tensorrt-dev=${TENSORRT_VERSION}"

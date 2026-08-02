@@ -198,7 +198,7 @@ std::vector<std::string> sequence_path_values(const YAML::Node& root, const std:
     if (!next.has_value() || !next->IsDefined()) {
       return {};
     }
-    current = *next;
+    current.reset(*next);
   }
   if (!current.IsSequence()) {
     return {};
@@ -884,8 +884,7 @@ absl::Status Configurator::gather_stitching_videos(
   const bool has_cam_auto =
       std::any_of(videos.begin(), videos.end(), [](const auto& item) { return is_cam_video_key(item.first); });
   const bool has_left_right_auto = videos.count("left") || videos.count("right");
-  const std::vector<std::string> ui_left_files =
-      sequence_path_values(config_, {"hmstream_ui", "video_roles", "left"});
+  const std::vector<std::string> ui_left_files = sequence_path_values(config_, {"hmstream_ui", "video_roles", "left"});
   const std::vector<std::string> ui_right_files =
       sequence_path_values(config_, {"hmstream_ui", "video_roles", "right"});
   const bool runtime_videos_owned_by_ui_roles =
@@ -1441,7 +1440,11 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
     return false;
   };
 
-  const fs::path output_work_dir = fs::path(".") / "output_workdirs" / game_id_;
+  const char* configured_output_work_dir = ::getenv("HM_OUTPUT_WORK_DIR");
+  const fs::path output_work_dir =
+      (configured_output_work_dir && *configured_output_work_dir ? fs::path(configured_output_work_dir)
+                                                                 : fs::path(".") / "output_workdirs") /
+      game_id_;
 
   for (auto kv : pipeline) {
     const std::string key = kv.first.as<std::string>();

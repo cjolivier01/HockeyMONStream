@@ -1,7 +1,11 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 
 #include <tiffio.h>
+#include <yaml-cpp/yaml.h>
 
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -10,9 +14,6 @@
 #include <iostream>
 #include <sstream>
 #include <string>
-#include <sys/stat.h>
-#include <sys/wait.h>
-#include <unistd.h>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -93,12 +94,13 @@ bool write_valid_stitching_artifacts(const fs::path& dir) {
   set_write_time(dir / "right.png", 0);
   set_write_time(dir / "hm_project.pto", 1);
   set_write_time(dir / "autooptimiser_out.pto", 2);
-  for (const char* filename : {"mapping_0000.tif",
-                               "mapping_0000_x.tif",
-                               "mapping_0000_y.tif",
-                               "mapping_0001.tif",
-                               "mapping_0001_x.tif",
-                               "mapping_0001_y.tif"}) {
+  for (const char* filename :
+       {"mapping_0000.tif",
+        "mapping_0000_x.tif",
+        "mapping_0000_y.tif",
+        "mapping_0001.tif",
+        "mapping_0001_x.tif",
+        "mapping_0001_y.tif"}) {
     set_write_time(dir / filename, 3);
   }
 
@@ -411,6 +413,46 @@ bool expect_dependency_invalidation_report(const fs::path& tmpdir) {
   return true;
 }
 
+bool expect_clean_preserves_unrelated_config(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "clean_config_preservation";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  if (!write_text_file(
+          dir / "config.yaml",
+          R"(keep:
+  nested: preserved
+game:
+  name: preservation-test
+  stitching:
+    frame_offsets: [1, 2]
+stitching:
+  control_points: [[1, 2], [3, 4]]
+rink:
+  scoreboard:
+    perspective_polygon: [[0, 0], [1, 1]]
+)")) {
+    return false;
+  }
+
+  const auto status = hm::stitching::clean_stitching_artifacts(dir.string());
+  if (!status.ok()) {
+    std::cerr << "config preservation: cleaning failed: " << status << std::endl;
+    return false;
+  }
+
+  const YAML::Node config = YAML::LoadFile((dir / "config.yaml").string());
+  if (!config["keep"] || config["keep"]["nested"].as<std::string>("") != "preserved" || !config["game"] ||
+      config["game"]["name"].as<std::string>("") != "preservation-test") {
+    std::cerr << "config preservation: unrelated keys were changed:\n" << config << std::endl;
+    return false;
+  }
+  if (config["stitching"] || config["game"]["stitching"] || config["rink"]) {
+    std::cerr << "config preservation: cleanable keys remain:\n" << config << std::endl;
+    return false;
+  }
+  return true;
+}
+
 void finish(const fs::path& tmpdir, int code) {
   fs::remove_all(tmpdir);
   _exit(code);
@@ -449,6 +491,10 @@ int main() {
 
   if (!expect_dependency_invalidation_report(tmpdir)) {
     finish(tmpdir, 7);
+  }
+
+  if (!expect_clean_preserves_unrelated_config(tmpdir)) {
+    finish(tmpdir, 8);
   }
 
   finish(tmpdir, 0);

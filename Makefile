@@ -23,7 +23,7 @@ all: print_targets
 
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
 	hmstream-cli run-hmstream-cli hmstream-ui run-hmstream-ui pipeline-app run-pipeline-app \
-	video-player run-video-player yolo-custom-lib deb wsl-deb
+	video-player run-video-player yolo-custom-lib hmstream-gst-plugins deb deb-ubuntu24 deb-ubuntu26 wsl-deb
 
 perf:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //...
@@ -70,6 +70,12 @@ hmstream-ui:
 yolo-custom-lib:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo
 
+hmstream-gst-plugins:
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) \
+		//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so \
+		//src/gst-plugins/gst-playtracker:libgstplaytracker.so \
+		//src/gst-plugins/gst-fieldmask:libnvdsgst_dsfieldmask.so
+
 run-hmstream-cli: hmstream-cli
 	bazel-bin/src/apps/pipeline-app/hmstream-cli \
 		-c configs/ds_hockey_configure_stitching.yaml \
@@ -95,8 +101,19 @@ video-player:
 run-video-player: video-player
 	bazel-bin/src/apps/video-player/video-player --help
 
-deb: hmstream-cli hmstream-ui yolo-custom-lib
+ifeq ($(strip $(TARGET_UBUNTU)),)
+deb: hmstream-cli hmstream-ui yolo-custom-lib hmstream-gst-plugins
 	scripts/make_deb.sh
+else
+deb:
+	scripts/make_deb_docker.sh --target-ubuntu=$(TARGET_UBUNTU) $(if $(DEEPSTREAM_DEB),--deepstream-deb=$(DEEPSTREAM_DEB),)
+endif
+
+deb-ubuntu24:
+	$(MAKE) deb TARGET_UBUNTU=24.04
+
+deb-ubuntu26:
+	$(MAKE) deb TARGET_UBUNTU=26.04
 
 wsl-deb: deb
 
@@ -130,7 +147,10 @@ print_targets:
 		'video-player   Build //src/apps/video-player:video-player.' \
 		'run-video-player  Run video-player --help (smoke check).' \
 		'yolo-custom-lib Build //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo.' \
-		'deb            Build hmstream-cli and hmstream-ui, then package everything into dist/<pkg>.deb (Linux/WSL installable).' \
+		'hmstream-gst-plugins Build the three HMStream-owned GStreamer plugins.' \
+		'deb            Build/package natively, or set TARGET_UBUNTU=24.04/26.04 for an ABI-isolated Docker build.' \
+		'deb-ubuntu24   Build the Ubuntu 24.04 package in Docker (output under dist/ubuntu24.04).' \
+		'deb-ubuntu26   Build the Ubuntu 26.04 package in Docker (output under dist/ubuntu26.04).' \
 		'wsl-deb        Alias for deb; Windows installer is a later WSL wrapper, not a .deb.' \
 		'' \
 		'Tests' \

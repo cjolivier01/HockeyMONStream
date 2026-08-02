@@ -19,7 +19,10 @@
 gboolean set_streammux_properties(NvDsStreammuxConfig* config, GstElement* element) {
   gboolean ret = FALSE;
   const gchar* new_mux_str = g_getenv("USE_NEW_NVSTREAMMUX");
-  gboolean use_new_mux = !g_strcmp0(new_mux_str, "yes");
+  // DeepStream 9.1's replacement mux is the safe default for native 8K
+  // stitching inputs. Keep an explicit environment override for diagnostics.
+  gboolean use_new_mux = !new_mux_str || !g_ascii_strcasecmp(new_mux_str, "yes") ||
+      !g_ascii_strcasecmp(new_mux_str, "true") || !g_strcmp0(new_mux_str, "1");
 
   if (!use_new_mux) {
     g_object_set(G_OBJECT(element), "gpu-id", config->gpu_id, NULL);
