@@ -952,6 +952,11 @@ else
   export PATH="/usr/bin:/bin:${PATH:-}"
 fi
 
+# Archive/ENCODE_FILE runs launched by the installed UI need a writable
+# working directory just like direct CLI runs.
+export HM_OUTPUT_WORK_DIR="${HM_OUTPUT_WORK_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/hmstream/output_workdirs}"
+mkdir -p "${HM_OUTPUT_WORK_DIR}"
+
 prepend_path GST_PLUGIN_PATH "${INSTALL_DIR}/lib/gst-plugins"
 prepend_path GST_PLUGIN_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 prepend_path LD_LIBRARY_PATH "${INSTALL_DIR}/lib"
