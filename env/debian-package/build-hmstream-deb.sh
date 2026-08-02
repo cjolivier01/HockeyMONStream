@@ -35,6 +35,9 @@ apt-get install -y --no-install-recommends "${DEEPSTREAM_DEB}"
 # The pinned Bazel repositories are public, so container builds should not
 # depend on a developer's SSH agent having a GitHub identity loaded.
 git config --global url.https://github.com/.insteadOf ssh://git@github.com/
+# The read-only bind mount retains the invoking user's ownership while this
+# build runs as root. Trust only the explicit pinned HockeyMOM input mount.
+git config --global --add safe.directory "${HMLIB_SOURCE}"
 
 if ! dpkg-query -W -f='${db:Status-Status} ${Version}\n' deepstream-9.1 | grep -Eq '^installed 9[.]1[.]'; then
   echo "ERROR: the input package did not install DeepStream 9.1." >&2
@@ -76,7 +79,7 @@ VIDEOPREP_PLUGIN="${BUILD_DIR}/bazel-bin/src/gst-plugins/gst-videoprep/libnvdsgs
 CUDA_NEEDED="$(patchelf --print-needed "${VIDEOPREP_PLUGIN}" | grep -E '^lib(cudart|npp[^.]*)[.]so[.]' || true)"
 if [[ -z "${CUDA_NEEDED}" ]] || grep -Ev "[.]so[.]${TARGET_CUDA_SONAME}$" <<< "${CUDA_NEEDED}" >/dev/null; then
   echo "ERROR: Ubuntu ${TARGET_UBUNTU} videoprep linked against an unexpected CUDA major:" >&2
-  printf '  %s\n' ${CUDA_NEEDED:-"(no CUDA libraries found)"} >&2
+  printf '  %s\n' "${CUDA_NEEDED:-(no CUDA libraries found)}" >&2
   exit 1
 fi
 
