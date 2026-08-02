@@ -10,7 +10,8 @@
 #   --version X.Y.Z  Override package version (default: git describe --tags --always).
 #   --output-dir DIR Where to write the .deb (default: dist/).
 #
-# Requirements: patchelf, dpkg-deb, python3-yaml (auto-installed from apt if missing).
+# Requirements: patchelf, dpkg-deb, dpkg-shlibdeps, python3-yaml
+# (auto-installed from apt if missing).
 set -euo pipefail
 
 TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -120,6 +121,10 @@ if ! command -v dpkg-deb &>/dev/null; then
   echo "[make_deb] dpkg-deb not found; installing via apt..."
   sudo apt-get install -y dpkg
 fi
+if ! command -v dpkg-shlibdeps &>/dev/null; then
+  echo "[make_deb] dpkg-shlibdeps not found; installing via apt..."
+  sudo apt-get install -y dpkg-dev
+fi
 
 # ---------- staging tree ----------
 STAGING="${TOPDIR}/dist-staging/${PKG_NAME}_${PKG_VERSION}_${PKG_ARCH}"
@@ -133,6 +138,8 @@ mkdir -p \
   "${STAGING}${INSTALL_PREFIX}/scripts" \
   "${STAGING}/usr/local/bin"
 
+declare -a package_elfs=()
+
 # ---------- helpers ----------
 INSTALL_RPATH="${INSTALL_PREFIX}/lib:/opt/nvidia/deepstream/deepstream/lib:/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib"
 
@@ -140,6 +147,11 @@ patchelf_rpath() {
   local elf="$1"
   chmod u+w "${elf}"
   patchelf --set-rpath "${INSTALL_RPATH}" "${elf}"
+}
+
+is_gstreamer_plugin() {
+  local elf="$1"
+  nm -D "${elf}" 2>/dev/null | grep -E ' gst_plugin_.*_(get_desc|register)$' >/dev/null
 }
 
 # Collect non-system shared lib paths from ldd output.
@@ -201,6 +213,7 @@ install_lib() {
     validate_elf_arch "${real}"
     cp "${real}" "${dest_dir}/${real_base}"
     patchelf_rpath "${dest_dir}/${real_base}"
+    package_elfs+=("${dest_dir}/${real_base}")
   fi
   # Create SONAME symlink if different from the real filename
   if [[ "${soname_base}" != "${real_base}" && ! -e "${dest_dir}/${soname_base}" ]]; then
@@ -212,8 +225,10 @@ install_lib() {
 echo "[make_deb] Staging hmstream binaries..."
 cp "${HMSTREAM_CLI}" "${STAGING}${INSTALL_PREFIX}/bin/hmstream-cli"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hmstream-cli"
+package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hmstream-cli")
 cp "${HMSTREAM_UI}" "${STAGING}${INSTALL_PREFIX}/bin/hmstream-ui"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hmstream-ui"
+package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hmstream-ui")
 ln -s hmstream-cli "${STAGING}${INSTALL_PREFIX}/bin/pipeline-app"
 
 # ---------- bundled shared libs (OpenCV etc.) ----------
@@ -240,26 +255,20 @@ for elf in "${all_elfs[@]}"; do
   done < <(collect_bundled_libs "${elf}")
 done
 
-# ---------- GStreamer plugins ----------
+# ---------- HMStream GStreamer plugins ----------
 echo "[make_deb] Staging GStreamer plugins..."
 
-# lib/gst-plugins/ — pre-staged NVIDIA/DeepStream plugins
-for so in "${TOPDIR}/lib/gst-plugins/"lib*.so; do
-  [[ -f "${so}" ]] || continue
-  dest="${STAGING}${INSTALL_PREFIX}/lib/gst-plugins/$(basename "${so}")"
-  validate_elf_arch "${so}"
-  cp "${so}" "${dest}"
-  patchelf_rpath "${dest}"
-done
-
-# bazel-bin gst-plugins — our custom-built plugins
+# DeepStream owns and installs its NVIDIA plugins through the deepstream-9.1
+# package. Only stage plugins built by this repository.
 for plugin_dir in "${TOPDIR}/bazel-bin/src/gst-plugins"/*/; do
   for so in "${plugin_dir}"lib*.so; do
     [[ -f "${so}" ]] || continue
+    is_gstreamer_plugin "${so}" || continue
     dest="${STAGING}${INSTALL_PREFIX}/lib/gst-plugins/$(basename "${so}")"
     validate_elf_arch "${so}"
     cp "${so}" "${dest}"
     patchelf_rpath "${dest}"
+    package_elfs+=("${dest}")
   done
 done
 
@@ -273,6 +282,7 @@ echo "[make_deb] Staging libnvdsinfer_custom_impl_Yolo.so..."
 validate_elf_arch "${YOLO_SO}"
 cp "${YOLO_SO}" "${STAGING}${INSTALL_PREFIX}/lib/libnvdsinfer_custom_impl_Yolo.so"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/lib/libnvdsinfer_custom_impl_Yolo.so"
+package_elfs+=("${STAGING}${INSTALL_PREFIX}/lib/libnvdsinfer_custom_impl_Yolo.so")
 
 # ---------- configs ----------
 echo "[make_deb] Staging configs..."
@@ -305,7 +315,9 @@ while IFS= read -r asset; do
   esac
   dest="${STAGING}${INSTALL_PREFIX}/pretrained/${rel}"
   mkdir -p "$(dirname "${dest}")"
-  cp "${asset_real}" "${dest}"
+  # Downloaded assets may inherit mkstemp's owner-only mode.  Package runtime
+  # data as world-readable so unprivileged hmstream processes can load it.
+  install -m 0644 "${asset_real}" "${dest}"
 done < "${asset_manifest}"
 rm -f "${asset_manifest}"
 
@@ -321,6 +333,17 @@ cat > "${STAGING}${INSTALL_PREFIX}/run.sh" <<'RUNSH'
 set -euo pipefail
 
 INSTALL_DIR=/opt/hmstream
+
+# DeepStream 9.1's legacy nvstreammux rejects native 8K input buffers. The
+# replacement mux handles the source resolution used for stitching. Preserve
+# an explicit caller override for diagnostics and older DeepStream releases.
+export USE_NEW_NVSTREAMMUX="${USE_NEW_NVSTREAMMUX:-yes}"
+
+# Remember an hmlib checkout adjacent to the caller's working directory before
+# changing to /opt/hmstream for DeepStream's relative configuration paths.
+if [ -z "${HMLIB_ROOT:-}" ] && [ -d "${PWD}/../hm/hmlib" ]; then
+  export HMLIB_ROOT="$(readlink -f "${PWD}/../hm")"
+fi
 
 prepend_path() {
   local var_name="$1"
@@ -751,6 +774,8 @@ set -euo pipefail
 
 INSTALL_DIR=/opt/hmstream
 
+export USE_NEW_NVSTREAMMUX="${USE_NEW_NVSTREAMMUX:-yes}"
+
 prepend_path() {
   local var_name="$1"
   local dir="$2"
@@ -779,6 +804,73 @@ chmod 755 "${STAGING}${INSTALL_PREFIX}/hmstream-ui.sh"
 
 # ---------- DEBIAN/control ----------
 echo "[make_deb] Writing DEBIAN/control..."
+
+# Resolve distro- and ABI-specific package names (for example libavformat62,
+# libfftw3-single3, and Qt t64 transitions) from the ELF files being packaged.
+# CUDA, DeepStream, and TensorRT remain documented external prerequisites.
+SHLIBDEPS_WORK_DIR="${STAGING}/.shlibdeps"
+mkdir -p "${SHLIBDEPS_WORK_DIR}/debian"
+cat > "${SHLIBDEPS_WORK_DIR}/debian/control" <<SHLIBDEPS_CONTROL
+Source: ${PKG_NAME}
+Section: misc
+Priority: optional
+Maintainer: hmstream <noreply@hmstream>
+Standards-Version: 4.6.2
+
+Package: ${PKG_NAME}
+Architecture: any
+Description: HMStream dependency resolution metadata
+SHLIBDEPS_CONTROL
+
+declare -a shlibdeps_elf_args=()
+for elf in "${package_elfs[@]}"; do
+  shlibdeps_elf_args+=("-e${elf}")
+done
+
+declare -a shlibdeps_exclude_args=()
+declare -A shlibdeps_excluded_packages=()
+while IFS=$'\t' read -r package status; do
+  package="${package%%:*}"
+  case "${package}" in
+    cuda-*|libcudnn*|libnvidia-*|libnvinfer*|libnvonnxparsers*|tensorrt*)
+      if [[ "${status}" == ii* && -z "${shlibdeps_excluded_packages[${package}]+set}" ]]; then
+        shlibdeps_excluded_packages["${package}"]=1
+        shlibdeps_exclude_args+=("-x${package}")
+      fi
+      ;;
+  esac
+done < <(dpkg-query -W -f='${binary:Package}\t${db:Status-Abbrev}\n')
+
+SHLIBDEPS_LOG="${SHLIBDEPS_WORK_DIR}/warnings.log"
+if ! SHLIBDEPS_OUTPUT="$({
+  cd "${SHLIBDEPS_WORK_DIR}"
+  dpkg-shlibdeps \
+    --package="${PKG_NAME}" \
+    --ignore-missing-info \
+    --warnings=0 \
+    -O \
+    -S"${STAGING}" \
+    -l"${STAGING}${INSTALL_PREFIX}/lib" \
+    -l"${STAGING}${INSTALL_PREFIX}/lib/gst-plugins" \
+    -l/opt/nvidia/deepstream/deepstream/lib \
+    -l/usr/local/cuda/lib64 \
+    "${shlibdeps_exclude_args[@]}" \
+    "${shlibdeps_elf_args[@]}"
+} 2>"${SHLIBDEPS_LOG}")"; then
+  echo "ERROR: dpkg-shlibdeps could not resolve package dependencies:" >&2
+  cat "${SHLIBDEPS_LOG}" >&2
+  exit 1
+fi
+
+SHLIB_DEPENDS="$(printf '%s\n' "${SHLIBDEPS_OUTPUT}" | sed -n 's/^shlibs:Depends=//p')"
+if [[ -z "${SHLIB_DEPENDS}" ]]; then
+  echo "ERROR: dpkg-shlibdeps returned no package dependencies." >&2
+  cat "${SHLIBDEPS_LOG}" >&2
+  exit 1
+fi
+SHLIB_DEPENDS="${SHLIB_DEPENDS//, /,$'\n' }"
+rm -rf "${SHLIBDEPS_WORK_DIR}"
+
 INSTALLED_SIZE=$(du -sk "${STAGING}" | awk '{print $1}')
 cat > "${STAGING}/DEBIAN/control" <<CONTROL
 Package: ${PKG_NAME}
@@ -786,38 +878,21 @@ Version: ${PKG_VERSION}
 Architecture: ${PKG_ARCH}
 Maintainer: hmstream <noreply@hmstream>
 Installed-Size: ${INSTALLED_SIZE}
-Depends: libgstreamer1.0-0 (>= 1.20),
- libgstreamer-plugins-base1.0-0 (>= 1.20),
+Depends: ${SHLIB_DEPENDS},
+ deepstream-9.1 (>= 9.1.0-1),
  gstreamer1.0-plugins-bad,
  gstreamer1.0-nice,
- libglib2.0-0,
- libgomp1,
- libgl1,
- libglu1-mesa,
- libglew2.2,
- libglfw3,
- libavformat60 | libavformat-extra60,
- libavcodec60 | libavcodec-extra60,
- libavutil58,
- libswresample4,
- libfftw3-3,
- libx11-6,
- libqt6core6t64 | libqt6core6,
- libqt6gui6t64 | libqt6gui6,
- libqt6widgets6t64 | libqt6widgets6,
- libsoup2.4-1,
- libtiff6,
- libpng16-16,
+ hugin-tools,
+ enblend,
  python3,
  python3-yaml
 Description: HMStream video pipeline application and UI
- Installs the HMStream CLI/UI binaries, bundled shared libraries
- (OpenCV 4.13), GStreamer plugins, configs, and non-engine pretrained
+ Installs the HMStream CLI/UI binaries, private shared libraries,
+ GStreamer plugins, configs, and non-engine pretrained
  assets to ${INSTALL_PREFIX}.
  .
- External requirements (not expressed as Depends):
-   - NVIDIA DeepStream (>= 6.3) at /opt/nvidia/deepstream/deepstream
-   - NVIDIA CUDA Toolkit (>= 12) at /usr/local/cuda
+ External requirements not otherwise expressed as direct dependencies:
+   - NVIDIA CUDA Toolkit (>= 12) at /usr/local/cuda (pulled transitively by DeepStream)
    - Python ML packages such as torch/onnx only if missing pretrained
      assets must be regenerated
  .
@@ -859,7 +934,7 @@ echo ""
 echo "Done: ${DEB_PATH}"
 echo ""
 echo "Install with:"
-echo "  sudo dpkg -i ${DEB_PATH}"
+echo "  sudo apt install ${DEB_PATH}"
 echo ""
 echo "Run with:"
 echo "  /opt/hmstream/run.sh [args...]"

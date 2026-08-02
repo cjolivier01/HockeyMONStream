@@ -157,7 +157,10 @@ bool remove_yaml_key_path(YAML::Node& root, const std::initializer_list<std::str
       return false;
     }
     path_nodes.emplace_back(current, keys.at(i));
-    current = *next;
+    // YAML::Node assignment writes through the current handle and can replace
+    // the node it aliases (including the config root). reset() only rebinds
+    // this traversal handle to the selected child.
+    current.reset(*next);
   }
   if (!current.IsMap()) {
     return false;
