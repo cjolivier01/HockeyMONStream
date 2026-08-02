@@ -149,7 +149,7 @@ printf '%s\n' \
   'Pin-Priority: 1001' \
   >/etc/apt/preferences.d/hmstream-tensorrt10
 
-apt_args=(-y --no-install-recommends)
+apt_args=(-y --no-install-recommends --allow-downgrades)
 if [[ "${SIMULATE}" -eq 1 ]]; then apt_args+=(--simulate); fi
 apt-get install "${apt_args[@]}" "${DEEPSTREAM_DEB}" "${HMSTREAM_DEB}"
 

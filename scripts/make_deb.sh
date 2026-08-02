@@ -433,9 +433,10 @@ if [[ -f "${MMENGINE_DL_MISC}" ]] && grep -q "pkgutil.find_loader('mmcv._ext')" 
     "${MMENGINE_DL_MISC}"
 fi
 if [[ -f "${MMENGINE_DL_MISC}" ]]; then
-  PYTHONPATH="${STAGING}${INSTALL_PREFIX}/python" \
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="${STAGING}${INSTALL_PREFIX}/python" \
     python3 -c 'from mmengine.utils.dl_utils.misc import mmcv_full_available; assert mmcv_full_available()'
 fi
+PYTHONDONTWRITEBYTECODE=1 \
 PYTHONPATH="${STAGING}${INSTALL_PREFIX}/python:${STAGING}${INSTALL_PREFIX}/hm:${STAGING}${INSTALL_PREFIX}/hm/xmodels/LightGlue" \
   python3 -c 'import hmlib.cli.create_control_points'
 
@@ -1114,6 +1115,17 @@ for elf in "${dependency_elfs[@]}"; do
       *) continue ;;
     esac
     cuda_dependency="${cuda_package}"
+    # NCCL packages from different CUDA lines share the same Debian package
+    # name but do not carry the same native GPU coverage. Keep the exact
+    # builder-selected variant (notably CUDA 12's sm_70 code on Ubuntu 24).
+    if [[ "${cuda_package}" == "libnccl2" ]]; then
+      cuda_package_version="$(dpkg-query -W -f='${Version}' "${cuda_package}")"
+      if ! dpkg --validate-version "${cuda_package_version}" >/dev/null 2>&1; then
+        echo "ERROR: invalid installed NCCL package version: ${cuda_package_version}" >&2
+        exit 1
+      fi
+      cuda_dependency="${cuda_package} (= ${cuda_package_version})"
+    fi
     if [[ "${needed}" =~ ^(lib.+)[.]so[.]([0-9]+) ]]; then
       printf '%s %s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${cuda_dependency}"
     elif [[ "${needed}" =~ ^(lib.+)[.]so$ ]]; then
