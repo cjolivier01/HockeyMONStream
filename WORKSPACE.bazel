@@ -120,7 +120,7 @@ git_repository(
 
 git_repository(
     name = "hm",
-    commit = "177a0076ba7a6fdd45105e926984f6a727d0ca64",
+    commit = "d77c92078ce3e244e7d1aec7e3b56cc8a41cc924",
     remote = "ssh://git@github.com/cjolivier01/HockeyMOM",
 )
 

@@ -12,6 +12,7 @@ DEEPSTREAM_DEB="${DEEPSTREAM_DEB:-}"
 HMLIB_SOURCE="${HMLIB_SOURCE:-}"
 OUTPUT_DIR=""
 PACKAGE_VERSION=""
+EXPECTED_DEEPSTREAM_VERSION="9.1.0-1+resolute2"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -45,11 +46,15 @@ if [[ -z "${DEEPSTREAM_DEB}" ]]; then
   fi
   for candidate in "${candidates[@]}"; do
     candidate_version="$(dpkg-deb -f "${candidate}" Version)"
-    if [[ -z "${DEEPSTREAM_DEB}" ]] || dpkg --compare-versions "${candidate_version}" gt "${best_version}"; then
+    if [[ "${candidate_version}" == "${EXPECTED_DEEPSTREAM_VERSION}" ]]; then
       DEEPSTREAM_DEB="${candidate}"
-      best_version="${candidate_version}"
+      break
     fi
   done
+  if [[ -z "${DEEPSTREAM_DEB}" ]]; then
+    echo "ERROR: sibling DeepStream artifact version ${EXPECTED_DEEPSTREAM_VERSION} is required." >&2
+    exit 1
+  fi
 fi
 DEEPSTREAM_DEB="$(readlink -f "${DEEPSTREAM_DEB}")"
 if [[ ! -f "${DEEPSTREAM_DEB}" ]]; then
@@ -60,6 +65,14 @@ if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Package)" != "deepstream-9.1" ]]; then
   echo "ERROR: not a deepstream-9.1 package: ${DEEPSTREAM_DEB}" >&2
   exit 1
 fi
+if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Version)" != "${EXPECTED_DEEPSTREAM_VERSION}" ]]; then
+  echo "ERROR: DeepStream ${EXPECTED_DEEPSTREAM_VERSION} is required: ${DEEPSTREAM_DEB}" >&2
+  exit 1
+fi
+if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Architecture)" != "amd64" ]]; then
+  echo "ERROR: the target-OS package builder currently supports amd64 DeepStream artifacts only." >&2
+  exit 1
+fi
 
 if [[ -z "${HMLIB_SOURCE}" ]]; then
   HMLIB_SOURCE="${TOPDIR}/../hm"
@@ -67,6 +80,18 @@ fi
 HMLIB_SOURCE="$(readlink -f "${HMLIB_SOURCE}")"
 if [[ ! -d "${HMLIB_SOURCE}/hmlib" || ! -d "${HMLIB_SOURCE}/xmodels/LightGlue/lightglue" ]]; then
   echo "ERROR: hmlib and its LightGlue submodule are required under: ${HMLIB_SOURCE}" >&2
+  exit 1
+fi
+EXPECTED_HMLIB_REVISION="$(tr -d '[:space:]' < "${TOPDIR}/scripts/hmlib-runtime-revision")"
+ACTUAL_HMLIB_REVISION="$(git -C "${HMLIB_SOURCE}" rev-parse HEAD 2>/dev/null || true)"
+if [[ "${ACTUAL_HMLIB_REVISION}" != "${EXPECTED_HMLIB_REVISION}" ]]; then
+  echo "ERROR: HockeyMOM runtime must be revision ${EXPECTED_HMLIB_REVISION}; found ${ACTUAL_HMLIB_REVISION:-unknown}." >&2
+  exit 1
+fi
+HMLIB_CHANGES="$(git -C "${HMLIB_SOURCE}" status --porcelain -- hmlib xmodels/LightGlue)"
+if [[ -n "${HMLIB_CHANGES}" ]]; then
+  echo "ERROR: HockeyMOM hmlib/LightGlue runtime paths must be clean before packaging:" >&2
+  printf '%s\n' "${HMLIB_CHANGES}" >&2
   exit 1
 fi
 

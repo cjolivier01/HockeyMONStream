@@ -18,12 +18,13 @@ HOST_PLATFORM_FLAGS := --config=arm64
 endif
 endif
 HOST_CUDA_FLAGS := $(shell scripts/bazel_cuda_host_config.sh 2>/dev/null)
+TARGET_UBUNTU ?= $(shell . /etc/os-release 2>/dev/null && printf '%s' "$$VERSION_ID")
 
 all: print_targets
 
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
 	hmstream-cli run-hmstream-cli hmstream-ui run-hmstream-ui pipeline-app run-pipeline-app \
-	video-player run-video-player yolo-custom-lib hmstream-gst-plugins deb deb-ubuntu24 deb-ubuntu26 wsl-deb
+	video-player run-video-player yolo-custom-lib hmstream-gst-plugins deb deb-native deb-ubuntu24 deb-ubuntu26 wsl-deb
 
 perf:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //...
@@ -101,13 +102,11 @@ video-player:
 run-video-player: video-player
 	bazel-bin/src/apps/video-player/video-player --help
 
-ifeq ($(strip $(TARGET_UBUNTU)),)
-deb: hmstream-cli hmstream-ui yolo-custom-lib hmstream-gst-plugins
-	scripts/make_deb.sh
-else
 deb:
 	scripts/make_deb_docker.sh --target-ubuntu=$(TARGET_UBUNTU) $(if $(DEEPSTREAM_DEB),--deepstream-deb=$(DEEPSTREAM_DEB),)
-endif
+
+deb-native: hmstream-cli hmstream-ui yolo-custom-lib hmstream-gst-plugins
+	scripts/make_deb.sh
 
 deb-ubuntu24:
 	$(MAKE) deb TARGET_UBUNTU=24.04
@@ -148,7 +147,8 @@ print_targets:
 		'run-video-player  Run video-player --help (smoke check).' \
 		'yolo-custom-lib Build //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo.' \
 		'hmstream-gst-plugins Build the three HMStream-owned GStreamer plugins.' \
-		'deb            Build/package natively, or set TARGET_UBUNTU=24.04/26.04 for an ABI-isolated Docker build.' \
+		'deb            Build for the host Ubuntu release in an ABI-isolated Docker container.' \
+		'deb-native     Legacy native package build (does not bundle the stitching Python runtime).' \
 		'deb-ubuntu24   Build the Ubuntu 24.04 package in Docker (output under dist/ubuntu24.04).' \
 		'deb-ubuntu26   Build the Ubuntu 26.04 package in Docker (output under dist/ubuntu26.04).' \
 		'wsl-deb        Alias for deb; Windows installer is a later WSL wrapper, not a .deb.' \

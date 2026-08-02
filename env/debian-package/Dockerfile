@@ -210,10 +210,10 @@ RUN if [ "${TARGET_UBUNTU}" = "24.04" ]; then \
 
 RUN if [ "${TARGET_UBUNTU}" = "24.04" ]; then \
       export CUDA_HOME=/usr/local/cuda-12.6; \
-      export TORCH_CUDA_ARCH_LIST='7.0;8.9'; \
+      export TORCH_CUDA_ARCH_LIST='7.0;7.5;8.0;8.6;8.9;9.0'; \
     else \
       export CUDA_HOME=/usr/local/cuda-13.2; \
-      export TORCH_CUDA_ARCH_LIST='8.9;9.0+PTX'; \
+      export TORCH_CUDA_ARCH_LIST='7.5;8.0;8.6;8.9;9.0;10.0;12.0'; \
     fi \
     && export PATH="${CUDA_HOME}/bin:${PATH}" \
     && MMCV_WITH_OPS=1 FORCE_CUDA=1 MAX_JOBS=4 \

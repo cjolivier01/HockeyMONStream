@@ -18,13 +18,13 @@ case "${TARGET_UBUNTU}" in
     BAZEL_DEB_CONFIG=deb_ubuntu24
     TARGET_CUDA_ROOT=/usr/local/cuda-12.6
     TARGET_CUDA_SONAME=12
-    TARGET_CUDA_ARCHES=(sm_70 sm_89)
+    TARGET_CUDA_ARCHES=(sm_70 sm_75 sm_80 sm_86 sm_89 sm_90)
     ;;
   26.04)
     BAZEL_DEB_CONFIG=deb_ubuntu26
     TARGET_CUDA_ROOT=/usr/local/cuda-13.2
     TARGET_CUDA_SONAME=13
-    TARGET_CUDA_ARCHES=(sm_89 sm_120)
+    TARGET_CUDA_ARCHES=(sm_75 sm_80 sm_86 sm_89 sm_90 sm_100 sm_120)
     ;;
   *) echo "ERROR: unsupported target Ubuntu release: ${TARGET_UBUNTU}" >&2; exit 1 ;;
 esac
@@ -80,17 +80,34 @@ if [[ -z "${CUDA_NEEDED}" ]] || grep -Ev "[.]so[.]${TARGET_CUDA_SONAME}$" <<< "$
   exit 1
 fi
 
-CUDA_CUBINS="$("${TARGET_CUDA_ROOT}/bin/cuobjdump" --list-elf "${VIDEOPREP_PLUGIN}")"
-for cuda_arch in "${TARGET_CUDA_ARCHES[@]}"; do
-  if ! grep -q "[.]${cuda_arch}[.]cubin$" <<< "${CUDA_CUBINS}"; then
-    echo "ERROR: Ubuntu ${TARGET_UBUNTU} videoprep is missing native ${cuda_arch} CUDA code." >&2
+validate_native_cuda_code() {
+  local label="$1"
+  local elf="$2"
+  local cuda_cubins
+  cuda_cubins="$("${TARGET_CUDA_ROOT}/bin/cuobjdump" --list-elf "${elf}")"
+  for cuda_arch in "${TARGET_CUDA_ARCHES[@]}"; do
+    if ! grep -q "[.]${cuda_arch}[.]cubin$" <<< "${cuda_cubins}"; then
+      echo "ERROR: Ubuntu ${TARGET_UBUNTU} ${label} is missing native ${cuda_arch} CUDA code." >&2
+      exit 1
+    fi
+  done
+  if "${TARGET_CUDA_ROOT}/bin/cuobjdump" --list-ptx "${elf}" 2>&1 | grep -q '^PTX file'; then
+    echo "ERROR: Ubuntu ${TARGET_UBUNTU} ${label} unexpectedly contains PTX." >&2
     exit 1
   fi
-done
-if "${TARGET_CUDA_ROOT}/bin/cuobjdump" --list-ptx "${VIDEOPREP_PLUGIN}" 2>&1 | grep -q '^PTX file'; then
-  echo "ERROR: Ubuntu ${TARGET_UBUNTU} videoprep unexpectedly contains PTX." >&2
+}
+
+validate_native_cuda_code videoprep "${VIDEOPREP_PLUGIN}"
+validate_native_cuda_code hmstream-cli "${BUILD_DIR}/bazel-bin/src/apps/pipeline-app/hmstream-cli"
+
+shopt -s nullglob
+MMCV_EXTENSIONS=(/opt/hmstream-python-deps/mmcv/_ext.cpython-*.so)
+shopt -u nullglob
+if [[ "${#MMCV_EXTENSIONS[@]}" -ne 1 ]]; then
+  echo "ERROR: expected exactly one packaged MMCV native extension, found ${#MMCV_EXTENSIONS[@]}." >&2
   exit 1
 fi
+validate_native_cuda_code 'MMCV extension' "${MMCV_EXTENSIONS[0]}"
 
 rm -rf "${CONTAINER_OUTPUT_DIR}"
 mkdir -p "${CONTAINER_OUTPUT_DIR}"
