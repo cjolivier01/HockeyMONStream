@@ -1,3 +1,5 @@
+exports_files(["AssetsMain.cpp"])
+
 cc_binary(
   name = "hmstream-assets",
   srcs = ["AssetsMain.cpp"],

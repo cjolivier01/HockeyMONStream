@@ -71,10 +71,28 @@ if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Architecture)" != "amd64" ]]; then
   exit 1
 fi
 
+if ! git -C "${TOPDIR}" diff --quiet HEAD --; then
+  echo "ERROR: refusing to label a package with Git HEAD while tracked source changes are present." >&2
+  echo "Commit or stash the tracked changes, then rebuild." >&2
+  exit 1
+fi
+unexpected_untracked="$(
+  git -C "${TOPDIR}" ls-files --others --exclude-standard \
+    | grep -Ev '^(bazelisk|run|stitching-calibration-note[.]txt|dist/|dist-staging/|output_workdirs/|bazel-[^/]+(/|$))' \
+    || true
+)"
+if [[ -n "${unexpected_untracked}" ]]; then
+  echo "ERROR: refusing to package untracked source files:" >&2
+  while IFS= read -r source_path; do
+    printf '  %s\n' "${source_path}" >&2
+  done <<< "${unexpected_untracked}"
+  exit 1
+fi
+
 if [[ -z "${PACKAGE_VERSION}" ]]; then
-  commit_count="$(git -C "${TOPDIR}" rev-list --count HEAD)"
+  commit_epoch="$(git -C "${TOPDIR}" show -s --format=%ct HEAD)"
   short_hash="$(git -C "${TOPDIR}" rev-parse --short=7 HEAD)"
-  PACKAGE_VERSION="0.0.${commit_count}+git.${short_hash}"
+  PACKAGE_VERSION="0.0.${commit_epoch}+git.${short_hash}"
 fi
 if [[ -z "${OUTPUT_DIR}" ]]; then
   OUTPUT_DIR="${TOPDIR}/dist/ubuntu${TARGET_UBUNTU}"

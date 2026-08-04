@@ -154,8 +154,59 @@ void remove_mapping_outputs(const fs::path& directory) {
   }
 }
 
+std::string restrict_optimization_variables(const std::string& project) {
+  std::istringstream input(project);
+  std::vector<std::string> lines;
+  std::string line;
+  while (std::getline(input, line))
+    lines.push_back(line);
+
+  const std::array<const char*, 3> variables = {"r1", "p1", "y1"};
+  std::vector<std::string> updated;
+  updated.reserve(lines.size() + variables.size() + 2);
+  bool in_variable_block = false;
+  bool replaced = false;
+  auto append_variable_block = [&]() {
+    for (const char* variable : variables)
+      updated.emplace_back(std::string("v ") + variable);
+    updated.emplace_back("v");
+  };
+  for (const std::string& current : lines) {
+    if (current.rfind("# specify variables", 0) == 0) {
+      updated.push_back(current);
+      append_variable_block();
+      in_variable_block = true;
+      replaced = true;
+      continue;
+    }
+    if (in_variable_block) {
+      if (!current.empty() && current.front() == 'v')
+        continue;
+      in_variable_block = false;
+    }
+    updated.push_back(current);
+  }
+  if (!replaced) {
+    const auto insertion = std::find_if(updated.begin(), updated.end(), [](const std::string& value) {
+      return value.rfind("# control points", 0) == 0;
+    });
+    std::vector<std::string> block = {"# specify variables", "v r1", "v p1", "v y1", "v", ""};
+    updated.insert(insertion, block.begin(), block.end());
+  }
+
+  std::ostringstream output;
+  for (const std::string& value : updated)
+    output << value << '\n';
+  return output.str();
+}
+
 absl::Status run_autooptimiser(const std::string& autooptimiser, const fs::path& directory) {
-  std::vector<std::string> command = {autooptimiser, "-a", "-l", "-s", "-o", "autooptimiser_out.pto", "hm_project.pto"};
+  // Match HockeyMOM's calibrated contract: optimize only the explicitly
+  // selected second-camera roll/pitch/yaw variables. Automatic strategy
+  // selection (-a) is intentionally avoided because it can change lens and
+  // projection parameters based on the control-point distribution.
+  std::vector<std::string> command = {
+      autooptimiser, "-n", "-l", "-s", "-q", "-o", "autooptimiser_out.pto", "hm_project.pto"};
   return run_checked(command, directory);
 }
 
@@ -370,11 +421,17 @@ absl::Status HuginProject::Configure(
   auto with_points = InsertControlPoints(*project, matches);
   if (!with_points.ok())
     return with_points.status();
-  status = write_file(staging / "hm_project.pto", *with_points);
+  status = write_file(staging / "hm_project.pto", restrict_optimization_variables(*with_points));
   if (!status.ok())
     return status;
 
   status = run_autooptimiser(*autooptimiser, staging);
+  if (!status.ok())
+    return status;
+  auto optimized_project = read_file(staging / "autooptimiser_out.pto");
+  if (!optimized_project.ok())
+    return optimized_project.status();
+  status = write_file(staging / "autooptimiser_out.pto", restrict_optimization_variables(*optimized_project));
   if (!status.ok())
     return status;
   std::optional<std::string> pano_modify;

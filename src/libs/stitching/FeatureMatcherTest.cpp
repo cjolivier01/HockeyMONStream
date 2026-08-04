@@ -62,7 +62,7 @@ int main() {
   ok &= expect(result.ok(), "valid matches must postprocess");
   if (result.ok()) {
     ok &= expect(
-        result->accepted_match_count == 3 && result->selected.size() == 5,
+        result->accepted_match_count == 3 && result->accepted.size() == 3 && result->selected.size() == 5,
         "linspace must duplicate when requested exceeds matches");
     ok &= expect(
         result->selected[0].left.y < result->selected.back().left.y,

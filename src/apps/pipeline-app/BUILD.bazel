@@ -1,4 +1,7 @@
-exports_files(["PipelineApp.cpp"])
+exports_files([
+  "PipelineApp.cpp",
+  "configurator.cpp",
+])
 
 PIPELINE_APP_SRCS = glob(
     [

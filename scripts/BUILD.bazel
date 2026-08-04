@@ -29,3 +29,7 @@
 #     """,
 #     visibility = ["//visibility:public"],
 # )
+exports_files([
+  "install_deb.sh",
+  "make_deb.sh",
+])

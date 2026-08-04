@@ -87,7 +87,11 @@ int main() {
           "'#hugin_optimizeReferenceImage 0' > hm_project.pto\n"),
       "fake pto_gen must be created");
   ok &= expect(
-      write_tool(autooptimiser, "cp hm_project.pto autooptimiser_out.pto\n"), "fake autooptimiser must be created");
+      write_tool(
+          autooptimiser,
+          "test \"$*\" = '-n -l -s -q -o autooptimiser_out.pto hm_project.pto'\n"
+          "cp \"$7\" \"$6\"\n"),
+      "fake autooptimiser must be created");
   ok &= expect(
       write_tool(
           pano_modify,
@@ -128,6 +132,11 @@ int main() {
     ok &= expect(
         scaled.ok() && scaled->first == 64 && scaled->second == 32,
         "portable pano_modify scaling must cap the Hugin canvas");
+    ok &= expect(
+        contents.find("# specify variables\nv r1\nv p1\nv y1\nv\n") != std::string::npos,
+        "Hugin optimization must remain restricted to second-camera roll/pitch/yaw");
+    ok &=
+        expect(contents.find("v r0") == std::string::npos, "unrequested Hugin optimization variables must be removed");
   }
   for (const char* artifact : {
            "hm_project.pto",

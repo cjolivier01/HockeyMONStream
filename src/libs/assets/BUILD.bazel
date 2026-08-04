@@ -1,3 +1,5 @@
+exports_files(["AssetManager.cpp"])
+
 cc_library(
   name = "asset_manager",
   srcs = ["AssetManager.cpp"],

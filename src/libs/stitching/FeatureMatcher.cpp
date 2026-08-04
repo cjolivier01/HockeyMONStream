@@ -160,6 +160,7 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Postprocess(
       by_y.begin(), by_y.end(), [&](size_t lhs, size_t rhs) { return accepted[lhs].left.y < accepted[rhs].left.y; });
   FeatureMatchResult result;
   result.accepted_match_count = accepted.size();
+  result.accepted = accepted;
   result.selected.reserve(max_control_points);
   for (size_t i = 0; i < max_control_points; ++i) {
     result.selected.push_back(accepted[by_y[torch_linspace_index(i, accepted.size(), max_control_points)]]);

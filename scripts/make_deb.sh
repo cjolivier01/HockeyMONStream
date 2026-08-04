@@ -861,11 +861,12 @@ shlibdeps_elf_args+=("-e${DEEPSTREAM_TRACKER_RUNTIME}")
 # NVIDIA does not ship Debian shlibs metadata for its unversioned DeepStream
 # libraries or most CUDA toolkit libraries. Generate metadata from the packages
 # that own the resolved CUDA files; TensorRT retains its package-provided
-# metadata. libcuda is supplied by the host driver through the libcuda1
-# virtual package, so give dpkg-shlibdeps explicit metadata instead of
-# globally ignoring missing dependency information.
+# metadata. libcuda is supplied by the host driver through the
+# libcuda.so.1 virtual package. NVIDIA's CUDA-repository driver packages do
+# not provide Ubuntu's older libcuda1 alias, so depending on that alias can
+# make apt replace an otherwise compatible installed driver.
 SHLIBS_LOCAL="${SHLIBDEPS_WORK_DIR}/debian/shlibs.local"
-printf '%s\n' 'libcuda 1 libcuda1' > "${SHLIBS_LOCAL}"
+printf '%s\n' 'libcuda 1 libcuda.so.1' > "${SHLIBS_LOCAL}"
 CUDA_STUB_DIR="${SHLIBDEPS_WORK_DIR}/cuda-stubs"
 mkdir -p "${CUDA_STUB_DIR}"
 if [[ -f /usr/local/cuda/lib64/stubs/libcuda.so ]]; then
@@ -983,6 +984,12 @@ SHLIB_DEPENDS="${SHLIB_DEPENDS//, /,$'\n' }"
 SHLIB_DEPENDS="$(printf '%s\n' "${SHLIB_DEPENDS}" | sed '/^ deepstream-9[.]1 /d')"
 if ! grep -Eq '(^|[[:space:]])libmosquitto1([[:space:](,]|$)' <<< "${SHLIB_DEPENDS}"; then
   echo "ERROR: nvtracker dependency analysis did not emit libmosquitto1." >&2
+  exit 1
+fi
+if ! grep -Eq '(^|[[:space:]])libcuda[.]so[.]1([[:space:](,]|$)' <<< "${SHLIB_DEPENDS}" ||
+   grep -Eq '(^|[[:space:]])libcuda1([[:space:](,]|$)' <<< "${SHLIB_DEPENDS}"; then
+  echo "ERROR: CUDA driver dependency must use the libcuda.so.1 virtual ABI without the legacy libcuda1 alias." >&2
+  printf '%s\n' "${SHLIB_DEPENDS}" >&2
   exit 1
 fi
 if grep -Eiq '(^|[[:space:]])(libnccl[^,[:space:]]*|python[^,[:space:]]*|onnxruntime[^,[:space:]]*)' \

@@ -27,6 +27,7 @@ struct FeatureMatch {
 
 struct FeatureMatchResult {
   size_t accepted_match_count{0};
+  std::vector<FeatureMatch> accepted;
   std::vector<FeatureMatch> selected;
 };
 

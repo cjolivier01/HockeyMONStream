@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -73,6 +74,28 @@ std::vector<cv::Point2f> yaml_points(const YAML::Node& node) {
       points.emplace_back(point[0].as<float>(), point[1].as<float>());
   }
   return points;
+}
+
+std::vector<float> yaml_floats(const YAML::Node& node) {
+  std::vector<float> values;
+  if (!node || !node.IsSequence())
+    return values;
+  values.reserve(node.size());
+  for (const auto& value : node)
+    values.push_back(value.as<float>());
+  return values;
+}
+
+double median(std::vector<float> values) {
+  if (values.empty())
+    return std::numeric_limits<double>::quiet_NaN();
+  const size_t middle = values.size() / 2;
+  std::nth_element(values.begin(), values.begin() + middle, values.end());
+  if (values.size() % 2 != 0)
+    return values[middle];
+  const float upper = values[middle];
+  std::nth_element(values.begin(), values.begin() + middle - 1, values.begin() + middle);
+  return (upper + values[middle - 1]) * 0.5;
 }
 
 cv::Mat homography(const std::vector<cv::Point2f>& left, const std::vector<cv::Point2f>& right) {
@@ -182,6 +205,36 @@ int main(int argc, char** argv) {
     native_left.push_back(match.left);
     native_right.push_back(match.right);
   }
+  std::vector<cv::Point2f> native_accepted_left;
+  std::vector<cv::Point2f> native_accepted_right;
+  std::vector<float> native_accepted_scores;
+  native_accepted_left.reserve(native_matches->accepted.size());
+  native_accepted_right.reserve(native_matches->accepted.size());
+  native_accepted_scores.reserve(native_matches->accepted.size());
+  for (const auto& match : native_matches->accepted) {
+    native_accepted_left.push_back(match.left);
+    native_accepted_right.push_back(match.right);
+    native_accepted_scores.push_back(match.score);
+  }
+  const std::vector<cv::Point2f> aliked_left = yaml_points(reference["aliked_left_points"]);
+  const std::vector<cv::Point2f> aliked_right = yaml_points(reference["aliked_right_points"]);
+  const std::vector<float> aliked_scores = yaml_floats(reference["aliked_scores"]);
+  if (aliked_left.size() < 8 || aliked_left.size() != aliked_right.size() ||
+      aliked_left.size() != aliked_scores.size()) {
+    std::cerr << "FAIL: Python ALIKED oracle returned an invalid accepted-match contract\n";
+    return 1;
+  }
+  const double accepted_count_ratio =
+      static_cast<double>(native_accepted_left.size()) / static_cast<double>(aliked_left.size());
+  const double median_score_delta = std::abs(median(native_accepted_scores) - median(aliked_scores));
+  const cv::Mat native_aliked_h = homography(native_accepted_left, native_accepted_right);
+  const cv::Mat python_aliked_h = homography(aliked_left, aliked_right);
+  if (accepted_count_ratio < 0.8 || accepted_count_ratio > 1.2 || median_score_delta > 0.05 ||
+      native_aliked_h.empty() || python_aliked_h.empty()) {
+    std::cerr << "FAIL: native/Python ALIKED intermediate parity count_ratio=" << accepted_count_ratio
+              << " median_score_delta=" << median_score_delta << '\n';
+    return 1;
+  }
   const std::vector<cv::Point2f> python_left = yaml_points(reference["left_points"]);
   const std::vector<cv::Point2f> python_right = yaml_points(reference["right_points"]);
   const cv::Mat native_h = homography(native_left, native_right);
@@ -199,16 +252,24 @@ int main(int argc, char** argv) {
   };
   std::vector<cv::Point2f> native_projection;
   std::vector<cv::Point2f> python_projection;
+  std::vector<cv::Point2f> native_aliked_projection;
+  std::vector<cv::Point2f> python_aliked_projection;
   cv::perspectiveTransform(probes, native_projection, native_h);
   cv::perspectiveTransform(probes, python_projection, python_h);
+  cv::perspectiveTransform(probes, native_aliked_projection, native_aliked_h);
+  cv::perspectiveTransform(probes, python_aliked_projection, python_aliked_h);
   double maximum_projection_delta = 0.0;
+  double maximum_aliked_projection_delta = 0.0;
   for (size_t i = 0; i < probes.size(); ++i) {
     maximum_projection_delta =
         std::max(maximum_projection_delta, cv::norm(native_projection[i] - python_projection[i]));
+    maximum_aliked_projection_delta =
+        std::max(maximum_aliked_projection_delta, cv::norm(native_aliked_projection[i] - python_aliked_projection[i]));
   }
   const double diagonal = std::hypot(static_cast<double>(right.cols), static_cast<double>(right.rows));
-  if (maximum_projection_delta > diagonal * 0.05) {
-    std::cerr << "FAIL: ALIKED native/SuperPoint legacy stitch geometry delta=" << maximum_projection_delta << '\n';
+  if (maximum_aliked_projection_delta > diagonal * 0.01 || maximum_projection_delta > diagonal * 0.05) {
+    std::cerr << "FAIL: matcher geometry parity aliked_delta=" << maximum_aliked_projection_delta
+              << " legacy_superpoint_delta=" << maximum_projection_delta << '\n';
     return 1;
   }
   return 0;
