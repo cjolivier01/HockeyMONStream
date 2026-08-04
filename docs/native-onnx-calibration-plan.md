@@ -278,11 +278,20 @@ Create `FeatureMatcher` and `HuginProject` components:
    `c n0 N1 x... y... X... Y... t0` at the control-point marker.
 7. Continue to use checked native process execution for `autooptimiser`, `nona`,
    and the selected blender.
-8. Validate every expected output and canvas limit before publishing artifacts.
+8. Parse the final optimizer output and require a finite control-point RMS of at
+   most 50 pixels. Inspect TIFF/PNG dimensions and types before decoding,
+   enforce both the configured live limit and an absolute allocation ceiling,
+   then reject malformed, out-of-source, insufficient-coverage, or degenerate
+   CV_16U x/y remaps and a mismatched/uniform seam before publication.
 
-Temporary files will be written under the game directory with unique names and
-renamed only after success. A failed attempt must not make
-`is_stitching_configured()` return true.
+Temporary files are written under the game directory with unique names and
+renamed only after success. Publication uses a locked, fsynced
+`PREPARED`/`COMMITTED` journal with durable copies of the prior generation.
+Malformed state or manifests fail closed; prepared transactions restore by
+copy so rollback can resume after another interruption. Artifact readers retain
+the same per-game lock through `ControlMasks` decoding, so they cannot observe
+the individually renamed flat files as a mixed generation. A failed attempt
+must not make `is_stitching_configured()` return true.
 
 Stitch-quality parity is evaluated after Hugin optimization, not inferred from
 match overlap alone. Using pinned Hugin/blender versions, compare optimized
@@ -310,6 +319,10 @@ before backups are removed. A reader recovers any interrupted prepared
 transaction under a per-game file lock before consuming a mask. The count
 matches the files, and YAML is published only after every image is readable and
 has the expected dimensions.
+Recovery accepts only `config.yaml` plus contiguous canonical
+`rink_mask_N.png` names, rejects duplicate/unreadable manifests and unknown
+state, and retains backups until an idempotent rollback finishes. Publishing a
+smaller generation transactionally removes obsolete higher-index masks.
 Consumers continue to union the instance masks. Mask regeneration after
 rotation or canvas-size changes remains intact.
 
@@ -487,8 +500,11 @@ The checked `make qualify-native-onnx` entrypoint requires an explicit
 `HM_PARITY_PYTHON`, checksummed rink config/checkpoint, and at least two
 colon-separated fixture directories in `HM_ONNX_PARITY_GAME_DIRS`. Every
 fixture must contain checksummed `left.png`, `right.png`, and `s.png` entries in
-the committed fixture manifest. The target runs every fixture separately with
-Bazel test-result caching disabled and requires the Hugin executables.
+the committed fixture manifest. Canonical fixture paths and manifest identities
+must be unique. Qualification verifies the pinned HockeyMOM, MMDetection, and
+LightGlue revisions and the exact rink/matcher ONNX SHA-256 values before it
+runs every fixture separately with Bazel test-result caching disabled and
+requires the Hugin executables.
 
 The canonical oracle is deterministic Python CPU output. The harness first
 captures and versions CPU goldens, compares native CPU to those goldens, and
@@ -521,8 +537,9 @@ exports:
 - SuperPoint: at least 99% identical selected keypoints within 0.25 pixel and
   descriptor cosine similarity at least 0.999;
 - the pinned upstream RaCo-ALIKED v3 optimized export: at least 64 stable
-  one-to-one accepted spatial pairs, a native/Python accepted-count ratio in
-  [0.8, 1.2], and all shared coordinates within 0.01 source pixel; the match
+  one-to-one accepted spatial pairs, at least 80% native/Python spatial overlap,
+  a native/Python accepted-count ratio in [0.8, 1.2], and all shared
+  coordinates within 0.01 source pixel; the match
   percentage, exported keypoint indices, scores, eager rank-selected order,
   and whole-set planar homography are diagnostics because upstream explicitly
   documents provider-dependent marginal correspondences and a fisheye rink is

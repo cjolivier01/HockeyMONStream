@@ -4,6 +4,7 @@
 #include <QtTest/qtestmouse.h>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
+#include <QtCore/QRegularExpression>
 #include <QtCore/QTemporaryDir>
 #include <QtGui/QWheelEvent>
 #include <QtTest/QTest>
@@ -148,11 +149,13 @@ bool write_fake_runner(const QString& path) {
     return false;
   }
   file.write("#!/usr/bin/env python3\n");
+  file.write("import os\n");
   file.write("import select\n");
   file.write("import sys\n");
   file.write("import time\n");
   file.write("for arg in sys.argv[1:]:\n");
   file.write("    print(arg, flush=True)\n");
+  file.write("print('USE_NEW_NVSTREAMMUX=' + os.environ.get('USE_NEW_NVSTREAMMUX', ''), flush=True)\n");
   file.write("if '--clean' in sys.argv[1:]:\n");
   file.write("    print('clean runner exiting', flush=True)\n");
   file.write("    sys.exit(0)\n");
@@ -777,10 +780,28 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
     QTest::qWait(10);
   }
   if (!expect(window->logText().contains("--show"), "Program run should request render output") ||
-      !expect(window->logText().contains("--render-window-id="), "Program run should embed the render sink")) {
+      !expect(window->logText().contains("--render-window-id="), "Program run should embed the render sink") ||
+      !expect(
+          window->logText().contains("USE_NEW_NVSTREAMMUX=yes"),
+          "UI runner should default to the DeepStream 9.1 new stream mux")) {
     return false;
   }
   activate(stop);
+
+  qputenv("USE_NEW_NVSTREAMMUX", "no");
+  activate(start);
+  for (int i = 0; i < 50 && !window->logText().contains("USE_NEW_NVSTREAMMUX=no"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const bool mux_override_preserved = expect(
+      window->logText().contains("USE_NEW_NVSTREAMMUX=no"),
+      "UI runner should preserve an explicit legacy stream mux override");
+  activate(stop);
+  qunsetenv("USE_NEW_NVSTREAMMUX");
+  if (!mux_override_preserved) {
+    return false;
+  }
 
   activate(restart);
   const bool restart_logged =
@@ -1299,7 +1320,8 @@ bool run_real_pipeline_e2e(HmStreamWindow* window, const QString& game_id) {
   const int deadline_ms = timeout_ms > 0 ? timeout_ms : 120000;
   QElapsedTimer timer;
   timer.start();
-  bool observed_running = false;
+  bool observed_first_frame = false;
+  const QRegularExpression positive_fps(R"(\*\*PERF:\s+([0-9]+(?:\.[0-9]+)?))");
   while (timer.elapsed() < deadline_ms) {
     QApplication::processEvents();
     QTest::qWait(100);
@@ -1309,8 +1331,16 @@ bool run_real_pipeline_e2e(HmStreamWindow* window, const QString& game_id) {
       activate(stop);
       return false;
     }
-    if (log.contains("** INFO: <bus_callback:314>: Pipeline running") || log.contains("**PERF:")) {
-      observed_running = true;
+    auto match = positive_fps.globalMatch(log);
+    while (match.hasNext()) {
+      bool parsed = false;
+      const double fps = match.next().captured(1).toDouble(&parsed);
+      if (parsed && fps > 0.0) {
+        observed_first_frame = true;
+        break;
+      }
+    }
+    if (observed_first_frame) {
       break;
     }
   }
@@ -1326,7 +1356,7 @@ bool run_real_pipeline_e2e(HmStreamWindow* window, const QString& game_id) {
 
   if (!expect(observed_native_asset_setup, "Real UI run should delegate native asset verification to hmstream-cli") ||
       !expect(observed_command, "Real UI run should launch hmstream-cli") ||
-      !expect(observed_running, "Real UI run should reach GStreamer PLAYING/PERF output")) {
+      !expect(observed_first_frame, "Real UI run should process frames at positive FPS")) {
     std::cerr << log.toStdString() << '\n';
     return false;
   }
@@ -1354,6 +1384,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   qputenv("HM_GAME_DIR", game_root.path().toLocal8Bit());
+  qunsetenv("USE_NEW_NVSTREAMMUX");
   const QString fake_runner = source_root.path() + "/hmstream-ui-fake-runner.sh";
   if (!write_fake_runner(fake_runner)) {
     return 1;

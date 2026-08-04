@@ -4,6 +4,7 @@
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
 
 #include "absl/status/status.h"
 #include "cupano/cuda/cudaStatus.h"
@@ -310,6 +311,10 @@ absl::Status StitcherPriv::ensure_stitcher() {
     }
   }
 
+  auto artifact_lock = hm::stitching::HuginProject::RecoverAndLock(config_file_);
+  if (!artifact_lock.ok()) {
+    return artifact_lock.status();
+  }
   absl::MutexLock lk(&stitcher_mu_);
   if (!has_stitcher()) {
     hm::pano::ControlMasks control_masks;
@@ -402,13 +407,15 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
       // TODO: handle this through caps
       params->output_width_height[0] = stitcher_fp16_->canvas_width();
       params->output_width_height[1] = stitcher_fp16_->canvas_height();
-      g_print("Stitched canvas size: %d x %d\n", (int)stitcher_fp16_->canvas_width(), (int)stitcher_fp16_->canvas_height());
+      g_print(
+          "Stitched canvas size: %d x %d\n", (int)stitcher_fp16_->canvas_width(), (int)stitcher_fp16_->canvas_height());
       update_canvas_hints(stitcher_fp16_->canvas_width(), stitcher_fp16_->canvas_height());
     } else if (stitcher_fp32_) {
       // TODO: handle this through caps
       params->output_width_height[0] = stitcher_fp32_->canvas_width();
       params->output_width_height[1] = stitcher_fp32_->canvas_height();
-      g_print("Stitched canvas size: %d x %d\n", (int)stitcher_fp32_->canvas_width(), (int)stitcher_fp32_->canvas_height());
+      g_print(
+          "Stitched canvas size: %d x %d\n", (int)stitcher_fp32_->canvas_width(), (int)stitcher_fp32_->canvas_height());
       update_canvas_hints(stitcher_fp32_->canvas_width(), stitcher_fp32_->canvas_height());
     } else if (one_pass_mode_) {
       g_print("hmstitcher: deferring stitched canvas sizing until the first input batch\n");
@@ -855,17 +862,17 @@ absl::Status StitcherPriv::GenerateOutput(
   }
   std::set<guint> observed_or_eos_source_ids = observed_source_ids;
   observed_or_eos_source_ids.insert(eos_snapshot.source_ids.begin(), eos_snapshot.source_ids.end());
-  const bool source_eos_explains_mismatch =
-      observed_or_eos_source_ids.size() == 2 && duplicate_frame_sources == 0 && invalid_surfaces_per_frame == 0 &&
-      surface_index == in_surface->numFilled && frame_meta_count == in_surface->numFilled &&
-      incomplete_frame_groups > 0 && source_eos_explained_incomplete_groups == incomplete_frame_groups &&
-      unexplained_incomplete_groups == 0 && inconsistent_source_groups == 0 && !missing_eos_source_ids.empty();
+  const bool source_eos_explains_mismatch = observed_or_eos_source_ids.size() == 2 && duplicate_frame_sources == 0 &&
+      invalid_surfaces_per_frame == 0 && surface_index == in_surface->numFilled &&
+      frame_meta_count == in_surface->numFilled && incomplete_frame_groups > 0 &&
+      source_eos_explained_incomplete_groups == incomplete_frame_groups && unexplained_incomplete_groups == 0 &&
+      inconsistent_source_groups == 0 && !missing_eos_source_ids.empty();
 
-  const bool invalid_frame_sequence =
-      (in_surface->batchSize % 2 != 0) || (in_surface->numFilled % 2 != 0) || surface_index != in_surface->numFilled ||
-      frame_meta_count != in_surface->numFilled || duplicate_frame_sources > 0 || invalid_surfaces_per_frame > 0 ||
-      observed_source_ids.size() != 2 || frame_source_surfaces.size() != in_surface->numFilled / 2 ||
-      incomplete_frame_groups > 0 || inconsistent_source_groups > 0;
+  const bool invalid_frame_sequence = (in_surface->batchSize % 2 != 0) || (in_surface->numFilled % 2 != 0) ||
+      surface_index != in_surface->numFilled || frame_meta_count != in_surface->numFilled ||
+      duplicate_frame_sources > 0 || invalid_surfaces_per_frame > 0 || observed_source_ids.size() != 2 ||
+      frame_source_surfaces.size() != in_surface->numFilled / 2 || incomplete_frame_groups > 0 ||
+      inconsistent_source_groups > 0;
   if (invalid_frame_sequence) {
     std::string reason = "invalid_frame_sequence";
     if (in_surface->numFilled % 2 != 0) {

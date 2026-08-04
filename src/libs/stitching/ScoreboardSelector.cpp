@@ -40,6 +40,36 @@ namespace fs = std::filesystem;
 constexpr size_t kMaximumHeaderBytes = 16 * 1024;
 constexpr size_t kMaximumBodyBytes = 4 * 1024;
 constexpr auto kTokenLifetime = std::chrono::minutes(30);
+constexpr auto kDefaultClientLifetime = std::chrono::seconds(10);
+
+std::chrono::milliseconds client_lifetime() {
+  const char* configured = std::getenv("HM_SCOREBOARD_CLIENT_TIMEOUT_MS");
+  if (configured == nullptr || *configured == '\0')
+    return kDefaultClientLifetime;
+  try {
+    const long long milliseconds = std::stoll(configured);
+    if (milliseconds >= 100 && milliseconds <= 60000)
+      return std::chrono::milliseconds(milliseconds);
+  } catch (const std::exception&) {
+  }
+  std::cerr << "Warning: ignoring invalid HM_SCOREBOARD_CLIENT_TIMEOUT_MS=" << configured << '\n';
+  return kDefaultClientLifetime;
+}
+
+absl::Status set_socket_deadline(int socket, int option, std::chrono::steady_clock::time_point deadline) {
+  const auto remaining = deadline - std::chrono::steady_clock::now();
+  if (remaining <= std::chrono::steady_clock::duration::zero())
+    return absl::DeadlineExceededError("Scoreboard HTTP client deadline expired");
+  const auto microseconds =
+      std::max<int64_t>(1, std::chrono::duration_cast<std::chrono::microseconds>(remaining).count());
+  const timeval timeout{
+      static_cast<time_t>(microseconds / 1000000),
+      static_cast<suseconds_t>(microseconds % 1000000),
+  };
+  if (::setsockopt(socket, SOL_SOCKET, option, &timeout, sizeof(timeout)) != 0)
+    return absl::InternalError("Unable to apply scoreboard HTTP client deadline");
+  return absl::OkStatus();
+}
 
 std::string random_token() {
   std::array<unsigned char, 32> bytes{};
@@ -53,13 +83,18 @@ std::string random_token() {
   return output.str();
 }
 
-absl::Status write_all(int socket, const void* data, size_t size) {
+absl::Status write_all(int socket, const void* data, size_t size, std::chrono::steady_clock::time_point deadline) {
   const char* cursor = static_cast<const char*>(data);
   while (size > 0) {
+    auto timeout_status = set_socket_deadline(socket, SO_SNDTIMEO, deadline);
+    if (!timeout_status.ok())
+      return timeout_status;
     const ssize_t written = ::send(socket, cursor, size, MSG_NOSIGNAL);
     if (written < 0) {
       if (errno == EINTR)
         continue;
+      if (errno == EAGAIN || errno == EWOULDBLOCK)
+        return absl::DeadlineExceededError("Scoreboard HTTP response deadline expired");
       return absl::InternalError("Failed writing scoreboard HTTP response");
     }
     cursor += written;
@@ -73,7 +108,8 @@ absl::Status respond(
     int status,
     const char* reason,
     const std::string& content_type,
-    const std::string& body) {
+    const std::string& body,
+    std::chrono::steady_clock::time_point deadline) {
   std::ostringstream header;
   header << "HTTP/1.1 " << status << ' ' << reason << "\r\n"
          << "Content-Type: " << content_type << "\r\n"
@@ -83,10 +119,11 @@ absl::Status respond(
          << "Content-Security-Policy: default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
             "img-src 'self' data:; connect-src 'self'\r\n"
          << "Connection: close\r\n\r\n";
-  auto result = write_all(socket, header.str().data(), header.str().size());
+  const std::string header_bytes = header.str();
+  auto result = write_all(socket, header_bytes.data(), header_bytes.size(), deadline);
   if (!result.ok())
     return result;
-  return write_all(socket, body.data(), body.size());
+  return write_all(socket, body.data(), body.size(), deadline);
 }
 
 void respond_best_effort(
@@ -94,8 +131,9 @@ void respond_best_effort(
     int status,
     const char* reason,
     const std::string& content_type,
-    const std::string& body) {
-  const auto result = respond(socket, status, reason, content_type, body);
+    const std::string& body,
+    std::chrono::steady_clock::time_point deadline) {
+  const auto result = respond(socket, status, reason, content_type, body, deadline);
   if (!result.ok())
     std::cerr << "Warning: unable to send scoreboard selector response: " << result << '\n';
 }
@@ -112,12 +150,19 @@ std::string lowercase(std::string value) {
   return value;
 }
 
-absl::StatusOr<Request> read_request(int socket) {
+absl::StatusOr<Request> read_request(int socket, std::chrono::steady_clock::time_point deadline) {
   std::string bytes;
   std::array<char, 2048> buffer{};
   size_t end = std::string::npos;
   while ((end = bytes.find("\r\n\r\n")) == std::string::npos) {
+    auto timeout_status = set_socket_deadline(socket, SO_RCVTIMEO, deadline);
+    if (!timeout_status.ok())
+      return timeout_status;
     const ssize_t count = ::recv(socket, buffer.data(), buffer.size(), 0);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+      return absl::DeadlineExceededError("Scoreboard HTTP request deadline expired");
     if (count <= 0)
       return absl::InvalidArgumentError("Incomplete scoreboard HTTP request");
     bytes.append(buffer.data(), static_cast<size_t>(count));
@@ -159,8 +204,15 @@ absl::StatusOr<Request> read_request(int socket) {
     return absl::ResourceExhaustedError("HTTP request body is too large");
   request.body = bytes.substr(end + 4);
   while (request.body.size() < content_length) {
+    auto timeout_status = set_socket_deadline(socket, SO_RCVTIMEO, deadline);
+    if (!timeout_status.ok())
+      return timeout_status;
     const ssize_t count =
         ::recv(socket, buffer.data(), std::min(buffer.size(), content_length - request.body.size()), 0);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+      return absl::DeadlineExceededError("Scoreboard HTTP request deadline expired");
     if (count <= 0)
       return absl::InvalidArgumentError("Incomplete HTTP request body");
     request.body.append(buffer.data(), static_cast<size_t>(count));
@@ -425,17 +477,24 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
         ::close(fd);
       }
     } client_cleanup{client};
-    auto request = read_request(client);
+    const auto client_deadline = std::min(deadline, std::chrono::steady_clock::now() + client_lifetime());
+    auto request = read_request(client, client_deadline);
     if (!request.ok()) {
       respond_best_effort(
-          client, 400, "Bad Request", "text/plain; charset=utf-8", std::string(request.status().message()));
+          client,
+          400,
+          "Bad Request",
+          "text/plain; charset=utf-8",
+          std::string(request.status().message()),
+          client_deadline);
       continue;
     }
     const auto host = request->headers.find("host");
     const bool valid_host = host != request->headers.end() &&
         (host->second == expected_host || host->second == "localhost:" + std::to_string(port));
     if (!valid_host || !target_has_token(request->target, token)) {
-      respond_best_effort(client, 403, "Forbidden", "text/plain; charset=utf-8", "Invalid selector capability\n");
+      respond_best_effort(
+          client, 403, "Forbidden", "text/plain; charset=utf-8", "Invalid selector capability\n", client_deadline);
       continue;
     }
     const std::string path = target_path(request->target);
@@ -445,21 +504,23 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
           200,
           "OK",
           "text/html; charset=utf-8",
-          selector_html(dimensions.cols, dimensions.rows, load_existing(game_dir)));
+          selector_html(dimensions.cols, dimensions.rows, load_existing(game_dir)),
+          client_deadline);
       continue;
     }
     if (request->method == "GET" && path == "/image") {
-      respond_best_effort(client, 200, "OK", "image/png", image_bytes);
+      respond_best_effort(client, 200, "OK", "image/png", image_bytes, client_deadline);
       continue;
     }
     const auto origin = request->headers.find("origin");
     if (request->method != "POST" || origin == request->headers.end() ||
         (origin->second != expected_origin && origin->second != "http://localhost:" + std::to_string(port))) {
-      respond_best_effort(client, 403, "Forbidden", "text/plain; charset=utf-8", "Invalid mutation origin\n");
+      respond_best_effort(
+          client, 403, "Forbidden", "text/plain; charset=utf-8", "Invalid mutation origin\n", client_deadline);
       continue;
     }
     if (path == "/cancel") {
-      respond_best_effort(client, 200, "OK", "text/plain; charset=utf-8", "Selection cancelled\n");
+      respond_best_effort(client, 200, "OK", "text/plain; charset=utf-8", "Selection cancelled\n", client_deadline);
       return absl::CancelledError("Scoreboard selection was cancelled");
     }
     Polygon polygon{};
@@ -467,27 +528,44 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
       auto parsed = parse_polygon(request->body);
       if (!parsed.ok()) {
         respond_best_effort(
-            client, 400, "Bad Request", "text/plain; charset=utf-8", std::string(parsed.status().message()));
+            client,
+            400,
+            "Bad Request",
+            "text/plain; charset=utf-8",
+            std::string(parsed.status().message()),
+            client_deadline);
         continue;
       }
       auto ordered = ValidateAndOrder(*parsed, dimensions.cols, dimensions.rows);
       if (!ordered.ok()) {
         respond_best_effort(
-            client, 400, "Bad Request", "text/plain; charset=utf-8", std::string(ordered.status().message()));
+            client,
+            400,
+            "Bad Request",
+            "text/plain; charset=utf-8",
+            std::string(ordered.status().message()),
+            client_deadline);
         continue;
       }
       polygon = *ordered;
     } else if (path != "/none") {
-      respond_best_effort(client, 404, "Not Found", "text/plain; charset=utf-8", "Unknown selector endpoint\n");
+      respond_best_effort(
+          client, 404, "Not Found", "text/plain; charset=utf-8", "Unknown selector endpoint\n", client_deadline);
       continue;
     }
     auto saved = Save(game_dir, polygon);
     if (!saved.ok()) {
       respond_best_effort(
-          client, 500, "Internal Server Error", "text/plain; charset=utf-8", std::string(saved.message()));
+          client,
+          500,
+          "Internal Server Error",
+          "text/plain; charset=utf-8",
+          std::string(saved.message()),
+          client_deadline);
       return saved;
     }
-    respond_best_effort(client, 200, "OK", "text/plain; charset=utf-8", "Scoreboard configuration saved\n");
+    respond_best_effort(
+        client, 200, "OK", "text/plain; charset=utf-8", "Scoreboard configuration saved\n", client_deadline);
     return absl::OkStatus();
   }
   return absl::DeadlineExceededError("Scoreboard selector capability expired");

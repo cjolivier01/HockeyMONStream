@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <regex>
@@ -99,6 +100,7 @@ bool exercise_http_selector(const std::filesystem::path& directory) {
     ::close(output_pipe[1]);
     ::unsetenv("HM_NO_SCOREBOARD");
     ::unsetenv("HM_SCOREBOARD_BIND_HOST");
+    ::setenv("HM_SCOREBOARD_CLIENT_TIMEOUT_MS", "250", 1);
     const auto status = hm::stitching::ScoreboardSelector::Run(directory);
     _exit(status.ok() ? 0 : 1);
   }
@@ -115,19 +117,70 @@ bool exercise_http_selector(const std::filesystem::path& directory) {
       break;
     startup.append(buffer.data(), static_cast<size_t>(count));
   }
-  ::close(output_pipe[0]);
   bool ok = std::regex_search(startup, match, url_pattern);
   if (ok) {
     const unsigned port = static_cast<unsigned>(std::stoul(match[1].str()));
     const std::string token = match[2].str();
-    ok &= http_request(port, "/?token=wrong", false).rfind("HTTP/1.1 403 ", 0) == 0;
-    ok &= http_request(port, "/?token=" + token, false).rfind("HTTP/1.1 200 ", 0) == 0;
-    ok &= http_request(port, "/none?token=" + token, true).rfind("HTTP/1.1 200 ", 0) == 0;
+    int ready_pipe[2]{};
+    const bool pipe_created = ::pipe(ready_pipe) == 0;
+    ok &= pipe_created;
+    pid_t slow_client = -1;
+    if (pipe_created)
+      slow_client = ::fork();
+    ok &= slow_client >= 0;
+    if (slow_client == 0) {
+      ::close(ready_pipe[0]);
+      const int socket = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+      sockaddr_in address{};
+      address.sin_family = AF_INET;
+      address.sin_port = htons(port);
+      ::inet_pton(AF_INET, "127.0.0.1", &address.sin_addr);
+      const bool connected =
+          socket >= 0 && ::connect(socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
+      const char ready = connected && ::send(socket, "G", 1, MSG_NOSIGNAL) == 1 ? '1' : '0';
+      const ssize_t ready_written = ::write(ready_pipe[1], &ready, 1);
+      ::close(ready_pipe[1]);
+      ::usleep(1500 * 1000);
+      if (socket >= 0)
+        ::close(socket);
+      _exit(ready == '1' && ready_written == 1 ? 0 : 1);
+    }
+    if (slow_client > 0) {
+      ::close(ready_pipe[1]);
+      char ready = '0';
+      ok &= expect(::read(ready_pipe[0], &ready, 1) == 1 && ready == '1', "slow scoreboard test client must connect");
+      ::close(ready_pipe[0]);
+      ::usleep(50 * 1000);
+      const auto request_started = std::chrono::steady_clock::now();
+      const std::string forbidden_response = http_request(port, "/?token=wrong", false);
+      ok &= expect(
+          forbidden_response.rfind("HTTP/1.1 403 ", 0) == 0,
+          "selector must resume with the queued request after a slow client deadline");
+      const auto request_elapsed = std::chrono::steady_clock::now() - request_started;
+      ok &= expect(
+          request_elapsed < std::chrono::seconds(1),
+          "a stalled scoreboard client must not block the single-threaded selector");
+      int slow_status = 0;
+      ok &= expect(
+          ::waitpid(slow_client, &slow_status, 0) == slow_client && WIFEXITED(slow_status) &&
+              WEXITSTATUS(slow_status) == 0,
+          "slow scoreboard test client must exit normally");
+    } else if (pipe_created) {
+      ::close(ready_pipe[0]);
+      ::close(ready_pipe[1]);
+    }
+    ok &= expect(
+        http_request(port, "/?token=" + token, false).rfind("HTTP/1.1 200 ", 0) == 0,
+        "valid scoreboard selector GET must succeed");
+    ok &= expect(
+        http_request(port, "/none?token=" + token, true).rfind("HTTP/1.1 200 ", 0) == 0,
+        "valid scoreboard selector POST must succeed");
   } else {
     ::kill(child, SIGTERM);
   }
   int status = 0;
   ok &= ::waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+  ::close(output_pipe[0]);
   if (!ok)
     std::cerr << "FAIL: native scoreboard HTTP selector did not complete: " << startup << '\n';
   return ok;

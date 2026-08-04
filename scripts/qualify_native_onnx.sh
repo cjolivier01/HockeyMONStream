@@ -23,6 +23,43 @@ if [[ ! -x "${HM_PARITY_PYTHON}" ]]; then
   echo "HM_PARITY_PYTHON is not executable: ${HM_PARITY_PYTHON}" >&2
   exit 2
 fi
+
+hockeymom_root="$("${HM_PARITY_PYTHON}" -c \
+  'from pathlib import Path; import hmlib; print(Path(hmlib.__file__).resolve().parent.parent)')"
+if [[ "$(git -C "${hockeymom_root}" rev-parse --is-inside-work-tree 2>/dev/null || true)" != "true" ]]; then
+  echo "HM_PARITY_PYTHON does not import hmlib from a HockeyMOM Git checkout: ${hockeymom_root}" >&2
+  exit 2
+fi
+expected_hockeymom_revision="$(tr -d '[:space:]' < "${TOPDIR}/scripts/hmlib-runtime-revision")"
+actual_hockeymom_revision="$(git -C "${hockeymom_root}" rev-parse HEAD)"
+if [[ "${actual_hockeymom_revision}" != "${expected_hockeymom_revision}" ]]; then
+  echo "HockeyMOM oracle revision mismatch: expected ${expected_hockeymom_revision}, got ${actual_hockeymom_revision}" >&2
+  exit 2
+fi
+if [[ -n "$(git -C "${hockeymom_root}" status --porcelain --untracked-files=all -- \
+    hmlib/config.py hmlib/models hmlib/segm hmlib/stitching)" ]]; then
+  echo "HockeyMOM oracle sources contain uncommitted changes under ${hockeymom_root}" >&2
+  exit 2
+fi
+oracle_revision_manifest="${TOPDIR}/scripts/hockeymom-oracle-revisions"
+while read -r expected_revision relative_checkout; do
+  [[ -z "${expected_revision}" || "${expected_revision}" == \#* ]] && continue
+  checkout="${hockeymom_root}/${relative_checkout}"
+  if [[ "$(git -C "${checkout}" rev-parse --is-inside-work-tree 2>/dev/null || true)" != "true" ]]; then
+    echo "Pinned HockeyMOM oracle checkout is missing: ${checkout}" >&2
+    exit 2
+  fi
+  actual_revision="$(git -C "${checkout}" rev-parse HEAD)"
+  if [[ "${actual_revision}" != "${expected_revision}" ]]; then
+    echo "HockeyMOM oracle checkout mismatch for ${relative_checkout}: expected ${expected_revision}, got ${actual_revision}" >&2
+    exit 2
+  fi
+  if [[ -n "$(git -C "${checkout}" status --porcelain --untracked-files=all)" ]]; then
+    echo "HockeyMOM oracle checkout contains uncommitted tracked changes: ${checkout}" >&2
+    exit 2
+  fi
+done < "${oracle_revision_manifest}"
+
 if [[ ! -f "${HM_PARITY_RINK_CONFIG:-}" ]]; then
   echo "HM_PARITY_RINK_CONFIG must name the pinned HockeyMOM rink config." >&2
   exit 2
@@ -36,9 +73,19 @@ if [[ ! -f "${model_manifest}" ]]; then
   echo "Native ONNX Python model manifest is missing: ${model_manifest}" >&2
   exit 2
 fi
-for model_entry in "rink-config:${HM_PARITY_RINK_CONFIG}" "rink-checkpoint:${HM_PARITY_RINK_CHECKPOINT}"; do
+rink_model="${HM_RINK_ONNX_MODEL:-${HOME}/.cache/hmstream/models/ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx}"
+matcher_model="${HM_FEATURE_MATCHER_ONNX_MODEL:-${HOME}/.cache/hmstream/models/aliked-lightglue-k2048-ea4a4ab2cb556958.onnx}"
+for model_entry in \
+    "rink-config:${HM_PARITY_RINK_CONFIG}" \
+    "rink-checkpoint:${HM_PARITY_RINK_CHECKPOINT}" \
+    "native-rink-onnx:${rink_model}" \
+    "native-feature-matcher-onnx:${matcher_model}"; do
   model_name="${model_entry%%:*}"
   model_path="${model_entry#*:}"
+  if [[ ! -f "${model_path}" ]]; then
+    echo "Pinned model is missing for ${model_name}: ${model_path}" >&2
+    exit 2
+  fi
   expected_hash="$(awk -v name="${model_name}" '$2 == name { print $1 }' "${model_manifest}")"
   actual_hash="$(sha256sum "${model_path}")"
   actual_hash="${actual_hash%% *}"
@@ -47,6 +94,10 @@ for model_entry in "rink-config:${HM_PARITY_RINK_CONFIG}" "rink-checkpoint:${HM_
     exit 2
   fi
 done
+export HM_RINK_ONNX_MODEL
+HM_RINK_ONNX_MODEL="$(realpath "${rink_model}")"
+export HM_FEATURE_MATCHER_ONNX_MODEL
+HM_FEATURE_MATCHER_ONNX_MODEL="$(realpath "${matcher_model}")"
 if [[ -z "${HM_ONNX_PARITY_GAME_DIRS:-}" ]]; then
   echo "HM_ONNX_PARITY_GAME_DIRS must contain at least two colon-separated fixture directories." >&2
   exit 2
@@ -63,9 +114,21 @@ if (( ${#fixture_dirs[@]} < 2 )); then
   exit 2
 fi
 
+declare -A seen_fixture_paths=()
+declare -A seen_fixture_names=()
 for fixture_dir in "${fixture_dirs[@]}"; do
   fixture_dir="$(realpath "${fixture_dir}")"
   fixture_name="$(basename "${fixture_dir}")"
+  if [[ -n "${seen_fixture_paths[${fixture_dir}]:-}" ]]; then
+    echo "Release qualification fixture path is duplicated: ${fixture_dir}" >&2
+    exit 2
+  fi
+  if [[ -n "${seen_fixture_names[${fixture_name}]:-}" ]]; then
+    echo "Release qualification fixture identity is duplicated: ${fixture_name}" >&2
+    exit 2
+  fi
+  seen_fixture_paths["${fixture_dir}"]=1
+  seen_fixture_names["${fixture_name}"]=1
   for fixture_file in left.png right.png s.png; do
     fixture_path="${fixture_dir}/${fixture_file}"
     if [[ ! -f "${fixture_path}" ]]; then

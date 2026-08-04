@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -15,6 +16,18 @@ namespace hm::stitching {
 
 class HuginProject {
  public:
+  class ArtifactLock {
+   public:
+    ~ArtifactLock();
+    ArtifactLock(const ArtifactLock&) = delete;
+    ArtifactLock& operator=(const ArtifactLock&) = delete;
+
+   private:
+    friend class HuginProject;
+    explicit ArtifactLock(int descriptor) : descriptor_(descriptor) {}
+    int descriptor_{-1};
+  };
+
   struct CameraPose {
     double roll;
     double pitch;
@@ -40,6 +53,15 @@ class HuginProject {
       const std::filesystem::path& game_dir,
       const std::vector<FeatureMatch>& matches,
       const Options& options);
+
+  // Recover an interrupted durable publication before opening the flat Hugin
+  // artifact set from game_dir.
+  static absl::Status Recover(const std::filesystem::path& game_dir);
+
+  // Recover and retain the publication lock while a caller decodes the flat
+  // artifact set. This prevents a concurrent calibration from exposing a
+  // mixed generation to ControlMasks readers.
+  static absl::StatusOr<std::unique_ptr<ArtifactLock>> RecoverAndLock(const std::filesystem::path& game_dir);
 };
 
 } // namespace hm::stitching

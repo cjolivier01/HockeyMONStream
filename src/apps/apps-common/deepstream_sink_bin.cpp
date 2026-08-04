@@ -58,6 +58,35 @@ namespace {
 constexpr guint kWebRtcPayloadType = 96;
 constexpr guint kDefaultWebRtcPort = 8080;
 
+#ifndef IS_TEGRA
+bool use_nv3d_render_sink() {
+  const char* configured = std::getenv("HM_RENDER_SINK");
+  if (configured != nullptr && *configured != '\0') {
+    std::string requested(configured);
+    std::transform(requested.begin(), requested.end(), requested.begin(), [](unsigned char c) {
+      return static_cast<char>(std::toupper(c));
+    });
+    if (requested == "NVEGLGLESSINK" || requested == "EGL") {
+      return false;
+    }
+    if (requested != "NV3DSINK" && requested != "NV3D") {
+      g_printerr(
+          "Unsupported HM_RENDER_SINK=%s; using the desktop nv3dsink default "
+          "(supported values: nv3dsink, nveglglessink)\n",
+          configured);
+    }
+  }
+
+  GstElementFactory* factory = gst_element_factory_find(NVDS_ELEM_SINK_3D);
+  if (factory == nullptr) {
+    g_printerr("nv3dsink is unavailable; falling back to nveglglessink\n");
+    return false;
+  }
+  gst_object_unref(factory);
+  return true;
+}
+#endif
+
 const char kWebRtcClientHtml[] = R"html(<!doctype html>
 <html>
 <head>
@@ -748,6 +777,10 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
 
   const guint uid = next_uid++;
 
+#ifndef IS_TEGRA
+  const bool use_nv3d = use_nv3d_render_sink();
+#endif
+
   struct cudaDeviceProp prop;
   cudaGetDeviceProperties(&prop, config->gpu_id);
 
@@ -763,7 +796,7 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
 #ifndef IS_TEGRA
     case NV_DS_SINK_RENDER_EGL:
       GST_CAT_INFO(NVDS_APP, "NVvideo renderer\n");
-      bin->sink = gst_element_factory_make(NVDS_ELEM_SINK_EGL, elem_name);
+      bin->sink = gst_element_factory_make(use_nv3d ? NVDS_ELEM_SINK_3D : NVDS_ELEM_SINK_EGL, elem_name);
       g_object_set(
           G_OBJECT(bin->sink),
           "window-x",
@@ -827,7 +860,11 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
 
   g_object_set(G_OBJECT(bin->sink), "sync", config->sync, "max-lateness", -1, "async", FALSE, "qos", config->qos, NULL);
 
-  if (!prop.integrated) {
+  if (!prop.integrated
+#ifndef IS_TEGRA
+      || use_nv3d
+#endif
+  ) {
     g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin_cap_filter%d", uid);
     bin->cap_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, elem_name);
     if (!bin->cap_filter) {
@@ -840,7 +877,7 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
   g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin_transform%d", uid);
 #ifndef IS_TEGRA
   if (config->type == NV_DS_SINK_RENDER_EGL) {
-    if (prop.integrated) {
+    if (prop.integrated && !use_nv3d) {
       bin->transform = gst_element_factory_make(NVDS_ELEM_EGLTRANSFORM, elem_name);
     } else {
       bin->transform = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, elem_name);
@@ -851,12 +888,13 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
     }
     gst_bin_add(GST_BIN(bin->bin), bin->transform);
 
-    if (!prop.integrated) {
+    if (!prop.integrated || use_nv3d) {
       caps = gst_caps_new_empty_simple("video/x-raw");
 
-      GstCapsFeatures* feature = NULL;
-      feature = gst_caps_features_new(MEMORY_FEATURES, NULL);
-      gst_caps_set_features(caps, 0, feature);
+      if (!use_nv3d) {
+        GstCapsFeatures* feature = gst_caps_features_new(MEMORY_FEATURES, NULL);
+        gst_caps_set_features(caps, 0, feature);
+      }
       g_object_set(G_OBJECT(bin->cap_filter), "caps", caps, NULL);
 
       g_object_set(G_OBJECT(bin->transform), "gpu-id", config->gpu_id, NULL);

@@ -55,6 +55,30 @@ namespace {
 constexpr int kExposureEvSliderZero = 40;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
 
+QString development_runtime_root() {
+  QString application_path = QFileInfo(QCoreApplication::applicationFilePath()).canonicalFilePath();
+  if (application_path.isEmpty()) {
+    application_path = QFileInfo(QCoreApplication::applicationFilePath()).absoluteFilePath();
+  }
+  const QString application_name = QFileInfo(application_path).fileName();
+  QDir candidate_root(QDir::currentPath());
+  while (true) {
+    const QString candidate_application =
+        candidate_root.filePath(QString("bazel-bin/src/apps/hmstream-ui/%1").arg(application_name));
+    const QString candidate_path = QFileInfo(candidate_application).canonicalFilePath();
+    const QString runner = candidate_root.filePath("bazel-bin/src/apps/pipeline-app/hmstream-cli");
+    const QString configs = candidate_root.filePath("configs");
+    if (!candidate_path.isEmpty() && candidate_path == application_path && QFileInfo(runner).isExecutable() &&
+        QFileInfo(configs).isDir()) {
+      return candidate_root.absolutePath();
+    }
+    if (!candidate_root.cdUp()) {
+      break;
+    }
+  }
+  return {};
+}
+
 struct CameraSliderSpec {
   const char* id;
   const char* label;
@@ -419,6 +443,12 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_di
 }
 
 void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QString& working_dir) {
+  // DeepStream 9.1's legacy nvstreammux rejects the native 8K source caps used
+  // by stitching. Match run.sh while preserving an explicit diagnostic
+  // override from the caller.
+  if (env.value("USE_NEW_NVSTREAMMUX").isEmpty()) {
+    env.insert("USE_NEW_NVSTREAMMUX", "yes");
+  }
   QDir registry_dir(QDir(working_dir).filePath(".cache/gstreamer-1.0"));
   if (!registry_dir.mkpath(".")) {
     registry_dir = QDir(QDir::home().filePath(".cache/gstreamer-1.0"));
@@ -1343,6 +1373,10 @@ QString HmStreamWindow::pipelineRunnerPath() const {
   if (!test_runner.isEmpty()) {
     return QString::fromLocal8Bit(test_runner);
   }
+  const QString development_root = development_runtime_root();
+  if (!development_root.isEmpty()) {
+    return QDir(development_root).filePath("bazel-bin/src/apps/pipeline-app/hmstream-cli");
+  }
   const QString installed_runner = "/opt/hmstream/bin/hmstream-cli";
   if (QFileInfo::exists(installed_runner)) {
     return installed_runner;
@@ -1359,6 +1393,13 @@ QString HmStreamWindow::pipelineRunnerPath() const {
 }
 
 QString HmStreamWindow::pipelineConfigPath(const QString& config_name) const {
+  const QString development_root = development_runtime_root();
+  if (!development_root.isEmpty()) {
+    const QString development_config = QDir(QDir(development_root).filePath("configs")).filePath(config_name);
+    if (QFileInfo::exists(development_config)) {
+      return development_config;
+    }
+  }
   const QString installed_config = QDir("/opt/hmstream/configs").filePath(config_name);
   if (QFileInfo::exists(installed_config)) {
     return installed_config;
@@ -1367,6 +1408,13 @@ QString HmStreamWindow::pipelineConfigPath(const QString& config_name) const {
 }
 
 QString HmStreamWindow::pipelineWorkingDirectory() const {
+  if (!qgetenv("HMSTREAM_UI_TEST_RUNNER").isEmpty()) {
+    return QDir::currentPath();
+  }
+  const QString development_root = development_runtime_root();
+  if (!development_root.isEmpty()) {
+    return development_root;
+  }
   if (QFileInfo::exists("/opt/hmstream/bin/hmstream-cli")) {
     return "/opt/hmstream";
   }

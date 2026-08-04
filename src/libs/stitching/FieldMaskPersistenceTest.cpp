@@ -62,6 +62,17 @@ int main() {
       std::ofstream(root / "config.yaml") << "interrupted: true\n";
       cv::imwrite((root / "rink_mask_0.png").string(), cv::Mat(2, 2, CV_8U, cv::Scalar(255)));
     }
+    ::setenv("HM_TEST_RINK_ROLLBACK_FAIL_AFTER", "1", 1);
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()),
+        "an interrupted rink rollback must remain recoverable");
+    ::unsetenv("HM_TEST_RINK_ROLLBACK_FAIL_AFTER");
+    ok &= expect(fs::exists(interrupted), "an interrupted rink rollback must retain its transaction");
+    ok &= expect(
+        fs::is_regular_file(interrupted / "previous" / "config.yaml") &&
+            fs::is_regular_file(interrupted / "previous" / "rink_mask_0.png") &&
+            fs::is_regular_file(interrupted / "previous" / "rink_mask_1.png"),
+        "an interrupted rink rollback must retain every durable backup");
     ok &= expect(hm::stitching::is_field_mask_configured(root.string()), "prepared rink transaction must recover");
     const YAML::Node recovered = YAML::LoadFile((root / "config.yaml").string());
     ok &= expect(recovered["unrelated"]["keep"].as<bool>(), "rink recovery must restore the prior config");
@@ -69,7 +80,56 @@ int main() {
         cv::imread((root / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE).size() == cv::Size(32, 24),
         "rink recovery must restore the prior mask generation");
     ok &= expect(!fs::exists(interrupted), "recovered rink transaction must be cleaned");
+
+    const fs::path malformed = root / ".hmstream-rink-malformed";
+    fs::create_directories(malformed);
+    std::ofstream(malformed / "state") << "PREPARE\n";
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()), "unknown rink transaction state must fail closed");
+    ok &= expect(fs::exists(malformed), "unknown rink transaction state must preserve its journal");
+    ok &= expect(
+        YAML::LoadFile((root / "config.yaml").string())["unrelated"]["keep"].as<bool>(),
+        "unknown rink transaction state must not touch the committed profile");
+    fs::remove_all(malformed);
+
+    const fs::path missing_manifest = root / ".hmstream-rink-missing-manifest";
+    fs::create_directories(missing_manifest / "previous");
+    std::ofstream(missing_manifest / "state") << "PREPARED\n";
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()),
+        "prepared rink transaction without a manifest must fail closed");
+    ok &= expect(fs::exists(missing_manifest), "missing rink manifest must preserve its journal");
+    fs::remove_all(missing_manifest);
+
+    const fs::path malicious = root / ".hmstream-rink-malicious";
+    fs::create_directories(malicious / "previous");
+    std::ofstream(malicious / "state") << "PREPARED\n";
+    std::ofstream(malicious / "new-files") << "rink_mask_0.png\nconfig.yaml\n.hmstream-rink.lock\n";
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()), "unexpected rink manifest artifact must fail closed");
+    ok &= expect(fs::exists(malicious), "invalid rink manifest must preserve its journal");
+    ok &= expect(fs::is_regular_file(root / "config.yaml"), "invalid rink manifest must not remove profile files");
+    fs::remove_all(malicious);
+
+    const fs::path unprepared = root / ".hmstream-rink-unprepared";
+    fs::create_directories(unprepared);
+    std::ofstream(unprepared / "temporary") << "not published\n";
+    ok &= expect(
+        hm::stitching::is_field_mask_configured(root.string()) && !fs::exists(unprepared),
+        "unprepared rink staging without publication metadata must be cleaned");
+
+    const fs::path committed = root / ".hmstream-rink-committed";
+    fs::create_directories(committed);
+    std::ofstream(committed / "state") << "COMMITTED\n";
+    ok &= expect(
+        hm::stitching::is_field_mask_configured(root.string()) && !fs::exists(committed),
+        "committed rink journal must be cleaned without rollback");
   }
+  hm::stitching::RinkProfile one_mask = profile;
+  one_mask.masks.resize(1);
+  status = hm::stitching::save_rink_profile(root.string(), one_mask);
+  ok &= expect(status.ok(), "a smaller rink mask generation must persist");
+  ok &= expect(!fs::exists(root / "rink_mask_1.png"), "obsolete rink masks must be removed transactionally");
   profile.masks[1] = cv::Mat(10, 10, CV_8U);
   ok &= expect(!hm::stitching::save_rink_profile(root.string(), profile).ok(), "mixed mask dimensions must fail");
   fs::remove_all(root);

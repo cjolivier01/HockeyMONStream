@@ -85,6 +85,15 @@ std::string host_arch_name() {
 #endif
 }
 
+bool manages_its_own_window(GstElement* sink) {
+  if (sink == nullptr) {
+    return false;
+  }
+  GstElementFactory* factory = gst_element_get_factory(sink);
+  return factory != nullptr &&
+         g_strcmp0(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)), NVDS_ELEM_SINK_3D) == 0;
+}
+
 void prepend_env_path(const char* name, const fs::path& dir) {
   if (dir.empty() || !fs::is_directory(dir)) {
     return;
@@ -673,7 +682,8 @@ absl::Status PipelineApplication::createMainLoop(
   bool has_video_overlay_sink = false;
   for (const auto& app_ctx : app_contexts) {
     for (guint j = 0; j < app_ctx->config.num_sink_sub_bins; j++) {
-      if (GST_IS_VIDEO_OVERLAY(app_ctx->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink)) {
+      GstElement* sink = app_ctx->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink;
+      if (GST_IS_VIDEO_OVERLAY(sink) && !manages_its_own_window(sink)) {
         has_video_overlay_sink = true;
         break;
       }
@@ -706,7 +716,8 @@ absl::Status PipelineApplication::createMainLoop(
     }
 #endif
     for (guint j = 0; j < app_contexts[i]->config.num_sink_sub_bins; j++) {
-      if (!GST_IS_VIDEO_OVERLAY(app_contexts[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink))
+      GstElement* sink = app_contexts[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink;
+      if (!GST_IS_VIDEO_OVERLAY(sink) || manages_its_own_window(sink))
         continue;
 
       guint width = 0, height = 0;
@@ -772,9 +783,8 @@ absl::Status PipelineApplication::createMainLoop(
         XMapRaised(display_, windows[i]);
         XSync(display_, 1);
       }
-      gst_video_overlay_set_window_handle(
-          GST_VIDEO_OVERLAY(app_contexts[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink), (gulong)windows[i]);
-      gst_video_overlay_expose(GST_VIDEO_OVERLAY(app_contexts[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink));
+      gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), (gulong)windows[i]);
+      gst_video_overlay_expose(GST_VIDEO_OVERLAY(sink));
 
       if (!use_external_window && !x_event_thread_)
         x_event_thread_ = g_thread_new("nvds-window-event-thread", nvds_x_event_thread_static, nullptr);
@@ -2461,12 +2471,12 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
     return absl::InternalError("Failed to set pipeline to PAUSED").raw_code();
   }
   for (i = 0; i < app_ctx_ptr->config.num_sink_sub_bins; i++) {
-    if (!GST_IS_VIDEO_OVERLAY(app_ctx_ptr->pipeline.instance_bins[0].sink_bin.sub_bins[i].sink))
+    GstElement* sink = app_ctx_ptr->pipeline.instance_bins[0].sink_bin.sub_bins[i].sink;
+    if (!GST_IS_VIDEO_OVERLAY(sink) || manages_its_own_window(sink))
       continue;
     gst_video_overlay_set_window_handle(
-        GST_VIDEO_OVERLAY(app_ctx_ptr->pipeline.instance_bins[0].sink_bin.sub_bins[i].sink),
-        (gulong)stage_windows_.at(current_stage_)[app_ctx_ptr->index]);
-    gst_video_overlay_expose(GST_VIDEO_OVERLAY(app_ctx_ptr->pipeline.instance_bins[0].sink_bin.sub_bins[i].sink));
+        GST_VIDEO_OVERLAY(sink), (gulong)stage_windows_.at(current_stage_)[app_ctx_ptr->index]);
+    gst_video_overlay_expose(GST_VIDEO_OVERLAY(sink));
   }
   if (gst_element_set_state(app_ctx_ptr->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
     g_print("\ncan't set pipeline to playing state.\n");

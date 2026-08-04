@@ -40,6 +40,7 @@
 #include "hstream/src/libs/common/pipeline_utils.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/Orientation.h"
 
 namespace fs = std::filesystem;
@@ -583,6 +584,10 @@ std::optional<std::tuple<int, int>> get_canvas_size(const std::string& game_dir)
   // Control masks require `seam_file.png`. If it is missing, create a simple hard-seam fallback so we can still
   // determine canvas sizing and avoid the pipeline booting into a gray passthrough mode.
   (void)stitching::maybe_create_default_seam_file(game_dir);
+  auto artifact_lock = stitching::HuginProject::RecoverAndLock(game_dir);
+  if (!artifact_lock.ok()) {
+    return std::nullopt;
+  }
   hm::pano::ControlMasks control_masks(game_dir);
   if (!control_masks.is_valid()) {
     return std::nullopt;

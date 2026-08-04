@@ -102,10 +102,12 @@ cc_library(
   srcs = ["HuginProject.cpp"],
   hdrs = ["HuginProject.h"],
   include_prefix = INCLUDE_PREFIX,
+  linkopts = ["-ltiff"],
   visibility = ["//visibility:public"],
   deps = [
     ":feature_matcher",
     "//src/libs/common:utils",
+    "@opencv_linux//:opencv",
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
   ],
@@ -114,7 +116,10 @@ cc_library(
 cc_test(
   name = "hugin_project_test",
   srcs = ["HuginProjectTest.cpp"],
-  deps = [":hugin_project"],
+  deps = [
+    ":hugin_project",
+    "@opencv_linux//:opencv",
+  ],
 )
 
 cc_test(

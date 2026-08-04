@@ -156,11 +156,12 @@ std::optional<HuginOutcome> configure_hugin(
   const auto projection = hm::stitching::HuginProject::ParseProjection(*project);
   const auto first = hm::stitching::HuginProject::ParseCameraPose(*project, 0);
   const auto second = hm::stitching::HuginProject::ParseCameraPose(*project, 1);
-  if (!canvas.ok() || !projection.ok() || *projection != 1 || !first.ok() || !second.ok()) {
+  const cv::Mat seam = cv::imread((output_dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  if (!canvas.ok() || !projection.ok() || *projection != 1 || !first.ok() || !second.ok() || seam.empty()) {
     std::cerr << "FAIL: optimized Hugin outcome could not be parsed for " << output_dir.filename() << '\n';
     return std::nullopt;
   }
-  return HuginOutcome{*first, *second, canvas->first, canvas->second};
+  return HuginOutcome{*first, *second, static_cast<size_t>(seam.cols), static_cast<size_t>(seam.rows)};
 }
 
 double angular_delta(double left, double right) {
@@ -378,8 +379,8 @@ int main(int argc, char** argv) {
   // provider-dependent fringe of marginal matches. Require a meaningful set
   // of identical, subpixel correspondences plus a bounded total count here;
   // the mandatory gate below validates the actual optimized Hugin result.
-  if (shared_spatial_pairs < 64 || accepted_count_ratio < 0.8 || accepted_count_ratio > 1.2 ||
-      maximum_coordinate_delta > 0.01) {
+  if (shared_spatial_pairs < 64 || identical_spatial_pair_ratio < 0.8 || accepted_count_ratio < 0.8 ||
+      accepted_count_ratio > 1.2 || maximum_coordinate_delta > 0.01) {
     std::cerr << "FAIL: native/Python RaCo-ALIKED parity spatial_pair_ratio=" << identical_spatial_pair_ratio
               << " count_ratio=" << accepted_count_ratio
               << " diagnostic_index_pair_ratio=" << identical_index_pair_ratio
@@ -525,13 +526,18 @@ int main(int argc, char** argv) {
       const double native_aspect = static_cast<double>(native_hugin->width) / native_hugin->height;
       const double legacy_aspect = static_cast<double>(legacy_hugin->width) / legacy_hugin->height;
       const double aspect_delta = std::abs(native_aspect - legacy_aspect) / legacy_aspect;
+      const double width_delta =
+          std::abs(static_cast<double>(native_hugin->width) - legacy_hugin->width) / legacy_hugin->width;
+      const double height_delta =
+          std::abs(static_cast<double>(native_hugin->height) - legacy_hugin->height) / legacy_hugin->height;
       std::cerr << "INFO: Hugin outcome native_pose=" << native_pose.roll << ',' << native_pose.pitch << ','
                 << native_pose.yaw << " legacy_pose=" << legacy_pose.roll << ',' << legacy_pose.pitch << ','
                 << legacy_pose.yaw << " pose_delta=" << roll_delta << ',' << pitch_delta << ',' << yaw_delta
                 << " native_canvas=" << native_hugin->width << 'x' << native_hugin->height
                 << " legacy_canvas=" << legacy_hugin->width << 'x' << legacy_hugin->height
-                << " aspect_delta=" << aspect_delta << '\n';
-      if (roll_delta > 5.0 || pitch_delta > 5.0 || yaw_delta > 5.0 || aspect_delta > 0.15) {
+                << " canvas_delta=" << width_delta << ',' << height_delta << " aspect_delta=" << aspect_delta << '\n';
+      if (roll_delta > 5.0 || pitch_delta > 5.0 || yaw_delta > 5.0 || width_delta > 0.15 || height_delta > 0.15 ||
+          aspect_delta > 0.15) {
         std::cerr << "FAIL: native Hugin calibration diverges from the legacy production outcome\n";
         return 1;
       }

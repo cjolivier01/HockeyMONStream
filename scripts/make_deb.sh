@@ -1029,6 +1029,7 @@ X-HMStream-Source-Epoch: ${SOURCE_EPOCH}
 Maintainer: Christopher Olivier <cjolivier01@gmail.com>
 Installed-Size: ${INSTALLED_SIZE}
 Depends: ${SHLIB_DEPENDS},
+ ca-certificates,
  deepstream-9.1 (= ${DEEPSTREAM_REQUIRED_VERSION}),
  ffmpeg,
  gstreamer1.0-plugins-bad,

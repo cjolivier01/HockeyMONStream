@@ -13,15 +13,22 @@
 #include <limits>
 #include <locale>
 #include <map>
+#include <memory>
 #include <optional>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
 
+#include <fcntl.h>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
+#include <sys/file.h>
 #include <sys/stat.h>
+#include <tiffio.h>
 #include <unistd.h>
 
 #include "absl/status/status.h"
@@ -35,6 +42,10 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr size_t kMinimumUsableMatches = 16;
+constexpr double kMaximumOptimizationRmsPixels = 50.0;
+constexpr size_t kHardMaximumCanvasDimension = 32768;
+constexpr uint64_t kHardMaximumCanvasPixels = 128ULL * 1024ULL * 1024ULL;
+constexpr const char* kStitchTransactionPrefix = ".hmstream-stitch-";
 
 const std::array<const char*, 8> kRequiredArtifacts = {
     "hm_project.pto",
@@ -79,6 +90,7 @@ std::map<std::string, std::string> environment() {
     if (separator != std::string::npos)
       values[item.substr(0, separator)] = item.substr(separator + 1);
   }
+  values["LC_ALL"] = "C";
   return values;
 }
 
@@ -97,9 +109,18 @@ absl::StatusOr<std::string> executable(const char* override_name, const char* na
   return absl::NotFoundError(std::string("Required Hugin executable not found: ") + name);
 }
 
-absl::Status run_checked(const std::vector<std::string>& command, const fs::path& working_dir) {
+absl::Status run_checked(
+    const std::vector<std::string>& command,
+    const fs::path& working_dir,
+    std::string* captured = nullptr) {
   const int exit_code = hm::run_command(
-      command, working_dir.string(), environment(), [](const std::string& error, const std::string& output) {
+      command, working_dir.string(), environment(), [captured](const std::string& error, const std::string& output) {
+        if (captured != nullptr) {
+          captured->append(error);
+          captured->push_back('\n');
+          captured->append(output);
+          captured->push_back('\n');
+        }
         if (!error.empty())
           std::cerr << error << '\n';
         if (!output.empty())
@@ -124,6 +145,487 @@ absl::Status validate_nonempty_file(const fs::path& path) {
     return absl::FailedPreconditionError("Expected Hugin artifact is empty: " + path.string());
   }
   return absl::OkStatus();
+}
+
+std::vector<std::string> artifact_names() {
+  std::vector<std::string> names(kRequiredArtifacts.begin(), kRequiredArtifacts.end());
+  for (const char* optional : kOptionalArtifacts)
+    names.emplace_back(optional);
+  return names;
+}
+
+bool is_artifact_name(const std::string& name) {
+  const auto names = artifact_names();
+  return std::find(names.begin(), names.end(), name) != names.end();
+}
+
+absl::Status fsync_path(const fs::path& path, bool directory = false) {
+  const int flags = O_RDONLY | O_CLOEXEC | (directory ? O_DIRECTORY : 0);
+  const int descriptor = ::open(path.c_str(), flags);
+  if (descriptor < 0)
+    return absl::InternalError("Unable to open Hugin artifact for fsync: " + path.string());
+  const int result = ::fsync(descriptor);
+  const std::string message = result == 0 ? std::string() : std::strerror(errno);
+  ::close(descriptor);
+  if (result != 0)
+    return absl::InternalError("Unable to fsync Hugin artifact " + path.string() + ": " + message);
+  return absl::OkStatus();
+}
+
+absl::Status write_transaction_file(const fs::path& path, const std::string& contents) {
+  auto status = write_file(path, contents);
+  if (!status.ok())
+    return status;
+  return fsync_path(path);
+}
+
+absl::StatusOr<int> lock_stitch_transactions(const fs::path& root) {
+  const fs::path path = root / ".hmstream-stitch.lock";
+  const int descriptor = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+  if (descriptor < 0)
+    return absl::InternalError("Unable to open stitch transaction lock: " + std::string(std::strerror(errno)));
+  if (::flock(descriptor, LOCK_EX) != 0) {
+    const std::string message = std::strerror(errno);
+    ::close(descriptor);
+    return absl::InternalError("Unable to lock stitch transaction: " + message);
+  }
+  return descriptor;
+}
+
+absl::StatusOr<std::string> read_transaction_state(const fs::path& transaction, const std::string& transaction_name) {
+  const fs::path state_path = transaction / "state";
+  std::error_code error;
+  const bool state_exists = fs::exists(state_path, error);
+  if (error)
+    return absl::InternalError("Unable to inspect " + transaction_name + " transaction state: " + error.message());
+  if (!state_exists)
+    return std::string("UNPREPARED");
+  std::ifstream input(state_path);
+  std::string state;
+  if (!input || !std::getline(input, state) || (!input.good() && !input.eof()) || state.empty()) {
+    return absl::FailedPreconditionError("Unable to read durable " + transaction_name + " transaction state");
+  }
+  std::string trailing;
+  if (std::getline(input, trailing) && !trailing.empty()) {
+    return absl::FailedPreconditionError("Invalid multiline " + transaction_name + " transaction state");
+  }
+  if (state != "PREPARED" && state != "COMMITTED") {
+    return absl::FailedPreconditionError("Unknown " + transaction_name + " transaction state: " + state);
+  }
+  return state;
+}
+
+absl::Status recover_stitch_transactions_locked(const fs::path& root) {
+  std::error_code error;
+  for (const auto& entry : fs::directory_iterator(root, error)) {
+    if (error)
+      return absl::InternalError("Unable to inspect stitch transactions: " + error.message());
+    const std::string directory_name = entry.path().filename().string();
+    if (!entry.is_directory(error) || error || directory_name.rfind(kStitchTransactionPrefix, 0) != 0) {
+      error.clear();
+      continue;
+    }
+    const fs::path transaction = entry.path();
+    auto state = read_transaction_state(transaction, "stitch");
+    if (!state.ok())
+      return state.status();
+    if (*state == "PREPARED") {
+      std::ifstream manifest(transaction / "artifacts");
+      if (!manifest)
+        return absl::FailedPreconditionError("Prepared stitch transaction has no artifact manifest");
+      std::set<std::string> manifested;
+      std::string name;
+      while (manifest >> name) {
+        if (fs::path(name).filename() != name || !is_artifact_name(name) || !manifested.insert(name).second)
+          return absl::InvalidArgumentError("Invalid stitch transaction filename: " + name);
+      }
+      if (!manifest.eof() || manifested.size() != artifact_names().size()) {
+        return absl::FailedPreconditionError("Prepared stitch transaction has an incomplete artifact manifest");
+      }
+      for (const std::string& artifact : artifact_names()) {
+        if (!manifested.count(artifact))
+          return absl::FailedPreconditionError("Prepared stitch transaction omits artifact: " + artifact);
+      }
+      const fs::path previous = transaction / "previous";
+      std::vector<fs::path> backups;
+      const bool previous_exists = fs::exists(previous, error);
+      if (error)
+        return absl::InternalError("Unable to inspect stitch transaction backup directory: " + error.message());
+      if (previous_exists) {
+        if (!fs::is_directory(previous, error) || error)
+          return absl::FailedPreconditionError("Stitch transaction backup is not a directory");
+        for (const auto& old : fs::directory_iterator(previous, error)) {
+          if (error)
+            return absl::InternalError("Unable to inspect stitch transaction backup: " + error.message());
+          const std::string old_name = old.path().filename().string();
+          if (!old.is_regular_file(error) || error || !is_artifact_name(old_name))
+            return absl::InvalidArgumentError("Invalid stitch transaction backup: " + old_name);
+          backups.push_back(old.path());
+        }
+      }
+      for (const std::string& artifact : manifested) {
+        name = artifact;
+        fs::remove(root / name, error);
+        if (error)
+          return absl::InternalError("Unable to remove interrupted stitch artifact: " + error.message());
+      }
+      for (const fs::path& old : backups) {
+        const fs::path destination = root / old.filename();
+        fs::copy_file(old, destination, fs::copy_options::overwrite_existing, error);
+        if (error)
+          return absl::InternalError("Unable to restore interrupted stitch artifact: " + error.message());
+        auto status = fsync_path(destination);
+        if (!status.ok())
+          return status;
+      }
+      error.clear();
+      auto status = fsync_path(root, true);
+      if (!status.ok())
+        return status;
+    }
+    // COMMITTED transactions already have a durable new generation. An
+    // UNPREPARED directory has no publication metadata and never changed a
+    // root artifact.
+    fs::remove_all(transaction, error);
+    if (error)
+      return absl::InternalError("Unable to clean stitch transaction: " + error.message());
+  }
+  return fsync_path(root, true);
+}
+
+struct TiffPlacement {
+  double x{0.0};
+  double y{0.0};
+  int width{0};
+  int height{0};
+};
+
+absl::Status validate_decoded_dimensions(
+    uint64_t width,
+    uint64_t height,
+    const std::optional<size_t>& maximum_dimension,
+    const std::string& description) {
+  if (width == 0 || height == 0 || width > kHardMaximumCanvasDimension || height > kHardMaximumCanvasDimension ||
+      width > kHardMaximumCanvasPixels / height) {
+    return absl::ResourceExhaustedError(description + " exceeds the absolute decoded-image safety limit");
+  }
+  if (maximum_dimension.has_value() && (width > *maximum_dimension || height > *maximum_dimension)) {
+    return absl::FailedPreconditionError(description + " exceeds the configured maximum canvas dimension");
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<TiffPlacement> read_tiff_placement(
+    const fs::path& path,
+    const std::optional<size_t>& maximum_dimension) {
+  TIFF* tif = TIFFOpen(path.c_str(), "r");
+  if (tif == nullptr)
+    return absl::InvalidArgumentError("Unable to decode Hugin TIFF: " + path.string());
+  uint32_t width = 0;
+  uint32_t height = 0;
+  float x_resolution = 0.0f;
+  float y_resolution = 0.0f;
+  float x_position = 0.0f;
+  float y_position = 0.0f;
+  const bool metadata_valid = TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width) &&
+      TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height) && TIFFGetField(tif, TIFFTAG_XRESOLUTION, &x_resolution) &&
+      TIFFGetField(tif, TIFFTAG_YRESOLUTION, &y_resolution);
+  (void)TIFFGetField(tif, TIFFTAG_XPOSITION, &x_position);
+  (void)TIFFGetField(tif, TIFFTAG_YPOSITION, &y_position);
+  auto dimensions_status = validate_decoded_dimensions(width, height, maximum_dimension, "Hugin TIFF " + path.string());
+  const tmsize_t scanline_size = dimensions_status.ok() ? TIFFScanlineSize(tif) : 0;
+  bool pixels_valid = dimensions_status.ok() && scanline_size > 0 && scanline_size <= 256 * 1024 * 1024;
+  if (pixels_valid) {
+    std::vector<unsigned char> scanline(static_cast<size_t>(scanline_size));
+    pixels_valid = TIFFReadScanline(tif, scanline.data(), 0, 0) >= 0;
+    if (pixels_valid && height > 1)
+      pixels_valid = TIFFReadScanline(tif, scanline.data(), height - 1, 0) >= 0;
+  }
+  TIFFClose(tif);
+  if (!dimensions_status.ok())
+    return dimensions_status;
+  if (!metadata_valid || !pixels_valid || width == 0 || height == 0 || width > std::numeric_limits<int>::max() ||
+      height > std::numeric_limits<int>::max() || !std::isfinite(x_resolution) || !std::isfinite(y_resolution) ||
+      x_resolution <= 0.0f || y_resolution <= 0.0f || !std::isfinite(x_position) || !std::isfinite(y_position)) {
+    return absl::FailedPreconditionError("Hugin TIFF metadata or pixel data is invalid: " + path.string());
+  }
+  return TiffPlacement{
+      static_cast<double>(x_position) * x_resolution,
+      static_cast<double>(y_position) * y_resolution,
+      static_cast<int>(width),
+      static_cast<int>(height)};
+}
+
+absl::Status inspect_remap_tiff(
+    const fs::path& path,
+    const TiffPlacement& placement,
+    const std::optional<size_t>& maximum_dimension) {
+  TIFF* tif = TIFFOpen(path.c_str(), "r");
+  if (tif == nullptr)
+    return absl::InvalidArgumentError("Unable to inspect Hugin remap TIFF: " + path.string());
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint16_t samples = 0;
+  uint16_t bits = 0;
+  uint16_t sample_format = SAMPLEFORMAT_UINT;
+  uint16_t planar = PLANARCONFIG_CONTIG;
+  uint16_t orientation = ORIENTATION_TOPLEFT;
+  const bool metadata_valid =
+      TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width) && TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height);
+  TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLESPERPIXEL, &samples);
+  TIFFGetFieldDefaulted(tif, TIFFTAG_BITSPERSAMPLE, &bits);
+  TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLEFORMAT, &sample_format);
+  TIFFGetFieldDefaulted(tif, TIFFTAG_PLANARCONFIG, &planar);
+  TIFFGetFieldDefaulted(tif, TIFFTAG_ORIENTATION, &orientation);
+  TIFFClose(tif);
+  if (!metadata_valid || samples != 1 || bits != 16 || sample_format != SAMPLEFORMAT_UINT ||
+      planar != PLANARCONFIG_CONTIG || orientation != ORIENTATION_TOPLEFT ||
+      width != static_cast<uint32_t>(placement.width) || height != static_cast<uint32_t>(placement.height)) {
+    return absl::FailedPreconditionError("Hugin remap TIFF header violates the CV_16U contract: " + path.string());
+  }
+  return validate_decoded_dimensions(width, height, maximum_dimension, "Hugin remap TIFF " + path.string());
+}
+
+absl::StatusOr<std::pair<int, int>> read_png_dimensions(const fs::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  std::array<unsigned char, 24> header{};
+  input.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()));
+  const std::array<unsigned char, 8> signature = {137, 80, 78, 71, 13, 10, 26, 10};
+  if (input.gcount() != static_cast<std::streamsize>(header.size()) ||
+      !std::equal(signature.begin(), signature.end(), header.begin()) || header[8] != 0 || header[9] != 0 ||
+      header[10] != 0 || header[11] != 13 || header[12] != 'I' || header[13] != 'H' || header[14] != 'D' ||
+      header[15] != 'R') {
+    return absl::FailedPreconditionError("Invalid PNG header: " + path.string());
+  }
+  auto big_endian_u32 = [&](size_t offset) {
+    return (static_cast<uint32_t>(header[offset]) << 24) | (static_cast<uint32_t>(header[offset + 1]) << 16) |
+        (static_cast<uint32_t>(header[offset + 2]) << 8) | static_cast<uint32_t>(header[offset + 3]);
+  };
+  const uint32_t width = big_endian_u32(16);
+  const uint32_t height = big_endian_u32(20);
+  if (width == 0 || height == 0 || width > std::numeric_limits<int>::max() ||
+      height > std::numeric_limits<int>::max()) {
+    return absl::FailedPreconditionError("Invalid PNG dimensions: " + path.string());
+  }
+  return std::make_pair(static_cast<int>(width), static_cast<int>(height));
+}
+
+absl::Status validate_remaps(
+    const fs::path& directory,
+    int index,
+    const TiffPlacement& placement,
+    const std::pair<int, int>& source_size,
+    const std::optional<size_t>& maximum_dimension) {
+  const std::string prefix = "mapping_" + std::string(index == 0 ? "0000" : "0001");
+  const fs::path x_path = directory / (prefix + "_x.tif");
+  const fs::path y_path = directory / (prefix + "_y.tif");
+  auto status = inspect_remap_tiff(x_path, placement, maximum_dimension);
+  if (!status.ok())
+    return status;
+  status = inspect_remap_tiff(y_path, placement, maximum_dimension);
+  if (!status.ok())
+    return status;
+  cv::Mat x;
+  cv::Mat y;
+  try {
+    x = cv::imread(x_path.string(), cv::IMREAD_ANYDEPTH | cv::IMREAD_GRAYSCALE);
+    y = cv::imread(y_path.string(), cv::IMREAD_ANYDEPTH | cv::IMREAD_GRAYSCALE);
+  } catch (const cv::Exception& exception) {
+    return absl::ResourceExhaustedError("Unable to safely decode Hugin remaps: " + std::string(exception.what()));
+  } catch (const std::bad_alloc&) {
+    return absl::ResourceExhaustedError("Unable to allocate decoded Hugin remaps");
+  }
+  if (x.empty() || y.empty() || x.type() != CV_16UC1 || y.type() != CV_16UC1 || x.size() != y.size() ||
+      x.cols != placement.width || x.rows != placement.height) {
+    return absl::FailedPreconditionError(
+        "Hugin remap TIFFs violate the CV_16U size/type contract for camera " + std::to_string(index));
+  }
+  size_t valid_count = 0;
+  uint16_t minimum_x = std::numeric_limits<uint16_t>::max();
+  uint16_t minimum_y = std::numeric_limits<uint16_t>::max();
+  uint16_t maximum_x = 0;
+  uint16_t maximum_y = 0;
+  constexpr uint16_t unmapped = std::numeric_limits<uint16_t>::max();
+  for (int row = 0; row < x.rows; ++row) {
+    const uint16_t* x_values = x.ptr<uint16_t>(row);
+    const uint16_t* y_values = y.ptr<uint16_t>(row);
+    for (int column = 0; column < x.cols; ++column) {
+      const bool x_unmapped = x_values[column] == unmapped;
+      const bool y_unmapped = y_values[column] == unmapped;
+      if (x_unmapped != y_unmapped) {
+        return absl::FailedPreconditionError("Hugin remap has inconsistent unmapped coordinates");
+      }
+      if (x_unmapped)
+        continue;
+      if (x_values[column] >= source_size.first || y_values[column] >= source_size.second) {
+        return absl::FailedPreconditionError("Hugin remap coordinate lies outside its source image");
+      }
+      ++valid_count;
+      minimum_x = std::min(minimum_x, x_values[column]);
+      maximum_x = std::max(maximum_x, x_values[column]);
+      minimum_y = std::min(minimum_y, y_values[column]);
+      maximum_y = std::max(maximum_y, y_values[column]);
+    }
+  }
+  const size_t minimum_valid = std::max<size_t>(16, x.total() / 1000);
+  const uint16_t minimum_x_span = static_cast<uint16_t>(std::min(16, std::max(0, source_size.first - 1)));
+  const uint16_t minimum_y_span = static_cast<uint16_t>(std::min(16, std::max(0, source_size.second - 1)));
+  if (valid_count < minimum_valid || maximum_x - minimum_x < minimum_x_span || maximum_y - minimum_y < minimum_y_span) {
+    return absl::FailedPreconditionError(
+        "Hugin remap coordinate coverage is empty or geometrically degenerate for camera " + std::to_string(index));
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<std::pair<int, int>> normalize_and_measure(TiffPlacement* first, TiffPlacement* second) {
+  const double minimum_x = std::min(first->x, second->x);
+  const double minimum_y = std::min(first->y, second->y);
+  first->x -= minimum_x;
+  second->x -= minimum_x;
+  first->y -= minimum_y;
+  second->y -= minimum_y;
+  const double width = std::max(first->x + first->width, second->x + second->width);
+  const double height = std::max(first->y + first->height, second->y + second->height);
+  if (!std::isfinite(width) || !std::isfinite(height) || width < 1.0 || height < 1.0 ||
+      width > std::numeric_limits<int>::max() || height > std::numeric_limits<int>::max()) {
+    return absl::FailedPreconditionError("Hugin mapping TIFFs produce an invalid canvas");
+  }
+  return std::make_pair(static_cast<int>(width), static_cast<int>(height));
+}
+
+absl::Status create_hard_seam(
+    const fs::path& path,
+    const TiffPlacement& first,
+    const TiffPlacement& second,
+    int canvas_width,
+    int canvas_height) {
+  const int x0 = static_cast<int>(first.x);
+  const int y0 = static_cast<int>(first.y);
+  const int x1 = static_cast<int>(second.x);
+  const int y1 = static_cast<int>(second.y);
+  const int x0_end = x0 + first.width;
+  const int x1_end = x1 + second.width;
+  const int overlap_start = std::max(x0, x1);
+  const int overlap_end = std::min(x0_end, x1_end);
+  int seam_x = canvas_width / 2;
+  if (overlap_end > overlap_start)
+    seam_x = overlap_start + (overlap_end - overlap_start) / 2;
+  else if (x1 > x0)
+    seam_x = x1;
+  seam_x = std::clamp(seam_x, 0, canvas_width);
+  cv::Mat seam(canvas_height, canvas_width, CV_8U, cv::Scalar(0));
+  if (seam_x < canvas_width)
+    seam.colRange(seam_x, canvas_width).setTo(255);
+  const int y0_end = y0 + first.height;
+  const int y1_end = y1 + second.height;
+  for (int y = 0; y < canvas_height; ++y) {
+    const bool in0 = y >= y0 && y < y0_end;
+    const bool in1 = y >= y1 && y < y1_end;
+    if (in0 && !in1) {
+      std::fill(
+          seam.ptr<uint8_t>(y) + std::clamp(x0, 0, canvas_width),
+          seam.ptr<uint8_t>(y) + std::clamp(x0_end, 0, canvas_width),
+          static_cast<uint8_t>(0));
+    } else if (in1 && !in0) {
+      std::fill(
+          seam.ptr<uint8_t>(y) + std::clamp(x1, 0, canvas_width),
+          seam.ptr<uint8_t>(y) + std::clamp(x1_end, 0, canvas_width),
+          static_cast<uint8_t>(255));
+    }
+  }
+  if (!cv::imwrite(path.string(), seam))
+    return absl::InternalError("Unable to write validated fallback Hugin seam: " + path.string());
+  return absl::OkStatus();
+}
+
+absl::Status validate_staged_artifacts(const fs::path& directory, const std::optional<size_t>& maximum_dimension) {
+  for (const char* artifact : kRequiredArtifacts) {
+    auto status = validate_nonempty_file(directory / artifact);
+    if (!status.ok())
+      return status;
+  }
+  auto project = read_file(directory / "autooptimiser_out.pto");
+  if (!project.ok())
+    return project.status();
+  auto project_canvas = HuginProject::ParseCanvasSize(*project);
+  auto projection = HuginProject::ParseProjection(*project);
+  if (!project_canvas.ok() || !projection.ok() || *projection != 1)
+    return absl::FailedPreconditionError("Hugin optimized project has an invalid canvas or projection");
+
+  TiffPlacement first;
+  TiffPlacement second;
+  auto first_result = read_tiff_placement(directory / "mapping_0000.tif", maximum_dimension);
+  auto second_result = read_tiff_placement(directory / "mapping_0001.tif", maximum_dimension);
+  if (!first_result.ok())
+    return first_result.status();
+  if (!second_result.ok())
+    return second_result.status();
+  first = *first_result;
+  second = *second_result;
+  auto canvas = normalize_and_measure(&first, &second);
+  if (!canvas.ok())
+    return canvas.status();
+  auto status = validate_decoded_dimensions(
+      static_cast<uint64_t>(canvas->first),
+      static_cast<uint64_t>(canvas->second),
+      maximum_dimension,
+      "Decoded Hugin remap canvas");
+  if (!status.ok())
+    return status;
+  auto first_source_size = read_png_dimensions(directory / "left.png");
+  auto second_source_size = read_png_dimensions(directory / "right.png");
+  if (!first_source_size.ok())
+    return first_source_size.status();
+  if (!second_source_size.ok())
+    return second_source_size.status();
+  status = validate_remaps(directory, 0, first, *first_source_size, maximum_dimension);
+  if (!status.ok())
+    return status;
+  status = validate_remaps(directory, 1, second, *second_source_size, maximum_dimension);
+  if (!status.ok())
+    return status;
+  // Nona emits cropped remaps, so their decoded ControlMasks canvas is not
+  // expected to equal the uncropped PTO panorama canvas. Both contracts must
+  // independently be finite and bounded.
+  const fs::path seam_path = directory / "seam_file.png";
+  auto seam_dimensions = read_png_dimensions(seam_path);
+  cv::Mat seam;
+  if (seam_dimensions.ok() && seam_dimensions->first == canvas->first && seam_dimensions->second == canvas->second) {
+    try {
+      seam = cv::imread(seam_path.string(), cv::IMREAD_GRAYSCALE);
+    } catch (const cv::Exception&) {
+      seam.release();
+    } catch (const std::bad_alloc&) {
+      return absl::ResourceExhaustedError("Unable to allocate decoded Hugin seam");
+    }
+  }
+  double minimum = 0.0;
+  double maximum = 0.0;
+  if (!seam.empty())
+    cv::minMaxLoc(seam, &minimum, &maximum);
+  if (seam.empty() || seam.cols != canvas->first || seam.rows != canvas->second || maximum <= minimum) {
+    try {
+      status = create_hard_seam(seam_path, first, second, canvas->first, canvas->second);
+    } catch (const cv::Exception& exception) {
+      return absl::ResourceExhaustedError("Unable to safely generate Hugin seam: " + std::string(exception.what()));
+    } catch (const std::bad_alloc&) {
+      return absl::ResourceExhaustedError("Unable to allocate generated Hugin seam");
+    }
+    if (!status.ok())
+      return status;
+    auto generated_dimensions = read_png_dimensions(seam_path);
+    if (!generated_dimensions.ok() || generated_dimensions->first != canvas->first ||
+        generated_dimensions->second != canvas->second) {
+      return absl::FailedPreconditionError("Generated Hugin seam has invalid dimensions");
+    }
+    seam = cv::imread(seam_path.string(), cv::IMREAD_GRAYSCALE);
+    if (seam.empty())
+      return absl::FailedPreconditionError("Generated Hugin seam is not decodable");
+    cv::minMaxLoc(seam, &minimum, &maximum);
+  }
+  if (seam.type() != CV_8UC1 || seam.cols != canvas->first || seam.rows != canvas->second || maximum <= minimum)
+    return absl::FailedPreconditionError("Hugin seam violates the decoded canvas/type contract");
+  return fsync_path(seam_path);
 }
 
 absl::StatusOr<fs::path> make_staging_directory(const fs::path& game_dir) {
@@ -206,7 +708,21 @@ absl::Status run_autooptimiser(const std::string& autooptimiser, const fs::path&
   // heuristic projection choice can flip between cylindrical and equirectangular
   // after a single marginal control-point change.
   std::vector<std::string> command = {autooptimiser, "-n", "-l", "-q", "-o", "autooptimiser_out.pto", "hm_project.pto"};
-  return run_checked(command, directory);
+  std::string output;
+  auto status = run_checked(command, directory, &output);
+  if (!status.ok())
+    return status;
+  static const std::regex rms_pattern(R"(([0-9]+(?:[.][0-9]+)?(?:[eE][+-]?[0-9]+)?)[[:space:]]+units)");
+  double rms = std::numeric_limits<double>::quiet_NaN();
+  for (std::sregex_iterator match(output.begin(), output.end(), rms_pattern), end; match != end; ++match)
+    rms = std::stod((*match)[1].str());
+  if (!std::isfinite(rms))
+    return absl::FailedPreconditionError("Unable to parse Hugin control-point optimization RMS");
+  if (rms > kMaximumOptimizationRmsPixels) {
+    return absl::FailedPreconditionError(
+        "Hugin control-point optimization RMS is too large: " + std::to_string(rms) + " pixels");
+  }
+  return absl::OkStatus();
 }
 
 absl::Status fit_cylindrical_canvas(const std::string& pano_modify, const fs::path& directory) {
@@ -255,44 +771,56 @@ absl::Status run_nona(const std::string& nona, const fs::path& directory) {
       {nona, "-m", "TIFF_m", "-z", "NONE", "--bigtiff", "-c", "-o", "mapping_", "autooptimiser_out.pto"}, directory);
 }
 
-absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir) {
-  std::vector<std::string> names(kRequiredArtifacts.begin(), kRequiredArtifacts.end());
-  for (const char* optional : kOptionalArtifacts)
-    names.emplace_back(optional);
-
+absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir, bool* prepared) {
+  const std::vector<std::string> names = artifact_names();
   const fs::path backups = staging / "previous";
   std::error_code error;
   fs::create_directory(backups, error);
   if (error)
     return absl::InternalError("Unable to prepare stitch artifact rollback directory: " + error.message());
-
-  std::vector<std::string> moved_old;
-  std::vector<std::string> published;
-  auto rollback = [&]() {
-    std::error_code ignored;
-    for (auto it = published.rbegin(); it != published.rend(); ++it) {
-      if (fs::exists(game_dir / *it, ignored))
-        fs::rename(game_dir / *it, staging / *it, ignored);
-      ignored.clear();
-    }
-    for (auto it = moved_old.rbegin(); it != moved_old.rend(); ++it) {
-      if (fs::exists(backups / *it, ignored))
-        fs::rename(backups / *it, game_dir / *it, ignored);
-      ignored.clear();
-    }
-  };
-
   for (const std::string& name : names) {
     if (!fs::exists(game_dir / name, error)) {
       error.clear();
       continue;
     }
-    fs::rename(game_dir / name, backups / name, error);
-    if (error) {
-      rollback();
+    fs::copy_file(game_dir / name, backups / name, fs::copy_options::overwrite_existing, error);
+    if (error)
       return absl::InternalError("Unable to preserve previous stitch artifact " + name + ": " + error.message());
-    }
-    moved_old.push_back(name);
+    auto status = fsync_path(backups / name);
+    if (!status.ok())
+      return status;
+  }
+
+  std::ostringstream manifest;
+  for (const std::string& name : names)
+    manifest << name << '\n';
+  auto status = write_transaction_file(staging / "artifacts", manifest.str());
+  if (!status.ok())
+    return status;
+  status = fsync_path(backups, true);
+  if (!status.ok())
+    return status;
+  status = fsync_path(staging, true);
+  if (!status.ok())
+    return status;
+  status = write_transaction_file(staging / "state", "PREPARED\n");
+  if (!status.ok())
+    return status;
+  status = fsync_path(staging, true);
+  if (!status.ok())
+    return status;
+  *prepared = true;
+
+  auto rollback_error = [&](const std::string& message) {
+    const auto rollback_status = recover_stitch_transactions_locked(game_dir);
+    if (!rollback_status.ok())
+      return absl::InternalError(message + "; rollback also failed: " + std::string(rollback_status.message()));
+    return absl::InternalError(message);
+  };
+  for (const std::string& name : names) {
+    fs::remove(game_dir / name, error);
+    if (error)
+      return rollback_error("Unable to remove old stitch artifact " + name + ": " + error.message());
   }
   for (const std::string& name : names) {
     if (!fs::exists(staging / name, error)) {
@@ -300,16 +828,60 @@ absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir
       continue;
     }
     fs::rename(staging / name, game_dir / name, error);
-    if (error) {
-      rollback();
-      return absl::InternalError("Unable to publish stitch artifact " + name + ": " + error.message());
-    }
-    published.push_back(name);
+    if (error)
+      return rollback_error("Unable to publish stitch artifact " + name + ": " + error.message());
+    status = fsync_path(game_dir / name);
+    if (!status.ok())
+      return rollback_error(std::string(status.message()));
   }
+  status = fsync_path(game_dir, true);
+  if (!status.ok())
+    return rollback_error(std::string(status.message()));
+  status = write_transaction_file(staging / "state.committed", "COMMITTED\n");
+  if (!status.ok())
+    return rollback_error(std::string(status.message()));
+  fs::rename(staging / "state.committed", staging / "state", error);
+  if (error)
+    return rollback_error("Unable to commit stitch transaction: " + error.message());
+  status = fsync_path(staging, true);
+  if (!status.ok())
+    return status;
+  fs::remove_all(staging, error);
+  if (error)
+    return absl::InternalError("Unable to clean committed stitch transaction: " + error.message());
+  status = fsync_path(game_dir, true);
+  if (!status.ok())
+    return status;
   return absl::OkStatus();
 }
 
 } // namespace
+
+HuginProject::ArtifactLock::~ArtifactLock() {
+  if (descriptor_ >= 0) {
+    ::flock(descriptor_, LOCK_UN);
+    ::close(descriptor_);
+  }
+}
+
+absl::StatusOr<std::unique_ptr<HuginProject::ArtifactLock>> HuginProject::RecoverAndLock(const fs::path& game_dir) {
+  std::error_code error;
+  if (!fs::is_directory(game_dir, error) || error)
+    return absl::NotFoundError("Unable to recover Hugin artifacts outside an existing game directory");
+  auto descriptor = lock_stitch_transactions(game_dir);
+  if (!descriptor.ok())
+    return descriptor.status();
+  auto lock = std::unique_ptr<ArtifactLock>(new ArtifactLock(*descriptor));
+  auto recovery = recover_stitch_transactions_locked(game_dir);
+  if (!recovery.ok())
+    return recovery;
+  return std::move(lock);
+}
+
+absl::Status HuginProject::Recover(const fs::path& game_dir) {
+  auto lock = RecoverAndLock(game_dir);
+  return lock.ok() ? absl::OkStatus() : lock.status();
+}
 
 absl::StatusOr<std::string> HuginProject::InsertControlPoints(
     const std::string& pto,
@@ -462,6 +1034,9 @@ absl::Status HuginProject::Configure(
     if (!status.ok())
       return status;
   }
+  auto transaction_lock = RecoverAndLock(game_dir);
+  if (!transaction_lock.ok())
+    return transaction_lock.status();
 
   fs::path staging;
   auto staging_result = make_staging_directory(game_dir);
@@ -470,7 +1045,10 @@ absl::Status HuginProject::Configure(
   staging = *staging_result;
   struct Cleanup {
     fs::path path;
+    bool prepared{false};
     ~Cleanup() {
+      if (prepared)
+        return;
       std::error_code ignored;
       fs::remove_all(path, ignored);
     }
@@ -592,8 +1170,8 @@ absl::Status HuginProject::Configure(
       return status;
   }
 
-  // A preview/seam is useful but not required for publication: the caller
-  // creates a validated hard-seam fallback from the published mapping TIFFs.
+  // Enblend's preview/seam is preferred. The complete decoded artifact
+  // validator below creates a hard-seam fallback inside this transaction.
   auto enblend = executable("HM_ENBLEND", "enblend");
   if (enblend.ok()) {
     status = run_checked(
@@ -608,12 +1186,10 @@ absl::Status HuginProject::Configure(
     }
   }
 
-  for (const char* artifact : kRequiredArtifacts) {
-    status = validate_nonempty_file(staging / artifact);
-    if (!status.ok())
-      return status;
-  }
-  return publish_artifacts(staging, game_dir);
+  status = validate_staged_artifacts(staging, options.max_canvas_dimension);
+  if (!status.ok())
+    return status;
+  return publish_artifacts(staging, game_dir, &cleanup.prepared);
 }
 
 } // namespace hm::stitching

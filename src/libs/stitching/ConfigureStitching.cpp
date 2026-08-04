@@ -760,6 +760,12 @@ absl::Status clean_stitching_artifacts(const std::string& game_dir) {
 }
 
 absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir) {
+  std::error_code directory_error;
+  if (!fs::is_directory(game_dir, directory_error) || directory_error)
+    return false;
+  auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
+  if (!artifact_lock.ok())
+    return artifact_lock.status();
   bool up_to_date = test_dependency_tree(game_dir, /*add_rink_mask=*/false);
   if (!up_to_date) {
     return false;
@@ -784,6 +790,9 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir) {
 }
 
 absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(const std::string& game_dir) {
+  auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
+  if (!artifact_lock.ok())
+    return artifact_lock.status();
   bool up_to_date = test_dependency_tree(game_dir, /*add_rink_mask=*/false);
   if (!up_to_date) {
     return false;
@@ -803,6 +812,9 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
   }
 
   const fs::path root = fs::path(game_dir);
+  auto artifact_lock = HuginProject::RecoverAndLock(root);
+  if (!artifact_lock.ok())
+    return artifact_lock.status();
   const fs::path seam_path = root / "seam_file.png";
   const bool seam_exists = fs::exists(seam_path);
 
@@ -951,8 +963,7 @@ absl::Status create_control_points(
 
   HuginProject::Options options;
   options.max_canvas_dimension = max_canvas_dimension;
-  HM_RETURN_IF_ERROR(HuginProject::Configure(game_dir, matched.selected, options));
-  return maybe_create_default_seam_file(game_dir);
+  return HuginProject::Configure(game_dir, matched.selected, options);
 }
 
 namespace {
@@ -1009,6 +1020,57 @@ absl::Status write_transaction_file(const fs::path& path, const std::string& con
   return fsync_path(path);
 }
 
+bool is_rink_artifact_name(const std::string& name) {
+  static const std::regex mask_pattern(R"(^rink_mask_(0|[1-9][0-9]*)[.]png$)");
+  return name == "config.yaml" || std::regex_match(name, mask_pattern);
+}
+
+absl::StatusOr<std::string> read_rink_transaction_state(const fs::path& transaction) {
+  const fs::path state_path = transaction / "state";
+  std::error_code error;
+  const bool exists = fs::exists(state_path, error);
+  if (error)
+    return absl::InternalError("Unable to inspect rink transaction state: " + error.message());
+  if (!exists)
+    return std::string("UNPREPARED");
+  std::ifstream input(state_path);
+  std::string state;
+  if (!input || !std::getline(input, state) || (!input.good() && !input.eof()) || state.empty())
+    return absl::FailedPreconditionError("Unable to read durable rink transaction state");
+  std::string trailing;
+  if (std::getline(input, trailing) && !trailing.empty())
+    return absl::FailedPreconditionError("Invalid multiline rink transaction state");
+  if (state != "PREPARED" && state != "COMMITTED")
+    return absl::FailedPreconditionError("Unknown rink transaction state: " + state);
+  return state;
+}
+
+absl::StatusOr<std::set<std::string>> read_rink_manifest(const fs::path& transaction) {
+  const fs::path path = transaction / "new-files";
+  std::error_code error;
+  if (!fs::is_regular_file(path, error) || error)
+    return absl::FailedPreconditionError("Prepared rink transaction has no readable new-files manifest");
+  if (fs::file_size(path, error) > 64 * 1024 || error)
+    return absl::FailedPreconditionError("Prepared rink transaction manifest is too large");
+  std::ifstream input(path);
+  if (!input)
+    return absl::FailedPreconditionError("Unable to open prepared rink transaction manifest");
+  std::set<std::string> names;
+  std::string name;
+  while (input >> name) {
+    if (fs::path(name).filename() != name || !is_rink_artifact_name(name) || !names.insert(name).second)
+      return absl::InvalidArgumentError("Invalid rink transaction filename: " + name);
+  }
+  if (!input.eof() || !names.count("config.yaml") || !names.count("rink_mask_0.png"))
+    return absl::FailedPreconditionError("Prepared rink transaction manifest is incomplete");
+  size_t mask_count = 0;
+  while (names.count("rink_mask_" + std::to_string(mask_count) + ".png"))
+    ++mask_count;
+  if (names.size() != mask_count + 1)
+    return absl::FailedPreconditionError("Prepared rink transaction mask indices are not contiguous");
+  return names;
+}
+
 absl::Status recover_rink_transactions_locked(const fs::path& root) {
   std::error_code error;
   for (const auto& entry : fs::directory_iterator(root, error)) {
@@ -1020,27 +1082,48 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
       continue;
     }
     const fs::path transaction = entry.path();
-    std::ifstream state_input(transaction / "state");
-    std::string state;
-    std::getline(state_input, state);
-    if (state == "PREPARED") {
-      std::ifstream manifest(transaction / "new-files");
-      std::string name;
-      while (manifest >> name) {
-        if (fs::path(name).filename() != name)
-          return absl::InvalidArgumentError("Invalid rink transaction filename: " + name);
+    auto state = read_rink_transaction_state(transaction);
+    if (!state.ok())
+      return state.status();
+    if (*state == "PREPARED") {
+      auto manifest = read_rink_manifest(transaction);
+      if (!manifest.ok())
+        return manifest.status();
+      const fs::path previous = transaction / "previous";
+      std::vector<fs::path> backups;
+      const bool previous_exists = fs::exists(previous, error);
+      if (error)
+        return absl::InternalError("Unable to inspect rink transaction backup directory: " + error.message());
+      if (previous_exists) {
+        if (!fs::is_directory(previous, error) || error)
+          return absl::FailedPreconditionError("Rink transaction backup is not a directory");
+        for (const auto& old : fs::directory_iterator(previous, error)) {
+          if (error)
+            return absl::InternalError("Unable to inspect rink transaction backup: " + error.message());
+          const std::string old_name = old.path().filename().string();
+          if (!old.is_regular_file(error) || error || !is_rink_artifact_name(old_name))
+            return absl::InvalidArgumentError("Invalid rink transaction backup: " + old_name);
+          backups.push_back(old.path());
+        }
+      }
+      for (const std::string& name : *manifest) {
         fs::remove(root / name, error);
         if (error)
           return absl::InternalError("Unable to remove interrupted rink artifact: " + error.message());
       }
-      const fs::path previous = transaction / "previous";
-      if (fs::is_directory(previous, error)) {
-        for (const auto& old : fs::directory_iterator(previous, error)) {
-          if (error)
-            return absl::InternalError("Unable to inspect rink transaction backup: " + error.message());
-          fs::rename(old.path(), root / old.path().filename(), error);
-          if (error)
-            return absl::InternalError("Unable to restore interrupted rink artifact: " + error.message());
+      size_t restored = 0;
+      for (const fs::path& old : backups) {
+        const fs::path destination = root / old.filename();
+        fs::copy_file(old, destination, fs::copy_options::overwrite_existing, error);
+        if (error)
+          return absl::InternalError("Unable to restore interrupted rink artifact: " + error.message());
+        auto status = fsync_path(destination);
+        if (!status.ok())
+          return status;
+        ++restored;
+        if (const char* fail_after = std::getenv("HM_TEST_RINK_ROLLBACK_FAIL_AFTER");
+            fail_after != nullptr && restored == static_cast<size_t>(std::strtoull(fail_after, nullptr, 10))) {
+          return absl::InternalError("Injected rink rollback interruption");
         }
       }
       error.clear();
@@ -1048,8 +1131,9 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
       if (!status.ok())
         return status;
     }
-    // COMMITTED transactions already have a durable new generation. A
-    // directory with no state was interrupted before any root artifact moved.
+    // COMMITTED transactions already have a durable new generation. An
+    // UNPREPARED directory has no publication metadata and never changed a
+    // root artifact.
     fs::remove_all(transaction, error);
     if (error)
       return absl::InternalError("Unable to clean rink transaction: " + error.message());
@@ -1128,7 +1212,10 @@ absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& p
   const fs::path staging(created);
   struct Cleanup {
     fs::path path;
+    bool prepared{false};
     ~Cleanup() {
+      if (prepared)
+        return;
       std::error_code ignored;
       fs::remove_all(path, ignored);
     }
@@ -1191,7 +1278,7 @@ absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& p
     if (error)
       return absl::InternalError("Unable to inspect old rink masks: " + error.message());
     const std::string name = entry.path().filename().string();
-    if ((name.rfind("rink_mask_", 0) == 0 && entry.path().extension() == ".png") || name == "config.yaml") {
+    if (is_rink_artifact_name(name)) {
       old_files.push_back(entry.path());
     }
   }
@@ -1207,9 +1294,14 @@ absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& p
   for (size_t index = 0; index < profile.masks.size(); ++index)
     new_files.push_back(staging / ("rink_mask_" + std::to_string(index) + ".png"));
   new_files.push_back(staging / "config.yaml");
-  std::ostringstream manifest;
+  std::set<std::string> published_names;
+  for (const fs::path& old : old_files)
+    published_names.insert(old.filename().string());
   for (const fs::path& source : new_files)
-    manifest << source.filename().string() << '\n';
+    published_names.insert(source.filename().string());
+  std::ostringstream manifest;
+  for (const std::string& name : published_names)
+    manifest << name << '\n';
   sync_status = write_transaction_file(staging / "new-files", manifest.str());
   if (!sync_status.ok())
     return sync_status;
@@ -1225,6 +1317,7 @@ absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& p
   sync_status = fsync_path(staging, true);
   if (!sync_status.ok())
     return sync_status;
+  cleanup.prepared = true;
 
   auto rollback_error = [&](const std::string& message) {
     const auto rollback_status = recover_rink_transactions_locked(root);
@@ -1232,6 +1325,11 @@ absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& p
       return absl::InternalError(message + "; rollback also failed: " + std::string(rollback_status.message()));
     return absl::InternalError(message);
   };
+  for (const std::string& name : published_names) {
+    fs::remove(root / name, error);
+    if (error)
+      return rollback_error("Unable to remove old rink artifact: " + error.message());
+  }
   for (const fs::path& source : new_files) {
     const fs::path destination = root / source.filename();
     fs::rename(source, destination, error);
