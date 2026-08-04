@@ -157,6 +157,10 @@ apt-get install "${apt_args[@]}" "${DEEPSTREAM_DEB}" "${HMSTREAM_DEB}"
 if [[ "${SIMULATE}" -eq 1 ]]; then
   echo "Dependency resolution succeeded for Ubuntu ${VERSION_ID}."
 else
+  # A short-lived older HMStream installer revision created this exact
+  # system-wide pin. The current package neither depends on nor changes NCCL;
+  # remove only HMStream's obsolete policy file after a successful install.
+  rm -f /etc/apt/preferences.d/hmstream-nccl
   apt-get check
   echo "Installed DeepStream $(dpkg-query -W -f='${Version}' deepstream-9.1) and HMStream $(dpkg-query -W -f='${Version}' hmstream)."
 fi

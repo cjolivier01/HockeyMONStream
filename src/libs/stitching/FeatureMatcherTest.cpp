@@ -69,6 +69,9 @@ int main() {
         "selected control points must be ordered evenly by left Y");
     ok &= expect(
         std::abs(result->selected[0].left.x - 153.25f) < 1e-4f, "inverse resize must preserve half-pixel centers");
+    ok &= expect(
+        result->accepted[0].left_index == 0 && result->accepted[0].right_index == 0,
+        "accepted matches must retain exported keypoint indices for exact parity checks");
   }
   scores[1] = 0.2f;
   auto thresholded = hm::stitching::FeatureMatcher::Postprocess(

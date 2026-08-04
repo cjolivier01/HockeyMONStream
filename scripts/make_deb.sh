@@ -2,12 +2,9 @@
 # Build an HMStream .deb that installs the application to /opt/hmstream.
 # The installed run.sh launches hmstream-cli without needing the source tree.
 #
-# Usage:
-#   scripts/make_deb.sh [--build] [--version X.Y.Z] [--output-dir DIR]
+# Internal usage (the public entrypoints are make deb-ubuntu24/deb-ubuntu26):
+#   HMSTREAM_IMMUTABLE_SOURCE=1 scripts/make_deb.sh [--version X.Y.Z] [--output-dir DIR]
 #
-#   --build          Run 'make hmstream-cli hmstream-assets hmstream-ui yolo-custom-lib hmstream-gst-plugins'
-#                    before packaging
-#                    (default: skip, use existing artifacts).
 #   --version X.Y.Z  Override package version (default: git describe --tags --always).
 #   --output-dir DIR Where to write the .deb (default: dist/).
 #
@@ -22,13 +19,11 @@ PKG_ARCH="${PKG_ARCH:-}"
 DEEPSTREAM_REQUIRED_VERSION="9.1.0-1+resolute2"
 
 # ---------- arg parsing ----------
-DO_BUILD=0
 PKG_VERSION=""
 OUTPUT_DIR="${TOPDIR}/dist"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --build) DO_BUILD=1 ;;
     --version) PKG_VERSION="$2"; shift ;;
     --version=*) PKG_VERSION="${1#--version=}" ;;
     --output-dir) OUTPUT_DIR="$2"; shift ;;
@@ -38,14 +33,24 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+if [[ "${HMSTREAM_IMMUTABLE_SOURCE:-}" != "1" ]]; then
+  echo "ERROR: make_deb.sh only packages an immutable source snapshot from the target-OS Docker builder." >&2
+  echo "Use 'make deb-ubuntu24' or 'make deb-ubuntu26'." >&2
+  exit 1
+fi
+
+if [[ ! -f "${TOPDIR}/.hmstream-package-source" ]]; then
+  echo "ERROR: immutable source revision manifest is missing." >&2
+  exit 1
+fi
+read -r SOURCE_REVISION SOURCE_EPOCH < "${TOPDIR}/.hmstream-package-source"
+if [[ ! "${SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ || ! "${SOURCE_EPOCH}" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: immutable source revision manifest is invalid." >&2
+  exit 1
+fi
 if [[ -z "$PKG_VERSION" ]]; then
-  GIT_COMMIT_COUNT="$(git -C "${TOPDIR}" rev-list --count HEAD 2>/dev/null || true)"
-  GIT_SHORT_HASH="$(git -C "${TOPDIR}" rev-parse --short=7 HEAD 2>/dev/null || true)"
-  if [[ -n "${GIT_COMMIT_COUNT}" && -n "${GIT_SHORT_HASH}" ]]; then
-    PKG_VERSION="0.0.${GIT_COMMIT_COUNT}+git.${GIT_SHORT_HASH}"
-  else
-    PKG_VERSION="0.0.0"
-  fi
+  echo "ERROR: the immutable package builder must provide an explicit version." >&2
+  exit 1
 fi
 # dpkg needs versions that start with a digit; strip a leading 'v'
 PKG_VERSION="${PKG_VERSION#v}"
@@ -75,12 +80,6 @@ fi
 if ! dpkg --validate-version "${PKG_VERSION}" >/dev/null 2>&1; then
   echo "ERROR: invalid Debian package version: ${PKG_VERSION}" >&2
   exit 1
-fi
-
-# ---------- optional build ----------
-if [[ "$DO_BUILD" -eq 1 ]]; then
-  echo "[make_deb] Building HMStream apps, YOLO custom inference lib, and GStreamer plugins..."
-  make -C "${TOPDIR}" hmstream-cli hmstream-assets hmstream-ui yolo-custom-lib hmstream-gst-plugins
 fi
 
 # ---------- verify artifacts ----------
@@ -352,6 +351,10 @@ rm -rf "${STAGING}${INSTALL_PREFIX}/configs/systemd"
 # ---------- pretrained assets ----------
 echo "[make_deb] Staging declared non-engine pretrained assets..."
 asset_manifest="$(mktemp)"
+if ! "${HMSTREAM_ASSETS}" --verify "${TOPDIR}/configs/ds_hockey_app_config.yaml"; then
+  echo "ERROR: every package-owned pretrained asset must exist and match its declared SHA256." >&2
+  exit 1
+fi
 "${HMSTREAM_ASSETS}" --print-targets "${TOPDIR}/configs/ds_hockey_app_config.yaml" \
   > "${asset_manifest}"
 pretrained_root="$(readlink -f "${TOPDIR}/pretrained" 2>/dev/null || true)"
@@ -359,8 +362,8 @@ while IFS= read -r asset; do
   [[ -n "${asset}" ]] || continue
   [[ "${asset}" != *.engine ]] || continue
   if [[ ! -f "${asset}" ]]; then
-    echo "[make_deb] WARNING: declared pretrained asset missing, not staged: ${asset}" >&2
-    continue
+    echo "ERROR: verified pretrained asset disappeared before staging: ${asset}" >&2
+    exit 1
   fi
   asset_real="$(readlink -f "${asset}")"
   case "${asset_real}" in
@@ -368,8 +371,8 @@ while IFS= read -r asset; do
       rel="${asset_real#"${pretrained_root}"/}"
       ;;
     *)
-      echo "[make_deb] WARNING: declared pretrained asset outside repo pretrained dir, not staged: ${asset}" >&2
-      continue
+      echo "ERROR: package-owned pretrained asset is outside the declared pretrained root: ${asset}" >&2
+      exit 1
       ;;
   esac
   dest="${STAGING}${INSTALL_PREFIX}/pretrained/${rel}"
@@ -1005,6 +1008,8 @@ cat > "${STAGING}/DEBIAN/control" <<CONTROL
 Package: ${PKG_NAME}
 Version: ${PKG_VERSION}
 Architecture: ${PKG_ARCH}
+X-HMStream-Source-Commit: ${SOURCE_REVISION}
+X-HMStream-Source-Epoch: ${SOURCE_EPOCH}
 Maintainer: Christopher Olivier <cjolivier01@gmail.com>
 Installed-Size: ${INSTALLED_SIZE}
 Depends: ${SHLIB_DEPENDS},

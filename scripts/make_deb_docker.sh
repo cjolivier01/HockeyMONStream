@@ -100,6 +100,18 @@ fi
 mkdir -p "${OUTPUT_DIR}"
 OUTPUT_DIR="$(readlink -f "${OUTPUT_DIR}")"
 
+# Freeze the complete build input before the slow image build. The container
+# never sees the mutable checkout, ignored artifacts, or untracked files.
+SOURCE_SNAPSHOT="$(mktemp -d /tmp/hmstream-deb-source.XXXXXX)"
+cleanup_snapshot() {
+  rm -rf -- "${SOURCE_SNAPSHOT}"
+}
+trap cleanup_snapshot EXIT
+git -C "${TOPDIR}" archive --format=tar HEAD | tar -xf - -C "${SOURCE_SNAPSHOT}"
+source_revision="$(git -C "${TOPDIR}" rev-parse HEAD)"
+source_epoch="$(git -C "${TOPDIR}" show -s --format=%ct HEAD)"
+printf '%s %s\n' "${source_revision}" "${source_epoch}" > "${SOURCE_SNAPSHOT}/.hmstream-package-source"
+
 image_tag="hmstream-deb-builder:ubuntu${TARGET_UBUNTU}"
 volume_suffix="${TARGET_UBUNTU//./}"
 cache_volume="hmstream-deb-bazel-ubuntu${volume_suffix}"
@@ -115,7 +127,7 @@ docker volume create "${cache_volume}" >/dev/null
 
 docker_args=(
   --rm
-  --volume "${TOPDIR}:/source:ro"
+  --volume "${SOURCE_SNAPSHOT}:/source:ro"
   --volume "${DEEPSTREAM_DEB}:/inputs/deepstream.deb:ro"
   --volume "${OUTPUT_DIR}:/output"
   --volume "${cache_volume}:/root/.cache/bazel"

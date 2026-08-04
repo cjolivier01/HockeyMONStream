@@ -43,6 +43,28 @@ int main() {
         discovered->front().target == root / "pretrained" / "model.bin", "relative target must resolve from config");
   auto ensured = hm::assets::AssetManager::Ensure({root / "configs" / "parent.yaml"});
   ok &= expect(ensured.ok(), "valid cached asset must work offline");
+  fs::remove(root / "pretrained" / "model.bin.lock");
+  fs::permissions(root / "pretrained", fs::perms::owner_read | fs::perms::owner_exec);
+  auto read_only_ensured = hm::assets::AssetManager::Ensure({root / "configs" / "parent.yaml"});
+  ok &= expect(read_only_ensured.ok(), "a valid packaged asset must not require a writable sibling lock file");
+  ok &= expect(
+      !fs::exists(root / "pretrained" / "model.bin.lock"),
+      "read-only packaged asset verification must not create a lock file");
+  fs::permissions(root / "pretrained", fs::perms::owner_all);
+  ok &= expect(
+      hm::assets::AssetManager::Verify({root / "configs" / "parent.yaml"}).ok(),
+      "verification must accept a present checksummed asset without opening a lock file");
+  {
+    std::ofstream asset(root / "pretrained" / "model.bin", std::ios::app);
+    asset << "tampered\n";
+  }
+  ok &= expect(
+      !hm::assets::AssetManager::Verify({root / "configs" / "parent.yaml"}).ok(),
+      "verification must reject a stale or tampered cached asset");
+  {
+    std::ofstream asset(root / "pretrained" / "model.bin");
+    asset << "native asset\n";
+  }
   ok &= expect(
       !hm::assets::AssetManager::Discover({root / "configs" / "missing.yaml"}).ok(),
       "a missing requested config must fail discovery");

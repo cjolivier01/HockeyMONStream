@@ -1,5 +1,14 @@
 INCLUDE_PREFIX = "hstream/src/libs/stitching"
 
+filegroup(
+  name = "runtime_sources",
+  srcs = glob(
+    ["*.cpp", "*.h"],
+    exclude = ["*Test.cpp"],
+  ),
+  visibility = ["//visibility:public"],
+)
+
 cc_library(
   name = "stitching",
   srcs = [
@@ -145,8 +154,21 @@ cc_test(
 cc_test(
   name = "python_parity_test",
   srcs = ["CalibrationParityTest.cpp"],
-  args = ["$(location :CalibrationParityReference.py)"],
-  data = [":CalibrationParityReference.py"],
+  args = [
+    "$(location :CalibrationParityReference.py)",
+    "$(location @lightglue_onnx_v3//:lightglue_init)",
+    "$(location @raco_v1_weights//file)",
+    "$(location @aliked_n16_weights//file)",
+    "$(location @raco_aliked_lightglue_weights//file)",
+  ],
+  data = [
+    ":CalibrationParityReference.py",
+    "@aliked_n16_weights//file",
+    "@lightglue_onnx_v3//:lightglue_init",
+    "@lightglue_onnx_v3//:python_sources",
+    "@raco_aliked_lightglue_weights//file",
+    "@raco_v1_weights//file",
+  ],
   env_inherit = [
     "HM_FEATURE_MATCHER_ONNX_MODEL",
     "HM_ONNX_PARITY_GAME_DIR",
@@ -171,37 +193,31 @@ cc_test(
   srcs = ["NoPythonRuntimeTest.cpp"],
   args = [
     "$(location //:run.sh)",
+    "$(locations //src/apps/hmstream-assets:runtime_sources)",
+    "$(locations //src/apps/hmstream-ui:runtime_sources)",
+    "$(locations //src/apps/pipeline-app:runtime_sources)",
+    "$(locations //src/libs/assets:runtime_sources)",
+    "$(locations //src/libs/onnx:runtime_sources)",
+    "$(locations //src/libs/stitching:runtime_sources)",
     "$(location //scripts:make_deb.sh)",
     "$(location //scripts:install_deb.sh)",
-    "$(location //src/apps/hmstream-assets:AssetsMain.cpp)",
-    "$(location //src/apps/hmstream-ui:HmStreamWindow.cpp)",
-    "$(location //src/apps/pipeline-app:PipelineApp.cpp)",
-    "$(location //src/apps/pipeline-app:configurator.cpp)",
-    "$(location //src/libs/assets:AssetManager.cpp)",
-    "$(location //src/libs/stitching:CalibrationModels.cpp)",
-    "$(location //src/libs/stitching:ConfigureStitching.cpp)",
-    "$(location //src/libs/stitching:FeatureMatcher.cpp)",
-    "$(location //src/libs/stitching:HuginProject.cpp)",
-    "$(location //src/libs/stitching:Orientation.cpp)",
-    "$(location //src/libs/stitching:RinkSegmentation.cpp)",
-    "$(location //src/libs/stitching:ScoreboardSelector.cpp)",
+    "$(location //src/apps/hmstream-assets:hmstream-assets)",
+    "$(location //src/apps/hmstream-ui:hmstream-ui)",
+    "$(location //src/apps/pipeline-app:hmstream-cli)",
   ],
   data = [
     "//:run.sh",
     "//scripts:install_deb.sh",
     "//scripts:make_deb.sh",
-    "//src/apps/hmstream-assets:AssetsMain.cpp",
-    "//src/apps/hmstream-ui:HmStreamWindow.cpp",
-    "//src/apps/pipeline-app:PipelineApp.cpp",
-    "//src/apps/pipeline-app:configurator.cpp",
-    "//src/libs/assets:AssetManager.cpp",
-    ":CalibrationModels.cpp",
-    ":ConfigureStitching.cpp",
-    ":FeatureMatcher.cpp",
-    ":HuginProject.cpp",
-    ":Orientation.cpp",
-    ":RinkSegmentation.cpp",
-    ":ScoreboardSelector.cpp",
+    "//src/apps/hmstream-assets:runtime_sources",
+    "//src/apps/hmstream-ui:runtime_sources",
+    "//src/apps/pipeline-app:runtime_sources",
+    "//src/apps/hmstream-assets:hmstream-assets",
+    "//src/apps/hmstream-ui:hmstream-ui",
+    "//src/apps/pipeline-app:hmstream-cli",
+    "//src/libs/assets:runtime_sources",
+    "//src/libs/onnx:runtime_sources",
+    ":runtime_sources",
   ],
 )
 

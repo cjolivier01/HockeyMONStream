@@ -319,6 +319,16 @@ absl::Status ensure_one(const AssetSpec& spec, const Limits& limits, size_t* tot
   if (!status.ok())
     return status;
   std::error_code error;
+  // Packaged assets live under root-owned /opt/hmstream and are intentionally
+  // read-only to ordinary users. Hash an existing immutable file before
+  // attempting to create a sibling lock; atomic publishers cannot change the
+  // inode being read underneath this verification.
+  if (fs::is_regular_file(spec.target, error) && !error && fs::file_size(spec.target, error) > 0 && !error) {
+    auto hash = AssetManager::Sha256(spec.target);
+    if (hash.ok() && *hash == spec.sha256)
+      return absl::OkStatus();
+  }
+  error.clear();
   fs::create_directories(spec.target.parent_path(), error);
   if (error)
     return absl::PermissionDeniedError("Unable to create asset directory: " + error.message());
@@ -449,6 +459,27 @@ absl::Status AssetManager::Ensure(const std::vector<fs::path>& configs, const Li
     auto status = ensure_one(spec, limits, &total);
     if (!status.ok())
       return status;
+  }
+  return absl::OkStatus();
+}
+
+absl::Status AssetManager::Verify(const std::vector<fs::path>& configs, const Limits& limits) {
+  auto assets = Discover(configs, limits);
+  if (!assets.ok())
+    return assets.status();
+  for (const AssetSpec& spec : *assets) {
+    auto status = validate_target(spec);
+    if (!status.ok())
+      return status;
+    std::error_code error;
+    if (!fs::is_regular_file(spec.target, error) || error) {
+      return absl::NotFoundError("Required pretrained asset is unavailable: " + spec.target.string());
+    }
+    auto hash = Sha256(spec.target);
+    if (!hash.ok())
+      return hash.status();
+    if (*hash != spec.sha256)
+      return absl::DataLossError("Pretrained asset checksum mismatch for " + spec.target.string());
   }
   return absl::OkStatus();
 }

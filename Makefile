@@ -24,7 +24,8 @@ all: print_targets
 
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
 	hmstream-cli run-hmstream-cli hmstream-ui run-hmstream-ui pipeline-app run-pipeline-app \
-	hmstream-assets video-player run-video-player yolo-custom-lib hmstream-gst-plugins deb deb-native deb-ubuntu24 deb-ubuntu26 wsl-deb
+	hmstream-assets video-player run-video-player yolo-custom-lib hmstream-gst-plugins qualify-native-onnx \
+	deb deb-ubuntu24 deb-ubuntu26 wsl-deb
 
 perf:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //...
@@ -58,6 +59,9 @@ jetson:
 
 test:
 	$(BAZEL) test --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //...
+
+qualify-native-onnx:
+	scripts/qualify_native_onnx.sh
 
 pipeline-app:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/pipeline-app:pipeline-app
@@ -108,9 +112,6 @@ run-video-player: video-player
 deb:
 	scripts/make_deb_docker.sh --target-ubuntu=$(TARGET_UBUNTU) $(if $(DEEPSTREAM_DEB),--deepstream-deb=$(DEEPSTREAM_DEB),)
 
-deb-native: hmstream-cli hmstream-assets hmstream-ui yolo-custom-lib hmstream-gst-plugins
-	scripts/make_deb.sh
-
 deb-ubuntu24:
 	$(MAKE) deb TARGET_UBUNTU=24.04
 
@@ -150,8 +151,8 @@ print_targets:
 		'run-video-player  Run video-player --help (smoke check).' \
 		'yolo-custom-lib Build //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo.' \
 		'hmstream-gst-plugins Build the three HMStream-owned GStreamer plugins.' \
+		'qualify-native-onnx Run the non-skippable native/Python ONNX release gate.' \
 		'deb            Build for the host Ubuntu release in an ABI-isolated Docker container.' \
-		'deb-native     Legacy native package build (does not bundle the stitching Python runtime).' \
 		'deb-ubuntu24   Build the Ubuntu 24.04 package in Docker (output under dist/ubuntu24.04).' \
 		'deb-ubuntu26   Build the Ubuntu 26.04 package in Docker (output under dist/ubuntu26.04).' \
 		'wsl-deb        Alias for deb; Windows installer is a later WSL wrapper, not a .deb.' \

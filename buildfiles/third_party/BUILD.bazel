@@ -1,4 +1,5 @@
 exports_files([
     "hm_cupano_half3_remap.patch",
+    "lightglue_onnx.BUILD",
     "onnxruntime.BUILD",
 ])

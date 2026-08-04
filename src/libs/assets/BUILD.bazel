@@ -1,5 +1,14 @@
 exports_files(["AssetManager.cpp"])
 
+filegroup(
+  name = "runtime_sources",
+  srcs = [
+    "AssetManager.cpp",
+    "AssetManager.h",
+  ],
+  visibility = ["//visibility:public"],
+)
+
 cc_library(
   name = "asset_manager",
   srcs = ["AssetManager.cpp"],

@@ -31,10 +31,9 @@ class AssetManager {
   static absl::StatusOr<std::vector<AssetSpec>> Discover(
       const std::vector<std::filesystem::path>& configs,
       const Limits& limits = {});
-  static absl::Status Ensure(
-      const std::vector<std::filesystem::path>& configs,
-      const Limits& limits = {});
+  static absl::Status Ensure(const std::vector<std::filesystem::path>& configs, const Limits& limits = {});
+  static absl::Status Verify(const std::vector<std::filesystem::path>& configs, const Limits& limits = {});
   static absl::StatusOr<std::string> Sha256(const std::filesystem::path& path);
 };
 
-}  // namespace hm::assets
+} // namespace hm::assets

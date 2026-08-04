@@ -149,6 +149,8 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Postprocess(
         {(right[0] + 0.5f) * input.source_sizes[1].width / input.resized_sizes[1].width - 0.5f,
          (right[1] + 0.5f) * input.source_sizes[1].height / input.resized_sizes[1].height - 0.5f},
         score,
+        static_cast<int>(left_index),
+        static_cast<int>(right_index),
     });
   }
   if (accepted.empty())

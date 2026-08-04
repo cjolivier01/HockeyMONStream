@@ -1,5 +1,11 @@
 exports_files(["AssetsMain.cpp"])
 
+filegroup(
+  name = "runtime_sources",
+  srcs = ["AssetsMain.cpp"],
+  visibility = ["//visibility:public"],
+)
+
 cc_binary(
   name = "hmstream-assets",
   srcs = ["AssetsMain.cpp"],

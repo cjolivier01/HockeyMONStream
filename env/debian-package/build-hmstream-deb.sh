@@ -101,7 +101,8 @@ validate_native_cuda_code hmstream-cli "${BUILD_DIR}/bazel-bin/src/apps/pipeline
 
 rm -rf "${CONTAINER_OUTPUT_DIR}"
 mkdir -p "${CONTAINER_OUTPUT_DIR}"
-scripts/make_deb.sh --version "${PACKAGE_VERSION}" --output-dir "${CONTAINER_OUTPUT_DIR}"
+HMSTREAM_IMMUTABLE_SOURCE=1 scripts/make_deb.sh \
+  --version "${PACKAGE_VERSION}" --output-dir "${CONTAINER_OUTPUT_DIR}"
 
 # Bind-mounted output directories can be root-squashed. Copy the completed
 # artifact as the invoking host user instead of relying on container-root

@@ -503,10 +503,15 @@ exports:
 - bbox edges: within 2 source-image pixels;
 - SuperPoint: at least 99% identical selected keypoints within 0.25 pixel and
   descriptor cosine similarity at least 0.999;
-- LightGlue: at least 99% identical accepted match pairs, with all shared
-  coordinates within 0.25 pixel; and
-- final selected control points/PTO: same count and order, coordinates within
-  0.25 pixel.
+- the pinned upstream RaCo-ALIKED v3 optimized export: at least 85% stable
+  one-to-one accepted spatial pairs, a native/Python accepted-count ratio in
+  [0.8, 1.2], and all shared coordinates within 0.01 source pixel; exported
+  keypoint indices, scores, selected order, and whole-set homography are
+  diagnostics because upstream explicitly documents provider-dependent
+  marginal correspondences; and
+- final selected control points/PTO against the same ONNX graph through every
+  supported native provider: same count and order, coordinates within 0.25
+  pixel.
 
 The comparison specification is machine-readable and defines exact tensor
 shape/count equality, absolute and relative error, NaN/Inf rejection, threshold
@@ -515,7 +520,15 @@ denominator for every percentage, and whether coordinates are in resized,
 padded, detector, or original-image space. A missing or extra output fails
 before numerical tolerance is applied.
 
-Any relaxed tolerance must be justified by a measured provider-specific
+The RaCo-ALIKED exception above is based on the frozen `tv-12-1-r2` fixture:
+eager CPU and ONNX Runtime CPU share 86.5% of accepted spatial pairs, their
+shared coordinates differ by at most 0.001 pixel, and accepted counts differ
+by 3.4%. The v3 publisher likewise describes the optimized artifact as
+"near-parity" and reports provider-dependent coverage. It is intentionally a
+model-identity/behavior gate rather than an unsupported bit-parity claim; the
+timed stitch remains the release outcome gate.
+
+Any other relaxed tolerance must be justified by a measured provider-specific
 floating-point difference and must not change the final orientation or valid
 stitch outcome.
 

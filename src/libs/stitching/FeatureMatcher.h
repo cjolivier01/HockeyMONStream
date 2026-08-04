@@ -23,6 +23,8 @@ struct FeatureMatch {
   cv::Point2f left;
   cv::Point2f right;
   float score{0.0f};
+  int left_index{-1};
+  int right_index{-1};
 };
 
 struct FeatureMatchResult {

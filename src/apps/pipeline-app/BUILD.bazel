@@ -44,6 +44,12 @@ PIPELINE_APP_DEPS = [
     "@com_google_absl//absl/cleanup",
 ]
 
+filegroup(
+    name = "runtime_sources",
+    srcs = PIPELINE_APP_SRCS,
+    visibility = ["//visibility:public"],
+)
+
 cc_binary(
     name = "pipeline-app",
     srcs = PIPELINE_APP_SRCS,
@@ -57,6 +63,7 @@ cc_binary(
     srcs = PIPELINE_APP_SRCS,
     copts = PIPELINE_APP_COPTS,
     linkopts = PIPELINE_APP_LINKOPTS,
+    visibility = ["//visibility:public"],
     deps = PIPELINE_APP_DEPS,
 )
 

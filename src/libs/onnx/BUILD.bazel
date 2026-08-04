@@ -1,5 +1,14 @@
 INCLUDE_PREFIX = "hstream/src/libs/onnx"
 
+filegroup(
+    name = "runtime_sources",
+    srcs = [
+        "OnnxSession.cpp",
+        "OnnxSession.h",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 config_setting(
     name = "linux_aarch64",
     constraint_values = [
