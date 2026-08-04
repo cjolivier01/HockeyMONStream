@@ -3,7 +3,6 @@
 #include <tiffio.h>
 #include <yaml-cpp/yaml.h>
 
-#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <chrono>
@@ -155,214 +154,22 @@ bool run_configured_child(
 }
 
 bool run_scoreboard_selector_env_child(const fs::path& tmpdir) {
-  const pid_t pid = fork();
-  if (pid < 0) {
-    std::cerr << "scoreboard selector env: fork failed" << std::endl;
+  const fs::path game_dir = tmpdir / "scoreboard-disabled-game";
+  fs::create_directories(game_dir);
+  setenv("HM_NO_SCOREBOARD", "1", /*overwrite=*/1);
+  const auto native_status = hm::stitching::configure_scoreboard(game_dir.string());
+  unsetenv("HM_NO_SCOREBOARD");
+  if (!native_status.ok() || !hm::stitching::is_scoreboard_configured(game_dir.string())) {
+    std::cerr << "native disabled scoreboard configuration failed: " << native_status << std::endl;
     return false;
   }
-  if (pid == 0) {
-    const fs::path game_root = tmpdir / "scoreboard_games";
-    const fs::path game_dir = game_root / "scoreboard-game";
-    const fs::path bin_dir = tmpdir / "fake-bin";
-    fs::create_directories(game_dir);
-    fs::create_directories(bin_dir);
-    unsetenv("HMLIB_ROOT");
-    unsetenv("HM_ROOT");
-    if (chdir(tmpdir.c_str()) != 0) {
-      std::cerr << "scoreboard selector env: chdir failed" << std::endl;
-      _exit(5);
+  const YAML::Node polygon =
+      YAML::LoadFile((game_dir / "config.yaml").string())["rink"]["scoreboard"]["perspective_polygon"];
+  for (size_t index = 0; index < 4; ++index) {
+    if (!polygon[index].IsSequence() || polygon[index][0].as<int>() != 0 || polygon[index][1].as<int>() != 0) {
+      std::cerr << "native disabled scoreboard sentinel is invalid" << std::endl;
+      return false;
     }
-
-    const fs::path hmscoreboard = bin_dir / "hmscoreboard";
-    if (!write_text_file(
-            hmscoreboard,
-            R"(#!/bin/sh
-set -eu
-game_id=""
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --game-id)
-      shift
-      game_id="${1:-}"
-      ;;
-    --game-id=*)
-      game_id="${1#--game-id=}"
-      ;;
-  esac
-  shift || true
-done
-if [ -z "${game_id}" ]; then
-  exit 64
-fi
-printf '%s\n' "${PYTHONUNBUFFERED:-}" > "${HM_GAME_DIR}/py_unbuffered.txt"
-mkdir -p "${HM_GAME_DIR}/${game_id}"
-cat > "${HM_GAME_DIR}/${game_id}/config.yaml" <<'YAML'
-rink:
-  scoreboard:
-    perspective_polygon:
-      - [0, 0]
-      - [10, 0]
-      - [10, 10]
-      - [0, 10]
-YAML
-)")) {
-      _exit(1);
-    }
-    if (chmod(hmscoreboard.c_str(), 0755) != 0) {
-      std::cerr << "scoreboard selector env: chmod failed" << std::endl;
-      _exit(2);
-    }
-
-    const char* old_path = getenv("PATH");
-    const std::string path = bin_dir.string() + (old_path && *old_path ? ":" + std::string(old_path) : "");
-    setenv("PATH", path.c_str(), /*overwrite=*/1);
-    setenv("HM_GAME_DIR", game_root.c_str(), /*overwrite=*/1);
-
-    const auto status = hm::stitching::configure_scoreboard(game_dir.string());
-    if (!status.ok()) {
-      std::cerr << "scoreboard selector env: configure_scoreboard failed: " << status << std::endl;
-      _exit(3);
-    }
-
-    std::ifstream unbuffered_file(game_root / "py_unbuffered.txt");
-    std::string value;
-    std::getline(unbuffered_file, value);
-    if (value != "1") {
-      std::cerr << "scoreboard selector env: expected PYTHONUNBUFFERED=1, got \"" << value << '"' << std::endl;
-      _exit(4);
-    }
-    _exit(0);
-  }
-
-  int status = 0;
-  if (waitpid(pid, &status, 0) != pid) {
-    std::cerr << "scoreboard selector env: waitpid failed" << std::endl;
-    return false;
-  }
-  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-    std::cerr << "scoreboard selector env: child failed with status " << status << std::endl;
-    return false;
-  }
-  return true;
-}
-
-bool run_scoreboard_selector_python_args_child(const fs::path& tmpdir) {
-  const pid_t pid = fork();
-  if (pid < 0) {
-    std::cerr << "scoreboard selector python args: fork failed" << std::endl;
-    return false;
-  }
-  if (pid == 0) {
-    const fs::path game_root = tmpdir / "scoreboard_python_games";
-    const fs::path game_dir = game_root / "scoreboard-python-game";
-    const fs::path bin_dir = tmpdir / "fake-python-bin";
-    const fs::path hm_root = tmpdir / "fake-hm";
-    fs::create_directories(game_dir);
-    fs::create_directories(bin_dir);
-    fs::create_directories(hm_root / "hmlib");
-
-    const fs::path python = bin_dir / "python3";
-    if (!write_text_file(
-            python,
-            R"(#!/bin/sh
-set -eu
-game_id=""
-bind_host=""
-port=""
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --game-id)
-      shift
-      game_id="${1:-}"
-      ;;
-    --game-id=*)
-      game_id="${1#--game-id=}"
-      ;;
-    --selector-bind-host)
-      shift
-      bind_host="${1:-}"
-      ;;
-    --selector-bind-host=*)
-      bind_host="${1#--selector-bind-host=}"
-      ;;
-    --selector-port)
-      shift
-      port="${1:-}"
-      ;;
-    --selector-port=*)
-      port="${1#--selector-port=}"
-      ;;
-  esac
-  shift || true
-done
-if [ -z "${game_id}" ] || [ -z "${bind_host}" ] || [ -z "${port}" ]; then
-  exit 64
-fi
-{
-  printf 'PYTHONUNBUFFERED=%s\n' "${PYTHONUNBUFFERED:-}"
-  printf 'bind_host=%s\n' "${bind_host}"
-  printf 'port=%s\n' "${port}"
-} > "${HM_GAME_DIR}/selector_args.txt"
-mkdir -p "${HM_GAME_DIR}/${game_id}"
-cat > "${HM_GAME_DIR}/${game_id}/config.yaml" <<'YAML'
-rink:
-  scoreboard:
-    perspective_polygon:
-      - [0, 0]
-      - [10, 0]
-      - [10, 10]
-      - [0, 10]
-YAML
-)")) {
-      _exit(1);
-    }
-    if (chmod(python.c_str(), 0755) != 0) {
-      std::cerr << "scoreboard selector python args: chmod failed" << std::endl;
-      _exit(2);
-    }
-
-    const char* old_path = getenv("PATH");
-    const std::string path = bin_dir.string() + (old_path && *old_path ? ":" + std::string(old_path) : "");
-    setenv("PATH", path.c_str(), /*overwrite=*/1);
-    setenv("HM_GAME_DIR", game_root.c_str(), /*overwrite=*/1);
-    setenv("HMLIB_ROOT", hm_root.c_str(), /*overwrite=*/1);
-    unsetenv("HM_ROOT");
-
-    const auto status = hm::stitching::configure_scoreboard(game_dir.string());
-    if (!status.ok()) {
-      std::cerr << "scoreboard selector python args: configure_scoreboard failed: " << status << std::endl;
-      _exit(3);
-    }
-
-    std::ifstream args_file(game_root / "selector_args.txt");
-    std::string line;
-    bool saw_unbuffered = false;
-    bool saw_bind_host = false;
-    bool saw_port = false;
-    while (std::getline(args_file, line)) {
-      if (line == "PYTHONUNBUFFERED=1") {
-        saw_unbuffered = true;
-      } else if (line == "bind_host=0.0.0.0") {
-        saw_bind_host = true;
-      } else if (line.rfind("port=", 0) == 0 && line.size() > 5 && line != "port=0") {
-        saw_port = true;
-      }
-    }
-    if (!saw_unbuffered || !saw_bind_host || !saw_port) {
-      std::cerr << "scoreboard selector python args: missing expected selector args" << std::endl;
-      _exit(4);
-    }
-    _exit(0);
-  }
-
-  int status = 0;
-  if (waitpid(pid, &status, 0) != pid) {
-    std::cerr << "scoreboard selector python args: waitpid failed" << std::endl;
-    return false;
-  }
-  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-    std::cerr << "scoreboard selector python args: child failed with status " << status << std::endl;
-    return false;
   }
   return true;
 }
@@ -483,10 +290,6 @@ int main() {
 
   if (!run_scoreboard_selector_env_child(tmpdir)) {
     finish(tmpdir, 5);
-  }
-
-  if (!run_scoreboard_selector_python_args_child(tmpdir)) {
-    finish(tmpdir, 6);
   }
 
   if (!expect_dependency_invalidation_report(tmpdir)) {

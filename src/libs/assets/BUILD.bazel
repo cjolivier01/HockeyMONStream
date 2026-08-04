@@ -1,0 +1,22 @@
+cc_library(
+  name = "asset_manager",
+  srcs = ["AssetManager.cpp"],
+  hdrs = ["AssetManager.h"],
+  include_prefix = "hstream/src/libs/assets",
+  visibility = ["//visibility:public"],
+  linkopts = [
+    "-lcurl",
+    "-lcrypto",
+  ],
+  deps = [
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+    "@yaml-cpp",
+  ],
+)
+
+cc_test(
+  name = "asset_manager_test",
+  srcs = ["AssetManagerTest.cpp"],
+  deps = [":asset_manager"],
+)

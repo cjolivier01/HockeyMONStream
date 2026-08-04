@@ -400,8 +400,8 @@ Update `scripts/make_deb.sh` and the Ubuntu 24.04/26.04 container builds to:
 - stage the selected native ONNX runtime when it is not a viable distro
   dependency, including license and architecture validation;
 - stage `hmstream-assets`, selector assets, model manifests, and config;
-- retain the exact DeepStream 9.1 dependency and private NCCL behavior from the
-  current branch;
+- retain the exact DeepStream 9.1 dependency while removing HMStream's obsolete
+  private NCCL payload, pin, and downgrade behavior;
 - verify ELF architecture/RPATH and ensure no packaged executable or script
   refers to Python; and
 - verify install, upgrade, uninstall, and non-root first-run behavior in clean
@@ -410,6 +410,11 @@ Update `scripts/make_deb.sh` and the Ubuntu 24.04/26.04 container builds to:
 The package does not include the large calibration ONNX files. First use
 downloads the content-addressed files into the existing configured cache/data
 location; an offline administrator may preseed the same checksummed paths.
+Assets hosted by the private HMStream GitHub repository use the release-asset
+API URL and require `GH_TOKEN` or `GITHUB_TOKEN` with repository read access.
+The native asset manager never logs that token and does not forward its
+authorization header to a redirect on another host. Public third-party assets
+do not require a token.
 
 Artifact production is explicit:
 
@@ -588,6 +593,19 @@ Status as of 2026-08-03, before production implementation:
   Ubuntu 22.04 aarch64 Jetson Orin. No ARM64/SBSA host is currently identified;
   cross-build/QEMU CPU smoke evidence cannot replace the SBSA hardware runtime
   gate.
+
+Implementation status as of 2026-08-04:
+
+- The requested technical implementation proceeds with CPU ONNX Runtime
+  1.23.2 and the redistributable ALIKED plus LightGlue matcher instead of the
+  restricted SuperPoint weights. This is explicitly behavioral/downstream
+  stitch parity, not exact SuperPoint keypoint parity.
+- The custom ice-rink ONNX asset remains in a private release. Technical tests
+  may consume it, but public redistribution remains blocked until the owner
+  records checkpoint and training-data provenance plus redistribution terms.
+- The private-asset API path is content-addressed by SHA256 and authenticated
+  through `GH_TOKEN`/`GITHUB_TOKEN`; clean offline installations must preseed
+  the same checksummed cache paths.
 
 No production implementation begins until the model-rights/model-choice gates
 are resolved. The missing SBSA host does not prevent local development after

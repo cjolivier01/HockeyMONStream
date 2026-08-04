@@ -1316,7 +1316,7 @@ bool run_real_pipeline_e2e(HmStreamWindow* window, const QString& game_id) {
   }
 
   const QString log = window->logText();
-  const bool observed_asset_python = log.contains("using asset setup python");
+  const bool observed_native_asset_setup = log.contains("pretrained assets will be verified by hmstream-cli");
   const bool observed_command = log.contains("pipeline command");
   activate(stop);
   for (int i = 0; i < 300 && window->pipelineStateText() != "STOPPED"; ++i) {
@@ -1324,7 +1324,7 @@ bool run_real_pipeline_e2e(HmStreamWindow* window, const QString& game_id) {
     QTest::qWait(100);
   }
 
-  if (!expect(observed_asset_python, "Real UI run should execute pretrained asset setup probe") ||
+  if (!expect(observed_native_asset_setup, "Real UI run should delegate native asset verification to hmstream-cli") ||
       !expect(observed_command, "Real UI run should launch hmstream-cli") ||
       !expect(observed_running, "Real UI run should reach GStreamer PLAYING/PERF output")) {
     std::cerr << log.toStdString() << '\n';

@@ -1,3 +1,5 @@
+exports_files(["HmStreamWindow.cpp"])
+
 COMMON_COPTS = [
     "-x",
     "c++",

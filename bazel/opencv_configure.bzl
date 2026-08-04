@@ -24,7 +24,12 @@ def _has_shared_lib(ctx, dirs, lib_stem):
     return False
 
 def _pick_opencv_lib_dir(ctx, root):
-    for rel in ["lib/aarch64-linux-gnu", "lib/x86_64-linux-gnu", "lib"]:
+    # NVIDIA's JetPack OpenCV package installs its matching libraries directly
+    # in /usr/lib while Ubuntu's older multiarch OpenCV can remain installed in
+    # /usr/lib/aarch64-linux-gnu. Prefer the prefix's direct lib directory so
+    # headers and libraries come from the same package; normal distro installs
+    # fall through to their multiarch directory.
+    for rel in ["lib", "lib/aarch64-linux-gnu", "lib/x86_64-linux-gnu"]:
         lib_dir = root + "/" + rel
         if _has_shared_lib(ctx, [lib_dir], "opencv_core"):
             return rel
@@ -144,6 +149,11 @@ def _opencv_configure_impl(ctx):
         candidates.append(("override", opencv_root))
     if conda_prefix:
         candidates.append(("conda", conda_prefix))
+    # JetPack hosts commonly install their CUDA-enabled OpenCV build under
+    # /usr/local while retaining Ubuntu's older runtime libraries under /usr.
+    # Keep headers and shared libraries from one prefix instead of mixing the
+    # two installations.
+    candidates.append(("system-local", "/usr/local"))
     candidates.append(("system", "/usr"))
 
     chosen = None

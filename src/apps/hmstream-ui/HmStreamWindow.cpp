@@ -452,56 +452,6 @@ void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QStr
   }
 }
 
-bool python_can_run_asset_setup(const QString& python) {
-  if (python.isEmpty()) {
-    return false;
-  }
-  QProcess check;
-  check.start(python, {"-c", "import yaml"});
-  if (!check.waitForStarted(3000)) {
-    return false;
-  }
-  if (!check.waitForFinished(15000)) {
-    check.kill();
-    check.waitForFinished(3000);
-    return false;
-  }
-  return check.exitStatus() == QProcess::NormalExit && check.exitCode() == 0;
-}
-
-QString asset_setup_python() {
-  QStringList candidates;
-  const QString configured = qEnvironmentVariable("PYTHON_BIN");
-  if (!configured.isEmpty()) {
-    candidates.push_back(configured);
-  }
-  const QString conda_prefix = qEnvironmentVariable("CONDA_PREFIX");
-  if (!conda_prefix.isEmpty()) {
-    candidates.push_back(QDir(conda_prefix).filePath("bin/python3"));
-  }
-  const QString venv = qEnvironmentVariable("VIRTUAL_ENV");
-  if (!venv.isEmpty()) {
-    candidates.push_back(QDir(venv).filePath("bin/python3"));
-  }
-  const QString home = QDir::homePath();
-  candidates.push_back(QDir(home).filePath("miniforge3/envs/ubuntu/bin/python3"));
-  candidates.push_back(QDir(home).filePath("miniconda3/envs/ubuntu/bin/python3"));
-  candidates.push_back(QDir(home).filePath(".conda/envs/ubuntu/bin/python3"));
-  candidates.push_back("python3");
-
-  std::set<std::string> seen;
-  for (const QString& candidate : candidates) {
-    const std::string key = candidate.toStdString();
-    if (!seen.insert(key).second) {
-      continue;
-    }
-    if (python_can_run_asset_setup(candidate)) {
-      return candidate;
-    }
-  }
-  return {};
-}
-
 QString existing_auto_cam_dir_for_source(const QDir& game_dir, const QFileInfo& source) {
   const QString family = auto_file_family(source.fileName());
   const QString source_parent = canonical_dir_path(source.absolutePath());
@@ -1424,53 +1374,8 @@ QString HmStreamWindow::pipelineWorkingDirectory() const {
 }
 
 bool HmStreamWindow::setupPretrainedAssets(const QStringList& pipeline_args) {
-  if (!qgetenv("HMSTREAM_UI_TEST_RUNNER").isEmpty()) {
-    return true;
-  }
-
-  QString script = "/opt/hmstream/scripts/setup_pretrained_assets.py";
-  if (!QFileInfo::exists(script)) {
-    script = QDir("scripts").filePath("setup_pretrained_assets.py");
-  }
-  if (!QFileInfo::exists(script)) {
-    return true;
-  }
-
-  const QStringList config_files = pipeline_config_files_from_args(pipeline_args);
-  if (config_files.isEmpty()) {
-    return true;
-  }
-
-  const QString python = asset_setup_python();
-  QStringList setup_args;
-  setup_args << script;
-  setup_args << config_files;
-  appendLog(QString("checking pretrained assets %1").arg(config_files.join(' ')));
-  if (python.isEmpty()) {
-    appendLog("asset setup failed: no Python interpreter with PyYAML is available");
-    appendLog("install python3-yaml or set PYTHON_BIN to the correct Python");
-    return false;
-  }
-  appendLog(QString("using asset setup python %1").arg(python));
-
-  QProcess setup;
-  setup.setWorkingDirectory(pipelineWorkingDirectory());
-  setup.start(python, setup_args);
-  if (!setup.waitForStarted(5000)) {
-    appendLog(QString("failed to start asset setup: %1").arg(setup.errorString()));
-    return false;
-  }
-  setup.waitForFinished(-1);
-  const QString output = QString::fromLocal8Bit(setup.readAllStandardOutput() + setup.readAllStandardError()).trimmed();
-  if (!output.isEmpty()) {
-    for (const QString& line : output.split('\n')) {
-      appendLog(line.trimmed());
-    }
-  }
-  if (setup.exitStatus() != QProcess::NormalExit || setup.exitCode() != 0) {
-    appendLog(QString("asset setup failed exit=%1").arg(setup.exitCode()));
-    return false;
-  }
+  Q_UNUSED(pipeline_args);
+  appendLog("pretrained assets will be verified by hmstream-cli");
   return true;
 }
 

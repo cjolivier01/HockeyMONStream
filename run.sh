@@ -669,45 +669,6 @@ fi
 
 hmaudio_enable=1
 
-asset_config_files=()
-collect_asset_config_files() {
-  local -n args_ref="$1"
-  local arg cfg i
-  for ((i = 0; i < ${#args_ref[@]}; i++)); do
-    arg="${args_ref[$i]}"
-    cfg=""
-    case "${arg}" in
-      -c|--config)
-        i=$((i + 1))
-        if [ "${i}" -lt "${#args_ref[@]}" ]; then
-          cfg="${args_ref[$i]}"
-        fi
-        ;;
-      -c=*|--config=*)
-        cfg="${arg#*=}"
-        ;;
-    esac
-    if [ -n "${cfg}" ]; then
-      case "${cfg}" in
-        /*) asset_config_files+=("${cfg}") ;;
-        *) asset_config_files+=("${SCRIPT_DIR}/${cfg}") ;;
-      esac
-    fi
-  done
-}
-
-collect_asset_config_files config_args
-collect_asset_config_files rewritten_args
-if [ -n "${int8_asset_config_file}" ]; then
-  asset_config_files+=("${int8_asset_config_file}")
-fi
-if [ -n "${bf16_asset_config_file}" ]; then
-  asset_config_files+=("${bf16_asset_config_file}")
-fi
-if [ "${#asset_config_files[@]}" -gt 0 ]; then
-  "${PYTHON_BIN:-python3}" "${SCRIPT_DIR}/scripts/setup_pretrained_assets.py" "${asset_config_files[@]}"
-fi
-
 yaml_property() {
   local config_file="$1"
   local key="$2"

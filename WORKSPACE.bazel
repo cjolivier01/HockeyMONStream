@@ -81,6 +81,27 @@ http_archive(
     url = "https://github.com/bazelbuild/rules_python/releases/download/1.1.0/rules_python-1.1.0.tar.gz",
 )
 
+# ONNX Runtime is kept private to HMStream rather than depending on a distro
+# package whose ABI/version differs between supported Ubuntu releases.  Both
+# archives are CPU-only; the target platform selects the matching library in
+# //src/libs/onnx.  Keeping acceleration out of this baseline also makes the
+# same exported models usable on x86_64, SBSA, and Jetson.
+http_archive(
+    name = "onnxruntime_linux_x86_64",
+    build_file = "@//buildfiles/third_party:onnxruntime.BUILD",
+    sha256 = "1fa4dcaef22f6f7d5cd81b28c2800414350c10116f5fdd46a2160082551c5f9b",
+    strip_prefix = "onnxruntime-linux-x64-1.23.2",
+    url = "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz",
+)
+
+http_archive(
+    name = "onnxruntime_linux_aarch64",
+    build_file = "@//buildfiles/third_party:onnxruntime.BUILD",
+    sha256 = "7c63c73560ed76b1fac6cff8204ffe34fe180e70d6582b5332ec094810241e5c",
+    strip_prefix = "onnxruntime-linux-aarch64-1.23.2",
+    url = "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-aarch64-1.23.2.tgz",
+)
+
 # {fmt} for SimpleDBus logging
 http_archive(
     name = "com_github_fmtlib_fmt",

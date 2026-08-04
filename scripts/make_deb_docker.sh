@@ -9,7 +9,6 @@ set -euo pipefail
 TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET_UBUNTU=""
 DEEPSTREAM_DEB="${DEEPSTREAM_DEB:-}"
-HMLIB_SOURCE="${HMLIB_SOURCE:-}"
 OUTPUT_DIR=""
 PACKAGE_VERSION=""
 EXPECTED_DEEPSTREAM_VERSION="9.1.0-1+resolute2"
@@ -20,8 +19,6 @@ while [[ $# -gt 0 ]]; do
     --target-ubuntu=*) TARGET_UBUNTU="${1#*=}" ;;
     --deepstream-deb) DEEPSTREAM_DEB="$2"; shift ;;
     --deepstream-deb=*) DEEPSTREAM_DEB="${1#*=}" ;;
-    --hmlib-source) HMLIB_SOURCE="$2"; shift ;;
-    --hmlib-source=*) HMLIB_SOURCE="${1#*=}" ;;
     --output-dir) OUTPUT_DIR="$2"; shift ;;
     --output-dir=*) OUTPUT_DIR="${1#*=}" ;;
     --version) PACKAGE_VERSION="$2"; shift ;;
@@ -74,27 +71,6 @@ if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Architecture)" != "amd64" ]]; then
   exit 1
 fi
 
-if [[ -z "${HMLIB_SOURCE}" ]]; then
-  HMLIB_SOURCE="${TOPDIR}/../hm"
-fi
-HMLIB_SOURCE="$(readlink -f "${HMLIB_SOURCE}")"
-if [[ ! -d "${HMLIB_SOURCE}/hmlib" || ! -d "${HMLIB_SOURCE}/xmodels/LightGlue/lightglue" ]]; then
-  echo "ERROR: hmlib and its LightGlue submodule are required under: ${HMLIB_SOURCE}" >&2
-  exit 1
-fi
-EXPECTED_HMLIB_REVISION="$(tr -d '[:space:]' < "${TOPDIR}/scripts/hmlib-runtime-revision")"
-ACTUAL_HMLIB_REVISION="$(git -C "${HMLIB_SOURCE}" rev-parse HEAD 2>/dev/null || true)"
-if [[ "${ACTUAL_HMLIB_REVISION}" != "${EXPECTED_HMLIB_REVISION}" ]]; then
-  echo "ERROR: HockeyMOM runtime must be revision ${EXPECTED_HMLIB_REVISION}; found ${ACTUAL_HMLIB_REVISION:-unknown}." >&2
-  exit 1
-fi
-HMLIB_CHANGES="$(git -C "${HMLIB_SOURCE}" status --porcelain -- hmlib xmodels/LightGlue)"
-if [[ -n "${HMLIB_CHANGES}" ]]; then
-  echo "ERROR: HockeyMOM hmlib/LightGlue runtime paths must be clean before packaging:" >&2
-  printf '%s\n' "${HMLIB_CHANGES}" >&2
-  exit 1
-fi
-
 if [[ -z "${PACKAGE_VERSION}" ]]; then
   commit_count="$(git -C "${TOPDIR}" rev-list --count HEAD)"
   short_hash="$(git -C "${TOPDIR}" rev-parse --short=7 HEAD)"
@@ -123,7 +99,6 @@ docker_args=(
   --rm
   --volume "${TOPDIR}:/source:ro"
   --volume "${DEEPSTREAM_DEB}:/inputs/deepstream.deb:ro"
-  --volume "${HMLIB_SOURCE}:/hmlib-source:ro"
   --volume "${OUTPUT_DIR}:/output"
   --volume "${cache_volume}:/root/.cache/bazel"
   --env "PACKAGE_VERSION=${PACKAGE_VERSION}"

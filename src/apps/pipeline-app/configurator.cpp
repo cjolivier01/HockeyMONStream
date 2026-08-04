@@ -841,7 +841,10 @@ void Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
   set_playcropper_if_not_set("scoreboard-scale", "rink.scoreboard.scoreboard_scale");
   if (has_node(config_, "rink.scoreboard.perspective_polygon", /*non_null=*/true)) {
     auto points = config_["rink"]["scoreboard"]["perspective_polygon"].as<std::vector<std::vector<int>>>();
-    if (!points.empty()) {
+    const bool disabled = points.size() == 4 && std::all_of(points.begin(), points.end(), [](const auto& point) {
+                            return point.size() == 2 && point[0] == 0 && point[1] == 0;
+                          });
+    if (!points.empty() && !disabled) {
       assert(points.size() == 4);
       std::stringstream ss;
       for (size_t i = 0, n = points.size(); i < n; ++i) {

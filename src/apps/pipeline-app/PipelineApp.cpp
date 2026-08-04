@@ -35,6 +35,7 @@
 
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
+#include "hstream/src/libs/assets/AssetManager.h"
 #include "hstream/src/libs/camera/AutoFocus.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
@@ -625,14 +626,15 @@ absl::Status PipelineApplication::auto_focus_cameras(const std::vector<std::shar
       // Assert no duplicates
       assert(sensors.emplace(src_config.camera_csi_sensor_id).second);
       assert(bus.emplace(src_config.camera_i2c_bus).second);
-      cameras.emplace_back(hm::camera::CameraConnection{
-          .sensor_id = src_config.camera_csi_sensor_id,
-          .i2c_bus = src_config.camera_i2c_bus,
-          .width = src_config.camera_width,
-          .height = src_config.camera_height,
-          .fps_n = src_config.camera_fps_n,
-          .fps_d = src_config.camera_fps_d,
-      });
+      cameras.emplace_back(
+          hm::camera::CameraConnection{
+              .sensor_id = src_config.camera_csi_sensor_id,
+              .i2c_bus = src_config.camera_i2c_bus,
+              .width = src_config.camera_width,
+              .height = src_config.camera_height,
+              .fps_n = src_config.camera_fps_n,
+              .fps_d = src_config.camera_fps_d,
+          });
     }
   }
   if (cameras.empty()) {
@@ -1165,6 +1167,17 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
       cfg_files_ = nullptr;
     });
   }
+
+  std::vector<fs::path> asset_configs;
+  for (size_t index = 0, count = g_strv_length(cfg_files_); index < count; ++index) {
+    asset_configs.emplace_back(cfg_files_[index]);
+    const fs::path calibration_assets =
+        fs::path(cfg_files_[index]).parent_path() / "ds_hockey_configure_stitching.yaml";
+    if (fs::is_regular_file(calibration_assets) &&
+        std::find(asset_configs.begin(), asset_configs.end(), calibration_assets) == asset_configs.end())
+      asset_configs.push_back(calibration_assets);
+  }
+  HM_RETURN_IF_ERROR(hm::assets::AssetManager::Ensure(asset_configs));
 
   if (pipline_options) {
     pipeline_options_.clear();
@@ -1994,7 +2007,8 @@ bool PipelineApplication::set_element_property_runtime(
     GParamSpec* pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(element), property_name.c_str());
     if (!pspec) {
       gst_object_unref(element);
-      g_printerr("runtime command failed: element %s has no property %s\n", element_name.c_str(), property_name.c_str());
+      g_printerr(
+          "runtime command failed: element %s has no property %s\n", element_name.c_str(), property_name.c_str());
       return false;
     }
     GValue gvalue = G_VALUE_INIT;
@@ -2003,13 +2017,18 @@ bool PipelineApplication::set_element_property_runtime(
         g_value_unset(&gvalue);
       }
       gst_object_unref(element);
-      g_printerr("runtime command failed: unsupported property type for %s.%s\n", element_name.c_str(), property_name.c_str());
+      g_printerr(
+          "runtime command failed: unsupported property type for %s.%s\n", element_name.c_str(), property_name.c_str());
       return false;
     }
     if (g_param_value_validate(pspec, &gvalue)) {
       g_value_unset(&gvalue);
       gst_object_unref(element);
-      g_printerr("runtime command failed: value out of range for %s.%s=%s\n", element_name.c_str(), property_name.c_str(), value.c_str());
+      g_printerr(
+          "runtime command failed: value out of range for %s.%s=%s\n",
+          element_name.c_str(),
+          property_name.c_str(),
+          value.c_str());
       return false;
     }
     g_object_set_property(G_OBJECT(element), property_name.c_str(), &gvalue);
@@ -2020,7 +2039,11 @@ bool PipelineApplication::set_element_property_runtime(
       g_object_get(G_OBJECT(element), "last-property-set-ok", &accepted, nullptr);
       if (!accepted) {
         gst_object_unref(element);
-        g_printerr("runtime command failed: plugin rejected %s.%s=%s\n", element_name.c_str(), property_name.c_str(), value.c_str());
+        g_printerr(
+            "runtime command failed: plugin rejected %s.%s=%s\n",
+            element_name.c_str(),
+            property_name.c_str(),
+            value.c_str());
         return false;
       }
     }

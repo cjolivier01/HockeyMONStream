@@ -24,7 +24,7 @@ all: print_targets
 
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
 	hmstream-cli run-hmstream-cli hmstream-ui run-hmstream-ui pipeline-app run-pipeline-app \
-	video-player run-video-player yolo-custom-lib hmstream-gst-plugins deb deb-native deb-ubuntu24 deb-ubuntu26 wsl-deb
+	hmstream-assets video-player run-video-player yolo-custom-lib hmstream-gst-plugins deb deb-native deb-ubuntu24 deb-ubuntu26 wsl-deb
 
 perf:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //...
@@ -64,6 +64,9 @@ pipeline-app:
 
 hmstream-cli:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/pipeline-app:hmstream-cli
+
+hmstream-assets:
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/hmstream-assets:hmstream-assets
 
 hmstream-ui:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/hmstream-ui:hmstream-ui
@@ -105,7 +108,7 @@ run-video-player: video-player
 deb:
 	scripts/make_deb_docker.sh --target-ubuntu=$(TARGET_UBUNTU) $(if $(DEEPSTREAM_DEB),--deepstream-deb=$(DEEPSTREAM_DEB),)
 
-deb-native: hmstream-cli hmstream-ui yolo-custom-lib hmstream-gst-plugins
+deb-native: hmstream-cli hmstream-assets hmstream-ui yolo-custom-lib hmstream-gst-plugins
 	scripts/make_deb.sh
 
 deb-ubuntu24:

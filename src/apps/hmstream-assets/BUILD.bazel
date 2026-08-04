@@ -1,0 +1,6 @@
+cc_binary(
+  name = "hmstream-assets",
+  srcs = ["AssetsMain.cpp"],
+  visibility = ["//visibility:public"],
+  deps = ["//src/libs/assets:asset_manager"],
+)

@@ -1,7 +1,12 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
-#include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/stitching/CalibrationModels.h"
+#include "hstream/src/libs/stitching/FeatureMatcher.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/stitching/Orientation.h"
+#include "hstream/src/libs/stitching/RinkSegmentation.h"
+#include "hstream/src/libs/stitching/ScoreboardSelector.h"
 #include "hstream/src/libs/stitching/Synchronization.h"
 
 #include <yaml-cpp/yaml.h>
@@ -17,32 +22,24 @@
 #include <optional>
 #include <regex>
 #include <set>
-#include <sstream>
 #include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
 
-#include <arpa/inet.h>
-#include <ifaddrs.h>
-#include <netinet/in.h>
 #include <opencv2/opencv.hpp>
-#include <sys/socket.h>
+#include <sys/stat.h>
 #include <tiffio.h>
 #include <unistd.h>
 #include "absl/strings/str_split.h"
 
 namespace fs = std::filesystem;
 
-extern "C" char** environ;
-
 namespace hm {
 namespace stitching {
 
 namespace {
 
-const std::string lfo_prefix = "Left frame offset: ";
-const std::string rfo_prefix = "Right frame offset: ";
 constexpr size_t kDefaultJetsonMaxLiveStitchCanvasDimension = 8192;
 constexpr size_t kDefaultMaxControlPoints = 1500;
 
@@ -364,17 +361,6 @@ struct FileNode {
   std::vector<FileNode> children;
 };
 
-std::string to_command_line(const std::vector<std::string>& cmd) {
-  std::stringstream ss;
-  for (size_t i = 0, n = cmd.size(); i < n; ++i) {
-    if (i) {
-      ss << ' ';
-    }
-    ss << cmd[i];
-  }
-  return ss.str();
-}
-
 // -----------------------------------------------------------------------------
 // ValidationResult: Returned by the checker function.
 //   - valid: true if every child is newer than its parent for every dependency edge.
@@ -692,330 +678,6 @@ absl::Status save_image(surface::Surface surf, const std::string& filename) {
   return absl::OkStatus();
 }
 
-std::string get_game_id(const std::string& game_path) {
-  fs::path path(game_path);
-  if (path.empty()) {
-    return std::string{};
-  }
-
-  fs::path normalized = path.lexically_normal();
-  std::error_code ec;
-
-  // If the path exists, prefer the filesystem type over heuristics.
-  if (fs::exists(normalized, ec) && !ec) {
-    if (fs::is_directory(normalized, ec) && !ec) {
-      std::string leaf = normalized.filename().string();
-      if (!leaf.empty()) {
-        return leaf;
-      }
-      return normalized.parent_path().filename().string();
-    }
-    return normalized.parent_path().filename().string();
-  }
-
-  // Fallback when path doesn't exist yet: infer file vs directory shape.
-  std::string leaf = normalized.filename().string();
-  if (leaf.empty()) {
-    return normalized.parent_path().filename().string();
-  }
-  if (normalized.has_extension()) {
-    return normalized.parent_path().filename().string();
-  }
-  return leaf;
-}
-
-std::map<std::string, std::string> get_environment() {
-  std::map<std::string, std::string> env_vars;
-  // extern char** environ is a global variable containing the environment variables
-
-  // Loop through the environment variables
-  for (char** env = environ; *env != nullptr; env++) {
-    std::string envEntry = *env;
-    size_t pos = envEntry.find('=');
-    if (pos != std::string::npos) {
-      std::string key = envEntry.substr(0, pos);
-      std::string value = envEntry.substr(pos + 1);
-      env_vars[key] = value;
-    }
-  }
-  return env_vars;
-}
-
-bool is_executable_usable(const fs::path& path) {
-  std::error_code ec;
-  if (!fs::exists(path, ec) || ec || ::access(path.c_str(), X_OK) != 0) {
-    return false;
-  }
-
-  std::ifstream in(path);
-  std::string first_line;
-  if (!std::getline(in, first_line) || first_line.rfind("#!", 0) != 0) {
-    return true;
-  }
-
-  std::string interpreter = first_line.substr(2);
-  const auto first_space = interpreter.find_first_of(" \t\r");
-  if (first_space != std::string::npos) {
-    interpreter = interpreter.substr(0, first_space);
-  }
-  if (interpreter.empty() || interpreter == "/usr/bin/env") {
-    return true;
-  }
-  return fs::exists(interpreter, ec) && !ec;
-}
-
-std::optional<fs::path> find_executable_maybe_conda(const std::string& exec) {
-  if (exec == "python3") {
-    std::vector<fs::path> python_candidates;
-    auto add_python_candidate = [&python_candidates](const fs::path& candidate) {
-      if (candidate.empty()) {
-        return;
-      }
-      for (const auto& existing : python_candidates) {
-        if (existing == candidate) {
-          return;
-        }
-      }
-      python_candidates.push_back(candidate);
-    };
-
-    if (const char* s = getenv("HM_PYTHON"); s && *s) {
-      add_python_candidate(s);
-    }
-    if (const char* s = getenv("CONDA_PREFIX"); s && *s) {
-      add_python_candidate(fs::path(s) / "bin" / "python3");
-    }
-    if (const char* s = getenv("CONDA_DEFAULT_ENV"); s && *s) {
-      if (const char* home = getenv("HOME"); home && *home) {
-        add_python_candidate(fs::path(home) / ".conda" / "envs" / s / "bin" / "python3");
-      }
-    }
-    if (const char* home = getenv("HOME"); home && *home) {
-      const fs::path envs_dir = fs::path(home) / ".conda" / "envs";
-      add_python_candidate(envs_dir / "ubuntu" / "bin" / "python3");
-      std::error_code ec;
-      if (fs::is_directory(envs_dir, ec)) {
-        std::vector<fs::path> conda_envs;
-        for (const auto& entry : fs::directory_iterator(envs_dir, ec)) {
-          if (!entry.is_directory(ec)) {
-            continue;
-          }
-          conda_envs.push_back(entry.path());
-        }
-        std::sort(conda_envs.begin(), conda_envs.end());
-        for (const auto& conda_env : conda_envs) {
-          add_python_candidate(conda_env / "bin" / "python3");
-        }
-      }
-    }
-    auto found_python = findExecutable("python3", {"PATH"});
-    if (found_python) {
-      add_python_candidate(*found_python);
-    }
-    add_python_candidate("/usr/bin/python3");
-
-    for (const auto& candidate : python_candidates) {
-      if (is_executable_usable(candidate)) {
-        return candidate;
-      }
-    }
-    return std::nullopt;
-  }
-
-  auto found_exec = findExecutable(exec, {"PATH"});
-  if (found_exec && is_executable_usable(*found_exec)) {
-    return *found_exec;
-  }
-  const char* s = getenv("CONDA_PREFIX");
-  if (!s) {
-    return std::nullopt;
-  }
-  auto path = fs::path(s) / "bin" / exec;
-  if (!is_executable_usable(path)) {
-    return std::nullopt;
-  }
-  return path;
-}
-
-std::optional<std::string> resolve_executable(const std::string& executable) {
-  if (executable.empty()) {
-    return std::nullopt;
-  }
-  if (executable[0] == '/' || executable[0] == '\\') {
-    if (!is_executable_usable(executable)) {
-      return std::nullopt;
-    }
-    return executable;
-  }
-  auto found = findExecutable(executable, {"PATH"});
-  if (!found || !is_executable_usable(*found)) {
-    return std::nullopt;
-  }
-  return found;
-}
-
-std::map<std::string, std::string> python_env(const std::string& add_dir, std::map<std::string, std::string> prev) {
-  if (!add_dir.empty()) {
-    std::string pythonpath;
-    auto it = prev.find("PYTHONPATH");
-    if (it != prev.end()) {
-      pythonpath = it->second;
-    }
-    if (pythonpath.empty()) {
-      pythonpath = add_dir;
-    } else {
-      pythonpath = add_dir + ':' + pythonpath;
-    }
-    prev["PYTHONPATH"] = pythonpath;
-  }
-
-  // Match hm_run.sh behavior: ensure conda libs are visible to python tools.
-  const char* conda_prefix = ::getenv("CONDA_PREFIX");
-  if (conda_prefix && *conda_prefix) {
-    const std::string conda_lib = (fs::path(conda_prefix) / "lib").string();
-    std::string ld = prev["LD_LIBRARY_PATH"];
-    if (!conda_lib.empty() && ld.find(conda_lib) == std::string::npos) {
-      ld = conda_lib + (ld.empty() ? "" : ":") + ld;
-      prev["LD_LIBRARY_PATH"] = ld;
-    }
-  }
-  return prev;
-}
-
-bool is_hmlib_repo_root(const fs::path& p) {
-  std::error_code ec;
-  return fs::is_directory(p / "hmlib", ec);
-}
-
-std::optional<fs::path> find_hmlib_repo_root() {
-  if (const char* s = ::getenv("HMLIB_ROOT"); s && *s && is_hmlib_repo_root(s)) {
-    return fs::path(s);
-  }
-  if (const char* s = ::getenv("HM_ROOT"); s && *s && is_hmlib_repo_root(s)) {
-    return fs::path(s);
-  }
-
-  const fs::path cwd = fs::current_path();
-  const std::vector<fs::path> candidates = {
-      cwd / ".." / "hm",
-      cwd / "bazel-hstream" / "external" / "hm",
-      cwd / "external" / "hm",
-  };
-  for (const auto& cand : candidates) {
-    if (is_hmlib_repo_root(cand)) {
-      return cand;
-    }
-  }
-  return std::nullopt;
-}
-
-std::optional<int> find_available_tcp_port() {
-  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) {
-    return std::nullopt;
-  }
-
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  addr.sin_port = htons(0);
-
-  if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-    ::close(fd);
-    return std::nullopt;
-  }
-
-  socklen_t len = sizeof(addr);
-  if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) < 0) {
-    ::close(fd);
-    return std::nullopt;
-  }
-
-  const int port = ntohs(addr.sin_port);
-  ::close(fd);
-  if (port <= 0) {
-    return std::nullopt;
-  }
-  return port;
-}
-
-std::vector<std::string> local_ipv4_addresses() {
-  std::set<std::string> addresses;
-  ifaddrs* ifaddr = nullptr;
-  if (::getifaddrs(&ifaddr) != 0) {
-    return {};
-  }
-
-  for (ifaddrs* ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
-    if (ifa->ifa_addr == nullptr || ifa->ifa_addr->sa_family != AF_INET) {
-      continue;
-    }
-    char buf[INET_ADDRSTRLEN] = {};
-    const auto* addr = reinterpret_cast<sockaddr_in*>(ifa->ifa_addr);
-    if (::inet_ntop(AF_INET, &addr->sin_addr, buf, sizeof(buf)) == nullptr) {
-      continue;
-    }
-    const std::string ip(buf);
-    if (ip.empty() || ip == "0.0.0.0" || ip.rfind("127.", 0) == 0) {
-      continue;
-    }
-    addresses.insert(ip);
-  }
-
-  ::freeifaddrs(ifaddr);
-  return {addresses.begin(), addresses.end()};
-}
-
-std::vector<std::string> scoreboard_selector_access_urls(int port) {
-  std::vector<std::string> urls;
-  std::set<std::string> seen;
-
-  auto add = [&](const std::string& host) {
-    if (host.empty()) {
-      return;
-    }
-    const std::string url = TO_STRING("http://" << host << ":" << port << "/");
-    if (seen.insert(url).second) {
-      urls.push_back(url);
-    }
-  };
-
-  char hostname[256] = {};
-  if (::gethostname(hostname, sizeof(hostname)) == 0) {
-    hostname[sizeof(hostname) - 1] = '\0';
-    add(hostname);
-  }
-  add("localhost");
-  add("127.0.0.1");
-  for (const auto& address : local_ipv4_addresses()) {
-    add(address);
-  }
-  return urls;
-}
-
-void print_scoreboard_selector_access_urls(int port) {
-  std::cerr << "Scoreboard selector will listen on 0.0.0.0:" << port << ". Open one of:\n";
-  for (const auto& url : scoreboard_selector_access_urls(port)) {
-    std::cerr << "  " << url << "\n";
-  }
-  std::cerr << std::flush;
-}
-
-std::map<std::string, std::string> hmlib_python_env(std::map<std::string, std::string> prev) {
-  const auto hm_root = find_hmlib_repo_root();
-  if (!hm_root.has_value()) {
-    return python_env("", std::move(prev));
-  }
-  std::string pythonpath_prefix = hm_root->string();
-  if (fs::is_directory(*hm_root / "src")) {
-    pythonpath_prefix += ':' + (fs::path(*hm_root) / "src").string();
-  }
-  if (fs::is_directory(*hm_root / "xmodels" / "LightGlue")) {
-    pythonpath_prefix += ':' + (fs::path(*hm_root) / "xmodels" / "LightGlue").string();
-  }
-  return python_env(pythonpath_prefix, std::move(prev));
-}
-
 } // namespace
 
 absl::Status save_stitched_image(const std::string& game_dir, surface::Surface surface) {
@@ -1245,68 +907,11 @@ bool can_configure_stitching(const YAML::Node& config) {
 absl::StatusOr<Synchronization> calculate_stitching_synchronization(
     const std::string& video1,
     const std::string& video2) {
-#if 1
   auto frame_offsets = synchronize_by_audio(video1, video2);
   return Synchronization{
       .video1_frame_offset = frame_offsets.first,
       .video2_frame_offset = frame_offsets.second,
   };
-#else
-  fs::path hm_cupano_dir = fs::path("external") / "hm-cupano";
-  std::vector<std::string> cmd{
-      "/home/colivier/miniforge3/envs/ubuntu/bin/python",
-      fs::path("scripts") / "create_control_points.py",
-      "--synchronize-only",
-      "--left",
-      video1,
-      "--right",
-      video2,
-  };
-  std::optional<double> v1_offset, v2_offset;
-  int exitcode = run_command(
-      cmd,
-      hm_cupano_dir,
-      get_environment(),
-      [&v1_offset, &v2_offset](const std::string& stderr, const std::string& stdout) -> void {
-        if (!stderr.empty()) {
-          std::cerr << stderr << std::endl;
-        }
-        if (!stdout.empty()) {
-          if (!strncmp(stdout.c_str(), lfo_prefix.c_str(), lfo_prefix.size())) {
-            char* endptr = (char*)stdout.c_str() + stdout.size();
-            v1_offset = std::strtod(stdout.c_str() + lfo_prefix.size(), &endptr);
-            std::cout << stdout << std::endl;
-          }
-          if (!strncmp(stdout.c_str(), rfo_prefix.c_str(), rfo_prefix.size())) {
-            char* endptr = (char*)stdout.c_str() + stdout.size();
-            v2_offset = ::strtod(stdout.c_str() + rfo_prefix.size(), &endptr);
-            std::cout << stdout << std::endl;
-          }
-        }
-      });
-  if (exitcode) {
-    return absl::InternalError("Failed to create control points");
-  }
-  if (!v1_offset.has_value() || !v2_offset.has_value()) {
-    return absl::InternalError("Failed to parse frame offsets from output");
-  }
-  return Synchronization{
-      .video1_frame_offset = *v1_offset,
-      .video2_frame_offset = *v2_offset,
-  };
-#endif
-}
-
-absl::StatusOr<std::string> find_and_validate_executable(
-    const std::string& executable_name,
-    const std::string& package = "hmlib") {
-  auto hmcreate_control_points = resolve_executable(executable_name);
-  if (!hmcreate_control_points.has_value()) {
-    return absl::NotFoundError(TO_STRING(
-        "Could not find executable: \"" << executable_name << "\", did you forget to install the \"" << package
-                                        << "\" package?"));
-  }
-  return *hmcreate_control_points;
 }
 
 absl::Status create_control_points(
@@ -1321,56 +926,27 @@ absl::Status create_control_points(
   size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", kDefaultMaxControlPoints);
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
 
-  std::vector<std::string> cmd;
-  std::string working_dir;
-  auto env = hmlib_python_env(get_environment());
-  if (auto hm_root = find_hmlib_repo_root(); hm_root.has_value()) {
-    working_dir = hm_root->string();
+  const cv::Mat left = cv::imread(left_file.string(), cv::IMREAD_COLOR);
+  const cv::Mat right = cv::imread(right_file.string(), cv::IMREAD_COLOR);
+  if (left.empty() || right.empty()) {
+    return absl::FailedPreconditionError("Unable to reload synchronized frames for native feature matching");
+  }
+  fs::path model_path;
+  HM_ASSIGN_OR_RETURN(model_path, feature_matcher_model_path());
+  std::unique_ptr<FeatureMatcher> matcher;
+  HM_ASSIGN_OR_RETURN(matcher, FeatureMatcher::Create(model_path.string()));
+  FeatureMatchResult matched;
+  HM_ASSIGN_OR_RETURN(matched, matcher->Infer(left, right, max_control_points));
+  if (matched.accepted_match_count < 16) {
+    return absl::FailedPreconditionError(TO_STRING(
+        "Native feature matcher produced only " << matched.accepted_match_count
+                                                << " usable matches; at least 16 are required"));
   }
 
-  const auto hmcreate_control_points = resolve_executable("hmcreate_control_points");
-  if (hmcreate_control_points.has_value()) {
-    cmd = {
-        *hmcreate_control_points,
-        "--left",
-        left_file,
-        "--right",
-        right_file,
-        TO_STRING("--max-control-points=" << max_control_points),
-    };
-  } else {
-    const auto python_exec = find_executable_maybe_conda("python3");
-    if (!python_exec.has_value()) {
-      return absl::NotFoundError("Could not find python3 for hmcreate_control_points fallback");
-    }
-    cmd = {
-        python_exec->string(),
-        "-m",
-        "hmlib.cli.create_control_points",
-        "--left",
-        left_file,
-        "--right",
-        right_file,
-        TO_STRING("--max-control-points=" << max_control_points),
-    };
-  }
-  if (max_canvas_dimension.has_value()) {
-    cmd.emplace_back(TO_STRING("--max-output-dimension=" << *max_canvas_dimension));
-  }
-
-  int exitcode = run_command(cmd, working_dir, env, [](const std::string& stderr, const std::string& stdout) -> void {
-    if (!stderr.empty()) {
-      std::cerr << stderr << std::endl;
-    }
-    if (!stdout.empty()) {
-      std::cerr << stdout << std::endl;
-    }
-  });
-  if (exitcode) {
-    return absl::InternalError(TO_STRING("Failed to create control points: " << to_command_line(cmd)));
-  }
-
-  return absl::OkStatus();
+  HuginProject::Options options;
+  options.max_canvas_dimension = max_canvas_dimension;
+  HM_RETURN_IF_ERROR(HuginProject::Configure(game_dir, matched.selected, options));
+  return maybe_create_default_seam_file(game_dir);
 }
 
 bool is_field_mask_configured(const std::string& game_dir) {
@@ -1413,114 +989,139 @@ bool is_field_mask_configured(const std::string& game_dir) {
   return true;
 }
 
-absl::Status create_field_mask(const std::string& game_dir, surface::Surface surface) {
-  fs::path stitched_file = fs::path(game_dir) / "s.png";
-  HM_RETURN_IF_ERROR(save_stitched_image(game_dir, surface));
-  std::string game_id = get_game_id(stitched_file);
+absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& profile) {
+  if (game_dir.empty() || profile.masks.empty()) {
+    return absl::InvalidArgumentError("A game directory and at least one rink mask are required");
+  }
+  const fs::path root(game_dir);
+  std::error_code error;
+  fs::create_directories(root, error);
+  if (error)
+    return absl::InternalError("Unable to create rink profile directory: " + error.message());
 
-  std::vector<std::string> cmd;
-  std::string working_dir;
-  auto env = hmlib_python_env(get_environment());
-
-  const auto hmfind_ice_rink = resolve_executable("hmfind_ice_rink");
-  if (hmfind_ice_rink.has_value()) {
-    cmd = {
-        *hmfind_ice_rink,
-        "--game-id",
-        game_id,
-#ifdef __aarch64__
-        "--device=cuda",
-#else
-        "--device=cpu",
-#endif
-    };
-  } else {
-    const auto python_exec = find_executable_maybe_conda("python3");
-    if (!python_exec.has_value()) {
-      return absl::NotFoundError("Could not find python3 for hmfind_ice_rink fallback");
+  std::string pattern = (root / ".hmstream-rink-XXXXXX").string();
+  std::vector<char> writable(pattern.begin(), pattern.end());
+  writable.push_back('\0');
+  char* created = ::mkdtemp(writable.data());
+  if (created == nullptr)
+    return absl::InternalError("Unable to create rink profile staging directory");
+  const fs::path staging(created);
+  struct Cleanup {
+    fs::path path;
+    ~Cleanup() {
+      std::error_code ignored;
+      fs::remove_all(path, ignored);
     }
-    cmd = {
-        python_exec->string(),
-        "-m",
-        "hmlib.cli.find_ice_rink",
-        "--game-id",
-        game_id,
-#ifdef __aarch64__
-        "--device=cuda",
-#else
-        "--device=cpu",
-#endif
-    };
-    if (auto hm_root = find_hmlib_repo_root(); hm_root.has_value()) {
-      working_dir = hm_root->string();
+  } cleanup{staging};
+  if (::chmod(staging.c_str(), 0700) != 0)
+    return absl::InternalError("Unable to protect rink staging directory");
+
+  const cv::Size expected_size = profile.masks.front().size();
+  for (size_t index = 0; index < profile.masks.size(); ++index) {
+    const cv::Mat& mask = profile.masks[index];
+    if (mask.empty() || mask.type() != CV_8U || mask.size() != expected_size) {
+      return absl::InvalidArgumentError("Rink masks must be equally sized, non-empty CV_8U images");
+    }
+    const fs::path path = staging / ("rink_mask_" + std::to_string(index) + ".png");
+    if (!cv::imwrite(path.string(), mask))
+      return absl::InternalError("Unable to stage rink mask " + path.string());
+    const cv::Mat validation = cv::imread(path.string(), cv::IMREAD_GRAYSCALE);
+    if (validation.empty() || validation.size() != expected_size) {
+      return absl::InternalError("Staged rink mask failed validation: " + path.string());
     }
   }
 
-  int exitcode = run_command(cmd, working_dir, env, [](const std::string& stderr, const std::string& stdout) -> void {
-    if (!stderr.empty()) {
-      std::cerr << stderr << std::endl;
-    }
-    if (!stdout.empty()) {
-      std::cerr << stdout << std::endl;
-    }
-  });
-  if (exitcode) {
-    return absl::InternalError("Failed to create control points");
+  const fs::path config_path = root / "config.yaml";
+  YAML::Node config(YAML::NodeType::Map);
+  try {
+    if (fs::is_regular_file(config_path))
+      config = YAML::LoadFile(config_path.string());
+    config["rink"]["ice_contours_mask_count"] = profile.masks.size();
+    config["rink"]["ice_contours_mask_centroid"] = std::vector<double>{profile.centroid.x, profile.centroid.y};
+    config["rink"]["ice_contours_combined_bbox"] = std::vector<double>{
+        profile.combined_bbox.x,
+        profile.combined_bbox.y,
+        profile.combined_bbox.x + profile.combined_bbox.width,
+        profile.combined_bbox.y + profile.combined_bbox.height};
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Unable to update rink profile YAML: " + std::string(exception.what()));
+  }
+  {
+    std::ofstream output(staging / "config.yaml", std::ios::out | std::ios::trunc);
+    if (!output)
+      return absl::InternalError("Unable to stage rink profile config");
+    output << config << '\n';
+    output.flush();
+    if (!output)
+      return absl::InternalError("Unable to flush rink profile config");
   }
 
+  const fs::path previous = staging / "previous";
+  fs::create_directory(previous, error);
+  if (error)
+    return absl::InternalError("Unable to create rink rollback directory: " + error.message());
+  std::vector<fs::path> old_files;
+  for (const auto& entry : fs::directory_iterator(root, error)) {
+    if (error)
+      return absl::InternalError("Unable to inspect old rink masks: " + error.message());
+    const std::string name = entry.path().filename().string();
+    if ((name.rfind("rink_mask_", 0) == 0 && entry.path().extension() == ".png") || name == "config.yaml") {
+      old_files.push_back(entry.path());
+    }
+  }
+  std::vector<fs::path> moved_old;
+  std::vector<fs::path> published;
+  auto rollback = [&]() {
+    std::error_code ignored;
+    for (auto it = published.rbegin(); it != published.rend(); ++it)
+      fs::rename(*it, staging / it->filename(), ignored);
+    for (auto it = moved_old.rbegin(); it != moved_old.rend(); ++it)
+      fs::rename(previous / it->filename(), *it, ignored);
+  };
+  for (const fs::path& old : old_files) {
+    fs::rename(old, previous / old.filename(), error);
+    if (error) {
+      rollback();
+      return absl::InternalError("Unable to preserve old rink artifact: " + error.message());
+    }
+    moved_old.push_back(old);
+  }
+  std::vector<fs::path> new_files;
+  for (size_t index = 0; index < profile.masks.size(); ++index)
+    new_files.push_back(staging / ("rink_mask_" + std::to_string(index) + ".png"));
+  new_files.push_back(staging / "config.yaml");
+  for (const fs::path& source : new_files) {
+    const fs::path destination = root / source.filename();
+    fs::rename(source, destination, error);
+    if (error) {
+      rollback();
+      return absl::InternalError("Unable to publish rink artifact: " + error.message());
+    }
+    published.push_back(destination);
+  }
   return absl::OkStatus();
 }
 
+absl::Status create_field_mask(const std::string& game_dir, surface::Surface surface) {
+  HM_RETURN_IF_ERROR(save_stitched_image(game_dir, surface));
+  const cv::Mat stitched = cv::imread((fs::path(game_dir) / "s.png").string(), cv::IMREAD_COLOR);
+  if (stitched.empty())
+    return absl::FailedPreconditionError("Unable to reload stitched frame for rink inference");
+  fs::path model_path;
+  HM_ASSIGN_OR_RETURN(model_path, rink_model_path());
+  std::unique_ptr<RinkSegmentation> model;
+  HM_ASSIGN_OR_RETURN(model, RinkSegmentation::Create(model_path.string()));
+  RinkProfile profile;
+  HM_ASSIGN_OR_RETURN(profile, model->Infer(stitched));
+  return save_rink_profile(game_dir, profile);
+}
+
 absl::Status configure_orientation(const std::string& game_dir) {
-  std::string game_id = get_game_id(game_dir);
-
-  std::vector<std::string> cmd;
-  std::string working_dir;
-  auto env = hmlib_python_env(get_environment());
-
-  std::optional<fs::path> exec = find_executable_maybe_conda("hmorientation");
-  if (exec.has_value()) {
-    cmd = {
-        exec->string(),
-        "--game-id",
-        game_id,
-        "--ice-rink-inference-scale",
-        "0.5",
-    };
-  } else {
-    const auto python_exec = find_executable_maybe_conda("python3");
-    if (!python_exec.has_value()) {
-      return absl::NotFoundError("Could not find python3 for hmorientation fallback");
-    }
-    cmd = {
-        python_exec->string(),
-        "-m",
-        "hmlib.cli.hmorientation",
-        "--game-id",
-        game_id,
-        "--ice-rink-inference-scale",
-        "0.5",
-    };
-    if (auto hm_root = find_hmlib_repo_root(); hm_root.has_value()) {
-      working_dir = hm_root->string();
-    }
-  }
-
-  int exitcode = run_command(cmd, working_dir, env, [](const std::string& stderr, const std::string& stdout) -> void {
-    if (!stderr.empty()) {
-      std::cerr << stderr << std::endl;
-    }
-    if (!stdout.empty()) {
-      std::cerr << stdout << std::endl;
-    }
-  });
-  if (exitcode) {
-    std::string msg = TO_STRING("Error executing command: \"" << to_command_line(cmd) << "\"");
-    std::cerr << msg << std::endl;
-    return absl::InternalError(TO_STRING("Failed to create control points: " << msg));
-  }
-
-  return absl::OkStatus();
+  fs::path model_path;
+  HM_ASSIGN_OR_RETURN(model_path, rink_model_path());
+  std::unique_ptr<RinkSegmentation> model;
+  HM_ASSIGN_OR_RETURN(model, RinkSegmentation::Create(model_path.string()));
+  return configure_game_orientation(game_dir, *model);
 }
 
 bool is_scoreboard_configured(const std::string& game_dir) {
@@ -1544,59 +1145,7 @@ bool is_scoreboard_configured(const std::string& game_dir) {
 }
 
 absl::Status configure_scoreboard(const std::string& game_dir) {
-  std::string game_id = get_game_id(game_dir);
-  if (game_id.empty()) {
-    return absl::InvalidArgumentError("Could not determine game_id from: " + game_dir);
-  }
-
-  std::vector<std::string> cmd;
-  std::string working_dir;
-  auto env = hmlib_python_env(get_environment());
-  env["PYTHONUNBUFFERED"] = "1";
-
-  const auto hm_root = find_hmlib_repo_root();
-  const auto selector_port = find_available_tcp_port();
-
-  if (hm_root.has_value()) {
-    const auto python_exec = find_executable_maybe_conda("python3");
-    if (!python_exec.has_value()) {
-      return absl::NotFoundError("Could not find python3 for scoreboard selector");
-    }
-    cmd = {python_exec->string(), "-u", "-m", "hmlib.scoreboard.selector", "--game-id", game_id};
-    working_dir = hm_root->string();
-    if (selector_port.has_value()) {
-      cmd.insert(
-          cmd.end(), {"--selector-bind-host", "0.0.0.0", "--selector-port", std::to_string(selector_port.value())});
-    }
-  } else {
-    std::optional<fs::path> exec = find_executable_maybe_conda("hmscoreboard");
-    if (exec.has_value()) {
-      cmd = {exec->string(), "--game-id", game_id};
-    } else {
-      const auto python_exec = find_executable_maybe_conda("python3");
-      if (!python_exec.has_value()) {
-        return absl::NotFoundError("Could not find python3 for scoreboard selector");
-      }
-      cmd = {python_exec->string(), "-u", "-m", "hmlib.scoreboard.selector", "--game-id", game_id};
-    }
-  }
-
-  std::cerr << "Scoreboard corners not configured - launching selector for game: " << game_id << "\n" << std::flush;
-  if (selector_port.has_value() && hm_root.has_value()) {
-    print_scoreboard_selector_access_urls(selector_port.value());
-  } else {
-    std::cerr << "If a browser does not open automatically, use one of the selector URLs printed below.\n"
-              << std::flush;
-  }
-  int exitcode = run_command(cmd, working_dir, env, [](const std::string& err, const std::string& out) {
-    if (!err.empty())
-      std::cerr << err << "\n" << std::flush;
-    if (!out.empty())
-      std::cerr << out << "\n" << std::flush;
-  });
-  if (exitcode) {
-    return absl::InternalError(TO_STRING("Scoreboard selector failed with exit code " << exitcode));
-  }
+  HM_RETURN_IF_ERROR(ScoreboardSelector::Run(game_dir));
   if (!is_scoreboard_configured(game_dir)) {
     return absl::InternalError("Scoreboard selector completed without writing perspective_polygon");
   }

@@ -3,13 +3,17 @@ INCLUDE_PREFIX = "hstream/src/libs/stitching"
 cc_library(
   name = "stitching",
   srcs = [
+    "CalibrationModels.cpp",
     "ConfigureStitching.cpp",
     "Orientation.cpp",
+    "ScoreboardSelector.cpp",
     "Synchronization.cpp",
   ],
   hdrs = [
+    "CalibrationModels.h",
     "ConfigureStitching.h",
     "Orientation.h",
+    "ScoreboardSelector.h",
     "Synchronization.h",
   ],
   linkopts = [
@@ -23,6 +27,9 @@ cc_library(
   visibility = ["//visibility:public"],
   deps = [
     ":correlation",
+    ":feature_matcher",
+    ":hugin_project",
+    ":rink_segmentation",
     "//src/libs/common:utils",
     "@hm-cupano//src/pano:cuda_matrix",
     "@yaml-cpp",
@@ -30,6 +37,135 @@ cc_library(
   ],
   data = [
     "@hm-cupano//scripts:all_scripts",
+  ],
+)
+
+cc_library(
+  name = "rink_segmentation",
+  srcs = ["RinkSegmentation.cpp"],
+  hdrs = ["RinkSegmentation.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    "//src/libs/onnx:session",
+    "@opencv_linux//:opencv",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_test(
+  name = "scoreboard_selector_test",
+  srcs = ["ScoreboardSelectorTest.cpp"],
+  deps = [
+    ":stitching",
+    "@opencv_linux//:opencv",
+    "@yaml-cpp",
+  ],
+)
+
+cc_test(
+  name = "field_mask_persistence_test",
+  srcs = ["FieldMaskPersistenceTest.cpp"],
+  deps = [
+    ":stitching",
+    "@opencv_linux//:opencv",
+    "@yaml-cpp",
+  ],
+)
+
+cc_library(
+  name = "feature_matcher",
+  srcs = ["FeatureMatcher.cpp"],
+  hdrs = ["FeatureMatcher.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    "//src/libs/onnx:session",
+    "@opencv_linux//:opencv",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_library(
+  name = "hugin_project",
+  srcs = ["HuginProject.cpp"],
+  hdrs = ["HuginProject.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    ":feature_matcher",
+    "//src/libs/common:utils",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_test(
+  name = "hugin_project_test",
+  srcs = ["HuginProjectTest.cpp"],
+  deps = [":hugin_project"],
+)
+
+cc_test(
+  name = "feature_matcher_test",
+  srcs = ["FeatureMatcherTest.cpp"],
+  deps = [":feature_matcher"],
+)
+
+cc_test(
+  name = "rink_segmentation_test",
+  srcs = ["RinkSegmentationTest.cpp"],
+  deps = [":rink_segmentation"],
+)
+
+cc_test(
+  name = "orientation_test",
+  srcs = ["OrientationTest.cpp"],
+  deps = [":stitching"],
+)
+
+cc_test(
+  name = "native_model_smoke_test",
+  srcs = ["NativeModelSmokeTest.cpp"],
+  deps = [
+    ":feature_matcher",
+    ":rink_segmentation",
+    "@opencv_linux//:opencv",
+  ],
+)
+
+cc_test(
+  name = "python_parity_test",
+  srcs = ["CalibrationParityTest.cpp"],
+  args = ["$(location :CalibrationParityReference.py)"],
+  data = [":CalibrationParityReference.py"],
+  linkopts = ["-lopencv_calib3d"],
+  deps = [
+    ":feature_matcher",
+    ":stitching",
+    "@opencv_linux//:opencv",
+    "@yaml-cpp",
+  ],
+)
+
+cc_test(
+  name = "no_python_runtime_test",
+  srcs = ["NoPythonRuntimeTest.cpp"],
+  args = [
+    "$(location //:run.sh)",
+    "$(location //src/apps/hmstream-ui:HmStreamWindow.cpp)",
+    "$(location //src/apps/pipeline-app:PipelineApp.cpp)",
+    "$(location //src/libs/stitching:ConfigureStitching.cpp)",
+    "$(location //src/libs/stitching:Orientation.cpp)",
+  ],
+  data = [
+    "//:run.sh",
+    "//src/apps/hmstream-ui:HmStreamWindow.cpp",
+    "//src/apps/pipeline-app:PipelineApp.cpp",
+    ":ConfigureStitching.cpp",
+    ":Orientation.cpp",
   ],
 )
 

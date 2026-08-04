@@ -13,6 +13,8 @@
 namespace hm {
 namespace stitching {
 
+struct RinkProfile;
+
 struct Synchronization {
   // Actual frame number
   double video1_frame_offset{0};
@@ -33,6 +35,8 @@ bool can_configure_stitching(const YAML::Node& config);
 bool is_field_mask_configured(const std::string& game_dir);
 
 absl::Status create_field_mask(const std::string& game_dir, surface::Surface surface);
+
+absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& profile);
 
 absl::Status save_stitched_image(const std::string& game_dir, surface::Surface surface);
 

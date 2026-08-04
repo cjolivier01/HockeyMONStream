@@ -149,11 +149,11 @@ printf '%s\n' \
   "Pin: version ${trt_version}" \
   'Pin-Priority: 1001' \
   >/etc/apt/preferences.d/hmstream-tensorrt10
-# Older installer revisions pinned NCCL system-wide. HMStream now carries its
-# target-specific NCCL privately, so remove only that installer-owned pin.
+# Older installer revisions pinned NCCL system-wide. HMStream no longer uses
+# NCCL, so remove only that obsolete installer-owned pin.
 rm -f /etc/apt/preferences.d/hmstream-nccl
 
-apt_args=(-y --no-install-recommends --allow-downgrades)
+apt_args=(-y --no-install-recommends)
 if [[ "${SIMULATE}" -eq 1 ]]; then apt_args+=(--simulate); fi
 apt-get install "${apt_args[@]}" "${DEEPSTREAM_DEB}" "${HMSTREAM_DEB}"
 
