@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
-#include <numeric>
+#include <tuple>
 #include <utility>
 
 #include <opencv2/imgproc.hpp>
@@ -18,15 +18,6 @@ absl::Status validate_source_image(const cv::Mat& image, const char* side) {
     return absl::InvalidArgumentError(std::string(side) + " feature image must be non-empty CV_8UC3 BGR");
   }
   return absl::OkStatus();
-}
-
-size_t torch_linspace_index(size_t position, size_t available, size_t requested) {
-  if (requested <= 1 || available <= 1)
-    return 0;
-  // torch.linspace(..., dtype=float32).long() truncates toward zero. Keep the
-  // float32 intermediate to preserve its duplicate-index behavior.
-  const float step = static_cast<float>(available - 1) / static_cast<float>(requested - 1);
-  return std::min(available - 1, static_cast<size_t>(static_cast<float>(position) * step));
 }
 
 } // namespace
@@ -156,17 +147,64 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Postprocess(
   if (accepted.empty())
     return absl::NotFoundError("ALIKED+LightGlue produced no usable matches");
 
-  std::vector<size_t> by_y(accepted.size());
-  std::iota(by_y.begin(), by_y.end(), 0);
-  std::stable_sort(
-      by_y.begin(), by_y.end(), [&](size_t lhs, size_t rhs) { return accepted[lhs].left.y < accepted[rhs].left.y; });
+  // Select a spatially distributed, deterministic subset. The former global
+  // Y-rank linspace duplicated points when the requested cap exceeded the
+  // model output and allowed one marginal match to shift every later rank.
+  // Fixed cells localize those changes and make model-row permutations
+  // irrelevant. A total final order keeps the emitted PTO reproducible.
+  constexpr size_t grid_columns = 16;
+  constexpr size_t grid_rows = 9;
+  std::vector<std::vector<size_t>> cells(grid_columns * grid_rows);
+  for (size_t index = 0; index < accepted.size(); ++index) {
+    const size_t column = std::min(
+        grid_columns - 1, static_cast<size_t>(accepted[index].left.x / input.source_sizes[0].width * grid_columns));
+    const size_t row =
+        std::min(grid_rows - 1, static_cast<size_t>(accepted[index].left.y / input.source_sizes[0].height * grid_rows));
+    cells[row * grid_columns + column].push_back(index);
+  }
+  const auto ranked = [&](size_t lhs, size_t rhs) {
+    const FeatureMatch& left = accepted[lhs];
+    const FeatureMatch& right = accepted[rhs];
+    const auto key = [](const FeatureMatch& match) {
+      return std::make_tuple(
+          -match.score, match.left.y, match.left.x, match.right.y, match.right.x, match.left_index, match.right_index);
+    };
+    return key(left) < key(right);
+  };
+  for (auto& cell : cells)
+    std::sort(cell.begin(), cell.end(), ranked);
+
+  const size_t selection_count = std::min(max_control_points, accepted.size());
+  std::vector<size_t> selected_indices;
+  selected_indices.reserve(selection_count);
+  for (size_t rank = 0; selected_indices.size() < selection_count; ++rank) {
+    bool added = false;
+    for (const auto& cell : cells) {
+      if (rank < cell.size()) {
+        selected_indices.push_back(cell[rank]);
+        added = true;
+        if (selected_indices.size() == selection_count)
+          break;
+      }
+    }
+    if (!added)
+      break;
+  }
+  std::sort(selected_indices.begin(), selected_indices.end(), [&](size_t lhs, size_t rhs) {
+    const FeatureMatch& left = accepted[lhs];
+    const FeatureMatch& right = accepted[rhs];
+    const auto key = [](const FeatureMatch& match) {
+      return std::make_tuple(
+          match.left.y, match.left.x, match.right.y, match.right.x, match.left_index, match.right_index, -match.score);
+    };
+    return key(left) < key(right);
+  });
   FeatureMatchResult result;
   result.accepted_match_count = accepted.size();
   result.accepted = accepted;
-  result.selected.reserve(max_control_points);
-  for (size_t i = 0; i < max_control_points; ++i) {
-    result.selected.push_back(accepted[by_y[torch_linspace_index(i, accepted.size(), max_control_points)]]);
-  }
+  result.selected.reserve(selection_count);
+  for (size_t index : selected_indices)
+    result.selected.push_back(accepted[index]);
   return result;
 }
 

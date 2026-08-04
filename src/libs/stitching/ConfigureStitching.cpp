@@ -15,19 +15,25 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <regex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
 
+#include <fcntl.h>
 #include <opencv2/opencv.hpp>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <tiffio.h>
 #include <unistd.h>
@@ -949,12 +955,120 @@ absl::Status create_control_points(
   return maybe_create_default_seam_file(game_dir);
 }
 
+namespace {
+
+constexpr const char* kRinkTransactionPrefix = ".hmstream-rink-";
+
+struct ScopedRinkLock {
+  int descriptor{-1};
+  ~ScopedRinkLock() {
+    if (descriptor >= 0) {
+      ::flock(descriptor, LOCK_UN);
+      ::close(descriptor);
+    }
+  }
+};
+
+absl::StatusOr<std::unique_ptr<ScopedRinkLock>> lock_rink_transactions(const fs::path& root) {
+  const fs::path path = root / ".hmstream-rink.lock";
+  const int descriptor = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+  if (descriptor < 0)
+    return absl::InternalError("Unable to open rink transaction lock: " + std::string(std::strerror(errno)));
+  if (::flock(descriptor, LOCK_EX) != 0) {
+    const std::string message = std::strerror(errno);
+    ::close(descriptor);
+    return absl::InternalError("Unable to lock rink transaction: " + message);
+  }
+  auto lock = std::make_unique<ScopedRinkLock>();
+  lock->descriptor = descriptor;
+  return lock;
+}
+
+absl::Status fsync_path(const fs::path& path, bool directory = false) {
+  const int flags = O_RDONLY | O_CLOEXEC | (directory ? O_DIRECTORY : 0);
+  const int descriptor = ::open(path.c_str(), flags);
+  if (descriptor < 0)
+    return absl::InternalError("Unable to open artifact for fsync: " + path.string());
+  const int result = ::fsync(descriptor);
+  const std::string message = result == 0 ? std::string() : std::strerror(errno);
+  ::close(descriptor);
+  if (result != 0)
+    return absl::InternalError("Unable to fsync artifact " + path.string() + ": " + message);
+  return absl::OkStatus();
+}
+
+absl::Status write_transaction_file(const fs::path& path, const std::string& contents) {
+  std::ofstream output(path, std::ios::out | std::ios::trunc);
+  if (!output)
+    return absl::InternalError("Unable to write rink transaction file: " + path.string());
+  output << contents;
+  output.flush();
+  if (!output)
+    return absl::InternalError("Unable to flush rink transaction file: " + path.string());
+  output.close();
+  return fsync_path(path);
+}
+
+absl::Status recover_rink_transactions_locked(const fs::path& root) {
+  std::error_code error;
+  for (const auto& entry : fs::directory_iterator(root, error)) {
+    if (error)
+      return absl::InternalError("Unable to inspect rink transactions: " + error.message());
+    const std::string directory_name = entry.path().filename().string();
+    if (!entry.is_directory(error) || error || directory_name.rfind(kRinkTransactionPrefix, 0) != 0) {
+      error.clear();
+      continue;
+    }
+    const fs::path transaction = entry.path();
+    std::ifstream state_input(transaction / "state");
+    std::string state;
+    std::getline(state_input, state);
+    if (state == "PREPARED") {
+      std::ifstream manifest(transaction / "new-files");
+      std::string name;
+      while (manifest >> name) {
+        if (fs::path(name).filename() != name)
+          return absl::InvalidArgumentError("Invalid rink transaction filename: " + name);
+        fs::remove(root / name, error);
+        if (error)
+          return absl::InternalError("Unable to remove interrupted rink artifact: " + error.message());
+      }
+      const fs::path previous = transaction / "previous";
+      if (fs::is_directory(previous, error)) {
+        for (const auto& old : fs::directory_iterator(previous, error)) {
+          if (error)
+            return absl::InternalError("Unable to inspect rink transaction backup: " + error.message());
+          fs::rename(old.path(), root / old.path().filename(), error);
+          if (error)
+            return absl::InternalError("Unable to restore interrupted rink artifact: " + error.message());
+        }
+      }
+      error.clear();
+      auto status = fsync_path(root, true);
+      if (!status.ok())
+        return status;
+    }
+    // COMMITTED transactions already have a durable new generation. A
+    // directory with no state was interrupted before any root artifact moved.
+    fs::remove_all(transaction, error);
+    if (error)
+      return absl::InternalError("Unable to clean rink transaction: " + error.message());
+  }
+  return fsync_path(root, true);
+}
+
+} // namespace
+
 bool is_field_mask_configured(const std::string& game_dir) {
   if (game_dir.empty()) {
     return false;
   }
 
-  const fs::path mask_path = fs::path(game_dir) / "rink_mask_0.png";
+  const fs::path root(game_dir);
+  auto lock = lock_rink_transactions(root);
+  if (!lock.ok() || !recover_rink_transactions_locked(root).ok())
+    return false;
+  const fs::path mask_path = root / "rink_mask_0.png";
   std::error_code ec;
   if (!fs::exists(mask_path, ec) || ec) {
     return false;
@@ -998,6 +1112,12 @@ absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& p
   fs::create_directories(root, error);
   if (error)
     return absl::InternalError("Unable to create rink profile directory: " + error.message());
+  auto transaction_lock = lock_rink_transactions(root);
+  if (!transaction_lock.ok())
+    return transaction_lock.status();
+  auto recovery = recover_rink_transactions_locked(root);
+  if (!recovery.ok())
+    return recovery;
 
   std::string pattern = (root / ".hmstream-rink-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
@@ -1029,6 +1149,9 @@ absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& p
     if (validation.empty() || validation.size() != expected_size) {
       return absl::InternalError("Staged rink mask failed validation: " + path.string());
     }
+    auto sync_status = fsync_path(path);
+    if (!sync_status.ok())
+      return sync_status;
   }
 
   const fs::path config_path = root / "config.yaml";
@@ -1055,6 +1178,9 @@ absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& p
     if (!output)
       return absl::InternalError("Unable to flush rink profile config");
   }
+  auto sync_status = fsync_path(staging / "config.yaml");
+  if (!sync_status.ok())
+    return sync_status;
 
   const fs::path previous = staging / "previous";
   fs::create_directory(previous, error);
@@ -1069,36 +1195,70 @@ absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& p
       old_files.push_back(entry.path());
     }
   }
-  std::vector<fs::path> moved_old;
-  std::vector<fs::path> published;
-  auto rollback = [&]() {
-    std::error_code ignored;
-    for (auto it = published.rbegin(); it != published.rend(); ++it)
-      fs::rename(*it, staging / it->filename(), ignored);
-    for (auto it = moved_old.rbegin(); it != moved_old.rend(); ++it)
-      fs::rename(previous / it->filename(), *it, ignored);
-  };
   for (const fs::path& old : old_files) {
-    fs::rename(old, previous / old.filename(), error);
-    if (error) {
-      rollback();
+    fs::copy_file(old, previous / old.filename(), fs::copy_options::overwrite_existing, error);
+    if (error)
       return absl::InternalError("Unable to preserve old rink artifact: " + error.message());
-    }
-    moved_old.push_back(old);
+    sync_status = fsync_path(previous / old.filename());
+    if (!sync_status.ok())
+      return sync_status;
   }
   std::vector<fs::path> new_files;
   for (size_t index = 0; index < profile.masks.size(); ++index)
     new_files.push_back(staging / ("rink_mask_" + std::to_string(index) + ".png"));
   new_files.push_back(staging / "config.yaml");
+  std::ostringstream manifest;
+  for (const fs::path& source : new_files)
+    manifest << source.filename().string() << '\n';
+  sync_status = write_transaction_file(staging / "new-files", manifest.str());
+  if (!sync_status.ok())
+    return sync_status;
+  sync_status = fsync_path(previous, true);
+  if (!sync_status.ok())
+    return sync_status;
+  sync_status = fsync_path(staging, true);
+  if (!sync_status.ok())
+    return sync_status;
+  sync_status = write_transaction_file(staging / "state", "PREPARED\n");
+  if (!sync_status.ok())
+    return sync_status;
+  sync_status = fsync_path(staging, true);
+  if (!sync_status.ok())
+    return sync_status;
+
+  auto rollback_error = [&](const std::string& message) {
+    const auto rollback_status = recover_rink_transactions_locked(root);
+    if (!rollback_status.ok())
+      return absl::InternalError(message + "; rollback also failed: " + std::string(rollback_status.message()));
+    return absl::InternalError(message);
+  };
   for (const fs::path& source : new_files) {
     const fs::path destination = root / source.filename();
     fs::rename(source, destination, error);
-    if (error) {
-      rollback();
-      return absl::InternalError("Unable to publish rink artifact: " + error.message());
-    }
-    published.push_back(destination);
+    if (error)
+      return rollback_error("Unable to publish rink artifact: " + error.message());
+    sync_status = fsync_path(destination);
+    if (!sync_status.ok())
+      return rollback_error(std::string(sync_status.message()));
   }
+  sync_status = fsync_path(root, true);
+  if (!sync_status.ok())
+    return rollback_error(std::string(sync_status.message()));
+  sync_status = write_transaction_file(staging / "state.committed", "COMMITTED\n");
+  if (!sync_status.ok())
+    return rollback_error(std::string(sync_status.message()));
+  fs::rename(staging / "state.committed", staging / "state", error);
+  if (error)
+    return rollback_error("Unable to commit rink transaction: " + error.message());
+  sync_status = fsync_path(staging, true);
+  if (!sync_status.ok())
+    return sync_status;
+  fs::remove_all(staging, error);
+  if (error)
+    return absl::InternalError("Unable to clean committed rink transaction: " + error.message());
+  sync_status = fsync_path(root, true);
+  if (!sync_status.ok())
+    return sync_status;
   return absl::OkStatus();
 }
 
@@ -1112,7 +1272,7 @@ absl::Status create_field_mask(const std::string& game_dir, surface::Surface sur
   std::unique_ptr<RinkSegmentation> model;
   HM_ASSIGN_OR_RETURN(model, RinkSegmentation::Create(model_path.string()));
   RinkProfile profile;
-  HM_ASSIGN_OR_RETURN(profile, model->Infer(stitched));
+  HM_ASSIGN_OR_RETURN(profile, model->Infer(stitched, RinkSegmentation::kHockeyMomInferenceScale));
   return save_rink_profile(game_dir, profile);
 }
 

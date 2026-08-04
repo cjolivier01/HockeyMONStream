@@ -92,3 +92,4 @@ build:jetson --linkopt=-l:libsystemd.so.0
 build:jetson --linkopt=-lm
 build:jetson --repo_env=OPENCV_ROOT=/opt/jetson-sysroot/usr
 build:jetson --repo_env=CUDA_PATH=/opt/jetson-sysroot/usr/local/cuda
+build:jetson --repo_env=HM_BAZEL_PREFER_FIRST_LOCAL_PATH=1

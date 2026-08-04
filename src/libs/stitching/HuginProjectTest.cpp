@@ -59,7 +59,23 @@ int main() {
   }
   auto canvas = hm::stitching::HuginProject::ParseCanvasSize(base);
   ok &= expect(canvas.ok() && canvas->first == 12092 && canvas->second == 9267, "PTO canvas dimensions must parse");
+  auto projection = hm::stitching::HuginProject::ParseProjection(base);
+  ok &= expect(projection.ok() && *projection == 2, "PTO panorama projection must parse");
+  ok &= expect(!hm::stitching::HuginProject::ParseProjection("p w12 h6\n").ok(), "missing projection must fail");
   ok &= expect(!hm::stitching::HuginProject::ParseCanvasSize("p f2 w12 v360\n").ok(), "missing height must fail");
+  const std::string pose_project =
+      "i w5312 h2988 f0 r-1.25e-2 p2.5 y-43.75 Tpy0 n\"left.png\"\n"
+      "i w5312 h2988 f0 r=0 p=0 y=0 r0.125 p-4.25 y43.5 n\"right.png\"\n";
+  auto pose = hm::stitching::HuginProject::ParseCameraPose(pose_project, 1);
+  ok &= expect(
+      pose.ok() && std::abs(pose->roll - 0.125) < 1e-12 && std::abs(pose->pitch + 4.25) < 1e-12 &&
+          std::abs(pose->yaw - 43.5) < 1e-12,
+      "PTO camera pose must parse without confusing linked or translation tokens");
+  ok &= expect(
+      !hm::stitching::HuginProject::ParseCameraPose("i w1 h1 rnan p0 y0 n\"bad.png\"\n", 0).ok(),
+      "non-finite PTO camera pose must fail");
+  ok &=
+      expect(!hm::stitching::HuginProject::ParseCameraPose(pose_project, 2).ok(), "missing PTO image index must fail");
   matches.resize(15);
   ok &=
       expect(!hm::stitching::HuginProject::InsertControlPoints(base, matches).ok(), "too few control points must fail");
@@ -89,17 +105,19 @@ int main() {
   ok &= expect(
       write_tool(
           autooptimiser,
-          "test \"$*\" = '-n -l -s -q -o autooptimiser_out.pto hm_project.pto'\n"
-          "cp \"$7\" \"$6\"\n"),
+          "test \"$*\" = '-n -l -q -o autooptimiser_out.pto hm_project.pto'\n"
+          "cp \"$6\" \"$5\"\n"),
       "fake autooptimiser must be created");
   ok &= expect(
       write_tool(
           pano_modify,
-          "canvas= output= input=\n"
-          "while [ \"$#\" -gt 0 ]; do case \"$1\" in --canvas=*) canvas=${1#*=} ;; -o) shift; output=$1 ;; *) "
+          "canvas= projection= output= input=\n"
+          "while [ \"$#\" -gt 0 ]; do case \"$1\" in --canvas=*) canvas=${1#*=} ;; --projection=*) "
+          "projection=${1#*=} ;; --fov=*) ;; -o) shift; output=$1 ;; *) "
           "input=$1 ;; esac; shift; done\n"
-          "width=${canvas%x*}; height=${canvas#*x}\n"
-          "awk -v w=\"$width\" -v h=\"$height\" '/^p / { sub(/w[0-9]+/, \"w\" w); sub(/h[0-9]+/, \"h\" h) } "
+          "if [ \"$canvas\" = AUTO ]; then width=100; height=50; else width=${canvas%x*}; height=${canvas#*x}; fi\n"
+          "awk -v w=\"$width\" -v h=\"$height\" -v p=\"$projection\" '/^p / { if (p != \"\") "
+          "sub(/f[0-9]+/, \"f\" p); sub(/w[0-9]+/, \"w\" w); sub(/h[0-9]+/, \"h\" h) } "
           "{ print }' \"$input\" > \"$output\"\n"),
       "fake pano_modify must be created");
   ok &= expect(
@@ -132,6 +150,7 @@ int main() {
     ok &= expect(
         scaled.ok() && scaled->first == 64 && scaled->second == 32,
         "portable pano_modify scaling must cap the Hugin canvas");
+    ok &= expect(contents.find("p f1 ") != std::string::npos, "Hugin output projection must remain cylindrical");
     ok &= expect(
         contents.find("# specify variables\nv r1\nv p1\nv y1\nv\n") != std::string::npos,
         "Hugin optimization must remain restricted to second-camera roll/pitch/yaw");

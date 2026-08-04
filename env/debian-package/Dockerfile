@@ -154,6 +154,7 @@ RUN if [ "${TARGET_UBUNTU}" = "24.04" ]; then \
       && apt-get install -y --no-install-recommends \
         cuda-compiler-13-2 \
         cuda-libraries-dev-13-2 \
+        cuda-nvtx-13-2 \
       && rm -rf /var/lib/apt/lists/*; \
     fi
 

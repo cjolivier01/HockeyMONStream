@@ -9,9 +9,25 @@ legacy matcher.
 """
 
 import argparse
+import gc
+import importlib.util
+import inspect
 import os
+import pkgutil
+import resource
 import sys
 from pathlib import Path
+
+
+# MMDetection 3.x still calls pkgutil.find_loader(), removed in Python 3.14.
+# Keep this source-only oracle compatible without altering the production
+# environment or the installed third-party packages.
+if not hasattr(pkgutil, "find_loader"):
+    def _find_loader(name: str):
+        spec = importlib.util.find_spec(name)
+        return None if spec is None else spec.loader
+
+    pkgutil.find_loader = _find_loader  # type: ignore[attr-defined]
 
 
 def skip(message: str) -> None:
@@ -28,17 +44,36 @@ def main() -> None:
     parser.add_argument("--raco-weights", type=Path, required=True)
     parser.add_argument("--aliked-weights", type=Path, required=True)
     parser.add_argument("--lightglue-weights", type=Path, required=True)
+    parser.add_argument("--rink-config", type=Path)
+    parser.add_argument("--rink-checkpoint", type=Path)
+    parser.add_argument("--rink-inference-scale", type=float, required=True)
+    parser.add_argument("--memory-limit-gib", type=float, required=True)
     args = parser.parse_args()
+    memory_limit = int(args.memory_limit_gib * 1024**3)
+    resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))
     os.environ["HM_GAME_DIR"] = str(args.game_dir.parent)
+    os.environ.setdefault("MPLCONFIGDIR", str(args.output_dir / "matplotlib"))
 
     try:
         import cv2
-        import hmlib  # noqa: F401 - parity runs only in a HockeyMOM environment
+        import hmlib  # parity runs only in a HockeyMOM environment
         import numpy as np
         import torch
         import yaml
     except Exception as exc:
         skip(f"HockeyMOM parity dependencies are unavailable: {exc}")
+
+    # A source checkout intentionally does not install MMDetection or the
+    # legacy LightGlue tree into the environment. Discover those pinned sibling
+    # trees from the imported hmlib checkout so the opt-in parity test behaves
+    # like HockeyMOM's own launchers without changing production PYTHONPATH.
+    hockeymom_root = Path(hmlib.__file__).resolve().parent.parent
+    for source_tree in (
+        hockeymom_root / "openmm" / "mmdetection",
+        hockeymom_root / "xmodels" / "LightGlue",
+    ):
+        if source_tree.is_dir() and str(source_tree) not in sys.path:
+            sys.path.insert(0, str(source_tree))
 
     source_init = args.lightglue_source_init.resolve()
     if source_init.name != "__init__.py" or source_init.parent.name != "lightglue_dynamo":
@@ -156,6 +191,11 @@ def main() -> None:
         "rink_available": False,
         "legacy_superpoint_available": False,
     }
+    # The rink oracle has a large, short-lived Mask2Former output. Release the
+    # independent RaCo graph before allocating those masks so qualification
+    # does not retain both model stacks at once.
+    del extractor, matcher, pipeline, images, keypoints, matches, match_scores
+    gc.collect()
 
     # HockeyMOM rink parity is independent of feature matching. Keep its
     # heavier MMDetection import optional for ordinary developer runs; the
@@ -166,22 +206,51 @@ def main() -> None:
         if stitched is None:
             raise RuntimeError("s.png fixture is unavailable")
         from mmdet.apis import init_detector  # noqa: F401
+        import mmdet.apis.inference as mmdet_inference
         from hmlib.config import prepend_root_dir
         from hmlib.models.loader import get_model_config
         from hmlib.segm.ice_rink import find_ice_rink_masks
 
-        config_file, checkpoint = get_model_config(game_id=args.game_dir.name, model_name="ice_rink_segm")
-        config_file = prepend_root_dir(config_file)
-        checkpoint = prepend_root_dir(checkpoint)
+        if "weights_only" not in inspect.signature(mmdet_inference.load_checkpoint).parameters:
+            legacy_load_checkpoint = mmdet_inference.load_checkpoint
+
+            def compatible_load_checkpoint(*load_args, weights_only=False, **load_kwargs):
+                del weights_only
+                return legacy_load_checkpoint(*load_args, **load_kwargs)
+
+            mmdet_inference.load_checkpoint = compatible_load_checkpoint
+
+        if args.rink_config is not None or args.rink_checkpoint is not None:
+            if args.rink_config is None or args.rink_checkpoint is None:
+                raise RuntimeError("rink config and checkpoint overrides must be provided together")
+            config_file = str(args.rink_config.resolve())
+            checkpoint = str(args.rink_checkpoint.resolve())
+        else:
+            config_file, checkpoint = get_model_config(game_id=args.game_dir.name, model_name="ice_rink_segm")
+            config_file = prepend_root_dir(config_file)
+            checkpoint = prepend_root_dir(checkpoint)
         if not Path(config_file).is_file() or not Path(checkpoint).is_file():
             raise RuntimeError(f"HockeyMOM rink checkpoint is unavailable: {checkpoint}")
-        rink = find_ice_rink_masks(
-            image=stitched,
-            config_file=config_file,
-            checkpoint=checkpoint,
-            device=device,
-            inference_scale=1.0,
-        )[0]
+        original_torch_load = torch.load
+
+        def compatible_torch_load(*load_args, **load_kwargs):
+            # The checkpoint is an explicitly supplied, SHA-256-pinned oracle
+            # input. Old MMEngine omits this argument and is incompatible with
+            # PyTorch 2.6+'s changed default.
+            load_kwargs.setdefault("weights_only", False)
+            return original_torch_load(*load_args, **load_kwargs)
+
+        torch.load = compatible_torch_load
+        try:
+            rink = find_ice_rink_masks(
+                image=stitched,
+                config_file=config_file,
+                checkpoint=checkpoint,
+                device=device,
+                inference_scale=args.rink_inference_scale,
+            )
+        finally:
+            torch.load = original_torch_load
         if rink is None or rink.get("combined_mask") is None:
             raise RuntimeError("HockeyMOM rink reference returned no combined mask")
         mask = numpy_value(rink["combined_mask"]).astype(np.uint8) * 255
@@ -200,14 +269,15 @@ def main() -> None:
     except Exception as exc:
         output["rink_skip_reason"] = str(exc)
 
-    # The old HockeyMOM SuperPoint matcher is useful migration evidence, but
-    # it is not the model in production and must never gate RaCo qualification.
+    # The mandatory C++ qualification gate compares the optimized Hugin result
+    # against this legacy production matcher. Ordinary developer parity runs
+    # keep the comparison optional when HockeyMOM dependencies are absent.
     try:
         from hmlib.stitching.control_points import calculate_control_points
 
         points = calculate_control_points(
-            left_input,
-            right_input,
+            image_tensor(left_input),
+            image_tensor(right_input),
             max_control_points=args.max_control_points,
             device=device,
             max_num_keypoints=2048,

@@ -2,7 +2,7 @@
 
 High-performance hockey video processing pipeline built on NVIDIA DeepStream + GStreamer.
 
-This repo contains a DeepStream-style C++ app (`pipeline-app`) plus custom GStreamer plugins for dual-camera stitching, rink masking, and play tracking. It is the performance-oriented counterpart to the Python implementation in the sibling `hm` repo and reuses HockeyMOM configs (and optionally its Python CLI helpers) for configuration steps.
+This repo contains a DeepStream-style C++ app (`pipeline-app`) plus custom GStreamer plugins for dual-camera stitching, rink masking, and play tracking. It is the performance-oriented counterpart to the Python implementation in the sibling `hm` repo. Production calibration is native C++/ONNX; Python is used only by an explicit, source-checkout parity test when HockeyMOM is installed.
 
 This repo also includes DeepStream-Yolo-derived model conversion/config docs under `docs/` and DeepStream config snippets under `configs/deepstream/`.
 
@@ -30,9 +30,10 @@ This repo also includes DeepStream-Yolo-derived model conversion/config docs und
 4. Run end-to-end:
    - `./run.sh --game-id=<game_id> -t=5`
 
-`run.sh` performs a two-stage run:
-- Stage `-1`: stitching + rink mask configuration (runs with a `FAKE` sink)
-- Stage `0`: main pipeline (defaults to `RENDER` sink unless you pass `--enable-sinks=...`)
+`run.sh` performs a one-pass stage `0` run by default. If stitching artifacts
+are absent, native calibration completes in-process before the stitcher output
+pool is allocated. Pass `--two-stage` to run the older stage `-1` FAKE-sink
+configuration followed by stage `0`.
 
 ## Models / Pretrained Assets
 

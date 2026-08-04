@@ -173,6 +173,8 @@ cc_test(
     "HM_FEATURE_MATCHER_ONNX_MODEL",
     "HM_ONNX_PARITY_GAME_DIR",
     "HM_PARITY_PYTHON",
+    "HM_PARITY_RINK_CHECKPOINT",
+    "HM_PARITY_RINK_CONFIG",
     "HM_PYTHON",
     "HM_REQUIRE_ONNX_PARITY",
     "HM_RINK_ONNX_MODEL",
@@ -182,6 +184,7 @@ cc_test(
   linkopts = ["-lopencv_calib3d"],
   deps = [
     ":feature_matcher",
+    ":hugin_project",
     ":stitching",
     "@opencv_linux//:opencv",
     "@yaml-cpp",

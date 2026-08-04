@@ -62,8 +62,8 @@ int main() {
   ok &= expect(result.ok(), "valid matches must postprocess");
   if (result.ok()) {
     ok &= expect(
-        result->accepted_match_count == 3 && result->accepted.size() == 3 && result->selected.size() == 5,
-        "linspace must duplicate when requested exceeds matches");
+        result->accepted_match_count == 3 && result->accepted.size() == 3 && result->selected.size() == 3,
+        "maximum control-point count must cap rather than duplicate matches");
     ok &= expect(
         result->selected[0].left.y < result->selected.back().left.y,
         "selected control points must be ordered evenly by left Y");
@@ -72,6 +72,28 @@ int main() {
     ok &= expect(
         result->accepted[0].left_index == 0 && result->accepted[0].right_index == 0,
         "accepted matches must retain exported keypoint indices for exact parity checks");
+  }
+  const std::vector<int64_t> permuted_matches = {0, 2, 2, 0, 0, 0, 0, 1, 1};
+  const std::vector<float> permuted_scores = {0.7f, 0.9f, 0.8f};
+  auto permuted = hm::stitching::FeatureMatcher::Postprocess(
+      metadata,
+      keypoints.data(),
+      keypoints.size(),
+      permuted_matches.data(),
+      permuted_matches.size(),
+      permuted_scores.data(),
+      permuted_scores.size(),
+      5);
+  ok &= expect(
+      permuted.ok() && result.ok() && permuted->selected.size() == result->selected.size(),
+      "permuted model rows must remain usable");
+  if (permuted.ok() && result.ok()) {
+    for (size_t index = 0; index < result->selected.size(); ++index) {
+      ok &= expect(
+          permuted->selected[index].left_index == result->selected[index].left_index &&
+              permuted->selected[index].right_index == result->selected[index].right_index,
+          "selected control points must be invariant to model row order");
+    }
   }
   scores[1] = 0.2f;
   auto thresholded = hm::stitching::FeatureMatcher::Postprocess(

@@ -89,9 +89,14 @@ if [[ -n "${unexpected_untracked}" ]]; then
   exit 1
 fi
 
+# Resolve the immutable source identity once. Every version field, archive,
+# and provenance record below refers to this object even if another process
+# moves the worktree or branch while Docker is building.
+SOURCE_REVISION="$(git -C "${TOPDIR}" rev-parse HEAD)"
+
 if [[ -z "${PACKAGE_VERSION}" ]]; then
-  commit_epoch="$(git -C "${TOPDIR}" show -s --format=%ct HEAD)"
-  short_hash="$(git -C "${TOPDIR}" rev-parse --short=7 HEAD)"
+  commit_epoch="$(git -C "${TOPDIR}" show -s --format=%ct "${SOURCE_REVISION}")"
+  short_hash="$(git -C "${TOPDIR}" rev-parse --short=7 "${SOURCE_REVISION}")"
   PACKAGE_VERSION="0.0.${commit_epoch}+git.${short_hash}"
 fi
 if [[ -z "${OUTPUT_DIR}" ]]; then
@@ -107,10 +112,9 @@ cleanup_snapshot() {
   rm -rf -- "${SOURCE_SNAPSHOT}"
 }
 trap cleanup_snapshot EXIT
-git -C "${TOPDIR}" archive --format=tar HEAD | tar -xf - -C "${SOURCE_SNAPSHOT}"
-source_revision="$(git -C "${TOPDIR}" rev-parse HEAD)"
-source_epoch="$(git -C "${TOPDIR}" show -s --format=%ct HEAD)"
-printf '%s %s\n' "${source_revision}" "${source_epoch}" > "${SOURCE_SNAPSHOT}/.hmstream-package-source"
+git -C "${TOPDIR}" archive --format=tar "${SOURCE_REVISION}" | tar -xf - -C "${SOURCE_SNAPSHOT}"
+source_epoch="$(git -C "${TOPDIR}" show -s --format=%ct "${SOURCE_REVISION}")"
+printf '%s %s\n' "${SOURCE_REVISION}" "${source_epoch}" > "${SOURCE_SNAPSHOT}/.hmstream-package-source"
 
 image_tag="hmstream-deb-builder:ubuntu${TARGET_UBUNTU}"
 volume_suffix="${TARGET_UBUNTU//./}"

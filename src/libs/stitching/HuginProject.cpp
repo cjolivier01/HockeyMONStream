@@ -201,13 +201,29 @@ std::string restrict_optimization_variables(const std::string& project) {
 }
 
 absl::Status run_autooptimiser(const std::string& autooptimiser, const fs::path& directory) {
-  // Match HockeyMOM's calibrated contract: optimize only the explicitly
-  // selected second-camera roll/pitch/yaw variables. Automatic strategy
-  // selection (-a) is intentionally avoided because it can change lens and
-  // projection parameters based on the control-point distribution.
-  std::vector<std::string> command = {
-      autooptimiser, "-n", "-l", "-s", "-q", "-o", "autooptimiser_out.pto", "hm_project.pto"};
+  // Optimize only the explicitly selected second-camera roll/pitch/yaw
+  // variables and level the result. In particular, do not use -s: its
+  // heuristic projection choice can flip between cylindrical and equirectangular
+  // after a single marginal control-point change.
+  std::vector<std::string> command = {autooptimiser, "-n", "-l", "-q", "-o", "autooptimiser_out.pto", "hm_project.pto"};
   return run_checked(command, directory);
+}
+
+absl::Status fit_cylindrical_canvas(const std::string& pano_modify, const fs::path& directory) {
+  const std::string temporary = "autooptimiser_fitted.pto";
+  auto status = run_checked(
+      {pano_modify, "--projection=1", "--fov=AUTO", "--canvas=AUTO", "-o", temporary, "autooptimiser_out.pto"},
+      directory);
+  if (!status.ok())
+    return status;
+  status = validate_nonempty_file(directory / temporary);
+  if (!status.ok())
+    return status;
+  std::error_code error;
+  fs::rename(directory / temporary, directory / "autooptimiser_out.pto", error);
+  if (error)
+    return absl::InternalError("Unable to publish fitted cylindrical Hugin project: " + error.message());
+  return absl::OkStatus();
 }
 
 absl::Status scale_canvas(const std::string& pano_modify, const fs::path& directory, size_t width, size_t height) {
@@ -361,6 +377,76 @@ absl::StatusOr<std::pair<size_t, size_t>> HuginProject::ParseCanvasSize(const st
   return absl::InvalidArgumentError("Hugin PTO has no panorama line");
 }
 
+absl::StatusOr<int> HuginProject::ParseProjection(const std::string& pto) {
+  std::istringstream input(pto);
+  std::string line;
+  while (std::getline(input, line)) {
+    if (line.rfind("p ", 0) != 0)
+      continue;
+    std::istringstream tokens(line);
+    std::string token;
+    while (tokens >> token) {
+      if (token.size() < 2 || token[0] != 'f')
+        continue;
+      try {
+        size_t parsed = 0;
+        const int projection = std::stoi(token.substr(1), &parsed);
+        if (parsed == token.size() - 1 && projection >= 0)
+          return projection;
+      } catch (const std::exception&) {
+        continue;
+      }
+    }
+    return absl::InvalidArgumentError("Hugin panorama line has no valid projection");
+  }
+  return absl::InvalidArgumentError("Hugin PTO has no panorama line");
+}
+
+absl::StatusOr<HuginProject::CameraPose> HuginProject::ParseCameraPose(const std::string& pto, size_t image_index) {
+  std::istringstream input(pto);
+  std::string line;
+  size_t current_image = 0;
+  while (std::getline(input, line)) {
+    if (line.rfind("i ", 0) != 0)
+      continue;
+    if (current_image++ != image_index)
+      continue;
+
+    CameraPose pose{};
+    bool found_roll = false;
+    bool found_pitch = false;
+    bool found_yaw = false;
+    std::istringstream tokens(line);
+    std::string token;
+    while (tokens >> token) {
+      if (token.size() < 2 || (token[0] != 'r' && token[0] != 'p' && token[0] != 'y') || token[1] == '=')
+        continue;
+      try {
+        size_t parsed = 0;
+        const double value = std::stod(token.substr(1), &parsed);
+        if (parsed != token.size() - 1 || !std::isfinite(value))
+          continue;
+        if (token[0] == 'r') {
+          pose.roll = value;
+          found_roll = true;
+        } else if (token[0] == 'p') {
+          pose.pitch = value;
+          found_pitch = true;
+        } else {
+          pose.yaw = value;
+          found_yaw = true;
+        }
+      } catch (const std::exception&) {
+        continue;
+      }
+    }
+    if (!found_roll || !found_pitch || !found_yaw)
+      return absl::InvalidArgumentError("Hugin image line has no finite roll/pitch/yaw pose");
+    return pose;
+  }
+  return absl::InvalidArgumentError("Hugin PTO has no requested image line");
+}
+
 absl::Status HuginProject::Configure(
     const fs::path& game_dir,
     const std::vector<FeatureMatch>& matches,
@@ -412,7 +498,7 @@ absl::Status HuginProject::Configure(
   fov.imbue(std::locale::classic());
   fov << std::setprecision(12) << options.horizontal_fov;
   auto status =
-      run_checked({*pto_gen, "-p", "0", "-o", "hm_project.pto", "-f", fov.str(), "left.png", "right.png"}, staging);
+      run_checked({*pto_gen, "-p", "1", "-o", "hm_project.pto", "-f", fov.str(), "left.png", "right.png"}, staging);
   if (!status.ok())
     return status;
   auto project = read_file(staging / "hm_project.pto");
@@ -434,20 +520,26 @@ absl::Status HuginProject::Configure(
   status = write_file(staging / "autooptimiser_out.pto", restrict_optimization_variables(*optimized_project));
   if (!status.ok())
     return status;
-  std::optional<std::string> pano_modify;
+  auto pano_modify_result = executable("HM_PANO_MODIFY", "pano_modify");
+  if (!pano_modify_result.ok())
+    return pano_modify_result.status();
+  const std::string pano_modify = *pano_modify_result;
+  status = fit_cylindrical_canvas(pano_modify, staging);
+  if (!status.ok())
+    return status;
+  auto fitted_project = read_file(staging / "autooptimiser_out.pto");
+  if (!fitted_project.ok())
+    return fitted_project.status();
+  auto projection = ParseProjection(*fitted_project);
+  if (!projection.ok() || *projection != 1)
+    return absl::FailedPreconditionError("Hugin failed to preserve the required cylindrical projection");
   auto fit_canvas = [&](size_t width, size_t height, double rounding_guard) -> absl::Status {
-    if (!pano_modify.has_value()) {
-      auto resolved = executable("HM_PANO_MODIFY", "pano_modify");
-      if (!resolved.ok())
-        return resolved.status();
-      pano_modify = std::move(*resolved);
-    }
     const size_t longest = std::max(width, height);
     const double factor =
         static_cast<double>(*options.max_canvas_dimension) / static_cast<double>(longest) * rounding_guard;
     const size_t scaled_width = std::max<size_t>(1, static_cast<size_t>(std::floor(width * factor)));
     const size_t scaled_height = std::max<size_t>(1, static_cast<size_t>(std::floor(height * factor)));
-    return scale_canvas(*pano_modify, staging, scaled_width, scaled_height);
+    return scale_canvas(pano_modify, staging, scaled_width, scaled_height);
   };
   if (options.max_canvas_dimension.has_value()) {
     auto optimized = read_file(staging / "autooptimiser_out.pto");

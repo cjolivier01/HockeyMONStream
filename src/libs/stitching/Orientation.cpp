@@ -559,7 +559,7 @@ absl::Status configure_game_orientation(const std::string& game_dir_string, cons
     if (!capture.read(first_frame) || first_frame.empty()) {
       return absl::InternalError("Failed to decode the first orientation frame: " + selected->second);
     }
-    auto rink = rink_model.Infer(first_frame, 0.5);
+    auto rink = rink_model.Infer(first_frame, RinkSegmentation::kHockeyMomInferenceScale);
     if (!rink.ok()) {
       return absl::Status(
           rink.status().code(),

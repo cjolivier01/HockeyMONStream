@@ -15,6 +15,12 @@ namespace hm::stitching {
 
 class HuginProject {
  public:
+  struct CameraPose {
+    double roll;
+    double pitch;
+    double yaw;
+  };
+
   struct Options {
     double horizontal_fov{108.0};
     std::optional<size_t> max_canvas_dimension;
@@ -25,6 +31,8 @@ class HuginProject {
       const std::string& pto,
       const std::vector<FeatureMatch>& matches);
   static absl::StatusOr<std::pair<size_t, size_t>> ParseCanvasSize(const std::string& pto);
+  static absl::StatusOr<int> ParseProjection(const std::string& pto);
+  static absl::StatusOr<CameraPose> ParseCameraPose(const std::string& pto, size_t image_index);
 
   // Builds all Hugin products in a private same-filesystem directory and only
   // publishes them into game_dir after every required mapping has validated.

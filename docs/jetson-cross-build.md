@@ -4,8 +4,17 @@ Use this flow when you want `make jetson` to emit aarch64 binaries without build
 
 1. Install the cross toolchain (once):
    ```bash
-   sudo apt-get install -y crossbuild-essential-arm64 qemu-user-static
+   sudo apt-get install -y \
+     crossbuild-essential-arm64 gcc-11-aarch64-linux-gnu g++-11-aarch64-linux-gnu \
+     qemu-user-static
    ```
+   The Bazel toolchain deliberately uses GCC 11 to match JetPack 6's Ubuntu
+   22.04 rootfs and libstdc++ ABI. Newer host cross compilers can either exceed
+   CUDA's supported host-compiler range or leak newer glibc symbol references
+   into binaries linked against the Jetson sysroot.
+   The `jetson` Bazel config also explicitly selects sysroot-backed local
+   repositories; ordinary host builds continue to use `/usr` even while a
+   synced `/opt/jetson-sysroot` exists.
 2. Pull a Jetson sysroot (includes glibc, DeepStream, CUDA, etc.) using SSH:
    ```bash
    JETSON_HOST=ubuntu@<jetson-ip> ./scripts/sync_jetson_sysroot.sh [/opt/jetson-sysroot]

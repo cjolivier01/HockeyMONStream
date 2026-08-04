@@ -379,8 +379,24 @@ while IFS= read -r asset; do
   mkdir -p "$(dirname "${dest}")"
   # Downloaded assets may inherit mkstemp's owner-only mode.  Package runtime
   # data as world-readable so unprivileged hmstream processes can load it.
+  source_hash_before="$(sha256sum "${asset_real}")"
+  source_hash_before="${source_hash_before%% *}"
   install -m 0644 "${asset_real}" "${dest}"
+  source_hash_after="$(sha256sum "${asset_real}")"
+  source_hash_after="${source_hash_after%% *}"
+  staged_hash="$(sha256sum "${dest}")"
+  staged_hash="${staged_hash%% *}"
+  if [[ "${source_hash_before}" != "${source_hash_after}" || "${source_hash_before}" != "${staged_hash}" ]]; then
+    echo "ERROR: pretrained asset changed while it was staged: ${asset}" >&2
+    exit 1
+  fi
 done < "${asset_manifest}"
+# Close the verification/copy window by confirming the sources still match the
+# declared manifest after every staged byte has been rehashed.
+if ! "${HMSTREAM_ASSETS}" --verify "${TOPDIR}/configs/ds_hockey_app_config.yaml"; then
+  echo "ERROR: a pretrained source changed during package staging." >&2
+  exit 1
+fi
 rm -f "${asset_manifest}"
 
 # The native binaries retain Bazel-linked HockeyMOM C++ components, but no

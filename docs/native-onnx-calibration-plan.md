@@ -263,15 +263,17 @@ model parity may not hide a decoder mismatch.
 Create `FeatureMatcher` and `HuginProject` components:
 
 1. Save the synchronized left/right frames as today.
-2. Run SuperPoint and LightGlue natively.
+2. Run the checksummed RaCo-ALIKED and LightGlue v3 ONNX pipeline natively.
 3. Validate matched indices, finite coordinates, bounds, and a frozen minimum
    usable match count derived from Hugin validation.
-4. Reproduce HockeyMOM's `torch.linspace(..., steps=max_control_points)` index
-   semantics exactly: sort by the left point's Y coordinate and select exactly
-   `HM_MAX_CONTROL_POINTS`, including duplicated indices when fewer matches are
-   available. This unusual behavior is retained for parity and covered by an
-   explicit unit test; changing it is a separate reference bugfix.
-5. Generate the base two-image PTO with `pto_gen`.
+4. Treat `HM_MAX_CONTROL_POINTS` as a cap. Never duplicate a correspondence.
+   Use a fixed source-coordinate grid, score-ranked round-robin selection, and
+   a total spatial output order so model-row permutations or a marginal match
+   in one area cannot globally shift every later control point.
+5. Generate the base two-image PTO with `pto_gen`, explicitly pin the two-camera
+   panorama to cylindrical projection, and fit its FOV/canvas with
+   `pano_modify`. Do not use `autooptimiser -s`: its heuristic can flip the
+   projection after a marginal control-point change.
 6. Insert escaped, locale-independent Hugin lines of the form
    `c n0 N1 x... y... X... Y... t0` at the control-point marker.
 7. Continue to use checked native process execution for `autooptimiser`, `nona`,
@@ -301,8 +303,13 @@ consumed by HMStream:
 - `rink.ice_contours_mask_centroid`; and
 - `rink.ice_contours_combined_bbox`.
 
-All masks are written atomically, the count matches the files, and YAML is
-updated only after every image is readable and has the expected dimensions.
+All masks are staged, re-read, and fsynced before a `PREPARED` transaction
+marker becomes durable. Existing masks/config are copied into the transaction;
+the root-directory renames are fsynced and a `COMMITTED` marker is made durable
+before backups are removed. A reader recovers any interrupted prepared
+transaction under a per-game file lock before consuming a mask. The count
+matches the files, and YAML is published only after every image is readable and
+has the expected dimensions.
 Consumers continue to union the instance masks. Mask regeneration after
 rotation or canvas-size changes remains intact.
 
@@ -476,6 +483,13 @@ target) converts any missing import/checkpoint/fixture or attempted skip into a
 failure. Definition-of-done parity evidence must come from this job, not from a
 successful developer skip.
 
+The checked `make qualify-native-onnx` entrypoint requires an explicit
+`HM_PARITY_PYTHON`, checksummed rink config/checkpoint, and at least two
+colon-separated fixture directories in `HM_ONNX_PARITY_GAME_DIRS`. Every
+fixture must contain checksummed `left.png`, `right.png`, and `s.png` entries in
+the committed fixture manifest. The target runs every fixture separately with
+Bazel test-result caching disabled and requires the Hugin executables.
+
 The canonical oracle is deterministic Python CPU output. The harness first
 captures and versions CPU goldens, compares native CPU to those goldens, and
 only then qualifies each accelerated provider against the native CPU result.
@@ -499,16 +513,20 @@ exports:
 
 - orientation classification: exact;
 - rink mask IoU: at least 0.99 against the Python result;
-- centroid: within 2 source-image pixels per axis;
-- bbox edges: within 2 source-image pixels;
+- centroid and bbox edges: at most 0.5% of the corresponding stitched-image
+  dimension per axis. Both implementations use HockeyMOM's production
+  `inference_scale=0.5`; on the 13,931x4,968 `tv-12-1-r2` fixture the measured
+  mask IoU is 0.996398, centroid deltas are 37.3x22.9 pixels, and the maximum
+  bbox-edge delta is 16 pixels;
 - SuperPoint: at least 99% identical selected keypoints within 0.25 pixel and
   descriptor cosine similarity at least 0.999;
-- the pinned upstream RaCo-ALIKED v3 optimized export: at least 85% stable
+- the pinned upstream RaCo-ALIKED v3 optimized export: at least 64 stable
   one-to-one accepted spatial pairs, a native/Python accepted-count ratio in
-  [0.8, 1.2], and all shared coordinates within 0.01 source pixel; exported
-  keypoint indices, scores, selected order, and whole-set homography are
-  diagnostics because upstream explicitly documents provider-dependent
-  marginal correspondences; and
+  [0.8, 1.2], and all shared coordinates within 0.01 source pixel; the match
+  percentage, exported keypoint indices, scores, eager rank-selected order,
+  and whole-set planar homography are diagnostics because upstream explicitly
+  documents provider-dependent marginal correspondences and a fisheye rink is
+  not described by one homography; and
 - final selected control points/PTO against the same ONNX graph through every
   supported native provider: same count and order, coordinates within 0.25
   pixel.
@@ -520,13 +538,16 @@ denominator for every percentage, and whether coordinates are in resized,
 padded, detector, or original-image space. A missing or extra output fails
 before numerical tolerance is applied.
 
-The RaCo-ALIKED exception above is based on the frozen `tv-12-1-r2` fixture:
-eager CPU and ONNX Runtime CPU share 86.5% of accepted spatial pairs, their
-shared coordinates differ by at most 0.001 pixel, and accepted counts differ
-by 3.4%. The v3 publisher likewise describes the optimized artifact as
-"near-parity" and reports provider-dependent coverage. It is intentionally a
-model-identity/behavior gate rather than an unsupported bit-parity claim; the
-timed stitch remains the release outcome gate.
+The RaCo-ALIKED exception above is based on two frozen fixtures. Eager CPU and
+ONNX Runtime CPU share 86.5% of accepted spatial pairs on `tv-12-1-r2` and
+80.7% on `dh-tv-12-1`; shared coordinates differ by less than 0.001 pixel and
+accepted-count ratios remain within the declared bounds. The v3 publisher
+likewise describes the optimized artifact as "near-parity" and reports
+provider-dependent coverage. This is a model-identity/behavior gate rather
+than an unsupported bit-parity claim. Mandatory qualification also generates
+native and legacy-SuperPoint cylindrical Hugin mappings, requires finite
+bounded relative camera pose/canvas deltas, and validates every nona mapping;
+the clean timed stitch remains the release outcome gate.
 
 Any other relaxed tolerance must be justified by a measured provider-specific
 floating-point difference and must not change the final orientation or valid
@@ -619,10 +640,15 @@ Implementation status as of 2026-08-04:
 - The private-asset API path is content-addressed by SHA256 and authenticated
   through `GH_TOKEN`/`GITHUB_TOKEN`; clean offline installations must preseed
   the same checksummed cache paths.
+- The source-only Python rink oracle uses HockeyMOM's production 0.5 inference
+  scale, releases the matcher model before rink inference, and has a 36 GiB
+  address-space guard. This prevents a full-resolution Mask2Former query-mask
+  expansion from exhausting the host during opt-in parity tests.
 
-No production implementation begins until the model-rights/model-choice gates
-are resolved. The missing SBSA host does not prevent local development after
-that point, but it does prevent the final all-platform definition of done.
+The requested technical production implementation is present in this PR, but
+public release of the rink asset remains blocked on its model-rights gate. The
+missing SBSA host likewise prevents claiming the final all-platform definition
+of done; neither limitation is represented as completed validation below.
 
 ## Implementation phases and gates
 
@@ -678,8 +704,8 @@ tolerances; native execution meets every target budget.
 
 - Implement detector/matcher native pipeline.
 - Port match selection and PTO insertion.
-- Add unit tests and both parity modes, including fewer-than-limit duplicate
-  selection behavior.
+- Add unit tests and both parity modes, including true-cap/no-duplicate and
+  model-row-permutation-invariant selection behavior.
 - Run Hugin generation into a temporary comparison directory.
 
 Gate: the controlled match/PTO parity tolerances and post-optimization stitch

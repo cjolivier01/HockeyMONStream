@@ -47,6 +47,28 @@ int main() {
     ok &= expect(config["rink"]["ice_contours_mask_count"].as<int>() == 2, "mask count must match files");
     const YAML::Node bbox = config["rink"]["ice_contours_combined_bbox"];
     ok &= expect(bbox[0].as<double>() == 2.0 && bbox[2].as<double>() == 28.0, "bbox must persist as x1,y1,x2,y2");
+
+    // Simulate SIGKILL after a prepared transaction published only part of a
+    // new generation. The next field-mask read must restore the complete old
+    // generation before consuming any artifact.
+    const fs::path interrupted = root / ".hmstream-rink-interrupted";
+    fs::create_directories(interrupted / "previous");
+    fs::copy_file(root / "config.yaml", interrupted / "previous" / "config.yaml");
+    fs::copy_file(root / "rink_mask_0.png", interrupted / "previous" / "rink_mask_0.png");
+    fs::copy_file(root / "rink_mask_1.png", interrupted / "previous" / "rink_mask_1.png");
+    {
+      std::ofstream(interrupted / "new-files") << "rink_mask_0.png\nrink_mask_1.png\nconfig.yaml\n";
+      std::ofstream(interrupted / "state") << "PREPARED\n";
+      std::ofstream(root / "config.yaml") << "interrupted: true\n";
+      cv::imwrite((root / "rink_mask_0.png").string(), cv::Mat(2, 2, CV_8U, cv::Scalar(255)));
+    }
+    ok &= expect(hm::stitching::is_field_mask_configured(root.string()), "prepared rink transaction must recover");
+    const YAML::Node recovered = YAML::LoadFile((root / "config.yaml").string());
+    ok &= expect(recovered["unrelated"]["keep"].as<bool>(), "rink recovery must restore the prior config");
+    ok &= expect(
+        cv::imread((root / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE).size() == cv::Size(32, 24),
+        "rink recovery must restore the prior mask generation");
+    ok &= expect(!fs::exists(interrupted), "recovered rink transaction must be cleaned");
   }
   profile.masks[1] = cv::Mat(10, 10, CV_8U);
   ok &= expect(!hm::stitching::save_rink_profile(root.string(), profile).ok(), "mixed mask dimensions must fail");
