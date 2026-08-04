@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <regex>
+#include <sstream>
 #include <string>
 #include <vector>
 

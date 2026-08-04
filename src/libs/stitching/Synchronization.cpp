@@ -114,9 +114,7 @@ std::pair<std::vector<std::vector<float>>, int> load_audio_as_tensor(
     }
   } else {
     int fallback_channels = 0;
-#if LIBAVCODEC_VERSION_MAJOR >= 61
-    fallback_channels = av_codec_parameters_get_channels(codecpar);
-#else
+#if LIBAVCODEC_VERSION_MAJOR < 61
     fallback_channels = codecpar->channels;
 #endif
     if (fallback_channels <= 0) {
