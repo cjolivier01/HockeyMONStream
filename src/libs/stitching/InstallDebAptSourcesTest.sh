@@ -153,6 +153,30 @@ legacy_before="$(sha256sum "${test_root}${CUDA_LEGACY_COMPAT_SOURCE}")"
 [[ "$(sha256sum "${test_root}${CUDA_LEGACY_COMPAT_SOURCE}")" == "${legacy_before}" ]] || \
   fail "normal-failure recovery did not restore the legacy conffile"
 
+# A failed later backup must not register partial metadata or prevent an
+# earlier mutation from being restored during EXIT cleanup.
+(
+  first_source="${test_root}/etc/apt/sources.list.d/first-to-restore.list"
+  second_source="${test_root}/etc/apt/sources.list.d/second-backup-fails.list"
+  printf '%s\n' 'first source' >"${first_source}"
+  printf '%s\n' 'second source' >"${second_source}"
+  begin_compat_source_transition
+  backup_compat_source_path "${first_source}"
+  rm -f "${first_source}"
+  # shellcheck disable=SC2329 # Invoked indirectly by the sourced production function.
+  cp() { return 1; }
+  set +e
+  backup_compat_source_path "${second_source}" 2>/dev/null
+  backup_status=$?
+  set -e
+  unset -f cp
+  [[ "${backup_status}" -ne 0 ]] || fail "injected second backup unexpectedly succeeded"
+  restore_compat_source_transition
+  [[ "$(<"${first_source}")" == 'first source' ]] || \
+    fail "earlier source was not restored after a later backup failure"
+  rm -rf "${compat_source_transition_dir}"
+)
+
 begin_compat_source_transition
 disable_installer_managed_cuda_sources "${test_root}"
 disable_cuda_compat_sources "${test_root}" "${CUDA_LEGACY_COMPAT_SOURCE}"

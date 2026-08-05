@@ -59,8 +59,9 @@ int main(int argc, char** argv) {
           !contains(installer, "Pin-Priority") && contains(installer, "old_deepstream_packages") &&
           contains(installer, "^deepstream-[0-9]+([.][0-9]+)*$") &&
           contains(installer, "deepstream-9.1-transition.deb") && contains(installer, "Conflicts") &&
-          contains(installer, "Replaces") && !contains(installer, "apt-get remove -y --no-install-recommends"),
-      "installer must validate OS provenance and replace older DeepStream in one APT transaction");
+          contains(installer, "Replaces") && !contains(installer, "apt-get remove -y --no-install-recommends") &&
+          !contains(installer, "nccl") && !contains(installer, "NCCL"),
+      "installer must validate OS provenance, replace older DeepStream atomically, and leave NCCL policy untouched");
   ok &= expect(
       contains(installer, "hmstream-cuda-ubuntu2404-compat.gpg") &&
           contains(installer, "disable_cuda_compat_sources") &&

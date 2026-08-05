@@ -182,6 +182,7 @@ bool write_fake_runner(const QString& path) {
   file.write("    print(arg, flush=True)\n");
   file.write("print('USE_NEW_NVSTREAMMUX=' + os.environ.get('USE_NEW_NVSTREAMMUX', ''), flush=True)\n");
   file.write("print('HM_RENDER_SINK=' + os.environ.get('HM_RENDER_SINK', ''), flush=True)\n");
+  file.write("print('HM_NO_SCOREBOARD=' + os.environ.get('HM_NO_SCOREBOARD', ''), flush=True)\n");
   file.write("print('LD_LIBRARY_PATH=' + os.environ.get('LD_LIBRARY_PATH', ''), flush=True)\n");
   file.write("if '--clean' in sys.argv[1:]:\n");
   file.write("    print('clean runner exiting', flush=True)\n");
@@ -1102,6 +1103,9 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
           window->logText().contains("HM_RENDER_SINK=nv3dsink"),
           "UI runner should preserve the self-managed desktop render sink") ||
       !expect(
+          window->logText().contains("HM_NO_SCOREBOARD=1"),
+          "Program playback should not block its output thread on the interactive scoreboard selector") ||
+      !expect(
           window->logText().contains("separate DeepStream window"),
           "UI must surface self-managed render-window mode")) {
     return false;
@@ -1127,17 +1131,27 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
   }
 
   qputenv("USE_NEW_NVSTREAMMUX", "no");
+  qputenv("HM_NO_SCOREBOARD", "0");
   activate(start);
-  for (int i = 0; i < 50 && !window->logText().contains("USE_NEW_NVSTREAMMUX=no"); ++i) {
+  for (int i = 0;
+       i < 50 &&
+       (!window->logText().contains("USE_NEW_NVSTREAMMUX=no") ||
+        !window->logText().contains("HM_NO_SCOREBOARD=0"));
+       ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
-  const bool mux_override_preserved = expect(
-      window->logText().contains("USE_NEW_NVSTREAMMUX=no"),
-      "UI runner should preserve an explicit legacy stream mux override");
+  const bool environment_overrides_preserved =
+      expect(
+          window->logText().contains("USE_NEW_NVSTREAMMUX=no"),
+          "UI runner should preserve an explicit legacy stream mux override") &&
+      expect(
+          window->logText().contains("HM_NO_SCOREBOARD=0"),
+          "UI runner should preserve an explicit interactive scoreboard override");
   activate(stop);
   qunsetenv("USE_NEW_NVSTREAMMUX");
-  if (!mux_override_preserved) {
+  qunsetenv("HM_NO_SCOREBOARD");
+  if (!environment_overrides_preserved) {
     return false;
   }
 

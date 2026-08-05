@@ -1789,6 +1789,16 @@ void HmStreamWindow::startPipeline() {
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   const QString working_dir = pipelineWorkingDirectory();
   configure_pipeline_runtime_environment(env, working_dir);
+  // The native scoreboard selector is intentionally interactive and blocks
+  // until its private HTTP form is submitted.  A normal UI Play action must
+  // not run that interaction on the playcropper output thread because doing
+  // so prevents the first frame from reaching the sink.  Keep an explicitly
+  // configured polygon active; when none exists, the selector's established
+  // HM_NO_SCOREBOARD path writes the disabled sentinel instead.  Operators
+  // can still request the selector explicitly with HM_NO_SCOREBOARD=0.
+  if (!isCalibrationRun() && env.value("HM_NO_SCOREBOARD").isEmpty()) {
+    env.insert("HM_NO_SCOREBOARD", "1");
+  }
   const bool embedded_render = std::any_of(
       args.begin(), args.end(), [](const QString& argument) { return argument.startsWith("--render-window-id="); });
   if (preview_external_notice_)

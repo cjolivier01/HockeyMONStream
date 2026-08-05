@@ -260,12 +260,16 @@ backup_compat_source_path() {
   done
   index="${#compat_source_paths[@]}"
   backup="${compat_source_transition_dir}/${index}"
-  compat_source_paths+=("${path}")
-  compat_source_backups+=("${backup}")
   if [[ -e "${path}" || -L "${path}" ]]; then
-    cp -a -- "${path}" "${backup}"
+    if ! cp -a -- "${path}" "${backup}"; then
+      return 1
+    fi
+    compat_source_paths+=("${path}")
+    compat_source_backups+=("${backup}")
     compat_source_existed+=(1)
   else
+    compat_source_paths+=("${path}")
+    compat_source_backups+=("${backup}")
     compat_source_existed+=(0)
   fi
 }
@@ -628,10 +632,6 @@ fi
 if [[ "${SIMULATE}" -eq 1 ]]; then
   echo "Dependency resolution succeeded for Ubuntu ${VERSION_ID}."
 else
-  # A short-lived older HMStream installer revision created this exact
-  # system-wide pin. The current package neither depends on nor changes NCCL;
-  # remove only HMStream's obsolete policy file after a successful install.
-  rm -f /etc/apt/preferences.d/hmstream-nccl
   apt-get check
   echo "Installed DeepStream $(dpkg-query -W -f='${Version}' deepstream-9.1) and HMStream $(dpkg-query -W -f='${Version}' hmstream)."
 fi
