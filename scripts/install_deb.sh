@@ -108,10 +108,12 @@ apt-get install -y --no-install-recommends binutils ca-certificates curl zstd
 
 keyring_deb="$(mktemp --suffix=.deb /tmp/hmstream-cuda-keyring.XXXXXX)"
 compat_dir=""
+combined_keyring=""
 transition_dir=""
 cleanup() {
   rm -f "${keyring_deb}"
   if [[ -n "${compat_dir}" ]]; then rm -rf "${compat_dir}"; fi
+  if [[ -n "${combined_keyring}" ]]; then rm -f "${combined_keyring}"; fi
   if [[ -n "${transition_dir}" ]]; then rm -rf "${transition_dir}"; fi
 }
 trap cleanup EXIT
@@ -128,11 +130,39 @@ if [[ "${VERSION_ID}" == "26.04" ]]; then
     "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb"
   compat_dir="$(mktemp -d /tmp/hmstream-cuda-keyring.XXXXXX)"
   dpkg-deb -x "${keyring_deb}" "${compat_dir}"
-  install -m 0644 "${compat_dir}/usr/share/keyrings/cuda-archive-keyring.gpg" \
-    /usr/share/keyrings/cuda-archive-keyring-ubuntu2404.gpg
-  printf '%s\n' \
-    'deb [signed-by=/usr/share/keyrings/cuda-archive-keyring-ubuntu2404.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/ /' \
-    >/etc/apt/sources.list.d/cuda-ubuntu2404-x86_64.list
+  # cuda-keyring uses one package-owned filename for release-specific keys.
+  # Installing the Resolute keyring above therefore replaces a Noble key that
+  # an existing compatibility source may still reference.  Keep both public
+  # keys in that keyring so existing Noble and native Resolute sources remain
+  # valid without registering the same URI under conflicting Signed-By paths.
+  combined_keyring="$(mktemp /tmp/hmstream-cuda-combined.XXXXXX.gpg)"
+  cat /usr/share/keyrings/cuda-archive-keyring.gpg \
+    "${compat_dir}/usr/share/keyrings/cuda-archive-keyring.gpg" >"${combined_keyring}"
+  install -m 0644 "${combined_keyring}" /usr/share/keyrings/cuda-archive-keyring.gpg
+
+  compat_repository='https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/'
+  compat_source_files=()
+  if [[ -f /etc/apt/sources.list ]]; then compat_source_files+=(/etc/apt/sources.list); fi
+  while IFS= read -r -d '' source_file; do
+    compat_source_files+=("${source_file}")
+  done < <(find /etc/apt/sources.list.d -maxdepth 1 -type f \( -name '*.list' -o -name '*.sources' \) -print0)
+  compat_source_found=0
+  for source_file in "${compat_source_files[@]}"; do
+    if awk -v uri="${compat_repository}" '
+      /^[[:space:]]*#/ { next }
+      /^[[:space:]]*deb[[:space:]]/ && index($0, uri) { found = 1 }
+      /^[[:space:]]*URIs:[[:space:]]/ && index($0, uri) { found = 1 }
+      END { exit found ? 0 : 1 }
+    ' "${source_file}"; then
+      compat_source_found=1
+      break
+    fi
+  done
+  if [[ "${compat_source_found}" -eq 0 ]]; then
+    printf '%s\n' \
+      'deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/ /' \
+      >/etc/apt/sources.list.d/hmstream-cuda-ubuntu2404-x86_64.list
+  fi
 fi
 
 apt-get update
