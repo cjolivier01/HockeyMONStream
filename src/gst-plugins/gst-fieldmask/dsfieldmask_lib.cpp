@@ -35,6 +35,7 @@ struct DsFieldMaskCtx {
   cv::Point2f detection_mask_centroid;
   cv::Rect2i field_box;
   bool logged_mask_size_mismatch{false};
+  std::string loaded_output_generation;
 };
 
 namespace {
@@ -277,6 +278,17 @@ absl::Status DsFieldMaskProcessFrame(
     return absl::OkStatus();
   }
 
+  std::string output_generation;
+#ifdef HAS_NVDS_CUSTOMUSERMETA
+  if (const auto* payload =
+          hm::UserApplicationPayload::get_payload<hm::stitching::StitchedOutputGenerationPayload>(frame_meta)) {
+    output_generation = payload->generation();
+  }
+#endif
+  if (ctx->total_frame_count > 0 && !ctx->loaded_output_generation.empty() && output_generation.empty()) {
+    return absl::FailedPreconditionError("Stitched-output generation metadata disappeared after mask loading");
+  }
+
   // Only consider the mask "obsolete" if we've already loaded one but it no longer matches the current frame size.
   // On first frame, `detection_u8_mask` is empty and has (cols, rows) = (0, 0); treating that as obsolete would
   // unnecessarily regenerate the rink mask and block the whole pipeline.
@@ -287,15 +299,9 @@ absl::Status DsFieldMaskProcessFrame(
     is_obsolete_detection_mask = true;
   }
 
-  if (ctx->total_frame_count == 0 && (ctx->detection_u8_mask.empty() || is_obsolete_detection_mask)) {
+  const bool output_generation_changed = output_generation != ctx->loaded_output_generation;
+  if (ctx->detection_u8_mask.empty() || is_obsolete_detection_mask || output_generation_changed) {
     fs::path mask_path = ctx->initParams.detection_mask_file;
-    std::string output_generation;
-#ifdef HAS_NVDS_CUSTOMUSERMETA
-    if (const auto* payload =
-            hm::UserApplicationPayload::get_payload<hm::stitching::StitchedOutputGenerationPayload>(frame_meta)) {
-      output_generation = payload->generation();
-    }
-#endif
     const bool field_mask_configured =
         hm::stitching::is_field_mask_configured(mask_path.parent_path().string(), output_generation);
     if (is_obsolete_detection_mask || !field_mask_configured) {
@@ -316,6 +322,7 @@ absl::Status DsFieldMaskProcessFrame(
     HM_ASSIGN_OR_RETURN(ctx->detection_u8_mask, load_mask_from_file(ctx->initParams.detection_mask_file));
     ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask, ctx->field_box);
     ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
+    ctx->loaded_output_generation = output_generation;
   }
   prune_detection_boxes(frame_meta, ctx, draw);
 #ifdef HAS_NVDS_CUSTOMUSERMETA

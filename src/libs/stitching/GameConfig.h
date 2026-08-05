@@ -66,4 +66,9 @@ absl::StatusOr<std::optional<YAML::Node>> load_game_config_file(const std::files
 // resolver: when both owners change the same path, desired wins.
 YAML::Node apply_game_config_diff(const YAML::Node& baseline, const YAML::Node& desired, const YAML::Node& latest);
 
+// Reverses baseline back to desired without overwriting a newer update to the
+// same path. Sequence entries restored by the rollback are merged with newer
+// entries instead of replacing them.
+YAML::Node merge_game_config_rollback(const YAML::Node& baseline, const YAML::Node& desired, const YAML::Node& latest);
+
 } // namespace hm::stitching

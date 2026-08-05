@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -31,6 +32,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -1253,6 +1255,52 @@ absl::StatusOr<std::string> configured_output_generation(
   return stitched_output_generation_id(hugin_generation, rotation);
 }
 
+absl::Status validate_output_generation_hugin(
+    const std::string& output_generation,
+    const std::string& expected_hugin_generation) {
+  constexpr std::string_view prefix = "hmstream-stitched-output-v1\nhugin-bytes:";
+  constexpr std::string_view rotation_prefix = "post-stitch-rotate-degrees:";
+  if (output_generation.compare(0, prefix.size(), prefix) != 0)
+    return absl::InvalidArgumentError("Invalid stitched-output generation header");
+  const size_t length_end = output_generation.find('\n', prefix.size());
+  if (length_end == std::string::npos || length_end == prefix.size())
+    return absl::InvalidArgumentError("Invalid stitched-output Hugin length");
+  size_t hugin_size = 0;
+  for (size_t index = prefix.size(); index < length_end; ++index) {
+    const unsigned char character = static_cast<unsigned char>(output_generation[index]);
+    if (!std::isdigit(character))
+      return absl::InvalidArgumentError("Invalid stitched-output Hugin length");
+    const size_t digit = static_cast<size_t>(character - '0');
+    if (hugin_size > (std::numeric_limits<size_t>::max() - digit) / 10)
+      return absl::InvalidArgumentError("Stitched-output Hugin length is too large");
+    hugin_size = hugin_size * 10 + digit;
+  }
+  const size_t hugin_start = length_end + 1;
+  if (hugin_size > output_generation.size() - hugin_start)
+    return absl::InvalidArgumentError("Truncated stitched-output Hugin generation");
+  if (output_generation.compare(hugin_start, hugin_size, expected_hugin_generation) != 0 ||
+      hugin_size != expected_hugin_generation.size()) {
+    return absl::AbortedError("Stitched output uses a stale Hugin generation");
+  }
+  const size_t rotation_start = hugin_start + hugin_size;
+  if (output_generation.compare(rotation_start, rotation_prefix.size(), rotation_prefix) != 0)
+    return absl::InvalidArgumentError("Invalid stitched-output rotation field");
+  const size_t value_start = rotation_start + rotation_prefix.size();
+  if (value_start >= output_generation.size() || output_generation.back() != '\n')
+    return absl::InvalidArgumentError("Invalid stitched-output rotation value");
+  const std::string value = output_generation.substr(value_start, output_generation.size() - value_start - 1);
+  std::istringstream parser(value);
+  parser.imbue(std::locale::classic());
+  double rotation = 0.0;
+  parser >> rotation;
+  if (!parser || !std::isfinite(rotation))
+    return absl::InvalidArgumentError("Invalid stitched-output rotation value");
+  parser >> std::ws;
+  if (!parser.eof())
+    return absl::InvalidArgumentError("Invalid stitched-output rotation value");
+  return absl::OkStatus();
+}
+
 absl::StatusOr<YAML::Node> load_config_or_empty(const fs::path& config_path) {
   try {
     if (fs::is_regular_file(config_path))
@@ -1283,14 +1331,21 @@ bool is_field_mask_configured(const std::string& game_dir, const std::string& ex
   auto config = load_config_or_empty(root / "config.yaml");
   if (!config.ok())
     return false;
-  auto current_output_generation = configured_output_generation(*config, *hugin_generation);
-  if (!current_output_generation.ok())
-    return false;
+  std::string current_output_generation;
+  if (!expected_output_generation.empty()) {
+    if (!validate_output_generation_hugin(expected_output_generation, *hugin_generation).ok())
+      return false;
+    current_output_generation = expected_output_generation;
+  } else {
+    auto configured_generation = configured_output_generation(*config, *hugin_generation);
+    if (!configured_generation.ok())
+      return false;
+    current_output_generation = *configured_generation;
+  }
   try {
     const YAML::Node saved_generation = (*config)["rink"]["stitched_output_generation"];
     if (!saved_generation || !saved_generation.IsScalar() ||
-        saved_generation.as<std::string>() != *current_output_generation ||
-        (!expected_output_generation.empty() && expected_output_generation != *current_output_generation)) {
+        saved_generation.as<std::string>() != current_output_generation) {
       return false;
     }
   } catch (const YAML::Exception&) {
@@ -1397,12 +1452,15 @@ absl::Status save_rink_profile_locked(
   try {
     if (fs::is_regular_file(config_path))
       config = YAML::LoadFile(config_path.string());
-    auto current_output_generation = configured_output_generation(config, hugin_generation);
-    if (!current_output_generation.ok())
-      return current_output_generation.status();
-    if (!expected_output_generation.empty() && expected_output_generation != *current_output_generation) {
-      return absl::AbortedError(
-          "Stitched output generation changed before rink-mask publication; retry with a fresh frame");
+    std::string current_output_generation;
+    if (!expected_output_generation.empty()) {
+      HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, hugin_generation));
+      current_output_generation = expected_output_generation;
+    } else {
+      auto configured_generation = configured_output_generation(config, hugin_generation);
+      if (!configured_generation.ok())
+        return configured_generation.status();
+      current_output_generation = *configured_generation;
     }
     config["rink"]["ice_contours_mask_count"] = profile.masks.size();
     config["rink"]["ice_contours_mask_centroid"] = std::vector<double>{profile.centroid.x, profile.centroid.y};
@@ -1411,7 +1469,7 @@ absl::Status save_rink_profile_locked(
         profile.combined_bbox.y,
         profile.combined_bbox.x + profile.combined_bbox.width,
         profile.combined_bbox.y + profile.combined_bbox.height};
-    config["rink"]["stitched_output_generation"] = *current_output_generation;
+    config["rink"]["stitched_output_generation"] = current_output_generation;
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Unable to update rink profile YAML: " + std::string(exception.what()));
   }
@@ -1559,17 +1617,7 @@ absl::Status create_field_mask(
   if (!hugin_generation.ok())
     return hugin_generation.status();
   if (!expected_output_generation.empty()) {
-    auto config_transaction = GameConfigTransactionLock::Acquire(root);
-    if (!config_transaction.ok())
-      return config_transaction.status();
-    auto config = load_config_or_empty(root / "config.yaml");
-    if (!config.ok())
-      return config.status();
-    auto current_output_generation = configured_output_generation(*config, *hugin_generation);
-    if (!current_output_generation.ok())
-      return current_output_generation.status();
-    if (*current_output_generation != expected_output_generation)
-      return absl::AbortedError("Stitched output generation changed; retry rink inference with a fresh frame");
+    HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, *hugin_generation));
   }
   HM_RETURN_IF_ERROR(save_stitched_image(game_dir, surface));
   const cv::Mat stitched = cv::imread((fs::path(game_dir) / "s.png").string(), cv::IMREAD_COLOR);

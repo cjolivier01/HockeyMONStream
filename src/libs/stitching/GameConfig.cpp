@@ -30,6 +30,71 @@ bool yaml_equal(const YAML::Node& lhs, const YAML::Node& rhs) {
   return YAML::Dump(lhs) == YAML::Dump(rhs);
 }
 
+bool sequence_contains(const YAML::Node& sequence, const YAML::Node& value) {
+  if (!sequence.IsSequence())
+    return false;
+  for (const auto& item : sequence) {
+    if (yaml_equal(item, value))
+      return true;
+  }
+  return false;
+}
+
+YAML::Node map_value(const YAML::Node& map, const std::string& key) {
+  if (map.IsMap()) {
+    for (const auto& pair : map) {
+      if (pair.first.IsScalar() && pair.first.as<std::string>() == key)
+        return pair.second;
+    }
+  }
+  return YAML::Node(YAML::NodeType::Undefined);
+}
+
+YAML::Node merge_rollback_impl(const YAML::Node& baseline, const YAML::Node& desired, const YAML::Node& latest) {
+  if (yaml_equal(baseline, desired))
+    return YAML::Clone(latest);
+  if (yaml_equal(latest, baseline))
+    return YAML::Clone(desired);
+
+  const bool empty_map_baseline = !baseline.IsDefined() || baseline.IsNull();
+  if ((baseline.IsMap() || empty_map_baseline) && desired.IsMap()) {
+    if (latest.IsDefined() && !latest.IsNull() && !latest.IsMap())
+      return YAML::Clone(latest);
+    YAML::Node result = latest.IsMap() ? YAML::Clone(latest) : YAML::Node(YAML::NodeType::Map);
+    if (baseline.IsMap()) {
+      for (const auto& pair : baseline) {
+        const std::string key = pair.first.as<std::string>();
+        if (!map_value(desired, key).IsDefined() && yaml_equal(map_value(result, key), pair.second))
+          result.remove(key);
+      }
+    }
+    for (const auto& pair : desired) {
+      const std::string key = pair.first.as<std::string>();
+      const YAML::Node old_value = map_value(baseline, key);
+      if (!old_value.IsDefined() || !yaml_equal(old_value, pair.second))
+        result[key] = merge_rollback_impl(old_value, pair.second, map_value(result, key));
+    }
+    return result;
+  }
+
+  if (baseline.IsSequence() && desired.IsSequence() && latest.IsSequence()) {
+    YAML::Node result(YAML::NodeType::Sequence);
+    for (const auto& item : desired) {
+      const bool rollback_addition = !sequence_contains(baseline, item);
+      if ((rollback_addition || sequence_contains(latest, item)) && !sequence_contains(result, item))
+        result.push_back(item);
+    }
+    for (const auto& item : latest) {
+      const bool rollback_removal = sequence_contains(baseline, item) && !sequence_contains(desired, item);
+      if (!rollback_removal && !sequence_contains(result, item))
+        result.push_back(item);
+    }
+    return result;
+  }
+
+  return YAML::Clone(latest);
+}
+
 struct ScopedRinkLock {
   int descriptor{-1};
   ~ScopedRinkLock() {
@@ -502,6 +567,10 @@ YAML::Node apply_game_config_diff(const YAML::Node& baseline, const YAML::Node& 
     return result;
   }
   return yaml_equal(baseline, desired) ? YAML::Clone(latest) : YAML::Clone(desired);
+}
+
+YAML::Node merge_game_config_rollback(const YAML::Node& baseline, const YAML::Node& desired, const YAML::Node& latest) {
+  return merge_rollback_impl(baseline, desired, latest);
 }
 
 } // namespace hm::stitching

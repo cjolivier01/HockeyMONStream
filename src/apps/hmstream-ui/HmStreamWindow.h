@@ -84,18 +84,24 @@ class HmStreamWindow : public QMainWindow {
   QString gameDirectory(const QString& game_id) const;
   QString relativeToGameDir(const QString& path) const;
   bool ensureGameDirectory();
-  bool importVideoPath(const QString& source_path, QString* imported_relative_path);
+  bool importVideoPath(const QString& source_path, QString* imported_relative_path, bool* created);
   bool saveCopiedImport(
       const QString& relative_path,
       const QString& auto_group_family = {},
       const QString& source_parent = {});
-  bool isCopiedImport(const QString& relative_path);
+  bool rollbackImportedVideoPath(const QString& relative_path);
   CopiedImportCleanupResult removeClearedCopiedExplicitImports(
       const QByteArray& original_config,
       bool had_config,
-      bool restore_auto_selection_on_failure = true);
+      bool restore_auto_selection_on_failure = true,
+      const QByteArray& published_auto_config = {});
   bool syncRuntimeExplicitVideoConfig(YAML::Node& config);
-  bool savePrivateConfigForRole(const QString& role, const QString& relative_path);
+  bool savePrivateConfigForRole(
+      const QString& role,
+      const QString& relative_path,
+      QByteArray* original_config,
+      bool* had_config,
+      QByteArray* published_config);
   bool removePrivateConfigForRole(
       const QString& role,
       const QString& relative_path,

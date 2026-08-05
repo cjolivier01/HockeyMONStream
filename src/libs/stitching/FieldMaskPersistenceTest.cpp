@@ -139,6 +139,42 @@ int main() {
             hm::stitching::is_field_mask_configured(root.string()),
         "regenerating the profile must bind it to the rotated output generation");
 
+    auto runtime_hugin_lock = hm::stitching::HuginProject::RecoverAndLock(root);
+    ok &= expect(runtime_hugin_lock.ok(), "runtime-override test must lock Hugin artifacts");
+    std::string runtime_override_generation;
+    if (runtime_hugin_lock.ok()) {
+      auto runtime_hugin_generation = hm::stitching::HuginProject::GenerationId(root, **runtime_hugin_lock);
+      ok &= expect(runtime_hugin_generation.ok(), "runtime-override test must identify Hugin artifacts");
+      if (runtime_hugin_generation.ok()) {
+        auto generation = hm::stitching::stitched_output_generation_id(*runtime_hugin_generation, 5.123456789012345);
+        ok &= expect(generation.ok(), "runtime-override test must identify the exact rotated output");
+        if (generation.ok())
+          runtime_override_generation = *generation;
+      }
+      runtime_hugin_lock->reset();
+    }
+    YAML::Node runtime_override_config = YAML::LoadFile((root / "config.yaml").string());
+    runtime_override_config["stitching"]["post_stitch_rotate_degrees"] = 0.0;
+    runtime_override_config["rink"]["stitched_output_generation"] = runtime_override_generation;
+    {
+      std::ofstream output(root / "config.yaml");
+      output << runtime_override_config << '\n';
+    }
+    ok &= expect(
+        !runtime_override_generation.empty() &&
+            hm::stitching::is_field_mask_configured(root.string(), runtime_override_generation),
+        "runtime output generation must be authoritative when its Hugin component is current");
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()),
+        "persisted rotation must not accidentally validate a different runtime output generation");
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string(), initial_output_generation),
+        "runtime generation validation must reject a stale Hugin component independently of rotation");
+    ok &= expect(
+        hm::stitching::save_rink_profile(root.string(), profile).ok() &&
+            hm::stitching::is_field_mask_configured(root.string()),
+        "runtime-override validation must leave a regenerable persisted configuration");
+
     // Simulate SIGKILL after a prepared transaction published only part of a
     // new generation. The next field-mask read must restore the complete old
     // generation before consuming any artifact.
