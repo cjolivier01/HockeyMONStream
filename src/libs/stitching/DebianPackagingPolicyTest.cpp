@@ -62,10 +62,10 @@ int main(int argc, char** argv) {
           contains(installer, "Replaces") && !contains(installer, "apt-get remove -y --no-install-recommends"),
       "installer must validate OS provenance and replace older DeepStream in one APT transaction");
   ok &= expect(
-      contains(installer, "hmstream-cuda-combined") && contains(installer, "compat_source_found") &&
-          contains(installer, "cat /usr/share/keyrings/cuda-archive-keyring.gpg") &&
-          contains(installer, ">/etc/apt/sources.list.d/hmstream-cuda-ubuntu2404-x86_64.list") &&
-          !contains(installer, ">/etc/apt/sources.list.d/cuda-ubuntu2404-x86_64.list"),
-      "Ubuntu 26 installer must preserve both NVIDIA signing keys and avoid conflicting compatibility sources");
+      contains(installer, "hmstream-cuda-ubuntu2404-compat.gpg") &&
+          contains(installer, "normalize_cuda_compat_sources") && contains(installer, "transaction_backup_path") &&
+          contains(installer, "rollback_transaction") && contains(installer, "enabled != \"no\"") &&
+          !contains(installer, "install -m 0644 \"${combined_keyring}\" /usr/share/keyrings/cuda-archive-keyring.gpg"),
+      "Ubuntu 26 installer must own its compatibility key and transactionally normalize active binary sources");
   return ok ? 0 : 1;
 }

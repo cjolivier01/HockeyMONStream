@@ -285,6 +285,13 @@ cc_test(
   ],
 )
 
+sh_test(
+  name = "install_deb_apt_sources_test",
+  srcs = ["InstallDebAptSourcesTest.sh"],
+  args = ["$(location //scripts:install_deb.sh)"],
+  data = ["//scripts:install_deb.sh"],
+)
+
 cc_test(
   name = "configure_stitching_test",
   srcs = [
