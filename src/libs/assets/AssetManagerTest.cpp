@@ -19,7 +19,8 @@ bool expect(bool condition, const char* message) {
 int main() {
   bool ok = true;
   namespace fs = std::filesystem;
-  const fs::path root = fs::temp_directory_path() / ("hmstream-assets-test-" + std::to_string(::getpid()));
+  const fs::path root =
+      fs::weakly_canonical(fs::temp_directory_path()) / ("hmstream-assets-test-" + std::to_string(::getpid()));
   fs::create_directories(root / "configs");
   fs::create_directories(root / "pretrained");
   {
@@ -28,6 +29,8 @@ int main() {
   }
   auto hash = hm::assets::AssetManager::Sha256(root / "pretrained" / "model.bin");
   ok &= expect(hash.ok(), "fixture hash must compute");
+  auto byte_hash = hm::assets::AssetManager::Sha256Bytes("native asset\n");
+  ok &= expect(byte_hash.ok() && hash.ok() && *byte_hash == *hash, "byte and file SHA256 must agree");
   {
     std::ofstream child(root / "configs" / "child.yaml");
     child << "pretrained-assets:\n  - name: model\n    url: https://example.invalid/model.bin\n    sha256: "

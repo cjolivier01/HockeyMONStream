@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -38,6 +39,7 @@ class AssetManager {
   static absl::Status Ensure(const std::vector<std::filesystem::path>& configs, const Limits& limits = {});
   static absl::Status Verify(const std::vector<std::filesystem::path>& configs, const Limits& limits = {});
   static absl::StatusOr<std::string> Sha256(const std::filesystem::path& path);
+  static absl::StatusOr<std::string> Sha256Bytes(std::string_view contents);
 };
 
 } // namespace hm::assets

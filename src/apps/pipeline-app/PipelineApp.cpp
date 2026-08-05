@@ -33,10 +33,10 @@
 #include <utility>
 #include <vector>
 
+#include "TensorRtModelCache.h"
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
 #include "hstream/src/libs/assets/AssetManager.h"
-#include "TensorRtModelCache.h"
 #include "hstream/src/libs/camera/AutoFocus.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
@@ -93,6 +93,18 @@ bool manages_its_own_window(GstElement* sink) {
   GstElementFactory* factory = gst_element_get_factory(sink);
   return factory != nullptr &&
       g_strcmp0(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)), NVDS_ELEM_SINK_3D) == 0;
+}
+
+absl::Status pause_pipeline_for_model_initialization(GstElement* pipeline) {
+  if (gst_element_set_state(pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE)
+    return absl::InternalError("Failed to set pipeline to PAUSED");
+  constexpr GstClockTime kModelInitializationTimeout = 15 * 60 * GST_SECOND;
+  const GstStateChangeReturn result = gst_element_get_state(pipeline, nullptr, nullptr, kModelInitializationTimeout);
+  if (result == GST_STATE_CHANGE_FAILURE)
+    return absl::InternalError("Pipeline failed while initializing models");
+  if (result == GST_STATE_CHANGE_ASYNC)
+    return absl::DeadlineExceededError("Timed out waiting for pipeline model initialization");
+  return absl::OkStatus();
 }
 
 void prepend_env_path(const char* name, const fs::path& dir) {
@@ -611,8 +623,9 @@ absl::Status PipelineApplication::configureInstances(
         app_ctx->return_value = -1;
         return absl::InternalError("Failed to parse config file");
       }
-      HM_RETURN_IF_ERROR(hm::pipeline::PrepareTensorRtModelCache(
-          config["pipeline"], fs::path(app_ctx->app_config_file()).parent_path()));
+      HM_RETURN_IF_ERROR(
+          hm::pipeline::PrepareTensorRtModelCache(
+              config["pipeline"], fs::path(app_ctx->app_config_file()).parent_path()));
       if (!parse_config_yaml(
               config["pipeline"], &app_ctx->config, fs::path(app_ctx->app_config_file()).parent_path())) {
         NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", app_ctx->app_config_file().c_str());
@@ -757,9 +770,10 @@ absl::Status PipelineApplication::createMainLoop(
   std::set<Window> owned_windows;
   for (guint i = 0; i < app_contexts.size(); i++) {
 #if defined(__aarch64__)
-    if (gst_element_set_state(app_contexts[i]->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
+    auto pause_status = pause_pipeline_for_model_initialization(app_contexts[i]->pipeline.pipeline);
+    if (!pause_status.ok()) {
       NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
-      return absl::InternalError("Failed to set pipeline to PAUSED");
+      return pause_status;
     }
 #endif
     for (guint j = 0; j < app_contexts[i]->config.num_sink_sub_bins; j++) {
@@ -842,9 +856,10 @@ absl::Status PipelineApplication::createMainLoop(
     struct cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, current_device);
     if (!prop.integrated) {
-      if (gst_element_set_state(app_contexts[i]->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
+      auto pause_status = pause_pipeline_for_model_initialization(app_contexts[i]->pipeline.pipeline);
+      if (!pause_status.ok()) {
         NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
-        return absl::InternalError("Failed to set pipeline to PAUSED");
+        return pause_status;
       }
     }
 #endif
@@ -1311,11 +1326,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     current_stage_ = stage_item.first;
     auto& app_contexts = stage_app_contexts_.at(current_stage_);
     {
+      auto cache_lock_cleanup = absl::MakeCleanup([] { hm::pipeline::ReleaseTensorRtModelCacheLocks(); });
       HM_RETURN_IF_ERROR(configureInstances(stage_count, app_contexts));
       if (!app_contexts.empty()) {
         CleanupStack stage_cleanup_stack;
         HM_RETURN_IF_ERROR(createPipelines(app_contexts, stage_cleanup_stack));
         HM_RETURN_IF_ERROR(createMainLoop(app_contexts, stage_windows_[current_stage_], stage_cleanup_stack));
+        hm::pipeline::ReleaseTensorRtModelCacheLocks();
         // editor_thread_ = hm::edit_pipeline(GST_OBJECT(app_contexts[0]->pipeline.pipeline));
         HM_RETURN_IF_ERROR(playPipelines(app_contexts, stage_cleanup_stack));
       }

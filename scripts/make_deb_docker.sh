@@ -107,7 +107,7 @@ OUTPUT_DIR="$(readlink -f "${OUTPUT_DIR}")"
 
 # Freeze the complete build input before the slow image build. The container
 # never sees the mutable checkout, ignored artifacts, or untracked files.
-SOURCE_SNAPSHOT="$(mktemp -d /tmp/hmstream-deb-source.XXXXXX)"
+SOURCE_SNAPSHOT="$(mktemp -d "${TMPDIR:-/tmp}/hmstream-deb-source.XXXXXX")"
 cleanup_snapshot() {
   rm -rf -- "${SOURCE_SNAPSHOT}"
 }

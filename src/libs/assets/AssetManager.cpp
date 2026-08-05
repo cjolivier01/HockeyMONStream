@@ -537,4 +537,29 @@ absl::StatusOr<std::string> AssetManager::Sha256(const fs::path& path) {
   return value.str();
 }
 
+absl::StatusOr<std::string> AssetManager::Sha256Bytes(std::string_view contents) {
+  EVP_MD_CTX* context = EVP_MD_CTX_new();
+  if (!context || EVP_DigestInit_ex(context, EVP_sha256(), nullptr) != 1) {
+    if (context)
+      EVP_MD_CTX_free(context);
+    return absl::InternalError("Unable to initialize SHA256");
+  }
+  if (EVP_DigestUpdate(context, contents.data(), contents.size()) != 1) {
+    EVP_MD_CTX_free(context);
+    return absl::InternalError("Unable to update SHA256");
+  }
+  std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+  unsigned length = 0;
+  if (EVP_DigestFinal_ex(context, digest.data(), &length) != 1) {
+    EVP_MD_CTX_free(context);
+    return absl::InternalError("Unable to finalize SHA256");
+  }
+  EVP_MD_CTX_free(context);
+  std::ostringstream value;
+  value << std::hex << std::setfill('0');
+  for (unsigned index = 0; index < length; ++index)
+    value << std::setw(2) << static_cast<unsigned>(digest[index]);
+  return value.str();
+}
+
 } // namespace hm::assets
