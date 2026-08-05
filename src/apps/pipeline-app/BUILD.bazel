@@ -109,6 +109,21 @@ cc_test(
 )
 
 cc_test(
+    name = "tensorrt_model_cache_test",
+    srcs = [
+        "TensorRtModelCache.cpp",
+        "TensorRtModelCache.h",
+        "TensorRtModelCacheTest.cpp",
+    ],
+    copts = PIPELINE_APP_COPTS,
+    deps = [
+        "//src/libs/assets:asset_manager",
+        "@com_google_absl//absl/status",
+        "@yaml-cpp",
+    ],
+)
+
+cc_test(
     name = "plugin_property_yaml_parser_test",
     srcs = [
         "PluginPropertyYamlParserTest.cpp",

@@ -1570,9 +1570,9 @@ void HmStreamWindow::logMissingTensorRtEngineCaches(const QStringList& pipeline_
         continue;
       }
 
-      appendLog(QString("TensorRT engine cache missing: %1").arg(engine_file));
+      appendLog(QString("configured TensorRT engine seed missing: %1").arg(engine_file));
       appendLog(
-          "first run will build/cache the primary-gie engine before video appears; the render window may stay black during this step");
+          "first run will build the primary-gie engine in HMStream's writable per-user cache before video appears; the render window may stay black during this step");
       appendLog("DeepStream may also log a model-engine-file open/deserialize warning while it builds the engine");
     } catch (const std::exception& e) {
       appendLog(QString("could not inspect TensorRT engine cache from %1: %2").arg(config_file, e.what()));
