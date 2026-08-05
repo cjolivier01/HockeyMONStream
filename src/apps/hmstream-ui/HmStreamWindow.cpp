@@ -439,6 +439,22 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_di
     }
   }
 
+  QDir runtime_lib_dir(QDir(working_dir).filePath(QString(".cache/runtime-lib-path/%1").arg(arch)));
+  if (runtime_lib_dir.mkpath(".")) {
+    for (const QFileInfo& solib_root : solib_roots) {
+      QDirIterator onnxruntime_it(
+          solib_root.absoluteFilePath(), QStringList("libonnxruntime.so.1"), QDir::Files, QDirIterator::Subdirectories);
+      if (!onnxruntime_it.hasNext())
+        continue;
+      const QFileInfo onnxruntime(onnxruntime_it.next());
+      const QString link_path = runtime_lib_dir.filePath("libonnxruntime.so.1");
+      QFile::remove(link_path);
+      if (QFile::link(onnxruntime.canonicalFilePath(), link_path))
+        prepend_env_path(env, "LD_LIBRARY_PATH", runtime_lib_dir.absolutePath());
+      break;
+    }
+  }
+
   prepend_env_path(env, "GST_PLUGIN_PATH", runtime_dir.absolutePath());
 }
 
@@ -456,7 +472,7 @@ void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QStr
   if (registry_dir.mkpath(".")) {
     const QString arch =
         QSysInfo::currentCpuArchitecture().isEmpty() ? QString("unknown") : QSysInfo::currentCpuArchitecture();
-    env.insert("GST_REGISTRY", registry_dir.filePath(QString("registry.hstream.%1.bin").arg(arch)));
+    env.insert("GST_REGISTRY", registry_dir.filePath(QString("registry.hstream.native-onnx-v1.%1.bin").arg(arch)));
   }
 
   prepend_env_path(env, "GST_PLUGIN_PATH", QDir(working_dir).filePath("lib/gst-plugins"));
@@ -1166,15 +1182,22 @@ void HmStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   preview_surface_->setAttribute(Qt::WA_NativeWindow);
   preview_surface_->setAttribute(Qt::WA_DontCreateNativeAncestors);
   preview_surface_->setStyleSheet("QWidget#previewSurface { background: #12171c; }");
+  preview_external_notice_ = new QLabel("Video is displayed in a separate DeepStream window", preview_surface_);
+  preview_external_notice_->setAlignment(Qt::AlignCenter);
+  preview_external_notice_->setWordWrap(true);
+  preview_external_notice_->setStyleSheet("color: #c9d1d9; padding: 24px;");
+  preview_external_notice_->hide();
+  auto* preview_surface_layout = new QVBoxLayout(preview_surface_);
+  preview_surface_layout->addWidget(preview_external_notice_);
 
   preview_status_ = new QLabel("Pipeline stopped");
   preview_status_->setObjectName("previewStatusLabel");
-  auto* program_fullscreen = new QPushButton("Fullscreen");
-  program_fullscreen->setObjectName("programFullscreenButton");
-  connect(program_fullscreen, &QPushButton::clicked, this, [this]() { togglePreviewFullscreen(0); });
+  program_fullscreen_button_ = new QPushButton("Fullscreen");
+  program_fullscreen_button_->setObjectName("programFullscreenButton");
+  connect(program_fullscreen_button_, &QPushButton::clicked, this, [this]() { togglePreviewFullscreen(0); });
   auto* program_footer = new QHBoxLayout();
   program_footer->addWidget(preview_status_, 1);
-  program_footer->addWidget(program_fullscreen);
+  program_footer->addWidget(program_fullscreen_button_);
   layout->addWidget(preview_host, 1);
   layout->addLayout(program_footer);
 
@@ -1187,14 +1210,21 @@ void HmStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   stitched_surface_->setAttribute(Qt::WA_NativeWindow);
   stitched_surface_->setAttribute(Qt::WA_DontCreateNativeAncestors);
   stitched_surface_->setStyleSheet("QWidget#stitchedPreviewSurface { background: #10151a; }");
+  stitched_external_notice_ = new QLabel("Video is displayed in a separate DeepStream window", stitched_surface_);
+  stitched_external_notice_->setAlignment(Qt::AlignCenter);
+  stitched_external_notice_->setWordWrap(true);
+  stitched_external_notice_->setStyleSheet("color: #c9d1d9; padding: 24px;");
+  stitched_external_notice_->hide();
+  auto* stitched_surface_layout = new QVBoxLayout(stitched_surface_);
+  stitched_surface_layout->addWidget(stitched_external_notice_);
   stitched_status_ = new QLabel("Stitched canvas preview");
   stitched_status_->setObjectName("stitchedPreviewStatusLabel");
-  auto* stitched_fullscreen = new QPushButton("Fullscreen");
-  stitched_fullscreen->setObjectName("stitchedFullscreenButton");
-  connect(stitched_fullscreen, &QPushButton::clicked, this, [this]() { togglePreviewFullscreen(1); });
+  stitched_fullscreen_button_ = new QPushButton("Fullscreen");
+  stitched_fullscreen_button_->setObjectName("stitchedFullscreenButton");
+  connect(stitched_fullscreen_button_, &QPushButton::clicked, this, [this]() { togglePreviewFullscreen(1); });
   auto* stitched_footer = new QHBoxLayout();
   stitched_footer->addWidget(stitched_status_, 1);
-  stitched_footer->addWidget(stitched_fullscreen);
+  stitched_footer->addWidget(stitched_fullscreen_button_);
   stitched_layout->addWidget(stitched_host, 1);
   stitched_layout->addLayout(stitched_footer);
 
@@ -1628,20 +1658,22 @@ bool HmStreamWindow::prepareStitchingCalibrationRun(
 
 QStringList HmStreamWindow::pipelineArguments() const {
   const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
+  const QString configured_render_sink = qEnvironmentVariable("HM_RENDER_SINK").trimmed().toLower();
+  const bool embed_render_window = configured_render_sink == "nveglglessink" || configured_render_sink == "egl";
   QStringList args;
   args << "-g" << game_id << "--enable-sources=URI-MULTIPLE";
   if (isCalibrationRun()) {
     args << "-c" << pipelineConfigPath("ds_hockey_configure_stitching.yaml");
     args << "--enable-sinks=RENDER";
     args << "--show-stitching" << "1";
-    if (stitched_surface_) {
+    if (embed_render_window && stitched_surface_) {
       args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(stitched_surface_->winId()));
     }
   } else {
     args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
     args << QString("--enable-sinks=%1").arg(enabledSinkNames().join(","));
     args << "--show";
-    if (preview_surface_) {
+    if (embed_render_window && preview_surface_) {
       args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(preview_surface_->winId()));
     }
   }
@@ -1683,6 +1715,18 @@ void HmStreamWindow::startPipeline() {
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   const QString working_dir = pipelineWorkingDirectory();
   configure_pipeline_runtime_environment(env, working_dir);
+  const bool embedded_render = std::any_of(
+      args.begin(), args.end(), [](const QString& argument) { return argument.startsWith("--render-window-id="); });
+  if (preview_external_notice_)
+    preview_external_notice_->setVisible(!embedded_render);
+  if (stitched_external_notice_)
+    stitched_external_notice_->setVisible(!embedded_render);
+  if (program_fullscreen_button_)
+    program_fullscreen_button_->setEnabled(embedded_render);
+  if (stitched_fullscreen_button_)
+    stitched_fullscreen_button_->setEnabled(embedded_render);
+  if (!embedded_render)
+    appendLog("nv3dsink render output will open in a separate DeepStream window; embedded preview is disabled");
   if (isCalibrationRun()) {
     if (!prepareStitchingCalibrationRun(runner, working_dir, env)) {
       pipeline_state_->setText("STOPPED");

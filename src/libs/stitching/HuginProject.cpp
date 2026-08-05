@@ -47,7 +47,23 @@ constexpr size_t kHardMaximumCanvasDimension = 32768;
 constexpr uint64_t kHardMaximumCanvasPixels = 128ULL * 1024ULL * 1024ULL;
 constexpr const char* kStitchTransactionPrefix = ".hmstream-stitch-";
 
-const std::array<const char*, 8> kRequiredArtifacts = {
+const std::array<const char*, 10> kRequiredArtifacts = {
+    "hm_project.pto",
+    "autooptimiser_out.pto",
+    "mapping_0000.tif",
+    "mapping_0000_x.tif",
+    "mapping_0000_y.tif",
+    "mapping_0001.tif",
+    "mapping_0001_x.tif",
+    "mapping_0001_y.tif",
+    "left.png",
+    "right.png",
+};
+
+// Releases before synchronized inputs were transactionally published used
+// this manifest. Accept it during recovery so an interrupted upgrade remains
+// recoverable, while new publications include left.png/right.png.
+const std::array<const char*, 8> kLegacyRequiredArtifacts = {
     "hm_project.pto",
     "autooptimiser_out.pto",
     "mapping_0000.tif",
@@ -154,6 +170,12 @@ std::vector<std::string> artifact_names() {
   return names;
 }
 
+std::set<std::string> legacy_artifact_names() {
+  std::set<std::string> names(kLegacyRequiredArtifacts.begin(), kLegacyRequiredArtifacts.end());
+  names.insert(kOptionalArtifacts.begin(), kOptionalArtifacts.end());
+  return names;
+}
+
 bool is_artifact_name(const std::string& name) {
   const auto names = artifact_names();
   return std::find(names.begin(), names.end(), name) != names.end();
@@ -200,19 +222,35 @@ absl::StatusOr<std::string> read_transaction_state(const fs::path& transaction, 
     return absl::InternalError("Unable to inspect " + transaction_name + " transaction state: " + error.message());
   if (!state_exists)
     return std::string("UNPREPARED");
-  std::ifstream input(state_path);
-  std::string state;
-  if (!input || !std::getline(input, state) || (!input.good() && !input.eof()) || state.empty()) {
-    return absl::FailedPreconditionError("Unable to read durable " + transaction_name + " transaction state");
+  const int descriptor = ::open(state_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (descriptor < 0)
+    return absl::FailedPreconditionError("Unable to open durable " + transaction_name + " transaction state");
+  struct StateFileCleanup {
+    int descriptor;
+    ~StateFileCleanup() {
+      ::close(descriptor);
+    }
+  } cleanup{descriptor};
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
+      metadata.st_size > 10) {
+    return absl::FailedPreconditionError("Invalid durable " + transaction_name + " transaction state file");
   }
-  std::string trailing;
-  if (std::getline(input, trailing) && !trailing.empty()) {
-    return absl::FailedPreconditionError("Invalid multiline " + transaction_name + " transaction state");
+  std::string contents(static_cast<size_t>(metadata.st_size), '\0');
+  size_t offset = 0;
+  while (offset < contents.size()) {
+    const ssize_t count = ::read(descriptor, contents.data() + offset, contents.size() - offset);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      return absl::FailedPreconditionError("Unable to read durable " + transaction_name + " transaction state");
+    offset += static_cast<size_t>(count);
   }
-  if (state != "PREPARED" && state != "COMMITTED") {
-    return absl::FailedPreconditionError("Unknown " + transaction_name + " transaction state: " + state);
-  }
-  return state;
+  if (contents == "PREPARED\n")
+    return std::string("PREPARED");
+  if (contents == "COMMITTED\n")
+    return std::string("COMMITTED");
+  return absl::FailedPreconditionError("Invalid durable " + transaction_name + " transaction state contents");
 }
 
 absl::Status recover_stitch_transactions_locked(const fs::path& root) {
@@ -239,12 +277,10 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
         if (fs::path(name).filename() != name || !is_artifact_name(name) || !manifested.insert(name).second)
           return absl::InvalidArgumentError("Invalid stitch transaction filename: " + name);
       }
-      if (!manifest.eof() || manifested.size() != artifact_names().size()) {
+      const std::vector<std::string> current_name_list = artifact_names();
+      const std::set<std::string> current_names(current_name_list.begin(), current_name_list.end());
+      if (!manifest.eof() || (manifested != current_names && manifested != legacy_artifact_names())) {
         return absl::FailedPreconditionError("Prepared stitch transaction has an incomplete artifact manifest");
-      }
-      for (const std::string& artifact : artifact_names()) {
-        if (!manifested.count(artifact))
-          return absl::FailedPreconditionError("Prepared stitch transaction omits artifact: " + artifact);
       }
       const fs::path previous = transaction / "previous";
       std::vector<fs::path> backups;
@@ -1023,14 +1059,23 @@ absl::Status HuginProject::Configure(
     const fs::path& game_dir,
     const std::vector<FeatureMatch>& matches,
     const Options& options) {
+  return Configure(game_dir, game_dir / "left.png", game_dir / "right.png", matches, options);
+}
+
+absl::Status HuginProject::Configure(
+    const fs::path& game_dir,
+    const fs::path& left_image,
+    const fs::path& right_image,
+    const std::vector<FeatureMatch>& matches,
+    const Options& options) {
   if (!std::isfinite(options.horizontal_fov) || options.horizontal_fov <= 0.0 || options.horizontal_fov >= 360.0) {
     return absl::InvalidArgumentError("Hugin horizontal field of view must be between 0 and 360 degrees");
   }
   if (matches.size() < kMinimumUsableMatches) {
     return absl::FailedPreconditionError("Insufficient control points for Hugin optimization");
   }
-  for (const char* image : {"left.png", "right.png"}) {
-    auto status = validate_nonempty_file(game_dir / image);
+  for (const fs::path& image : {left_image, right_image}) {
+    auto status = validate_nonempty_file(image);
     if (!status.ok())
       return status;
   }
@@ -1055,10 +1100,10 @@ absl::Status HuginProject::Configure(
   } cleanup{staging};
 
   std::error_code error;
-  fs::copy_file(game_dir / "left.png", staging / "left.png", fs::copy_options::overwrite_existing, error);
+  fs::copy_file(left_image, staging / "left.png", fs::copy_options::overwrite_existing, error);
   if (error)
     return absl::InternalError("Unable to stage left image: " + error.message());
-  fs::copy_file(game_dir / "right.png", staging / "right.png", fs::copy_options::overwrite_existing, error);
+  fs::copy_file(right_image, staging / "right.png", fs::copy_options::overwrite_existing, error);
   if (error)
     return absl::InternalError("Unable to stage right image: " + error.message());
 

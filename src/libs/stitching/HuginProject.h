@@ -54,6 +54,17 @@ class HuginProject {
       const std::vector<FeatureMatch>& matches,
       const Options& options);
 
+  // As above, but consume immutable, run-private synchronized images. The
+  // images are copied into and published with the locked Hugin generation, so
+  // concurrent calibrations cannot pair one run's matches with another run's
+  // public left.png/right.png files.
+  static absl::Status Configure(
+      const std::filesystem::path& game_dir,
+      const std::filesystem::path& left_image,
+      const std::filesystem::path& right_image,
+      const std::vector<FeatureMatch>& matches,
+      const Options& options);
+
   // Recover an interrupted durable publication before opening the flat Hugin
   // artifact set from game_dir.
   static absl::Status Recover(const std::filesystem::path& game_dir);

@@ -87,13 +87,9 @@ case "${VERSION_ID:-}" in
     ;;
 esac
 
-HMSTREAM_DEPENDS="$(dpkg-deb -f "${HMSTREAM_DEB}" Depends)"
-if [[ "${VERSION_ID}" == "24.04" && "${HMSTREAM_DEPENDS}" == *"libc6 (>= 2.43)"* ]]; then
-  echo "ERROR: the selected HMStream artifact targets Ubuntu 26.04, not 24.04." >&2
-  exit 1
-fi
-if [[ "${VERSION_ID}" == "26.04" && "${HMSTREAM_DEPENDS}" != *"libc6 (>= 2.43)"* ]]; then
-  echo "ERROR: the selected HMStream artifact does not target Ubuntu 26.04." >&2
+HMSTREAM_TARGET_UBUNTU="$(dpkg-deb -f "${HMSTREAM_DEB}" X-HMStream-Target-Ubuntu 2>/dev/null || true)"
+if [[ "${HMSTREAM_TARGET_UBUNTU}" != "${VERSION_ID}" ]]; then
+  echo "ERROR: the selected HMStream artifact targets Ubuntu ${HMSTREAM_TARGET_UBUNTU:-unknown}, not ${VERSION_ID}." >&2
   exit 1
 fi
 
@@ -138,17 +134,18 @@ if [[ "${VERSION_ID}" == "26.04" ]]; then
 fi
 
 apt-get update
-trt_version="$(apt-cache madison libnvinfer-dev \
+trt_runtime_version="$(apt-cache madison libnvinfer10 \
   | awk '$3 ~ /^10[.]/ && $3 ~ /[+]cuda13[.]2$/ && !found { print $3; found = 1 }')"
-if [[ -z "${trt_version}" ]]; then
+if [[ -z "${trt_runtime_version}" ]]; then
   echo "ERROR: NVIDIA repositories do not provide the TensorRT 10 / CUDA 13.2 dependencies required by DeepStream 9.1." >&2
   exit 1
 fi
-printf '%s\n' \
-  'Package: tensorrt* libnvinfer* libnvonnxparsers*' \
-  "Pin: version ${trt_version}" \
-  'Pin-Priority: 1001' \
-  >/etc/apt/preferences.d/hmstream-tensorrt10
+
+# Older HMStream installers pinned every TensorRT package to version 10. That
+# needlessly attempted to downgrade an independently installed TensorRT 11 SDK.
+# The versioned TensorRT 10 runtime packages required by the two local .debs
+# coexist with newer SDK packages and apt resolves them without a global pin.
+rm -f /etc/apt/preferences.d/hmstream-tensorrt10
 
 apt_args=(-y --no-install-recommends)
 if [[ "${SIMULATE}" -eq 1 ]]; then apt_args+=(--simulate); fi

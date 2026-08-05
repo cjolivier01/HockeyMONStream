@@ -260,6 +260,22 @@ rink:
   return true;
 }
 
+bool expect_legacy_seam_generation_rejects_oversized_tiff(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "oversized_legacy_tiff";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  if (!write_mapping_tiff(dir / "mapping_0000.tif", 40000, 1, 0.0f, 0.0f) ||
+      !write_mapping_tiff(dir / "mapping_0001.tif", 1, 1, 0.0f, 0.0f)) {
+    return false;
+  }
+  const auto status = hm::stitching::maybe_create_default_seam_file(dir.string());
+  if (!absl::IsResourceExhausted(status) || fs::exists(dir / "seam_file.png")) {
+    std::cerr << "oversized legacy TIFF must fail before seam allocation: " << status << std::endl;
+    return false;
+  }
+  return true;
+}
+
 void finish(const fs::path& tmpdir, int code) {
   fs::remove_all(tmpdir);
   _exit(code);
@@ -298,6 +314,10 @@ int main() {
 
   if (!expect_clean_preserves_unrelated_config(tmpdir)) {
     finish(tmpdir, 8);
+  }
+
+  if (!expect_legacy_seam_generation_rejects_oversized_tiff(tmpdir)) {
+    finish(tmpdir, 9);
   }
 
   finish(tmpdir, 0);

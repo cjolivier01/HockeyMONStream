@@ -156,6 +156,8 @@ bool write_fake_runner(const QString& path) {
   file.write("for arg in sys.argv[1:]:\n");
   file.write("    print(arg, flush=True)\n");
   file.write("print('USE_NEW_NVSTREAMMUX=' + os.environ.get('USE_NEW_NVSTREAMMUX', ''), flush=True)\n");
+  file.write("print('HM_RENDER_SINK=' + os.environ.get('HM_RENDER_SINK', ''), flush=True)\n");
+  file.write("print('LD_LIBRARY_PATH=' + os.environ.get('LD_LIBRARY_PATH', ''), flush=True)\n");
   file.write("if '--clean' in sys.argv[1:]:\n");
   file.write("    print('clean runner exiting', flush=True)\n");
   file.write("    sys.exit(0)\n");
@@ -675,7 +677,9 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
           window->logText().contains("stitching calibration control points changed unset -> 750"),
           "Calibration CP change should be logged") ||
       !expect(window->logText().contains("--show-stitching 1"), "Calibration should request stitched display") ||
-      !expect(window->logText().contains("--render-window-id="), "Calibration should embed the render sink") ||
+      !expect(
+          !window->logText().contains("--render-window-id="),
+          "Desktop calibration should use nv3dsink's separate render window by default") ||
       !expect(
           window->logText().contains("ANSI blue runner line"), "ANSI-colored runner output should remain visible") ||
       !expect(
@@ -774,19 +778,45 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
   }
 
   mode->setCurrentIndex(mode->findData("program"));
+  qputenv("HM_RENDER_SINK", "nv3dsink");
   activate(start);
-  for (int i = 0; i < 50 && !window->logText().contains("ds_hockey_app_config.yaml"); ++i) {
+  for (int i = 0; i < 50 && !window->logText().contains("HM_RENDER_SINK=nv3dsink"); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
   if (!expect(window->logText().contains("--show"), "Program run should request render output") ||
-      !expect(window->logText().contains("--render-window-id="), "Program run should embed the render sink") ||
+      !expect(
+          !window->logText().contains("--render-window-id="), "nv3dsink run must not promise an embedded preview") ||
       !expect(
           window->logText().contains("USE_NEW_NVSTREAMMUX=yes"),
-          "UI runner should default to the DeepStream 9.1 new stream mux")) {
+          "UI runner should default to the DeepStream 9.1 new stream mux") ||
+      !expect(
+          window->logText().contains("HM_RENDER_SINK=nv3dsink"),
+          "UI runner should preserve the self-managed desktop render sink") ||
+      !expect(
+          window->logText().contains("separate DeepStream window"),
+          "UI must surface self-managed render-window mode")) {
     return false;
   }
   activate(stop);
+  qunsetenv("HM_RENDER_SINK");
+
+  qputenv("HM_RENDER_SINK", "nveglglessink");
+  activate(start);
+  for (int i = 0; i < 50 && !window->logText().contains("HM_RENDER_SINK=nveglglessink"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const bool explicit_embedding_preserved = expect(
+                                                window->logText().contains("--render-window-id="),
+                                                "Explicit nveglglessink mode should embed in the Qt preview") &&
+      expect(window->logText().contains("HM_RENDER_SINK=nveglglessink"),
+             "UI runner should preserve an explicit embeddable render sink");
+  activate(stop);
+  qunsetenv("HM_RENDER_SINK");
+  if (!explicit_embedding_preserved) {
+    return false;
+  }
 
   qputenv("USE_NEW_NVSTREAMMUX", "no");
   activate(start);

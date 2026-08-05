@@ -1,0 +1,4 @@
+exports_files([
+    "Dockerfile",
+    "build-hmstream-deb.sh",
+])

@@ -68,6 +68,19 @@ cc_binary(
 )
 
 cc_test(
+    name = "pipeline_clean_only_test",
+    srcs = ["PipelineCleanOnlyTest.cpp"],
+    args = [
+        "$(location :hmstream-cli)",
+        "$(location //configs:ds_hockey_configure_stitching.yaml)",
+    ],
+    data = [
+        ":hmstream-cli",
+        "//configs:ds_hockey_configure_stitching.yaml",
+    ],
+)
+
+cc_test(
     name = "terminal_progress_ui_test",
     srcs = [
         "TerminalProgressUi.cpp",

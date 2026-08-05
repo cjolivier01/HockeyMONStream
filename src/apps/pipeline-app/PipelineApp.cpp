@@ -91,7 +91,7 @@ bool manages_its_own_window(GstElement* sink) {
   }
   GstElementFactory* factory = gst_element_get_factory(sink);
   return factory != nullptr &&
-         g_strcmp0(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)), NVDS_ELEM_SINK_3D) == 0;
+      g_strcmp0(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)), NVDS_ELEM_SINK_3D) == 0;
 }
 
 void prepend_env_path(const char* name, const fs::path& dir) {
@@ -194,8 +194,47 @@ void stage_bazel_gst_plugins(const fs::path& root) {
   prepend_env_path("GST_PLUGIN_PATH", runtime_plugin_dir);
 }
 
+void stage_bazel_runtime_libraries(const fs::path& root) {
+  const fs::path bazel_bin = root / "bazel-bin";
+  if (!fs::is_directory(bazel_bin))
+    return;
+  std::error_code ec;
+  fs::path onnxruntime;
+  for (const fs::directory_entry& solib : fs::directory_iterator(bazel_bin, ec)) {
+    if (ec)
+      return;
+    if (!solib.is_directory(ec) || solib.path().filename().string().rfind("_solib_", 0) != 0) {
+      ec.clear();
+      continue;
+    }
+    for (const fs::directory_entry& entry : fs::recursive_directory_iterator(solib.path(), ec)) {
+      if (ec)
+        return;
+      if (entry.path().filename() == "libonnxruntime.so.1" && entry.is_regular_file(ec) && !ec) {
+        onnxruntime = fs::canonical(entry.path(), ec);
+        break;
+      }
+    }
+    if (!onnxruntime.empty())
+      break;
+  }
+  if (onnxruntime.empty() || ec)
+    return;
+  const fs::path runtime_dir = root / ".cache/runtime-lib-path" / host_arch_name();
+  fs::create_directories(runtime_dir, ec);
+  if (ec)
+    return;
+  const fs::path link = runtime_dir / "libonnxruntime.so.1";
+  fs::remove(link, ec);
+  ec.clear();
+  fs::create_symlink(onnxruntime, link, ec);
+  if (!ec)
+    prepend_env_path("LD_LIBRARY_PATH", runtime_dir);
+}
+
 void configure_pipeline_runtime_environment(const char* argv0) {
   const fs::path root = pipeline_runtime_root(argv0);
+  stage_bazel_runtime_libraries(root);
   std::error_code ec;
   fs::path registry_dir = root / ".cache/gstreamer-1.0";
   fs::create_directories(registry_dir, ec);
@@ -207,7 +246,8 @@ void configure_pipeline_runtime_environment(const char* argv0) {
     }
   }
   if (!ec) {
-    const std::string registry = (registry_dir / ("registry.hstream." + host_arch_name() + ".bin")).string();
+    const std::string registry =
+        (registry_dir / ("registry.hstream.native-onnx-v1." + host_arch_name() + ".bin")).string();
     setenv("GST_REGISTRY", registry.c_str(), 1);
   }
 
@@ -1123,6 +1163,18 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     return absl::InternalError(error->message);
   }
 
+#ifndef IS_TEGRA
+  if (render_window_id_ > 0) {
+    const char* configured_sink = std::getenv("HM_RENDER_SINK");
+    if (configured_sink != nullptr && *configured_sink != '\0' &&
+        g_ascii_strcasecmp(configured_sink, "nveglglessink") != 0 && g_ascii_strcasecmp(configured_sink, "egl") != 0) {
+      g_printerr(
+          "Ignoring HM_RENDER_SINK=%s because --render-window-id requires nveglglessink embedding\n", configured_sink);
+    }
+    ::setenv("HM_RENDER_SINK", "nveglglessink", 1);
+  }
+#endif
+
   if (print_version_) {
     g_print(
         "deepstream-app version %d.%d.%d\n", NVDS_APP_VERSION_MAJOR, NVDS_APP_VERSION_MINOR, NVDS_APP_VERSION_MICRO);
@@ -1178,16 +1230,14 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     });
   }
 
-  std::vector<fs::path> asset_configs;
-  for (size_t index = 0, count = g_strv_length(cfg_files_); index < count; ++index) {
-    asset_configs.emplace_back(cfg_files_[index]);
-    const fs::path calibration_assets =
-        fs::path(cfg_files_[index]).parent_path() / "ds_hockey_configure_stitching.yaml";
-    if (fs::is_regular_file(calibration_assets) &&
-        std::find(asset_configs.begin(), asset_configs.end(), calibration_assets) == asset_configs.end())
-      asset_configs.push_back(calibration_assets);
+  // Cleaning only removes generated game artifacts and must remain usable
+  // offline, even when declared models are not installed.
+  if (!clean_stitching_artifacts_) {
+    std::vector<fs::path> asset_configs;
+    for (size_t index = 0, count = g_strv_length(cfg_files_); index < count; ++index)
+      asset_configs.emplace_back(cfg_files_[index]);
+    HM_RETURN_IF_ERROR(hm::assets::AssetManager::Ensure(asset_configs));
   }
-  HM_RETURN_IF_ERROR(hm::assets::AssetManager::Ensure(asset_configs));
 
   if (pipline_options) {
     pipeline_options_.clear();

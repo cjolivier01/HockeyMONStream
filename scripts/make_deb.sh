@@ -48,6 +48,21 @@ if [[ ! "${SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ || ! "${SOURCE_EPOCH}" =~ ^[0-9]+
   echo "ERROR: immutable source revision manifest is invalid." >&2
   exit 1
 fi
+TARGET_UBUNTU="${HMSTREAM_TARGET_UBUNTU:-}"
+if [[ -z "${TARGET_UBUNTU}" && -r /etc/os-release ]]; then
+  # shellcheck disable=SC1091
+  source /etc/os-release
+  if [[ "${ID:-}" == "ubuntu" ]]; then
+    TARGET_UBUNTU="${VERSION_ID:-}"
+  fi
+fi
+case "${TARGET_UBUNTU}" in
+  24.04|26.04) ;;
+  *)
+    echo "ERROR: HMSTREAM_TARGET_UBUNTU must identify Ubuntu 24.04 or 26.04." >&2
+    exit 1
+    ;;
+esac
 if [[ -z "$PKG_VERSION" ]]; then
   echo "ERROR: the immutable package builder must provide an explicit version." >&2
   exit 1
@@ -460,8 +475,7 @@ prepend_path LD_LIBRARY_PATH "${INSTALL_DIR}/lib/gst-plugins"
 prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib"
 prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/nvshmem/13"
-prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/nvshmem/12"
-prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/libcusparseLt/12"
+prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/libcusparseLt/13"
 one_pass_only=1
 have_sink_arg=0
 show_arg=0
@@ -823,11 +837,23 @@ prepend_path LD_LIBRARY_PATH "${INSTALL_DIR}/lib/gst-plugins"
 prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib"
 prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/nvshmem/13"
-prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/nvshmem/12"
-prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/libcusparseLt/12"
+prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/libcusparseLt/13"
 exec "${INSTALL_DIR}/bin/hmstream-ui" "$@"
 UISH
 chmod 755 "${STAGING}${INSTALL_PREFIX}/hmstream-ui.sh"
+
+# A short-lived older package left its runtime calibration tree unowned after
+# upgrades. Current releases are fully native, so remove only that exact legacy
+# install-prefix residue during configuration.
+cat > "${STAGING}/DEBIAN/postinst" <<'POSTINST'
+#!/bin/sh
+set -e
+if [ "$1" = configure ] && [ -d /opt/hmstream/python ]; then
+  rm -rf -- /opt/hmstream/python
+fi
+exit 0
+POSTINST
+chmod 0755 "${STAGING}/DEBIAN/postinst"
 
 # ---------- package-owned command wrappers ----------
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hmstream-cli"
@@ -861,6 +887,13 @@ declare -a shlibdeps_elf_args=()
 declare -a shlibdeps_private_lib_args=()
 declare -a shlibdeps_private_lib_dirs=()
 for elf in "${package_elfs[@]}"; do
+  if patchelf --print-needed "${elf}" \
+    | grep -Eq '^lib(cudart|npp[^.]*|cublas[^.]*|cufft[^.]*|curand[^.]*|cusolver[^.]*|cusparse[^.]*|nvrtc[^.]*|nvJitLink)[.]so[.]12$'; then
+    echo "ERROR: CUDA 12 dependency entered the CUDA 13.2 HMStream package: ${elf}" >&2
+    patchelf --print-needed "${elf}" \
+      | grep -E '^lib(cudart|npp[^.]*|cublas[^.]*|cufft[^.]*|curand[^.]*|cusolver[^.]*|cusparse[^.]*|nvrtc[^.]*|nvJitLink)[.]so[.]12$' >&2
+    exit 1
+  fi
   shlibdeps_elf_args+=("-e${elf}")
 done
 
@@ -898,8 +931,7 @@ declare -a cuda_search_dirs=(
   /usr/local/cuda/lib64
   /usr/local/cuda/targets/x86_64-linux/lib
   /usr/lib/x86_64-linux-gnu
-  /usr/lib/x86_64-linux-gnu/libcusparseLt/12
-  /usr/lib/x86_64-linux-gnu/nvshmem/12
+  /usr/lib/x86_64-linux-gnu/libcusparseLt/13
   /usr/lib/x86_64-linux-gnu/nvshmem/13
 )
 declare -a shlibdeps_cuda_lib_args=()
@@ -1026,6 +1058,7 @@ Version: ${PKG_VERSION}
 Architecture: ${PKG_ARCH}
 X-HMStream-Source-Commit: ${SOURCE_REVISION}
 X-HMStream-Source-Epoch: ${SOURCE_EPOCH}
+X-HMStream-Target-Ubuntu: ${TARGET_UBUNTU}
 Maintainer: Christopher Olivier <cjolivier01@gmail.com>
 Installed-Size: ${INSTALLED_SIZE}
 Depends: ${SHLIB_DEPENDS},
@@ -1042,7 +1075,7 @@ Description: HMStream video pipeline application and UI
  assets to ${INSTALL_PREFIX}. Runtime calibration does not launch Python.
  .
  External requirements not otherwise expressed as direct dependencies:
-   - NVIDIA CUDA Toolkit (>= 12) at /usr/local/cuda (pulled transitively by DeepStream)
+   - NVIDIA CUDA Toolkit 13.2 at /usr/local/cuda (pulled transitively by DeepStream)
    - Configured model frameworks beyond the packaged native stitching runtime
  .
  Launch the CLI with: ${INSTALL_PREFIX}/run.sh [args...]

@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <regex>
@@ -48,6 +49,8 @@ namespace {
 
 constexpr size_t kDefaultJetsonMaxLiveStitchCanvasDimension = 8192;
 constexpr size_t kDefaultMaxControlPoints = 1500;
+constexpr size_t kHardMaximumArtifactDimension = 32768;
+constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
 
 absl::StatusOr<size_t> remove_file_if_present(const fs::path& path) {
   std::error_code ec;
@@ -311,16 +314,51 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
   if (!have_dims || !width || !height) {
     return absl::InvalidArgumentError(TO_STRING("Missing TIFF dimensions: " << path.string()));
   }
-  if (!have_res || xres <= 0.0f || yres <= 0.0f) {
+  if (width > kHardMaximumArtifactDimension || height > kHardMaximumArtifactDimension ||
+      static_cast<uint64_t>(width) * height > kHardMaximumArtifactPixels) {
+    return absl::ResourceExhaustedError(TO_STRING("TIFF dimensions exceed safety limits: " << path.string()));
+  }
+  if (!have_res || !std::isfinite(xres) || !std::isfinite(yres) || xres <= 0.0f || yres <= 0.0f) {
     return absl::InvalidArgumentError(TO_STRING("Missing TIFF resolution: " << path.string()));
   }
 
+  const double x_px = static_cast<double>(xpos) * xres;
+  const double y_px = static_cast<double>(ypos) * yres;
+  if (!std::isfinite(xpos) || !std::isfinite(ypos) || !std::isfinite(x_px) || !std::isfinite(y_px) ||
+      x_px < std::numeric_limits<int>::lowest() || x_px > std::numeric_limits<int>::max() ||
+      y_px < std::numeric_limits<int>::lowest() || y_px > std::numeric_limits<int>::max()) {
+    return absl::InvalidArgumentError(TO_STRING("Invalid TIFF placement: " << path.string()));
+  }
+
   return TiffPlacement{
-      .x_px = xpos * xres,
-      .y_px = ypos * yres,
+      .x_px = static_cast<float>(x_px),
+      .y_px = static_cast<float>(y_px),
       .width = static_cast<int>(width),
       .height = static_cast<int>(height),
   };
+}
+
+absl::StatusOr<CanvasSize> normalize_and_measure_canvas(TiffPlacement* p0, TiffPlacement* p1) {
+  const double min_x = std::min<double>(p0->x_px, p1->x_px);
+  const double min_y = std::min<double>(p0->y_px, p1->y_px);
+  p0->x_px -= static_cast<float>(min_x);
+  p1->x_px -= static_cast<float>(min_x);
+  p0->y_px -= static_cast<float>(min_y);
+  p1->y_px -= static_cast<float>(min_y);
+
+  const double width = std::max<double>(p0->x_px + p0->width, p1->x_px + p1->width);
+  const double height = std::max<double>(p0->y_px + p0->height, p1->y_px + p1->height);
+  if (!std::isfinite(width) || !std::isfinite(height) || width < 1.0 || height < 1.0 ||
+      width > std::numeric_limits<int>::max() || height > std::numeric_limits<int>::max()) {
+    return absl::FailedPreconditionError("Mapping TIFFs produce an invalid canvas");
+  }
+  const auto canvas_width = static_cast<size_t>(width);
+  const auto canvas_height = static_cast<size_t>(height);
+  if (canvas_width > kHardMaximumArtifactDimension || canvas_height > kHardMaximumArtifactDimension ||
+      static_cast<uint64_t>(canvas_width) * canvas_height > kHardMaximumArtifactPixels) {
+    return absl::ResourceExhaustedError("Mapping TIFF canvas exceeds safety limits");
+  }
+  return CanvasSize{.width = canvas_width, .height = canvas_height};
 }
 
 absl::StatusOr<CanvasSize> get_mapping_canvas_size(const fs::path& game_dir) {
@@ -336,25 +374,7 @@ absl::StatusOr<CanvasSize> get_mapping_canvas_size(const fs::path& game_dir) {
   HM_ASSIGN_OR_RETURN(p0, read_tiff_placement(mapping0_path));
   HM_ASSIGN_OR_RETURN(p1, read_tiff_placement(mapping1_path));
 
-  const float min_x = std::min(p0.x_px, p1.x_px);
-  const float min_y = std::min(p0.y_px, p1.y_px);
-  p0.x_px -= min_x;
-  p1.x_px -= min_x;
-  p0.y_px -= min_y;
-  p1.y_px -= min_y;
-
-  // Match hm::pano::ControlMasks::canvas_width/height semantics (float + int, then truncation).
-  const int canvas_width = static_cast<int>(std::max(p0.x_px + p0.width, p1.x_px + p1.width));
-  const int canvas_height = static_cast<int>(std::max(p0.y_px + p0.height, p1.y_px + p1.height));
-  if (canvas_width <= 0 || canvas_height <= 0) {
-    return absl::FailedPreconditionError(
-        TO_STRING("Invalid canvas size computed from mapping TIFFs: " << canvas_width << "x" << canvas_height));
-  }
-
-  return CanvasSize{
-      .width = static_cast<size_t>(canvas_width),
-      .height = static_cast<size_t>(canvas_height),
-  };
+  return normalize_and_measure_canvas(&p0, &p1);
 }
 
 // -----------------------------------------------------------------------------
@@ -830,22 +850,19 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
   HM_ASSIGN_OR_RETURN(p0, read_tiff_placement(mapping0_path));
   HM_ASSIGN_OR_RETURN(p1, read_tiff_placement(mapping1_path));
 
-  const float min_x = std::min(p0.x_px, p1.x_px);
-  const float min_y = std::min(p0.y_px, p1.y_px);
-  p0.x_px -= min_x;
-  p1.x_px -= min_x;
-  p0.y_px -= min_y;
-  p1.y_px -= min_y;
-
-  // Match hm::pano::ControlMasks::canvas_width/height semantics (float + int, then truncation).
-  const int canvas_width = static_cast<int>(std::max(p0.x_px + p0.width, p1.x_px + p1.width));
-  const int canvas_height = static_cast<int>(std::max(p0.y_px + p0.height, p1.y_px + p1.height));
-  if (canvas_width <= 0 || canvas_height <= 0) {
-    return absl::FailedPreconditionError(
-        TO_STRING("Invalid canvas size computed from mapping TIFFs: " << canvas_width << "x" << canvas_height));
-  }
+  CanvasSize measured_canvas;
+  HM_ASSIGN_OR_RETURN(measured_canvas, normalize_and_measure_canvas(&p0, &p1));
+  const int canvas_width = static_cast<int>(measured_canvas.width);
+  const int canvas_height = static_cast<int>(measured_canvas.height);
   if (seam_exists) {
-    cv::Mat existing = cv::imread(seam_path.string(), cv::IMREAD_UNCHANGED);
+    cv::Mat existing;
+    try {
+      existing = cv::imread(seam_path.string(), cv::IMREAD_UNCHANGED);
+    } catch (const cv::Exception& exception) {
+      return absl::ResourceExhaustedError("Unable to safely decode existing seam: " + std::string(exception.what()));
+    } catch (const std::bad_alloc&) {
+      return absl::ResourceExhaustedError("Unable to allocate decoded seam");
+    }
     if (!existing.empty() && existing.cols == canvas_width && existing.rows == canvas_height) {
       double min_value = 0.0;
       double max_value = 0.0;
@@ -882,7 +899,14 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
 
   // NOTE: hm-cupano inverts the seam mask at load time and uses 1 for image 0 (left) and 0 for image 1 (right).
   // Creating {0,255} (then inverted) yields {1,0} respectively.
-  cv::Mat mask(canvas_height, canvas_width, CV_8U, cv::Scalar(0));
+  cv::Mat mask;
+  try {
+    mask = cv::Mat(canvas_height, canvas_width, CV_8U, cv::Scalar(0));
+  } catch (const cv::Exception& exception) {
+    return absl::ResourceExhaustedError("Unable to allocate fallback seam: " + std::string(exception.what()));
+  } catch (const std::bad_alloc&) {
+    return absl::ResourceExhaustedError("Unable to allocate fallback seam");
+  }
   if (seam_x < canvas_width) {
     mask.colRange(seam_x, canvas_width).setTo(255);
   }
@@ -909,8 +933,12 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
     }
   }
 
-  if (!cv::imwrite(seam_path.string(), mask)) {
-    return absl::InternalError(TO_STRING("Failed to write seam mask: " << seam_path.string()));
+  try {
+    if (!cv::imwrite(seam_path.string(), mask)) {
+      return absl::InternalError(TO_STRING("Failed to write seam mask: " << seam_path.string()));
+    }
+  } catch (const cv::Exception& exception) {
+    return absl::InternalError("Unable to encode fallback seam: " + std::string(exception.what()));
   }
 
   std::cout << "Created fallback seam mask: " << seam_path.string() << " (" << canvas_width << "x" << canvas_height
@@ -936,8 +964,28 @@ absl::Status create_control_points(
     const std::string& game_dir,
     surface::Surface left_surface,
     surface::Surface right_surface) {
-  fs::path left_file = fs::path(game_dir) / "left.png";
-  fs::path right_file = fs::path(game_dir) / "right.png";
+  std::string pattern = (fs::path(game_dir) / ".hmstream-calibration-input-XXXXXX").string();
+  std::vector<char> writable(pattern.begin(), pattern.end());
+  writable.push_back('\0');
+  char* created = ::mkdtemp(writable.data());
+  if (created == nullptr) {
+    return absl::InternalError(
+        TO_STRING("Unable to create private calibration input directory: " << std::strerror(errno)));
+  }
+  const fs::path input_dir(created);
+  struct RemoveInputDirectory {
+    fs::path path;
+    ~RemoveInputDirectory() {
+      std::error_code ignored;
+      fs::remove_all(path, ignored);
+    }
+  } input_cleanup{input_dir};
+  if (::chmod(input_dir.c_str(), 0700) != 0) {
+    return absl::InternalError("Unable to protect private calibration input directory");
+  }
+
+  const fs::path left_file = input_dir / "left.png";
+  const fs::path right_file = input_dir / "right.png";
   HM_RETURN_IF_ERROR(save_image(left_surface, left_file));
   HM_RETURN_IF_ERROR(save_image(right_surface, right_file));
 
@@ -963,7 +1011,7 @@ absl::Status create_control_points(
 
   HuginProject::Options options;
   options.max_canvas_dimension = max_canvas_dimension;
-  return HuginProject::Configure(game_dir, matched.selected, options);
+  return HuginProject::Configure(game_dir, left_file, right_file, matched.selected, options);
 }
 
 namespace {
@@ -1033,16 +1081,35 @@ absl::StatusOr<std::string> read_rink_transaction_state(const fs::path& transact
     return absl::InternalError("Unable to inspect rink transaction state: " + error.message());
   if (!exists)
     return std::string("UNPREPARED");
-  std::ifstream input(state_path);
-  std::string state;
-  if (!input || !std::getline(input, state) || (!input.good() && !input.eof()) || state.empty())
-    return absl::FailedPreconditionError("Unable to read durable rink transaction state");
-  std::string trailing;
-  if (std::getline(input, trailing) && !trailing.empty())
-    return absl::FailedPreconditionError("Invalid multiline rink transaction state");
-  if (state != "PREPARED" && state != "COMMITTED")
-    return absl::FailedPreconditionError("Unknown rink transaction state: " + state);
-  return state;
+  const int descriptor = ::open(state_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (descriptor < 0)
+    return absl::FailedPreconditionError("Unable to open durable rink transaction state");
+  struct StateFileCleanup {
+    int descriptor;
+    ~StateFileCleanup() {
+      ::close(descriptor);
+    }
+  } cleanup{descriptor};
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
+      metadata.st_size > 10) {
+    return absl::FailedPreconditionError("Invalid durable rink transaction state file");
+  }
+  std::string contents(static_cast<size_t>(metadata.st_size), '\0');
+  size_t offset = 0;
+  while (offset < contents.size()) {
+    const ssize_t count = ::read(descriptor, contents.data() + offset, contents.size() - offset);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      return absl::FailedPreconditionError("Unable to read durable rink transaction state");
+    offset += static_cast<size_t>(count);
+  }
+  if (contents == "PREPARED\n")
+    return std::string("PREPARED");
+  if (contents == "COMMITTED\n")
+    return std::string("COMMITTED");
+  return absl::FailedPreconditionError("Invalid durable rink transaction state contents");
 }
 
 absl::StatusOr<std::set<std::string>> read_rink_manifest(const fs::path& transaction) {
@@ -1149,6 +1216,9 @@ bool is_field_mask_configured(const std::string& game_dir) {
   }
 
   const fs::path root(game_dir);
+  auto hugin_lock = HuginProject::RecoverAndLock(root);
+  if (!hugin_lock.ok())
+    return false;
   auto lock = lock_rink_transactions(root);
   if (!lock.ok() || !recover_rink_transactions_locked(root).ok())
     return false;

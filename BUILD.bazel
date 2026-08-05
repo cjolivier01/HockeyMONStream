@@ -1,4 +1,7 @@
-exports_files(["run.sh"])
+exports_files([
+    ".bazelrc",
+    "run.sh",
+])
 
 filegroup(
     name = "all_source",

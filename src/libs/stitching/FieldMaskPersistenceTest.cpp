@@ -1,10 +1,14 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
 
+#include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <thread>
 
 #include <opencv2/imgcodecs.hpp>
 #include <unistd.h>
@@ -92,6 +96,22 @@ int main() {
         "unknown rink transaction state must not touch the committed profile");
     fs::remove_all(malformed);
 
+    const fs::path multiline = root / ".hmstream-rink-multiline";
+    fs::create_directories(multiline);
+    std::ofstream(multiline / "state") << "PREPARED\n\nCOMMITTED\n";
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()), "multiline rink transaction state must fail closed");
+    ok &= expect(fs::exists(multiline), "multiline rink transaction state must preserve its journal");
+    ok &= expect(fs::is_regular_file(root / "config.yaml"), "multiline rink state must not touch the profile");
+    fs::remove_all(multiline);
+
+    const fs::path nonregular = root / ".hmstream-rink-nonregular";
+    fs::create_directories(nonregular / "state");
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()), "non-regular rink transaction state must fail closed");
+    ok &= expect(fs::exists(nonregular), "non-regular rink transaction state must preserve its journal");
+    fs::remove_all(nonregular);
+
     const fs::path missing_manifest = root / ".hmstream-rink-missing-manifest";
     fs::create_directories(missing_manifest / "previous");
     std::ofstream(missing_manifest / "state") << "PREPARED\n";
@@ -124,6 +144,24 @@ int main() {
     ok &= expect(
         hm::stitching::is_field_mask_configured(root.string()) && !fs::exists(committed),
         "committed rink journal must be cleaned without rollback");
+
+    auto hugin_lock = hm::stitching::HuginProject::RecoverAndLock(root);
+    ok &= expect(hugin_lock.ok(), "field-mask lock test must acquire the Hugin artifact lock");
+    std::atomic<bool> field_mask_read_finished{false};
+    std::atomic<bool> field_mask_read_result{false};
+    std::thread field_mask_reader([&] {
+      field_mask_read_result = hm::stitching::is_field_mask_configured(root.string());
+      field_mask_read_finished = true;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    ok &= expect(
+        !field_mask_read_finished, "field-mask validation must wait for a concurrent Hugin publication to finish");
+    if (hugin_lock.ok())
+      hugin_lock->reset();
+    field_mask_reader.join();
+    ok &= expect(
+        field_mask_read_finished && field_mask_read_result,
+        "field-mask validation must resume after the Hugin artifact lock is released");
   }
   hm::stitching::RinkProfile one_mask = profile;
   one_mask.masks.resize(1);

@@ -114,7 +114,7 @@ append_path() {
 # Use a repo-local registry so stale blacklists in ~/.cache don't break local plugins.
 GST_REGISTRY_DIR="${SCRIPT_DIR}/.cache/gstreamer-1.0"
 mkdir -p "${GST_REGISTRY_DIR}"
-export GST_REGISTRY="${GST_REGISTRY_DIR}/registry.hstream.$(uname -m).bin"
+export GST_REGISTRY="${GST_REGISTRY_DIR}/registry.hstream.native-onnx-v1.$(uname -m).bin"
 
 prepend_path GST_PLUGIN_PATH "${SCRIPT_DIR}/lib/gst-plugins"
 prepend_path GST_PLUGIN_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
@@ -175,6 +175,19 @@ if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
         ! -path '*Sstubs*' \
         -printf '%p\n' | sort -u
     )
+
+    # Plugins are staged behind symlinks, so their Bazel-relative RUNPATH can
+    # no longer reliably locate ONNX Runtime. Put the exact SONAME in a short,
+    # stable dependency directory before the scanner runs.
+    BAZEL_RUNTIME_LIB_DIR="${SCRIPT_DIR}/.cache/runtime-lib-path/$(uname -m)"
+    mkdir -p "${BAZEL_RUNTIME_LIB_DIR}"
+    ORT_RUNTIME_SO="$({
+      find -L "${BAZEL_BIN_REAL}" -maxdepth 4 -type f -name 'libonnxruntime.so.1' -print -quit
+    } 2>/dev/null || true)"
+    if [ -n "${ORT_RUNTIME_SO}" ]; then
+      ln -sfn "$(readlink -f "${ORT_RUNTIME_SO}")" "${BAZEL_RUNTIME_LIB_DIR}/libonnxruntime.so.1"
+      prepend_path LD_LIBRARY_PATH "${BAZEL_RUNTIME_LIB_DIR}"
+    fi
   fi
 
   prepend_path GST_PLUGIN_PATH "${BAZEL_GST_RUNTIME_PLUGIN_DIR}"
@@ -195,16 +208,15 @@ if [ -x "${PIPELINE_APP_BIN}" ]; then
   PIPELINE_APP_BIN="$(readlink -f "${PIPELINE_APP_BIN}")"
 fi
 if [ -n "${CONDA_PREFIX:-}" ]; then
-  # Conda environments often ship their own GLib/GStreamer stack. Adding `${CONDA_PREFIX}/lib` ahead of system
-  # libraries can cause hard-to-debug runtime aborts (e.g. GLib pthread TLS errors) when DeepStream/GStreamer load.
+  # Conda environments can override any part of the native multimedia stack,
+  # including curl/libsoup even when they do not contain GLib itself. Keep the
+  # native DeepStream process isolated from those libraries by default.
   #
   # Opt-in to using conda's shared libs by setting `HM_USE_CONDA_LD_LIBRARY_PATH=1`.
   if [ "${HM_USE_CONDA_LD_LIBRARY_PATH:-0}" = "1" ]; then
     append_path LD_LIBRARY_PATH "${CONDA_PREFIX}/lib"
-  elif [ -f "${CONDA_PREFIX}/lib/libglib-2.0.so.0" ] || [ -f "${CONDA_PREFIX}/lib/libgobject-2.0.so.0" ]; then
-    echo "CONDA_PREFIX is set but skipping ${CONDA_PREFIX}/lib in LD_LIBRARY_PATH to avoid GLib/GStreamer conflicts (set HM_USE_CONDA_LD_LIBRARY_PATH=1 to force)"
   else
-    append_path LD_LIBRARY_PATH "${CONDA_PREFIX}/lib"
+    echo "CONDA_PREFIX is set but skipping ${CONDA_PREFIX}/lib in LD_LIBRARY_PATH to avoid native-library conflicts (set HM_USE_CONDA_LD_LIBRARY_PATH=1 to force)"
   fi
 fi
 

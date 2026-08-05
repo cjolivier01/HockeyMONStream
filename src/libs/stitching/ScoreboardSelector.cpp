@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -299,6 +300,32 @@ std::optional<ScoreboardSelector::Polygon> load_existing(const fs::path& game_di
   }
 }
 
+bool valid_public_host(const std::string& host) {
+  if (host.empty() || host.size() > 253 || host == "0.0.0.0" || host == "127.0.0.1" || host == "localhost" ||
+      host.front() == '.' || host.back() == '.') {
+    return false;
+  }
+  size_t label_length = 0;
+  bool label_starts_with_hyphen = false;
+  char previous = '\0';
+  for (unsigned char character : host) {
+    if (character == '.') {
+      if (label_length == 0 || label_length > 63 || label_starts_with_hyphen || previous == '-')
+        return false;
+      label_length = 0;
+      label_starts_with_hyphen = false;
+    } else if (std::isalnum(character) || character == '-') {
+      if (label_length == 0)
+        label_starts_with_hyphen = character == '-';
+      ++label_length;
+    } else {
+      return false;
+    }
+    previous = static_cast<char>(character);
+  }
+  return label_length > 0 && label_length <= 63 && !label_starts_with_hyphen && previous != '-';
+}
+
 } // namespace
 
 bool ScoreboardSelector::IsDisabled(const Polygon& polygon) {
@@ -417,6 +444,16 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
     }
   }
 
+  std::string browser_host = "127.0.0.1";
+  if (bind_host == "0.0.0.0") {
+    const char* configured_public_host = std::getenv("HM_SCOREBOARD_PUBLIC_HOST");
+    if (configured_public_host == nullptr || !valid_public_host(configured_public_host)) {
+      return absl::InvalidArgumentError(
+          "Remote scoreboard binding requires a valid, non-loopback HM_SCOREBOARD_PUBLIC_HOST hostname or IPv4 address");
+    }
+    browser_host = configured_public_host;
+  }
+
   const int server = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (server < 0)
     return absl::InternalError("Unable to create scoreboard selector socket");
@@ -441,14 +478,10 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
   }
   const unsigned port = ntohs(address.sin_port);
   const std::string token = random_token();
-  const std::string browser_host = bind_host == "0.0.0.0" ? "127.0.0.1" : bind_host;
   const std::string expected_host = browser_host + ":" + std::to_string(port);
   const std::string expected_origin = "http://" + expected_host;
   std::cerr << "Scoreboard corners are not configured. Open this private, expiring URL:\n  " << expected_origin
             << "/?token=" << token << "\n";
-  if (bind_host == "0.0.0.0") {
-    std::cerr << "Remote scoreboard access is enabled; replace 127.0.0.1 with this host's trusted-network address.\n";
-  }
   std::cerr << std::flush;
 
   const auto deadline = std::chrono::steady_clock::now() + kTokenLifetime;
@@ -491,7 +524,8 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
     }
     const auto host = request->headers.find("host");
     const bool valid_host = host != request->headers.end() &&
-        (host->second == expected_host || host->second == "localhost:" + std::to_string(port));
+        (host->second == expected_host ||
+         (bind_host == "127.0.0.1" && host->second == "localhost:" + std::to_string(port)));
     if (!valid_host || !target_has_token(request->target, token)) {
       respond_best_effort(
           client, 403, "Forbidden", "text/plain; charset=utf-8", "Invalid selector capability\n", client_deadline);
@@ -514,7 +548,8 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
     }
     const auto origin = request->headers.find("origin");
     if (request->method != "POST" || origin == request->headers.end() ||
-        (origin->second != expected_origin && origin->second != "http://localhost:" + std::to_string(port))) {
+        (origin->second != expected_origin &&
+         (bind_host != "127.0.0.1" || origin->second != "http://localhost:" + std::to_string(port)))) {
       respond_best_effort(
           client, 403, "Forbidden", "text/plain; charset=utf-8", "Invalid mutation origin\n", client_deadline);
       continue;

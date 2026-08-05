@@ -232,16 +232,12 @@ int main(int argc, char** argv) {
       argv[4],
       "--lightglue-weights",
       argv[5],
+      "--rink-inference-scale",
+      std::to_string(hm::stitching::RinkSegmentation::kHockeyMomInferenceScale),
   };
   if (rink_config != nullptr && *rink_config != '\0' && rink_checkpoint != nullptr && *rink_checkpoint != '\0') {
     reference_arguments.insert(
-        reference_arguments.end(),
-        {"--rink-config",
-         rink_config,
-         "--rink-checkpoint",
-         rink_checkpoint,
-         "--rink-inference-scale",
-         std::to_string(hm::stitching::RinkSegmentation::kHockeyMomInferenceScale)});
+        reference_arguments.end(), {"--rink-config", rink_config, "--rink-checkpoint", rink_checkpoint});
   }
   const int reference_status = run_reference(reference_arguments);
   if (reference_status == 77 || reference_status == 127)

@@ -100,35 +100,16 @@ RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
       zip
 
 RUN apt-get update \
-    && if [ "${TARGET_UBUNTU}" = "24.04" ]; then \
-      apt-get install -y --no-install-recommends \
-        cuda-cudart-12-6 \
-        cuda-cupti-12-6 \
-        cuda-nvrtc-12-6 \
-        libcublas-12-6 \
-        libcufft-12-6 \
-        libcufile-12-6 \
-        libcurand-12-6 \
-        libcusolver-12-6 \
-        libcusparse-12-6 \
-        libcusparselt0-cuda-12 \
-        libnvshmem3-cuda-12; \
-    else \
-      apt-get install -y --no-install-recommends \
-        libcusparselt0 \
-        libnvshmem3-cuda-13; \
-    fi \
+    && apt-get install -y --no-install-recommends \
+      libcusparselt0 \
+      libnvshmem3-cuda-13 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN apt-get update \
-    && trt_version="$(apt-cache madison libnvinfer-dev | awk '$3 ~ /^10\./ && $3 ~ /[+]cuda13[.]2$/ { print $3; exit }')" \
+    && trt_version="$(apt-cache madison libnvinfer10 | awk '$3 ~ /^10\./ && $3 ~ /[+]cuda13[.]2$/ { print $3; exit }')" \
     && test -n "${trt_version}" \
-    && printf '%s\n' \
-      'Package: tensorrt* libnvinfer* libnvonnxparsers*' \
-      "Pin: version ${trt_version}" \
-      'Pin-Priority: 1001' \
-      >/etc/apt/preferences.d/hmstream-tensorrt10 \
     && apt-get install -y --no-install-recommends \
+      "libnvinfer-dev=${trt_version}" \
       "libnvinfer-plugin-dev=${trt_version}" \
       "libnvonnxparsers-dev=${trt_version}" \
     && dpkg-query -W -f='${binary:Package} ${Version}\n' \
@@ -138,32 +119,16 @@ RUN apt-get update \
     && chmod 0755 /usr/local/bin/bazelisk \
     && rm -rf /var/lib/apt/lists/*
 
-ENV LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/libcusparseLt/12:/usr/lib/x86_64-linux-gnu/nvshmem/12:/usr/lib/x86_64-linux-gnu/nvshmem/13
-
-RUN if [ "${TARGET_UBUNTU}" = "24.04" ]; then \
-      apt-get update \
-      && apt-get install -y --no-install-recommends \
-        cuda-compiler-12-6 \
-        libcublas-dev-12-6 \
-        libnpp-dev-12-6 \
-        libcusolver-dev-12-6 \
-        libcusparse-dev-12-6 \
-      && rm -rf /var/lib/apt/lists/*; \
-    else \
-      apt-get update \
-      && apt-get install -y --no-install-recommends \
-        cuda-compiler-13-2 \
-        cuda-libraries-dev-13-2 \
-        cuda-nvtx-13-2 \
-      && rm -rf /var/lib/apt/lists/*; \
-    fi
+ENV LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/nvshmem/13
 
 RUN apt-get update \
-    && if [ "${TARGET_UBUNTU}" = "24.04" ]; then \
-      apt-get install -y --no-install-recommends \
-        cuda-nvtx-12-6 \
-        libnvjitlink-12-6; \
-    fi \
+    && apt-get install -y --no-install-recommends \
+      cuda-compiler-13-2 \
+      cuda-libraries-dev-13-2 \
+      cuda-nvtx-13-2 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update \
     && apt-get install -y --no-install-recommends enblend ffmpeg hugin-tools \
     && rm -rf /var/lib/apt/lists/*
 

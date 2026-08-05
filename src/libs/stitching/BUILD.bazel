@@ -230,6 +230,25 @@ cc_test(
 )
 
 cc_test(
+  name = "debian_packaging_policy_test",
+  srcs = ["DebianPackagingPolicyTest.cpp"],
+  args = [
+    "$(location //:.bazelrc)",
+    "$(location //env/debian-package:Dockerfile)",
+    "$(location //env/debian-package:build-hmstream-deb.sh)",
+    "$(location //scripts:make_deb.sh)",
+    "$(location //scripts:install_deb.sh)",
+  ],
+  data = [
+    "//:.bazelrc",
+    "//env/debian-package:Dockerfile",
+    "//env/debian-package:build-hmstream-deb.sh",
+    "//scripts:install_deb.sh",
+    "//scripts:make_deb.sh",
+  ],
+)
+
+cc_test(
   name = "configure_stitching_test",
   srcs = [
     "ConfigureStitchingTest.cpp",

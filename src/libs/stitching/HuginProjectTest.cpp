@@ -209,7 +209,15 @@ int main() {
   }
   hm::stitching::HuginProject::Options options;
   options.max_canvas_dimension = 64;
-  const auto configured = hm::stitching::HuginProject::Configure(root / "game", matches, options);
+  fs::create_directories(root / "private-inputs");
+  ok &= expect(
+      cv::imwrite((root / "private-inputs" / "left.png").string(), cv::Mat(48, 64, CV_8UC3, cv::Scalar(11, 12, 13))),
+      "private left calibration input must exist");
+  ok &= expect(
+      cv::imwrite((root / "private-inputs" / "right.png").string(), cv::Mat(48, 64, CV_8UC3, cv::Scalar(21, 22, 23))),
+      "private right calibration input must exist");
+  const auto configured = hm::stitching::HuginProject::Configure(
+      root / "game", root / "private-inputs" / "left.png", root / "private-inputs" / "right.png", matches, options);
   if (!configured.ok())
     std::cerr << configured << '\n';
   ok &= expect(configured.ok(), "fake Hugin toolchain must complete orchestration");
@@ -230,6 +238,14 @@ int main() {
     ok &= expect(
         published_seam.size() == cv::Size(64, 32),
         "Hugin publication must include a decoded seam matching the remap canvas");
+    const cv::Mat published_left = cv::imread((root / "game" / "left.png").string(), cv::IMREAD_COLOR);
+    const cv::Mat published_right = cv::imread((root / "game" / "right.png").string(), cv::IMREAD_COLOR);
+    ok &= expect(
+        !published_left.empty() && published_left.at<cv::Vec3b>(0, 0) == cv::Vec3b(11, 12, 13),
+        "Hugin publication must atomically install its private left input");
+    ok &= expect(
+        !published_right.empty() && published_right.at<cv::Vec3b>(0, 0) == cv::Vec3b(21, 22, 23),
+        "Hugin publication must atomically install its private right input");
   }
   for (const char* artifact : {
            "hm_project.pto",
@@ -242,6 +258,8 @@ int main() {
            "mapping_0001_y.tif",
            "seam_file.png",
            "panorama.tif",
+           "left.png",
+           "right.png",
        }) {
     ok &= expect(fs::is_regular_file(root / "game" / artifact), "configured Hugin artifact must be published");
   }
@@ -321,6 +339,24 @@ int main() {
       fs::is_regular_file(root / "game" / "autooptimiser_out.pto"),
       "unknown Hugin transaction state must not touch the committed generation");
   fs::remove_all(malformed);
+
+  const fs::path multiline = root / "game" / ".hmstream-stitch-multiline";
+  fs::create_directories(multiline / "previous");
+  std::ofstream(multiline / "state") << "PREPARED\n\nCOMMITTED\n";
+  const auto multiline_recovery = hm::stitching::HuginProject::Recover(root / "game");
+  ok &= expect(!multiline_recovery.ok(), "multiline Hugin transaction state must fail closed");
+  ok &= expect(fs::exists(multiline), "multiline Hugin transaction state must preserve its journal");
+  ok &= expect(
+      fs::is_regular_file(root / "game" / "autooptimiser_out.pto"),
+      "multiline Hugin transaction state must not touch the committed generation");
+  fs::remove_all(multiline);
+
+  const fs::path nonregular = root / "game" / ".hmstream-stitch-nonregular";
+  fs::create_directories(nonregular / "state");
+  const auto nonregular_recovery = hm::stitching::HuginProject::Recover(root / "game");
+  ok &= expect(!nonregular_recovery.ok(), "non-regular Hugin transaction state must fail closed");
+  ok &= expect(fs::exists(nonregular), "non-regular Hugin transaction state must preserve its journal");
+  fs::remove_all(nonregular);
 
   const fs::path unprepared = root / "game" / ".hmstream-stitch-unprepared";
   fs::create_directories(unprepared);

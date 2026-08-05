@@ -15,9 +15,9 @@ DEEPSTREAM_DEB=/inputs/deepstream.deb
 case "${TARGET_UBUNTU}" in
   24.04)
     BAZEL_DEB_CONFIG=deb_ubuntu24
-    TARGET_CUDA_ROOT=/usr/local/cuda-12.6
-    TARGET_CUDA_SONAME=12
-    TARGET_CUDA_ARCHES=(sm_70 sm_75 sm_80 sm_86 sm_89 sm_90)
+    TARGET_CUDA_ROOT=/usr/local/cuda-13.2
+    TARGET_CUDA_SONAME=13
+    TARGET_CUDA_ARCHES=(sm_75 sm_80 sm_86 sm_89 sm_90 sm_100 sm_120)
     ;;
   26.04)
     BAZEL_DEB_CONFIG=deb_ubuntu26
@@ -101,7 +101,7 @@ validate_native_cuda_code hmstream-cli "${BUILD_DIR}/bazel-bin/src/apps/pipeline
 
 rm -rf "${CONTAINER_OUTPUT_DIR}"
 mkdir -p "${CONTAINER_OUTPUT_DIR}"
-HMSTREAM_IMMUTABLE_SOURCE=1 scripts/make_deb.sh \
+HMSTREAM_IMMUTABLE_SOURCE=1 HMSTREAM_TARGET_UBUNTU="${TARGET_UBUNTU}" scripts/make_deb.sh \
   --version "${PACKAGE_VERSION}" --output-dir "${CONTAINER_OUTPUT_DIR}"
 
 # Bind-mounted output directories can be root-squashed. Copy the completed

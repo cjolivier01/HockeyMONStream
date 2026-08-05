@@ -38,7 +38,11 @@ bool write_all(int fd, const std::string& value) {
   return true;
 }
 
-std::string http_request(unsigned port, const std::string& target, bool post) {
+std::string http_request(
+    unsigned port,
+    const std::string& target,
+    bool post,
+    const std::string& authority_host = "127.0.0.1") {
   const int socket = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (socket < 0)
     return {};
@@ -52,10 +56,10 @@ std::string http_request(unsigned port, const std::string& target, bool post) {
   }
   std::ostringstream request;
   request << (post ? "POST " : "GET ") << target << " HTTP/1.1\r\n"
-          << "Host: 127.0.0.1:" << port << "\r\n"
+          << "Host: " << authority_host << ':' << port << "\r\n"
           << "Connection: close\r\n";
   if (post) {
-    request << "Origin: http://127.0.0.1:" << port << "\r\n"
+    request << "Origin: http://" << authority_host << ':' << port << "\r\n"
             << "Content-Type: application/json\r\n"
             << "Content-Length: 2\r\n";
   }
@@ -81,7 +85,8 @@ std::string http_request(unsigned port, const std::string& target, bool post) {
   return response;
 }
 
-bool exercise_http_selector(const std::filesystem::path& directory) {
+bool exercise_http_selector(const std::filesystem::path& directory, bool remote = false) {
+  const std::string authority_host = remote ? "scoreboard.test" : "127.0.0.1";
   cv::Mat image(24, 32, CV_8UC3, cv::Scalar(255, 255, 255));
   if (!cv::imwrite((directory / "s.png").string(), image))
     return false;
@@ -99,7 +104,15 @@ bool exercise_http_selector(const std::filesystem::path& directory) {
     ::dup2(output_pipe[1], STDERR_FILENO);
     ::close(output_pipe[1]);
     ::unsetenv("HM_NO_SCOREBOARD");
-    ::unsetenv("HM_SCOREBOARD_BIND_HOST");
+    if (remote) {
+      ::setenv("HM_SCOREBOARD_BIND_HOST", "0.0.0.0", 1);
+      ::setenv("HM_SCOREBOARD_ALLOW_REMOTE", "1", 1);
+      ::setenv("HM_SCOREBOARD_PUBLIC_HOST", authority_host.c_str(), 1);
+    } else {
+      ::unsetenv("HM_SCOREBOARD_BIND_HOST");
+      ::unsetenv("HM_SCOREBOARD_ALLOW_REMOTE");
+      ::unsetenv("HM_SCOREBOARD_PUBLIC_HOST");
+    }
     ::setenv("HM_SCOREBOARD_CLIENT_TIMEOUT_MS", "250", 1);
     const auto status = hm::stitching::ScoreboardSelector::Run(directory);
     _exit(status.ok() ? 0 : 1);
@@ -108,7 +121,9 @@ bool exercise_http_selector(const std::filesystem::path& directory) {
   std::string startup;
   std::array<char, 512> buffer{};
   std::smatch match;
-  const std::regex url_pattern(R"(http://127[.]0[.]0[.]1:([0-9]+)/[?]token=([0-9a-f]{64}))");
+  const std::regex url_pattern(
+      remote ? R"(http://scoreboard[.]test:([0-9]+)/[?]token=([0-9a-f]{64}))"
+             : R"(http://127[.]0[.]0[.]1:([0-9]+)/[?]token=([0-9a-f]{64}))");
   while (startup.size() < 4096 && !std::regex_search(startup, match, url_pattern)) {
     const ssize_t count = ::read(output_pipe[0], buffer.data(), buffer.size());
     if (count < 0 && errno == EINTR)
@@ -152,7 +167,7 @@ bool exercise_http_selector(const std::filesystem::path& directory) {
       ::close(ready_pipe[0]);
       ::usleep(50 * 1000);
       const auto request_started = std::chrono::steady_clock::now();
-      const std::string forbidden_response = http_request(port, "/?token=wrong", false);
+      const std::string forbidden_response = http_request(port, "/?token=wrong", false, authority_host);
       ok &= expect(
           forbidden_response.rfind("HTTP/1.1 403 ", 0) == 0,
           "selector must resume with the queued request after a slow client deadline");
@@ -170,10 +185,10 @@ bool exercise_http_selector(const std::filesystem::path& directory) {
       ::close(ready_pipe[1]);
     }
     ok &= expect(
-        http_request(port, "/?token=" + token, false).rfind("HTTP/1.1 200 ", 0) == 0,
+        http_request(port, "/?token=" + token, false, authority_host).rfind("HTTP/1.1 200 ", 0) == 0,
         "valid scoreboard selector GET must succeed");
     ok &= expect(
-        http_request(port, "/none?token=" + token, true).rfind("HTTP/1.1 200 ", 0) == 0,
+        http_request(port, "/none?token=" + token, true, authority_host).rfind("HTTP/1.1 200 ", 0) == 0,
         "valid scoreboard selector POST must succeed");
   } else {
     ::kill(child, SIGTERM);
@@ -229,6 +244,18 @@ int main() {
   } else {
     ok &= expect(false, "HTTP selector must publish config.yaml");
   }
+  std::filesystem::remove(directory / "config.yaml");
+  ok &= expect(
+      exercise_http_selector(directory, true),
+      "remote scoreboard mode must accept its explicit public authority and matching origin");
+  ::setenv("HM_SCOREBOARD_BIND_HOST", "0.0.0.0", 1);
+  ::setenv("HM_SCOREBOARD_ALLOW_REMOTE", "1", 1);
+  ::unsetenv("HM_SCOREBOARD_PUBLIC_HOST");
+  ok &= expect(
+      absl::IsInvalidArgument(Selector::Run(directory)),
+      "remote scoreboard mode must require an explicit public host before listening");
+  ::unsetenv("HM_SCOREBOARD_BIND_HOST");
+  ::unsetenv("HM_SCOREBOARD_ALLOW_REMOTE");
   std::filesystem::remove_all(directory);
   return ok ? 0 : 1;
 }

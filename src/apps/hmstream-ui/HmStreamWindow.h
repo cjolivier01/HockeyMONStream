@@ -111,6 +111,8 @@ class HmStreamWindow : public QMainWindow {
   QLabel* pipeline_state_{nullptr};
   QLabel* preview_status_{nullptr};
   QLabel* stitched_status_{nullptr};
+  QLabel* preview_external_notice_{nullptr};
+  QLabel* stitched_external_notice_{nullptr};
   QLabel* game_path_label_{nullptr};
   QLabel* video_sets_path_label_{nullptr};
   QComboBox* game_selector_{nullptr};
@@ -133,6 +135,8 @@ class HmStreamWindow : public QMainWindow {
   QPushButton* start_button_{nullptr};
   QPushButton* pause_button_{nullptr};
   QPushButton* stop_button_{nullptr};
+  QPushButton* program_fullscreen_button_{nullptr};
+  QPushButton* stitched_fullscreen_button_{nullptr};
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};
