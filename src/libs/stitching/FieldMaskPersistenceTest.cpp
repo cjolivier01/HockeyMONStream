@@ -301,6 +301,18 @@ int main() {
         replacement_read.ok() && replacement_read->at<uchar>(0, 0) == 255,
         "the next field-mask read must observe the concurrently published generation");
 
+    cv::Mat color_mask(24, 32, CV_8UC3, cv::Scalar(0, 64, 255));
+    ok &= expect(
+        cv::imwrite((root / "rink_mask_0.png").string(), color_mask),
+        "color field-mask compatibility test must write its fixture");
+    const auto grayscale_read = hm::stitching::load_field_mask(root.string());
+    ok &= expect(
+        grayscale_read.ok() && grayscale_read->type() == CV_8UC1 && grayscale_read->size() == color_mask.size(),
+        "field-mask loading must preserve the previous 8-bit grayscale decode contract");
+    ok &= expect(
+        hm::stitching::save_rink_profile(root.string(), profile).ok(),
+        "field-mask compatibility test must restore the committed profile");
+
     auto hugin_lock = hm::stitching::HuginProject::RecoverAndLock(root);
     ok &= expect(hugin_lock.ok(), "field-mask lock test must acquire the Hugin artifact lock");
     std::atomic<bool> field_mask_read_finished{false};

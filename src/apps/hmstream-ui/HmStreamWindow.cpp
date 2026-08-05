@@ -3120,6 +3120,7 @@ bool HmStreamWindow::rollbackImportedVideoPath(const QString& relative_path) {
     appendLog(QString("imported video was adopted while rollback was pending; preserving %1").arg(relative_path));
     return true;
   }
+  const YAML::Node original_config = YAML::Clone(config);
 
   QString imported_path;
   if (!resolveImportedVideoPath(relative_path, copied_import, &imported_path))
@@ -3176,7 +3177,21 @@ bool HmStreamWindow::rollbackImportedVideoPath(const QString& relative_path) {
     }
   }
 
-  if (!staged_path.isEmpty() && !QFile::remove(staged_path)) {
+  const char* staged_remove_fail_path = std::getenv("HM_TEST_VIDEO_STAGED_REMOVE_FAIL");
+  const bool injected_staged_remove_failure =
+      staged_remove_fail_path != nullptr && relative_path == QString::fromUtf8(staged_remove_fail_path);
+  if (!staged_path.isEmpty() && (injected_staged_remove_failure || !QFile::remove(staged_path))) {
+    if (injected_staged_remove_failure)
+      appendLog(QString("injected failure removing staged imported video %1").arg(relative_path));
+    if (!QFile::rename(staged_path, imported_path))
+      appendLog(QString("failed to restore staged imported video %1 after deletion failure").arg(relative_path));
+    if (copied_import) {
+      const auto restore_metadata = publish_yaml_config(config_path, original_config);
+      if (!restore_metadata.ok()) {
+        appendLog(QString("failed to restore copied import metadata after deletion failure: %1")
+                      .arg(restore_metadata.ToString().c_str()));
+      }
+    }
     appendLog(QString("failed to remove staged imported video rollback %1").arg(relative_path));
     return false;
   }

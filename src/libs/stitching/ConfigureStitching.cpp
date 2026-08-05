@@ -1367,7 +1367,7 @@ absl::StatusOr<cv::Mat> load_field_mask(const std::string& game_dir, const std::
     if (delay_ms > 0)
       std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
   }
-  cv::Mat mask = cv::imread(mask_path.string(), cv::IMREAD_UNCHANGED);
+  cv::Mat mask = cv::imread(mask_path.string(), cv::IMREAD_GRAYSCALE);
   if (mask.empty()) {
     return absl::InvalidArgumentError("Field mask could not be decoded: " + mask_path.string());
   }

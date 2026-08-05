@@ -867,20 +867,26 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   activate(left);
   ::setenv("HM_TEST_VIDEO_IMPORT_FORCE_COPY", "1", 1);
   ::setenv("HM_TEST_PRIVATE_CONFIG_SAVE_FAIL", "1", 1);
-  ::setenv("HM_TEST_VIDEO_REMOVE_FAIL", ".hmstream-ui/left/GX020001.MP4", 1);
+  ::setenv("HM_TEST_VIDEO_STAGED_REMOVE_FAIL", ".hmstream-ui/left/GX020001.MP4", 1);
   video_path->setText(duplicate_a);
   activate(add_video);
-  ::unsetenv("HM_TEST_VIDEO_REMOVE_FAIL");
+  ::unsetenv("HM_TEST_VIDEO_STAGED_REMOVE_FAIL");
   ::unsetenv("HM_TEST_PRIVATE_CONFIG_SAVE_FAIL");
   ::unsetenv("HM_TEST_VIDEO_IMPORT_FORCE_COPY");
   const fs::path rollback_delete_failure_game = fs::path(window->gameDirectoryText().toStdString());
   const fs::path rollback_delete_failure_config = rollback_delete_failure_game / "config.yaml";
   YAML::Node rollback_delete_failure_after = YAML::LoadFile(rollback_delete_failure_config.string());
+  bool rollback_staging_path_exists = false;
+  for (const auto& entry : fs::directory_iterator(rollback_delete_failure_game / ".hmstream-ui/left")) {
+    if (entry.path().filename().string().rfind(".hmstream-rollback-", 0) == 0)
+      rollback_staging_path_exists = true;
+  }
   if (!expect(
           fs::exists(rollback_delete_failure_game / ".hmstream-ui/left/GX020001.MP4") &&
+              !rollback_staging_path_exists &&
               rollback_delete_failure_after["hmstream_ui"]["copied_imports"].size() == 1 &&
               !rollback_delete_failure_after["hmstream_ui"]["video_roles"]["left"],
-          "A copied-file rollback deletion failure must preserve ownership metadata")) {
+          "A staged copied-file rollback deletion failure must restore the path and ownership metadata")) {
     return false;
   }
   activate(create);
