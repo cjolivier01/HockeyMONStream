@@ -106,6 +106,7 @@ void StitcherPriv::Shutdown() {
     absl::MutexLock lk(&stitcher_mu_);
     stitcher_fp32_.reset();
     stitcher_fp16_.reset();
+    hugin_generation_id_.clear();
   }
   release_rotation_scratch();
 }
@@ -333,6 +334,11 @@ absl::Status StitcherPriv::ensure_stitcher() {
         return absl::NotFoundError(TO_STRING("Could not load control masks from " << config_file_dir));
       }
     }
+    auto generation = hm::stitching::HuginProject::GenerationId(config_file_, **artifact_lock);
+    if (!generation.ok()) {
+      return generation.status();
+    }
+    hugin_generation_id_ = std::move(*generation);
     update_canvas_hints(control_masks.canvas_width(), control_masks.canvas_height());
     if (stitch_compute_precision_ == StitchComputePrecision::kFp16) {
       g_print("hmstitcher: using fp16 stitch compute\n");
@@ -1102,7 +1108,12 @@ absl::Status StitcherPriv::GenerateOutput(
       field_mask_attempted_ = true;
       bool mask_configured = stitching::is_field_mask_configured(config_file_);
       if (!mask_configured) {
-        absl::Status mask_status = stitching::create_field_mask(config_file_, logical_output_surface);
+        std::string hugin_generation;
+        {
+          absl::MutexLock lk(&stitcher_mu_);
+          hugin_generation = hugin_generation_id_;
+        }
+        absl::Status mask_status = stitching::create_field_mask(config_file_, logical_output_surface, hugin_generation);
         if (!mask_status.ok()) {
           std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
         }

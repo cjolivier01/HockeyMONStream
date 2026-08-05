@@ -54,6 +54,14 @@ int main() {
   ok &= expect(
       hm::assets::AssetManager::Verify({root / "configs" / "parent.yaml"}).ok(),
       "verification must accept a present checksummed asset without opening a lock file");
+  ok &= expect(
+      hm::assets::internal::fsync_asset_parent_directory(root / "pretrained" / "model.bin").ok(),
+      "asset parent directory fsync must succeed for a valid publication target");
+  ::setenv("HM_TEST_ASSET_DIRECTORY_FSYNC_FAILURE", "1", 1);
+  ok &= expect(
+      !hm::assets::internal::fsync_asset_parent_directory(root / "pretrained" / "model.bin").ok(),
+      "asset publication must propagate a parent-directory fsync failure");
+  ::unsetenv("HM_TEST_ASSET_DIRECTORY_FSYNC_FAILURE");
   {
     std::ofstream asset(root / "pretrained" / "model.bin", std::ios::app);
     asset << "tampered\n";

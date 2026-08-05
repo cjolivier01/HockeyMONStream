@@ -34,7 +34,10 @@ bool can_configure_stitching(const YAML::Node& config);
 
 bool is_field_mask_configured(const std::string& game_dir);
 
-absl::Status create_field_mask(const std::string& game_dir, surface::Surface surface);
+absl::Status create_field_mask(
+    const std::string& game_dir,
+    surface::Surface surface,
+    const std::string& expected_hugin_generation = {});
 
 absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& profile);
 

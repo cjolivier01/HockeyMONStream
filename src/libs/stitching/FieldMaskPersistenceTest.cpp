@@ -169,19 +169,32 @@ int main() {
     ok &= expect(hugin_lock.ok(), "field-mask lock test must acquire the Hugin artifact lock");
     std::atomic<bool> field_mask_read_finished{false};
     std::atomic<bool> field_mask_read_result{false};
+    std::atomic<bool> field_mask_write_finished{false};
+    std::atomic<bool> field_mask_write_result{false};
     std::thread field_mask_reader([&] {
       field_mask_read_result = hm::stitching::is_field_mask_configured(root.string());
       field_mask_read_finished = true;
     });
+    std::thread field_mask_writer([&] {
+      field_mask_write_result = hm::stitching::save_rink_profile(root.string(), profile).ok();
+      field_mask_write_finished = true;
+    });
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     ok &= expect(
         !field_mask_read_finished, "field-mask validation must wait for a concurrent Hugin publication to finish");
+    ok &= expect(
+        !field_mask_write_finished,
+        "field-mask publication must wait for a concurrent Hugin generation writer to finish");
     if (hugin_lock.ok())
       hugin_lock->reset();
     field_mask_reader.join();
+    field_mask_writer.join();
     ok &= expect(
         field_mask_read_finished && field_mask_read_result,
         "field-mask validation must resume after the Hugin artifact lock is released");
+    ok &= expect(
+        field_mask_write_finished && field_mask_write_result,
+        "field-mask publication must resume after the Hugin artifact lock is released");
   }
   hm::stitching::RinkProfile one_mask = profile;
   one_mask.masks.resize(1);

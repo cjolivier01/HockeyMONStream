@@ -73,6 +73,10 @@ class HuginProject {
   // artifact set. This prevents a concurrent calibration from exposing a
   // mixed generation to ControlMasks readers.
   static absl::StatusOr<std::unique_ptr<ArtifactLock>> RecoverAndLock(const std::filesystem::path& game_dir);
+
+  // Identifies the currently published flat Hugin generation. The supplied
+  // lock must still be held so every artifact belongs to one generation.
+  static absl::StatusOr<std::string> GenerationId(const std::filesystem::path& game_dir, const ArtifactLock& lock);
 };
 
 } // namespace hm::stitching

@@ -84,10 +84,17 @@ class HmStreamWindow : public QMainWindow {
       const QString& auto_group_family = {},
       const QString& source_parent = {});
   bool isCopiedImport(const QString& relative_path);
-  bool removeClearedCopiedExplicitImports(const QByteArray& original_config, bool had_config);
+  bool removeClearedCopiedExplicitImports(
+      const QByteArray& original_config,
+      bool had_config,
+      bool restore_auto_selection_on_failure = true);
   bool syncRuntimeExplicitVideoConfig(YAML::Node& config);
   bool savePrivateConfigForRole(const QString& role, const QString& relative_path);
-  bool removePrivateConfigForRole(const QString& role, const QString& relative_path);
+  bool removePrivateConfigForRole(const QString& role, const QString& relative_path, QByteArray* published_config);
+  bool restorePrivateConfigAfterRemoveFailure(
+      const QByteArray& original_config,
+      bool had_config,
+      const QByteArray& removed_config);
   bool removeImportedVideoPath(const QString& relative_path, bool allow_regular_delete = false);
   void toggleOutput(const QString& id, bool enabled);
   void redirectYoutube();
@@ -110,7 +117,7 @@ class HmStreamWindow : public QMainWindow {
   QStringList enabledSinkNames() const;
   bool isCalibrationRun() const;
   void updateRunControls();
-  bool applySavedControlConfig(YAML::Node& config);
+  bool applySavedControlConfig(YAML::Node& config, bool* invalidate_rink_masks, int* invalidated_config_artifacts);
   void loadSavedControlConfig();
   bool sendLiveCameraControl(const QString& id, int value);
   QSlider* addSlider(QVBoxLayout* layout, const QString& id, const QString& label, int minimum, int maximum, int value);

@@ -104,13 +104,15 @@ done
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl
+apt-get install -y --no-install-recommends binutils ca-certificates curl zstd
 
 keyring_deb="$(mktemp --suffix=.deb /tmp/hmstream-cuda-keyring.XXXXXX)"
 compat_dir=""
+transition_dir=""
 cleanup() {
   rm -f "${keyring_deb}"
   if [[ -n "${compat_dir}" ]]; then rm -rf "${compat_dir}"; fi
+  if [[ -n "${transition_dir}" ]]; then rm -rf "${transition_dir}"; fi
 }
 trap cleanup EXIT
 
@@ -153,8 +155,9 @@ if [[ "${SIMULATE}" -eq 1 ]]; then apt_args+=(--simulate); fi
 # NVIDIA's versioned DeepStream artifacts install many of the same absolute
 # paths but do not declare Conflicts/Replaces against older versioned releases
 # (for example, deepstream-8.0).  APT does not order a package-name removal
-# before unpacking a local artifact when dpkg cannot see a declared conflict,
-# so preflight the complete resolution and then remove older series explicitly.
+# before unpacking a local artifact when dpkg cannot see a declared conflict.
+# Add those relationships to a temporary local copy, allowing APT to perform
+# one coherent replacement transaction without a standalone removal.
 # Keep unrelated split packages out of this list; the 9.1 artifact declares its
 # own conflicts with the legacy binaries/sample-data packages.
 old_deepstream_packages=()
@@ -166,20 +169,82 @@ while IFS=$'\t' read -r package status; do
     old_deepstream_packages+=("${package}")
   fi
 done < <(dpkg-query -W -f='${binary:Package}\t${db:Status-Abbrev}\n' 'deepstream-*' 2>/dev/null || true)
+install_deepstream_deb="${DEEPSTREAM_DEB}"
 if [[ "${#old_deepstream_packages[@]}" -gt 0 ]]; then
   echo "Replacing older DeepStream package(s): ${old_deepstream_packages[*]}"
-  old_deepstream_remove_args=()
-  for package in "${old_deepstream_packages[@]}"; do
-    old_deepstream_remove_args+=("${package}-")
-  done
-  apt-get install --simulate --no-install-recommends \
-    "${old_deepstream_remove_args[@]}" "${DEEPSTREAM_DEB}" "${HMSTREAM_DEB}"
-  if [[ "${SIMULATE}" -eq 0 ]]; then
-    apt-get remove -y --no-install-recommends "${old_deepstream_packages[@]}"
+  transition_dir="$(mktemp -d /tmp/hmstream-deepstream-transition.XXXXXX)"
+  control_member="$(ar t "${DEEPSTREAM_DEB}" | awk '/^control[.]tar[.]/{print; exit}')"
+  data_member="$(ar t "${DEEPSTREAM_DEB}" | awk '/^data[.]tar[.]/{print; exit}')"
+  if [[ -z "${control_member}" || -z "${data_member}" ]]; then
+    echo "ERROR: malformed DeepStream Debian artifact." >&2
+    exit 1
   fi
+  case "${control_member}" in
+    *.zst) control_compression=(--zstd) ;;
+    *.xz) control_compression=(-J) ;;
+    *.gz) control_compression=(-z) ;;
+    *) echo "ERROR: unsupported DeepStream control archive: ${control_member}" >&2; exit 1 ;;
+  esac
+  mkdir "${transition_dir}/control"
+  ar p "${DEEPSTREAM_DEB}" "${control_member}" | tar "${control_compression[@]}" -xf - -C "${transition_dir}/control"
+  transition_relationships=()
+  for package in "${old_deepstream_packages[@]}"; do
+    transition_relationships+=("${package%%:*}")
+  done
+  relationship_list="$(IFS=', '; echo "${transition_relationships[*]}")"
+  sed -i -E \
+    -e "s/^(Conflicts:.*)$/\\1, ${relationship_list}/" \
+    -e "s/^(Replaces:.*)$/\\1, ${relationship_list}/" \
+    "${transition_dir}/control/control"
+  tar "${control_compression[@]}" -cf "${transition_dir}/${control_member}" -C "${transition_dir}/control" .
+  install_deepstream_deb="${transition_dir}/deepstream-9.1-transition.deb"
+  printf '!<arch>\n' >"${install_deepstream_deb}"
+  append_ar_member() {
+    local name="$1"
+    local size="$2"
+    printf '%-16s%-12s%-6s%-6s%-8s%-10s`\n' "${name}/" 0 0 0 100644 "${size}" >>"${install_deepstream_deb}"
+  }
+  for member in debian-binary "${control_member}" "${data_member}"; do
+    if [[ "${member}" == "${control_member}" ]]; then
+      member_size="$(stat -c '%s' "${transition_dir}/${control_member}")"
+      append_ar_member "${member}" "${member_size}"
+      cat "${transition_dir}/${control_member}" >>"${install_deepstream_deb}"
+    else
+      member_size="$(ar tv "${DEEPSTREAM_DEB}" | awk -v member="${member}" '$NF == member {print $3; exit}')"
+      append_ar_member "${member}" "${member_size}"
+      ar p "${DEEPSTREAM_DEB}" "${member}" >>"${install_deepstream_deb}"
+    fi
+    if (( member_size % 2 != 0 )); then printf '\n' >>"${install_deepstream_deb}"; fi
+  done
+  dpkg-deb --info "${install_deepstream_deb}" >/dev/null
+  for relationship in Conflicts Replaces; do
+    metadata="$(dpkg-deb -f "${install_deepstream_deb}" "${relationship}")"
+    for package in "${transition_relationships[@]}"; do
+      if [[ ",${metadata// /}," != *",${package},"* ]]; then
+        echo "ERROR: failed to add ${relationship}: ${package} to the DeepStream transition artifact." >&2
+        exit 1
+      fi
+    done
+  done
 fi
 
-apt-get install "${apt_args[@]}" "${DEEPSTREAM_DEB}" "${HMSTREAM_DEB}"
+simulation="$(apt-get install --simulate --no-install-recommends "${install_deepstream_deb}" "${HMSTREAM_DEB}")"
+printf '%s\n' "${simulation}"
+while read -r removed_package; do
+  [[ -z "${removed_package}" ]] && continue
+  allowed=0
+  for package in "${old_deepstream_packages[@]}"; do
+    if [[ "${removed_package}" == "${package%%:*}" ]]; then allowed=1; break; fi
+  done
+  if [[ "${allowed}" -eq 0 ]]; then
+    echo "ERROR: DeepStream replacement would remove dependent package ${removed_package}; refusing." >&2
+    exit 1
+  fi
+done < <(awk '$1 == "Remv" {print $2}' <<<"${simulation}")
+
+if [[ "${SIMULATE}" -eq 0 ]]; then
+  apt-get install "${apt_args[@]}" "${install_deepstream_deb}" "${HMSTREAM_DEB}"
+fi
 
 if [[ "${SIMULATE}" -eq 1 ]]; then
   echo "Dependency resolution succeeded for Ubuntu ${VERSION_ID}."

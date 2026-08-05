@@ -23,6 +23,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -444,6 +445,34 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   if (!select_list_item(list, "Right  .hmstream-ui/right/GX010002.MP4")) {
     return false;
   }
+  {
+    YAML::Node before_failed_remove = YAML::LoadFile(config.string());
+    before_failed_remove["hmstream_ui"]["copied_imports"].push_back(".hmstream-ui/right/GX010002.MP4");
+    YAML::Node source_metadata(YAML::NodeType::Map);
+    source_metadata["path"] = ".hmstream-ui/right/GX010002.MP4";
+    source_metadata["family"] = "test-family";
+    source_metadata["source_parent"] = source_dir.toStdString();
+    before_failed_remove["hmstream_ui"]["auto_import_sources"].push_back(source_metadata);
+    before_failed_remove["concurrent"]["keep"] = true;
+    std::ofstream out(config);
+    out << before_failed_remove << "\n";
+  }
+  ::setenv("HM_TEST_VIDEO_REMOVE_FAIL", ".hmstream-ui/right/GX010002.MP4", 1);
+  activate(remove_video);
+  ::unsetenv("HM_TEST_VIDEO_REMOVE_FAIL");
+  YAML::Node after_failed_right_remove = YAML::LoadFile(config.string());
+  if (!expect(
+          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / ".hmstream-ui" / "right" / "GX010002.MP4") &&
+              after_failed_right_remove["hmstream_ui"]["video_roles"]["right"] &&
+              after_failed_right_remove["hmstream_ui"]["copied_imports"].size() == 1 &&
+              after_failed_right_remove["hmstream_ui"]["auto_import_sources"].size() == 1 &&
+              after_failed_right_remove["concurrent"]["keep"].as<bool>(),
+          "Failed explicit deletion must restore role and copied-import metadata without losing unrelated config")) {
+    return false;
+  }
+  if (!select_list_item(list, "Right  .hmstream-ui/right/GX010002.MP4")) {
+    return false;
+  }
   activate(remove_video);
   std::ifstream updated_input(config);
   const std::string updated_text((std::istreambuf_iterator<char>(updated_input)), std::istreambuf_iterator<char>());
@@ -478,6 +507,25 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   if (!expect(
           list_match_count(list, "GX010001.MP4") == 1,
           "Absolute generated config paths should not duplicate scanned Auto files")) {
+    return false;
+  }
+  if (!select_list_item(list, "Auto  cam3/GX010001.MP4")) {
+    return false;
+  }
+  ::setenv("HM_TEST_VIDEO_REMOVE_FAIL", "cam3/GX010001.MP4", 1);
+  activate(remove_video);
+  ::unsetenv("HM_TEST_VIDEO_REMOVE_FAIL");
+  YAML::Node after_failed_auto_remove = YAML::LoadFile(config.string());
+  if (!expect(
+          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "cam3" / "GX010001.MP4") &&
+              after_failed_auto_remove["game"]["videos"]["left"] &&
+              after_failed_auto_remove["game"]["videos"]["right"] &&
+              after_failed_auto_remove["hmstream_ui"]["video_roles"]["left"] &&
+              after_failed_auto_remove["hmstream_ui"]["video_roles"]["center"] &&
+              after_failed_auto_remove["hmstream_ui"]["video_roles"]["right"] &&
+              after_failed_auto_remove["game"]["stitching"]["frame_offsets"] &&
+              after_failed_auto_remove["stitching"]["frame_offsets"],
+          "Failed Auto deletion must restore every cleared selection and frame-offset path")) {
     return false;
   }
   if (!select_list_item(list, "Auto  cam3/GX010001.MP4")) {
@@ -627,10 +675,10 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   YAML::Node cleanup_after = YAML::LoadFile((cleanup_game / "config.yaml").string());
   if (!expect(
           fs::exists(cleanup_game / "cam1" / "GX010001.MP4") &&
-              !fs::exists(cleanup_game / ".hmstream-ui" / "left" / "copied-left.mp4") &&
-              !cleanup_after["hmstream_ui"]["video_roles"]["left"] &&
-              cleanup_after["hmstream_ui"]["copied_imports"].size() == 0,
-          "Removing Auto should clean copied explicit imports when regular Auto delete is refused")) {
+              fs::exists(cleanup_game / ".hmstream-ui" / "left" / "copied-left.mp4") &&
+              cleanup_after["hmstream_ui"]["video_roles"]["left"] &&
+              cleanup_after["hmstream_ui"]["copied_imports"].size() == 1,
+          "Refused Auto deletion must preserve the complete prior file and config state")) {
     return false;
   }
 

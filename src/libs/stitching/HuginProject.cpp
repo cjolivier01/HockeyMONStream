@@ -938,6 +938,24 @@ absl::Status HuginProject::Recover(const fs::path& game_dir) {
   return lock.ok() ? absl::OkStatus() : lock.status();
 }
 
+absl::StatusOr<std::string> HuginProject::GenerationId(const fs::path& game_dir, const ArtifactLock&) {
+  std::ostringstream generation;
+  // The stitched surface is determined by the PTO/remap generation. Legacy
+  // valid generations did not publish left.png/right.png, so do not make
+  // those provenance images part of the runtime identity.
+  for (const char* name : kLegacyRequiredArtifacts) {
+    struct stat metadata{};
+    const fs::path path = game_dir / name;
+    if (::stat(path.c_str(), &metadata) != 0 || !S_ISREG(metadata.st_mode)) {
+      return absl::NotFoundError("Hugin generation artifact is missing: " + path.string());
+    }
+    generation << name << ':' << static_cast<uint64_t>(metadata.st_dev) << ':' << static_cast<uint64_t>(metadata.st_ino)
+               << ':' << static_cast<uint64_t>(metadata.st_size) << ':' << metadata.st_mtim.tv_sec << ':'
+               << metadata.st_mtim.tv_nsec << '\n';
+  }
+  return generation.str();
+}
+
 absl::StatusOr<std::string> HuginProject::InsertControlPoints(
     const std::string& pto,
     const std::vector<FeatureMatch>& matches) {

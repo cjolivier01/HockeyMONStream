@@ -58,8 +58,8 @@ int main(int argc, char** argv) {
       contains(installer, "X-HMStream-Target-Ubuntu") && !contains(installer, "libc6 (>= 2.43)") &&
           !contains(installer, "Pin-Priority") && contains(installer, "old_deepstream_packages") &&
           contains(installer, "^deepstream-[0-9]+([.][0-9]+)*$") &&
-          contains(installer, "apt-get remove -y --no-install-recommends") &&
-          contains(installer, "old_deepstream_remove_args[@]"),
-      "installer must validate OS provenance, avoid global pins, and safely replace older DeepStream");
+          contains(installer, "deepstream-9.1-transition.deb") && contains(installer, "Conflicts") &&
+          contains(installer, "Replaces") && !contains(installer, "apt-get remove -y --no-install-recommends"),
+      "installer must validate OS provenance and replace older DeepStream in one APT transaction");
   return ok ? 0 : 1;
 }

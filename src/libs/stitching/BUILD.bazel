@@ -10,11 +10,23 @@ filegroup(
 )
 
 cc_library(
+  name = "game_config",
+  srcs = ["GameConfig.cpp"],
+  hdrs = ["GameConfig.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    "@yaml-cpp",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_library(
   name = "stitching",
   srcs = [
     "CalibrationModels.cpp",
     "ConfigureStitching.cpp",
-    "GameConfig.cpp",
     "Orientation.cpp",
     "ScoreboardSelector.cpp",
     "Synchronization.cpp",
@@ -22,7 +34,6 @@ cc_library(
   hdrs = [
     "CalibrationModels.h",
     "ConfigureStitching.h",
-    "GameConfig.h",
     "Orientation.h",
     "ScoreboardSelector.h",
     "Synchronization.h",
@@ -37,6 +48,7 @@ cc_library(
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    ":game_config",
     ":correlation",
     ":feature_matcher",
     ":hugin_project",
@@ -89,7 +101,7 @@ cc_test(
     name = "game_config_test",
     srcs = ["GameConfigTest.cpp"],
     deps = [
-        ":stitching",
+        ":game_config",
         "@yaml-cpp",
     ],
 )

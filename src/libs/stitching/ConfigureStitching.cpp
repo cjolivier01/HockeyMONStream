@@ -53,17 +53,6 @@ constexpr size_t kDefaultMaxControlPoints = 1500;
 constexpr size_t kHardMaximumArtifactDimension = 32768;
 constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
 
-struct ScopedRinkLock {
-  int descriptor{-1};
-  ~ScopedRinkLock() {
-    if (descriptor >= 0) {
-      ::flock(descriptor, LOCK_UN);
-      ::close(descriptor);
-    }
-  }
-};
-
-absl::StatusOr<std::unique_ptr<ScopedRinkLock>> lock_rink_transactions(const fs::path& root);
 absl::Status recover_rink_transactions_locked(const fs::path& root);
 
 absl::StatusOr<size_t> remove_file_if_present(const fs::path& path) {
@@ -1039,21 +1028,6 @@ namespace {
 
 constexpr const char* kRinkTransactionPrefix = ".hmstream-rink-";
 
-absl::StatusOr<std::unique_ptr<ScopedRinkLock>> lock_rink_transactions(const fs::path& root) {
-  const fs::path path = root / ".hmstream-rink.lock";
-  const int descriptor = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
-  if (descriptor < 0)
-    return absl::InternalError("Unable to open rink transaction lock: " + std::string(std::strerror(errno)));
-  if (::flock(descriptor, LOCK_EX) != 0) {
-    const std::string message = std::strerror(errno);
-    ::close(descriptor);
-    return absl::InternalError("Unable to lock rink transaction: " + message);
-  }
-  auto lock = std::make_unique<ScopedRinkLock>();
-  lock->descriptor = descriptor;
-  return lock;
-}
-
 absl::Status fsync_path(const fs::path& path, bool directory = false) {
   const int flags = O_RDONLY | O_CLOEXEC | (directory ? O_DIRECTORY : 0);
   const int descriptor = ::open(path.c_str(), flags);
@@ -1139,13 +1113,8 @@ absl::StatusOr<std::set<std::string>> read_rink_manifest(const fs::path& transac
     if (fs::path(name).filename() != name || !is_rink_artifact_name(name) || !names.insert(name).second)
       return absl::InvalidArgumentError("Invalid rink transaction filename: " + name);
   }
-  if (!input.eof() || !names.count("config.yaml") || !names.count("rink_mask_0.png"))
+  if (!input.eof() || !names.count("config.yaml") || names.size() < 2)
     return absl::FailedPreconditionError("Prepared rink transaction manifest is incomplete");
-  size_t mask_count = 0;
-  while (names.count("rink_mask_" + std::to_string(mask_count) + ".png"))
-    ++mask_count;
-  if (names.size() != mask_count + 1)
-    return absl::FailedPreconditionError("Prepared rink transaction mask indices are not contiguous");
   return names;
 }
 
@@ -1221,32 +1190,6 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
 
 } // namespace
 
-struct GameConfigTransactionLock::State {
-  std::unique_ptr<GameConfigLock> config;
-  std::unique_ptr<ScopedRinkLock> rink;
-};
-
-GameConfigTransactionLock::GameConfigTransactionLock(std::unique_ptr<State> state) : state_(std::move(state)) {}
-
-GameConfigTransactionLock::~GameConfigTransactionLock() = default;
-
-absl::StatusOr<std::unique_ptr<GameConfigTransactionLock>> GameConfigTransactionLock::Acquire(
-    const fs::path& game_dir) {
-  auto config = GameConfigLock::Acquire(game_dir);
-  if (!config.ok())
-    return config.status();
-  auto rink = lock_rink_transactions(game_dir);
-  if (!rink.ok())
-    return rink.status();
-  auto recovery = recover_rink_transactions_locked(game_dir);
-  if (!recovery.ok())
-    return recovery;
-  auto state = std::make_unique<State>();
-  state->config = std::move(*config);
-  state->rink = std::move(*rink);
-  return std::unique_ptr<GameConfigTransactionLock>(new GameConfigTransactionLock(std::move(state)));
-}
-
 bool is_field_mask_configured(const std::string& game_dir) {
   if (game_dir.empty()) {
     return false;
@@ -1294,7 +1237,7 @@ bool is_field_mask_configured(const std::string& game_dir) {
   return true;
 }
 
-absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& profile) {
+absl::Status save_rink_profile_locked(const std::string& game_dir, const RinkProfile& profile) {
   if (game_dir.empty() || profile.masks.empty()) {
     return absl::InvalidArgumentError("A game directory and at least one rink mask are required");
   }
@@ -1309,9 +1252,6 @@ absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& p
   }
   const fs::path root(game_dir);
   std::error_code error;
-  fs::create_directories(root, error);
-  if (error)
-    return absl::InternalError("Unable to create rink profile directory: " + error.message());
   auto config_transaction = GameConfigTransactionLock::Acquire(root);
   if (!config_transaction.ok())
     return config_transaction.status();
@@ -1482,7 +1422,36 @@ absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& p
   return absl::OkStatus();
 }
 
-absl::Status create_field_mask(const std::string& game_dir, surface::Surface surface) {
+absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& profile) {
+  if (game_dir.empty())
+    return absl::InvalidArgumentError("A game directory is required");
+  const fs::path root(game_dir);
+  std::error_code error;
+  fs::create_directories(root, error);
+  if (error)
+    return absl::InternalError("Unable to create rink profile directory: " + error.message());
+  auto hugin_lock = HuginProject::RecoverAndLock(root);
+  if (!hugin_lock.ok())
+    return hugin_lock.status();
+  return save_rink_profile_locked(game_dir, profile);
+}
+
+absl::Status create_field_mask(
+    const std::string& game_dir,
+    surface::Surface surface,
+    const std::string& expected_hugin_generation) {
+  const fs::path root(game_dir);
+  auto hugin_lock = HuginProject::RecoverAndLock(root);
+  if (!hugin_lock.ok())
+    return hugin_lock.status();
+  if (!expected_hugin_generation.empty()) {
+    auto current_generation = HuginProject::GenerationId(root, **hugin_lock);
+    if (!current_generation.ok())
+      return current_generation.status();
+    if (*current_generation != expected_hugin_generation) {
+      return absl::AbortedError("Hugin generation changed before rink-mask publication; retry with a fresh frame");
+    }
+  }
   HM_RETURN_IF_ERROR(save_stitched_image(game_dir, surface));
   const cv::Mat stitched = cv::imread((fs::path(game_dir) / "s.png").string(), cv::IMREAD_COLOR);
   if (stitched.empty())
@@ -1493,7 +1462,7 @@ absl::Status create_field_mask(const std::string& game_dir, surface::Surface sur
   HM_ASSIGN_OR_RETURN(model, RinkSegmentation::Create(model_path.string()));
   RinkProfile profile;
   HM_ASSIGN_OR_RETURN(profile, model->Infer(stitched, RinkSegmentation::kHockeyMomInferenceScale));
-  return save_rink_profile(game_dir, profile);
+  return save_rink_profile_locked(game_dir, profile);
 }
 
 absl::Status configure_orientation(const std::string& game_dir) {

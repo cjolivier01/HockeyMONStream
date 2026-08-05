@@ -10,6 +10,10 @@
 
 namespace hm::assets {
 
+namespace internal {
+absl::Status fsync_asset_parent_directory(const std::filesystem::path& target);
+}
+
 struct AssetSpec {
   std::string name;
   std::string url;

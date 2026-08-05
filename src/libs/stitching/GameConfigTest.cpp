@@ -86,11 +86,13 @@ int main() {
   first_save["pipeline"]["generated"] = true;
   YAML::Node concurrently_created(YAML::NodeType::Map);
   concurrently_created["hmstream_ui"]["keep"] = true;
+  concurrently_created["pipeline"]["remote"] = true;
   const YAML::Node first_merged =
       hm::stitching::apply_game_config_diff(absent_baseline, first_save, concurrently_created);
   ok &= expect(
-      first_merged["pipeline"]["generated"].as<bool>() && first_merged["hmstream_ui"]["keep"].as<bool>(),
-      "a first save after an absent baseline must preserve a concurrently created config");
+      first_merged["pipeline"]["generated"].as<bool>() && first_merged["pipeline"]["remote"].as<bool>() &&
+          first_merged["hmstream_ui"]["keep"].as<bool>(),
+      "a first save after an absent baseline must preserve concurrent siblings in the same map");
 
   const fs::path interrupted = root / ".hmstream-rink-interrupted";
   fs::create_directories(interrupted / "previous");
@@ -120,6 +122,29 @@ int main() {
       recovered["recovered"]["old"].as<bool>() && recovered["after_recovery"].as<bool>() && !recovered["interrupted"],
       "rink recovery must precede and preserve the subsequent config mutation");
   ok &= expect(!fs::exists(interrupted), "recovered rink journal must be removed");
+
+  std::ofstream(root / "config.yaml") << "generation: old\n";
+  std::ofstream(root / "rink_mask_0.png") << "old-mask-zero";
+  std::ofstream(root / "rink_mask_1.png") << "old-mask-one";
+  auto invalidation_lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
+  ok &= expect(invalidation_lock.ok(), "rink invalidation test must acquire the config transaction");
+  if (invalidation_lock.ok()) {
+    ::setenv("HM_TEST_RINK_INVALIDATION_FAIL_AFTER_REMOVE", "1", 1);
+    const auto failed = hm::stitching::publish_game_config_without_rink_masks(root, "generation: new\n");
+    ::unsetenv("HM_TEST_RINK_INVALIDATION_FAIL_AFTER_REMOVE");
+    ok &= expect(!failed.ok(), "injected rink invalidation failure must abort publication");
+    const YAML::Node rolled_back = YAML::LoadFile((root / "config.yaml").string());
+    ok &= expect(
+        rolled_back["generation"].as<std::string>() == "old" && fs::is_regular_file(root / "rink_mask_0.png") &&
+            fs::is_regular_file(root / "rink_mask_1.png"),
+        "failed rink invalidation must restore the complete prior config/mask generation");
+    const auto published = hm::stitching::publish_game_config_without_rink_masks(root, "generation: new\n");
+    ok &= expect(
+        published.ok() && *published == 2 &&
+            YAML::LoadFile((root / "config.yaml").string())["generation"].as<std::string>() == "new" &&
+            !fs::exists(root / "rink_mask_0.png") && !fs::exists(root / "rink_mask_1.png"),
+        "successful rink invalidation must atomically publish config and remove every mask");
+  }
 
   fs::remove_all(root);
   return ok ? 0 : 1;

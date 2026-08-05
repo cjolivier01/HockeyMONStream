@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -48,6 +49,13 @@ class GameConfigTransactionLock final {
 // Durably replaces config.yaml. The caller must hold GameConfigLock while
 // constructing contents from the previous config and until this returns.
 absl::Status publish_game_config(const std::filesystem::path& game_dir, const std::string& contents);
+
+// Durably publishes config.yaml while removing every rink_mask_*.png as one
+// recoverable generation. The caller must hold GameConfigTransactionLock.
+// Returns the number of masks removed.
+absl::StatusOr<size_t> publish_game_config_without_rink_masks(
+    const std::filesystem::path& game_dir,
+    const std::string& contents);
 
 // Loads one config generation while holding the config/rink transaction lock.
 // A missing file is represented by an empty optional node.

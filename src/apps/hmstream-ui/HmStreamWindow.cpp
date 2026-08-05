@@ -882,28 +882,14 @@ bool yaml_sequence_contains(YAML::Node node, const char* value) {
 
 struct ArtifactInvalidationResult {
   int invalidated = 0;
-  QString error;
 };
 
-ArtifactInvalidationResult invalidate_rotation_dependent_artifacts(YAML::Node& config, const QString& game_dir) {
+ArtifactInvalidationResult invalidate_rotation_dependent_artifacts(YAML::Node& config) {
   ArtifactInvalidationResult result;
-  int invalidated = 0;
-  invalidated += remove_yaml_path(config, {"rink", "scoreboard", "perspective_polygon"}) ? 1 : 0;
-  invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_count"}) ? 1 : 0;
-  invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_centroid"}) ? 1 : 0;
-  invalidated += remove_yaml_path(config, {"rink", "ice_contours_combined_bbox"}) ? 1 : 0;
-
-  QDir dir(game_dir);
-  const QStringList masks = dir.entryList(QStringList() << "rink_mask_*.png", QDir::Files);
-  for (const QString& mask : masks) {
-    if (dir.remove(mask)) {
-      ++invalidated;
-    } else {
-      result.error = QString("failed to delete %1").arg(dir.filePath(mask));
-      return result;
-    }
-  }
-  result.invalidated = invalidated;
+  result.invalidated += remove_yaml_path(config, {"rink", "scoreboard", "perspective_polygon"}) ? 1 : 0;
+  result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_count"}) ? 1 : 0;
+  result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_centroid"}) ? 1 : 0;
+  result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_combined_bbox"}) ? 1 : 0;
   return result;
 }
 
@@ -2041,14 +2027,33 @@ void HmStreamWindow::savePreset() {
     }
   }
 
-  if (!applySavedControlConfig(config)) {
+  bool invalidate_rink_masks = false;
+  int invalidated_config_artifacts = 0;
+  if (!applySavedControlConfig(config, &invalidate_rink_masks, &invalidated_config_artifacts)) {
     return;
   }
-  const auto publish = publish_yaml_config(config_path, config);
+  absl::Status publish;
+  size_t invalidated_masks = 0;
+  if (invalidate_rink_masks) {
+    auto transaction =
+        hm::stitching::publish_game_config_without_rink_masks(config_path.parent_path(), YAML::Dump(config) + "\n");
+    if (transaction.ok()) {
+      invalidated_masks = *transaction;
+      publish = absl::OkStatus();
+    } else {
+      publish = transaction.status();
+    }
+  } else {
+    publish = publish_yaml_config(config_path, config);
+  }
   if (!publish.ok()) {
     appendLog(QString("failed to write preset %1: %2")
                   .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
     return;
+  }
+  if (invalidate_rink_masks) {
+    appendLog(QString("stitch rotation saved; invalidated %1 scoreboard/ice-mask artifact(s)")
+                  .arg(invalidated_config_artifacts + static_cast<int>(invalidated_masks)));
   }
   appendLog(QString("preset saved %1").arg(QString::fromStdString(config_path.string())));
 }
@@ -2132,7 +2137,16 @@ void HmStreamWindow::loadSavedControlConfig() {
   }
 }
 
-bool HmStreamWindow::applySavedControlConfig(YAML::Node& config) {
+bool HmStreamWindow::applySavedControlConfig(
+    YAML::Node& config,
+    bool* invalidate_rink_masks,
+    int* invalidated_config_artifacts) {
+  if (invalidate_rink_masks) {
+    *invalidate_rink_masks = false;
+  }
+  if (invalidated_config_artifacts) {
+    *invalidated_config_artifacts = 0;
+  }
   if (!yaml_defined(config) || config.IsNull()) {
     config = YAML::Node(YAML::NodeType::Map);
   }
@@ -2236,14 +2250,13 @@ bool HmStreamWindow::applySavedControlConfig(YAML::Node& config) {
     rotation_changed_for_artifacts = true;
   }
   if (rotation_changed_for_artifacts) {
-    const ArtifactInvalidationResult invalidation =
-        invalidate_rotation_dependent_artifacts(config, gameDirectory(game_id_edit_->text()));
-    if (!invalidation.error.isEmpty()) {
-      appendLog(QString("stitch rotation save aborted: %1").arg(invalidation.error));
-      return false;
+    const ArtifactInvalidationResult invalidation = invalidate_rotation_dependent_artifacts(config);
+    if (invalidate_rink_masks) {
+      *invalidate_rink_masks = true;
     }
-    appendLog(
-        QString("stitch rotation saved; invalidated %1 scoreboard/ice-mask artifact(s)").arg(invalidation.invalidated));
+    if (invalidated_config_artifacts) {
+      *invalidated_config_artifacts = invalidation.invalidated;
+    }
   }
   auto apply_color_prefix = [&](const QString& prefix) {
     const QString name_prefix = prefix.isEmpty() ? QString() : prefix + "_";
@@ -2614,33 +2627,39 @@ void HmStreamWindow::removeSelectedVideoSet() {
   const QString relative_path = item->data(Qt::UserRole + 1).toString();
   const bool copied_import = isCopiedImport(relative_path);
   const QString config_file = QDir(gameDirectory(game_id_edit_->text())).filePath("config.yaml");
-  const bool had_config = QFile::exists(config_file);
+  auto loaded_config = hm::stitching::load_game_config_file(config_file.toStdString());
+  if (!loaded_config.ok()) {
+    appendLog(QString("could not read private config: %1").arg(loaded_config.status().ToString().c_str()));
+    video_set_list_->insertItem(row, item);
+    return;
+  }
+  const bool had_config = loaded_config->has_value();
   QByteArray original_config;
   if (had_config) {
-    QFile file(config_file);
-    if (file.open(QIODevice::ReadOnly)) {
-      original_config = file.readAll();
+    try {
+      original_config = QByteArray::fromStdString(YAML::Dump(**loaded_config) + "\n");
+    } catch (const std::exception& exc) {
+      appendLog(QString("could not read private config: %1").arg(exc.what()));
+      video_set_list_->insertItem(row, item);
+      return;
     }
   }
 
-  if (!removePrivateConfigForRole(role, relative_path)) {
+  QByteArray removed_config;
+  if (!removePrivateConfigForRole(role, relative_path, &removed_config)) {
     video_set_list_->insertItem(row, item);
-    return;
-  }
-  if (role == "auto" && !removeClearedCopiedExplicitImports(original_config, had_config)) {
-    video_set_list_->insertItem(row, item);
-    refreshVideoSets();
     return;
   }
   if (!removeImportedVideoPath(relative_path, copied_import)) {
-    if (had_config && role != "auto") {
-      if (!savePrivateConfigForRole(role, relative_path)) {
-        appendLog(QString("failed to restore private config after remove failure %1").arg(config_file));
-      }
+    if (!restorePrivateConfigAfterRemoveFailure(original_config, had_config, removed_config)) {
+      appendLog(QString("failed to restore private config after remove failure %1").arg(config_file));
     }
     video_set_list_->insertItem(row, item);
     refreshVideoSets();
     return;
+  }
+  if (role == "auto" && !removeClearedCopiedExplicitImports(original_config, had_config, false)) {
+    appendLog("video set removed, but one or more unreferenced copied imports could not be cleaned");
   }
 
   appendLog(QString("video set removed role=%1 path=%2").arg(role_label(role), relative_path));
@@ -3015,7 +3034,10 @@ bool HmStreamWindow::isCopiedImport(const QString& relative_path) {
   }
 }
 
-bool HmStreamWindow::removeClearedCopiedExplicitImports(const QByteArray& original_config, bool had_config) {
+bool HmStreamWindow::removeClearedCopiedExplicitImports(
+    const QByteArray& original_config,
+    bool had_config,
+    bool restore_auto_selection_on_failure) {
   if (!had_config || original_config.isEmpty()) {
     return true;
   }
@@ -3106,7 +3128,9 @@ bool HmStreamWindow::removeClearedCopiedExplicitImports(const QByteArray& origin
   for (const QString& path : cleanup_paths) {
     if (!removeImportedVideoPath(path, true)) {
       if (removed_paths.empty()) {
-        restore_original_config();
+        if (restore_auto_selection_on_failure) {
+          restore_original_config();
+        }
       } else {
         remove_cleanup_metadata(removed_paths);
         if (!publish_yaml_config(config_path, current_config).ok()) {
@@ -3284,7 +3308,10 @@ bool HmStreamWindow::savePrivateConfigForRole(const QString& role, const QString
   return publish.ok();
 }
 
-bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QString& relative_path) {
+bool HmStreamWindow::removePrivateConfigForRole(
+    const QString& role,
+    const QString& relative_path,
+    QByteArray* published_config) {
   if (!is_explicit_role(role) && role != "auto") {
     return true;
   }
@@ -3367,6 +3394,9 @@ bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QStri
     changed = clear_stitching_frame_offsets(config) || changed;
   }
   if (!changed) {
+    if (published_config) {
+      *published_config = QByteArray::fromStdString(YAML::Dump(config) + "\n");
+    }
     return true;
   }
 
@@ -3374,7 +3404,40 @@ bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QStri
   if (!publish.ok())
     appendLog(QString("failed to write private config %1: %2")
                   .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
+  if (publish.ok() && published_config) {
+    *published_config = QByteArray::fromStdString(YAML::Dump(config) + "\n");
+  }
   return publish.ok();
+}
+
+bool HmStreamWindow::restorePrivateConfigAfterRemoveFailure(
+    const QByteArray& original_config,
+    bool had_config,
+    const QByteArray& removed_config) {
+  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
+  if (!config_lock.ok()) {
+    appendLog(QString("could not lock private config rollback: %1").arg(config_lock.status().ToString().c_str()));
+    return false;
+  }
+  try {
+    const YAML::Node original = had_config ? YAML::Load(original_config.toStdString()) : YAML::Node();
+    const YAML::Node removed = removed_config.isEmpty() ? YAML::Node() : YAML::Load(removed_config.toStdString());
+    YAML::Node latest;
+    if (fs::is_regular_file(config_path)) {
+      latest = YAML::LoadFile(config_path.string());
+    }
+    const YAML::Node restored = hm::stitching::apply_game_config_diff(removed, original, latest);
+    const auto status = publish_yaml_config(config_path, restored);
+    if (!status.ok()) {
+      appendLog(QString("failed to publish private config rollback: %1").arg(status.ToString().c_str()));
+      return false;
+    }
+  } catch (const std::exception& exc) {
+    appendLog(QString("could not restore private config: %1").arg(exc.what()));
+    return false;
+  }
+  return true;
 }
 
 bool HmStreamWindow::removeImportedVideoPath(const QString& relative_path, bool allow_regular_delete) {
@@ -3409,6 +3472,11 @@ bool HmStreamWindow::removeImportedVideoPath(const QString& relative_path, bool 
   }
   if (!imported.isSymLink() && !allow_regular_delete) {
     appendLog(QString("not deleting regular video file %1").arg(relative_path));
+    return false;
+  }
+  if (const char* fail_path = std::getenv("HM_TEST_VIDEO_REMOVE_FAIL");
+      fail_path != nullptr && relative_path == QString::fromUtf8(fail_path)) {
+    appendLog(QString("injected failure removing imported video %1").arg(relative_path));
     return false;
   }
   if (!QFile::remove(imported_path)) {

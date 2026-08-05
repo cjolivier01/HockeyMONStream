@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -26,6 +28,25 @@
 #include <yaml-cpp/yaml.h>
 
 namespace hm::assets {
+
+absl::Status internal::fsync_asset_parent_directory(const std::filesystem::path& target) {
+  if (const char* injected = std::getenv("HM_TEST_ASSET_DIRECTORY_FSYNC_FAILURE");
+      injected != nullptr && std::string(injected) == "1") {
+    return absl::InternalError("Injected asset directory fsync failure");
+  }
+  const int directory = ::open(target.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (directory < 0)
+    return absl::InternalError("Unable to open asset directory for fsync: " + std::string(std::strerror(errno)));
+  if (::fsync(directory) != 0) {
+    const std::string message = std::strerror(errno);
+    ::close(directory);
+    return absl::InternalError("Unable to fsync asset directory: " + message);
+  }
+  if (::close(directory) != 0)
+    return absl::InternalError("Unable to close asset directory after fsync: " + std::string(std::strerror(errno)));
+  return absl::OkStatus();
+}
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -387,12 +408,7 @@ absl::Status ensure_one(const AssetSpec& spec, const Limits& limits, size_t* tot
   fs::rename(temporary, spec.target, error);
   if (error)
     return absl::InternalError("Unable to publish asset: " + error.message());
-  const int directory = ::open(spec.target.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-  if (directory >= 0) {
-    ::fsync(directory);
-    ::close(directory);
-  }
-  return absl::OkStatus();
+  return internal::fsync_asset_parent_directory(spec.target);
 }
 
 } // namespace
