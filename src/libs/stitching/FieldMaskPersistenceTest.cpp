@@ -7,6 +7,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <limits>
 #include <string>
 #include <thread>
 
@@ -168,6 +170,25 @@ int main() {
   status = hm::stitching::save_rink_profile(root.string(), one_mask);
   ok &= expect(status.ok(), "a smaller rink mask generation must persist");
   ok &= expect(!fs::exists(root / "rink_mask_1.png"), "obsolete rink masks must be removed transactionally");
+  const auto config_bytes = [&]() {
+    std::ifstream input(root / "config.yaml", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  }();
+  for (int invalid_case = 0; invalid_case < 3; ++invalid_case) {
+    hm::stitching::RinkProfile invalid = one_mask;
+    if (invalid_case == 0)
+      invalid.centroid.x = std::numeric_limits<double>::quiet_NaN();
+    else if (invalid_case == 1)
+      invalid.combined_bbox.width = std::numeric_limits<double>::infinity();
+    else
+      invalid.scores = {std::numeric_limits<float>::quiet_NaN()};
+    ok &= expect(
+        !hm::stitching::save_rink_profile(root.string(), invalid).ok(),
+        "non-finite rink geometry or scores must not be persisted");
+    std::ifstream input(root / "config.yaml", std::ios::binary);
+    const std::string after{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+    ok &= expect(after == config_bytes, "invalid rink profiles must preserve the committed config generation");
+  }
   profile.masks[1] = cv::Mat(10, 10, CV_8U);
   ok &= expect(!hm::stitching::save_rink_profile(root.string(), profile).ok(), "mixed mask dimensions must fail");
   fs::remove_all(root);

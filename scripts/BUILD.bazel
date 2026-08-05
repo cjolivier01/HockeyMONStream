@@ -32,5 +32,6 @@
 exports_files([
     "install_deb.sh",
     "make_deb.sh",
+    "make_deb_docker.sh",
     "qualify_native_onnx.sh",
 ])

@@ -35,6 +35,8 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "hstream/src/libs/stitching/GameConfig.h"
+
 #ifdef Q_OS_UNIX
 #include <signal.h>
 #endif
@@ -54,6 +56,13 @@ namespace {
 
 constexpr int kExposureEvSliderZero = 40;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
+
+absl::Status publish_yaml_config(const fs::path& config_path, const YAML::Node& config) {
+  std::string contents;
+  if (config.IsDefined() && !config.IsNull())
+    contents = YAML::Dump(config) + "\n";
+  return hm::stitching::publish_game_config(config_path.parent_path(), contents);
+}
 
 QString development_runtime_root() {
   QString application_path = QFileInfo(QCoreApplication::applicationFilePath()).canonicalFilePath();
@@ -1584,6 +1593,12 @@ bool HmStreamWindow::runStitchingClean(
 
 bool HmStreamWindow::saveStitchingCalibrationState(int control_points, const QString& status) {
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
+  if (!config_lock.ok()) {
+    appendLog(
+        QString("could not lock stitching calibration settings: %1").arg(config_lock.status().ToString().c_str()));
+    return false;
+  }
   YAML::Node config(YAML::NodeType::Map);
   if (fs::exists(config_path)) {
     try {
@@ -1599,17 +1614,10 @@ bool HmStreamWindow::saveStitchingCalibrationState(int control_points, const QSt
 
   config["hmstream_ui"]["stitching_calibration"]["control_points"] = control_points;
   config["hmstream_ui"]["stitching_calibration"]["status"] = status.toStdString();
-  std::ofstream out(config_path);
-  if (!out) {
-    appendLog(
-        QString("failed to write stitching calibration settings %1").arg(QString::fromStdString(config_path.string())));
-    return false;
-  }
-  out << config << "\n";
-  out.close();
-  if (!out) {
-    appendLog(
-        QString("failed to write stitching calibration settings %1").arg(QString::fromStdString(config_path.string())));
+  const auto publish = publish_yaml_config(config_path, config);
+  if (!publish.ok()) {
+    appendLog(QString("failed to write stitching calibration settings %1: %2")
+                  .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
     return false;
   }
   appendLog(QString("stitching calibration control points saved %1 status=%2").arg(control_points).arg(status));
@@ -1974,6 +1982,11 @@ void HmStreamWindow::savePreset() {
     return;
   }
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
+  if (!config_lock.ok()) {
+    appendLog(QString("could not lock preset config: %1").arg(config_lock.status().ToString().c_str()));
+    return;
+  }
   YAML::Node config;
   if (fs::exists(config_path)) {
     try {
@@ -1987,15 +2000,10 @@ void HmStreamWindow::savePreset() {
   if (!applySavedControlConfig(config)) {
     return;
   }
-  std::ofstream out(config_path);
-  if (!out) {
-    appendLog(QString("failed to write preset %1").arg(QString::fromStdString(config_path.string())));
-    return;
-  }
-  out << config << "\n";
-  out.close();
-  if (!out) {
-    appendLog(QString("failed to write preset %1").arg(QString::fromStdString(config_path.string())));
+  const auto publish = publish_yaml_config(config_path, config);
+  if (!publish.ok()) {
+    appendLog(QString("failed to write preset %1: %2")
+                  .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
     return;
   }
   appendLog(QString("preset saved %1").arg(QString::fromStdString(config_path.string())));
@@ -2576,14 +2584,9 @@ void HmStreamWindow::removeSelectedVideoSet() {
   }
   if (!removeImportedVideoPath(relative_path, copied_import)) {
     if (had_config && role != "auto") {
-      QFile file(config_file);
-      if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        file.write(original_config);
-      } else {
+      if (!savePrivateConfigForRole(role, relative_path)) {
         appendLog(QString("failed to restore private config after remove failure %1").arg(config_file));
       }
-    } else if (!had_config) {
-      QFile::remove(config_file);
     }
     video_set_list_->insertItem(row, item);
     refreshVideoSets();
@@ -2886,6 +2889,11 @@ bool HmStreamWindow::saveCopiedImport(
     const QString& auto_group_family,
     const QString& source_parent) {
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
+  if (!config_lock.ok()) {
+    appendLog(QString("could not lock copied import metadata: %1").arg(config_lock.status().ToString().c_str()));
+    return false;
+  }
   YAML::Node config;
   if (fs::exists(config_path)) {
     try {
@@ -2934,13 +2942,11 @@ bool HmStreamWindow::saveCopiedImport(
     }
   }
 
-  std::ofstream out(config_path);
-  if (!out) {
-    appendLog(QString("failed to write copied import metadata %1").arg(QString::fromStdString(config_path.string())));
-    return false;
-  }
-  out << config << "\n";
-  return true;
+  const auto publish = publish_yaml_config(config_path, config);
+  if (!publish.ok())
+    appendLog(QString("failed to write copied import metadata %1: %2")
+                  .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
+  return publish.ok();
 }
 
 bool HmStreamWindow::isCopiedImport(const QString& relative_path) {
@@ -2974,6 +2980,12 @@ bool HmStreamWindow::removeClearedCopiedExplicitImports(const QByteArray& origin
   YAML::Node old_config;
   YAML::Node current_config;
   const QString config_file = QDir(gameDirectory(game_id_edit_->text())).filePath("config.yaml");
+  const fs::path config_path(config_file.toStdString());
+  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
+  if (!config_lock.ok()) {
+    appendLog(QString("could not lock copied import cleanup: %1").arg(config_lock.status().ToString().c_str()));
+    return false;
+  }
   try {
     old_config = YAML::Load(original_config.toStdString());
     current_config = YAML::LoadFile(config_file.toStdString());
@@ -3012,10 +3024,8 @@ bool HmStreamWindow::removeClearedCopiedExplicitImports(const QByteArray& origin
   }
 
   auto restore_original_config = [&]() {
-    QFile file(config_file);
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-      file.write(original_config);
-    } else {
+    const auto status = hm::stitching::publish_game_config(config_path.parent_path(), original_config.toStdString());
+    if (!status.ok()) {
       appendLog(QString("failed to restore private config after cleanup failure %1").arg(config_file));
     }
   };
@@ -3056,10 +3066,7 @@ bool HmStreamWindow::removeClearedCopiedExplicitImports(const QByteArray& origin
         restore_original_config();
       } else {
         remove_cleanup_metadata(removed_paths);
-        std::ofstream out(config_file.toStdString());
-        if (out) {
-          out << current_config << "\n";
-        } else {
+        if (!publish_yaml_config(config_path, current_config).ok()) {
           appendLog(QString("failed to update copied import metadata %1").arg(config_file));
         }
       }
@@ -3069,12 +3076,10 @@ bool HmStreamWindow::removeClearedCopiedExplicitImports(const QByteArray& origin
   }
   if (!removed_paths.empty()) {
     remove_cleanup_metadata(removed_paths);
-    std::ofstream out(config_file.toStdString());
-    if (!out) {
+    if (!publish_yaml_config(config_path, current_config).ok()) {
       appendLog(QString("failed to update copied import metadata %1").arg(config_file));
       return false;
     }
-    out << current_config << "\n";
   }
   return true;
 }
@@ -3174,6 +3179,11 @@ bool HmStreamWindow::syncRuntimeExplicitVideoConfig(YAML::Node& config) {
 
 bool HmStreamWindow::savePrivateConfigForRole(const QString& role, const QString& relative_path) {
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
+  if (!config_lock.ok()) {
+    appendLog(QString("could not lock private config: %1").arg(config_lock.status().ToString().c_str()));
+    return false;
+  }
   YAML::Node config;
   if (fs::exists(config_path)) {
     try {
@@ -3224,15 +3234,11 @@ bool HmStreamWindow::savePrivateConfigForRole(const QString& role, const QString
     return true;
   }
 
-  std::ofstream out(config_path);
-  if (!out) {
-    appendLog(QString("failed to write private config %1").arg(QString::fromStdString(config_path.string())));
-    return false;
-  }
-  if (config.IsDefined() && !config.IsNull()) {
-    out << config << "\n";
-  }
-  return true;
+  const auto publish = publish_yaml_config(config_path, config);
+  if (!publish.ok())
+    appendLog(QString("failed to write private config %1: %2")
+                  .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
+  return publish.ok();
 }
 
 bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QString& relative_path) {
@@ -3245,6 +3251,11 @@ bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QStri
     return true;
   }
 
+  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
+  if (!config_lock.ok()) {
+    appendLog(QString("could not lock private config: %1").arg(config_lock.status().ToString().c_str()));
+    return false;
+  }
   YAML::Node config;
   try {
     config = YAML::LoadFile(config_path.string());
@@ -3317,13 +3328,11 @@ bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QStri
     return true;
   }
 
-  std::ofstream out(config_path);
-  if (!out) {
-    appendLog(QString("failed to write private config %1").arg(QString::fromStdString(config_path.string())));
-    return false;
-  }
-  out << config << "\n";
-  return true;
+  const auto publish = publish_yaml_config(config_path, config);
+  if (!publish.ok())
+    appendLog(QString("failed to write private config %1: %2")
+                  .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
+  return publish.ok();
 }
 
 bool HmStreamWindow::removeImportedVideoPath(const QString& relative_path, bool allow_regular_delete) {

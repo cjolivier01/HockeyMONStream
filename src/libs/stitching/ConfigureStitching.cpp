@@ -3,6 +3,7 @@
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/CalibrationModels.h"
 #include "hstream/src/libs/stitching/FeatureMatcher.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/Orientation.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
@@ -51,6 +52,19 @@ constexpr size_t kDefaultJetsonMaxLiveStitchCanvasDimension = 8192;
 constexpr size_t kDefaultMaxControlPoints = 1500;
 constexpr size_t kHardMaximumArtifactDimension = 32768;
 constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
+
+struct ScopedRinkLock {
+  int descriptor{-1};
+  ~ScopedRinkLock() {
+    if (descriptor >= 0) {
+      ::flock(descriptor, LOCK_UN);
+      ::close(descriptor);
+    }
+  }
+};
+
+absl::StatusOr<std::unique_ptr<ScopedRinkLock>> lock_rink_transactions(const fs::path& root);
+absl::Status recover_rink_transactions_locked(const fs::path& root);
 
 absl::StatusOr<size_t> remove_file_if_present(const fs::path& path) {
   std::error_code ec;
@@ -322,8 +336,8 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
     return absl::InvalidArgumentError(TO_STRING("Missing TIFF resolution: " << path.string()));
   }
 
-  const double x_px = static_cast<double>(xpos) * xres;
-  const double y_px = static_cast<double>(ypos) * yres;
+  const float x_px = xpos * xres;
+  const float y_px = ypos * yres;
   if (!std::isfinite(xpos) || !std::isfinite(ypos) || !std::isfinite(x_px) || !std::isfinite(y_px) ||
       x_px < std::numeric_limits<int>::lowest() || x_px > std::numeric_limits<int>::max() ||
       y_px < std::numeric_limits<int>::lowest() || y_px > std::numeric_limits<int>::max()) {
@@ -339,15 +353,15 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
 }
 
 absl::StatusOr<CanvasSize> normalize_and_measure_canvas(TiffPlacement* p0, TiffPlacement* p1) {
-  const double min_x = std::min<double>(p0->x_px, p1->x_px);
-  const double min_y = std::min<double>(p0->y_px, p1->y_px);
-  p0->x_px -= static_cast<float>(min_x);
-  p1->x_px -= static_cast<float>(min_x);
-  p0->y_px -= static_cast<float>(min_y);
-  p1->y_px -= static_cast<float>(min_y);
+  const float min_x = std::min(p0->x_px, p1->x_px);
+  const float min_y = std::min(p0->y_px, p1->y_px);
+  p0->x_px -= min_x;
+  p1->x_px -= min_x;
+  p0->y_px -= min_y;
+  p1->y_px -= min_y;
 
-  const double width = std::max<double>(p0->x_px + p0->width, p1->x_px + p1->width);
-  const double height = std::max<double>(p0->y_px + p0->height, p1->y_px + p1->height);
+  const float width = std::max(p0->x_px + p0->width, p1->x_px + p1->width);
+  const float height = std::max(p0->y_px + p0->height, p1->y_px + p1->height);
   if (!std::isfinite(width) || !std::isfinite(height) || width < 1.0 || height < 1.0 ||
       width > std::numeric_limits<int>::max() || height > std::numeric_limits<int>::max()) {
     return absl::FailedPreconditionError("Mapping TIFFs produce an invalid canvas");
@@ -729,6 +743,16 @@ absl::Status clean_stitching_artifacts(const std::string& game_dir) {
     return absl::NotFoundError(TO_STRING("Game directory does not exist: " << game_dir));
   }
 
+  // Every artifact owner follows Hugin -> config -> rink ordering. Holding all
+  // three locks prevents clean from splitting a committed generation or
+  // racing a config.yaml read-modify-write.
+  auto hugin_lock = HuginProject::RecoverAndLock(game_dir_path);
+  if (!hugin_lock.ok())
+    return hugin_lock.status();
+  auto config_transaction = GameConfigTransactionLock::Acquire(game_dir_path);
+  if (!config_transaction.ok())
+    return config_transaction.status();
+
   size_t removed_files = 0;
   auto clean_pattern = [&](const std::string& pattern) -> absl::Status {
     size_t removed = 0;
@@ -756,14 +780,11 @@ absl::Status clean_stitching_artifacts(const std::string& game_dir) {
     try {
       YAML::Node cfg = YAML::LoadFile(cfg_file_path.string());
       remove_cleanable_stitching_cache_keys(cfg);
-      std::ofstream out(cfg_file_path, std::ios::out | std::ios::trunc);
-      if (!out.is_open()) {
-        return absl::InternalError(
-            TO_STRING("Failed to open private config for writing: \"" << cfg_file_path.string() << '"'));
-      }
+      std::ostringstream out;
       if (!is_empty_yaml_document(cfg)) {
         out << cfg << "\n";
       }
+      HM_RETURN_IF_ERROR(publish_game_config(game_dir_path, out.str()));
     } catch (const YAML::Exception& ex) {
       return absl::InternalError(
           TO_STRING("Failed to clean private config \"" << cfg_file_path.string() << "\": " << ex.what()));
@@ -1018,16 +1039,6 @@ namespace {
 
 constexpr const char* kRinkTransactionPrefix = ".hmstream-rink-";
 
-struct ScopedRinkLock {
-  int descriptor{-1};
-  ~ScopedRinkLock() {
-    if (descriptor >= 0) {
-      ::flock(descriptor, LOCK_UN);
-      ::close(descriptor);
-    }
-  }
-};
-
 absl::StatusOr<std::unique_ptr<ScopedRinkLock>> lock_rink_transactions(const fs::path& root) {
   const fs::path path = root / ".hmstream-rink.lock";
   const int descriptor = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
@@ -1210,6 +1221,32 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
 
 } // namespace
 
+struct GameConfigTransactionLock::State {
+  std::unique_ptr<GameConfigLock> config;
+  std::unique_ptr<ScopedRinkLock> rink;
+};
+
+GameConfigTransactionLock::GameConfigTransactionLock(std::unique_ptr<State> state) : state_(std::move(state)) {}
+
+GameConfigTransactionLock::~GameConfigTransactionLock() = default;
+
+absl::StatusOr<std::unique_ptr<GameConfigTransactionLock>> GameConfigTransactionLock::Acquire(
+    const fs::path& game_dir) {
+  auto config = GameConfigLock::Acquire(game_dir);
+  if (!config.ok())
+    return config.status();
+  auto rink = lock_rink_transactions(game_dir);
+  if (!rink.ok())
+    return rink.status();
+  auto recovery = recover_rink_transactions_locked(game_dir);
+  if (!recovery.ok())
+    return recovery;
+  auto state = std::make_unique<State>();
+  state->config = std::move(*config);
+  state->rink = std::move(*rink);
+  return std::unique_ptr<GameConfigTransactionLock>(new GameConfigTransactionLock(std::move(state)));
+}
+
 bool is_field_mask_configured(const std::string& game_dir) {
   if (game_dir.empty()) {
     return false;
@@ -1219,8 +1256,8 @@ bool is_field_mask_configured(const std::string& game_dir) {
   auto hugin_lock = HuginProject::RecoverAndLock(root);
   if (!hugin_lock.ok())
     return false;
-  auto lock = lock_rink_transactions(root);
-  if (!lock.ok() || !recover_rink_transactions_locked(root).ok())
+  auto config_transaction = GameConfigTransactionLock::Acquire(root);
+  if (!config_transaction.ok())
     return false;
   const fs::path mask_path = root / "rink_mask_0.png";
   std::error_code ec;
@@ -1261,17 +1298,23 @@ absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& p
   if (game_dir.empty() || profile.masks.empty()) {
     return absl::InvalidArgumentError("A game directory and at least one rink mask are required");
   }
+  if (!std::isfinite(profile.centroid.x) || !std::isfinite(profile.centroid.y) ||
+      !std::isfinite(profile.combined_bbox.x) || !std::isfinite(profile.combined_bbox.y) ||
+      !std::isfinite(profile.combined_bbox.width) || !std::isfinite(profile.combined_bbox.height) ||
+      profile.combined_bbox.width <= 0.0 || profile.combined_bbox.height <= 0.0 ||
+      !std::all_of(profile.scores.begin(), profile.scores.end(), [](float score) {
+        return std::isfinite(score) && score >= 0.0f && score <= 1.0f;
+      })) {
+    return absl::InvalidArgumentError("Rink profile geometry and scores must be finite and valid");
+  }
   const fs::path root(game_dir);
   std::error_code error;
   fs::create_directories(root, error);
   if (error)
     return absl::InternalError("Unable to create rink profile directory: " + error.message());
-  auto transaction_lock = lock_rink_transactions(root);
-  if (!transaction_lock.ok())
-    return transaction_lock.status();
-  auto recovery = recover_rink_transactions_locked(root);
-  if (!recovery.ok())
-    return recovery;
+  auto config_transaction = GameConfigTransactionLock::Acquire(root);
+  if (!config_transaction.ok())
+    return config_transaction.status();
 
   std::string pattern = (root / ".hmstream-rink-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());

@@ -40,6 +40,7 @@
 #include "hstream/src/libs/common/pipeline_utils.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/Orientation.h"
 
@@ -58,6 +59,38 @@ constexpr const char* kEnableFlagField = "enable";
 
 constexpr const char* kDefaultOutputVideoName = "tracking_output.mkv";
 constexpr const char* kLegacyDefaultOutputName = "out.mkv";
+
+bool yaml_equal(const YAML::Node& lhs, const YAML::Node& rhs) {
+  if (lhs.IsDefined() != rhs.IsDefined())
+    return false;
+  if (!lhs.IsDefined())
+    return true;
+  return YAML::Dump(lhs) == YAML::Dump(rhs);
+}
+
+// Applies only the changes between baseline and desired to the newest on-disk
+// document. Unchanged paths retain concurrent UI/calibration updates.
+YAML::Node apply_yaml_diff(const YAML::Node& baseline, const YAML::Node& desired, const YAML::Node& latest) {
+  if (baseline.IsMap() && desired.IsMap()) {
+    YAML::Node result = latest.IsMap() ? YAML::Clone(latest) : YAML::Node(YAML::NodeType::Map);
+    for (const auto& pair : baseline) {
+      const std::string key = pair.first.as<std::string>();
+      if (!desired[key].IsDefined())
+        result.remove(key);
+    }
+    for (const auto& pair : desired) {
+      const std::string key = pair.first.as<std::string>();
+      const YAML::Node old_value = baseline[key];
+      if (!old_value.IsDefined()) {
+        result[key] = YAML::Clone(pair.second);
+      } else if (!yaml_equal(old_value, pair.second)) {
+        result[key] = apply_yaml_diff(old_value, pair.second, result[key]);
+      }
+    }
+    return result;
+  }
+  return yaml_equal(baseline, desired) ? YAML::Clone(latest) : YAML::Clone(desired);
+}
 
 int as_int(const YAML::Node& node) {
   // be less asserty than YAML-CPP
@@ -1620,17 +1653,26 @@ std::optional<YAML::Node> Configurator::load_private_config() {
 }
 
 absl::Status Configurator::save_private_config(const YAML::Node& private_config) {
-  std::string private_config_file = get_private_config_file_name(game_id_);
-  std::ofstream fout(private_config_file, std::ios::out | std::ios::trunc);
-  if (!fout.is_open()) {
-    return absl::InternalError(TO_STRING(
-        "Failed to open private config file for writing: \"" << private_config_file
-                                                             << "\", reason: " << strerror(errno)));
+  const fs::path game_dir = get_game_dir(game_id_);
+  auto config_lock = stitching::GameConfigTransactionLock::Acquire(game_dir);
+  if (!config_lock.ok())
+    return config_lock.status();
+  const fs::path private_config_file = get_private_config_file_name(game_id_);
+  YAML::Node latest;
+  try {
+    if (fs::is_regular_file(private_config_file))
+      latest = YAML::LoadFile(private_config_file.string());
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Failed to merge private config: " + std::string(error.what()));
   }
-  if (!is_empty_yaml_document(private_config)) {
-    fout << private_config << "\n";
-  }
-  return absl::OkStatus();
+  const YAML::Node merged = apply_yaml_diff(persisted_private_config_, private_config, latest);
+  std::string contents;
+  if (!is_empty_yaml_document(merged))
+    contents = YAML::Dump(merged) + "\n";
+  auto status = stitching::publish_game_config(game_dir, contents);
+  if (status.ok())
+    persisted_private_config_ = YAML::Clone(private_config);
+  return status;
 }
 
 absl::StatusOr<YAML::Node> Configurator::load_config() {
@@ -1644,12 +1686,14 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
   std::optional<YAML::Node> private_config = load_private_config();
   if (private_config.has_value()) {
     private_config_ = *private_config;
+    persisted_private_config_ = YAML::Clone(private_config_);
     config = merge_nodes(
         config,
         private_config_,
         /*warn_if_key_not_in_dest=*/!config);
   } else {
     private_config_ = YAML::Node();
+    persisted_private_config_ = YAML::Node();
   }
   return config;
 }
@@ -1818,15 +1862,10 @@ absl::Status Configurator::complete_configuration(
       if (preserved_pipeline.IsDefined()) {
         config_["pipeline"] = preserved_pipeline;
       }
-      if (private_config_.IsDefined()) {
-        auto save_status = save_private_config(private_config_);
-        if (!save_status.ok()) {
-          if (clean_stitching_artifacts) {
-            return save_status;
-          }
-          std::cerr << "Warning: failed to save private config: " << save_status << std::endl;
-        }
-      }
+      // clean_stitching_artifacts already published the merged private YAML.
+      // Keep this process's snapshot aligned without overwriting concurrent
+      // config owners with the stale pre-clean document.
+      persisted_private_config_ = YAML::Clone(private_config_);
     }
   }
 

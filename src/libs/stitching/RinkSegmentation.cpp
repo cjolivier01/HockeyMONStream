@@ -84,6 +84,23 @@ cv::Point2d contour_centroid(const std::vector<cv::Mat>& masks) {
   return {sum.x / static_cast<double>(count), sum.y / static_cast<double>(count)};
 }
 
+absl::Status validate_profile_geometry(const RinkProfile& profile, int width, int height) {
+  if (!std::isfinite(profile.centroid.x) || !std::isfinite(profile.centroid.y) ||
+      !std::isfinite(profile.combined_bbox.x) || !std::isfinite(profile.combined_bbox.y) ||
+      !std::isfinite(profile.combined_bbox.width) || !std::isfinite(profile.combined_bbox.height) ||
+      profile.combined_bbox.x < 0.0 || profile.combined_bbox.y < 0.0 || profile.combined_bbox.width <= 0.0 ||
+      profile.combined_bbox.height <= 0.0 || profile.combined_bbox.x + profile.combined_bbox.width > width + 1.0 ||
+      profile.combined_bbox.y + profile.combined_bbox.height > height + 1.0) {
+    return absl::DataLossError("Ice-rink profile contains invalid geometry");
+  }
+  if (!std::all_of(profile.scores.begin(), profile.scores.end(), [](float score) {
+        return std::isfinite(score) && score >= 0.0f && score <= 1.0f;
+      })) {
+    return absl::DataLossError("Ice-rink profile contains an invalid score");
+  }
+  return absl::OkStatus();
+}
+
 } // namespace
 
 RinkSegmentation::RinkSegmentation(std::unique_ptr<hm::onnx::Session> session) : session_(std::move(session)) {}
@@ -152,6 +169,10 @@ absl::StatusOr<RinkProfile> RinkSegmentation::Postprocess(
       input.resized_width > kInputWidth || input.resized_height > kInputHeight) {
     return absl::InvalidArgumentError("Rink preprocessing metadata is invalid");
   }
+  if (!std::all_of(class_logits, class_logits + class_logit_count, [](float value) { return std::isfinite(value); }) ||
+      !std::all_of(mask_logits, mask_logits + mask_logit_count, [](float value) { return std::isfinite(value); })) {
+    return absl::DataLossError("Rink ONNX output contains non-finite values");
+  }
 
   RinkProfile result;
   for (const Candidate& candidate : top_candidates(class_logits)) {
@@ -212,6 +233,9 @@ absl::StatusOr<RinkProfile> RinkSegmentation::Postprocess(
     return absl::InternalError("Ice-rink masks were unexpectedly empty");
   result.combined_bbox = {min_x, min_y, max_x - min_x, max_y - min_y};
   result.centroid = contour_centroid(result.masks);
+  auto validation = validate_profile_geometry(result, input.source_width, input.source_height);
+  if (!validation.ok())
+    return validation;
   return result;
 }
 
@@ -224,8 +248,14 @@ absl::StatusOr<RinkProfile> RinkSegmentation::Infer(const cv::Mat& bgr_image, do
   }
   cv::Mat inference_image = bgr_image;
   if (inference_scale != 1.0) {
-    const int width = std::max(1, static_cast<int>(std::round(bgr_image.cols * inference_scale)));
-    const int height = std::max(1, static_cast<int>(std::round(bgr_image.rows * inference_scale)));
+    const double scaled_width = std::round(bgr_image.cols * inference_scale);
+    const double scaled_height = std::round(bgr_image.rows * inference_scale);
+    if (!std::isfinite(scaled_width) || !std::isfinite(scaled_height) ||
+        scaled_width > std::numeric_limits<int>::max() || scaled_height > std::numeric_limits<int>::max()) {
+      return absl::InvalidArgumentError("Rink inference scale produces invalid image dimensions");
+    }
+    const int width = std::max(1, static_cast<int>(scaled_width));
+    const int height = std::max(1, static_cast<int>(scaled_height));
     cv::resize(
         bgr_image,
         inference_image,
@@ -271,6 +301,9 @@ absl::StatusOr<RinkProfile> RinkSegmentation::Infer(const cv::Mat& bgr_image, do
     profile->combined_bbox.width /= inference_scale;
     profile->combined_bbox.height /= inference_scale;
   }
+  auto validation = validate_profile_geometry(*profile, bgr_image.cols, bgr_image.rows);
+  if (!validation.ok())
+    return validation;
   return profile;
 }
 

@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/ScoreboardSelector.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 
 #include <algorithm>
 #include <array>
@@ -374,6 +375,9 @@ absl::StatusOr<ScoreboardSelector::Polygon> ScoreboardSelector::ValidateAndOrder
 }
 
 absl::Status ScoreboardSelector::Save(const fs::path& game_dir, const Polygon& polygon) {
+  auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
+  if (!config_lock.ok())
+    return config_lock.status();
   const fs::path config_path = game_dir / "config.yaml";
   YAML::Node config(YAML::NodeType::Map);
   try {
@@ -390,31 +394,9 @@ absl::Status ScoreboardSelector::Save(const fs::path& game_dir, const Polygon& p
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Unable to update scoreboard config: " + std::string(exception.what()));
   }
-  const fs::path temporary = config_path.string() + ".scoreboard.tmp." + std::to_string(::getpid());
-  {
-    std::ofstream output(temporary, std::ios::out | std::ios::trunc);
-    if (!output)
-      return absl::InternalError("Unable to create temporary scoreboard config");
-    output << config << '\n';
-    output.flush();
-    if (!output) {
-      std::error_code ignored;
-      fs::remove(temporary, ignored);
-      return absl::InternalError("Unable to flush temporary scoreboard config");
-    }
-  }
-  if (::chmod(temporary.c_str(), 0600) != 0) {
-    std::error_code ignored;
-    fs::remove(temporary, ignored);
-    return absl::InternalError("Unable to protect temporary scoreboard config");
-  }
-  std::error_code error;
-  fs::rename(temporary, config_path, error);
-  if (error) {
-    fs::remove(temporary, error);
-    return absl::InternalError("Unable to atomically publish scoreboard config: " + error.message());
-  }
-  return absl::OkStatus();
+  std::ostringstream serialized;
+  serialized << config << '\n';
+  return publish_game_config(game_dir, serialized.str());
 }
 
 absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {

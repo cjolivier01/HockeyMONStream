@@ -37,11 +37,15 @@ bool write_tool(const std::filesystem::path& path, const std::string& body) {
   return output.good() && !error;
 }
 
-bool write_spatial_tiff(const std::filesystem::path& path, uint32_t width, uint32_t height, float x_position) {
+bool write_spatial_tiff_tags(
+    const std::filesystem::path& path,
+    uint32_t width,
+    uint32_t height,
+    float x_position,
+    float resolution) {
   TIFF* tif = TIFFOpen(path.c_str(), "w");
   if (tif == nullptr)
     return false;
-  constexpr float resolution = 1.0f;
   TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, width);
   TIFFSetField(tif, TIFFTAG_IMAGELENGTH, height);
   TIFFSetField(tif, TIFFTAG_SAMPLESPERPIXEL, 1);
@@ -52,7 +56,7 @@ bool write_spatial_tiff(const std::filesystem::path& path, uint32_t width, uint3
   TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, height);
   TIFFSetField(tif, TIFFTAG_XRESOLUTION, resolution);
   TIFFSetField(tif, TIFFTAG_YRESOLUTION, resolution);
-  TIFFSetField(tif, TIFFTAG_XPOSITION, x_position / resolution);
+  TIFFSetField(tif, TIFFTAG_XPOSITION, x_position);
   TIFFSetField(tif, TIFFTAG_YPOSITION, 0.0f);
   std::vector<unsigned char> row(width, 127);
   bool ok = true;
@@ -148,15 +152,20 @@ int main() {
   const fs::path enblend = root / "enblend";
   const fs::path fixtures = root / "fixtures";
   fs::create_directories(fixtures);
-  ok &= expect(write_spatial_tiff(fixtures / "mapping_0000.tif", 40, 32, 0.0f), "first fake mapping must exist");
-  ok &= expect(write_spatial_tiff(fixtures / "mapping_0001.tif", 40, 32, 24.0f), "second fake mapping must exist");
+  constexpr float boundary_resolution = 8033.26416015625f;
+  ok &= expect(
+      write_spatial_tiff_tags(fixtures / "mapping_0000.tif", 40, 32, 3490.974853515625f, boundary_resolution),
+      "first fake mapping must exist");
+  ok &= expect(
+      write_spatial_tiff_tags(fixtures / "mapping_0001.tif", 40, 32, 3490.97509765625f, boundary_resolution),
+      "second fake mapping must exist");
   ok &= expect(write_remap_pair(fixtures, "mapping_0000", 40, 32), "first fake CV_16U remap must exist");
   ok &= expect(write_remap_pair(fixtures, "mapping_0001", 40, 32), "second fake CV_16U remap must exist");
-  cv::Mat seam(32, 64, CV_8U, cv::Scalar(0));
-  seam.colRange(32, 64).setTo(255);
+  cv::Mat seam(32, 42, CV_8U, cv::Scalar(0));
+  seam.colRange(21, 42).setTo(255);
   ok &= expect(cv::imwrite((fixtures / "seam_file.png").string(), seam), "fake seam must exist");
   ok &= expect(
-      cv::imwrite((fixtures / "panorama.tif").string(), cv::Mat(32, 64, CV_8UC3, cv::Scalar(1, 2, 3))),
+      cv::imwrite((fixtures / "panorama.tif").string(), cv::Mat(32, 42, CV_8UC3, cv::Scalar(1, 2, 3))),
       "fake panorama must exist");
   ok &= expect(
       write_tool(
@@ -236,8 +245,8 @@ int main() {
         expect(contents.find("v r0") == std::string::npos, "unrequested Hugin optimization variables must be removed");
     const cv::Mat published_seam = cv::imread((root / "game" / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
     ok &= expect(
-        published_seam.size() == cv::Size(64, 32),
-        "Hugin publication must include a decoded seam matching the remap canvas");
+        published_seam.size() == cv::Size(42, 32),
+        "Hugin validation must match hm-cupano's float placement arithmetic at a pixel boundary");
     const cv::Mat published_left = cv::imread((root / "game" / "left.png").string(), cv::IMREAD_COLOR);
     const cv::Mat published_right = cv::imread((root / "game" / "right.png").string(), cv::IMREAD_COLOR);
     ok &= expect(
@@ -300,6 +309,8 @@ int main() {
   const fs::path interrupted = root / "game" / ".hmstream-stitch-interrupted";
   fs::create_directories(interrupted / "previous");
   const std::vector<std::string> artifact_names = {
+      "left.png",
+      "right.png",
       "hm_project.pto",
       "autooptimiser_out.pto",
       "mapping_0000.tif",
@@ -311,11 +322,18 @@ int main() {
       "seam_file.png",
       "panorama.tif",
   };
+  std::vector<fs::file_time_type> expected_mtimes;
+  const auto generation_start = fs::file_time_type::clock::now() - std::chrono::minutes(1);
   {
     std::ofstream manifest(interrupted / "artifacts");
-    for (const std::string& name : artifact_names) {
+    for (size_t index = 0; index < artifact_names.size(); ++index) {
+      const std::string& name = artifact_names[index];
+      const auto modified = generation_start + std::chrono::seconds(index);
+      fs::last_write_time(root / "game" / name, modified);
+      expected_mtimes.push_back(fs::last_write_time(root / "game" / name));
       manifest << name << '\n';
       fs::copy_file(root / "game" / name, interrupted / "previous" / name);
+      fs::last_write_time(interrupted / "previous" / name, expected_mtimes.back());
     }
     std::ofstream(interrupted / "state") << "PREPARED\n";
   }
@@ -328,6 +346,18 @@ int main() {
       fs::file_size(root / "game" / "mapping_0000.tif") > 1 &&
           fs::is_regular_file(root / "game" / "autooptimiser_out.pto"),
       "Hugin recovery must restore the complete prior generation");
+  for (size_t index = 0; index < artifact_names.size(); ++index) {
+    ok &= expect(
+        fs::last_write_time(root / "game" / artifact_names[index]) == expected_mtimes[index],
+        "Hugin recovery must preserve dependency timestamps");
+  }
+  ok &= expect(
+      fs::last_write_time(root / "game" / "right.png") < fs::last_write_time(root / "game" / "hm_project.pto") &&
+          fs::last_write_time(root / "game" / "hm_project.pto") <
+              fs::last_write_time(root / "game" / "autooptimiser_out.pto") &&
+          fs::last_write_time(root / "game" / "autooptimiser_out.pto") <
+              fs::last_write_time(root / "game" / "mapping_0000.tif"),
+      "restored Hugin dependency ordering must remain usable");
 
   const fs::path malformed = root / "game" / ".hmstream-stitch-malformed";
   fs::create_directories(malformed / "previous");

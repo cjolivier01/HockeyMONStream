@@ -362,6 +362,14 @@ echo "[make_deb] Staging configs..."
 cp -r "${TOPDIR}/configs/." "${STAGING}${INSTALL_PREFIX}/configs/"
 # Remove the systemd unit files — those belong to a separate package/install step
 rm -rf "${STAGING}${INSTALL_PREFIX}/configs/systemd"
+# Source checkouts keep native models in a per-user cache.  Installed configs
+# instead reference the immutable package-owned copies staged below, so Play
+# works without a token, download, or writable model directory.
+for native_config in ds_hockey_app_config.yaml ds_hockey_configure_stitching.yaml; do
+  sed -i \
+    "s#\\\$HOME/.cache/hmstream/models/#${INSTALL_PREFIX}/pretrained/native-calibration/#g" \
+    "${STAGING}${INSTALL_PREFIX}/configs/${native_config}"
+done
 
 # ---------- pretrained assets ----------
 echo "[make_deb] Staging declared non-engine pretrained assets..."
@@ -373,6 +381,7 @@ fi
 "${HMSTREAM_ASSETS}" --print-targets "${TOPDIR}/configs/ds_hockey_app_config.yaml" \
   > "${asset_manifest}"
 pretrained_root="$(readlink -f "${TOPDIR}/pretrained" 2>/dev/null || true)"
+model_cache_root="$(readlink -f "${HOME}/.cache/hmstream/models" 2>/dev/null || true)"
 while IFS= read -r asset; do
   [[ -n "${asset}" ]] || continue
   [[ "${asset}" != *.engine ]] || continue
@@ -381,15 +390,14 @@ while IFS= read -r asset; do
     exit 1
   fi
   asset_real="$(readlink -f "${asset}")"
-  case "${asset_real}" in
-    "${pretrained_root}/"*)
-      rel="${asset_real#"${pretrained_root}"/}"
-      ;;
-    *)
-      echo "ERROR: package-owned pretrained asset is outside the declared pretrained root: ${asset}" >&2
-      exit 1
-      ;;
-  esac
+  if [[ -n "${pretrained_root}" && "${asset_real}" == "${pretrained_root}/"* ]]; then
+    rel="${asset_real#"${pretrained_root}"/}"
+  elif [[ -n "${model_cache_root}" && "${asset_real}" == "${model_cache_root}/"* ]]; then
+    rel="native-calibration/${asset_real#"${model_cache_root}"/}"
+  else
+    echo "ERROR: package-owned pretrained asset is outside an approved pretrained/model-cache root: ${asset}" >&2
+    exit 1
+  fi
   dest="${STAGING}${INSTALL_PREFIX}/pretrained/${rel}"
   mkdir -p "$(dirname "${dest}")"
   # Downloaded assets may inherit mkstemp's owner-only mode.  Package runtime

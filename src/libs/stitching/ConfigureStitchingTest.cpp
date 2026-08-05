@@ -1,10 +1,13 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
 
 #include <tiffio.h>
 #include <yaml-cpp/yaml.h>
 
 #include <sys/wait.h>
 #include <unistd.h>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -13,6 +16,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -260,6 +264,38 @@ rink:
   return true;
 }
 
+bool expect_clean_waits_for_transaction_locks(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "clean_locking";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  std::ofstream(dir / "config.yaml") << "unrelated: true\n";
+
+  auto expect_wait = [&](auto held_lock, const char* message) {
+    if (!held_lock.ok())
+      return false;
+    std::atomic<bool> finished{false};
+    absl::Status clean_status;
+    std::thread cleaner([&]() {
+      clean_status = hm::stitching::clean_stitching_artifacts(dir.string());
+      finished = true;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const bool waited = !finished.load();
+    held_lock->reset();
+    cleaner.join();
+    if (!waited || !clean_status.ok()) {
+      std::cerr << message << ": waited=" << waited << " status=" << clean_status << std::endl;
+      return false;
+    }
+    return true;
+  };
+
+  if (!expect_wait(hm::stitching::HuginProject::RecoverAndLock(dir), "clean must wait for the Hugin lock"))
+    return false;
+  return expect_wait(
+      hm::stitching::GameConfigTransactionLock::Acquire(dir), "clean must wait for the config/rink transaction lock");
+}
+
 bool expect_legacy_seam_generation_rejects_oversized_tiff(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "oversized_legacy_tiff";
   fs::remove_all(dir);
@@ -316,8 +352,12 @@ int main() {
     finish(tmpdir, 8);
   }
 
-  if (!expect_legacy_seam_generation_rejects_oversized_tiff(tmpdir)) {
+  if (!expect_clean_waits_for_transaction_locks(tmpdir)) {
     finish(tmpdir, 9);
+  }
+
+  if (!expect_legacy_seam_generation_rejects_oversized_tiff(tmpdir)) {
+    finish(tmpdir, 10);
   }
 
   finish(tmpdir, 0);

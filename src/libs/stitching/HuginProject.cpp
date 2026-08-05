@@ -194,6 +194,20 @@ absl::Status fsync_path(const fs::path& path, bool directory = false) {
   return absl::OkStatus();
 }
 
+absl::Status copy_file_preserving_mtime(const fs::path& source, const fs::path& destination) {
+  std::error_code error;
+  const auto modified = fs::last_write_time(source, error);
+  if (error)
+    return absl::InternalError("Unable to read stitch artifact timestamp: " + error.message());
+  fs::copy_file(source, destination, fs::copy_options::overwrite_existing, error);
+  if (error)
+    return absl::InternalError("Unable to copy stitch artifact: " + error.message());
+  fs::last_write_time(destination, modified, error);
+  if (error)
+    return absl::InternalError("Unable to preserve stitch artifact timestamp: " + error.message());
+  return fsync_path(destination);
+}
+
 absl::Status write_transaction_file(const fs::path& path, const std::string& contents) {
   auto status = write_file(path, contents);
   if (!status.ok())
@@ -307,12 +321,9 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
       }
       for (const fs::path& old : backups) {
         const fs::path destination = root / old.filename();
-        fs::copy_file(old, destination, fs::copy_options::overwrite_existing, error);
-        if (error)
-          return absl::InternalError("Unable to restore interrupted stitch artifact: " + error.message());
-        auto status = fsync_path(destination);
+        auto status = copy_file_preserving_mtime(old, destination);
         if (!status.ok())
-          return status;
+          return absl::InternalError("Unable to restore interrupted stitch artifact: " + std::string(status.message()));
       }
       error.clear();
       auto status = fsync_path(root, true);
@@ -330,8 +341,8 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
 }
 
 struct TiffPlacement {
-  double x{0.0};
-  double y{0.0};
+  float x{0.0f};
+  float y{0.0f};
   int width{0};
   int height{0};
 };
@@ -385,11 +396,11 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(
       x_resolution <= 0.0f || y_resolution <= 0.0f || !std::isfinite(x_position) || !std::isfinite(y_position)) {
     return absl::FailedPreconditionError("Hugin TIFF metadata or pixel data is invalid: " + path.string());
   }
-  return TiffPlacement{
-      static_cast<double>(x_position) * x_resolution,
-      static_cast<double>(y_position) * y_resolution,
-      static_cast<int>(width),
-      static_cast<int>(height)};
+  const float x = x_position * x_resolution;
+  const float y = y_position * y_resolution;
+  if (!std::isfinite(x) || !std::isfinite(y))
+    return absl::FailedPreconditionError("Hugin TIFF placement overflows pixel coordinates: " + path.string());
+  return TiffPlacement{x, y, static_cast<int>(width), static_cast<int>(height)};
 }
 
 absl::Status inspect_remap_tiff(
@@ -514,14 +525,14 @@ absl::Status validate_remaps(
 }
 
 absl::StatusOr<std::pair<int, int>> normalize_and_measure(TiffPlacement* first, TiffPlacement* second) {
-  const double minimum_x = std::min(first->x, second->x);
-  const double minimum_y = std::min(first->y, second->y);
+  const float minimum_x = std::min(first->x, second->x);
+  const float minimum_y = std::min(first->y, second->y);
   first->x -= minimum_x;
   second->x -= minimum_x;
   first->y -= minimum_y;
   second->y -= minimum_y;
-  const double width = std::max(first->x + first->width, second->x + second->width);
-  const double height = std::max(first->y + first->height, second->y + second->height);
+  const float width = std::max(first->x + first->width, second->x + second->width);
+  const float height = std::max(first->y + first->height, second->y + second->height);
   if (!std::isfinite(width) || !std::isfinite(height) || width < 1.0 || height < 1.0 ||
       width > std::numeric_limits<int>::max() || height > std::numeric_limits<int>::max()) {
     return absl::FailedPreconditionError("Hugin mapping TIFFs produce an invalid canvas");
@@ -819,12 +830,10 @@ absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir
       error.clear();
       continue;
     }
-    fs::copy_file(game_dir / name, backups / name, fs::copy_options::overwrite_existing, error);
-    if (error)
-      return absl::InternalError("Unable to preserve previous stitch artifact " + name + ": " + error.message());
-    auto status = fsync_path(backups / name);
+    auto status = copy_file_preserving_mtime(game_dir / name, backups / name);
     if (!status.ok())
-      return status;
+      return absl::InternalError(
+          "Unable to preserve previous stitch artifact " + name + ": " + std::string(status.message()));
   }
 
   std::ostringstream manifest;

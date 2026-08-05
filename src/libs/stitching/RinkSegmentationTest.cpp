@@ -2,9 +2,12 @@
 
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 #include <opencv2/core.hpp>
+
+#include "absl/status/status.h"
 
 namespace {
 
@@ -80,6 +83,27 @@ int main() {
   ok &= expect(
       !hm::stitching::RinkSegmentation::Postprocess(metadata, nullptr, 0, masks.data(), masks.size()).ok(),
       "missing logits must fail");
+
+  const std::vector<float> valid_classes = classes;
+  const std::vector<float> valid_masks = masks;
+  for (const float invalid : {
+           std::numeric_limits<float>::quiet_NaN(),
+           std::numeric_limits<float>::infinity(),
+           -std::numeric_limits<float>::infinity(),
+       }) {
+    classes = valid_classes;
+    classes.back() = invalid;
+    const auto bad_classes = hm::stitching::RinkSegmentation::Postprocess(
+        metadata, classes.data(), classes.size(), valid_masks.data(), valid_masks.size());
+    ok &= expect(absl::IsDataLoss(bad_classes.status()), "every non-finite class logit must fail before sorting");
+
+    masks = valid_masks;
+    masks.back() = invalid;
+    const auto bad_masks = hm::stitching::RinkSegmentation::Postprocess(
+        metadata, valid_classes.data(), valid_classes.size(), masks.data(), masks.size());
+    ok &=
+        expect(absl::IsDataLoss(bad_masks.status()), "every non-finite mask logit must fail before OpenCV processing");
+  }
 
   std::fill(classes.begin(), classes.end(), -10.0f);
   auto no_rink = hm::stitching::RinkSegmentation::Postprocess(

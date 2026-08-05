@@ -10,6 +10,7 @@
 #include "hstream/src/libs/stitching/Orientation.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 
 #include <algorithm>
 #include <cassert>
@@ -18,6 +19,7 @@
 #include <fstream>
 #include <iostream>
 #include <regex>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -361,6 +363,9 @@ absl::Status save_orientation_config(const fs::path& game_dir, const VideoChapte
     right_paths.push_back(relative_right.string());
   }
 
+  auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
+  if (!config_lock.ok())
+    return config_lock.status();
   const fs::path config_path = game_dir / "config.yaml";
   YAML::Node config(YAML::NodeType::Map);
   try {
@@ -372,27 +377,9 @@ absl::Status save_orientation_config(const fs::path& game_dir, const VideoChapte
     return absl::InvalidArgumentError("Failed to update private game config: " + std::string(error.what()));
   }
 
-  const fs::path temporary = config_path.string() + ".tmp." + std::to_string(::getpid());
-  {
-    std::ofstream output(temporary, std::ios::out | std::ios::trunc);
-    if (!output.is_open())
-      return absl::InternalError("Failed to create temporary game config: " + temporary.string());
-    output << config << '\n';
-    output.flush();
-    if (!output.good()) {
-      output.close();
-      std::error_code ignored;
-      fs::remove(temporary, ignored);
-      return absl::InternalError("Failed to write temporary game config: " + temporary.string());
-    }
-  }
-  std::error_code error;
-  fs::rename(temporary, config_path, error);
-  if (error) {
-    fs::remove(temporary, error);
-    return absl::InternalError("Failed to atomically publish game config: " + error.message());
-  }
-  return absl::OkStatus();
+  std::ostringstream serialized;
+  serialized << config << '\n';
+  return publish_game_config(game_dir, serialized.str());
 }
 } // namespace
 

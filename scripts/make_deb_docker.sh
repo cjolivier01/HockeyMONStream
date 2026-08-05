@@ -148,6 +148,16 @@ if [[ -n "${PRETRAINED_SOURCE}" && -d "${PRETRAINED_SOURCE}" ]]; then
   docker_args+=(--volume "${PRETRAINED_SOURCE}:${PRETRAINED_SOURCE}:ro")
 fi
 
+# Native calibration models intentionally live in a content-addressed user
+# cache for source-tree runs.  Expose that cache read-only to the immutable
+# package build; make_deb.sh verifies every declared digest before and after
+# copying the models into the package-owned pretrained tree.
+MODEL_CACHE_SOURCE="${HMSTREAM_MODEL_CACHE_DIR:-${HOME}/.cache/hmstream/models}"
+if [[ -d "${MODEL_CACHE_SOURCE}" ]]; then
+  MODEL_CACHE_SOURCE="$(readlink -f "${MODEL_CACHE_SOURCE}")"
+  docker_args+=(--volume "${MODEL_CACHE_SOURCE}:/root/.cache/hmstream/models:ro")
+fi
+
 if [[ -n "${SSH_AUTH_SOCK:-}" && -S "${SSH_AUTH_SOCK}" ]]; then
   docker_args+=(--volume "${SSH_AUTH_SOCK}:/run/host-ssh-agent" --env SSH_AUTH_SOCK=/run/host-ssh-agent)
 fi

@@ -35,6 +35,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/stitching",
         "@qt//:qt_widgets",
         "@yaml-cpp",
     ],

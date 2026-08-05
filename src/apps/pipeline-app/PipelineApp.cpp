@@ -234,6 +234,10 @@ void stage_bazel_runtime_libraries(const fs::path& root) {
 
 void configure_pipeline_runtime_environment(const char* argv0) {
   const fs::path root = pipeline_runtime_root(argv0);
+  const fs::path packaged_native_models = root / "pretrained/native-calibration";
+  if (!std::getenv("HM_NATIVE_MODEL_DIR") && fs::is_directory(packaged_native_models)) {
+    setenv("HM_NATIVE_MODEL_DIR", packaged_native_models.c_str(), 1);
+  }
   stage_bazel_runtime_libraries(root);
   std::error_code ec;
   fs::path registry_dir = root / ".cache/gstreamer-1.0";

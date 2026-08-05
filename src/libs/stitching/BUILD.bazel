@@ -14,6 +14,7 @@ cc_library(
   srcs = [
     "CalibrationModels.cpp",
     "ConfigureStitching.cpp",
+    "GameConfig.cpp",
     "Orientation.cpp",
     "ScoreboardSelector.cpp",
     "Synchronization.cpp",
@@ -21,6 +22,7 @@ cc_library(
   hdrs = [
     "CalibrationModels.h",
     "ConfigureStitching.h",
+    "GameConfig.h",
     "Orientation.h",
     "ScoreboardSelector.h",
     "Synchronization.h",
@@ -74,13 +76,22 @@ cc_test(
 )
 
 cc_test(
-  name = "field_mask_persistence_test",
+    name = "field_mask_persistence_test",
   srcs = ["FieldMaskPersistenceTest.cpp"],
   deps = [
     ":stitching",
     "@opencv_linux//:opencv",
     "@yaml-cpp",
   ],
+)
+
+cc_test(
+    name = "game_config_test",
+    srcs = ["GameConfigTest.cpp"],
+    deps = [
+        ":stitching",
+        "@yaml-cpp",
+    ],
 )
 
 cc_library(
@@ -237,6 +248,7 @@ cc_test(
     "$(location //env/debian-package:Dockerfile)",
     "$(location //env/debian-package:build-hmstream-deb.sh)",
     "$(location //scripts:make_deb.sh)",
+    "$(location //scripts:make_deb_docker.sh)",
     "$(location //scripts:install_deb.sh)",
   ],
   data = [
@@ -245,6 +257,7 @@ cc_test(
     "//env/debian-package:build-hmstream-deb.sh",
     "//scripts:install_deb.sh",
     "//scripts:make_deb.sh",
+    "//scripts:make_deb_docker.sh",
   ],
 )
 

@@ -10,8 +10,8 @@
 #include <string>
 
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
-#include "hstream/src/libs/common/pipeline_utils.h"
 #include "hstream/src/libs/common/filesystem.h"
+#include "hstream/src/libs/common/pipeline_utils.h"
 
 struct NvDsConfig;
 struct NvDsPipeline;
@@ -72,16 +72,48 @@ class Configurator {
  private:
   // Refactoring helpers to keep complete_configuration() readable
   void apply_gpu_override(YAML::Node& pipeline);
-  absl::Status setup_stitcher_and_masks(YAML::Node& pipeline, const std::filesystem::path& game_dir, bool force, bool& has_hmstitcher);
+  absl::Status setup_stitcher_and_masks(
+      YAML::Node& pipeline,
+      const std::filesystem::path& game_dir,
+      bool force,
+      bool& has_hmstitcher);
   void map_common_config_keys();
   absl::Status invalidate_rotation_dependent_cache_if_needed(const std::filesystem::path& game_dir);
   absl::Status invalidate_canvas_dependent_cache_if_needed(const std::filesystem::path& game_dir);
   void apply_scoreboard_perspective(YAML::Node& pipeline);
-  absl::Status gather_stitching_videos(const std::filesystem::path& game_dir, bool force, std::vector<std::string>& left_files, std::vector<std::string>& right_files, YAML::Node& offsets);
-  void apply_frame_offsets_and_sizes(const std::vector<std::string>& left_files, const std::vector<std::string>& right_files, const YAML::Node& offsets, size_t& ww, size_t& hh, size_t& area, YAML::Node& pipeline);
-  std::tuple<long,long> cap_playcropper_output(long width, long height) const;
-  absl::Status set_output_dimensions(YAML::Node& pipeline, bool is_camera_source, const std::map<int, YAML::Node>& camera_sources, const std::vector<std::string>& left_files, const std::vector<std::string>& right_files, bool has_hmstitcher, const std::filesystem::path& game_dir, size_t& ww, size_t& hh, size_t& area, size_t& num_video_sources);
-  void configure_audio(YAML::Node& pipeline, const std::vector<std::string>& left_files, const std::vector<std::string>& right_files, const YAML::Node& offsets, size_t& num_video_sources);
+  absl::Status gather_stitching_videos(
+      const std::filesystem::path& game_dir,
+      bool force,
+      std::vector<std::string>& left_files,
+      std::vector<std::string>& right_files,
+      YAML::Node& offsets);
+  void apply_frame_offsets_and_sizes(
+      const std::vector<std::string>& left_files,
+      const std::vector<std::string>& right_files,
+      const YAML::Node& offsets,
+      size_t& ww,
+      size_t& hh,
+      size_t& area,
+      YAML::Node& pipeline);
+  std::tuple<long, long> cap_playcropper_output(long width, long height) const;
+  absl::Status set_output_dimensions(
+      YAML::Node& pipeline,
+      bool is_camera_source,
+      const std::map<int, YAML::Node>& camera_sources,
+      const std::vector<std::string>& left_files,
+      const std::vector<std::string>& right_files,
+      bool has_hmstitcher,
+      const std::filesystem::path& game_dir,
+      size_t& ww,
+      size_t& hh,
+      size_t& area,
+      size_t& num_video_sources);
+  void configure_audio(
+      YAML::Node& pipeline,
+      const std::vector<std::string>& left_files,
+      const std::vector<std::string>& right_files,
+      const YAML::Node& offsets,
+      size_t& num_video_sources);
   absl::Status configure_encode_file_outputs(YAML::Node& pipeline) const;
   void log_enabled_bins(const YAML::Node& pipeline) const;
 
@@ -97,6 +129,7 @@ class Configurator {
   // The fully-realzied merged config
   YAML::Node config_;
   YAML::Node private_config_;
+  YAML::Node persisted_private_config_;
 
   bool set_stream_offsets_{false};
 };

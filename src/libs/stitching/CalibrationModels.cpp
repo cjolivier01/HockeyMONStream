@@ -13,6 +13,8 @@ absl::StatusOr<std::filesystem::path> model_path(const char* override_name, cons
   std::filesystem::path path;
   if (const char* override_path = std::getenv(override_name); override_path && *override_path) {
     path = override_path;
+  } else if (const char* model_dir = std::getenv("HM_NATIVE_MODEL_DIR"); model_dir && *model_dir) {
+    path = std::filesystem::path(model_dir) / content_addressed_name;
   } else {
     const char* home = std::getenv("HOME");
     if (home == nullptr || *home == '\0') {
@@ -24,7 +26,8 @@ absl::StatusOr<std::filesystem::path> model_path(const char* override_name, cons
   if (!std::filesystem::is_regular_file(path, error) || error) {
     return absl::NotFoundError(
         "Missing native calibration model " + path.string() +
-        "; run hmstream-assets on configs/ds_hockey_configure_stitching.yaml or set " + override_name);
+        "; run hmstream-assets on configs/ds_hockey_configure_stitching.yaml or set " + override_name +
+        "/HM_NATIVE_MODEL_DIR");
   }
   if (std::filesystem::file_size(path, error) == 0 || error) {
     return absl::FailedPreconditionError("Native calibration model is empty: " + path.string());
