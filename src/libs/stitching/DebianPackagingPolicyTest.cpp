@@ -66,7 +66,9 @@ int main(int argc, char** argv) {
           contains(installer, "disable_cuda_compat_sources") &&
           contains(installer, "disable_installer_managed_cuda_sources") &&
           contains(installer, "CUDA_LEGACY_COMPAT_SOURCE") && contains(installer, "publish_cuda_compat_source") &&
-          contains(installer, "Enabled: no") && !contains(installer, "rollback_transaction") &&
+          contains(installer, "restore_compat_source_transition") && contains(installer, "sync -d") &&
+          contains(installer, "sync -f") && contains(installer, "Enabled: no") &&
+          !contains(installer, "rollback_transaction") &&
           !contains(installer, "install -m 0644 \"${combined_keyring}\" /usr/share/keyrings/cuda-archive-keyring.gpg"),
       "Ubuntu 26 installer must own its key and interruption-safely replace duplicate compatibility sources");
   return ok ? 0 : 1;

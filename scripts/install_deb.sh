@@ -18,17 +18,22 @@ CUDA_LEGACY_COMPAT_SOURCE='/etc/apt/sources.list.d/cuda-ubuntu2404-x86_64.list'
 # exercised against an isolated APT tree by the Bazel regression test.
 disable_cuda_compat_sources() {
   local apt_root="$1"
+  local only_source="${2:-}"
   local source_path resolved_path extension output matches total_matches=0
   local -a candidates=()
   local -A visited=()
 
-  if [[ -f "${apt_root}/etc/apt/sources.list" ]]; then
-    candidates+=("${apt_root}/etc/apt/sources.list")
+  if [[ -n "${only_source}" ]]; then
+    candidates+=("${apt_root}${only_source}")
+  else
+    if [[ -f "${apt_root}/etc/apt/sources.list" ]]; then
+      candidates+=("${apt_root}/etc/apt/sources.list")
+    fi
+    shopt -s nullglob
+    candidates+=("${apt_root}/etc/apt/sources.list.d/"*.list)
+    candidates+=("${apt_root}/etc/apt/sources.list.d/"*.sources)
+    shopt -u nullglob
   fi
-  shopt -s nullglob
-  candidates+=("${apt_root}/etc/apt/sources.list.d/"*.list)
-  candidates+=("${apt_root}/etc/apt/sources.list.d/"*.sources)
-  shopt -u nullglob
 
   for source_path in "${candidates[@]}"; do
     [[ -f "${source_path}" ]] || continue
@@ -218,9 +223,12 @@ disable_cuda_compat_sources() {
     file_matches="$(<"${matches}")"
     rm -f "${matches}"
     if [[ "${file_matches}" -gt 0 ]]; then
+      backup_compat_source_path "${resolved_path}"
       chmod --reference="${resolved_path}" "${output}"
       chown --reference="${resolved_path}" "${output}"
+      sync -d "${output}"
       mv -f "${output}" "${resolved_path}"
+      sync -f "$(dirname "${resolved_path}")"
       total_matches=$((total_matches + file_matches))
     else
       rm -f "${output}"
@@ -232,16 +240,67 @@ disable_cuda_compat_sources() {
 # shellcheck disable=SC2034 # Exposed to the sourced behavior test.
 DISABLED_CUDA_SOURCE_COUNT=0
 
+compat_source_transition_dir=""
+compat_source_transition_committed=0
+declare -a compat_source_paths=()
+declare -a compat_source_backups=()
+declare -a compat_source_existed=()
+
+begin_compat_source_transition() {
+  [[ -z "${compat_source_transition_dir}" ]] || return 0
+  compat_source_transition_dir="$(mktemp -d /tmp/hmstream-cuda-source-transition.XXXXXX)"
+}
+
+backup_compat_source_path() {
+  local path="$1"
+  local index backup
+  [[ -n "${compat_source_transition_dir}" ]] || return 0
+  for index in "${!compat_source_paths[@]}"; do
+    if [[ "${compat_source_paths[${index}]}" == "${path}" ]]; then return 0; fi
+  done
+  index="${#compat_source_paths[@]}"
+  backup="${compat_source_transition_dir}/${index}"
+  compat_source_paths+=("${path}")
+  compat_source_backups+=("${backup}")
+  if [[ -e "${path}" || -L "${path}" ]]; then
+    cp -a -- "${path}" "${backup}"
+    compat_source_existed+=(1)
+  else
+    compat_source_existed+=(0)
+  fi
+}
+
+restore_compat_source_transition() {
+  local index path backup temporary
+  [[ -n "${compat_source_transition_dir}" && "${compat_source_transition_committed}" -eq 0 ]] || return 0
+  for ((index=${#compat_source_paths[@]} - 1; index >= 0; index--)); do
+    path="${compat_source_paths[${index}]}"
+    backup="${compat_source_backups[${index}]}"
+    temporary="${path}.hmstream-restore.$$.${index}"
+    rm -f -- "${temporary}"
+    if [[ "${compat_source_existed[${index}]}" -eq 1 ]]; then
+      cp -a -- "${backup}" "${temporary}"
+      if [[ -f "${temporary}" && ! -L "${temporary}" ]]; then sync -d "${temporary}"; fi
+      mv -Tf "${temporary}" "${path}"
+    else
+      rm -f -- "${path}"
+    fi
+    sync -f "$(dirname "${path}")"
+  done
+}
+
+commit_compat_source_transition() {
+  compat_source_transition_committed=1
+}
+
 disable_installer_managed_cuda_sources() {
   local apt_root="$1"
-  local managed_source
-  for managed_source in \
-    "${apt_root}${CUDA_COMPAT_SOURCE}" \
-    "${apt_root}${CUDA_LEGACY_COMPAT_SOURCE}"; do
-    if [[ -e "${managed_source}" || -L "${managed_source}" ]]; then
-      rm -f -- "${managed_source}"
-    fi
-  done
+  local managed_source="${apt_root}${CUDA_COMPAT_SOURCE}"
+  if [[ -e "${managed_source}" || -L "${managed_source}" ]]; then
+    backup_compat_source_path "${managed_source}"
+    rm -f -- "${managed_source}"
+    sync -f "$(dirname "${managed_source}")"
+  fi
 }
 
 publish_cuda_compat_source() {
@@ -249,6 +308,7 @@ publish_cuda_compat_source() {
   local target="${apt_root}${CUDA_COMPAT_SOURCE}"
   local temporary
   mkdir -p "$(dirname "${target}")"
+  backup_compat_source_path "${target}"
   temporary="$(mktemp "${target}.XXXXXX")"
   if ! printf '%s\n' \
     "deb [arch=amd64 signed-by=${CUDA_COMPAT_KEYRING}] ${CUDA_COMPAT_REPOSITORY} /" \
@@ -257,7 +317,9 @@ publish_cuda_compat_source() {
     return 1
   fi
   chmod 0644 "${temporary}"
+  sync -d "${temporary}"
   mv -f "${temporary}" "${target}"
+  sync -f "$(dirname "${target}")"
 }
 
 # Allow the behavior test to source the production implementation without
@@ -376,6 +438,9 @@ transition_dir=""
 cleanup() {
   local status=$?
   set +e
+  if [[ "${status}" -ne 0 && "${compat_source_transition_committed}" -eq 0 ]]; then
+    restore_compat_source_transition
+  fi
   if [[ -n "${keyring_deb}" ]]; then rm -f "${keyring_deb}"; fi
   if [[ -n "${compat_keyring_deb}" ]]; then rm -f "${compat_keyring_deb}"; fi
   if [[ -n "${native_dir}" ]]; then rm -rf "${native_dir}"; fi
@@ -383,16 +448,19 @@ cleanup() {
   if [[ -n "${combined_keyring}" ]]; then rm -f "${combined_keyring}"; fi
   if [[ -n "${compat_keyring_target_temp}" ]]; then rm -f "${compat_keyring_target_temp}"; fi
   if [[ -n "${transition_dir}" ]]; then rm -rf "${transition_dir}"; fi
+  if [[ -n "${compat_source_transition_dir}" ]]; then rm -rf "${compat_source_transition_dir}"; fi
   return "${status}"
 }
 trap cleanup EXIT
 
-# Older installers used either of two managed filenames and could conflict
-# with a pre-existing source before reaching repair code.  Removing only those
-# known generated entries leaves APT valid even if this process is interrupted;
-# the canonical source is recreated below.
+# Older installers could conflict with a pre-existing source before reaching
+# repair code.  Remove the uniquely owned HMStream entry and disable only the
+# matching line in NVIDIA's legacy conffile before the first APT update.  A
+# normal failure restores both; a crash leaves only fewer active providers.
 if [[ "${VERSION_ID}" == "26.04" ]]; then
+  begin_compat_source_transition
   disable_installer_managed_cuda_sources ""
+  disable_cuda_compat_sources "" "${CUDA_LEGACY_COMPAT_SOURCE}"
 fi
 
 apt-get update
@@ -430,7 +498,9 @@ if [[ "${VERSION_ID}" == "26.04" ]]; then
     "${compat_dir}/usr/share/keyrings/cuda-archive-keyring.gpg" >"${combined_keyring}"
   compat_keyring_target_temp="$(mktemp /usr/share/keyrings/.hmstream-cuda-compat.XXXXXX.gpg)"
   install -m 0644 "${combined_keyring}" "${compat_keyring_target_temp}"
+  sync -d "${compat_keyring_target_temp}"
   mv -f "${compat_keyring_target_temp}" "${CUDA_COMPAT_KEYRING}"
+  sync -f "$(dirname "${CUDA_COMPAT_KEYRING}")"
   compat_keyring_target_temp=""
 
   # First disable all duplicate definitions.  Each atomic file replacement
@@ -439,6 +509,7 @@ if [[ "${VERSION_ID}" == "26.04" ]]; then
   # amd64 binary source with the exact flat-repository suite.
   disable_cuda_compat_sources ""
   publish_cuda_compat_source ""
+  commit_compat_source_transition
 fi
 
 dpkg -i "${keyring_deb}"

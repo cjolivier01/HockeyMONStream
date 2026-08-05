@@ -10,7 +10,11 @@ fi
 HMSTREAM_INSTALLER_SOURCE_ONLY=1 source "$1"
 
 test_root="$(mktemp -d /tmp/hmstream-apt-sources-test.XXXXXX)"
-trap 'rm -rf "${test_root}"' EXIT
+cleanup_test() {
+  rm -rf "${test_root}"
+  if [[ -n "${compat_source_transition_dir:-}" ]]; then rm -rf "${compat_source_transition_dir}"; fi
+}
+trap cleanup_test EXIT
 
 fail() {
   echo "FAIL: $*" >&2
@@ -119,18 +123,48 @@ fi
 [[ "$(sha256sum "${test_root}/etc/apt/sources.list.d/mixed.sources")" == "${mixed_before}" ]] || \
   fail "rejected mixed Deb822 stanza was modified"
 
-# Pre-update recovery removes both filenames emitted by past installers while
-# preserving unrelated source files.  Absence is an APT-valid interrupted state.
+# Pre-update recovery removes the uniquely owned HMStream source but edits only
+# the matching line in NVIDIA's legacy conffile.  A normal failure restores the
+# exact prior files; a completed transition preserves unrelated conffile data.
 reset_apt_tree
 printf '%s\n' 'new managed source' >"${test_root}${CUDA_COMPAT_SOURCE}"
-printf '%s\n' 'legacy managed source' >"${test_root}${CUDA_LEGACY_COMPAT_SOURCE}"
+printf '%s\n' \
+  '# locally retained comment' \
+  "deb [signed-by=/legacy.gpg] ${compat_uri} /" \
+  'deb [signed-by=/unrelated.gpg] https://example.invalid/packages stable' \
+  >"${test_root}${CUDA_LEGACY_COMPAT_SOURCE}"
 printf '%s\n' 'unrelated source' >"${test_root}/etc/apt/sources.list.d/unrelated.list"
+managed_before="$(sha256sum "${test_root}${CUDA_COMPAT_SOURCE}")"
+legacy_before="$(sha256sum "${test_root}${CUDA_LEGACY_COMPAT_SOURCE}")"
+(
+  begin_compat_source_transition
+  disable_installer_managed_cuda_sources "${test_root}"
+  disable_cuda_compat_sources "${test_root}" "${CUDA_LEGACY_COMPAT_SOURCE}"
+  [[ ! -e "${test_root}${CUDA_COMPAT_SOURCE}" ]] || fail "current managed source survived pre-update repair"
+  grep -q '^# HMStream disabled duplicate' "${test_root}${CUDA_LEGACY_COMPAT_SOURCE}" || \
+    fail "legacy compatibility line was not disabled"
+  grep -qF 'https://example.invalid/packages' "${test_root}${CUDA_LEGACY_COMPAT_SOURCE}" || \
+    fail "unrelated legacy conffile entry was removed"
+  restore_compat_source_transition
+  rm -rf "${compat_source_transition_dir}"
+)
+[[ "$(sha256sum "${test_root}${CUDA_COMPAT_SOURCE}")" == "${managed_before}" ]] || \
+  fail "normal-failure recovery did not restore the managed source"
+[[ "$(sha256sum "${test_root}${CUDA_LEGACY_COMPAT_SOURCE}")" == "${legacy_before}" ]] || \
+  fail "normal-failure recovery did not restore the legacy conffile"
+
+begin_compat_source_transition
 disable_installer_managed_cuda_sources "${test_root}"
-[[ ! -e "${test_root}${CUDA_COMPAT_SOURCE}" ]] || fail "current managed source survived pre-update repair"
-[[ ! -e "${test_root}${CUDA_LEGACY_COMPAT_SOURCE}" ]] || fail "legacy managed source survived pre-update repair"
+disable_cuda_compat_sources "${test_root}" "${CUDA_LEGACY_COMPAT_SOURCE}"
+disable_cuda_compat_sources "${test_root}"
+publish_cuda_compat_source "${test_root}"
+commit_compat_source_transition
 [[ "$(<"${test_root}/etc/apt/sources.list.d/unrelated.list")" == 'unrelated source' ]] || \
   fail "pre-update repair changed an unrelated source"
-publish_cuda_compat_source "${test_root}"
+grep -qF '# locally retained comment' "${test_root}${CUDA_LEGACY_COMPAT_SOURCE}" || \
+  fail "completed transition lost legacy conffile comments"
+grep -qF 'https://example.invalid/packages' "${test_root}${CUDA_LEGACY_COMPAT_SOURCE}" || \
+  fail "completed transition lost an unrelated legacy conffile entry"
 [[ -s "${test_root}${CUDA_COMPAT_SOURCE}" ]] || fail "canonical source was not recoverable after interruption"
 
 echo "APT CUDA source reconciliation tests passed"
