@@ -37,8 +37,9 @@ int main(int argc, char** argv) {
       "Ubuntu 24 package config must use the same CUDA 13.2 ABI as DeepStream 9.1");
   ok &= expect(
       contains(dockerfile, "cuda-compiler-13-2") && !contains(dockerfile, "cuda-compiler-12") &&
-          !contains(dockerfile, "Pin-Priority"),
-      "package builder must use CUDA 13.2 without a broad TensorRT pin");
+          contains(dockerfile, "\"libnvinfer-headers-dev=${trt_version}\"") &&
+          contains(dockerfile, "\"libnvinfer10=${trt_version}\"") && !contains(dockerfile, "Pin-Priority"),
+      "package builder must use CUDA 13.2 and transaction-local TensorRT pins without a broad APT pin");
   ok &= expect(
       contains(builder, "TARGET_CUDA_ROOT=/usr/local/cuda-13.2") &&
           !contains(builder, "TARGET_CUDA_ROOT=/usr/local/cuda-12"),

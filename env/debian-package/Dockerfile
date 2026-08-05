@@ -109,6 +109,12 @@ RUN apt-get update \
     && trt_version="$(apt-cache madison libnvinfer10 | awk '$3 ~ /^10\./ && $3 ~ /[+]cuda13[.]2$/ { print $3; exit }')" \
     && test -n "${trt_version}" \
     && apt-get install -y --no-install-recommends \
+      "libnvinfer-headers-dev=${trt_version}" \
+      "libnvinfer-safe-headers-dev=${trt_version}" \
+      "libnvinfer-headers-plugin-dev=${trt_version}" \
+      "libnvinfer10=${trt_version}" \
+      "libnvinfer-plugin10=${trt_version}" \
+      "libnvonnxparsers10=${trt_version}" \
       "libnvinfer-dev=${trt_version}" \
       "libnvinfer-plugin-dev=${trt_version}" \
       "libnvonnxparsers-dev=${trt_version}" \
