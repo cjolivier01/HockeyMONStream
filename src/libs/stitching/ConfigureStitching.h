@@ -32,12 +32,16 @@ absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(const std::str
 
 bool can_configure_stitching(const YAML::Node& config);
 
-bool is_field_mask_configured(const std::string& game_dir);
+absl::StatusOr<std::string> stitched_output_generation_id(
+    const std::string& hugin_generation,
+    double post_stitch_rotate_degrees);
+
+bool is_field_mask_configured(const std::string& game_dir, const std::string& expected_output_generation = {});
 
 absl::Status create_field_mask(
     const std::string& game_dir,
     surface::Surface surface,
-    const std::string& expected_hugin_generation = {});
+    const std::string& expected_output_generation = {});
 
 absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& profile);
 

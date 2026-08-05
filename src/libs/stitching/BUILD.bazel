@@ -36,6 +36,7 @@ cc_library(
     "ConfigureStitching.h",
     "Orientation.h",
     "ScoreboardSelector.h",
+    "StitchedOutputGenerationPayload.h",
     "Synchronization.h",
   ],
   linkopts = [
@@ -95,6 +96,15 @@ cc_test(
     "@opencv_linux//:opencv",
     "@yaml-cpp",
   ],
+)
+
+cc_test(
+    name = "stitched_output_generation_payload_test",
+    srcs = ["StitchedOutputGenerationPayloadTest.cpp"],
+    deps = [
+        ":stitching",
+        "@deepstream//:deepstream_lib",
+    ],
 )
 
 cc_test(

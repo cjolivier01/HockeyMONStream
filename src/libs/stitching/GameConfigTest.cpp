@@ -144,6 +144,11 @@ int main() {
             YAML::LoadFile((root / "config.yaml").string())["generation"].as<std::string>() == "new" &&
             !fs::exists(root / "rink_mask_0.png") && !fs::exists(root / "rink_mask_1.png"),
         "successful rink invalidation must atomically publish config and remove every mask");
+    struct stat invalidated_metadata{};
+    ok &= expect(
+        ::stat((root / "config.yaml").c_str(), &invalidated_metadata) == 0 &&
+            (invalidated_metadata.st_mode & 0777) == 0600,
+        "rink invalidation must publish the replacement private config as owner-only");
   }
 
   fs::remove_all(root);

@@ -72,7 +72,11 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   absl::Status configure_one_pass_from_surfaces(
       hm::surface::Surface incoming_surface_left,
       hm::surface::Surface incoming_surface_right);
-  absl::Status apply_post_stitch_rotation(hm::surface::Surface surface, size_t width, size_t height);
+  absl::Status apply_post_stitch_rotation(
+      hm::surface::Surface surface,
+      size_t width,
+      size_t height,
+      double post_stitch_rotate_degrees);
   absl::Status ensure_rotation_scratch(const hm::surface::Surface& surface, size_t width, size_t height);
   void release_rotation_scratch();
   EosSnapshot snapshot_eos_for_buffer(GstBuffer* inbuf);

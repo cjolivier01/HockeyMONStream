@@ -1,14 +1,17 @@
 #include "hstream/src/gst-plugins/gst-fieldmask/dsfieldmask_lib.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/RinkSegmentation.h"
 
 #include "absl/status/status.h"
 
 #include <opencv2/imgcodecs.hpp>
 
+#include <unistd.h>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
-#include <unistd.h>
 
 namespace fs = std::filesystem;
 
@@ -18,15 +21,34 @@ int main() {
   unsetenv("CONDA_PREFIX");
   setenv("PATH", "/does/not/exist", /*overwrite=*/1);
 
-  const fs::path tmpdir = fs::temp_directory_path() / ("dsfieldmask_load_existing_mask_test_" + std::to_string(::getpid()));
+  const fs::path tmpdir =
+      fs::temp_directory_path() / ("dsfieldmask_load_existing_mask_test_" + std::to_string(::getpid()));
   fs::create_directories(tmpdir);
 
-  const fs::path mask_path = tmpdir / "rink_mask_0.png";
+  for (const char* name : {
+           "hm_project.pto",
+           "autooptimiser_out.pto",
+           "mapping_0000.tif",
+           "mapping_0000_x.tif",
+           "mapping_0000_y.tif",
+           "mapping_0001.tif",
+           "mapping_0001_x.tif",
+           "mapping_0001_y.tif",
+       }) {
+    std::ofstream(tmpdir / name) << "generation-test-artifact\n";
+  }
+
   cv::Mat mask(64, 64, CV_8UC1, cv::Scalar(255));
-  if (!cv::imwrite(mask_path.string(), mask)) {
-    std::cerr << "Failed to write test mask: " << mask_path << std::endl;
+  hm::stitching::RinkProfile profile;
+  profile.masks = {mask};
+  profile.centroid = {32.0, 32.0};
+  profile.combined_bbox = {0.0, 0.0, 64.0, 64.0};
+  const absl::Status saved = hm::stitching::save_rink_profile(tmpdir.string(), profile);
+  if (!saved.ok()) {
+    std::cerr << "Failed to publish test mask: " << saved << std::endl;
     return 2;
   }
+  const fs::path mask_path = tmpdir / "rink_mask_0.png";
 
   DsFieldMaskInitParams params;
   params.detection_mask_file = mask_path.string();

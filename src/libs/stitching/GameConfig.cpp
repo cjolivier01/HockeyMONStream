@@ -359,6 +359,11 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(const fs::path& ga
   auto status = write_transaction_file(staging / "config.yaml", contents);
   if (!status.ok())
     return status;
+  if (::chmod((staging / "config.yaml").c_str(), 0600) != 0)
+    return absl::InternalError("Unable to protect staged game config: " + std::string(std::strerror(errno)));
+  status = fsync_path(staging / "config.yaml");
+  if (!status.ok())
+    return status;
   const fs::path previous = staging / "previous";
   fs::create_directory(previous, error);
   if (error)

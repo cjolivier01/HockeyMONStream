@@ -13,6 +13,7 @@
 #include <thread>
 
 #include <opencv2/imgcodecs.hpp>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
 
@@ -33,6 +34,32 @@ int main() {
     std::ofstream config(root / "config.yaml");
     config << "unrelated:\n  keep: true\n";
   }
+  for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"})
+    std::ofstream(root / name) << "p f2 w32 h24\n";
+  for (const char* name : {
+           "mapping_0000.tif",
+           "mapping_0000_x.tif",
+           "mapping_0000_y.tif",
+           "mapping_0001.tif",
+           "mapping_0001_x.tif",
+           "mapping_0001_y.tif",
+       }) {
+    cv::imwrite((root / name).string(), cv::Mat(24, 32, CV_32F, cv::Scalar(0.0f)));
+  }
+  auto initial_hugin_lock = hm::stitching::HuginProject::RecoverAndLock(root);
+  ok &= expect(initial_hugin_lock.ok(), "generation test must lock initial Hugin artifacts");
+  std::string initial_output_generation;
+  if (initial_hugin_lock.ok()) {
+    auto initial_hugin_generation = hm::stitching::HuginProject::GenerationId(root, **initial_hugin_lock);
+    ok &= expect(initial_hugin_generation.ok(), "generation test must identify initial Hugin artifacts");
+    if (initial_hugin_generation.ok()) {
+      auto generation = hm::stitching::stitched_output_generation_id(*initial_hugin_generation, 0.0);
+      ok &= expect(generation.ok(), "generation test must identify initial stitched output");
+      if (generation.ok())
+        initial_output_generation = *generation;
+    }
+    initial_hugin_lock->reset();
+  }
   cv::Mat first(24, 32, CV_8U, cv::Scalar(0));
   cv::Mat second(24, 32, CV_8U, cv::Scalar(0));
   first(cv::Rect(2, 3, 10, 8)).setTo(255);
@@ -42,15 +69,24 @@ int main() {
   profile.centroid = {15.25, 11.5};
   profile.combined_bbox = {2.0, 3.0, 26.0, 17.0};
   auto status = hm::stitching::save_rink_profile(root.string(), profile);
+  if (!status.ok())
+    std::cerr << "FAIL: initial rink profile publication: " << status << '\n';
   ok &= expect(status.ok(), "valid rink profile must persist");
   if (status.ok()) {
     ok &=
         expect(!cv::imread((root / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE).empty(), "first mask must load");
     ok &=
         expect(!cv::imread((root / "rink_mask_1.png").string(), cv::IMREAD_GRAYSCALE).empty(), "second mask must load");
+    struct stat config_metadata{};
+    ok &= expect(
+        ::stat((root / "config.yaml").c_str(), &config_metadata) == 0 && (config_metadata.st_mode & 0777) == 0600,
+        "rink profile publication must keep the private config owner-only");
     const YAML::Node config = YAML::LoadFile((root / "config.yaml").string());
     ok &= expect(config["unrelated"]["keep"].as<bool>(), "unrelated config must survive");
     ok &= expect(config["rink"]["ice_contours_mask_count"].as<int>() == 2, "mask count must match files");
+    ok &= expect(
+        config["rink"]["stitched_output_generation"].as<std::string>() == initial_output_generation,
+        "rink profile must persist the exact stitched-output generation");
     const YAML::Node bbox = config["rink"]["ice_contours_combined_bbox"];
     ok &= expect(bbox[0].as<double>() == 2.0 && bbox[2].as<double>() == 28.0, "bbox must persist as x1,y1,x2,y2");
 
@@ -71,6 +107,37 @@ int main() {
     ok &= expect(
         hm::stitching::is_field_mask_configured(root.string()),
         "durably prepared rink publication must recover on the next owner");
+
+    const fs::path replacement_mapping = root / "mapping_0000_x.replacement.tif";
+    cv::imwrite(replacement_mapping.string(), cv::Mat(24, 32, CV_32F, cv::Scalar(1.0f)));
+    fs::rename(replacement_mapping, root / "mapping_0000_x.tif");
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()),
+        "same-canvas Hugin recalibration must invalidate a mask from the previous output generation");
+    NvBufSurfaceParams stale_surface_params{};
+    hm::surface::Surface stale_surface(&stale_surface_params);
+    const auto stale_publication =
+        hm::stitching::create_field_mask(root.string(), stale_surface, initial_output_generation);
+    ok &= expect(
+        absl::IsAborted(stale_publication),
+        "downstream inference must reject a frame produced by the previous Hugin generation");
+    ok &= expect(
+        hm::stitching::save_rink_profile(root.string(), profile).ok() &&
+            hm::stitching::is_field_mask_configured(root.string()),
+        "regenerating the profile must bind it to the recalibrated same-size output");
+    YAML::Node rotated_config = YAML::LoadFile((root / "config.yaml").string());
+    rotated_config["stitching"]["post_stitch_rotate_degrees"] = 5.0;
+    {
+      std::ofstream output(root / "config.yaml");
+      output << rotated_config << '\n';
+    }
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()),
+        "a post-stitch rotation change must invalidate a mask even when canvas dimensions do not change");
+    ok &= expect(
+        hm::stitching::save_rink_profile(root.string(), profile).ok() &&
+            hm::stitching::is_field_mask_configured(root.string()),
+        "regenerating the profile must bind it to the rotated output generation");
 
     // Simulate SIGKILL after a prepared transaction published only part of a
     // new generation. The next field-mask read must restore the complete old

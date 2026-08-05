@@ -5,6 +5,7 @@
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 
 #include "absl/status/status.h"
 #include "cupano/cuda/cudaStatus.h"
@@ -661,8 +662,11 @@ absl::Status StitcherPriv::ensure_rotation_scratch(const hm::surface::Surface& s
   return absl::OkStatus();
 }
 
-absl::Status StitcherPriv::apply_post_stitch_rotation(hm::surface::Surface surface, size_t width, size_t height) {
-  const double post_stitch_rotate_degrees = post_stitch_rotate_degrees_.load(std::memory_order_relaxed);
+absl::Status StitcherPriv::apply_post_stitch_rotation(
+    hm::surface::Surface surface,
+    size_t width,
+    size_t height,
+    double post_stitch_rotate_degrees) {
   if (std::abs(post_stitch_rotate_degrees) < 1e-6) {
     return absl::OkStatus();
   }
@@ -1102,23 +1106,34 @@ absl::Status StitcherPriv::GenerateOutput(
     logical_output_params.planeParams.height[0] = canvas->height();
     hm::surface::Surface logical_output_surface(&logical_output_params);
 
-    HM_RETURN_IF_ERROR(apply_post_stitch_rotation(logical_output_surface, canvas->width(), canvas->height()));
+    const double applied_post_stitch_rotation = post_stitch_rotate_degrees_.load(std::memory_order_relaxed);
+    HM_RETURN_IF_ERROR(apply_post_stitch_rotation(
+        logical_output_surface, canvas->width(), canvas->height(), applied_post_stitch_rotation));
+    std::string hugin_generation;
+    {
+      absl::MutexLock lk(&stitcher_mu_);
+      hugin_generation = hugin_generation_id_;
+    }
+    std::string output_generation;
+    HM_ASSIGN_OR_RETURN(
+        output_generation, stitching::stitched_output_generation_id(hugin_generation, applied_post_stitch_rotation));
 
     if (one_pass_mode_ && !field_mask_attempted_) {
       field_mask_attempted_ = true;
-      bool mask_configured = stitching::is_field_mask_configured(config_file_);
+      bool mask_configured = stitching::is_field_mask_configured(config_file_, output_generation);
       if (!mask_configured) {
-        std::string hugin_generation;
-        {
-          absl::MutexLock lk(&stitcher_mu_);
-          hugin_generation = hugin_generation_id_;
-        }
-        absl::Status mask_status = stitching::create_field_mask(config_file_, logical_output_surface, hugin_generation);
+        absl::Status mask_status =
+            stitching::create_field_mask(config_file_, logical_output_surface, output_generation);
         if (!mask_status.ok()) {
           std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
         }
       }
     }
+
+#ifdef HAS_NVDS_CUSTOMUSERMETA
+    stitching::StitchedOutputGenerationPayload::create_and_add<stitching::StitchedOutputGenerationPayload>(
+        reuse_frame_meta, output_generation);
+#endif
 
     if (show_) {
       render("HM Stitcher (LEFT)", incoming_surface_left, cuda_stream_);

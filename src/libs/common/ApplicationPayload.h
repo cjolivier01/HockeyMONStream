@@ -4,7 +4,6 @@
 
 #include <cassert>
 #include <cstdint>
-#include <optional>
 #include <type_traits>
 
 #if NVDS_VERSION_MAJOR > 6 || (NVDS_VERSION_MAJOR == 6 && NVDS_VERSION_MINOR >= 2)
@@ -21,6 +20,7 @@ namespace hm {
 enum HmPayloadType : long {
   HM_PAYLOAD_TYPE_PLAY_TRACKER = NVDS_START_USER_META + 8192,
   HM_PAYLOAD_TYPE_FIELDMASK,
+  HM_PAYLOAD_TYPE_STITCHED_OUTPUT_GENERATION,
 };
 
 struct UserApplicationPayload {
@@ -41,6 +41,8 @@ struct UserApplicationPayload {
   /* release function set by user. "data" holds a pointer to NvDsUserMeta*/
   static void release_user_meta(gpointer data, gpointer user_data);
 
+  static NvDsMetaType ApplicationMetaType();
+
   // Assumption is that there is only one of this type
   template <typename T>
   static const T* get_payload(const NvDsFrameMeta* frame_meta);
@@ -50,8 +52,6 @@ struct UserApplicationPayload {
 
   virtual NvDsMetaType get_meta_type();
 
- private:
-  std::optional<NvDsMetaType> meta_type_;
 };
 
 template <typename T, typename... Args>
@@ -88,6 +88,8 @@ inline const T* UserApplicationPayload::get_payload(const NvDsFrameMeta* frame_m
   for (const NvDsUserMetaList* user_meta_list = frame_meta->frame_user_meta_list; user_meta_list != nullptr;
        user_meta_list = user_meta_list->next) {
     const NvDsUserMeta* user_meta = (const NvDsUserMeta*)user_meta_list->data;
+    if (!user_meta || user_meta->base_meta.meta_type != ApplicationMetaType() || !user_meta->user_meta_data)
+      continue;
     const NVDS_CUSTOM_PAYLOAD* src_user_metadata = (const NVDS_CUSTOM_PAYLOAD*)user_meta->user_meta_data;
     if (src_user_metadata->payloadType == T::PayloadSubType()) {
 #ifdef NDEBUG

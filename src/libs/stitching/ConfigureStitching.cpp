@@ -21,8 +21,10 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
+#include <locale>
 #include <memory>
 #include <optional>
 #include <regex>
@@ -1190,7 +1192,80 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
 
 } // namespace
 
-bool is_field_mask_configured(const std::string& game_dir) {
+absl::StatusOr<std::string> stitched_output_generation_id(
+    const std::string& hugin_generation,
+    double post_stitch_rotate_degrees) {
+  if (hugin_generation.empty())
+    return absl::InvalidArgumentError("A Hugin generation is required");
+  if (!std::isfinite(post_stitch_rotate_degrees))
+    return absl::InvalidArgumentError("Post-stitch rotation must be finite");
+  if (post_stitch_rotate_degrees == 0.0)
+    post_stitch_rotate_degrees = 0.0;
+  std::ostringstream generation;
+  generation.imbue(std::locale::classic());
+  generation << std::setprecision(std::numeric_limits<double>::max_digits10);
+  generation << "hmstream-stitched-output-v1\nhugin-bytes:" << hugin_generation.size() << '\n'
+             << hugin_generation << "post-stitch-rotate-degrees:" << post_stitch_rotate_degrees << '\n';
+  return generation.str();
+}
+
+namespace {
+
+absl::StatusOr<double> configured_post_stitch_rotation(const YAML::Node& config) {
+  try {
+    if (!config || !config.IsMap())
+      return 0.0;
+    YAML::Node stitching;
+    for (const auto& entry : config) {
+      if (entry.first.IsScalar() && entry.first.as<std::string>() == "stitching") {
+        stitching = entry.second;
+        break;
+      }
+    }
+    if (!stitching || !stitching.IsMap())
+      return 0.0;
+    YAML::Node rotation;
+    for (const auto& entry : stitching) {
+      if (entry.first.IsScalar() && entry.first.as<std::string>() == "post_stitch_rotate_degrees") {
+        rotation = entry.second;
+        break;
+      }
+    }
+    if (!rotation || !rotation.IsDefined() || rotation.IsNull())
+      return 0.0;
+    if (!rotation.IsScalar())
+      return absl::InvalidArgumentError("Configured post-stitch rotation must be a scalar");
+    const double value = rotation.as<double>();
+    if (!std::isfinite(value))
+      return absl::InvalidArgumentError("Configured post-stitch rotation must be finite");
+    return value;
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to read configured post-stitch rotation: " + std::string(exception.what()));
+  }
+}
+
+absl::StatusOr<std::string> configured_output_generation(
+    const YAML::Node& config,
+    const std::string& hugin_generation) {
+  double rotation = 0.0;
+  HM_ASSIGN_OR_RETURN(rotation, configured_post_stitch_rotation(config));
+  return stitched_output_generation_id(hugin_generation, rotation);
+}
+
+absl::StatusOr<YAML::Node> load_config_or_empty(const fs::path& config_path) {
+  try {
+    if (fs::is_regular_file(config_path))
+      return YAML::LoadFile(config_path.string());
+    return YAML::Node(YAML::NodeType::Map);
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Unable to read rink profile YAML: " + std::string(exception.what()));
+  }
+}
+
+} // namespace
+
+bool is_field_mask_configured(const std::string& game_dir, const std::string& expected_output_generation) {
   if (game_dir.empty()) {
     return false;
   }
@@ -1202,6 +1277,25 @@ bool is_field_mask_configured(const std::string& game_dir) {
   auto config_transaction = GameConfigTransactionLock::Acquire(root);
   if (!config_transaction.ok())
     return false;
+  auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
+  if (!hugin_generation.ok())
+    return false;
+  auto config = load_config_or_empty(root / "config.yaml");
+  if (!config.ok())
+    return false;
+  auto current_output_generation = configured_output_generation(*config, *hugin_generation);
+  if (!current_output_generation.ok())
+    return false;
+  try {
+    const YAML::Node saved_generation = (*config)["rink"]["stitched_output_generation"];
+    if (!saved_generation || !saved_generation.IsScalar() ||
+        saved_generation.as<std::string>() != *current_output_generation ||
+        (!expected_output_generation.empty() && expected_output_generation != *current_output_generation)) {
+      return false;
+    }
+  } catch (const YAML::Exception&) {
+    return false;
+  }
   const fs::path mask_path = root / "rink_mask_0.png";
   std::error_code ec;
   if (!fs::exists(mask_path, ec) || ec) {
@@ -1237,7 +1331,11 @@ bool is_field_mask_configured(const std::string& game_dir) {
   return true;
 }
 
-absl::Status save_rink_profile_locked(const std::string& game_dir, const RinkProfile& profile) {
+absl::Status save_rink_profile_locked(
+    const std::string& game_dir,
+    const RinkProfile& profile,
+    const std::string& hugin_generation,
+    const std::string& expected_output_generation) {
   if (game_dir.empty() || profile.masks.empty()) {
     return absl::InvalidArgumentError("A game directory and at least one rink mask are required");
   }
@@ -1299,6 +1397,13 @@ absl::Status save_rink_profile_locked(const std::string& game_dir, const RinkPro
   try {
     if (fs::is_regular_file(config_path))
       config = YAML::LoadFile(config_path.string());
+    auto current_output_generation = configured_output_generation(config, hugin_generation);
+    if (!current_output_generation.ok())
+      return current_output_generation.status();
+    if (!expected_output_generation.empty() && expected_output_generation != *current_output_generation) {
+      return absl::AbortedError(
+          "Stitched output generation changed before rink-mask publication; retry with a fresh frame");
+    }
     config["rink"]["ice_contours_mask_count"] = profile.masks.size();
     config["rink"]["ice_contours_mask_centroid"] = std::vector<double>{profile.centroid.x, profile.centroid.y};
     config["rink"]["ice_contours_combined_bbox"] = std::vector<double>{
@@ -1306,6 +1411,7 @@ absl::Status save_rink_profile_locked(const std::string& game_dir, const RinkPro
         profile.combined_bbox.y,
         profile.combined_bbox.x + profile.combined_bbox.width,
         profile.combined_bbox.y + profile.combined_bbox.height};
+    config["rink"]["stitched_output_generation"] = *current_output_generation;
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Unable to update rink profile YAML: " + std::string(exception.what()));
   }
@@ -1318,6 +1424,8 @@ absl::Status save_rink_profile_locked(const std::string& game_dir, const RinkPro
     if (!output)
       return absl::InternalError("Unable to flush rink profile config");
   }
+  if (::chmod((staging / "config.yaml").c_str(), 0600) != 0)
+    return absl::InternalError("Unable to protect staged rink profile config: " + std::string(std::strerror(errno)));
   auto sync_status = fsync_path(staging / "config.yaml");
   if (!sync_status.ok())
     return sync_status;
@@ -1433,24 +1541,35 @@ absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& p
   auto hugin_lock = HuginProject::RecoverAndLock(root);
   if (!hugin_lock.ok())
     return hugin_lock.status();
-  return save_rink_profile_locked(game_dir, profile);
+  auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
+  if (!hugin_generation.ok())
+    return hugin_generation.status();
+  return save_rink_profile_locked(game_dir, profile, *hugin_generation, {});
 }
 
 absl::Status create_field_mask(
     const std::string& game_dir,
     surface::Surface surface,
-    const std::string& expected_hugin_generation) {
+    const std::string& expected_output_generation) {
   const fs::path root(game_dir);
   auto hugin_lock = HuginProject::RecoverAndLock(root);
   if (!hugin_lock.ok())
     return hugin_lock.status();
-  if (!expected_hugin_generation.empty()) {
-    auto current_generation = HuginProject::GenerationId(root, **hugin_lock);
-    if (!current_generation.ok())
-      return current_generation.status();
-    if (*current_generation != expected_hugin_generation) {
-      return absl::AbortedError("Hugin generation changed before rink-mask publication; retry with a fresh frame");
-    }
+  auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
+  if (!hugin_generation.ok())
+    return hugin_generation.status();
+  if (!expected_output_generation.empty()) {
+    auto config_transaction = GameConfigTransactionLock::Acquire(root);
+    if (!config_transaction.ok())
+      return config_transaction.status();
+    auto config = load_config_or_empty(root / "config.yaml");
+    if (!config.ok())
+      return config.status();
+    auto current_output_generation = configured_output_generation(*config, *hugin_generation);
+    if (!current_output_generation.ok())
+      return current_output_generation.status();
+    if (*current_output_generation != expected_output_generation)
+      return absl::AbortedError("Stitched output generation changed; retry rink inference with a fresh frame");
   }
   HM_RETURN_IF_ERROR(save_stitched_image(game_dir, surface));
   const cv::Mat stitched = cv::imread((fs::path(game_dir) / "s.png").string(), cv::IMREAD_COLOR);
@@ -1462,7 +1581,7 @@ absl::Status create_field_mask(
   HM_ASSIGN_OR_RETURN(model, RinkSegmentation::Create(model_path.string()));
   RinkProfile profile;
   HM_ASSIGN_OR_RETURN(profile, model->Infer(stitched, RinkSegmentation::kHockeyMomInferenceScale));
-  return save_rink_profile_locked(game_dir, profile);
+  return save_rink_profile_locked(game_dir, profile, *hugin_generation, expected_output_generation);
 }
 
 absl::Status configure_orientation(const std::string& game_dir) {

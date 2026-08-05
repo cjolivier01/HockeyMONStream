@@ -42,12 +42,14 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <optional>
 #include <set>
+#include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -2590,9 +2592,15 @@ void HmStreamWindow::addVideoPath() {
     removeImportedVideoPath(imported_relative_path, isCopiedImport(imported_relative_path));
     return;
   }
-  if (role == "auto" && !removeClearedCopiedExplicitImports(original_config, had_config)) {
-    removeImportedVideoPath(imported_relative_path, isCopiedImport(imported_relative_path));
-    return;
+  if (role == "auto") {
+    const CopiedImportCleanupResult cleanup = removeClearedCopiedExplicitImports(original_config, had_config);
+    if (cleanup == CopiedImportCleanupResult::kRolledBack) {
+      removeImportedVideoPath(imported_relative_path, isCopiedImport(imported_relative_path));
+      return;
+    }
+    if (cleanup == CopiedImportCleanupResult::kCommittedWithCleanupFailure) {
+      appendLog("video set added, but one or more unreferenced copied imports could not be cleaned");
+    }
   }
   refreshVideoSets();
   appendLog(QString("video set added role=%1 path=%2").arg(role_label(role), imported_relative_path));
@@ -2625,28 +2633,19 @@ void HmStreamWindow::removeSelectedVideoSet() {
   }
   const QString role = item->data(Qt::UserRole).toString();
   const QString relative_path = item->data(Qt::UserRole + 1).toString();
-  const bool copied_import = isCopiedImport(relative_path);
   const QString config_file = QDir(gameDirectory(game_id_edit_->text())).filePath("config.yaml");
-  auto loaded_config = hm::stitching::load_game_config_file(config_file.toStdString());
-  if (!loaded_config.ok()) {
-    appendLog(QString("could not read private config: %1").arg(loaded_config.status().ToString().c_str()));
-    video_set_list_->insertItem(row, item);
-    return;
-  }
-  const bool had_config = loaded_config->has_value();
   QByteArray original_config;
-  if (had_config) {
-    try {
-      original_config = QByteArray::fromStdString(YAML::Dump(**loaded_config) + "\n");
-    } catch (const std::exception& exc) {
-      appendLog(QString("could not read private config: %1").arg(exc.what()));
-      video_set_list_->insertItem(row, item);
-      return;
-    }
+  bool had_config = false;
+  bool copied_import = false;
+  if (const char* delay = std::getenv("HM_TEST_VIDEO_REMOVE_PRE_TRANSACTION_DELAY_MS")) {
+    const long delay_ms = std::strtol(delay, nullptr, 10);
+    if (delay_ms > 0)
+      std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
   }
 
   QByteArray removed_config;
-  if (!removePrivateConfigForRole(role, relative_path, &removed_config)) {
+  if (!removePrivateConfigForRole(
+          role, relative_path, &original_config, &had_config, &copied_import, &removed_config)) {
     video_set_list_->insertItem(row, item);
     return;
   }
@@ -2658,7 +2657,8 @@ void HmStreamWindow::removeSelectedVideoSet() {
     refreshVideoSets();
     return;
   }
-  if (role == "auto" && !removeClearedCopiedExplicitImports(original_config, had_config, false)) {
+  if (role == "auto" &&
+      removeClearedCopiedExplicitImports(original_config, had_config, false) != CopiedImportCleanupResult::kSuccess) {
     appendLog("video set removed, but one or more unreferenced copied imports could not be cleaned");
   }
 
@@ -3034,12 +3034,12 @@ bool HmStreamWindow::isCopiedImport(const QString& relative_path) {
   }
 }
 
-bool HmStreamWindow::removeClearedCopiedExplicitImports(
+HmStreamWindow::CopiedImportCleanupResult HmStreamWindow::removeClearedCopiedExplicitImports(
     const QByteArray& original_config,
     bool had_config,
     bool restore_auto_selection_on_failure) {
   if (!had_config || original_config.isEmpty()) {
-    return true;
+    return CopiedImportCleanupResult::kSuccess;
   }
   YAML::Node old_config;
   YAML::Node current_config;
@@ -3048,13 +3048,13 @@ bool HmStreamWindow::removeClearedCopiedExplicitImports(
   auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
   if (!config_lock.ok()) {
     appendLog(QString("could not lock copied import cleanup: %1").arg(config_lock.status().ToString().c_str()));
-    return false;
+    return CopiedImportCleanupResult::kCommittedWithCleanupFailure;
   }
   try {
     old_config = YAML::Load(original_config.toStdString());
     current_config = YAML::LoadFile(config_file.toStdString());
   } catch (const std::exception&) {
-    return true;
+    return CopiedImportCleanupResult::kCommittedWithCleanupFailure;
   }
 
   std::set<QString> current_references;
@@ -3093,6 +3093,7 @@ bool HmStreamWindow::removeClearedCopiedExplicitImports(
     if (!status.ok()) {
       appendLog(QString("failed to restore private config after cleanup failure %1").arg(config_file));
     }
+    return status.ok();
   };
   auto remove_cleanup_metadata = [&](const std::set<QString>& removed_paths) {
     YAML::Node copied_imports = current_config["hmstream_ui"]["copied_imports"];
@@ -3129,7 +3130,8 @@ bool HmStreamWindow::removeClearedCopiedExplicitImports(
     if (!removeImportedVideoPath(path, true)) {
       if (removed_paths.empty()) {
         if (restore_auto_selection_on_failure) {
-          restore_original_config();
+          return restore_original_config() ? CopiedImportCleanupResult::kRolledBack
+                                           : CopiedImportCleanupResult::kCommittedWithCleanupFailure;
         }
       } else {
         remove_cleanup_metadata(removed_paths);
@@ -3137,7 +3139,7 @@ bool HmStreamWindow::removeClearedCopiedExplicitImports(
           appendLog(QString("failed to update copied import metadata %1").arg(config_file));
         }
       }
-      return false;
+      return CopiedImportCleanupResult::kCommittedWithCleanupFailure;
     }
     removed_paths.insert(path);
   }
@@ -3145,10 +3147,10 @@ bool HmStreamWindow::removeClearedCopiedExplicitImports(
     remove_cleanup_metadata(removed_paths);
     if (!publish_yaml_config(config_path, current_config).ok()) {
       appendLog(QString("failed to update copied import metadata %1").arg(config_file));
-      return false;
+      return CopiedImportCleanupResult::kCommittedWithCleanupFailure;
     }
   }
-  return true;
+  return CopiedImportCleanupResult::kSuccess;
 }
 
 bool HmStreamWindow::syncRuntimeExplicitVideoConfig(YAML::Node& config) {
@@ -3311,7 +3313,18 @@ bool HmStreamWindow::savePrivateConfigForRole(const QString& role, const QString
 bool HmStreamWindow::removePrivateConfigForRole(
     const QString& role,
     const QString& relative_path,
+    QByteArray* original_config,
+    bool* had_config,
+    bool* copied_import,
     QByteArray* published_config) {
+  if (original_config)
+    original_config->clear();
+  if (had_config)
+    *had_config = false;
+  if (copied_import)
+    *copied_import = false;
+  if (published_config)
+    published_config->clear();
   if (!is_explicit_role(role) && role != "auto") {
     return true;
   }
@@ -3328,6 +3341,13 @@ bool HmStreamWindow::removePrivateConfigForRole(
   YAML::Node config;
   try {
     config = YAML::LoadFile(config_path.string());
+    if (original_config)
+      *original_config = QByteArray::fromStdString(YAML::Dump(config) + "\n");
+    if (had_config)
+      *had_config = true;
+    if (copied_import) {
+      *copied_import = is_copied_import_in_config(config, QDir(gameDirectory(game_id_edit_->text())), relative_path);
+    }
   } catch (const std::exception& exc) {
     appendLog(QString("could not update private config: %1").arg(exc.what()));
     return false;

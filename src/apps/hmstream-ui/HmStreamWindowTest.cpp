@@ -1,4 +1,5 @@
 #include "src/apps/hmstream-ui/HmStreamWindow.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 
 #include <QtTest/qtest_widgets.h>
 #include <QtTest/qtestmouse.h>
@@ -23,11 +24,14 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -453,21 +457,36 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
     source_metadata["family"] = "test-family";
     source_metadata["source_parent"] = source_dir.toStdString();
     before_failed_remove["hmstream_ui"]["auto_import_sources"].push_back(source_metadata);
-    before_failed_remove["concurrent"]["keep"] = true;
     std::ofstream out(config);
     out << before_failed_remove << "\n";
   }
+  std::atomic<bool> concurrent_remove_write_ok{false};
+  std::thread concurrent_remove_writer([config, &concurrent_remove_write_ok] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    auto lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+    if (!lock.ok())
+      return;
+    YAML::Node latest = YAML::LoadFile(config.string());
+    latest["concurrent"]["keep"] = true;
+    concurrent_remove_write_ok =
+        hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(latest) + "\n").ok();
+  });
+  ::setenv("HM_TEST_VIDEO_REMOVE_PRE_TRANSACTION_DELAY_MS", "100", 1);
   ::setenv("HM_TEST_VIDEO_REMOVE_FAIL", ".hmstream-ui/right/GX010002.MP4", 1);
   activate(remove_video);
   ::unsetenv("HM_TEST_VIDEO_REMOVE_FAIL");
+  ::unsetenv("HM_TEST_VIDEO_REMOVE_PRE_TRANSACTION_DELAY_MS");
+  concurrent_remove_writer.join();
   YAML::Node after_failed_right_remove = YAML::LoadFile(config.string());
   if (!expect(
-          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / ".hmstream-ui" / "right" / "GX010002.MP4") &&
+          concurrent_remove_write_ok &&
+              fs::exists(
+                  fs::path(window->gameDirectoryText().toStdString()) / ".hmstream-ui" / "right" / "GX010002.MP4") &&
               after_failed_right_remove["hmstream_ui"]["video_roles"]["right"] &&
               after_failed_right_remove["hmstream_ui"]["copied_imports"].size() == 1 &&
               after_failed_right_remove["hmstream_ui"]["auto_import_sources"].size() == 1 &&
               after_failed_right_remove["concurrent"]["keep"].as<bool>(),
-          "Failed explicit deletion must restore role and copied-import metadata without losing unrelated config")) {
+          "Failed deletion must restore the transactional pre-removal state without losing an interleaved writer")) {
     return false;
   }
   if (!select_list_item(list, "Right  .hmstream-ui/right/GX010002.MP4")) {
@@ -679,6 +698,47 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
               cleanup_after["hmstream_ui"]["video_roles"]["left"] &&
               cleanup_after["hmstream_ui"]["copied_imports"].size() == 1,
           "Refused Auto deletion must preserve the complete prior file and config state")) {
+    return false;
+  }
+
+  game_id->setText("ui-partial-auto-cleanup-game");
+  activate(create);
+  const fs::path partial_cleanup_game = fs::path(window->gameDirectoryText().toStdString());
+  fs::create_directories(partial_cleanup_game / ".hmstream-ui" / "left");
+  fs::create_directories(partial_cleanup_game / ".hmstream-ui" / "right");
+  const std::string removed_old_path = ".hmstream-ui/left/aa-old-copy.mp4";
+  const std::string retained_old_path = ".hmstream-ui/right/zz-old-copy.mp4";
+  if (!write_fake_video(QString::fromStdString((partial_cleanup_game / removed_old_path).string())) ||
+      !write_fake_video(QString::fromStdString((partial_cleanup_game / retained_old_path).string()))) {
+    return false;
+  }
+  YAML::Node partial_cleanup_config;
+  partial_cleanup_config["hmstream_ui"]["video_roles"]["left"].push_back(removed_old_path);
+  partial_cleanup_config["hmstream_ui"]["video_roles"]["right"].push_back(retained_old_path);
+  partial_cleanup_config["hmstream_ui"]["copied_imports"].push_back(removed_old_path);
+  partial_cleanup_config["hmstream_ui"]["copied_imports"].push_back(retained_old_path);
+  {
+    std::ofstream out(partial_cleanup_game / "config.yaml");
+    out << partial_cleanup_config << "\n";
+  }
+  activate(create);
+  activate(automatic);
+  ::setenv("HM_TEST_VIDEO_REMOVE_FAIL", retained_old_path.c_str(), 1);
+  video_path->setText(duplicate_a);
+  activate(add_video);
+  ::unsetenv("HM_TEST_VIDEO_REMOVE_FAIL");
+  const YAML::Node partial_cleanup_after = YAML::LoadFile((partial_cleanup_game / "config.yaml").string());
+  if (!expect(
+          !fs::exists(partial_cleanup_game / removed_old_path) &&
+              fs::exists(partial_cleanup_game / retained_old_path) &&
+              fs::exists(partial_cleanup_game / "cam1" / "GX020001.MP4") &&
+              !partial_cleanup_after["hmstream_ui"]["video_roles"]["left"] &&
+              !partial_cleanup_after["hmstream_ui"]["video_roles"]["right"] &&
+              partial_cleanup_after["hmstream_ui"]["copied_imports"].size() == 1 &&
+              partial_cleanup_after["hmstream_ui"]["copied_imports"][0].as<std::string>() == retained_old_path &&
+              window->logText().contains(
+                  "video set added, but one or more unreferenced copied imports could not be cleaned"),
+          "Partial old-copy cleanup must retain the committed new Auto import and metadata for the failed deletion")) {
     return false;
   }
 

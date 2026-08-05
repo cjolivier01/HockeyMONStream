@@ -46,6 +46,12 @@ class HmStreamWindow : public QMainWindow {
   int cameraTabCount() const;
 
  private:
+  enum class CopiedImportCleanupResult {
+    kSuccess,
+    kRolledBack,
+    kCommittedWithCleanupFailure,
+  };
+
   void buildUi();
   void buildTopBar(QVBoxLayout* root);
   void buildMainArea(QVBoxLayout* root);
@@ -84,13 +90,19 @@ class HmStreamWindow : public QMainWindow {
       const QString& auto_group_family = {},
       const QString& source_parent = {});
   bool isCopiedImport(const QString& relative_path);
-  bool removeClearedCopiedExplicitImports(
+  CopiedImportCleanupResult removeClearedCopiedExplicitImports(
       const QByteArray& original_config,
       bool had_config,
       bool restore_auto_selection_on_failure = true);
   bool syncRuntimeExplicitVideoConfig(YAML::Node& config);
   bool savePrivateConfigForRole(const QString& role, const QString& relative_path);
-  bool removePrivateConfigForRole(const QString& role, const QString& relative_path, QByteArray* published_config);
+  bool removePrivateConfigForRole(
+      const QString& role,
+      const QString& relative_path,
+      QByteArray* original_config,
+      bool* had_config,
+      bool* copied_import,
+      QByteArray* published_config);
   bool restorePrivateConfigAfterRemoveFailure(
       const QByteArray& original_config,
       bool had_config,
