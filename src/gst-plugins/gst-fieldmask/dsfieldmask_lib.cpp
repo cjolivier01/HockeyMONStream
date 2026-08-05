@@ -5,6 +5,7 @@
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 
 #include "absl/status/status.h"
 
@@ -34,6 +35,7 @@ struct DsFieldMaskCtx {
   cv::Point2f detection_mask_centroid;
   cv::Rect2i field_box;
   bool logged_mask_size_mismatch{false};
+  std::string loaded_output_generation;
 };
 
 namespace {
@@ -120,19 +122,6 @@ cv::Point2f compute_centroid(const cv::Mat& mask, cv::Rect2i& bbox) {
   return cv::Point2f(sumX / count, sumY / count);
 }
 
-// Load mask from file
-absl::StatusOr<cv::Mat> load_mask_from_file(const std::string& filePath) {
-  if (!fs::exists(filePath)) {
-    return absl::NotFoundError(TO_STRING("Mask file does not exist: " << filePath));
-  }
-  // Load the image as a single-channel grayscale image
-  cv::Mat mask = cv::imread(filePath, cv::IMREAD_GRAYSCALE);
-  if (mask.empty()) {
-    return absl::InvalidArgumentError(TO_STRING("Failed to load mask from file: " << filePath));
-  }
-  return mask;
-}
-
 void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx, bool draw) {
   if (!frame_meta->obj_meta_list || !frame_meta->bInferDone) {
     return;
@@ -188,14 +177,11 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx,
     // max_x = std::max(max_x, detector_bbox_info.org_bbox_coords.left + detector_bbox_info.org_bbox_coords.width);
     // max_y = std::max(max_y, detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height);
 
-    const int lower_center_height_amount =
-        float(bbox_coords.height) * lower_bbox_center_by_height_ratio;
-    const int raise_bottom_height_amount =
-        float(bbox_coords.height) * raise_bbox_bottom_by_height_ratio;
+    const int lower_center_height_amount = float(bbox_coords.height) * lower_bbox_center_by_height_ratio;
+    const int raise_bottom_height_amount = float(bbox_coords.height) * raise_bbox_bottom_by_height_ratio;
 
     // Center of bounding box
-    cv::Point2f ptCenter =
-        cv::Point2f(bbox_center_x, bbox_coords.top + half_height - lower_center_height_amount);
+    cv::Point2f ptCenter = cv::Point2f(bbox_center_x, bbox_coords.top + half_height - lower_center_height_amount);
 
     if (plot_context) {
       plot_context->plot_circle(
@@ -206,8 +192,7 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx,
     }
 
     // Bottom of bounding box (for testing if their feet are on the ice)
-    cv::Point2f ptBottom =
-        cv::Point2f(bbox_center_x, bbox_coords.top + bbox_coords.height);
+    cv::Point2f ptBottom = cv::Point2f(bbox_center_x, bbox_coords.top + bbox_coords.height);
 
     ptBottom.y -= raise_bottom_height_amount;
 
@@ -280,6 +265,17 @@ absl::Status DsFieldMaskProcessFrame(
     return absl::OkStatus();
   }
 
+  std::string output_generation;
+#ifdef HAS_NVDS_CUSTOMUSERMETA
+  if (const auto* payload =
+          hm::UserApplicationPayload::get_payload<hm::stitching::StitchedOutputGenerationPayload>(frame_meta)) {
+    output_generation = payload->generation();
+  }
+#endif
+  if (ctx->total_frame_count > 0 && !ctx->loaded_output_generation.empty() && output_generation.empty()) {
+    return absl::FailedPreconditionError("Stitched-output generation metadata disappeared after mask loading");
+  }
+
   // Only consider the mask "obsolete" if we've already loaded one but it no longer matches the current frame size.
   // On first frame, `detection_u8_mask` is empty and has (cols, rows) = (0, 0); treating that as obsolete would
   // unnecessarily regenerate the rink mask and block the whole pipeline.
@@ -290,10 +286,11 @@ absl::Status DsFieldMaskProcessFrame(
     is_obsolete_detection_mask = true;
   }
 
-  if (ctx->total_frame_count == 0 && (ctx->detection_u8_mask.empty() || is_obsolete_detection_mask)) {
+  const bool output_generation_changed = output_generation != ctx->loaded_output_generation;
+  if (ctx->detection_u8_mask.empty() || is_obsolete_detection_mask || output_generation_changed) {
     fs::path mask_path = ctx->initParams.detection_mask_file;
-    const bool field_mask_configured = hm::stitching::is_field_mask_configured(mask_path.parent_path().string());
-    if (is_obsolete_detection_mask || !field_mask_configured) {
+    auto loaded_mask = hm::stitching::load_field_mask(mask_path.parent_path().string(), output_generation);
+    if (is_obsolete_detection_mask || !loaded_mask.ok()) {
       if (!surface) {
         return absl::FailedPreconditionError("Cannot create field mask without an input surface");
       }
@@ -305,11 +302,14 @@ absl::Status DsFieldMaskProcessFrame(
 #else
       hm::surface::Surface this_surface(&surface->surfaceList[frame_index]);
 #endif
-      HM_RETURN_IF_ERROR(hm::stitching::create_field_mask(mask_path.parent_path().string(), this_surface));
+      HM_RETURN_IF_ERROR(
+          hm::stitching::create_field_mask(mask_path.parent_path().string(), this_surface, output_generation));
+      loaded_mask = hm::stitching::load_field_mask(mask_path.parent_path().string(), output_generation);
     }
-    HM_ASSIGN_OR_RETURN(ctx->detection_u8_mask, load_mask_from_file(ctx->initParams.detection_mask_file));
+    HM_ASSIGN_OR_RETURN(ctx->detection_u8_mask, std::move(loaded_mask));
     ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask, ctx->field_box);
     ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
+    ctx->loaded_output_generation = output_generation;
   }
   prune_detection_boxes(frame_meta, ctx, draw);
 #ifdef HAS_NVDS_CUSTOMUSERMETA

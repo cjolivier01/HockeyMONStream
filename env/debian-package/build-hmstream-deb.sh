@@ -6,7 +6,6 @@ BUILD_DIR=/home/colivier/src/hstream
 OUTPUT_DIR=/output
 CONTAINER_OUTPUT_DIR=/tmp/hmstream-deb-output
 DEEPSTREAM_DEB=/inputs/deepstream.deb
-HMLIB_SOURCE=/hmlib-source
 
 : "${PACKAGE_VERSION:?PACKAGE_VERSION is required}"
 : "${HOST_UID:?HOST_UID is required}"
@@ -16,9 +15,9 @@ HMLIB_SOURCE=/hmlib-source
 case "${TARGET_UBUNTU}" in
   24.04)
     BAZEL_DEB_CONFIG=deb_ubuntu24
-    TARGET_CUDA_ROOT=/usr/local/cuda-12.6
-    TARGET_CUDA_SONAME=12
-    TARGET_CUDA_ARCHES=(sm_70 sm_75 sm_80 sm_86 sm_89 sm_90)
+    TARGET_CUDA_ROOT=/usr/local/cuda-13.2
+    TARGET_CUDA_SONAME=13
+    TARGET_CUDA_ARCHES=(sm_75 sm_80 sm_86 sm_89 sm_90 sm_100 sm_120)
     ;;
   26.04)
     BAZEL_DEB_CONFIG=deb_ubuntu26
@@ -35,9 +34,6 @@ apt-get install -y --no-install-recommends "${DEEPSTREAM_DEB}"
 # The pinned Bazel repositories are public, so container builds should not
 # depend on a developer's SSH agent having a GitHub identity loaded.
 git config --global url.https://github.com/.insteadOf ssh://git@github.com/
-# The read-only bind mount retains the invoking user's ownership while this
-# build runs as root. Trust only the explicit pinned HockeyMOM input mount.
-git config --global --add safe.directory "${HMLIB_SOURCE}"
 
 if ! dpkg-query -W -f='${db:Status-Status} ${Version}\n' deepstream-9.1 | grep -Eq '^installed 9[.]1[.]'; then
   echo "ERROR: the input package did not install DeepStream 9.1." >&2
@@ -73,7 +69,7 @@ rsync -a \
 
 cd "${BUILD_DIR}"
 make HOST_CUDA_FLAGS="--config=${BAZEL_DEB_CONFIG}" \
-  hmstream-cli hmstream-ui yolo-custom-lib hmstream-gst-plugins
+  hmstream-cli hmstream-assets hmstream-ui yolo-custom-lib hmstream-gst-plugins
 
 VIDEOPREP_PLUGIN="${BUILD_DIR}/bazel-bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so"
 CUDA_NEEDED="$(patchelf --print-needed "${VIDEOPREP_PLUGIN}" | grep -E '^lib(cudart|npp[^.]*)[.]so[.]' || true)"
@@ -103,20 +99,10 @@ validate_native_cuda_code() {
 validate_native_cuda_code videoprep "${VIDEOPREP_PLUGIN}"
 validate_native_cuda_code hmstream-cli "${BUILD_DIR}/bazel-bin/src/apps/pipeline-app/hmstream-cli"
 
-shopt -s nullglob
-MMCV_EXTENSIONS=(/opt/hmstream-python-deps/mmcv/_ext.cpython-*.so)
-shopt -u nullglob
-if [[ "${#MMCV_EXTENSIONS[@]}" -ne 1 ]]; then
-  echo "ERROR: expected exactly one packaged MMCV native extension, found ${#MMCV_EXTENSIONS[@]}." >&2
-  exit 1
-fi
-validate_native_cuda_code 'MMCV extension' "${MMCV_EXTENSIONS[0]}"
-
 rm -rf "${CONTAINER_OUTPUT_DIR}"
 mkdir -p "${CONTAINER_OUTPUT_DIR}"
-HMLIB_SOURCE="${HMLIB_SOURCE}" \
-HMSTREAM_PYTHON_DEPS=/opt/hmstream-python-deps \
-  scripts/make_deb.sh --version "${PACKAGE_VERSION}" --output-dir "${CONTAINER_OUTPUT_DIR}"
+HMSTREAM_IMMUTABLE_SOURCE=1 HMSTREAM_TARGET_UBUNTU="${TARGET_UBUNTU}" scripts/make_deb.sh \
+  --version "${PACKAGE_VERSION}" --output-dir "${CONTAINER_OUTPUT_DIR}"
 
 # Bind-mounted output directories can be root-squashed. Copy the completed
 # artifact as the invoking host user instead of relying on container-root

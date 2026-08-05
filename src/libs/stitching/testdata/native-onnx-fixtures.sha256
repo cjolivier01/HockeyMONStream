@@ -1,0 +1,9 @@
+# External release-qualification fixtures. Paths are <fixture-basename>/<file>.
+# The large images remain outside Git; changing any fixture requires an
+# intentional manifest update and a fresh native/Python/Hugin qualification.
+b535875fcbd1c0497f2d173c7ec40f2601e4cfec8c159ff4d6d23d311b7287a7  dh-tv-12-1/left.png
+280f4564576f2cf17c4eab07299aff5fea4ea1853c431e2546227dea860f61ef  dh-tv-12-1/right.png
+2659a192066963f58c78420e84b6cf6185ae8b36fb21eae891660f02da746def  dh-tv-12-1/s.png
+8d7b17da54f59ee9a5d0f47d3cb730d11b2b30c74c915331fdc5271b2c59efe3  tv-12-1-r2/left.png
+7468977a4c701d166d9ae83677d9bcb22f30389f90255941fe43b622a1e2712f  tv-12-1-r2/right.png
+741c4be6b0febbafb938f094c37ffb758de566be6fab04c19e1a0791c154911e  tv-12-1-r2/s.png

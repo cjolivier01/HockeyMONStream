@@ -3,26 +3,13 @@ load("@bazel_tools//tools/cpp:unix_cc_toolchain_config.bzl", "cc_toolchain_confi
 JETSON_SYSROOT = "/opt/jetson-sysroot"
 
 JETSON_CXX_INCLUDES = [
-  JETSON_SYSROOT + "/usr/include",
-  JETSON_SYSROOT + "/usr/include/aarch64-linux-gnu",
-  JETSON_SYSROOT + "/usr/lib/aarch64-linux-gnu/dbus-1.0/include",
-  "/usr/aarch64-linux-gnu/include",
-  "/usr/aarch64-linux-gnu/include/c++/13",
-  "/usr/aarch64-linux-gnu/include/c++/13/aarch64-linux-gnu",
-  "/usr/lib/gcc-cross/aarch64-linux-gnu/13/include",
-  "/usr/lib/gcc-cross/aarch64-linux-gnu/13/include-fixed",
+  "/usr/lib/gcc-cross/aarch64-linux-gnu/11/include",
   JETSON_SYSROOT + "/usr/include/c++/11",
   JETSON_SYSROOT + "/usr/include/aarch64-linux-gnu/c++/11",
-  JETSON_SYSROOT + "/usr/include/c++/12",
-  JETSON_SYSROOT + "/usr/include/aarch64-linux-gnu/c++/12",
-  JETSON_SYSROOT + "/usr/include/c++/13",
-  JETSON_SYSROOT + "/usr/include/aarch64-linux-gnu/c++/13",
-  JETSON_SYSROOT + "/usr/lib/gcc/aarch64-linux-gnu/11/include",
-  JETSON_SYSROOT + "/usr/lib/gcc/aarch64-linux-gnu/11/include-fixed",
-  JETSON_SYSROOT + "/usr/lib/gcc/aarch64-linux-gnu/12/include",
-  JETSON_SYSROOT + "/usr/lib/gcc/aarch64-linux-gnu/12/include-fixed",
-  JETSON_SYSROOT + "/usr/lib/gcc/aarch64-linux-gnu/13/include",
-  JETSON_SYSROOT + "/usr/lib/gcc/aarch64-linux-gnu/13/include-fixed",
+  JETSON_SYSROOT + "/usr/include/c++/11/backward",
+  JETSON_SYSROOT + "/usr/lib/aarch64-linux-gnu/dbus-1.0/include",
+  JETSON_SYSROOT + "/usr/include/aarch64-linux-gnu",
+  JETSON_SYSROOT + "/usr/include",
 ]
 
 cc_toolchain_config(
@@ -38,10 +25,10 @@ cc_toolchain_config(
   cxx_builtin_include_directories = JETSON_CXX_INCLUDES,
   tool_paths = {
     "ar": "/usr/bin/aarch64-linux-gnu-ar",
-    "cpp": "/usr/bin/aarch64-linux-gnu-cpp",
+    "cpp": "/usr/bin/aarch64-linux-gnu-cpp-11",
     "dwp": "/bin/false",
-    "gcc": "/usr/bin/aarch64-linux-gnu-gcc",
-    "gcov": "/usr/bin/aarch64-linux-gnu-gcov",
+    "gcc": "/usr/bin/aarch64-linux-gnu-gcc-11",
+    "gcov": "/usr/bin/aarch64-linux-gnu-gcov-11",
     "ld": "/usr/bin/aarch64-linux-gnu-ld",
     "nm": "/usr/bin/aarch64-linux-gnu-nm",
     "objcopy": "/usr/bin/aarch64-linux-gnu-objcopy",
@@ -52,6 +39,17 @@ cc_toolchain_config(
   },
   compile_flags = [
     "-no-canonical-prefixes",
+    # The host cross compiler's default C include directory belongs to the
+    # host glibc. Mixing it with the older Jetson rootfs can emit symbols such
+    # as __isoc23_strtol that the target libc does not provide. Keep the
+    # supported compiler's intrinsic headers, then take the C++/libc headers
+    # from the synced Jetson sysroot in GCC's normal include_next order.
+    "-isystem",
+    JETSON_SYSROOT + "/usr/include/c++/11",
+    "-isystem",
+    JETSON_SYSROOT + "/usr/include/aarch64-linux-gnu/c++/11",
+    "-isystem",
+    JETSON_SYSROOT + "/usr/include/c++/11/backward",
     "-isystem",
     JETSON_SYSROOT + "/usr/include/aarch64-linux-gnu",
     "-isystem",
@@ -61,7 +59,7 @@ cc_toolchain_config(
   ],
   dbg_compile_flags = ["-g"],
   opt_compile_flags = ["-O2"],
-  cxx_flags = [],
+  cxx_flags = ["-nostdinc++"],
   unfiltered_compile_flags = [
     "--sysroot=" + JETSON_SYSROOT,
     "-fPIC",

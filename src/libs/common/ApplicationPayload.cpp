@@ -8,10 +8,12 @@ const char* UserApplicationPayload::PayloadTypeName() const {
 }
 
 NvDsMetaType UserApplicationPayload::get_meta_type() {
-  if (!meta_type_) {
-    meta_type_ = nvds_get_user_meta_type((gchar*)PayloadTypeName());
-  }
-  return *meta_type_;
+  return ApplicationMetaType();
+}
+
+NvDsMetaType UserApplicationPayload::ApplicationMetaType() {
+  static const NvDsMetaType meta_type = nvds_get_user_meta_type((gchar*)"HOCKEYMOM.USER.CUSTOM_META");
+  return meta_type;
 }
 
 gpointer UserApplicationPayload::copy_user_meta(gpointer data, gpointer user_data) {
@@ -22,7 +24,6 @@ gpointer UserApplicationPayload::copy_user_meta(gpointer data, gpointer user_dat
 
   dst_user_metadata->payloadType = udata->payloadType;
   dst_user_metadata->payloadSize = udata->payloadSize;
-  memcpy(dst_user_metadata->payload, udata->payload, udata->payloadSize);
 
   return (gpointer)dst_user_metadata;
 }

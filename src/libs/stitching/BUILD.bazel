@@ -1,15 +1,42 @@
 INCLUDE_PREFIX = "hstream/src/libs/stitching"
 
+filegroup(
+  name = "runtime_sources",
+  srcs = glob(
+    ["*.cpp", "*.h"],
+    exclude = ["*Test.cpp"],
+  ),
+  visibility = ["//visibility:public"],
+)
+
+cc_library(
+  name = "game_config",
+  srcs = ["GameConfig.cpp"],
+  hdrs = ["GameConfig.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    "@yaml-cpp",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
 cc_library(
   name = "stitching",
   srcs = [
+    "CalibrationModels.cpp",
     "ConfigureStitching.cpp",
     "Orientation.cpp",
+    "ScoreboardSelector.cpp",
     "Synchronization.cpp",
   ],
   hdrs = [
+    "CalibrationModels.h",
     "ConfigureStitching.h",
     "Orientation.h",
+    "ScoreboardSelector.h",
+    "StitchedOutputGenerationPayload.h",
     "Synchronization.h",
   ],
   linkopts = [
@@ -22,15 +49,247 @@ cc_library(
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    ":game_config",
     ":correlation",
+    ":feature_matcher",
+    ":hugin_project",
+    ":rink_segmentation",
     "//src/libs/common:utils",
     "@hm-cupano//src/pano:cuda_matrix",
     "@yaml-cpp",
     "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+    "@opencv_linux//:opencv",
   ],
   data = [
     "@hm-cupano//scripts:all_scripts",
   ],
+)
+
+cc_library(
+  name = "rink_segmentation",
+  srcs = ["RinkSegmentation.cpp"],
+  hdrs = ["RinkSegmentation.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    "//src/libs/onnx:session",
+    "@opencv_linux//:opencv",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_test(
+  name = "scoreboard_selector_test",
+  srcs = ["ScoreboardSelectorTest.cpp"],
+  deps = [
+    ":stitching",
+    "@opencv_linux//:opencv",
+    "@yaml-cpp",
+  ],
+)
+
+cc_test(
+    name = "field_mask_persistence_test",
+  srcs = ["FieldMaskPersistenceTest.cpp"],
+  deps = [
+    ":stitching",
+    "@opencv_linux//:opencv",
+    "@yaml-cpp",
+  ],
+)
+
+cc_test(
+    name = "stitched_output_generation_payload_test",
+    srcs = ["StitchedOutputGenerationPayloadTest.cpp"],
+    deps = [
+        ":stitching",
+        "@deepstream//:deepstream_lib",
+    ],
+)
+
+cc_test(
+    name = "game_config_test",
+    srcs = ["GameConfigTest.cpp"],
+    deps = [
+        ":game_config",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
+  name = "feature_matcher",
+  srcs = ["FeatureMatcher.cpp"],
+  hdrs = ["FeatureMatcher.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    "//src/libs/onnx:session",
+    "@opencv_linux//:opencv",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_library(
+  name = "hugin_project",
+  srcs = ["HuginProject.cpp"],
+  hdrs = ["HuginProject.h"],
+  include_prefix = INCLUDE_PREFIX,
+  linkopts = ["-ltiff"],
+  visibility = ["//visibility:public"],
+  deps = [
+    ":feature_matcher",
+    "//src/libs/common:utils",
+    "@opencv_linux//:opencv",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_test(
+  name = "hugin_project_test",
+  srcs = ["HuginProjectTest.cpp"],
+  deps = [
+    ":hugin_project",
+    "@opencv_linux//:opencv",
+  ],
+)
+
+cc_test(
+  name = "feature_matcher_test",
+  srcs = ["FeatureMatcherTest.cpp"],
+  deps = [":feature_matcher"],
+)
+
+cc_test(
+  name = "rink_segmentation_test",
+  srcs = ["RinkSegmentationTest.cpp"],
+  deps = [":rink_segmentation"],
+)
+
+cc_test(
+  name = "orientation_test",
+  srcs = ["OrientationTest.cpp"],
+  deps = [":stitching"],
+)
+
+cc_test(
+  name = "native_model_smoke_test",
+  srcs = ["NativeModelSmokeTest.cpp"],
+  env_inherit = [
+    "HM_FEATURE_MATCHER_ONNX_MODEL",
+    "HM_REQUIRE_ONNX_MODEL_TESTS",
+    "HM_RINK_ONNX_MODEL",
+    "HOME",
+  ],
+  deps = [
+    ":feature_matcher",
+    ":rink_segmentation",
+    "@opencv_linux//:opencv",
+  ],
+)
+
+cc_test(
+  name = "python_parity_test",
+  srcs = ["CalibrationParityTest.cpp"],
+  args = [
+    "$(location :CalibrationParityReference.py)",
+    "$(location @lightglue_onnx_v3//:lightglue_init)",
+    "$(location @raco_v1_weights//file)",
+    "$(location @aliked_n16_weights//file)",
+    "$(location @raco_aliked_lightglue_weights//file)",
+  ],
+  data = [
+    ":CalibrationParityReference.py",
+    "@aliked_n16_weights//file",
+    "@lightglue_onnx_v3//:lightglue_init",
+    "@lightglue_onnx_v3//:python_sources",
+    "@raco_aliked_lightglue_weights//file",
+    "@raco_v1_weights//file",
+  ],
+  env_inherit = [
+    "HM_FEATURE_MATCHER_ONNX_MODEL",
+    "HM_ONNX_PARITY_GAME_DIR",
+    "HM_PARITY_PYTHON",
+    "HM_PARITY_RINK_CHECKPOINT",
+    "HM_PARITY_RINK_CONFIG",
+    "HM_PYTHON",
+    "HM_REQUIRE_ONNX_PARITY",
+    "HM_RINK_ONNX_MODEL",
+    "HOME",
+    "PYTHON_BIN",
+  ],
+  linkopts = ["-lopencv_calib3d"],
+  deps = [
+    ":feature_matcher",
+    ":hugin_project",
+    ":stitching",
+    "@opencv_linux//:opencv",
+    "@yaml-cpp",
+  ],
+)
+
+cc_test(
+  name = "no_python_runtime_test",
+  srcs = ["NoPythonRuntimeTest.cpp"],
+  args = [
+    "$(location //:run.sh)",
+    "$(locations //src/apps/hmstream-assets:runtime_sources)",
+    "$(locations //src/apps/hmstream-ui:runtime_sources)",
+    "$(locations //src/apps/pipeline-app:runtime_sources)",
+    "$(locations //src/libs/assets:runtime_sources)",
+    "$(locations //src/libs/onnx:runtime_sources)",
+    "$(locations //src/libs/stitching:runtime_sources)",
+    "$(location //scripts:make_deb.sh)",
+    "$(location //scripts:install_deb.sh)",
+    "$(location //src/apps/hmstream-assets:hmstream-assets)",
+    "$(location //src/apps/hmstream-ui:hmstream-ui)",
+    "$(location //src/apps/pipeline-app:hmstream-cli)",
+  ],
+  data = [
+    "//:run.sh",
+    "//scripts:install_deb.sh",
+    "//scripts:make_deb.sh",
+    "//src/apps/hmstream-assets:runtime_sources",
+    "//src/apps/hmstream-ui:runtime_sources",
+    "//src/apps/pipeline-app:runtime_sources",
+    "//src/apps/hmstream-assets:hmstream-assets",
+    "//src/apps/hmstream-ui:hmstream-ui",
+    "//src/apps/pipeline-app:hmstream-cli",
+    "//src/libs/assets:runtime_sources",
+    "//src/libs/onnx:runtime_sources",
+    ":runtime_sources",
+  ],
+)
+
+cc_test(
+  name = "debian_packaging_policy_test",
+  srcs = ["DebianPackagingPolicyTest.cpp"],
+  args = [
+    "$(location //:.bazelrc)",
+    "$(location //env/debian-package:Dockerfile)",
+    "$(location //env/debian-package:build-hmstream-deb.sh)",
+    "$(location //scripts:make_deb.sh)",
+    "$(location //scripts:make_deb_docker.sh)",
+    "$(location //scripts:install_deb.sh)",
+  ],
+  data = [
+    "//:.bazelrc",
+    "//env/debian-package:Dockerfile",
+    "//env/debian-package:build-hmstream-deb.sh",
+    "//scripts:install_deb.sh",
+    "//scripts:make_deb.sh",
+    "//scripts:make_deb_docker.sh",
+  ],
+)
+
+sh_test(
+  name = "install_deb_apt_sources_test",
+  srcs = ["InstallDebAptSourcesTest.sh"],
+  args = ["$(location //scripts:install_deb.sh)"],
+  data = ["//scripts:install_deb.sh"],
 )
 
 cc_test(

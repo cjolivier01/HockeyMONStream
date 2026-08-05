@@ -65,8 +65,8 @@ build:blackwell --@rules_cuda//cuda:archs=sm_75;sm_120
 # Debian artifacts use explicit CUDA toolchains and native SASS targets. This
 # avoids relying on PTX JIT compatibility with whatever driver a target host
 # happens to have installed.
-build:deb_ubuntu24 --repo_env=CUDA_PATH=/usr/local/cuda-12.6
-build:deb_ubuntu24 --@rules_cuda//cuda:archs=sm_70;sm_75;sm_80;sm_86;sm_89;sm_90
+build:deb_ubuntu24 --repo_env=CUDA_PATH=/usr/local/cuda-13.2
+build:deb_ubuntu24 --@rules_cuda//cuda:archs=sm_75;sm_80;sm_86;sm_89;sm_90;sm_100;sm_120
 build:deb_ubuntu26 --repo_env=CUDA_PATH=/usr/local/cuda-13.2
 build:deb_ubuntu26 --@rules_cuda//cuda:archs=sm_75;sm_80;sm_86;sm_89;sm_90;sm_100;sm_120
 
@@ -92,3 +92,4 @@ build:jetson --linkopt=-l:libsystemd.so.0
 build:jetson --linkopt=-lm
 build:jetson --repo_env=OPENCV_ROOT=/opt/jetson-sysroot/usr
 build:jetson --repo_env=CUDA_PATH=/opt/jetson-sysroot/usr/local/cuda
+build:jetson --repo_env=HM_BAZEL_PREFER_FIRST_LOCAL_PATH=1

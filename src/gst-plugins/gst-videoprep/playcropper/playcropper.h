@@ -1,9 +1,9 @@
 #pragma once
 
+#include "cupano/pano/cudaMat.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 #include "hstream/src/libs/draw_display/Fonts.h"
 #include "hstream/src/libs/scoreboard/Scoreboard.h"
-#include "cupano/pano/cudaMat.h"
 
 #include <string>
 #include <vector>
@@ -34,7 +34,6 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   gint AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) override;
 
  protected:
-
   absl::Status RenderDisplayMeta(surface::Surface surface, const NvDsFrameMeta* frame_meta, cudaStream_t stream);
   absl::Status RenderScoreboard(surface::Surface in_surface, surface::Surface out_surface, cudaStream_t stream);
   absl::Status EnsureScoreboardPerspectiveConfigured(surface::Surface stitched_surface);
@@ -59,13 +58,14 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   std::unique_ptr<hm::CudaMat<uchar4>> display_surface_;
   float fixed_edge_rotation_angle_{10.0};
   bool show_scoreboard_{false};
-  float scoreboard_width_ratio_{1.0/8};
-  float scoreboard_height_ratio_{1.0/8};
+  float scoreboard_width_ratio_{1.0 / 8};
+  float scoreboard_height_ratio_{1.0 / 8};
   std::string scoreboard_projected_width_;
   std::string scoreboard_projected_height_;
   float scoreboard_scale_{1.0};
   std::unique_ptr<hm::scoreboard::Scoreboard<uchar4>> scoreboard_;
   std::vector<cv::Point2f> scoreboard_perspective_polygion_;
+  bool scoreboard_disabled_{false};
   bool scoreboard_configure_attempted_{false};
   std::string config_file_;
   size_t scoreboard_warp_interval_{3};

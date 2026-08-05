@@ -1,0 +1,4 @@
+# Nested source checkouts imported by the source-only Python parity oracle.
+# Paths are relative to the pinned HockeyMOM checkout.
+82d8a6374f7291e680f342367a520b9bf5a74538  openmm/mmdetection
+840e8523daeb4483f474b48fa9f0da5cec7fa1d1  xmodels/LightGlue

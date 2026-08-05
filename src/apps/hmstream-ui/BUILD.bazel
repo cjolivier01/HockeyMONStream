@@ -1,3 +1,5 @@
+exports_files(["HmStreamWindow.cpp"])
+
 COMMON_COPTS = [
     "-x",
     "c++",
@@ -15,6 +17,16 @@ QT_UI_COMPATIBILITY = select({
     "//conditions:default": [],
 })
 
+filegroup(
+    name = "runtime_sources",
+    srcs = [
+        "HmStreamWindow.cpp",
+        "HmStreamWindow.h",
+        "main.cpp",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 cc_library(
     name = "hmstream_window",
     srcs = ["HmStreamWindow.cpp"],
@@ -23,6 +35,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/stitching:game_config",
         "@qt//:qt_widgets",
         "@yaml-cpp",
     ],
@@ -33,6 +46,7 @@ cc_binary(
     srcs = ["main.cpp"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
+    visibility = ["//visibility:public"],
     deps = [
         ":hmstream_window",
         "@qt//:qt_widgets",

@@ -3,8 +3,8 @@
 #include "absl/status/statusor.h"
 #include "hstream/src/libs/common/Status.h"
 
-#include "cupano/pano/cudaPano.h"
 #include "cupano/cuda/cudaTypes.h"
+#include "cupano/pano/cudaPano.h"
 
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 
@@ -72,7 +72,11 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   absl::Status configure_one_pass_from_surfaces(
       hm::surface::Surface incoming_surface_left,
       hm::surface::Surface incoming_surface_right);
-  absl::Status apply_post_stitch_rotation(hm::surface::Surface surface, size_t width, size_t height);
+  absl::Status apply_post_stitch_rotation(
+      hm::surface::Surface surface,
+      size_t width,
+      size_t height,
+      double post_stitch_rotate_degrees);
   absl::Status ensure_rotation_scratch(const hm::surface::Surface& surface, size_t width, size_t height);
   void release_rotation_scratch();
   EosSnapshot snapshot_eos_for_buffer(GstBuffer* inbuf);
@@ -88,6 +92,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   absl::Mutex stitcher_mu_;
   std::unique_ptr<STITCHER_FP32> stitcher_fp32_ ABSL_GUARDED_BY(stitcher_mu_);
   std::unique_ptr<STITCHER_FP16> stitcher_fp16_ ABSL_GUARDED_BY(stitcher_mu_);
+  std::string hugin_generation_id_ ABSL_GUARDED_BY(stitcher_mu_);
   std::string config_file_;
   std::mutex process_mu_;
   size_t process_pass_{0};

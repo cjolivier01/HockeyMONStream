@@ -3,7 +3,7 @@ _workspace_name = "kstream"
 workspace(name = _workspace_name)
 
 load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository", "new_git_repository")
-load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive", "http_file")
 load("//bazel:conditional_local_repository.bzl", "conditional_local_repository")
 
 local_repository(
@@ -63,6 +63,7 @@ conditional_local_repository(
     build_file = "//buildfiles:third_party/glibconfig.BUILD",
     paths = [
         "/opt/jetson-sysroot/usr/lib/aarch64-linux-gnu/glib-2.0/include",
+        "/usr/lib/aarch64-linux-gnu/glib-2.0/include",
         "/usr/lib/x86_64-linux-gnu/glib-2.0/include",
     ],
 )
@@ -79,6 +80,60 @@ http_archive(
     sha256 = "9c6e26911a79fbf510a8f06d8eedb40f412023cf7fa6d1461def27116bff022c",
     strip_prefix = "rules_python-1.1.0",
     url = "https://github.com/bazelbuild/rules_python/releases/download/1.1.0/rules_python-1.1.0.tar.gz",
+)
+
+# ONNX Runtime is kept private to HMStream rather than depending on a distro
+# package whose ABI/version differs between supported Ubuntu releases.  Both
+# archives are CPU-only; the target platform selects the matching library in
+# //src/libs/onnx.  Keeping acceleration out of this baseline also makes the
+# same exported models usable on x86_64, SBSA, and Jetson.
+http_archive(
+    name = "onnxruntime_linux_x86_64",
+    build_file = "@//buildfiles/third_party:onnxruntime.BUILD",
+    sha256 = "1fa4dcaef22f6f7d5cd81b28c2800414350c10116f5fdd46a2160082551c5f9b",
+    strip_prefix = "onnxruntime-linux-x64-1.23.2",
+    url = "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz",
+)
+
+http_archive(
+    name = "onnxruntime_linux_aarch64",
+    build_file = "@//buildfiles/third_party:onnxruntime.BUILD",
+    sha256 = "7c63c73560ed76b1fac6cff8204ffe34fe180e70d6582b5332ec094810241e5c",
+    strip_prefix = "onnxruntime-linux-aarch64-1.23.2",
+    url = "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-aarch64-1.23.2.tgz",
+)
+
+# The Python parity test reconstructs the exact eager-PyTorch pipeline from
+# which the production RaCo-ALIKED/LightGlue graph was exported. These are
+# source-checkout test inputs only; none is linked into or packaged with the
+# production binaries.
+http_archive(
+    name = "lightglue_onnx_v3",
+    build_file = "@//buildfiles/third_party:lightglue_onnx.BUILD",
+    sha256 = "403435314bc6b1c5da69a242457cfd7334596ac3c66f57e211365dc26751a0b9",
+    strip_prefix = "LightGlue-ONNX-953bd8dee53569f69a3cc8082862828b6f385ded",
+    url = "https://github.com/fabio-sim/LightGlue-ONNX/archive/953bd8dee53569f69a3cc8082862828b6f385ded.tar.gz",
+)
+
+http_file(
+    name = "raco_v1_weights",
+    downloaded_file_path = "raco.pth",
+    sha256 = "79f0d862bb41abedd8dda33a9b0120f4dcd619c43a90398175bad1a019192e3a",
+    url = "https://github.com/cvg/RaCo/releases/download/v1.0.0/raco.pth",
+)
+
+http_file(
+    name = "aliked_n16_weights",
+    downloaded_file_path = "aliked-n16.pth",
+    sha256 = "5be8704840ed662d9d8c561bf7279c222092674e7eb05fd0feab94899e9d82f2",
+    url = "https://github.com/Shiaoming/ALIKED/raw/main/models/aliked-n16.pth",
+)
+
+http_file(
+    name = "raco_aliked_lightglue_weights",
+    downloaded_file_path = "raco_aliked_lightglue.pth",
+    sha256 = "a804c3fe2851cc3c765cda6a9f412845893c8d8e2a3048f848d7f6ba172e6312",
+    url = "https://github.com/cvg/LightGlue/releases/download/v0.1_arxiv/raco_aliked_lightglue.pth",
 )
 
 # {fmt} for SimpleDBus logging

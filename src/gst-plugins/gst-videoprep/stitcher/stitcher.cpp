@@ -4,6 +4,8 @@
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 
 #include "absl/status/status.h"
 #include "cupano/cuda/cudaStatus.h"
@@ -105,6 +107,7 @@ void StitcherPriv::Shutdown() {
     absl::MutexLock lk(&stitcher_mu_);
     stitcher_fp32_.reset();
     stitcher_fp16_.reset();
+    hugin_generation_id_.clear();
   }
   release_rotation_scratch();
 }
@@ -310,6 +313,10 @@ absl::Status StitcherPriv::ensure_stitcher() {
     }
   }
 
+  auto artifact_lock = hm::stitching::HuginProject::RecoverAndLock(config_file_);
+  if (!artifact_lock.ok()) {
+    return artifact_lock.status();
+  }
   absl::MutexLock lk(&stitcher_mu_);
   if (!has_stitcher()) {
     hm::pano::ControlMasks control_masks;
@@ -328,6 +335,11 @@ absl::Status StitcherPriv::ensure_stitcher() {
         return absl::NotFoundError(TO_STRING("Could not load control masks from " << config_file_dir));
       }
     }
+    auto generation = hm::stitching::HuginProject::GenerationId(config_file_, **artifact_lock);
+    if (!generation.ok()) {
+      return generation.status();
+    }
+    hugin_generation_id_ = std::move(*generation);
     update_canvas_hints(control_masks.canvas_width(), control_masks.canvas_height());
     if (stitch_compute_precision_ == StitchComputePrecision::kFp16) {
       g_print("hmstitcher: using fp16 stitch compute\n");
@@ -402,13 +414,15 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
       // TODO: handle this through caps
       params->output_width_height[0] = stitcher_fp16_->canvas_width();
       params->output_width_height[1] = stitcher_fp16_->canvas_height();
-      g_print("Stitched canvas size: %d x %d\n", (int)stitcher_fp16_->canvas_width(), (int)stitcher_fp16_->canvas_height());
+      g_print(
+          "Stitched canvas size: %d x %d\n", (int)stitcher_fp16_->canvas_width(), (int)stitcher_fp16_->canvas_height());
       update_canvas_hints(stitcher_fp16_->canvas_width(), stitcher_fp16_->canvas_height());
     } else if (stitcher_fp32_) {
       // TODO: handle this through caps
       params->output_width_height[0] = stitcher_fp32_->canvas_width();
       params->output_width_height[1] = stitcher_fp32_->canvas_height();
-      g_print("Stitched canvas size: %d x %d\n", (int)stitcher_fp32_->canvas_width(), (int)stitcher_fp32_->canvas_height());
+      g_print(
+          "Stitched canvas size: %d x %d\n", (int)stitcher_fp32_->canvas_width(), (int)stitcher_fp32_->canvas_height());
       update_canvas_hints(stitcher_fp32_->canvas_width(), stitcher_fp32_->canvas_height());
     } else if (one_pass_mode_) {
       g_print("hmstitcher: deferring stitched canvas sizing until the first input batch\n");
@@ -648,8 +662,11 @@ absl::Status StitcherPriv::ensure_rotation_scratch(const hm::surface::Surface& s
   return absl::OkStatus();
 }
 
-absl::Status StitcherPriv::apply_post_stitch_rotation(hm::surface::Surface surface, size_t width, size_t height) {
-  const double post_stitch_rotate_degrees = post_stitch_rotate_degrees_.load(std::memory_order_relaxed);
+absl::Status StitcherPriv::apply_post_stitch_rotation(
+    hm::surface::Surface surface,
+    size_t width,
+    size_t height,
+    double post_stitch_rotate_degrees) {
   if (std::abs(post_stitch_rotate_degrees) < 1e-6) {
     return absl::OkStatus();
   }
@@ -855,17 +872,17 @@ absl::Status StitcherPriv::GenerateOutput(
   }
   std::set<guint> observed_or_eos_source_ids = observed_source_ids;
   observed_or_eos_source_ids.insert(eos_snapshot.source_ids.begin(), eos_snapshot.source_ids.end());
-  const bool source_eos_explains_mismatch =
-      observed_or_eos_source_ids.size() == 2 && duplicate_frame_sources == 0 && invalid_surfaces_per_frame == 0 &&
-      surface_index == in_surface->numFilled && frame_meta_count == in_surface->numFilled &&
-      incomplete_frame_groups > 0 && source_eos_explained_incomplete_groups == incomplete_frame_groups &&
-      unexplained_incomplete_groups == 0 && inconsistent_source_groups == 0 && !missing_eos_source_ids.empty();
+  const bool source_eos_explains_mismatch = observed_or_eos_source_ids.size() == 2 && duplicate_frame_sources == 0 &&
+      invalid_surfaces_per_frame == 0 && surface_index == in_surface->numFilled &&
+      frame_meta_count == in_surface->numFilled && incomplete_frame_groups > 0 &&
+      source_eos_explained_incomplete_groups == incomplete_frame_groups && unexplained_incomplete_groups == 0 &&
+      inconsistent_source_groups == 0 && !missing_eos_source_ids.empty();
 
-  const bool invalid_frame_sequence =
-      (in_surface->batchSize % 2 != 0) || (in_surface->numFilled % 2 != 0) || surface_index != in_surface->numFilled ||
-      frame_meta_count != in_surface->numFilled || duplicate_frame_sources > 0 || invalid_surfaces_per_frame > 0 ||
-      observed_source_ids.size() != 2 || frame_source_surfaces.size() != in_surface->numFilled / 2 ||
-      incomplete_frame_groups > 0 || inconsistent_source_groups > 0;
+  const bool invalid_frame_sequence = (in_surface->batchSize % 2 != 0) || (in_surface->numFilled % 2 != 0) ||
+      surface_index != in_surface->numFilled || frame_meta_count != in_surface->numFilled ||
+      duplicate_frame_sources > 0 || invalid_surfaces_per_frame > 0 || observed_source_ids.size() != 2 ||
+      frame_source_surfaces.size() != in_surface->numFilled / 2 || incomplete_frame_groups > 0 ||
+      inconsistent_source_groups > 0;
   if (invalid_frame_sequence) {
     std::string reason = "invalid_frame_sequence";
     if (in_surface->numFilled % 2 != 0) {
@@ -1089,18 +1106,34 @@ absl::Status StitcherPriv::GenerateOutput(
     logical_output_params.planeParams.height[0] = canvas->height();
     hm::surface::Surface logical_output_surface(&logical_output_params);
 
-    HM_RETURN_IF_ERROR(apply_post_stitch_rotation(logical_output_surface, canvas->width(), canvas->height()));
+    const double applied_post_stitch_rotation = post_stitch_rotate_degrees_.load(std::memory_order_relaxed);
+    HM_RETURN_IF_ERROR(apply_post_stitch_rotation(
+        logical_output_surface, canvas->width(), canvas->height(), applied_post_stitch_rotation));
+    std::string hugin_generation;
+    {
+      absl::MutexLock lk(&stitcher_mu_);
+      hugin_generation = hugin_generation_id_;
+    }
+    std::string output_generation;
+    HM_ASSIGN_OR_RETURN(
+        output_generation, stitching::stitched_output_generation_id(hugin_generation, applied_post_stitch_rotation));
 
     if (one_pass_mode_ && !field_mask_attempted_) {
       field_mask_attempted_ = true;
-      bool mask_configured = stitching::is_field_mask_configured(config_file_);
+      bool mask_configured = stitching::is_field_mask_configured(config_file_, output_generation);
       if (!mask_configured) {
-        absl::Status mask_status = stitching::create_field_mask(config_file_, logical_output_surface);
+        absl::Status mask_status =
+            stitching::create_field_mask(config_file_, logical_output_surface, output_generation);
         if (!mask_status.ok()) {
           std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
         }
       }
     }
+
+#ifdef HAS_NVDS_CUSTOMUSERMETA
+    stitching::StitchedOutputGenerationPayload::create_and_add<stitching::StitchedOutputGenerationPayload>(
+        reuse_frame_meta, output_generation);
+#endif
 
     if (show_) {
       render("HM Stitcher (LEFT)", incoming_surface_left, cuda_stream_);

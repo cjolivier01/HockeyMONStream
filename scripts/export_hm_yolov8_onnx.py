@@ -16,7 +16,7 @@ DEFAULT_CHECKPOINT_URL = (
     "https://github.com/cjolivier01/HockeyMOM/releases/download/v0.0.1/"
     "hm_crowdhuman_e85_yolov8_m_1984_736.pth"
 )
-DEFAULT_ONNX_NAME = "hm_crowdhuman_e85_yolov8_m_1984_736_b2_1984x736.onnx"
+DEFAULT_ONNX_NAME = "hm_crowdhuman_e85_yolov8_m_1984_736_dynamic_b1-b2_1984x736.onnx"
 
 
 def _repo_root() -> Path:
@@ -98,7 +98,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--opset", type=int, default=17)
-    parser.add_argument("--dynamic-batch", action="store_true")
+    parser.add_argument("--dynamic-batch", dest="dynamic_batch", action="store_true")
+    parser.add_argument(
+        "--fixed-batch",
+        dest="dynamic_batch",
+        action="store_false",
+        help="developer-only compatibility export; DeepStream production assets must keep a dynamic batch axis",
+    )
+    parser.set_defaults(dynamic_batch=True)
     parser.add_argument("--timeout", type=float, default=120.0)
     return parser
 

@@ -35,17 +35,24 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "hstream/src/libs/stitching/GameConfig.h"
+
+#include <QtCore/QUuid>
+
 #ifdef Q_OS_UNIX
 #include <signal.h>
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <optional>
 #include <set>
+#include <stdexcept>
+#include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -54,6 +61,37 @@ namespace {
 
 constexpr int kExposureEvSliderZero = 40;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
+
+absl::Status publish_yaml_config(const fs::path& config_path, const YAML::Node& config) {
+  std::string contents;
+  if (config.IsDefined() && !config.IsNull())
+    contents = YAML::Dump(config) + "\n";
+  return hm::stitching::publish_game_config(config_path.parent_path(), contents);
+}
+
+QString development_runtime_root() {
+  QString application_path = QFileInfo(QCoreApplication::applicationFilePath()).canonicalFilePath();
+  if (application_path.isEmpty()) {
+    application_path = QFileInfo(QCoreApplication::applicationFilePath()).absoluteFilePath();
+  }
+  const QString application_name = QFileInfo(application_path).fileName();
+  QDir candidate_root(QDir::currentPath());
+  while (true) {
+    const QString candidate_application =
+        candidate_root.filePath(QString("bazel-bin/src/apps/hmstream-ui/%1").arg(application_name));
+    const QString candidate_path = QFileInfo(candidate_application).canonicalFilePath();
+    const QString runner = candidate_root.filePath("bazel-bin/src/apps/pipeline-app/hmstream-cli");
+    const QString configs = candidate_root.filePath("configs");
+    if (!candidate_path.isEmpty() && candidate_path == application_path && QFileInfo(runner).isExecutable() &&
+        QFileInfo(configs).isDir()) {
+      return candidate_root.absolutePath();
+    }
+    if (!candidate_root.cdUp()) {
+      break;
+    }
+  }
+  return {};
+}
 
 struct CameraSliderSpec {
   const char* id;
@@ -415,10 +453,32 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_di
     }
   }
 
+  QDir runtime_lib_dir(QDir(working_dir).filePath(QString(".cache/runtime-lib-path/%1").arg(arch)));
+  if (runtime_lib_dir.mkpath(".")) {
+    for (const QFileInfo& solib_root : solib_roots) {
+      QDirIterator onnxruntime_it(
+          solib_root.absoluteFilePath(), QStringList("libonnxruntime.so.1"), QDir::Files, QDirIterator::Subdirectories);
+      if (!onnxruntime_it.hasNext())
+        continue;
+      const QFileInfo onnxruntime(onnxruntime_it.next());
+      const QString link_path = runtime_lib_dir.filePath("libonnxruntime.so.1");
+      QFile::remove(link_path);
+      if (QFile::link(onnxruntime.canonicalFilePath(), link_path))
+        prepend_env_path(env, "LD_LIBRARY_PATH", runtime_lib_dir.absolutePath());
+      break;
+    }
+  }
+
   prepend_env_path(env, "GST_PLUGIN_PATH", runtime_dir.absolutePath());
 }
 
 void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QString& working_dir) {
+  // DeepStream 9.1's legacy nvstreammux rejects the native 8K source caps used
+  // by stitching. Match run.sh while preserving an explicit diagnostic
+  // override from the caller.
+  if (env.value("USE_NEW_NVSTREAMMUX").isEmpty()) {
+    env.insert("USE_NEW_NVSTREAMMUX", "yes");
+  }
   QDir registry_dir(QDir(working_dir).filePath(".cache/gstreamer-1.0"));
   if (!registry_dir.mkpath(".")) {
     registry_dir = QDir(QDir::home().filePath(".cache/gstreamer-1.0"));
@@ -426,7 +486,7 @@ void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QStr
   if (registry_dir.mkpath(".")) {
     const QString arch =
         QSysInfo::currentCpuArchitecture().isEmpty() ? QString("unknown") : QSysInfo::currentCpuArchitecture();
-    env.insert("GST_REGISTRY", registry_dir.filePath(QString("registry.hstream.%1.bin").arg(arch)));
+    env.insert("GST_REGISTRY", registry_dir.filePath(QString("registry.hstream.native-onnx-v1.%1.bin").arg(arch)));
   }
 
   prepend_env_path(env, "GST_PLUGIN_PATH", QDir(working_dir).filePath("lib/gst-plugins"));
@@ -452,56 +512,6 @@ void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QStr
   }
 }
 
-bool python_can_run_asset_setup(const QString& python) {
-  if (python.isEmpty()) {
-    return false;
-  }
-  QProcess check;
-  check.start(python, {"-c", "import yaml"});
-  if (!check.waitForStarted(3000)) {
-    return false;
-  }
-  if (!check.waitForFinished(15000)) {
-    check.kill();
-    check.waitForFinished(3000);
-    return false;
-  }
-  return check.exitStatus() == QProcess::NormalExit && check.exitCode() == 0;
-}
-
-QString asset_setup_python() {
-  QStringList candidates;
-  const QString configured = qEnvironmentVariable("PYTHON_BIN");
-  if (!configured.isEmpty()) {
-    candidates.push_back(configured);
-  }
-  const QString conda_prefix = qEnvironmentVariable("CONDA_PREFIX");
-  if (!conda_prefix.isEmpty()) {
-    candidates.push_back(QDir(conda_prefix).filePath("bin/python3"));
-  }
-  const QString venv = qEnvironmentVariable("VIRTUAL_ENV");
-  if (!venv.isEmpty()) {
-    candidates.push_back(QDir(venv).filePath("bin/python3"));
-  }
-  const QString home = QDir::homePath();
-  candidates.push_back(QDir(home).filePath("miniforge3/envs/ubuntu/bin/python3"));
-  candidates.push_back(QDir(home).filePath("miniconda3/envs/ubuntu/bin/python3"));
-  candidates.push_back(QDir(home).filePath(".conda/envs/ubuntu/bin/python3"));
-  candidates.push_back("python3");
-
-  std::set<std::string> seen;
-  for (const QString& candidate : candidates) {
-    const std::string key = candidate.toStdString();
-    if (!seen.insert(key).second) {
-      continue;
-    }
-    if (python_can_run_asset_setup(candidate)) {
-      return candidate;
-    }
-  }
-  return {};
-}
-
 QString existing_auto_cam_dir_for_source(const QDir& game_dir, const QFileInfo& source) {
   const QString family = auto_file_family(source.fileName());
   const QString source_parent = canonical_dir_path(source.absolutePath());
@@ -511,7 +521,7 @@ QString existing_auto_cam_dir_for_source(const QDir& game_dir, const QFileInfo& 
 
   std::map<QString, std::pair<QString, QString>> copied_auto_sources;
   const fs::path config_path = fs::path(game_dir.absolutePath().toStdString()) / "config.yaml";
-  if (fs::exists(config_path)) {
+  if (fs::is_regular_file(config_path)) {
     try {
       YAML::Node config = YAML::LoadFile(config_path.string());
       YAML::Node entries = config["hmstream_ui"]["auto_import_sources"];
@@ -574,7 +584,7 @@ bool copied_auto_import_matches(
     const QString& family,
     const QString& source_parent) {
   const fs::path config_path = fs::path(game_dir.absolutePath().toStdString()) / "config.yaml";
-  if (!fs::exists(config_path)) {
+  if (!fs::is_regular_file(config_path)) {
     return false;
   }
   try {
@@ -648,6 +658,53 @@ QString normalized_config_video_path(const QDir& game_dir, const QString& path) 
     }
   }
   return path;
+}
+
+bool is_copied_import_in_config(const YAML::Node& config, const QDir& game_dir, const QString& relative_path) {
+  YAML::Node list = config["hmstream_ui"]["copied_imports"];
+  if (!list || !list.IsSequence()) {
+    return false;
+  }
+  for (const auto& item : list) {
+    const QString path = normalized_config_video_path(game_dir, QString::fromStdString(item.as<std::string>()));
+    if (path == relative_path) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool config_references_video_path(const YAML::Node& config, const QDir& game_dir, const QString& relative_path) {
+  const QString normalized_target = normalized_config_video_path(game_dir, relative_path);
+  auto child = [](const YAML::Node& parent, const char* key) {
+    if (parent.IsMap()) {
+      for (const auto& entry : parent) {
+        if (entry.first.IsScalar() && entry.first.as<std::string>() == key)
+          return entry.second;
+      }
+    }
+    return YAML::Node(YAML::NodeType::Undefined);
+  };
+  auto list_references_target = [&](const YAML::Node& list) {
+    if (!list || !list.IsSequence())
+      return false;
+    for (const auto& item : list) {
+      if (item.IsScalar() &&
+          normalized_config_video_path(game_dir, QString::fromStdString(item.as<std::string>())) == normalized_target) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const YAML::Node roles = child(child(config, "hmstream_ui"), "video_roles");
+  for (const char* role : {"left", "center", "right"}) {
+    if (list_references_target(child(roles, role)))
+      return true;
+  }
+  const YAML::Node runtime_videos = child(child(config, "game"), "videos");
+  return list_references_target(child(runtime_videos, "left")) ||
+      list_references_target(child(runtime_videos, "right"));
 }
 
 bool clear_stitching_frame_offsets(YAML::Node& config) {
@@ -861,28 +918,14 @@ bool yaml_sequence_contains(YAML::Node node, const char* value) {
 
 struct ArtifactInvalidationResult {
   int invalidated = 0;
-  QString error;
 };
 
-ArtifactInvalidationResult invalidate_rotation_dependent_artifacts(YAML::Node& config, const QString& game_dir) {
+ArtifactInvalidationResult invalidate_rotation_dependent_artifacts(YAML::Node& config) {
   ArtifactInvalidationResult result;
-  int invalidated = 0;
-  invalidated += remove_yaml_path(config, {"rink", "scoreboard", "perspective_polygon"}) ? 1 : 0;
-  invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_count"}) ? 1 : 0;
-  invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_centroid"}) ? 1 : 0;
-  invalidated += remove_yaml_path(config, {"rink", "ice_contours_combined_bbox"}) ? 1 : 0;
-
-  QDir dir(game_dir);
-  const QStringList masks = dir.entryList(QStringList() << "rink_mask_*.png", QDir::Files);
-  for (const QString& mask : masks) {
-    if (dir.remove(mask)) {
-      ++invalidated;
-    } else {
-      result.error = QString("failed to delete %1").arg(dir.filePath(mask));
-      return result;
-    }
-  }
-  result.invalidated = invalidated;
+  result.invalidated += remove_yaml_path(config, {"rink", "scoreboard", "perspective_polygon"}) ? 1 : 0;
+  result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_count"}) ? 1 : 0;
+  result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_centroid"}) ? 1 : 0;
+  result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_combined_bbox"}) ? 1 : 0;
   return result;
 }
 
@@ -895,6 +938,28 @@ double ratio_x100(int value) {
 }
 
 } // namespace
+
+void hm::ui_internal::restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previous) {
+  auto restore_child = [](YAML::Node current_parent, YAML::Node previous_parent, const char* key) {
+    YAML::Node previous_value;
+    if (lookup_yaml_key(previous_parent, key, &previous_value)) {
+      current_parent[key] = YAML::Clone(previous_value);
+    } else {
+      remove_yaml_key(current_parent, key);
+    }
+  };
+
+  restore_child(
+      current["hmstream_ui"]["video_roles"], map_value(map_value(previous, "hmstream_ui"), "video_roles"), "left");
+  restore_child(
+      current["hmstream_ui"]["video_roles"], map_value(map_value(previous, "hmstream_ui"), "video_roles"), "center");
+  restore_child(
+      current["hmstream_ui"]["video_roles"], map_value(map_value(previous, "hmstream_ui"), "video_roles"), "right");
+  restore_child(current["game"]["videos"], map_value(map_value(previous, "game"), "videos"), "left");
+  restore_child(current["game"]["videos"], map_value(map_value(previous, "game"), "videos"), "right");
+  restore_child(current["game"]["stitching"], map_value(map_value(previous, "game"), "stitching"), "frame_offsets");
+  restore_child(current["stitching"], map_value(previous, "stitching"), "frame_offsets");
+}
 
 HmStreamWindow::HmStreamWindow(QWidget* parent) : QMainWindow(parent) {
   pipeline_process_ = new QProcess(this);
@@ -1186,15 +1251,22 @@ void HmStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   preview_surface_->setAttribute(Qt::WA_NativeWindow);
   preview_surface_->setAttribute(Qt::WA_DontCreateNativeAncestors);
   preview_surface_->setStyleSheet("QWidget#previewSurface { background: #12171c; }");
+  preview_external_notice_ = new QLabel("Video is displayed in a separate DeepStream window", preview_surface_);
+  preview_external_notice_->setAlignment(Qt::AlignCenter);
+  preview_external_notice_->setWordWrap(true);
+  preview_external_notice_->setStyleSheet("color: #c9d1d9; padding: 24px;");
+  preview_external_notice_->hide();
+  auto* preview_surface_layout = new QVBoxLayout(preview_surface_);
+  preview_surface_layout->addWidget(preview_external_notice_);
 
   preview_status_ = new QLabel("Pipeline stopped");
   preview_status_->setObjectName("previewStatusLabel");
-  auto* program_fullscreen = new QPushButton("Fullscreen");
-  program_fullscreen->setObjectName("programFullscreenButton");
-  connect(program_fullscreen, &QPushButton::clicked, this, [this]() { togglePreviewFullscreen(0); });
+  program_fullscreen_button_ = new QPushButton("Fullscreen");
+  program_fullscreen_button_->setObjectName("programFullscreenButton");
+  connect(program_fullscreen_button_, &QPushButton::clicked, this, [this]() { togglePreviewFullscreen(0); });
   auto* program_footer = new QHBoxLayout();
   program_footer->addWidget(preview_status_, 1);
-  program_footer->addWidget(program_fullscreen);
+  program_footer->addWidget(program_fullscreen_button_);
   layout->addWidget(preview_host, 1);
   layout->addLayout(program_footer);
 
@@ -1207,14 +1279,21 @@ void HmStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   stitched_surface_->setAttribute(Qt::WA_NativeWindow);
   stitched_surface_->setAttribute(Qt::WA_DontCreateNativeAncestors);
   stitched_surface_->setStyleSheet("QWidget#stitchedPreviewSurface { background: #10151a; }");
+  stitched_external_notice_ = new QLabel("Video is displayed in a separate DeepStream window", stitched_surface_);
+  stitched_external_notice_->setAlignment(Qt::AlignCenter);
+  stitched_external_notice_->setWordWrap(true);
+  stitched_external_notice_->setStyleSheet("color: #c9d1d9; padding: 24px;");
+  stitched_external_notice_->hide();
+  auto* stitched_surface_layout = new QVBoxLayout(stitched_surface_);
+  stitched_surface_layout->addWidget(stitched_external_notice_);
   stitched_status_ = new QLabel("Stitched canvas preview");
   stitched_status_->setObjectName("stitchedPreviewStatusLabel");
-  auto* stitched_fullscreen = new QPushButton("Fullscreen");
-  stitched_fullscreen->setObjectName("stitchedFullscreenButton");
-  connect(stitched_fullscreen, &QPushButton::clicked, this, [this]() { togglePreviewFullscreen(1); });
+  stitched_fullscreen_button_ = new QPushButton("Fullscreen");
+  stitched_fullscreen_button_->setObjectName("stitchedFullscreenButton");
+  connect(stitched_fullscreen_button_, &QPushButton::clicked, this, [this]() { togglePreviewFullscreen(1); });
   auto* stitched_footer = new QHBoxLayout();
   stitched_footer->addWidget(stitched_status_, 1);
-  stitched_footer->addWidget(stitched_fullscreen);
+  stitched_footer->addWidget(stitched_fullscreen_button_);
   stitched_layout->addWidget(stitched_host, 1);
   stitched_layout->addLayout(stitched_footer);
 
@@ -1393,6 +1472,10 @@ QString HmStreamWindow::pipelineRunnerPath() const {
   if (!test_runner.isEmpty()) {
     return QString::fromLocal8Bit(test_runner);
   }
+  const QString development_root = development_runtime_root();
+  if (!development_root.isEmpty()) {
+    return QDir(development_root).filePath("bazel-bin/src/apps/pipeline-app/hmstream-cli");
+  }
   const QString installed_runner = "/opt/hmstream/bin/hmstream-cli";
   if (QFileInfo::exists(installed_runner)) {
     return installed_runner;
@@ -1409,6 +1492,13 @@ QString HmStreamWindow::pipelineRunnerPath() const {
 }
 
 QString HmStreamWindow::pipelineConfigPath(const QString& config_name) const {
+  const QString development_root = development_runtime_root();
+  if (!development_root.isEmpty()) {
+    const QString development_config = QDir(QDir(development_root).filePath("configs")).filePath(config_name);
+    if (QFileInfo::exists(development_config)) {
+      return development_config;
+    }
+  }
   const QString installed_config = QDir("/opt/hmstream/configs").filePath(config_name);
   if (QFileInfo::exists(installed_config)) {
     return installed_config;
@@ -1417,6 +1507,13 @@ QString HmStreamWindow::pipelineConfigPath(const QString& config_name) const {
 }
 
 QString HmStreamWindow::pipelineWorkingDirectory() const {
+  if (!qgetenv("HMSTREAM_UI_TEST_RUNNER").isEmpty()) {
+    return QDir::currentPath();
+  }
+  const QString development_root = development_runtime_root();
+  if (!development_root.isEmpty()) {
+    return development_root;
+  }
   if (QFileInfo::exists("/opt/hmstream/bin/hmstream-cli")) {
     return "/opt/hmstream";
   }
@@ -1424,53 +1521,8 @@ QString HmStreamWindow::pipelineWorkingDirectory() const {
 }
 
 bool HmStreamWindow::setupPretrainedAssets(const QStringList& pipeline_args) {
-  if (!qgetenv("HMSTREAM_UI_TEST_RUNNER").isEmpty()) {
-    return true;
-  }
-
-  QString script = "/opt/hmstream/scripts/setup_pretrained_assets.py";
-  if (!QFileInfo::exists(script)) {
-    script = QDir("scripts").filePath("setup_pretrained_assets.py");
-  }
-  if (!QFileInfo::exists(script)) {
-    return true;
-  }
-
-  const QStringList config_files = pipeline_config_files_from_args(pipeline_args);
-  if (config_files.isEmpty()) {
-    return true;
-  }
-
-  const QString python = asset_setup_python();
-  QStringList setup_args;
-  setup_args << script;
-  setup_args << config_files;
-  appendLog(QString("checking pretrained assets %1").arg(config_files.join(' ')));
-  if (python.isEmpty()) {
-    appendLog("asset setup failed: no Python interpreter with PyYAML is available");
-    appendLog("install python3-yaml or set PYTHON_BIN to the correct Python");
-    return false;
-  }
-  appendLog(QString("using asset setup python %1").arg(python));
-
-  QProcess setup;
-  setup.setWorkingDirectory(pipelineWorkingDirectory());
-  setup.start(python, setup_args);
-  if (!setup.waitForStarted(5000)) {
-    appendLog(QString("failed to start asset setup: %1").arg(setup.errorString()));
-    return false;
-  }
-  setup.waitForFinished(-1);
-  const QString output = QString::fromLocal8Bit(setup.readAllStandardOutput() + setup.readAllStandardError()).trimmed();
-  if (!output.isEmpty()) {
-    for (const QString& line : output.split('\n')) {
-      appendLog(line.trimmed());
-    }
-  }
-  if (setup.exitStatus() != QProcess::NormalExit || setup.exitCode() != 0) {
-    appendLog(QString("asset setup failed exit=%1").arg(setup.exitCode()));
-    return false;
-  }
+  Q_UNUSED(pipeline_args);
+  appendLog("pretrained assets will be verified by hmstream-cli");
   return true;
 }
 
@@ -1518,9 +1570,9 @@ void HmStreamWindow::logMissingTensorRtEngineCaches(const QStringList& pipeline_
         continue;
       }
 
-      appendLog(QString("TensorRT engine cache missing: %1").arg(engine_file));
+      appendLog(QString("configured TensorRT engine seed missing: %1").arg(engine_file));
       appendLog(
-          "first run will build/cache the primary-gie engine before video appears; the render window may stay black during this step");
+          "first run will build the primary-gie engine in HMStream's writable per-user cache before video appears; the render window may stay black during this step");
       appendLog("DeepStream may also log a model-engine-file open/deserialize warning while it builds the engine");
     } catch (const std::exception& e) {
       appendLog(QString("could not inspect TensorRT engine cache from %1: %2").arg(config_file, e.what()));
@@ -1601,6 +1653,12 @@ bool HmStreamWindow::runStitchingClean(
 
 bool HmStreamWindow::saveStitchingCalibrationState(int control_points, const QString& status) {
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
+  if (!config_lock.ok()) {
+    appendLog(
+        QString("could not lock stitching calibration settings: %1").arg(config_lock.status().ToString().c_str()));
+    return false;
+  }
   YAML::Node config(YAML::NodeType::Map);
   if (fs::exists(config_path)) {
     try {
@@ -1616,17 +1674,10 @@ bool HmStreamWindow::saveStitchingCalibrationState(int control_points, const QSt
 
   config["hmstream_ui"]["stitching_calibration"]["control_points"] = control_points;
   config["hmstream_ui"]["stitching_calibration"]["status"] = status.toStdString();
-  std::ofstream out(config_path);
-  if (!out) {
-    appendLog(
-        QString("failed to write stitching calibration settings %1").arg(QString::fromStdString(config_path.string())));
-    return false;
-  }
-  out << config << "\n";
-  out.close();
-  if (!out) {
-    appendLog(
-        QString("failed to write stitching calibration settings %1").arg(QString::fromStdString(config_path.string())));
+  const auto publish = publish_yaml_config(config_path, config);
+  if (!publish.ok()) {
+    appendLog(QString("failed to write stitching calibration settings %1: %2")
+                  .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
     return false;
   }
   appendLog(QString("stitching calibration control points saved %1 status=%2").arg(control_points).arg(status));
@@ -1642,9 +1693,15 @@ bool HmStreamWindow::prepareStitchingCalibrationRun(
   bool saved_found = false;
   int saved_control_points = 0;
   QString saved_status;
-  if (fs::exists(config_path)) {
+  auto loaded_config = hm::stitching::load_game_config_file(config_path);
+  if (!loaded_config.ok()) {
+    appendLog(
+        QString("could not read stitching calibration settings: %1").arg(loaded_config.status().ToString().c_str()));
+    return false;
+  }
+  if (loaded_config->has_value()) {
     try {
-      const YAML::Node config = YAML::LoadFile(config_path.string());
+      const YAML::Node config = **loaded_config;
       YAML::Node saved;
       if (lookup_yaml_path(config, "hmstream_ui.stitching_calibration.control_points", &saved) && saved.IsScalar()) {
         saved_control_points = saved.as<int>();
@@ -1675,20 +1732,22 @@ bool HmStreamWindow::prepareStitchingCalibrationRun(
 
 QStringList HmStreamWindow::pipelineArguments() const {
   const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
+  const QString configured_render_sink = qEnvironmentVariable("HM_RENDER_SINK").trimmed().toLower();
+  const bool embed_render_window = configured_render_sink == "nveglglessink" || configured_render_sink == "egl";
   QStringList args;
   args << "-g" << game_id << "--enable-sources=URI-MULTIPLE";
   if (isCalibrationRun()) {
     args << "-c" << pipelineConfigPath("ds_hockey_configure_stitching.yaml");
     args << "--enable-sinks=RENDER";
     args << "--show-stitching" << "1";
-    if (stitched_surface_) {
+    if (embed_render_window && stitched_surface_) {
       args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(stitched_surface_->winId()));
     }
   } else {
     args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
     args << QString("--enable-sinks=%1").arg(enabledSinkNames().join(","));
     args << "--show";
-    if (preview_surface_) {
+    if (embed_render_window && preview_surface_) {
       args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(preview_surface_->winId()));
     }
   }
@@ -1730,6 +1789,28 @@ void HmStreamWindow::startPipeline() {
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   const QString working_dir = pipelineWorkingDirectory();
   configure_pipeline_runtime_environment(env, working_dir);
+  // The native scoreboard selector is intentionally interactive and blocks
+  // until its private HTTP form is submitted.  A normal UI Play action must
+  // not run that interaction on the playcropper output thread because doing
+  // so prevents the first frame from reaching the sink.  Keep an explicitly
+  // configured polygon active; when none exists, the selector's established
+  // HM_NO_SCOREBOARD path writes the disabled sentinel instead.  Operators
+  // can still request the selector explicitly with HM_NO_SCOREBOARD=0.
+  if (!isCalibrationRun() && env.value("HM_NO_SCOREBOARD").isEmpty()) {
+    env.insert("HM_NO_SCOREBOARD", "1");
+  }
+  const bool embedded_render = std::any_of(
+      args.begin(), args.end(), [](const QString& argument) { return argument.startsWith("--render-window-id="); });
+  if (preview_external_notice_)
+    preview_external_notice_->setVisible(!embedded_render);
+  if (stitched_external_notice_)
+    stitched_external_notice_->setVisible(!embedded_render);
+  if (program_fullscreen_button_)
+    program_fullscreen_button_->setEnabled(embedded_render);
+  if (stitched_fullscreen_button_)
+    stitched_fullscreen_button_->setEnabled(embedded_render);
+  if (!embedded_render)
+    appendLog("nv3dsink render output will open in a separate DeepStream window; embedded preview is disabled");
   if (isCalibrationRun()) {
     if (!prepareStitchingCalibrationRun(runner, working_dir, env)) {
       pipeline_state_->setText("STOPPED");
@@ -1977,6 +2058,11 @@ void HmStreamWindow::savePreset() {
     return;
   }
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
+  if (!config_lock.ok()) {
+    appendLog(QString("could not lock preset config: %1").arg(config_lock.status().ToString().c_str()));
+    return;
+  }
   YAML::Node config;
   if (fs::exists(config_path)) {
     try {
@@ -1987,19 +2073,33 @@ void HmStreamWindow::savePreset() {
     }
   }
 
-  if (!applySavedControlConfig(config)) {
+  bool invalidate_rink_masks = false;
+  int invalidated_config_artifacts = 0;
+  if (!applySavedControlConfig(config, &invalidate_rink_masks, &invalidated_config_artifacts)) {
     return;
   }
-  std::ofstream out(config_path);
-  if (!out) {
-    appendLog(QString("failed to write preset %1").arg(QString::fromStdString(config_path.string())));
+  absl::Status publish;
+  size_t invalidated_masks = 0;
+  if (invalidate_rink_masks) {
+    auto transaction =
+        hm::stitching::publish_game_config_without_rink_masks(config_path.parent_path(), YAML::Dump(config) + "\n");
+    if (transaction.ok()) {
+      invalidated_masks = *transaction;
+      publish = absl::OkStatus();
+    } else {
+      publish = transaction.status();
+    }
+  } else {
+    publish = publish_yaml_config(config_path, config);
+  }
+  if (!publish.ok()) {
+    appendLog(QString("failed to write preset %1: %2")
+                  .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
     return;
   }
-  out << config << "\n";
-  out.close();
-  if (!out) {
-    appendLog(QString("failed to write preset %1").arg(QString::fromStdString(config_path.string())));
-    return;
+  if (invalidate_rink_masks) {
+    appendLog(QString("stitch rotation saved; invalidated %1 scoreboard/ice-mask artifact(s)")
+                  .arg(invalidated_config_artifacts + static_cast<int>(invalidated_masks)));
   }
   appendLog(QString("preset saved %1").arg(QString::fromStdString(config_path.string())));
 }
@@ -2038,11 +2138,16 @@ void HmStreamWindow::loadSavedControlConfig() {
   }
 
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
-  if (!fs::exists(config_path)) {
+  auto loaded_config = hm::stitching::load_game_config_file(config_path);
+  if (!loaded_config.ok()) {
+    appendLog(QString("could not load saved controls: %1").arg(loaded_config.status().ToString().c_str()));
+    return;
+  }
+  if (!loaded_config->has_value()) {
     return;
   }
   try {
-    YAML::Node config = YAML::LoadFile(config_path.string());
+    YAML::Node config = **loaded_config;
     YAML::Node control_points;
     if (control_points_spin_ &&
         lookup_yaml_path(config, "hmstream_ui.stitching_calibration.control_points", &control_points) &&
@@ -2078,7 +2183,16 @@ void HmStreamWindow::loadSavedControlConfig() {
   }
 }
 
-bool HmStreamWindow::applySavedControlConfig(YAML::Node& config) {
+bool HmStreamWindow::applySavedControlConfig(
+    YAML::Node& config,
+    bool* invalidate_rink_masks,
+    int* invalidated_config_artifacts) {
+  if (invalidate_rink_masks) {
+    *invalidate_rink_masks = false;
+  }
+  if (invalidated_config_artifacts) {
+    *invalidated_config_artifacts = 0;
+  }
   if (!yaml_defined(config) || config.IsNull()) {
     config = YAML::Node(YAML::NodeType::Map);
   }
@@ -2182,14 +2296,13 @@ bool HmStreamWindow::applySavedControlConfig(YAML::Node& config) {
     rotation_changed_for_artifacts = true;
   }
   if (rotation_changed_for_artifacts) {
-    const ArtifactInvalidationResult invalidation =
-        invalidate_rotation_dependent_artifacts(config, gameDirectory(game_id_edit_->text()));
-    if (!invalidation.error.isEmpty()) {
-      appendLog(QString("stitch rotation save aborted: %1").arg(invalidation.error));
-      return false;
+    const ArtifactInvalidationResult invalidation = invalidate_rotation_dependent_artifacts(config);
+    if (invalidate_rink_masks) {
+      *invalidate_rink_masks = true;
     }
-    appendLog(
-        QString("stitch rotation saved; invalidated %1 scoreboard/ice-mask artifact(s)").arg(invalidation.invalidated));
+    if (invalidated_config_artifacts) {
+      *invalidated_config_artifacts = invalidation.invalidated;
+    }
   }
   auto apply_color_prefix = [&](const QString& prefix) {
     const QString name_prefix = prefix.isEmpty() ? QString() : prefix + "_";
@@ -2497,35 +2610,52 @@ void HmStreamWindow::addVideoPath() {
   if (!ensureGameDirectory()) {
     return;
   }
-  const QString config_file = QDir(gameDirectory(game_id_edit_->text())).filePath("config.yaml");
-  const bool had_config = QFile::exists(config_file);
-  QByteArray original_config;
-  if (had_config) {
-    QFile file(config_file);
-    if (file.open(QIODevice::ReadOnly)) {
-      original_config = file.readAll();
-    }
-    try {
-      YAML::LoadFile(config_file.toStdString());
-    } catch (const std::exception& exc) {
-      appendLog(QString("could not update private config: %1").arg(exc.what()));
-      return;
-    }
+  const fs::path game_dir_path(gameDirectory(game_id_edit_->text()).toStdString());
+  auto config_transaction = hm::stitching::GameConfigTransactionLock::Acquire(game_dir_path);
+  if (!config_transaction.ok()) {
+    appendLog(
+        QString("could not lock video import transaction: %1").arg(config_transaction.status().ToString().c_str()));
+    return;
   }
 
   QString imported_relative_path;
-  if (!importVideoPath(video_path_edit_->text(), &imported_relative_path)) {
+  bool imported_path_created = false;
+  if (!importVideoPath(video_path_edit_->text(), &imported_relative_path, &imported_path_created)) {
     return;
   }
 
-  if (!savePrivateConfigForRole(role, imported_relative_path)) {
-    removeImportedVideoPath(imported_relative_path, isCopiedImport(imported_relative_path));
+  if (const char* delay = std::getenv("HM_TEST_VIDEO_ADD_PRE_CONFIG_SAVE_DELAY_MS")) {
+    const long delay_ms = std::strtol(delay, nullptr, 10);
+    if (delay_ms > 0)
+      std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+  }
+  QByteArray original_config;
+  QByteArray published_config;
+  bool had_config = false;
+  if (!savePrivateConfigForRole(role, imported_relative_path, &original_config, &had_config, &published_config)) {
+    if (imported_path_created) {
+      rollbackImportedVideoPath(imported_relative_path);
+    }
+    config_transaction->reset();
+    refreshVideoSets();
     return;
   }
-  if (role == "auto" && !removeClearedCopiedExplicitImports(original_config, had_config)) {
-    removeImportedVideoPath(imported_relative_path, isCopiedImport(imported_relative_path));
-    return;
+  if (role == "auto") {
+    const CopiedImportCleanupResult cleanup =
+        removeClearedCopiedExplicitImports(original_config, had_config, true, published_config);
+    if (cleanup == CopiedImportCleanupResult::kRolledBack) {
+      if (imported_path_created) {
+        rollbackImportedVideoPath(imported_relative_path);
+      }
+      config_transaction->reset();
+      refreshVideoSets();
+      return;
+    }
+    if (cleanup == CopiedImportCleanupResult::kCommittedWithCleanupFailure) {
+      appendLog("video set added, but one or more unreferenced copied imports could not be cleaned");
+    }
   }
+  config_transaction->reset();
   refreshVideoSets();
   appendLog(QString("video set added role=%1 path=%2").arg(role_label(role), imported_relative_path));
 }
@@ -2557,44 +2687,53 @@ void HmStreamWindow::removeSelectedVideoSet() {
   }
   const QString role = item->data(Qt::UserRole).toString();
   const QString relative_path = item->data(Qt::UserRole + 1).toString();
-  const bool copied_import = isCopiedImport(relative_path);
   const QString config_file = QDir(gameDirectory(game_id_edit_->text())).filePath("config.yaml");
-  const bool had_config = QFile::exists(config_file);
   QByteArray original_config;
-  if (had_config) {
-    QFile file(config_file);
-    if (file.open(QIODevice::ReadOnly)) {
-      original_config = file.readAll();
-    }
+  bool had_config = false;
+  bool copied_import = false;
+  if (const char* delay = std::getenv("HM_TEST_VIDEO_REMOVE_PRE_TRANSACTION_DELAY_MS")) {
+    const long delay_ms = std::strtol(delay, nullptr, 10);
+    if (delay_ms > 0)
+      std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
   }
 
-  if (!removePrivateConfigForRole(role, relative_path)) {
+  auto config_transaction =
+      hm::stitching::GameConfigTransactionLock::Acquire(fs::path(gameDirectory(game_id_edit_->text()).toStdString()));
+  if (!config_transaction.ok()) {
+    appendLog(
+        QString("could not lock video removal transaction: %1").arg(config_transaction.status().ToString().c_str()));
     video_set_list_->insertItem(row, item);
     return;
   }
-  if (role == "auto" && !removeClearedCopiedExplicitImports(original_config, had_config)) {
+
+  QByteArray removed_config;
+  if (!removePrivateConfigForRole(
+          role, relative_path, &original_config, &had_config, &copied_import, &removed_config)) {
     video_set_list_->insertItem(row, item);
-    refreshVideoSets();
     return;
+  }
+  if (const char* delay = std::getenv("HM_TEST_VIDEO_REMOVE_POST_TRANSACTION_DELAY_MS")) {
+    const long delay_ms = std::strtol(delay, nullptr, 10);
+    if (delay_ms > 0)
+      std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
   }
   if (!removeImportedVideoPath(relative_path, copied_import)) {
-    if (had_config && role != "auto") {
-      QFile file(config_file);
-      if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        file.write(original_config);
-      } else {
-        appendLog(QString("failed to restore private config after remove failure %1").arg(config_file));
-      }
-    } else if (!had_config) {
-      QFile::remove(config_file);
+    if (!restorePrivateConfigAfterRemoveFailure(original_config, had_config, removed_config)) {
+      appendLog(QString("failed to restore private config after remove failure %1").arg(config_file));
     }
     video_set_list_->insertItem(row, item);
+    config_transaction->reset();
     refreshVideoSets();
     return;
+  }
+  if (role == "auto" &&
+      removeClearedCopiedExplicitImports(original_config, had_config, false) != CopiedImportCleanupResult::kSuccess) {
+    appendLog("video set removed, but one or more unreferenced copied imports could not be cleaned");
   }
 
   appendLog(QString("video set removed role=%1 path=%2").arg(role_label(role), relative_path));
   delete item;
+  config_transaction->reset();
   refreshVideoSets();
 }
 
@@ -2658,9 +2797,12 @@ void HmStreamWindow::refreshVideoSets() {
   }
 
   const fs::path config_path = fs::path(dir.toStdString()) / "config.yaml";
-  if (fs::exists(config_path)) {
+  auto loaded_config = hm::stitching::load_game_config_file(config_path);
+  if (!loaded_config.ok()) {
+    appendLog(QString("could not list configured videos: %1").arg(loaded_config.status().ToString().c_str()));
+  } else if (loaded_config->has_value()) {
     try {
-      YAML::Node config = YAML::LoadFile(config_path.string());
+      YAML::Node config = **loaded_config;
       YAML::Node explicit_roles = config["hmstream_ui"]["video_roles"];
       for (const QString& role : {QString("left"), QString("center"), QString("right")}) {
         YAML::Node role_videos = explicit_roles[role.toStdString()];
@@ -2680,6 +2822,23 @@ void HmStreamWindow::refreshVideoSets() {
             const QString path = normalized_config_video_path(game_dir, QString::fromStdString(item.as<std::string>()));
             if (!configured_paths.count(path) && (!listed_cam_video || is_cam_relative_path(path))) {
               add_item("auto", path);
+            }
+          }
+        }
+      }
+      YAML::Node copied_imports = config["hmstream_ui"]["copied_imports"];
+      if (copied_imports && copied_imports.IsSequence()) {
+        for (const auto& item : copied_imports) {
+          if (!item.IsScalar())
+            continue;
+          const QString path = normalized_config_video_path(game_dir, QString::fromStdString(item.as<std::string>()));
+          if (configured_paths.count(path) || !QFileInfo::exists(game_dir.filePath(path)))
+            continue;
+          for (const QString& role : {QString("left"), QString("center"), QString("right")}) {
+            if (path.startsWith(QString(".hmstream-ui/%1/").arg(role))) {
+              configured_paths.insert(path);
+              add_item(role, path);
+              break;
             }
           }
         }
@@ -2771,7 +2930,11 @@ bool HmStreamWindow::ensureGameDirectory() {
   return true;
 }
 
-bool HmStreamWindow::importVideoPath(const QString& source_path, QString* imported_relative_path) {
+bool HmStreamWindow::importVideoPath(const QString& source_path, QString* imported_relative_path, bool* created) {
+  if (!imported_relative_path || !created) {
+    return false;
+  }
+  *created = false;
   if (!ensureGameDirectory()) {
     return false;
   }
@@ -2866,6 +3029,9 @@ bool HmStreamWindow::importVideoPath(const QString& source_path, QString* import
 
   if (!QFileInfo::exists(dest_path)) {
     try {
+      if (std::getenv("HM_TEST_VIDEO_IMPORT_FORCE_COPY") != nullptr) {
+        throw std::runtime_error("injected symlink failure");
+      }
       fs::create_symlink(fs::path(source.absoluteFilePath().toStdString()), fs::path(dest_path.toStdString()));
     } catch (const std::exception& exc) {
       if (!QFile::copy(source.absoluteFilePath(), dest_path)) {
@@ -2878,6 +3044,7 @@ bool HmStreamWindow::importVideoPath(const QString& source_path, QString* import
       }
       appendLog(QString("video symlink unavailable; copied import to %1").arg(dest_name));
     }
+    *created = true;
   }
 
   *imported_relative_path = relativeToGameDir(dest_path);
@@ -2937,51 +3104,130 @@ bool HmStreamWindow::saveCopiedImport(
     }
   }
 
-  std::ofstream out(config_path);
-  if (!out) {
-    appendLog(QString("failed to write copied import metadata %1").arg(QString::fromStdString(config_path.string())));
+  const auto publish = publish_yaml_config(config_path, config);
+  if (!publish.ok())
+    appendLog(QString("failed to write copied import metadata %1: %2")
+                  .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
+  return publish.ok();
+}
+
+bool HmStreamWindow::rollbackImportedVideoPath(const QString& relative_path) {
+  const QDir game_dir(gameDirectory(game_id_edit_->text()));
+  const fs::path config_path = fs::path(game_dir.absolutePath().toStdString()) / "config.yaml";
+  bool copied_import = false;
+  YAML::Node config(YAML::NodeType::Map);
+  if (fs::exists(config_path)) {
+    try {
+      config = YAML::LoadFile(config_path.string());
+      copied_import = is_copied_import_in_config(config, game_dir, relative_path);
+    } catch (const std::exception& exc) {
+      appendLog(QString("could not read copied import metadata during rollback: %1").arg(exc.what()));
+      return false;
+    }
+  }
+
+  if (config_references_video_path(config, game_dir, relative_path)) {
+    appendLog(QString("imported video was adopted while rollback was pending; preserving %1").arg(relative_path));
+    return true;
+  }
+  const YAML::Node original_config = YAML::Clone(config);
+
+  QString imported_path;
+  if (!resolveImportedVideoPath(relative_path, copied_import, &imported_path))
+    return false;
+  if (const char* fail_path = std::getenv("HM_TEST_VIDEO_REMOVE_FAIL");
+      !imported_path.isEmpty() && fail_path != nullptr && relative_path == QString::fromUtf8(fail_path)) {
+    appendLog(QString("injected failure removing imported video %1").arg(relative_path));
     return false;
   }
-  out << config << "\n";
+
+  QString staged_path;
+  if (!imported_path.isEmpty()) {
+    const QFileInfo imported(imported_path);
+    staged_path =
+        QDir(imported.absolutePath())
+            .filePath(QString(".hmstream-rollback-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+    if (!QFile::rename(imported_path, staged_path)) {
+      appendLog(QString("failed to stage imported video rollback %1").arg(relative_path));
+      return false;
+    }
+  }
+
+  if (copied_import) {
+    auto matches_path = [&](const QString& value) {
+      return normalized_config_video_path(game_dir, value) == normalized_config_video_path(game_dir, relative_path);
+    };
+    YAML::Node copied_imports = config["hmstream_ui"]["copied_imports"];
+    YAML::Node copied_replacement(YAML::NodeType::Sequence);
+    if (copied_imports && copied_imports.IsSequence()) {
+      for (const auto& item : copied_imports) {
+        const QString path = QString::fromStdString(item.as<std::string>());
+        if (!matches_path(path))
+          copied_replacement.push_back(item.as<std::string>());
+      }
+    }
+    config["hmstream_ui"]["copied_imports"] = copied_replacement;
+
+    YAML::Node sources = config["hmstream_ui"]["auto_import_sources"];
+    if (sources && sources.IsSequence()) {
+      YAML::Node source_replacement(YAML::NodeType::Sequence);
+      for (const auto& item : sources) {
+        if (!item["path"] || !matches_path(QString::fromStdString(item["path"].as<std::string>())))
+          source_replacement.push_back(item);
+      }
+      config["hmstream_ui"]["auto_import_sources"] = source_replacement;
+    }
+
+    const auto publish = publish_yaml_config(config_path, config);
+    if (!publish.ok()) {
+      if (!staged_path.isEmpty() && !QFile::rename(staged_path, imported_path))
+        appendLog(QString("failed to restore staged imported video %1").arg(relative_path));
+      appendLog(QString("failed to remove copied import metadata during rollback: %1").arg(publish.ToString().c_str()));
+      return false;
+    }
+  }
+
+  const char* staged_remove_fail_path = std::getenv("HM_TEST_VIDEO_STAGED_REMOVE_FAIL");
+  const bool injected_staged_remove_failure =
+      staged_remove_fail_path != nullptr && relative_path == QString::fromUtf8(staged_remove_fail_path);
+  if (!staged_path.isEmpty() && (injected_staged_remove_failure || !QFile::remove(staged_path))) {
+    if (injected_staged_remove_failure)
+      appendLog(QString("injected failure removing staged imported video %1").arg(relative_path));
+    if (!QFile::rename(staged_path, imported_path))
+      appendLog(QString("failed to restore staged imported video %1 after deletion failure").arg(relative_path));
+    if (copied_import) {
+      const auto restore_metadata = publish_yaml_config(config_path, original_config);
+      if (!restore_metadata.ok()) {
+        appendLog(QString("failed to restore copied import metadata after deletion failure: %1")
+                      .arg(restore_metadata.ToString().c_str()));
+      }
+    }
+    appendLog(QString("failed to remove staged imported video rollback %1").arg(relative_path));
+    return false;
+  }
   return true;
 }
 
-bool HmStreamWindow::isCopiedImport(const QString& relative_path) {
-  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
-  if (!fs::exists(config_path)) {
-    return false;
-  }
-  try {
-    YAML::Node config = YAML::LoadFile(config_path.string());
-    YAML::Node list = config["hmstream_ui"]["copied_imports"];
-    if (!list || !list.IsSequence()) {
-      return false;
-    }
-    const QDir game_dir(gameDirectory(game_id_edit_->text()));
-    for (const auto& item : list) {
-      const QString path = normalized_config_video_path(game_dir, QString::fromStdString(item.as<std::string>()));
-      if (path == relative_path) {
-        return true;
-      }
-    }
-  } catch (const std::exception&) {
-    return false;
-  }
-  return false;
-}
-
-bool HmStreamWindow::removeClearedCopiedExplicitImports(const QByteArray& original_config, bool had_config) {
+HmStreamWindow::CopiedImportCleanupResult HmStreamWindow::removeClearedCopiedExplicitImports(
+    const QByteArray& original_config,
+    bool had_config,
+    bool restore_auto_selection_on_failure,
+    const QByteArray& published_auto_config) {
   if (!had_config || original_config.isEmpty()) {
-    return true;
+    return CopiedImportCleanupResult::kSuccess;
   }
   YAML::Node old_config;
   YAML::Node current_config;
+  YAML::Node auto_config;
   const QString config_file = QDir(gameDirectory(game_id_edit_->text())).filePath("config.yaml");
+  const fs::path config_path(config_file.toStdString());
   try {
     old_config = YAML::Load(original_config.toStdString());
     current_config = YAML::LoadFile(config_file.toStdString());
+    if (!published_auto_config.isEmpty())
+      auto_config = YAML::Load(published_auto_config.toStdString());
   } catch (const std::exception&) {
-    return true;
+    return CopiedImportCleanupResult::kCommittedWithCleanupFailure;
   }
 
   std::set<QString> current_references;
@@ -3008,19 +3254,21 @@ bool HmStreamWindow::removeClearedCopiedExplicitImports(const QByteArray& origin
     }
     for (const auto& item : role_videos) {
       const QString path = normalized_config_video_path(game_dir, QString::fromStdString(item.as<std::string>()));
-      if (!current_references.count(path) && isCopiedImport(path)) {
+      if (!current_references.count(path) && is_copied_import_in_config(current_config, game_dir, path)) {
         cleanup_paths.insert(path);
       }
     }
   }
 
   auto restore_original_config = [&]() {
-    QFile file(config_file);
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-      file.write(original_config);
-    } else {
+    current_config = !published_auto_config.isEmpty()
+        ? hm::stitching::merge_game_config_rollback(auto_config, old_config, current_config)
+        : YAML::Clone(old_config);
+    const auto status = publish_yaml_config(config_path, current_config);
+    if (!status.ok()) {
       appendLog(QString("failed to restore private config after cleanup failure %1").arg(config_file));
     }
+    return status.ok();
   };
   auto remove_cleanup_metadata = [&](const std::set<QString>& removed_paths) {
     YAML::Node copied_imports = current_config["hmstream_ui"]["copied_imports"];
@@ -3056,30 +3304,28 @@ bool HmStreamWindow::removeClearedCopiedExplicitImports(const QByteArray& origin
   for (const QString& path : cleanup_paths) {
     if (!removeImportedVideoPath(path, true)) {
       if (removed_paths.empty()) {
-        restore_original_config();
+        if (restore_auto_selection_on_failure) {
+          return restore_original_config() ? CopiedImportCleanupResult::kRolledBack
+                                           : CopiedImportCleanupResult::kCommittedWithCleanupFailure;
+        }
       } else {
         remove_cleanup_metadata(removed_paths);
-        std::ofstream out(config_file.toStdString());
-        if (out) {
-          out << current_config << "\n";
-        } else {
+        if (!publish_yaml_config(config_path, current_config).ok()) {
           appendLog(QString("failed to update copied import metadata %1").arg(config_file));
         }
       }
-      return false;
+      return CopiedImportCleanupResult::kCommittedWithCleanupFailure;
     }
     removed_paths.insert(path);
   }
   if (!removed_paths.empty()) {
     remove_cleanup_metadata(removed_paths);
-    std::ofstream out(config_file.toStdString());
-    if (!out) {
+    if (!publish_yaml_config(config_path, current_config).ok()) {
       appendLog(QString("failed to update copied import metadata %1").arg(config_file));
-      return false;
+      return CopiedImportCleanupResult::kCommittedWithCleanupFailure;
     }
-    out << current_config << "\n";
   }
-  return true;
+  return CopiedImportCleanupResult::kSuccess;
 }
 
 bool HmStreamWindow::syncRuntimeExplicitVideoConfig(YAML::Node& config) {
@@ -3175,12 +3421,27 @@ bool HmStreamWindow::syncRuntimeExplicitVideoConfig(YAML::Node& config) {
   return changed;
 }
 
-bool HmStreamWindow::savePrivateConfigForRole(const QString& role, const QString& relative_path) {
+bool HmStreamWindow::savePrivateConfigForRole(
+    const QString& role,
+    const QString& relative_path,
+    QByteArray* original_config,
+    bool* had_config,
+    QByteArray* published_config) {
+  if (original_config)
+    original_config->clear();
+  if (had_config)
+    *had_config = false;
+  if (published_config)
+    published_config->clear();
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
   YAML::Node config;
   if (fs::exists(config_path)) {
     try {
       config = YAML::LoadFile(config_path.string());
+      if (original_config)
+        *original_config = QByteArray::fromStdString(YAML::Dump(config) + "\n");
+      if (had_config)
+        *had_config = true;
     } catch (const std::exception& exc) {
       appendLog(QString("could not update private config: %1").arg(exc.what()));
       return false;
@@ -3224,21 +3485,40 @@ bool HmStreamWindow::savePrivateConfigForRole(const QString& role, const QString
   }
 
   if (!changed) {
+    if (published_config && config.IsDefined())
+      *published_config = QByteArray::fromStdString(YAML::Dump(config) + "\n");
     return true;
   }
 
-  std::ofstream out(config_path);
-  if (!out) {
-    appendLog(QString("failed to write private config %1").arg(QString::fromStdString(config_path.string())));
+  if (std::getenv("HM_TEST_PRIVATE_CONFIG_SAVE_FAIL") != nullptr) {
+    appendLog("injected private config save failure");
     return false;
   }
-  if (config.IsDefined() && !config.IsNull()) {
-    out << config << "\n";
-  }
-  return true;
+
+  const auto publish = publish_yaml_config(config_path, config);
+  if (!publish.ok())
+    appendLog(QString("failed to write private config %1: %2")
+                  .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
+  if (publish.ok() && published_config)
+    *published_config = QByteArray::fromStdString(YAML::Dump(config) + "\n");
+  return publish.ok();
 }
 
-bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QString& relative_path) {
+bool HmStreamWindow::removePrivateConfigForRole(
+    const QString& role,
+    const QString& relative_path,
+    QByteArray* original_config,
+    bool* had_config,
+    bool* copied_import,
+    QByteArray* published_config) {
+  if (original_config)
+    original_config->clear();
+  if (had_config)
+    *had_config = false;
+  if (copied_import)
+    *copied_import = false;
+  if (published_config)
+    published_config->clear();
   if (!is_explicit_role(role) && role != "auto") {
     return true;
   }
@@ -3247,10 +3527,16 @@ bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QStri
   if (!fs::exists(config_path)) {
     return true;
   }
-
   YAML::Node config;
   try {
     config = YAML::LoadFile(config_path.string());
+    if (original_config)
+      *original_config = QByteArray::fromStdString(YAML::Dump(config) + "\n");
+    if (had_config)
+      *had_config = true;
+    if (copied_import) {
+      *copied_import = is_copied_import_in_config(config, QDir(gameDirectory(game_id_edit_->text())), relative_path);
+    }
   } catch (const std::exception& exc) {
     appendLog(QString("could not update private config: %1").arg(exc.what()));
     return false;
@@ -3317,19 +3603,54 @@ bool HmStreamWindow::removePrivateConfigForRole(const QString& role, const QStri
     changed = clear_stitching_frame_offsets(config) || changed;
   }
   if (!changed) {
+    if (published_config) {
+      *published_config = QByteArray::fromStdString(YAML::Dump(config) + "\n");
+    }
     return true;
   }
 
-  std::ofstream out(config_path);
-  if (!out) {
-    appendLog(QString("failed to write private config %1").arg(QString::fromStdString(config_path.string())));
+  const auto publish = publish_yaml_config(config_path, config);
+  if (!publish.ok())
+    appendLog(QString("failed to write private config %1: %2")
+                  .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
+  if (publish.ok() && published_config) {
+    *published_config = QByteArray::fromStdString(YAML::Dump(config) + "\n");
+  }
+  return publish.ok();
+}
+
+bool HmStreamWindow::restorePrivateConfigAfterRemoveFailure(
+    const QByteArray& original_config,
+    bool had_config,
+    const QByteArray& removed_config) {
+  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  try {
+    const YAML::Node original = had_config ? YAML::Load(original_config.toStdString()) : YAML::Node();
+    const YAML::Node removed = removed_config.isEmpty() ? YAML::Node() : YAML::Load(removed_config.toStdString());
+    YAML::Node latest;
+    if (fs::is_regular_file(config_path)) {
+      latest = YAML::LoadFile(config_path.string());
+    }
+    const YAML::Node restored = hm::stitching::merge_game_config_rollback(removed, original, latest);
+    const auto status = publish_yaml_config(config_path, restored);
+    if (!status.ok()) {
+      appendLog(QString("failed to publish private config rollback: %1").arg(status.ToString().c_str()));
+      return false;
+    }
+  } catch (const std::exception& exc) {
+    appendLog(QString("could not restore private config: %1").arg(exc.what()));
     return false;
   }
-  out << config << "\n";
   return true;
 }
 
-bool HmStreamWindow::removeImportedVideoPath(const QString& relative_path, bool allow_regular_delete) {
+bool HmStreamWindow::resolveImportedVideoPath(
+    const QString& relative_path,
+    bool allow_regular_delete,
+    QString* resolved_imported_path) {
+  if (!resolved_imported_path)
+    return false;
+  resolved_imported_path->clear();
   const QDir game_dir(gameDirectory(game_id_edit_->text()));
   const QString game_root = QDir::cleanPath(game_dir.absolutePath());
   const QString canonical_game_root = canonical_dir_path(game_root);
@@ -3342,7 +3663,7 @@ bool HmStreamWindow::removeImportedVideoPath(const QString& relative_path, bool 
     return true;
   }
   const QFileInfo imported(imported_path);
-  if (!imported.exists()) {
+  if (!imported.exists() && !imported.isSymLink()) {
     return true;
   }
   const QString canonical_parent = canonical_dir_path(QFileInfo(imported_path).absolutePath());
@@ -3361,6 +3682,21 @@ bool HmStreamWindow::removeImportedVideoPath(const QString& relative_path, bool 
   }
   if (!imported.isSymLink() && !allow_regular_delete) {
     appendLog(QString("not deleting regular video file %1").arg(relative_path));
+    return false;
+  }
+  *resolved_imported_path = imported_path;
+  return true;
+}
+
+bool HmStreamWindow::removeImportedVideoPath(const QString& relative_path, bool allow_regular_delete) {
+  QString imported_path;
+  if (!resolveImportedVideoPath(relative_path, allow_regular_delete, &imported_path))
+    return false;
+  if (imported_path.isEmpty())
+    return true;
+  if (const char* fail_path = std::getenv("HM_TEST_VIDEO_REMOVE_FAIL");
+      fail_path != nullptr && relative_path == QString::fromUtf8(fail_path)) {
+    appendLog(QString("injected failure removing imported video %1").arg(relative_path));
     return false;
   }
   if (!QFile::remove(imported_path)) {
@@ -3425,8 +3761,14 @@ QString HmStreamWindow::writePlaytrackerRuntimeConfig() {
   try {
     QString base_playtracker_config = pipelineConfigPath("play_tracker_config.yaml");
     const fs::path game_config_path = fs::path(game_dir.toStdString()) / "config.yaml";
-    if (fs::exists(game_config_path)) {
-      YAML::Node game_config = YAML::LoadFile(game_config_path.string());
+    auto loaded_game_config = hm::stitching::load_game_config_file(game_config_path);
+    if (!loaded_game_config.ok()) {
+      appendLog(
+          QString("could not read playtracker game config: %1").arg(loaded_game_config.status().ToString().c_str()));
+      return {};
+    }
+    if (loaded_game_config->has_value()) {
+      YAML::Node game_config = **loaded_game_config;
       YAML::Node configured_config_file;
       if (lookup_yaml_path(game_config, "pipeline.ds-playtracker.config-file", &configured_config_file) &&
           configured_config_file.IsScalar()) {

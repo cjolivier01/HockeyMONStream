@@ -10,15 +10,22 @@
 #include "hstream/src/libs/stitching/Orientation.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 
 #include <algorithm>
 #include <cassert>
 #include <cctype>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <regex>
+#include <sstream>
 #include <string>
 #include <vector>
+
+#include <opencv2/videoio.hpp>
+#include <unistd.h>
+#include <yaml-cpp/yaml.h>
 
 namespace hm {
 namespace stitching {
@@ -43,25 +50,25 @@ constexpr const char* INSTA360_FILE_PATTERN = R"(^(VID_[0-9]{8}_[0-9]{6}_[0-9]{3
  *
  * Pattern: left-[0-9]\.mp4$
  */
-constexpr const char* LEFT_PART_FILE_PATTERN = R"(left-[0-9]\.mp4$)";
+constexpr const char* LEFT_PART_FILE_PATTERN = R"(left-[0-9]+\.(mp4|mkv|m4v)$)";
 
 /** @brief Regular expression for right part files.
  *
  * Pattern: right-[0-9]\.mp4$
  */
-constexpr const char* RIGHT_PART_FILE_PATTERN = R"(right-[0-9]\.mp4$)";
+constexpr const char* RIGHT_PART_FILE_PATTERN = R"(right-[0-9]+\.(mp4|mkv|m4v)$)";
 
 /** @brief Regular expression for a plain left file.
  *
  * Pattern: left.mp4
  */
-constexpr const char* LEFT_FILE_PATTERN = R"(left\.mp4$)";
+constexpr const char* LEFT_FILE_PATTERN = R"(left\.(mp4|mkv|m4v)$)";
 
 /** @brief Regular expression for a plain right file.
  *
  * Pattern: right.mp4
  */
-constexpr const char* RIGHT_FILE_PATTERN = R"(right\.mp4$)";
+constexpr const char* RIGHT_FILE_PATTERN = R"(right\.(mp4|mkv|m4v)$)";
 
 /** @brief Regular expression for a pre-stitched file.
  *
@@ -330,6 +337,50 @@ int cam_index(const std::string& name) {
   }
   return 0;
 }
+
+absl::Status save_orientation_config(const fs::path& game_dir, const VideoChapter& left, const VideoChapter& right) {
+  if (left.empty() || right.empty()) {
+    return absl::InvalidArgumentError("Both camera orientations need at least one chapter");
+  }
+  if (left.size() != right.size()) {
+    return absl::InvalidArgumentError("Left and right cameras have different chapter counts");
+  }
+  std::vector<std::string> left_paths;
+  std::vector<std::string> right_paths;
+  for (const auto& [chapter, left_path] : left) {
+    const auto found = right.find(chapter);
+    if (found == right.end()) {
+      return absl::InvalidArgumentError("Left and right cameras have mismatched chapter numbers");
+    }
+    std::error_code error;
+    fs::path relative_left = fs::relative(left_path, game_dir, error);
+    if (error)
+      return absl::InternalError("Failed to relativize left video path: " + error.message());
+    fs::path relative_right = fs::relative(found->second, game_dir, error);
+    if (error)
+      return absl::InternalError("Failed to relativize right video path: " + error.message());
+    left_paths.push_back(relative_left.string());
+    right_paths.push_back(relative_right.string());
+  }
+
+  auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
+  if (!config_lock.ok())
+    return config_lock.status();
+  const fs::path config_path = game_dir / "config.yaml";
+  YAML::Node config(YAML::NodeType::Map);
+  try {
+    if (fs::is_regular_file(config_path))
+      config = YAML::LoadFile(config_path.string());
+    config["game"]["videos"]["left"] = left_paths;
+    config["game"]["videos"]["right"] = right_paths;
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Failed to update private game config: " + std::string(error.what()));
+  }
+
+  std::ostringstream serialized;
+  serialized << config << '\n';
+  return publish_game_config(game_dir, serialized.str());
+}
 } // namespace
 
 /**
@@ -436,6 +487,92 @@ absl::StatusOr<VideosDict> get_available_videos(const std::string& dir_name, boo
   }
 
   return videos_dict;
+}
+
+absl::StatusOr<OrientationScores> rink_orientation_scores(const cv::Mat& binary_mask) {
+  if (binary_mask.empty() || binary_mask.channels() != 1) {
+    return absl::InvalidArgumentError("Orientation requires a non-empty single-channel rink mask");
+  }
+  cv::Mat mask;
+  cv::compare(binary_mask, 0, mask, cv::CMP_GT);
+  const int band_width = mask.cols / 8;
+  const int band_height = mask.rows / 8;
+  if (band_width <= 0 || band_height <= 0) {
+    return absl::InvalidArgumentError("Orientation rink mask is too small");
+  }
+  return OrientationScores{
+      static_cast<double>(cv::countNonZero(mask(cv::Rect(0, 0, band_width, mask.rows)))),
+      static_cast<double>(cv::countNonZero(mask(cv::Rect(mask.cols - band_width, 0, band_width, mask.rows)))),
+      static_cast<double>(cv::countNonZero(mask(cv::Rect(0, 0, mask.cols, band_height)))),
+      static_cast<double>(cv::countNonZero(mask(cv::Rect(0, mask.rows - band_height, mask.cols, band_height)))),
+  };
+}
+
+absl::StatusOr<std::string> classify_rink_orientation(const cv::Mat& binary_mask) {
+  auto scores = rink_orientation_scores(binary_mask);
+  if (!scores.ok())
+    return scores.status();
+  if (scores->left > scores->right)
+    return std::string("right");
+  if (scores->right > scores->left)
+    return std::string("left");
+  return absl::FailedPreconditionError(
+      "Ambiguous camera orientation: left edge sum=" + std::to_string(scores->left) +
+      ", right edge sum=" + std::to_string(scores->right));
+}
+
+absl::Status configure_game_orientation(const std::string& game_dir_string, const RinkSegmentation& rink_model) {
+  const fs::path game_dir(game_dir_string);
+  auto videos = get_available_videos(game_dir.string());
+  if (!videos.ok())
+    return videos.status();
+  if (videos->count("left") && videos->count("right")) {
+    return save_orientation_config(game_dir, videos->at("left"), videos->at("right"));
+  }
+
+  std::map<std::string, VideoChapter> oriented;
+  for (const auto& [camera, chapters] : *videos) {
+    if (camera == "stitched" || chapters.empty())
+      continue;
+    // Preserve HockeyMOM's current selection semantics: the minimum pathname,
+    // rather than the minimum chapter number, supplies the orientation frame.
+    const auto selected = std::min_element(
+        chapters.begin(), chapters.end(), [](const auto& lhs, const auto& rhs) { return lhs.second < rhs.second; });
+    cv::VideoCapture capture(selected->second);
+    if (!capture.isOpened()) {
+      return absl::NotFoundError("Failed to open orientation video: " + selected->second);
+    }
+    cv::Mat first_frame;
+    if (!capture.read(first_frame) || first_frame.empty()) {
+      return absl::InternalError("Failed to decode the first orientation frame: " + selected->second);
+    }
+    auto rink = rink_model.Infer(first_frame, RinkSegmentation::kHockeyMomInferenceScale);
+    if (!rink.ok()) {
+      return absl::Status(
+          rink.status().code(),
+          "Rink inference failed for camera " + camera + ": " + std::string(rink.status().message()));
+    }
+    auto scores = rink_orientation_scores(rink->combined_mask);
+    if (!scores.ok())
+      return scores.status();
+    auto orientation = classify_rink_orientation(rink->combined_mask);
+    if (!orientation.ok()) {
+      return absl::Status(
+          orientation.status().code(),
+          "Camera " + camera + " orientation failed (left=" + std::to_string(scores->left) +
+              ", right=" + std::to_string(scores->right) + "): " + std::string(orientation.status().message()));
+    }
+    std::cout << "Camera " << camera << " orientation=" << *orientation << " left_edge=" << scores->left
+              << " right_edge=" << scores->right << std::endl;
+    if (oriented.count(*orientation)) {
+      return absl::FailedPreconditionError("Multiple cameras classified as " + *orientation);
+    }
+    oriented[*orientation] = chapters;
+  }
+  if (!oriented.count("left") || !oriented.count("right") || oriented.size() != 2) {
+    return absl::FailedPreconditionError("Native orientation did not identify exactly one left and one right camera");
+  }
+  return save_orientation_config(game_dir, oriented.at("left"), oriented.at("right"));
 }
 
 /**

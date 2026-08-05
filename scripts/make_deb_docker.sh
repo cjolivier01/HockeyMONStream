@@ -9,7 +9,6 @@ set -euo pipefail
 TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET_UBUNTU=""
 DEEPSTREAM_DEB="${DEEPSTREAM_DEB:-}"
-HMLIB_SOURCE="${HMLIB_SOURCE:-}"
 OUTPUT_DIR=""
 PACKAGE_VERSION=""
 EXPECTED_DEEPSTREAM_VERSION="9.1.0-1+resolute2"
@@ -20,8 +19,6 @@ while [[ $# -gt 0 ]]; do
     --target-ubuntu=*) TARGET_UBUNTU="${1#*=}" ;;
     --deepstream-deb) DEEPSTREAM_DEB="$2"; shift ;;
     --deepstream-deb=*) DEEPSTREAM_DEB="${1#*=}" ;;
-    --hmlib-source) HMLIB_SOURCE="$2"; shift ;;
-    --hmlib-source=*) HMLIB_SOURCE="${1#*=}" ;;
     --output-dir) OUTPUT_DIR="$2"; shift ;;
     --output-dir=*) OUTPUT_DIR="${1#*=}" ;;
     --version) PACKAGE_VERSION="$2"; shift ;;
@@ -74,37 +71,50 @@ if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Architecture)" != "amd64" ]]; then
   exit 1
 fi
 
-if [[ -z "${HMLIB_SOURCE}" ]]; then
-  HMLIB_SOURCE="${TOPDIR}/../hm"
-fi
-HMLIB_SOURCE="$(readlink -f "${HMLIB_SOURCE}")"
-if [[ ! -d "${HMLIB_SOURCE}/hmlib" || ! -d "${HMLIB_SOURCE}/xmodels/LightGlue/lightglue" ]]; then
-  echo "ERROR: hmlib and its LightGlue submodule are required under: ${HMLIB_SOURCE}" >&2
+if ! git -C "${TOPDIR}" diff --quiet HEAD --; then
+  echo "ERROR: refusing to label a package with Git HEAD while tracked source changes are present." >&2
+  echo "Commit or stash the tracked changes, then rebuild." >&2
   exit 1
 fi
-EXPECTED_HMLIB_REVISION="$(tr -d '[:space:]' < "${TOPDIR}/scripts/hmlib-runtime-revision")"
-ACTUAL_HMLIB_REVISION="$(git -C "${HMLIB_SOURCE}" rev-parse HEAD 2>/dev/null || true)"
-if [[ "${ACTUAL_HMLIB_REVISION}" != "${EXPECTED_HMLIB_REVISION}" ]]; then
-  echo "ERROR: HockeyMOM runtime must be revision ${EXPECTED_HMLIB_REVISION}; found ${ACTUAL_HMLIB_REVISION:-unknown}." >&2
-  exit 1
-fi
-HMLIB_CHANGES="$(git -C "${HMLIB_SOURCE}" status --porcelain -- hmlib xmodels/LightGlue)"
-if [[ -n "${HMLIB_CHANGES}" ]]; then
-  echo "ERROR: HockeyMOM hmlib/LightGlue runtime paths must be clean before packaging:" >&2
-  printf '%s\n' "${HMLIB_CHANGES}" >&2
+unexpected_untracked="$(
+  git -C "${TOPDIR}" ls-files --others --exclude-standard \
+    | grep -Ev '^(bazelisk|run|stitching-calibration-note[.]txt|dist/|dist-staging/|output_workdirs/|bazel-[^/]+(/|$))' \
+    || true
+)"
+if [[ -n "${unexpected_untracked}" ]]; then
+  echo "ERROR: refusing to package untracked source files:" >&2
+  while IFS= read -r source_path; do
+    printf '  %s\n' "${source_path}" >&2
+  done <<< "${unexpected_untracked}"
   exit 1
 fi
 
+# Resolve the immutable source identity once. Every version field, archive,
+# and provenance record below refers to this object even if another process
+# moves the worktree or branch while Docker is building.
+SOURCE_REVISION="$(git -C "${TOPDIR}" rev-parse HEAD)"
+
 if [[ -z "${PACKAGE_VERSION}" ]]; then
-  commit_count="$(git -C "${TOPDIR}" rev-list --count HEAD)"
-  short_hash="$(git -C "${TOPDIR}" rev-parse --short=7 HEAD)"
-  PACKAGE_VERSION="0.0.${commit_count}+git.${short_hash}"
+  commit_epoch="$(git -C "${TOPDIR}" show -s --format=%ct "${SOURCE_REVISION}")"
+  short_hash="$(git -C "${TOPDIR}" rev-parse --short=7 "${SOURCE_REVISION}")"
+  PACKAGE_VERSION="0.0.${commit_epoch}+git.${short_hash}"
 fi
 if [[ -z "${OUTPUT_DIR}" ]]; then
   OUTPUT_DIR="${TOPDIR}/dist/ubuntu${TARGET_UBUNTU}"
 fi
 mkdir -p "${OUTPUT_DIR}"
 OUTPUT_DIR="$(readlink -f "${OUTPUT_DIR}")"
+
+# Freeze the complete build input before the slow image build. The container
+# never sees the mutable checkout, ignored artifacts, or untracked files.
+SOURCE_SNAPSHOT="$(mktemp -d "${TMPDIR:-/tmp}/hmstream-deb-source.XXXXXX")"
+cleanup_snapshot() {
+  rm -rf -- "${SOURCE_SNAPSHOT}"
+}
+trap cleanup_snapshot EXIT
+git -C "${TOPDIR}" archive --format=tar "${SOURCE_REVISION}" | tar -xf - -C "${SOURCE_SNAPSHOT}"
+source_epoch="$(git -C "${TOPDIR}" show -s --format=%ct "${SOURCE_REVISION}")"
+printf '%s %s\n' "${SOURCE_REVISION}" "${source_epoch}" > "${SOURCE_SNAPSHOT}/.hmstream-package-source"
 
 image_tag="hmstream-deb-builder:ubuntu${TARGET_UBUNTU}"
 volume_suffix="${TARGET_UBUNTU//./}"
@@ -121,9 +131,8 @@ docker volume create "${cache_volume}" >/dev/null
 
 docker_args=(
   --rm
-  --volume "${TOPDIR}:/source:ro"
+  --volume "${SOURCE_SNAPSHOT}:/source:ro"
   --volume "${DEEPSTREAM_DEB}:/inputs/deepstream.deb:ro"
-  --volume "${HMLIB_SOURCE}:/hmlib-source:ro"
   --volume "${OUTPUT_DIR}:/output"
   --volume "${cache_volume}:/root/.cache/bazel"
   --env "PACKAGE_VERSION=${PACKAGE_VERSION}"
@@ -137,6 +146,16 @@ docker_args=(
 PRETRAINED_SOURCE="$(readlink -f "${TOPDIR}/pretrained" 2>/dev/null || true)"
 if [[ -n "${PRETRAINED_SOURCE}" && -d "${PRETRAINED_SOURCE}" ]]; then
   docker_args+=(--volume "${PRETRAINED_SOURCE}:${PRETRAINED_SOURCE}:ro")
+fi
+
+# Native calibration models intentionally live in a content-addressed user
+# cache for source-tree runs.  Expose that cache read-only to the immutable
+# package build; make_deb.sh verifies every declared digest before and after
+# copying the models into the package-owned pretrained tree.
+MODEL_CACHE_SOURCE="${HMSTREAM_MODEL_CACHE_DIR:-${HOME}/.cache/hmstream/models}"
+if [[ -d "${MODEL_CACHE_SOURCE}" ]]; then
+  MODEL_CACHE_SOURCE="$(readlink -f "${MODEL_CACHE_SOURCE}")"
+  docker_args+=(--volume "${MODEL_CACHE_SOURCE}:/root/.cache/hmstream/models:ro")
 fi
 
 if [[ -n "${SSH_AUTH_SOCK:-}" && -S "${SSH_AUTH_SOCK}" ]]; then

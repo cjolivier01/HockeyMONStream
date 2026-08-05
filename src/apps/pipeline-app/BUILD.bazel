@@ -1,3 +1,8 @@
+exports_files([
+  "PipelineApp.cpp",
+  "configurator.cpp",
+])
+
 PIPELINE_APP_SRCS = glob(
     [
         "*.cpp",
@@ -19,6 +24,7 @@ PIPELINE_APP_LINKOPTS = [
 ]
 
 PIPELINE_APP_DEPS = [
+    "//src/libs/assets:asset_manager",
     # "//src/libs/common:mod_pipeline",
     "//src/libs/common:utils",
     "//src/libs/common:fs",
@@ -38,6 +44,12 @@ PIPELINE_APP_DEPS = [
     "@com_google_absl//absl/cleanup",
 ]
 
+filegroup(
+    name = "runtime_sources",
+    srcs = PIPELINE_APP_SRCS,
+    visibility = ["//visibility:public"],
+)
+
 cc_binary(
     name = "pipeline-app",
     srcs = PIPELINE_APP_SRCS,
@@ -51,7 +63,35 @@ cc_binary(
     srcs = PIPELINE_APP_SRCS,
     copts = PIPELINE_APP_COPTS,
     linkopts = PIPELINE_APP_LINKOPTS,
+    visibility = ["//visibility:public"],
     deps = PIPELINE_APP_DEPS,
+)
+
+cc_test(
+    name = "configurator_persistence_test",
+    srcs = [
+        "ConfiguratorPersistenceTest.cpp",
+        "StitcherOnePassConfig.h",
+        "configurator.cpp",
+        "configurator.h",
+        "deepstream_app.h",
+    ],
+    copts = PIPELINE_APP_COPTS,
+    linkopts = PIPELINE_APP_LINKOPTS,
+    deps = PIPELINE_APP_DEPS,
+)
+
+cc_test(
+    name = "pipeline_clean_only_test",
+    srcs = ["PipelineCleanOnlyTest.cpp"],
+    args = [
+        "$(location :hmstream-cli)",
+        "$(location //configs:ds_hockey_configure_stitching.yaml)",
+    ],
+    data = [
+        ":hmstream-cli",
+        "//configs:ds_hockey_configure_stitching.yaml",
+    ],
 )
 
 cc_test(
@@ -65,6 +105,21 @@ cc_test(
         "-x",
         "c++",
         "-std=c++17",
+    ],
+)
+
+cc_test(
+    name = "tensorrt_model_cache_test",
+    srcs = [
+        "TensorRtModelCache.cpp",
+        "TensorRtModelCache.h",
+        "TensorRtModelCacheTest.cpp",
+    ],
+    copts = PIPELINE_APP_COPTS,
+    deps = [
+        "//src/libs/assets:asset_manager",
+        "@com_google_absl//absl/status",
+        "@yaml-cpp",
     ],
 )
 

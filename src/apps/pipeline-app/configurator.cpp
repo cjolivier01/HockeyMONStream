@@ -40,6 +40,8 @@
 #include "hstream/src/libs/common/pipeline_utils.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/Orientation.h"
 
 namespace fs = std::filesystem;
@@ -583,6 +585,10 @@ std::optional<std::tuple<int, int>> get_canvas_size(const std::string& game_dir)
   // Control masks require `seam_file.png`. If it is missing, create a simple hard-seam fallback so we can still
   // determine canvas sizing and avoid the pipeline booting into a gray passthrough mode.
   (void)stitching::maybe_create_default_seam_file(game_dir);
+  auto artifact_lock = stitching::HuginProject::RecoverAndLock(game_dir);
+  if (!artifact_lock.ok()) {
+    return std::nullopt;
+  }
   hm::pano::ControlMasks control_masks(game_dir);
   if (!control_masks.is_valid()) {
     return std::nullopt;
@@ -841,7 +847,10 @@ void Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
   set_playcropper_if_not_set("scoreboard-scale", "rink.scoreboard.scoreboard_scale");
   if (has_node(config_, "rink.scoreboard.perspective_polygon", /*non_null=*/true)) {
     auto points = config_["rink"]["scoreboard"]["perspective_polygon"].as<std::vector<std::vector<int>>>();
-    if (!points.empty()) {
+    const bool disabled = points.size() == 4 && std::all_of(points.begin(), points.end(), [](const auto& point) {
+                            return point.size() == 2 && point[0] == 0 && point[1] == 0;
+                          });
+    if (!points.empty() && !disabled) {
       assert(points.size() == 4);
       std::stringstream ss;
       for (size_t i = 0, n = points.size(); i < n; ++i) {
@@ -1603,26 +1612,35 @@ std::filesystem::path Configurator::get_private_config_file_name(const std::stri
   return get_game_dir(game_id) / "config.yaml";
 }
 
-std::optional<YAML::Node> Configurator::load_private_config() {
-  std::string private_config_file = get_private_config_file_name(game_id_);
-  if (!std::filesystem::exists(private_config_file)) {
+absl::StatusOr<std::optional<YAML::Node>> Configurator::load_private_config() {
+  const fs::path private_config_file = get_private_config_file_name(game_id_);
+  if (private_config_file.parent_path().empty() || !fs::is_directory(private_config_file.parent_path())) {
     return std::nullopt;
   }
-  return YAML::LoadFile(private_config_file);
+  return stitching::load_game_config_file(private_config_file);
 }
 
 absl::Status Configurator::save_private_config(const YAML::Node& private_config) {
-  std::string private_config_file = get_private_config_file_name(game_id_);
-  std::ofstream fout(private_config_file, std::ios::out | std::ios::trunc);
-  if (!fout.is_open()) {
-    return absl::InternalError(TO_STRING(
-        "Failed to open private config file for writing: \"" << private_config_file
-                                                             << "\", reason: " << strerror(errno)));
+  const fs::path game_dir = get_game_dir(game_id_);
+  auto config_lock = stitching::GameConfigTransactionLock::Acquire(game_dir);
+  if (!config_lock.ok())
+    return config_lock.status();
+  const fs::path private_config_file = get_private_config_file_name(game_id_);
+  YAML::Node latest;
+  try {
+    if (fs::is_regular_file(private_config_file))
+      latest = YAML::LoadFile(private_config_file.string());
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Failed to merge private config: " + std::string(error.what()));
   }
-  if (!is_empty_yaml_document(private_config)) {
-    fout << private_config << "\n";
-  }
-  return absl::OkStatus();
+  const YAML::Node merged = stitching::apply_game_config_diff(persisted_private_config_, private_config, latest);
+  std::string contents;
+  if (!is_empty_yaml_document(merged))
+    contents = YAML::Dump(merged) + "\n";
+  auto status = stitching::publish_game_config(game_dir, contents);
+  if (status.ok())
+    persisted_private_config_ = YAML::Clone(private_config);
+  return status;
 }
 
 absl::StatusOr<YAML::Node> Configurator::load_config() {
@@ -1633,15 +1651,18 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
       config = YAML::LoadFile(baseline_path);
     }
   }
-  std::optional<YAML::Node> private_config = load_private_config();
+  std::optional<YAML::Node> private_config;
+  HM_ASSIGN_OR_RETURN(private_config, load_private_config());
   if (private_config.has_value()) {
     private_config_ = *private_config;
+    persisted_private_config_ = YAML::Clone(private_config_);
     config = merge_nodes(
         config,
         private_config_,
         /*warn_if_key_not_in_dest=*/!config);
   } else {
-    private_config_ = YAML::Node();
+    private_config_ = YAML::Node(YAML::NodeType::Map);
+    persisted_private_config_ = YAML::Node(YAML::NodeType::Map);
   }
   return config;
 }
@@ -1810,15 +1831,10 @@ absl::Status Configurator::complete_configuration(
       if (preserved_pipeline.IsDefined()) {
         config_["pipeline"] = preserved_pipeline;
       }
-      if (private_config_.IsDefined()) {
-        auto save_status = save_private_config(private_config_);
-        if (!save_status.ok()) {
-          if (clean_stitching_artifacts) {
-            return save_status;
-          }
-          std::cerr << "Warning: failed to save private config: " << save_status << std::endl;
-        }
-      }
+      // clean_stitching_artifacts already published the merged private YAML.
+      // Keep this process's snapshot aligned without overwriting concurrent
+      // config owners with the stale pre-clean document.
+      persisted_private_config_ = YAML::Clone(private_config_);
     }
   }
 

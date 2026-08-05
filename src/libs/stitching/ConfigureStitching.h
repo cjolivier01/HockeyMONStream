@@ -8,10 +8,13 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "hstream/src/libs/common/Surface.h"
+#include "opencv2/core/mat.hpp"
 #include "yaml-cpp/node/node.h"
 
 namespace hm {
 namespace stitching {
+
+struct RinkProfile;
 
 struct Synchronization {
   // Actual frame number
@@ -30,9 +33,24 @@ absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(const std::str
 
 bool can_configure_stitching(const YAML::Node& config);
 
-bool is_field_mask_configured(const std::string& game_dir);
+absl::StatusOr<std::string> stitched_output_generation_id(
+    const std::string& hugin_generation,
+    double post_stitch_rotate_degrees);
 
-absl::Status create_field_mask(const std::string& game_dir, surface::Surface surface);
+bool is_field_mask_configured(const std::string& game_dir, const std::string& expected_output_generation = {});
+
+// Validates and decodes rink_mask_0.png while holding the Hugin and
+// config/rink transaction locks for one complete artifact generation.
+absl::StatusOr<cv::Mat> load_field_mask(
+    const std::string& game_dir,
+    const std::string& expected_output_generation = {});
+
+absl::Status create_field_mask(
+    const std::string& game_dir,
+    surface::Surface surface,
+    const std::string& expected_output_generation = {});
+
+absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& profile);
 
 absl::Status save_stitched_image(const std::string& game_dir, surface::Surface surface);
 

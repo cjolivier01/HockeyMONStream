@@ -24,6 +24,14 @@
 
 class QProcessEnvironment;
 
+namespace hm::ui_internal {
+
+// Restores only paths cleared by the UI's automatic video selection. Other
+// keys may have been updated by another config owner in the meantime.
+void restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previous);
+
+} // namespace hm::ui_internal
+
 class HmStreamWindow : public QMainWindow {
  public:
   explicit HmStreamWindow(QWidget* parent = nullptr);
@@ -38,6 +46,12 @@ class HmStreamWindow : public QMainWindow {
   int cameraTabCount() const;
 
  private:
+  enum class CopiedImportCleanupResult {
+    kSuccess,
+    kRolledBack,
+    kCommittedWithCleanupFailure,
+  };
+
   void buildUi();
   void buildTopBar(QVBoxLayout* root);
   void buildMainArea(QVBoxLayout* root);
@@ -70,16 +84,38 @@ class HmStreamWindow : public QMainWindow {
   QString gameDirectory(const QString& game_id) const;
   QString relativeToGameDir(const QString& path) const;
   bool ensureGameDirectory();
-  bool importVideoPath(const QString& source_path, QString* imported_relative_path);
+  bool importVideoPath(const QString& source_path, QString* imported_relative_path, bool* created);
+  // These helpers mutate video/config state and require the caller to hold a
+  // GameConfigTransactionLock for the selected game.
   bool saveCopiedImport(
       const QString& relative_path,
       const QString& auto_group_family = {},
       const QString& source_parent = {});
-  bool isCopiedImport(const QString& relative_path);
-  bool removeClearedCopiedExplicitImports(const QByteArray& original_config, bool had_config);
+  bool rollbackImportedVideoPath(const QString& relative_path);
+  CopiedImportCleanupResult removeClearedCopiedExplicitImports(
+      const QByteArray& original_config,
+      bool had_config,
+      bool restore_auto_selection_on_failure = true,
+      const QByteArray& published_auto_config = {});
   bool syncRuntimeExplicitVideoConfig(YAML::Node& config);
-  bool savePrivateConfigForRole(const QString& role, const QString& relative_path);
-  bool removePrivateConfigForRole(const QString& role, const QString& relative_path);
+  bool savePrivateConfigForRole(
+      const QString& role,
+      const QString& relative_path,
+      QByteArray* original_config,
+      bool* had_config,
+      QByteArray* published_config);
+  bool removePrivateConfigForRole(
+      const QString& role,
+      const QString& relative_path,
+      QByteArray* original_config,
+      bool* had_config,
+      bool* copied_import,
+      QByteArray* published_config);
+  bool restorePrivateConfigAfterRemoveFailure(
+      const QByteArray& original_config,
+      bool had_config,
+      const QByteArray& removed_config);
+  bool resolveImportedVideoPath(const QString& relative_path, bool allow_regular_delete, QString* imported_path);
   bool removeImportedVideoPath(const QString& relative_path, bool allow_regular_delete = false);
   void toggleOutput(const QString& id, bool enabled);
   void redirectYoutube();
@@ -102,7 +138,7 @@ class HmStreamWindow : public QMainWindow {
   QStringList enabledSinkNames() const;
   bool isCalibrationRun() const;
   void updateRunControls();
-  bool applySavedControlConfig(YAML::Node& config);
+  bool applySavedControlConfig(YAML::Node& config, bool* invalidate_rink_masks, int* invalidated_config_artifacts);
   void loadSavedControlConfig();
   bool sendLiveCameraControl(const QString& id, int value);
   QSlider* addSlider(QVBoxLayout* layout, const QString& id, const QString& label, int minimum, int maximum, int value);
@@ -111,6 +147,8 @@ class HmStreamWindow : public QMainWindow {
   QLabel* pipeline_state_{nullptr};
   QLabel* preview_status_{nullptr};
   QLabel* stitched_status_{nullptr};
+  QLabel* preview_external_notice_{nullptr};
+  QLabel* stitched_external_notice_{nullptr};
   QLabel* game_path_label_{nullptr};
   QLabel* video_sets_path_label_{nullptr};
   QComboBox* game_selector_{nullptr};
@@ -133,6 +171,8 @@ class HmStreamWindow : public QMainWindow {
   QPushButton* start_button_{nullptr};
   QPushButton* pause_button_{nullptr};
   QPushButton* stop_button_{nullptr};
+  QPushButton* program_fullscreen_button_{nullptr};
+  QPushButton* stitched_fullscreen_button_{nullptr};
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};

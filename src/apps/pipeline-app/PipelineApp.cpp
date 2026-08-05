@@ -33,8 +33,10 @@
 #include <utility>
 #include <vector>
 
+#include "TensorRtModelCache.h"
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
+#include "hstream/src/libs/assets/AssetManager.h"
 #include "hstream/src/libs/camera/AutoFocus.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
@@ -82,6 +84,27 @@ std::string host_arch_name() {
 #else
   return "unknown";
 #endif
+}
+
+bool manages_its_own_window(GstElement* sink) {
+  if (sink == nullptr) {
+    return false;
+  }
+  GstElementFactory* factory = gst_element_get_factory(sink);
+  return factory != nullptr &&
+      g_strcmp0(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)), NVDS_ELEM_SINK_3D) == 0;
+}
+
+absl::Status pause_pipeline_for_model_initialization(GstElement* pipeline) {
+  if (gst_element_set_state(pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE)
+    return absl::InternalError("Failed to set pipeline to PAUSED");
+  constexpr GstClockTime kModelInitializationTimeout = 15 * 60 * GST_SECOND;
+  const GstStateChangeReturn result = gst_element_get_state(pipeline, nullptr, nullptr, kModelInitializationTimeout);
+  if (result == GST_STATE_CHANGE_FAILURE)
+    return absl::InternalError("Pipeline failed while initializing models");
+  if (result == GST_STATE_CHANGE_ASYNC)
+    return absl::DeadlineExceededError("Timed out waiting for pipeline model initialization");
+  return absl::OkStatus();
 }
 
 void prepend_env_path(const char* name, const fs::path& dir) {
@@ -184,8 +207,51 @@ void stage_bazel_gst_plugins(const fs::path& root) {
   prepend_env_path("GST_PLUGIN_PATH", runtime_plugin_dir);
 }
 
+void stage_bazel_runtime_libraries(const fs::path& root) {
+  const fs::path bazel_bin = root / "bazel-bin";
+  if (!fs::is_directory(bazel_bin))
+    return;
+  std::error_code ec;
+  fs::path onnxruntime;
+  for (const fs::directory_entry& solib : fs::directory_iterator(bazel_bin, ec)) {
+    if (ec)
+      return;
+    if (!solib.is_directory(ec) || solib.path().filename().string().rfind("_solib_", 0) != 0) {
+      ec.clear();
+      continue;
+    }
+    for (const fs::directory_entry& entry : fs::recursive_directory_iterator(solib.path(), ec)) {
+      if (ec)
+        return;
+      if (entry.path().filename() == "libonnxruntime.so.1" && entry.is_regular_file(ec) && !ec) {
+        onnxruntime = fs::canonical(entry.path(), ec);
+        break;
+      }
+    }
+    if (!onnxruntime.empty())
+      break;
+  }
+  if (onnxruntime.empty() || ec)
+    return;
+  const fs::path runtime_dir = root / ".cache/runtime-lib-path" / host_arch_name();
+  fs::create_directories(runtime_dir, ec);
+  if (ec)
+    return;
+  const fs::path link = runtime_dir / "libonnxruntime.so.1";
+  fs::remove(link, ec);
+  ec.clear();
+  fs::create_symlink(onnxruntime, link, ec);
+  if (!ec)
+    prepend_env_path("LD_LIBRARY_PATH", runtime_dir);
+}
+
 void configure_pipeline_runtime_environment(const char* argv0) {
   const fs::path root = pipeline_runtime_root(argv0);
+  const fs::path packaged_native_models = root / "pretrained/native-calibration";
+  if (!std::getenv("HM_NATIVE_MODEL_DIR") && fs::is_directory(packaged_native_models)) {
+    setenv("HM_NATIVE_MODEL_DIR", packaged_native_models.c_str(), 1);
+  }
+  stage_bazel_runtime_libraries(root);
   std::error_code ec;
   fs::path registry_dir = root / ".cache/gstreamer-1.0";
   fs::create_directories(registry_dir, ec);
@@ -197,7 +263,8 @@ void configure_pipeline_runtime_environment(const char* argv0) {
     }
   }
   if (!ec) {
-    const std::string registry = (registry_dir / ("registry.hstream." + host_arch_name() + ".bin")).string();
+    const std::string registry =
+        (registry_dir / ("registry.hstream.native-onnx-v1." + host_arch_name() + ".bin")).string();
     setenv("GST_REGISTRY", registry.c_str(), 1);
   }
 
@@ -556,6 +623,9 @@ absl::Status PipelineApplication::configureInstances(
         app_ctx->return_value = -1;
         return absl::InternalError("Failed to parse config file");
       }
+      HM_RETURN_IF_ERROR(
+          hm::pipeline::PrepareTensorRtModelCache(
+              config["pipeline"], fs::path(app_ctx->app_config_file()).parent_path()));
       if (!parse_config_yaml(
               config["pipeline"], &app_ctx->config, fs::path(app_ctx->app_config_file()).parent_path())) {
         NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", app_ctx->app_config_file().c_str());
@@ -625,14 +695,15 @@ absl::Status PipelineApplication::auto_focus_cameras(const std::vector<std::shar
       // Assert no duplicates
       assert(sensors.emplace(src_config.camera_csi_sensor_id).second);
       assert(bus.emplace(src_config.camera_i2c_bus).second);
-      cameras.emplace_back(hm::camera::CameraConnection{
-          .sensor_id = src_config.camera_csi_sensor_id,
-          .i2c_bus = src_config.camera_i2c_bus,
-          .width = src_config.camera_width,
-          .height = src_config.camera_height,
-          .fps_n = src_config.camera_fps_n,
-          .fps_d = src_config.camera_fps_d,
-      });
+      cameras.emplace_back(
+          hm::camera::CameraConnection{
+              .sensor_id = src_config.camera_csi_sensor_id,
+              .i2c_bus = src_config.camera_i2c_bus,
+              .width = src_config.camera_width,
+              .height = src_config.camera_height,
+              .fps_n = src_config.camera_fps_n,
+              .fps_d = src_config.camera_fps_d,
+          });
     }
   }
   if (cameras.empty()) {
@@ -671,7 +742,8 @@ absl::Status PipelineApplication::createMainLoop(
   bool has_video_overlay_sink = false;
   for (const auto& app_ctx : app_contexts) {
     for (guint j = 0; j < app_ctx->config.num_sink_sub_bins; j++) {
-      if (GST_IS_VIDEO_OVERLAY(app_ctx->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink)) {
+      GstElement* sink = app_ctx->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink;
+      if (GST_IS_VIDEO_OVERLAY(sink) && !manages_its_own_window(sink)) {
         has_video_overlay_sink = true;
         break;
       }
@@ -698,13 +770,15 @@ absl::Status PipelineApplication::createMainLoop(
   std::set<Window> owned_windows;
   for (guint i = 0; i < app_contexts.size(); i++) {
 #if defined(__aarch64__)
-    if (gst_element_set_state(app_contexts[i]->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
+    auto pause_status = pause_pipeline_for_model_initialization(app_contexts[i]->pipeline.pipeline);
+    if (!pause_status.ok()) {
       NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
-      return absl::InternalError("Failed to set pipeline to PAUSED");
+      return pause_status;
     }
 #endif
     for (guint j = 0; j < app_contexts[i]->config.num_sink_sub_bins; j++) {
-      if (!GST_IS_VIDEO_OVERLAY(app_contexts[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink))
+      GstElement* sink = app_contexts[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink;
+      if (!GST_IS_VIDEO_OVERLAY(sink) || manages_its_own_window(sink))
         continue;
 
       guint width = 0, height = 0;
@@ -770,9 +844,8 @@ absl::Status PipelineApplication::createMainLoop(
         XMapRaised(display_, windows[i]);
         XSync(display_, 1);
       }
-      gst_video_overlay_set_window_handle(
-          GST_VIDEO_OVERLAY(app_contexts[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink), (gulong)windows[i]);
-      gst_video_overlay_expose(GST_VIDEO_OVERLAY(app_contexts[i]->pipeline.instance_bins[0].sink_bin.sub_bins[j].sink));
+      gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), (gulong)windows[i]);
+      gst_video_overlay_expose(GST_VIDEO_OVERLAY(sink));
 
       if (!use_external_window && !x_event_thread_)
         x_event_thread_ = g_thread_new("nvds-window-event-thread", nvds_x_event_thread_static, nullptr);
@@ -783,9 +856,10 @@ absl::Status PipelineApplication::createMainLoop(
     struct cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, current_device);
     if (!prop.integrated) {
-      if (gst_element_set_state(app_contexts[i]->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
+      auto pause_status = pause_pipeline_for_model_initialization(app_contexts[i]->pipeline.pipeline);
+      if (!pause_status.ok()) {
         NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
-        return absl::InternalError("Failed to set pipeline to PAUSED");
+        return pause_status;
       }
     }
 #endif
@@ -1111,6 +1185,18 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     return absl::InternalError(error->message);
   }
 
+#ifndef IS_TEGRA
+  if (render_window_id_ > 0) {
+    const char* configured_sink = std::getenv("HM_RENDER_SINK");
+    if (configured_sink != nullptr && *configured_sink != '\0' &&
+        g_ascii_strcasecmp(configured_sink, "nveglglessink") != 0 && g_ascii_strcasecmp(configured_sink, "egl") != 0) {
+      g_printerr(
+          "Ignoring HM_RENDER_SINK=%s because --render-window-id requires nveglglessink embedding\n", configured_sink);
+    }
+    ::setenv("HM_RENDER_SINK", "nveglglessink", 1);
+  }
+#endif
+
   if (print_version_) {
     g_print(
         "deepstream-app version %d.%d.%d\n", NVDS_APP_VERSION_MAJOR, NVDS_APP_VERSION_MINOR, NVDS_APP_VERSION_MICRO);
@@ -1164,6 +1250,15 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
       g_strfreev(cfg_files_);
       cfg_files_ = nullptr;
     });
+  }
+
+  // Cleaning only removes generated game artifacts and must remain usable
+  // offline, even when declared models are not installed.
+  if (!clean_stitching_artifacts_) {
+    std::vector<fs::path> asset_configs;
+    for (size_t index = 0, count = g_strv_length(cfg_files_); index < count; ++index)
+      asset_configs.emplace_back(cfg_files_[index]);
+    HM_RETURN_IF_ERROR(hm::assets::AssetManager::Ensure(asset_configs));
   }
 
   if (pipline_options) {
@@ -1231,11 +1326,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     current_stage_ = stage_item.first;
     auto& app_contexts = stage_app_contexts_.at(current_stage_);
     {
+      auto cache_lock_cleanup = absl::MakeCleanup([] { hm::pipeline::ReleaseTensorRtModelCacheLocks(); });
       HM_RETURN_IF_ERROR(configureInstances(stage_count, app_contexts));
       if (!app_contexts.empty()) {
         CleanupStack stage_cleanup_stack;
         HM_RETURN_IF_ERROR(createPipelines(app_contexts, stage_cleanup_stack));
         HM_RETURN_IF_ERROR(createMainLoop(app_contexts, stage_windows_[current_stage_], stage_cleanup_stack));
+        hm::pipeline::ReleaseTensorRtModelCacheLocks();
         // editor_thread_ = hm::edit_pipeline(GST_OBJECT(app_contexts[0]->pipeline.pipeline));
         HM_RETURN_IF_ERROR(playPipelines(app_contexts, stage_cleanup_stack));
       }
@@ -1994,7 +2091,8 @@ bool PipelineApplication::set_element_property_runtime(
     GParamSpec* pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(element), property_name.c_str());
     if (!pspec) {
       gst_object_unref(element);
-      g_printerr("runtime command failed: element %s has no property %s\n", element_name.c_str(), property_name.c_str());
+      g_printerr(
+          "runtime command failed: element %s has no property %s\n", element_name.c_str(), property_name.c_str());
       return false;
     }
     GValue gvalue = G_VALUE_INIT;
@@ -2003,13 +2101,18 @@ bool PipelineApplication::set_element_property_runtime(
         g_value_unset(&gvalue);
       }
       gst_object_unref(element);
-      g_printerr("runtime command failed: unsupported property type for %s.%s\n", element_name.c_str(), property_name.c_str());
+      g_printerr(
+          "runtime command failed: unsupported property type for %s.%s\n", element_name.c_str(), property_name.c_str());
       return false;
     }
     if (g_param_value_validate(pspec, &gvalue)) {
       g_value_unset(&gvalue);
       gst_object_unref(element);
-      g_printerr("runtime command failed: value out of range for %s.%s=%s\n", element_name.c_str(), property_name.c_str(), value.c_str());
+      g_printerr(
+          "runtime command failed: value out of range for %s.%s=%s\n",
+          element_name.c_str(),
+          property_name.c_str(),
+          value.c_str());
       return false;
     }
     g_object_set_property(G_OBJECT(element), property_name.c_str(), &gvalue);
@@ -2020,7 +2123,11 @@ bool PipelineApplication::set_element_property_runtime(
       g_object_get(G_OBJECT(element), "last-property-set-ok", &accepted, nullptr);
       if (!accepted) {
         gst_object_unref(element);
-        g_printerr("runtime command failed: plugin rejected %s.%s=%s\n", element_name.c_str(), property_name.c_str(), value.c_str());
+        g_printerr(
+            "runtime command failed: plugin rejected %s.%s=%s\n",
+            element_name.c_str(),
+            property_name.c_str(),
+            value.c_str());
         return false;
       }
     }
@@ -2438,12 +2545,12 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
     return absl::InternalError("Failed to set pipeline to PAUSED").raw_code();
   }
   for (i = 0; i < app_ctx_ptr->config.num_sink_sub_bins; i++) {
-    if (!GST_IS_VIDEO_OVERLAY(app_ctx_ptr->pipeline.instance_bins[0].sink_bin.sub_bins[i].sink))
+    GstElement* sink = app_ctx_ptr->pipeline.instance_bins[0].sink_bin.sub_bins[i].sink;
+    if (!GST_IS_VIDEO_OVERLAY(sink) || manages_its_own_window(sink))
       continue;
     gst_video_overlay_set_window_handle(
-        GST_VIDEO_OVERLAY(app_ctx_ptr->pipeline.instance_bins[0].sink_bin.sub_bins[i].sink),
-        (gulong)stage_windows_.at(current_stage_)[app_ctx_ptr->index]);
-    gst_video_overlay_expose(GST_VIDEO_OVERLAY(app_ctx_ptr->pipeline.instance_bins[0].sink_bin.sub_bins[i].sink));
+        GST_VIDEO_OVERLAY(sink), (gulong)stage_windows_.at(current_stage_)[app_ctx_ptr->index]);
+    gst_video_overlay_expose(GST_VIDEO_OVERLAY(sink));
   }
   if (gst_element_set_state(app_ctx_ptr->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
     g_print("\ncan't set pipeline to playing state.\n");
