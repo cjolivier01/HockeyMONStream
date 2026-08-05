@@ -63,9 +63,11 @@ int main(int argc, char** argv) {
       "installer must validate OS provenance and replace older DeepStream in one APT transaction");
   ok &= expect(
       contains(installer, "hmstream-cuda-ubuntu2404-compat.gpg") &&
-          contains(installer, "normalize_cuda_compat_sources") && contains(installer, "transaction_backup_path") &&
-          contains(installer, "rollback_transaction") && contains(installer, "enabled != \"no\"") &&
+          contains(installer, "disable_cuda_compat_sources") &&
+          contains(installer, "disable_installer_managed_cuda_sources") &&
+          contains(installer, "CUDA_LEGACY_COMPAT_SOURCE") && contains(installer, "publish_cuda_compat_source") &&
+          contains(installer, "Enabled: no") && !contains(installer, "rollback_transaction") &&
           !contains(installer, "install -m 0644 \"${combined_keyring}\" /usr/share/keyrings/cuda-archive-keyring.gpg"),
-      "Ubuntu 26 installer must own its compatibility key and transactionally normalize active binary sources");
+      "Ubuntu 26 installer must own its key and interruption-safely replace duplicate compatibility sources");
   return ok ? 0 : 1;
 }

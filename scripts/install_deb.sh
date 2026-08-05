@@ -7,16 +7,17 @@ set -euo pipefail
 CUDA_COMPAT_REPOSITORY='https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/'
 CUDA_COMPAT_KEYRING='/usr/share/keyrings/hmstream-cuda-ubuntu2404-compat.gpg'
 CUDA_COMPAT_SOURCE='/etc/apt/sources.list.d/hmstream-cuda-ubuntu2404-x86_64.list'
+CUDA_LEGACY_COMPAT_SOURCE='/etc/apt/sources.list.d/cuda-ubuntu2404-x86_64.list'
 
-# Rewrite active binary definitions of the Ubuntu 24 CUDA repository to one
-# canonical URI and Signed-By path.  Disabled and deb-src-only definitions are
-# deliberately ignored: neither makes binary TensorRT packages available.
+# Disable duplicate definitions of the Ubuntu 24 CUDA repository before one
+# canonical installer-owned source is atomically published.  Disabling entries
+# one file at a time cannot introduce a Signed-By conflict, so a power loss at
+# any point leaves APT usable and a rerun can finish the transition.
 #
 # A root prefix is accepted so the exact production parser/rewriter can be
 # exercised against an isolated APT tree by the Bazel regression test.
-normalize_cuda_compat_sources() {
+disable_cuda_compat_sources() {
   local apt_root="$1"
-  local signed_by="$2"
   local source_path resolved_path extension output matches total_matches=0
   local -a candidates=()
   local -A visited=()
@@ -40,7 +41,7 @@ normalize_cuda_compat_sources() {
     matches="${output}.matches"
 
     if [[ "${extension}" == "list" || "${source_path}" == "${apt_root}/etc/apt/sources.list" ]]; then
-      awk -v repository="${CUDA_COMPAT_REPOSITORY}" -v signed_by="${signed_by}" -v matches="${matches}" '
+      awk -v repository="${CUDA_COMPAT_REPOSITORY}" -v matches="${matches}" '
         function trim(value) {
           sub(/^[[:space:]]+/, "", value)
           sub(/[[:space:]]+$/, "", value)
@@ -58,12 +59,12 @@ normalize_cuda_compat_sources() {
         }
         {
           line = $0
-          if (line !~ /^[[:space:]]*deb[[:space:]]/) {
+          if (line !~ /^[[:space:]]*deb(-src)?[[:space:]]/) {
             print line
             next
           }
 
-          match(line, /^[[:space:]]*deb[[:space:]]+/)
+          match(line, /^[[:space:]]*deb(-src)?[[:space:]]+/)
           prefix = substr(line, 1, RLENGTH)
           rest = substr(line, RLENGTH + 1)
           options = ""
@@ -84,12 +85,12 @@ normalize_cuda_compat_sources() {
           }
 
           remainder = substr(rest, length(uri) + 1)
-          canonical_uri = repository
-          gsub(/(^|[[:space:]])[Ss][Ii][Gg][Nn][Ee][Dd]-[Bb][Yy]=[^[:space:]]+/, " ", options)
-          gsub(/[[:space:]]+/, " ", options)
-          options = trim(options)
-          if (options != "") options = options " "
-          print prefix "[" options "signed-by=" signed_by "] " canonical_uri remainder
+          split(trim(remainder), repository_fields, /[[:space:]]+/)
+          if (repository_fields[1] != "/") {
+            print line
+            next
+          }
+          print "# HMStream disabled duplicate CUDA compatibility source: " line
           count++
         }
         END { print count > matches }
@@ -99,7 +100,7 @@ normalize_cuda_compat_sources() {
         return "${status}"
       }
     else
-      awk -v repository="${CUDA_COMPAT_REPOSITORY}" -v signed_by="${signed_by}" -v matches="${matches}" '
+      awk -v repository="${CUDA_COMPAT_REPOSITORY}" -v matches="${matches}" '
         function trim(value) {
           sub(/^[[:space:]]+/, "", value)
           sub(/[[:space:]]+$/, "", value)
@@ -133,16 +134,6 @@ normalize_cuda_compat_sources() {
           for (i = 1; i <= count; i++) if (words[i] == word) return 1
           return 0
         }
-        function rewrite_uris(value,    count, words, i, result, item) {
-          count = split(value, words, /[[:space:]]+/)
-          result = ""
-          for (i = 1; i <= count; i++) {
-            item = words[i]
-            if (canonical(item) == canonical_repository) item = repository
-            result = result (result == "" ? "" : " ") item
-          }
-          return result
-        }
         function supported_uris(value,    count, words, i, item) {
           count = split(value, words, /[[:space:]]+/)
           for (i = 1; i <= count; i++) {
@@ -165,7 +156,9 @@ normalize_cuda_compat_sources() {
           types = field_value("types")
           enabled = tolower(field_value("enabled"))
           uris = field_value("uris")
-          target = enabled != "no" && has_word(types, "deb")
+          suites = field_value("suites")
+          target = enabled != "no" && (has_word(types, "deb") || has_word(types, "deb-src"))
+          target = target && has_word(suites, "/")
           uri_count = split(uris, uri_words, /[[:space:]]+/)
           found_uri = 0
           for (uri_index = 1; uri_index <= uri_count; uri_index++) {
@@ -183,7 +176,7 @@ normalize_cuda_compat_sources() {
             next
           }
 
-          wrote_signed_by = 0
+          wrote_enabled = 0
           skip_continuation = 0
           for (i = 1; i <= line_count; i++) {
             line = lines[i]
@@ -192,14 +185,9 @@ normalize_cuda_compat_sources() {
               sub(/:.*/, "", field)
               lower_field = tolower(field)
               skip_continuation = 0
-              if (lower_field == "signed-by") {
-                if (!wrote_signed_by) printf "Signed-By: %s\n", signed_by
-                wrote_signed_by = 1
-                skip_continuation = 1
-                continue
-              }
-              if (lower_field == "uris") {
-                printf "%s: %s\n", field, rewrite_uris(field_value("uris"))
+              if (lower_field == "enabled") {
+                if (!wrote_enabled) printf "Enabled: no\n"
+                wrote_enabled = 1
                 skip_continuation = 1
                 continue
               }
@@ -210,7 +198,8 @@ normalize_cuda_compat_sources() {
             }
             printf "%s\n", line
           }
-          if (!wrote_signed_by) printf "Signed-By: %s\n", signed_by
+          if (!wrote_enabled) printf "Enabled: no\n"
+          printf "# HMStream disabled duplicate CUDA compatibility source\n"
           printf "\n"
           count++
         }
@@ -229,9 +218,6 @@ normalize_cuda_compat_sources() {
     file_matches="$(<"${matches}")"
     rm -f "${matches}"
     if [[ "${file_matches}" -gt 0 ]]; then
-      if declare -F transaction_backup_path >/dev/null; then
-        transaction_backup_path "${resolved_path}"
-      fi
       chmod --reference="${resolved_path}" "${output}"
       chown --reference="${resolved_path}" "${output}"
       mv -f "${output}" "${resolved_path}"
@@ -240,66 +226,38 @@ normalize_cuda_compat_sources() {
       rm -f "${output}"
     fi
   done
-  NORMALIZED_CUDA_SOURCE_COUNT="${total_matches}"
+  DISABLED_CUDA_SOURCE_COUNT="${total_matches}"
 }
 
-NORMALIZED_CUDA_SOURCE_COUNT=0
+# shellcheck disable=SC2034 # Exposed to the sourced behavior test.
+DISABLED_CUDA_SOURCE_COUNT=0
 
-transaction_dir=""
-transaction_committed=0
-declare -a transaction_paths=()
-declare -a transaction_backups=()
-declare -a transaction_existed=()
-
-begin_transaction() {
-  [[ -z "${transaction_dir}" ]] || return 0
-  transaction_dir="$(mktemp -d /tmp/hmstream-installer-transaction.XXXXXX)"
-}
-
-transaction_backup_path() {
-  local path="$1"
-  local index backup
-  [[ -n "${transaction_dir}" ]] || return 0
-  for index in "${!transaction_paths[@]}"; do
-    if [[ "${transaction_paths[${index}]}" == "${path}" ]]; then return 0; fi
-  done
-  index="${#transaction_paths[@]}"
-  backup="${transaction_dir}/${index}"
-  transaction_paths+=("${path}")
-  transaction_backups+=("${backup}")
-  if [[ -e "${path}" || -L "${path}" ]]; then
-    cp -a -- "${path}" "${backup}"
-    transaction_existed+=(1)
-  else
-    transaction_existed+=(0)
-  fi
-}
-
-rollback_transaction() {
-  local index path backup
-  [[ -n "${transaction_dir}" && "${transaction_committed}" -eq 0 ]] || return 0
-  for ((index=${#transaction_paths[@]} - 1; index >= 0; index--)); do
-    path="${transaction_paths[${index}]}"
-    backup="${transaction_backups[${index}]}"
-    rm -f -- "${path}"
-    if [[ "${transaction_existed[${index}]}" -eq 1 ]]; then
-      mkdir -p "$(dirname "${path}")"
-      cp -a -- "${backup}" "${path}"
+disable_installer_managed_cuda_sources() {
+  local apt_root="$1"
+  local managed_source
+  for managed_source in \
+    "${apt_root}${CUDA_COMPAT_SOURCE}" \
+    "${apt_root}${CUDA_LEGACY_COMPAT_SOURCE}"; do
+    if [[ -e "${managed_source}" || -L "${managed_source}" ]]; then
+      rm -f -- "${managed_source}"
     fi
   done
 }
 
-commit_transaction() {
-  transaction_committed=1
-}
-
-disable_installer_managed_cuda_source() {
+publish_cuda_compat_source() {
   local apt_root="$1"
-  local managed_source="${apt_root}${CUDA_COMPAT_SOURCE}"
-  if [[ -e "${managed_source}" || -L "${managed_source}" ]]; then
-    transaction_backup_path "${managed_source}"
-    rm -f -- "${managed_source}"
+  local target="${apt_root}${CUDA_COMPAT_SOURCE}"
+  local temporary
+  mkdir -p "$(dirname "${target}")"
+  temporary="$(mktemp "${target}.XXXXXX")"
+  if ! printf '%s\n' \
+    "deb [arch=amd64 signed-by=${CUDA_COMPAT_KEYRING}] ${CUDA_COMPAT_REPOSITORY} /" \
+    >"${temporary}"; then
+    rm -f "${temporary}"
+    return 1
   fi
+  chmod 0644 "${temporary}"
+  mv -f "${temporary}" "${target}"
 }
 
 # Allow the behavior test to source the production implementation without
@@ -413,29 +371,28 @@ compat_keyring_deb=""
 native_dir=""
 compat_dir=""
 combined_keyring=""
+compat_keyring_target_temp=""
 transition_dir=""
 cleanup() {
   local status=$?
   set +e
-  if [[ "${status}" -ne 0 ]]; then rollback_transaction; fi
   if [[ -n "${keyring_deb}" ]]; then rm -f "${keyring_deb}"; fi
   if [[ -n "${compat_keyring_deb}" ]]; then rm -f "${compat_keyring_deb}"; fi
   if [[ -n "${native_dir}" ]]; then rm -rf "${native_dir}"; fi
   if [[ -n "${compat_dir}" ]]; then rm -rf "${compat_dir}"; fi
   if [[ -n "${combined_keyring}" ]]; then rm -f "${combined_keyring}"; fi
+  if [[ -n "${compat_keyring_target_temp}" ]]; then rm -f "${compat_keyring_target_temp}"; fi
   if [[ -n "${transition_dir}" ]]; then rm -rf "${transition_dir}"; fi
-  if [[ -n "${transaction_dir}" ]]; then rm -rf "${transaction_dir}"; fi
   return "${status}"
 }
 trap cleanup EXIT
 
-# An older installer owned this exact source filename and could define the same
-# repository with a different Signed-By path than a pre-existing source.  Move
-# only that installer-managed entry out of the way before the first APT update;
-# the transaction restores it byte-for-byte if any later step fails.
+# Older installers used either of two managed filenames and could conflict
+# with a pre-existing source before reaching repair code.  Removing only those
+# known generated entries leaves APT valid even if this process is interrupted;
+# the canonical source is recreated below.
 if [[ "${VERSION_ID}" == "26.04" ]]; then
-  begin_transaction
-  disable_installer_managed_cuda_source ""
+  disable_installer_managed_cuda_sources ""
 fi
 
 apt-get update
@@ -471,21 +428,17 @@ if [[ "${VERSION_ID}" == "26.04" ]]; then
   combined_keyring="$(mktemp /tmp/hmstream-cuda-combined.XXXXXX.gpg)"
   cat "${native_dir}/usr/share/keyrings/cuda-archive-keyring.gpg" \
     "${compat_dir}/usr/share/keyrings/cuda-archive-keyring.gpg" >"${combined_keyring}"
-  transaction_backup_path "${CUDA_COMPAT_KEYRING}"
-  install -m 0644 "${combined_keyring}" "${CUDA_COMPAT_KEYRING}"
+  compat_keyring_target_temp="$(mktemp /usr/share/keyrings/.hmstream-cuda-compat.XXXXXX.gpg)"
+  install -m 0644 "${combined_keyring}" "${compat_keyring_target_temp}"
+  mv -f "${compat_keyring_target_temp}" "${CUDA_COMPAT_KEYRING}"
+  compat_keyring_target_temp=""
 
-  normalize_cuda_compat_sources "" "${CUDA_COMPAT_KEYRING}"
-  if [[ "${NORMALIZED_CUDA_SOURCE_COUNT}" -eq 0 ]]; then
-    transaction_backup_path "${CUDA_COMPAT_SOURCE}"
-    printf '%s\n' \
-      "deb [signed-by=${CUDA_COMPAT_KEYRING}] ${CUDA_COMPAT_REPOSITORY} /" \
-      >"${CUDA_COMPAT_SOURCE}"
-  fi
-
-  # Source definitions now use the durable key.  Install the native package
-  # only after that transition is recoverable, and retain its old key file in
-  # the transaction so a later failure restores the prior working state.
-  transaction_backup_path /usr/share/keyrings/cuda-archive-keyring.gpg
+  # First disable all duplicate definitions.  Each atomic file replacement
+  # only removes providers, so interruption cannot split one repository across
+  # conflicting Signed-By values.  Then atomically publish exactly one usable
+  # amd64 binary source with the exact flat-repository suite.
+  disable_cuda_compat_sources ""
+  publish_cuda_compat_source ""
 fi
 
 dpkg -i "${keyring_deb}"
@@ -602,7 +555,6 @@ if [[ "${SIMULATE}" -eq 0 ]]; then
 fi
 
 if [[ "${SIMULATE}" -eq 1 ]]; then
-  commit_transaction
   echo "Dependency resolution succeeded for Ubuntu ${VERSION_ID}."
 else
   # A short-lived older HMStream installer revision created this exact
@@ -610,6 +562,5 @@ else
   # remove only HMStream's obsolete policy file after a successful install.
   rm -f /etc/apt/preferences.d/hmstream-nccl
   apt-get check
-  commit_transaction
   echo "Installed DeepStream $(dpkg-query -W -f='${Version}' deepstream-9.1) and HMStream $(dpkg-query -W -f='${Version}' hmstream)."
 fi

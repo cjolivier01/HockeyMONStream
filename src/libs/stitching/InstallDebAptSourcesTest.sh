@@ -10,11 +10,7 @@ fi
 HMSTREAM_INSTALLER_SOURCE_ONLY=1 source "$1"
 
 test_root="$(mktemp -d /tmp/hmstream-apt-sources-test.XXXXXX)"
-cleanup_test() {
-  rm -rf "${test_root}"
-  if [[ -n "${transaction_dir:-}" ]]; then rm -rf "${transaction_dir}"; fi
-}
-trap cleanup_test EXIT
+trap 'rm -rf "${test_root}"' EXIT
 
 fail() {
   echo "FAIL: $*" >&2
@@ -22,16 +18,15 @@ fail() {
 }
 
 reset_apt_tree() {
-  rm -rf "${test_root:?}/etc"
+  rm -rf "${test_root:?}/etc" "${test_root}/source-targets"
   mkdir -p "${test_root}/etc/apt/sources.list.d"
-  NORMALIZED_CUDA_SOURCE_COUNT=0
+  DISABLED_CUDA_SOURCE_COUNT=0
 }
 
 compat_uri='https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/'
-test_key='/usr/share/keyrings/hmstream-test-key.gpg'
 
-# Disabled and source-only Deb822 stanzas must not suppress creation of the
-# binary compatibility source.
+# A disabled source stays untouched.  An active deb-src-only source is not a
+# usable provider and is disabled before the canonical binary source appears.
 reset_apt_tree
 printf '%s\n' \
   'Types: deb' \
@@ -39,76 +34,78 @@ printf '%s\n' \
   'Suites: /' \
   'Enabled: no' \
   'Signed-By: /disabled.gpg' \
-  '' \
+  >"${test_root}/etc/apt/sources.list.d/inactive.sources"
+printf '%s\n' \
   'Types: deb-src' \
   "URIs: ${compat_uri}" \
   'Suites: /' \
   'Signed-By: /source-only.gpg' \
-  >"${test_root}/etc/apt/sources.list.d/inactive.sources"
+  >"${test_root}/etc/apt/sources.list.d/source-only.sources"
 inactive_before="$(sha256sum "${test_root}/etc/apt/sources.list.d/inactive.sources")"
-normalize_cuda_compat_sources "${test_root}" "${test_key}"
-[[ "${NORMALIZED_CUDA_SOURCE_COUNT}" -eq 0 ]] || fail "inactive Deb822 stanzas counted as binary sources"
+disable_cuda_compat_sources "${test_root}"
+[[ "${DISABLED_CUDA_SOURCE_COUNT}" -eq 1 ]] || fail "deb-src-only source was treated as a usable provider"
 [[ "$(sha256sum "${test_root}/etc/apt/sources.list.d/inactive.sources")" == "${inactive_before}" ]] || \
-  fail "inactive Deb822 stanzas were modified"
+  fail "disabled Deb822 stanza was modified"
+grep -qFx 'Enabled: no' "${test_root}/etc/apt/sources.list.d/source-only.sources" || \
+  fail "deb-src-only stanza was not disabled"
+publish_cuda_compat_source "${test_root}"
+grep -qFx "deb [arch=amd64 signed-by=${CUDA_COMPAT_KEYRING}] ${compat_uri} /" \
+  "${test_root}${CUDA_COMPAT_SOURCE}" || fail "canonical binary source was not published"
 
-# One-line sources are recognized with either slash spelling, canonicalized,
-# and assigned one durable key without changing comments or deb-src entries.
+# URI spelling and architecture restrictions cannot suppress the canonical
+# source.  Exact flat-suite duplicates are commented; another suite remains.
 reset_apt_tree
 printf '%s\n' \
-  'deb [arch=amd64 signed-by=/old-one.gpg] http://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64 /' \
+  'deb [arch=arm64 signed-by=/wrong-arch.gpg] http://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64 /' \
   'deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/ /' \
-  '# deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/ /' \
   'deb-src https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/ /' \
+  'deb [signed-by=/other-suite.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/ stable' \
   >"${test_root}/etc/apt/sources.list.d/variants.list"
-normalize_cuda_compat_sources "${test_root}" "${test_key}"
-[[ "${NORMALIZED_CUDA_SOURCE_COUNT}" -eq 2 ]] || fail "URI variants were not both recognized"
-[[ "$(grep -cF "deb [arch=amd64 signed-by=${test_key}] ${compat_uri} /" "${test_root}/etc/apt/sources.list.d/variants.list")" -eq 1 ]] || \
-  fail "list options were not normalized"
-[[ "$(grep -cF "deb [signed-by=${test_key}] ${compat_uri} /" "${test_root}/etc/apt/sources.list.d/variants.list")" -eq 1 ]] || \
-  fail "slashless list URI was not normalized"
-grep -qF 'deb-src https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/ /' \
-  "${test_root}/etc/apt/sources.list.d/variants.list" || fail "deb-src entry was modified"
-if grep -qF '/old-one.gpg' "${test_root}/etc/apt/sources.list.d/variants.list"; then
-  fail "old Signed-By remained in an active list entry"
-fi
+disable_cuda_compat_sources "${test_root}"
+[[ "${DISABLED_CUDA_SOURCE_COUNT}" -eq 3 ]] || fail "exact-suite URI variants were not all disabled"
+[[ "$(grep -c '^# HMStream disabled duplicate CUDA compatibility source:' \
+  "${test_root}/etc/apt/sources.list.d/variants.list")" -eq 3 ]] || fail "list duplicates were not marked"
+grep -qF 'deb [signed-by=/other-suite.gpg]' "${test_root}/etc/apt/sources.list.d/variants.list" || \
+  fail "different repository suite was disabled"
+publish_cuda_compat_source "${test_root}"
+grep -qF 'arch=amd64' "${test_root}${CUDA_COMPAT_SOURCE}" || fail "wrong-architecture entry suppressed amd64 source"
 
-# Deb822 fields may continue on following lines.  The complete active stanza
-# is rewritten while retaining its unrelated fields.
+# Deb822 fields may continue on following lines.  A wrong-architecture active
+# stanza is still disabled because Signed-By conflicts are repository-wide;
+# the canonical source supplies the usable amd64 provider.
 reset_apt_tree
 printf '%s\n' \
   'Types:' \
   ' deb deb-src' \
   'URIs:' \
   ' https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64' \
-  'Suites: /' \
-  'Architectures: amd64' \
+  'Suites:' \
+  ' /' \
+  'Architectures: arm64' \
   'Signed-By:' \
   ' /old-continuation.gpg' \
   >"${test_root}/etc/apt/sources.list.d/continued.sources"
-normalize_cuda_compat_sources "${test_root}" "${test_key}"
-[[ "${NORMALIZED_CUDA_SOURCE_COUNT}" -eq 1 ]] || fail "continued Deb822 source was not recognized"
-grep -qFx "URIs: ${compat_uri}" "${test_root}/etc/apt/sources.list.d/continued.sources" || \
-  fail "continued Deb822 URI was not canonicalized"
-grep -qFx "Signed-By: ${test_key}" "${test_root}/etc/apt/sources.list.d/continued.sources" || \
-  fail "continued Deb822 Signed-By was not replaced"
-grep -qFx 'Architectures: amd64' "${test_root}/etc/apt/sources.list.d/continued.sources" || \
-  fail "unrelated Deb822 field was lost"
-if grep -qF '/old-continuation.gpg' "${test_root}/etc/apt/sources.list.d/continued.sources"; then
-  fail "continued old Signed-By value remained"
-fi
+disable_cuda_compat_sources "${test_root}"
+[[ "${DISABLED_CUDA_SOURCE_COUNT}" -eq 1 ]] || fail "continued Deb822 source was not recognized"
+grep -qFx 'Enabled: no' "${test_root}/etc/apt/sources.list.d/continued.sources" || \
+  fail "continued Deb822 source was not disabled"
+grep -qFx 'Architectures: arm64' "${test_root}/etc/apt/sources.list.d/continued.sources" || \
+  fail "Deb822 architecture field was lost"
+grep -qF '/old-continuation.gpg' "${test_root}/etc/apt/sources.list.d/continued.sources" || \
+  fail "disabled Deb822 source was destructively rewritten"
 
 # Source-file symlinks are followed without replacing the symlink itself.
 reset_apt_tree
 mkdir -p "${test_root}/source-targets"
 printf '%s\n' "deb [signed-by=/old-link.gpg] ${compat_uri} /" >"${test_root}/source-targets/cuda.list"
 ln -s "../../../source-targets/cuda.list" "${test_root}/etc/apt/sources.list.d/cuda-link.list"
-normalize_cuda_compat_sources "${test_root}" "${test_key}"
-[[ "${NORMALIZED_CUDA_SOURCE_COUNT}" -eq 1 ]] || fail "symlinked source was not recognized"
+disable_cuda_compat_sources "${test_root}"
+[[ "${DISABLED_CUDA_SOURCE_COUNT}" -eq 1 ]] || fail "symlinked source was not recognized"
 [[ -L "${test_root}/etc/apt/sources.list.d/cuda-link.list" ]] || fail "source symlink was replaced"
-grep -qF "signed-by=${test_key}" "${test_root}/source-targets/cuda.list" || fail "symlink target was not updated"
+grep -q '^# HMStream disabled' "${test_root}/source-targets/cuda.list" || fail "symlink target was not disabled"
 
-# A mixed Deb822 stanza cannot safely use a release-specific key for an
-# unrelated repository.  Reject it without changing the file.
+# A mixed Deb822 stanza cannot be disabled without also removing an unrelated
+# repository.  Reject it atomically and leave the file unchanged.
 reset_apt_tree
 printf '%s\n' \
   'Types: deb' \
@@ -116,40 +113,24 @@ printf '%s\n' \
   'Suites: /' \
   >"${test_root}/etc/apt/sources.list.d/mixed.sources"
 mixed_before="$(sha256sum "${test_root}/etc/apt/sources.list.d/mixed.sources")"
-if normalize_cuda_compat_sources "${test_root}" "${test_key}" 2>/dev/null; then
+if disable_cuda_compat_sources "${test_root}" 2>/dev/null; then
   fail "unsafe mixed Deb822 stanza was accepted"
 fi
 [[ "$(sha256sum "${test_root}/etc/apt/sources.list.d/mixed.sources")" == "${mixed_before}" ]] || \
   fail "rejected mixed Deb822 stanza was modified"
 
-# Every persistent source/key mutation is recoverable.  This models a failure
-# after source reconciliation or cuda-keyring installation.
+# Pre-update recovery removes both filenames emitted by past installers while
+# preserving unrelated source files.  Absence is an APT-valid interrupted state.
 reset_apt_tree
-legacy_source="${test_root}${CUDA_COMPAT_SOURCE}"
-package_key="${test_root}/usr/share/keyrings/cuda-archive-keyring.gpg"
-custom_key="${test_root}${CUDA_COMPAT_KEYRING}"
-mkdir -p "$(dirname "${package_key}")"
-printf '%s\n' 'legacy managed source' >"${legacy_source}"
-printf '%s\n' 'old package key' >"${package_key}"
-transaction_dir=""
-# shellcheck disable=SC2034 # Read by functions sourced from the installer.
-transaction_committed=0
-# shellcheck disable=SC2034 # Read by functions sourced from the installer.
-transaction_paths=()
-# shellcheck disable=SC2034 # Read by functions sourced from the installer.
-transaction_backups=()
-# shellcheck disable=SC2034 # Read by functions sourced from the installer.
-transaction_existed=()
-begin_transaction
-disable_installer_managed_cuda_source "${test_root}"
-[[ ! -e "${legacy_source}" ]] || fail "installer-managed source was not disabled before APT update"
-transaction_backup_path "${package_key}"
-printf '%s\n' 'new package key' >"${package_key}"
-transaction_backup_path "${custom_key}"
-printf '%s\n' 'new custom key' >"${custom_key}"
-rollback_transaction
-[[ "$(<"${legacy_source}")" == 'legacy managed source' ]] || fail "managed source rollback failed"
-[[ "$(<"${package_key}")" == 'old package key' ]] || fail "package key rollback failed"
-[[ ! -e "${custom_key}" ]] || fail "new compatibility key survived rollback"
+printf '%s\n' 'new managed source' >"${test_root}${CUDA_COMPAT_SOURCE}"
+printf '%s\n' 'legacy managed source' >"${test_root}${CUDA_LEGACY_COMPAT_SOURCE}"
+printf '%s\n' 'unrelated source' >"${test_root}/etc/apt/sources.list.d/unrelated.list"
+disable_installer_managed_cuda_sources "${test_root}"
+[[ ! -e "${test_root}${CUDA_COMPAT_SOURCE}" ]] || fail "current managed source survived pre-update repair"
+[[ ! -e "${test_root}${CUDA_LEGACY_COMPAT_SOURCE}" ]] || fail "legacy managed source survived pre-update repair"
+[[ "$(<"${test_root}/etc/apt/sources.list.d/unrelated.list")" == 'unrelated source' ]] || \
+  fail "pre-update repair changed an unrelated source"
+publish_cuda_compat_source "${test_root}"
+[[ -s "${test_root}${CUDA_COMPAT_SOURCE}" ]] || fail "canonical source was not recoverable after interruption"
 
 echo "APT CUDA source reconciliation tests passed"
