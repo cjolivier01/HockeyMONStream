@@ -113,6 +113,34 @@ int main() {
           rollback_merged["concurrent"]["keep"].as<bool>(),
       "rollback merging must restore removed sequence entries without overwriting same-path concurrent updates");
 
+  YAML::Node auto_published(YAML::NodeType::Map);
+  YAML::Node pre_auto(YAML::NodeType::Map);
+  pre_auto["hmstream_ui"]["video_roles"]["left"].push_back("A.mp4");
+  YAML::Node post_auto(YAML::NodeType::Map);
+  post_auto["hmstream_ui"]["video_roles"]["left"].push_back("B.mp4");
+  const YAML::Node absent_sequence_merged =
+      hm::stitching::merge_game_config_rollback(auto_published, pre_auto, post_auto);
+  ok &= expect(
+      absent_sequence_merged["hmstream_ui"]["video_roles"]["left"].size() == 2 &&
+          absent_sequence_merged["hmstream_ui"]["video_roles"]["left"][0].as<std::string>() == "A.mp4" &&
+          absent_sequence_merged["hmstream_ui"]["video_roles"]["left"][1].as<std::string>() == "B.mp4",
+      "rollback merging must restore a sequence deleted by the baseline alongside a newer sequence");
+
+  YAML::Node ordered_baseline(YAML::NodeType::Sequence);
+  ordered_baseline.push_back("C.mp4");
+  YAML::Node ordered_desired(YAML::NodeType::Sequence);
+  ordered_desired.push_back("A.mp4");
+  ordered_desired.push_back("C.mp4");
+  YAML::Node ordered_latest(YAML::NodeType::Sequence);
+  ordered_latest.push_back("B.mp4");
+  ordered_latest.push_back("C.mp4");
+  const YAML::Node ordered_merged =
+      hm::stitching::merge_game_config_rollback(ordered_baseline, ordered_desired, ordered_latest);
+  ok &= expect(
+      ordered_merged.size() == 3 && ordered_merged[0].as<std::string>() == "B.mp4" &&
+          ordered_merged[1].as<std::string>() == "A.mp4" && ordered_merged[2].as<std::string>() == "C.mp4",
+      "rollback merging must preserve the latest sequence's relative order around restored entries");
+
   const fs::path interrupted = root / ".hmstream-rink-interrupted";
   fs::create_directories(interrupted / "previous");
   std::ofstream(interrupted / "previous" / "config.yaml") << "recovered:\n  old: true\n";

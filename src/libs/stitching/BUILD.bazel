@@ -58,6 +58,8 @@ cc_library(
     "@hm-cupano//src/pano:cuda_matrix",
     "@yaml-cpp",
     "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+    "@opencv_linux//:opencv",
   ],
   data = [
     "@hm-cupano//scripts:all_scripts",

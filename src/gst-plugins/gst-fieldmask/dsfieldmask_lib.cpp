@@ -122,19 +122,6 @@ cv::Point2f compute_centroid(const cv::Mat& mask, cv::Rect2i& bbox) {
   return cv::Point2f(sumX / count, sumY / count);
 }
 
-// Load mask from file
-absl::StatusOr<cv::Mat> load_mask_from_file(const std::string& filePath) {
-  if (!fs::exists(filePath)) {
-    return absl::NotFoundError(TO_STRING("Mask file does not exist: " << filePath));
-  }
-  // Load the image as a single-channel grayscale image
-  cv::Mat mask = cv::imread(filePath, cv::IMREAD_GRAYSCALE);
-  if (mask.empty()) {
-    return absl::InvalidArgumentError(TO_STRING("Failed to load mask from file: " << filePath));
-  }
-  return mask;
-}
-
 void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx, bool draw) {
   if (!frame_meta->obj_meta_list || !frame_meta->bInferDone) {
     return;
@@ -302,9 +289,8 @@ absl::Status DsFieldMaskProcessFrame(
   const bool output_generation_changed = output_generation != ctx->loaded_output_generation;
   if (ctx->detection_u8_mask.empty() || is_obsolete_detection_mask || output_generation_changed) {
     fs::path mask_path = ctx->initParams.detection_mask_file;
-    const bool field_mask_configured =
-        hm::stitching::is_field_mask_configured(mask_path.parent_path().string(), output_generation);
-    if (is_obsolete_detection_mask || !field_mask_configured) {
+    auto loaded_mask = hm::stitching::load_field_mask(mask_path.parent_path().string(), output_generation);
+    if (is_obsolete_detection_mask || !loaded_mask.ok()) {
       if (!surface) {
         return absl::FailedPreconditionError("Cannot create field mask without an input surface");
       }
@@ -318,8 +304,9 @@ absl::Status DsFieldMaskProcessFrame(
 #endif
       HM_RETURN_IF_ERROR(
           hm::stitching::create_field_mask(mask_path.parent_path().string(), this_surface, output_generation));
+      loaded_mask = hm::stitching::load_field_mask(mask_path.parent_path().string(), output_generation);
     }
-    HM_ASSIGN_OR_RETURN(ctx->detection_u8_mask, load_mask_from_file(ctx->initParams.detection_mask_file));
+    HM_ASSIGN_OR_RETURN(ctx->detection_u8_mask, std::move(loaded_mask));
     ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask, ctx->field_box);
     ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
     ctx->loaded_output_generation = output_generation;

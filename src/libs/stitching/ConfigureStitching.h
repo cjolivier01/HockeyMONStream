@@ -8,6 +8,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "hstream/src/libs/common/Surface.h"
+#include "opencv2/core/mat.hpp"
 #include "yaml-cpp/node/node.h"
 
 namespace hm {
@@ -37,6 +38,12 @@ absl::StatusOr<std::string> stitched_output_generation_id(
     double post_stitch_rotate_degrees);
 
 bool is_field_mask_configured(const std::string& game_dir, const std::string& expected_output_generation = {});
+
+// Validates and decodes rink_mask_0.png while holding the Hugin and
+// config/rink transaction locks for one complete artifact generation.
+absl::StatusOr<cv::Mat> load_field_mask(
+    const std::string& game_dir,
+    const std::string& expected_output_generation = {});
 
 absl::Status create_field_mask(
     const std::string& game_dir,

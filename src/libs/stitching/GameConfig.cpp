@@ -1,10 +1,12 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <regex>
 #include <set>
@@ -77,18 +79,55 @@ YAML::Node merge_rollback_impl(const YAML::Node& baseline, const YAML::Node& des
     return result;
   }
 
-  if (baseline.IsSequence() && desired.IsSequence() && latest.IsSequence()) {
-    YAML::Node result(YAML::NodeType::Sequence);
-    for (const auto& item : desired) {
-      const bool rollback_addition = !sequence_contains(baseline, item);
-      if ((rollback_addition || sequence_contains(latest, item)) && !sequence_contains(result, item))
-        result.push_back(item);
-    }
+  const bool empty_sequence_baseline = !baseline.IsDefined() || baseline.IsNull();
+  if ((baseline.IsSequence() || empty_sequence_baseline) && desired.IsSequence() && latest.IsSequence()) {
+    std::vector<YAML::Node> merged;
     for (const auto& item : latest) {
       const bool rollback_removal = sequence_contains(baseline, item) && !sequence_contains(desired, item);
-      if (!rollback_removal && !sequence_contains(result, item))
-        result.push_back(item);
+      if (!rollback_removal && std::none_of(merged.begin(), merged.end(), [&](const YAML::Node& value) {
+            return yaml_equal(value, item);
+          })) {
+        merged.push_back(YAML::Clone(item));
+      }
     }
+
+    // Insert restored entries around the desired sequence's nearest surviving
+    // anchors. This preserves the relative order of every entry already in
+    // latest instead of moving concurrent additions behind older entries.
+    for (size_t desired_index = desired.size(); desired_index > 0; --desired_index) {
+      const YAML::Node item = desired[desired_index - 1];
+      if (sequence_contains(baseline, item) ||
+          std::any_of(merged.begin(), merged.end(), [&](const YAML::Node& value) { return yaml_equal(value, item); })) {
+        continue;
+      }
+
+      auto insertion = merged.begin();
+      bool found_anchor = false;
+      for (size_t next = desired_index; next < desired.size() && !found_anchor; ++next) {
+        insertion = std::find_if(
+            merged.begin(), merged.end(), [&](const YAML::Node& value) { return yaml_equal(value, desired[next]); });
+        found_anchor = insertion != merged.end();
+      }
+      if (!found_anchor) {
+        for (size_t previous = desired_index - 1; previous > 0; --previous) {
+          auto anchor = std::find_if(merged.begin(), merged.end(), [&](const YAML::Node& value) {
+            return yaml_equal(value, desired[previous - 1]);
+          });
+          if (anchor != merged.end()) {
+            insertion = std::next(anchor);
+            found_anchor = true;
+            break;
+          }
+        }
+      }
+      if (!found_anchor)
+        insertion = merged.begin();
+      merged.insert(insertion, YAML::Clone(item));
+    }
+
+    YAML::Node result(YAML::NodeType::Sequence);
+    for (const auto& item : merged)
+      result.push_back(item);
     return result;
   }
 

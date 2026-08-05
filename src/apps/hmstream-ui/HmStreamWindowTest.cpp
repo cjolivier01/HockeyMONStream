@@ -499,7 +499,6 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
     if (!lock.ok())
       return;
     YAML::Node latest = YAML::LoadFile(config.string());
-    latest["hmstream_ui"]["video_roles"]["right"] = YAML::Node(YAML::NodeType::Sequence);
     latest["hmstream_ui"]["video_roles"]["right"].push_back(".hmstream-ui/right/concurrent.mov");
     latest["concurrent"]["post_remove_keep"] = true;
     post_remove_writer_ok = hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(latest) + "\n").ok();
@@ -511,27 +510,55 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   ::unsetenv("HM_TEST_VIDEO_REMOVE_POST_TRANSACTION_DELAY_MS");
   post_remove_writer.join();
   const YAML::Node after_post_transaction_failure = YAML::LoadFile(config.string());
+  const bool post_remove_state_ok = post_remove_writer_ok &&
+      after_post_transaction_failure["hmstream_ui"]["video_roles"]["right"].size() == 3 &&
+      after_post_transaction_failure["hmstream_ui"]["video_roles"]["right"][0].as<std::string>() ==
+          ".hmstream-ui/right/GX010002.MP4" &&
+      after_post_transaction_failure["hmstream_ui"]["video_roles"]["right"][1].as<std::string>() ==
+          ".hmstream-ui/right/GX020002.MP4" &&
+      after_post_transaction_failure["hmstream_ui"]["video_roles"]["right"][2].as<std::string>() ==
+          ".hmstream-ui/right/concurrent.mov" &&
+      after_post_transaction_failure["concurrent"]["post_remove_keep"].as<bool>();
+  if (!post_remove_state_ok)
+    std::cerr << "post-remove config:\n" << YAML::Dump(after_post_transaction_failure) << '\n';
   if (!expect(
-          post_remove_writer_ok && after_post_transaction_failure["hmstream_ui"]["video_roles"]["right"].size() == 2 &&
-              after_post_transaction_failure["hmstream_ui"]["video_roles"]["right"][0].as<std::string>() ==
-                  ".hmstream-ui/right/GX010002.MP4" &&
-              after_post_transaction_failure["hmstream_ui"]["video_roles"]["right"][1].as<std::string>() ==
-                  ".hmstream-ui/right/concurrent.mov" &&
-              after_post_transaction_failure["concurrent"]["post_remove_keep"].as<bool>(),
-          "Failed deletion rollback must merge a same-role update published after the removal transaction")) {
+          post_remove_state_ok,
+          "Failed deletion rollback must preserve the original role before a serialized same-role append")) {
     return false;
   }
   if (!select_list_item(list, "Right  .hmstream-ui/right/GX010002.MP4")) {
     return false;
   }
+  std::atomic<bool> successful_remove_writer_checked{false};
+  std::atomic<bool> successful_remove_writer_saw_missing{false};
+  std::thread successful_remove_writer(
+      [config, &successful_remove_writer_checked, &successful_remove_writer_saw_missing] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        auto lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+        if (!lock.ok())
+          return;
+        successful_remove_writer_saw_missing = !fs::exists(config.parent_path() / ".hmstream-ui/right/GX010002.MP4");
+        if (!successful_remove_writer_saw_missing) {
+          YAML::Node latest = YAML::LoadFile(config.string());
+          latest["hmstream_ui"]["video_roles"]["right"].push_back(".hmstream-ui/right/GX010002.MP4");
+          const auto unexpected_publish =
+              hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(latest) + "\n");
+          (void)unexpected_publish;
+        }
+        successful_remove_writer_checked = true;
+      });
+  ::setenv("HM_TEST_VIDEO_REMOVE_POST_TRANSACTION_DELAY_MS", "100", 1);
   activate(remove_video);
+  ::unsetenv("HM_TEST_VIDEO_REMOVE_POST_TRANSACTION_DELAY_MS");
+  successful_remove_writer.join();
   std::ifstream updated_input(config);
   const std::string updated_text((std::istreambuf_iterator<char>(updated_input)), std::istreambuf_iterator<char>());
   YAML::Node after_right_remove = YAML::LoadFile(config.string());
   if (!expect(
-          updated_text.find("GX010002.MP4") == std::string::npos && !after_right_remove["game"]["videos"]["left"] &&
+          successful_remove_writer_checked && successful_remove_writer_saw_missing &&
+              updated_text.find("GX010002.MP4") == std::string::npos && !after_right_remove["game"]["videos"]["left"] &&
               !after_right_remove["game"]["videos"]["right"],
-          "Removing an explicit role should clear incomplete runtime video config") ||
+          "A successful deletion must complete before a same-path adopter can acquire the config transaction") ||
       !expect(!list_contains(list, "GX010002.MP4"), "Removed explicit imports should not reappear as Auto")) {
     return false;
   }
@@ -794,23 +821,25 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   activate(create);
   activate(automatic);
   std::atomic<bool> auto_writer_ok{false};
-  std::thread auto_writer([rollback_game, rollback_concurrent_path, &auto_writer_ok] {
+  std::atomic<bool> auto_writer_saw_missing{false};
+  std::thread auto_writer([rollback_game, rollback_concurrent_path, &auto_writer_ok, &auto_writer_saw_missing] {
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     auto lock = hm::stitching::GameConfigTransactionLock::Acquire(rollback_game);
     if (!lock.ok())
       return;
+    auto_writer_saw_missing = !fs::exists(rollback_game / "cam1/GX020001.MP4");
     YAML::Node latest = YAML::LoadFile((rollback_game / "config.yaml").string());
     latest["hmstream_ui"]["video_roles"]["left"] = YAML::Node(YAML::NodeType::Sequence);
     latest["hmstream_ui"]["video_roles"]["left"].push_back(rollback_concurrent_path);
-    latest["hmstream_ui"]["copied_imports"] = YAML::Node(YAML::NodeType::Sequence);
     latest["hmstream_ui"]["copied_imports"].push_back(rollback_concurrent_path);
-    latest["hmstream_ui"]["copied_imports"].push_back("cam1/GX020001.MP4");
+    if (!auto_writer_saw_missing)
+      latest["hmstream_ui"]["copied_imports"].push_back("cam1/GX020001.MP4");
     latest["concurrent"]["auto_keep"] = true;
     auto_writer_ok = hm::stitching::publish_game_config(rollback_game, YAML::Dump(latest) + "\n").ok();
   });
   ::setenv("HM_TEST_VIDEO_IMPORT_FORCE_COPY", "1", 1);
   ::setenv("HM_TEST_VIDEO_ADD_PRE_CONFIG_SAVE_DELAY_MS", "100", 1);
-  ::setenv("HM_TEST_VIDEO_REMOVE_FAIL", rollback_concurrent_path.c_str(), 1);
+  ::setenv("HM_TEST_VIDEO_REMOVE_FAIL", rollback_old_path.c_str(), 1);
   video_path->setText(duplicate_a);
   activate(add_video);
   ::unsetenv("HM_TEST_VIDEO_REMOVE_FAIL");
@@ -819,16 +848,51 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   auto_writer.join();
   const YAML::Node rollback_after = YAML::LoadFile((rollback_game / "config.yaml").string());
   if (!expect(
-          auto_writer_ok && !fs::exists(rollback_game / "cam1" / "GX020001.MP4") &&
+          auto_writer_ok && auto_writer_saw_missing && !fs::exists(rollback_game / "cam1" / "GX020001.MP4") &&
               fs::exists(rollback_game / rollback_old_path) && fs::exists(rollback_game / rollback_concurrent_path) &&
               rollback_after["hmstream_ui"]["video_roles"]["left"] &&
-              rollback_after["hmstream_ui"]["copied_imports"].size() == 1 &&
+              rollback_after["hmstream_ui"]["copied_imports"].size() == 2 &&
               rollback_after["hmstream_ui"]["video_roles"]["left"][0].as<std::string>() == rollback_concurrent_path &&
-              rollback_after["hmstream_ui"]["copied_imports"][0].as<std::string>() == rollback_concurrent_path &&
+              rollback_after["hmstream_ui"]["copied_imports"][0].as<std::string>() == rollback_old_path &&
+              rollback_after["hmstream_ui"]["copied_imports"][1].as<std::string>() == rollback_concurrent_path &&
               (!rollback_after["hmstream_ui"]["auto_import_sources"] ||
                rollback_after["hmstream_ui"]["auto_import_sources"].size() == 0) &&
               rollback_after["concurrent"]["auto_keep"].as<bool>(),
-          "Auto cleanup rollback must use its transactional snapshot and remove only the new copy metadata")) {
+          "Auto cleanup rollback must finish before another importer can inspect or adopt the same path")) {
+    return false;
+  }
+
+  game_id->setText("ui-copy-rollback-delete-failure-game");
+  activate(create);
+  activate(left);
+  ::setenv("HM_TEST_VIDEO_IMPORT_FORCE_COPY", "1", 1);
+  ::setenv("HM_TEST_PRIVATE_CONFIG_SAVE_FAIL", "1", 1);
+  ::setenv("HM_TEST_VIDEO_REMOVE_FAIL", ".hmstream-ui/left/GX020001.MP4", 1);
+  video_path->setText(duplicate_a);
+  activate(add_video);
+  ::unsetenv("HM_TEST_VIDEO_REMOVE_FAIL");
+  ::unsetenv("HM_TEST_PRIVATE_CONFIG_SAVE_FAIL");
+  ::unsetenv("HM_TEST_VIDEO_IMPORT_FORCE_COPY");
+  const fs::path rollback_delete_failure_game = fs::path(window->gameDirectoryText().toStdString());
+  const fs::path rollback_delete_failure_config = rollback_delete_failure_game / "config.yaml";
+  YAML::Node rollback_delete_failure_after = YAML::LoadFile(rollback_delete_failure_config.string());
+  if (!expect(
+          fs::exists(rollback_delete_failure_game / ".hmstream-ui/left/GX020001.MP4") &&
+              rollback_delete_failure_after["hmstream_ui"]["copied_imports"].size() == 1 &&
+              !rollback_delete_failure_after["hmstream_ui"]["video_roles"]["left"],
+          "A copied-file rollback deletion failure must preserve ownership metadata")) {
+    return false;
+  }
+  activate(create);
+  if (!select_list_item(list, "Left  .hmstream-ui/left/GX020001.MP4")) {
+    return false;
+  }
+  activate(remove_video);
+  rollback_delete_failure_after = YAML::LoadFile(rollback_delete_failure_config.string());
+  if (!expect(
+          !fs::exists(rollback_delete_failure_game / ".hmstream-ui/left/GX020001.MP4") &&
+              rollback_delete_failure_after["hmstream_ui"]["copied_imports"].size() == 0,
+          "An owned orphan retained after rollback must remain visible and removable through the UI")) {
     return false;
   }
 

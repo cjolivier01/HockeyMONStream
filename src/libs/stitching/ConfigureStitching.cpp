@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -34,6 +35,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1313,56 +1315,61 @@ absl::StatusOr<YAML::Node> load_config_or_empty(const fs::path& config_path) {
 
 } // namespace
 
-bool is_field_mask_configured(const std::string& game_dir, const std::string& expected_output_generation) {
+absl::StatusOr<cv::Mat> load_field_mask(const std::string& game_dir, const std::string& expected_output_generation) {
   if (game_dir.empty()) {
-    return false;
+    return absl::InvalidArgumentError("A game directory is required to load the field mask");
   }
 
   const fs::path root(game_dir);
   auto hugin_lock = HuginProject::RecoverAndLock(root);
   if (!hugin_lock.ok())
-    return false;
+    return hugin_lock.status();
   auto config_transaction = GameConfigTransactionLock::Acquire(root);
   if (!config_transaction.ok())
-    return false;
+    return config_transaction.status();
   auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
   if (!hugin_generation.ok())
-    return false;
+    return hugin_generation.status();
   auto config = load_config_or_empty(root / "config.yaml");
   if (!config.ok())
-    return false;
+    return config.status();
   std::string current_output_generation;
   if (!expected_output_generation.empty()) {
-    if (!validate_output_generation_hugin(expected_output_generation, *hugin_generation).ok())
-      return false;
+    HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, *hugin_generation));
     current_output_generation = expected_output_generation;
   } else {
     auto configured_generation = configured_output_generation(*config, *hugin_generation);
     if (!configured_generation.ok())
-      return false;
+      return configured_generation.status();
     current_output_generation = *configured_generation;
   }
   try {
     const YAML::Node saved_generation = (*config)["rink"]["stitched_output_generation"];
     if (!saved_generation || !saved_generation.IsScalar() ||
         saved_generation.as<std::string>() != current_output_generation) {
-      return false;
+      return absl::FailedPreconditionError("Field mask does not match the current stitched-output generation");
     }
-  } catch (const YAML::Exception&) {
-    return false;
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Invalid field-mask generation metadata: " + std::string(exception.what()));
   }
   const fs::path mask_path = root / "rink_mask_0.png";
   std::error_code ec;
   if (!fs::exists(mask_path, ec) || ec) {
-    return false;
+    return absl::NotFoundError("Field mask is missing: " + mask_path.string());
   }
   const auto bytes = fs::file_size(mask_path, ec);
   if (ec || bytes == 0) {
-    return false;
+    return absl::FailedPreconditionError("Field mask is empty or unreadable: " + mask_path.string());
+  }
+
+  if (const char* delay = std::getenv("HM_TEST_FIELD_MASK_PRE_DECODE_DELAY_MS")) {
+    const long delay_ms = std::strtol(delay, nullptr, 10);
+    if (delay_ms > 0)
+      std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
   }
   cv::Mat mask = cv::imread(mask_path.string(), cv::IMREAD_UNCHANGED);
   if (mask.empty()) {
-    return false;
+    return absl::InvalidArgumentError("Field mask could not be decoded: " + mask_path.string());
   }
   if (const auto max_canvas_dimension = live_stitch_max_canvas_dimension(); max_canvas_dimension.has_value()) {
     const CanvasSize mask_size{
@@ -1372,7 +1379,7 @@ bool is_field_mask_configured(const std::string& game_dir, const std::string& ex
     if (canvas_exceeds_max_dimension(mask_size, *max_canvas_dimension)) {
       std::cout << "Field mask canvas " << mask_size.width << "x" << mask_size.height
                 << " exceeds live-stitch max dimension " << *max_canvas_dimension << "; regenerating" << std::endl;
-      return false;
+      return absl::FailedPreconditionError("Field mask exceeds the live-stitch canvas limit");
     }
   }
   auto canvas_size = get_mapping_canvas_size(fs::path(game_dir));
@@ -1380,10 +1387,14 @@ bool is_field_mask_configured(const std::string& game_dir, const std::string& ex
     if (mask.cols != static_cast<int>(canvas_size->width) || mask.rows != static_cast<int>(canvas_size->height)) {
       std::cout << "Field mask size " << mask.cols << "x" << mask.rows << " does not match stitched canvas "
                 << canvas_size->width << "x" << canvas_size->height << "; regenerating" << std::endl;
-      return false;
+      return absl::FailedPreconditionError("Field mask size does not match the stitched canvas");
     }
   }
-  return true;
+  return mask;
+}
+
+bool is_field_mask_configured(const std::string& game_dir, const std::string& expected_output_generation) {
+  return load_field_mask(game_dir, expected_output_generation).ok();
 }
 
 absl::Status save_rink_profile_locked(

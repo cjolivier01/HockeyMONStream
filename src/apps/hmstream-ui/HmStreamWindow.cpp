@@ -37,6 +37,8 @@
 
 #include "hstream/src/libs/stitching/GameConfig.h"
 
+#include <QtCore/QUuid>
+
 #ifdef Q_OS_UNIX
 #include <signal.h>
 #endif
@@ -519,10 +521,9 @@ QString existing_auto_cam_dir_for_source(const QDir& game_dir, const QFileInfo& 
 
   std::map<QString, std::pair<QString, QString>> copied_auto_sources;
   const fs::path config_path = fs::path(game_dir.absolutePath().toStdString()) / "config.yaml";
-  auto loaded_config = hm::stitching::load_game_config_file(config_path);
-  if (loaded_config.ok() && loaded_config->has_value()) {
+  if (fs::is_regular_file(config_path)) {
     try {
-      YAML::Node config = **loaded_config;
+      YAML::Node config = YAML::LoadFile(config_path.string());
       YAML::Node entries = config["hmstream_ui"]["auto_import_sources"];
       if (entries && entries.IsSequence()) {
         for (const auto& entry : entries) {
@@ -583,12 +584,11 @@ bool copied_auto_import_matches(
     const QString& family,
     const QString& source_parent) {
   const fs::path config_path = fs::path(game_dir.absolutePath().toStdString()) / "config.yaml";
-  auto loaded_config = hm::stitching::load_game_config_file(config_path);
-  if (!loaded_config.ok() || !loaded_config->has_value()) {
+  if (!fs::is_regular_file(config_path)) {
     return false;
   }
   try {
-    YAML::Node config = **loaded_config;
+    YAML::Node config = YAML::LoadFile(config_path.string());
     YAML::Node entries = config["hmstream_ui"]["auto_import_sources"];
     if (!entries || !entries.IsSequence()) {
       return false;
@@ -672,6 +672,39 @@ bool is_copied_import_in_config(const YAML::Node& config, const QDir& game_dir, 
     }
   }
   return false;
+}
+
+bool config_references_video_path(const YAML::Node& config, const QDir& game_dir, const QString& relative_path) {
+  const QString normalized_target = normalized_config_video_path(game_dir, relative_path);
+  auto child = [](const YAML::Node& parent, const char* key) {
+    if (parent.IsMap()) {
+      for (const auto& entry : parent) {
+        if (entry.first.IsScalar() && entry.first.as<std::string>() == key)
+          return entry.second;
+      }
+    }
+    return YAML::Node(YAML::NodeType::Undefined);
+  };
+  auto list_references_target = [&](const YAML::Node& list) {
+    if (!list || !list.IsSequence())
+      return false;
+    for (const auto& item : list) {
+      if (item.IsScalar() &&
+          normalized_config_video_path(game_dir, QString::fromStdString(item.as<std::string>())) == normalized_target) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const YAML::Node roles = child(child(config, "hmstream_ui"), "video_roles");
+  for (const char* role : {"left", "center", "right"}) {
+    if (list_references_target(child(roles, role)))
+      return true;
+  }
+  const YAML::Node runtime_videos = child(child(config, "game"), "videos");
+  return list_references_target(child(runtime_videos, "left")) ||
+      list_references_target(child(runtime_videos, "right"));
 }
 
 bool clear_stitching_frame_offsets(YAML::Node& config) {
@@ -2567,6 +2600,13 @@ void HmStreamWindow::addVideoPath() {
   if (!ensureGameDirectory()) {
     return;
   }
+  const fs::path game_dir_path(gameDirectory(game_id_edit_->text()).toStdString());
+  auto config_transaction = hm::stitching::GameConfigTransactionLock::Acquire(game_dir_path);
+  if (!config_transaction.ok()) {
+    appendLog(
+        QString("could not lock video import transaction: %1").arg(config_transaction.status().ToString().c_str()));
+    return;
+  }
 
   QString imported_relative_path;
   bool imported_path_created = false;
@@ -2586,6 +2626,8 @@ void HmStreamWindow::addVideoPath() {
     if (imported_path_created) {
       rollbackImportedVideoPath(imported_relative_path);
     }
+    config_transaction->reset();
+    refreshVideoSets();
     return;
   }
   if (role == "auto") {
@@ -2595,12 +2637,15 @@ void HmStreamWindow::addVideoPath() {
       if (imported_path_created) {
         rollbackImportedVideoPath(imported_relative_path);
       }
+      config_transaction->reset();
+      refreshVideoSets();
       return;
     }
     if (cleanup == CopiedImportCleanupResult::kCommittedWithCleanupFailure) {
       appendLog("video set added, but one or more unreferenced copied imports could not be cleaned");
     }
   }
+  config_transaction->reset();
   refreshVideoSets();
   appendLog(QString("video set added role=%1 path=%2").arg(role_label(role), imported_relative_path));
 }
@@ -2642,6 +2687,15 @@ void HmStreamWindow::removeSelectedVideoSet() {
       std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
   }
 
+  auto config_transaction =
+      hm::stitching::GameConfigTransactionLock::Acquire(fs::path(gameDirectory(game_id_edit_->text()).toStdString()));
+  if (!config_transaction.ok()) {
+    appendLog(
+        QString("could not lock video removal transaction: %1").arg(config_transaction.status().ToString().c_str()));
+    video_set_list_->insertItem(row, item);
+    return;
+  }
+
   QByteArray removed_config;
   if (!removePrivateConfigForRole(
           role, relative_path, &original_config, &had_config, &copied_import, &removed_config)) {
@@ -2658,6 +2712,7 @@ void HmStreamWindow::removeSelectedVideoSet() {
       appendLog(QString("failed to restore private config after remove failure %1").arg(config_file));
     }
     video_set_list_->insertItem(row, item);
+    config_transaction->reset();
     refreshVideoSets();
     return;
   }
@@ -2668,6 +2723,7 @@ void HmStreamWindow::removeSelectedVideoSet() {
 
   appendLog(QString("video set removed role=%1 path=%2").arg(role_label(role), relative_path));
   delete item;
+  config_transaction->reset();
   refreshVideoSets();
 }
 
@@ -2756,6 +2812,23 @@ void HmStreamWindow::refreshVideoSets() {
             const QString path = normalized_config_video_path(game_dir, QString::fromStdString(item.as<std::string>()));
             if (!configured_paths.count(path) && (!listed_cam_video || is_cam_relative_path(path))) {
               add_item("auto", path);
+            }
+          }
+        }
+      }
+      YAML::Node copied_imports = config["hmstream_ui"]["copied_imports"];
+      if (copied_imports && copied_imports.IsSequence()) {
+        for (const auto& item : copied_imports) {
+          if (!item.IsScalar())
+            continue;
+          const QString path = normalized_config_video_path(game_dir, QString::fromStdString(item.as<std::string>()));
+          if (configured_paths.count(path) || !QFileInfo::exists(game_dir.filePath(path)))
+            continue;
+          for (const QString& role : {QString("left"), QString("center"), QString("right")}) {
+            if (path.startsWith(QString(".hmstream-ui/%1/").arg(role))) {
+              configured_paths.insert(path);
+              add_item(role, path);
+              break;
             }
           }
         }
@@ -2973,11 +3046,6 @@ bool HmStreamWindow::saveCopiedImport(
     const QString& auto_group_family,
     const QString& source_parent) {
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
-  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
-  if (!config_lock.ok()) {
-    appendLog(QString("could not lock copied import metadata: %1").arg(config_lock.status().ToString().c_str()));
-    return false;
-  }
   YAML::Node config;
   if (fs::exists(config_path)) {
     try {
@@ -3036,15 +3104,9 @@ bool HmStreamWindow::saveCopiedImport(
 bool HmStreamWindow::rollbackImportedVideoPath(const QString& relative_path) {
   const QDir game_dir(gameDirectory(game_id_edit_->text()));
   const fs::path config_path = fs::path(game_dir.absolutePath().toStdString()) / "config.yaml";
-  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
-  if (!config_lock.ok()) {
-    appendLog(QString("could not lock imported video rollback: %1").arg(config_lock.status().ToString().c_str()));
-    return false;
-  }
-
   bool copied_import = false;
+  YAML::Node config(YAML::NodeType::Map);
   if (fs::exists(config_path)) {
-    YAML::Node config;
     try {
       config = YAML::LoadFile(config_path.string());
       copied_import = is_copied_import_in_config(config, game_dir, relative_path);
@@ -3052,45 +3114,70 @@ bool HmStreamWindow::rollbackImportedVideoPath(const QString& relative_path) {
       appendLog(QString("could not read copied import metadata during rollback: %1").arg(exc.what()));
       return false;
     }
+  }
 
-    if (copied_import) {
-      auto matches_path = [&](const QString& value) {
-        return normalized_config_video_path(game_dir, value) == normalized_config_video_path(game_dir, relative_path);
-      };
-      YAML::Node copied_imports = config["hmstream_ui"]["copied_imports"];
-      YAML::Node copied_replacement(YAML::NodeType::Sequence);
-      if (copied_imports && copied_imports.IsSequence()) {
-        for (const auto& item : copied_imports) {
-          const QString path = QString::fromStdString(item.as<std::string>());
-          if (!matches_path(path)) {
-            copied_replacement.push_back(item.as<std::string>());
-          }
-        }
-      }
-      config["hmstream_ui"]["copied_imports"] = copied_replacement;
+  if (config_references_video_path(config, game_dir, relative_path)) {
+    appendLog(QString("imported video was adopted while rollback was pending; preserving %1").arg(relative_path));
+    return true;
+  }
 
-      YAML::Node sources = config["hmstream_ui"]["auto_import_sources"];
-      if (sources && sources.IsSequence()) {
-        YAML::Node source_replacement(YAML::NodeType::Sequence);
-        for (const auto& item : sources) {
-          if (!item["path"] || !matches_path(QString::fromStdString(item["path"].as<std::string>()))) {
-            source_replacement.push_back(item);
-          }
-        }
-        config["hmstream_ui"]["auto_import_sources"] = source_replacement;
-      }
+  QString imported_path;
+  if (!resolveImportedVideoPath(relative_path, copied_import, &imported_path))
+    return false;
+  if (const char* fail_path = std::getenv("HM_TEST_VIDEO_REMOVE_FAIL");
+      !imported_path.isEmpty() && fail_path != nullptr && relative_path == QString::fromUtf8(fail_path)) {
+    appendLog(QString("injected failure removing imported video %1").arg(relative_path));
+    return false;
+  }
 
-      const auto publish = publish_yaml_config(config_path, config);
-      if (!publish.ok()) {
-        appendLog(
-            QString("failed to remove copied import metadata during rollback: %1").arg(publish.ToString().c_str()));
-        return false;
-      }
+  QString staged_path;
+  if (!imported_path.isEmpty()) {
+    const QFileInfo imported(imported_path);
+    staged_path =
+        QDir(imported.absolutePath())
+            .filePath(QString(".hmstream-rollback-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+    if (!QFile::rename(imported_path, staged_path)) {
+      appendLog(QString("failed to stage imported video rollback %1").arg(relative_path));
+      return false;
     }
   }
 
-  if (!removeImportedVideoPath(relative_path, copied_import)) {
-    appendLog(QString("failed to remove imported video during rollback %1").arg(relative_path));
+  if (copied_import) {
+    auto matches_path = [&](const QString& value) {
+      return normalized_config_video_path(game_dir, value) == normalized_config_video_path(game_dir, relative_path);
+    };
+    YAML::Node copied_imports = config["hmstream_ui"]["copied_imports"];
+    YAML::Node copied_replacement(YAML::NodeType::Sequence);
+    if (copied_imports && copied_imports.IsSequence()) {
+      for (const auto& item : copied_imports) {
+        const QString path = QString::fromStdString(item.as<std::string>());
+        if (!matches_path(path))
+          copied_replacement.push_back(item.as<std::string>());
+      }
+    }
+    config["hmstream_ui"]["copied_imports"] = copied_replacement;
+
+    YAML::Node sources = config["hmstream_ui"]["auto_import_sources"];
+    if (sources && sources.IsSequence()) {
+      YAML::Node source_replacement(YAML::NodeType::Sequence);
+      for (const auto& item : sources) {
+        if (!item["path"] || !matches_path(QString::fromStdString(item["path"].as<std::string>())))
+          source_replacement.push_back(item);
+      }
+      config["hmstream_ui"]["auto_import_sources"] = source_replacement;
+    }
+
+    const auto publish = publish_yaml_config(config_path, config);
+    if (!publish.ok()) {
+      if (!staged_path.isEmpty() && !QFile::rename(staged_path, imported_path))
+        appendLog(QString("failed to restore staged imported video %1").arg(relative_path));
+      appendLog(QString("failed to remove copied import metadata during rollback: %1").arg(publish.ToString().c_str()));
+      return false;
+    }
+  }
+
+  if (!staged_path.isEmpty() && !QFile::remove(staged_path)) {
+    appendLog(QString("failed to remove staged imported video rollback %1").arg(relative_path));
     return false;
   }
   return true;
@@ -3109,11 +3196,6 @@ HmStreamWindow::CopiedImportCleanupResult HmStreamWindow::removeClearedCopiedExp
   YAML::Node auto_config;
   const QString config_file = QDir(gameDirectory(game_id_edit_->text())).filePath("config.yaml");
   const fs::path config_path(config_file.toStdString());
-  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
-  if (!config_lock.ok()) {
-    appendLog(QString("could not lock copied import cleanup: %1").arg(config_lock.status().ToString().c_str()));
-    return CopiedImportCleanupResult::kCommittedWithCleanupFailure;
-  }
   try {
     old_config = YAML::Load(original_config.toStdString());
     current_config = YAML::LoadFile(config_file.toStdString());
@@ -3327,11 +3409,6 @@ bool HmStreamWindow::savePrivateConfigForRole(
   if (published_config)
     published_config->clear();
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
-  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
-  if (!config_lock.ok()) {
-    appendLog(QString("could not lock private config: %1").arg(config_lock.status().ToString().c_str()));
-    return false;
-  }
   YAML::Node config;
   if (fs::exists(config_path)) {
     try {
@@ -3422,11 +3499,6 @@ bool HmStreamWindow::removePrivateConfigForRole(
   }
 
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
-  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
-  if (!config_lock.ok()) {
-    appendLog(QString("could not lock private config: %1").arg(config_lock.status().ToString().c_str()));
-    return false;
-  }
   if (!fs::exists(config_path)) {
     return true;
   }
@@ -3527,11 +3599,6 @@ bool HmStreamWindow::restorePrivateConfigAfterRemoveFailure(
     bool had_config,
     const QByteArray& removed_config) {
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
-  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
-  if (!config_lock.ok()) {
-    appendLog(QString("could not lock private config rollback: %1").arg(config_lock.status().ToString().c_str()));
-    return false;
-  }
   try {
     const YAML::Node original = had_config ? YAML::Load(original_config.toStdString()) : YAML::Node();
     const YAML::Node removed = removed_config.isEmpty() ? YAML::Node() : YAML::Load(removed_config.toStdString());
@@ -3552,7 +3619,13 @@ bool HmStreamWindow::restorePrivateConfigAfterRemoveFailure(
   return true;
 }
 
-bool HmStreamWindow::removeImportedVideoPath(const QString& relative_path, bool allow_regular_delete) {
+bool HmStreamWindow::resolveImportedVideoPath(
+    const QString& relative_path,
+    bool allow_regular_delete,
+    QString* resolved_imported_path) {
+  if (!resolved_imported_path)
+    return false;
+  resolved_imported_path->clear();
   const QDir game_dir(gameDirectory(game_id_edit_->text()));
   const QString game_root = QDir::cleanPath(game_dir.absolutePath());
   const QString canonical_game_root = canonical_dir_path(game_root);
@@ -3565,7 +3638,7 @@ bool HmStreamWindow::removeImportedVideoPath(const QString& relative_path, bool 
     return true;
   }
   const QFileInfo imported(imported_path);
-  if (!imported.exists()) {
+  if (!imported.exists() && !imported.isSymLink()) {
     return true;
   }
   const QString canonical_parent = canonical_dir_path(QFileInfo(imported_path).absolutePath());
@@ -3586,6 +3659,16 @@ bool HmStreamWindow::removeImportedVideoPath(const QString& relative_path, bool 
     appendLog(QString("not deleting regular video file %1").arg(relative_path));
     return false;
   }
+  *resolved_imported_path = imported_path;
+  return true;
+}
+
+bool HmStreamWindow::removeImportedVideoPath(const QString& relative_path, bool allow_regular_delete) {
+  QString imported_path;
+  if (!resolveImportedVideoPath(relative_path, allow_regular_delete, &imported_path))
+    return false;
+  if (imported_path.isEmpty())
+    return true;
   if (const char* fail_path = std::getenv("HM_TEST_VIDEO_REMOVE_FAIL");
       fail_path != nullptr && relative_path == QString::fromUtf8(fail_path)) {
     appendLog(QString("injected failure removing imported video %1").arg(relative_path));

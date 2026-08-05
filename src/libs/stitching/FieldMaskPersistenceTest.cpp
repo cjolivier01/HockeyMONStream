@@ -268,6 +268,39 @@ int main() {
         hm::stitching::is_field_mask_configured(root.string()) && !fs::exists(committed),
         "committed rink journal must be cleaned without rollback");
 
+    hm::stitching::RinkProfile replacement_profile = profile;
+    replacement_profile.masks[0] = cv::Mat(24, 32, CV_8U, cv::Scalar(255));
+    std::atomic<bool> atomic_read_finished{false};
+    std::atomic<bool> concurrent_publication_finished{false};
+    absl::StatusOr<cv::Mat> atomic_read = absl::UnknownError("field-mask reader did not run");
+    absl::Status concurrent_publication = absl::UnknownError("field-mask writer did not run");
+    ::setenv("HM_TEST_FIELD_MASK_PRE_DECODE_DELAY_MS", "150", 1);
+    std::thread atomic_reader([&] {
+      atomic_read = hm::stitching::load_field_mask(root.string());
+      atomic_read_finished = true;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    std::thread concurrent_publisher([&] {
+      concurrent_publication = hm::stitching::save_rink_profile(root.string(), replacement_profile);
+      concurrent_publication_finished = true;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    ok &= expect(!atomic_read_finished, "field-mask decode delay must hold the generation read open");
+    ok &= expect(
+        !concurrent_publication_finished,
+        "field-mask publication must wait until validation and decoding release the generation locks");
+    atomic_reader.join();
+    concurrent_publisher.join();
+    ::unsetenv("HM_TEST_FIELD_MASK_PRE_DECODE_DELAY_MS");
+    ok &= expect(
+        atomic_read.ok() && atomic_read->at<uchar>(0, 0) == 0,
+        "an atomic field-mask read must decode the generation that it validated");
+    ok &= expect(concurrent_publication.ok(), "waiting field-mask publication must resume after the atomic read");
+    const auto replacement_read = hm::stitching::load_field_mask(root.string());
+    ok &= expect(
+        replacement_read.ok() && replacement_read->at<uchar>(0, 0) == 255,
+        "the next field-mask read must observe the concurrently published generation");
+
     auto hugin_lock = hm::stitching::HuginProject::RecoverAndLock(root);
     ok &= expect(hugin_lock.ok(), "field-mask lock test must acquire the Hugin artifact lock");
     std::atomic<bool> field_mask_read_finished{false};

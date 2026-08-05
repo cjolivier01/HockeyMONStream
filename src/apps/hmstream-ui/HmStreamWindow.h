@@ -85,6 +85,8 @@ class HmStreamWindow : public QMainWindow {
   QString relativeToGameDir(const QString& path) const;
   bool ensureGameDirectory();
   bool importVideoPath(const QString& source_path, QString* imported_relative_path, bool* created);
+  // These helpers mutate video/config state and require the caller to hold a
+  // GameConfigTransactionLock for the selected game.
   bool saveCopiedImport(
       const QString& relative_path,
       const QString& auto_group_family = {},
@@ -113,6 +115,7 @@ class HmStreamWindow : public QMainWindow {
       const QByteArray& original_config,
       bool had_config,
       const QByteArray& removed_config);
+  bool resolveImportedVideoPath(const QString& relative_path, bool allow_regular_delete, QString* imported_path);
   bool removeImportedVideoPath(const QString& relative_path, bool allow_regular_delete = false);
   void toggleOutput(const QString& id, bool enabled);
   void redirectYoutube();
