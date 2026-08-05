@@ -56,7 +56,10 @@ int main(int argc, char** argv) {
       "immutable Docker build must expose the content-addressed native model cache read-only");
   ok &= expect(
       contains(installer, "X-HMStream-Target-Ubuntu") && !contains(installer, "libc6 (>= 2.43)") &&
-          !contains(installer, "Pin-Priority"),
-      "installer must validate explicit OS provenance without ABI heuristics or global TensorRT pins");
+          !contains(installer, "Pin-Priority") && contains(installer, "old_deepstream_packages") &&
+          contains(installer, "^deepstream-[0-9]+([.][0-9]+)*$") &&
+          contains(installer, "apt-get remove -y --no-install-recommends") &&
+          contains(installer, "old_deepstream_remove_args[@]"),
+      "installer must validate OS provenance, avoid global pins, and safely replace older DeepStream");
   return ok ? 0 : 1;
 }

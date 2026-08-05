@@ -43,17 +43,19 @@ int main() {
 
   auto first_lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
   ok &= expect(first_lock.ok(), "first game-config transaction must lock");
-  std::atomic<bool> second_entered{false};
+  std::atomic<bool> reader_finished{false};
+  std::atomic<bool> reader_succeeded{false};
   std::thread waiter([&]() {
-    auto second_lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
-    second_entered = second_lock.ok();
+    auto loaded = hm::stitching::load_game_config_file(root / "config.yaml");
+    reader_succeeded = loaded.ok() && loaded->has_value();
+    reader_finished = true;
   });
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  ok &= expect(!second_entered.load(), "a second game-config transaction must wait for the first");
+  ok &= expect(!reader_finished.load(), "a runtime config read must wait for an in-progress rink/config publication");
   if (first_lock.ok())
     first_lock->reset();
   waiter.join();
-  ok &= expect(second_entered.load(), "a waiting game-config transaction must resume after release");
+  ok &= expect(reader_succeeded.load(), "a waiting runtime config read must resume with a complete generation");
 
   const pid_t first = ::fork();
   if (first == 0)
@@ -79,6 +81,17 @@ int main() {
       ::stat((root / "config.yaml").c_str(), &metadata) == 0 && (metadata.st_mode & 0777) == 0600,
       "atomically published private config must be owner-only");
 
+  YAML::Node absent_baseline;
+  YAML::Node first_save(YAML::NodeType::Map);
+  first_save["pipeline"]["generated"] = true;
+  YAML::Node concurrently_created(YAML::NodeType::Map);
+  concurrently_created["hmstream_ui"]["keep"] = true;
+  const YAML::Node first_merged =
+      hm::stitching::apply_game_config_diff(absent_baseline, first_save, concurrently_created);
+  ok &= expect(
+      first_merged["pipeline"]["generated"].as<bool>() && first_merged["hmstream_ui"]["keep"].as<bool>(),
+      "a first save after an absent baseline must preserve a concurrently created config");
+
   const fs::path interrupted = root / ".hmstream-rink-interrupted";
   fs::create_directories(interrupted / "previous");
   std::ofstream(interrupted / "previous" / "config.yaml") << "recovered:\n  old: true\n";
@@ -87,11 +100,15 @@ int main() {
   std::ofstream(interrupted / "state") << "PREPARED\n";
   std::ofstream(root / "config.yaml") << "interrupted: true\n";
   std::ofstream(root / "rink_mask_0.png") << "new-mask";
-  {
+  auto recovered_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  ok &= expect(
+      recovered_read.ok() && recovered_read->has_value(),
+      "recovery-aware config reads must recover a prepared rink transaction");
+  if (recovered_read.ok() && recovered_read->has_value()) {
     auto recovered_lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
-    ok &= expect(recovered_lock.ok(), "config lock acquisition must recover a prepared rink transaction");
+    ok &= expect(recovered_lock.ok(), "config update after recovery must lock");
     if (recovered_lock.ok()) {
-      YAML::Node config = YAML::LoadFile((root / "config.yaml").string());
+      YAML::Node config = **recovered_read;
       config["after_recovery"] = true;
       ok &= expect(
           hm::stitching::publish_game_config(root, YAML::Dump(config) + "\n").ok(),

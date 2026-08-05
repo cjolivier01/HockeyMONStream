@@ -285,8 +285,10 @@ async function post(path,body='{}'){const r=await fetch(path+'?token='+encodeURI
 
 std::optional<ScoreboardSelector::Polygon> load_existing(const fs::path& game_dir) {
   try {
-    const YAML::Node polygon =
-        YAML::LoadFile((game_dir / "config.yaml").string())["rink"]["scoreboard"]["perspective_polygon"];
+    auto loaded_config = load_game_config_file(game_dir / "config.yaml");
+    if (!loaded_config.ok() || !loaded_config->has_value())
+      return std::nullopt;
+    const YAML::Node polygon = (**loaded_config)["rink"]["scoreboard"]["perspective_polygon"];
     if (!polygon || !polygon.IsSequence() || polygon.size() != 4)
       return std::nullopt;
     ScoreboardSelector::Polygon result;

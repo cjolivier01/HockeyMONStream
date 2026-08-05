@@ -32,6 +32,7 @@
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
 #include "hstream/src/libs/draw_display/Fonts.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 #include "nvdsmeta.h"
 #include "yaml-cpp/yaml.h"
 
@@ -633,12 +634,16 @@ absl::Status PlayCropperPriv::LoadScoreboardPerspectiveFromConfig() {
   if (std::filesystem::is_directory(config_path)) {
     config_path /= "config.yaml";
   }
-  if (!std::filesystem::exists(config_path)) {
+  auto loaded_config = stitching::load_game_config_file(config_path);
+  if (!loaded_config.ok()) {
+    return loaded_config.status();
+  }
+  if (!loaded_config->has_value()) {
     return absl::NotFoundError(TO_STRING("Scoreboard config file does not exist: " << config_path.string()));
   }
 
   try {
-    YAML::Node cfg = YAML::LoadFile(config_path.string());
+    YAML::Node cfg = **loaded_config;
     YAML::Node polygon = cfg["rink"]["scoreboard"]["perspective_polygon"];
     if (!polygon || !polygon.IsSequence() || polygon.size() != 4) {
       return absl::NotFoundError("Scoreboard perspective_polygon is not configured yet");

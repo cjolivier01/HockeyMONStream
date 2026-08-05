@@ -24,6 +24,14 @@
 
 class QProcessEnvironment;
 
+namespace hm::ui_internal {
+
+// Restores only paths cleared by the UI's automatic video selection. Other
+// keys may have been updated by another config owner in the meantime.
+void restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previous);
+
+} // namespace hm::ui_internal
+
 class HmStreamWindow : public QMainWindow {
  public:
   explicit HmStreamWindow(QWidget* parent = nullptr);

@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <cstring>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,14 @@ namespace hm::stitching {
 namespace {
 
 namespace fs = std::filesystem;
+
+bool yaml_equal(const YAML::Node& lhs, const YAML::Node& rhs) {
+  if (lhs.IsDefined() != rhs.IsDefined())
+    return false;
+  if (!lhs.IsDefined())
+    return true;
+  return YAML::Dump(lhs) == YAML::Dump(rhs);
+}
 
 absl::Status fsync_directory(const fs::path& path) {
   const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY);
@@ -92,6 +101,50 @@ absl::Status publish_game_config(const fs::path& game_dir, const std::string& co
     return absl::InternalError("Unable to atomically publish game config: " + message);
   }
   return fsync_directory(game_dir);
+}
+
+absl::StatusOr<std::optional<YAML::Node>> load_game_config_file(const fs::path& config_path) {
+  auto lock = GameConfigTransactionLock::Acquire(config_path.parent_path());
+  if (!lock.ok())
+    return lock.status();
+  std::error_code error;
+  const bool exists = fs::exists(config_path, error);
+  if (error)
+    return absl::InternalError("Unable to inspect game config: " + error.message());
+  if (!exists)
+    return std::nullopt;
+  if (!fs::is_regular_file(config_path, error) || error)
+    return absl::FailedPreconditionError("Game config is not a regular file: " + config_path.string());
+  try {
+    return std::optional<YAML::Node>(YAML::LoadFile(config_path.string()));
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Unable to load game config: " + std::string(exception.what()));
+  }
+}
+
+YAML::Node apply_game_config_diff(const YAML::Node& baseline, const YAML::Node& desired, const YAML::Node& latest) {
+  const bool empty_map_baseline = !baseline.IsDefined() || baseline.IsNull();
+  if ((baseline.IsMap() || empty_map_baseline) && desired.IsMap()) {
+    YAML::Node result = latest.IsMap() ? YAML::Clone(latest) : YAML::Node(YAML::NodeType::Map);
+    if (baseline.IsMap()) {
+      for (const auto& pair : baseline) {
+        const std::string key = pair.first.as<std::string>();
+        if (!desired[key].IsDefined())
+          result.remove(key);
+      }
+    }
+    for (const auto& pair : desired) {
+      const std::string key = pair.first.as<std::string>();
+      const YAML::Node old_value = baseline.IsMap() ? baseline[key] : YAML::Node(YAML::NodeType::Undefined);
+      if (!old_value.IsDefined()) {
+        result[key] = YAML::Clone(pair.second);
+      } else if (!yaml_equal(old_value, pair.second)) {
+        result[key] = apply_game_config_diff(old_value, pair.second, result[key]);
+      }
+    }
+    return result;
+  }
+  return yaml_equal(baseline, desired) ? YAML::Clone(latest) : YAML::Clone(desired);
 }
 
 } // namespace hm::stitching

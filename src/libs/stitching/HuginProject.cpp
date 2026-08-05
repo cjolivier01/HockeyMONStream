@@ -854,7 +854,17 @@ absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir
   status = fsync_path(staging, true);
   if (!status.ok())
     return status;
+  // The PREPARED state is only recoverable after the staging directory entry
+  // itself is durable in its parent. Do this before changing any flat
+  // artifacts in the game directory.
+  status = fsync_path(game_dir, true);
+  if (!status.ok())
+    return status;
   *prepared = true;
+  if (const char* interrupt = std::getenv("HM_TEST_STITCH_INTERRUPT_AFTER_PREPARE_SYNC");
+      interrupt != nullptr && std::string(interrupt) == "1") {
+    return absl::InternalError("Injected stitch interruption after durable preparation");
+  }
 
   auto rollback_error = [&](const std::string& message) {
     const auto rollback_status = recover_stitch_transactions_locked(game_dir);

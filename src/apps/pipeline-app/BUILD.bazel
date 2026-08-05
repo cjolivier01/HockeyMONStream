@@ -68,6 +68,20 @@ cc_binary(
 )
 
 cc_test(
+    name = "configurator_persistence_test",
+    srcs = [
+        "ConfiguratorPersistenceTest.cpp",
+        "StitcherOnePassConfig.h",
+        "configurator.cpp",
+        "configurator.h",
+        "deepstream_app.h",
+    ],
+    copts = PIPELINE_APP_COPTS,
+    linkopts = PIPELINE_APP_LINKOPTS,
+    deps = PIPELINE_APP_DEPS,
+)
+
+cc_test(
     name = "pipeline_clean_only_test",
     srcs = ["PipelineCleanOnlyTest.cpp"],
     args = [

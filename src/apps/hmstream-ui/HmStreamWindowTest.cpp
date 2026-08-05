@@ -41,6 +41,26 @@ bool expect(bool condition, const std::string& message) {
   return true;
 }
 
+bool test_path_scoped_auto_rollback() {
+  YAML::Node before(YAML::NodeType::Map);
+  before["hmstream_ui"]["video_roles"]["left"].push_back("left.mp4");
+  before["game"]["videos"]["left"].push_back("left.mp4");
+  before["game"]["stitching"]["frame_offsets"]["left"] = "3";
+
+  YAML::Node latest(YAML::NodeType::Map);
+  latest["concurrent"]["keep"] = true;
+  latest["hmstream_ui"]["copied_imports"].push_back("copied.mp4");
+  hm::ui_internal::restore_auto_selection_paths(latest, before);
+
+  return expect(
+      latest["concurrent"]["keep"].as<bool>() &&
+          latest["hmstream_ui"]["video_roles"]["left"][0].as<std::string>() == "left.mp4" &&
+          latest["game"]["videos"]["left"][0].as<std::string>() == "left.mp4" &&
+          latest["game"]["stitching"]["frame_offsets"]["left"].as<std::string>() == "3" &&
+          latest["hmstream_ui"]["copied_imports"][0].as<std::string>() == "copied.mp4",
+      "Auto cleanup rollback must restore owned paths without replacing an intervening unrelated update");
+}
+
 bool lookup_yaml_key(YAML::Node parent, const char* key, YAML::Node* value) {
   if (!parent.IsMap()) {
     return false;
@@ -1396,6 +1416,9 @@ bool run_real_pipeline_e2e(HmStreamWindow* window, const QString& game_id) {
 } // namespace
 
 int main(int argc, char** argv) {
+  if (!test_path_scoped_auto_rollback()) {
+    return 1;
+  }
   const QByteArray e2e_game_id = qgetenv("HMSTREAM_UI_E2E_GAME_ID");
   if (!e2e_game_id.isEmpty()) {
     QApplication app(argc, argv);

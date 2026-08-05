@@ -32,7 +32,7 @@ class Configurator {
 
   absl::Status apply_config_item(const std::string& key, const std::string& value);
 
-  std::optional<YAML::Node> load_private_config();
+  absl::StatusOr<std::optional<YAML::Node>> load_private_config();
   absl::Status save_private_config(const YAML::Node& private_config);
 
   static std::filesystem::path get_game_dir(const std::string& game_id);

@@ -1430,7 +1430,16 @@ absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& p
   sync_status = fsync_path(staging, true);
   if (!sync_status.ok())
     return sync_status;
+  // Persist the PREPARED transaction directory entry before deleting or
+  // replacing any flat config/mask artifacts in the game directory.
+  sync_status = fsync_path(root, true);
+  if (!sync_status.ok())
+    return sync_status;
   cleanup.prepared = true;
+  if (const char* interrupt = std::getenv("HM_TEST_RINK_INTERRUPT_AFTER_PREPARE_SYNC");
+      interrupt != nullptr && std::string(interrupt) == "1") {
+    return absl::InternalError("Injected rink interruption after durable preparation");
+  }
 
   auto rollback_error = [&](const std::string& message) {
     const auto rollback_status = recover_rink_transactions_locked(root);
@@ -1497,11 +1506,12 @@ absl::Status configure_orientation(const std::string& game_dir) {
 
 bool is_scoreboard_configured(const std::string& game_dir) {
   const fs::path config_file = fs::path(game_dir) / "config.yaml";
-  if (!fs::exists(config_file)) {
+  auto loaded_config = load_game_config_file(config_file);
+  if (!loaded_config.ok() || !loaded_config->has_value()) {
     return false;
   }
   try {
-    YAML::Node cfg = YAML::LoadFile(config_file.string());
+    YAML::Node cfg = **loaded_config;
     const auto& rink = cfg["rink"];
     if (!rink || !rink.IsMap())
       return false;

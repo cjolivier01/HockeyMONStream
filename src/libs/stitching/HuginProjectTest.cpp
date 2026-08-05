@@ -276,6 +276,32 @@ int main() {
     std::ifstream input(root / "game" / "autooptimiser_out.pto", std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
   }();
+  ::setenv("HM_TEST_STITCH_INTERRUPT_AFTER_PREPARE_SYNC", "1", 1);
+  const auto interrupted_before_publication = hm::stitching::HuginProject::Configure(root / "game", matches, options);
+  ::unsetenv("HM_TEST_STITCH_INTERRUPT_AFTER_PREPARE_SYNC");
+  ok &= expect(
+      !interrupted_before_publication.ok(), "injected interruption after durable preparation must stop publication");
+  bool durable_prepared_journal = false;
+  for (const auto& entry : fs::directory_iterator(root / "game")) {
+    if (entry.is_directory() && entry.path().filename().string().rfind(".hmstream-stitch-", 0) == 0)
+      durable_prepared_journal = true;
+  }
+  ok &= expect(durable_prepared_journal, "durably prepared Hugin publication must retain its recovery journal");
+  const auto project_before_recovery = [&]() {
+    std::ifstream input(root / "game" / "autooptimiser_out.pto", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  }();
+  ok &= expect(
+      project_before_recovery == previous_project,
+      "interruption after durable preparation must happen before replacing root artifacts");
+  ok &= expect(
+      hm::stitching::HuginProject::Recover(root / "game").ok(),
+      "durably prepared Hugin publication must recover on the next owner");
+  const auto project_after_recovery = [&]() {
+    std::ifstream input(root / "game" / "autooptimiser_out.pto", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  }();
+  ok &= expect(project_after_recovery == previous_project, "prepared-only Hugin recovery must preserve the generation");
   ok &= expect(
       write_remap_pair(fixtures, "mapping_0000", 40, 32, true) &&
           write_remap_pair(fixtures, "mapping_0001", 40, 32, true),

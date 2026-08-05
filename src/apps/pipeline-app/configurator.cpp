@@ -60,38 +60,6 @@ constexpr const char* kEnableFlagField = "enable";
 constexpr const char* kDefaultOutputVideoName = "tracking_output.mkv";
 constexpr const char* kLegacyDefaultOutputName = "out.mkv";
 
-bool yaml_equal(const YAML::Node& lhs, const YAML::Node& rhs) {
-  if (lhs.IsDefined() != rhs.IsDefined())
-    return false;
-  if (!lhs.IsDefined())
-    return true;
-  return YAML::Dump(lhs) == YAML::Dump(rhs);
-}
-
-// Applies only the changes between baseline and desired to the newest on-disk
-// document. Unchanged paths retain concurrent UI/calibration updates.
-YAML::Node apply_yaml_diff(const YAML::Node& baseline, const YAML::Node& desired, const YAML::Node& latest) {
-  if (baseline.IsMap() && desired.IsMap()) {
-    YAML::Node result = latest.IsMap() ? YAML::Clone(latest) : YAML::Node(YAML::NodeType::Map);
-    for (const auto& pair : baseline) {
-      const std::string key = pair.first.as<std::string>();
-      if (!desired[key].IsDefined())
-        result.remove(key);
-    }
-    for (const auto& pair : desired) {
-      const std::string key = pair.first.as<std::string>();
-      const YAML::Node old_value = baseline[key];
-      if (!old_value.IsDefined()) {
-        result[key] = YAML::Clone(pair.second);
-      } else if (!yaml_equal(old_value, pair.second)) {
-        result[key] = apply_yaml_diff(old_value, pair.second, result[key]);
-      }
-    }
-    return result;
-  }
-  return yaml_equal(baseline, desired) ? YAML::Clone(latest) : YAML::Clone(desired);
-}
-
 int as_int(const YAML::Node& node) {
   // be less asserty than YAML-CPP
   // std::cout << node << std::endl;
@@ -1644,12 +1612,12 @@ std::filesystem::path Configurator::get_private_config_file_name(const std::stri
   return get_game_dir(game_id) / "config.yaml";
 }
 
-std::optional<YAML::Node> Configurator::load_private_config() {
-  std::string private_config_file = get_private_config_file_name(game_id_);
-  if (!std::filesystem::exists(private_config_file)) {
+absl::StatusOr<std::optional<YAML::Node>> Configurator::load_private_config() {
+  const fs::path private_config_file = get_private_config_file_name(game_id_);
+  if (private_config_file.parent_path().empty() || !fs::is_directory(private_config_file.parent_path())) {
     return std::nullopt;
   }
-  return YAML::LoadFile(private_config_file);
+  return stitching::load_game_config_file(private_config_file);
 }
 
 absl::Status Configurator::save_private_config(const YAML::Node& private_config) {
@@ -1665,7 +1633,7 @@ absl::Status Configurator::save_private_config(const YAML::Node& private_config)
   } catch (const YAML::Exception& error) {
     return absl::InvalidArgumentError("Failed to merge private config: " + std::string(error.what()));
   }
-  const YAML::Node merged = apply_yaml_diff(persisted_private_config_, private_config, latest);
+  const YAML::Node merged = stitching::apply_game_config_diff(persisted_private_config_, private_config, latest);
   std::string contents;
   if (!is_empty_yaml_document(merged))
     contents = YAML::Dump(merged) + "\n";
@@ -1683,7 +1651,8 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
       config = YAML::LoadFile(baseline_path);
     }
   }
-  std::optional<YAML::Node> private_config = load_private_config();
+  std::optional<YAML::Node> private_config;
+  HM_ASSIGN_OR_RETURN(private_config, load_private_config());
   if (private_config.has_value()) {
     private_config_ = *private_config;
     persisted_private_config_ = YAML::Clone(private_config_);
@@ -1692,8 +1661,8 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
         private_config_,
         /*warn_if_key_not_in_dest=*/!config);
   } else {
-    private_config_ = YAML::Node();
-    persisted_private_config_ = YAML::Node();
+    private_config_ = YAML::Node(YAML::NodeType::Map);
+    persisted_private_config_ = YAML::Node(YAML::NodeType::Map);
   }
   return config;
 }

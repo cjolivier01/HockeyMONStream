@@ -54,6 +54,24 @@ int main() {
     const YAML::Node bbox = config["rink"]["ice_contours_combined_bbox"];
     ok &= expect(bbox[0].as<double>() == 2.0 && bbox[2].as<double>() == 28.0, "bbox must persist as x1,y1,x2,y2");
 
+    ::setenv("HM_TEST_RINK_INTERRUPT_AFTER_PREPARE_SYNC", "1", 1);
+    const auto interrupted_before_publication = hm::stitching::save_rink_profile(root.string(), profile);
+    ::unsetenv("HM_TEST_RINK_INTERRUPT_AFTER_PREPARE_SYNC");
+    ok &= expect(
+        !interrupted_before_publication.ok(), "injected interruption after durable preparation must stop publication");
+    bool durable_prepared_journal = false;
+    for (const auto& entry : fs::directory_iterator(root)) {
+      if (entry.is_directory() && entry.path().filename().string().rfind(".hmstream-rink-", 0) == 0)
+        durable_prepared_journal = true;
+    }
+    ok &= expect(durable_prepared_journal, "durably prepared rink publication must retain its recovery journal");
+    ok &= expect(
+        YAML::LoadFile((root / "config.yaml").string())["unrelated"]["keep"].as<bool>(),
+        "interruption after durable preparation must happen before replacing root config");
+    ok &= expect(
+        hm::stitching::is_field_mask_configured(root.string()),
+        "durably prepared rink publication must recover on the next owner");
+
     // Simulate SIGKILL after a prepared transaction published only part of a
     // new generation. The next field-mask read must restore the complete old
     // generation before consuming any artifact.

@@ -2,10 +2,12 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "yaml-cpp/yaml.h"
 
 namespace hm::stitching {
 
@@ -46,5 +48,14 @@ class GameConfigTransactionLock final {
 // Durably replaces config.yaml. The caller must hold GameConfigLock while
 // constructing contents from the previous config and until this returns.
 absl::Status publish_game_config(const std::filesystem::path& game_dir, const std::string& contents);
+
+// Loads one config generation while holding the config/rink transaction lock.
+// A missing file is represented by an empty optional node.
+absl::StatusOr<std::optional<YAML::Node>> load_game_config_file(const std::filesystem::path& config_path);
+
+// Applies only changes made between baseline and desired to latest. This is a
+// three-way merge for independently owned config paths, not a conflict
+// resolver: when both owners change the same path, desired wins.
+YAML::Node apply_game_config_diff(const YAML::Node& baseline, const YAML::Node& desired, const YAML::Node& latest);
 
 } // namespace hm::stitching

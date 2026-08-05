@@ -149,6 +149,36 @@ rm -f /etc/apt/preferences.d/hmstream-tensorrt10
 
 apt_args=(-y --no-install-recommends)
 if [[ "${SIMULATE}" -eq 1 ]]; then apt_args+=(--simulate); fi
+
+# NVIDIA's versioned DeepStream artifacts install many of the same absolute
+# paths but do not declare Conflicts/Replaces against older versioned releases
+# (for example, deepstream-8.0).  APT does not order a package-name removal
+# before unpacking a local artifact when dpkg cannot see a declared conflict,
+# so preflight the complete resolution and then remove older series explicitly.
+# Keep unrelated split packages out of this list; the 9.1 artifact declares its
+# own conflicts with the legacy binaries/sample-data packages.
+old_deepstream_packages=()
+while IFS=$'\t' read -r package status; do
+  package_name="${package%%:*}"
+  if [[ "${status:0:1}" == "i" && "${status:1:1}" != "n" &&
+        "${package_name}" =~ ^deepstream-[0-9]+([.][0-9]+)*$ &&
+        "${package_name}" != "deepstream-9.1" ]]; then
+    old_deepstream_packages+=("${package}")
+  fi
+done < <(dpkg-query -W -f='${binary:Package}\t${db:Status-Abbrev}\n' 'deepstream-*' 2>/dev/null || true)
+if [[ "${#old_deepstream_packages[@]}" -gt 0 ]]; then
+  echo "Replacing older DeepStream package(s): ${old_deepstream_packages[*]}"
+  old_deepstream_remove_args=()
+  for package in "${old_deepstream_packages[@]}"; do
+    old_deepstream_remove_args+=("${package}-")
+  done
+  apt-get install --simulate --no-install-recommends \
+    "${old_deepstream_remove_args[@]}" "${DEEPSTREAM_DEB}" "${HMSTREAM_DEB}"
+  if [[ "${SIMULATE}" -eq 0 ]]; then
+    apt-get remove -y --no-install-recommends "${old_deepstream_packages[@]}"
+  fi
+fi
+
 apt-get install "${apt_args[@]}" "${DEEPSTREAM_DEB}" "${HMSTREAM_DEB}"
 
 if [[ "${SIMULATE}" -eq 1 ]]; then
