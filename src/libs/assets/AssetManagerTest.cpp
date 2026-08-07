@@ -5,7 +5,10 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <thread>
 
+#include <fcntl.h>
+#include <signal.h>
 #include <unistd.h>
 
 namespace {
@@ -13,6 +16,16 @@ bool expect(bool condition, const char* message) {
   if (!condition)
     std::cerr << "FAIL: " << message << '\n';
   return condition;
+}
+
+bool process_is_running(pid_t process) {
+  if (::kill(process, 0) != 0)
+    return false;
+  std::ifstream stat("/proc/" + std::to_string(process) + "/stat");
+  std::string field;
+  for (int index = 0; index < 3 && stat >> field; ++index) {
+  }
+  return field != "Z";
 }
 } // namespace
 
@@ -34,9 +47,18 @@ int main() {
     {
       std::ofstream gh(root / "bin" / "gh");
       gh << "#!/bin/sh\n"
+            "if [ -n \"${HM_TEST_GH_CHILD_PID_FILE:-}\" ]; then\n"
+            "  /bin/sleep 30 &\n"
+            "  printf '%s\\n' \"$!\" > \"$HM_TEST_GH_CHILD_PID_FILE\"\n"
+            "  wait\n"
+            "fi\n"
             "if [ \"$#\" -eq 4 ] && [ \"$1\" = auth ] && [ \"$2\" = token ] && "
             "[ \"$3\" = --hostname ] && [ \"$4\" = github.com ]; then\n"
-            "  printf cli-token\n"
+            "  if [ -e \"/proc/self/fd/${HM_TEST_SENTINEL_FD:-missing}\" ]; then\n"
+            "    printf leaked-fd\n"
+            "  else\n"
+            "    printf cli-token\n"
+            "  fi\n"
             "  exit 0\n"
             "fi\n"
             "exit 1\n";
@@ -49,8 +71,40 @@ int main() {
     ::unsetenv("GH_TOKEN");
     ok &=
         expect(hm::assets::internal::github_token() == "github-environment-token", "GITHUB_TOKEN must be the fallback");
+    ::setenv("GH_TOKEN", " \t\n", 1);
+    ok &= expect(
+        hm::assets::internal::github_token() == "github-environment-token",
+        "a blank GH_TOKEN must not suppress later fallbacks");
+    ::unsetenv("GH_TOKEN");
     ::unsetenv("GITHUB_TOKEN");
-    ok &= expect(hm::assets::internal::github_token() == "cli-token", "the authenticated gh CLI must be the fallback");
+    const int sentinel = ::open((root / "sentinel").c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    const int inherited_sentinel = sentinel < 0 ? -1 : ::fcntl(sentinel, F_DUPFD, 200);
+    if (sentinel >= 0)
+      ::close(sentinel);
+    ::setenv("HM_TEST_SENTINEL_FD", std::to_string(inherited_sentinel).c_str(), 1);
+    ok &= expect(
+        inherited_sentinel >= 0 && hm::assets::internal::github_token() == "cli-token",
+        "the authenticated gh CLI must be the fallback without inheriting unrelated descriptors");
+    ::unsetenv("HM_TEST_SENTINEL_FD");
+    if (inherited_sentinel >= 0)
+      ::close(inherited_sentinel);
+    const fs::path child_pid_file = root / "gh-child.pid";
+    ::setenv("HM_TEST_GH_CHILD_PID_FILE", child_pid_file.c_str(), 1);
+    ok &= expect(
+        hm::assets::internal::github_token(std::chrono::milliseconds(200)).empty(),
+        "a timed-out gh CLI must leave the token unavailable");
+    ::unsetenv("HM_TEST_GH_CHILD_PID_FILE");
+    pid_t spawned_child = -1;
+    {
+      std::ifstream child_pid(child_pid_file);
+      child_pid >> spawned_child;
+    }
+    for (int attempt = 0; spawned_child > 0 && process_is_running(spawned_child) && attempt < 100; ++attempt)
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    const bool child_stopped = spawned_child > 0 && !process_is_running(spawned_child);
+    if (!child_stopped && spawned_child > 0)
+      ::kill(spawned_child, SIGKILL);
+    ok &= expect(child_stopped, "timing out gh must terminate its descendant processes");
     ::setenv("PATH", (root / "missing-bin").c_str(), 1);
     ok &= expect(hm::assets::internal::github_token().empty(), "a missing gh CLI must leave the token unavailable");
     if (original_gh_token_value == nullptr)

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <string>
@@ -13,7 +14,7 @@ namespace hm::assets {
 
 namespace internal {
 absl::Status fsync_asset_parent_directory(const std::filesystem::path& target);
-std::string github_token();
+std::string github_token(std::chrono::milliseconds cli_timeout = std::chrono::seconds(5));
 } // namespace internal
 
 struct AssetSpec {

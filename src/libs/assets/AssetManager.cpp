@@ -59,7 +59,6 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr size_t kMaximumGithubTokenBytes = 16 * 1024;
-constexpr auto kGithubCliTimeout = std::chrono::seconds(5);
 
 std::string trim_whitespace(std::string value) {
   const auto first = std::find_if_not(value.begin(), value.end(), [](unsigned char c) { return std::isspace(c); });
@@ -70,7 +69,7 @@ std::string trim_whitespace(std::string value) {
   return std::string(first, last);
 }
 
-std::string github_token_from_cli() {
+std::string github_token_from_cli(std::chrono::milliseconds timeout) {
   int output[2];
   if (::pipe2(output, O_CLOEXEC | O_NONBLOCK) != 0)
     return {};
@@ -81,13 +80,28 @@ std::string github_token_from_cli() {
     ::close(output[1]);
     return {};
   }
-  bool actions_ok = ::posix_spawn_file_actions_adddup2(&actions, output[1], STDOUT_FILENO) == 0 &&
-      ::posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0) == 0;
-  if (output[0] != STDOUT_FILENO)
-    actions_ok = actions_ok && ::posix_spawn_file_actions_addclose(&actions, output[0]) == 0;
-  if (output[1] != STDOUT_FILENO)
-    actions_ok = actions_ok && ::posix_spawn_file_actions_addclose(&actions, output[1]) == 0;
+  const bool actions_ok = ::posix_spawn_file_actions_adddup2(&actions, output[1], STDOUT_FILENO) == 0 &&
+      ::posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0) == 0 &&
+      ::posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0) == 0 &&
+      ::posix_spawn_file_actions_addclosefrom_np(&actions, STDERR_FILENO + 1) == 0;
   if (!actions_ok) {
+    ::posix_spawn_file_actions_destroy(&actions);
+    ::close(output[0]);
+    ::close(output[1]);
+    return {};
+  }
+
+  posix_spawnattr_t attributes;
+  if (::posix_spawnattr_init(&attributes) != 0) {
+    ::posix_spawn_file_actions_destroy(&actions);
+    ::close(output[0]);
+    ::close(output[1]);
+    return {};
+  }
+  const bool attributes_ok = ::posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP) == 0 &&
+      ::posix_spawnattr_setpgroup(&attributes, 0) == 0;
+  if (!attributes_ok) {
+    ::posix_spawnattr_destroy(&attributes);
     ::posix_spawn_file_actions_destroy(&actions);
     ::close(output[0]);
     ::close(output[1]);
@@ -101,7 +115,8 @@ std::string github_token_from_cli() {
   char hostname[] = "github.com";
   char* arguments[] = {executable, auth, token, hostname_option, hostname, nullptr};
   pid_t child = -1;
-  const int spawn_status = ::posix_spawnp(&child, executable, &actions, nullptr, arguments, environ);
+  const int spawn_status = ::posix_spawnp(&child, executable, &actions, &attributes, arguments, environ);
+  ::posix_spawnattr_destroy(&attributes);
   ::posix_spawn_file_actions_destroy(&actions);
   ::close(output[1]);
   if (spawn_status != 0) {
@@ -114,7 +129,7 @@ std::string github_token_from_cli() {
   bool child_exited = false;
   bool failed = false;
   int child_status = 0;
-  const auto deadline = std::chrono::steady_clock::now() + kGithubCliTimeout;
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (!output_closed || !child_exited) {
     if (!output_closed) {
       std::array<char, 1024> buffer{};
@@ -155,8 +170,8 @@ std::string github_token_from_cli() {
 
     const auto now = std::chrono::steady_clock::now();
     if (now >= deadline) {
+      ::kill(-child, SIGKILL);
       if (!child_exited) {
-        ::kill(child, SIGKILL);
         while (::waitpid(child, &child_status, 0) < 0 && errno == EINTR) {
         }
       }
@@ -411,6 +426,12 @@ absl::Status download(const AssetSpec& spec, const fs::path& temporary, size_t m
   FILE* file = std::fopen(temporary.c_str(), "wb");
   if (!file)
     return absl::InternalError("Unable to open temporary asset: " + temporary.string());
+  const int file_descriptor = ::fileno(file);
+  const int descriptor_flags = ::fcntl(file_descriptor, F_GETFD);
+  if (descriptor_flags < 0 || ::fcntl(file_descriptor, F_SETFD, descriptor_flags | FD_CLOEXEC) != 0) {
+    std::fclose(file);
+    return absl::InternalError("Unable to protect temporary asset descriptor");
+  }
   DownloadState state{file, 0, maximum};
   CURL* curl = curl_easy_init();
   if (!curl) {
@@ -543,15 +564,16 @@ absl::Status ensure_one(const AssetSpec& spec, const Limits& limits, size_t* tot
 
 } // namespace
 
-std::string internal::github_token() {
+std::string internal::github_token(std::chrono::milliseconds cli_timeout) {
   for (const char* name : {"GH_TOKEN", "GITHUB_TOKEN"}) {
     if (const char* token = std::getenv(name); token != nullptr && *token != '\0') {
       std::string result = trim_whitespace(token);
-      if (!std::any_of(result.begin(), result.end(), [](unsigned char c) { return std::isspace(c); }))
+      if (!result.empty() &&
+          !std::any_of(result.begin(), result.end(), [](unsigned char c) { return std::isspace(c); }))
         return result;
     }
   }
-  return github_token_from_cli();
+  return github_token_from_cli(cli_timeout);
 }
 
 absl::StatusOr<std::vector<AssetSpec>> AssetManager::Discover(
