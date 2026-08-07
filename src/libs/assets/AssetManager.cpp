@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -14,6 +15,8 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <mutex>
+#include <new>
 #include <set>
 #include <sstream>
 #include <string>
@@ -97,26 +100,78 @@ bool reap_child_until(pid_t child, int* status, std::chrono::steady_clock::time_
   }
 }
 
-void reap_child_asynchronously(pid_t child) {
-  try {
-    std::thread([child]() {
-      int status = 0;
-      while (true) {
-        const pid_t waited = ::waitpid(child, &status, 0);
-        if (waited == child) {
-          if (WIFEXITED(status) || WIFSIGNALED(status))
-            return;
+class AsyncChildReaper {
+ public:
+  bool Start() {
+    try {
+      worker_ = std::thread([this]() { Run(); });
+      return true;
+    } catch (const std::system_error&) {
+      return false;
+    }
+  }
+
+  bool Reserve() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (child_count_ + reservations_ >= children_.size())
+      return false;
+    ++reservations_;
+    return true;
+  }
+
+  void Release() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    --reservations_;
+  }
+
+  void Adopt(pid_t child) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    --reservations_;
+    children_[child_count_++] = child;
+    condition_.notify_one();
+  }
+
+ private:
+  void Run() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    while (true) {
+      condition_.wait(lock, [this]() { return child_count_ != 0; });
+      for (size_t index = 0; index < child_count_;) {
+        int status = 0;
+        const pid_t waited = ::waitpid(children_[index], &status, WNOHANG);
+        const bool terminal = waited == children_[index] && (WIFEXITED(status) || WIFSIGNALED(status));
+        const bool unavailable = waited < 0 && errno != EINTR;
+        if (terminal || unavailable) {
+          children_[index] = children_[--child_count_];
           continue;
         }
-        if (waited < 0 && errno == EINTR)
-          continue;
-        return;
+        ++index;
       }
-    }).detach();
-  } catch (const std::system_error&) {
-    // Resource exhaustion may prevent creating a reaper thread. The child has
-    // already received SIGKILL, and authentication still fails closed.
+      if (child_count_ != 0)
+        condition_.wait_for(lock, std::chrono::milliseconds(10));
+    }
   }
+
+  std::array<pid_t, 128> children_{};
+  size_t child_count_{0};
+  size_t reservations_{0};
+  std::mutex mutex_;
+  std::condition_variable condition_;
+  std::thread worker_;
+};
+
+AsyncChildReaper* async_child_reaper() {
+  static AsyncChildReaper* reaper = []() {
+    auto* candidate = new (std::nothrow) AsyncChildReaper;
+    if (candidate == nullptr || !candidate->Start()) {
+      delete candidate;
+      return static_cast<AsyncChildReaper*>(nullptr);
+    }
+    // The process owns this persistent worker. Intentionally retain it so its
+    // joinable thread object is never destroyed during static teardown.
+    return candidate;
+  }();
+  return reaper;
 }
 
 std::string github_token_from_cli(std::chrono::milliseconds timeout) {
@@ -173,12 +228,21 @@ std::string github_token_from_cli(std::chrono::milliseconds timeout) {
   for (std::string& variable : environment_storage)
     environment.push_back(variable.data());
   environment.push_back(nullptr);
+  AsyncChildReaper* reaper = async_child_reaper();
+  if (reaper == nullptr || !reaper->Reserve()) {
+    ::posix_spawnattr_destroy(&attributes);
+    ::posix_spawn_file_actions_destroy(&actions);
+    ::close(output[0]);
+    ::close(output[1]);
+    return {};
+  }
   pid_t child = -1;
   const int spawn_status = ::posix_spawnp(&child, executable, &actions, &attributes, arguments, environment.data());
   ::posix_spawnattr_destroy(&attributes);
   ::posix_spawn_file_actions_destroy(&actions);
   ::close(output[1]);
   if (spawn_status != 0) {
+    reaper->Release();
     ::close(output[0]);
     return {};
   }
@@ -228,7 +292,7 @@ std::string github_token_from_cli(std::chrono::milliseconds timeout) {
     if (!child_exited) {
       const pid_t waited = ::waitpid(child, &child_status, WNOHANG);
       if (waited == child) {
-        child_exited = true;
+        child_exited = WIFEXITED(child_status) || WIFSIGNALED(child_status);
       } else if (waited < 0 && errno != EINTR) {
         failed = true;
         child_exited = true;
@@ -257,10 +321,14 @@ std::string github_token_from_cli(std::chrono::milliseconds timeout) {
     if (!child_exited) {
       ::kill(child, SIGKILL);
       child_exited = reap_child_until(child, &child_status, std::chrono::steady_clock::now() + kChildReapTimeout);
-      if (!child_exited)
-        reap_child_asynchronously(child);
+      if (!child_exited) {
+        reaper->Adopt(child);
+        reaper = nullptr;
+      }
     }
   }
+  if (reaper != nullptr)
+    reaper->Release();
   ::close(output[0]);
 
   if (failed || !child_exited || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0)

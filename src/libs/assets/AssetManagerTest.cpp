@@ -9,6 +9,7 @@
 
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/ptrace.h>
 #include <unistd.h>
 
 namespace {
@@ -36,6 +37,15 @@ bool wait_for_process_to_stop(pid_t process) {
 } // namespace
 
 int main(int, char**) {
+  if (const char* pid_file = std::getenv("HM_TEST_GH_TRACED_PID_FILE"); pid_file != nullptr) {
+    std::ofstream(pid_file) << ::getpid() << '\n';
+    ::close(STDOUT_FILENO);
+    if (::ptrace(PTRACE_TRACEME, 0, nullptr, nullptr) != 0)
+      return 71;
+    ::raise(SIGSTOP);
+    while (true)
+      ::pause();
+  }
   if (const char* pid_file = std::getenv("HM_TEST_GH_ESCAPE_GROUP_PID_FILE"); pid_file != nullptr) {
     const pid_t parent_group = ::getpgid(::getppid());
     if (parent_group < 0 || ::setpgid(0, parent_group) != 0)
@@ -170,6 +180,21 @@ int main(int, char**) {
     ok &= expect(
         escaped_elapsed < std::chrono::seconds(2) && escaped_stopped,
         "timeout must directly terminate and reap a gh process outside its original group");
+    const fs::path traced_pid_file = root / "gh-traced.pid";
+    ::setenv("HM_TEST_GH_TRACED_PID_FILE", traced_pid_file.c_str(), 1);
+    ok &= expect(
+        hm::assets::internal::github_token(std::chrono::milliseconds(500)).empty(),
+        "a traced and stopped gh process must remain owned through timeout cleanup");
+    ::unsetenv("HM_TEST_GH_TRACED_PID_FILE");
+    pid_t traced_process = -1;
+    {
+      std::ifstream traced_pid(traced_pid_file);
+      traced_pid >> traced_process;
+    }
+    const bool traced_stopped = wait_for_process_to_stop(traced_process);
+    if (!traced_stopped && traced_process > 0)
+      ::kill(traced_process, SIGKILL);
+    ok &= expect(traced_stopped, "timeout must terminate and reap a traced gh process");
     ::setenv("PATH", (root / "missing-bin").c_str(), 1);
     ok &= expect(hm::assets::internal::github_token().empty(), "a missing gh CLI must leave the token unavailable");
     if (original_gh_token_value == nullptr)
