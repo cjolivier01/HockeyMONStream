@@ -4,6 +4,8 @@
 #include <array>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -22,10 +24,15 @@
 #include <curl/curl.h>
 #include <fcntl.h>
 #include <openssl/evp.h>
+#include <poll.h>
+#include <spawn.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
+
+extern char** environ;
 
 namespace hm::assets {
 
@@ -50,6 +57,131 @@ absl::Status internal::fsync_asset_parent_directory(const std::filesystem::path&
 namespace {
 
 namespace fs = std::filesystem;
+
+constexpr size_t kMaximumGithubTokenBytes = 16 * 1024;
+constexpr auto kGithubCliTimeout = std::chrono::seconds(5);
+
+std::string trim_whitespace(std::string value) {
+  const auto first = std::find_if_not(value.begin(), value.end(), [](unsigned char c) { return std::isspace(c); });
+  const auto last =
+      std::find_if_not(value.rbegin(), value.rend(), [](unsigned char c) { return std::isspace(c); }).base();
+  if (first >= last)
+    return {};
+  return std::string(first, last);
+}
+
+std::string github_token_from_cli() {
+  int output[2];
+  if (::pipe2(output, O_CLOEXEC | O_NONBLOCK) != 0)
+    return {};
+
+  posix_spawn_file_actions_t actions;
+  if (::posix_spawn_file_actions_init(&actions) != 0) {
+    ::close(output[0]);
+    ::close(output[1]);
+    return {};
+  }
+  bool actions_ok = ::posix_spawn_file_actions_adddup2(&actions, output[1], STDOUT_FILENO) == 0 &&
+      ::posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0) == 0;
+  if (output[0] != STDOUT_FILENO)
+    actions_ok = actions_ok && ::posix_spawn_file_actions_addclose(&actions, output[0]) == 0;
+  if (output[1] != STDOUT_FILENO)
+    actions_ok = actions_ok && ::posix_spawn_file_actions_addclose(&actions, output[1]) == 0;
+  if (!actions_ok) {
+    ::posix_spawn_file_actions_destroy(&actions);
+    ::close(output[0]);
+    ::close(output[1]);
+    return {};
+  }
+
+  char executable[] = "gh";
+  char auth[] = "auth";
+  char token[] = "token";
+  char hostname_option[] = "--hostname";
+  char hostname[] = "github.com";
+  char* arguments[] = {executable, auth, token, hostname_option, hostname, nullptr};
+  pid_t child = -1;
+  const int spawn_status = ::posix_spawnp(&child, executable, &actions, nullptr, arguments, environ);
+  ::posix_spawn_file_actions_destroy(&actions);
+  ::close(output[1]);
+  if (spawn_status != 0) {
+    ::close(output[0]);
+    return {};
+  }
+
+  std::string result;
+  bool output_closed = false;
+  bool child_exited = false;
+  bool failed = false;
+  int child_status = 0;
+  const auto deadline = std::chrono::steady_clock::now() + kGithubCliTimeout;
+  while (!output_closed || !child_exited) {
+    if (!output_closed) {
+      std::array<char, 1024> buffer{};
+      while (true) {
+        const ssize_t count = ::read(output[0], buffer.data(), buffer.size());
+        if (count > 0) {
+          if (result.size() + static_cast<size_t>(count) > kMaximumGithubTokenBytes)
+            failed = true;
+          else
+            result.append(buffer.data(), static_cast<size_t>(count));
+          continue;
+        }
+        if (count == 0) {
+          output_closed = true;
+          break;
+        }
+        if (errno == EINTR)
+          continue;
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+          failed = true;
+          output_closed = true;
+        }
+        break;
+      }
+    }
+
+    if (!child_exited) {
+      const pid_t waited = ::waitpid(child, &child_status, WNOHANG);
+      if (waited == child) {
+        child_exited = true;
+      } else if (waited < 0 && errno != EINTR) {
+        failed = true;
+        child_exited = true;
+      }
+    }
+    if (output_closed && child_exited)
+      break;
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      if (!child_exited) {
+        ::kill(child, SIGKILL);
+        while (::waitpid(child, &child_status, 0) < 0 && errno == EINTR) {
+        }
+      }
+      failed = true;
+      child_exited = true;
+      break;
+    }
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+    const int timeout = static_cast<int>(std::min(remaining, std::chrono::milliseconds(50)).count());
+    if (output_closed)
+      ::poll(nullptr, 0, timeout);
+    else {
+      pollfd descriptor{output[0], POLLIN | POLLHUP, 0};
+      ::poll(&descriptor, 1, timeout);
+    }
+  }
+  ::close(output[0]);
+
+  if (failed || !child_exited || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0)
+    return {};
+  result = trim_whitespace(std::move(result));
+  if (std::any_of(result.begin(), result.end(), [](unsigned char c) { return std::isspace(c); }))
+    return {};
+  return result;
+}
 
 std::string lowercase(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return std::tolower(c); });
@@ -290,12 +422,10 @@ absl::Status download(const AssetSpec& spec, const fs::path& temporary, size_t m
   bool github_token_available = false;
   if (github_api) {
     headers = curl_slist_append(headers, "Accept: application/octet-stream");
-    const char* token = std::getenv("GH_TOKEN");
-    if (!token || !*token)
-      token = std::getenv("GITHUB_TOKEN");
-    if (token && *token) {
+    const std::string token = internal::github_token();
+    if (!token.empty()) {
       github_token_available = true;
-      headers = curl_slist_append(headers, (std::string("Authorization: Bearer ") + token).c_str());
+      headers = curl_slist_append(headers, ("Authorization: Bearer " + token).c_str());
     }
   }
   curl_easy_setopt(curl, CURLOPT_URL, spec.url.c_str());
@@ -326,7 +456,7 @@ absl::Status download(const AssetSpec& spec, const fs::path& temporary, size_t m
   if (result != CURLE_OK) {
     std::string message = "Asset download failed: " + std::string(curl_easy_strerror(result));
     if (github_api && !github_token_available)
-      message += "; set GH_TOKEN or GITHUB_TOKEN when accessing private GitHub release assets";
+      message += "; authenticate with gh or set GH_TOKEN/GITHUB_TOKEN when accessing private GitHub release assets";
     return absl::UnavailableError(message);
   }
   if (!flushed)
@@ -412,6 +542,17 @@ absl::Status ensure_one(const AssetSpec& spec, const Limits& limits, size_t* tot
 }
 
 } // namespace
+
+std::string internal::github_token() {
+  for (const char* name : {"GH_TOKEN", "GITHUB_TOKEN"}) {
+    if (const char* token = std::getenv(name); token != nullptr && *token != '\0') {
+      std::string result = trim_whitespace(token);
+      if (!std::any_of(result.begin(), result.end(), [](unsigned char c) { return std::isspace(c); }))
+        return result;
+    }
+  }
+  return github_token_from_cli();
+}
 
 absl::StatusOr<std::vector<AssetSpec>> AssetManager::Discover(
     const std::vector<fs::path>& configs,

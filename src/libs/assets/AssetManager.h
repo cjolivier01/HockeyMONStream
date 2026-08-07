@@ -13,7 +13,8 @@ namespace hm::assets {
 
 namespace internal {
 absl::Status fsync_asset_parent_directory(const std::filesystem::path& target);
-}
+std::string github_token();
+} // namespace internal
 
 struct AssetSpec {
   std::string name;

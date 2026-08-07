@@ -24,6 +24,49 @@ int main() {
   fs::create_directories(root / "configs");
   fs::create_directories(root / "pretrained");
   {
+    const char* original_gh_token_value = std::getenv("GH_TOKEN");
+    const char* original_github_token_value = std::getenv("GITHUB_TOKEN");
+    const char* original_path_value = std::getenv("PATH");
+    const std::string original_gh_token = original_gh_token_value == nullptr ? "" : original_gh_token_value;
+    const std::string original_github_token = original_github_token_value == nullptr ? "" : original_github_token_value;
+    const std::string original_path = original_path_value == nullptr ? "" : original_path_value;
+    fs::create_directories(root / "bin");
+    {
+      std::ofstream gh(root / "bin" / "gh");
+      gh << "#!/bin/sh\n"
+            "if [ \"$#\" -eq 4 ] && [ \"$1\" = auth ] && [ \"$2\" = token ] && "
+            "[ \"$3\" = --hostname ] && [ \"$4\" = github.com ]; then\n"
+            "  printf cli-token\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 1\n";
+    }
+    fs::permissions(root / "bin" / "gh", fs::perms::owner_all);
+    ::setenv("PATH", (root / "bin").c_str(), 1);
+    ::setenv("GH_TOKEN", "  gh-environment-token\n", 1);
+    ::setenv("GITHUB_TOKEN", "github-environment-token", 1);
+    ok &= expect(hm::assets::internal::github_token() == "gh-environment-token", "GH_TOKEN must take precedence");
+    ::unsetenv("GH_TOKEN");
+    ok &=
+        expect(hm::assets::internal::github_token() == "github-environment-token", "GITHUB_TOKEN must be the fallback");
+    ::unsetenv("GITHUB_TOKEN");
+    ok &= expect(hm::assets::internal::github_token() == "cli-token", "the authenticated gh CLI must be the fallback");
+    ::setenv("PATH", (root / "missing-bin").c_str(), 1);
+    ok &= expect(hm::assets::internal::github_token().empty(), "a missing gh CLI must leave the token unavailable");
+    if (original_gh_token_value == nullptr)
+      ::unsetenv("GH_TOKEN");
+    else
+      ::setenv("GH_TOKEN", original_gh_token.c_str(), 1);
+    if (original_github_token_value == nullptr)
+      ::unsetenv("GITHUB_TOKEN");
+    else
+      ::setenv("GITHUB_TOKEN", original_github_token.c_str(), 1);
+    if (original_path_value == nullptr)
+      ::unsetenv("PATH");
+    else
+      ::setenv("PATH", original_path.c_str(), 1);
+  }
+  {
     std::ofstream asset(root / "pretrained" / "model.bin");
     asset << "native asset\n";
   }
