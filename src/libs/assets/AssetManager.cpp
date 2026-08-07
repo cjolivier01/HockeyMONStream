@@ -59,6 +59,7 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr size_t kMaximumGithubTokenBytes = 16 * 1024;
+constexpr auto kChildReapTimeout = std::chrono::milliseconds(500);
 
 std::string trim_whitespace(std::string value) {
   const auto first = std::find_if_not(value.begin(), value.end(), [](unsigned char c) { return std::isspace(c); });
@@ -67,6 +68,29 @@ std::string trim_whitespace(std::string value) {
   if (first >= last)
     return {};
   return std::string(first, last);
+}
+
+bool is_github_token_environment_variable(const char* value) {
+  return std::strncmp(value, "GH_TOKEN=", std::strlen("GH_TOKEN=")) == 0 ||
+      std::strncmp(value, "GITHUB_TOKEN=", std::strlen("GITHUB_TOKEN=")) == 0;
+}
+
+bool reap_child_until(pid_t child, int* status, std::chrono::steady_clock::time_point deadline) {
+  while (true) {
+    const pid_t waited = ::waitpid(child, status, WNOHANG);
+    if (waited == child)
+      return true;
+    if (waited < 0) {
+      if (errno == EINTR)
+        continue;
+      return errno == ECHILD;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline)
+      return false;
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+    ::poll(nullptr, 0, static_cast<int>(std::min(remaining, std::chrono::milliseconds(10)).count()));
+  }
 }
 
 std::string github_token_from_cli(std::chrono::milliseconds timeout) {
@@ -114,8 +138,17 @@ std::string github_token_from_cli(std::chrono::milliseconds timeout) {
   char hostname_option[] = "--hostname";
   char hostname[] = "github.com";
   char* arguments[] = {executable, auth, token, hostname_option, hostname, nullptr};
+  std::vector<std::string> environment_storage;
+  for (char** variable = environ; variable != nullptr && *variable != nullptr; ++variable)
+    if (!is_github_token_environment_variable(*variable))
+      environment_storage.emplace_back(*variable);
+  std::vector<char*> environment;
+  environment.reserve(environment_storage.size() + 1);
+  for (std::string& variable : environment_storage)
+    environment.push_back(variable.data());
+  environment.push_back(nullptr);
   pid_t child = -1;
-  const int spawn_status = ::posix_spawnp(&child, executable, &actions, &attributes, arguments, environ);
+  const int spawn_status = ::posix_spawnp(&child, executable, &actions, &attributes, arguments, environment.data());
   ::posix_spawnattr_destroy(&attributes);
   ::posix_spawn_file_actions_destroy(&actions);
   ::close(output[1]);
@@ -128,18 +161,26 @@ std::string github_token_from_cli(std::chrono::milliseconds timeout) {
   bool output_closed = false;
   bool child_exited = false;
   bool failed = false;
+  bool force_stop = false;
   int child_status = 0;
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (!output_closed || !child_exited) {
     if (!output_closed) {
       std::array<char, 1024> buffer{};
       while (true) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+          failed = true;
+          force_stop = true;
+          break;
+        }
         const ssize_t count = ::read(output[0], buffer.data(), buffer.size());
         if (count > 0) {
-          if (result.size() + static_cast<size_t>(count) > kMaximumGithubTokenBytes)
+          if (result.size() + static_cast<size_t>(count) > kMaximumGithubTokenBytes) {
             failed = true;
-          else
-            result.append(buffer.data(), static_cast<size_t>(count));
+            force_stop = true;
+            break;
+          }
+          result.append(buffer.data(), static_cast<size_t>(count));
           continue;
         }
         if (count == 0) {
@@ -155,6 +196,8 @@ std::string github_token_from_cli(std::chrono::milliseconds timeout) {
         break;
       }
     }
+    if (force_stop)
+      break;
 
     if (!child_exited) {
       const pid_t waited = ::waitpid(child, &child_status, WNOHANG);
@@ -170,13 +213,8 @@ std::string github_token_from_cli(std::chrono::milliseconds timeout) {
 
     const auto now = std::chrono::steady_clock::now();
     if (now >= deadline) {
-      ::kill(-child, SIGKILL);
-      if (!child_exited) {
-        while (::waitpid(child, &child_status, 0) < 0 && errno == EINTR) {
-        }
-      }
       failed = true;
-      child_exited = true;
+      force_stop = true;
       break;
     }
     const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
@@ -186,6 +224,13 @@ std::string github_token_from_cli(std::chrono::milliseconds timeout) {
     else {
       pollfd descriptor{output[0], POLLIN | POLLHUP, 0};
       ::poll(&descriptor, 1, timeout);
+    }
+  }
+  if (force_stop) {
+    ::kill(-child, SIGKILL);
+    if (!child_exited) {
+      ::kill(child, SIGKILL);
+      child_exited = reap_child_until(child, &child_status, std::chrono::steady_clock::now() + kChildReapTimeout);
     }
   }
   ::close(output[0]);
@@ -423,14 +468,13 @@ size_t write_download(char* data, size_t size, size_t count, void* opaque) {
 }
 
 absl::Status download(const AssetSpec& spec, const fs::path& temporary, size_t maximum, size_t* received) {
-  FILE* file = std::fopen(temporary.c_str(), "wb");
-  if (!file)
+  const int file_descriptor = ::open(temporary.c_str(), O_WRONLY | O_TRUNC | O_CLOEXEC | O_NOFOLLOW);
+  if (file_descriptor < 0)
     return absl::InternalError("Unable to open temporary asset: " + temporary.string());
-  const int file_descriptor = ::fileno(file);
-  const int descriptor_flags = ::fcntl(file_descriptor, F_GETFD);
-  if (descriptor_flags < 0 || ::fcntl(file_descriptor, F_SETFD, descriptor_flags | FD_CLOEXEC) != 0) {
-    std::fclose(file);
-    return absl::InternalError("Unable to protect temporary asset descriptor");
+  FILE* file = ::fdopen(file_descriptor, "wb");
+  if (!file) {
+    ::close(file_descriptor);
+    return absl::InternalError("Unable to create temporary asset stream");
   }
   DownloadState state{file, 0, maximum};
   CURL* curl = curl_easy_init();

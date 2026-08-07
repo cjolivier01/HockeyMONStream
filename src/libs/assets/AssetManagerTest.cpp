@@ -27,9 +27,23 @@ bool process_is_running(pid_t process) {
   }
   return field != "Z";
 }
+
+bool wait_for_process_to_stop(pid_t process) {
+  for (int attempt = 0; process > 0 && process_is_running(process) && attempt < 100; ++attempt)
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  return process > 0 && !process_is_running(process);
+}
 } // namespace
 
-int main() {
+int main(int, char**) {
+  if (const char* pid_file = std::getenv("HM_TEST_GH_ESCAPE_GROUP_PID_FILE"); pid_file != nullptr) {
+    const pid_t parent_group = ::getpgid(::getppid());
+    if (parent_group < 0 || ::setpgid(0, parent_group) != 0)
+      return 70;
+    std::ofstream(pid_file) << ::getpid() << '\n';
+    while (true)
+      ::pause();
+  }
   bool ok = true;
   namespace fs = std::filesystem;
   const fs::path root =
@@ -47,6 +61,10 @@ int main() {
     {
       std::ofstream gh(root / "bin" / "gh");
       gh << "#!/bin/sh\n"
+            "if [ -n \"${HM_TEST_GH_FLOOD_PID_FILE:-}\" ]; then\n"
+            "  printf '%s\\n' \"$$\" > \"$HM_TEST_GH_FLOOD_PID_FILE\"\n"
+            "  while :; do printf 0123456789abcdef0123456789abcdef; done\n"
+            "fi\n"
             "if [ -n \"${HM_TEST_GH_CHILD_PID_FILE:-}\" ]; then\n"
             "  /bin/sleep 30 &\n"
             "  printf '%s\\n' \"$!\" > \"$HM_TEST_GH_CHILD_PID_FILE\"\n"
@@ -54,7 +72,9 @@ int main() {
             "fi\n"
             "if [ \"$#\" -eq 4 ] && [ \"$1\" = auth ] && [ \"$2\" = token ] && "
             "[ \"$3\" = --hostname ] && [ \"$4\" = github.com ]; then\n"
-            "  if [ -e \"/proc/self/fd/${HM_TEST_SENTINEL_FD:-missing}\" ]; then\n"
+            "  if [ -n \"${GH_TOKEN+x}\" ] || [ -n \"${GITHUB_TOKEN+x}\" ]; then\n"
+            "    printf leaked-token-environment\n"
+            "  elif [ -e \"/proc/self/fd/${HM_TEST_SENTINEL_FD:-missing}\" ]; then\n"
             "    printf leaked-fd\n"
             "  else\n"
             "    printf cli-token\n"
@@ -77,6 +97,13 @@ int main() {
         "a blank GH_TOKEN must not suppress later fallbacks");
     ::unsetenv("GH_TOKEN");
     ::unsetenv("GITHUB_TOKEN");
+    ::setenv("GH_TOKEN", " \t\n", 1);
+    ::setenv("GITHUB_TOKEN", "invalid token", 1);
+    ok &= expect(
+        hm::assets::internal::github_token() == "cli-token",
+        "invalid token variables must not mask the gh CLI credential store");
+    ::unsetenv("GH_TOKEN");
+    ::unsetenv("GITHUB_TOKEN");
     const int sentinel = ::open((root / "sentinel").c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
     const int inherited_sentinel = sentinel < 0 ? -1 : ::fcntl(sentinel, F_DUPFD, 200);
     if (sentinel >= 0)
@@ -91,7 +118,7 @@ int main() {
     const fs::path child_pid_file = root / "gh-child.pid";
     ::setenv("HM_TEST_GH_CHILD_PID_FILE", child_pid_file.c_str(), 1);
     ok &= expect(
-        hm::assets::internal::github_token(std::chrono::milliseconds(200)).empty(),
+        hm::assets::internal::github_token(std::chrono::milliseconds(500)).empty(),
         "a timed-out gh CLI must leave the token unavailable");
     ::unsetenv("HM_TEST_GH_CHILD_PID_FILE");
     pid_t spawned_child = -1;
@@ -99,12 +126,50 @@ int main() {
       std::ifstream child_pid(child_pid_file);
       child_pid >> spawned_child;
     }
-    for (int attempt = 0; spawned_child > 0 && process_is_running(spawned_child) && attempt < 100; ++attempt)
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    const bool child_stopped = spawned_child > 0 && !process_is_running(spawned_child);
+    const bool child_stopped = wait_for_process_to_stop(spawned_child);
     if (!child_stopped && spawned_child > 0)
       ::kill(spawned_child, SIGKILL);
     ok &= expect(child_stopped, "timing out gh must terminate its descendant processes");
+    const fs::path flood_pid_file = root / "gh-flood.pid";
+    ::setenv("HM_TEST_GH_FLOOD_PID_FILE", flood_pid_file.c_str(), 1);
+    const auto flood_started = std::chrono::steady_clock::now();
+    ok &= expect(
+        hm::assets::internal::github_token(std::chrono::seconds(2)).empty(),
+        "excessive continuous gh output must be rejected");
+    const auto flood_elapsed = std::chrono::steady_clock::now() - flood_started;
+    ::unsetenv("HM_TEST_GH_FLOOD_PID_FILE");
+    pid_t flood_process = -1;
+    {
+      std::ifstream flood_pid(flood_pid_file);
+      flood_pid >> flood_process;
+    }
+    const bool flood_stopped = wait_for_process_to_stop(flood_process);
+    if (!flood_stopped && flood_process > 0)
+      ::kill(flood_process, SIGKILL);
+    ok &= expect(
+        flood_elapsed < std::chrono::milliseconds(1500) && flood_stopped,
+        "the output limit must promptly terminate a continuously writing gh process");
+    fs::remove(root / "bin" / "gh");
+    fs::create_symlink(fs::read_symlink("/proc/self/exe"), root / "bin" / "gh");
+    const fs::path escaped_pid_file = root / "gh-escaped.pid";
+    ::setenv("HM_TEST_GH_ESCAPE_GROUP_PID_FILE", escaped_pid_file.c_str(), 1);
+    const auto escaped_started = std::chrono::steady_clock::now();
+    ok &= expect(
+        hm::assets::internal::github_token(std::chrono::milliseconds(500)).empty(),
+        "a gh process that leaves its assigned group must still time out");
+    const auto escaped_elapsed = std::chrono::steady_clock::now() - escaped_started;
+    ::unsetenv("HM_TEST_GH_ESCAPE_GROUP_PID_FILE");
+    pid_t escaped_process = -1;
+    {
+      std::ifstream escaped_pid(escaped_pid_file);
+      escaped_pid >> escaped_process;
+    }
+    const bool escaped_stopped = wait_for_process_to_stop(escaped_process);
+    if (!escaped_stopped && escaped_process > 0)
+      ::kill(escaped_process, SIGKILL);
+    ok &= expect(
+        escaped_elapsed < std::chrono::seconds(2) && escaped_stopped,
+        "timeout must directly terminate and reap a gh process outside its original group");
     ::setenv("PATH", (root / "missing-bin").c_str(), 1);
     ok &= expect(hm::assets::internal::github_token().empty(), "a missing gh CLI must leave the token unavailable");
     if (original_gh_token_value == nullptr)
