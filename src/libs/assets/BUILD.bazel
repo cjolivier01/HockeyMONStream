@@ -13,11 +13,13 @@ cc_library(
   name = "asset_manager",
   srcs = ["AssetManager.cpp"],
   hdrs = ["AssetManager.h"],
+  copts = ["-pthread"],
   include_prefix = "hstream/src/libs/assets",
   visibility = ["//visibility:public"],
   linkopts = [
     "-lcurl",
     "-lcrypto",
+    "-pthread",
   ],
   deps = [
     "@com_google_absl//absl/status:status",

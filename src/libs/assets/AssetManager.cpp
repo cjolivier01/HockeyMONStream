@@ -18,6 +18,7 @@
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -78,8 +79,11 @@ bool is_github_token_environment_variable(const char* value) {
 bool reap_child_until(pid_t child, int* status, std::chrono::steady_clock::time_point deadline) {
   while (true) {
     const pid_t waited = ::waitpid(child, status, WNOHANG);
-    if (waited == child)
-      return true;
+    if (waited == child) {
+      if (WIFEXITED(*status) || WIFSIGNALED(*status))
+        return true;
+      continue;
+    }
     if (waited < 0) {
       if (errno == EINTR)
         continue;
@@ -90,6 +94,28 @@ bool reap_child_until(pid_t child, int* status, std::chrono::steady_clock::time_
       return false;
     const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
     ::poll(nullptr, 0, static_cast<int>(std::min(remaining, std::chrono::milliseconds(10)).count()));
+  }
+}
+
+void reap_child_asynchronously(pid_t child) {
+  try {
+    std::thread([child]() {
+      int status = 0;
+      while (true) {
+        const pid_t waited = ::waitpid(child, &status, 0);
+        if (waited == child) {
+          if (WIFEXITED(status) || WIFSIGNALED(status))
+            return;
+          continue;
+        }
+        if (waited < 0 && errno == EINTR)
+          continue;
+        return;
+      }
+    }).detach();
+  } catch (const std::system_error&) {
+    // Resource exhaustion may prevent creating a reaper thread. The child has
+    // already received SIGKILL, and authentication still fails closed.
   }
 }
 
@@ -231,6 +257,8 @@ std::string github_token_from_cli(std::chrono::milliseconds timeout) {
     if (!child_exited) {
       ::kill(child, SIGKILL);
       child_exited = reap_child_until(child, &child_status, std::chrono::steady_clock::now() + kChildReapTimeout);
+      if (!child_exited)
+        reap_child_asynchronously(child);
     }
   }
   ::close(output[0]);
@@ -467,10 +495,7 @@ size_t write_download(char* data, size_t size, size_t count, void* opaque) {
   return written;
 }
 
-absl::Status download(const AssetSpec& spec, const fs::path& temporary, size_t maximum, size_t* received) {
-  const int file_descriptor = ::open(temporary.c_str(), O_WRONLY | O_TRUNC | O_CLOEXEC | O_NOFOLLOW);
-  if (file_descriptor < 0)
-    return absl::InternalError("Unable to open temporary asset: " + temporary.string());
+absl::Status download(const AssetSpec& spec, int file_descriptor, size_t maximum, size_t* received) {
   FILE* file = ::fdopen(file_descriptor, "wb");
   if (!file) {
     ::close(file_descriptor);
@@ -571,10 +596,9 @@ absl::Status ensure_one(const AssetSpec& spec, const Limits& limits, size_t* tot
   std::string pattern = (spec.target.parent_path() / ("." + spec.target.filename().string() + ".XXXXXX")).string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
-  const int fd = ::mkstemp(writable.data());
+  const int fd = ::mkostemp(writable.data(), O_CLOEXEC);
   if (fd < 0)
     return absl::InternalError("Unable to create temporary asset file");
-  ::close(fd);
   const fs::path temporary(writable.data());
   struct Remove {
     fs::path path;
@@ -586,7 +610,8 @@ absl::Status ensure_one(const AssetSpec& spec, const Limits& limits, size_t* tot
   std::cout << "Downloading pretrained asset: " << spec.target << '\n';
   size_t received = 0;
   const size_t remaining = limits.maximum_total_bytes - std::min(*total, limits.maximum_total_bytes);
-  status = download(spec, temporary, std::min(limits.maximum_asset_bytes, remaining), &received);
+  // download takes ownership of the descriptor and closes it with its FILE stream.
+  status = download(spec, fd, std::min(limits.maximum_asset_bytes, remaining), &received);
   if (!status.ok())
     return status;
   *total += received;
