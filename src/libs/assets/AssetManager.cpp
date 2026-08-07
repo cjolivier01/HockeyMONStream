@@ -4,6 +4,9 @@
 #include <array>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
+#include <condition_variable>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -12,20 +15,28 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <mutex>
+#include <new>
 #include <set>
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include <curl/curl.h>
 #include <fcntl.h>
 #include <openssl/evp.h>
+#include <poll.h>
+#include <spawn.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
+
+extern char** environ;
 
 namespace hm::assets {
 
@@ -50,6 +61,283 @@ absl::Status internal::fsync_asset_parent_directory(const std::filesystem::path&
 namespace {
 
 namespace fs = std::filesystem;
+
+constexpr size_t kMaximumGithubTokenBytes = 16 * 1024;
+constexpr auto kChildReapTimeout = std::chrono::milliseconds(500);
+
+std::string trim_whitespace(std::string value) {
+  const auto first = std::find_if_not(value.begin(), value.end(), [](unsigned char c) { return std::isspace(c); });
+  const auto last =
+      std::find_if_not(value.rbegin(), value.rend(), [](unsigned char c) { return std::isspace(c); }).base();
+  if (first >= last)
+    return {};
+  return std::string(first, last);
+}
+
+bool is_github_token_environment_variable(const char* value) {
+  return std::strncmp(value, "GH_TOKEN=", std::strlen("GH_TOKEN=")) == 0 ||
+      std::strncmp(value, "GITHUB_TOKEN=", std::strlen("GITHUB_TOKEN=")) == 0;
+}
+
+bool reap_child_until(pid_t child, int* status, std::chrono::steady_clock::time_point deadline) {
+  while (true) {
+    const pid_t waited = ::waitpid(child, status, WNOHANG);
+    if (waited == child) {
+      if (WIFEXITED(*status) || WIFSIGNALED(*status))
+        return true;
+      continue;
+    }
+    if (waited < 0) {
+      if (errno == EINTR)
+        continue;
+      return errno == ECHILD;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline)
+      return false;
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+    ::poll(nullptr, 0, static_cast<int>(std::min(remaining, std::chrono::milliseconds(10)).count()));
+  }
+}
+
+class AsyncChildReaper {
+ public:
+  bool Start() {
+    try {
+      worker_ = std::thread([this]() { Run(); });
+      return true;
+    } catch (const std::system_error&) {
+      return false;
+    }
+  }
+
+  bool Reserve() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (child_count_ + reservations_ >= children_.size())
+      return false;
+    ++reservations_;
+    return true;
+  }
+
+  void Release() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    --reservations_;
+  }
+
+  void Adopt(pid_t child) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    --reservations_;
+    children_[child_count_++] = child;
+    condition_.notify_one();
+  }
+
+ private:
+  void Run() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    while (true) {
+      condition_.wait(lock, [this]() { return child_count_ != 0; });
+      for (size_t index = 0; index < child_count_;) {
+        int status = 0;
+        const pid_t waited = ::waitpid(children_[index], &status, WNOHANG);
+        const bool terminal = waited == children_[index] && (WIFEXITED(status) || WIFSIGNALED(status));
+        const bool unavailable = waited < 0 && errno != EINTR;
+        if (terminal || unavailable) {
+          children_[index] = children_[--child_count_];
+          continue;
+        }
+        ++index;
+      }
+      if (child_count_ != 0)
+        condition_.wait_for(lock, std::chrono::milliseconds(10));
+    }
+  }
+
+  std::array<pid_t, 128> children_{};
+  size_t child_count_{0};
+  size_t reservations_{0};
+  std::mutex mutex_;
+  std::condition_variable condition_;
+  std::thread worker_;
+};
+
+AsyncChildReaper* async_child_reaper() {
+  static AsyncChildReaper* reaper = []() {
+    auto* candidate = new (std::nothrow) AsyncChildReaper;
+    if (candidate == nullptr || !candidate->Start()) {
+      delete candidate;
+      return static_cast<AsyncChildReaper*>(nullptr);
+    }
+    // The process owns this persistent worker. Intentionally retain it so its
+    // joinable thread object is never destroyed during static teardown.
+    return candidate;
+  }();
+  return reaper;
+}
+
+std::string github_token_from_cli(std::chrono::milliseconds timeout) {
+  int output[2];
+  if (::pipe2(output, O_CLOEXEC | O_NONBLOCK) != 0)
+    return {};
+
+  posix_spawn_file_actions_t actions;
+  if (::posix_spawn_file_actions_init(&actions) != 0) {
+    ::close(output[0]);
+    ::close(output[1]);
+    return {};
+  }
+  const bool actions_ok = ::posix_spawn_file_actions_adddup2(&actions, output[1], STDOUT_FILENO) == 0 &&
+      ::posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0) == 0 &&
+      ::posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0) == 0 &&
+      ::posix_spawn_file_actions_addclosefrom_np(&actions, STDERR_FILENO + 1) == 0;
+  if (!actions_ok) {
+    ::posix_spawn_file_actions_destroy(&actions);
+    ::close(output[0]);
+    ::close(output[1]);
+    return {};
+  }
+
+  posix_spawnattr_t attributes;
+  if (::posix_spawnattr_init(&attributes) != 0) {
+    ::posix_spawn_file_actions_destroy(&actions);
+    ::close(output[0]);
+    ::close(output[1]);
+    return {};
+  }
+  const bool attributes_ok = ::posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP) == 0 &&
+      ::posix_spawnattr_setpgroup(&attributes, 0) == 0;
+  if (!attributes_ok) {
+    ::posix_spawnattr_destroy(&attributes);
+    ::posix_spawn_file_actions_destroy(&actions);
+    ::close(output[0]);
+    ::close(output[1]);
+    return {};
+  }
+
+  char executable[] = "gh";
+  char auth[] = "auth";
+  char token[] = "token";
+  char hostname_option[] = "--hostname";
+  char hostname[] = "github.com";
+  char* arguments[] = {executable, auth, token, hostname_option, hostname, nullptr};
+  std::vector<std::string> environment_storage;
+  for (char** variable = environ; variable != nullptr && *variable != nullptr; ++variable)
+    if (!is_github_token_environment_variable(*variable))
+      environment_storage.emplace_back(*variable);
+  std::vector<char*> environment;
+  environment.reserve(environment_storage.size() + 1);
+  for (std::string& variable : environment_storage)
+    environment.push_back(variable.data());
+  environment.push_back(nullptr);
+  AsyncChildReaper* reaper = async_child_reaper();
+  if (reaper == nullptr || !reaper->Reserve()) {
+    ::posix_spawnattr_destroy(&attributes);
+    ::posix_spawn_file_actions_destroy(&actions);
+    ::close(output[0]);
+    ::close(output[1]);
+    return {};
+  }
+  pid_t child = -1;
+  const int spawn_status = ::posix_spawnp(&child, executable, &actions, &attributes, arguments, environment.data());
+  ::posix_spawnattr_destroy(&attributes);
+  ::posix_spawn_file_actions_destroy(&actions);
+  ::close(output[1]);
+  if (spawn_status != 0) {
+    reaper->Release();
+    ::close(output[0]);
+    return {};
+  }
+
+  std::string result;
+  bool output_closed = false;
+  bool child_exited = false;
+  bool failed = false;
+  bool force_stop = false;
+  int child_status = 0;
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (!output_closed || !child_exited) {
+    if (!output_closed) {
+      std::array<char, 1024> buffer{};
+      while (true) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+          failed = true;
+          force_stop = true;
+          break;
+        }
+        const ssize_t count = ::read(output[0], buffer.data(), buffer.size());
+        if (count > 0) {
+          if (result.size() + static_cast<size_t>(count) > kMaximumGithubTokenBytes) {
+            failed = true;
+            force_stop = true;
+            break;
+          }
+          result.append(buffer.data(), static_cast<size_t>(count));
+          continue;
+        }
+        if (count == 0) {
+          output_closed = true;
+          break;
+        }
+        if (errno == EINTR)
+          continue;
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+          failed = true;
+          output_closed = true;
+        }
+        break;
+      }
+    }
+    if (force_stop)
+      break;
+
+    if (!child_exited) {
+      const pid_t waited = ::waitpid(child, &child_status, WNOHANG);
+      if (waited == child) {
+        child_exited = WIFEXITED(child_status) || WIFSIGNALED(child_status);
+      } else if (waited < 0 && errno != EINTR) {
+        failed = true;
+        child_exited = true;
+      }
+    }
+    if (output_closed && child_exited)
+      break;
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      failed = true;
+      force_stop = true;
+      break;
+    }
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+    const int timeout = static_cast<int>(std::min(remaining, std::chrono::milliseconds(50)).count());
+    if (output_closed)
+      ::poll(nullptr, 0, timeout);
+    else {
+      pollfd descriptor{output[0], POLLIN | POLLHUP, 0};
+      ::poll(&descriptor, 1, timeout);
+    }
+  }
+  if (force_stop) {
+    ::kill(-child, SIGKILL);
+    if (!child_exited) {
+      ::kill(child, SIGKILL);
+      child_exited = reap_child_until(child, &child_status, std::chrono::steady_clock::now() + kChildReapTimeout);
+      if (!child_exited) {
+        reaper->Adopt(child);
+        reaper = nullptr;
+      }
+    }
+  }
+  if (reaper != nullptr)
+    reaper->Release();
+  ::close(output[0]);
+
+  if (failed || !child_exited || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0)
+    return {};
+  result = trim_whitespace(std::move(result));
+  if (std::any_of(result.begin(), result.end(), [](unsigned char c) { return std::isspace(c); }))
+    return {};
+  return result;
+}
 
 std::string lowercase(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return std::tolower(c); });
@@ -275,10 +563,12 @@ size_t write_download(char* data, size_t size, size_t count, void* opaque) {
   return written;
 }
 
-absl::Status download(const AssetSpec& spec, const fs::path& temporary, size_t maximum, size_t* received) {
-  FILE* file = std::fopen(temporary.c_str(), "wb");
-  if (!file)
-    return absl::InternalError("Unable to open temporary asset: " + temporary.string());
+absl::Status download(const AssetSpec& spec, int file_descriptor, size_t maximum, size_t* received) {
+  FILE* file = ::fdopen(file_descriptor, "wb");
+  if (!file) {
+    ::close(file_descriptor);
+    return absl::InternalError("Unable to create temporary asset stream");
+  }
   DownloadState state{file, 0, maximum};
   CURL* curl = curl_easy_init();
   if (!curl) {
@@ -290,12 +580,10 @@ absl::Status download(const AssetSpec& spec, const fs::path& temporary, size_t m
   bool github_token_available = false;
   if (github_api) {
     headers = curl_slist_append(headers, "Accept: application/octet-stream");
-    const char* token = std::getenv("GH_TOKEN");
-    if (!token || !*token)
-      token = std::getenv("GITHUB_TOKEN");
-    if (token && *token) {
+    const std::string token = internal::github_token();
+    if (!token.empty()) {
       github_token_available = true;
-      headers = curl_slist_append(headers, (std::string("Authorization: Bearer ") + token).c_str());
+      headers = curl_slist_append(headers, ("Authorization: Bearer " + token).c_str());
     }
   }
   curl_easy_setopt(curl, CURLOPT_URL, spec.url.c_str());
@@ -326,7 +614,7 @@ absl::Status download(const AssetSpec& spec, const fs::path& temporary, size_t m
   if (result != CURLE_OK) {
     std::string message = "Asset download failed: " + std::string(curl_easy_strerror(result));
     if (github_api && !github_token_available)
-      message += "; set GH_TOKEN or GITHUB_TOKEN when accessing private GitHub release assets";
+      message += "; authenticate with gh or set GH_TOKEN/GITHUB_TOKEN when accessing private GitHub release assets";
     return absl::UnavailableError(message);
   }
   if (!flushed)
@@ -376,10 +664,9 @@ absl::Status ensure_one(const AssetSpec& spec, const Limits& limits, size_t* tot
   std::string pattern = (spec.target.parent_path() / ("." + spec.target.filename().string() + ".XXXXXX")).string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
-  const int fd = ::mkstemp(writable.data());
+  const int fd = ::mkostemp(writable.data(), O_CLOEXEC);
   if (fd < 0)
     return absl::InternalError("Unable to create temporary asset file");
-  ::close(fd);
   const fs::path temporary(writable.data());
   struct Remove {
     fs::path path;
@@ -391,7 +678,8 @@ absl::Status ensure_one(const AssetSpec& spec, const Limits& limits, size_t* tot
   std::cout << "Downloading pretrained asset: " << spec.target << '\n';
   size_t received = 0;
   const size_t remaining = limits.maximum_total_bytes - std::min(*total, limits.maximum_total_bytes);
-  status = download(spec, temporary, std::min(limits.maximum_asset_bytes, remaining), &received);
+  // download takes ownership of the descriptor and closes it with its FILE stream.
+  status = download(spec, fd, std::min(limits.maximum_asset_bytes, remaining), &received);
   if (!status.ok())
     return status;
   *total += received;
@@ -412,6 +700,18 @@ absl::Status ensure_one(const AssetSpec& spec, const Limits& limits, size_t* tot
 }
 
 } // namespace
+
+std::string internal::github_token(std::chrono::milliseconds cli_timeout) {
+  for (const char* name : {"GH_TOKEN", "GITHUB_TOKEN"}) {
+    if (const char* token = std::getenv(name); token != nullptr && *token != '\0') {
+      std::string result = trim_whitespace(token);
+      if (!result.empty() &&
+          !std::any_of(result.begin(), result.end(), [](unsigned char c) { return std::isspace(c); }))
+        return result;
+    }
+  }
+  return github_token_from_cli(cli_timeout);
+}
 
 absl::StatusOr<std::vector<AssetSpec>> AssetManager::Discover(
     const std::vector<fs::path>& configs,
