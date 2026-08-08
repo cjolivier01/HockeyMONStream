@@ -24,12 +24,14 @@
 #include <vector>
 
 class QProcessEnvironment;
+class QCloseEvent;
 
 namespace hm::ui_internal {
 
 // Restores only paths cleared by the UI's automatic video selection. Other
 // keys may have been updated by another config owner in the meantime.
 void restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previous);
+bool supports_x11_embedding(const QString& platform_name);
 
 } // namespace hm::ui_internal
 
@@ -45,6 +47,9 @@ class HStreamWindow : public QMainWindow {
   int videoSetCount() const;
   int cameraControlValue(const QString& id) const;
   int cameraTabCount() const;
+
+ protected:
+  void closeEvent(QCloseEvent* event) override;
 
  private:
   enum class CopiedImportCleanupResult {

@@ -12,6 +12,8 @@
 #include <QtCore/QStandardPaths>
 #include <QtCore/QSysInfo>
 #include <QtCore/Qt>
+#include <QtGui/QCloseEvent>
+#include <QtGui/QGuiApplication>
 #include <QtGui/QPalette>
 #include <QtGui/QResizeEvent>
 #include <QtGui/QTextDocument>
@@ -481,7 +483,9 @@ void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QStr
     env.insert("USE_NEW_NVSTREAMMUX", "yes");
   }
   if (env.value("HM_RENDER_SINK").isEmpty()) {
-    env.insert("HM_RENDER_SINK", "nveglglessink");
+    env.insert(
+        "HM_RENDER_SINK",
+        hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName()) ? "nveglglessink" : "nv3dsink");
   }
   QDir registry_dir(QDir(working_dir).filePath(".cache/gstreamer-1.0"));
   if (!registry_dir.mkpath(".")) {
@@ -978,6 +982,10 @@ void hm::ui_internal::restore_auto_selection_paths(YAML::Node& current, const YA
   restore_child(current["stitching"], map_value(previous, "stitching"), "frame_offsets");
 }
 
+bool hm::ui_internal::supports_x11_embedding(const QString& platform_name) {
+  return platform_name.compare("xcb", Qt::CaseInsensitive) == 0;
+}
+
 HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
   pipeline_process_ = new QProcess(this);
   pipeline_process_->setProcessChannelMode(QProcess::MergedChannels);
@@ -997,6 +1005,22 @@ HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
   refreshGames();
   updateRunControls();
   appendLog("hstream-ui started with hstream-cli runner backend");
+}
+
+void HStreamWindow::closeEvent(QCloseEvent* event) {
+  if (!event) {
+    return;
+  }
+  if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
+    appendLog("window close requested; stopping pipeline before exit");
+    stopPipeline();
+    if (pipeline_process_->state() != QProcess::NotRunning) {
+      appendLog("window close deferred because the pipeline is still running");
+      event->ignore();
+      return;
+    }
+  }
+  QMainWindow::closeEvent(event);
 }
 
 QString HStreamWindow::pipelineStateText() const {
@@ -1782,12 +1806,12 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   }
 
   const bool needs_calibration = pending_only
-      ? saved_status == "pending"
+      ? saved_status != "complete"
       : !saved_found || saved_control_points != control_points || saved_status != "complete";
   if (needs_calibration) {
     const QString previous = saved_found ? QString::number(saved_control_points) : QString("unset");
     if (pending_only) {
-      appendLog("video inputs changed; cleaning stale stitch artifacts before program playback");
+      appendLog("stitching calibration is pending or untracked; cleaning stitch artifacts before program playback");
     } else {
       appendLog(QString("stitching calibration control points changed %1 -> %2 status=%3; cleaning stitch artifacts")
                     .arg(previous)
@@ -1812,6 +1836,7 @@ QStringList HStreamWindow::pipelineArguments() const {
   const QString configured_render_sink = qEnvironmentVariable("HM_RENDER_SINK").trimmed().toLower();
   const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
   const bool embed_render_window = render_video &&
+      hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName()) &&
       (configured_render_sink.isEmpty() || configured_render_sink == "nveglglessink" ||
        configured_render_sink == "egl");
   QStringList args;
@@ -1823,7 +1848,10 @@ QStringList HStreamWindow::pipelineArguments() const {
       args << "--show-stitching" << "1";
     }
     if (embed_render_window && stitched_surface_) {
-      args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(stitched_surface_->winId()));
+      const WId window_id = stitched_surface_->winId();
+      if (window_id != 0) {
+        args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(window_id));
+      }
     }
   } else {
     args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
@@ -1832,7 +1860,10 @@ QStringList HStreamWindow::pipelineArguments() const {
       args << "--show";
     }
     if (embed_render_window && preview_surface_) {
-      args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(preview_surface_->winId()));
+      const WId window_id = preview_surface_->winId();
+      if (window_id != 0) {
+        args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(window_id));
+      }
     }
   }
   args << "--options=pipeline.hmaudio.enable=1";
@@ -1931,9 +1962,9 @@ void HStreamWindow::startPipeline() {
   if (stitched_external_notice_)
     stitched_external_notice_->setText(render_notice);
   if (program_fullscreen_button_)
-    program_fullscreen_button_->setEnabled(embedded_render);
+    program_fullscreen_button_->setEnabled(embedded_render && !active_run_is_calibration_);
   if (stitched_fullscreen_button_)
-    stitched_fullscreen_button_->setEnabled(embedded_render);
+    stitched_fullscreen_button_->setEnabled(embedded_render && active_run_is_calibration_);
   if (render_video && !embedded_render)
     appendLog("nv3dsink render output will open in a separate DeepStream window; embedded preview is disabled");
   else if (!render_video)
@@ -1951,7 +1982,9 @@ void HStreamWindow::startPipeline() {
                     .arg(control_points));
     }
   } else if (active_run_is_calibration_) {
-    appendLog("stitching calibration is complete; starting continuous stitched preview");
+    appendLog(
+        render_video ? "stitching calibration is complete; starting continuous stitched preview"
+                     : "stitching calibration is complete; starting without video rendering");
   }
   appendLog("audio enabled via pipeline.hmaudio.enable=1; render audio uses the configured system audio sink");
   pipeline_process_->setProcessEnvironment(env);
@@ -1980,9 +2013,15 @@ void HStreamWindow::startPipeline() {
 
   pipeline_state_->setText("STARTING");
   if (active_run_is_calibration_) {
-    preview_status_->setText(
-        calibration_pending_ ? "Starting one-pass stitching calibration and preview"
-                             : "Starting continuous stitched preview");
+    if (render_video) {
+      preview_status_->setText(
+          calibration_pending_ ? "Starting one-pass stitching calibration and preview"
+                               : "Starting continuous stitched preview");
+    } else {
+      preview_status_->setText(
+          calibration_pending_ ? "Starting one-pass stitching calibration without video rendering"
+                               : "Starting stitching pipeline without video rendering");
+    }
   } else {
     preview_status_->setText(
         calibration_pending_ ? "Starting one-pass stitching calibration and program pipeline"
@@ -2077,20 +2116,41 @@ void HStreamWindow::stopPipeline() {
 
 void HStreamWindow::handlePipelineStarted() {
   pipeline_state_->setText("PLAYING");
-  if (isCalibrationRun()) {
+  const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
+  if (active_run_is_calibration_) {
     const bool previewing = !calibration_pending_;
-    preview_status_->setText(previewing ? "Continuous stitched preview running" : "Stitching calibration running");
-    if (stitched_status_) {
-      stitched_status_->setText(
-          previewing ? "Stitching calibrated\nContinuous stitched preview running"
-                     : QString("Calibrating stitching\nControl points: %1\nPlayback will continue automatically")
-                           .arg(active_calibration_control_points_));
+    if (render_video) {
+      preview_status_->setText(previewing ? "Continuous stitched preview running" : "Stitching calibration running");
+    } else {
+      preview_status_->setText(
+          previewing ? "Stitching pipeline running without video rendering"
+                     : "Stitching calibration running without video rendering");
     }
-    if (previewing) {
+    if (stitched_status_) {
+      if (render_video) {
+        stitched_status_->setText(
+            previewing ? "Stitching calibrated\nContinuous stitched preview running"
+                       : QString("Calibrating stitching\nControl points: %1\nPlayback will continue automatically")
+                             .arg(active_calibration_control_points_));
+      } else {
+        stitched_status_->setText(
+            previewing ? "Stitching calibrated\nVideo rendering disabled"
+                       : QString("Calibrating stitching\nControl points: %1\nVideo rendering disabled")
+                             .arg(active_calibration_control_points_));
+      }
+    }
+    if (previewing && render_video) {
       appendLog("continuous stitched preview running; camera controls remain available");
     }
   } else {
-    preview_status_->setText("Program pipeline running");
+    if (calibration_pending_) {
+      preview_status_->setText(
+          render_video ? "Program pipeline calibrating stitching"
+                       : "Program pipeline calibrating stitching without video rendering");
+    } else {
+      preview_status_->setText(
+          render_video ? "Program pipeline running" : "Program pipeline running without video rendering");
+    }
   }
   appendLog(QString("pipeline started pid=%1").arg(pipeline_process_ ? pipeline_process_->processId() : 0));
   updateRunControls();
@@ -2181,20 +2241,31 @@ void HStreamWindow::readPipelineOutput() {
             trimmed.contains(kOnePassStitchingCompleteMarker) &&
             saveStitchingCalibrationState(active_run_game_id_, active_calibration_control_points_, "complete")) {
           calibration_pending_ = false;
+          const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
           preview_status_->setText(
-              active_run_is_calibration_ ? "Continuous stitched preview running"
-                                         : "Program pipeline playing after stitching calibration");
+              active_run_is_calibration_ ? (render_video ? "Continuous stitched preview running"
+                                                         : "Stitching pipeline running without video rendering")
+                                         : (render_video ? "Program pipeline playing after stitching calibration"
+                                                         : "Program pipeline running without video rendering after "
+                                                           "stitching calibration"));
           if (stitched_status_) {
             stitched_status_->setText(
-                active_run_is_calibration_ ? "Stitching calibrated\nContinuous stitched preview running"
+                active_run_is_calibration_ ? (render_video ? "Stitching calibrated\nContinuous stitched preview running"
+                                                           : "Stitching calibrated\nVideo rendering disabled")
                                            : "Stitching calibrated during program playback");
           }
           appendLog(
               active_run_is_calibration_
-                  ? "one-pass stitching calibration complete; continuous stitched preview running; camera controls "
-                    "remain available"
-                  : "one-pass stitching calibration complete; continuous program playback running; camera controls "
-                    "remain available");
+                  ? (render_video
+                         ? "one-pass stitching calibration complete; continuous stitched preview running; camera "
+                           "controls remain available"
+                         : "one-pass stitching calibration complete; pipeline continuing without video rendering; "
+                           "camera controls remain available")
+                  : (render_video
+                         ? "one-pass stitching calibration complete; continuous program playback running; camera "
+                           "controls remain available"
+                         : "one-pass stitching calibration complete; program pipeline continuing without video "
+                           "rendering; camera controls remain available"));
         }
       }
     }

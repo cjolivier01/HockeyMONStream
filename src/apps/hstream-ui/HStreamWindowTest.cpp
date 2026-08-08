@@ -994,12 +994,48 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Main content and runtime log should be separated by a draggable vertical splitter")) {
     return false;
   }
+  if (!expect(
+          hm::ui_internal::supports_x11_embedding("xcb") && !hm::ui_internal::supports_x11_embedding("wayland") &&
+              !hm::ui_internal::supports_x11_embedding("offscreen"),
+          "Native preview embedding should only accept Qt XCB window handles")) {
+    return false;
+  }
 
   activate(stop);
   if (!expect(window->pipelineStateText() == "STOPPED", "Stop button should stop the pipeline")) {
     return false;
   }
   if (!expect(control_points->value() == 1500, "Stitching calibration CP default should be 1500")) {
+    return false;
+  }
+
+  mode->setCurrentIndex(mode->findData("program"));
+  const int fresh_program_clean_commands = window->logText().count("stitching calibration clean command");
+  qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
+  activate(start);
+  for (int i = 0; i < 200 &&
+       (!window->logText().contains("one-pass stitching calibration complete; continuous program playback running") ||
+        window->pipelineStateText() != "PLAYING");
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const fs::path fresh_program_config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  const YAML::Node fresh_program_saved = YAML::LoadFile(fresh_program_config.string());
+  YAML::Node fresh_program_status;
+  const bool has_fresh_program_status =
+      lookup_yaml_path(fresh_program_saved, {"hstream_ui", "stitching_calibration", "status"}, &fresh_program_status);
+  const bool fresh_program_tracked =
+      expect(
+          window->logText().count("stitching calibration clean command") == fresh_program_clean_commands + 1,
+          "A fresh Program run should establish tracked one-pass stitching calibration") &&
+      expect(
+          has_fresh_program_status && fresh_program_status.IsScalar() &&
+              fresh_program_status.as<std::string>() == "complete",
+          "A fresh Program one-pass calibration should persist completed state");
+  activate(stop);
+  qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+  if (!fresh_program_tracked) {
     return false;
   }
 
@@ -1011,7 +1047,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
-  for (int i = 0; i < 50 && !window->logText().contains("ANSI blue runner line"); ++i) {
+  for (int i = 0; i < 50 && !window->logText().contains("HM_MAX_CONTROL_POINTS=750"); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
@@ -1020,7 +1056,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Calibration should use the one-pass application config") ||
       !expect(window->logText().contains("--clean"), "Changed calibration CP count should clean stitching artifacts") ||
       !expect(
-          window->logText().contains("stitching calibration control points changed unset -> 750"),
+          window->logText().contains("stitching calibration control points changed 1500 -> 750"),
           "Calibration CP change should be logged") ||
       !expect(
           window->logText().contains("--enable-sinks=RENDER"),
@@ -1030,9 +1066,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           window->logText().contains("HM_MAX_CONTROL_POINTS=750"),
           "One-pass calibration should pass the selected control-point limit") ||
       !expect(
-          window->logText().contains("--render-window-id=") &&
-              window->logText().contains("HM_RENDER_SINK=nveglglessink") && !stitched_surface->isHidden(),
-          "Desktop calibration should embed nveglglessink output in the Stitched tab by default") ||
+          !window->logText().contains("--render-window-id=") && window->logText().contains("HM_RENDER_SINK=nv3dsink") &&
+              stitched_surface->isHidden(),
+          "The offscreen test backend should fall back to a separate render window instead of passing a non-X11 "
+          "handle") ||
       !expect(
           window->logText().contains("ANSI blue runner line"), "ANSI-colored runner output should remain visible") ||
       !expect(
@@ -1262,12 +1299,16 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       out << invalidated << "\n";
     }
 
+    log->clear();
     mode->setCurrentIndex(mode->findData("program"));
     const int clean_commands_before = window->logText().count("stitching calibration clean command");
+    const int program_completions_before =
+        window->logText().count("one-pass stitching calibration complete; continuous program playback running");
     qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
     activate(start);
     for (int i = 0; i < 200 &&
-         (!window->logText().contains("one-pass stitching calibration complete; continuous program playback running") ||
+         (window->logText().count("one-pass stitching calibration complete; continuous program playback running") ==
+              program_completions_before ||
           window->pipelineStateText() != "PLAYING");
          ++i) {
       QApplication::processEvents();
@@ -1277,9 +1318,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     YAML::Node program_status;
     const bool has_program_status =
         lookup_yaml_path(after_program_calibration, {"hstream_ui", "stitching_calibration", "status"}, &program_status);
+    const int clean_commands_after = window->logText().count("stitching calibration clean command");
     const bool program_recalibrated =
         expect(
-            window->logText().count("stitching calibration clean command") == clean_commands_before + 1,
+            clean_commands_after == clean_commands_before + 1,
             "Program playback should clean stale stitch artifacts when video inputs invalidate calibration") &&
         expect(
             has_program_status && program_status.IsScalar() && program_status.as<std::string>() == "complete",
@@ -1342,16 +1384,19 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   qunsetenv("HM_RENDER_SINK");
 
   qputenv("HM_RENDER_SINK", "nveglglessink");
+  const int embedded_commands_before_unsupported_egl = window->logText().count("--render-window-id=");
   activate(start);
   for (int i = 0; i < 50 && !window->logText().contains("HM_RENDER_SINK=nveglglessink"); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
-  const bool explicit_embedding_preserved = expect(
-                                                window->logText().contains("--render-window-id="),
-                                                "Explicit nveglglessink mode should embed in the Qt preview") &&
-      expect(window->logText().contains("HM_RENDER_SINK=nveglglessink"),
-             "UI runner should preserve an explicit embeddable render sink");
+  const bool explicit_embedding_preserved =
+      expect(
+          window->logText().count("--render-window-id=") == embedded_commands_before_unsupported_egl,
+          "Explicit nveglglessink mode should not receive a non-X11 native window handle") &&
+      expect(
+          window->logText().contains("HM_RENDER_SINK=nveglglessink"),
+          "UI runner should preserve an explicit embeddable render sink");
   activate(stop);
   qunsetenv("HM_RENDER_SINK");
   if (!explicit_embedding_preserved) {
@@ -1890,6 +1935,27 @@ bool test_camera_controls(HStreamWindow* window) {
       expect(preserved_manual_left_gamma, "Saving defaults should preserve same-prefix manual color config");
 }
 
+bool test_window_close_stops_pipeline(HStreamWindow* window) {
+  auto* start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* mode = require_child<QComboBox>(window, "runModeCombo");
+  if (!start || !mode) {
+    return false;
+  }
+  mode->setCurrentIndex(mode->findData("program"));
+  activate(start);
+  for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(window->pipelineStateText() == "PLAYING", "Close-event test pipeline should start")) {
+    return false;
+  }
+  const bool closed = window->close();
+  QApplication::processEvents();
+  return expect(closed, "Window close should complete after graceful pipeline shutdown") &&
+      expect(window->pipelineStateText() == "STOPPED", "Window close should stop the pipeline process group");
+}
+
 bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   auto* game_id_edit = require_child<QLineEdit>(window, "gameIdEdit");
   auto* create = require_child<QPushButton>(window, "createGameButton");
@@ -2015,6 +2081,10 @@ int main(int argc, char** argv) {
   }
   if (!test_camera_controls(&window)) {
     std::cerr << "test_camera_controls failed\n";
+    return 1;
+  }
+  if (!test_window_close_stops_pipeline(&window)) {
+    std::cerr << "test_window_close_stops_pipeline failed\n";
     return 1;
   }
   return 0;
