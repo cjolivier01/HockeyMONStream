@@ -1253,6 +1253,51 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     }
   }
 
+  {
+    const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+    YAML::Node invalidated = YAML::LoadFile(config.string());
+    invalidated["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+    {
+      std::ofstream out(config);
+      out << invalidated << "\n";
+    }
+
+    mode->setCurrentIndex(mode->findData("program"));
+    const int clean_commands_before = window->logText().count("stitching calibration clean command");
+    qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
+    activate(start);
+    for (int i = 0; i < 200 &&
+         (!window->logText().contains("one-pass stitching calibration complete; continuous program playback running") ||
+          window->pipelineStateText() != "PLAYING");
+         ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    const YAML::Node after_program_calibration = YAML::LoadFile(config.string());
+    YAML::Node program_status;
+    const bool has_program_status =
+        lookup_yaml_path(after_program_calibration, {"hstream_ui", "stitching_calibration", "status"}, &program_status);
+    const bool program_recalibrated =
+        expect(
+            window->logText().count("stitching calibration clean command") == clean_commands_before + 1,
+            "Program playback should clean stale stitch artifacts when video inputs invalidate calibration") &&
+        expect(
+            has_program_status && program_status.IsScalar() && program_status.as<std::string>() == "complete",
+            "Program one-pass calibration should mark the replacement video inputs complete") &&
+        expect(
+            window->pipelineStateText() == "PLAYING",
+            "Program playback should continue in the same process after recalibrating replacement inputs");
+    activate(stop);
+    for (int i = 0; i < 50 && window->pipelineStateText() != "STOPPED"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+    if (!program_recalibrated) {
+      return false;
+    }
+  }
+
   mode->setCurrentIndex(mode->findData("program"));
   qputenv("HM_RENDER_SINK", "nv3dsink");
   const int embedded_commands_before_external_run = window->logText().count("--render-window-id=");

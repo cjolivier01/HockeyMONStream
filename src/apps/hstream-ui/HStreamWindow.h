@@ -142,7 +142,8 @@ class HStreamWindow : public QMainWindow {
       const QString& runner,
       const QString& working_dir,
       const QProcessEnvironment& env,
-      bool* calibration_required);
+      bool* calibration_required,
+      bool pending_only = false);
   bool runStitchingClean(const QString& runner, const QString& working_dir, const QProcessEnvironment& env);
   bool saveStitchingCalibrationState(const QString& game_id, int control_points, const QString& status);
   QStringList enabledSinkNames() const;
