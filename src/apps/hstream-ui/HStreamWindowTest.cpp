@@ -956,7 +956,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
   auto* log = require_child<QTextEdit>(window, "runtimeLog");
   auto* main_log_splitter = require_child<QSplitter>(window, "mainLogSplitter");
-  if (!stop || !start || !pause || !restart || !mode || !control_points || !rotate || !log || !main_log_splitter) {
+  auto* program_host = require_child<QWidget>(window, "programLetterboxHost");
+  auto* preview_surface = require_child<QWidget>(window, "previewSurface");
+  auto* external_notice = require_child<QLabel>(window, "programExternalRenderNotice");
+  if (!stop || !start || !pause || !restart || !mode || !control_points || !rotate || !log || !main_log_splitter ||
+      !program_host || !preview_surface || !external_notice) {
     return false;
   }
 
@@ -1169,9 +1173,23 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Program playback should not block its output thread on the interactive scoreboard selector") ||
       !expect(
           window->logText().contains("separate DeepStream window"),
-          "UI must surface self-managed render-window mode")) {
+          "UI must surface self-managed render-window mode") ||
+      !expect(
+          external_notice->parentWidget() == program_host && preview_surface->isHidden(),
+          "External-render notice should use the resizable Qt host instead of the hidden native render surface")) {
     return false;
   }
+  window->resize(window->width(), 1200);
+  main_log_splitter->setSizes({800, 350});
+  QApplication::processEvents();
+  QTest::qWait(10);
+  if (!expect(
+          external_notice->geometry() == program_host->rect(),
+          "External-render notice should resize and move with its preview tab when the log splitter moves")) {
+    return false;
+  }
+  window->resize(1440, 900);
+  QApplication::processEvents();
   activate(stop);
   qunsetenv("HM_RENDER_SINK");
 

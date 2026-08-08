@@ -1271,13 +1271,15 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   preview_surface_->setAttribute(Qt::WA_NativeWindow);
   preview_surface_->setAttribute(Qt::WA_DontCreateNativeAncestors);
   preview_surface_->setStyleSheet("QWidget#previewSurface { background: #12171c; }");
-  preview_external_notice_ = new QLabel("Video is displayed in a separate DeepStream window", preview_surface_);
+  preview_external_notice_ = new QLabel("Video is displayed in a separate DeepStream window", preview_host);
+  preview_external_notice_->setObjectName("programExternalRenderNotice");
   preview_external_notice_->setAlignment(Qt::AlignCenter);
   preview_external_notice_->setWordWrap(true);
   preview_external_notice_->setStyleSheet("color: #c9d1d9; padding: 24px;");
   preview_external_notice_->hide();
-  auto* preview_surface_layout = new QVBoxLayout(preview_surface_);
-  preview_surface_layout->addWidget(preview_external_notice_);
+  auto* preview_notice_layout = new QVBoxLayout(preview_host);
+  preview_notice_layout->setContentsMargins(0, 0, 0, 0);
+  preview_notice_layout->addWidget(preview_external_notice_);
 
   preview_status_ = new QLabel("Pipeline stopped");
   preview_status_->setObjectName("previewStatusLabel");
@@ -1299,13 +1301,15 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   stitched_surface_->setAttribute(Qt::WA_NativeWindow);
   stitched_surface_->setAttribute(Qt::WA_DontCreateNativeAncestors);
   stitched_surface_->setStyleSheet("QWidget#stitchedPreviewSurface { background: #10151a; }");
-  stitched_external_notice_ = new QLabel("Video is displayed in a separate DeepStream window", stitched_surface_);
+  stitched_external_notice_ = new QLabel("Video is displayed in a separate DeepStream window", stitched_host);
+  stitched_external_notice_->setObjectName("stitchedExternalRenderNotice");
   stitched_external_notice_->setAlignment(Qt::AlignCenter);
   stitched_external_notice_->setWordWrap(true);
   stitched_external_notice_->setStyleSheet("color: #c9d1d9; padding: 24px;");
   stitched_external_notice_->hide();
-  auto* stitched_surface_layout = new QVBoxLayout(stitched_surface_);
-  stitched_surface_layout->addWidget(stitched_external_notice_);
+  auto* stitched_notice_layout = new QVBoxLayout(stitched_host);
+  stitched_notice_layout->setContentsMargins(0, 0, 0, 0);
+  stitched_notice_layout->addWidget(stitched_external_notice_);
   stitched_status_ = new QLabel("Stitched canvas preview");
   stitched_status_->setObjectName("stitchedPreviewStatusLabel");
   stitched_fullscreen_button_ = new QPushButton("Fullscreen");
@@ -1848,6 +1852,10 @@ void HStreamWindow::startPipeline() {
   }
   const bool embedded_render = std::any_of(
       args.begin(), args.end(), [](const QString& argument) { return argument.startsWith("--render-window-id="); });
+  if (preview_surface_)
+    preview_surface_->setVisible(embedded_render);
+  if (stitched_surface_)
+    stitched_surface_->setVisible(embedded_render);
   if (preview_external_notice_)
     preview_external_notice_->setVisible(!embedded_render);
   if (stitched_external_notice_)
