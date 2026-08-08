@@ -205,6 +205,16 @@ bool write_fake_runner(const QString& path) {
   file.write("    if line == '':\n");
   file.write("        break\n");
   file.write("    print('stdin:' + line.rstrip('\\n'), flush=True)\n");
+  file.write("    if line.startswith('@set-property '):\n");
+  file.write("        _, element, assignment = line.rstrip('\\n').split(' ', 2)\n");
+  file.write("        property_name, runtime_value = assignment.split('=', 1)\n");
+  file.write("        if os.environ.get('HSTREAM_UI_TEST_REJECT_RUNTIME_CONTROL') == '1':\n");
+  file.write(
+      "            print('runtime command failed: plugin rejected ' + element + '.' + property_name + '=' + "
+      "runtime_value, file=sys.stderr, flush=True)\n");
+  file.write("        else:\n");
+  file.write(
+      "            print('runtime property ' + element + ' ' + property_name + '=' + runtime_value, flush=True)\n");
   file.close();
   return QFile::setPermissions(
       path,
@@ -953,14 +963,16 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* restart = require_child<QPushButton>(window, "restartStageButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* control_points = require_child<QSpinBox>(window, "controlPointsSpin");
+  auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
   auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
   auto* log = require_child<QTextEdit>(window, "runtimeLog");
   auto* main_log_splitter = require_child<QSplitter>(window, "mainLogSplitter");
   auto* program_host = require_child<QWidget>(window, "programLetterboxHost");
   auto* preview_surface = require_child<QWidget>(window, "previewSurface");
   auto* external_notice = require_child<QLabel>(window, "programExternalRenderNotice");
-  if (!stop || !start || !pause || !restart || !mode || !control_points || !rotate || !log || !main_log_splitter ||
-      !program_host || !preview_surface || !external_notice) {
+  auto* stitched_status = require_child<QLabel>(window, "stitchedPreviewStatusLabel");
+  if (!stop || !start || !pause || !restart || !mode || !control_points || !game_id || !rotate || !log ||
+      !main_log_splitter || !program_host || !preview_surface || !external_notice || !stitched_status) {
     return false;
   }
 
@@ -1035,15 +1047,17 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
 
   rotate->setValue(74);
-  for (int i = 0;
-       i < 50 && !window->logText().contains("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=16");
-       ++i) {
+  for (int i = 0; i < 50 && !window->logText().contains("camera control Stitch_Rotate_Degrees=74 apply=live"); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
   if (!expect(
           window->logText().contains("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=16"),
-          "Live stitch rotation should be sent to the running pipeline over stdin")) {
+          "Live stitch rotation should be sent to the running pipeline over stdin") ||
+      !expect(
+          window->logText().contains("camera control Stitch_Rotate_Degrees=74 apply=pending") &&
+              window->logText().contains("camera control Stitch_Rotate_Degrees=74 apply=live"),
+          "Live stitch rotation should only report success after the pipeline acknowledges it")) {
     return false;
   }
 
@@ -1077,9 +1091,14 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   {
     const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+    const QString launched_game_id = game_id->text();
+    const QString switched_game_id = "ui-switched-during-calibration";
+    const fs::path switched_config =
+        fs::path(qgetenv("HM_GAME_DIR").toStdString()) / switched_game_id.toStdString() / "config.yaml";
     qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
     const int pipeline_commands_before = window->logText().count("pipeline command ");
     activate(start);
+    game_id->setText(switched_game_id);
     for (int i = 0; i < 200 &&
          (!window->logText().contains("one-pass stitching calibration complete; continuous stitched preview running") ||
           window->pipelineStateText() != "PLAYING");
@@ -1091,6 +1110,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     YAML::Node transitioned_status;
     const bool has_transitioned_status =
         lookup_yaml_path(after_transition, {"hstream_ui", "stitching_calibration", "status"}, &transitioned_status);
+    game_id->setText(launched_game_id);
     if (!expect(
             window->logText().contains("hmstitcher: one-pass stitching configuration complete"),
             "Successful one-pass calibration should publish its completion marker") ||
@@ -1102,15 +1122,16 @@ bool test_pipeline_buttons(HStreamWindow* window) {
         !expect(
             has_transitioned_status && transitioned_status.IsScalar() &&
                 transitioned_status.as<std::string>() == "complete",
-            "Calibration should be marked complete while continuous preview keeps running")) {
+            "Calibration should be marked complete while continuous preview keeps running") ||
+        !expect(
+            !fs::exists(switched_config),
+            "Calibration completion should remain associated with the game that launched the run")) {
       qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
       activate(stop);
       return false;
     }
     rotate->setValue(73);
-    for (int i = 0;
-         i < 50 && !window->logText().contains("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=17");
-         ++i) {
+    for (int i = 0; i < 50 && !window->logText().contains("camera control Stitch_Rotate_Degrees=73 apply=live"); ++i) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
@@ -1122,6 +1143,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       return false;
     }
     activate(stop);
+    for (int i = 0; i < 50 && window->pipelineStateText() != "STOPPED"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
     qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
 
     const YAML::Node after_preview_stop = YAML::LoadFile(config.string());
@@ -1130,13 +1155,23 @@ bool test_pipeline_buttons(HStreamWindow* window) {
         lookup_yaml_path(after_preview_stop, {"hstream_ui", "stitching_calibration", "status"}, &stopped_status);
     if (!expect(
             has_stopped_status && stopped_status.IsScalar() && stopped_status.as<std::string>() == "complete",
-            "Stopping the post-calibration preview should preserve completed calibration state")) {
+            "Stopping the post-calibration preview should preserve completed calibration state") ||
+        !expect(
+            stitched_status->text() == "Stitched canvas preview",
+            "Stopping a completed calibration preview should clear the active stitched status")) {
       return false;
     }
 
     const int clean_commands_before = window->logText().count("stitching calibration clean command");
+    qputenv("HSTREAM_UI_TEST_REJECT_RUNTIME_CONTROL", "1");
     activate(start);
     for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    rotate->setValue(71);
+    for (int i = 0; i < 50 && !window->logText().contains("camera control Stitch_Rotate_Degrees=71 apply=failed");
+         ++i) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
@@ -1145,9 +1180,15 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
+    qunsetenv("HSTREAM_UI_TEST_REJECT_RUNTIME_CONTROL");
     if (!expect(
             window->logText().count("stitching calibration clean command") == clean_commands_before,
-            "A completed calibration should reopen continuous preview without recalibrating")) {
+            "A completed calibration should reopen continuous preview without recalibrating") ||
+        !expect(
+            window->logText().contains("camera control Stitch_Rotate_Degrees=71 apply=pending") &&
+                window->logText().contains("camera control Stitch_Rotate_Degrees=71 apply=failed") &&
+                !window->logText().contains("camera control Stitch_Rotate_Degrees=71 apply=live"),
+            "Rejected runtime controls should not be reported as live")) {
       return false;
     }
   }
@@ -1544,7 +1585,7 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
   max_speed_x->setValue(460);
-  for (int i = 0; i < 50 && !window->logText().contains("stdin:@set-property dsplaytracker0 config-file="); ++i) {
+  for (int i = 0; i < 50 && !window->logText().contains("camera control Max_Speed_X_x10=460 apply=live"); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
@@ -1572,6 +1613,10 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!expect(
           window->logText().contains("stdin:@set-property dsplaytracker0 config-file="),
           "Live speed slider should send playtracker config-file update to the running pipeline") ||
+      !expect(
+          window->logText().contains("camera control Max_Speed_X_x10=460 apply=pending") &&
+              window->logText().contains("camera control Max_Speed_X_x10=460 apply=live"),
+          "Live speed slider should only report success after the pipeline acknowledges it") ||
       !expect(
           live_preserved_custom_tracker_config,
           "Live playtracker update should preserve the custom base tracker config") ||

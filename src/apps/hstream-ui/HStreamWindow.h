@@ -21,6 +21,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 class QProcessEnvironment;
 
@@ -50,6 +51,14 @@ class HStreamWindow : public QMainWindow {
     kSuccess,
     kRolledBack,
     kCommittedWithCleanupFailure,
+  };
+
+  struct PendingRuntimeControl {
+    QString element;
+    QString property;
+    QString runtime_value;
+    QString control_id;
+    int control_value;
   };
 
   void buildUi();
@@ -135,13 +144,15 @@ class HStreamWindow : public QMainWindow {
       const QProcessEnvironment& env,
       bool* calibration_required);
   bool runStitchingClean(const QString& runner, const QString& working_dir, const QProcessEnvironment& env);
-  bool saveStitchingCalibrationState(int control_points, const QString& status);
+  bool saveStitchingCalibrationState(const QString& game_id, int control_points, const QString& status);
   QStringList enabledSinkNames() const;
   bool isCalibrationRun() const;
   void updateRunControls();
   bool applySavedControlConfig(YAML::Node& config, bool* invalidate_rink_masks, int* invalidated_config_artifacts);
   void loadSavedControlConfig();
   bool sendLiveCameraControl(const QString& id, int value);
+  void handleRuntimeControlResponse(const QString& line);
+  void failPendingRuntimeControls(const QString& reason);
   QSlider* addSlider(QVBoxLayout* layout, const QString& id, const QString& label, int minimum, int maximum, int value);
 
   QLabel* backend_mode_{nullptr};
@@ -179,6 +190,8 @@ class HStreamWindow : public QMainWindow {
   bool pipeline_stop_requested_{false};
   bool calibration_pending_{false};
   bool preview_fullscreen_{false};
+  QString active_calibration_game_id_;
+  int active_calibration_control_points_{0};
   QString pipeline_stdout_buffer_;
   QString pipeline_stderr_buffer_;
   int dynamic_rtsp_count_{0};
@@ -187,4 +200,5 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QSlider*> camera_sliders_;
   std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, int> camera_defaults_;
+  std::vector<PendingRuntimeControl> pending_runtime_controls_;
 };

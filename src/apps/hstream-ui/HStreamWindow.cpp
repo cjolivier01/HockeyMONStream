@@ -1675,8 +1675,8 @@ bool HStreamWindow::runStitchingClean(
   return true;
 }
 
-bool HStreamWindow::saveStitchingCalibrationState(int control_points, const QString& status) {
-  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+bool HStreamWindow::saveStitchingCalibrationState(const QString& game_id, int control_points, const QString& status) {
+  const fs::path config_path = fs::path(gameDirectory(game_id).toStdString()) / "config.yaml";
   auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
   if (!config_lock.ok()) {
     appendLog(
@@ -1718,8 +1718,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     return false;
   }
   *calibration_required = false;
-  const int control_points = stitchingCalibrationControlPoints();
-  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  const int control_points = active_calibration_control_points_;
+  const fs::path config_path = fs::path(gameDirectory(active_calibration_game_id_).toStdString()) / "config.yaml";
   bool saved_found = false;
   int saved_control_points = 0;
   QString saved_status;
@@ -1757,7 +1757,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     if (!runStitchingClean(runner, working_dir, env)) {
       return false;
     }
-    if (!saveStitchingCalibrationState(control_points, "pending")) {
+    if (!saveStitchingCalibrationState(active_calibration_game_id_, control_points, "pending")) {
       return false;
     }
     *calibration_required = true;
@@ -1799,6 +1799,9 @@ void HStreamWindow::startPipeline() {
     updateRunControls();
     return;
   }
+  active_calibration_game_id_.clear();
+  active_calibration_control_points_ = 0;
+  pending_runtime_controls_.clear();
   if (preview_tabs_) {
     preview_tabs_->setCurrentIndex(isCalibrationRun() ? 1 : 0);
     QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
@@ -1817,11 +1820,17 @@ void HStreamWindow::startPipeline() {
   const QString working_dir = pipelineWorkingDirectory();
   configure_pipeline_runtime_environment(env, working_dir);
   if (isCalibrationRun()) {
+    active_calibration_game_id_ = game_id_edit_->text().trimmed();
+    active_calibration_control_points_ = stitchingCalibrationControlPoints();
     bool calibration_required = false;
     if (!prepareStitchingCalibrationRun(runner, working_dir, env, &calibration_required)) {
       calibration_pending_ = false;
+      active_calibration_game_id_.clear();
+      active_calibration_control_points_ = 0;
       pipeline_state_->setText("STOPPED");
       preview_status_->setText("Stitching calibration setup failed");
+      if (stitched_status_)
+        stitched_status_->setText("Stitched canvas preview");
       updateRunControls();
       return;
     }
@@ -1833,8 +1842,12 @@ void HStreamWindow::startPipeline() {
   const QStringList args = pipelineArguments();
   if (!setupPretrainedAssets(args)) {
     calibration_pending_ = false;
+    active_calibration_game_id_.clear();
+    active_calibration_control_points_ = 0;
     pipeline_state_->setText("STOPPED");
     preview_status_->setText("Asset setup failed");
+    if (stitched_status_)
+      stitched_status_->setText("Stitched canvas preview");
     updateRunControls();
     return;
   }
@@ -1867,7 +1880,7 @@ void HStreamWindow::startPipeline() {
   if (!embedded_render)
     appendLog("nv3dsink render output will open in a separate DeepStream window; embedded preview is disabled");
   if (isCalibrationRun()) {
-    const int control_points = stitchingCalibrationControlPoints();
+    const int control_points = active_calibration_control_points_;
     env.insert("HM_MAX_CONTROL_POINTS", QString::number(control_points));
     if (calibration_pending_) {
       appendLog(
@@ -1913,7 +1926,7 @@ void HStreamWindow::startPipeline() {
     if (calibration_pending_) {
       stitched_status_->setText(
           QString("Calibrating stitching\nControl points: %1\nPlayback will continue automatically")
-              .arg(stitchingCalibrationControlPoints()));
+              .arg(active_calibration_control_points_));
     } else {
       stitched_status_->setText("Stitching calibrated\nContinuous stitched preview starting");
     }
@@ -1959,6 +1972,8 @@ void HStreamWindow::stopPipeline() {
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
     pipeline_state_->setText("STOPPED");
     preview_status_->setText("Pipeline stopped");
+    if (stitched_status_)
+      stitched_status_->setText("Stitched canvas preview");
     appendLog("pipeline already stopped");
     updateRunControls();
     return;
@@ -2003,7 +2018,7 @@ void HStreamWindow::handlePipelineStarted() {
       stitched_status_->setText(
           previewing ? "Stitching calibrated\nContinuous stitched preview running"
                      : QString("Calibrating stitching\nControl points: %1\nPlayback will continue automatically")
-                           .arg(stitchingCalibrationControlPoints()));
+                           .arg(active_calibration_control_points_));
     }
     if (previewing) {
       appendLog("continuous stitched preview running; camera controls remain available");
@@ -2029,12 +2044,17 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   pipeline_uses_process_group_ = false;
   const bool stopped_by_user = pipeline_stop_requested_;
   pipeline_stop_requested_ = false;
-  if (isCalibrationRun() && calibration_pending_ && !stopped_by_user) {
+  if (!active_calibration_game_id_.isEmpty() && calibration_pending_ && !stopped_by_user) {
     appendLog("one-pass stitching calibration ended before completion; calibration remains pending");
   }
+  failPendingRuntimeControls("pipeline-finished");
   calibration_pending_ = false;
+  active_calibration_game_id_.clear();
+  active_calibration_control_points_ = 0;
   pipeline_state_->setText("STOPPED");
   preview_status_->setText("Pipeline stopped");
+  if (stitched_status_)
+    stitched_status_->setText("Stitched canvas preview");
   appendLog(QString("pipeline finished exit=%1 status=%2")
                 .arg(exit_code)
                 .arg(exit_status == QProcess::NormalExit ? "normal" : "crashed"));
@@ -2045,9 +2065,14 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   pipeline_paused_ = false;
   pipeline_uses_process_group_ = false;
   pipeline_stop_requested_ = false;
+  failPendingRuntimeControls("pipeline-error");
   calibration_pending_ = false;
+  active_calibration_game_id_.clear();
+  active_calibration_control_points_ = 0;
   pipeline_state_->setText("STOPPED");
   preview_status_->setText("Pipeline failed to start");
+  if (stitched_status_)
+    stitched_status_->setText("Stitched canvas preview");
   appendLog(QString("pipeline process error=%1 message=%2")
                 .arg(static_cast<int>(error))
                 .arg(pipeline_process_ ? pipeline_process_->errorString() : QString()));
@@ -2074,8 +2099,11 @@ void HStreamWindow::readPipelineOutput() {
       if (!line.trimmed().isEmpty()) {
         const QString trimmed = line.trimmed();
         appendLog(trimmed);
-        if (calibration_pending_ && isCalibrationRun() && trimmed.contains(kOnePassStitchingCompleteMarker) &&
-            saveStitchingCalibrationState(stitchingCalibrationControlPoints(), "complete")) {
+        handleRuntimeControlResponse(trimmed);
+        if (calibration_pending_ && !active_calibration_game_id_.isEmpty() &&
+            trimmed.contains(kOnePassStitchingCompleteMarker) &&
+            saveStitchingCalibrationState(
+                active_calibration_game_id_, active_calibration_control_points_, "complete")) {
           calibration_pending_ = false;
           preview_status_->setText("Continuous stitched preview running");
           if (stitched_status_) {
@@ -3950,16 +3978,68 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
   }
 }
 
+void HStreamWindow::handleRuntimeControlResponse(const QString& line) {
+  auto acknowledge = [this](std::vector<PendingRuntimeControl>::iterator pending, const QString& result) {
+    appendLog(
+        QString("camera control %1=%2 apply=%3").arg(pending->control_id).arg(pending->control_value).arg(result));
+    pending_runtime_controls_.erase(pending);
+  };
+
+  static const QRegularExpression success_pattern(R"(^runtime property (\S+) (\S+?)=(.*)$)");
+  const QRegularExpressionMatch success = success_pattern.match(line);
+  if (success.hasMatch()) {
+    const QString element = success.captured(1);
+    const QString property = success.captured(2);
+    const QString runtime_value = success.captured(3);
+    const auto pending = std::find_if(
+        pending_runtime_controls_.begin(), pending_runtime_controls_.end(), [&](const PendingRuntimeControl& control) {
+          return control.element == element && control.property == property && control.runtime_value == runtime_value;
+        });
+    if (pending != pending_runtime_controls_.end()) {
+      acknowledge(pending, "live");
+    }
+    return;
+  }
+
+  if (!line.startsWith("runtime command failed:") || pending_runtime_controls_.empty()) {
+    return;
+  }
+  auto pending = std::find_if(
+      pending_runtime_controls_.begin(), pending_runtime_controls_.end(), [&](const PendingRuntimeControl& control) {
+        return line.contains(control.element) && (line.contains(control.property) || !line.contains('.'));
+      });
+  if (pending == pending_runtime_controls_.end()) {
+    pending = pending_runtime_controls_.begin();
+  }
+  acknowledge(pending, "failed");
+}
+
+void HStreamWindow::failPendingRuntimeControls(const QString& reason) {
+  for (const PendingRuntimeControl& pending : pending_runtime_controls_) {
+    appendLog(QString("camera control %1=%2 apply=failed reason=%3")
+                  .arg(pending.control_id)
+                  .arg(pending.control_value)
+                  .arg(reason));
+  }
+  pending_runtime_controls_.clear();
+}
+
 bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
     return false;
   }
+  auto send_property = [this, &id, value](
+                           const QString& element, const QString& property, const QString& runtime_value) {
+    const QByteArray command = QString("@set-property %1 %2=%3\n").arg(element, property, runtime_value).toLocal8Bit();
+    if (pipeline_process_->write(command) != command.size()) {
+      return false;
+    }
+    pending_runtime_controls_.push_back({element, property, runtime_value, id, value});
+    return true;
+  };
   if (id == "Stitch_Rotate_Degrees") {
     const int post_stitch_rotate_degrees = 90 - value;
-    const QByteArray command = QString("@set-property hmstitcher0 post-stitch-rotate-degrees=%1\n")
-                                   .arg(post_stitch_rotate_degrees)
-                                   .toLocal8Bit();
-    return pipeline_process_->write(command) == command.size();
+    return send_property("hmstitcher0", "post-stitch-rotate-degrees", QString::number(post_stitch_rotate_degrees));
   }
   const QSet<QString> playtracker_live_controls = {
       "Max_Speed_X_x10",
@@ -3974,9 +4054,7 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
     if (runtime_config_path.isEmpty()) {
       return false;
     }
-    const QByteArray command =
-        QString("@set-property dsplaytracker0 config-file=%1\n").arg(runtime_config_path).toLocal8Bit();
-    return pipeline_process_->write(command) == command.size();
+    return send_property("dsplaytracker0", "config-file", runtime_config_path);
   }
   return false;
 }
@@ -4001,7 +4079,8 @@ QSlider* HStreamWindow::addSlider(
   connect(slider, &QSlider::valueChanged, this, [this, id, value_label](int new_value) {
     value_label->setText(QString::number(new_value));
     const bool sent_live = sendLiveCameraControl(id, new_value);
-    appendLog(QString("camera control %1=%2 apply=%3").arg(id).arg(new_value).arg(sent_live ? "live" : "save/restart"));
+    appendLog(
+        QString("camera control %1=%2 apply=%3").arg(id).arg(new_value).arg(sent_live ? "pending" : "save/restart"));
   });
   row->addWidget(name, 0, 0);
   row->addWidget(value_label, 0, 1);
