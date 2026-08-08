@@ -163,6 +163,8 @@ class HStreamWindow : public QMainWindow {
   QLabel* stitched_external_notice_{nullptr};
   QLabel* game_path_label_{nullptr};
   QLabel* video_sets_path_label_{nullptr};
+  QWidget* game_controls_{nullptr};
+  QWidget* video_controls_{nullptr};
   QComboBox* game_selector_{nullptr};
   QComboBox* run_mode_selector_{nullptr};
   QSpinBox* control_points_spin_{nullptr};
@@ -185,12 +187,14 @@ class HStreamWindow : public QMainWindow {
   QPushButton* stop_button_{nullptr};
   QPushButton* program_fullscreen_button_{nullptr};
   QPushButton* stitched_fullscreen_button_{nullptr};
+  QCheckBox* render_video_toggle_{nullptr};
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};
   bool calibration_pending_{false};
   bool preview_fullscreen_{false};
-  QString active_calibration_game_id_;
+  QString active_run_game_id_;
+  bool active_run_is_calibration_{false};
   int active_calibration_control_points_{0};
   QString pipeline_stdout_buffer_;
   QString pipeline_stderr_buffer_;

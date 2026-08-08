@@ -196,6 +196,10 @@ bool write_fake_runner(const QString& path) {
   file.write("sys.stdout.flush()\n");
   file.write("if os.environ.get('HSTREAM_UI_TEST_COMPLETE_CALIBRATION') == '1':\n");
   file.write("    print('hmstitcher: one-pass stitching configuration complete', flush=True)\n");
+  file.write("if os.environ.get('HSTREAM_UI_TEST_CLOSE_STDIN') == '1':\n");
+  file.write("    sys.stdin.close()\n");
+  file.write("    time.sleep(5.0)\n");
+  file.write("    sys.exit(0)\n");
   file.write("deadline = time.monotonic() + 5.0\n");
   file.write("while time.monotonic() < deadline:\n");
   file.write("    readable, _, _ = select.select([sys.stdin], [], [], 0.05)\n");
@@ -383,6 +387,8 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   stale_offsets["game"]["videos"]["left"].push_back("stale-generated-left.mp4");
   stale_offsets["game"]["videos"]["right"] = YAML::Node(YAML::NodeType::Sequence);
   stale_offsets["game"]["videos"]["right"].push_back("stale-generated-right.mp4");
+  stale_offsets["hstream_ui"]["stitching_calibration"]["control_points"] = 750;
+  stale_offsets["hstream_ui"]["stitching_calibration"]["status"] = "complete";
   {
     std::ofstream out(config);
     out << stale_offsets << "\n";
@@ -395,7 +401,10 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   if (!expect(
           !one_sided["game"]["videos"]["left"] && !one_sided["game"]["videos"]["right"] &&
               !one_sided["game"]["stitching"]["frame_offsets"] && !one_sided["stitching"]["frame_offsets"],
-          "A single explicit Left/Right side should not write a partial runtime video config")) {
+          "A single explicit Left/Right side should not write a partial runtime video config") ||
+      !expect(
+          one_sided["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "pending",
+          "Changing a video input should invalidate completed stitching calibration")) {
     return false;
   }
   if (!expect(
@@ -965,14 +974,18 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* control_points = require_child<QSpinBox>(window, "controlPointsSpin");
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
   auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
+  auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
+  auto* render_video = require_child<QCheckBox>(window, "renderVideoCheck");
   auto* log = require_child<QTextEdit>(window, "runtimeLog");
   auto* main_log_splitter = require_child<QSplitter>(window, "mainLogSplitter");
   auto* program_host = require_child<QWidget>(window, "programLetterboxHost");
   auto* preview_surface = require_child<QWidget>(window, "previewSurface");
+  auto* stitched_surface = require_child<QWidget>(window, "stitchedPreviewSurface");
   auto* external_notice = require_child<QLabel>(window, "programExternalRenderNotice");
   auto* stitched_status = require_child<QLabel>(window, "stitchedPreviewStatusLabel");
-  if (!stop || !start || !pause || !restart || !mode || !control_points || !game_id || !rotate || !log ||
-      !main_log_splitter || !program_host || !preview_surface || !external_notice || !stitched_status) {
+  if (!stop || !start || !pause || !restart || !mode || !control_points || !game_id || !rotate || !max_speed_x ||
+      !render_video || !log || !main_log_splitter || !program_host || !preview_surface || !stitched_surface ||
+      !external_notice || !stitched_status) {
     return false;
   }
 
@@ -1017,8 +1030,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           window->logText().contains("HM_MAX_CONTROL_POINTS=750"),
           "One-pass calibration should pass the selected control-point limit") ||
       !expect(
-          !window->logText().contains("--render-window-id="),
-          "Desktop calibration should use nv3dsink's separate render window by default") ||
+          window->logText().contains("--render-window-id=") &&
+              window->logText().contains("HM_RENDER_SINK=nveglglessink") && !stitched_surface->isHidden(),
+          "Desktop calibration should embed nveglglessink output in the Stitched tab by default") ||
       !expect(
           window->logText().contains("ANSI blue runner line"), "ANSI-colored runner output should remain visible") ||
       !expect(
@@ -1095,6 +1109,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     const QString switched_game_id = "ui-switched-during-calibration";
     const fs::path switched_config =
         fs::path(qgetenv("HM_GAME_DIR").toStdString()) / switched_game_id.toStdString() / "config.yaml";
+    const fs::path active_runtime_config = config.parent_path() / ".hstream-ui" / "play_tracker_config.yaml";
+    const fs::path switched_runtime_config = switched_config.parent_path() / ".hstream-ui" / "play_tracker_config.yaml";
     qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
     const int pipeline_commands_before = window->logText().count("pipeline command ");
     activate(start);
@@ -1110,7 +1126,25 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     YAML::Node transitioned_status;
     const bool has_transitioned_status =
         lookup_yaml_path(after_transition, {"hstream_ui", "stitching_calibration", "status"}, &transitioned_status);
+    const int original_max_speed_x = max_speed_x->value();
+    max_speed_x->setValue(original_max_speed_x + 1);
+    for (int i = 0; i < 50 &&
+         !window->logText().contains(
+             QString("camera control Max_Speed_X_x10=%1 apply=live").arg(original_max_speed_x + 1));
+         ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    const bool runtime_control_used_launched_game =
+        fs::exists(active_runtime_config) && !fs::exists(switched_runtime_config);
     game_id->setText(launched_game_id);
+    max_speed_x->setValue(original_max_speed_x);
+    for (int i = 0; i < 50 &&
+         !window->logText().contains(QString("camera control Max_Speed_X_x10=%1 apply=live").arg(original_max_speed_x));
+         ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
     if (!expect(
             window->logText().contains("hmstitcher: one-pass stitching configuration complete"),
             "Successful one-pass calibration should publish its completion marker") ||
@@ -1125,7 +1159,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
             "Calibration should be marked complete while continuous preview keeps running") ||
         !expect(
             !fs::exists(switched_config),
-            "Calibration completion should remain associated with the game that launched the run")) {
+            "Calibration completion should remain associated with the game that launched the run") ||
+        !expect(
+            runtime_control_used_launched_game,
+            "Live controls should write runtime config for the game that launched the pipeline")) {
       qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
       activate(stop);
       return false;
@@ -1136,7 +1173,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       QTest::qWait(10);
     }
     if (!expect(
-            window->logText().contains("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=17"),
+            window->logText().contains("camera control Stitch_Rotate_Degrees=73 apply=live"),
             "Stitch controls should remain live after one-pass calibration completes")) {
       qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
       activate(stop);
@@ -1191,10 +1228,34 @@ bool test_pipeline_buttons(HStreamWindow* window) {
             "Rejected runtime controls should not be reported as live")) {
       return false;
     }
+
+    qputenv("HSTREAM_UI_TEST_CLOSE_STDIN", "1");
+    activate(start);
+    for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    QTest::qWait(100);
+    rotate->setValue(70);
+    for (int i = 0; i < 50 && !window->logText().contains("pipeline remains running"); ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    const bool write_error_kept_running = window->pipelineStateText() == "PLAYING";
+    activate(stop);
+    for (int i = 0; i < 50 && window->pipelineStateText() != "STOPPED"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    qunsetenv("HSTREAM_UI_TEST_CLOSE_STDIN");
+    if (!expect(write_error_kept_running, "A runtime-control write error should not mark live playback stopped")) {
+      return false;
+    }
   }
 
   mode->setCurrentIndex(mode->findData("program"));
   qputenv("HM_RENDER_SINK", "nv3dsink");
+  const int embedded_commands_before_external_run = window->logText().count("--render-window-id=");
   activate(start);
   for (int i = 0; i < 50 && !window->logText().contains("HM_RENDER_SINK=nv3dsink"); ++i) {
     QApplication::processEvents();
@@ -1202,7 +1263,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   if (!expect(window->logText().contains("--show"), "Program run should request render output") ||
       !expect(
-          !window->logText().contains("--render-window-id="), "nv3dsink run must not promise an embedded preview") ||
+          window->logText().count("--render-window-id=") == embedded_commands_before_external_run,
+          "nv3dsink run must not promise an embedded preview") ||
       !expect(
           window->logText().contains("USE_NEW_NVSTREAMMUX=yes"),
           "UI runner should default to the DeepStream 9.1 new stream mux") ||
@@ -1248,6 +1310,27 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   activate(stop);
   qunsetenv("HM_RENDER_SINK");
   if (!explicit_embedding_preserved) {
+    return false;
+  }
+
+  const int fake_sink_commands_before = window->logText().count("--enable-sinks=FAKE");
+  const int embedded_commands_before = window->logText().count("--render-window-id=");
+  render_video->setChecked(false);
+  activate(start);
+  for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const bool rendering_disabled = expect(
+                                      window->logText().count("--enable-sinks=FAKE") == fake_sink_commands_before + 1,
+                                      "Disabling video rendering should use a fake sink when no output is selected") &&
+      expect(window->logText().count("--render-window-id=") == embedded_commands_before,
+             "Disabling video rendering should not attach a native preview window") &&
+      expect(external_notice->text() == "Video rendering is disabled for this run",
+             "The active preview tab should explain that rendering is disabled");
+  activate(stop);
+  render_video->setChecked(true);
+  if (!rendering_disabled) {
     return false;
   }
 
