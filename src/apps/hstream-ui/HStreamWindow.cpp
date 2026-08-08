@@ -476,6 +476,22 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_di
   prepend_env_path(env, "GST_PLUGIN_PATH", runtime_dir.absolutePath());
 }
 
+bool is_tegra_runtime() {
+#ifdef IS_TEGRA
+  return true;
+#elif defined(Q_OS_LINUX)
+  const QString architecture = QSysInfo::currentCpuArchitecture().toLower();
+  if (architecture != "arm64" && architecture != "aarch64")
+    return false;
+  if (QFileInfo::exists("/etc/nv_tegra_release"))
+    return true;
+  QFile compatible("/proc/device-tree/compatible");
+  return compatible.open(QIODevice::ReadOnly) && compatible.readAll().contains("nvidia,tegra");
+#else
+  return false;
+#endif
+}
+
 void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QString& working_dir) {
   // DeepStream 9.1's legacy nvstreammux rejects the native 8K source caps used
   // by stitching. Match run.sh while preserving an explicit diagnostic
@@ -486,7 +502,8 @@ void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QStr
   if (env.value("HM_RENDER_SINK").isEmpty()) {
     env.insert(
         "HM_RENDER_SINK",
-        hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName()) ? "nveglglessink" : "nv3dsink");
+        hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) ? "nveglglessink"
+                                                                                                     : "nv3dsink");
   }
   QDir registry_dir(QDir(working_dir).filePath(".cache/gstreamer-1.0"));
   if (!registry_dir.mkpath(".")) {
@@ -983,8 +1000,8 @@ void hm::ui_internal::restore_auto_selection_paths(YAML::Node& current, const YA
   restore_child(current["stitching"], map_value(previous, "stitching"), "frame_offsets");
 }
 
-bool hm::ui_internal::supports_x11_embedding(const QString& platform_name) {
-  return platform_name.compare("xcb", Qt::CaseInsensitive) == 0;
+bool hm::ui_internal::supports_x11_embedding(const QString& platform_name, bool tegra_runtime) {
+  return !tegra_runtime && platform_name.compare("xcb", Qt::CaseInsensitive) == 0;
 }
 
 HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
@@ -1862,7 +1879,7 @@ QStringList HStreamWindow::pipelineArguments() const {
   const QString configured_render_sink = qEnvironmentVariable("HM_RENDER_SINK").trimmed().toLower();
   const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
   const bool embed_render_window = render_video &&
-      hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName()) &&
+      hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) &&
       (configured_render_sink.isEmpty() || configured_render_sink == "nveglglessink" ||
        configured_render_sink == "egl");
   QStringList args;

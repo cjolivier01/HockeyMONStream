@@ -31,7 +31,7 @@ namespace hm::ui_internal {
 // Restores only paths cleared by the UI's automatic video selection. Other
 // keys may have been updated by another config owner in the meantime.
 void restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previous);
-bool supports_x11_embedding(const QString& platform_name);
+bool supports_x11_embedding(const QString& platform_name, bool tegra_runtime = false);
 
 } // namespace hm::ui_internal
 

@@ -1004,8 +1004,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   if (!expect(
           hm::ui_internal::supports_x11_embedding("xcb") && !hm::ui_internal::supports_x11_embedding("wayland") &&
-              !hm::ui_internal::supports_x11_embedding("offscreen"),
-          "Native preview embedding should only accept Qt XCB window handles")) {
+              !hm::ui_internal::supports_x11_embedding("offscreen") &&
+              !hm::ui_internal::supports_x11_embedding("xcb", true),
+          "Native preview embedding should only accept non-Tegra Qt XCB window handles")) {
     return false;
   }
 
