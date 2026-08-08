@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
 
   bool ok = true;
   const fs::path root =
-      fs::weakly_canonical(fs::temp_directory_path()) / ("hmstream-trt-cache-test-" + std::to_string(::getpid()));
+      fs::weakly_canonical(fs::temp_directory_path()) / ("hstream-trt-cache-test-" + std::to_string(::getpid()));
   const fs::path configs = root / "configs";
   const fs::path models = root / "packaged-models";
   const fs::path cache = root / "cache";
@@ -86,7 +86,7 @@ int main(int argc, char** argv) {
       models,
       fs::perms::owner_read | fs::perms::owner_exec | fs::perms::group_read | fs::perms::group_exec |
           fs::perms::others_read | fs::perms::others_exec);
-  ::setenv("HMSTREAM_TENSORRT_CACHE_DIR", cache.c_str(), 1);
+  ::setenv("HSTREAM_TENSORRT_CACHE_DIR", cache.c_str(), 1);
 
   YAML::Node ini_pipeline = pipeline_for("infer.txt");
   ok &= expect(
@@ -289,7 +289,7 @@ int main(int argc, char** argv) {
       writable["primary-gie"]["config-file"].as<std::string>() == "infer.yaml",
       "development inference config must not be redirected unnecessarily");
 
-  ::unsetenv("HMSTREAM_TENSORRT_CACHE_DIR");
+  ::unsetenv("HSTREAM_TENSORRT_CACHE_DIR");
   hm::pipeline::ReleaseTensorRtModelCacheLocks();
   fs::remove_all(root);
   return ok ? 0 : 1;

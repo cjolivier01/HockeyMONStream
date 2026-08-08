@@ -1,4 +1,4 @@
-#include "src/apps/hstream-ui/HmStreamWindow.h"
+#include "src/apps/hstream-ui/HStreamWindow.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 
 #include <QtTest/qtest_widgets.h>
@@ -20,6 +20,7 @@
 #include <QtWidgets/QRadioButton>
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QSpinBox>
+#include <QtWidgets/QSplitter>
 #include <QtWidgets/QTextEdit>
 
 #include <yaml-cpp/yaml.h>
@@ -48,21 +49,21 @@ bool expect(bool condition, const std::string& message) {
 
 bool test_path_scoped_auto_rollback() {
   YAML::Node before(YAML::NodeType::Map);
-  before["hmstream_ui"]["video_roles"]["left"].push_back("left.mp4");
+  before["hstream_ui"]["video_roles"]["left"].push_back("left.mp4");
   before["game"]["videos"]["left"].push_back("left.mp4");
   before["game"]["stitching"]["frame_offsets"]["left"] = "3";
 
   YAML::Node latest(YAML::NodeType::Map);
   latest["concurrent"]["keep"] = true;
-  latest["hmstream_ui"]["copied_imports"].push_back("copied.mp4");
+  latest["hstream_ui"]["copied_imports"].push_back("copied.mp4");
   hm::ui_internal::restore_auto_selection_paths(latest, before);
 
   return expect(
       latest["concurrent"]["keep"].as<bool>() &&
-          latest["hmstream_ui"]["video_roles"]["left"][0].as<std::string>() == "left.mp4" &&
+          latest["hstream_ui"]["video_roles"]["left"][0].as<std::string>() == "left.mp4" &&
           latest["game"]["videos"]["left"][0].as<std::string>() == "left.mp4" &&
           latest["game"]["stitching"]["frame_offsets"]["left"].as<std::string>() == "3" &&
-          latest["hmstream_ui"]["copied_imports"][0].as<std::string>() == "copied.mp4",
+          latest["hstream_ui"]["copied_imports"][0].as<std::string>() == "copied.mp4",
       "Auto cleanup rollback must restore owned paths without replacing an intervening unrelated update");
 }
 
@@ -114,7 +115,7 @@ bool lookup_yaml_path(YAML::Node root, std::initializer_list<const char*> path, 
 }
 
 template <typename T>
-T* require_child(HmStreamWindow* window, const char* name) {
+T* require_child(HStreamWindow* window, const char* name) {
   T* child = window->findChild<T*>(name);
   if (!child) {
     std::cerr << "Missing child: " << name << '\n';
@@ -192,6 +193,11 @@ bool write_fake_runner(const QString& path) {
   file.write("time.sleep(0.05)\n");
   file.write("sys.stdout.write(' blue runner line\\033[0m\\n')\n");
   file.write("sys.stdout.flush()\n");
+  file.write(
+      "if os.environ.get('HSTREAM_UI_TEST_COMPLETE_CALIBRATION') == '1' and "
+      "any(arg.endswith('ds_hockey_configure_stitching.yaml') for arg in sys.argv[1:]):\n");
+  file.write("    print('calibration runner complete', flush=True)\n");
+  file.write("    sys.exit(0)\n");
   file.write("deadline = time.monotonic() + 5.0\n");
   file.write("while time.monotonic() < deadline:\n");
   file.write("    readable, _, _ = select.select([sys.stdin], [], [], 0.05)\n");
@@ -208,7 +214,7 @@ bool write_fake_runner(const QString& path) {
           QFileDevice::ExeGroup | QFileDevice::ReadOther | QFileDevice::ExeOther);
 }
 
-bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
+bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
   auto* create = require_child<QPushButton>(window, "createGameButton");
   auto* video_path = require_child<QLineEdit>(window, "videoPathEdit");
@@ -354,8 +360,7 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
     return false;
   }
   if (!expect(
-          fs::exists(
-              fs::path(window->gameDirectoryText().toStdString()) / ".hstream-ui" / "center" / "GX010003.MP4") &&
+          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / ".hstream-ui" / "center" / "GX010003.MP4") &&
               !fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "GX010003.MP4"),
           "Center imports should stay outside runtime Auto discovery paths")) {
     return false;
@@ -398,8 +403,8 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
   YAML::Node yaml = YAML::LoadFile(config.string());
   if (!expect(
-          yaml["hmstream_ui"]["video_roles"]["center"] &&
-              yaml["hmstream_ui"]["video_roles"]["center"][0].as<std::string>() == ".hstream-ui/center/GX010003.MP4" &&
+          yaml["hstream_ui"]["video_roles"]["center"] &&
+              yaml["hstream_ui"]["video_roles"]["center"][0].as<std::string>() == ".hstream-ui/center/GX010003.MP4" &&
               !yaml["game"]["videos"]["center"] && text.find("left") != std::string::npos &&
               text.find("GX010005.MP4") != std::string::npos && text.find("right") != std::string::npos &&
               text.find("GX010002.MP4") != std::string::npos && yaml["game"]["videos"]["left"].size() == 1 &&
@@ -452,12 +457,12 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   }
   {
     YAML::Node before_failed_remove = YAML::LoadFile(config.string());
-    before_failed_remove["hmstream_ui"]["copied_imports"].push_back(".hstream-ui/right/GX010002.MP4");
+    before_failed_remove["hstream_ui"]["copied_imports"].push_back(".hstream-ui/right/GX010002.MP4");
     YAML::Node source_metadata(YAML::NodeType::Map);
     source_metadata["path"] = ".hstream-ui/right/GX010002.MP4";
     source_metadata["family"] = "test-family";
     source_metadata["source_parent"] = source_dir.toStdString();
-    before_failed_remove["hmstream_ui"]["auto_import_sources"].push_back(source_metadata);
+    before_failed_remove["hstream_ui"]["auto_import_sources"].push_back(source_metadata);
     std::ofstream out(config);
     out << before_failed_remove << "\n";
   }
@@ -483,9 +488,9 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
           concurrent_remove_write_ok &&
               fs::exists(
                   fs::path(window->gameDirectoryText().toStdString()) / ".hstream-ui" / "right" / "GX010002.MP4") &&
-              after_failed_right_remove["hmstream_ui"]["video_roles"]["right"] &&
-              after_failed_right_remove["hmstream_ui"]["copied_imports"].size() == 1 &&
-              after_failed_right_remove["hmstream_ui"]["auto_import_sources"].size() == 1 &&
+              after_failed_right_remove["hstream_ui"]["video_roles"]["right"] &&
+              after_failed_right_remove["hstream_ui"]["copied_imports"].size() == 1 &&
+              after_failed_right_remove["hstream_ui"]["auto_import_sources"].size() == 1 &&
               after_failed_right_remove["concurrent"]["keep"].as<bool>(),
           "Failed deletion must restore the transactional pre-removal state without losing an interleaved writer")) {
     return false;
@@ -500,7 +505,7 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
     if (!lock.ok())
       return;
     YAML::Node latest = YAML::LoadFile(config.string());
-    latest["hmstream_ui"]["video_roles"]["right"].push_back(".hstream-ui/right/concurrent.mov");
+    latest["hstream_ui"]["video_roles"]["right"].push_back(".hstream-ui/right/concurrent.mov");
     latest["concurrent"]["post_remove_keep"] = true;
     post_remove_writer_ok = hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(latest) + "\n").ok();
   });
@@ -512,12 +517,12 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   post_remove_writer.join();
   const YAML::Node after_post_transaction_failure = YAML::LoadFile(config.string());
   const bool post_remove_state_ok = post_remove_writer_ok &&
-      after_post_transaction_failure["hmstream_ui"]["video_roles"]["right"].size() == 3 &&
-      after_post_transaction_failure["hmstream_ui"]["video_roles"]["right"][0].as<std::string>() ==
+      after_post_transaction_failure["hstream_ui"]["video_roles"]["right"].size() == 3 &&
+      after_post_transaction_failure["hstream_ui"]["video_roles"]["right"][0].as<std::string>() ==
           ".hstream-ui/right/GX010002.MP4" &&
-      after_post_transaction_failure["hmstream_ui"]["video_roles"]["right"][1].as<std::string>() ==
+      after_post_transaction_failure["hstream_ui"]["video_roles"]["right"][1].as<std::string>() ==
           ".hstream-ui/right/GX020002.MP4" &&
-      after_post_transaction_failure["hmstream_ui"]["video_roles"]["right"][2].as<std::string>() ==
+      after_post_transaction_failure["hstream_ui"]["video_roles"]["right"][2].as<std::string>() ==
           ".hstream-ui/right/concurrent.mov" &&
       after_post_transaction_failure["concurrent"]["post_remove_keep"].as<bool>();
   if (!post_remove_state_ok)
@@ -541,7 +546,7 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
         successful_remove_writer_saw_missing = !fs::exists(config.parent_path() / ".hstream-ui/right/GX010002.MP4");
         if (!successful_remove_writer_saw_missing) {
           YAML::Node latest = YAML::LoadFile(config.string());
-          latest["hmstream_ui"]["video_roles"]["right"].push_back(".hstream-ui/right/GX010002.MP4");
+          latest["hstream_ui"]["video_roles"]["right"].push_back(".hstream-ui/right/GX010002.MP4");
           const auto unexpected_publish =
               hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(latest) + "\n");
           (void)unexpected_publish;
@@ -570,12 +575,12 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   generated["game"]["videos"]["left"].push_back(auto_import.toStdString());
   generated["game"]["videos"]["right"] = YAML::Node(YAML::NodeType::Sequence);
   generated["game"]["videos"]["right"].push_back("stale-generated-right.mp4");
-  generated["hmstream_ui"]["video_roles"]["left"] = YAML::Node(YAML::NodeType::Sequence);
-  generated["hmstream_ui"]["video_roles"]["left"].push_back(".hstream-ui/left/GX010005.MP4");
-  generated["hmstream_ui"]["video_roles"]["right"] = YAML::Node(YAML::NodeType::Sequence);
-  generated["hmstream_ui"]["video_roles"]["right"].push_back(".hstream-ui/right/GX020002.MP4");
-  generated["hmstream_ui"]["video_roles"]["center"] = YAML::Node(YAML::NodeType::Sequence);
-  generated["hmstream_ui"]["video_roles"]["center"].push_back(".hstream-ui/center/GX010003.MP4");
+  generated["hstream_ui"]["video_roles"]["left"] = YAML::Node(YAML::NodeType::Sequence);
+  generated["hstream_ui"]["video_roles"]["left"].push_back(".hstream-ui/left/GX010005.MP4");
+  generated["hstream_ui"]["video_roles"]["right"] = YAML::Node(YAML::NodeType::Sequence);
+  generated["hstream_ui"]["video_roles"]["right"].push_back(".hstream-ui/right/GX020002.MP4");
+  generated["hstream_ui"]["video_roles"]["center"] = YAML::Node(YAML::NodeType::Sequence);
+  generated["hstream_ui"]["video_roles"]["center"].push_back(".hstream-ui/center/GX010003.MP4");
   generated["game"]["stitching"]["frame_offsets"]["left"] = "90";
   generated["stitching"]["frame_offsets"]["left"] = "91";
   {
@@ -599,9 +604,9 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
           fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "cam3" / "GX010001.MP4") &&
               after_failed_auto_remove["game"]["videos"]["left"] &&
               after_failed_auto_remove["game"]["videos"]["right"] &&
-              after_failed_auto_remove["hmstream_ui"]["video_roles"]["left"] &&
-              after_failed_auto_remove["hmstream_ui"]["video_roles"]["center"] &&
-              after_failed_auto_remove["hmstream_ui"]["video_roles"]["right"] &&
+              after_failed_auto_remove["hstream_ui"]["video_roles"]["left"] &&
+              after_failed_auto_remove["hstream_ui"]["video_roles"]["center"] &&
+              after_failed_auto_remove["hstream_ui"]["video_roles"]["right"] &&
               after_failed_auto_remove["game"]["stitching"]["frame_offsets"] &&
               after_failed_auto_remove["stitching"]["frame_offsets"],
           "Failed Auto deletion must restore every cleared selection and frame-offset path")) {
@@ -614,9 +619,9 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   YAML::Node removed_auto = YAML::LoadFile(config.string());
   if (!expect(
           !removed_auto["game"]["videos"]["left"] && !removed_auto["game"]["videos"]["right"] &&
-              !removed_auto["hmstream_ui"]["video_roles"]["left"] &&
-              !removed_auto["hmstream_ui"]["video_roles"]["center"] &&
-              !removed_auto["hmstream_ui"]["video_roles"]["right"] &&
+              !removed_auto["hstream_ui"]["video_roles"]["left"] &&
+              !removed_auto["hstream_ui"]["video_roles"]["center"] &&
+              !removed_auto["hstream_ui"]["video_roles"]["right"] &&
               !removed_auto["game"]["stitching"]["frame_offsets"] && !removed_auto["stitching"]["frame_offsets"],
           "Removing Auto config entries should clear stale generated runtime and explicit role config")) {
     return false;
@@ -701,7 +706,7 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   copied_entry["path"] = "cam1/GX020001.MP4";
   copied_entry["family"] = "gopro-0001";
   copied_entry["source_parent"] = duplicate_source_a.string();
-  copied_metadata["hmstream_ui"]["auto_import_sources"].push_back(copied_entry);
+  copied_metadata["hstream_ui"]["auto_import_sources"].push_back(copied_entry);
   {
     std::ofstream out(copied_game / "config.yaml");
     out << copied_metadata << "\n";
@@ -735,13 +740,12 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   if (!write_fake_video(QString::fromStdString((cleanup_game / "cam1" / "GX010001.MP4").string()))) {
     return false;
   }
-  if (!write_fake_video(
-          QString::fromStdString((cleanup_game / ".hstream-ui" / "left" / "copied-left.mp4").string()))) {
+  if (!write_fake_video(QString::fromStdString((cleanup_game / ".hstream-ui" / "left" / "copied-left.mp4").string()))) {
     return false;
   }
   YAML::Node cleanup_config;
-  cleanup_config["hmstream_ui"]["video_roles"]["left"].push_back(".hstream-ui/left/copied-left.mp4");
-  cleanup_config["hmstream_ui"]["copied_imports"].push_back(".hstream-ui/left/copied-left.mp4");
+  cleanup_config["hstream_ui"]["video_roles"]["left"].push_back(".hstream-ui/left/copied-left.mp4");
+  cleanup_config["hstream_ui"]["copied_imports"].push_back(".hstream-ui/left/copied-left.mp4");
   {
     std::ofstream out(cleanup_game / "config.yaml");
     out << cleanup_config << "\n";
@@ -755,8 +759,8 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   if (!expect(
           fs::exists(cleanup_game / "cam1" / "GX010001.MP4") &&
               fs::exists(cleanup_game / ".hstream-ui" / "left" / "copied-left.mp4") &&
-              cleanup_after["hmstream_ui"]["video_roles"]["left"] &&
-              cleanup_after["hmstream_ui"]["copied_imports"].size() == 1,
+              cleanup_after["hstream_ui"]["video_roles"]["left"] &&
+              cleanup_after["hstream_ui"]["copied_imports"].size() == 1,
           "Refused Auto deletion must preserve the complete prior file and config state")) {
     return false;
   }
@@ -773,10 +777,10 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
     return false;
   }
   YAML::Node partial_cleanup_config;
-  partial_cleanup_config["hmstream_ui"]["video_roles"]["left"].push_back(removed_old_path);
-  partial_cleanup_config["hmstream_ui"]["video_roles"]["right"].push_back(retained_old_path);
-  partial_cleanup_config["hmstream_ui"]["copied_imports"].push_back(removed_old_path);
-  partial_cleanup_config["hmstream_ui"]["copied_imports"].push_back(retained_old_path);
+  partial_cleanup_config["hstream_ui"]["video_roles"]["left"].push_back(removed_old_path);
+  partial_cleanup_config["hstream_ui"]["video_roles"]["right"].push_back(retained_old_path);
+  partial_cleanup_config["hstream_ui"]["copied_imports"].push_back(removed_old_path);
+  partial_cleanup_config["hstream_ui"]["copied_imports"].push_back(retained_old_path);
   {
     std::ofstream out(partial_cleanup_game / "config.yaml");
     out << partial_cleanup_config << "\n";
@@ -792,10 +796,10 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
           !fs::exists(partial_cleanup_game / removed_old_path) &&
               fs::exists(partial_cleanup_game / retained_old_path) &&
               fs::exists(partial_cleanup_game / "cam1" / "GX020001.MP4") &&
-              !partial_cleanup_after["hmstream_ui"]["video_roles"]["left"] &&
-              !partial_cleanup_after["hmstream_ui"]["video_roles"]["right"] &&
-              partial_cleanup_after["hmstream_ui"]["copied_imports"].size() == 1 &&
-              partial_cleanup_after["hmstream_ui"]["copied_imports"][0].as<std::string>() == retained_old_path &&
+              !partial_cleanup_after["hstream_ui"]["video_roles"]["left"] &&
+              !partial_cleanup_after["hstream_ui"]["video_roles"]["right"] &&
+              partial_cleanup_after["hstream_ui"]["copied_imports"].size() == 1 &&
+              partial_cleanup_after["hstream_ui"]["copied_imports"][0].as<std::string>() == retained_old_path &&
               window->logText().contains(
                   "video set added, but one or more unreferenced copied imports could not be cleaned"),
           "Partial old-copy cleanup must retain the committed new Auto import and metadata for the failed deletion")) {
@@ -813,8 +817,8 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
     return false;
   }
   YAML::Node rollback_config;
-  rollback_config["hmstream_ui"]["video_roles"]["left"].push_back(rollback_old_path);
-  rollback_config["hmstream_ui"]["copied_imports"].push_back(rollback_old_path);
+  rollback_config["hstream_ui"]["video_roles"]["left"].push_back(rollback_old_path);
+  rollback_config["hstream_ui"]["copied_imports"].push_back(rollback_old_path);
   {
     std::ofstream out(rollback_game / "config.yaml");
     out << rollback_config << "\n";
@@ -830,11 +834,11 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
       return;
     auto_writer_saw_missing = !fs::exists(rollback_game / "cam1/GX020001.MP4");
     YAML::Node latest = YAML::LoadFile((rollback_game / "config.yaml").string());
-    latest["hmstream_ui"]["video_roles"]["left"] = YAML::Node(YAML::NodeType::Sequence);
-    latest["hmstream_ui"]["video_roles"]["left"].push_back(rollback_concurrent_path);
-    latest["hmstream_ui"]["copied_imports"].push_back(rollback_concurrent_path);
+    latest["hstream_ui"]["video_roles"]["left"] = YAML::Node(YAML::NodeType::Sequence);
+    latest["hstream_ui"]["video_roles"]["left"].push_back(rollback_concurrent_path);
+    latest["hstream_ui"]["copied_imports"].push_back(rollback_concurrent_path);
     if (!auto_writer_saw_missing)
-      latest["hmstream_ui"]["copied_imports"].push_back("cam1/GX020001.MP4");
+      latest["hstream_ui"]["copied_imports"].push_back("cam1/GX020001.MP4");
     latest["concurrent"]["auto_keep"] = true;
     auto_writer_ok = hm::stitching::publish_game_config(rollback_game, YAML::Dump(latest) + "\n").ok();
   });
@@ -851,13 +855,13 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   if (!expect(
           auto_writer_ok && auto_writer_saw_missing && !fs::exists(rollback_game / "cam1" / "GX020001.MP4") &&
               fs::exists(rollback_game / rollback_old_path) && fs::exists(rollback_game / rollback_concurrent_path) &&
-              rollback_after["hmstream_ui"]["video_roles"]["left"] &&
-              rollback_after["hmstream_ui"]["copied_imports"].size() == 2 &&
-              rollback_after["hmstream_ui"]["video_roles"]["left"][0].as<std::string>() == rollback_concurrent_path &&
-              rollback_after["hmstream_ui"]["copied_imports"][0].as<std::string>() == rollback_old_path &&
-              rollback_after["hmstream_ui"]["copied_imports"][1].as<std::string>() == rollback_concurrent_path &&
-              (!rollback_after["hmstream_ui"]["auto_import_sources"] ||
-               rollback_after["hmstream_ui"]["auto_import_sources"].size() == 0) &&
+              rollback_after["hstream_ui"]["video_roles"]["left"] &&
+              rollback_after["hstream_ui"]["copied_imports"].size() == 2 &&
+              rollback_after["hstream_ui"]["video_roles"]["left"][0].as<std::string>() == rollback_concurrent_path &&
+              rollback_after["hstream_ui"]["copied_imports"][0].as<std::string>() == rollback_old_path &&
+              rollback_after["hstream_ui"]["copied_imports"][1].as<std::string>() == rollback_concurrent_path &&
+              (!rollback_after["hstream_ui"]["auto_import_sources"] ||
+               rollback_after["hstream_ui"]["auto_import_sources"].size() == 0) &&
               rollback_after["concurrent"]["auto_keep"].as<bool>(),
           "Auto cleanup rollback must finish before another importer can inspect or adopt the same path")) {
     return false;
@@ -879,14 +883,13 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   YAML::Node rollback_delete_failure_after = YAML::LoadFile(rollback_delete_failure_config.string());
   bool rollback_staging_path_exists = false;
   for (const auto& entry : fs::directory_iterator(rollback_delete_failure_game / ".hstream-ui/left")) {
-    if (entry.path().filename().string().rfind(".hmstream-rollback-", 0) == 0)
+    if (entry.path().filename().string().rfind(".hstream-rollback-", 0) == 0)
       rollback_staging_path_exists = true;
   }
   if (!expect(
-          fs::exists(rollback_delete_failure_game / ".hstream-ui/left/GX020001.MP4") &&
-              !rollback_staging_path_exists &&
-              rollback_delete_failure_after["hmstream_ui"]["copied_imports"].size() == 1 &&
-              !rollback_delete_failure_after["hmstream_ui"]["video_roles"]["left"],
+          fs::exists(rollback_delete_failure_game / ".hstream-ui/left/GX020001.MP4") && !rollback_staging_path_exists &&
+              rollback_delete_failure_after["hstream_ui"]["copied_imports"].size() == 1 &&
+              !rollback_delete_failure_after["hstream_ui"]["video_roles"]["left"],
           "A staged copied-file rollback deletion failure must restore the path and ownership metadata")) {
     return false;
   }
@@ -898,7 +901,7 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   rollback_delete_failure_after = YAML::LoadFile(rollback_delete_failure_config.string());
   if (!expect(
           !fs::exists(rollback_delete_failure_game / ".hstream-ui/left/GX020001.MP4") &&
-              rollback_delete_failure_after["hmstream_ui"]["copied_imports"].size() == 0,
+              rollback_delete_failure_after["hstream_ui"]["copied_imports"].size() == 0,
           "An owned orphan retained after rollback must remain visible and removable through the UI")) {
     return false;
   }
@@ -914,10 +917,10 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
   ::unsetenv("HM_TEST_VIDEO_IMPORT_FORCE_COPY");
   const fs::path save_failure_game = fs::path(window->gameDirectoryText().toStdString());
   const YAML::Node save_failure_after = YAML::LoadFile((save_failure_game / "config.yaml").string());
-  const YAML::Node save_failure_roles = save_failure_after["hmstream_ui"]["video_roles"];
+  const YAML::Node save_failure_roles = save_failure_after["hstream_ui"]["video_roles"];
   if (!expect(
           !fs::exists(save_failure_game / ".hstream-ui" / "left" / "GX020001.MP4") &&
-              save_failure_after["hmstream_ui"]["copied_imports"].size() == 0 &&
+              save_failure_after["hstream_ui"]["copied_imports"].size() == 0 &&
               (!save_failure_roles || !save_failure_roles["left"]),
           "Private-config save failure must remove the new copied file and its ownership metadata")) {
     return false;
@@ -945,7 +948,7 @@ bool test_game_setup(HmStreamWindow* window, const QString& source_dir) {
              "Auto imports from a different camera folder should create a new camN without renaming");
 }
 
-bool test_pipeline_buttons(HmStreamWindow* window) {
+bool test_pipeline_buttons(HStreamWindow* window) {
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
   auto* pause = require_child<QPushButton>(window, "pausePipelineButton");
@@ -954,7 +957,14 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
   auto* control_points = require_child<QSpinBox>(window, "controlPointsSpin");
   auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
   auto* log = require_child<QTextEdit>(window, "runtimeLog");
-  if (!stop || !start || !pause || !restart || !mode || !control_points || !rotate || !log) {
+  auto* main_log_splitter = require_child<QSplitter>(window, "mainLogSplitter");
+  if (!stop || !start || !pause || !restart || !mode || !control_points || !rotate || !log || !main_log_splitter) {
+    return false;
+  }
+
+  if (!expect(
+          main_log_splitter->orientation() == Qt::Vertical && main_log_splitter->count() == 2,
+          "Main content and runtime log should be separated by a draggable vertical splitter")) {
     return false;
   }
 
@@ -985,7 +995,8 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
       !expect(
           window->logText().contains("stitching calibration control points changed unset -> 750"),
           "Calibration CP change should be logged") ||
-      !expect(window->logText().contains("--show-stitching 1"), "Calibration should request stitched display") ||
+      !expect(
+          window->logText().contains("--enable-sinks=FAKE"), "Calibration stage should avoid rendering gray output") ||
       !expect(
           !window->logText().contains("--render-window-id="),
           "Desktop calibration should use nv3dsink's separate render window by default") ||
@@ -1002,10 +1013,10 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
     const YAML::Node saved = YAML::LoadFile(config.string());
     YAML::Node saved_control_points;
     const bool has_saved_control_points =
-        lookup_yaml_path(saved, {"hmstream_ui", "stitching_calibration", "control_points"}, &saved_control_points);
+        lookup_yaml_path(saved, {"hstream_ui", "stitching_calibration", "control_points"}, &saved_control_points);
     YAML::Node saved_status;
     const bool has_saved_status =
-        lookup_yaml_path(saved, {"hmstream_ui", "stitching_calibration", "status"}, &saved_status);
+        lookup_yaml_path(saved, {"hstream_ui", "stitching_calibration", "status"}, &saved_status);
     if (!expect(
             has_saved_control_points && saved_control_points.IsScalar() && saved_control_points.as<int>() == 750,
             "Calibration CP count should be saved to private config") ||
@@ -1050,7 +1061,7 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
     const YAML::Node saved = YAML::LoadFile(config.string());
     YAML::Node saved_status;
     const bool has_saved_status =
-        lookup_yaml_path(saved, {"hmstream_ui", "stitching_calibration", "status"}, &saved_status);
+        lookup_yaml_path(saved, {"hstream_ui", "stitching_calibration", "status"}, &saved_status);
     if (!expect(
             has_saved_status && saved_status.IsScalar() && saved_status.as<std::string>() == "pending",
             "User-stopped calibration should remain pending so the next run cleans again")) {
@@ -1059,12 +1070,64 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
   }
   {
     const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
-    YAML::Node complete = YAML::LoadFile(config.string());
-    complete["hmstream_ui"]["stitching_calibration"]["status"] = "complete";
-    {
-      std::ofstream out(config);
-      out << complete << "\n";
+    qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
+    const int preview_commands_before = window->logText().count("ds_hockey_app_config.yaml");
+    activate(start);
+    for (int i = 0; i < 200 &&
+         (!window->logText().contains("continuous stitched preview running; camera controls remain available") ||
+          window->pipelineStateText() != "PLAYING");
+         ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
     }
+    const YAML::Node after_transition = YAML::LoadFile(config.string());
+    YAML::Node transitioned_status;
+    const bool has_transitioned_status =
+        lookup_yaml_path(after_transition, {"hstream_ui", "stitching_calibration", "status"}, &transitioned_status);
+    if (!expect(
+            window->logText().contains("stitching calibration complete; starting continuous stitched preview"),
+            "Successful calibration should automatically start stitched preview") ||
+        !expect(
+            window->logText().count("ds_hockey_app_config.yaml") > preview_commands_before,
+            "Post-calibration preview should run the continuous application pipeline") ||
+        !expect(window->logText().contains("--show-stitching 1"), "Continuous preview should show stitcher output") ||
+        !expect(window->pipelineStateText() == "PLAYING", "Continuous stitched preview should remain running") ||
+        !expect(
+            has_transitioned_status && transitioned_status.IsScalar() &&
+                transitioned_status.as<std::string>() == "complete",
+            "Calibration should be marked complete before continuous preview starts")) {
+      qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+      activate(stop);
+      return false;
+    }
+    rotate->setValue(73);
+    for (int i = 0;
+         i < 50 && !window->logText().contains("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=17");
+         ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    if (!expect(
+            window->logText().contains("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=17"),
+            "Stitch controls should remain live after calibration transitions to preview")) {
+      qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+      activate(stop);
+      return false;
+    }
+    activate(stop);
+    qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+
+    const YAML::Node after_preview_stop = YAML::LoadFile(config.string());
+    YAML::Node stopped_status;
+    const bool has_stopped_status =
+        lookup_yaml_path(after_preview_stop, {"hstream_ui", "stitching_calibration", "status"}, &stopped_status);
+    if (!expect(
+            has_stopped_status && stopped_status.IsScalar() && stopped_status.as<std::string>() == "complete",
+            "Stopping the post-calibration preview should preserve completed calibration state")) {
+      return false;
+    }
+
+    const int calibration_commands_before = window->logText().count("ds_hockey_configure_stitching.yaml");
     activate(start);
     for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
       QApplication::processEvents();
@@ -1075,13 +1138,9 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
-    const YAML::Node after_stop = YAML::LoadFile(config.string());
-    YAML::Node saved_status;
-    const bool has_saved_status =
-        lookup_yaml_path(after_stop, {"hmstream_ui", "stitching_calibration", "status"}, &saved_status);
     if (!expect(
-            has_saved_status && saved_status.IsScalar() && saved_status.as<std::string>() == "pending",
-            "Starting calibration from complete state should mark pending before any user stop")) {
+            window->logText().count("ds_hockey_configure_stitching.yaml") == calibration_commands_before,
+            "A completed calibration should reopen continuous preview without recalibrating")) {
       return false;
     }
   }
@@ -1133,10 +1192,8 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
   qputenv("USE_NEW_NVSTREAMMUX", "no");
   qputenv("HM_NO_SCOREBOARD", "0");
   activate(start);
-  for (int i = 0;
-       i < 50 &&
-       (!window->logText().contains("USE_NEW_NVSTREAMMUX=no") ||
-        !window->logText().contains("HM_NO_SCOREBOARD=0"));
+  for (int i = 0; i < 50 &&
+       (!window->logText().contains("USE_NEW_NVSTREAMMUX=no") || !window->logText().contains("HM_NO_SCOREBOARD=0"));
        ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
@@ -1163,19 +1220,19 @@ bool test_pipeline_buttons(HmStreamWindow* window) {
     return false;
   }
 
-  const QByteArray original_runner = qgetenv("HMSTREAM_UI_TEST_RUNNER");
-  qputenv("HMSTREAM_UI_TEST_RUNNER", "/tmp/hstream-ui-missing-runner");
+  const QByteArray original_runner = qgetenv("HSTREAM_UI_TEST_RUNNER");
+  qputenv("HSTREAM_UI_TEST_RUNNER", "/tmp/hstream-ui-missing-runner");
   activate(start);
   for (int i = 0; i < 50 && !window->logText().contains("pipeline process error"); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
-  qputenv("HMSTREAM_UI_TEST_RUNNER", original_runner);
+  qputenv("HSTREAM_UI_TEST_RUNNER", original_runner);
   return expect(window->pipelineStateText() == "STOPPED", "Failed runner should restore stopped state") &&
       expect(window->logText().contains("pipeline process error"), "Failed runner should log process error");
 }
 
-bool test_output_controls(HmStreamWindow* window) {
+bool test_output_controls(HStreamWindow* window) {
   auto* spare = require_child<QCheckBox>(window, "outputToggle_spare-rtmp");
   auto* youtube_redirect = require_child<QPushButton>(window, "redirectYoutubeButton");
   auto* add_rtsp = require_child<QPushButton>(window, "addRtspButton");
@@ -1200,7 +1257,7 @@ bool test_output_controls(HmStreamWindow* window) {
       window->outputStateText("rtsp-dynamic-1") == "ENABLED", "Add RTSP button should create an enabled RTSP output");
 }
 
-bool test_camera_controls(HmStreamWindow* window) {
+bool test_camera_controls(HStreamWindow* window) {
   if (!expect(window->cameraTabCount() >= 6, "Camera controls should be grouped on tabs")) {
     return false;
   }
@@ -1289,7 +1346,7 @@ bool test_camera_controls(HmStreamWindow* window) {
       !lookup_yaml_path(saved, {"rink", "ice_contours_combined_bbox"}, nullptr);
   auto saved_int = [&](const char* key, int expected) {
     YAML::Node value;
-    if (!lookup_yaml_path(saved, {"hmstream_ui", "camera_controls", key}, &value)) {
+    if (!lookup_yaml_path(saved, {"hstream_ui", "camera_controls", key}, &value)) {
       return false;
     }
     return value && value.IsScalar() && value.as<int>() == expected;
@@ -1331,7 +1388,7 @@ bool test_camera_controls(HmStreamWindow* window) {
   const bool saved_fast_max_speed_x = has_live_boxes && live_boxes.IsSequence() && live_boxes.size() > 0 &&
       lookup_yaml_key(live_boxes[0], "max-speed-x", &fast_max_speed_x);
   const bool has_default_follower =
-      lookup_yaml_path(saved, {"hmstream_ui", "camera_controls", "Apply_To_Follower_Box"}, nullptr);
+      lookup_yaml_path(saved, {"hstream_ui", "camera_controls", "Apply_To_Follower_Box"}, nullptr);
   if (!saved_controls_ok) {
     std::cerr << saved << '\n';
   }
@@ -1451,7 +1508,7 @@ bool test_camera_controls(HmStreamWindow* window) {
 
   YAML::Node relative_runtime_config = YAML::LoadFile(config.string());
   relative_runtime_config["pipeline"]["ds-playtracker"]["config-file"] = ".hstream-ui/play_tracker_config.yaml";
-  relative_runtime_config["hmstream_ui"]["playtracker_config_base"] = custom_playtracker_config.string();
+  relative_runtime_config["hstream_ui"]["playtracker_config_base"] = custom_playtracker_config.string();
   {
     std::ofstream out(config);
     out << relative_runtime_config << "\n";
@@ -1593,7 +1650,7 @@ bool test_camera_controls(HmStreamWindow* window) {
       preserved_custom_tracker_value.IsScalar() && preserved_custom_tracker_value.as<double>() == 9.5;
   YAML::Node saved_playtracker_base;
   const bool remembered_custom_tracker_base =
-      lookup_yaml_path(same_prefix, {"hmstream_ui", "playtracker_config_base"}, &saved_playtracker_base) &&
+      lookup_yaml_path(same_prefix, {"hstream_ui", "playtracker_config_base"}, &saved_playtracker_base) &&
       saved_playtracker_base.IsScalar() &&
       saved_playtracker_base.as<std::string>() == custom_playtracker_config.string();
   if (!expect(preserved_left_gamma, "Saving one color leaf should preserve manual same-prefix color edits") ||
@@ -1609,7 +1666,7 @@ bool test_camera_controls(HmStreamWindow* window) {
   activate(save);
   YAML::Node cleaned = YAML::LoadFile(config.string());
   YAML::Node cleaned_controls;
-  const bool has_cleaned_controls = lookup_yaml_path(cleaned, {"hmstream_ui", "camera_controls"}, &cleaned_controls);
+  const bool has_cleaned_controls = lookup_yaml_path(cleaned, {"hstream_ui", "camera_controls"}, &cleaned_controls);
   YAML::Node preserved_gamma;
   const bool has_preserved_gamma =
       lookup_yaml_path(cleaned, {"stitching", "right", "color", "gamma"}, &preserved_gamma);
@@ -1639,7 +1696,7 @@ bool test_camera_controls(HmStreamWindow* window) {
       expect(preserved_manual_left_gamma, "Saving defaults should preserve same-prefix manual color config");
 }
 
-bool run_real_pipeline_e2e(HmStreamWindow* window, const QString& game_id) {
+bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   auto* game_id_edit = require_child<QLineEdit>(window, "gameIdEdit");
   auto* create = require_child<QPushButton>(window, "createGameButton");
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
@@ -1653,7 +1710,7 @@ bool run_real_pipeline_e2e(HmStreamWindow* window, const QString& game_id) {
   game_id_edit->setText(game_id);
   activate(create);
 
-  const QString run_mode = QString::fromLocal8Bit(qgetenv("HMSTREAM_UI_E2E_RUN_MODE"));
+  const QString run_mode = QString::fromLocal8Bit(qgetenv("HSTREAM_UI_E2E_RUN_MODE"));
   if (!run_mode.isEmpty()) {
     const int mode_index = mode->findData(run_mode);
     if (mode_index < 0) {
@@ -1662,13 +1719,13 @@ bool run_real_pipeline_e2e(HmStreamWindow* window, const QString& game_id) {
     }
     mode->setCurrentIndex(mode_index);
   }
-  const int configured_control_points = qEnvironmentVariableIntValue("HMSTREAM_UI_E2E_CONTROL_POINTS");
+  const int configured_control_points = qEnvironmentVariableIntValue("HSTREAM_UI_E2E_CONTROL_POINTS");
   if (configured_control_points > 0) {
     control_points->setValue(configured_control_points);
   }
   activate(start);
 
-  const int timeout_ms = qEnvironmentVariableIntValue("HMSTREAM_UI_E2E_TIMEOUT_MS");
+  const int timeout_ms = qEnvironmentVariableIntValue("HSTREAM_UI_E2E_TIMEOUT_MS");
   const int deadline_ms = timeout_ms > 0 ? timeout_ms : 120000;
   QElapsedTimer timer;
   timer.start();
@@ -1721,10 +1778,10 @@ int main(int argc, char** argv) {
   if (!test_path_scoped_auto_rollback()) {
     return 1;
   }
-  const QByteArray e2e_game_id = qgetenv("HMSTREAM_UI_E2E_GAME_ID");
+  const QByteArray e2e_game_id = qgetenv("HSTREAM_UI_E2E_GAME_ID");
   if (!e2e_game_id.isEmpty()) {
     QApplication app(argc, argv);
-    HmStreamWindow window;
+    HStreamWindow window;
     window.show();
     if (!run_real_pipeline_e2e(&window, QString::fromLocal8Bit(e2e_game_id))) {
       std::cerr << "run_real_pipeline_e2e failed\n";
@@ -1744,10 +1801,10 @@ int main(int argc, char** argv) {
   if (!write_fake_runner(fake_runner)) {
     return 1;
   }
-  qputenv("HMSTREAM_UI_TEST_RUNNER", fake_runner.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_RUNNER", fake_runner.toLocal8Bit());
 
   QApplication app(argc, argv);
-  HmStreamWindow window;
+  HStreamWindow window;
   window.show();
 
   if (!test_game_setup(&window, source_root.path())) {

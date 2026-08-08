@@ -57,7 +57,7 @@ int main(int, char**) {
   bool ok = true;
   namespace fs = std::filesystem;
   const fs::path root =
-      fs::weakly_canonical(fs::temp_directory_path()) / ("hmstream-assets-test-" + std::to_string(::getpid()));
+      fs::weakly_canonical(fs::temp_directory_path()) / ("hstream-assets-test-" + std::to_string(::getpid()));
   fs::create_directories(root / "configs");
   fs::create_directories(root / "pretrained");
   {
@@ -290,14 +290,14 @@ int main(int, char**) {
   {
     const char* original_home_value = std::getenv("HOME");
     const std::string original_home = original_home_value == nullptr ? "" : original_home_value;
-    fs::create_directories(root / "real-home" / ".cache" / "hmstream");
+    fs::create_directories(root / "real-home" / ".cache" / "hstream");
     fs::create_directory_symlink(root / "real-home", root / "home-link");
     {
-      std::ofstream asset(root / "real-home" / ".cache" / "hmstream" / "linked-home-model.bin");
+      std::ofstream asset(root / "real-home" / ".cache" / "hstream" / "linked-home-model.bin");
       asset << "linked home asset\n";
     }
     auto linked_hash =
-        hm::assets::AssetManager::Sha256(root / "real-home" / ".cache" / "hmstream" / "linked-home-model.bin");
+        hm::assets::AssetManager::Sha256(root / "real-home" / ".cache" / "hstream" / "linked-home-model.bin");
     {
       std::ofstream config(root / "configs" / "linked-home.yaml");
       config << "pretrained-assets:\n"
@@ -306,7 +306,7 @@ int main(int, char**) {
                 "    sha256: "
              << (linked_hash.ok() ? *linked_hash : std::string(64, '0'))
              << "\n"
-                "    path: $HOME/.cache/hmstream/linked-home-model.bin\n";
+                "    path: $HOME/.cache/hstream/linked-home-model.bin\n";
     }
     ::setenv("HOME", (root / "home-link").c_str(), 1);
     auto linked_home = hm::assets::AssetManager::Ensure({root / "configs" / "linked-home.yaml"});

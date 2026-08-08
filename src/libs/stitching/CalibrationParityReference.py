@@ -2,7 +2,7 @@
 """Conditional deterministic Python oracle for native calibration parity.
 
 This source-checkout-only helper deliberately uses the pinned LightGlue-ONNX
-v3 RaCoALIKED pipeline that produced HMStream's ONNX artifact. HockeyMOM rink
+v3 RaCoALIKED pipeline that produced HStream's ONNX artifact. HockeyMOM rink
 and legacy SuperPoint comparisons are reported when their Python dependencies
 are installed; production RaCo-ALIKED qualification does not depend on the
 legacy matcher.

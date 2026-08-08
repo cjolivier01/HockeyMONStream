@@ -1,5 +1,5 @@
 # Source-only Python oracle inputs. The release gate requires these exact
-# bytes; they are never shipped in the HMStream Debian package.
+# bytes; they are never shipped in the HStream Debian package.
 e34b9634f9678a181a970b712389cdbaa8cc45004117c916e5af6a3ba931591b  rink-config
 fd7278b84ec48d31a781e5fd1c637ae50cce38f4df120034a98b5f73fbe5fc2e  rink-checkpoint
 2c231f9f4897779d19f5bd2c1a8f7c80b7dac01da6555ff0b9d1787f26c1bfeb  native-rink-onnx

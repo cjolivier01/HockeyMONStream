@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build HMStream against an explicit Ubuntu ABI baseline in Docker.
+# Build HStream against an explicit Ubuntu ABI baseline in Docker.
 #
 # Usage:
 #   scripts/make_deb_docker.sh --target-ubuntu=24.04 [--deepstream-deb=FILE]
@@ -107,18 +107,18 @@ OUTPUT_DIR="$(readlink -f "${OUTPUT_DIR}")"
 
 # Freeze the complete build input before the slow image build. The container
 # never sees the mutable checkout, ignored artifacts, or untracked files.
-SOURCE_SNAPSHOT="$(mktemp -d "${TMPDIR:-/tmp}/hmstream-deb-source.XXXXXX")"
+SOURCE_SNAPSHOT="$(mktemp -d "${TMPDIR:-/tmp}/hstream-deb-source.XXXXXX")"
 cleanup_snapshot() {
   rm -rf -- "${SOURCE_SNAPSHOT}"
 }
 trap cleanup_snapshot EXIT
 git -C "${TOPDIR}" archive --format=tar "${SOURCE_REVISION}" | tar -xf - -C "${SOURCE_SNAPSHOT}"
 source_epoch="$(git -C "${TOPDIR}" show -s --format=%ct "${SOURCE_REVISION}")"
-printf '%s %s\n' "${SOURCE_REVISION}" "${source_epoch}" > "${SOURCE_SNAPSHOT}/.hmstream-package-source"
+printf '%s %s\n' "${SOURCE_REVISION}" "${source_epoch}" > "${SOURCE_SNAPSHOT}/.hstream-package-source"
 
-image_tag="hmstream-deb-builder:ubuntu${TARGET_UBUNTU}"
+image_tag="hstream-deb-builder:ubuntu${TARGET_UBUNTU}"
 volume_suffix="${TARGET_UBUNTU//./}"
-cache_volume="hmstream-deb-bazel-ubuntu${volume_suffix}"
+cache_volume="hstream-deb-bazel-ubuntu${volume_suffix}"
 cuda_repository="ubuntu${TARGET_UBUNTU//./}"
 
 echo "[make_deb_docker] Building ${image_tag}..."
@@ -152,10 +152,10 @@ fi
 # cache for source-tree runs.  Expose that cache read-only to the immutable
 # package build; make_deb.sh verifies every declared digest before and after
 # copying the models into the package-owned pretrained tree.
-MODEL_CACHE_SOURCE="${HMSTREAM_MODEL_CACHE_DIR:-${HOME}/.cache/hmstream/models}"
+MODEL_CACHE_SOURCE="${HSTREAM_MODEL_CACHE_DIR:-${HOME}/.cache/hstream/models}"
 if [[ -d "${MODEL_CACHE_SOURCE}" ]]; then
   MODEL_CACHE_SOURCE="$(readlink -f "${MODEL_CACHE_SOURCE}")"
-  docker_args+=(--volume "${MODEL_CACHE_SOURCE}:/root/.cache/hmstream/models:ro")
+  docker_args+=(--volume "${MODEL_CACHE_SOURCE}:/root/.cache/hstream/models:ro")
 fi
 
 if [[ -n "${SSH_AUTH_SOCK:-}" && -S "${SSH_AUTH_SOCK}" ]]; then

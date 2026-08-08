@@ -32,9 +32,9 @@ void restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previou
 
 } // namespace hm::ui_internal
 
-class HmStreamWindow : public QMainWindow {
+class HStreamWindow : public QMainWindow {
  public:
-  explicit HmStreamWindow(QWidget* parent = nullptr);
+  explicit HStreamWindow(QWidget* parent = nullptr);
 
   QString pipelineStateText() const;
   QString outputStateText(const QString& id) const;
@@ -50,6 +50,12 @@ class HmStreamWindow : public QMainWindow {
     kSuccess,
     kRolledBack,
     kCommittedWithCleanupFailure,
+  };
+
+  enum class CalibrationPhase {
+    kNone,
+    kConfiguring,
+    kPreviewing,
   };
 
   void buildUi();
@@ -132,7 +138,8 @@ class HmStreamWindow : public QMainWindow {
   bool prepareStitchingCalibrationRun(
       const QString& runner,
       const QString& working_dir,
-      const QProcessEnvironment& env);
+      const QProcessEnvironment& env,
+      bool* calibration_required);
   bool runStitchingClean(const QString& runner, const QString& working_dir, const QProcessEnvironment& env);
   bool saveStitchingCalibrationState(int control_points, const QString& status);
   QStringList enabledSinkNames() const;
@@ -176,6 +183,7 @@ class HmStreamWindow : public QMainWindow {
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};
+  CalibrationPhase calibration_phase_{CalibrationPhase::kNone};
   bool preview_fullscreen_{false};
   QString pipeline_stdout_buffer_;
   QString pipeline_stderr_buffer_;

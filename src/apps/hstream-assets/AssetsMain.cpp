@@ -16,17 +16,17 @@ int main(int argc, char** argv) {
     else if (argument == "--verify")
       verify = true;
     else if (argument == "-h" || argument == "--help") {
-      std::cout << "usage: hmstream-assets [--print-targets|--verify] CONFIG.yaml...\n";
+      std::cout << "usage: hstream-assets [--print-targets|--verify] CONFIG.yaml...\n";
       return 0;
     } else
       configs.emplace_back(argument);
   }
   if (configs.empty()) {
-    std::cerr << "hmstream-assets requires at least one YAML config\n";
+    std::cerr << "hstream-assets requires at least one YAML config\n";
     return 64;
   }
   if (print_targets && verify) {
-    std::cerr << "hmstream-assets accepts only one of --print-targets and --verify\n";
+    std::cerr << "hstream-assets accepts only one of --print-targets and --verify\n";
     return 64;
   }
   if (print_targets) {

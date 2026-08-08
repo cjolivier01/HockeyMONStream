@@ -46,16 +46,16 @@ int main(int argc, char** argv) {
           !contains(builder, "TARGET_CUDA_ROOT=/usr/local/cuda-12"),
       "every target-OS build must select CUDA 13.2");
   ok &= expect(
-      contains(packager, "X-HMStream-Target-Ubuntu: ${TARGET_UBUNTU}") &&
-          contains(packager, "CUDA 12 dependency entered the CUDA 13.2 HMStream package") &&
+      contains(packager, "X-HStream-Target-Ubuntu: ${TARGET_UBUNTU}") &&
+          contains(packager, "CUDA 12 dependency entered the CUDA 13.2 HStream package") &&
           contains(packager, "pretrained/native-calibration") && contains(packager, "model_cache_root"),
       "package must carry OS provenance, reject CUDA 12 ELFs, and stage verified native models");
   ok &= expect(
-      contains(docker_runner, ":/root/.cache/hmstream/models:ro") &&
-          contains(docker_runner, "HMSTREAM_MODEL_CACHE_DIR"),
+      contains(docker_runner, ":/root/.cache/hstream/models:ro") &&
+          contains(docker_runner, "HSTREAM_MODEL_CACHE_DIR"),
       "immutable Docker build must expose the content-addressed native model cache read-only");
   ok &= expect(
-      contains(installer, "X-HMStream-Target-Ubuntu") && !contains(installer, "libc6 (>= 2.43)") &&
+      contains(installer, "X-HStream-Target-Ubuntu") && !contains(installer, "libc6 (>= 2.43)") &&
           !contains(installer, "Pin-Priority") && contains(installer, "old_deepstream_packages") &&
           contains(installer, "^deepstream-[0-9]+([.][0-9]+)*$") &&
           contains(installer, "deepstream-9.1-transition.deb") && contains(installer, "Conflicts") &&
@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
           !contains(installer, "nccl") && !contains(installer, "NCCL"),
       "installer must validate OS provenance, replace older DeepStream atomically, and leave NCCL policy untouched");
   ok &= expect(
-      contains(installer, "hmstream-cuda-ubuntu2404-compat.gpg") &&
+      contains(installer, "hstream-cuda-ubuntu2404-compat.gpg") &&
           contains(installer, "disable_cuda_compat_sources") &&
           contains(installer, "disable_installer_managed_cuda_sources") &&
           contains(installer, "CUDA_LEGACY_COMPAT_SOURCE") && contains(installer, "publish_cuda_compat_source") &&

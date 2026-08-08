@@ -7,7 +7,7 @@ filegroup(
 )
 
 cc_binary(
-  name = "hmstream-assets",
+  name = "hstream-assets",
   srcs = ["AssetsMain.cpp"],
   visibility = ["//visibility:public"],
   deps = ["//src/libs/assets:asset_manager"],

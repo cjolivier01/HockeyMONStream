@@ -101,13 +101,13 @@ absl::Status ensure_owned_temporary_root(const fs::path& directory) {
 }
 
 absl::StatusOr<fs::path> cache_root() {
-  if (const char* configured = std::getenv("HMSTREAM_TENSORRT_CACHE_DIR"); configured && *configured)
+  if (const char* configured = std::getenv("HSTREAM_TENSORRT_CACHE_DIR"); configured && *configured)
     return fs::absolute(configured).lexically_normal();
   if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg)
-    return (fs::path(xdg) / "hmstream/tensorrt").lexically_normal();
+    return (fs::path(xdg) / "hstream/tensorrt").lexically_normal();
   if (const char* home = std::getenv("HOME"); home && *home)
-    return (fs::path(home) / ".cache/hmstream/tensorrt").lexically_normal();
-  const fs::path private_root = fs::path("/tmp") / ("hmstream-" + std::to_string(::getuid()));
+    return (fs::path(home) / ".cache/hstream/tensorrt").lexically_normal();
+  const fs::path private_root = fs::path("/tmp") / ("hstream-" + std::to_string(::getuid()));
   auto status = ensure_owned_temporary_root(private_root);
   if (!status.ok())
     return status;

@@ -112,10 +112,10 @@
       "problemMatcher": []
     },
     {
-      "label": "Make: hmstream-assets",
+      "label": "Make: hstream-assets",
       "type": "shell",
       "command": "make",
-      "args": ["hmstream-assets"],
+      "args": ["hstream-assets"],
       "options": {
         "cwd": "${workspaceRoot}",
       },
@@ -142,10 +142,10 @@
       "problemMatcher": []
     },
     {
-      "label": "Make: hmstream-gst-plugins",
+      "label": "Make: hstream-gst-plugins",
       "type": "shell",
       "command": "make",
-      "args": ["hmstream-gst-plugins"],
+      "args": ["hstream-gst-plugins"],
       "options": {
         "cwd": "${workspaceRoot}",
       },
@@ -276,6 +276,34 @@
       "type": "shell",
       "command": "make",
       "args": ["print_targets"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Debug build: hstream-cli",
+      "type": "shell",
+      "command": "make",
+      "args": ["hstream-cli", "BUILD_CONFIG=debug"],
+      "group": {
+        "kind": "build",
+        "isDefault": false,
+      },
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Debug build: hstream-ui",
+      "type": "shell",
+      "command": "make",
+      "args": ["hstream-ui", "BUILD_CONFIG=debug"],
+      "group": {
+        "kind": "build",
+        "isDefault": false,
+      },
       "options": {
         "cwd": "${workspaceRoot}",
       },

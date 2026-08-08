@@ -477,19 +477,19 @@ Add packaging as a first-class deliverable.
 
 Suggested packages:
 
-- `hmstream`
+- `hstream`
   - CLI binaries: `hstream-cli`, helper tools.
   - Runtime configs under `/usr/share/hstream/configs`.
   - Scripts that are safe as installed commands.
-  - Depends on `hmstream-gst-plugins`, because the normal pipeline requires the custom GStreamer plugins.
+  - Depends on `hstream-gst-plugins`, because the normal pipeline requires the custom GStreamer plugins.
 - `hstream-ui`
   - Qt Widgets desktop app.
   - `.desktop` file and icon.
-  - Depends on `hmstream`; it receives custom plugins transitively through `hmstream`.
-- `hmstream-gst-plugins`
+  - Depends on `hstream`; it receives custom plugins transitively through `hstream`.
+- `hstream-gst-plugins`
   - Custom GStreamer plugins under the appropriate multiarch GStreamer plugin directory.
   - Runs `gst-inspect-1.0` smoke check in CI/package validation where possible.
-- `hmstream-dev` (optional)
+- `hstream-dev` (optional)
   - Headers and C++ library artifacts for embedding/testing.
 
 External dependencies:
@@ -504,7 +504,7 @@ Installed paths:
 
 - `/usr/bin/hstream-cli`: CLI wrapper.
 - `/usr/bin/hstream-ui`: desktop UI wrapper.
-- `/usr/bin/hmstream-doctor`: diagnostics.
+- `/usr/bin/hstream-doctor`: diagnostics.
 - `/usr/lib/hstream/`: private shared libraries and helper binaries that should not be on the public PATH.
 - `/usr/lib/<triplet>/gstreamer-1.0/`: packaged hstream GStreamer plugins.
 - `/usr/share/hstream/configs/`: installed runtime configs.
@@ -527,18 +527,18 @@ Build approach:
 - Add a packaging target/script that stages Bazel outputs into a Debian package root.
 - Use `dpkg-deb`/`debhelper` for first packages; avoid inventing a custom installer.
 - Include an installed environment wrapper that sets required DeepStream/GStreamer plugin paths consistently.
-- Start with split packages: `hmstream`, `hstream-ui`, `hmstream-gst-plugins`, and optional `hmstream-dev`.
+- Start with split packages: `hstream`, `hstream-ui`, `hstream-gst-plugins`, and optional `hstream-dev`.
 
 Installed commands:
 
 - `hstream-cli` for the CLI.
 - `hstream-ui` for the desktop UI.
-- `hmstream-doctor` for dependency and plugin diagnostics.
+- `hstream-doctor` for dependency and plugin diagnostics.
 
 Validation:
 
-- `hmstream-doctor` checks NVIDIA driver, CUDA, DeepStream path, GStreamer plugin discovery, custom plugin discovery, config root, writable game root, and optional RTMP/RTSP/WebRTC dependencies.
-- CI/package smoke tests should run `hmstream-doctor --no-gpu-required` and a short `FAKE` sink pipeline where dependencies are available.
+- `hstream-doctor` checks NVIDIA driver, CUDA, DeepStream path, GStreamer plugin discovery, custom plugin discovery, config root, writable game root, and optional RTMP/RTSP/WebRTC dependencies.
+- CI/package smoke tests should run `hstream-doctor --no-gpu-required` and a short `FAKE` sink pipeline where dependencies are available.
 
 ## Windows Installer Via WSL
 
@@ -554,7 +554,7 @@ Recommended shape:
 - Detect WSL 2 and offer to install/enable it when the user has administrator rights.
 - Install or select a supported Ubuntu/Debian WSL distro, then either run the validated DeepStream container path or
   install distro-specific `.deb` artifacts when that path is proven.
-- Run `hmstream-doctor` inside WSL after installation and show actionable failures in the Windows installer UI/log.
+- Run `hstream-doctor` inside WSL after installation and show actionable failures in the Windows installer UI/log.
 - Launch the UI with `wsl.exe -d <distro> -- hstream-ui` only for validated WSLg/display-sink combinations.
 
 Display and hardware assumptions:
@@ -580,15 +580,15 @@ Networking and device access:
 Installed Windows components:
 
 - `HStream UI` Start Menu shortcut.
-- `hmstream-launcher.exe` or PowerShell-backed launcher that invokes `wsl.exe`.
-- `hmstream-wsl-doctor.ps1` for collecting WSL, GPU, package, and network diagnostics.
+- `hstream-launcher.exe` or PowerShell-backed launcher that invokes `wsl.exe`.
+- `hstream-wsl-doctor.ps1` for collecting WSL, GPU, package, and network diagnostics.
 - Optional settings file under `%ProgramData%\HStream\launcher.json` for distro name, default game root, and exposed
   ports.
 
 Validation:
 
 - Fresh Windows 11 VM or workstation with WSLg.
-- Installer provisions/selects distro, installs packages, and runs `hmstream-doctor`.
+- Installer provisions/selects distro, installs packages, and runs `hstream-doctor`.
 - `hstream-ui` opens from the Start Menu.
 - FAKE/video-file pipeline starts inside WSL; embedded preview is required only for matrices with a validated display sink.
 - RTMP push and RTSP server port behavior are tested from Windows-side clients.
@@ -630,14 +630,14 @@ Validation:
 
 - Add packaging staging script and Debian metadata.
 - Produce split CLI/UI/plugin packages from the first packaging pass.
-- Add `hmstream-doctor`.
+- Add `hstream-doctor`.
 - Package smoke validation.
 - Keep `hstream-ui` disabled for Jetson builds until the Jetson sysroot/package build includes Qt6 development headers
   and the embedded preview path is validated there.
 
 ### Phase 6: Windows Installer Via WSL
 
-- Add a Windows installer/launcher project after Debian packages and `hmstream-doctor` are available.
+- Add a Windows installer/launcher project after Debian packages and `hstream-doctor` are available.
 - Provision or target a supported WSL distro and install the same `.deb` packages there.
 - Add Start Menu launcher, Windows-side diagnostics wrapper, path translation, and firewall/port guidance.
 - Validate WSLg UI launch and file/RTMP/RTSP workflows on Windows 11.
@@ -653,7 +653,7 @@ Validation:
 - Embedded EGL preview may differ across X11, Wayland, and Jetson.
   - Mitigation: start with X11/native window smoke, keep standalone `--show` fallback, document supported display backends.
 - Debian users may not have NVIDIA/DeepStream prerequisites.
-  - Mitigation: package `hmstream-doctor` and fail early with exact missing dependency messages.
+  - Mitigation: package `hstream-doctor` and fail early with exact missing dependency messages.
 - WSL users may have Windows, WSL, NVIDIA driver, CUDA, and DeepStream versions that do not line up.
   - Mitigation: make the Windows installer run the WSL-side doctor before claiming success, and keep Windows/WSL support
     bounded to validated OS/distro/driver combinations.

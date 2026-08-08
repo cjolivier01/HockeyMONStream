@@ -73,8 +73,8 @@ if [[ ! -f "${model_manifest}" ]]; then
   echo "Native ONNX Python model manifest is missing: ${model_manifest}" >&2
   exit 2
 fi
-rink_model="${HM_RINK_ONNX_MODEL:-${HOME}/.cache/hmstream/models/ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx}"
-matcher_model="${HM_FEATURE_MATCHER_ONNX_MODEL:-${HOME}/.cache/hmstream/models/aliked-lightglue-k2048-ea4a4ab2cb556958.onnx}"
+rink_model="${HM_RINK_ONNX_MODEL:-${HOME}/.cache/hstream/models/ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx}"
+matcher_model="${HM_FEATURE_MATCHER_ONNX_MODEL:-${HOME}/.cache/hstream/models/aliked-lightglue-k2048-ea4a4ab2cb556958.onnx}"
 for model_entry in \
     "rink-config:${HM_PARITY_RINK_CONFIG}" \
     "rink-checkpoint:${HM_PARITY_RINK_CHECKPOINT}" \

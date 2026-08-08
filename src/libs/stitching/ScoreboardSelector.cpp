@@ -274,7 +274,7 @@ std::string selector_html(int width, int height, const std::optional<ScoreboardS
   initial << ']';
   std::ostringstream html;
   html << R"HTML(<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>HMStream scoreboard selector</title><style>body{font-family:sans-serif;background:#111;color:#eee;margin:1rem}#wrap{position:relative;display:inline-block;max-width:100%}img{display:block;max-width:100%;height:auto}canvas{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair}button{margin:.75rem .5rem 0 0;padding:.6rem 1rem}</style></head><body>
+<title>HStream scoreboard selector</title><style>body{font-family:sans-serif;background:#111;color:#eee;margin:1rem}#wrap{position:relative;display:inline-block;max-width:100%}img{display:block;max-width:100%;height:auto}canvas{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair}button{margin:.75rem .5rem 0 0;padding:.6rem 1rem}</style></head><body>
 <h1>Select scoreboard corners</h1><p>Click upper-left, upper-right, lower-right, and lower-left. You can also explicitly disable the scoreboard.</p><div id="wrap"><img id="image"><canvas id="overlay"></canvas></div><br><button id="save">Save</button><button id="clear">Clear</button><button id="none">No scoreboard</button><button id="cancel">Cancel</button><pre id="status"></pre><script>
 const token=new URLSearchParams(location.search).get('token');const image=document.getElementById('image'),canvas=document.getElementById('overlay'),ctx=canvas.getContext('2d');let points=)HTML"
        << initial.str() << ";const nativeWidth=" << width << ",nativeHeight=" << height << R"HTML(;

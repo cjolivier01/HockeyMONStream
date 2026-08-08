@@ -2564,8 +2564,8 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
 //------------------------------------------------------------------------------
 int main(int argc, char* argv[]) {
   configure_pipeline_runtime_environment(argc > 0 ? argv[0] : nullptr);
-  if (!std::getenv("HMSTREAM_RUNTIME_ENV_READY")) {
-    setenv("HMSTREAM_RUNTIME_ENV_READY", "1", 1);
+  if (!std::getenv("HSTREAM_RUNTIME_ENV_READY")) {
+    setenv("HSTREAM_RUNTIME_ENV_READY", "1", 1);
     if (argc > 0 && argv[0]) {
       if (std::strchr(argv[0], '/')) {
         execv(argv[0], argv);

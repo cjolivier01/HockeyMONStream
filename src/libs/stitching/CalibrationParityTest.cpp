@@ -70,7 +70,7 @@ fs::path model_path(const char* variable, const char* filename) {
   if (const char* value = std::getenv(variable); value != nullptr && *value != '\0')
     return value;
   const char* home = std::getenv("HOME");
-  return fs::path(home == nullptr ? "/nonexistent" : home) / ".cache/hmstream/models" / filename;
+  return fs::path(home == nullptr ? "/nonexistent" : home) / ".cache/hstream/models" / filename;
 }
 
 std::vector<cv::Point2f> yaml_points(const YAML::Node& node) {
@@ -201,7 +201,7 @@ int main(int argc, char** argv) {
   if (required() && !fs::is_regular_file(game_dir / "s.png"))
     return skip_or_fail("mandatory parity fixture is missing s.png: " + game_dir.string());
 
-  char temporary_template[] = "/tmp/hmstream-python-parity-XXXXXX";
+  char temporary_template[] = "/tmp/hstream-python-parity-XXXXXX";
   const char* temporary = ::mkdtemp(temporary_template);
   if (temporary == nullptr)
     return 1;

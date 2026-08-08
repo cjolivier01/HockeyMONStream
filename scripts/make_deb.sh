@@ -1,9 +1,9 @@
 #!/bin/bash
-# Build an HMStream .deb that installs the application to /opt/hmstream.
+# Build an HStream .deb that installs the application to /opt/hstream.
 # The installed run.sh launches hstream-cli without needing the source tree.
 #
 # Internal usage (the public entrypoints are make deb-ubuntu24/deb-ubuntu26):
-#   HMSTREAM_IMMUTABLE_SOURCE=1 scripts/make_deb.sh [--version X.Y.Z] [--output-dir DIR]
+#   HSTREAM_IMMUTABLE_SOURCE=1 scripts/make_deb.sh [--version X.Y.Z] [--output-dir DIR]
 #
 #   --version X.Y.Z  Override package version (default: git describe --tags --always).
 #   --output-dir DIR Where to write the .deb (default: dist/).
@@ -13,8 +13,8 @@
 set -euo pipefail
 
 TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-INSTALL_PREFIX="/opt/hmstream"
-PKG_NAME="hmstream"
+INSTALL_PREFIX="/opt/hstream"
+PKG_NAME="hstream"
 PKG_ARCH="${PKG_ARCH:-}"
 DEEPSTREAM_REQUIRED_VERSION="9.1.0-1+resolute2"
 
@@ -33,22 +33,22 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-if [[ "${HMSTREAM_IMMUTABLE_SOURCE:-}" != "1" ]]; then
+if [[ "${HSTREAM_IMMUTABLE_SOURCE:-}" != "1" ]]; then
   echo "ERROR: make_deb.sh only packages an immutable source snapshot from the target-OS Docker builder." >&2
   echo "Use 'make deb-ubuntu24' or 'make deb-ubuntu26'." >&2
   exit 1
 fi
 
-if [[ ! -f "${TOPDIR}/.hmstream-package-source" ]]; then
+if [[ ! -f "${TOPDIR}/.hstream-package-source" ]]; then
   echo "ERROR: immutable source revision manifest is missing." >&2
   exit 1
 fi
-read -r SOURCE_REVISION SOURCE_EPOCH < "${TOPDIR}/.hmstream-package-source"
+read -r SOURCE_REVISION SOURCE_EPOCH < "${TOPDIR}/.hstream-package-source"
 if [[ ! "${SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ || ! "${SOURCE_EPOCH}" =~ ^[0-9]+$ ]]; then
   echo "ERROR: immutable source revision manifest is invalid." >&2
   exit 1
 fi
-TARGET_UBUNTU="${HMSTREAM_TARGET_UBUNTU:-}"
+TARGET_UBUNTU="${HSTREAM_TARGET_UBUNTU:-}"
 if [[ -z "${TARGET_UBUNTU}" && -r /etc/os-release ]]; then
   # shellcheck disable=SC1091
   source /etc/os-release
@@ -59,7 +59,7 @@ fi
 case "${TARGET_UBUNTU}" in
   24.04|26.04) ;;
   *)
-    echo "ERROR: HMSTREAM_TARGET_UBUNTU must identify Ubuntu 24.04 or 26.04." >&2
+    echo "ERROR: HSTREAM_TARGET_UBUNTU must identify Ubuntu 24.04 or 26.04." >&2
     exit 1
     ;;
 esac
@@ -89,7 +89,7 @@ if [[ "${PKG_ARCH}" == "all" || "${PKG_ARCH}" == "any" || "${PKG_ARCH}" == "sour
   exit 1
 fi
 if [[ "${PKG_ARCH}" != "amd64" ]]; then
-  echo "ERROR: HMStream Debian packaging currently supports amd64 only; ${PKG_ARCH} runtime paths are not implemented." >&2
+  echo "ERROR: HStream Debian packaging currently supports amd64 only; ${PKG_ARCH} runtime paths are not implemented." >&2
   exit 1
 fi
 if ! dpkg --validate-version "${PKG_VERSION}" >/dev/null 2>&1; then
@@ -98,29 +98,29 @@ if ! dpkg --validate-version "${PKG_VERSION}" >/dev/null 2>&1; then
 fi
 
 # ---------- verify artifacts ----------
-HMSTREAM_CLI="${TOPDIR}/bazel-bin/src/apps/pipeline-app/hstream-cli"
-HMSTREAM_ASSETS="${TOPDIR}/bazel-bin/src/apps/hmstream-assets/hmstream-assets"
-HMSTREAM_UI="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-ui"
-HMSTREAM_GST_PLUGINS=(
+HSTREAM_CLI="${TOPDIR}/bazel-bin/src/apps/pipeline-app/hstream-cli"
+HSTREAM_ASSETS="${TOPDIR}/bazel-bin/src/apps/hstream-assets/hstream-assets"
+HSTREAM_UI="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-ui"
+HSTREAM_GST_PLUGINS=(
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so"
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-playtracker/libgstplaytracker.so"
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so"
 )
-if [[ ! -f "${HMSTREAM_CLI}" ]]; then
-  echo "ERROR: ${HMSTREAM_CLI} not found. Run 'make hstream-cli' first, or pass --build." >&2
+if [[ ! -f "${HSTREAM_CLI}" ]]; then
+  echo "ERROR: ${HSTREAM_CLI} not found. Run 'make hstream-cli' first, or pass --build." >&2
   exit 1
 fi
-if [[ ! -f "${HMSTREAM_ASSETS}" ]]; then
-  echo "ERROR: ${HMSTREAM_ASSETS} not found. Run 'make hmstream-assets' first, or pass --build." >&2
+if [[ ! -f "${HSTREAM_ASSETS}" ]]; then
+  echo "ERROR: ${HSTREAM_ASSETS} not found. Run 'make hstream-assets' first, or pass --build." >&2
   exit 1
 fi
-if [[ ! -f "${HMSTREAM_UI}" ]]; then
-  echo "ERROR: ${HMSTREAM_UI} not found. Run 'make hstream-ui' first, or pass --build." >&2
+if [[ ! -f "${HSTREAM_UI}" ]]; then
+  echo "ERROR: ${HSTREAM_UI} not found. Run 'make hstream-ui' first, or pass --build." >&2
   exit 1
 fi
-for plugin in "${HMSTREAM_GST_PLUGINS[@]}"; do
+for plugin in "${HSTREAM_GST_PLUGINS[@]}"; do
   if [[ ! -f "${plugin}" ]]; then
-    echo "ERROR: ${plugin} not found. Run 'make hmstream-gst-plugins' first, or use 'make deb'." >&2
+    echo "ERROR: ${plugin} not found. Run 'make hstream-gst-plugins' first, or use 'make deb'." >&2
     exit 1
   fi
 done
@@ -147,9 +147,9 @@ validate_elf_arch() {
     return 1
   }
 }
-validate_elf_arch "${HMSTREAM_CLI}"
-validate_elf_arch "${HMSTREAM_ASSETS}"
-validate_elf_arch "${HMSTREAM_UI}"
+validate_elf_arch "${HSTREAM_CLI}"
+validate_elf_arch "${HSTREAM_ASSETS}"
+validate_elf_arch "${HSTREAM_UI}"
 
 # ---------- ensure tools ----------
 if ! command -v patchelf &>/dev/null; then
@@ -268,14 +268,14 @@ install_lib() {
 }
 
 # ---------- binaries ----------
-echo "[make_deb] Staging hmstream binaries..."
-cp "${HMSTREAM_CLI}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-cli"
+echo "[make_deb] Staging hstream binaries..."
+cp "${HSTREAM_CLI}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-cli"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-cli"
 package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-cli")
-cp "${HMSTREAM_ASSETS}" "${STAGING}${INSTALL_PREFIX}/bin/hmstream-assets"
-patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hmstream-assets"
-package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hmstream-assets")
-cp "${HMSTREAM_UI}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
+cp "${HSTREAM_ASSETS}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-assets"
+patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-assets"
+package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-assets")
+cp "${HSTREAM_UI}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
 package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-ui")
 ln -s hstream-cli "${STAGING}${INSTALL_PREFIX}/bin/pipeline-app"
@@ -284,8 +284,8 @@ ln -s hstream-cli "${STAGING}${INSTALL_PREFIX}/bin/pipeline-app"
 echo "[make_deb] Collecting bundled shared libs..."
 declare -A seen_libs
 
-# Collect from the binaries and the exact HMStream-owned plugin set.
-all_elfs=("${HMSTREAM_CLI}" "${HMSTREAM_ASSETS}" "${HMSTREAM_UI}" "${HMSTREAM_GST_PLUGINS[@]}")
+# Collect from the binaries and the exact HStream-owned plugin set.
+all_elfs=("${HSTREAM_CLI}" "${HSTREAM_ASSETS}" "${HSTREAM_UI}" "${HSTREAM_GST_PLUGINS[@]}")
 
 for elf in "${all_elfs[@]}"; do
   while IFS= read -r lib_path; do
@@ -321,12 +321,12 @@ install -m 0644 "${ORT_SOURCE}/ThirdPartyNotices.txt" \
   "${STAGING}${INSTALL_PREFIX}/share/licenses/onnxruntime/ThirdPartyNotices.txt"
 install -m 0644 "${TOPDIR}/LICENSE.md" "${STAGING}/usr/share/doc/${PKG_NAME}/copyright"
 
-# ---------- HMStream GStreamer plugins ----------
+# ---------- HStream GStreamer plugins ----------
 echo "[make_deb] Staging GStreamer plugins..."
 
 # DeepStream owns its NVIDIA plugins. Stage only the three plugins built and
 # owned by this repository; never pick up stale Bazel outputs opportunistically.
-for so in "${HMSTREAM_GST_PLUGINS[@]}"; do
+for so in "${HSTREAM_GST_PLUGINS[@]}"; do
   if ! is_gstreamer_plugin "${so}"; then
     echo "ERROR: expected GStreamer plugin does not export a plugin descriptor: ${so}" >&2
     exit 1
@@ -367,21 +367,21 @@ rm -rf "${STAGING}${INSTALL_PREFIX}/configs/systemd"
 # works without a token, download, or writable model directory.
 for native_config in ds_hockey_app_config.yaml ds_hockey_configure_stitching.yaml; do
   sed -i \
-    "s#\\\$HOME/.cache/hmstream/models/#${INSTALL_PREFIX}/pretrained/native-calibration/#g" \
+    "s#\\\$HOME/.cache/hstream/models/#${INSTALL_PREFIX}/pretrained/native-calibration/#g" \
     "${STAGING}${INSTALL_PREFIX}/configs/${native_config}"
 done
 
 # ---------- pretrained assets ----------
 echo "[make_deb] Staging declared non-engine pretrained assets..."
 asset_manifest="$(mktemp)"
-if ! "${HMSTREAM_ASSETS}" --verify "${TOPDIR}/configs/ds_hockey_app_config.yaml"; then
+if ! "${HSTREAM_ASSETS}" --verify "${TOPDIR}/configs/ds_hockey_app_config.yaml"; then
   echo "ERROR: every package-owned pretrained asset must exist and match its declared SHA256." >&2
   exit 1
 fi
-"${HMSTREAM_ASSETS}" --print-targets "${TOPDIR}/configs/ds_hockey_app_config.yaml" \
+"${HSTREAM_ASSETS}" --print-targets "${TOPDIR}/configs/ds_hockey_app_config.yaml" \
   > "${asset_manifest}"
 pretrained_root="$(readlink -f "${TOPDIR}/pretrained" 2>/dev/null || true)"
-model_cache_root="$(readlink -f "${HOME}/.cache/hmstream/models" 2>/dev/null || true)"
+model_cache_root="$(readlink -f "${HOME}/.cache/hstream/models" 2>/dev/null || true)"
 while IFS= read -r asset; do
   [[ -n "${asset}" ]] || continue
   [[ "${asset}" != *.engine ]] || continue
@@ -401,7 +401,7 @@ while IFS= read -r asset; do
   dest="${STAGING}${INSTALL_PREFIX}/pretrained/${rel}"
   mkdir -p "$(dirname "${dest}")"
   # Downloaded assets may inherit mkstemp's owner-only mode.  Package runtime
-  # data as world-readable so unprivileged hmstream processes can load it.
+  # data as world-readable so unprivileged hstream processes can load it.
   source_hash_before="$(sha256sum "${asset_real}")"
   source_hash_before="${source_hash_before%% *}"
   install -m 0644 "${asset_real}" "${dest}"
@@ -416,7 +416,7 @@ while IFS= read -r asset; do
 done < "${asset_manifest}"
 # Close the verification/copy window by confirming the sources still match the
 # declared manifest after every staged byte has been rehashed.
-if ! "${HMSTREAM_ASSETS}" --verify "${TOPDIR}/configs/ds_hockey_app_config.yaml"; then
+if ! "${HSTREAM_ASSETS}" --verify "${TOPDIR}/configs/ds_hockey_app_config.yaml"; then
   echo "ERROR: a pretrained source changed during package staging." >&2
   exit 1
 fi
@@ -430,7 +430,7 @@ cat > "${STAGING}${INSTALL_PREFIX}/run.sh" <<'RUNSH'
 #!/bin/bash
 set -euo pipefail
 
-INSTALL_DIR=/opt/hmstream
+INSTALL_DIR=/opt/hstream
 
 # DeepStream 9.1's legacy nvstreammux rejects native 8K input buffers. The
 # replacement mux handles the source resolution used for stitching. Preserve
@@ -466,16 +466,16 @@ GST_REGISTRY_DIR="${HOME}/.cache/gstreamer-1.0"
 mkdir -p "${GST_REGISTRY_DIR}"
 export GST_REGISTRY="${GST_REGISTRY_DIR}/registry.hstream.$(uname -m).bin"
 
-# The installed launcher runs from /opt/hmstream so packaged config-relative
+# The installed launcher runs from /opt/hstream so packaged config-relative
 # paths resolve correctly. Keep generated video outputs in a per-user writable
 # location instead of trying to create them below the read-only install tree.
-export HM_OUTPUT_WORK_DIR="${HM_OUTPUT_WORK_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/hmstream/output_workdirs}"
+export HM_OUTPUT_WORK_DIR="${HM_OUTPUT_WORK_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/hstream/output_workdirs}"
 mkdir -p "${HM_OUTPUT_WORK_DIR}"
 
 prepend_path GST_PLUGIN_PATH "${INSTALL_DIR}/lib/gst-plugins"
 prepend_path GST_PLUGIN_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 
-# Bundled libs (OpenCV etc.) are embedded in /opt/hmstream/lib; the binary's
+# Bundled libs (OpenCV etc.) are embedded in /opt/hstream/lib; the binary's
 # RPATH already includes this dir, but gst-plugins are dlopen'd at runtime so
 # LD_LIBRARY_PATH is still needed for them.
 prepend_path LD_LIBRARY_PATH "${INSTALL_DIR}/lib"
@@ -817,7 +817,7 @@ cat > "${STAGING}${INSTALL_PREFIX}/hstream-ui.sh" <<'UISH'
 #!/bin/bash
 set -euo pipefail
 
-INSTALL_DIR=/opt/hmstream
+INSTALL_DIR=/opt/hstream
 
 export USE_NEW_NVSTREAMMUX="${USE_NEW_NVSTREAMMUX:-yes}"
 
@@ -835,7 +835,7 @@ prepend_path() {
 
 # Archive/ENCODE_FILE runs launched by the installed UI need a writable
 # working directory just like direct CLI runs.
-export HM_OUTPUT_WORK_DIR="${HM_OUTPUT_WORK_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/hmstream/output_workdirs}"
+export HM_OUTPUT_WORK_DIR="${HM_OUTPUT_WORK_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/hstream/output_workdirs}"
 mkdir -p "${HM_OUTPUT_WORK_DIR}"
 
 prepend_path GST_PLUGIN_PATH "${INSTALL_DIR}/lib/gst-plugins"
@@ -856,8 +856,8 @@ chmod 755 "${STAGING}${INSTALL_PREFIX}/hstream-ui.sh"
 cat > "${STAGING}/DEBIAN/postinst" <<'POSTINST'
 #!/bin/sh
 set -e
-if [ "$1" = configure ] && [ -d /opt/hmstream/python ]; then
-  rm -rf -- /opt/hmstream/python
+if [ "$1" = configure ] && [ -d /opt/hstream/python ]; then
+  rm -rf -- /opt/hstream/python
 fi
 exit 0
 POSTINST
@@ -865,7 +865,7 @@ chmod 0755 "${STAGING}/DEBIAN/postinst"
 
 # ---------- package-owned command wrappers ----------
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hstream-cli"
-ln -s "${INSTALL_PREFIX}/bin/hmstream-assets" "${STAGING}/usr/bin/hmstream-assets"
+ln -s "${INSTALL_PREFIX}/bin/hstream-assets" "${STAGING}/usr/bin/hstream-assets"
 ln -s "${INSTALL_PREFIX}/hstream-ui.sh" "${STAGING}/usr/bin/hstream-ui"
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hstream"
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/pipeline-app"
@@ -888,7 +888,7 @@ Standards-Version: 4.6.2
 
 Package: ${PKG_NAME}
 Architecture: any
-Description: HMStream dependency resolution metadata
+Description: HStream dependency resolution metadata
 SHLIBDEPS_CONTROL
 
 declare -a shlibdeps_elf_args=()
@@ -897,7 +897,7 @@ declare -a shlibdeps_private_lib_dirs=()
 for elf in "${package_elfs[@]}"; do
   if patchelf --print-needed "${elf}" \
     | grep -Eq '^lib(cudart|npp[^.]*|cublas[^.]*|cufft[^.]*|curand[^.]*|cusolver[^.]*|cusparse[^.]*|nvrtc[^.]*|nvJitLink)[.]so[.]12$'; then
-    echo "ERROR: CUDA 12 dependency entered the CUDA 13.2 HMStream package: ${elf}" >&2
+    echo "ERROR: CUDA 12 dependency entered the CUDA 13.2 HStream package: ${elf}" >&2
     patchelf --print-needed "${elf}" \
       | grep -E '^lib(cudart|npp[^.]*|cublas[^.]*|cufft[^.]*|curand[^.]*|cusolver[^.]*|cusparse[^.]*|nvrtc[^.]*|nvJitLink)[.]so[.]12$' >&2
     exit 1
@@ -907,7 +907,7 @@ done
 
 # nvtracker is provided by the DeepStream Debian package, but its low-level
 # implementation is dlopen'd and therefore its CUDA/MQTT dependencies are not
-# visible in HMStream's own ELF graph. Resolve that runtime graph without
+# visible in HStream's own ELF graph. Resolve that runtime graph without
 # copying any DeepStream-owned files into this package.
 DEEPSTREAM_TRACKER_RUNTIME="/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so"
 if [[ ! -f "${DEEPSTREAM_TRACKER_RUNTIME}" ]]; then
@@ -1053,7 +1053,7 @@ if ! grep -Eq '(^|[[:space:]])libcuda[.]so[.]1([[:space:](,]|$)' <<< "${SHLIB_DE
 fi
 if grep -Eiq '(^|[[:space:]])(libnccl[^,[:space:]]*|python[^,[:space:]]*|onnxruntime[^,[:space:]]*)' \
     <<< "${SHLIB_DEPENDS}"; then
-  echo "ERROR: native HMStream unexpectedly acquired a Python, NCCL, or external ONNX Runtime dependency:" >&2
+  echo "ERROR: native HStream unexpectedly acquired a Python, NCCL, or external ONNX Runtime dependency:" >&2
   printf '%s\n' "${SHLIB_DEPENDS}" >&2
   exit 1
 fi
@@ -1064,9 +1064,9 @@ cat > "${STAGING}/DEBIAN/control" <<CONTROL
 Package: ${PKG_NAME}
 Version: ${PKG_VERSION}
 Architecture: ${PKG_ARCH}
-X-HMStream-Source-Commit: ${SOURCE_REVISION}
-X-HMStream-Source-Epoch: ${SOURCE_EPOCH}
-X-HMStream-Target-Ubuntu: ${TARGET_UBUNTU}
+X-HStream-Source-Commit: ${SOURCE_REVISION}
+X-HStream-Source-Epoch: ${SOURCE_EPOCH}
+X-HStream-Target-Ubuntu: ${TARGET_UBUNTU}
 Maintainer: Christopher Olivier <cjolivier01@gmail.com>
 Installed-Size: ${INSTALLED_SIZE}
 Depends: ${SHLIB_DEPENDS},
@@ -1077,8 +1077,8 @@ Depends: ${SHLIB_DEPENDS},
  gstreamer1.0-nice,
  hugin-tools,
  enblend
-Description: HMStream video pipeline application and UI
- Installs the HMStream CLI/UI binaries, private shared libraries,
+Description: HStream video pipeline application and UI
+ Installs the HStream CLI/UI binaries, private shared libraries,
  GStreamer plugins, configs, native ONNX Runtime, and non-engine pretrained
  assets to ${INSTALL_PREFIX}. Runtime calibration does not launch Python.
  .
@@ -1094,7 +1094,7 @@ CONTROL
 
 if find "${STAGING}${INSTALL_PREFIX}" -type f \( -name '*.py' -o -name '*.pyc' -o -name '*.pyo' \) -print -quit \
   | grep -q .; then
-  echo "ERROR: Python runtime files unexpectedly entered the native HMStream package." >&2
+  echo "ERROR: Python runtime files unexpectedly entered the native HStream package." >&2
   exit 1
 fi
 if grep -RIE '(python3|PYTHONPATH|HM_PYTHON|setup_pretrained_assets[.]py|hmlib[.]cli)' \
@@ -1122,7 +1122,7 @@ if ! patchelf --print-needed "${STAGING}${INSTALL_PREFIX}/bin/hstream-cli" | gre
 fi
 for elf in "${package_elfs[@]}"; do
   if patchelf --print-needed "${elf}" 2>/dev/null | grep -qi '^libnccl'; then
-    echo "ERROR: an HMStream package ELF unexpectedly needs NCCL: ${elf}" >&2
+    echo "ERROR: an HStream package ELF unexpectedly needs NCCL: ${elf}" >&2
     exit 1
   fi
 done
@@ -1132,7 +1132,7 @@ mkdir -p "${OUTPUT_DIR}"
 DEB_PATH="${OUTPUT_DIR}/${PKG_NAME}_${PKG_VERSION}_${PKG_ARCH}.deb"
 echo "[make_deb] Building ${DEB_PATH}..."
 dpkg-deb --build --root-owner-group "${STAGING}" "${DEB_PATH}"
-INSTALLER_PATH="${OUTPUT_DIR}/install-hmstream-deb"
+INSTALLER_PATH="${OUTPUT_DIR}/install-hstream-deb"
 install -m 0755 "${TOPDIR}/scripts/install_deb.sh" "${INSTALLER_PATH}"
 
 echo ""
@@ -1141,11 +1141,11 @@ echo ""
 echo "Install with:"
 printf '  sudo %s \\\n' "${INSTALLER_PATH}"
 printf '    --deepstream-deb=%s \\\n' '/path/to/deepstream-9.1_9.1.0-1+resolute2_amd64.deb'
-echo "    --hmstream-deb=${DEB_PATH}"
+echo "    --hstream-deb=${DEB_PATH}"
 echo "  (the installer configures NVIDIA repositories; DeepStream itself remains a local release artifact)"
 echo ""
 echo "Run with:"
-echo "  /opt/hmstream/run.sh [args...]"
+echo "  /opt/hstream/run.sh [args...]"
 echo "  hstream-cli [args...]   (after install)"
 echo "  hstream-ui              (after install)"
 echo "  hstream [args...]        (compatibility wrapper after install)"

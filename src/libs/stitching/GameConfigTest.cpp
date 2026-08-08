@@ -85,45 +85,45 @@ int main() {
   YAML::Node first_save(YAML::NodeType::Map);
   first_save["pipeline"]["generated"] = true;
   YAML::Node concurrently_created(YAML::NodeType::Map);
-  concurrently_created["hmstream_ui"]["keep"] = true;
+  concurrently_created["hstream_ui"]["keep"] = true;
   concurrently_created["pipeline"]["remote"] = true;
   const YAML::Node first_merged =
       hm::stitching::apply_game_config_diff(absent_baseline, first_save, concurrently_created);
   ok &= expect(
       first_merged["pipeline"]["generated"].as<bool>() && first_merged["pipeline"]["remote"].as<bool>() &&
-          first_merged["hmstream_ui"]["keep"].as<bool>(),
+          first_merged["hstream_ui"]["keep"].as<bool>(),
       "a first save after an absent baseline must preserve concurrent siblings in the same map");
 
   YAML::Node removed_selection(YAML::NodeType::Map);
-  removed_selection["hmstream_ui"]["video_roles"]["right"] = YAML::Node(YAML::NodeType::Sequence);
+  removed_selection["hstream_ui"]["video_roles"]["right"] = YAML::Node(YAML::NodeType::Sequence);
   YAML::Node original_selection(YAML::NodeType::Map);
-  original_selection["hmstream_ui"]["video_roles"]["right"].push_back("A.mp4");
+  original_selection["hstream_ui"]["video_roles"]["right"].push_back("A.mp4");
   original_selection["game"]["stitching"]["frame_offsets"]["right"] = 90;
   YAML::Node concurrent_selection = YAML::Clone(removed_selection);
-  concurrent_selection["hmstream_ui"]["video_roles"]["right"].push_back("B.mp4");
+  concurrent_selection["hstream_ui"]["video_roles"]["right"].push_back("B.mp4");
   concurrent_selection["game"]["stitching"]["frame_offsets"]["right"] = 91;
   concurrent_selection["concurrent"]["keep"] = true;
   const YAML::Node rollback_merged =
       hm::stitching::merge_game_config_rollback(removed_selection, original_selection, concurrent_selection);
   ok &= expect(
-      rollback_merged["hmstream_ui"]["video_roles"]["right"].size() == 2 &&
-          rollback_merged["hmstream_ui"]["video_roles"]["right"][0].as<std::string>() == "A.mp4" &&
-          rollback_merged["hmstream_ui"]["video_roles"]["right"][1].as<std::string>() == "B.mp4" &&
+      rollback_merged["hstream_ui"]["video_roles"]["right"].size() == 2 &&
+          rollback_merged["hstream_ui"]["video_roles"]["right"][0].as<std::string>() == "A.mp4" &&
+          rollback_merged["hstream_ui"]["video_roles"]["right"][1].as<std::string>() == "B.mp4" &&
           rollback_merged["game"]["stitching"]["frame_offsets"]["right"].as<int>() == 91 &&
           rollback_merged["concurrent"]["keep"].as<bool>(),
       "rollback merging must restore removed sequence entries without overwriting same-path concurrent updates");
 
   YAML::Node auto_published(YAML::NodeType::Map);
   YAML::Node pre_auto(YAML::NodeType::Map);
-  pre_auto["hmstream_ui"]["video_roles"]["left"].push_back("A.mp4");
+  pre_auto["hstream_ui"]["video_roles"]["left"].push_back("A.mp4");
   YAML::Node post_auto(YAML::NodeType::Map);
-  post_auto["hmstream_ui"]["video_roles"]["left"].push_back("B.mp4");
+  post_auto["hstream_ui"]["video_roles"]["left"].push_back("B.mp4");
   const YAML::Node absent_sequence_merged =
       hm::stitching::merge_game_config_rollback(auto_published, pre_auto, post_auto);
   ok &= expect(
-      absent_sequence_merged["hmstream_ui"]["video_roles"]["left"].size() == 2 &&
-          absent_sequence_merged["hmstream_ui"]["video_roles"]["left"][0].as<std::string>() == "A.mp4" &&
-          absent_sequence_merged["hmstream_ui"]["video_roles"]["left"][1].as<std::string>() == "B.mp4",
+      absent_sequence_merged["hstream_ui"]["video_roles"]["left"].size() == 2 &&
+          absent_sequence_merged["hstream_ui"]["video_roles"]["left"][0].as<std::string>() == "A.mp4" &&
+          absent_sequence_merged["hstream_ui"]["video_roles"]["left"][1].as<std::string>() == "B.mp4",
       "rollback merging must restore a sequence deleted by the baseline alongside a newer sequence");
 
   YAML::Node ordered_baseline(YAML::NodeType::Sequence);
@@ -141,7 +141,7 @@ int main() {
           ordered_merged[1].as<std::string>() == "A.mp4" && ordered_merged[2].as<std::string>() == "C.mp4",
       "rollback merging must preserve the latest sequence's relative order around restored entries");
 
-  const fs::path interrupted = root / ".hmstream-rink-interrupted";
+  const fs::path interrupted = root / ".hstream-rink-interrupted";
   fs::create_directories(interrupted / "previous");
   std::ofstream(interrupted / "previous" / "config.yaml") << "recovered:\n  old: true\n";
   std::ofstream(interrupted / "previous" / "rink_mask_0.png") << "old-mask";

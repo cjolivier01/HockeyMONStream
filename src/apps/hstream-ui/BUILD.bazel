@@ -1,4 +1,4 @@
-exports_files(["HmStreamWindow.cpp"])
+exports_files(["HStreamWindow.cpp"])
 
 COMMON_COPTS = [
     "-x",
@@ -20,17 +20,17 @@ QT_UI_COMPATIBILITY = select({
 filegroup(
     name = "runtime_sources",
     srcs = [
-        "HmStreamWindow.cpp",
-        "HmStreamWindow.h",
+        "HStreamWindow.cpp",
+        "HStreamWindow.h",
         "main.cpp",
     ],
     visibility = ["//visibility:public"],
 )
 
 cc_library(
-    name = "hmstream_window",
-    srcs = ["HmStreamWindow.cpp"],
-    hdrs = ["HmStreamWindow.h"],
+    name = "hstream_window",
+    srcs = ["HStreamWindow.cpp"],
+    hdrs = ["HStreamWindow.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
@@ -48,21 +48,21 @@ cc_binary(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
-        ":hmstream_window",
+        ":hstream_window",
         "@qt//:qt_widgets",
     ],
 )
 
 cc_test(
-    name = "hmstream_ui_test",
-    srcs = ["HmStreamWindowTest.cpp"],
+    name = "hstream_ui_test",
+    srcs = ["HStreamWindowTest.cpp"],
     copts = COMMON_COPTS,
     env = {
         "QT_QPA_PLATFORM": "offscreen",
     },
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
-        ":hmstream_window",
+        ":hstream_window",
         "@qt//:qt_test",
         "@qt//:qt_widgets",
         "@yaml-cpp",

@@ -137,7 +137,7 @@ int main() {
       expect(!hm::stitching::HuginProject::InsertControlPoints(base, matches).ok(), "non-finite coordinates must fail");
 
   namespace fs = std::filesystem;
-  const fs::path root = fs::temp_directory_path() / ("hmstream-hugin-test-" + std::to_string(::getpid()));
+  const fs::path root = fs::temp_directory_path() / ("hstream-hugin-test-" + std::to_string(::getpid()));
   fs::create_directories(root / "game");
   ok &= expect(
       cv::imwrite((root / "game" / "left.png").string(), cv::Mat(48, 64, CV_8UC3, cv::Scalar(1, 2, 3))),
@@ -283,7 +283,7 @@ int main() {
       !interrupted_before_publication.ok(), "injected interruption after durable preparation must stop publication");
   bool durable_prepared_journal = false;
   for (const auto& entry : fs::directory_iterator(root / "game")) {
-    if (entry.is_directory() && entry.path().filename().string().rfind(".hmstream-stitch-", 0) == 0)
+    if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-stitch-", 0) == 0)
       durable_prepared_journal = true;
   }
   ok &= expect(durable_prepared_journal, "durably prepared Hugin publication must retain its recovery journal");
@@ -332,7 +332,7 @@ int main() {
   ok &= expect(
       fs::file_size(root / "game" / "mapping_0000.tif") > 1, "failed Hugin validation must not publish a corrupt TIFF");
 
-  const fs::path interrupted = root / "game" / ".hmstream-stitch-interrupted";
+  const fs::path interrupted = root / "game" / ".hstream-stitch-interrupted";
   fs::create_directories(interrupted / "previous");
   const std::vector<std::string> artifact_names = {
       "left.png",
@@ -385,7 +385,7 @@ int main() {
               fs::last_write_time(root / "game" / "mapping_0000.tif"),
       "restored Hugin dependency ordering must remain usable");
 
-  const fs::path malformed = root / "game" / ".hmstream-stitch-malformed";
+  const fs::path malformed = root / "game" / ".hstream-stitch-malformed";
   fs::create_directories(malformed / "previous");
   std::ofstream(malformed / "state") << "PREPARE\n";
   const auto malformed_recovery = hm::stitching::HuginProject::Recover(root / "game");
@@ -396,7 +396,7 @@ int main() {
       "unknown Hugin transaction state must not touch the committed generation");
   fs::remove_all(malformed);
 
-  const fs::path multiline = root / "game" / ".hmstream-stitch-multiline";
+  const fs::path multiline = root / "game" / ".hstream-stitch-multiline";
   fs::create_directories(multiline / "previous");
   std::ofstream(multiline / "state") << "PREPARED\n\nCOMMITTED\n";
   const auto multiline_recovery = hm::stitching::HuginProject::Recover(root / "game");
@@ -407,21 +407,21 @@ int main() {
       "multiline Hugin transaction state must not touch the committed generation");
   fs::remove_all(multiline);
 
-  const fs::path nonregular = root / "game" / ".hmstream-stitch-nonregular";
+  const fs::path nonregular = root / "game" / ".hstream-stitch-nonregular";
   fs::create_directories(nonregular / "state");
   const auto nonregular_recovery = hm::stitching::HuginProject::Recover(root / "game");
   ok &= expect(!nonregular_recovery.ok(), "non-regular Hugin transaction state must fail closed");
   ok &= expect(fs::exists(nonregular), "non-regular Hugin transaction state must preserve its journal");
   fs::remove_all(nonregular);
 
-  const fs::path unprepared = root / "game" / ".hmstream-stitch-unprepared";
+  const fs::path unprepared = root / "game" / ".hstream-stitch-unprepared";
   fs::create_directories(unprepared);
   std::ofstream(unprepared / "temporary") << "not published\n";
   ok &= expect(
       hm::stitching::HuginProject::Recover(root / "game").ok() && !fs::exists(unprepared),
       "unprepared Hugin staging without publication metadata must be cleaned");
 
-  const fs::path committed = root / "game" / ".hmstream-stitch-committed";
+  const fs::path committed = root / "game" / ".hstream-stitch-committed";
   fs::create_directories(committed);
   std::ofstream(committed / "state") << "COMMITTED\n";
   ok &= expect(
@@ -445,7 +445,7 @@ int main() {
   ok &= expect(second_reader_entered && second_reader_ok, "waiting Hugin reader must proceed after lock release");
   bool staging_left_behind = false;
   for (const auto& entry : fs::directory_iterator(root / "game")) {
-    if (entry.path().filename().string().rfind(".hmstream-stitch-", 0) == 0)
+    if (entry.path().filename().string().rfind(".hstream-stitch-", 0) == 0)
       staging_left_behind = true;
   }
   ok &= expect(!staging_left_behind, "private Hugin staging directory must be cleaned");

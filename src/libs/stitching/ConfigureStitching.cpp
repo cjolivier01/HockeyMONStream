@@ -980,7 +980,7 @@ absl::Status create_control_points(
     const std::string& game_dir,
     surface::Surface left_surface,
     surface::Surface right_surface) {
-  std::string pattern = (fs::path(game_dir) / ".hmstream-calibration-input-XXXXXX").string();
+  std::string pattern = (fs::path(game_dir) / ".hstream-calibration-input-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   char* created = ::mkdtemp(writable.data());
@@ -1032,7 +1032,7 @@ absl::Status create_control_points(
 
 namespace {
 
-constexpr const char* kRinkTransactionPrefix = ".hmstream-rink-";
+constexpr const char* kRinkTransactionPrefix = ".hstream-rink-";
 
 absl::Status fsync_path(const fs::path& path, bool directory = false) {
   const int flags = O_RDONLY | O_CLOEXEC | (directory ? O_DIRECTORY : 0);
@@ -1208,7 +1208,7 @@ absl::StatusOr<std::string> stitched_output_generation_id(
   std::ostringstream generation;
   generation.imbue(std::locale::classic());
   generation << std::setprecision(std::numeric_limits<double>::max_digits10);
-  generation << "hmstream-stitched-output-v1\nhugin-bytes:" << hugin_generation.size() << '\n'
+  generation << "hstream-stitched-output-v1\nhugin-bytes:" << hugin_generation.size() << '\n'
              << hugin_generation << "post-stitch-rotate-degrees:" << post_stitch_rotate_degrees << '\n';
   return generation.str();
 }
@@ -1260,7 +1260,7 @@ absl::StatusOr<std::string> configured_output_generation(
 absl::Status validate_output_generation_hugin(
     const std::string& output_generation,
     const std::string& expected_hugin_generation) {
-  constexpr std::string_view prefix = "hmstream-stitched-output-v1\nhugin-bytes:";
+  constexpr std::string_view prefix = "hstream-stitched-output-v1\nhugin-bytes:";
   constexpr std::string_view rotation_prefix = "post-stitch-rotate-degrees:";
   if (output_generation.compare(0, prefix.size(), prefix) != 0)
     return absl::InvalidArgumentError("Invalid stitched-output generation header");
@@ -1420,7 +1420,7 @@ absl::Status save_rink_profile_locked(
   if (!config_transaction.ok())
     return config_transaction.status();
 
-  std::string pattern = (root / ".hmstream-rink-XXXXXX").string();
+  std::string pattern = (root / ".hstream-rink-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   char* created = ::mkdtemp(writable.data());

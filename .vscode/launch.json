@@ -76,7 +76,7 @@
         "GST_PLUGIN_PATH": "${workspaceFolder}/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
         "DISPLAY": ":1",
       },
-      "preLaunchTask": "Make: hstream-cli",
+      "preLaunchTask": "Debug build: hstream-cli",
     },
     {
       "name": "hstream-ui",
@@ -92,7 +92,7 @@
       "env": {
         "DISPLAY": ":1",
       },
-      "preLaunchTask": "Make: hstream-ui",
+      "preLaunchTask": "Debug build: hstream-ui",
     },
     {
       "name": "pipeline-app",
