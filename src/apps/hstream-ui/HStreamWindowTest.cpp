@@ -184,6 +184,7 @@ bool write_fake_runner(const QString& path) {
   file.write("print('USE_NEW_NVSTREAMMUX=' + os.environ.get('USE_NEW_NVSTREAMMUX', ''), flush=True)\n");
   file.write("print('HM_RENDER_SINK=' + os.environ.get('HM_RENDER_SINK', ''), flush=True)\n");
   file.write("print('HM_NO_SCOREBOARD=' + os.environ.get('HM_NO_SCOREBOARD', ''), flush=True)\n");
+  file.write("print('HM_MAX_CONTROL_POINTS=' + os.environ.get('HM_MAX_CONTROL_POINTS', ''), flush=True)\n");
   file.write("print('LD_LIBRARY_PATH=' + os.environ.get('LD_LIBRARY_PATH', ''), flush=True)\n");
   file.write("if '--clean' in sys.argv[1:]:\n");
   file.write("    print('clean runner exiting', flush=True)\n");
@@ -193,11 +194,8 @@ bool write_fake_runner(const QString& path) {
   file.write("time.sleep(0.05)\n");
   file.write("sys.stdout.write(' blue runner line\\033[0m\\n')\n");
   file.write("sys.stdout.flush()\n");
-  file.write(
-      "if os.environ.get('HSTREAM_UI_TEST_COMPLETE_CALIBRATION') == '1' and "
-      "any(arg.endswith('ds_hockey_configure_stitching.yaml') for arg in sys.argv[1:]):\n");
-  file.write("    print('calibration runner complete', flush=True)\n");
-  file.write("    sys.exit(0)\n");
+  file.write("if os.environ.get('HSTREAM_UI_TEST_COMPLETE_CALIBRATION') == '1':\n");
+  file.write("    print('hmstitcher: one-pass stitching configuration complete', flush=True)\n");
   file.write("deadline = time.monotonic() + 5.0\n");
   file.write("while time.monotonic() < deadline:\n");
   file.write("    readable, _, _ = select.select([sys.stdin], [], [], 0.05)\n");
@@ -989,14 +987,19 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     QTest::qWait(10);
   }
   if (!expect(
-          window->logText().contains("ds_hockey_configure_stitching.yaml"),
-          "Calibration should use stitching config") ||
+          window->logText().contains("ds_hockey_app_config.yaml"),
+          "Calibration should use the one-pass application config") ||
       !expect(window->logText().contains("--clean"), "Changed calibration CP count should clean stitching artifacts") ||
       !expect(
           window->logText().contains("stitching calibration control points changed unset -> 750"),
           "Calibration CP change should be logged") ||
       !expect(
-          window->logText().contains("--enable-sinks=FAKE"), "Calibration stage should avoid rendering gray output") ||
+          window->logText().contains("--enable-sinks=RENDER"),
+          "One-pass calibration should render the stitched output") ||
+      !expect(window->logText().contains("--show-stitching 1"), "Calibration should show stitcher output") ||
+      !expect(
+          window->logText().contains("HM_MAX_CONTROL_POINTS=750"),
+          "One-pass calibration should pass the selected control-point limit") ||
       !expect(
           !window->logText().contains("--render-window-id="),
           "Desktop calibration should use nv3dsink's separate render window by default") ||
@@ -1071,10 +1074,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   {
     const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
     qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
-    const int preview_commands_before = window->logText().count("ds_hockey_app_config.yaml");
+    const int pipeline_commands_before = window->logText().count("pipeline command ");
     activate(start);
     for (int i = 0; i < 200 &&
-         (!window->logText().contains("continuous stitched preview running; camera controls remain available") ||
+         (!window->logText().contains("one-pass stitching calibration complete; continuous stitched preview running") ||
           window->pipelineStateText() != "PLAYING");
          ++i) {
       QApplication::processEvents();
@@ -1085,17 +1088,17 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     const bool has_transitioned_status =
         lookup_yaml_path(after_transition, {"hstream_ui", "stitching_calibration", "status"}, &transitioned_status);
     if (!expect(
-            window->logText().contains("stitching calibration complete; starting continuous stitched preview"),
-            "Successful calibration should automatically start stitched preview") ||
+            window->logText().contains("hmstitcher: one-pass stitching configuration complete"),
+            "Successful one-pass calibration should publish its completion marker") ||
         !expect(
-            window->logText().count("ds_hockey_app_config.yaml") > preview_commands_before,
-            "Post-calibration preview should run the continuous application pipeline") ||
+            window->logText().count("pipeline command ") == pipeline_commands_before + 1,
+            "Calibration and continuous stitched preview should use one application process") ||
         !expect(window->logText().contains("--show-stitching 1"), "Continuous preview should show stitcher output") ||
         !expect(window->pipelineStateText() == "PLAYING", "Continuous stitched preview should remain running") ||
         !expect(
             has_transitioned_status && transitioned_status.IsScalar() &&
                 transitioned_status.as<std::string>() == "complete",
-            "Calibration should be marked complete before continuous preview starts")) {
+            "Calibration should be marked complete while continuous preview keeps running")) {
       qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
       activate(stop);
       return false;
@@ -1109,7 +1112,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     }
     if (!expect(
             window->logText().contains("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=17"),
-            "Stitch controls should remain live after calibration transitions to preview")) {
+            "Stitch controls should remain live after one-pass calibration completes")) {
       qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
       activate(stop);
       return false;
@@ -1127,7 +1130,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       return false;
     }
 
-    const int calibration_commands_before = window->logText().count("ds_hockey_configure_stitching.yaml");
+    const int clean_commands_before = window->logText().count("stitching calibration clean command");
     activate(start);
     for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
       QApplication::processEvents();
@@ -1139,7 +1142,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       QTest::qWait(10);
     }
     if (!expect(
-            window->logText().count("ds_hockey_configure_stitching.yaml") == calibration_commands_before,
+            window->logText().count("stitching calibration clean command") == clean_commands_before,
             "A completed calibration should reopen continuous preview without recalibrating")) {
       return false;
     }

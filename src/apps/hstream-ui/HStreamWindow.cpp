@@ -11,7 +11,6 @@
 #include <QtCore/QSet>
 #include <QtCore/QStandardPaths>
 #include <QtCore/QSysInfo>
-#include <QtCore/QTimer>
 #include <QtCore/Qt>
 #include <QtGui/QPalette>
 #include <QtGui/QResizeEvent>
@@ -62,6 +61,7 @@ namespace {
 
 constexpr int kExposureEvSliderZero = 40;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
+constexpr char kOnePassStitchingCompleteMarker[] = "hmstitcher: one-pass stitching configuration complete";
 
 absl::Status publish_yaml_config(const fs::path& config_path, const YAML::Node& config) {
   std::string contents;
@@ -1768,16 +1768,11 @@ QStringList HStreamWindow::pipelineArguments() const {
   QStringList args;
   args << "-g" << game_id << "--enable-sources=URI-MULTIPLE";
   if (isCalibrationRun()) {
-    if (calibration_phase_ == CalibrationPhase::kConfiguring) {
-      args << "-c" << pipelineConfigPath("ds_hockey_configure_stitching.yaml");
-      args << "--enable-sinks=FAKE";
-    } else {
-      args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
-      args << "--enable-sinks=RENDER";
-      args << "--show-stitching" << "1";
-      if (embed_render_window && stitched_surface_) {
-        args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(stitched_surface_->winId()));
-      }
+    args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
+    args << "--enable-sinks=RENDER";
+    args << "--show-stitching" << "1";
+    if (embed_render_window && stitched_surface_) {
+      args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(stitched_surface_->winId()));
     }
   } else {
     args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
@@ -1807,7 +1802,7 @@ void HStreamWindow::startPipeline() {
 
   const QString runner = pipelineRunnerPath();
   if (QFileInfo(runner).isAbsolute() && !QFileInfo::exists(runner)) {
-    calibration_phase_ = CalibrationPhase::kNone;
+    calibration_pending_ = false;
     pipeline_state_->setText("STOPPED");
     preview_status_->setText("Pipeline failed to start");
     appendLog(QString("pipeline process error=missing runner %1").arg(runner));
@@ -1817,23 +1812,23 @@ void HStreamWindow::startPipeline() {
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   const QString working_dir = pipelineWorkingDirectory();
   configure_pipeline_runtime_environment(env, working_dir);
-  if (isCalibrationRun() && calibration_phase_ == CalibrationPhase::kNone) {
+  if (isCalibrationRun()) {
     bool calibration_required = false;
     if (!prepareStitchingCalibrationRun(runner, working_dir, env, &calibration_required)) {
-      calibration_phase_ = CalibrationPhase::kNone;
+      calibration_pending_ = false;
       pipeline_state_->setText("STOPPED");
       preview_status_->setText("Stitching calibration setup failed");
       updateRunControls();
       return;
     }
-    calibration_phase_ = calibration_required ? CalibrationPhase::kConfiguring : CalibrationPhase::kPreviewing;
-  } else if (!isCalibrationRun()) {
-    calibration_phase_ = CalibrationPhase::kNone;
+    calibration_pending_ = calibration_required;
+  } else {
+    calibration_pending_ = false;
   }
 
   const QStringList args = pipelineArguments();
   if (!setupPretrainedAssets(args)) {
-    calibration_phase_ = CalibrationPhase::kNone;
+    calibration_pending_ = false;
     pipeline_state_->setText("STOPPED");
     preview_status_->setText("Asset setup failed");
     updateRunControls();
@@ -1848,8 +1843,7 @@ void HStreamWindow::startPipeline() {
   // configured polygon active; when none exists, the selector's established
   // HM_NO_SCOREBOARD path writes the disabled sentinel instead.  Operators
   // can still request the selector explicitly with HM_NO_SCOREBOARD=0.
-  if ((!isCalibrationRun() || calibration_phase_ == CalibrationPhase::kPreviewing) &&
-      env.value("HM_NO_SCOREBOARD").isEmpty()) {
+  if (env.value("HM_NO_SCOREBOARD").isEmpty()) {
     env.insert("HM_NO_SCOREBOARD", "1");
   }
   const bool embedded_render = std::any_of(
@@ -1864,12 +1858,15 @@ void HStreamWindow::startPipeline() {
     stitched_fullscreen_button_->setEnabled(embedded_render);
   if (!embedded_render)
     appendLog("nv3dsink render output will open in a separate DeepStream window; embedded preview is disabled");
-  if (isCalibrationRun() && calibration_phase_ == CalibrationPhase::kConfiguring) {
+  if (isCalibrationRun()) {
     const int control_points = stitchingCalibrationControlPoints();
     env.insert("HM_MAX_CONTROL_POINTS", QString::number(control_points));
-    appendLog(QString("stitching calibration control points=%1").arg(control_points));
-  } else if (isCalibrationRun()) {
-    appendLog("stitching calibration is complete; starting continuous stitched preview");
+    if (calibration_pending_) {
+      appendLog(
+          QString("stitching calibration control points=%1; starting one-pass stitched playback").arg(control_points));
+    } else {
+      appendLog("stitching calibration is complete; starting continuous stitched preview");
+    }
   }
   appendLog("audio enabled via pipeline.hmaudio.enable=1; render audio uses the configured system audio sink");
   pipeline_process_->setProcessEnvironment(env);
@@ -1899,15 +1896,16 @@ void HStreamWindow::startPipeline() {
   pipeline_state_->setText("STARTING");
   if (isCalibrationRun()) {
     preview_status_->setText(
-        calibration_phase_ == CalibrationPhase::kConfiguring ? "Starting stitching calibration pipeline"
-                                                             : "Starting continuous stitched preview");
+        calibration_pending_ ? "Starting one-pass stitching calibration and preview"
+                             : "Starting continuous stitched preview");
   } else {
     preview_status_->setText("Starting program pipeline");
   }
   if (isCalibrationRun() && stitched_status_) {
-    if (calibration_phase_ == CalibrationPhase::kConfiguring) {
-      stitched_status_->setText(QString("Calibrating stitching\nControl points: %1\nPreview will start automatically")
-                                    .arg(stitchingCalibrationControlPoints()));
+    if (calibration_pending_) {
+      stitched_status_->setText(
+          QString("Calibrating stitching\nControl points: %1\nPlayback will continue automatically")
+              .arg(stitchingCalibrationControlPoints()));
     } else {
       stitched_status_->setText("Stitching calibrated\nContinuous stitched preview starting");
     }
@@ -1991,12 +1989,12 @@ void HStreamWindow::stopPipeline() {
 void HStreamWindow::handlePipelineStarted() {
   pipeline_state_->setText("PLAYING");
   if (isCalibrationRun()) {
-    const bool previewing = calibration_phase_ == CalibrationPhase::kPreviewing;
+    const bool previewing = !calibration_pending_;
     preview_status_->setText(previewing ? "Continuous stitched preview running" : "Stitching calibration running");
     if (stitched_status_) {
       stitched_status_->setText(
           previewing ? "Stitching calibrated\nContinuous stitched preview running"
-                     : QString("Calibrating stitching\nControl points: %1\nPreview will start automatically")
+                     : QString("Calibrating stitching\nControl points: %1\nPlayback will continue automatically")
                            .arg(stitchingCalibrationControlPoints()));
     }
     if (previewing) {
@@ -2023,31 +2021,10 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   pipeline_uses_process_group_ = false;
   const bool stopped_by_user = pipeline_stop_requested_;
   pipeline_stop_requested_ = false;
-  const CalibrationPhase finished_phase = calibration_phase_;
-  const bool calibration_completed = isCalibrationRun() && finished_phase == CalibrationPhase::kConfiguring &&
-      !stopped_by_user && exit_status == QProcess::NormalExit && exit_code == 0;
-  if (calibration_completed && saveStitchingCalibrationState(stitchingCalibrationControlPoints(), "complete")) {
-    calibration_phase_ = CalibrationPhase::kPreviewing;
-    pipeline_state_->setText("STARTING");
-    preview_status_->setText("Calibration complete; starting continuous stitched preview");
-    if (stitched_status_) {
-      stitched_status_->setText("Stitching calibrated\nContinuous stitched preview starting");
-    }
-    appendLog("stitching calibration complete; starting continuous stitched preview");
-    QTimer::singleShot(0, this, [this]() {
-      if (isCalibrationRun() && calibration_phase_ == CalibrationPhase::kPreviewing && pipeline_process_ &&
-          pipeline_process_->state() == QProcess::NotRunning) {
-        startPipeline();
-      } else {
-        calibration_phase_ = CalibrationPhase::kNone;
-        pipeline_state_->setText("STOPPED");
-        preview_status_->setText("Stitched preview transition cancelled");
-        updateRunControls();
-      }
-    });
-    return;
+  if (isCalibrationRun() && calibration_pending_ && !stopped_by_user) {
+    appendLog("one-pass stitching calibration ended before completion; calibration remains pending");
   }
-  calibration_phase_ = CalibrationPhase::kNone;
+  calibration_pending_ = false;
   pipeline_state_->setText("STOPPED");
   preview_status_->setText("Pipeline stopped");
   appendLog(QString("pipeline finished exit=%1 status=%2")
@@ -2060,7 +2037,7 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   pipeline_paused_ = false;
   pipeline_uses_process_group_ = false;
   pipeline_stop_requested_ = false;
-  calibration_phase_ = CalibrationPhase::kNone;
+  calibration_pending_ = false;
   pipeline_state_->setText("STOPPED");
   preview_status_->setText("Pipeline failed to start");
   appendLog(QString("pipeline process error=%1 message=%2")
@@ -2087,7 +2064,19 @@ void HStreamWindow::readPipelineOutput() {
       buffer->remove(0, newline + 1);
       line.remove('\r');
       if (!line.trimmed().isEmpty()) {
-        appendLog(line.trimmed());
+        const QString trimmed = line.trimmed();
+        appendLog(trimmed);
+        if (calibration_pending_ && isCalibrationRun() && trimmed.contains(kOnePassStitchingCompleteMarker) &&
+            saveStitchingCalibrationState(stitchingCalibrationControlPoints(), "complete")) {
+          calibration_pending_ = false;
+          preview_status_->setText("Continuous stitched preview running");
+          if (stitched_status_) {
+            stitched_status_->setText("Stitching calibrated\nContinuous stitched preview running");
+          }
+          appendLog(
+              "one-pass stitching calibration complete; continuous stitched preview running; camera controls "
+              "remain available");
+        }
       }
     }
   };

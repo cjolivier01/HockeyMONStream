@@ -52,12 +52,6 @@ class HStreamWindow : public QMainWindow {
     kCommittedWithCleanupFailure,
   };
 
-  enum class CalibrationPhase {
-    kNone,
-    kConfiguring,
-    kPreviewing,
-  };
-
   void buildUi();
   void buildTopBar(QVBoxLayout* root);
   void buildMainArea(QVBoxLayout* root);
@@ -183,7 +177,7 @@ class HStreamWindow : public QMainWindow {
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};
-  CalibrationPhase calibration_phase_{CalibrationPhase::kNone};
+  bool calibration_pending_{false};
   bool preview_fullscreen_{false};
   QString pipeline_stdout_buffer_;
   QString pipeline_stderr_buffer_;
