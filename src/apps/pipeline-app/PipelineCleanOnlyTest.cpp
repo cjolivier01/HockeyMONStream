@@ -10,7 +10,7 @@ namespace fs = std::filesystem;
 
 int main(int argc, char** argv) {
   if (argc != 3) {
-    std::cerr << "FAIL: expected hmstream-cli and calibration config paths\n";
+    std::cerr << "FAIL: expected hstream-cli and calibration config paths\n";
     return 1;
   }
   std::string pattern = (fs::temp_directory_path() / "hmstream-clean-only-test-XXXXXX").string();

@@ -23,7 +23,7 @@ TARGET_UBUNTU ?= $(shell . /etc/os-release 2>/dev/null && printf '%s' "$$VERSION
 all: print_targets
 
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
-	hmstream-cli run-hmstream-cli hmstream-ui run-hmstream-ui pipeline-app run-pipeline-app \
+	hstream-cli run-hstream-cli hstream-ui run-hstream-ui pipeline-app run-pipeline-app \
 	hmstream-assets video-player run-video-player yolo-custom-lib hmstream-gst-plugins qualify-native-onnx \
 	deb deb-ubuntu24 deb-ubuntu26 wsl-deb
 
@@ -66,14 +66,14 @@ qualify-native-onnx:
 pipeline-app:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/pipeline-app:pipeline-app
 
-hmstream-cli:
-	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/pipeline-app:hmstream-cli
+hstream-cli:
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/pipeline-app:hstream-cli
 
 hmstream-assets:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/hmstream-assets:hmstream-assets
 
-hmstream-ui:
-	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/hmstream-ui:hmstream-ui
+hstream-ui:
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/hstream-ui:hstream-ui
 
 yolo-custom-lib:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo
@@ -84,16 +84,16 @@ hmstream-gst-plugins:
 		//src/gst-plugins/gst-playtracker:libgstplaytracker.so \
 		//src/gst-plugins/gst-fieldmask:libnvdsgst_dsfieldmask.so
 
-run-hmstream-cli: hmstream-cli
-	bazel-bin/src/apps/pipeline-app/hmstream-cli \
+run-hstream-cli: hstream-cli
+	bazel-bin/src/apps/pipeline-app/hstream-cli \
 		-c configs/ds_hockey_configure_stitching.yaml \
 		-c configs/ds_hockey_app_config.yaml \
 		--enable-sources=URI-MULTIPLE \
 		--enable-sinks=RENDER \
 		--options=pipeline.hmaudio.enable=1
 
-run-hmstream-ui: hmstream-ui
-	bazel-bin/src/apps/hmstream-ui/hmstream-ui
+run-hstream-ui: hstream-ui
+	bazel-bin/src/apps/hstream-ui/hstream-ui
 
 run-pipeline-app: pipeline-app
 	bazel-bin/src/apps/pipeline-app/pipeline-app \
@@ -141,10 +141,10 @@ print_targets:
 		'' \
 		'Apps' \
 		'----' \
-		'hmstream-cli   Build //src/apps/pipeline-app:hmstream-cli.' \
-		'run-hmstream-cli  Run hmstream-cli with the canonical hockey config (RENDER sink).' \
-		'hmstream-ui    Build //src/apps/hmstream-ui:hmstream-ui.' \
-		'run-hmstream-ui   Run the hmstream-ui desktop control surface.' \
+		'hstream-cli   Build //src/apps/pipeline-app:hstream-cli.' \
+		'run-hstream-cli  Run hstream-cli with the canonical hockey config (RENDER sink).' \
+		'hstream-ui    Build //src/apps/hstream-ui:hstream-ui.' \
+		'run-hstream-ui   Run the hstream-ui desktop control surface.' \
 		'pipeline-app   Build //src/apps/pipeline-app:pipeline-app.' \
 		'run-pipeline-app  Run legacy pipeline-app with the canonical hockey config (RENDER sink).' \
 		'video-player   Build //src/apps/video-player:video-player.' \

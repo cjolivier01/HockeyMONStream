@@ -59,7 +59,7 @@ cc_binary(
 )
 
 cc_binary(
-    name = "hmstream-cli",
+    name = "hstream-cli",
     srcs = PIPELINE_APP_SRCS,
     copts = PIPELINE_APP_COPTS,
     linkopts = PIPELINE_APP_LINKOPTS,
@@ -85,11 +85,11 @@ cc_test(
     name = "pipeline_clean_only_test",
     srcs = ["PipelineCleanOnlyTest.cpp"],
     args = [
-        "$(location :hmstream-cli)",
+        "$(location :hstream-cli)",
         "$(location //configs:ds_hockey_configure_stitching.yaml)",
     ],
     data = [
-        ":hmstream-cli",
+        ":hstream-cli",
         "//configs:ds_hockey_configure_stitching.yaml",
     ],
 )

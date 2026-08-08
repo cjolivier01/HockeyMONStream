@@ -2572,7 +2572,7 @@ int main(int argc, char* argv[]) {
       } else {
         execvp(argv[0], argv);
       }
-      std::perror("hmstream-cli re-exec failed");
+      std::perror("hstream-cli re-exec failed");
     }
   }
   PipelineApplication app;

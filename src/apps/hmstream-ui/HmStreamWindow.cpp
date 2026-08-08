@@ -1,4 +1,4 @@
-#include "src/apps/hmstream-ui/HmStreamWindow.h"
+#include "src/apps/hstream-ui/HmStreamWindow.h"
 
 #include <QtCore/QDateTime>
 #include <QtCore/QDir>
@@ -78,9 +78,9 @@ QString development_runtime_root() {
   QDir candidate_root(QDir::currentPath());
   while (true) {
     const QString candidate_application =
-        candidate_root.filePath(QString("bazel-bin/src/apps/hmstream-ui/%1").arg(application_name));
+        candidate_root.filePath(QString("bazel-bin/src/apps/hstream-ui/%1").arg(application_name));
     const QString candidate_path = QFileInfo(candidate_application).canonicalFilePath();
-    const QString runner = candidate_root.filePath("bazel-bin/src/apps/pipeline-app/hmstream-cli");
+    const QString runner = candidate_root.filePath("bazel-bin/src/apps/pipeline-app/hstream-cli");
     const QString configs = candidate_root.filePath("configs");
     if (!candidate_path.isEmpty() && candidate_path == application_path && QFileInfo(runner).isExecutable() &&
         QFileInfo(configs).isDir()) {
@@ -978,7 +978,7 @@ HmStreamWindow::HmStreamWindow(QWidget* parent) : QMainWindow(parent) {
   buildUi();
   refreshGames();
   updateRunControls();
-  appendLog("hmstream-ui started with hmstream-cli runner backend");
+  appendLog("hstream-ui started with hstream-cli runner backend");
 }
 
 QString HmStreamWindow::pipelineStateText() const {
@@ -1044,7 +1044,7 @@ void HmStreamWindow::buildTopBar(QVBoxLayout* root) {
   title->setFont(title_font);
 
   pipeline_state_ = make_value_label("pipelineStateLabel", "STOPPED");
-  backend_mode_ = new QLabel("Backend: hmstream-cli");
+  backend_mode_ = new QLabel("Backend: hstream-cli");
   backend_mode_->setObjectName("backendModeLabel");
 
   run_mode_selector_ = new QComboBox();
@@ -1474,13 +1474,13 @@ QString HmStreamWindow::pipelineRunnerPath() const {
   }
   const QString development_root = development_runtime_root();
   if (!development_root.isEmpty()) {
-    return QDir(development_root).filePath("bazel-bin/src/apps/pipeline-app/hmstream-cli");
+    return QDir(development_root).filePath("bazel-bin/src/apps/pipeline-app/hstream-cli");
   }
-  const QString installed_runner = "/opt/hmstream/bin/hmstream-cli";
+  const QString installed_runner = "/opt/hmstream/bin/hstream-cli";
   if (QFileInfo::exists(installed_runner)) {
     return installed_runner;
   }
-  const QString bazel_runner = QDir::current().filePath("bazel-bin/src/apps/pipeline-app/hmstream-cli");
+  const QString bazel_runner = QDir::current().filePath("bazel-bin/src/apps/pipeline-app/hstream-cli");
   if (QFileInfo::exists(bazel_runner)) {
     return bazel_runner;
   }
@@ -1488,7 +1488,7 @@ QString HmStreamWindow::pipelineRunnerPath() const {
   if (QFileInfo::exists(legacy_bazel_runner)) {
     return legacy_bazel_runner;
   }
-  return "hmstream-cli";
+  return "hstream-cli";
 }
 
 QString HmStreamWindow::pipelineConfigPath(const QString& config_name) const {
@@ -1514,7 +1514,7 @@ QString HmStreamWindow::pipelineWorkingDirectory() const {
   if (!development_root.isEmpty()) {
     return development_root;
   }
-  if (QFileInfo::exists("/opt/hmstream/bin/hmstream-cli")) {
+  if (QFileInfo::exists("/opt/hmstream/bin/hstream-cli")) {
     return "/opt/hmstream";
   }
   return QDir::currentPath();
@@ -1522,7 +1522,7 @@ QString HmStreamWindow::pipelineWorkingDirectory() const {
 
 bool HmStreamWindow::setupPretrainedAssets(const QStringList& pipeline_args) {
   Q_UNUSED(pipeline_args);
-  appendLog("pretrained assets will be verified by hmstream-cli");
+  appendLog("pretrained assets will be verified by hstream-cli");
   return true;
 }
 
@@ -2423,7 +2423,7 @@ bool HmStreamWindow::applySavedControlConfig(
       has_control(controls, "Max_Accel_Y_x10");
   if (has_live_box_runtime_controls && game_id_edit_) {
     const QString game_dir = gameDirectory(game_id_edit_->text());
-    QDir runtime_dir(QDir(game_dir).filePath(".hmstream-ui"));
+    QDir runtime_dir(QDir(game_dir).filePath(".hstream-ui"));
     if (!runtime_dir.exists() && !runtime_dir.mkpath(".")) {
       appendLog(QString("could not create playtracker runtime config directory %1").arg(runtime_dir.path()));
     } else {
@@ -2835,7 +2835,7 @@ void HmStreamWindow::refreshVideoSets() {
           if (configured_paths.count(path) || !QFileInfo::exists(game_dir.filePath(path)))
             continue;
           for (const QString& role : {QString("left"), QString("center"), QString("right")}) {
-            if (path.startsWith(QString(".hmstream-ui/%1/").arg(role))) {
+            if (path.startsWith(QString(".hstream-ui/%1/").arg(role))) {
               configured_paths.insert(path);
               add_item(role, path);
               break;
@@ -2979,7 +2979,7 @@ bool HmStreamWindow::importVideoPath(const QString& source_path, QString* import
     }
     target_dir.cd(cam_dir);
   } else if (is_explicit_role(role)) {
-    const QString ui_dir = ".hmstream-ui";
+    const QString ui_dir = ".hstream-ui";
     const QString role_dir = ui_dir + "/" + role;
     if (!target_dir.exists(ui_dir) && !target_dir.mkdir(ui_dir)) {
       appendLog(QString("failed to create UI metadata directory %1").arg(ui_dir));
@@ -3751,7 +3751,7 @@ QString HmStreamWindow::writePlaytrackerRuntimeConfig() {
     return {};
   }
   const QString game_dir = gameDirectory(game_id_edit_->text());
-  QDir runtime_dir(QDir(game_dir).filePath(".hmstream-ui"));
+  QDir runtime_dir(QDir(game_dir).filePath(".hstream-ui"));
   if (!runtime_dir.exists() && !runtime_dir.mkpath(".")) {
     appendLog(QString("could not create playtracker runtime config directory %1").arg(runtime_dir.path()));
     return {};

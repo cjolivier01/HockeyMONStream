@@ -69,7 +69,7 @@ rsync -a \
 
 cd "${BUILD_DIR}"
 make HOST_CUDA_FLAGS="--config=${BAZEL_DEB_CONFIG}" \
-  hmstream-cli hmstream-assets hmstream-ui yolo-custom-lib hmstream-gst-plugins
+  hstream-cli hmstream-assets hstream-ui yolo-custom-lib hmstream-gst-plugins
 
 VIDEOPREP_PLUGIN="${BUILD_DIR}/bazel-bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so"
 CUDA_NEEDED="$(patchelf --print-needed "${VIDEOPREP_PLUGIN}" | grep -E '^lib(cudart|npp[^.]*)[.]so[.]' || true)"
@@ -97,7 +97,7 @@ validate_native_cuda_code() {
 }
 
 validate_native_cuda_code videoprep "${VIDEOPREP_PLUGIN}"
-validate_native_cuda_code hmstream-cli "${BUILD_DIR}/bazel-bin/src/apps/pipeline-app/hmstream-cli"
+validate_native_cuda_code hstream-cli "${BUILD_DIR}/bazel-bin/src/apps/pipeline-app/hstream-cli"
 
 rm -rf "${CONTAINER_OUTPUT_DIR}"
 mkdir -p "${CONTAINER_OUTPUT_DIR}"

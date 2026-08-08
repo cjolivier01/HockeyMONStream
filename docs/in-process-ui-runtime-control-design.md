@@ -33,7 +33,7 @@ UI visual target: [pipeline-ui-runtime-control-mockup.png](pipeline-ui-runtime-c
 ## Existing Context
 
 `pipeline-app` currently owns a C++ `GstPipeline` created in `create_pipeline()` and driven through `PipelineApplication`.
-The installed CLI command should be renamed to `hmstream-cli`, with `pipeline-app` kept only as a compatibility/developer
+The installed CLI command should be renamed to `hstream-cli`, with `pipeline-app` kept only as a compatibility/developer
 target while existing scripts migrate. It already has:
 
 - A real in-process `GstPipeline` (`pipeline->pipeline = gst_pipeline_new("pipeline")`).
@@ -84,13 +84,13 @@ Add three layers:
    - Contains no Qt dependencies.
 
 2. `src/apps/pipeline-app`
-   - Remains the CLI implementation, exposed as `hmstream-cli`.
+   - Remains the CLI implementation, exposed as `hstream-cli`.
    - Becomes a thin wrapper around `pipeline_controller`.
    - Keeps existing flags and behavior.
    - Keeps CLI-only behavior such as terminal mode changes, stdin commands, signal handlers, progress UI, and standalone X11
      windows outside the reusable controller.
 
-3. `src/apps/hmstream-ui`
+3. `src/apps/hstream-ui`
    - New Qt Widgets desktop app.
    - Depends on `pipeline_controller`.
    - Presents operator workflows: preview, sources, outputs, camera controls, logs, status, diagnostics.
@@ -173,8 +173,8 @@ threads. The first implementation must split these responsibilities:
 - `PipelineRuntime`: creates/configures `AppCtx`, builds the `GstPipeline`, starts/stops state transitions, owns the GLib
   context, and exposes runtime handles.
 - `PipelineController`: thread-safe facade over `PipelineRuntime`.
-- `hmstream-cli`: parses flags and wires terminal/progress/X11 behavior around `PipelineController`.
-- `hmstream-ui`: calls the same controller without inheriting CLI terminal or X11 behavior.
+- `hstream-cli`: parses flags and wires terminal/progress/X11 behavior around `PipelineController`.
+- `hstream-ui`: calls the same controller without inheriting CLI terminal or X11 behavior.
 
 Existing functions such as `create_pipeline()` can be reused, but they must accept the controller's GLib context and avoid
 installing watches/timeouts on the default context implicitly.
@@ -478,11 +478,11 @@ Add packaging as a first-class deliverable.
 Suggested packages:
 
 - `hmstream`
-  - CLI binaries: `hmstream-cli`, helper tools.
+  - CLI binaries: `hstream-cli`, helper tools.
   - Runtime configs under `/usr/share/hstream/configs`.
   - Scripts that are safe as installed commands.
   - Depends on `hmstream-gst-plugins`, because the normal pipeline requires the custom GStreamer plugins.
-- `hmstream-ui`
+- `hstream-ui`
   - Qt Widgets desktop app.
   - `.desktop` file and icon.
   - Depends on `hmstream`; it receives custom plugins transitively through `hmstream`.
@@ -502,14 +502,14 @@ External dependencies:
 
 Installed paths:
 
-- `/usr/bin/hmstream-cli`: CLI wrapper.
-- `/usr/bin/hmstream-ui`: desktop UI wrapper.
+- `/usr/bin/hstream-cli`: CLI wrapper.
+- `/usr/bin/hstream-ui`: desktop UI wrapper.
 - `/usr/bin/hmstream-doctor`: diagnostics.
 - `/usr/lib/hstream/`: private shared libraries and helper binaries that should not be on the public PATH.
 - `/usr/lib/<triplet>/gstreamer-1.0/`: packaged hstream GStreamer plugins.
 - `/usr/share/hstream/configs/`: installed runtime configs.
 - `/usr/share/hstream/env/`: installed environment defaults and launch fragments.
-- `/usr/share/applications/hmstream-ui.desktop`: desktop entry.
+- `/usr/share/applications/hstream-ui.desktop`: desktop entry.
 - `/usr/share/icons/hicolor/.../apps/hstream.png`: icon.
 
 Runtime discovery:
@@ -527,12 +527,12 @@ Build approach:
 - Add a packaging target/script that stages Bazel outputs into a Debian package root.
 - Use `dpkg-deb`/`debhelper` for first packages; avoid inventing a custom installer.
 - Include an installed environment wrapper that sets required DeepStream/GStreamer plugin paths consistently.
-- Start with split packages: `hmstream`, `hmstream-ui`, `hmstream-gst-plugins`, and optional `hmstream-dev`.
+- Start with split packages: `hmstream`, `hstream-ui`, `hmstream-gst-plugins`, and optional `hmstream-dev`.
 
 Installed commands:
 
-- `hmstream-cli` for the CLI.
-- `hmstream-ui` for the desktop UI.
+- `hstream-cli` for the CLI.
+- `hstream-ui` for the desktop UI.
 - `hmstream-doctor` for dependency and plugin diagnostics.
 
 Validation:
@@ -555,7 +555,7 @@ Recommended shape:
 - Install or select a supported Ubuntu/Debian WSL distro, then either run the validated DeepStream container path or
   install distro-specific `.deb` artifacts when that path is proven.
 - Run `hmstream-doctor` inside WSL after installation and show actionable failures in the Windows installer UI/log.
-- Launch the UI with `wsl.exe -d <distro> -- hmstream-ui` only for validated WSLg/display-sink combinations.
+- Launch the UI with `wsl.exe -d <distro> -- hstream-ui` only for validated WSLg/display-sink combinations.
 
 Display and hardware assumptions:
 
@@ -573,7 +573,7 @@ Networking and device access:
 - RTSP/WebRTC servers need explicit bind/port behavior documented. The launcher should surface the WSL IP/port and, when
   feasible, configure Windows firewall rules for selected server ports.
 - Local media paths should be selectable from Windows and translated to WSL paths (`C:\...` to `/mnt/c/...`) before
-  invoking `hmstream-ui`.
+  invoking `hstream-ui`.
 - Direct camera device access should remain a Linux/Jetson-first capability until each Windows/WSL camera path is
   validated. Network cameras and file inputs are the first Windows installer targets.
 
@@ -589,7 +589,7 @@ Validation:
 
 - Fresh Windows 11 VM or workstation with WSLg.
 - Installer provisions/selects distro, installs packages, and runs `hmstream-doctor`.
-- `hmstream-ui` opens from the Start Menu.
+- `hstream-ui` opens from the Start Menu.
 - FAKE/video-file pipeline starts inside WSL; embedded preview is required only for matrices with a validated display sink.
 - RTMP push and RTSP server port behavior are tested from Windows-side clients.
 
@@ -632,7 +632,7 @@ Validation:
 - Produce split CLI/UI/plugin packages from the first packaging pass.
 - Add `hmstream-doctor`.
 - Package smoke validation.
-- Keep `hmstream-ui` disabled for Jetson builds until the Jetson sysroot/package build includes Qt6 development headers
+- Keep `hstream-ui` disabled for Jetson builds until the Jetson sysroot/package build includes Qt6 development headers
   and the embedded preview path is validated there.
 
 ### Phase 6: Windows Installer Via WSL

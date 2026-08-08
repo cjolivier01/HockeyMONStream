@@ -8,11 +8,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# DeepStream 9.1's legacy nvstreammux rejects native 8K input buffers. The
-# replacement mux handles the source resolution used for stitching. Preserve
-# an explicit caller override for diagnostics and older DeepStream releases.
-export USE_NEW_NVSTREAMMUX="${USE_NEW_NVSTREAMMUX:-yes}"
-
 show_help() {
   cat <<'EOF'
 Usage:
@@ -114,7 +109,7 @@ append_path() {
 # Use a repo-local registry so stale blacklists in ~/.cache don't break local plugins.
 GST_REGISTRY_DIR="${SCRIPT_DIR}/.cache/gstreamer-1.0"
 mkdir -p "${GST_REGISTRY_DIR}"
-export GST_REGISTRY="${GST_REGISTRY_DIR}/registry.hstream.native-onnx-v1.$(uname -m).bin"
+export GST_REGISTRY="${GST_REGISTRY_DIR}/registry.hstream.$(uname -m).bin"
 
 prepend_path GST_PLUGIN_PATH "${SCRIPT_DIR}/lib/gst-plugins"
 prepend_path GST_PLUGIN_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
@@ -175,19 +170,6 @@ if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
         ! -path '*Sstubs*' \
         -printf '%p\n' | sort -u
     )
-
-    # Plugins are staged behind symlinks, so their Bazel-relative RUNPATH can
-    # no longer reliably locate ONNX Runtime. Put the exact SONAME in a short,
-    # stable dependency directory before the scanner runs.
-    BAZEL_RUNTIME_LIB_DIR="${SCRIPT_DIR}/.cache/runtime-lib-path/$(uname -m)"
-    mkdir -p "${BAZEL_RUNTIME_LIB_DIR}"
-    ORT_RUNTIME_SO="$({
-      find -L "${BAZEL_BIN_REAL}" -maxdepth 4 -type f -name 'libonnxruntime.so.1' -print -quit
-    } 2>/dev/null || true)"
-    if [ -n "${ORT_RUNTIME_SO}" ]; then
-      ln -sfn "$(readlink -f "${ORT_RUNTIME_SO}")" "${BAZEL_RUNTIME_LIB_DIR}/libonnxruntime.so.1"
-      prepend_path LD_LIBRARY_PATH "${BAZEL_RUNTIME_LIB_DIR}"
-    fi
   fi
 
   prepend_path GST_PLUGIN_PATH "${BAZEL_GST_RUNTIME_PLUGIN_DIR}"
@@ -208,15 +190,16 @@ if [ -x "${PIPELINE_APP_BIN}" ]; then
   PIPELINE_APP_BIN="$(readlink -f "${PIPELINE_APP_BIN}")"
 fi
 if [ -n "${CONDA_PREFIX:-}" ]; then
-  # Conda environments can override any part of the native multimedia stack,
-  # including curl/libsoup even when they do not contain GLib itself. Keep the
-  # native DeepStream process isolated from those libraries by default.
+  # Conda environments often ship their own GLib/GStreamer stack. Adding `${CONDA_PREFIX}/lib` ahead of system
+  # libraries can cause hard-to-debug runtime aborts (e.g. GLib pthread TLS errors) when DeepStream/GStreamer load.
   #
   # Opt-in to using conda's shared libs by setting `HM_USE_CONDA_LD_LIBRARY_PATH=1`.
   if [ "${HM_USE_CONDA_LD_LIBRARY_PATH:-0}" = "1" ]; then
     append_path LD_LIBRARY_PATH "${CONDA_PREFIX}/lib"
+  elif [ -f "${CONDA_PREFIX}/lib/libglib-2.0.so.0" ] || [ -f "${CONDA_PREFIX}/lib/libgobject-2.0.so.0" ]; then
+    echo "CONDA_PREFIX is set but skipping ${CONDA_PREFIX}/lib in LD_LIBRARY_PATH to avoid GLib/GStreamer conflicts (set HM_USE_CONDA_LD_LIBRARY_PATH=1 to force)"
   else
-    echo "CONDA_PREFIX is set but skipping ${CONDA_PREFIX}/lib in LD_LIBRARY_PATH to avoid native-library conflicts (set HM_USE_CONDA_LD_LIBRARY_PATH=1 to force)"
+    append_path LD_LIBRARY_PATH "${CONDA_PREFIX}/lib"
   fi
 fi
 
@@ -680,6 +663,45 @@ if [ "${stitcher_minimize_blend}" -eq 1 ]; then
 fi
 
 hmaudio_enable=1
+
+asset_config_files=()
+collect_asset_config_files() {
+  local -n args_ref="$1"
+  local arg cfg i
+  for ((i = 0; i < ${#args_ref[@]}; i++)); do
+    arg="${args_ref[$i]}"
+    cfg=""
+    case "${arg}" in
+      -c|--config)
+        i=$((i + 1))
+        if [ "${i}" -lt "${#args_ref[@]}" ]; then
+          cfg="${args_ref[$i]}"
+        fi
+        ;;
+      -c=*|--config=*)
+        cfg="${arg#*=}"
+        ;;
+    esac
+    if [ -n "${cfg}" ]; then
+      case "${cfg}" in
+        /*) asset_config_files+=("${cfg}") ;;
+        *) asset_config_files+=("${SCRIPT_DIR}/${cfg}") ;;
+      esac
+    fi
+  done
+}
+
+collect_asset_config_files config_args
+collect_asset_config_files rewritten_args
+if [ -n "${int8_asset_config_file}" ]; then
+  asset_config_files+=("${int8_asset_config_file}")
+fi
+if [ -n "${bf16_asset_config_file}" ]; then
+  asset_config_files+=("${bf16_asset_config_file}")
+fi
+if [ "${#asset_config_files[@]}" -gt 0 ]; then
+  "${PYTHON_BIN:-python3}" "${SCRIPT_DIR}/scripts/setup_pretrained_assets.py" "${asset_config_files[@]}"
+fi
 
 yaml_property() {
   local config_file="$1"

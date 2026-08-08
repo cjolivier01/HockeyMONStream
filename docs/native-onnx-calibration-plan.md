@@ -2,8 +2,8 @@
 
 ## Objective
 
-HMStream must not start Python in any production workflow. `hmstream-ui`,
-`hmstream-cli`, `run.sh`, and the Debian-installed launchers must perform camera
+HMStream must not start Python in any production workflow. `hstream-ui`,
+`hstream-cli`, `run.sh`, and the Debian-installed launchers must perform camera
 orientation, control-point generation, field-mask generation, scoreboard
 selection, and pretrained-asset setup with native code.
 
@@ -66,7 +66,7 @@ its configured source. This is preferable to crossing the runtime boundary.
 | Field mask | Runs `hmfind_ice_rink` using Mask2Former | Reuse the native rink model and write mask/centroid/bbox metadata from C++ |
 | Scoreboard | Runs the Python `hmscoreboard` web selector | Small native HTTP selector that serves the stitched PNG and writes the selected polygon |
 | UI asset setup | `HmStreamWindow` starts `setup_pretrained_assets.py` | Native asset manager library called in process |
-| Local launcher | `run.sh` starts `setup_pretrained_assets.py` | Native `hmstream-assets` binary, or asset setup performed by `hmstream-cli` before pipeline construction |
+| Local launcher | `run.sh` starts `setup_pretrained_assets.py` | Native `hmstream-assets` binary, or asset setup performed by `hstream-cli` before pipeline construction |
 | Installed launcher | Packaged `run.sh` starts Python and exports Python paths | Native asset setup with no Python environment manipulation |
 | Debian payload | Bundles hmlib and a large Python ML runtime | Bundle only HMStream native code, private native dependencies, config, and non-engine assets |
 
@@ -397,8 +397,8 @@ content-addressed dynamic-batch export, or the patching operation must be
 implemented natively
 with a pinned ONNX protobuf library. Publishing a correct graph is preferred.
 
-Asset setup should be invoked once inside `hmstream-cli` before pipeline
-construction; `hmstream-ui` can rely on the CLI status and display its output.
+Asset setup should be invoked once inside `hstream-cli` before pipeline
+construction; `hstream-ui` can rely on the CLI status and display its output.
 `run.sh` and installed wrappers will no longer choose a Python interpreter.
 
 All calibration assets are resolved, downloaded/preseeded, checksummed, and
@@ -579,9 +579,9 @@ with Python-related environment variables unset:
 2. Existing configured-game one-pass path.
 3. Clean unconfigured-game one-pass path.
 4. Explicit `--two-stage` path.
-5. Direct `pipeline-app`/`hmstream-cli` display, encode, and fake-sink variants
+5. Direct `pipeline-app`/`hstream-cli` display, encode, and fake-sink variants
    with short time limits where the host supports them.
-6. `hmstream-ui` Play path, including asset progress and native scoreboard
+6. `hstream-ui` Play path, including asset progress and native scoreboard
    selection.
 7. Clean `tv-12-1-r2`, configure orientation/control points/rink mask, and run
    a timed stitched pipeline. Preserve logs, artifact dimensions, selected

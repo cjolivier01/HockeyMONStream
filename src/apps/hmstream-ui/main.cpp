@@ -1,4 +1,4 @@
-#include "src/apps/hmstream-ui/HmStreamWindow.h"
+#include "src/apps/hstream-ui/HmStreamWindow.h"
 
 #include <QtCore/QtGlobal>
 #include <QtWidgets/QApplication>

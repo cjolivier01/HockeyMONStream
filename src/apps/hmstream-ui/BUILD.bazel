@@ -42,7 +42,7 @@ cc_library(
 )
 
 cc_binary(
-    name = "hmstream-ui",
+    name = "hstream-ui",
     srcs = ["main.cpp"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,

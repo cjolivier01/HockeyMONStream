@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build an HMStream .deb that installs the application to /opt/hmstream.
-# The installed run.sh launches hmstream-cli without needing the source tree.
+# The installed run.sh launches hstream-cli without needing the source tree.
 #
 # Internal usage (the public entrypoints are make deb-ubuntu24/deb-ubuntu26):
 #   HMSTREAM_IMMUTABLE_SOURCE=1 scripts/make_deb.sh [--version X.Y.Z] [--output-dir DIR]
@@ -98,16 +98,16 @@ if ! dpkg --validate-version "${PKG_VERSION}" >/dev/null 2>&1; then
 fi
 
 # ---------- verify artifacts ----------
-HMSTREAM_CLI="${TOPDIR}/bazel-bin/src/apps/pipeline-app/hmstream-cli"
+HMSTREAM_CLI="${TOPDIR}/bazel-bin/src/apps/pipeline-app/hstream-cli"
 HMSTREAM_ASSETS="${TOPDIR}/bazel-bin/src/apps/hmstream-assets/hmstream-assets"
-HMSTREAM_UI="${TOPDIR}/bazel-bin/src/apps/hmstream-ui/hmstream-ui"
+HMSTREAM_UI="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-ui"
 HMSTREAM_GST_PLUGINS=(
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so"
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-playtracker/libgstplaytracker.so"
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so"
 )
 if [[ ! -f "${HMSTREAM_CLI}" ]]; then
-  echo "ERROR: ${HMSTREAM_CLI} not found. Run 'make hmstream-cli' first, or pass --build." >&2
+  echo "ERROR: ${HMSTREAM_CLI} not found. Run 'make hstream-cli' first, or pass --build." >&2
   exit 1
 fi
 if [[ ! -f "${HMSTREAM_ASSETS}" ]]; then
@@ -115,7 +115,7 @@ if [[ ! -f "${HMSTREAM_ASSETS}" ]]; then
   exit 1
 fi
 if [[ ! -f "${HMSTREAM_UI}" ]]; then
-  echo "ERROR: ${HMSTREAM_UI} not found. Run 'make hmstream-ui' first, or pass --build." >&2
+  echo "ERROR: ${HMSTREAM_UI} not found. Run 'make hstream-ui' first, or pass --build." >&2
   exit 1
 fi
 for plugin in "${HMSTREAM_GST_PLUGINS[@]}"; do
@@ -269,16 +269,16 @@ install_lib() {
 
 # ---------- binaries ----------
 echo "[make_deb] Staging hmstream binaries..."
-cp "${HMSTREAM_CLI}" "${STAGING}${INSTALL_PREFIX}/bin/hmstream-cli"
-patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hmstream-cli"
-package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hmstream-cli")
+cp "${HMSTREAM_CLI}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-cli"
+patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-cli"
+package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-cli")
 cp "${HMSTREAM_ASSETS}" "${STAGING}${INSTALL_PREFIX}/bin/hmstream-assets"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hmstream-assets"
 package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hmstream-assets")
-cp "${HMSTREAM_UI}" "${STAGING}${INSTALL_PREFIX}/bin/hmstream-ui"
-patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hmstream-ui"
-package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hmstream-ui")
-ln -s hmstream-cli "${STAGING}${INSTALL_PREFIX}/bin/pipeline-app"
+cp "${HMSTREAM_UI}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
+patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
+package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-ui")
+ln -s hstream-cli "${STAGING}${INSTALL_PREFIX}/bin/pipeline-app"
 
 # ---------- bundled shared libs (OpenCV etc.) ----------
 echo "[make_deb] Collecting bundled shared libs..."
@@ -808,12 +808,12 @@ if [ "${ssh_forwarded_display}" -eq 1 ] && [ "${HM_ALLOW_SSH_RENDER:-0}" != "1" 
   unset DISPLAY
 fi
 
-exec "${INSTALL_DIR}/bin/hmstream-cli" "${pipeline_args[@]}"
+exec "${INSTALL_DIR}/bin/hstream-cli" "${pipeline_args[@]}"
 RUNSH
 chmod 755 "${STAGING}${INSTALL_PREFIX}/run.sh"
 
 # ---------- installed UI wrapper ----------
-cat > "${STAGING}${INSTALL_PREFIX}/hmstream-ui.sh" <<'UISH'
+cat > "${STAGING}${INSTALL_PREFIX}/hstream-ui.sh" <<'UISH'
 #!/bin/bash
 set -euo pipefail
 
@@ -846,9 +846,9 @@ prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib"
 prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/nvshmem/13"
 prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/libcusparseLt/13"
-exec "${INSTALL_DIR}/bin/hmstream-ui" "$@"
+exec "${INSTALL_DIR}/bin/hstream-ui" "$@"
 UISH
-chmod 755 "${STAGING}${INSTALL_PREFIX}/hmstream-ui.sh"
+chmod 755 "${STAGING}${INSTALL_PREFIX}/hstream-ui.sh"
 
 # A short-lived older package left its runtime calibration tree unowned after
 # upgrades. Current releases are fully native, so remove only that exact legacy
@@ -864,9 +864,9 @@ POSTINST
 chmod 0755 "${STAGING}/DEBIAN/postinst"
 
 # ---------- package-owned command wrappers ----------
-ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hmstream-cli"
+ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hstream-cli"
 ln -s "${INSTALL_PREFIX}/bin/hmstream-assets" "${STAGING}/usr/bin/hmstream-assets"
-ln -s "${INSTALL_PREFIX}/hmstream-ui.sh" "${STAGING}/usr/bin/hmstream-ui"
+ln -s "${INSTALL_PREFIX}/hstream-ui.sh" "${STAGING}/usr/bin/hstream-ui"
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hstream"
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/pipeline-app"
 
@@ -1087,9 +1087,9 @@ Description: HMStream video pipeline application and UI
    - Configured model frameworks beyond the packaged native stitching runtime
  .
  Launch the CLI with: ${INSTALL_PREFIX}/run.sh [args...]
- or via the hmstream-cli wrapper in /usr/bin/hmstream-cli.
- Launch the UI with: ${INSTALL_PREFIX}/hmstream-ui.sh
- or via the hmstream-ui wrapper in /usr/bin/hmstream-ui.
+ or via the hstream-cli wrapper in /usr/bin/hstream-cli.
+ Launch the UI with: ${INSTALL_PREFIX}/hstream-ui.sh
+ or via the hstream-ui wrapper in /usr/bin/hstream-ui.
 CONTROL
 
 if find "${STAGING}${INSTALL_PREFIX}" -type f \( -name '*.py' -o -name '*.pyc' -o -name '*.pyo' \) -print -quit \
@@ -1116,8 +1116,8 @@ if [[ "$(patchelf --print-soname "${STAGING}${INSTALL_PREFIX}/lib/libonnxruntime
   echo "ERROR: the staged ONNX Runtime library has an unexpected ELF SONAME." >&2
   exit 1
 fi
-if ! patchelf --print-needed "${STAGING}${INSTALL_PREFIX}/bin/hmstream-cli" | grep -qx 'libonnxruntime[.]so[.]1'; then
-  echo "ERROR: hmstream-cli does not reference the pinned ONNX Runtime SONAME." >&2
+if ! patchelf --print-needed "${STAGING}${INSTALL_PREFIX}/bin/hstream-cli" | grep -qx 'libonnxruntime[.]so[.]1'; then
+  echo "ERROR: hstream-cli does not reference the pinned ONNX Runtime SONAME." >&2
   exit 1
 fi
 for elf in "${package_elfs[@]}"; do
@@ -1146,6 +1146,6 @@ echo "  (the installer configures NVIDIA repositories; DeepStream itself remains
 echo ""
 echo "Run with:"
 echo "  /opt/hmstream/run.sh [args...]"
-echo "  hmstream-cli [args...]   (after install)"
-echo "  hmstream-ui              (after install)"
+echo "  hstream-cli [args...]   (after install)"
+echo "  hstream-ui              (after install)"
 echo "  hstream [args...]        (compatibility wrapper after install)"
