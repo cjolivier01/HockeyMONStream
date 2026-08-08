@@ -1075,6 +1075,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Calibration should route the normal render sink without enabling stitcher debug windows") ||
       !expect(
           window->logText().contains("pipeline.streammux.batch-size=2") &&
+              window->logText().contains("pipeline.streammux.sync-inputs=1") &&
               window->logText().contains("pipeline.hmstitcher.show=0") &&
               !window->logText().contains("pipeline.hmplaycropper.enable=0") &&
               !window->logText().contains("pipeline.ds-playtracker.enable=0"),
@@ -1208,6 +1209,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
             "Calibration and continuous stitched preview should use one application process") ||
         !expect(
             window->logText().contains("pipeline.streammux.batch-size=2") &&
+                window->logText().contains("pipeline.streammux.sync-inputs=1") &&
                 window->logText().contains("pipeline.hmstitcher.show=0") &&
                 !window->logText().contains("pipeline.hmplaycropper.enable=0"),
             "Continuous preview should stay on the normal pipeline without legacy OpenGL debug windows") ||

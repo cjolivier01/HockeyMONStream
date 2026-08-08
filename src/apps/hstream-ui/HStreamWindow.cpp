@@ -64,7 +64,8 @@ namespace {
 constexpr int kExposureEvSliderZero = 40;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
 constexpr char kOnePassStitchingCompleteMarker[] = "hmstitcher: one-pass stitching configuration complete";
-constexpr char kStitchedPreviewPipelineOptions[] = "pipeline.streammux.batch-size=2,pipeline.hmstitcher.show=0";
+constexpr char kStitchedPreviewPipelineOptions[] =
+    "pipeline.streammux.batch-size=2,pipeline.streammux.sync-inputs=1,pipeline.hmstitcher.show=0";
 
 absl::Status publish_yaml_config(const fs::path& config_path, const YAML::Node& config) {
   std::string contents;
