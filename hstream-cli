@@ -1,1 +1,1 @@
-bazel-bin/src/apps/pipeline-app/hmstream-cli
+bazel-bin/src/apps/pipeline-app/hstream-cli
