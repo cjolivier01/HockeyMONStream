@@ -21,6 +21,7 @@
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
+#include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTextEdit>
 
 #include <yaml-cpp/yaml.h>
@@ -978,14 +979,21 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* render_video = require_child<QCheckBox>(window, "renderVideoCheck");
   auto* log = require_child<QTextEdit>(window, "runtimeLog");
   auto* main_log_splitter = require_child<QSplitter>(window, "mainLogSplitter");
+  auto* preview_tabs = require_child<QTabWidget>(window, "previewTabs");
   auto* program_host = require_child<QWidget>(window, "programLetterboxHost");
   auto* preview_surface = require_child<QWidget>(window, "previewSurface");
   auto* stitched_surface = require_child<QWidget>(window, "stitchedPreviewSurface");
+  auto* camera1_host = require_child<QWidget>(window, "camera1LetterboxHost");
+  auto* camera1_surface = require_child<QWidget>(window, "camera1PreviewSurface");
+  auto* camera2_surface = require_child<QWidget>(window, "camera2PreviewSurface");
+  auto* camera3_surface = require_child<QWidget>(window, "camera3PreviewSurface");
   auto* external_notice = require_child<QLabel>(window, "programExternalRenderNotice");
+  auto* camera1_notice = require_child<QLabel>(window, "camera1ExternalRenderNotice");
   auto* stitched_status = require_child<QLabel>(window, "stitchedPreviewStatusLabel");
   if (!stop || !start || !pause || !restart || !mode || !control_points || !game_id || !rotate || !max_speed_x ||
-      !render_video || !log || !main_log_splitter || !program_host || !preview_surface || !stitched_surface ||
-      !external_notice || !stitched_status) {
+      !render_video || !log || !main_log_splitter || !preview_tabs || !program_host || !preview_surface ||
+      !stitched_surface || !camera1_host || !camera1_surface || !camera2_surface || !camera3_surface ||
+      !external_notice || !camera1_notice || !stitched_status) {
     return false;
   }
 
@@ -1061,15 +1069,24 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       !expect(
           window->logText().contains("--enable-sinks=RENDER"),
           "One-pass calibration should render the stitched output") ||
-      !expect(window->logText().contains("--show-stitching 1"), "Calibration should show stitcher output") ||
+      !expect(
+          window->logText().contains("--show") && !window->logText().contains("--show-stitching"),
+          "Calibration should route the normal render sink without enabling stitcher debug windows") ||
+      !expect(
+          window->logText().contains("pipeline.streammux.batch-size=2") &&
+              window->logText().contains("pipeline.hmstitcher.show=0") &&
+              !window->logText().contains("pipeline.hmplaycropper.enable=0") &&
+              !window->logText().contains("pipeline.ds-playtracker.enable=0"),
+          "Stitched preview should batch both cameras on the normal pipeline without legacy OpenGL debug windows") ||
       !expect(
           window->logText().contains("HM_MAX_CONTROL_POINTS=750"),
           "One-pass calibration should pass the selected control-point limit") ||
       !expect(
           !window->logText().contains("--render-window-id=") && window->logText().contains("HM_RENDER_SINK=nv3dsink") &&
-              stitched_surface->isHidden(),
+              !window->logText().contains("--source-render-window-ids=") && stitched_surface->isHidden() &&
+              camera1_surface->isHidden() && camera2_surface->isHidden() && camera3_surface->isHidden(),
           "The offscreen test backend should fall back to a separate render window instead of passing a non-X11 "
-          "handle") ||
+          "handle for stitched or camera previews") ||
       !expect(
           window->logText().contains("ANSI blue runner line"), "ANSI-colored runner output should remain visible") ||
       !expect(
@@ -1188,7 +1205,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
         !expect(
             window->logText().count("pipeline command ") == pipeline_commands_before + 1,
             "Calibration and continuous stitched preview should use one application process") ||
-        !expect(window->logText().contains("--show-stitching 1"), "Continuous preview should show stitcher output") ||
+        !expect(
+            window->logText().contains("pipeline.streammux.batch-size=2") &&
+                window->logText().contains("pipeline.hmstitcher.show=0") &&
+                !window->logText().contains("pipeline.hmplaycropper.enable=0"),
+            "Continuous preview should stay on the normal pipeline without legacy OpenGL debug windows") ||
         !expect(window->pipelineStateText() == "PLAYING", "Continuous stitched preview should remain running") ||
         !expect(
             has_transitioned_status && transitioned_status.IsScalar() &&
@@ -1371,13 +1392,18 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   window->resize(window->width(), 1200);
   main_log_splitter->setSizes({800, 350});
+  preview_tabs->setCurrentIndex(2);
   QApplication::processEvents();
   QTest::qWait(10);
   if (!expect(
           external_notice->geometry() == program_host->rect(),
-          "External-render notice should resize and move with its preview tab when the log splitter moves")) {
+          "External-render notice should resize and move with its preview tab when the log splitter moves") ||
+      !expect(
+          camera1_notice->parentWidget() == camera1_host && camera1_notice->geometry() == camera1_host->rect(),
+          "Camera-render notice should remain owned and resized by its tab when the log splitter moves")) {
     return false;
   }
+  preview_tabs->setCurrentIndex(0);
   window->resize(1440, 900);
   QApplication::processEvents();
   activate(stop);
@@ -1405,6 +1431,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
 
   const int fake_sink_commands_before = window->logText().count("--enable-sinks=FAKE");
   const int embedded_commands_before = window->logText().count("--render-window-id=");
+  const int source_embedded_commands_before = window->logText().count("--source-render-window-ids=");
   render_video->setChecked(false);
   activate(start);
   for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
@@ -1416,8 +1443,12 @@ bool test_pipeline_buttons(HStreamWindow* window) {
                                       "Disabling video rendering should use a fake sink when no output is selected") &&
       expect(window->logText().count("--render-window-id=") == embedded_commands_before,
              "Disabling video rendering should not attach a native preview window") &&
+      expect(window->logText().count("--source-render-window-ids=") == source_embedded_commands_before,
+             "Disabling video rendering should not attach native source-camera preview windows") &&
       expect(external_notice->text() == "Video rendering is disabled for this run",
-             "The active preview tab should explain that rendering is disabled");
+             "The active preview tab should explain that rendering is disabled") &&
+      expect(camera1_notice->text() == "Video rendering is disabled for this run",
+             "Camera tabs should explain that rendering is disabled");
   activate(stop);
   render_video->setChecked(true);
   if (!rendering_disabled) {

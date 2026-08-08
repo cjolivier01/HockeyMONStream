@@ -185,6 +185,8 @@ class HStreamWindow : public QMainWindow {
   QTabWidget* preview_tabs_{nullptr};
   QWidget* preview_surface_{nullptr};
   QWidget* stitched_surface_{nullptr};
+  std::vector<QWidget*> camera_preview_surfaces_;
+  std::vector<QLabel*> camera_preview_notices_;
   QTabWidget* camera_tabs_{nullptr};
   QVBoxLayout* output_list_{nullptr};
   QProcess* pipeline_process_{nullptr};

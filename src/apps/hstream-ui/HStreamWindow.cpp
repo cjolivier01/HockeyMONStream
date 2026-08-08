@@ -64,6 +64,7 @@ namespace {
 constexpr int kExposureEvSliderZero = 40;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
 constexpr char kOnePassStitchingCompleteMarker[] = "hmstitcher: one-pass stitching configuration complete";
+constexpr char kStitchedPreviewPipelineOptions[] = "pipeline.streammux.batch-size=2,pipeline.hmstitcher.show=0";
 
 absl::Status publish_yaml_config(const fs::path& config_path, const YAML::Node& config) {
   std::string contents;
@@ -1377,9 +1378,34 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
 
   preview_tabs_->addTab(program, "Program");
   preview_tabs_->addTab(stitched, "Stitched");
-  preview_tabs_->addTab(new QLabel("Camera 1 preview"), "Camera 1");
-  preview_tabs_->addTab(new QLabel("Camera 2 preview"), "Camera 2");
-  preview_tabs_->addTab(new QLabel("Camera 3 preview"), "Camera 3");
+  for (int camera_index = 0; camera_index < 3; ++camera_index) {
+    auto* camera = new QWidget();
+    auto* camera_layout = new QVBoxLayout(camera);
+    auto* camera_host = new LetterboxRenderHost(16.0 / 9.0);
+    camera_host->setObjectName(QString("camera%1LetterboxHost").arg(camera_index + 1));
+    QWidget* camera_surface = camera_host->renderSurface();
+    camera_surface->setObjectName(QString("camera%1PreviewSurface").arg(camera_index + 1));
+    camera_surface->setAttribute(Qt::WA_NativeWindow);
+    camera_surface->setAttribute(Qt::WA_DontCreateNativeAncestors);
+    camera_surface->setStyleSheet(
+        QString("QWidget#camera%1PreviewSurface { background: #10151a; }").arg(camera_index + 1));
+    camera_preview_surfaces_.push_back(camera_surface);
+
+    auto* camera_notice = new QLabel("Camera preview requires embedded X11 rendering", camera_host);
+    camera_notice->setObjectName(QString("camera%1ExternalRenderNotice").arg(camera_index + 1));
+    camera_notice->setAlignment(Qt::AlignCenter);
+    camera_notice->setWordWrap(true);
+    camera_notice->setStyleSheet("color: #c9d1d9; padding: 24px;");
+    camera_notice->hide();
+    camera_preview_notices_.push_back(camera_notice);
+    auto* camera_notice_layout = new QVBoxLayout(camera_host);
+    camera_notice_layout->setContentsMargins(0, 0, 0, 0);
+    camera_notice_layout->addWidget(camera_notice);
+
+    camera_layout->addWidget(camera_host, 1);
+    camera_layout->addWidget(new QLabel(QString("Camera %1 source preview").arg(camera_index + 1)));
+    preview_tabs_->addTab(camera, QString("Camera %1").arg(camera_index + 1));
+  }
   root->addWidget(preview_tabs_, 1);
 }
 
@@ -1845,8 +1871,9 @@ QStringList HStreamWindow::pipelineArguments() const {
     args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
     args << QString("--enable-sinks=%1").arg(render_video ? "RENDER" : "FAKE");
     if (render_video) {
-      args << "--show-stitching" << "1";
+      args << "--show";
     }
+    args << QString("--options=%1").arg(kStitchedPreviewPipelineOptions);
     if (embed_render_window && stitched_surface_) {
       const WId window_id = stitched_surface_->winId();
       if (window_id != 0) {
@@ -1864,6 +1891,20 @@ QStringList HStreamWindow::pipelineArguments() const {
       if (window_id != 0) {
         args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(window_id));
       }
+    }
+  }
+  if (embed_render_window) {
+    QStringList camera_window_ids;
+    for (QWidget* surface : camera_preview_surfaces_) {
+      if (!surface)
+        continue;
+      const WId window_id = surface->winId();
+      if (window_id != 0) {
+        camera_window_ids << QString::number(static_cast<qulonglong>(window_id));
+      }
+    }
+    if (!camera_window_ids.isEmpty()) {
+      args << QString("--source-render-window-ids=%1").arg(camera_window_ids.join(','));
     }
   }
   args << "--options=pipeline.hmaudio.enable=1";
@@ -1951,16 +1992,30 @@ void HStreamWindow::startPipeline() {
     preview_surface_->setVisible(embedded_render);
   if (stitched_surface_)
     stitched_surface_->setVisible(embedded_render);
+  for (QWidget* surface : camera_preview_surfaces_) {
+    if (surface)
+      surface->setVisible(embedded_render);
+  }
   if (preview_external_notice_)
     preview_external_notice_->setVisible(!embedded_render);
   if (stitched_external_notice_)
     stitched_external_notice_->setVisible(!embedded_render);
+  for (QLabel* notice : camera_preview_notices_) {
+    if (notice)
+      notice->setVisible(!embedded_render);
+  }
   const QString render_notice =
       render_video ? "Video is displayed in a separate DeepStream window" : "Video rendering is disabled for this run";
   if (preview_external_notice_)
     preview_external_notice_->setText(render_notice);
   if (stitched_external_notice_)
     stitched_external_notice_->setText(render_notice);
+  const QString camera_render_notice =
+      render_video ? "Camera preview requires embedded X11 rendering" : "Video rendering is disabled for this run";
+  for (QLabel* notice : camera_preview_notices_) {
+    if (notice)
+      notice->setText(camera_render_notice);
+  }
   if (program_fullscreen_button_)
     program_fullscreen_button_->setEnabled(embedded_render && !active_run_is_calibration_);
   if (stitched_fullscreen_button_)

@@ -287,7 +287,6 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
       return false;
     }
   } else if (key == "scoreboard-perspective-polygon") {
-    std::cout << "GOT scoreboard-perspective-polygon!" << std::endl;
     scoreboard_perspective_polygion_.clear();
     std::vector<std::string> points = absl::StrSplit(prop.value, ',');
     assert(points.size() == 8);
@@ -303,6 +302,9 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
         });
     if (scoreboard_disabled_)
       scoreboard_perspective_polygion_.clear();
+    std::cout << (scoreboard_disabled_ ? "Scoreboard overlay disabled by configured sentinel"
+                                       : "Loaded scoreboard perspective polygon")
+              << std::endl;
   } else if (key == "show-scoreboard") {
     show_scoreboard_ = !!std::atoi(prop.value.c_str());
   } else if (key == "scoreboard-projected-width") {
@@ -677,7 +679,9 @@ absl::Status PlayCropperPriv::LoadScoreboardPerspectiveFromConfig() {
     if (scoreboard_disabled_)
       scoreboard_perspective_polygion_.clear();
     scoreboard_.reset();
-    std::cout << "GOT scoreboard-perspective-polygon from config reload!" << std::endl;
+    std::cout << (scoreboard_disabled_ ? "Scoreboard overlay disabled by config reload"
+                                       : "Loaded scoreboard perspective polygon from config reload")
+              << std::endl;
     return absl::OkStatus();
   } catch (const YAML::Exception& ex) {
     return absl::InternalError(
