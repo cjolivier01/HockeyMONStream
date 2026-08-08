@@ -1891,7 +1891,6 @@ QStringList HStreamWindow::pipelineArguments() const {
     if (render_video) {
       args << "--show";
     }
-    args << QString("--options=%1").arg(kStitchedPreviewPipelineOptions);
     if (embed_render_window && stitched_surface_) {
       const WId window_id = stitched_surface_->winId();
       if (window_id != 0) {
@@ -1910,6 +1909,9 @@ QStringList HStreamWindow::pipelineArguments() const {
         args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(window_id));
       }
     }
+  }
+  if (isCalibrationRun() || calibration_pending_) {
+    args << QString("--options=%1").arg(kStitchedPreviewPipelineOptions);
   }
   if (embed_render_window) {
     QStringList camera_window_ids;

@@ -1351,6 +1351,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
             has_program_status && program_status.IsScalar() && program_status.as<std::string>() == "complete",
             "Program one-pass calibration should mark the replacement video inputs complete") &&
         expect(
+            window->logText().contains("pipeline.streammux.batch-size=2") &&
+                window->logText().contains("pipeline.streammux.sync-inputs=1") &&
+                window->logText().contains("pipeline.hmstitcher.show=0"),
+            "Program one-pass calibration should synchronize both stitcher inputs") &&
+        expect(
             window->pipelineStateText() == "PLAYING",
             "Program playback should continue in the same process after recalibrating replacement inputs");
     activate(stop);
