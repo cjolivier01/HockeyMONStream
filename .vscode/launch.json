@@ -54,6 +54,47 @@
       },
     },
     {
+      "name": "hstream-cli",
+      "type": "lldb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/bazel-bin/src/apps/pipeline-app/hstream-cli",
+      "args": [
+        "-c",
+        "${workspaceFolder}/configs/ds_hockey_configure_stitching.yaml",
+        "-c",
+        "${workspaceFolder}/configs/ds_hockey_app_config.yaml",
+        "--enable-sources=URI-MULTIPLE",
+        "--enable-sinks=RENDER",
+        "--options=pipeline.hmaudio.enable=1",
+      ],
+      "sourceMap": {
+        "/proc/self/cwd/external": "${workspaceFolder}/bazel-hstream/external",
+        "/proc/self/cwd": "${workspaceFolder}",
+      },
+      "env": {
+        "GST_PLUGIN_PATH": "${workspaceFolder}/lib/gst-plugins:/opt/nvidia/deepstream/deepstream/lib/gst-plugins",
+        "DISPLAY": ":1",
+      },
+      "preLaunchTask": "Make: hstream-cli",
+    },
+    {
+      "name": "hstream-ui",
+      "type": "lldb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/bazel-bin/src/apps/hstream-ui/hstream-ui",
+      "args": [],
+      "sourceMap": {
+        "/proc/self/cwd/external": "${workspaceFolder}/bazel-hstream/external",
+        "/proc/self/cwd": "${workspaceFolder}",
+      },
+      "env": {
+        "DISPLAY": ":1",
+      },
+      "preLaunchTask": "Make: hstream-ui",
+    },
+    {
       "name": "pipeline-app",
       "type": "lldb",
       "request": "launch",

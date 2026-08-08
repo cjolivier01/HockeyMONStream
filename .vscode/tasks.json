@@ -2,29 +2,282 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Build single target (set in json)",
+      "label": "Make: all",
       "type": "shell",
-      "command": "./bld",
-      // "command": "bazel",
-      "args": [
-        // "cquery"
-        //"//apps/examples:basic-tutorial",
-        //"//src/gst-plugins/gst-dsexample:nvdsgst_dsexample",
-        // "--output=starlark",
-        // "--starlark:expr='target'",
-      ],
-      "group": {
-        "kind": "build",
-        "isDefault": false,
-      },
+      "command": "make",
+      "args": ["all"],
       "options": {
         "cwd": "${workspaceRoot}",
       },
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared",
-        "showReuseMessage": true,
-        "clear": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: perf",
+      "type": "shell",
+      "command": "make",
+      "args": ["perf"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: debug",
+      "type": "shell",
+      "command": "make",
+      "args": ["debug"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: gstdebug",
+      "type": "shell",
+      "command": "make",
+      "args": ["gstdebug"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: x86_64",
+      "type": "shell",
+      "command": "make",
+      "args": ["x86_64"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: arm64",
+      "type": "shell",
+      "command": "make",
+      "args": ["arm64"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: jetson",
+      "type": "shell",
+      "command": "make",
+      "args": ["jetson"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: test",
+      "type": "shell",
+      "command": "make",
+      "args": ["test"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: qualify-native-onnx",
+      "type": "shell",
+      "command": "make",
+      "args": ["qualify-native-onnx"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: pipeline-app",
+      "type": "shell",
+      "command": "make",
+      "args": ["pipeline-app"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: hstream-cli",
+      "type": "shell",
+      "command": "make",
+      "args": ["hstream-cli"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: hmstream-assets",
+      "type": "shell",
+      "command": "make",
+      "args": ["hmstream-assets"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: hstream-ui",
+      "type": "shell",
+      "command": "make",
+      "args": ["hstream-ui"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: yolo-custom-lib",
+      "type": "shell",
+      "command": "make",
+      "args": ["yolo-custom-lib"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: hmstream-gst-plugins",
+      "type": "shell",
+      "command": "make",
+      "args": ["hmstream-gst-plugins"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: run-hstream-cli",
+      "type": "shell",
+      "command": "make",
+      "args": ["run-hstream-cli"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: run-hstream-ui",
+      "type": "shell",
+      "command": "make",
+      "args": ["run-hstream-ui"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: run-pipeline-app",
+      "type": "shell",
+      "command": "make",
+      "args": ["run-pipeline-app"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: video-player",
+      "type": "shell",
+      "command": "make",
+      "args": ["video-player"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: run-video-player",
+      "type": "shell",
+      "command": "make",
+      "args": ["run-video-player"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: deb",
+      "type": "shell",
+      "command": "make",
+      "args": ["deb"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: deb-ubuntu24",
+      "type": "shell",
+      "command": "make",
+      "args": ["deb-ubuntu24"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: deb-ubuntu26",
+      "type": "shell",
+      "command": "make",
+      "args": ["deb-ubuntu26"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: wsl-deb",
+      "type": "shell",
+      "command": "make",
+      "args": ["wsl-deb"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: clean",
+      "type": "shell",
+      "command": "make",
+      "args": ["clean"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: distclean",
+      "type": "shell",
+      "command": "make",
+      "args": ["distclean"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: expunge",
+      "type": "shell",
+      "command": "make",
+      "args": ["expunge"],
+      "options": {
+        "cwd": "${workspaceRoot}",
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Make: print_targets",
+      "type": "shell",
+      "command": "make",
+      "args": ["print_targets"],
+      "options": {
+        "cwd": "${workspaceRoot}",
       },
       "problemMatcher": []
     },
