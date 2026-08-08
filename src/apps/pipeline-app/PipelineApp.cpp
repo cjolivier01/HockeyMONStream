@@ -675,6 +675,9 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
   if (source_render_window_ids_.empty()) {
     return absl::OkStatus();
   }
+  if (app_contexts.size() != 1) {
+    return absl::InvalidArgumentError("--source-render-window-ids requires exactly one active pipeline context");
+  }
 
   constexpr gint kCameraPreviewWidth = 1280;
   constexpr gint kCameraPreviewHeight = 720;
@@ -709,6 +712,19 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           gst_object_unref(sink);
         return absl::InternalError(TO_STRING("Could not create embedded preview for source " << source_index));
       }
+
+      const NvDsSourceConfig& source_config = app_context->config.multi_source_config[source_index];
+      g_object_set(
+          G_OBJECT(converter),
+          "gpu-id",
+          source_config.gpu_id,
+          "nvbuf-memory-type",
+          source_config.nvbuf_memory_type,
+          nullptr);
+#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
+      // Match the established URI source converter workaround on Jetson.
+      g_object_set(G_OBJECT(converter), "copy-hw", 2, nullptr);
+#endif
 
       GstCaps* caps = gst_caps_new_simple(
           "video/x-raw",
