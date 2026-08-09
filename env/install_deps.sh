@@ -28,7 +28,7 @@ sudo apt-get install -y \
   aptitude
 
 # DeepStream 9.1 uses TensorRT ABI 10. The unversioned NVIDIA metapackage now
-# selects TensorRT 11, which makes HMStream's custom inference library
+# selects TensorRT 11, which makes HStream's custom inference library
 # incompatible with the DeepStream runtime. Select the newest CUDA 13.2 build
 # that retains the TensorRT 10 ABI.
 TENSORRT_VERSION="$(

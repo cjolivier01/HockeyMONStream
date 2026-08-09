@@ -23,6 +23,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include "nvdsmeta.h"
@@ -496,6 +497,10 @@ absl::Status StitcherPriv::configure_one_pass_from_surfaces(
   }
   if (!canvas_width_hint_ || !canvas_height_hint_) {
     return absl::FailedPreconditionError("One-pass stitching did not produce a canvas size");
+  }
+  if (configured_during_run_) {
+    g_print("hmstitcher: one-pass stitching configuration complete\n");
+    std::fflush(stdout);
   }
   return absl::OkStatus();
 }

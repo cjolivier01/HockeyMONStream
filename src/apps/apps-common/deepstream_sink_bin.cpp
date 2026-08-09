@@ -891,10 +891,12 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
     if (!prop.integrated || use_nv3d) {
       caps = gst_caps_new_empty_simple("video/x-raw");
 
-      if (!use_nv3d) {
-        GstCapsFeatures* feature = gst_caps_features_new(MEMORY_FEATURES, NULL);
-        gst_caps_set_features(caps, 0, feature);
-      }
+      // DeepStream 9.1's nveglglessink crashes in its render thread when it
+      // receives NVMM buffers with the GStreamer version shipped on this
+      // host.  Its system-memory path implements GstVideoOverlay correctly,
+      // including rendering into an application-owned X11 child window.  Do
+      // the device-to-host conversion here for the embeddable EGL sink; the
+      // self-managed nv3dsink path is unchanged.
       g_object_set(G_OBJECT(bin->cap_filter), "caps", caps, NULL);
 
       g_object_set(G_OBJECT(bin->transform), "gpu-id", config->gpu_id, NULL);

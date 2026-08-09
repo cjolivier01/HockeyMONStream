@@ -175,7 +175,7 @@ bool is_rink_artifact_name(const std::string& name) {
 }
 
 absl::StatusOr<std::unique_ptr<ScopedRinkLock>> lock_rink_transactions(const fs::path& root) {
-  const fs::path path = root / ".hmstream-rink.lock";
+  const fs::path path = root / ".hstream-rink.lock";
   const int descriptor = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
   if (descriptor < 0)
     return absl::InternalError("Unable to open rink transaction lock: " + std::string(std::strerror(errno)));
@@ -255,7 +255,7 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
     if (error)
       return absl::InternalError("Unable to inspect rink transactions: " + error.message());
     const std::string directory_name = entry.path().filename().string();
-    if (!entry.is_directory(error) || error || directory_name.rfind(".hmstream-rink-", 0) != 0) {
+    if (!entry.is_directory(error) || error || directory_name.rfind(".hstream-rink-", 0) != 0) {
       error.clear();
       continue;
     }
@@ -367,7 +367,7 @@ absl::StatusOr<std::unique_ptr<GameConfigLock>> GameConfigLock::Acquire(const fs
   std::error_code error;
   if (!fs::is_directory(game_dir, error) || error)
     return absl::NotFoundError("Cannot lock config outside an existing game directory: " + game_dir.string());
-  const fs::path path = game_dir / ".hmstream-config.lock";
+  const fs::path path = game_dir / ".hstream-config.lock";
   const int descriptor = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
   if (descriptor < 0)
     return absl::InternalError("Unable to open game config lock: " + std::string(std::strerror(errno)));
@@ -380,7 +380,7 @@ absl::StatusOr<std::unique_ptr<GameConfigLock>> GameConfigLock::Acquire(const fs
 }
 
 absl::Status publish_game_config(const fs::path& game_dir, const std::string& contents) {
-  std::string pattern = (game_dir / ".hmstream-config-XXXXXX").string();
+  std::string pattern = (game_dir / ".hstream-config-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   const int descriptor = ::mkstemp(writable.data());
@@ -440,7 +440,7 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(const fs::path& ga
     return 0;
   }
 
-  std::string pattern = (game_dir / ".hmstream-rink-XXXXXX").string();
+  std::string pattern = (game_dir / ".hstream-rink-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   char* created = ::mkdtemp(writable.data());

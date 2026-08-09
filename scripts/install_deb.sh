@@ -1,12 +1,12 @@
 #!/bin/bash
-# Install the local DeepStream and HMStream Debian artifacts on a clean Ubuntu
+# Install the local DeepStream and HStream Debian artifacts on a clean Ubuntu
 # host, including the NVIDIA repositories that provide their CUDA/TensorRT
 # dependencies.
 set -euo pipefail
 
 CUDA_COMPAT_REPOSITORY='https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/'
-CUDA_COMPAT_KEYRING='/usr/share/keyrings/hmstream-cuda-ubuntu2404-compat.gpg'
-CUDA_COMPAT_SOURCE='/etc/apt/sources.list.d/hmstream-cuda-ubuntu2404-x86_64.list'
+CUDA_COMPAT_KEYRING='/usr/share/keyrings/hstream-cuda-ubuntu2404-compat.gpg'
+CUDA_COMPAT_SOURCE='/etc/apt/sources.list.d/hstream-cuda-ubuntu2404-x86_64.list'
 CUDA_LEGACY_COMPAT_SOURCE='/etc/apt/sources.list.d/cuda-ubuntu2404-x86_64.list'
 
 # Disable duplicate definitions of the Ubuntu 24 CUDA repository before one
@@ -42,7 +42,7 @@ disable_cuda_compat_sources() {
     if [[ -n "${visited[${resolved_path}]:-}" ]]; then continue; fi
     visited["${resolved_path}"]=1
     extension="${source_path##*.}"
-    output="$(mktemp "${resolved_path}.hmstream.XXXXXX")"
+    output="$(mktemp "${resolved_path}.hstream.XXXXXX")"
     matches="${output}.matches"
 
     if [[ "${extension}" == "list" || "${source_path}" == "${apt_root}/etc/apt/sources.list" ]]; then
@@ -95,7 +95,7 @@ disable_cuda_compat_sources() {
             print line
             next
           }
-          print "# HMStream disabled duplicate CUDA compatibility source: " line
+          print "# HStream disabled duplicate CUDA compatibility source: " line
           count++
         }
         END { print count > matches }
@@ -204,7 +204,7 @@ disable_cuda_compat_sources() {
             printf "%s\n", line
           }
           if (!wrote_enabled) printf "Enabled: no\n"
-          printf "# HMStream disabled duplicate CUDA compatibility source\n"
+          printf "# HStream disabled duplicate CUDA compatibility source\n"
           printf "\n"
           count++
         }
@@ -248,7 +248,7 @@ declare -a compat_source_existed=()
 
 begin_compat_source_transition() {
   [[ -z "${compat_source_transition_dir}" ]] || return 0
-  compat_source_transition_dir="$(mktemp -d /tmp/hmstream-cuda-source-transition.XXXXXX)"
+  compat_source_transition_dir="$(mktemp -d /tmp/hstream-cuda-source-transition.XXXXXX)"
 }
 
 backup_compat_source_path() {
@@ -280,7 +280,7 @@ restore_compat_source_transition() {
   for ((index=${#compat_source_paths[@]} - 1; index >= 0; index--)); do
     path="${compat_source_paths[${index}]}"
     backup="${compat_source_backups[${index}]}"
-    temporary="${path}.hmstream-restore.$$.${index}"
+    temporary="${path}.hstream-restore.$$.${index}"
     rm -f -- "${temporary}"
     if [[ "${compat_source_existed[${index}]}" -eq 1 ]]; then
       cp -a -- "${backup}" "${temporary}"
@@ -328,12 +328,12 @@ publish_cuda_compat_source() {
 
 # Allow the behavior test to source the production implementation without
 # entering the privileged installer workflow.
-if [[ "${HMSTREAM_INSTALLER_SOURCE_ONLY:-0}" == "1" ]]; then
+if [[ "${HSTREAM_INSTALLER_SOURCE_ONLY:-0}" == "1" ]]; then
   # shellcheck disable=SC2317 # exit is used when executed rather than sourced.
   return 0 2>/dev/null || exit 0
 fi
 
-HMSTREAM_DEB=""
+HSTREAM_DEB=""
 DEEPSTREAM_DEB=""
 EXPECTED_DEEPSTREAM_VERSION="9.1.0-1+resolute2"
 SIMULATE=0
@@ -341,13 +341,13 @@ SIMULATE=0
 usage() {
   cat <<'USAGE'
 Usage:
-  sudo ./install-hmstream-deb \
+  sudo ./install-hstream-deb \
     --deepstream-deb=/path/to/deepstream-9.1_9.1.0-1+resolute2_amd64.deb \
-    --hmstream-deb=/path/to/hmstream_*_amd64.deb
+    --hstream-deb=/path/to/hstream_*_amd64.deb
 
 Options:
   --deepstream-deb FILE  Local deepstream-9.1 release artifact.
-  --hmstream-deb FILE    Local HMStream artifact for this Ubuntu release.
+  --hstream-deb FILE    Local HStream artifact for this Ubuntu release.
   --simulate             Configure repositories and only simulate apt install.
   -h, --help             Show this help.
 USAGE
@@ -357,8 +357,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --deepstream-deb) DEEPSTREAM_DEB="$2"; shift ;;
     --deepstream-deb=*) DEEPSTREAM_DEB="${1#*=}" ;;
-    --hmstream-deb) HMSTREAM_DEB="$2"; shift ;;
-    --hmstream-deb=*) HMSTREAM_DEB="${1#*=}" ;;
+    --hstream-deb) HSTREAM_DEB="$2"; shift ;;
+    --hstream-deb=*) HSTREAM_DEB="${1#*=}" ;;
     --simulate) SIMULATE=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "ERROR: unknown option: $1" >&2; usage >&2; exit 1 ;;
@@ -370,22 +370,22 @@ if [[ "${EUID}" -ne 0 ]]; then
   echo "ERROR: run this installer as root (for example, with sudo)." >&2
   exit 1
 fi
-if [[ -z "${HMSTREAM_DEB}" || -z "${DEEPSTREAM_DEB}" ]]; then
-  echo "ERROR: --hmstream-deb and --deepstream-deb are required." >&2
+if [[ -z "${HSTREAM_DEB}" || -z "${DEEPSTREAM_DEB}" ]]; then
+  echo "ERROR: --hstream-deb and --deepstream-deb are required." >&2
   usage >&2
   exit 1
 fi
 
-for deb in "${HMSTREAM_DEB}" "${DEEPSTREAM_DEB}"; do
+for deb in "${HSTREAM_DEB}" "${DEEPSTREAM_DEB}"; do
   if [[ ! -f "${deb}" ]]; then
     echo "ERROR: Debian artifact not found: ${deb}" >&2
     exit 1
   fi
 done
-HMSTREAM_DEB="$(readlink -f "${HMSTREAM_DEB}")"
+HSTREAM_DEB="$(readlink -f "${HSTREAM_DEB}")"
 DEEPSTREAM_DEB="$(readlink -f "${DEEPSTREAM_DEB}")"
-if [[ "$(dpkg-deb -f "${HMSTREAM_DEB}" Package)" != "hmstream" ]]; then
-  echo "ERROR: not an hmstream package: ${HMSTREAM_DEB}" >&2
+if [[ "$(dpkg-deb -f "${HSTREAM_DEB}" Package)" != "hstream" ]]; then
+  echo "ERROR: not an hstream package: ${HSTREAM_DEB}" >&2
   exit 1
 fi
 if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Package)" != "deepstream-9.1" ]]; then
@@ -404,7 +404,7 @@ fi
 # shellcheck disable=SC1091
 source /etc/os-release
 if [[ "${ID:-}" != "ubuntu" ]]; then
-  echo "ERROR: HMStream Debian artifacts currently support Ubuntu only." >&2
+  echo "ERROR: HStream Debian artifacts currently support Ubuntu only." >&2
   exit 1
 fi
 case "${VERSION_ID:-}" in
@@ -416,14 +416,14 @@ case "${VERSION_ID:-}" in
     ;;
 esac
 
-HMSTREAM_TARGET_UBUNTU="$(dpkg-deb -f "${HMSTREAM_DEB}" X-HMStream-Target-Ubuntu 2>/dev/null || true)"
-if [[ "${HMSTREAM_TARGET_UBUNTU}" != "${VERSION_ID}" ]]; then
-  echo "ERROR: the selected HMStream artifact targets Ubuntu ${HMSTREAM_TARGET_UBUNTU:-unknown}, not ${VERSION_ID}." >&2
+HSTREAM_TARGET_UBUNTU="$(dpkg-deb -f "${HSTREAM_DEB}" X-HStream-Target-Ubuntu 2>/dev/null || true)"
+if [[ "${HSTREAM_TARGET_UBUNTU}" != "${VERSION_ID}" ]]; then
+  echo "ERROR: the selected HStream artifact targets Ubuntu ${HSTREAM_TARGET_UBUNTU:-unknown}, not ${VERSION_ID}." >&2
   exit 1
 fi
 
 HOST_ARCH="$(dpkg --print-architecture)"
-for deb in "${HMSTREAM_DEB}" "${DEEPSTREAM_DEB}"; do
+for deb in "${HSTREAM_DEB}" "${DEEPSTREAM_DEB}"; do
   deb_arch="$(dpkg-deb -f "${deb}" Architecture)"
   if [[ "${deb_arch}" != "${HOST_ARCH}" ]]; then
     echo "ERROR: ${deb} targets ${deb_arch}, but this host is ${HOST_ARCH}." >&2
@@ -458,7 +458,7 @@ cleanup() {
 trap cleanup EXIT
 
 # Older installers could conflict with a pre-existing source before reaching
-# repair code.  Remove the uniquely owned HMStream entry and disable only the
+# repair code.  Remove the uniquely owned HStream entry and disable only the
 # matching line in NVIDIA's legacy conffile before the first APT update.  A
 # normal failure restores both; a crash leaves only fewer active providers.
 if [[ "${VERSION_ID}" == "26.04" ]]; then
@@ -470,7 +470,7 @@ fi
 apt-get update
 apt-get install -y --no-install-recommends binutils ca-certificates curl zstd
 
-keyring_deb="$(mktemp --suffix=.deb /tmp/hmstream-cuda-keyring.XXXXXX)"
+keyring_deb="$(mktemp --suffix=.deb /tmp/hstream-cuda-keyring.XXXXXX)"
 curl -fsSLo "${keyring_deb}" \
   "https://developer.download.nvidia.com/compute/cuda/repos/${CUDA_REPOSITORY}/x86_64/cuda-keyring_1.1-1_all.deb"
 
@@ -478,11 +478,11 @@ curl -fsSLo "${keyring_deb}" \
 # DeepStream 9.1 in its Ubuntu 24.04 repository. Resolute therefore needs that
 # compatibility repository in addition to its native CUDA repository.
 if [[ "${VERSION_ID}" == "26.04" ]]; then
-  compat_keyring_deb="$(mktemp --suffix=.deb /tmp/hmstream-cuda-compat-keyring.XXXXXX)"
+  compat_keyring_deb="$(mktemp --suffix=.deb /tmp/hstream-cuda-compat-keyring.XXXXXX)"
   curl -fsSLo "${compat_keyring_deb}" \
     "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb"
-  native_dir="$(mktemp -d /tmp/hmstream-cuda-native-keyring.XXXXXX)"
-  compat_dir="$(mktemp -d /tmp/hmstream-cuda-keyring.XXXXXX)"
+  native_dir="$(mktemp -d /tmp/hstream-cuda-native-keyring.XXXXXX)"
+  compat_dir="$(mktemp -d /tmp/hstream-cuda-keyring.XXXXXX)"
   dpkg-deb -x "${keyring_deb}" "${native_dir}"
   dpkg-deb -x "${compat_keyring_deb}" "${compat_dir}"
   for extracted_key in \
@@ -497,10 +497,10 @@ if [[ "${VERSION_ID}" == "26.04" ]]; then
   # Keep the compatibility key at an installer-owned path.  Upgrading the
   # cuda-keyring package may replace its own release-specific key file, but it
   # cannot invalidate this durable two-release keyring.
-  combined_keyring="$(mktemp /tmp/hmstream-cuda-combined.XXXXXX.gpg)"
+  combined_keyring="$(mktemp /tmp/hstream-cuda-combined.XXXXXX.gpg)"
   cat "${native_dir}/usr/share/keyrings/cuda-archive-keyring.gpg" \
     "${compat_dir}/usr/share/keyrings/cuda-archive-keyring.gpg" >"${combined_keyring}"
-  compat_keyring_target_temp="$(mktemp /usr/share/keyrings/.hmstream-cuda-compat.XXXXXX.gpg)"
+  compat_keyring_target_temp="$(mktemp /usr/share/keyrings/.hstream-cuda-compat.XXXXXX.gpg)"
   install -m 0644 "${combined_keyring}" "${compat_keyring_target_temp}"
   sync -d "${compat_keyring_target_temp}"
   mv -f "${compat_keyring_target_temp}" "${CUDA_COMPAT_KEYRING}"
@@ -526,11 +526,11 @@ if [[ -z "${trt_runtime_version}" ]]; then
   exit 1
 fi
 
-# Older HMStream installers pinned every TensorRT package to version 10. That
+# Older HStream installers pinned every TensorRT package to version 10. That
 # needlessly attempted to downgrade an independently installed TensorRT 11 SDK.
 # The versioned TensorRT 10 runtime packages required by the two local .debs
 # coexist with newer SDK packages and apt resolves them without a global pin.
-rm -f /etc/apt/preferences.d/hmstream-tensorrt10
+rm -f /etc/apt/preferences.d/hstream-tensorrt10
 
 apt_args=(-y --no-install-recommends)
 if [[ "${SIMULATE}" -eq 1 ]]; then apt_args+=(--simulate); fi
@@ -555,7 +555,7 @@ done < <(dpkg-query -W -f='${binary:Package}\t${db:Status-Abbrev}\n' 'deepstream
 install_deepstream_deb="${DEEPSTREAM_DEB}"
 if [[ "${#old_deepstream_packages[@]}" -gt 0 ]]; then
   echo "Replacing older DeepStream package(s): ${old_deepstream_packages[*]}"
-  transition_dir="$(mktemp -d /tmp/hmstream-deepstream-transition.XXXXXX)"
+  transition_dir="$(mktemp -d /tmp/hstream-deepstream-transition.XXXXXX)"
   control_member="$(ar t "${DEEPSTREAM_DEB}" | awk '/^control[.]tar[.]/{print; exit}')"
   data_member="$(ar t "${DEEPSTREAM_DEB}" | awk '/^data[.]tar[.]/{print; exit}')"
   if [[ -z "${control_member}" || -z "${data_member}" ]]; then
@@ -611,7 +611,7 @@ if [[ "${#old_deepstream_packages[@]}" -gt 0 ]]; then
   done
 fi
 
-simulation="$(apt-get install --simulate --no-install-recommends "${install_deepstream_deb}" "${HMSTREAM_DEB}")"
+simulation="$(apt-get install --simulate --no-install-recommends "${install_deepstream_deb}" "${HSTREAM_DEB}")"
 printf '%s\n' "${simulation}"
 while read -r removed_package; do
   [[ -z "${removed_package}" ]] && continue
@@ -626,12 +626,12 @@ while read -r removed_package; do
 done < <(awk '$1 == "Remv" {print $2}' <<<"${simulation}")
 
 if [[ "${SIMULATE}" -eq 0 ]]; then
-  apt-get install "${apt_args[@]}" "${install_deepstream_deb}" "${HMSTREAM_DEB}"
+  apt-get install "${apt_args[@]}" "${install_deepstream_deb}" "${HSTREAM_DEB}"
 fi
 
 if [[ "${SIMULATE}" -eq 1 ]]; then
   echo "Dependency resolution succeeded for Ubuntu ${VERSION_ID}."
 else
   apt-get check
-  echo "Installed DeepStream $(dpkg-query -W -f='${Version}' deepstream-9.1) and HMStream $(dpkg-query -W -f='${Version}' hmstream)."
+  echo "Installed DeepStream $(dpkg-query -W -f='${Version}' deepstream-9.1) and HStream $(dpkg-query -W -f='${Version}' hstream)."
 fi

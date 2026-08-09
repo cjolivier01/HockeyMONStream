@@ -1,4 +1,4 @@
-#include "src/apps/hstream-ui/HmStreamWindow.h"
+#include "src/apps/hstream-ui/HStreamWindow.h"
 
 #include <QtCore/QtGlobal>
 #include <QtWidgets/QApplication>
@@ -14,7 +14,7 @@ int main(int argc, char** argv) {
   }
 #endif
   QApplication app(argc, argv);
-  HmStreamWindow window;
+  HStreamWindow window;
   window.show();
   return app.exec();
 }

@@ -20,7 +20,7 @@ RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
       'Acquire::Retries "5";' \
       'Acquire::http::Timeout "30";' \
       'Acquire::https::Timeout "30";' \
-      >/etc/apt/apt.conf.d/80hmstream-network \
+      >/etc/apt/apt.conf.d/80hstream-network \
     && curl -fsSLo /tmp/cuda-keyring.deb \
       "https://developer.download.nvidia.com/compute/cuda/repos/${CUDA_REPOSITORY}/x86_64/cuda-keyring_1.1-1_all.deb" \
     && dpkg -i /tmp/cuda-keyring.deb \
@@ -138,7 +138,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends enblend ffmpeg hugin-tools \
     && rm -rf /var/lib/apt/lists/*
 
-COPY build-hmstream-deb.sh /usr/local/bin/build-hmstream-deb
-RUN chmod 0755 /usr/local/bin/build-hmstream-deb
+COPY build-hstream-deb.sh /usr/local/bin/build-hstream-deb
+RUN chmod 0755 /usr/local/bin/build-hstream-deb
 
-ENTRYPOINT ["/usr/local/bin/build-hmstream-deb"]
+ENTRYPOINT ["/usr/local/bin/build-hstream-deb"]

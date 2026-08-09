@@ -44,7 +44,7 @@ int main() {
     ok &= expect(lock.ok(), "concurrent config creator must acquire the transaction lock");
     if (lock.ok()) {
       YAML::Node concurrent(YAML::NodeType::Map);
-      concurrent["hmstream_ui"]["keep"] = true;
+      concurrent["hstream_ui"]["keep"] = true;
       ok &= expect(
           hm::stitching::publish_game_config(game_dir, YAML::Dump(concurrent) + "\n").ok(),
           "concurrent config creation must publish");
@@ -59,7 +59,7 @@ int main() {
   auto final_config = hm::stitching::load_game_config_file(game_dir / "config.yaml");
   ok &= expect(
       final_config.ok() && final_config->has_value() && (**final_config)["pipeline"]["generated"].as<bool>() &&
-          (**final_config)["hmstream_ui"]["keep"].as<bool>(),
+          (**final_config)["hstream_ui"]["keep"].as<bool>(),
       "Configurator first save must retain keys created after its absent baseline");
 
   ::unsetenv("HM_GAME_DIR");

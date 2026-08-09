@@ -97,7 +97,7 @@ int main() {
         !interrupted_before_publication.ok(), "injected interruption after durable preparation must stop publication");
     bool durable_prepared_journal = false;
     for (const auto& entry : fs::directory_iterator(root)) {
-      if (entry.is_directory() && entry.path().filename().string().rfind(".hmstream-rink-", 0) == 0)
+      if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-rink-", 0) == 0)
         durable_prepared_journal = true;
     }
     ok &= expect(durable_prepared_journal, "durably prepared rink publication must retain its recovery journal");
@@ -178,7 +178,7 @@ int main() {
     // Simulate SIGKILL after a prepared transaction published only part of a
     // new generation. The next field-mask read must restore the complete old
     // generation before consuming any artifact.
-    const fs::path interrupted = root / ".hmstream-rink-interrupted";
+    const fs::path interrupted = root / ".hstream-rink-interrupted";
     fs::create_directories(interrupted / "previous");
     fs::copy_file(root / "config.yaml", interrupted / "previous" / "config.yaml");
     fs::copy_file(root / "rink_mask_0.png", interrupted / "previous" / "rink_mask_0.png");
@@ -208,7 +208,7 @@ int main() {
         "rink recovery must restore the prior mask generation");
     ok &= expect(!fs::exists(interrupted), "recovered rink transaction must be cleaned");
 
-    const fs::path malformed = root / ".hmstream-rink-malformed";
+    const fs::path malformed = root / ".hstream-rink-malformed";
     fs::create_directories(malformed);
     std::ofstream(malformed / "state") << "PREPARE\n";
     ok &= expect(
@@ -219,7 +219,7 @@ int main() {
         "unknown rink transaction state must not touch the committed profile");
     fs::remove_all(malformed);
 
-    const fs::path multiline = root / ".hmstream-rink-multiline";
+    const fs::path multiline = root / ".hstream-rink-multiline";
     fs::create_directories(multiline);
     std::ofstream(multiline / "state") << "PREPARED\n\nCOMMITTED\n";
     ok &= expect(
@@ -228,14 +228,14 @@ int main() {
     ok &= expect(fs::is_regular_file(root / "config.yaml"), "multiline rink state must not touch the profile");
     fs::remove_all(multiline);
 
-    const fs::path nonregular = root / ".hmstream-rink-nonregular";
+    const fs::path nonregular = root / ".hstream-rink-nonregular";
     fs::create_directories(nonregular / "state");
     ok &= expect(
         !hm::stitching::is_field_mask_configured(root.string()), "non-regular rink transaction state must fail closed");
     ok &= expect(fs::exists(nonregular), "non-regular rink transaction state must preserve its journal");
     fs::remove_all(nonregular);
 
-    const fs::path missing_manifest = root / ".hmstream-rink-missing-manifest";
+    const fs::path missing_manifest = root / ".hstream-rink-missing-manifest";
     fs::create_directories(missing_manifest / "previous");
     std::ofstream(missing_manifest / "state") << "PREPARED\n";
     ok &= expect(
@@ -244,24 +244,24 @@ int main() {
     ok &= expect(fs::exists(missing_manifest), "missing rink manifest must preserve its journal");
     fs::remove_all(missing_manifest);
 
-    const fs::path malicious = root / ".hmstream-rink-malicious";
+    const fs::path malicious = root / ".hstream-rink-malicious";
     fs::create_directories(malicious / "previous");
     std::ofstream(malicious / "state") << "PREPARED\n";
-    std::ofstream(malicious / "new-files") << "rink_mask_0.png\nconfig.yaml\n.hmstream-rink.lock\n";
+    std::ofstream(malicious / "new-files") << "rink_mask_0.png\nconfig.yaml\n.hstream-rink.lock\n";
     ok &= expect(
         !hm::stitching::is_field_mask_configured(root.string()), "unexpected rink manifest artifact must fail closed");
     ok &= expect(fs::exists(malicious), "invalid rink manifest must preserve its journal");
     ok &= expect(fs::is_regular_file(root / "config.yaml"), "invalid rink manifest must not remove profile files");
     fs::remove_all(malicious);
 
-    const fs::path unprepared = root / ".hmstream-rink-unprepared";
+    const fs::path unprepared = root / ".hstream-rink-unprepared";
     fs::create_directories(unprepared);
     std::ofstream(unprepared / "temporary") << "not published\n";
     ok &= expect(
         hm::stitching::is_field_mask_configured(root.string()) && !fs::exists(unprepared),
         "unprepared rink staging without publication metadata must be cleaned");
 
-    const fs::path committed = root / ".hmstream-rink-committed";
+    const fs::path committed = root / ".hstream-rink-committed";
     fs::create_directories(committed);
     std::ofstream(committed / "state") << "COMMITTED\n";
     ok &= expect(

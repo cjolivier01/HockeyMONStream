@@ -20,13 +20,13 @@ absl::StatusOr<std::filesystem::path> model_path(const char* override_name, cons
     if (home == nullptr || *home == '\0') {
       return absl::NotFoundError(std::string(override_name) + " is unset and HOME is unavailable");
     }
-    path = std::filesystem::path(home) / ".cache" / "hmstream" / "models" / content_addressed_name;
+    path = std::filesystem::path(home) / ".cache" / "hstream" / "models" / content_addressed_name;
   }
   std::error_code error;
   if (!std::filesystem::is_regular_file(path, error) || error) {
     return absl::NotFoundError(
         "Missing native calibration model " + path.string() +
-        "; run hmstream-assets on configs/ds_hockey_configure_stitching.yaml or set " + override_name +
+        "; run hstream-assets on configs/ds_hockey_configure_stitching.yaml or set " + override_name +
         "/HM_NATIVE_MODEL_DIR");
   }
   if (std::filesystem::file_size(path, error) == 0 || error) {

@@ -1,4 +1,4 @@
-#include "src/apps/hstream-ui/HmStreamWindow.h"
+#include "src/apps/hstream-ui/HStreamWindow.h"
 
 #include <QtCore/QDateTime>
 #include <QtCore/QDir>
@@ -12,6 +12,8 @@
 #include <QtCore/QStandardPaths>
 #include <QtCore/QSysInfo>
 #include <QtCore/Qt>
+#include <QtGui/QCloseEvent>
+#include <QtGui/QGuiApplication>
 #include <QtGui/QPalette>
 #include <QtGui/QResizeEvent>
 #include <QtGui/QTextDocument>
@@ -61,6 +63,9 @@ namespace {
 
 constexpr int kExposureEvSliderZero = 40;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
+constexpr char kOnePassStitchingCompleteMarker[] = "hmstitcher: one-pass stitching configuration complete";
+constexpr char kStitchedPreviewPipelineOptions[] =
+    "pipeline.streammux.batch-size=2,pipeline.streammux.sync-inputs=1,pipeline.hmstitcher.show=0";
 
 absl::Status publish_yaml_config(const fs::path& config_path, const YAML::Node& config) {
   std::string contents;
@@ -472,12 +477,34 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_di
   prepend_env_path(env, "GST_PLUGIN_PATH", runtime_dir.absolutePath());
 }
 
+bool is_tegra_runtime() {
+#ifdef IS_TEGRA
+  return true;
+#elif defined(Q_OS_LINUX)
+  const QString architecture = QSysInfo::currentCpuArchitecture().toLower();
+  if (architecture != "arm64" && architecture != "aarch64")
+    return false;
+  if (QFileInfo::exists("/etc/nv_tegra_release"))
+    return true;
+  QFile compatible("/proc/device-tree/compatible");
+  return compatible.open(QIODevice::ReadOnly) && compatible.readAll().contains("nvidia,tegra");
+#else
+  return false;
+#endif
+}
+
 void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QString& working_dir) {
   // DeepStream 9.1's legacy nvstreammux rejects the native 8K source caps used
   // by stitching. Match run.sh while preserving an explicit diagnostic
   // override from the caller.
   if (env.value("USE_NEW_NVSTREAMMUX").isEmpty()) {
     env.insert("USE_NEW_NVSTREAMMUX", "yes");
+  }
+  if (env.value("HM_RENDER_SINK").isEmpty()) {
+    env.insert(
+        "HM_RENDER_SINK",
+        hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) ? "nveglglessink"
+                                                                                                     : "nv3dsink");
   }
   QDir registry_dir(QDir(working_dir).filePath(".cache/gstreamer-1.0"));
   if (!registry_dir.mkpath(".")) {
@@ -524,7 +551,7 @@ QString existing_auto_cam_dir_for_source(const QDir& game_dir, const QFileInfo& 
   if (fs::is_regular_file(config_path)) {
     try {
       YAML::Node config = YAML::LoadFile(config_path.string());
-      YAML::Node entries = config["hmstream_ui"]["auto_import_sources"];
+      YAML::Node entries = config["hstream_ui"]["auto_import_sources"];
       if (entries && entries.IsSequence()) {
         for (const auto& entry : entries) {
           if (!entry["path"] || !entry["family"] || !entry["source_parent"]) {
@@ -589,7 +616,7 @@ bool copied_auto_import_matches(
   }
   try {
     YAML::Node config = YAML::LoadFile(config_path.string());
-    YAML::Node entries = config["hmstream_ui"]["auto_import_sources"];
+    YAML::Node entries = config["hstream_ui"]["auto_import_sources"];
     if (!entries || !entries.IsSequence()) {
       return false;
     }
@@ -661,7 +688,7 @@ QString normalized_config_video_path(const QDir& game_dir, const QString& path) 
 }
 
 bool is_copied_import_in_config(const YAML::Node& config, const QDir& game_dir, const QString& relative_path) {
-  YAML::Node list = config["hmstream_ui"]["copied_imports"];
+  YAML::Node list = config["hstream_ui"]["copied_imports"];
   if (!list || !list.IsSequence()) {
     return false;
   }
@@ -697,7 +724,7 @@ bool config_references_video_path(const YAML::Node& config, const QDir& game_dir
     return false;
   };
 
-  const YAML::Node roles = child(child(config, "hmstream_ui"), "video_roles");
+  const YAML::Node roles = child(child(config, "hstream_ui"), "video_roles");
   for (const char* role : {"left", "center", "right"}) {
     if (list_references_target(child(roles, role)))
       return true;
@@ -720,6 +747,19 @@ bool clear_stitching_frame_offsets(YAML::Node& config) {
     changed = true;
   }
   return changed;
+}
+
+bool invalidate_stitching_calibration(YAML::Node& config) {
+  YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+  if (!calibration || !calibration.IsMap() || !calibration["status"]) {
+    return false;
+  }
+  const YAML::Node status = calibration["status"];
+  if (status.IsScalar() && status.as<std::string>() == "pending") {
+    return false;
+  }
+  calibration["status"] = "pending";
+  return true;
 }
 
 bool yaml_defined(YAML::Node node) {
@@ -950,19 +990,24 @@ void hm::ui_internal::restore_auto_selection_paths(YAML::Node& current, const YA
   };
 
   restore_child(
-      current["hmstream_ui"]["video_roles"], map_value(map_value(previous, "hmstream_ui"), "video_roles"), "left");
+      current["hstream_ui"]["video_roles"], map_value(map_value(previous, "hstream_ui"), "video_roles"), "left");
   restore_child(
-      current["hmstream_ui"]["video_roles"], map_value(map_value(previous, "hmstream_ui"), "video_roles"), "center");
+      current["hstream_ui"]["video_roles"], map_value(map_value(previous, "hstream_ui"), "video_roles"), "center");
   restore_child(
-      current["hmstream_ui"]["video_roles"], map_value(map_value(previous, "hmstream_ui"), "video_roles"), "right");
+      current["hstream_ui"]["video_roles"], map_value(map_value(previous, "hstream_ui"), "video_roles"), "right");
   restore_child(current["game"]["videos"], map_value(map_value(previous, "game"), "videos"), "left");
   restore_child(current["game"]["videos"], map_value(map_value(previous, "game"), "videos"), "right");
   restore_child(current["game"]["stitching"], map_value(map_value(previous, "game"), "stitching"), "frame_offsets");
   restore_child(current["stitching"], map_value(previous, "stitching"), "frame_offsets");
 }
 
-HmStreamWindow::HmStreamWindow(QWidget* parent) : QMainWindow(parent) {
+bool hm::ui_internal::supports_x11_embedding(const QString& platform_name, bool tegra_runtime) {
+  return !tegra_runtime && platform_name.compare("xcb", Qt::CaseInsensitive) == 0;
+}
+
+HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
   pipeline_process_ = new QProcess(this);
+  pipeline_process_->setProcessChannelMode(QProcess::MergedChannels);
   connect(pipeline_process_, &QProcess::started, this, [this]() { handlePipelineStarted(); });
   connect(
       pipeline_process_,
@@ -981,43 +1026,59 @@ HmStreamWindow::HmStreamWindow(QWidget* parent) : QMainWindow(parent) {
   appendLog("hstream-ui started with hstream-cli runner backend");
 }
 
-QString HmStreamWindow::pipelineStateText() const {
+void HStreamWindow::closeEvent(QCloseEvent* event) {
+  if (!event) {
+    return;
+  }
+  if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
+    appendLog("window close requested; stopping pipeline before exit");
+    stopPipeline();
+    if (pipeline_process_->state() != QProcess::NotRunning) {
+      appendLog("window close deferred because the pipeline is still running");
+      event->ignore();
+      return;
+    }
+  }
+  QMainWindow::closeEvent(event);
+}
+
+QString HStreamWindow::pipelineStateText() const {
   return pipeline_state_ ? pipeline_state_->text() : QString();
 }
 
-QString HmStreamWindow::outputStateText(const QString& id) const {
+QString HStreamWindow::outputStateText(const QString& id) const {
   const auto it = output_states_.find(id);
   return it == output_states_.end() ? QString() : it->second->text();
 }
 
-QString HmStreamWindow::logText() const {
+QString HStreamWindow::logText() const {
   return log_ ? log_->toPlainText() : QString();
 }
 
-QString HmStreamWindow::gameIdText() const {
+QString HStreamWindow::gameIdText() const {
   return game_id_edit_ ? game_id_edit_->text() : QString();
 }
 
-QString HmStreamWindow::gameDirectoryText() const {
+QString HStreamWindow::gameDirectoryText() const {
   return game_path_label_ ? game_path_label_->text() : QString();
 }
 
-int HmStreamWindow::videoSetCount() const {
+int HStreamWindow::videoSetCount() const {
   return video_set_list_ ? video_set_list_->count() : 0;
 }
 
-int HmStreamWindow::cameraControlValue(const QString& id) const {
+int HStreamWindow::cameraControlValue(const QString& id) const {
   const auto it = camera_sliders_.find(id);
   return it == camera_sliders_.end() ? 0 : it->second->value();
 }
 
-int HmStreamWindow::cameraTabCount() const {
+int HStreamWindow::cameraTabCount() const {
   return camera_tabs_ ? camera_tabs_->count() : 0;
 }
 
-void HmStreamWindow::buildUi() {
-  setObjectName("hmstreamUi");
-  setWindowTitle("HMStream UI");
+void HStreamWindow::buildUi() {
+  setObjectName("hstreamUi");
+  setWindowTitle("HStream UI");
   resize(1440, 900);
 
   auto* central = new QWidget(this);
@@ -1026,17 +1087,36 @@ void HmStreamWindow::buildUi() {
   root->setSpacing(10);
 
   buildTopBar(root);
-  buildMainArea(root);
-  buildLog(root);
+
+  auto* content_splitter = new QSplitter(Qt::Vertical);
+  content_splitter->setObjectName("mainLogSplitter");
+  content_splitter->setChildrenCollapsible(false);
+
+  auto* main_container = new QWidget();
+  auto* main_layout = new QVBoxLayout(main_container);
+  main_layout->setContentsMargins(0, 0, 0, 0);
+  buildMainArea(main_layout);
+
+  auto* log_container = new QWidget();
+  auto* log_layout = new QVBoxLayout(log_container);
+  log_layout->setContentsMargins(0, 0, 0, 0);
+  buildLog(log_layout);
+
+  content_splitter->addWidget(main_container);
+  content_splitter->addWidget(log_container);
+  content_splitter->setStretchFactor(0, 4);
+  content_splitter->setStretchFactor(1, 1);
+  content_splitter->setSizes({680, 170});
+  root->addWidget(content_splitter, 1);
 
   setCentralWidget(central);
 }
 
-void HmStreamWindow::buildTopBar(QVBoxLayout* root) {
+void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   auto* bar = new QHBoxLayout();
   bar->setSpacing(8);
 
-  auto* title = new QLabel("HMStream Runtime Control");
+  auto* title = new QLabel("HStream Runtime Control");
   title->setObjectName("titleLabel");
   QFont title_font = title->font();
   title_font.setBold(true);
@@ -1068,6 +1148,16 @@ void HmStreamWindow::buildTopBar(QVBoxLayout* root) {
   control_points_spin_->setEnabled(false);
   control_points_spin_->setPrefix("CP ");
 
+  render_video_toggle_ = new QCheckBox("Render video");
+  render_video_toggle_->setObjectName("renderVideoCheck");
+  render_video_toggle_->setChecked(true);
+  render_video_toggle_->setToolTip("Embed video in the active preview tab; disable before Play to reduce GPU work");
+  connect(render_video_toggle_, &QCheckBox::toggled, this, [this](bool enabled) {
+    appendLog(
+        enabled ? "video rendering enabled for the next pipeline start"
+                : "video rendering disabled for the next pipeline start");
+  });
+
   start_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), "Play");
   start_button_->setObjectName("startPipelineButton");
   pause_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPause), "Pause");
@@ -1095,6 +1185,7 @@ void HmStreamWindow::buildTopBar(QVBoxLayout* root) {
   bar->addWidget(backend_mode_);
   bar->addWidget(run_mode_selector_);
   bar->addWidget(control_points_spin_);
+  bar->addWidget(render_video_toggle_);
   bar->addStretch(1);
   bar->addWidget(start_button_);
   bar->addWidget(pause_button_);
@@ -1105,7 +1196,7 @@ void HmStreamWindow::buildTopBar(QVBoxLayout* root) {
   root->addLayout(bar);
 }
 
-void HmStreamWindow::buildMainArea(QVBoxLayout* root) {
+void HStreamWindow::buildMainArea(QVBoxLayout* root) {
   auto* splitter = new QSplitter(Qt::Horizontal);
   splitter->setObjectName("mainSplitter");
 
@@ -1128,8 +1219,9 @@ void HmStreamWindow::buildMainArea(QVBoxLayout* root) {
   root->addWidget(splitter, 1);
 }
 
-void HmStreamWindow::buildGameControls(QVBoxLayout* root) {
+void HStreamWindow::buildGameControls(QVBoxLayout* root) {
   auto* group = new QGroupBox("Game");
+  game_controls_ = group;
   group->setObjectName("gameSetupGroup");
   auto* layout = new QGridLayout(group);
   layout->setColumnStretch(1, 1);
@@ -1172,6 +1264,7 @@ void HmStreamWindow::buildGameControls(QVBoxLayout* root) {
   layout->addWidget(game_path_label_, 2, 1, 1, 2);
 
   auto* video_group = new QGroupBox("Video Sets");
+  video_controls_ = video_group;
   video_group->setObjectName("videoSetsGroup");
   auto* video_layout = new QGridLayout(video_group);
   video_layout->setColumnStretch(0, 1);
@@ -1238,7 +1331,7 @@ void HmStreamWindow::buildGameControls(QVBoxLayout* root) {
   root->addWidget(group);
 }
 
-void HmStreamWindow::buildPreviewPane(QVBoxLayout* root) {
+void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   preview_tabs_ = new QTabWidget();
   preview_tabs_->setObjectName("previewTabs");
 
@@ -1251,13 +1344,15 @@ void HmStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   preview_surface_->setAttribute(Qt::WA_NativeWindow);
   preview_surface_->setAttribute(Qt::WA_DontCreateNativeAncestors);
   preview_surface_->setStyleSheet("QWidget#previewSurface { background: #12171c; }");
-  preview_external_notice_ = new QLabel("Video is displayed in a separate DeepStream window", preview_surface_);
+  preview_external_notice_ = new QLabel("Video is displayed in a separate DeepStream window", preview_host);
+  preview_external_notice_->setObjectName("programExternalRenderNotice");
   preview_external_notice_->setAlignment(Qt::AlignCenter);
   preview_external_notice_->setWordWrap(true);
   preview_external_notice_->setStyleSheet("color: #c9d1d9; padding: 24px;");
   preview_external_notice_->hide();
-  auto* preview_surface_layout = new QVBoxLayout(preview_surface_);
-  preview_surface_layout->addWidget(preview_external_notice_);
+  auto* preview_notice_layout = new QVBoxLayout(preview_host);
+  preview_notice_layout->setContentsMargins(0, 0, 0, 0);
+  preview_notice_layout->addWidget(preview_external_notice_);
 
   preview_status_ = new QLabel("Pipeline stopped");
   preview_status_->setObjectName("previewStatusLabel");
@@ -1279,13 +1374,15 @@ void HmStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   stitched_surface_->setAttribute(Qt::WA_NativeWindow);
   stitched_surface_->setAttribute(Qt::WA_DontCreateNativeAncestors);
   stitched_surface_->setStyleSheet("QWidget#stitchedPreviewSurface { background: #10151a; }");
-  stitched_external_notice_ = new QLabel("Video is displayed in a separate DeepStream window", stitched_surface_);
+  stitched_external_notice_ = new QLabel("Video is displayed in a separate DeepStream window", stitched_host);
+  stitched_external_notice_->setObjectName("stitchedExternalRenderNotice");
   stitched_external_notice_->setAlignment(Qt::AlignCenter);
   stitched_external_notice_->setWordWrap(true);
   stitched_external_notice_->setStyleSheet("color: #c9d1d9; padding: 24px;");
   stitched_external_notice_->hide();
-  auto* stitched_surface_layout = new QVBoxLayout(stitched_surface_);
-  stitched_surface_layout->addWidget(stitched_external_notice_);
+  auto* stitched_notice_layout = new QVBoxLayout(stitched_host);
+  stitched_notice_layout->setContentsMargins(0, 0, 0, 0);
+  stitched_notice_layout->addWidget(stitched_external_notice_);
   stitched_status_ = new QLabel("Stitched canvas preview");
   stitched_status_->setObjectName("stitchedPreviewStatusLabel");
   stitched_fullscreen_button_ = new QPushButton("Fullscreen");
@@ -1299,13 +1396,38 @@ void HmStreamWindow::buildPreviewPane(QVBoxLayout* root) {
 
   preview_tabs_->addTab(program, "Program");
   preview_tabs_->addTab(stitched, "Stitched");
-  preview_tabs_->addTab(new QLabel("Camera 1 preview"), "Camera 1");
-  preview_tabs_->addTab(new QLabel("Camera 2 preview"), "Camera 2");
-  preview_tabs_->addTab(new QLabel("Camera 3 preview"), "Camera 3");
+  for (int camera_index = 0; camera_index < 3; ++camera_index) {
+    auto* camera = new QWidget();
+    auto* camera_layout = new QVBoxLayout(camera);
+    auto* camera_host = new LetterboxRenderHost(16.0 / 9.0);
+    camera_host->setObjectName(QString("camera%1LetterboxHost").arg(camera_index + 1));
+    QWidget* camera_surface = camera_host->renderSurface();
+    camera_surface->setObjectName(QString("camera%1PreviewSurface").arg(camera_index + 1));
+    camera_surface->setAttribute(Qt::WA_NativeWindow);
+    camera_surface->setAttribute(Qt::WA_DontCreateNativeAncestors);
+    camera_surface->setStyleSheet(
+        QString("QWidget#camera%1PreviewSurface { background: #10151a; }").arg(camera_index + 1));
+    camera_preview_surfaces_.push_back(camera_surface);
+
+    auto* camera_notice = new QLabel("Camera preview requires embedded X11 rendering", camera_host);
+    camera_notice->setObjectName(QString("camera%1ExternalRenderNotice").arg(camera_index + 1));
+    camera_notice->setAlignment(Qt::AlignCenter);
+    camera_notice->setWordWrap(true);
+    camera_notice->setStyleSheet("color: #c9d1d9; padding: 24px;");
+    camera_notice->hide();
+    camera_preview_notices_.push_back(camera_notice);
+    auto* camera_notice_layout = new QVBoxLayout(camera_host);
+    camera_notice_layout->setContentsMargins(0, 0, 0, 0);
+    camera_notice_layout->addWidget(camera_notice);
+
+    camera_layout->addWidget(camera_host, 1);
+    camera_layout->addWidget(new QLabel(QString("Camera %1 source preview").arg(camera_index + 1)));
+    preview_tabs_->addTab(camera, QString("Camera %1").arg(camera_index + 1));
+  }
   root->addWidget(preview_tabs_, 1);
 }
 
-void HmStreamWindow::buildOutputControls(QVBoxLayout* parent) {
+void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
   auto* group = new QGroupBox("Output Routing");
   group->setObjectName("outputRoutingGroup");
   auto* layout = new QVBoxLayout(group);
@@ -1345,7 +1467,7 @@ void HmStreamWindow::buildOutputControls(QVBoxLayout* parent) {
   parent->addWidget(group);
 }
 
-void HmStreamWindow::buildCameraControls(QVBoxLayout* parent) {
+void HStreamWindow::buildCameraControls(QVBoxLayout* parent) {
   auto* group = new QGroupBox("Camera Controls");
   group->setObjectName("cameraControlsGroup");
   group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
@@ -1447,7 +1569,7 @@ void HmStreamWindow::buildCameraControls(QVBoxLayout* parent) {
   parent->addWidget(group, 1);
 }
 
-void HmStreamWindow::buildLog(QVBoxLayout* root) {
+void HStreamWindow::buildLog(QVBoxLayout* root) {
   log_ = new QTextEdit();
   log_->setObjectName("runtimeLog");
   log_->setReadOnly(true);
@@ -1467,8 +1589,8 @@ void HmStreamWindow::buildLog(QVBoxLayout* root) {
   root->addWidget(log_);
 }
 
-QString HmStreamWindow::pipelineRunnerPath() const {
-  const QByteArray test_runner = qgetenv("HMSTREAM_UI_TEST_RUNNER");
+QString HStreamWindow::pipelineRunnerPath() const {
+  const QByteArray test_runner = qgetenv("HSTREAM_UI_TEST_RUNNER");
   if (!test_runner.isEmpty()) {
     return QString::fromLocal8Bit(test_runner);
   }
@@ -1476,7 +1598,7 @@ QString HmStreamWindow::pipelineRunnerPath() const {
   if (!development_root.isEmpty()) {
     return QDir(development_root).filePath("bazel-bin/src/apps/pipeline-app/hstream-cli");
   }
-  const QString installed_runner = "/opt/hmstream/bin/hstream-cli";
+  const QString installed_runner = "/opt/hstream/bin/hstream-cli";
   if (QFileInfo::exists(installed_runner)) {
     return installed_runner;
   }
@@ -1491,7 +1613,7 @@ QString HmStreamWindow::pipelineRunnerPath() const {
   return "hstream-cli";
 }
 
-QString HmStreamWindow::pipelineConfigPath(const QString& config_name) const {
+QString HStreamWindow::pipelineConfigPath(const QString& config_name) const {
   const QString development_root = development_runtime_root();
   if (!development_root.isEmpty()) {
     const QString development_config = QDir(QDir(development_root).filePath("configs")).filePath(config_name);
@@ -1499,34 +1621,34 @@ QString HmStreamWindow::pipelineConfigPath(const QString& config_name) const {
       return development_config;
     }
   }
-  const QString installed_config = QDir("/opt/hmstream/configs").filePath(config_name);
+  const QString installed_config = QDir("/opt/hstream/configs").filePath(config_name);
   if (QFileInfo::exists(installed_config)) {
     return installed_config;
   }
   return QDir("configs").filePath(config_name);
 }
 
-QString HmStreamWindow::pipelineWorkingDirectory() const {
-  if (!qgetenv("HMSTREAM_UI_TEST_RUNNER").isEmpty()) {
+QString HStreamWindow::pipelineWorkingDirectory() const {
+  if (!qgetenv("HSTREAM_UI_TEST_RUNNER").isEmpty()) {
     return QDir::currentPath();
   }
   const QString development_root = development_runtime_root();
   if (!development_root.isEmpty()) {
     return development_root;
   }
-  if (QFileInfo::exists("/opt/hmstream/bin/hstream-cli")) {
-    return "/opt/hmstream";
+  if (QFileInfo::exists("/opt/hstream/bin/hstream-cli")) {
+    return "/opt/hstream";
   }
   return QDir::currentPath();
 }
 
-bool HmStreamWindow::setupPretrainedAssets(const QStringList& pipeline_args) {
+bool HStreamWindow::setupPretrainedAssets(const QStringList& pipeline_args) {
   Q_UNUSED(pipeline_args);
   appendLog("pretrained assets will be verified by hstream-cli");
   return true;
 }
 
-void HmStreamWindow::logMissingTensorRtEngineCaches(const QStringList& pipeline_args) {
+void HStreamWindow::logMissingTensorRtEngineCaches(const QStringList& pipeline_args) {
   const QString working_dir = pipelineWorkingDirectory();
   const QStringList config_files = pipeline_config_files_from_args(pipeline_args);
   std::set<std::string> logged_engines;
@@ -1572,7 +1694,7 @@ void HmStreamWindow::logMissingTensorRtEngineCaches(const QStringList& pipeline_
 
       appendLog(QString("configured TensorRT engine seed missing: %1").arg(engine_file));
       appendLog(
-          "first run will build the primary-gie engine in HMStream's writable per-user cache before video appears; the render window may stay black during this step");
+          "first run will build the primary-gie engine in HStream's writable per-user cache before video appears; the render window may stay black during this step");
       appendLog("DeepStream may also log a model-engine-file open/deserialize warning while it builds the engine");
     } catch (const std::exception& e) {
       appendLog(QString("could not inspect TensorRT engine cache from %1: %2").arg(config_file, e.what()));
@@ -1580,7 +1702,7 @@ void HmStreamWindow::logMissingTensorRtEngineCaches(const QStringList& pipeline_
   }
 }
 
-QStringList HmStreamWindow::enabledSinkNames() const {
+QStringList HStreamWindow::enabledSinkNames() const {
   QStringList sinks;
   for (const auto& [id, toggle] : output_toggles_) {
     if (!toggle || !toggle->isChecked()) {
@@ -1594,22 +1716,25 @@ QStringList HmStreamWindow::enabledSinkNames() const {
       sinks.push_back("ENCODE_FILE");
     }
   }
-  if (!sinks.contains("RENDER")) {
+  if (render_video_toggle_ && render_video_toggle_->isChecked() && !sinks.contains("RENDER")) {
     sinks.push_front("RENDER");
+  }
+  if (sinks.isEmpty()) {
+    sinks.push_back("FAKE");
   }
   sinks.removeDuplicates();
   return sinks;
 }
 
-bool HmStreamWindow::isCalibrationRun() const {
+bool HStreamWindow::isCalibrationRun() const {
   return run_mode_selector_ && run_mode_selector_->currentData().toString() == "stitch-calibration";
 }
 
-int HmStreamWindow::stitchingCalibrationControlPoints() const {
+int HStreamWindow::stitchingCalibrationControlPoints() const {
   return control_points_spin_ ? control_points_spin_->value() : kDefaultStitchCalibrationControlPoints;
 }
 
-bool HmStreamWindow::runStitchingClean(
+bool HStreamWindow::runStitchingClean(
     const QString& runner,
     const QString& working_dir,
     const QProcessEnvironment& env) {
@@ -1651,8 +1776,8 @@ bool HmStreamWindow::runStitchingClean(
   return true;
 }
 
-bool HmStreamWindow::saveStitchingCalibrationState(int control_points, const QString& status) {
-  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+bool HStreamWindow::saveStitchingCalibrationState(const QString& game_id, int control_points, const QString& status) {
+  const fs::path config_path = fs::path(gameDirectory(game_id).toStdString()) / "config.yaml";
   auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
   if (!config_lock.ok()) {
     appendLog(
@@ -1672,8 +1797,8 @@ bool HmStreamWindow::saveStitchingCalibrationState(int control_points, const QSt
     }
   }
 
-  config["hmstream_ui"]["stitching_calibration"]["control_points"] = control_points;
-  config["hmstream_ui"]["stitching_calibration"]["status"] = status.toStdString();
+  config["hstream_ui"]["stitching_calibration"]["control_points"] = control_points;
+  config["hstream_ui"]["stitching_calibration"]["status"] = status.toStdString();
   const auto publish = publish_yaml_config(config_path, config);
   if (!publish.ok()) {
     appendLog(QString("failed to write stitching calibration settings %1: %2")
@@ -1684,12 +1809,19 @@ bool HmStreamWindow::saveStitchingCalibrationState(int control_points, const QSt
   return true;
 }
 
-bool HmStreamWindow::prepareStitchingCalibrationRun(
+bool HStreamWindow::prepareStitchingCalibrationRun(
     const QString& runner,
     const QString& working_dir,
-    const QProcessEnvironment& env) {
-  const int control_points = stitchingCalibrationControlPoints();
-  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+    const QProcessEnvironment& env,
+    bool* calibration_required,
+    bool pending_only) {
+  if (!calibration_required) {
+    appendLog("stitching calibration setup did not provide a result destination");
+    return false;
+  }
+  *calibration_required = false;
+  const int control_points = active_calibration_control_points_;
+  const fs::path config_path = fs::path(gameDirectory(active_run_game_id_).toStdString()) / "config.yaml";
   bool saved_found = false;
   int saved_control_points = 0;
   QString saved_status;
@@ -1703,12 +1835,12 @@ bool HmStreamWindow::prepareStitchingCalibrationRun(
     try {
       const YAML::Node config = **loaded_config;
       YAML::Node saved;
-      if (lookup_yaml_path(config, "hmstream_ui.stitching_calibration.control_points", &saved) && saved.IsScalar()) {
+      if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.control_points", &saved) && saved.IsScalar()) {
         saved_control_points = saved.as<int>();
         saved_found = true;
       }
       YAML::Node status;
-      if (lookup_yaml_path(config, "hmstream_ui.stitching_calibration.status", &status) && status.IsScalar()) {
+      if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.status", &status) && status.IsScalar()) {
         saved_status = QString::fromStdString(status.as<std::string>());
       }
     } catch (const std::exception& exc) {
@@ -1717,45 +1849,89 @@ bool HmStreamWindow::prepareStitchingCalibrationRun(
     }
   }
 
-  if (!saved_found || saved_control_points != control_points || saved_status != "complete") {
+  const bool needs_calibration = pending_only
+      ? saved_status != "complete"
+      : !saved_found || saved_control_points != control_points || saved_status != "complete";
+  if (needs_calibration) {
     const QString previous = saved_found ? QString::number(saved_control_points) : QString("unset");
-    appendLog(QString("stitching calibration control points changed %1 -> %2 status=%3; cleaning stitch artifacts")
-                  .arg(previous)
-                  .arg(control_points)
-                  .arg(saved_status.isEmpty() ? "unset" : saved_status));
+    if (pending_only) {
+      appendLog("stitching calibration is pending or untracked; cleaning stitch artifacts before program playback");
+    } else {
+      appendLog(QString("stitching calibration control points changed %1 -> %2 status=%3; cleaning stitch artifacts")
+                    .arg(previous)
+                    .arg(control_points)
+                    .arg(saved_status.isEmpty() ? "unset" : saved_status));
+    }
     if (!runStitchingClean(runner, working_dir, env)) {
       return false;
     }
+    if (!saveStitchingCalibrationState(active_run_game_id_, control_points, "pending")) {
+      return false;
+    }
+    *calibration_required = true;
   }
-  return saveStitchingCalibrationState(control_points, "pending");
+  return true;
 }
 
-QStringList HmStreamWindow::pipelineArguments() const {
-  const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
+QStringList HStreamWindow::pipelineArguments() const {
+  const QString game_id = !active_run_game_id_.isEmpty()
+      ? active_run_game_id_
+      : (game_id_edit_ ? game_id_edit_->text().trimmed() : QString());
   const QString configured_render_sink = qEnvironmentVariable("HM_RENDER_SINK").trimmed().toLower();
-  const bool embed_render_window = configured_render_sink == "nveglglessink" || configured_render_sink == "egl";
+  const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
+  const bool embed_render_window = render_video &&
+      hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) &&
+      (configured_render_sink.isEmpty() || configured_render_sink == "nveglglessink" ||
+       configured_render_sink == "egl");
   QStringList args;
   args << "-g" << game_id << "--enable-sources=URI-MULTIPLE";
   if (isCalibrationRun()) {
-    args << "-c" << pipelineConfigPath("ds_hockey_configure_stitching.yaml");
-    args << "--enable-sinks=RENDER";
-    args << "--show-stitching" << "1";
+    args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
+    args << QString("--enable-sinks=%1").arg(render_video ? "RENDER" : "FAKE");
+    if (render_video) {
+      args << "--show";
+    }
     if (embed_render_window && stitched_surface_) {
-      args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(stitched_surface_->winId()));
+      const WId window_id = stitched_surface_->winId();
+      if (window_id != 0) {
+        args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(window_id));
+      }
     }
   } else {
     args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
     args << QString("--enable-sinks=%1").arg(enabledSinkNames().join(","));
-    args << "--show";
+    if (render_video) {
+      args << "--show";
+    }
     if (embed_render_window && preview_surface_) {
-      args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(preview_surface_->winId()));
+      const WId window_id = preview_surface_->winId();
+      if (window_id != 0) {
+        args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(window_id));
+      }
+    }
+  }
+  if (isCalibrationRun() || calibration_pending_) {
+    args << QString("--options=%1").arg(kStitchedPreviewPipelineOptions);
+  }
+  if (embed_render_window) {
+    QStringList camera_window_ids;
+    for (QWidget* surface : camera_preview_surfaces_) {
+      if (!surface)
+        continue;
+      const WId window_id = surface->winId();
+      if (window_id != 0) {
+        camera_window_ids << QString::number(static_cast<qulonglong>(window_id));
+      }
+    }
+    if (!camera_window_ids.isEmpty()) {
+      args << QString("--source-render-window-ids=%1").arg(camera_window_ids.join(','));
     }
   }
   args << "--options=pipeline.hmaudio.enable=1";
   return args;
 }
 
-void HmStreamWindow::startPipeline() {
+void HStreamWindow::startPipeline() {
   if (!pipeline_process_ || pipeline_process_->state() != QProcess::NotRunning) {
     appendLog("pipeline already running");
     return;
@@ -1764,31 +1940,61 @@ void HmStreamWindow::startPipeline() {
     updateRunControls();
     return;
   }
+  active_run_game_id_ = game_id_edit_->text().trimmed();
+  active_run_is_calibration_ = isCalibrationRun();
+  active_calibration_control_points_ = 0;
+  pending_runtime_controls_.clear();
   if (preview_tabs_) {
     preview_tabs_->setCurrentIndex(isCalibrationRun() ? 1 : 0);
     QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
   }
 
   const QString runner = pipelineRunnerPath();
-  const QStringList args = pipelineArguments();
   if (QFileInfo(runner).isAbsolute() && !QFileInfo::exists(runner)) {
+    calibration_pending_ = false;
+    active_run_game_id_.clear();
+    active_run_is_calibration_ = false;
     pipeline_state_->setText("STOPPED");
     preview_status_->setText("Pipeline failed to start");
     appendLog(QString("pipeline process error=missing runner %1").arg(runner));
     updateRunControls();
     return;
   }
+  QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+  const QString working_dir = pipelineWorkingDirectory();
+  configure_pipeline_runtime_environment(env, working_dir);
+  active_calibration_control_points_ = stitchingCalibrationControlPoints();
+  bool calibration_required = false;
+  if (!prepareStitchingCalibrationRun(
+          runner, working_dir, env, &calibration_required, /*pending_only=*/!active_run_is_calibration_)) {
+    calibration_pending_ = false;
+    active_run_game_id_.clear();
+    active_run_is_calibration_ = false;
+    active_calibration_control_points_ = 0;
+    pipeline_state_->setText("STOPPED");
+    preview_status_->setText("Stitching setup failed");
+    if (stitched_status_)
+      stitched_status_->setText("Stitched canvas preview");
+    updateRunControls();
+    return;
+  }
+  calibration_pending_ = calibration_required;
+
+  const QStringList args = pipelineArguments();
   if (!setupPretrainedAssets(args)) {
+    calibration_pending_ = false;
+    active_run_game_id_.clear();
+    active_run_is_calibration_ = false;
+    active_calibration_control_points_ = 0;
     pipeline_state_->setText("STOPPED");
     preview_status_->setText("Asset setup failed");
+    if (stitched_status_)
+      stitched_status_->setText("Stitched canvas preview");
     updateRunControls();
     return;
   }
   logMissingTensorRtEngineCaches(args);
 
-  QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-  const QString working_dir = pipelineWorkingDirectory();
-  configure_pipeline_runtime_environment(env, working_dir);
   // The native scoreboard selector is intentionally interactive and blocks
   // until its private HTTP form is submitted.  A normal UI Play action must
   // not run that interaction on the playcropper output thread because doing
@@ -1796,31 +2002,64 @@ void HmStreamWindow::startPipeline() {
   // configured polygon active; when none exists, the selector's established
   // HM_NO_SCOREBOARD path writes the disabled sentinel instead.  Operators
   // can still request the selector explicitly with HM_NO_SCOREBOARD=0.
-  if (!isCalibrationRun() && env.value("HM_NO_SCOREBOARD").isEmpty()) {
+  if (env.value("HM_NO_SCOREBOARD").isEmpty()) {
     env.insert("HM_NO_SCOREBOARD", "1");
   }
   const bool embedded_render = std::any_of(
       args.begin(), args.end(), [](const QString& argument) { return argument.startsWith("--render-window-id="); });
+  const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
+  if (preview_surface_)
+    preview_surface_->setVisible(embedded_render);
+  if (stitched_surface_)
+    stitched_surface_->setVisible(embedded_render);
+  for (QWidget* surface : camera_preview_surfaces_) {
+    if (surface)
+      surface->setVisible(embedded_render);
+  }
   if (preview_external_notice_)
     preview_external_notice_->setVisible(!embedded_render);
   if (stitched_external_notice_)
     stitched_external_notice_->setVisible(!embedded_render);
+  for (QLabel* notice : camera_preview_notices_) {
+    if (notice)
+      notice->setVisible(!embedded_render);
+  }
+  const QString render_notice =
+      render_video ? "Video is displayed in a separate DeepStream window" : "Video rendering is disabled for this run";
+  if (preview_external_notice_)
+    preview_external_notice_->setText(render_notice);
+  if (stitched_external_notice_)
+    stitched_external_notice_->setText(render_notice);
+  const QString camera_render_notice =
+      render_video ? "Camera preview requires embedded X11 rendering" : "Video rendering is disabled for this run";
+  for (QLabel* notice : camera_preview_notices_) {
+    if (notice)
+      notice->setText(camera_render_notice);
+  }
   if (program_fullscreen_button_)
-    program_fullscreen_button_->setEnabled(embedded_render);
+    program_fullscreen_button_->setEnabled(embedded_render && !active_run_is_calibration_);
   if (stitched_fullscreen_button_)
-    stitched_fullscreen_button_->setEnabled(embedded_render);
-  if (!embedded_render)
+    stitched_fullscreen_button_->setEnabled(embedded_render && active_run_is_calibration_);
+  if (render_video && !embedded_render)
     appendLog("nv3dsink render output will open in a separate DeepStream window; embedded preview is disabled");
-  if (isCalibrationRun()) {
-    if (!prepareStitchingCalibrationRun(runner, working_dir, env)) {
-      pipeline_state_->setText("STOPPED");
-      preview_status_->setText("Stitching calibration setup failed");
-      updateRunControls();
-      return;
-    }
-    const int control_points = stitchingCalibrationControlPoints();
+  else if (!render_video)
+    appendLog("video rendering disabled; pipeline will run without a display sink");
+  if (calibration_pending_) {
+    const int control_points = active_calibration_control_points_;
     env.insert("HM_MAX_CONTROL_POINTS", QString::number(control_points));
-    appendLog(QString("stitching calibration control points=%1").arg(control_points));
+    if (active_run_is_calibration_) {
+      appendLog(
+          QString("stitching calibration control points=%1; starting one-pass stitched playback").arg(control_points));
+    } else {
+      appendLog(QString(
+                    "video inputs require stitching calibration; starting one-pass program playback with control "
+                    "points=%1")
+                    .arg(control_points));
+    }
+  } else if (active_run_is_calibration_) {
+    appendLog(
+        render_video ? "stitching calibration is complete; starting continuous stitched preview"
+                     : "stitching calibration is complete; starting without video rendering");
   }
   appendLog("audio enabled via pipeline.hmaudio.enable=1; render audio uses the configured system audio sink");
   pipeline_process_->setProcessEnvironment(env);
@@ -1848,12 +2087,29 @@ void HmStreamWindow::startPipeline() {
   pipeline_stop_requested_ = false;
 
   pipeline_state_->setText("STARTING");
-  preview_status_->setText(
-      isCalibrationRun() ? "Starting stitching calibration pipeline" : "Starting program pipeline");
+  if (active_run_is_calibration_) {
+    if (render_video) {
+      preview_status_->setText(
+          calibration_pending_ ? "Starting one-pass stitching calibration and preview"
+                               : "Starting continuous stitched preview");
+    } else {
+      preview_status_->setText(
+          calibration_pending_ ? "Starting one-pass stitching calibration without video rendering"
+                               : "Starting stitching pipeline without video rendering");
+    }
+  } else {
+    preview_status_->setText(
+        calibration_pending_ ? "Starting one-pass stitching calibration and program pipeline"
+                             : "Starting program pipeline");
+  }
   if (isCalibrationRun() && stitched_status_) {
-    stitched_status_->setText(
-        QString("Starting stitching calibration\nControl points: %1\nRender sink: hmstitcher output")
-            .arg(stitchingCalibrationControlPoints()));
+    if (calibration_pending_) {
+      stitched_status_->setText(
+          QString("Calibrating stitching\nControl points: %1\nPlayback will continue automatically")
+              .arg(active_calibration_control_points_));
+    } else {
+      stitched_status_->setText("Stitching calibrated\nContinuous stitched preview starting");
+    }
     if (preview_tabs_) {
       preview_tabs_->setCurrentIndex(1);
     }
@@ -1865,7 +2121,7 @@ void HmStreamWindow::startPipeline() {
   updateRunControls();
 }
 
-void HmStreamWindow::pauseOrResumePipeline() {
+void HStreamWindow::pauseOrResumePipeline() {
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
     appendLog("pause requested but pipeline is not running");
     return;
@@ -1892,10 +2148,12 @@ void HmStreamWindow::pauseOrResumePipeline() {
 #endif
 }
 
-void HmStreamWindow::stopPipeline() {
+void HStreamWindow::stopPipeline() {
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
     pipeline_state_->setText("STOPPED");
     preview_status_->setText("Pipeline stopped");
+    if (stitched_status_)
+      stitched_status_->setText("Stitched canvas preview");
     appendLog("pipeline already stopped");
     updateRunControls();
     return;
@@ -1931,14 +2189,49 @@ void HmStreamWindow::stopPipeline() {
   }
 }
 
-void HmStreamWindow::handlePipelineStarted() {
+void HStreamWindow::handlePipelineStarted() {
   pipeline_state_->setText("PLAYING");
-  preview_status_->setText(isCalibrationRun() ? "Stitching calibration running" : "Program pipeline running");
+  const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
+  if (active_run_is_calibration_) {
+    const bool previewing = !calibration_pending_;
+    if (render_video) {
+      preview_status_->setText(previewing ? "Continuous stitched preview running" : "Stitching calibration running");
+    } else {
+      preview_status_->setText(
+          previewing ? "Stitching pipeline running without video rendering"
+                     : "Stitching calibration running without video rendering");
+    }
+    if (stitched_status_) {
+      if (render_video) {
+        stitched_status_->setText(
+            previewing ? "Stitching calibrated\nContinuous stitched preview running"
+                       : QString("Calibrating stitching\nControl points: %1\nPlayback will continue automatically")
+                             .arg(active_calibration_control_points_));
+      } else {
+        stitched_status_->setText(
+            previewing ? "Stitching calibrated\nVideo rendering disabled"
+                       : QString("Calibrating stitching\nControl points: %1\nVideo rendering disabled")
+                             .arg(active_calibration_control_points_));
+      }
+    }
+    if (previewing && render_video) {
+      appendLog("continuous stitched preview running; camera controls remain available");
+    }
+  } else {
+    if (calibration_pending_) {
+      preview_status_->setText(
+          render_video ? "Program pipeline calibrating stitching"
+                       : "Program pipeline calibrating stitching without video rendering");
+    } else {
+      preview_status_->setText(
+          render_video ? "Program pipeline running" : "Program pipeline running without video rendering");
+    }
+  }
   appendLog(QString("pipeline started pid=%1").arg(pipeline_process_ ? pipeline_process_->processId() : 0));
   updateRunControls();
 }
 
-void HmStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status) {
+void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status) {
   readPipelineOutput();
   if (!pipeline_stdout_buffer_.isEmpty()) {
     appendLog(pipeline_stdout_buffer_.trimmed());
@@ -1952,30 +2245,53 @@ void HmStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus 
   pipeline_uses_process_group_ = false;
   const bool stopped_by_user = pipeline_stop_requested_;
   pipeline_stop_requested_ = false;
-  if (isCalibrationRun() && !stopped_by_user && exit_status == QProcess::NormalExit && exit_code == 0) {
-    saveStitchingCalibrationState(stitchingCalibrationControlPoints(), "complete");
+  if (calibration_pending_ && !stopped_by_user) {
+    appendLog("one-pass stitching calibration ended before completion; calibration remains pending");
   }
+  failPendingRuntimeControls("pipeline-finished");
+  calibration_pending_ = false;
+  active_run_game_id_.clear();
+  active_run_is_calibration_ = false;
+  active_calibration_control_points_ = 0;
   pipeline_state_->setText("STOPPED");
   preview_status_->setText("Pipeline stopped");
+  if (stitched_status_)
+    stitched_status_->setText("Stitched canvas preview");
   appendLog(QString("pipeline finished exit=%1 status=%2")
                 .arg(exit_code)
                 .arg(exit_status == QProcess::NormalExit ? "normal" : "crashed"));
   updateRunControls();
 }
 
-void HmStreamWindow::handlePipelineError(QProcess::ProcessError error) {
+void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
+  const QString error_message = QString("pipeline process error=%1 message=%2")
+                                    .arg(static_cast<int>(error))
+                                    .arg(pipeline_process_ ? pipeline_process_->errorString() : QString());
+  if (error != QProcess::FailedToStart && error != QProcess::Crashed) {
+    if (error == QProcess::WriteError || error == QProcess::ReadError) {
+      failPendingRuntimeControls(error == QProcess::WriteError ? "pipeline-write-error" : "pipeline-read-error");
+    }
+    appendLog(error_message + "; pipeline remains running");
+    updateRunControls();
+    return;
+  }
   pipeline_paused_ = false;
   pipeline_uses_process_group_ = false;
   pipeline_stop_requested_ = false;
+  failPendingRuntimeControls("pipeline-error");
+  calibration_pending_ = false;
+  active_run_game_id_.clear();
+  active_run_is_calibration_ = false;
+  active_calibration_control_points_ = 0;
   pipeline_state_->setText("STOPPED");
   preview_status_->setText("Pipeline failed to start");
-  appendLog(QString("pipeline process error=%1 message=%2")
-                .arg(static_cast<int>(error))
-                .arg(pipeline_process_ ? pipeline_process_->errorString() : QString()));
+  if (stitched_status_)
+    stitched_status_->setText("Stitched canvas preview");
+  appendLog(error_message);
   updateRunControls();
 }
 
-void HmStreamWindow::readPipelineOutput() {
+void HStreamWindow::readPipelineOutput() {
   if (!pipeline_process_) {
     return;
   }
@@ -1993,15 +2309,49 @@ void HmStreamWindow::readPipelineOutput() {
       buffer->remove(0, newline + 1);
       line.remove('\r');
       if (!line.trimmed().isEmpty()) {
-        appendLog(line.trimmed());
+        const QString trimmed = line.trimmed();
+        appendLog(trimmed);
+        handleRuntimeControlResponse(trimmed);
+        if (calibration_pending_ && !active_run_game_id_.isEmpty() &&
+            trimmed.contains(kOnePassStitchingCompleteMarker) &&
+            saveStitchingCalibrationState(active_run_game_id_, active_calibration_control_points_, "complete")) {
+          calibration_pending_ = false;
+          const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
+          preview_status_->setText(
+              active_run_is_calibration_ ? (render_video ? "Continuous stitched preview running"
+                                                         : "Stitching pipeline running without video rendering")
+                                         : (render_video ? "Program pipeline playing after stitching calibration"
+                                                         : "Program pipeline running without video rendering after "
+                                                           "stitching calibration"));
+          if (stitched_status_) {
+            stitched_status_->setText(
+                active_run_is_calibration_ ? (render_video ? "Stitching calibrated\nContinuous stitched preview running"
+                                                           : "Stitching calibrated\nVideo rendering disabled")
+                                           : "Stitching calibrated during program playback");
+          }
+          appendLog(
+              active_run_is_calibration_
+                  ? (render_video
+                         ? "one-pass stitching calibration complete; continuous stitched preview running; camera "
+                           "controls remain available"
+                         : "one-pass stitching calibration complete; pipeline continuing without video rendering; "
+                           "camera controls remain available")
+                  : (render_video
+                         ? "one-pass stitching calibration complete; continuous program playback running; camera "
+                           "controls remain available"
+                         : "one-pass stitching calibration complete; program pipeline continuing without video "
+                           "rendering; camera controls remain available"));
+        }
       }
     }
   };
   drain(pipeline_process_->readAllStandardOutput(), &pipeline_stdout_buffer_);
-  drain(pipeline_process_->readAllStandardError(), &pipeline_stderr_buffer_);
+  if (pipeline_process_->processChannelMode() != QProcess::MergedChannels) {
+    drain(pipeline_process_->readAllStandardError(), &pipeline_stderr_buffer_);
+  }
 }
 
-void HmStreamWindow::togglePreviewFullscreen(int tab_index) {
+void HStreamWindow::togglePreviewFullscreen(int tab_index) {
   if (preview_tabs_) {
     preview_tabs_->setCurrentIndex(tab_index);
   }
@@ -2015,7 +2365,7 @@ void HmStreamWindow::togglePreviewFullscreen(int tab_index) {
   }
 }
 
-void HmStreamWindow::updateRunControls() {
+void HStreamWindow::updateRunControls() {
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   if (!pipeline_state_) {
     return;
@@ -2039,9 +2389,18 @@ void HmStreamWindow::updateRunControls() {
   if (control_points_spin_) {
     control_points_spin_->setEnabled(!running && isCalibrationRun());
   }
+  if (render_video_toggle_) {
+    render_video_toggle_->setEnabled(!running);
+  }
+  if (game_controls_) {
+    game_controls_->setEnabled(!running);
+  }
+  if (video_controls_) {
+    video_controls_->setEnabled(!running);
+  }
 }
 
-void HmStreamWindow::restartStage() {
+void HStreamWindow::restartStage() {
   appendLog("stage restart requested");
   if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
     stopPipeline();
@@ -2053,7 +2412,7 @@ void HmStreamWindow::restartStage() {
   startPipeline();
 }
 
-void HmStreamWindow::savePreset() {
+void HStreamWindow::savePreset() {
   if (!ensureGameDirectory()) {
     return;
   }
@@ -2104,7 +2463,7 @@ void HmStreamWindow::savePreset() {
   appendLog(QString("preset saved %1").arg(QString::fromStdString(config_path.string())));
 }
 
-void HmStreamWindow::resetCameraControls() {
+void HStreamWindow::resetCameraControls() {
   for (const auto& [id, value] : camera_defaults_) {
     const auto it = camera_sliders_.find(id);
     if (it != camera_sliders_.end()) {
@@ -2114,7 +2473,7 @@ void HmStreamWindow::resetCameraControls() {
   appendLog("camera controls reset to defaults");
 }
 
-void HmStreamWindow::loadSavedControlConfig() {
+void HStreamWindow::loadSavedControlConfig() {
   if (!game_id_edit_ || game_id_edit_->text().isEmpty()) {
     return;
   }
@@ -2150,13 +2509,13 @@ void HmStreamWindow::loadSavedControlConfig() {
     YAML::Node config = **loaded_config;
     YAML::Node control_points;
     if (control_points_spin_ &&
-        lookup_yaml_path(config, "hmstream_ui.stitching_calibration.control_points", &control_points) &&
+        lookup_yaml_path(config, "hstream_ui.stitching_calibration.control_points", &control_points) &&
         control_points.IsScalar()) {
       const bool blocked = control_points_spin_->blockSignals(true);
       control_points_spin_->setValue(control_points.as<int>());
       control_points_spin_->blockSignals(blocked);
     }
-    YAML::Node controls = config["hmstream_ui"]["camera_controls"];
+    YAML::Node controls = config["hstream_ui"]["camera_controls"];
     if (!controls || !controls.IsMap()) {
       return;
     }
@@ -2183,7 +2542,7 @@ void HmStreamWindow::loadSavedControlConfig() {
   }
 }
 
-bool HmStreamWindow::applySavedControlConfig(
+bool HStreamWindow::applySavedControlConfig(
     YAML::Node& config,
     bool* invalidate_rink_masks,
     int* invalidated_config_artifacts) {
@@ -2196,10 +2555,10 @@ bool HmStreamWindow::applySavedControlConfig(
   if (!yaml_defined(config) || config.IsNull()) {
     config = YAML::Node(YAML::NodeType::Map);
   }
-  YAML::Node previous_hmstream_ui = map_value(config, "hmstream_ui");
-  YAML::Node previous_generated = map_value(previous_hmstream_ui, "generated_runtime_keys");
-  YAML::Node previous_generated_values = map_value(previous_hmstream_ui, "generated_runtime_values");
-  YAML::Node previous_playtracker_config_base = map_value(previous_hmstream_ui, "playtracker_config_base");
+  YAML::Node previous_hstream_ui = map_value(config, "hstream_ui");
+  YAML::Node previous_generated = map_value(previous_hstream_ui, "generated_runtime_keys");
+  YAML::Node previous_generated_values = map_value(previous_hstream_ui, "generated_runtime_values");
+  YAML::Node previous_playtracker_config_base = map_value(previous_hstream_ui, "playtracker_config_base");
   const bool ui_rotation_previously_generated =
       yaml_sequence_contains(previous_generated, "stitching.post_stitch_rotate_degrees");
   if (yaml_defined(previous_generated) && previous_generated.IsSequence()) {
@@ -2235,9 +2594,9 @@ bool HmStreamWindow::applySavedControlConfig(
       }
     }
   }
-  remove_yaml_path(config, {"hmstream_ui", "generated_runtime_keys"});
-  remove_yaml_path(config, {"hmstream_ui", "generated_runtime_values"});
-  remove_yaml_path(config, {"hmstream_ui", "playtracker_config_base"});
+  remove_yaml_path(config, {"hstream_ui", "generated_runtime_keys"});
+  remove_yaml_path(config, {"hstream_ui", "generated_runtime_values"});
+  remove_yaml_path(config, {"hstream_ui", "playtracker_config_base"});
   YAML::Node current_playtracker_config;
   if (previous_playtracker_config_base && previous_playtracker_config_base.IsScalar() &&
       !lookup_yaml_path(config, "pipeline.ds-playtracker.config-file", &current_playtracker_config)) {
@@ -2268,7 +2627,7 @@ bool HmStreamWindow::applySavedControlConfig(
     controls[key.c_str()] = slider->value();
     ++changed;
   }
-  config["hmstream_ui"]["camera_controls"] = controls;
+  config["hstream_ui"]["camera_controls"] = controls;
 
   auto slider_value = [this](const QString& id) -> int {
     const auto it = camera_sliders_.find(id);
@@ -2508,7 +2867,7 @@ bool HmStreamWindow::applySavedControlConfig(
           } else {
             config["pipeline"]["ds-playtracker"]["config-file"] = runtime_config_path.toStdString();
             if (!configured_playtracker_config.isEmpty() && configured_playtracker_config != runtime_config_path) {
-              config["hmstream_ui"]["playtracker_config_base"] = configured_playtracker_config.toStdString();
+              config["hstream_ui"]["playtracker_config_base"] = configured_playtracker_config.toStdString();
             }
             mark_runtime_key("pipeline.ds-playtracker.config-file");
             appendLog(QString("playtracker runtime config saved %1").arg(runtime_config_path));
@@ -2520,13 +2879,13 @@ bool HmStreamWindow::applySavedControlConfig(
     }
   }
   if (has_control(controls, "Apply_To_Fast_Box")) {
-    config["hmstream_ui"]["camera_control_targets"]["apply_to_fast_box"] = slider_value("Apply_To_Fast_Box") != 0;
-    mark_runtime_key("hmstream_ui.camera_control_targets.apply_to_fast_box");
+    config["hstream_ui"]["camera_control_targets"]["apply_to_fast_box"] = slider_value("Apply_To_Fast_Box") != 0;
+    mark_runtime_key("hstream_ui.camera_control_targets.apply_to_fast_box");
   }
   if (has_control(controls, "Apply_To_Follower_Box")) {
-    config["hmstream_ui"]["camera_control_targets"]["apply_to_follower_box"] =
+    config["hstream_ui"]["camera_control_targets"]["apply_to_follower_box"] =
         slider_value("Apply_To_Follower_Box") != 0;
-    mark_runtime_key("hmstream_ui.camera_control_targets.apply_to_follower_box");
+    mark_runtime_key("hstream_ui.camera_control_targets.apply_to_follower_box");
   }
   if (generated_runtime_keys.size() > 0) {
     for (const auto& path_node : generated_runtime_keys) {
@@ -2536,14 +2895,14 @@ bool HmStreamWindow::applySavedControlConfig(
         generated_runtime_values[key.c_str()] = YAML::Dump(value);
       }
     }
-    config["hmstream_ui"]["generated_runtime_keys"] = generated_runtime_keys;
-    config["hmstream_ui"]["generated_runtime_values"] = generated_runtime_values;
+    config["hstream_ui"]["generated_runtime_keys"] = generated_runtime_keys;
+    config["hstream_ui"]["generated_runtime_values"] = generated_runtime_values;
   }
   appendLog(QString("preset captured %1 non-default camera controls").arg(changed));
   return true;
 }
 
-void HmStreamWindow::refreshGames() {
+void HStreamWindow::refreshGames() {
   if (!game_selector_) {
     return;
   }
@@ -2576,7 +2935,7 @@ void HmStreamWindow::refreshGames() {
   }
 }
 
-void HmStreamWindow::selectGame(const QString& game_id) {
+void HStreamWindow::selectGame(const QString& game_id) {
   if (!game_id_edit_) {
     return;
   }
@@ -2592,7 +2951,7 @@ void HmStreamWindow::selectGame(const QString& game_id) {
   appendLog(QString("game selected %1").arg(game_id_edit_->text()));
 }
 
-void HmStreamWindow::createOrLoadGame() {
+void HStreamWindow::createOrLoadGame() {
   if (!ensureGameDirectory()) {
     return;
   }
@@ -2602,7 +2961,7 @@ void HmStreamWindow::createOrLoadGame() {
   appendLog(QString("game ready %1").arg(game_id_edit_->text()));
 }
 
-void HmStreamWindow::addVideoPath() {
+void HStreamWindow::addVideoPath() {
   if (!video_path_edit_) {
     return;
   }
@@ -2660,7 +3019,7 @@ void HmStreamWindow::addVideoPath() {
   appendLog(QString("video set added role=%1 path=%2").arg(role_label(role), imported_relative_path));
 }
 
-void HmStreamWindow::browseVideoPath() {
+void HStreamWindow::browseVideoPath() {
   const QString start_dir = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
   const QString path = QFileDialog::getOpenFileName(
       this,
@@ -2672,7 +3031,7 @@ void HmStreamWindow::browseVideoPath() {
   }
 }
 
-void HmStreamWindow::removeSelectedVideoSet() {
+void HStreamWindow::removeSelectedVideoSet() {
   if (!video_set_list_) {
     return;
   }
@@ -2737,7 +3096,7 @@ void HmStreamWindow::removeSelectedVideoSet() {
   refreshVideoSets();
 }
 
-void HmStreamWindow::refreshVideoSets() {
+void HStreamWindow::refreshVideoSets() {
   if (!video_set_list_ || !game_id_edit_) {
     return;
   }
@@ -2803,7 +3162,7 @@ void HmStreamWindow::refreshVideoSets() {
   } else if (loaded_config->has_value()) {
     try {
       YAML::Node config = **loaded_config;
-      YAML::Node explicit_roles = config["hmstream_ui"]["video_roles"];
+      YAML::Node explicit_roles = config["hstream_ui"]["video_roles"];
       for (const QString& role : {QString("left"), QString("center"), QString("right")}) {
         YAML::Node role_videos = explicit_roles[role.toStdString()];
         if (role_videos && role_videos.IsSequence()) {
@@ -2826,7 +3185,7 @@ void HmStreamWindow::refreshVideoSets() {
           }
         }
       }
-      YAML::Node copied_imports = config["hmstream_ui"]["copied_imports"];
+      YAML::Node copied_imports = config["hstream_ui"]["copied_imports"];
       if (copied_imports && copied_imports.IsSequence()) {
         for (const auto& item : copied_imports) {
           if (!item.IsScalar())
@@ -2872,7 +3231,7 @@ void HmStreamWindow::refreshVideoSets() {
   }
 }
 
-QString HmStreamWindow::selectedVideoRole() const {
+QString HStreamWindow::selectedVideoRole() const {
   if (role_left_ && role_left_->isChecked()) {
     return "left";
   }
@@ -2885,7 +3244,7 @@ QString HmStreamWindow::selectedVideoRole() const {
   return "auto";
 }
 
-QString HmStreamWindow::gameRoot() const {
+QString HStreamWindow::gameRoot() const {
   const QByteArray env = qgetenv("HM_GAME_DIR");
   if (!env.isEmpty()) {
     return QString::fromLocal8Bit(env);
@@ -2893,19 +3252,19 @@ QString HmStreamWindow::gameRoot() const {
   return QDir::home().filePath("Videos");
 }
 
-QString HmStreamWindow::gameDirectory(const QString& game_id) const {
+QString HStreamWindow::gameDirectory(const QString& game_id) const {
   if (game_id.isEmpty()) {
     return gameRoot();
   }
   return QDir(gameRoot()).filePath(game_id);
 }
 
-QString HmStreamWindow::relativeToGameDir(const QString& path) const {
+QString HStreamWindow::relativeToGameDir(const QString& path) const {
   const QDir dir(gameDirectory(game_id_edit_->text()));
   return dir.relativeFilePath(path);
 }
 
-bool HmStreamWindow::ensureGameDirectory() {
+bool HStreamWindow::ensureGameDirectory() {
   if (!game_id_edit_) {
     return false;
   }
@@ -2930,7 +3289,7 @@ bool HmStreamWindow::ensureGameDirectory() {
   return true;
 }
 
-bool HmStreamWindow::importVideoPath(const QString& source_path, QString* imported_relative_path, bool* created) {
+bool HStreamWindow::importVideoPath(const QString& source_path, QString* imported_relative_path, bool* created) {
   if (!imported_relative_path || !created) {
     return false;
   }
@@ -3051,7 +3410,7 @@ bool HmStreamWindow::importVideoPath(const QString& source_path, QString* import
   return true;
 }
 
-bool HmStreamWindow::saveCopiedImport(
+bool HStreamWindow::saveCopiedImport(
     const QString& relative_path,
     const QString& auto_group_family,
     const QString& source_parent) {
@@ -3066,10 +3425,10 @@ bool HmStreamWindow::saveCopiedImport(
     }
   }
 
-  YAML::Node list = config["hmstream_ui"]["copied_imports"];
+  YAML::Node list = config["hstream_ui"]["copied_imports"];
   if (!list || !list.IsSequence()) {
-    config["hmstream_ui"]["copied_imports"] = YAML::Node(YAML::NodeType::Sequence);
-    list = config["hmstream_ui"]["copied_imports"];
+    config["hstream_ui"]["copied_imports"] = YAML::Node(YAML::NodeType::Sequence);
+    list = config["hstream_ui"]["copied_imports"];
   }
   bool copied_exists = false;
   for (const auto& item : list) {
@@ -3083,10 +3442,10 @@ bool HmStreamWindow::saveCopiedImport(
   }
 
   if (!auto_group_family.isEmpty() && !source_parent.isEmpty()) {
-    YAML::Node sources = config["hmstream_ui"]["auto_import_sources"];
+    YAML::Node sources = config["hstream_ui"]["auto_import_sources"];
     if (!sources || !sources.IsSequence()) {
-      config["hmstream_ui"]["auto_import_sources"] = YAML::Node(YAML::NodeType::Sequence);
-      sources = config["hmstream_ui"]["auto_import_sources"];
+      config["hstream_ui"]["auto_import_sources"] = YAML::Node(YAML::NodeType::Sequence);
+      sources = config["hstream_ui"]["auto_import_sources"];
     }
     bool source_exists = false;
     for (const auto& item : sources) {
@@ -3111,7 +3470,7 @@ bool HmStreamWindow::saveCopiedImport(
   return publish.ok();
 }
 
-bool HmStreamWindow::rollbackImportedVideoPath(const QString& relative_path) {
+bool HStreamWindow::rollbackImportedVideoPath(const QString& relative_path) {
   const QDir game_dir(gameDirectory(game_id_edit_->text()));
   const fs::path config_path = fs::path(game_dir.absolutePath().toStdString()) / "config.yaml";
   bool copied_import = false;
@@ -3146,7 +3505,7 @@ bool HmStreamWindow::rollbackImportedVideoPath(const QString& relative_path) {
     const QFileInfo imported(imported_path);
     staged_path =
         QDir(imported.absolutePath())
-            .filePath(QString(".hmstream-rollback-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+            .filePath(QString(".hstream-rollback-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
     if (!QFile::rename(imported_path, staged_path)) {
       appendLog(QString("failed to stage imported video rollback %1").arg(relative_path));
       return false;
@@ -3157,7 +3516,7 @@ bool HmStreamWindow::rollbackImportedVideoPath(const QString& relative_path) {
     auto matches_path = [&](const QString& value) {
       return normalized_config_video_path(game_dir, value) == normalized_config_video_path(game_dir, relative_path);
     };
-    YAML::Node copied_imports = config["hmstream_ui"]["copied_imports"];
+    YAML::Node copied_imports = config["hstream_ui"]["copied_imports"];
     YAML::Node copied_replacement(YAML::NodeType::Sequence);
     if (copied_imports && copied_imports.IsSequence()) {
       for (const auto& item : copied_imports) {
@@ -3166,16 +3525,16 @@ bool HmStreamWindow::rollbackImportedVideoPath(const QString& relative_path) {
           copied_replacement.push_back(item.as<std::string>());
       }
     }
-    config["hmstream_ui"]["copied_imports"] = copied_replacement;
+    config["hstream_ui"]["copied_imports"] = copied_replacement;
 
-    YAML::Node sources = config["hmstream_ui"]["auto_import_sources"];
+    YAML::Node sources = config["hstream_ui"]["auto_import_sources"];
     if (sources && sources.IsSequence()) {
       YAML::Node source_replacement(YAML::NodeType::Sequence);
       for (const auto& item : sources) {
         if (!item["path"] || !matches_path(QString::fromStdString(item["path"].as<std::string>())))
           source_replacement.push_back(item);
       }
-      config["hmstream_ui"]["auto_import_sources"] = source_replacement;
+      config["hstream_ui"]["auto_import_sources"] = source_replacement;
     }
 
     const auto publish = publish_yaml_config(config_path, config);
@@ -3208,7 +3567,7 @@ bool HmStreamWindow::rollbackImportedVideoPath(const QString& relative_path) {
   return true;
 }
 
-HmStreamWindow::CopiedImportCleanupResult HmStreamWindow::removeClearedCopiedExplicitImports(
+HStreamWindow::CopiedImportCleanupResult HStreamWindow::removeClearedCopiedExplicitImports(
     const QByteArray& original_config,
     bool had_config,
     bool restore_auto_selection_on_failure,
@@ -3240,13 +3599,13 @@ HmStreamWindow::CopiedImportCleanupResult HmStreamWindow::removeClearedCopiedExp
       current_references.insert(normalized_config_video_path(game_dir, QString::fromStdString(item.as<std::string>())));
     }
   };
-  YAML::Node current_roles = current_config["hmstream_ui"]["video_roles"];
+  YAML::Node current_roles = current_config["hstream_ui"]["video_roles"];
   for (const QString& role : {QString("left"), QString("center"), QString("right")}) {
     collect_current(current_roles[role.toStdString()]);
   }
 
   std::set<QString> cleanup_paths;
-  YAML::Node old_roles = old_config["hmstream_ui"]["video_roles"];
+  YAML::Node old_roles = old_config["hstream_ui"]["video_roles"];
   for (const QString& role : {QString("left"), QString("center"), QString("right")}) {
     YAML::Node role_videos = old_roles[role.toStdString()];
     if (!role_videos || !role_videos.IsSequence()) {
@@ -3271,7 +3630,7 @@ HmStreamWindow::CopiedImportCleanupResult HmStreamWindow::removeClearedCopiedExp
     return status.ok();
   };
   auto remove_cleanup_metadata = [&](const std::set<QString>& removed_paths) {
-    YAML::Node copied_imports = current_config["hmstream_ui"]["copied_imports"];
+    YAML::Node copied_imports = current_config["hstream_ui"]["copied_imports"];
     YAML::Node copied_replacement(YAML::NodeType::Sequence);
     if (copied_imports && copied_imports.IsSequence()) {
       for (const auto& item : copied_imports) {
@@ -3281,9 +3640,9 @@ HmStreamWindow::CopiedImportCleanupResult HmStreamWindow::removeClearedCopiedExp
         }
       }
     }
-    current_config["hmstream_ui"]["copied_imports"] = copied_replacement;
+    current_config["hstream_ui"]["copied_imports"] = copied_replacement;
 
-    YAML::Node sources = current_config["hmstream_ui"]["auto_import_sources"];
+    YAML::Node sources = current_config["hstream_ui"]["auto_import_sources"];
     if (sources && sources.IsSequence()) {
       YAML::Node source_replacement(YAML::NodeType::Sequence);
       for (const auto& item : sources) {
@@ -3296,7 +3655,7 @@ HmStreamWindow::CopiedImportCleanupResult HmStreamWindow::removeClearedCopiedExp
         }
         source_replacement.push_back(item);
       }
-      current_config["hmstream_ui"]["auto_import_sources"] = source_replacement;
+      current_config["hstream_ui"]["auto_import_sources"] = source_replacement;
     }
   };
 
@@ -3328,10 +3687,10 @@ HmStreamWindow::CopiedImportCleanupResult HmStreamWindow::removeClearedCopiedExp
   return CopiedImportCleanupResult::kSuccess;
 }
 
-bool HmStreamWindow::syncRuntimeExplicitVideoConfig(YAML::Node& config) {
+bool HStreamWindow::syncRuntimeExplicitVideoConfig(YAML::Node& config) {
   bool changed = false;
-  YAML::Node explicit_left = config["hmstream_ui"]["video_roles"]["left"];
-  YAML::Node explicit_right = config["hmstream_ui"]["video_roles"]["right"];
+  YAML::Node explicit_left = config["hstream_ui"]["video_roles"]["left"];
+  YAML::Node explicit_right = config["hstream_ui"]["video_roles"]["right"];
   const bool has_left = explicit_left && explicit_left.IsSequence() && explicit_left.size() > 0;
   const bool has_right = explicit_right && explicit_right.IsSequence() && explicit_right.size() > 0;
   if (has_left && has_right) {
@@ -3421,7 +3780,7 @@ bool HmStreamWindow::syncRuntimeExplicitVideoConfig(YAML::Node& config) {
   return changed;
 }
 
-bool HmStreamWindow::savePrivateConfigForRole(
+bool HStreamWindow::savePrivateConfigForRole(
     const QString& role,
     const QString& relative_path,
     QByteArray* original_config,
@@ -3449,11 +3808,12 @@ bool HmStreamWindow::savePrivateConfigForRole(
   }
 
   bool changed = false;
+  bool video_inputs_changed = false;
   if (is_explicit_role(role)) {
-    YAML::Node list = config["hmstream_ui"]["video_roles"][role.toStdString()];
+    YAML::Node list = config["hstream_ui"]["video_roles"][role.toStdString()];
     if (!list || !list.IsSequence()) {
-      config["hmstream_ui"]["video_roles"][role.toStdString()] = YAML::Node(YAML::NodeType::Sequence);
-      list = config["hmstream_ui"]["video_roles"][role.toStdString()];
+      config["hstream_ui"]["video_roles"][role.toStdString()] = YAML::Node(YAML::NodeType::Sequence);
+      list = config["hstream_ui"]["video_roles"][role.toStdString()];
       changed = true;
     }
     bool exists = false;
@@ -3466,6 +3826,7 @@ bool HmStreamWindow::savePrivateConfigForRole(
     if (!exists) {
       list.push_back(relative_path.toStdString());
       changed = true;
+      video_inputs_changed = true;
     }
     changed = clear_stitching_frame_offsets(config) || changed;
   }
@@ -3475,13 +3836,18 @@ bool HmStreamWindow::savePrivateConfigForRole(
   }
 
   if (role == "auto") {
-    changed = remove_yaml_key(config["hmstream_ui"]["video_roles"], "left") || changed;
-    changed = remove_yaml_key(config["hmstream_ui"]["video_roles"], "center") || changed;
-    changed = remove_yaml_key(config["hmstream_ui"]["video_roles"], "right") || changed;
+    video_inputs_changed = true;
+    changed = remove_yaml_key(config["hstream_ui"]["video_roles"], "left") || changed;
+    changed = remove_yaml_key(config["hstream_ui"]["video_roles"], "center") || changed;
+    changed = remove_yaml_key(config["hstream_ui"]["video_roles"], "right") || changed;
     changed = remove_yaml_key(config["game"]["videos"], "left") || changed;
     changed = remove_yaml_key(config["game"]["videos"], "right") || changed;
     changed = clear_stitching_frame_offsets(config) || changed;
     appendLog("auto video set will be discovered from the game directory");
+  }
+
+  if (video_inputs_changed) {
+    changed = invalidate_stitching_calibration(config) || changed;
   }
 
   if (!changed) {
@@ -3504,7 +3870,7 @@ bool HmStreamWindow::savePrivateConfigForRole(
   return publish.ok();
 }
 
-bool HmStreamWindow::removePrivateConfigForRole(
+bool HStreamWindow::removePrivateConfigForRole(
     const QString& role,
     const QString& relative_path,
     QByteArray* original_config,
@@ -3543,6 +3909,7 @@ bool HmStreamWindow::removePrivateConfigForRole(
   }
 
   bool changed = false;
+  bool video_inputs_changed = role == "auto";
   auto matches_path = [&](const QString& value) {
     if (value == relative_path) {
       return true;
@@ -3551,7 +3918,7 @@ bool HmStreamWindow::removePrivateConfigForRole(
     return normalized == relative_path;
   };
 
-  auto remove_from_list = [&](YAML::Node parent, const QString& key) {
+  auto remove_from_list = [&](YAML::Node parent, const QString& key, bool video_input) {
     YAML::Node list = parent[key.toStdString()];
     if (!list || !list.IsSequence()) {
       return;
@@ -3562,6 +3929,7 @@ bool HmStreamWindow::removePrivateConfigForRole(
       const QString value = QString::fromStdString(item.as<std::string>());
       if (matches_path(value)) {
         changed = true;
+        video_inputs_changed = video_inputs_changed || video_input;
       } else {
         replacement.push_back(value.toStdString());
       }
@@ -3570,7 +3938,7 @@ bool HmStreamWindow::removePrivateConfigForRole(
   };
 
   auto remove_auto_source_metadata = [&]() {
-    YAML::Node list = config["hmstream_ui"]["auto_import_sources"];
+    YAML::Node list = config["hstream_ui"]["auto_import_sources"];
     if (!list || !list.IsSequence()) {
       return;
     }
@@ -3583,24 +3951,27 @@ bool HmStreamWindow::removePrivateConfigForRole(
         replacement.push_back(item);
       }
     }
-    config["hmstream_ui"]["auto_import_sources"] = replacement;
+    config["hstream_ui"]["auto_import_sources"] = replacement;
   };
 
   if (is_explicit_role(role)) {
-    remove_from_list(config["hmstream_ui"]["video_roles"], role);
+    remove_from_list(config["hstream_ui"]["video_roles"], role, true);
   }
-  remove_from_list(config["hmstream_ui"], "copied_imports");
+  remove_from_list(config["hstream_ui"], "copied_imports", false);
   remove_auto_source_metadata();
   if (role == "auto") {
-    changed = remove_yaml_key(config["hmstream_ui"]["video_roles"], "left") || changed;
-    changed = remove_yaml_key(config["hmstream_ui"]["video_roles"], "center") || changed;
-    changed = remove_yaml_key(config["hmstream_ui"]["video_roles"], "right") || changed;
+    changed = remove_yaml_key(config["hstream_ui"]["video_roles"], "left") || changed;
+    changed = remove_yaml_key(config["hstream_ui"]["video_roles"], "center") || changed;
+    changed = remove_yaml_key(config["hstream_ui"]["video_roles"], "right") || changed;
     changed = remove_yaml_key(config["game"]["videos"], "left") || changed;
     changed = remove_yaml_key(config["game"]["videos"], "right") || changed;
     changed = clear_stitching_frame_offsets(config) || changed;
   } else if (role == "left" || role == "right") {
     changed = syncRuntimeExplicitVideoConfig(config) || changed;
     changed = clear_stitching_frame_offsets(config) || changed;
+  }
+  if (video_inputs_changed) {
+    changed = invalidate_stitching_calibration(config) || changed;
   }
   if (!changed) {
     if (published_config) {
@@ -3619,7 +3990,7 @@ bool HmStreamWindow::removePrivateConfigForRole(
   return publish.ok();
 }
 
-bool HmStreamWindow::restorePrivateConfigAfterRemoveFailure(
+bool HStreamWindow::restorePrivateConfigAfterRemoveFailure(
     const QByteArray& original_config,
     bool had_config,
     const QByteArray& removed_config) {
@@ -3644,7 +4015,7 @@ bool HmStreamWindow::restorePrivateConfigAfterRemoveFailure(
   return true;
 }
 
-bool HmStreamWindow::resolveImportedVideoPath(
+bool HStreamWindow::resolveImportedVideoPath(
     const QString& relative_path,
     bool allow_regular_delete,
     QString* resolved_imported_path) {
@@ -3688,7 +4059,7 @@ bool HmStreamWindow::resolveImportedVideoPath(
   return true;
 }
 
-bool HmStreamWindow::removeImportedVideoPath(const QString& relative_path, bool allow_regular_delete) {
+bool HStreamWindow::removeImportedVideoPath(const QString& relative_path, bool allow_regular_delete) {
   QString imported_path;
   if (!resolveImportedVideoPath(relative_path, allow_regular_delete, &imported_path))
     return false;
@@ -3706,7 +4077,7 @@ bool HmStreamWindow::removeImportedVideoPath(const QString& relative_path, bool 
   return true;
 }
 
-void HmStreamWindow::toggleOutput(const QString& id, bool enabled) {
+void HStreamWindow::toggleOutput(const QString& id, bool enabled) {
   output_states_[id]->setText(enabled ? "ENABLED" : "STOPPED");
   appendLog(QString("output route %1 %2").arg(id, enabled ? "enabled" : "disabled"));
   if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
@@ -3714,7 +4085,7 @@ void HmStreamWindow::toggleOutput(const QString& id, bool enabled) {
   }
 }
 
-void HmStreamWindow::redirectYoutube() {
+void HStreamWindow::redirectYoutube() {
   QCheckBox* toggle = output_toggles_["youtube-primary"];
   const bool was_blocked = toggle->blockSignals(true);
   toggle->setChecked(true);
@@ -3723,7 +4094,7 @@ void HmStreamWindow::redirectYoutube() {
   appendLog("youtube-primary RTMP route enabled for the next pipeline start");
 }
 
-void HmStreamWindow::addRtspOutput() {
+void HStreamWindow::addRtspOutput() {
   ++dynamic_rtsp_count_;
   const QString id = QString("rtsp-dynamic-%1").arg(dynamic_rtsp_count_);
   auto* row = new QHBoxLayout();
@@ -3740,17 +4111,20 @@ void HmStreamWindow::addRtspOutput() {
   appendLog(QString("rtsp server mount /dynamic%1 enabled for the next pipeline start").arg(dynamic_rtsp_count_));
 }
 
-void HmStreamWindow::appendLog(const QString& message) {
+void HStreamWindow::appendLog(const QString& message) {
   const QString html =
       QString("<span style=\"color:#667085\">%1</span> %2").arg(timestamp().toHtmlEscaped(), ansi_to_html(message));
   log_->append(html);
 }
 
-QString HmStreamWindow::writePlaytrackerRuntimeConfig() {
-  if (!game_id_edit_) {
+QString HStreamWindow::writePlaytrackerRuntimeConfig() {
+  const QString game_id = !active_run_game_id_.isEmpty()
+      ? active_run_game_id_
+      : (game_id_edit_ ? game_id_edit_->text().trimmed() : QString());
+  if (game_id.isEmpty()) {
     return {};
   }
-  const QString game_dir = gameDirectory(game_id_edit_->text());
+  const QString game_dir = gameDirectory(game_id);
   QDir runtime_dir(QDir(game_dir).filePath(".hstream-ui"));
   if (!runtime_dir.exists() && !runtime_dir.mkpath(".")) {
     appendLog(QString("could not create playtracker runtime config directory %1").arg(runtime_dir.path()));
@@ -3778,7 +4152,7 @@ QString HmStreamWindow::writePlaytrackerRuntimeConfig() {
         for (const QString& candidate : candidates) {
           if (same_file_path(candidate, runtime_config_path)) {
             YAML::Node base_config_file;
-            if (lookup_yaml_path(game_config, "hmstream_ui.playtracker_config_base", &base_config_file) &&
+            if (lookup_yaml_path(game_config, "hstream_ui.playtracker_config_base", &base_config_file) &&
                 base_config_file.IsScalar()) {
               configured = QString::fromStdString(base_config_file.as<std::string>());
               const QStringList base_candidates = playtracker_config_candidates(configured, game_dir, working_dir);
@@ -3859,16 +4233,68 @@ QString HmStreamWindow::writePlaytrackerRuntimeConfig() {
   }
 }
 
-bool HmStreamWindow::sendLiveCameraControl(const QString& id, int value) {
+void HStreamWindow::handleRuntimeControlResponse(const QString& line) {
+  auto acknowledge = [this](std::vector<PendingRuntimeControl>::iterator pending, const QString& result) {
+    appendLog(
+        QString("camera control %1=%2 apply=%3").arg(pending->control_id).arg(pending->control_value).arg(result));
+    pending_runtime_controls_.erase(pending);
+  };
+
+  static const QRegularExpression success_pattern(R"(^runtime property (\S+) (\S+?)=(.*)$)");
+  const QRegularExpressionMatch success = success_pattern.match(line);
+  if (success.hasMatch()) {
+    const QString element = success.captured(1);
+    const QString property = success.captured(2);
+    const QString runtime_value = success.captured(3);
+    const auto pending = std::find_if(
+        pending_runtime_controls_.begin(), pending_runtime_controls_.end(), [&](const PendingRuntimeControl& control) {
+          return control.element == element && control.property == property && control.runtime_value == runtime_value;
+        });
+    if (pending != pending_runtime_controls_.end()) {
+      acknowledge(pending, "live");
+    }
+    return;
+  }
+
+  if (!line.startsWith("runtime command failed:") || pending_runtime_controls_.empty()) {
+    return;
+  }
+  auto pending = std::find_if(
+      pending_runtime_controls_.begin(), pending_runtime_controls_.end(), [&](const PendingRuntimeControl& control) {
+        return line.contains(control.element) && (line.contains(control.property) || !line.contains('.'));
+      });
+  if (pending == pending_runtime_controls_.end()) {
+    pending = pending_runtime_controls_.begin();
+  }
+  acknowledge(pending, "failed");
+}
+
+void HStreamWindow::failPendingRuntimeControls(const QString& reason) {
+  for (const PendingRuntimeControl& pending : pending_runtime_controls_) {
+    appendLog(QString("camera control %1=%2 apply=failed reason=%3")
+                  .arg(pending.control_id)
+                  .arg(pending.control_value)
+                  .arg(reason));
+  }
+  pending_runtime_controls_.clear();
+}
+
+bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
     return false;
   }
+  auto send_property = [this, &id, value](
+                           const QString& element, const QString& property, const QString& runtime_value) {
+    const QByteArray command = QString("@set-property %1 %2=%3\n").arg(element, property, runtime_value).toLocal8Bit();
+    if (pipeline_process_->write(command) != command.size()) {
+      return false;
+    }
+    pending_runtime_controls_.push_back({element, property, runtime_value, id, value});
+    return true;
+  };
   if (id == "Stitch_Rotate_Degrees") {
     const int post_stitch_rotate_degrees = 90 - value;
-    const QByteArray command = QString("@set-property hmstitcher0 post-stitch-rotate-degrees=%1\n")
-                                   .arg(post_stitch_rotate_degrees)
-                                   .toLocal8Bit();
-    return pipeline_process_->write(command) == command.size();
+    return send_property("hmstitcher0", "post-stitch-rotate-degrees", QString::number(post_stitch_rotate_degrees));
   }
   const QSet<QString> playtracker_live_controls = {
       "Max_Speed_X_x10",
@@ -3883,14 +4309,12 @@ bool HmStreamWindow::sendLiveCameraControl(const QString& id, int value) {
     if (runtime_config_path.isEmpty()) {
       return false;
     }
-    const QByteArray command =
-        QString("@set-property dsplaytracker0 config-file=%1\n").arg(runtime_config_path).toLocal8Bit();
-    return pipeline_process_->write(command) == command.size();
+    return send_property("dsplaytracker0", "config-file", runtime_config_path);
   }
   return false;
 }
 
-QSlider* HmStreamWindow::addSlider(
+QSlider* HStreamWindow::addSlider(
     QVBoxLayout* layout,
     const QString& id,
     const QString& label,
@@ -3910,7 +4334,8 @@ QSlider* HmStreamWindow::addSlider(
   connect(slider, &QSlider::valueChanged, this, [this, id, value_label](int new_value) {
     value_label->setText(QString::number(new_value));
     const bool sent_live = sendLiveCameraControl(id, new_value);
-    appendLog(QString("camera control %1=%2 apply=%3").arg(id).arg(new_value).arg(sent_live ? "live" : "save/restart"));
+    appendLog(
+        QString("camera control %1=%2 apply=%3").arg(id).arg(new_value).arg(sent_live ? "pending" : "save/restart"));
   });
   row->addWidget(name, 0, 0);
   row->addWidget(value_label, 0, 1);

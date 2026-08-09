@@ -2,7 +2,7 @@
 
 ## Objective
 
-HMStream must not start Python in any production workflow. `hstream-ui`,
+HStream must not start Python in any production workflow. `hstream-ui`,
 `hstream-cli`, `run.sh`, and the Debian-installed launchers must perform camera
 orientation, control-point generation, field-mask generation, scoreboard
 selection, and pretrained-asset setup with native code.
@@ -36,7 +36,7 @@ The no-Python requirement is an invariant, not merely a preferred path.
 
 Allowed:
 
-- native HMStream binaries and libraries;
+- native HStream binaries and libraries;
 - ONNX inference from C++;
 - Hugin tools (`pto_gen`, `autooptimiser`, `nona`) and a native blender
   (`enblend` or `multiblend`);
@@ -65,10 +65,10 @@ its configured source. This is preferable to crossing the runtime boundary.
 | Control points | Runs `hmcreate_control_points` using SuperPoint and LightGlue | Native preprocessing and ONNX execution, native match filtering, and native PTO control-point insertion |
 | Field mask | Runs `hmfind_ice_rink` using Mask2Former | Reuse the native rink model and write mask/centroid/bbox metadata from C++ |
 | Scoreboard | Runs the Python `hmscoreboard` web selector | Small native HTTP selector that serves the stitched PNG and writes the selected polygon |
-| UI asset setup | `HmStreamWindow` starts `setup_pretrained_assets.py` | Native asset manager library called in process |
-| Local launcher | `run.sh` starts `setup_pretrained_assets.py` | Native `hmstream-assets` binary, or asset setup performed by `hstream-cli` before pipeline construction |
+| UI asset setup | `HStreamWindow` starts `setup_pretrained_assets.py` | Native asset manager library called in process |
+| Local launcher | `run.sh` starts `setup_pretrained_assets.py` | Native `hstream-assets` binary, or asset setup performed by `hstream-cli` before pipeline construction |
 | Installed launcher | Packaged `run.sh` starts Python and exports Python paths | Native asset setup with no Python environment manipulation |
-| Debian payload | Bundles hmlib and a large Python ML runtime | Bundle only HMStream native code, private native dependencies, config, and non-engine assets |
+| Debian payload | Bundles hmlib and a large Python ML runtime | Bundle only HStream native code, private native dependencies, config, and non-engine assets |
 
 Developer-only Python scripts elsewhere in `scripts/` are out of the runtime
 path and may remain, but runtime tests will prove that launchers and binaries do
@@ -132,7 +132,7 @@ provider, CUDA/TensorRT version, and JetPack version—not architecture alone.
 Bazel will select by the target platform so Jetson cross-builds do not
 accidentally link an SBSA or x86 library. Builds and installed packages verify
 ELF architecture, SONAME, required symbol versions, and RPATH. Debian packages
-will carry a private copy under `/opt/hmstream/lib` when the target distribution
+will carry a private copy under `/opt/hstream/lib` when the target distribution
 does not provide the exact ABI; this must not alter system CUDA, NCCL, or
 DeepStream packages.
 
@@ -303,7 +303,7 @@ implementation is accepted.
 ### 5. Native field-mask generation
 
 Reuse `RinkSegmentation` on the stitched frame. Persist exactly the fields
-consumed by HMStream:
+consumed by HStream:
 
 - `rink_mask_0.png` through `rink_mask_N.png`, one 8-bit binary mask per
   accepted instance at stitched-canvas dimensions, matching HockeyMOM's
@@ -362,7 +362,7 @@ be small source assets, not generated Python payloads.
 
 ### 7. Native pretrained-asset manager
 
-Add a reusable C++ library plus a small `hmstream-assets` command. It will parse
+Add a reusable C++ library plus a small `hstream-assets` command. It will parse
 the existing YAML schema with yaml-cpp, recursively follow enabled child
 `config-file` entries, and support `path`, `file`, and `property` targets.
 
@@ -419,8 +419,8 @@ Update `scripts/make_deb.sh` and the Ubuntu 24.04/26.04 container builds to:
   and PyYAML dependencies that are present only for calibration;
 - stage the selected native ONNX runtime when it is not a viable distro
   dependency, including license and architecture validation;
-- stage `hmstream-assets`, selector assets, model manifests, and config;
-- retain the exact DeepStream 9.1 dependency while removing HMStream's obsolete
+- stage `hstream-assets`, selector assets, model manifests, and config;
+- retain the exact DeepStream 9.1 dependency while removing HStream's obsolete
   private NCCL payload, pin, and downgrade behavior;
 - verify ELF architecture/RPATH and ensure no packaged executable or script
   refers to Python; and
@@ -430,7 +430,7 @@ Update `scripts/make_deb.sh` and the Ubuntu 24.04/26.04 container builds to:
 The package does not include the large calibration ONNX files. First use
 downloads the content-addressed files into the existing configured cache/data
 location; an offline administrator may preseed the same checksummed paths.
-Assets hosted by the private HMStream GitHub repository use the release-asset
+Assets hosted by the private HStream GitHub repository use the release-asset
 API URL and require `GH_TOKEN` or `GITHUB_TOKEN` with repository read access.
 The native asset manager never logs that token and does not forward its
 authorization header to a redirect on another host. Public third-party assets
@@ -575,7 +575,7 @@ stitch outcome.
 Run all of the following without a Python executable available on `PATH` and
 with Python-related environment variables unset:
 
-1. `hmstream-assets` against a local HTTP fixture and the real model manifest.
+1. `hstream-assets` against a local HTTP fixture and the real model manifest.
 2. Existing configured-game one-pass path.
 3. Clean unconfigured-game one-pass path.
 4. Explicit `--two-stage` path.

@@ -9,7 +9,7 @@ namespace hm::onnx {
 namespace {
 
 Ort::Env& environment() {
-  static Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "hmstream");
+  static Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "hstream");
   return env;
 }
 

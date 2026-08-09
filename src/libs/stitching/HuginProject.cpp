@@ -45,7 +45,7 @@ constexpr size_t kMinimumUsableMatches = 16;
 constexpr double kMaximumOptimizationRmsPixels = 50.0;
 constexpr size_t kHardMaximumCanvasDimension = 32768;
 constexpr uint64_t kHardMaximumCanvasPixels = 128ULL * 1024ULL * 1024ULL;
-constexpr const char* kStitchTransactionPrefix = ".hmstream-stitch-";
+constexpr const char* kStitchTransactionPrefix = ".hstream-stitch-";
 
 const std::array<const char*, 10> kRequiredArtifacts = {
     "hm_project.pto",
@@ -216,7 +216,7 @@ absl::Status write_transaction_file(const fs::path& path, const std::string& con
 }
 
 absl::StatusOr<int> lock_stitch_transactions(const fs::path& root) {
-  const fs::path path = root / ".hmstream-stitch.lock";
+  const fs::path path = root / ".hstream-stitch.lock";
   const int descriptor = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
   if (descriptor < 0)
     return absl::InternalError("Unable to open stitch transaction lock: " + std::string(std::strerror(errno)));
@@ -676,7 +676,7 @@ absl::Status validate_staged_artifacts(const fs::path& directory, const std::opt
 }
 
 absl::StatusOr<fs::path> make_staging_directory(const fs::path& game_dir) {
-  std::string pattern = (game_dir / ".hmstream-stitch-XXXXXX").string();
+  std::string pattern = (game_dir / ".hstream-stitch-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   char* created = ::mkdtemp(writable.data());

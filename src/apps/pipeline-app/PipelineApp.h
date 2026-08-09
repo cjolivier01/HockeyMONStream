@@ -145,6 +145,7 @@ class PipelineApplication {
   static gboolean recreate_pipeline_thread_func_static(gpointer arg);
   gboolean recreate_pipeline_thread_func(gpointer arg);
   absl::Status auto_focus_cameras(const std::vector<std::shared_ptr<HmApp>>& app_contexts) const;
+  absl::Status configure_source_preview_sinks(const std::vector<std::shared_ptr<HmApp>>& app_contexts) const;
 
  private:
   // std::vector<std::unique_ptr<HmApp>> app_ctx_;
@@ -171,6 +172,7 @@ class PipelineApplication {
   gdouble show_scaled_scale_{-1};
   gdouble show_render_scale_{-1};
   gint64 render_window_id_{0};
+  std::vector<guint64> source_render_window_ids_;
   gdouble stitch_rotate_degrees_{0.0};
   gboolean stitch_rotate_degrees_set_{FALSE};
   gboolean show_bbox_text_;

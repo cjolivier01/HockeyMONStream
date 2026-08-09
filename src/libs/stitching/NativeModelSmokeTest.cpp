@@ -21,7 +21,7 @@ fs::path model_path(const char* variable, const char* filename) {
   if (const char* value = std::getenv(variable); value != nullptr && *value != '\0')
     return value;
   const char* home = std::getenv("HOME");
-  return fs::path(home == nullptr ? "/nonexistent" : home) / ".cache/hmstream/models" / filename;
+  return fs::path(home == nullptr ? "/nonexistent" : home) / ".cache/hstream/models" / filename;
 }
 
 bool fail_or_skip(const std::string& message) {

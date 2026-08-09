@@ -17,11 +17,11 @@ pretrained-assets:
   - name: ice-rink-mask2former-swin-s
     url: https://api.github.com/repos/cjolivier01/hstream/releases/assets/501418054
     sha256: 2c231f9f4897779d19f5bd2c1a8f7c80b7dac01da6555ff0b9d1787f26c1bfeb
-    path: $HOME/.cache/hmstream/models/ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx
+    path: $HOME/.cache/hstream/models/ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx
   - name: aliked-lightglue-k2048
     url: https://github.com/fabio-sim/LightGlue-ONNX/releases/download/v3.0/raco_aliked_lightglue_pipeline_k2048.onnx
     sha256: ea4a4ab2cb5569580bccdd29037bf1437363c5ec1c0d1c0638840a3096332ae6
-    path: $HOME/.cache/hmstream/models/aliked-lightglue-k2048-ea4a4ab2cb556958.onnx
+    path: $HOME/.cache/hstream/models/aliked-lightglue-k2048-ea4a4ab2cb556958.onnx
 
 application:
   enable-perf-measurement: 1

@@ -893,9 +893,9 @@ absl::Status Configurator::gather_stitching_videos(
   const bool has_cam_auto =
       std::any_of(videos.begin(), videos.end(), [](const auto& item) { return is_cam_video_key(item.first); });
   const bool has_left_right_auto = videos.count("left") || videos.count("right");
-  const std::vector<std::string> ui_left_files = sequence_path_values(config_, {"hmstream_ui", "video_roles", "left"});
+  const std::vector<std::string> ui_left_files = sequence_path_values(config_, {"hstream_ui", "video_roles", "left"});
   const std::vector<std::string> ui_right_files =
-      sequence_path_values(config_, {"hmstream_ui", "video_roles", "right"});
+      sequence_path_values(config_, {"hstream_ui", "video_roles", "right"});
   const bool runtime_videos_owned_by_ui_roles =
       explicit_runtime_videos_match_ui_roles(left_files, right_files, ui_left_files, ui_right_files);
   if (!force && has_cam_auto && !has_left_right_auto && !runtime_videos_owned_by_ui_roles &&

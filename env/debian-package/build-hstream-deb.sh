@@ -4,7 +4,7 @@ set -euo pipefail
 SOURCE_DIR=/source
 BUILD_DIR=/home/colivier/src/hstream
 OUTPUT_DIR=/output
-CONTAINER_OUTPUT_DIR=/tmp/hmstream-deb-output
+CONTAINER_OUTPUT_DIR=/tmp/hstream-deb-output
 DEEPSTREAM_DEB=/inputs/deepstream.deb
 
 : "${PACKAGE_VERSION:?PACKAGE_VERSION is required}"
@@ -69,7 +69,7 @@ rsync -a \
 
 cd "${BUILD_DIR}"
 make HOST_CUDA_FLAGS="--config=${BAZEL_DEB_CONFIG}" \
-  hstream-cli hmstream-assets hstream-ui yolo-custom-lib hmstream-gst-plugins
+  hstream-cli hstream-assets hstream-ui yolo-custom-lib hstream-gst-plugins
 
 VIDEOPREP_PLUGIN="${BUILD_DIR}/bazel-bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so"
 CUDA_NEEDED="$(patchelf --print-needed "${VIDEOPREP_PLUGIN}" | grep -E '^lib(cudart|npp[^.]*)[.]so[.]' || true)"
@@ -101,7 +101,7 @@ validate_native_cuda_code hstream-cli "${BUILD_DIR}/bazel-bin/src/apps/pipeline-
 
 rm -rf "${CONTAINER_OUTPUT_DIR}"
 mkdir -p "${CONTAINER_OUTPUT_DIR}"
-HMSTREAM_IMMUTABLE_SOURCE=1 HMSTREAM_TARGET_UBUNTU="${TARGET_UBUNTU}" scripts/make_deb.sh \
+HSTREAM_IMMUTABLE_SOURCE=1 HSTREAM_TARGET_UBUNTU="${TARGET_UBUNTU}" scripts/make_deb.sh \
   --version "${PACKAGE_VERSION}" --output-dir "${CONTAINER_OUTPUT_DIR}"
 
 # Bind-mounted output directories can be root-squashed. Copy the completed

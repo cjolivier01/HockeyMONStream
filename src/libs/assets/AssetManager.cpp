@@ -502,11 +502,11 @@ std::vector<fs::path> allowed_roots(const AssetSpec& spec) {
   std::vector<fs::path> roots = {
       (spec.declaring_config.parent_path().parent_path() / "pretrained").lexically_normal(),
       "/mnt/data/pretrained",
-      "/opt/hmstream/pretrained",
+      "/opt/hstream/pretrained",
   };
   if (const char* home = std::getenv("HOME"); home != nullptr && *home != '\0')
-    roots.push_back((fs::path(home) / ".cache" / "hmstream").lexically_normal());
-  if (const char* extra = std::getenv("HMSTREAM_ASSET_ROOTS"); extra != nullptr) {
+    roots.push_back((fs::path(home) / ".cache" / "hstream").lexically_normal());
+  if (const char* extra = std::getenv("HSTREAM_ASSET_ROOTS"); extra != nullptr) {
     std::istringstream values(extra);
     std::string value;
     while (std::getline(values, value, ':'))
@@ -588,7 +588,7 @@ absl::Status download(const AssetSpec& spec, int file_descriptor, size_t maximum
   }
   curl_easy_setopt(curl, CURLOPT_URL, spec.url.c_str());
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-  curl_easy_setopt(curl, CURLOPT_USERAGENT, "hmstream-assets/1");
+  curl_easy_setopt(curl, CURLOPT_USERAGENT, "hstream-assets/1");
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
   curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
 #if LIBCURL_VERSION_NUM >= 0x075500
@@ -628,7 +628,7 @@ absl::Status ensure_one(const AssetSpec& spec, const Limits& limits, size_t* tot
   if (!status.ok())
     return status;
   std::error_code error;
-  // Packaged assets live under root-owned /opt/hmstream and are intentionally
+  // Packaged assets live under root-owned /opt/hstream and are intentionally
   // read-only to ordinary users. Hash an existing immutable file before
   // attempting to create a sibling lock; atomic publishers cannot change the
   // inode being read underneath this verification.

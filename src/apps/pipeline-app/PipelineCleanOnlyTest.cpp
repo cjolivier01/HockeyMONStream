@@ -13,7 +13,7 @@ int main(int argc, char** argv) {
     std::cerr << "FAIL: expected hstream-cli and calibration config paths\n";
     return 1;
   }
-  std::string pattern = (fs::temp_directory_path() / "hmstream-clean-only-test-XXXXXX").string();
+  std::string pattern = (fs::temp_directory_path() / "hstream-clean-only-test-XXXXXX").string();
   if (::mkdtemp(pattern.data()) == nullptr) {
     std::cerr << "FAIL: unable to create clean-only test directory\n";
     return 1;
@@ -36,7 +36,7 @@ int main(int argc, char** argv) {
   const bool child_ok =
       child > 0 && ::waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
   const bool artifact_removed = !fs::exists(game / "seam_file.png");
-  const bool no_asset_download = !fs::exists(root / "home" / ".cache" / "hmstream" / "models");
+  const bool no_asset_download = !fs::exists(root / "home" / ".cache" / "hstream" / "models");
   fs::remove_all(root);
   if (!child_ok || !artifact_removed || !no_asset_download) {
     std::cerr << "FAIL: clean-only must remove artifacts without verifying or downloading pretrained models\n";

@@ -666,7 +666,108 @@ absl::Status PipelineApplication::createPipelines(
       hm::save_dot_file(app_contexts[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_created" + s);
     }
   }
+  HM_RETURN_IF_ERROR(configure_source_preview_sinks(app_contexts));
   return auto_focus_cameras(app_contexts);
+}
+
+absl::Status PipelineApplication::configure_source_preview_sinks(
+    const std::vector<std::shared_ptr<HmApp>>& app_contexts) const {
+  if (source_render_window_ids_.empty()) {
+    return absl::OkStatus();
+  }
+  if (app_contexts.size() != 1) {
+    return absl::InvalidArgumentError("--source-render-window-ids requires exactly one active pipeline context");
+  }
+
+  constexpr gint kCameraPreviewWidth = 1280;
+  constexpr gint kCameraPreviewHeight = 720;
+  for (const auto& app_context : app_contexts) {
+    NvDsSrcParentBin& sources = app_context->pipeline.multi_src_bin;
+    const guint preview_count = std::min<guint>(sources.num_bins, static_cast<guint>(source_render_window_ids_.size()));
+    for (guint source_index = 0; source_index < preview_count; ++source_index) {
+      NvDsSrcBin& source = sources.sub_bins[source_index];
+      if (!source.bin || !source.fakesink_queue || !source.fakesink) {
+        return absl::FailedPreconditionError(
+            TO_STRING("Source " << source_index << " does not expose a preview tee branch"));
+      }
+
+      gst_element_unlink(source.fakesink_queue, source.fakesink);
+      if (!gst_bin_remove(GST_BIN(source.bin), source.fakesink)) {
+        return absl::InternalError(TO_STRING("Could not replace source " << source_index << " fake sink"));
+      }
+      source.fakesink = nullptr;
+
+      const std::string suffix = std::to_string(source_index);
+      GstElement* converter =
+          gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, ("source_preview_converter_" + suffix).c_str());
+      GstElement* caps_filter =
+          gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, ("source_preview_caps_" + suffix).c_str());
+      GstElement* sink = gst_element_factory_make(NVDS_ELEM_SINK_EGL, ("source_preview_sink_" + suffix).c_str());
+      if (!converter || !caps_filter || !sink || !GST_IS_VIDEO_OVERLAY(sink)) {
+        if (converter)
+          gst_object_unref(converter);
+        if (caps_filter)
+          gst_object_unref(caps_filter);
+        if (sink)
+          gst_object_unref(sink);
+        return absl::InternalError(TO_STRING("Could not create embedded preview for source " << source_index));
+      }
+
+      const NvDsSourceConfig& source_config = app_context->config.multi_source_config[source_index];
+      g_object_set(
+          G_OBJECT(converter),
+          "gpu-id",
+          source_config.gpu_id,
+          "nvbuf-memory-type",
+          source_config.nvbuf_memory_type,
+          nullptr);
+#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
+      // Match the established URI source converter workaround on Jetson.
+      g_object_set(G_OBJECT(converter), "copy-hw", 2, nullptr);
+#endif
+
+      GstCaps* caps = gst_caps_new_simple(
+          "video/x-raw",
+          "format",
+          G_TYPE_STRING,
+          "RGBA",
+          "width",
+          G_TYPE_INT,
+          kCameraPreviewWidth,
+          "height",
+          G_TYPE_INT,
+          kCameraPreviewHeight,
+          nullptr);
+      g_object_set(G_OBJECT(caps_filter), "caps", caps, nullptr);
+      gst_caps_unref(caps);
+      g_object_set(
+          G_OBJECT(source.fakesink_queue),
+          "leaky",
+          2,
+          "max-size-buffers",
+          1,
+          "max-size-bytes",
+          0,
+          "max-size-time",
+          static_cast<guint64>(0),
+          nullptr);
+      g_object_set(
+          G_OBJECT(sink), "sync", FALSE, "async", FALSE, "enable-last-sample", FALSE, "create-window", FALSE, nullptr);
+
+      gst_bin_add_many(GST_BIN(source.bin), converter, caps_filter, sink, nullptr);
+      if (!gst_element_link_many(source.fakesink_queue, converter, caps_filter, sink, nullptr)) {
+        return absl::InternalError(TO_STRING("Could not link embedded preview for source " << source_index));
+      }
+      gst_video_overlay_set_window_handle(
+          GST_VIDEO_OVERLAY(sink), static_cast<guintptr>(source_render_window_ids_[source_index]));
+      source.fakesink = sink;
+      g_print(
+          "Using external source %u render window id: %" G_GUINT64_FORMAT "\n",
+          source_index,
+          source_render_window_ids_[source_index]);
+    }
+  }
+  return absl::OkStatus();
 }
 
 /*
@@ -1050,6 +1151,50 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &render_window_id_,
        "Native X11 window id to use for the render sink instead of creating a DeepStream window",
        "XID"},
+      {"source-render-window-ids",
+       0,
+       0,
+       G_OPTION_ARG_CALLBACK,
+       (gpointer) + [](const gchar*, const gchar* value, gpointer data, GError** error) -> gboolean {
+         auto* app = static_cast<PipelineApplication*>(data);
+         std::vector<guint64> parsed;
+         for (absl::string_view part : absl::StrSplit(value ? value : "", ',')) {
+           std::string token(part);
+           token.erase(
+               std::remove_if(token.begin(), token.end(), [](unsigned char c) { return std::isspace(c); }),
+               token.end());
+           if (token.empty()) {
+             g_set_error(error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE, "Empty XID in --source-render-window-ids");
+             return FALSE;
+           }
+           if (!std::all_of(token.begin(), token.end(), [](unsigned char c) { return std::isdigit(c); })) {
+             g_set_error(
+                 error,
+                 G_OPTION_ERROR,
+                 G_OPTION_ERROR_BAD_VALUE,
+                 "Invalid XID in --source-render-window-ids: %s",
+                 token.c_str());
+             return FALSE;
+           }
+           errno = 0;
+           gchar* end = nullptr;
+           const guint64 window_id = g_ascii_strtoull(token.c_str(), &end, 10);
+           if (errno == ERANGE || window_id == 0 || !end || *end != '\0') {
+             g_set_error(
+                 error,
+                 G_OPTION_ERROR,
+                 G_OPTION_ERROR_BAD_VALUE,
+                 "Invalid XID in --source-render-window-ids: %s",
+                 token.c_str());
+             return FALSE;
+           }
+           parsed.push_back(window_id);
+         }
+         app->source_render_window_ids_ = std::move(parsed);
+         return TRUE;
+       },
+       "Comma-separated native X11 window ids for source camera previews",
+       "XID,..."},
       {"stitch-rotate-degrees",
        0,
        0,
@@ -2564,8 +2709,8 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
 //------------------------------------------------------------------------------
 int main(int argc, char* argv[]) {
   configure_pipeline_runtime_environment(argc > 0 ? argv[0] : nullptr);
-  if (!std::getenv("HMSTREAM_RUNTIME_ENV_READY")) {
-    setenv("HMSTREAM_RUNTIME_ENV_READY", "1", 1);
+  if (!std::getenv("HSTREAM_RUNTIME_ENV_READY")) {
+    setenv("HSTREAM_RUNTIME_ENV_READY", "1", 1);
     if (argc > 0 && argv[0]) {
       if (std::strchr(argv[0], '/')) {
         execv(argv[0], argv);

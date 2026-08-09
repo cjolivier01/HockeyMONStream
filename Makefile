@@ -1,5 +1,6 @@
 TOPDIR := $(shell pwd)
 BAZEL ?= bazelisk
+BUILD_CONFIG ?= opt
 JETSON_SYSROOT ?= /opt/jetson-sysroot
 HOST_ARCH := $(shell uname -m)
 IS_JETSON_HOST := $(shell \
@@ -24,7 +25,7 @@ all: print_targets
 
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
 	hstream-cli run-hstream-cli hstream-ui run-hstream-ui pipeline-app run-pipeline-app \
-	hmstream-assets video-player run-video-player yolo-custom-lib hmstream-gst-plugins qualify-native-onnx \
+	hstream-assets video-player run-video-player yolo-custom-lib hstream-gst-plugins qualify-native-onnx \
 	deb deb-ubuntu24 deb-ubuntu26 wsl-deb
 
 perf:
@@ -67,18 +68,18 @@ pipeline-app:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/pipeline-app:pipeline-app
 
 hstream-cli:
-	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/pipeline-app:hstream-cli
+	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/pipeline-app:hstream-cli
 
-hmstream-assets:
-	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/hmstream-assets:hmstream-assets
+hstream-assets:
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/hstream-assets:hstream-assets
 
 hstream-ui:
-	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/hstream-ui:hstream-ui
+	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/hstream-ui:hstream-ui
 
 yolo-custom-lib:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo
 
-hmstream-gst-plugins:
+hstream-gst-plugins:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) \
 		//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so \
 		//src/gst-plugins/gst-playtracker:libgstplaytracker.so \
@@ -150,7 +151,7 @@ print_targets:
 		'video-player   Build //src/apps/video-player:video-player.' \
 		'run-video-player  Run video-player --help (smoke check).' \
 		'yolo-custom-lib Build //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo.' \
-		'hmstream-gst-plugins Build the three HMStream-owned GStreamer plugins.' \
+		'hstream-gst-plugins Build the three HStream-owned GStreamer plugins.' \
 		'qualify-native-onnx Run the non-skippable native/Python ONNX release gate.' \
 		'deb            Build for the host Ubuntu release in an ABI-isolated Docker container.' \
 		'deb-ubuntu24   Build the Ubuntu 24.04 package in Docker (output under dist/ubuntu24.04).' \

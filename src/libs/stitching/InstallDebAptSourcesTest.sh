@@ -7,9 +7,9 @@ if [[ $# -ne 1 ]]; then
 fi
 
 # shellcheck disable=SC1090 # Bazel supplies the production installer path.
-HMSTREAM_INSTALLER_SOURCE_ONLY=1 source "$1"
+HSTREAM_INSTALLER_SOURCE_ONLY=1 source "$1"
 
-test_root="$(mktemp -d /tmp/hmstream-apt-sources-test.XXXXXX)"
+test_root="$(mktemp -d /tmp/hstream-apt-sources-test.XXXXXX)"
 cleanup_test() {
   rm -rf "${test_root}"
   if [[ -n "${compat_source_transition_dir:-}" ]]; then rm -rf "${compat_source_transition_dir}"; fi
@@ -67,7 +67,7 @@ printf '%s\n' \
   >"${test_root}/etc/apt/sources.list.d/variants.list"
 disable_cuda_compat_sources "${test_root}"
 [[ "${DISABLED_CUDA_SOURCE_COUNT}" -eq 3 ]] || fail "exact-suite URI variants were not all disabled"
-[[ "$(grep -c '^# HMStream disabled duplicate CUDA compatibility source:' \
+[[ "$(grep -c '^# HStream disabled duplicate CUDA compatibility source:' \
   "${test_root}/etc/apt/sources.list.d/variants.list")" -eq 3 ]] || fail "list duplicates were not marked"
 grep -qF 'deb [signed-by=/other-suite.gpg]' "${test_root}/etc/apt/sources.list.d/variants.list" || \
   fail "different repository suite was disabled"
@@ -106,7 +106,7 @@ ln -s "../../../source-targets/cuda.list" "${test_root}/etc/apt/sources.list.d/c
 disable_cuda_compat_sources "${test_root}"
 [[ "${DISABLED_CUDA_SOURCE_COUNT}" -eq 1 ]] || fail "symlinked source was not recognized"
 [[ -L "${test_root}/etc/apt/sources.list.d/cuda-link.list" ]] || fail "source symlink was replaced"
-grep -q '^# HMStream disabled' "${test_root}/source-targets/cuda.list" || fail "symlink target was not disabled"
+grep -q '^# HStream disabled' "${test_root}/source-targets/cuda.list" || fail "symlink target was not disabled"
 
 # A mixed Deb822 stanza cannot be disabled without also removing an unrelated
 # repository.  Reject it atomically and leave the file unchanged.
@@ -123,7 +123,7 @@ fi
 [[ "$(sha256sum "${test_root}/etc/apt/sources.list.d/mixed.sources")" == "${mixed_before}" ]] || \
   fail "rejected mixed Deb822 stanza was modified"
 
-# Pre-update recovery removes the uniquely owned HMStream source but edits only
+# Pre-update recovery removes the uniquely owned HStream source but edits only
 # the matching line in NVIDIA's legacy conffile.  A normal failure restores the
 # exact prior files; a completed transition preserves unrelated conffile data.
 reset_apt_tree
@@ -141,7 +141,7 @@ legacy_before="$(sha256sum "${test_root}${CUDA_LEGACY_COMPAT_SOURCE}")"
   disable_installer_managed_cuda_sources "${test_root}"
   disable_cuda_compat_sources "${test_root}" "${CUDA_LEGACY_COMPAT_SOURCE}"
   [[ ! -e "${test_root}${CUDA_COMPAT_SOURCE}" ]] || fail "current managed source survived pre-update repair"
-  grep -q '^# HMStream disabled duplicate' "${test_root}${CUDA_LEGACY_COMPAT_SOURCE}" || \
+  grep -q '^# HStream disabled duplicate' "${test_root}${CUDA_LEGACY_COMPAT_SOURCE}" || \
     fail "legacy compatibility line was not disabled"
   grep -qF 'https://example.invalid/packages' "${test_root}${CUDA_LEGACY_COMPAT_SOURCE}" || \
     fail "unrelated legacy conffile entry was removed"

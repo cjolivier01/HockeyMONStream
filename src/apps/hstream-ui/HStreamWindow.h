@@ -21,20 +21,23 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 class QProcessEnvironment;
+class QCloseEvent;
 
 namespace hm::ui_internal {
 
 // Restores only paths cleared by the UI's automatic video selection. Other
 // keys may have been updated by another config owner in the meantime.
 void restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previous);
+bool supports_x11_embedding(const QString& platform_name, bool tegra_runtime = false);
 
 } // namespace hm::ui_internal
 
-class HmStreamWindow : public QMainWindow {
+class HStreamWindow : public QMainWindow {
  public:
-  explicit HmStreamWindow(QWidget* parent = nullptr);
+  explicit HStreamWindow(QWidget* parent = nullptr);
 
   QString pipelineStateText() const;
   QString outputStateText(const QString& id) const;
@@ -45,11 +48,22 @@ class HmStreamWindow : public QMainWindow {
   int cameraControlValue(const QString& id) const;
   int cameraTabCount() const;
 
+ protected:
+  void closeEvent(QCloseEvent* event) override;
+
  private:
   enum class CopiedImportCleanupResult {
     kSuccess,
     kRolledBack,
     kCommittedWithCleanupFailure,
+  };
+
+  struct PendingRuntimeControl {
+    QString element;
+    QString property;
+    QString runtime_value;
+    QString control_id;
+    int control_value;
   };
 
   void buildUi();
@@ -132,15 +146,19 @@ class HmStreamWindow : public QMainWindow {
   bool prepareStitchingCalibrationRun(
       const QString& runner,
       const QString& working_dir,
-      const QProcessEnvironment& env);
+      const QProcessEnvironment& env,
+      bool* calibration_required,
+      bool pending_only = false);
   bool runStitchingClean(const QString& runner, const QString& working_dir, const QProcessEnvironment& env);
-  bool saveStitchingCalibrationState(int control_points, const QString& status);
+  bool saveStitchingCalibrationState(const QString& game_id, int control_points, const QString& status);
   QStringList enabledSinkNames() const;
   bool isCalibrationRun() const;
   void updateRunControls();
   bool applySavedControlConfig(YAML::Node& config, bool* invalidate_rink_masks, int* invalidated_config_artifacts);
   void loadSavedControlConfig();
   bool sendLiveCameraControl(const QString& id, int value);
+  void handleRuntimeControlResponse(const QString& line);
+  void failPendingRuntimeControls(const QString& reason);
   QSlider* addSlider(QVBoxLayout* layout, const QString& id, const QString& label, int minimum, int maximum, int value);
 
   QLabel* backend_mode_{nullptr};
@@ -151,6 +169,8 @@ class HmStreamWindow : public QMainWindow {
   QLabel* stitched_external_notice_{nullptr};
   QLabel* game_path_label_{nullptr};
   QLabel* video_sets_path_label_{nullptr};
+  QWidget* game_controls_{nullptr};
+  QWidget* video_controls_{nullptr};
   QComboBox* game_selector_{nullptr};
   QComboBox* run_mode_selector_{nullptr};
   QSpinBox* control_points_spin_{nullptr};
@@ -165,6 +185,8 @@ class HmStreamWindow : public QMainWindow {
   QTabWidget* preview_tabs_{nullptr};
   QWidget* preview_surface_{nullptr};
   QWidget* stitched_surface_{nullptr};
+  std::vector<QWidget*> camera_preview_surfaces_;
+  std::vector<QLabel*> camera_preview_notices_;
   QTabWidget* camera_tabs_{nullptr};
   QVBoxLayout* output_list_{nullptr};
   QProcess* pipeline_process_{nullptr};
@@ -173,10 +195,15 @@ class HmStreamWindow : public QMainWindow {
   QPushButton* stop_button_{nullptr};
   QPushButton* program_fullscreen_button_{nullptr};
   QPushButton* stitched_fullscreen_button_{nullptr};
+  QCheckBox* render_video_toggle_{nullptr};
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};
+  bool calibration_pending_{false};
   bool preview_fullscreen_{false};
+  QString active_run_game_id_;
+  bool active_run_is_calibration_{false};
+  int active_calibration_control_points_{0};
   QString pipeline_stdout_buffer_;
   QString pipeline_stderr_buffer_;
   int dynamic_rtsp_count_{0};
@@ -185,4 +212,5 @@ class HmStreamWindow : public QMainWindow {
   std::map<QString, QSlider*> camera_sliders_;
   std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, int> camera_defaults_;
+  std::vector<PendingRuntimeControl> pending_runtime_controls_;
 };
