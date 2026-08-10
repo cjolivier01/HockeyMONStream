@@ -1117,6 +1117,7 @@ absl::Status PipelineApplication::stopPipeline(std::shared_ptr<HmApp> app_contex
   if (!pipeline) {
     return absl::OkStatus();
   }
+  cancel_uri_playlist_frame_barrier(&app_context->pipeline.multi_src_bin);
   if (gst_element_set_state(pipeline, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE) {
     return absl::FailedPreconditionError("Can't set pipeline to stopped state.\n");
   }

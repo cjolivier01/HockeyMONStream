@@ -22,9 +22,6 @@ videoprep::RuntimeOutputPoolStatusDisposition videoprep::classify_runtime_output
   if (status.ok()) {
     return RuntimeOutputPoolStatusDisposition::kProceed;
   }
-  if (absl::IsUnavailable(status)) {
-    return RuntimeOutputPoolStatusDisposition::kRetry;
-  }
   if (absl::IsCancelled(status)) {
     return RuntimeOutputPoolStatusDisposition::kSendEos;
   }
@@ -39,9 +36,6 @@ bool videoprep::RuntimeOutputPoolFlow::handle_status(
     return true;
   }
   switch (classify_runtime_output_pool_status(status)) {
-    case RuntimeOutputPoolStatusDisposition::kRetry:
-      gst_buffer_unref(input_buffer);
-      return true;
     case RuntimeOutputPoolStatusDisposition::kSendEos:
       gst_buffer_unref(input_buffer);
       eos_terminal_ = true;
@@ -775,8 +769,8 @@ void CustomAlgorithmBase::OutputThread(void) {
           std::cerr << output_pool_status << std::endl;
         }
         if (runtime_output_pool_flow.handle_status(output_pool_status, packetInfo.inbuf, send_eos_downstream)) {
-          // Runtime-sized transforms may need a later complete batch, or EOS may arrive before sizing completes.
-          // The helper releases the input and, for EOS, terminates downstream. No output pool/buffer exists here.
+          // EOS may arrive before runtime sizing completes. The helper releases the terminal input and ends output;
+          // every nonterminal sizing failure is handled below as a pipeline error, never as a dropped frame.
           lk.lock();
           continue;
         }
@@ -826,14 +820,6 @@ void CustomAlgorithmBase::OutputThread(void) {
         assert(cuda_stream_);
         if (in_surf && out_surf) {
           const absl::Status generate_status = GenerateOutput(batch_meta, in_surf, out_surf);
-          if (absl::IsUnavailable(generate_status)) {
-            // An incomplete multi-source batch is transient. Neither the empty output buffer nor its copied metadata
-            // is valid downstream, so release both buffers and wait for the mux to provide a complete batch.
-            gst_buffer_unref(newGstOutBuf);
-            gst_buffer_unref(packetInfo.inbuf);
-            lk.lock();
-            continue;
-          }
           cuda_status.Update(generate_status);
           if (!cuda_status.ok()) {
             std::cerr << cuda_status << std::endl;
@@ -925,6 +911,9 @@ void CustomAlgorithmBase::OutputThread(void) {
       } else {
         runtime_output_pool_flow.finish_with_eos(outBuffer, send_eos_downstream);
       }
+    } else if (outBuffer) {
+      gst_buffer_unref(outBuffer);
+      outBuffer = nullptr;
     }
     lk.lock();
     continue;

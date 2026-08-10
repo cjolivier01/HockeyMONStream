@@ -842,6 +842,20 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
       if (config->multi_source_config[i].num_sources < 1) {
         config->multi_source_config[i].num_sources = 1;
       }
+      // HStream uses URI_MULTIPLE as one logical camera playlist. Preserve that type whenever a playlist is explicit,
+      // or when this entry represents only one camera. Rewriting it to URI makes production mux selection miss the
+      // exact-pair/full-batch contract even though uri-list survives and the decode barrier remains active.
+      const gboolean is_uri_playlist =
+          (config->multi_source_config[i].uri_list && *config->multi_source_config[i].uri_list) ||
+          config->multi_source_config[i].num_sources == 1;
+      if (is_uri_playlist) {
+        if (!config->multi_source_config[i].uri) {
+          g_printerr("No URI configured for source id %d\n", config->multi_source_config[i].source_id);
+          std::cerr << "No URI configured for source id " << config->multi_source_config[i].source_id << std::endl;
+          goto done;
+        }
+        continue;
+      }
       for (j = 1; j < config->multi_source_config[i].num_sources; j++) {
         if (config->num_source_sub_bins == MAX_SOURCE_BINS) {
           NVGSTDS_ERR_MSG_V("App supports max %d sources", MAX_SOURCE_BINS);

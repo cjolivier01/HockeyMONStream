@@ -1344,22 +1344,22 @@ void Configurator::configure_audio(
         src1.IsDefined() && as_int(src1[kEnableFlagField]) && as_int(src1["type"]) == NV_DS_SOURCE_URI_MULTIPLE) {
       src0["uri"] = ff + file_maybe_in_game_dir(left_files[0]);
       src1["uri"] = ff + file_maybe_in_game_dir(right_files[0]);
-      if (left_files.size() > 1) {
-        std::vector<std::string> uri_list;
-        uri_list.reserve(left_files.size());
-        for (const auto& f : left_files) {
-          uri_list.emplace_back(ff + file_maybe_in_game_dir(f));
-        }
-        src0["uri-list"] = uri_list;
+      std::vector<std::string> left_uri_list;
+      left_uri_list.reserve(left_files.size());
+      for (const auto& f : left_files) {
+        left_uri_list.emplace_back(ff + file_maybe_in_game_dir(f));
       }
-      if (right_files.size() > 1) {
-        std::vector<std::string> uri_list;
-        uri_list.reserve(right_files.size());
-        for (const auto& f : right_files) {
-          uri_list.emplace_back(ff + file_maybe_in_game_dir(f));
-        }
-        src1["uri-list"] = uri_list;
+      src0["uri-list"] = left_uri_list;
+      std::vector<std::string> right_uri_list;
+      right_uri_list.reserve(right_files.size());
+      for (const auto& f : right_files) {
+        right_uri_list.emplace_back(ff + file_maybe_in_game_dir(f));
       }
+      src1["uri-list"] = right_uri_list;
+      // URI-MULTIPLE stitching is the lossless file path: metadata attached at decoder output must survive every
+      // conversion and nvstreammux. Requiring it makes total metadata loss a hard error instead of silently trusting
+      // a mux-local frame counter that cannot reveal an upstream drop.
+      pipeline["hmstitcher"]["private-properties"]["require-decoded-frame-sequence-meta"] = "1";
       if (get_node_value<double>(offsets, "left", 0.0) == 0) {
         possible_audio_uri = src0["uri"].as<std::string>();
         audio_source_id = src0["source-id"].as<int>();
@@ -1926,6 +1926,16 @@ absl::Status Configurator::complete_configuration(
       num_video_sources));
 
   configure_audio(pipeline, left_files, right_files, offsets, num_video_sources);
+  if (pipeline_has_hmstitcher && get_node_value<int>(pipeline, "hmstitcher.enable", false)) {
+    // URI playlist construction selects HStream's full-batch-only new mux for two-camera file stitching. The legacy
+    // mux uses -1 for the same infinite wait. Decode and stitcher sequence guards turn a missing peer into a hard
+    // pipeline error instead of allowing either mux to recover by emitting an incomplete camera pair.
+    pipeline["streammux"]["sync-inputs"] = "0";
+    pipeline["streammux"]["batched-push-timeout"] =
+        g_strcmp0(g_getenv("USE_NEW_NVSTREAMMUX"), "yes") == 0 ? "1000000" : "-1";
+    pipeline["streammux"]["frame-num-reset-on-stream-reset"] = "0";
+    pipeline["streammux"]["frame-num-reset-on-eos"] = "0";
+  }
   HM_RETURN_IF_ERROR(configure_encode_file_outputs(pipeline));
 
   if (show_render_sink) {

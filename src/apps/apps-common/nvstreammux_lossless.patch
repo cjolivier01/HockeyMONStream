@@ -1,0 +1,49 @@
+--- a/nvstreammux_batch.cpp
++++ b/nvstreammux_batch.cpp
+@@ -216,17 +216,5 @@
+-    bool batch_ready = is_ready(batch);
+-
+-    if(!batch_ready)
+-    {
+-        /* If not ready and we have atleast one buffer in the batch,
+-         * check if we are late to push this batch?
+-         * if late and have atleast 1 buffer in batch, mark the batch as ready
+-         * for push.
+-         */
+-        if(calculate_delay() == NanoSecondsType(0)
+-           && batch->acc_batch > 0)
+-        {
+-            /** force the batch out */
+-            return true;
+-        }
+-    }
+-    return batch_ready;
++    /* HStream file stitching is lossless: an incomplete camera pair must
++     * never be emitted merely because a wall-clock deadline elapsed. The
++     * decoder rendezvous and downstream sequence metadata checks provide the
++     * corresponding liveness and integrity failures. */
++    return is_ready(batch);
+--- a/nvstreammux.cpp
++++ b/nvstreammux.cpp
+@@ -333,2 +332,0 @@
+-        NanoSecondsType wait_time;
+-
+@@ -341,0 +340,7 @@
++        /* all_pads_eos is set only after every input queue, including its
++         * final EOS event, has drained. Do not wait for a partial-batch
++         * deadline once no complete batch remains. */
++        if(all_pads_eos)
++        {
++            break;
++        }
+@@ -344,2 +349 @@
+-        wait_time = batch_policy.calculate_wait();
+-        bool wait_not_past_max = wait_time > (std::chrono::milliseconds(0));
++        const bool wait_not_past_max = true;
+@@ -350,3 +354,3 @@
+-            //std::cout << "waiting got " << wait_time.count() << "\n";
+-            /** Wait for new buffers on pads or if no buffer comes in, upto wait_time */
+-            cv.wait_for(lck, wait_time);
++            /* Only a peer buffer, EOS, cancellation, or teardown may end a
++             * lossless file-batch wait; wall-clock time never may. */
++            cv.wait(lck);

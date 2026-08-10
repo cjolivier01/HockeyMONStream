@@ -153,18 +153,38 @@ typedef struct {
   GstElement* uri_audio_tee;
   gulong uri_audio_probe;
   guint uri_audio_link_count;
-  gboolean uri_audio_final_eos_allowed;
   gboolean uri_audio_has_pad;
-  guint uri_audio_pad_uri_index;
+  gboolean uri_audio_eos_seen;
+  /** Keep a selected peer audio branch alive after camera exhaustion until its current chapter has drained. */
+  gboolean uri_terminal_audio_drain_pending;
+  /** Logical video end at permanent camera exhaustion; later peer audio belongs to unpairable video and is dropped. */
+  guint64 uri_terminal_audio_cutoff;
+  gboolean uri_list_video_eos_seen;
+  gboolean uri_list_pads_complete;
+  gboolean uri_list_boundary_handled;
+  /** Guards URI playlist lifecycle fields when this source is not owned by a multi-source parent. */
+  GMutex uri_playlist_mutex;
   /** Optional playlist state (for file sources). */
   gchar** uri_list;
   guint num_uri_list;
   guint uri_list_index;
   guint uri_switch_count;
   gboolean uri_switch_pending;
+  /** Total decoded video frames across every URI in this playlist. Never resets at chapter boundaries. */
+  guint64 uri_list_decoded_frame_count;
+  /** Logical end timestamp of the latest decoded video buffer released by the exact-pair barrier. */
+  guint64 uri_list_released_video_end;
+  /** Latest committed sequence that reached this source's nvstreammux sink pad. G_MAXUINT64 means none. */
+  guint64 uri_list_mux_delivered_sequence;
+  /** Frames decoded only after a peer camera permanently ended; they are stopped before nvstreammux. */
+  guint64 uri_list_terminal_dropped_frame_count;
+  /** Decode-time sequence currently waiting for the peer camera before either buffer can reach nvstreammux. */
+  guint64 uri_list_frame_ready_sequence;
+  gboolean uri_list_permanently_ended;
   /** URI playlist timestamp continuity state (nanoseconds). */
   guint64 uri_list_segment_stop;
   guint64 uri_list_last_pts;
+  guint64 uri_list_last_duration;
 } NvDsSrcBin;
 
 struct NvDsSrcParentBin {
@@ -178,6 +198,16 @@ struct NvDsSrcParentBin {
   guint num_bins;
   guint num_fr_on;
   gboolean live_source;
+  /** Coordinates exact decoded-frame pairs across multi-camera URI playlist switches. */
+  GMutex uri_playlist_barrier_mutex;
+  GCond uri_playlist_barrier_cond;
+  guint64 uri_playlist_next_frame_sequence;
+  guint64 uri_playlist_paired_video_end;
+  gboolean uri_playlist_exact_pairing_enabled;
+  gboolean uri_playlist_terminal;
+  gboolean uri_playlist_barrier_failed;
+  /** Cancels waits for committed frames to reach nvstreammux during failure/application teardown. */
+  gboolean uri_playlist_delivery_aborted;
   gulong nvstreammux_eosmonitor_probe;
 };
 
@@ -199,6 +229,9 @@ gboolean link_uri_source_audio_src(NvDsSrcBin* bin, GstElement* sinkelem);
  * @return true if bin created successfully.
  */
 gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, NvDsSrcParentBin* bin);
+
+/** Wake every URI-playlist frame waiter before an error/stop transitions the pipeline to NULL. */
+void cancel_uri_playlist_frame_barrier(NvDsSrcParentBin* bin);
 
 /**
  * Initialize @ref NvDsSrcParentBin. It creates and adds nvmultiurisrcbin

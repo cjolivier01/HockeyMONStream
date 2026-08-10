@@ -27,7 +27,6 @@ struct RuntimeOutputSize {
 
 enum class RuntimeOutputPoolStatusDisposition {
   kProceed,
-  kRetry,
   kSendEos,
   kError,
 };
@@ -36,7 +35,7 @@ RuntimeOutputPoolStatusDisposition classify_runtime_output_pool_status(const abs
 
 class RuntimeOutputPoolFlow {
  public:
-  // Returns true after consuming input_buffer for a retryable or EOS status.
+  // Returns true after consuming input_buffer for a terminal EOS status.
   // The caller must then skip output-pool acquisition and output-buffer access.
   bool handle_status(
       const absl::Status& status,
