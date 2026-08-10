@@ -147,12 +147,35 @@ gboolean parse_dsplaytracker_yaml(
   if (fixed_edge_rotation_angle_present) {
     config->fixed_edge_rotation_angle = static_cast<gfloat>(fixed_edge_rotation_angle);
   }
-  double dynamic_acceleration_scaling = 0.0;
+  bool fixed_edge_rotation_angle_left_present = false;
+  double fixed_edge_rotation_angle_left = 0.0;
   if (!parse_finite_yaml_double(
           yaml_node,
-          "dynamic-acceleration-scaling",
-          "dynamic_acceleration_scaling",
-          &dynamic_acceleration_scaling)) {
+          "fixed-edge-rotation-angle-left",
+          "fixed_edge_rotation_angle_left",
+          &fixed_edge_rotation_angle_left,
+          &fixed_edge_rotation_angle_left_present)) {
+    return false;
+  }
+  if (fixed_edge_rotation_angle_left_present) {
+    config->fixed_edge_rotation_angle_left = static_cast<gfloat>(fixed_edge_rotation_angle_left);
+  }
+  bool fixed_edge_rotation_angle_right_present = false;
+  double fixed_edge_rotation_angle_right = 0.0;
+  if (!parse_finite_yaml_double(
+          yaml_node,
+          "fixed-edge-rotation-angle-right",
+          "fixed_edge_rotation_angle_right",
+          &fixed_edge_rotation_angle_right,
+          &fixed_edge_rotation_angle_right_present)) {
+    return false;
+  }
+  if (fixed_edge_rotation_angle_right_present) {
+    config->fixed_edge_rotation_angle_right = static_cast<gfloat>(fixed_edge_rotation_angle_right);
+  }
+  double dynamic_acceleration_scaling = 0.0;
+  if (!parse_finite_yaml_double(
+          yaml_node, "dynamic-acceleration-scaling", "dynamic_acceleration_scaling", &dynamic_acceleration_scaling)) {
     return false;
   }
   YAML::Node dynamic_acceleration_scaling_node;
@@ -164,7 +187,11 @@ gboolean parse_dsplaytracker_yaml(
     config->dynamic_acceleration_scaling = static_cast<gfloat>(dynamic_acceleration_scaling);
   }
   config->fixed_edge_rotation_angle_set = fixed_edge_rotation_angle_present;
+  config->fixed_edge_rotation_angle_left_set = fixed_edge_rotation_angle_left_present;
+  config->fixed_edge_rotation_angle_right_set = fixed_edge_rotation_angle_right_present;
   SET_LOCATOR(locator, *config, fixed_edge_rotation_angle);
+  SET_LOCATOR(locator, *config, fixed_edge_rotation_angle_left);
+  SET_LOCATOR(locator, *config, fixed_edge_rotation_angle_right);
   SET_LOCATOR(locator, *config, dynamic_acceleration_scaling);
   hm::utils::parse_chracter_buffer(config->config_file, yaml_node, "config-file", config_dir);
   if (!hm::gst::append_plugin_properties_from_yaml(yaml_node, "properties", &config->plugin_properties) ||
@@ -280,7 +307,37 @@ gboolean parse_hmplaycropper_yaml(
     config->fixed_edge_rotation_angle = static_cast<gfloat>(fixed_edge_rotation_angle);
   }
   config->fixed_edge_rotation_angle_set = fixed_edge_rotation_angle_present;
+  bool fixed_edge_rotation_angle_left_present = false;
+  double fixed_edge_rotation_angle_left = 0.0;
+  if (!parse_finite_yaml_double(
+          yaml_node,
+          "fixed-edge-rotation-angle-left",
+          "fixed_edge_rotation_angle_left",
+          &fixed_edge_rotation_angle_left,
+          &fixed_edge_rotation_angle_left_present)) {
+    return false;
+  }
+  if (fixed_edge_rotation_angle_left_present) {
+    config->fixed_edge_rotation_angle_left = static_cast<gfloat>(fixed_edge_rotation_angle_left);
+  }
+  bool fixed_edge_rotation_angle_right_present = false;
+  double fixed_edge_rotation_angle_right = 0.0;
+  if (!parse_finite_yaml_double(
+          yaml_node,
+          "fixed-edge-rotation-angle-right",
+          "fixed_edge_rotation_angle_right",
+          &fixed_edge_rotation_angle_right,
+          &fixed_edge_rotation_angle_right_present)) {
+    return false;
+  }
+  if (fixed_edge_rotation_angle_right_present) {
+    config->fixed_edge_rotation_angle_right = static_cast<gfloat>(fixed_edge_rotation_angle_right);
+  }
+  config->fixed_edge_rotation_angle_left_set = fixed_edge_rotation_angle_left_present;
+  config->fixed_edge_rotation_angle_right_set = fixed_edge_rotation_angle_right_present;
   SET_LOCATOR(locator, *config, fixed_edge_rotation_angle);
+  SET_LOCATOR(locator, *config, fixed_edge_rotation_angle_left);
+  SET_LOCATOR(locator, *config, fixed_edge_rotation_angle_right);
   SET_LOCATOR(locator, *config, no_crop);
   SET_LOCATOR(locator, *config, show_scoreboard);
   SET_LOCATOR_CHARS(locator, *config, scoreboard_projected_width);
@@ -307,22 +364,17 @@ gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_
   SET_LOCATOR(locator, *config, force_scoreboard_config);
   double post_stitch_rotate_degrees = 0.0;
   if (!parse_finite_yaml_double(
-          yaml_node,
-          "post-stitch-rotate-degrees",
-          "post_stitch_rotate_degrees",
-          &post_stitch_rotate_degrees)) {
+          yaml_node, "post-stitch-rotate-degrees", "post_stitch_rotate_degrees", &post_stitch_rotate_degrees)) {
     return false;
   }
   YAML::Node post_stitch_rotate_degrees_node;
   if (find_yaml_alias(
-          yaml_node,
-          "post-stitch-rotate-degrees",
-          "post_stitch_rotate_degrees",
-          &post_stitch_rotate_degrees_node)) {
+          yaml_node, "post-stitch-rotate-degrees", "post_stitch_rotate_degrees", &post_stitch_rotate_degrees_node)) {
     config->post_stitch_rotate_degrees = static_cast<gfloat>(post_stitch_rotate_degrees);
   }
   SET_LOCATOR(locator, *config, post_stitch_rotate_degrees);
   SET_LOCATOR(locator, *config, minimize_blend);
+  SET_LOCATOR(locator, *config, ui_preview);
   SET_LOCATOR_CHARS(locator, *config, stitch_compute_precision);
   SET_LOCATOR_CHARS(locator, *config, config_file);
   locator.ignored.emplace("properties");

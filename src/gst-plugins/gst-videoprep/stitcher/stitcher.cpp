@@ -51,6 +51,28 @@ namespace stitcher {
 
 namespace {
 
+std::string calibration_message(std::string message) {
+  std::replace(message.begin(), message.end(), '\n', ' ');
+  std::replace(message.begin(), message.end(), '\r', ' ');
+  return message;
+}
+
+void report_calibration_progress(const char* stage, const char* status, const std::string& message = {}) {
+  const std::string single_line_message = calibration_message(message);
+  g_print(
+      "HSTREAM_CALIBRATION stage=%s status=%s%s%s\n",
+      stage,
+      status,
+      single_line_message.empty() ? "" : " message=",
+      single_line_message.c_str());
+  std::fflush(stdout);
+}
+
+absl::Status report_calibration_failure(const absl::Status& status) {
+  report_calibration_progress("calibration", "failed", status.ToString());
+  return status;
+}
+
 void log_canvas_hint(const std::string& prefix, size_t width, size_t height) {
   if (!width || !height) {
     return;
@@ -592,19 +614,23 @@ absl::Status StitcherPriv::configure_one_pass_from_surfaces(
       return absl::FailedPreconditionError("Stitching is not configured");
     }
     g_print("hmstitcher: configuring stitching in one-pass mode\n");
+    report_calibration_progress("input", "started", "Waiting for synchronized frames from both cameras");
+    report_calibration_progress("input", "complete", "Captured synchronized frames from both cameras");
     if (!orientation_ran_) {
+      report_calibration_progress("orientation", "started", "Looking for the ice rink and camera orientation");
       absl::Status orientation_status = stitching::configure_orientation(config_file_);
       if (!orientation_status.ok()) {
         std::cerr << orientation_status << "\n" << std::flush;
-        return orientation_status;
+        return report_calibration_failure(orientation_status);
       }
       orientation_ran_ = true;
+      report_calibration_progress("orientation", "complete", "Camera orientation is configured");
     }
     absl::Status configure_status =
         stitching::configure_stitching(config_file_, incoming_surface_left, incoming_surface_right);
     if (!configure_status.ok()) {
       std::cerr << configure_status << "\n" << std::flush;
-      return configure_status;
+      return report_calibration_failure(configure_status);
     }
     configured_during_run_ = true;
   }
@@ -617,7 +643,7 @@ absl::Status StitcherPriv::configure_one_pass_from_surfaces(
   if (!stitcher_ready) {
     absl::Status reload_status = reload_stitcher();
     if (!reload_status.ok()) {
-      return reload_status;
+      return configured_during_run_ ? report_calibration_failure(reload_status) : reload_status;
     }
   }
   {
@@ -625,14 +651,13 @@ absl::Status StitcherPriv::configure_one_pass_from_surfaces(
     stitcher_ready = has_stitcher();
   }
   if (!stitcher_ready) {
-    return absl::FailedPreconditionError("One-pass stitching configured but control masks could not be loaded");
+    const absl::Status status =
+        absl::FailedPreconditionError("One-pass stitching configured but control masks could not be loaded");
+    return configured_during_run_ ? report_calibration_failure(status) : status;
   }
   if (!canvas_width_hint_ || !canvas_height_hint_) {
-    return absl::FailedPreconditionError("One-pass stitching did not produce a canvas size");
-  }
-  if (configured_during_run_) {
-    g_print("hmstitcher: one-pass stitching configuration complete\n");
-    std::fflush(stdout);
+    const absl::Status status = absl::FailedPreconditionError("One-pass stitching did not produce a canvas size");
+    return configured_during_run_ ? report_calibration_failure(status) : status;
   }
   return absl::OkStatus();
 }
@@ -1297,13 +1322,29 @@ absl::Status StitcherPriv::GenerateOutput(
 
     if (one_pass_mode_ && !field_mask_attempted_) {
       field_mask_attempted_ = true;
+      if (configured_during_run_) {
+        report_calibration_progress("rink-mask", "started", "Looking for the ice surface in the stitched panorama");
+      }
       bool mask_configured = stitching::is_field_mask_configured(config_file_, output_generation);
       if (!mask_configured) {
         absl::Status mask_status =
             stitching::create_field_mask(config_file_, logical_output_surface, output_generation);
         if (!mask_status.ok()) {
           std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
+          if (configured_during_run_ && !calibration_completion_reported_) {
+            report_calibration_progress("calibration", "failed", mask_status.ToString());
+            calibration_completion_reported_ = true;
+          }
+        } else {
+          mask_configured = true;
         }
+      }
+      if (configured_during_run_ && mask_configured && !calibration_completion_reported_) {
+        report_calibration_progress("rink-mask", "complete", "Ice surface calibration is ready");
+        report_calibration_progress("calibration", "complete", "Stitching calibration is complete");
+        g_print("hmstitcher: one-pass stitching configuration complete\n");
+        std::fflush(stdout);
+        calibration_completion_reported_ = true;
       }
     }
 

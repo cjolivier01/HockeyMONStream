@@ -126,6 +126,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool logged_missing_masks_{false};
   bool orientation_ran_{false};
   bool field_mask_attempted_{false};
+  bool calibration_completion_reported_{false};
   size_t left_frame_offset_ns_{0}, right_frame_offset_ns_{0};
   bool show_{false};
   bool match_exposure_{false};

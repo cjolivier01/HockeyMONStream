@@ -46,6 +46,8 @@ hmplaycropper:
   gpu-id: 0
   plugin-type: playcropper
   config-file: config.yaml
+  fixed-edge-rotation-angle-left: 25.0
+  fixed-edge-rotation-angle-right: 75.0
   properties:
     output-width: 1920
     output-height: 1080
@@ -58,6 +60,7 @@ hmstitcher:
   enable: true
   plugin-type: hmstitcher
   post-stitch-rotate-degrees: 2.5
+  ui-preview: 1
   properties:
     num-output-buffers: 6
   private-properties:
@@ -66,6 +69,8 @@ hmstitcher:
 ds-playtracker:
   enable: true
   config-file: tracker.yaml
+  fixed-edge-rotation-angle-left: 25.0
+  fixed-edge-rotation-angle-right: 75.0
   properties:
     source-id: 2
   private-properties:
@@ -83,6 +88,12 @@ ds-playtracker:
       !expect_property(playcropper.private_properties, "no-crop", "false")) {
     return 1;
   }
+  if (!playcropper.fixed_edge_rotation_angle_left_set || !playcropper.fixed_edge_rotation_angle_right_set ||
+      std::abs(playcropper.fixed_edge_rotation_angle_left - 25.0) > 1e-6 ||
+      std::abs(playcropper.fixed_edge_rotation_angle_right - 75.0) > 1e-6) {
+    std::cerr << "Expected independent playcropper fixed-edge rotation angles\n";
+    return 1;
+  }
 
   HmStitcherConfig stitcher{};
   if (!parse_hmstitcher_yaml(&stitcher, config["hmstitcher"], "/tmp")) {
@@ -93,8 +104,8 @@ ds-playtracker:
       !expect_property(stitcher.private_properties, "one-pass-mode", "true")) {
     return 1;
   }
-  if (std::abs(stitcher.post_stitch_rotate_degrees - 2.5) > 1e-6) {
-    std::cerr << "Expected post-stitch-rotate-degrees to parse into HmStitcherConfig\n";
+  if (std::abs(stitcher.post_stitch_rotate_degrees - 2.5) > 1e-6 || !stitcher.ui_preview) {
+    std::cerr << "Expected post-stitch rotation and UI preview settings to parse into HmStitcherConfig\n";
     return 1;
   }
 
@@ -105,6 +116,12 @@ ds-playtracker:
   }
   if (!expect_property(playtracker.plugin_properties, "source-id", "2") ||
       !expect_property(playtracker.private_properties, "show", "true")) {
+    return 1;
+  }
+  if (!playtracker.fixed_edge_rotation_angle_left_set || !playtracker.fixed_edge_rotation_angle_right_set ||
+      std::abs(playtracker.fixed_edge_rotation_angle_left - 25.0) > 1e-6 ||
+      std::abs(playtracker.fixed_edge_rotation_angle_right - 75.0) > 1e-6) {
+    std::cerr << "Expected independent playtracker fixed-edge rotation angles\n";
     return 1;
   }
 

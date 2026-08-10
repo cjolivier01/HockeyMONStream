@@ -78,6 +78,10 @@ struct NvDsDsPlayTrackerConfig {
   gboolean show;
   gfloat fixed_edge_rotation_angle;
   gboolean fixed_edge_rotation_angle_set;
+  gfloat fixed_edge_rotation_angle_left;
+  gboolean fixed_edge_rotation_angle_left_set;
+  gfloat fixed_edge_rotation_angle_right;
+  gboolean fixed_edge_rotation_angle_right_set;
   gfloat dynamic_acceleration_scaling;
   gchar config_file[kMyMaxPath];
   hm::gst::PluginProperties plugin_properties;
@@ -158,6 +162,10 @@ struct HmPlayCropperConfig : public NvDsHmVideoPrepConfig {
   gboolean transform_object_meta;
   gfloat fixed_edge_rotation_angle;
   gboolean fixed_edge_rotation_angle_set;
+  gfloat fixed_edge_rotation_angle_left;
+  gboolean fixed_edge_rotation_angle_left_set;
+  gfloat fixed_edge_rotation_angle_right;
+  gboolean fixed_edge_rotation_angle_right_set;
   int scoreboard_perspective_polygon[8];
   guint runtime_output_max_width;
   guint runtime_output_max_height;
@@ -183,6 +191,7 @@ struct HmStitcherConfig : public NvDsHmVideoPrepConfig {
   gboolean force_scoreboard_config;
   gfloat post_stitch_rotate_degrees;
   gboolean minimize_blend;
+  gboolean ui_preview;
   gchar stitch_compute_precision[32];
 };
 
@@ -193,6 +202,14 @@ struct HmStitcherBin {
   GstElement* pre_conv{nullptr};
   GstElement* cap_filter{nullptr};
   GstElement* elem_hmstitcher{nullptr};
+  GstElement* output_tee{nullptr};
+  GstElement* output_queue{nullptr};
+  GstElement* preview_queue{nullptr};
+  GstElement* preview_converter{nullptr};
+  GstElement* preview_caps_filter{nullptr};
+  GstElement* preview_system_converter{nullptr};
+  GstElement* preview_system_caps_filter{nullptr};
+  GstElement* preview_sink{nullptr};
 };
 
 gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin);

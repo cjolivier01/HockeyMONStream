@@ -5,17 +5,23 @@
 #include <QtTest/qtestmouse.h>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
+#include <QtCore/QFileInfo>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QTemporaryDir>
+#include <QtCore/QUrl>
+#include <QtGui/QImage>
+#include <QtGui/QScreen>
 #include <QtGui/QWheelEvent>
 #include <QtTest/QTest>
 #include <QtWidgets/QAbstractButton>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
+#include <QtWidgets/QDialog>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QListWidget>
+#include <QtWidgets/QProgressBar>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QRadioButton>
 #include <QtWidgets/QSlider>
@@ -26,8 +32,10 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -187,6 +195,10 @@ bool write_fake_runner(const QString& path) {
   file.write("print('HM_NO_SCOREBOARD=' + os.environ.get('HM_NO_SCOREBOARD', ''), flush=True)\n");
   file.write("print('HM_MAX_CONTROL_POINTS=' + os.environ.get('HM_MAX_CONTROL_POINTS', ''), flush=True)\n");
   file.write("print('LD_LIBRARY_PATH=' + os.environ.get('LD_LIBRARY_PATH', ''), flush=True)\n");
+  file.write("if os.environ.get('HM_NO_SCOREBOARD') != '1':\n");
+  file.write("    print('Scoreboard corners are not configured. Open this private, expiring URL:', flush=True)\n");
+  file.write("    print('  http://127.0.0.1:45678/?token=' + ('a' * 64), flush=True)\n");
+  file.write("    print('Scoreboard overlay disabled by config reload', flush=True)\n");
   file.write("if '--clean' in sys.argv[1:]:\n");
   file.write("    print('clean runner exiting', flush=True)\n");
   file.write("    sys.exit(0)\n");
@@ -195,20 +207,76 @@ bool write_fake_runner(const QString& path) {
   file.write("time.sleep(0.05)\n");
   file.write("sys.stdout.write(' blue runner line\\033[0m\\n')\n");
   file.write("sys.stdout.flush()\n");
-  file.write("if os.environ.get('HSTREAM_UI_TEST_COMPLETE_CALIBRATION') == '1':\n");
-  file.write("    print('hmstitcher: one-pass stitching configuration complete', flush=True)\n");
+  file.write("calibration_result = os.environ.get('HSTREAM_UI_TEST_CALIBRATION_RESULT', '')\n");
+  file.write("if not calibration_result and os.environ.get('HSTREAM_UI_TEST_COMPLETE_CALIBRATION') == '1':\n");
+  file.write("    calibration_result = 'success'\n");
+  file.write("if calibration_result in ('success', 'failure', 'exit'):\n");
+  file.write("    delay = float(os.environ.get('HSTREAM_UI_TEST_CALIBRATION_STEP_DELAY_MS', '0')) / 1000.0\n");
+  file.write("    events = [\n");
+  file.write(
+      "        'HSTREAM_CALIBRATION stage=input status=started message=Waiting for synchronized frames from both "
+      "cameras',\n");
+  file.write(
+      "        'HSTREAM_CALIBRATION stage=input status=complete message=Captured synchronized frames from both "
+      "cameras',\n");
+  file.write(
+      "        'HSTREAM_CALIBRATION stage=orientation status=started message=Looking for the ice rink and camera "
+      "orientation',\n");
+  file.write("    ]\n");
+  file.write("    for event in events:\n");
+  file.write("        print(event, flush=True)\n");
+  file.write("        time.sleep(delay)\n");
+  file.write("    if calibration_result == 'exit':\n");
+  file.write("        sys.exit(9)\n");
+  file.write("    events = [\n");
+  file.write(
+      "        'HSTREAM_CALIBRATION stage=orientation status=complete message=Camera orientation is configured',\n");
+  file.write(
+      "        'HSTREAM_CALIBRATION stage=features status=started message=Looking for control points in both camera "
+      "frames',\n");
+  file.write(
+      "        'HSTREAM_CALIBRATION stage=features status=complete message=Control points found in both camera "
+      "frames',\n");
+  file.write(
+      "        'HSTREAM_CALIBRATION stage=matching status=started message=Selecting and validating control-point "
+      "matches',\n");
+  file.write("        'HSTREAM_CALIBRATION stage=matching status=complete message=Matched 750 control points',\n");
+  file.write(
+      "        'HSTREAM_CALIBRATION stage=optimizer status=started message=Running panorama optimizer "
+      "(autooptimiser)',\n");
+  file.write("    ]\n");
+  file.write("    for event in events:\n");
+  file.write("        print(event, flush=True)\n");
+  file.write("        time.sleep(delay)\n");
+  file.write("    if calibration_result == 'failure':\n");
+  file.write(
+      "        print('HSTREAM_CALIBRATION stage=calibration status=failed message=autooptimiser rejected the "
+      "control-point geometry', flush=True)\n");
+  file.write("    else:\n");
+  file.write(
+      "        print('HSTREAM_CALIBRATION stage=optimizer status=complete message=Panorama alignment optimized', "
+      "flush=True)\n");
+  file.write(
+      "        print('HSTREAM_CALIBRATION stage=canvas status=started message=Building stitch maps and panorama "
+      "preview', flush=True)\n");
+  file.write(
+      "        print('HSTREAM_CALIBRATION stage=canvas status=complete message=Stitch maps and panorama preview are "
+      "ready', flush=True)\n");
+  file.write(
+      "        print('HSTREAM_CALIBRATION stage=rink-mask status=started message=Looking for the ice surface in the "
+      "stitched panorama', flush=True)\n");
+  file.write(
+      "        print('HSTREAM_CALIBRATION stage=rink-mask status=complete message=Ice surface calibration is ready', "
+      "flush=True)\n");
+  file.write(
+      "        print('HSTREAM_CALIBRATION stage=calibration status=complete message=Stitching calibration is "
+      "complete', flush=True)\n");
+  file.write("        print('hmstitcher: one-pass stitching configuration complete', flush=True)\n");
   file.write("if os.environ.get('HSTREAM_UI_TEST_CLOSE_STDIN') == '1':\n");
   file.write("    sys.stdin.close()\n");
   file.write("    time.sleep(5.0)\n");
   file.write("    sys.exit(0)\n");
-  file.write("deadline = time.monotonic() + 5.0\n");
-  file.write("while time.monotonic() < deadline:\n");
-  file.write("    readable, _, _ = select.select([sys.stdin], [], [], 0.05)\n");
-  file.write("    if not readable:\n");
-  file.write("        continue\n");
-  file.write("    line = sys.stdin.readline()\n");
-  file.write("    if line == '':\n");
-  file.write("        break\n");
+  file.write("def handle_stdin_line(line):\n");
   file.write("    print('stdin:' + line.rstrip('\\n'), flush=True)\n");
   file.write("    if line.startswith('@set-property '):\n");
   file.write("        _, element, assignment = line.rstrip('\\n').split(' ', 2)\n");
@@ -220,6 +288,20 @@ bool write_fake_runner(const QString& path) {
   file.write("        else:\n");
   file.write(
       "            print('runtime property ' + element + ' ' + property_name + '=' + runtime_value, flush=True)\n");
+  file.write("deadline = time.monotonic() + 5.0\n");
+  file.write("stdin_fd = sys.stdin.fileno()\n");
+  file.write("pending_stdin = b''\n");
+  file.write("while time.monotonic() < deadline:\n");
+  file.write("    readable, _, _ = select.select([stdin_fd], [], [], 0.05)\n");
+  file.write("    if not readable:\n");
+  file.write("        continue\n");
+  file.write("    chunk = os.read(stdin_fd, 4096)\n");
+  file.write("    if not chunk:\n");
+  file.write("        break\n");
+  file.write("    pending_stdin += chunk\n");
+  file.write("    while b'\\n' in pending_stdin:\n");
+  file.write("        raw_line, pending_stdin = pending_stdin.split(b'\\n', 1)\n");
+  file.write("        handle_stdin_line(raw_line.decode(errors='replace') + '\\n')\n");
   file.close();
   return QFile::setPermissions(
       path,
@@ -966,6 +1048,182 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
              "Auto imports from a different camera folder should create a new camN without renaming");
 }
 
+bool set_test_calibration_status(HStreamWindow* window, const std::string& status, int control_points = 1500) {
+  const fs::path game_dir(window->gameDirectoryText().toStdString());
+  const fs::path config_path = game_dir / "config.yaml";
+  YAML::Node config(YAML::NodeType::Map);
+  try {
+    if (fs::is_regular_file(config_path))
+      config = YAML::LoadFile(config_path.string());
+    config["hstream_ui"]["stitching_calibration"]["control_points"] = control_points;
+    config["hstream_ui"]["stitching_calibration"]["status"] = status;
+  } catch (const std::exception& exception) {
+    std::cerr << "Could not prepare calibration dialog test: " << exception.what() << '\n';
+    return false;
+  }
+  const auto published = hm::stitching::publish_game_config(game_dir, YAML::Dump(config) + "\n");
+  if (!published.ok()) {
+    std::cerr << "Could not publish calibration dialog test config: " << published << '\n';
+    return false;
+  }
+  return true;
+}
+
+bool test_calibration_progress_dialog(HStreamWindow* window) {
+  auto* start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
+  auto* mode = require_child<QComboBox>(window, "runModeCombo");
+  auto* control_points = require_child<QSpinBox>(window, "controlPointsSpin");
+  if (!start || !stop || !mode || !control_points || !set_test_calibration_status(window, "pending"))
+    return false;
+
+  mode->setCurrentIndex(mode->findData("stitch-calibration"));
+  control_points->setValue(1500);
+  qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+  qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+  activate(start);
+  for (int i = 0; i < 200 && window->pipelineStateText() != "PLAYING"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+
+  auto* dialog = require_child<QDialog>(window, "stitchCalibrationDialog");
+  auto* headline = require_child<QLabel>(window, "stitchCalibrationHeadline");
+  auto* detail = require_child<QLabel>(window, "stitchCalibrationDetail");
+  auto* status_icon = require_child<QLabel>(window, "stitchCalibrationIcon");
+  auto* progress = require_child<QProgressBar>(window, "stitchCalibrationProgress");
+  auto* input_stage = require_child<QLabel>(window, "stitchCalibrationStage_input");
+  auto* orientation_stage = require_child<QLabel>(window, "stitchCalibrationStage_orientation");
+  auto* features_stage = require_child<QLabel>(window, "stitchCalibrationStage_features");
+  auto* matching_stage = require_child<QLabel>(window, "stitchCalibrationStage_matching");
+  auto* optimizer_stage = require_child<QLabel>(window, "stitchCalibrationStage_optimizer");
+  auto* rink_stage = require_child<QLabel>(window, "stitchCalibrationStage_rink-mask");
+  auto* ok = require_child<QPushButton>(window, "stitchCalibrationOkButton");
+  auto* cancel = require_child<QPushButton>(window, "stitchCalibrationCancelButton");
+  if (!dialog || !headline || !detail || !status_icon || !progress || !input_stage || !orientation_stage ||
+      !features_stage || !matching_stage || !optimizer_stage || !rink_stage || !ok || !cancel) {
+    activate(stop);
+    return false;
+  }
+  if (!expect(dialog->isVisible(), "Calibration-required Play should open the progress popup") ||
+      !expect(
+          headline->text().contains("Calibrating stitching"), "Active popup should identify stitching calibration") ||
+      !expect(
+          input_stage->property("calibrationState").toString() == "active",
+          "The synchronized-frame stage should be active while the runner waits") ||
+      !expect(
+          progress->isVisible() && progress->minimum() == 0 && progress->maximum() == 0,
+          "Active calibration should show indeterminate progress") ||
+      !expect(cancel->isVisible() && !ok->isVisible(), "Active calibration should offer Stop instead of OK")) {
+    activate(stop);
+    return false;
+  }
+  dialog->reject();
+  QApplication::processEvents();
+  if (!expect(dialog->isVisible(), "Escape/window rejection should not dismiss active calibration")) {
+    activate(stop);
+    return false;
+  }
+  activate(stop);
+  for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(!dialog->isVisible(), "User cancellation should close the calibration popup without a failure"))
+    return false;
+
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "failure");
+  activate(start);
+  for (int i = 0; i < 300 && !headline->text().contains("failed"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(dialog->isVisible(), "A native calibration failure should leave the popup open") ||
+      !expect(
+          status_icon->property("calibrationState").toString() == "failed" && !status_icon->pixmap().isNull(),
+          "A failed calibration should display its red critical status icon") ||
+      !expect(
+          detail->text().contains("autooptimiser rejected the control-point geometry"),
+          "The popup should show the native failure reason") ||
+      !expect(
+          orientation_stage->property("calibrationState").toString() == "complete" &&
+              features_stage->property("calibrationState").toString() == "complete" &&
+              matching_stage->property("calibrationState").toString() == "complete" &&
+              optimizer_stage->property("calibrationState").toString() == "failed" &&
+              rink_stage->property("calibrationState").toString() == "pending",
+          "Native milestones should advance completed stages and mark the active failure stage") ||
+      !expect(
+          ok->isVisible() && ok->isEnabled() && !cancel->isVisible(),
+          "A failed calibration should end with an enabled OK button") ||
+      !expect(
+          window->pipelineStateText() == "PLAYING",
+          "A reported rink/calibration error may remain inspectable while playback exits or continues")) {
+    activate(stop);
+    qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+    return false;
+  }
+  activate(ok);
+  if (!expect(!dialog->isVisible(), "OK should close a failed calibration popup")) {
+    activate(stop);
+    qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+    return false;
+  }
+  activate(stop);
+  for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "exit");
+  activate(start);
+  for (int i = 0; i < 300 && (window->pipelineStateText() != "STOPPED" || !headline->text().contains("failed")); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(dialog->isVisible(), "An early calibration process exit should open a persistent failure popup") ||
+      !expect(
+          detail->text().contains("ended before it finished") && detail->text().contains("exit 9"),
+          "An early exit should show its exit diagnostics") ||
+      !expect(ok->isVisible(), "An early-exit failure should be dismissible with OK")) {
+    qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+    return false;
+  }
+  activate(ok);
+
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
+  activate(start);
+  for (int i = 0; i < 400 &&
+       (dialog->isVisible() ||
+        !window->logText().contains("one-pass stitching calibration complete; continuous stitched preview running"));
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  YAML::Node completed = YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+  YAML::Node completed_status;
+  const bool has_completed_status =
+      lookup_yaml_path(completed, {"hstream_ui", "stitching_calibration", "status"}, &completed_status);
+  const bool success_ok = expect(
+                              !dialog->isVisible(),
+                              "Successful rink-complete calibration should close the popup automatically") &&
+      expect(window->pipelineStateText() == "PLAYING", "The pipeline should continue after the popup auto-closes") &&
+      expect(has_completed_status && completed_status.as<std::string>() == "complete",
+             "Only the final rink-complete milestone should persist completed calibration") &&
+      expect(rink_stage->property("calibrationState").toString() == "complete",
+             "Successful calibration should complete the final ice-surface stage");
+  activate(stop);
+  for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+  if (auto* log = require_child<QTextEdit>(window, "runtimeLog"))
+    log->clear();
+  else
+    return false;
+  return success_ok && set_test_calibration_status(window, "pending");
+}
+
 bool test_pipeline_buttons(HStreamWindow* window) {
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
@@ -1005,8 +1263,19 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(
           hm::ui_internal::supports_x11_embedding("xcb") && !hm::ui_internal::supports_x11_embedding("wayland") &&
               !hm::ui_internal::supports_x11_embedding("offscreen") &&
-              !hm::ui_internal::supports_x11_embedding("xcb", true),
-          "Native preview embedding should only accept non-Tegra Qt XCB window handles")) {
+              !hm::ui_internal::supports_x11_embedding("xcb", true) &&
+              hm::ui_internal::supports_snapshot_preview_sink("") &&
+              hm::ui_internal::supports_snapshot_preview_sink("ximagesink") &&
+              hm::ui_internal::supports_snapshot_preview_sink("xvimagesink") &&
+              !hm::ui_internal::supports_snapshot_preview_sink("nveglglessink") &&
+              !hm::ui_internal::supports_snapshot_preview_sink("egl") &&
+              !hm::ui_internal::supports_snapshot_preview_sink("nv3dsink") &&
+              hm::ui_internal::preview_channel_for_tab(0, 3) == "main" &&
+              hm::ui_internal::preview_channel_for_tab(1, 3) == "stitched" &&
+              hm::ui_internal::preview_channel_for_tab(2, 3) == "source0" &&
+              hm::ui_internal::preview_channel_for_tab(4, 3) == "source2" &&
+              hm::ui_internal::preview_channel_for_tab(5, 3).isEmpty(),
+          "Native preview support and tab-specific backend channel mapping should remain explicit")) {
     return false;
   }
 
@@ -1021,7 +1290,19 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   mode->setCurrentIndex(mode->findData("program"));
   const int fresh_program_clean_commands = window->logText().count("stitching calibration clean command");
   qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
+  for (QWidget* surface : {preview_surface, stitched_surface, camera1_surface, camera2_surface, camera3_surface}) {
+    surface->setProperty("previewFrameAvailable", true);
+  }
   activate(start);
+  if (!expect(
+          !preview_surface->property("previewFrameAvailable").toBool() &&
+              !stitched_surface->property("previewFrameAvailable").toBool() &&
+              !camera1_surface->property("previewFrameAvailable").toBool() &&
+              !camera2_surface->property("previewFrameAvailable").toBool() &&
+              !camera3_surface->property("previewFrameAvailable").toBool(),
+          "Starting a new pipeline should clear every preview before new backend frames arrive")) {
+    return false;
+  }
   for (int i = 0; i < 200 &&
        (!window->logText().contains("one-pass stitching calibration complete; continuous program playback running") ||
         window->pipelineStateText() != "PLAYING");
@@ -1037,12 +1318,30 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   const bool fresh_program_tracked =
       expect(
           window->logText().count("stitching calibration clean command") == fresh_program_clean_commands + 1,
-          "A fresh Program run should establish tracked one-pass stitching calibration") &&
+          "A fresh Program run should establish tracked one-pass stitching calibration (before=" +
+              std::to_string(fresh_program_clean_commands) +
+              ", after=" + std::to_string(window->logText().count("stitching calibration clean command")) + ")") &&
       expect(
           has_fresh_program_status && fresh_program_status.IsScalar() &&
               fresh_program_status.as<std::string>() == "complete",
           "A fresh Program one-pass calibration should persist completed state");
+  for (QWidget* surface : {preview_surface, stitched_surface, camera1_surface, camera2_surface, camera3_surface}) {
+    surface->setProperty("previewFrameAvailable", true);
+  }
   activate(stop);
+  for (int i = 0; i < 50 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          !preview_surface->property("previewFrameAvailable").toBool() &&
+              !stitched_surface->property("previewFrameAvailable").toBool() &&
+              !camera1_surface->property("previewFrameAvailable").toBool() &&
+              !camera2_surface->property("previewFrameAvailable").toBool() &&
+              !camera3_surface->property("previewFrameAvailable").toBool(),
+          "Finishing a pipeline should clear every captured preview frame")) {
+    return false;
+  }
   qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
   if (!fresh_program_tracked) {
     return false;
@@ -1397,8 +1696,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           window->logText().contains("HM_RENDER_SINK=nv3dsink"),
           "UI runner should preserve the self-managed desktop render sink") ||
       !expect(
-          window->logText().contains("HM_NO_SCOREBOARD=1"),
-          "Program playback should not block its output thread on the interactive scoreboard selector") ||
+          window->logText().contains("HM_NO_SCOREBOARD=") && !window->logText().contains("HM_NO_SCOREBOARD=1") &&
+              window->logText().contains("scoreboard selector opened in browser") &&
+              window->logText().contains("scoreboard selection complete; pipeline continuing"),
+          "Program playback should leave scoreboard selection enabled and launch its private selector URL") ||
       !expect(
           window->logText().contains("separate DeepStream window"),
           "UI must surface self-managed render-window mode") ||
@@ -1439,7 +1740,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Explicit nveglglessink mode should not receive a non-X11 native window handle") &&
       expect(
           window->logText().contains("HM_RENDER_SINK=nveglglessink"),
-          "UI runner should preserve an explicit embeddable render sink");
+          "UI runner should preserve an explicit external render sink");
   activate(stop);
   qunsetenv("HM_RENDER_SINK");
   if (!explicit_embedding_preserved) {
@@ -1548,6 +1849,9 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* exposure = require_child<QSlider>(window, "cameraSlider_Exposure_EV_x10");
   auto* exposure_value = require_child<QLabel>(window, "cameraValue_Exposure_EV_x10");
   auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
+  auto* fixed_edge_link = require_child<QSlider>(window, "cameraSlider_Link_Fixed_Edge_Rotation_Left_Right");
+  auto* fixed_edge_left = require_child<QSlider>(window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
+  auto* fixed_edge_right = require_child<QSlider>(window, "cameraSlider_Right_Fixed_Edge_Rotation_Angle_x10");
   auto* left_brightness = require_child<QSlider>(window, "cameraSlider_Left_Brightness_Multiplier_x100");
   auto* left_gamma = require_child<QSlider>(window, "cameraSlider_Left_Gamma_Multiplier_x100");
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
@@ -1559,22 +1863,44 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
-  if (!exposure || !exposure_value || !rotate || !left_brightness || !left_gamma || !max_speed_x || !max_speed_y ||
-      !reset || !save || !create || !game_id || !start || !stop || !mode) {
+  if (!exposure || !exposure_value || !rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right ||
+      !left_brightness || !left_gamma || !max_speed_x || !max_speed_y || !reset || !save || !create || !game_id ||
+      !start || !stop || !mode) {
     return false;
   }
 
   game_id->setText("ui-camera-control-game");
   activate(create);
+  const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  {
+    YAML::Node existing(YAML::NodeType::Map);
+    existing["rink"]["camera"]["fixed_edge_rotation_angle"] = 22.0;
+    std::ofstream out(config);
+    out << existing << "\n";
+  }
+  activate(create);
+  if (!expect(
+          fixed_edge_link->value() == 1 && fixed_edge_left->value() == 220 && fixed_edge_right->value() == 220,
+          "Camera controls should load the scalar rink.camera.fixed_edge_rotation_angle value")) {
+    return false;
+  }
 
   exposure->setValue(47);
   rotate->setValue(72);
+  fixed_edge_left->setValue(250);
+  fixed_edge_link->setValue(0);
+  fixed_edge_right->setValue(750);
   left_gamma->setValue(125);
   max_speed_x->setValue(450);
   if (!expect(window->cameraControlValue("Exposure_EV_x10") == 47, "Exposure slider should update controller state") ||
       !expect(
           window->cameraControlValue("Stitch_Rotate_Degrees") == 72,
           "Stitch rotation slider should update controller state") ||
+      !expect(
+          window->cameraControlValue("Link_Fixed_Edge_Rotation_Left_Right") == 0 &&
+              window->cameraControlValue("Left_Fixed_Edge_Rotation_Angle_x10") == 250 &&
+              window->cameraControlValue("Right_Fixed_Edge_Rotation_Angle_x10") == 750,
+          "Fixed-edge rotation should support independently configured left and right angles") ||
       !expect(
           window->cameraControlValue("Left_Gamma_Multiplier_x100") == 125,
           "Side color slider should update controller state") ||
@@ -1600,7 +1926,6 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
 
-  const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
   const fs::path rink_mask = fs::path(window->gameDirectoryText().toStdString()) / "rink_mask_0.png";
   {
     YAML::Node seeded(YAML::NodeType::Map);
@@ -1635,10 +1960,17 @@ bool test_camera_controls(HStreamWindow* window) {
     return value && value.IsScalar() && value.as<int>() == expected;
   };
   const bool saved_controls_ok = saved_int("Exposure_EV_x10", 47) && saved_int("Stitch_Rotate_Degrees", 72) &&
-      saved_int("Left_Gamma_Multiplier_x100", 125);
+      saved_int("Link_Fixed_Edge_Rotation_Left_Right", 0) && saved_int("Left_Fixed_Edge_Rotation_Angle_x10", 250) &&
+      saved_int("Right_Fixed_Edge_Rotation_Angle_x10", 750) && saved_int("Left_Gamma_Multiplier_x100", 125);
   YAML::Node saved_rotation;
   const bool has_saved_rotation = lookup_yaml_path(saved, {"stitching", "post_stitch_rotate_degrees"}, &saved_rotation);
   const bool saved_rotation_ok = saved_rotation && saved_rotation.IsScalar() && saved_rotation.as<int>() == 18;
+  YAML::Node saved_fixed_edge_rotation;
+  const bool has_saved_fixed_edge_rotation =
+      lookup_yaml_path(saved, {"rink", "camera", "fixed_edge_rotation_angle"}, &saved_fixed_edge_rotation);
+  const bool saved_fixed_edge_rotation_ok = has_saved_fixed_edge_rotation && saved_fixed_edge_rotation.IsSequence() &&
+      saved_fixed_edge_rotation.size() == 2 && saved_fixed_edge_rotation[0].as<double>() == 25.0 &&
+      saved_fixed_edge_rotation[1].as<double>() == 75.0;
   YAML::Node saved_max_speed_x;
   const bool has_saved_max_speed_x =
       lookup_yaml_path(saved, {"rink", "camera", "max_speed_ratio_x"}, &saved_max_speed_x);
@@ -1679,6 +2011,9 @@ bool test_camera_controls(HStreamWindow* window) {
       !expect(saved_controls_ok, "Save preset should persist non-default control values") ||
       !expect(!has_default_follower, "Save preset should omit default control values") ||
       !expect(has_saved_rotation && saved_rotation_ok, "Stitch slider should save the runtime rotation config") ||
+      !expect(
+          saved_fixed_edge_rotation_ok,
+          "Unlinked fixed-edge sliders should save rink.camera.fixed_edge_rotation_angle as [left, right]") ||
       !expect(removed_rink_mask, "Saving stitch rotation should remove stale rink mask image") ||
       !expect(removed_scoreboard_polygon, "Saving stitch rotation should invalidate scoreboard perspective") ||
       !expect(removed_ice_mask_keys, "Saving stitch rotation should invalidate cached ice-mask metadata") ||
@@ -1785,6 +2120,11 @@ bool test_camera_controls(HStreamWindow* window) {
   activate(create);
   if (!expect(window->cameraControlValue("Exposure_EV_x10") == 47, "Create/Load should restore saved controls") ||
       !expect(window->cameraControlValue("Stitch_Rotate_Degrees") == 72, "Create/Load should restore stitch control") ||
+      !expect(
+          window->cameraControlValue("Link_Fixed_Edge_Rotation_Left_Right") == 0 &&
+              window->cameraControlValue("Left_Fixed_Edge_Rotation_Angle_x10") == 250 &&
+              window->cameraControlValue("Right_Fixed_Edge_Rotation_Angle_x10") == 750,
+          "Create/Load should restore independent fixed-edge rotation angles") ||
       !expect(exposure_value->text() == "47", "Create/Load should refresh visible camera value labels")) {
     return false;
   }
@@ -1803,6 +2143,40 @@ bool test_camera_controls(HStreamWindow* window) {
     QTest::qWait(10);
   }
   if (!expect(window->pipelineStateText() == "PLAYING", "Fake runner should start for live playtracker control test")) {
+    return false;
+  }
+  fixed_edge_link->setValue(1);
+  fixed_edge_left->setValue(300);
+  for (int i = 0; i < 50 &&
+       (!window->logText().contains("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle=30.0") ||
+        !window->logText().contains("stdin:@set-property playcropper0 fixed-edge-rotation-angle=30.0"));
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(fixed_edge_right->value() == 300, "Linked fixed-edge control should update both sides") ||
+      !expect(
+          window->logText().contains("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle=30.0") &&
+              window->logText().contains("stdin:@set-property playcropper0 fixed-edge-rotation-angle=30.0"),
+          "Linked fixed-edge control should update tracker and cropper live")) {
+    std::cerr << window->logText().toStdString() << '\n';
+    activate(stop);
+    return false;
+  }
+  fixed_edge_link->setValue(0);
+  fixed_edge_right->setValue(650);
+  for (int i = 0; i < 50 &&
+       (!window->logText().contains("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle-right=65.0") ||
+        !window->logText().contains("stdin:@set-property playcropper0 fixed-edge-rotation-angle-right=65.0"));
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          window->logText().contains("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle-right=65.0") &&
+              window->logText().contains("stdin:@set-property playcropper0 fixed-edge-rotation-angle-right=65.0"),
+          "Unlinked right fixed-edge control should update the right side of both runtime stages")) {
+    activate(stop);
     return false;
   }
   max_speed_x->setValue(460);
@@ -1976,6 +2350,8 @@ bool test_camera_controls(HStreamWindow* window) {
              "Saving defaults should clear saved camera controls") &&
       expect(!lookup_yaml_path(cleaned, {"stitching", "post_stitch_rotate_degrees"}, nullptr),
              "Saving defaults should clear UI-generated stitch runtime override") &&
+      expect(!lookup_yaml_path(cleaned, {"rink", "camera", "fixed_edge_rotation_angle"}, nullptr),
+             "Saving defaults should clear UI-generated fixed-edge rotation override") &&
       expect(restored_custom_playtracker_config, "Saving defaults should restore custom playtracker config override") &&
       expect(!lookup_yaml_path(cleaned, {"stitching", "left", "color", "brightness"}, nullptr),
              "Saving defaults should clear UI-generated side color leaf") &&
@@ -2004,6 +2380,172 @@ bool test_window_close_stops_pipeline(HStreamWindow* window) {
       expect(window->pipelineStateText() == "STOPPED", "Window close should stop the pipeline process group");
 }
 
+bool prepare_real_e2e_game(const QString& game_id) {
+  if (!qEnvironmentVariableIsSet("HSTREAM_UI_E2E_PREPARE_GAME")) {
+    return true;
+  }
+  const fs::path game_dir = fs::path(qgetenv("HM_GAME_DIR").toStdString()) / game_id.toStdString();
+  const fs::path config_path = game_dir / "config.yaml";
+  const fs::path panorama_path = game_dir / "panorama.tif";
+  if (!fs::is_regular_file(config_path) || !fs::is_regular_file(panorama_path)) {
+    std::cerr << "E2E sandbox requires config.yaml and panorama.tif in " << game_dir << '\n';
+    return false;
+  }
+  try {
+    YAML::Node config = YAML::LoadFile(config_path.string());
+    const int configured_control_points = qEnvironmentVariableIntValue("HSTREAM_UI_E2E_CONTROL_POINTS");
+    config["hstream_ui"]["stitching_calibration"]["control_points"] =
+        configured_control_points > 0 ? configured_control_points : 1500;
+    config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+    if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_REQUIRE_SCOREBOARD_SELECTOR")) {
+      YAML::Node rink = config["rink"];
+      if (rink && rink.IsMap()) {
+        YAML::Node scoreboard = rink["scoreboard"];
+        if (scoreboard && scoreboard.IsMap()) {
+          scoreboard.remove("perspective_polygon");
+        }
+      }
+    }
+    const auto published = hm::stitching::publish_game_config(game_dir, YAML::Dump(config) + "\n");
+    if (!published.ok()) {
+      std::cerr << "Could not prepare E2E game config: " << published << '\n';
+      return false;
+    }
+  } catch (const std::exception& exception) {
+    std::cerr << "Could not prepare E2E game config: " << exception.what() << '\n';
+    return false;
+  }
+  return true;
+}
+
+bool submit_no_scoreboard(const QString& selector_url, QString* error) {
+  const QUrl url(selector_url);
+  if (!url.isValid() || url.host().isEmpty() || url.port() <= 0) {
+    if (error) {
+      *error = "invalid selector URL";
+    }
+    return false;
+  }
+  QUrl endpoint(url);
+  endpoint.setPath("/none");
+  const QString origin = QString("%1://%2:%3").arg(url.scheme(), url.host()).arg(url.port());
+  QProcess request;
+  request.start(
+      "curl",
+      {"--fail",
+       "--silent",
+       "--show-error",
+       "--max-time",
+       "10",
+       "--request",
+       "POST",
+       "--header",
+       QString("Origin: %1").arg(origin),
+       endpoint.toString()});
+  if (!request.waitForStarted(3000) || !request.waitForFinished(15000) || request.exitCode() != 0) {
+    if (error) {
+      *error = QString::fromLocal8Bit(request.readAllStandardError()).trimmed();
+      if (error->isEmpty()) {
+        *error = request.errorString();
+      }
+    }
+    return false;
+  }
+  return true;
+}
+
+QString find_encoded_e2e_output(const QString& output_root, const QString& game_id) {
+  const QDir game_output(QDir(output_root).filePath(game_id));
+  if (!game_output.exists()) {
+    return {};
+  }
+  QFileInfo newest;
+  const QFileInfoList candidates =
+      game_output.entryInfoList({"*.mkv", "*.mp4", "*.mov"}, QDir::Files | QDir::Readable, QDir::Time);
+  for (const QFileInfo& candidate : candidates) {
+    if (candidate.size() > 64 * 1024 && (!newest.exists() || candidate.lastModified() > newest.lastModified())) {
+      newest = candidate;
+    }
+  }
+  return newest.exists() ? newest.absoluteFilePath() : QString();
+}
+
+bool write_e2e_text(const QString& path, const QString& contents) {
+  const QByteArray bytes = contents.toUtf8();
+  QFile file(path);
+  return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(bytes) == bytes.size();
+}
+
+struct NativePreviewCapture {
+  bool passed{false};
+  int width{0};
+  int height{0};
+  double mean_luminance{0.0};
+  double luminance_deviation{0.0};
+  int luminance_range{0};
+};
+
+NativePreviewCapture capture_native_preview(QWidget* surface, const QString& output_path) {
+  NativePreviewCapture capture;
+  if (!surface || !surface->isVisible() || surface->winId() == 0 || !surface->screen()) {
+    return capture;
+  }
+  QApplication::processEvents();
+  // The production preview is painted by Qt from a backend-provided frame.
+  // Capture it through the top-level backing store: native-child grab paths
+  // are not reliable on all X11 compositors, while the same backing store is
+  // what produces the full UI screenshot and what the operator sees.
+  QWidget* top_level = surface->window();
+  const QPoint top_level_origin = surface->mapTo(top_level, QPoint(0, 0));
+  const QPixmap pixmap = top_level->grab(QRect(top_level_origin, surface->size()));
+  if (pixmap.isNull() || !pixmap.save(output_path)) {
+    return capture;
+  }
+  const QImage image = pixmap.toImage().convertToFormat(QImage::Format_RGB32);
+  capture.width = image.width();
+  capture.height = image.height();
+  if (capture.width < 100 || capture.height < 100) {
+    return capture;
+  }
+
+  double luminance_sum = 0.0;
+  double luminance_square_sum = 0.0;
+  size_t samples = 0;
+  int minimum_luminance = 255;
+  int maximum_luminance = 0;
+  for (int y = 0; y < image.height(); y += 4) {
+    for (int x = 0; x < image.width(); x += 4) {
+      const int luminance = qGray(image.pixel(x, y));
+      luminance_sum += luminance;
+      luminance_square_sum += static_cast<double>(luminance) * luminance;
+      minimum_luminance = std::min(minimum_luminance, luminance);
+      maximum_luminance = std::max(maximum_luminance, luminance);
+      ++samples;
+    }
+  }
+  if (samples == 0) {
+    return capture;
+  }
+  capture.mean_luminance = luminance_sum / samples;
+  const double variance =
+      std::max(0.0, luminance_square_sum / samples - capture.mean_luminance * capture.mean_luminance);
+  capture.luminance_deviation = std::sqrt(variance);
+  capture.luminance_range = maximum_luminance - minimum_luminance;
+  capture.passed = capture.luminance_deviation >= 8.0 && capture.luminance_range >= 40;
+  return capture;
+}
+
+QString native_preview_report_line(const QString& name, const NativePreviewCapture& capture) {
+  return QString("%1_preview: %2 width=%3 height=%4 mean_luminance=%5 luminance_deviation=%6 luminance_range=%7\n")
+      .arg(name)
+      .arg(capture.passed ? "PASS" : "FAIL")
+      .arg(capture.width)
+      .arg(capture.height)
+      .arg(capture.mean_luminance, 0, 'f', 2)
+      .arg(capture.luminance_deviation, 0, 'f', 2)
+      .arg(capture.luminance_range);
+}
+
 bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   auto* game_id_edit = require_child<QLineEdit>(window, "gameIdEdit");
   auto* create = require_child<QPushButton>(window, "createGameButton");
@@ -2011,9 +2553,30 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* control_points = require_child<QSpinBox>(window, "controlPointsSpin");
-  if (!game_id_edit || !create || !start || !stop || !mode || !control_points) {
+  auto* render_video = require_child<QCheckBox>(window, "renderVideoCheck");
+  auto* archive = require_child<QCheckBox>(window, "outputToggle_archive-file");
+  auto* preview_tabs = require_child<QTabWidget>(window, "previewTabs");
+  auto* program_surface = require_child<QWidget>(window, "previewSurface");
+  auto* program_render_target = require_child<QWidget>(window, "previewRenderTarget");
+  auto* stitched_surface = require_child<QWidget>(window, "stitchedPreviewSurface");
+  auto* stitched_render_target = require_child<QWidget>(window, "stitchedPreviewRenderTarget");
+  auto* camera1_surface = require_child<QWidget>(window, "camera1PreviewSurface");
+  if (!game_id_edit || !create || !start || !stop || !mode || !control_points || !render_video || !archive ||
+      !preview_tabs || !program_surface || !program_render_target || !stitched_surface || !stitched_render_target ||
+      !camera1_surface) {
     return false;
   }
+  const bool verify_x11_preview = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_VERIFY_X11_PREVIEW");
+
+  QString artifact_dir = qEnvironmentVariable("HSTREAM_UI_E2E_ARTIFACT_DIR");
+  if (artifact_dir.isEmpty()) {
+    artifact_dir = QDir::current().filePath(QString("test-artifacts/hstream-ui-%1").arg(game_id));
+  }
+  if (!QDir().mkpath(artifact_dir)) {
+    std::cerr << "Could not create E2E artifact directory: " << artifact_dir.toStdString() << '\n';
+    return false;
+  }
+  std::cout << "HStream UI E2E artifacts: " << artifact_dir.toStdString() << '\n';
 
   game_id_edit->setText(game_id);
   activate(create);
@@ -2031,22 +2594,113 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   if (configured_control_points > 0) {
     control_points->setValue(configured_control_points);
   }
+  if (render_video->isChecked() && !verify_x11_preview) {
+    activate(render_video);
+  } else if (!render_video->isChecked() && verify_x11_preview) {
+    activate(render_video);
+  }
+  if (!archive->isChecked()) {
+    activate(archive);
+  }
   activate(start);
+  const auto stop_and_preserve_failure = [&]() {
+    activate(stop);
+    for (int i = 0; i < 300 && window->pipelineStateText() != "STOPPED"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(100);
+    }
+    window->grab().save(QDir(artifact_dir).filePath("ui-failed.png"));
+    write_e2e_text(QDir(artifact_dir).filePath("pipeline.log"), window->completeLogText());
+  };
 
   const int timeout_ms = qEnvironmentVariableIntValue("HSTREAM_UI_E2E_TIMEOUT_MS");
   const int deadline_ms = timeout_ms > 0 ? timeout_ms : 120000;
   QElapsedTimer timer;
   timer.start();
   bool observed_first_frame = false;
+  bool submitted_scoreboard = false;
+  qint64 first_frame_at_ms = -1;
+  QString interaction_error;
+  NativePreviewCapture program_preview;
+  NativePreviewCapture stitched_preview;
+  NativePreviewCapture camera1_preview;
+  bool x11_previews_captured = false;
+  bool stitched_target_acknowledged = false;
+  bool program_target_acknowledged = false;
+  auto capture_x11_previews = [&]() {
+    if (!verify_x11_preview || x11_previews_captured || window->pipelineStateText() != "PLAYING") {
+      return;
+    }
+    const QString program_target =
+        QString("runtime render window id=%1").arg(static_cast<qulonglong>(program_render_target->winId()));
+    preview_tabs->setCurrentIndex(0);
+    for (int i = 0; i < 100 && !window->completeLogText().contains(program_target); ++i) {
+      QApplication::processEvents();
+      QTest::qWait(50);
+    }
+    program_target_acknowledged = window->completeLogText().contains(program_target);
+    for (int i = 0; i < 100 && !program_surface->property("previewFrameAvailable").toBool(); ++i) {
+      QApplication::processEvents();
+      QTest::qWait(50);
+    }
+    QTest::qWait(100);
+    program_preview =
+        capture_native_preview(program_surface, QDir(artifact_dir).filePath("program-preview-surface.png"));
+
+    preview_tabs->setCurrentIndex(2);
+    QApplication::processEvents();
+    for (int i = 0; i < 100 && !camera1_surface->property("previewFrameAvailable").toBool(); ++i) {
+      QApplication::processEvents();
+      QTest::qWait(50);
+    }
+    QTest::qWait(100);
+    camera1_preview =
+        capture_native_preview(camera1_surface, QDir(artifact_dir).filePath("camera1-preview-surface.png"));
+
+    const QString stitched_target =
+        QString("runtime render window id=%1").arg(static_cast<qulonglong>(stitched_render_target->winId()));
+    preview_tabs->setCurrentIndex(1);
+    for (int i = 0; i < 100 && !window->completeLogText().contains(stitched_target); ++i) {
+      QApplication::processEvents();
+      QTest::qWait(50);
+    }
+    stitched_target_acknowledged = window->completeLogText().contains(stitched_target);
+    for (int i = 0; i < 100 && !stitched_surface->property("previewFrameAvailable").toBool(); ++i) {
+      QApplication::processEvents();
+      QTest::qWait(50);
+    }
+    QTest::qWait(100);
+    stitched_preview =
+        capture_native_preview(stitched_surface, QDir(artifact_dir).filePath("stitched-preview-surface.png"));
+
+    preview_tabs->setCurrentIndex(0);
+    for (int i = 0; i < 100 && !window->completeLogText().contains(program_target); ++i) {
+      QApplication::processEvents();
+      QTest::qWait(50);
+    }
+    program_target_acknowledged = program_target_acknowledged || window->completeLogText().contains(program_target);
+    x11_previews_captured = program_surface->property("previewFrameAvailable").toBool() &&
+        stitched_surface->property("previewFrameAvailable").toBool() &&
+        camera1_surface->property("previewFrameAvailable").toBool() && program_preview.passed &&
+        stitched_preview.passed && camera1_preview.passed;
+  };
   const QRegularExpression positive_fps(R"(\*\*PERF:\s+([0-9]+(?:\.[0-9]+)?))");
   while (timer.elapsed() < deadline_ms) {
     QApplication::processEvents();
     QTest::qWait(100);
-    const QString log = window->logText();
+    const QString log = window->completeLogText();
     if (log.contains("asset setup failed") || log.contains("pipeline process error")) {
       std::cerr << log.toStdString() << '\n';
-      activate(stop);
+      stop_and_preserve_failure();
       return false;
+    }
+    if (!submitted_scoreboard && !window->scoreboardSelectorUrl().isEmpty()) {
+      submitted_scoreboard = submit_no_scoreboard(window->scoreboardSelectorUrl(), &interaction_error);
+      if (!submitted_scoreboard) {
+        std::cerr << "Could not submit the scoreboard selector: " << interaction_error.toStdString() << '\n';
+        stop_and_preserve_failure();
+        return false;
+      }
     }
     auto match = positive_fps.globalMatch(log);
     while (match.hasNext()) {
@@ -2054,27 +2708,134 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       const double fps = match.next().captured(1).toDouble(&parsed);
       if (parsed && fps > 0.0) {
         observed_first_frame = true;
+        if (first_frame_at_ms < 0) {
+          first_frame_at_ms = timer.elapsed();
+        }
         break;
       }
     }
     if (observed_first_frame) {
+      capture_x11_previews();
+    }
+    const int configured_record_ms = qEnvironmentVariableIntValue("HSTREAM_UI_E2E_RECORD_MS");
+    const int record_ms = configured_record_ms > 0 ? configured_record_ms : 6000;
+    if (observed_first_frame && timer.elapsed() - first_frame_at_ms >= record_ms &&
+        (!verify_x11_preview || x11_previews_captured)) {
+      break;
+    }
+    if (window->pipelineStateText() == "STOPPED") {
       break;
     }
   }
 
-  const QString log = window->logText();
+  QString preview_report;
+  preview_report += QString("x11_preview_requested: %1\n").arg(verify_x11_preview ? "true" : "false");
+  if (verify_x11_preview) {
+    preview_report += native_preview_report_line("program", program_preview);
+    preview_report += native_preview_report_line("stitched", stitched_preview);
+    preview_report += native_preview_report_line("camera1", camera1_preview);
+    preview_report +=
+        QString("stitched_target_acknowledged: %1\n").arg(stitched_target_acknowledged ? "true" : "false");
+    preview_report += QString("program_target_acknowledged: %1\n").arg(program_target_acknowledged ? "true" : "false");
+  }
+  write_e2e_text(QDir(artifact_dir).filePath("preview-report.txt"), preview_report);
+
+  window->grab().save(QDir(artifact_dir).filePath("ui-running.png"));
+  const QString log = window->completeLogText();
   const bool observed_native_asset_setup = log.contains("pretrained assets will be verified by hstream-cli");
   const bool observed_command = log.contains("pipeline command");
+  const bool require_scoreboard = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_REQUIRE_SCOREBOARD_SELECTOR");
   activate(stop);
   for (int i = 0; i < 300 && window->pipelineStateText() != "STOPPED"; ++i) {
     QApplication::processEvents();
     QTest::qWait(100);
   }
+  window->grab().save(QDir(artifact_dir).filePath("ui-stopped.png"));
+  const QString final_log = window->completeLogText();
+  write_e2e_text(QDir(artifact_dir).filePath("pipeline.log"), final_log);
+  const bool program_channel_observed = final_log.contains("preview frame active channel=main");
+  const bool stitched_channel_observed = final_log.contains("preview frame active channel=stitched");
+  const bool camera1_channel_observed = final_log.contains("preview frame active channel=source0");
+
+  QString log_issues;
+  int log_issue_count = 0;
+  const QRegularExpression issue_pattern(
+      R"((warning|error|critical|failed))", QRegularExpression::CaseInsensitiveOption);
+  for (const QString& line : final_log.split('\n')) {
+    const bool expected_control_line =
+        line.contains("may also log a model-engine-file open/deserialize warning") || line.contains("User Interrupted");
+    if (!expected_control_line && issue_pattern.match(line).hasMatch()) {
+      log_issues += line + '\n';
+      ++log_issue_count;
+    }
+  }
+  write_e2e_text(QDir(artifact_dir).filePath("log-issues.txt"), log_issues);
+  const bool fatal_log_issue = final_log.contains("ERROR from element") || final_log.contains("FAILED_PRECONDITION:") ||
+      final_log.contains("Segmentation fault") || final_log.contains("CUDA error:");
+
+  const QString output_path = find_encoded_e2e_output(qEnvironmentVariable("HM_OUTPUT_WORK_DIR"), game_id);
+  const QString panorama_path = QDir(window->gameDirectoryText()).filePath("panorama.tif");
+  bool visual_match = false;
+  QString visual_verifier_output;
+  const QString visual_verifier = qEnvironmentVariable("HSTREAM_UI_E2E_VISUAL_VERIFIER");
+  if (!output_path.isEmpty() && QFileInfo(panorama_path).isFile() && !visual_verifier.isEmpty()) {
+    QProcess verifier;
+    verifier.setProcessChannelMode(QProcess::MergedChannels);
+    verifier.start(visual_verifier, {output_path, panorama_path, artifact_dir});
+    if (verifier.waitForStarted(5000) && verifier.waitForFinished(180000)) {
+      visual_verifier_output = QString::fromLocal8Bit(verifier.readAll()).trimmed();
+      visual_match = verifier.exitStatus() == QProcess::NormalExit && verifier.exitCode() == 0;
+    } else {
+      visual_verifier_output = QString("visual verifier process failed: %1").arg(verifier.errorString());
+    }
+  } else {
+    visual_verifier_output = "visual verifier, encoded output, or panorama.tif is unavailable";
+  }
+  write_e2e_text(QDir(artifact_dir).filePath("visual-verifier.log"), visual_verifier_output + "\n");
+
+  QString report;
+  report += QString("game_id: %1\n").arg(game_id);
+  report += QString("output: %1\n").arg(output_path);
+  report += QString("panorama: %1\n").arg(panorama_path);
+  report += QString("scoreboard_selector_observed: %1\n").arg(submitted_scoreboard ? "true" : "false");
+  report += QString("positive_fps_observed: %1\n").arg(observed_first_frame ? "true" : "false");
+  report += QString("log_issue_lines: %1\n").arg(log_issue_count);
+  report += QString("fatal_log_issue: %1\n").arg(fatal_log_issue ? "true" : "false");
+  report += QString("x11_program_preview: %1\n")
+                .arg(program_preview.passed ? "PASS" : (verify_x11_preview ? "FAIL" : "NOT_RUN"));
+  report += QString("x11_stitched_preview: %1\n")
+                .arg(stitched_preview.passed ? "PASS" : (verify_x11_preview ? "FAIL" : "NOT_RUN"));
+  report += QString("x11_camera1_preview: %1\n")
+                .arg(camera1_preview.passed ? "PASS" : (verify_x11_preview ? "FAIL" : "NOT_RUN"));
+  report += QString("program_preview_channel: %1\n").arg(program_channel_observed ? "OBSERVED" : "MISSING");
+  report += QString("stitched_preview_channel: %1\n").arg(stitched_channel_observed ? "OBSERVED" : "MISSING");
+  report += QString("camera1_preview_channel: %1\n").arg(camera1_channel_observed ? "OBSERVED" : "MISSING");
+  report += QString("visual_match: %1\n").arg(visual_match ? "PASS" : "FAIL");
+  write_e2e_text(QDir(artifact_dir).filePath("report.txt"), report);
+  std::cout << report.toStdString();
+  if (!visual_verifier_output.isEmpty()) {
+    std::cout << visual_verifier_output.toStdString() << '\n';
+  }
 
   if (!expect(observed_native_asset_setup, "Real UI run should delegate native asset verification to hstream-cli") ||
       !expect(observed_command, "Real UI run should launch hstream-cli") ||
-      !expect(observed_first_frame, "Real UI run should process frames at positive FPS")) {
-    std::cerr << log.toStdString() << '\n';
+      !expect(
+          !require_scoreboard || submitted_scoreboard,
+          "Real UI run should launch and complete the scoreboard selector") ||
+      !expect(observed_first_frame, "Real UI run should process frames at positive FPS") ||
+      !expect(
+          !verify_x11_preview || (stitched_target_acknowledged && program_target_acknowledged),
+          "Program and Stitched tabs should be acknowledged as live native render targets") ||
+      !expect(
+          !verify_x11_preview || (program_preview.passed && stitched_preview.passed && camera1_preview.passed),
+          "Program, Stitched, and Camera 1 surfaces should all contain non-blank video") ||
+      !expect(
+          !verify_x11_preview || (program_channel_observed && stitched_channel_observed && camera1_channel_observed),
+          "Program, Stitched, and Camera 1 must be supplied by their distinct backend preview channels") ||
+      !expect(!fatal_log_issue, "Real UI run should not emit a fatal pipeline log signature") ||
+      !expect(!output_path.isEmpty(), "Archive output should contain a finalized encoded video") ||
+      !expect(visual_match, "Encoded output should geometrically match panorama.tif")) {
+    std::cerr << final_log.toStdString() << '\n';
     return false;
   }
   return expect(window->pipelineStateText() == "STOPPED", "Real UI run should stop cleanly after e2e smoke");
@@ -2088,6 +2849,9 @@ int main(int argc, char** argv) {
   }
   const QByteArray e2e_game_id = qgetenv("HSTREAM_UI_E2E_GAME_ID");
   if (!e2e_game_id.isEmpty()) {
+    if (!prepare_real_e2e_game(QString::fromLocal8Bit(e2e_game_id))) {
+      return 1;
+    }
     QApplication app(argc, argv);
     HStreamWindow window;
     window.show();
@@ -2110,6 +2874,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   qputenv("HSTREAM_UI_TEST_RUNNER", fake_runner.toLocal8Bit());
+  qputenv("HSTREAM_SCOREBOARD_BROWSER", "/bin/true");
 
   QApplication app(argc, argv);
   HStreamWindow window;
@@ -2117,6 +2882,10 @@ int main(int argc, char** argv) {
 
   if (!test_game_setup(&window, source_root.path())) {
     std::cerr << "test_game_setup failed\n";
+    return 1;
+  }
+  if (!test_calibration_progress_dialog(&window)) {
+    std::cerr << "test_calibration_progress_dialog failed\n";
     return 1;
   }
   if (!test_pipeline_buttons(&window)) {

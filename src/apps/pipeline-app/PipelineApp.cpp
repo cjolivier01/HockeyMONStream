@@ -11,7 +11,10 @@
 
 #include <cuda_runtime_api.h>
 #include <gst/gstbin.h>
+#include <gst/video/video.h>
 #include <gst/video/videooverlay.h>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 #include <signal.h>
 #include <string.h>
 #include <sys/select.h>
@@ -679,6 +682,100 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     return absl::InvalidArgumentError("--source-render-window-ids requires exactly one active pipeline context");
   }
 
+  constexpr gint kProgramPreviewWidth = 1600;
+  constexpr gint kProgramPreviewHeight = 900;
+  const auto& app_context = app_contexts.front();
+  NvDsSinkBin& output = app_context->pipeline.instance_bins[0].sink_bin;
+  GstElement* program_queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "program_preview_queue");
+  GstElement* program_converter = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "program_preview_converter");
+  GstElement* program_caps_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "program_preview_caps");
+  GstElement* program_system_converter = gst_element_factory_make("videoconvert", "program_preview_system_converter");
+  GstElement* program_system_caps_filter =
+      gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "program_preview_system_caps");
+  GstElement* program_sink = gst_element_factory_make(NVDS_ELEM_SINK_FAKESINK, "program_preview_sink");
+  if (!output.bin || !output.tee || !program_queue || !program_converter || !program_caps_filter ||
+      !program_system_converter || !program_system_caps_filter || !program_sink) {
+    for (GstElement* element : {
+             program_queue,
+             program_converter,
+             program_caps_filter,
+             program_system_converter,
+             program_system_caps_filter,
+             program_sink,
+         }) {
+      if (element)
+        gst_object_unref(element);
+    }
+    return absl::InternalError("Could not create retained Program preview branch");
+  }
+  g_object_set(
+      G_OBJECT(program_queue),
+      "leaky",
+      2,
+      "max-size-buffers",
+      1,
+      "max-size-bytes",
+      0,
+      "max-size-time",
+      static_cast<guint64>(0),
+      nullptr);
+  g_object_set(
+      G_OBJECT(program_converter),
+      "gpu-id",
+      app_context->config.hmsticher_config.gpu_id,
+      "nvbuf-memory-type",
+      1,
+      nullptr);
+  GstCaps* program_caps = gst_caps_new_simple(
+      "video/x-raw",
+      "format",
+      G_TYPE_STRING,
+      "NV12",
+      "width",
+      G_TYPE_INT,
+      kProgramPreviewWidth,
+      "height",
+      G_TYPE_INT,
+      kProgramPreviewHeight,
+      nullptr);
+  g_object_set(G_OBJECT(program_caps_filter), "caps", program_caps, nullptr);
+  gst_caps_unref(program_caps);
+  GstCaps* program_system_caps = gst_caps_new_simple(
+      "video/x-raw",
+      "format",
+      G_TYPE_STRING,
+      "BGRx",
+      "width",
+      G_TYPE_INT,
+      kProgramPreviewWidth,
+      "height",
+      G_TYPE_INT,
+      kProgramPreviewHeight,
+      nullptr);
+  g_object_set(G_OBJECT(program_system_caps_filter), "caps", program_system_caps, nullptr);
+  gst_caps_unref(program_system_caps);
+  g_object_set(G_OBJECT(program_sink), "sync", FALSE, "async", FALSE, "enable-last-sample", TRUE, nullptr);
+  gst_bin_add_many(
+      GST_BIN(output.bin),
+      program_queue,
+      program_converter,
+      program_caps_filter,
+      program_system_converter,
+      program_system_caps_filter,
+      program_sink,
+      nullptr);
+  if (!link_element_to_tee_src_pad(output.tee, program_queue) ||
+      !gst_element_link_many(
+          program_queue,
+          program_converter,
+          program_caps_filter,
+          program_system_converter,
+          program_system_caps_filter,
+          program_sink,
+          nullptr)) {
+    return absl::InternalError("Could not link retained Program preview branch");
+  }
+
   constexpr gint kCameraPreviewWidth = 1280;
   constexpr gint kCameraPreviewHeight = 720;
   for (const auto& app_context : app_contexts) {
@@ -702,25 +799,28 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, ("source_preview_converter_" + suffix).c_str());
       GstElement* caps_filter =
           gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, ("source_preview_caps_" + suffix).c_str());
-      GstElement* sink = gst_element_factory_make(NVDS_ELEM_SINK_EGL, ("source_preview_sink_" + suffix).c_str());
-      if (!converter || !caps_filter || !sink || !GST_IS_VIDEO_OVERLAY(sink)) {
+      GstElement* system_converter =
+          gst_element_factory_make("videoconvert", ("source_preview_system_converter_" + suffix).c_str());
+      GstElement* system_caps_filter =
+          gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, ("source_preview_system_caps_" + suffix).c_str());
+      GstElement* sink = gst_element_factory_make("ximagesink", ("source_preview_sink_" + suffix).c_str());
+      if (!converter || !caps_filter || !system_converter || !system_caps_filter || !sink ||
+          !GST_IS_VIDEO_OVERLAY(sink)) {
         if (converter)
           gst_object_unref(converter);
         if (caps_filter)
           gst_object_unref(caps_filter);
+        if (system_converter)
+          gst_object_unref(system_converter);
+        if (system_caps_filter)
+          gst_object_unref(system_caps_filter);
         if (sink)
           gst_object_unref(sink);
         return absl::InternalError(TO_STRING("Could not create embedded preview for source " << source_index));
       }
 
       const NvDsSourceConfig& source_config = app_context->config.multi_source_config[source_index];
-      g_object_set(
-          G_OBJECT(converter),
-          "gpu-id",
-          source_config.gpu_id,
-          "nvbuf-memory-type",
-          source_config.nvbuf_memory_type,
-          nullptr);
+      g_object_set(G_OBJECT(converter), "gpu-id", source_config.gpu_id, "nvbuf-memory-type", 1, nullptr);
 #if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
       // Match the established URI source converter workaround on Jetson.
       g_object_set(G_OBJECT(converter), "copy-hw", 2, nullptr);
@@ -730,7 +830,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           "video/x-raw",
           "format",
           G_TYPE_STRING,
-          "RGBA",
+          "NV12",
           "width",
           G_TYPE_INT,
           kCameraPreviewWidth,
@@ -740,6 +840,20 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           nullptr);
       g_object_set(G_OBJECT(caps_filter), "caps", caps, nullptr);
       gst_caps_unref(caps);
+      GstCaps* system_caps = gst_caps_new_simple(
+          "video/x-raw",
+          "format",
+          G_TYPE_STRING,
+          "BGRx",
+          "width",
+          G_TYPE_INT,
+          kCameraPreviewWidth,
+          "height",
+          G_TYPE_INT,
+          kCameraPreviewHeight,
+          nullptr);
+      g_object_set(G_OBJECT(system_caps_filter), "caps", system_caps, nullptr);
+      gst_caps_unref(system_caps);
       g_object_set(
           G_OBJECT(source.fakesink_queue),
           "leaky",
@@ -751,11 +865,12 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           "max-size-time",
           static_cast<guint64>(0),
           nullptr);
-      g_object_set(
-          G_OBJECT(sink), "sync", FALSE, "async", FALSE, "enable-last-sample", FALSE, "create-window", FALSE, nullptr);
+      g_object_set(G_OBJECT(sink), "sync", FALSE, "async", FALSE, "enable-last-sample", TRUE, nullptr);
 
-      gst_bin_add_many(GST_BIN(source.bin), converter, caps_filter, sink, nullptr);
-      if (!gst_element_link_many(source.fakesink_queue, converter, caps_filter, sink, nullptr)) {
+      gst_bin_add_many(
+          GST_BIN(source.bin), converter, caps_filter, system_converter, system_caps_filter, sink, nullptr);
+      if (!gst_element_link_many(
+              source.fakesink_queue, converter, caps_filter, system_converter, system_caps_filter, sink, nullptr)) {
         return absl::InternalError(TO_STRING("Could not link embedded preview for source " << source_index));
       }
       gst_video_overlay_set_window_handle(
@@ -1335,11 +1450,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   if (render_window_id_ > 0) {
     const char* configured_sink = std::getenv("HM_RENDER_SINK");
     if (configured_sink != nullptr && *configured_sink != '\0' &&
-        g_ascii_strcasecmp(configured_sink, "nveglglessink") != 0 && g_ascii_strcasecmp(configured_sink, "egl") != 0) {
+        g_ascii_strcasecmp(configured_sink, "ximagesink") != 0 && g_ascii_strcasecmp(configured_sink, "ximage") != 0) {
       g_printerr(
-          "Ignoring HM_RENDER_SINK=%s because --render-window-id requires nveglglessink embedding\n", configured_sink);
+          "Ignoring HM_RENDER_SINK=%s because --render-window-id requires the stable ximagesink X11 embedding "
+          "path\n",
+          configured_sink);
     }
-    ::setenv("HM_RENDER_SINK", "nveglglessink", 1);
+    ::setenv("HM_RENDER_SINK", "ximagesink", 1);
   }
 #endif
 
@@ -1985,6 +2102,8 @@ void PipelineApplication::print_runtime_commands() const {
       "\tq: Quit\n\n"
       "\tp: Pause\n"
       "\tr: Resume\n"
+      "\t@set-render-window <xid>: Move the embedded program render sink to another X11 window\n"
+      "\t@capture-preview-frame <main|stitched|sourceN> <jpg-path>: Save the latest UI preview frame\n"
       "\t@set-property <element> <property=value>: Set an allowlisted runtime GStreamer property\n\n");
   if (!stage_app_contexts_.empty() && !stage_app_contexts_.at(current_stage_).empty() &&
       stage_app_contexts_.at(current_stage_)[0] &&
@@ -2036,9 +2155,11 @@ bool is_allowlisted_runtime_property(const std::string& element_name, const std:
   return (element_name == "hmstitcher0" && property_name == "post-stitch-rotate-degrees") ||
       (element_name == "dsplaytracker0" &&
        (property_name == "config-file" || property_name == "fixed-edge-rotation-angle" ||
+        property_name == "fixed-edge-rotation-angle-left" || property_name == "fixed-edge-rotation-angle-right" ||
         property_name == "dynamic-acceleration-scaling")) ||
       ((element_name == "playcropper0" || element_name == "playcropper") &&
-       property_name == "fixed-edge-rotation-angle");
+       (property_name == "fixed-edge-rotation-angle" || property_name == "fixed-edge-rotation-angle-left" ||
+        property_name == "fixed-edge-rotation-angle-right"));
 }
 
 std::string trim_ascii(std::string value) {
@@ -2135,6 +2256,187 @@ bool parse_uint64_strict(const std::string& value, guint64* out) {
   }
   *out = parsed;
   return true;
+}
+
+bool parse_runtime_set_render_window(const std::string& line, guint64* window_id) {
+  constexpr absl::string_view kCommand = "set-render-window";
+  const std::string trimmed = trim_ascii(line);
+  if (trimmed.rfind(std::string(kCommand), 0) != 0 ||
+      (trimmed.size() > kCommand.size() && !std::isspace(static_cast<unsigned char>(trimmed[kCommand.size()])))) {
+    return false;
+  }
+  return parse_uint64_strict(trim_ascii(trimmed.substr(kCommand.size())), window_id) && *window_id > 0;
+}
+
+bool parse_runtime_capture_preview_frame(const std::string& line, std::string* channel, std::string* path) {
+  constexpr absl::string_view kCommand = "capture-preview-frame";
+  if (!channel || !path) {
+    return false;
+  }
+  const std::string trimmed = trim_ascii(line);
+  if (trimmed.rfind(std::string(kCommand), 0) != 0 || trimmed.size() <= kCommand.size() ||
+      !std::isspace(static_cast<unsigned char>(trimmed[kCommand.size()]))) {
+    return false;
+  }
+  const std::string arguments = trim_ascii(trimmed.substr(kCommand.size()));
+  const size_t separator = arguments.find_first_of(" \t");
+  if (separator == std::string::npos) {
+    return false;
+  }
+  *channel = arguments.substr(0, separator);
+  *path = trim_ascii(arguments.substr(separator));
+  return !channel->empty() && !path->empty();
+}
+
+enum class PreviewFrameSaveStatus {
+  kSaved,
+  kUnavailable,
+  kFailed,
+};
+
+struct PreviewFrameSaveResult {
+  PreviewFrameSaveStatus status{PreviewFrameSaveStatus::kFailed};
+  int width{0};
+  int height{0};
+  std::string message;
+};
+
+PreviewFrameSaveResult save_preview_frame(GstElement* sink, const fs::path& output_path) {
+  if (!sink || !g_object_class_find_property(G_OBJECT_GET_CLASS(sink), "last-sample")) {
+    return {PreviewFrameSaveStatus::kUnavailable};
+  }
+  GstSample* sample = nullptr;
+  g_object_get(G_OBJECT(sink), "last-sample", &sample, nullptr);
+  if (!sample) {
+    return {PreviewFrameSaveStatus::kUnavailable};
+  }
+  auto release_sample = absl::MakeCleanup([sample] { gst_sample_unref(sample); });
+  GstCaps* caps = gst_sample_get_caps(sample);
+  GstBuffer* buffer = gst_sample_get_buffer(sample);
+  GstVideoInfo info;
+  if (!caps || !buffer || !gst_video_info_from_caps(&info, caps)) {
+    return {PreviewFrameSaveStatus::kFailed, 0, 0, "invalid sample"};
+  }
+  GstVideoFrame frame;
+  if (!gst_video_frame_map(&frame, &info, buffer, GST_MAP_READ)) {
+    return {PreviewFrameSaveStatus::kFailed, 0, 0, "sample map failed"};
+  }
+  auto unmap_frame = absl::MakeCleanup([&frame] { gst_video_frame_unmap(&frame); });
+  const int width = GST_VIDEO_INFO_WIDTH(&info);
+  const int height = GST_VIDEO_INFO_HEIGHT(&info);
+  const int row_stride = GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0);
+  guint8* pixels = static_cast<guint8*>(GST_VIDEO_FRAME_PLANE_DATA(&frame, 0));
+  if (!pixels || width <= 0 || height <= 0 || row_stride <= 0) {
+    return {PreviewFrameSaveStatus::kFailed, 0, 0, "invalid frame layout"};
+  }
+
+  cv::Mat bgr;
+  switch (GST_VIDEO_INFO_FORMAT(&info)) {
+    case GST_VIDEO_FORMAT_BGRx:
+    case GST_VIDEO_FORMAT_BGRA: {
+      const cv::Mat source(height, width, CV_8UC4, pixels, static_cast<size_t>(row_stride));
+      cv::cvtColor(source, bgr, cv::COLOR_BGRA2BGR);
+      break;
+    }
+    case GST_VIDEO_FORMAT_RGBx:
+    case GST_VIDEO_FORMAT_RGBA: {
+      const cv::Mat source(height, width, CV_8UC4, pixels, static_cast<size_t>(row_stride));
+      cv::cvtColor(source, bgr, cv::COLOR_RGBA2BGR);
+      break;
+    }
+    case GST_VIDEO_FORMAT_BGR: {
+      const cv::Mat source(height, width, CV_8UC3, pixels, static_cast<size_t>(row_stride));
+      bgr = source.clone();
+      break;
+    }
+    case GST_VIDEO_FORMAT_RGB: {
+      const cv::Mat source(height, width, CV_8UC3, pixels, static_cast<size_t>(row_stride));
+      cv::cvtColor(source, bgr, cv::COLOR_RGB2BGR);
+      break;
+    }
+    default:
+      return {PreviewFrameSaveStatus::kFailed, 0, 0, "unsupported frame format"};
+  }
+
+  constexpr int kMaximumPreviewWidth = 1600;
+  constexpr int kMaximumPreviewHeight = 900;
+  const double scale = std::min(
+      1.0,
+      std::min(static_cast<double>(kMaximumPreviewWidth) / width, static_cast<double>(kMaximumPreviewHeight) / height));
+  cv::Mat preview = bgr;
+  if (scale < 1.0) {
+    cv::resize(
+        bgr,
+        preview,
+        cv::Size(
+            std::max(1, static_cast<int>(std::round(width * scale))),
+            std::max(1, static_cast<int>(std::round(height * scale)))),
+        0.0,
+        0.0,
+        cv::INTER_AREA);
+  }
+  try {
+    if (!output_path.is_absolute() || !output_path.has_parent_path() || !fs::is_directory(output_path.parent_path())) {
+      return {PreviewFrameSaveStatus::kFailed, 0, 0, "output directory is unavailable"};
+    }
+    const std::vector<int> jpeg_options = {cv::IMWRITE_JPEG_QUALITY, 82};
+    if (!cv::imwrite(output_path.string(), preview, jpeg_options)) {
+      return {PreviewFrameSaveStatus::kFailed, 0, 0, "JPEG write failed"};
+    }
+  } catch (const std::exception& exception) {
+    return {PreviewFrameSaveStatus::kFailed, 0, 0, exception.what()};
+  }
+  return {PreviewFrameSaveStatus::kSaved, preview.cols, preview.rows};
+}
+
+void report_last_render_sample(GstElement* sink) {
+  GstSample* sample = nullptr;
+  g_object_get(G_OBJECT(sink), "last-sample", &sample, nullptr);
+  if (!sample) {
+    g_print("runtime render sample unavailable\n");
+    return;
+  }
+  auto release_sample = absl::MakeCleanup([sample] { gst_sample_unref(sample); });
+  GstCaps* caps = gst_sample_get_caps(sample);
+  GstBuffer* buffer = gst_sample_get_buffer(sample);
+  GstVideoInfo info;
+  if (!caps || !buffer || !gst_video_info_from_caps(&info, caps)) {
+    g_print("runtime render sample invalid\n");
+    return;
+  }
+  GstVideoFrame frame;
+  if (!gst_video_frame_map(&frame, &info, buffer, GST_MAP_READ)) {
+    g_print("runtime render sample map failed\n");
+    return;
+  }
+  auto unmap_frame = absl::MakeCleanup([&frame] { gst_video_frame_unmap(&frame); });
+  const guint pixel_stride = GST_VIDEO_INFO_COMP_PSTRIDE(&info, 0);
+  const guint8* pixels = static_cast<const guint8*>(GST_VIDEO_FRAME_PLANE_DATA(&frame, 0));
+  const gint row_stride = GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0);
+  double luminance_sum = 0.0;
+  size_t sample_count = 0;
+  guint8 minimum_luminance = 255;
+  guint8 maximum_luminance = 0;
+  if (pixels && pixel_stride >= 3) {
+    for (gint y = 0; y < GST_VIDEO_INFO_HEIGHT(&info); y += 16) {
+      const guint8* row = pixels + static_cast<ptrdiff_t>(y) * row_stride;
+      for (gint x = 0; x < GST_VIDEO_INFO_WIDTH(&info); x += 16) {
+        const guint8* pixel = row + static_cast<size_t>(x) * pixel_stride;
+        const guint8 luminance = static_cast<guint8>((pixel[0] + pixel[1] + pixel[2]) / 3);
+        luminance_sum += luminance;
+        minimum_luminance = std::min(minimum_luminance, luminance);
+        maximum_luminance = std::max(maximum_luminance, luminance);
+        ++sample_count;
+      }
+    }
+  }
+  g_print(
+      "runtime render sample format=%s width=%u height=%u mean=%.2f range=%u\n",
+      gst_video_format_to_string(GST_VIDEO_INFO_FORMAT(&info)),
+      GST_VIDEO_INFO_WIDTH(&info),
+      GST_VIDEO_INFO_HEIGHT(&info),
+      sample_count ? luminance_sum / sample_count : 0.0,
+      sample_count ? static_cast<guint>(maximum_luminance - minimum_luminance) : 0);
 }
 
 bool set_gvalue_from_string(GValue* gvalue, GParamSpec* pspec, const std::string& value) {
@@ -2286,14 +2588,142 @@ bool PipelineApplication::set_element_property_runtime(
 }
 
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
+  guint64 window_id = 0;
+  if (parse_runtime_set_render_window(line, &window_id)) {
+    return set_render_window_runtime(window_id);
+  }
+  std::string preview_channel;
+  std::string preview_path;
+  if (parse_runtime_capture_preview_frame(line, &preview_channel, &preview_path)) {
+    return capture_preview_frame_runtime(preview_channel, preview_path);
+  }
   std::string element_name;
   std::string property_name;
   std::string value;
   if (!parse_runtime_set_property(line, &element_name, &property_name, &value)) {
-    g_printerr("runtime command failed: expected: set-property <element> <property=value>\n");
+    g_printerr(
+        "runtime command failed: expected: set-render-window <xid>, capture-preview-frame <main|stitched|sourceN> "
+        "<jpg-path>, or set-property <element> <property=value>\n");
     return false;
   }
   return set_element_property_runtime(element_name, property_name, value);
+}
+
+bool PipelineApplication::capture_preview_frame_runtime(const std::string& channel, const std::string& path) {
+  GstElement* sink = nullptr;
+  bool release_sink = false;
+  auto stage = stage_app_contexts_.find(current_stage_);
+  if (stage == stage_app_contexts_.end()) {
+    g_print("runtime preview frame unavailable channel=%s path=%s\n", channel.c_str(), path.c_str());
+    return true;
+  }
+
+  if (channel == "main") {
+    for (const auto& app_context : stage->second) {
+      if (!app_context)
+        continue;
+      NvDsSinkBin& output = app_context->pipeline.instance_bins[0].sink_bin;
+      if (output.bin) {
+        sink = gst_bin_get_by_name(GST_BIN(output.bin), "program_preview_sink");
+        release_sink = sink != nullptr;
+      }
+      if (sink)
+        break;
+      for (guint sink_index = 0; sink_index < app_context->config.num_sink_sub_bins; ++sink_index) {
+        GstElement* candidate = app_context->pipeline.instance_bins[0].sink_bin.sub_bins[sink_index].sink;
+        if (GST_IS_VIDEO_OVERLAY(candidate) && !manages_its_own_window(candidate)) {
+          sink = candidate;
+          break;
+        }
+      }
+      if (sink)
+        break;
+    }
+  } else if (channel == "stitched") {
+    for (const auto& app_context : stage->second) {
+      if (app_context && app_context->pipeline.hmstitcher_bin.preview_sink) {
+        sink = app_context->pipeline.hmstitcher_bin.preview_sink;
+        break;
+      }
+    }
+  } else if (channel.rfind("source", 0) == 0) {
+    guint64 source_index = 0;
+    if (parse_uint64_strict(channel.substr(6), &source_index)) {
+      for (const auto& app_context : stage->second) {
+        if (!app_context || source_index >= app_context->pipeline.multi_src_bin.num_bins)
+          continue;
+        sink = app_context->pipeline.multi_src_bin.sub_bins[source_index].fakesink;
+        if (sink)
+          break;
+      }
+    }
+  }
+
+  if (!sink) {
+    g_print("runtime preview frame unavailable channel=%s path=%s\n", channel.c_str(), path.c_str());
+    return true;
+  }
+  auto release_retained_sink = absl::MakeCleanup([&]() {
+    if (release_sink)
+      gst_object_unref(sink);
+  });
+  const PreviewFrameSaveResult result = save_preview_frame(sink, fs::path(path));
+  if (result.status == PreviewFrameSaveStatus::kUnavailable) {
+    g_print("runtime preview frame unavailable channel=%s path=%s\n", channel.c_str(), path.c_str());
+    return true;
+  }
+  if (result.status == PreviewFrameSaveStatus::kFailed) {
+    g_print(
+        "runtime preview frame failed channel=%s path=%s message=%s\n",
+        channel.c_str(),
+        path.c_str(),
+        result.message.c_str());
+    return true;
+  }
+  g_print(
+      "runtime preview frame channel=%s path=%s width=%d height=%d\n",
+      channel.c_str(),
+      path.c_str(),
+      result.width,
+      result.height);
+  return true;
+}
+
+bool PipelineApplication::set_render_window_runtime(guint64 window_id) {
+  if (window_id == 0) {
+    g_printerr("runtime render window failed: XID must be positive\n");
+    return false;
+  }
+  size_t updated_sinks = 0;
+  auto& app_contexts = stage_app_contexts_.at(current_stage_);
+  for (const auto& app_context : app_contexts) {
+    if (!app_context)
+      continue;
+    for (guint sink_index = 0; sink_index < app_context->config.num_sink_sub_bins; ++sink_index) {
+      GstElement* sink = app_context->pipeline.instance_bins[0].sink_bin.sub_bins[sink_index].sink;
+      if (!GST_IS_VIDEO_OVERLAY(sink) || manages_its_own_window(sink))
+        continue;
+      gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), static_cast<guintptr>(window_id));
+      gst_video_overlay_expose(GST_VIDEO_OVERLAY(sink));
+      report_last_render_sample(sink);
+      ++updated_sinks;
+    }
+  }
+  if (updated_sinks == 0) {
+    g_printerr("runtime render window failed: no embedded render sink is active\n");
+    return false;
+  }
+  render_window_id_ = static_cast<gint64>(window_id);
+  auto windows = stage_windows_.find(current_stage_);
+  if (windows != stage_windows_.end()) {
+    for (const auto& app_context : app_contexts) {
+      if (app_context && windows->second.count(app_context->index)) {
+        windows->second[app_context->index] = static_cast<Window>(window_id);
+      }
+    }
+  }
+  g_print("runtime render window id=%" G_GUINT64_FORMAT " sinks=%zu\n", window_id, updated_sinks);
+  return true;
 }
 
 gboolean PipelineApplication::event_thread_func_static(gpointer arg) {

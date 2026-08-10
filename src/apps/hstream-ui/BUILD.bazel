@@ -53,6 +53,21 @@ cc_binary(
     ],
 )
 
+cc_binary(
+    name = "hstream_ui_visual_verifier",
+    testonly = True,
+    srcs = ["HStreamUiVisualVerifier.cpp"],
+    copts = COMMON_COPTS,
+    linkopts = [
+        "-lopencv_calib3d",
+        "-lopencv_features2d",
+    ],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+    deps = ["@opencv_linux//:opencv"],
+)
+
 cc_test(
     name = "hstream_ui_test",
     srcs = ["HStreamWindowTest.cpp"],

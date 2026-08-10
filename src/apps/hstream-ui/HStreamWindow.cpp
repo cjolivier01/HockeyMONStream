@@ -11,9 +11,15 @@
 #include <QtCore/QSet>
 #include <QtCore/QStandardPaths>
 #include <QtCore/QSysInfo>
+#include <QtCore/QTimer>
+#include <QtCore/QUrl>
 #include <QtCore/Qt>
 #include <QtGui/QCloseEvent>
+#include <QtGui/QDesktopServices>
 #include <QtGui/QGuiApplication>
+#include <QtGui/QImage>
+#include <QtGui/QPaintEngine>
+#include <QtGui/QPainter>
 #include <QtGui/QPalette>
 #include <QtGui/QResizeEvent>
 #include <QtGui/QTextDocument>
@@ -21,12 +27,14 @@
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QButtonGroup>
 #include <QtWidgets/QComboBox>
+#include <QtWidgets/QDialog>
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLineEdit>
+#include <QtWidgets/QProgressBar>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QRadioButton>
 #include <QtWidgets/QScrollArea>
@@ -47,6 +55,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -62,12 +71,29 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr int kExposureEvSliderZero = 40;
+constexpr int kFixedEdgeRotationDefaultX10 = 100;
+constexpr int kFixedEdgeRotationMaximumX10 = 900;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
-constexpr char kOnePassStitchingCompleteMarker[] = "hmstitcher: one-pass stitching configuration complete";
+constexpr qsizetype kMaxCapturedLogCharacters = 16 * 1024 * 1024;
 constexpr char kStitchedPreviewPipelineOptions[] =
     "pipeline.streammux.batch-size=2,pipeline.streammux.sync-inputs=0,"
     "pipeline.streammux.batched-push-timeout=2147483647,pipeline.streammux.frame-num-reset-on-stream-reset=0,"
     "pipeline.streammux.frame-num-reset-on-eos=0,pipeline.hmstitcher.show=0";
+
+struct CalibrationStageSpec {
+  const char* id;
+  const char* label;
+};
+
+constexpr CalibrationStageSpec kCalibrationStages[] = {
+    {"input", "Wait for synchronized camera frames"},
+    {"orientation", "Find the ice rink and orient cameras"},
+    {"features", "Look for control points"},
+    {"matching", "Match control points"},
+    {"optimizer", "Run panorama optimizer (autooptimiser)"},
+    {"canvas", "Build stitch maps and panorama"},
+    {"rink-mask", "Find the ice surface"},
+};
 
 absl::Status publish_yaml_config(const fs::path& config_path, const YAML::Node& config) {
   std::string contents;
@@ -137,6 +163,93 @@ class WheelPassthroughSlider : public QSlider {
   }
 };
 
+class StitchingCalibrationDialog : public QDialog {
+ public:
+  explicit StitchingCalibrationDialog(QWidget* parent = nullptr) : QDialog(parent) {}
+
+  void setCloseAllowed(bool allowed) {
+    close_allowed_ = allowed;
+  }
+
+  void reject() override {
+    if (close_allowed_)
+      QDialog::reject();
+  }
+
+ protected:
+  void closeEvent(QCloseEvent* event) override {
+    if (!close_allowed_) {
+      event->ignore();
+      return;
+    }
+    QDialog::closeEvent(event);
+  }
+
+ private:
+  bool close_allowed_{false};
+};
+
+class NativeVideoTarget : public QWidget {
+ public:
+  explicit NativeVideoTarget(QWidget* parent = nullptr) : QWidget(parent) {
+    // X11 video-overlay sinks paint this native child directly.  Keep Qt's
+    // backing store from repainting the child black after the video sink has
+    // presented a frame.  WA_PaintOnScreen requires paintEngine() to return
+    // null; doing both avoids the QWidget::paintEngine warning while leaving
+    // ownership of every pixel with the external renderer.
+    if (QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0) {
+      setAttribute(Qt::WA_NativeWindow);
+      setAttribute(Qt::WA_DontCreateNativeAncestors);
+      setAttribute(Qt::WA_PaintOnScreen);
+      setAttribute(Qt::WA_NoSystemBackground);
+    }
+    setAutoFillBackground(false);
+  }
+
+  QPaintEngine* paintEngine() const override {
+    return nullptr;
+  }
+};
+
+class SnapshotVideoSurface : public QWidget {
+ public:
+  explicit SnapshotVideoSurface(QWidget* parent = nullptr) : QWidget(parent) {
+    setAutoFillBackground(false);
+  }
+
+  void setFrame(const QImage& frame) {
+    frame_ = frame;
+    setProperty("previewFrameAvailable", !frame_.isNull());
+    repaint();
+  }
+
+ protected:
+  void paintEvent(QPaintEvent*) override {
+    QPainter painter(this);
+    painter.fillRect(rect(), Qt::black);
+    if (frame_.isNull()) {
+      return;
+    }
+    QSize target_size = frame_.size();
+    target_size.scale(size(), Qt::KeepAspectRatio);
+    const QRect target(
+        (width() - target_size.width()) / 2,
+        (height() - target_size.height()) / 2,
+        target_size.width(),
+        target_size.height());
+    painter.drawImage(target, frame_);
+  }
+
+ private:
+  QImage frame_;
+};
+
+void set_snapshot_frame(QWidget* surface, const QImage& frame) {
+  if (auto* snapshot = dynamic_cast<SnapshotVideoSurface*>(surface)) {
+    snapshot->setFrame(frame);
+  }
+}
+
 class LetterboxRenderHost : public QWidget {
  public:
   explicit LetterboxRenderHost(double aspect_ratio, QWidget* parent = nullptr)
@@ -148,10 +261,15 @@ class LetterboxRenderHost : public QWidget {
     pal.setColor(QPalette::Window, Qt::black);
     setPalette(pal);
     setAutoFillBackground(true);
+    render_target_->hide();
   }
 
   QWidget* renderSurface() const {
     return render_surface_;
+  }
+
+  QWidget* renderTarget() const {
+    return render_target_;
   }
 
  protected:
@@ -173,12 +291,17 @@ class LetterboxRenderHost : public QWidget {
     }
     const int x = (available.width() - width) / 2;
     const int y = (available.height() - height) / 2;
+    // Some GstVideoOverlay sinks map an application-owned X11 window even
+    // after Qt hides it. Keep that transport-only target to one pixel so it
+    // cannot cover the snapshot surface if the sink remaps/raises it.
+    render_target_->setGeometry(x, y, 1, 1);
     render_surface_->setGeometry(x, y, width, height);
   }
 
  private:
   double aspect_ratio_;
-  QWidget* render_surface_{new QWidget(this)};
+  QWidget* render_target_{new NativeVideoTarget(this)};
+  QWidget* render_surface_{new SnapshotVideoSurface(this)};
 };
 
 QString ansi_color(int code) {
@@ -505,7 +628,7 @@ void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QStr
   if (env.value("HM_RENDER_SINK").isEmpty()) {
     env.insert(
         "HM_RENDER_SINK",
-        hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) ? "nveglglessink"
+        hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) ? "ximagesink"
                                                                                                      : "nv3dsink");
   }
   QDir registry_dir(QDir(working_dir).filePath(".cache/gstreamer-1.0"));
@@ -1007,7 +1130,23 @@ bool hm::ui_internal::supports_x11_embedding(const QString& platform_name, bool 
   return !tegra_runtime && platform_name.compare("xcb", Qt::CaseInsensitive) == 0;
 }
 
+bool hm::ui_internal::supports_snapshot_preview_sink(const QString& configured_render_sink) {
+  const QString sink = configured_render_sink.trimmed().toLower();
+  return sink.isEmpty() || sink == "xvimagesink" || sink == "xvideo" || sink == "xv" || sink == "ximagesink" ||
+      sink == "ximage";
+}
+
+QString hm::ui_internal::preview_channel_for_tab(int tab_index, int camera_count) {
+  if (tab_index == 0)
+    return "main";
+  if (tab_index == 1)
+    return "stitched";
+  const int source_index = tab_index - 2;
+  return source_index >= 0 && source_index < camera_count ? QString("source%1").arg(source_index) : QString();
+}
+
 HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
+  capture_complete_log_ = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_GAME_ID");
   pipeline_process_ = new QProcess(this);
   pipeline_process_->setProcessChannelMode(QProcess::MergedChannels);
   connect(pipeline_process_, &QProcess::started, this, [this]() { handlePipelineStarted(); });
@@ -1021,6 +1160,9 @@ HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
   });
   connect(pipeline_process_, &QProcess::readyReadStandardOutput, this, [this]() { readPipelineOutput(); });
   connect(pipeline_process_, &QProcess::readyReadStandardError, this, [this]() { readPipelineOutput(); });
+  preview_frame_timer_ = new QTimer(this);
+  preview_frame_timer_->setInterval(500);
+  connect(preview_frame_timer_, &QTimer::timeout, this, [this]() { requestPreviewFrame(); });
 
   buildUi();
   refreshGames();
@@ -1055,6 +1197,14 @@ QString HStreamWindow::outputStateText(const QString& id) const {
 
 QString HStreamWindow::logText() const {
   return log_ ? log_->toPlainText() : QString();
+}
+
+QString HStreamWindow::completeLogText() const {
+  return complete_log_;
+}
+
+QString HStreamWindow::scoreboardSelectorUrl() const {
+  return scoreboard_selector_url_;
 }
 
 QString HStreamWindow::gameIdText() const {
@@ -1343,9 +1493,8 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   preview_host->setObjectName("programLetterboxHost");
   preview_surface_ = preview_host->renderSurface();
   preview_surface_->setObjectName("previewSurface");
-  preview_surface_->setAttribute(Qt::WA_NativeWindow);
-  preview_surface_->setAttribute(Qt::WA_DontCreateNativeAncestors);
-  preview_surface_->setStyleSheet("QWidget#previewSurface { background: #12171c; }");
+  preview_render_target_ = preview_host->renderTarget();
+  preview_render_target_->setObjectName("previewRenderTarget");
   preview_external_notice_ = new QLabel("Video is displayed in a separate DeepStream window", preview_host);
   preview_external_notice_->setObjectName("programExternalRenderNotice");
   preview_external_notice_->setAlignment(Qt::AlignCenter);
@@ -1373,9 +1522,8 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   stitched_host->setObjectName("stitchedLetterboxHost");
   stitched_surface_ = stitched_host->renderSurface();
   stitched_surface_->setObjectName("stitchedPreviewSurface");
-  stitched_surface_->setAttribute(Qt::WA_NativeWindow);
-  stitched_surface_->setAttribute(Qt::WA_DontCreateNativeAncestors);
-  stitched_surface_->setStyleSheet("QWidget#stitchedPreviewSurface { background: #10151a; }");
+  stitched_render_target_ = stitched_host->renderTarget();
+  stitched_render_target_->setObjectName("stitchedPreviewRenderTarget");
   stitched_external_notice_ = new QLabel("Video is displayed in a separate DeepStream window", stitched_host);
   stitched_external_notice_->setObjectName("stitchedExternalRenderNotice");
   stitched_external_notice_->setAlignment(Qt::AlignCenter);
@@ -1405,11 +1553,10 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
     camera_host->setObjectName(QString("camera%1LetterboxHost").arg(camera_index + 1));
     QWidget* camera_surface = camera_host->renderSurface();
     camera_surface->setObjectName(QString("camera%1PreviewSurface").arg(camera_index + 1));
-    camera_surface->setAttribute(Qt::WA_NativeWindow);
-    camera_surface->setAttribute(Qt::WA_DontCreateNativeAncestors);
-    camera_surface->setStyleSheet(
-        QString("QWidget#camera%1PreviewSurface { background: #10151a; }").arg(camera_index + 1));
     camera_preview_surfaces_.push_back(camera_surface);
+    QWidget* camera_render_target = camera_host->renderTarget();
+    camera_render_target->setObjectName(QString("camera%1PreviewRenderTarget").arg(camera_index + 1));
+    camera_preview_render_targets_.push_back(camera_render_target);
 
     auto* camera_notice = new QLabel("Camera preview requires embedded X11 rendering", camera_host);
     camera_notice->setObjectName(QString("camera%1ExternalRenderNotice").arg(camera_index + 1));
@@ -1426,6 +1573,9 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
     camera_layout->addWidget(new QLabel(QString("Camera %1 source preview").arg(camera_index + 1)));
     preview_tabs_->addTab(camera, QString("Camera %1").arg(camera_index + 1));
   }
+  connect(preview_tabs_, &QTabWidget::currentChanged, this, [this](int tab_index) {
+    switchPipelineRenderTarget(tab_index);
+  });
   root->addWidget(preview_tabs_, 1);
 }
 
@@ -1551,6 +1701,17 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent) {
   };
   const std::vector<CameraSliderSpec> stitch_controls = {
       {"Stitch_Rotate_Degrees", "Stitch rotate degrees", 0, 180, 90},
+      {"Link_Fixed_Edge_Rotation_Left_Right", "Link left/right fixed-edge rotation", 0, 1, 1},
+      {"Left_Fixed_Edge_Rotation_Angle_x10",
+       "Left fixed-edge rotation angle x10",
+       0,
+       kFixedEdgeRotationMaximumX10,
+       kFixedEdgeRotationDefaultX10},
+      {"Right_Fixed_Edge_Rotation_Angle_x10",
+       "Right fixed-edge rotation angle x10",
+       0,
+       kFixedEdgeRotationMaximumX10,
+       kFixedEdgeRotationDefaultX10},
   };
 
   auto* plugin = new QWidget();
@@ -1577,7 +1738,9 @@ void HStreamWindow::buildLog(QVBoxLayout* root) {
   log_->setReadOnly(true);
   log_->setAcceptRichText(true);
   log_->setLineWrapMode(QTextEdit::NoWrap);
-  log_->document()->setMaximumBlockCount(250);
+  // Calibration now reports every native stage, and operators need the lead-up
+  // to a failure rather than only the final few hundred lines.
+  log_->document()->setMaximumBlockCount(2000);
   log_->setMinimumHeight(110);
   log_->setStyleSheet(
       "QTextEdit#runtimeLog {"
@@ -1875,6 +2038,296 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   return true;
 }
 
+void HStreamWindow::showStitchingCalibrationDialog() {
+  if (!calibration_dialog_) {
+    auto* dialog = new StitchingCalibrationDialog(this);
+    calibration_dialog_ = dialog;
+    dialog->setObjectName("stitchCalibrationDialog");
+    dialog->setWindowTitle("Stitching calibration");
+    dialog->setWindowModality(Qt::WindowModal);
+    dialog->setMinimumWidth(560);
+    dialog->setStyleSheet(
+        "QLabel[calibrationState=\"pending\"] { color: #667085; }"
+        "QLabel[calibrationState=\"active\"] { color: #1570ef; font-weight: 600; }"
+        "QLabel[calibrationState=\"complete\"] { color: #039855; }"
+        "QLabel[calibrationState=\"failed\"] { color: #d92d20; font-weight: 600; }");
+
+    auto* root = new QVBoxLayout(dialog);
+    root->setContentsMargins(24, 24, 24, 20);
+    root->setSpacing(14);
+
+    auto* heading = new QHBoxLayout();
+    heading->setSpacing(14);
+    calibration_icon_ = new QLabel(dialog);
+    calibration_icon_->setObjectName("stitchCalibrationIcon");
+    calibration_icon_->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
+    calibration_icon_->setFixedSize(40, 40);
+    heading->addWidget(calibration_icon_);
+    auto* heading_text = new QVBoxLayout();
+    heading_text->setSpacing(4);
+    calibration_headline_ = new QLabel(dialog);
+    calibration_headline_->setObjectName("stitchCalibrationHeadline");
+    QFont headline_font = calibration_headline_->font();
+    headline_font.setPointSize(headline_font.pointSize() + 2);
+    headline_font.setBold(true);
+    calibration_headline_->setFont(headline_font);
+    calibration_detail_ = new QLabel(dialog);
+    calibration_detail_->setObjectName("stitchCalibrationDetail");
+    calibration_detail_->setWordWrap(true);
+    calibration_detail_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    heading_text->addWidget(calibration_headline_);
+    heading_text->addWidget(calibration_detail_);
+    heading->addLayout(heading_text, 1);
+    root->addLayout(heading);
+
+    calibration_progress_ = new QProgressBar(dialog);
+    calibration_progress_->setObjectName("stitchCalibrationProgress");
+    calibration_progress_->setRange(0, 0);
+    calibration_progress_->setTextVisible(false);
+    root->addWidget(calibration_progress_);
+
+    auto* stage_box = new QVBoxLayout();
+    stage_box->setSpacing(8);
+    for (const CalibrationStageSpec& spec : kCalibrationStages) {
+      const QString id = QString::fromLatin1(spec.id);
+      auto* row = new QHBoxLayout();
+      row->setSpacing(9);
+      auto* icon = new QLabel(QString::fromUtf8("\u25cb"), dialog);
+      icon->setObjectName(QString("stitchCalibrationStageIcon_%1").arg(id));
+      icon->setAlignment(Qt::AlignCenter);
+      icon->setFixedWidth(20);
+      auto* label = new QLabel(QString::fromLatin1(spec.label), dialog);
+      label->setObjectName(QString("stitchCalibrationStage_%1").arg(id));
+      row->addWidget(icon);
+      row->addWidget(label, 1);
+      stage_box->addLayout(row);
+      calibration_stage_icons_[id] = icon;
+      calibration_stage_labels_[id] = label;
+    }
+    root->addLayout(stage_box);
+
+    auto* buttons = new QHBoxLayout();
+    buttons->addStretch(1);
+    calibration_cancel_button_ = new QPushButton("Stop calibration", dialog);
+    calibration_cancel_button_->setObjectName("stitchCalibrationCancelButton");
+    calibration_ok_button_ = new QPushButton("OK", dialog);
+    calibration_ok_button_->setObjectName("stitchCalibrationOkButton");
+    calibration_ok_button_->setDefault(true);
+    buttons->addWidget(calibration_cancel_button_);
+    buttons->addWidget(calibration_ok_button_);
+    root->addLayout(buttons);
+
+    connect(calibration_cancel_button_, &QPushButton::clicked, this, [this]() {
+      if (calibration_detail_)
+        calibration_detail_->setText("Stopping calibration…");
+      if (calibration_cancel_button_)
+        calibration_cancel_button_->setEnabled(false);
+      stopPipeline();
+    });
+    connect(calibration_ok_button_, &QPushButton::clicked, dialog, &QDialog::accept);
+  }
+
+  calibration_dialog_failed_ = false;
+  active_calibration_stage_.clear();
+  auto apply_state = [](QLabel* label, const char* state) {
+    if (!label)
+      return;
+    label->setProperty("calibrationState", state);
+    label->style()->unpolish(label);
+    label->style()->polish(label);
+  };
+  for (const auto& [id, icon] : calibration_stage_icons_) {
+    (void)id;
+    icon->setText(QString::fromUtf8("\u25cb"));
+    apply_state(icon, "pending");
+  }
+  for (const auto& [id, label] : calibration_stage_labels_) {
+    (void)id;
+    apply_state(label, "pending");
+  }
+  calibration_icon_->setPixmap(style()->standardIcon(QStyle::SP_MessageBoxInformation).pixmap(32, 32));
+  apply_state(calibration_icon_, "active");
+  calibration_headline_->setText("Calibrating stitching…");
+  apply_state(calibration_headline_, "active");
+  calibration_detail_->setText(QString("Waiting for synchronized frames from both cameras. Control-point limit: %1.")
+                                   .arg(active_calibration_control_points_));
+  calibration_progress_->setVisible(true);
+  calibration_ok_button_->setVisible(false);
+  calibration_cancel_button_->setVisible(true);
+  calibration_cancel_button_->setEnabled(true);
+  static_cast<StitchingCalibrationDialog*>(calibration_dialog_)->setCloseAllowed(false);
+  setStitchingCalibrationStage("input", "started", calibration_detail_->text());
+  calibration_dialog_->show();
+  calibration_dialog_->raise();
+  calibration_dialog_->activateWindow();
+  QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+}
+
+void HStreamWindow::setStitchingCalibrationStage(const QString& stage, const QString& status, const QString& message) {
+  auto icon_it = calibration_stage_icons_.find(stage);
+  auto label_it = calibration_stage_labels_.find(stage);
+  if (icon_it == calibration_stage_icons_.end() || label_it == calibration_stage_labels_.end()) {
+    if (!message.isEmpty() && calibration_detail_)
+      calibration_detail_->setText(message);
+    return;
+  }
+  auto apply_state = [](QLabel* label, const QString& state) {
+    if (!label)
+      return;
+    label->setProperty("calibrationState", state);
+    label->style()->unpolish(label);
+    label->style()->polish(label);
+  };
+  auto mark_complete = [&](const QString& id) {
+    const auto previous_icon = calibration_stage_icons_.find(id);
+    const auto previous_label = calibration_stage_labels_.find(id);
+    if (previous_icon == calibration_stage_icons_.end() || previous_label == calibration_stage_labels_.end())
+      return;
+    previous_icon->second->setText(QString::fromUtf8("\u2713"));
+    apply_state(previous_icon->second, "complete");
+    apply_state(previous_label->second, "complete");
+  };
+
+  if (status == "started") {
+    if (!active_calibration_stage_.isEmpty() && active_calibration_stage_ != stage)
+      mark_complete(active_calibration_stage_);
+    active_calibration_stage_ = stage;
+    icon_it->second->setText(QString::fromUtf8("\u25cf"));
+    apply_state(icon_it->second, "active");
+    apply_state(label_it->second, "active");
+  } else if (status == "complete") {
+    mark_complete(stage);
+    if (active_calibration_stage_ == stage)
+      active_calibration_stage_.clear();
+  } else if (status == "failed") {
+    active_calibration_stage_ = stage;
+    icon_it->second->setText(QString::fromUtf8("\u2715"));
+    apply_state(icon_it->second, "failed");
+    apply_state(label_it->second, "failed");
+  }
+  if (!message.isEmpty() && calibration_detail_)
+    calibration_detail_->setText(message);
+}
+
+void HStreamWindow::handleStitchingCalibrationOutput(const QString& line) {
+  if (!calibration_pending_)
+    return;
+  static const QRegularExpression event_pattern(
+      R"(^HSTREAM_CALIBRATION\s+stage=([a-z0-9-]+)\s+status=(started|complete|failed)(?:\s+message=(.*))?$)");
+  const QRegularExpressionMatch match = event_pattern.match(line);
+  if (!match.hasMatch())
+    return;
+  const QString stage = match.captured(1);
+  const QString status = match.captured(2);
+  const QString message = match.captured(3).trimmed();
+  if (stage == "calibration") {
+    if (status == "complete")
+      completeStitchingCalibration();
+    else if (status == "failed")
+      failStitchingCalibration(message.isEmpty() ? "The native stitching calibration failed." : message);
+    return;
+  }
+  setStitchingCalibrationStage(stage, status, message);
+}
+
+void HStreamWindow::completeStitchingCalibration() {
+  if (!calibration_pending_ || active_run_game_id_.isEmpty())
+    return;
+  if (!saveStitchingCalibrationState(active_run_game_id_, active_calibration_control_points_, "complete")) {
+    failStitchingCalibration("Stitching finished, but its completed state could not be saved.");
+    return;
+  }
+  calibration_pending_ = false;
+  for (const CalibrationStageSpec& spec : kCalibrationStages)
+    setStitchingCalibrationStage(QString::fromLatin1(spec.id), "complete", {});
+  if (calibration_icon_) {
+    calibration_icon_->setPixmap(style()->standardIcon(QStyle::SP_DialogApplyButton).pixmap(32, 32));
+    calibration_icon_->setProperty("calibrationState", "complete");
+  }
+  if (calibration_headline_) {
+    calibration_headline_->setText("Stitching calibration complete");
+    calibration_headline_->setProperty("calibrationState", "complete");
+  }
+  if (calibration_detail_)
+    calibration_detail_->setText("The stitched panorama and ice-surface calibration are ready.");
+  if (calibration_progress_)
+    calibration_progress_->setVisible(false);
+  if (calibration_ok_button_)
+    calibration_ok_button_->setVisible(false);
+  if (calibration_cancel_button_)
+    calibration_cancel_button_->setVisible(false);
+  if (calibration_dialog_)
+    static_cast<StitchingCalibrationDialog*>(calibration_dialog_)->setCloseAllowed(true);
+
+  const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
+  preview_status_->setText(
+      active_run_is_calibration_ ? (render_video ? "Continuous stitched preview running"
+                                                 : "Stitching pipeline running without video rendering")
+                                 : (render_video ? "Program pipeline playing after stitching calibration"
+                                                 : "Program pipeline running without video rendering after stitching "
+                                                   "calibration"));
+  if (stitched_status_) {
+    stitched_status_->setText(
+        active_run_is_calibration_ ? (render_video ? "Stitching calibrated\nContinuous stitched preview running"
+                                                   : "Stitching calibrated\nVideo rendering disabled")
+                                   : "Stitching calibrated during program playback");
+  }
+  appendLog(
+      active_run_is_calibration_
+          ? (render_video
+                 ? "one-pass stitching calibration complete; continuous stitched preview running; camera controls "
+                   "remain available"
+                 : "one-pass stitching calibration complete; pipeline continuing without video rendering; camera "
+                   "controls remain available")
+          : (render_video
+                 ? "one-pass stitching calibration complete; continuous program playback running; camera controls "
+                   "remain available"
+                 : "one-pass stitching calibration complete; program pipeline continuing without video rendering; "
+                   "camera controls remain available"));
+  QTimer::singleShot(250, this, [this]() {
+    if (!calibration_pending_ && !calibration_dialog_failed_)
+      closeStitchingCalibrationDialog();
+  });
+}
+
+void HStreamWindow::failStitchingCalibration(const QString& message) {
+  if (calibration_dialog_failed_)
+    return;
+  if (!calibration_dialog_)
+    showStitchingCalibrationDialog();
+  calibration_dialog_failed_ = true;
+  if (calibration_pending_ && !active_run_game_id_.isEmpty())
+    saveStitchingCalibrationState(active_run_game_id_, active_calibration_control_points_, "failed");
+  if (!active_calibration_stage_.isEmpty())
+    setStitchingCalibrationStage(active_calibration_stage_, "failed", {});
+  calibration_icon_->setPixmap(style()->standardIcon(QStyle::SP_MessageBoxCritical).pixmap(32, 32));
+  calibration_icon_->setProperty("calibrationState", "failed");
+  calibration_headline_->setText("Stitching calibration failed");
+  calibration_headline_->setProperty("calibrationState", "failed");
+  calibration_headline_->style()->unpolish(calibration_headline_);
+  calibration_headline_->style()->polish(calibration_headline_);
+  calibration_detail_->setText(
+      QString("%1\n\nThe pipeline log has the full diagnostic details.")
+          .arg(message.isEmpty() ? "The native stitching calibration did not complete." : message));
+  calibration_progress_->setVisible(false);
+  calibration_cancel_button_->setVisible(false);
+  calibration_ok_button_->setVisible(true);
+  calibration_ok_button_->setEnabled(true);
+  static_cast<StitchingCalibrationDialog*>(calibration_dialog_)->setCloseAllowed(true);
+  calibration_dialog_->show();
+  calibration_dialog_->raise();
+  calibration_dialog_->activateWindow();
+  appendLog(QString("stitching calibration failed: %1").arg(message));
+}
+
+void HStreamWindow::closeStitchingCalibrationDialog() {
+  if (!calibration_dialog_)
+    return;
+  static_cast<StitchingCalibrationDialog*>(calibration_dialog_)->setCloseAllowed(true);
+  calibration_dialog_->hide();
+  active_calibration_stage_.clear();
+}
+
 QStringList HStreamWindow::pipelineArguments() const {
   const QString game_id = !active_run_game_id_.isEmpty()
       ? active_run_game_id_
@@ -1883,8 +2336,7 @@ QStringList HStreamWindow::pipelineArguments() const {
   const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
   const bool embed_render_window = render_video &&
       hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) &&
-      (configured_render_sink.isEmpty() || configured_render_sink == "nveglglessink" ||
-       configured_render_sink == "egl");
+      hm::ui_internal::supports_snapshot_preview_sink(configured_render_sink);
   QStringList args;
   args << "-g" << game_id << "--enable-sources=URI-MULTIPLE";
   if (isCalibrationRun()) {
@@ -1893,8 +2345,8 @@ QStringList HStreamWindow::pipelineArguments() const {
     if (render_video) {
       args << "--show";
     }
-    if (embed_render_window && stitched_surface_) {
-      const WId window_id = stitched_surface_->winId();
+    if (embed_render_window && stitched_render_target_) {
+      const WId window_id = stitched_render_target_->winId();
       if (window_id != 0) {
         args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(window_id));
       }
@@ -1905,8 +2357,8 @@ QStringList HStreamWindow::pipelineArguments() const {
     if (render_video) {
       args << "--show";
     }
-    if (embed_render_window && preview_surface_) {
-      const WId window_id = preview_surface_->winId();
+    if (embed_render_window && preview_render_target_) {
+      const WId window_id = preview_render_target_->winId();
       if (window_id != 0) {
         args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(window_id));
       }
@@ -1916,8 +2368,11 @@ QStringList HStreamWindow::pipelineArguments() const {
     args << QString("--options=%1").arg(kStitchedPreviewPipelineOptions);
   }
   if (embed_render_window) {
+    args << "--options=pipeline.hmstitcher.ui-preview=1";
+  }
+  if (embed_render_window) {
     QStringList camera_window_ids;
-    for (QWidget* surface : camera_preview_surfaces_) {
+    for (QWidget* surface : camera_preview_render_targets_) {
       if (!surface)
         continue;
       const WId window_id = surface->winId();
@@ -1938,6 +2393,7 @@ void HStreamWindow::startPipeline() {
     appendLog("pipeline already running");
     return;
   }
+  clearPreviewFrames();
   if (!ensureGameDirectory()) {
     updateRunControls();
     return;
@@ -1945,7 +2401,10 @@ void HStreamWindow::startPipeline() {
   active_run_game_id_ = game_id_edit_->text().trimmed();
   active_run_is_calibration_ = isCalibrationRun();
   active_calibration_control_points_ = 0;
+  scoreboard_selector_url_.clear();
   pending_runtime_controls_.clear();
+  preview_frame_channels_received_.clear();
+  preview_frame_error_logged_ = false;
   if (preview_tabs_) {
     preview_tabs_->setCurrentIndex(isCalibrationRun() ? 1 : 0);
     QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
@@ -1969,6 +2428,8 @@ void HStreamWindow::startPipeline() {
   bool calibration_required = false;
   if (!prepareStitchingCalibrationRun(
           runner, working_dir, env, &calibration_required, /*pending_only=*/!active_run_is_calibration_)) {
+    showStitchingCalibrationDialog();
+    failStitchingCalibration("Could not prepare the game for stitching calibration.");
     calibration_pending_ = false;
     active_run_game_id_.clear();
     active_run_is_calibration_ = false;
@@ -1981,9 +2442,13 @@ void HStreamWindow::startPipeline() {
     return;
   }
   calibration_pending_ = calibration_required;
+  if (calibration_pending_)
+    showStitchingCalibrationDialog();
 
   const QStringList args = pipelineArguments();
   if (!setupPretrainedAssets(args)) {
+    if (calibration_pending_)
+      failStitchingCalibration("The pretrained calibration assets could not be prepared.");
     calibration_pending_ = false;
     active_run_game_id_.clear();
     active_run_is_calibration_ = false;
@@ -1997,26 +2462,35 @@ void HStreamWindow::startPipeline() {
   }
   logMissingTensorRtEngineCaches(args);
 
-  // The native scoreboard selector is intentionally interactive and blocks
-  // until its private HTTP form is submitted.  A normal UI Play action must
-  // not run that interaction on the playcropper output thread because doing
-  // so prevents the first frame from reaching the sink.  Keep an explicitly
-  // configured polygon active; when none exists, the selector's established
-  // HM_NO_SCOREBOARD path writes the disabled sentinel instead.  Operators
-  // can still request the selector explicitly with HM_NO_SCOREBOARD=0.
-  if (env.value("HM_NO_SCOREBOARD").isEmpty()) {
-    env.insert("HM_NO_SCOREBOARD", "1");
-  }
   const bool embedded_render = std::any_of(
       args.begin(), args.end(), [](const QString& argument) { return argument.startsWith("--render-window-id="); });
+  pipeline_render_embedded_ = embedded_render;
   const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
   if (preview_surface_)
     preview_surface_->setVisible(embedded_render);
+  if (preview_render_target_)
+    preview_render_target_->setVisible(false);
   if (stitched_surface_)
     stitched_surface_->setVisible(embedded_render);
+  if (stitched_render_target_)
+    stitched_render_target_->setVisible(false);
   for (QWidget* surface : camera_preview_surfaces_) {
     if (surface)
       surface->setVisible(embedded_render);
+  }
+  for (QWidget* target : camera_preview_render_targets_) {
+    if (target)
+      target->setVisible(false);
+  }
+  if (embedded_render) {
+    if (preview_surface_)
+      preview_surface_->raise();
+    if (stitched_surface_)
+      stitched_surface_->raise();
+    for (QWidget* surface : camera_preview_surfaces_) {
+      if (surface)
+        surface->raise();
+    }
   }
   if (preview_external_notice_)
     preview_external_notice_->setVisible(!embedded_render);
@@ -2043,7 +2517,7 @@ void HStreamWindow::startPipeline() {
   if (stitched_fullscreen_button_)
     stitched_fullscreen_button_->setEnabled(embedded_render && active_run_is_calibration_);
   if (render_video && !embedded_render)
-    appendLog("nv3dsink render output will open in a separate DeepStream window; embedded preview is disabled");
+    appendLog("render output will open in a separate DeepStream window; embedded preview is disabled");
   else if (!render_video)
     appendLog("video rendering disabled; pipeline will run without a display sink");
   if (calibration_pending_) {
@@ -2152,6 +2626,7 @@ void HStreamWindow::pauseOrResumePipeline() {
 
 void HStreamWindow::stopPipeline() {
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
+    closeStitchingCalibrationDialog();
     pipeline_state_->setText("STOPPED");
     preview_status_->setText("Pipeline stopped");
     if (stitched_status_)
@@ -2162,6 +2637,8 @@ void HStreamWindow::stopPipeline() {
   }
   appendLog("pipeline stop requested");
   pipeline_stop_requested_ = true;
+  if (calibration_pending_ && calibration_detail_ && !calibration_dialog_failed_)
+    calibration_detail_->setText("Stopping calibration…");
 #ifdef Q_OS_UNIX
   const qint64 pid = pipeline_process_->processId();
   const pid_t target = pipeline_uses_process_group_ ? -static_cast<pid_t>(pid) : static_cast<pid_t>(pid);
@@ -2230,6 +2707,9 @@ void HStreamWindow::handlePipelineStarted() {
     }
   }
   appendLog(QString("pipeline started pid=%1").arg(pipeline_process_ ? pipeline_process_->processId() : 0));
+  if (pipeline_render_embedded_ && preview_frame_timer_) {
+    preview_frame_timer_->start();
+  }
   updateRunControls();
 }
 
@@ -2245,10 +2725,26 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   }
   pipeline_paused_ = false;
   pipeline_uses_process_group_ = false;
+  pipeline_render_embedded_ = false;
+  if (preview_frame_timer_)
+    preview_frame_timer_->stop();
+  preview_frame_request_pending_ = false;
+  if (!preview_frame_request_path_.isEmpty())
+    QFile::remove(preview_frame_request_path_);
+  preview_frame_request_path_.clear();
+  preview_frame_request_channel_.clear();
+  clearPreviewFrames();
   const bool stopped_by_user = pipeline_stop_requested_;
   pipeline_stop_requested_ = false;
   if (calibration_pending_ && !stopped_by_user) {
     appendLog("one-pass stitching calibration ended before completion; calibration remains pending");
+    if (!calibration_dialog_failed_) {
+      failStitchingCalibration(QString("The calibration process ended before it finished (exit %1, %2).")
+                                   .arg(exit_code)
+                                   .arg(exit_status == QProcess::NormalExit ? "normal exit" : "crashed"));
+    }
+  } else if (calibration_pending_ && stopped_by_user) {
+    closeStitchingCalibrationDialog();
   }
   failPendingRuntimeControls("pipeline-finished");
   calibration_pending_ = false;
@@ -2265,6 +2761,14 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   updateRunControls();
 }
 
+void HStreamWindow::clearPreviewFrames() {
+  set_snapshot_frame(preview_surface_, QImage());
+  set_snapshot_frame(stitched_surface_, QImage());
+  for (QWidget* surface : camera_preview_surfaces_) {
+    set_snapshot_frame(surface, QImage());
+  }
+}
+
 void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   const QString error_message = QString("pipeline process error=%1 message=%2")
                                     .arg(static_cast<int>(error))
@@ -2277,8 +2781,15 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
     updateRunControls();
     return;
   }
+  if (pipeline_stop_requested_) {
+    appendLog(error_message + "; pipeline is stopping at the user's request");
+    return;
+  }
+  if (calibration_pending_ && !calibration_dialog_failed_)
+    failStitchingCalibration(QString("The calibration process could not continue: %1").arg(error_message));
   pipeline_paused_ = false;
   pipeline_uses_process_group_ = false;
+  pipeline_render_embedded_ = false;
   pipeline_stop_requested_ = false;
   failPendingRuntimeControls("pipeline-error");
   calibration_pending_ = false;
@@ -2312,38 +2823,13 @@ void HStreamWindow::readPipelineOutput() {
       line.remove('\r');
       if (!line.trimmed().isEmpty()) {
         const QString trimmed = line.trimmed();
+        if (handlePreviewFrameResponse(trimmed)) {
+          continue;
+        }
         appendLog(trimmed);
         handleRuntimeControlResponse(trimmed);
-        if (calibration_pending_ && !active_run_game_id_.isEmpty() &&
-            trimmed.contains(kOnePassStitchingCompleteMarker) &&
-            saveStitchingCalibrationState(active_run_game_id_, active_calibration_control_points_, "complete")) {
-          calibration_pending_ = false;
-          const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
-          preview_status_->setText(
-              active_run_is_calibration_ ? (render_video ? "Continuous stitched preview running"
-                                                         : "Stitching pipeline running without video rendering")
-                                         : (render_video ? "Program pipeline playing after stitching calibration"
-                                                         : "Program pipeline running without video rendering after "
-                                                           "stitching calibration"));
-          if (stitched_status_) {
-            stitched_status_->setText(
-                active_run_is_calibration_ ? (render_video ? "Stitching calibrated\nContinuous stitched preview running"
-                                                           : "Stitching calibrated\nVideo rendering disabled")
-                                           : "Stitching calibrated during program playback");
-          }
-          appendLog(
-              active_run_is_calibration_
-                  ? (render_video
-                         ? "one-pass stitching calibration complete; continuous stitched preview running; camera "
-                           "controls remain available"
-                         : "one-pass stitching calibration complete; pipeline continuing without video rendering; "
-                           "camera controls remain available")
-                  : (render_video
-                         ? "one-pass stitching calibration complete; continuous program playback running; camera "
-                           "controls remain available"
-                         : "one-pass stitching calibration complete; program pipeline continuing without video "
-                           "rendering; camera controls remain available"));
-        }
+        handleScoreboardSelectorOutput(trimmed);
+        handleStitchingCalibrationOutput(trimmed);
       }
     }
   };
@@ -2351,6 +2837,173 @@ void HStreamWindow::readPipelineOutput() {
   if (pipeline_process_->processChannelMode() != QProcess::MergedChannels) {
     drain(pipeline_process_->readAllStandardError(), &pipeline_stderr_buffer_);
   }
+}
+
+void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
+  static const QRegularExpression selector_url(
+      R"((https?://[^\s]+/\?token=[0-9a-fA-F]{64}))", QRegularExpression::CaseInsensitiveOption);
+  const QRegularExpressionMatch match = selector_url.match(line);
+  if (match.hasMatch()) {
+    const QString url_text = match.captured(1);
+    if (url_text == scoreboard_selector_url_) {
+      return;
+    }
+    scoreboard_selector_url_ = url_text;
+    if (preview_status_) {
+      preview_status_->setText("Waiting for scoreboard selection in browser");
+    }
+
+    bool opened = false;
+    const QString browser_command = qEnvironmentVariable("HSTREAM_SCOREBOARD_BROWSER").trimmed();
+    if (!browser_command.isEmpty()) {
+      opened = QProcess::startDetached(browser_command, {url_text});
+    } else {
+      opened = QDesktopServices::openUrl(QUrl(url_text));
+    }
+    appendLog(
+        opened ? QString("scoreboard selector opened in browser: %1").arg(url_text)
+               : QString("could not open scoreboard selector automatically; open this URL: %1").arg(url_text));
+    return;
+  }
+
+  if (!scoreboard_selector_url_.isEmpty() &&
+      (line.contains("Loaded scoreboard perspective polygon") || line.contains("Scoreboard overlay disabled"))) {
+    if (preview_status_) {
+      const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
+      preview_status_->setText(
+          active_run_is_calibration_
+              ? (render_video ? "Continuous stitched preview running"
+                              : "Stitching pipeline running without video rendering")
+              : (render_video ? "Program pipeline running" : "Program pipeline running without video rendering"));
+    }
+    appendLog("scoreboard selection complete; pipeline continuing");
+  }
+}
+
+void HStreamWindow::requestPreviewFrame() {
+  if (!pipeline_render_embedded_ || preview_frame_request_pending_ || pipeline_paused_ || !pipeline_process_ ||
+      pipeline_process_->state() == QProcess::NotRunning || !preview_tabs_) {
+    return;
+  }
+
+  const int tab_index = preview_tabs_->currentIndex();
+  const QString channel =
+      hm::ui_internal::preview_channel_for_tab(tab_index, static_cast<int>(camera_preview_surfaces_.size()));
+  if (channel.isEmpty())
+    return;
+
+  QDir temporary_root(QStandardPaths::writableLocation(QStandardPaths::TempLocation));
+  const quint64 request_generation = ++preview_frame_request_generation_;
+  const QString path = temporary_root.filePath(QString("hstream-ui-preview-%1-%2-%3.jpg")
+                                                   .arg(QCoreApplication::applicationPid())
+                                                   .arg(channel)
+                                                   .arg(request_generation));
+  QFile::remove(path);
+  const QByteArray command = QString("@capture-preview-frame %1 %2\n").arg(channel, path).toUtf8();
+  if (pipeline_process_->write(command) != command.size()) {
+    return;
+  }
+  preview_frame_request_pending_ = true;
+  preview_frame_request_channel_ = channel;
+  preview_frame_request_path_ = path;
+  QTimer::singleShot(3000, this, [this, request_generation, channel, path]() {
+    if (!preview_frame_request_pending_ || preview_frame_request_generation_ != request_generation ||
+        preview_frame_request_channel_ != channel || preview_frame_request_path_ != path) {
+      return;
+    }
+    preview_frame_request_pending_ = false;
+    QFile::remove(preview_frame_request_path_);
+    preview_frame_request_path_.clear();
+    preview_frame_request_channel_.clear();
+  });
+}
+
+bool HStreamWindow::handlePreviewFrameResponse(const QString& line) {
+  static const QRegularExpression success_pattern(
+      R"(^runtime preview frame channel=(\S+) path=(.+) width=(\d+) height=(\d+)$)");
+  const QRegularExpressionMatch success = success_pattern.match(line);
+  if (success.hasMatch()) {
+    const QString channel = success.captured(1);
+    const QString path = success.captured(2);
+    const bool is_current_request = preview_frame_request_pending_ && channel == preview_frame_request_channel_ &&
+        path == preview_frame_request_path_;
+    if (!is_current_request) {
+      QFile::remove(path);
+      return true;
+    }
+    const QImage frame(path);
+    if (!frame.isNull()) {
+      if (channel == "main") {
+        set_snapshot_frame(preview_surface_, frame);
+      } else if (channel == "stitched") {
+        set_snapshot_frame(stitched_surface_, frame);
+      } else if (channel.startsWith("source")) {
+        bool valid_index = false;
+        const int source_index = channel.mid(6).toInt(&valid_index);
+        if (valid_index && source_index >= 0 && source_index < static_cast<int>(camera_preview_surfaces_.size())) {
+          set_snapshot_frame(camera_preview_surfaces_[source_index], frame);
+        }
+      }
+      if (preview_frame_channels_received_.insert(channel).second) {
+        const QString artifact_dir = qEnvironmentVariable("HSTREAM_UI_E2E_ARTIFACT_DIR");
+        if (!artifact_dir.isEmpty()) {
+          frame.save(QDir(artifact_dir).filePath(QString("backend-%1-preview.jpg").arg(channel)));
+        }
+        appendLog(
+            QString("preview frame active channel=%1 size=%2x%3").arg(channel).arg(frame.width()).arg(frame.height()));
+      }
+    } else if (!preview_frame_error_logged_) {
+      preview_frame_error_logged_ = true;
+      appendLog(QString("preview frame could not be loaded from %1").arg(path));
+    }
+    QFile::remove(path);
+    preview_frame_request_pending_ = false;
+    preview_frame_request_path_.clear();
+    preview_frame_request_channel_.clear();
+    return true;
+  }
+
+  static const QRegularExpression unavailable_pattern(R"(^runtime preview frame unavailable channel=(\S+) path=(.+)$)");
+  const QRegularExpressionMatch unavailable = unavailable_pattern.match(line);
+  static const QRegularExpression failed_pattern(
+      R"(^runtime preview frame failed channel=(\S+) path=(.+) message=(.*)$)");
+  const QRegularExpressionMatch failed = failed_pattern.match(line);
+  if (!unavailable.hasMatch() && !failed.hasMatch()) {
+    return false;
+  }
+  if (failed.hasMatch() && !preview_frame_error_logged_) {
+    preview_frame_error_logged_ = true;
+    appendLog(line);
+  }
+  const QString response_channel = unavailable.hasMatch() ? unavailable.captured(1) : failed.captured(1);
+  const QString response_path = unavailable.hasMatch() ? unavailable.captured(2) : failed.captured(2);
+  if (preview_frame_request_pending_ && response_channel == preview_frame_request_channel_ &&
+      response_path == preview_frame_request_path_) {
+    preview_frame_request_pending_ = false;
+    QFile::remove(preview_frame_request_path_);
+    preview_frame_request_path_.clear();
+    preview_frame_request_channel_.clear();
+  }
+  return true;
+}
+
+void HStreamWindow::switchPipelineRenderTarget(int tab_index) {
+  if (!pipeline_render_embedded_ || !pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning ||
+      tab_index < 0 || tab_index > 1) {
+    return;
+  }
+  QWidget* target = tab_index == 0 ? preview_render_target_ : stitched_render_target_;
+  if (!target)
+    return;
+  const WId window_id = target->winId();
+  if (window_id == 0)
+    return;
+  const QByteArray command = QString("@set-render-window %1\n").arg(static_cast<qulonglong>(window_id)).toUtf8();
+  if (pipeline_process_->write(command) != command.size()) {
+    appendLog(QString("could not move pipeline video to the %1 view").arg(tab_index == 0 ? "Program" : "Stitched"));
+    return;
+  }
+  appendLog(QString("pipeline video target switched to %1 view").arg(tab_index == 0 ? "Program" : "Stitched"));
 }
 
 void HStreamWindow::togglePreviewFullscreen(int tab_index) {
@@ -2509,6 +3162,21 @@ void HStreamWindow::loadSavedControlConfig() {
   }
   try {
     YAML::Node config = **loaded_config;
+    auto set_control_without_signal = [this](const QString& id, int value) {
+      const auto slider_it = camera_sliders_.find(id);
+      if (slider_it == camera_sliders_.end()) {
+        return false;
+      }
+      const bool blocked = slider_it->second->blockSignals(true);
+      slider_it->second->setValue(value);
+      slider_it->second->blockSignals(blocked);
+      const int applied_value = slider_it->second->value();
+      const auto label_it = camera_value_labels_.find(id);
+      if (label_it != camera_value_labels_.end()) {
+        label_it->second->setText(QString::number(applied_value));
+      }
+      return true;
+    };
     YAML::Node control_points;
     if (control_points_spin_ &&
         lookup_yaml_path(config, "hstream_ui.stitching_calibration.control_points", &control_points) &&
@@ -2517,26 +3185,35 @@ void HStreamWindow::loadSavedControlConfig() {
       control_points_spin_->setValue(control_points.as<int>());
       control_points_spin_->blockSignals(blocked);
     }
-    YAML::Node controls = config["hstream_ui"]["camera_controls"];
-    if (!controls || !controls.IsMap()) {
-      return;
+    YAML::Node fixed_edge_rotation;
+    if (lookup_yaml_path(config, "rink.camera.fixed_edge_rotation_angle", &fixed_edge_rotation)) {
+      auto angle_x10 = [](const YAML::Node& value) { return static_cast<int>(std::lround(value.as<double>() * 10.0)); };
+      if (fixed_edge_rotation.IsSequence() && fixed_edge_rotation.size() == 2) {
+        set_control_without_signal("Link_Fixed_Edge_Rotation_Left_Right", 0);
+        set_control_without_signal("Left_Fixed_Edge_Rotation_Angle_x10", angle_x10(fixed_edge_rotation[0]));
+        set_control_without_signal("Right_Fixed_Edge_Rotation_Angle_x10", angle_x10(fixed_edge_rotation[1]));
+      } else if (fixed_edge_rotation.IsScalar()) {
+        const int value = angle_x10(fixed_edge_rotation);
+        set_control_without_signal("Link_Fixed_Edge_Rotation_Left_Right", 1);
+        set_control_without_signal("Left_Fixed_Edge_Rotation_Angle_x10", value);
+        set_control_without_signal("Right_Fixed_Edge_Rotation_Angle_x10", value);
+      } else {
+        appendLog("ignored invalid rink.camera.fixed_edge_rotation_angle; expected one value or [left, right]");
+      }
     }
+    YAML::Node controls = config["hstream_ui"]["camera_controls"];
     int loaded = 0;
-    for (const auto& entry : controls) {
-      const QString id = QString::fromStdString(entry.first.as<std::string>());
-      const auto slider_it = camera_sliders_.find(id);
-      if (slider_it == camera_sliders_.end()) {
-        continue;
+    if (controls && controls.IsMap()) {
+      for (const auto& entry : controls) {
+        const QString id = QString::fromStdString(entry.first.as<std::string>());
+        if (set_control_without_signal(id, entry.second.as<int>())) {
+          ++loaded;
+        }
       }
-      const bool blocked = slider_it->second->blockSignals(true);
-      const int value = entry.second.as<int>();
-      slider_it->second->setValue(value);
-      slider_it->second->blockSignals(blocked);
-      const auto label_it = camera_value_labels_.find(id);
-      if (label_it != camera_value_labels_.end()) {
-        label_it->second->setText(QString::number(value));
-      }
-      ++loaded;
+    }
+    if (cameraControlValue("Link_Fixed_Edge_Rotation_Left_Right") != 0) {
+      set_control_without_signal(
+          "Right_Fixed_Edge_Rotation_Angle_x10", cameraControlValue("Left_Fixed_Edge_Rotation_Angle_x10"));
     }
     appendLog(QString("loaded %1 saved camera controls").arg(loaded));
   } catch (const std::exception& exc) {
@@ -2644,6 +3321,22 @@ bool HStreamWindow::applySavedControlConfig(
   if (has_control(controls, "Stitch_Rotate_Degrees")) {
     config["stitching"]["post_stitch_rotate_degrees"] = 90 - slider_value("Stitch_Rotate_Degrees");
     mark_runtime_key("stitching.post_stitch_rotate_degrees");
+  }
+  const bool fixed_edge_rotation_changed = has_control(controls, "Link_Fixed_Edge_Rotation_Left_Right") ||
+      has_control(controls, "Left_Fixed_Edge_Rotation_Angle_x10") ||
+      has_control(controls, "Right_Fixed_Edge_Rotation_Angle_x10");
+  if (fixed_edge_rotation_changed) {
+    const double left_angle = slider_value("Left_Fixed_Edge_Rotation_Angle_x10") / 10.0;
+    const double right_angle = slider_value("Right_Fixed_Edge_Rotation_Angle_x10") / 10.0;
+    if (slider_value("Link_Fixed_Edge_Rotation_Left_Right") != 0) {
+      config["rink"]["camera"]["fixed_edge_rotation_angle"] = left_angle;
+    } else {
+      YAML::Node angles(YAML::NodeType::Sequence);
+      angles.push_back(left_angle);
+      angles.push_back(right_angle);
+      config["rink"]["camera"]["fixed_edge_rotation_angle"] = angles;
+    }
+    mark_runtime_key("rink.camera.fixed_edge_rotation_angle");
   }
   bool rotation_changed_for_artifacts = false;
   if (has_control(controls, "Stitch_Rotate_Degrees")) {
@@ -4114,6 +4807,14 @@ void HStreamWindow::addRtspOutput() {
 }
 
 void HStreamWindow::appendLog(const QString& message) {
+  if (capture_complete_log_) {
+    complete_log_ += QString("%1 %2\n").arg(timestamp(), message);
+    if (complete_log_.size() > kMaxCapturedLogCharacters) {
+      const qsizetype overflow = complete_log_.size() - kMaxCapturedLogCharacters;
+      const qsizetype next_line = complete_log_.indexOf('\n', overflow);
+      complete_log_.remove(0, next_line >= 0 ? next_line + 1 : overflow);
+    }
+  }
   const QString html =
       QString("<span style=\"color:#667085\">%1</span> %2").arg(timestamp().toHtmlEscaped(), ansi_to_html(message));
   log_->append(html);
@@ -4298,6 +4999,28 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
     const int post_stitch_rotate_degrees = 90 - value;
     return send_property("hmstitcher0", "post-stitch-rotate-degrees", QString::number(post_stitch_rotate_degrees));
   }
+  const QSet<QString> fixed_edge_rotation_controls = {
+      "Link_Fixed_Edge_Rotation_Left_Right",
+      "Left_Fixed_Edge_Rotation_Angle_x10",
+      "Right_Fixed_Edge_Rotation_Angle_x10",
+  };
+  if (fixed_edge_rotation_controls.contains(id)) {
+    const bool linked = cameraControlValue("Link_Fixed_Edge_Rotation_Left_Right") != 0;
+    const double left_angle = cameraControlValue("Left_Fixed_Edge_Rotation_Angle_x10") / 10.0;
+    const double right_angle = cameraControlValue("Right_Fixed_Edge_Rotation_Angle_x10") / 10.0;
+    auto send_to_both_stages = [&](const QString& property, double angle) {
+      const QString runtime_value = QString::number(angle, 'f', 1);
+      const bool tracker_sent = send_property("dsplaytracker0", property, runtime_value);
+      const bool cropper_sent = send_property("playcropper0", property, runtime_value);
+      return tracker_sent && cropper_sent;
+    };
+    if (linked) {
+      return send_to_both_stages("fixed-edge-rotation-angle", left_angle);
+    }
+    const bool left_sent = send_to_both_stages("fixed-edge-rotation-angle-left", left_angle);
+    const bool right_sent = send_to_both_stages("fixed-edge-rotation-angle-right", right_angle);
+    return left_sent && right_sent;
+  }
   const QSet<QString> playtracker_live_controls = {
       "Max_Speed_X_x10",
       "Max_Speed_Y_x10",
@@ -4314,6 +5037,32 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
     return send_property("dsplaytracker0", "config-file", runtime_config_path);
   }
   return false;
+}
+
+void HStreamWindow::synchronizeFixedEdgeRotationControls(const QString& changed_id, int value) {
+  const QString link_id = "Link_Fixed_Edge_Rotation_Left_Right";
+  const QString left_id = "Left_Fixed_Edge_Rotation_Angle_x10";
+  const QString right_id = "Right_Fixed_Edge_Rotation_Angle_x10";
+  if (changed_id != link_id && changed_id != left_id && changed_id != right_id) {
+    return;
+  }
+  const bool linked = changed_id == link_id ? value != 0 : cameraControlValue(link_id) != 0;
+  if (!linked) {
+    return;
+  }
+  const QString target_id = changed_id == right_id ? left_id : right_id;
+  const int linked_value = changed_id == link_id ? cameraControlValue(left_id) : value;
+  const auto slider_it = camera_sliders_.find(target_id);
+  if (slider_it == camera_sliders_.end() || slider_it->second->value() == linked_value) {
+    return;
+  }
+  const bool blocked = slider_it->second->blockSignals(true);
+  slider_it->second->setValue(linked_value);
+  slider_it->second->blockSignals(blocked);
+  const auto label_it = camera_value_labels_.find(target_id);
+  if (label_it != camera_value_labels_.end()) {
+    label_it->second->setText(QString::number(slider_it->second->value()));
+  }
 }
 
 QSlider* HStreamWindow::addSlider(
@@ -4335,6 +5084,7 @@ QSlider* HStreamWindow::addSlider(
   camera_defaults_[id] = value;
   connect(slider, &QSlider::valueChanged, this, [this, id, value_label](int new_value) {
     value_label->setText(QString::number(new_value));
+    synchronizeFixedEdgeRotationControls(id, new_value);
     const bool sent_live = sendLiveCameraControl(id, new_value);
     appendLog(
         QString("camera control %1=%2 apply=%3").arg(id).arg(new_value).arg(sent_live ? "pending" : "save/restart"));

@@ -26,8 +26,8 @@
 #include <vector>
 
 #include <cuda_runtime_api.h>
-#include <gst/sdp/sdp.h>
 #include <gst/rtsp-server/rtsp-server.h>
+#include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
 #include <json-glib/json-glib.h>
 #include <libsoup/soup.h>
@@ -59,6 +59,14 @@ constexpr guint kWebRtcPayloadType = 96;
 constexpr guint kDefaultWebRtcPort = 8080;
 
 #ifndef IS_TEGRA
+bool use_xvideo_render_sink() {
+  const char* configured = std::getenv("HM_RENDER_SINK");
+  return configured != nullptr &&
+      (g_ascii_strcasecmp(configured, "ximagesink") == 0 || g_ascii_strcasecmp(configured, "ximage") == 0 ||
+       g_ascii_strcasecmp(configured, "xvimagesink") == 0 || g_ascii_strcasecmp(configured, "xvideo") == 0 ||
+       g_ascii_strcasecmp(configured, "xv") == 0);
+}
+
 bool use_nv3d_render_sink() {
   const char* configured = std::getenv("HM_RENDER_SINK");
   if (configured != nullptr && *configured != '\0') {
@@ -66,13 +74,14 @@ bool use_nv3d_render_sink() {
     std::transform(requested.begin(), requested.end(), requested.begin(), [](unsigned char c) {
       return static_cast<char>(std::toupper(c));
     });
-    if (requested == "NVEGLGLESSINK" || requested == "EGL") {
+    if (requested == "NVEGLGLESSINK" || requested == "EGL" || requested == "XIMAGESINK" || requested == "XIMAGE" ||
+        requested == "XVIMAGESINK" || requested == "XVIDEO" || requested == "XV") {
       return false;
     }
     if (requested != "NV3DSINK" && requested != "NV3D") {
       g_printerr(
           "Unsupported HM_RENDER_SINK=%s; using the desktop nv3dsink default "
-          "(supported values: nv3dsink, nveglglessink)\n",
+          "(supported values: nv3dsink, nveglglessink, ximagesink)\n",
           configured);
     }
   }
@@ -452,8 +461,10 @@ gboolean start_webrtc_signaling(GstElement* webrtc, const NvDsSinkEncoderConfig*
 
   soup_server_add_handler(signal_server->server, "/", on_webrtc_http_request, signal_server, NULL);
   soup_server_add_handler(signal_server->server, "/index.html", on_webrtc_http_request, signal_server, NULL);
-  soup_server_add_websocket_handler(signal_server->server, "/ws", NULL, NULL, on_webrtc_ws_connected, signal_server, NULL);
-  if (!soup_server_listen_all(signal_server->server, signal_server->port, static_cast<SoupServerListenOptions>(0), &error)) {
+  soup_server_add_websocket_handler(
+      signal_server->server, "/ws", NULL, NULL, on_webrtc_ws_connected, signal_server, NULL);
+  if (!soup_server_listen_all(
+          signal_server->server, signal_server->port, static_cast<SoupServerListenOptions>(0), &error)) {
     g_printerr("Failed to listen for WebRTC signaling on port %u: %s\n", signal_server->port, error->message);
     g_error_free(error);
     g_object_unref(signal_server->server);
@@ -607,8 +618,8 @@ gboolean link_webrtc_rtp_src_to_sink(
   }
 
   {
-    std::string ghost_pad_name = std::string("webrtc_") + (track_name ? track_name : "rtp") + "_in_" +
-        std::to_string(webrtc_in_counter++);
+    std::string ghost_pad_name =
+        std::string("webrtc_") + (track_name ? track_name : "rtp") + "_in_" + std::to_string(webrtc_in_counter++);
     ret = hm::connectElementsWithGhostPads(rtp_src_element, "src", webrtc, webrtc_sink_pad_name, ghost_pad_name);
   }
 
@@ -773,12 +784,15 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
   gboolean ret = FALSE;
   gchar elem_name[50];
   GstElement* connect_to;
+  GstElement* system_memory_transform = nullptr;
+  GstElement* system_memory_cap_filter = nullptr;
   GstCaps* caps = NULL;
 
   const guint uid = next_uid++;
 
 #ifndef IS_TEGRA
   const bool use_nv3d = use_nv3d_render_sink();
+  const bool use_xvideo = use_xvideo_render_sink();
 #endif
 
   struct cudaDeviceProp prop;
@@ -796,19 +810,22 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
 #ifndef IS_TEGRA
     case NV_DS_SINK_RENDER_EGL:
       GST_CAT_INFO(NVDS_APP, "NVvideo renderer\n");
-      bin->sink = gst_element_factory_make(use_nv3d ? NVDS_ELEM_SINK_3D : NVDS_ELEM_SINK_EGL, elem_name);
-      g_object_set(
-          G_OBJECT(bin->sink),
-          "window-x",
-          config->offset_x,
-          "window-y",
-          config->offset_y,
-          "window-width",
-          config->width,
-          "window-height",
-          config->height,
-          NULL);
-      g_object_set(G_OBJECT(bin->sink), "enable-last-sample", FALSE, NULL);
+      bin->sink = gst_element_factory_make(
+          use_nv3d ? NVDS_ELEM_SINK_3D : (use_xvideo ? "ximagesink" : NVDS_ELEM_SINK_EGL), elem_name);
+      if (!use_xvideo) {
+        g_object_set(
+            G_OBJECT(bin->sink),
+            "window-x",
+            config->offset_x,
+            "window-y",
+            config->offset_y,
+            "window-width",
+            config->width,
+            "window-height",
+            config->height,
+            NULL);
+      }
+      g_object_set(G_OBJECT(bin->sink), "enable-last-sample", use_xvideo ? TRUE : FALSE, NULL);
       break;
 #endif
     case NV_DS_SINK_RENDER_DRM:
@@ -858,7 +875,28 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
     goto done;
   }
 
+  // The embedded X11 preview is observational and must never throttle or drop
+  // the processing/encode branch because inference temporarily falls behind
+  // the input clock (for example while the first TensorRT context starts).
+  // A synchronized ximagesink can otherwise reject every late frame and
+  // leave an application-owned window permanently black even though valid
+  // BGRx samples reach the sink. Encoded and self-managed render sinks retain
+  // their configured timing behavior.
+#ifndef IS_TEGRA
+  g_object_set(
+      G_OBJECT(bin->sink),
+      "sync",
+      use_xvideo ? FALSE : config->sync,
+      "max-lateness",
+      -1,
+      "async",
+      FALSE,
+      "qos",
+      use_xvideo ? FALSE : config->qos,
+      NULL);
+#else
   g_object_set(G_OBJECT(bin->sink), "sync", config->sync, "max-lateness", -1, "async", FALSE, "qos", config->qos, NULL);
+#endif
 
   if (!prop.integrated
 #ifndef IS_TEGRA
@@ -889,18 +927,33 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
     gst_bin_add(GST_BIN(bin->bin), bin->transform);
 
     if (!prop.integrated || use_nv3d) {
-      caps = gst_caps_new_empty_simple("video/x-raw");
+      if (!use_nv3d) {
+        caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "NV12", NULL);
+        g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin_system_transform%d", uid);
+        system_memory_transform = gst_element_factory_make("videoconvert", elem_name);
+        g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin_system_caps%d", uid);
+        system_memory_cap_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, elem_name);
+        if (!system_memory_transform || !system_memory_cap_filter) {
+          NVGSTDS_ERR_MSG_V("Failed to create system-memory render conversion for embedded EGL output");
+          goto done;
+        }
+        GstCaps* system_caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "BGRx", NULL);
+        g_object_set(G_OBJECT(system_memory_cap_filter), "caps", system_caps, NULL);
+        gst_caps_unref(system_caps);
+        gst_bin_add_many(GST_BIN(bin->bin), system_memory_transform, system_memory_cap_filter, NULL);
+      } else {
+        caps = gst_caps_new_empty_simple("video/x-raw");
+      }
 
-      // DeepStream 9.1's nveglglessink crashes in its render thread when it
-      // receives NVMM buffers with the GStreamer version shipped on this
-      // host.  Its system-memory path implements GstVideoOverlay correctly,
-      // including rendering into an application-owned X11 child window.  Do
-      // the device-to-host conversion here for the embeddable EGL sink; the
-      // self-managed nv3dsink path is unchanged.
+      // DeepStream 9.1's nveglglessink crashes in its render thread when it receives NVMM buffers with the GStreamer
+      // version shipped on this host. nvvideoconvert's nominal system-memory output still wraps an
+      // NVBUF_MEM_SYSTEM surface, which X11 video sinks also cannot consume directly. For application-owned X11
+      // output, first copy to pinned NV12 and then force a standard videoconvert allocation to ordinary BGRx system
+      // memory. The self-managed nv3dsink path is unchanged.
       g_object_set(G_OBJECT(bin->cap_filter), "caps", caps, NULL);
 
       g_object_set(G_OBJECT(bin->transform), "gpu-id", config->gpu_id, NULL);
-      g_object_set(G_OBJECT(bin->transform), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
+      g_object_set(G_OBJECT(bin->transform), "nvbuf-memory-type", use_nv3d ? config->nvbuf_memory_type : 1, NULL);
     }
   }
 #endif
@@ -915,6 +968,16 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
   gst_bin_add_many(GST_BIN(bin->bin), bin->queue, bin->sink, NULL);
 
   connect_to = bin->sink;
+
+  if (system_memory_cap_filter) {
+    NVGSTDS_LINK_ELEMENT(system_memory_cap_filter, connect_to);
+    connect_to = system_memory_cap_filter;
+  }
+
+  if (system_memory_transform) {
+    NVGSTDS_LINK_ELEMENT(system_memory_transform, connect_to);
+    connect_to = system_memory_transform;
+  }
 
   if (bin->cap_filter) {
     NVGSTDS_LINK_ELEMENT(bin->cap_filter, connect_to);

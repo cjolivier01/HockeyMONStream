@@ -104,8 +104,7 @@ static guint get_output_batch_size(GstVideoPrep* videoprep, GstCaps* input_caps)
     }
   }
   if (videoprep->priv) {
-    const guint output_batch_size =
-        videoprep->priv->GetOutputBatchSize(input_batch_size, videoprep->num_batch_buffers);
+    const guint output_batch_size = videoprep->priv->GetOutputBatchSize(input_batch_size, videoprep->num_batch_buffers);
     if (output_batch_size > 0) {
       return output_batch_size;
     }
@@ -146,6 +145,8 @@ enum {
   PROP_PLUGIN_PRIVATE_CONFIG,
   PROP_POST_STITCH_ROTATE_DEGREES,
   PROP_FIXED_EDGE_ROTATION_ANGLE,
+  PROP_FIXED_EDGE_ROTATION_ANGLE_LEFT,
+  PROP_FIXED_EDGE_ROTATION_ANGLE_RIGHT,
   PROP_DYNAMIC_ACCELERATION_SCALING,
   PROP_LAST_PROPERTY_SET_OK,
   PROP_SILENT,
@@ -1074,9 +1075,9 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
       g_param_spec_string(
           CONFIG_GROUP_VIDEOPREP_PROPERTY_CONFIG_FILE,
           "Config File",
-	          "Config File",
-	          NULL,
-	          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+          "Config File",
+          NULL,
+          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
 
   g_object_class_install_property(
       gobject_class,
@@ -1117,6 +1118,30 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
           "fixed-edge-rotation-angle",
           "Fixed edge rotation angle",
           "Runtime fixed-edge rotation angle consumed by playcropper and vpplaytracker",
+          -180.0,
+          180.0,
+          10.0,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+
+  g_object_class_install_property(
+      gobject_class,
+      PROP_FIXED_EDGE_ROTATION_ANGLE_LEFT,
+      g_param_spec_double(
+          "fixed-edge-rotation-angle-left",
+          "Left fixed edge rotation angle",
+          "Runtime fixed-edge rotation angle used on the left half of the panorama",
+          -180.0,
+          180.0,
+          10.0,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+
+  g_object_class_install_property(
+      gobject_class,
+      PROP_FIXED_EDGE_ROTATION_ANGLE_RIGHT,
+      g_param_spec_double(
+          "fixed-edge-rotation-angle-right",
+          "Right fixed edge rotation angle",
+          "Runtime fixed-edge rotation angle used on the right half of the panorama",
           -180.0,
           180.0,
           10.0,
@@ -1185,15 +1210,21 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->plugin_type = NULL; // strdup("videoprep");
   videoprep->post_stitch_rotate_degrees = 0.0;
   videoprep->fixed_edge_rotation_angle = 10.0;
+  videoprep->fixed_edge_rotation_angle_left = 10.0;
+  videoprep->fixed_edge_rotation_angle_right = 10.0;
   videoprep->dynamic_acceleration_scaling = 1.0;
   videoprep->last_property_set_ok = TRUE;
   videoprep->post_stitch_rotate_degrees_set = FALSE;
   videoprep->fixed_edge_rotation_angle_set = FALSE;
+  videoprep->fixed_edge_rotation_angle_left_set = FALSE;
+  videoprep->fixed_edge_rotation_angle_right_set = FALSE;
   videoprep->dynamic_acceleration_scaling_set = FALSE;
   videoprep->property_set_sequence = 0;
   videoprep->plugin_private_config_sequence = 0;
   videoprep->post_stitch_rotate_degrees_sequence = 0;
   videoprep->fixed_edge_rotation_angle_sequence = 0;
+  videoprep->fixed_edge_rotation_angle_left_sequence = 0;
+  videoprep->fixed_edge_rotation_angle_right_sequence = 0;
   videoprep->dynamic_acceleration_scaling_sequence = 0;
   videoprep->priv_factory = new VideoPrepLibrary_Factory();
 
@@ -1293,8 +1324,7 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
       PROPERTY_SET_CASE(PROP_OUTPUT_WIDTH, videoprep->output_width);
       PROPERTY_SET_CASE(PROP_OUTPUT_HEIGHT, videoprep->output_height);
       PROPERTY_SET_CASE(PROP_PLUGIN_TYPE, videoprep->plugin_type);
-    case PROP_CONFIG_FILE:
-    {
+    case PROP_CONFIG_FILE: {
       gchar* previous_config_file = videoprep->config_file ? g_strdup(videoprep->config_file) : nullptr;
       hm::gst::set_value(videoprep->config_file, value);
       if (videoprep->config_file && !set_priv_property("config-file", videoprep->config_file)) {
@@ -1312,8 +1342,7 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
         videoprep->last_property_set_ok = videoprep->priv->SetPrivateConfig(videoprep->plugin_private_config);
       }
       break;
-    case PROP_POST_STITCH_ROTATE_DEGREES:
-    {
+    case PROP_POST_STITCH_ROTATE_DEGREES: {
       const gdouble previous = videoprep->post_stitch_rotate_degrees;
       const gboolean previous_set = videoprep->post_stitch_rotate_degrees_set;
       const guint previous_sequence = videoprep->post_stitch_rotate_degrees_sequence;
@@ -1327,8 +1356,7 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
       }
       break;
     }
-    case PROP_FIXED_EDGE_ROTATION_ANGLE:
-    {
+    case PROP_FIXED_EDGE_ROTATION_ANGLE: {
       const gdouble previous = videoprep->fixed_edge_rotation_angle;
       const gboolean previous_set = videoprep->fixed_edge_rotation_angle_set;
       const guint previous_sequence = videoprep->fixed_edge_rotation_angle_sequence;
@@ -1342,8 +1370,37 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
       }
       break;
     }
-    case PROP_DYNAMIC_ACCELERATION_SCALING:
-    {
+    case PROP_FIXED_EDGE_ROTATION_ANGLE_LEFT: {
+      const gdouble previous = videoprep->fixed_edge_rotation_angle_left;
+      const gboolean previous_set = videoprep->fixed_edge_rotation_angle_left_set;
+      const guint previous_sequence = videoprep->fixed_edge_rotation_angle_left_sequence;
+      videoprep->fixed_edge_rotation_angle_left = g_value_get_double(value);
+      videoprep->fixed_edge_rotation_angle_left_set = TRUE;
+      videoprep->fixed_edge_rotation_angle_left_sequence = ++videoprep->property_set_sequence;
+      if (!set_priv_property(
+              "fixed-edge-rotation-angle-left", std::to_string(videoprep->fixed_edge_rotation_angle_left))) {
+        videoprep->fixed_edge_rotation_angle_left = previous;
+        videoprep->fixed_edge_rotation_angle_left_set = previous_set;
+        videoprep->fixed_edge_rotation_angle_left_sequence = previous_sequence;
+      }
+      break;
+    }
+    case PROP_FIXED_EDGE_ROTATION_ANGLE_RIGHT: {
+      const gdouble previous = videoprep->fixed_edge_rotation_angle_right;
+      const gboolean previous_set = videoprep->fixed_edge_rotation_angle_right_set;
+      const guint previous_sequence = videoprep->fixed_edge_rotation_angle_right_sequence;
+      videoprep->fixed_edge_rotation_angle_right = g_value_get_double(value);
+      videoprep->fixed_edge_rotation_angle_right_set = TRUE;
+      videoprep->fixed_edge_rotation_angle_right_sequence = ++videoprep->property_set_sequence;
+      if (!set_priv_property(
+              "fixed-edge-rotation-angle-right", std::to_string(videoprep->fixed_edge_rotation_angle_right))) {
+        videoprep->fixed_edge_rotation_angle_right = previous;
+        videoprep->fixed_edge_rotation_angle_right_set = previous_set;
+        videoprep->fixed_edge_rotation_angle_right_sequence = previous_sequence;
+      }
+      break;
+    }
+    case PROP_DYNAMIC_ACCELERATION_SCALING: {
       const gdouble previous = videoprep->dynamic_acceleration_scaling;
       const gboolean previous_set = videoprep->dynamic_acceleration_scaling_set;
       const guint previous_sequence = videoprep->dynamic_acceleration_scaling_sequence;
@@ -1407,6 +1464,20 @@ static bool gst_videoprep_apply_typed_properties(GstVideoPrep* videoprep) {
              Property("fixed-edge-rotation-angle", std::to_string(videoprep->fixed_edge_rotation_angle))) &&
         ok;
   }
+  if (videoprep->fixed_edge_rotation_angle_left_set &&
+      typed_property_wins_over_private_config(
+          videoprep, videoprep->fixed_edge_rotation_angle_left_sequence, "fixed-edge-rotation-angle-left")) {
+    ok = videoprep->priv->SetProperty(
+             Property("fixed-edge-rotation-angle-left", std::to_string(videoprep->fixed_edge_rotation_angle_left))) &&
+        ok;
+  }
+  if (videoprep->fixed_edge_rotation_angle_right_set &&
+      typed_property_wins_over_private_config(
+          videoprep, videoprep->fixed_edge_rotation_angle_right_sequence, "fixed-edge-rotation-angle-right")) {
+    ok = videoprep->priv->SetProperty(
+             Property("fixed-edge-rotation-angle-right", std::to_string(videoprep->fixed_edge_rotation_angle_right))) &&
+        ok;
+  }
   if (videoprep->dynamic_acceleration_scaling_set &&
       typed_property_wins_over_private_config(
           videoprep, videoprep->dynamic_acceleration_scaling_sequence, "dynamic-acceleration-scaling")) {
@@ -1440,6 +1511,12 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
       break;
     case PROP_FIXED_EDGE_ROTATION_ANGLE:
       g_value_set_double(value, videoprep->fixed_edge_rotation_angle);
+      break;
+    case PROP_FIXED_EDGE_ROTATION_ANGLE_LEFT:
+      g_value_set_double(value, videoprep->fixed_edge_rotation_angle_left);
+      break;
+    case PROP_FIXED_EDGE_ROTATION_ANGLE_RIGHT:
+      g_value_set_double(value, videoprep->fixed_edge_rotation_angle_right);
       break;
     case PROP_DYNAMIC_ACCELERATION_SCALING:
       g_value_set_double(value, videoprep->dynamic_acceleration_scaling);

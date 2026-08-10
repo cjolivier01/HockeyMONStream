@@ -330,7 +330,18 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
   } else if (key == "runtime-output-max-height") {
     runtime_output_max_height_ = std::atol(prop.value.c_str());
   } else if (key == "fixed-edge-rotation-angle") {
-    if (!parse_finite_float(prop.value, &fixed_edge_rotation_angle_)) {
+    float angle = 0.0f;
+    if (!parse_finite_float(prop.value, &angle)) {
+      return false;
+    }
+    fixed_edge_rotation_angle_left_ = angle;
+    fixed_edge_rotation_angle_right_ = angle;
+  } else if (key == "fixed-edge-rotation-angle-left") {
+    if (!parse_finite_float(prop.value, &fixed_edge_rotation_angle_left_)) {
+      return false;
+    }
+  } else if (key == "fixed-edge-rotation-angle-right") {
+    if (!parse_finite_float(prop.value, &fixed_edge_rotation_angle_right_)) {
       return false;
     }
   } else if (key == "no-crop") {
@@ -497,8 +508,6 @@ absl::Status PlayCropperPriv::GenerateOutput(
     // Calculate rotation angle
     float angle = 0.0f;
 
-    const float max_angle = fixed_edge_rotation_angle_;
-
     // const playtracker::PlayTrackerPayload* ptpayload =
     //     playtracker::PlayTrackerPayload::get_payload<playtracker::PlayTrackerPayload>(frame_meta);
     if (false /*ptpayload*/) {
@@ -508,10 +517,10 @@ absl::Status PlayCropperPriv::GenerateOutput(
       const float tcx = tbox.center().x;
       if (tcx < half_width) {
         float pct = 1.0 - tcx / half_width;
-        angle = max_angle * pct;
+        angle = fixed_edge_rotation_angle_left_ * pct;
       } else if (tcx > half_width) {
         float pct = (half_width - tcx) / half_width;
-        angle = max_angle * pct;
+        angle = fixed_edge_rotation_angle_right_ * pct;
       }
     }
 
