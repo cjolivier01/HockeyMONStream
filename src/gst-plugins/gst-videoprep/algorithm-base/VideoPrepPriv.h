@@ -24,6 +24,15 @@ struct RuntimeOutputSize {
   bool valid() const { return width > 0 && height > 0; }
 };
 
+enum class RuntimeOutputPoolStatusDisposition {
+  kProceed,
+  kRetry,
+  kSendEos,
+  kError,
+};
+
+RuntimeOutputPoolStatusDisposition classify_runtime_output_pool_status(const absl::Status& status);
+
 class VideoPrepPriv : public DSCustomLibraryBase {
  public:
   VideoPrepPriv(int gpu_id, size_t batch_size)
