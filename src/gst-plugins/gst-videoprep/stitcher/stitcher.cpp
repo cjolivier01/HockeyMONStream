@@ -203,21 +203,22 @@ bool StitcherPriv::HandleEvent(GstEvent* event) {
 
 StitcherPriv::EosSnapshot StitcherPriv::snapshot_eos_for_buffer(GstBuffer* inbuf) {
   EosSnapshot snapshot;
-  {
+  GstMapInfo in_map_info = GST_MAP_INFO_INIT;
+  if (!inbuf || !gst_buffer_map(inbuf, &in_map_info, GST_MAP_READ)) {
     std::lock_guard<std::mutex> lock(eos_mu_);
     snapshot.pipeline_eos_seen = pipeline_eos_seen_;
     snapshot.source_ids = eos_source_ids_;
-  }
-
-  GstMapInfo in_map_info = GST_MAP_INFO_INIT;
-  if (!inbuf || !gst_buffer_map(inbuf, &in_map_info, GST_MAP_READ)) {
     return snapshot;
   }
 
   auto* in_surface = reinterpret_cast<NvBufSurface*>(in_map_info.data);
-  if (in_surface) {
+  {
     std::lock_guard<std::mutex> lock(eos_mu_);
-    eos_snapshot_by_surface_[in_surface] = snapshot;
+    snapshot.pipeline_eos_seen = pipeline_eos_seen_;
+    snapshot.source_ids = eos_source_ids_;
+    if (in_surface) {
+      eos_snapshot_by_surface_[in_surface] = snapshot;
+    }
   }
   gst_buffer_unmap(inbuf, &in_map_info);
   return snapshot;
@@ -233,6 +234,7 @@ StitcherPriv::EosSnapshot StitcherPriv::snapshot_eos_for_surface(NvBufSurface* i
   if (iter != eos_snapshot_by_surface_.end()) {
     snapshot = iter->second;
     snapshot.pipeline_eos_seen = snapshot.pipeline_eos_seen || pipeline_eos_seen_;
+    snapshot.source_ids.insert(eos_source_ids_.begin(), eos_source_ids_.end());
     eos_snapshot_by_surface_.erase(iter);
   }
   return snapshot;
@@ -284,7 +286,7 @@ absl::Status frame_sequence_mismatch_status(
     const std::set<guint>& observed_source_ids,
     const std::set<guint>& missing_eos_source_ids,
     const std::set<guint>& eos_source_ids,
-    bool source_eos_explains_mismatch,
+    bool pipeline_eos_explains_mismatch,
     bool pipeline_eos_seen) {
   std::stringstream message;
   message << "Stitcher did not receive the expected source/frame sequence"
@@ -298,15 +300,66 @@ absl::Status frame_sequence_mismatch_status(
           << ", missing_eos_sources=" << format_source_ids(missing_eos_source_ids)
           << ", pipeline_eos_seen=" << pipeline_eos_seen << ")";
 
-  const bool pipeline_eos_explains_mismatch =
-      pipeline_eos_seen && eos_source_ids.empty() && duplicate_frame_sources == 0 && incomplete_frame_groups > 0;
-  if (source_eos_explains_mismatch || pipeline_eos_explains_mismatch) {
+  if (pipeline_eos_explains_mismatch) {
     return absl::CancelledError(message.str());
   }
   return absl::FailedPreconditionError(message.str());
 }
 
 } // namespace
+
+absl::StatusOr<std::pair<size_t, size_t>> select_runtime_stitch_pair(
+    const std::vector<RuntimeFrameKey>& frames,
+    const std::set<guint>& eos_source_ids,
+    bool pipeline_eos_seen) {
+  if (frames.empty()) {
+    return absl::FailedPreconditionError("Runtime stitching requires at least one input frame");
+  }
+
+  std::map<guint, std::vector<size_t>> source_indices;
+  for (size_t index = 0; index < frames.size(); ++index) {
+    source_indices[frames[index].source_id].push_back(index);
+  }
+  if (source_indices.size() > 2) {
+    return absl::FailedPreconditionError("Runtime stitching received frames from more than two sources");
+  }
+
+  if (source_indices.size() == 2 && frames.size() % 2 == 0) {
+    auto left = source_indices.begin();
+    auto right = std::next(left);
+    if (left->second.size() == right->second.size()) {
+      // nvstreammux is the timestamp synchronization authority. Independent camera frame counters may be offset
+      // after a partial batch, so select the first frame from each source in mux order rather than by frame_num.
+      return std::make_pair(left->second.front(), right->second.front());
+    }
+  }
+
+  std::set<guint> observed_source_ids;
+  for (const auto& [source_id, indices] : source_indices) {
+    (void)indices;
+    observed_source_ids.insert(source_id);
+  }
+  const bool structurally_valid_partial = frames.size() % 2 != 0 &&
+      ((source_indices.size() == 1 && frames.size() == 1) ||
+       (source_indices.size() == 2 &&
+        std::abs(
+            static_cast<std::ptrdiff_t>(source_indices.begin()->second.size()) -
+            static_cast<std::ptrdiff_t>(std::next(source_indices.begin())->second.size())) == 1));
+  if (pipeline_eos_seen && structurally_valid_partial) {
+    return absl::CancelledError("Runtime stitching input ended before a complete source pair arrived");
+  }
+
+  if (structurally_valid_partial) {
+    // A DeepStream per-source EOS is not a pipeline EOS: the source may emit STREAM_START and resume later. Drop this
+    // incomplete mux batch without terminalizing OutputThread; the global GST_EVENT_EOS path remains responsible for
+    // irreversibly ending downstream output.
+    return absl::UnavailableError(
+        eos_source_ids.empty() ? "Runtime stitching is waiting for a complete synchronized source pair"
+                               : "Runtime stitching discarded a partial batch after source-local EOS");
+  }
+
+  return absl::FailedPreconditionError("Could not find a balanced left/right frame pair for runtime stitching");
+}
 
 absl::Status StitcherPriv::ensure_stitcher() {
   if (configure_only_ && !one_pass_mode_) {
@@ -539,60 +592,64 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
   if (!batch_meta || !in_surface) {
     return absl::InvalidArgumentError("Cannot determine stitched canvas size without batch metadata and input surface");
   }
-  if (in_surface->numFilled % 2 != 0) {
-    return absl::FailedPreconditionError("Not enough filled surfaces to determine stitched canvas size");
-  }
 
   struct RuntimeFrameInfo {
     NvBufSurfaceParams* surface_params;
     size_t incoming_surface_index;
   };
-  std::map<int, std::map<int, RuntimeFrameInfo>> frame_source_surfaces;
+  std::vector<RuntimeFrameInfo> runtime_frames;
+  std::vector<RuntimeFrameKey> runtime_frame_keys;
   size_t surface_index = 0;
+  size_t frame_meta_count = 0;
   for (NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list; frame_meta_list != nullptr;
        frame_meta_list = frame_meta_list->next) {
+    ++frame_meta_count;
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)frame_meta_list->data;
+    if (!frame_meta || frame_meta->num_surfaces_per_frame != 1) {
+      return absl::FailedPreconditionError("Invalid frame metadata while determining stitched canvas size");
+    }
     if (surface_index >= in_surface->numFilled) {
-      break;
+      continue;
     }
     auto* surface_params = &in_surface->surfaceList[surface_index];
-    frame_source_surfaces[frame_meta->frame_num].emplace(
-        frame_meta->source_id,
+    runtime_frames.push_back(
         RuntimeFrameInfo{
             .surface_params = surface_params,
             .incoming_surface_index = surface_index,
         });
+    runtime_frame_keys.push_back(RuntimeFrameKey{frame_meta->frame_num, frame_meta->source_id});
     ++surface_index;
   }
 
-  for (auto& frame_item : frame_source_surfaces) {
-    auto& source_to_surface = frame_item.second;
-    if (source_to_surface.size() < 2) {
-      continue;
-    }
-    const RuntimeFrameInfo& frame_info_left = source_to_surface.begin()->second;
-    const RuntimeFrameInfo& frame_info_right = source_to_surface.rbegin()->second;
+  if (frame_meta_count != in_surface->numFilled || surface_index != in_surface->numFilled) {
+    return absl::FailedPreconditionError("Input surface and frame metadata counts differ during runtime sizing");
+  }
+  const EosSnapshot eos_snapshot = snapshot_eos_for_surface(in_surface);
+  absl::StatusOr<std::pair<size_t, size_t>> selected_pair =
+      select_runtime_stitch_pair(runtime_frame_keys, eos_snapshot.source_ids, eos_snapshot.pipeline_eos_seen);
+  if (!selected_pair.ok()) {
+    return selected_pair.status();
+  }
+  const RuntimeFrameInfo& frame_info_left = runtime_frames[selected_pair->first];
+  const RuntimeFrameInfo& frame_info_right = runtime_frames[selected_pair->second];
 
 #ifdef __aarch64__
-    hm::surface::EglSurfaceMapper incoming_left_elg_surface_mapper(
-        in_surface, frame_info_left.incoming_surface_index, /*read_only=*/true);
-    HM_RETURN_IF_ERROR(to_status(incoming_left_elg_surface_mapper.status()));
-    hm::surface::Surface incoming_surface_left = incoming_left_elg_surface_mapper.get_surface();
-    hm::surface::EglSurfaceMapper incoming_right_elg_surface_mapper(
-        in_surface, frame_info_right.incoming_surface_index, /*read_only=*/true);
-    HM_RETURN_IF_ERROR(to_status(incoming_right_elg_surface_mapper.status()));
-    hm::surface::Surface incoming_surface_right = incoming_right_elg_surface_mapper.get_surface();
+  hm::surface::EglSurfaceMapper incoming_left_elg_surface_mapper(
+      in_surface, frame_info_left.incoming_surface_index, /*read_only=*/true);
+  HM_RETURN_IF_ERROR(to_status(incoming_left_elg_surface_mapper.status()));
+  hm::surface::Surface incoming_surface_left = incoming_left_elg_surface_mapper.get_surface();
+  hm::surface::EglSurfaceMapper incoming_right_elg_surface_mapper(
+      in_surface, frame_info_right.incoming_surface_index, /*read_only=*/true);
+  HM_RETURN_IF_ERROR(to_status(incoming_right_elg_surface_mapper.status()));
+  hm::surface::Surface incoming_surface_right = incoming_right_elg_surface_mapper.get_surface();
 #else
-    hm::surface::Surface incoming_surface_left(frame_info_left.surface_params);
-    hm::surface::Surface incoming_surface_right(frame_info_right.surface_params);
+  hm::surface::Surface incoming_surface_left(frame_info_left.surface_params);
+  hm::surface::Surface incoming_surface_right(frame_info_right.surface_params);
 #endif
 
-    HM_RETURN_IF_ERROR(configure_one_pass_from_surfaces(incoming_surface_left, incoming_surface_right));
-    return videoprep::RuntimeOutputSize{
-        canvas_width_hint_, canvas_height_hint_, GetOutputBatchSize(in_surface->batchSize, 0)};
-  }
-
-  return absl::FailedPreconditionError("Could not find a paired left/right frame to determine stitched canvas size");
+  HM_RETURN_IF_ERROR(configure_one_pass_from_surfaces(incoming_surface_left, incoming_surface_right));
+  return videoprep::RuntimeOutputSize{
+      canvas_width_hint_, canvas_height_hint_, GetOutputBatchSize(in_surface->batchSize, 0)};
 }
 
 bool StitcherPriv::SetProperty(const Property& prop) {
@@ -794,6 +851,7 @@ absl::Status StitcherPriv::GenerateOutput(
 
   //  frame_number -> source_id -> NvBufSurfaceParams*
   std::map<int, std::map<int, FrameInfo>> frame_source_surfaces;
+  std::map<guint, std::vector<FrameInfo>> source_frames;
 
   const EosSnapshot eos_snapshot = snapshot_eos_for_surface(in_surface);
 
@@ -830,50 +888,52 @@ absl::Status StitcherPriv::GenerateOutput(
 
     source_frame_metas.emplace(frame_meta->source_id, frame_meta);
 
-    const bool inserted = frame_sources
-                              .emplace(
-                                  frame_meta->source_id,
-                                  FrameInfo{
-                                      .surface_params = surface_params,
-                                      .frame_meta = frame_meta,
-                                      .incoming_surface_index = surface_index,
-                                  })
-                              .second;
+    const FrameInfo frame_info{
+        .surface_params = surface_params,
+        .frame_meta = frame_meta,
+        .incoming_surface_index = surface_index,
+    };
+    const bool inserted = frame_sources.emplace(frame_meta->source_id, frame_info).second;
     if (!inserted) {
       ++duplicate_frame_sources;
     }
+    source_frames[frame_meta->source_id].push_back(frame_info);
     ++surface_index;
+  }
+
+  // The mux is the timestamp synchronization authority. If it emits a partial batch, the two source frame counters
+  // remain offset in later complete batches (for example, s0/f4 with s1/f3). Pair complete batches by each source's
+  // batch order instead of requiring those independent counters to match exactly.
+  if (duplicate_frame_sources == 0 && observed_source_ids.size() == 2 && in_surface->numFilled % 2 == 0) {
+    const size_t frames_per_source = in_surface->numFilled / 2;
+    const bool balanced_sources = std::all_of(source_frames.begin(), source_frames.end(), [&](const auto& entry) {
+      return entry.second.size() == frames_per_source;
+    });
+    if (balanced_sources) {
+      frame_source_surfaces.clear();
+      for (size_t frame_group = 0; frame_group < frames_per_source; ++frame_group) {
+        for (const auto& [source_id, frames] : source_frames) {
+          frame_source_surfaces[static_cast<int>(frame_group)].emplace(source_id, frames[frame_group]);
+        }
+      }
+    }
   }
 
   std::set<guint> expected_source_ids;
   size_t incomplete_frame_groups = 0;
-  size_t source_eos_explained_incomplete_groups = 0;
-  size_t unexplained_incomplete_groups = 0;
   size_t inconsistent_source_groups = 0;
   std::set<guint> missing_eos_source_ids;
   for (const auto& [frame_number, source_to_surface] : frame_source_surfaces) {
     (void)frame_number;
     if (source_to_surface.size() != 2) {
       ++incomplete_frame_groups;
-      bool group_has_eos_source = false;
       std::set<guint> group_missing_eos_source_ids;
-      for (const auto& [source_id, frame_info] : source_to_surface) {
-        (void)frame_info;
-        if (eos_snapshot.source_ids.count(source_id)) {
-          group_has_eos_source = true;
-        }
-      }
       for (guint eos_source_id : eos_snapshot.source_ids) {
         if (!source_to_surface.count(eos_source_id)) {
           group_missing_eos_source_ids.insert(eos_source_id);
         }
       }
-      if (!group_has_eos_source && !group_missing_eos_source_ids.empty()) {
-        ++source_eos_explained_incomplete_groups;
-        missing_eos_source_ids.insert(group_missing_eos_source_ids.begin(), group_missing_eos_source_ids.end());
-      } else {
-        ++unexplained_incomplete_groups;
-      }
+      missing_eos_source_ids.insert(group_missing_eos_source_ids.begin(), group_missing_eos_source_ids.end());
       continue;
     }
 
@@ -900,14 +960,6 @@ absl::Status StitcherPriv::GenerateOutput(
       }
     }
   }
-  std::set<guint> observed_or_eos_source_ids = observed_source_ids;
-  observed_or_eos_source_ids.insert(eos_snapshot.source_ids.begin(), eos_snapshot.source_ids.end());
-  const bool source_eos_explains_mismatch = observed_or_eos_source_ids.size() == 2 && duplicate_frame_sources == 0 &&
-      invalid_surfaces_per_frame == 0 && surface_index == in_surface->numFilled &&
-      frame_meta_count == in_surface->numFilled && incomplete_frame_groups > 0 &&
-      source_eos_explained_incomplete_groups == incomplete_frame_groups && unexplained_incomplete_groups == 0 &&
-      inconsistent_source_groups == 0 && !missing_eos_source_ids.empty();
-
   const bool invalid_frame_sequence = (in_surface->batchSize % 2 != 0) || (in_surface->numFilled % 2 != 0) ||
       surface_index != in_surface->numFilled || frame_meta_count != in_surface->numFilled ||
       duplicate_frame_sources > 0 || invalid_surfaces_per_frame > 0 || observed_source_ids.size() != 2 ||
@@ -926,7 +978,21 @@ absl::Status StitcherPriv::GenerateOutput(
     } else if (frame_meta_count != in_surface->numFilled || surface_index != in_surface->numFilled) {
       reason = "surface_metadata_mismatch";
     }
-    return frame_sequence_mismatch_status(
+    bool valid_partial_source_counts = false;
+    if (source_frames.size() == 1) {
+      valid_partial_source_counts = in_surface->numFilled == 1 && source_frames.begin()->second.size() == 1;
+    } else if (source_frames.size() == 2) {
+      const auto left = source_frames.begin();
+      const auto right = std::next(left);
+      valid_partial_source_counts = std::abs(
+                                        static_cast<std::ptrdiff_t>(left->second.size()) -
+                                        static_cast<std::ptrdiff_t>(right->second.size())) == 1;
+    }
+    const bool structurally_valid_partial = in_surface->numFilled % 2 != 0 &&
+        frame_meta_count == in_surface->numFilled && surface_index == in_surface->numFilled &&
+        duplicate_frame_sources == 0 && invalid_surfaces_per_frame == 0 && observed_source_ids.size() <= 2 &&
+        valid_partial_source_counts;
+    const absl::Status mismatch_status = frame_sequence_mismatch_status(
         reason,
         frame_source_surfaces.size(),
         in_surface->numFilled,
@@ -938,8 +1004,14 @@ absl::Status StitcherPriv::GenerateOutput(
         observed_source_ids,
         missing_eos_source_ids,
         eos_snapshot.source_ids,
-        source_eos_explains_mismatch,
+        eos_snapshot.pipeline_eos_seen && structurally_valid_partial,
         eos_snapshot.pipeline_eos_seen);
+    if (structurally_valid_partial && !eos_snapshot.pipeline_eos_seen) {
+      // STREAM_EOS is source-local and may be followed by STREAM_START. Discard this incomplete batch but leave the
+      // output thread live so a restarted source can form a later complete pair. Only global pipeline EOS is terminal.
+      return absl::UnavailableError(mismatch_status.message());
+    }
+    return mismatch_status;
   }
 
   assert(cuda_stream_);

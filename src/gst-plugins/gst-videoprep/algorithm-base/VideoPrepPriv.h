@@ -7,6 +7,7 @@
 #include "nvbufsurface.h"
 #include <cassert>
 #include <cstddef>
+#include <functional>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -22,6 +23,35 @@ struct RuntimeOutputSize {
   guint batch_size{0};
 
   bool valid() const { return width > 0 && height > 0; }
+};
+
+enum class RuntimeOutputPoolStatusDisposition {
+  kProceed,
+  kRetry,
+  kSendEos,
+  kError,
+};
+
+RuntimeOutputPoolStatusDisposition classify_runtime_output_pool_status(const absl::Status& status);
+
+class RuntimeOutputPoolFlow {
+ public:
+  // Returns true after consuming input_buffer for a retryable or EOS status.
+  // The caller must then skip output-pool acquisition and output-buffer access.
+  bool handle_status(
+      const absl::Status& status,
+      GstBuffer* input_buffer,
+      const std::function<void()>& send_eos);
+  // Once sizing ends at EOS, every later input is consumed before its surface,
+  // metadata, output pool, or output buffer can be accessed.
+  bool consume_if_terminal(GstBuffer* input_buffer) const;
+  // Completes a generated-output cancellation by sending EOS once, releasing
+  // the unused output, and making all later output production terminal.
+  void finish_with_eos(GstBuffer* output_buffer, const std::function<void()>& send_eos);
+  bool eos_terminal() const { return eos_terminal_; }
+
+ private:
+  bool eos_terminal_{false};
 };
 
 class VideoPrepPriv : public DSCustomLibraryBase {
