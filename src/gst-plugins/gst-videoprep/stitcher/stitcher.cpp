@@ -852,6 +852,11 @@ absl::Status StitcherPriv::GenerateOutput(
   if (!batch_meta || !in_surface || !out_surface) {
     return absl::InvalidArgumentError("Stitcher GenerateOutput requires batch meta, input surface, and output surface");
   }
+  if (in_surface->batchSize == 0 || in_surface->batchSize % 2 != 0 ||
+      in_surface->numFilled > in_surface->batchSize) {
+    return absl::FailedPreconditionError(
+        "Stitcher output requires a positive even batch size and numFilled no greater than batchSize");
+  }
   // assert(in_surface->isContiguous);
 
   struct FrameInfo {
