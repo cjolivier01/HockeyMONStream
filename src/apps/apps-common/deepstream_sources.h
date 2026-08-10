@@ -155,6 +155,10 @@ typedef struct {
   guint uri_audio_link_count;
   gboolean uri_audio_has_pad;
   gboolean uri_audio_eos_seen;
+  /** Keep a selected peer audio branch alive after camera exhaustion until its current chapter has drained. */
+  gboolean uri_terminal_audio_drain_pending;
+  /** Logical video end at permanent camera exhaustion; later peer audio belongs to unpairable video and is dropped. */
+  guint64 uri_terminal_audio_cutoff;
   gboolean uri_list_video_eos_seen;
   gboolean uri_list_pads_complete;
   gboolean uri_list_boundary_handled;

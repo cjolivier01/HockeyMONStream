@@ -859,6 +859,19 @@ int main(int argc, char** argv) {
     return rc;
   }
 
+  // Either equal-length camera can report permanent EOS first. If the other camera supplies backpressured audio,
+  // terminal coordination must still drain its complete paired timeline before retiring that decoder.
+  rc = run_lossless_two_camera_mux(
+      left_uris,
+      right_uris,
+      /*include_right_uri_list=*/true,
+      /*audio_source_id=*/0,
+      /*audio_sleep_time_us=*/30000);
+  if (rc != 0) {
+    fs::remove_all(tmpdir);
+    return rc;
+  }
+
   // Camera chapter boundaries do not have to occur on the same frame. The total streams still pair exactly: the
   // shorter right chapter continues in its next file while the left camera finishes its current file.
   const std::vector<std::string> shifted_right_uris{
@@ -877,6 +890,19 @@ int main(int argc, char** argv) {
       shorter_right_uris,
       /*include_right_uri_list=*/true,
       /*audio_source_id=*/1,
+      /*audio_sleep_time_us=*/30000);
+  if (rc != 0) {
+    fs::remove_all(tmpdir);
+    return rc;
+  }
+
+  // The ending camera may not be the selected audio source. Backpressure the longer peer too: permanent video
+  // exhaustion must wait for that peer's audio through the last retained camera pair instead of stopping its decoder.
+  rc = run_lossless_two_camera_mux(
+      left_uris,
+      shorter_right_uris,
+      /*include_right_uri_list=*/true,
+      /*audio_source_id=*/0,
       /*audio_sleep_time_us=*/30000);
   if (rc != 0) {
     fs::remove_all(tmpdir);

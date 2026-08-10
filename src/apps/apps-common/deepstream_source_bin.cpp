@@ -51,6 +51,7 @@ struct UriListPadProbeData {
 
 static gboolean send_uri_audio_eos(NvDsSrcBin* bin, gboolean log_failure);
 static gboolean switch_to_next_uri(gpointer data);
+static gboolean finish_uri_terminal_audio_drain(gpointer data);
 
 constexpr gint64 kUriPlaylistBarrierWaitUs = 30 * G_TIME_SPAN_SECOND;
 
@@ -74,6 +75,22 @@ static void advance_uri_playlist_base_locked(NvDsSrcBin* bin) {
     bin->accumulated_base = bin->prev_accumulated_base + stop;
     bin->prev_accumulated_base = bin->accumulated_base;
   }
+}
+
+static GstClockTime uri_playlist_logical_video_end_locked(const NvDsSrcBin* bin) {
+  if (!bin) {
+    return GST_CLOCK_TIME_NONE;
+  }
+  GstClockTime local_end = GST_CLOCK_TIME_NONE;
+  if (GST_CLOCK_TIME_IS_VALID(bin->uri_list_last_pts)) {
+    local_end = bin->uri_list_last_pts;
+    if (GST_CLOCK_TIME_IS_VALID(bin->uri_list_last_duration)) {
+      local_end += bin->uri_list_last_duration;
+    }
+  } else if (bin->uri_list_segment_stop != GST_CLOCK_TIME_NONE) {
+    local_end = bin->uri_list_segment_stop;
+  }
+  return local_end == GST_CLOCK_TIME_NONE ? GST_CLOCK_TIME_NONE : bin->prev_accumulated_base + local_end;
 }
 
 static std::vector<NvDsSrcBin*> uri_playlist_sources(NvDsSrcParentBin* parent) {
@@ -183,6 +200,7 @@ static void mark_uri_playlist_terminal(NvDsSrcBin* bin) {
   GMutex* mutex = uri_playlist_mutex(bin);
   g_mutex_lock(mutex);
   const gboolean already_terminal = parent ? parent->uri_playlist_terminal : bin->uri_list_permanently_ended;
+  const GstClockTime audio_cutoff = uri_playlist_logical_video_end_locked(bin);
   if (!already_terminal) {
     if (parent) {
       parent->uri_playlist_terminal = TRUE;
@@ -190,6 +208,10 @@ static void mark_uri_playlist_terminal(NvDsSrcBin* bin) {
     for (NvDsSrcBin* source : sources) {
       source->uri_list_permanently_ended = TRUE;
       source->uri_switch_pending = FALSE;
+      source->uri_terminal_audio_cutoff = audio_cutoff;
+      source->uri_terminal_audio_drain_pending = source != bin && source->uri_audio_link_count > 0 &&
+          ((!source->uri_list_pads_complete && !source->uri_audio_has_pad) ||
+           (source->uri_audio_has_pad && !source->uri_audio_eos_seen));
     }
     if (parent) {
       g_cond_broadcast(&parent->uri_playlist_barrier_cond);
@@ -201,20 +223,49 @@ static void mark_uri_playlist_terminal(NvDsSrcBin* bin) {
   }
 
   // The ending camera has drained both streams before reaching this point. Peers end here because no later exact
-  // camera pair can exist. Retire each peer decoder before closing its downstream pads: otherwise a buffer already
-  // queued inside uridecodebin can race the synthetic EOS and turn normal coordinated termination into FLOW_ERROR.
-  // The barrier was broadcast above, so a peer blocked on its first unpairable frame can leave its streaming task.
+  // camera pair can exist. A linked peer audio branch is the one exception: keep its decoder alive until serialized
+  // audio EOS proves that all audio through the last retained video interval has cleared downstream backpressure.
+  // Audio after the cutoff belongs only to unpairable peer video and is dropped by the pad probe below.
   for (NvDsSrcBin* source : sources) {
-    if (source != bin && source->src_elem) {
+    if (source != bin && !source->uri_terminal_audio_drain_pending && source->src_elem) {
       gst_element_set_state(source->src_elem, GST_STATE_NULL);
     }
   }
 
-  // Send serialized EOS on every branch; source-pad stream locks keep every already-released buffer ahead of it.
+  // Send serialized EOS on every branch except a peer still draining audio. That peer emits its synthetic EOS from
+  // the main loop after raw chapter EOS, so setting its decoder to NULL cannot join its own streaming task.
   for (NvDsSrcBin* source : sources) {
-    send_uri_audio_eos(source, FALSE);
-    send_uri_video_eos(source);
+    if (!source->uri_terminal_audio_drain_pending) {
+      send_uri_audio_eos(source, FALSE);
+      send_uri_video_eos(source);
+    }
   }
+}
+
+static gboolean finish_uri_terminal_audio_drain(gpointer data) {
+  auto* bin = static_cast<NvDsSrcBin*>(data);
+  if (!bin) {
+    return G_SOURCE_REMOVE;
+  }
+  GMutex* mutex = uri_playlist_mutex(bin);
+  g_mutex_lock(mutex);
+  const gboolean terminal = uri_playlist_terminal_locked(bin);
+  const gboolean drain_complete = bin->uri_terminal_audio_drain_pending &&
+      (bin->uri_audio_eos_seen || (bin->uri_list_pads_complete && !bin->uri_audio_has_pad));
+  if (terminal && drain_complete) {
+    bin->uri_terminal_audio_drain_pending = FALSE;
+  }
+  g_mutex_unlock(mutex);
+  if (!terminal || !drain_complete) {
+    return G_SOURCE_REMOVE;
+  }
+
+  if (bin->src_elem) {
+    gst_element_set_state(bin->src_elem, GST_STATE_NULL);
+  }
+  send_uri_audio_eos(bin, FALSE);
+  send_uri_video_eos(bin);
+  return G_SOURCE_REMOVE;
 }
 
 static gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequence) {
@@ -823,10 +874,13 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
     GMutex* mutex = uri_playlist_mutex(bin);
     g_mutex_lock(mutex);
     const gboolean terminal = uri_playlist_terminal_locked(bin);
+    const gboolean drain_terminal_audio =
+        !probe_data->is_video && terminal && bin->uri_terminal_audio_drain_pending;
+    const GstClockTime terminal_audio_cutoff = bin->uri_terminal_audio_cutoff;
     const gboolean is_current_uri = probe_data->uri_index == bin->uri_list_index;
     const guint64 decoded_sequence = bin->uri_list_decoded_frame_count;
     g_mutex_unlock(mutex);
-    if (!probe_data->is_video && terminal) {
+    if (!probe_data->is_video && terminal && !drain_terminal_audio) {
       return GST_PAD_PROBE_DROP;
     }
     if (probe_data->is_video && !is_current_uri) {
@@ -876,6 +930,14 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       }
       ++bin->uri_list_decoded_frame_count;
       g_mutex_unlock(mutex);
+    }
+    const GstClockTime logical_audio_pts =
+        GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buf)) ? GST_BUFFER_PTS(buf) + probe_data->base : GST_CLOCK_TIME_NONE;
+    if (drain_terminal_audio && terminal_audio_cutoff != GST_CLOCK_TIME_NONE &&
+        GST_CLOCK_TIME_IS_VALID(logical_audio_pts) && logical_audio_pts >= terminal_audio_cutoff) {
+      // Once either camera is permanently exhausted, audio accompanying only later unpairable peer video must not
+      // extend the output timeline. Earlier audio continues through downstream backpressure until raw chapter EOS.
+      return GST_PAD_PROBE_DROP;
     }
     if (probe_data->base != 0 && GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buf))) {
       GST_BUFFER_PTS(buf) += probe_data->base;
@@ -1053,12 +1115,18 @@ static GstPadProbeReturn uri_list_audio_pad_event_probe(GstPad* pad, GstPadProbe
     GMutex* mutex = uri_playlist_mutex(bin);
     g_mutex_lock(mutex);
     const gboolean is_current_uri = probe_data->uri_index == bin->uri_list_index;
+    const gboolean terminal_drain_pending =
+        uri_playlist_terminal_locked(bin) && bin->uri_terminal_audio_drain_pending;
     if (is_current_uri) {
       bin->uri_audio_eos_seen = TRUE;
     }
     g_mutex_unlock(mutex);
     if (is_current_uri) {
-      maybe_complete_uri_playlist_boundary(bin, probe_data->uri_index);
+      if (terminal_drain_pending) {
+        g_idle_add(finish_uri_terminal_audio_drain, bin);
+      } else {
+        maybe_complete_uri_playlist_boundary(bin, probe_data->uri_index);
+      }
     }
     // Raw chapter EOS must never close the shared audio branch. A serialized EOS is emitted after the full current
     // URI (or a peer camera's permanent end) has been coordinated.
@@ -1306,6 +1374,8 @@ static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
   bin->uri_list_last_duration = GST_CLOCK_TIME_NONE;
   bin->uri_audio_has_pad = FALSE;
   bin->uri_audio_eos_seen = FALSE;
+  bin->uri_terminal_audio_drain_pending = FALSE;
+  bin->uri_terminal_audio_cutoff = GST_CLOCK_TIME_NONE;
   bin->uri_list_video_eos_seen = FALSE;
   bin->uri_list_pads_complete = FALSE;
   bin->uri_list_boundary_handled = FALSE;
@@ -1454,9 +1524,15 @@ static void cb_no_more_pads(GstElement* decodebin, gpointer data) {
   g_mutex_lock(mutex);
   const guint uri_index = bin->uri_list_index;
   bin->uri_list_pads_complete = TRUE;
+  const gboolean terminal_drain_without_audio =
+      uri_playlist_terminal_locked(bin) && bin->uri_terminal_audio_drain_pending && !bin->uri_audio_has_pad;
   g_mutex_unlock(mutex);
   // If video EOS raced ahead of no-more-pads, this is what proves that the URI truly has no audio pad.
-  maybe_complete_uri_playlist_boundary(bin, uri_index);
+  if (terminal_drain_without_audio) {
+    g_idle_add(finish_uri_terminal_audio_drain, bin);
+  } else {
+    maybe_complete_uri_playlist_boundary(bin, uri_index);
+  }
 }
 
 /**
@@ -2691,7 +2767,8 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
   const gchar* streammux_factory = NVDS_ELEM_STREAM_MUX;
 
   for (i = 0; i < num_sub_bins; ++i) {
-    if (configs[i].enable && configs[i].type == NV_DS_SOURCE_URI_MULTIPLE) {
+    const gboolean has_explicit_playlist = configs[i].uri_list && *configs[i].uri_list;
+    if (configs[i].enable && (configs[i].type == NV_DS_SOURCE_URI_MULTIPLE || has_explicit_playlist)) {
       ++uri_playlist_source_count;
     }
   }
