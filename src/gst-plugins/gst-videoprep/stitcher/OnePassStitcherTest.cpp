@@ -236,6 +236,38 @@ bool expect_prepare_runtime_partial_is_retryable() {
   return true;
 }
 
+bool expect_prepare_runtime_invalid_envelopes_fail() {
+  auto expect_failed = [](guint batch_size, guint num_filled, const std::string& label) {
+    hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
+    stitcher.SetProperty({"one-pass-mode", "1"});
+
+    NvDsBatchMeta* batch_meta = nvds_create_batch_meta(std::max<guint>(num_filled, 1));
+    for (guint index = 0; index < num_filled; ++index) {
+      NvDsFrameMeta* frame_meta = nvds_acquire_frame_meta_from_pool(batch_meta);
+      frame_meta->frame_num = index / 2;
+      frame_meta->source_id = index % 2;
+      frame_meta->num_surfaces_per_frame = 1;
+      nvds_add_frame_meta_to_batch(batch_meta, frame_meta);
+    }
+
+    std::vector<NvBufSurfaceParams> input_params(std::max<guint>(num_filled, 1));
+    NvBufSurface in_surface{};
+    in_surface.batchSize = batch_size;
+    in_surface.numFilled = num_filled;
+    in_surface.surfaceList = input_params.data();
+    const auto result = stitcher.PrepareRuntimeOutputSize(batch_meta, &in_surface);
+    nvds_destroy_batch_meta(batch_meta);
+    if (result.status().code() != absl::StatusCode::kFailedPrecondition) {
+      std::cerr << "Expected runtime sizing to reject " << label << ", got " << result.status() << std::endl;
+      return false;
+    }
+    return true;
+  };
+
+  return expect_failed(/*batch_size=*/3, /*num_filled=*/1, "odd configured batch size") &&
+      expect_failed(/*batch_size=*/2, /*num_filled=*/3, "numFilled greater than batchSize");
+}
+
 bool expect_enqueued_partial_preserves_event_order(bool pipeline_eos) {
   hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
   stitcher.SetProperty({"one-pass-mode", "1"});
@@ -641,6 +673,9 @@ int main() {
   if (!expect_prepare_runtime_partial_is_retryable()) {
     return 14;
   }
+  if (!expect_prepare_runtime_invalid_envelopes_fail()) {
+    return 27;
+  }
   if (!expect_enqueued_partial_preserves_event_order(/*pipeline_eos=*/false)) {
     return 15;
   }
@@ -734,6 +769,26 @@ int main() {
           /*stream_start_source_ids=*/{},
           /*input_batch_size=*/4)) {
     return 26;
+  }
+  if (!expect_generate_status(
+          {{0, 0}},
+          {},
+          absl::StatusCode::kFailedPrecondition,
+          "odd configured batch envelope",
+          /*pipeline_eos=*/false,
+          /*stream_start_source_ids=*/{},
+          /*input_batch_size=*/3)) {
+    return 28;
+  }
+  if (!expect_generate_status(
+          {{0, 0}, {0, 1}, {1, 0}},
+          {},
+          absl::StatusCode::kFailedPrecondition,
+          "numFilled greater than batchSize",
+          /*pipeline_eos=*/false,
+          /*stream_start_source_ids=*/{},
+          /*input_batch_size=*/2)) {
+    return 29;
   }
   if (!expect_generate_status(
           {{0, 0}, {0, 0}}, {}, absl::StatusCode::kFailedPrecondition, "duplicate frame/source without eos")) {
