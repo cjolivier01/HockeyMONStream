@@ -31,16 +31,20 @@ videoprep::RuntimeOutputPoolStatusDisposition videoprep::classify_runtime_output
   return RuntimeOutputPoolStatusDisposition::kError;
 }
 
-bool videoprep::handle_runtime_output_pool_status(
+bool videoprep::RuntimeOutputPoolFlow::handle_status(
     const absl::Status& status,
     GstBuffer* input_buffer,
     const std::function<void()>& send_eos) {
+  if (consume_if_terminal(input_buffer)) {
+    return true;
+  }
   switch (classify_runtime_output_pool_status(status)) {
     case RuntimeOutputPoolStatusDisposition::kRetry:
       gst_buffer_unref(input_buffer);
       return true;
     case RuntimeOutputPoolStatusDisposition::kSendEos:
       gst_buffer_unref(input_buffer);
+      eos_terminal_ = true;
       send_eos();
       return true;
     case RuntimeOutputPoolStatusDisposition::kProceed:
@@ -48,6 +52,14 @@ bool videoprep::handle_runtime_output_pool_status(
       return false;
   }
   return false;
+}
+
+bool videoprep::RuntimeOutputPoolFlow::consume_if_terminal(GstBuffer* input_buffer) const {
+  if (!eos_terminal_) {
+    return false;
+  }
+  gst_buffer_unref(input_buffer);
+  return true;
 }
 
 namespace {
@@ -700,6 +712,7 @@ void CustomAlgorithmBase::OutputThread(void) {
     }
     eos_sent_ = true;
   };
+  videoprep::RuntimeOutputPoolFlow runtime_output_pool_flow;
   /* Run till signalled to stop. */
   while (1) {
     /* Wait if processing queue is empty. */
@@ -716,6 +729,11 @@ void CustomAlgorithmBase::OutputThread(void) {
 
     m_processCV.notify_all();
     lk.unlock();
+
+    if (runtime_output_pool_flow.consume_if_terminal(packetInfo.inbuf)) {
+      lk.lock();
+      continue;
+    }
 
     // Add custom algorithm logic here
     // Once buffer processing is done, push the buffer to the downstream by using gst_pad_push function
@@ -746,7 +764,7 @@ void CustomAlgorithmBase::OutputThread(void) {
         if (absl::IsCancelled(output_pool_status)) {
           std::cerr << output_pool_status << std::endl;
         }
-        if (videoprep::handle_runtime_output_pool_status(output_pool_status, packetInfo.inbuf, send_eos_downstream)) {
+        if (runtime_output_pool_flow.handle_status(output_pool_status, packetInfo.inbuf, send_eos_downstream)) {
           // Runtime-sized transforms may need a later complete batch, or EOS may arrive before sizing completes.
           // The helper releases the input and, for EOS, terminates downstream. No output pool/buffer exists here.
           lk.lock();
