@@ -153,10 +153,13 @@ typedef struct {
   GstElement* uri_audio_tee;
   gulong uri_audio_probe;
   guint uri_audio_link_count;
-  gboolean uri_audio_final_eos_allowed;
   gboolean uri_audio_has_pad;
-  guint uri_audio_pad_uri_index;
-  gint uri_audio_eos_seen;
+  gboolean uri_audio_eos_seen;
+  gboolean uri_list_video_eos_seen;
+  gboolean uri_list_pads_complete;
+  gboolean uri_list_boundary_handled;
+  /** Guards URI playlist lifecycle fields when this source is not owned by a multi-source parent. */
+  GMutex uri_playlist_mutex;
   /** Optional playlist state (for file sources). */
   gchar** uri_list;
   guint num_uri_list;
@@ -214,6 +217,9 @@ gboolean link_uri_source_audio_src(NvDsSrcBin* bin, GstElement* sinkelem);
  * @return true if bin created successfully.
  */
 gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, NvDsSrcParentBin* bin);
+
+/** Wake every URI-playlist frame waiter before an error/stop transitions the pipeline to NULL. */
+void cancel_uri_playlist_frame_barrier(NvDsSrcParentBin* bin);
 
 /**
  * Initialize @ref NvDsSrcParentBin. It creates and adds nvmultiurisrcbin

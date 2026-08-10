@@ -255,8 +255,12 @@ bool expect_generate_status(
     const std::string& test_name,
     bool pipeline_eos = false,
     const std::vector<guint>& stream_start_source_ids = {},
-    gint input_batch_size = -1) {
+    gint input_batch_size = -1,
+    bool require_decoded_sequence_meta = false) {
   hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
+  if (require_decoded_sequence_meta) {
+    stitcher.SetProperty({"require-decoded-frame-sequence-meta", "1"});
+  }
   for (guint source_id : eos_source_ids) {
     GstEvent* event = gst_nvevent_new_stream_eos(source_id);
     stitcher.HandleEvent(event);
@@ -472,6 +476,17 @@ int main() {
           /*stream_start_source_ids=*/{},
           /*input_batch_size=*/2)) {
     return 31;
+  }
+  if (!expect_generate_status(
+          {{0, 0}, {0, 1}},
+          {},
+          absl::StatusCode::kFailedPrecondition,
+          "mandatory decoded sequence metadata completely missing",
+          /*pipeline_eos=*/false,
+          /*stream_start_source_ids=*/{},
+          /*input_batch_size=*/2,
+          /*require_decoded_sequence_meta=*/true)) {
+    return 32;
   }
   if (!expect_generate_status(
           {{0, 0}, {0, 0}}, {}, absl::StatusCode::kFailedPrecondition, "duplicate frame/source without eos")) {

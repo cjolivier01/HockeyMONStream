@@ -130,6 +130,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool show_{false};
   bool match_exposure_{false};
   bool minimize_blend_{false};
+  bool require_decoded_frame_sequence_meta_{false};
   StitchComputePrecision stitch_compute_precision_{StitchComputePrecision::kFp32};
   std::mutex eos_mu_;
   bool pipeline_eos_seen_{false};

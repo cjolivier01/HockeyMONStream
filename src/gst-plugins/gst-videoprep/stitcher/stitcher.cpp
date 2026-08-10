@@ -691,6 +691,11 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
         "Lossless stitching decode/mux invariant failed: decoded-frame sequence metadata is missing from part of the "
         "runtime-sizing batch");
   }
+  if (require_decoded_frame_sequence_meta_ && decoded_sequence_meta_count != frame_meta_count) {
+    return absl::FailedPreconditionError(
+        "Lossless stitching decode/mux invariant failed: decoded-frame sequence metadata is required on every "
+        "runtime-sizing frame");
+  }
   const EosSnapshot eos_snapshot = snapshot_eos_for_surface(in_surface);
   absl::StatusOr<std::pair<size_t, size_t>> selected_pair =
       select_runtime_stitch_pair(runtime_frame_keys, eos_snapshot.source_ids, eos_snapshot.pipeline_eos_seen);
@@ -738,6 +743,8 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     match_exposure_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "minimize-blend" || prop.key == "minimize_blend") {
     minimize_blend_ = !!std::atol(prop.value.c_str());
+  } else if (prop.key == "require-decoded-frame-sequence-meta" || prop.key == "require_decoded_frame_sequence_meta") {
+    require_decoded_frame_sequence_meta_ = !!std::atol(prop.value.c_str());
   } else if (
       prop.key == "stitch-compute-precision" || prop.key == "stitch_compute_precision" ||
       prop.key == "stitcher-compute-precision" || prop.key == "stitcher_compute_precision") {
@@ -977,6 +984,10 @@ absl::Status StitcherPriv::GenerateOutput(
     return absl::FailedPreconditionError(
         "Lossless stitching decode/mux invariant failed: decoded-frame sequence metadata is missing from part of the "
         "batch");
+  }
+  if (require_decoded_frame_sequence_meta_ && decoded_sequence_meta_count != frame_meta_count) {
+    return absl::FailedPreconditionError(
+        "Lossless stitching decode/mux invariant failed: decoded-frame sequence metadata is required on every frame");
   }
 
   std::set<guint> expected_source_ids;

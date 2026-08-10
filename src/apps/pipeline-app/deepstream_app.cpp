@@ -245,6 +245,11 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       guint i = 0;
       gst_message_parse_error(message, &error, &debuginfo);
 
+      // A URI decoder can fail while its peer is waiting at the exact-frame barrier. Wake every waiter before the
+      // application begins error teardown; otherwise setting the pipeline to NULL can wait forever on that streaming
+      // task. The original error remains the reason the run fails.
+      cancel_uri_playlist_frame_barrier(&appCtx->pipeline.multi_src_bin);
+
       if (strstr(error->message, attempts_error)) {
         g_print(
             "Reconnection attempt  exceeded or EOS received for all sources."
@@ -2149,6 +2154,7 @@ void destroy_pipeline(AppCtx* appCtx) {
   if (!appCtx)
     return;
 
+  cancel_uri_playlist_frame_barrier(&appCtx->pipeline.multi_src_bin);
   gst_element_send_event(appCtx->pipeline.pipeline, gst_event_new_eos());
   sleep(1);
 

@@ -32,12 +32,13 @@ struct BusState {
   GMainLoop* loop{nullptr};
   int exit_code{0};
   guint timeout_id{0};
+  NvDsSrcParentBin* source_parent{nullptr};
 };
 
 gboolean timeout_call(gpointer data) {
   BusState* state = static_cast<BusState*>(data);
   std::cerr << "ERROR: timed out waiting for EOS/error\n";
-  state->exit_code = 1;
+  state->exit_code = 2;
   state->timeout_id = 0;
   g_main_loop_quit(state->loop);
   return FALSE;
@@ -50,6 +51,9 @@ gboolean bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
       g_main_loop_quit(state->loop);
       break;
     case GST_MESSAGE_ERROR: {
+      if (state->source_parent) {
+        cancel_uri_playlist_frame_barrier(state->source_parent);
+      }
       GError* err = nullptr;
       gchar* debug = nullptr;
       gst_message_parse_error(msg, &err, &debug);
@@ -277,9 +281,9 @@ bool add_encoder_chain(GstElement* pipeline, const fs::path& output_path, std::v
   return true;
 }
 
-int run_pipeline(GstElement* pipeline, int timeout_seconds) {
+int run_pipeline(GstElement* pipeline, int timeout_seconds, NvDsSrcParentBin* source_parent = nullptr) {
   GMainLoop* loop = g_main_loop_new(NULL, FALSE);
-  BusState bus_state{.loop = loop, .exit_code = 0};
+  BusState bus_state{.loop = loop, .exit_code = 0, .source_parent = source_parent};
 
   GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline));
   const guint bus_watch_id = gst_bus_add_watch(bus, bus_call, &bus_state);
@@ -294,6 +298,9 @@ int run_pipeline(GstElement* pipeline, int timeout_seconds) {
 
   g_main_loop_run(loop);
 
+  if (source_parent) {
+    cancel_uri_playlist_frame_barrier(source_parent);
+  }
   gst_element_set_state(pipeline, GST_STATE_NULL);
   if (bus_state.timeout_id) {
     g_source_remove(bus_state.timeout_id);
@@ -307,7 +314,11 @@ int run_pipeline(GstElement* pipeline, int timeout_seconds) {
   return bus_state.exit_code;
 }
 
-void configure_uri_multiple_source(NvDsSourceConfig& cfg, const std::vector<std::string>& uris, guint source_id) {
+void configure_uri_multiple_source(
+    NvDsSourceConfig& cfg,
+    const std::vector<std::string>& uris,
+    guint source_id,
+    bool include_uri_list = true) {
   cfg = {};
   cfg.type = NV_DS_SOURCE_URI_MULTIPLE;
   cfg.enable = TRUE;
@@ -317,8 +328,10 @@ void configure_uri_multiple_source(NvDsSourceConfig& cfg, const std::vector<std:
   cfg.uri_list_loop = FALSE;
   cfg.camera_id = source_id;
   cfg.source_id = source_id;
-  const std::string uri_list = join_semicolon(uris);
-  cfg.uri_list = g_strdup(uri_list.c_str());
+  if (include_uri_list) {
+    const std::string uri_list = join_semicolon(uris);
+    cfg.uri_list = g_strdup(uri_list.c_str());
+  }
   cfg.uri = g_strdup(uris.front().c_str());
 }
 
@@ -557,7 +570,7 @@ int run_decode_compose_encode(
       "batch-size",
       2,
       "batched-push-timeout",
-      G_MAXINT,
+      1000000,
       "sync-inputs",
       FALSE,
       "frame-num-reset-on-stream-reset",
@@ -612,7 +625,7 @@ int run_decode_compose_encode(
   gst_pad_add_probe(tiler_src, GST_PAD_PROBE_TYPE_BUFFER, count_buffers_probe, &counter, NULL);
   gst_object_unref(tiler_src);
 
-  int rc = run_pipeline(pipeline, 30);
+  int rc = run_pipeline(pipeline, 30, &src_parent);
   if (rc != 0) {
     return rc;
   }
@@ -630,14 +643,26 @@ int run_decode_compose_encode(
   return expect_encoded_file(out, /*expect_audio=*/true, /*min_audio_pts_seconds=*/1.5);
 }
 
-int run_lossless_two_camera_mux(const std::vector<std::string>& left_uris, const std::vector<std::string>& right_uris) {
+int run_lossless_two_camera_mux(
+    const std::vector<std::string>& left_uris,
+    const std::vector<std::string>& right_uris,
+    bool include_right_uri_list = true,
+    guint audio_source_id = 0,
+    guint64 audio_sleep_time_us = 0,
+    bool expect_pipeline_error = false) {
   NvDsSourceConfig configs[2]{};
   configure_uri_multiple_source(configs[0], left_uris, /*source_id=*/0);
-  configure_uri_multiple_source(configs[1], right_uris, /*source_id=*/1);
+  configure_uri_multiple_source(configs[1], right_uris, /*source_id=*/1, include_right_uri_list);
 
   NvDsSrcParentBin src_parent{};
   if (!create_multi_source_bin(2, configs, &src_parent)) {
     std::cerr << "Failed to create lossless two-camera source bin\n";
+    return 2;
+  }
+  GstElementFactory* mux_factory = gst_element_get_factory(src_parent.streammux);
+  if (!mux_factory ||
+      g_strcmp0(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(mux_factory)), "hstreamlosslessmux") != 0) {
+    std::cerr << "Two-camera URI-MULTIPLE did not select the full-batch-only HStream mux\n";
     return 2;
   }
   g_object_set(
@@ -645,7 +670,7 @@ int run_lossless_two_camera_mux(const std::vector<std::string>& left_uris, const
       "batch-size",
       2,
       "batched-push-timeout",
-      G_MAXINT,
+      1000000,
       "sync-inputs",
       FALSE,
       "frame-num-reset-on-stream-reset",
@@ -657,18 +682,28 @@ int run_lossless_two_camera_mux(const std::vector<std::string>& left_uris, const
   GstElement* pipeline = gst_pipeline_new("uri-multiple-lossless-mux-test");
   GstElement* sink = gst_element_factory_make("fakesink", "lossless-mux-sink");
   GstElement* audio_sink = gst_element_factory_make("fakesink", "lossless-audio-sink");
-  if (!pipeline || !sink || !audio_sink) {
+  GstElement* audio_delay =
+      audio_sleep_time_us > 0 ? gst_element_factory_make("identity", "lossless-audio-delay") : nullptr;
+  if (!pipeline || !sink || !audio_sink || (audio_sleep_time_us > 0 && !audio_delay)) {
     std::cerr << "Failed to create lossless mux pipeline/sinks\n";
     return 3;
   }
   g_object_set(G_OBJECT(sink), "sync", FALSE, "async", FALSE, NULL);
   g_object_set(G_OBJECT(audio_sink), "sync", FALSE, "async", FALSE, NULL);
   gst_bin_add_many(GST_BIN(pipeline), src_parent.bin, sink, audio_sink, NULL);
+  if (audio_delay) {
+    g_object_set(G_OBJECT(audio_delay), "sleep-time", static_cast<guint>(audio_sleep_time_us), NULL);
+    gst_bin_add(GST_BIN(pipeline), audio_delay);
+    if (!gst_element_link(audio_delay, audio_sink)) {
+      std::cerr << "Failed to link delayed source audio\n";
+      return 4;
+    }
+  }
   if (!gst_element_link(src_parent.bin, sink)) {
     std::cerr << "Failed to link lossless mux pipeline\n";
     return 4;
   }
-  if (!link_uri_source_audio_src(&src_parent.sub_bins[0], audio_sink)) {
+  if (!link_uri_source_audio_src(&src_parent.sub_bins[audio_source_id], audio_delay ? audio_delay : audio_sink)) {
     std::cerr << "Failed to link source audio for lossless mux pipeline\n";
     return 4;
   }
@@ -693,7 +728,14 @@ int run_lossless_two_camera_mux(const std::vector<std::string>& left_uris, const
       nullptr);
   gst_object_unref(audio_sink_pad);
 
-  const int rc = run_pipeline(pipeline, 30);
+  const int rc = run_pipeline(pipeline, 30, &src_parent);
+  if (expect_pipeline_error) {
+    if (rc != 1) {
+      std::cerr << "Expected a decoder error and prompt frame-barrier cancellation, got run result " << rc << "\n";
+      return 10;
+    }
+    return 0;
+  }
   if (rc != 0) {
     std::cerr << "Lossless mux failure diagnostics: audio_buffers=" << audio_stats.buffers
               << ", audio_eos_events=" << audio_stats.eos_events << "\n";
@@ -793,10 +835,10 @@ int main(int argc, char** argv) {
   const fs::path shifted_b2 = tmpdir / "right_shifted_2.mp4";
   const fs::path audio = tmpdir / "continuous_audio.m4a";
   if (!make_synthetic_mp4(a0, 1, 0, 440) || !make_synthetic_mp4(a1, 1, 30, 494) ||
-      !make_synthetic_mp4(a2, 1, 60, 523) || !make_synthetic_mp4(b0, 1, 90, 0) || !make_synthetic_mp4(b1, 1, 120, 0) ||
-      !make_synthetic_mp4(b2, 1, 150, 0) || !make_synthetic_mp4(shifted_b0, 0.8, 180, 0) ||
-      !make_synthetic_mp4(shifted_b1, 1.2, 210, 0) || !make_synthetic_mp4(shifted_b2, 1.0, 240, 0) ||
-      !make_synthetic_audio(audio, 3)) {
+      !make_synthetic_mp4(a2, 1, 60, 523) || !make_synthetic_mp4(b0, 1, 90, 587) ||
+      !make_synthetic_mp4(b1, 1, 120, 659) || !make_synthetic_mp4(b2, 1, 150, 698) ||
+      !make_synthetic_mp4(shifted_b0, 0.8, 180, 0) || !make_synthetic_mp4(shifted_b1, 1.2, 210, 0) ||
+      !make_synthetic_mp4(shifted_b2, 1.0, 240, 0) || !make_synthetic_audio(audio, 3)) {
     std::cerr << "Failed to generate synthetic mp4 chapters with ffmpeg\n";
     fs::remove_all(tmpdir);
     return 2;
@@ -828,14 +870,39 @@ int main(int argc, char** argv) {
   }
 
   const std::vector<std::string> shorter_right_uris{to_file_uri(b0), to_file_uri(b1)};
-  rc = run_lossless_two_camera_mux(left_uris, shorter_right_uris);
+  // Backpressure the audio-bearing shorter camera so video EOS arrives first. Switching must wait for that camera's
+  // trailing audio buffers/EOS instead of tearing down uridecodebin and truncating the audio timeline.
+  rc = run_lossless_two_camera_mux(
+      left_uris,
+      shorter_right_uris,
+      /*include_right_uri_list=*/true,
+      /*audio_source_id=*/1,
+      /*audio_sleep_time_us=*/30000);
   if (rc != 0) {
     fs::remove_all(tmpdir);
     return rc;
   }
 
   const std::vector<std::string> single_right_uri{to_file_uri(b0)};
-  rc = run_lossless_two_camera_mux(left_uris, single_right_uri);
+  // Exercise the production fallback too: URI-MULTIPLE configurations historically omitted uri-list when a camera
+  // had only one file. That one-file camera must still participate in every exact-sequence barrier rendezvous.
+  rc = run_lossless_two_camera_mux(left_uris, single_right_uri, /*include_right_uri_list=*/false);
+  if (rc != 0) {
+    fs::remove_all(tmpdir);
+    return rc;
+  }
+
+  // A decoder that fails while its peer is waiting for the next exact frame must cancel/broadcast the barrier before
+  // teardown. Without that safeguard this expected resource error blocks GST_STATE_NULL until the barrier timeout.
+  const std::vector<std::string> failing_right_uris{
+      to_file_uri(b0), to_file_uri(tmpdir / "deliberately_missing_right_1.mp4")};
+  rc = run_lossless_two_camera_mux(
+      {to_file_uri(a0), to_file_uri(a1)},
+      failing_right_uris,
+      /*include_right_uri_list=*/true,
+      /*audio_source_id=*/0,
+      /*audio_sleep_time_us=*/0,
+      /*expect_pipeline_error=*/true);
   if (rc != 0) {
     fs::remove_all(tmpdir);
     return rc;
