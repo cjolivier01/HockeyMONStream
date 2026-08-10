@@ -347,13 +347,16 @@ static UriPlaylistDeliveryWaitResult wait_for_committed_uri_playlist_delivery(
     NvDsSrcBin* bin,
     guint64 committed_sequence) {
   NvDsSrcParentBin* parent = bin ? bin->parent_bin : nullptr;
-  if (!parent || committed_sequence == G_MAXUINT64) {
+  if (!parent) {
     return UriPlaylistDeliveryWaitResult::kDelivered;
   }
 
   g_mutex_lock(&parent->uri_playlist_barrier_mutex);
   const std::vector<NvDsSrcBin*> sources = uri_playlist_sources(parent);
   const auto all_delivered = [&sources, committed_sequence]() {
+    if (committed_sequence == G_MAXUINT64) {
+      return true;
+    }
     return sources.size() == 2 && std::all_of(sources.begin(), sources.end(), [committed_sequence](NvDsSrcBin* source) {
              return source->uri_list_mux_delivered_sequence != G_MAXUINT64 &&
                  source->uri_list_mux_delivered_sequence >= committed_sequence;

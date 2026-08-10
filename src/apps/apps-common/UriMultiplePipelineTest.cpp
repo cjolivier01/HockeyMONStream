@@ -104,6 +104,12 @@ struct MuxBatchStats {
   std::vector<std::vector<std::pair<guint, guint>>> batch_frames;
 };
 
+enum class ExpectedPipelineFailure {
+  kNone,
+  kBusError,
+  kStateChangeFailure,
+};
+
 GstPadProbeReturn count_buffers_probe(GstPad* /*pad*/, GstPadProbeInfo* info, gpointer user_data) {
   if ((info->type & GST_PAD_PROBE_TYPE_BUFFER) == 0) {
     return GST_PAD_PROBE_OK;
@@ -297,8 +303,15 @@ int run_pipeline(GstElement* pipeline, int timeout_seconds, NvDsSrcParentBin* so
 
   if (gst_element_set_state(pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
     std::cerr << "Failed to set pipeline to PLAYING\n";
+    if (source_parent) {
+      cancel_uri_playlist_frame_barrier(source_parent);
+    }
+    gst_element_set_state(pipeline, GST_STATE_NULL);
+    g_source_remove(bus_state.timeout_id);
+    g_source_remove(bus_watch_id);
+    gst_object_unref(GST_OBJECT(pipeline));
     g_main_loop_unref(loop);
-    return 2;
+    return 3;
   }
 
   g_main_loop_run(loop);
@@ -710,7 +723,7 @@ int run_lossless_two_camera_mux(
     bool include_right_uri_list = true,
     guint audio_source_id = 0,
     guint64 audio_sleep_time_us = 0,
-    bool expect_pipeline_error = false,
+    ExpectedPipelineFailure expected_failure = ExpectedPipelineFailure::kNone,
     guint64 video_sleep_time_us = 0,
     gint video_sleep_source_id = -1,
     guint64 video_sleep_on_buffer = 0) {
@@ -797,9 +810,10 @@ int run_lossless_two_camera_mux(
   gst_object_unref(audio_sink_pad);
 
   const int rc = run_pipeline(pipeline, 30, &src_parent);
-  if (expect_pipeline_error) {
-    if (rc != 1) {
-      std::cerr << "Expected a decoder error and prompt frame-barrier cancellation, got run result " << rc << "\n";
+  if (expected_failure != ExpectedPipelineFailure::kNone) {
+    const int expected_rc = expected_failure == ExpectedPipelineFailure::kBusError ? 1 : 3;
+    if (rc != expected_rc) {
+      std::cerr << "Expected prompt pipeline failure " << expected_rc << ", got run result " << rc << "\n";
       return 10;
     }
     return 0;
@@ -940,7 +954,7 @@ int main(int argc, char** argv) {
       /*include_right_uri_list=*/true,
       /*audio_source_id=*/0,
       /*audio_sleep_time_us=*/0,
-      /*expect_pipeline_error=*/false,
+      /*expected_failure=*/ExpectedPipelineFailure::kNone,
       /*video_sleep_time_us=*/500000,
       /*video_sleep_source_id=*/0,
       /*video_sleep_on_buffer=*/15);
@@ -1030,7 +1044,21 @@ int main(int argc, char** argv) {
       /*include_right_uri_list=*/true,
       /*audio_source_id=*/0,
       /*audio_sleep_time_us=*/0,
-      /*expect_pipeline_error=*/true);
+      /*expected_failure=*/ExpectedPipelineFailure::kBusError);
+  if (rc != 0) {
+    fs::remove_all(tmpdir);
+    return rc;
+  }
+
+  // Cancellation must also win before sequence zero commits; otherwise no-pair terminal teardown can synthesize EOS
+  // ahead of this decoder error and incorrectly report successful completion.
+  rc = run_lossless_two_camera_mux(
+      {to_file_uri(a0)},
+      {to_file_uri(tmpdir / "deliberately_missing_right_0.mp4")},
+      /*include_right_uri_list=*/true,
+      /*audio_source_id=*/0,
+      /*audio_sleep_time_us=*/0,
+      /*expected_failure=*/ExpectedPipelineFailure::kStateChangeFailure);
   if (rc != 0) {
     fs::remove_all(tmpdir);
     return rc;
