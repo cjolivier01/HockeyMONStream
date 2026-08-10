@@ -1279,7 +1279,19 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   mode->setCurrentIndex(mode->findData("program"));
   const int fresh_program_clean_commands = window->logText().count("stitching calibration clean command");
   qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
+  for (QWidget* surface : {preview_surface, stitched_surface, camera1_surface, camera2_surface, camera3_surface}) {
+    surface->setProperty("previewFrameAvailable", true);
+  }
   activate(start);
+  if (!expect(
+          !preview_surface->property("previewFrameAvailable").toBool() &&
+              !stitched_surface->property("previewFrameAvailable").toBool() &&
+              !camera1_surface->property("previewFrameAvailable").toBool() &&
+              !camera2_surface->property("previewFrameAvailable").toBool() &&
+              !camera3_surface->property("previewFrameAvailable").toBool(),
+          "Starting a new pipeline should clear every preview before new backend frames arrive")) {
+    return false;
+  }
   for (int i = 0; i < 200 &&
        (!window->logText().contains("one-pass stitching calibration complete; continuous program playback running") ||
         window->pipelineStateText() != "PLAYING");
@@ -1302,7 +1314,23 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           has_fresh_program_status && fresh_program_status.IsScalar() &&
               fresh_program_status.as<std::string>() == "complete",
           "A fresh Program one-pass calibration should persist completed state");
+  for (QWidget* surface : {preview_surface, stitched_surface, camera1_surface, camera2_surface, camera3_surface}) {
+    surface->setProperty("previewFrameAvailable", true);
+  }
   activate(stop);
+  for (int i = 0; i < 50 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          !preview_surface->property("previewFrameAvailable").toBool() &&
+              !stitched_surface->property("previewFrameAvailable").toBool() &&
+              !camera1_surface->property("previewFrameAvailable").toBool() &&
+              !camera2_surface->property("previewFrameAvailable").toBool() &&
+              !camera3_surface->property("previewFrameAvailable").toBool(),
+          "Finishing a pipeline should clear every captured preview frame")) {
+    return false;
+  }
   qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
   if (!fresh_program_tracked) {
     return false;

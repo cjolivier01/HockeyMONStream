@@ -96,6 +96,7 @@ class HStreamWindow : public QMainWindow {
   void closeStitchingCalibrationDialog();
   void handleScoreboardSelectorOutput(const QString& line);
   void switchPipelineRenderTarget(int tab_index);
+  void clearPreviewFrames();
   void requestPreviewFrame();
   bool handlePreviewFrameResponse(const QString& line);
   void togglePreviewFullscreen(int tab_index);

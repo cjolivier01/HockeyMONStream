@@ -2376,6 +2376,7 @@ void HStreamWindow::startPipeline() {
     appendLog("pipeline already running");
     return;
   }
+  clearPreviewFrames();
   if (!ensureGameDirectory()) {
     updateRunControls();
     return;
@@ -2715,6 +2716,7 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
     QFile::remove(preview_frame_request_path_);
   preview_frame_request_path_.clear();
   preview_frame_request_channel_.clear();
+  clearPreviewFrames();
   const bool stopped_by_user = pipeline_stop_requested_;
   pipeline_stop_requested_ = false;
   if (calibration_pending_ && !stopped_by_user) {
@@ -2740,6 +2742,14 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
                 .arg(exit_code)
                 .arg(exit_status == QProcess::NormalExit ? "normal" : "crashed"));
   updateRunControls();
+}
+
+void HStreamWindow::clearPreviewFrames() {
+  set_snapshot_frame(preview_surface_, QImage());
+  set_snapshot_frame(stitched_surface_, QImage());
+  for (QWidget* surface : camera_preview_surfaces_) {
+    set_snapshot_frame(surface, QImage());
+  }
 }
 
 void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
