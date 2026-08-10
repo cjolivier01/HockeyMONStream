@@ -211,6 +211,7 @@ StitcherPriv::EosSnapshot StitcherPriv::snapshot_eos_for_surface(NvBufSurface* i
   if (iter != eos_snapshot_by_surface_.end()) {
     snapshot = iter->second;
     snapshot.pipeline_eos_seen = snapshot.pipeline_eos_seen || pipeline_eos_seen_;
+    snapshot.source_ids.insert(eos_source_ids_.begin(), eos_source_ids_.end());
     eos_snapshot_by_surface_.erase(iter);
   }
   return snapshot;

@@ -119,6 +119,7 @@ bool expect_prepare_runtime_partial_is_retryable() {
 bool expect_prepare_runtime_partial_eos_is_cancelled(bool pipeline_eos) {
   hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
   stitcher.SetProperty({"one-pass-mode", "1"});
+  stitcher.outputthread_stopped = true;
 
   NvDsBatchMeta* batch_meta = nvds_create_batch_meta(1);
   NvDsFrameMeta* frame_meta = nvds_acquire_frame_meta_from_pool(batch_meta);
@@ -138,6 +139,7 @@ bool expect_prepare_runtime_partial_eos_is_cancelled(bool pipeline_eos) {
     nvds_destroy_batch_meta(batch_meta);
     return false;
   }
+  hm::videoprep::RuntimeOutputPoolFlow output_pool_flow;
   GstBuffer* retry_input_buffer = gst_buffer_new();
   int retry_released_inputs = 0;
   int retry_eos_events = 0;
@@ -145,7 +147,7 @@ bool expect_prepare_runtime_partial_eos_is_cancelled(bool pipeline_eos) {
       GST_MINI_OBJECT_CAST(retry_input_buffer),
       [](gpointer user_data, GstMiniObject*) { ++*static_cast<int*>(user_data); },
       &retry_released_inputs);
-  const bool retry_handled = hm::videoprep::handle_runtime_output_pool_status(
+  const bool retry_handled = output_pool_flow.handle_status(
       partial_result.status(), retry_input_buffer, [&retry_eos_events]() { ++retry_eos_events; });
   if (!retry_handled || retry_released_inputs != 1 || retry_eos_events != 0) {
     if (!retry_handled) {
@@ -156,8 +158,28 @@ bool expect_prepare_runtime_partial_eos_is_cancelled(bool pipeline_eos) {
     return false;
   }
 
+  // Reproduce production ordering: ProcessBuffer snapshots EOS state when the
+  // surface is enqueued, then the event arrives before OutputThread sizes it.
+  GstBuffer* queued_input_buffer = gst_buffer_new_allocate(nullptr, sizeof(NvBufSurface), nullptr);
+  GstMapInfo queued_write_map = GST_MAP_INFO_INIT;
+  if (!queued_input_buffer || !gst_buffer_map(queued_input_buffer, &queued_write_map, GST_MAP_WRITE)) {
+    std::cerr << "Could not allocate the queued runtime-sizing test surface" << std::endl;
+    if (queued_input_buffer) {
+      gst_buffer_unref(queued_input_buffer);
+    }
+    nvds_destroy_batch_meta(batch_meta);
+    return false;
+  }
+  *reinterpret_cast<NvBufSurface*>(queued_write_map.data) = in_surface;
+  gst_buffer_unmap(queued_input_buffer, &queued_write_map);
+  if (stitcher.ProcessBuffer(queued_input_buffer) != hm::BufferResult::Buffer_Async) {
+    std::cerr << "Could not enqueue the runtime-sizing test surface" << std::endl;
+    gst_buffer_unref(queued_input_buffer);
+    nvds_destroy_batch_meta(batch_meta);
+    return false;
+  }
+
   if (pipeline_eos) {
-    stitcher.outputthread_stopped = true;
     GstEvent* event = gst_event_new_eos();
     stitcher.HandleEvent(event);
     gst_event_unref(event);
@@ -167,7 +189,17 @@ bool expect_prepare_runtime_partial_eos_is_cancelled(bool pipeline_eos) {
     gst_event_unref(event);
   }
 
-  const auto eos_result = stitcher.PrepareRuntimeOutputSize(batch_meta, &in_surface);
+  GstMapInfo queued_read_map = GST_MAP_INFO_INIT;
+  if (!gst_buffer_map(queued_input_buffer, &queued_read_map, GST_MAP_READ)) {
+    std::cerr << "Could not remap the queued runtime-sizing test surface" << std::endl;
+    gst_buffer_unref(queued_input_buffer);
+    nvds_destroy_batch_meta(batch_meta);
+    return false;
+  }
+  const auto eos_result =
+      stitcher.PrepareRuntimeOutputSize(batch_meta, reinterpret_cast<NvBufSurface*>(queued_read_map.data));
+  gst_buffer_unmap(queued_input_buffer, &queued_read_map);
+  gst_buffer_unref(queued_input_buffer);
   nvds_destroy_batch_meta(batch_meta);
   if (eos_result.status().code() != absl::StatusCode::kCancelled) {
     std::cerr << "Expected partial runtime sizing after " << (pipeline_eos ? "pipeline" : "missing source")
@@ -181,7 +213,7 @@ bool expect_prepare_runtime_partial_eos_is_cancelled(bool pipeline_eos) {
       GST_MINI_OBJECT_CAST(input_buffer),
       [](gpointer user_data, GstMiniObject*) { ++*static_cast<int*>(user_data); },
       &released_inputs);
-  const bool handled = hm::videoprep::handle_runtime_output_pool_status(
+  const bool handled = output_pool_flow.handle_status(
       eos_result.status(), input_buffer, [&downstream_eos_events]() { ++downstream_eos_events; });
   if (!handled || released_inputs != 1 || downstream_eos_events != 1) {
     if (!handled) {
@@ -191,6 +223,22 @@ bool expect_prepare_runtime_partial_eos_is_cancelled(bool pipeline_eos) {
                  "EOS event; handled="
               << handled << ", released_inputs=" << released_inputs
               << ", downstream_eos_events=" << downstream_eos_events << std::endl;
+    return false;
+  }
+  GstBuffer* later_input_buffer = gst_buffer_new();
+  int later_released_inputs = 0;
+  gst_mini_object_weak_ref(
+      GST_MINI_OBJECT_CAST(later_input_buffer),
+      [](gpointer user_data, GstMiniObject*) { ++*static_cast<int*>(user_data); },
+      &later_released_inputs);
+  const bool terminal_consumed = output_pool_flow.consume_if_terminal(later_input_buffer);
+  if (!output_pool_flow.eos_terminal() || !terminal_consumed || later_released_inputs != 1 ||
+      downstream_eos_events != 1) {
+    if (!terminal_consumed) {
+      gst_buffer_unref(later_input_buffer);
+    }
+    std::cerr << "Expected runtime-sizing EOS to consume all later inputs without sending another EOS event"
+              << std::endl;
     return false;
   }
   return true;
