@@ -210,6 +210,7 @@ cc_library(
         ":deepstream_includes",
         ":deepstream_lib",
         ":hstream_lossless_nvstreammux_backend",
+        "@local_cuda//:cuda_headers",
         "@gst_plugin_dev//toolchains/jetson:cuda_runtime",
         "@gstreamer",
         "@yaml-cpp",
