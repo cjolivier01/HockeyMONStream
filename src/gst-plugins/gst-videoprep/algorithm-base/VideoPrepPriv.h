@@ -7,6 +7,7 @@
 #include "nvbufsurface.h"
 #include <cassert>
 #include <cstddef>
+#include <functional>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -32,6 +33,13 @@ enum class RuntimeOutputPoolStatusDisposition {
 };
 
 RuntimeOutputPoolStatusDisposition classify_runtime_output_pool_status(const absl::Status& status);
+
+// Returns true after consuming input_buffer for a retryable or EOS status. The
+// caller must then skip output-pool acquisition and all output-buffer access.
+bool handle_runtime_output_pool_status(
+    const absl::Status& status,
+    GstBuffer* input_buffer,
+    const std::function<void()>& send_eos);
 
 class VideoPrepPriv : public DSCustomLibraryBase {
  public:

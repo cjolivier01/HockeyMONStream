@@ -31,6 +31,25 @@ videoprep::RuntimeOutputPoolStatusDisposition videoprep::classify_runtime_output
   return RuntimeOutputPoolStatusDisposition::kError;
 }
 
+bool videoprep::handle_runtime_output_pool_status(
+    const absl::Status& status,
+    GstBuffer* input_buffer,
+    const std::function<void()>& send_eos) {
+  switch (classify_runtime_output_pool_status(status)) {
+    case RuntimeOutputPoolStatusDisposition::kRetry:
+      gst_buffer_unref(input_buffer);
+      return true;
+    case RuntimeOutputPoolStatusDisposition::kSendEos:
+      gst_buffer_unref(input_buffer);
+      send_eos();
+      return true;
+    case RuntimeOutputPoolStatusDisposition::kProceed:
+    case RuntimeOutputPoolStatusDisposition::kError:
+      return false;
+  }
+  return false;
+}
+
 namespace {
 
 guint get_caps_batch_size(GstCaps* caps) {
@@ -724,24 +743,14 @@ void CustomAlgorithmBase::OutputThread(void) {
         GstBuffer* newGstOutBuf = NULL;
         GstFlowReturn result = GST_FLOW_OK;
         const absl::Status output_pool_status = EnsureDsOutputBufferPool(batch_meta, in_surf);
-        switch (videoprep::classify_runtime_output_pool_status(output_pool_status)) {
-          case videoprep::RuntimeOutputPoolStatusDisposition::kRetry:
-            // Runtime-sized transforms may need a complete multi-source batch before they can allocate their output
-            // pool. Drop an incomplete mux batch without poisoning the transform; a later complete batch will retry.
-            gst_buffer_unref(packetInfo.inbuf);
-            lk.lock();
-            continue;
-          case videoprep::RuntimeOutputPoolStatusDisposition::kSendEos:
-            // EOS may arrive while runtime sizing is waiting for the missing source. There is no output pool or
-            // output buffer yet, so release only the input and terminate downstream without treating this as fatal.
-            std::cerr << output_pool_status << std::endl;
-            gst_buffer_unref(packetInfo.inbuf);
-            send_eos_downstream();
-            lk.lock();
-            continue;
-          case videoprep::RuntimeOutputPoolStatusDisposition::kProceed:
-          case videoprep::RuntimeOutputPoolStatusDisposition::kError:
-            break;
+        if (absl::IsCancelled(output_pool_status)) {
+          std::cerr << output_pool_status << std::endl;
+        }
+        if (videoprep::handle_runtime_output_pool_status(output_pool_status, packetInfo.inbuf, send_eos_downstream)) {
+          // Runtime-sized transforms may need a later complete batch, or EOS may arrive before sizing completes.
+          // The helper releases the input and, for EOS, terminates downstream. No output pool/buffer exists here.
+          lk.lock();
+          continue;
         }
         cuda_status.Update(output_pool_status);
         if (!cuda_status.ok()) {
