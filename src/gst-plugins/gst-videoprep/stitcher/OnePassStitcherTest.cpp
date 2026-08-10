@@ -164,7 +164,7 @@ int main() {
   if (!expect_output_batch_size(/*input_batch_size=*/4, /*configured_batch_size=*/4, /*expected_batch_size=*/2)) {
     return 4;
   }
-  if (!expect_generate_status({{0, 0}}, {}, absl::StatusCode::kFailedPrecondition, "odd batch without eos")) {
+  if (!expect_generate_status({{0, 0}}, {}, absl::StatusCode::kUnavailable, "odd batch without eos")) {
     return 5;
   }
   if (!expect_generate_status({{0, 0}}, {1}, absl::StatusCode::kCancelled, "odd batch after source eos")) {
@@ -173,7 +173,7 @@ int main() {
   if (!expect_generate_status(
           {{0, 0}},
           {1},
-          absl::StatusCode::kFailedPrecondition,
+          absl::StatusCode::kUnavailable,
           "odd batch after cleared source eos",
           /*pipeline_eos=*/false,
           /*stream_start_source_ids=*/{1})) {
@@ -188,31 +188,25 @@ int main() {
     return 8;
   }
   if (!expect_generate_status(
-          {{0, 0}, {0, 0}},
-          {},
-          absl::StatusCode::kFailedPrecondition,
-          "duplicate frame/source without eos")) {
+          {{0, 0}, {0, 0}}, {}, absl::StatusCode::kFailedPrecondition, "duplicate frame/source without eos")) {
     return 9;
   }
   if (!expect_generate_status(
-          {{0, 0}, {0, 0}},
-          {1},
-          absl::StatusCode::kFailedPrecondition,
-          "duplicate after source eos")) {
+          {{0, 0}, {0, 0}}, {1}, absl::StatusCode::kFailedPrecondition, "duplicate after source eos")) {
     return 10;
   }
   if (!expect_generate_status(
-          {{0, 0}, {1, 1}},
+          {{0, 0}, {0, 1}, {0, 2}, {1, 3}},
           {},
           absl::StatusCode::kFailedPrecondition,
-          "even unpaired frames without eos")) {
+          "unbalanced source frames without eos")) {
     return 11;
   }
   if (!expect_generate_status(
-          {{0, 0}, {1, 1}},
+          {{0, 0}, {0, 1}, {0, 2}, {1, 3}},
           {1},
           absl::StatusCode::kFailedPrecondition,
-          "even unpaired after source eos")) {
+          "unbalanced source frames after source eos")) {
     return 12;
   }
 
