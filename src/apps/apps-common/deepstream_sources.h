@@ -206,6 +206,8 @@ struct NvDsSrcParentBin {
   gboolean uri_playlist_exact_pairing_enabled;
   gboolean uri_playlist_terminal;
   gboolean uri_playlist_barrier_failed;
+  /** Cancels waits for committed frames to reach nvstreammux during failure/application teardown. */
+  gboolean uri_playlist_delivery_aborted;
   gulong nvstreammux_eosmonitor_probe;
 };
 

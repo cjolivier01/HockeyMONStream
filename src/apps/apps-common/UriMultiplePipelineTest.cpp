@@ -80,6 +80,7 @@ gboolean bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
 struct BufferCounter {
   guint64 buffers{0};
   guint64 sleep_time_us{0};
+  guint64 sleep_on_buffer{0};
 };
 
 struct AudioTimelineStats {
@@ -109,7 +110,7 @@ GstPadProbeReturn count_buffers_probe(GstPad* /*pad*/, GstPadProbeInfo* info, gp
   }
   auto* counter = static_cast<BufferCounter*>(user_data);
   ++counter->buffers;
-  if (counter->sleep_time_us > 0) {
+  if (counter->sleep_time_us > 0 && (counter->sleep_on_buffer == 0 || counter->buffers == counter->sleep_on_buffer)) {
     g_usleep(counter->sleep_time_us);
   }
   return GST_PAD_PROBE_OK;
@@ -711,7 +712,8 @@ int run_lossless_two_camera_mux(
     guint64 audio_sleep_time_us = 0,
     bool expect_pipeline_error = false,
     guint64 video_sleep_time_us = 0,
-    gint video_sleep_source_id = -1) {
+    gint video_sleep_source_id = -1,
+    guint64 video_sleep_on_buffer = 0) {
   NvDsSourceConfig configs[2]{};
   configure_uri_multiple_source(configs[0], left_uris, /*source_id=*/0);
   configure_uri_multiple_source(configs[1], right_uris, /*source_id=*/1, include_right_uri_list);
@@ -776,6 +778,7 @@ int run_lossless_two_camera_mux(
   for (guint source_id = 0; source_id < 2; ++source_id) {
     if (video_sleep_source_id < 0 || static_cast<guint>(video_sleep_source_id) == source_id) {
       source_counters[source_id].sleep_time_us = video_sleep_time_us;
+      source_counters[source_id].sleep_on_buffer = video_sleep_on_buffer;
     }
     GstPad* source_pad = gst_element_get_static_pad(src_parent.sub_bins[source_id].bin, "src");
     gst_pad_add_probe(source_pad, GST_PAD_PROBE_TYPE_BUFFER, count_buffers_probe, &source_counters[source_id], nullptr);
@@ -929,7 +932,8 @@ int main(int argc, char** argv) {
   }
 
   // Drive selected audio ahead while the other camera ends in the middle of this camera's next physical chapter.
-  // The audio gate must never release beyond the fully paired video frontier, even before terminal EOS is known.
+  // Hold only the selected camera's final committed video buffer before its mux-sink acknowledgement: peer audio EOS
+  // can then reach deferred terminal teardown first, which must still wait rather than flush that final video pair.
   rc = run_lossless_two_camera_mux(
       shifted_right_uris,
       {to_file_uri(b0)},
@@ -937,8 +941,9 @@ int main(int argc, char** argv) {
       /*audio_source_id=*/0,
       /*audio_sleep_time_us=*/0,
       /*expect_pipeline_error=*/false,
-      /*video_sleep_time_us=*/50000,
-      /*video_sleep_source_id=*/0);
+      /*video_sleep_time_us=*/500000,
+      /*video_sleep_source_id=*/0,
+      /*video_sleep_on_buffer=*/15);
   if (rc != 0) {
     fs::remove_all(tmpdir);
     return rc;

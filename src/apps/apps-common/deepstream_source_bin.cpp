@@ -223,6 +223,7 @@ static void cancel_uri_playlist_source(NvDsSrcBin* bin, gboolean barrier_failed)
   if (parent) {
     parent->uri_playlist_terminal = TRUE;
     parent->uri_playlist_barrier_failed = parent->uri_playlist_barrier_failed || barrier_failed;
+    parent->uri_playlist_delivery_aborted = TRUE;
     for (NvDsSrcBin* source : uri_playlist_sources(parent)) {
       source->uri_list_permanently_ended = TRUE;
       source->uri_switch_pending = FALSE;
@@ -241,6 +242,7 @@ void cancel_uri_playlist_frame_barrier(NvDsSrcParentBin* parent) {
   }
   g_mutex_lock(&parent->uri_playlist_barrier_mutex);
   parent->uri_playlist_terminal = TRUE;
+  parent->uri_playlist_delivery_aborted = TRUE;
   for (NvDsSrcBin* source : uri_playlist_sources(parent)) {
     source->uri_list_permanently_ended = TRUE;
     source->uri_switch_pending = FALSE;
@@ -335,10 +337,18 @@ static GstPadProbeReturn uri_playlist_mux_sink_buffer_probe(
   return GST_PAD_PROBE_OK;
 }
 
-static gboolean wait_for_committed_uri_playlist_delivery(NvDsSrcBin* bin, guint64 committed_sequence) {
+enum class UriPlaylistDeliveryWaitResult {
+  kDelivered,
+  kCancelled,
+  kTimedOut,
+};
+
+static UriPlaylistDeliveryWaitResult wait_for_committed_uri_playlist_delivery(
+    NvDsSrcBin* bin,
+    guint64 committed_sequence) {
   NvDsSrcParentBin* parent = bin ? bin->parent_bin : nullptr;
   if (!parent || committed_sequence == G_MAXUINT64) {
-    return TRUE;
+    return UriPlaylistDeliveryWaitResult::kDelivered;
   }
 
   g_mutex_lock(&parent->uri_playlist_barrier_mutex);
@@ -350,24 +360,31 @@ static gboolean wait_for_committed_uri_playlist_delivery(NvDsSrcBin* bin, guint6
            });
   };
   const gint64 deadline = g_get_monotonic_time() + kUriPlaylistBarrierWaitUs;
-  while (!all_delivered()) {
+  gboolean timed_out = FALSE;
+  while (!all_delivered() && !parent->uri_playlist_delivery_aborted) {
     if (!g_cond_wait_until(&parent->uri_playlist_barrier_cond, &parent->uri_playlist_barrier_mutex, deadline)) {
       parent->uri_playlist_barrier_failed = TRUE;
+      parent->uri_playlist_delivery_aborted = TRUE;
       g_cond_broadcast(&parent->uri_playlist_barrier_cond);
+      timed_out = TRUE;
       break;
     }
   }
   const gboolean delivered = all_delivered();
   g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
-  if (!delivered) {
+  if (delivered) {
+    return UriPlaylistDeliveryWaitResult::kDelivered;
+  }
+  if (timed_out) {
     GST_ELEMENT_ERROR(
         bin->src_elem,
         STREAM,
         FAILED,
         ("Timed out preserving the final committed camera pair"),
         ("committed_sequence=%" G_GUINT64_FORMAT, committed_sequence));
+    return UriPlaylistDeliveryWaitResult::kTimedOut;
   }
-  return delivered;
+  return UriPlaylistDeliveryWaitResult::kCancelled;
 }
 
 static void mark_uri_playlist_terminal(NvDsSrcBin* bin) {
@@ -418,7 +435,10 @@ static void mark_uri_playlist_terminal(NvDsSrcBin* bin) {
   // A pair is committed at the decode barrier, but a peer thread may still be between that barrier and its mux sink.
   // Do not deactivate the peer decoder or inject EOS until every committed buffer is owned by nvstreammux; otherwise
   // terminal teardown could flush one half of the final exact pair.
-  wait_for_committed_uri_playlist_delivery(bin, final_committed_sequence);
+  if (wait_for_committed_uri_playlist_delivery(bin, final_committed_sequence) !=
+      UriPlaylistDeliveryWaitResult::kDelivered) {
+    return;
+  }
 
   // The ending camera has drained both streams before reaching this point. Peers end here because no later exact
   // camera pair can exist. A linked peer audio branch is the one exception: keep its decoder alive until serialized
@@ -452,11 +472,21 @@ static gboolean finish_uri_terminal_audio_drain(gpointer data) {
   const gboolean terminal = uri_playlist_terminal_locked(bin);
   const gboolean drain_complete = bin->uri_terminal_audio_drain_pending &&
       (bin->uri_audio_eos_seen || (bin->uri_list_pads_complete && !bin->uri_audio_has_pad));
+  const guint64 final_committed_sequence = bin->parent_bin && bin->parent_bin->uri_playlist_next_frame_sequence > 0
+      ? bin->parent_bin->uri_playlist_next_frame_sequence - 1
+      : G_MAXUINT64;
   if (terminal && drain_complete) {
     bin->uri_terminal_audio_drain_pending = FALSE;
   }
   g_mutex_unlock(mutex);
   if (!terminal || !drain_complete) {
+    return G_SOURCE_REMOVE;
+  }
+
+  // Audio EOS can reach this idle callback while the peer's final video buffer is still travelling from the exact
+  // decode barrier to nvstreammux. Retiring the decoder in that window would flush one half of a committed pair.
+  if (wait_for_committed_uri_playlist_delivery(bin, final_committed_sequence) !=
+      UriPlaylistDeliveryWaitResult::kDelivered) {
     return G_SOURCE_REMOVE;
   }
 
@@ -495,6 +525,7 @@ static gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequ
   const std::vector<NvDsSrcBin*> sources = uri_playlist_sources(parent);
   if (sources.size() != 2 || !GST_CLOCK_TIME_IS_VALID(logical_video_end)) {
     parent->uri_playlist_barrier_failed = TRUE;
+    parent->uri_playlist_delivery_aborted = TRUE;
     parent->uri_playlist_terminal = TRUE;
     for (NvDsSrcBin* source : sources) {
       source->uri_list_permanently_ended = TRUE;
@@ -524,6 +555,7 @@ static gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequ
         ++parent->uri_playlist_next_frame_sequence;
       } else {
         parent->uri_playlist_barrier_failed = TRUE;
+        parent->uri_playlist_delivery_aborted = TRUE;
         parent->uri_playlist_terminal = TRUE;
         for (NvDsSrcBin* source : sources) {
           source->uri_list_permanently_ended = TRUE;
@@ -537,6 +569,7 @@ static gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequ
       while (!parent->uri_playlist_terminal && parent->uri_playlist_next_frame_sequence <= sequence) {
         if (!g_cond_wait_until(&parent->uri_playlist_barrier_cond, &parent->uri_playlist_barrier_mutex, deadline)) {
           parent->uri_playlist_barrier_failed = TRUE;
+          parent->uri_playlist_delivery_aborted = TRUE;
           parent->uri_playlist_terminal = TRUE;
           for (NvDsSrcBin* source : sources) {
             source->uri_list_permanently_ended = TRUE;
@@ -3014,6 +3047,7 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
   bin->uri_playlist_exact_pairing_enabled = uri_playlist_source_count == 2;
   bin->uri_playlist_terminal = FALSE;
   bin->uri_playlist_barrier_failed = FALSE;
+  bin->uri_playlist_delivery_aborted = FALSE;
 
   bin->bin = gst_bin_new("multi_src_bin");
   if (!bin->bin) {
