@@ -179,6 +179,11 @@ cc_library(
         "-D_GstNvStreamMux=_GstHStreamLosslessMux",
         "-D_GstNvStreamMuxClass=_GstHStreamLosslessMuxClass",
         "-Dgst_nvstreammux_2_get_type=gst_hstream_lossless_mux_get_type",
+        "-DGstNvStreamPad=GstHStreamLosslessPad",
+        "-DGstNvStreamPadClass=GstHStreamLosslessPadClass",
+        "-D_GstNvStreamPad=_GstHStreamLosslessPad",
+        "-D_GstNvStreamPadClass=_GstHStreamLosslessPadClass",
+        "-Dgst_nvstream_pad_get_type=gst_hstream_lossless_pad_get_type",
     ],
     includes = [
         "sources/gst-plugins/gst-nvmultistream2",

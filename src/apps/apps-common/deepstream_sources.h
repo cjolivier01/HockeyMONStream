@@ -172,6 +172,8 @@ typedef struct {
   gboolean uri_switch_pending;
   /** Total decoded video frames across every URI in this playlist. Never resets at chapter boundaries. */
   guint64 uri_list_decoded_frame_count;
+  /** Logical end timestamp of the latest decoded video buffer released by the exact-pair barrier. */
+  guint64 uri_list_released_video_end;
   /** Frames decoded only after a peer camera permanently ended; they are stopped before nvstreammux. */
   guint64 uri_list_terminal_dropped_frame_count;
   /** Decode-time sequence currently waiting for the peer camera before either buffer can reach nvstreammux. */
@@ -198,6 +200,8 @@ struct NvDsSrcParentBin {
   GMutex uri_playlist_barrier_mutex;
   GCond uri_playlist_barrier_cond;
   guint64 uri_playlist_next_frame_sequence;
+  guint64 uri_playlist_paired_video_end;
+  gboolean uri_playlist_exact_pairing_enabled;
   gboolean uri_playlist_terminal;
   gboolean uri_playlist_barrier_failed;
   gulong nvstreammux_eosmonitor_probe;
