@@ -74,6 +74,48 @@ bool expect_output_batch_size(guint input_batch_size, guint configured_batch_siz
   return true;
 }
 
+bool expect_runtime_pair_recovery() {
+  const auto partial = hm::stitcher::select_runtime_stitch_pair({{4, 0}});
+  if (partial.status().code() != absl::StatusCode::kUnavailable) {
+    std::cerr << "Expected the first partial runtime-sizing batch to be retryable, got " << partial.status()
+              << std::endl;
+    return false;
+  }
+
+  const auto offset_complete = hm::stitcher::select_runtime_stitch_pair({{4, 0}, {3, 1}});
+  if (!offset_complete.ok() || offset_complete->first != 0 || offset_complete->second != 1) {
+    std::cerr << "Expected the next offset-but-synchronized batch to produce a runtime sizing pair" << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_prepare_runtime_partial_is_retryable() {
+  hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
+  stitcher.SetProperty({"one-pass-mode", "1"});
+
+  NvDsBatchMeta* batch_meta = nvds_create_batch_meta(1);
+  NvDsFrameMeta* frame_meta = nvds_acquire_frame_meta_from_pool(batch_meta);
+  frame_meta->frame_num = 4;
+  frame_meta->source_id = 0;
+  frame_meta->num_surfaces_per_frame = 1;
+  nvds_add_frame_meta_to_batch(batch_meta, frame_meta);
+
+  NvBufSurfaceParams input_param{};
+  NvBufSurface in_surface{};
+  in_surface.batchSize = 2;
+  in_surface.numFilled = 1;
+  in_surface.surfaceList = &input_param;
+  const auto result = stitcher.PrepareRuntimeOutputSize(batch_meta, &in_surface);
+  nvds_destroy_batch_meta(batch_meta);
+  if (result.status().code() != absl::StatusCode::kUnavailable) {
+    std::cerr << "Expected PrepareRuntimeOutputSize to retry a partial first batch, got " << result.status()
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
 bool expect_generate_status(
     const std::vector<FrameDesc>& frames,
     const std::vector<guint>& eos_source_ids,
@@ -163,6 +205,12 @@ int main() {
   }
   if (!expect_output_batch_size(/*input_batch_size=*/4, /*configured_batch_size=*/4, /*expected_batch_size=*/2)) {
     return 4;
+  }
+  if (!expect_runtime_pair_recovery()) {
+    return 13;
+  }
+  if (!expect_prepare_runtime_partial_is_retryable()) {
+    return 14;
   }
   if (!expect_generate_status({{0, 0}}, {}, absl::StatusCode::kUnavailable, "odd batch without eos")) {
     return 5;

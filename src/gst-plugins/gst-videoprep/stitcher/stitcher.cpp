@@ -286,6 +286,60 @@ absl::Status frame_sequence_mismatch_status(
 
 } // namespace
 
+absl::StatusOr<std::pair<size_t, size_t>> select_runtime_stitch_pair(
+    const std::vector<RuntimeFrameKey>& frames,
+    const std::set<guint>& eos_source_ids,
+    bool pipeline_eos_seen) {
+  if (frames.empty()) {
+    return absl::FailedPreconditionError("Runtime stitching requires at least one input frame");
+  }
+
+  std::map<guint, std::vector<size_t>> source_indices;
+  for (size_t index = 0; index < frames.size(); ++index) {
+    source_indices[frames[index].source_id].push_back(index);
+  }
+  if (source_indices.size() > 2) {
+    return absl::FailedPreconditionError("Runtime stitching received frames from more than two sources");
+  }
+
+  if (source_indices.size() == 2 && frames.size() % 2 == 0) {
+    auto left = source_indices.begin();
+    auto right = std::next(left);
+    if (left->second.size() == right->second.size()) {
+      // nvstreammux is the timestamp synchronization authority. Independent camera frame counters may be offset
+      // after a partial batch, so select the first frame from each source in mux order rather than by frame_num.
+      return std::make_pair(left->second.front(), right->second.front());
+    }
+  }
+
+  std::set<guint> observed_source_ids;
+  for (const auto& [source_id, indices] : source_indices) {
+    (void)indices;
+    observed_source_ids.insert(source_id);
+  }
+  std::set<guint> observed_or_eos_source_ids = observed_source_ids;
+  observed_or_eos_source_ids.insert(eos_source_ids.begin(), eos_source_ids.end());
+  const bool missing_source_reached_eos = observed_source_ids.size() == 1 && observed_or_eos_source_ids.size() == 2 &&
+      std::any_of(eos_source_ids.begin(), eos_source_ids.end(), [&](guint source_id) {
+                                            return !observed_source_ids.count(source_id);
+                                          });
+  if (missing_source_reached_eos || (pipeline_eos_seen && eos_source_ids.empty())) {
+    return absl::CancelledError("Runtime stitching input ended before a complete source pair arrived");
+  }
+
+  const bool structurally_valid_partial = frames.size() % 2 != 0 && eos_source_ids.empty() && !pipeline_eos_seen &&
+      ((source_indices.size() == 1 && frames.size() == 1) ||
+       (source_indices.size() == 2 &&
+        std::abs(
+            static_cast<std::ptrdiff_t>(source_indices.begin()->second.size()) -
+            static_cast<std::ptrdiff_t>(std::next(source_indices.begin())->second.size())) == 1));
+  if (structurally_valid_partial) {
+    return absl::UnavailableError("Runtime stitching is waiting for a complete synchronized source pair");
+  }
+
+  return absl::FailedPreconditionError("Could not find a balanced left/right frame pair for runtime stitching");
+}
+
 absl::Status StitcherPriv::ensure_stitcher() {
   if (configure_only_ && !one_pass_mode_) {
     return absl::OkStatus();
@@ -514,60 +568,64 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
   if (!batch_meta || !in_surface) {
     return absl::InvalidArgumentError("Cannot determine stitched canvas size without batch metadata and input surface");
   }
-  if (in_surface->numFilled % 2 != 0) {
-    return absl::FailedPreconditionError("Not enough filled surfaces to determine stitched canvas size");
-  }
 
   struct RuntimeFrameInfo {
     NvBufSurfaceParams* surface_params;
     size_t incoming_surface_index;
   };
-  std::map<int, std::map<int, RuntimeFrameInfo>> frame_source_surfaces;
+  std::vector<RuntimeFrameInfo> runtime_frames;
+  std::vector<RuntimeFrameKey> runtime_frame_keys;
   size_t surface_index = 0;
+  size_t frame_meta_count = 0;
   for (NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list; frame_meta_list != nullptr;
        frame_meta_list = frame_meta_list->next) {
+    ++frame_meta_count;
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)frame_meta_list->data;
+    if (!frame_meta || frame_meta->num_surfaces_per_frame != 1) {
+      return absl::FailedPreconditionError("Invalid frame metadata while determining stitched canvas size");
+    }
     if (surface_index >= in_surface->numFilled) {
-      break;
+      continue;
     }
     auto* surface_params = &in_surface->surfaceList[surface_index];
-    frame_source_surfaces[frame_meta->frame_num].emplace(
-        frame_meta->source_id,
+    runtime_frames.push_back(
         RuntimeFrameInfo{
             .surface_params = surface_params,
             .incoming_surface_index = surface_index,
         });
+    runtime_frame_keys.push_back(RuntimeFrameKey{frame_meta->frame_num, frame_meta->source_id});
     ++surface_index;
   }
 
-  for (auto& frame_item : frame_source_surfaces) {
-    auto& source_to_surface = frame_item.second;
-    if (source_to_surface.size() < 2) {
-      continue;
-    }
-    const RuntimeFrameInfo& frame_info_left = source_to_surface.begin()->second;
-    const RuntimeFrameInfo& frame_info_right = source_to_surface.rbegin()->second;
+  if (frame_meta_count != in_surface->numFilled || surface_index != in_surface->numFilled) {
+    return absl::FailedPreconditionError("Input surface and frame metadata counts differ during runtime sizing");
+  }
+  const EosSnapshot eos_snapshot = snapshot_eos_for_surface(in_surface);
+  absl::StatusOr<std::pair<size_t, size_t>> selected_pair =
+      select_runtime_stitch_pair(runtime_frame_keys, eos_snapshot.source_ids, eos_snapshot.pipeline_eos_seen);
+  if (!selected_pair.ok()) {
+    return selected_pair.status();
+  }
+  const RuntimeFrameInfo& frame_info_left = runtime_frames[selected_pair->first];
+  const RuntimeFrameInfo& frame_info_right = runtime_frames[selected_pair->second];
 
 #ifdef __aarch64__
-    hm::surface::EglSurfaceMapper incoming_left_elg_surface_mapper(
-        in_surface, frame_info_left.incoming_surface_index, /*read_only=*/true);
-    HM_RETURN_IF_ERROR(to_status(incoming_left_elg_surface_mapper.status()));
-    hm::surface::Surface incoming_surface_left = incoming_left_elg_surface_mapper.get_surface();
-    hm::surface::EglSurfaceMapper incoming_right_elg_surface_mapper(
-        in_surface, frame_info_right.incoming_surface_index, /*read_only=*/true);
-    HM_RETURN_IF_ERROR(to_status(incoming_right_elg_surface_mapper.status()));
-    hm::surface::Surface incoming_surface_right = incoming_right_elg_surface_mapper.get_surface();
+  hm::surface::EglSurfaceMapper incoming_left_elg_surface_mapper(
+      in_surface, frame_info_left.incoming_surface_index, /*read_only=*/true);
+  HM_RETURN_IF_ERROR(to_status(incoming_left_elg_surface_mapper.status()));
+  hm::surface::Surface incoming_surface_left = incoming_left_elg_surface_mapper.get_surface();
+  hm::surface::EglSurfaceMapper incoming_right_elg_surface_mapper(
+      in_surface, frame_info_right.incoming_surface_index, /*read_only=*/true);
+  HM_RETURN_IF_ERROR(to_status(incoming_right_elg_surface_mapper.status()));
+  hm::surface::Surface incoming_surface_right = incoming_right_elg_surface_mapper.get_surface();
 #else
-    hm::surface::Surface incoming_surface_left(frame_info_left.surface_params);
-    hm::surface::Surface incoming_surface_right(frame_info_right.surface_params);
+  hm::surface::Surface incoming_surface_left(frame_info_left.surface_params);
+  hm::surface::Surface incoming_surface_right(frame_info_right.surface_params);
 #endif
 
-    HM_RETURN_IF_ERROR(configure_one_pass_from_surfaces(incoming_surface_left, incoming_surface_right));
-    return videoprep::RuntimeOutputSize{
-        canvas_width_hint_, canvas_height_hint_, GetOutputBatchSize(in_surface->batchSize, 0)};
-  }
-
-  return absl::FailedPreconditionError("Could not find a paired left/right frame to determine stitched canvas size");
+  HM_RETURN_IF_ERROR(configure_one_pass_from_surfaces(incoming_surface_left, incoming_surface_right));
+  return videoprep::RuntimeOutputSize{
+      canvas_width_hint_, canvas_height_hint_, GetOutputBatchSize(in_surface->batchSize, 0)};
 }
 
 bool StitcherPriv::SetProperty(const Property& prop) {

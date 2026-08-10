@@ -12,9 +12,21 @@
 #include <mutex>
 #include <set>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace hm {
 namespace stitcher {
+
+struct RuntimeFrameKey {
+  gint frame_num;
+  guint source_id;
+};
+
+absl::StatusOr<std::pair<size_t, size_t>> select_runtime_stitch_pair(
+    const std::vector<RuntimeFrameKey>& frames,
+    const std::set<guint>& eos_source_ids = {},
+    bool pipeline_eos_seen = false);
 
 using STITCH_PRIV_BASE = CustomAlgorithmBase;
 
