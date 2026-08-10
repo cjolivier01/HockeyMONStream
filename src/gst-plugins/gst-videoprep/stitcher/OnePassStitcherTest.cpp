@@ -138,6 +138,23 @@ bool expect_prepare_runtime_partial_eos_is_cancelled(bool pipeline_eos) {
     nvds_destroy_batch_meta(batch_meta);
     return false;
   }
+  GstBuffer* retry_input_buffer = gst_buffer_new();
+  int retry_released_inputs = 0;
+  int retry_eos_events = 0;
+  gst_mini_object_weak_ref(
+      GST_MINI_OBJECT_CAST(retry_input_buffer),
+      [](gpointer user_data, GstMiniObject*) { ++*static_cast<int*>(user_data); },
+      &retry_released_inputs);
+  const bool retry_handled = hm::videoprep::handle_runtime_output_pool_status(
+      partial_result.status(), retry_input_buffer, [&retry_eos_events]() { ++retry_eos_events; });
+  if (!retry_handled || retry_released_inputs != 1 || retry_eos_events != 0) {
+    if (!retry_handled) {
+      gst_buffer_unref(retry_input_buffer);
+    }
+    std::cerr << "Expected unavailable runtime sizing to release its input without sending EOS" << std::endl;
+    nvds_destroy_batch_meta(batch_meta);
+    return false;
+  }
 
   if (pipeline_eos) {
     stitcher.outputthread_stopped = true;
@@ -157,9 +174,23 @@ bool expect_prepare_runtime_partial_eos_is_cancelled(bool pipeline_eos) {
               << " EOS to cancel, got " << eos_result.status() << std::endl;
     return false;
   }
-  if (hm::videoprep::classify_runtime_output_pool_status(eos_result.status()) !=
-      hm::videoprep::RuntimeOutputPoolStatusDisposition::kSendEos) {
-    std::cerr << "Expected cancelled runtime output-pool sizing to send downstream EOS" << std::endl;
+  GstBuffer* input_buffer = gst_buffer_new();
+  int released_inputs = 0;
+  int downstream_eos_events = 0;
+  gst_mini_object_weak_ref(
+      GST_MINI_OBJECT_CAST(input_buffer),
+      [](gpointer user_data, GstMiniObject*) { ++*static_cast<int*>(user_data); },
+      &released_inputs);
+  const bool handled = hm::videoprep::handle_runtime_output_pool_status(
+      eos_result.status(), input_buffer, [&downstream_eos_events]() { ++downstream_eos_events; });
+  if (!handled || released_inputs != 1 || downstream_eos_events != 1) {
+    if (!handled) {
+      gst_buffer_unref(input_buffer);
+    }
+    std::cerr << "Expected cancelled runtime output-pool sizing to release its input and send exactly one downstream "
+                 "EOS event; handled="
+              << handled << ", released_inputs=" << released_inputs
+              << ", downstream_eos_events=" << downstream_eos_events << std::endl;
     return false;
   }
   return true;
