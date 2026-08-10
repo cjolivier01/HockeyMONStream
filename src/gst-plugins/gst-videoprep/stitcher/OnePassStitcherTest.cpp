@@ -179,6 +179,22 @@ bool expect_runtime_pair_recovery() {
     return false;
   }
 
+  const auto even_tail_after_source_eos =
+      hm::stitcher::select_runtime_stitch_pair({{4, 0}, {5, 0}}, {1}, /*pipeline_eos_seen=*/false);
+  const auto even_tail_after_pipeline_eos =
+      hm::stitcher::select_runtime_stitch_pair({{4, 0}, {5, 0}}, {}, /*pipeline_eos_seen=*/true);
+  const auto duplicate_tail =
+      hm::stitcher::select_runtime_stitch_pair({{4, 0}, {4, 0}}, {1}, /*pipeline_eos_seen=*/false);
+  if (even_tail_after_source_eos.status().code() != absl::StatusCode::kUnavailable ||
+      even_tail_after_pipeline_eos.status().code() != absl::StatusCode::kCancelled ||
+      duplicate_tail.status().code() != absl::StatusCode::kFailedPrecondition) {
+    std::cerr << "Expected metadata-valid even tails to remain restartable for source EOS and terminal for pipeline "
+                 "EOS while duplicate frames remain errors; source status="
+              << even_tail_after_source_eos.status() << ", pipeline status=" << even_tail_after_pipeline_eos.status()
+              << ", duplicate status=" << duplicate_tail.status() << std::endl;
+    return false;
+  }
+
   const auto combined_eos = hm::stitcher::select_runtime_stitch_pair({{4, 0}}, {0}, /*pipeline_eos_seen=*/true);
   if (combined_eos.status().code() != absl::StatusCode::kCancelled) {
     std::cerr << "Expected pipeline EOS to cancel a valid partial even after its observed source reached EOS, got "
@@ -532,7 +548,8 @@ bool expect_generate_status(
     absl::StatusCode expected_code,
     const std::string& test_name,
     bool pipeline_eos = false,
-    const std::vector<guint>& stream_start_source_ids = {}) {
+    const std::vector<guint>& stream_start_source_ids = {},
+    guint input_batch_size = 0) {
   hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
   for (guint source_id : eos_source_ids) {
     GstEvent* event = gst_nvevent_new_stream_eos(source_id);
@@ -574,7 +591,9 @@ bool expect_generate_status(
 
   std::vector<NvBufSurfaceParams> input_params(std::max<size_t>(frames.size(), 1));
   NvBufSurface in_surface{};
-  in_surface.batchSize = std::max<guint>(2, static_cast<guint>(((frames.size() + 1) / 2) * 2));
+  in_surface.batchSize = input_batch_size > 0
+      ? input_batch_size
+      : std::max<guint>(2, static_cast<guint>(((frames.size() + 1) / 2) * 2));
   in_surface.numFilled = frames.size();
   in_surface.surfaceList = input_params.data();
 
@@ -675,6 +694,46 @@ int main() {
           "odd batch after observed source and pipeline eos",
           /*pipeline_eos=*/true)) {
     return 20;
+  }
+  if (!expect_generate_status(
+          {{0, 0}, {1, 0}},
+          {1},
+          absl::StatusCode::kUnavailable,
+          "batch-size-4 even tail after missing source eos",
+          /*pipeline_eos=*/false,
+          /*stream_start_source_ids=*/{},
+          /*input_batch_size=*/4)) {
+    return 23;
+  }
+  if (!expect_generate_status(
+          {{0, 0}, {1, 0}},
+          {0},
+          absl::StatusCode::kUnavailable,
+          "batch-size-4 even tail after observed source eos",
+          /*pipeline_eos=*/false,
+          /*stream_start_source_ids=*/{},
+          /*input_batch_size=*/4)) {
+    return 24;
+  }
+  if (!expect_generate_status(
+          {{0, 0}, {1, 0}},
+          {},
+          absl::StatusCode::kCancelled,
+          "batch-size-4 even tail after pipeline eos",
+          /*pipeline_eos=*/true,
+          /*stream_start_source_ids=*/{},
+          /*input_batch_size=*/4)) {
+    return 25;
+  }
+  if (!expect_generate_status(
+          {{0, 0}, {1, 0}},
+          {},
+          absl::StatusCode::kFailedPrecondition,
+          "batch-size-4 even single-source batch without eos",
+          /*pipeline_eos=*/false,
+          /*stream_start_source_ids=*/{},
+          /*input_batch_size=*/4)) {
+    return 26;
   }
   if (!expect_generate_status(
           {{0, 0}, {0, 0}}, {}, absl::StatusCode::kFailedPrecondition, "duplicate frame/source without eos")) {
