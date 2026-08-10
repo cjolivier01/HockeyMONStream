@@ -10,6 +10,7 @@ JETSON_CXX_INCLUDES = [
   JETSON_SYSROOT + "/usr/lib/aarch64-linux-gnu/dbus-1.0/include",
   JETSON_SYSROOT + "/usr/include/aarch64-linux-gnu",
   JETSON_SYSROOT + "/usr/include",
+  JETSON_SYSROOT + "/usr/local/cuda/include",
 ]
 
 cc_toolchain_config(
@@ -54,6 +55,8 @@ cc_toolchain_config(
     JETSON_SYSROOT + "/usr/include/aarch64-linux-gnu",
     "-isystem",
     JETSON_SYSROOT + "/usr/include",
+    "-isystem",
+    JETSON_SYSROOT + "/usr/local/cuda/include",
     "-isystem",
     JETSON_SYSROOT + "/usr/lib/aarch64-linux-gnu/dbus-1.0/include",
   ],

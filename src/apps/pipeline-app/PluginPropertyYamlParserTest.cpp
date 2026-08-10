@@ -1,9 +1,12 @@
 #include "hstream/src/apps/apps-common/deepstream_dsfieldmask.h"
 
+#include "deepstream_app.h"
+
 #include <yaml-cpp/yaml.h>
 
 #include <cmath>
 #include <iostream>
+#include <memory>
 #include <string>
 
 GST_DEBUG_CATEGORY(NVDS_APP);
@@ -34,6 +37,7 @@ bool expect_property(const hm::gst::PluginProperties& properties, const std::str
 } // namespace
 
 int main() {
+  gst_init(nullptr, nullptr);
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
 
   const YAML::Node config = YAML::Load(R"yaml(
@@ -165,6 +169,83 @@ post-stitch-rotate-degrees: nope
     std::cerr << "Expected invalid post-stitch-rotate-degrees to fail parsing\n";
     return 1;
   }
+
+  const YAML::Node uri_playlist_config = YAML::Load(R"yaml(
+application:
+  enable-perf-measurement: 0
+source0:
+  enable: 1
+  type: 3
+  num-sources: 1
+  source-id: 0
+  uri-list:
+    - file:///tmp/left-0.mp4
+    - file:///tmp/left-1.mp4
+source1:
+  enable: 1
+  type: 3
+  num-sources: 1
+  source-id: 1
+  uri: file:///tmp/right-0.mp4
+)yaml");
+  auto parsed_playlist = std::make_unique<NvDsConfig>();
+  if (!parse_config_yaml(uri_playlist_config, parsed_playlist.get(), "/tmp") ||
+      parsed_playlist->num_source_sub_bins != 2 ||
+      parsed_playlist->multi_source_config[0].type != NV_DS_SOURCE_URI_MULTIPLE ||
+      parsed_playlist->multi_source_config[1].type != NV_DS_SOURCE_URI_MULTIPLE) {
+    std::cerr << "URI playlist parsing did not retain two logical URI_MULTIPLE cameras\n";
+    return 1;
+  }
+
+  g_setenv("USE_NEW_NVSTREAMMUX", "yes", TRUE);
+  auto playlist_sources = std::make_unique<NvDsSrcParentBin>();
+  if (!create_multi_source_bin(
+          parsed_playlist->num_source_sub_bins, parsed_playlist->multi_source_config, playlist_sources.get())) {
+    std::cerr << "Could not construct parsed URI playlist sources\n";
+    return 1;
+  }
+  GstElementFactory* playlist_mux_factory = gst_element_get_factory(playlist_sources->streammux);
+  const gchar* playlist_mux_name =
+      playlist_mux_factory ? gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(playlist_mux_factory)) : nullptr;
+  if (g_strcmp0(playlist_mux_name, "hstreamlosslessmux") != 0) {
+    std::cerr << "Parsed two-camera URI playlist selected " << (playlist_mux_name ? playlist_mux_name : "<none>")
+              << " instead of hstreamlosslessmux\n";
+    gst_object_unref(playlist_sources->bin);
+    return 1;
+  }
+  gst_object_unref(playlist_sources->bin);
+
+  const YAML::Node single_playback_config = YAML::Load(R"yaml(
+application:
+  enable-perf-measurement: 0
+source0:
+  enable: 1
+  type: 3
+  num-sources: 1
+  source-id: 0
+  uri: file:///tmp/stitched-output.mp4
+)yaml");
+  auto parsed_single = std::make_unique<NvDsConfig>();
+  if (!parse_config_yaml(single_playback_config, parsed_single.get(), "/tmp") ||
+      parsed_single->num_source_sub_bins != 1 ||
+      parsed_single->multi_source_config[0].type != NV_DS_SOURCE_URI_MULTIPLE) {
+    std::cerr << "Single stitched-output source did not retain URI_MULTIPLE playlist semantics\n";
+    return 1;
+  }
+  auto single_sources = std::make_unique<NvDsSrcParentBin>();
+  if (!create_multi_source_bin(1, parsed_single->multi_source_config, single_sources.get())) {
+    std::cerr << "Could not construct parsed single stitched-output source\n";
+    return 1;
+  }
+  GstElementFactory* single_mux_factory = gst_element_get_factory(single_sources->streammux);
+  const gchar* single_mux_name =
+      single_mux_factory ? gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(single_mux_factory)) : nullptr;
+  if (single_sources->uri_playlist_exact_pairing_enabled || g_strcmp0(single_mux_name, "hstreamlosslessmux") == 0) {
+    std::cerr << "Parsed single stitched-output source incorrectly enabled exact two-camera pairing\n";
+    gst_object_unref(single_sources->bin);
+    return 1;
+  }
+  gst_object_unref(single_sources->bin);
 
   return 0;
 }

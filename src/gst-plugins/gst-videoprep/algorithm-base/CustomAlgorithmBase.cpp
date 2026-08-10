@@ -17,6 +17,55 @@
 
 namespace hm {
 
+videoprep::RuntimeOutputPoolStatusDisposition videoprep::classify_runtime_output_pool_status(
+    const absl::Status& status) {
+  if (status.ok()) {
+    return RuntimeOutputPoolStatusDisposition::kProceed;
+  }
+  if (absl::IsCancelled(status)) {
+    return RuntimeOutputPoolStatusDisposition::kSendEos;
+  }
+  return RuntimeOutputPoolStatusDisposition::kError;
+}
+
+bool videoprep::RuntimeOutputPoolFlow::handle_status(
+    const absl::Status& status,
+    GstBuffer* input_buffer,
+    const std::function<void()>& send_eos) {
+  if (consume_if_terminal(input_buffer)) {
+    return true;
+  }
+  switch (classify_runtime_output_pool_status(status)) {
+    case RuntimeOutputPoolStatusDisposition::kSendEos:
+      gst_buffer_unref(input_buffer);
+      eos_terminal_ = true;
+      send_eos();
+      return true;
+    case RuntimeOutputPoolStatusDisposition::kProceed:
+    case RuntimeOutputPoolStatusDisposition::kError:
+      return false;
+  }
+  return false;
+}
+
+bool videoprep::RuntimeOutputPoolFlow::consume_if_terminal(GstBuffer* input_buffer) const {
+  if (!eos_terminal_) {
+    return false;
+  }
+  gst_buffer_unref(input_buffer);
+  return true;
+}
+
+void videoprep::RuntimeOutputPoolFlow::finish_with_eos(
+    GstBuffer* output_buffer,
+    const std::function<void()>& send_eos) {
+  if (!eos_terminal_) {
+    eos_terminal_ = true;
+    send_eos();
+  }
+  gst_buffer_unref(output_buffer);
+}
+
 namespace {
 
 guint get_caps_batch_size(GstCaps* caps) {
@@ -656,6 +705,18 @@ void CustomAlgorithmBase::OutputThread(void) {
       return;
     }
   }
+  auto send_eos_downstream = [this]() {
+    if (eos_sent_) {
+      return;
+    }
+    GstEvent* eos_event = gst_event_new_eos();
+    if (!gst_pad_push_event(GST_BASE_TRANSFORM_SRC_PAD(m_element), eos_event)) {
+      std::cerr << "Error sending EOS downstream from videoprep algorithm" << std::endl;
+      return;
+    }
+    eos_sent_ = true;
+  };
+  videoprep::RuntimeOutputPoolFlow runtime_output_pool_flow;
   /* Run till signalled to stop. */
   while (1) {
     /* Wait if processing queue is empty. */
@@ -672,6 +733,11 @@ void CustomAlgorithmBase::OutputThread(void) {
 
     m_processCV.notify_all();
     lk.unlock();
+
+    if (runtime_output_pool_flow.consume_if_terminal(packetInfo.inbuf)) {
+      lk.lock();
+      continue;
+    }
 
     // Add custom algorithm logic here
     // Once buffer processing is done, push the buffer to the downstream by using gst_pad_push function
@@ -698,7 +764,17 @@ void CustomAlgorithmBase::OutputThread(void) {
         // Transform mode, hence transform input buffer to output buffer
         GstBuffer* newGstOutBuf = NULL;
         GstFlowReturn result = GST_FLOW_OK;
-        cuda_status.Update(EnsureDsOutputBufferPool(batch_meta, in_surf));
+        const absl::Status output_pool_status = EnsureDsOutputBufferPool(batch_meta, in_surf);
+        if (absl::IsCancelled(output_pool_status)) {
+          std::cerr << output_pool_status << std::endl;
+        }
+        if (runtime_output_pool_flow.handle_status(output_pool_status, packetInfo.inbuf, send_eos_downstream)) {
+          // EOS may arrive before runtime sizing completes. The helper releases the terminal input and ends output;
+          // every nonterminal sizing failure is handled below as a pipeline error, never as a dropped frame.
+          lk.lock();
+          continue;
+        }
+        cuda_status.Update(output_pool_status);
         if (!cuda_status.ok()) {
           std::cerr << cuda_status << std::endl;
           update_last_flow_ret(GST_FLOW_ERROR);
@@ -743,7 +819,8 @@ void CustomAlgorithmBase::OutputThread(void) {
         assert(m_element);
         assert(cuda_stream_);
         if (in_surf && out_surf) {
-          cuda_status.Update(GenerateOutput(batch_meta, in_surf, out_surf));
+          const absl::Status generate_status = GenerateOutput(batch_meta, in_surf, out_surf);
+          cuda_status.Update(generate_status);
           if (!cuda_status.ok()) {
             std::cerr << cuda_status << std::endl;
             if (cuda_status.code() == absl::StatusCode::kCancelled) {
@@ -832,17 +909,11 @@ void CustomAlgorithmBase::OutputThread(void) {
             flow_ret,
             GST_TIME_ARGS(GST_BUFFER_PTS(outBuffer)));
       } else {
-        if (!eos_sent_) {
-          GstEvent* eos_event = gst_event_new_eos();
-          gboolean ret = gst_pad_push_event(GST_BASE_TRANSFORM_SRC_PAD(m_element), eos_event);
-          if (!ret) {
-            std::cerr << "Error sending EOS downstream from videoprep algorithm" << std::endl;
-          } else {
-            eos_sent_ = true;
-          }
-        }
-        gst_buffer_unref(outBuffer);
+        runtime_output_pool_flow.finish_with_eos(outBuffer, send_eos_downstream);
       }
+    } else if (outBuffer) {
+      gst_buffer_unref(outBuffer);
+      outBuffer = nullptr;
     }
     lk.lock();
     continue;

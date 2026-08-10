@@ -10,11 +10,32 @@
 
 #include <atomic>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace hm {
 namespace stitcher {
+
+struct RuntimeFrameKey {
+  gint frame_num;
+  guint source_id;
+};
+
+absl::StatusOr<std::pair<size_t, size_t>> select_runtime_stitch_pair(
+    const std::vector<RuntimeFrameKey>& frames,
+    const std::set<guint>& eos_source_ids = {},
+    bool pipeline_eos_seen = false);
+
+/**
+ * Enforces the lossless stitched-frame contract. The first frame must be zero, every later frame must be exactly the
+ * previous frame plus one, and the returned value is the last accepted frame number.
+ */
+absl::StatusOr<gint> validate_stitch_frame_continuity(
+    const std::vector<gint>& frame_numbers,
+    std::optional<gint> previous_frame_num = std::nullopt);
 
 using STITCH_PRIV_BASE = CustomAlgorithmBase;
 
@@ -109,11 +130,13 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool show_{false};
   bool match_exposure_{false};
   bool minimize_blend_{false};
+  bool require_decoded_frame_sequence_meta_{false};
   StitchComputePrecision stitch_compute_precision_{StitchComputePrecision::kFp32};
   std::mutex eos_mu_;
   bool pipeline_eos_seen_{false};
   std::set<guint> eos_source_ids_;
   std::unordered_map<NvBufSurface*, EosSnapshot> eos_snapshot_by_surface_;
+  std::optional<gint> last_stitched_frame_num_;
   std::atomic<double> post_stitch_rotate_degrees_{0.0};
   void* rotation_scratch_data_{nullptr};
   size_t rotation_scratch_pitch_{0};

@@ -1,5 +1,10 @@
 INCLUDE_PREFIX = "hstream/src/apps/apps-common"
 
+exports_files([
+    "HStreamLosslessMux.cpp",
+    "nvstreammux_lossless.patch",
+])
+
 cc_library(
     name = "gst_plugin_properties",
     srcs = ["gst_plugin_properties.cpp"],
@@ -15,6 +20,18 @@ cc_library(
         "@glib",
         "@gstreamer",
         "@yaml-cpp",
+    ],
+)
+
+cc_library(
+    name = "hstream_lossless_nvstreammux",
+    hdrs = ["HStreamLosslessMux.h"],
+    include_prefix = INCLUDE_PREFIX,
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@deepstream//:hstream_lossless_nvstreammux_impl",
+        "@gstreamer",
     ],
 )
 
@@ -102,7 +119,9 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":gst_plugin_properties",
+        ":hstream_lossless_nvstreammux",
         "//src/libs/camera",
+        "//src/libs/common:decoded_frame_sequence_meta",
         "//src/libs/common:fs",
         "//src/libs/common:utils",
         "//toolchains/jetson:cuda_runtime",
