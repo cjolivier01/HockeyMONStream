@@ -286,7 +286,6 @@ absl::Status frame_sequence_mismatch_status(
     const std::set<guint>& observed_source_ids,
     const std::set<guint>& missing_eos_source_ids,
     const std::set<guint>& eos_source_ids,
-    bool source_eos_explains_mismatch,
     bool pipeline_eos_explains_mismatch,
     bool pipeline_eos_seen) {
   std::stringstream message;
@@ -301,7 +300,7 @@ absl::Status frame_sequence_mismatch_status(
           << ", missing_eos_sources=" << format_source_ids(missing_eos_source_ids)
           << ", pipeline_eos_seen=" << pipeline_eos_seen << ")";
 
-  if (source_eos_explains_mismatch || pipeline_eos_explains_mismatch) {
+  if (pipeline_eos_explains_mismatch) {
     return absl::CancelledError(message.str());
   }
   return absl::FailedPreconditionError(message.str());
@@ -340,24 +339,23 @@ absl::StatusOr<std::pair<size_t, size_t>> select_runtime_stitch_pair(
     (void)indices;
     observed_source_ids.insert(source_id);
   }
-  std::set<guint> observed_or_eos_source_ids = observed_source_ids;
-  observed_or_eos_source_ids.insert(eos_source_ids.begin(), eos_source_ids.end());
-  const bool missing_source_reached_eos = observed_source_ids.size() == 1 && observed_or_eos_source_ids.size() == 2 &&
-      std::any_of(eos_source_ids.begin(), eos_source_ids.end(), [&](guint source_id) {
-                                            return !observed_source_ids.count(source_id);
-                                          });
   const bool structurally_valid_partial = frames.size() % 2 != 0 &&
       ((source_indices.size() == 1 && frames.size() == 1) ||
        (source_indices.size() == 2 &&
         std::abs(
             static_cast<std::ptrdiff_t>(source_indices.begin()->second.size()) -
             static_cast<std::ptrdiff_t>(std::next(source_indices.begin())->second.size())) == 1));
-  if (missing_source_reached_eos || (pipeline_eos_seen && structurally_valid_partial)) {
+  if (pipeline_eos_seen && structurally_valid_partial) {
     return absl::CancelledError("Runtime stitching input ended before a complete source pair arrived");
   }
 
-  if (structurally_valid_partial && eos_source_ids.empty() && !pipeline_eos_seen) {
-    return absl::UnavailableError("Runtime stitching is waiting for a complete synchronized source pair");
+  if (structurally_valid_partial) {
+    // A DeepStream per-source EOS is not a pipeline EOS: the source may emit STREAM_START and resume later. Drop this
+    // incomplete mux batch without terminalizing OutputThread; the global GST_EVENT_EOS path remains responsible for
+    // irreversibly ending downstream output.
+    return absl::UnavailableError(
+        eos_source_ids.empty() ? "Runtime stitching is waiting for a complete synchronized source pair"
+                               : "Runtime stitching discarded a partial batch after source-local EOS");
   }
 
   return absl::FailedPreconditionError("Could not find a balanced left/right frame pair for runtime stitching");
@@ -923,33 +921,19 @@ absl::Status StitcherPriv::GenerateOutput(
 
   std::set<guint> expected_source_ids;
   size_t incomplete_frame_groups = 0;
-  size_t source_eos_explained_incomplete_groups = 0;
-  size_t unexplained_incomplete_groups = 0;
   size_t inconsistent_source_groups = 0;
   std::set<guint> missing_eos_source_ids;
   for (const auto& [frame_number, source_to_surface] : frame_source_surfaces) {
     (void)frame_number;
     if (source_to_surface.size() != 2) {
       ++incomplete_frame_groups;
-      bool group_has_eos_source = false;
       std::set<guint> group_missing_eos_source_ids;
-      for (const auto& [source_id, frame_info] : source_to_surface) {
-        (void)frame_info;
-        if (eos_snapshot.source_ids.count(source_id)) {
-          group_has_eos_source = true;
-        }
-      }
       for (guint eos_source_id : eos_snapshot.source_ids) {
         if (!source_to_surface.count(eos_source_id)) {
           group_missing_eos_source_ids.insert(eos_source_id);
         }
       }
-      if (!group_has_eos_source && !group_missing_eos_source_ids.empty()) {
-        ++source_eos_explained_incomplete_groups;
-        missing_eos_source_ids.insert(group_missing_eos_source_ids.begin(), group_missing_eos_source_ids.end());
-      } else {
-        ++unexplained_incomplete_groups;
-      }
+      missing_eos_source_ids.insert(group_missing_eos_source_ids.begin(), group_missing_eos_source_ids.end());
       continue;
     }
 
@@ -976,14 +960,6 @@ absl::Status StitcherPriv::GenerateOutput(
       }
     }
   }
-  std::set<guint> observed_or_eos_source_ids = observed_source_ids;
-  observed_or_eos_source_ids.insert(eos_snapshot.source_ids.begin(), eos_snapshot.source_ids.end());
-  const bool source_eos_explains_mismatch = observed_or_eos_source_ids.size() == 2 && duplicate_frame_sources == 0 &&
-      invalid_surfaces_per_frame == 0 && surface_index == in_surface->numFilled &&
-      frame_meta_count == in_surface->numFilled && incomplete_frame_groups > 0 &&
-      source_eos_explained_incomplete_groups == incomplete_frame_groups && unexplained_incomplete_groups == 0 &&
-      inconsistent_source_groups == 0 && !missing_eos_source_ids.empty();
-
   const bool invalid_frame_sequence = (in_surface->batchSize % 2 != 0) || (in_surface->numFilled % 2 != 0) ||
       surface_index != in_surface->numFilled || frame_meta_count != in_surface->numFilled ||
       duplicate_frame_sources > 0 || invalid_surfaces_per_frame > 0 || observed_source_ids.size() != 2 ||
@@ -1028,12 +1004,11 @@ absl::Status StitcherPriv::GenerateOutput(
         observed_source_ids,
         missing_eos_source_ids,
         eos_snapshot.source_ids,
-        source_eos_explains_mismatch,
         eos_snapshot.pipeline_eos_seen && structurally_valid_partial,
         eos_snapshot.pipeline_eos_seen);
-    const bool transient_partial_batch =
-        structurally_valid_partial && eos_snapshot.source_ids.empty() && !eos_snapshot.pipeline_eos_seen;
-    if (transient_partial_batch) {
+    if (structurally_valid_partial && !eos_snapshot.pipeline_eos_seen) {
+      // STREAM_EOS is source-local and may be followed by STREAM_START. Discard this incomplete batch but leave the
+      // output thread live so a restarted source can form a later complete pair. Only global pipeline EOS is terminal.
       return absl::UnavailableError(mismatch_status.message());
     }
     return mismatch_status;
