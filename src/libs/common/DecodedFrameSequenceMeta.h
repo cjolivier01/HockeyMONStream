@@ -20,6 +20,9 @@ struct DecodedFrameSequence {
  */
 bool add_decoded_frame_sequence_meta(GstBuffer* buffer, guint source_id, uint64_t sequence);
 
+/** Returns decoder-output sequence metadata directly from a pre-mux buffer, when present. */
+std::optional<DecodedFrameSequence> decoded_frame_sequence(GstBuffer* buffer);
+
 /** Returns the decoder-output sequence copied by nvstreammux into this frame's user metadata, when present. */
 std::optional<DecodedFrameSequence> decoded_frame_sequence(const NvDsFrameMeta* frame_meta);
 

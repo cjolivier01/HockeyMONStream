@@ -710,7 +710,8 @@ int run_lossless_two_camera_mux(
     guint audio_source_id = 0,
     guint64 audio_sleep_time_us = 0,
     bool expect_pipeline_error = false,
-    guint64 video_sleep_time_us = 0) {
+    guint64 video_sleep_time_us = 0,
+    gint video_sleep_source_id = -1) {
   NvDsSourceConfig configs[2]{};
   configure_uri_multiple_source(configs[0], left_uris, /*source_id=*/0);
   configure_uri_multiple_source(configs[1], right_uris, /*source_id=*/1, include_right_uri_list);
@@ -773,7 +774,9 @@ int run_lossless_two_camera_mux(
   MuxBatchStats mux_stats{};
   AudioTimelineStats audio_stats{};
   for (guint source_id = 0; source_id < 2; ++source_id) {
-    source_counters[source_id].sleep_time_us = video_sleep_time_us;
+    if (video_sleep_source_id < 0 || static_cast<guint>(video_sleep_source_id) == source_id) {
+      source_counters[source_id].sleep_time_us = video_sleep_time_us;
+    }
     GstPad* source_pad = gst_element_get_static_pad(src_parent.sub_bins[source_id].bin, "src");
     gst_pad_add_probe(source_pad, GST_PAD_PROBE_TYPE_BUFFER, count_buffers_probe, &source_counters[source_id], nullptr);
     gst_object_unref(source_pad);
@@ -825,11 +828,13 @@ int run_lossless_two_camera_mux(
         src_parent.sub_bins[source_id].uri_list_terminal_dropped_frame_count;
     if (decoded_before_terminal != expected_frames_per_source ||
         source_counters[source_id].buffers != expected_frames_per_source ||
-        mux_stats.frames_by_source[source_id] != expected_frames_per_source) {
+        mux_stats.frames_by_source[source_id] != expected_frames_per_source ||
+        src_parent.sub_bins[source_id].uri_list_mux_delivered_sequence != expected_frames_per_source - 1) {
       std::cerr << "Frame loss for source " << source_id
                 << ": decoded=" << src_parent.sub_bins[source_id].uri_list_decoded_frame_count
                 << ", terminal_dropped=" << src_parent.sub_bins[source_id].uri_list_terminal_dropped_frame_count
                 << ", pre_mux=" << source_counters[source_id].buffers
+                << ", mux_delivered_sequence=" << src_parent.sub_bins[source_id].uri_list_mux_delivered_sequence
                 << ", post_mux=" << mux_stats.frames_by_source[source_id] << "\n";
       return 6;
     }
@@ -932,7 +937,8 @@ int main(int argc, char** argv) {
       /*audio_source_id=*/0,
       /*audio_sleep_time_us=*/0,
       /*expect_pipeline_error=*/false,
-      /*video_sleep_time_us=*/50000);
+      /*video_sleep_time_us=*/50000,
+      /*video_sleep_source_id=*/0);
   if (rc != 0) {
     fs::remove_all(tmpdir);
     return rc;

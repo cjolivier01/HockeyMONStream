@@ -94,6 +94,14 @@ bool add_decoded_frame_sequence_meta(GstBuffer* buffer, guint source_id, uint64_
   return true;
 }
 
+std::optional<DecodedFrameSequence> decoded_frame_sequence(GstBuffer* buffer) {
+  const GstHmDecodedFrameSequenceMeta* meta = find_sequence_meta(buffer);
+  if (!meta) {
+    return std::nullopt;
+  }
+  return DecodedFrameSequence{meta->source_id, meta->sequence};
+}
+
 std::optional<DecodedFrameSequence> decoded_frame_sequence(const NvDsFrameMeta* frame_meta) {
   if (!frame_meta) {
     return std::nullopt;

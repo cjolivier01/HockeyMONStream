@@ -174,6 +174,8 @@ typedef struct {
   guint64 uri_list_decoded_frame_count;
   /** Logical end timestamp of the latest decoded video buffer released by the exact-pair barrier. */
   guint64 uri_list_released_video_end;
+  /** Latest committed sequence that reached this source's nvstreammux sink pad. G_MAXUINT64 means none. */
+  guint64 uri_list_mux_delivered_sequence;
   /** Frames decoded only after a peer camera permanently ended; they are stopped before nvstreammux. */
   guint64 uri_list_terminal_dropped_frame_count;
   /** Decode-time sequence currently waiting for the peer camera before either buffer can reach nvstreammux. */

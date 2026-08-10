@@ -293,6 +293,83 @@ static gboolean send_uri_video_eos(NvDsSrcBin* bin) {
   return sent;
 }
 
+static GstPadProbeReturn uri_playlist_mux_sink_buffer_probe(
+    GstPad* /*pad*/,
+    GstPadProbeInfo* info,
+    gpointer user_data) {
+  if ((info->type & GST_PAD_PROBE_TYPE_BUFFER) == 0) {
+    return GST_PAD_PROBE_OK;
+  }
+  auto* bin = static_cast<NvDsSrcBin*>(user_data);
+  NvDsSrcParentBin* parent = bin ? bin->parent_bin : nullptr;
+  if (!bin || !parent || !parent->uri_playlist_exact_pairing_enabled) {
+    return GST_PAD_PROBE_OK;
+  }
+  const std::optional<hm::DecodedFrameSequence> sequence = hm::decoded_frame_sequence(GST_BUFFER(info->data));
+
+  gboolean valid_delivery = FALSE;
+  g_mutex_lock(&parent->uri_playlist_barrier_mutex);
+  const guint64 expected_sequence =
+      bin->uri_list_mux_delivered_sequence == G_MAXUINT64 ? 0 : bin->uri_list_mux_delivered_sequence + 1;
+  if (sequence.has_value() && sequence->source_id == bin->source_id && sequence->sequence == expected_sequence &&
+      sequence->sequence < parent->uri_playlist_next_frame_sequence) {
+    bin->uri_list_mux_delivered_sequence = sequence->sequence;
+    valid_delivery = TRUE;
+    g_cond_broadcast(&parent->uri_playlist_barrier_cond);
+  }
+  g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+
+  if (!valid_delivery) {
+    cancel_uri_playlist_source(bin, TRUE);
+    GST_ELEMENT_ERROR(
+        bin->src_elem,
+        STREAM,
+        FAILED,
+        ("Committed camera frame did not reach nvstreammux in exact sequence"),
+        ("source=%u expected=%" G_GUINT64_FORMAT " actual=%" G_GUINT64_FORMAT,
+         bin->source_id,
+         expected_sequence,
+         sequence.has_value() ? sequence->sequence : G_MAXUINT64));
+    return GST_PAD_PROBE_DROP;
+  }
+  return GST_PAD_PROBE_OK;
+}
+
+static gboolean wait_for_committed_uri_playlist_delivery(NvDsSrcBin* bin, guint64 committed_sequence) {
+  NvDsSrcParentBin* parent = bin ? bin->parent_bin : nullptr;
+  if (!parent || committed_sequence == G_MAXUINT64) {
+    return TRUE;
+  }
+
+  g_mutex_lock(&parent->uri_playlist_barrier_mutex);
+  const std::vector<NvDsSrcBin*> sources = uri_playlist_sources(parent);
+  const auto all_delivered = [&sources, committed_sequence]() {
+    return sources.size() == 2 && std::all_of(sources.begin(), sources.end(), [committed_sequence](NvDsSrcBin* source) {
+             return source->uri_list_mux_delivered_sequence != G_MAXUINT64 &&
+                 source->uri_list_mux_delivered_sequence >= committed_sequence;
+           });
+  };
+  const gint64 deadline = g_get_monotonic_time() + kUriPlaylistBarrierWaitUs;
+  while (!all_delivered()) {
+    if (!g_cond_wait_until(&parent->uri_playlist_barrier_cond, &parent->uri_playlist_barrier_mutex, deadline)) {
+      parent->uri_playlist_barrier_failed = TRUE;
+      g_cond_broadcast(&parent->uri_playlist_barrier_cond);
+      break;
+    }
+  }
+  const gboolean delivered = all_delivered();
+  g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+  if (!delivered) {
+    GST_ELEMENT_ERROR(
+        bin->src_elem,
+        STREAM,
+        FAILED,
+        ("Timed out preserving the final committed camera pair"),
+        ("committed_sequence=%" G_GUINT64_FORMAT, committed_sequence));
+  }
+  return delivered;
+}
+
 static void mark_uri_playlist_terminal(NvDsSrcBin* bin) {
   if (!bin) {
     return;
@@ -303,6 +380,7 @@ static void mark_uri_playlist_terminal(NvDsSrcBin* bin) {
     sources.push_back(bin);
   }
   std::vector<gboolean> drain_peer_audio(sources.size(), FALSE);
+  guint64 final_committed_sequence = G_MAXUINT64;
 
   GMutex* mutex = uri_playlist_mutex(bin);
   g_mutex_lock(mutex);
@@ -314,6 +392,9 @@ static void mark_uri_playlist_terminal(NvDsSrcBin* bin) {
   if (!already_terminal) {
     if (parent) {
       parent->uri_playlist_terminal = TRUE;
+      if (parent->uri_playlist_next_frame_sequence > 0) {
+        final_committed_sequence = parent->uri_playlist_next_frame_sequence - 1;
+      }
     }
     for (size_t source_index = 0; source_index < sources.size(); ++source_index) {
       NvDsSrcBin* source = sources[source_index];
@@ -333,6 +414,11 @@ static void mark_uri_playlist_terminal(NvDsSrcBin* bin) {
   if (already_terminal) {
     return;
   }
+
+  // A pair is committed at the decode barrier, but a peer thread may still be between that barrier and its mux sink.
+  // Do not deactivate the peer decoder or inject EOS until every committed buffer is owned by nvstreammux; otherwise
+  // terminal teardown could flush one half of the final exact pair.
+  wait_for_committed_uri_playlist_delivery(bin, final_committed_sequence);
 
   // The ending camera has drained both streams before reaching this point. Peers end here because no later exact
   // camera pair can exist. A linked peer audio branch is the one exception: keep its decoder alive until serialized
@@ -1054,6 +1140,11 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
           bin->config->camera_fps_n > 0 && bin->config->camera_fps_d > 0) {
         video_duration = gst_util_uint64_scale(GST_SECOND, bin->config->camera_fps_d, bin->config->camera_fps_n);
       }
+      if (GST_CLOCK_TIME_IS_VALID(video_duration)) {
+        // Persist the same normalized duration used by the atomic frontier. Chapter-base accumulation reads the
+        // buffer duration later and must not shorten the next chapter by one frame after a zero-duration tail.
+        GST_BUFFER_DURATION(buf) = video_duration;
+      }
       const GstClockTime logical_video_end =
           GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buf)) && GST_CLOCK_TIME_IS_VALID(video_duration)
           ? GST_BUFFER_PTS(buf) + probe_data->base + video_duration
@@ -1505,6 +1596,7 @@ static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
   bin->uri_switch_pending = FALSE;
   bin->uri_list_decoded_frame_count = 0;
   bin->uri_list_released_video_end = GST_CLOCK_TIME_NONE;
+  bin->uri_list_mux_delivered_sequence = G_MAXUINT64;
   bin->uri_list_terminal_dropped_frame_count = 0;
   bin->uri_list_frame_ready_sequence = G_MAXUINT64;
   bin->uri_list_permanently_ended = FALSE;
@@ -3014,6 +3106,22 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
     if (!link_element_to_streammux_sink_pad(bin->streammux, bin->sub_bins[i].bin, i)) {
       NVGSTDS_ERR_MSG_V("source %d cannot be linked to mux's sink pad %p\n", i, bin->streammux);
       goto done;
+    }
+    if (bin->uri_playlist_exact_pairing_enabled && bin->sub_bins[i].uri_list) {
+      gchar mux_sink_pad_name[32];
+      g_snprintf(mux_sink_pad_name, sizeof(mux_sink_pad_name), "sink_%u", i);
+      GstPad* mux_sink_pad = gst_element_get_static_pad(bin->streammux, mux_sink_pad_name);
+      const gulong probe_id = mux_sink_pad
+          ? gst_pad_add_probe(
+                mux_sink_pad, GST_PAD_PROBE_TYPE_BUFFER, uri_playlist_mux_sink_buffer_probe, &bin->sub_bins[i], nullptr)
+          : 0;
+      if (mux_sink_pad) {
+        gst_object_unref(mux_sink_pad);
+      }
+      if (probe_id == 0) {
+        NVGSTDS_ERR_MSG_V("Could not monitor source %d delivery to nvstreammux\n", i);
+        goto done;
+      }
     }
 
     bin->num_bins++;
