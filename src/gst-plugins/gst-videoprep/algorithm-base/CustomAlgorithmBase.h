@@ -139,7 +139,7 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   NvBufSurfTransformConfigParams m_config_params;
   /* Aysnc Stop Handling */
   gboolean m_stop = FALSE;
-  bool eos_sent_;
+  bool eos_sent_{false};
 
   /* Vector Containing Key:Value Pair of Custom Lib Properties */
   std::vector<Property> m_vectorProperty;

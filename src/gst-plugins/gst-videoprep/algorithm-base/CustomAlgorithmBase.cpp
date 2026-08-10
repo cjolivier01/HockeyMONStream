@@ -17,6 +17,20 @@
 
 namespace hm {
 
+videoprep::RuntimeOutputPoolStatusDisposition videoprep::classify_runtime_output_pool_status(
+    const absl::Status& status) {
+  if (status.ok()) {
+    return RuntimeOutputPoolStatusDisposition::kProceed;
+  }
+  if (absl::IsUnavailable(status)) {
+    return RuntimeOutputPoolStatusDisposition::kRetry;
+  }
+  if (absl::IsCancelled(status)) {
+    return RuntimeOutputPoolStatusDisposition::kSendEos;
+  }
+  return RuntimeOutputPoolStatusDisposition::kError;
+}
+
 namespace {
 
 guint get_caps_batch_size(GstCaps* caps) {
@@ -656,6 +670,17 @@ void CustomAlgorithmBase::OutputThread(void) {
       return;
     }
   }
+  auto send_eos_downstream = [this]() {
+    if (eos_sent_) {
+      return;
+    }
+    GstEvent* eos_event = gst_event_new_eos();
+    if (!gst_pad_push_event(GST_BASE_TRANSFORM_SRC_PAD(m_element), eos_event)) {
+      std::cerr << "Error sending EOS downstream from videoprep algorithm" << std::endl;
+      return;
+    }
+    eos_sent_ = true;
+  };
   /* Run till signalled to stop. */
   while (1) {
     /* Wait if processing queue is empty. */
@@ -699,12 +724,24 @@ void CustomAlgorithmBase::OutputThread(void) {
         GstBuffer* newGstOutBuf = NULL;
         GstFlowReturn result = GST_FLOW_OK;
         const absl::Status output_pool_status = EnsureDsOutputBufferPool(batch_meta, in_surf);
-        if (absl::IsUnavailable(output_pool_status)) {
-          // Runtime-sized transforms may need a complete multi-source batch before they can allocate their output
-          // pool. Drop an incomplete mux batch without poisoning the transform; a later complete batch will retry.
-          gst_buffer_unref(packetInfo.inbuf);
-          lk.lock();
-          continue;
+        switch (videoprep::classify_runtime_output_pool_status(output_pool_status)) {
+          case videoprep::RuntimeOutputPoolStatusDisposition::kRetry:
+            // Runtime-sized transforms may need a complete multi-source batch before they can allocate their output
+            // pool. Drop an incomplete mux batch without poisoning the transform; a later complete batch will retry.
+            gst_buffer_unref(packetInfo.inbuf);
+            lk.lock();
+            continue;
+          case videoprep::RuntimeOutputPoolStatusDisposition::kSendEos:
+            // EOS may arrive while runtime sizing is waiting for the missing source. There is no output pool or
+            // output buffer yet, so release only the input and terminate downstream without treating this as fatal.
+            std::cerr << output_pool_status << std::endl;
+            gst_buffer_unref(packetInfo.inbuf);
+            send_eos_downstream();
+            lk.lock();
+            continue;
+          case videoprep::RuntimeOutputPoolStatusDisposition::kProceed:
+          case videoprep::RuntimeOutputPoolStatusDisposition::kError:
+            break;
         }
         cuda_status.Update(output_pool_status);
         if (!cuda_status.ok()) {
@@ -849,15 +886,7 @@ void CustomAlgorithmBase::OutputThread(void) {
             flow_ret,
             GST_TIME_ARGS(GST_BUFFER_PTS(outBuffer)));
       } else {
-        if (!eos_sent_) {
-          GstEvent* eos_event = gst_event_new_eos();
-          gboolean ret = gst_pad_push_event(GST_BASE_TRANSFORM_SRC_PAD(m_element), eos_event);
-          if (!ret) {
-            std::cerr << "Error sending EOS downstream from videoprep algorithm" << std::endl;
-          } else {
-            eos_sent_ = true;
-          }
-        }
+        send_eos_downstream();
         gst_buffer_unref(outBuffer);
       }
     }

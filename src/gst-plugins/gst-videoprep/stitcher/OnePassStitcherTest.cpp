@@ -116,6 +116,55 @@ bool expect_prepare_runtime_partial_is_retryable() {
   return true;
 }
 
+bool expect_prepare_runtime_partial_eos_is_cancelled(bool pipeline_eos) {
+  hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
+  stitcher.SetProperty({"one-pass-mode", "1"});
+
+  NvDsBatchMeta* batch_meta = nvds_create_batch_meta(1);
+  NvDsFrameMeta* frame_meta = nvds_acquire_frame_meta_from_pool(batch_meta);
+  frame_meta->frame_num = 4;
+  frame_meta->source_id = 0;
+  frame_meta->num_surfaces_per_frame = 1;
+  nvds_add_frame_meta_to_batch(batch_meta, frame_meta);
+
+  NvBufSurfaceParams input_param{};
+  NvBufSurface in_surface{};
+  in_surface.batchSize = 2;
+  in_surface.numFilled = 1;
+  in_surface.surfaceList = &input_param;
+  const auto partial_result = stitcher.PrepareRuntimeOutputSize(batch_meta, &in_surface);
+  if (partial_result.status().code() != absl::StatusCode::kUnavailable) {
+    std::cerr << "Expected runtime sizing to wait before EOS, got " << partial_result.status() << std::endl;
+    nvds_destroy_batch_meta(batch_meta);
+    return false;
+  }
+
+  if (pipeline_eos) {
+    stitcher.outputthread_stopped = true;
+    GstEvent* event = gst_event_new_eos();
+    stitcher.HandleEvent(event);
+    gst_event_unref(event);
+  } else {
+    GstEvent* event = gst_nvevent_new_stream_eos(/*source_id=*/1);
+    stitcher.HandleEvent(event);
+    gst_event_unref(event);
+  }
+
+  const auto eos_result = stitcher.PrepareRuntimeOutputSize(batch_meta, &in_surface);
+  nvds_destroy_batch_meta(batch_meta);
+  if (eos_result.status().code() != absl::StatusCode::kCancelled) {
+    std::cerr << "Expected partial runtime sizing after " << (pipeline_eos ? "pipeline" : "missing source")
+              << " EOS to cancel, got " << eos_result.status() << std::endl;
+    return false;
+  }
+  if (hm::videoprep::classify_runtime_output_pool_status(eos_result.status()) !=
+      hm::videoprep::RuntimeOutputPoolStatusDisposition::kSendEos) {
+    std::cerr << "Expected cancelled runtime output-pool sizing to send downstream EOS" << std::endl;
+    return false;
+  }
+  return true;
+}
+
 bool expect_generate_status(
     const std::vector<FrameDesc>& frames,
     const std::vector<guint>& eos_source_ids,
@@ -212,8 +261,18 @@ int main() {
   if (!expect_prepare_runtime_partial_is_retryable()) {
     return 14;
   }
+  if (!expect_prepare_runtime_partial_eos_is_cancelled(/*pipeline_eos=*/false)) {
+    return 15;
+  }
+  if (!expect_prepare_runtime_partial_eos_is_cancelled(/*pipeline_eos=*/true)) {
+    return 16;
+  }
   if (!expect_generate_status({{0, 0}}, {}, absl::StatusCode::kUnavailable, "odd batch without eos")) {
     return 5;
+  }
+  if (!expect_generate_status(
+          {{0, 0}, {0, 1}, {1, 0}}, {}, absl::StatusCode::kUnavailable, "three-frame partial batch without eos")) {
+    return 17;
   }
   if (!expect_generate_status({{0, 0}}, {1}, absl::StatusCode::kCancelled, "odd batch after source eos")) {
     return 6;
