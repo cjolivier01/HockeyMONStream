@@ -210,9 +210,10 @@ StitcherPriv::EosSnapshot StitcherPriv::snapshot_eos_for_surface(NvBufSurface* i
   };
   auto iter = eos_snapshot_by_surface_.find(in_surface);
   if (iter != eos_snapshot_by_surface_.end()) {
+    // Sink-pad buffers and serialized EOS/stream events have a defined order. Preserve the state from the moment this
+    // buffer was enqueued: retroactively merging a later global EOS can turn an earlier partial into a terminal
+    // cancellation, causing OutputThread to discard other valid buffers that were already queued ahead of EOS.
     snapshot = iter->second;
-    snapshot.pipeline_eos_seen = snapshot.pipeline_eos_seen || pipeline_eos_seen_;
-    snapshot.source_ids.insert(eos_source_ids_.begin(), eos_source_ids_.end());
     eos_snapshot_by_surface_.erase(iter);
   }
   return snapshot;

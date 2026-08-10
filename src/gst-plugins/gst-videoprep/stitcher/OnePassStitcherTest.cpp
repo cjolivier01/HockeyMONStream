@@ -220,7 +220,7 @@ bool expect_prepare_runtime_partial_is_retryable() {
   return true;
 }
 
-bool expect_prepare_runtime_partial_eos_status(bool pipeline_eos) {
+bool expect_enqueued_partial_preserves_event_order(bool pipeline_eos) {
   hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
   stitcher.SetProperty({"one-pass-mode", "1"});
   stitcher.outputthread_stopped = true;
@@ -262,8 +262,8 @@ bool expect_prepare_runtime_partial_eos_status(bool pipeline_eos) {
     return false;
   }
 
-  // Reproduce production ordering: ProcessBuffer snapshots EOS state when the
-  // surface is enqueued, then the event arrives before OutputThread sizes it.
+  // Reproduce production ordering: ProcessBuffer snapshots state when the surface is enqueued, then the serialized
+  // event arrives before OutputThread sizes it. The later event must not be applied retroactively to this buffer.
   GstBuffer* queued_input_buffer = gst_buffer_new_allocate(nullptr, sizeof(NvBufSurface), nullptr);
   GstMapInfo queued_write_map = GST_MAP_INFO_INIT;
   if (!queued_input_buffer || !gst_buffer_map(queued_input_buffer, &queued_write_map, GST_MAP_WRITE)) {
@@ -305,12 +305,9 @@ bool expect_prepare_runtime_partial_eos_status(bool pipeline_eos) {
   gst_buffer_unmap(queued_input_buffer, &queued_read_map);
   gst_buffer_unref(queued_input_buffer);
   nvds_destroy_batch_meta(batch_meta);
-  const absl::StatusCode expected_code =
-      pipeline_eos ? absl::StatusCode::kCancelled : absl::StatusCode::kUnavailable;
-  if (eos_result.status().code() != expected_code) {
-    std::cerr << "Expected partial runtime sizing after " << (pipeline_eos ? "pipeline" : "source-local")
-              << " EOS to be " << (pipeline_eos ? "terminal" : "nonterminal") << ", got " << eos_result.status()
-              << std::endl;
+  if (eos_result.status().code() != absl::StatusCode::kUnavailable) {
+    std::cerr << "Expected a partial queued before " << (pipeline_eos ? "pipeline" : "source-local")
+              << " EOS to retain its pre-event nonterminal state, got " << eos_result.status() << std::endl;
     return false;
   }
   GstBuffer* input_buffer = gst_buffer_new();
@@ -322,9 +319,7 @@ bool expect_prepare_runtime_partial_eos_status(bool pipeline_eos) {
       &released_inputs);
   const bool handled = output_pool_flow.handle_status(
       eos_result.status(), input_buffer, [&downstream_eos_events]() { ++downstream_eos_events; });
-  const int expected_eos_events = pipeline_eos ? 1 : 0;
-  if (!handled || released_inputs != 1 || downstream_eos_events != expected_eos_events ||
-      output_pool_flow.eos_terminal() != pipeline_eos) {
+  if (!handled || released_inputs != 1 || downstream_eos_events != 0 || output_pool_flow.eos_terminal()) {
     if (!handled) {
       gst_buffer_unref(input_buffer);
     }
@@ -341,13 +336,12 @@ bool expect_prepare_runtime_partial_eos_status(bool pipeline_eos) {
       [](gpointer user_data, GstMiniObject*) { ++*static_cast<int*>(user_data); },
       &later_released_inputs);
   const bool terminal_consumed = output_pool_flow.consume_if_terminal(later_input_buffer);
-  const bool terminal_behavior_ok = terminal_consumed == pipeline_eos &&
-      later_released_inputs == (pipeline_eos ? 1 : 0) && downstream_eos_events == expected_eos_events;
+  const bool terminal_behavior_ok = !terminal_consumed && later_released_inputs == 0 && downstream_eos_events == 0;
   if (!terminal_consumed) {
     gst_buffer_unref(later_input_buffer);
   }
   if (!terminal_behavior_ok) {
-    std::cerr << "Expected only pipeline EOS to consume all later inputs" << std::endl;
+    std::cerr << "A later event must not terminalize output while pre-event queued buffers are draining" << std::endl;
     return false;
   }
   return true;
@@ -628,10 +622,10 @@ int main() {
   if (!expect_prepare_runtime_partial_is_retryable()) {
     return 14;
   }
-  if (!expect_prepare_runtime_partial_eos_status(/*pipeline_eos=*/false)) {
+  if (!expect_enqueued_partial_preserves_event_order(/*pipeline_eos=*/false)) {
     return 15;
   }
-  if (!expect_prepare_runtime_partial_eos_status(/*pipeline_eos=*/true)) {
+  if (!expect_enqueued_partial_preserves_event_order(/*pipeline_eos=*/true)) {
     return 16;
   }
   if (!expect_enqueued_partial_restart_is_retryable()) {
