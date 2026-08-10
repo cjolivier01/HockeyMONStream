@@ -581,7 +581,7 @@ bool expect_generate_status(
     const std::string& test_name,
     bool pipeline_eos = false,
     const std::vector<guint>& stream_start_source_ids = {},
-    guint input_batch_size = 0) {
+    gint input_batch_size = -1) {
   hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
   for (guint source_id : eos_source_ids) {
     GstEvent* event = gst_nvevent_new_stream_eos(source_id);
@@ -623,8 +623,8 @@ bool expect_generate_status(
 
   std::vector<NvBufSurfaceParams> input_params(std::max<size_t>(frames.size(), 1));
   NvBufSurface in_surface{};
-  in_surface.batchSize = input_batch_size > 0
-      ? input_batch_size
+  in_surface.batchSize = input_batch_size >= 0
+      ? static_cast<guint>(input_batch_size)
       : std::max<guint>(2, static_cast<guint>(((frames.size() + 1) / 2) * 2));
   in_surface.numFilled = frames.size();
   in_surface.surfaceList = input_params.data();
@@ -789,6 +789,26 @@ int main() {
           /*stream_start_source_ids=*/{},
           /*input_batch_size=*/2)) {
     return 29;
+  }
+  if (!expect_generate_status(
+          {{0, 0}, {0, 1}},
+          {},
+          absl::StatusCode::kFailedPrecondition,
+          "zero batchSize with a balanced pair",
+          /*pipeline_eos=*/false,
+          /*stream_start_source_ids=*/{},
+          /*input_batch_size=*/0)) {
+    return 30;
+  }
+  if (!expect_generate_status(
+          {{0, 0}, {0, 1}, {1, 0}, {1, 1}},
+          {},
+          absl::StatusCode::kFailedPrecondition,
+          "balanced pairs with numFilled greater than batchSize",
+          /*pipeline_eos=*/false,
+          /*stream_start_source_ids=*/{},
+          /*input_batch_size=*/2)) {
+    return 31;
   }
   if (!expect_generate_status(
           {{0, 0}, {0, 0}}, {}, absl::StatusCode::kFailedPrecondition, "duplicate frame/source without eos")) {
