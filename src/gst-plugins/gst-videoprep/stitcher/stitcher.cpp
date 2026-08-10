@@ -318,7 +318,11 @@ absl::StatusOr<std::pair<size_t, size_t>> select_runtime_stitch_pair(
   }
 
   std::map<guint, std::vector<size_t>> source_indices;
+  std::set<std::pair<gint, guint>> unique_frame_keys;
   for (size_t index = 0; index < frames.size(); ++index) {
+    if (!unique_frame_keys.emplace(frames[index].frame_num, frames[index].source_id).second) {
+      return absl::FailedPreconditionError("Runtime stitching received a duplicate frame/source pair");
+    }
     source_indices[frames[index].source_id].push_back(index);
   }
   if (source_indices.size() > 2) {
@@ -340,17 +344,21 @@ absl::StatusOr<std::pair<size_t, size_t>> select_runtime_stitch_pair(
     (void)indices;
     observed_source_ids.insert(source_id);
   }
+  std::set<guint> observed_or_eos_source_ids = observed_source_ids;
+  observed_or_eos_source_ids.insert(eos_source_ids.begin(), eos_source_ids.end());
+  const bool source_eos_explains_unpairable_batch =
+      !eos_source_ids.empty() && observed_or_eos_source_ids.size() <= 2;
   const bool structurally_valid_partial = frames.size() % 2 != 0 &&
       ((source_indices.size() == 1 && frames.size() == 1) ||
        (source_indices.size() == 2 &&
         std::abs(
             static_cast<std::ptrdiff_t>(source_indices.begin()->second.size()) -
             static_cast<std::ptrdiff_t>(std::next(source_indices.begin())->second.size())) == 1));
-  if (pipeline_eos_seen && structurally_valid_partial) {
+  if (pipeline_eos_seen) {
     return absl::CancelledError("Runtime stitching input ended before a complete source pair arrived");
   }
 
-  if (structurally_valid_partial) {
+  if (structurally_valid_partial || source_eos_explains_unpairable_batch) {
     // A DeepStream per-source EOS is not a pipeline EOS: the source may emit STREAM_START and resume later. Drop this
     // incomplete mux batch without terminalizing OutputThread; the global GST_EVENT_EOS path remains responsible for
     // irreversibly ending downstream output.
@@ -993,6 +1001,14 @@ absl::Status StitcherPriv::GenerateOutput(
         frame_meta_count == in_surface->numFilled && surface_index == in_surface->numFilled &&
         duplicate_frame_sources == 0 && invalid_surfaces_per_frame == 0 && observed_source_ids.size() <= 2 &&
         valid_partial_source_counts;
+    const bool metadata_valid_unpairable_batch = in_surface->batchSize > 0 && in_surface->batchSize % 2 == 0 &&
+        in_surface->numFilled > 0 && in_surface->numFilled <= in_surface->batchSize &&
+        frame_meta_count == in_surface->numFilled && surface_index == in_surface->numFilled &&
+        duplicate_frame_sources == 0 && invalid_surfaces_per_frame == 0 && observed_source_ids.size() <= 2;
+    std::set<guint> observed_or_eos_source_ids = observed_source_ids;
+    observed_or_eos_source_ids.insert(eos_snapshot.source_ids.begin(), eos_snapshot.source_ids.end());
+    const bool source_eos_explains_unpairable_batch = metadata_valid_unpairable_batch &&
+        !eos_snapshot.source_ids.empty() && observed_or_eos_source_ids.size() <= 2;
     const absl::Status mismatch_status = frame_sequence_mismatch_status(
         reason,
         frame_source_surfaces.size(),
@@ -1005,11 +1021,13 @@ absl::Status StitcherPriv::GenerateOutput(
         observed_source_ids,
         missing_eos_source_ids,
         eos_snapshot.source_ids,
-        eos_snapshot.pipeline_eos_seen && structurally_valid_partial,
+        eos_snapshot.pipeline_eos_seen && metadata_valid_unpairable_batch,
         eos_snapshot.pipeline_eos_seen);
-    if (structurally_valid_partial && !eos_snapshot.pipeline_eos_seen) {
+    if (!eos_snapshot.pipeline_eos_seen &&
+        (structurally_valid_partial || source_eos_explains_unpairable_batch)) {
       // STREAM_EOS is source-local and may be followed by STREAM_START. Discard this incomplete batch but leave the
-      // output thread live so a restarted source can form a later complete pair. Only global pipeline EOS is terminal.
+      // output thread live so a restarted source can form a later complete pair. This includes even tails from a
+      // larger mux batch when all remaining frames belong to one source. Only global pipeline EOS is terminal.
       return absl::UnavailableError(mismatch_status.message());
     }
     return mismatch_status;
