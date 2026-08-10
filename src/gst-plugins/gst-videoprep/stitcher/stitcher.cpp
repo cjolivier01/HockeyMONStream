@@ -794,6 +794,7 @@ absl::Status StitcherPriv::GenerateOutput(
 
   //  frame_number -> source_id -> NvBufSurfaceParams*
   std::map<int, std::map<int, FrameInfo>> frame_source_surfaces;
+  std::map<guint, std::vector<FrameInfo>> source_frames;
 
   const EosSnapshot eos_snapshot = snapshot_eos_for_surface(in_surface);
 
@@ -830,19 +831,35 @@ absl::Status StitcherPriv::GenerateOutput(
 
     source_frame_metas.emplace(frame_meta->source_id, frame_meta);
 
-    const bool inserted = frame_sources
-                              .emplace(
-                                  frame_meta->source_id,
-                                  FrameInfo{
-                                      .surface_params = surface_params,
-                                      .frame_meta = frame_meta,
-                                      .incoming_surface_index = surface_index,
-                                  })
-                              .second;
+    const FrameInfo frame_info{
+        .surface_params = surface_params,
+        .frame_meta = frame_meta,
+        .incoming_surface_index = surface_index,
+    };
+    const bool inserted = frame_sources.emplace(frame_meta->source_id, frame_info).second;
     if (!inserted) {
       ++duplicate_frame_sources;
     }
+    source_frames[frame_meta->source_id].push_back(frame_info);
     ++surface_index;
+  }
+
+  // The mux is the timestamp synchronization authority. If it emits a partial batch, the two source frame counters
+  // remain offset in later complete batches (for example, s0/f4 with s1/f3). Pair complete batches by each source's
+  // batch order instead of requiring those independent counters to match exactly.
+  if (duplicate_frame_sources == 0 && observed_source_ids.size() == 2 && in_surface->numFilled % 2 == 0) {
+    const size_t frames_per_source = in_surface->numFilled / 2;
+    const bool balanced_sources = std::all_of(source_frames.begin(), source_frames.end(), [&](const auto& entry) {
+      return entry.second.size() == frames_per_source;
+    });
+    if (balanced_sources) {
+      frame_source_surfaces.clear();
+      for (size_t frame_group = 0; frame_group < frames_per_source; ++frame_group) {
+        for (const auto& [source_id, frames] : source_frames) {
+          frame_source_surfaces[static_cast<int>(frame_group)].emplace(source_id, frames[frame_group]);
+        }
+      }
+    }
   }
 
   std::set<guint> expected_source_ids;
@@ -926,7 +943,7 @@ absl::Status StitcherPriv::GenerateOutput(
     } else if (frame_meta_count != in_surface->numFilled || surface_index != in_surface->numFilled) {
       reason = "surface_metadata_mismatch";
     }
-    return frame_sequence_mismatch_status(
+    const absl::Status mismatch_status = frame_sequence_mismatch_status(
         reason,
         frame_source_surfaces.size(),
         in_surface->numFilled,
@@ -940,6 +957,13 @@ absl::Status StitcherPriv::GenerateOutput(
         eos_snapshot.source_ids,
         source_eos_explains_mismatch,
         eos_snapshot.pipeline_eos_seen);
+    const bool transient_partial_batch = in_surface->numFilled == 1 && frame_meta_count == 1 && surface_index == 1 &&
+        duplicate_frame_sources == 0 && invalid_surfaces_per_frame == 0 && observed_source_ids.size() == 1 &&
+        eos_snapshot.source_ids.empty() && !eos_snapshot.pipeline_eos_seen;
+    if (transient_partial_batch) {
+      return absl::UnavailableError(mismatch_status.message());
+    }
+    return mismatch_status;
   }
 
   assert(cuda_stream_);
