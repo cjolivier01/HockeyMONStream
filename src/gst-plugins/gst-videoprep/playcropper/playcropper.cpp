@@ -218,7 +218,11 @@ absl::StatusOr<videoprep::RuntimeOutputSize> PlayCropperPriv::PrepareRuntimeOutp
     output_height = round_down_even(output_height);
   }
 
-  return videoprep::RuntimeOutputSize{output_width, output_height};
+  // Upstream elements can retain a larger NvBufSurface capacity than the number of frames they actually produced.
+  // In particular, hmstitcher reduces one exact two-camera pair to one filled surface while a pass-through tracker
+  // may preserve the earlier configured batch capacity in its caps. Size this transform's pool from the filled frame
+  // count so its output caps describe the stitched stream rather than the upstream allocation headroom.
+  return videoprep::RuntimeOutputSize{output_width, output_height, in_surface->numFilled};
 }
 
 gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) {
@@ -439,7 +443,9 @@ absl::Status PlayCropperPriv::GenerateOutput(
   if (!in_surface->numFilled) {
     return absl::CancelledError("No surfaces were filled");
   }
-  assert(in_surface->numFilled == out_surface->batchSize);
+  if (in_surface->numFilled > out_surface->batchSize) {
+    return absl::FailedPreconditionError("Playcropper output surface capacity is smaller than the filled input batch");
+  }
   assert(cuda_stream_);
 
   // NppStreamContext nppStreamContext;

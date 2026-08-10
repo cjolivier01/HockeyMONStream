@@ -10,6 +10,7 @@ bool expect_size(
     hm::playcropper::PlayCropperPriv& cropper,
     size_t input_width,
     size_t input_height,
+    guint input_batch_size,
     size_t expected_width,
     size_t expected_height) {
   NvBufSurfaceParams surface_params{};
@@ -17,7 +18,7 @@ bool expect_size(
   surface_params.height = input_height;
 
   NvBufSurface surface{};
-  surface.numFilled = 1;
+  surface.numFilled = input_batch_size;
   surface.surfaceList = &surface_params;
 
   auto size = cropper.PrepareRuntimeOutputSize(nullptr, &surface);
@@ -25,19 +26,20 @@ bool expect_size(
     std::cerr << "PrepareRuntimeOutputSize failed: " << size.status() << std::endl;
     return false;
   }
-  if (size->width != expected_width || size->height != expected_height) {
-    std::cerr << "Unexpected runtime size: " << size->width << "x" << size->height
-              << ", expected: " << expected_width << "x" << expected_height << std::endl;
+  if (size->width != expected_width || size->height != expected_height || size->batch_size != input_batch_size) {
+    std::cerr << "Unexpected runtime size: " << size->width << "x" << size->height << " batch " << size->batch_size
+              << ", expected: " << expected_width << "x" << expected_height << " batch " << input_batch_size
+              << std::endl;
     return false;
   }
   return true;
 }
 
-}  // namespace
+} // namespace
 
 int main() {
   hm::playcropper::PlayCropperPriv cropper(/*gpu_id=*/0, /*batch_size=*/1);
-  if (!expect_size(cropper, /*input_width=*/12102, /*input_height=*/5153, 9158, 5152)) {
+  if (!expect_size(cropper, /*input_width=*/12102, /*input_height=*/5153, /*input_batch_size=*/1, 9158, 5152)) {
     return 1;
   }
 
@@ -47,7 +49,10 @@ int main() {
   if (!cropper.SetProperty({"runtime-output-max-height", "2160"})) {
     return 1;
   }
-  if (!expect_size(cropper, /*input_width=*/12102, /*input_height=*/5153, 3838, 2160)) {
+  if (!expect_size(cropper, /*input_width=*/12102, /*input_height=*/5153, /*input_batch_size=*/1, 3838, 2160)) {
+    return 1;
+  }
+  if (!expect_size(cropper, /*input_width=*/12102, /*input_height=*/5153, /*input_batch_size=*/2, 3838, 2160)) {
     return 1;
   }
 

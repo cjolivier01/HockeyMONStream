@@ -5,6 +5,10 @@
 namespace hm {
 namespace {
 
+constexpr char kDecodedFrameSequenceMetaApiName[] = "GstHmDecodedFrameSequenceMetaAPI";
+constexpr char kDecodedFrameSequenceMetaImplementationName[] = "GstHmDecodedFrameSequenceMeta";
+constexpr gsize kRegistrationFailed = 1;
+
 struct GstHmDecodedFrameSequenceMeta {
   GstMeta meta;
   guint source_id;
@@ -15,10 +19,20 @@ GType decoded_frame_sequence_meta_api_get_type() {
   static gsize type = 0;
   static const gchar* tags[] = {"hstream", "decoded-frame-sequence", nullptr};
   if (g_once_init_enter(&type)) {
-    const GType registered = gst_meta_api_type_register("GstHmDecodedFrameSequenceMetaAPI", tags);
-    g_once_init_leave(&type, registered);
+    // This implementation is linked into both hstream-cli and the separately loaded videoprep plugin. Their local
+    // g_once guards do not protect GStreamer's process-global type registry from a duplicate registration. Reuse the
+    // process-global type when another image registered it first; a failed registration can also mean that the other
+    // image won the race between the lookup and registration calls.
+    GType registered = g_type_from_name(kDecodedFrameSequenceMetaApiName);
+    if (registered == G_TYPE_INVALID) {
+      registered = gst_meta_api_type_register(kDecodedFrameSequenceMetaApiName, tags);
+    }
+    if (registered == G_TYPE_INVALID) {
+      registered = g_type_from_name(kDecodedFrameSequenceMetaApiName);
+    }
+    g_once_init_leave(&type, registered == G_TYPE_INVALID ? kRegistrationFailed : registered);
   }
-  return static_cast<GType>(type);
+  return type == kRegistrationFailed ? G_TYPE_INVALID : static_cast<GType>(type);
 }
 
 gboolean decoded_frame_sequence_meta_init(GstMeta* meta, gpointer /*params*/, GstBuffer* /*buffer*/) {
@@ -53,16 +67,23 @@ gboolean decoded_frame_sequence_meta_transform(
 const GstMetaInfo* decoded_frame_sequence_meta_get_info() {
   static gsize info = 0;
   if (g_once_init_enter(&info)) {
-    const GstMetaInfo* registered = gst_meta_register(
-        decoded_frame_sequence_meta_api_get_type(),
-        "GstHmDecodedFrameSequenceMeta",
-        sizeof(GstHmDecodedFrameSequenceMeta),
-        decoded_frame_sequence_meta_init,
-        nullptr,
-        decoded_frame_sequence_meta_transform);
-    g_once_init_leave(&info, reinterpret_cast<gsize>(registered));
+    const GType api = decoded_frame_sequence_meta_api_get_type();
+    const GstMetaInfo* registered = gst_meta_get_info(kDecodedFrameSequenceMetaImplementationName);
+    if (!registered && api != G_TYPE_INVALID) {
+      registered = gst_meta_register(
+          api,
+          kDecodedFrameSequenceMetaImplementationName,
+          sizeof(GstHmDecodedFrameSequenceMeta),
+          decoded_frame_sequence_meta_init,
+          nullptr,
+          decoded_frame_sequence_meta_transform);
+    }
+    if (!registered) {
+      registered = gst_meta_get_info(kDecodedFrameSequenceMetaImplementationName);
+    }
+    g_once_init_leave(&info, registered ? reinterpret_cast<gsize>(registered) : kRegistrationFailed);
   }
-  return reinterpret_cast<const GstMetaInfo*>(info);
+  return info == kRegistrationFailed ? nullptr : reinterpret_cast<const GstMetaInfo*>(info);
 }
 
 const GstHmDecodedFrameSequenceMeta* find_sequence_meta(GstBuffer* buffer) {
@@ -84,8 +105,11 @@ bool add_decoded_frame_sequence_meta(GstBuffer* buffer, guint source_id, uint64_
   if (!buffer || !gst_buffer_is_writable(buffer)) {
     return false;
   }
-  auto* meta = reinterpret_cast<GstHmDecodedFrameSequenceMeta*>(
-      gst_buffer_add_meta(buffer, decoded_frame_sequence_meta_get_info(), nullptr));
+  const GstMetaInfo* info = decoded_frame_sequence_meta_get_info();
+  if (!info) {
+    return false;
+  }
+  auto* meta = reinterpret_cast<GstHmDecodedFrameSequenceMeta*>(gst_buffer_add_meta(buffer, info, nullptr));
   if (!meta) {
     return false;
   }
