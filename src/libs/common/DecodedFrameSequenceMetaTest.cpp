@@ -20,6 +20,21 @@ gboolean initialize_meta(GstMeta* meta, gpointer /*params*/, GstBuffer* /*buffer
   return TRUE;
 }
 
+gboolean transform_meta(GstBuffer* destination, GstMeta* meta, GstBuffer* /*source*/, GQuark type, gpointer /*data*/) {
+  if (!GST_META_TRANSFORM_IS_COPY(type)) {
+    return FALSE;
+  }
+  const auto* source_meta = reinterpret_cast<const PreRegisteredSequenceMeta*>(meta);
+  auto* destination_meta =
+      reinterpret_cast<PreRegisteredSequenceMeta*>(gst_buffer_add_meta(destination, meta->info, nullptr));
+  if (!destination_meta) {
+    return FALSE;
+  }
+  destination_meta->source_id = source_meta->source_id;
+  destination_meta->sequence = source_meta->sequence;
+  return TRUE;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -32,7 +47,12 @@ int main(int argc, char** argv) {
     return 1;
   }
   const GstMetaInfo* info = gst_meta_register(
-      api, "GstHmDecodedFrameSequenceMeta", sizeof(PreRegisteredSequenceMeta), initialize_meta, nullptr, nullptr);
+      api,
+      "GstHmDecodedFrameSequenceMeta",
+      sizeof(PreRegisteredSequenceMeta),
+      initialize_meta,
+      nullptr,
+      transform_meta);
   if (!info) {
     std::cerr << "Could not pre-register decoded-frame sequence implementation\n";
     return 1;
@@ -41,9 +61,13 @@ int main(int argc, char** argv) {
   GstBuffer* buffer = gst_buffer_new();
   const bool added = hm::add_decoded_frame_sequence_meta(buffer, 7, 1234);
   const std::optional<hm::DecodedFrameSequence> sequence = hm::decoded_frame_sequence(buffer);
+  GstBuffer* copy = gst_buffer_copy_deep(buffer);
+  const std::optional<hm::DecodedFrameSequence> copied_sequence = hm::decoded_frame_sequence(copy);
+  gst_buffer_unref(copy);
   gst_buffer_unref(buffer);
 
-  if (!added || !sequence.has_value() || sequence->source_id != 7 || sequence->sequence != 1234) {
+  if (!added || !sequence.has_value() || sequence->source_id != 7 || sequence->sequence != 1234 ||
+      !copied_sequence.has_value() || copied_sequence->source_id != 7 || copied_sequence->sequence != 1234) {
     std::cerr << "Did not reuse the process-global decoded-frame sequence metadata registration\n";
     return 1;
   }
