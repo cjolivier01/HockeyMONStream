@@ -698,7 +698,15 @@ void CustomAlgorithmBase::OutputThread(void) {
         // Transform mode, hence transform input buffer to output buffer
         GstBuffer* newGstOutBuf = NULL;
         GstFlowReturn result = GST_FLOW_OK;
-        cuda_status.Update(EnsureDsOutputBufferPool(batch_meta, in_surf));
+        const absl::Status output_pool_status = EnsureDsOutputBufferPool(batch_meta, in_surf);
+        if (absl::IsUnavailable(output_pool_status)) {
+          // Runtime-sized transforms may need a complete multi-source batch before they can allocate their output
+          // pool. Drop an incomplete mux batch without poisoning the transform; a later complete batch will retry.
+          gst_buffer_unref(packetInfo.inbuf);
+          lk.lock();
+          continue;
+        }
+        cuda_status.Update(output_pool_status);
         if (!cuda_status.ok()) {
           std::cerr << cuda_status << std::endl;
           update_last_flow_ret(GST_FLOW_ERROR);
@@ -743,7 +751,16 @@ void CustomAlgorithmBase::OutputThread(void) {
         assert(m_element);
         assert(cuda_stream_);
         if (in_surf && out_surf) {
-          cuda_status.Update(GenerateOutput(batch_meta, in_surf, out_surf));
+          const absl::Status generate_status = GenerateOutput(batch_meta, in_surf, out_surf);
+          if (absl::IsUnavailable(generate_status)) {
+            // An incomplete multi-source batch is transient. Neither the empty output buffer nor its copied metadata
+            // is valid downstream, so release both buffers and wait for the mux to provide a complete batch.
+            gst_buffer_unref(newGstOutBuf);
+            gst_buffer_unref(packetInfo.inbuf);
+            lk.lock();
+            continue;
+          }
+          cuda_status.Update(generate_status);
           if (!cuda_status.ok()) {
             std::cerr << cuda_status << std::endl;
             if (cuda_status.code() == absl::StatusCode::kCancelled) {
