@@ -36,6 +36,7 @@ namespace hm::ui_internal {
 // keys may have been updated by another config owner in the meantime.
 void restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previous);
 bool supports_x11_embedding(const QString& platform_name, bool tegra_runtime = false);
+bool supports_snapshot_preview_sink(const QString& configured_render_sink);
 
 } // namespace hm::ui_internal
 

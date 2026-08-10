@@ -1128,6 +1128,12 @@ bool hm::ui_internal::supports_x11_embedding(const QString& platform_name, bool 
   return !tegra_runtime && platform_name.compare("xcb", Qt::CaseInsensitive) == 0;
 }
 
+bool hm::ui_internal::supports_snapshot_preview_sink(const QString& configured_render_sink) {
+  const QString sink = configured_render_sink.trimmed().toLower();
+  return sink.isEmpty() || sink == "xvimagesink" || sink == "xvideo" || sink == "xv" || sink == "ximagesink" ||
+      sink == "ximage";
+}
+
 HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
   capture_complete_log_ = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_GAME_ID");
   pipeline_process_ = new QProcess(this);
@@ -2319,10 +2325,7 @@ QStringList HStreamWindow::pipelineArguments() const {
   const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
   const bool embed_render_window = render_video &&
       hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) &&
-      (configured_render_sink.isEmpty() || configured_render_sink == "nveglglessink" ||
-       configured_render_sink == "egl" || configured_render_sink == "xvimagesink" ||
-       configured_render_sink == "xvideo" || configured_render_sink == "xv" || configured_render_sink == "ximagesink" ||
-       configured_render_sink == "ximage");
+      hm::ui_internal::supports_snapshot_preview_sink(configured_render_sink);
   QStringList args;
   args << "-g" << game_id << "--enable-sources=URI-MULTIPLE";
   if (isCalibrationRun()) {
@@ -2500,7 +2503,7 @@ void HStreamWindow::startPipeline() {
   if (stitched_fullscreen_button_)
     stitched_fullscreen_button_->setEnabled(embedded_render && active_run_is_calibration_);
   if (render_video && !embedded_render)
-    appendLog("nv3dsink render output will open in a separate DeepStream window; embedded preview is disabled");
+    appendLog("render output will open in a separate DeepStream window; embedded preview is disabled");
   else if (!render_video)
     appendLog("video rendering disabled; pipeline will run without a display sink");
   if (calibration_pending_) {

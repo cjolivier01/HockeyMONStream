@@ -1263,7 +1263,13 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(
           hm::ui_internal::supports_x11_embedding("xcb") && !hm::ui_internal::supports_x11_embedding("wayland") &&
               !hm::ui_internal::supports_x11_embedding("offscreen") &&
-              !hm::ui_internal::supports_x11_embedding("xcb", true),
+              !hm::ui_internal::supports_x11_embedding("xcb", true) &&
+              hm::ui_internal::supports_snapshot_preview_sink("") &&
+              hm::ui_internal::supports_snapshot_preview_sink("ximagesink") &&
+              hm::ui_internal::supports_snapshot_preview_sink("xvimagesink") &&
+              !hm::ui_internal::supports_snapshot_preview_sink("nveglglessink") &&
+              !hm::ui_internal::supports_snapshot_preview_sink("egl") &&
+              !hm::ui_internal::supports_snapshot_preview_sink("nv3dsink"),
           "Native preview embedding should only accept non-Tegra Qt XCB window handles")) {
     return false;
   }
@@ -1720,7 +1726,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Explicit nveglglessink mode should not receive a non-X11 native window handle") &&
       expect(
           window->logText().contains("HM_RENDER_SINK=nveglglessink"),
-          "UI runner should preserve an explicit embeddable render sink");
+          "UI runner should preserve an explicit external render sink");
   activate(stop);
   qunsetenv("HM_RENDER_SINK");
   if (!explicit_embedding_preserved) {
