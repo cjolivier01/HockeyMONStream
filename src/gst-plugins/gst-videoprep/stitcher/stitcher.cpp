@@ -1,6 +1,7 @@
 #include "hstream/src/gst-plugins/gst-videoprep/stitcher/stitcher.h"
 
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
+#include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
@@ -8,6 +9,7 @@
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 
 #include "absl/status/status.h"
+#include "absl/strings/str_format.h"
 #include "cupano/cuda/cudaStatus.h"
 #include "cupano/pano/cudaMat.h"
 
@@ -296,24 +298,44 @@ absl::StatusOr<std::pair<size_t, size_t>> select_runtime_stitch_pair(
   }
 
   std::map<guint, std::vector<size_t>> source_indices;
+  std::map<gint, std::map<guint, size_t>> frame_indices;
   std::set<std::pair<gint, guint>> unique_frame_keys;
   for (size_t index = 0; index < frames.size(); ++index) {
     if (!unique_frame_keys.emplace(frames[index].frame_num, frames[index].source_id).second) {
       return absl::FailedPreconditionError("Runtime stitching received a duplicate frame/source pair");
     }
     source_indices[frames[index].source_id].push_back(index);
+    frame_indices[frames[index].frame_num].emplace(frames[index].source_id, index);
   }
   if (source_indices.size() > 2) {
     return absl::FailedPreconditionError("Runtime stitching received frames from more than two sources");
   }
 
-  if (source_indices.size() == 2 && frames.size() % 2 == 0) {
-    auto left = source_indices.begin();
-    auto right = std::next(left);
-    if (left->second.size() == right->second.size()) {
-      // nvstreammux is the timestamp synchronization authority. Independent camera frame counters may be offset
-      // after a partial batch, so select the first frame from each source in mux order rather than by frame_num.
-      return std::make_pair(left->second.front(), right->second.front());
+  if (source_indices.size() == 2 && frames.size() % 2 == 0 && frame_indices.size() * 2 == frames.size()) {
+    const std::set<guint> expected_source_ids{source_indices.begin()->first, std::next(source_indices.begin())->first};
+    bool every_frame_has_both_sources = true;
+    for (const auto& [frame_num, by_source] : frame_indices) {
+      (void)frame_num;
+      std::set<guint> source_ids;
+      for (const auto& [source_id, index] : by_source) {
+        (void)index;
+        source_ids.insert(source_id);
+      }
+      every_frame_has_both_sources = every_frame_has_both_sources && source_ids == expected_source_ids;
+    }
+    if (every_frame_has_both_sources) {
+      std::vector<gint> complete_frame_numbers;
+      complete_frame_numbers.reserve(frame_indices.size());
+      for (const auto& [frame_num, by_source] : frame_indices) {
+        (void)by_source;
+        complete_frame_numbers.push_back(frame_num);
+      }
+      const auto continuity = validate_stitch_frame_continuity(complete_frame_numbers);
+      if (!continuity.ok()) {
+        return continuity.status();
+      }
+      const auto& first_pair = frame_indices.begin()->second;
+      return std::make_pair(first_pair.begin()->second, first_pair.rbegin()->second);
     }
   }
 
@@ -324,28 +346,76 @@ absl::StatusOr<std::pair<size_t, size_t>> select_runtime_stitch_pair(
   }
   std::set<guint> observed_or_eos_source_ids = observed_source_ids;
   observed_or_eos_source_ids.insert(eos_source_ids.begin(), eos_source_ids.end());
-  const bool source_eos_explains_unpairable_batch =
-      !eos_source_ids.empty() && observed_or_eos_source_ids.size() <= 2;
+  const bool source_eos_explains_unpairable_batch = !eos_source_ids.empty() && observed_or_eos_source_ids.size() <= 2;
   const bool structurally_valid_partial = frames.size() % 2 != 0 &&
       ((source_indices.size() == 1 && frames.size() == 1) ||
        (source_indices.size() == 2 &&
         std::abs(
             static_cast<std::ptrdiff_t>(source_indices.begin()->second.size()) -
             static_cast<std::ptrdiff_t>(std::next(source_indices.begin())->second.size())) == 1));
-  if (pipeline_eos_seen) {
+  if (pipeline_eos_seen || source_eos_explains_unpairable_batch) {
     return absl::CancelledError("Runtime stitching input ended before a complete source pair arrived");
   }
 
-  if (structurally_valid_partial || source_eos_explains_unpairable_batch) {
-    // A DeepStream per-source EOS is not a pipeline EOS: the source may emit STREAM_START and resume later. Drop this
-    // incomplete mux batch without terminalizing OutputThread; the global GST_EVENT_EOS path remains responsible for
-    // irreversibly ending downstream output.
-    return absl::UnavailableError(
-        eos_source_ids.empty() ? "Runtime stitching is waiting for a complete synchronized source pair"
-                               : "Runtime stitching discarded a partial batch after source-local EOS");
+  if (structurally_valid_partial) {
+    return absl::FailedPreconditionError(
+        "nvstreammux emitted an incomplete batch before either camera permanently ended");
   }
 
   return absl::FailedPreconditionError("Could not find a balanced left/right frame pair for runtime stitching");
+}
+
+absl::Status validate_decoder_mux_sequence(const NvDsFrameMeta* frame_meta, bool* decoder_sequence_present) {
+  const std::optional<DecodedFrameSequence> decoded_sequence = hm::decoded_frame_sequence(frame_meta);
+  *decoder_sequence_present = decoded_sequence.has_value();
+  if (!decoded_sequence.has_value()) {
+    return absl::OkStatus();
+  }
+  if (decoded_sequence->source_id != frame_meta->source_id ||
+      decoded_sequence->sequence != static_cast<uint64_t>(frame_meta->frame_num)) {
+    return absl::FailedPreconditionError(
+        absl::StrFormat(
+            "Lossless stitching decode/mux invariant failed: source %u decoder frame %llu became mux source %u frame %d",
+            decoded_sequence->source_id,
+            static_cast<unsigned long long>(decoded_sequence->sequence),
+            frame_meta->source_id,
+            frame_meta->frame_num));
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<gint> validate_stitch_frame_continuity(
+    const std::vector<gint>& frame_numbers,
+    std::optional<gint> previous_frame_num) {
+  if (frame_numbers.empty()) {
+    return absl::FailedPreconditionError("Stitching received no complete frame numbers");
+  }
+
+  gint expected = 0;
+  if (previous_frame_num.has_value()) {
+    if (*previous_frame_num == std::numeric_limits<gint>::max()) {
+      return absl::FailedPreconditionError("Stitching frame counter overflowed");
+    }
+    expected = *previous_frame_num + 1;
+  }
+
+  for (size_t index = 0; index < frame_numbers.size(); ++index) {
+    const gint frame_num = frame_numbers[index];
+    if (frame_num != expected) {
+      return absl::FailedPreconditionError(
+          absl::StrFormat(
+              "Lossless stitching frame invariant failed: expected both cameras at frame %d, received frame %d",
+              expected,
+              frame_num));
+    }
+    if (index + 1 < frame_numbers.size()) {
+      if (expected == std::numeric_limits<gint>::max()) {
+        return absl::FailedPreconditionError("Stitching frame counter overflowed");
+      }
+      ++expected;
+    }
+  }
+  return frame_numbers.back();
 }
 
 absl::Status StitcherPriv::ensure_stitcher() {
@@ -576,8 +646,7 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
   if (!batch_meta || !in_surface) {
     return absl::InvalidArgumentError("Cannot determine stitched canvas size without batch metadata and input surface");
   }
-  if (in_surface->batchSize == 0 || in_surface->batchSize % 2 != 0 ||
-      in_surface->numFilled > in_surface->batchSize) {
+  if (in_surface->batchSize == 0 || in_surface->batchSize % 2 != 0 || in_surface->numFilled > in_surface->batchSize) {
     return absl::FailedPreconditionError(
         "Runtime stitching requires a positive even batch size and numFilled no greater than batchSize");
   }
@@ -590,6 +659,7 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
   std::vector<RuntimeFrameKey> runtime_frame_keys;
   size_t surface_index = 0;
   size_t frame_meta_count = 0;
+  size_t decoded_sequence_meta_count = 0;
   for (NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list; frame_meta_list != nullptr;
        frame_meta_list = frame_meta_list->next) {
     ++frame_meta_count;
@@ -597,6 +667,9 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
     if (!frame_meta || frame_meta->num_surfaces_per_frame != 1) {
       return absl::FailedPreconditionError("Invalid frame metadata while determining stitched canvas size");
     }
+    bool decoded_sequence_present = false;
+    HM_RETURN_IF_ERROR(validate_decoder_mux_sequence(frame_meta, &decoded_sequence_present));
+    decoded_sequence_meta_count += decoded_sequence_present ? 1 : 0;
     if (surface_index >= in_surface->numFilled) {
       continue;
     }
@@ -612,6 +685,11 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
 
   if (frame_meta_count != in_surface->numFilled || surface_index != in_surface->numFilled) {
     return absl::FailedPreconditionError("Input surface and frame metadata counts differ during runtime sizing");
+  }
+  if (decoded_sequence_meta_count != 0 && decoded_sequence_meta_count != frame_meta_count) {
+    return absl::FailedPreconditionError(
+        "Lossless stitching decode/mux invariant failed: decoded-frame sequence metadata is missing from part of the "
+        "runtime-sizing batch");
   }
   const EosSnapshot eos_snapshot = snapshot_eos_for_surface(in_surface);
   absl::StatusOr<std::pair<size_t, size_t>> selected_pair =
@@ -827,8 +905,7 @@ absl::Status StitcherPriv::GenerateOutput(
   if (!batch_meta || !in_surface || !out_surface) {
     return absl::InvalidArgumentError("Stitcher GenerateOutput requires batch meta, input surface, and output surface");
   }
-  if (in_surface->batchSize == 0 || in_surface->batchSize % 2 != 0 ||
-      in_surface->numFilled > in_surface->batchSize) {
+  if (in_surface->batchSize == 0 || in_surface->batchSize % 2 != 0 || in_surface->numFilled > in_surface->batchSize) {
     return absl::FailedPreconditionError(
         "Stitcher output requires a positive even batch size and numFilled no greater than batchSize");
   }
@@ -845,7 +922,6 @@ absl::Status StitcherPriv::GenerateOutput(
 
   //  frame_number -> source_id -> NvBufSurfaceParams*
   std::map<int, std::map<int, FrameInfo>> frame_source_surfaces;
-  std::map<guint, std::vector<FrameInfo>> source_frames;
 
   const EosSnapshot eos_snapshot = snapshot_eos_for_surface(in_surface);
 
@@ -858,6 +934,7 @@ absl::Status StitcherPriv::GenerateOutput(
   size_t frame_meta_count = 0;
   size_t duplicate_frame_sources = 0;
   size_t invalid_surfaces_per_frame = 0;
+  size_t decoded_sequence_meta_count = 0;
   for (NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list; frame_meta_list != nullptr;
        frame_meta_list = frame_meta_list->next) {
     ++frame_meta_count;
@@ -869,6 +946,9 @@ absl::Status StitcherPriv::GenerateOutput(
     if (frame_meta->num_surfaces_per_frame != 1) {
       ++invalid_surfaces_per_frame;
     }
+    bool decoded_sequence_present = false;
+    HM_RETURN_IF_ERROR(validate_decoder_mux_sequence(frame_meta, &decoded_sequence_present));
+    decoded_sequence_meta_count += decoded_sequence_present ? 1 : 0;
     if (surface_index >= in_surface->numFilled) {
       continue;
     }
@@ -891,26 +971,12 @@ absl::Status StitcherPriv::GenerateOutput(
     if (!inserted) {
       ++duplicate_frame_sources;
     }
-    source_frames[frame_meta->source_id].push_back(frame_info);
     ++surface_index;
   }
-
-  // The mux is the timestamp synchronization authority. If it emits a partial batch, the two source frame counters
-  // remain offset in later complete batches (for example, s0/f4 with s1/f3). Pair complete batches by each source's
-  // batch order instead of requiring those independent counters to match exactly.
-  if (duplicate_frame_sources == 0 && observed_source_ids.size() == 2 && in_surface->numFilled % 2 == 0) {
-    const size_t frames_per_source = in_surface->numFilled / 2;
-    const bool balanced_sources = std::all_of(source_frames.begin(), source_frames.end(), [&](const auto& entry) {
-      return entry.second.size() == frames_per_source;
-    });
-    if (balanced_sources) {
-      frame_source_surfaces.clear();
-      for (size_t frame_group = 0; frame_group < frames_per_source; ++frame_group) {
-        for (const auto& [source_id, frames] : source_frames) {
-          frame_source_surfaces[static_cast<int>(frame_group)].emplace(source_id, frames[frame_group]);
-        }
-      }
-    }
+  if (decoded_sequence_meta_count != 0 && decoded_sequence_meta_count != frame_meta_count) {
+    return absl::FailedPreconditionError(
+        "Lossless stitching decode/mux invariant failed: decoded-frame sequence metadata is missing from part of the "
+        "batch");
   }
 
   std::set<guint> expected_source_ids;
@@ -972,29 +1038,15 @@ absl::Status StitcherPriv::GenerateOutput(
     } else if (frame_meta_count != in_surface->numFilled || surface_index != in_surface->numFilled) {
       reason = "surface_metadata_mismatch";
     }
-    bool valid_partial_source_counts = false;
-    if (source_frames.size() == 1) {
-      valid_partial_source_counts = in_surface->numFilled == 1 && source_frames.begin()->second.size() == 1;
-    } else if (source_frames.size() == 2) {
-      const auto left = source_frames.begin();
-      const auto right = std::next(left);
-      valid_partial_source_counts = std::abs(
-                                        static_cast<std::ptrdiff_t>(left->second.size()) -
-                                        static_cast<std::ptrdiff_t>(right->second.size())) == 1;
-    }
-    const bool valid_surface_envelope = in_surface->batchSize > 0 && in_surface->batchSize % 2 == 0 &&
-        in_surface->numFilled <= in_surface->batchSize;
-    const bool structurally_valid_partial = valid_surface_envelope && in_surface->numFilled % 2 != 0 &&
-        frame_meta_count == in_surface->numFilled && surface_index == in_surface->numFilled &&
-        duplicate_frame_sources == 0 && invalid_surfaces_per_frame == 0 && observed_source_ids.size() <= 2 &&
-        valid_partial_source_counts;
+    const bool valid_surface_envelope =
+        in_surface->batchSize > 0 && in_surface->batchSize % 2 == 0 && in_surface->numFilled <= in_surface->batchSize;
     const bool metadata_valid_unpairable_batch = valid_surface_envelope && in_surface->numFilled > 0 &&
         frame_meta_count == in_surface->numFilled && surface_index == in_surface->numFilled &&
         duplicate_frame_sources == 0 && invalid_surfaces_per_frame == 0 && observed_source_ids.size() <= 2;
     std::set<guint> observed_or_eos_source_ids = observed_source_ids;
     observed_or_eos_source_ids.insert(eos_snapshot.source_ids.begin(), eos_snapshot.source_ids.end());
-    const bool source_eos_explains_unpairable_batch = metadata_valid_unpairable_batch &&
-        !eos_snapshot.source_ids.empty() && observed_or_eos_source_ids.size() <= 2;
+    const bool source_eos_explains_unpairable_batch =
+        metadata_valid_unpairable_batch && !eos_snapshot.source_ids.empty() && observed_or_eos_source_ids.size() <= 2;
     const absl::Status mismatch_status = frame_sequence_mismatch_status(
         reason,
         frame_source_surfaces.size(),
@@ -1009,15 +1061,22 @@ absl::Status StitcherPriv::GenerateOutput(
         eos_snapshot.source_ids,
         eos_snapshot.pipeline_eos_seen && metadata_valid_unpairable_batch,
         eos_snapshot.pipeline_eos_seen);
-    if (!eos_snapshot.pipeline_eos_seen &&
-        (structurally_valid_partial || source_eos_explains_unpairable_batch)) {
-      // STREAM_EOS is source-local and may be followed by STREAM_START. Discard this incomplete batch but leave the
-      // output thread live so a restarted source can form a later complete pair. This includes even tails from a
-      // larger mux batch when all remaining frames belong to one source. Only global pipeline EOS is terminal.
-      return absl::UnavailableError(mismatch_status.message());
+    if (source_eos_explains_unpairable_batch) {
+      // URI-MULTIPLE suppresses chapter-boundary EOS before nvstreammux. A source EOS observed here therefore means
+      // that a camera has permanently ended, so stop stitched output instead of discarding frames and continuing.
+      return absl::CancelledError(mismatch_status.message());
     }
     return mismatch_status;
   }
+
+  std::vector<gint> complete_frame_numbers;
+  complete_frame_numbers.reserve(frame_source_surfaces.size());
+  for (const auto& [frame_number, source_to_surface] : frame_source_surfaces) {
+    (void)source_to_surface;
+    complete_frame_numbers.push_back(frame_number);
+  }
+  HM_ASSIGN_OR_RETURN(
+      last_stitched_frame_num_, validate_stitch_frame_continuity(complete_frame_numbers, last_stitched_frame_num_));
 
   assert(cuda_stream_);
 

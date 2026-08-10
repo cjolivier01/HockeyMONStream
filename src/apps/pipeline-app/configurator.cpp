@@ -894,8 +894,7 @@ absl::Status Configurator::gather_stitching_videos(
       std::any_of(videos.begin(), videos.end(), [](const auto& item) { return is_cam_video_key(item.first); });
   const bool has_left_right_auto = videos.count("left") || videos.count("right");
   const std::vector<std::string> ui_left_files = sequence_path_values(config_, {"hstream_ui", "video_roles", "left"});
-  const std::vector<std::string> ui_right_files =
-      sequence_path_values(config_, {"hstream_ui", "video_roles", "right"});
+  const std::vector<std::string> ui_right_files = sequence_path_values(config_, {"hstream_ui", "video_roles", "right"});
   const bool runtime_videos_owned_by_ui_roles =
       explicit_runtime_videos_match_ui_roles(left_files, right_files, ui_left_files, ui_right_files);
   if (!force && has_cam_auto && !has_left_right_auto && !runtime_videos_owned_by_ui_roles &&
@@ -1903,6 +1902,16 @@ absl::Status Configurator::complete_configuration(
       num_video_sources));
 
   configure_audio(pipeline, left_files, right_files, offsets, num_video_sources);
+  if (pipeline_has_hmstitcher && get_node_value<int>(pipeline, "hmstitcher.enable", false)) {
+    // Stitching is lossless only when nvstreammux waits for a frame from every camera. PTS synchronization can flush
+    // a partial batch at a URI chapter segment transition, so pair strictly by source availability and let the
+    // stitcher's continuous frame-number contract reject any gap or mismatch. DeepStream 9.1 documents -1 as an
+    // infinite timeout but rejects it during READY->PAUSED, so use the maximum supported timeout.
+    pipeline["streammux"]["sync-inputs"] = "0";
+    pipeline["streammux"]["batched-push-timeout"] = "2147483647";
+    pipeline["streammux"]["frame-num-reset-on-stream-reset"] = "0";
+    pipeline["streammux"]["frame-num-reset-on-eos"] = "0";
+  }
   HM_RETURN_IF_ERROR(configure_encode_file_outputs(pipeline));
 
   if (show_render_sink) {

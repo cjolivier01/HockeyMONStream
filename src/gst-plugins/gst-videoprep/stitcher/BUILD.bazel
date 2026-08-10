@@ -12,7 +12,9 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/gst-plugins/gst-videoprep/algorithm-base",
+        "//src/libs/common:decoded_frame_sequence_meta",
         "//src/libs/stitching",
+        "@com_google_absl//absl/strings",
         "@hm-cupano//src/cuda:cuda_blend_cuda_lib",
         "@hm-cupano//src/pano:cuda_pano",
     ],

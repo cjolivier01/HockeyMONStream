@@ -65,7 +65,9 @@ constexpr int kExposureEvSliderZero = 40;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
 constexpr char kOnePassStitchingCompleteMarker[] = "hmstitcher: one-pass stitching configuration complete";
 constexpr char kStitchedPreviewPipelineOptions[] =
-    "pipeline.streammux.batch-size=2,pipeline.streammux.sync-inputs=1,pipeline.hmstitcher.show=0";
+    "pipeline.streammux.batch-size=2,pipeline.streammux.sync-inputs=0,"
+    "pipeline.streammux.batched-push-timeout=2147483647,pipeline.streammux.frame-num-reset-on-stream-reset=0,"
+    "pipeline.streammux.frame-num-reset-on-eos=0,pipeline.hmstitcher.show=0";
 
 absl::Status publish_yaml_config(const fs::path& config_path, const YAML::Node& config) {
   std::string contents;

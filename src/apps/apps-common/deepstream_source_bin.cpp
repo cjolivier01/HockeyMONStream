@@ -26,6 +26,7 @@
 #include "deepstream_sources.h"
 
 #include "hstream/src/libs/camera/AutoFocus.h"
+#include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 
 #include "gst-nvdssr.h"
@@ -44,9 +45,191 @@ struct UriListPadProbeData {
   NvDsSrcBin* bin;
   guint uri_index;
   GstClockTime base;
+  gboolean is_video;
 };
 
 static gboolean maybe_send_final_uri_audio_eos(NvDsSrcBin* bin, gboolean log_failure);
+static gboolean send_uri_audio_eos(NvDsSrcBin* bin, gboolean log_failure);
+static gboolean switch_to_next_uri(gpointer data);
+
+static void advance_uri_playlist_base(NvDsSrcBin* bin) {
+  GstClockTime stop = bin->uri_list_segment_stop;
+  if (stop == GST_CLOCK_TIME_NONE && bin->src_elem) {
+    gint64 queried_duration = GST_CLOCK_TIME_NONE;
+    if (gst_element_query_duration(bin->src_elem, GST_FORMAT_TIME, &queried_duration) && queried_duration > 0) {
+      stop = static_cast<GstClockTime>(queried_duration);
+    }
+  }
+  if (stop == GST_CLOCK_TIME_NONE && GST_CLOCK_TIME_IS_VALID(bin->uri_list_last_pts)) {
+    stop = bin->uri_list_last_pts;
+    if (GST_CLOCK_TIME_IS_VALID(bin->uri_list_last_duration)) {
+      stop += bin->uri_list_last_duration;
+    }
+  }
+  if (stop != GST_CLOCK_TIME_NONE) {
+    bin->accumulated_base = bin->prev_accumulated_base + stop;
+    bin->prev_accumulated_base = bin->accumulated_base;
+  }
+}
+
+static std::vector<NvDsSrcBin*> uri_playlist_sources(NvDsSrcParentBin* parent) {
+  std::vector<NvDsSrcBin*> sources;
+  if (!parent) {
+    return sources;
+  }
+  for (guint source_index = 0; source_index < parent->num_bins; ++source_index) {
+    NvDsSrcBin* source = &parent->sub_bins[source_index];
+    if (source->bin && source->uri_list && source->num_uri_list >= 1) {
+      sources.push_back(source);
+    }
+  }
+  return sources;
+}
+
+static gboolean send_uri_video_eos(NvDsSrcBin* bin) {
+  if (!bin || !bin->tee) {
+    return FALSE;
+  }
+  gboolean sent = FALSE;
+  GstIterator* iterator = gst_element_iterate_src_pads(bin->tee);
+  GValue item = G_VALUE_INIT;
+  gboolean done = FALSE;
+  while (!done) {
+    switch (gst_iterator_next(iterator, &item)) {
+      case GST_ITERATOR_OK: {
+        GstPad* src_pad = GST_PAD(g_value_get_object(&item));
+        if (src_pad && gst_pad_is_linked(src_pad)) {
+          sent = gst_pad_push_event(src_pad, gst_event_new_eos()) || sent;
+        }
+        g_value_reset(&item);
+        break;
+      }
+      case GST_ITERATOR_RESYNC:
+        gst_iterator_resync(iterator);
+        break;
+      case GST_ITERATOR_ERROR:
+      case GST_ITERATOR_DONE:
+        done = TRUE;
+        break;
+    }
+  }
+  if (G_VALUE_TYPE(&item) != 0) {
+    g_value_unset(&item);
+  }
+  gst_iterator_free(iterator);
+  return sent;
+}
+
+static void mark_uri_playlist_terminal(NvDsSrcBin* bin) {
+  if (!bin) {
+    return;
+  }
+  NvDsSrcParentBin* parent = bin->parent_bin;
+  std::vector<NvDsSrcBin*> sources = uri_playlist_sources(parent);
+  if (!parent) {
+    sources.push_back(bin);
+  } else {
+    g_mutex_lock(&parent->uri_playlist_barrier_mutex);
+    parent->uri_playlist_terminal = TRUE;
+    for (NvDsSrcBin* source : sources) {
+      source->uri_list_permanently_ended = TRUE;
+      source->uri_switch_pending = FALSE;
+    }
+    g_cond_broadcast(&parent->uri_playlist_barrier_cond);
+    g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+  }
+
+  for (NvDsSrcBin* source : sources) {
+    source->uri_list_permanently_ended = TRUE;
+    source->uri_switch_pending = FALSE;
+    const bool peer_must_stop_now = source != bin;
+    if (!source->uri_audio_final_eos_allowed && send_uri_audio_eos(source, FALSE)) {
+      source->uri_audio_final_eos_allowed = TRUE;
+    }
+    if (peer_must_stop_now) {
+      // This peer may already have suppressed an intermediate chapter EOS and scheduled a switch. The current camera
+      // is now permanently over, so close the peer's mux and audio inputs immediately; its frame barrier drops
+      // anything that decoded only after terminal pairing became impossible.
+      send_uri_video_eos(source);
+    }
+  }
+}
+
+static gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequence) {
+  NvDsSrcParentBin* parent = bin ? bin->parent_bin : nullptr;
+  if (!parent) {
+    return bin && !bin->uri_list_permanently_ended;
+  }
+
+  g_mutex_lock(&parent->uri_playlist_barrier_mutex);
+  if (parent->uri_playlist_terminal) {
+    g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+    return FALSE;
+  }
+  bin->uri_list_frame_ready_sequence = sequence;
+  const std::vector<NvDsSrcBin*> sources = uri_playlist_sources(parent);
+  if (sources.size() < 2) {
+    g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+    return TRUE;
+  }
+  const bool all_sources_ready = std::all_of(sources.begin(), sources.end(), [sequence](const NvDsSrcBin* source) {
+    return source->uri_list_frame_ready_sequence == sequence;
+  });
+  if (all_sources_ready) {
+    if (parent->uri_playlist_next_frame_sequence == sequence) {
+      ++parent->uri_playlist_next_frame_sequence;
+    } else {
+      parent->uri_playlist_barrier_failed = TRUE;
+      parent->uri_playlist_terminal = TRUE;
+      for (NvDsSrcBin* source : sources) {
+        source->uri_list_permanently_ended = TRUE;
+      }
+    }
+    g_cond_broadcast(&parent->uri_playlist_barrier_cond);
+  } else {
+    while (!parent->uri_playlist_terminal && parent->uri_playlist_next_frame_sequence <= sequence) {
+      g_cond_wait(&parent->uri_playlist_barrier_cond, &parent->uri_playlist_barrier_mutex);
+    }
+  }
+  const gboolean released = !parent->uri_playlist_terminal && parent->uri_playlist_next_frame_sequence > sequence;
+  const gboolean barrier_failed = parent->uri_playlist_barrier_failed;
+  g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+  if (barrier_failed) {
+    GST_ELEMENT_ERROR(
+        bin->src_elem,
+        STREAM,
+        FAILED,
+        ("Lossless camera frame barrier failed"),
+        ("source=%u sequence=%" G_GUINT64_FORMAT, bin->source_id, sequence));
+  }
+  return released;
+}
+
+static gboolean wait_at_uri_playlist_boundary(NvDsSrcBin* bin, gboolean has_next) {
+  if (!bin) {
+    return FALSE;
+  }
+  NvDsSrcParentBin* parent = bin->parent_bin;
+  if (parent) {
+    g_mutex_lock(&parent->uri_playlist_barrier_mutex);
+    const gboolean terminal = parent->uri_playlist_terminal;
+    g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+    if (terminal) {
+      return FALSE;
+    }
+  }
+  if (has_next) {
+    // Each camera is one continuous frame stream even when its file boundaries differ from its peer. Drain this
+    // decoder completely, hide only the intermediate EOS, and advance independently. The per-frame barrier keeps the
+    // two streams exactly paired across the boundary.
+    advance_uri_playlist_base(bin);
+    bin->uri_switch_pending = TRUE;
+    g_timeout_add(1, switch_to_next_uri, bin);
+    return TRUE;
+  }
+  mark_uri_playlist_terminal(bin);
+  return FALSE;
+}
 
 namespace hm {
 
@@ -114,7 +297,7 @@ std::optional<NvDsSourceType> source_type_from_string(const std::string& str) {
   // Return an empty optional if no match was found.
   return std::nullopt;
 }
-}
+} // namespace hm
 
 #if 1
 /* Functions below print the Capabilities in a human-friendly format */
@@ -354,7 +537,7 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
         NULL);
   } else {
     caps = gst_caps_new_simple(
-        //config->media_type ? config->media_type : "video/x-raw",
+        // config->media_type ? config->media_type : "video/x-raw",
         "video/x-raw",
         "format",
         G_TYPE_STRING,
@@ -382,7 +565,7 @@ static gboolean create_camera_source_bin(NvDsSourceConfig* config, NvDsSrcBin* b
   } else if (config->media_type && strstr(config->media_type, "h264")) {
     // assert(!bin->src_parser);
     bin->src_parser = gst_element_factory_make("h264parse", "cam_h264parse");
-    if(!bin->src_parser) {
+    if (!bin->src_parser) {
       NVGSTDS_ERR_MSG_V("Failed to create 'cam_h264parse'");
       goto done;
     }
@@ -541,17 +724,52 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
     return GST_PAD_PROBE_OK;
   }
 
-  if ((info->type & GST_PAD_PROBE_TYPE_BUFFER) != 0 && probe_data->base != 0) {
+  if ((info->type & GST_PAD_PROBE_TYPE_BUFFER) != 0) {
     GstBuffer* buf = GST_BUFFER(info->data);
-    if (GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buf))) {
+    if (!probe_data->is_video && bin->uri_list_permanently_ended) {
+      return GST_PAD_PROBE_DROP;
+    }
+    if (probe_data->is_video && probe_data->uri_index == bin->uri_list_index) {
+      if (!gst_buffer_is_writable(buf)) {
+        buf = gst_buffer_make_writable(buf);
+        if (buf) {
+          GST_PAD_PROBE_INFO_DATA(info) = buf;
+        }
+      }
+      if (!buf || !hm::add_decoded_frame_sequence_meta(buf, bin->source_id, bin->uri_list_decoded_frame_count)) {
+        GST_ELEMENT_ERROR(
+            bin->src_elem,
+            STREAM,
+            FAILED,
+            ("Could not attach the lossless decoded-frame sequence"),
+            ("source=%u sequence=%" G_GUINT64_FORMAT, bin->source_id, bin->uri_list_decoded_frame_count));
+        return GST_PAD_PROBE_DROP;
+      }
+      if (!wait_at_uri_playlist_frame_barrier(bin, bin->uri_list_decoded_frame_count)) {
+        ++bin->uri_list_decoded_frame_count;
+        if (bin->uri_list_permanently_ended) {
+          ++bin->uri_list_terminal_dropped_frame_count;
+        }
+        return GST_PAD_PROBE_DROP;
+      }
+    }
+    if (probe_data->is_video && probe_data->uri_index == bin->uri_list_index &&
+        GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buf))) {
+      bin->uri_list_last_pts = GST_BUFFER_PTS(buf);
+      bin->uri_list_last_duration = GST_BUFFER_DURATION(buf);
+    }
+    if (probe_data->is_video && probe_data->uri_index == bin->uri_list_index) {
+      ++bin->uri_list_decoded_frame_count;
+    }
+    if (probe_data->base != 0 && GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buf))) {
       GST_BUFFER_PTS(buf) += probe_data->base;
     }
-    if (GST_CLOCK_TIME_IS_VALID(GST_BUFFER_DTS(buf))) {
+    if (probe_data->base != 0 && GST_CLOCK_TIME_IS_VALID(GST_BUFFER_DTS(buf))) {
       GST_BUFFER_DTS(buf) += probe_data->base;
     }
   }
-  if ((info->type & GST_PAD_PROBE_TYPE_BUFFER) != 0) {
-    const bool is_playlist = (bin->uri_list && bin->num_uri_list >= 2);
+  if ((info->type & GST_PAD_PROBE_TYPE_BUFFER) != 0 && probe_data->is_video) {
+    const bool is_playlist = (bin->uri_list && bin->num_uri_list >= 1);
     const bool is_final_uri = is_playlist && (probe_data->uri_index + 1 >= bin->num_uri_list);
     const bool current_uri_has_audio = bin->uri_audio_has_pad && bin->uri_audio_pad_uri_index == probe_data->uri_index;
     if (is_final_uri && !current_uri_has_audio && !bin->uri_audio_final_eos_allowed &&
@@ -562,23 +780,69 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
 
   if ((info->type & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) != 0) {
     GstEvent* event = GST_EVENT(info->data);
+    if (probe_data->uri_index > 0 && GST_EVENT_TYPE(event) == GST_EVENT_STREAM_START) {
+      // Every URI is a chapter of one logical camera stream. Exposing an intermediate STREAM_START makes
+      // nvstreammux reset that source and flush a partial batch even though no camera actually ended.
+      return GST_PAD_PROBE_DROP;
+    }
+    if (probe_data->is_video && GST_EVENT_TYPE(event) == GST_EVENT_EOS) {
+      const bool is_current_uri = probe_data->uri_index == bin->uri_list_index;
+      const bool has_next = probe_data->uri_index + 1 < bin->num_uri_list;
+      const bool will_loop = bin->config && bin->config->uri_list_loop;
+      if (is_current_uri) {
+        // EOS has passed through the decoder, so every delayed frame from this chapter reached the per-frame barrier.
+        // Hide an intermediate file boundary; a final EOS terminates all camera and audio branches.
+        return wait_at_uri_playlist_boundary(bin, has_next || will_loop) ? GST_PAD_PROBE_DROP : GST_PAD_PROBE_OK;
+      }
+    }
+    if (probe_data->is_video && bin->uri_switch_pending &&
+        (GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_START || GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_STOP)) {
+      return GST_PAD_PROBE_DROP;
+    }
     if (GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT && probe_data->base != 0) {
       const GstSegment* segment = nullptr;
       gst_event_parse_segment(event, &segment);
       if (segment && segment->format == GST_FORMAT_TIME) {
+        if (probe_data->is_video && probe_data->uri_index == bin->uri_list_index) {
+          GstClockTime stop = segment->stop;
+          if (stop == GST_CLOCK_TIME_NONE) {
+            stop = segment->duration;
+          }
+          if (stop != GST_CLOCK_TIME_NONE) {
+            bin->uri_list_segment_stop = stop;
+          }
+        }
         GstSegment adjusted;
         gst_segment_copy_into(segment, &adjusted);
-        if (GST_CLOCK_TIME_IS_VALID(adjusted.base)) adjusted.base += probe_data->base;
-        if (GST_CLOCK_TIME_IS_VALID(adjusted.start)) adjusted.start += probe_data->base;
-        if (GST_CLOCK_TIME_IS_VALID(adjusted.stop)) adjusted.stop += probe_data->base;
-        if (GST_CLOCK_TIME_IS_VALID(adjusted.time)) adjusted.time += probe_data->base;
-        if (GST_CLOCK_TIME_IS_VALID(adjusted.position)) adjusted.position += probe_data->base;
+        if (GST_CLOCK_TIME_IS_VALID(adjusted.base))
+          adjusted.base += probe_data->base;
+        if (GST_CLOCK_TIME_IS_VALID(adjusted.start))
+          adjusted.start += probe_data->base;
+        if (GST_CLOCK_TIME_IS_VALID(adjusted.stop))
+          adjusted.stop += probe_data->base;
+        if (GST_CLOCK_TIME_IS_VALID(adjusted.time))
+          adjusted.time += probe_data->base;
+        if (GST_CLOCK_TIME_IS_VALID(adjusted.position))
+          adjusted.position += probe_data->base;
         GstEvent* adjusted_event = gst_event_new_segment(&adjusted);
         gst_event_set_seqnum(adjusted_event, gst_event_get_seqnum(event));
         gst_event_unref(event);
         GST_PAD_PROBE_INFO_DATA(info) = adjusted_event;
       }
       return GST_PAD_PROBE_OK;
+    }
+    if (probe_data->is_video && GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
+      const GstSegment* segment = nullptr;
+      gst_event_parse_segment(event, &segment);
+      if (segment && probe_data->uri_index == bin->uri_list_index) {
+        GstClockTime stop = segment->stop;
+        if (stop == GST_CLOCK_TIME_NONE) {
+          stop = segment->duration;
+        }
+        if (stop != GST_CLOCK_TIME_NONE) {
+          bin->uri_list_segment_stop = stop;
+        }
+      }
     }
   }
   return GST_PAD_PROBE_OK;
@@ -598,8 +862,16 @@ static GstPadProbeReturn uri_list_audio_pad_event_probe(GstPad* pad, GstPadProbe
     if (GST_EVENT_TYPE(event) != GST_EVENT_EOS) {
       return ret;
     }
+    g_atomic_int_set(&bin->uri_audio_eos_seen, TRUE);
 
-    const bool is_playlist = (bin->uri_list && bin->num_uri_list >= 2);
+    if (bin->uri_list_permanently_ended) {
+      // A peer camera has permanently ended. Stop accepting audio immediately, but let this decoder's EOS close the
+      // already-linked audio branch even if this was not the final URI in its own playlist.
+      bin->uri_audio_final_eos_allowed = TRUE;
+      return ret;
+    }
+
+    const bool is_playlist = (bin->uri_list && bin->num_uri_list >= 1);
     if (!is_playlist) {
       return ret;
     }
@@ -622,11 +894,12 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
 
   if (!strncmp(name, "video", 5)) {
     NvDsSrcBin* bin = (NvDsSrcBin*)data;
-    if (bin->uri_list && bin->num_uri_list >= 2) {
+    if (bin->uri_list && bin->num_uri_list >= 1) {
       auto* probe_data = g_new0(UriListPadProbeData, 1);
       probe_data->bin = bin;
       probe_data->uri_index = bin->uri_list_index;
       probe_data->base = bin->prev_accumulated_base;
+      probe_data->is_video = TRUE;
       gst_pad_add_probe(
           pad,
           (GstPadProbeType)(GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM | GST_PAD_PROBE_TYPE_BUFFER),
@@ -658,11 +931,12 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
     NvDsSrcBin* bin = (NvDsSrcBin*)data;
 
     if (bin->uri_audio_tee) {
-      if (bin->uri_list && bin->num_uri_list >= 2) {
+      if (bin->uri_list && bin->num_uri_list >= 1) {
         auto* probe_data = g_new0(UriListPadProbeData, 1);
         probe_data->bin = bin;
         probe_data->uri_index = bin->uri_list_index;
         probe_data->base = bin->prev_accumulated_base;
+        probe_data->is_video = FALSE;
         gst_pad_add_probe(
             pad,
             (GstPadProbeType)(GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM | GST_PAD_PROBE_TYPE_BUFFER),
@@ -789,8 +1063,10 @@ static std::vector<std::string> split_semicolon_list(const gchar* input) {
     size_t pos = s.find(';', start);
     std::string token = (pos == std::string::npos) ? s.substr(start) : s.substr(start, pos - start);
     // Trim spaces.
-    while (!token.empty() && (token.front() == ' ' || token.front() == '\t')) token.erase(token.begin());
-    while (!token.empty() && (token.back() == ' ' || token.back() == '\t')) token.pop_back();
+    while (!token.empty() && (token.front() == ' ' || token.front() == '\t'))
+      token.erase(token.begin());
+    while (!token.empty() && (token.back() == ' ' || token.back() == '\t'))
+      token.pop_back();
     if (!token.empty()) {
       out.emplace_back(std::move(token));
     }
@@ -807,7 +1083,7 @@ static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
     return;
   }
   std::vector<std::string> uris = split_semicolon_list(config->uri_list);
-  if (uris.size() < 2) {
+  if (uris.empty()) {
     return;
   }
   bin->num_uri_list = static_cast<guint>(uris.size());
@@ -818,13 +1094,19 @@ static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
   bin->uri_list_index = 0;
   bin->uri_switch_count = 0;
   bin->uri_switch_pending = FALSE;
+  bin->uri_list_decoded_frame_count = 0;
+  bin->uri_list_terminal_dropped_frame_count = 0;
+  bin->uri_list_frame_ready_sequence = G_MAXUINT64;
+  bin->uri_list_permanently_ended = FALSE;
   bin->accumulated_base = 0;
   bin->prev_accumulated_base = 0;
   bin->uri_list_segment_stop = GST_CLOCK_TIME_NONE;
   bin->uri_list_last_pts = GST_CLOCK_TIME_NONE;
+  bin->uri_list_last_duration = GST_CLOCK_TIME_NONE;
   bin->uri_audio_final_eos_allowed = FALSE;
   bin->uri_audio_has_pad = FALSE;
   bin->uri_audio_pad_uri_index = 0;
+  g_atomic_int_set(&bin->uri_audio_eos_seen, FALSE);
 
   // Keep config->uri in sync with the current entry to match file/live detection elsewhere.
   g_free(config->uri);
@@ -835,6 +1117,18 @@ static gboolean switch_to_next_uri(gpointer data) {
   NvDsSrcBin* bin = (NvDsSrcBin*)data;
   if (!bin || !bin->config || !bin->src_elem || !bin->bin || !bin->uri_list || bin->num_uri_list < 2) {
     return FALSE;
+  }
+  if (!bin->uri_switch_pending || bin->uri_list_permanently_ended) {
+    return FALSE;
+  }
+  if (bin->parent_bin) {
+    g_mutex_lock(&bin->parent_bin->uri_playlist_barrier_mutex);
+    const gboolean terminal = bin->parent_bin->uri_playlist_terminal;
+    g_mutex_unlock(&bin->parent_bin->uri_playlist_barrier_mutex);
+    if (terminal) {
+      bin->uri_switch_pending = FALSE;
+      return FALSE;
+    }
   }
   NvDsSourceConfig* config = bin->config;
 
@@ -876,16 +1170,18 @@ static gboolean switch_to_next_uri(gpointer data) {
   // Reset per-URI duration/PTS hints so the next file can update them via SEGMENT/buffers.
   bin->uri_list_segment_stop = GST_CLOCK_TIME_NONE;
   bin->uri_list_last_pts = GST_CLOCK_TIME_NONE;
+  bin->uri_list_last_duration = GST_CLOCK_TIME_NONE;
   bin->uri_audio_final_eos_allowed = FALSE;
   bin->uri_audio_has_pad = FALSE;
   bin->uri_audio_pad_uri_index = bin->uri_list_index;
+  g_atomic_int_set(&bin->uri_audio_eos_seen, FALSE);
 
   bin->uri_switch_pending = FALSE;
   return FALSE;
 }
 
 static gboolean maybe_send_final_uri_audio_eos(NvDsSrcBin* bin, gboolean log_failure) {
-  if (!bin || !bin->uri_audio_tee || !bin->uri_list || bin->num_uri_list < 2) {
+  if (!bin || !bin->uri_audio_tee || !bin->uri_list || bin->num_uri_list < 1) {
     return FALSE;
   }
   if (bin->config && bin->config->uri_list_loop) {
@@ -895,6 +1191,14 @@ static gboolean maybe_send_final_uri_audio_eos(NvDsSrcBin* bin, gboolean log_fai
     return FALSE;
   }
   if (bin->uri_audio_has_pad && bin->uri_audio_pad_uri_index == bin->uri_list_index) {
+    return FALSE;
+  }
+
+  return send_uri_audio_eos(bin, log_failure);
+}
+
+static gboolean send_uri_audio_eos(NvDsSrcBin* bin, gboolean log_failure) {
+  if (!bin || !bin->uri_audio_tee || bin->uri_audio_link_count == 0) {
     return FALSE;
   }
 
@@ -935,7 +1239,7 @@ static gboolean maybe_send_final_uri_audio_eos(NvDsSrcBin* bin, gboolean log_fai
 static void cb_no_more_pads(GstElement* decodebin, gpointer data) {
   (void)decodebin;
   NvDsSrcBin* bin = (NvDsSrcBin*)data;
-  if (!bin || !bin->uri_list || bin->num_uri_list < 2 || !bin->config || bin->config->uri_list_loop) {
+  if (!bin || !bin->uri_list || bin->num_uri_list < 1 || !bin->config || bin->config->uri_list_loop) {
     return;
   }
   const bool is_final_uri = (bin->uri_list_index + 1 >= bin->num_uri_list);
@@ -1013,35 +1317,8 @@ static GstPadProbeReturn uri_list_stream_buf_prob(GstPad* pad, GstPadProbeInfo* 
 
   if ((info->type & GST_PAD_PROBE_TYPE_EVENT_BOTH)) {
     if (GST_EVENT_TYPE(event) == GST_EVENT_EOS) {
-      const bool has_next =
-          (bin->uri_list && bin->num_uri_list >= 2 && (bin->uri_list_index + 1 < bin->num_uri_list));
-      const bool will_loop = (bin->config && bin->config->uri_list_loop);
-      if (has_next || will_loop) {
-        // Advance the base timestamp so the next URI's PTS continues monotonically.
-        // IMPORTANT: do not advance this on SEGMENT events (seeks emit SEGMENT), only on EOS (file boundary).
-        GstClockTime stop = bin->uri_list_segment_stop;
-        if (stop == GST_CLOCK_TIME_NONE && bin->src_elem) {
-          gint64 qdur = GST_CLOCK_TIME_NONE;
-          if (gst_element_query_duration(bin->src_elem, GST_FORMAT_TIME, &qdur) && qdur > 0) {
-            stop = static_cast<GstClockTime>(qdur);
-          }
-        }
-        if (stop == GST_CLOCK_TIME_NONE && GST_CLOCK_TIME_IS_VALID(bin->uri_list_last_pts)) {
-          stop = bin->uri_list_last_pts;
-        }
-        if (stop != GST_CLOCK_TIME_NONE) {
-          bin->accumulated_base = bin->prev_accumulated_base + stop;
-          bin->prev_accumulated_base = bin->accumulated_base;
-        }
-
-        if (!bin->uri_switch_pending) {
-          bin->uri_switch_pending = TRUE;
-          g_timeout_add(1, switch_to_next_uri, bin);
-        }
-        return GST_PAD_PROBE_DROP;
-      }
-      // End of playlist: allow EOS to propagate so the overall pipeline can terminate.
-      maybe_send_final_uri_audio_eos(bin, TRUE);
+      // Let EOS reach the decoder so it drains every delayed frame. The decoded-video pad probe suppresses only
+      // intermediate chapter EOS and schedules the switch; final EOS continues to nvstreammux normally.
       return GST_PAD_PROBE_OK;
     }
 
@@ -1085,7 +1362,7 @@ static GstPadProbeReturn uri_list_audio_event_probe(GstPad* pad, GstPadProbeInfo
 
   GstEvent* event = GST_EVENT(info->data);
   if (GST_EVENT_TYPE(event) == GST_EVENT_EOS) {
-    const bool is_playlist = (bin->uri_list && bin->num_uri_list >= 2);
+    const bool is_playlist = (bin->uri_list && bin->num_uri_list >= 1);
     const bool will_loop = (bin->config && bin->config->uri_list_loop);
     if (is_playlist && (will_loop || bin->uri_switch_pending || !bin->uri_audio_final_eos_allowed)) {
       return GST_PAD_PROBE_DROP;
@@ -1167,7 +1444,7 @@ static void decodebin_child_added(GstChildProxy* child_proxy, GObject* object, g
   }
 
   // Playlist switching: install on any video decoder (not just nvv4l2decoder).
-  if (!config->loop && bin->uri_list && bin->num_uri_list >= 2 && config->uri &&
+  if (!config->loop && bin->uri_list && bin->num_uri_list >= 1 && config->uri &&
       g_strstr_len(config->uri, -1, "file:/") == config->uri && !bin->src_buffer_probe) {
     GstElementFactory* factory = GST_ELEMENT_GET_CLASS(GST_ELEMENT(object))->elementfactory;
     const gchar* klass = factory ? gst_element_factory_get_klass(factory) : nullptr;
@@ -2193,6 +2470,11 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
   guint i = 0;
 
   bin->reset_thread = NULL;
+  g_mutex_init(&bin->uri_playlist_barrier_mutex);
+  g_cond_init(&bin->uri_playlist_barrier_cond);
+  bin->uri_playlist_next_frame_sequence = 0;
+  bin->uri_playlist_terminal = FALSE;
+  bin->uri_playlist_barrier_failed = FALSE;
 
   bin->bin = gst_bin_new("multi_src_bin");
   if (!bin->bin) {
@@ -2204,7 +2486,8 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
 
   bin->streammux = gst_element_factory_make(NVDS_ELEM_STREAM_MUX, "src_bin_muxer");
   if (!bin->streammux) {
-    std::cout << "Could not create element " << NVDS_ELEM_STREAM_MUX << ", are all plugins registered properly, or possible libyaml-cpp.so.7 is not installed?" << std::endl;
+    std::cout << "Could not create element " << NVDS_ELEM_STREAM_MUX
+              << ", are all plugins registered properly, or possible libyaml-cpp.so.7 is not installed?" << std::endl;
     NVGSTDS_ERR_MSG_V("Failed to create element 'src_bin_muxer'");
     goto done;
   }

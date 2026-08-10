@@ -103,6 +103,7 @@ cc_library(
     deps = [
         ":gst_plugin_properties",
         "//src/libs/camera",
+        "//src/libs/common:decoded_frame_sequence_meta",
         "//src/libs/common:fs",
         "//src/libs/common:utils",
         "//toolchains/jetson:cuda_runtime",

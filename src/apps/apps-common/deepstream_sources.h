@@ -156,15 +156,24 @@ typedef struct {
   gboolean uri_audio_final_eos_allowed;
   gboolean uri_audio_has_pad;
   guint uri_audio_pad_uri_index;
+  gint uri_audio_eos_seen;
   /** Optional playlist state (for file sources). */
   gchar** uri_list;
   guint num_uri_list;
   guint uri_list_index;
   guint uri_switch_count;
   gboolean uri_switch_pending;
+  /** Total decoded video frames across every URI in this playlist. Never resets at chapter boundaries. */
+  guint64 uri_list_decoded_frame_count;
+  /** Frames decoded only after a peer camera permanently ended; they are stopped before nvstreammux. */
+  guint64 uri_list_terminal_dropped_frame_count;
+  /** Decode-time sequence currently waiting for the peer camera before either buffer can reach nvstreammux. */
+  guint64 uri_list_frame_ready_sequence;
+  gboolean uri_list_permanently_ended;
   /** URI playlist timestamp continuity state (nanoseconds). */
   guint64 uri_list_segment_stop;
   guint64 uri_list_last_pts;
+  guint64 uri_list_last_duration;
 } NvDsSrcBin;
 
 struct NvDsSrcParentBin {
@@ -178,6 +187,12 @@ struct NvDsSrcParentBin {
   guint num_bins;
   guint num_fr_on;
   gboolean live_source;
+  /** Coordinates exact decoded-frame pairs across multi-camera URI playlist switches. */
+  GMutex uri_playlist_barrier_mutex;
+  GCond uri_playlist_barrier_cond;
+  guint64 uri_playlist_next_frame_sequence;
+  gboolean uri_playlist_terminal;
+  gboolean uri_playlist_barrier_failed;
   gulong nvstreammux_eosmonitor_probe;
 };
 
