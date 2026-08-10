@@ -38,10 +38,16 @@ class RuntimeOutputPoolFlow {
  public:
   // Returns true after consuming input_buffer for a retryable or EOS status.
   // The caller must then skip output-pool acquisition and output-buffer access.
-  bool handle_status(const absl::Status& status, GstBuffer* input_buffer, const std::function<void()>& send_eos);
+  bool handle_status(
+      const absl::Status& status,
+      GstBuffer* input_buffer,
+      const std::function<void()>& send_eos);
   // Once sizing ends at EOS, every later input is consumed before its surface,
   // metadata, output pool, or output buffer can be accessed.
   bool consume_if_terminal(GstBuffer* input_buffer) const;
+  // Completes a generated-output cancellation by sending EOS once, releasing
+  // the unused output, and making all later output production terminal.
+  void finish_with_eos(GstBuffer* output_buffer, const std::function<void()>& send_eos);
   bool eos_terminal() const { return eos_terminal_; }
 
  private:

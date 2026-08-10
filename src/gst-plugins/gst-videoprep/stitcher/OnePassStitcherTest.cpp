@@ -82,6 +82,13 @@ bool expect_runtime_pair_recovery() {
     return false;
   }
 
+  const auto combined_eos = hm::stitcher::select_runtime_stitch_pair({{4, 0}}, {0}, /*pipeline_eos_seen=*/true);
+  if (combined_eos.status().code() != absl::StatusCode::kCancelled) {
+    std::cerr << "Expected pipeline EOS to cancel a valid partial even after its observed source reached EOS, got "
+              << combined_eos.status() << std::endl;
+    return false;
+  }
+
   const auto offset_complete = hm::stitcher::select_runtime_stitch_pair({{4, 0}, {3, 1}});
   if (!offset_complete.ok() || offset_complete->first != 0 || offset_complete->second != 1) {
     std::cerr << "Expected the next offset-but-synchronized batch to produce a runtime sizing pair" << std::endl;
@@ -244,6 +251,95 @@ bool expect_prepare_runtime_partial_eos_is_cancelled(bool pipeline_eos) {
   return true;
 }
 
+bool expect_enqueued_partial_restart_is_retryable() {
+  hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
+  stitcher.SetProperty({"one-pass-mode", "1"});
+  stitcher.outputthread_stopped = true;
+
+  NvDsBatchMeta* batch_meta = nvds_create_batch_meta(1);
+  NvDsFrameMeta* frame_meta = nvds_acquire_frame_meta_from_pool(batch_meta);
+  frame_meta->frame_num = 4;
+  frame_meta->source_id = 0;
+  frame_meta->num_surfaces_per_frame = 1;
+  nvds_add_frame_meta_to_batch(batch_meta, frame_meta);
+
+  NvBufSurfaceParams input_param{};
+  NvBufSurface in_surface{};
+  in_surface.batchSize = 2;
+  in_surface.numFilled = 1;
+  in_surface.surfaceList = &input_param;
+  GstBuffer* queued_input_buffer = gst_buffer_new_allocate(nullptr, sizeof(NvBufSurface), nullptr);
+  GstMapInfo write_map = GST_MAP_INFO_INIT;
+  if (!queued_input_buffer || !gst_buffer_map(queued_input_buffer, &write_map, GST_MAP_WRITE)) {
+    if (queued_input_buffer) {
+      gst_buffer_unref(queued_input_buffer);
+    }
+    nvds_destroy_batch_meta(batch_meta);
+    return false;
+  }
+  *reinterpret_cast<NvBufSurface*>(write_map.data) = in_surface;
+  gst_buffer_unmap(queued_input_buffer, &write_map);
+
+  GstEvent* eos_event = gst_nvevent_new_stream_eos(/*source_id=*/1);
+  stitcher.HandleEvent(eos_event);
+  gst_event_unref(eos_event);
+  if (stitcher.ProcessBuffer(queued_input_buffer) != hm::BufferResult::Buffer_Async) {
+    gst_buffer_unref(queued_input_buffer);
+    nvds_destroy_batch_meta(batch_meta);
+    return false;
+  }
+  GstEvent* restart_event = gst_nvevent_new_stream_start(/*source_id=*/1, const_cast<char*>("restarted-stream"));
+  stitcher.HandleEvent(restart_event);
+  gst_event_unref(restart_event);
+
+  GstMapInfo read_map = GST_MAP_INFO_INIT;
+  if (!gst_buffer_map(queued_input_buffer, &read_map, GST_MAP_READ)) {
+    gst_buffer_unref(queued_input_buffer);
+    nvds_destroy_batch_meta(batch_meta);
+    return false;
+  }
+  const auto result = stitcher.PrepareRuntimeOutputSize(batch_meta, reinterpret_cast<NvBufSurface*>(read_map.data));
+  gst_buffer_unmap(queued_input_buffer, &read_map);
+  gst_buffer_unref(queued_input_buffer);
+  nvds_destroy_batch_meta(batch_meta);
+  if (result.status().code() != absl::StatusCode::kUnavailable) {
+    std::cerr << "Expected a source restart to clear the enqueued surface's stale EOS snapshot, got " << result.status()
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_generated_output_eos_is_terminal() {
+  hm::videoprep::RuntimeOutputPoolFlow output_flow;
+  int output_releases = 0;
+  int later_input_releases = 0;
+  int eos_events = 0;
+  GstBuffer* output_buffer = gst_buffer_new();
+  gst_mini_object_weak_ref(
+      GST_MINI_OBJECT_CAST(output_buffer),
+      [](gpointer user_data, GstMiniObject*) { ++*static_cast<int*>(user_data); },
+      &output_releases);
+  output_flow.finish_with_eos(output_buffer, [&eos_events]() { ++eos_events; });
+
+  GstBuffer* later_input_buffer = gst_buffer_new();
+  gst_mini_object_weak_ref(
+      GST_MINI_OBJECT_CAST(later_input_buffer),
+      [](gpointer user_data, GstMiniObject*) { ++*static_cast<int*>(user_data); },
+      &later_input_releases);
+  const bool later_consumed = output_flow.consume_if_terminal(later_input_buffer);
+  if (!output_flow.eos_terminal() || output_releases != 1 || !later_consumed || later_input_releases != 1 ||
+      eos_events != 1) {
+    if (!later_consumed) {
+      gst_buffer_unref(later_input_buffer);
+    }
+    std::cerr << "Expected GenerateOutput cancellation to release its output, send EOS once, and consume later input"
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
 bool expect_generate_status(
     const std::vector<FrameDesc>& frames,
     const std::vector<guint>& eos_source_ids,
@@ -346,6 +442,12 @@ int main() {
   if (!expect_prepare_runtime_partial_eos_is_cancelled(/*pipeline_eos=*/true)) {
     return 16;
   }
+  if (!expect_enqueued_partial_restart_is_retryable()) {
+    return 18;
+  }
+  if (!expect_generated_output_eos_is_terminal()) {
+    return 19;
+  }
   if (!expect_generate_status({{0, 0}}, {}, absl::StatusCode::kUnavailable, "odd batch without eos")) {
     return 5;
   }
@@ -372,6 +474,14 @@ int main() {
           "odd batch after pipeline eos",
           /*pipeline_eos=*/true)) {
     return 8;
+  }
+  if (!expect_generate_status(
+          {{0, 0}},
+          {0},
+          absl::StatusCode::kCancelled,
+          "odd batch after observed source and pipeline eos",
+          /*pipeline_eos=*/true)) {
+    return 20;
   }
   if (!expect_generate_status(
           {{0, 0}, {0, 0}}, {}, absl::StatusCode::kFailedPrecondition, "duplicate frame/source without eos")) {
