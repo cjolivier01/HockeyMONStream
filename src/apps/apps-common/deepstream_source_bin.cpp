@@ -428,10 +428,10 @@ static gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequ
       const GstClockTime paired_end = valid_pair_ends
           ? std::min(sources[0]->uri_list_released_video_end, sources[1]->uri_list_released_video_end)
           : GST_CLOCK_TIME_NONE;
-      const gboolean advancing_frontier = GST_CLOCK_TIME_IS_VALID(paired_end) &&
+      const gboolean non_regressing_frontier = GST_CLOCK_TIME_IS_VALID(paired_end) &&
           (!GST_CLOCK_TIME_IS_VALID(parent->uri_playlist_paired_video_end) ||
-           paired_end > parent->uri_playlist_paired_video_end);
-      if (parent->uri_playlist_next_frame_sequence == sequence && advancing_frontier) {
+           paired_end >= parent->uri_playlist_paired_video_end);
+      if (parent->uri_playlist_next_frame_sequence == sequence && non_regressing_frontier) {
         // Publish sequence N's fully paired video endpoint before releasing either N buffer. Terminal EOS therefore
         // cannot snapshot an N-1 audio cutoff after N has already become a stitchable output pair.
         parent->uri_playlist_paired_video_end = paired_end;
@@ -463,7 +463,9 @@ static gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequ
       }
     }
   }
-  const gboolean released = !parent->uri_playlist_terminal && parent->uri_playlist_next_frame_sequence > sequence;
+  // Once sequence N advances the shared counter, both N buffers are an irrevocably committed pair. A terminal
+  // transition while one waiter is reacquiring this mutex may stop N+1, but must never revoke one half of N.
+  const gboolean released = parent->uri_playlist_next_frame_sequence > sequence;
   g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
   if (report_failure) {
     GST_ELEMENT_ERROR(
@@ -1048,8 +1050,8 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
         return GST_PAD_PROBE_DROP;
       }
       GstClockTime video_duration = GST_BUFFER_DURATION(buf);
-      if (!GST_CLOCK_TIME_IS_VALID(video_duration) && bin->config && bin->config->camera_fps_n > 0 &&
-          bin->config->camera_fps_d > 0) {
+      if ((!GST_CLOCK_TIME_IS_VALID(video_duration) || video_duration == 0) && bin->config &&
+          bin->config->camera_fps_n > 0 && bin->config->camera_fps_d > 0) {
         video_duration = gst_util_uint64_scale(GST_SECOND, bin->config->camera_fps_d, bin->config->camera_fps_n);
       }
       const GstClockTime logical_video_end =
