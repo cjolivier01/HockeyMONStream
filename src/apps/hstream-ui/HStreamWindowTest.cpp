@@ -1269,8 +1269,13 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               hm::ui_internal::supports_snapshot_preview_sink("xvimagesink") &&
               !hm::ui_internal::supports_snapshot_preview_sink("nveglglessink") &&
               !hm::ui_internal::supports_snapshot_preview_sink("egl") &&
-              !hm::ui_internal::supports_snapshot_preview_sink("nv3dsink"),
-          "Native preview embedding should only accept non-Tegra Qt XCB window handles")) {
+              !hm::ui_internal::supports_snapshot_preview_sink("nv3dsink") &&
+              hm::ui_internal::preview_channel_for_tab(0, 3) == "main" &&
+              hm::ui_internal::preview_channel_for_tab(1, 3) == "stitched" &&
+              hm::ui_internal::preview_channel_for_tab(2, 3) == "source0" &&
+              hm::ui_internal::preview_channel_for_tab(4, 3) == "source2" &&
+              hm::ui_internal::preview_channel_for_tab(5, 3).isEmpty(),
+          "Native preview support and tab-specific backend channel mapping should remain explicit")) {
     return false;
   }
 
@@ -2739,6 +2744,9 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   window->grab().save(QDir(artifact_dir).filePath("ui-stopped.png"));
   const QString final_log = window->completeLogText();
   write_e2e_text(QDir(artifact_dir).filePath("pipeline.log"), final_log);
+  const bool program_channel_observed = final_log.contains("preview frame active channel=main");
+  const bool stitched_channel_observed = final_log.contains("preview frame active channel=stitched");
+  const bool camera1_channel_observed = final_log.contains("preview frame active channel=source0");
 
   QString log_issues;
   int log_issue_count = 0;
@@ -2788,6 +2796,11 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
                 .arg(program_preview.passed ? "PASS" : (verify_x11_preview ? "FAIL" : "NOT_RUN"));
   report += QString("x11_stitched_preview: %1\n")
                 .arg(stitched_preview.passed ? "PASS" : (verify_x11_preview ? "FAIL" : "NOT_RUN"));
+  report += QString("x11_camera1_preview: %1\n")
+                .arg(camera1_preview.passed ? "PASS" : (verify_x11_preview ? "FAIL" : "NOT_RUN"));
+  report += QString("program_preview_channel: %1\n").arg(program_channel_observed ? "OBSERVED" : "MISSING");
+  report += QString("stitched_preview_channel: %1\n").arg(stitched_channel_observed ? "OBSERVED" : "MISSING");
+  report += QString("camera1_preview_channel: %1\n").arg(camera1_channel_observed ? "OBSERVED" : "MISSING");
   report += QString("visual_match: %1\n").arg(visual_match ? "PASS" : "FAIL");
   write_e2e_text(QDir(artifact_dir).filePath("report.txt"), report);
   std::cout << report.toStdString();
@@ -2805,8 +2818,11 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
           !verify_x11_preview || (stitched_target_acknowledged && program_target_acknowledged),
           "Program and Stitched tabs should be acknowledged as live native render targets") ||
       !expect(
-          !verify_x11_preview || (program_preview.passed && stitched_preview.passed),
-          "Program and Stitched native surfaces should both contain non-blank video") ||
+          !verify_x11_preview || (program_preview.passed && stitched_preview.passed && camera1_preview.passed),
+          "Program, Stitched, and Camera 1 surfaces should all contain non-blank video") ||
+      !expect(
+          !verify_x11_preview || (program_channel_observed && stitched_channel_observed && camera1_channel_observed),
+          "Program, Stitched, and Camera 1 must be supplied by their distinct backend preview channels") ||
       !expect(!fatal_log_issue, "Real UI run should not emit a fatal pipeline log signature") ||
       !expect(!output_path.isEmpty(), "Archive output should contain a finalized encoded video") ||
       !expect(visual_match, "Encoded output should geometrically match panorama.tif")) {

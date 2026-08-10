@@ -1134,6 +1134,15 @@ bool hm::ui_internal::supports_snapshot_preview_sink(const QString& configured_r
       sink == "ximage";
 }
 
+QString hm::ui_internal::preview_channel_for_tab(int tab_index, int camera_count) {
+  if (tab_index == 0)
+    return "main";
+  if (tab_index == 1)
+    return "stitched";
+  const int source_index = tab_index - 2;
+  return source_index >= 0 && source_index < camera_count ? QString("source%1").arg(source_index) : QString();
+}
+
 HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
   capture_complete_log_ = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_GAME_ID");
   pipeline_process_ = new QProcess(this);
@@ -2357,6 +2366,9 @@ QStringList HStreamWindow::pipelineArguments() const {
     args << QString("--options=%1").arg(kStitchedPreviewPipelineOptions);
   }
   if (embed_render_window) {
+    args << "--options=pipeline.hmstitcher.ui-preview=1";
+  }
+  if (embed_render_window) {
     QStringList camera_window_ids;
     for (QWidget* surface : camera_preview_render_targets_) {
       if (!surface)
@@ -2873,14 +2885,10 @@ void HStreamWindow::requestPreviewFrame() {
   }
 
   const int tab_index = preview_tabs_->currentIndex();
-  QString channel = "main";
-  if (tab_index >= 2) {
-    const int source_index = tab_index - 2;
-    if (source_index < 0 || source_index >= static_cast<int>(camera_preview_surfaces_.size())) {
-      return;
-    }
-    channel = QString("source%1").arg(source_index);
-  }
+  const QString channel =
+      hm::ui_internal::preview_channel_for_tab(tab_index, static_cast<int>(camera_preview_surfaces_.size()));
+  if (channel.isEmpty())
+    return;
 
   QDir temporary_root(QStandardPaths::writableLocation(QStandardPaths::TempLocation));
   const quint64 request_generation = ++preview_frame_request_generation_;
@@ -2925,6 +2933,7 @@ bool HStreamWindow::handlePreviewFrameResponse(const QString& line) {
     if (!frame.isNull()) {
       if (channel == "main") {
         set_snapshot_frame(preview_surface_, frame);
+      } else if (channel == "stitched") {
         set_snapshot_frame(stitched_surface_, frame);
       } else if (channel.startsWith("source")) {
         bool valid_index = false;

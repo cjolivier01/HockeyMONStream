@@ -43,9 +43,11 @@ to the source game. Configured stitching artifacts are reflinked (or copied
 when reflinks are not available), while `config.yaml`, UI state, locks, and
 encoded output remain isolated. The source game is not modified.
 
-On X11, the backend retains ordinary BGRx samples behind the render sink and
-serves bounded JPEG preview frames through HStream's private runtime-command
-channel. Qt paints those frames in the tabs. This avoids relying on a video
+On X11, the backend retains independent ordinary BGRx samples for the final
+program render, the raw stitched canvas, and each camera source, then serves
+bounded JPEG preview frames through HStream's private runtime-command channel.
+The acceptance test requires all three distinct channel acknowledgements in
+addition to non-blank pixels. Qt paints those frames in the tabs. This avoids relying on a video
 sink painting directly into a child window, which is unreliable across Qt
 backing stores, compositors, and mixed-DPI desktops. It does not alter the
 full-resolution encode branch.
@@ -60,8 +62,9 @@ The artifact directory contains:
 - `program-preview-surface.png`, `stitched-preview-surface.png`,
   `camera1-preview-surface.png`, and `preview-report.txt`: live X11 evidence
   when `--x11-preview` is used;
-- `backend-main-preview.jpg` and `backend-source0-preview.jpg`: the first
-  retained backend frames delivered to the Qt preview during an X11 run;
+- `backend-main-preview.jpg`, `backend-stitched-preview.jpg`, and
+  `backend-source0-preview.jpg`: the first retained backend frames delivered
+  to the Qt preview during an X11 run;
 - `encoded-output/`: the actual archive written by the UI-selected sink;
 - `encoded-frame.jpg`: the best sampled output frame;
 - `panorama-reference.jpg`: a review-sized panorama;

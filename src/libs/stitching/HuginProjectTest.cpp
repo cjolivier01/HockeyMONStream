@@ -225,6 +225,19 @@ int main() {
   ok &= expect(
       cv::imwrite((root / "private-inputs" / "right.png").string(), cv::Mat(48, 64, CV_8UC3, cv::Scalar(21, 22, 23))),
       "private right calibration input must exist");
+  std::vector<std::string> failure_progress;
+  options.progress = [&failure_progress](const std::string& stage, const std::string& status, const std::string&) {
+    failure_progress.push_back(stage + ":" + status);
+  };
+  ::setenv("HM_PTO_GEN", (root / "missing-pto-gen").c_str(), 1);
+  const auto missing_optimizer_setup = hm::stitching::HuginProject::Configure(
+      root / "game", root / "private-inputs" / "left.png", root / "private-inputs" / "right.png", matches, options);
+  ok &= expect(!missing_optimizer_setup.ok(), "missing Hugin setup tool must fail calibration");
+  ok &= expect(
+      !failure_progress.empty() && failure_progress.front() == "optimizer:started",
+      "optimizer stage must become active before Hugin setup can fail");
+  ::setenv("HM_PTO_GEN", pto_gen.c_str(), 1);
+  options.progress = {};
   const auto configured = hm::stitching::HuginProject::Configure(
       root / "game", root / "private-inputs" / "left.png", root / "private-inputs" / "right.png", matches, options);
   if (!configured.ok())

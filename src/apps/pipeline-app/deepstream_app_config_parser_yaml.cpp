@@ -374,6 +374,7 @@ gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_
   }
   SET_LOCATOR(locator, *config, post_stitch_rotate_degrees);
   SET_LOCATOR(locator, *config, minimize_blend);
+  SET_LOCATOR(locator, *config, ui_preview);
   SET_LOCATOR_CHARS(locator, *config, stitch_compute_precision);
   SET_LOCATOR_CHARS(locator, *config, config_file);
   locator.ignored.emplace("properties");

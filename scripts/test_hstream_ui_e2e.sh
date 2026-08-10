@@ -86,7 +86,11 @@ cd "${repo_root}"
 bazelisk build --config=opt --cpu=k8 \
   //src/apps/hstream-ui:hstream_ui_test \
   //src/apps/hstream-ui:hstream_ui_visual_verifier \
-  //src/apps/pipeline-app:hstream-cli
+  //src/apps/pipeline-app:hstream-cli \
+  //src/gst-plugins/gst-fieldmask:libnvdsgst_dsfieldmask.so \
+  //src/gst-plugins/gst-playtracker:libgstplaytracker.so \
+  //src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so \
+  //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo
 
 qt_platform=offscreen
 if [[ ${verify_x11_preview} == 1 ]]; then

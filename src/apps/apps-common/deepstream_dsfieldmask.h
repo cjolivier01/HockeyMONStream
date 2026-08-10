@@ -191,6 +191,7 @@ struct HmStitcherConfig : public NvDsHmVideoPrepConfig {
   gboolean force_scoreboard_config;
   gfloat post_stitch_rotate_degrees;
   gboolean minimize_blend;
+  gboolean ui_preview;
   gchar stitch_compute_precision[32];
 };
 
@@ -201,6 +202,14 @@ struct HmStitcherBin {
   GstElement* pre_conv{nullptr};
   GstElement* cap_filter{nullptr};
   GstElement* elem_hmstitcher{nullptr};
+  GstElement* output_tee{nullptr};
+  GstElement* output_queue{nullptr};
+  GstElement* preview_queue{nullptr};
+  GstElement* preview_converter{nullptr};
+  GstElement* preview_caps_filter{nullptr};
+  GstElement* preview_system_converter{nullptr};
+  GstElement* preview_system_caps_filter{nullptr};
+  GstElement* preview_sink{nullptr};
 };
 
 gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin);

@@ -1116,6 +1116,8 @@ absl::Status HuginProject::Configure(
     if (!status.ok())
       return status;
   }
+  if (options.progress)
+    options.progress("optimizer", "started", "Preparing and running panorama optimizer (autooptimiser)");
   auto transaction_lock = RecoverAndLock(game_dir);
   if (!transaction_lock.ok())
     return transaction_lock.status();
@@ -1150,9 +1152,6 @@ absl::Status HuginProject::Configure(
   auto autooptimiser = executable("HM_AUTOOPTIMISER", "autooptimiser");
   if (!autooptimiser.ok())
     return autooptimiser.status();
-  auto nona = executable("HM_NONA", "nona");
-  if (!nona.ok())
-    return nona.status();
 
   std::ostringstream fov;
   fov.imbue(std::locale::classic());
@@ -1171,8 +1170,6 @@ absl::Status HuginProject::Configure(
   if (!status.ok())
     return status;
 
-  if (options.progress)
-    options.progress("optimizer", "started", "Running panorama optimizer (autooptimiser)");
   status = run_autooptimiser(*autooptimiser, staging);
   if (!status.ok())
     return status;
@@ -1180,6 +1177,9 @@ absl::Status HuginProject::Configure(
     options.progress("optimizer", "complete", "Panorama alignment optimized");
   if (options.progress)
     options.progress("canvas", "started", "Building stitch maps and panorama preview");
+  auto nona = executable("HM_NONA", "nona");
+  if (!nona.ok())
+    return nona.status();
   auto optimized_project = read_file(staging / "autooptimiser_out.pto");
   if (!optimized_project.ok())
     return optimized_project.status();

@@ -37,6 +37,7 @@ namespace hm::ui_internal {
 void restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previous);
 bool supports_x11_embedding(const QString& platform_name, bool tegra_runtime = false);
 bool supports_snapshot_preview_sink(const QString& configured_render_sink);
+QString preview_channel_for_tab(int tab_index, int camera_count);
 
 } // namespace hm::ui_internal
 

@@ -682,6 +682,100 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     return absl::InvalidArgumentError("--source-render-window-ids requires exactly one active pipeline context");
   }
 
+  constexpr gint kProgramPreviewWidth = 1600;
+  constexpr gint kProgramPreviewHeight = 900;
+  const auto& app_context = app_contexts.front();
+  NvDsSinkBin& output = app_context->pipeline.instance_bins[0].sink_bin;
+  GstElement* program_queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "program_preview_queue");
+  GstElement* program_converter = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "program_preview_converter");
+  GstElement* program_caps_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "program_preview_caps");
+  GstElement* program_system_converter = gst_element_factory_make("videoconvert", "program_preview_system_converter");
+  GstElement* program_system_caps_filter =
+      gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "program_preview_system_caps");
+  GstElement* program_sink = gst_element_factory_make(NVDS_ELEM_SINK_FAKESINK, "program_preview_sink");
+  if (!output.bin || !output.tee || !program_queue || !program_converter || !program_caps_filter ||
+      !program_system_converter || !program_system_caps_filter || !program_sink) {
+    for (GstElement* element : {
+             program_queue,
+             program_converter,
+             program_caps_filter,
+             program_system_converter,
+             program_system_caps_filter,
+             program_sink,
+         }) {
+      if (element)
+        gst_object_unref(element);
+    }
+    return absl::InternalError("Could not create retained Program preview branch");
+  }
+  g_object_set(
+      G_OBJECT(program_queue),
+      "leaky",
+      2,
+      "max-size-buffers",
+      1,
+      "max-size-bytes",
+      0,
+      "max-size-time",
+      static_cast<guint64>(0),
+      nullptr);
+  g_object_set(
+      G_OBJECT(program_converter),
+      "gpu-id",
+      app_context->config.hmsticher_config.gpu_id,
+      "nvbuf-memory-type",
+      1,
+      nullptr);
+  GstCaps* program_caps = gst_caps_new_simple(
+      "video/x-raw",
+      "format",
+      G_TYPE_STRING,
+      "NV12",
+      "width",
+      G_TYPE_INT,
+      kProgramPreviewWidth,
+      "height",
+      G_TYPE_INT,
+      kProgramPreviewHeight,
+      nullptr);
+  g_object_set(G_OBJECT(program_caps_filter), "caps", program_caps, nullptr);
+  gst_caps_unref(program_caps);
+  GstCaps* program_system_caps = gst_caps_new_simple(
+      "video/x-raw",
+      "format",
+      G_TYPE_STRING,
+      "BGRx",
+      "width",
+      G_TYPE_INT,
+      kProgramPreviewWidth,
+      "height",
+      G_TYPE_INT,
+      kProgramPreviewHeight,
+      nullptr);
+  g_object_set(G_OBJECT(program_system_caps_filter), "caps", program_system_caps, nullptr);
+  gst_caps_unref(program_system_caps);
+  g_object_set(G_OBJECT(program_sink), "sync", FALSE, "async", FALSE, "enable-last-sample", TRUE, nullptr);
+  gst_bin_add_many(
+      GST_BIN(output.bin),
+      program_queue,
+      program_converter,
+      program_caps_filter,
+      program_system_converter,
+      program_system_caps_filter,
+      program_sink,
+      nullptr);
+  if (!link_element_to_tee_src_pad(output.tee, program_queue) ||
+      !gst_element_link_many(
+          program_queue,
+          program_converter,
+          program_caps_filter,
+          program_system_converter,
+          program_system_caps_filter,
+          program_sink,
+          nullptr)) {
+    return absl::InternalError("Could not link retained Program preview branch");
+  }
+
   constexpr gint kCameraPreviewWidth = 1280;
   constexpr gint kCameraPreviewHeight = 720;
   for (const auto& app_context : app_contexts) {
@@ -2008,7 +2102,7 @@ void PipelineApplication::print_runtime_commands() const {
       "\tp: Pause\n"
       "\tr: Resume\n"
       "\t@set-render-window <xid>: Move the embedded program render sink to another X11 window\n"
-      "\t@capture-preview-frame <main|sourceN> <jpg-path>: Save the latest UI preview frame\n"
+      "\t@capture-preview-frame <main|stitched|sourceN> <jpg-path>: Save the latest UI preview frame\n"
       "\t@set-property <element> <property=value>: Set an allowlisted runtime GStreamer property\n\n");
   if (!stage_app_contexts_.empty() && !stage_app_contexts_.at(current_stage_).empty() &&
       stage_app_contexts_.at(current_stage_)[0] &&
@@ -2507,7 +2601,7 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   std::string value;
   if (!parse_runtime_set_property(line, &element_name, &property_name, &value)) {
     g_printerr(
-        "runtime command failed: expected: set-render-window <xid>, capture-preview-frame <main|sourceN> "
+        "runtime command failed: expected: set-render-window <xid>, capture-preview-frame <main|stitched|sourceN> "
         "<jpg-path>, or set-property <element> <property=value>\n");
     return false;
   }
@@ -2516,6 +2610,7 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
 
 bool PipelineApplication::capture_preview_frame_runtime(const std::string& channel, const std::string& path) {
   GstElement* sink = nullptr;
+  bool release_sink = false;
   auto stage = stage_app_contexts_.find(current_stage_);
   if (stage == stage_app_contexts_.end()) {
     g_print("runtime preview frame unavailable channel=%s path=%s\n", channel.c_str(), path.c_str());
@@ -2526,6 +2621,13 @@ bool PipelineApplication::capture_preview_frame_runtime(const std::string& chann
     for (const auto& app_context : stage->second) {
       if (!app_context)
         continue;
+      NvDsSinkBin& output = app_context->pipeline.instance_bins[0].sink_bin;
+      if (output.bin) {
+        sink = gst_bin_get_by_name(GST_BIN(output.bin), "program_preview_sink");
+        release_sink = sink != nullptr;
+      }
+      if (sink)
+        break;
       for (guint sink_index = 0; sink_index < app_context->config.num_sink_sub_bins; ++sink_index) {
         GstElement* candidate = app_context->pipeline.instance_bins[0].sink_bin.sub_bins[sink_index].sink;
         if (GST_IS_VIDEO_OVERLAY(candidate) && !manages_its_own_window(candidate)) {
@@ -2535,6 +2637,13 @@ bool PipelineApplication::capture_preview_frame_runtime(const std::string& chann
       }
       if (sink)
         break;
+    }
+  } else if (channel == "stitched") {
+    for (const auto& app_context : stage->second) {
+      if (app_context && app_context->pipeline.hmstitcher_bin.preview_sink) {
+        sink = app_context->pipeline.hmstitcher_bin.preview_sink;
+        break;
+      }
     }
   } else if (channel.rfind("source", 0) == 0) {
     guint64 source_index = 0;
@@ -2553,6 +2662,10 @@ bool PipelineApplication::capture_preview_frame_runtime(const std::string& chann
     g_print("runtime preview frame unavailable channel=%s path=%s\n", channel.c_str(), path.c_str());
     return true;
   }
+  auto release_retained_sink = absl::MakeCleanup([&]() {
+    if (release_sink)
+      gst_object_unref(sink);
+  });
   const PreviewFrameSaveResult result = save_preview_frame(sink, fs::path(path));
   if (result.status == PreviewFrameSaveStatus::kUnavailable) {
     g_print("runtime preview frame unavailable channel=%s path=%s\n", channel.c_str(), path.c_str());
