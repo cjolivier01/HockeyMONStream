@@ -62,6 +62,16 @@ bool videoprep::RuntimeOutputPoolFlow::consume_if_terminal(GstBuffer* input_buff
   return true;
 }
 
+void videoprep::RuntimeOutputPoolFlow::finish_with_eos(
+    GstBuffer* output_buffer,
+    const std::function<void()>& send_eos) {
+  if (!eos_terminal_) {
+    eos_terminal_ = true;
+    send_eos();
+  }
+  gst_buffer_unref(output_buffer);
+}
+
 namespace {
 
 guint get_caps_batch_size(GstCaps* caps) {
@@ -913,8 +923,7 @@ void CustomAlgorithmBase::OutputThread(void) {
             flow_ret,
             GST_TIME_ARGS(GST_BUFFER_PTS(outBuffer)));
       } else {
-        send_eos_downstream();
-        gst_buffer_unref(outBuffer);
+        runtime_output_pool_flow.finish_with_eos(outBuffer, send_eos_downstream);
       }
     }
     lk.lock();
