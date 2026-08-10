@@ -363,6 +363,11 @@ static UriPlaylistDeliveryWaitResult wait_for_committed_uri_playlist_delivery(
   gboolean timed_out = FALSE;
   while (!all_delivered() && !parent->uri_playlist_delivery_aborted) {
     if (!g_cond_wait_until(&parent->uri_playlist_barrier_cond, &parent->uri_playlist_barrier_mutex, deadline)) {
+      // The condition and deadline can become ready together. Re-check both protected predicates before declaring a
+      // genuine timeout; cancellation still takes precedence over a delivery acknowledgement observed in that race.
+      if (all_delivered() || parent->uri_playlist_delivery_aborted) {
+        continue;
+      }
       parent->uri_playlist_barrier_failed = TRUE;
       parent->uri_playlist_delivery_aborted = TRUE;
       g_cond_broadcast(&parent->uri_playlist_barrier_cond);
@@ -371,10 +376,8 @@ static UriPlaylistDeliveryWaitResult wait_for_committed_uri_playlist_delivery(
     }
   }
   const gboolean delivered = all_delivered();
+  const gboolean cancelled = parent->uri_playlist_delivery_aborted;
   g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
-  if (delivered) {
-    return UriPlaylistDeliveryWaitResult::kDelivered;
-  }
   if (timed_out) {
     GST_ELEMENT_ERROR(
         bin->src_elem,
@@ -384,7 +387,10 @@ static UriPlaylistDeliveryWaitResult wait_for_committed_uri_playlist_delivery(
         ("committed_sequence=%" G_GUINT64_FORMAT, committed_sequence));
     return UriPlaylistDeliveryWaitResult::kTimedOut;
   }
-  return UriPlaylistDeliveryWaitResult::kCancelled;
+  if (cancelled) {
+    return UriPlaylistDeliveryWaitResult::kCancelled;
+  }
+  return delivered ? UriPlaylistDeliveryWaitResult::kDelivered : UriPlaylistDeliveryWaitResult::kCancelled;
 }
 
 static void mark_uri_playlist_terminal(NvDsSrcBin* bin) {
