@@ -160,6 +160,35 @@ bool expect_lossless_frame_continuity_contract() {
   return true;
 }
 
+bool expect_output_capacity_is_stable_across_batches() {
+  std::vector<NvBufSurfaceParams> output_params(2);
+  NvBufSurface output_surface{};
+  output_surface.batchSize = 2;
+  output_surface.numFilled = 2;
+  output_surface.surfaceList = output_params.data();
+
+  absl::Status first_status = hm::stitcher::prepare_stitch_output_surface(&output_surface, /*planned_frames=*/1);
+  if (!first_status.ok() || output_surface.batchSize != 2 || output_surface.numFilled != 0) {
+    std::cerr << "Expected a one-frame batch to preserve output capacity 2: " << first_status << std::endl;
+    return false;
+  }
+
+  output_surface.numFilled = 1;
+  absl::Status second_status = hm::stitcher::prepare_stitch_output_surface(&output_surface, /*planned_frames=*/2);
+  if (!second_status.ok() || output_surface.batchSize != 2 || output_surface.numFilled != 0) {
+    std::cerr << "Expected a later two-frame batch to reuse output capacity 2: " << second_status << std::endl;
+    return false;
+  }
+
+  const absl::Status overflow_status =
+      hm::stitcher::prepare_stitch_output_surface(&output_surface, /*planned_frames=*/3);
+  if (overflow_status.code() != absl::StatusCode::kFailedPrecondition || output_surface.batchSize != 2) {
+    std::cerr << "Expected output overflow to fail without changing capacity: " << overflow_status << std::endl;
+    return false;
+  }
+  return true;
+}
+
 bool expect_prepare_runtime_partial_fails() {
   hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
   stitcher.SetProperty({"one-pass-mode", "1"});
@@ -349,6 +378,9 @@ int main() {
   }
   if (!expect_lossless_frame_continuity_contract()) {
     return 28;
+  }
+  if (!expect_output_capacity_is_stable_across_batches()) {
+    return 29;
   }
   if (!expect_prepare_runtime_partial_fails()) {
     return 14;

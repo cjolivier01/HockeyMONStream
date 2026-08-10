@@ -440,6 +440,21 @@ absl::StatusOr<gint> validate_stitch_frame_continuity(
   return frame_numbers.back();
 }
 
+absl::Status prepare_stitch_output_surface(NvBufSurface* output_surface, size_t planned_frames) {
+  if (!output_surface || !output_surface->batchSize) {
+    return absl::FailedPreconditionError("Stitching output surface has no allocation capacity");
+  }
+  if (planned_frames > output_surface->batchSize) {
+    return absl::FailedPreconditionError(
+        absl::StrFormat(
+            "Stitching planned %zu output frames but the surface capacity is %u",
+            planned_frames,
+            output_surface->batchSize));
+  }
+  output_surface->numFilled = 0;
+  return absl::OkStatus();
+}
+
 absl::Status StitcherPriv::ensure_stitcher() {
   if (configure_only_ && !one_pass_mode_) {
     return absl::OkStatus();
@@ -1118,17 +1133,14 @@ absl::Status StitcherPriv::GenerateOutput(
 
   HM_RETURN_IF_ERROR(to_status(cudaSetDevice(m_gpuId)));
 
-  out_surface->numFilled = 0;
-  out_surface->batchSize = in_surface->batchSize / 2;
-
   // We will have this many output frames
   const size_t batch_size = frame_source_surfaces.size();
-  out_surface->batchSize = batch_size;
+  HM_RETURN_IF_ERROR(prepare_stitch_output_surface(out_surface, batch_size));
 
   if (log_batches_enabled()) {
     g_print(
         "hmstitcher batch in: surface batchSize=%u numFilled=%u frame_meta_count=%u frame_meta_list_len=%u "
-        "frame_pairs=%zu planned_out_batchSize=%u\n",
+        "frame_pairs=%zu output_capacity=%u\n",
         in_surface->batchSize,
         in_surface->numFilled,
         batch_meta->num_frames_in_batch,
