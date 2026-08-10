@@ -2583,7 +2583,6 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     if (!verify_x11_preview || x11_previews_captured || window->pipelineStateText() != "PLAYING") {
       return;
     }
-    x11_previews_captured = true;
     const QString program_target =
         QString("runtime render window id=%1").arg(static_cast<qulonglong>(program_render_target->winId()));
     preview_tabs->setCurrentIndex(0);
@@ -2632,6 +2631,10 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       QTest::qWait(50);
     }
     program_target_acknowledged = program_target_acknowledged || window->completeLogText().contains(program_target);
+    x11_previews_captured = program_surface->property("previewFrameAvailable").toBool() &&
+        stitched_surface->property("previewFrameAvailable").toBool() &&
+        camera1_surface->property("previewFrameAvailable").toBool() && program_preview.passed &&
+        stitched_preview.passed && camera1_preview.passed;
   };
   const QRegularExpression positive_fps(R"(\*\*PERF:\s+([0-9]+(?:\.[0-9]+)?))");
   while (timer.elapsed() < deadline_ms) {
@@ -2668,7 +2671,8 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     }
     const int configured_record_ms = qEnvironmentVariableIntValue("HSTREAM_UI_E2E_RECORD_MS");
     const int record_ms = configured_record_ms > 0 ? configured_record_ms : 6000;
-    if (observed_first_frame && timer.elapsed() - first_frame_at_ms >= record_ms) {
+    if (observed_first_frame && timer.elapsed() - first_frame_at_ms >= record_ms &&
+        (!verify_x11_preview || x11_previews_captured)) {
       break;
     }
     if (window->pipelineStateText() == "STOPPED") {

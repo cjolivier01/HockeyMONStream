@@ -2870,8 +2870,11 @@ void HStreamWindow::requestPreviewFrame() {
   }
 
   QDir temporary_root(QStandardPaths::writableLocation(QStandardPaths::TempLocation));
-  const QString path = temporary_root.filePath(
-      QString("hstream-ui-preview-%1-%2.jpg").arg(QCoreApplication::applicationPid()).arg(channel));
+  const quint64 request_generation = ++preview_frame_request_generation_;
+  const QString path = temporary_root.filePath(QString("hstream-ui-preview-%1-%2-%3.jpg")
+                                                   .arg(QCoreApplication::applicationPid())
+                                                   .arg(channel)
+                                                   .arg(request_generation));
   QFile::remove(path);
   const QByteArray command = QString("@capture-preview-frame %1 %2\n").arg(channel, path).toUtf8();
   if (pipeline_process_->write(command) != command.size()) {
@@ -2880,9 +2883,9 @@ void HStreamWindow::requestPreviewFrame() {
   preview_frame_request_pending_ = true;
   preview_frame_request_channel_ = channel;
   preview_frame_request_path_ = path;
-  QTimer::singleShot(3000, this, [this, channel, path]() {
-    if (!preview_frame_request_pending_ || preview_frame_request_channel_ != channel ||
-        preview_frame_request_path_ != path) {
+  QTimer::singleShot(3000, this, [this, request_generation, channel, path]() {
+    if (!preview_frame_request_pending_ || preview_frame_request_generation_ != request_generation ||
+        preview_frame_request_channel_ != channel || preview_frame_request_path_ != path) {
       return;
     }
     preview_frame_request_pending_ = false;
@@ -2899,6 +2902,12 @@ bool HStreamWindow::handlePreviewFrameResponse(const QString& line) {
   if (success.hasMatch()) {
     const QString channel = success.captured(1);
     const QString path = success.captured(2);
+    const bool is_current_request = preview_frame_request_pending_ && channel == preview_frame_request_channel_ &&
+        path == preview_frame_request_path_;
+    if (!is_current_request) {
+      QFile::remove(path);
+      return true;
+    }
     const QImage frame(path);
     if (!frame.isNull()) {
       if (channel == "main") {
@@ -2924,25 +2933,28 @@ bool HStreamWindow::handlePreviewFrameResponse(const QString& line) {
       appendLog(QString("preview frame could not be loaded from %1").arg(path));
     }
     QFile::remove(path);
-    if (preview_frame_request_pending_ && channel == preview_frame_request_channel_) {
-      preview_frame_request_pending_ = false;
-      preview_frame_request_path_.clear();
-      preview_frame_request_channel_.clear();
-    }
+    preview_frame_request_pending_ = false;
+    preview_frame_request_path_.clear();
+    preview_frame_request_channel_.clear();
     return true;
   }
 
-  static const QRegularExpression unavailable_pattern(
-      R"(^runtime preview frame (?:unavailable|failed) channel=(\S+).*$)");
+  static const QRegularExpression unavailable_pattern(R"(^runtime preview frame unavailable channel=(\S+) path=(.+)$)");
   const QRegularExpressionMatch unavailable = unavailable_pattern.match(line);
-  if (!unavailable.hasMatch()) {
+  static const QRegularExpression failed_pattern(
+      R"(^runtime preview frame failed channel=(\S+) path=(.+) message=(.*)$)");
+  const QRegularExpressionMatch failed = failed_pattern.match(line);
+  if (!unavailable.hasMatch() && !failed.hasMatch()) {
     return false;
   }
-  if (line.startsWith("runtime preview frame failed") && !preview_frame_error_logged_) {
+  if (failed.hasMatch() && !preview_frame_error_logged_) {
     preview_frame_error_logged_ = true;
     appendLog(line);
   }
-  if (preview_frame_request_pending_ && unavailable.captured(1) == preview_frame_request_channel_) {
+  const QString response_channel = unavailable.hasMatch() ? unavailable.captured(1) : failed.captured(1);
+  const QString response_path = unavailable.hasMatch() ? unavailable.captured(2) : failed.captured(2);
+  if (preview_frame_request_pending_ && response_channel == preview_frame_request_channel_ &&
+      response_path == preview_frame_request_path_) {
     preview_frame_request_pending_ = false;
     QFile::remove(preview_frame_request_path_);
     preview_frame_request_path_.clear();

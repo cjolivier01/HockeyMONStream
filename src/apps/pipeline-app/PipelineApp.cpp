@@ -2518,7 +2518,7 @@ bool PipelineApplication::capture_preview_frame_runtime(const std::string& chann
   GstElement* sink = nullptr;
   auto stage = stage_app_contexts_.find(current_stage_);
   if (stage == stage_app_contexts_.end()) {
-    g_print("runtime preview frame unavailable channel=%s\n", channel.c_str());
+    g_print("runtime preview frame unavailable channel=%s path=%s\n", channel.c_str(), path.c_str());
     return true;
   }
 
@@ -2550,16 +2550,20 @@ bool PipelineApplication::capture_preview_frame_runtime(const std::string& chann
   }
 
   if (!sink) {
-    g_print("runtime preview frame unavailable channel=%s\n", channel.c_str());
+    g_print("runtime preview frame unavailable channel=%s path=%s\n", channel.c_str(), path.c_str());
     return true;
   }
   const PreviewFrameSaveResult result = save_preview_frame(sink, fs::path(path));
   if (result.status == PreviewFrameSaveStatus::kUnavailable) {
-    g_print("runtime preview frame unavailable channel=%s\n", channel.c_str());
+    g_print("runtime preview frame unavailable channel=%s path=%s\n", channel.c_str(), path.c_str());
     return true;
   }
   if (result.status == PreviewFrameSaveStatus::kFailed) {
-    g_print("runtime preview frame failed channel=%s message=%s\n", channel.c_str(), result.message.c_str());
+    g_print(
+        "runtime preview frame failed channel=%s path=%s message=%s\n",
+        channel.c_str(),
+        path.c_str(),
+        result.message.c_str());
     return true;
   }
   g_print(

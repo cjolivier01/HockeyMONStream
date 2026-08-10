@@ -225,6 +225,7 @@ class HStreamWindow : public QMainWindow {
   bool calibration_dialog_failed_{false};
   bool preview_fullscreen_{false};
   bool preview_frame_request_pending_{false};
+  quint64 preview_frame_request_generation_{0};
   QString preview_frame_request_path_;
   QString preview_frame_request_channel_;
   std::set<QString> preview_frame_channels_received_;
