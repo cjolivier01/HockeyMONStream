@@ -576,6 +576,11 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
   if (!batch_meta || !in_surface) {
     return absl::InvalidArgumentError("Cannot determine stitched canvas size without batch metadata and input surface");
   }
+  if (in_surface->batchSize == 0 || in_surface->batchSize % 2 != 0 ||
+      in_surface->numFilled > in_surface->batchSize) {
+    return absl::FailedPreconditionError(
+        "Runtime stitching requires a positive even batch size and numFilled no greater than batchSize");
+  }
 
   struct RuntimeFrameInfo {
     NvBufSurfaceParams* surface_params;
@@ -972,12 +977,13 @@ absl::Status StitcherPriv::GenerateOutput(
                                         static_cast<std::ptrdiff_t>(left->second.size()) -
                                         static_cast<std::ptrdiff_t>(right->second.size())) == 1;
     }
-    const bool structurally_valid_partial = in_surface->numFilled % 2 != 0 &&
+    const bool valid_surface_envelope = in_surface->batchSize > 0 && in_surface->batchSize % 2 == 0 &&
+        in_surface->numFilled <= in_surface->batchSize;
+    const bool structurally_valid_partial = valid_surface_envelope && in_surface->numFilled % 2 != 0 &&
         frame_meta_count == in_surface->numFilled && surface_index == in_surface->numFilled &&
         duplicate_frame_sources == 0 && invalid_surfaces_per_frame == 0 && observed_source_ids.size() <= 2 &&
         valid_partial_source_counts;
-    const bool metadata_valid_unpairable_batch = in_surface->batchSize > 0 && in_surface->batchSize % 2 == 0 &&
-        in_surface->numFilled > 0 && in_surface->numFilled <= in_surface->batchSize &&
+    const bool metadata_valid_unpairable_batch = valid_surface_envelope && in_surface->numFilled > 0 &&
         frame_meta_count == in_surface->numFilled && surface_index == in_surface->numFilled &&
         duplicate_frame_sources == 0 && invalid_surfaces_per_frame == 0 && observed_source_ids.size() <= 2;
     std::set<guint> observed_or_eos_source_ids = observed_source_ids;
