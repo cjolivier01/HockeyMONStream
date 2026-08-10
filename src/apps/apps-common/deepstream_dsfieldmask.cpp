@@ -808,12 +808,32 @@ gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTra
   if (config->fixed_edge_rotation_angle_set) {
     ppc << ";fixed-edge-rotation-angle=" << config->fixed_edge_rotation_angle;
   }
+  if (config->fixed_edge_rotation_angle_left_set) {
+    ppc << ";fixed-edge-rotation-angle-left=" << config->fixed_edge_rotation_angle_left;
+  }
+  if (config->fixed_edge_rotation_angle_right_set) {
+    ppc << ";fixed-edge-rotation-angle-right=" << config->fixed_edge_rotation_angle_right;
+  }
   ppc << ";dynamic-acceleration-scaling=" << config->dynamic_acceleration_scaling;
   if (config->fixed_edge_rotation_angle_set) {
     g_object_set(
         G_OBJECT(bin->elem_dsplaytracker),
         "fixed-edge-rotation-angle",
         static_cast<gdouble>(config->fixed_edge_rotation_angle),
+        NULL);
+  }
+  if (config->fixed_edge_rotation_angle_left_set) {
+    g_object_set(
+        G_OBJECT(bin->elem_dsplaytracker),
+        "fixed-edge-rotation-angle-left",
+        static_cast<gdouble>(config->fixed_edge_rotation_angle_left),
+        NULL);
+  }
+  if (config->fixed_edge_rotation_angle_right_set) {
+    g_object_set(
+        G_OBJECT(bin->elem_dsplaytracker),
+        "fixed-edge-rotation-angle-right",
+        static_cast<gdouble>(config->fixed_edge_rotation_angle_right),
         NULL);
   }
   g_object_set(
@@ -1005,6 +1025,12 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
   if (config->fixed_edge_rotation_angle_set) {
     ppc << ";fixed-edge-rotation-angle=" << config->fixed_edge_rotation_angle;
   }
+  if (config->fixed_edge_rotation_angle_left_set) {
+    ppc << ";fixed-edge-rotation-angle-left=" << config->fixed_edge_rotation_angle_left;
+  }
+  if (config->fixed_edge_rotation_angle_right_set) {
+    ppc << ";fixed-edge-rotation-angle-right=" << config->fixed_edge_rotation_angle_right;
+  }
   ppc << ";no-crop=" << config->no_crop;
 
   if (config->fixed_edge_rotation_angle_set) {
@@ -1012,6 +1038,20 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
         G_OBJECT(bin->playcropper),
         "fixed-edge-rotation-angle",
         static_cast<gdouble>(config->fixed_edge_rotation_angle),
+        NULL);
+  }
+  if (config->fixed_edge_rotation_angle_left_set) {
+    g_object_set(
+        G_OBJECT(bin->playcropper),
+        "fixed-edge-rotation-angle-left",
+        static_cast<gdouble>(config->fixed_edge_rotation_angle_left),
+        NULL);
+  }
+  if (config->fixed_edge_rotation_angle_right_set) {
+    g_object_set(
+        G_OBJECT(bin->playcropper),
+        "fixed-edge-rotation-angle-right",
+        static_cast<gdouble>(config->fixed_edge_rotation_angle_right),
         NULL);
   }
   private_config = hm::gst::serialize_plugin_properties(config->private_properties, ppc.str());

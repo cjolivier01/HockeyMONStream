@@ -1171,9 +1171,15 @@ absl::Status HuginProject::Configure(
   if (!status.ok())
     return status;
 
+  if (options.progress)
+    options.progress("optimizer", "started", "Running panorama optimizer (autooptimiser)");
   status = run_autooptimiser(*autooptimiser, staging);
   if (!status.ok())
     return status;
+  if (options.progress)
+    options.progress("optimizer", "complete", "Panorama alignment optimized");
+  if (options.progress)
+    options.progress("canvas", "started", "Building stitch maps and panorama preview");
   auto optimized_project = read_file(staging / "autooptimiser_out.pto");
   if (!optimized_project.ok())
     return optimized_project.status();
@@ -1271,7 +1277,10 @@ absl::Status HuginProject::Configure(
   status = validate_staged_artifacts(staging, options.max_canvas_dimension);
   if (!status.ok())
     return status;
-  return publish_artifacts(staging, game_dir, &cleanup.prepared);
+  status = publish_artifacts(staging, game_dir, &cleanup.prepared);
+  if (status.ok() && options.progress)
+    options.progress("canvas", "complete", "Stitch maps and panorama preview are ready");
+  return status;
 }
 
 } // namespace hm::stitching

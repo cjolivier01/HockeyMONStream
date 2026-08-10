@@ -59,6 +59,13 @@ constexpr size_t kDefaultMaxControlPoints = 1500;
 constexpr size_t kHardMaximumArtifactDimension = 32768;
 constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
 
+void report_calibration_progress(const std::string& stage, const std::string& status, const std::string& message = {}) {
+  std::cout << "HSTREAM_CALIBRATION stage=" << stage << " status=" << status;
+  if (!message.empty())
+    std::cout << " message=" << message;
+  std::cout << std::endl;
+}
+
 absl::Status recover_rink_transactions_locked(const fs::path& root);
 
 absl::StatusOr<size_t> remove_file_if_present(const fs::path& path) {
@@ -1013,20 +1020,30 @@ absl::Status create_control_points(
   if (left.empty() || right.empty()) {
     return absl::FailedPreconditionError("Unable to reload synchronized frames for native feature matching");
   }
+  report_calibration_progress("features", "started", "Looking for control points in both camera frames");
   fs::path model_path;
   HM_ASSIGN_OR_RETURN(model_path, feature_matcher_model_path());
   std::unique_ptr<FeatureMatcher> matcher;
   HM_ASSIGN_OR_RETURN(matcher, FeatureMatcher::Create(model_path.string()));
   FeatureMatchResult matched;
-  HM_ASSIGN_OR_RETURN(matched, matcher->Infer(left, right, max_control_points));
+  HM_ASSIGN_OR_RETURN(matched, matcher->Infer(left, right, max_control_points, [] {
+    report_calibration_progress("features", "complete", "Control points found in both camera frames");
+    report_calibration_progress("matching", "started", "Selecting and validating control-point matches");
+  }));
   if (matched.accepted_match_count < 16) {
     return absl::FailedPreconditionError(TO_STRING(
         "Native feature matcher produced only " << matched.accepted_match_count
                                                 << " usable matches; at least 16 are required"));
   }
+  report_calibration_progress(
+      "matching",
+      "complete",
+      TO_STRING(
+          "Matched " << matched.selected.size() << " control points (" << matched.accepted_match_count << " usable)"));
 
   HuginProject::Options options;
   options.max_canvas_dimension = max_canvas_dimension;
+  options.progress = report_calibration_progress;
   return HuginProject::Configure(game_dir, left_file, right_file, matched.selected, options);
 }
 

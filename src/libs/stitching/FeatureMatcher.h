@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -52,8 +53,11 @@ class FeatureMatcher {
       size_t score_count,
       size_t max_control_points);
 
-  absl::StatusOr<FeatureMatchResult> Infer(const cv::Mat& left_bgr, const cv::Mat& right_bgr, size_t max_control_points)
-      const;
+  absl::StatusOr<FeatureMatchResult> Infer(
+      const cv::Mat& left_bgr,
+      const cv::Mat& right_bgr,
+      size_t max_control_points,
+      const std::function<void()>& inference_complete = {}) const;
 
  private:
   explicit FeatureMatcher(std::unique_ptr<hm::onnx::Session> session);

@@ -29,11 +29,17 @@ This repo also includes DeepStream-Yolo-derived model conversion/config docs und
 
 4. Run end-to-end:
    - `./run.sh --game-id=<game_id> -t=5`
+   - `scripts/test_hstream_ui_e2e.sh <game_id>` to drive the UI controls, exercise the scoreboard selector, archive output, and visually compare it with `panorama.tif`
 
 `run.sh` performs a one-pass stage `0` run by default. If stitching artifacts
 are absent, native calibration completes in-process before the stitcher output
 pool is allocated. Pass `--two-stage` to run the older stage `-1` FAKE-sink
 configuration followed by stage `0`.
+
+The UI acceptance test runs against an isolated symlink sandbox, leaving the
+source game untouched. It retains the complete pipeline log, UI screenshots,
+an encoded sample frame, a panorama preview, and feature-match diagnostics
+under `test-artifacts/`. See `docs/hstream-ui-e2e-testing.md`.
 
 ## Models / Pretrained Assets
 

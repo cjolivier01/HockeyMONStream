@@ -19,5 +19,6 @@ MODULE.bazel.lock
 .cache
 camera_bin.dot
 output_workdirs
+/test-artifacts
 /dist-staging
 /dist

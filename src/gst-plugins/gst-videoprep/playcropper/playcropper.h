@@ -56,7 +56,8 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   std::shared_ptr<draw_display::FontCache> font_cache_;
   float render_scale_{0.5};
   std::unique_ptr<hm::CudaMat<uchar4>> display_surface_;
-  float fixed_edge_rotation_angle_{10.0};
+  float fixed_edge_rotation_angle_left_{10.0};
+  float fixed_edge_rotation_angle_right_{10.0};
   bool show_scoreboard_{false};
   float scoreboard_width_ratio_{1.0 / 8};
   float scoreboard_height_ratio_{1.0 / 8};

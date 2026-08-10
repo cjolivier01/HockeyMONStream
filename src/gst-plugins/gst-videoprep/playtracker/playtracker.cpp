@@ -5,8 +5,8 @@
 #include <gst/video/video.h>
 #include <npp.h>
 #include <algorithm>
-#include <cerrno>
 #include <cctype>
+#include <cerrno>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
@@ -101,12 +101,13 @@ absl::Status PlayTrackerPriv::ReloadContextFromConfig() {
     if (live_boxes.size() == 0) {
       return absl::InvalidArgumentError("vpplaytracker config play-tracker.live-boxes must not be empty");
     }
+    const float representative_fixed_edge_rotation_angle =
+        0.5f * (fixed_edge_rotation_angle_left_ + fixed_edge_rotation_angle_right_);
     for (YAML::Node box : live_boxes) {
-      box["arena-angle-from-vertical"] = std::to_string(fixed_edge_rotation_angle_);
+      box["arena-angle-from-vertical"] = std::to_string(representative_fixed_edge_rotation_angle);
     }
     if (live_boxes.size() > 0) {
-      live_boxes[live_boxes.size() - 1]["dynamic-acceleration-scaling"] =
-          std::to_string(dynamic_acceleration_scaling_);
+      live_boxes[live_boxes.size() - 1]["dynamic-acceleration-scaling"] = std::to_string(dynamic_acceleration_scaling_);
     }
   } catch (const std::exception& exc) {
     return absl::InvalidArgumentError(absl::StrCat("failed to load vpplaytracker config: ", exc.what()));
@@ -135,7 +136,8 @@ absl::Status PlayTrackerPriv::ReloadContextFromConfig() {
 
 bool PlayTrackerPriv::SetProperty(const Property& prop) {
   bool reload_context = false;
-  const float previous_fixed_edge_rotation_angle = fixed_edge_rotation_angle_;
+  const float previous_fixed_edge_rotation_angle_left = fixed_edge_rotation_angle_left_;
+  const float previous_fixed_edge_rotation_angle_right = fixed_edge_rotation_angle_right_;
   const float previous_dynamic_acceleration_scaling = dynamic_acceleration_scaling_;
   std::string key = prop.key;
   std::replace(key.begin(), key.end(), '_', '-');
@@ -144,7 +146,20 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
   } else if (key == "draw") {
     init_params_.draw = !!std::atol(prop.value.c_str());
   } else if (key == "fixed-edge-rotation-angle") {
-    if (!parse_finite_float(prop.value, &fixed_edge_rotation_angle_)) {
+    float angle = 0.0f;
+    if (!parse_finite_float(prop.value, &angle)) {
+      return false;
+    }
+    fixed_edge_rotation_angle_left_ = angle;
+    fixed_edge_rotation_angle_right_ = angle;
+    reload_context = true;
+  } else if (key == "fixed-edge-rotation-angle-left") {
+    if (!parse_finite_float(prop.value, &fixed_edge_rotation_angle_left_)) {
+      return false;
+    }
+    reload_context = true;
+  } else if (key == "fixed-edge-rotation-angle-right") {
+    if (!parse_finite_float(prop.value, &fixed_edge_rotation_angle_right_)) {
       return false;
     }
     reload_context = true;
@@ -166,7 +181,8 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
       const absl::Status status = ReloadContextFromConfig();
       if (!status.ok()) {
         play_tracker_config_source_file_ = previous_config_source_file;
-        fixed_edge_rotation_angle_ = previous_fixed_edge_rotation_angle;
+        fixed_edge_rotation_angle_left_ = previous_fixed_edge_rotation_angle_left;
+        fixed_edge_rotation_angle_right_ = previous_fixed_edge_rotation_angle_right;
         dynamic_acceleration_scaling_ = previous_dynamic_acceleration_scaling;
         std::cerr << status << std::endl;
         return false;

@@ -131,6 +131,8 @@ class PipelineApplication {
   bool read_stdin_char(char* out) const;
   bool read_runtime_command_line(std::string* line);
   bool handle_runtime_command_line(const std::string& line);
+  bool set_render_window_runtime(guint64 window_id);
+  bool capture_preview_frame_runtime(const std::string& channel, const std::string& path);
   bool set_element_property_runtime(
       const std::string& element_name,
       const std::string& property_name,

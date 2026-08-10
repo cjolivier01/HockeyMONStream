@@ -772,10 +772,34 @@ void Configurator::map_common_config_keys() {
       });
   const std::vector<std::pair<std::string, std::string>> map_dest_from_src{
       {"pipeline.hmstitcher.post-stitch-rotate-degrees", "stitching.post_stitch_rotate_degrees"},
-      {"pipeline.hmplaycropper.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle"},
-      {"pipeline.ds-playtracker.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle"},
   };
   map_key_configs(config_, map_dest_from_src);
+
+  const std::optional<YAML::Node> fixed_edge_rotation = get_node(config_, "rink.camera.fixed_edge_rotation_angle");
+  if (!fixed_edge_rotation || !fixed_edge_rotation->IsDefined() || fixed_edge_rotation->IsNull()) {
+    return;
+  }
+  if (!fixed_edge_rotation->IsSequence() || fixed_edge_rotation->size() != 2) {
+    map_key_configs(
+        config_,
+        {
+            {"pipeline.hmplaycropper.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle"},
+            {"pipeline.ds-playtracker.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle"},
+        });
+    return;
+  }
+  for (const char* stage : {"hmplaycropper", "ds-playtracker"}) {
+    YAML::Node stage_config = config_["pipeline"][stage];
+    if (stage_config["fixed-edge-rotation-angle"].IsDefined()) {
+      continue;
+    }
+    if (!stage_config["fixed-edge-rotation-angle-left"].IsDefined()) {
+      stage_config["fixed-edge-rotation-angle-left"] = (*fixed_edge_rotation)[0];
+    }
+    if (!stage_config["fixed-edge-rotation-angle-right"].IsDefined()) {
+      stage_config["fixed-edge-rotation-angle-right"] = (*fixed_edge_rotation)[1];
+    }
+  }
 }
 
 absl::Status Configurator::invalidate_rotation_dependent_cache_if_needed(const fs::path& game_dir) {
@@ -894,8 +918,7 @@ absl::Status Configurator::gather_stitching_videos(
       std::any_of(videos.begin(), videos.end(), [](const auto& item) { return is_cam_video_key(item.first); });
   const bool has_left_right_auto = videos.count("left") || videos.count("right");
   const std::vector<std::string> ui_left_files = sequence_path_values(config_, {"hstream_ui", "video_roles", "left"});
-  const std::vector<std::string> ui_right_files =
-      sequence_path_values(config_, {"hstream_ui", "video_roles", "right"});
+  const std::vector<std::string> ui_right_files = sequence_path_values(config_, {"hstream_ui", "video_roles", "right"});
   const bool runtime_videos_owned_by_ui_roles =
       explicit_runtime_videos_match_ui_roles(left_files, right_files, ui_left_files, ui_right_files);
   if (!force && has_cam_auto && !has_left_right_auto && !runtime_videos_owned_by_ui_roles &&

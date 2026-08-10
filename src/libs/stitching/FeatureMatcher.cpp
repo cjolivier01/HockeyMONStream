@@ -211,7 +211,8 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Postprocess(
 absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
     const cv::Mat& left_bgr,
     const cv::Mat& right_bgr,
-    size_t max_control_points) const {
+    size_t max_control_points,
+    const std::function<void()>& inference_complete) const {
   auto input = Prepare(left_bgr, right_bgr);
   if (!input.ok())
     return input.status();
@@ -239,6 +240,8 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
     return match_count.status();
   if (!score_count.ok())
     return score_count.status();
+  if (inference_complete)
+    inference_complete();
   return Postprocess(
       *input, *keypoints, *keypoint_count, *matches, *match_count, *scores, *score_count, max_control_points);
 }

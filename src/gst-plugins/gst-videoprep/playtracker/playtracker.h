@@ -1,10 +1,10 @@
 #pragma once
 
-#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 
-#include "absl/status/status.h"
 #include <mutex>
+#include "absl/status/status.h"
 
 namespace hm {
 namespace playtracker {
@@ -34,7 +34,8 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
   std::mutex context_mu_;
   DsPlayTrackerCtx* pt_context_{nullptr};
   hm::play_tracker::PlayTrackerResults prev_play_tracker_results_;
-  float fixed_edge_rotation_angle_{10.0};
+  float fixed_edge_rotation_angle_left_{10.0};
+  float fixed_edge_rotation_angle_right_{10.0};
   // Dynamic acceleration scaling (usually to slower) on the last live-box only
   float dynamic_acceleration_scaling_{1.0};
   size_t frame_counter_{0};

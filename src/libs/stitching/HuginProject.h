@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -35,8 +36,12 @@ class HuginProject {
   };
 
   struct Options {
+    using ProgressCallback =
+        std::function<void(const std::string& stage, const std::string& status, const std::string& message)>;
+
     double horizontal_fov{108.0};
     std::optional<size_t> max_canvas_dimension;
+    ProgressCallback progress;
   };
 
   // Pure helpers exposed for focused contract tests.
