@@ -858,17 +858,23 @@ int run_lossless_two_camera_mux(
     return 8;
   }
   const GstClockTime expected_audio_duration = expected_complete_chapters * GST_SECOND;
-  const GstClockTime minimum_audio_duration = expected_audio_duration - GST_SECOND / 10;
+  // One missing 15 fps frame would shorten the terminal frontier by ~66 ms. Keep the tolerance below that so the
+  // regression fails if terminal EOS snapshots sequence N-1 after sequence N was already released by the barrier.
+  const GstClockTime minimum_audio_duration = expected_audio_duration - GST_SECOND / 50;
   const GstClockTime maximum_audio_duration = expected_audio_duration + GST_SECOND / 10;
-  if (audio_stats.buffers == 0 || audio_stats.eos_events != 1 || audio_stats.invalid_timestamps != 0 ||
-      audio_stats.discontinuities != 0 || audio_stats.first_pts > GST_SECOND / 10 ||
-      audio_stats.final_end < minimum_audio_duration || audio_stats.final_end > maximum_audio_duration) {
+  const GstClockTime paired_video_end = src_parent.uri_playlist_paired_video_end;
+  if (!GST_CLOCK_TIME_IS_VALID(paired_video_end) || paired_video_end + GST_SECOND / 50 < expected_audio_duration ||
+      paired_video_end > expected_audio_duration + GST_SECOND / 50 || audio_stats.buffers == 0 ||
+      audio_stats.eos_events != 1 || audio_stats.invalid_timestamps != 0 || audio_stats.discontinuities != 0 ||
+      audio_stats.first_pts > GST_SECOND / 10 || audio_stats.final_end < minimum_audio_duration ||
+      audio_stats.final_end > maximum_audio_duration || audio_stats.final_end + GST_SECOND / 50 < paired_video_end) {
     std::cerr << "Source audio was not continuous through the coordinated camera playlist: buffers="
               << audio_stats.buffers << ", eos_events=" << audio_stats.eos_events
               << ", invalid_timestamps=" << audio_stats.invalid_timestamps
               << ", discontinuities=" << audio_stats.discontinuities
               << ", first_pts=" << GST_TIME_AS_SECONDS(audio_stats.first_pts)
               << "s, final_end=" << GST_TIME_AS_SECONDS(audio_stats.final_end)
+              << "s, paired_video_end=" << GST_TIME_AS_SECONDS(paired_video_end)
               << "s, expected=" << expected_complete_chapters << "s\n";
     return 9;
   }

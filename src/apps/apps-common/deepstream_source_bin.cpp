@@ -109,33 +109,6 @@ static std::vector<NvDsSrcBin*> uri_playlist_sources(NvDsSrcParentBin* parent) {
   return sources;
 }
 
-static gboolean update_uri_playlist_paired_video_end_locked(NvDsSrcBin* bin, GstClockTime logical_end) {
-  NvDsSrcParentBin* parent = bin ? bin->parent_bin : nullptr;
-  if (!parent || !parent->uri_playlist_exact_pairing_enabled) {
-    return TRUE;
-  }
-  if (logical_end == GST_CLOCK_TIME_NONE) {
-    return FALSE;
-  }
-  bin->uri_list_released_video_end = logical_end;
-  const std::vector<NvDsSrcBin*> sources = uri_playlist_sources(parent);
-  if (sources.size() != 2) {
-    return FALSE;
-  }
-  if (!GST_CLOCK_TIME_IS_VALID(sources[0]->uri_list_released_video_end) ||
-      !GST_CLOCK_TIME_IS_VALID(sources[1]->uri_list_released_video_end)) {
-    return TRUE;
-  }
-  const GstClockTime paired_end =
-      std::min(sources[0]->uri_list_released_video_end, sources[1]->uri_list_released_video_end);
-  if (!GST_CLOCK_TIME_IS_VALID(parent->uri_playlist_paired_video_end) ||
-      paired_end > parent->uri_playlist_paired_video_end) {
-    parent->uri_playlist_paired_video_end = paired_end;
-    g_cond_broadcast(&parent->uri_playlist_barrier_cond);
-  }
-  return TRUE;
-}
-
 static GstPadProbeReturn fail_uri_playlist_audio_gate(NvDsSrcBin* bin, const char* reason) {
   cancel_uri_playlist_source(bin, TRUE);
   GST_ELEMENT_ERROR(
@@ -409,7 +382,7 @@ static gboolean finish_uri_terminal_audio_drain(gpointer data) {
   return G_SOURCE_REMOVE;
 }
 
-static gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequence) {
+static gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequence, GstClockTime logical_video_end) {
   NvDsSrcParentBin* parent = bin ? bin->parent_bin : nullptr;
   if (!parent) {
     if (!bin) {
@@ -432,8 +405,9 @@ static gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequ
     return TRUE;
   }
   bin->uri_list_frame_ready_sequence = sequence;
+  bin->uri_list_released_video_end = logical_video_end;
   const std::vector<NvDsSrcBin*> sources = uri_playlist_sources(parent);
-  if (sources.size() != 2) {
+  if (sources.size() != 2 || !GST_CLOCK_TIME_IS_VALID(logical_video_end)) {
     parent->uri_playlist_barrier_failed = TRUE;
     parent->uri_playlist_terminal = TRUE;
     for (NvDsSrcBin* source : sources) {
@@ -448,7 +422,19 @@ static gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequ
       return source->uri_list_frame_ready_sequence == sequence;
     });
     if (all_sources_ready) {
-      if (parent->uri_playlist_next_frame_sequence == sequence) {
+      const gboolean valid_pair_ends = std::all_of(sources.begin(), sources.end(), [](const NvDsSrcBin* source) {
+        return GST_CLOCK_TIME_IS_VALID(source->uri_list_released_video_end);
+      });
+      const GstClockTime paired_end = valid_pair_ends
+          ? std::min(sources[0]->uri_list_released_video_end, sources[1]->uri_list_released_video_end)
+          : GST_CLOCK_TIME_NONE;
+      const gboolean advancing_frontier = GST_CLOCK_TIME_IS_VALID(paired_end) &&
+          (!GST_CLOCK_TIME_IS_VALID(parent->uri_playlist_paired_video_end) ||
+           paired_end > parent->uri_playlist_paired_video_end);
+      if (parent->uri_playlist_next_frame_sequence == sequence && advancing_frontier) {
+        // Publish sequence N's fully paired video endpoint before releasing either N buffer. Terminal EOS therefore
+        // cannot snapshot an N-1 audio cutoff after N has already become a stitchable output pair.
+        parent->uri_playlist_paired_video_end = paired_end;
         ++parent->uri_playlist_next_frame_sequence;
       } else {
         parent->uri_playlist_barrier_failed = TRUE;
@@ -1061,7 +1047,16 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
             ("source=%u sequence=%" G_GUINT64_FORMAT, bin->source_id, decoded_sequence));
         return GST_PAD_PROBE_DROP;
       }
-      if (!wait_at_uri_playlist_frame_barrier(bin, decoded_sequence)) {
+      GstClockTime video_duration = GST_BUFFER_DURATION(buf);
+      if (!GST_CLOCK_TIME_IS_VALID(video_duration) && bin->config && bin->config->camera_fps_n > 0 &&
+          bin->config->camera_fps_d > 0) {
+        video_duration = gst_util_uint64_scale(GST_SECOND, bin->config->camera_fps_d, bin->config->camera_fps_n);
+      }
+      const GstClockTime logical_video_end =
+          GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buf)) && GST_CLOCK_TIME_IS_VALID(video_duration)
+          ? GST_BUFFER_PTS(buf) + probe_data->base + video_duration
+          : GST_CLOCK_TIME_NONE;
+      if (!wait_at_uri_playlist_frame_barrier(bin, decoded_sequence, logical_video_end)) {
         g_mutex_lock(mutex);
         ++bin->uri_list_decoded_frame_count;
         if (uri_playlist_terminal_locked(bin)) {
@@ -1077,28 +1072,8 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
         bin->uri_list_last_pts = GST_BUFFER_PTS(buf);
         bin->uri_list_last_duration = GST_BUFFER_DURATION(buf);
       }
-      GstClockTime video_duration = GST_BUFFER_DURATION(buf);
-      if (!GST_CLOCK_TIME_IS_VALID(video_duration) && bin->config && bin->config->camera_fps_n > 0 &&
-          bin->config->camera_fps_d > 0) {
-        video_duration = gst_util_uint64_scale(GST_SECOND, bin->config->camera_fps_d, bin->config->camera_fps_n);
-      }
-      const GstClockTime logical_video_end =
-          GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buf)) && GST_CLOCK_TIME_IS_VALID(video_duration)
-          ? GST_BUFFER_PTS(buf) + probe_data->base + video_duration
-          : GST_CLOCK_TIME_NONE;
-      const gboolean paired_end_updated = update_uri_playlist_paired_video_end_locked(bin, logical_video_end);
       ++bin->uri_list_decoded_frame_count;
       g_mutex_unlock(mutex);
-      if (!paired_end_updated) {
-        cancel_uri_playlist_source(bin, TRUE);
-        GST_ELEMENT_ERROR(
-            bin->src_elem,
-            STREAM,
-            FAILED,
-            ("Could not update the exact-pair video timeline"),
-            ("source=%u sequence=%" G_GUINT64_FORMAT, bin->source_id, decoded_sequence));
-        return GST_PAD_PROBE_DROP;
-      }
     }
     if (probe_data->base != 0 && GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buf))) {
       GST_BUFFER_PTS(buf) += probe_data->base;
