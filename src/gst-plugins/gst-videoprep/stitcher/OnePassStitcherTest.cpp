@@ -189,6 +189,40 @@ bool expect_output_capacity_is_stable_across_batches() {
   return true;
 }
 
+bool expect_resumed_calibration_progress_contract() {
+  g_unsetenv("HSTREAM_CALIBRATION_PENDING");
+  const auto normal_existing = hm::stitcher::one_pass_calibration_progress_plan(
+      /*configured_during_run=*/false, /*mask_configured=*/true);
+  if (normal_existing.report || normal_existing.create_mask || normal_existing.complete) {
+    std::cerr << "Ordinary playback should not emit calibration completion for cached mappings" << std::endl;
+    return false;
+  }
+
+  g_setenv("HSTREAM_CALIBRATION_PENDING", "1", TRUE);
+  const auto resumed_existing = hm::stitcher::one_pass_calibration_progress_plan(
+      /*configured_during_run=*/false, /*mask_configured=*/true);
+  const auto resumed_missing = hm::stitcher::one_pass_calibration_progress_plan(
+      /*configured_during_run=*/false, /*mask_configured=*/false);
+  const auto resumed_after_creation = hm::stitcher::one_pass_calibration_progress_plan(
+      /*configured_during_run=*/false, /*mask_configured=*/true);
+  g_unsetenv("HSTREAM_CALIBRATION_PENDING");
+  if (!resumed_existing.report || resumed_existing.create_mask || !resumed_existing.complete ||
+      !resumed_missing.report || !resumed_missing.create_mask || resumed_missing.complete ||
+      !resumed_after_creation.complete) {
+    std::cerr << "Resumed calibration should complete with an existing mask or create and then complete a missing mask"
+              << std::endl;
+    return false;
+  }
+
+  const auto configured_missing = hm::stitcher::one_pass_calibration_progress_plan(
+      /*configured_during_run=*/true, /*mask_configured=*/false);
+  if (!configured_missing.report || !configured_missing.create_mask || configured_missing.complete) {
+    std::cerr << "New one-pass configuration should retain its calibration progress contract" << std::endl;
+    return false;
+  }
+  return true;
+}
+
 bool expect_prepare_runtime_partial_fails() {
   hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
   stitcher.SetProperty({"one-pass-mode", "1"});
@@ -381,6 +415,9 @@ int main() {
   }
   if (!expect_output_capacity_is_stable_across_batches()) {
     return 29;
+  }
+  if (!expect_resumed_calibration_progress_contract()) {
+    return 33;
   }
   if (!expect_prepare_runtime_partial_fails()) {
     return 14;

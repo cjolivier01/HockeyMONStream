@@ -185,6 +185,8 @@ class PipelineApplication {
   gboolean dump_pipeline_dot_;
   gboolean force_reconfigure_;
   gboolean clean_stitching_artifacts_{FALSE};
+  gboolean clean_stitching_from_control_points_{FALSE};
+  gchar* clean_stitching_expected_invalidation_id_{nullptr};
   gboolean progress_ui_enabled_{FALSE};
   gboolean progress_ui_graph_{TRUE};
   gboolean progress_ui_no_graph_{FALSE};

@@ -166,10 +166,22 @@ class HStreamWindow : public QMainWindow {
       const QString& runner,
       const QString& working_dir,
       const QProcessEnvironment& env,
-      bool* calibration_required,
-      bool pending_only = false);
-  bool runStitchingClean(const QString& runner, const QString& working_dir, const QProcessEnvironment& env);
-  bool saveStitchingCalibrationState(const QString& game_id, int control_points, const QString& status);
+      bool* calibration_required);
+  bool runStitchingClean(
+      const QString& runner,
+      const QString& working_dir,
+      const QProcessEnvironment& env,
+      bool from_control_points,
+      const QString& expected_invalidation_id);
+  bool saveStitchingCalibrationState(
+      const QString& game_id,
+      int control_points,
+      const QString& status,
+      const QString& stale_from,
+      const QString& expected_invalidation_id,
+      bool artifacts_invalidated,
+      bool require_matching_pending,
+      bool* applied = nullptr);
   QStringList enabledSinkNames() const;
   bool isCalibrationRun() const;
   void updateRunControls();
@@ -236,6 +248,10 @@ class HStreamWindow : public QMainWindow {
   QString active_run_game_id_;
   bool active_run_is_calibration_{false};
   int active_calibration_control_points_{0};
+  QString active_calibration_start_stage_;
+  QString active_calibration_invalidation_id_;
+  bool calibration_restart_requested_{false};
+  bool active_force_reconfigure_{false};
   QString pipeline_stdout_buffer_;
   QString pipeline_stderr_buffer_;
   bool capture_complete_log_{false};

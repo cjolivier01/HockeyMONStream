@@ -8,6 +8,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
 #include "hstream/src/libs/common/filesystem.h"
@@ -17,6 +18,21 @@ struct NvDsConfig;
 struct NvDsPipeline;
 
 namespace hm {
+namespace configurator_internal {
+
+struct ExplicitStitchingVideoSelection {
+  std::vector<std::string> left;
+  std::vector<std::string> right;
+  bool left_is_explicit{false};
+  bool right_is_explicit{false};
+  bool ui_roles_are_authoritative{false};
+  std::string error;
+};
+
+ExplicitStitchingVideoSelection select_explicit_stitching_videos(const YAML::Node& config, bool force);
+
+} // namespace configurator_internal
+
 class Configurator {
  public:
   static constexpr int kUseConfigFileGpu = -1;
@@ -33,7 +49,10 @@ class Configurator {
   absl::Status apply_config_item(const std::string& key, const std::string& value);
 
   absl::StatusOr<std::optional<YAML::Node>> load_private_config();
-  absl::Status save_private_config(const YAML::Node& private_config);
+  absl::Status save_private_config(
+      const YAML::Node& private_config,
+      const std::string& expected_invalidation_id = {},
+      bool remove_rink_masks = false);
 
   static std::filesystem::path get_game_dir(const std::string& game_id);
   static std::filesystem::path get_private_config_file_name(const std::string& game_id);
@@ -57,6 +76,8 @@ class Configurator {
   absl::Status complete_configuration(
       bool force,
       bool clean_stitching_artifacts = false,
+      bool clean_stitching_from_control_points = false,
+      const std::string& clean_expected_invalidation_id = {},
       bool show_render_sink = false,
       double show_render_scale = -1.0);
 
@@ -130,6 +151,7 @@ class Configurator {
   YAML::Node config_;
   YAML::Node private_config_;
   YAML::Node persisted_private_config_;
+  std::string active_stitching_invalidation_id_;
 
   bool set_stream_offsets_{false};
 };

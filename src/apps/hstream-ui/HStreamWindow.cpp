@@ -95,6 +95,14 @@ constexpr CalibrationStageSpec kCalibrationStages[] = {
     {"rink-mask", "Find the ice surface"},
 };
 
+std::optional<size_t> calibration_stage_index(const QString& stage) {
+  for (size_t index = 0; index < std::size(kCalibrationStages); ++index) {
+    if (stage == QString::fromLatin1(kCalibrationStages[index].id))
+      return index;
+  }
+  return std::nullopt;
+}
+
 absl::Status publish_yaml_config(const fs::path& config_path, const YAML::Node& config) {
   std::string contents;
   if (config.IsDefined() && !config.IsNull())
@@ -874,17 +882,24 @@ bool clear_stitching_frame_offsets(YAML::Node& config) {
   return changed;
 }
 
-bool invalidate_stitching_calibration(YAML::Node& config) {
+bool invalidate_stitching_calibration(YAML::Node& config, const char* stale_from) {
   YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
-  if (!calibration || !calibration.IsMap() || !calibration["status"]) {
+  if (!calibration || !calibration.IsMap()) {
     return false;
   }
-  const YAML::Node status = calibration["status"];
-  if (status.IsScalar() && status.as<std::string>() == "pending") {
-    return false;
-  }
+  const std::string previous_status =
+      calibration["status"] && calibration["status"].IsScalar() ? calibration["status"].as<std::string>() : "";
+  const std::string previous_stale = calibration["stale_from"] && calibration["stale_from"].IsScalar()
+      ? calibration["stale_from"].as<std::string>()
+      : "";
+  const bool previous_invalidated = calibration["artifacts_invalidated"] &&
+      calibration["artifacts_invalidated"].IsScalar() && calibration["artifacts_invalidated"].as<bool>();
+  const bool had_invalidation_id = calibration["invalidation_id"] && calibration["invalidation_id"].IsScalar();
   calibration["status"] = "pending";
-  return true;
+  calibration["stale_from"] = stale_from;
+  calibration["artifacts_invalidated"] = false;
+  calibration.remove("invalidation_id");
+  return previous_status != "pending" || previous_stale != stale_from || previous_invalidated || had_invalidation_id;
 }
 
 bool yaml_defined(YAML::Node node) {
@@ -1902,12 +1917,16 @@ int HStreamWindow::stitchingCalibrationControlPoints() const {
 bool HStreamWindow::runStitchingClean(
     const QString& runner,
     const QString& working_dir,
-    const QProcessEnvironment& env) {
+    const QProcessEnvironment& env,
+    bool from_control_points,
+    const QString& expected_invalidation_id) {
   const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
   QStringList clean_args;
   clean_args << "-g" << game_id << "--enable-sources=URI-MULTIPLE";
   clean_args << "-c" << pipelineConfigPath("ds_hockey_configure_stitching.yaml");
-  clean_args << "--clean";
+  clean_args << (from_control_points ? "--clean-from-control-points" : "--clean");
+  if (!expected_invalidation_id.isEmpty())
+    clean_args << QString("--clean-expected-invalidation-id=%1").arg(expected_invalidation_id);
 
   appendLog(QString("stitching calibration clean command %1 %2").arg(runner, clean_args.join(' ')));
   QProcess clean;
@@ -1941,7 +1960,17 @@ bool HStreamWindow::runStitchingClean(
   return true;
 }
 
-bool HStreamWindow::saveStitchingCalibrationState(const QString& game_id, int control_points, const QString& status) {
+bool HStreamWindow::saveStitchingCalibrationState(
+    const QString& game_id,
+    int control_points,
+    const QString& status,
+    const QString& stale_from,
+    const QString& expected_invalidation_id,
+    bool artifacts_invalidated,
+    bool require_matching_pending,
+    bool* applied) {
+  if (applied)
+    *applied = false;
   const fs::path config_path = fs::path(gameDirectory(game_id).toStdString()) / "config.yaml";
   auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
   if (!config_lock.ok()) {
@@ -1962,14 +1991,49 @@ bool HStreamWindow::saveStitchingCalibrationState(const QString& game_id, int co
     }
   }
 
-  config["hstream_ui"]["stitching_calibration"]["control_points"] = control_points;
-  config["hstream_ui"]["stitching_calibration"]["status"] = status.toStdString();
+  YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+  if (require_matching_pending) {
+    const int current_control_points = calibration["control_points"] && calibration["control_points"].IsScalar()
+        ? calibration["control_points"].as<int>()
+        : -1;
+    const QString current_status = calibration["status"] && calibration["status"].IsScalar()
+        ? QString::fromStdString(calibration["status"].as<std::string>())
+        : QString();
+    const QString current_stale = calibration["stale_from"] && calibration["stale_from"].IsScalar()
+        ? QString::fromStdString(calibration["stale_from"].as<std::string>())
+        : QString();
+    const QString current_invalidation_id = calibration["invalidation_id"] && calibration["invalidation_id"].IsScalar()
+        ? QString::fromStdString(calibration["invalidation_id"].as<std::string>())
+        : QString();
+    const bool current_invalidated = calibration["artifacts_invalidated"] &&
+        calibration["artifacts_invalidated"].IsScalar() && calibration["artifacts_invalidated"].as<bool>();
+    const bool expected_invalidated = status != "pending";
+    if (current_control_points != control_points || current_status != "pending" || current_stale != stale_from ||
+        current_invalidation_id != expected_invalidation_id || current_invalidated != expected_invalidated) {
+      appendLog(
+          QString("stitching calibration state transition to %1 skipped because dependency state changed concurrently")
+              .arg(status));
+      return true;
+    }
+  }
+
+  calibration["control_points"] = control_points;
+  calibration["status"] = status.toStdString();
+  if (status == "complete") {
+    calibration.remove("stale_from");
+    calibration.remove("artifacts_invalidated");
+  } else if (!stale_from.isEmpty()) {
+    calibration["stale_from"] = stale_from.toStdString();
+    calibration["artifacts_invalidated"] = artifacts_invalidated;
+  }
   const auto publish = publish_yaml_config(config_path, config);
   if (!publish.ok()) {
     appendLog(QString("failed to write stitching calibration settings %1: %2")
                   .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
     return false;
   }
+  if (applied)
+    *applied = true;
   appendLog(QString("stitching calibration control points saved %1 status=%2").arg(control_points).arg(status));
   return true;
 }
@@ -1978,8 +2042,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     const QString& runner,
     const QString& working_dir,
     const QProcessEnvironment& env,
-    bool* calibration_required,
-    bool pending_only) {
+    bool* calibration_required) {
   if (!calibration_required) {
     appendLog("stitching calibration setup did not provide a result destination");
     return false;
@@ -1990,15 +2053,23 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   bool saved_found = false;
   int saved_control_points = 0;
   QString saved_status;
-  auto loaded_config = hm::stitching::load_game_config_file(config_path);
-  if (!loaded_config.ok()) {
-    appendLog(
-        QString("could not read stitching calibration settings: %1").arg(loaded_config.status().ToString().c_str()));
-    return false;
-  }
-  if (loaded_config->has_value()) {
+  QString saved_stale_from;
+  bool saved_artifacts_invalidated = false;
+  bool clean_all = false;
+  bool clean_from_control_points = false;
+  {
+    auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
+    if (!config_lock.ok()) {
+      appendLog(
+          QString("could not lock stitching calibration settings: %1").arg(config_lock.status().ToString().c_str()));
+      return false;
+    }
+    YAML::Node config(YAML::NodeType::Map);
     try {
-      const YAML::Node config = **loaded_config;
+      if (fs::exists(config_path))
+        config = YAML::LoadFile(config_path.string());
+      if (!yaml_defined(config) || config.IsNull())
+        config = YAML::Node(YAML::NodeType::Map);
       YAML::Node saved;
       if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.control_points", &saved) && saved.IsScalar()) {
         saved_control_points = saved.as<int>();
@@ -2008,33 +2079,115 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.status", &status) && status.IsScalar()) {
         saved_status = QString::fromStdString(status.as<std::string>());
       }
+      YAML::Node stale_from;
+      if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.stale_from", &stale_from) &&
+          stale_from.IsScalar()) {
+        saved_stale_from = QString::fromStdString(stale_from.as<std::string>());
+      }
+      YAML::Node artifacts_invalidated;
+      if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.artifacts_invalidated", &artifacts_invalidated) &&
+          artifacts_invalidated.IsScalar()) {
+        saved_artifacts_invalidated = artifacts_invalidated.as<bool>();
+      }
     } catch (const std::exception& exc) {
       appendLog(QString("could not read stitching calibration settings: %1").arg(exc.what()));
       return false;
     }
+
+    const bool control_points_changed = !saved_found || saved_control_points != control_points;
+    const bool needs_calibration = active_force_reconfigure_ || control_points_changed || saved_status != "complete";
+    if (!needs_calibration) {
+      active_calibration_start_stage_.clear();
+      active_calibration_invalidation_id_.clear();
+      return true;
+    }
+
+    QString stale_from = saved_stale_from;
+    if (!calibration_stage_index(stale_from).has_value())
+      stale_from = "input";
+    const size_t features_index = *calibration_stage_index("features");
+    if (control_points_changed && saved_status == "complete") {
+      stale_from = "features";
+    } else if (control_points_changed && saved_found && features_index < *calibration_stage_index(stale_from)) {
+      stale_from = "features";
+    }
+    if (active_force_reconfigure_)
+      stale_from = "input";
+    active_calibration_start_stage_ = stale_from;
+
+    clean_from_control_points = !active_force_reconfigure_ && stale_from == "features" &&
+        (control_points_changed || !saved_artifacts_invalidated);
+    clean_all = active_force_reconfigure_ ||
+        (stale_from != "features" && (!saved_artifacts_invalidated || control_points_changed));
+
+    active_calibration_invalidation_id_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+    YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+    calibration["control_points"] = control_points;
+    calibration["status"] = "pending";
+    calibration["stale_from"] = stale_from.toStdString();
+    calibration["artifacts_invalidated"] = !(clean_all || clean_from_control_points);
+    calibration["invalidation_id"] = active_calibration_invalidation_id_.toStdString();
+    const auto publish = publish_yaml_config(config_path, config);
+    if (!publish.ok()) {
+      appendLog(QString("failed to write stitching calibration settings %1: %2")
+                    .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
+      return false;
+    }
   }
 
-  const bool needs_calibration = pending_only
-      ? saved_status != "complete"
-      : !saved_found || saved_control_points != control_points || saved_status != "complete";
-  if (needs_calibration) {
+  if (active_force_reconfigure_)
+    appendLog("stitching calibration restart requested; rebuilding the complete dependency graph");
+  if (clean_all) {
+    appendLog(QString("stitching calibration dependency %1 is stale; cleaning it and all downstream artifacts")
+                  .arg(active_calibration_start_stage_));
+    if (!runStitchingClean(
+            runner,
+            working_dir,
+            env,
+            /*from_control_points=*/false,
+            active_calibration_invalidation_id_)) {
+      return false;
+    }
+  } else if (clean_from_control_points) {
     const QString previous = saved_found ? QString::number(saved_control_points) : QString("unset");
-    if (pending_only) {
-      appendLog("stitching calibration is pending or untracked; cleaning stitch artifacts before program playback");
-    } else {
-      appendLog(QString("stitching calibration control points changed %1 -> %2 status=%3; cleaning stitch artifacts")
-                    .arg(previous)
-                    .arg(control_points)
-                    .arg(saved_status.isEmpty() ? "unset" : saved_status));
-    }
-    if (!runStitchingClean(runner, working_dir, env)) {
+    appendLog(QString(
+                  "stitching calibration control points changed %1 -> %2; invalidating control points and "
+                  "downstream artifacts")
+                  .arg(previous)
+                  .arg(control_points));
+    if (!runStitchingClean(
+            runner,
+            working_dir,
+            env,
+            /*from_control_points=*/true,
+            active_calibration_invalidation_id_)) {
       return false;
     }
-    if (!saveStitchingCalibrationState(active_run_game_id_, control_points, "pending")) {
-      return false;
-    }
-    *calibration_required = true;
+  } else {
+    appendLog(QString("stitching calibration resuming from stale dependency %1 without cleaning cached inputs")
+                  .arg(active_calibration_start_stage_));
   }
+
+  if (clean_all || clean_from_control_points) {
+    bool state_applied = false;
+    if (!saveStitchingCalibrationState(
+            active_run_game_id_,
+            control_points,
+            "pending",
+            active_calibration_start_stage_,
+            active_calibration_invalidation_id_,
+            true,
+            /*require_matching_pending=*/true,
+            &state_applied)) {
+      return false;
+    }
+    if (!state_applied) {
+      appendLog("stitching calibration cleanup was superseded by a newer dependency invalidation");
+      return false;
+    }
+  }
+  *calibration_required = true;
   return true;
 }
 
@@ -2149,14 +2302,28 @@ void HStreamWindow::showStitchingCalibrationDialog() {
   apply_state(calibration_icon_, "active");
   calibration_headline_->setText("Calibrating stitching…");
   apply_state(calibration_headline_, "active");
-  calibration_detail_->setText(QString("Waiting for synchronized frames from both cameras. Control-point limit: %1.")
-                                   .arg(active_calibration_control_points_));
+  const QString start_stage =
+      active_calibration_start_stage_.isEmpty() ? QString("input") : active_calibration_start_stage_;
+  calibration_detail_->setText(
+      start_stage == "features"
+          ? QString(
+                "Camera orientation and synchronization are current. Resuming at control-point detection with "
+                "a limit of %1.")
+                .arg(active_calibration_control_points_)
+          : QString("Waiting for synchronized frames from both cameras. Control-point limit: %1.")
+                .arg(active_calibration_control_points_));
   calibration_progress_->setVisible(true);
   calibration_ok_button_->setVisible(false);
   calibration_cancel_button_->setVisible(true);
   calibration_cancel_button_->setEnabled(true);
   static_cast<StitchingCalibrationDialog*>(calibration_dialog_)->setCloseAllowed(false);
-  setStitchingCalibrationStage("input", "started", calibration_detail_->text());
+  for (const CalibrationStageSpec& spec : kCalibrationStages) {
+    const QString stage = QString::fromLatin1(spec.id);
+    if (stage == start_stage)
+      break;
+    setStitchingCalibrationStage(stage, "complete", {});
+  }
+  setStitchingCalibrationStage(start_stage, "started", calibration_detail_->text());
   calibration_dialog_->show();
   calibration_dialog_->raise();
   calibration_dialog_->activateWindow();
@@ -2233,8 +2400,22 @@ void HStreamWindow::handleStitchingCalibrationOutput(const QString& line) {
 void HStreamWindow::completeStitchingCalibration() {
   if (!calibration_pending_ || active_run_game_id_.isEmpty())
     return;
-  if (!saveStitchingCalibrationState(active_run_game_id_, active_calibration_control_points_, "complete")) {
+  bool state_applied = false;
+  if (!saveStitchingCalibrationState(
+          active_run_game_id_,
+          active_calibration_control_points_,
+          "complete",
+          active_calibration_start_stage_,
+          active_calibration_invalidation_id_,
+          true,
+          /*require_matching_pending=*/true,
+          &state_applied)) {
     failStitchingCalibration("Stitching finished, but its completed state could not be saved.");
+    return;
+  }
+  if (!state_applied) {
+    failStitchingCalibration(
+        "Stitching inputs changed while calibration was running. Stop and press Play to rebuild the newer dependency.");
     return;
   }
   calibration_pending_ = false;
@@ -2297,7 +2478,14 @@ void HStreamWindow::failStitchingCalibration(const QString& message) {
     showStitchingCalibrationDialog();
   calibration_dialog_failed_ = true;
   if (calibration_pending_ && !active_run_game_id_.isEmpty())
-    saveStitchingCalibrationState(active_run_game_id_, active_calibration_control_points_, "failed");
+    saveStitchingCalibrationState(
+        active_run_game_id_,
+        active_calibration_control_points_,
+        "failed",
+        active_calibration_start_stage_,
+        active_calibration_invalidation_id_,
+        true,
+        /*require_matching_pending=*/true);
   if (!active_calibration_stage_.isEmpty())
     setStitchingCalibrationStage(active_calibration_stage_, "failed", {});
   calibration_icon_->setPixmap(style()->standardIcon(QStyle::SP_MessageBoxCritical).pixmap(32, 32));
@@ -2339,6 +2527,10 @@ QStringList HStreamWindow::pipelineArguments() const {
       hm::ui_internal::supports_snapshot_preview_sink(configured_render_sink);
   QStringList args;
   args << "-g" << game_id << "--enable-sources=URI-MULTIPLE";
+  if (active_force_reconfigure_)
+    args << "--force-reconfigure";
+  if (calibration_pending_ && !active_calibration_invalidation_id_.isEmpty())
+    args << QString("--clean-expected-invalidation-id=%1").arg(active_calibration_invalidation_id_);
   if (isCalibrationRun()) {
     args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
     args << QString("--enable-sinks=%1").arg(render_video ? "RENDER" : "FAKE");
@@ -2401,6 +2593,10 @@ void HStreamWindow::startPipeline() {
   active_run_game_id_ = game_id_edit_->text().trimmed();
   active_run_is_calibration_ = isCalibrationRun();
   active_calibration_control_points_ = 0;
+  active_calibration_start_stage_.clear();
+  active_calibration_invalidation_id_.clear();
+  active_force_reconfigure_ = active_run_is_calibration_ && calibration_restart_requested_;
+  calibration_restart_requested_ = false;
   scoreboard_selector_url_.clear();
   pending_runtime_controls_.clear();
   preview_frame_channels_received_.clear();
@@ -2426,8 +2622,7 @@ void HStreamWindow::startPipeline() {
   configure_pipeline_runtime_environment(env, working_dir);
   active_calibration_control_points_ = stitchingCalibrationControlPoints();
   bool calibration_required = false;
-  if (!prepareStitchingCalibrationRun(
-          runner, working_dir, env, &calibration_required, /*pending_only=*/!active_run_is_calibration_)) {
+  if (!prepareStitchingCalibrationRun(runner, working_dir, env, &calibration_required)) {
     showStitchingCalibrationDialog();
     failStitchingCalibration("Could not prepare the game for stitching calibration.");
     calibration_pending_ = false;
@@ -2523,6 +2718,9 @@ void HStreamWindow::startPipeline() {
   if (calibration_pending_) {
     const int control_points = active_calibration_control_points_;
     env.insert("HM_MAX_CONTROL_POINTS", QString::number(control_points));
+    env.insert("HSTREAM_CALIBRATION_PENDING", "1");
+    env.insert("HSTREAM_CALIBRATION_START_STAGE", active_calibration_start_stage_);
+    env.insert("HSTREAM_CALIBRATION_INVALIDATION_ID", active_calibration_invalidation_id_);
     if (active_run_is_calibration_) {
       appendLog(
           QString("stitching calibration control points=%1; starting one-pass stitched playback").arg(control_points));
@@ -2751,6 +2949,9 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   active_run_game_id_.clear();
   active_run_is_calibration_ = false;
   active_calibration_control_points_ = 0;
+  active_calibration_start_stage_.clear();
+  active_calibration_invalidation_id_.clear();
+  active_force_reconfigure_ = false;
   pipeline_state_->setText("STOPPED");
   preview_status_->setText("Pipeline stopped");
   if (stitched_status_)
@@ -2796,6 +2997,9 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   active_run_game_id_.clear();
   active_run_is_calibration_ = false;
   active_calibration_control_points_ = 0;
+  active_calibration_start_stage_.clear();
+  active_calibration_invalidation_id_.clear();
+  active_force_reconfigure_ = false;
   pipeline_state_->setText("STOPPED");
   preview_status_->setText("Pipeline failed to start");
   if (stitched_status_)
@@ -3057,6 +3261,7 @@ void HStreamWindow::updateRunControls() {
 
 void HStreamWindow::restartStage() {
   appendLog("stage restart requested");
+  calibration_restart_requested_ = isCalibrationRun();
   if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
     stopPipeline();
   }
@@ -4542,7 +4747,7 @@ bool HStreamWindow::savePrivateConfigForRole(
   }
 
   if (video_inputs_changed) {
-    changed = invalidate_stitching_calibration(config) || changed;
+    changed = invalidate_stitching_calibration(config, "input") || changed;
   }
 
   if (!changed) {
@@ -4666,7 +4871,7 @@ bool HStreamWindow::removePrivateConfigForRole(
     changed = clear_stitching_frame_offsets(config) || changed;
   }
   if (video_inputs_changed) {
-    changed = invalidate_stitching_calibration(config) || changed;
+    changed = invalidate_stitching_calibration(config, "input") || changed;
   }
   if (!changed) {
     if (published_config) {

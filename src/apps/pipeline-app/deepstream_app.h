@@ -40,11 +40,11 @@
 
 #include "configurator.h"
 
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
-#include <cstdlib>
 
 // #ifdef __cplusplus
 // extern "C" {
@@ -283,9 +283,17 @@ class HmApp : public _AppCtx {
   absl::Status complete_configuration(
       bool force,
       bool clean_stitching_artifacts = false,
+      bool clean_stitching_from_control_points = false,
+      const std::string& clean_expected_invalidation_id = {},
       bool show_render_sink = false,
       double show_render_scale = -1.0) {
-    return configurator_->complete_configuration(force, clean_stitching_artifacts, show_render_sink, show_render_scale);
+    return configurator_->complete_configuration(
+        force,
+        clean_stitching_artifacts,
+        clean_stitching_from_control_points,
+        clean_expected_invalidation_id,
+        show_render_sink,
+        show_render_scale);
   }
 
   bool pause();
@@ -344,10 +352,7 @@ absl::StatusOr<YAML::Node> get_app_config(const gchar* cfg_file_path);
  */
 gboolean parse_config_file(NvDsConfig* config, const gchar* cfg_file_path);
 
-gboolean parse_config_yaml(
-    const YAML::Node& configyml,
-    NvDsConfig* config,
-    const std::string& config_dir);
+gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, const std::string& config_dir);
 
 /**
  * Function to procure the NvDsSensorInfo for the source_id

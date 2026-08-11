@@ -90,6 +90,47 @@ int main() {
     const YAML::Node bbox = config["rink"]["ice_contours_combined_bbox"];
     ok &= expect(bbox[0].as<double>() == 2.0 && bbox[2].as<double>() == 28.0, "bbox must persist as x1,y1,x2,y2");
 
+    YAML::Node guarded_config = YAML::LoadFile((root / "config.yaml").string());
+    YAML::Node guarded_calibration = guarded_config["hstream_ui"]["stitching_calibration"];
+    guarded_calibration["status"] = "pending";
+    guarded_calibration["artifacts_invalidated"] = true;
+    guarded_calibration["invalidation_id"] = "rink-run-a";
+    {
+      std::ofstream output(root / "config.yaml");
+      output << guarded_config << '\n';
+    }
+    ok &= expect(
+        hm::stitching::save_rink_profile(root.string(), profile, "rink-run-a").ok(),
+        "current calibration token must permit transactional rink publication");
+    YAML::Node completed_config = YAML::LoadFile((root / "config.yaml").string());
+    YAML::Node completed_calibration = completed_config["hstream_ui"]["stitching_calibration"];
+    completed_calibration["status"] = "complete";
+    completed_calibration.remove("artifacts_invalidated");
+    completed_config["stitching"]["post_stitch_rotate_degrees"] = 2.5;
+    {
+      std::ofstream output(root / "config.yaml");
+      output << completed_config << '\n';
+    }
+    ok &= expect(
+        hm::stitching::save_rink_profile(root.string(), profile, "rink-run-a").ok() &&
+            hm::stitching::is_field_mask_configured(root.string()),
+        "the completed generation owner must be able to publish a live-rotation rink generation");
+    YAML::Node superseding_config = YAML::LoadFile((root / "config.yaml").string());
+    superseding_config["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+    superseding_config["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = false;
+    superseding_config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "rink-run-b";
+    {
+      std::ofstream output(root / "config.yaml");
+      output << superseding_config << '\n';
+    }
+    const auto superseded_rink = hm::stitching::save_rink_profile(root.string(), profile, "rink-run-a");
+    const YAML::Node after_superseded_rink = YAML::LoadFile((root / "config.yaml").string());
+    ok &= expect(
+        absl::IsAborted(superseded_rink) &&
+            after_superseded_rink["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() ==
+                "rink-run-b",
+        "superseded rink publication must preserve the newer invalidation generation");
+
     ::setenv("HM_TEST_RINK_INTERRUPT_AFTER_PREPARE_SYNC", "1", 1);
     const auto interrupted_before_publication = hm::stitching::save_rink_profile(root.string(), profile);
     ::unsetenv("HM_TEST_RINK_INTERRUPT_AFTER_PREPARE_SYNC");

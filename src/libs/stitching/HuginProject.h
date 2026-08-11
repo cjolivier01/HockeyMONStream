@@ -41,6 +41,7 @@ class HuginProject {
 
     double horizontal_fov{108.0};
     std::optional<size_t> max_canvas_dimension;
+    std::string expected_invalidation_id;
     ProgressCallback progress;
   };
 

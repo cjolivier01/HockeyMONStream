@@ -141,6 +141,7 @@ cc_library(
   visibility = ["//visibility:public"],
   deps = [
     ":feature_matcher",
+    ":game_config",
     "//src/libs/common:utils",
     "@opencv_linux//:opencv",
     "@com_google_absl//absl/status:status",
