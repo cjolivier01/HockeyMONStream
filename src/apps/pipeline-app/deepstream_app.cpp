@@ -202,6 +202,24 @@ static void s_fps_sensor_info_callback_stream_removed(AppCtx* appCtx, NvDsFPSSen
   }
 }
 
+static gboolean message_source_is_ui_preview(GstMessage* message) {
+  GstObject* current =
+      message && GST_MESSAGE_SRC(message) ? GST_OBJECT(gst_object_ref(GST_MESSAGE_SRC(message))) : NULL;
+  while (current) {
+    const gchar* name = GST_OBJECT_NAME(current);
+    const gboolean preview = name && (g_strrstr(name, "gpu_preview") || g_strrstr(name, "hmstitcher_preview"));
+    GstObject* parent = gst_object_get_parent(current);
+    gst_object_unref(current);
+    if (preview) {
+      if (parent)
+        gst_object_unref(parent);
+      return TRUE;
+    }
+    current = parent;
+  }
+  return FALSE;
+}
+
 /**
  * callback function to receive messages from components
  * in the pipeline.
@@ -244,6 +262,19 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       const gchar* attempts_error = "Reconnection attempts exceeded for all sources or EOS received.";
       guint i = 0;
       gst_message_parse_error(message, &error, &debuginfo);
+
+      // GPU previews are observational branches behind hmpreviewisolation.
+      // Converter/X11 errors must disable that preview without tearing down
+      // decoding, stitching, audio, or encoded outputs.
+      if (message_source_is_ui_preview(message)) {
+        g_printerr(
+            "HSTREAM_PREVIEW status=isolated-error source=%s message=%s\n",
+            GST_OBJECT_NAME(message->src),
+            error && error->message ? error->message : "unknown preview error");
+        g_clear_error(&error);
+        g_free(debuginfo);
+        return TRUE;
+      }
 
       // A URI decoder can fail while its peer is waiting at the exact-frame barrier. Wake every waiter before the
       // application begins error teardown; otherwise setting the pipeline to NULL can wait forever on that streaming

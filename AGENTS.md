@@ -43,6 +43,12 @@ Notes:
 - Bazel: use `cc_library` for reusable code and `cc_binary` for tools/tests. Prefer `INCLUDE_PREFIX` so includes look like `#include "hstream/src/libs/<mod>/Header.h"`.
 - File names: `PascalCase` for classes/headers, `snake_case` for Bazel targets when consistent with neighbors.
 
+## GPU Data-Path Guidelines
+- Keep video frames GPU-resident whenever possible. Avoid device-to-host (D2H) copies, CPU mapping/readback, and GPU-to-CPU-to-GPU round trips unless they are functionally required.
+- Preview and display paths should prefer zero-copy GPU-native interop (for example NVMM/EGL/OpenGL/CUDA-compatible rendering) over conversion to system-memory images.
+- When a D2H transfer is unavoidable, isolate it from the main pipeline, bound its frequency and resolution, and document why the transfer is necessary and what prevents a GPU-native path.
+- Treat new system-memory caps, `gst_buffer_map`/`gst_video_frame_map` calls on video frames, CPU-side image conversion, and snapshot encoding in a steady-state video path as performance-sensitive changes that require explicit justification and measurement.
+
 ## Testing Guidelines
 - Keep tests small and colocated. Name sources `*Test.cpp` and targets `<name>_test`.
 - Tests are simple binaries; run via `bazelisk run //<path>:<target>`. If using frameworks (e.g., Abseil), follow existing library deps.

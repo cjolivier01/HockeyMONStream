@@ -172,6 +172,9 @@ gboolean create_demux_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_
 
 void set_rtsp_udp_port_num(guint rtsp_port_num, guint udp_port_num);
 void set_rtsp_audio_sink_ids(const gint* sink_ids, guint num_sink_ids);
+// Preserve render-type audio routing while replacing only the render video
+// sink with a non-rendering terminator for the GPU-native hstream-ui preview.
+void set_embedded_gpu_preview_video_mode(gboolean enabled);
 gboolean start_webrtc_signaling_for_sink(GstElement* webrtc, const NvDsSinkEncoderConfig* config);
 gboolean link_webrtc_rtp_src_to_sink(
     GstElement* webrtc,

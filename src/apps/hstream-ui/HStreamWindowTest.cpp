@@ -1264,13 +1264,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           hm::ui_internal::supports_x11_embedding("xcb") && !hm::ui_internal::supports_x11_embedding("wayland") &&
               !hm::ui_internal::supports_x11_embedding("offscreen") &&
               !hm::ui_internal::supports_x11_embedding("xcb", true) &&
-              hm::ui_internal::supports_snapshot_preview_sink("") &&
-              hm::ui_internal::supports_snapshot_preview_sink("ximagesink") &&
-              hm::ui_internal::supports_snapshot_preview_sink("xvimagesink") &&
-              !hm::ui_internal::supports_snapshot_preview_sink("nveglglessink") &&
-              !hm::ui_internal::supports_snapshot_preview_sink("egl") &&
-              !hm::ui_internal::supports_snapshot_preview_sink("nv3dsink") &&
-              hm::ui_internal::preview_channel_for_tab(0, 3) == "main" &&
+              hm::ui_internal::preview_channel_for_tab(0, 3) == "program" &&
               hm::ui_internal::preview_channel_for_tab(1, 3) == "stitched" &&
               hm::ui_internal::preview_channel_for_tab(2, 3) == "source0" &&
               hm::ui_internal::preview_channel_for_tab(4, 3) == "source2" &&
@@ -1291,16 +1285,16 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   const int fresh_program_clean_commands = window->logText().count("stitching calibration clean command");
   qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
   for (QWidget* surface : {preview_surface, stitched_surface, camera1_surface, camera2_surface, camera3_surface}) {
-    surface->setProperty("previewFrameAvailable", true);
+    surface->setProperty("previewRendererState", "ready");
   }
   activate(start);
   if (!expect(
-          !preview_surface->property("previewFrameAvailable").toBool() &&
-              !stitched_surface->property("previewFrameAvailable").toBool() &&
-              !camera1_surface->property("previewFrameAvailable").toBool() &&
-              !camera2_surface->property("previewFrameAvailable").toBool() &&
-              !camera3_surface->property("previewFrameAvailable").toBool(),
-          "Starting a new pipeline should clear every preview before new backend frames arrive")) {
+          preview_surface->property("previewRendererState").toString() == "idle" &&
+              stitched_surface->property("previewRendererState").toString() == "idle" &&
+              camera1_surface->property("previewRendererState").toString() == "idle" &&
+              camera2_surface->property("previewRendererState").toString() == "idle" &&
+              camera3_surface->property("previewRendererState").toString() == "idle",
+          "Starting a new pipeline should reset every GPU preview before renderer status arrives")) {
     return false;
   }
   for (int i = 0; i < 200 &&
@@ -1326,7 +1320,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               fresh_program_status.as<std::string>() == "complete",
           "A fresh Program one-pass calibration should persist completed state");
   for (QWidget* surface : {preview_surface, stitched_surface, camera1_surface, camera2_surface, camera3_surface}) {
-    surface->setProperty("previewFrameAvailable", true);
+    surface->setProperty("previewRendererState", "ready");
   }
   activate(stop);
   for (int i = 0; i < 50 && window->pipelineStateText() != "STOPPED"; ++i) {
@@ -1334,12 +1328,12 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     QTest::qWait(10);
   }
   if (!expect(
-          !preview_surface->property("previewFrameAvailable").toBool() &&
-              !stitched_surface->property("previewFrameAvailable").toBool() &&
-              !camera1_surface->property("previewFrameAvailable").toBool() &&
-              !camera2_surface->property("previewFrameAvailable").toBool() &&
-              !camera3_surface->property("previewFrameAvailable").toBool(),
-          "Finishing a pipeline should clear every captured preview frame")) {
+          preview_surface->property("previewRendererState").toString() == "idle" &&
+              stitched_surface->property("previewRendererState").toString() == "idle" &&
+              camera1_surface->property("previewRendererState").toString() == "idle" &&
+              camera2_surface->property("previewRendererState").toString() == "idle" &&
+              camera3_surface->property("previewRendererState").toString() == "idle",
+          "Finishing a pipeline should clear every GPU renderer state")) {
     return false;
   }
   qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
@@ -2491,13 +2485,9 @@ NativePreviewCapture capture_native_preview(QWidget* surface, const QString& out
     return capture;
   }
   QApplication::processEvents();
-  // The production preview is painted by Qt from a backend-provided frame.
-  // Capture it through the top-level backing store: native-child grab paths
-  // are not reliable on all X11 compositors, while the same backing store is
-  // what produces the full UI screenshot and what the operator sees.
-  QWidget* top_level = surface->window();
-  const QPoint top_level_origin = surface->mapTo(top_level, QPoint(0, 0));
-  const QPixmap pixmap = top_level->grab(QRect(top_level_origin, surface->size()));
+  // The GPU preview owns this native child directly, so capture the X11
+  // drawable rather than asking Qt's CPU backing store for its parent.
+  const QPixmap pixmap = surface->screen()->grabWindow(surface->winId());
   if (pixmap.isNull() || !pixmap.save(output_path)) {
     return capture;
   }
@@ -2561,9 +2551,10 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   auto* stitched_surface = require_child<QWidget>(window, "stitchedPreviewSurface");
   auto* stitched_render_target = require_child<QWidget>(window, "stitchedPreviewRenderTarget");
   auto* camera1_surface = require_child<QWidget>(window, "camera1PreviewSurface");
+  auto* camera1_render_target = require_child<QWidget>(window, "camera1PreviewRenderTarget");
   if (!game_id_edit || !create || !start || !stop || !mode || !control_points || !render_video || !archive ||
       !preview_tabs || !program_surface || !program_render_target || !stitched_surface || !stitched_render_target ||
-      !camera1_surface) {
+      !camera1_surface || !camera1_render_target) {
     return false;
   }
   const bool verify_x11_preview = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_VERIFY_X11_PREVIEW");
@@ -2631,57 +2622,45 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     if (!verify_x11_preview || x11_previews_captured || window->pipelineStateText() != "PLAYING") {
       return;
     }
-    const QString program_target =
-        QString("runtime render window id=%1").arg(static_cast<qulonglong>(program_render_target->winId()));
     preview_tabs->setCurrentIndex(0);
-    for (int i = 0; i < 100 && !window->completeLogText().contains(program_target); ++i) {
+    for (int i = 0; i < 100 && program_surface->property("previewRendererState").toString() != "ready"; ++i) {
       QApplication::processEvents();
       QTest::qWait(50);
     }
-    program_target_acknowledged = window->completeLogText().contains(program_target);
-    for (int i = 0; i < 100 && !program_surface->property("previewFrameAvailable").toBool(); ++i) {
-      QApplication::processEvents();
-      QTest::qWait(50);
-    }
+    program_target_acknowledged = program_surface->property("previewRendererState").toString() == "ready";
     QTest::qWait(100);
     program_preview =
-        capture_native_preview(program_surface, QDir(artifact_dir).filePath("program-preview-surface.png"));
+        capture_native_preview(program_render_target, QDir(artifact_dir).filePath("program-preview-surface.png"));
 
     preview_tabs->setCurrentIndex(2);
     QApplication::processEvents();
-    for (int i = 0; i < 100 && !camera1_surface->property("previewFrameAvailable").toBool(); ++i) {
+    for (int i = 0; i < 100 && camera1_surface->property("previewRendererState").toString() != "ready"; ++i) {
       QApplication::processEvents();
       QTest::qWait(50);
     }
     QTest::qWait(100);
     camera1_preview =
-        capture_native_preview(camera1_surface, QDir(artifact_dir).filePath("camera1-preview-surface.png"));
+        capture_native_preview(camera1_render_target, QDir(artifact_dir).filePath("camera1-preview-surface.png"));
 
-    const QString stitched_target =
-        QString("runtime render window id=%1").arg(static_cast<qulonglong>(stitched_render_target->winId()));
     preview_tabs->setCurrentIndex(1);
-    for (int i = 0; i < 100 && !window->completeLogText().contains(stitched_target); ++i) {
+    for (int i = 0; i < 100 && stitched_surface->property("previewRendererState").toString() != "ready"; ++i) {
       QApplication::processEvents();
       QTest::qWait(50);
     }
-    stitched_target_acknowledged = window->completeLogText().contains(stitched_target);
-    for (int i = 0; i < 100 && !stitched_surface->property("previewFrameAvailable").toBool(); ++i) {
-      QApplication::processEvents();
-      QTest::qWait(50);
-    }
+    stitched_target_acknowledged = stitched_surface->property("previewRendererState").toString() == "ready";
     QTest::qWait(100);
     stitched_preview =
-        capture_native_preview(stitched_surface, QDir(artifact_dir).filePath("stitched-preview-surface.png"));
+        capture_native_preview(stitched_render_target, QDir(artifact_dir).filePath("stitched-preview-surface.png"));
 
     preview_tabs->setCurrentIndex(0);
-    for (int i = 0; i < 100 && !window->completeLogText().contains(program_target); ++i) {
+    for (int i = 0; i < 100 && program_surface->property("previewRendererState").toString() != "ready"; ++i) {
       QApplication::processEvents();
       QTest::qWait(50);
     }
-    program_target_acknowledged = program_target_acknowledged || window->completeLogText().contains(program_target);
-    x11_previews_captured = program_surface->property("previewFrameAvailable").toBool() &&
-        stitched_surface->property("previewFrameAvailable").toBool() &&
-        camera1_surface->property("previewFrameAvailable").toBool() && program_preview.passed &&
+    program_target_acknowledged =
+        program_target_acknowledged || program_surface->property("previewRendererState").toString() == "ready";
+    x11_previews_captured = program_target_acknowledged && stitched_target_acknowledged &&
+        camera1_surface->property("previewRendererState").toString() == "ready" && program_preview.passed &&
         stitched_preview.passed && camera1_preview.passed;
   };
   const QRegularExpression positive_fps(R"(\*\*PERF:\s+([0-9]+(?:\.[0-9]+)?))");
@@ -2753,9 +2732,9 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   window->grab().save(QDir(artifact_dir).filePath("ui-stopped.png"));
   const QString final_log = window->completeLogText();
   write_e2e_text(QDir(artifact_dir).filePath("pipeline.log"), final_log);
-  const bool program_channel_observed = final_log.contains("preview frame active channel=main");
-  const bool stitched_channel_observed = final_log.contains("preview frame active channel=stitched");
-  const bool camera1_channel_observed = final_log.contains("preview frame active channel=source0");
+  const bool program_channel_observed = final_log.contains("GPU preview ready channel=program");
+  const bool stitched_channel_observed = final_log.contains("GPU preview ready channel=stitched");
+  const bool camera1_channel_observed = final_log.contains("GPU preview ready channel=source0");
 
   QString log_issues;
   int log_issue_count = 0;

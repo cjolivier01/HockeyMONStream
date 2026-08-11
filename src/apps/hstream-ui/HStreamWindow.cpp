@@ -17,9 +17,7 @@
 #include <QtGui/QCloseEvent>
 #include <QtGui/QDesktopServices>
 #include <QtGui/QGuiApplication>
-#include <QtGui/QImage>
 #include <QtGui/QPaintEngine>
-#include <QtGui/QPainter>
 #include <QtGui/QPalette>
 #include <QtGui/QResizeEvent>
 #include <QtGui/QTextDocument>
@@ -211,45 +209,6 @@ class NativeVideoTarget : public QWidget {
   }
 };
 
-class SnapshotVideoSurface : public QWidget {
- public:
-  explicit SnapshotVideoSurface(QWidget* parent = nullptr) : QWidget(parent) {
-    setAutoFillBackground(false);
-  }
-
-  void setFrame(const QImage& frame) {
-    frame_ = frame;
-    setProperty("previewFrameAvailable", !frame_.isNull());
-    repaint();
-  }
-
- protected:
-  void paintEvent(QPaintEvent*) override {
-    QPainter painter(this);
-    painter.fillRect(rect(), Qt::black);
-    if (frame_.isNull()) {
-      return;
-    }
-    QSize target_size = frame_.size();
-    target_size.scale(size(), Qt::KeepAspectRatio);
-    const QRect target(
-        (width() - target_size.width()) / 2,
-        (height() - target_size.height()) / 2,
-        target_size.width(),
-        target_size.height());
-    painter.drawImage(target, frame_);
-  }
-
- private:
-  QImage frame_;
-};
-
-void set_snapshot_frame(QWidget* surface, const QImage& frame) {
-  if (auto* snapshot = dynamic_cast<SnapshotVideoSurface*>(surface)) {
-    snapshot->setFrame(frame);
-  }
-}
-
 class LetterboxRenderHost : public QWidget {
  public:
   explicit LetterboxRenderHost(double aspect_ratio, QWidget* parent = nullptr)
@@ -261,7 +220,10 @@ class LetterboxRenderHost : public QWidget {
     pal.setColor(QPalette::Window, Qt::black);
     setPalette(pal);
     setAutoFillBackground(true);
-    render_target_->hide();
+    render_surface_ = new QWidget(this);
+    render_surface_->setAutoFillBackground(true);
+    render_surface_->setPalette(pal);
+    render_target_ = new NativeVideoTarget(render_surface_);
   }
 
   QWidget* renderSurface() const {
@@ -291,17 +253,14 @@ class LetterboxRenderHost : public QWidget {
     }
     const int x = (available.width() - width) / 2;
     const int y = (available.height() - height) / 2;
-    // Some GstVideoOverlay sinks map an application-owned X11 window even
-    // after Qt hides it. Keep that transport-only target to one pixel so it
-    // cannot cover the snapshot surface if the sink remaps/raises it.
-    render_target_->setGeometry(x, y, 1, 1);
     render_surface_->setGeometry(x, y, width, height);
+    render_target_->setGeometry(0, 0, width, height);
   }
 
  private:
   double aspect_ratio_;
-  QWidget* render_target_{new NativeVideoTarget(this)};
-  QWidget* render_surface_{new SnapshotVideoSurface(this)};
+  QWidget* render_surface_{nullptr};
+  QWidget* render_target_{nullptr};
 };
 
 QString ansi_color(int code) {
@@ -1130,15 +1089,9 @@ bool hm::ui_internal::supports_x11_embedding(const QString& platform_name, bool 
   return !tegra_runtime && platform_name.compare("xcb", Qt::CaseInsensitive) == 0;
 }
 
-bool hm::ui_internal::supports_snapshot_preview_sink(const QString& configured_render_sink) {
-  const QString sink = configured_render_sink.trimmed().toLower();
-  return sink.isEmpty() || sink == "xvimagesink" || sink == "xvideo" || sink == "xv" || sink == "ximagesink" ||
-      sink == "ximage";
-}
-
 QString hm::ui_internal::preview_channel_for_tab(int tab_index, int camera_count) {
   if (tab_index == 0)
-    return "main";
+    return "program";
   if (tab_index == 1)
     return "stitched";
   const int source_index = tab_index - 2;
@@ -1160,10 +1113,6 @@ HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
   });
   connect(pipeline_process_, &QProcess::readyReadStandardOutput, this, [this]() { readPipelineOutput(); });
   connect(pipeline_process_, &QProcess::readyReadStandardError, this, [this]() { readPipelineOutput(); });
-  preview_frame_timer_ = new QTimer(this);
-  preview_frame_timer_->setInterval(500);
-  connect(preview_frame_timer_, &QTimer::timeout, this, [this]() { requestPreviewFrame(); });
-
   buildUi();
   refreshGames();
   updateRunControls();
@@ -2332,11 +2281,9 @@ QStringList HStreamWindow::pipelineArguments() const {
   const QString game_id = !active_run_game_id_.isEmpty()
       ? active_run_game_id_
       : (game_id_edit_ ? game_id_edit_->text().trimmed() : QString());
-  const QString configured_render_sink = qEnvironmentVariable("HM_RENDER_SINK").trimmed().toLower();
   const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
-  const bool embed_render_window = render_video &&
-      hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) &&
-      hm::ui_internal::supports_snapshot_preview_sink(configured_render_sink);
+  const bool embed_render_window =
+      render_video && hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime());
   QStringList args;
   args << "-g" << game_id << "--enable-sources=URI-MULTIPLE";
   if (isCalibrationRun()) {
@@ -2345,43 +2292,39 @@ QStringList HStreamWindow::pipelineArguments() const {
     if (render_video) {
       args << "--show";
     }
-    if (embed_render_window && stitched_render_target_) {
-      const WId window_id = stitched_render_target_->winId();
-      if (window_id != 0) {
-        args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(window_id));
-      }
-    }
   } else {
     args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
     args << QString("--enable-sinks=%1").arg(enabledSinkNames().join(","));
     if (render_video) {
       args << "--show";
     }
-    if (embed_render_window && preview_render_target_) {
-      const WId window_id = preview_render_target_->winId();
-      if (window_id != 0) {
-        args << QString("--render-window-id=%1").arg(static_cast<qulonglong>(window_id));
-      }
-    }
   }
   if (isCalibrationRun() || calibration_pending_) {
     args << QString("--options=%1").arg(kStitchedPreviewPipelineOptions);
   }
   if (embed_render_window) {
-    args << "--options=pipeline.hmstitcher.ui-preview=1";
-  }
-  if (embed_render_window) {
-    QStringList camera_window_ids;
-    for (QWidget* surface : camera_preview_render_targets_) {
-      if (!surface)
-        continue;
-      const WId window_id = surface->winId();
-      if (window_id != 0) {
-        camera_window_ids << QString::number(static_cast<qulonglong>(window_id));
-      }
+    QStringList preview_windows;
+    auto add_window = [&preview_windows](const QString& channel, QWidget* target) {
+      if (!target)
+        return false;
+      const WId window_id = target->winId();
+      if (window_id == 0)
+        return false;
+      preview_windows << QString("%1:%2").arg(channel).arg(static_cast<qulonglong>(window_id));
+      return true;
+    };
+    const bool have_required_windows =
+        add_window("program", preview_render_target_) && add_window("stitched", stitched_render_target_);
+    for (int camera_index = 0; camera_index < static_cast<int>(camera_preview_render_targets_.size()); ++camera_index) {
+      add_window(QString("source%1").arg(camera_index), camera_preview_render_targets_[camera_index]);
     }
-    if (!camera_window_ids.isEmpty()) {
-      args << QString("--source-render-window-ids=%1").arg(camera_window_ids.join(','));
+    if (have_required_windows) {
+      const QString initial_channel = preview_tabs_
+          ? hm::ui_internal::preview_channel_for_tab(
+                preview_tabs_->currentIndex(), static_cast<int>(camera_preview_render_targets_.size()))
+          : QString("program");
+      args << QString("--ui-preview-windows=%1").arg(preview_windows.join(','));
+      args << QString("--ui-preview-active=%1").arg(initial_channel.isEmpty() ? "program" : initial_channel);
     }
   }
   args << "--options=pipeline.hmaudio.enable=1";
@@ -2404,7 +2347,6 @@ void HStreamWindow::startPipeline() {
   scoreboard_selector_url_.clear();
   pending_runtime_controls_.clear();
   preview_frame_channels_received_.clear();
-  preview_frame_error_logged_ = false;
   if (preview_tabs_) {
     preview_tabs_->setCurrentIndex(isCalibrationRun() ? 1 : 0);
     QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
@@ -2446,6 +2388,14 @@ void HStreamWindow::startPipeline() {
     showStitchingCalibrationDialog();
 
   const QStringList args = pipelineArguments();
+  const QString initial_preview_channel = preview_tabs_
+      ? hm::ui_internal::preview_channel_for_tab(
+            preview_tabs_->currentIndex(), static_cast<int>(camera_preview_render_targets_.size()))
+      : QString("program");
+  preview_generation_ = 1;
+  active_preview_channel_.clear();
+  pending_preview_channel_ = initial_preview_channel.isEmpty() ? QString("program") : initial_preview_channel;
+  pending_preview_generation_ = preview_generation_;
   if (!setupPretrainedAssets(args)) {
     if (calibration_pending_)
       failStitchingCalibration("The pretrained calibration assets could not be prepared.");
@@ -2463,34 +2413,24 @@ void HStreamWindow::startPipeline() {
   logMissingTensorRtEngineCaches(args);
 
   const bool embedded_render = std::any_of(
-      args.begin(), args.end(), [](const QString& argument) { return argument.startsWith("--render-window-id="); });
+      args.begin(), args.end(), [](const QString& argument) { return argument.startsWith("--ui-preview-windows="); });
   pipeline_render_embedded_ = embedded_render;
   const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
   if (preview_surface_)
     preview_surface_->setVisible(embedded_render);
   if (preview_render_target_)
-    preview_render_target_->setVisible(false);
+    preview_render_target_->setVisible(embedded_render);
   if (stitched_surface_)
     stitched_surface_->setVisible(embedded_render);
   if (stitched_render_target_)
-    stitched_render_target_->setVisible(false);
+    stitched_render_target_->setVisible(embedded_render);
   for (QWidget* surface : camera_preview_surfaces_) {
     if (surface)
       surface->setVisible(embedded_render);
   }
   for (QWidget* target : camera_preview_render_targets_) {
     if (target)
-      target->setVisible(false);
-  }
-  if (embedded_render) {
-    if (preview_surface_)
-      preview_surface_->raise();
-    if (stitched_surface_)
-      stitched_surface_->raise();
-    for (QWidget* surface : camera_preview_surfaces_) {
-      if (surface)
-        surface->raise();
-    }
+      target->setVisible(embedded_render);
   }
   if (preview_external_notice_)
     preview_external_notice_->setVisible(!embedded_render);
@@ -2513,9 +2453,9 @@ void HStreamWindow::startPipeline() {
       notice->setText(camera_render_notice);
   }
   if (program_fullscreen_button_)
-    program_fullscreen_button_->setEnabled(embedded_render && !active_run_is_calibration_);
+    program_fullscreen_button_->setEnabled(embedded_render);
   if (stitched_fullscreen_button_)
-    stitched_fullscreen_button_->setEnabled(embedded_render && active_run_is_calibration_);
+    stitched_fullscreen_button_->setEnabled(embedded_render);
   if (render_video && !embedded_render)
     appendLog("render output will open in a separate DeepStream window; embedded preview is disabled");
   else if (!render_video)
@@ -2538,6 +2478,7 @@ void HStreamWindow::startPipeline() {
                      : "stitching calibration is complete; starting without video rendering");
   }
   appendLog("audio enabled via pipeline.hmaudio.enable=1; render audio uses the configured system audio sink");
+  env.insert("HSTREAM_UI_PARENT_PID", QString::number(QCoreApplication::applicationPid()));
   pipeline_process_->setProcessEnvironment(env);
   pipeline_process_->setWorkingDirectory(working_dir);
 #ifdef Q_OS_UNIX
@@ -2707,9 +2648,8 @@ void HStreamWindow::handlePipelineStarted() {
     }
   }
   appendLog(QString("pipeline started pid=%1").arg(pipeline_process_ ? pipeline_process_->processId() : 0));
-  if (pipeline_render_embedded_ && preview_frame_timer_) {
-    preview_frame_timer_->start();
-  }
+  if (pipeline_render_embedded_ && !pending_preview_channel_.isEmpty())
+    schedulePreviewReadyTimeout(pending_preview_channel_, pending_preview_generation_, 5 * 60 * 1000);
   updateRunControls();
 }
 
@@ -2726,13 +2666,6 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   pipeline_paused_ = false;
   pipeline_uses_process_group_ = false;
   pipeline_render_embedded_ = false;
-  if (preview_frame_timer_)
-    preview_frame_timer_->stop();
-  preview_frame_request_pending_ = false;
-  if (!preview_frame_request_path_.isEmpty())
-    QFile::remove(preview_frame_request_path_);
-  preview_frame_request_path_.clear();
-  preview_frame_request_channel_.clear();
   clearPreviewFrames();
   const bool stopped_by_user = pipeline_stop_requested_;
   pipeline_stop_requested_ = false;
@@ -2762,11 +2695,24 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
 }
 
 void HStreamWindow::clearPreviewFrames() {
-  set_snapshot_frame(preview_surface_, QImage());
-  set_snapshot_frame(stitched_surface_, QImage());
-  for (QWidget* surface : camera_preview_surfaces_) {
-    set_snapshot_frame(surface, QImage());
+  std::vector<QWidget*> surfaces = {preview_surface_, stitched_surface_};
+  surfaces.insert(surfaces.end(), camera_preview_surfaces_.begin(), camera_preview_surfaces_.end());
+  for (QWidget* surface : surfaces) {
+    if (!surface)
+      continue;
+    surface->setProperty("previewRendererState", "idle");
+    surface->setProperty("previewRendererGeneration", 0);
   }
+  std::vector<QWidget*> targets = {preview_render_target_, stitched_render_target_};
+  targets.insert(targets.end(), camera_preview_render_targets_.begin(), camera_preview_render_targets_.end());
+  for (QWidget* target : targets) {
+    if (target)
+      target->hide();
+  }
+  preview_frame_channels_received_.clear();
+  active_preview_channel_.clear();
+  pending_preview_channel_.clear();
+  pending_preview_generation_ = 0;
 }
 
 void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
@@ -2823,7 +2769,7 @@ void HStreamWindow::readPipelineOutput() {
       line.remove('\r');
       if (!line.trimmed().isEmpty()) {
         const QString trimmed = line.trimmed();
-        if (handlePreviewFrameResponse(trimmed)) {
+        if (handleGpuPreviewStatus(trimmed)) {
           continue;
         }
         appendLog(trimmed);
@@ -2880,130 +2826,178 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
   }
 }
 
-void HStreamWindow::requestPreviewFrame() {
-  if (!pipeline_render_embedded_ || preview_frame_request_pending_ || pipeline_paused_ || !pipeline_process_ ||
-      pipeline_process_->state() == QProcess::NotRunning || !preview_tabs_) {
-    return;
-  }
-
-  const int tab_index = preview_tabs_->currentIndex();
-  const QString channel =
-      hm::ui_internal::preview_channel_for_tab(tab_index, static_cast<int>(camera_preview_surfaces_.size()));
-  if (channel.isEmpty())
-    return;
-
-  QDir temporary_root(QStandardPaths::writableLocation(QStandardPaths::TempLocation));
-  const quint64 request_generation = ++preview_frame_request_generation_;
-  const QString path = temporary_root.filePath(QString("hstream-ui-preview-%1-%2-%3.jpg")
-                                                   .arg(QCoreApplication::applicationPid())
-                                                   .arg(channel)
-                                                   .arg(request_generation));
-  QFile::remove(path);
-  const QByteArray command = QString("@capture-preview-frame %1 %2\n").arg(channel, path).toUtf8();
-  if (pipeline_process_->write(command) != command.size()) {
-    return;
-  }
-  preview_frame_request_pending_ = true;
-  preview_frame_request_channel_ = channel;
-  preview_frame_request_path_ = path;
-  QTimer::singleShot(3000, this, [this, request_generation, channel, path]() {
-    if (!preview_frame_request_pending_ || preview_frame_request_generation_ != request_generation ||
-        preview_frame_request_channel_ != channel || preview_frame_request_path_ != path) {
-      return;
-    }
-    preview_frame_request_pending_ = false;
-    QFile::remove(preview_frame_request_path_);
-    preview_frame_request_path_.clear();
-    preview_frame_request_channel_.clear();
-  });
+QWidget* HStreamWindow::previewSurfaceForChannel(const QString& channel) const {
+  if (channel == "program")
+    return preview_surface_;
+  if (channel == "stitched")
+    return stitched_surface_;
+  if (!channel.startsWith("source"))
+    return nullptr;
+  bool valid_index = false;
+  const int source_index = channel.mid(6).toInt(&valid_index);
+  return valid_index && source_index >= 0 && source_index < static_cast<int>(camera_preview_surfaces_.size())
+      ? camera_preview_surfaces_[source_index]
+      : nullptr;
 }
 
-bool HStreamWindow::handlePreviewFrameResponse(const QString& line) {
-  static const QRegularExpression success_pattern(
-      R"(^runtime preview frame channel=(\S+) path=(.+) width=(\d+) height=(\d+)$)");
-  const QRegularExpressionMatch success = success_pattern.match(line);
-  if (success.hasMatch()) {
-    const QString channel = success.captured(1);
-    const QString path = success.captured(2);
-    const bool is_current_request = preview_frame_request_pending_ && channel == preview_frame_request_channel_ &&
-        path == preview_frame_request_path_;
-    if (!is_current_request) {
-      QFile::remove(path);
-      return true;
+QWidget* HStreamWindow::previewTargetForChannel(const QString& channel) const {
+  if (channel == "program")
+    return preview_render_target_;
+  if (channel == "stitched")
+    return stitched_render_target_;
+  if (!channel.startsWith("source"))
+    return nullptr;
+  bool valid_index = false;
+  const int source_index = channel.mid(6).toInt(&valid_index);
+  return valid_index && source_index >= 0 && source_index < static_cast<int>(camera_preview_render_targets_.size())
+      ? camera_preview_render_targets_[source_index]
+      : nullptr;
+}
+
+bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
+  static const QRegularExpression pattern(
+      R"(^HSTREAM_PREVIEW channel=(\S+) status=(\S+) generation=(\d+) message=(.*)$)");
+  const QRegularExpressionMatch match = pattern.match(line);
+  if (!match.hasMatch())
+    return false;
+
+  const QString channel = match.captured(1);
+  const QString status = match.captured(2);
+  bool generation_valid = false;
+  const quint64 generation = match.captured(3).toULongLong(&generation_valid);
+  const QString message = match.captured(4);
+  if (!generation_valid || generation < preview_generation_)
+    return true;
+
+  QWidget* surface = previewSurfaceForChannel(channel);
+  QWidget* target = previewTargetForChannel(channel);
+  if (surface) {
+    surface->setProperty("previewRendererState", status);
+    surface->setProperty("previewRendererGeneration", generation);
+  }
+  if (target) {
+    target->setProperty("previewRendererState", status);
+    target->setProperty("previewRendererGeneration", generation);
+  }
+  QLabel* notice = nullptr;
+  if (channel == "program") {
+    notice = preview_external_notice_;
+  } else if (channel == "stitched") {
+    notice = stitched_external_notice_;
+  } else if (channel.startsWith("source")) {
+    bool valid_index = false;
+    const int source_index = channel.mid(6).toInt(&valid_index);
+    if (valid_index && source_index >= 0 && source_index < static_cast<int>(camera_preview_notices_.size()))
+      notice = camera_preview_notices_[source_index];
+  }
+  const bool matches_pending = channel == pending_preview_channel_ && generation == pending_preview_generation_;
+  if (status == "activated") {
+    if (matches_pending) {
+      if (preview_status_)
+        preview_status_->setText(QString("Waiting for first GPU frame from %1").arg(channel));
     }
-    const QImage frame(path);
-    if (!frame.isNull()) {
-      if (channel == "main") {
-        set_snapshot_frame(preview_surface_, frame);
-      } else if (channel == "stitched") {
-        set_snapshot_frame(stitched_surface_, frame);
-      } else if (channel.startsWith("source")) {
-        bool valid_index = false;
-        const int source_index = channel.mid(6).toInt(&valid_index);
-        if (valid_index && source_index >= 0 && source_index < static_cast<int>(camera_preview_surfaces_.size())) {
-          set_snapshot_frame(camera_preview_surfaces_[source_index], frame);
-        }
-      }
-      if (preview_frame_channels_received_.insert(channel).second) {
-        const QString artifact_dir = qEnvironmentVariable("HSTREAM_UI_E2E_ARTIFACT_DIR");
-        if (!artifact_dir.isEmpty()) {
-          frame.save(QDir(artifact_dir).filePath(QString("backend-%1-preview.jpg").arg(channel)));
-        }
-        appendLog(
-            QString("preview frame active channel=%1 size=%2x%3").arg(channel).arg(frame.width()).arg(frame.height()));
-      }
-    } else if (!preview_frame_error_logged_) {
-      preview_frame_error_logged_ = true;
-      appendLog(QString("preview frame could not be loaded from %1").arg(path));
-    }
-    QFile::remove(path);
-    preview_frame_request_pending_ = false;
-    preview_frame_request_path_.clear();
-    preview_frame_request_channel_.clear();
     return true;
   }
-
-  static const QRegularExpression unavailable_pattern(R"(^runtime preview frame unavailable channel=(\S+) path=(.+)$)");
-  const QRegularExpressionMatch unavailable = unavailable_pattern.match(line);
-  static const QRegularExpression failed_pattern(
-      R"(^runtime preview frame failed channel=(\S+) path=(.+) message=(.*)$)");
-  const QRegularExpressionMatch failed = failed_pattern.match(line);
-  if (!unavailable.hasMatch() && !failed.hasMatch()) {
-    return false;
-  }
-  if (failed.hasMatch() && !preview_frame_error_logged_) {
-    preview_frame_error_logged_ = true;
-    appendLog(line);
-  }
-  const QString response_channel = unavailable.hasMatch() ? unavailable.captured(1) : failed.captured(1);
-  const QString response_path = unavailable.hasMatch() ? unavailable.captured(2) : failed.captured(2);
-  if (preview_frame_request_pending_ && response_channel == preview_frame_request_channel_ &&
-      response_path == preview_frame_request_path_) {
-    preview_frame_request_pending_ = false;
-    QFile::remove(preview_frame_request_path_);
-    preview_frame_request_path_.clear();
-    preview_frame_request_channel_.clear();
+  if (status == "ready") {
+    if (matches_pending) {
+      active_preview_channel_ = channel;
+      pending_preview_channel_.clear();
+      pending_preview_generation_ = 0;
+    }
+    if (surface)
+      surface->show();
+    if (target)
+      target->show();
+    if (notice)
+      notice->hide();
+    if (preview_frame_channels_received_.insert(channel).second)
+      appendLog(QString("GPU preview ready channel=%1 generation=%2").arg(channel).arg(generation));
+  } else if (status == "failed" || status == "unavailable") {
+    const bool affected_active = channel == active_preview_channel_;
+    if (matches_pending) {
+      pending_preview_channel_.clear();
+      pending_preview_generation_ = 0;
+    }
+    if (affected_active)
+      active_preview_channel_.clear();
+    if (target)
+      target->hide();
+    if (surface)
+      surface->hide();
+    if (notice) {
+      notice->setText(
+          status == "failed" ? QString("GPU preview failed\n%1").arg(message)
+                             : QString("GPU preview unavailable\n%1").arg(message));
+      notice->show();
+    }
+    if ((matches_pending || affected_active) && preview_status_)
+      preview_status_->setText(
+          status == "failed" ? "GPU preview failed; pipeline continues"
+                             : "GPU preview unavailable; pipeline continues");
+    appendLog(QString("GPU preview %1 channel=%2 generation=%3 message=%4")
+                  .arg(status, channel)
+                  .arg(generation)
+                  .arg(message));
+  } else if (status == "deactivated") {
+    if (channel == active_preview_channel_)
+      active_preview_channel_.clear();
+    if (target)
+      target->hide();
+    if (surface)
+      surface->hide();
   }
   return true;
 }
 
 void HStreamWindow::switchPipelineRenderTarget(int tab_index) {
   if (!pipeline_render_embedded_ || !pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning ||
-      tab_index < 0 || tab_index > 1) {
+      tab_index < 0) {
     return;
   }
-  QWidget* target = tab_index == 0 ? preview_render_target_ : stitched_render_target_;
-  if (!target)
+  const QString channel =
+      hm::ui_internal::preview_channel_for_tab(tab_index, static_cast<int>(camera_preview_render_targets_.size()));
+  if (channel.isEmpty() || channel == pending_preview_channel_ ||
+      (pending_preview_channel_.isEmpty() && channel == active_preview_channel_))
     return;
-  const WId window_id = target->winId();
-  if (window_id == 0)
-    return;
-  const QByteArray command = QString("@set-render-window %1\n").arg(static_cast<qulonglong>(window_id)).toUtf8();
+  const quint64 generation = preview_generation_ + 1;
+  const QByteArray command = QString("@set-preview-active %1 %2\n").arg(channel).arg(generation).toUtf8();
   if (pipeline_process_->write(command) != command.size()) {
-    appendLog(QString("could not move pipeline video to the %1 view").arg(tab_index == 0 ? "Program" : "Stitched"));
+    appendLog(QString("could not activate GPU preview channel %1").arg(channel));
     return;
   }
-  appendLog(QString("pipeline video target switched to %1 view").arg(tab_index == 0 ? "Program" : "Stitched"));
+  preview_generation_ = generation;
+  pending_preview_channel_ = channel;
+  pending_preview_generation_ = generation;
+  if (QWidget* surface = previewSurfaceForChannel(channel))
+    surface->setProperty("previewRendererState", "activating");
+  appendLog(QString("GPU preview requested channel=%1 generation=%2").arg(channel).arg(generation));
+  schedulePreviewReadyTimeout(channel, generation, 10 * 1000);
+}
+
+void HStreamWindow::schedulePreviewReadyTimeout(const QString& channel, quint64 generation, int timeout_ms) {
+  QTimer::singleShot(timeout_ms, this, [this, channel, generation]() {
+    if (pending_preview_channel_ != channel || pending_preview_generation_ != generation || !pipeline_process_ ||
+        pipeline_process_->state() == QProcess::NotRunning) {
+      return;
+    }
+    appendLog(QString("GPU preview first-frame timeout channel=%1 generation=%2").arg(channel).arg(generation));
+    const quint64 deactivate_generation = preview_generation_ + 1;
+    const QByteArray deactivate = QString("@set-preview-active none %1\n").arg(deactivate_generation).toUtf8();
+    if (pipeline_process_->write(deactivate) != deactivate.size()) {
+      appendLog("could not deactivate the unready GPU preview; leaving its target visible");
+      return;
+    }
+    preview_generation_ = deactivate_generation;
+    pending_preview_channel_.clear();
+    pending_preview_generation_ = 0;
+    active_preview_channel_.clear();
+    if (QWidget* target = previewTargetForChannel(channel))
+      target->hide();
+    if (QWidget* surface = previewSurfaceForChannel(channel))
+      surface->hide();
+    if (preview_status_)
+      preview_status_->setText("GPU preview first frame timed out; pipeline continues");
+  });
 }
 
 void HStreamWindow::togglePreviewFullscreen(int tab_index) {
