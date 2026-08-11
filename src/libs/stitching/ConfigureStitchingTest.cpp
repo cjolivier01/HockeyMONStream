@@ -264,6 +264,82 @@ rink:
   return true;
 }
 
+bool expect_control_point_clean_preserves_upstream_dependencies(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "control_point_clean_dependencies";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir) || !write_text_file(dir / "s.png", "stitched") ||
+      !write_text_file(dir / "rink_mask_0.png", "mask") || !write_text_file(dir / "matches.png", "matches") ||
+      !write_text_file(
+          dir / "config.yaml",
+          R"(game:
+  videos:
+    left: [cam1/GX010001.MP4]
+    right: [cam2/GX010002.MP4]
+  stitching:
+    frame_offsets:
+      left: 3
+      right: 0
+stitching:
+  control_points: [[1, 2], [3, 4]]
+rink:
+  scoreboard:
+    perspective_polygon: [[0, 0], [1, 1]]
+hstream_ui:
+  stitching_calibration:
+    control_points: 750
+    status: pending
+    stale_from: features
+    artifacts_invalidated: false
+    invalidation_id: current-clean
+)")) {
+    return false;
+  }
+
+  const auto superseded =
+      hm::stitching::clean_stitching_artifacts_from_control_points(dir.string(), "delayed-stale-clean");
+  if (superseded.code() != absl::StatusCode::kAborted || !fs::exists(dir / "hm_project.pto") ||
+      !fs::exists(dir / "mapping_0000.tif")) {
+    std::cerr << "superseded cleanup deleted a newer artifact generation: " << superseded << std::endl;
+    return false;
+  }
+
+  const auto cleanup_before = hm::stitching::is_stitching_invalidation_cleanup_applied(dir.string(), "current-clean");
+  if (!cleanup_before.ok() || cleanup_before.value()) {
+    std::cerr << "current cleanup state was not revalidated before cleaning: " << cleanup_before.status() << std::endl;
+    return false;
+  }
+
+  const auto status = hm::stitching::clean_stitching_artifacts_from_control_points(dir.string(), "current-clean");
+  if (!status.ok()) {
+    std::cerr << "control-point dependency clean failed: " << status << std::endl;
+    return false;
+  }
+  const YAML::Node config = YAML::LoadFile((dir / "config.yaml").string());
+  const bool upstream_preserved = fs::exists(dir / "left.png") && fs::exists(dir / "right.png") &&
+      config["game"]["videos"]["left"] && config["game"]["videos"]["right"] &&
+      config["game"]["stitching"]["frame_offsets"];
+  const bool downstream_removed = !fs::exists(dir / "hm_project.pto") && !fs::exists(dir / "autooptimiser_out.pto") &&
+      !fs::exists(dir / "mapping_0000.tif") && !fs::exists(dir / "mapping_0001.tif") &&
+      !fs::exists(dir / "matches.png") && !fs::exists(dir / "s.png") && !fs::exists(dir / "rink_mask_0.png") &&
+      !config["stitching"] && !config["rink"];
+  const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+  if (!upstream_preserved || !downstream_removed || !calibration || calibration["control_points"].as<int>(0) != 750 ||
+      calibration["stale_from"].as<std::string>("") != "features") {
+    std::cerr << "control-point clean did not preserve the dependency boundary:\n" << config << std::endl;
+    return false;
+  }
+  YAML::Node precleaned = YAML::Clone(config);
+  precleaned["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = true;
+  const auto published = hm::stitching::publish_game_config(dir, YAML::Dump(precleaned) + "\n");
+  const auto cleanup_after = hm::stitching::is_stitching_invalidation_cleanup_applied(dir.string(), "current-clean");
+  if (!published.ok() || !cleanup_after.ok() || !cleanup_after.value()) {
+    std::cerr << "completed cleanup state was not revalidated: publish=" << published
+              << " validation=" << cleanup_after.status() << std::endl;
+    return false;
+  }
+  return true;
+}
+
 bool expect_clean_waits_for_transaction_locks(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "clean_locking";
   fs::remove_all(dir);
@@ -350,6 +426,10 @@ int main() {
 
   if (!expect_clean_preserves_unrelated_config(tmpdir)) {
     finish(tmpdir, 8);
+  }
+
+  if (!expect_control_point_clean_preserves_upstream_dependencies(tmpdir)) {
+    finish(tmpdir, 11);
   }
 
   if (!expect_clean_waits_for_transaction_locks(tmpdir)) {

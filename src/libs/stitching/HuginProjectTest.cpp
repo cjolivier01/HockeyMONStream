@@ -289,6 +289,45 @@ int main() {
     std::ifstream input(root / "game" / "autooptimiser_out.pto", std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
   }();
+  {
+    std::ofstream config(root / "game" / "config.yaml");
+    config << "hstream_ui:\n"
+              "  stitching_calibration:\n"
+              "    status: pending\n"
+              "    artifacts_invalidated: true\n"
+              "    invalidation_id: hugin-run-a\n";
+  }
+  options.expected_invalidation_id = "hugin-run-a";
+  bool superseded_during_hugin = false;
+  options.progress = [&](const std::string& stage, const std::string& status, const std::string&) {
+    if (stage != "canvas" || status != "started" || superseded_during_hugin)
+      return;
+    superseded_during_hugin = true;
+    std::ofstream config(root / "game" / "config.yaml");
+    config << "hstream_ui:\n"
+              "  stitching_calibration:\n"
+              "    status: pending\n"
+              "    artifacts_invalidated: false\n"
+              "    invalidation_id: hugin-run-b\n";
+  };
+  const auto superseded_hugin = hm::stitching::HuginProject::Configure(root / "game", matches, options);
+  ok &= expect(
+      superseded_during_hugin && superseded_hugin.code() == absl::StatusCode::kAborted,
+      "superseded Hugin calibration must abort at its publication transaction");
+  const auto project_after_superseded_hugin = [&]() {
+    std::ifstream input(root / "game" / "autooptimiser_out.pto", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  }();
+  const auto config_after_superseded_hugin = [&]() {
+    std::ifstream input(root / "game" / "config.yaml", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  }();
+  ok &= expect(
+      project_after_superseded_hugin == previous_project &&
+          config_after_superseded_hugin.find("invalidation_id: hugin-run-b") != std::string::npos,
+      "superseded Hugin publication must preserve both the prior artifacts and the newer invalidation");
+  options.expected_invalidation_id.clear();
+  options.progress = {};
   ::setenv("HM_TEST_STITCH_INTERRUPT_AFTER_PREPARE_SYNC", "1", 1);
   const auto interrupted_before_publication = hm::stitching::HuginProject::Configure(root / "game", matches, options);
   ::unsetenv("HM_TEST_STITCH_INTERRUPT_AFTER_PREPARE_SYNC");

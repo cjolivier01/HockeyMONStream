@@ -194,12 +194,28 @@ bool write_fake_runner(const QString& path) {
   file.write("print('HM_RENDER_SINK=' + os.environ.get('HM_RENDER_SINK', ''), flush=True)\n");
   file.write("print('HM_NO_SCOREBOARD=' + os.environ.get('HM_NO_SCOREBOARD', ''), flush=True)\n");
   file.write("print('HM_MAX_CONTROL_POINTS=' + os.environ.get('HM_MAX_CONTROL_POINTS', ''), flush=True)\n");
+  file.write(
+      "print('HSTREAM_CALIBRATION_INVALIDATION_ID=' + "
+      "os.environ.get('HSTREAM_CALIBRATION_INVALIDATION_ID', ''), flush=True)\n");
   file.write("print('LD_LIBRARY_PATH=' + os.environ.get('LD_LIBRARY_PATH', ''), flush=True)\n");
   file.write("if os.environ.get('HM_NO_SCOREBOARD') != '1':\n");
   file.write("    print('Scoreboard corners are not configured. Open this private, expiring URL:', flush=True)\n");
   file.write("    print('  http://127.0.0.1:45678/?token=' + ('a' * 64), flush=True)\n");
   file.write("    print('Scoreboard overlay disabled by config reload', flush=True)\n");
-  file.write("if '--clean' in sys.argv[1:]:\n");
+  file.write("if '--clean' in sys.argv[1:] or '--clean-from-control-points' in sys.argv[1:]:\n");
+  file.write("    if os.environ.get('HSTREAM_UI_TEST_CLEAN_INVALIDATE_INPUT') == '1':\n");
+  file.write("        game_id = sys.argv[sys.argv.index('-g') + 1]\n");
+  file.write("        config_path = os.path.join(os.environ['HM_GAME_DIR'], game_id, 'config.yaml')\n");
+  file.write("        with open(config_path, 'r', encoding='utf-8') as source:\n");
+  file.write("            config_text = source.read()\n");
+  file.write("        config_text = config_text.replace('stale_from: features', 'stale_from: input')\n");
+  file.write(
+      "        config_text = ''.join(line for line in config_text.splitlines(True) if 'invalidation_id:' not in line)\n");
+  file.write("        with open(config_path, 'w', encoding='utf-8') as destination:\n");
+  file.write("            destination.write(config_text)\n");
+  file.write("    if os.environ.get('HSTREAM_UI_TEST_CLEAN_RESULT') == 'failure':\n");
+  file.write("        print('clean runner forced failure', flush=True)\n");
+  file.write("        sys.exit(8)\n");
   file.write("    print('clean runner exiting', flush=True)\n");
   file.write("    sys.exit(0)\n");
   file.write("sys.stdout.write('\\033[34mANSI')\n");
@@ -212,25 +228,29 @@ bool write_fake_runner(const QString& path) {
   file.write("    calibration_result = 'success'\n");
   file.write("if calibration_result in ('success', 'failure', 'exit'):\n");
   file.write("    delay = float(os.environ.get('HSTREAM_UI_TEST_CALIBRATION_STEP_DELAY_MS', '0')) / 1000.0\n");
-  file.write("    events = [\n");
+  file.write("    events = []\n");
+  file.write("    if os.environ.get('HSTREAM_CALIBRATION_START_STAGE') != 'features':\n");
+  file.write("        events = [\n");
   file.write(
-      "        'HSTREAM_CALIBRATION stage=input status=started message=Waiting for synchronized frames from both "
+      "            'HSTREAM_CALIBRATION stage=input status=started message=Waiting for synchronized frames from both "
       "cameras',\n");
   file.write(
-      "        'HSTREAM_CALIBRATION stage=input status=complete message=Captured synchronized frames from both "
+      "            'HSTREAM_CALIBRATION stage=input status=complete message=Captured synchronized frames from both "
       "cameras',\n");
   file.write(
-      "        'HSTREAM_CALIBRATION stage=orientation status=started message=Looking for the ice rink and camera "
+      "            'HSTREAM_CALIBRATION stage=orientation status=started message=Looking for the ice rink and camera "
       "orientation',\n");
-  file.write("    ]\n");
+  file.write("        ]\n");
   file.write("    for event in events:\n");
   file.write("        print(event, flush=True)\n");
   file.write("        time.sleep(delay)\n");
   file.write("    if calibration_result == 'exit':\n");
   file.write("        sys.exit(9)\n");
-  file.write("    events = [\n");
+  file.write("    events = []\n");
+  file.write("    if os.environ.get('HSTREAM_CALIBRATION_START_STAGE') != 'features':\n");
   file.write(
-      "        'HSTREAM_CALIBRATION stage=orientation status=complete message=Camera orientation is configured',\n");
+      "        events.append('HSTREAM_CALIBRATION stage=orientation status=complete message=Camera orientation is configured')\n");
+  file.write("    events += [\n");
   file.write(
       "        'HSTREAM_CALIBRATION stage=features status=started message=Looking for control points in both camera "
       "frames',\n");
@@ -1191,6 +1211,51 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   activate(ok);
 
   qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_STEP_DELAY_MS", "30");
+  activate(start);
+  for (int i = 0; i < 200 && window->pipelineStateText() != "PLAYING"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const fs::path superseded_config_path = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  {
+    auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(superseded_config_path.parent_path());
+    if (!config_lock.ok()) {
+      std::cerr << "Could not lock superseded calibration test config: " << config_lock.status() << '\n';
+      return false;
+    }
+    YAML::Node superseded = YAML::LoadFile(superseded_config_path.string());
+    YAML::Node calibration = superseded["hstream_ui"]["stitching_calibration"];
+    calibration["status"] = "pending";
+    calibration["stale_from"] = "input";
+    calibration["artifacts_invalidated"] = false;
+    calibration.remove("invalidation_id");
+    const auto published =
+        hm::stitching::publish_game_config(superseded_config_path.parent_path(), YAML::Dump(superseded) + "\n");
+    if (!published.ok()) {
+      std::cerr << "Could not publish superseded calibration test config: " << published << '\n';
+      return false;
+    }
+  }
+  for (int i = 0; i < 400 && !detail->text().contains("inputs changed while calibration was running"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const YAML::Node superseded_completion = YAML::LoadFile(superseded_config_path.string());
+  const YAML::Node superseded_calibration = superseded_completion["hstream_ui"]["stitching_calibration"];
+  const bool superseded_completion_ok = expect(
+      detail->text().contains("inputs changed while calibration was running") &&
+          superseded_calibration["status"].as<std::string>() == "pending" &&
+          superseded_calibration["stale_from"].as<std::string>() == "input" &&
+          !superseded_calibration["artifacts_invalidated"].as<bool>(),
+      "Calibration completion must not erase a newer upstream dependency invalidation");
+  activate(stop);
+  activate(ok);
+  qunsetenv("HSTREAM_UI_TEST_CALIBRATION_STEP_DELAY_MS");
+  if (!superseded_completion_ok)
+    return false;
+
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
   activate(start);
   for (int i = 0; i < 400 &&
        (dialog->isVisible() ||
@@ -1350,6 +1415,22 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   const int calibration_index = mode->findData("stitch-calibration");
   mode->setCurrentIndex(calibration_index);
   control_points->setValue(750);
+  qputenv("HSTREAM_UI_TEST_CLEAN_RESULT", "failure");
+  activate(start);
+  qunsetenv("HSTREAM_UI_TEST_CLEAN_RESULT");
+  const fs::path failed_clean_config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  const YAML::Node failed_clean_state = YAML::LoadFile(failed_clean_config.string());
+  const YAML::Node failed_clean_calibration = failed_clean_state["hstream_ui"]["stitching_calibration"];
+  if (!expect(
+          window->pipelineStateText() == "STOPPED" &&
+              failed_clean_calibration["status"].as<std::string>() == "pending" &&
+              failed_clean_calibration["stale_from"].as<std::string>() == "features" &&
+              !failed_clean_calibration["artifacts_invalidated"].as<bool>(),
+          "Calibration must durably record its stale dependency before artifact cleanup starts")) {
+    return false;
+  }
+  const int guarded_calibration_commands_before =
+      window->logText().count("--clean-expected-invalidation-id=");
   activate(start);
   for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
     QApplication::processEvents();
@@ -1362,7 +1443,12 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(
           window->logText().contains("ds_hockey_app_config.yaml"),
           "Calibration should use the one-pass application config") ||
-      !expect(window->logText().contains("--clean"), "Changed calibration CP count should clean stitching artifacts") ||
+      !expect(
+          window->logText().contains("--clean-from-control-points"),
+          "Changed calibration CP count should invalidate only control-point-dependent stitching artifacts") ||
+      !expect(
+          window->logText().count("--clean-expected-invalidation-id=") == guarded_calibration_commands_before + 4,
+          "Pending calibration must guard both its cleanup and its non-forced main process with the invalidation ID") ||
       !expect(
           window->logText().contains("stitching calibration control points changed 1500 -> 750"),
           "Calibration CP change should be logged") ||
@@ -1408,12 +1494,31 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     YAML::Node saved_status;
     const bool has_saved_status =
         lookup_yaml_path(saved, {"hstream_ui", "stitching_calibration", "status"}, &saved_status);
+    YAML::Node saved_stale_from;
+    const bool has_saved_stale_from =
+        lookup_yaml_path(saved, {"hstream_ui", "stitching_calibration", "stale_from"}, &saved_stale_from);
+    YAML::Node saved_artifacts_invalidated;
+    const bool has_saved_artifacts_invalidated = lookup_yaml_path(
+        saved, {"hstream_ui", "stitching_calibration", "artifacts_invalidated"}, &saved_artifacts_invalidated);
+    YAML::Node saved_invalidation_id;
+    const bool has_saved_invalidation_id = lookup_yaml_path(
+        saved, {"hstream_ui", "stitching_calibration", "invalidation_id"}, &saved_invalidation_id);
     if (!expect(
             has_saved_control_points && saved_control_points.IsScalar() && saved_control_points.as<int>() == 750,
             "Calibration CP count should be saved to private config") ||
         !expect(
             has_saved_status && saved_status.IsScalar() && saved_status.as<std::string>() == "pending",
-            "Calibration CP state should remain pending while the calibration process is running")) {
+            "Calibration CP state should remain pending while the calibration process is running") ||
+        !expect(
+            has_saved_stale_from && saved_stale_from.as<std::string>() == "features" &&
+                has_saved_artifacts_invalidated && saved_artifacts_invalidated.as<bool>(),
+            "Calibration state should persist the applied control-point dependency boundary") ||
+        !expect(
+            has_saved_invalidation_id && saved_invalidation_id.IsScalar() &&
+                window->logText().contains(
+                    QString("HSTREAM_CALIBRATION_INVALIDATION_ID=%1")
+                        .arg(QString::fromStdString(saved_invalidation_id.as<std::string>()))),
+            "The one-pass runtime must receive the pending calibration invalidation ID")) {
       return false;
     }
   }
@@ -1457,10 +1562,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
         lookup_yaml_path(saved, {"hstream_ui", "stitching_calibration", "status"}, &saved_status);
     if (!expect(
             has_saved_status && saved_status.IsScalar() && saved_status.as<std::string>() == "pending",
-            "User-stopped calibration should remain pending so the next run cleans again")) {
+            "User-stopped calibration should remain pending so the next run can resume")) {
       return false;
     }
   }
+  const int resume_clean_commands = window->logText().count("stitching calibration clean command");
   {
     const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
     const QString launched_game_id = game_id->text();
@@ -1484,6 +1590,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     YAML::Node transitioned_status;
     const bool has_transitioned_status =
         lookup_yaml_path(after_transition, {"hstream_ui", "stitching_calibration", "status"}, &transitioned_status);
+    YAML::Node transitioned_invalidation_id;
+    const bool has_transitioned_invalidation_id = lookup_yaml_path(
+        after_transition, {"hstream_ui", "stitching_calibration", "invalidation_id"}, &transitioned_invalidation_id);
     const int original_max_speed_x = max_speed_x->value();
     max_speed_x->setValue(original_max_speed_x + 1);
     for (int i = 0; i < 50 &&
@@ -1504,6 +1613,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       QTest::qWait(10);
     }
     if (!expect(
+            window->logText().count("stitching calibration clean command") == resume_clean_commands &&
+                window->logText().contains(
+                    "stitching calibration resuming from stale dependency features without cleaning cached inputs"),
+            "Stop then Play should resume control-point calibration without cleaning upstream dependencies") ||
+        !expect(
             window->logText().contains("hmstitcher: one-pass stitching configuration complete"),
             "Successful one-pass calibration should publish its completion marker") ||
         !expect(
@@ -1521,8 +1635,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
         !expect(window->pipelineStateText() == "PLAYING", "Continuous stitched preview should remain running") ||
         !expect(
             has_transitioned_status && transitioned_status.IsScalar() &&
-                transitioned_status.as<std::string>() == "complete",
-            "Calibration should be marked complete while continuous preview keeps running") ||
+                transitioned_status.as<std::string>() == "complete" && has_transitioned_invalidation_id &&
+                transitioned_invalidation_id.IsScalar() && !transitioned_invalidation_id.as<std::string>().empty(),
+            "Calibration should retain its completed generation owner while continuous preview keeps running") ||
         !expect(
             !fs::exists(switched_config),
             "Calibration completion should remain associated with the game that launched the run") ||
@@ -1562,6 +1677,79 @@ bool test_pipeline_buttons(HStreamWindow* window) {
         !expect(
             stitched_status->text() == "Stitched canvas preview",
             "Stopping a completed calibration preview should clear the active stitched status")) {
+      return false;
+    }
+
+    {
+      auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+      if (!config_lock.ok()) {
+        std::cerr << "Could not lock interrupted input-stage calibration state: " << config_lock.status() << '\n';
+        return false;
+      }
+      YAML::Node interrupted = YAML::LoadFile(config.string());
+      YAML::Node calibration = interrupted["hstream_ui"]["stitching_calibration"];
+      calibration["control_points"] = 750;
+      calibration["status"] = "pending";
+      calibration["stale_from"] = "input";
+      calibration["artifacts_invalidated"] = true;
+      calibration["invalidation_id"] = "interrupted-input-run";
+      const auto published = hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(interrupted) + "\n");
+      if (!published.ok()) {
+        std::cerr << "Could not publish interrupted input-stage calibration state: " << published << '\n';
+        return false;
+      }
+    }
+    const int full_clean_commands_before = window->logText().count(" --clean --clean-expected-invalidation-id=");
+    control_points->setValue(775);
+    qputenv("HSTREAM_UI_TEST_CLEAN_INVALIDATE_INPUT", "1");
+    activate(start);
+    qunsetenv("HSTREAM_UI_TEST_CLEAN_INVALIDATE_INPUT");
+    const YAML::Node superseded_clean = YAML::LoadFile(config.string());
+    const YAML::Node superseded_calibration = superseded_clean["hstream_ui"]["stitching_calibration"];
+    if (!expect(
+            window->pipelineStateText() == "STOPPED" &&
+                superseded_calibration["status"].as<std::string>() == "pending" &&
+                superseded_calibration["stale_from"].as<std::string>() == "input" &&
+                !superseded_calibration["artifacts_invalidated"].as<bool>() &&
+                window->logText().count(" --clean --clean-expected-invalidation-id=") ==
+                    full_clean_commands_before + 1 &&
+                window->logText().contains(
+                    "stitching calibration cleanup was superseded by a newer dependency invalidation"),
+            "A CP change after an interrupted input-stage run must fully clean, while a newer input invalidation wins")) {
+      return false;
+    }
+    control_points->setValue(750);
+
+    const int forced_restarts_before = window->logText().count("--force-reconfigure");
+    const int calibration_completions_before =
+        window->logText().count("one-pass stitching calibration complete; continuous stitched preview running");
+    qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
+    activate(restart);
+    for (int i = 0; i < 200 &&
+         (!window->logText().contains(
+              "stitching calibration restart requested; rebuilding the complete dependency graph") ||
+          window->logText().count("--force-reconfigure") == forced_restarts_before ||
+          window->logText().count("one-pass stitching calibration complete; continuous stitched preview running") ==
+              calibration_completions_before ||
+          window->pipelineStateText() != "PLAYING");
+         ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    const bool forced_restart_ok =
+        expect(
+            window->logText().count("--force-reconfigure") > forced_restarts_before,
+            "Restart Stage should explicitly force the complete calibration dependency graph") &&
+        expect(
+            window->logText().contains(
+                "stitching calibration restart requested; rebuilding the complete dependency graph"),
+            "Restart Stage should identify the full rebuild in the log") &&
+        expect(
+            window->logText().contains("--force-reconfigure --clean-expected-invalidation-id="),
+            "Restart Stage should not repeat its synchronous artifact clean inside the forced pipeline");
+    activate(stop);
+    qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+    if (!forced_restart_ok) {
       return false;
     }
 

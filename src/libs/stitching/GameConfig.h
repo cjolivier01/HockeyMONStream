@@ -61,6 +61,31 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
 // A missing file is represented by an empty optional node.
 absl::StatusOr<std::optional<YAML::Node>> load_game_config_file(const std::filesystem::path& config_path);
 
+// Requires the supplied document to contain the expected pending stitching
+// invalidation. Callers use this while holding GameConfigTransactionLock so
+// validation and a dependent mutation share one transaction.
+absl::Status validate_pending_stitching_invalidation(
+    const YAML::Node& config,
+    const std::string& expected_invalidation_id);
+
+// Accepts the same generation while it is pending or after it has completed.
+// Long-lived runtime artifact owners use this to regenerate downstream data
+// until a newer invalidation replaces their generation ID.
+absl::Status validate_stitching_generation_owner(
+    const YAML::Node& config,
+    const std::string& expected_invalidation_id);
+
+// Loads and validates config_path without acquiring another lock. The caller
+// must hold GameConfigTransactionLock so validation and its dependent artifact
+// publication cannot be separated by a newer invalidation.
+absl::Status validate_pending_stitching_invalidation_file_locked(
+    const std::filesystem::path& config_path,
+    const std::string& expected_invalidation_id);
+
+absl::Status validate_stitching_generation_owner_file_locked(
+    const std::filesystem::path& config_path,
+    const std::string& expected_invalidation_id);
+
 // Applies only changes made between baseline and desired to latest. This is a
 // three-way merge for independently owned config paths, not a conflict
 // resolver: when both owners change the same path, desired wins.

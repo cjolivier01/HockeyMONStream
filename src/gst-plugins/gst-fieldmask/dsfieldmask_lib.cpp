@@ -36,6 +36,7 @@ struct DsFieldMaskCtx {
   cv::Rect2i field_box;
   bool logged_mask_size_mismatch{false};
   std::string loaded_output_generation;
+  std::string calibration_invalidation_id;
 };
 
 namespace {
@@ -251,6 +252,8 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx,
 DsFieldMaskCtx* DsFieldMaskCtxInit(DsFieldMaskInitParams* initParams) {
   DsFieldMaskCtx* ctx = new DsFieldMaskCtx();
   ctx->initParams = *initParams;
+  const char* calibration_invalidation_id = g_getenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
+  ctx->calibration_invalidation_id = calibration_invalidation_id ? calibration_invalidation_id : "";
   return ctx;
 }
 
@@ -303,7 +306,11 @@ absl::Status DsFieldMaskProcessFrame(
       hm::surface::Surface this_surface(&surface->surfaceList[frame_index]);
 #endif
       HM_RETURN_IF_ERROR(
-          hm::stitching::create_field_mask(mask_path.parent_path().string(), this_surface, output_generation));
+          hm::stitching::create_field_mask(
+              mask_path.parent_path().string(),
+              this_surface,
+              output_generation,
+              ctx->calibration_invalidation_id));
       loaded_mask = hm::stitching::load_field_mask(mask_path.parent_path().string(), output_generation);
     }
     HM_ASSIGN_OR_RETURN(ctx->detection_u8_mask, std::move(loaded_mask));

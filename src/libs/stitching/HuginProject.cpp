@@ -33,6 +33,7 @@
 
 #include "absl/status/status.h"
 #include "hstream/src/libs/common/Process.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 
 extern "C" char** environ;
 
@@ -1277,7 +1278,18 @@ absl::Status HuginProject::Configure(
   status = validate_staged_artifacts(staging, options.max_canvas_dimension);
   if (!status.ok())
     return status;
-  status = publish_artifacts(staging, game_dir, &cleanup.prepared);
+  if (!options.expected_invalidation_id.empty()) {
+    auto config_transaction = GameConfigTransactionLock::Acquire(game_dir);
+    if (!config_transaction.ok())
+      return config_transaction.status();
+    auto validation = validate_pending_stitching_invalidation_file_locked(
+        game_dir / "config.yaml", options.expected_invalidation_id);
+    if (!validation.ok())
+      return validation;
+    status = publish_artifacts(staging, game_dir, &cleanup.prepared);
+  } else {
+    status = publish_artifacts(staging, game_dir, &cleanup.prepared);
+  }
   if (status.ok() && options.progress)
     options.progress("canvas", "complete", "Stitch maps and panorama preview are ready");
   return status;

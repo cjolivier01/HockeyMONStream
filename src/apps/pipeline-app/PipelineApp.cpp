@@ -608,9 +608,14 @@ absl::Status PipelineApplication::configureInstances(
 
       // Now auto-configure stuff as needed, i.e. dependent pipelines or stitching (if needed)
       absl::Status configuration_status = app_ctx->complete_configuration(
-          force_reconfigure_, clean_stitching_artifacts_, show_ || show_render_scale_ == 0.0, show_render_scale_);
+          force_reconfigure_,
+          clean_stitching_artifacts_,
+          clean_stitching_from_control_points_,
+          clean_stitching_expected_invalidation_id_ ? clean_stitching_expected_invalidation_id_ : "",
+          show_ || show_render_scale_ == 0.0,
+          show_render_scale_);
       if (configuration_status.code() == absl::StatusCode::kCancelled) {
-        if (!clean_stitching_artifacts_) {
+        if (!clean_stitching_artifacts_ && !clean_stitching_from_control_points_) {
           return configuration_status;
         }
         std::cerr << configuration_status << std::endl;
@@ -1417,6 +1422,20 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
       {"game-id", 'g', 0, G_OPTION_ARG_FILENAME_ARRAY, &game_id_, "Game ID", nullptr},
       {"force-reconfigure", 'f', 0, G_OPTION_ARG_NONE, &force_reconfigure_, "Force reconfigure", nullptr},
       {"clean", 0, 0, G_OPTION_ARG_NONE, &clean_stitching_artifacts_, "Clean stitching artifacts and exit", nullptr},
+      {"clean-from-control-points",
+       0,
+       0,
+       G_OPTION_ARG_NONE,
+       &clean_stitching_from_control_points_,
+       "Clean control-point-dependent stitching artifacts and exit",
+       nullptr},
+      {"clean-expected-invalidation-id",
+       0,
+       0,
+       G_OPTION_ARG_STRING,
+       &clean_stitching_expected_invalidation_id_,
+       "Apply stitching changes only if this invalidation is still current",
+       "ID"},
       {"start-time", 's', 0, G_OPTION_ARG_STRING, &start_time, "Start time", nullptr},
       {"input-uri",
        'i',
@@ -1444,6 +1463,27 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   if (!g_option_context_parse(ctx, &normalized_argc, &normalized_argv_data, &error)) {
     NVGSTDS_ERR_MSG_V("%s", error->message);
     return absl::InternalError(error->message);
+  }
+
+  constexpr const char* kCalibrationInvalidationEnvironment = "HSTREAM_CALIBRATION_INVALIDATION_ID";
+  if (clean_stitching_expected_invalidation_id_ != nullptr) {
+    if (*clean_stitching_expected_invalidation_id_ == '\0') {
+      return absl::InvalidArgumentError("--clean-expected-invalidation-id requires a non-empty ID");
+    }
+    const char* runtime_invalidation_id = g_getenv(kCalibrationInvalidationEnvironment);
+    if (runtime_invalidation_id != nullptr && *runtime_invalidation_id != '\0' &&
+        g_strcmp0(runtime_invalidation_id, clean_stitching_expected_invalidation_id_) != 0) {
+      return absl::InvalidArgumentError(
+          "--clean-expected-invalidation-id conflicts with HSTREAM_CALIBRATION_INVALIDATION_ID");
+    }
+    if (!g_setenv(
+            kCalibrationInvalidationEnvironment, clean_stitching_expected_invalidation_id_, /*overwrite=*/TRUE)) {
+      return absl::InternalError("Unable to publish the stitching invalidation ID to runtime plugins");
+    }
+  } else {
+    // The parsed CLI value is the single source of truth. Do not let an
+    // inherited runtime-only token fence plugins differently from Configurator.
+    g_unsetenv(kCalibrationInvalidationEnvironment);
   }
 
 #ifndef IS_TEGRA
@@ -1517,7 +1557,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
 
   // Cleaning only removes generated game artifacts and must remain usable
   // offline, even when declared models are not installed.
-  if (!clean_stitching_artifacts_) {
+  if (!clean_stitching_artifacts_ && !clean_stitching_from_control_points_) {
     std::vector<fs::path> asset_configs;
     for (size_t index = 0, count = g_strv_length(cfg_files_); index < count; ++index)
       asset_configs.emplace_back(cfg_files_[index]);

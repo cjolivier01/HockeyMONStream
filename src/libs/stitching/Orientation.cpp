@@ -338,7 +338,11 @@ int cam_index(const std::string& name) {
   return 0;
 }
 
-absl::Status save_orientation_config(const fs::path& game_dir, const VideoChapter& left, const VideoChapter& right) {
+absl::Status save_orientation_config(
+    const fs::path& game_dir,
+    const VideoChapter& left,
+    const VideoChapter& right,
+    const std::string& expected_invalidation_id) {
   if (left.empty() || right.empty()) {
     return absl::InvalidArgumentError("Both camera orientations need at least one chapter");
   }
@@ -371,6 +375,7 @@ absl::Status save_orientation_config(const fs::path& game_dir, const VideoChapte
   try {
     if (fs::is_regular_file(config_path))
       config = YAML::LoadFile(config_path.string());
+    HM_RETURN_IF_ERROR(validate_pending_stitching_invalidation(config, expected_invalidation_id));
     config["game"]["videos"]["left"] = left_paths;
     config["game"]["videos"]["right"] = right_paths;
   } catch (const YAML::Exception& error) {
@@ -521,13 +526,16 @@ absl::StatusOr<std::string> classify_rink_orientation(const cv::Mat& binary_mask
       ", right edge sum=" + std::to_string(scores->right));
 }
 
-absl::Status configure_game_orientation(const std::string& game_dir_string, const RinkSegmentation& rink_model) {
+absl::Status configure_game_orientation(
+    const std::string& game_dir_string,
+    const RinkSegmentation& rink_model,
+    const std::string& expected_invalidation_id) {
   const fs::path game_dir(game_dir_string);
   auto videos = get_available_videos(game_dir.string());
   if (!videos.ok())
     return videos.status();
   if (videos->count("left") && videos->count("right")) {
-    return save_orientation_config(game_dir, videos->at("left"), videos->at("right"));
+    return save_orientation_config(game_dir, videos->at("left"), videos->at("right"), expected_invalidation_id);
   }
 
   std::map<std::string, VideoChapter> oriented;
@@ -572,7 +580,7 @@ absl::Status configure_game_orientation(const std::string& game_dir_string, cons
   if (!oriented.count("left") || !oriented.count("right") || oriented.size() != 2) {
     return absl::FailedPreconditionError("Native orientation did not identify exactly one left and one right camera");
   }
-  return save_orientation_config(game_dir, oriented.at("left"), oriented.at("right"));
+  return save_orientation_config(game_dir, oriented.at("left"), oriented.at("right"), expected_invalidation_id);
 }
 
 /**

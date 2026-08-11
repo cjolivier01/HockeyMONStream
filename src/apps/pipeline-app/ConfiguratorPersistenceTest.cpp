@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -9,6 +10,7 @@
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
 
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 
 GST_DEBUG_CATEGORY(NVDS_APP);
@@ -61,6 +63,95 @@ int main() {
       final_config.ok() && final_config->has_value() && (**final_config)["pipeline"]["generated"].as<bool>() &&
           (**final_config)["hstream_ui"]["keep"].as<bool>(),
       "Configurator first save must retain keys created after its absent baseline");
+
+  YAML::Node explicit_roles(YAML::NodeType::Map);
+  explicit_roles["hstream_ui"]["video_roles"]["left"].push_back(".hstream-ui/left/GX010001.MP4");
+  explicit_roles["hstream_ui"]["video_roles"]["right"].push_back(".hstream-ui/right/GX010002.MP4");
+  auto selected = hm::configurator_internal::select_explicit_stitching_videos(explicit_roles, /*force=*/true);
+  ok &= expect(
+      selected.ui_roles_are_authoritative && selected.left_is_explicit && selected.right_is_explicit &&
+          selected.left == std::vector<std::string>{".hstream-ui/left/GX010001.MP4"} &&
+          selected.right == std::vector<std::string>{".hstream-ui/right/GX010002.MP4"},
+      "Forced configuration must reconstruct missing runtime video lists from explicit UI roles");
+
+  explicit_roles["game"]["videos"]["left"].push_back("cam2/GX010002.MP4");
+  explicit_roles["game"]["videos"]["right"].push_back("cam1/GX010001.MP4");
+  selected = hm::configurator_internal::select_explicit_stitching_videos(explicit_roles, /*force=*/true);
+  ok &= expect(
+      selected.left == std::vector<std::string>{".hstream-ui/left/GX010001.MP4"} &&
+          selected.right == std::vector<std::string>{".hstream-ui/right/GX010002.MP4"},
+      "Forced configuration must prefer explicit UI roles over mismatched derived runtime lists");
+
+  YAML::Node out_of_order_left(YAML::NodeType::Sequence);
+  out_of_order_left.push_back(".hstream-ui/left/GX020001.MP4");
+  out_of_order_left.push_back(".hstream-ui/left/GX010001.MP4");
+  explicit_roles["hstream_ui"]["video_roles"]["left"] = out_of_order_left;
+  explicit_roles["hstream_ui"]["video_roles"]["right"].push_back(".hstream-ui/right/GX020002.MP4");
+  selected = hm::configurator_internal::select_explicit_stitching_videos(explicit_roles, /*force=*/true);
+  ok &= expect(
+      selected.error.empty() &&
+          selected.left == std::vector<std::string>{".hstream-ui/left/GX010001.MP4", ".hstream-ui/left/GX020001.MP4"} &&
+          selected.right ==
+              std::vector<std::string>{".hstream-ui/right/GX010002.MP4", ".hstream-ui/right/GX020002.MP4"},
+      "Explicit UI Left/Right roles must be paired and sorted by chapter");
+
+  explicit_roles["hstream_ui"]["video_roles"]["right"][1] = ".hstream-ui/right/GX030002.MP4";
+  selected = hm::configurator_internal::select_explicit_stitching_videos(explicit_roles, /*force=*/true);
+  ok &= expect(!selected.error.empty(), "Forced configuration must reject mismatched explicit UI chapters");
+
+  const fs::path superseded_force_dir = games / "superseded-force";
+  fs::create_directories(superseded_force_dir);
+  std::ofstream(superseded_force_dir / "seam_file.png") << "newer generation\n";
+  YAML::Node stale_force_config(YAML::NodeType::Map);
+  stale_force_config["pipeline"]["application"]["complete-configuration"] = "1";
+  stale_force_config["pipeline"]["hmstitcher"]["enable"] = "1";
+  stale_force_config["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+  stale_force_config["hstream_ui"]["stitching_calibration"]["stale_from"] = "input";
+  stale_force_config["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = true;
+  stale_force_config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "stale-force";
+  ok &= expect(
+      hm::stitching::publish_game_config(superseded_force_dir, YAML::Dump(stale_force_config) + "\n").ok(),
+      "stale forced configuration fixture must publish");
+  hm::Configurator forced_configurator("superseded-force", "", hm::Configurator::kUseConfigFileGpu);
+  ok &= expect(forced_configurator.configure().ok(), "forced configurator must load its stale snapshot");
+  auto initially_current =
+      hm::stitching::is_stitching_invalidation_cleanup_applied(superseded_force_dir.string(), "stale-force");
+  ok &= expect(
+      initially_current.ok() && initially_current.value(),
+      "forced invalidation must initially pass the pre-clean revalidation");
+  YAML::Node stale_offset_save = YAML::Clone(stale_force_config);
+  stale_offset_save["game"]["stitching"]["frame_offsets"]["left"] = "9";
+  stale_offset_save["game"]["stitching"]["frame_offsets"]["right"] = "0";
+  stale_force_config["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = false;
+  stale_force_config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "newer-force";
+  ok &= expect(
+      hm::stitching::publish_game_config(superseded_force_dir, YAML::Dump(stale_force_config) + "\n").ok(),
+      "newer forced invalidation fixture must publish");
+  const absl::Status stale_save_status =
+      forced_configurator.save_private_config(stale_offset_save, /*expected_invalidation_id=*/"stale-force");
+  auto after_stale_save = hm::stitching::load_game_config_file(superseded_force_dir / "config.yaml");
+  ok &= expect(
+      stale_save_status.code() == absl::StatusCode::kAborted && after_stale_save.ok() &&
+          after_stale_save->has_value() && !(**after_stale_save)["game"]["stitching"]["frame_offsets"] &&
+          (**after_stale_save)["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() ==
+              "newer-force",
+      "A superseded forced save must not republish stale frame offsets after initial revalidation");
+  const absl::Status non_forced_status = forced_configurator.complete_configuration(
+      /*force=*/false,
+      /*clean_stitching_artifacts=*/false,
+      /*clean_stitching_from_control_points=*/false,
+      /*clean_expected_invalidation_id=*/"stale-force");
+  ok &= expect(
+      non_forced_status.code() == absl::StatusCode::kAborted && fs::exists(superseded_force_dir / "seam_file.png"),
+      "A non-forced input-stale run must abort before using a superseding artifact generation");
+  const absl::Status forced_status = forced_configurator.complete_configuration(
+      /*force=*/true,
+      /*clean_stitching_artifacts=*/false,
+      /*clean_stitching_from_control_points=*/false,
+      /*clean_expected_invalidation_id=*/"stale-force");
+  ok &= expect(
+      forced_status.code() == absl::StatusCode::kAborted && fs::exists(superseded_force_dir / "seam_file.png"),
+      "Forced configuration must abort before using or deleting a superseding artifact generation");
 
   ::unsetenv("HM_GAME_DIR");
   fs::remove_all(root);

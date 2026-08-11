@@ -208,10 +208,6 @@ std::vector<std::string> sequence_path_values(const YAML::Node& root, const std:
   return current.as<std::vector<std::string>>();
 }
 
-bool same_sequence_values(const std::vector<std::string>& a, const std::vector<std::string>& b) {
-  return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin());
-}
-
 int explicit_file_chapter(const std::string& file) {
   const std::string filename = fs::path(file).filename().string();
   std::smatch match;
@@ -238,12 +234,12 @@ std::string explicit_file_chapter_key(const std::string& file) {
   const std::string filename = fs::path(file).filename().string();
   std::smatch match;
   static const std::regex gopro_pattern(R"(^G[A-Z]([0-9]{2})([0-9]{4})\.(MP4|mp4)$)");
-  static const std::regex insta360_chapter_pattern(R"(^VID_[0-9]{8}_[0-9]{6}_([0-9]{3})\.(MP4|mp4)$)");
+  static const std::regex insta360_pattern(R"(^VID_[0-9]{8}_[0-9]{6}_([0-9]{3})\.(MP4|mp4)$)");
   static const std::regex left_right_pattern(R"((left|right)(?:-([0-9]))?\.mp4$)");
   if (std::regex_search(filename, match, gopro_pattern)) {
     return "gopro:" + match[1].str();
   }
-  if (std::regex_search(filename, match, insta360_chapter_pattern)) {
+  if (std::regex_search(filename, match, insta360_pattern)) {
     return "insta360:" + match[1].str();
   }
   if (std::regex_search(filename, match, left_right_pattern)) {
@@ -265,58 +261,16 @@ std::map<int, std::string> files_by_explicit_chapter(const std::vector<std::stri
   return by_chapter;
 }
 
-std::map<std::string, std::string> files_by_explicit_chapter_key(const std::vector<std::string>& files) {
-  std::map<std::string, std::string> by_chapter;
-  for (const std::string& file : files) {
-    const std::string chapter = explicit_file_chapter_key(file);
-    if (chapter.empty() || by_chapter.count(chapter)) {
-      by_chapter.clear();
-      return by_chapter;
-    }
-    by_chapter[chapter] = file;
-  }
-  return by_chapter;
-}
-
-bool explicit_runtime_videos_match_ui_roles(
-    const std::vector<std::string>& runtime_left,
-    const std::vector<std::string>& runtime_right,
-    const std::vector<std::string>& ui_left,
-    const std::vector<std::string>& ui_right) {
-  if (runtime_left.empty() || runtime_right.empty() || ui_left.empty() || ui_right.empty()) {
-    return false;
-  }
-  const std::map<std::string, std::string> left_by_chapter = files_by_explicit_chapter_key(ui_left);
-  const std::map<std::string, std::string> right_by_chapter = files_by_explicit_chapter_key(ui_right);
-  if (!left_by_chapter.empty() && !right_by_chapter.empty()) {
-    if (left_by_chapter.size() != right_by_chapter.size()) {
-      return false;
-    }
-    std::vector<std::string> sorted_left;
-    std::vector<std::string> sorted_right;
-    for (const auto& [chapter, left_file] : left_by_chapter) {
-      auto right_found = right_by_chapter.find(chapter);
-      if (right_found == right_by_chapter.end()) {
-        return false;
-      }
-      sorted_left.emplace_back(left_file);
-      sorted_right.emplace_back(right_found->second);
-    }
-    return same_sequence_values(runtime_left, sorted_left) && same_sequence_values(runtime_right, sorted_right);
-  }
-  auto is_unparseable = [](const std::string& file) { return explicit_file_chapter_key(file).empty(); };
-  if (ui_left.size() == ui_right.size() && std::all_of(ui_left.begin(), ui_left.end(), is_unparseable) &&
-      std::all_of(ui_right.begin(), ui_right.end(), is_unparseable)) {
-    return same_sequence_values(runtime_left, ui_left) && same_sequence_values(runtime_right, ui_right);
-  }
-  return false;
-}
-
 void remove_rotation_dependent_rink_cache_keys(YAML::Node& config);
+void remove_control_point_dependent_stitching_cache_keys(YAML::Node& config);
 
 void remove_cleanable_stitching_cache_keys(YAML::Node& config) {
   remove_yaml_key_path(config, {"stitching", "frame_offsets"});
   remove_yaml_key_path(config, {"game", "stitching", "frame_offsets"});
+  remove_control_point_dependent_stitching_cache_keys(config);
+}
+
+void remove_control_point_dependent_stitching_cache_keys(YAML::Node& config) {
   remove_yaml_key_path(config, {"stitching", "control_points"});
   remove_yaml_key_path(config, {"game", "stitching", "control_points"});
   remove_rotation_dependent_rink_cache_keys(config);
@@ -342,30 +296,15 @@ double get_rotation_or_default(const YAML::Node& node, const std::string& key, d
   return value.value_or(default_value);
 }
 
-absl::Status remove_rink_mask_files(const fs::path& game_dir) {
-  if (!fs::exists(game_dir)) {
-    return absl::OkStatus();
+absl::StatusOr<bool> get_yaml_bool_value(const YAML::Node& node, const std::string& key, bool default_value) {
+  const auto value = get_node(node, key);
+  if (!value.has_value())
+    return default_value;
+  try {
+    return value->as<bool>();
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Invalid boolean config value for " + key + ": " + exception.what());
   }
-  std::error_code ec;
-  for (const auto& entry : fs::directory_iterator(game_dir, ec)) {
-    if (ec) {
-      return absl::InternalError(TO_STRING("Failed to scan rink mask files in " << game_dir << ": " << ec.message()));
-    }
-    if (!entry.is_regular_file(ec) || ec) {
-      ec.clear();
-      continue;
-    }
-    const std::string filename = entry.path().filename().string();
-    if (!absl::StartsWith(filename, "rink_mask_") || !absl::EndsWith(filename, ".png")) {
-      continue;
-    }
-    fs::remove(entry.path(), ec);
-    if (ec) {
-      return absl::InternalError(
-          TO_STRING("Failed to remove stale rink mask " << entry.path() << ": " << ec.message()));
-    }
-  }
-  return absl::OkStatus();
 }
 
 bool is_render_sink_type(int sink_type) {
@@ -727,6 +666,73 @@ std::optional<YAML::Node> maybe_get_config_file(const YAML::Node& yaml_node, con
 
 } // namespace
 
+configurator_internal::ExplicitStitchingVideoSelection configurator_internal::select_explicit_stitching_videos(
+    const YAML::Node& config,
+    bool force) {
+  ExplicitStitchingVideoSelection selection;
+  const std::vector<std::string> ui_left = sequence_path_values(config, {"hstream_ui", "video_roles", "left"});
+  const std::vector<std::string> ui_right = sequence_path_values(config, {"hstream_ui", "video_roles", "right"});
+  selection.ui_roles_are_authoritative = !ui_left.empty() || !ui_right.empty();
+
+  if (!ui_left.empty() && !ui_right.empty()) {
+    std::map<std::string, std::string> left_by_chapter;
+    std::map<std::string, std::string> right_by_chapter;
+    bool any_parseable = false;
+    bool all_parseable = true;
+    bool duplicate_chapter = false;
+    auto index_chapters = [&](const std::vector<std::string>& files, std::map<std::string, std::string>& indexed) {
+      for (const std::string& file : files) {
+        const std::string chapter = explicit_file_chapter_key(file);
+        any_parseable = any_parseable || !chapter.empty();
+        all_parseable = all_parseable && !chapter.empty();
+        if (!chapter.empty() && !indexed.emplace(chapter, file).second)
+          duplicate_chapter = true;
+      }
+    };
+    index_chapters(ui_left, left_by_chapter);
+    index_chapters(ui_right, right_by_chapter);
+    if (any_parseable) {
+      if (!all_parseable || duplicate_chapter) {
+        selection.error = "Explicit UI Left/Right roles have incompatible chapter names";
+        return selection;
+      }
+      if (left_by_chapter.size() != right_by_chapter.size()) {
+        selection.error = "Explicit UI Left/Right roles have different chapter counts";
+        return selection;
+      }
+      for (const auto& [chapter, left_file] : left_by_chapter) {
+        auto right = right_by_chapter.find(chapter);
+        if (right == right_by_chapter.end()) {
+          selection.error = "Explicit UI Left/Right roles have mismatched chapters";
+          return selection;
+        }
+        selection.left.emplace_back(left_file);
+        selection.right.emplace_back(right->second);
+      }
+    } else if (ui_left.size() == ui_right.size()) {
+      selection.left = ui_left;
+      selection.right = ui_right;
+    } else {
+      selection.error = "Explicit UI Left/Right roles have different chapter counts";
+      return selection;
+    }
+    selection.left_is_explicit = true;
+    selection.right_is_explicit = true;
+  } else if (!ui_left.empty()) {
+    selection.left = ui_left;
+    selection.left_is_explicit = true;
+  } else if (!ui_right.empty()) {
+    selection.right = ui_right;
+    selection.right_is_explicit = true;
+  } else if (!force) {
+    selection.left = sequence_path_values(config, {"game", "videos", "left"});
+    selection.right = sequence_path_values(config, {"game", "videos", "right"});
+    selection.left_is_explicit = !selection.left.empty();
+    selection.right_is_explicit = !selection.right.empty();
+  }
+  return selection;
+}
+
 // Forward declaration for helper defined later in this file
 void map_key_configs(YAML::Node yaml, const std::vector<std::pair<std::string, std::string>>& map_dest_from_src);
 
@@ -823,12 +829,14 @@ absl::Status Configurator::invalidate_rotation_dependent_cache_if_needed(const f
     return absl::OkStatus();
   }
 
-  HM_RETURN_IF_ERROR(remove_rink_mask_files(game_dir));
   remove_rotation_dependent_rink_cache_keys(config_);
   remove_rotation_dependent_rink_cache_keys(private_config_);
   private_config_["stitching"]["generated_field_mask_post_stitch_rotate_degrees"] = desired_rotation;
-  auto save_status = save_private_config(private_config_);
+  auto save_status =
+      save_private_config(private_config_, active_stitching_invalidation_id_, /*remove_rink_masks=*/true);
   if (!save_status.ok()) {
+    if (!active_stitching_invalidation_id_.empty())
+      return save_status;
     std::cerr << "Warning: failed to save post-stitch rotation cache marker: " << save_status << std::endl;
   }
   return absl::OkStatus();
@@ -846,7 +854,7 @@ absl::Status Configurator::invalidate_canvas_dependent_cache_if_needed(const fs:
   remove_rotation_dependent_rink_cache_keys(config_);
   remove_rotation_dependent_rink_cache_keys(private_config_);
   if (private_config_.IsDefined()) {
-    HM_RETURN_IF_ERROR(save_private_config(private_config_));
+    HM_RETURN_IF_ERROR(save_private_config(private_config_, active_stitching_invalidation_id_));
   }
   return absl::OkStatus();
 }
@@ -894,33 +902,23 @@ absl::Status Configurator::gather_stitching_videos(
     std::vector<std::string>& left_files,
     std::vector<std::string>& right_files,
     YAML::Node& offsets) {
-  // Prefer explicit config unless forcing
-  bool explicit_left = false;
-  bool explicit_right = false;
-  std::vector<std::string> explicit_left_files;
-  std::vector<std::string> explicit_right_files;
-  if (!force) {
-    if (has_node(config_, "game.videos.left", /*non_null=*/true)) {
-      left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
-      explicit_left = !left_files.empty();
-      explicit_left_files = left_files;
-    }
-    if (has_node(config_, "game.videos.right", /*non_null=*/true)) {
-      right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
-      explicit_right = !right_files.empty();
-      explicit_right_files = right_files;
-    }
-  }
+  const configurator_internal::ExplicitStitchingVideoSelection explicit_selection =
+      configurator_internal::select_explicit_stitching_videos(config_, force);
+  if (!explicit_selection.error.empty())
+    return absl::InvalidArgumentError(explicit_selection.error);
+  left_files = explicit_selection.left;
+  right_files = explicit_selection.right;
+  bool explicit_left = explicit_selection.left_is_explicit;
+  bool explicit_right = explicit_selection.right_is_explicit;
+  std::vector<std::string> explicit_left_files = left_files;
+  std::vector<std::string> explicit_right_files = right_files;
+  const bool runtime_videos_owned_by_ui_roles = explicit_selection.ui_roles_are_authoritative;
 
   stitching::VideosDict videos;
   HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir));
   const bool has_cam_auto =
       std::any_of(videos.begin(), videos.end(), [](const auto& item) { return is_cam_video_key(item.first); });
   const bool has_left_right_auto = videos.count("left") || videos.count("right");
-  const std::vector<std::string> ui_left_files = sequence_path_values(config_, {"hstream_ui", "video_roles", "left"});
-  const std::vector<std::string> ui_right_files = sequence_path_values(config_, {"hstream_ui", "video_roles", "right"});
-  const bool runtime_videos_owned_by_ui_roles =
-      explicit_runtime_videos_match_ui_roles(left_files, right_files, ui_left_files, ui_right_files);
   if (!force && has_cam_auto && !has_left_right_auto && !runtime_videos_owned_by_ui_roles &&
       (explicit_left || explicit_right)) {
     std::cerr << "Ignoring stale generated game.videos left/right because camN Auto video sets are available"
@@ -940,8 +938,10 @@ absl::Status Configurator::gather_stitching_videos(
     private_changed = remove_yaml_key_path(private_config_, {"game", "stitching", "frame_offsets"}) || private_changed;
     private_changed = remove_yaml_key_path(private_config_, {"stitching", "frame_offsets"}) || private_changed;
     if (private_changed) {
-      auto spp_status = save_private_config(private_config_);
+      auto spp_status = save_private_config(private_config_, active_stitching_invalidation_id_);
       if (!spp_status.ok()) {
+        if (!active_stitching_invalidation_id_.empty())
+          return spp_status;
         std::cerr << "Warnings: failed to save private config: " << spp_status << std::endl;
       }
     }
@@ -1114,14 +1114,16 @@ absl::Status Configurator::gather_stitching_videos(
     }
     private_config_["game"]["videos"]["left"] = left_files;
     private_config_["game"]["videos"]["right"] = right_files;
-    auto spp_status = save_private_config(private_config_);
+    auto spp_status = save_private_config(private_config_, active_stitching_invalidation_id_);
     if (!spp_status.ok()) {
+      if (!active_stitching_invalidation_id_.empty())
+        return spp_status;
       std::cerr << "Warnings: failed to save private config: " << spp_status << std::endl;
     }
   }
 
   if (left_files.empty() && right_files.empty() && !videos.count("left") && !videos.count("right")) {
-    HM_RETURN_IF_ERROR(stitching::configure_orientation(game_dir));
+    HM_RETURN_IF_ERROR(stitching::configure_orientation(game_dir, active_stitching_invalidation_id_));
     overlay_config("", get_private_config_file_name(game_id_));
     private_config_["game"]["videos"]["left"] = config_["game"]["videos"]["left"];
     private_config_["game"]["videos"]["right"] = config_["game"]["videos"]["right"];
@@ -1159,8 +1161,10 @@ absl::Status Configurator::gather_stitching_videos(
     if (!left_files.empty() && !right_files.empty()) {
       private_config_["game"]["videos"]["left"] = left_files;
       private_config_["game"]["videos"]["right"] = right_files;
-      auto spp_status = save_private_config(private_config_);
+      auto spp_status = save_private_config(private_config_, active_stitching_invalidation_id_);
       if (!spp_status.ok()) {
+        if (!active_stitching_invalidation_id_.empty())
+          return spp_status;
         std::cerr << "Warnings: failed to save private config: " << spp_status << std::endl;
       }
     }
@@ -1176,8 +1180,10 @@ absl::Status Configurator::gather_stitching_videos(
       offsets["right"] = std::to_string(sync.video2_frame_offset);
       private_config_["game"]["stitching"]["frame_offsets"]["left"] = std::to_string(sync.video1_frame_offset);
       private_config_["game"]["stitching"]["frame_offsets"]["right"] = std::to_string(sync.video2_frame_offset);
-      auto spp_status = save_private_config(private_config_);
+      auto spp_status = save_private_config(private_config_, active_stitching_invalidation_id_);
       if (!spp_status.ok()) {
+        if (!active_stitching_invalidation_id_.empty())
+          return spp_status;
         std::cerr << "Warnings: failed to save private config: " << spp_status << std::endl;
       }
     }
@@ -1643,7 +1649,10 @@ absl::StatusOr<std::optional<YAML::Node>> Configurator::load_private_config() {
   return stitching::load_game_config_file(private_config_file);
 }
 
-absl::Status Configurator::save_private_config(const YAML::Node& private_config) {
+absl::Status Configurator::save_private_config(
+    const YAML::Node& private_config,
+    const std::string& expected_invalidation_id,
+    bool remove_rink_masks) {
   const fs::path game_dir = get_game_dir(game_id_);
   auto config_lock = stitching::GameConfigTransactionLock::Acquire(game_dir);
   if (!config_lock.ok())
@@ -1656,11 +1665,18 @@ absl::Status Configurator::save_private_config(const YAML::Node& private_config)
   } catch (const YAML::Exception& error) {
     return absl::InvalidArgumentError("Failed to merge private config: " + std::string(error.what()));
   }
+  HM_RETURN_IF_ERROR(stitching::validate_pending_stitching_invalidation(latest, expected_invalidation_id));
   const YAML::Node merged = stitching::apply_game_config_diff(persisted_private_config_, private_config, latest);
   std::string contents;
   if (!is_empty_yaml_document(merged))
     contents = YAML::Dump(merged) + "\n";
-  auto status = stitching::publish_game_config(game_dir, contents);
+  absl::Status status;
+  if (remove_rink_masks) {
+    auto removed = stitching::publish_game_config_without_rink_masks(game_dir, contents);
+    status = removed.ok() ? absl::OkStatus() : removed.status();
+  } else {
+    status = stitching::publish_game_config(game_dir, contents);
+  }
   if (status.ok())
     persisted_private_config_ = YAML::Clone(private_config);
   return status;
@@ -1810,8 +1826,13 @@ void map_key_configs(YAML::Node yaml, const std::vector<std::pair<std::string, s
 absl::Status Configurator::complete_configuration(
     bool force,
     bool clean_stitching_artifacts,
+    bool clean_stitching_from_control_points,
+    const std::string& clean_expected_invalidation_id,
     bool show_render_sink,
     double show_render_scale) {
+  active_stitching_invalidation_id_.clear();
+  const bool clean_requested = clean_stitching_artifacts || clean_stitching_from_control_points;
+  const bool clean_from_control_points_only = clean_stitching_from_control_points && !clean_stitching_artifacts;
   if (!get_node_value(config_, "pipeline.application.complete-configuration", false)) {
     return absl::OkStatus();
   }
@@ -1824,7 +1845,7 @@ absl::Status Configurator::complete_configuration(
   if (game_id_.empty()) {
     // return absl::InvalidArgumentError("No game id specified");
     // Just go by what's in the config file(s)
-    if (clean_stitching_artifacts) {
+    if (clean_requested) {
       return absl::InvalidArgumentError("No game id specified for cleaning");
     }
     return absl::OkStatus();
@@ -1837,20 +1858,47 @@ absl::Status Configurator::complete_configuration(
   // Stitching config mask config dir
   fs::path game_dir = get_game_dir(game_id_);
   const bool has_hmstitcher = has_node(pipeline, "hmstitcher", false);
-  if (clean_stitching_artifacts && !has_hmstitcher) {
+  if (clean_requested && !has_hmstitcher) {
     return absl::FailedPreconditionError("No hmstitcher section is configured; nothing to clean");
   }
-  if (has_hmstitcher && (force || clean_stitching_artifacts)) {
+  bool stitching_artifacts_precleaned = false;
+  if (has_hmstitcher && !clean_expected_invalidation_id.empty()) {
+    HM_ASSIGN_OR_RETURN(
+        stitching_artifacts_precleaned,
+        stitching::is_stitching_invalidation_cleanup_applied(game_dir.string(), clean_expected_invalidation_id));
+    bool loaded_artifacts_invalidated = false;
+    HM_ASSIGN_OR_RETURN(
+        loaded_artifacts_invalidated,
+        get_yaml_bool_value(config_, "hstream_ui.stitching_calibration.artifacts_invalidated", false));
+    const bool loaded_invalidation_matches =
+        get_node_value(config_, "hstream_ui.stitching_calibration.invalidation_id", std::string()) ==
+            clean_expected_invalidation_id &&
+        get_node_value(config_, "hstream_ui.stitching_calibration.status", std::string()) == "pending" &&
+        loaded_artifacts_invalidated == stitching_artifacts_precleaned;
+    if (!loaded_invalidation_matches) {
+      return absl::AbortedError("Loaded stitching configuration was superseded before configuration");
+    }
+    active_stitching_invalidation_id_ = clean_expected_invalidation_id;
+  }
+  const bool should_clean_stitching = clean_requested || (force && !stitching_artifacts_precleaned);
+  if (has_hmstitcher && should_clean_stitching) {
     YAML::Node preserved_pipeline = config_["pipeline"];
-    absl::Status clean_status = stitching::clean_stitching_artifacts(game_dir.string());
+    absl::Status clean_status = clean_from_control_points_only
+        ? stitching::clean_stitching_artifacts_from_control_points(game_dir.string(), clean_expected_invalidation_id)
+        : stitching::clean_stitching_artifacts(game_dir.string(), clean_expected_invalidation_id);
     if (!clean_status.ok()) {
-      if (clean_stitching_artifacts) {
+      if (clean_requested || (force && !clean_expected_invalidation_id.empty())) {
         return clean_status;
       }
       std::cerr << "Warning: failed to clean stitching artifacts: " << clean_status << std::endl;
     } else {
-      remove_cleanable_stitching_cache_keys(config_);
-      remove_cleanable_stitching_cache_keys(private_config_);
+      if (clean_from_control_points_only) {
+        remove_control_point_dependent_stitching_cache_keys(config_);
+        remove_control_point_dependent_stitching_cache_keys(private_config_);
+      } else {
+        remove_cleanable_stitching_cache_keys(config_);
+        remove_cleanable_stitching_cache_keys(private_config_);
+      }
       if (preserved_pipeline.IsDefined()) {
         config_["pipeline"] = preserved_pipeline;
       }
@@ -1868,7 +1916,7 @@ absl::Status Configurator::complete_configuration(
     pipeline["hmplaycropper"]["config-file"] = std::string(game_dir);
   }
 
-  if (clean_stitching_artifacts) {
+  if (clean_requested) {
     return absl::CancelledError("Stitching artifacts cleaned");
   }
 
