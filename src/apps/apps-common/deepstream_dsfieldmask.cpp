@@ -1,5 +1,6 @@
 #include "hstream/src/apps/apps-common/deepstream_dsfieldmask.h"
 #include "deepstream_sinks.h"
+#include "hstream/src/apps/apps-common/HmGpuPreview.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
 #include "hstream/src/apps/apps-common/deepstream_config.h"
 #include "hstream/src/apps/apps-common/deepstream_sinks.h"
@@ -11,6 +12,7 @@
 #include <gstreamer-1.0/gst/gstelementfactory.h>
 #include <gstreamer-1.0/gst/gstobject.h>
 #include <gstreamer-1.0/gst/gstpad.h>
+#include <nvbufsurface.h>
 
 #include <algorithm>
 #include <atomic>
@@ -628,14 +630,17 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
 
   NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "sink");
   if (config->ui_preview) {
+    if (!hm::gpu_preview::renderer_available() || !hm::gpu_preview::register_elements()) {
+      NVGSTDS_ERR_MSG_V("GPU-native stitching preview is unavailable on this platform");
+      goto done;
+    }
     HMGST_ELEMENT_MAKE_BINADD(bin->output_tee, "tee", "hmstitcher_preview_tee");
     HMGST_ELEMENT_MAKE_BINADD(bin->output_queue, NVDS_ELEM_QUEUE, "hmstitcher_output_queue");
     HMGST_ELEMENT_MAKE_BINADD(bin->preview_queue, NVDS_ELEM_QUEUE, "hmstitcher_preview_queue");
+    HMGST_ELEMENT_MAKE_BINADD(bin->preview_isolation, "hmpreviewisolation", "hmstitcher_preview_isolation");
     HMGST_ELEMENT_MAKE_BINADD(bin->preview_converter, NVDS_ELEM_VIDEO_CONV, "hmstitcher_preview_converter");
     HMGST_ELEMENT_MAKE_BINADD(bin->preview_caps_filter, NVDS_ELEM_CAPS_FILTER, "hmstitcher_preview_caps");
-    HMGST_ELEMENT_MAKE_BINADD(bin->preview_system_converter, "videoconvert", "hmstitcher_preview_system_converter");
-    HMGST_ELEMENT_MAKE_BINADD(bin->preview_system_caps_filter, NVDS_ELEM_CAPS_FILTER, "hmstitcher_preview_system_caps");
-    HMGST_ELEMENT_MAKE_BINADD(bin->preview_sink, NVDS_ELEM_SINK_FAKESINK, "hmstitcher_preview_sink");
+    HMGST_ELEMENT_MAKE_BINADD(bin->preview_sink, "hmgpupreviewsink", "hmstitcher_preview_sink");
 
     constexpr gint kStitchedPreviewWidth = 1600;
     constexpr gint kStitchedPreviewHeight = 900;
@@ -650,7 +655,15 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
         "max-size-time",
         static_cast<guint64>(0),
         NULL);
-    g_object_set(G_OBJECT(bin->preview_converter), "gpu-id", config->gpu_id, "nvbuf-memory-type", 1, NULL);
+    g_object_set(
+        G_OBJECT(bin->preview_converter),
+        "gpu-id",
+        config->gpu_id,
+        "nvbuf-memory-type",
+        NVBUF_MEM_CUDA_DEVICE,
+        "output-buffers",
+        1,
+        NULL);
 #if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
     g_object_set(G_OBJECT(bin->preview_converter), "copy-hw", 2, NULL);
 #endif
@@ -658,7 +671,7 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
         "video/x-raw",
         "format",
         G_TYPE_STRING,
-        "NV12",
+        "RGBA",
         "width",
         G_TYPE_INT,
         kStitchedPreviewWidth,
@@ -666,32 +679,33 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
         G_TYPE_INT,
         kStitchedPreviewHeight,
         NULL);
+    gst_caps_set_features(preview_caps, 0, gst_caps_features_new(MEMORY_FEATURES, NULL));
     g_object_set(G_OBJECT(bin->preview_caps_filter), "caps", preview_caps, NULL);
     gst_caps_unref(preview_caps);
-    GstCaps* preview_system_caps = gst_caps_new_simple(
-        "video/x-raw",
-        "format",
-        G_TYPE_STRING,
-        "BGRx",
-        "width",
-        G_TYPE_INT,
-        kStitchedPreviewWidth,
-        "height",
-        G_TYPE_INT,
-        kStitchedPreviewHeight,
+    g_object_set(G_OBJECT(bin->preview_isolation), "channel", "stitched", "active", FALSE, NULL);
+    g_object_set(
+        G_OBJECT(bin->preview_sink),
+        "channel",
+        "stitched",
+        "gpu-id",
+        config->gpu_id,
+        "sync",
+        FALSE,
+        "async",
+        FALSE,
+        "qos",
+        FALSE,
+        "enable-last-sample",
+        FALSE,
         NULL);
-    g_object_set(G_OBJECT(bin->preview_system_caps_filter), "caps", preview_system_caps, NULL);
-    gst_caps_unref(preview_system_caps);
-    g_object_set(G_OBJECT(bin->preview_sink), "sync", FALSE, "async", FALSE, "enable-last-sample", TRUE, NULL);
 
     NVGSTDS_LINK_ELEMENT(bin->elem_hmstitcher, bin->output_tee);
     if (!link_to_tee(bin->output_tee, bin->output_queue) || !link_to_tee(bin->output_tee, bin->preview_queue) ||
         !gst_element_link_many(
             bin->preview_queue,
+            bin->preview_isolation,
             bin->preview_converter,
             bin->preview_caps_filter,
-            bin->preview_system_converter,
-            bin->preview_system_caps_filter,
             bin->preview_sink,
             NULL)) {
       NVGSTDS_ERR_MSG_V("Failed to link hmstitcher UI preview branch");

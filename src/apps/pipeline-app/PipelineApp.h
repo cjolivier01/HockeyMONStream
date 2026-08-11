@@ -88,7 +88,7 @@ class PipelineApplication {
   // Helper functions for pipeline initialization and execution.
   absl::Status initializeInstances(CleanupStack& cleanup_stack);
   absl::Status configureInstances(size_t stage_index, std::vector<std::shared_ptr<HmApp>>& app_contexts);
-  absl::Status createPipelines(std::vector<std::shared_ptr<HmApp>>& app_contexts, CleanupStack& cleanup_stack) const;
+  absl::Status createPipelines(std::vector<std::shared_ptr<HmApp>>& app_contexts, CleanupStack& cleanup_stack);
   absl::Status createMainLoop(
       std::vector<std::shared_ptr<HmApp>>& app_contexts,
       std::map<int, Window>& windows,
@@ -132,6 +132,7 @@ class PipelineApplication {
   bool read_runtime_command_line(std::string* line);
   bool handle_runtime_command_line(const std::string& line);
   bool set_render_window_runtime(guint64 window_id);
+  bool set_preview_active_runtime(const std::string& channel, guint64 generation);
   bool capture_preview_frame_runtime(const std::string& channel, const std::string& path);
   bool set_element_property_runtime(
       const std::string& element_name,
@@ -147,7 +148,7 @@ class PipelineApplication {
   static gboolean recreate_pipeline_thread_func_static(gpointer arg);
   gboolean recreate_pipeline_thread_func(gpointer arg);
   absl::Status auto_focus_cameras(const std::vector<std::shared_ptr<HmApp>>& app_contexts) const;
-  absl::Status configure_source_preview_sinks(const std::vector<std::shared_ptr<HmApp>>& app_contexts) const;
+  absl::Status configure_source_preview_sinks(const std::vector<std::shared_ptr<HmApp>>& app_contexts);
 
  private:
   // std::vector<std::unique_ptr<HmApp>> app_ctx_;
@@ -175,6 +176,15 @@ class PipelineApplication {
   gdouble show_render_scale_{-1};
   gint64 render_window_id_{0};
   std::vector<guint64> source_render_window_ids_;
+  std::map<std::string, guint64> ui_preview_window_ids_;
+  std::string initial_ui_preview_channel_{"program"};
+  struct UiPreviewChannel {
+    GstElement* isolation{nullptr};
+    GstElement* sink{nullptr};
+  };
+  std::map<std::string, UiPreviewChannel> ui_preview_channels_;
+  std::string active_ui_preview_channel_;
+  guint64 active_ui_preview_generation_{1};
   gdouble stitch_rotate_degrees_{0.0};
   gboolean stitch_rotate_degrees_set_{FALSE};
   gboolean show_bbox_text_;

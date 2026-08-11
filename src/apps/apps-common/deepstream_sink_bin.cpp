@@ -41,6 +41,7 @@ static GstRTSPServer* server[MAX_SINK_BINS];
 static guint server_count = 0;
 static GMutex server_cnt_lock;
 static std::set<guint> rtsp_audio_sink_ids;
+static std::atomic<bool> embedded_gpu_preview_video_mode{false};
 
 void set_rtsp_audio_sink_ids(const gint* sink_ids, guint num_sink_ids) {
   rtsp_audio_sink_ids.clear();
@@ -49,6 +50,10 @@ void set_rtsp_audio_sink_ids(const gint* sink_ids, guint num_sink_ids) {
       rtsp_audio_sink_ids.insert(static_cast<guint>(sink_ids[i]));
     }
   }
+}
+
+void set_embedded_gpu_preview_video_mode(gboolean enabled) {
+  embedded_gpu_preview_video_mode = enabled != FALSE;
 }
 
 GST_DEBUG_CATEGORY_EXTERN(NVDS_APP);
@@ -794,6 +799,7 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
   const bool use_nv3d = use_nv3d_render_sink();
   const bool use_xvideo = use_xvideo_render_sink();
 #endif
+  const bool gpu_preview_fake = embedded_gpu_preview_video_mode.load();
 
   struct cudaDeviceProp prop;
   cudaGetDeviceProperties(&prop, config->gpu_id);
@@ -811,8 +817,10 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
     case NV_DS_SINK_RENDER_EGL:
       GST_CAT_INFO(NVDS_APP, "NVvideo renderer\n");
       bin->sink = gst_element_factory_make(
-          use_nv3d ? NVDS_ELEM_SINK_3D : (use_xvideo ? "ximagesink" : NVDS_ELEM_SINK_EGL), elem_name);
-      if (!use_xvideo) {
+          gpu_preview_fake ? NVDS_ELEM_SINK_FAKESINK
+                           : (use_nv3d ? NVDS_ELEM_SINK_3D : (use_xvideo ? "ximagesink" : NVDS_ELEM_SINK_EGL)),
+          elem_name);
+      if (!gpu_preview_fake && !use_xvideo) {
         g_object_set(
             G_OBJECT(bin->sink),
             "window-x",
@@ -825,7 +833,7 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
             config->height,
             NULL);
       }
-      g_object_set(G_OBJECT(bin->sink), "enable-last-sample", use_xvideo ? TRUE : FALSE, NULL);
+      g_object_set(G_OBJECT(bin->sink), "enable-last-sample", !gpu_preview_fake && use_xvideo ? TRUE : FALSE, NULL);
       break;
 #endif
     case NV_DS_SINK_RENDER_DRM:
@@ -898,11 +906,12 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
   g_object_set(G_OBJECT(bin->sink), "sync", config->sync, "max-lateness", -1, "async", FALSE, "qos", config->qos, NULL);
 #endif
 
-  if (!prop.integrated
+  if (!gpu_preview_fake &&
+      (!prop.integrated
 #ifndef IS_TEGRA
-      || use_nv3d
+       || use_nv3d
 #endif
-  ) {
+       )) {
     g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin_cap_filter%d", uid);
     bin->cap_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, elem_name);
     if (!bin->cap_filter) {
@@ -914,7 +923,7 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
 
   g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin_transform%d", uid);
 #ifndef IS_TEGRA
-  if (config->type == NV_DS_SINK_RENDER_EGL) {
+  if (!gpu_preview_fake && config->type == NV_DS_SINK_RENDER_EGL) {
     if (prop.integrated && !use_nv3d) {
       bin->transform = gst_element_factory_make(NVDS_ELEM_EGLTRANSFORM, elem_name);
     } else {

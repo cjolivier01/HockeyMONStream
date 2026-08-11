@@ -13,11 +13,15 @@
 #include <gst/gstbin.h>
 #include <gst/video/video.h>
 #include <gst/video/videooverlay.h>
+#include <nvbufsurface.h>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <signal.h>
 #include <string.h>
 #include <sys/select.h>
+#if defined(__linux__)
+#include <sys/prctl.h>
+#endif
 #include <termios.h>
 #include <unistd.h>
 #include <algorithm>
@@ -37,8 +41,10 @@
 #include <vector>
 
 #include "TensorRtModelCache.h"
+#include "hstream/src/apps/apps-common/HmGpuPreview.h"
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
+#include "hstream/src/apps/apps-common/deepstream_sinks.h"
 #include "hstream/src/libs/assets/AssetManager.h"
 #include "hstream/src/libs/camera/AutoFocus.h"
 #include "hstream/src/libs/common/Status.h"
@@ -647,6 +653,9 @@ absl::Status PipelineApplication::configureInstances(
         return absl::InternalError("Failed to parse config file");
       }
     }
+    if (!ui_preview_window_ids_.empty()) {
+      app_ctx->config.hmsticher_config.ui_preview = TRUE;
+    }
     valid_app_contexts.emplace_back(std::move(app_ctx));
   }
   app_contexts = std::move(valid_app_contexts);
@@ -658,7 +667,7 @@ absl::Status PipelineApplication::configureInstances(
 
 absl::Status PipelineApplication::createPipelines(
     std::vector<std::shared_ptr<HmApp>>& app_contexts,
-    CleanupStack& cleanup_stack) const {
+    CleanupStack& cleanup_stack) {
   // Section 2: Create pipelines for each instance.
   for (guint i = 0; i < app_contexts.size(); i++) {
     if (!create_pipeline(app_contexts[i].get(), nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
@@ -679,10 +688,283 @@ absl::Status PipelineApplication::createPipelines(
 }
 
 absl::Status PipelineApplication::configure_source_preview_sinks(
-    const std::vector<std::shared_ptr<HmApp>>& app_contexts) const {
+    const std::vector<std::shared_ptr<HmApp>>& app_contexts) {
+  if (!ui_preview_window_ids_.empty()) {
+    if (app_contexts.size() != 1) {
+      return absl::InvalidArgumentError("GPU-native UI previews require exactly one active pipeline context");
+    }
+    constexpr guint64 kPreviewImageBudgetBytes = 64ULL * 1024ULL * 1024ULL;
+    guint64 preview_image_bytes = 0;
+
+    struct PreviewProbeState {
+      GstElement* sink{nullptr};
+      GstClockTime last_pts{GST_CLOCK_TIME_NONE};
+      std::chrono::steady_clock::time_point last_emission;
+      bool have_last_emission{false};
+    };
+    auto preview_probe = +[](GstPad*, GstPadProbeInfo* info, gpointer user_data) -> GstPadProbeReturn {
+      auto* state = static_cast<PreviewProbeState*>(user_data);
+      if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) != 0) {
+        GstEvent* event = GST_PAD_PROBE_INFO_EVENT(info);
+        if (event && GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
+          GstCaps* caps = nullptr;
+          gst_event_parse_caps(event, &caps);
+          const GstStructure* structure = caps && gst_caps_get_size(caps) ? gst_caps_get_structure(caps, 0) : nullptr;
+          gint width = 0;
+          gint height = 0;
+          if (structure && gst_structure_get_int(structure, "width", &width) &&
+              gst_structure_get_int(structure, "height", &height) && width > 0 && height > 0) {
+            hm::gpu_preview::set_source_geometry(state->sink, width, height);
+          }
+        }
+      }
+      if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) != 0) {
+        const auto now = std::chrono::steady_clock::now();
+        constexpr auto kMinimumWallPeriod = std::chrono::nanoseconds(GST_SECOND / 30);
+        if (state->have_last_emission && now - state->last_emission < kMinimumWallPeriod)
+          return GST_PAD_PROBE_DROP;
+        GstBuffer* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
+        const GstClockTime pts = buffer ? GST_BUFFER_PTS(buffer) : GST_CLOCK_TIME_NONE;
+        constexpr GstClockTime kMinimumPreviewPeriod = GST_SECOND / 30;
+        if (GST_CLOCK_TIME_IS_VALID(pts) && GST_CLOCK_TIME_IS_VALID(state->last_pts) && pts >= state->last_pts &&
+            pts - state->last_pts < kMinimumPreviewPeriod) {
+          return GST_PAD_PROBE_DROP;
+        }
+        if (GST_CLOCK_TIME_IS_VALID(pts))
+          state->last_pts = pts;
+        state->last_emission = now;
+        state->have_last_emission = true;
+      }
+      return GST_PAD_PROBE_OK;
+    };
+
+    auto configure_path = [&](GstElement* queue,
+                              GstElement* isolation,
+                              GstElement* converter,
+                              GstElement* caps_filter,
+                              GstElement* sink,
+                              const std::string& channel,
+                              guint64 window_id,
+                              guint gpu_id,
+                              gint width,
+                              gint height,
+                              bool link_elements) -> bool {
+      if (!queue || !isolation || !converter || !caps_filter || !sink)
+        return false;
+      const guint64 aligned_pitch = (static_cast<guint64>(width) * 4ULL + 255ULL) & ~255ULL;
+      const guint64 path_image_bytes = aligned_pitch * static_cast<guint64>(height) * 2ULL;
+      if (path_image_bytes > kPreviewImageBudgetBytes - preview_image_bytes)
+        return false;
+      preview_image_bytes += path_image_bytes;
+      g_object_set(
+          G_OBJECT(queue),
+          "leaky",
+          2,
+          "max-size-buffers",
+          1,
+          "max-size-bytes",
+          0,
+          "max-size-time",
+          static_cast<guint64>(0),
+          nullptr);
+      const bool initially_active = channel == active_ui_preview_channel_;
+      g_object_set(
+          G_OBJECT(isolation),
+          "channel",
+          channel.c_str(),
+          "generation",
+          static_cast<guint64>(active_ui_preview_generation_),
+          "active",
+          initially_active ? TRUE : FALSE,
+          nullptr);
+      g_object_set(
+          G_OBJECT(converter),
+          "gpu-id",
+          gpu_id,
+          "nvbuf-memory-type",
+          NVBUF_MEM_CUDA_DEVICE,
+          "output-buffers",
+          1,
+          nullptr);
+      GstCaps* caps = gst_caps_new_simple(
+          "video/x-raw",
+          "format",
+          G_TYPE_STRING,
+          "RGBA",
+          "width",
+          G_TYPE_INT,
+          width,
+          "height",
+          G_TYPE_INT,
+          height,
+          nullptr);
+      gst_caps_set_features(caps, 0, gst_caps_features_new("memory:NVMM", nullptr));
+      g_object_set(G_OBJECT(caps_filter), "caps", caps, nullptr);
+      gst_caps_unref(caps);
+      g_object_set(
+          G_OBJECT(sink),
+          "window-id",
+          window_id,
+          "gpu-id",
+          gpu_id,
+          "channel",
+          channel.c_str(),
+          "generation",
+          static_cast<guint64>(active_ui_preview_generation_),
+          "sync",
+          FALSE,
+          "async",
+          FALSE,
+          "qos",
+          FALSE,
+          "enable-last-sample",
+          FALSE,
+          nullptr);
+      if (link_elements && !gst_element_link_many(queue, isolation, converter, caps_filter, sink, nullptr))
+        return false;
+      GstPad* probe_pad = gst_element_get_static_pad(isolation, "src");
+      if (!probe_pad)
+        return false;
+      auto* probe_state = new PreviewProbeState{GST_ELEMENT(gst_object_ref(sink))};
+      gst_pad_add_probe(
+          probe_pad,
+          static_cast<GstPadProbeType>(GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM),
+          preview_probe,
+          probe_state,
+          +[](gpointer data) {
+            auto* state = static_cast<PreviewProbeState*>(data);
+            gst_object_unref(state->sink);
+            delete state;
+          });
+      gst_object_unref(probe_pad);
+      ui_preview_channels_[channel] = UiPreviewChannel{isolation, sink};
+      if (initially_active)
+        active_ui_preview_channel_ = channel;
+      return true;
+    };
+
+    const auto& app_context = app_contexts.front();
+    NvDsSinkBin& output = app_context->pipeline.instance_bins[0].sink_bin;
+    const auto program_target = ui_preview_window_ids_.find("program");
+    if (program_target != ui_preview_window_ids_.end()) {
+      GstElement* queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "program_gpu_preview_queue");
+      GstElement* isolation = gst_element_factory_make("hmpreviewisolation", "program_gpu_preview_isolation");
+      GstElement* converter = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "program_gpu_preview_converter");
+      GstElement* caps_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "program_gpu_preview_caps");
+      GstElement* sink = gst_element_factory_make("hmgpupreviewsink", "program_gpu_preview_sink");
+      if (!output.bin || !output.tee || !queue || !isolation || !converter || !caps_filter || !sink) {
+        return absl::InternalError("Could not create the GPU-native Program preview branch");
+      }
+      gst_bin_add_many(GST_BIN(output.bin), queue, isolation, converter, caps_filter, sink, nullptr);
+      if (!configure_path(
+              queue,
+              isolation,
+              converter,
+              caps_filter,
+              sink,
+              "program",
+              program_target->second,
+              app_context->config.hmsticher_config.gpu_id,
+              1600,
+              900,
+              true) ||
+          !link_element_to_tee_src_pad(output.tee, queue)) {
+        return absl::InternalError("Could not link the GPU-native Program preview branch");
+      }
+    }
+
+    const auto stitched_target = ui_preview_window_ids_.find("stitched");
+    HmStitcherBin& stitcher = app_context->pipeline.hmstitcher_bin;
+    if (stitched_target != ui_preview_window_ids_.end()) {
+      if (!stitcher.preview_queue || !stitcher.preview_isolation || !stitcher.preview_converter ||
+          !stitcher.preview_caps_filter || !stitcher.preview_sink) {
+        return absl::FailedPreconditionError("The stitched GPU preview branch was not created");
+      }
+      g_object_set(G_OBJECT(stitcher.preview_sink), "window-id", stitched_target->second, nullptr);
+      if (!configure_path(
+              stitcher.preview_queue,
+              stitcher.preview_isolation,
+              stitcher.preview_converter,
+              stitcher.preview_caps_filter,
+              stitcher.preview_sink,
+              "stitched",
+              stitched_target->second,
+              app_context->config.hmsticher_config.gpu_id,
+              1600,
+              900,
+              false)) {
+        return absl::InternalError("Could not configure the GPU-native Stitched preview branch");
+      }
+    }
+
+    NvDsSrcParentBin& sources = app_context->pipeline.multi_src_bin;
+    for (guint source_index = 0; source_index < sources.num_bins; ++source_index) {
+      const std::string channel = "source" + std::to_string(source_index);
+      const auto target = ui_preview_window_ids_.find(channel);
+      if (target == ui_preview_window_ids_.end())
+        continue;
+      NvDsSrcBin& source = sources.sub_bins[source_index];
+      if (!source.bin || !source.fakesink_queue || !source.fakesink) {
+        return absl::FailedPreconditionError(TO_STRING(channel << " does not expose a preview tee branch"));
+      }
+      gst_element_unlink(source.fakesink_queue, source.fakesink);
+      if (!gst_bin_remove(GST_BIN(source.bin), source.fakesink)) {
+        return absl::InternalError(TO_STRING("Could not replace the fake sink for " << channel));
+      }
+      source.fakesink = nullptr;
+      GstElement* isolation =
+          gst_element_factory_make("hmpreviewisolation", (channel + "_gpu_preview_isolation").c_str());
+      GstElement* converter =
+          gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, (channel + "_gpu_preview_converter").c_str());
+      GstElement* caps_filter =
+          gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, (channel + "_gpu_preview_caps").c_str());
+      GstElement* sink = gst_element_factory_make("hmgpupreviewsink", (channel + "_gpu_preview_sink").c_str());
+      if (!isolation || !converter || !caps_filter || !sink)
+        return absl::InternalError(TO_STRING("Could not create the GPU-native preview branch for " << channel));
+      gst_bin_add_many(GST_BIN(source.bin), isolation, converter, caps_filter, sink, nullptr);
+      const NvDsSourceConfig& source_config = app_context->config.multi_source_config[source_index];
+      if (!configure_path(
+              source.fakesink_queue,
+              isolation,
+              converter,
+              caps_filter,
+              sink,
+              channel,
+              target->second,
+              source_config.gpu_id,
+              1280,
+              720,
+              true)) {
+        return absl::InternalError(TO_STRING("Could not link the GPU-native preview branch for " << channel));
+      }
+      source.fakesink = sink;
+    }
+
+    for (const auto& [channel, window_id] : ui_preview_window_ids_) {
+      if (channel.rfind("source", 0) == 0 && !ui_preview_channels_.count(channel)) {
+        g_print(
+            "HSTREAM_PREVIEW channel=%s status=unavailable generation=%" G_GUINT64_FORMAT
+            " message=no active camera source for XID %" G_GUINT64_FORMAT "\n",
+            channel.c_str(),
+            active_ui_preview_generation_,
+            window_id);
+      }
+    }
+    if (!active_ui_preview_channel_.empty() && !ui_preview_channels_.count(active_ui_preview_channel_))
+      active_ui_preview_channel_.clear();
+    g_print(
+        "HSTREAM_PREVIEW_MEMORY image-bytes=%" G_GUINT64_FORMAT " budget-bytes=%" G_GUINT64_FORMAT "\n",
+        preview_image_bytes,
+        kPreviewImageBudgetBytes);
+    return absl::OkStatus();
+  }
+
   if (source_render_window_ids_.empty()) {
     return absl::OkStatus();
   }
+  // Legacy, explicitly requested CLI compatibility path. hstream-ui never
+  // selects this system-memory renderer; its steady-state previews use the
+  // GPU-native branches above. Keep this isolated for older diagnostic tools.
   if (app_contexts.size() != 1) {
     return absl::InvalidArgumentError("--source-render-window-ids requires exactly one active pipeline context");
   }
@@ -1272,6 +1554,87 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &render_window_id_,
        "Native X11 window id to use for the render sink instead of creating a DeepStream window",
        "XID"},
+      {"ui-preview-windows",
+       0,
+       0,
+       G_OPTION_ARG_CALLBACK,
+       (gpointer) + [](const gchar*, const gchar* value, gpointer data, GError** error) -> gboolean {
+         auto* app = static_cast<PipelineApplication*>(data);
+         std::map<std::string, guint64> parsed;
+         std::set<guint64> window_ids;
+         for (absl::string_view part : absl::StrSplit(value ? value : "", ',')) {
+           const size_t separator = part.find(':');
+           if (separator == absl::string_view::npos) {
+             g_set_error(
+                 error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE, "Invalid --ui-preview-windows entry: %s", value);
+             return FALSE;
+           }
+           std::string channel(part.substr(0, separator));
+           std::string id_text(part.substr(separator + 1));
+           channel.erase(
+               std::remove_if(channel.begin(), channel.end(), [](unsigned char c) { return std::isspace(c); }),
+               channel.end());
+           id_text.erase(
+               std::remove_if(id_text.begin(), id_text.end(), [](unsigned char c) { return std::isspace(c); }),
+               id_text.end());
+           const bool valid_channel = channel == "program" || channel == "stitched" ||
+               (channel.rfind("source", 0) == 0 && channel.size() > 6 &&
+                std::all_of(channel.begin() + 6, channel.end(), [](unsigned char c) { return std::isdigit(c); }));
+           if (!valid_channel || id_text.empty() ||
+               !std::all_of(id_text.begin(), id_text.end(), [](unsigned char c) { return std::isdigit(c); })) {
+             g_set_error(
+                 error,
+                 G_OPTION_ERROR,
+                 G_OPTION_ERROR_BAD_VALUE,
+                 "Invalid --ui-preview-windows entry: %s",
+                 std::string(part).c_str());
+             return FALSE;
+           }
+           errno = 0;
+           gchar* end = nullptr;
+           const guint64 window_id = g_ascii_strtoull(id_text.c_str(), &end, 10);
+           if (errno == ERANGE || window_id == 0 || !end || *end != '\0' || parsed.count(channel) ||
+               window_ids.count(window_id)) {
+             g_set_error(
+                 error,
+                 G_OPTION_ERROR,
+                 G_OPTION_ERROR_BAD_VALUE,
+                 "Duplicate, zero, or invalid UI preview target: %s",
+                 std::string(part).c_str());
+             return FALSE;
+           }
+           parsed.emplace(channel, window_id);
+           window_ids.insert(window_id);
+         }
+         if (parsed.empty()) {
+           g_set_error(error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE, "--ui-preview-windows cannot be empty");
+           return FALSE;
+         }
+         app->ui_preview_window_ids_ = std::move(parsed);
+         return TRUE;
+       },
+       "GPU-native UI preview targets as logical-channel:XID pairs",
+       "program:XID,stitched:XID,source0:XID,..."},
+      {"ui-preview-active",
+       0,
+       0,
+       G_OPTION_ARG_CALLBACK,
+       (gpointer) + [](const gchar*, const gchar* value, gpointer data, GError** error) -> gboolean {
+         auto* app = static_cast<PipelineApplication*>(data);
+         const std::string channel = value ? value : "";
+         const bool valid = channel == "program" || channel == "stitched" ||
+             (channel.rfind("source", 0) == 0 && channel.size() > 6 &&
+              std::all_of(channel.begin() + 6, channel.end(), [](unsigned char c) { return std::isdigit(c); }));
+         if (!valid) {
+           g_set_error(
+               error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE, "Invalid --ui-preview-active channel: %s", value);
+           return FALSE;
+         }
+         app->initial_ui_preview_channel_ = channel;
+         return TRUE;
+       },
+       "Initially active GPU-native UI preview channel",
+       "CHANNEL"},
       {"source-render-window-ids",
        0,
        0,
@@ -1463,6 +1826,21 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   if (!g_option_context_parse(ctx, &normalized_argc, &normalized_argv_data, &error)) {
     NVGSTDS_ERR_MSG_V("%s", error->message);
     return absl::InternalError(error->message);
+  }
+
+  if (!ui_preview_window_ids_.empty()) {
+    if (!hm::gpu_preview::renderer_available() || !hm::gpu_preview::register_elements()) {
+      return absl::FailedPreconditionError(
+          "GPU-native embedded preview is unavailable on this platform; no CPU preview fallback was enabled");
+    }
+    if (!ui_preview_window_ids_.count(initial_ui_preview_channel_)) {
+      return absl::InvalidArgumentError("--ui-preview-active must name a channel present in --ui-preview-windows");
+    }
+    active_ui_preview_channel_ = initial_ui_preview_channel_;
+    active_ui_preview_generation_ = 1;
+    set_embedded_gpu_preview_video_mode(TRUE);
+  } else {
+    set_embedded_gpu_preview_video_mode(FALSE);
   }
 
   constexpr const char* kCalibrationInvalidationEnvironment = "HSTREAM_CALIBRATION_INVALIDATION_ID";
@@ -2142,6 +2520,7 @@ void PipelineApplication::print_runtime_commands() const {
       "\tq: Quit\n\n"
       "\tp: Pause\n"
       "\tr: Resume\n"
+      "\t@set-preview-active <program|stitched|sourceN|none> <generation>: Activate one GPU-native UI preview\n"
       "\t@set-render-window <xid>: Move the embedded program render sink to another X11 window\n"
       "\t@capture-preview-frame <main|stitched|sourceN> <jpg-path>: Save the latest UI preview frame\n"
       "\t@set-property <element> <property=value>: Set an allowlisted runtime GStreamer property\n\n");
@@ -2308,6 +2687,24 @@ bool parse_runtime_set_render_window(const std::string& line, guint64* window_id
   return parse_uint64_strict(trim_ascii(trimmed.substr(kCommand.size())), window_id) && *window_id > 0;
 }
 
+bool parse_runtime_set_preview_active(const std::string& line, std::string* channel, guint64* generation) {
+  constexpr absl::string_view kCommand = "set-preview-active";
+  if (!channel || !generation)
+    return false;
+  const std::string trimmed = trim_ascii(line);
+  if (trimmed.rfind(std::string(kCommand), 0) != 0 || trimmed.size() <= kCommand.size() ||
+      !std::isspace(static_cast<unsigned char>(trimmed[kCommand.size()]))) {
+    return false;
+  }
+  const std::string arguments = trim_ascii(trimmed.substr(kCommand.size()));
+  const size_t separator = arguments.find_first_of(" \t");
+  if (separator == std::string::npos)
+    return false;
+  *channel = arguments.substr(0, separator);
+  const std::string generation_text = trim_ascii(arguments.substr(separator));
+  return !channel->empty() && parse_uint64_strict(generation_text, generation) && *generation > 0;
+}
+
 bool parse_runtime_capture_preview_frame(const std::string& line, std::string* channel, std::string* path) {
   constexpr absl::string_view kCommand = "capture-preview-frame";
   if (!channel || !path) {
@@ -2342,6 +2739,9 @@ struct PreviewFrameSaveResult {
 };
 
 PreviewFrameSaveResult save_preview_frame(GstElement* sink, const fs::path& output_path) {
+  // Explicit one-shot diagnostic command only. This intentionally maps one
+  // retained sample to host memory and is never used by hstream-ui or any
+  // steady-state preview path.
   if (!sink || !g_object_class_find_property(G_OBJECT_GET_CLASS(sink), "last-sample")) {
     return {PreviewFrameSaveStatus::kUnavailable};
   }
@@ -2628,6 +3028,11 @@ bool PipelineApplication::set_element_property_runtime(
 }
 
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
+  std::string active_preview_channel;
+  guint64 preview_generation = 0;
+  if (parse_runtime_set_preview_active(line, &active_preview_channel, &preview_generation)) {
+    return set_preview_active_runtime(active_preview_channel, preview_generation);
+  }
   guint64 window_id = 0;
   if (parse_runtime_set_render_window(line, &window_id)) {
     return set_render_window_runtime(window_id);
@@ -2642,11 +3047,84 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   std::string value;
   if (!parse_runtime_set_property(line, &element_name, &property_name, &value)) {
     g_printerr(
-        "runtime command failed: expected: set-render-window <xid>, capture-preview-frame <main|stitched|sourceN> "
-        "<jpg-path>, or set-property <element> <property=value>\n");
+        "runtime command failed: expected: set-preview-active <program|stitched|sourceN|none> <generation>, "
+        "set-render-window <xid>, capture-preview-frame <main|stitched|sourceN> <jpg-path>, or set-property "
+        "<element> <property=value>\n");
     return false;
   }
   return set_element_property_runtime(element_name, property_name, value);
+}
+
+bool PipelineApplication::set_preview_active_runtime(const std::string& channel, guint64 generation) {
+  if (ui_preview_channels_.empty()) {
+    g_printerr("runtime preview activation failed: GPU-native UI previews are not configured\n");
+    return false;
+  }
+  if (generation <= active_ui_preview_generation_) {
+    g_print(
+        "HSTREAM_PREVIEW channel=%s status=stale generation=%" G_GUINT64_FORMAT
+        " message=activation generation is not newer than %" G_GUINT64_FORMAT "\n",
+        channel.c_str(),
+        generation,
+        active_ui_preview_generation_);
+    return true;
+  }
+
+  const auto previous = ui_preview_channels_.find(active_ui_preview_channel_);
+  if (previous != ui_preview_channels_.end() && previous->first != channel) {
+    // active=false waits for every buffer already past the gate to finish its
+    // downstream push. Only then is it safe to destroy the old GL renderer.
+    hm::gpu_preview::set_isolation_active(previous->second.isolation, false, generation);
+    if (!hm::gpu_preview::quiesce(previous->second.sink, generation)) {
+      active_ui_preview_channel_.clear();
+      active_ui_preview_generation_ = generation;
+      g_print(
+          "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
+          " message=could not quiesce the previous preview channel\n",
+          channel.c_str(),
+          generation);
+      return true;
+    }
+  }
+
+  active_ui_preview_channel_.clear();
+  active_ui_preview_generation_ = generation;
+  if (channel == "none") {
+    g_print(
+        "HSTREAM_PREVIEW channel=none status=deactivated generation=%" G_GUINT64_FORMAT
+        " message=all GPU preview branches are inactive\n",
+        generation);
+    return true;
+  }
+
+  const auto target = ui_preview_channels_.find(channel);
+  if (target == ui_preview_channels_.end()) {
+    g_print(
+        "HSTREAM_PREVIEW channel=%s status=unavailable generation=%" G_GUINT64_FORMAT
+        " message=the requested camera source is unavailable\n",
+        channel.c_str(),
+        generation);
+    return true;
+  }
+
+  g_object_set(G_OBJECT(target->second.sink), "generation", generation, nullptr);
+  hm::gpu_preview::set_isolation_active(target->second.isolation, true, generation);
+  if (!hm::gpu_preview::isolation_active(target->second.isolation)) {
+    hm::gpu_preview::quiesce(target->second.sink, generation);
+    g_print(
+        "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
+        " message=the requested GPU preview channel has failed locally\n",
+        channel.c_str(),
+        generation);
+    return true;
+  }
+  active_ui_preview_channel_ = channel;
+  g_print(
+      "HSTREAM_PREVIEW channel=%s status=activated generation=%" G_GUINT64_FORMAT
+      " message=GPU preview branch activated\n",
+      channel.c_str(),
+      generation);
+  return true;
 }
 
 bool PipelineApplication::capture_preview_frame_runtime(const std::string& channel, const std::string& path) {
@@ -3150,15 +3628,28 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
   gboolean ret = TRUE;
   AppCtx* app_ctx_ptr = reinterpret_cast<AppCtx*>(arg);
   g_print("Destroy pipeline\n");
+  ui_preview_channels_.clear();
   destroy_pipeline(app_ctx_ptr);
   g_print("Recreate pipeline\n");
   if (!create_pipeline(app_ctx_ptr, nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
     NVGSTDS_ERR_MSG_V("Failed to create pipeline");
-    return absl::InternalError("Failed to create pipeline").raw_code();
+    return FALSE;
+  }
+  if (!ui_preview_window_ids_.empty()) {
+    const auto stage = stage_app_contexts_.find(current_stage_);
+    if (stage == stage_app_contexts_.end()) {
+      NVGSTDS_ERR_MSG_V("Could not find the current stage while rebuilding GPU preview branches");
+      return FALSE;
+    }
+    const absl::Status preview_status = configure_source_preview_sinks(stage->second);
+    if (!preview_status.ok()) {
+      NVGSTDS_ERR_MSG_V("Failed to rebuild GPU preview branches: %s", preview_status.ToString().c_str());
+      return FALSE;
+    }
   }
   if (gst_element_set_state(app_ctx_ptr->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
     NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
-    return absl::InternalError("Failed to set pipeline to PAUSED").raw_code();
+    return FALSE;
   }
   for (i = 0; i < app_ctx_ptr->config.num_sink_sub_bins; i++) {
     GstElement* sink = app_ctx_ptr->pipeline.instance_bins[0].sink_bin.sub_bins[i].sink;
@@ -3170,7 +3661,7 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
   }
   if (gst_element_set_state(app_ctx_ptr->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
     g_print("\ncan't set pipeline to playing state.\n");
-    return absl::InternalError("can't set pipeline to playing state").raw_code();
+    return FALSE;
   }
   return ret;
 }
@@ -3179,6 +3670,17 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
 // Main function.
 //------------------------------------------------------------------------------
 int main(int argc, char* argv[]) {
+#if defined(__linux__)
+  if (const char* expected_parent_text = std::getenv("HSTREAM_UI_PARENT_PID")) {
+    guint64 expected_parent = 0;
+    if (!parse_uint64_strict(expected_parent_text, &expected_parent) || expected_parent == 0 ||
+        expected_parent > static_cast<guint64>(G_MAXINT) || prctl(PR_SET_PDEATHSIG, SIGTERM) != 0 ||
+        getppid() != static_cast<pid_t>(expected_parent)) {
+      g_printerr("hstream-cli refused a stale or invalid HSTREAM_UI_PARENT_PID\n");
+      return 78;
+    }
+  }
+#endif
   configure_pipeline_runtime_environment(argc > 0 ? argv[0] : nullptr);
   if (!std::getenv("HSTREAM_RUNTIME_ENV_READY")) {
     setenv("HSTREAM_RUNTIME_ENV_READY", "1", 1);
@@ -3191,6 +3693,8 @@ int main(int argc, char* argv[]) {
       std::perror("hstream-cli re-exec failed");
     }
   }
+  // Must precede GStreamer sinks or any other Xlib user in this process.
+  hm::gpu_preview::initialize_process();
   PipelineApplication app;
   absl::Status status = app.run(argc, argv);
   disable_perf_measurement();

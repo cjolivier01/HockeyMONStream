@@ -36,7 +36,6 @@ namespace hm::ui_internal {
 // keys may have been updated by another config owner in the meantime.
 void restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previous);
 bool supports_x11_embedding(const QString& platform_name, bool tegra_runtime = false);
-bool supports_snapshot_preview_sink(const QString& configured_render_sink);
 QString preview_channel_for_tab(int tab_index, int camera_count);
 
 } // namespace hm::ui_internal
@@ -99,8 +98,10 @@ class HStreamWindow : public QMainWindow {
   void handleScoreboardSelectorOutput(const QString& line);
   void switchPipelineRenderTarget(int tab_index);
   void clearPreviewFrames();
-  void requestPreviewFrame();
-  bool handlePreviewFrameResponse(const QString& line);
+  bool handleGpuPreviewStatus(const QString& line);
+  QWidget* previewSurfaceForChannel(const QString& channel) const;
+  QWidget* previewTargetForChannel(const QString& channel) const;
+  void schedulePreviewReadyTimeout(const QString& channel, quint64 generation, int timeout_ms);
   void togglePreviewFullscreen(int tab_index);
   void restartStage();
   void savePreset();
@@ -225,7 +226,6 @@ class HStreamWindow : public QMainWindow {
   QTabWidget* camera_tabs_{nullptr};
   QVBoxLayout* output_list_{nullptr};
   QProcess* pipeline_process_{nullptr};
-  QTimer* preview_frame_timer_{nullptr};
   QPushButton* start_button_{nullptr};
   QPushButton* pause_button_{nullptr};
   QPushButton* stop_button_{nullptr};
@@ -239,12 +239,11 @@ class HStreamWindow : public QMainWindow {
   bool calibration_pending_{false};
   bool calibration_dialog_failed_{false};
   bool preview_fullscreen_{false};
-  bool preview_frame_request_pending_{false};
-  quint64 preview_frame_request_generation_{0};
-  QString preview_frame_request_path_;
-  QString preview_frame_request_channel_;
+  quint64 preview_generation_{1};
+  QString active_preview_channel_;
+  QString pending_preview_channel_;
+  quint64 pending_preview_generation_{0};
   std::set<QString> preview_frame_channels_received_;
-  bool preview_frame_error_logged_{false};
   QString active_run_game_id_;
   bool active_run_is_calibration_{false};
   int active_calibration_control_points_{0};
