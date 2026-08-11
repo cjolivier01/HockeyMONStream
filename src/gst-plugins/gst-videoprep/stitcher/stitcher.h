@@ -37,6 +37,9 @@ absl::StatusOr<gint> validate_stitch_frame_continuity(
     const std::vector<gint>& frame_numbers,
     std::optional<gint> previous_frame_num = std::nullopt);
 
+/** Resets output occupancy for a new stitched batch without changing the pool's allocation capacity. */
+absl::Status prepare_stitch_output_surface(NvBufSurface* output_surface, size_t planned_frames);
+
 using STITCH_PRIV_BASE = CustomAlgorithmBase;
 
 class StitcherPriv : public STITCH_PRIV_BASE {

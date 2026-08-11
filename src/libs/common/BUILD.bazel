@@ -79,6 +79,57 @@ cc_library(
     ],
 )
 
+cc_test(
+    name = "decoded_frame_sequence_meta_test",
+    srcs = ["DecodedFrameSequenceMetaTest.cpp"],
+    deps = [
+        ":decoded_frame_sequence_meta",
+        "@gstreamer",
+    ],
+)
+
+cc_test(
+    name = "decoded_frame_sequence_meta_validation_test",
+    srcs = ["DecodedFrameSequenceMetaValidationTest.cpp"],
+    deps = [
+        ":decoded_frame_sequence_meta",
+        "@gstreamer",
+    ],
+)
+
+cc_binary(
+    name = "decoded_frame_sequence_meta_dso_a.so",
+    srcs = ["DecodedFrameSequenceMetaDsoTestLibrary.cpp"],
+    linkshared = True,
+    deps = [
+        ":decoded_frame_sequence_meta",
+        "@gstreamer",
+    ],
+)
+
+cc_binary(
+    name = "decoded_frame_sequence_meta_dso_b.so",
+    srcs = ["DecodedFrameSequenceMetaDsoTestLibrary.cpp"],
+    linkshared = True,
+    deps = [
+        ":decoded_frame_sequence_meta",
+        "@gstreamer",
+    ],
+)
+
+cc_test(
+    name = "decoded_frame_sequence_meta_dso_test",
+    srcs = ["DecodedFrameSequenceMetaDsoTest.cpp"],
+    data = [
+        ":decoded_frame_sequence_meta_dso_a.so",
+        ":decoded_frame_sequence_meta_dso_b.so",
+    ],
+    linkopts = ["-ldl"],
+    deps = [
+        "@gstreamer",
+    ],
+)
+
 cc_library(
     name = "utils_base",
     srcs = ["utils.cpp"],

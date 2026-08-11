@@ -202,8 +202,11 @@ bool PlayCropperPriv::UsesRuntimeOutputSize() const {
 absl::StatusOr<videoprep::RuntimeOutputSize> PlayCropperPriv::PrepareRuntimeOutputSize(
     NvDsBatchMeta* /*batch_meta*/,
     NvBufSurface* in_surface) {
-  if (!in_surface || !in_surface->surfaceList || !in_surface->numFilled) {
+  if (!in_surface || !in_surface->surfaceList || !in_surface->batchSize || !in_surface->numFilled) {
     return absl::InvalidArgumentError("Cannot determine playcropper output size without input surface");
+  }
+  if (in_surface->numFilled > in_surface->batchSize) {
+    return absl::InvalidArgumentError("Playcropper input contains more filled surfaces than its batch capacity");
   }
 
   constexpr double kOutputAspectRatio = 16.0 / 9.0;
@@ -218,7 +221,9 @@ absl::StatusOr<videoprep::RuntimeOutputSize> PlayCropperPriv::PrepareRuntimeOutp
     output_height = round_down_even(output_height);
   }
 
-  return videoprep::RuntimeOutputSize{output_width, output_height};
+  // Size the persistent pool from allocation capacity, not this buffer's occupancy. numFilled can be smaller than a
+  // later buffer without requiring caps renegotiation or pool growth.
+  return videoprep::RuntimeOutputSize{output_width, output_height, in_surface->batchSize};
 }
 
 gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep) {
@@ -439,7 +444,12 @@ absl::Status PlayCropperPriv::GenerateOutput(
   if (!in_surface->numFilled) {
     return absl::CancelledError("No surfaces were filled");
   }
-  assert(in_surface->numFilled == out_surface->batchSize);
+  if (!in_surface->batchSize || in_surface->numFilled > in_surface->batchSize) {
+    return absl::FailedPreconditionError("Playcropper input fill count exceeds its surface capacity");
+  }
+  if (in_surface->numFilled > out_surface->batchSize) {
+    return absl::FailedPreconditionError("Playcropper output surface capacity is smaller than the filled input batch");
+  }
   assert(cuda_stream_);
 
   // NppStreamContext nppStreamContext;
