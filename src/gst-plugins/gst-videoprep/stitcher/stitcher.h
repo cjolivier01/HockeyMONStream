@@ -40,6 +40,16 @@ absl::StatusOr<gint> validate_stitch_frame_continuity(
 /** Resets output occupancy for a new stitched batch without changing the pool's allocation capacity. */
 absl::Status prepare_stitch_output_surface(NvBufSurface* output_surface, size_t planned_frames);
 
+struct OnePassCalibrationProgressPlan {
+  bool report;
+  bool create_mask;
+  bool complete;
+};
+
+// Keeps resumed calibration observable even when stitch mappings were already
+// committed before the prior run stopped.
+OnePassCalibrationProgressPlan one_pass_calibration_progress_plan(bool configured_during_run, bool mask_configured);
+
 using STITCH_PRIV_BASE = CustomAlgorithmBase;
 
 class StitcherPriv : public STITCH_PRIV_BASE {
@@ -118,6 +128,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   std::unique_ptr<STITCHER_FP16> stitcher_fp16_ ABSL_GUARDED_BY(stitcher_mu_);
   std::string hugin_generation_id_ ABSL_GUARDED_BY(stitcher_mu_);
   std::string config_file_;
+  std::string calibration_invalidation_id_;
   std::mutex process_mu_;
   size_t process_pass_{0};
   bool configure_only_{false};

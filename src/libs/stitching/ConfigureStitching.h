@@ -48,15 +48,31 @@ absl::StatusOr<cv::Mat> load_field_mask(
 absl::Status create_field_mask(
     const std::string& game_dir,
     surface::Surface surface,
-    const std::string& expected_output_generation = {});
+    const std::string& expected_output_generation = {},
+    const std::string& expected_invalidation_id = {});
 
-absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& profile);
+absl::Status save_rink_profile(
+    const std::string& game_dir,
+    const RinkProfile& profile,
+    const std::string& expected_invalidation_id = {});
 
 absl::Status save_stitched_image(const std::string& game_dir, surface::Surface surface);
 
-absl::Status clean_stitching_artifacts(const std::string& game_dir);
+// Revalidates a pending UI invalidation under the game-config lock and
+// returns whether its artifact cleanup has already been applied.
+absl::StatusOr<bool> is_stitching_invalidation_cleanup_applied(
+    const std::string& game_dir,
+    const std::string& expected_invalidation_id);
 
-absl::Status configure_orientation(const std::string& game_dir);
+absl::Status clean_stitching_artifacts(const std::string& game_dir, const std::string& expected_invalidation_id = {});
+
+// Invalidates control-point generation and every artifact that depends on it,
+// while preserving camera orientation and synchronization results.
+absl::Status clean_stitching_artifacts_from_control_points(
+    const std::string& game_dir,
+    const std::string& expected_invalidation_id = {});
+
+absl::Status configure_orientation(const std::string& game_dir, const std::string& expected_invalidation_id = {});
 
 bool is_scoreboard_configured(const std::string& game_dir);
 
@@ -65,7 +81,8 @@ absl::Status configure_scoreboard(const std::string& game_dir);
 absl::Status configure_stitching(
     const std::string& game_dir,
     surface::Surface left_surface,
-    surface::Surface right_surface);
+    surface::Surface right_surface,
+    const std::string& expected_invalidation_id = {});
 
 // Ensure `${game_dir}/seam_file.png` exists.
 //

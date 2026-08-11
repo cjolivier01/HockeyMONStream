@@ -581,6 +581,80 @@ absl::StatusOr<std::optional<YAML::Node>> load_game_config_file(const fs::path& 
   }
 }
 
+namespace {
+
+absl::Status validate_stitching_generation_owner_impl(
+    const YAML::Node& config,
+    const std::string& expected_invalidation_id,
+    bool allow_completed) {
+  if (expected_invalidation_id.empty())
+    return absl::OkStatus();
+  try {
+    YAML::Node calibration;
+    if (config && config.IsMap()) {
+      const YAML::Node ui = config["hstream_ui"];
+      if (ui && ui.IsMap())
+        calibration = ui["stitching_calibration"];
+    }
+    const std::string current_invalidation_id =
+        calibration && calibration["invalidation_id"] && calibration["invalidation_id"].IsScalar()
+        ? calibration["invalidation_id"].as<std::string>()
+        : std::string();
+    const std::string current_status = calibration && calibration["status"] && calibration["status"].IsScalar()
+        ? calibration["status"].as<std::string>()
+        : std::string();
+    const bool status_matches = current_status == "pending" || (allow_completed && current_status == "complete");
+    if (current_invalidation_id != expected_invalidation_id || !status_matches)
+      return absl::AbortedError("Stitching invalidation was superseded");
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Unable to validate stitching invalidation: " + std::string(exception.what()));
+  }
+  return absl::OkStatus();
+}
+
+absl::Status validate_stitching_generation_owner_file_locked_impl(
+    const fs::path& config_path,
+    const std::string& expected_invalidation_id,
+    bool allow_completed) {
+  if (expected_invalidation_id.empty())
+    return absl::OkStatus();
+  try {
+    const YAML::Node config = fs::is_regular_file(config_path) ? YAML::LoadFile(config_path.string()) : YAML::Node();
+    return validate_stitching_generation_owner_impl(config, expected_invalidation_id, allow_completed);
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to load stitching invalidation for validation: " + std::string(exception.what()));
+  }
+}
+
+} // namespace
+
+absl::Status validate_pending_stitching_invalidation(
+    const YAML::Node& config,
+    const std::string& expected_invalidation_id) {
+  return validate_stitching_generation_owner_impl(config, expected_invalidation_id, /*allow_completed=*/false);
+}
+
+absl::Status validate_stitching_generation_owner(
+    const YAML::Node& config,
+    const std::string& expected_invalidation_id) {
+  return validate_stitching_generation_owner_impl(config, expected_invalidation_id, /*allow_completed=*/true);
+}
+
+absl::Status validate_pending_stitching_invalidation_file_locked(
+    const fs::path& config_path,
+    const std::string& expected_invalidation_id) {
+  return validate_stitching_generation_owner_file_locked_impl(
+      config_path, expected_invalidation_id, /*allow_completed=*/false);
+}
+
+absl::Status validate_stitching_generation_owner_file_locked(
+    const fs::path& config_path,
+    const std::string& expected_invalidation_id) {
+  return validate_stitching_generation_owner_file_locked_impl(
+      config_path, expected_invalidation_id, /*allow_completed=*/true);
+}
+
 YAML::Node apply_game_config_diff(const YAML::Node& baseline, const YAML::Node& desired, const YAML::Node& latest) {
   const bool empty_map_baseline = !baseline.IsDefined() || baseline.IsNull();
   if ((baseline.IsMap() || empty_map_baseline) && desired.IsMap()) {

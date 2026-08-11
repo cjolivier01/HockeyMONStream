@@ -243,15 +243,19 @@ bool remove_yaml_key_path(YAML::Node& root, const std::initializer_list<std::str
   return true;
 }
 
-void remove_cleanable_stitching_cache_keys(YAML::Node& config) {
-  remove_yaml_key_path(config, {"stitching", "frame_offsets"});
-  remove_yaml_key_path(config, {"game", "stitching", "frame_offsets"});
+void remove_control_point_dependent_cache_keys(YAML::Node& config) {
   remove_yaml_key_path(config, {"stitching", "control_points"});
   remove_yaml_key_path(config, {"game", "stitching", "control_points"});
   remove_yaml_key_path(config, {"rink", "scoreboard", "perspective_polygon"});
   remove_yaml_key_path(config, {"rink", "ice_contours_mask_count"});
   remove_yaml_key_path(config, {"rink", "ice_contours_mask_centroid"});
   remove_yaml_key_path(config, {"rink", "ice_contours_combined_bbox"});
+}
+
+void remove_cleanable_stitching_cache_keys(YAML::Node& config) {
+  remove_yaml_key_path(config, {"stitching", "frame_offsets"});
+  remove_yaml_key_path(config, {"game", "stitching", "frame_offsets"});
+  remove_control_point_dependent_cache_keys(config);
 }
 
 bool is_empty_yaml_document(const YAML::Node& node) {
@@ -734,7 +738,46 @@ absl::Status save_stitched_image(const std::string& game_dir, surface::Surface s
   return save_image(surface, (fs::path(game_dir) / "s.png").string());
 }
 
-absl::Status clean_stitching_artifacts(const std::string& game_dir) {
+namespace {
+
+absl::StatusOr<bool> read_stitching_invalidation_cleanup_state(
+    const fs::path& config_path,
+    const std::string& expected_invalidation_id) {
+  try {
+    const YAML::Node cfg = fs::exists(config_path) ? YAML::LoadFile(config_path.string()) : YAML::Node();
+    HM_RETURN_IF_ERROR(validate_pending_stitching_invalidation(cfg, expected_invalidation_id));
+    YAML::Node calibration;
+    if (cfg && cfg.IsMap()) {
+      const YAML::Node ui = cfg["hstream_ui"];
+      if (ui && ui.IsMap())
+        calibration = ui["stitching_calibration"];
+    }
+    return calibration && calibration["artifacts_invalidated"] && calibration["artifacts_invalidated"].IsScalar() &&
+        calibration["artifacts_invalidated"].as<bool>();
+  } catch (const YAML::Exception& ex) {
+    return absl::InvalidArgumentError(
+        TO_STRING("Failed to validate private config \"" << config_path.string() << "\": " << ex.what()));
+  }
+}
+
+} // namespace
+
+absl::StatusOr<bool> is_stitching_invalidation_cleanup_applied(
+    const std::string& game_dir,
+    const std::string& expected_invalidation_id) {
+  if (game_dir.empty() || expected_invalidation_id.empty())
+    return absl::InvalidArgumentError("Missing game directory or stitching invalidation ID");
+  const fs::path game_dir_path(game_dir);
+  auto config_transaction = GameConfigTransactionLock::Acquire(game_dir_path);
+  if (!config_transaction.ok())
+    return config_transaction.status();
+  return read_stitching_invalidation_cleanup_state(game_dir_path / "config.yaml", expected_invalidation_id);
+}
+
+absl::Status clean_stitching_artifacts_impl(
+    const std::string& game_dir,
+    bool preserve_synchronized_inputs,
+    const std::string& expected_invalidation_id) {
   if (game_dir.empty()) {
     return absl::InvalidArgumentError("Missing game directory");
   }
@@ -755,6 +798,15 @@ absl::Status clean_stitching_artifacts(const std::string& game_dir) {
   if (!config_transaction.ok())
     return config_transaction.status();
 
+  const fs::path cfg_file_path = game_dir_path / "config.yaml";
+  if (!expected_invalidation_id.empty()) {
+    bool artifacts_invalidated = false;
+    HM_ASSIGN_OR_RETURN(
+        artifacts_invalidated, read_stitching_invalidation_cleanup_state(cfg_file_path, expected_invalidation_id));
+    if (artifacts_invalidated)
+      return absl::AbortedError("Stitching cleanup invalidation was already applied before artifact deletion");
+  }
+
   size_t removed_files = 0;
   auto clean_pattern = [&](const std::string& pattern) -> absl::Status {
     size_t removed = 0;
@@ -773,15 +825,22 @@ absl::Status clean_stitching_artifacts(const std::string& game_dir) {
   HM_RETURN_IF_ERROR(clean_pattern("keypoints.png"));
   HM_RETURN_IF_ERROR(clean_pattern("s.png"));
   HM_RETURN_IF_ERROR(clean_pattern("rink_mask_*.png"));
-  size_t removed_extracted_frames = 0;
-  HM_ASSIGN_OR_RETURN(removed_extracted_frames, delete_extracted_frames(game_dir_path));
-  removed_files += removed_extracted_frames;
+  if (!preserve_synchronized_inputs) {
+    HM_RETURN_IF_ERROR(clean_pattern("left.png"));
+    HM_RETURN_IF_ERROR(clean_pattern("right.png"));
+    size_t removed_extracted_frames = 0;
+    HM_ASSIGN_OR_RETURN(removed_extracted_frames, delete_extracted_frames(game_dir_path));
+    removed_files += removed_extracted_frames;
+  }
 
-  const fs::path cfg_file_path = game_dir_path / "config.yaml";
   if (fs::exists(cfg_file_path)) {
     try {
       YAML::Node cfg = YAML::LoadFile(cfg_file_path.string());
-      remove_cleanable_stitching_cache_keys(cfg);
+      if (preserve_synchronized_inputs) {
+        remove_control_point_dependent_cache_keys(cfg);
+      } else {
+        remove_cleanable_stitching_cache_keys(cfg);
+      }
       std::ostringstream out;
       if (!is_empty_yaml_document(cfg)) {
         out << cfg << "\n";
@@ -797,9 +856,22 @@ absl::Status clean_stitching_artifacts(const std::string& game_dir) {
   }
 
   if (removed_files) {
-    std::cout << "Removed " << removed_files << " stitch artifact file(s) from \"" << game_dir << "\"\n";
+    std::cout << "Removed " << removed_files
+              << (preserve_synchronized_inputs ? " control-point-dependent stitch artifact file(s) from \""
+                                               : " stitch artifact file(s) from \"")
+              << game_dir << "\"\n";
   }
   return absl::OkStatus();
+}
+
+absl::Status clean_stitching_artifacts(const std::string& game_dir, const std::string& expected_invalidation_id) {
+  return clean_stitching_artifacts_impl(game_dir, /*preserve_synchronized_inputs=*/false, expected_invalidation_id);
+}
+
+absl::Status clean_stitching_artifacts_from_control_points(
+    const std::string& game_dir,
+    const std::string& expected_invalidation_id) {
+  return clean_stitching_artifacts_impl(game_dir, /*preserve_synchronized_inputs=*/true, expected_invalidation_id);
 }
 
 absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir) {
@@ -986,7 +1058,8 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
 absl::Status create_control_points(
     const std::string& game_dir,
     surface::Surface left_surface,
-    surface::Surface right_surface) {
+    surface::Surface right_surface,
+    const std::string& expected_invalidation_id) {
   std::string pattern = (fs::path(game_dir) / ".hstream-calibration-input-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
@@ -1043,6 +1116,7 @@ absl::Status create_control_points(
 
   HuginProject::Options options;
   options.max_canvas_dimension = max_canvas_dimension;
+  options.expected_invalidation_id = expected_invalidation_id;
   options.progress = report_calibration_progress;
   return HuginProject::Configure(game_dir, left_file, right_file, matched.selected, options);
 }
@@ -1418,7 +1492,8 @@ absl::Status save_rink_profile_locked(
     const std::string& game_dir,
     const RinkProfile& profile,
     const std::string& hugin_generation,
-    const std::string& expected_output_generation) {
+    const std::string& expected_output_generation,
+    const std::string& expected_invalidation_id) {
   if (game_dir.empty() || profile.masks.empty()) {
     return absl::InvalidArgumentError("A game directory and at least one rink mask are required");
   }
@@ -1480,6 +1555,7 @@ absl::Status save_rink_profile_locked(
   try {
     if (fs::is_regular_file(config_path))
       config = YAML::LoadFile(config_path.string());
+    HM_RETURN_IF_ERROR(validate_stitching_generation_owner(config, expected_invalidation_id));
     std::string current_output_generation;
     if (!expected_output_generation.empty()) {
       HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, hugin_generation));
@@ -1616,7 +1692,10 @@ absl::Status save_rink_profile_locked(
   return absl::OkStatus();
 }
 
-absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& profile) {
+absl::Status save_rink_profile(
+    const std::string& game_dir,
+    const RinkProfile& profile,
+    const std::string& expected_invalidation_id) {
   if (game_dir.empty())
     return absl::InvalidArgumentError("A game directory is required");
   const fs::path root(game_dir);
@@ -1630,13 +1709,14 @@ absl::Status save_rink_profile(const std::string& game_dir, const RinkProfile& p
   auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
   if (!hugin_generation.ok())
     return hugin_generation.status();
-  return save_rink_profile_locked(game_dir, profile, *hugin_generation, {});
+  return save_rink_profile_locked(game_dir, profile, *hugin_generation, {}, expected_invalidation_id);
 }
 
 absl::Status create_field_mask(
     const std::string& game_dir,
     surface::Surface surface,
-    const std::string& expected_output_generation) {
+    const std::string& expected_output_generation,
+    const std::string& expected_invalidation_id) {
   const fs::path root(game_dir);
   auto hugin_lock = HuginProject::RecoverAndLock(root);
   if (!hugin_lock.ok())
@@ -1646,6 +1726,13 @@ absl::Status create_field_mask(
     return hugin_generation.status();
   if (!expected_output_generation.empty()) {
     HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, *hugin_generation));
+  }
+  if (!expected_invalidation_id.empty()) {
+    auto config_transaction = GameConfigTransactionLock::Acquire(root);
+    if (!config_transaction.ok())
+      return config_transaction.status();
+    HM_RETURN_IF_ERROR(validate_stitching_generation_owner_file_locked(
+        root / "config.yaml", expected_invalidation_id));
   }
   HM_RETURN_IF_ERROR(save_stitched_image(game_dir, surface));
   const cv::Mat stitched = cv::imread((fs::path(game_dir) / "s.png").string(), cv::IMREAD_COLOR);
@@ -1657,15 +1744,16 @@ absl::Status create_field_mask(
   HM_ASSIGN_OR_RETURN(model, RinkSegmentation::Create(model_path.string()));
   RinkProfile profile;
   HM_ASSIGN_OR_RETURN(profile, model->Infer(stitched, RinkSegmentation::kHockeyMomInferenceScale));
-  return save_rink_profile_locked(game_dir, profile, *hugin_generation, expected_output_generation);
+  return save_rink_profile_locked(
+      game_dir, profile, *hugin_generation, expected_output_generation, expected_invalidation_id);
 }
 
-absl::Status configure_orientation(const std::string& game_dir) {
+absl::Status configure_orientation(const std::string& game_dir, const std::string& expected_invalidation_id) {
   fs::path model_path;
   HM_ASSIGN_OR_RETURN(model_path, rink_model_path());
   std::unique_ptr<RinkSegmentation> model;
   HM_ASSIGN_OR_RETURN(model, RinkSegmentation::Create(model_path.string()));
-  return configure_game_orientation(game_dir, *model);
+  return configure_game_orientation(game_dir, *model, expected_invalidation_id);
 }
 
 bool is_scoreboard_configured(const std::string& game_dir) {
@@ -1700,8 +1788,9 @@ absl::Status configure_scoreboard(const std::string& game_dir) {
 absl::Status configure_stitching(
     const std::string& game_dir,
     surface::Surface left_surface,
-    surface::Surface right_surface) {
-  HM_RETURN_IF_ERROR(create_control_points(game_dir, left_surface, right_surface));
+    surface::Surface right_surface,
+    const std::string& expected_invalidation_id) {
+  HM_RETURN_IF_ERROR(create_control_points(game_dir, left_surface, right_surface, expected_invalidation_id));
   return absl::OkStatus();
 }
 

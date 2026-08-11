@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 
 namespace fs = std::filesystem;
@@ -21,6 +22,7 @@ int main() {
   // If DsFieldMaskProcessFrame ever regresses and unnecessarily calls `create_field_mask`, we want the test to fail
   // quickly instead of invoking a Python toolchain.
   unsetenv("CONDA_PREFIX");
+  unsetenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
   setenv("PATH", "/does/not/exist", /*overwrite=*/1);
 
   const fs::path tmpdir =
@@ -136,6 +138,43 @@ int main() {
     return 8;
   }
 #endif
+
+  {
+    std::ofstream config(tmpdir / "config.yaml");
+    config << "hstream_ui:\n"
+              "  stitching_calibration:\n"
+              "    status: pending\n"
+              "    artifacts_invalidated: false\n"
+              "    invalidation_id: newer-fieldmask-run\n";
+  }
+  fs::remove(mask_path);
+  setenv("HSTREAM_CALIBRATION_INVALIDATION_ID", "stale-fieldmask-run", /*overwrite=*/1);
+  DsFieldMaskCtx* stale_ctx = DsFieldMaskCtxInit(&params);
+  unsetenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
+  if (!stale_ctx) {
+    std::cerr << "DsFieldMaskCtxInit returned nullptr for supersession test" << std::endl;
+    DsFieldMaskCtxDeinit(ctx);
+#ifdef HAS_NVDS_CUSTOMUSERMETA
+    nvds_destroy_batch_meta(batch_meta);
+#endif
+    return 9;
+  }
+  const absl::Status superseded_status =
+      DsFieldMaskProcessFrame(&surface, /*frame_index=*/0, frame_meta, stale_ctx, /*draw=*/false);
+  DsFieldMaskCtxDeinit(stale_ctx);
+  const auto superseded_config = [&]() {
+    std::ifstream input(tmpdir / "config.yaml");
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  }();
+  if (!absl::IsAborted(superseded_status) || fs::exists(mask_path) ||
+      superseded_config.find("invalidation_id: newer-fieldmask-run") == std::string::npos) {
+    std::cerr << "Superseded field-mask fallback must not publish rink artifacts: " << superseded_status << std::endl;
+    DsFieldMaskCtxDeinit(ctx);
+#ifdef HAS_NVDS_CUSTOMUSERMETA
+    nvds_destroy_batch_meta(batch_meta);
+#endif
+    return 10;
+  }
 
   DsFieldMaskCtxDeinit(ctx);
 #ifdef HAS_NVDS_CUSTOMUSERMETA
