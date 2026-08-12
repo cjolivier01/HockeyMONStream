@@ -56,6 +56,14 @@ absl::Status save_rink_profile(
     const RinkProfile& profile,
     const std::string& expected_invalidation_id = {});
 
+// Atomically publishes the stitched calibration snapshot together with the
+// rink profile after revalidating its generation owner.
+absl::Status save_rink_profile_with_stitched_image(
+    const std::string& game_dir,
+    const RinkProfile& profile,
+    const cv::Mat& stitched_image,
+    const std::string& expected_invalidation_id = {});
+
 absl::Status save_stitched_image(const std::string& game_dir, surface::Surface surface);
 
 // Revalidates a pending UI invalidation under the game-config lock and
