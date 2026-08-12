@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 
 #include <QtCore/QDateTime>
 #include <QtCore/QDir>
@@ -15,7 +16,6 @@
 #include <QtCore/QUrl>
 #include <QtCore/Qt>
 #include <QtGui/QCloseEvent>
-#include <QtGui/QDesktopServices>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QPaintEngine>
 #include <QtGui/QPalette>
@@ -2953,6 +2953,8 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   pipeline_paused_ = false;
   pipeline_uses_process_group_ = false;
   pipeline_render_embedded_ = false;
+  if (scoreboard_selection_dialog_)
+    scoreboard_selection_dialog_->closeAfterBackendCompletion();
   clearPreviewFrames();
   const bool stopped_by_user = pipeline_stop_requested_;
   pipeline_stop_requested_ = false;
@@ -3027,6 +3029,8 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   pipeline_uses_process_group_ = false;
   pipeline_render_embedded_ = false;
   pipeline_stop_requested_ = false;
+  if (scoreboard_selection_dialog_)
+    scoreboard_selection_dialog_->closeAfterBackendCompletion();
   failPendingRuntimeControls("pipeline-error");
   calibration_pending_ = false;
   active_run_game_id_.clear();
@@ -3085,23 +3089,70 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
   if (match.hasMatch()) {
     const QString url_text = match.captured(1);
     if (url_text == scoreboard_selector_url_) {
+      if (scoreboard_selection_dialog_) {
+        scoreboard_selection_dialog_->show();
+        scoreboard_selection_dialog_->raise();
+        scoreboard_selection_dialog_->activateWindow();
+      }
       return;
     }
     scoreboard_selector_url_ = url_text;
     if (preview_status_) {
-      preview_status_->setText("Waiting for scoreboard selection in browser");
+      preview_status_->setText("Waiting for scoreboard selection");
     }
 
-    bool opened = false;
-    const QString browser_command = qEnvironmentVariable("HSTREAM_SCOREBOARD_BROWSER").trimmed();
-    if (!browser_command.isEmpty()) {
-      opened = QProcess::startDetached(browser_command, {url_text});
-    } else {
-      opened = QDesktopServices::openUrl(QUrl(url_text));
+    QVector<QPoint> initial_points;
+    const QString game_dir = gameDirectory(active_run_game_id_);
+    const QString config_path = QDir(game_dir).filePath("config.yaml");
+    try {
+      if (QFileInfo(config_path).isFile()) {
+        const YAML::Node polygon =
+            YAML::LoadFile(config_path.toStdString())["rink"]["scoreboard"]["perspective_polygon"];
+        bool disabled = polygon && polygon.IsSequence() && polygon.size() == 4;
+        if (disabled) {
+          for (size_t index = 0; index < 4; ++index) {
+            if (!polygon[index].IsSequence() || polygon[index].size() != 2 || polygon[index][0].as<int>() != 0 ||
+                polygon[index][1].as<int>() != 0) {
+              disabled = false;
+              break;
+            }
+          }
+        }
+        if (polygon && polygon.IsSequence() && polygon.size() == 4 && !disabled) {
+          QVector<QPoint> loaded_points;
+          for (size_t index = 0; index < 4; ++index) {
+            if (!polygon[index].IsSequence() || polygon[index].size() != 2) {
+              loaded_points.clear();
+              break;
+            }
+            loaded_points.push_back(QPoint(polygon[index][0].as<int>(), polygon[index][1].as<int>()));
+          }
+          if (loaded_points.size() == 4)
+            initial_points = loaded_points;
+        }
+      }
+    } catch (const std::exception& exception) {
+      initial_points.clear();
+      appendLog(QString("could not load existing scoreboard points: %1").arg(exception.what()));
     }
-    appendLog(
-        opened ? QString("scoreboard selector opened in browser: %1").arg(url_text)
-               : QString("could not open scoreboard selector automatically; open this URL: %1").arg(url_text));
+
+    if (scoreboard_selection_dialog_) {
+      scoreboard_selection_dialog_->closeAfterBackendCompletion();
+      scoreboard_selection_dialog_ = nullptr;
+    }
+    auto* dialog =
+        new ScoreboardSelectionDialog(QUrl(url_text), QDir(game_dir).filePath("s.png"), initial_points, this);
+    scoreboard_selection_dialog_ = dialog;
+    connect(dialog, &QObject::destroyed, this, [this, dialog]() {
+      if (scoreboard_selection_dialog_ == dialog)
+        scoreboard_selection_dialog_ = nullptr;
+    });
+    if (!dialog->loadError().isEmpty())
+      appendLog(dialog->loadError());
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+    appendLog(QString("scoreboard selector opened in Qt: %1").arg(url_text));
     return;
   }
 
@@ -3116,6 +3167,8 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
               : (render_video ? "Program pipeline running" : "Program pipeline running without video rendering"));
     }
     appendLog("scoreboard selection complete; pipeline continuing");
+    if (scoreboard_selection_dialog_)
+      scoreboard_selection_dialog_->closeAfterBackendCompletion();
   }
 }
 

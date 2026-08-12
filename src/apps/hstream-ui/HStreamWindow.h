@@ -29,6 +29,7 @@ class QCloseEvent;
 class QDialog;
 class QProgressBar;
 class QTimer;
+class ScoreboardSelectionDialog;
 
 namespace hm::ui_internal {
 
@@ -257,6 +258,7 @@ class HStreamWindow : public QMainWindow {
   bool capture_complete_log_{false};
   QString complete_log_;
   QString scoreboard_selector_url_;
+  ScoreboardSelectionDialog* scoreboard_selection_dialog_{nullptr};
   QDialog* calibration_dialog_{nullptr};
   QLabel* calibration_icon_{nullptr};
   QLabel* calibration_headline_{nullptr};
