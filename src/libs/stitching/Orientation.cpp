@@ -8,9 +8,11 @@
  */
 
 #include "hstream/src/libs/stitching/Orientation.h"
+
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/OrientationInternal.h"
 
 #include <algorithm>
 #include <cassert>

@@ -1,5 +1,7 @@
 #include "hstream/src/libs/stitching/Orientation.h"
 
+#include "hstream/src/libs/stitching/OrientationInternal.h"
+
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -87,8 +89,8 @@ int main() {
     ok &= expect(
         hm::stitching::publish_game_config(completed_root, YAML::Dump(completed) + "\n").ok(),
         "completed Program owner fixture must publish");
-    const hm::stitching::VideoChapter left{{1, left_path.string()}};
-    const hm::stitching::VideoChapter right{{1, right_path.string()}};
+    const hm::stitching::orientation_internal::VideoChapterMap left{{1, left_path.string()}};
+    const hm::stitching::orientation_internal::VideoChapterMap right{{1, right_path.string()}};
     const auto completed_save =
         hm::stitching::orientation_internal::save_orientation_config(completed_root, left, right, "program-owner");
     const YAML::Node after_completed = YAML::LoadFile((completed_root / "config.yaml").string());
