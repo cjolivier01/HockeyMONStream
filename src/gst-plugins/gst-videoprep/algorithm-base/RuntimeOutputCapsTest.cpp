@@ -263,9 +263,9 @@ int main(int argc, char** argv) {
       nullptr);
   set_runtime_transform_caps(reinterpret_cast<RuntimeSizedTransform*>(transform), runtime_caps);
   ok &= expect(
-      hm::videoprep::update_runtime_output_caps(GST_BASE_TRANSFORM(transform), runtime_caps),
+      hm::videoprep::update_runtime_output_caps(GST_BASE_TRANSFORM(transform), runtime_caps) ==
+          hm::videoprep::RuntimeOutputCapsUpdateResult::kUpdated,
       "runtime output caps update must succeed");
-  gst_caps_unref(runtime_caps);
 
   ok &= expect(
       pad_has_dimensions(transform_src_pad, kRuntimeWidth, kRuntimeHeight),
@@ -291,8 +291,16 @@ int main(int argc, char** argv) {
           pad_has_dimensions(sink_pad, kRuntimeWidth, kRuntimeHeight),
       "post-update buffer flow must preserve runtime caps on transform and downstream");
   ok &= expect(
-      !hm::videoprep::update_runtime_output_caps(nullptr, nullptr),
+      hm::videoprep::update_runtime_output_caps(nullptr, nullptr) ==
+          hm::videoprep::RuntimeOutputCapsUpdateResult::kFailed,
       "invalid runtime caps update arguments must fail safely");
+
+  gst_pad_unlink(transform_src_pad, sink_pad);
+  ok &= expect(
+      hm::videoprep::update_runtime_output_caps(GST_BASE_TRANSFORM(transform), runtime_caps) ==
+          hm::videoprep::RuntimeOutputCapsUpdateResult::kCancelled,
+      "runtime caps update on an unlinked downstream pad must be cancellation");
+  gst_caps_unref(runtime_caps);
 
   GstFlowReturn eos_flow = GST_FLOW_ERROR;
   g_signal_emit_by_name(source, "end-of-stream", &eos_flow);

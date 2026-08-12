@@ -110,6 +110,27 @@ cc_test(
 )
 
 cc_test(
+    name = "pipeline_stitching_calibration_lifecycle_test",
+    srcs = ["PipelineStitchingCalibrationLifecycleTest.cpp"],
+    args = [
+        "$(location :hstream-cli)",
+        "$(location //src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so)",
+    ],
+    data = [
+        ":hstream-cli",
+        "//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so",
+    ],
+    size = "large",
+    tags = [
+        "local",
+        "manual",
+        "no-cache",
+        "requires-deepstream-hw",
+    ],
+    timeout = "long",
+)
+
+cc_test(
     name = "terminal_progress_ui_test",
     srcs = [
         "TerminalProgressUi.cpp",
