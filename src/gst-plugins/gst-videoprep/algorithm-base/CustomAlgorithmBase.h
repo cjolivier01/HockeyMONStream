@@ -14,6 +14,7 @@
 #include "VideoPrepPriv.h"
 #include "gst-nvevent.h"
 #include "gstnvdsmeta.h"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/RuntimeOutputCaps.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_interface.hpp"
 #include "hstream/src/libs/common/ApplicationPayload.h"
 // #include "deepstream/sources/includes/nvbufsurface.h"

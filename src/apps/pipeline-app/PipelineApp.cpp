@@ -32,6 +32,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -2575,6 +2576,7 @@ void PipelineApplication::print_runtime_commands() const {
       "\tq: Quit\n\n"
       "\tp: Pause\n"
       "\tr: Resume\n"
+      "\t@seek <seconds>: Seek active file playback\n"
       "\t@set-preview-active <program|stitched|sourceN|none> <generation>: Activate one GPU-native UI preview\n"
       "\t@set-render-window <xid>: Move the embedded program render sink to another X11 window\n"
       "\t@capture-preview-frame <program|main|stitched|sourceN> <image-path>: Save one diagnostic UI preview "
@@ -2766,6 +2768,25 @@ bool parse_runtime_set_render_window(const std::string& line, guint64* window_id
     return false;
   }
   return parse_uint64_strict(trim_ascii(trimmed.substr(kCommand.size())), window_id) && *window_id > 0;
+}
+
+bool parse_runtime_seek(const std::string& line, guint64* position_ns) {
+  constexpr absl::string_view kCommand = "seek";
+  if (!position_ns) {
+    return false;
+  }
+  const std::string trimmed = trim_ascii(line);
+  if (trimmed.rfind(std::string(kCommand), 0) != 0 || trimmed.size() <= kCommand.size() ||
+      !std::isspace(static_cast<unsigned char>(trimmed[kCommand.size()]))) {
+    return false;
+  }
+  gdouble seconds = 0.0;
+  if (!parse_double_strict(trim_ascii(trimmed.substr(kCommand.size())), &seconds) || seconds < 0.0 ||
+      seconds > static_cast<gdouble>(G_MAXINT64) / GST_SECOND) {
+    return false;
+  }
+  *position_ns = static_cast<guint64>(std::llround(seconds * GST_SECOND));
+  return true;
 }
 
 bool parse_runtime_set_preview_active(const std::string& line, std::string* channel, guint64* generation) {
@@ -3251,6 +3272,10 @@ bool PipelineApplication::set_element_properties_runtime(
 }
 
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
+  guint64 seek_position_ns = 0;
+  if (parse_runtime_seek(line, &seek_position_ns)) {
+    return seek_runtime(seek_position_ns);
+  }
   std::string active_preview_channel;
   guint64 preview_generation = 0;
   if (parse_runtime_set_preview_active(line, &active_preview_channel, &preview_generation)) {
@@ -3274,12 +3299,110 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   std::string value;
   if (!parse_runtime_set_property(line, &element_name, &property_name, &value)) {
     g_printerr(
-        "runtime command failed: expected: set-preview-active <program|stitched|sourceN|none> <generation>, "
-        "set-render-window <xid>, capture-preview-frame <main|stitched|sourceN> <jpg-path>, set-properties "
-        "<element property=value;...>, or set-property <element> <property=value>\n");
+        "runtime command failed: expected: seek <seconds>, set-preview-active "
+        "<program|stitched|sourceN|none> <generation>, set-render-window <xid>, capture-preview-frame "
+        "<main|stitched|sourceN> <jpg-path>, set-properties <element property=value;...>, or set-property "
+        "<element> <property=value>\n");
     return false;
   }
   return set_element_property_runtime(element_name, property_name, value);
+}
+
+bool PipelineApplication::seek_runtime(guint64 position_ns) {
+  const auto stage = stage_app_contexts_.find(current_stage_);
+  if (stage == stage_app_contexts_.end()) {
+    g_printerr("runtime command failed: no active pipeline to seek\n");
+    return false;
+  }
+
+  bool sought_any = false;
+  for (const auto& app_context : stage->second) {
+    if (!app_context || !app_context->pipeline.pipeline) {
+      continue;
+    }
+    NvDsPipeline& pipeline = app_context->pipeline;
+    const NvDsConfig& config = app_context->config;
+    struct SeekTarget {
+      GstElement* element;
+      guint64 position_ns;
+      std::string label;
+    };
+    std::vector<SeekTarget> targets;
+    auto release_targets = absl::MakeCleanup([&targets] {
+      for (const SeekTarget& target : targets) {
+        gst_object_unref(target.element);
+      }
+    });
+    for (size_t source_index = 0; source_index < app_context->pipeline.multi_src_bin.num_bins; ++source_index) {
+      GstElement* source_bin = pipeline.multi_src_bin.sub_bins[source_index].bin;
+      const NvDsSourceType type = config.multi_source_config[source_index].type;
+      if (!source_bin || (type != NV_DS_SOURCE_URI && type != NV_DS_SOURCE_URI_MULTIPLE)) {
+        continue;
+      }
+      guint64 source_position_ns = position_ns;
+      if (source_index == 0) {
+        source_position_ns += config.hmsticher_config.left_frame_offset_ns;
+      } else if (source_index == 1) {
+        source_position_ns += config.hmsticher_config.right_frame_offset_ns;
+      }
+      if (source_position_ns < position_ns) {
+        g_printerr("runtime command failed: source %zu seek position overflowed\n", source_index);
+        return false;
+      }
+      targets.push_back(
+          {GST_ELEMENT(gst_object_ref(source_bin)), source_position_ns, "source " + std::to_string(source_index)});
+    }
+    for (size_t instance_index = 0; instance_index < MAX_SOURCE_BINS; ++instance_index) {
+      GstElement* audio_bin = pipeline.instance_bins[instance_index].hmaudio_bin.bin;
+      if (audio_bin) {
+        targets.push_back({GST_ELEMENT(gst_object_ref(audio_bin)), position_ns, "audio source"});
+      }
+    }
+    if (targets.empty()) {
+      continue;
+    }
+
+    GstState state = GST_STATE_NULL;
+    GstState pending = GST_STATE_VOID_PENDING;
+    const GstStateChangeReturn state_result = gst_element_get_state(pipeline.pipeline, &state, &pending, 0);
+    if (state_result == GST_STATE_CHANGE_FAILURE) {
+      g_printerr("runtime command failed: could not inspect pipeline state before seek\n");
+      return false;
+    }
+    const bool restore_paused = state == GST_STATE_PAUSED && pending != GST_STATE_PLAYING;
+    if (restore_paused && !resume_pipeline(app_context.get())) {
+      g_printerr("runtime command failed: could not prepare paused pipeline for seek\n");
+      return false;
+    }
+    auto restore_state = absl::MakeCleanup([&] {
+      if (restore_paused && !pause_pipeline(app_context.get())) {
+        g_printerr("runtime command failed: could not restore PAUSED after seek\n");
+      }
+    });
+
+    // A URI-MULTIPLE source can wait for its peer at the exact-frame barrier
+    // while handling a flushing seek. Send the complete synchronized seek set
+    // concurrently so neither camera can block the other from receiving it.
+    std::vector<std::future<bool>> results;
+    results.reserve(targets.size());
+    for (const SeekTarget& target : targets) {
+      results.emplace_back(
+          std::async(std::launch::async, [target] { return hm::seek_element(target.element, target.position_ns); }));
+    }
+    for (size_t target_index = 0; target_index < targets.size(); ++target_index) {
+      if (!results[target_index].get()) {
+        g_printerr("runtime command failed: %s rejected seek\n", targets[target_index].label.c_str());
+        return false;
+      }
+    }
+    sought_any = true;
+  }
+  if (!sought_any) {
+    g_printerr("runtime command failed: active pipeline has no seekable file sources\n");
+    return false;
+  }
+  g_print("runtime seek position=%" GST_TIME_FORMAT "\n", GST_TIME_ARGS(position_ns));
+  return true;
 }
 
 bool PipelineApplication::set_preview_active_runtime(const std::string& channel, guint64 generation) {

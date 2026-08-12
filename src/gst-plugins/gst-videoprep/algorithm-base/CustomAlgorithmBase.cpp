@@ -243,11 +243,16 @@ absl::Status CustomAlgorithmBase::EnsureDsOutputBufferPool(NvDsBatchMeta* batch_
     return status;
   }
 
-  GstEvent* caps_event = gst_event_new_caps(runtime_caps);
-  if (!gst_pad_push_event(GST_BASE_TRANSFORM_SRC_PAD(m_element), caps_event)) {
+  // Pushing a CAPS event directly updates the pad's sticky event but bypasses
+  // GstBaseTransform's negotiated-caps state. That left the transform and its
+  // downstream peer disagreeing after one-pass calibration changed the canvas
+  // size, so a resumed calibration could finish Hugin and then fail before its
+  // first stitched buffer. Keep the base class and downstream in one atomic
+  // negotiation transition instead.
+  if (!videoprep::update_runtime_output_caps(m_element, runtime_caps)) {
     ReleaseDsOutputBufferPool();
     gst_caps_unref(runtime_caps);
-    return absl::InternalError("Failed to push runtime output caps downstream");
+    return absl::InternalError("Failed to update runtime output caps downstream");
   }
 
   if (m_runtimeOutputCaps) {
