@@ -163,6 +163,14 @@ void ScoreboardSelectionCanvas::clearPoints() {
   notifySelectionChanged();
 }
 
+bool ScoreboardSelectionCanvas::event(QEvent* event) {
+  if (event->type() == QEvent::DevicePixelRatioChange) {
+    invalidateViewportCache();
+    update();
+  }
+  return QWidget::event(event);
+}
+
 void ScoreboardSelectionCanvas::paintEvent(QPaintEvent*) {
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing);
@@ -174,7 +182,8 @@ void ScoreboardSelectionCanvas::paintEvent(QPaintEvent*) {
   }
   if (!view_initialized_)
     fitImage();
-  if (!viewport_cache_valid_ || viewport_cache_.deviceIndependentSize() != size())
+  if (!viewport_cache_valid_ || viewport_cache_.deviceIndependentSize() != size() ||
+      !qFuzzyCompare(viewport_cache_.devicePixelRatio(), devicePixelRatioF()))
     renderViewportCache();
   painter.drawPixmap(QPointF(0, 0), viewport_cache_);
 
