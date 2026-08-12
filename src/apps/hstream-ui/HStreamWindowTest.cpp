@@ -8,6 +8,7 @@
 #include <QtCore/QFileInfo>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QTemporaryDir>
+#include <QtCore/QTimer>
 #include <QtCore/QUrl>
 #include <QtGui/QImage>
 #include <QtGui/QScreen>
@@ -21,6 +22,7 @@
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QListWidget>
+#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QProgressBar>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QRadioButton>
@@ -1519,8 +1521,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Calibration must durably record its stale dependency before artifact cleanup starts")) {
     return false;
   }
-  const int guarded_calibration_commands_before =
-      window->logText().count("--clean-expected-invalidation-id=");
+  const int guarded_calibration_commands_before = window->logText().count("--clean-expected-invalidation-id=");
   activate(start);
   for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
     QApplication::processEvents();
@@ -1591,8 +1592,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     const bool has_saved_artifacts_invalidated = lookup_yaml_path(
         saved, {"hstream_ui", "stitching_calibration", "artifacts_invalidated"}, &saved_artifacts_invalidated);
     YAML::Node saved_invalidation_id;
-    const bool has_saved_invalidation_id = lookup_yaml_path(
-        saved, {"hstream_ui", "stitching_calibration", "invalidation_id"}, &saved_invalidation_id);
+    const bool has_saved_invalidation_id =
+        lookup_yaml_path(saved, {"hstream_ui", "stitching_calibration", "invalidation_id"}, &saved_invalidation_id);
     if (!expect(
             has_saved_control_points && saved_control_points.IsScalar() && saved_control_points.as<int>() == 750,
             "Calibration CP count should be saved to private config") ||
@@ -1605,9 +1606,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
             "Calibration state should persist the applied control-point dependency boundary") ||
         !expect(
             has_saved_invalidation_id && saved_invalidation_id.IsScalar() &&
-                window->logText().contains(
-                    QString("HSTREAM_CALIBRATION_INVALIDATION_ID=%1")
-                        .arg(QString::fromStdString(saved_invalidation_id.as<std::string>()))),
+                window->logText().contains(QString("HSTREAM_CALIBRATION_INVALIDATION_ID=%1")
+                                               .arg(QString::fromStdString(saved_invalidation_id.as<std::string>()))),
             "The one-pass runtime must receive the pending calibration invalidation ID")) {
       return false;
     }
@@ -1975,9 +1975,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "UI runner should preserve the self-managed desktop render sink") ||
       !expect(
           window->logText().contains("HM_NO_SCOREBOARD=") && !window->logText().contains("HM_NO_SCOREBOARD=1") &&
-              window->logText().contains("scoreboard selector opened in browser") &&
+              window->logText().contains("scoreboard selector opened in Qt") &&
               window->logText().contains("scoreboard selection complete; pipeline continuing"),
-          "Program playback should leave scoreboard selection enabled and launch its private selector URL") ||
+          "Program playback should leave scoreboard selection enabled and launch its native selector") ||
       !expect(
           window->logText().contains("separate DeepStream window"),
           "UI must surface self-managed render-window mode") ||
@@ -2696,39 +2696,20 @@ bool prepare_real_e2e_game(const QString& game_id) {
   return true;
 }
 
-bool submit_no_scoreboard(const QString& selector_url, QString* error) {
-  const QUrl url(selector_url);
-  if (!url.isValid() || url.host().isEmpty() || url.port() <= 0) {
+bool submit_no_scoreboard(HStreamWindow* window, QString* error) {
+  QDialog* dialog = window ? window->findChild<QDialog*>("scoreboardSelectionDialog") : nullptr;
+  QPushButton* button = dialog ? dialog->findChild<QPushButton*>("scoreboardNoScoreboardButton") : nullptr;
+  if (!dialog || !button) {
     if (error) {
-      *error = "invalid selector URL";
+      *error = "native scoreboard selector dialog is not available";
     }
     return false;
   }
-  QUrl endpoint(url);
-  endpoint.setPath("/none");
-  const QString origin = QString("%1://%2:%3").arg(url.scheme(), url.host()).arg(url.port());
-  QProcess request;
-  request.start(
-      "curl",
-      {"--fail",
-       "--silent",
-       "--show-error",
-       "--max-time",
-       "10",
-       "--request",
-       "POST",
-       "--header",
-       QString("Origin: %1").arg(origin),
-       endpoint.toString()});
-  if (!request.waitForStarted(3000) || !request.waitForFinished(15000) || request.exitCode() != 0) {
-    if (error) {
-      *error = QString::fromLocal8Bit(request.readAllStandardError()).trimmed();
-      if (error->isEmpty()) {
-        *error = request.errorString();
-      }
-    }
-    return false;
-  }
+  QTimer::singleShot(0, dialog, []() {
+    if (auto* confirmation = qobject_cast<QMessageBox*>(QApplication::activeModalWidget()))
+      confirmation->done(QMessageBox::Yes);
+  });
+  button->click();
   return true;
 }
 
@@ -2958,7 +2939,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       return false;
     }
     if (!submitted_scoreboard && !window->scoreboardSelectorUrl().isEmpty()) {
-      submitted_scoreboard = submit_no_scoreboard(window->scoreboardSelectorUrl(), &interaction_error);
+      submitted_scoreboard = submit_no_scoreboard(window, &interaction_error);
       if (!submitted_scoreboard) {
         std::cerr << "Could not submit the scoreboard selector: " << interaction_error.toStdString() << '\n';
         stop_and_preserve_failure();
@@ -3137,8 +3118,6 @@ int main(int argc, char** argv) {
     return 1;
   }
   qputenv("HSTREAM_UI_TEST_RUNNER", fake_runner.toLocal8Bit());
-  qputenv("HSTREAM_SCOREBOARD_BROWSER", "/bin/true");
-
   QApplication app(argc, argv);
   HStreamWindow window;
   window.show();

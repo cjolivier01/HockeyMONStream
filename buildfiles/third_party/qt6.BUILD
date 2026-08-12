@@ -54,6 +54,15 @@ cc_library(
 )
 
 cc_library(
+    name = "qt_network",
+    hdrs = glob(["include/**/qt6/QtNetwork/**"]),
+    includes = qt_includes,
+    linkopts = qt_lib_dirs + ["-lQt6Network"],
+    visibility = ["//visibility:public"],
+    deps = [":qt_core"],
+)
+
+cc_library(
     name = "qt_test",
     hdrs = glob(["include/**/qt6/QtTest/**"]),
     includes = qt_includes,

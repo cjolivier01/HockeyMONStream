@@ -22,9 +22,24 @@ filegroup(
     srcs = [
         "HStreamWindow.cpp",
         "HStreamWindow.h",
+        "ScoreboardSelectionDialog.cpp",
+        "ScoreboardSelectionDialog.h",
         "main.cpp",
     ],
     visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "scoreboard_selection_dialog",
+    srcs = ["ScoreboardSelectionDialog.cpp"],
+    hdrs = ["ScoreboardSelectionDialog.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@qt//:qt_network",
+        "@qt//:qt_widgets",
+    ],
 )
 
 cc_library(
@@ -35,6 +50,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":scoreboard_selection_dialog",
         "//src/libs/stitching:game_config",
         "@qt//:qt_widgets",
         "@yaml-cpp",
@@ -78,8 +94,25 @@ cc_test(
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
         ":hstream_window",
+        ":scoreboard_selection_dialog",
         "@qt//:qt_test",
         "@qt//:qt_widgets",
         "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "scoreboard_selection_dialog_test",
+    srcs = ["ScoreboardSelectionDialogTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {
+        "QT_QPA_PLATFORM": "offscreen",
+    },
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":scoreboard_selection_dialog",
+        "@qt//:qt_network",
+        "@qt//:qt_test",
+        "@qt//:qt_widgets",
     ],
 )

@@ -72,9 +72,9 @@ The artifact directory contains:
 - `report.txt`, `visual-report.txt`, and `visual-verifier.log`: machine-readable pass/fail evidence and match counts.
 
 The displayed Qt preview cannot be embedded when the test uses the offscreen
-platform, so the encoded archive is the visual ground truth. The ordinary UI
-still opens the selector URL in the desktop browser; `HSTREAM_SCOREBOARD_BROWSER`
-can name a different browser executable for remote or controlled environments.
+platform, so the encoded archive is the visual ground truth. Scoreboard
+selection uses a modal Qt dialog in hstream-ui; the E2E test exercises its
+native **No Scoreboard** action when scoreboard configuration is required.
 
 For unusually sparse footage, `HSTREAM_UI_E2E_MIN_VISUAL_INLIERS` can adjust
 the default of 20. Lowering it should be accompanied by inspection of
