@@ -47,8 +47,12 @@ struct OnePassCalibrationProgressPlan {
 };
 
 // Keeps resumed calibration observable even when stitch mappings were already
-// committed before the prior run stopped.
-OnePassCalibrationProgressPlan one_pass_calibration_progress_plan(bool configured_during_run, bool mask_configured);
+// committed before the prior run stopped. report_latched preserves a progress
+// sequence that this run already announced while it creates the rink mask.
+OnePassCalibrationProgressPlan one_pass_calibration_progress_plan(
+    bool configured_during_run,
+    bool mask_configured,
+    bool report_latched = false);
 
 using STITCH_PRIV_BASE = CustomAlgorithmBase;
 

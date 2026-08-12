@@ -203,6 +203,15 @@ bool expect_resumed_calibration_progress_contract() {
     std::cerr << "Ordinary playback should report a missing rink mask as active calibration" << std::endl;
     return false;
   }
+  const auto normal_after_creation = hm::stitcher::one_pass_calibration_progress_plan(
+      /*configured_during_run=*/false,
+      /*mask_configured=*/true,
+      /*report_latched=*/normal_missing.report);
+  if (!normal_after_creation.report || normal_after_creation.create_mask || !normal_after_creation.complete) {
+    std::cerr << "Ordinary playback should complete the progress sequence after creating its missing rink mask"
+              << std::endl;
+    return false;
+  }
 
   g_setenv("HSTREAM_CALIBRATION_PENDING", "1", TRUE);
   const auto resumed_existing = hm::stitcher::one_pass_calibration_progress_plan(

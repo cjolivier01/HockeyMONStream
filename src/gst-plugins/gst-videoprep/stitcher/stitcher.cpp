@@ -127,9 +127,12 @@ std::string normalized_property_value(std::string value) {
 
 static constexpr int kNumStitcherLaplacianLevels = 11;
 
-OnePassCalibrationProgressPlan one_pass_calibration_progress_plan(bool configured_during_run, bool mask_configured) {
+OnePassCalibrationProgressPlan one_pass_calibration_progress_plan(
+    bool configured_during_run,
+    bool mask_configured,
+    bool report_latched) {
   const bool create_mask = !mask_configured;
-  const bool report = configured_during_run || calibration_progress_requested() || create_mask;
+  const bool report = report_latched || configured_during_run || calibration_progress_requested() || create_mask;
   return {
       .report = report,
       .create_mask = create_mask,
@@ -666,9 +669,8 @@ absl::Status StitcherPriv::configure_one_pass_from_surfaces(
       }
       orientation_ran_ = true;
     }
-    absl::Status configure_status =
-        stitching::configure_stitching(
-            config_file_, incoming_surface_left, incoming_surface_right, calibration_invalidation_id_);
+    absl::Status configure_status = stitching::configure_stitching(
+        config_file_, incoming_surface_left, incoming_surface_right, calibration_invalidation_id_);
     if (!configure_status.ok()) {
       std::cerr << configure_status << "\n" << std::flush;
       return report_calibration_failure(configure_status);
@@ -1249,9 +1251,8 @@ absl::Status StitcherPriv::GenerateOutput(
             }
             orientation_ran_ = true;
           }
-          absl::Status configure_status =
-              stitching::configure_stitching(
-                  config_file_, incoming_surface_left, incoming_surface_right, calibration_invalidation_id_);
+          absl::Status configure_status = stitching::configure_stitching(
+              config_file_, incoming_surface_left, incoming_surface_right, calibration_invalidation_id_);
           if (!configure_status.ok()) {
             std::cerr << configure_status << "\n" << std::flush;
             return to_status(CudaStatus(
@@ -1369,9 +1370,8 @@ absl::Status StitcherPriv::GenerateOutput(
         report_calibration_progress("rink-mask", "started", "Looking for the ice surface in the stitched panorama");
       }
       if (progress.create_mask) {
-        absl::Status mask_status =
-            stitching::create_field_mask(
-                config_file_, logical_output_surface, output_generation, calibration_invalidation_id_);
+        absl::Status mask_status = stitching::create_field_mask(
+            config_file_, logical_output_surface, output_generation, calibration_invalidation_id_);
         if (!mask_status.ok()) {
           std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
           if (progress.report && !calibration_completion_reported_) {
@@ -1382,7 +1382,8 @@ absl::Status StitcherPriv::GenerateOutput(
           mask_configured = true;
         }
       }
-      progress = one_pass_calibration_progress_plan(configured_during_run_, mask_configured);
+      progress = one_pass_calibration_progress_plan(
+          configured_during_run_, mask_configured, /*report_latched=*/progress.report);
       if (progress.complete && !calibration_completion_reported_) {
         report_calibration_progress("rink-mask", "complete", "Ice surface calibration is ready");
         report_calibration_progress("calibration", "complete", "Stitching calibration is complete");
