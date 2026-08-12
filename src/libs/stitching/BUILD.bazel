@@ -56,12 +56,12 @@ cc_library(
   ],
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
+  implementation_deps = [":orientation_internal"],
   deps = [
     ":game_config",
     ":correlation",
     ":feature_matcher",
     ":hugin_project",
-    ":orientation_internal",
     ":rink_segmentation",
     "//src/libs/common:utils",
     "@hm-cupano//src/pano:cuda_matrix",
