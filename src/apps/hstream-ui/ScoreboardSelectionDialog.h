@@ -6,6 +6,7 @@
 #include <QtCore/QUrl>
 #include <QtCore/QVector>
 #include <QtGui/QImage>
+#include <QtGui/QPixmap>
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QWidget>
 
@@ -29,6 +30,7 @@ class ScoreboardSelectionCanvas : public QWidget {
   void setPoints(const QVector<QPoint>& points);
   const QVector<QPoint>& points() const;
   double viewScale() const;
+  quint64 viewportRenderCount() const;
   void fitImage();
   void actualSize();
   void focusPoints();
@@ -54,6 +56,8 @@ class ScoreboardSelectionCanvas : public QWidget {
   QPointF screenToImage(const QPointF& point) const;
   int pointNear(const QPointF& position) const;
   void setScaleAround(const QPointF& position, double scale);
+  void invalidateViewportCache();
+  void renderViewportCache();
   void notifySelectionChanged();
 
   QImage image_;
@@ -68,6 +72,9 @@ class ScoreboardSelectionCanvas : public QWidget {
   QPointF pan_start_offset_;
   QPoint hover_point_;
   bool hover_valid_{false};
+  QPixmap viewport_cache_;
+  bool viewport_cache_valid_{false};
+  quint64 viewport_render_count_{0};
 };
 
 class ScoreboardSelectionDialog : public QDialog {
@@ -76,10 +83,13 @@ class ScoreboardSelectionDialog : public QDialog {
       const QUrl& selector_url,
       const QString& image_path,
       const QVector<QPoint>& initial_points,
-      QWidget* parent = nullptr);
+      QWidget* parent = nullptr,
+      int request_timeout_ms = 10000);
 
   QString loadError() const;
   void closeAfterBackendCompletion();
+
+  std::function<void(const QString&)> cancellationFailed;
 
  protected:
   void reject() override;
@@ -120,4 +130,5 @@ class ScoreboardSelectionDialog : public QDialog {
   QPointer<QNetworkReply> pending_reply_;
   bool submitting_{false};
   bool backend_completed_{false};
+  int request_timeout_ms_{10000};
 };

@@ -66,6 +66,7 @@ ScoreboardSelectionCanvas::ScoreboardSelectionCanvas(QWidget* parent) : QWidget(
 bool ScoreboardSelectionCanvas::setImage(const QString& path) {
   image_ = QImage(path);
   view_initialized_ = false;
+  invalidateViewportCache();
   update();
   return !image_.isNull();
 }
@@ -90,6 +91,10 @@ double ScoreboardSelectionCanvas::viewScale() const {
   return view_scale_;
 }
 
+quint64 ScoreboardSelectionCanvas::viewportRenderCount() const {
+  return viewport_render_count_;
+}
+
 void ScoreboardSelectionCanvas::fitImage() {
   if (image_.isNull() || width() <= 0 || height() <= 0)
     return;
@@ -101,6 +106,7 @@ void ScoreboardSelectionCanvas::fitImage() {
       (height() - image_.height() * view_scale_) / 2.0,
   };
   view_initialized_ = true;
+  invalidateViewportCache();
   update();
 }
 
@@ -111,6 +117,7 @@ void ScoreboardSelectionCanvas::actualSize() {
   view_scale_ = 1.0;
   view_offset_ = QPointF(width() / 2.0, height() / 2.0) - image_center;
   view_initialized_ = true;
+  invalidateViewportCache();
   update();
 }
 
@@ -134,6 +141,7 @@ void ScoreboardSelectionCanvas::focusPoints() {
   const QPointF center((minimum_x + maximum_x) / 2.0, (minimum_y + maximum_y) / 2.0);
   view_offset_ = QPointF(width() / 2.0, height() / 2.0) - center * view_scale_;
   view_initialized_ = true;
+  invalidateViewportCache();
   update();
 }
 
@@ -158,21 +166,17 @@ void ScoreboardSelectionCanvas::clearPoints() {
 void ScoreboardSelectionCanvas::paintEvent(QPaintEvent*) {
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing);
-  painter.fillRect(rect(), QColor(7, 20, 29));
   if (image_.isNull()) {
+    painter.fillRect(rect(), QColor(7, 20, 29));
     painter.setPen(QColor(211, 237, 248));
     painter.drawText(rect(), Qt::AlignCenter, "Could not load the scoreboard image");
     return;
   }
   if (!view_initialized_)
     fitImage();
-
-  painter.save();
-  painter.translate(view_offset_);
-  painter.scale(view_scale_, view_scale_);
-  painter.setRenderHint(QPainter::SmoothPixmapTransform);
-  painter.drawImage(QPointF(0, 0), image_);
-  painter.restore();
+  if (!viewport_cache_valid_ || viewport_cache_.deviceIndependentSize() != size())
+    renderViewportCache();
+  painter.drawPixmap(QPointF(0, 0), viewport_cache_);
 
   const QVector<QPoint> polygon = ordered_points(points_);
   if (polygon.size() >= 2) {
@@ -222,6 +226,7 @@ void ScoreboardSelectionCanvas::resizeEvent(QResizeEvent* event) {
     const QPointF old_center(event->oldSize().width() / 2.0, event->oldSize().height() / 2.0);
     const QPointF image_center = screenToImage(old_center);
     view_offset_ = QPointF(event->size().width() / 2.0, event->size().height() / 2.0) - image_center * view_scale_;
+    invalidateViewportCache();
     update();
   }
   QWidget::resizeEvent(event);
@@ -260,6 +265,7 @@ void ScoreboardSelectionCanvas::mouseMoveEvent(QMouseEvent* event) {
     notifySelectionChanged();
   } else {
     view_offset_ = pan_start_offset_ + event->position() - press_position_;
+    invalidateViewportCache();
     update();
   }
   event->accept();
@@ -332,7 +338,35 @@ void ScoreboardSelectionCanvas::setScaleAround(const QPointF& position, double s
   view_scale_ = std::clamp(scale, kMinimumScale, kMaximumScale);
   view_offset_ = position - image_position * view_scale_;
   view_initialized_ = true;
+  invalidateViewportCache();
   update();
+}
+
+void ScoreboardSelectionCanvas::invalidateViewportCache() {
+  viewport_cache_valid_ = false;
+}
+
+void ScoreboardSelectionCanvas::renderViewportCache() {
+  const qreal pixel_ratio = devicePixelRatioF();
+  const QSize pixel_size(std::max(1, qCeil(width() * pixel_ratio)), std::max(1, qCeil(height() * pixel_ratio)));
+  viewport_cache_ = QPixmap(pixel_size);
+  viewport_cache_.setDevicePixelRatio(pixel_ratio);
+  viewport_cache_.fill(QColor(7, 20, 29));
+
+  QPainter cache_painter(&viewport_cache_);
+  cache_painter.setRenderHint(QPainter::SmoothPixmapTransform);
+  const QRectF image_screen(view_offset_, QSizeF(image_.width() * view_scale_, image_.height() * view_scale_));
+  const QRectF visible_screen = image_screen.intersected(QRectF(rect()));
+  if (!visible_screen.isEmpty()) {
+    const QRectF visible_source(
+        (visible_screen.left() - view_offset_.x()) / view_scale_,
+        (visible_screen.top() - view_offset_.y()) / view_scale_,
+        visible_screen.width() / view_scale_,
+        visible_screen.height() / view_scale_);
+    cache_painter.drawImage(visible_screen, image_, visible_source);
+  }
+  viewport_cache_valid_ = true;
+  ++viewport_render_count_;
 }
 
 void ScoreboardSelectionCanvas::notifySelectionChanged() {
@@ -345,8 +379,13 @@ ScoreboardSelectionDialog::ScoreboardSelectionDialog(
     const QUrl& selector_url,
     const QString& image_path,
     const QVector<QPoint>& initial_points,
-    QWidget* parent)
-    : QDialog(parent), selector_url_(selector_url), image_path_(image_path), initial_points_(initial_points) {
+    QWidget* parent,
+    int request_timeout_ms)
+    : QDialog(parent),
+      selector_url_(selector_url),
+      image_path_(image_path),
+      initial_points_(initial_points),
+      request_timeout_ms_(std::max(100, request_timeout_ms)) {
   setObjectName("scoreboardSelectionDialog");
   setWindowTitle("Select Scoreboard Corners");
   setWindowModality(Qt::ApplicationModal);
@@ -585,7 +624,7 @@ void ScoreboardSelectionDialog::submit(Submission submission) {
     body.insert("points", points);
   }
   QNetworkRequest request(endpoint);
-  request.setTransferTimeout(10000);
+  request.setTransferTimeout(request_timeout_ms_);
   request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
   request.setRawHeader(
       "Origin",
@@ -618,8 +657,25 @@ void ScoreboardSelectionDialog::finishSubmission(QNetworkReply* reply, Submissio
       QDialog::accept();
     return;
   }
+  if (submission == Submission::kCancel) {
+    backend_completed_ = true;
+    const QString failure = !response.isEmpty()
+        ? response
+        : QString("The pipeline did not accept the cancellation request: %1").arg(network_error);
+    const auto handler = cancellationFailed;
+    QObject* context = parentWidget();
+    if (handler) {
+      if (context) {
+        QTimer::singleShot(0, context, [handler, failure]() { handler(failure); });
+      } else {
+        QTimer::singleShot(0, [handler, failure]() { handler(failure); });
+      }
+    }
+    QDialog::reject();
+    return;
+  }
   submitting_ = false;
-  status_title_->setText(submission == Submission::kCancel ? "Could not cancel" : "Could not save");
+  status_title_->setText("Could not save");
   status_message_->setText(
       !response.isEmpty() ? response : QString("The pipeline did not accept the request: %1").arg(network_error));
   refreshSelectionUi();

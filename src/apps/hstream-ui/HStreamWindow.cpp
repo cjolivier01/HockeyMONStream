@@ -3142,6 +3142,11 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
     }
     auto* dialog =
         new ScoreboardSelectionDialog(QUrl(url_text), QDir(game_dir).filePath("s.png"), initial_points, this);
+    dialog->cancellationFailed = [this](const QString& reason) {
+      appendLog(QString("scoreboard selector cancellation failed; stopping pipeline: %1").arg(reason));
+      if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning)
+        stopPipeline();
+    };
     scoreboard_selection_dialog_ = dialog;
     connect(dialog, &QObject::destroyed, this, [this, dialog]() {
       if (scoreboard_selection_dialog_ == dialog)

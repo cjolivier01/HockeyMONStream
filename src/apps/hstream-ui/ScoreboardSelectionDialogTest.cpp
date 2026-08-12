@@ -54,6 +54,9 @@ class SelectorServer {
         const int content_length = match.hasMatch() ? match.captured(1).toInt() : 0;
         if (request_.size() < header_end + 4 + content_length)
           return;
+        request_received_ = true;
+        if (response_status_ == 0)
+          return;
         const QByteArray body = response_status_ == 200 ? "saved\n" : "invalid test selection\n";
         const QByteArray reason = response_status_ == 200 ? "OK" : "Bad Request";
         socket->write(
@@ -78,6 +81,10 @@ class SelectorServer {
     return complete_;
   }
 
+  bool requestReceived() const {
+    return request_received_;
+  }
+
   QByteArray request() const {
     return request_;
   }
@@ -86,6 +93,7 @@ class SelectorServer {
   QTcpServer server_;
   int response_status_;
   QByteArray request_;
+  bool request_received_{false};
   bool complete_{false};
 };
 
@@ -126,6 +134,37 @@ bool test_canvas_controls(const QString& image_path) {
   ok &= expect(
       canvas.points() == QVector<QPoint>{QPoint(10, 10)},
       "dragging empty image space must pan without creating or shifting a point");
+  return ok;
+}
+
+bool test_large_image_viewport_cache(const QString& image_path) {
+  ScoreboardSelectionCanvas canvas;
+  canvas.resize(900, 520);
+  canvas.show();
+  if (!expect(canvas.setImage(image_path), "large panorama must load"))
+    return false;
+  canvas.fitImage();
+  QApplication::processEvents();
+  const quint64 initial_renders = canvas.viewportRenderCount();
+  QElapsedTimer hover_timer;
+  hover_timer.start();
+  for (int index = 0; index < 200; ++index)
+    QTest::mouseMove(&canvas, QPoint(10 + index % 800, 10 + index % 450));
+  QApplication::processEvents();
+  bool ok = expect(
+      canvas.viewportRenderCount() == initial_renders,
+      "hovering a large panorama must reuse the cached viewport instead of rescaling the image");
+  ok &= expect(hover_timer.elapsed() < 2000, "cached large-panorama hover updates must remain responsive");
+  QTest::mouseClick(&canvas, Qt::LeftButton, Qt::NoModifier, QPoint(300, 220));
+  QApplication::processEvents();
+  ok &= expect(
+      canvas.viewportRenderCount() == initial_renders,
+      "adding or painting selection points must not rescale the large panorama");
+  canvas.zoomBy(1.25);
+  QApplication::processEvents();
+  ok &= expect(
+      canvas.viewportRenderCount() == initial_renders + 1,
+      "zooming must invalidate and rebuild the large-panorama viewport exactly once");
   return ok;
 }
 
@@ -179,6 +218,72 @@ bool test_failed_submission_remains_open(const QString& image_path) {
   return ok;
 }
 
+bool test_cancel_success(const QString& image_path) {
+  SelectorServer server;
+  if (!expect(server.listen(), "cancel test selector server must listen"))
+    return false;
+  ScoreboardSelectionDialog dialog(server.url(), image_path, {});
+  dialog.setAttribute(Qt::WA_DeleteOnClose, false);
+  QSignalSpy rejected(&dialog, &QDialog::rejected);
+  dialog.show();
+  QApplication::processEvents();
+  QPushButton* cancel = dialog.findChild<QPushButton*>("scoreboardCancelButton");
+  if (cancel)
+    cancel->click();
+  bool ok = expect(
+      wait_until([&]() { return server.complete() && rejected.count() == 1; }),
+      "a successful /cancel response must close the dialog");
+  ok &= expect(server.request().startsWith("POST /cancel?token="), "Cancel must call the private /cancel endpoint");
+  return ok;
+}
+
+bool test_cancel_failure_escapes_modal(const QString& image_path, bool timeout) {
+  SelectorServer server(timeout ? 0 : 400);
+  if (!expect(server.listen(), "cancel failure selector server must listen"))
+    return false;
+  ScoreboardSelectionDialog dialog(server.url(), image_path, {}, nullptr, 100);
+  dialog.setAttribute(Qt::WA_DeleteOnClose, false);
+  QSignalSpy rejected(&dialog, &QDialog::rejected);
+  bool cancellation_failed = false;
+  QString cancellation_error;
+  dialog.cancellationFailed = [&](const QString& error) {
+    cancellation_failed = true;
+    cancellation_error = error;
+  };
+  dialog.show();
+  QApplication::processEvents();
+  QPushButton* cancel = dialog.findChild<QPushButton*>("scoreboardCancelButton");
+  if (cancel)
+    cancel->click();
+  const bool escaped = wait_until([&]() { return cancellation_failed && rejected.count() == 1; });
+  bool ok = expect(escaped, "a failed or timed-out /cancel request must escape the application-modal dialog");
+  ok &= expect(!dialog.isVisible(), "cancel failure must not leave an uncloseable modal visible");
+  ok &= expect(!cancellation_error.isEmpty(), "cancel failure must report why the owning pipeline should stop");
+  ok &= expect(server.requestReceived(), "cancel failure test must reach the backend selector");
+  return ok;
+}
+
+bool test_cancel_backend_disappears(const QString& image_path) {
+  QTcpServer port_reservation;
+  if (!port_reservation.listen(QHostAddress::LocalHost, 0))
+    return false;
+  const quint16 unused_port = port_reservation.serverPort();
+  port_reservation.close();
+  const QUrl selector_url(QString("http://127.0.0.1:%1/?token=%2").arg(unused_port).arg(QString(64, 'b')));
+  ScoreboardSelectionDialog dialog(selector_url, image_path, {}, nullptr, 100);
+  dialog.setAttribute(Qt::WA_DeleteOnClose, false);
+  QSignalSpy rejected(&dialog, &QDialog::rejected);
+  bool cancellation_failed = false;
+  dialog.cancellationFailed = [&](const QString&) { cancellation_failed = true; };
+  dialog.show();
+  QApplication::processEvents();
+  if (auto* cancel = dialog.findChild<QPushButton*>("scoreboardCancelButton"))
+    cancel->click();
+  return expect(
+      wait_until([&]() { return cancellation_failed && rejected.count() == 1; }),
+      "a disappeared backend must not trap the user in the application-modal dialog");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -191,7 +296,14 @@ int main(int argc, char** argv) {
   image.fill(QColor(35, 80, 110));
   if (!image.save(image_path))
     return 1;
-  const bool ok = test_canvas_controls(image_path) && test_successful_submission(image_path) &&
-      test_failed_submission_remains_open(image_path);
+  const QString large_image_path = directory.filePath("large-s.png");
+  QImage large_image(6000, 2500, QImage::Format_RGB32);
+  large_image.fill(QColor(28, 71, 96));
+  if (!large_image.save(large_image_path))
+    return 1;
+  const bool ok = test_canvas_controls(image_path) && test_large_image_viewport_cache(large_image_path) &&
+      test_successful_submission(image_path) && test_failed_submission_remains_open(image_path) &&
+      test_cancel_success(image_path) && test_cancel_failure_escapes_modal(image_path, false) &&
+      test_cancel_failure_escapes_modal(image_path, true) && test_cancel_backend_disappears(image_path);
   return ok ? 0 : 1;
 }
