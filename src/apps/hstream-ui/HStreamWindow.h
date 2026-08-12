@@ -90,6 +90,7 @@ class HStreamWindow : public QMainWindow {
   void handlePipelineError(QProcess::ProcessError error);
   void readPipelineOutput();
   void showStitchingCalibrationDialog();
+  bool beginObservedStitchingCalibration(const QString& reported_stage);
   void handleStitchingCalibrationOutput(const QString& line);
   void setStitchingCalibrationStage(const QString& stage, const QString& status, const QString& message);
   void completeStitchingCalibration();

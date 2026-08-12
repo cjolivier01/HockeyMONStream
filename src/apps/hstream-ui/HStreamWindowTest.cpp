@@ -1127,6 +1127,9 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   }
   if (!expect(dialog->isVisible(), "Calibration-required Play should open the progress popup") ||
       !expect(
+          dialog->windowFlags().testFlag(Qt::WindowStaysOnTopHint),
+          "The calibration popup should stay above GPU-native preview windows") ||
+      !expect(
           headline->text().contains("Calibrating stitching"), "Active popup should identify stitching calibration") ||
       !expect(
           input_stage->property("calibrationState").toString() == "active",
@@ -1282,11 +1285,49 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
     QTest::qWait(10);
   }
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+  if (!success_ok || !set_test_calibration_status(window, "complete"))
+    return false;
+
+  mode->setCurrentIndex(mode->findData("program"));
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_STEP_DELAY_MS", "40");
+  activate(start);
+  for (int i = 0; i < 200 && !dialog->isVisible(); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const bool program_discovery_visible =
+      expect(dialog->isVisible(), "Program playback should show calibration discovered by the running pipeline") &&
+      expect(
+          headline->text().contains("Calibrating stitching"),
+          "Program playback should use the same stitching calibration progress popup") &&
+      expect(
+          window->logText().contains("running pipeline discovered stitching calibration"),
+          "Program playback should log why it opened the calibration progress popup");
+  for (int i = 0; i < 400 &&
+       (dialog->isVisible() ||
+        !window->logText().contains("one-pass stitching calibration complete; continuous program playback running"));
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const bool program_discovery_completed =
+      expect(!dialog->isVisible(), "Successful Program calibration should close the progress popup automatically") &&
+      expect(
+          window->pipelineStateText() == "PLAYING",
+          "Program playback should continue after runtime-discovered calibration completes");
+  activate(stop);
+  for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+  qunsetenv("HSTREAM_UI_TEST_CALIBRATION_STEP_DELAY_MS");
   if (auto* log = require_child<QTextEdit>(window, "runtimeLog"))
     log->clear();
   else
     return false;
-  return success_ok && set_test_calibration_status(window, "pending");
+  return program_discovery_visible && program_discovery_completed && set_test_calibration_status(window, "pending");
 }
 
 bool test_pipeline_buttons(HStreamWindow* window) {

@@ -197,6 +197,12 @@ bool expect_resumed_calibration_progress_contract() {
     std::cerr << "Ordinary playback should not emit calibration completion for cached mappings" << std::endl;
     return false;
   }
+  const auto normal_missing = hm::stitcher::one_pass_calibration_progress_plan(
+      /*configured_during_run=*/false, /*mask_configured=*/false);
+  if (!normal_missing.report || !normal_missing.create_mask || normal_missing.complete) {
+    std::cerr << "Ordinary playback should report a missing rink mask as active calibration" << std::endl;
+    return false;
+  }
 
   g_setenv("HSTREAM_CALIBRATION_PENDING", "1", TRUE);
   const auto resumed_existing = hm::stitcher::one_pass_calibration_progress_plan(

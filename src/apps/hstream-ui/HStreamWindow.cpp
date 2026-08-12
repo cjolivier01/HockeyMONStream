@@ -1968,6 +1968,8 @@ bool HStreamWindow::saveStitchingCalibrationState(
 
   calibration["control_points"] = control_points;
   calibration["status"] = status.toStdString();
+  if (!expected_invalidation_id.isEmpty())
+    calibration["invalidation_id"] = expected_invalidation_id.toStdString();
   if (status == "complete") {
     calibration.remove("stale_from");
     calibration.remove("artifacts_invalidated");
@@ -2147,6 +2149,9 @@ void HStreamWindow::showStitchingCalibrationDialog() {
     dialog->setObjectName("stitchCalibrationDialog");
     dialog->setWindowTitle("Stitching calibration");
     dialog->setWindowModality(Qt::WindowModal);
+    // Embedded GPU preview targets are native child windows. Keep the
+    // operator-facing calibration modal above them when Program is selected.
+    dialog->setWindowFlag(Qt::WindowStaysOnTopHint, true);
     dialog->setMinimumWidth(560);
     dialog->setStyleSheet(
         "QLabel[calibrationState=\"pending\"] { color: #667085; }"
@@ -2279,6 +2284,38 @@ void HStreamWindow::showStitchingCalibrationDialog() {
   QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 }
 
+bool HStreamWindow::beginObservedStitchingCalibration(const QString& reported_stage) {
+  if (calibration_pending_)
+    return true;
+  if (active_run_game_id_.isEmpty()) {
+    appendLog("ignored unowned stitching calibration progress without an active game");
+    return false;
+  }
+
+  active_calibration_start_stage_ =
+      calibration_stage_index(reported_stage).has_value() ? reported_stage : QString("input");
+  active_calibration_invalidation_id_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
+  if (!saveStitchingCalibrationState(
+          active_run_game_id_,
+          active_calibration_control_points_,
+          "pending",
+          active_calibration_start_stage_,
+          active_calibration_invalidation_id_,
+          /*artifacts_invalidated=*/true,
+          /*require_matching_pending=*/false)) {
+    appendLog("could not track stitching calibration discovered by the running pipeline");
+    active_calibration_start_stage_.clear();
+    active_calibration_invalidation_id_.clear();
+    return false;
+  }
+
+  calibration_pending_ = true;
+  appendLog(QString("running pipeline discovered stitching calibration at stage %1; opening progress window")
+                .arg(active_calibration_start_stage_));
+  showStitchingCalibrationDialog();
+  return true;
+}
+
 void HStreamWindow::setStitchingCalibrationStage(const QString& stage, const QString& status, const QString& message) {
   auto icon_it = calibration_stage_icons_.find(stage);
   auto label_it = calibration_stage_labels_.find(stage);
@@ -2326,8 +2363,6 @@ void HStreamWindow::setStitchingCalibrationStage(const QString& stage, const QSt
 }
 
 void HStreamWindow::handleStitchingCalibrationOutput(const QString& line) {
-  if (!calibration_pending_)
-    return;
   static const QRegularExpression event_pattern(
       R"(^HSTREAM_CALIBRATION\s+stage=([a-z0-9-]+)\s+status=(started|complete|failed)(?:\s+message=(.*))?$)");
   const QRegularExpressionMatch match = event_pattern.match(line);
@@ -2336,6 +2371,15 @@ void HStreamWindow::handleStitchingCalibrationOutput(const QString& line) {
   const QString stage = match.captured(1);
   const QString status = match.captured(2);
   const QString message = match.captured(3).trimmed();
+  if (!calibration_pending_ && !beginObservedStitchingCalibration(stage))
+    return;
+  if (status == "started" && calibration_dialog_) {
+    // A GPU-native render target can be mapped after process start. Reassert
+    // the modal ordering at each native stage transition.
+    calibration_dialog_->show();
+    calibration_dialog_->raise();
+    calibration_dialog_->activateWindow();
+  }
   if (stage == "calibration") {
     if (status == "complete")
       completeStitchingCalibration();

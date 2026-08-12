@@ -128,10 +128,11 @@ std::string normalized_property_value(std::string value) {
 static constexpr int kNumStitcherLaplacianLevels = 11;
 
 OnePassCalibrationProgressPlan one_pass_calibration_progress_plan(bool configured_during_run, bool mask_configured) {
-  const bool report = configured_during_run || calibration_progress_requested();
+  const bool create_mask = !mask_configured;
+  const bool report = configured_during_run || calibration_progress_requested() || create_mask;
   return {
       .report = report,
-      .create_mask = !mask_configured,
+      .create_mask = create_mask,
       .complete = report && mask_configured,
   };
 }
