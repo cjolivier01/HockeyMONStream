@@ -139,7 +139,7 @@ bool test_canvas_controls(const QString& image_path) {
 
 bool test_large_image_viewport_cache(const QString& image_path) {
   ScoreboardSelectionCanvas canvas;
-  canvas.resize(900, 520);
+  canvas.resize(901, 521);
   canvas.show();
   if (!expect(canvas.setImage(image_path), "large panorama must load"))
     return false;

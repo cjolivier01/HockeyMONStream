@@ -182,8 +182,11 @@ void ScoreboardSelectionCanvas::paintEvent(QPaintEvent*) {
   }
   if (!view_initialized_)
     fitImage();
-  if (!viewport_cache_valid_ || viewport_cache_.deviceIndependentSize() != size() ||
-      !qFuzzyCompare(viewport_cache_.devicePixelRatio(), devicePixelRatioF()))
+  const qreal pixel_ratio = devicePixelRatioF();
+  const QSize expected_cache_size(
+      std::max(1, qCeil(width() * pixel_ratio)), std::max(1, qCeil(height() * pixel_ratio)));
+  if (!viewport_cache_valid_ || viewport_cache_.size() != expected_cache_size ||
+      !qFuzzyCompare(viewport_cache_.devicePixelRatio(), pixel_ratio))
     renderViewportCache();
   painter.drawPixmap(QPointF(0, 0), viewport_cache_);
 
