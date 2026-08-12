@@ -23,6 +23,14 @@ cc_library(
 )
 
 cc_library(
+  name = "orientation_internal",
+  hdrs = ["OrientationInternal.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:private"],
+  deps = ["@com_google_absl//absl/status:status"],
+)
+
+cc_library(
   name = "stitching",
   srcs = [
     "CalibrationModels.cpp",
@@ -48,6 +56,7 @@ cc_library(
   ],
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
+  implementation_deps = [":orientation_internal"],
   deps = [
     ":game_config",
     ":correlation",
@@ -173,7 +182,12 @@ cc_test(
 cc_test(
   name = "orientation_test",
   srcs = ["OrientationTest.cpp"],
-  deps = [":stitching"],
+  deps = [
+    ":game_config",
+    ":orientation_internal",
+    ":stitching",
+    "@yaml-cpp",
+  ],
 )
 
 cc_test(

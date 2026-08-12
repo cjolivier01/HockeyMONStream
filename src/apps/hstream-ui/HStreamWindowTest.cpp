@@ -1399,6 +1399,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
   auto* render_video = require_child<QCheckBox>(window, "renderVideoCheck");
   auto* log = require_child<QTextEdit>(window, "runtimeLog");
+  auto* clear_log = require_child<QPushButton>(window, "clearLogButton");
   auto* main_log_splitter = require_child<QSplitter>(window, "mainLogSplitter");
   auto* preview_tabs = require_child<QTabWidget>(window, "previewTabs");
   auto* program_host = require_child<QWidget>(window, "programLetterboxHost");
@@ -1412,7 +1413,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* camera1_notice = require_child<QLabel>(window, "camera1ExternalRenderNotice");
   auto* stitched_status = require_child<QLabel>(window, "stitchedPreviewStatusLabel");
   if (!stop || !start || !pause || !restart || !mode || !control_points || !game_id || !rotate || !max_speed_x ||
-      !render_video || !log || !main_log_splitter || !preview_tabs || !program_host || !preview_surface ||
+      !render_video || !log || !clear_log || !main_log_splitter || !preview_tabs || !program_host || !preview_surface ||
       !stitched_surface || !camera1_host || !camera1_surface || !camera2_surface || !camera3_surface ||
       !external_notice || !camera1_notice || !stitched_status) {
     return false;
@@ -1445,6 +1446,16 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
 
   mode->setCurrentIndex(mode->findData("program"));
+  if (!expect(
+          control_points->isEnabled(),
+          "Program mode must allow changing calibration control points before the full pipeline starts")) {
+    return false;
+  }
+  log->append("clear-log-test-marker");
+  activate(clear_log);
+  if (!expect(log->toPlainText().isEmpty(), "Clear Log must remove the visible runtime log output")) {
+    return false;
+  }
   const int fresh_program_clean_commands = window->logText().count("stitching calibration clean command");
   qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
   for (QWidget* surface : {preview_surface, stitched_surface, camera1_surface, camera2_surface, camera3_surface}) {
@@ -1893,6 +1904,57 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     }
     qunsetenv("HSTREAM_UI_TEST_CLOSE_STDIN");
     if (!expect(write_error_kept_running, "A runtime-control write error should not mark live playback stopped")) {
+      return false;
+    }
+  }
+
+  {
+    const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+    YAML::Node completed = YAML::LoadFile(config.string());
+    completed["hstream_ui"]["stitching_calibration"]["control_points"] = 750;
+    completed["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+    completed["hstream_ui"]["stitching_calibration"].remove("stale_from");
+    completed["hstream_ui"]["stitching_calibration"].remove("artifacts_invalidated");
+    {
+      std::ofstream out(config);
+      out << completed << '\n';
+    }
+
+    log->clear();
+    mode->setCurrentIndex(mode->findData("program"));
+    control_points->setValue(775);
+    const int clean_commands_before = window->logText().count("stitching calibration clean command");
+    qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
+    activate(start);
+    for (int i = 0; i < 200 &&
+         (!window->logText().contains("one-pass stitching calibration complete; continuous program playback running") ||
+          window->pipelineStateText() != "PLAYING");
+         ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    const YAML::Node after_program_cp_change = YAML::LoadFile(config.string());
+    const YAML::Node after_program_calibration = after_program_cp_change["hstream_ui"]["stitching_calibration"];
+    const bool program_cp_recalibrated =
+        expect(
+            window->logText().count("stitching calibration clean command") == clean_commands_before + 1 &&
+                window->logText().contains("stitching calibration control points changed 750 -> 775") &&
+                window->logText().contains("--clean-from-control-points"),
+            "Changing CP in Program mode must invalidate control-point-dependent artifacts") &&
+        expect(
+            after_program_calibration["control_points"].as<int>() == 775 &&
+                after_program_calibration["status"].as<std::string>() == "complete",
+            "Program CP recalibration must persist the selected count and completed state") &&
+        expect(
+            window->pipelineStateText() == "PLAYING",
+            "Program playback must continue in the same process after a CP-triggered recalibration");
+    activate(stop);
+    for (int i = 0; i < 50 && window->pipelineStateText() != "STOPPED"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+    if (!program_cp_recalibrated) {
       return false;
     }
   }

@@ -1249,7 +1249,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   run_mode_selector_->addItem("Stitching Calibration", "stitch-calibration");
   connect(run_mode_selector_, &QComboBox::currentIndexChanged, this, [this]() {
     if (control_points_spin_) {
-      control_points_spin_->setEnabled(isCalibrationRun());
+      const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+      control_points_spin_->setEnabled(!running);
     }
     if (stitched_status_ && isCalibrationRun()) {
       stitched_status_->setText("Stitching calibration preview");
@@ -1261,8 +1262,11 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   control_points_spin_->setRange(20, 5000);
   control_points_spin_->setSingleStep(25);
   control_points_spin_->setValue(kDefaultStitchCalibrationControlPoints);
-  control_points_spin_->setEnabled(false);
+  control_points_spin_->setEnabled(true);
   control_points_spin_->setPrefix("CP ");
+  control_points_spin_->setToolTip(
+      "Control-point limit for stitching calibration. Changing this in Program mode recalibrates stitching before "
+      "the full pipeline continues.");
 
   render_video_toggle_ = new QCheckBox("Render video");
   render_video_toggle_->setObjectName("renderVideoCheck");
@@ -1697,6 +1701,19 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent) {
 }
 
 void HStreamWindow::buildLog(QVBoxLayout* root) {
+  auto* header = new QHBoxLayout();
+  auto* title = new QLabel("Runtime log");
+  QFont title_font = title->font();
+  title_font.setBold(true);
+  title->setFont(title_font);
+  auto* clear = new QPushButton("Clear Log");
+  clear->setObjectName("clearLogButton");
+  clear->setToolTip("Clear the visible runtime log");
+  header->addWidget(title);
+  header->addStretch(1);
+  header->addWidget(clear);
+  root->addLayout(header);
+
   log_ = new QTextEdit();
   log_->setObjectName("runtimeLog");
   log_->setReadOnly(true);
@@ -1715,6 +1732,7 @@ void HStreamWindow::buildLog(QVBoxLayout* root) {
       " border: 1px solid #252a31;"
       " selection-background-color: #264f78;"
       "}");
+  connect(clear, &QPushButton::clicked, log_, &QTextEdit::clear);
   root->addWidget(log_);
 }
 
@@ -3387,7 +3405,7 @@ void HStreamWindow::updateRunControls() {
     run_mode_selector_->setEnabled(!running);
   }
   if (control_points_spin_) {
-    control_points_spin_->setEnabled(!running && isCalibrationRun());
+    control_points_spin_->setEnabled(!running);
   }
   if (render_video_toggle_) {
     render_video_toggle_->setEnabled(!running);

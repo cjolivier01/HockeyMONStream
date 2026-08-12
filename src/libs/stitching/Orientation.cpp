@@ -8,9 +8,11 @@
  */
 
 #include "hstream/src/libs/stitching/Orientation.h"
+
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/OrientationInternal.h"
 
 #include <algorithm>
 #include <cassert>
@@ -338,7 +340,9 @@ int cam_index(const std::string& name) {
   return 0;
 }
 
-absl::Status save_orientation_config(
+} // namespace
+
+absl::Status orientation_internal::save_orientation_config(
     const fs::path& game_dir,
     const VideoChapter& left,
     const VideoChapter& right,
@@ -375,7 +379,7 @@ absl::Status save_orientation_config(
   try {
     if (fs::is_regular_file(config_path))
       config = YAML::LoadFile(config_path.string());
-    HM_RETURN_IF_ERROR(validate_pending_stitching_invalidation(config, expected_invalidation_id));
+    HM_RETURN_IF_ERROR(validate_stitching_generation_owner(config, expected_invalidation_id));
     config["game"]["videos"]["left"] = left_paths;
     config["game"]["videos"]["right"] = right_paths;
   } catch (const YAML::Exception& error) {
@@ -386,7 +390,6 @@ absl::Status save_orientation_config(
   serialized << config << '\n';
   return publish_game_config(game_dir, serialized.str());
 }
-} // namespace
 
 /**
  * @brief Retrieves available videos in the given directory.
@@ -535,7 +538,8 @@ absl::Status configure_game_orientation(
   if (!videos.ok())
     return videos.status();
   if (videos->count("left") && videos->count("right")) {
-    return save_orientation_config(game_dir, videos->at("left"), videos->at("right"), expected_invalidation_id);
+    return orientation_internal::save_orientation_config(
+        game_dir, videos->at("left"), videos->at("right"), expected_invalidation_id);
   }
 
   std::map<std::string, VideoChapter> oriented;
@@ -580,7 +584,8 @@ absl::Status configure_game_orientation(
   if (!oriented.count("left") || !oriented.count("right") || oriented.size() != 2) {
     return absl::FailedPreconditionError("Native orientation did not identify exactly one left and one right camera");
   }
-  return save_orientation_config(game_dir, oriented.at("left"), oriented.at("right"), expected_invalidation_id);
+  return orientation_internal::save_orientation_config(
+      game_dir, oriented.at("left"), oriented.at("right"), expected_invalidation_id);
 }
 
 /**

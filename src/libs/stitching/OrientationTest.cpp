@@ -1,11 +1,16 @@
 #include "hstream/src/libs/stitching/Orientation.h"
 
+#include "hstream/src/libs/stitching/OrientationInternal.h"
+
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
 
 #include <opencv2/core.hpp>
+#include <yaml-cpp/yaml.h>
+
+#include "hstream/src/libs/stitching/GameConfig.h"
 
 namespace fs = std::filesystem;
 
@@ -70,6 +75,45 @@ int main() {
       ok &= expect(lr->at("left").count(2) && lr->at("left").count(12), "multi-digit chapter numbers must be parsed");
     }
     fs::remove_all(lr_root, error);
+
+    const fs::path completed_root = std::string(created) + "-completed-owner";
+    fs::create_directories(completed_root / "cam1");
+    fs::create_directories(completed_root / "cam2");
+    const fs::path left_path = completed_root / "cam1" / "left.mp4";
+    const fs::path right_path = completed_root / "cam2" / "right.mp4";
+    touch(left_path);
+    touch(right_path);
+    YAML::Node completed(YAML::NodeType::Map);
+    completed["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+    completed["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "program-owner";
+    ok &= expect(
+        hm::stitching::publish_game_config(completed_root, YAML::Dump(completed) + "\n").ok(),
+        "completed Program owner fixture must publish");
+    const hm::stitching::orientation_internal::VideoChapterMap left{{1, left_path.string()}};
+    const hm::stitching::orientation_internal::VideoChapterMap right{{1, right_path.string()}};
+    const auto completed_save =
+        hm::stitching::orientation_internal::save_orientation_config(completed_root, left, right, "program-owner");
+    const YAML::Node after_completed = YAML::LoadFile((completed_root / "config.yaml").string());
+    ok &= expect(
+        completed_save.ok() && after_completed["game"]["videos"]["left"][0].as<std::string>() == "cam1/left.mp4" &&
+            after_completed["game"]["videos"]["right"][0].as<std::string>() == "cam2/right.mp4",
+        "a completed Program generation must be allowed to persist its derived camera orientation");
+    completed["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+    completed["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "newer-owner";
+    ok &= expect(
+        hm::stitching::publish_game_config(completed_root, YAML::Dump(completed) + "\n").ok(),
+        "newer orientation owner fixture must publish");
+    const auto superseded_save =
+        hm::stitching::orientation_internal::save_orientation_config(completed_root, left, right, "program-owner");
+    YAML::Node after_superseded = YAML::LoadFile((completed_root / "config.yaml").string());
+    const bool stale_orientation_absent = !after_superseded["game"] || !after_superseded["game"]["videos"];
+    ok &= expect(
+        superseded_save.code() == absl::StatusCode::kAborted &&
+            after_superseded["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() ==
+                "newer-owner" &&
+            stale_orientation_absent,
+        "a superseded Program generation must not persist stale camera orientation");
+    fs::remove_all(completed_root, error);
   }
   return ok ? 0 : 1;
 }
