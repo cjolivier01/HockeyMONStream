@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <map>
 #include <string>
 
@@ -26,6 +27,19 @@ struct OrientationScores {
   double top{0.0};
   double bottom{0.0};
 };
+
+namespace orientation_internal {
+
+// Persists an already-resolved camera ordering. Runtime Program launches may
+// legitimately add this derived mapping while retaining a completed stitching
+// generation owner; a different generation ID must still fence the write.
+absl::Status save_orientation_config(
+    const std::filesystem::path& game_dir,
+    const VideoChapter& left,
+    const VideoChapter& right,
+    const std::string& expected_invalidation_id);
+
+} // namespace orientation_internal
 
 absl::StatusOr<OrientationScores> rink_orientation_scores(const cv::Mat& binary_mask);
 absl::StatusOr<std::string> classify_rink_orientation(const cv::Mat& binary_mask);
