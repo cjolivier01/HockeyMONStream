@@ -171,7 +171,12 @@ absl::Status write_transaction_file(const fs::path& path, const std::string& con
 
 bool is_rink_artifact_name(const std::string& name) {
   static const std::regex mask_pattern(R"(^rink_mask_(0|[1-9][0-9]*)[.]png$)");
-  return name == "config.yaml" || std::regex_match(name, mask_pattern);
+  return name == "config.yaml" || name == "s.png" || std::regex_match(name, mask_pattern);
+}
+
+bool is_rink_mask_name(const std::string& name) {
+  static const std::regex mask_pattern(R"(^rink_mask_(0|[1-9][0-9]*)[.]png$)");
+  return std::regex_match(name, mask_pattern);
 }
 
 absl::StatusOr<std::unique_ptr<ScopedRinkLock>> lock_rink_transactions(const fs::path& root) {
@@ -427,7 +432,7 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(const fs::path& ga
     if (error)
       return absl::InternalError("Unable to inspect rink masks: " + error.message());
     const std::string name = entry.path().filename().string();
-    if (name != "config.yaml" && is_rink_artifact_name(name)) {
+    if (is_rink_mask_name(name)) {
       if (!entry.is_regular_file(error) || error)
         return absl::FailedPreconditionError("Rink mask is not a regular file: " + entry.path().string());
       masks.push_back(entry.path());

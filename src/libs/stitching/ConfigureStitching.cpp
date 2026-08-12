@@ -1152,7 +1152,7 @@ absl::Status write_transaction_file(const fs::path& path, const std::string& con
 
 bool is_rink_artifact_name(const std::string& name) {
   static const std::regex mask_pattern(R"(^rink_mask_(0|[1-9][0-9]*)[.]png$)");
-  return name == "config.yaml" || std::regex_match(name, mask_pattern);
+  return name == "config.yaml" || name == "s.png" || std::regex_match(name, mask_pattern);
 }
 
 absl::StatusOr<std::string> read_rink_transaction_state(const fs::path& transaction) {
@@ -1493,7 +1493,8 @@ absl::Status save_rink_profile_locked(
     const RinkProfile& profile,
     const std::string& hugin_generation,
     const std::string& expected_output_generation,
-    const std::string& expected_invalidation_id) {
+    const std::string& expected_invalidation_id,
+    const cv::Mat* stitched_image = nullptr) {
   if (game_dir.empty() || profile.masks.empty()) {
     return absl::InvalidArgumentError("A game directory and at least one rink mask are required");
   }
@@ -1545,6 +1546,19 @@ absl::Status save_rink_profile_locked(
     if (validation.empty() || validation.size() != expected_size) {
       return absl::InternalError("Staged rink mask failed validation: " + path.string());
     }
+    auto sync_status = fsync_path(path);
+    if (!sync_status.ok())
+      return sync_status;
+  }
+  if (stitched_image != nullptr) {
+    if (stitched_image->empty())
+      return absl::InvalidArgumentError("A non-empty stitched calibration image is required");
+    const fs::path path = staging / "s.png";
+    if (!cv::imwrite(path.string(), *stitched_image))
+      return absl::InternalError("Unable to stage stitched calibration image " + path.string());
+    const cv::Mat validation = cv::imread(path.string(), cv::IMREAD_COLOR);
+    if (validation.empty() || validation.size() != stitched_image->size())
+      return absl::InternalError("Staged stitched calibration image failed validation: " + path.string());
     auto sync_status = fsync_path(path);
     if (!sync_status.ok())
       return sync_status;
@@ -1601,7 +1615,7 @@ absl::Status save_rink_profile_locked(
     if (error)
       return absl::InternalError("Unable to inspect old rink masks: " + error.message());
     const std::string name = entry.path().filename().string();
-    if (is_rink_artifact_name(name)) {
+    if (is_rink_artifact_name(name) && (name != "s.png" || stitched_image != nullptr)) {
       old_files.push_back(entry.path());
     }
   }
@@ -1616,6 +1630,8 @@ absl::Status save_rink_profile_locked(
   std::vector<fs::path> new_files;
   for (size_t index = 0; index < profile.masks.size(); ++index)
     new_files.push_back(staging / ("rink_mask_" + std::to_string(index) + ".png"));
+  if (stitched_image != nullptr)
+    new_files.push_back(staging / "s.png");
   new_files.push_back(staging / "config.yaml");
   std::set<std::string> published_names;
   for (const fs::path& old : old_files)
@@ -1712,6 +1728,32 @@ absl::Status save_rink_profile(
   return save_rink_profile_locked(game_dir, profile, *hugin_generation, {}, expected_invalidation_id);
 }
 
+absl::Status save_rink_profile_with_stitched_image(
+    const std::string& game_dir,
+    const RinkProfile& profile,
+    const cv::Mat& stitched_image,
+    const std::string& expected_invalidation_id) {
+  if (game_dir.empty())
+    return absl::InvalidArgumentError("A game directory is required");
+  const fs::path root(game_dir);
+  std::error_code error;
+  fs::create_directories(root, error);
+  if (error)
+    return absl::InternalError("Unable to create rink profile directory: " + error.message());
+  auto hugin_lock = HuginProject::RecoverAndLock(root);
+  if (!hugin_lock.ok())
+    return hugin_lock.status();
+  auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
+  if (!hugin_generation.ok())
+    return hugin_generation.status();
+  if (const char* delay = std::getenv("HM_TEST_RINK_PRE_PUBLICATION_DELAY_MS")) {
+    const long delay_ms = std::strtol(delay, nullptr, 10);
+    if (delay_ms > 0)
+      std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+  }
+  return save_rink_profile_locked(game_dir, profile, *hugin_generation, {}, expected_invalidation_id, &stitched_image);
+}
+
 absl::Status create_field_mask(
     const std::string& game_dir,
     surface::Surface surface,
@@ -1727,15 +1769,25 @@ absl::Status create_field_mask(
   if (!expected_output_generation.empty()) {
     HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, *hugin_generation));
   }
-  if (!expected_invalidation_id.empty()) {
-    auto config_transaction = GameConfigTransactionLock::Acquire(root);
-    if (!config_transaction.ok())
-      return config_transaction.status();
-    HM_RETURN_IF_ERROR(validate_stitching_generation_owner_file_locked(
-        root / "config.yaml", expected_invalidation_id));
-  }
-  HM_RETURN_IF_ERROR(save_stitched_image(game_dir, surface));
-  const cv::Mat stitched = cv::imread((fs::path(game_dir) / "s.png").string(), cv::IMREAD_COLOR);
+  std::string pattern = (root / ".hstream-field-mask-input-XXXXXX").string();
+  std::vector<char> writable(pattern.begin(), pattern.end());
+  writable.push_back('\0');
+  char* created = ::mkdtemp(writable.data());
+  if (created == nullptr)
+    return absl::InternalError("Unable to create private rink input directory");
+  const fs::path input_dir(created);
+  struct RemoveInputDirectory {
+    fs::path path;
+    ~RemoveInputDirectory() {
+      std::error_code ignored;
+      fs::remove_all(path, ignored);
+    }
+  } input_cleanup{input_dir};
+  if (::chmod(input_dir.c_str(), 0700) != 0)
+    return absl::InternalError("Unable to protect private rink input directory");
+  const fs::path stitched_path = input_dir / "s.png";
+  HM_RETURN_IF_ERROR(save_image(surface, stitched_path));
+  const cv::Mat stitched = cv::imread(stitched_path.string(), cv::IMREAD_COLOR);
   if (stitched.empty())
     return absl::FailedPreconditionError("Unable to reload stitched frame for rink inference");
   fs::path model_path;
@@ -1745,7 +1797,7 @@ absl::Status create_field_mask(
   RinkProfile profile;
   HM_ASSIGN_OR_RETURN(profile, model->Infer(stitched, RinkSegmentation::kHockeyMomInferenceScale));
   return save_rink_profile_locked(
-      game_dir, profile, *hugin_generation, expected_output_generation, expected_invalidation_id);
+      game_dir, profile, *hugin_generation, expected_output_generation, expected_invalidation_id, &stitched);
 }
 
 absl::Status configure_orientation(const std::string& game_dir, const std::string& expected_invalidation_id) {

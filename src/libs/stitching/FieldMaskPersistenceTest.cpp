@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
 
@@ -130,6 +131,56 @@ int main() {
             after_superseded_rink["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() ==
                 "rink-run-b",
         "superseded rink publication must preserve the newer invalidation generation");
+
+    const cv::Mat committed_snapshot(24, 32, CV_8UC3, cv::Scalar(1, 2, 3));
+    ok &= expect(
+        cv::imwrite((root / "s.png").string(), committed_snapshot),
+        "superseded stitched snapshot test must publish its committed fixture");
+    YAML::Node current_snapshot_owner = YAML::LoadFile((root / "config.yaml").string());
+    current_snapshot_owner["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+    current_snapshot_owner["hstream_ui"]["stitching_calibration"].remove("stale_from");
+    current_snapshot_owner["hstream_ui"]["stitching_calibration"].remove("artifacts_invalidated");
+    current_snapshot_owner["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "rink-run-a";
+    {
+      std::ofstream output(root / "config.yaml");
+      output << current_snapshot_owner << '\n';
+    }
+    const cv::Mat stale_snapshot(24, 32, CV_8UC3, cv::Scalar(200, 100, 50));
+    std::atomic<bool> stale_inference_started{false};
+    absl::Status stale_snapshot_status = absl::UnknownError("stale rink inference did not run");
+    ::setenv("HM_TEST_RINK_PRE_PUBLICATION_DELAY_MS", "300", 1);
+    std::thread stale_inference([&] {
+      stale_inference_started = true;
+      stale_snapshot_status =
+          hm::stitching::save_rink_profile_with_stitched_image(root.string(), profile, stale_snapshot, "rink-run-a");
+    });
+    while (!stale_inference_started)
+      std::this_thread::yield();
+    std::this_thread::sleep_for(std::chrono::milliseconds(75));
+    {
+      auto config_transaction = hm::stitching::GameConfigTransactionLock::Acquire(root);
+      ok &= expect(config_transaction.ok(), "newer rink owner must acquire the config transaction lock");
+      if (config_transaction.ok()) {
+        YAML::Node newer_snapshot_owner = YAML::LoadFile((root / "config.yaml").string());
+        newer_snapshot_owner["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+        newer_snapshot_owner["hstream_ui"]["stitching_calibration"]["stale_from"] = "input";
+        newer_snapshot_owner["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = false;
+        newer_snapshot_owner["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "rink-run-b";
+        ok &= expect(
+            hm::stitching::publish_game_config(root, YAML::Dump(newer_snapshot_owner) + "\n").ok(),
+            "newer rink owner must supersede the inference before publication");
+      }
+    }
+    stale_inference.join();
+    ::unsetenv("HM_TEST_RINK_PRE_PUBLICATION_DELAY_MS");
+    const cv::Mat after_stale_snapshot = cv::imread((root / "s.png").string(), cv::IMREAD_COLOR);
+    const YAML::Node after_stale_snapshot_config = YAML::LoadFile((root / "config.yaml").string());
+    ok &= expect(
+        absl::IsAborted(stale_snapshot_status) && !after_stale_snapshot.empty() &&
+            cv::norm(after_stale_snapshot, committed_snapshot, cv::NORM_INF) == 0 &&
+            after_stale_snapshot_config["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() ==
+                "rink-run-b",
+        "superseded rink inference must not overwrite the committed stitched calibration snapshot");
 
     ::setenv("HM_TEST_RINK_INTERRUPT_AFTER_PREPARE_SYNC", "1", 1);
     const auto interrupted_before_publication = hm::stitching::save_rink_profile(root.string(), profile);

@@ -1867,21 +1867,49 @@ absl::Status Configurator::complete_configuration(
         get_node_value(config_, "hstream_ui.stitching_calibration.invalidation_id", std::string());
     const std::string loaded_status = get_node_value(config_, "hstream_ui.stitching_calibration.status", std::string());
     bool loaded_invalidation_matches = loaded_invalidation_id == clean_expected_invalidation_id;
+    bool loaded_artifacts_invalidated = false;
     if (loaded_status == "pending") {
-      HM_ASSIGN_OR_RETURN(
-          stitching_artifacts_precleaned,
-          stitching::is_stitching_invalidation_cleanup_applied(game_dir.string(), clean_expected_invalidation_id));
-      bool loaded_artifacts_invalidated = false;
       HM_ASSIGN_OR_RETURN(
           loaded_artifacts_invalidated,
           get_yaml_bool_value(config_, "hstream_ui.stitching_calibration.artifacts_invalidated", false));
-      loaded_invalidation_matches =
-          loaded_invalidation_matches && loaded_artifacts_invalidated == stitching_artifacts_precleaned;
     } else {
       loaded_invalidation_matches = loaded_invalidation_matches && loaded_status == "complete" && !clean_requested;
     }
     if (!loaded_invalidation_matches) {
       return absl::AbortedError("Loaded stitching configuration was superseded before configuration");
+    }
+
+    // load_config() and this final launch boundary are separated by command-line
+    // overlays and sub-config loading. Revalidate the on-disk generation while
+    // holding its transaction lock so a newer UI invalidation cannot start a
+    // pipeline that owns only the stale in-memory document.
+    auto config_transaction = stitching::GameConfigTransactionLock::Acquire(game_dir);
+    if (!config_transaction.ok())
+      return config_transaction.status();
+    const fs::path private_config_file = game_dir / "config.yaml";
+    HM_RETURN_IF_ERROR(
+        stitching::validate_stitching_generation_owner_file_locked(
+            private_config_file, clean_expected_invalidation_id));
+    try {
+      const YAML::Node current = YAML::LoadFile(private_config_file.string());
+      const std::string current_status =
+          get_node_value(current, "hstream_ui.stitching_calibration.status", std::string());
+      if (current_status != loaded_status) {
+        return absl::AbortedError("Stitching configuration state changed before pipeline launch");
+      }
+      if (current_status == "pending") {
+        bool current_artifacts_invalidated = false;
+        HM_ASSIGN_OR_RETURN(
+            current_artifacts_invalidated,
+            get_yaml_bool_value(current, "hstream_ui.stitching_calibration.artifacts_invalidated", false));
+        if (current_artifacts_invalidated != loaded_artifacts_invalidated) {
+          return absl::AbortedError("Stitching cleanup state changed before pipeline launch");
+        }
+        stitching_artifacts_precleaned = current_artifacts_invalidated;
+      }
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError(
+          "Unable to revalidate stitching configuration before launch: " + std::string(error.what()));
     }
     active_stitching_invalidation_id_ = clean_expected_invalidation_id;
   }

@@ -153,6 +153,34 @@ int main() {
       forced_status.code() == absl::StatusCode::kAborted && fs::exists(superseded_force_dir / "seam_file.png"),
       "Forced configuration must abort before using or deleting a superseding artifact generation");
 
+  const fs::path superseded_complete_dir = games / "superseded-complete";
+  fs::create_directories(superseded_complete_dir);
+  YAML::Node reserved_complete_config(YAML::NodeType::Map);
+  reserved_complete_config["pipeline"]["application"]["complete-configuration"] = "1";
+  reserved_complete_config["pipeline"]["hmstitcher"]["enable"] = "1";
+  reserved_complete_config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+  reserved_complete_config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "reserved-complete-a";
+  ok &= expect(
+      hm::stitching::publish_game_config(superseded_complete_dir, YAML::Dump(reserved_complete_config) + "\n").ok(),
+      "reserved complete owner fixture must publish");
+  hm::Configurator complete_configurator("superseded-complete", "", hm::Configurator::kUseConfigFileGpu);
+  ok &= expect(complete_configurator.configure().ok(), "reserved complete configurator must load its owner snapshot");
+  reserved_complete_config["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+  reserved_complete_config["hstream_ui"]["stitching_calibration"]["stale_from"] = "input";
+  reserved_complete_config["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = false;
+  reserved_complete_config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "reserved-complete-b";
+  ok &= expect(
+      hm::stitching::publish_game_config(superseded_complete_dir, YAML::Dump(reserved_complete_config) + "\n").ok(),
+      "newer owner must supersede a reserved complete run after load_config");
+  const absl::Status superseded_complete_status = complete_configurator.complete_configuration(
+      /*force=*/false,
+      /*clean_stitching_artifacts=*/false,
+      /*clean_stitching_from_control_points=*/false,
+      /*clean_expected_invalidation_id=*/"reserved-complete-a");
+  ok &= expect(
+      superseded_complete_status.code() == absl::StatusCode::kAborted,
+      "A reserved complete owner superseded after load_config must abort at the final launch boundary");
+
   ::unsetenv("HM_GAME_DIR");
   fs::remove_all(root);
   return ok ? 0 : 1;
