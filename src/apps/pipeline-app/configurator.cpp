@@ -1665,7 +1665,7 @@ absl::Status Configurator::save_private_config(
   } catch (const YAML::Exception& error) {
     return absl::InvalidArgumentError("Failed to merge private config: " + std::string(error.what()));
   }
-  HM_RETURN_IF_ERROR(stitching::validate_pending_stitching_invalidation(latest, expected_invalidation_id));
+  HM_RETURN_IF_ERROR(stitching::validate_stitching_generation_owner(latest, expected_invalidation_id));
   const YAML::Node merged = stitching::apply_game_config_diff(persisted_private_config_, private_config, latest);
   std::string contents;
   if (!is_empty_yaml_document(merged))
@@ -1863,18 +1863,23 @@ absl::Status Configurator::complete_configuration(
   }
   bool stitching_artifacts_precleaned = false;
   if (has_hmstitcher && !clean_expected_invalidation_id.empty()) {
-    HM_ASSIGN_OR_RETURN(
-        stitching_artifacts_precleaned,
-        stitching::is_stitching_invalidation_cleanup_applied(game_dir.string(), clean_expected_invalidation_id));
-    bool loaded_artifacts_invalidated = false;
-    HM_ASSIGN_OR_RETURN(
-        loaded_artifacts_invalidated,
-        get_yaml_bool_value(config_, "hstream_ui.stitching_calibration.artifacts_invalidated", false));
-    const bool loaded_invalidation_matches =
-        get_node_value(config_, "hstream_ui.stitching_calibration.invalidation_id", std::string()) ==
-            clean_expected_invalidation_id &&
-        get_node_value(config_, "hstream_ui.stitching_calibration.status", std::string()) == "pending" &&
-        loaded_artifacts_invalidated == stitching_artifacts_precleaned;
+    const std::string loaded_invalidation_id =
+        get_node_value(config_, "hstream_ui.stitching_calibration.invalidation_id", std::string());
+    const std::string loaded_status = get_node_value(config_, "hstream_ui.stitching_calibration.status", std::string());
+    bool loaded_invalidation_matches = loaded_invalidation_id == clean_expected_invalidation_id;
+    if (loaded_status == "pending") {
+      HM_ASSIGN_OR_RETURN(
+          stitching_artifacts_precleaned,
+          stitching::is_stitching_invalidation_cleanup_applied(game_dir.string(), clean_expected_invalidation_id));
+      bool loaded_artifacts_invalidated = false;
+      HM_ASSIGN_OR_RETURN(
+          loaded_artifacts_invalidated,
+          get_yaml_bool_value(config_, "hstream_ui.stitching_calibration.artifacts_invalidated", false));
+      loaded_invalidation_matches =
+          loaded_invalidation_matches && loaded_artifacts_invalidated == stitching_artifacts_precleaned;
+    } else {
+      loaded_invalidation_matches = loaded_invalidation_matches && loaded_status == "complete" && !clean_requested;
+    }
     if (!loaded_invalidation_matches) {
       return absl::AbortedError("Loaded stitching configuration was superseded before configuration");
     }

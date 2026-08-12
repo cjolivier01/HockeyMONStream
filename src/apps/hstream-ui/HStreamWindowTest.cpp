@@ -227,6 +227,7 @@ bool write_fake_runner(const QString& path) {
   file.write("if not calibration_result and os.environ.get('HSTREAM_UI_TEST_COMPLETE_CALIBRATION') == '1':\n");
   file.write("    calibration_result = 'success'\n");
   file.write("if calibration_result in ('success', 'failure', 'exit'):\n");
+  file.write("    time.sleep(float(os.environ.get('HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS', '0')) / 1000.0)\n");
   file.write("    delay = float(os.environ.get('HSTREAM_UI_TEST_CALIBRATION_STEP_DELAY_MS', '0')) / 1000.0\n");
   file.write("    events = []\n");
   file.write("    if os.environ.get('HSTREAM_CALIBRATION_START_STAGE') != 'features':\n");
@@ -1323,6 +1324,60 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   }
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_STEP_DELAY_MS");
+
+  if (!set_test_calibration_status(window, "complete"))
+    return false;
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS", "150");
+  activate(start);
+  const fs::path superseded_program_config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  {
+    auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(superseded_program_config.parent_path());
+    if (!config_lock.ok()) {
+      std::cerr << "Could not lock Program discovery race config: " << config_lock.status() << '\n';
+      return false;
+    }
+    YAML::Node superseded = YAML::LoadFile(superseded_program_config.string());
+    YAML::Node calibration = superseded["hstream_ui"]["stitching_calibration"];
+    calibration["status"] = "pending";
+    calibration["stale_from"] = "input";
+    calibration["artifacts_invalidated"] = false;
+    calibration["invalidation_id"] = "newer-program-invalidation";
+    const auto published =
+        hm::stitching::publish_game_config(superseded_program_config.parent_path(), YAML::Dump(superseded) + "\n");
+    if (!published.ok()) {
+      std::cerr << "Could not publish Program discovery race config: " << published << '\n';
+      return false;
+    }
+  }
+  for (int i = 0; i < 300 && !window->logText().contains("runtime-discovered calibration was superseded"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const YAML::Node after_superseded_program = YAML::LoadFile(superseded_program_config.string());
+  const YAML::Node superseded_program_calibration = after_superseded_program["hstream_ui"]["stitching_calibration"];
+  const bool superseded_program_ok =
+      expect(
+          !dialog->isVisible(),
+          "A superseded Program run must not adopt or show calibration owned by a newer invalidation") &&
+      expect(
+          window->logText().contains("runtime-discovered calibration was superseded"),
+          "Program discovery should report that its reserved owner was superseded") &&
+      expect(
+          superseded_program_calibration["status"].as<std::string>() == "pending" &&
+              superseded_program_calibration["invalidation_id"].as<std::string>() == "newer-program-invalidation" &&
+              !superseded_program_calibration["artifacts_invalidated"].as<bool>(),
+          "A runtime-discovered calibration event must not overwrite a newer invalidation owner");
+  activate(stop);
+  for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+  qunsetenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS");
+  if (!superseded_program_ok)
+    return false;
+
   if (auto* log = require_child<QTextEdit>(window, "runtimeLog"))
     log->clear();
   else

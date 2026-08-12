@@ -2049,7 +2049,20 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     const bool needs_calibration = active_force_reconfigure_ || control_points_changed || saved_status != "complete";
     if (!needs_calibration) {
       active_calibration_start_stage_.clear();
-      active_calibration_invalidation_id_.clear();
+      // Reserve one generation owner before the process starts. Program can
+      // discover a missing artifact only after the first stitched frame; this
+      // token lets that backend work fail closed if a newer UI invalidation
+      // supersedes the run before it publishes anything.
+      active_calibration_invalidation_id_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
+      config["hstream_ui"]["stitching_calibration"]["invalidation_id"] =
+          active_calibration_invalidation_id_.toStdString();
+      const auto publish = publish_yaml_config(config_path, config);
+      if (!publish.ok()) {
+        appendLog(QString("failed to reserve stitching calibration owner %1: %2")
+                      .arg(active_calibration_invalidation_id_, publish.ToString().c_str()));
+        active_calibration_invalidation_id_.clear();
+        return false;
+      }
       return true;
     }
 
@@ -2292,20 +2305,51 @@ bool HStreamWindow::beginObservedStitchingCalibration(const QString& reported_st
     return false;
   }
 
-  active_calibration_start_stage_ =
+  const QString reported_start_stage =
       calibration_stage_index(reported_stage).has_value() ? reported_stage : QString("input");
-  active_calibration_invalidation_id_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
-  if (!saveStitchingCalibrationState(
-          active_run_game_id_,
-          active_calibration_control_points_,
-          "pending",
-          active_calibration_start_stage_,
-          active_calibration_invalidation_id_,
-          /*artifacts_invalidated=*/true,
-          /*require_matching_pending=*/false)) {
-    appendLog("could not track stitching calibration discovered by the running pipeline");
+  const fs::path config_path = fs::path(gameDirectory(active_run_game_id_).toStdString()) / "config.yaml";
+  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
+  if (!config_lock.ok()) {
+    appendLog(QString("could not lock runtime-discovered calibration state: %1")
+                  .arg(config_lock.status().ToString().c_str()));
+    return false;
+  }
+  try {
+    YAML::Node config = fs::is_regular_file(config_path) ? YAML::LoadFile(config_path.string()) : YAML::Node();
+    YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+    const QString current_owner = calibration["invalidation_id"] && calibration["invalidation_id"].IsScalar()
+        ? QString::fromStdString(calibration["invalidation_id"].as<std::string>())
+        : QString();
+    const QString current_status = calibration["status"] && calibration["status"].IsScalar()
+        ? QString::fromStdString(calibration["status"].as<std::string>())
+        : QString();
+    if (active_calibration_invalidation_id_.isEmpty() || current_owner != active_calibration_invalidation_id_ ||
+        (current_status != "complete" && current_status != "pending")) {
+      appendLog("runtime-discovered calibration was superseded before the pipeline could claim it");
+      return false;
+    }
+
+    QString current_start_stage = calibration["stale_from"] && calibration["stale_from"].IsScalar()
+        ? QString::fromStdString(calibration["stale_from"].as<std::string>())
+        : reported_start_stage;
+    if (!calibration_stage_index(current_start_stage).has_value() ||
+        *calibration_stage_index(reported_start_stage) < *calibration_stage_index(current_start_stage)) {
+      current_start_stage = reported_start_stage;
+    }
+    active_calibration_start_stage_ = current_start_stage;
+    calibration["control_points"] = active_calibration_control_points_;
+    calibration["status"] = "pending";
+    calibration["stale_from"] = active_calibration_start_stage_.toStdString();
+    calibration["artifacts_invalidated"] = true;
+    const auto publish = publish_yaml_config(config_path, config);
+    if (!publish.ok()) {
+      appendLog(QString("could not claim runtime-discovered calibration: %1").arg(publish.ToString().c_str()));
+      active_calibration_start_stage_.clear();
+      return false;
+    }
+  } catch (const std::exception& exception) {
+    appendLog(QString("could not claim runtime-discovered calibration: %1").arg(exception.what()));
     active_calibration_start_stage_.clear();
-    active_calibration_invalidation_id_.clear();
     return false;
   }
 
@@ -2520,7 +2564,7 @@ QStringList HStreamWindow::pipelineArguments() const {
   args << "-g" << game_id << "--enable-sources=URI-MULTIPLE";
   if (active_force_reconfigure_)
     args << "--force-reconfigure";
-  if (calibration_pending_ && !active_calibration_invalidation_id_.isEmpty())
+  if (!active_calibration_invalidation_id_.isEmpty())
     args << QString("--clean-expected-invalidation-id=%1").arg(active_calibration_invalidation_id_);
   if (isCalibrationRun()) {
     args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
@@ -2704,7 +2748,6 @@ void HStreamWindow::startPipeline() {
     env.insert("HM_MAX_CONTROL_POINTS", QString::number(control_points));
     env.insert("HSTREAM_CALIBRATION_PENDING", "1");
     env.insert("HSTREAM_CALIBRATION_START_STAGE", active_calibration_start_stage_);
-    env.insert("HSTREAM_CALIBRATION_INVALIDATION_ID", active_calibration_invalidation_id_);
     if (active_run_is_calibration_) {
       appendLog(
           QString("stitching calibration control points=%1; starting one-pass stitched playback").arg(control_points));
@@ -2719,6 +2762,8 @@ void HStreamWindow::startPipeline() {
         render_video ? "stitching calibration is complete; starting continuous stitched preview"
                      : "stitching calibration is complete; starting without video rendering");
   }
+  if (!active_calibration_invalidation_id_.isEmpty())
+    env.insert("HSTREAM_CALIBRATION_INVALIDATION_ID", active_calibration_invalidation_id_);
   appendLog("audio enabled via pipeline.hmaudio.enable=1; render audio uses the configured system audio sink");
   env.insert("HSTREAM_UI_PARENT_PID", QString::number(QCoreApplication::applicationPid()));
   pipeline_process_->setProcessEnvironment(env);
