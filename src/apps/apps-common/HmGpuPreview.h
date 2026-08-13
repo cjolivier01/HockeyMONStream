@@ -14,6 +14,8 @@ bool renderer_available();
 
 // hmpreviewisolation is a buffer gate and downstream-flow failure barrier.
 void set_isolation_active(GstElement* isolation, bool active, std::uint64_t generation);
+void set_isolation_generation(GstElement* isolation, std::uint64_t generation);
+void set_renderer_generation(GstElement* sink, std::uint64_t generation);
 bool isolation_active(GstElement* isolation);
 
 // Sets the original upstream aspect ratio used for GL letterboxing after the

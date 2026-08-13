@@ -2179,10 +2179,10 @@ void HStreamWindow::showStitchingCalibrationDialog() {
     calibration_dialog_ = dialog;
     dialog->setObjectName("stitchCalibrationDialog");
     dialog->setWindowTitle("Stitching calibration");
+    // Keep calibration modal to this HStream window. A system-wide
+    // WindowStaysOnTopHint prevents the operator from using unrelated apps
+    // while calibration runs, which can take several minutes.
     dialog->setWindowModality(Qt::WindowModal);
-    // Embedded GPU preview targets are native child windows. Keep the
-    // operator-facing calibration modal above them when Program is selected.
-    dialog->setWindowFlag(Qt::WindowStaysOnTopHint, true);
     dialog->setMinimumWidth(560);
     dialog->setStyleSheet(
         "QLabel[calibrationState=\"pending\"] { color: #667085; }"
@@ -2310,8 +2310,6 @@ void HStreamWindow::showStitchingCalibrationDialog() {
   }
   setStitchingCalibrationStage(start_stage, "started", calibration_detail_->text());
   calibration_dialog_->show();
-  calibration_dialog_->raise();
-  calibration_dialog_->activateWindow();
   QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 }
 
@@ -2435,13 +2433,8 @@ void HStreamWindow::handleStitchingCalibrationOutput(const QString& line) {
   const QString message = match.captured(3).trimmed();
   if (!calibration_pending_ && !beginObservedStitchingCalibration(stage))
     return;
-  if (status == "started" && calibration_dialog_) {
-    // A GPU-native render target can be mapped after process start. Reassert
-    // the modal ordering at each native stage transition.
+  if (status == "started" && calibration_dialog_)
     calibration_dialog_->show();
-    calibration_dialog_->raise();
-    calibration_dialog_->activateWindow();
-  }
   if (stage == "calibration") {
     if (status == "complete")
       completeStitchingCalibration();
@@ -2558,8 +2551,6 @@ void HStreamWindow::failStitchingCalibration(const QString& message) {
   calibration_ok_button_->setEnabled(true);
   static_cast<StitchingCalibrationDialog*>(calibration_dialog_)->setCloseAllowed(true);
   calibration_dialog_->show();
-  calibration_dialog_->raise();
-  calibration_dialog_->activateWindow();
   appendLog(QString("stitching calibration failed: %1").arg(message));
 }
 
@@ -2576,8 +2567,11 @@ QStringList HStreamWindow::pipelineArguments() const {
       ? active_run_game_id_
       : (game_id_edit_ ? game_id_edit_->text().trimmed() : QString());
   const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
-  const bool embed_render_window =
-      render_video && hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime());
+  const bool test_embedded_preview = !qgetenv("HSTREAM_UI_TEST_RUNNER").isEmpty() &&
+      qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW");
+  const bool embed_render_window = render_video &&
+      (hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) ||
+       test_embedded_preview);
   QStringList args;
   args << "-g" << game_id << "--enable-sources=URI-MULTIPLE";
   if (active_force_reconfigure_)
@@ -2953,8 +2947,8 @@ void HStreamWindow::handlePipelineStarted() {
     }
   }
   appendLog(QString("pipeline started pid=%1").arg(pipeline_process_ ? pipeline_process_->processId() : 0));
-  if (pipeline_render_embedded_ && !pending_preview_channel_.isEmpty())
-    schedulePreviewReadyTimeout(pending_preview_channel_, pending_preview_generation_, 5 * 60 * 1000);
+  if (pipeline_render_embedded_ && preview_status_)
+    preview_status_->setText("Starting GPU preview with the video pipeline");
   updateRunControls();
 }
 
@@ -3023,6 +3017,8 @@ void HStreamWindow::clearPreviewFrames() {
   active_preview_channel_.clear();
   pending_preview_channel_.clear();
   pending_preview_generation_ = 0;
+  preview_recovery_attempts_ = 0;
+  preview_runtime_ready_ = false;
 }
 
 void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
@@ -3224,6 +3220,40 @@ QWidget* HStreamWindow::previewTargetForChannel(const QString& channel) const {
 }
 
 bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
+  static const QRegularExpression runtime_ready_pattern(
+      R"(^HSTREAM_PREVIEW_RUNTIME status=ready channel=(\S+) generation=(\d+)$)");
+  const QRegularExpressionMatch runtime_ready = runtime_ready_pattern.match(line);
+  if (runtime_ready.hasMatch()) {
+    if (!pipeline_render_embedded_ || !pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning)
+      return true;
+    bool generation_valid = false;
+    const QString backend_channel = runtime_ready.captured(1);
+    const quint64 generation = runtime_ready.captured(2).toULongLong(&generation_valid);
+    if (!generation_valid || generation < preview_generation_)
+      return true;
+    preview_runtime_ready_ = true;
+    preview_generation_ = generation;
+    const QString selected_channel = selectedPipelinePreviewChannel();
+    if (selected_channel.isEmpty() || selected_channel == backend_channel) {
+      pending_preview_channel_ = backend_channel;
+      pending_preview_generation_ = generation;
+      preview_recovery_attempts_ = 0;
+      if (QWidget* surface = previewSurfaceForChannel(backend_channel)) {
+        surface->setProperty("previewRendererState", "activating");
+        surface->show();
+      }
+      if (QWidget* target = previewTargetForChannel(backend_channel)) {
+        target->setProperty("previewRendererState", "activating");
+        target->show();
+      }
+      appendLog(QString("GPU preview backend ready channel=%1 generation=%2").arg(backend_channel).arg(generation));
+      schedulePreviewReadyTimeout(backend_channel, generation, previewReadyTimeoutMs());
+    } else if (!requestPipelinePreviewChannel(selected_channel, PreviewRequestReason::kStartup)) {
+      appendLog(
+          QString("could not activate selected GPU preview channel %1 after backend startup").arg(selected_channel));
+    }
+    return true;
+  }
   static const QRegularExpression pattern(
       R"(^HSTREAM_PREVIEW channel=(\S+) status=(\S+) generation=(\d+) message=(.*)$)");
   const QRegularExpressionMatch match = pattern.match(line);
@@ -3272,6 +3302,9 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
       active_preview_channel_ = channel;
       pending_preview_channel_.clear();
       pending_preview_generation_ = 0;
+      preview_recovery_attempts_ = 0;
+      if (preview_status_)
+        preview_status_->setText(QString("%1 GPU preview ready").arg(channel == "program" ? "Program" : channel));
     }
     if (surface)
       surface->show();
@@ -3286,6 +3319,7 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
     if (matches_pending) {
       pending_preview_channel_.clear();
       pending_preview_generation_ = 0;
+      preview_recovery_attempts_ = 0;
     }
     if (affected_active)
       active_preview_channel_.clear();
@@ -3310,10 +3344,15 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
   } else if (status == "deactivated") {
     if (channel == active_preview_channel_)
       active_preview_channel_.clear();
-    if (target)
-      target->hide();
-    if (surface)
-      surface->hide();
+    // A deactivation for a channel being superseded must not hide the newly
+    // pending selected target. Keeping it mapped lets the replacement GLX
+    // renderer present without requiring another tab change.
+    if (!matches_pending) {
+      if (target)
+        target->hide();
+      if (surface)
+        surface->hide();
+    }
   }
   return true;
 }
@@ -3325,22 +3364,66 @@ void HStreamWindow::switchPipelineRenderTarget(int tab_index) {
   }
   const QString channel =
       hm::ui_internal::preview_channel_for_tab(tab_index, static_cast<int>(camera_preview_render_targets_.size()));
-  if (channel.isEmpty() || channel == pending_preview_channel_ ||
-      (pending_preview_channel_.isEmpty() && channel == active_preview_channel_))
-    return;
+  requestPipelinePreviewChannel(channel, PreviewRequestReason::kTabChange);
+}
+
+QString HStreamWindow::selectedPipelinePreviewChannel() const {
+  if (!preview_tabs_)
+    return "program";
+  return hm::ui_internal::preview_channel_for_tab(
+      preview_tabs_->currentIndex(), static_cast<int>(camera_preview_render_targets_.size()));
+}
+
+int HStreamWindow::previewReadyTimeoutMs() const {
+  bool test_timeout_valid = false;
+  const int test_timeout = qEnvironmentVariableIntValue("HSTREAM_UI_TEST_PREVIEW_TIMEOUT_MS", &test_timeout_valid);
+  if (test_timeout_valid && test_timeout > 0)
+    return test_timeout;
+  constexpr int kFirstFrameWaitMs = 30 * 1000;
+  constexpr int kBackgroundRecoveryWaitMs = 60 * 1000;
+  constexpr int kRapidRecoveryAttempts = 3;
+  return preview_recovery_attempts_ < kRapidRecoveryAttempts ? kFirstFrameWaitMs : kBackgroundRecoveryWaitMs;
+}
+
+bool HStreamWindow::requestPipelinePreviewChannel(const QString& channel, PreviewRequestReason reason) {
+  if (!pipeline_render_embedded_ || !pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning ||
+      channel.isEmpty() || !preview_runtime_ready_) {
+    return false;
+  }
+  const bool force = reason != PreviewRequestReason::kTabChange;
+  if (!force &&
+      (channel == pending_preview_channel_ ||
+       (pending_preview_channel_.isEmpty() && channel == active_preview_channel_))) {
+    return true;
+  }
   const quint64 generation = preview_generation_ + 1;
   const QByteArray command = QString("@set-preview-active %1 %2\n").arg(channel).arg(generation).toUtf8();
   if (pipeline_process_->write(command) != command.size()) {
     appendLog(QString("could not activate GPU preview channel %1").arg(channel));
-    return;
+    return false;
   }
   preview_generation_ = generation;
   pending_preview_channel_ = channel;
   pending_preview_generation_ = generation;
-  if (QWidget* surface = previewSurfaceForChannel(channel))
+  if (reason != PreviewRequestReason::kRecovery)
+    preview_recovery_attempts_ = 0;
+  if (QWidget* surface = previewSurfaceForChannel(channel)) {
     surface->setProperty("previewRendererState", "activating");
-  appendLog(QString("GPU preview requested channel=%1 generation=%2").arg(channel).arg(generation));
-  schedulePreviewReadyTimeout(channel, generation, 10 * 1000);
+    surface->show();
+  }
+  if (QWidget* target = previewTargetForChannel(channel)) {
+    target->setProperty("previewRendererState", "activating");
+    target->show();
+  }
+  appendLog(QString("GPU preview requested channel=%1 generation=%2 reason=%3")
+                .arg(channel)
+                .arg(generation)
+                .arg(
+                    reason == PreviewRequestReason::kStartup
+                        ? "startup"
+                        : (reason == PreviewRequestReason::kRecovery ? "recovery" : "tab-change")));
+  schedulePreviewReadyTimeout(channel, generation, previewReadyTimeoutMs());
+  return true;
 }
 
 void HStreamWindow::schedulePreviewReadyTimeout(const QString& channel, quint64 generation, int timeout_ms) {
@@ -3349,23 +3432,30 @@ void HStreamWindow::schedulePreviewReadyTimeout(const QString& channel, quint64 
         pipeline_process_->state() == QProcess::NotRunning) {
       return;
     }
-    appendLog(QString("GPU preview first-frame timeout channel=%1 generation=%2").arg(channel).arg(generation));
-    const quint64 deactivate_generation = preview_generation_ + 1;
-    const QByteArray deactivate = QString("@set-preview-active none %1\n").arg(deactivate_generation).toUtf8();
-    if (pipeline_process_->write(deactivate) != deactivate.size()) {
-      appendLog("could not deactivate the unready GPU preview; leaving its target visible");
+    if (selectedPipelinePreviewChannel() != channel) {
       return;
     }
-    preview_generation_ = deactivate_generation;
-    pending_preview_channel_.clear();
-    pending_preview_generation_ = 0;
-    active_preview_channel_.clear();
-    if (QWidget* target = previewTargetForChannel(channel))
-      target->hide();
-    if (QWidget* surface = previewSurfaceForChannel(channel))
-      surface->hide();
-    if (preview_status_)
-      preview_status_->setText("GPU preview first frame timed out; pipeline continues");
+    constexpr int kRapidRecoveryAttempts = 3;
+    if (preview_recovery_attempts_ < kRapidRecoveryAttempts + 1)
+      ++preview_recovery_attempts_;
+    appendLog(QString("GPU preview first-frame wait exceeded channel=%1 generation=%2 recovery-attempt=%3")
+                  .arg(channel)
+                  .arg(generation)
+                  .arg(preview_recovery_attempts_));
+    if (preview_status_) {
+      preview_status_->setText(
+          preview_recovery_attempts_ <= kRapidRecoveryAttempts
+              ? QString("GPU preview delayed; retrying %1 (%2/%3)")
+                    .arg(channel)
+                    .arg(preview_recovery_attempts_)
+                    .arg(kRapidRecoveryAttempts)
+              : QString("GPU preview delayed; automatic recovery continues for %1").arg(channel));
+    }
+    if (!requestPipelinePreviewChannel(channel, PreviewRequestReason::kRecovery)) {
+      // A full process pipe must not turn a renderer watchdog into a terminal
+      // failure. Keep the same generation pending and try again later.
+      schedulePreviewReadyTimeout(channel, generation, previewReadyTimeoutMs());
+    }
   });
 }
 

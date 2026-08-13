@@ -74,6 +74,12 @@ class HStreamWindow : public QMainWindow {
     int control_value;
   };
 
+  enum class PreviewRequestReason {
+    kStartup,
+    kTabChange,
+    kRecovery,
+  };
+
   void buildUi();
   void buildTopBar(QVBoxLayout* root);
   void buildMainArea(QVBoxLayout* root);
@@ -99,6 +105,9 @@ class HStreamWindow : public QMainWindow {
   void closeStitchingCalibrationDialog();
   void handleScoreboardSelectorOutput(const QString& line);
   void switchPipelineRenderTarget(int tab_index);
+  bool requestPipelinePreviewChannel(const QString& channel, PreviewRequestReason reason);
+  QString selectedPipelinePreviewChannel() const;
+  int previewReadyTimeoutMs() const;
   void clearPreviewFrames();
   bool handleGpuPreviewStatus(const QString& line);
   QWidget* previewSurfaceForChannel(const QString& channel) const;
@@ -245,6 +254,8 @@ class HStreamWindow : public QMainWindow {
   QString active_preview_channel_;
   QString pending_preview_channel_;
   quint64 pending_preview_generation_{0};
+  int preview_recovery_attempts_{0};
+  bool preview_runtime_ready_{false};
   std::set<QString> preview_frame_channels_received_;
   QString active_run_game_id_;
   bool active_run_is_calibration_{false};

@@ -129,6 +129,15 @@ bool run_deactivation_barrier_test() {
     std::this_thread::yield();
   const bool setter_attempted = setter_entered.load(std::memory_order_acquire);
   const bool waited_for_in_flight_buffer = setter_attempted && !deactivated.load();
+  std::atomic<bool> generation_updated{false};
+  std::thread update_generation([&] {
+    hm::gpu_preview::set_isolation_generation(isolation, 3);
+    generation_updated = true;
+  });
+  const auto generation_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!generation_updated.load() && std::chrono::steady_clock::now() < generation_deadline)
+    std::this_thread::yield();
+  const bool generation_update_did_not_wait = generation_updated.load();
   {
     std::lock_guard<std::mutex> lock(barrier.mutex);
     barrier.release = true;
@@ -136,8 +145,9 @@ bool run_deactivation_barrier_test() {
   barrier.condition.notify_all();
   producer.join();
   deactivate.join();
-  const bool passed = entered && setter_attempted && waited_for_in_flight_buffer && deactivated.load() &&
-      push_result.load() == GST_FLOW_OK && !hm::gpu_preview::isolation_active(isolation);
+  update_generation.join();
+  const bool passed = entered && setter_attempted && waited_for_in_flight_buffer && generation_update_did_not_wait &&
+      deactivated.load() && push_result.load() == GST_FLOW_OK && !hm::gpu_preview::isolation_active(isolation);
 
   gst_pad_unlink(upstream, isolation_sink);
   gst_pad_unlink(isolation_src, downstream);
@@ -147,7 +157,7 @@ bool run_deactivation_barrier_test() {
   gst_object_unref(downstream);
   gst_object_unref(isolation);
   if (!passed)
-    std::cerr << "Preview deactivation returned before an in-flight downstream buffer drained\n";
+    std::cerr << "Preview generation update blocked, or deactivation returned before an in-flight buffer drained\n";
   return passed;
 }
 
