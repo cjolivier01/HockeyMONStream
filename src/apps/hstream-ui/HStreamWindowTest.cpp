@@ -2450,19 +2450,30 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   qputenv("HSTREAM_UI_TEST_RUNNER", "hstream-ui-missing-runner");
   qputenv("PATH", "/usr/bin:/bin");
   qputenv("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW", "1");
-  activate(start);
+  qputenv("HSTREAM_UI_TEST_BYPASS_SETSID", "1");
+  // Click without processing events so the synchronous startup setup can be
+  // inspected before QProcess delivers its queued FailedToStart signal.
+  start->click();
+  const bool targets_mapped_before_failed_start =
+      !preview_target->isHidden() && !stitched_target->isHidden() && !camera1_target->isHidden();
   for (int i = 0; i < 100 && window->pipelineStateText() != "STOPPED"; ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
-  const bool asynchronous_failure_clean = expect(
-                                              window->pipelineStateText() == "STOPPED",
-                                              "Asynchronous QProcess FailedToStart should restore stopped state") &&
-      expect(preview_target->isHidden() && stitched_target->isHidden() && camera1_target->isHidden(),
-             "Asynchronous QProcess FailedToStart must unmap every native preview target");
+  const bool asynchronous_failure_clean =
+      expect(
+          targets_mapped_before_failed_start,
+          "FailedToStart regression must begin with native preview targets mapped by embedded startup") &&
+      expect(
+          window->pipelineStateText() == "STOPPED",
+          "Asynchronous QProcess FailedToStart should restore stopped state") &&
+      expect(
+          preview_target->isHidden() && stitched_target->isHidden() && camera1_target->isHidden(),
+          "Asynchronous QProcess FailedToStart must unmap every native preview target");
   qputenv("HSTREAM_UI_TEST_RUNNER", original_runner);
   qputenv("PATH", original_path);
   qunsetenv("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW");
+  qunsetenv("HSTREAM_UI_TEST_BYPASS_SETSID");
   return asynchronous_failure_clean;
 }
 

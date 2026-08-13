@@ -2887,7 +2887,9 @@ void HStreamWindow::startPipeline() {
   pipeline_process_->setWorkingDirectory(working_dir);
 #ifdef Q_OS_UNIX
   const QString setsid = "/usr/bin/setsid";
-  if (QFileInfo::exists(setsid)) {
+  const bool test_without_setsid =
+      !qgetenv("HSTREAM_UI_TEST_RUNNER").isEmpty() && qEnvironmentVariableIsSet("HSTREAM_UI_TEST_BYPASS_SETSID");
+  if (QFileInfo::exists(setsid) && !test_without_setsid) {
     QStringList wrapped_args;
     wrapped_args << runner;
     wrapped_args << args;
