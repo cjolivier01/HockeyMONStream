@@ -274,7 +274,7 @@ struct RendererState {
   guint source_height{0};
   guint negotiated_width{0};
   guint negotiated_height{0};
-  guint64 generation{0};
+  std::atomic<guint64> generation{0};
   guint64 ready_generation{G_MAXUINT64};
   GstVideoInfo video_info{};
   bool have_caps{false};
@@ -343,7 +343,11 @@ void post_sink_failure(GstHmGpuPreviewSink* self, const char* message) {
   bool expected = false;
   if (state->failure_reported.compare_exchange_strong(expected, true)) {
     post_preview_status(
-        GST_ELEMENT(self), state->channel.c_str(), "failed", state->generation, message ? message : "renderer failed");
+        GST_ELEMENT(self),
+        state->channel.c_str(),
+        "failed",
+        state->generation.load(),
+        message ? message : "renderer failed");
   }
 }
 
@@ -504,7 +508,11 @@ bool initialize_renderer(GstHmGpuPreviewSink* self) {
   }
   release_context(state);
   post_preview_status(
-      GST_ELEMENT(self), state->channel.c_str(), "initialized", state->generation, "GPU-resident renderer ready");
+      GST_ELEMENT(self),
+      state->channel.c_str(),
+      "initialized",
+      state->generation.load(),
+      "GPU-resident renderer ready");
   return true;
 }
 
@@ -678,10 +686,10 @@ GstFlowReturn preview_sink_render(GstBaseSink* base_sink, GstBuffer* buffer) {
   gst_buffer_unmap(buffer, &map);
   if (!state->failed.load()) {
     draw_texture(self);
-    if (!state->failed.load() && state->ready_generation != state->generation) {
-      state->ready_generation = state->generation;
-      post_preview_status(
-          GST_ELEMENT(self), state->channel.c_str(), "ready", state->generation, "first GPU frame presented");
+    const guint64 generation = state->generation.load();
+    if (!state->failed.load() && state->ready_generation != generation) {
+      state->ready_generation = generation;
+      post_preview_status(GST_ELEMENT(self), state->channel.c_str(), "ready", generation, "first GPU frame presented");
     }
   }
   release_context(state);
@@ -752,6 +760,10 @@ gboolean preview_sink_stop(GstBaseSink* base_sink) {
 void preview_sink_set_property(GObject* object, guint property_id, const GValue* value, GParamSpec* spec) {
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(object);
   RendererState* state = self->state;
+  if (property_id == kSinkPropertyGeneration) {
+    state->generation = g_value_get_uint64(value);
+    return;
+  }
   std::lock_guard<std::mutex> lock(state->mutex);
   switch (property_id) {
     case kSinkPropertyWindowId:
@@ -762,9 +774,6 @@ void preview_sink_set_property(GObject* object, guint property_id, const GValue*
       break;
     case kSinkPropertyChannel:
       state->channel = g_value_get_string(value) ? g_value_get_string(value) : "unknown";
-      break;
-    case kSinkPropertyGeneration:
-      state->generation = g_value_get_uint64(value);
       break;
     case kSinkPropertySourceWidth:
       state->source_width = g_value_get_uint(value);
@@ -780,6 +789,10 @@ void preview_sink_set_property(GObject* object, guint property_id, const GValue*
 void preview_sink_get_property(GObject* object, guint property_id, GValue* value, GParamSpec* spec) {
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(object);
   RendererState* state = self->state;
+  if (property_id == kSinkPropertyGeneration) {
+    g_value_set_uint64(value, state->generation.load());
+    return;
+  }
   std::lock_guard<std::mutex> lock(state->mutex);
   switch (property_id) {
     case kSinkPropertyWindowId:
@@ -790,9 +803,6 @@ void preview_sink_get_property(GObject* object, guint property_id, GValue* value
       break;
     case kSinkPropertyChannel:
       g_value_set_string(value, state->channel.c_str());
-      break;
-    case kSinkPropertyGeneration:
-      g_value_set_uint64(value, state->generation);
       break;
     case kSinkPropertySourceWidth:
       g_value_set_uint(value, state->source_width);
@@ -916,6 +926,29 @@ void set_isolation_active(GstElement* isolation, bool active, std::uint64_t gene
     return;
   g_object_set(
       G_OBJECT(isolation), "generation", static_cast<guint64>(generation), "active", active ? TRUE : FALSE, nullptr);
+}
+
+void set_isolation_generation(GstElement* isolation, std::uint64_t generation) {
+  if (!isolation)
+    return;
+  // Generation is atomic and does not participate in the flow barrier. A
+  // same-channel readiness retry must not wait behind the active buffer it is
+  // trying to observe.
+  g_object_set(G_OBJECT(isolation), "generation", static_cast<guint64>(generation), nullptr);
+}
+
+void set_renderer_generation(GstElement* sink, std::uint64_t generation) {
+#if defined(__x86_64__)
+  if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
+    return;
+  auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
+  // Generation is status metadata. Updating it must never wait for a frame
+  // currently rendering under the renderer mutex.
+  self->state->generation = generation;
+#else
+  (void)sink;
+  (void)generation;
+#endif
 }
 
 bool isolation_active(GstElement* isolation) {

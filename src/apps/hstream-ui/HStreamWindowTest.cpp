@@ -225,6 +225,11 @@ bool write_fake_runner(const QString& path) {
   file.write("time.sleep(0.05)\n");
   file.write("sys.stdout.write(' blue runner line\\033[0m\\n')\n");
   file.write("sys.stdout.flush()\n");
+  file.write("if os.environ.get('HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW') == '1':\n");
+  file.write("    print('HSTREAM_PREVIEW_RUNTIME status=ready channel=program generation=2', flush=True)\n");
+  file.write(
+      "    print('HSTREAM_PREVIEW channel=program status=activated generation=2 message=GPU preview branch "
+      "re-armed', flush=True)\n");
   file.write("calibration_result = os.environ.get('HSTREAM_UI_TEST_CALIBRATION_RESULT', '')\n");
   file.write("if not calibration_result and os.environ.get('HSTREAM_UI_TEST_COMPLETE_CALIBRATION') == '1':\n");
   file.write("    calibration_result = 'success'\n");
@@ -300,7 +305,19 @@ bool write_fake_runner(const QString& path) {
   file.write("    time.sleep(5.0)\n");
   file.write("    sys.exit(0)\n");
   file.write("def handle_stdin_line(line):\n");
+  file.write("    global preview_activation_count\n");
   file.write("    print('stdin:' + line.rstrip('\\n'), flush=True)\n");
+  file.write("    if line.startswith('@set-preview-active '):\n");
+  file.write("        _, channel, generation = line.rstrip('\\n').split(' ', 2)\n");
+  file.write("        preview_activation_count += 1\n");
+  file.write(
+      "        print('HSTREAM_PREVIEW channel=' + channel + ' status=activated generation=' + generation + "
+      "' message=GPU preview branch activated', flush=True)\n");
+  file.write("        ready_after = int(os.environ.get('HSTREAM_UI_TEST_PREVIEW_READY_AFTER', '0'))\n");
+  file.write("        if ready_after and preview_activation_count >= ready_after:\n");
+  file.write(
+      "            print('HSTREAM_PREVIEW channel=' + channel + ' status=ready generation=' + generation + "
+      "' message=first GPU frame presented', flush=True)\n");
   file.write("    if line.startswith('@set-property '):\n");
   file.write("        _, element, assignment = line.rstrip('\\n').split(' ', 2)\n");
   file.write("        property_name, runtime_value = assignment.split('=', 1)\n");
@@ -311,6 +328,7 @@ bool write_fake_runner(const QString& path) {
   file.write("        else:\n");
   file.write(
       "            print('runtime property ' + element + ' ' + property_name + '=' + runtime_value, flush=True)\n");
+  file.write("preview_activation_count = 0\n");
   file.write("deadline = time.monotonic() + 5.0\n");
   file.write("stdin_fd = sys.stdin.fileno()\n");
   file.write("pending_stdin = b''\n");
@@ -1130,8 +1148,9 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   }
   if (!expect(dialog->isVisible(), "Calibration-required Play should open the progress popup") ||
       !expect(
-          dialog->windowFlags().testFlag(Qt::WindowStaysOnTopHint),
-          "The calibration popup should stay above GPU-native preview windows") ||
+          dialog->windowModality() == Qt::WindowModal && dialog->parentWidget() == window &&
+              !dialog->windowFlags().testFlag(Qt::WindowStaysOnTopHint),
+          "The calibration popup should be modal only to HStream, not system-wide always-on-top") ||
       !expect(
           headline->text().contains("Calibrating stitching"), "Active popup should identify stitching calibration") ||
       !expect(
@@ -1404,6 +1423,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* preview_tabs = require_child<QTabWidget>(window, "previewTabs");
   auto* program_host = require_child<QWidget>(window, "programLetterboxHost");
   auto* preview_surface = require_child<QWidget>(window, "previewSurface");
+  auto* preview_target = require_child<QWidget>(window, "previewRenderTarget");
   auto* stitched_surface = require_child<QWidget>(window, "stitchedPreviewSurface");
   auto* camera1_host = require_child<QWidget>(window, "camera1LetterboxHost");
   auto* camera1_surface = require_child<QWidget>(window, "camera1PreviewSurface");
@@ -1414,8 +1434,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* stitched_status = require_child<QLabel>(window, "stitchedPreviewStatusLabel");
   if (!stop || !start || !pause || !restart || !mode || !control_points || !game_id || !rotate || !max_speed_x ||
       !render_video || !log || !clear_log || !main_log_splitter || !preview_tabs || !program_host || !preview_surface ||
-      !stitched_surface || !camera1_host || !camera1_surface || !camera2_surface || !camera3_surface ||
-      !external_notice || !camera1_notice || !stitched_status) {
+      !preview_target || !stitched_surface || !camera1_host || !camera1_surface || !camera2_surface ||
+      !camera3_surface || !external_notice || !camera1_notice || !stitched_status) {
     return false;
   }
 
@@ -1458,23 +1478,32 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   const int fresh_program_clean_commands = window->logText().count("stitching calibration clean command");
   qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
+  qputenv("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW", "1");
+  qputenv("HSTREAM_UI_TEST_PREVIEW_TIMEOUT_MS", "20");
+  qputenv("HSTREAM_UI_TEST_PREVIEW_READY_AFTER", "1");
   for (QWidget* surface : {preview_surface, stitched_surface, camera1_surface, camera2_surface, camera3_surface}) {
     surface->setProperty("previewRendererState", "ready");
   }
   activate(start);
+  const QString initial_program_preview_state = preview_surface->property("previewRendererState").toString();
   if (!expect(
-          preview_surface->property("previewRendererState").toString() == "idle" &&
+          (initial_program_preview_state == "idle" || initial_program_preview_state == "activating") &&
               stitched_surface->property("previewRendererState").toString() == "idle" &&
               camera1_surface->property("previewRendererState").toString() == "idle" &&
               camera2_surface->property("previewRendererState").toString() == "idle" &&
               camera3_surface->property("previewRendererState").toString() == "idle",
-          "Starting a new pipeline should reset every GPU preview before renderer status arrives")) {
+          "Starting a new pipeline should reset every GPU preview before the backend-ready handshake activates "
+          "Program")) {
     return false;
   }
   for (int i = 0; i < 200 &&
        (!window->logText().contains("one-pass stitching calibration complete; continuous program playback running") ||
         window->pipelineStateText() != "PLAYING");
        ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  for (int i = 0; i < 200 && !window->logText().contains("GPU preview ready channel=program generation="); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
@@ -1489,10 +1518,20 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "A fresh Program run should establish tracked one-pass stitching calibration (before=" +
               std::to_string(fresh_program_clean_commands) +
               ", after=" + std::to_string(window->logText().count("stitching calibration clean command")) + ")") &&
-      expect(
-          has_fresh_program_status && fresh_program_status.IsScalar() &&
-              fresh_program_status.as<std::string>() == "complete",
-          "A fresh Program one-pass calibration should persist completed state");
+      expect(has_fresh_program_status && fresh_program_status.IsScalar() &&
+                 fresh_program_status.as<std::string>() == "complete",
+             "A fresh Program one-pass calibration should persist completed state") &&
+      expect(window->logText().contains("GPU preview backend ready channel=program generation=2"),
+             "Program startup must acknowledge the selected GPU preview without a tab change") &&
+      expect(window->logText().contains("GPU preview first-frame wait exceeded channel=program") &&
+                 window->logText().contains("GPU preview requested channel=program generation=3 reason=recovery") &&
+                 window->logText().contains("GPU preview ready channel=program generation="),
+             "A delayed Program first frame must recover by reactivating the same tab") &&
+      expect(!window->logText().contains("stdin:@set-preview-active none") && !preview_surface->isHidden() &&
+                 !preview_target->isHidden(),
+             "First-frame recovery must never deactivate or hide the selected Program preview");
+  if (!fresh_program_tracked)
+    std::cerr << window->logText().toStdString() << '\n';
   for (QWidget* surface : {preview_surface, stitched_surface, camera1_surface, camera2_surface, camera3_surface}) {
     surface->setProperty("previewRendererState", "ready");
   }
@@ -1511,6 +1550,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
   qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+  qunsetenv("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW");
+  qunsetenv("HSTREAM_UI_TEST_PREVIEW_TIMEOUT_MS");
+  qunsetenv("HSTREAM_UI_TEST_PREVIEW_READY_AFTER");
   if (!fresh_program_tracked) {
     return false;
   }

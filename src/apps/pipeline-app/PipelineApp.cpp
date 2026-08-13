@@ -1413,7 +1413,7 @@ absl::Status PipelineApplication::stopPipeline(std::shared_ptr<HmApp> app_contex
 
 absl::Status PipelineApplication::playPipelines(
     std::vector<std::shared_ptr<HmApp>>& app_contexts,
-    CleanupStack& cleanup_stack) const {
+    CleanupStack& cleanup_stack) {
   absl::Status status;
   for (guint i = 0; i < app_contexts.size(); i++) {
     status = app_contexts[i]->configurator().post_config_pipeline(
@@ -1444,6 +1444,18 @@ absl::Status PipelineApplication::playPipelines(
   print_runtime_commands();
   changemode(1);
   g_timeout_add(40, event_thread_func_static, nullptr);
+  if (!ui_preview_channels_.empty()) {
+    // Re-arm the initial channel directly after PLAYING. Startup must not race
+    // an external command against installation of the GLib stdin poll.
+    const std::string channel =
+        active_ui_preview_channel_.empty() ? initial_ui_preview_channel_ : active_ui_preview_channel_;
+    const guint64 generation = active_ui_preview_generation_ + 1;
+    g_print(
+        "HSTREAM_PREVIEW_RUNTIME status=ready channel=%s generation=%" G_GUINT64_FORMAT "\n",
+        channel.c_str(),
+        generation);
+    set_preview_active_runtime(channel, generation);
+  }
   g_main_loop_run(main_loop_);
   changemode(0);
 
@@ -1854,8 +1866,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
       return absl::InvalidArgumentError(
           "--clean-expected-invalidation-id conflicts with HSTREAM_CALIBRATION_INVALIDATION_ID");
     }
-    if (!g_setenv(
-            kCalibrationInvalidationEnvironment, clean_stitching_expected_invalidation_id_, /*overwrite=*/TRUE)) {
+    if (!g_setenv(kCalibrationInvalidationEnvironment, clean_stitching_expected_invalidation_id_, /*overwrite=*/TRUE)) {
       return absl::InternalError("Unable to publish the stitching invalidation ID to runtime plugins");
     }
   } else {
@@ -3071,7 +3082,31 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
   }
 
   const auto previous = ui_preview_channels_.find(active_ui_preview_channel_);
-  if (previous != ui_preview_channels_.end() && previous->first != channel) {
+  if (previous != ui_preview_channels_.end() && previous->first == channel) {
+    // A first-frame recovery for the selected channel must not destroy its
+    // renderer or wait behind a buffer that is still negotiating downstream.
+    // Advancing the generation re-arms the ready acknowledgement on the next
+    // presented frame while leaving the observational GPU branch flowing.
+    hm::gpu_preview::set_renderer_generation(previous->second.sink, generation);
+    hm::gpu_preview::set_isolation_generation(previous->second.isolation, generation);
+    active_ui_preview_generation_ = generation;
+    if (!hm::gpu_preview::isolation_active(previous->second.isolation)) {
+      active_ui_preview_channel_.clear();
+      g_print(
+          "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
+          " message=the selected GPU preview channel cannot be re-armed\n",
+          channel.c_str(),
+          generation);
+      return true;
+    }
+    g_print(
+        "HSTREAM_PREVIEW channel=%s status=activated generation=%" G_GUINT64_FORMAT
+        " message=GPU preview branch re-armed\n",
+        channel.c_str(),
+        generation);
+    return true;
+  }
+  if (previous != ui_preview_channels_.end()) {
     // active=false waits for every buffer already past the gate to finish its
     // downstream push. Only then is it safe to destroy the old GL renderer.
     hm::gpu_preview::set_isolation_active(previous->second.isolation, false, generation);
