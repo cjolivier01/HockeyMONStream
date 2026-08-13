@@ -3172,13 +3172,35 @@ QString diagnostic_capture_attempt_path(const QString& artifact_dir, const QStri
                                              .arg(canonical_output.suffix()));
 }
 
+bool promote_diagnostic_capture_artifact(const QString& attempt_path, const QString& canonical_path) {
+  const bool removed_stale_artifact = !QFileInfo::exists(canonical_path) || QFile::remove(canonical_path);
+  return removed_stale_artifact &&
+      (QFile::rename(attempt_path, canonical_path) || QFile::copy(attempt_path, canonical_path));
+}
+
+bool clear_diagnostic_capture_artifact(const QString& artifact_dir, const QString& output_name) {
+  const QString canonical_path = QDir(artifact_dir).filePath(output_name);
+  return !QFileInfo::exists(canonical_path) || QFile::remove(canonical_path);
+}
+
 bool test_diagnostic_capture_attempt_paths() {
+  QTemporaryDir artifact_dir;
   const QString first = diagnostic_capture_attempt_path("/tmp/hstream-e2e", "program-preview.png", 1);
   const QString second = diagnostic_capture_attempt_path("/tmp/hstream-e2e", "program-preview.png", 2);
   const QString stale_failure = QString("runtime preview frame unavailable channel=program path=%1").arg(first);
+  const QString successful_attempt = artifact_dir.filePath("successful-attempt.png");
+  const QString canonical = artifact_dir.filePath("program-preview.png");
+  const QString failed_attempt = artifact_dir.filePath("failed-attempt.png");
+  const QString inaccessible_canonical = artifact_dir.filePath("missing/program-preview.png");
+  const bool wrote_artifacts = write_e2e_text(successful_attempt, "captured") &&
+      write_e2e_text(failed_attempt, "captured") && write_e2e_text(canonical, "stale capture");
+  const bool cleared = wrote_artifacts && clear_diagnostic_capture_artifact(artifact_dir.path(), "program-preview.png");
+  const bool promoted = cleared && promote_diagnostic_capture_artifact(successful_attempt, canonical);
+  const bool rejected = !promote_diagnostic_capture_artifact(failed_attempt, inaccessible_canonical);
   return expect(
-      first != second && !stale_failure.contains(second),
-      "Each diagnostic capture retry must have a distinct response marker so stale failures cannot poison it");
+      artifact_dir.isValid() && first != second && !stale_failure.contains(second) && cleared && promoted &&
+          QFileInfo(canonical).size() > 0 && rejected && QFileInfo::exists(failed_attempt),
+      "Diagnostic retries must use distinct markers and only pass after publishing the canonical artifact");
 }
 
 NativePreviewCapture inspect_native_preview_capture(const QString& output_path) {
@@ -3260,6 +3282,13 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     return false;
   }
   std::cout << "HStream UI E2E artifacts: " << artifact_dir.toStdString() << '\n';
+  if (verify_x11_preview &&
+      (!clear_diagnostic_capture_artifact(artifact_dir, "program-preview-surface.png") ||
+       !clear_diagnostic_capture_artifact(artifact_dir, "stitched-preview-surface.png") ||
+       !clear_diagnostic_capture_artifact(artifact_dir, "camera1-preview-surface.png"))) {
+    std::cerr << "Could not clear stale E2E preview artifacts in " << artifact_dir.toStdString() << '\n';
+    return false;
+  }
 
   game_id_edit->setText(game_id);
   activate(create);
@@ -3344,9 +3373,12 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
         if (window->completeLogText().contains(completion) && QFileInfo(output_path).size() > 0) {
           NativePreviewCapture capture = inspect_native_preview_capture(output_path);
           if (capture.passed) {
-            QFile::remove(canonical_output.absoluteFilePath());
-            if (!QFile::rename(output_path, canonical_output.absoluteFilePath())) {
-              QFile::copy(output_path, canonical_output.absoluteFilePath());
+            const QString canonical_path = canonical_output.absoluteFilePath();
+            if (!promote_diagnostic_capture_artifact(output_path, canonical_path)) {
+              capture.passed = false;
+              interaction_error =
+                  QString("diagnostic %1 preview was captured but could not be published to %2; attempt remains at %3")
+                      .arg(channel, canonical_path, output_path);
             }
           }
           return capture;
