@@ -208,7 +208,6 @@ class NativeVideoTarget : public QWidget {
     // ownership of every pixel with the external renderer.
     if (QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0) {
       setAttribute(Qt::WA_NativeWindow);
-      setAttribute(Qt::WA_DontCreateNativeAncestors);
       setAttribute(Qt::WA_PaintOnScreen);
       setAttribute(Qt::WA_NoSystemBackground);
     }
@@ -269,6 +268,10 @@ class LetterboxRenderHost : public QWidget {
     render_surface_->setAutoFillBackground(true);
     render_surface_->setPalette(pal);
     render_target_ = new NativeVideoTarget(render_surface_);
+    // Keep the native overlay unmapped until a pipeline explicitly enables
+    // embedded rendering. A mapped, unpainted X11 child is an opaque black
+    // window and can obscure Qt siblings while the initial layout settles.
+    render_target_->hide();
     focus_button_ = new QPushButton(render_surface_);
     focus_button_->setFixedSize(36, 36);
     focus_button_->setToolTip("Focus this video (double-click)");
@@ -285,7 +288,6 @@ class LetterboxRenderHost : public QWidget {
       // native sibling too so the window system can stack it visibly above
       // the sink instead of hiding Qt backing-store pixels behind the video.
       focus_button_->setAttribute(Qt::WA_NativeWindow);
-      focus_button_->setAttribute(Qt::WA_DontCreateNativeAncestors);
       focus_button_->winId();
     }
     render_target_->setFocusButton(focus_button_);

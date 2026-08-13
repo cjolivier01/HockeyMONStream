@@ -48,6 +48,10 @@
 #include <thread>
 #include <vector>
 
+#ifdef Q_OS_UNIX
+#include <X11/Xlib.h>
+#endif
+
 namespace fs = std::filesystem;
 
 namespace {
@@ -58,6 +62,38 @@ bool expect(bool condition, const std::string& message) {
     return false;
   }
   return true;
+}
+
+bool expect_x11_widget_geometry(QWidget* widget, bool expected_viewable, const std::string& description) {
+#ifdef Q_OS_UNIX
+  if (!widget || QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) != 0)
+    return true;
+  Display* display = XOpenDisplay(nullptr);
+  if (!display)
+    return expect(false, description + ": could not open the X11 display");
+  XWindowAttributes attributes{};
+  Window child = None;
+  int root_x = 0;
+  int root_y = 0;
+  const Window native_window = static_cast<Window>(widget->winId());
+  const bool queried = XGetWindowAttributes(display, native_window, &attributes) != 0 &&
+      XTranslateCoordinates(display, native_window, DefaultRootWindow(display), 0, 0, &root_x, &root_y, &child) != 0;
+  XCloseDisplay(display);
+  if (!queried)
+    return expect(false, description + ": could not query the native X11 window");
+  const QPoint qt_root = widget->mapToGlobal(QPoint(0, 0));
+  const bool viewable = attributes.map_state == IsViewable;
+  return expect(
+      root_x == qt_root.x() && root_y == qt_root.y() && viewable == expected_viewable,
+      description + ": native geometry/map state differs from Qt (X11=" + std::to_string(root_x) + "," +
+          std::to_string(root_y) + " Qt=" + std::to_string(qt_root.x()) + "," + std::to_string(qt_root.y()) +
+          " viewable=" + (viewable ? "true" : "false") + ")");
+#else
+  (void)widget;
+  (void)expected_viewable;
+  (void)description;
+  return true;
+#endif
 }
 
 bool test_path_scoped_auto_rollback() {
@@ -1467,6 +1503,20 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Main content and runtime log should be separated by a draggable vertical splitter")) {
     return false;
   }
+  const QRect stopped_target_rect(preview_target->mapTo(window, QPoint(0, 0)), preview_target->size());
+  const QRect tab_bar_rect(preview_tabs->tabBar()->mapTo(window, QPoint(0, 0)), preview_tabs->tabBar()->size());
+  if (!expect(
+          preview_target->isHidden() && camera1_target->isHidden() && !stopped_target_rect.intersects(tab_bar_rect),
+          "Stopped native video targets must stay unmapped and geometrically below the preview tab bar")) {
+    std::cerr << "stopped_target=" << stopped_target_rect.x() << ',' << stopped_target_rect.y() << ' '
+              << stopped_target_rect.width() << 'x' << stopped_target_rect.height() << " tab_bar=" << tab_bar_rect.x()
+              << ',' << tab_bar_rect.y() << ' ' << tab_bar_rect.width() << 'x' << tab_bar_rect.height() << '\n';
+    return false;
+  }
+  if (!expect_x11_widget_geometry(
+          preview_target, false, "Stopped Program target must use its Qt host as the native X11 coordinate space")) {
+    return false;
+  }
   const int preview_height_before_setup_collapse = preview_tabs->height();
   setup_preview_splitter->setSizes({0, setup_preview_splitter->height()});
   QApplication::processEvents();
@@ -1647,6 +1697,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       expect(!window->logText().contains("stdin:@set-preview-active none") && !preview_surface->isHidden() &&
                  !preview_target->isHidden(),
              "First-frame recovery must never deactivate or hide the selected Program preview");
+  if (!expect_x11_widget_geometry(
+          preview_target, true, "Playing Program target must remain aligned with its Qt video host")) {
+    return false;
+  }
   if (!fresh_program_tracked)
     std::cerr << window->logText().toStdString() << '\n';
   for (QWidget* surface : {preview_surface, stitched_surface, camera1_surface, camera2_surface, camera3_surface}) {
@@ -1664,6 +1718,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               camera2_surface->property("previewRendererState").toString() == "idle" &&
               camera3_surface->property("previewRendererState").toString() == "idle",
           "Finishing a pipeline should clear every GPU renderer state")) {
+    return false;
+  }
+  if (!expect(
+          preview_target->isHidden() && camera1_target->isHidden(),
+          "Finishing a pipeline must unmap native video targets so stopped-state UI controls cannot be obscured")) {
     return false;
   }
   qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
@@ -1733,11 +1792,14 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           window->logText().contains("HM_MAX_CONTROL_POINTS=750"),
           "One-pass calibration should pass the selected control-point limit") ||
       !expect(
-          !window->logText().contains("--render-window-id=") && window->logText().contains("HM_RENDER_SINK=nv3dsink") &&
-              !window->logText().contains("--source-render-window-ids=") && stitched_surface->isHidden() &&
-              camera1_surface->isHidden() && camera2_surface->isHidden() && camera3_surface->isHidden(),
-          "The offscreen test backend should fall back to a separate render window instead of passing a non-X11 "
-          "handle for stitched or camera previews") ||
+          QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0
+              ? window->logText().contains("--ui-preview-windows=program:") && !stitched_surface->isHidden() &&
+                  !camera1_surface->isHidden() && !camera2_surface->isHidden() && !camera3_surface->isHidden()
+              : !window->logText().contains("--render-window-id=") &&
+                  window->logText().contains("HM_RENDER_SINK=nv3dsink") &&
+                  !window->logText().contains("--source-render-window-ids=") && stitched_surface->isHidden() &&
+                  camera1_surface->isHidden() && camera2_surface->isHidden() && camera3_surface->isHidden(),
+          "Only the X11 test backend should expose embedded stitched and camera preview windows") ||
       !expect(
           window->logText().contains("ANSI blue runner line"), "ANSI-colored runner output should remain visible") ||
       !expect(
@@ -2204,6 +2266,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
 
   mode->setCurrentIndex(mode->findData("program"));
   qputenv("HM_RENDER_SINK", "nv3dsink");
+  const bool x11_test_backend = QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0;
   const int embedded_commands_before_external_run = window->logText().count("--render-window-id=");
   activate(start);
   for (int i = 0; i < 50 && !window->logText().contains("HM_RENDER_SINK=nv3dsink"); ++i) {
@@ -2226,11 +2289,13 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               window->logText().contains("scoreboard selection complete; pipeline continuing"),
           "Program playback should leave scoreboard selection enabled and launch its native selector") ||
       !expect(
-          window->logText().contains("separate DeepStream window"),
-          "UI must surface self-managed render-window mode") ||
+          x11_test_backend ? !window->logText().contains("separate DeepStream window")
+                           : window->logText().contains("separate DeepStream window"),
+          "UI must distinguish embedded X11 preview from self-managed render-window mode") ||
       !expect(
-          external_notice->parentWidget() == program_host && preview_surface->isHidden(),
-          "External-render notice should use the resizable Qt host instead of the hidden native render surface")) {
+          external_notice->parentWidget() == program_host &&
+              (x11_test_backend ? !preview_surface->isHidden() : preview_surface->isHidden()),
+          "Preview surface visibility must match the selected embedded or external render mode")) {
     return false;
   }
   window->resize(window->width(), 1200);
@@ -2239,10 +2304,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   QApplication::processEvents();
   QTest::qWait(10);
   if (!expect(
-          external_notice->geometry() == program_host->rect(),
+          x11_test_backend || external_notice->geometry() == program_host->rect(),
           "External-render notice should resize and move with its preview tab when the log splitter moves") ||
       !expect(
-          camera1_notice->parentWidget() == camera1_host && camera1_notice->geometry() == camera1_host->rect(),
+          camera1_notice->parentWidget() == camera1_host &&
+              (x11_test_backend || camera1_notice->geometry() == camera1_host->rect()),
           "Camera-render notice should remain owned and resized by its tab when the log splitter moves")) {
     return false;
   }
