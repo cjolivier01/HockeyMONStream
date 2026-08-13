@@ -168,6 +168,7 @@ class HStreamWindow : public QMainWindow {
   void addRtspOutput();
   void appendLog(const QString& message);
   QString writePlaytrackerRuntimeConfig();
+  void schedulePlaytrackerRuntimeControl(const QString& id, int value);
   QString pipelineRunnerPath() const;
   QString pipelineConfigPath(const QString& config_name) const;
   QString pipelineWorkingDirectory() const;
@@ -292,4 +293,8 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, int> camera_defaults_;
   std::vector<PendingRuntimeControl> pending_runtime_controls_;
+  QString scheduled_playtracker_control_id_;
+  int scheduled_playtracker_control_value_{0};
+  quint64 scheduled_playtracker_control_generation_{0};
+  QString last_playtracker_runtime_snapshot_;
 };

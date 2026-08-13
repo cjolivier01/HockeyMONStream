@@ -38,11 +38,13 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -1806,8 +1808,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     const QString switched_game_id = "ui-switched-during-calibration";
     const fs::path switched_config =
         fs::path(qgetenv("HM_GAME_DIR").toStdString()) / switched_game_id.toStdString() / "config.yaml";
-    const fs::path active_runtime_config = config.parent_path() / ".hstream-ui" / "play_tracker_config.yaml";
-    const fs::path switched_runtime_config = switched_config.parent_path() / ".hstream-ui" / "play_tracker_config.yaml";
+    const fs::path active_runtime_dir = config.parent_path() / ".hstream-ui";
+    const fs::path switched_runtime_dir = switched_config.parent_path() / ".hstream-ui";
     qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
     const int pipeline_commands_before = window->logText().count("pipeline command ");
     activate(start);
@@ -1835,8 +1837,15 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
+    auto contains_runtime_snapshot = [](const fs::path& dir) {
+      if (!fs::exists(dir))
+        return false;
+      return std::any_of(fs::directory_iterator(dir), fs::directory_iterator(), [](const fs::directory_entry& entry) {
+        return entry.path().filename().string().rfind("play_tracker_runtime_", 0) == 0;
+      });
+    };
     const bool runtime_control_used_launched_game =
-        fs::exists(active_runtime_config) && !fs::exists(switched_runtime_config);
+        contains_runtime_snapshot(active_runtime_dir) && !contains_runtime_snapshot(switched_runtime_dir);
     game_id->setText(launched_game_id);
     max_speed_x->setValue(original_max_speed_x);
     for (int i = 0; i < 50 &&
@@ -2646,8 +2655,24 @@ bool test_camera_controls(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
-  const fs::path live_playtracker_config =
-      fs::path(window->gameDirectoryText().toStdString()) / ".hstream-ui" / "play_tracker_config.yaml";
+  auto newest_live_playtracker_config = [&]() {
+    const fs::path dir = fs::path(window->gameDirectoryText().toStdString()) / ".hstream-ui";
+    fs::path newest;
+    std::uint64_t newest_generation = 0;
+    for (const auto& entry : fs::directory_iterator(dir)) {
+      const std::string name = entry.path().filename().string();
+      constexpr std::string_view prefix = "play_tracker_runtime_";
+      if (name.rfind(prefix, 0) != 0)
+        continue;
+      const std::uint64_t generation = std::stoull(name.substr(prefix.size()));
+      if (newest.empty() || generation > newest_generation) {
+        newest = entry.path();
+        newest_generation = generation;
+      }
+    }
+    return newest;
+  };
+  fs::path live_playtracker_config = newest_live_playtracker_config();
   YAML::Node live_playtracker =
       fs::exists(live_playtracker_config) ? YAML::LoadFile(live_playtracker_config.string()) : YAML::Node();
   YAML::Node live_custom_tracker_value;
@@ -2668,8 +2693,8 @@ bool test_camera_controls(HStreamWindow* window) {
           live_playtracker, {"play-tracker", "live-boxes", "1", "max-speed-y"}, &live_follower_max_speed_y) &&
       live_follower_max_speed_y.IsScalar() && live_follower_max_speed_y.as<double>() == 77.0;
   if (!expect(
-          window->logText().contains("stdin:@set-property dsplaytracker0 config-file="),
-          "Live speed slider should send playtracker config-file update to the running pipeline") ||
+          window->logText().contains("stdin:@set-property dsplaytracker0 runtime-tuning-config-file="),
+          "Live speed slider should send a state-preserving playtracker update to the running pipeline") ||
       !expect(
           window->logText().contains("camera control Max_Speed_X_x10=460 apply=pending") &&
               window->logText().contains("camera control Max_Speed_X_x10=460 apply=live"),
@@ -2687,6 +2712,7 @@ bool test_camera_controls(HStreamWindow* window) {
   for (int i = 0; i < 50; ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
+    live_playtracker_config = newest_live_playtracker_config();
     live_playtracker =
         fs::exists(live_playtracker_config) ? YAML::LoadFile(live_playtracker_config.string()) : YAML::Node();
     YAML::Node sequential_x;
@@ -2698,6 +2724,7 @@ bool test_camera_controls(HStreamWindow* window) {
       break;
     }
   }
+  live_playtracker_config = newest_live_playtracker_config();
   live_playtracker =
       fs::exists(live_playtracker_config) ? YAML::LoadFile(live_playtracker_config.string()) : YAML::Node();
   YAML::Node sequential_x;
@@ -2717,6 +2744,7 @@ bool test_camera_controls(HStreamWindow* window) {
   for (int i = 0; i < 50; ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
+    live_playtracker_config = newest_live_playtracker_config();
     live_playtracker =
         fs::exists(live_playtracker_config) ? YAML::LoadFile(live_playtracker_config.string()) : YAML::Node();
     YAML::Node reset_x;
@@ -2727,6 +2755,7 @@ bool test_camera_controls(HStreamWindow* window) {
       break;
     }
   }
+  live_playtracker_config = newest_live_playtracker_config();
   live_playtracker =
       fs::exists(live_playtracker_config) ? YAML::LoadFile(live_playtracker_config.string()) : YAML::Node();
   YAML::Node reset_x;

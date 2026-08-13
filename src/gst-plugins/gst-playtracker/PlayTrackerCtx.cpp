@@ -285,7 +285,7 @@ void adjust_config(const BBox& arena_box, PlayTrackerConfig& pt_config, const st
 PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::Node& yaml) {
   PlayTrackerConfig config;
   hm::utils::ConfigLocator locator{
-      .ignored{"live-boxes"},
+      .ignored{"live-boxes", "hstream-apply-to-fast-box", "hstream-apply-to-follower-box", "hstream-runtime-tuning"},
   };
   std::vector<YAML::Node> live_box_yamls;
 
@@ -322,6 +322,186 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
   return config;
 }
 
+absl::Status validate_runtime_tuning_target(
+    const DsPlayTrackerCtx::PlayTracker& tracker_context,
+    const DsPlayTrackerRuntimeTuning& tuning) {
+  const size_t box_count = tracker_context.play_tracker_config.living_boxes.size();
+  if (tuning.apply_to_fast_box && box_count < 1) {
+    return absl::FailedPreconditionError("playtracker runtime tuning requires a fast live box");
+  }
+  if (tuning.apply_to_follower_box && box_count < 2) {
+    return absl::FailedPreconditionError("playtracker runtime tuning requires a follower live box");
+  }
+  if (tracker_context.base_play_tracker_config.living_boxes.size() != box_count) {
+    return absl::FailedPreconditionError("playtracker runtime tuning base configuration does not match live boxes");
+  }
+  return absl::OkStatus();
+}
+
+absl::Status apply_runtime_tuning_to_tracker(
+    DsPlayTrackerCtx::PlayTracker* tracker_context,
+    const DsPlayTrackerRuntimeTuning& tuning) {
+  if (!tracker_context || !tracker_context->play_tracker) {
+    return absl::FailedPreconditionError("playtracker runtime tuning target is not initialized");
+  }
+  absl::Status status = validate_runtime_tuning_target(*tracker_context, tuning);
+  if (!status.ok()) {
+    return status;
+  }
+  auto* tracker = tracker_context->play_tracker.get();
+  if (tuning.update_motion_tuning &&
+      (tuning.overshoot_stop_delay_count.has_value() || tuning.overshoot_scale_speed_ratio.has_value())) {
+    auto& applied = tracker_context->play_tracker_config.play_detector;
+    tracker->set_breakaway_braking(
+        tuning.overshoot_stop_delay_count.value_or(applied.overshoot_stop_delay_count),
+        tuning.overshoot_scale_speed_ratio.value_or(applied.overshoot_scale_speed_ratio));
+    if (tuning.overshoot_stop_delay_count.has_value()) {
+      applied.overshoot_stop_delay_count = *tuning.overshoot_stop_delay_count;
+    }
+    if (tuning.overshoot_scale_speed_ratio.has_value()) {
+      applied.overshoot_scale_speed_ratio = *tuning.overshoot_scale_speed_ratio;
+    }
+  }
+  const size_t box_count = tracker_context->play_tracker_config.living_boxes.size();
+  for (size_t index = 0; index < box_count; ++index) {
+    const bool selected = (index == 0 && tuning.apply_to_fast_box) || (index == 1 && tuning.apply_to_follower_box);
+    if (!selected) {
+      continue;
+    }
+    auto& applied = tracker_context->play_tracker_config.living_boxes[index];
+    const auto& base = tracker_context->base_play_tracker_config.living_boxes[index];
+    auto box = tracker->get_live_box(index);
+    if (tuning.update_motion_tuning) {
+      if (tuning.stop_on_dir_change_delay.has_value() || tuning.cancel_on_opposite.has_value() ||
+          tuning.cancel_hysteresis_frames.has_value() || tuning.stop_delay_cooldown_frames.has_value() ||
+          tuning.post_nonstop_stop_delay_count.has_value() || tuning.time_to_dest_speed_limit_frames.has_value()) {
+        box->set_braking(
+            tuning.stop_on_dir_change_delay.value_or(applied.stop_translation_on_dir_change_delay),
+            tuning.cancel_on_opposite.value_or(applied.cancel_stop_on_opposite_dir),
+            tuning.cancel_hysteresis_frames.value_or(applied.cancel_stop_hysteresis_frames),
+            tuning.stop_delay_cooldown_frames.value_or(applied.stop_delay_cooldown_frames),
+            tuning.post_nonstop_stop_delay_count.value_or(applied.post_nonstop_stop_delay_count),
+            tuning.time_to_dest_speed_limit_frames.value_or(applied.time_to_dest_speed_limit_frames));
+        if (tuning.stop_on_dir_change_delay.has_value()) {
+          applied.stop_translation_on_dir_change_delay = *tuning.stop_on_dir_change_delay;
+        }
+        if (tuning.cancel_on_opposite.has_value()) {
+          applied.cancel_stop_on_opposite_dir = *tuning.cancel_on_opposite;
+        }
+        if (tuning.cancel_hysteresis_frames.has_value()) {
+          applied.cancel_stop_hysteresis_frames = *tuning.cancel_hysteresis_frames;
+        }
+        if (tuning.stop_delay_cooldown_frames.has_value()) {
+          applied.stop_delay_cooldown_frames = *tuning.stop_delay_cooldown_frames;
+        }
+        if (tuning.post_nonstop_stop_delay_count.has_value()) {
+          applied.post_nonstop_stop_delay_count = *tuning.post_nonstop_stop_delay_count;
+        }
+        if (tuning.time_to_dest_speed_limit_frames.has_value()) {
+          applied.time_to_dest_speed_limit_frames = *tuning.time_to_dest_speed_limit_frames;
+        }
+      }
+      if (tuning.max_speed_x.has_value() || tuning.max_speed_y.has_value() || tuning.max_accel_x.has_value() ||
+          tuning.max_accel_y.has_value()) {
+        auto override_or_current = [](const std::optional<float>& value, float current_value, float base_value) {
+          if (!value.has_value()) {
+            return current_value;
+          }
+          return *value > 0.0f ? *value : base_value;
+        };
+        const float max_speed_x = override_or_current(tuning.max_speed_x, applied.max_speed_x, base.max_speed_x);
+        const float max_speed_y = override_or_current(tuning.max_speed_y, applied.max_speed_y, base.max_speed_y);
+        const float max_accel_x = override_or_current(tuning.max_accel_x, applied.max_accel_x, base.max_accel_x);
+        const float max_accel_y = override_or_current(tuning.max_accel_y, applied.max_accel_y, base.max_accel_y);
+        box->set_translation_constraints(max_speed_x, max_speed_y, max_accel_x, max_accel_y);
+        applied.max_speed_x = max_speed_x;
+        applied.max_speed_y = max_speed_y;
+        applied.max_accel_x = max_accel_x;
+        applied.max_accel_y = max_accel_y;
+      }
+    }
+    if (tuning.update_camera_geometry) {
+      box->set_camera_geometry(tuning.arena_angle_from_vertical, tuning.dynamic_acceleration_scaling);
+      applied.arena_angle_from_vertical = tuning.arena_angle_from_vertical;
+      applied.dynamic_acceleration_scaling = tuning.dynamic_acceleration_scaling;
+    }
+  }
+  return absl::OkStatus();
+}
+
+template <typename T>
+void merge_optional(std::optional<T>* destination, const std::optional<T>& update) {
+  if (update.has_value()) {
+    *destination = update;
+  }
+}
+
+void merge_detector_runtime_tuning(DsPlayTrackerRuntimeTuning* state, const DsPlayTrackerRuntimeTuning& update) {
+  state->update_motion_tuning = true;
+  state->apply_to_fast_box = false;
+  state->apply_to_follower_box = false;
+  merge_optional(&state->overshoot_stop_delay_count, update.overshoot_stop_delay_count);
+  merge_optional(&state->overshoot_scale_speed_ratio, update.overshoot_scale_speed_ratio);
+}
+
+void merge_box_runtime_tuning(
+    DsPlayTrackerRuntimeTuning* state,
+    const DsPlayTrackerRuntimeTuning& update,
+    bool fast_box) {
+  state->update_motion_tuning = state->update_motion_tuning || update.update_motion_tuning;
+  state->apply_to_fast_box = fast_box;
+  state->apply_to_follower_box = !fast_box;
+  merge_optional(&state->stop_on_dir_change_delay, update.stop_on_dir_change_delay);
+  merge_optional(&state->cancel_on_opposite, update.cancel_on_opposite);
+  merge_optional(&state->cancel_hysteresis_frames, update.cancel_hysteresis_frames);
+  merge_optional(&state->stop_delay_cooldown_frames, update.stop_delay_cooldown_frames);
+  merge_optional(&state->post_nonstop_stop_delay_count, update.post_nonstop_stop_delay_count);
+  merge_optional(&state->time_to_dest_speed_limit_frames, update.time_to_dest_speed_limit_frames);
+  merge_optional(&state->max_speed_x, update.max_speed_x);
+  merge_optional(&state->max_speed_y, update.max_speed_y);
+  merge_optional(&state->max_accel_x, update.max_accel_x);
+  merge_optional(&state->max_accel_y, update.max_accel_y);
+  if (update.update_camera_geometry) {
+    state->update_camera_geometry = true;
+    state->arena_angle_from_vertical = update.arena_angle_from_vertical;
+    state->dynamic_acceleration_scaling = update.dynamic_acceleration_scaling;
+  }
+}
+
+void accumulate_runtime_tuning(DsPlayTrackerCtx* ctx, const DsPlayTrackerRuntimeTuning& tuning) {
+  if (tuning.overshoot_stop_delay_count.has_value() || tuning.overshoot_scale_speed_ratio.has_value()) {
+    if (!ctx->detector_runtime_tuning.has_value()) {
+      ctx->detector_runtime_tuning.emplace();
+    }
+    merge_detector_runtime_tuning(&*ctx->detector_runtime_tuning, tuning);
+  }
+  if (tuning.apply_to_fast_box) {
+    if (!ctx->fast_box_runtime_tuning.has_value()) {
+      ctx->fast_box_runtime_tuning.emplace();
+    }
+    merge_box_runtime_tuning(&*ctx->fast_box_runtime_tuning, tuning, true);
+  }
+  if (tuning.apply_to_follower_box) {
+    if (!ctx->follower_box_runtime_tuning.has_value()) {
+      ctx->follower_box_runtime_tuning.emplace();
+    }
+    merge_box_runtime_tuning(&*ctx->follower_box_runtime_tuning, tuning, false);
+  }
+}
+
+absl::Status apply_accumulated_runtime_tuning(DsPlayTrackerCtx* ctx, DsPlayTrackerCtx::PlayTracker* tracker_context) {
+  for (const auto* tuning :
+       {&ctx->detector_runtime_tuning, &ctx->fast_box_runtime_tuning, &ctx->follower_box_runtime_tuning}) {
+    if (tuning->has_value()) {
+      absl::Status status = apply_runtime_tuning_to_tracker(tracker_context, **tuning);
+      if (!status.ok()) {
+        return status;
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+
 bool has_play_tracker(DsPlayTrackerCtx* ctx, int source_id) {
   return !!ctx->play_trackers.count(source_id);
 }
@@ -340,8 +520,15 @@ hm::play_tracker::PlayTracker* get_or_create_play_tracker(DsPlayTrackerCtx* ctx,
       YAML::Node yaml = YAML::LoadFile(ctx->initParams.play_tracker_config_file);
       if (yaml["play-tracker"]) {
         ctx->play_trackers[source_id].play_tracker_config = create_play_tracker_config(arena_box, yaml["play-tracker"]);
+        ctx->play_trackers[source_id].base_play_tracker_config = ctx->play_trackers[source_id].play_tracker_config;
         ctx->play_trackers[source_id].play_tracker = std::make_unique<hm::play_tracker::PlayTracker>(
             arena_box, ctx->play_trackers[source_id].play_tracker_config);
+        const absl::Status tuning_status = apply_accumulated_runtime_tuning(ctx, &ctx->play_trackers[source_id]);
+        if (!tuning_status.ok()) {
+          g_printerr("Could not apply accumulated playtracker runtime tuning: %s\n", tuning_status.ToString().c_str());
+          ctx->play_trackers.erase(source_id);
+          return nullptr;
+        }
         return ctx->play_trackers[source_id].play_tracker.get();
       } else {
         g_error("Could not find 'play-tracker' in config file: %s", ctx->initParams.play_tracker_config_file.c_str());
@@ -549,18 +736,90 @@ absl::Status DsPlayTrackerValidateConfigFile(const std::string& config_file) {
   return absl::OkStatus();
 }
 
-absl::Status DsPlayTrackerCtxReloadConfig(DsPlayTrackerCtx* ctx, const std::string& config_file) {
-  if (!ctx) {
-    return absl::InvalidArgumentError("playtracker context is null");
-  }
+absl::StatusOr<DsPlayTrackerRuntimeTuning> DsPlayTrackerLoadRuntimeTuning(const std::string& config_file) {
   absl::Status status = DsPlayTrackerValidateConfigFile(config_file);
   if (!status.ok()) {
     return status;
   }
-  ctx->initParams.play_tracker_config_file = config_file;
-  // Trackers own their parsed configuration and cannot be mutated safely in
-  // place. Recreate them lazily on the next frame for each source.
-  ctx->play_trackers.clear();
+  try {
+    const YAML::Node play_tracker = YAML::LoadFile(config_file)["play-tracker"];
+    const YAML::Node runtime = play_tracker["hstream-runtime-tuning"];
+    auto read_int = [](const YAML::Node& node, const char* key) -> std::optional<int> {
+      return node[key] && node[key].IsScalar() ? std::optional<int>(node[key].as<int>()) : std::nullopt;
+    };
+    auto read_float = [](const YAML::Node& node, const char* key) -> std::optional<float> {
+      return node[key] && node[key].IsScalar() ? std::optional<float>(node[key].as<float>()) : std::nullopt;
+    };
+    auto read_bool = [](const YAML::Node& node, const char* key, bool fallback) {
+      return node[key] && node[key].IsScalar() ? node[key].as<bool>() : fallback;
+    };
+    const bool apply_to_fast = read_bool(play_tracker, "hstream-apply-to-fast-box", false);
+    const bool apply_to_follower = read_bool(play_tracker, "hstream-apply-to-follower-box", true);
+    const YAML::Node live_boxes = play_tracker["live-boxes"];
+    const size_t live_box_count = live_boxes && live_boxes.IsSequence() ? live_boxes.size() : 0;
+    if (apply_to_fast && live_box_count < 1) {
+      return absl::FailedPreconditionError("playtracker runtime tuning requires a fast live box");
+    }
+    if (apply_to_follower && live_box_count < 2) {
+      return absl::FailedPreconditionError("playtracker runtime tuning requires a follower live box");
+    }
+    return DsPlayTrackerRuntimeTuning{
+        .stop_on_dir_change_delay = read_int(runtime, "stop-translation-on-dir-change-delay"),
+        .cancel_on_opposite =
+            runtime["cancel-stop-on-opposite-dir"] && runtime["cancel-stop-on-opposite-dir"].IsScalar()
+            ? std::optional<bool>(runtime["cancel-stop-on-opposite-dir"].as<bool>())
+            : std::nullopt,
+        .cancel_hysteresis_frames = read_int(runtime, "cancel-stop-hysteresis-frames"),
+        .stop_delay_cooldown_frames = read_int(runtime, "stop-delay-cooldown-frames"),
+        .post_nonstop_stop_delay_count = read_int(runtime, "post-nonstop-stop-delay-count"),
+        .time_to_dest_speed_limit_frames = read_int(runtime, "time-to-dest-speed-limit-frames"),
+        .overshoot_stop_delay_count = read_int(runtime, "overshoot-stop-delay-count"),
+        .overshoot_scale_speed_ratio = read_float(runtime, "overshoot-scale-speed-ratio"),
+        .max_speed_x = read_float(runtime, "max-speed-x"),
+        .max_speed_y = read_float(runtime, "max-speed-y"),
+        .max_accel_x = read_float(runtime, "max-accel-x"),
+        .max_accel_y = read_float(runtime, "max-accel-y"),
+        .apply_to_fast_box = apply_to_fast,
+        .apply_to_follower_box = apply_to_follower,
+        .update_camera_geometry = read_bool(runtime, "update-camera-geometry", false),
+        .arena_angle_from_vertical = read_float(runtime, "arena-angle-from-vertical").value_or(0.0f),
+        .dynamic_acceleration_scaling = read_float(runtime, "dynamic-acceleration-scaling").value_or(1.0f),
+    };
+  } catch (const std::exception& exc) {
+    return absl::InvalidArgumentError(absl::StrCat("invalid playtracker runtime config: ", exc.what()));
+  }
+}
+
+absl::Status DsPlayTrackerCtxApplyRuntimeTuning(DsPlayTrackerCtx* ctx, const DsPlayTrackerRuntimeTuning& tuning) {
+  if (!ctx) {
+    return absl::InvalidArgumentError("playtracker context is null");
+  }
+  std::vector<std::pair<hm::play_tracker::PlayTracker*, DsPlayTrackerCtx::PlayTracker*>> targets;
+  for (auto& [source_id, tracker_context] : ctx->play_trackers) {
+    (void)source_id;
+    auto* tracker = tracker_context.play_tracker.get();
+    if (!tracker) {
+      continue;
+    }
+    targets.emplace_back(tracker, &tracker_context);
+  }
+  // Validate every target before mutating any tracker so a rejected update
+  // cannot leave only some sources changed.
+  for (const auto& [tracker, tracker_context] : targets) {
+    (void)tracker;
+    absl::Status status = gst_hm_playtracker::validate_runtime_tuning_target(*tracker_context, tuning);
+    if (!status.ok()) {
+      return status;
+    }
+  }
+  for (const auto& [tracker, tracker_context] : targets) {
+    (void)tracker;
+    absl::Status status = gst_hm_playtracker::apply_runtime_tuning_to_tracker(tracker_context, tuning);
+    if (!status.ok()) {
+      return status;
+    }
+  }
+  gst_hm_playtracker::accumulate_runtime_tuning(ctx, tuning);
   return absl::OkStatus();
 }
 

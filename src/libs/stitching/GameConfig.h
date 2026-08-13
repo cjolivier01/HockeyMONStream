@@ -50,6 +50,10 @@ class GameConfigTransactionLock final {
 // constructing contents from the previous config and until this returns.
 absl::Status publish_game_config(const std::filesystem::path& game_dir, const std::string& contents);
 
+// Durably replaces one named file without exposing a truncated/partial
+// generation to concurrent readers.
+absl::Status publish_named_file(const std::filesystem::path& path, const std::string& contents);
+
 // Durably publishes config.yaml while removing every rink_mask_*.png as one
 // recoverable generation. The caller must hold GameConfigTransactionLock.
 // Returns the number of masks removed.

@@ -23,6 +23,62 @@ fs::path write_minimal_config(const fs::path& dir) {
   out << "  fps-speed-scale: 1.0\n";
   out << "  live-boxes:\n";
   out << "    - name: current_roi\n";
+  out << "    - name: current_roi_aspect\n";
+  return cfg;
+}
+
+fs::path write_runtime_config(const fs::path& dir) {
+  fs::path cfg = dir / "runtime_tuning.yaml";
+  std::ofstream out(cfg);
+  out << "play-tracker:\n";
+  out << "  hstream-apply-to-fast-box: false\n";
+  out << "  hstream-apply-to-follower-box: true\n";
+  out << "  overshoot-stop-delay-count: 9\n";
+  out << "  overshoot-scale-speed-ratio: 0.45\n";
+  out << "  hstream-runtime-tuning:\n";
+  out << "    stop-translation-on-dir-change-delay: 7\n";
+  out << "    cancel-stop-on-opposite-dir: true\n";
+  out << "    cancel-stop-hysteresis-frames: 3\n";
+  out << "    stop-delay-cooldown-frames: 4\n";
+  out << "    post-nonstop-stop-delay-count: 5\n";
+  out << "    time-to-dest-speed-limit-frames: 22\n";
+  out << "    overshoot-stop-delay-count: 9\n";
+  out << "    overshoot-scale-speed-ratio: 0.45\n";
+  out << "    max-speed-x: 31.0\n";
+  out << "    max-speed-y: 17.0\n";
+  out << "    max-accel-x: 2.0\n";
+  out << "    max-accel-y: 1.5\n";
+  out << "  live-boxes:\n";
+  out << "    - name: current_roi\n";
+  out << "    - name: current_roi_aspect\n";
+  out << "      stop-translation-on-dir-change-delay: 7\n";
+  out << "      cancel-stop-on-opposite-dir: true\n";
+  out << "      cancel-stop-hysteresis-frames: 3\n";
+  out << "      stop-delay-cooldown-frames: 4\n";
+  out << "      post-nonstop-stop-delay-count: 5\n";
+  out << "      time-to-dest-speed-limit-frames: 22\n";
+  out << "      max-speed-x: 31.0\n";
+  out << "      max-speed-y: 17.0\n";
+  out << "      max-accel-x: 2.0\n";
+  out << "      max-accel-y: 1.5\n";
+  return cfg;
+}
+
+fs::path write_sparse_runtime_config(
+    const fs::path& dir,
+    const std::string& name,
+    const std::string& key,
+    float value) {
+  fs::path cfg = dir / name;
+  std::ofstream out(cfg);
+  out << "play-tracker:\n";
+  out << "  hstream-apply-to-fast-box: false\n";
+  out << "  hstream-apply-to-follower-box: true\n";
+  out << "  hstream-runtime-tuning:\n";
+  out << "    " << key << ": " << value << "\n";
+  out << "  live-boxes:\n";
+  out << "    - name: current_roi\n";
+  out << "    - name: current_roi_aspect\n";
   return cfg;
 }
 
@@ -62,6 +118,59 @@ int main() {
   if (!status.ok()) {
     std::cerr << "PostCapsInit failed: " << status << std::endl;
     return 2;
+  }
+
+  DsPlayTrackerCtx* context = priv.contextForTesting();
+  if (!context) {
+    std::cerr << "vpplaytracker context missing after initialization\n";
+    return 3;
+  }
+  YAML::Node base_yaml = YAML::LoadFile(cfg.string());
+  context->play_trackers[0].play_tracker_config =
+      gst_hm_playtracker::create_play_tracker_config(hm::BBox(0, 0, 1280, 720), base_yaml["play-tracker"]);
+  context->play_trackers[0].base_play_tracker_config = context->play_trackers[0].play_tracker_config;
+  context->play_trackers[0].play_tracker = std::make_unique<hm::play_tracker::PlayTracker>(
+      hm::BBox(0, 0, 1280, 720), context->play_trackers[0].play_tracker_config);
+  context->play_trackers[0].has_received_tracks = true;
+  auto* tracker_before = context->play_trackers[0].play_tracker.get();
+  tracker_before->set_bboxes({hm::BBox(120, 100, 520, 360), hm::BBox(80, 60, 720, 420)});
+  const hm::BBox follower_before = tracker_before->get_live_box(1)->bounding_box();
+  const fs::path runtime_cfg = write_runtime_config(tmpdir);
+  if (!priv.SetProperty(hm::Property("runtime-tuning-config-file", runtime_cfg.string()))) {
+    std::cerr << "vpplaytracker rejected valid runtime tuning config\n";
+    return 4;
+  }
+  const hm::BBox follower_after = tracker_before->get_live_box(1)->bounding_box();
+  if (priv.contextForTesting() != context || context->play_trackers[0].play_tracker.get() != tracker_before ||
+      !context->play_trackers[0].has_received_tracks || follower_after.left != follower_before.left ||
+      follower_after.top != follower_before.top || follower_after.right != follower_before.right ||
+      follower_after.bottom != follower_before.bottom) {
+    std::cerr << "runtime tuning replaced or reset active tracker state\n";
+    return 5;
+  }
+  if (priv.SetProperty(hm::Property("runtime-tuning-config-file", (tmpdir / "missing.yaml").string()))) {
+    std::cerr << "vpplaytracker accepted invalid runtime tuning config\n";
+    return 6;
+  }
+  const auto& base_follower = context->play_trackers[0].base_play_tracker_config.living_boxes[1];
+  const fs::path sparse_x = write_sparse_runtime_config(tmpdir, "runtime_x.yaml", "max-speed-x", 41.0f);
+  const fs::path sparse_y = write_sparse_runtime_config(tmpdir, "runtime_y.yaml", "max-speed-y", 23.0f);
+  const fs::path reset_x = write_sparse_runtime_config(tmpdir, "runtime_reset_x.yaml", "max-speed-x", 0.0f);
+  if (!priv.SetProperty(hm::Property("runtime-tuning-config-file", sparse_x.string())) ||
+      !priv.SetProperty(hm::Property("runtime-tuning-config-file", sparse_y.string()))) {
+    std::cerr << "vpplaytracker rejected sequential sparse runtime tuning\n";
+    return 7;
+  }
+  const auto& sequential = context->play_trackers[0].play_tracker_config.living_boxes[1];
+  if (sequential.max_speed_x != 41.0f || sequential.max_speed_y != 23.0f) {
+    std::cerr << "sequential sparse runtime tuning discarded an earlier override\n";
+    return 8;
+  }
+  if (!priv.SetProperty(hm::Property("runtime-tuning-config-file", reset_x.string())) ||
+      context->play_trackers[0].play_tracker_config.living_boxes[1].max_speed_x != base_follower.max_speed_x ||
+      context->play_trackers[0].play_tracker_config.living_boxes[1].max_speed_y != 23.0f) {
+    std::cerr << "runtime zero reset did not restore only the requested configured value\n";
+    return 9;
   }
 
   if (params.m_inCaps) {

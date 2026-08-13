@@ -2584,7 +2584,7 @@ namespace {
 bool is_allowlisted_runtime_property(const std::string& element_name, const std::string& property_name) {
   return (element_name == "hmstitcher0" && property_name == "post-stitch-rotate-degrees") ||
       (element_name == "dsplaytracker0" &&
-       (property_name == "config-file" || property_name == "fixed-edge-rotation-angle" ||
+       (property_name == "runtime-tuning-config-file" || property_name == "fixed-edge-rotation-angle" ||
         property_name == "fixed-edge-rotation-angle-left" || property_name == "fixed-edge-rotation-angle-right" ||
         property_name == "dynamic-acceleration-scaling")) ||
       ((element_name == "playcropper0" || element_name == "playcropper") &&

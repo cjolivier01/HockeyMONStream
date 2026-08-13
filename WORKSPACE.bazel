@@ -176,6 +176,8 @@ git_repository(
 git_repository(
     name = "hm",
     commit = "d77c92078ce3e244e7d1aec7e3b56cc8a41cc924",
+    patch_args = ["-p1"],
+    patches = ["//buildfiles/third_party:hm_playtracker_runtime_tuning.patch"],
     remote = "ssh://git@github.com/cjolivier01/HockeyMOM",
 )
 
