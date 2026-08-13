@@ -3173,9 +3173,10 @@ QString diagnostic_capture_attempt_path(const QString& artifact_dir, const QStri
 }
 
 bool promote_diagnostic_capture_artifact(const QString& attempt_path, const QString& canonical_path) {
-  const bool removed_stale_artifact = !QFileInfo::exists(canonical_path) || QFile::remove(canonical_path);
-  return removed_stale_artifact &&
-      (QFile::rename(attempt_path, canonical_path) || QFile::copy(attempt_path, canonical_path));
+  if (QFileInfo::exists(canonical_path)) {
+    return true;
+  }
+  return QFile::rename(attempt_path, canonical_path) || QFile::copy(attempt_path, canonical_path);
 }
 
 bool clear_diagnostic_capture_artifact(const QString& artifact_dir, const QString& output_name) {
@@ -3191,16 +3192,21 @@ bool test_diagnostic_capture_attempt_paths() {
   const QString successful_attempt = artifact_dir.filePath("successful-attempt.png");
   const QString canonical = artifact_dir.filePath("program-preview.png");
   const QString failed_attempt = artifact_dir.filePath("failed-attempt.png");
+  const QString retry_attempt = artifact_dir.filePath("retry-attempt.png");
   const QString inaccessible_canonical = artifact_dir.filePath("missing/program-preview.png");
   const bool wrote_artifacts = write_e2e_text(successful_attempt, "captured") &&
-      write_e2e_text(failed_attempt, "captured") && write_e2e_text(canonical, "stale capture");
+      write_e2e_text(failed_attempt, "captured") && write_e2e_text(retry_attempt, "new capture") &&
+      write_e2e_text(canonical, "stale capture");
   const bool cleared = wrote_artifacts && clear_diagnostic_capture_artifact(artifact_dir.path(), "program-preview.png");
   const bool promoted = cleared && promote_diagnostic_capture_artifact(successful_attempt, canonical);
+  const qint64 published_size = QFileInfo(canonical).size();
+  const bool retained = promote_diagnostic_capture_artifact(retry_attempt, canonical);
   const bool rejected = !promote_diagnostic_capture_artifact(failed_attempt, inaccessible_canonical);
   return expect(
       artifact_dir.isValid() && first != second && !stale_failure.contains(second) && cleared && promoted &&
-          QFileInfo(canonical).size() > 0 && rejected && QFileInfo::exists(failed_attempt),
-      "Diagnostic retries must use distinct markers and only pass after publishing the canonical artifact");
+          published_size > 0 && retained && QFileInfo(canonical).size() == published_size &&
+          QFileInfo::exists(retry_attempt) && rejected && QFileInfo::exists(failed_attempt),
+      "Diagnostic retries must use distinct markers, publish once, and retain a valid current-run artifact");
 }
 
 NativePreviewCapture inspect_native_preview_capture(const QString& output_path) {
