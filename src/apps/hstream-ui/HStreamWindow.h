@@ -296,6 +296,8 @@ class HStreamWindow : public QMainWindow {
   std::vector<PendingRuntimeControl> pending_runtime_controls_;
   std::map<QString, int> scheduled_playtracker_controls_;
   std::optional<std::map<QString, int>> publishing_playtracker_controls_;
+  bool scheduled_playtracker_force_all_targets_{false};
+  bool publishing_playtracker_force_all_targets_{false};
   quint64 scheduled_playtracker_control_generation_{0};
   QString last_playtracker_runtime_snapshot_;
 };

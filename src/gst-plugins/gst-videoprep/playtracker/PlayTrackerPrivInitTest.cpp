@@ -82,6 +82,20 @@ fs::path write_sparse_runtime_config(
   return cfg;
 }
 
+fs::path write_both_boxes_runtime_config(const fs::path& dir, const std::string& name, float max_speed_x) {
+  fs::path cfg = dir / name;
+  std::ofstream out(cfg);
+  out << "play-tracker:\n";
+  out << "  hstream-apply-to-fast-box: true\n";
+  out << "  hstream-apply-to-follower-box: true\n";
+  out << "  hstream-runtime-tuning:\n";
+  out << "    max-speed-x: " << max_speed_x << "\n";
+  out << "  live-boxes:\n";
+  out << "    - name: current_roi\n";
+  out << "    - name: current_roi_aspect\n";
+  return cfg;
+}
+
 } // namespace
 
 int main() {
@@ -188,6 +202,19 @@ int main() {
       context->play_trackers[0].play_tracker_config.living_boxes[1].max_speed_y != 23.0f) {
     std::cerr << "runtime zero reset did not restore only the requested configured value\n";
     return 9;
+  }
+  const fs::path both_boxes_tuning = write_both_boxes_runtime_config(tmpdir, "runtime_both.yaml", 55.0f);
+  const fs::path both_boxes_reset = write_both_boxes_runtime_config(tmpdir, "runtime_both_reset.yaml", 0.0f);
+  if (!priv.SetProperty(hm::Property("runtime-tuning-config-file", both_boxes_tuning.string())) ||
+      context->play_trackers[0].play_tracker_config.living_boxes[0].max_speed_x != 55.0f ||
+      context->play_trackers[0].play_tracker_config.living_boxes[1].max_speed_x != 55.0f ||
+      !priv.SetProperty(hm::Property("runtime-tuning-config-file", both_boxes_reset.string())) ||
+      context->play_trackers[0].play_tracker_config.living_boxes[0].max_speed_x !=
+          context->play_trackers[0].base_play_tracker_config.living_boxes[0].max_speed_x ||
+      context->play_trackers[0].play_tracker_config.living_boxes[1].max_speed_x !=
+          context->play_trackers[0].base_play_tracker_config.living_boxes[1].max_speed_x) {
+    std::cerr << "both-box runtime reset did not restore fast and follower configured values\n";
+    return 13;
   }
 
   if (params.m_inCaps) {

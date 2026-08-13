@@ -2350,6 +2350,7 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* fixed_edge_left = require_child<QSlider>(window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
   auto* fixed_edge_right = require_child<QSlider>(window, "cameraSlider_Right_Fixed_Edge_Rotation_Angle_x10");
   auto* stop_delay = require_child<QSlider>(window, "cameraSlider_Stop_Direction_Change_Delay_Frames");
+  auto* apply_to_fast = require_child<QSlider>(window, "cameraSlider_Apply_To_Fast_Box");
   auto* max_accel_x = require_child<QSlider>(window, "cameraSlider_Max_Accel_X_x10");
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
   auto* max_speed_y = require_child<QSlider>(window, "cameraSlider_Max_Speed_Y_x10");
@@ -2360,8 +2361,9 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
-  if (!rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right || !stop_delay || !max_accel_x ||
-      !max_speed_x || !max_speed_y || !reset || !save || !create || !game_id || !start || !stop || !mode) {
+  if (!rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right || !stop_delay || !apply_to_fast ||
+      !max_accel_x || !max_speed_x || !max_speed_y || !reset || !save || !create || !game_id || !start || !stop ||
+      !mode) {
     return false;
   }
 
@@ -2759,6 +2761,7 @@ bool test_camera_controls(HStreamWindow* window) {
     std::cerr << live_playtracker << '\n';
     return false;
   }
+  apply_to_fast->setValue(1);
   max_speed_x->setValue(510);
   max_accel_x->setValue(35);
   for (int i = 0; i < 50; ++i) {
@@ -2830,10 +2833,12 @@ bool test_camera_controls(HStreamWindow* window) {
       lookup_yaml_path(
           live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-accel-x"}, &reset_runtime_accel_x) &&
       reset_runtime_speed_x.as<double>() == 0.0 && reset_runtime_speed_y.as<double>() == 0.0 &&
-      reset_runtime_accel_x.as<double>() == 0.0;
+      reset_runtime_accel_x.as<double>() == 0.0 &&
+      live_playtracker["play-tracker"]["hstream-apply-to-fast-box"].as<bool>() &&
+      live_playtracker["play-tracker"]["hstream-apply-to-follower-box"].as<bool>();
   if (!expect(
           reset_coalesced_all_dirty_controls,
-          "Reset Camera during playback should send every changed playtracker control back to configured values")) {
+          "Reset Camera during playback should restore every changed control on both previously tunable boxes")) {
     std::cerr << live_playtracker << '\n';
     activate(stop);
     return false;
