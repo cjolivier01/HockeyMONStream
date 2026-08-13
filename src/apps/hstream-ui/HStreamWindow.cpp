@@ -3055,6 +3055,8 @@ void HStreamWindow::handlePipelineStarted() {
 }
 
 void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status) {
+  ++scheduled_rotation_control_generation_;
+  scheduled_rotation_controls_.clear();
   ++scheduled_playtracker_control_generation_;
   scheduled_playtracker_controls_.clear();
   publishing_playtracker_controls_.reset();
@@ -3133,6 +3135,8 @@ void HStreamWindow::clearPreviewFrames() {
 }
 
 void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
+  ++scheduled_rotation_control_generation_;
+  scheduled_rotation_controls_.clear();
   ++scheduled_playtracker_control_generation_;
   scheduled_playtracker_controls_.clear();
   publishing_playtracker_controls_.reset();
@@ -5546,32 +5550,40 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
 }
 
 void HStreamWindow::handleRuntimeControlResponse(const QString& line) {
-  auto acknowledge_matching = [this](const auto& matches, const QString& result) {
-    QString applied_runtime_snapshot;
-    auto pending = pending_runtime_controls_.begin();
-    while (pending != pending_runtime_controls_.end()) {
-      if (!matches(*pending)) {
-        ++pending;
-        continue;
-      }
-      appendLog(
-          QString("camera control %1=%2 apply=%3").arg(pending->control_id).arg(pending->control_value).arg(result));
-      if (pending->property == "runtime-tuning-config-file") {
-        if (result == "live") {
-          applied_runtime_snapshot = pending->runtime_value;
-        } else {
-          QFile::remove(pending->runtime_value);
+  auto acknowledge_matching = [this](const auto& matches, bool failed) {
+    const auto pending = std::find_if(pending_runtime_controls_.begin(), pending_runtime_controls_.end(), matches);
+    if (pending == pending_runtime_controls_.end()) {
+      return;
+    }
+    const PendingRuntimeControl acknowledged = *pending;
+    pending_runtime_controls_.erase(pending);
+    if (acknowledged.property == "runtime-tuning-config-file") {
+      if (failed) {
+        QFile::remove(acknowledged.runtime_value);
+      } else {
+        if (!last_playtracker_runtime_snapshot_.isEmpty() &&
+            last_playtracker_runtime_snapshot_ != acknowledged.runtime_value) {
+          QFile::remove(last_playtracker_runtime_snapshot_);
         }
+        last_playtracker_runtime_snapshot_ = acknowledged.runtime_value;
       }
-      pending = pending_runtime_controls_.erase(pending);
     }
-    if (!applied_runtime_snapshot.isEmpty()) {
-      if (!last_playtracker_runtime_snapshot_.isEmpty() &&
-          last_playtracker_runtime_snapshot_ != applied_runtime_snapshot) {
-        QFile::remove(last_playtracker_runtime_snapshot_);
-      }
-      last_playtracker_runtime_snapshot_ = applied_runtime_snapshot;
+    const auto batch = runtime_control_batches_.find(acknowledged.batch_id);
+    if (batch == runtime_control_batches_.end()) {
+      return;
     }
+    batch->second.failed = batch->second.failed || failed;
+    if (batch->second.pending_commands > 0) {
+      --batch->second.pending_commands;
+    }
+    if (batch->second.pending_commands != 0) {
+      return;
+    }
+    const QString result = batch->second.failed ? "failed" : "live";
+    for (const auto& [control_id, control_value] : batch->second.controls) {
+      appendLog(QString("camera control %1=%2 apply=%3").arg(control_id).arg(control_value).arg(result));
+    }
+    runtime_control_batches_.erase(batch);
   };
 
   static const QRegularExpression success_pattern(R"(^runtime property (\S+) (\S+?)=(.*)$)");
@@ -5584,7 +5596,7 @@ void HStreamWindow::handleRuntimeControlResponse(const QString& line) {
         [&](const PendingRuntimeControl& control) {
           return control.element == element && control.property == property && control.runtime_value == runtime_value;
         },
-        "live");
+        false);
     return;
   }
 
@@ -5603,7 +5615,7 @@ void HStreamWindow::handleRuntimeControlResponse(const QString& line) {
         [&](const PendingRuntimeControl& control) {
           return control.element == element && control.property == property && control.runtime_value == runtime_value;
         },
-        "failed");
+        true);
   } else {
     const PendingRuntimeControl first = pending_runtime_controls_.front();
     acknowledge_matching(
@@ -5611,38 +5623,69 @@ void HStreamWindow::handleRuntimeControlResponse(const QString& line) {
           return control.element == first.element && control.property == first.property &&
               control.runtime_value == first.runtime_value;
         },
-        "failed");
+        true);
   }
 }
 
 void HStreamWindow::failPendingRuntimeControls(const QString& reason) {
   for (const PendingRuntimeControl& pending : pending_runtime_controls_) {
-    appendLog(QString("camera control %1=%2 apply=failed reason=%3")
-                  .arg(pending.control_id)
-                  .arg(pending.control_value)
-                  .arg(reason));
     if (pending.property == "runtime-tuning-config-file" && pending.runtime_value != last_playtracker_runtime_snapshot_)
       QFile::remove(pending.runtime_value);
   }
+  for (const auto& [batch_id, batch] : runtime_control_batches_) {
+    (void)batch_id;
+    for (const auto& [control_id, control_value] : batch.controls) {
+      appendLog(QString("camera control %1=%2 apply=failed reason=%3").arg(control_id).arg(control_value).arg(reason));
+    }
+  }
   pending_runtime_controls_.clear();
+  runtime_control_batches_.clear();
+}
+
+bool HStreamWindow::publishRuntimeControlBatch(
+    const std::map<QString, int>& controls,
+    const std::vector<RuntimePropertyCommand>& commands) {
+  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || controls.empty() ||
+      commands.empty()) {
+    return false;
+  }
+  const quint64 batch_id = ++next_runtime_control_batch_id_;
+  runtime_control_batches_.emplace(batch_id, RuntimeControlBatch{controls, commands.size(), false});
+  for (const RuntimePropertyCommand& property_command : commands) {
+    const QByteArray command = QString("@set-property %1 %2=%3\n")
+                                   .arg(property_command.element, property_command.property, property_command.value)
+                                   .toLocal8Bit();
+    if (pipeline_process_->write(command) != command.size()) {
+      pending_runtime_controls_.erase(
+          std::remove_if(
+              pending_runtime_controls_.begin(),
+              pending_runtime_controls_.end(),
+              [batch_id](const PendingRuntimeControl& pending) { return pending.batch_id == batch_id; }),
+          pending_runtime_controls_.end());
+      runtime_control_batches_.erase(batch_id);
+      for (const auto& [control_id, control_value] : controls) {
+        appendLog(QString("camera control %1=%2 apply=failed reason=pipeline command write")
+                      .arg(control_id)
+                      .arg(control_value));
+      }
+      return false;
+    }
+    pending_runtime_controls_.push_back(
+        {property_command.element, property_command.property, property_command.value, batch_id});
+  }
+  for (const auto& [control_id, control_value] : controls) {
+    appendLog(QString("camera control %1=%2 apply=pending").arg(control_id).arg(control_value));
+  }
+  return true;
 }
 
 bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
     return false;
   }
-  auto send_property = [this, &id, value](
-                           const QString& element, const QString& property, const QString& runtime_value) {
-    const QByteArray command = QString("@set-property %1 %2=%3\n").arg(element, property, runtime_value).toLocal8Bit();
-    if (pipeline_process_->write(command) != command.size()) {
-      return false;
-    }
-    pending_runtime_controls_.push_back({element, property, runtime_value, id, value});
-    return true;
-  };
   if (id == "Stitch_Rotate_Degrees") {
-    const int post_stitch_rotate_degrees = 90 - value;
-    return send_property("hmstitcher0", "post-stitch-rotate-degrees", QString::number(post_stitch_rotate_degrees));
+    scheduleRotationRuntimeControl(id, value);
+    return false;
   }
   const QSet<QString> fixed_edge_rotation_controls = {
       "Link_Fixed_Edge_Rotation_Left_Right",
@@ -5650,21 +5693,8 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
       "Right_Fixed_Edge_Rotation_Angle_x10",
   };
   if (fixed_edge_rotation_controls.contains(id)) {
-    const bool linked = cameraControlValue("Link_Fixed_Edge_Rotation_Left_Right") != 0;
-    const double left_angle = cameraControlValue("Left_Fixed_Edge_Rotation_Angle_x10") / 10.0;
-    const double right_angle = cameraControlValue("Right_Fixed_Edge_Rotation_Angle_x10") / 10.0;
-    auto send_to_both_stages = [&](const QString& property, double angle) {
-      const QString runtime_value = QString::number(angle, 'f', 1);
-      const bool tracker_sent = send_property("dsplaytracker0", property, runtime_value);
-      const bool cropper_sent = send_property("playcropper0", property, runtime_value);
-      return tracker_sent && cropper_sent;
-    };
-    if (linked) {
-      return send_to_both_stages("fixed-edge-rotation-angle", left_angle);
-    }
-    const bool left_sent = send_to_both_stages("fixed-edge-rotation-angle-left", left_angle);
-    const bool right_sent = send_to_both_stages("fixed-edge-rotation-angle-right", right_angle);
-    return left_sent && right_sent;
+    scheduleRotationRuntimeControl(id, value);
+    return false;
   }
   const QSet<QString> playtracker_live_controls = {
       "Stop_Direction_Change_Delay_Frames",
@@ -5687,6 +5717,46 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
     return false;
   }
   return false;
+}
+
+void HStreamWindow::scheduleRotationRuntimeControl(const QString& id, int value) {
+  appendLog(QString("camera control %1=%2 apply=scheduled").arg(id).arg(value));
+  scheduled_rotation_controls_[id] = value;
+  const quint64 generation = ++scheduled_rotation_control_generation_;
+  QTimer::singleShot(120, this, [this, generation]() {
+    if (generation != scheduled_rotation_control_generation_ || !pipeline_process_ ||
+        pipeline_process_->state() == QProcess::NotRunning) {
+      return;
+    }
+    const std::map<QString, int> controls = std::move(scheduled_rotation_controls_);
+    scheduled_rotation_controls_.clear();
+    std::vector<RuntimePropertyCommand> commands;
+    if (controls.count("Stitch_Rotate_Degrees")) {
+      commands.push_back(
+          {"hmstitcher0",
+           "post-stitch-rotate-degrees",
+           QString::number(90 - cameraControlValue("Stitch_Rotate_Degrees"))});
+    }
+    const bool has_fixed_edge_change = controls.count("Link_Fixed_Edge_Rotation_Left_Right") ||
+        controls.count("Left_Fixed_Edge_Rotation_Angle_x10") || controls.count("Right_Fixed_Edge_Rotation_Angle_x10");
+    if (has_fixed_edge_change) {
+      const bool linked = cameraControlValue("Link_Fixed_Edge_Rotation_Left_Right") != 0;
+      const double left_angle = cameraControlValue("Left_Fixed_Edge_Rotation_Angle_x10") / 10.0;
+      const double right_angle = cameraControlValue("Right_Fixed_Edge_Rotation_Angle_x10") / 10.0;
+      auto add_both_stages = [&](const QString& property, double angle) {
+        const QString runtime_value = QString::number(angle, 'f', 1);
+        commands.push_back({"dsplaytracker0", property, runtime_value});
+        commands.push_back({"playcropper0", property, runtime_value});
+      };
+      if (linked) {
+        add_both_stages("fixed-edge-rotation-angle", left_angle);
+      } else {
+        add_both_stages("fixed-edge-rotation-angle-left", left_angle);
+        add_both_stages("fixed-edge-rotation-angle-right", right_angle);
+      }
+    }
+    publishRuntimeControlBatch(controls, commands);
+  });
 }
 
 void HStreamWindow::schedulePlaytrackerRuntimeControl(const QString& id, int value) {
@@ -5713,23 +5783,13 @@ void HStreamWindow::schedulePlaytrackerRuntimeControl(const QString& id, int val
       publishing_playtracker_force_all_targets_ = false;
       return;
     }
-    const QByteArray command =
-        QString("@set-property dsplaytracker0 runtime-tuning-config-file=%1\n").arg(runtime_config_path).toLocal8Bit();
-    if (pipeline_process_->write(command) != command.size()) {
-      for (const auto& [control_id, control_value] : *publishing_playtracker_controls_) {
-        appendLog(QString("camera control %1=%2 apply=failed reason=pipeline command write")
-                      .arg(control_id)
-                      .arg(control_value));
-      }
+    const bool published = publishRuntimeControlBatch(
+        *publishing_playtracker_controls_, {{"dsplaytracker0", "runtime-tuning-config-file", runtime_config_path}});
+    if (!published) {
       QFile::remove(runtime_config_path);
       publishing_playtracker_controls_.reset();
       publishing_playtracker_force_all_targets_ = false;
       return;
-    }
-    for (const auto& [control_id, control_value] : *publishing_playtracker_controls_) {
-      pending_runtime_controls_.push_back(
-          {"dsplaytracker0", "runtime-tuning-config-file", runtime_config_path, control_id, control_value});
-      appendLog(QString("camera control %1=%2 apply=pending").arg(control_id).arg(control_value));
     }
     publishing_playtracker_controls_.reset();
     publishing_playtracker_force_all_targets_ = false;
@@ -5785,8 +5845,10 @@ QSlider* HStreamWindow::addSlider(
     const bool sent_live = sendLiveCameraControl(id, new_value);
     if (sent_live) {
       appendLog(QString("camera control %1=%2 apply=pending").arg(id).arg(new_value));
-    } else if (scheduled_playtracker_controls_.count(id) && scheduled_playtracker_controls_.at(id) == new_value) {
-      // schedulePlaytrackerRuntimeControl() already reported the coalesced live update.
+    } else if (
+        (scheduled_rotation_controls_.count(id) && scheduled_rotation_controls_.at(id) == new_value) ||
+        (scheduled_playtracker_controls_.count(id) && scheduled_playtracker_controls_.at(id) == new_value)) {
+      // The scheduler already reported the coalesced live update.
     } else {
       appendLog(QString("camera control %1=%2 apply=save/restart").arg(id).arg(new_value));
     }

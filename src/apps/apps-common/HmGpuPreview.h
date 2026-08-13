@@ -3,6 +3,8 @@
 #include <gst/gst.h>
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace hm::gpu_preview {
 
@@ -25,5 +27,15 @@ void set_source_geometry(GstElement* sink, unsigned width, unsigned height);
 // Waits for an in-flight render to finish and fences GL work before a target
 // window can be destroyed. Returns false only when the sink is unavailable.
 bool quiesce(GstElement* sink, std::uint64_t generation);
+
+// Copies the most recently presented OpenGL texture to host memory for an
+// explicit, one-shot diagnostic capture. Normal preview rendering never calls
+// this function and remains entirely GPU-resident.
+bool capture_presented_frame(
+    GstElement* sink,
+    std::vector<std::uint8_t>* rgba,
+    unsigned* width,
+    unsigned* height,
+    std::string* error);
 
 } // namespace hm::gpu_preview

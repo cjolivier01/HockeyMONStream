@@ -674,6 +674,9 @@ absl::Status PipelineApplication::createPipelines(
       NVGSTDS_ERR_MSG_V("Failed to create pipeline");
       return absl::InternalError("Failed to create pipeline");
     }
+    HM_RETURN_IF_ERROR(
+        app_contexts[i]->configurator().prepare_initial_pipeline_position(
+            app_contexts[i]->pipeline, app_contexts[i]->config, start_time_ns_));
     if (dump_pipeline_dot_) {
       std::string s = "pipeline";
       if (i) {
@@ -2533,7 +2536,8 @@ void PipelineApplication::print_runtime_commands() const {
       "\tr: Resume\n"
       "\t@set-preview-active <program|stitched|sourceN|none> <generation>: Activate one GPU-native UI preview\n"
       "\t@set-render-window <xid>: Move the embedded program render sink to another X11 window\n"
-      "\t@capture-preview-frame <main|stitched|sourceN> <jpg-path>: Save the latest UI preview frame\n"
+      "\t@capture-preview-frame <program|main|stitched|sourceN> <image-path>: Save one diagnostic UI preview "
+      "frame\n"
       "\t@set-property <element> <property=value>: Set an allowlisted runtime GStreamer property\n\n");
   if (!stage_app_contexts_.empty() && !stage_app_contexts_.at(current_stage_).empty() &&
       stage_app_contexts_.at(current_stage_)[0] &&
@@ -2838,6 +2842,35 @@ PreviewFrameSaveResult save_preview_frame(GstElement* sink, const fs::path& outp
     return {PreviewFrameSaveStatus::kFailed, 0, 0, exception.what()};
   }
   return {PreviewFrameSaveStatus::kSaved, preview.cols, preview.rows};
+}
+
+PreviewFrameSaveResult save_gpu_preview_frame(GstElement* sink, const fs::path& output_path) {
+  // Explicit one-shot E2E/diagnostic readback only. The steady-state renderer
+  // continues to use CUDA/OpenGL interop without mapping pixel planes to CPU.
+  std::vector<std::uint8_t> rgba;
+  unsigned width = 0;
+  unsigned height = 0;
+  std::string capture_error;
+  if (!hm::gpu_preview::capture_presented_frame(sink, &rgba, &width, &height, &capture_error)) {
+    return {PreviewFrameSaveStatus::kUnavailable, 0, 0, capture_error};
+  }
+  if (width == 0 || height == 0 || rgba.size() != static_cast<size_t>(width) * height * 4U) {
+    return {PreviewFrameSaveStatus::kFailed, 0, 0, "invalid GPU diagnostic frame"};
+  }
+  try {
+    if (!output_path.is_absolute() || !output_path.has_parent_path() || !fs::is_directory(output_path.parent_path())) {
+      return {PreviewFrameSaveStatus::kFailed, 0, 0, "output directory is unavailable"};
+    }
+    const cv::Mat source(static_cast<int>(height), static_cast<int>(width), CV_8UC4, rgba.data());
+    cv::Mat bgr;
+    cv::cvtColor(source, bgr, cv::COLOR_RGBA2BGR);
+    if (!cv::imwrite(output_path.string(), bgr)) {
+      return {PreviewFrameSaveStatus::kFailed, 0, 0, "diagnostic image write failed"};
+    }
+  } catch (const std::exception& exception) {
+    return {PreviewFrameSaveStatus::kFailed, 0, 0, exception.what()};
+  }
+  return {PreviewFrameSaveStatus::kSaved, static_cast<int>(width), static_cast<int>(height)};
 }
 
 void report_last_render_sample(GstElement* sink) {
@@ -3171,7 +3204,12 @@ bool PipelineApplication::capture_preview_frame_runtime(const std::string& chann
     return true;
   }
 
-  if (channel == "main") {
+  const std::string gpu_channel = channel == "main" ? "program" : channel;
+  const auto gpu_preview = ui_preview_channels_.find(gpu_channel);
+  const bool gpu_native_capture = gpu_preview != ui_preview_channels_.end();
+  if (gpu_native_capture) {
+    sink = gpu_preview->second.sink;
+  } else if (channel == "main") {
     for (const auto& app_context : stage->second) {
       if (!app_context)
         continue;
@@ -3220,9 +3258,14 @@ bool PipelineApplication::capture_preview_frame_runtime(const std::string& chann
     if (release_sink)
       gst_object_unref(sink);
   });
-  const PreviewFrameSaveResult result = save_preview_frame(sink, fs::path(path));
+  const PreviewFrameSaveResult result =
+      gpu_native_capture ? save_gpu_preview_frame(sink, fs::path(path)) : save_preview_frame(sink, fs::path(path));
   if (result.status == PreviewFrameSaveStatus::kUnavailable) {
-    g_print("runtime preview frame unavailable channel=%s path=%s\n", channel.c_str(), path.c_str());
+    g_print(
+        "runtime preview frame unavailable channel=%s path=%s message=%s\n",
+        channel.c_str(),
+        path.c_str(),
+        result.message.empty() ? "no retained frame" : result.message.c_str());
     return true;
   }
   if (result.status == PreviewFrameSaveStatus::kFailed) {
@@ -3668,6 +3711,13 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
   g_print("Recreate pipeline\n");
   if (!create_pipeline(app_ctx_ptr, nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
     NVGSTDS_ERR_MSG_V("Failed to create pipeline");
+    return FALSE;
+  }
+  auto* hm_app = static_cast<HmApp*>(app_ctx_ptr);
+  const absl::Status position_status =
+      hm_app->configurator().prepare_initial_pipeline_position(hm_app->pipeline, hm_app->config, start_time_ns_);
+  if (!position_status.ok()) {
+    NVGSTDS_ERR_MSG_V("Failed to restore initial pipeline position: %s", position_status.ToString().c_str());
     return FALSE;
   }
   if (!ui_preview_window_ids_.empty()) {

@@ -2040,32 +2040,98 @@ absl::Status Configurator::apply_config_item(const std::string& key, const std::
   return absl::OkStatus();
 }
 
+absl::Status Configurator::prepare_initial_pipeline_position(
+    NvDsPipeline& pipeline,
+    const NvDsConfig& config,
+    uint64_t start_time_ns) {
+  const bool needs_position =
+      start_time_ns || config.hmsticher_config.left_frame_offset_ns || config.hmsticher_config.right_frame_offset_ns;
+  if (!needs_position) {
+    return absl::OkStatus();
+  }
+  if (pipeline.multi_src_bin.uri_playlist_exact_pairing_enabled) {
+    guint audio_source_id = G_MAXUINT;
+    // YAML section indices can be sparse (for example hmaudio3 with no hmaudio0), so the parsed count is not a safe
+    // upper bound for finding the source-linked audio stream.
+    for (size_t i = 0; i < MAX_SOURCE_BINS; ++i) {
+      const NvDsHmAudioConfig& audio_config = config.hmaudio_config[i];
+      if (!audio_config.enable || audio_config.src != SRC_SOURCE_BIN) {
+        continue;
+      }
+      if (audio_source_id != G_MAXUINT && audio_source_id != audio_config.source_id) {
+        return absl::FailedPreconditionError("Lossless startup requires one selected URI-playlist audio source");
+      }
+      audio_source_id = audio_config.source_id;
+    }
+    if (audio_source_id == G_MAXUINT) {
+      audio_source_id = config.hmsticher_config.left_frame_offset_ns == 0 ? 0 : 1;
+    }
+    if (audio_source_id >= 2 || (audio_source_id == 0 && config.hmsticher_config.left_frame_offset_ns != 0) ||
+        (audio_source_id == 1 && config.hmsticher_config.right_frame_offset_ns != 0)) {
+      return absl::FailedPreconditionError(
+          "Lossless startup audio must use the camera with zero stitching frame offset");
+    }
+    if (!configure_uri_playlist_initial_offsets(
+            &pipeline.multi_src_bin,
+            config.hmsticher_config.left_frame_offset_ns,
+            config.hmsticher_config.right_frame_offset_ns,
+            audio_source_id,
+            start_time_ns)) {
+      return absl::FailedPreconditionError(
+          "Could not configure initial camera offsets before lossless sequence admission began");
+    }
+    return absl::OkStatus();
+  }
+  // Other source topologies retain the established PAUSED/seek path in post_config_pipeline(). Decoded-pad trimming
+  // is deliberately exclusive to exact two-camera URI playlists because only those sources share the frame barrier.
+  return absl::OkStatus();
+}
+
 absl::Status Configurator::post_config_pipeline(
     NvDsPipeline& pipeline,
     const NvDsConfig& config,
     uint64_t start_time_ns) {
-  // Only pause/wait/seek when needed. Importantly, avoid an unbounded wait here because the GLib main loop is not
-  // running yet (so bus watches won't fire), which can look like a "hang" at startup.
   const bool needs_seek =
       start_time_ns || config.hmsticher_config.left_frame_offset_ns || config.hmsticher_config.right_frame_offset_ns;
   if (!needs_seek) {
     return absl::OkStatus();
   }
-
-  GstState state, pending;
-  // Quick, non-blocking query.
-  (void)gst_element_get_state(pipeline.pipeline, &state, &pending, 0);
-
-  if (state == GST_STATE_NULL || state == GST_STATE_READY) {
-    if (gst_element_set_state(pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
-      return absl::InternalError("Failed to set pipeline to PAUSED");
+  if (pipeline.multi_src_bin.uri_playlist_exact_pairing_enabled) {
+    // prepare_initial_pipeline_position() configured decoded-pad trimming before preroll. A later flushing seek would
+    // revoke a committed pair and violate exact camera/audio continuity. Standalone file audio is not upstream of
+    // that barrier, however, and must retain --start-time positioning.
+    if (!start_time_ns) {
+      return absl::OkStatus();
     }
+    bool has_standalone_file_audio = false;
+    for (size_t i = 0; i < MAX_SOURCE_BINS; ++i) {
+      const NvDsHmAudioConfig& audio_config = config.hmaudio_config[i];
+      has_standalone_file_audio = has_standalone_file_audio || (audio_config.enable && audio_config.src == SRC_FILE);
+    }
+    if (!has_standalone_file_audio) {
+      return absl::OkStatus();
+    }
+    for (size_t i = 0; i < MAX_SOURCE_BINS; ++i) {
+      if (pipeline.instance_bins[i].hmaudio_bin.bin &&
+          !seek_element(pipeline.instance_bins[i].hmaudio_bin.bin, start_time_ns)) {
+        return absl::InternalError("Failed to seek standalone audio to the requested start time");
+      }
+    }
+    return absl::OkStatus();
   }
 
+  GstState state = GST_STATE_VOID_PENDING;
+  GstState pending = GST_STATE_VOID_PENDING;
+  (void)gst_element_get_state(pipeline.pipeline, &state, &pending, 0);
+  if (state == GST_STATE_NULL || state == GST_STATE_READY) {
+    if (gst_element_set_state(pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
+      return absl::InternalError("Failed to set pipeline to PAUSED before seeking");
+    }
+  }
   constexpr GstClockTime kPauseWaitTimeout = 5 * GST_SECOND;
-  GstStateChangeReturn wait_ret = gst_element_get_state(pipeline.pipeline, &state, &pending, kPauseWaitTimeout);
+  const GstStateChangeReturn wait_ret = gst_element_get_state(pipeline.pipeline, &state, &pending, kPauseWaitTimeout);
   if (wait_ret == GST_STATE_CHANGE_FAILURE) {
-    return absl::InternalError("Failed while waiting for pipeline to PAUSED");
+    return absl::InternalError("Failed while waiting for pipeline to PAUSED before seeking");
   }
   if (state != GST_STATE_PAUSED) {
     std::cerr << "Warning: pipeline did not reach PAUSED within " << (kPauseWaitTimeout / GST_SECOND) << "s"
@@ -2075,46 +2141,42 @@ absl::Status Configurator::post_config_pipeline(
   }
   save_dot_file(pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_paused");
 
-  // Seek pre-stitching streams to the proper offsets so that they're in sync
   std::vector<GstElement*> src_bins;
   src_bins.reserve(MAX_SOURCE_BINS);
   for (size_t i = 0; i < pipeline.multi_src_bin.num_bins; ++i) {
-    if (!pipeline.multi_src_bin.sub_bins[i].bin) {
-      continue;
+    NvDsSrcBin& source = pipeline.multi_src_bin.sub_bins[i];
+    if (source.bin && source.config &&
+        (source.config->type == NV_DS_SOURCE_URI || source.config->type == NV_DS_SOURCE_URI_MULTIPLE)) {
+      src_bins.push_back(source.bin);
     }
-    if (config.multi_source_config[i].type != NV_DS_SOURCE_URI &&
-        config.multi_source_config[i].type != NV_DS_SOURCE_URI_MULTIPLE) {
-      continue;
-    }
-    src_bins.emplace_back(pipeline.multi_src_bin.sub_bins[i].bin);
   }
   if (src_bins.size() == 2) {
-    if (config.hmsticher_config.left_frame_offset_ns || start_time_ns) {
-      bool result = seek_element(src_bins[0], config.hmsticher_config.left_frame_offset_ns + start_time_ns);
-      if (!result) {
-        g_printerr("Failed to seek source 0\n");
+    const guint64 offsets[2] = {
+        config.hmsticher_config.left_frame_offset_ns, config.hmsticher_config.right_frame_offset_ns};
+    for (size_t source_index = 0; source_index < 2; ++source_index) {
+      if ((start_time_ns || offsets[source_index]) &&
+          !seek_element(src_bins[source_index], start_time_ns + offsets[source_index])) {
+        return absl::InternalError("Failed to seek a camera source to its requested initial position");
       }
     }
-    if (config.hmsticher_config.right_frame_offset_ns || start_time_ns) {
-      // size_t seekTarget = 0.95 * GST_SECOND;
-      bool result = seek_element(src_bins[1], config.hmsticher_config.right_frame_offset_ns + start_time_ns);
-      if (!result) {
-        g_printerr("Failed to seek source 1\n");
-      }
-    }
-  } else if (!src_bins.empty() && start_time_ns) {
-    for (auto* bin : src_bins) {
-      bool result = seek_element(bin, start_time_ns);
-      if (!result) {
-        g_printerr("Failed to seek source 0\n");
+  } else if (start_time_ns) {
+    for (GstElement* source : src_bins) {
+      if (!seek_element(source, start_time_ns)) {
+        return absl::InternalError("Failed to seek video source to the requested start time");
       }
     }
   }
+
+  bool has_standalone_file_audio = false;
   for (size_t i = 0; i < MAX_SOURCE_BINS; ++i) {
-    if (pipeline.instance_bins[i].hmaudio_bin.bin && start_time_ns) {
-      bool result = seek_element(pipeline.instance_bins[i].hmaudio_bin.bin, start_time_ns);
-      if (!result) {
-        g_printerr("Failed to seek hmaudio\n");
+    const NvDsHmAudioConfig& audio_config = config.hmaudio_config[i];
+    has_standalone_file_audio = has_standalone_file_audio || (audio_config.enable && audio_config.src == SRC_FILE);
+  }
+  if (start_time_ns && has_standalone_file_audio) {
+    for (size_t i = 0; i < MAX_SOURCE_BINS; ++i) {
+      if (pipeline.instance_bins[i].hmaudio_bin.bin &&
+          !seek_element(pipeline.instance_bins[i].hmaudio_bin.bin, start_time_ns)) {
+        return absl::InternalError("Failed to seek standalone audio to the requested start time");
       }
     }
   }

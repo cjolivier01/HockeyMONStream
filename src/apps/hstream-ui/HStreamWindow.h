@@ -71,8 +71,19 @@ class HStreamWindow : public QMainWindow {
     QString element;
     QString property;
     QString runtime_value;
-    QString control_id;
-    int control_value;
+    quint64 batch_id;
+  };
+
+  struct RuntimeControlBatch {
+    std::map<QString, int> controls;
+    size_t pending_commands;
+    bool failed;
+  };
+
+  struct RuntimePropertyCommand {
+    QString element;
+    QString property;
+    QString value;
   };
 
   enum class PreviewRequestReason {
@@ -203,6 +214,10 @@ class HStreamWindow : public QMainWindow {
   bool applySavedControlConfig(YAML::Node& config, bool* invalidate_rink_masks, int* invalidated_config_artifacts);
   void loadSavedControlConfig();
   bool sendLiveCameraControl(const QString& id, int value);
+  bool publishRuntimeControlBatch(
+      const std::map<QString, int>& controls,
+      const std::vector<RuntimePropertyCommand>& commands);
+  void scheduleRotationRuntimeControl(const QString& id, int value);
   void synchronizeFixedEdgeRotationControls(const QString& changed_id, int value);
   void handleRuntimeControlResponse(const QString& line);
   void failPendingRuntimeControls(const QString& reason);
@@ -294,10 +309,14 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, int> camera_defaults_;
   std::vector<PendingRuntimeControl> pending_runtime_controls_;
+  std::map<quint64, RuntimeControlBatch> runtime_control_batches_;
+  std::map<QString, int> scheduled_rotation_controls_;
   std::map<QString, int> scheduled_playtracker_controls_;
   std::optional<std::map<QString, int>> publishing_playtracker_controls_;
   bool scheduled_playtracker_force_all_targets_{false};
   bool publishing_playtracker_force_all_targets_{false};
+  quint64 next_runtime_control_batch_id_{0};
+  quint64 scheduled_rotation_control_generation_{0};
   quint64 scheduled_playtracker_control_generation_{0};
   QString last_playtracker_runtime_snapshot_;
 };

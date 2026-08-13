@@ -2026,6 +2026,20 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
+    auto* fixed_edge_link = require_child<QSlider>(window, "cameraSlider_Link_Fixed_Edge_Rotation_Left_Right");
+    auto* fixed_edge_left = require_child<QSlider>(window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
+    if (!fixed_edge_link || !fixed_edge_left) {
+      activate(stop);
+      return false;
+    }
+    fixed_edge_link->setValue(1);
+    fixed_edge_left->setValue(310);
+    for (int i = 0;
+         i < 50 && !window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=failed");
+         ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
     activate(stop);
     for (int i = 0; i < 50 && window->pipelineStateText() != "STOPPED"; ++i) {
       QApplication::processEvents();
@@ -2039,7 +2053,12 @@ bool test_pipeline_buttons(HStreamWindow* window) {
             window->logText().contains("camera control Stitch_Rotate_Degrees=71 apply=pending") &&
                 window->logText().contains("camera control Stitch_Rotate_Degrees=71 apply=failed") &&
                 !window->logText().contains("camera control Stitch_Rotate_Degrees=71 apply=live"),
-            "Rejected runtime controls should not be reported as live")) {
+            "Rejected runtime controls should not be reported as live") ||
+        !expect(
+            window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=pending") &&
+                window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=failed") &&
+                !window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=live"),
+            "A multi-stage fixed-edge update should fail as one batch when its property commands are rejected")) {
       return false;
     }
 
@@ -2637,6 +2656,27 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!expect(window->pipelineStateText() == "PLAYING", "Fake runner should start for live playtracker control test")) {
     return false;
   }
+  const int rotation_commands_before =
+      window->logText().count("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=");
+  for (int value = 60; value <= 69; ++value) {
+    rotate->setValue(value);
+  }
+  for (int i = 0; i < 50 && !window->logText().contains("camera control Stitch_Rotate_Degrees=69 apply=live"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          window->logText().count("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=") ==
+              rotation_commands_before + 1,
+          "Rapid stitch rotation changes should coalesce into one live pipeline command") ||
+      !expect(
+          window->logText().contains("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=21") &&
+              window->logText().contains("camera control Stitch_Rotate_Degrees=69 apply=live") &&
+              !window->logText().contains("camera control Stitch_Rotate_Degrees=60 apply=pending"),
+          "Only the final coalesced stitch rotation should become pending and live")) {
+    activate(stop);
+    return false;
+  }
   fixed_edge_link->setValue(1);
   fixed_edge_left->setValue(300);
   for (int i = 0; i < 50 &&
@@ -3010,12 +3050,34 @@ bool submit_no_scoreboard(HStreamWindow* window, QString* error) {
     }
     return false;
   }
-  QTimer::singleShot(0, dialog, []() {
-    if (auto* confirmation = qobject_cast<QMessageBox*>(QApplication::activeModalWidget()))
-      confirmation->done(QMessageBox::Yes);
+  // QMessageBox::question() enters a nested event loop. Poll through that loop: a single zero-delay lookup may run
+  // before the confirmation becomes active and silently leave the default "No" selected.
+  auto* confirmer = new QTimer(dialog);
+  confirmer->setInterval(10);
+  QObject::connect(confirmer, &QTimer::timeout, dialog, [confirmer]() {
+    for (QWidget* widget : QApplication::topLevelWidgets()) {
+      auto* confirmation = qobject_cast<QMessageBox*>(widget);
+      if (confirmation && confirmation->objectName() == "scoreboardNoScoreboardConfirmation" &&
+          confirmation->isVisible()) {
+        confirmer->stop();
+        if (QAbstractButton* yes = confirmation->button(QMessageBox::Yes)) {
+          yes->click();
+        }
+        return;
+      }
+    }
   });
+  confirmer->start();
   button->click();
-  return true;
+  confirmer->stop();
+  confirmer->deleteLater();
+  auto* status = dialog->findChild<QLabel*>("scoreboardStatusTitle");
+  const bool submitted = status && status->text() == "Saving selection";
+  if (!submitted && error) {
+    *error = status ? QString("No-scoreboard confirmation did not submit (status: %1)").arg(status->text())
+                    : "scoreboard submission status is unavailable";
+  }
+  return submitted;
 }
 
 QString find_encoded_e2e_output(const QString& output_root, const QString& game_id) {
@@ -3049,19 +3111,9 @@ struct NativePreviewCapture {
   int luminance_range{0};
 };
 
-NativePreviewCapture capture_native_preview(QWidget* surface, const QString& output_path) {
+NativePreviewCapture inspect_native_preview_capture(const QString& output_path) {
   NativePreviewCapture capture;
-  if (!surface || !surface->isVisible() || surface->winId() == 0 || !surface->screen()) {
-    return capture;
-  }
-  QApplication::processEvents();
-  // The GPU preview owns this native child directly, so capture the X11
-  // drawable rather than asking Qt's CPU backing store for its parent.
-  const QPixmap pixmap = surface->screen()->grabWindow(surface->winId());
-  if (pixmap.isNull() || !pixmap.save(output_path)) {
-    return capture;
-  }
-  const QImage image = pixmap.toImage().convertToFormat(QImage::Format_RGB32);
+  const QImage image = QImage(output_path).convertToFormat(QImage::Format_RGB32);
   capture.width = image.width();
   capture.height = image.height();
   if (capture.width < 100 || capture.height < 100) {
@@ -3186,21 +3238,50 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   NativePreviewCapture stitched_preview;
   NativePreviewCapture camera1_preview;
   bool x11_previews_captured = false;
+  bool x11_previews_attempted = false;
   bool stitched_target_acknowledged = false;
   bool program_target_acknowledged = false;
+  bool camera1_target_acknowledged = false;
   auto capture_x11_previews = [&]() {
-    if (!verify_x11_preview || x11_previews_captured || window->pipelineStateText() != "PLAYING") {
+    if (!verify_x11_preview || x11_previews_attempted || window->pipelineStateText() != "PLAYING") {
       return;
     }
+    x11_previews_attempted = true;
+    QProcess* pipeline = window->findChild<QProcess*>();
+    if (!pipeline || pipeline->state() == QProcess::NotRunning) {
+      interaction_error = "pipeline process is unavailable for diagnostic preview capture";
+      return;
+    }
+    auto capture_channel = [&](const QString& channel, const QString& output_name) {
+      const QString output_path = QDir(artifact_dir).filePath(output_name);
+      QFile::remove(output_path);
+      const QByteArray command = QString("@capture-preview-frame %1 %2\n").arg(channel, output_path).toUtf8();
+      if (pipeline->write(command) != command.size()) {
+        interaction_error = QString("could not request a diagnostic %1 preview frame").arg(channel);
+        return NativePreviewCapture{};
+      }
+      const QString completion = QString("runtime preview frame channel=%1 path=%2").arg(channel, output_path);
+      const QString failure = QString("runtime preview frame failed channel=%1 path=%2").arg(channel, output_path);
+      const QString unavailable =
+          QString("runtime preview frame unavailable channel=%1 path=%2").arg(channel, output_path);
+      for (int i = 0; i < 100; ++i) {
+        QApplication::processEvents();
+        if (window->completeLogText().contains(completion) && QFileInfo(output_path).size() > 0)
+          return inspect_native_preview_capture(output_path);
+        if (window->completeLogText().contains(failure) || window->completeLogText().contains(unavailable))
+          break;
+        QTest::qWait(50);
+      }
+      interaction_error = QString("diagnostic %1 preview capture did not complete").arg(channel);
+      return NativePreviewCapture{};
+    };
     preview_tabs->setCurrentIndex(0);
     for (int i = 0; i < 100 && program_surface->property("previewRendererState").toString() != "ready"; ++i) {
       QApplication::processEvents();
       QTest::qWait(50);
     }
     program_target_acknowledged = program_surface->property("previewRendererState").toString() == "ready";
-    QTest::qWait(100);
-    program_preview =
-        capture_native_preview(program_render_target, QDir(artifact_dir).filePath("program-preview-surface.png"));
+    program_preview = capture_channel("program", "program-preview-surface.png");
 
     preview_tabs->setCurrentIndex(2);
     QApplication::processEvents();
@@ -3208,9 +3289,8 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       QApplication::processEvents();
       QTest::qWait(50);
     }
-    QTest::qWait(100);
-    camera1_preview =
-        capture_native_preview(camera1_render_target, QDir(artifact_dir).filePath("camera1-preview-surface.png"));
+    camera1_target_acknowledged = camera1_surface->property("previewRendererState").toString() == "ready";
+    camera1_preview = capture_channel("source0", "camera1-preview-surface.png");
 
     preview_tabs->setCurrentIndex(1);
     for (int i = 0; i < 100 && stitched_surface->property("previewRendererState").toString() != "ready"; ++i) {
@@ -3218,9 +3298,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       QTest::qWait(50);
     }
     stitched_target_acknowledged = stitched_surface->property("previewRendererState").toString() == "ready";
-    QTest::qWait(100);
-    stitched_preview =
-        capture_native_preview(stitched_render_target, QDir(artifact_dir).filePath("stitched-preview-surface.png"));
+    stitched_preview = capture_channel("stitched", "stitched-preview-surface.png");
 
     preview_tabs->setCurrentIndex(0);
     for (int i = 0; i < 100 && program_surface->property("previewRendererState").toString() != "ready"; ++i) {
@@ -3230,8 +3308,9 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     program_target_acknowledged =
         program_target_acknowledged || program_surface->property("previewRendererState").toString() == "ready";
     x11_previews_captured = program_target_acknowledged && stitched_target_acknowledged &&
-        camera1_surface->property("previewRendererState").toString() == "ready" && program_preview.passed &&
-        stitched_preview.passed && camera1_preview.passed;
+        camera1_target_acknowledged && program_preview.passed && stitched_preview.passed && camera1_preview.passed;
+    if (!x11_previews_captured && interaction_error.isEmpty())
+      interaction_error = "one or more GPU preview captures were blank or not acknowledged";
   };
   const QRegularExpression positive_fps(R"(\*\*PERF:\s+([0-9]+(?:\.[0-9]+)?))");
   while (timer.elapsed() < deadline_ms) {
@@ -3265,6 +3344,11 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     }
     if (observed_first_frame) {
       capture_x11_previews();
+      if (verify_x11_preview && x11_previews_attempted && !x11_previews_captured) {
+        std::cerr << "Could not capture all GPU previews: " << interaction_error.toStdString() << '\n';
+        stop_and_preserve_failure();
+        return false;
+      }
     }
     const int configured_record_ms = qEnvironmentVariableIntValue("HSTREAM_UI_E2E_RECORD_MS");
     const int record_ms = configured_record_ms > 0 ? configured_record_ms : 6000;
@@ -3286,6 +3370,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     preview_report +=
         QString("stitched_target_acknowledged: %1\n").arg(stitched_target_acknowledged ? "true" : "false");
     preview_report += QString("program_target_acknowledged: %1\n").arg(program_target_acknowledged ? "true" : "false");
+    preview_report += QString("camera1_target_acknowledged: %1\n").arg(camera1_target_acknowledged ? "true" : "false");
   }
   write_e2e_text(QDir(artifact_dir).filePath("preview-report.txt"), preview_report);
 

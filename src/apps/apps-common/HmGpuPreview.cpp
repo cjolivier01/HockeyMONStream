@@ -987,4 +987,60 @@ bool quiesce(GstElement* sink, std::uint64_t generation) {
 #endif
 }
 
+bool capture_presented_frame(
+    GstElement* sink,
+    std::vector<std::uint8_t>* rgba,
+    unsigned* width,
+    unsigned* height,
+    std::string* error) {
+#if defined(__x86_64__)
+  if (!sink || !rgba || !width || !height || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type())) {
+    if (error)
+      *error = "GPU preview renderer is unavailable";
+    return false;
+  }
+  auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
+  RendererState* state = self->state;
+  std::lock_guard<std::mutex> lock(state->mutex);
+  if (state->failed.load() || !state->context || !state->texture || state->negotiated_width == 0 ||
+      state->negotiated_height == 0) {
+    if (error)
+      *error = "GPU preview has not presented a frame";
+    return false;
+  }
+  if (!make_context_current(self)) {
+    if (error)
+      *error = "could not activate the preview OpenGL context";
+    return false;
+  }
+  const size_t byte_count = static_cast<size_t>(state->negotiated_width) * state->negotiated_height * 4U;
+  rgba->resize(byte_count);
+  glBindTexture(GL_TEXTURE_2D, state->texture);
+  glPixelStorei(GL_PACK_ALIGNMENT, 1);
+  glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba->data());
+  glFinish();
+  const GLenum gl_error = glGetError();
+  release_context(state);
+  if (gl_error != GL_NO_ERROR) {
+    rgba->clear();
+    if (error)
+      *error = "OpenGL diagnostic texture readback failed";
+    return false;
+  }
+  *width = state->negotiated_width;
+  *height = state->negotiated_height;
+  if (error)
+    error->clear();
+  return true;
+#else
+  (void)sink;
+  (void)rgba;
+  (void)width;
+  (void)height;
+  if (error)
+    *error = "GPU preview renderer is unavailable on this platform";
+  return false;
+#endif
+}
+
 } // namespace hm::gpu_preview

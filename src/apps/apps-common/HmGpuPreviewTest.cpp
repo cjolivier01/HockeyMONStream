@@ -213,37 +213,23 @@ bool run_renderer_test(Display* display, Window window) {
     gst_message_unref(message);
   }
 
-  unsigned long minimum = ~0UL;
-  unsigned long maximum = 0;
-  // Direct GLX presentation can become visible to a second X11 connection a
-  // little after SwapBuffers returns, especially through a compositor. Retry
-  // the actual foreign-window readback instead of racing that presentation.
-  const gint64 capture_deadline = g_get_monotonic_time() + 2 * G_TIME_SPAN_SECOND;
-  while (maximum == minimum && g_get_monotonic_time() < capture_deadline) {
-    XSync(display, False);
-    XImage* image = XGetImage(display, window, 0, 0, 640, 360, AllPlanes, ZPixmap);
-    minimum = ~0UL;
-    maximum = 0;
-    if (image) {
-      for (int y = 0; y < 360; y += 12) {
-        for (int x = 0; x < 640; x += 12) {
-          const unsigned long pixel = XGetPixel(image, x, y);
-          minimum = std::min(minimum, pixel);
-          maximum = std::max(maximum, pixel);
-        }
-      }
-      XDestroyImage(image);
-    }
-    if (maximum == minimum)
-      g_usleep(20 * 1000);
-  }
+  std::vector<std::uint8_t> rgba;
+  unsigned width = 0;
+  unsigned height = 0;
+  std::string capture_error;
+  sink = gst_bin_get_by_name(GST_BIN(pipeline), "preview");
+  const bool captured = hm::gpu_preview::capture_presented_frame(sink, &rgba, &width, &height, &capture_error);
+  gst_object_unref(sink);
+  const auto [minimum, maximum] = rgba.empty()
+      ? std::pair<std::uint8_t, std::uint8_t>{0, 0}
+      : std::minmax({*std::min_element(rgba.begin(), rgba.end()), *std::max_element(rgba.begin(), rgba.end())});
 
   gst_object_unref(bus);
   gst_element_set_state(pipeline, GST_STATE_NULL);
   gst_object_unref(pipeline);
-  if (!ready || maximum == minimum) {
-    std::cerr << "GPU preview did not present varying pixels: ready=" << ready << " range=" << (maximum - minimum)
-              << '\n';
+  if (!ready || !captured || width != 640 || height != 360 || maximum == minimum) {
+    std::cerr << "GPU preview did not expose its presented texture: ready=" << ready << " captured=" << captured
+              << " range=" << static_cast<int>(maximum - minimum) << " error=" << capture_error << '\n';
     return false;
   }
   return true;
