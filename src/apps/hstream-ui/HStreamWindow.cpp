@@ -3170,6 +3170,7 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   pipeline_uses_process_group_ = false;
   pipeline_render_embedded_ = false;
   pipeline_stop_requested_ = false;
+  clearPreviewFrames();
   if (scoreboard_selection_dialog_)
     scoreboard_selection_dialog_->closeAfterBackendCompletion();
   failPendingRuntimeControls("pipeline-error");
