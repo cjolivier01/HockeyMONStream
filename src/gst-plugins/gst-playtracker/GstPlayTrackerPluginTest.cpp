@@ -1,8 +1,10 @@
+#include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/gst-plugins/testutils/GstPluginTestHarness.h"
 
 #include <gst/gst.h>
 
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 
 int main(int argc, char** argv) {
@@ -53,6 +55,36 @@ int main(int argc, char** argv) {
 
   if (!ok) {
     std::cerr << "playtracker property roundtrip failed\n";
+    return 1;
+  }
+
+  const char* first_config = "/tmp/hstream-playtracker-plugin-test-1.yaml";
+  const char* second_config = "/tmp/hstream-playtracker-plugin-test-2.yaml";
+  {
+    std::ofstream out(first_config);
+    out << "play-tracker:\n"
+           "  overshoot-stop-delay-count: 4\n"
+           "  live-boxes:\n"
+           "    - name: current_roi\n"
+           "      stop-translation-on-dir-change-delay: 3\n";
+  }
+  {
+    std::ofstream out(second_config);
+    out << "play-tracker:\n"
+           "  overshoot-stop-delay-count: 8\n"
+           "  live-boxes:\n"
+           "    - name: current_roi\n"
+           "      stop-translation-on-dir-change-delay: 7\n";
+  }
+  DsPlayTrackerInitParams init_params{.play_tracker_config_file = first_config};
+  DsPlayTrackerCtx* context = DsPlayTrackerCtxInit(&init_params);
+  const absl::Status reload_status = DsPlayTrackerCtxReloadConfig(context, second_config);
+  const bool reload_ok = reload_status.ok() && context->initParams.play_tracker_config_file == second_config;
+  DsPlayTrackerCtxDeinit(context);
+  std::remove(first_config);
+  std::remove(second_config);
+  if (!reload_ok) {
+    std::cerr << "playtracker runtime config reload failed: " << reload_status << '\n';
     return 1;
   }
   std::_Exit(0);

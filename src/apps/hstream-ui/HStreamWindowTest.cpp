@@ -1459,7 +1459,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(
           program_controls->isAncestorOf(max_speed_x) && stitched_controls->isAncestorOf(rotate) &&
               !camera1_host->isAncestorOf(max_speed_x) && !camera1_host->isAncestorOf(rotate) &&
-              program_control_tabs->count() == 4 && stitched_control_tabs->count() == 2,
+              program_control_tabs->count() == 3 && stitched_control_tabs->count() == 1,
           "Controls must live in the earliest preview tab whose frames reflect their pipeline stage")) {
     return false;
   }
@@ -1488,6 +1488,24 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Every camera video should support in-app focus mode with a visible restore icon")) {
     return false;
   }
+  preview_tabs->setCurrentIndex(0);
+  QApplication::processEvents();
+  if (!expect(
+          program_host->isVisible() && !preview_tabs->tabBar()->isVisible() && !window->isFullScreen(),
+          "An automatic tab change should transfer focus mode to the selected preview")) {
+    return false;
+  }
+  activate(program_focus);
+  QApplication::processEvents();
+  if (!expect(
+          preview_tabs->tabBar()->isVisible() && top_bar->isVisible() && !window->isFullScreen(),
+          "One restore-icon click after an automatic tab change should restore the normal layout")) {
+    return false;
+  }
+  preview_tabs->setCurrentIndex(2);
+  QApplication::processEvents();
+  QTest::mouseDClick(camera1_target, Qt::LeftButton);
+  QApplication::processEvents();
   QTest::mouseDClick(camera1_target, Qt::LeftButton);
   QApplication::processEvents();
   if (!expect(
@@ -1498,6 +1516,21 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(
           window->findChild<QLineEdit*>("pluginPropertyEdit") == nullptr,
           "The inert generic plugin field should not be presented as a working video control")) {
+    return false;
+  }
+  if (!expect(
+          window->findChild<QSlider*>("cameraSlider_Exposure_EV_x10") == nullptr &&
+              window->findChild<QSlider*>("cameraSlider_Left_Brightness_Multiplier_x100") == nullptr,
+          "Controls without a native GPU pipeline consumer must not claim association with a preview")) {
+    return false;
+  }
+  window->resize(1440, 900);
+  QApplication::processEvents();
+  const QSize minimum_hint = window->minimumSizeHint();
+  if (!expect(
+          minimum_hint.width() <= 1440 && minimum_hint.height() <= 900,
+          "The normal UI minimum size must fit the supported 1440x900 viewport")) {
+    std::cerr << "minimumSizeHint=" << minimum_hint.width() << 'x' << minimum_hint.height() << '\n';
     return false;
   }
   if (!expect(
@@ -2281,18 +2314,15 @@ bool test_output_controls(HStreamWindow* window) {
 }
 
 bool test_camera_controls(HStreamWindow* window) {
-  if (!expect(window->cameraTabCount() >= 6, "Camera controls should be grouped on tabs")) {
+  if (!expect(window->cameraTabCount() == 4, "Native-effective controls should be grouped by associated stage")) {
     return false;
   }
 
-  auto* exposure = require_child<QSlider>(window, "cameraSlider_Exposure_EV_x10");
-  auto* exposure_value = require_child<QLabel>(window, "cameraValue_Exposure_EV_x10");
   auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
   auto* fixed_edge_link = require_child<QSlider>(window, "cameraSlider_Link_Fixed_Edge_Rotation_Left_Right");
   auto* fixed_edge_left = require_child<QSlider>(window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
   auto* fixed_edge_right = require_child<QSlider>(window, "cameraSlider_Right_Fixed_Edge_Rotation_Angle_x10");
-  auto* left_brightness = require_child<QSlider>(window, "cameraSlider_Left_Brightness_Multiplier_x100");
-  auto* left_gamma = require_child<QSlider>(window, "cameraSlider_Left_Gamma_Multiplier_x100");
+  auto* stop_delay = require_child<QSlider>(window, "cameraSlider_Stop_Direction_Change_Delay_Frames");
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
   auto* max_speed_y = require_child<QSlider>(window, "cameraSlider_Max_Speed_Y_x10");
   auto* reset = require_child<QPushButton>(window, "resetCameraButton");
@@ -2302,9 +2332,8 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
-  if (!exposure || !exposure_value || !rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right ||
-      !left_brightness || !left_gamma || !max_speed_x || !max_speed_y || !reset || !save || !create || !game_id ||
-      !start || !stop || !mode) {
+  if (!rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right || !stop_delay || !max_speed_x ||
+      !max_speed_y || !reset || !save || !create || !game_id || !start || !stop || !mode) {
     return false;
   }
 
@@ -2324,15 +2353,13 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
 
-  exposure->setValue(47);
   rotate->setValue(72);
   fixed_edge_left->setValue(250);
   fixed_edge_link->setValue(0);
   fixed_edge_right->setValue(750);
-  left_gamma->setValue(125);
+  stop_delay->setValue(14);
   max_speed_x->setValue(450);
-  if (!expect(window->cameraControlValue("Exposure_EV_x10") == 47, "Exposure slider should update controller state") ||
-      !expect(
+  if (!expect(
           window->cameraControlValue("Stitch_Rotate_Degrees") == 72,
           "Stitch rotation slider should update controller state") ||
       !expect(
@@ -2341,26 +2368,26 @@ bool test_camera_controls(HStreamWindow* window) {
               window->cameraControlValue("Right_Fixed_Edge_Rotation_Angle_x10") == 750,
           "Fixed-edge rotation should support independently configured left and right angles") ||
       !expect(
-          window->cameraControlValue("Left_Gamma_Multiplier_x100") == 125,
-          "Side color slider should update controller state") ||
+          window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 14,
+          "Tracker braking slider should update controller state") ||
       !expect(window->cameraControlValue("Max_Speed_X_x10") == 450, "Speed slider should update controller state")) {
     return false;
   }
 
-  const int gamma_before_wheel = left_gamma->value();
+  const int stop_delay_before_wheel = stop_delay->value();
   QWheelEvent wheel_event(
-      left_gamma->rect().center(),
-      left_gamma->mapToGlobal(left_gamma->rect().center()),
+      stop_delay->rect().center(),
+      stop_delay->mapToGlobal(stop_delay->rect().center()),
       QPoint(),
       QPoint(0, 120),
       Qt::NoButton,
       Qt::NoModifier,
       Qt::ScrollUpdate,
       false);
-  QApplication::sendEvent(left_gamma, &wheel_event);
+  QApplication::sendEvent(stop_delay, &wheel_event);
   QApplication::processEvents();
   if (!expect(
-          left_gamma->value() == gamma_before_wheel,
+          stop_delay->value() == stop_delay_before_wheel,
           "Mouse wheel over camera slider should not change live camera control")) {
     return false;
   }
@@ -2398,9 +2425,9 @@ bool test_camera_controls(HStreamWindow* window) {
     }
     return value && value.IsScalar() && value.as<int>() == expected;
   };
-  const bool saved_controls_ok = saved_int("Exposure_EV_x10", 47) && saved_int("Stitch_Rotate_Degrees", 72) &&
-      saved_int("Link_Fixed_Edge_Rotation_Left_Right", 0) && saved_int("Left_Fixed_Edge_Rotation_Angle_x10", 250) &&
-      saved_int("Right_Fixed_Edge_Rotation_Angle_x10", 750) && saved_int("Left_Gamma_Multiplier_x100", 125);
+  const bool saved_controls_ok = saved_int("Stop_Direction_Change_Delay_Frames", 14) &&
+      saved_int("Stitch_Rotate_Degrees", 72) && saved_int("Link_Fixed_Edge_Rotation_Left_Right", 0) &&
+      saved_int("Left_Fixed_Edge_Rotation_Angle_x10", 250) && saved_int("Right_Fixed_Edge_Rotation_Angle_x10", 750);
   YAML::Node saved_rotation;
   const bool has_saved_rotation = lookup_yaml_path(saved, {"stitching", "post_stitch_rotate_degrees"}, &saved_rotation);
   const bool saved_rotation_ok = saved_rotation && saved_rotation.IsScalar() && saved_rotation.as<int>() == 18;
@@ -2410,11 +2437,6 @@ bool test_camera_controls(HStreamWindow* window) {
   const bool saved_fixed_edge_rotation_ok = has_saved_fixed_edge_rotation && saved_fixed_edge_rotation.IsSequence() &&
       saved_fixed_edge_rotation.size() == 2 && saved_fixed_edge_rotation[0].as<double>() == 25.0 &&
       saved_fixed_edge_rotation[1].as<double>() == 75.0;
-  YAML::Node saved_max_speed_x;
-  const bool has_saved_max_speed_x =
-      lookup_yaml_path(saved, {"rink", "camera", "max_speed_ratio_x"}, &saved_max_speed_x);
-  const bool saved_max_speed_x_ok =
-      has_saved_max_speed_x && saved_max_speed_x.IsScalar() && saved_max_speed_x.as<double>() == 1.5;
   YAML::Node saved_playtracker_config_path;
   const bool has_saved_playtracker_config_path =
       lookup_yaml_path(saved, {"pipeline", "ds-playtracker", "config-file"}, &saved_playtracker_config_path);
@@ -2456,14 +2478,12 @@ bool test_camera_controls(HStreamWindow* window) {
       !expect(removed_rink_mask, "Saving stitch rotation should remove stale rink mask image") ||
       !expect(removed_scoreboard_polygon, "Saving stitch rotation should invalidate scoreboard perspective") ||
       !expect(removed_ice_mask_keys, "Saving stitch rotation should invalidate cached ice-mask metadata") ||
-      !expect(has_saved_max_speed_x && saved_max_speed_x_ok, "Speed slider should save runtime ratio config") ||
       !expect(
           has_saved_playtracker_config_path && saved_follower_max_speed_x && !saved_follower_max_speed_y &&
               !saved_follower_max_accel_x && !saved_follower_max_accel_y && !saved_fast_max_speed_x,
           "Speed slider should save only changed follower playtracker runtime config")) {
-    if (!has_saved_rotation || !saved_rotation_ok || !has_saved_max_speed_x || !saved_max_speed_x_ok ||
-        !saved_follower_max_speed_x || saved_follower_max_speed_y || saved_follower_max_accel_x ||
-        saved_follower_max_accel_y || saved_fast_max_speed_x) {
+    if (!has_saved_rotation || !saved_rotation_ok || !saved_follower_max_speed_x || saved_follower_max_speed_y ||
+        saved_follower_max_accel_x || saved_follower_max_accel_y || saved_fast_max_speed_x) {
       std::cerr << saved << '\n';
       std::cerr << playtracker_config << '\n';
     }
@@ -2552,19 +2572,22 @@ bool test_camera_controls(HStreamWindow* window) {
   }
 
   activate(reset);
-  if (!expect(window->cameraControlValue("Exposure_EV_x10") == 40, "Reset should restore exposure default")) {
+  if (!expect(
+          window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 0,
+          "Reset should restore the native tracker default")) {
     return false;
   }
 
   activate(create);
-  if (!expect(window->cameraControlValue("Exposure_EV_x10") == 47, "Create/Load should restore saved controls") ||
+  if (!expect(
+          window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 14,
+          "Create/Load should restore saved native controls") ||
       !expect(window->cameraControlValue("Stitch_Rotate_Degrees") == 72, "Create/Load should restore stitch control") ||
       !expect(
           window->cameraControlValue("Link_Fixed_Edge_Rotation_Left_Right") == 0 &&
               window->cameraControlValue("Left_Fixed_Edge_Rotation_Angle_x10") == 250 &&
               window->cameraControlValue("Right_Fixed_Edge_Rotation_Angle_x10") == 750,
-          "Create/Load should restore independent fixed-edge rotation angles") ||
-      !expect(exposure_value->text() == "47", "Create/Load should refresh visible camera value labels")) {
+          "Create/Load should restore independent fixed-edge rotation angles")) {
     return false;
   }
 
@@ -2690,7 +2713,7 @@ bool test_camera_controls(HStreamWindow* window) {
     std::cerr << live_playtracker << '\n';
     return false;
   }
-  max_speed_y->setValue(300);
+  max_speed_y->setValue(0);
   for (int i = 0; i < 50; ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
@@ -2722,18 +2745,8 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(stop);
 
-  left_gamma->setValue(100);
-  left_brightness->setValue(110);
   activate(save);
   YAML::Node same_prefix = YAML::LoadFile(config.string());
-  YAML::Node same_prefix_left_gamma;
-  YAML::Node same_prefix_left_brightness;
-  const bool preserved_left_gamma =
-      lookup_yaml_path(same_prefix, {"stitching", "left", "color", "gamma"}, &same_prefix_left_gamma) &&
-      same_prefix_left_gamma.IsScalar() && same_prefix_left_gamma.as<double>() == 1.75;
-  const bool saved_left_brightness =
-      lookup_yaml_path(same_prefix, {"stitching", "left", "color", "brightness"}, &same_prefix_left_brightness) &&
-      same_prefix_left_brightness.IsScalar() && same_prefix_left_brightness.as<double>() == 1.1;
   YAML::Node same_prefix_tracker_path;
   const bool has_same_prefix_tracker_path =
       lookup_yaml_path(same_prefix, {"pipeline", "ds-playtracker", "config-file"}, &same_prefix_tracker_path);
@@ -2753,9 +2766,7 @@ bool test_camera_controls(HStreamWindow* window) {
       lookup_yaml_path(same_prefix, {"hstream_ui", "playtracker_config_base"}, &saved_playtracker_base) &&
       saved_playtracker_base.IsScalar() &&
       saved_playtracker_base.as<std::string>() == custom_playtracker_config.string();
-  if (!expect(preserved_left_gamma, "Saving one color leaf should preserve manual same-prefix color edits") ||
-      !expect(saved_left_brightness, "Saving one color leaf should persist that leaf") ||
-      !expect(preserved_custom_tracker_config, "Generated playtracker config should preserve custom base config") ||
+  if (!expect(preserved_custom_tracker_config, "Generated playtracker config should preserve custom base config") ||
       !expect(remembered_custom_tracker_base, "Generated playtracker config should remember custom base path")) {
     std::cerr << same_prefix << '\n';
     std::cerr << same_prefix_tracker << '\n';
@@ -2792,8 +2803,6 @@ bool test_camera_controls(HStreamWindow* window) {
       expect(!lookup_yaml_path(cleaned, {"rink", "camera", "fixed_edge_rotation_angle"}, nullptr),
              "Saving defaults should clear UI-generated fixed-edge rotation override") &&
       expect(restored_custom_playtracker_config, "Saving defaults should restore custom playtracker config override") &&
-      expect(!lookup_yaml_path(cleaned, {"stitching", "left", "color", "brightness"}, nullptr),
-             "Saving defaults should clear UI-generated side color leaf") &&
       expect(preserved_manual_gamma, "Saving defaults should preserve non-UI-authored runtime config") &&
       expect(preserved_manual_left_gamma, "Saving defaults should preserve same-prefix manual color config");
 }

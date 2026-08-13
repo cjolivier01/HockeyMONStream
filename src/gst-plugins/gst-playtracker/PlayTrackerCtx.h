@@ -9,7 +9,7 @@
 
 #include "absl/status/status.h"
 #include "hstream/src/libs/common/ManagedObject.h"
-//#include "deepstream/sources/includes/nvbufsurface.h"
+// #include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurface.h"
 
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
@@ -44,12 +44,11 @@ DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* init_params);
 
 absl::Status DsPlayTrackerValidateConfigFile(const std::string& config_file);
 
-bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx,
-                               GstDsPlayTrackerFrame& frame,
-                               cudaStream_t stream);
+absl::Status DsPlayTrackerCtxReloadConfig(DsPlayTrackerCtx* ctx, const std::string& config_file);
 
-absl::Status DsPlayTrackerDrawToDisplayMeta(DsPlayTrackerCtx* ctx,
-                                            GstDsPlayTrackerFrame& frame);
+bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame, cudaStream_t stream);
+
+absl::Status DsPlayTrackerDrawToDisplayMeta(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame);
 
 // Deinitialize library context
 void DsPlayTrackerCtxDeinit(DsPlayTrackerCtx* ctx);

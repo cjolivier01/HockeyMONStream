@@ -71,7 +71,6 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr int kExposureEvSliderZero = 40;
 constexpr int kFixedEdgeRotationDefaultX10 = 100;
 constexpr int kFixedEdgeRotationMaximumX10 = 900;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
@@ -259,7 +258,7 @@ class LetterboxRenderHost : public QWidget {
   explicit LetterboxRenderHost(double aspect_ratio, QWidget* parent = nullptr)
       : QWidget(parent), aspect_ratio_(aspect_ratio > 0.0 ? aspect_ratio : 16.0 / 9.0) {
     setObjectName("letterboxRenderHost");
-    setMinimumHeight(260);
+    setMinimumHeight(120);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     QPalette pal = palette();
     pal.setColor(QPalette::Window, Qt::black);
@@ -1115,17 +1114,6 @@ bool yaml_scalar_bool(YAML::Node node, bool default_value) {
   return default_value;
 }
 
-void remove_yaml_path_if_empty_map(YAML::Node root, std::initializer_list<const char*> path) {
-  QStringList parts;
-  for (const char* part : path) {
-    parts.push_back(part);
-  }
-  YAML::Node value;
-  if (lookup_yaml_path(root, parts.join('.'), &value) && value.IsMap() && value.size() == 0) {
-    remove_yaml_path(root, path);
-  }
-}
-
 bool yaml_sequence_contains(YAML::Node node, const char* value) {
   if (!node || !node.IsSequence()) {
     return false;
@@ -1149,10 +1137,6 @@ ArtifactInvalidationResult invalidate_rotation_dependent_artifacts(YAML::Node& c
   result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_centroid"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_combined_bbox"}) ? 1 : 0;
   return result;
-}
-
-double slider_to_exposure_ev(int position) {
-  return static_cast<double>(std::max(0, std::min(80, position)) - 40) / 10.0;
 }
 
 double ratio_x100(int value) {
@@ -1320,8 +1304,8 @@ void HStreamWindow::buildUi() {
 }
 
 void HStreamWindow::buildTopBar(QVBoxLayout* root) {
-  auto* bar = new QHBoxLayout();
-  bar->setSpacing(8);
+  auto* status_bar = new QHBoxLayout();
+  status_bar->setSpacing(8);
 
   auto* title = new QLabel("HStream Runtime Control");
   title->setObjectName("titleLabel");
@@ -1389,22 +1373,27 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   connect(save, &QPushButton::clicked, this, [this]() { savePreset(); });
   connect(reset, &QPushButton::clicked, this, [this]() { resetCameraControls(); });
 
-  bar->addWidget(title);
-  bar->addSpacing(16);
-  bar->addWidget(new QLabel("Pipeline:"));
-  bar->addWidget(pipeline_state_);
-  bar->addWidget(backend_mode_);
-  bar->addWidget(run_mode_selector_);
-  bar->addWidget(control_points_spin_);
-  bar->addWidget(render_video_toggle_);
-  bar->addStretch(1);
-  bar->addWidget(start_button_);
-  bar->addWidget(pause_button_);
-  bar->addWidget(restart);
-  bar->addWidget(save);
-  bar->addWidget(reset);
-  bar->addWidget(stop_button_);
-  root->addLayout(bar);
+  status_bar->addWidget(title);
+  status_bar->addSpacing(16);
+  status_bar->addWidget(new QLabel("Pipeline:"));
+  status_bar->addWidget(pipeline_state_);
+  status_bar->addWidget(backend_mode_);
+  status_bar->addStretch(1);
+  status_bar->addWidget(run_mode_selector_);
+  status_bar->addWidget(control_points_spin_);
+  status_bar->addWidget(render_video_toggle_);
+
+  auto* action_bar = new QHBoxLayout();
+  action_bar->setSpacing(8);
+  action_bar->addStretch(1);
+  action_bar->addWidget(start_button_);
+  action_bar->addWidget(pause_button_);
+  action_bar->addWidget(restart);
+  action_bar->addWidget(save);
+  action_bar->addWidget(reset);
+  action_bar->addWidget(stop_button_);
+  root->addLayout(status_bar);
+  root->addLayout(action_bar);
 }
 
 void HStreamWindow::buildMainArea(QVBoxLayout* root) {
@@ -1519,7 +1508,7 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
 
   video_set_list_ = new QListWidget();
   video_set_list_->setObjectName("videoSetList");
-  video_set_list_->setMinimumHeight(92);
+  video_set_list_->setMinimumHeight(48);
 
   video_sets_path_label_ = new QLabel(gameRoot());
   video_sets_path_label_->setObjectName("videoSetsPathLabel");
@@ -1646,6 +1635,14 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
     preview_tabs_->addTab(camera, QString("Camera %1").arg(camera_index + 1));
   }
   connect(preview_tabs_, &QTabWidget::currentChanged, this, [this](int tab_index) {
+    if (preview_focus_mode_) {
+      focused_preview_tab_ = tab_index;
+      for (size_t index = 0; index < preview_hosts_.size(); ++index) {
+        auto* host = static_cast<LetterboxRenderHost*>(preview_hosts_[index]);
+        if (host)
+          host->setFocused(static_cast<int>(index) == tab_index);
+      }
+    }
     switchPipelineRenderTarget(tab_index);
   });
   root->addWidget(preview_tabs_, 1);
@@ -1698,10 +1695,10 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   auto* layout = new QVBoxLayout(group);
   auto* association = new QLabel(
       program_stage
-          ? "These controls affect the final Program image after stitching and play tracking. Live-capable changes "
-            "appear immediately; saved-only changes appear after Save Preset and restart."
-          : "These controls affect the stitched canvas before play tracking. Live-capable changes appear "
-            "immediately; saved-only changes appear after Save Preset and restart.");
+          ? "These controls affect Program frames after stitching. Changes are applied live while the pipeline is "
+            "running; Save Preset keeps them for the next run."
+          : "Stitch rotation affects the stitched canvas before play tracking. It applies live while the pipeline "
+            "is running; Save Preset keeps it for the next run.");
   association->setObjectName(program_stage ? "programControlAssociation" : "stitchedControlAssociation");
   association->setWordWrap(true);
   association->setStyleSheet("color: #667085;");
@@ -1710,7 +1707,8 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   auto* control_tabs = new QTabWidget();
   control_tabs->setObjectName(program_stage ? "programControlTabs" : "stitchedControlTabs");
   control_tabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-  control_tabs->setMaximumHeight(235);
+  control_tabs->setMinimumHeight(92);
+  control_tabs->setMaximumHeight(180);
   if (program_stage)
     program_control_tabs_ = control_tabs;
   else
@@ -1738,53 +1736,22 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   };
 
   const std::vector<CameraSliderSpec> tracking_controls = {
-      {"Stop_Direction_Change_Delay_Frames", "Stop direction-change delay frames", 0, 60, 12},
-      {"Cancel_Stop_On_Opposite_Direction", "Cancel stop on opposite direction", 0, 1, 1},
-      {"Stop_Cancel_Hysteresis_Frames", "Stop cancel hysteresis frames", 0, 10, 2},
-      {"Stop_Delay_Cooldown_Frames", "Stop-delay cooldown frames", 0, 30, 4},
-      {"Time_To_Dest_Speed_Limit_Frames", "Time-to-destination speed limit frames", 0, 120, 24},
+      {"Stop_Direction_Change_Delay_Frames", "Stop direction-change delay frames", 0, 60, 0},
+      {"Cancel_Stop_On_Opposite_Direction", "Cancel stop on opposite direction", 0, 1, 0},
+      {"Stop_Cancel_Hysteresis_Frames", "Stop cancel hysteresis frames", 0, 10, 0},
+      {"Stop_Delay_Cooldown_Frames", "Stop-delay cooldown frames", 0, 30, 0},
+      {"Time_To_Dest_Speed_Limit_Frames", "Time-to-destination speed limit frames", 0, 120, 10},
       {"Apply_To_Fast_Box", "Apply to fast box", 0, 1, 0},
       {"Apply_To_Follower_Box", "Apply to follower box", 0, 1, 1},
   };
   const std::vector<CameraSliderSpec> motion_controls = {
-      {"Overshoot_Stop_Delay_Frames", "Overshoot stop-delay frames", 0, 60, 12},
-      {"Post_Nonstop_Stop_Delay_Frames", "Post-nonstop stop-delay frames", 0, 60, 12},
-      {"Overshoot_Speed_Ratio_x100", "Overshoot speed ratio x100", 0, 200, 100},
-      {"Max_Speed_X_x10", "Max speed X x10", 0, 2000, 300},
-      {"Max_Speed_Y_x10", "Max speed Y x10", 0, 2000, 300},
-      {"Max_Accel_X_x10", "Max accel X x10", 0, 1000, 120},
-      {"Max_Accel_Y_x10", "Max accel Y x10", 0, 1000, 120},
-  };
-  const std::vector<CameraSliderSpec> stitched_color_controls = {
-      {"White_Balance_Kelvin_Enable", "White balance Kelvin enable", 0, 1, 0},
-      {"White_Balance_Kelvin_Temperature", "White balance Kelvin temperature", 1000, 15000, 6500},
-      {"White_Balance_Red_Gain_x100", "White balance red gain x100", 1, 300, 100},
-      {"White_Balance_Green_Gain_x100", "White balance green gain x100", 1, 300, 100},
-      {"White_Balance_Blue_Gain_x100", "White balance blue gain x100", 1, 300, 100},
-      {"Brightness_Multiplier_x100", "Brightness multiplier x100", 1, 300, 100},
-      {"Exposure_EV_x10", "Exposure EV x10", 0, 80, kExposureEvSliderZero},
-      {"Contrast_Multiplier_x100", "Contrast multiplier x100", 1, 300, 100},
-      {"Gamma_Multiplier_x100", "Gamma multiplier x100", 1, 300, 100},
-  };
-  const std::vector<CameraSliderSpec> left_color_controls = {
-      {"Left_White_Balance_Kelvin_Enable", "Left white balance Kelvin enable", 0, 1, 0},
-      {"Left_White_Balance_Kelvin_Temperature", "Left white balance Kelvin temperature", 1000, 15000, 6500},
-      {"Left_White_Balance_Red_Gain_x100", "Left white balance red gain x100", 1, 300, 100},
-      {"Left_White_Balance_Green_Gain_x100", "Left white balance green gain x100", 1, 300, 100},
-      {"Left_White_Balance_Blue_Gain_x100", "Left white balance blue gain x100", 1, 300, 100},
-      {"Left_Brightness_Multiplier_x100", "Left brightness multiplier x100", 1, 300, 100},
-      {"Left_Exposure_EV_x10", "Left exposure EV x10", 0, 80, kExposureEvSliderZero},
-      {"Left_Contrast_Multiplier_x100", "Left contrast multiplier x100", 1, 300, 100},
-      {"Left_Gamma_Multiplier_x100", "Left gamma multiplier x100", 1, 300, 100},
-      {"Right_White_Balance_Kelvin_Enable", "Right white balance Kelvin enable", 0, 1, 0},
-      {"Right_White_Balance_Kelvin_Temperature", "Right white balance Kelvin temperature", 1000, 15000, 6500},
-      {"Right_White_Balance_Red_Gain_x100", "Right white balance red gain x100", 1, 300, 100},
-      {"Right_White_Balance_Green_Gain_x100", "Right white balance green gain x100", 1, 300, 100},
-      {"Right_White_Balance_Blue_Gain_x100", "Right white balance blue gain x100", 1, 300, 100},
-      {"Right_Brightness_Multiplier_x100", "Right brightness multiplier x100", 1, 300, 100},
-      {"Right_Exposure_EV_x10", "Right exposure EV x10", 0, 80, kExposureEvSliderZero},
-      {"Right_Contrast_Multiplier_x100", "Right contrast multiplier x100", 1, 300, 100},
-      {"Right_Gamma_Multiplier_x100", "Right gamma multiplier x100", 1, 300, 100},
+      {"Overshoot_Stop_Delay_Frames", "Overshoot stop-delay frames", 0, 60, 0},
+      {"Post_Nonstop_Stop_Delay_Frames", "Post-nonstop stop-delay frames", 0, 60, 0},
+      {"Overshoot_Speed_Ratio_x100", "Overshoot speed ratio x100", 0, 200, 70},
+      {"Max_Speed_X_x10", "Max speed X override x10 (0 = configured)", 0, 2000, 0},
+      {"Max_Speed_Y_x10", "Max speed Y override x10 (0 = configured)", 0, 2000, 0},
+      {"Max_Accel_X_x10", "Max accel X override x10 (0 = configured)", 0, 1000, 0},
+      {"Max_Accel_Y_x10", "Max accel Y override x10 (0 = configured)", 0, 1000, 0},
   };
   const std::vector<CameraSliderSpec> stitch_controls = {
       {"Stitch_Rotate_Degrees", "Stitch rotate degrees", 0, 180, 90},
@@ -1804,11 +1771,9 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   if (program_stage) {
     control_tabs->addTab(add_slider_tab(tracking_controls), "Tracking");
     control_tabs->addTab(add_slider_tab(motion_controls), "Motion");
-    control_tabs->addTab(add_slider_tab(stitched_color_controls), "Final Color");
     const std::vector<CameraSliderSpec> crop_controls(stitch_controls.begin() + 1, stitch_controls.end());
     control_tabs->addTab(add_slider_tab(crop_controls), "Crop Rotation");
   } else {
-    control_tabs->addTab(add_slider_tab(left_color_controls), "Camera Color");
     const std::vector<CameraSliderSpec> rotation_controls = {stitch_controls.front()};
     control_tabs->addTab(add_slider_tab(rotation_controls), "Rotation");
   }
@@ -1838,7 +1803,7 @@ void HStreamWindow::buildLog(QVBoxLayout* root) {
   // Calibration now reports every native stage, and operators need the lead-up
   // to a failure rather than only the final few hundred lines.
   log_->document()->setMaximumBlockCount(2000);
-  log_->setMinimumHeight(110);
+  log_->setMinimumHeight(60);
   log_->setStyleSheet(
       "QTextEdit#runtimeLog {"
       " background: #05070a;"
@@ -3869,10 +3834,6 @@ bool HStreamWindow::applySavedControlConfig(
       !lookup_yaml_path(config, "pipeline.ds-playtracker.config-file", &current_playtracker_config)) {
     config["pipeline"]["ds-playtracker"]["config-file"] = previous_playtracker_config_base.as<std::string>();
   }
-  remove_yaml_path_if_empty_map(config, {"stitching", "left", "color"});
-  remove_yaml_path_if_empty_map(config, {"stitching", "right", "color"});
-  remove_yaml_path_if_empty_map(config, {"rink", "camera", "color"});
-
   YAML::Node generated_runtime_keys(YAML::NodeType::Sequence);
   YAML::Node generated_runtime_values(YAML::NodeType::Map);
   std::set<std::string> generated_key_set;
@@ -3899,12 +3860,6 @@ bool HStreamWindow::applySavedControlConfig(
   auto slider_value = [this](const QString& id) -> int {
     const auto it = camera_sliders_.find(id);
     return it == camera_sliders_.end() ? 0 : it->second->value();
-  };
-  auto slider_changed = [this](const QString& id) -> bool {
-    const auto slider_it = camera_sliders_.find(id);
-    const auto default_it = camera_defaults_.find(id);
-    return slider_it != camera_sliders_.end() && default_it != camera_defaults_.end() &&
-        slider_it->second->value() != default_it->second;
   };
   if (has_control(controls, "Stitch_Rotate_Degrees")) {
     config["stitching"]["post_stitch_rotate_degrees"] = 90 - slider_value("Stitch_Rotate_Degrees");
@@ -3946,68 +3901,6 @@ bool HStreamWindow::applySavedControlConfig(
       *invalidated_config_artifacts = invalidation.invalidated;
     }
   }
-  auto apply_color_prefix = [&](const QString& prefix) {
-    const QString name_prefix = prefix.isEmpty() ? QString() : prefix + "_";
-    const char* side_key = prefix.compare("Left", Qt::CaseInsensitive) == 0 ? "left" : "right";
-    const QString config_prefix =
-        prefix.isEmpty() ? QString("rink.camera.color") : QString("stitching.%1.color").arg(prefix.toLower());
-    auto set_color_leaf = [&](const char* leaf, const auto& value) {
-      if (prefix.isEmpty()) {
-        config["rink"]["camera"]["color"][leaf] = value;
-      } else {
-        config["stitching"][side_key]["color"][leaf] = value;
-      }
-      mark_runtime_key(config_prefix + "." + leaf);
-    };
-    auto remove_color_leaf = [&](const char* leaf) { remove_yaml_path(config, config_prefix + "." + leaf); };
-
-    if (slider_changed(name_prefix + "Brightness_Multiplier_x100")) {
-      set_color_leaf("brightness", ratio_x100(slider_value(name_prefix + "Brightness_Multiplier_x100")));
-    }
-    if (slider_changed(name_prefix + "Exposure_EV_x10")) {
-      set_color_leaf("exposure_ev", slider_to_exposure_ev(slider_value(name_prefix + "Exposure_EV_x10")));
-    }
-    if (slider_changed(name_prefix + "Contrast_Multiplier_x100")) {
-      set_color_leaf("contrast", ratio_x100(slider_value(name_prefix + "Contrast_Multiplier_x100")));
-    }
-    if (slider_changed(name_prefix + "Gamma_Multiplier_x100")) {
-      set_color_leaf("gamma", ratio_x100(slider_value(name_prefix + "Gamma_Multiplier_x100")));
-    }
-
-    const QStringList white_balance_ids = {
-        name_prefix + "White_Balance_Kelvin_Enable",
-        name_prefix + "White_Balance_Kelvin_Temperature",
-        name_prefix + "White_Balance_Red_Gain_x100",
-        name_prefix + "White_Balance_Green_Gain_x100",
-        name_prefix + "White_Balance_Blue_Gain_x100",
-    };
-    bool white_balance_changed = false;
-    for (const QString& id : white_balance_ids) {
-      white_balance_changed = white_balance_changed || slider_changed(id);
-    }
-    if (white_balance_changed) {
-      const int kelvin_enabled = slider_value(name_prefix + "White_Balance_Kelvin_Enable");
-      const int kelvin = slider_value(name_prefix + "White_Balance_Kelvin_Temperature");
-      const int red = slider_value(name_prefix + "White_Balance_Red_Gain_x100");
-      const int green = slider_value(name_prefix + "White_Balance_Green_Gain_x100");
-      const int blue = slider_value(name_prefix + "White_Balance_Blue_Gain_x100");
-      if (kelvin_enabled > 0) {
-        set_color_leaf("white_balance_temp", QString("%1k").arg(kelvin).toStdString());
-        remove_color_leaf("white_balance");
-        return;
-      }
-      YAML::Node white_balance(YAML::NodeType::Sequence);
-      white_balance.push_back(ratio_x100(blue));
-      white_balance.push_back(ratio_x100(green));
-      white_balance.push_back(ratio_x100(red));
-      set_color_leaf("white_balance", white_balance);
-      remove_color_leaf("white_balance_temp");
-    }
-  };
-  apply_color_prefix("");
-  apply_color_prefix("Left");
-  apply_color_prefix("Right");
-
   if (has_control(controls, "Stop_Direction_Change_Delay_Frames")) {
     config["rink"]["camera"]["stop_on_dir_change_delay"] = slider_value("Stop_Direction_Change_Delay_Frames");
     mark_runtime_key("rink.camera.stop_on_dir_change_delay");
@@ -4043,27 +3936,15 @@ bool HStreamWindow::applySavedControlConfig(
     config["rink"]["camera"]["time_to_dest_speed_limit_frames"] = slider_value("Time_To_Dest_Speed_Limit_Frames");
     mark_runtime_key("rink.camera.time_to_dest_speed_limit_frames");
   }
-  auto apply_ratio_control = [&](const QString& id, const char* yaml_key) {
-    const std::string control_key = id.toStdString();
-    if (!has_control(controls, control_key.c_str())) {
-      return;
-    }
-    const auto default_it = camera_defaults_.find(id);
-    const double default_value = default_it == camera_defaults_.end() ? 0.0 : static_cast<double>(default_it->second);
-    if (default_value <= 0.0) {
-      return;
-    }
-    config["rink"]["camera"][yaml_key] = static_cast<double>(slider_value(id)) / default_value;
-    mark_runtime_key(QString("rink.camera.") + yaml_key);
-  };
-  apply_ratio_control("Max_Speed_X_x10", "max_speed_ratio_x");
-  apply_ratio_control("Max_Speed_Y_x10", "max_speed_ratio_y");
-  apply_ratio_control("Max_Accel_X_x10", "max_accel_ratio_x");
-  apply_ratio_control("Max_Accel_Y_x10", "max_accel_ratio_y");
-  const bool has_live_box_runtime_controls = has_control(controls, "Max_Speed_X_x10") ||
+  const bool has_playtracker_runtime_controls = has_control(controls, "Stop_Direction_Change_Delay_Frames") ||
+      has_control(controls, "Cancel_Stop_On_Opposite_Direction") ||
+      has_control(controls, "Stop_Cancel_Hysteresis_Frames") || has_control(controls, "Stop_Delay_Cooldown_Frames") ||
+      has_control(controls, "Time_To_Dest_Speed_Limit_Frames") ||
+      has_control(controls, "Overshoot_Stop_Delay_Frames") || has_control(controls, "Post_Nonstop_Stop_Delay_Frames") ||
+      has_control(controls, "Overshoot_Speed_Ratio_x100") || has_control(controls, "Max_Speed_X_x10") ||
       has_control(controls, "Max_Speed_Y_x10") || has_control(controls, "Max_Accel_X_x10") ||
       has_control(controls, "Max_Accel_Y_x10");
-  if (has_live_box_runtime_controls && game_id_edit_) {
+  if (has_playtracker_runtime_controls && game_id_edit_) {
     const QString game_dir = gameDirectory(game_id_edit_->text());
     QDir runtime_dir(QDir(game_dir).filePath(".hstream-ui"));
     if (!runtime_dir.exists() && !runtime_dir.mkpath(".")) {
@@ -4118,7 +3999,34 @@ bool HStreamWindow::applySavedControlConfig(
           live_boxes.push_back(box);
         }
 
+        YAML::Node play_tracker = play_tracker_config["play-tracker"];
+        if (has_control(controls, "Overshoot_Stop_Delay_Frames")) {
+          play_tracker["overshoot-stop-delay-count"] = slider_value("Overshoot_Stop_Delay_Frames");
+        }
+        if (has_control(controls, "Overshoot_Speed_Ratio_x100")) {
+          play_tracker["overshoot-scale-speed-ratio"] = ratio_x100(slider_value("Overshoot_Speed_Ratio_x100"));
+        }
+
         auto apply_live_box = [&](int index) {
+          if (has_control(controls, "Stop_Direction_Change_Delay_Frames")) {
+            live_boxes[index]["stop-translation-on-dir-change-delay"] =
+                slider_value("Stop_Direction_Change_Delay_Frames");
+          }
+          if (has_control(controls, "Cancel_Stop_On_Opposite_Direction")) {
+            live_boxes[index]["cancel-stop-on-opposite-dir"] = slider_value("Cancel_Stop_On_Opposite_Direction") != 0;
+          }
+          if (has_control(controls, "Stop_Cancel_Hysteresis_Frames")) {
+            live_boxes[index]["cancel-stop-hysteresis-frames"] = slider_value("Stop_Cancel_Hysteresis_Frames");
+          }
+          if (has_control(controls, "Stop_Delay_Cooldown_Frames")) {
+            live_boxes[index]["stop-delay-cooldown-frames"] = slider_value("Stop_Delay_Cooldown_Frames");
+          }
+          if (has_control(controls, "Time_To_Dest_Speed_Limit_Frames")) {
+            live_boxes[index]["time-to-dest-speed-limit-frames"] = slider_value("Time_To_Dest_Speed_Limit_Frames");
+          }
+          if (has_control(controls, "Post_Nonstop_Stop_Delay_Frames")) {
+            live_boxes[index]["post-nonstop-stop-delay-count"] = slider_value("Post_Nonstop_Stop_Delay_Frames");
+          }
           if (has_control(controls, "Max_Speed_X_x10")) {
             live_boxes[index]["max-speed-x"] = static_cast<double>(slider_value("Max_Speed_X_x10")) / 10.0;
           }
@@ -5494,11 +5402,31 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
           live_boxes[index][key] = static_cast<double>(slider_value(id)) / 10.0;
         }
       };
+      auto set_integer_if_changed = [&](const QString& id, const char* key) {
+        if (slider_changed(id)) {
+          live_boxes[index][key] = slider_value(id);
+        }
+      };
+      set_integer_if_changed("Stop_Direction_Change_Delay_Frames", "stop-translation-on-dir-change-delay");
+      if (slider_changed("Cancel_Stop_On_Opposite_Direction")) {
+        live_boxes[index]["cancel-stop-on-opposite-dir"] = slider_value("Cancel_Stop_On_Opposite_Direction") != 0;
+      }
+      set_integer_if_changed("Stop_Cancel_Hysteresis_Frames", "cancel-stop-hysteresis-frames");
+      set_integer_if_changed("Stop_Delay_Cooldown_Frames", "stop-delay-cooldown-frames");
+      set_integer_if_changed("Time_To_Dest_Speed_Limit_Frames", "time-to-dest-speed-limit-frames");
+      set_integer_if_changed("Post_Nonstop_Stop_Delay_Frames", "post-nonstop-stop-delay-count");
       set_if_changed("Max_Speed_X_x10", "max-speed-x");
       set_if_changed("Max_Speed_Y_x10", "max-speed-y");
       set_if_changed("Max_Accel_X_x10", "max-accel-x");
       set_if_changed("Max_Accel_Y_x10", "max-accel-y");
     };
+    YAML::Node play_tracker = play_tracker_config["play-tracker"];
+    if (slider_changed("Overshoot_Stop_Delay_Frames")) {
+      play_tracker["overshoot-stop-delay-count"] = slider_value("Overshoot_Stop_Delay_Frames");
+    }
+    if (slider_changed("Overshoot_Speed_Ratio_x100")) {
+      play_tracker["overshoot-scale-speed-ratio"] = ratio_x100(slider_value("Overshoot_Speed_Ratio_x100"));
+    }
     if (slider_value("Apply_To_Fast_Box") != 0) {
       apply_live_box(0);
     }
@@ -5610,6 +5538,14 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
     return left_sent && right_sent;
   }
   const QSet<QString> playtracker_live_controls = {
+      "Stop_Direction_Change_Delay_Frames",
+      "Cancel_Stop_On_Opposite_Direction",
+      "Stop_Cancel_Hysteresis_Frames",
+      "Stop_Delay_Cooldown_Frames",
+      "Time_To_Dest_Speed_Limit_Frames",
+      "Overshoot_Stop_Delay_Frames",
+      "Post_Nonstop_Stop_Delay_Frames",
+      "Overshoot_Speed_Ratio_x100",
       "Max_Speed_X_x10",
       "Max_Speed_Y_x10",
       "Max_Accel_X_x10",

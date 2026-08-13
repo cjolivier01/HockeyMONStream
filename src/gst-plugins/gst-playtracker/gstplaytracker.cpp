@@ -207,8 +207,18 @@ static void gst_playtracker_set_property(GObject* object, guint prop_id, const G
       break;
     case PROP_PLAY_TRACKER_CONFIG_FILE: {
       const char* str = g_value_get_string(value);
+      if (playtracker->playtrackerlib_ctx && str && *str) {
+        GST_OBJECT_LOCK(playtracker);
+        const absl::Status status = DsPlayTrackerCtxReloadConfig(playtracker->playtrackerlib_ctx, str);
+        GST_OBJECT_UNLOCK(playtracker);
+        if (!status.ok()) {
+          GST_ERROR_OBJECT(playtracker, "could not reload playtracker config: %s", status.ToString().c_str());
+          break;
+        }
+      }
       if (str && *str) {
         strncpy(playtracker->play_tracker_config_file, str, STRSIZE(playtracker->play_tracker_config_file) - 1);
+        playtracker->play_tracker_config_file[STRSIZE(playtracker->play_tracker_config_file) - 1] = '\0';
       } else {
         playtracker->play_tracker_config_file[0] = '\0';
       }
@@ -369,6 +379,7 @@ static GstFlowReturn gst_playtracker_transform(GstBaseTransform* btrans, GstBuff
 
   GST_DEBUG_OBJECT(playtracker, "transform");
 
+  GST_OBJECT_LOCK(playtracker);
   for (guint i = 0; i < batch_meta->num_frames_in_batch; i++) {
     GstDsPlayTrackerFrame frame;
     frame.frame_meta = nvds_get_nth_frame_meta(batch_meta->frame_meta_list, i);
@@ -376,9 +387,11 @@ static GstFlowReturn gst_playtracker_transform(GstBaseTransform* btrans, GstBuff
     frame.input_surf_params = in_surface->surfaceList + i;
     if (!DsPlayTrackerProcessFrame(playtracker->playtrackerlib_ctx, frame, playtracker->stream)) {
       std::cerr << "Error calling DsPlayTrackerProcessFrame()" << std::endl;
+      GST_OBJECT_UNLOCK(playtracker);
       goto invalid_inbuf;
     }
   }
+  GST_OBJECT_UNLOCK(playtracker);
 
   gst_buffer_unmap(inbuf, &inmap);
 

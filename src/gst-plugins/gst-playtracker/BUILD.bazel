@@ -67,6 +67,7 @@ cc_test(
         ":libgstplaytracker.so",
     ],
     deps = [
+        ":playtracker_context",
         "//src/gst-plugins/testutils:gst_plugin_test_harness",
         "@gstreamer",
     ],

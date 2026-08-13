@@ -49,16 +49,26 @@ bool validate_numeric_yaml_fields(const YAML::Node& node, std::string* error) {
       "min-width",
       "min-height",
       "nonstop-delay-count",
+      "overshoot-stop-delay-count",
       "overshoot-scale-speed-ratio",
       "scale-dest-height",
       "scale-dest-width",
       "scale-speed-constraints",
+      "resizing-stop-cancel-hysteresis-frames",
+      "resizing-stop-delay-cooldown-frames",
+      "resizing-stop-on-dir-change-delay",
+      "resizing-time-to-dest-speed-limit-frames",
       "size-ratio-thresh-grow-dh",
       "size-ratio-thresh-grow-dw",
       "size-ratio-thresh-shrink-dh",
       "size-ratio-thresh-shrink-dw",
       "sticky-size-ratio-to-frame-width",
       "sticky-translation-gaussian-mult",
+      "stop-delay-cooldown-frames",
+      "stop-translation-on-dir-change-delay",
+      "cancel-stop-hysteresis-frames",
+      "post-nonstop-stop-delay-count",
+      "time-to-dest-speed-limit-frames",
       "unsticky-translation-size-ratio",
   };
   if (!node) {
@@ -119,6 +129,7 @@ PlayDetectorConfig create_play_detector_config(
   SET_LOCATOR(locator, config, scale_speed_constraints);
   SET_LOCATOR(locator, config, nonstop_delay_count);
   SET_LOCATOR(locator, config, overshoot_scale_speed_ratio);
+  SET_LOCATOR(locator, config, overshoot_stop_delay_count);
   return config;
 }
 
@@ -136,6 +147,11 @@ ResizingConfig create_resizing_config(
   SET_LOCATOR(locator, config, max_width);
   SET_LOCATOR(locator, config, max_height);
   SET_LOCATOR(locator, config, stop_resizing_on_dir_change);
+  SET_LOCATOR(locator, config, resizing_stop_on_dir_change_delay);
+  SET_LOCATOR(locator, config, resizing_cancel_stop_on_opposite_dir);
+  SET_LOCATOR(locator, config, resizing_stop_cancel_hysteresis_frames);
+  SET_LOCATOR(locator, config, resizing_stop_delay_cooldown_frames);
+  SET_LOCATOR(locator, config, resizing_time_to_dest_speed_limit_frames);
   SET_LOCATOR(locator, config, sticky_sizing);
   SET_LOCATOR(locator, config, size_ratio_thresh_grow_dw);
   SET_LOCATOR(locator, config, size_ratio_thresh_grow_dh);
@@ -154,6 +170,12 @@ TranslatingBoxConfig create_translating_box_config(
   SET_LOCATOR(locator, config, max_accel_x);
   SET_LOCATOR(locator, config, max_accel_y);
   SET_LOCATOR(locator, config, stop_translation_on_dir_change);
+  SET_LOCATOR(locator, config, stop_translation_on_dir_change_delay);
+  SET_LOCATOR(locator, config, cancel_stop_on_opposite_dir);
+  SET_LOCATOR(locator, config, post_nonstop_stop_delay_count);
+  SET_LOCATOR(locator, config, cancel_stop_hysteresis_frames);
+  SET_LOCATOR(locator, config, stop_delay_cooldown_frames);
+  SET_LOCATOR(locator, config, time_to_dest_speed_limit_frames);
   SET_LOCATOR(locator, config, sticky_translation);
   SET_LOCATOR(locator, config, sticky_size_ratio_to_frame_width);
   SET_LOCATOR(locator, config, sticky_translation_gaussian_mult);
@@ -527,6 +549,21 @@ absl::Status DsPlayTrackerValidateConfigFile(const std::string& config_file) {
   return absl::OkStatus();
 }
 
+absl::Status DsPlayTrackerCtxReloadConfig(DsPlayTrackerCtx* ctx, const std::string& config_file) {
+  if (!ctx) {
+    return absl::InvalidArgumentError("playtracker context is null");
+  }
+  absl::Status status = DsPlayTrackerValidateConfigFile(config_file);
+  if (!status.ok()) {
+    return status;
+  }
+  ctx->initParams.play_tracker_config_file = config_file;
+  // Trackers own their parsed configuration and cannot be mutated safely in
+  // place. Recreate them lazily on the next frame for each source.
+  ctx->play_trackers.clear();
+  return absl::OkStatus();
+}
+
 bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame, cudaStream_t stream) {
   // We always do our calculations wrt the original image, since we tune based upon the camera
   // type, which is generally tied to the resolution. We scale in the play tracker when possible, but
@@ -535,14 +572,13 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
   DsPlayTrackerCtx::PlayTracker* play_tracker_ctx{nullptr};
 
 #if 1 && !defined(NDEBUG)
-    hm::utils::PlotContext plot_context(frame.frame_meta);
-    plot_context.plot_rect(
-        //hm::BBox(field_box.x, field_box.y, field_box.x + field_box.width, field_box.y + field_box.height),
-        ctx->arena_box,
-        20,
-        hm::utils::ColorRGB{255, 0, 0});
+  hm::utils::PlotContext plot_context(frame.frame_meta);
+  plot_context.plot_rect(
+      // hm::BBox(field_box.x, field_box.y, field_box.x + field_box.width, field_box.y + field_box.height),
+      ctx->arena_box,
+      20,
+      hm::utils::ColorRGB{255, 0, 0});
 #endif
-
 
   if (!gst_hm_playtracker::has_play_tracker(ctx, frame.frame_meta->source_id)) {
     ctx->arena_box = hm::BBox(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
@@ -570,7 +606,7 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
           hm::utils::ColorRGB{0, 255, 128});
 #endif
     }
-#endif 
+#endif
     gst_hm_playtracker::get_or_create_play_tracker(ctx, frame.frame_meta->source_id, ctx->arena_box);
     play_tracker_ctx = &ctx->play_trackers.at(frame.frame_meta->source_id);
   } else {
@@ -604,11 +640,12 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
       continue;
     }
     const NvDsComp_BboxInfo& tracker_bbox_info = obj_meta->tracker_bbox_info;
-    tracking_boxes.emplace_back(hm::BBox(
-        tracker_bbox_info.org_bbox_coords.left * scale_x,
-        tracker_bbox_info.org_bbox_coords.top * scale_y,
-        (tracker_bbox_info.org_bbox_coords.left + tracker_bbox_info.org_bbox_coords.width) * scale_x,
-        (tracker_bbox_info.org_bbox_coords.top + tracker_bbox_info.org_bbox_coords.height) * scale_y));
+    tracking_boxes.emplace_back(
+        hm::BBox(
+            tracker_bbox_info.org_bbox_coords.left * scale_x,
+            tracker_bbox_info.org_bbox_coords.top * scale_y,
+            (tracker_bbox_info.org_bbox_coords.left + tracker_bbox_info.org_bbox_coords.width) * scale_x,
+            (tracker_bbox_info.org_bbox_coords.top + tracker_bbox_info.org_bbox_coords.height) * scale_y));
     size_t tracking_id = obj_meta->object_id;
     tracking_ids.push_back(tracking_id);
   }
