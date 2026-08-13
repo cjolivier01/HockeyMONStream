@@ -133,6 +133,23 @@ int main() {
       hm::BBox(0, 0, 1280, 720), context->play_trackers[0].play_tracker_config);
   context->play_trackers[0].has_received_tracks = true;
   auto* tracker_before = context->play_trackers[0].play_tracker.get();
+  const float fast_dynamic_scaling_before =
+      context->play_trackers[0].play_tracker_config.living_boxes[0].dynamic_acceleration_scaling;
+  if (!priv.SetProperty(hm::Property("fixed-edge-rotation-angle", "31.0")) ||
+      context->play_trackers[0].play_tracker_config.living_boxes[0].dynamic_acceleration_scaling !=
+          fast_dynamic_scaling_before ||
+      context->play_trackers[0].play_tracker_config.living_boxes[0].arena_angle_from_vertical != 31.0f ||
+      context->play_trackers[0].play_tracker_config.living_boxes[1].arena_angle_from_vertical != 31.0f) {
+    std::cerr << "fixed-edge rotation changed fast-box dynamic acceleration scaling\n";
+    return 11;
+  }
+  if (!priv.SetProperty(hm::Property("dynamic-acceleration-scaling", "2.5")) ||
+      context->play_trackers[0].play_tracker_config.living_boxes[0].dynamic_acceleration_scaling !=
+          fast_dynamic_scaling_before ||
+      context->play_trackers[0].play_tracker_config.living_boxes[1].dynamic_acceleration_scaling != 2.5f) {
+    std::cerr << "dynamic acceleration scaling did not remain follower-specific\n";
+    return 12;
+  }
   tracker_before->set_bboxes({hm::BBox(120, 100, 520, 360), hm::BBox(80, 60, 720, 420)});
   const hm::BBox follower_before = tracker_before->get_live_box(1)->bounding_box();
   const fs::path runtime_cfg = write_runtime_config(tmpdir);

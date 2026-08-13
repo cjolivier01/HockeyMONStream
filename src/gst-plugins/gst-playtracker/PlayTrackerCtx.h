@@ -39,9 +39,8 @@ struct DsPlayTrackerRuntimeTuning {
   bool apply_to_fast_box{false};
   bool apply_to_follower_box{true};
   bool update_motion_tuning{true};
-  bool update_camera_geometry{false};
-  float arena_angle_from_vertical{0.0f};
-  float dynamic_acceleration_scaling{1.0f};
+  std::optional<float> arena_angle_from_vertical;
+  std::optional<float> dynamic_acceleration_scaling;
 };
 
 // Init parameters structure as input, required for instantiating

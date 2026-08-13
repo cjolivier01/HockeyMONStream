@@ -138,12 +138,15 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
   bool reload_context = false;
   std::string key = prop.key;
   std::replace(key.begin(), key.end(), '_', '-');
-  auto apply_camera_geometry = [this](float angle, float dynamic_acceleration_scaling) {
+  auto apply_camera_geometry = [this](
+                                   std::optional<float> angle,
+                                   std::optional<float> dynamic_acceleration_scaling,
+                                   bool apply_to_fast_box,
+                                   bool apply_to_follower_box) {
     DsPlayTrackerRuntimeTuning tuning;
-    tuning.apply_to_fast_box = true;
-    tuning.apply_to_follower_box = true;
+    tuning.apply_to_fast_box = apply_to_fast_box;
+    tuning.apply_to_follower_box = apply_to_follower_box;
     tuning.update_motion_tuning = false;
-    tuning.update_camera_geometry = true;
     tuning.arena_angle_from_vertical = angle;
     tuning.dynamic_acceleration_scaling = dynamic_acceleration_scaling;
     std::lock_guard<std::mutex> lk(context_mu_);
@@ -158,7 +161,7 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     if (!parse_finite_float(prop.value, &angle)) {
       return false;
     }
-    if (!apply_camera_geometry(angle, dynamic_acceleration_scaling_)) {
+    if (!apply_camera_geometry(angle, std::nullopt, true, true)) {
       return false;
     }
     fixed_edge_rotation_angle_left_ = angle;
@@ -168,7 +171,7 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     if (!parse_finite_float(prop.value, &angle)) {
       return false;
     }
-    if (!apply_camera_geometry(0.5f * (angle + fixed_edge_rotation_angle_right_), dynamic_acceleration_scaling_)) {
+    if (!apply_camera_geometry(0.5f * (angle + fixed_edge_rotation_angle_right_), std::nullopt, true, true)) {
       return false;
     }
     fixed_edge_rotation_angle_left_ = angle;
@@ -177,7 +180,7 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     if (!parse_finite_float(prop.value, &angle)) {
       return false;
     }
-    if (!apply_camera_geometry(0.5f * (fixed_edge_rotation_angle_left_ + angle), dynamic_acceleration_scaling_)) {
+    if (!apply_camera_geometry(0.5f * (fixed_edge_rotation_angle_left_ + angle), std::nullopt, true, true)) {
       return false;
     }
     fixed_edge_rotation_angle_right_ = angle;
@@ -186,9 +189,7 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     if (!parse_finite_float(prop.value, &dynamic_acceleration_scaling)) {
       return false;
     }
-    if (!apply_camera_geometry(
-            0.5f * (fixed_edge_rotation_angle_left_ + fixed_edge_rotation_angle_right_),
-            dynamic_acceleration_scaling)) {
+    if (!apply_camera_geometry(std::nullopt, dynamic_acceleration_scaling, false, true)) {
       return false;
     }
     dynamic_acceleration_scaling_ = dynamic_acceleration_scaling;

@@ -420,10 +420,16 @@ absl::Status apply_runtime_tuning_to_tracker(
         applied.max_accel_y = max_accel_y;
       }
     }
-    if (tuning.update_camera_geometry) {
-      box->set_camera_geometry(tuning.arena_angle_from_vertical, tuning.dynamic_acceleration_scaling);
-      applied.arena_angle_from_vertical = tuning.arena_angle_from_vertical;
-      applied.dynamic_acceleration_scaling = tuning.dynamic_acceleration_scaling;
+    if (tuning.arena_angle_from_vertical.has_value() || tuning.dynamic_acceleration_scaling.has_value()) {
+      box->set_camera_geometry(
+          tuning.arena_angle_from_vertical.value_or(applied.arena_angle_from_vertical),
+          tuning.dynamic_acceleration_scaling.value_or(applied.dynamic_acceleration_scaling));
+      if (tuning.arena_angle_from_vertical.has_value()) {
+        applied.arena_angle_from_vertical = *tuning.arena_angle_from_vertical;
+      }
+      if (tuning.dynamic_acceleration_scaling.has_value()) {
+        applied.dynamic_acceleration_scaling = *tuning.dynamic_acceleration_scaling;
+      }
     }
   }
   return absl::OkStatus();
@@ -461,9 +467,10 @@ void merge_box_runtime_tuning(
   merge_optional(&state->max_speed_y, update.max_speed_y);
   merge_optional(&state->max_accel_x, update.max_accel_x);
   merge_optional(&state->max_accel_y, update.max_accel_y);
-  if (update.update_camera_geometry) {
-    state->update_camera_geometry = true;
+  if (update.arena_angle_from_vertical.has_value()) {
     state->arena_angle_from_vertical = update.arena_angle_from_vertical;
+  }
+  if (update.dynamic_acceleration_scaling.has_value()) {
     state->dynamic_acceleration_scaling = update.dynamic_acceleration_scaling;
   }
 }
@@ -781,9 +788,8 @@ absl::StatusOr<DsPlayTrackerRuntimeTuning> DsPlayTrackerLoadRuntimeTuning(const 
         .max_accel_y = read_float(runtime, "max-accel-y"),
         .apply_to_fast_box = apply_to_fast,
         .apply_to_follower_box = apply_to_follower,
-        .update_camera_geometry = read_bool(runtime, "update-camera-geometry", false),
-        .arena_angle_from_vertical = read_float(runtime, "arena-angle-from-vertical").value_or(0.0f),
-        .dynamic_acceleration_scaling = read_float(runtime, "dynamic-acceleration-scaling").value_or(1.0f),
+        .arena_angle_from_vertical = read_float(runtime, "arena-angle-from-vertical"),
+        .dynamic_acceleration_scaling = read_float(runtime, "dynamic-acceleration-scaling"),
     };
   } catch (const std::exception& exc) {
     return absl::InvalidArgumentError(absl::StrCat("invalid playtracker runtime config: ", exc.what()));

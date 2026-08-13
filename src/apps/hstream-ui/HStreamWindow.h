@@ -20,6 +20,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -293,8 +294,8 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, int> camera_defaults_;
   std::vector<PendingRuntimeControl> pending_runtime_controls_;
-  QString scheduled_playtracker_control_id_;
-  int scheduled_playtracker_control_value_{0};
+  std::map<QString, int> scheduled_playtracker_controls_;
+  std::optional<std::map<QString, int>> publishing_playtracker_controls_;
   quint64 scheduled_playtracker_control_generation_{0};
   QString last_playtracker_runtime_snapshot_;
 };

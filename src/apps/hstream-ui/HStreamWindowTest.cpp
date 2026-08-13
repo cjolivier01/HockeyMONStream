@@ -1422,6 +1422,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* log = require_child<QTextEdit>(window, "runtimeLog");
   auto* clear_log = require_child<QPushButton>(window, "clearLogButton");
   auto* main_log_splitter = require_child<QSplitter>(window, "mainLogSplitter");
+  auto* setup_preview_splitter = require_child<QSplitter>(window, "setupPreviewSplitter");
+  auto* output_routing = require_child<QWidget>(window, "outputRoutingGroup");
   auto* preview_tabs = require_child<QTabWidget>(window, "previewTabs");
   auto* program_host = require_child<QWidget>(window, "programLetterboxHost");
   auto* preview_surface = require_child<QWidget>(window, "previewSurface");
@@ -1445,11 +1447,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* setup_row = require_child<QWidget>(window, "setupControlsRow");
   auto* log_panel = require_child<QWidget>(window, "logPanel");
   if (!stop || !start || !pause || !restart || !mode || !control_points || !game_id || !rotate || !max_speed_x ||
-      !render_video || !log || !clear_log || !main_log_splitter || !preview_tabs || !program_host || !preview_surface ||
-      !preview_target || !stitched_surface || !camera1_host || !camera1_surface || !camera1_target || !camera1_focus ||
-      !camera2_surface || !camera3_surface || !external_notice || !camera1_notice || !stitched_status ||
-      !program_controls || !stitched_controls || !program_control_tabs || !stitched_control_tabs || !program_focus ||
-      !top_bar || !setup_row || !log_panel) {
+      !render_video || !log || !clear_log || !main_log_splitter || !setup_preview_splitter || !output_routing ||
+      !preview_tabs || !program_host || !preview_surface || !preview_target || !stitched_surface || !camera1_host ||
+      !camera1_surface || !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface ||
+      !external_notice || !camera1_notice || !stitched_status || !program_controls || !stitched_controls ||
+      !program_control_tabs || !stitched_control_tabs || !program_focus || !top_bar || !setup_row || !log_panel) {
     return false;
   }
 
@@ -1458,6 +1460,22 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Main content and runtime log should be separated by a draggable vertical splitter")) {
     return false;
   }
+  const int preview_height_before_setup_collapse = preview_tabs->height();
+  setup_preview_splitter->setSizes({0, setup_preview_splitter->height()});
+  QApplication::processEvents();
+  if (!expect(
+          setup_preview_splitter->orientation() == Qt::Vertical && setup_preview_splitter->count() == 2 &&
+              setup_preview_splitter->sizes().at(0) == 0 &&
+              preview_tabs->height() >= preview_height_before_setup_collapse,
+          "Dragging the setup splitter upward should collapse Video Sets and grow the video preview") ||
+      !expect(
+          output_routing->sizePolicy().verticalPolicy() == QSizePolicy::Maximum &&
+              output_routing->height() <= output_routing->sizeHint().height() + 2,
+          "Output Routing should use compact natural row spacing instead of stretching vertically")) {
+    return false;
+  }
+  setup_preview_splitter->setSizes({240, 440});
+  QApplication::processEvents();
   if (!expect(
           program_controls->isAncestorOf(max_speed_x) && stitched_controls->isAncestorOf(rotate) &&
               !camera1_host->isAncestorOf(max_speed_x) && !camera1_host->isAncestorOf(rotate) &&
@@ -2332,6 +2350,7 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* fixed_edge_left = require_child<QSlider>(window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
   auto* fixed_edge_right = require_child<QSlider>(window, "cameraSlider_Right_Fixed_Edge_Rotation_Angle_x10");
   auto* stop_delay = require_child<QSlider>(window, "cameraSlider_Stop_Direction_Change_Delay_Frames");
+  auto* max_accel_x = require_child<QSlider>(window, "cameraSlider_Max_Accel_X_x10");
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
   auto* max_speed_y = require_child<QSlider>(window, "cameraSlider_Max_Speed_Y_x10");
   auto* reset = require_child<QPushButton>(window, "resetCameraButton");
@@ -2341,8 +2360,8 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
-  if (!rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right || !stop_delay || !max_speed_x ||
-      !max_speed_y || !reset || !save || !create || !game_id || !start || !stop || !mode) {
+  if (!rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right || !stop_delay || !max_accel_x ||
+      !max_speed_x || !max_speed_y || !reset || !save || !create || !game_id || !start || !stop || !mode) {
     return false;
   }
 
@@ -2740,6 +2759,88 @@ bool test_camera_controls(HStreamWindow* window) {
     std::cerr << live_playtracker << '\n';
     return false;
   }
+  max_speed_x->setValue(510);
+  max_accel_x->setValue(35);
+  for (int i = 0; i < 50; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+    live_playtracker_config = newest_live_playtracker_config();
+    live_playtracker =
+        fs::exists(live_playtracker_config) ? YAML::LoadFile(live_playtracker_config.string()) : YAML::Node();
+    YAML::Node rapid_speed_x;
+    YAML::Node rapid_accel_x;
+    if (lookup_yaml_path(live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-speed-x"}, &rapid_speed_x) &&
+        lookup_yaml_path(live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-accel-x"}, &rapid_accel_x) &&
+        rapid_speed_x.as<double>() == 51.0 && rapid_accel_x.as<double>() == 3.5) {
+      break;
+    }
+  }
+  YAML::Node rapid_speed_x;
+  YAML::Node rapid_accel_x;
+  const bool coalesced_rapid_controls =
+      lookup_yaml_path(live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-speed-x"}, &rapid_speed_x) &&
+      lookup_yaml_path(live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-accel-x"}, &rapid_accel_x) &&
+      rapid_speed_x.as<double>() == 51.0 && rapid_accel_x.as<double>() == 3.5;
+  for (int i = 0; i < 50 &&
+       (!window->logText().contains("camera control Max_Speed_X_x10=510 apply=live") ||
+        !window->logText().contains("camera control Max_Accel_X_x10=35 apply=live"));
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(coalesced_rapid_controls, "Rapid distinct live controls should be coalesced without dropping either") ||
+      !expect(
+          window->logText().contains("camera control Max_Speed_X_x10=510 apply=live") &&
+              window->logText().contains("camera control Max_Accel_X_x10=35 apply=live"),
+          "Every control coalesced into one snapshot should be acknowledged")) {
+    std::cerr << live_playtracker << '\n';
+    activate(stop);
+    return false;
+  }
+
+  activate(reset);
+  for (int i = 0; i < 50; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+    live_playtracker_config = newest_live_playtracker_config();
+    live_playtracker =
+        fs::exists(live_playtracker_config) ? YAML::LoadFile(live_playtracker_config.string()) : YAML::Node();
+    YAML::Node reset_runtime_speed_x;
+    YAML::Node reset_runtime_speed_y;
+    YAML::Node reset_runtime_accel_x;
+    if (lookup_yaml_path(
+            live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-speed-x"}, &reset_runtime_speed_x) &&
+        lookup_yaml_path(
+            live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-speed-y"}, &reset_runtime_speed_y) &&
+        lookup_yaml_path(
+            live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-accel-x"}, &reset_runtime_accel_x) &&
+        reset_runtime_speed_x.as<double>() == 0.0 && reset_runtime_speed_y.as<double>() == 0.0 &&
+        reset_runtime_accel_x.as<double>() == 0.0) {
+      break;
+    }
+  }
+  YAML::Node reset_runtime_speed_x;
+  YAML::Node reset_runtime_speed_y;
+  YAML::Node reset_runtime_accel_x;
+  const bool reset_coalesced_all_dirty_controls =
+      lookup_yaml_path(
+          live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-speed-x"}, &reset_runtime_speed_x) &&
+      lookup_yaml_path(
+          live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-speed-y"}, &reset_runtime_speed_y) &&
+      lookup_yaml_path(
+          live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-accel-x"}, &reset_runtime_accel_x) &&
+      reset_runtime_speed_x.as<double>() == 0.0 && reset_runtime_speed_y.as<double>() == 0.0 &&
+      reset_runtime_accel_x.as<double>() == 0.0;
+  if (!expect(
+          reset_coalesced_all_dirty_controls,
+          "Reset Camera during playback should send every changed playtracker control back to configured values")) {
+    std::cerr << live_playtracker << '\n';
+    activate(stop);
+    return false;
+  }
+
+  max_speed_x->setValue(460);
+  max_speed_y->setValue(480);
   max_speed_y->setValue(0);
   for (int i = 0; i < 50; ++i) {
     QApplication::processEvents();
