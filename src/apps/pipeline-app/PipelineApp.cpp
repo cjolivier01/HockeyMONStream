@@ -3157,8 +3157,18 @@ bool PipelineApplication::set_element_properties_runtime(
           value.c_str());
       return false;
     }
+    if (assignments.size() > 1 && (assignment.pspec->flags & G_PARAM_READABLE) == 0) {
+      pending.push_back(std::move(assignment));
+      g_printerr(
+          "runtime command failed: property has no rollback snapshot: %s.%s\n",
+          element_name.c_str(),
+          property_name.c_str());
+      return false;
+    }
     g_value_init(&assignment.previous, G_PARAM_SPEC_VALUE_TYPE(assignment.pspec));
-    g_object_get_property(G_OBJECT(element), property_name.c_str(), &assignment.previous);
+    if ((assignment.pspec->flags & G_PARAM_READABLE) != 0) {
+      g_object_get_property(G_OBJECT(element), property_name.c_str(), &assignment.previous);
+    }
     pending.push_back(std::move(assignment));
   }
   size_t applied = 0;

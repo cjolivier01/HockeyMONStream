@@ -3302,6 +3302,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       return;
     }
     ++x11_preview_attempts;
+    interaction_error.clear();
     QProcess* pipeline = window->findChild<QProcess*>();
     if (!pipeline || pipeline->state() == QProcess::NotRunning) {
       interaction_error = "pipeline process is unavailable for diagnostic preview capture";
@@ -3319,7 +3320,8 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       const QString failure = QString("runtime preview frame failed channel=%1 path=%2").arg(channel, output_path);
       const QString unavailable =
           QString("runtime preview frame unavailable channel=%1 path=%2").arg(channel, output_path);
-      for (int i = 0; i < 100; ++i) {
+      const qint64 capture_deadline_ms = std::min<qint64>(deadline_ms, timer.elapsed() + 5000);
+      while (timer.elapsed() < capture_deadline_ms) {
         QApplication::processEvents();
         if (window->completeLogText().contains(completion) && QFileInfo(output_path).size() > 0)
           return inspect_native_preview_capture(output_path);
@@ -3330,44 +3332,44 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       interaction_error = QString("diagnostic %1 preview capture did not complete").arg(channel);
       return NativePreviewCapture{};
     };
+    auto wait_for_renderer = [&](QWidget* surface) {
+      const qint64 renderer_deadline_ms = std::min<qint64>(deadline_ms, timer.elapsed() + 5000);
+      while (timer.elapsed() < renderer_deadline_ms &&
+             surface->property("previewRendererState").toString() != "ready") {
+        QApplication::processEvents();
+        QTest::qWait(50);
+      }
+      return surface->property("previewRendererState").toString() == "ready";
+    };
     preview_tabs->setCurrentIndex(0);
-    for (int i = 0; i < 100 && program_surface->property("previewRendererState").toString() != "ready"; ++i) {
-      QApplication::processEvents();
-      QTest::qWait(50);
-    }
-    program_target_acknowledged = program_surface->property("previewRendererState").toString() == "ready";
+    program_target_acknowledged = wait_for_renderer(program_surface);
     program_preview = capture_channel("program", "program-preview-surface.png");
 
+    if (timer.elapsed() >= deadline_ms)
+      return;
     preview_tabs->setCurrentIndex(2);
     QApplication::processEvents();
-    for (int i = 0; i < 100 && camera1_surface->property("previewRendererState").toString() != "ready"; ++i) {
-      QApplication::processEvents();
-      QTest::qWait(50);
-    }
-    camera1_target_acknowledged = camera1_surface->property("previewRendererState").toString() == "ready";
+    camera1_target_acknowledged = wait_for_renderer(camera1_surface);
     camera1_preview = capture_channel("source0", "camera1-preview-surface.png");
 
+    if (timer.elapsed() >= deadline_ms)
+      return;
     preview_tabs->setCurrentIndex(1);
-    for (int i = 0; i < 100 && stitched_surface->property("previewRendererState").toString() != "ready"; ++i) {
-      QApplication::processEvents();
-      QTest::qWait(50);
-    }
-    stitched_target_acknowledged = stitched_surface->property("previewRendererState").toString() == "ready";
+    stitched_target_acknowledged = wait_for_renderer(stitched_surface);
     stitched_preview = capture_channel("stitched", "stitched-preview-surface.png");
 
+    if (timer.elapsed() >= deadline_ms)
+      return;
     preview_tabs->setCurrentIndex(0);
-    for (int i = 0; i < 100 && program_surface->property("previewRendererState").toString() != "ready"; ++i) {
-      QApplication::processEvents();
-      QTest::qWait(50);
-    }
-    program_target_acknowledged =
-        program_target_acknowledged || program_surface->property("previewRendererState").toString() == "ready";
+    program_target_acknowledged = program_target_acknowledged || wait_for_renderer(program_surface);
     x11_previews_captured = program_target_acknowledged && stitched_target_acknowledged &&
         camera1_target_acknowledged && program_preview.passed && stitched_preview.passed && camera1_preview.passed;
     if (!x11_previews_captured && interaction_error.isEmpty())
       interaction_error = "one or more GPU preview captures were blank or not acknowledged";
     if (!x11_previews_captured) {
       next_x11_preview_attempt_ms = timer.elapsed() + 500;
+    } else {
+      interaction_error.clear();
     }
   };
   const QRegularExpression positive_fps(R"(\*\*PERF:\s+([0-9]+(?:\.[0-9]+)?))");
