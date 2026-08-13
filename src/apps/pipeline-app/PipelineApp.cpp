@@ -3161,40 +3161,6 @@ bool PipelineApplication::set_element_properties_runtime(
     g_object_get_property(G_OBJECT(element), property_name.c_str(), &assignment.previous);
     pending.push_back(std::move(assignment));
   }
-  std::vector<std::pair<GstElement*, GstState>> pipelines;
-  for (const auto& app : app_ctx) {
-    if (pending.size() == 1) {
-      break;
-    }
-    if (!app || !app->pipeline.pipeline) {
-      continue;
-    }
-    GstState state = GST_STATE_NULL;
-    gst_element_get_state(app->pipeline.pipeline, &state, nullptr, 0);
-    pipelines.emplace_back(app->pipeline.pipeline, state);
-  }
-  auto resume = absl::MakeCleanup([&]() {
-    for (const auto& [pipeline, state] : pipelines) {
-      if (state == GST_STATE_PLAYING) {
-        gst_element_set_state(pipeline, GST_STATE_PLAYING);
-      }
-    }
-  });
-  for (const auto& [pipeline, state] : pipelines) {
-    if (state == GST_STATE_PLAYING && gst_element_set_state(pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
-      g_printerr("runtime command failed: could not pause pipeline for atomic property update\n");
-      return false;
-    }
-  }
-  for (const auto& [pipeline, state] : pipelines) {
-    if (state == GST_STATE_PLAYING) {
-      const GstStateChangeReturn paused = gst_element_get_state(pipeline, nullptr, nullptr, 5 * GST_SECOND);
-      if (paused != GST_STATE_CHANGE_SUCCESS && paused != GST_STATE_CHANGE_NO_PREROLL) {
-        g_printerr("runtime command failed: pipeline did not pause for atomic property update\n");
-        return false;
-      }
-    }
-  }
   size_t applied = 0;
   for (; applied < pending.size(); ++applied) {
     PendingAssignment& assignment = pending[applied];
