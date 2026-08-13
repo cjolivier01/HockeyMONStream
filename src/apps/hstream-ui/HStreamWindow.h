@@ -86,7 +86,7 @@ class HStreamWindow : public QMainWindow {
   void buildGameControls(QVBoxLayout* root);
   void buildPreviewPane(QVBoxLayout* root);
   void buildOutputControls(QVBoxLayout* parent);
-  void buildCameraControls(QVBoxLayout* parent);
+  void buildCameraControls(QVBoxLayout* parent, bool program_stage);
   void buildLog(QVBoxLayout* root);
 
   void startPipeline();
@@ -113,7 +113,8 @@ class HStreamWindow : public QMainWindow {
   QWidget* previewSurfaceForChannel(const QString& channel) const;
   QWidget* previewTargetForChannel(const QString& channel) const;
   void schedulePreviewReadyTimeout(const QString& channel, quint64 generation, int timeout_ms);
-  void togglePreviewFullscreen(int tab_index);
+  void togglePreviewFocus(int tab_index);
+  void setPreviewFocusMode(bool focused, int tab_index);
   void restartStage();
   void savePreset();
   void resetCameraControls();
@@ -227,6 +228,9 @@ class HStreamWindow : public QMainWindow {
   QRadioButton* role_right_{nullptr};
   QTextEdit* log_{nullptr};
   QTabWidget* preview_tabs_{nullptr};
+  QWidget* top_bar_{nullptr};
+  QWidget* setup_panel_{nullptr};
+  QWidget* log_panel_{nullptr};
   QWidget* preview_surface_{nullptr};
   QWidget* preview_render_target_{nullptr};
   QWidget* stitched_surface_{nullptr};
@@ -234,14 +238,14 @@ class HStreamWindow : public QMainWindow {
   std::vector<QWidget*> camera_preview_surfaces_;
   std::vector<QWidget*> camera_preview_render_targets_;
   std::vector<QLabel*> camera_preview_notices_;
-  QTabWidget* camera_tabs_{nullptr};
+  QTabWidget* program_control_tabs_{nullptr};
+  QTabWidget* stitched_control_tabs_{nullptr};
+  std::vector<QWidget*> preview_hosts_;
   QVBoxLayout* output_list_{nullptr};
   QProcess* pipeline_process_{nullptr};
   QPushButton* start_button_{nullptr};
   QPushButton* pause_button_{nullptr};
   QPushButton* stop_button_{nullptr};
-  QPushButton* program_fullscreen_button_{nullptr};
-  QPushButton* stitched_fullscreen_button_{nullptr};
   QCheckBox* render_video_toggle_{nullptr};
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
@@ -249,7 +253,8 @@ class HStreamWindow : public QMainWindow {
   bool pipeline_render_embedded_{false};
   bool calibration_pending_{false};
   bool calibration_dialog_failed_{false};
-  bool preview_fullscreen_{false};
+  bool preview_focus_mode_{false};
+  int focused_preview_tab_{-1};
   quint64 preview_generation_{1};
   QString active_preview_channel_;
   QString pending_preview_channel_;

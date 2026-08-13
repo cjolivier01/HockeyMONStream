@@ -1427,21 +1427,77 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* stitched_surface = require_child<QWidget>(window, "stitchedPreviewSurface");
   auto* camera1_host = require_child<QWidget>(window, "camera1LetterboxHost");
   auto* camera1_surface = require_child<QWidget>(window, "camera1PreviewSurface");
+  auto* camera1_target = require_child<QWidget>(window, "camera1PreviewRenderTarget");
+  auto* camera1_focus = require_child<QPushButton>(window, "camera1FocusButton");
   auto* camera2_surface = require_child<QWidget>(window, "camera2PreviewSurface");
   auto* camera3_surface = require_child<QWidget>(window, "camera3PreviewSurface");
   auto* external_notice = require_child<QLabel>(window, "programExternalRenderNotice");
   auto* camera1_notice = require_child<QLabel>(window, "camera1ExternalRenderNotice");
   auto* stitched_status = require_child<QLabel>(window, "stitchedPreviewStatusLabel");
+  auto* program_controls = require_child<QWidget>(window, "programAssociatedControls");
+  auto* stitched_controls = require_child<QWidget>(window, "stitchedAssociatedControls");
+  auto* program_control_tabs = require_child<QTabWidget>(window, "programControlTabs");
+  auto* stitched_control_tabs = require_child<QTabWidget>(window, "stitchedControlTabs");
+  auto* program_focus = require_child<QPushButton>(window, "programFocusButton");
+  auto* top_bar = require_child<QWidget>(window, "topBarPanel");
+  auto* setup_row = require_child<QWidget>(window, "setupControlsRow");
+  auto* log_panel = require_child<QWidget>(window, "logPanel");
   if (!stop || !start || !pause || !restart || !mode || !control_points || !game_id || !rotate || !max_speed_x ||
       !render_video || !log || !clear_log || !main_log_splitter || !preview_tabs || !program_host || !preview_surface ||
-      !preview_target || !stitched_surface || !camera1_host || !camera1_surface || !camera2_surface ||
-      !camera3_surface || !external_notice || !camera1_notice || !stitched_status) {
+      !preview_target || !stitched_surface || !camera1_host || !camera1_surface || !camera1_target || !camera1_focus ||
+      !camera2_surface || !camera3_surface || !external_notice || !camera1_notice || !stitched_status ||
+      !program_controls || !stitched_controls || !program_control_tabs || !stitched_control_tabs || !program_focus ||
+      !top_bar || !setup_row || !log_panel) {
     return false;
   }
 
   if (!expect(
           main_log_splitter->orientation() == Qt::Vertical && main_log_splitter->count() == 2,
           "Main content and runtime log should be separated by a draggable vertical splitter")) {
+    return false;
+  }
+  if (!expect(
+          program_controls->isAncestorOf(max_speed_x) && stitched_controls->isAncestorOf(rotate) &&
+              !camera1_host->isAncestorOf(max_speed_x) && !camera1_host->isAncestorOf(rotate) &&
+              program_control_tabs->count() == 4 && stitched_control_tabs->count() == 2,
+          "Controls must live in the earliest preview tab whose frames reflect their pipeline stage")) {
+    return false;
+  }
+  QTest::mouseDClick(preview_target, Qt::LeftButton);
+  QApplication::processEvents();
+  if (!expect(
+          !top_bar->isVisible() && !setup_row->isVisible() && !log_panel->isVisible() &&
+              !preview_tabs->tabBar()->isVisible() && !program_controls->isVisible() && program_host->isVisible() &&
+              !window->isFullScreen(),
+          "Double-clicking a video should focus it across the HStream app area")) {
+    return false;
+  }
+  activate(program_focus);
+  if (!expect(
+          top_bar->isVisible() && setup_row->isVisible() && log_panel->isVisible() &&
+              preview_tabs->tabBar()->isVisible() && program_controls->isVisible(),
+          "The top-right restore icon should restore the normal HStream layout")) {
+    return false;
+  }
+  preview_tabs->setCurrentIndex(2);
+  QApplication::processEvents();
+  QTest::mouseDClick(camera1_target, Qt::LeftButton);
+  QApplication::processEvents();
+  if (!expect(
+          camera1_host->isVisible() && !preview_tabs->tabBar()->isVisible() && !window->isFullScreen(),
+          "Every camera video should support in-app focus mode with a visible restore icon")) {
+    return false;
+  }
+  QTest::mouseDClick(camera1_target, Qt::LeftButton);
+  QApplication::processEvents();
+  if (!expect(
+          preview_tabs->tabBar()->isVisible() && top_bar->isVisible() && !window->isFullScreen(),
+          "Double-clicking a focused camera video should restore the normal layout")) {
+    return false;
+  }
+  if (!expect(
+          window->findChild<QLineEdit*>("pluginPropertyEdit") == nullptr,
+          "The inert generic plugin field should not be presented as a working video control")) {
     return false;
   }
   if (!expect(
@@ -1512,12 +1568,13 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   YAML::Node fresh_program_status;
   const bool has_fresh_program_status =
       lookup_yaml_path(fresh_program_saved, {"hstream_ui", "stitching_calibration", "status"}, &fresh_program_status);
-  const bool fresh_program_tracked =
-      expect(
-          window->logText().count("stitching calibration clean command") == fresh_program_clean_commands + 1,
-          "A fresh Program run should establish tracked one-pass stitching calibration (before=" +
-              std::to_string(fresh_program_clean_commands) +
-              ", after=" + std::to_string(window->logText().count("stitching calibration clean command")) + ")") &&
+  const bool
+      fresh_program_tracked =
+          expect(
+              window->logText().count("stitching calibration clean command") == fresh_program_clean_commands + 1,
+              "A fresh Program run should establish tracked one-pass stitching calibration (before=" +
+                  std::to_string(fresh_program_clean_commands) +
+                  ", after=" + std::to_string(window->logText().count("stitching calibration clean command")) + ")") &&
       expect(has_fresh_program_status && fresh_program_status.IsScalar() &&
                  fresh_program_status.as<std::string>() == "complete",
              "A fresh Program one-pass calibration should persist completed state") &&

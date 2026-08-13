@@ -17,6 +17,7 @@
 #include <QtCore/Qt>
 #include <QtGui/QCloseEvent>
 #include <QtGui/QGuiApplication>
+#include <QtGui/QMouseEvent>
 #include <QtGui/QPaintEngine>
 #include <QtGui/QPalette>
 #include <QtGui/QResizeEvent>
@@ -40,6 +41,7 @@
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QStyle>
+#include <QtWidgets/QTabBar>
 
 #include <yaml-cpp/yaml.h>
 
@@ -57,6 +59,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -215,6 +218,40 @@ class NativeVideoTarget : public QWidget {
   QPaintEngine* paintEngine() const override {
     return nullptr;
   }
+
+  void setFocusToggleCallback(std::function<void()> callback) {
+    focus_toggle_callback_ = std::move(callback);
+  }
+
+  void setFocusButton(QPushButton* button) {
+    focus_button_ = button;
+  }
+
+ protected:
+  void mouseDoubleClickEvent(QMouseEvent* event) override {
+    if (event->button() == Qt::LeftButton && focus_toggle_callback_) {
+      focus_toggle_callback_();
+      event->accept();
+      return;
+    }
+    QWidget::mouseDoubleClickEvent(event);
+  }
+
+  void mouseReleaseEvent(QMouseEvent* event) override {
+    if (event->button() == Qt::LeftButton && focus_button_) {
+      const QPoint button_position = focus_button_->mapFromGlobal(event->globalPosition().toPoint());
+      if (focus_button_->rect().contains(button_position)) {
+        focus_button_->click();
+        event->accept();
+        return;
+      }
+    }
+    QWidget::mouseReleaseEvent(event);
+  }
+
+ private:
+  std::function<void()> focus_toggle_callback_;
+  QPushButton* focus_button_{nullptr};
 };
 
 class LetterboxRenderHost : public QWidget {
@@ -222,7 +259,7 @@ class LetterboxRenderHost : public QWidget {
   explicit LetterboxRenderHost(double aspect_ratio, QWidget* parent = nullptr)
       : QWidget(parent), aspect_ratio_(aspect_ratio > 0.0 ? aspect_ratio : 16.0 / 9.0) {
     setObjectName("letterboxRenderHost");
-    setMinimumHeight(420);
+    setMinimumHeight(260);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     QPalette pal = palette();
     pal.setColor(QPalette::Window, Qt::black);
@@ -232,6 +269,22 @@ class LetterboxRenderHost : public QWidget {
     render_surface_->setAutoFillBackground(true);
     render_surface_->setPalette(pal);
     render_target_ = new NativeVideoTarget(render_surface_);
+    focus_button_ = new QPushButton(render_surface_);
+    focus_button_->setFixedSize(36, 36);
+    focus_button_->setToolTip("Focus this video (double-click)");
+    focus_button_->setText(QStringLiteral("⛶"));
+    QFont focus_button_font = focus_button_->font();
+    focus_button_font.setPointSize(17);
+    focus_button_->setFont(focus_button_font);
+    focus_button_->setStyleSheet(
+        "QPushButton { background: rgba(15, 23, 42, 210); border: 1px solid rgba(255, 255, 255, 100); "
+        "border-radius: 5px; color: white; padding: 0; }"
+        "QPushButton:hover { background: rgba(30, 64, 175, 235); }");
+    render_target_->setFocusButton(focus_button_);
+    connect(focus_button_, &QPushButton::clicked, this, [this]() {
+      if (focus_toggle_callback_)
+        focus_toggle_callback_();
+    });
   }
 
   QWidget* renderSurface() const {
@@ -242,7 +295,32 @@ class LetterboxRenderHost : public QWidget {
     return render_target_;
   }
 
+  QPushButton* focusButton() const {
+    return focus_button_;
+  }
+
+  void setFocusToggleCallback(std::function<void()> callback) {
+    focus_toggle_callback_ = std::move(callback);
+    render_target_->setFocusToggleCallback(focus_toggle_callback_);
+  }
+
+  void setFocused(bool focused) {
+    focus_button_->setText(focused ? QStringLiteral("↙") : QStringLiteral("⛶"));
+    focus_button_->setToolTip(
+        focused ? "Restore the HStream controls (double-click)" : "Focus this video (double-click)");
+    focus_button_->raise();
+  }
+
  protected:
+  void mouseDoubleClickEvent(QMouseEvent* event) override {
+    if (event->button() == Qt::LeftButton && focus_toggle_callback_) {
+      focus_toggle_callback_();
+      event->accept();
+      return;
+    }
+    QWidget::mouseDoubleClickEvent(event);
+  }
+
   void resizeEvent(QResizeEvent* event) override {
     QWidget::resizeEvent(event);
     if (!render_surface_) {
@@ -263,12 +341,17 @@ class LetterboxRenderHost : public QWidget {
     const int y = (available.height() - height) / 2;
     render_surface_->setGeometry(x, y, width, height);
     render_target_->setGeometry(0, 0, width, height);
+    constexpr int kButtonMargin = 10;
+    focus_button_->move(width - focus_button_->width() - kButtonMargin, kButtonMargin);
+    focus_button_->raise();
   }
 
  private:
   double aspect_ratio_;
   QWidget* render_surface_{nullptr};
-  QWidget* render_target_{nullptr};
+  NativeVideoTarget* render_target_{nullptr};
+  QPushButton* focus_button_{nullptr};
+  std::function<void()> focus_toggle_callback_;
 };
 
 QString ansi_color(int code) {
@@ -1189,7 +1272,8 @@ int HStreamWindow::cameraControlValue(const QString& id) const {
 }
 
 int HStreamWindow::cameraTabCount() const {
-  return camera_tabs_ ? camera_tabs_->count() : 0;
+  return (program_control_tabs_ ? program_control_tabs_->count() : 0) +
+      (stitched_control_tabs_ ? stitched_control_tabs_->count() : 0);
 }
 
 void HStreamWindow::buildUi() {
@@ -1202,24 +1286,31 @@ void HStreamWindow::buildUi() {
   root->setContentsMargins(12, 10, 12, 10);
   root->setSpacing(10);
 
-  buildTopBar(root);
+  top_bar_ = new QWidget(central);
+  top_bar_->setObjectName("topBarPanel");
+  auto* top_bar_layout = new QVBoxLayout(top_bar_);
+  top_bar_layout->setContentsMargins(0, 0, 0, 0);
+  buildTopBar(top_bar_layout);
+  root->addWidget(top_bar_);
 
   auto* content_splitter = new QSplitter(Qt::Vertical);
   content_splitter->setObjectName("mainLogSplitter");
   content_splitter->setChildrenCollapsible(false);
 
-  auto* main_container = new QWidget();
-  auto* main_layout = new QVBoxLayout(main_container);
+  setup_panel_ = new QWidget();
+  setup_panel_->setObjectName("setupPanel");
+  auto* main_layout = new QVBoxLayout(setup_panel_);
   main_layout->setContentsMargins(0, 0, 0, 0);
   buildMainArea(main_layout);
 
-  auto* log_container = new QWidget();
-  auto* log_layout = new QVBoxLayout(log_container);
+  log_panel_ = new QWidget();
+  log_panel_->setObjectName("logPanel");
+  auto* log_layout = new QVBoxLayout(log_panel_);
   log_layout->setContentsMargins(0, 0, 0, 0);
   buildLog(log_layout);
 
-  content_splitter->addWidget(main_container);
-  content_splitter->addWidget(log_container);
+  content_splitter->addWidget(setup_panel_);
+  content_splitter->addWidget(log_panel_);
   content_splitter->setStretchFactor(0, 4);
   content_splitter->setStretchFactor(1, 1);
   content_splitter->setSizes({680, 170});
@@ -1317,26 +1408,23 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
 }
 
 void HStreamWindow::buildMainArea(QVBoxLayout* root) {
-  auto* splitter = new QSplitter(Qt::Horizontal);
-  splitter->setObjectName("mainSplitter");
-
-  auto* left = new QWidget();
-  auto* left_layout = new QVBoxLayout(left);
-  left_layout->setContentsMargins(0, 0, 0, 0);
-  buildGameControls(left_layout);
-  buildPreviewPane(left_layout);
-
-  auto* right = new QWidget();
-  auto* right_layout = new QVBoxLayout(right);
-  right_layout->setContentsMargins(0, 0, 0, 0);
-  buildOutputControls(right_layout);
-  buildCameraControls(right_layout);
-
-  splitter->addWidget(left);
-  splitter->addWidget(right);
-  splitter->setStretchFactor(0, 3);
-  splitter->setStretchFactor(1, 1);
-  root->addWidget(splitter, 1);
+  auto* setup_row = new QWidget();
+  setup_row->setObjectName("setupControlsRow");
+  auto* setup_layout = new QHBoxLayout(setup_row);
+  setup_layout->setContentsMargins(0, 0, 0, 0);
+  auto* game_column = new QWidget();
+  auto* game_layout = new QVBoxLayout(game_column);
+  game_layout->setContentsMargins(0, 0, 0, 0);
+  buildGameControls(game_layout);
+  auto* output_column = new QWidget();
+  output_column->setMaximumWidth(360);
+  auto* output_layout = new QVBoxLayout(output_column);
+  output_layout->setContentsMargins(0, 0, 0, 0);
+  buildOutputControls(output_layout);
+  setup_layout->addWidget(game_column, 1);
+  setup_layout->addWidget(output_column);
+  root->addWidget(setup_row);
+  buildPreviewPane(root);
 }
 
 void HStreamWindow::buildGameControls(QVBoxLayout* root) {
@@ -1455,10 +1543,17 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   preview_tabs_ = new QTabWidget();
   preview_tabs_->setObjectName("previewTabs");
 
+  auto configure_host = [this](LetterboxRenderHost* host, int tab_index, const QString& button_name) {
+    host->focusButton()->setObjectName(button_name);
+    host->setFocusToggleCallback([this, tab_index]() { togglePreviewFocus(tab_index); });
+    preview_hosts_.push_back(host);
+  };
+
   auto* program = new QWidget();
   auto* layout = new QVBoxLayout(program);
   auto* preview_host = new LetterboxRenderHost(16.0 / 9.0);
   preview_host->setObjectName("programLetterboxHost");
+  configure_host(preview_host, 0, "programFocusButton");
   preview_surface_ = preview_host->renderSurface();
   preview_surface_->setObjectName("previewSurface");
   preview_render_target_ = preview_host->renderTarget();
@@ -1475,19 +1570,22 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
 
   preview_status_ = new QLabel("Pipeline stopped");
   preview_status_->setObjectName("previewStatusLabel");
-  program_fullscreen_button_ = new QPushButton("Fullscreen");
-  program_fullscreen_button_->setObjectName("programFullscreenButton");
-  connect(program_fullscreen_button_, &QPushButton::clicked, this, [this]() { togglePreviewFullscreen(0); });
   auto* program_footer = new QHBoxLayout();
   program_footer->addWidget(preview_status_, 1);
-  program_footer->addWidget(program_fullscreen_button_);
   layout->addWidget(preview_host, 1);
   layout->addLayout(program_footer);
+  auto* program_controls = new QWidget();
+  program_controls->setObjectName("programAssociatedControls");
+  auto* program_controls_layout = new QVBoxLayout(program_controls);
+  program_controls_layout->setContentsMargins(0, 0, 0, 0);
+  buildCameraControls(program_controls_layout, true);
+  layout->addWidget(program_controls);
 
   auto* stitched = new QWidget();
   auto* stitched_layout = new QVBoxLayout(stitched);
   auto* stitched_host = new LetterboxRenderHost(16.0 / 9.0);
   stitched_host->setObjectName("stitchedLetterboxHost");
+  configure_host(stitched_host, 1, "stitchedFocusButton");
   stitched_surface_ = stitched_host->renderSurface();
   stitched_surface_->setObjectName("stitchedPreviewSurface");
   stitched_render_target_ = stitched_host->renderTarget();
@@ -1503,14 +1601,16 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   stitched_notice_layout->addWidget(stitched_external_notice_);
   stitched_status_ = new QLabel("Stitched canvas preview");
   stitched_status_->setObjectName("stitchedPreviewStatusLabel");
-  stitched_fullscreen_button_ = new QPushButton("Fullscreen");
-  stitched_fullscreen_button_->setObjectName("stitchedFullscreenButton");
-  connect(stitched_fullscreen_button_, &QPushButton::clicked, this, [this]() { togglePreviewFullscreen(1); });
   auto* stitched_footer = new QHBoxLayout();
   stitched_footer->addWidget(stitched_status_, 1);
-  stitched_footer->addWidget(stitched_fullscreen_button_);
   stitched_layout->addWidget(stitched_host, 1);
   stitched_layout->addLayout(stitched_footer);
+  auto* stitched_controls = new QWidget();
+  stitched_controls->setObjectName("stitchedAssociatedControls");
+  auto* stitched_controls_layout = new QVBoxLayout(stitched_controls);
+  stitched_controls_layout->setContentsMargins(0, 0, 0, 0);
+  buildCameraControls(stitched_controls_layout, false);
+  stitched_layout->addWidget(stitched_controls);
 
   preview_tabs_->addTab(program, "Program");
   preview_tabs_->addTab(stitched, "Stitched");
@@ -1519,6 +1619,7 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
     auto* camera_layout = new QVBoxLayout(camera);
     auto* camera_host = new LetterboxRenderHost(16.0 / 9.0);
     camera_host->setObjectName(QString("camera%1LetterboxHost").arg(camera_index + 1));
+    configure_host(camera_host, camera_index + 2, QString("camera%1FocusButton").arg(camera_index + 1));
     QWidget* camera_surface = camera_host->renderSurface();
     camera_surface->setObjectName(QString("camera%1PreviewSurface").arg(camera_index + 1));
     camera_preview_surfaces_.push_back(camera_surface);
@@ -1538,7 +1639,10 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
     camera_notice_layout->addWidget(camera_notice);
 
     camera_layout->addWidget(camera_host, 1);
-    camera_layout->addWidget(new QLabel(QString("Camera %1 source preview").arg(camera_index + 1)));
+    auto* camera_status = new QLabel(
+        QString("Camera %1 decoded source preview — downstream controls do not alter this tab").arg(camera_index + 1));
+    camera_status->setObjectName(QString("camera%1PreviewStatusLabel").arg(camera_index + 1));
+    camera_layout->addWidget(camera_status);
     preview_tabs_->addTab(camera, QString("Camera %1").arg(camera_index + 1));
   }
   connect(preview_tabs_, &QTabWidget::currentChanged, this, [this](int tab_index) {
@@ -1587,15 +1691,30 @@ void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
   parent->addWidget(group);
 }
 
-void HStreamWindow::buildCameraControls(QVBoxLayout* parent) {
-  auto* group = new QGroupBox("Camera Controls");
-  group->setObjectName("cameraControlsGroup");
-  group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage) {
+  auto* group = new QGroupBox(program_stage ? "Program Controls" : "Stitched Controls");
+  group->setObjectName(program_stage ? "programControlsGroup" : "stitchedControlsGroup");
+  group->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
   auto* layout = new QVBoxLayout(group);
+  auto* association = new QLabel(
+      program_stage
+          ? "These controls affect the final Program image after stitching and play tracking. Live-capable changes "
+            "appear immediately; saved-only changes appear after Save Preset and restart."
+          : "These controls affect the stitched canvas before play tracking. Live-capable changes appear "
+            "immediately; saved-only changes appear after Save Preset and restart.");
+  association->setObjectName(program_stage ? "programControlAssociation" : "stitchedControlAssociation");
+  association->setWordWrap(true);
+  association->setStyleSheet("color: #667085;");
+  layout->addWidget(association);
 
-  camera_tabs_ = new QTabWidget();
-  camera_tabs_->setObjectName("cameraControlTabs");
-  camera_tabs_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+  auto* control_tabs = new QTabWidget();
+  control_tabs->setObjectName(program_stage ? "programControlTabs" : "stitchedControlTabs");
+  control_tabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+  control_tabs->setMaximumHeight(235);
+  if (program_stage)
+    program_control_tabs_ = control_tabs;
+  else
+    stitched_control_tabs_ = control_tabs;
 
   auto add_slider_tab = [this](const std::vector<CameraSliderSpec>& specs) {
     auto* page = new QWidget();
@@ -1682,22 +1801,19 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent) {
        kFixedEdgeRotationDefaultX10},
   };
 
-  auto* plugin = new QWidget();
-  auto* plugin_layout = new QVBoxLayout(plugin);
-  auto* property = new QLineEdit("nvarguscamerasrc.exposuretimerange");
-  property->setObjectName("pluginPropertyEdit");
-  plugin_layout->addWidget(new QLabel("GStreamer property"));
-  plugin_layout->addWidget(property);
-  plugin_layout->addStretch(1);
-
-  camera_tabs_->addTab(add_slider_tab(tracking_controls), "Tracking");
-  camera_tabs_->addTab(add_slider_tab(motion_controls), "Motion");
-  camera_tabs_->addTab(add_slider_tab(stitched_color_controls), "Color");
-  camera_tabs_->addTab(add_slider_tab(left_color_controls), "Side Color");
-  camera_tabs_->addTab(add_slider_tab(stitch_controls), "Stitch");
-  camera_tabs_->addTab(plugin, "Plugin");
-  layout->addWidget(camera_tabs_, 1);
-  parent->addWidget(group, 1);
+  if (program_stage) {
+    control_tabs->addTab(add_slider_tab(tracking_controls), "Tracking");
+    control_tabs->addTab(add_slider_tab(motion_controls), "Motion");
+    control_tabs->addTab(add_slider_tab(stitched_color_controls), "Final Color");
+    const std::vector<CameraSliderSpec> crop_controls(stitch_controls.begin() + 1, stitch_controls.end());
+    control_tabs->addTab(add_slider_tab(crop_controls), "Crop Rotation");
+  } else {
+    control_tabs->addTab(add_slider_tab(left_color_controls), "Camera Color");
+    const std::vector<CameraSliderSpec> rotation_controls = {stitch_controls.front()};
+    control_tabs->addTab(add_slider_tab(rotation_controls), "Rotation");
+  }
+  layout->addWidget(control_tabs);
+  parent->addWidget(group);
 }
 
 void HStreamWindow::buildLog(QVBoxLayout* root) {
@@ -2747,10 +2863,6 @@ void HStreamWindow::startPipeline() {
     if (notice)
       notice->setText(camera_render_notice);
   }
-  if (program_fullscreen_button_)
-    program_fullscreen_button_->setEnabled(embedded_render);
-  if (stitched_fullscreen_button_)
-    stitched_fullscreen_button_->setEnabled(embedded_render);
   if (render_video && !embedded_render)
     appendLog("render output will open in a separate DeepStream window; embedded preview is disabled");
   else if (!render_video)
@@ -3459,18 +3571,40 @@ void HStreamWindow::schedulePreviewReadyTimeout(const QString& channel, quint64 
   });
 }
 
-void HStreamWindow::togglePreviewFullscreen(int tab_index) {
-  if (preview_tabs_) {
-    preview_tabs_->setCurrentIndex(tab_index);
+void HStreamWindow::togglePreviewFocus(int tab_index) {
+  const bool restore = preview_focus_mode_ && focused_preview_tab_ == tab_index;
+  setPreviewFocusMode(!restore, tab_index);
+}
+
+void HStreamWindow::setPreviewFocusMode(bool focused, int tab_index) {
+  if (!preview_tabs_ || tab_index < 0 || tab_index >= preview_tabs_->count())
+    return;
+  preview_tabs_->setCurrentIndex(tab_index);
+  preview_focus_mode_ = focused;
+  focused_preview_tab_ = focused ? tab_index : -1;
+  if (top_bar_)
+    top_bar_->setVisible(!focused);
+  if (log_panel_)
+    log_panel_->setVisible(!focused);
+  if (setup_panel_) {
+    if (QWidget* setup_row = setup_panel_->findChild<QWidget*>("setupControlsRow"))
+      setup_row->setVisible(!focused);
   }
-  preview_fullscreen_ = !preview_fullscreen_;
-  if (preview_fullscreen_) {
-    showFullScreen();
-    appendLog(tab_index == 1 ? "stitched preview fullscreen" : "program preview fullscreen");
-  } else {
-    showNormal();
-    appendLog("preview restored to normal window");
+  preview_tabs_->tabBar()->setVisible(!focused);
+  for (int page_index = 0; page_index < preview_tabs_->count(); ++page_index) {
+    QWidget* page = preview_tabs_->widget(page_index);
+    QWidget* host = page_index < static_cast<int>(preview_hosts_.size()) ? preview_hosts_[page_index] : nullptr;
+    for (QWidget* child : page->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly)) {
+      if (child != host)
+        child->setVisible(!focused);
+    }
   }
+  for (size_t index = 0; index < preview_hosts_.size(); ++index) {
+    auto* host = static_cast<LetterboxRenderHost*>(preview_hosts_[index]);
+    if (host)
+      host->setFocused(focused && static_cast<int>(index) == tab_index);
+  }
+  appendLog(focused ? QString("preview focus mode tab=%1").arg(tab_index) : "preview restored to normal layout");
 }
 
 void HStreamWindow::updateRunControls() {
