@@ -168,6 +168,10 @@ typedef struct {
   gchar** uri_list;
   guint num_uri_list;
   guint uri_list_index;
+  /** First physical chapter selected during pre-preroll positioning. */
+  guint uri_playlist_initial_uri_index;
+  /** Exact duration of complete physical chapters skipped before decoding begins. */
+  guint64 uri_playlist_initial_skipped_base_ns;
   guint uri_switch_count;
   gboolean uri_switch_pending;
   /** Video frames admitted after initial positioning across every URI. Never resets at chapter boundaries. */

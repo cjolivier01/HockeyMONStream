@@ -217,6 +217,9 @@ class HStreamWindow : public QMainWindow {
   bool publishRuntimeControlBatch(
       const std::map<QString, int>& controls,
       const std::vector<RuntimePropertyCommand>& commands);
+  void flushScheduledRuntimeControls();
+  void timeoutRuntimeControlBatch(quint64 batch_id);
+  int runtimeControlAckTimeoutMs() const;
   void scheduleRotationRuntimeControl(const QString& id, int value);
   void synchronizeFixedEdgeRotationControls(const QString& changed_id, int value);
   void handleRuntimeControlResponse(const QString& line);
@@ -312,6 +315,8 @@ class HStreamWindow : public QMainWindow {
   std::map<quint64, RuntimeControlBatch> runtime_control_batches_;
   std::map<QString, int> scheduled_rotation_controls_;
   std::map<QString, int> scheduled_playtracker_controls_;
+  bool scheduled_rotation_controls_ready_{false};
+  bool scheduled_playtracker_controls_ready_{false};
   std::optional<std::map<QString, int>> publishing_playtracker_controls_;
   bool scheduled_playtracker_force_all_targets_{false};
   bool publishing_playtracker_force_all_targets_{false};

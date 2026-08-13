@@ -320,16 +320,23 @@ bool write_fake_runner(const QString& path) {
   file.write(
       "            print('HSTREAM_PREVIEW channel=' + channel + ' status=ready generation=' + generation + "
       "' message=first GPU frame presented', flush=True)\n");
-  file.write("    if line.startswith('@set-property '):\n");
-  file.write("        _, element, assignment = line.rstrip('\\n').split(' ', 2)\n");
-  file.write("        property_name, runtime_value = assignment.split('=', 1)\n");
-  file.write("        if os.environ.get('HSTREAM_UI_TEST_REJECT_RUNTIME_CONTROL') == '1':\n");
+  file.write("    if line.startswith('@set-properties '):\n");
+  file.write("        updates = line.rstrip('\\n').split(' ', 1)[1].split(';')\n");
+  file.write("        reject = os.environ.get('HSTREAM_UI_TEST_REJECT_RUNTIME_CONTROL') == '1'\n");
+  file.write("        stall = os.environ.get('HSTREAM_UI_TEST_STALL_RUNTIME_CONTROL') == '1'\n");
+  file.write("        if reject and updates:\n");
+  file.write("            element, assignment = updates[-1].split(' ', 1)\n");
+  file.write("            property_name, runtime_value = assignment.split('=', 1)\n");
   file.write(
       "            print('runtime command failed: plugin rejected ' + element + '.' + property_name + '=' + "
       "runtime_value, file=sys.stderr, flush=True)\n");
-  file.write("        else:\n");
+  file.write("        for update in updates:\n");
+  file.write("            element, assignment = update.split(' ', 1)\n");
+  file.write("            property_name, runtime_value = assignment.split('=', 1)\n");
+  file.write("            print('stdin:@set-property ' + update, flush=True)\n");
+  file.write("            if not reject and not stall:\n");
   file.write(
-      "            print('runtime property ' + element + ' ' + property_name + '=' + runtime_value, flush=True)\n");
+      "                print('runtime property ' + element + ' ' + property_name + '=' + runtime_value, flush=True)\n");
   file.write("preview_activation_count = 0\n");
   file.write("deadline = time.monotonic() + 5.0\n");
   file.write("stdin_fd = sys.stdin.fileno()\n");
@@ -2918,6 +2925,52 @@ bool test_camera_controls(HStreamWindow* window) {
     activate(stop);
     return false;
   }
+
+  activate(stop);
+  qputenv("HSTREAM_UI_TEST_STALL_RUNTIME_CONTROL", "1");
+  qputenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS", "40");
+  activate(start);
+  for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(window->pipelineStateText() == "PLAYING", "Fake runner should restart for stalled-control test")) {
+    qunsetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
+    qunsetenv("HSTREAM_UI_TEST_STALL_RUNTIME_CONTROL");
+    return false;
+  }
+  max_speed_x->setValue(470);
+  QTest::qWait(220);
+  for (int value = 471; value <= 490; ++value) {
+    max_speed_x->setValue(value);
+  }
+  QTest::qWait(220);
+  const fs::path runtime_dir = fs::path(window->gameDirectoryText().toStdString()) / ".hstream-ui";
+  auto runtime_snapshot_count = [&]() {
+    return static_cast<int>(std::count_if(
+        fs::directory_iterator(runtime_dir), fs::directory_iterator(), [](const fs::directory_entry& entry) {
+          return entry.path().filename().string().rfind("play_tracker_runtime_", 0) == 0;
+        }));
+  };
+  const bool stalled_controls_bounded =
+      expect(
+          runtime_snapshot_count() <= 2,
+          "A non-acknowledging backend should retain at most the last acknowledged and one in-flight snapshot") &&
+      expect(
+          window->logText().contains(
+              "camera control Max_Speed_X_x10=470 apply=failed "
+              "reason=acknowledgement-timeout") &&
+              window->logText().contains(
+                  "camera control Max_Speed_X_x10=490 apply=failed "
+                  "reason=acknowledgement-timeout"),
+          "A stalled live-control backend should time out both the in-flight and coalesced latest values");
+  qunsetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
+  qunsetenv("HSTREAM_UI_TEST_STALL_RUNTIME_CONTROL");
+  if (!stalled_controls_bounded) {
+    std::cerr << window->logText().toStdString() << '\n';
+    activate(stop);
+    return false;
+  }
   activate(stop);
 
   activate(save);
@@ -3238,15 +3291,17 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   NativePreviewCapture stitched_preview;
   NativePreviewCapture camera1_preview;
   bool x11_previews_captured = false;
-  bool x11_previews_attempted = false;
+  int x11_preview_attempts = 0;
+  qint64 next_x11_preview_attempt_ms = 0;
   bool stitched_target_acknowledged = false;
   bool program_target_acknowledged = false;
   bool camera1_target_acknowledged = false;
   auto capture_x11_previews = [&]() {
-    if (!verify_x11_preview || x11_previews_attempted || window->pipelineStateText() != "PLAYING") {
+    if (!verify_x11_preview || x11_previews_captured || window->pipelineStateText() != "PLAYING" ||
+        timer.elapsed() < next_x11_preview_attempt_ms) {
       return;
     }
-    x11_previews_attempted = true;
+    ++x11_preview_attempts;
     QProcess* pipeline = window->findChild<QProcess*>();
     if (!pipeline || pipeline->state() == QProcess::NotRunning) {
       interaction_error = "pipeline process is unavailable for diagnostic preview capture";
@@ -3311,6 +3366,9 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
         camera1_target_acknowledged && program_preview.passed && stitched_preview.passed && camera1_preview.passed;
     if (!x11_previews_captured && interaction_error.isEmpty())
       interaction_error = "one or more GPU preview captures were blank or not acknowledged";
+    if (!x11_previews_captured) {
+      next_x11_preview_attempt_ms = timer.elapsed() + 500;
+    }
   };
   const QRegularExpression positive_fps(R"(\*\*PERF:\s+([0-9]+(?:\.[0-9]+)?))");
   while (timer.elapsed() < deadline_ms) {
@@ -3344,11 +3402,6 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     }
     if (observed_first_frame) {
       capture_x11_previews();
-      if (verify_x11_preview && x11_previews_attempted && !x11_previews_captured) {
-        std::cerr << "Could not capture all GPU previews: " << interaction_error.toStdString() << '\n';
-        stop_and_preserve_failure();
-        return false;
-      }
     }
     const int configured_record_ms = qEnvironmentVariableIntValue("HSTREAM_UI_E2E_RECORD_MS");
     const int record_ms = configured_record_ms > 0 ? configured_record_ms : 6000;
@@ -3364,6 +3417,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   QString preview_report;
   preview_report += QString("x11_preview_requested: %1\n").arg(verify_x11_preview ? "true" : "false");
   if (verify_x11_preview) {
+    preview_report += QString("x11_preview_attempts: %1\n").arg(x11_preview_attempts);
     preview_report += native_preview_report_line("program", program_preview);
     preview_report += native_preview_report_line("stitched", stitched_preview);
     preview_report += native_preview_report_line("camera1", camera1_preview);

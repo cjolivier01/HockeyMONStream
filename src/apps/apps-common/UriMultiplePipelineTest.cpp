@@ -87,6 +87,7 @@ struct AudioTimelineStats {
   guint64 buffers{0};
   guint64 eos_events{0};
   guint64 invalid_timestamps{0};
+  guint64 dts_before_pts{0};
   guint64 discontinuities{0};
   GstClockTime first_pts{GST_CLOCK_TIME_NONE};
   GstClockTime previous_end{GST_CLOCK_TIME_NONE};
@@ -135,11 +136,15 @@ GstPadProbeReturn inspect_audio_timeline_probe(GstPad* /*pad*/, GstPadProbeInfo*
   }
   GstBuffer* buffer = GST_BUFFER(info->data);
   const GstClockTime pts = GST_BUFFER_PTS(buffer);
+  const GstClockTime dts = GST_BUFFER_DTS(buffer);
   const GstClockTime duration = GST_BUFFER_DURATION(buffer);
   ++stats->buffers;
   if (!GST_CLOCK_TIME_IS_VALID(pts) || !GST_CLOCK_TIME_IS_VALID(duration)) {
     ++stats->invalid_timestamps;
     return GST_PAD_PROBE_OK;
+  }
+  if (GST_CLOCK_TIME_IS_VALID(dts) && dts < pts) {
+    ++stats->dts_before_pts;
   }
   if (!GST_CLOCK_TIME_IS_VALID(stats->first_pts)) {
     stats->first_pts = pts;
@@ -768,6 +773,16 @@ int run_lossless_two_camera_mux(
     std::cerr << "Failed to configure initial camera positions before preroll\n";
     return 2;
   }
+  if (start_time >= GST_SECOND &&
+      (src_parent.sub_bins[0].uri_playlist_initial_uri_index == 0 ||
+       src_parent.sub_bins[1].uri_playlist_initial_uri_index == 0 ||
+       src_parent.sub_bins[0].uri_playlist_initial_skipped_base_ns == 0 ||
+       src_parent.sub_bins[1].uri_playlist_initial_skipped_base_ns == 0 ||
+       src_parent.sub_bins[0].uri_list_decoded_frame_count != 0 ||
+       src_parent.sub_bins[1].uri_list_decoded_frame_count != 0)) {
+    std::cerr << "Large initial positioning did not preselect complete chapters before decoding\n";
+    return 2;
+  }
   GstElementFactory* mux_factory = gst_element_get_factory(src_parent.streammux);
   if (!mux_factory ||
       g_strcmp0(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(mux_factory)), "hstreamlosslessmux") != 0) {
@@ -860,11 +875,16 @@ int run_lossless_two_camera_mux(
     return rc;
   }
   const size_t expected_complete_chapters = std::min(left_uris.size(), right_uris.size());
-  const guint minimum_switches = static_cast<guint>(expected_complete_chapters - 1);
-  const guint maximum_left_switches =
-      std::min<guint>(left_uris.size() - 1, static_cast<guint>(expected_complete_chapters));
-  const guint maximum_right_switches =
-      std::min<guint>(right_uris.size() - 1, static_cast<guint>(expected_complete_chapters));
+  const size_t expected_decoded_chapters = std::min(
+      left_uris.size() - src_parent.sub_bins[0].uri_playlist_initial_uri_index,
+      right_uris.size() - src_parent.sub_bins[1].uri_playlist_initial_uri_index);
+  const guint minimum_switches = static_cast<guint>(expected_decoded_chapters - 1);
+  const guint maximum_left_switches = std::min<guint>(
+      left_uris.size() - src_parent.sub_bins[0].uri_playlist_initial_uri_index - 1,
+      static_cast<guint>(expected_decoded_chapters));
+  const guint maximum_right_switches = std::min<guint>(
+      right_uris.size() - src_parent.sub_bins[1].uri_playlist_initial_uri_index - 1,
+      static_cast<guint>(expected_decoded_chapters));
   if (src_parent.sub_bins[0].uri_switch_count < minimum_switches ||
       src_parent.sub_bins[0].uri_switch_count > maximum_left_switches ||
       src_parent.sub_bins[1].uri_switch_count < minimum_switches ||
@@ -875,9 +895,12 @@ int run_lossless_two_camera_mux(
   }
 
   constexpr guint64 kFramesPerChapter = 15;
+  const guint64 preselected_left_frames = src_parent.sub_bins[0].uri_playlist_initial_skipped_base_ns * 15 / GST_SECOND;
+  const guint64 preselected_right_frames =
+      src_parent.sub_bins[1].uri_playlist_initial_skipped_base_ns * 15 / GST_SECOND;
   const guint64 positioned_frames = std::max(
-      src_parent.sub_bins[0].uri_list_initial_positioned_frame_count,
-      src_parent.sub_bins[1].uri_list_initial_positioned_frame_count);
+      preselected_left_frames + src_parent.sub_bins[0].uri_list_initial_positioned_frame_count,
+      preselected_right_frames + src_parent.sub_bins[1].uri_list_initial_positioned_frame_count);
   const guint64 expected_frames_per_source = kFramesPerChapter * expected_complete_chapters - positioned_frames;
   for (guint source_id = 0; source_id < 2; ++source_id) {
     const guint64 decoded_before_terminal = src_parent.sub_bins[source_id].uri_list_decoded_frame_count -
@@ -895,8 +918,10 @@ int run_lossless_two_camera_mux(
       return 6;
     }
   }
-  const guint64 expected_left_positioned_frames = ((start_time + left_initial_offset) * 15) / GST_SECOND;
-  const guint64 expected_right_positioned_frames = ((start_time + right_initial_offset) * 15) / GST_SECOND;
+  const guint64 expected_left_positioned_frames =
+      ((start_time + left_initial_offset) * 15) / GST_SECOND - preselected_left_frames;
+  const guint64 expected_right_positioned_frames =
+      ((start_time + right_initial_offset) * 15) / GST_SECOND - preselected_right_frames;
   if (src_parent.sub_bins[0].uri_list_initial_positioned_frame_count != expected_left_positioned_frames ||
       src_parent.sub_bins[1].uri_list_initial_positioned_frame_count != expected_right_positioned_frames) {
     std::cerr << "Initial positioning consumed unexpected frame counts: left="
@@ -944,12 +969,14 @@ int run_lossless_two_camera_mux(
   const GstClockTime paired_video_end = src_parent.uri_playlist_paired_video_end;
   if (!GST_CLOCK_TIME_IS_VALID(paired_video_end) || paired_video_end + GST_SECOND / 50 < expected_audio_duration ||
       paired_video_end > expected_audio_duration + GST_SECOND / 50 || audio_stats.buffers == 0 ||
-      audio_stats.eos_events != 1 || audio_stats.invalid_timestamps != 0 || audio_stats.discontinuities != 0 ||
-      audio_stats.first_pts > GST_SECOND / 10 || audio_stats.final_end < minimum_audio_duration ||
-      audio_stats.final_end > maximum_audio_duration || audio_stats.final_end + GST_SECOND / 50 < paired_video_end) {
+      audio_stats.eos_events != 1 || audio_stats.invalid_timestamps != 0 || audio_stats.dts_before_pts != 0 ||
+      audio_stats.discontinuities != 0 || audio_stats.first_pts > GST_SECOND / 10 ||
+      audio_stats.final_end < minimum_audio_duration || audio_stats.final_end > maximum_audio_duration ||
+      audio_stats.final_end + GST_SECOND / 50 < paired_video_end) {
     std::cerr << "Source audio was not continuous through the coordinated camera playlist: buffers="
               << audio_stats.buffers << ", eos_events=" << audio_stats.eos_events
               << ", invalid_timestamps=" << audio_stats.invalid_timestamps
+              << ", dts_before_pts=" << audio_stats.dts_before_pts
               << ", discontinuities=" << audio_stats.discontinuities
               << ", first_pts=" << GST_TIME_AS_SECONDS(audio_stats.first_pts)
               << "s, final_end=" << GST_TIME_AS_SECONDS(audio_stats.final_end)

@@ -74,6 +74,7 @@ namespace {
 constexpr int kFixedEdgeRotationDefaultX10 = 100;
 constexpr int kFixedEdgeRotationMaximumX10 = 900;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
+constexpr int kRuntimeControlAckTimeoutMs = 3000;
 constexpr qsizetype kMaxCapturedLogCharacters = 16 * 1024 * 1024;
 constexpr char kStitchedPreviewPipelineOptions[] =
     "pipeline.streammux.batch-size=2,pipeline.streammux.sync-inputs=0,"
@@ -3057,8 +3058,10 @@ void HStreamWindow::handlePipelineStarted() {
 void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status) {
   ++scheduled_rotation_control_generation_;
   scheduled_rotation_controls_.clear();
+  scheduled_rotation_controls_ready_ = false;
   ++scheduled_playtracker_control_generation_;
   scheduled_playtracker_controls_.clear();
+  scheduled_playtracker_controls_ready_ = false;
   publishing_playtracker_controls_.reset();
   scheduled_playtracker_force_all_targets_ = false;
   publishing_playtracker_force_all_targets_ = false;
@@ -3137,8 +3140,10 @@ void HStreamWindow::clearPreviewFrames() {
 void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   ++scheduled_rotation_control_generation_;
   scheduled_rotation_controls_.clear();
+  scheduled_rotation_controls_ready_ = false;
   ++scheduled_playtracker_control_generation_;
   scheduled_playtracker_controls_.clear();
+  scheduled_playtracker_controls_ready_ = false;
   publishing_playtracker_controls_.reset();
   scheduled_playtracker_force_all_targets_ = false;
   publishing_playtracker_force_all_targets_ = false;
@@ -5557,6 +5562,19 @@ void HStreamWindow::handleRuntimeControlResponse(const QString& line) {
     }
     const PendingRuntimeControl acknowledged = *pending;
     pending_runtime_controls_.erase(pending);
+    if (failed) {
+      for (auto other = pending_runtime_controls_.begin(); other != pending_runtime_controls_.end();) {
+        if (other->batch_id != acknowledged.batch_id) {
+          ++other;
+          continue;
+        }
+        if (other->property == "runtime-tuning-config-file" &&
+            other->runtime_value != last_playtracker_runtime_snapshot_) {
+          QFile::remove(other->runtime_value);
+        }
+        other = pending_runtime_controls_.erase(other);
+      }
+    }
     if (acknowledged.property == "runtime-tuning-config-file") {
       if (failed) {
         QFile::remove(acknowledged.runtime_value);
@@ -5573,7 +5591,9 @@ void HStreamWindow::handleRuntimeControlResponse(const QString& line) {
       return;
     }
     batch->second.failed = batch->second.failed || failed;
-    if (batch->second.pending_commands > 0) {
+    if (failed) {
+      batch->second.pending_commands = 0;
+    } else if (batch->second.pending_commands > 0) {
       --batch->second.pending_commands;
     }
     if (batch->second.pending_commands != 0) {
@@ -5584,6 +5604,7 @@ void HStreamWindow::handleRuntimeControlResponse(const QString& line) {
       appendLog(QString("camera control %1=%2 apply=%3").arg(control_id).arg(control_value).arg(result));
     }
     runtime_control_batches_.erase(batch);
+    flushScheduledRuntimeControls();
   };
 
   static const QRegularExpression success_pattern(R"(^runtime property (\S+) (\S+?)=(.*)$)");
@@ -5642,40 +5663,72 @@ void HStreamWindow::failPendingRuntimeControls(const QString& reason) {
   runtime_control_batches_.clear();
 }
 
+int HStreamWindow::runtimeControlAckTimeoutMs() const {
+  bool valid = false;
+  const int test_timeout = qEnvironmentVariableIntValue("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS", &valid);
+  return valid && test_timeout > 0 ? test_timeout : kRuntimeControlAckTimeoutMs;
+}
+
+void HStreamWindow::timeoutRuntimeControlBatch(quint64 batch_id) {
+  const auto batch = runtime_control_batches_.find(batch_id);
+  if (batch == runtime_control_batches_.end()) {
+    return;
+  }
+  for (auto pending = pending_runtime_controls_.begin(); pending != pending_runtime_controls_.end();) {
+    if (pending->batch_id != batch_id) {
+      ++pending;
+      continue;
+    }
+    if (pending->property == "runtime-tuning-config-file" &&
+        pending->runtime_value != last_playtracker_runtime_snapshot_) {
+      QFile::remove(pending->runtime_value);
+    }
+    pending = pending_runtime_controls_.erase(pending);
+  }
+  for (const auto& [control_id, control_value] : batch->second.controls) {
+    appendLog(
+        QString("camera control %1=%2 apply=failed reason=acknowledgement-timeout").arg(control_id).arg(control_value));
+  }
+  runtime_control_batches_.erase(batch);
+  flushScheduledRuntimeControls();
+}
+
 bool HStreamWindow::publishRuntimeControlBatch(
     const std::map<QString, int>& controls,
     const std::vector<RuntimePropertyCommand>& commands) {
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || controls.empty() ||
-      commands.empty()) {
+      commands.empty() || !runtime_control_batches_.empty()) {
     return false;
   }
   const quint64 batch_id = ++next_runtime_control_batch_id_;
   runtime_control_batches_.emplace(batch_id, RuntimeControlBatch{controls, commands.size(), false});
+  QStringList assignments;
   for (const RuntimePropertyCommand& property_command : commands) {
-    const QByteArray command = QString("@set-property %1 %2=%3\n")
-                                   .arg(property_command.element, property_command.property, property_command.value)
-                                   .toLocal8Bit();
-    if (pipeline_process_->write(command) != command.size()) {
-      pending_runtime_controls_.erase(
-          std::remove_if(
-              pending_runtime_controls_.begin(),
-              pending_runtime_controls_.end(),
-              [batch_id](const PendingRuntimeControl& pending) { return pending.batch_id == batch_id; }),
-          pending_runtime_controls_.end());
-      runtime_control_batches_.erase(batch_id);
-      for (const auto& [control_id, control_value] : controls) {
-        appendLog(QString("camera control %1=%2 apply=failed reason=pipeline command write")
-                      .arg(control_id)
-                      .arg(control_value));
-      }
-      return false;
-    }
+    assignments.push_back(
+        QString("%1 %2=%3").arg(property_command.element, property_command.property, property_command.value));
     pending_runtime_controls_.push_back(
         {property_command.element, property_command.property, property_command.value, batch_id});
+  }
+  const QByteArray command = QString("@set-properties %1\n").arg(assignments.join(';')).toLocal8Bit();
+  if (pipeline_process_->write(command) != command.size()) {
+    pending_runtime_controls_.erase(
+        std::remove_if(
+            pending_runtime_controls_.begin(),
+            pending_runtime_controls_.end(),
+            [batch_id](const PendingRuntimeControl& pending) { return pending.batch_id == batch_id; }),
+        pending_runtime_controls_.end());
+    runtime_control_batches_.erase(batch_id);
+    for (const auto& [control_id, control_value] : controls) {
+      appendLog(QString("camera control %1=%2 apply=failed reason=pipeline command write")
+                    .arg(control_id)
+                    .arg(control_value));
+    }
+    return false;
   }
   for (const auto& [control_id, control_value] : controls) {
     appendLog(QString("camera control %1=%2 apply=pending").arg(control_id).arg(control_value));
   }
+  QTimer::singleShot(runtimeControlAckTimeoutMs(), this, [this, batch_id]() { timeoutRuntimeControlBatch(batch_id); });
   return true;
 }
 
@@ -5722,14 +5775,41 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
 void HStreamWindow::scheduleRotationRuntimeControl(const QString& id, int value) {
   appendLog(QString("camera control %1=%2 apply=scheduled").arg(id).arg(value));
   scheduled_rotation_controls_[id] = value;
+  scheduled_rotation_controls_ready_ = false;
   const quint64 generation = ++scheduled_rotation_control_generation_;
   QTimer::singleShot(120, this, [this, generation]() {
     if (generation != scheduled_rotation_control_generation_ || !pipeline_process_ ||
         pipeline_process_->state() == QProcess::NotRunning) {
       return;
     }
+    scheduled_rotation_controls_ready_ = true;
+    flushScheduledRuntimeControls();
+  });
+}
+
+void HStreamWindow::schedulePlaytrackerRuntimeControl(const QString& id, int value) {
+  appendLog(QString("camera control %1=%2 apply=scheduled").arg(id).arg(value));
+  scheduled_playtracker_controls_[id] = value;
+  scheduled_playtracker_controls_ready_ = false;
+  const quint64 generation = ++scheduled_playtracker_control_generation_;
+  QTimer::singleShot(120, this, [this, generation]() {
+    if (generation != scheduled_playtracker_control_generation_ || !pipeline_process_ ||
+        pipeline_process_->state() == QProcess::NotRunning) {
+      return;
+    }
+    scheduled_playtracker_controls_ready_ = true;
+    flushScheduledRuntimeControls();
+  });
+}
+
+void HStreamWindow::flushScheduledRuntimeControls() {
+  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || !runtime_control_batches_.empty()) {
+    return;
+  }
+  if (scheduled_rotation_controls_ready_ && !scheduled_rotation_controls_.empty()) {
     const std::map<QString, int> controls = std::move(scheduled_rotation_controls_);
     scheduled_rotation_controls_.clear();
+    scheduled_rotation_controls_ready_ = false;
     std::vector<RuntimePropertyCommand> commands;
     if (controls.count("Stitch_Rotate_Degrees")) {
       commands.push_back(
@@ -5756,20 +5836,12 @@ void HStreamWindow::scheduleRotationRuntimeControl(const QString& id, int value)
       }
     }
     publishRuntimeControlBatch(controls, commands);
-  });
-}
-
-void HStreamWindow::schedulePlaytrackerRuntimeControl(const QString& id, int value) {
-  appendLog(QString("camera control %1=%2 apply=scheduled").arg(id).arg(value));
-  scheduled_playtracker_controls_[id] = value;
-  const quint64 generation = ++scheduled_playtracker_control_generation_;
-  QTimer::singleShot(120, this, [this, generation]() {
-    if (generation != scheduled_playtracker_control_generation_ || !pipeline_process_ ||
-        pipeline_process_->state() == QProcess::NotRunning) {
-      return;
-    }
+    return;
+  }
+  if (scheduled_playtracker_controls_ready_ && !scheduled_playtracker_controls_.empty()) {
     publishing_playtracker_controls_ = std::move(scheduled_playtracker_controls_);
     scheduled_playtracker_controls_.clear();
+    scheduled_playtracker_controls_ready_ = false;
     publishing_playtracker_force_all_targets_ = scheduled_playtracker_force_all_targets_;
     scheduled_playtracker_force_all_targets_ = false;
     const QString runtime_config_path = writePlaytrackerRuntimeConfig();
@@ -5793,7 +5865,7 @@ void HStreamWindow::schedulePlaytrackerRuntimeControl(const QString& id, int val
     }
     publishing_playtracker_controls_.reset();
     publishing_playtracker_force_all_targets_ = false;
-  });
+  }
 }
 
 void HStreamWindow::synchronizeFixedEdgeRotationControls(const QString& changed_id, int value) {

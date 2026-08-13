@@ -22,6 +22,7 @@
 #include <optional>
 #include <set>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -138,6 +139,8 @@ class PipelineApplication {
       const std::string& element_name,
       const std::string& property_name,
       const std::string& value);
+  bool set_element_properties_runtime(
+      const std::vector<std::tuple<std::string, std::string, std::string>>& assignments);
   static gboolean event_thread_func_static(gpointer arg);
   gboolean event_thread_func();
   static int get_source_id_from_coordinates(float x_rel, float y_rel, AppCtx* app_ctx);

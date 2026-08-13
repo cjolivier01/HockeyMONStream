@@ -2538,7 +2538,8 @@ void PipelineApplication::print_runtime_commands() const {
       "\t@set-render-window <xid>: Move the embedded program render sink to another X11 window\n"
       "\t@capture-preview-frame <program|main|stitched|sourceN> <image-path>: Save one diagnostic UI preview "
       "frame\n"
-      "\t@set-property <element> <property=value>: Set an allowlisted runtime GStreamer property\n\n");
+      "\t@set-property <element> <property=value>: Set an allowlisted runtime GStreamer property\n"
+      "\t@set-properties <element property=value;...>: Atomically set allowlisted runtime properties\n\n");
   if (!stage_app_contexts_.empty() && !stage_app_contexts_.at(current_stage_).empty() &&
       stage_app_contexts_.at(current_stage_)[0] &&
       stage_app_contexts_.at(current_stage_)[0]->config.tiled_display_config.enable) {
@@ -2630,6 +2631,30 @@ bool parse_runtime_set_property(
   *property_name = trim_ascii(rest.substr(0, equals));
   *value = trim_ascii(rest.substr(equals + 1));
   return !element_name->empty() && !property_name->empty();
+}
+
+bool parse_runtime_set_properties(
+    const std::string& line,
+    std::vector<std::tuple<std::string, std::string, std::string>>* assignments) {
+  constexpr absl::string_view kCommand = "set-properties";
+  const std::string trimmed = trim_ascii(line);
+  if (!assignments || trimmed.rfind(std::string(kCommand), 0) != 0 ||
+      (trimmed.size() > kCommand.size() && !std::isspace(static_cast<unsigned char>(trimmed[kCommand.size()])))) {
+    return false;
+  }
+  assignments->clear();
+  for (absl::string_view item_view : absl::StrSplit(trim_ascii(trimmed.substr(kCommand.size())), ';')) {
+    const std::string item(item_view);
+    std::string element_name;
+    std::string property_name;
+    std::string value;
+    if (!parse_runtime_set_property("set-property " + item, &element_name, &property_name, &value)) {
+      assignments->clear();
+      return false;
+    }
+    assignments->emplace_back(std::move(element_name), std::move(property_name), std::move(value));
+  }
+  return !assignments->empty();
 }
 
 bool parse_double_strict(const std::string& value, gdouble* out) {
@@ -3071,6 +3096,143 @@ bool PipelineApplication::set_element_property_runtime(
   return false;
 }
 
+bool PipelineApplication::set_element_properties_runtime(
+    const std::vector<std::tuple<std::string, std::string, std::string>>& assignments) {
+  struct PendingAssignment {
+    GstElement* element{nullptr};
+    std::string element_name;
+    std::string property_name;
+    std::string value;
+    GParamSpec* pspec{nullptr};
+    GValue requested = G_VALUE_INIT;
+    GValue previous = G_VALUE_INIT;
+  };
+  std::vector<PendingAssignment> pending;
+  auto cleanup = absl::MakeCleanup([&]() {
+    for (PendingAssignment& assignment : pending) {
+      if (G_IS_VALUE(&assignment.requested)) {
+        g_value_unset(&assignment.requested);
+      }
+      if (G_IS_VALUE(&assignment.previous)) {
+        g_value_unset(&assignment.previous);
+      }
+      if (assignment.element) {
+        gst_object_unref(assignment.element);
+      }
+    }
+  });
+  auto& app_ctx = stage_app_contexts_.at(current_stage_);
+  for (const auto& [element_name, property_name, value] : assignments) {
+    if (!is_allowlisted_runtime_property(element_name, property_name)) {
+      g_printerr(
+          "runtime command failed: property is not live-mutable here: %s.%s\n",
+          element_name.c_str(),
+          property_name.c_str());
+      return false;
+    }
+    GstElement* element = nullptr;
+    for (const auto& app : app_ctx) {
+      if (app && app->pipeline.pipeline &&
+          (element = gst_bin_get_by_name(GST_BIN(app->pipeline.pipeline), element_name.c_str()))) {
+        break;
+      }
+    }
+    if (!element) {
+      g_printerr("runtime command failed: element not found: %s\n", element_name.c_str());
+      return false;
+    }
+    PendingAssignment assignment;
+    assignment.element = element;
+    assignment.element_name = element_name;
+    assignment.property_name = property_name;
+    assignment.value = value;
+    assignment.pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(element), property_name.c_str());
+    if (!assignment.pspec || !set_gvalue_from_string(&assignment.requested, assignment.pspec, value) ||
+        g_param_value_validate(assignment.pspec, &assignment.requested)) {
+      pending.push_back(std::move(assignment));
+      g_printerr(
+          "runtime command failed: invalid value for %s.%s=%s\n",
+          element_name.c_str(),
+          property_name.c_str(),
+          value.c_str());
+      return false;
+    }
+    g_value_init(&assignment.previous, G_PARAM_SPEC_VALUE_TYPE(assignment.pspec));
+    g_object_get_property(G_OBJECT(element), property_name.c_str(), &assignment.previous);
+    pending.push_back(std::move(assignment));
+  }
+  std::vector<std::pair<GstElement*, GstState>> pipelines;
+  for (const auto& app : app_ctx) {
+    if (pending.size() == 1) {
+      break;
+    }
+    if (!app || !app->pipeline.pipeline) {
+      continue;
+    }
+    GstState state = GST_STATE_NULL;
+    gst_element_get_state(app->pipeline.pipeline, &state, nullptr, 0);
+    pipelines.emplace_back(app->pipeline.pipeline, state);
+  }
+  auto resume = absl::MakeCleanup([&]() {
+    for (const auto& [pipeline, state] : pipelines) {
+      if (state == GST_STATE_PLAYING) {
+        gst_element_set_state(pipeline, GST_STATE_PLAYING);
+      }
+    }
+  });
+  for (const auto& [pipeline, state] : pipelines) {
+    if (state == GST_STATE_PLAYING && gst_element_set_state(pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
+      g_printerr("runtime command failed: could not pause pipeline for atomic property update\n");
+      return false;
+    }
+  }
+  for (const auto& [pipeline, state] : pipelines) {
+    if (state == GST_STATE_PLAYING) {
+      const GstStateChangeReturn paused = gst_element_get_state(pipeline, nullptr, nullptr, 5 * GST_SECOND);
+      if (paused != GST_STATE_CHANGE_SUCCESS && paused != GST_STATE_CHANGE_NO_PREROLL) {
+        g_printerr("runtime command failed: pipeline did not pause for atomic property update\n");
+        return false;
+      }
+    }
+  }
+  size_t applied = 0;
+  for (; applied < pending.size(); ++applied) {
+    PendingAssignment& assignment = pending[applied];
+    g_object_set_property(G_OBJECT(assignment.element), assignment.property_name.c_str(), &assignment.requested);
+    GParamSpec* status = g_object_class_find_property(G_OBJECT_GET_CLASS(assignment.element), "last-property-set-ok");
+    gboolean accepted = TRUE;
+    if (status && G_PARAM_SPEC_VALUE_TYPE(status) == G_TYPE_BOOLEAN) {
+      g_object_get(G_OBJECT(assignment.element), "last-property-set-ok", &accepted, nullptr);
+    }
+    if (!accepted) {
+      break;
+    }
+  }
+  if (applied != pending.size()) {
+    const size_t failed_index = applied;
+    while (applied > 0) {
+      --applied;
+      PendingAssignment& assignment = pending[applied];
+      g_object_set_property(G_OBJECT(assignment.element), assignment.property_name.c_str(), &assignment.previous);
+    }
+    const PendingAssignment& failed = pending[failed_index];
+    g_printerr(
+        "runtime command failed: plugin rejected %s.%s=%s\n",
+        failed.element_name.c_str(),
+        failed.property_name.c_str(),
+        failed.value.c_str());
+    return false;
+  }
+  for (const PendingAssignment& assignment : pending) {
+    g_print(
+        "runtime property %s %s=%s\n",
+        assignment.element_name.c_str(),
+        assignment.property_name.c_str(),
+        assignment.value.c_str());
+  }
+  return true;
+}
+
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   std::string active_preview_channel;
   guint64 preview_generation = 0;
@@ -3086,14 +3248,18 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   if (parse_runtime_capture_preview_frame(line, &preview_channel, &preview_path)) {
     return capture_preview_frame_runtime(preview_channel, preview_path);
   }
+  std::vector<std::tuple<std::string, std::string, std::string>> assignments;
+  if (parse_runtime_set_properties(line, &assignments)) {
+    return set_element_properties_runtime(assignments);
+  }
   std::string element_name;
   std::string property_name;
   std::string value;
   if (!parse_runtime_set_property(line, &element_name, &property_name, &value)) {
     g_printerr(
         "runtime command failed: expected: set-preview-active <program|stitched|sourceN|none> <generation>, "
-        "set-render-window <xid>, capture-preview-frame <main|stitched|sourceN> <jpg-path>, or set-property "
-        "<element> <property=value>\n");
+        "set-render-window <xid>, capture-preview-frame <main|stitched|sourceN> <jpg-path>, set-properties "
+        "<element property=value;...>, or set-property <element> <property=value>\n");
     return false;
   }
   return set_element_property_runtime(element_name, property_name, value);

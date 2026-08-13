@@ -21,6 +21,7 @@
 
 #include <cuda_runtime_api.h>
 #include <gst/audio/audio.h>
+#include <gst/pbutils/pbutils.h>
 #include <gst/rtp/gstrtcpbuffer.h>
 #include <gst/rtsp/gstrtsptransport.h>
 #include "deepstream_common.h"
@@ -159,6 +160,9 @@ static GstPadProbeReturn trim_initial_uri_playlist_buffer(
     return fail_uri_playlist_initial_positioning(probe_data->bin, "could not clip audio at the initial frontier");
   }
   GST_BUFFER_PTS(clipped) = GST_BUFFER_PTS(buffer) + gst_util_uint64_scale(skipped_frames, GST_SECOND, rate);
+  // This is decoded raw audio. Its decode and presentation order are identical, and retaining a pre-clip DTS would
+  // place the clipped buffer before the requested startup epoch when the common timestamp rebase runs below.
+  GST_BUFFER_DTS(clipped) = GST_BUFFER_PTS(clipped);
   GST_BUFFER_DURATION(clipped) = gst_util_uint64_scale(retained_frames, GST_SECOND, rate);
   GST_PAD_PROBE_INFO_DATA(info) = clipped;
   gst_buffer_unref(buffer);
@@ -1303,7 +1307,7 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
           GST_PAD_PROBE_INFO_DATA(info) = buf;
         }
       }
-      if (buf && probe_data->uri_index > 0) {
+      if (buf && probe_data->uri_index > bin->uri_playlist_initial_uri_index) {
         // The demuxer marks the first buffer of each physical file DISCONT/RESYNC. For a logical camera playlist that
         // is not a discontinuity, and nvstreammux may flush the frame it already has from the peer camera when it sees
         // the flag. Timestamp rebasing plus the exact-sequence barrier provide the real continuity contract.
@@ -1404,7 +1408,7 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
   }
   if ((info->type & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) != 0) {
     GstEvent* event = GST_EVENT(info->data);
-    if (uri_playlist_initial_positioning_enabled(bin) && probe_data->uri_index == 0 &&
+    if (uri_playlist_initial_positioning_enabled(bin) && probe_data->uri_index == bin->uri_playlist_initial_uri_index &&
         GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
       const GstSegment* segment = nullptr;
       gst_event_parse_segment(event, &segment);
@@ -1440,12 +1444,13 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       GST_PAD_PROBE_INFO_DATA(info) = adjusted_event;
       return GST_PAD_PROBE_OK;
     }
-    if (probe_data->uri_index > 0 && GST_EVENT_TYPE(event) == GST_EVENT_STREAM_START) {
+    if (probe_data->uri_index > bin->uri_playlist_initial_uri_index &&
+        GST_EVENT_TYPE(event) == GST_EVENT_STREAM_START) {
       // Every URI is a chapter of one logical camera stream. Exposing an intermediate STREAM_START makes
       // nvstreammux reset that source and flush a partial batch even though no camera actually ended.
       return GST_PAD_PROBE_DROP;
     }
-    if (probe_data->uri_index > 0 && GST_EVENT_TYPE(event) == GST_EVENT_TAG) {
+    if (probe_data->uri_index > bin->uri_playlist_initial_uri_index && GST_EVENT_TYPE(event) == GST_EVENT_TAG) {
       // Per-file container tags are not a logical camera boundary. Some nvstreammux releases finalize the current
       // aggregate while forwarding sticky metadata, so retain only the first chapter's tag set.
       return GST_PAD_PROBE_DROP;
@@ -1455,7 +1460,8 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       // EOS after one camera's entire playlist is permanently exhausted.
       return GST_PAD_PROBE_DROP;
     }
-    if (probe_data->is_video && probe_data->uri_index > 0 && GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
+    if (probe_data->is_video && probe_data->uri_index > bin->uri_playlist_initial_uri_index &&
+        GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
       GstCaps* chapter_caps = nullptr;
       gst_event_parse_caps(event, &chapter_caps);
       GstPad* tee_sink = gst_element_get_static_pad(bin->tee, "sink");
@@ -1480,7 +1486,8 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       // a file boundary; changed caps are a hard error because the playlist can no longer be one lossless stream.
       return GST_PAD_PROBE_DROP;
     }
-    if (probe_data->is_video && probe_data->uri_index > 0 && GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
+    if (probe_data->is_video && probe_data->uri_index > bin->uri_playlist_initial_uri_index &&
+        GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
       const GstSegment* segment = nullptr;
       gst_event_parse_segment(event, &segment);
       if (segment) {
@@ -1501,7 +1508,7 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       // current camera pair on this event even when its timeout is effectively infinite.
       return GST_PAD_PROBE_DROP;
     }
-    if (probe_data->uri_index > 0 &&
+    if (probe_data->uri_index > bin->uri_playlist_initial_uri_index &&
         (GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_START || GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_STOP)) {
       return GST_PAD_PROBE_DROP;
     }
@@ -1857,6 +1864,8 @@ static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
     bin->uri_list[i] = g_strdup(uris[i].c_str());
   }
   bin->uri_list_index = 0;
+  bin->uri_playlist_initial_uri_index = 0;
+  bin->uri_playlist_initial_skipped_base_ns = 0;
   bin->uri_switch_count = 0;
   bin->uri_switch_pending = FALSE;
   bin->uri_list_decoded_frame_count = 0;
@@ -3441,6 +3450,48 @@ gboolean configure_uri_playlist_initial_offsets(
   if (video_offsets[0] > G_MAXUINT64 - start_time_ns || video_offsets[1] > G_MAXUINT64 - start_time_ns) {
     return FALSE;
   }
+  struct InitialChapterPlan {
+    guint index{0};
+    GstClockTime skipped_base{0};
+  } plans[2];
+  for (guint source_id = 0; source_id < 2; ++source_id) {
+    NvDsSrcBin* source = &bin->sub_bins[source_id];
+    const GstClockTime video_target = video_offsets[source_id] + start_time_ns;
+    // A source that owns selected audio cannot skip past the common audio epoch merely because its camera has a
+    // positive synchronization offset. Decode that residual video range so audio remains continuous from time zero.
+    const GstClockTime target = source_id == audio_source_id ? std::min(video_target, start_time_ns) : video_target;
+    while (plans[source_id].index < source->num_uri_list) {
+      GError* error = nullptr;
+      GstDiscoverer* discoverer = gst_discoverer_new(10 * GST_SECOND, &error);
+      GstDiscovererInfo* info = discoverer
+          ? gst_discoverer_discover_uri(discoverer, source->uri_list[plans[source_id].index], &error)
+          : nullptr;
+      const GstClockTime duration = info ? gst_discoverer_info_get_duration(info) : GST_CLOCK_TIME_NONE;
+      const GstDiscovererResult result = info ? gst_discoverer_info_get_result(info) : GST_DISCOVERER_ERROR;
+      if (info) {
+        gst_discoverer_info_unref(info);
+      }
+      if (discoverer) {
+        g_object_unref(discoverer);
+      }
+      if (error) {
+        g_error_free(error);
+      }
+      if (result != GST_DISCOVERER_OK || !GST_CLOCK_TIME_IS_VALID(duration) || duration == 0 ||
+          duration > G_MAXUINT64 - plans[source_id].skipped_base) {
+        break;
+      }
+      if (plans[source_id].skipped_base + duration > target) {
+        break;
+      }
+      if (plans[source_id].index + 1 == source->num_uri_list) {
+        // Starting at or beyond permanent camera EOS can never create exact pair zero.
+        return FALSE;
+      }
+      plans[source_id].skipped_base += duration;
+      ++plans[source_id].index;
+    }
+  }
   gboolean configured = FALSE;
   g_mutex_lock(&bin->uri_playlist_barrier_mutex);
   const gboolean pristine = !bin->uri_playlist_initial_offsets_configured && !bin->uri_playlist_terminal &&
@@ -3467,10 +3518,23 @@ gboolean configure_uri_playlist_initial_offsets(
       source->uri_playlist_initial_audio_offset_ns = source_id == audio_source_id ? start_time_ns : 0;
       source->uri_playlist_video_origin_ns = GST_CLOCK_TIME_NONE;
       source->uri_playlist_audio_origin_ns = source_id == audio_source_id ? start_time_ns : 0;
+      source->uri_list_index = plans[source_id].index;
+      source->uri_playlist_initial_uri_index = plans[source_id].index;
+      source->uri_playlist_initial_skipped_base_ns = plans[source_id].skipped_base;
+      source->prev_accumulated_base = plans[source_id].skipped_base;
+      source->accumulated_base = plans[source_id].skipped_base;
+      g_free(source->config->uri);
+      source->config->uri = g_strdup(source->uri_list[plans[source_id].index]);
     }
     bin->uri_playlist_initial_offsets_configured = configured;
   }
   g_mutex_unlock(&bin->uri_playlist_barrier_mutex);
+  if (configured) {
+    for (guint source_id = 0; source_id < 2; ++source_id) {
+      NvDsSrcBin* source = &bin->sub_bins[source_id];
+      g_object_set(G_OBJECT(source->src_elem), "uri", source->config->uri, NULL);
+    }
+  }
   return configured;
 }
 
