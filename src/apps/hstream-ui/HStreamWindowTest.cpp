@@ -3164,6 +3164,23 @@ struct NativePreviewCapture {
   int luminance_range{0};
 };
 
+QString diagnostic_capture_attempt_path(const QString& artifact_dir, const QString& output_name, int attempt_number) {
+  const QFileInfo canonical_output(QDir(artifact_dir).filePath(output_name));
+  return canonical_output.dir().filePath(QString("%1-attempt-%2.%3")
+                                             .arg(canonical_output.completeBaseName())
+                                             .arg(attempt_number)
+                                             .arg(canonical_output.suffix()));
+}
+
+bool test_diagnostic_capture_attempt_paths() {
+  const QString first = diagnostic_capture_attempt_path("/tmp/hstream-e2e", "program-preview.png", 1);
+  const QString second = diagnostic_capture_attempt_path("/tmp/hstream-e2e", "program-preview.png", 2);
+  const QString stale_failure = QString("runtime preview frame unavailable channel=program path=%1").arg(first);
+  return expect(
+      first != second && !stale_failure.contains(second),
+      "Each diagnostic capture retry must have a distinct response marker so stale failures cannot poison it");
+}
+
 NativePreviewCapture inspect_native_preview_capture(const QString& output_path) {
   NativePreviewCapture capture;
   const QImage image = QImage(output_path).convertToFormat(QImage::Format_RGB32);
@@ -3309,7 +3326,8 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       return;
     }
     auto capture_channel = [&](const QString& channel, const QString& output_name) {
-      const QString output_path = QDir(artifact_dir).filePath(output_name);
+      const QFileInfo canonical_output(QDir(artifact_dir).filePath(output_name));
+      const QString output_path = diagnostic_capture_attempt_path(artifact_dir, output_name, x11_preview_attempts);
       QFile::remove(output_path);
       const QByteArray command = QString("@capture-preview-frame %1 %2\n").arg(channel, output_path).toUtf8();
       if (pipeline->write(command) != command.size()) {
@@ -3323,8 +3341,16 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       const qint64 capture_deadline_ms = std::min<qint64>(deadline_ms, timer.elapsed() + 5000);
       while (timer.elapsed() < capture_deadline_ms) {
         QApplication::processEvents();
-        if (window->completeLogText().contains(completion) && QFileInfo(output_path).size() > 0)
-          return inspect_native_preview_capture(output_path);
+        if (window->completeLogText().contains(completion) && QFileInfo(output_path).size() > 0) {
+          NativePreviewCapture capture = inspect_native_preview_capture(output_path);
+          if (capture.passed) {
+            QFile::remove(canonical_output.absoluteFilePath());
+            if (!QFile::rename(output_path, canonical_output.absoluteFilePath())) {
+              QFile::copy(output_path, canonical_output.absoluteFilePath());
+            }
+          }
+          return capture;
+        }
         if (window->completeLogText().contains(failure) || window->completeLogText().contains(unavailable))
           break;
         QTest::qWait(50);
@@ -3534,7 +3560,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
 } // namespace
 
 int main(int argc, char** argv) {
-  if (!test_path_scoped_auto_rollback()) {
+  if (!test_path_scoped_auto_rollback() || !test_diagnostic_capture_attempt_paths()) {
     return 1;
   }
   const QByteArray e2e_game_id = qgetenv("HSTREAM_UI_E2E_GAME_ID");
