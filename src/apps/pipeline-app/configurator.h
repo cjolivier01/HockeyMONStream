@@ -81,6 +81,10 @@ class Configurator {
       bool show_render_sink = false,
       double show_render_scale = -1.0);
 
+  absl::Status prepare_initial_pipeline_position(
+      NvDsPipeline& pipeline,
+      const NvDsConfig& config,
+      uint64_t start_time_ns);
   absl::Status post_config_pipeline(NvDsPipeline& pipeline, const NvDsConfig& config, uint64_t start_time_ns);
 
   absl::StatusOr<bool> does_need_stitching(const std::string& game_dir) const;

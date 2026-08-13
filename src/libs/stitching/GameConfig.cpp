@@ -385,7 +385,14 @@ absl::StatusOr<std::unique_ptr<GameConfigLock>> GameConfigLock::Acquire(const fs
 }
 
 absl::Status publish_game_config(const fs::path& game_dir, const std::string& contents) {
-  std::string pattern = (game_dir / ".hstream-config-XXXXXX").string();
+  return publish_named_file(game_dir / "config.yaml", contents);
+}
+
+absl::Status publish_named_file(const fs::path& path, const std::string& contents) {
+  const fs::path parent = path.parent_path();
+  if (parent.empty())
+    return absl::InvalidArgumentError("Atomic publication requires a parent directory");
+  std::string pattern = (parent / ("." + path.filename().string() + "-XXXXXX")).string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   const int descriptor = ::mkstemp(writable.data());
@@ -415,14 +422,14 @@ absl::Status publish_game_config(const fs::path& game_dir, const std::string& co
     return absl::InternalError("Unable to close temporary game config: " + std::string(std::strerror(errno)));
   }
   std::error_code error;
-  fs::rename(temporary, game_dir / "config.yaml", error);
+  fs::rename(temporary, path, error);
   if (error) {
     const std::string message = error.message();
     std::error_code ignored;
     fs::remove(temporary, ignored);
     return absl::InternalError("Unable to atomically publish game config: " + message);
   }
-  return fsync_directory(game_dir);
+  return fsync_directory(parent);
 }
 
 absl::StatusOr<size_t> publish_game_config_without_rink_masks(const fs::path& game_dir, const std::string& contents) {

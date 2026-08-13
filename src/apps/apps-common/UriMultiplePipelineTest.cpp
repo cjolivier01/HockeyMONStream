@@ -87,6 +87,7 @@ struct AudioTimelineStats {
   guint64 buffers{0};
   guint64 eos_events{0};
   guint64 invalid_timestamps{0};
+  guint64 dts_before_pts{0};
   guint64 discontinuities{0};
   GstClockTime first_pts{GST_CLOCK_TIME_NONE};
   GstClockTime previous_end{GST_CLOCK_TIME_NONE};
@@ -101,6 +102,7 @@ struct MuxBatchStats {
   guint64 decode_mux_sequence_mismatches{0};
   bool exact_frame_pairs{true};
   std::map<guint, guint64> frames_by_source;
+  std::map<guint, guint64> next_decoded_sequence_by_source;
   std::vector<std::vector<std::pair<guint, guint>>> batch_frames;
 };
 
@@ -134,11 +136,15 @@ GstPadProbeReturn inspect_audio_timeline_probe(GstPad* /*pad*/, GstPadProbeInfo*
   }
   GstBuffer* buffer = GST_BUFFER(info->data);
   const GstClockTime pts = GST_BUFFER_PTS(buffer);
+  const GstClockTime dts = GST_BUFFER_DTS(buffer);
   const GstClockTime duration = GST_BUFFER_DURATION(buffer);
   ++stats->buffers;
   if (!GST_CLOCK_TIME_IS_VALID(pts) || !GST_CLOCK_TIME_IS_VALID(duration)) {
     ++stats->invalid_timestamps;
     return GST_PAD_PROBE_OK;
+  }
+  if (GST_CLOCK_TIME_IS_VALID(dts) && dts < pts) {
+    ++stats->dts_before_pts;
   }
   if (!GST_CLOCK_TIME_IS_VALID(stats->first_pts)) {
     stats->first_pts = pts;
@@ -189,8 +195,11 @@ GstPadProbeReturn inspect_mux_batches_probe(GstPad* /*pad*/, GstPadProbeInfo* in
       ++stats->missing_decoded_sequence_meta;
     } else if (
         decoded_sequence->source_id != frame_meta->source_id ||
-        decoded_sequence->sequence != static_cast<uint64_t>(frame_meta->frame_num)) {
+        decoded_sequence->sequence != static_cast<uint64_t>(frame_meta->frame_num) ||
+        decoded_sequence->sequence != stats->next_decoded_sequence_by_source[frame_meta->source_id]) {
       ++stats->decode_mux_sequence_mismatches;
+    } else {
+      ++stats->next_decoded_sequence_by_source[frame_meta->source_id];
     }
     source_ids.insert(frame_meta->source_id);
     frame_numbers.insert(frame_meta->frame_num);
@@ -330,6 +339,24 @@ int run_pipeline(GstElement* pipeline, int timeout_seconds, NvDsSrcParentBin* so
   g_main_loop_unref(loop);
 
   return bus_state.exit_code;
+}
+
+int run_pipeline_with_preroll(GstElement* pipeline, int timeout_seconds, NvDsSrcParentBin* source_parent) {
+  if (gst_element_set_state(pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
+    std::cerr << "Failed to set initially positioned pipeline to PAUSED\n";
+    gst_object_unref(GST_OBJECT(pipeline));
+    return 3;
+  }
+  constexpr GstClockTime kPrerollTimeout = 10 * GST_SECOND;
+  const GstStateChangeReturn preroll = gst_element_get_state(pipeline, nullptr, nullptr, kPrerollTimeout);
+  if (preroll == GST_STATE_CHANGE_FAILURE || preroll == GST_STATE_CHANGE_ASYNC) {
+    std::cerr << "Initially positioned pipeline did not complete PAUSED preroll\n";
+    cancel_uri_playlist_frame_barrier(source_parent);
+    gst_element_set_state(pipeline, GST_STATE_NULL);
+    gst_object_unref(GST_OBJECT(pipeline));
+    return 3;
+  }
+  return run_pipeline(pipeline, timeout_seconds, source_parent);
 }
 
 void configure_uri_multiple_source(
@@ -726,7 +753,11 @@ int run_lossless_two_camera_mux(
     ExpectedPipelineFailure expected_failure = ExpectedPipelineFailure::kNone,
     guint64 video_sleep_time_us = 0,
     gint video_sleep_source_id = -1,
-    guint64 video_sleep_on_buffer = 0) {
+    guint64 video_sleep_on_buffer = 0,
+    GstClockTime left_initial_offset = 0,
+    GstClockTime right_initial_offset = 0,
+    GstClockTime start_time = 0,
+    bool pause_before_playing = false) {
   NvDsSourceConfig configs[2]{};
   configure_uri_multiple_source(configs[0], left_uris, /*source_id=*/0);
   configure_uri_multiple_source(configs[1], right_uris, /*source_id=*/1, include_right_uri_list);
@@ -734,6 +765,22 @@ int run_lossless_two_camera_mux(
   NvDsSrcParentBin src_parent{};
   if (!create_multi_source_bin(2, configs, &src_parent)) {
     std::cerr << "Failed to create lossless two-camera source bin\n";
+    return 2;
+  }
+  if ((left_initial_offset || right_initial_offset || start_time) &&
+      !configure_uri_playlist_initial_offsets(
+          &src_parent, left_initial_offset, right_initial_offset, audio_source_id, start_time)) {
+    std::cerr << "Failed to configure initial camera positions before preroll\n";
+    return 2;
+  }
+  if (start_time >= GST_SECOND &&
+      (src_parent.sub_bins[0].uri_playlist_initial_uri_index == 0 ||
+       src_parent.sub_bins[1].uri_playlist_initial_uri_index == 0 ||
+       src_parent.sub_bins[0].uri_playlist_initial_skipped_base_ns == 0 ||
+       src_parent.sub_bins[1].uri_playlist_initial_skipped_base_ns == 0 ||
+       src_parent.sub_bins[0].uri_list_decoded_frame_count != 0 ||
+       src_parent.sub_bins[1].uri_list_decoded_frame_count != 0)) {
+    std::cerr << "Large initial positioning did not preselect complete chapters before decoding\n";
     return 2;
   }
   GstElementFactory* mux_factory = gst_element_get_factory(src_parent.streammux);
@@ -788,6 +835,7 @@ int run_lossless_two_camera_mux(
   BufferCounter source_counters[2]{};
   MuxBatchStats mux_stats{};
   AudioTimelineStats audio_stats{};
+  AudioTimelineStats video_timeline_stats[2]{};
   for (guint source_id = 0; source_id < 2; ++source_id) {
     if (video_sleep_source_id < 0 || static_cast<guint>(video_sleep_source_id) == source_id) {
       source_counters[source_id].sleep_time_us = video_sleep_time_us;
@@ -795,6 +843,8 @@ int run_lossless_two_camera_mux(
     }
     GstPad* source_pad = gst_element_get_static_pad(src_parent.sub_bins[source_id].bin, "src");
     gst_pad_add_probe(source_pad, GST_PAD_PROBE_TYPE_BUFFER, count_buffers_probe, &source_counters[source_id], nullptr);
+    gst_pad_add_probe(
+        source_pad, GST_PAD_PROBE_TYPE_BUFFER, inspect_audio_timeline_probe, &video_timeline_stats[source_id], nullptr);
     gst_object_unref(source_pad);
   }
   GstPad* mux_src = gst_element_get_static_pad(src_parent.streammux, "src");
@@ -809,7 +859,8 @@ int run_lossless_two_camera_mux(
       nullptr);
   gst_object_unref(audio_sink_pad);
 
-  const int rc = run_pipeline(pipeline, 30, &src_parent);
+  const int rc = pause_before_playing ? run_pipeline_with_preroll(pipeline, 30, &src_parent)
+                                      : run_pipeline(pipeline, 30, &src_parent);
   if (expected_failure != ExpectedPipelineFailure::kNone) {
     const int expected_rc = expected_failure == ExpectedPipelineFailure::kBusError ? 1 : 3;
     if (rc != expected_rc) {
@@ -824,11 +875,16 @@ int run_lossless_two_camera_mux(
     return rc;
   }
   const size_t expected_complete_chapters = std::min(left_uris.size(), right_uris.size());
-  const guint minimum_switches = static_cast<guint>(expected_complete_chapters - 1);
-  const guint maximum_left_switches =
-      std::min<guint>(left_uris.size() - 1, static_cast<guint>(expected_complete_chapters));
-  const guint maximum_right_switches =
-      std::min<guint>(right_uris.size() - 1, static_cast<guint>(expected_complete_chapters));
+  const size_t expected_decoded_chapters = std::min(
+      left_uris.size() - src_parent.sub_bins[0].uri_playlist_initial_uri_index,
+      right_uris.size() - src_parent.sub_bins[1].uri_playlist_initial_uri_index);
+  const guint minimum_switches = static_cast<guint>(expected_decoded_chapters - 1);
+  const guint maximum_left_switches = std::min<guint>(
+      left_uris.size() - src_parent.sub_bins[0].uri_playlist_initial_uri_index - 1,
+      static_cast<guint>(expected_decoded_chapters));
+  const guint maximum_right_switches = std::min<guint>(
+      right_uris.size() - src_parent.sub_bins[1].uri_playlist_initial_uri_index - 1,
+      static_cast<guint>(expected_decoded_chapters));
   if (src_parent.sub_bins[0].uri_switch_count < minimum_switches ||
       src_parent.sub_bins[0].uri_switch_count > maximum_left_switches ||
       src_parent.sub_bins[1].uri_switch_count < minimum_switches ||
@@ -839,7 +895,13 @@ int run_lossless_two_camera_mux(
   }
 
   constexpr guint64 kFramesPerChapter = 15;
-  const guint64 expected_frames_per_source = kFramesPerChapter * expected_complete_chapters;
+  const guint64 preselected_left_frames = src_parent.sub_bins[0].uri_playlist_initial_skipped_base_ns * 15 / GST_SECOND;
+  const guint64 preselected_right_frames =
+      src_parent.sub_bins[1].uri_playlist_initial_skipped_base_ns * 15 / GST_SECOND;
+  const guint64 positioned_frames = std::max(
+      preselected_left_frames + src_parent.sub_bins[0].uri_list_initial_positioned_frame_count,
+      preselected_right_frames + src_parent.sub_bins[1].uri_list_initial_positioned_frame_count);
+  const guint64 expected_frames_per_source = kFramesPerChapter * expected_complete_chapters - positioned_frames;
   for (guint source_id = 0; source_id < 2; ++source_id) {
     const guint64 decoded_before_terminal = src_parent.sub_bins[source_id].uri_list_decoded_frame_count -
         src_parent.sub_bins[source_id].uri_list_terminal_dropped_frame_count;
@@ -855,6 +917,17 @@ int run_lossless_two_camera_mux(
                 << ", post_mux=" << mux_stats.frames_by_source[source_id] << "\n";
       return 6;
     }
+  }
+  const guint64 expected_left_positioned_frames =
+      ((start_time + left_initial_offset) * 15) / GST_SECOND - preselected_left_frames;
+  const guint64 expected_right_positioned_frames =
+      ((start_time + right_initial_offset) * 15) / GST_SECOND - preselected_right_frames;
+  if (src_parent.sub_bins[0].uri_list_initial_positioned_frame_count != expected_left_positioned_frames ||
+      src_parent.sub_bins[1].uri_list_initial_positioned_frame_count != expected_right_positioned_frames) {
+    std::cerr << "Initial positioning consumed unexpected frame counts: left="
+              << src_parent.sub_bins[0].uri_list_initial_positioned_frame_count
+              << ", right=" << src_parent.sub_bins[1].uri_list_initial_positioned_frame_count << "\n";
+    return 6;
   }
   if (mux_stats.batches != expected_frames_per_source || mux_stats.incomplete_batches != 0 ||
       mux_stats.invalid_metadata_batches != 0 || mux_stats.missing_decoded_sequence_meta != 0 ||
@@ -875,11 +948,20 @@ int run_lossless_two_camera_mux(
     }
     return 7;
   }
+  for (guint source_id = 0; source_id < 2; ++source_id) {
+    if (video_timeline_stats[source_id].buffers == 0 ||
+        !GST_CLOCK_TIME_IS_VALID(video_timeline_stats[source_id].first_pts) ||
+        video_timeline_stats[source_id].first_pts > GST_SECOND / 10) {
+      std::cerr << "Initially positioned video source " << source_id
+                << " did not start near zero: first_pts=" << video_timeline_stats[source_id].first_pts << "\n";
+      return 7;
+    }
+  }
   if (!src_parent.sub_bins[0].uri_list_permanently_ended || !src_parent.sub_bins[1].uri_list_permanently_ended) {
     std::cerr << "Expected both camera playlists to terminate together when either camera permanently ended\n";
     return 8;
   }
-  const GstClockTime expected_audio_duration = expected_complete_chapters * GST_SECOND;
+  const GstClockTime expected_audio_duration = expected_frames_per_source * GST_SECOND / 15;
   // One missing 15 fps frame would shorten the terminal frontier by ~66 ms. Keep the tolerance below that so the
   // regression fails if terminal EOS snapshots sequence N-1 after sequence N was already released by the barrier.
   const GstClockTime minimum_audio_duration = expected_audio_duration - GST_SECOND / 50;
@@ -887,12 +969,14 @@ int run_lossless_two_camera_mux(
   const GstClockTime paired_video_end = src_parent.uri_playlist_paired_video_end;
   if (!GST_CLOCK_TIME_IS_VALID(paired_video_end) || paired_video_end + GST_SECOND / 50 < expected_audio_duration ||
       paired_video_end > expected_audio_duration + GST_SECOND / 50 || audio_stats.buffers == 0 ||
-      audio_stats.eos_events != 1 || audio_stats.invalid_timestamps != 0 || audio_stats.discontinuities != 0 ||
-      audio_stats.first_pts > GST_SECOND / 10 || audio_stats.final_end < minimum_audio_duration ||
-      audio_stats.final_end > maximum_audio_duration || audio_stats.final_end + GST_SECOND / 50 < paired_video_end) {
+      audio_stats.eos_events != 1 || audio_stats.invalid_timestamps != 0 || audio_stats.dts_before_pts != 0 ||
+      audio_stats.discontinuities != 0 || audio_stats.first_pts > GST_SECOND / 10 ||
+      audio_stats.final_end < minimum_audio_duration || audio_stats.final_end > maximum_audio_duration ||
+      audio_stats.final_end + GST_SECOND / 50 < paired_video_end) {
     std::cerr << "Source audio was not continuous through the coordinated camera playlist: buffers="
               << audio_stats.buffers << ", eos_events=" << audio_stats.eos_events
               << ", invalid_timestamps=" << audio_stats.invalid_timestamps
+              << ", dts_before_pts=" << audio_stats.dts_before_pts
               << ", discontinuities=" << audio_stats.discontinuities
               << ", first_pts=" << GST_TIME_AS_SECONDS(audio_stats.first_pts)
               << "s, final_end=" << GST_TIME_AS_SECONDS(audio_stats.final_end)
@@ -964,6 +1048,51 @@ int main(int argc, char** argv) {
   }
 
   rc = run_lossless_two_camera_mux(left_uris, right_uris);
+  if (rc != 0) {
+    fs::remove_all(tmpdir);
+    return rc;
+  }
+
+  // Production startup first drives the pipeline through PAUSED to initialize models and video-overlay sinks. The
+  // asymmetric synchronization offset must be consumed before sequence zero, not as a post-preroll flushing seek
+  // that can revoke one half of an already committed pair. 100312679 ns reproduces sharks-12-1-r4 (~3 frames at
+  // 29.97 fps); with this 15 fps source it consumes exactly one complete frame before pair zero.
+  rc = run_lossless_two_camera_mux(
+      left_uris,
+      right_uris,
+      /*include_right_uri_list=*/true,
+      /*audio_source_id=*/0,
+      /*audio_sleep_time_us=*/0,
+      /*expected_failure=*/ExpectedPipelineFailure::kNone,
+      /*video_sleep_time_us=*/0,
+      /*video_sleep_source_id=*/-1,
+      /*video_sleep_on_buffer=*/0,
+      /*left_initial_offset=*/0,
+      /*right_initial_offset=*/100312679,
+      /*start_time=*/0,
+      /*pause_before_playing=*/true);
+  if (rc != 0) {
+    fs::remove_all(tmpdir);
+    return rc;
+  }
+
+  // A common --start-time may span chapter boundaries. Consume complete chapters plus the partial frontier before
+  // sequence zero, then expose video and selected audio on a new near-zero epoch so PLAYING does not wait for the
+  // skipped wall-clock duration.
+  rc = run_lossless_two_camera_mux(
+      left_uris,
+      right_uris,
+      /*include_right_uri_list=*/true,
+      /*audio_source_id=*/0,
+      /*audio_sleep_time_us=*/0,
+      /*expected_failure=*/ExpectedPipelineFailure::kNone,
+      /*video_sleep_time_us=*/0,
+      /*video_sleep_source_id=*/-1,
+      /*video_sleep_on_buffer=*/0,
+      /*left_initial_offset=*/0,
+      /*right_initial_offset=*/0,
+      /*start_time=*/GST_SECOND + 200 * GST_MSECOND,
+      /*pause_before_playing=*/true);
   if (rc != 0) {
     fs::remove_all(tmpdir);
     return rc;

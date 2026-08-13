@@ -55,5 +55,6 @@ int main(int argc, char** argv) {
     std::cerr << "playtracker property roundtrip failed\n";
     return 1;
   }
+
   std::_Exit(0);
 }

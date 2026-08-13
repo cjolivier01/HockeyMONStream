@@ -148,6 +148,7 @@ enum {
   PROP_FIXED_EDGE_ROTATION_ANGLE_LEFT,
   PROP_FIXED_EDGE_ROTATION_ANGLE_RIGHT,
   PROP_DYNAMIC_ACCELERATION_SCALING,
+  PROP_RUNTIME_TUNING_CONFIG_FILE,
   PROP_LAST_PROPERTY_SET_OK,
   PROP_SILENT,
 };
@@ -1161,6 +1162,16 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
+      PROP_RUNTIME_TUNING_CONFIG_FILE,
+      g_param_spec_string(
+          "runtime-tuning-config-file",
+          "Runtime play tracker tuning config",
+          "State-preserving play tracker tuning configuration",
+          NULL,
+          GParamFlags(G_PARAM_WRITABLE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+
+  g_object_class_install_property(
+      gobject_class,
       PROP_LAST_PROPERTY_SET_OK,
       g_param_spec_boolean(
           "last-property-set-ok",
@@ -1414,6 +1425,12 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
       }
       break;
     }
+    case PROP_RUNTIME_TUNING_CONFIG_FILE: {
+      const gchar* config_file = g_value_get_string(value);
+      videoprep->last_property_set_ok =
+          config_file && *config_file && set_priv_property("runtime-tuning-config-file", config_file);
+      break;
+    }
     case PROP_LAST_PROPERTY_SET_OK:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
@@ -1520,6 +1537,9 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
       break;
     case PROP_DYNAMIC_ACCELERATION_SCALING:
       g_value_set_double(value, videoprep->dynamic_acceleration_scaling);
+      break;
+    case PROP_RUNTIME_TUNING_CONFIG_FILE:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
     case PROP_LAST_PROPERTY_SET_OK:
       g_value_set_boolean(value, videoprep->last_property_set_ok);

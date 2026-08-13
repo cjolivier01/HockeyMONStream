@@ -5,6 +5,7 @@
 
 #include <algorithm> // for std::replace
 #include <cassert>
+#include <cstdint>
 #include <cstring> // for strncpy
 #include <map>
 #include <set>
@@ -19,7 +20,8 @@ struct ConfigEnumLocator {
   void (*assign)(void*, int); // assignment function: takes an int and assigns to the enum
 };
 
-using ConfigValueLocator = std::variant<guint*, size_t*, float*, std::string*, gboolean*, bool*, ConfigEnumLocator>;
+using ConfigValueLocator =
+    std::variant<guint*, size_t*, int64_t*, float*, std::string*, gboolean*, bool*, ConfigEnumLocator>;
 
 namespace hm {
 namespace utils {

@@ -26,6 +26,12 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
 
   absl::Status GenerateOutput(NvDsBatchMeta* batch_meta, NvBufSurface* in_surface, NvBufSurface* out_surface) override;
 
+  // Test/diagnostic accessors for proving runtime tuning preserves the active
+  // context and tracker objects.
+  DsPlayTrackerCtx* contextForTesting() const {
+    return pt_context_;
+  }
+
  protected:
   absl::Status ReloadContextFromConfig();
 

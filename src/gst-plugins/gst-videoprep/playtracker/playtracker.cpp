@@ -136,11 +136,22 @@ absl::Status PlayTrackerPriv::ReloadContextFromConfig() {
 
 bool PlayTrackerPriv::SetProperty(const Property& prop) {
   bool reload_context = false;
-  const float previous_fixed_edge_rotation_angle_left = fixed_edge_rotation_angle_left_;
-  const float previous_fixed_edge_rotation_angle_right = fixed_edge_rotation_angle_right_;
-  const float previous_dynamic_acceleration_scaling = dynamic_acceleration_scaling_;
   std::string key = prop.key;
   std::replace(key.begin(), key.end(), '_', '-');
+  auto apply_camera_geometry = [this](
+                                   std::optional<float> angle,
+                                   std::optional<float> dynamic_acceleration_scaling,
+                                   bool apply_to_fast_box,
+                                   bool apply_to_follower_box) {
+    DsPlayTrackerRuntimeTuning tuning;
+    tuning.apply_to_fast_box = apply_to_fast_box;
+    tuning.apply_to_follower_box = apply_to_follower_box;
+    tuning.update_motion_tuning = false;
+    tuning.arena_angle_from_vertical = angle;
+    tuning.dynamic_acceleration_scaling = dynamic_acceleration_scaling;
+    std::lock_guard<std::mutex> lk(context_mu_);
+    return !pt_context_ || DsPlayTrackerCtxApplyRuntimeTuning(pt_context_, tuning).ok();
+  };
   if (key == "show") {
     show_ = !!std::atol(prop.value.c_str());
   } else if (key == "draw") {
@@ -150,25 +161,59 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     if (!parse_finite_float(prop.value, &angle)) {
       return false;
     }
+    if (!apply_camera_geometry(angle, std::nullopt, true, true)) {
+      return false;
+    }
     fixed_edge_rotation_angle_left_ = angle;
     fixed_edge_rotation_angle_right_ = angle;
-    reload_context = true;
   } else if (key == "fixed-edge-rotation-angle-left") {
-    if (!parse_finite_float(prop.value, &fixed_edge_rotation_angle_left_)) {
+    float angle = 0.0f;
+    if (!parse_finite_float(prop.value, &angle)) {
       return false;
     }
-    reload_context = true;
+    if (!apply_camera_geometry(0.5f * (angle + fixed_edge_rotation_angle_right_), std::nullopt, true, true)) {
+      return false;
+    }
+    fixed_edge_rotation_angle_left_ = angle;
   } else if (key == "fixed-edge-rotation-angle-right") {
-    if (!parse_finite_float(prop.value, &fixed_edge_rotation_angle_right_)) {
+    float angle = 0.0f;
+    if (!parse_finite_float(prop.value, &angle)) {
       return false;
     }
-    reload_context = true;
+    if (!apply_camera_geometry(0.5f * (fixed_edge_rotation_angle_left_ + angle), std::nullopt, true, true)) {
+      return false;
+    }
+    fixed_edge_rotation_angle_right_ = angle;
   } else if (key == "dynamic-acceleration-scaling") {
-    if (!parse_finite_float(prop.value, &dynamic_acceleration_scaling_)) {
+    float dynamic_acceleration_scaling = 0.0f;
+    if (!parse_finite_float(prop.value, &dynamic_acceleration_scaling)) {
       return false;
     }
-    reload_context = true;
+    if (!apply_camera_geometry(std::nullopt, dynamic_acceleration_scaling, false, true)) {
+      return false;
+    }
+    dynamic_acceleration_scaling_ = dynamic_acceleration_scaling;
+  } else if (key == "runtime-tuning-config-file") {
+    // Parse outside the streaming mutex so disk I/O and YAML conversion never
+    // stall GenerateOutput(). Only the small in-place mutation is serialized.
+    auto tuning = DsPlayTrackerLoadRuntimeTuning(prop.value);
+    if (!tuning.ok()) {
+      std::cerr << tuning.status() << std::endl;
+      return false;
+    }
+    std::lock_guard<std::mutex> lk(context_mu_);
+    if (!pt_context_) {
+      return false;
+    }
+    const absl::Status status = DsPlayTrackerCtxApplyRuntimeTuning(pt_context_, *tuning);
+    if (!status.ok()) {
+      std::cerr << status << std::endl;
+      return false;
+    }
+    return true;
   } else if (key == "config-file") {
+    // This property changes the next-start base configuration. Runtime tuning
+    // uses runtime-tuning-config-file so active tracker history is preserved.
     reload_context = true;
   }
   if (reload_context) {
@@ -181,9 +226,6 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
       const absl::Status status = ReloadContextFromConfig();
       if (!status.ok()) {
         play_tracker_config_source_file_ = previous_config_source_file;
-        fixed_edge_rotation_angle_left_ = previous_fixed_edge_rotation_angle_left;
-        fixed_edge_rotation_angle_right_ = previous_fixed_edge_rotation_angle_right;
-        dynamic_acceleration_scaling_ = previous_dynamic_acceleration_scaling;
         std::cerr << status << std::endl;
         return false;
       }

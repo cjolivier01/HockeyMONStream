@@ -168,9 +168,13 @@ typedef struct {
   gchar** uri_list;
   guint num_uri_list;
   guint uri_list_index;
+  /** First physical chapter selected during pre-preroll positioning. */
+  guint uri_playlist_initial_uri_index;
+  /** Exact duration of complete physical chapters skipped before decoding begins. */
+  guint64 uri_playlist_initial_skipped_base_ns;
   guint uri_switch_count;
   gboolean uri_switch_pending;
-  /** Total decoded video frames across every URI in this playlist. Never resets at chapter boundaries. */
+  /** Video frames admitted after initial positioning across every URI. Never resets at chapter boundaries. */
   guint64 uri_list_decoded_frame_count;
   /** Logical end timestamp of the latest decoded video buffer released by the exact-pair barrier. */
   guint64 uri_list_released_video_end;
@@ -178,9 +182,19 @@ typedef struct {
   guint64 uri_list_mux_delivered_sequence;
   /** Frames decoded only after a peer camera permanently ended; they are stopped before nvstreammux. */
   guint64 uri_list_terminal_dropped_frame_count;
+  /** Frames consumed solely to reach the configured initial synchronization frontier, before sequence zero. */
+  guint64 uri_list_initial_positioned_frame_count;
   /** Decode-time sequence currently waiting for the peer camera before either buffer can reach nvstreammux. */
   guint64 uri_list_frame_ready_sequence;
   gboolean uri_list_permanently_ended;
+  /** Initial decoded-video trim, applied before sequence metadata and exact-pair admission begin. */
+  guint64 uri_playlist_initial_video_offset_ns;
+  /** Initial selected-audio trim. Kept on the zero-video-offset source so muxed audio starts with pair zero. */
+  guint64 uri_playlist_initial_audio_offset_ns;
+  /** Raw logical PTS of the first retained video frame; retained video timestamps are rebased from this epoch. */
+  guint64 uri_playlist_video_origin_ns;
+  /** Raw logical PTS requested for selected audio; retained audio timestamps are rebased from this epoch. */
+  guint64 uri_playlist_audio_origin_ns;
   /** URI playlist timestamp continuity state (nanoseconds). */
   guint64 uri_list_segment_stop;
   guint64 uri_list_last_pts;
@@ -208,8 +222,20 @@ struct NvDsSrcParentBin {
   gboolean uri_playlist_barrier_failed;
   /** Cancels waits for committed frames to reach nvstreammux during failure/application teardown. */
   gboolean uri_playlist_delivery_aborted;
+  gboolean uri_playlist_initial_offsets_configured;
   gulong nvstreammux_eosmonitor_probe;
 };
+
+/**
+ * Configure coherent initial source positioning before the pipeline leaves NULL/READY. Unlike a flushing seek after
+ * PAUSED preroll, this trim happens at decoded-pad admission, before sequence zero can be committed or audio exposed.
+ */
+gboolean configure_uri_playlist_initial_offsets(
+    NvDsSrcParentBin* bin,
+    guint64 left_video_offset_ns,
+    guint64 right_video_offset_ns,
+    guint audio_source_id,
+    guint64 start_time_ns);
 
 gboolean create_source_bin(NvDsSourceConfig* config, NvDsSrcBin* bin);
 gboolean create_audio_source_bin(NvDsSourceConfig* config, NvDsSrcBin* bin);

@@ -515,12 +515,15 @@ void ScoreboardSelectionDialog::buildUi() {
     status_message_->setText("Click four scoreboard corners to start again.");
   });
   no_scoreboard_button_ = add_button("No Scoreboard", "scoreboardNoScoreboardButton", 3, 1, [this]() {
-    if (QMessageBox::question(
-            this,
-            "Confirm no scoreboard",
-            "Mark this game as having no scoreboard? The scoreboard overlay will be disabled.",
-            QMessageBox::Yes | QMessageBox::No,
-            QMessageBox::No) == QMessageBox::Yes) {
+    QMessageBox confirmation(
+        QMessageBox::Question,
+        "Confirm no scoreboard",
+        "Mark this game as having no scoreboard? The scoreboard overlay will be disabled.",
+        QMessageBox::Yes | QMessageBox::No,
+        this);
+    confirmation.setObjectName("scoreboardNoScoreboardConfirmation");
+    confirmation.setDefaultButton(QMessageBox::No);
+    if (confirmation.exec() == QMessageBox::Yes) {
       submit(Submission::kNoScoreboard);
     }
   });

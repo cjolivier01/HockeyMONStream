@@ -20,6 +20,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -70,8 +71,19 @@ class HStreamWindow : public QMainWindow {
     QString element;
     QString property;
     QString runtime_value;
-    QString control_id;
-    int control_value;
+    quint64 batch_id;
+  };
+
+  struct RuntimeControlBatch {
+    std::map<QString, int> controls;
+    size_t pending_commands;
+    bool failed;
+  };
+
+  struct RuntimePropertyCommand {
+    QString element;
+    QString property;
+    QString value;
   };
 
   enum class PreviewRequestReason {
@@ -86,7 +98,7 @@ class HStreamWindow : public QMainWindow {
   void buildGameControls(QVBoxLayout* root);
   void buildPreviewPane(QVBoxLayout* root);
   void buildOutputControls(QVBoxLayout* parent);
-  void buildCameraControls(QVBoxLayout* parent);
+  void buildCameraControls(QVBoxLayout* parent, bool program_stage);
   void buildLog(QVBoxLayout* root);
 
   void startPipeline();
@@ -113,7 +125,8 @@ class HStreamWindow : public QMainWindow {
   QWidget* previewSurfaceForChannel(const QString& channel) const;
   QWidget* previewTargetForChannel(const QString& channel) const;
   void schedulePreviewReadyTimeout(const QString& channel, quint64 generation, int timeout_ms);
-  void togglePreviewFullscreen(int tab_index);
+  void togglePreviewFocus(int tab_index);
+  void setPreviewFocusMode(bool focused, int tab_index);
   void restartStage();
   void savePreset();
   void resetCameraControls();
@@ -167,6 +180,7 @@ class HStreamWindow : public QMainWindow {
   void addRtspOutput();
   void appendLog(const QString& message);
   QString writePlaytrackerRuntimeConfig();
+  void schedulePlaytrackerRuntimeControl(const QString& id, int value);
   QString pipelineRunnerPath() const;
   QString pipelineConfigPath(const QString& config_name) const;
   QString pipelineWorkingDirectory() const;
@@ -200,6 +214,13 @@ class HStreamWindow : public QMainWindow {
   bool applySavedControlConfig(YAML::Node& config, bool* invalidate_rink_masks, int* invalidated_config_artifacts);
   void loadSavedControlConfig();
   bool sendLiveCameraControl(const QString& id, int value);
+  bool publishRuntimeControlBatch(
+      const std::map<QString, int>& controls,
+      const std::vector<RuntimePropertyCommand>& commands);
+  void flushScheduledRuntimeControls();
+  void timeoutRuntimeControlBatch(quint64 batch_id);
+  int runtimeControlAckTimeoutMs() const;
+  void scheduleRotationRuntimeControl(const QString& id, int value);
   void synchronizeFixedEdgeRotationControls(const QString& changed_id, int value);
   void handleRuntimeControlResponse(const QString& line);
   void failPendingRuntimeControls(const QString& reason);
@@ -227,6 +248,9 @@ class HStreamWindow : public QMainWindow {
   QRadioButton* role_right_{nullptr};
   QTextEdit* log_{nullptr};
   QTabWidget* preview_tabs_{nullptr};
+  QWidget* top_bar_{nullptr};
+  QWidget* setup_panel_{nullptr};
+  QWidget* log_panel_{nullptr};
   QWidget* preview_surface_{nullptr};
   QWidget* preview_render_target_{nullptr};
   QWidget* stitched_surface_{nullptr};
@@ -234,14 +258,14 @@ class HStreamWindow : public QMainWindow {
   std::vector<QWidget*> camera_preview_surfaces_;
   std::vector<QWidget*> camera_preview_render_targets_;
   std::vector<QLabel*> camera_preview_notices_;
-  QTabWidget* camera_tabs_{nullptr};
+  QTabWidget* program_control_tabs_{nullptr};
+  QTabWidget* stitched_control_tabs_{nullptr};
+  std::vector<QWidget*> preview_hosts_;
   QVBoxLayout* output_list_{nullptr};
   QProcess* pipeline_process_{nullptr};
   QPushButton* start_button_{nullptr};
   QPushButton* pause_button_{nullptr};
   QPushButton* stop_button_{nullptr};
-  QPushButton* program_fullscreen_button_{nullptr};
-  QPushButton* stitched_fullscreen_button_{nullptr};
   QCheckBox* render_video_toggle_{nullptr};
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
@@ -249,7 +273,8 @@ class HStreamWindow : public QMainWindow {
   bool pipeline_render_embedded_{false};
   bool calibration_pending_{false};
   bool calibration_dialog_failed_{false};
-  bool preview_fullscreen_{false};
+  bool preview_focus_mode_{false};
+  int focused_preview_tab_{-1};
   quint64 preview_generation_{1};
   QString active_preview_channel_;
   QString pending_preview_channel_;
@@ -287,4 +312,16 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, int> camera_defaults_;
   std::vector<PendingRuntimeControl> pending_runtime_controls_;
+  std::map<quint64, RuntimeControlBatch> runtime_control_batches_;
+  std::map<QString, int> scheduled_rotation_controls_;
+  std::map<QString, int> scheduled_playtracker_controls_;
+  bool scheduled_rotation_controls_ready_{false};
+  bool scheduled_playtracker_controls_ready_{false};
+  std::optional<std::map<QString, int>> publishing_playtracker_controls_;
+  bool scheduled_playtracker_force_all_targets_{false};
+  bool publishing_playtracker_force_all_targets_{false};
+  quint64 next_runtime_control_batch_id_{0};
+  quint64 scheduled_rotation_control_generation_{0};
+  quint64 scheduled_playtracker_control_generation_{0};
+  QString last_playtracker_runtime_snapshot_;
 };

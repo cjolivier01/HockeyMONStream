@@ -5,16 +5,43 @@
 
 #include <list>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "hstream/src/libs/common/ManagedObject.h"
-//#include "deepstream/sources/includes/nvbufsurface.h"
+// #include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurface.h"
 
 #include "hockeymom/csrc/play_tracker/PlayTracker.h"
+#include "yaml-cpp/yaml.h"
 
 typedef struct GstDsPlayTrackerFrame GstDsPlayTrackerFrame;
+
+namespace gst_hm_playtracker {
+hm::play_tracker::PlayTrackerConfig create_play_tracker_config(const hm::BBox& arena_box, const YAML::Node& yaml);
+}
+
+struct DsPlayTrackerRuntimeTuning {
+  std::optional<int> stop_on_dir_change_delay;
+  std::optional<bool> cancel_on_opposite;
+  std::optional<int> cancel_hysteresis_frames;
+  std::optional<int> stop_delay_cooldown_frames;
+  std::optional<int> post_nonstop_stop_delay_count;
+  std::optional<int> time_to_dest_speed_limit_frames;
+  std::optional<int> overshoot_stop_delay_count;
+  std::optional<float> overshoot_scale_speed_ratio;
+  std::optional<float> max_speed_x;
+  std::optional<float> max_speed_y;
+  std::optional<float> max_accel_x;
+  std::optional<float> max_accel_y;
+  bool apply_to_fast_box{false};
+  bool apply_to_follower_box{true};
+  bool update_motion_tuning{true};
+  std::optional<float> arena_angle_from_vertical;
+  std::optional<float> dynamic_acceleration_scaling;
+};
 
 // Init parameters structure as input, required for instantiating
 // playtracker_lib
@@ -29,7 +56,11 @@ struct DsPlayTrackerInitParams {
 
 struct DsPlayTrackerCtx {
   DsPlayTrackerInitParams initParams;
+  std::optional<DsPlayTrackerRuntimeTuning> detector_runtime_tuning;
+  std::optional<DsPlayTrackerRuntimeTuning> fast_box_runtime_tuning;
+  std::optional<DsPlayTrackerRuntimeTuning> follower_box_runtime_tuning;
   struct PlayTracker {
+    hm::play_tracker::PlayTrackerConfig base_play_tracker_config;
     hm::play_tracker::PlayTrackerConfig play_tracker_config;
     std::unique_ptr<hm::play_tracker::PlayTracker> play_tracker;
     bool has_received_tracks{false};
@@ -44,12 +75,13 @@ DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* init_params);
 
 absl::Status DsPlayTrackerValidateConfigFile(const std::string& config_file);
 
-bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx,
-                               GstDsPlayTrackerFrame& frame,
-                               cudaStream_t stream);
+absl::StatusOr<DsPlayTrackerRuntimeTuning> DsPlayTrackerLoadRuntimeTuning(const std::string& config_file);
 
-absl::Status DsPlayTrackerDrawToDisplayMeta(DsPlayTrackerCtx* ctx,
-                                            GstDsPlayTrackerFrame& frame);
+absl::Status DsPlayTrackerCtxApplyRuntimeTuning(DsPlayTrackerCtx* ctx, const DsPlayTrackerRuntimeTuning& tuning);
+
+bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame, cudaStream_t stream);
+
+absl::Status DsPlayTrackerDrawToDisplayMeta(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame);
 
 // Deinitialize library context
 void DsPlayTrackerCtxDeinit(DsPlayTrackerCtx* ctx);

@@ -674,6 +674,9 @@ absl::Status PipelineApplication::createPipelines(
       NVGSTDS_ERR_MSG_V("Failed to create pipeline");
       return absl::InternalError("Failed to create pipeline");
     }
+    HM_RETURN_IF_ERROR(
+        app_contexts[i]->configurator().prepare_initial_pipeline_position(
+            app_contexts[i]->pipeline, app_contexts[i]->config, start_time_ns_));
     if (dump_pipeline_dot_) {
       std::string s = "pipeline";
       if (i) {
@@ -2533,8 +2536,10 @@ void PipelineApplication::print_runtime_commands() const {
       "\tr: Resume\n"
       "\t@set-preview-active <program|stitched|sourceN|none> <generation>: Activate one GPU-native UI preview\n"
       "\t@set-render-window <xid>: Move the embedded program render sink to another X11 window\n"
-      "\t@capture-preview-frame <main|stitched|sourceN> <jpg-path>: Save the latest UI preview frame\n"
-      "\t@set-property <element> <property=value>: Set an allowlisted runtime GStreamer property\n\n");
+      "\t@capture-preview-frame <program|main|stitched|sourceN> <image-path>: Save one diagnostic UI preview "
+      "frame\n"
+      "\t@set-property <element> <property=value>: Set an allowlisted runtime GStreamer property\n"
+      "\t@set-properties <element property=value;...>: Atomically set allowlisted runtime properties\n\n");
   if (!stage_app_contexts_.empty() && !stage_app_contexts_.at(current_stage_).empty() &&
       stage_app_contexts_.at(current_stage_)[0] &&
       stage_app_contexts_.at(current_stage_)[0]->config.tiled_display_config.enable) {
@@ -2584,7 +2589,7 @@ namespace {
 bool is_allowlisted_runtime_property(const std::string& element_name, const std::string& property_name) {
   return (element_name == "hmstitcher0" && property_name == "post-stitch-rotate-degrees") ||
       (element_name == "dsplaytracker0" &&
-       (property_name == "config-file" || property_name == "fixed-edge-rotation-angle" ||
+       (property_name == "runtime-tuning-config-file" || property_name == "fixed-edge-rotation-angle" ||
         property_name == "fixed-edge-rotation-angle-left" || property_name == "fixed-edge-rotation-angle-right" ||
         property_name == "dynamic-acceleration-scaling")) ||
       ((element_name == "playcropper0" || element_name == "playcropper") &&
@@ -2626,6 +2631,30 @@ bool parse_runtime_set_property(
   *property_name = trim_ascii(rest.substr(0, equals));
   *value = trim_ascii(rest.substr(equals + 1));
   return !element_name->empty() && !property_name->empty();
+}
+
+bool parse_runtime_set_properties(
+    const std::string& line,
+    std::vector<std::tuple<std::string, std::string, std::string>>* assignments) {
+  constexpr absl::string_view kCommand = "set-properties";
+  const std::string trimmed = trim_ascii(line);
+  if (!assignments || trimmed.rfind(std::string(kCommand), 0) != 0 ||
+      (trimmed.size() > kCommand.size() && !std::isspace(static_cast<unsigned char>(trimmed[kCommand.size()])))) {
+    return false;
+  }
+  assignments->clear();
+  for (absl::string_view item_view : absl::StrSplit(trim_ascii(trimmed.substr(kCommand.size())), ';')) {
+    const std::string item(item_view);
+    std::string element_name;
+    std::string property_name;
+    std::string value;
+    if (!parse_runtime_set_property("set-property " + item, &element_name, &property_name, &value)) {
+      assignments->clear();
+      return false;
+    }
+    assignments->emplace_back(std::move(element_name), std::move(property_name), std::move(value));
+  }
+  return !assignments->empty();
 }
 
 bool parse_double_strict(const std::string& value, gdouble* out) {
@@ -2840,6 +2869,35 @@ PreviewFrameSaveResult save_preview_frame(GstElement* sink, const fs::path& outp
   return {PreviewFrameSaveStatus::kSaved, preview.cols, preview.rows};
 }
 
+PreviewFrameSaveResult save_gpu_preview_frame(GstElement* sink, const fs::path& output_path) {
+  // Explicit one-shot E2E/diagnostic readback only. The steady-state renderer
+  // continues to use CUDA/OpenGL interop without mapping pixel planes to CPU.
+  std::vector<std::uint8_t> rgba;
+  unsigned width = 0;
+  unsigned height = 0;
+  std::string capture_error;
+  if (!hm::gpu_preview::capture_presented_frame(sink, &rgba, &width, &height, &capture_error)) {
+    return {PreviewFrameSaveStatus::kUnavailable, 0, 0, capture_error};
+  }
+  if (width == 0 || height == 0 || rgba.size() != static_cast<size_t>(width) * height * 4U) {
+    return {PreviewFrameSaveStatus::kFailed, 0, 0, "invalid GPU diagnostic frame"};
+  }
+  try {
+    if (!output_path.is_absolute() || !output_path.has_parent_path() || !fs::is_directory(output_path.parent_path())) {
+      return {PreviewFrameSaveStatus::kFailed, 0, 0, "output directory is unavailable"};
+    }
+    const cv::Mat source(static_cast<int>(height), static_cast<int>(width), CV_8UC4, rgba.data());
+    cv::Mat bgr;
+    cv::cvtColor(source, bgr, cv::COLOR_RGBA2BGR);
+    if (!cv::imwrite(output_path.string(), bgr)) {
+      return {PreviewFrameSaveStatus::kFailed, 0, 0, "diagnostic image write failed"};
+    }
+  } catch (const std::exception& exception) {
+    return {PreviewFrameSaveStatus::kFailed, 0, 0, exception.what()};
+  }
+  return {PreviewFrameSaveStatus::kSaved, static_cast<int>(width), static_cast<int>(height)};
+}
+
 void report_last_render_sample(GstElement* sink) {
   GstSample* sample = nullptr;
   g_object_get(G_OBJECT(sink), "last-sample", &sample, nullptr);
@@ -3038,6 +3096,119 @@ bool PipelineApplication::set_element_property_runtime(
   return false;
 }
 
+bool PipelineApplication::set_element_properties_runtime(
+    const std::vector<std::tuple<std::string, std::string, std::string>>& assignments) {
+  struct PendingAssignment {
+    GstElement* element{nullptr};
+    std::string element_name;
+    std::string property_name;
+    std::string value;
+    GParamSpec* pspec{nullptr};
+    GValue requested = G_VALUE_INIT;
+    GValue previous = G_VALUE_INIT;
+  };
+  std::vector<PendingAssignment> pending;
+  auto cleanup = absl::MakeCleanup([&]() {
+    for (PendingAssignment& assignment : pending) {
+      if (G_IS_VALUE(&assignment.requested)) {
+        g_value_unset(&assignment.requested);
+      }
+      if (G_IS_VALUE(&assignment.previous)) {
+        g_value_unset(&assignment.previous);
+      }
+      if (assignment.element) {
+        gst_object_unref(assignment.element);
+      }
+    }
+  });
+  auto& app_ctx = stage_app_contexts_.at(current_stage_);
+  for (const auto& [element_name, property_name, value] : assignments) {
+    if (!is_allowlisted_runtime_property(element_name, property_name)) {
+      g_printerr(
+          "runtime command failed: property is not live-mutable here: %s.%s\n",
+          element_name.c_str(),
+          property_name.c_str());
+      return false;
+    }
+    GstElement* element = nullptr;
+    for (const auto& app : app_ctx) {
+      if (app && app->pipeline.pipeline &&
+          (element = gst_bin_get_by_name(GST_BIN(app->pipeline.pipeline), element_name.c_str()))) {
+        break;
+      }
+    }
+    if (!element) {
+      g_printerr("runtime command failed: element not found: %s\n", element_name.c_str());
+      return false;
+    }
+    PendingAssignment assignment;
+    assignment.element = element;
+    assignment.element_name = element_name;
+    assignment.property_name = property_name;
+    assignment.value = value;
+    assignment.pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(element), property_name.c_str());
+    if (!assignment.pspec || !set_gvalue_from_string(&assignment.requested, assignment.pspec, value) ||
+        g_param_value_validate(assignment.pspec, &assignment.requested)) {
+      pending.push_back(std::move(assignment));
+      g_printerr(
+          "runtime command failed: invalid value for %s.%s=%s\n",
+          element_name.c_str(),
+          property_name.c_str(),
+          value.c_str());
+      return false;
+    }
+    if (assignments.size() > 1 && (assignment.pspec->flags & G_PARAM_READABLE) == 0) {
+      pending.push_back(std::move(assignment));
+      g_printerr(
+          "runtime command failed: property has no rollback snapshot: %s.%s\n",
+          element_name.c_str(),
+          property_name.c_str());
+      return false;
+    }
+    g_value_init(&assignment.previous, G_PARAM_SPEC_VALUE_TYPE(assignment.pspec));
+    if ((assignment.pspec->flags & G_PARAM_READABLE) != 0) {
+      g_object_get_property(G_OBJECT(element), property_name.c_str(), &assignment.previous);
+    }
+    pending.push_back(std::move(assignment));
+  }
+  size_t applied = 0;
+  for (; applied < pending.size(); ++applied) {
+    PendingAssignment& assignment = pending[applied];
+    g_object_set_property(G_OBJECT(assignment.element), assignment.property_name.c_str(), &assignment.requested);
+    GParamSpec* status = g_object_class_find_property(G_OBJECT_GET_CLASS(assignment.element), "last-property-set-ok");
+    gboolean accepted = TRUE;
+    if (status && G_PARAM_SPEC_VALUE_TYPE(status) == G_TYPE_BOOLEAN) {
+      g_object_get(G_OBJECT(assignment.element), "last-property-set-ok", &accepted, nullptr);
+    }
+    if (!accepted) {
+      break;
+    }
+  }
+  if (applied != pending.size()) {
+    const size_t failed_index = applied;
+    while (applied > 0) {
+      --applied;
+      PendingAssignment& assignment = pending[applied];
+      g_object_set_property(G_OBJECT(assignment.element), assignment.property_name.c_str(), &assignment.previous);
+    }
+    const PendingAssignment& failed = pending[failed_index];
+    g_printerr(
+        "runtime command failed: plugin rejected %s.%s=%s\n",
+        failed.element_name.c_str(),
+        failed.property_name.c_str(),
+        failed.value.c_str());
+    return false;
+  }
+  for (const PendingAssignment& assignment : pending) {
+    g_print(
+        "runtime property %s %s=%s\n",
+        assignment.element_name.c_str(),
+        assignment.property_name.c_str(),
+        assignment.value.c_str());
+  }
+  return true;
+}
+
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   std::string active_preview_channel;
   guint64 preview_generation = 0;
@@ -3053,14 +3224,18 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   if (parse_runtime_capture_preview_frame(line, &preview_channel, &preview_path)) {
     return capture_preview_frame_runtime(preview_channel, preview_path);
   }
+  std::vector<std::tuple<std::string, std::string, std::string>> assignments;
+  if (parse_runtime_set_properties(line, &assignments)) {
+    return set_element_properties_runtime(assignments);
+  }
   std::string element_name;
   std::string property_name;
   std::string value;
   if (!parse_runtime_set_property(line, &element_name, &property_name, &value)) {
     g_printerr(
         "runtime command failed: expected: set-preview-active <program|stitched|sourceN|none> <generation>, "
-        "set-render-window <xid>, capture-preview-frame <main|stitched|sourceN> <jpg-path>, or set-property "
-        "<element> <property=value>\n");
+        "set-render-window <xid>, capture-preview-frame <main|stitched|sourceN> <jpg-path>, set-properties "
+        "<element property=value;...>, or set-property <element> <property=value>\n");
     return false;
   }
   return set_element_property_runtime(element_name, property_name, value);
@@ -3171,7 +3346,12 @@ bool PipelineApplication::capture_preview_frame_runtime(const std::string& chann
     return true;
   }
 
-  if (channel == "main") {
+  const std::string gpu_channel = channel == "main" ? "program" : channel;
+  const auto gpu_preview = ui_preview_channels_.find(gpu_channel);
+  const bool gpu_native_capture = gpu_preview != ui_preview_channels_.end();
+  if (gpu_native_capture) {
+    sink = gpu_preview->second.sink;
+  } else if (channel == "main") {
     for (const auto& app_context : stage->second) {
       if (!app_context)
         continue;
@@ -3220,9 +3400,14 @@ bool PipelineApplication::capture_preview_frame_runtime(const std::string& chann
     if (release_sink)
       gst_object_unref(sink);
   });
-  const PreviewFrameSaveResult result = save_preview_frame(sink, fs::path(path));
+  const PreviewFrameSaveResult result =
+      gpu_native_capture ? save_gpu_preview_frame(sink, fs::path(path)) : save_preview_frame(sink, fs::path(path));
   if (result.status == PreviewFrameSaveStatus::kUnavailable) {
-    g_print("runtime preview frame unavailable channel=%s path=%s\n", channel.c_str(), path.c_str());
+    g_print(
+        "runtime preview frame unavailable channel=%s path=%s message=%s\n",
+        channel.c_str(),
+        path.c_str(),
+        result.message.empty() ? "no retained frame" : result.message.c_str());
     return true;
   }
   if (result.status == PreviewFrameSaveStatus::kFailed) {
@@ -3668,6 +3853,13 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
   g_print("Recreate pipeline\n");
   if (!create_pipeline(app_ctx_ptr, nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
     NVGSTDS_ERR_MSG_V("Failed to create pipeline");
+    return FALSE;
+  }
+  auto* hm_app = static_cast<HmApp*>(app_ctx_ptr);
+  const absl::Status position_status =
+      hm_app->configurator().prepare_initial_pipeline_position(hm_app->pipeline, hm_app->config, start_time_ns_);
+  if (!position_status.ok()) {
+    NVGSTDS_ERR_MSG_V("Failed to restore initial pipeline position: %s", position_status.ToString().c_str());
     return FALSE;
   }
   if (!ui_preview_window_ids_.empty()) {

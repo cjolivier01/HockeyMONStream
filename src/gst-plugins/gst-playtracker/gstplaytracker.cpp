@@ -209,6 +209,7 @@ static void gst_playtracker_set_property(GObject* object, guint prop_id, const G
       const char* str = g_value_get_string(value);
       if (str && *str) {
         strncpy(playtracker->play_tracker_config_file, str, STRSIZE(playtracker->play_tracker_config_file) - 1);
+        playtracker->play_tracker_config_file[STRSIZE(playtracker->play_tracker_config_file) - 1] = '\0';
       } else {
         playtracker->play_tracker_config_file[0] = '\0';
       }
@@ -379,7 +380,6 @@ static GstFlowReturn gst_playtracker_transform(GstBaseTransform* btrans, GstBuff
       goto invalid_inbuf;
     }
   }
-
   gst_buffer_unmap(inbuf, &inmap);
 
   return GST_FLOW_OK;

@@ -3,6 +3,8 @@
 #include <gst/gst.h>
 
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 
 namespace {
@@ -26,6 +28,7 @@ bool expect_videoprep_factory(const char* factory_name) {
           {"fixed-edge-rotation-angle-left", G_TYPE_DOUBLE, true},
           {"fixed-edge-rotation-angle-right", G_TYPE_DOUBLE, true},
           {"dynamic-acceleration-scaling", G_TYPE_DOUBLE, true},
+          {"runtime-tuning-config-file", G_TYPE_STRING, false},
           {"last-property-set-ok", G_TYPE_BOOLEAN, false},
       },
       {
@@ -118,6 +121,38 @@ int main(int argc, char** argv) {
 
   if (!ok) {
     std::cerr << "videoprep property roundtrip failed\n";
+    return 1;
+  }
+
+  const std::filesystem::path valid_base = std::filesystem::temp_directory_path() / "hstream-vpplaytracker-base.yaml";
+  const std::filesystem::path invalid_runtime =
+      std::filesystem::temp_directory_path() / "hstream-invalid-vpplaytracker-runtime.yaml";
+  {
+    std::ofstream out(valid_base);
+    out << "play-tracker:\n  live-boxes:\n    - name: current_roi\n    - name: current_roi_aspect\n";
+  }
+  {
+    std::ofstream out(invalid_runtime);
+    out << "play-tracker:\n  live-boxes: invalid\n";
+  }
+  GstElement* tracker = gst_element_factory_make("vpplaytracker", nullptr);
+  if (!tracker) {
+    std::cerr << "Could not create vpplaytracker\n";
+    return 1;
+  }
+  g_object_set(G_OBJECT(tracker), "plugin-type", "vpplaytracker", "config-file", valid_base.c_str(), nullptr);
+  const GstStateChangeReturn state_result = gst_element_set_state(tracker, GST_STATE_READY);
+  gboolean invalid_accepted = TRUE;
+  if (state_result == GST_STATE_CHANGE_SUCCESS) {
+    g_object_set(G_OBJECT(tracker), "runtime-tuning-config-file", invalid_runtime.c_str(), nullptr);
+    g_object_get(G_OBJECT(tracker), "last-property-set-ok", &invalid_accepted, nullptr);
+  }
+  gst_element_set_state(tracker, GST_STATE_NULL);
+  gst_object_unref(tracker);
+  std::filesystem::remove(valid_base);
+  std::filesystem::remove(invalid_runtime);
+  if (state_result != GST_STATE_CHANGE_SUCCESS || invalid_accepted) {
+    std::cerr << "vpplaytracker production property path did not reject invalid runtime tuning\n";
     return 1;
   }
   return 0;

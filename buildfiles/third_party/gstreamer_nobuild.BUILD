@@ -43,6 +43,7 @@ cc_library(
         "-l:libgstbase-1.0.so",
         "-l:libgstvideo-1.0.so",
         "-l:libgstaudio-1.0.so",
+        "-l:libgstpbutils-1.0.so",
         "-l:libgstrtsp-1.0.so",
         "-l:libgstapp-1.0.so",
         "-l:libgstrtsp-1.0.so",

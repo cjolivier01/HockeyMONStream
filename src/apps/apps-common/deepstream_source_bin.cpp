@@ -21,6 +21,7 @@
 
 #include <cuda_runtime_api.h>
 #include <gst/audio/audio.h>
+#include <gst/pbutils/pbutils.h>
 #include <gst/rtp/gstrtcpbuffer.h>
 #include <gst/rtsp/gstrtsptransport.h>
 #include "deepstream_common.h"
@@ -48,14 +49,125 @@ struct UriListPadProbeData {
   guint uri_index;
   GstClockTime base;
   gboolean is_video;
+  GstClockTime initial_offset;
 };
 
 static gboolean send_uri_audio_eos(NvDsSrcBin* bin, gboolean log_failure);
 static gboolean switch_to_next_uri(gpointer data);
 static gboolean finish_uri_terminal_audio_drain(gpointer data);
 static void cancel_uri_playlist_source(NvDsSrcBin* bin, gboolean barrier_failed);
+static GstPadProbeReturn fail_uri_playlist_audio_gate(NvDsSrcBin* bin, const char* reason);
+static GstPadProbeReturn fail_uri_playlist_initial_positioning(NvDsSrcBin* bin, const char* reason);
 
 constexpr gint64 kUriPlaylistBarrierWaitUs = 30 * G_TIME_SPAN_SECOND;
+
+static GMutex* uri_playlist_mutex(NvDsSrcBin* bin);
+
+static GstClockTime uri_playlist_initial_offset(const NvDsSrcBin* bin, gboolean is_video) {
+  if (!bin) {
+    return 0;
+  }
+  return is_video ? bin->uri_playlist_initial_video_offset_ns : bin->uri_playlist_initial_audio_offset_ns;
+}
+
+static gboolean uri_playlist_initial_positioning_enabled(const NvDsSrcBin* bin) {
+  return bin && bin->parent_bin && bin->parent_bin->uri_playlist_initial_offsets_configured;
+}
+
+static GstClockTime add_uri_playlist_timestamp(GstClockTime timestamp, GstClockTime base) {
+  if (!GST_CLOCK_TIME_IS_VALID(timestamp) || !GST_CLOCK_TIME_IS_VALID(base) || timestamp > G_MAXUINT64 - base) {
+    return GST_CLOCK_TIME_NONE;
+  }
+  return timestamp + base;
+}
+
+static GstClockTime rebase_uri_playlist_timestamp(GstClockTime timestamp, GstClockTime origin) {
+  if (!GST_CLOCK_TIME_IS_VALID(timestamp) || !GST_CLOCK_TIME_IS_VALID(origin) || timestamp < origin) {
+    return GST_CLOCK_TIME_NONE;
+  }
+  return timestamp - origin;
+}
+
+static GstPadProbeReturn trim_initial_uri_playlist_buffer(
+    GstPad* pad,
+    GstPadProbeInfo* info,
+    UriListPadProbeData* probe_data) {
+  if (!info || !probe_data || probe_data->initial_offset == 0) {
+    return GST_PAD_PROBE_OK;
+  }
+  GstBuffer* buffer = GST_BUFFER(info->data);
+  if (!buffer || !GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buffer))) {
+    return fail_uri_playlist_initial_positioning(probe_data->bin, "decoded buffer has no valid PTS");
+  }
+  GstClockTime duration = GST_BUFFER_DURATION(buffer);
+  if (probe_data->is_video && (!GST_CLOCK_TIME_IS_VALID(duration) || duration == 0) && probe_data->bin &&
+      probe_data->bin->config && probe_data->bin->config->camera_fps_n > 0 &&
+      probe_data->bin->config->camera_fps_d > 0) {
+    duration =
+        gst_util_uint64_scale(GST_SECOND, probe_data->bin->config->camera_fps_d, probe_data->bin->config->camera_fps_n);
+  }
+  if (!GST_CLOCK_TIME_IS_VALID(duration) || duration == 0) {
+    return fail_uri_playlist_initial_positioning(probe_data->bin, "decoded buffer has no valid duration");
+  }
+  const GstClockTime logical_start = add_uri_playlist_timestamp(GST_BUFFER_PTS(buffer), probe_data->base);
+  if (!GST_CLOCK_TIME_IS_VALID(logical_start) || duration > G_MAXUINT64 - logical_start) {
+    return fail_uri_playlist_initial_positioning(probe_data->bin, "decoded buffer timestamp overflowed");
+  }
+  const GstClockTime logical_end = logical_start + duration;
+  if (logical_end <= probe_data->initial_offset) {
+    if (probe_data->is_video) {
+      GMutex* mutex = uri_playlist_mutex(probe_data->bin);
+      g_mutex_lock(mutex);
+      probe_data->bin->uri_list_last_pts = GST_BUFFER_PTS(buffer);
+      probe_data->bin->uri_list_last_duration = duration;
+      ++probe_data->bin->uri_list_initial_positioned_frame_count;
+      g_mutex_unlock(mutex);
+    }
+    return GST_PAD_PROBE_DROP;
+  }
+  if (probe_data->is_video) {
+    // Video offsets are expressed in frame time and preserve whole decoded frames. The first frame whose endpoint is
+    // beyond the trim frontier becomes logical sequence zero; no already-committed frame is ever flushed.
+    return GST_PAD_PROBE_OK;
+  }
+
+  if (logical_start >= probe_data->initial_offset) {
+    return GST_PAD_PROBE_OK;
+  }
+  GstCaps* caps = gst_pad_get_current_caps(pad);
+  GstAudioInfo audio_info;
+  gst_audio_info_init(&audio_info);
+  const gboolean valid_audio_info = caps && gst_audio_info_from_caps(&audio_info, caps);
+  if (caps) {
+    gst_caps_unref(caps);
+  }
+  const gint rate = valid_audio_info ? GST_AUDIO_INFO_RATE(&audio_info) : 0;
+  const gint bytes_per_frame = valid_audio_info ? GST_AUDIO_INFO_BPF(&audio_info) : 0;
+  if (rate <= 0 || bytes_per_frame <= 0) {
+    return fail_uri_playlist_initial_positioning(probe_data->bin, "initial audio trim has no valid sample layout");
+  }
+  const GstClockTime skipped_duration = probe_data->initial_offset - logical_start;
+  const guint64 skipped_frames = gst_util_uint64_scale_ceil(skipped_duration, rate, GST_SECOND);
+  const GstAudioMeta* audio_meta = gst_buffer_get_audio_meta(buffer);
+  const guint64 buffer_frames = audio_meta ? audio_meta->samples : gst_buffer_get_size(buffer) / bytes_per_frame;
+  if (skipped_frames >= buffer_frames) {
+    return GST_PAD_PROBE_DROP;
+  }
+  const guint64 retained_frames = buffer_frames - skipped_frames;
+  GstBuffer* clipped = gst_audio_buffer_truncate(
+      gst_buffer_ref(buffer), bytes_per_frame, static_cast<gsize>(skipped_frames), static_cast<gsize>(retained_frames));
+  if (!clipped) {
+    return fail_uri_playlist_initial_positioning(probe_data->bin, "could not clip audio at the initial frontier");
+  }
+  GST_BUFFER_PTS(clipped) = GST_BUFFER_PTS(buffer) + gst_util_uint64_scale(skipped_frames, GST_SECOND, rate);
+  // This is decoded raw audio. Its decode and presentation order are identical, and retaining a pre-clip DTS would
+  // place the clipped buffer before the requested startup epoch when the common timestamp rebase runs below.
+  GST_BUFFER_DTS(clipped) = GST_BUFFER_PTS(clipped);
+  GST_BUFFER_DURATION(clipped) = gst_util_uint64_scale(retained_frames, GST_SECOND, rate);
+  GST_PAD_PROBE_INFO_DATA(info) = clipped;
+  gst_buffer_unref(buffer);
+  return GST_PAD_PROBE_OK;
+}
 
 static GMutex* uri_playlist_mutex(NvDsSrcBin* bin) {
   return bin && bin->parent_bin ? &bin->parent_bin->uri_playlist_barrier_mutex : &bin->uri_playlist_mutex;
@@ -92,7 +204,13 @@ static GstClockTime uri_playlist_logical_video_end_locked(const NvDsSrcBin* bin)
   } else if (bin->uri_list_segment_stop != GST_CLOCK_TIME_NONE) {
     local_end = bin->uri_list_segment_stop;
   }
-  return local_end == GST_CLOCK_TIME_NONE ? GST_CLOCK_TIME_NONE : bin->prev_accumulated_base + local_end;
+  if (local_end == GST_CLOCK_TIME_NONE) {
+    return GST_CLOCK_TIME_NONE;
+  }
+  const GstClockTime raw_logical_end = add_uri_playlist_timestamp(local_end, bin->prev_accumulated_base);
+  return uri_playlist_initial_positioning_enabled(bin)
+      ? rebase_uri_playlist_timestamp(raw_logical_end, bin->uri_playlist_video_origin_ns)
+      : raw_logical_end;
 }
 
 static std::vector<NvDsSrcBin*> uri_playlist_sources(NvDsSrcParentBin* parent) {
@@ -116,6 +234,17 @@ static GstPadProbeReturn fail_uri_playlist_audio_gate(NvDsSrcBin* bin, const cha
       STREAM,
       FAILED,
       ("Could not preserve lossless source audio alignment"),
+      ("source=%u: %s", bin->source_id, reason));
+  return GST_PAD_PROBE_DROP;
+}
+
+static GstPadProbeReturn fail_uri_playlist_initial_positioning(NvDsSrcBin* bin, const char* reason) {
+  cancel_uri_playlist_source(bin, TRUE);
+  GST_ELEMENT_ERROR(
+      bin->src_elem,
+      STREAM,
+      FAILED,
+      ("Could not position the lossless URI playlist"),
       ("source=%u: %s", bin->source_id, reason));
   return GST_PAD_PROBE_DROP;
 }
@@ -157,7 +286,13 @@ static GstPadProbeReturn gate_uri_playlist_audio_buffer(
   if (!GST_CLOCK_TIME_IS_VALID(duration)) {
     return fail_uri_playlist_audio_gate(bin, "audio buffer has no valid duration");
   }
-  const GstClockTime logical_start = GST_BUFFER_PTS(buffer) + probe_data->base;
+  const GstClockTime raw_logical_start = add_uri_playlist_timestamp(GST_BUFFER_PTS(buffer), probe_data->base);
+  const GstClockTime logical_start = uri_playlist_initial_positioning_enabled(bin)
+      ? rebase_uri_playlist_timestamp(raw_logical_start, bin->uri_playlist_audio_origin_ns)
+      : raw_logical_start;
+  if (!GST_CLOCK_TIME_IS_VALID(logical_start) || duration > G_MAXUINT64 - logical_start) {
+    return fail_uri_playlist_audio_gate(bin, "audio timestamp overflowed");
+  }
   const GstClockTime logical_end = logical_start + duration;
 
   GMutex* mutex = uri_playlist_mutex(bin);
@@ -1131,6 +1266,10 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
   }
 
   if ((info->type & GST_PAD_PROBE_TYPE_BUFFER) != 0) {
+    const GstPadProbeReturn initial_trim_result = trim_initial_uri_playlist_buffer(pad, info, probe_data);
+    if (initial_trim_result != GST_PAD_PROBE_OK) {
+      return initial_trim_result;
+    }
     if (!probe_data->is_video) {
       const GstPadProbeReturn audio_gate_result = gate_uri_playlist_audio_buffer(pad, info, probe_data);
       if (audio_gate_result != GST_PAD_PROBE_OK) {
@@ -1138,6 +1277,15 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       }
     }
     GstBuffer* buf = GST_BUFFER(info->data);
+    if (uri_playlist_initial_positioning_enabled(bin) && buf && !gst_buffer_is_writable(buf)) {
+      buf = gst_buffer_make_writable(buf);
+      if (!buf) {
+        return fail_uri_playlist_initial_positioning(bin, "could not make a retained buffer writable");
+      }
+      GST_PAD_PROBE_INFO_DATA(info) = buf;
+    }
+    const GstClockTime raw_buffer_pts = buf ? GST_BUFFER_PTS(buf) : GST_CLOCK_TIME_NONE;
+    const GstClockTime raw_buffer_dts = buf ? GST_BUFFER_DTS(buf) : GST_CLOCK_TIME_NONE;
     GMutex* mutex = uri_playlist_mutex(bin);
     g_mutex_lock(mutex);
     const gboolean terminal = uri_playlist_terminal_locked(bin);
@@ -1159,13 +1307,36 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
           GST_PAD_PROBE_INFO_DATA(info) = buf;
         }
       }
-      if (buf && probe_data->uri_index > 0) {
+      if (buf && probe_data->uri_index > bin->uri_playlist_initial_uri_index) {
         // The demuxer marks the first buffer of each physical file DISCONT/RESYNC. For a logical camera playlist that
         // is not a discontinuity, and nvstreammux may flush the frame it already has from the peer camera when it sees
         // the flag. Timestamp rebasing plus the exact-sequence barrier provide the real continuity contract.
         GST_BUFFER_FLAG_UNSET(buf, GST_BUFFER_FLAG_DISCONT);
         GST_BUFFER_FLAG_UNSET(buf, GST_BUFFER_FLAG_RESYNC);
         GST_BUFFER_FLAG_UNSET(buf, GST_BUFFER_FLAG_HEADER);
+      }
+      const GstClockTime raw_logical_pts = add_uri_playlist_timestamp(raw_buffer_pts, probe_data->base);
+      if (uri_playlist_initial_positioning_enabled(bin)) {
+        g_mutex_lock(mutex);
+        if (!GST_CLOCK_TIME_IS_VALID(bin->uri_playlist_video_origin_ns) && GST_CLOCK_TIME_IS_VALID(raw_logical_pts)) {
+          bin->uri_playlist_video_origin_ns = raw_logical_pts;
+        }
+        const GstClockTime video_origin = bin->uri_playlist_video_origin_ns;
+        g_mutex_unlock(mutex);
+        if (!GST_CLOCK_TIME_IS_VALID(raw_logical_pts) || !GST_CLOCK_TIME_IS_VALID(video_origin)) {
+          return fail_uri_playlist_initial_positioning(bin, "first retained video frame has no valid timestamp");
+        }
+        GST_BUFFER_PTS(buf) = rebase_uri_playlist_timestamp(raw_logical_pts, video_origin);
+        // This is decoded raw video. Encoded DTS may precede the first retained PTS because of frame reordering, so
+        // rebasing it to the presentation epoch would underflow or flatten multiple decode timestamps to zero.
+        GST_BUFFER_DTS(buf) = GST_CLOCK_TIME_NONE;
+      } else {
+        if (probe_data->base != 0 && GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buf))) {
+          GST_BUFFER_PTS(buf) += probe_data->base;
+        }
+        if (probe_data->base != 0 && GST_CLOCK_TIME_IS_VALID(GST_BUFFER_DTS(buf))) {
+          GST_BUFFER_DTS(buf) += probe_data->base;
+        }
       }
       if (!buf || !hm::add_decoded_frame_sequence_meta(buf, bin->source_id, decoded_sequence)) {
         cancel_uri_playlist_source(bin, TRUE);
@@ -1189,7 +1360,7 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       }
       const GstClockTime logical_video_end =
           GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buf)) && GST_CLOCK_TIME_IS_VALID(video_duration)
-          ? GST_BUFFER_PTS(buf) + probe_data->base + video_duration
+          ? GST_BUFFER_PTS(buf) + video_duration
           : GST_CLOCK_TIME_NONE;
       if (!wait_at_uri_playlist_frame_barrier(bin, decoded_sequence, logical_video_end)) {
         g_mutex_lock(mutex);
@@ -1203,28 +1374,83 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
     }
     if (probe_data->is_video) {
       g_mutex_lock(mutex);
-      if (GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buf))) {
-        bin->uri_list_last_pts = GST_BUFFER_PTS(buf);
+      if (GST_CLOCK_TIME_IS_VALID(raw_buffer_pts)) {
+        // Keep raw chapter-local timestamps for the next chapter's accumulated base. Output timestamps may have
+        // already been rebased to the startup epoch above.
+        bin->uri_list_last_pts = raw_buffer_pts;
         bin->uri_list_last_duration = GST_BUFFER_DURATION(buf);
       }
       ++bin->uri_list_decoded_frame_count;
       g_mutex_unlock(mutex);
     }
-    if (probe_data->base != 0 && GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buf))) {
-      GST_BUFFER_PTS(buf) += probe_data->base;
-    }
-    if (probe_data->base != 0 && GST_CLOCK_TIME_IS_VALID(GST_BUFFER_DTS(buf))) {
-      GST_BUFFER_DTS(buf) += probe_data->base;
+    if (!probe_data->is_video && uri_playlist_initial_positioning_enabled(bin)) {
+      const GstClockTime pts = rebase_uri_playlist_timestamp(
+          add_uri_playlist_timestamp(raw_buffer_pts, probe_data->base), bin->uri_playlist_audio_origin_ns);
+      if (!GST_CLOCK_TIME_IS_VALID(pts)) {
+        return fail_uri_playlist_initial_positioning(bin, "retained audio buffer has no valid timestamp");
+      }
+      GST_BUFFER_PTS(buf) = pts;
+      if (GST_CLOCK_TIME_IS_VALID(raw_buffer_dts)) {
+        GST_BUFFER_DTS(buf) = rebase_uri_playlist_timestamp(
+            add_uri_playlist_timestamp(raw_buffer_dts, probe_data->base), bin->uri_playlist_audio_origin_ns);
+        if (!GST_CLOCK_TIME_IS_VALID(GST_BUFFER_DTS(buf))) {
+          return fail_uri_playlist_initial_positioning(bin, "retained audio DTS precedes the selected epoch");
+        }
+      }
+    } else if (!probe_data->is_video) {
+      if (probe_data->base != 0 && GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buf))) {
+        GST_BUFFER_PTS(buf) += probe_data->base;
+      }
+      if (probe_data->base != 0 && GST_CLOCK_TIME_IS_VALID(GST_BUFFER_DTS(buf))) {
+        GST_BUFFER_DTS(buf) += probe_data->base;
+      }
     }
   }
   if ((info->type & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) != 0) {
     GstEvent* event = GST_EVENT(info->data);
-    if (probe_data->uri_index > 0 && GST_EVENT_TYPE(event) == GST_EVENT_STREAM_START) {
+    if (uri_playlist_initial_positioning_enabled(bin) && probe_data->uri_index == bin->uri_playlist_initial_uri_index &&
+        GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
+      const GstSegment* segment = nullptr;
+      gst_event_parse_segment(event, &segment);
+      if (!segment || segment->format != GST_FORMAT_TIME) {
+        return fail_uri_playlist_initial_positioning(bin, "initial segment is not time-based");
+      }
+      if (probe_data->is_video) {
+        GstClockTime raw_stop = segment->stop;
+        if (!GST_CLOCK_TIME_IS_VALID(raw_stop)) {
+          raw_stop = segment->duration;
+        }
+        if (GST_CLOCK_TIME_IS_VALID(raw_stop)) {
+          GMutex* mutex = uri_playlist_mutex(bin);
+          g_mutex_lock(mutex);
+          if (probe_data->uri_index == bin->uri_list_index) {
+            bin->uri_list_segment_stop = raw_stop;
+          }
+          g_mutex_unlock(mutex);
+        }
+      }
+      GstSegment adjusted;
+      gst_segment_copy_into(segment, &adjusted);
+      adjusted.base = 0;
+      adjusted.offset = 0;
+      adjusted.start = 0;
+      adjusted.stop = GST_CLOCK_TIME_NONE;
+      adjusted.duration = GST_CLOCK_TIME_NONE;
+      adjusted.time = 0;
+      adjusted.position = 0;
+      GstEvent* adjusted_event = gst_event_new_segment(&adjusted);
+      gst_event_set_seqnum(adjusted_event, gst_event_get_seqnum(event));
+      gst_event_unref(event);
+      GST_PAD_PROBE_INFO_DATA(info) = adjusted_event;
+      return GST_PAD_PROBE_OK;
+    }
+    if (probe_data->uri_index > bin->uri_playlist_initial_uri_index &&
+        GST_EVENT_TYPE(event) == GST_EVENT_STREAM_START) {
       // Every URI is a chapter of one logical camera stream. Exposing an intermediate STREAM_START makes
       // nvstreammux reset that source and flush a partial batch even though no camera actually ended.
       return GST_PAD_PROBE_DROP;
     }
-    if (probe_data->uri_index > 0 && GST_EVENT_TYPE(event) == GST_EVENT_TAG) {
+    if (probe_data->uri_index > bin->uri_playlist_initial_uri_index && GST_EVENT_TYPE(event) == GST_EVENT_TAG) {
       // Per-file container tags are not a logical camera boundary. Some nvstreammux releases finalize the current
       // aggregate while forwarding sticky metadata, so retain only the first chapter's tag set.
       return GST_PAD_PROBE_DROP;
@@ -1234,7 +1460,8 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       // EOS after one camera's entire playlist is permanently exhausted.
       return GST_PAD_PROBE_DROP;
     }
-    if (probe_data->is_video && probe_data->uri_index > 0 && GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
+    if (probe_data->is_video && probe_data->uri_index > bin->uri_playlist_initial_uri_index &&
+        GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
       GstCaps* chapter_caps = nullptr;
       gst_event_parse_caps(event, &chapter_caps);
       GstPad* tee_sink = gst_element_get_static_pad(bin->tee, "sink");
@@ -1259,7 +1486,8 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       // a file boundary; changed caps are a hard error because the playlist can no longer be one lossless stream.
       return GST_PAD_PROBE_DROP;
     }
-    if (probe_data->is_video && probe_data->uri_index > 0 && GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
+    if (probe_data->is_video && probe_data->uri_index > bin->uri_playlist_initial_uri_index &&
+        GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
       const GstSegment* segment = nullptr;
       gst_event_parse_segment(event, &segment);
       if (segment) {
@@ -1280,7 +1508,7 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       // current camera pair on this event even when its timeout is effectively infinite.
       return GST_PAD_PROBE_DROP;
     }
-    if (probe_data->uri_index > 0 &&
+    if (probe_data->uri_index > bin->uri_playlist_initial_uri_index &&
         (GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_START || GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_STOP)) {
       return GST_PAD_PROBE_DROP;
     }
@@ -1422,6 +1650,7 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
       g_mutex_lock(mutex);
       probe_data->uri_index = bin->uri_list_index;
       probe_data->base = bin->prev_accumulated_base;
+      probe_data->initial_offset = uri_playlist_initial_offset(bin, TRUE);
       g_mutex_unlock(mutex);
       probe_data->is_video = TRUE;
       gst_pad_add_probe(
@@ -1464,6 +1693,7 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
         g_mutex_lock(mutex);
         probe_data->uri_index = bin->uri_list_index;
         probe_data->base = bin->prev_accumulated_base;
+        probe_data->initial_offset = uri_playlist_initial_offset(bin, FALSE);
         g_mutex_unlock(mutex);
         probe_data->is_video = FALSE;
         gst_pad_add_probe(
@@ -1634,14 +1864,21 @@ static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
     bin->uri_list[i] = g_strdup(uris[i].c_str());
   }
   bin->uri_list_index = 0;
+  bin->uri_playlist_initial_uri_index = 0;
+  bin->uri_playlist_initial_skipped_base_ns = 0;
   bin->uri_switch_count = 0;
   bin->uri_switch_pending = FALSE;
   bin->uri_list_decoded_frame_count = 0;
   bin->uri_list_released_video_end = GST_CLOCK_TIME_NONE;
   bin->uri_list_mux_delivered_sequence = G_MAXUINT64;
   bin->uri_list_terminal_dropped_frame_count = 0;
+  bin->uri_list_initial_positioned_frame_count = 0;
   bin->uri_list_frame_ready_sequence = G_MAXUINT64;
   bin->uri_list_permanently_ended = FALSE;
+  bin->uri_playlist_initial_video_offset_ns = 0;
+  bin->uri_playlist_initial_audio_offset_ns = 0;
+  bin->uri_playlist_video_origin_ns = GST_CLOCK_TIME_NONE;
+  bin->uri_playlist_audio_origin_ns = GST_CLOCK_TIME_NONE;
   bin->accumulated_base = 0;
   bin->prev_accumulated_base = 0;
   bin->uri_list_segment_stop = GST_CLOCK_TIME_NONE;
@@ -3057,6 +3294,7 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
   bin->uri_playlist_terminal = FALSE;
   bin->uri_playlist_barrier_failed = FALSE;
   bin->uri_playlist_delivery_aborted = FALSE;
+  bin->uri_playlist_initial_offsets_configured = FALSE;
 
   bin->bin = gst_bin_new("multi_src_bin");
   if (!bin->bin) {
@@ -3191,6 +3429,113 @@ done:
     NVGSTDS_ERR_MSG_V("%s failed", __func__);
   }
   return ret;
+}
+
+gboolean configure_uri_playlist_initial_offsets(
+    NvDsSrcParentBin* bin,
+    guint64 left_video_offset_ns,
+    guint64 right_video_offset_ns,
+    guint audio_source_id,
+    guint64 start_time_ns) {
+  if (!bin || !bin->uri_playlist_exact_pairing_enabled || bin->num_bins != 2 || audio_source_id >= bin->num_bins) {
+    return FALSE;
+  }
+  GstState state = GST_STATE_VOID_PENDING;
+  GstState pending = GST_STATE_VOID_PENDING;
+  (void)gst_element_get_state(bin->bin, &state, &pending, 0);
+  if (state > GST_STATE_READY || (pending != GST_STATE_VOID_PENDING && pending > GST_STATE_READY)) {
+    return FALSE;
+  }
+  const guint64 video_offsets[2] = {left_video_offset_ns, right_video_offset_ns};
+  if (video_offsets[0] > G_MAXUINT64 - start_time_ns || video_offsets[1] > G_MAXUINT64 - start_time_ns) {
+    return FALSE;
+  }
+  struct InitialChapterPlan {
+    guint index{0};
+    GstClockTime skipped_base{0};
+  } plans[2];
+  for (guint source_id = 0; source_id < 2; ++source_id) {
+    NvDsSrcBin* source = &bin->sub_bins[source_id];
+    const GstClockTime video_target = video_offsets[source_id] + start_time_ns;
+    // A source that owns selected audio cannot skip past the common audio epoch merely because its camera has a
+    // positive synchronization offset. Decode that residual video range so audio remains continuous from time zero.
+    const GstClockTime target = source_id == audio_source_id ? std::min(video_target, start_time_ns) : video_target;
+    while (plans[source_id].index < source->num_uri_list) {
+      GError* error = nullptr;
+      GstDiscoverer* discoverer = gst_discoverer_new(10 * GST_SECOND, &error);
+      GstDiscovererInfo* info = discoverer
+          ? gst_discoverer_discover_uri(discoverer, source->uri_list[plans[source_id].index], &error)
+          : nullptr;
+      const GstClockTime duration = info ? gst_discoverer_info_get_duration(info) : GST_CLOCK_TIME_NONE;
+      const GstDiscovererResult result = info ? gst_discoverer_info_get_result(info) : GST_DISCOVERER_ERROR;
+      if (info) {
+        gst_discoverer_info_unref(info);
+      }
+      if (discoverer) {
+        g_object_unref(discoverer);
+      }
+      if (error) {
+        g_error_free(error);
+      }
+      if (result != GST_DISCOVERER_OK || !GST_CLOCK_TIME_IS_VALID(duration) || duration == 0 ||
+          duration > G_MAXUINT64 - plans[source_id].skipped_base) {
+        break;
+      }
+      if (plans[source_id].skipped_base + duration > target) {
+        break;
+      }
+      if (plans[source_id].index + 1 == source->num_uri_list) {
+        // Starting at or beyond permanent camera EOS can never create exact pair zero.
+        return FALSE;
+      }
+      plans[source_id].skipped_base += duration;
+      ++plans[source_id].index;
+    }
+  }
+  gboolean configured = FALSE;
+  g_mutex_lock(&bin->uri_playlist_barrier_mutex);
+  const gboolean pristine = !bin->uri_playlist_initial_offsets_configured && !bin->uri_playlist_terminal &&
+      bin->uri_playlist_next_frame_sequence == 0 && !GST_CLOCK_TIME_IS_VALID(bin->uri_playlist_paired_video_end);
+  if (pristine) {
+    configured = TRUE;
+    for (guint source_id = 0; source_id < 2; ++source_id) {
+      NvDsSrcBin* source = &bin->sub_bins[source_id];
+      if (!source->uri_list || source->uri_list_decoded_frame_count != 0 ||
+          source->uri_list_initial_positioned_frame_count != 0 ||
+          source->uri_list_mux_delivered_sequence != G_MAXUINT64 ||
+          source->uri_list_frame_ready_sequence != G_MAXUINT64 ||
+          GST_CLOCK_TIME_IS_VALID(source->uri_list_released_video_end) ||
+          GST_CLOCK_TIME_IS_VALID(source->uri_playlist_video_origin_ns)) {
+        configured = FALSE;
+        break;
+      }
+    }
+  }
+  if (configured) {
+    for (guint source_id = 0; source_id < 2; ++source_id) {
+      NvDsSrcBin* source = &bin->sub_bins[source_id];
+      source->uri_playlist_initial_video_offset_ns = video_offsets[source_id] + start_time_ns;
+      source->uri_playlist_initial_audio_offset_ns = source_id == audio_source_id ? start_time_ns : 0;
+      source->uri_playlist_video_origin_ns = GST_CLOCK_TIME_NONE;
+      source->uri_playlist_audio_origin_ns = source_id == audio_source_id ? start_time_ns : 0;
+      source->uri_list_index = plans[source_id].index;
+      source->uri_playlist_initial_uri_index = plans[source_id].index;
+      source->uri_playlist_initial_skipped_base_ns = plans[source_id].skipped_base;
+      source->prev_accumulated_base = plans[source_id].skipped_base;
+      source->accumulated_base = plans[source_id].skipped_base;
+      g_free(source->config->uri);
+      source->config->uri = g_strdup(source->uri_list[plans[source_id].index]);
+    }
+    bin->uri_playlist_initial_offsets_configured = configured;
+  }
+  g_mutex_unlock(&bin->uri_playlist_barrier_mutex);
+  if (configured) {
+    for (guint source_id = 0; source_id < 2; ++source_id) {
+      NvDsSrcBin* source = &bin->sub_bins[source_id];
+      g_object_set(G_OBJECT(source->src_elem), "uri", source->config->uri, NULL);
+    }
+  }
+  return configured;
 }
 
 static void set_properties_nvuribin(GstElement* element_, NvDsSourceConfig const* config) {

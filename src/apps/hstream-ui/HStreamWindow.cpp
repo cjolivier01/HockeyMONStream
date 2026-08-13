@@ -17,6 +17,7 @@
 #include <QtCore/Qt>
 #include <QtGui/QCloseEvent>
 #include <QtGui/QGuiApplication>
+#include <QtGui/QMouseEvent>
 #include <QtGui/QPaintEngine>
 #include <QtGui/QPalette>
 #include <QtGui/QResizeEvent>
@@ -40,6 +41,7 @@
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QStyle>
+#include <QtWidgets/QTabBar>
 
 #include <yaml-cpp/yaml.h>
 
@@ -57,6 +59,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -68,10 +71,10 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr int kExposureEvSliderZero = 40;
 constexpr int kFixedEdgeRotationDefaultX10 = 100;
 constexpr int kFixedEdgeRotationMaximumX10 = 900;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
+constexpr int kRuntimeControlAckTimeoutMs = 3000;
 constexpr qsizetype kMaxCapturedLogCharacters = 16 * 1024 * 1024;
 constexpr char kStitchedPreviewPipelineOptions[] =
     "pipeline.streammux.batch-size=2,pipeline.streammux.sync-inputs=0,"
@@ -215,6 +218,40 @@ class NativeVideoTarget : public QWidget {
   QPaintEngine* paintEngine() const override {
     return nullptr;
   }
+
+  void setFocusToggleCallback(std::function<void()> callback) {
+    focus_toggle_callback_ = std::move(callback);
+  }
+
+  void setFocusButton(QPushButton* button) {
+    focus_button_ = button;
+  }
+
+ protected:
+  void mouseDoubleClickEvent(QMouseEvent* event) override {
+    if (event->button() == Qt::LeftButton && focus_toggle_callback_) {
+      focus_toggle_callback_();
+      event->accept();
+      return;
+    }
+    QWidget::mouseDoubleClickEvent(event);
+  }
+
+  void mouseReleaseEvent(QMouseEvent* event) override {
+    if (event->button() == Qt::LeftButton && focus_button_) {
+      const QPoint button_position = focus_button_->mapFromGlobal(event->globalPosition().toPoint());
+      if (focus_button_->rect().contains(button_position)) {
+        focus_button_->click();
+        event->accept();
+        return;
+      }
+    }
+    QWidget::mouseReleaseEvent(event);
+  }
+
+ private:
+  std::function<void()> focus_toggle_callback_;
+  QPushButton* focus_button_{nullptr};
 };
 
 class LetterboxRenderHost : public QWidget {
@@ -222,7 +259,7 @@ class LetterboxRenderHost : public QWidget {
   explicit LetterboxRenderHost(double aspect_ratio, QWidget* parent = nullptr)
       : QWidget(parent), aspect_ratio_(aspect_ratio > 0.0 ? aspect_ratio : 16.0 / 9.0) {
     setObjectName("letterboxRenderHost");
-    setMinimumHeight(420);
+    setMinimumHeight(120);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     QPalette pal = palette();
     pal.setColor(QPalette::Window, Qt::black);
@@ -232,6 +269,30 @@ class LetterboxRenderHost : public QWidget {
     render_surface_->setAutoFillBackground(true);
     render_surface_->setPalette(pal);
     render_target_ = new NativeVideoTarget(render_surface_);
+    focus_button_ = new QPushButton(render_surface_);
+    focus_button_->setFixedSize(36, 36);
+    focus_button_->setToolTip("Focus this video (double-click)");
+    focus_button_->setText(QStringLiteral("⛶"));
+    QFont focus_button_font = focus_button_->font();
+    focus_button_font.setPointSize(17);
+    focus_button_->setFont(focus_button_font);
+    focus_button_->setStyleSheet(
+        "QPushButton { background: rgba(15, 23, 42, 210); border: 1px solid rgba(255, 255, 255, 100); "
+        "border-radius: 5px; color: white; padding: 0; }"
+        "QPushButton:hover { background: rgba(30, 64, 175, 235); }");
+    if (QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0) {
+      // The video-overlay sink owns a native child window. Make the control a
+      // native sibling too so the window system can stack it visibly above
+      // the sink instead of hiding Qt backing-store pixels behind the video.
+      focus_button_->setAttribute(Qt::WA_NativeWindow);
+      focus_button_->setAttribute(Qt::WA_DontCreateNativeAncestors);
+      focus_button_->winId();
+    }
+    render_target_->setFocusButton(focus_button_);
+    connect(focus_button_, &QPushButton::clicked, this, [this]() {
+      if (focus_toggle_callback_)
+        focus_toggle_callback_();
+    });
   }
 
   QWidget* renderSurface() const {
@@ -242,7 +303,32 @@ class LetterboxRenderHost : public QWidget {
     return render_target_;
   }
 
+  QPushButton* focusButton() const {
+    return focus_button_;
+  }
+
+  void setFocusToggleCallback(std::function<void()> callback) {
+    focus_toggle_callback_ = std::move(callback);
+    render_target_->setFocusToggleCallback(focus_toggle_callback_);
+  }
+
+  void setFocused(bool focused) {
+    focus_button_->setText(focused ? QStringLiteral("↙") : QStringLiteral("⛶"));
+    focus_button_->setToolTip(
+        focused ? "Restore the HStream controls (double-click)" : "Focus this video (double-click)");
+    focus_button_->raise();
+  }
+
  protected:
+  void mouseDoubleClickEvent(QMouseEvent* event) override {
+    if (event->button() == Qt::LeftButton && focus_toggle_callback_) {
+      focus_toggle_callback_();
+      event->accept();
+      return;
+    }
+    QWidget::mouseDoubleClickEvent(event);
+  }
+
   void resizeEvent(QResizeEvent* event) override {
     QWidget::resizeEvent(event);
     if (!render_surface_) {
@@ -263,12 +349,17 @@ class LetterboxRenderHost : public QWidget {
     const int y = (available.height() - height) / 2;
     render_surface_->setGeometry(x, y, width, height);
     render_target_->setGeometry(0, 0, width, height);
+    constexpr int kButtonMargin = 10;
+    focus_button_->move(width - focus_button_->width() - kButtonMargin, kButtonMargin);
+    focus_button_->raise();
   }
 
  private:
   double aspect_ratio_;
   QWidget* render_surface_{nullptr};
-  QWidget* render_target_{nullptr};
+  NativeVideoTarget* render_target_{nullptr};
+  QPushButton* focus_button_{nullptr};
+  std::function<void()> focus_toggle_callback_;
 };
 
 QString ansi_color(int code) {
@@ -1032,17 +1123,6 @@ bool yaml_scalar_bool(YAML::Node node, bool default_value) {
   return default_value;
 }
 
-void remove_yaml_path_if_empty_map(YAML::Node root, std::initializer_list<const char*> path) {
-  QStringList parts;
-  for (const char* part : path) {
-    parts.push_back(part);
-  }
-  YAML::Node value;
-  if (lookup_yaml_path(root, parts.join('.'), &value) && value.IsMap() && value.size() == 0) {
-    remove_yaml_path(root, path);
-  }
-}
-
 bool yaml_sequence_contains(YAML::Node node, const char* value) {
   if (!node || !node.IsSequence()) {
     return false;
@@ -1066,10 +1146,6 @@ ArtifactInvalidationResult invalidate_rotation_dependent_artifacts(YAML::Node& c
   result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_centroid"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_combined_bbox"}) ? 1 : 0;
   return result;
-}
-
-double slider_to_exposure_ev(int position) {
-  return static_cast<double>(std::max(0, std::min(80, position)) - 40) / 10.0;
 }
 
 double ratio_x100(int value) {
@@ -1189,7 +1265,8 @@ int HStreamWindow::cameraControlValue(const QString& id) const {
 }
 
 int HStreamWindow::cameraTabCount() const {
-  return camera_tabs_ ? camera_tabs_->count() : 0;
+  return (program_control_tabs_ ? program_control_tabs_->count() : 0) +
+      (stitched_control_tabs_ ? stitched_control_tabs_->count() : 0);
 }
 
 void HStreamWindow::buildUi() {
@@ -1202,24 +1279,31 @@ void HStreamWindow::buildUi() {
   root->setContentsMargins(12, 10, 12, 10);
   root->setSpacing(10);
 
-  buildTopBar(root);
+  top_bar_ = new QWidget(central);
+  top_bar_->setObjectName("topBarPanel");
+  auto* top_bar_layout = new QVBoxLayout(top_bar_);
+  top_bar_layout->setContentsMargins(0, 0, 0, 0);
+  buildTopBar(top_bar_layout);
+  root->addWidget(top_bar_);
 
   auto* content_splitter = new QSplitter(Qt::Vertical);
   content_splitter->setObjectName("mainLogSplitter");
   content_splitter->setChildrenCollapsible(false);
 
-  auto* main_container = new QWidget();
-  auto* main_layout = new QVBoxLayout(main_container);
+  setup_panel_ = new QWidget();
+  setup_panel_->setObjectName("setupPanel");
+  auto* main_layout = new QVBoxLayout(setup_panel_);
   main_layout->setContentsMargins(0, 0, 0, 0);
   buildMainArea(main_layout);
 
-  auto* log_container = new QWidget();
-  auto* log_layout = new QVBoxLayout(log_container);
+  log_panel_ = new QWidget();
+  log_panel_->setObjectName("logPanel");
+  auto* log_layout = new QVBoxLayout(log_panel_);
   log_layout->setContentsMargins(0, 0, 0, 0);
   buildLog(log_layout);
 
-  content_splitter->addWidget(main_container);
-  content_splitter->addWidget(log_container);
+  content_splitter->addWidget(setup_panel_);
+  content_splitter->addWidget(log_panel_);
   content_splitter->setStretchFactor(0, 4);
   content_splitter->setStretchFactor(1, 1);
   content_splitter->setSizes({680, 170});
@@ -1229,8 +1313,8 @@ void HStreamWindow::buildUi() {
 }
 
 void HStreamWindow::buildTopBar(QVBoxLayout* root) {
-  auto* bar = new QHBoxLayout();
-  bar->setSpacing(8);
+  auto* status_bar = new QHBoxLayout();
+  status_bar->setSpacing(8);
 
   auto* title = new QLabel("HStream Runtime Control");
   title->setObjectName("titleLabel");
@@ -1298,45 +1382,61 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   connect(save, &QPushButton::clicked, this, [this]() { savePreset(); });
   connect(reset, &QPushButton::clicked, this, [this]() { resetCameraControls(); });
 
-  bar->addWidget(title);
-  bar->addSpacing(16);
-  bar->addWidget(new QLabel("Pipeline:"));
-  bar->addWidget(pipeline_state_);
-  bar->addWidget(backend_mode_);
-  bar->addWidget(run_mode_selector_);
-  bar->addWidget(control_points_spin_);
-  bar->addWidget(render_video_toggle_);
-  bar->addStretch(1);
-  bar->addWidget(start_button_);
-  bar->addWidget(pause_button_);
-  bar->addWidget(restart);
-  bar->addWidget(save);
-  bar->addWidget(reset);
-  bar->addWidget(stop_button_);
-  root->addLayout(bar);
+  status_bar->addWidget(title);
+  status_bar->addSpacing(16);
+  status_bar->addWidget(new QLabel("Pipeline:"));
+  status_bar->addWidget(pipeline_state_);
+  status_bar->addWidget(backend_mode_);
+  status_bar->addStretch(1);
+  status_bar->addWidget(run_mode_selector_);
+  status_bar->addWidget(control_points_spin_);
+  status_bar->addWidget(render_video_toggle_);
+
+  auto* action_bar = new QHBoxLayout();
+  action_bar->setSpacing(8);
+  action_bar->addStretch(1);
+  action_bar->addWidget(start_button_);
+  action_bar->addWidget(pause_button_);
+  action_bar->addWidget(restart);
+  action_bar->addWidget(save);
+  action_bar->addWidget(reset);
+  action_bar->addWidget(stop_button_);
+  root->addLayout(status_bar);
+  root->addLayout(action_bar);
 }
 
 void HStreamWindow::buildMainArea(QVBoxLayout* root) {
-  auto* splitter = new QSplitter(Qt::Horizontal);
-  splitter->setObjectName("mainSplitter");
+  auto* setup_row = new QWidget();
+  setup_row->setObjectName("setupControlsRow");
+  auto* setup_layout = new QHBoxLayout(setup_row);
+  setup_layout->setContentsMargins(0, 0, 0, 0);
+  auto* game_column = new QWidget();
+  auto* game_layout = new QVBoxLayout(game_column);
+  game_layout->setContentsMargins(0, 0, 0, 0);
+  buildGameControls(game_layout);
+  auto* output_column = new QWidget();
+  output_column->setMaximumWidth(360);
+  auto* output_layout = new QVBoxLayout(output_column);
+  output_layout->setContentsMargins(0, 0, 0, 0);
+  buildOutputControls(output_layout);
+  setup_layout->addWidget(game_column, 1);
+  setup_layout->addWidget(output_column);
 
-  auto* left = new QWidget();
-  auto* left_layout = new QVBoxLayout(left);
-  left_layout->setContentsMargins(0, 0, 0, 0);
-  buildGameControls(left_layout);
-  buildPreviewPane(left_layout);
-
-  auto* right = new QWidget();
-  auto* right_layout = new QVBoxLayout(right);
-  right_layout->setContentsMargins(0, 0, 0, 0);
-  buildOutputControls(right_layout);
-  buildCameraControls(right_layout);
-
-  splitter->addWidget(left);
-  splitter->addWidget(right);
-  splitter->setStretchFactor(0, 3);
-  splitter->setStretchFactor(1, 1);
-  root->addWidget(splitter, 1);
+  auto* setup_preview_splitter = new QSplitter(Qt::Vertical);
+  setup_preview_splitter->setObjectName("setupPreviewSplitter");
+  setup_preview_splitter->setChildrenCollapsible(true);
+  setup_preview_splitter->addWidget(setup_row);
+  auto* preview_container = new QWidget();
+  auto* preview_layout = new QVBoxLayout(preview_container);
+  preview_layout->setContentsMargins(0, 0, 0, 0);
+  buildPreviewPane(preview_layout);
+  setup_preview_splitter->addWidget(preview_container);
+  setup_preview_splitter->setStretchFactor(0, 0);
+  setup_preview_splitter->setStretchFactor(1, 1);
+  setup_preview_splitter->setCollapsible(0, true);
+  setup_preview_splitter->setCollapsible(1, false);
+  setup_preview_splitter->setSizes({240, 440});
+  root->addWidget(setup_preview_splitter, 1);
 }
 
 void HStreamWindow::buildGameControls(QVBoxLayout* root) {
@@ -1431,7 +1531,7 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
 
   video_set_list_ = new QListWidget();
   video_set_list_->setObjectName("videoSetList");
-  video_set_list_->setMinimumHeight(92);
+  video_set_list_->setMinimumHeight(48);
 
   video_sets_path_label_ = new QLabel(gameRoot());
   video_sets_path_label_->setObjectName("videoSetsPathLabel");
@@ -1455,10 +1555,17 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   preview_tabs_ = new QTabWidget();
   preview_tabs_->setObjectName("previewTabs");
 
+  auto configure_host = [this](LetterboxRenderHost* host, int tab_index, const QString& button_name) {
+    host->focusButton()->setObjectName(button_name);
+    host->setFocusToggleCallback([this, tab_index]() { togglePreviewFocus(tab_index); });
+    preview_hosts_.push_back(host);
+  };
+
   auto* program = new QWidget();
   auto* layout = new QVBoxLayout(program);
   auto* preview_host = new LetterboxRenderHost(16.0 / 9.0);
   preview_host->setObjectName("programLetterboxHost");
+  configure_host(preview_host, 0, "programFocusButton");
   preview_surface_ = preview_host->renderSurface();
   preview_surface_->setObjectName("previewSurface");
   preview_render_target_ = preview_host->renderTarget();
@@ -1475,19 +1582,22 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
 
   preview_status_ = new QLabel("Pipeline stopped");
   preview_status_->setObjectName("previewStatusLabel");
-  program_fullscreen_button_ = new QPushButton("Fullscreen");
-  program_fullscreen_button_->setObjectName("programFullscreenButton");
-  connect(program_fullscreen_button_, &QPushButton::clicked, this, [this]() { togglePreviewFullscreen(0); });
   auto* program_footer = new QHBoxLayout();
   program_footer->addWidget(preview_status_, 1);
-  program_footer->addWidget(program_fullscreen_button_);
   layout->addWidget(preview_host, 1);
   layout->addLayout(program_footer);
+  auto* program_controls = new QWidget();
+  program_controls->setObjectName("programAssociatedControls");
+  auto* program_controls_layout = new QVBoxLayout(program_controls);
+  program_controls_layout->setContentsMargins(0, 0, 0, 0);
+  buildCameraControls(program_controls_layout, true);
+  layout->addWidget(program_controls);
 
   auto* stitched = new QWidget();
   auto* stitched_layout = new QVBoxLayout(stitched);
   auto* stitched_host = new LetterboxRenderHost(16.0 / 9.0);
   stitched_host->setObjectName("stitchedLetterboxHost");
+  configure_host(stitched_host, 1, "stitchedFocusButton");
   stitched_surface_ = stitched_host->renderSurface();
   stitched_surface_->setObjectName("stitchedPreviewSurface");
   stitched_render_target_ = stitched_host->renderTarget();
@@ -1503,14 +1613,16 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   stitched_notice_layout->addWidget(stitched_external_notice_);
   stitched_status_ = new QLabel("Stitched canvas preview");
   stitched_status_->setObjectName("stitchedPreviewStatusLabel");
-  stitched_fullscreen_button_ = new QPushButton("Fullscreen");
-  stitched_fullscreen_button_->setObjectName("stitchedFullscreenButton");
-  connect(stitched_fullscreen_button_, &QPushButton::clicked, this, [this]() { togglePreviewFullscreen(1); });
   auto* stitched_footer = new QHBoxLayout();
   stitched_footer->addWidget(stitched_status_, 1);
-  stitched_footer->addWidget(stitched_fullscreen_button_);
   stitched_layout->addWidget(stitched_host, 1);
   stitched_layout->addLayout(stitched_footer);
+  auto* stitched_controls = new QWidget();
+  stitched_controls->setObjectName("stitchedAssociatedControls");
+  auto* stitched_controls_layout = new QVBoxLayout(stitched_controls);
+  stitched_controls_layout->setContentsMargins(0, 0, 0, 0);
+  buildCameraControls(stitched_controls_layout, false);
+  stitched_layout->addWidget(stitched_controls);
 
   preview_tabs_->addTab(program, "Program");
   preview_tabs_->addTab(stitched, "Stitched");
@@ -1519,6 +1631,7 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
     auto* camera_layout = new QVBoxLayout(camera);
     auto* camera_host = new LetterboxRenderHost(16.0 / 9.0);
     camera_host->setObjectName(QString("camera%1LetterboxHost").arg(camera_index + 1));
+    configure_host(camera_host, camera_index + 2, QString("camera%1FocusButton").arg(camera_index + 1));
     QWidget* camera_surface = camera_host->renderSurface();
     camera_surface->setObjectName(QString("camera%1PreviewSurface").arg(camera_index + 1));
     camera_preview_surfaces_.push_back(camera_surface);
@@ -1538,10 +1651,21 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
     camera_notice_layout->addWidget(camera_notice);
 
     camera_layout->addWidget(camera_host, 1);
-    camera_layout->addWidget(new QLabel(QString("Camera %1 source preview").arg(camera_index + 1)));
+    auto* camera_status = new QLabel(
+        QString("Camera %1 decoded source preview — downstream controls do not alter this tab").arg(camera_index + 1));
+    camera_status->setObjectName(QString("camera%1PreviewStatusLabel").arg(camera_index + 1));
+    camera_layout->addWidget(camera_status);
     preview_tabs_->addTab(camera, QString("Camera %1").arg(camera_index + 1));
   }
   connect(preview_tabs_, &QTabWidget::currentChanged, this, [this](int tab_index) {
+    if (preview_focus_mode_) {
+      focused_preview_tab_ = tab_index;
+      for (size_t index = 0; index < preview_hosts_.size(); ++index) {
+        auto* host = static_cast<LetterboxRenderHost*>(preview_hosts_[index]);
+        if (host)
+          host->setFocused(static_cast<int>(index) == tab_index);
+      }
+    }
     switchPipelineRenderTarget(tab_index);
   });
   root->addWidget(preview_tabs_, 1);
@@ -1550,7 +1674,9 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
 void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
   auto* group = new QGroupBox("Output Routing");
   group->setObjectName("outputRoutingGroup");
+  group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
   auto* layout = new QVBoxLayout(group);
+  layout->setSpacing(group->style()->pixelMetric(QStyle::PM_LayoutVerticalSpacing));
   output_list_ = layout;
 
   const std::vector<std::pair<QString, QString>> outputs = {
@@ -1584,18 +1710,35 @@ void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
 
   layout->addWidget(redirect);
   layout->addWidget(add_rtsp);
-  parent->addWidget(group);
+  parent->addWidget(group, 0, Qt::AlignTop);
+  parent->addStretch(1);
 }
 
-void HStreamWindow::buildCameraControls(QVBoxLayout* parent) {
-  auto* group = new QGroupBox("Camera Controls");
-  group->setObjectName("cameraControlsGroup");
-  group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage) {
+  auto* group = new QGroupBox(program_stage ? "Program Controls" : "Stitched Controls");
+  group->setObjectName(program_stage ? "programControlsGroup" : "stitchedControlsGroup");
+  group->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
   auto* layout = new QVBoxLayout(group);
+  auto* association = new QLabel(
+      program_stage
+          ? "These controls affect Program frames after stitching. Changes are applied live while the pipeline is "
+            "running; Save Preset keeps them for the next run."
+          : "Stitch rotation affects the stitched canvas before play tracking. It applies live while the pipeline "
+            "is running; Save Preset keeps it for the next run.");
+  association->setObjectName(program_stage ? "programControlAssociation" : "stitchedControlAssociation");
+  association->setWordWrap(true);
+  association->setStyleSheet("color: #667085;");
+  layout->addWidget(association);
 
-  camera_tabs_ = new QTabWidget();
-  camera_tabs_->setObjectName("cameraControlTabs");
-  camera_tabs_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+  auto* control_tabs = new QTabWidget();
+  control_tabs->setObjectName(program_stage ? "programControlTabs" : "stitchedControlTabs");
+  control_tabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+  control_tabs->setMinimumHeight(92);
+  control_tabs->setMaximumHeight(180);
+  if (program_stage)
+    program_control_tabs_ = control_tabs;
+  else
+    stitched_control_tabs_ = control_tabs;
 
   auto add_slider_tab = [this](const std::vector<CameraSliderSpec>& specs) {
     auto* page = new QWidget();
@@ -1619,53 +1762,22 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent) {
   };
 
   const std::vector<CameraSliderSpec> tracking_controls = {
-      {"Stop_Direction_Change_Delay_Frames", "Stop direction-change delay frames", 0, 60, 12},
-      {"Cancel_Stop_On_Opposite_Direction", "Cancel stop on opposite direction", 0, 1, 1},
-      {"Stop_Cancel_Hysteresis_Frames", "Stop cancel hysteresis frames", 0, 10, 2},
-      {"Stop_Delay_Cooldown_Frames", "Stop-delay cooldown frames", 0, 30, 4},
-      {"Time_To_Dest_Speed_Limit_Frames", "Time-to-destination speed limit frames", 0, 120, 24},
+      {"Stop_Direction_Change_Delay_Frames", "Stop direction-change delay frames", 0, 60, 0},
+      {"Cancel_Stop_On_Opposite_Direction", "Cancel stop on opposite direction", 0, 1, 0},
+      {"Stop_Cancel_Hysteresis_Frames", "Stop cancel hysteresis frames", 0, 10, 0},
+      {"Stop_Delay_Cooldown_Frames", "Stop-delay cooldown frames", 0, 30, 0},
+      {"Time_To_Dest_Speed_Limit_Frames", "Time-to-destination speed limit frames", 0, 120, 10},
       {"Apply_To_Fast_Box", "Apply to fast box", 0, 1, 0},
       {"Apply_To_Follower_Box", "Apply to follower box", 0, 1, 1},
   };
   const std::vector<CameraSliderSpec> motion_controls = {
-      {"Overshoot_Stop_Delay_Frames", "Overshoot stop-delay frames", 0, 60, 12},
-      {"Post_Nonstop_Stop_Delay_Frames", "Post-nonstop stop-delay frames", 0, 60, 12},
-      {"Overshoot_Speed_Ratio_x100", "Overshoot speed ratio x100", 0, 200, 100},
-      {"Max_Speed_X_x10", "Max speed X x10", 0, 2000, 300},
-      {"Max_Speed_Y_x10", "Max speed Y x10", 0, 2000, 300},
-      {"Max_Accel_X_x10", "Max accel X x10", 0, 1000, 120},
-      {"Max_Accel_Y_x10", "Max accel Y x10", 0, 1000, 120},
-  };
-  const std::vector<CameraSliderSpec> stitched_color_controls = {
-      {"White_Balance_Kelvin_Enable", "White balance Kelvin enable", 0, 1, 0},
-      {"White_Balance_Kelvin_Temperature", "White balance Kelvin temperature", 1000, 15000, 6500},
-      {"White_Balance_Red_Gain_x100", "White balance red gain x100", 1, 300, 100},
-      {"White_Balance_Green_Gain_x100", "White balance green gain x100", 1, 300, 100},
-      {"White_Balance_Blue_Gain_x100", "White balance blue gain x100", 1, 300, 100},
-      {"Brightness_Multiplier_x100", "Brightness multiplier x100", 1, 300, 100},
-      {"Exposure_EV_x10", "Exposure EV x10", 0, 80, kExposureEvSliderZero},
-      {"Contrast_Multiplier_x100", "Contrast multiplier x100", 1, 300, 100},
-      {"Gamma_Multiplier_x100", "Gamma multiplier x100", 1, 300, 100},
-  };
-  const std::vector<CameraSliderSpec> left_color_controls = {
-      {"Left_White_Balance_Kelvin_Enable", "Left white balance Kelvin enable", 0, 1, 0},
-      {"Left_White_Balance_Kelvin_Temperature", "Left white balance Kelvin temperature", 1000, 15000, 6500},
-      {"Left_White_Balance_Red_Gain_x100", "Left white balance red gain x100", 1, 300, 100},
-      {"Left_White_Balance_Green_Gain_x100", "Left white balance green gain x100", 1, 300, 100},
-      {"Left_White_Balance_Blue_Gain_x100", "Left white balance blue gain x100", 1, 300, 100},
-      {"Left_Brightness_Multiplier_x100", "Left brightness multiplier x100", 1, 300, 100},
-      {"Left_Exposure_EV_x10", "Left exposure EV x10", 0, 80, kExposureEvSliderZero},
-      {"Left_Contrast_Multiplier_x100", "Left contrast multiplier x100", 1, 300, 100},
-      {"Left_Gamma_Multiplier_x100", "Left gamma multiplier x100", 1, 300, 100},
-      {"Right_White_Balance_Kelvin_Enable", "Right white balance Kelvin enable", 0, 1, 0},
-      {"Right_White_Balance_Kelvin_Temperature", "Right white balance Kelvin temperature", 1000, 15000, 6500},
-      {"Right_White_Balance_Red_Gain_x100", "Right white balance red gain x100", 1, 300, 100},
-      {"Right_White_Balance_Green_Gain_x100", "Right white balance green gain x100", 1, 300, 100},
-      {"Right_White_Balance_Blue_Gain_x100", "Right white balance blue gain x100", 1, 300, 100},
-      {"Right_Brightness_Multiplier_x100", "Right brightness multiplier x100", 1, 300, 100},
-      {"Right_Exposure_EV_x10", "Right exposure EV x10", 0, 80, kExposureEvSliderZero},
-      {"Right_Contrast_Multiplier_x100", "Right contrast multiplier x100", 1, 300, 100},
-      {"Right_Gamma_Multiplier_x100", "Right gamma multiplier x100", 1, 300, 100},
+      {"Overshoot_Stop_Delay_Frames", "Overshoot stop-delay frames", 0, 60, 0},
+      {"Post_Nonstop_Stop_Delay_Frames", "Post-nonstop stop-delay frames", 0, 60, 0},
+      {"Overshoot_Speed_Ratio_x100", "Overshoot speed ratio x100", 0, 200, 70},
+      {"Max_Speed_X_x10", "Max speed X override x10 (0 = configured)", 0, 2000, 0},
+      {"Max_Speed_Y_x10", "Max speed Y override x10 (0 = configured)", 0, 2000, 0},
+      {"Max_Accel_X_x10", "Max accel X override x10 (0 = configured)", 0, 1000, 0},
+      {"Max_Accel_Y_x10", "Max accel Y override x10 (0 = configured)", 0, 1000, 0},
   };
   const std::vector<CameraSliderSpec> stitch_controls = {
       {"Stitch_Rotate_Degrees", "Stitch rotate degrees", 0, 180, 90},
@@ -1682,22 +1794,17 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent) {
        kFixedEdgeRotationDefaultX10},
   };
 
-  auto* plugin = new QWidget();
-  auto* plugin_layout = new QVBoxLayout(plugin);
-  auto* property = new QLineEdit("nvarguscamerasrc.exposuretimerange");
-  property->setObjectName("pluginPropertyEdit");
-  plugin_layout->addWidget(new QLabel("GStreamer property"));
-  plugin_layout->addWidget(property);
-  plugin_layout->addStretch(1);
-
-  camera_tabs_->addTab(add_slider_tab(tracking_controls), "Tracking");
-  camera_tabs_->addTab(add_slider_tab(motion_controls), "Motion");
-  camera_tabs_->addTab(add_slider_tab(stitched_color_controls), "Color");
-  camera_tabs_->addTab(add_slider_tab(left_color_controls), "Side Color");
-  camera_tabs_->addTab(add_slider_tab(stitch_controls), "Stitch");
-  camera_tabs_->addTab(plugin, "Plugin");
-  layout->addWidget(camera_tabs_, 1);
-  parent->addWidget(group, 1);
+  if (program_stage) {
+    control_tabs->addTab(add_slider_tab(tracking_controls), "Tracking");
+    control_tabs->addTab(add_slider_tab(motion_controls), "Motion");
+    const std::vector<CameraSliderSpec> crop_controls(stitch_controls.begin() + 1, stitch_controls.end());
+    control_tabs->addTab(add_slider_tab(crop_controls), "Crop Rotation");
+  } else {
+    const std::vector<CameraSliderSpec> rotation_controls = {stitch_controls.front()};
+    control_tabs->addTab(add_slider_tab(rotation_controls), "Rotation");
+  }
+  layout->addWidget(control_tabs);
+  parent->addWidget(group);
 }
 
 void HStreamWindow::buildLog(QVBoxLayout* root) {
@@ -1722,7 +1829,7 @@ void HStreamWindow::buildLog(QVBoxLayout* root) {
   // Calibration now reports every native stage, and operators need the lead-up
   // to a failure rather than only the final few hundred lines.
   log_->document()->setMaximumBlockCount(2000);
-  log_->setMinimumHeight(110);
+  log_->setMinimumHeight(60);
   log_->setStyleSheet(
       "QTextEdit#runtimeLog {"
       " background: #05070a;"
@@ -2747,10 +2854,6 @@ void HStreamWindow::startPipeline() {
     if (notice)
       notice->setText(camera_render_notice);
   }
-  if (program_fullscreen_button_)
-    program_fullscreen_button_->setEnabled(embedded_render);
-  if (stitched_fullscreen_button_)
-    stitched_fullscreen_button_->setEnabled(embedded_render);
   if (render_video && !embedded_render)
     appendLog("render output will open in a separate DeepStream window; embedded preview is disabled");
   else if (!render_video)
@@ -2953,6 +3056,15 @@ void HStreamWindow::handlePipelineStarted() {
 }
 
 void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status) {
+  ++scheduled_rotation_control_generation_;
+  scheduled_rotation_controls_.clear();
+  scheduled_rotation_controls_ready_ = false;
+  ++scheduled_playtracker_control_generation_;
+  scheduled_playtracker_controls_.clear();
+  scheduled_playtracker_controls_ready_ = false;
+  publishing_playtracker_controls_.reset();
+  scheduled_playtracker_force_all_targets_ = false;
+  publishing_playtracker_force_all_targets_ = false;
   readPipelineOutput();
   if (!pipeline_stdout_buffer_.isEmpty()) {
     appendLog(pipeline_stdout_buffer_.trimmed());
@@ -2981,6 +3093,10 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
     closeStitchingCalibrationDialog();
   }
   failPendingRuntimeControls("pipeline-finished");
+  if (!last_playtracker_runtime_snapshot_.isEmpty()) {
+    QFile::remove(last_playtracker_runtime_snapshot_);
+  }
+  last_playtracker_runtime_snapshot_.clear();
   calibration_pending_ = false;
   active_run_game_id_.clear();
   active_run_is_calibration_ = false;
@@ -3022,6 +3138,15 @@ void HStreamWindow::clearPreviewFrames() {
 }
 
 void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
+  ++scheduled_rotation_control_generation_;
+  scheduled_rotation_controls_.clear();
+  scheduled_rotation_controls_ready_ = false;
+  ++scheduled_playtracker_control_generation_;
+  scheduled_playtracker_controls_.clear();
+  scheduled_playtracker_controls_ready_ = false;
+  publishing_playtracker_controls_.reset();
+  scheduled_playtracker_force_all_targets_ = false;
+  publishing_playtracker_force_all_targets_ = false;
   const QString error_message = QString("pipeline process error=%1 message=%2")
                                     .arg(static_cast<int>(error))
                                     .arg(pipeline_process_ ? pipeline_process_->errorString() : QString());
@@ -3459,18 +3584,40 @@ void HStreamWindow::schedulePreviewReadyTimeout(const QString& channel, quint64 
   });
 }
 
-void HStreamWindow::togglePreviewFullscreen(int tab_index) {
-  if (preview_tabs_) {
-    preview_tabs_->setCurrentIndex(tab_index);
+void HStreamWindow::togglePreviewFocus(int tab_index) {
+  const bool restore = preview_focus_mode_ && focused_preview_tab_ == tab_index;
+  setPreviewFocusMode(!restore, tab_index);
+}
+
+void HStreamWindow::setPreviewFocusMode(bool focused, int tab_index) {
+  if (!preview_tabs_ || tab_index < 0 || tab_index >= preview_tabs_->count())
+    return;
+  preview_tabs_->setCurrentIndex(tab_index);
+  preview_focus_mode_ = focused;
+  focused_preview_tab_ = focused ? tab_index : -1;
+  if (top_bar_)
+    top_bar_->setVisible(!focused);
+  if (log_panel_)
+    log_panel_->setVisible(!focused);
+  if (setup_panel_) {
+    if (QWidget* setup_row = setup_panel_->findChild<QWidget*>("setupControlsRow"))
+      setup_row->setVisible(!focused);
   }
-  preview_fullscreen_ = !preview_fullscreen_;
-  if (preview_fullscreen_) {
-    showFullScreen();
-    appendLog(tab_index == 1 ? "stitched preview fullscreen" : "program preview fullscreen");
-  } else {
-    showNormal();
-    appendLog("preview restored to normal window");
+  preview_tabs_->tabBar()->setVisible(!focused);
+  for (int page_index = 0; page_index < preview_tabs_->count(); ++page_index) {
+    QWidget* page = preview_tabs_->widget(page_index);
+    QWidget* host = page_index < static_cast<int>(preview_hosts_.size()) ? preview_hosts_[page_index] : nullptr;
+    for (QWidget* child : page->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly)) {
+      if (child != host)
+        child->setVisible(!focused);
+    }
   }
+  for (size_t index = 0; index < preview_hosts_.size(); ++index) {
+    auto* host = static_cast<LetterboxRenderHost*>(preview_hosts_[index]);
+    if (host)
+      host->setFocused(focused && static_cast<int>(index) == tab_index);
+  }
+  appendLog(focused ? QString("preview focus mode tab=%1").arg(tab_index) : "preview restored to normal layout");
 }
 
 void HStreamWindow::updateRunControls() {
@@ -3578,6 +3725,28 @@ void HStreamWindow::resetCameraControls() {
     if (it != camera_sliders_.end()) {
       it->second->setValue(value);
     }
+  }
+  if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
+    // Reset every runtime-tunable field on both boxes, including a box that
+    // was tuned before its target selector was returned to the default.
+    const QStringList playtracker_reset_controls = {
+        "Stop_Direction_Change_Delay_Frames",
+        "Cancel_Stop_On_Opposite_Direction",
+        "Stop_Cancel_Hysteresis_Frames",
+        "Stop_Delay_Cooldown_Frames",
+        "Time_To_Dest_Speed_Limit_Frames",
+        "Overshoot_Stop_Delay_Frames",
+        "Post_Nonstop_Stop_Delay_Frames",
+        "Overshoot_Speed_Ratio_x100",
+        "Max_Speed_X_x10",
+        "Max_Speed_Y_x10",
+        "Max_Accel_X_x10",
+        "Max_Accel_Y_x10",
+    };
+    for (const QString& id : playtracker_reset_controls) {
+      schedulePlaytrackerRuntimeControl(id, cameraControlValue(id));
+    }
+    scheduled_playtracker_force_all_targets_ = true;
   }
   appendLog("camera controls reset to defaults");
 }
@@ -3735,10 +3904,6 @@ bool HStreamWindow::applySavedControlConfig(
       !lookup_yaml_path(config, "pipeline.ds-playtracker.config-file", &current_playtracker_config)) {
     config["pipeline"]["ds-playtracker"]["config-file"] = previous_playtracker_config_base.as<std::string>();
   }
-  remove_yaml_path_if_empty_map(config, {"stitching", "left", "color"});
-  remove_yaml_path_if_empty_map(config, {"stitching", "right", "color"});
-  remove_yaml_path_if_empty_map(config, {"rink", "camera", "color"});
-
   YAML::Node generated_runtime_keys(YAML::NodeType::Sequence);
   YAML::Node generated_runtime_values(YAML::NodeType::Map);
   std::set<std::string> generated_key_set;
@@ -3765,12 +3930,6 @@ bool HStreamWindow::applySavedControlConfig(
   auto slider_value = [this](const QString& id) -> int {
     const auto it = camera_sliders_.find(id);
     return it == camera_sliders_.end() ? 0 : it->second->value();
-  };
-  auto slider_changed = [this](const QString& id) -> bool {
-    const auto slider_it = camera_sliders_.find(id);
-    const auto default_it = camera_defaults_.find(id);
-    return slider_it != camera_sliders_.end() && default_it != camera_defaults_.end() &&
-        slider_it->second->value() != default_it->second;
   };
   if (has_control(controls, "Stitch_Rotate_Degrees")) {
     config["stitching"]["post_stitch_rotate_degrees"] = 90 - slider_value("Stitch_Rotate_Degrees");
@@ -3812,68 +3971,6 @@ bool HStreamWindow::applySavedControlConfig(
       *invalidated_config_artifacts = invalidation.invalidated;
     }
   }
-  auto apply_color_prefix = [&](const QString& prefix) {
-    const QString name_prefix = prefix.isEmpty() ? QString() : prefix + "_";
-    const char* side_key = prefix.compare("Left", Qt::CaseInsensitive) == 0 ? "left" : "right";
-    const QString config_prefix =
-        prefix.isEmpty() ? QString("rink.camera.color") : QString("stitching.%1.color").arg(prefix.toLower());
-    auto set_color_leaf = [&](const char* leaf, const auto& value) {
-      if (prefix.isEmpty()) {
-        config["rink"]["camera"]["color"][leaf] = value;
-      } else {
-        config["stitching"][side_key]["color"][leaf] = value;
-      }
-      mark_runtime_key(config_prefix + "." + leaf);
-    };
-    auto remove_color_leaf = [&](const char* leaf) { remove_yaml_path(config, config_prefix + "." + leaf); };
-
-    if (slider_changed(name_prefix + "Brightness_Multiplier_x100")) {
-      set_color_leaf("brightness", ratio_x100(slider_value(name_prefix + "Brightness_Multiplier_x100")));
-    }
-    if (slider_changed(name_prefix + "Exposure_EV_x10")) {
-      set_color_leaf("exposure_ev", slider_to_exposure_ev(slider_value(name_prefix + "Exposure_EV_x10")));
-    }
-    if (slider_changed(name_prefix + "Contrast_Multiplier_x100")) {
-      set_color_leaf("contrast", ratio_x100(slider_value(name_prefix + "Contrast_Multiplier_x100")));
-    }
-    if (slider_changed(name_prefix + "Gamma_Multiplier_x100")) {
-      set_color_leaf("gamma", ratio_x100(slider_value(name_prefix + "Gamma_Multiplier_x100")));
-    }
-
-    const QStringList white_balance_ids = {
-        name_prefix + "White_Balance_Kelvin_Enable",
-        name_prefix + "White_Balance_Kelvin_Temperature",
-        name_prefix + "White_Balance_Red_Gain_x100",
-        name_prefix + "White_Balance_Green_Gain_x100",
-        name_prefix + "White_Balance_Blue_Gain_x100",
-    };
-    bool white_balance_changed = false;
-    for (const QString& id : white_balance_ids) {
-      white_balance_changed = white_balance_changed || slider_changed(id);
-    }
-    if (white_balance_changed) {
-      const int kelvin_enabled = slider_value(name_prefix + "White_Balance_Kelvin_Enable");
-      const int kelvin = slider_value(name_prefix + "White_Balance_Kelvin_Temperature");
-      const int red = slider_value(name_prefix + "White_Balance_Red_Gain_x100");
-      const int green = slider_value(name_prefix + "White_Balance_Green_Gain_x100");
-      const int blue = slider_value(name_prefix + "White_Balance_Blue_Gain_x100");
-      if (kelvin_enabled > 0) {
-        set_color_leaf("white_balance_temp", QString("%1k").arg(kelvin).toStdString());
-        remove_color_leaf("white_balance");
-        return;
-      }
-      YAML::Node white_balance(YAML::NodeType::Sequence);
-      white_balance.push_back(ratio_x100(blue));
-      white_balance.push_back(ratio_x100(green));
-      white_balance.push_back(ratio_x100(red));
-      set_color_leaf("white_balance", white_balance);
-      remove_color_leaf("white_balance_temp");
-    }
-  };
-  apply_color_prefix("");
-  apply_color_prefix("Left");
-  apply_color_prefix("Right");
-
   if (has_control(controls, "Stop_Direction_Change_Delay_Frames")) {
     config["rink"]["camera"]["stop_on_dir_change_delay"] = slider_value("Stop_Direction_Change_Delay_Frames");
     mark_runtime_key("rink.camera.stop_on_dir_change_delay");
@@ -3909,27 +4006,15 @@ bool HStreamWindow::applySavedControlConfig(
     config["rink"]["camera"]["time_to_dest_speed_limit_frames"] = slider_value("Time_To_Dest_Speed_Limit_Frames");
     mark_runtime_key("rink.camera.time_to_dest_speed_limit_frames");
   }
-  auto apply_ratio_control = [&](const QString& id, const char* yaml_key) {
-    const std::string control_key = id.toStdString();
-    if (!has_control(controls, control_key.c_str())) {
-      return;
-    }
-    const auto default_it = camera_defaults_.find(id);
-    const double default_value = default_it == camera_defaults_.end() ? 0.0 : static_cast<double>(default_it->second);
-    if (default_value <= 0.0) {
-      return;
-    }
-    config["rink"]["camera"][yaml_key] = static_cast<double>(slider_value(id)) / default_value;
-    mark_runtime_key(QString("rink.camera.") + yaml_key);
-  };
-  apply_ratio_control("Max_Speed_X_x10", "max_speed_ratio_x");
-  apply_ratio_control("Max_Speed_Y_x10", "max_speed_ratio_y");
-  apply_ratio_control("Max_Accel_X_x10", "max_accel_ratio_x");
-  apply_ratio_control("Max_Accel_Y_x10", "max_accel_ratio_y");
-  const bool has_live_box_runtime_controls = has_control(controls, "Max_Speed_X_x10") ||
+  const bool has_playtracker_runtime_controls = has_control(controls, "Stop_Direction_Change_Delay_Frames") ||
+      has_control(controls, "Cancel_Stop_On_Opposite_Direction") ||
+      has_control(controls, "Stop_Cancel_Hysteresis_Frames") || has_control(controls, "Stop_Delay_Cooldown_Frames") ||
+      has_control(controls, "Time_To_Dest_Speed_Limit_Frames") ||
+      has_control(controls, "Overshoot_Stop_Delay_Frames") || has_control(controls, "Post_Nonstop_Stop_Delay_Frames") ||
+      has_control(controls, "Overshoot_Speed_Ratio_x100") || has_control(controls, "Max_Speed_X_x10") ||
       has_control(controls, "Max_Speed_Y_x10") || has_control(controls, "Max_Accel_X_x10") ||
       has_control(controls, "Max_Accel_Y_x10");
-  if (has_live_box_runtime_controls && game_id_edit_) {
+  if (has_playtracker_runtime_controls && game_id_edit_) {
     const QString game_dir = gameDirectory(game_id_edit_->text());
     QDir runtime_dir(QDir(game_dir).filePath(".hstream-ui"));
     if (!runtime_dir.exists() && !runtime_dir.mkpath(".")) {
@@ -3984,7 +4069,34 @@ bool HStreamWindow::applySavedControlConfig(
           live_boxes.push_back(box);
         }
 
+        YAML::Node play_tracker = play_tracker_config["play-tracker"];
+        if (has_control(controls, "Overshoot_Stop_Delay_Frames")) {
+          play_tracker["overshoot-stop-delay-count"] = slider_value("Overshoot_Stop_Delay_Frames");
+        }
+        if (has_control(controls, "Overshoot_Speed_Ratio_x100")) {
+          play_tracker["overshoot-scale-speed-ratio"] = ratio_x100(slider_value("Overshoot_Speed_Ratio_x100"));
+        }
+
         auto apply_live_box = [&](int index) {
+          if (has_control(controls, "Stop_Direction_Change_Delay_Frames")) {
+            live_boxes[index]["stop-translation-on-dir-change-delay"] =
+                slider_value("Stop_Direction_Change_Delay_Frames");
+          }
+          if (has_control(controls, "Cancel_Stop_On_Opposite_Direction")) {
+            live_boxes[index]["cancel-stop-on-opposite-dir"] = slider_value("Cancel_Stop_On_Opposite_Direction") != 0;
+          }
+          if (has_control(controls, "Stop_Cancel_Hysteresis_Frames")) {
+            live_boxes[index]["cancel-stop-hysteresis-frames"] = slider_value("Stop_Cancel_Hysteresis_Frames");
+          }
+          if (has_control(controls, "Stop_Delay_Cooldown_Frames")) {
+            live_boxes[index]["stop-delay-cooldown-frames"] = slider_value("Stop_Delay_Cooldown_Frames");
+          }
+          if (has_control(controls, "Time_To_Dest_Speed_Limit_Frames")) {
+            live_boxes[index]["time-to-dest-speed-limit-frames"] = slider_value("Time_To_Dest_Speed_Limit_Frames");
+          }
+          if (has_control(controls, "Post_Nonstop_Stop_Delay_Frames")) {
+            live_boxes[index]["post-nonstop-stop-delay-count"] = slider_value("Post_Nonstop_Stop_Delay_Frames");
+          }
           if (has_control(controls, "Max_Speed_X_x10")) {
             live_boxes[index]["max-speed-x"] = static_cast<double>(slider_value("Max_Speed_X_x10")) / 10.0;
           }
@@ -5288,7 +5400,11 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
     return {};
   }
 
-  const QString runtime_config_path = runtime_dir.filePath("play_tracker_config.yaml");
+  const QString persistent_runtime_config = runtime_dir.filePath("play_tracker_config.yaml");
+  const bool live_update = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+  const QString runtime_config_path = live_update
+      ? runtime_dir.filePath(QString("play_tracker_runtime_%1.yaml").arg(scheduled_playtracker_control_generation_))
+      : persistent_runtime_config;
   try {
     QString base_playtracker_config = pipelineConfigPath("play_tracker_config.yaml");
     const fs::path game_config_path = fs::path(game_dir.toStdString()) / "config.yaml";
@@ -5307,7 +5423,7 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
         const QString working_dir = pipelineWorkingDirectory();
         const QStringList candidates = playtracker_config_candidates(configured, game_dir, working_dir);
         for (const QString& candidate : candidates) {
-          if (same_file_path(candidate, runtime_config_path)) {
+          if (same_file_path(candidate, runtime_config_path) || same_file_path(candidate, persistent_runtime_config)) {
             YAML::Node base_config_file;
             if (lookup_yaml_path(game_config, "hstream_ui.playtracker_config_base", &base_config_file) &&
                 base_config_file.IsScalar()) {
@@ -5360,11 +5476,63 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
           live_boxes[index][key] = static_cast<double>(slider_value(id)) / 10.0;
         }
       };
+      auto set_integer_if_changed = [&](const QString& id, const char* key) {
+        if (slider_changed(id)) {
+          live_boxes[index][key] = slider_value(id);
+        }
+      };
+      set_integer_if_changed("Stop_Direction_Change_Delay_Frames", "stop-translation-on-dir-change-delay");
+      if (slider_changed("Cancel_Stop_On_Opposite_Direction")) {
+        live_boxes[index]["cancel-stop-on-opposite-dir"] = slider_value("Cancel_Stop_On_Opposite_Direction") != 0;
+      }
+      set_integer_if_changed("Stop_Cancel_Hysteresis_Frames", "cancel-stop-hysteresis-frames");
+      set_integer_if_changed("Stop_Delay_Cooldown_Frames", "stop-delay-cooldown-frames");
+      set_integer_if_changed("Time_To_Dest_Speed_Limit_Frames", "time-to-dest-speed-limit-frames");
+      set_integer_if_changed("Post_Nonstop_Stop_Delay_Frames", "post-nonstop-stop-delay-count");
       set_if_changed("Max_Speed_X_x10", "max-speed-x");
       set_if_changed("Max_Speed_Y_x10", "max-speed-y");
       set_if_changed("Max_Accel_X_x10", "max-accel-x");
       set_if_changed("Max_Accel_Y_x10", "max-accel-y");
     };
+    YAML::Node play_tracker = play_tracker_config["play-tracker"];
+    play_tracker["hstream-apply-to-fast-box"] =
+        publishing_playtracker_force_all_targets_ || slider_value("Apply_To_Fast_Box") != 0;
+    play_tracker["hstream-apply-to-follower-box"] =
+        publishing_playtracker_force_all_targets_ || slider_value("Apply_To_Follower_Box") != 0;
+    // Each command is an immutable sparse delta. Do not inherit a stale delta
+    // if a base file was previously generated by hstream-ui.
+    play_tracker["hstream-runtime-tuning"] = YAML::Node(YAML::NodeType::Map);
+    YAML::Node runtime_tuning = play_tracker["hstream-runtime-tuning"];
+    const auto& publishing_controls = publishing_playtracker_controls_.has_value() ? *publishing_playtracker_controls_
+                                                                                   : scheduled_playtracker_controls_;
+    auto set_changed_int = [&](const char* key, const char* control_id) {
+      if (publishing_controls.count(control_id))
+        runtime_tuning[key] = slider_value(control_id);
+    };
+    set_changed_int("stop-translation-on-dir-change-delay", "Stop_Direction_Change_Delay_Frames");
+    if (publishing_controls.count("Cancel_Stop_On_Opposite_Direction"))
+      runtime_tuning["cancel-stop-on-opposite-dir"] = slider_value("Cancel_Stop_On_Opposite_Direction") != 0;
+    set_changed_int("cancel-stop-hysteresis-frames", "Stop_Cancel_Hysteresis_Frames");
+    set_changed_int("stop-delay-cooldown-frames", "Stop_Delay_Cooldown_Frames");
+    set_changed_int("time-to-dest-speed-limit-frames", "Time_To_Dest_Speed_Limit_Frames");
+    set_changed_int("post-nonstop-stop-delay-count", "Post_Nonstop_Stop_Delay_Frames");
+    set_changed_int("overshoot-stop-delay-count", "Overshoot_Stop_Delay_Frames");
+    if (publishing_controls.count("Overshoot_Speed_Ratio_x100"))
+      runtime_tuning["overshoot-scale-speed-ratio"] = ratio_x100(slider_value("Overshoot_Speed_Ratio_x100"));
+    if (publishing_controls.count("Max_Speed_X_x10"))
+      runtime_tuning["max-speed-x"] = static_cast<double>(slider_value("Max_Speed_X_x10")) / 10.0;
+    if (publishing_controls.count("Max_Speed_Y_x10"))
+      runtime_tuning["max-speed-y"] = static_cast<double>(slider_value("Max_Speed_Y_x10")) / 10.0;
+    if (publishing_controls.count("Max_Accel_X_x10"))
+      runtime_tuning["max-accel-x"] = static_cast<double>(slider_value("Max_Accel_X_x10")) / 10.0;
+    if (publishing_controls.count("Max_Accel_Y_x10"))
+      runtime_tuning["max-accel-y"] = static_cast<double>(slider_value("Max_Accel_Y_x10")) / 10.0;
+    if (slider_changed("Overshoot_Stop_Delay_Frames")) {
+      play_tracker["overshoot-stop-delay-count"] = slider_value("Overshoot_Stop_Delay_Frames");
+    }
+    if (slider_changed("Overshoot_Speed_Ratio_x100")) {
+      play_tracker["overshoot-scale-speed-ratio"] = ratio_x100(slider_value("Overshoot_Speed_Ratio_x100"));
+    }
     if (slider_value("Apply_To_Fast_Box") != 0) {
       apply_live_box(0);
     }
@@ -5372,15 +5540,11 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
       apply_live_box(1);
     }
 
-    std::ofstream tracker_out(runtime_config_path.toStdString());
-    if (!tracker_out) {
-      appendLog(QString("could not open playtracker runtime config %1").arg(runtime_config_path));
-      return {};
-    }
-    tracker_out << play_tracker_config << "\n";
-    tracker_out.close();
-    if (!tracker_out) {
-      appendLog(QString("could not write playtracker runtime config %1").arg(runtime_config_path));
+    const absl::Status publish = hm::stitching::publish_named_file(
+        fs::path(runtime_config_path.toStdString()), YAML::Dump(play_tracker_config) + "\n");
+    if (!publish.ok()) {
+      appendLog(QString("could not atomically write playtracker runtime config %1: %2")
+                    .arg(runtime_config_path, publish.ToString().c_str()));
       return {};
     }
     return runtime_config_path;
@@ -5391,10 +5555,56 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
 }
 
 void HStreamWindow::handleRuntimeControlResponse(const QString& line) {
-  auto acknowledge = [this](std::vector<PendingRuntimeControl>::iterator pending, const QString& result) {
-    appendLog(
-        QString("camera control %1=%2 apply=%3").arg(pending->control_id).arg(pending->control_value).arg(result));
+  auto acknowledge_matching = [this](const auto& matches, bool failed) {
+    const auto pending = std::find_if(pending_runtime_controls_.begin(), pending_runtime_controls_.end(), matches);
+    if (pending == pending_runtime_controls_.end()) {
+      return;
+    }
+    const PendingRuntimeControl acknowledged = *pending;
     pending_runtime_controls_.erase(pending);
+    if (failed) {
+      for (auto other = pending_runtime_controls_.begin(); other != pending_runtime_controls_.end();) {
+        if (other->batch_id != acknowledged.batch_id) {
+          ++other;
+          continue;
+        }
+        if (other->property == "runtime-tuning-config-file" &&
+            other->runtime_value != last_playtracker_runtime_snapshot_) {
+          QFile::remove(other->runtime_value);
+        }
+        other = pending_runtime_controls_.erase(other);
+      }
+    }
+    if (acknowledged.property == "runtime-tuning-config-file") {
+      if (failed) {
+        QFile::remove(acknowledged.runtime_value);
+      } else {
+        if (!last_playtracker_runtime_snapshot_.isEmpty() &&
+            last_playtracker_runtime_snapshot_ != acknowledged.runtime_value) {
+          QFile::remove(last_playtracker_runtime_snapshot_);
+        }
+        last_playtracker_runtime_snapshot_ = acknowledged.runtime_value;
+      }
+    }
+    const auto batch = runtime_control_batches_.find(acknowledged.batch_id);
+    if (batch == runtime_control_batches_.end()) {
+      return;
+    }
+    batch->second.failed = batch->second.failed || failed;
+    if (failed) {
+      batch->second.pending_commands = 0;
+    } else if (batch->second.pending_commands > 0) {
+      --batch->second.pending_commands;
+    }
+    if (batch->second.pending_commands != 0) {
+      return;
+    }
+    const QString result = batch->second.failed ? "failed" : "live";
+    for (const auto& [control_id, control_value] : batch->second.controls) {
+      appendLog(QString("camera control %1=%2 apply=%3").arg(control_id).arg(control_value).arg(result));
+    }
+    runtime_control_batches_.erase(batch);
+    flushScheduledRuntimeControls();
   };
 
   static const QRegularExpression success_pattern(R"(^runtime property (\S+) (\S+?)=(.*)$)");
@@ -5403,55 +5613,132 @@ void HStreamWindow::handleRuntimeControlResponse(const QString& line) {
     const QString element = success.captured(1);
     const QString property = success.captured(2);
     const QString runtime_value = success.captured(3);
-    const auto pending = std::find_if(
-        pending_runtime_controls_.begin(), pending_runtime_controls_.end(), [&](const PendingRuntimeControl& control) {
+    acknowledge_matching(
+        [&](const PendingRuntimeControl& control) {
           return control.element == element && control.property == property && control.runtime_value == runtime_value;
-        });
-    if (pending != pending_runtime_controls_.end()) {
-      acknowledge(pending, "live");
-    }
+        },
+        false);
     return;
   }
 
   if (!line.startsWith("runtime command failed:") || pending_runtime_controls_.empty()) {
     return;
   }
-  auto pending = std::find_if(
+  const auto pending = std::find_if(
       pending_runtime_controls_.begin(), pending_runtime_controls_.end(), [&](const PendingRuntimeControl& control) {
         return line.contains(control.element) && (line.contains(control.property) || !line.contains('.'));
       });
-  if (pending == pending_runtime_controls_.end()) {
-    pending = pending_runtime_controls_.begin();
+  if (pending != pending_runtime_controls_.end()) {
+    const QString element = pending->element;
+    const QString property = pending->property;
+    const QString runtime_value = pending->runtime_value;
+    acknowledge_matching(
+        [&](const PendingRuntimeControl& control) {
+          return control.element == element && control.property == property && control.runtime_value == runtime_value;
+        },
+        true);
+  } else {
+    const PendingRuntimeControl first = pending_runtime_controls_.front();
+    acknowledge_matching(
+        [&](const PendingRuntimeControl& control) {
+          return control.element == first.element && control.property == first.property &&
+              control.runtime_value == first.runtime_value;
+        },
+        true);
   }
-  acknowledge(pending, "failed");
 }
 
 void HStreamWindow::failPendingRuntimeControls(const QString& reason) {
   for (const PendingRuntimeControl& pending : pending_runtime_controls_) {
-    appendLog(QString("camera control %1=%2 apply=failed reason=%3")
-                  .arg(pending.control_id)
-                  .arg(pending.control_value)
-                  .arg(reason));
+    if (pending.property == "runtime-tuning-config-file" && pending.runtime_value != last_playtracker_runtime_snapshot_)
+      QFile::remove(pending.runtime_value);
+  }
+  for (const auto& [batch_id, batch] : runtime_control_batches_) {
+    (void)batch_id;
+    for (const auto& [control_id, control_value] : batch.controls) {
+      appendLog(QString("camera control %1=%2 apply=failed reason=%3").arg(control_id).arg(control_value).arg(reason));
+    }
   }
   pending_runtime_controls_.clear();
+  runtime_control_batches_.clear();
+}
+
+int HStreamWindow::runtimeControlAckTimeoutMs() const {
+  bool valid = false;
+  const int test_timeout = qEnvironmentVariableIntValue("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS", &valid);
+  return valid && test_timeout > 0 ? test_timeout : kRuntimeControlAckTimeoutMs;
+}
+
+void HStreamWindow::timeoutRuntimeControlBatch(quint64 batch_id) {
+  const auto batch = runtime_control_batches_.find(batch_id);
+  if (batch == runtime_control_batches_.end()) {
+    return;
+  }
+  for (auto pending = pending_runtime_controls_.begin(); pending != pending_runtime_controls_.end();) {
+    if (pending->batch_id != batch_id) {
+      ++pending;
+      continue;
+    }
+    if (pending->property == "runtime-tuning-config-file" &&
+        pending->runtime_value != last_playtracker_runtime_snapshot_) {
+      QFile::remove(pending->runtime_value);
+    }
+    pending = pending_runtime_controls_.erase(pending);
+  }
+  for (const auto& [control_id, control_value] : batch->second.controls) {
+    appendLog(
+        QString("camera control %1=%2 apply=failed reason=acknowledgement-timeout").arg(control_id).arg(control_value));
+  }
+  runtime_control_batches_.erase(batch);
+  flushScheduledRuntimeControls();
+}
+
+bool HStreamWindow::publishRuntimeControlBatch(
+    const std::map<QString, int>& controls,
+    const std::vector<RuntimePropertyCommand>& commands) {
+  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || controls.empty() ||
+      commands.empty() || !runtime_control_batches_.empty()) {
+    return false;
+  }
+  const quint64 batch_id = ++next_runtime_control_batch_id_;
+  runtime_control_batches_.emplace(batch_id, RuntimeControlBatch{controls, commands.size(), false});
+  QStringList assignments;
+  for (const RuntimePropertyCommand& property_command : commands) {
+    assignments.push_back(
+        QString("%1 %2=%3").arg(property_command.element, property_command.property, property_command.value));
+    pending_runtime_controls_.push_back(
+        {property_command.element, property_command.property, property_command.value, batch_id});
+  }
+  const QByteArray command = QString("@set-properties %1\n").arg(assignments.join(';')).toLocal8Bit();
+  if (pipeline_process_->write(command) != command.size()) {
+    pending_runtime_controls_.erase(
+        std::remove_if(
+            pending_runtime_controls_.begin(),
+            pending_runtime_controls_.end(),
+            [batch_id](const PendingRuntimeControl& pending) { return pending.batch_id == batch_id; }),
+        pending_runtime_controls_.end());
+    runtime_control_batches_.erase(batch_id);
+    for (const auto& [control_id, control_value] : controls) {
+      appendLog(QString("camera control %1=%2 apply=failed reason=pipeline command write")
+                    .arg(control_id)
+                    .arg(control_value));
+    }
+    return false;
+  }
+  for (const auto& [control_id, control_value] : controls) {
+    appendLog(QString("camera control %1=%2 apply=pending").arg(control_id).arg(control_value));
+  }
+  QTimer::singleShot(runtimeControlAckTimeoutMs(), this, [this, batch_id]() { timeoutRuntimeControlBatch(batch_id); });
+  return true;
 }
 
 bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
     return false;
   }
-  auto send_property = [this, &id, value](
-                           const QString& element, const QString& property, const QString& runtime_value) {
-    const QByteArray command = QString("@set-property %1 %2=%3\n").arg(element, property, runtime_value).toLocal8Bit();
-    if (pipeline_process_->write(command) != command.size()) {
-      return false;
-    }
-    pending_runtime_controls_.push_back({element, property, runtime_value, id, value});
-    return true;
-  };
   if (id == "Stitch_Rotate_Degrees") {
-    const int post_stitch_rotate_degrees = 90 - value;
-    return send_property("hmstitcher0", "post-stitch-rotate-degrees", QString::number(post_stitch_rotate_degrees));
+    scheduleRotationRuntimeControl(id, value);
+    return false;
   }
   const QSet<QString> fixed_edge_rotation_controls = {
       "Link_Fixed_Edge_Rotation_Left_Right",
@@ -5459,23 +5746,18 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
       "Right_Fixed_Edge_Rotation_Angle_x10",
   };
   if (fixed_edge_rotation_controls.contains(id)) {
-    const bool linked = cameraControlValue("Link_Fixed_Edge_Rotation_Left_Right") != 0;
-    const double left_angle = cameraControlValue("Left_Fixed_Edge_Rotation_Angle_x10") / 10.0;
-    const double right_angle = cameraControlValue("Right_Fixed_Edge_Rotation_Angle_x10") / 10.0;
-    auto send_to_both_stages = [&](const QString& property, double angle) {
-      const QString runtime_value = QString::number(angle, 'f', 1);
-      const bool tracker_sent = send_property("dsplaytracker0", property, runtime_value);
-      const bool cropper_sent = send_property("playcropper0", property, runtime_value);
-      return tracker_sent && cropper_sent;
-    };
-    if (linked) {
-      return send_to_both_stages("fixed-edge-rotation-angle", left_angle);
-    }
-    const bool left_sent = send_to_both_stages("fixed-edge-rotation-angle-left", left_angle);
-    const bool right_sent = send_to_both_stages("fixed-edge-rotation-angle-right", right_angle);
-    return left_sent && right_sent;
+    scheduleRotationRuntimeControl(id, value);
+    return false;
   }
   const QSet<QString> playtracker_live_controls = {
+      "Stop_Direction_Change_Delay_Frames",
+      "Cancel_Stop_On_Opposite_Direction",
+      "Stop_Cancel_Hysteresis_Frames",
+      "Stop_Delay_Cooldown_Frames",
+      "Time_To_Dest_Speed_Limit_Frames",
+      "Overshoot_Stop_Delay_Frames",
+      "Post_Nonstop_Stop_Delay_Frames",
+      "Overshoot_Speed_Ratio_x100",
       "Max_Speed_X_x10",
       "Max_Speed_Y_x10",
       "Max_Accel_X_x10",
@@ -5484,13 +5766,106 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
       "Apply_To_Follower_Box",
   };
   if (playtracker_live_controls.contains(id)) {
-    const QString runtime_config_path = writePlaytrackerRuntimeConfig();
-    if (runtime_config_path.isEmpty()) {
-      return false;
-    }
-    return send_property("dsplaytracker0", "config-file", runtime_config_path);
+    schedulePlaytrackerRuntimeControl(id, value);
+    return false;
   }
   return false;
+}
+
+void HStreamWindow::scheduleRotationRuntimeControl(const QString& id, int value) {
+  appendLog(QString("camera control %1=%2 apply=scheduled").arg(id).arg(value));
+  scheduled_rotation_controls_[id] = value;
+  scheduled_rotation_controls_ready_ = false;
+  const quint64 generation = ++scheduled_rotation_control_generation_;
+  QTimer::singleShot(120, this, [this, generation]() {
+    if (generation != scheduled_rotation_control_generation_ || !pipeline_process_ ||
+        pipeline_process_->state() == QProcess::NotRunning) {
+      return;
+    }
+    scheduled_rotation_controls_ready_ = true;
+    flushScheduledRuntimeControls();
+  });
+}
+
+void HStreamWindow::schedulePlaytrackerRuntimeControl(const QString& id, int value) {
+  appendLog(QString("camera control %1=%2 apply=scheduled").arg(id).arg(value));
+  scheduled_playtracker_controls_[id] = value;
+  scheduled_playtracker_controls_ready_ = false;
+  const quint64 generation = ++scheduled_playtracker_control_generation_;
+  QTimer::singleShot(120, this, [this, generation]() {
+    if (generation != scheduled_playtracker_control_generation_ || !pipeline_process_ ||
+        pipeline_process_->state() == QProcess::NotRunning) {
+      return;
+    }
+    scheduled_playtracker_controls_ready_ = true;
+    flushScheduledRuntimeControls();
+  });
+}
+
+void HStreamWindow::flushScheduledRuntimeControls() {
+  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || !runtime_control_batches_.empty()) {
+    return;
+  }
+  if (scheduled_rotation_controls_ready_ && !scheduled_rotation_controls_.empty()) {
+    const std::map<QString, int> controls = std::move(scheduled_rotation_controls_);
+    scheduled_rotation_controls_.clear();
+    scheduled_rotation_controls_ready_ = false;
+    std::vector<RuntimePropertyCommand> commands;
+    if (controls.count("Stitch_Rotate_Degrees")) {
+      commands.push_back(
+          {"hmstitcher0",
+           "post-stitch-rotate-degrees",
+           QString::number(90 - cameraControlValue("Stitch_Rotate_Degrees"))});
+    }
+    const bool has_fixed_edge_change = controls.count("Link_Fixed_Edge_Rotation_Left_Right") ||
+        controls.count("Left_Fixed_Edge_Rotation_Angle_x10") || controls.count("Right_Fixed_Edge_Rotation_Angle_x10");
+    if (has_fixed_edge_change) {
+      const bool linked = cameraControlValue("Link_Fixed_Edge_Rotation_Left_Right") != 0;
+      const double left_angle = cameraControlValue("Left_Fixed_Edge_Rotation_Angle_x10") / 10.0;
+      const double right_angle = cameraControlValue("Right_Fixed_Edge_Rotation_Angle_x10") / 10.0;
+      auto add_both_stages = [&](const QString& property, double angle) {
+        const QString runtime_value = QString::number(angle, 'f', 1);
+        commands.push_back({"dsplaytracker0", property, runtime_value});
+        commands.push_back({"playcropper0", property, runtime_value});
+      };
+      if (linked) {
+        add_both_stages("fixed-edge-rotation-angle", left_angle);
+      } else {
+        add_both_stages("fixed-edge-rotation-angle-left", left_angle);
+        add_both_stages("fixed-edge-rotation-angle-right", right_angle);
+      }
+    }
+    publishRuntimeControlBatch(controls, commands);
+    return;
+  }
+  if (scheduled_playtracker_controls_ready_ && !scheduled_playtracker_controls_.empty()) {
+    publishing_playtracker_controls_ = std::move(scheduled_playtracker_controls_);
+    scheduled_playtracker_controls_.clear();
+    scheduled_playtracker_controls_ready_ = false;
+    publishing_playtracker_force_all_targets_ = scheduled_playtracker_force_all_targets_;
+    scheduled_playtracker_force_all_targets_ = false;
+    const QString runtime_config_path = writePlaytrackerRuntimeConfig();
+    if (runtime_config_path.isEmpty()) {
+      for (const auto& [control_id, control_value] : *publishing_playtracker_controls_) {
+        appendLog(QString("camera control %1=%2 apply=failed reason=runtime config publication")
+                      .arg(control_id)
+                      .arg(control_value));
+      }
+      publishing_playtracker_controls_.reset();
+      publishing_playtracker_force_all_targets_ = false;
+      return;
+    }
+    const bool published = publishRuntimeControlBatch(
+        *publishing_playtracker_controls_, {{"dsplaytracker0", "runtime-tuning-config-file", runtime_config_path}});
+    if (!published) {
+      QFile::remove(runtime_config_path);
+      publishing_playtracker_controls_.reset();
+      publishing_playtracker_force_all_targets_ = false;
+      return;
+    }
+    publishing_playtracker_controls_.reset();
+    publishing_playtracker_force_all_targets_ = false;
+  }
 }
 
 void HStreamWindow::synchronizeFixedEdgeRotationControls(const QString& changed_id, int value) {
@@ -5540,8 +5915,15 @@ QSlider* HStreamWindow::addSlider(
     value_label->setText(QString::number(new_value));
     synchronizeFixedEdgeRotationControls(id, new_value);
     const bool sent_live = sendLiveCameraControl(id, new_value);
-    appendLog(
-        QString("camera control %1=%2 apply=%3").arg(id).arg(new_value).arg(sent_live ? "pending" : "save/restart"));
+    if (sent_live) {
+      appendLog(QString("camera control %1=%2 apply=pending").arg(id).arg(new_value));
+    } else if (
+        (scheduled_rotation_controls_.count(id) && scheduled_rotation_controls_.at(id) == new_value) ||
+        (scheduled_playtracker_controls_.count(id) && scheduled_playtracker_controls_.at(id) == new_value)) {
+      // The scheduler already reported the coalesced live update.
+    } else {
+      appendLog(QString("camera control %1=%2 apply=save/restart").arg(id).arg(new_value));
+    }
   });
   row->addWidget(name, 0, 0);
   row->addWidget(value_label, 0, 1);

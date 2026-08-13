@@ -38,11 +38,13 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -318,16 +320,23 @@ bool write_fake_runner(const QString& path) {
   file.write(
       "            print('HSTREAM_PREVIEW channel=' + channel + ' status=ready generation=' + generation + "
       "' message=first GPU frame presented', flush=True)\n");
-  file.write("    if line.startswith('@set-property '):\n");
-  file.write("        _, element, assignment = line.rstrip('\\n').split(' ', 2)\n");
-  file.write("        property_name, runtime_value = assignment.split('=', 1)\n");
-  file.write("        if os.environ.get('HSTREAM_UI_TEST_REJECT_RUNTIME_CONTROL') == '1':\n");
+  file.write("    if line.startswith('@set-properties '):\n");
+  file.write("        updates = line.rstrip('\\n').split(' ', 1)[1].split(';')\n");
+  file.write("        reject = os.environ.get('HSTREAM_UI_TEST_REJECT_RUNTIME_CONTROL') == '1'\n");
+  file.write("        stall = os.environ.get('HSTREAM_UI_TEST_STALL_RUNTIME_CONTROL') == '1'\n");
+  file.write("        if reject and updates:\n");
+  file.write("            element, assignment = updates[-1].split(' ', 1)\n");
+  file.write("            property_name, runtime_value = assignment.split('=', 1)\n");
   file.write(
       "            print('runtime command failed: plugin rejected ' + element + '.' + property_name + '=' + "
       "runtime_value, file=sys.stderr, flush=True)\n");
-  file.write("        else:\n");
+  file.write("        for update in updates:\n");
+  file.write("            element, assignment = update.split(' ', 1)\n");
+  file.write("            property_name, runtime_value = assignment.split('=', 1)\n");
+  file.write("            print('stdin:@set-property ' + update, flush=True)\n");
+  file.write("            if not reject and not stall:\n");
   file.write(
-      "            print('runtime property ' + element + ' ' + property_name + '=' + runtime_value, flush=True)\n");
+      "                print('runtime property ' + element + ' ' + property_name + '=' + runtime_value, flush=True)\n");
   file.write("preview_activation_count = 0\n");
   file.write("deadline = time.monotonic() + 5.0\n");
   file.write("stdin_fd = sys.stdin.fileno()\n");
@@ -1420,6 +1429,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* log = require_child<QTextEdit>(window, "runtimeLog");
   auto* clear_log = require_child<QPushButton>(window, "clearLogButton");
   auto* main_log_splitter = require_child<QSplitter>(window, "mainLogSplitter");
+  auto* setup_preview_splitter = require_child<QSplitter>(window, "setupPreviewSplitter");
+  auto* output_routing = require_child<QWidget>(window, "outputRoutingGroup");
   auto* preview_tabs = require_child<QTabWidget>(window, "previewTabs");
   auto* program_host = require_child<QWidget>(window, "programLetterboxHost");
   auto* preview_surface = require_child<QWidget>(window, "previewSurface");
@@ -1427,21 +1438,126 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* stitched_surface = require_child<QWidget>(window, "stitchedPreviewSurface");
   auto* camera1_host = require_child<QWidget>(window, "camera1LetterboxHost");
   auto* camera1_surface = require_child<QWidget>(window, "camera1PreviewSurface");
+  auto* camera1_target = require_child<QWidget>(window, "camera1PreviewRenderTarget");
+  auto* camera1_focus = require_child<QPushButton>(window, "camera1FocusButton");
   auto* camera2_surface = require_child<QWidget>(window, "camera2PreviewSurface");
   auto* camera3_surface = require_child<QWidget>(window, "camera3PreviewSurface");
   auto* external_notice = require_child<QLabel>(window, "programExternalRenderNotice");
   auto* camera1_notice = require_child<QLabel>(window, "camera1ExternalRenderNotice");
   auto* stitched_status = require_child<QLabel>(window, "stitchedPreviewStatusLabel");
+  auto* program_controls = require_child<QWidget>(window, "programAssociatedControls");
+  auto* stitched_controls = require_child<QWidget>(window, "stitchedAssociatedControls");
+  auto* program_control_tabs = require_child<QTabWidget>(window, "programControlTabs");
+  auto* stitched_control_tabs = require_child<QTabWidget>(window, "stitchedControlTabs");
+  auto* program_focus = require_child<QPushButton>(window, "programFocusButton");
+  auto* top_bar = require_child<QWidget>(window, "topBarPanel");
+  auto* setup_row = require_child<QWidget>(window, "setupControlsRow");
+  auto* log_panel = require_child<QWidget>(window, "logPanel");
   if (!stop || !start || !pause || !restart || !mode || !control_points || !game_id || !rotate || !max_speed_x ||
-      !render_video || !log || !clear_log || !main_log_splitter || !preview_tabs || !program_host || !preview_surface ||
-      !preview_target || !stitched_surface || !camera1_host || !camera1_surface || !camera2_surface ||
-      !camera3_surface || !external_notice || !camera1_notice || !stitched_status) {
+      !render_video || !log || !clear_log || !main_log_splitter || !setup_preview_splitter || !output_routing ||
+      !preview_tabs || !program_host || !preview_surface || !preview_target || !stitched_surface || !camera1_host ||
+      !camera1_surface || !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface ||
+      !external_notice || !camera1_notice || !stitched_status || !program_controls || !stitched_controls ||
+      !program_control_tabs || !stitched_control_tabs || !program_focus || !top_bar || !setup_row || !log_panel) {
     return false;
   }
 
   if (!expect(
           main_log_splitter->orientation() == Qt::Vertical && main_log_splitter->count() == 2,
           "Main content and runtime log should be separated by a draggable vertical splitter")) {
+    return false;
+  }
+  const int preview_height_before_setup_collapse = preview_tabs->height();
+  setup_preview_splitter->setSizes({0, setup_preview_splitter->height()});
+  QApplication::processEvents();
+  if (!expect(
+          setup_preview_splitter->orientation() == Qt::Vertical && setup_preview_splitter->count() == 2 &&
+              setup_preview_splitter->sizes().at(0) == 0 &&
+              preview_tabs->height() >= preview_height_before_setup_collapse,
+          "Dragging the setup splitter upward should collapse Video Sets and grow the video preview") ||
+      !expect(
+          output_routing->sizePolicy().verticalPolicy() == QSizePolicy::Maximum &&
+              output_routing->height() <= output_routing->sizeHint().height() + 2,
+          "Output Routing should use compact natural row spacing instead of stretching vertically")) {
+    return false;
+  }
+  setup_preview_splitter->setSizes({240, 440});
+  QApplication::processEvents();
+  if (!expect(
+          program_controls->isAncestorOf(max_speed_x) && stitched_controls->isAncestorOf(rotate) &&
+              !camera1_host->isAncestorOf(max_speed_x) && !camera1_host->isAncestorOf(rotate) &&
+              program_control_tabs->count() == 3 && stitched_control_tabs->count() == 1,
+          "Controls must live in the earliest preview tab whose frames reflect their pipeline stage")) {
+    return false;
+  }
+  QTest::mouseDClick(preview_target, Qt::LeftButton);
+  QApplication::processEvents();
+  if (!expect(
+          !top_bar->isVisible() && !setup_row->isVisible() && !log_panel->isVisible() &&
+              !preview_tabs->tabBar()->isVisible() && !program_controls->isVisible() && program_host->isVisible() &&
+              !window->isFullScreen(),
+          "Double-clicking a video should focus it across the HStream app area")) {
+    return false;
+  }
+  activate(program_focus);
+  if (!expect(
+          top_bar->isVisible() && setup_row->isVisible() && log_panel->isVisible() &&
+              preview_tabs->tabBar()->isVisible() && program_controls->isVisible(),
+          "The top-right restore icon should restore the normal HStream layout")) {
+    return false;
+  }
+  preview_tabs->setCurrentIndex(2);
+  QApplication::processEvents();
+  QTest::mouseDClick(camera1_target, Qt::LeftButton);
+  QApplication::processEvents();
+  if (!expect(
+          camera1_host->isVisible() && !preview_tabs->tabBar()->isVisible() && !window->isFullScreen(),
+          "Every camera video should support in-app focus mode with a visible restore icon")) {
+    return false;
+  }
+  preview_tabs->setCurrentIndex(0);
+  QApplication::processEvents();
+  if (!expect(
+          program_host->isVisible() && !preview_tabs->tabBar()->isVisible() && !window->isFullScreen(),
+          "An automatic tab change should transfer focus mode to the selected preview")) {
+    return false;
+  }
+  activate(program_focus);
+  QApplication::processEvents();
+  if (!expect(
+          preview_tabs->tabBar()->isVisible() && top_bar->isVisible() && !window->isFullScreen(),
+          "One restore-icon click after an automatic tab change should restore the normal layout")) {
+    return false;
+  }
+  preview_tabs->setCurrentIndex(2);
+  QApplication::processEvents();
+  QTest::mouseDClick(camera1_target, Qt::LeftButton);
+  QApplication::processEvents();
+  QTest::mouseDClick(camera1_target, Qt::LeftButton);
+  QApplication::processEvents();
+  if (!expect(
+          preview_tabs->tabBar()->isVisible() && top_bar->isVisible() && !window->isFullScreen(),
+          "Double-clicking a focused camera video should restore the normal layout")) {
+    return false;
+  }
+  if (!expect(
+          window->findChild<QLineEdit*>("pluginPropertyEdit") == nullptr,
+          "The inert generic plugin field should not be presented as a working video control")) {
+    return false;
+  }
+  if (!expect(
+          window->findChild<QSlider*>("cameraSlider_Exposure_EV_x10") == nullptr &&
+              window->findChild<QSlider*>("cameraSlider_Left_Brightness_Multiplier_x100") == nullptr,
+          "Controls without a native GPU pipeline consumer must not claim association with a preview")) {
+    return false;
+  }
+  window->resize(1440, 900);
+  QApplication::processEvents();
+  const QSize minimum_hint = window->minimumSizeHint();
+  if (!expect(
+          minimum_hint.width() <= 1440 && minimum_hint.height() <= 900,
+          "The normal UI minimum size must fit the supported 1440x900 viewport")) {
+    std::cerr << "minimumSizeHint=" << minimum_hint.width() << 'x' << minimum_hint.height() << '\n';
     return false;
   }
   if (!expect(
@@ -1512,12 +1628,13 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   YAML::Node fresh_program_status;
   const bool has_fresh_program_status =
       lookup_yaml_path(fresh_program_saved, {"hstream_ui", "stitching_calibration", "status"}, &fresh_program_status);
-  const bool fresh_program_tracked =
-      expect(
-          window->logText().count("stitching calibration clean command") == fresh_program_clean_commands + 1,
-          "A fresh Program run should establish tracked one-pass stitching calibration (before=" +
-              std::to_string(fresh_program_clean_commands) +
-              ", after=" + std::to_string(window->logText().count("stitching calibration clean command")) + ")") &&
+  const bool
+      fresh_program_tracked =
+          expect(
+              window->logText().count("stitching calibration clean command") == fresh_program_clean_commands + 1,
+              "A fresh Program run should establish tracked one-pass stitching calibration (before=" +
+                  std::to_string(fresh_program_clean_commands) +
+                  ", after=" + std::to_string(window->logText().count("stitching calibration clean command")) + ")") &&
       expect(has_fresh_program_status && fresh_program_status.IsScalar() &&
                  fresh_program_status.as<std::string>() == "complete",
              "A fresh Program one-pass calibration should persist completed state") &&
@@ -1716,8 +1833,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     const QString switched_game_id = "ui-switched-during-calibration";
     const fs::path switched_config =
         fs::path(qgetenv("HM_GAME_DIR").toStdString()) / switched_game_id.toStdString() / "config.yaml";
-    const fs::path active_runtime_config = config.parent_path() / ".hstream-ui" / "play_tracker_config.yaml";
-    const fs::path switched_runtime_config = switched_config.parent_path() / ".hstream-ui" / "play_tracker_config.yaml";
+    const fs::path active_runtime_dir = config.parent_path() / ".hstream-ui";
+    const fs::path switched_runtime_dir = switched_config.parent_path() / ".hstream-ui";
     qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
     const int pipeline_commands_before = window->logText().count("pipeline command ");
     activate(start);
@@ -1745,8 +1862,15 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
+    auto contains_runtime_snapshot = [](const fs::path& dir) {
+      if (!fs::exists(dir))
+        return false;
+      return std::any_of(fs::directory_iterator(dir), fs::directory_iterator(), [](const fs::directory_entry& entry) {
+        return entry.path().filename().string().rfind("play_tracker_runtime_", 0) == 0;
+      });
+    };
     const bool runtime_control_used_launched_game =
-        fs::exists(active_runtime_config) && !fs::exists(switched_runtime_config);
+        contains_runtime_snapshot(active_runtime_dir) && !contains_runtime_snapshot(switched_runtime_dir);
     game_id->setText(launched_game_id);
     max_speed_x->setValue(original_max_speed_x);
     for (int i = 0; i < 50 &&
@@ -1909,6 +2033,20 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
+    auto* fixed_edge_link = require_child<QSlider>(window, "cameraSlider_Link_Fixed_Edge_Rotation_Left_Right");
+    auto* fixed_edge_left = require_child<QSlider>(window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
+    if (!fixed_edge_link || !fixed_edge_left) {
+      activate(stop);
+      return false;
+    }
+    fixed_edge_link->setValue(1);
+    fixed_edge_left->setValue(310);
+    for (int i = 0;
+         i < 50 && !window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=failed");
+         ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
     activate(stop);
     for (int i = 0; i < 50 && window->pipelineStateText() != "STOPPED"; ++i) {
       QApplication::processEvents();
@@ -1922,7 +2060,12 @@ bool test_pipeline_buttons(HStreamWindow* window) {
             window->logText().contains("camera control Stitch_Rotate_Degrees=71 apply=pending") &&
                 window->logText().contains("camera control Stitch_Rotate_Degrees=71 apply=failed") &&
                 !window->logText().contains("camera control Stitch_Rotate_Degrees=71 apply=live"),
-            "Rejected runtime controls should not be reported as live")) {
+            "Rejected runtime controls should not be reported as live") ||
+        !expect(
+            window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=pending") &&
+                window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=failed") &&
+                !window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=live"),
+            "A multi-stage fixed-edge update should fail as one batch when its property commands are rejected")) {
       return false;
     }
 
@@ -2224,18 +2367,17 @@ bool test_output_controls(HStreamWindow* window) {
 }
 
 bool test_camera_controls(HStreamWindow* window) {
-  if (!expect(window->cameraTabCount() >= 6, "Camera controls should be grouped on tabs")) {
+  if (!expect(window->cameraTabCount() == 4, "Native-effective controls should be grouped by associated stage")) {
     return false;
   }
 
-  auto* exposure = require_child<QSlider>(window, "cameraSlider_Exposure_EV_x10");
-  auto* exposure_value = require_child<QLabel>(window, "cameraValue_Exposure_EV_x10");
   auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
   auto* fixed_edge_link = require_child<QSlider>(window, "cameraSlider_Link_Fixed_Edge_Rotation_Left_Right");
   auto* fixed_edge_left = require_child<QSlider>(window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
   auto* fixed_edge_right = require_child<QSlider>(window, "cameraSlider_Right_Fixed_Edge_Rotation_Angle_x10");
-  auto* left_brightness = require_child<QSlider>(window, "cameraSlider_Left_Brightness_Multiplier_x100");
-  auto* left_gamma = require_child<QSlider>(window, "cameraSlider_Left_Gamma_Multiplier_x100");
+  auto* stop_delay = require_child<QSlider>(window, "cameraSlider_Stop_Direction_Change_Delay_Frames");
+  auto* apply_to_fast = require_child<QSlider>(window, "cameraSlider_Apply_To_Fast_Box");
+  auto* max_accel_x = require_child<QSlider>(window, "cameraSlider_Max_Accel_X_x10");
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
   auto* max_speed_y = require_child<QSlider>(window, "cameraSlider_Max_Speed_Y_x10");
   auto* reset = require_child<QPushButton>(window, "resetCameraButton");
@@ -2245,9 +2387,9 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
-  if (!exposure || !exposure_value || !rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right ||
-      !left_brightness || !left_gamma || !max_speed_x || !max_speed_y || !reset || !save || !create || !game_id ||
-      !start || !stop || !mode) {
+  if (!rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right || !stop_delay || !apply_to_fast ||
+      !max_accel_x || !max_speed_x || !max_speed_y || !reset || !save || !create || !game_id || !start || !stop ||
+      !mode) {
     return false;
   }
 
@@ -2267,15 +2409,13 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
 
-  exposure->setValue(47);
   rotate->setValue(72);
   fixed_edge_left->setValue(250);
   fixed_edge_link->setValue(0);
   fixed_edge_right->setValue(750);
-  left_gamma->setValue(125);
+  stop_delay->setValue(14);
   max_speed_x->setValue(450);
-  if (!expect(window->cameraControlValue("Exposure_EV_x10") == 47, "Exposure slider should update controller state") ||
-      !expect(
+  if (!expect(
           window->cameraControlValue("Stitch_Rotate_Degrees") == 72,
           "Stitch rotation slider should update controller state") ||
       !expect(
@@ -2284,26 +2424,26 @@ bool test_camera_controls(HStreamWindow* window) {
               window->cameraControlValue("Right_Fixed_Edge_Rotation_Angle_x10") == 750,
           "Fixed-edge rotation should support independently configured left and right angles") ||
       !expect(
-          window->cameraControlValue("Left_Gamma_Multiplier_x100") == 125,
-          "Side color slider should update controller state") ||
+          window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 14,
+          "Tracker braking slider should update controller state") ||
       !expect(window->cameraControlValue("Max_Speed_X_x10") == 450, "Speed slider should update controller state")) {
     return false;
   }
 
-  const int gamma_before_wheel = left_gamma->value();
+  const int stop_delay_before_wheel = stop_delay->value();
   QWheelEvent wheel_event(
-      left_gamma->rect().center(),
-      left_gamma->mapToGlobal(left_gamma->rect().center()),
+      stop_delay->rect().center(),
+      stop_delay->mapToGlobal(stop_delay->rect().center()),
       QPoint(),
       QPoint(0, 120),
       Qt::NoButton,
       Qt::NoModifier,
       Qt::ScrollUpdate,
       false);
-  QApplication::sendEvent(left_gamma, &wheel_event);
+  QApplication::sendEvent(stop_delay, &wheel_event);
   QApplication::processEvents();
   if (!expect(
-          left_gamma->value() == gamma_before_wheel,
+          stop_delay->value() == stop_delay_before_wheel,
           "Mouse wheel over camera slider should not change live camera control")) {
     return false;
   }
@@ -2341,9 +2481,9 @@ bool test_camera_controls(HStreamWindow* window) {
     }
     return value && value.IsScalar() && value.as<int>() == expected;
   };
-  const bool saved_controls_ok = saved_int("Exposure_EV_x10", 47) && saved_int("Stitch_Rotate_Degrees", 72) &&
-      saved_int("Link_Fixed_Edge_Rotation_Left_Right", 0) && saved_int("Left_Fixed_Edge_Rotation_Angle_x10", 250) &&
-      saved_int("Right_Fixed_Edge_Rotation_Angle_x10", 750) && saved_int("Left_Gamma_Multiplier_x100", 125);
+  const bool saved_controls_ok = saved_int("Stop_Direction_Change_Delay_Frames", 14) &&
+      saved_int("Stitch_Rotate_Degrees", 72) && saved_int("Link_Fixed_Edge_Rotation_Left_Right", 0) &&
+      saved_int("Left_Fixed_Edge_Rotation_Angle_x10", 250) && saved_int("Right_Fixed_Edge_Rotation_Angle_x10", 750);
   YAML::Node saved_rotation;
   const bool has_saved_rotation = lookup_yaml_path(saved, {"stitching", "post_stitch_rotate_degrees"}, &saved_rotation);
   const bool saved_rotation_ok = saved_rotation && saved_rotation.IsScalar() && saved_rotation.as<int>() == 18;
@@ -2353,11 +2493,6 @@ bool test_camera_controls(HStreamWindow* window) {
   const bool saved_fixed_edge_rotation_ok = has_saved_fixed_edge_rotation && saved_fixed_edge_rotation.IsSequence() &&
       saved_fixed_edge_rotation.size() == 2 && saved_fixed_edge_rotation[0].as<double>() == 25.0 &&
       saved_fixed_edge_rotation[1].as<double>() == 75.0;
-  YAML::Node saved_max_speed_x;
-  const bool has_saved_max_speed_x =
-      lookup_yaml_path(saved, {"rink", "camera", "max_speed_ratio_x"}, &saved_max_speed_x);
-  const bool saved_max_speed_x_ok =
-      has_saved_max_speed_x && saved_max_speed_x.IsScalar() && saved_max_speed_x.as<double>() == 1.5;
   YAML::Node saved_playtracker_config_path;
   const bool has_saved_playtracker_config_path =
       lookup_yaml_path(saved, {"pipeline", "ds-playtracker", "config-file"}, &saved_playtracker_config_path);
@@ -2399,14 +2534,12 @@ bool test_camera_controls(HStreamWindow* window) {
       !expect(removed_rink_mask, "Saving stitch rotation should remove stale rink mask image") ||
       !expect(removed_scoreboard_polygon, "Saving stitch rotation should invalidate scoreboard perspective") ||
       !expect(removed_ice_mask_keys, "Saving stitch rotation should invalidate cached ice-mask metadata") ||
-      !expect(has_saved_max_speed_x && saved_max_speed_x_ok, "Speed slider should save runtime ratio config") ||
       !expect(
           has_saved_playtracker_config_path && saved_follower_max_speed_x && !saved_follower_max_speed_y &&
               !saved_follower_max_accel_x && !saved_follower_max_accel_y && !saved_fast_max_speed_x,
           "Speed slider should save only changed follower playtracker runtime config")) {
-    if (!has_saved_rotation || !saved_rotation_ok || !has_saved_max_speed_x || !saved_max_speed_x_ok ||
-        !saved_follower_max_speed_x || saved_follower_max_speed_y || saved_follower_max_accel_x ||
-        saved_follower_max_accel_y || saved_fast_max_speed_x) {
+    if (!has_saved_rotation || !saved_rotation_ok || !saved_follower_max_speed_x || saved_follower_max_speed_y ||
+        saved_follower_max_accel_x || saved_follower_max_accel_y || saved_fast_max_speed_x) {
       std::cerr << saved << '\n';
       std::cerr << playtracker_config << '\n';
     }
@@ -2495,19 +2628,22 @@ bool test_camera_controls(HStreamWindow* window) {
   }
 
   activate(reset);
-  if (!expect(window->cameraControlValue("Exposure_EV_x10") == 40, "Reset should restore exposure default")) {
+  if (!expect(
+          window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 0,
+          "Reset should restore the native tracker default")) {
     return false;
   }
 
   activate(create);
-  if (!expect(window->cameraControlValue("Exposure_EV_x10") == 47, "Create/Load should restore saved controls") ||
+  if (!expect(
+          window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 14,
+          "Create/Load should restore saved native controls") ||
       !expect(window->cameraControlValue("Stitch_Rotate_Degrees") == 72, "Create/Load should restore stitch control") ||
       !expect(
           window->cameraControlValue("Link_Fixed_Edge_Rotation_Left_Right") == 0 &&
               window->cameraControlValue("Left_Fixed_Edge_Rotation_Angle_x10") == 250 &&
               window->cameraControlValue("Right_Fixed_Edge_Rotation_Angle_x10") == 750,
-          "Create/Load should restore independent fixed-edge rotation angles") ||
-      !expect(exposure_value->text() == "47", "Create/Load should refresh visible camera value labels")) {
+          "Create/Load should restore independent fixed-edge rotation angles")) {
     return false;
   }
 
@@ -2525,6 +2661,27 @@ bool test_camera_controls(HStreamWindow* window) {
     QTest::qWait(10);
   }
   if (!expect(window->pipelineStateText() == "PLAYING", "Fake runner should start for live playtracker control test")) {
+    return false;
+  }
+  const int rotation_commands_before =
+      window->logText().count("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=");
+  for (int value = 60; value <= 69; ++value) {
+    rotate->setValue(value);
+  }
+  for (int i = 0; i < 50 && !window->logText().contains("camera control Stitch_Rotate_Degrees=69 apply=live"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          window->logText().count("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=") ==
+              rotation_commands_before + 1,
+          "Rapid stitch rotation changes should coalesce into one live pipeline command") ||
+      !expect(
+          window->logText().contains("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=21") &&
+              window->logText().contains("camera control Stitch_Rotate_Degrees=69 apply=live") &&
+              !window->logText().contains("camera control Stitch_Rotate_Degrees=60 apply=pending"),
+          "Only the final coalesced stitch rotation should become pending and live")) {
+    activate(stop);
     return false;
   }
   fixed_edge_link->setValue(1);
@@ -2566,8 +2723,24 @@ bool test_camera_controls(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
-  const fs::path live_playtracker_config =
-      fs::path(window->gameDirectoryText().toStdString()) / ".hstream-ui" / "play_tracker_config.yaml";
+  auto newest_live_playtracker_config = [&]() {
+    const fs::path dir = fs::path(window->gameDirectoryText().toStdString()) / ".hstream-ui";
+    fs::path newest;
+    std::uint64_t newest_generation = 0;
+    for (const auto& entry : fs::directory_iterator(dir)) {
+      const std::string name = entry.path().filename().string();
+      constexpr std::string_view prefix = "play_tracker_runtime_";
+      if (name.rfind(prefix, 0) != 0)
+        continue;
+      const std::uint64_t generation = std::stoull(name.substr(prefix.size()));
+      if (newest.empty() || generation > newest_generation) {
+        newest = entry.path();
+        newest_generation = generation;
+      }
+    }
+    return newest;
+  };
+  fs::path live_playtracker_config = newest_live_playtracker_config();
   YAML::Node live_playtracker =
       fs::exists(live_playtracker_config) ? YAML::LoadFile(live_playtracker_config.string()) : YAML::Node();
   YAML::Node live_custom_tracker_value;
@@ -2588,8 +2761,8 @@ bool test_camera_controls(HStreamWindow* window) {
           live_playtracker, {"play-tracker", "live-boxes", "1", "max-speed-y"}, &live_follower_max_speed_y) &&
       live_follower_max_speed_y.IsScalar() && live_follower_max_speed_y.as<double>() == 77.0;
   if (!expect(
-          window->logText().contains("stdin:@set-property dsplaytracker0 config-file="),
-          "Live speed slider should send playtracker config-file update to the running pipeline") ||
+          window->logText().contains("stdin:@set-property dsplaytracker0 runtime-tuning-config-file="),
+          "Live speed slider should send a state-preserving playtracker update to the running pipeline") ||
       !expect(
           window->logText().contains("camera control Max_Speed_X_x10=460 apply=pending") &&
               window->logText().contains("camera control Max_Speed_X_x10=460 apply=live"),
@@ -2607,6 +2780,7 @@ bool test_camera_controls(HStreamWindow* window) {
   for (int i = 0; i < 50; ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
+    live_playtracker_config = newest_live_playtracker_config();
     live_playtracker =
         fs::exists(live_playtracker_config) ? YAML::LoadFile(live_playtracker_config.string()) : YAML::Node();
     YAML::Node sequential_x;
@@ -2618,6 +2792,7 @@ bool test_camera_controls(HStreamWindow* window) {
       break;
     }
   }
+  live_playtracker_config = newest_live_playtracker_config();
   live_playtracker =
       fs::exists(live_playtracker_config) ? YAML::LoadFile(live_playtracker_config.string()) : YAML::Node();
   YAML::Node sequential_x;
@@ -2633,10 +2808,96 @@ bool test_camera_controls(HStreamWindow* window) {
     std::cerr << live_playtracker << '\n';
     return false;
   }
-  max_speed_y->setValue(300);
+  apply_to_fast->setValue(1);
+  max_speed_x->setValue(510);
+  max_accel_x->setValue(35);
   for (int i = 0; i < 50; ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
+    live_playtracker_config = newest_live_playtracker_config();
+    live_playtracker =
+        fs::exists(live_playtracker_config) ? YAML::LoadFile(live_playtracker_config.string()) : YAML::Node();
+    YAML::Node rapid_speed_x;
+    YAML::Node rapid_accel_x;
+    if (lookup_yaml_path(live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-speed-x"}, &rapid_speed_x) &&
+        lookup_yaml_path(live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-accel-x"}, &rapid_accel_x) &&
+        rapid_speed_x.as<double>() == 51.0 && rapid_accel_x.as<double>() == 3.5) {
+      break;
+    }
+  }
+  YAML::Node rapid_speed_x;
+  YAML::Node rapid_accel_x;
+  const bool coalesced_rapid_controls =
+      lookup_yaml_path(live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-speed-x"}, &rapid_speed_x) &&
+      lookup_yaml_path(live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-accel-x"}, &rapid_accel_x) &&
+      rapid_speed_x.as<double>() == 51.0 && rapid_accel_x.as<double>() == 3.5;
+  for (int i = 0; i < 50 &&
+       (!window->logText().contains("camera control Max_Speed_X_x10=510 apply=live") ||
+        !window->logText().contains("camera control Max_Accel_X_x10=35 apply=live"));
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(coalesced_rapid_controls, "Rapid distinct live controls should be coalesced without dropping either") ||
+      !expect(
+          window->logText().contains("camera control Max_Speed_X_x10=510 apply=live") &&
+              window->logText().contains("camera control Max_Accel_X_x10=35 apply=live"),
+          "Every control coalesced into one snapshot should be acknowledged")) {
+    std::cerr << live_playtracker << '\n';
+    activate(stop);
+    return false;
+  }
+
+  activate(reset);
+  for (int i = 0; i < 50; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+    live_playtracker_config = newest_live_playtracker_config();
+    live_playtracker =
+        fs::exists(live_playtracker_config) ? YAML::LoadFile(live_playtracker_config.string()) : YAML::Node();
+    YAML::Node reset_runtime_speed_x;
+    YAML::Node reset_runtime_speed_y;
+    YAML::Node reset_runtime_accel_x;
+    if (lookup_yaml_path(
+            live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-speed-x"}, &reset_runtime_speed_x) &&
+        lookup_yaml_path(
+            live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-speed-y"}, &reset_runtime_speed_y) &&
+        lookup_yaml_path(
+            live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-accel-x"}, &reset_runtime_accel_x) &&
+        reset_runtime_speed_x.as<double>() == 0.0 && reset_runtime_speed_y.as<double>() == 0.0 &&
+        reset_runtime_accel_x.as<double>() == 0.0) {
+      break;
+    }
+  }
+  YAML::Node reset_runtime_speed_x;
+  YAML::Node reset_runtime_speed_y;
+  YAML::Node reset_runtime_accel_x;
+  const bool reset_coalesced_all_dirty_controls =
+      lookup_yaml_path(
+          live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-speed-x"}, &reset_runtime_speed_x) &&
+      lookup_yaml_path(
+          live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-speed-y"}, &reset_runtime_speed_y) &&
+      lookup_yaml_path(
+          live_playtracker, {"play-tracker", "hstream-runtime-tuning", "max-accel-x"}, &reset_runtime_accel_x) &&
+      reset_runtime_speed_x.as<double>() == 0.0 && reset_runtime_speed_y.as<double>() == 0.0 &&
+      reset_runtime_accel_x.as<double>() == 0.0 &&
+      live_playtracker["play-tracker"]["hstream-apply-to-fast-box"].as<bool>() &&
+      live_playtracker["play-tracker"]["hstream-apply-to-follower-box"].as<bool>();
+  if (!expect(
+          reset_coalesced_all_dirty_controls,
+          "Reset Camera during playback should restore every changed control on both previously tunable boxes")) {
+    std::cerr << live_playtracker << '\n';
+    activate(stop);
+    return false;
+  }
+
+  max_speed_x->setValue(460);
+  max_speed_y->setValue(480);
+  max_speed_y->setValue(0);
+  for (int i = 0; i < 50; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+    live_playtracker_config = newest_live_playtracker_config();
     live_playtracker =
         fs::exists(live_playtracker_config) ? YAML::LoadFile(live_playtracker_config.string()) : YAML::Node();
     YAML::Node reset_x;
@@ -2647,6 +2908,7 @@ bool test_camera_controls(HStreamWindow* window) {
       break;
     }
   }
+  live_playtracker_config = newest_live_playtracker_config();
   live_playtracker =
       fs::exists(live_playtracker_config) ? YAML::LoadFile(live_playtracker_config.string()) : YAML::Node();
   YAML::Node reset_x;
@@ -2663,20 +2925,56 @@ bool test_camera_controls(HStreamWindow* window) {
     activate(stop);
     return false;
   }
+
+  activate(stop);
+  qputenv("HSTREAM_UI_TEST_STALL_RUNTIME_CONTROL", "1");
+  qputenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS", "40");
+  activate(start);
+  for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(window->pipelineStateText() == "PLAYING", "Fake runner should restart for stalled-control test")) {
+    qunsetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
+    qunsetenv("HSTREAM_UI_TEST_STALL_RUNTIME_CONTROL");
+    return false;
+  }
+  max_speed_x->setValue(470);
+  QTest::qWait(220);
+  for (int value = 471; value <= 490; ++value) {
+    max_speed_x->setValue(value);
+  }
+  QTest::qWait(220);
+  const fs::path runtime_dir = fs::path(window->gameDirectoryText().toStdString()) / ".hstream-ui";
+  auto runtime_snapshot_count = [&]() {
+    return static_cast<int>(std::count_if(
+        fs::directory_iterator(runtime_dir), fs::directory_iterator(), [](const fs::directory_entry& entry) {
+          return entry.path().filename().string().rfind("play_tracker_runtime_", 0) == 0;
+        }));
+  };
+  const bool stalled_controls_bounded =
+      expect(
+          runtime_snapshot_count() <= 2,
+          "A non-acknowledging backend should retain at most the last acknowledged and one in-flight snapshot") &&
+      expect(
+          window->logText().contains(
+              "camera control Max_Speed_X_x10=470 apply=failed "
+              "reason=acknowledgement-timeout") &&
+              window->logText().contains(
+                  "camera control Max_Speed_X_x10=490 apply=failed "
+                  "reason=acknowledgement-timeout"),
+          "A stalled live-control backend should time out both the in-flight and coalesced latest values");
+  qunsetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
+  qunsetenv("HSTREAM_UI_TEST_STALL_RUNTIME_CONTROL");
+  if (!stalled_controls_bounded) {
+    std::cerr << window->logText().toStdString() << '\n';
+    activate(stop);
+    return false;
+  }
   activate(stop);
 
-  left_gamma->setValue(100);
-  left_brightness->setValue(110);
   activate(save);
   YAML::Node same_prefix = YAML::LoadFile(config.string());
-  YAML::Node same_prefix_left_gamma;
-  YAML::Node same_prefix_left_brightness;
-  const bool preserved_left_gamma =
-      lookup_yaml_path(same_prefix, {"stitching", "left", "color", "gamma"}, &same_prefix_left_gamma) &&
-      same_prefix_left_gamma.IsScalar() && same_prefix_left_gamma.as<double>() == 1.75;
-  const bool saved_left_brightness =
-      lookup_yaml_path(same_prefix, {"stitching", "left", "color", "brightness"}, &same_prefix_left_brightness) &&
-      same_prefix_left_brightness.IsScalar() && same_prefix_left_brightness.as<double>() == 1.1;
   YAML::Node same_prefix_tracker_path;
   const bool has_same_prefix_tracker_path =
       lookup_yaml_path(same_prefix, {"pipeline", "ds-playtracker", "config-file"}, &same_prefix_tracker_path);
@@ -2696,9 +2994,7 @@ bool test_camera_controls(HStreamWindow* window) {
       lookup_yaml_path(same_prefix, {"hstream_ui", "playtracker_config_base"}, &saved_playtracker_base) &&
       saved_playtracker_base.IsScalar() &&
       saved_playtracker_base.as<std::string>() == custom_playtracker_config.string();
-  if (!expect(preserved_left_gamma, "Saving one color leaf should preserve manual same-prefix color edits") ||
-      !expect(saved_left_brightness, "Saving one color leaf should persist that leaf") ||
-      !expect(preserved_custom_tracker_config, "Generated playtracker config should preserve custom base config") ||
+  if (!expect(preserved_custom_tracker_config, "Generated playtracker config should preserve custom base config") ||
       !expect(remembered_custom_tracker_base, "Generated playtracker config should remember custom base path")) {
     std::cerr << same_prefix << '\n';
     std::cerr << same_prefix_tracker << '\n';
@@ -2735,8 +3031,6 @@ bool test_camera_controls(HStreamWindow* window) {
       expect(!lookup_yaml_path(cleaned, {"rink", "camera", "fixed_edge_rotation_angle"}, nullptr),
              "Saving defaults should clear UI-generated fixed-edge rotation override") &&
       expect(restored_custom_playtracker_config, "Saving defaults should restore custom playtracker config override") &&
-      expect(!lookup_yaml_path(cleaned, {"stitching", "left", "color", "brightness"}, nullptr),
-             "Saving defaults should clear UI-generated side color leaf") &&
       expect(preserved_manual_gamma, "Saving defaults should preserve non-UI-authored runtime config") &&
       expect(preserved_manual_left_gamma, "Saving defaults should preserve same-prefix manual color config");
 }
@@ -2809,12 +3103,34 @@ bool submit_no_scoreboard(HStreamWindow* window, QString* error) {
     }
     return false;
   }
-  QTimer::singleShot(0, dialog, []() {
-    if (auto* confirmation = qobject_cast<QMessageBox*>(QApplication::activeModalWidget()))
-      confirmation->done(QMessageBox::Yes);
+  // QMessageBox::question() enters a nested event loop. Poll through that loop: a single zero-delay lookup may run
+  // before the confirmation becomes active and silently leave the default "No" selected.
+  auto* confirmer = new QTimer(dialog);
+  confirmer->setInterval(10);
+  QObject::connect(confirmer, &QTimer::timeout, dialog, [confirmer]() {
+    for (QWidget* widget : QApplication::topLevelWidgets()) {
+      auto* confirmation = qobject_cast<QMessageBox*>(widget);
+      if (confirmation && confirmation->objectName() == "scoreboardNoScoreboardConfirmation" &&
+          confirmation->isVisible()) {
+        confirmer->stop();
+        if (QAbstractButton* yes = confirmation->button(QMessageBox::Yes)) {
+          yes->click();
+        }
+        return;
+      }
+    }
   });
+  confirmer->start();
   button->click();
-  return true;
+  confirmer->stop();
+  confirmer->deleteLater();
+  auto* status = dialog->findChild<QLabel*>("scoreboardStatusTitle");
+  const bool submitted = status && status->text() == "Saving selection";
+  if (!submitted && error) {
+    *error = status ? QString("No-scoreboard confirmation did not submit (status: %1)").arg(status->text())
+                    : "scoreboard submission status is unavailable";
+  }
+  return submitted;
 }
 
 QString find_encoded_e2e_output(const QString& output_root, const QString& game_id) {
@@ -2848,19 +3164,54 @@ struct NativePreviewCapture {
   int luminance_range{0};
 };
 
-NativePreviewCapture capture_native_preview(QWidget* surface, const QString& output_path) {
+QString diagnostic_capture_attempt_path(const QString& artifact_dir, const QString& output_name, int attempt_number) {
+  const QFileInfo canonical_output(QDir(artifact_dir).filePath(output_name));
+  return canonical_output.dir().filePath(QString("%1-attempt-%2.%3")
+                                             .arg(canonical_output.completeBaseName())
+                                             .arg(attempt_number)
+                                             .arg(canonical_output.suffix()));
+}
+
+bool promote_diagnostic_capture_artifact(const QString& attempt_path, const QString& canonical_path) {
+  if (QFileInfo::exists(canonical_path)) {
+    return true;
+  }
+  return QFile::rename(attempt_path, canonical_path) || QFile::copy(attempt_path, canonical_path);
+}
+
+bool clear_diagnostic_capture_artifact(const QString& artifact_dir, const QString& output_name) {
+  const QString canonical_path = QDir(artifact_dir).filePath(output_name);
+  return !QFileInfo::exists(canonical_path) || QFile::remove(canonical_path);
+}
+
+bool test_diagnostic_capture_attempt_paths() {
+  QTemporaryDir artifact_dir;
+  const QString first = diagnostic_capture_attempt_path("/tmp/hstream-e2e", "program-preview.png", 1);
+  const QString second = diagnostic_capture_attempt_path("/tmp/hstream-e2e", "program-preview.png", 2);
+  const QString stale_failure = QString("runtime preview frame unavailable channel=program path=%1").arg(first);
+  const QString successful_attempt = artifact_dir.filePath("successful-attempt.png");
+  const QString canonical = artifact_dir.filePath("program-preview.png");
+  const QString failed_attempt = artifact_dir.filePath("failed-attempt.png");
+  const QString retry_attempt = artifact_dir.filePath("retry-attempt.png");
+  const QString inaccessible_canonical = artifact_dir.filePath("missing/program-preview.png");
+  const bool wrote_artifacts = write_e2e_text(successful_attempt, "captured") &&
+      write_e2e_text(failed_attempt, "captured") && write_e2e_text(retry_attempt, "new capture") &&
+      write_e2e_text(canonical, "stale capture");
+  const bool cleared = wrote_artifacts && clear_diagnostic_capture_artifact(artifact_dir.path(), "program-preview.png");
+  const bool promoted = cleared && promote_diagnostic_capture_artifact(successful_attempt, canonical);
+  const qint64 published_size = QFileInfo(canonical).size();
+  const bool retained = promote_diagnostic_capture_artifact(retry_attempt, canonical);
+  const bool rejected = !promote_diagnostic_capture_artifact(failed_attempt, inaccessible_canonical);
+  return expect(
+      artifact_dir.isValid() && first != second && !stale_failure.contains(second) && cleared && promoted &&
+          published_size > 0 && retained && QFileInfo(canonical).size() == published_size &&
+          QFileInfo::exists(retry_attempt) && rejected && QFileInfo::exists(failed_attempt),
+      "Diagnostic retries must use distinct markers, publish once, and retain a valid current-run artifact");
+}
+
+NativePreviewCapture inspect_native_preview_capture(const QString& output_path) {
   NativePreviewCapture capture;
-  if (!surface || !surface->isVisible() || surface->winId() == 0 || !surface->screen()) {
-    return capture;
-  }
-  QApplication::processEvents();
-  // The GPU preview owns this native child directly, so capture the X11
-  // drawable rather than asking Qt's CPU backing store for its parent.
-  const QPixmap pixmap = surface->screen()->grabWindow(surface->winId());
-  if (pixmap.isNull() || !pixmap.save(output_path)) {
-    return capture;
-  }
-  const QImage image = pixmap.toImage().convertToFormat(QImage::Format_RGB32);
+  const QImage image = QImage(output_path).convertToFormat(QImage::Format_RGB32);
   capture.width = image.width();
   capture.height = image.height();
   if (capture.width < 100 || capture.height < 100) {
@@ -2937,6 +3288,13 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     return false;
   }
   std::cout << "HStream UI E2E artifacts: " << artifact_dir.toStdString() << '\n';
+  if (verify_x11_preview &&
+      (!clear_diagnostic_capture_artifact(artifact_dir, "program-preview-surface.png") ||
+       !clear_diagnostic_capture_artifact(artifact_dir, "stitched-preview-surface.png") ||
+       !clear_diagnostic_capture_artifact(artifact_dir, "camera1-preview-surface.png"))) {
+    std::cerr << "Could not clear stale E2E preview artifacts in " << artifact_dir.toStdString() << '\n';
+    return false;
+  }
 
   game_id_edit->setText(game_id);
   activate(create);
@@ -2985,52 +3343,98 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   NativePreviewCapture stitched_preview;
   NativePreviewCapture camera1_preview;
   bool x11_previews_captured = false;
+  int x11_preview_attempts = 0;
+  qint64 next_x11_preview_attempt_ms = 0;
   bool stitched_target_acknowledged = false;
   bool program_target_acknowledged = false;
+  bool camera1_target_acknowledged = false;
   auto capture_x11_previews = [&]() {
-    if (!verify_x11_preview || x11_previews_captured || window->pipelineStateText() != "PLAYING") {
+    if (!verify_x11_preview || x11_previews_captured || window->pipelineStateText() != "PLAYING" ||
+        timer.elapsed() < next_x11_preview_attempt_ms) {
       return;
     }
-    preview_tabs->setCurrentIndex(0);
-    for (int i = 0; i < 100 && program_surface->property("previewRendererState").toString() != "ready"; ++i) {
-      QApplication::processEvents();
-      QTest::qWait(50);
+    ++x11_preview_attempts;
+    interaction_error.clear();
+    QProcess* pipeline = window->findChild<QProcess*>();
+    if (!pipeline || pipeline->state() == QProcess::NotRunning) {
+      interaction_error = "pipeline process is unavailable for diagnostic preview capture";
+      return;
     }
-    program_target_acknowledged = program_surface->property("previewRendererState").toString() == "ready";
-    QTest::qWait(100);
-    program_preview =
-        capture_native_preview(program_render_target, QDir(artifact_dir).filePath("program-preview-surface.png"));
+    auto capture_channel = [&](const QString& channel, const QString& output_name) {
+      const QFileInfo canonical_output(QDir(artifact_dir).filePath(output_name));
+      const QString output_path = diagnostic_capture_attempt_path(artifact_dir, output_name, x11_preview_attempts);
+      QFile::remove(output_path);
+      const QByteArray command = QString("@capture-preview-frame %1 %2\n").arg(channel, output_path).toUtf8();
+      if (pipeline->write(command) != command.size()) {
+        interaction_error = QString("could not request a diagnostic %1 preview frame").arg(channel);
+        return NativePreviewCapture{};
+      }
+      const QString completion = QString("runtime preview frame channel=%1 path=%2").arg(channel, output_path);
+      const QString failure = QString("runtime preview frame failed channel=%1 path=%2").arg(channel, output_path);
+      const QString unavailable =
+          QString("runtime preview frame unavailable channel=%1 path=%2").arg(channel, output_path);
+      const qint64 capture_deadline_ms = std::min<qint64>(deadline_ms, timer.elapsed() + 5000);
+      while (timer.elapsed() < capture_deadline_ms) {
+        QApplication::processEvents();
+        if (window->completeLogText().contains(completion) && QFileInfo(output_path).size() > 0) {
+          NativePreviewCapture capture = inspect_native_preview_capture(output_path);
+          if (capture.passed) {
+            const QString canonical_path = canonical_output.absoluteFilePath();
+            if (!promote_diagnostic_capture_artifact(output_path, canonical_path)) {
+              capture.passed = false;
+              interaction_error =
+                  QString("diagnostic %1 preview was captured but could not be published to %2; attempt remains at %3")
+                      .arg(channel, canonical_path, output_path);
+            }
+          }
+          return capture;
+        }
+        if (window->completeLogText().contains(failure) || window->completeLogText().contains(unavailable))
+          break;
+        QTest::qWait(50);
+      }
+      interaction_error = QString("diagnostic %1 preview capture did not complete").arg(channel);
+      return NativePreviewCapture{};
+    };
+    auto wait_for_renderer = [&](QWidget* surface) {
+      const qint64 renderer_deadline_ms = std::min<qint64>(deadline_ms, timer.elapsed() + 5000);
+      while (timer.elapsed() < renderer_deadline_ms &&
+             surface->property("previewRendererState").toString() != "ready") {
+        QApplication::processEvents();
+        QTest::qWait(50);
+      }
+      return surface->property("previewRendererState").toString() == "ready";
+    };
+    preview_tabs->setCurrentIndex(0);
+    program_target_acknowledged = wait_for_renderer(program_surface);
+    program_preview = capture_channel("program", "program-preview-surface.png");
 
+    if (timer.elapsed() >= deadline_ms)
+      return;
     preview_tabs->setCurrentIndex(2);
     QApplication::processEvents();
-    for (int i = 0; i < 100 && camera1_surface->property("previewRendererState").toString() != "ready"; ++i) {
-      QApplication::processEvents();
-      QTest::qWait(50);
-    }
-    QTest::qWait(100);
-    camera1_preview =
-        capture_native_preview(camera1_render_target, QDir(artifact_dir).filePath("camera1-preview-surface.png"));
+    camera1_target_acknowledged = wait_for_renderer(camera1_surface);
+    camera1_preview = capture_channel("source0", "camera1-preview-surface.png");
 
+    if (timer.elapsed() >= deadline_ms)
+      return;
     preview_tabs->setCurrentIndex(1);
-    for (int i = 0; i < 100 && stitched_surface->property("previewRendererState").toString() != "ready"; ++i) {
-      QApplication::processEvents();
-      QTest::qWait(50);
-    }
-    stitched_target_acknowledged = stitched_surface->property("previewRendererState").toString() == "ready";
-    QTest::qWait(100);
-    stitched_preview =
-        capture_native_preview(stitched_render_target, QDir(artifact_dir).filePath("stitched-preview-surface.png"));
+    stitched_target_acknowledged = wait_for_renderer(stitched_surface);
+    stitched_preview = capture_channel("stitched", "stitched-preview-surface.png");
 
+    if (timer.elapsed() >= deadline_ms)
+      return;
     preview_tabs->setCurrentIndex(0);
-    for (int i = 0; i < 100 && program_surface->property("previewRendererState").toString() != "ready"; ++i) {
-      QApplication::processEvents();
-      QTest::qWait(50);
-    }
-    program_target_acknowledged =
-        program_target_acknowledged || program_surface->property("previewRendererState").toString() == "ready";
+    program_target_acknowledged = program_target_acknowledged || wait_for_renderer(program_surface);
     x11_previews_captured = program_target_acknowledged && stitched_target_acknowledged &&
-        camera1_surface->property("previewRendererState").toString() == "ready" && program_preview.passed &&
-        stitched_preview.passed && camera1_preview.passed;
+        camera1_target_acknowledged && program_preview.passed && stitched_preview.passed && camera1_preview.passed;
+    if (!x11_previews_captured && interaction_error.isEmpty())
+      interaction_error = "one or more GPU preview captures were blank or not acknowledged";
+    if (!x11_previews_captured) {
+      next_x11_preview_attempt_ms = timer.elapsed() + 500;
+    } else {
+      interaction_error.clear();
+    }
   };
   const QRegularExpression positive_fps(R"(\*\*PERF:\s+([0-9]+(?:\.[0-9]+)?))");
   while (timer.elapsed() < deadline_ms) {
@@ -3079,12 +3483,14 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   QString preview_report;
   preview_report += QString("x11_preview_requested: %1\n").arg(verify_x11_preview ? "true" : "false");
   if (verify_x11_preview) {
+    preview_report += QString("x11_preview_attempts: %1\n").arg(x11_preview_attempts);
     preview_report += native_preview_report_line("program", program_preview);
     preview_report += native_preview_report_line("stitched", stitched_preview);
     preview_report += native_preview_report_line("camera1", camera1_preview);
     preview_report +=
         QString("stitched_target_acknowledged: %1\n").arg(stitched_target_acknowledged ? "true" : "false");
     preview_report += QString("program_target_acknowledged: %1\n").arg(program_target_acknowledged ? "true" : "false");
+    preview_report += QString("camera1_target_acknowledged: %1\n").arg(camera1_target_acknowledged ? "true" : "false");
   }
   write_e2e_text(QDir(artifact_dir).filePath("preview-report.txt"), preview_report);
 
@@ -3192,7 +3598,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
 } // namespace
 
 int main(int argc, char** argv) {
-  if (!test_path_scoped_auto_rollback()) {
+  if (!test_path_scoped_auto_rollback() || !test_diagnostic_capture_attempt_paths()) {
     return 1;
   }
   const QByteArray e2e_game_id = qgetenv("HSTREAM_UI_E2E_GAME_ID");
