@@ -17,7 +17,9 @@ so a healthy pipeline processing the wrong game fails.
 For a fast UI-only regression run, the X11 interaction test uses real Qt mouse
 events against native XCB widgets under a window manager. It verifies native
 parent, geometry, and map state while exercising stopped double-click, live
-focus/restore, resize, render-off-while-focused, stop-while-focused, and live render off/on. It also
+focus/restore, resize, render-off while focused or paused, missing render-off
+acknowledgement recovery, active and unrelated preview failures,
+stop-while-focused, and live render off/on. It also
 saves composed X11 screenshots for inspection:
 
 ```bash

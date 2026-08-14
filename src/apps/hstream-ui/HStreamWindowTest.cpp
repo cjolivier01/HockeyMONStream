@@ -388,12 +388,29 @@ bool write_fake_runner(const QString& path) {
   file.write("    time.sleep(5.0)\n");
   file.write("    sys.exit(0)\n");
   file.write("def handle_stdin_line(line):\n");
-  file.write("    global preview_activation_count\n");
+  file.write("    global preview_activation_count, preview_disable_stalled\n");
   file.write("    print('stdin:' + line.rstrip('\\n'), flush=True)\n");
+  file.write("    if line.startswith('@test-stall-preview-disable'):\n");
+  file.write("        preview_disable_stalled = True\n");
+  file.write("        print('test preview disable stalled', flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-resume-preview-disable'):\n");
+  file.write("        preview_disable_stalled = False\n");
+  file.write("        print('test preview disable resumed', flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-preview-status '):\n");
+  file.write("        _, channel, status, generation = line.rstrip('\\n').split(' ', 3)\n");
+  file.write(
+      "        print('HSTREAM_PREVIEW channel=' + channel + ' status=' + status + ' generation=' + generation + "
+      "' message=synthetic review regression', flush=True)\n");
+  file.write("        return\n");
   file.write("    if line.startswith('@set-preview-active '):\n");
   file.write("        _, channel, generation = line.rstrip('\\n').split(' ', 2)\n");
   file.write("        preview_activation_count += 1\n");
   file.write("        if channel == 'none':\n");
+  file.write("            if preview_disable_stalled:\n");
+  file.write("                print('test preview disable acknowledgement suppressed', flush=True)\n");
+  file.write("                return\n");
   file.write(
       "            print('HSTREAM_PREVIEW channel=none status=deactivated generation=' + generation + "
       "' message=all GPU preview branches are inactive', flush=True)\n");
@@ -424,7 +441,8 @@ bool write_fake_runner(const QString& path) {
   file.write(
       "                print('runtime property ' + element + ' ' + property_name + '=' + runtime_value, flush=True)\n");
   file.write("preview_activation_count = 0\n");
-  file.write("deadline = time.monotonic() + 5.0\n");
+  file.write("preview_disable_stalled = False\n");
+  file.write("deadline = time.monotonic() + 15.0\n");
   file.write("stdin_fd = sys.stdin.fileno()\n");
   file.write("pending_stdin = b''\n");
   file.write("while time.monotonic() < deadline:\n");
@@ -1541,13 +1559,14 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* top_bar = require_child<QWidget>(window, "topBarPanel");
   auto* setup_row = require_child<QWidget>(window, "setupControlsRow");
   auto* log_panel = require_child<QWidget>(window, "logPanel");
+  auto* pipeline_process = window->findChild<QProcess*>();
   if (!stop || !start || !pause || !restart || !mode || !control_points || !game_id || !rotate || !max_speed_x ||
       !render_video || !log || !clear_log || !main_log_splitter || !setup_preview_splitter || !output_routing ||
       !preview_tabs || !program_host || !preview_surface || !preview_target || !stitched_surface || !stitched_target ||
       !camera1_host || !camera1_surface || !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface ||
       !external_notice || !camera1_notice || !stitched_status || !program_controls || !program_controls_toggle ||
       !stitched_controls || !program_control_tabs || !stitched_control_tabs || !program_focus || !top_bar ||
-      !setup_row || !log_panel) {
+      !setup_row || !log_panel || !pipeline_process) {
     return false;
   }
 
@@ -1636,8 +1655,15 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     std::cerr << "minimumSizeHint=" << minimum_hint.width() << 'x' << minimum_hint.height() << '\n';
     return false;
   }
+  const bool architecture_supports_x11_embedding =
+#if defined(__x86_64__)
+      true;
+#else
+      false;
+#endif
   if (!expect(
-          hm::ui_internal::supports_x11_embedding("xcb") && !hm::ui_internal::supports_x11_embedding("wayland") &&
+          hm::ui_internal::supports_x11_embedding("xcb") == architecture_supports_x11_embedding &&
+              !hm::ui_internal::supports_x11_embedding("wayland") &&
               !hm::ui_internal::supports_x11_embedding("offscreen") &&
               !hm::ui_internal::supports_x11_embedding("xcb", true) &&
               hm::ui_internal::preview_channel_for_tab(0, 3) == "program" &&
@@ -1770,6 +1796,76 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
 
+  const int disabled_count_before_paused_toggle = window->logText().count("GPU preview disabled generation=");
+  activate(pause);
+  if (!expect(window->pipelineStateText() == "PAUSED", "The pause regression must stop backend command handling"))
+    return false;
+  QTest::mouseClick(render_video, Qt::LeftButton);
+  QApplication::processEvents();
+  QTest::qWait(40);
+  if (!expect(
+          !render_video->isChecked() && preview_target->isHidden() && program_focus->isHidden() &&
+              setup_preview_splitter->sizes().at(0) > 0 &&
+              window->logText().count("GPU preview disabled generation=") == disabled_count_before_paused_toggle &&
+              window->logText().contains("GPU preview will finish disabling when the paused pipeline resumes"),
+          "Render-off while paused must immediately unmap native targets and defer its acknowledgement safely")) {
+    return false;
+  }
+  activate(pause);
+  for (int i = 0;
+       i < 100 && window->logText().count("GPU preview disabled generation=") <= disabled_count_before_paused_toggle;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          window->pipelineStateText() == "PLAYING" && !render_video->isChecked() && preview_target->isHidden(),
+          "Resuming must allow the pending render-off request to quiesce the backend")) {
+    return false;
+  }
+  QTest::mouseClick(render_video, Qt::LeftButton);
+  for (int i = 0; i < 100 &&
+       (preview_target->isHidden() || preview_target->property("previewRendererState").toString() != "ready");
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          render_video->isChecked() && !preview_target->isHidden() && setup_preview_splitter->sizes().at(0) == 0,
+          "Rendering must reactivate normally after a paused render-off request completes")) {
+    return false;
+  }
+
+  pipeline_process->write("@test-stall-preview-disable\n");
+  for (int i = 0; i < 100 && !window->logText().contains("test preview disable stalled"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  QTest::mouseClick(render_video, Qt::LeftButton);
+  for (int i = 0; i < 100 && !window->logText().contains("GPU preview disable failed (the backend did not acknowledge");
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  for (int i = 0; i < 100 &&
+       (preview_target->isHidden() || preview_target->property("previewRendererState").toString() != "ready");
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          render_video->isChecked() && !preview_target->isHidden() && setup_preview_splitter->sizes().at(0) == 0 &&
+              window->logText().count("GPU preview disable acknowledgement delayed; retrying") >= 3 &&
+              window->logText().contains("restoring rendering"),
+          "A missing render-off acknowledgement must restore the truthful enabled UI and reconcile the backend")) {
+    return false;
+  }
+  pipeline_process->write("@test-resume-preview-disable\n");
+  for (int i = 0; i < 100 && !window->logText().contains("test preview disable resumed"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+
   QTest::mouseDClick(preview_target, Qt::LeftButton);
   QApplication::processEvents();
   if (!expect(
@@ -1820,6 +1916,21 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Re-enabling rendering after a focused disable must allow the ready preview to enter focus again")) {
     return false;
   }
+  const quint64 focused_preview_generation = preview_target->property("previewRendererGeneration").toULongLong();
+  pipeline_process->write(
+      QString("@test-preview-status source2 unavailable %1\n").arg(focused_preview_generation).toUtf8());
+  for (int i = 0; i < 100 &&
+       !window->logText().contains(
+           QString("GPU preview unavailable channel=source2 generation=%1").arg(focused_preview_generation));
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          !top_bar->isVisible() && !preview_target->isHidden() && program_focus->isVisible(),
+          "An unavailable inactive camera must not exit a healthy focused Program preview")) {
+    return false;
+  }
   QTest::mouseClick(program_focus, Qt::LeftButton);
   QApplication::processEvents();
   if (!expect(
@@ -1831,6 +1942,38 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   if (!capture_interaction_artifact(window, "playing-restored.png"))
     return false;
+
+  pipeline_process->write(QString("@test-preview-status program failed %1\n").arg(focused_preview_generation).toUtf8());
+  for (int i = 0; i < 100 &&
+       !window->logText().contains(
+           QString("GPU preview failed channel=program generation=%1").arg(focused_preview_generation));
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          top_bar->isVisible() && preview_tabs->tabBar()->isVisible() && preview_target->isHidden() &&
+              setup_preview_splitter->sizes().at(0) > 0 && program_controls->isVisible(),
+          "Failure of the active GPU preview must restore the normal setup and associated-control layout")) {
+    return false;
+  }
+  render_video->setChecked(false);
+  for (int i = 0; i < 100 && render_video->isChecked(); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  render_video->setChecked(true);
+  for (int i = 0; i < 100 &&
+       (preview_target->isHidden() || preview_target->property("previewRendererState").toString() != "ready");
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          !preview_target->isHidden() && setup_preview_splitter->sizes().at(0) == 0,
+          "Render off/on must recover normally after an active preview failure")) {
+    return false;
+  }
   window->resize(1440, 900);
   QApplication::processEvents();
   preview_tabs->setCurrentIndex(1);

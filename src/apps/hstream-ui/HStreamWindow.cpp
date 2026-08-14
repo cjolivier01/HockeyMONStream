@@ -10,6 +10,7 @@
 #include <QtCore/QProcessEnvironment>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QSet>
+#include <QtCore/QSignalBlocker>
 #include <QtCore/QStandardPaths>
 #include <QtCore/QSysInfo>
 #include <QtCore/QTimer>
@@ -3233,6 +3234,7 @@ void HStreamWindow::clearPreviewFrames() {
   pending_preview_channel_.clear();
   pending_preview_generation_ = 0;
   preview_recovery_attempts_ = 0;
+  preview_disable_attempts_ = 0;
   preview_runtime_ready_ = false;
 }
 
@@ -3252,6 +3254,8 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   if (error != QProcess::FailedToStart && error != QProcess::Crashed) {
     if (error == QProcess::WriteError || error == QProcess::ReadError) {
       failPendingRuntimeControls(error == QProcess::WriteError ? "pipeline-write-error" : "pipeline-read-error");
+      if (error == QProcess::WriteError && render_video_toggle_ && !render_video_toggle_->isChecked())
+        recoverPreviewDisableFailure("the pipeline command channel reported a write error");
     }
     appendLog(error_message + "; pipeline remains running");
     updateRunControls();
@@ -3556,6 +3560,7 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
       appendLog(QString("GPU preview ready channel=%1 generation=%2").arg(channel).arg(generation));
   } else if (status == "failed" || status == "unavailable") {
     const bool affected_active = channel == active_preview_channel_;
+    const bool affected_selected = matches_pending || affected_active;
     if (matches_pending) {
       pending_preview_channel_.clear();
       pending_preview_generation_ = 0;
@@ -3564,12 +3569,14 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
     if (affected_active)
       active_preview_channel_.clear();
     setPreviewFocusAvailable(channel, false);
-    if (preview_focus_mode_)
-      setPreviewFocusMode(false, focused_preview_tab_ >= 0 ? focused_preview_tab_ : 0);
     if (target)
       target->hide();
+    if (affected_selected && preview_focus_mode_)
+      setPreviewFocusMode(false, focused_preview_tab_ >= 0 ? focused_preview_tab_ : 0);
     if (surface)
       surface->hide();
+    if (affected_selected)
+      setPreviewRenderingLayout(false);
     if (notice) {
       notice->setText(
           status == "failed" ? QString("GPU preview failed\n%1").arg(message)
@@ -3592,6 +3599,7 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
       active_preview_channel_.clear();
       pending_preview_channel_.clear();
       pending_preview_generation_ = 0;
+      preview_disable_attempts_ = 0;
       std::vector<QWidget*> surfaces = {preview_surface_, stitched_surface_};
       surfaces.insert(surfaces.end(), camera_preview_surfaces_.begin(), camera_preview_surfaces_.end());
       std::vector<QWidget*> targets = {preview_render_target_, stitched_render_target_};
@@ -3706,6 +3714,8 @@ bool HStreamWindow::requestPipelinePreviewChannel(const QString& channel, Previe
                                : (reason == PreviewRequestReason::kRenderToggle ? "render-toggle" : "tab-change"))));
   if (channel != "none")
     schedulePreviewReadyTimeout(channel, generation, previewReadyTimeoutMs());
+  else
+    schedulePreviewDisableTimeout(generation, previewDisableTimeoutMs());
   return true;
 }
 
@@ -3742,6 +3752,73 @@ void HStreamWindow::schedulePreviewReadyTimeout(const QString& channel, quint64 
   });
 }
 
+int HStreamWindow::previewDisableTimeoutMs() const {
+  bool test_timeout_valid = false;
+  const int test_timeout = qEnvironmentVariableIntValue("HSTREAM_UI_TEST_PREVIEW_TIMEOUT_MS", &test_timeout_valid);
+  return test_timeout_valid && test_timeout > 0 ? test_timeout : 5000;
+}
+
+void HStreamWindow::schedulePreviewDisableTimeout(quint64 generation, int timeout_ms) {
+  QTimer::singleShot(timeout_ms, this, [this, generation, timeout_ms]() {
+    if (pending_preview_channel_ != "none" || pending_preview_generation_ != generation || !pipeline_process_ ||
+        pipeline_process_->state() == QProcess::NotRunning ||
+        (render_video_toggle_ && render_video_toggle_->isChecked())) {
+      return;
+    }
+    if (pipeline_paused_) {
+      const QString paused_status = "GPU preview will finish disabling when the pipeline resumes";
+      if (!preview_status_ || preview_status_->text() != paused_status) {
+        appendLog("GPU preview will finish disabling when the paused pipeline resumes");
+      }
+      if (preview_status_)
+        preview_status_->setText(paused_status);
+      schedulePreviewDisableTimeout(generation, std::max(timeout_ms, 250));
+      return;
+    }
+    constexpr int kDisableRetryLimit = 3;
+    if (preview_disable_attempts_ >= kDisableRetryLimit) {
+      recoverPreviewDisableFailure("the backend did not acknowledge the render-off request");
+      return;
+    }
+    ++preview_disable_attempts_;
+    appendLog(QString("GPU preview disable acknowledgement delayed; retrying (%1/%2)")
+                  .arg(preview_disable_attempts_)
+                  .arg(kDisableRetryLimit));
+    if (!requestPipelinePreviewChannel("none", PreviewRequestReason::kRenderToggle))
+      schedulePreviewDisableTimeout(generation, timeout_ms);
+  });
+}
+
+void HStreamWindow::recoverPreviewDisableFailure(const QString& reason) {
+  if (!render_video_toggle_ || render_video_toggle_->isChecked() || !pipeline_process_ ||
+      pipeline_process_->state() == QProcess::NotRunning) {
+    return;
+  }
+  const QString channel =
+      active_preview_channel_.isEmpty() ? selectedPipelinePreviewChannel() : active_preview_channel_;
+  pending_preview_channel_.clear();
+  pending_preview_generation_ = 0;
+  preview_disable_attempts_ = 0;
+  if (render_video_toggle_) {
+    const QSignalBlocker blocker(render_video_toggle_);
+    render_video_toggle_->setChecked(true);
+  }
+  setPreviewRenderingLayout(true);
+  if (QWidget* surface = previewSurfaceForChannel(channel))
+    surface->show();
+  if (QWidget* target = previewTargetForChannel(channel)) {
+    target->show();
+    setPreviewFocusAvailable(channel, target->property("previewRendererState").toString() == "ready");
+  }
+  if (preview_status_)
+    preview_status_->setText("Could not disable GPU preview; rendering remains enabled");
+  appendLog(QString("GPU preview disable failed (%1); restoring rendering").arg(reason));
+  if (preview_runtime_ready_ && !channel.isEmpty() &&
+      !requestPipelinePreviewChannel(channel, PreviewRequestReason::kRenderToggle)) {
+    appendLog(QString("could not reconcile restored GPU preview channel %1").arg(channel));
+  }
+}
+
 void HStreamWindow::setRuntimeVideoRendering(bool enabled) {
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   if (!running) {
@@ -3756,21 +3833,50 @@ void HStreamWindow::setRuntimeVideoRendering(bool enabled) {
   }
 
   if (!enabled) {
+    preview_disable_attempts_ = 0;
     if (preview_focus_mode_)
       setPreviewFocusMode(false, focused_preview_tab_ >= 0 ? focused_preview_tab_ : 0);
     setAllPreviewFocusAvailable(false);
+    // Unmap native X11 children before splitters and tab contents move. The
+    // backend acknowledgement may be delayed while SIGSTOP-paused, but a
+    // frozen native child must never obscure the restored Qt layout.
+    std::vector<QWidget*> surfaces = {preview_surface_, stitched_surface_};
+    surfaces.insert(surfaces.end(), camera_preview_surfaces_.begin(), camera_preview_surfaces_.end());
+    std::vector<QWidget*> targets = {preview_render_target_, stitched_render_target_};
+    targets.insert(targets.end(), camera_preview_render_targets_.begin(), camera_preview_render_targets_.end());
+    for (QWidget* target : targets) {
+      if (target)
+        target->hide();
+    }
+    for (QWidget* surface : surfaces) {
+      if (surface)
+        surface->hide();
+    }
+    for (QLabel* notice : {preview_external_notice_, stitched_external_notice_}) {
+      if (notice) {
+        notice->setText("Video rendering is disabled");
+        notice->show();
+      }
+    }
+    for (QLabel* notice : camera_preview_notices_) {
+      if (notice) {
+        notice->setText("Video rendering is disabled");
+        notice->show();
+      }
+    }
     setPreviewRenderingLayout(false);
     if (preview_status_)
       preview_status_->setText("Disabling GPU preview…");
     if (preview_runtime_ready_) {
       if (!requestPipelinePreviewChannel("none", PreviewRequestReason::kRenderToggle))
-        appendLog("could not disable the GPU preview display branch");
+        recoverPreviewDisableFailure("the render-off command could not be written");
     } else {
       appendLog("video rendering will be disabled when the GPU preview backend becomes ready");
     }
     return;
   }
 
+  preview_disable_attempts_ = 0;
   setPreviewRenderingLayout(true);
   for (QLabel* notice : {preview_external_notice_, stitched_external_notice_}) {
     if (notice) {

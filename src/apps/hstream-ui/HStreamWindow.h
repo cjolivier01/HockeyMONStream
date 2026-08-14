@@ -129,6 +129,9 @@ class HStreamWindow : public QMainWindow {
   QWidget* previewSurfaceForChannel(const QString& channel) const;
   QWidget* previewTargetForChannel(const QString& channel) const;
   void schedulePreviewReadyTimeout(const QString& channel, quint64 generation, int timeout_ms);
+  void schedulePreviewDisableTimeout(quint64 generation, int timeout_ms);
+  void recoverPreviewDisableFailure(const QString& reason);
+  int previewDisableTimeoutMs() const;
   void setRuntimeVideoRendering(bool enabled);
   void setPreviewRenderingLayout(bool rendering);
   void setPreviewFocusAvailable(const QString& channel, bool available);
@@ -298,6 +301,7 @@ class HStreamWindow : public QMainWindow {
   QString pending_preview_channel_;
   quint64 pending_preview_generation_{0};
   int preview_recovery_attempts_{0};
+  int preview_disable_attempts_{0};
   bool preview_runtime_ready_{false};
   std::set<QString> preview_frame_channels_received_;
   QString active_run_game_id_;
