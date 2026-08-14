@@ -2576,7 +2576,7 @@ void PipelineApplication::print_runtime_commands() const {
       "\tq: Quit\n\n"
       "\tp: Pause\n"
       "\tr: Resume\n"
-      "\t@seek <seconds>: Seek active file playback\n"
+      "\t@seek <seconds>: Seek active single-file playback (paired cameras require --start-time restart)\n"
       "\t@set-preview-active <program|stitched|sourceN|none> <generation>: Activate one GPU-native UI preview\n"
       "\t@set-render-window <xid>: Move the embedded program render sink to another X11 window\n"
       "\t@capture-preview-frame <program|main|stitched|sourceN> <image-path>: Save one diagnostic UI preview "
@@ -3313,6 +3313,19 @@ bool PipelineApplication::seek_runtime(guint64 position_ns) {
   if (stage == stage_app_contexts_.end()) {
     g_printerr("runtime command failed: no active pipeline to seek\n");
     return false;
+  }
+
+  for (const auto& app_context : stage->second) {
+    if (app_context && app_context->pipeline.multi_src_bin.uri_playlist_exact_pairing_enabled) {
+      // A flushing seek can leave one decoder past the exact-frame barrier
+      // while its peer is still flushing. Reject it before touching either
+      // source; a coordinated seek epoch or a full pipeline restart is
+      // required to preserve every paired frame.
+      g_printerr(
+          "runtime command failed: seek is unavailable for lossless paired-camera sources; restart with "
+          "--start-time to preserve exact frame pairing\n");
+      return false;
+    }
   }
 
   bool sought_any = false;
