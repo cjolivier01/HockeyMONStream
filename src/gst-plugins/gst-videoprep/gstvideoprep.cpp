@@ -340,9 +340,10 @@ static GstCaps* gst_videoprep_fixate_caps(
   GstVideoPrep* videoprep = GST_VIDEOPREP(trans);
 
   guint out_width, out_height;
-  const bool runtime_output_size = videoprep->priv && videoprep->priv->UsesRuntimeOutputSize();
+  const bool fixating_output = direction == GST_PAD_SINK;
+  const bool runtime_output_size = fixating_output && videoprep->priv && videoprep->priv->UsesRuntimeOutputSize();
   const RuntimeOutputSize negotiated_runtime_size =
-      videoprep->priv ? videoprep->priv->RuntimeOutputSizeForNegotiation() : RuntimeOutputSize{};
+      fixating_output && videoprep->priv ? videoprep->priv->RuntimeOutputSizeForNegotiation() : RuntimeOutputSize{};
 
   othercaps = gst_caps_truncate(othercaps);
   othercaps = gst_caps_make_writable(othercaps);
@@ -356,39 +357,44 @@ static GstCaps* gst_videoprep_fixate_caps(
 
   ins = gst_caps_get_structure(caps, 0);
   outs = gst_caps_get_structure(othercaps, 0);
-  if (direction == GST_PAD_SINK) {
+  if (fixating_output) {
     gst_structure_set(outs, "batch-size", G_TYPE_UINT, get_output_batch_size(videoprep, caps), NULL);
-  }
 
-  if (!runtime_output_size && !negotiated_runtime_size.valid() &&
-      videoprep->custom_create_params.output_width_height[0]) {
-    videoprep->output_width = videoprep->custom_create_params.output_width_height[0];
-  }
-  if (!runtime_output_size && !negotiated_runtime_size.valid() &&
-      videoprep->custom_create_params.output_width_height[1]) {
-    videoprep->output_height = videoprep->custom_create_params.output_width_height[1];
-  }
-  if (!runtime_output_size && !negotiated_runtime_size.valid() && !videoprep->output_width &&
-      !videoprep->output_height) {
-    videoprep->output_width = videoprep->input_width;
-    videoprep->output_height = videoprep->input_height;
-    assert(videoprep->output_width && videoprep->output_height);
-  }
+    if (!runtime_output_size && !negotiated_runtime_size.valid() &&
+        videoprep->custom_create_params.output_width_height[0]) {
+      videoprep->output_width = videoprep->custom_create_params.output_width_height[0];
+    }
+    if (!runtime_output_size && !negotiated_runtime_size.valid() &&
+        videoprep->custom_create_params.output_width_height[1]) {
+      videoprep->output_height = videoprep->custom_create_params.output_width_height[1];
+    }
+    if (!runtime_output_size && !negotiated_runtime_size.valid() && !videoprep->output_width &&
+        !videoprep->output_height) {
+      videoprep->output_width = videoprep->input_width;
+      videoprep->output_height = videoprep->input_height;
+      assert(videoprep->output_width && videoprep->output_height);
+    }
 
-  out_width = negotiated_runtime_size.valid() ? negotiated_runtime_size.width : videoprep->output_width;
-  out_height = negotiated_runtime_size.valid() ? negotiated_runtime_size.height : videoprep->output_height;
-  if (runtime_output_size && !negotiated_runtime_size.valid()) {
-    gint input_width = 0;
-    gint input_height = 0;
-    gst_structure_get_int(ins, "width", &input_width);
-    gst_structure_get_int(ins, "height", &input_height);
-    out_width = input_width;
-    out_height = input_height;
+    out_width = negotiated_runtime_size.valid() ? negotiated_runtime_size.width : videoprep->output_width;
+    out_height = negotiated_runtime_size.valid() ? negotiated_runtime_size.height : videoprep->output_height;
+    if (runtime_output_size && !negotiated_runtime_size.valid()) {
+      gint input_width = 0;
+      gint input_height = 0;
+      gst_structure_get_int(ins, "width", &input_width);
+      gst_structure_get_int(ins, "height", &input_height);
+      out_width = input_width;
+      out_height = input_height;
+    }
+
+    gst_structure_remove_fields(outs, "width", "height", NULL);
+    gst_structure_set(outs, "width", G_TYPE_INT, out_width, "height", G_TYPE_INT, out_height, NULL);
+  } else if (videoprep->input_width && videoprep->input_height) {
+    // Reverse negotiation fixes the sink/input caps. A discovered stitched
+    // canvas is an output property and must never be imposed on the cameras.
+    // Retain the dimensions accepted on the sink side when they are known.
+    gst_structure_fixate_field_nearest_int(outs, "width", videoprep->input_width);
+    gst_structure_fixate_field_nearest_int(outs, "height", videoprep->input_height);
   }
-
-  gst_structure_remove_fields(outs, "width", "height", NULL);
-
-  gst_structure_set(outs, "width", G_TYPE_INT, out_width, "height", G_TYPE_INT, out_height, NULL);
 
   from_fmt = gst_structure_get_string(ins, "format");
   to_fmt = gst_structure_get_string(outs, "format");
@@ -505,7 +511,7 @@ static GstCaps* gst_videoprep_fixate_caps(
       }
     }
   }
-  if (direction == GST_PAD_SINK) {
+  if (fixating_output) {
     GstCaps* peer_caps = gst_pad_peer_query_caps(GST_BASE_TRANSFORM_SRC_PAD(trans), NULL);
     GstStructure* peer_structure;
     const gchar* out_mem_type_string = NULL;

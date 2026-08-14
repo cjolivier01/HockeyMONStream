@@ -1,5 +1,6 @@
 #include "hstream/src/gst-plugins/testutils/GstPluginTestHarness.h"
 
+#include <gst/base/gstbasetransform.h>
 #include <gst/gst.h>
 
 #include <cmath>
@@ -37,6 +38,65 @@ bool expect_videoprep_factory(const char* factory_name) {
       });
 }
 
+GstCaps* make_nvmm_rgba_caps(int width, int height) {
+  GstCaps* caps = gst_caps_new_simple(
+      "video/x-raw",
+      "format",
+      G_TYPE_STRING,
+      "RGBA",
+      "width",
+      G_TYPE_INT,
+      width,
+      "height",
+      G_TYPE_INT,
+      height,
+      "framerate",
+      GST_TYPE_FRACTION,
+      30,
+      1,
+      nullptr);
+  gst_caps_set_features(caps, 0, gst_caps_features_new("memory:NVMM", nullptr));
+  return caps;
+}
+
+bool expect_reverse_fixate_preserves_input_dimensions() {
+  constexpr int kInputWidth = 320;
+  constexpr int kInputHeight = 180;
+  constexpr int kOutputWidth = 777;
+  constexpr int kOutputHeight = 333;
+  GstElement* element = gst_element_factory_make("playcropper", nullptr);
+  if (!element) {
+    std::cerr << "Could not create playcropper for reverse fixate test\n";
+    return false;
+  }
+  g_object_set(
+      element, "output-width", kOutputWidth, "output-height", kOutputHeight, "plugin-type", "playcropper", nullptr);
+
+  GstBaseTransformClass* transform_class = GST_BASE_TRANSFORM_GET_CLASS(element);
+  GstCaps* input_caps = make_nvmm_rgba_caps(kInputWidth, kInputHeight);
+  GstCaps* output_caps = make_nvmm_rgba_caps(kOutputWidth, kOutputHeight);
+  bool ok = transform_class->accept_caps(GST_BASE_TRANSFORM(element), GST_PAD_SINK, input_caps);
+  GstCaps* candidate_input_caps = gst_caps_copy(input_caps);
+  GstCaps* fixated_input_caps =
+      transform_class->fixate_caps(GST_BASE_TRANSFORM(element), GST_PAD_SRC, output_caps, candidate_input_caps);
+
+  int width = 0;
+  int height = 0;
+  const GstStructure* structure = fixated_input_caps ? gst_caps_get_structure(fixated_input_caps, 0) : nullptr;
+  ok = ok && structure && gst_structure_get_int(structure, "width", &width) &&
+      gst_structure_get_int(structure, "height", &height) && width == kInputWidth && height == kInputHeight;
+  if (!ok) {
+    std::cerr << "videoprep reverse fixate replaced input dimensions with output dimensions\n";
+  }
+
+  if (fixated_input_caps)
+    gst_caps_unref(fixated_input_caps);
+  gst_caps_unref(output_caps);
+  gst_caps_unref(input_caps);
+  gst_object_unref(element);
+  return ok;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -50,6 +110,9 @@ int main(int argc, char** argv) {
     if (!expect_videoprep_factory(factory)) {
       return 1;
     }
+  }
+  if (!expect_reverse_fixate_preserves_input_dimensions()) {
+    return 1;
   }
 
   GstElement* element = gst_element_factory_make("playcropper", nullptr);
