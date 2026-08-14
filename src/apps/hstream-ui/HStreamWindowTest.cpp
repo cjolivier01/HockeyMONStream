@@ -1553,12 +1553,22 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Controls must live in the earliest preview tab whose frames reflect their pipeline stage")) {
     return false;
   }
+  if (!expect(
+          program_focus->parentWidget() == program_host && program_focus->size() == QSize(24, 24) &&
+              program_focus->x() == program_host->width() - program_focus->width() - 6 && program_focus->y() == 6 &&
+              program_focus->toolTip() == "Focus video" && program_focus->accessibleName() == "Focus video",
+          "The compact focus control must stay in the preview pane's top-right corner") ||
+      !expect_x11_widget_state(
+          program_focus, true, "The focus control must use the preview host as its native X11 coordinate space")) {
+    return false;
+  }
   QTest::mouseDClick(preview_target, Qt::LeftButton);
   QApplication::processEvents();
   if (!expect(
           !top_bar->isVisible() && !setup_row->isVisible() && !log_panel->isVisible() &&
               !preview_tabs->tabBar()->isVisible() && !program_controls->isVisible() && program_host->isVisible() &&
-              !window->isFullScreen(),
+              !window->isFullScreen() && program_focus->toolTip() == "Restore HStream controls" &&
+              program_focus->accessibleName() == "Restore HStream controls",
           "Double-clicking a video should focus it across the HStream app area")) {
     return false;
   }
