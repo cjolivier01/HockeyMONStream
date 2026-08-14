@@ -3131,6 +3131,10 @@ void HStreamWindow::pauseOrResumePipeline() {
     playback_eta_ = "Warming up";
     playback_speed_ = "Warming up";
     playback_warming_after_resume_ = true;
+    const QByteArray reset_progress_command("@reset-progress-rate\n");
+    if (pipeline_process_->write(reset_progress_command) != reset_progress_command.size()) {
+      appendLog("could not reset playback speed after resume; ETA will remain unavailable");
+    }
   }
   preview_status_->setText(pipeline_paused_ ? "Pipeline paused" : "Pipeline resumed");
   appendLog(pipeline_paused_ ? "pipeline paused" : "pipeline resumed");
@@ -3426,6 +3430,12 @@ bool HStreamWindow::handlePlaybackProgressOutput(const QString& line) {
       fields[token.left(separator)] = token.mid(separator + 1);
     }
   }
+  const auto status = fields.find("status");
+  if (status != fields.end() && status->second == "reset") {
+    playback_warming_after_resume_ = false;
+    updatePlaybackProgressPresentation();
+    return true;
+  }
   const auto instance = fields.find("instance");
   if (instance != fields.end() && instance->second != "aggregate") {
     return true;
@@ -3481,7 +3491,6 @@ bool HStreamWindow::handlePlaybackProgressOutput(const QString& line) {
   if (playback_warming_after_resume_) {
     playback_eta_ = "Warming up";
     playback_speed_ = "Warming up";
-    playback_warming_after_resume_ = false;
   }
 
   if (playback_progress_) {

@@ -31,6 +31,7 @@ class PlaybackRateEstimator {
       uint64_t remaining_ns,
       std::chrono::steady_clock::time_point now,
       std::chrono::steady_clock::duration expected_sample_interval);
+  void reset();
 
  private:
   bool have_sample_{false};
@@ -43,5 +44,7 @@ class PlaybackRateEstimator {
 bool aggregate_playback_progress(
     const std::vector<PlaybackProgressMetrics>& instances,
     PlaybackProgressMetrics* aggregate);
+
+bool playback_progress_sampling_enabled(bool configured_perf_sampling, bool launched_by_ui);
 
 } // namespace hm

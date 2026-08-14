@@ -41,6 +41,12 @@ PlaybackRateEstimator::Estimate PlaybackRateEstimator::sample(
   return estimate;
 }
 
+void PlaybackRateEstimator::reset() {
+  have_sample_ = false;
+  previous_processed_ns_ = 0;
+  previous_wall_ = {};
+}
+
 bool aggregate_playback_progress(
     const std::vector<PlaybackProgressMetrics>& instances,
     PlaybackProgressMetrics* aggregate) {
@@ -62,6 +68,11 @@ bool aggregate_playback_progress(
         return lhs.processed_ns < rhs.processed_ns;
       });
   *aggregate = *slowest;
+  if (any_unknown_total) {
+    aggregate->total_ns = kUnknownPlaybackTime;
+    aggregate->remaining_ns = kUnknownPlaybackTime;
+    aggregate->fraction = 0.0;
+  }
 
   aggregate->speed_x = instances.front().speed_x;
   aggregate->eta_ns = instances.front().eta_ns;
@@ -78,6 +89,10 @@ bool aggregate_playback_progress(
     }
   }
   return true;
+}
+
+bool playback_progress_sampling_enabled(bool configured_perf_sampling, bool launched_by_ui) {
+  return configured_perf_sampling || launched_by_ui;
 }
 
 } // namespace hm

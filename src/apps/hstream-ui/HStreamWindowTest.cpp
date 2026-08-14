@@ -528,6 +528,17 @@ bool write_fake_runner(const QString& path) {
       "        print('HSTREAM_PREVIEW channel=' + channel + ' status=' + status + ' generation=' + generation + "
       "' message=synthetic review regression', flush=True)\n");
   file.write("        return\n");
+  file.write("    if line.startswith('@reset-progress-rate'):\n");
+  file.write(
+      "        print('HSTREAM_PROGRESS processed_ns=43000000000 total_ns=600000000000 remaining_ns=557000000000 "
+      "eta_ns=1114000000000 speed_x=0.500000 fraction=0.071667 stage=0 instance=aggregate instances=2', "
+      "flush=True)\n");
+  file.write("        print('HSTREAM_PROGRESS status=reset stage=0 instance=aggregate instances=2', flush=True)\n");
+  file.write(
+      "        print('HSTREAM_PROGRESS processed_ns=44000000000 total_ns=600000000000 remaining_ns=556000000000 "
+      "eta_ns=unknown speed_x=0.000000 fraction=0.073333 stage=0 instance=aggregate instances=2', "
+      "flush=True)\n");
+  file.write("        return\n");
   file.write("    if line.startswith('@set-preview-active '):\n");
   file.write("        _, channel, generation = line.rstrip('\\n').split(' ', 2)\n");
   file.write("        preview_activation_count += 1\n");
@@ -1975,11 +1986,17 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
   activate(pause);
+  for (int i = 0; i < 100 && !window->logText().contains("stdin:@reset-progress-rate"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
   if (!expect(
-          playback_progress->toolTip().contains("Pipeline: PLAYING") &&
+          window->logText().contains("stdin:@reset-progress-rate") &&
+              playback_progress->toolTip().contains("Pipeline: PLAYING") &&
               playback_progress->toolTip().contains("ETA: Warming up") &&
-              playback_progress->toolTip().contains("Processing speed: Warming up"),
-          "Resuming should warm up ETA and speed until fresh adjacent backend samples arrive")) {
+              playback_progress->toolTip().contains("Processing speed: Warming up") &&
+              !playback_progress->toolTip().contains("Processing speed: 0.50x"),
+          "Resuming should reset every backend rate and suppress contaminated multi-pipeline samples")) {
     return false;
   }
   for (int i = 0;

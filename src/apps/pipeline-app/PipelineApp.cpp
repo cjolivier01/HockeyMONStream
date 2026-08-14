@@ -653,6 +653,11 @@ absl::Status PipelineApplication::configureInstances(
         return absl::InternalError("Failed to parse config file");
       }
     }
+    if (hm::playback_progress_sampling_enabled(
+            app_ctx->config.enable_perf_measurement, std::getenv("HSTREAM_UI_PARENT_PID") != nullptr)) {
+      app_ctx->config.enable_perf_measurement = TRUE;
+      app_ctx->config.perf_measurement_interval_sec = std::max(1U, app_ctx->config.perf_measurement_interval_sec);
+    }
     if (!ui_preview_window_ids_.empty()) {
       app_ctx->config.hmsticher_config.ui_preview = TRUE;
     }
@@ -2603,6 +2608,7 @@ void PipelineApplication::print_runtime_commands() const {
       "\t@set-render-window <xid>: Move the embedded program render sink to another X11 window\n"
       "\t@capture-preview-frame <program|main|stitched|sourceN> <image-path>: Save one diagnostic UI preview "
       "frame\n"
+      "\t@reset-progress-rate: Reset playback speed and ETA sampling after a process pause\n"
       "\t@set-property <element> <property=value>: Set an allowlisted runtime GStreamer property\n"
       "\t@set-properties <element property=value;...>: Atomically set allowlisted runtime properties\n\n");
   if (!stage_app_contexts_.empty() && !stage_app_contexts_.at(current_stage_).empty() &&
@@ -3275,6 +3281,10 @@ bool PipelineApplication::set_element_properties_runtime(
 }
 
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
+  if (trim_ascii(line) == "reset-progress-rate") {
+    reset_playback_progress_rates();
+    return true;
+  }
   std::string active_preview_channel;
   guint64 preview_generation = 0;
   if (parse_runtime_set_preview_active(line, &active_preview_channel, &preview_generation)) {
@@ -3300,10 +3310,23 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
     g_printerr(
         "runtime command failed: expected: set-preview-active <program|stitched|sourceN|none> <generation>, "
         "set-render-window <xid>, capture-preview-frame <main|stitched|sourceN> <jpg-path>, set-properties "
-        "<element property=value;...>, or set-property <element> <property=value>\n");
+        "<element property=value;...>, reset-progress-rate, or set-property <element> <property=value>\n");
     return false;
   }
   return set_element_property_runtime(element_name, property_name, value);
+}
+
+void PipelineApplication::reset_playback_progress_rates() {
+  g_mutex_lock(&fps_lock_);
+  for (auto& [index, state] : progress_states_) {
+    (void)index;
+    state.rate_estimator.reset();
+  }
+  ui_progress_by_stage_.erase(current_stage_);
+  const size_t active_instances = stage_app_contexts_.at(current_stage_).size();
+  g_mutex_unlock(&fps_lock_);
+  g_print(
+      "HSTREAM_PROGRESS status=reset stage=%ld instance=aggregate instances=%zu\n", current_stage_, active_instances);
 }
 
 bool PipelineApplication::set_preview_active_runtime(const std::string& channel, guint64 generation) {
