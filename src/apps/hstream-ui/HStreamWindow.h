@@ -130,7 +130,7 @@ class HStreamWindow : public QMainWindow {
   QWidget* previewTargetForChannel(const QString& channel) const;
   void schedulePreviewReadyTimeout(const QString& channel, quint64 generation, int timeout_ms);
   void schedulePreviewDisableTimeout(quint64 generation, int timeout_ms);
-  void recoverPreviewDisableFailure(const QString& reason);
+  void recoverPreviewDisableFailure(const QString& reason, bool force = false);
   int previewDisableTimeoutMs() const;
   void setRuntimeVideoRendering(bool enabled);
   void setPreviewRenderingLayout(bool rendering);

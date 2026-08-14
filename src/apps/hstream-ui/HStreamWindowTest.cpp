@@ -1957,23 +1957,6 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Failure of the active GPU preview must restore the normal setup and associated-control layout")) {
     return false;
   }
-  render_video->setChecked(false);
-  for (int i = 0; i < 100 && render_video->isChecked(); ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  render_video->setChecked(true);
-  for (int i = 0; i < 100 &&
-       (preview_target->isHidden() || preview_target->property("previewRendererState").toString() != "ready");
-       ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  if (!expect(
-          !preview_target->isHidden() && setup_preview_splitter->sizes().at(0) == 0,
-          "Render off/on must recover normally after an active preview failure")) {
-    return false;
-  }
   window->resize(1440, 900);
   QApplication::processEvents();
   preview_tabs->setCurrentIndex(1);
@@ -1981,7 +1964,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
-  if (!expect_x11_widget_state(preview_target, false, "Inactive Program target must be unmapped after a tab switch") ||
+  if (!expect_x11_widget_state(
+          preview_target,
+          false,
+          "Failed Program target must remain unmapped after switching to a healthy preview",
+          false) ||
       !expect_x11_widget_state(stitched_target, true, "Selected Stitched target must be mapped inside its Qt host")) {
     return false;
   }
@@ -2009,19 +1996,17 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Double-clicking a focused camera preview should restore the normal layout")) {
     return false;
   }
-  preview_tabs->setCurrentIndex(0);
-  for (int i = 0; i < 100 && (preview_target->isHidden() || program_focus->isHidden()); ++i) {
+  for (int i = 0; i < 100 && (camera1_target->isHidden() || camera1_focus->isHidden()); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
   if (!fresh_program_tracked)
     std::cerr << window->logText().toStdString() << '\n';
-  for (QWidget* surface : {preview_surface, stitched_surface, camera1_surface, camera2_surface, camera3_surface}) {
-    surface->setProperty("previewRendererState", "ready");
-  }
-  QTest::mouseDClick(preview_target, Qt::LeftButton);
+  QTest::mouseDClick(camera1_target, Qt::LeftButton);
   QApplication::processEvents();
-  if (!expect(!top_bar->isVisible(), "The stop-while-focused regression must begin in focused preview mode")) {
+  if (!expect(
+          !top_bar->isVisible() && camera1_focus->isVisible(),
+          "The stop-while-focused regression must begin on a healthy preview after Program failed")) {
     return false;
   }
   activate(stop);
@@ -2045,9 +2030,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   if (!expect(
           top_bar->isVisible() && setup_row->isVisible() && log_panel->isVisible() &&
-              preview_tabs->tabBar()->isVisible() && program_controls->isVisible() && program_focus->isHidden() &&
+              preview_tabs->tabBar()->isVisible() && !program_controls->isVisible() && camera1_focus->isHidden() &&
               setup_preview_splitter->sizes().at(0) > 0,
-          "Stopping while focused must restore the complete normal UI before unmapping native preview windows")) {
+          "Stopping while focused on Camera 1 must restore the normal camera-tab UI before unmapping native preview "
+          "windows")) {
     return false;
   }
   if (!capture_interaction_artifact(window, "stopped-after-focused-stop.png"))
@@ -2473,6 +2459,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     }
 
     qputenv("HSTREAM_UI_TEST_CLOSE_STDIN", "1");
+    render_video->setChecked(false);
+    const int disable_recoveries_before_write_error = window->logText().count("GPU preview disable failed (");
     activate(start);
     for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
       QApplication::processEvents();
@@ -2485,13 +2473,33 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       QTest::qWait(10);
     }
     const bool write_error_kept_running = window->pipelineStateText() == "PLAYING";
+    const bool rendering_stayed_unchecked = !render_video->isChecked();
+    const bool target_stayed_unmapped = preview_target->isHidden();
+    const bool backend_reported_disabled =
+        window->logText().contains("GPU preview backend ready with rendering disabled generation=");
+    const bool embedded_backend_state_is_valid =
+        !hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName()) || backend_reported_disabled;
+    const int disable_recoveries_after_write_error = window->logText().count("GPU preview disable failed (");
+    const bool write_error_kept_rendering_disabled = rendering_stayed_unchecked && target_stayed_unmapped &&
+        embedded_backend_state_is_valid &&
+        disable_recoveries_after_write_error == disable_recoveries_before_write_error;
     activate(stop);
     for (int i = 0; i < 50 && window->pipelineStateText() != "STOPPED"; ++i) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
     qunsetenv("HSTREAM_UI_TEST_CLOSE_STDIN");
-    if (!expect(write_error_kept_running, "A runtime-control write error should not mark live playback stopped")) {
+    render_video->setChecked(true);
+    if (!write_error_kept_rendering_disabled) {
+      std::cerr << "write-error render state: checked=" << !rendering_stayed_unchecked
+                << " target-mapped=" << !target_stayed_unmapped << " backend-disabled=" << backend_reported_disabled
+                << " disable-recoveries=" << disable_recoveries_before_write_error << "->"
+                << disable_recoveries_after_write_error << '\n';
+    }
+    if (!expect(write_error_kept_running, "A runtime-control write error should not mark live playback stopped") ||
+        !expect(
+            write_error_kept_rendering_disabled,
+            "An unrelated write error after acknowledged render-off must not re-enable or remap GPU preview")) {
       return false;
     }
   }

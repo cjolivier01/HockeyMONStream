@@ -3254,8 +3254,10 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   if (error != QProcess::FailedToStart && error != QProcess::Crashed) {
     if (error == QProcess::WriteError || error == QProcess::ReadError) {
       failPendingRuntimeControls(error == QProcess::WriteError ? "pipeline-write-error" : "pipeline-read-error");
-      if (error == QProcess::WriteError && render_video_toggle_ && !render_video_toggle_->isChecked())
+      if (error == QProcess::WriteError && render_video_toggle_ && !render_video_toggle_->isChecked() &&
+          pending_preview_channel_ == "none" && pending_preview_generation_ != 0) {
         recoverPreviewDisableFailure("the pipeline command channel reported a write error");
+      }
     }
     appendLog(error_message + "; pipeline remains running");
     updateRunControls();
@@ -3789,9 +3791,10 @@ void HStreamWindow::schedulePreviewDisableTimeout(quint64 generation, int timeou
   });
 }
 
-void HStreamWindow::recoverPreviewDisableFailure(const QString& reason) {
+void HStreamWindow::recoverPreviewDisableFailure(const QString& reason, bool force) {
   if (!render_video_toggle_ || render_video_toggle_->isChecked() || !pipeline_process_ ||
-      pipeline_process_->state() == QProcess::NotRunning) {
+      pipeline_process_->state() == QProcess::NotRunning ||
+      (!force && (pending_preview_channel_ != "none" || pending_preview_generation_ == 0))) {
     return;
   }
   const QString channel =
@@ -3869,7 +3872,7 @@ void HStreamWindow::setRuntimeVideoRendering(bool enabled) {
       preview_status_->setText("Disabling GPU preview…");
     if (preview_runtime_ready_) {
       if (!requestPipelinePreviewChannel("none", PreviewRequestReason::kRenderToggle))
-        recoverPreviewDisableFailure("the render-off command could not be written");
+        recoverPreviewDisableFailure("the render-off command could not be written", true);
     } else {
       appendLog("video rendering will be disabled when the GPU preview backend becomes ready");
     }
