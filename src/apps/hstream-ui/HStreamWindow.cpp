@@ -19,6 +19,7 @@
 #include <QtGui/QGuiApplication>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPaintEngine>
+#include <QtGui/QPainter>
 #include <QtGui/QPalette>
 #include <QtGui/QResizeEvent>
 #include <QtGui/QTextDocument>
@@ -42,6 +43,7 @@
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QStyle>
 #include <QtWidgets/QTabBar>
+#include <QtWidgets/QToolButton>
 
 #include <yaml-cpp/yaml.h>
 
@@ -226,9 +228,13 @@ class NativeVideoTarget : public QWidget {
     focus_button_ = button;
   }
 
+  void setFocusAvailable(bool available) {
+    focus_available_ = available;
+  }
+
  protected:
   void mouseDoubleClickEvent(QMouseEvent* event) override {
-    if (event->button() == Qt::LeftButton && focus_toggle_callback_) {
+    if (event->button() == Qt::LeftButton && focus_available_ && focus_toggle_callback_) {
       focus_toggle_callback_();
       event->accept();
       return;
@@ -237,7 +243,8 @@ class NativeVideoTarget : public QWidget {
   }
 
   void mouseReleaseEvent(QMouseEvent* event) override {
-    if (event->button() == Qt::LeftButton && focus_button_) {
+    if (event->button() == Qt::LeftButton && focus_available_ && focus_button_ && focus_button_->isEnabled() &&
+        focus_button_->isVisible()) {
       const QPoint button_position = focus_button_->mapFromGlobal(event->globalPosition().toPoint());
       if (focus_button_->rect().contains(button_position)) {
         focus_button_->click();
@@ -251,7 +258,29 @@ class NativeVideoTarget : public QWidget {
  private:
   std::function<void()> focus_toggle_callback_;
   QPushButton* focus_button_{nullptr};
+  bool focus_available_{false};
 };
+
+QIcon preview_focus_icon(bool focused) {
+  QPixmap pixmap(16, 16);
+  pixmap.fill(Qt::transparent);
+  QPainter painter(&pixmap);
+  painter.setRenderHint(QPainter::Antialiasing, false);
+  painter.setPen(QPen(Qt::white, 2, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+  const int outer = focused ? 3 : 2;
+  const int inner = focused ? 6 : 5;
+  const int far = focused ? 12 : 13;
+  const int arm = inner - outer;
+  painter.drawLine(outer, inner, outer, outer);
+  painter.drawLine(outer, outer, inner, outer);
+  painter.drawLine(far, inner, far, outer);
+  painter.drawLine(far, outer, far - arm, outer);
+  painter.drawLine(outer, far - arm, outer, far);
+  painter.drawLine(outer, far, inner, far);
+  painter.drawLine(far, far - arm, far, far);
+  painter.drawLine(far, far, far - arm, far);
+  return QIcon(pixmap);
+}
 
 class LetterboxRenderHost : public QWidget {
  public:
@@ -277,7 +306,7 @@ class LetterboxRenderHost : public QWidget {
     focus_button_->setIconSize(QSize(14, 14));
     focus_button_->setToolTip("Focus video");
     focus_button_->setAccessibleName("Focus video");
-    focus_button_->setIcon(focus_button_->style()->standardIcon(QStyle::SP_TitleBarMaxButton));
+    focus_button_->setIcon(preview_focus_icon(false));
     focus_button_->setStyleSheet(
         "QPushButton { background: rgba(15, 23, 42, 210); border: 1px solid rgba(255, 255, 255, 100); "
         "border-radius: 3px; color: white; padding: 0; }"
@@ -290,6 +319,7 @@ class LetterboxRenderHost : public QWidget {
       focus_button_->winId();
     }
     render_target_->setFocusButton(focus_button_);
+    setFocusAvailable(false);
     connect(focus_button_, &QPushButton::clicked, this, [this]() {
       if (focus_toggle_callback_)
         focus_toggle_callback_();
@@ -313,9 +343,21 @@ class LetterboxRenderHost : public QWidget {
     render_target_->setFocusToggleCallback(focus_toggle_callback_);
   }
 
+  void setFocusAvailable(bool available) {
+    focus_available_ = available;
+    render_target_->setFocusAvailable(available);
+    focus_button_->setEnabled(available);
+    focus_button_->setVisible(available);
+    if (available)
+      focus_button_->raise();
+  }
+
+  bool focusAvailable() const {
+    return focus_available_;
+  }
+
   void setFocused(bool focused) {
-    focus_button_->setIcon(
-        focus_button_->style()->standardIcon(focused ? QStyle::SP_TitleBarNormalButton : QStyle::SP_TitleBarMaxButton));
+    focus_button_->setIcon(preview_focus_icon(focused));
     focus_button_->setAccessibleName(focused ? "Restore HStream controls" : "Focus video");
     focus_button_->setToolTip(focused ? "Restore HStream controls" : "Focus video");
     focus_button_->raise();
@@ -323,7 +365,7 @@ class LetterboxRenderHost : public QWidget {
 
  protected:
   void mouseDoubleClickEvent(QMouseEvent* event) override {
-    if (event->button() == Qt::LeftButton && focus_toggle_callback_) {
+    if (event->button() == Qt::LeftButton && focus_available_ && focus_toggle_callback_) {
       focus_toggle_callback_();
       event->accept();
       return;
@@ -362,6 +404,7 @@ class LetterboxRenderHost : public QWidget {
   NativeVideoTarget* render_target_{nullptr};
   QPushButton* focus_button_{nullptr};
   std::function<void()> focus_toggle_callback_;
+  bool focus_available_{false};
 };
 
 QString ansi_color(int code) {
@@ -1179,7 +1222,13 @@ void hm::ui_internal::restore_auto_selection_paths(YAML::Node& current, const YA
 }
 
 bool hm::ui_internal::supports_x11_embedding(const QString& platform_name, bool tegra_runtime) {
+#if defined(__x86_64__)
   return !tegra_runtime && platform_name.compare("xcb", Qt::CaseInsensitive) == 0;
+#else
+  (void)platform_name;
+  (void)tegra_runtime;
+  return false;
+#endif
 }
 
 QString hm::ui_internal::preview_channel_for_tab(int tab_index, int camera_count) {
@@ -1288,9 +1337,9 @@ void HStreamWindow::buildUi() {
   buildTopBar(top_bar_layout);
   root->addWidget(top_bar_);
 
-  auto* content_splitter = new QSplitter(Qt::Vertical);
-  content_splitter->setObjectName("mainLogSplitter");
-  content_splitter->setChildrenCollapsible(false);
+  main_log_splitter_ = new QSplitter(Qt::Vertical);
+  main_log_splitter_->setObjectName("mainLogSplitter");
+  main_log_splitter_->setChildrenCollapsible(false);
 
   setup_panel_ = new QWidget();
   setup_panel_->setObjectName("setupPanel");
@@ -1304,12 +1353,12 @@ void HStreamWindow::buildUi() {
   log_layout->setContentsMargins(0, 0, 0, 0);
   buildLog(log_layout);
 
-  content_splitter->addWidget(setup_panel_);
-  content_splitter->addWidget(log_panel_);
-  content_splitter->setStretchFactor(0, 4);
-  content_splitter->setStretchFactor(1, 1);
-  content_splitter->setSizes({680, 170});
-  root->addWidget(content_splitter, 1);
+  main_log_splitter_->addWidget(setup_panel_);
+  main_log_splitter_->addWidget(log_panel_);
+  main_log_splitter_->setStretchFactor(0, 4);
+  main_log_splitter_->setStretchFactor(1, 1);
+  main_log_splitter_->setSizes({680, 170});
+  root->addWidget(main_log_splitter_, 1);
 
   setCentralWidget(central);
 }
@@ -1357,12 +1406,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   render_video_toggle_ = new QCheckBox("Render video");
   render_video_toggle_->setObjectName("renderVideoCheck");
   render_video_toggle_->setChecked(true);
-  render_video_toggle_->setToolTip("Embed video in the active preview tab; disable before Play to reduce GPU work");
-  connect(render_video_toggle_, &QCheckBox::toggled, this, [this](bool enabled) {
-    appendLog(
-        enabled ? "video rendering enabled for the next pipeline start"
-                : "video rendering disabled for the next pipeline start");
-  });
+  render_video_toggle_->setToolTip("Show the active GPU preview; this can be changed while the pipeline is running");
+  connect(render_video_toggle_, &QCheckBox::toggled, this, [this](bool enabled) { setRuntimeVideoRendering(enabled); });
 
   start_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), "Play");
   start_button_->setObjectName("startPipelineButton");
@@ -1424,21 +1469,21 @@ void HStreamWindow::buildMainArea(QVBoxLayout* root) {
   setup_layout->addWidget(game_column, 1);
   setup_layout->addWidget(output_column);
 
-  auto* setup_preview_splitter = new QSplitter(Qt::Vertical);
-  setup_preview_splitter->setObjectName("setupPreviewSplitter");
-  setup_preview_splitter->setChildrenCollapsible(true);
-  setup_preview_splitter->addWidget(setup_row);
+  setup_preview_splitter_ = new QSplitter(Qt::Vertical);
+  setup_preview_splitter_->setObjectName("setupPreviewSplitter");
+  setup_preview_splitter_->setChildrenCollapsible(true);
+  setup_preview_splitter_->addWidget(setup_row);
   auto* preview_container = new QWidget();
   auto* preview_layout = new QVBoxLayout(preview_container);
   preview_layout->setContentsMargins(0, 0, 0, 0);
   buildPreviewPane(preview_layout);
-  setup_preview_splitter->addWidget(preview_container);
-  setup_preview_splitter->setStretchFactor(0, 0);
-  setup_preview_splitter->setStretchFactor(1, 1);
-  setup_preview_splitter->setCollapsible(0, true);
-  setup_preview_splitter->setCollapsible(1, false);
-  setup_preview_splitter->setSizes({240, 440});
-  root->addWidget(setup_preview_splitter, 1);
+  setup_preview_splitter_->addWidget(preview_container);
+  setup_preview_splitter_->setStretchFactor(0, 0);
+  setup_preview_splitter_->setStretchFactor(1, 1);
+  setup_preview_splitter_->setCollapsible(0, true);
+  setup_preview_splitter_->setCollapsible(1, false);
+  setup_preview_splitter_->setSizes({240, 440});
+  root->addWidget(setup_preview_splitter_, 1);
 }
 
 void HStreamWindow::buildGameControls(QVBoxLayout* root) {
@@ -1562,6 +1607,28 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
     host->setFocusToggleCallback([this, tab_index]() { togglePreviewFocus(tab_index); });
     preview_hosts_.push_back(host);
   };
+  auto add_controls_drawer =
+      [this](QVBoxLayout* page_layout, QWidget* controls, const QString& label, const QString& object_name) {
+        auto* toggle = new QToolButton();
+        toggle->setObjectName(object_name);
+        toggle->setCheckable(true);
+        toggle->setChecked(true);
+        toggle->setArrowType(Qt::DownArrow);
+        toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        toggle->setText(label);
+        toggle->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+        connect(toggle, &QToolButton::toggled, controls, [toggle, controls](bool expanded) {
+          controls->setVisible(expanded);
+          toggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+          toggle->setToolTip(
+              expanded ? "Hide controls to give the video more space"
+                       : "Show controls associated with this video stage");
+        });
+        associated_control_toggles_.push_back(toggle);
+        associated_control_panels_.push_back(controls);
+        page_layout->addWidget(toggle);
+        page_layout->addWidget(controls);
+      };
 
   auto* program = new QWidget();
   auto* layout = new QVBoxLayout(program);
@@ -1593,7 +1660,7 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   auto* program_controls_layout = new QVBoxLayout(program_controls);
   program_controls_layout->setContentsMargins(0, 0, 0, 0);
   buildCameraControls(program_controls_layout, true);
-  layout->addWidget(program_controls);
+  add_controls_drawer(layout, program_controls, "Program Controls", "programControlsToggle");
 
   auto* stitched = new QWidget();
   auto* stitched_layout = new QVBoxLayout(stitched);
@@ -1624,7 +1691,7 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   auto* stitched_controls_layout = new QVBoxLayout(stitched_controls);
   stitched_controls_layout->setContentsMargins(0, 0, 0, 0);
   buildCameraControls(stitched_controls_layout, false);
-  stitched_layout->addWidget(stitched_controls);
+  add_controls_drawer(stitched_layout, stitched_controls, "Stitched Controls", "stitchedControlsToggle");
 
   preview_tabs_->addTab(program, "Program");
   preview_tabs_->addTab(stitched, "Stitched");
@@ -1661,6 +1728,11 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   }
   connect(preview_tabs_, &QTabWidget::currentChanged, this, [this](int tab_index) {
     if (preview_focus_mode_) {
+      if (!canFocusPreview(tab_index)) {
+        setPreviewFocusMode(false, tab_index);
+        switchPipelineRenderTarget(tab_index);
+        return;
+      }
       focused_preview_tab_ = tab_index;
       for (size_t index = 0; index < preview_hosts_.size(); ++index) {
         auto* host = static_cast<LetterboxRenderHost*>(preview_hosts_[index]);
@@ -2678,9 +2750,9 @@ QStringList HStreamWindow::pipelineArguments() const {
   const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
   const bool test_embedded_preview = !qgetenv("HSTREAM_UI_TEST_RUNNER").isEmpty() &&
       qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW");
-  const bool embed_render_window = render_video &&
-      (hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) ||
-       test_embedded_preview);
+  const bool embed_render_window =
+      hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) ||
+      test_embedded_preview;
   QStringList args;
   args << "-g" << game_id << "--enable-sources=URI-MULTIPLE";
   if (active_force_reconfigure_)
@@ -2689,14 +2761,23 @@ QStringList HStreamWindow::pipelineArguments() const {
     args << QString("--clean-expected-invalidation-id=%1").arg(active_calibration_invalidation_id_);
   if (isCalibrationRun()) {
     args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
-    args << QString("--enable-sinks=%1").arg(render_video ? "RENDER" : "FAKE");
-    if (render_video) {
+    args << QString("--enable-sinks=%1").arg(render_video || embed_render_window ? "RENDER" : "FAKE");
+    if (render_video || embed_render_window) {
       args << "--show";
     }
   } else {
     args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
-    args << QString("--enable-sinks=%1").arg(enabledSinkNames().join(","));
-    if (render_video) {
+    QStringList sinks = enabledSinkNames();
+    if (embed_render_window) {
+      // Embedded GPU preview mode substitutes a cheap fakesink for the
+      // conventional RENDER video sink. Keep the logical sink enabled because
+      // its audio side remains the operator's local monitor.
+      sinks.removeAll("FAKE");
+      if (!sinks.contains("RENDER"))
+        sinks.push_front("RENDER");
+    }
+    args << QString("--enable-sinks=%1").arg(sinks.join(","));
+    if (render_video || embed_render_window) {
       args << "--show";
     }
   }
@@ -2725,7 +2806,8 @@ QStringList HStreamWindow::pipelineArguments() const {
                 preview_tabs_->currentIndex(), static_cast<int>(camera_preview_render_targets_.size()))
           : QString("program");
       args << QString("--ui-preview-windows=%1").arg(preview_windows.join(','));
-      args << QString("--ui-preview-active=%1").arg(initial_channel.isEmpty() ? "program" : initial_channel);
+      args << QString("--ui-preview-active=%1")
+                  .arg(render_video ? (initial_channel.isEmpty() ? "program" : initial_channel) : "none");
     }
   }
   args << "--options=pipeline.hmaudio.enable=1";
@@ -2798,8 +2880,10 @@ void HStreamWindow::startPipeline() {
       : QString("program");
   preview_generation_ = 1;
   active_preview_channel_.clear();
-  pending_preview_channel_ = initial_preview_channel.isEmpty() ? QString("program") : initial_preview_channel;
-  pending_preview_generation_ = preview_generation_;
+  const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
+  pending_preview_channel_ =
+      render_video ? (initial_preview_channel.isEmpty() ? QString("program") : initial_preview_channel) : QString();
+  pending_preview_generation_ = pending_preview_channel_.isEmpty() ? 0 : preview_generation_;
   if (!setupPretrainedAssets(args)) {
     if (calibration_pending_)
       failStitchingCalibration("The pretrained calibration assets could not be prepared.");
@@ -2819,39 +2903,41 @@ void HStreamWindow::startPipeline() {
   const bool embedded_render = std::any_of(
       args.begin(), args.end(), [](const QString& argument) { return argument.startsWith("--ui-preview-windows="); });
   pipeline_render_embedded_ = embedded_render;
-  const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
+  setAllPreviewFocusAvailable(false);
   if (preview_surface_)
-    preview_surface_->setVisible(embedded_render);
+    preview_surface_->hide();
   if (preview_render_target_)
-    preview_render_target_->setVisible(embedded_render);
+    preview_render_target_->hide();
   if (stitched_surface_)
-    stitched_surface_->setVisible(embedded_render);
+    stitched_surface_->hide();
   if (stitched_render_target_)
-    stitched_render_target_->setVisible(embedded_render);
+    stitched_render_target_->hide();
   for (QWidget* surface : camera_preview_surfaces_) {
     if (surface)
-      surface->setVisible(embedded_render);
+      surface->hide();
   }
   for (QWidget* target : camera_preview_render_targets_) {
     if (target)
-      target->setVisible(embedded_render);
+      target->hide();
   }
   if (preview_external_notice_)
-    preview_external_notice_->setVisible(!embedded_render);
+    preview_external_notice_->show();
   if (stitched_external_notice_)
-    stitched_external_notice_->setVisible(!embedded_render);
+    stitched_external_notice_->show();
   for (QLabel* notice : camera_preview_notices_) {
     if (notice)
-      notice->setVisible(!embedded_render);
+      notice->show();
   }
-  const QString render_notice =
-      render_video ? "Video is displayed in a separate DeepStream window" : "Video rendering is disabled for this run";
+  const QString render_notice = !render_video
+      ? "Video rendering is disabled"
+      : (embedded_render ? "Starting GPU preview…" : "Video is displayed in a separate DeepStream window");
   if (preview_external_notice_)
     preview_external_notice_->setText(render_notice);
   if (stitched_external_notice_)
     stitched_external_notice_->setText(render_notice);
-  const QString camera_render_notice =
-      render_video ? "Camera preview requires embedded X11 rendering" : "Video rendering is disabled for this run";
+  const QString camera_render_notice = !render_video
+      ? "Video rendering is disabled"
+      : (embedded_render ? "Starting GPU preview…" : "Camera preview requires embedded X11 rendering");
   for (QLabel* notice : camera_preview_notices_) {
     if (notice)
       notice->setText(camera_render_notice);
@@ -3056,6 +3142,8 @@ void HStreamWindow::handlePipelineStarted() {
   appendLog(QString("pipeline started pid=%1").arg(pipeline_process_ ? pipeline_process_->processId() : 0));
   if (pipeline_render_embedded_ && preview_status_)
     preview_status_->setText("Starting GPU preview with the video pipeline");
+  if (pipeline_render_embedded_ && render_video)
+    setPreviewRenderingLayout(true);
   updateRunControls();
 }
 
@@ -3119,6 +3207,13 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
 }
 
 void HStreamWindow::clearPreviewFrames() {
+  if (preview_focus_mode_) {
+    const int restore_tab =
+        focused_preview_tab_ >= 0 ? focused_preview_tab_ : (preview_tabs_ ? preview_tabs_->currentIndex() : 0);
+    setPreviewFocusMode(false, restore_tab);
+  }
+  setPreviewRenderingLayout(false);
+  setAllPreviewFocusAvailable(false);
   std::vector<QWidget*> surfaces = {preview_surface_, stitched_surface_};
   surfaces.insert(surfaces.end(), camera_preview_surfaces_.begin(), camera_preview_surfaces_.end());
   for (QWidget* surface : surfaces) {
@@ -3363,11 +3458,23 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
       return true;
     preview_runtime_ready_ = true;
     preview_generation_ = generation;
+    const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
     const QString selected_channel = selectedPipelinePreviewChannel();
-    if (selected_channel.isEmpty() || selected_channel == backend_channel) {
+    if (!render_video) {
+      pending_preview_channel_.clear();
+      pending_preview_generation_ = 0;
+      if (backend_channel != "none") {
+        requestPipelinePreviewChannel("none", PreviewRequestReason::kRenderToggle);
+      } else {
+        if (preview_status_)
+          preview_status_->setText("Pipeline running without video rendering");
+        appendLog(QString("GPU preview backend ready with rendering disabled generation=%1").arg(generation));
+      }
+    } else if (backend_channel != "none" && (selected_channel.isEmpty() || selected_channel == backend_channel)) {
       pending_preview_channel_ = backend_channel;
       pending_preview_generation_ = generation;
       preview_recovery_attempts_ = 0;
+      setPreviewFocusAvailable(backend_channel, false);
       if (QWidget* surface = previewSurfaceForChannel(backend_channel)) {
         surface->setProperty("previewRendererState", "activating");
         surface->show();
@@ -3421,6 +3528,7 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
   }
   const bool matches_pending = channel == pending_preview_channel_ && generation == pending_preview_generation_;
   if (status == "activated") {
+    setPreviewFocusAvailable(channel, false);
     if (matches_pending) {
       if (preview_status_)
         preview_status_->setText(QString("Waiting for first GPU frame from %1").arg(channel));
@@ -3442,6 +3550,8 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
       target->show();
     if (notice)
       notice->hide();
+    setPreviewFocusAvailable(channel, true);
+    setPreviewRenderingLayout(true);
     if (preview_frame_channels_received_.insert(channel).second)
       appendLog(QString("GPU preview ready channel=%1 generation=%2").arg(channel).arg(generation));
   } else if (status == "failed" || status == "unavailable") {
@@ -3453,6 +3563,9 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
     }
     if (affected_active)
       active_preview_channel_.clear();
+    setPreviewFocusAvailable(channel, false);
+    if (preview_focus_mode_)
+      setPreviewFocusMode(false, focused_preview_tab_ >= 0 ? focused_preview_tab_ : 0);
     if (target)
       target->hide();
     if (surface)
@@ -3472,8 +3585,42 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
                   .arg(generation)
                   .arg(message));
   } else if (status == "deactivated") {
+    setPreviewFocusAvailable(channel, false);
     if (channel == active_preview_channel_)
       active_preview_channel_.clear();
+    if (channel == "none" && matches_pending) {
+      active_preview_channel_.clear();
+      pending_preview_channel_.clear();
+      pending_preview_generation_ = 0;
+      std::vector<QWidget*> surfaces = {preview_surface_, stitched_surface_};
+      surfaces.insert(surfaces.end(), camera_preview_surfaces_.begin(), camera_preview_surfaces_.end());
+      std::vector<QWidget*> targets = {preview_render_target_, stitched_render_target_};
+      targets.insert(targets.end(), camera_preview_render_targets_.begin(), camera_preview_render_targets_.end());
+      for (QWidget* item : surfaces) {
+        if (item)
+          item->hide();
+      }
+      for (QWidget* item : targets) {
+        if (item)
+          item->hide();
+      }
+      for (QLabel* disabled_notice : {preview_external_notice_, stitched_external_notice_}) {
+        if (disabled_notice) {
+          disabled_notice->setText("Video rendering is disabled");
+          disabled_notice->show();
+        }
+      }
+      for (QLabel* disabled_notice : camera_preview_notices_) {
+        if (disabled_notice) {
+          disabled_notice->setText("Video rendering is disabled");
+          disabled_notice->show();
+        }
+      }
+      if (preview_status_)
+        preview_status_->setText("Pipeline running without video rendering");
+      appendLog(QString("GPU preview disabled generation=%1; display branch is quiescent").arg(generation));
+      return true;
+    }
     // A deactivation for a channel being superseded must not hide the newly
     // pending selected target. Keeping it mapped lets the replacement GLX
     // renderer present without requiring another tab change.
@@ -3489,7 +3636,7 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
 
 void HStreamWindow::switchPipelineRenderTarget(int tab_index) {
   if (!pipeline_render_embedded_ || !pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning ||
-      tab_index < 0) {
+      tab_index < 0 || (render_video_toggle_ && !render_video_toggle_->isChecked())) {
     return;
   }
   const QString channel =
@@ -3535,15 +3682,18 @@ bool HStreamWindow::requestPipelinePreviewChannel(const QString& channel, Previe
   preview_generation_ = generation;
   pending_preview_channel_ = channel;
   pending_preview_generation_ = generation;
+  setAllPreviewFocusAvailable(false);
   if (reason != PreviewRequestReason::kRecovery)
     preview_recovery_attempts_ = 0;
-  if (QWidget* surface = previewSurfaceForChannel(channel)) {
-    surface->setProperty("previewRendererState", "activating");
-    surface->show();
-  }
-  if (QWidget* target = previewTargetForChannel(channel)) {
-    target->setProperty("previewRendererState", "activating");
-    target->show();
+  if (channel != "none") {
+    if (QWidget* surface = previewSurfaceForChannel(channel)) {
+      surface->setProperty("previewRendererState", "activating");
+      surface->show();
+    }
+    if (QWidget* target = previewTargetForChannel(channel)) {
+      target->setProperty("previewRendererState", "activating");
+      target->show();
+    }
   }
   appendLog(QString("GPU preview requested channel=%1 generation=%2 reason=%3")
                 .arg(channel)
@@ -3551,8 +3701,11 @@ bool HStreamWindow::requestPipelinePreviewChannel(const QString& channel, Previe
                 .arg(
                     reason == PreviewRequestReason::kStartup
                         ? "startup"
-                        : (reason == PreviewRequestReason::kRecovery ? "recovery" : "tab-change")));
-  schedulePreviewReadyTimeout(channel, generation, previewReadyTimeoutMs());
+                        : (reason == PreviewRequestReason::kRecovery
+                               ? "recovery"
+                               : (reason == PreviewRequestReason::kRenderToggle ? "render-toggle" : "tab-change"))));
+  if (channel != "none")
+    schedulePreviewReadyTimeout(channel, generation, previewReadyTimeoutMs());
   return true;
 }
 
@@ -3589,38 +3742,227 @@ void HStreamWindow::schedulePreviewReadyTimeout(const QString& channel, quint64 
   });
 }
 
+void HStreamWindow::setRuntimeVideoRendering(bool enabled) {
+  const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+  if (!running) {
+    appendLog(
+        enabled ? "video rendering enabled for the next pipeline start"
+                : "video rendering disabled for the next pipeline start");
+    return;
+  }
+  if (!pipeline_render_embedded_) {
+    appendLog("runtime video rendering changes are unavailable for the active external display sink");
+    return;
+  }
+
+  if (!enabled) {
+    if (preview_focus_mode_)
+      setPreviewFocusMode(false, focused_preview_tab_ >= 0 ? focused_preview_tab_ : 0);
+    setAllPreviewFocusAvailable(false);
+    setPreviewRenderingLayout(false);
+    if (preview_status_)
+      preview_status_->setText("Disabling GPU preview…");
+    if (preview_runtime_ready_) {
+      if (!requestPipelinePreviewChannel("none", PreviewRequestReason::kRenderToggle))
+        appendLog("could not disable the GPU preview display branch");
+    } else {
+      appendLog("video rendering will be disabled when the GPU preview backend becomes ready");
+    }
+    return;
+  }
+
+  setPreviewRenderingLayout(true);
+  for (QLabel* notice : {preview_external_notice_, stitched_external_notice_}) {
+    if (notice) {
+      notice->setText("Starting GPU preview…");
+      notice->show();
+    }
+  }
+  for (QLabel* notice : camera_preview_notices_) {
+    if (notice) {
+      notice->setText("Starting GPU preview…");
+      notice->show();
+    }
+  }
+  if (preview_status_)
+    preview_status_->setText("Enabling GPU preview…");
+  if (preview_runtime_ready_) {
+    const QString channel = selectedPipelinePreviewChannel();
+    if (!requestPipelinePreviewChannel(channel.isEmpty() ? "program" : channel, PreviewRequestReason::kRenderToggle))
+      appendLog("could not enable the selected GPU preview display branch");
+  } else {
+    appendLog("video rendering will start when the GPU preview backend becomes ready");
+  }
+}
+
+void HStreamWindow::setPreviewRenderingLayout(bool rendering) {
+  if (rendering == preview_layout_compacted_)
+    return;
+  if (rendering) {
+    if (main_log_splitter_)
+      normal_main_log_sizes_ = main_log_splitter_->sizes();
+    if (setup_preview_splitter_)
+      normal_setup_preview_sizes_ = setup_preview_splitter_->sizes();
+    normal_associated_controls_visible_.clear();
+    for (size_t index = 0; index < associated_control_panels_.size(); ++index) {
+      QWidget* panel = associated_control_panels_[index];
+      normal_associated_controls_visible_.push_back(panel && !panel->isHidden());
+      if (index < associated_control_toggles_.size() && associated_control_toggles_[index])
+        associated_control_toggles_[index]->setChecked(false);
+    }
+    if (setup_preview_splitter_)
+      setup_preview_splitter_->setSizes({0, std::max(1, setup_preview_splitter_->height())});
+    if (main_log_splitter_) {
+      const QList<int> sizes = main_log_splitter_->sizes();
+      const int total = std::max(main_log_splitter_->height(), sizes.value(0) + sizes.value(1));
+      const int compact_log_height = std::min(130, std::max(90, total / 6));
+      main_log_splitter_->setSizes({std::max(1, total - compact_log_height), compact_log_height});
+    }
+    preview_layout_compacted_ = true;
+    return;
+  }
+
+  if (main_log_splitter_ && normal_main_log_sizes_.size() == 2)
+    main_log_splitter_->setSizes(normal_main_log_sizes_);
+  if (setup_preview_splitter_ && normal_setup_preview_sizes_.size() == 2)
+    setup_preview_splitter_->setSizes(normal_setup_preview_sizes_);
+  for (size_t index = 0;
+       index < normal_associated_controls_visible_.size() && index < associated_control_toggles_.size();
+       ++index) {
+    if (associated_control_toggles_[index])
+      associated_control_toggles_[index]->setChecked(normal_associated_controls_visible_[index]);
+  }
+  normal_main_log_sizes_.clear();
+  normal_setup_preview_sizes_.clear();
+  normal_associated_controls_visible_.clear();
+  preview_layout_compacted_ = false;
+}
+
+void HStreamWindow::setPreviewFocusAvailable(const QString& channel, bool available) {
+  int tab_index = -1;
+  if (channel == "program") {
+    tab_index = 0;
+  } else if (channel == "stitched") {
+    tab_index = 1;
+  } else if (channel.startsWith("source")) {
+    bool valid = false;
+    const int source_index = channel.mid(6).toInt(&valid);
+    if (valid)
+      tab_index = source_index + 2;
+  }
+  if (tab_index < 0 || tab_index >= static_cast<int>(preview_hosts_.size()))
+    return;
+  auto* host = static_cast<LetterboxRenderHost*>(preview_hosts_[tab_index]);
+  if (host)
+    host->setFocusAvailable(available);
+}
+
+void HStreamWindow::setAllPreviewFocusAvailable(bool available) {
+  for (QWidget* widget : preview_hosts_) {
+    auto* host = static_cast<LetterboxRenderHost*>(widget);
+    if (host)
+      host->setFocusAvailable(available);
+  }
+}
+
+bool HStreamWindow::canFocusPreview(int tab_index) const {
+  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || !pipeline_render_embedded_ ||
+      (render_video_toggle_ && !render_video_toggle_->isChecked()) || tab_index < 0 ||
+      tab_index >= static_cast<int>(preview_hosts_.size())) {
+    return false;
+  }
+  auto* host = static_cast<LetterboxRenderHost*>(preview_hosts_[tab_index]);
+  const QString channel =
+      hm::ui_internal::preview_channel_for_tab(tab_index, static_cast<int>(camera_preview_render_targets_.size()));
+  QWidget* target = previewTargetForChannel(channel);
+  return host && host->focusAvailable() && target && !target->isHidden() &&
+      target->property("previewRendererState").toString() == "ready";
+}
+
 void HStreamWindow::togglePreviewFocus(int tab_index) {
   const bool restore = preview_focus_mode_ && focused_preview_tab_ == tab_index;
+  if (!restore && !canFocusPreview(tab_index)) {
+    appendLog(QString("preview focus ignored because tab %1 has no ready GPU frame").arg(tab_index));
+    return;
+  }
   setPreviewFocusMode(!restore, tab_index);
 }
 
 void HStreamWindow::setPreviewFocusMode(bool focused, int tab_index) {
   if (!preview_tabs_ || tab_index < 0 || tab_index >= preview_tabs_->count())
     return;
+  if (focused && !canFocusPreview(tab_index))
+    return;
+  const QString transitioning_channel =
+      hm::ui_internal::preview_channel_for_tab(tab_index, static_cast<int>(camera_preview_render_targets_.size()));
+  QWidget* transitioning_target = previewTargetForChannel(transitioning_channel);
+  auto* transitioning_host = tab_index < static_cast<int>(preview_hosts_.size())
+      ? static_cast<LetterboxRenderHost*>(preview_hosts_[tab_index])
+      : nullptr;
+  const bool remap_target = transitioning_target && !transitioning_target->isHidden();
+  const bool restore_focus_button = transitioning_host && transitioning_host->focusAvailable();
+  // A mapped native X11 child punches through Qt's backing store. Unmap it
+  // while the surrounding layouts change size so neither Qt nor the
+  // compositor can retain pieces of its old geometry. The XID and renderer
+  // remain intact and are remapped after the new layout has settled.
+  if (remap_target)
+    transitioning_target->hide();
+  if (transitioning_host)
+    transitioning_host->focusButton()->hide();
   preview_tabs_->setCurrentIndex(tab_index);
   preview_focus_mode_ = focused;
   focused_preview_tab_ = focused ? tab_index : -1;
-  if (top_bar_)
-    top_bar_->setVisible(!focused);
-  if (log_panel_)
-    log_panel_->setVisible(!focused);
-  if (setup_panel_) {
-    if (QWidget* setup_row = setup_panel_->findChild<QWidget*>("setupControlsRow"))
-      setup_row->setVisible(!focused);
-  }
-  preview_tabs_->tabBar()->setVisible(!focused);
-  for (int page_index = 0; page_index < preview_tabs_->count(); ++page_index) {
-    QWidget* page = preview_tabs_->widget(page_index);
-    QWidget* host = page_index < static_cast<int>(preview_hosts_.size()) ? preview_hosts_[page_index] : nullptr;
-    for (QWidget* child : page->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly)) {
-      if (child != host)
-        child->setVisible(!focused);
+  if (focused) {
+    focus_hidden_widgets_.clear();
+    auto hide_for_focus = [this](QWidget* widget) {
+      if (!widget)
+        return;
+      if (!widget->isHidden())
+        focus_hidden_widgets_.push_back(widget);
+      widget->hide();
+    };
+    hide_for_focus(top_bar_);
+    hide_for_focus(log_panel_);
+    if (setup_panel_)
+      hide_for_focus(setup_panel_->findChild<QWidget*>("setupControlsRow"));
+    hide_for_focus(preview_tabs_->tabBar());
+    for (int page_index = 0; page_index < preview_tabs_->count(); ++page_index) {
+      QWidget* page = preview_tabs_->widget(page_index);
+      QWidget* host = page_index < static_cast<int>(preview_hosts_.size()) ? preview_hosts_[page_index] : nullptr;
+      for (QWidget* child : page->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly)) {
+        if (child != host)
+          hide_for_focus(child);
+      }
     }
+  } else {
+    for (QWidget* widget : focus_hidden_widgets_) {
+      if (widget)
+        widget->show();
+    }
+    focus_hidden_widgets_.clear();
   }
   for (size_t index = 0; index < preview_hosts_.size(); ++index) {
     auto* host = static_cast<LetterboxRenderHost*>(preview_hosts_[index]);
     if (host)
       host->setFocused(focused && static_cast<int>(index) == tab_index);
+  }
+  if (centralWidget() && centralWidget()->layout()) {
+    centralWidget()->layout()->invalidate();
+    centralWidget()->layout()->activate();
+  }
+  QApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+  QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+  if (centralWidget()) {
+    centralWidget()->repaint();
+    QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+  }
+  if (remap_target) {
+    transitioning_target->show();
+    transitioning_target->raise();
+  }
+  if (transitioning_host && restore_focus_button) {
+    transitioning_host->focusButton()->show();
+    transitioning_host->focusButton()->raise();
   }
   appendLog(focused ? QString("preview focus mode tab=%1").arg(tab_index) : "preview restored to normal layout");
 }
@@ -3650,7 +3992,7 @@ void HStreamWindow::updateRunControls() {
     control_points_spin_->setEnabled(!running);
   }
   if (render_video_toggle_) {
-    render_video_toggle_->setEnabled(!running);
+    render_video_toggle_->setEnabled(!running || pipeline_render_embedded_);
   }
   if (game_controls_) {
     game_controls_->setEnabled(!running);

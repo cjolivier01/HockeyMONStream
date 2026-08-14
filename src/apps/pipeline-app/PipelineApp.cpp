@@ -742,6 +742,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     };
 
     auto configure_path = [&](GstElement* queue,
+                              GstElement* ingress_isolation,
                               GstElement* isolation,
                               GstElement* converter,
                               GstElement* caps_filter,
@@ -752,7 +753,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
                               gint width,
                               gint height,
                               bool link_elements) -> bool {
-      if (!queue || !isolation || !converter || !caps_filter || !sink)
+      if (!queue || !ingress_isolation || !isolation || !converter || !caps_filter || !sink)
         return false;
       const guint64 aligned_pitch = (static_cast<guint64>(width) * 4ULL + 255ULL) & ~255ULL;
       const guint64 path_image_bytes = aligned_pitch * static_cast<guint64>(height) * 2ULL;
@@ -772,6 +773,15 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           nullptr);
       const bool initially_active = channel == active_ui_preview_channel_;
       g_object_set(
+          G_OBJECT(ingress_isolation),
+          "channel",
+          channel.c_str(),
+          "generation",
+          static_cast<guint64>(active_ui_preview_generation_),
+          "active",
+          initially_active ? TRUE : FALSE,
+          nullptr);
+      g_object_set(
           G_OBJECT(isolation),
           "channel",
           channel.c_str(),
@@ -780,6 +790,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           "active",
           initially_active ? TRUE : FALSE,
           nullptr);
+      hm::gpu_preview::set_isolation_failure_peer(isolation, ingress_isolation);
       g_object_set(
           G_OBJECT(converter),
           "gpu-id",
@@ -823,9 +834,15 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           "enable-last-sample",
           FALSE,
           nullptr);
-      if (link_elements && !gst_element_link_many(queue, isolation, converter, caps_filter, sink, nullptr))
+      // The ingress gate keeps inactive buffers out of the queue. The second
+      // gate remains after the queue as a drain barrier: once it is closed,
+      // no already-enqueued buffer can still reach the converter or renderer.
+      if (link_elements &&
+          !gst_element_link_many(ingress_isolation, queue, isolation, converter, caps_filter, sink, nullptr))
         return false;
-      GstPad* probe_pad = gst_element_get_static_pad(isolation, "src");
+      // Rate-limit before the queue so high-frame-rate inputs do not wake the
+      // preview task for frames that will be discarded.
+      GstPad* probe_pad = gst_element_get_static_pad(ingress_isolation, "src");
       if (!probe_pad)
         return false;
       auto* probe_state = new PreviewProbeState{GST_ELEMENT(gst_object_ref(sink))};
@@ -840,7 +857,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
             delete state;
           });
       gst_object_unref(probe_pad);
-      ui_preview_channels_[channel] = UiPreviewChannel{isolation, sink};
+      ui_preview_channels_[channel] = UiPreviewChannel{ingress_isolation, isolation, sink};
       if (initially_active)
         active_ui_preview_channel_ = channel;
       return true;
@@ -851,16 +868,20 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     const auto program_target = ui_preview_window_ids_.find("program");
     if (program_target != ui_preview_window_ids_.end()) {
       GstElement* queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "program_gpu_preview_queue");
+      GstElement* ingress_isolation =
+          gst_element_factory_make("hmpreviewisolation", "program_gpu_preview_ingress_isolation");
       GstElement* isolation = gst_element_factory_make("hmpreviewisolation", "program_gpu_preview_isolation");
       GstElement* converter = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "program_gpu_preview_converter");
       GstElement* caps_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "program_gpu_preview_caps");
       GstElement* sink = gst_element_factory_make("hmgpupreviewsink", "program_gpu_preview_sink");
-      if (!output.bin || !output.tee || !queue || !isolation || !converter || !caps_filter || !sink) {
+      if (!output.bin || !output.tee || !queue || !ingress_isolation || !isolation || !converter || !caps_filter ||
+          !sink) {
         return absl::InternalError("Could not create the GPU-native Program preview branch");
       }
-      gst_bin_add_many(GST_BIN(output.bin), queue, isolation, converter, caps_filter, sink, nullptr);
+      gst_bin_add_many(GST_BIN(output.bin), ingress_isolation, queue, isolation, converter, caps_filter, sink, nullptr);
       if (!configure_path(
               queue,
+              ingress_isolation,
               isolation,
               converter,
               caps_filter,
@@ -871,7 +892,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
               1600,
               900,
               true) ||
-          !link_element_to_tee_src_pad(output.tee, queue)) {
+          !link_element_to_tee_src_pad(output.tee, ingress_isolation)) {
         return absl::InternalError("Could not link the GPU-native Program preview branch");
       }
     }
@@ -879,13 +900,14 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     const auto stitched_target = ui_preview_window_ids_.find("stitched");
     HmStitcherBin& stitcher = app_context->pipeline.hmstitcher_bin;
     if (stitched_target != ui_preview_window_ids_.end()) {
-      if (!stitcher.preview_queue || !stitcher.preview_isolation || !stitcher.preview_converter ||
-          !stitcher.preview_caps_filter || !stitcher.preview_sink) {
+      if (!stitcher.preview_queue || !stitcher.preview_ingress_isolation || !stitcher.preview_isolation ||
+          !stitcher.preview_converter || !stitcher.preview_caps_filter || !stitcher.preview_sink) {
         return absl::FailedPreconditionError("The stitched GPU preview branch was not created");
       }
       g_object_set(G_OBJECT(stitcher.preview_sink), "window-id", stitched_target->second, nullptr);
       if (!configure_path(
               stitcher.preview_queue,
+              stitcher.preview_ingress_isolation,
               stitcher.preview_isolation,
               stitcher.preview_converter,
               stitcher.preview_caps_filter,
@@ -907,14 +929,29 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       if (target == ui_preview_window_ids_.end())
         continue;
       NvDsSrcBin& source = sources.sub_bins[source_index];
-      if (!source.bin || !source.fakesink_queue || !source.fakesink) {
+      if (!source.bin || !source.tee || !source.fakesink_queue || !source.fakesink) {
         return absl::FailedPreconditionError(TO_STRING(channel << " does not expose a preview tee branch"));
       }
+      GstPad* source_queue_sink = gst_element_get_static_pad(source.fakesink_queue, "sink");
+      GstPad* old_tee_pad = source_queue_sink ? gst_pad_get_peer(source_queue_sink) : nullptr;
+      if (!source_queue_sink || !old_tee_pad || GST_OBJECT_PARENT(old_tee_pad) != GST_OBJECT(source.tee) ||
+          !gst_pad_unlink(old_tee_pad, source_queue_sink)) {
+        if (old_tee_pad)
+          gst_object_unref(old_tee_pad);
+        if (source_queue_sink)
+          gst_object_unref(source_queue_sink);
+        return absl::InternalError(TO_STRING("Could not detach the fake preview branch for " << channel));
+      }
+      gst_element_release_request_pad(source.tee, old_tee_pad);
+      gst_object_unref(old_tee_pad);
+      gst_object_unref(source_queue_sink);
       gst_element_unlink(source.fakesink_queue, source.fakesink);
       if (!gst_bin_remove(GST_BIN(source.bin), source.fakesink)) {
         return absl::InternalError(TO_STRING("Could not replace the fake sink for " << channel));
       }
       source.fakesink = nullptr;
+      GstElement* ingress_isolation =
+          gst_element_factory_make("hmpreviewisolation", (channel + "_gpu_preview_ingress_isolation").c_str());
       GstElement* isolation =
           gst_element_factory_make("hmpreviewisolation", (channel + "_gpu_preview_isolation").c_str());
       GstElement* converter =
@@ -922,12 +959,13 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       GstElement* caps_filter =
           gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, (channel + "_gpu_preview_caps").c_str());
       GstElement* sink = gst_element_factory_make("hmgpupreviewsink", (channel + "_gpu_preview_sink").c_str());
-      if (!isolation || !converter || !caps_filter || !sink)
+      if (!ingress_isolation || !isolation || !converter || !caps_filter || !sink)
         return absl::InternalError(TO_STRING("Could not create the GPU-native preview branch for " << channel));
-      gst_bin_add_many(GST_BIN(source.bin), isolation, converter, caps_filter, sink, nullptr);
+      gst_bin_add_many(GST_BIN(source.bin), ingress_isolation, isolation, converter, caps_filter, sink, nullptr);
       const NvDsSourceConfig& source_config = app_context->config.multi_source_config[source_index];
       if (!configure_path(
               source.fakesink_queue,
+              ingress_isolation,
               isolation,
               converter,
               caps_filter,
@@ -939,6 +977,9 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
               720,
               true)) {
         return absl::InternalError(TO_STRING("Could not link the GPU-native preview branch for " << channel));
+      }
+      if (!link_element_to_tee_src_pad(source.tee, ingress_isolation)) {
+        return absl::InternalError(TO_STRING("Could not attach the GPU-native preview branch for " << channel));
       }
       source.fakesink = sink;
     }
@@ -1637,7 +1678,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        (gpointer) + [](const gchar*, const gchar* value, gpointer data, GError** error) -> gboolean {
          auto* app = static_cast<PipelineApplication*>(data);
          const std::string channel = value ? value : "";
-         const bool valid = channel == "program" || channel == "stitched" ||
+         const bool valid = channel == "none" || channel == "program" || channel == "stitched" ||
              (channel.rfind("source", 0) == 0 && channel.size() > 6 &&
               std::all_of(channel.begin() + 6, channel.end(), [](unsigned char c) { return std::isdigit(c); }));
          if (!valid) {
@@ -1848,10 +1889,10 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
       return absl::FailedPreconditionError(
           "GPU-native embedded preview is unavailable on this platform; no CPU preview fallback was enabled");
     }
-    if (!ui_preview_window_ids_.count(initial_ui_preview_channel_)) {
+    if (initial_ui_preview_channel_ != "none" && !ui_preview_window_ids_.count(initial_ui_preview_channel_)) {
       return absl::InvalidArgumentError("--ui-preview-active must name a channel present in --ui-preview-windows");
     }
-    active_ui_preview_channel_ = initial_ui_preview_channel_;
+    active_ui_preview_channel_ = initial_ui_preview_channel_ == "none" ? std::string() : initial_ui_preview_channel_;
     active_ui_preview_generation_ = 1;
     set_embedded_gpu_preview_video_mode(TRUE);
   } else {
@@ -3263,9 +3304,11 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
     // Advancing the generation re-arms the ready acknowledgement on the next
     // presented frame while leaving the observational GPU branch flowing.
     hm::gpu_preview::set_renderer_generation(previous->second.sink, generation);
+    hm::gpu_preview::set_isolation_generation(previous->second.ingress_isolation, generation);
     hm::gpu_preview::set_isolation_generation(previous->second.isolation, generation);
     active_ui_preview_generation_ = generation;
-    if (!hm::gpu_preview::isolation_active(previous->second.isolation)) {
+    if (!hm::gpu_preview::isolation_active(previous->second.ingress_isolation) ||
+        !hm::gpu_preview::isolation_active(previous->second.isolation)) {
       active_ui_preview_channel_.clear();
       g_print(
           "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
@@ -3282,8 +3325,10 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
     return true;
   }
   if (previous != ui_preview_channels_.end()) {
-    // active=false waits for every buffer already past the gate to finish its
-    // downstream push. Only then is it safe to destroy the old GL renderer.
+    // Close the cheap ingress gate first so no new buffer enters the queue.
+    // Closing the post-queue barrier then waits for any buffer already inside
+    // the converter/sink path. Only then is renderer destruction safe.
+    hm::gpu_preview::set_isolation_active(previous->second.ingress_isolation, false, generation);
     hm::gpu_preview::set_isolation_active(previous->second.isolation, false, generation);
     if (!hm::gpu_preview::quiesce(previous->second.sink, generation)) {
       active_ui_preview_channel_.clear();
@@ -3318,8 +3363,14 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
   }
 
   g_object_set(G_OBJECT(target->second.sink), "generation", generation, nullptr);
+  // Arm the drain barrier before opening the ingress gate. A newly enqueued
+  // buffer can therefore never be dropped between the two gates.
   hm::gpu_preview::set_isolation_active(target->second.isolation, true, generation);
-  if (!hm::gpu_preview::isolation_active(target->second.isolation)) {
+  hm::gpu_preview::set_isolation_active(target->second.ingress_isolation, true, generation);
+  if (!hm::gpu_preview::isolation_active(target->second.isolation) ||
+      !hm::gpu_preview::isolation_active(target->second.ingress_isolation)) {
+    hm::gpu_preview::set_isolation_active(target->second.ingress_isolation, false, generation);
+    hm::gpu_preview::set_isolation_active(target->second.isolation, false, generation);
     hm::gpu_preview::quiesce(target->second.sink, generation);
     g_print(
         "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT

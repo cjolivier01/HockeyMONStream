@@ -107,6 +107,20 @@ bool link_to_tee(GstElement* src_tee, GstElement* target) {
   return true;
 }
 
+bool add_tee_output_ghost_pad(GstElement* bin, GstElement* tee) {
+  GstPadTemplate* pad_template = gst_element_class_get_pad_template(GST_ELEMENT_GET_CLASS(tee), "src_%u");
+  GstPad* tee_pad = pad_template ? gst_element_request_pad(tee, pad_template, NULL, NULL) : nullptr;
+  GstPad* ghost = tee_pad ? gst_ghost_pad_new("src", tee_pad) : nullptr;
+  const bool added = ghost && gst_element_add_pad(bin, ghost);
+  if (ghost && !added)
+    gst_object_unref(ghost);
+  if (tee_pad)
+    gst_object_unref(tee_pad);
+  if (!added)
+    g_printerr("Tee output could not be exposed as a ghost pad.\n");
+  return added;
+}
+
 [[maybe_unused]] NvDsSinkBinSubBin* find_sink_sub_bin(
     int sink_id,
     const NvDsSinkSubBinConfig* sink_config,
@@ -391,7 +405,8 @@ bool create_rtsp_audio_branch(NvDsHmAudioBin* bin, const HmAudioSinkTarget& targ
   if (!create_audio_branch_queue(bin, target.config, &queue) ||
       !make_audio_bin_element(
           bin, &audioconvert, NVDS_ELEM_AUDIO_CONV, branch_element_name("rtsp", target.config, "audioconvert")) ||
-      !make_audio_bin_element(bin, &audioresample, "audioresample", branch_element_name("rtsp", target.config, "resample")) ||
+      !make_audio_bin_element(
+          bin, &audioresample, "audioresample", branch_element_name("rtsp", target.config, "resample")) ||
       !make_audio_bin_element(bin, &capsfilter, "capsfilter", branch_element_name("rtsp", target.config, "caps")) ||
       !make_audio_bin_element(bin, &payloader, "rtpL16pay", branch_element_name("rtsp", target.config, "l16pay")) ||
       !make_audio_bin_element(bin, &udpsink, "udpsink", branch_element_name("rtsp", target.config, "udpsink"))) {
@@ -452,8 +467,10 @@ bool create_webrtc_audio_branch(NvDsHmAudioBin* bin, const HmAudioSinkTarget& ta
   if (!create_audio_branch_queue(bin, target.config, &queue) ||
       !make_audio_bin_element(
           bin, &audioconvert, NVDS_ELEM_AUDIO_CONV, branch_element_name("webrtc", target.config, "audioconvert")) ||
-      !make_audio_bin_element(bin, &audioresample, "audioresample", branch_element_name("webrtc", target.config, "resample")) ||
-      !make_audio_bin_element(bin, &raw_capsfilter, "capsfilter", branch_element_name("webrtc", target.config, "rawcaps")) ||
+      !make_audio_bin_element(
+          bin, &audioresample, "audioresample", branch_element_name("webrtc", target.config, "resample")) ||
+      !make_audio_bin_element(
+          bin, &raw_capsfilter, "capsfilter", branch_element_name("webrtc", target.config, "rawcaps")) ||
       !make_audio_bin_element(bin, &opusenc, "opusenc", branch_element_name("webrtc", target.config, "opusenc")) ||
       !make_audio_bin_element(bin, &rtppay, "rtpopuspay", branch_element_name("webrtc", target.config, "rtpopuspay"))) {
     return false;
@@ -523,7 +540,8 @@ bool create_render_audio_branch(
   if (!create_audio_branch_queue(bin, target.config, &queue) ||
       !make_audio_bin_element(
           bin, &audioconvert, NVDS_ELEM_AUDIO_CONV, branch_element_name("render", target.config, "audioconvert")) ||
-      !make_audio_bin_element(bin, &audioresample, "audioresample", branch_element_name("render", target.config, "resample")) ||
+      !make_audio_bin_element(
+          bin, &audioresample, "audioresample", branch_element_name("render", target.config, "resample")) ||
       !make_audio_bin_element(bin, &audiosink, "alsasink", branch_element_name("render", target.config, "alsasink"))) {
     return false;
   }
@@ -559,7 +577,8 @@ bool create_audio_branch_for_target(
     return create_file_audio_branch(bin, target, input_encoded_aac);
   }
   if (target.config->type == NV_DS_SINK_UDPSINK) {
-    return is_rtmp_server_sink(target.config) ? create_rtmp_audio_branch(bin, target) : create_rtsp_audio_branch(bin, target);
+    return is_rtmp_server_sink(target.config) ? create_rtmp_audio_branch(bin, target)
+                                              : create_rtsp_audio_branch(bin, target);
   }
   if (target.config->type == NV_DS_SINK_WEBRTC) {
     return create_webrtc_audio_branch(bin, target);
@@ -635,7 +654,8 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
       goto done;
     }
     HMGST_ELEMENT_MAKE_BINADD(bin->output_tee, "tee", "hmstitcher_preview_tee");
-    HMGST_ELEMENT_MAKE_BINADD(bin->output_queue, NVDS_ELEM_QUEUE, "hmstitcher_output_queue");
+    HMGST_ELEMENT_MAKE_BINADD(
+        bin->preview_ingress_isolation, "hmpreviewisolation", "hmstitcher_preview_ingress_isolation");
     HMGST_ELEMENT_MAKE_BINADD(bin->preview_queue, NVDS_ELEM_QUEUE, "hmstitcher_preview_queue");
     HMGST_ELEMENT_MAKE_BINADD(bin->preview_isolation, "hmpreviewisolation", "hmstitcher_preview_isolation");
     HMGST_ELEMENT_MAKE_BINADD(bin->preview_converter, NVDS_ELEM_VIDEO_CONV, "hmstitcher_preview_converter");
@@ -682,6 +702,7 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
     gst_caps_set_features(preview_caps, 0, gst_caps_features_new(MEMORY_FEATURES, NULL));
     g_object_set(G_OBJECT(bin->preview_caps_filter), "caps", preview_caps, NULL);
     gst_caps_unref(preview_caps);
+    g_object_set(G_OBJECT(bin->preview_ingress_isolation), "channel", "stitched", "active", FALSE, NULL);
     g_object_set(G_OBJECT(bin->preview_isolation), "channel", "stitched", "active", FALSE, NULL);
     g_object_set(
         G_OBJECT(bin->preview_sink),
@@ -700,8 +721,10 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
         NULL);
 
     NVGSTDS_LINK_ELEMENT(bin->elem_hmstitcher, bin->output_tee);
-    if (!link_to_tee(bin->output_tee, bin->output_queue) || !link_to_tee(bin->output_tee, bin->preview_queue) ||
+    if (!add_tee_output_ghost_pad(bin->bin, bin->output_tee) ||
+        !link_to_tee(bin->output_tee, bin->preview_ingress_isolation) ||
         !gst_element_link_many(
+            bin->preview_ingress_isolation,
             bin->preview_queue,
             bin->preview_isolation,
             bin->preview_converter,
@@ -711,7 +734,6 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
       NVGSTDS_ERR_MSG_V("Failed to link hmstitcher UI preview branch");
       goto done;
     }
-    NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->output_queue, "src");
   } else {
     NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->elem_hmstitcher, "src");
   }

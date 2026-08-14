@@ -203,8 +203,8 @@ struct HmStitcherBin {
   GstElement* cap_filter{nullptr};
   GstElement* elem_hmstitcher{nullptr};
   GstElement* output_tee{nullptr};
-  GstElement* output_queue{nullptr};
   GstElement* preview_queue{nullptr};
+  GstElement* preview_ingress_isolation{nullptr};
   GstElement* preview_isolation{nullptr};
   GstElement* preview_converter{nullptr};
   GstElement* preview_caps_filter{nullptr};

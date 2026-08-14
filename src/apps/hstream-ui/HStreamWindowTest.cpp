@@ -3,6 +3,7 @@
 
 #include <QtTest/qtest_widgets.h>
 #include <QtTest/qtestmouse.h>
+#include <QtCore/QDir>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
@@ -31,6 +32,7 @@
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTextEdit>
+#include <QtWidgets/QToolButton>
 
 #include <yaml-cpp/yaml.h>
 
@@ -64,7 +66,11 @@ bool expect(bool condition, const std::string& message) {
   return true;
 }
 
-bool expect_x11_widget_state(QWidget* widget, bool expected_viewable, const std::string& description) {
+bool expect_x11_widget_state(
+    QWidget* widget,
+    bool expected_viewable,
+    const std::string& description,
+    bool require_geometry = true) {
 #ifdef Q_OS_UNIX
   if (!widget || QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) != 0)
     return true;
@@ -91,9 +97,11 @@ bool expect_x11_widget_state(QWidget* widget, bool expected_viewable, const std:
   const int expected_y = qRound(widget->y() * scale);
   const int expected_width = qRound(widget->width() * scale);
   const int expected_height = qRound(widget->height() * scale);
+  const bool geometry_matches = !require_geometry ||
+      (attributes.x == expected_x && attributes.y == expected_y && attributes.width == expected_width &&
+       attributes.height == expected_height);
   return expect(
-      parent == expected_parent && attributes.x == expected_x && attributes.y == expected_y &&
-          attributes.width == expected_width && attributes.height == expected_height && viewable == expected_viewable,
+      parent == expected_parent && geometry_matches && viewable == expected_viewable,
       description + ": native parent/geometry/map state differs from Qt (parent=" + std::to_string(parent) +
           " expected-parent=" + std::to_string(expected_parent) + " X11=" + std::to_string(attributes.x) + "," +
           std::to_string(attributes.y) + " " + std::to_string(attributes.width) + "x" +
@@ -106,6 +114,19 @@ bool expect_x11_widget_state(QWidget* widget, bool expected_viewable, const std:
   (void)description;
   return true;
 #endif
+}
+
+bool capture_interaction_artifact(HStreamWindow* window, const QString& name) {
+  const QString artifact_dir = qEnvironmentVariable("HSTREAM_UI_X11_ARTIFACT_DIR");
+  if (artifact_dir.isEmpty())
+    return true;
+  if (!window || !window->screen() || !QDir().mkpath(artifact_dir))
+    return expect(false, "Could not prepare the X11 interaction artifact directory");
+  QApplication::processEvents();
+  const QPixmap composed = window->screen()->grabWindow(window->winId());
+  const QString path = QDir(artifact_dir).filePath(name);
+  return expect(
+      !composed.isNull() && composed.save(path), "Could not save composed X11 screenshot: " + path.toStdString());
 }
 
 bool test_path_scoped_auto_rollback() {
@@ -275,11 +296,23 @@ bool write_fake_runner(const QString& path) {
   file.write("time.sleep(0.05)\n");
   file.write("sys.stdout.write(' blue runner line\\033[0m\\n')\n");
   file.write("sys.stdout.flush()\n");
-  file.write("if os.environ.get('HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW') == '1':\n");
-  file.write("    print('HSTREAM_PREVIEW_RUNTIME status=ready channel=program generation=2', flush=True)\n");
   file.write(
-      "    print('HSTREAM_PREVIEW channel=program status=activated generation=2 message=GPU preview branch "
-      "re-armed', flush=True)\n");
+      "if os.environ.get('HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW') == '1' or any(argument.startswith("
+      "'--ui-preview-windows=') for argument in sys.argv[1:]):\n");
+  file.write("    initial_preview = 'program'\n");
+  file.write("    for argument in sys.argv[1:]:\n");
+  file.write("        if argument.startswith('--ui-preview-active='):\n");
+  file.write("            initial_preview = argument.split('=', 1)[1]\n");
+  file.write(
+      "    print('HSTREAM_PREVIEW_RUNTIME status=ready channel=' + initial_preview + ' generation=2', flush=True)\n");
+  file.write("    if initial_preview != 'none':\n");
+  file.write(
+      "        print('HSTREAM_PREVIEW channel=' + initial_preview + ' status=activated generation=2 message=GPU "
+      "preview branch re-armed', flush=True)\n");
+  file.write("        if int(os.environ.get('HSTREAM_UI_TEST_PREVIEW_READY_AFTER', '0')) == 0:\n");
+  file.write(
+      "            print('HSTREAM_PREVIEW channel=' + initial_preview + ' status=ready generation=2 message=first "
+      "GPU frame presented', flush=True)\n");
   file.write("calibration_result = os.environ.get('HSTREAM_UI_TEST_CALIBRATION_RESULT', '')\n");
   file.write("if not calibration_result and os.environ.get('HSTREAM_UI_TEST_COMPLETE_CALIBRATION') == '1':\n");
   file.write("    calibration_result = 'success'\n");
@@ -360,6 +393,11 @@ bool write_fake_runner(const QString& path) {
   file.write("    if line.startswith('@set-preview-active '):\n");
   file.write("        _, channel, generation = line.rstrip('\\n').split(' ', 2)\n");
   file.write("        preview_activation_count += 1\n");
+  file.write("        if channel == 'none':\n");
+  file.write(
+      "            print('HSTREAM_PREVIEW channel=none status=deactivated generation=' + generation + "
+      "' message=all GPU preview branches are inactive', flush=True)\n");
+  file.write("            return\n");
   file.write(
       "        print('HSTREAM_PREVIEW channel=' + channel + ' status=activated generation=' + generation + "
       "' message=GPU preview branch activated', flush=True)\n");
@@ -1495,6 +1533,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* camera1_notice = require_child<QLabel>(window, "camera1ExternalRenderNotice");
   auto* stitched_status = require_child<QLabel>(window, "stitchedPreviewStatusLabel");
   auto* program_controls = require_child<QWidget>(window, "programAssociatedControls");
+  auto* program_controls_toggle = require_child<QToolButton>(window, "programControlsToggle");
   auto* stitched_controls = require_child<QWidget>(window, "stitchedAssociatedControls");
   auto* program_control_tabs = require_child<QTabWidget>(window, "programControlTabs");
   auto* stitched_control_tabs = require_child<QTabWidget>(window, "stitchedControlTabs");
@@ -1506,8 +1545,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       !render_video || !log || !clear_log || !main_log_splitter || !setup_preview_splitter || !output_routing ||
       !preview_tabs || !program_host || !preview_surface || !preview_target || !stitched_surface || !stitched_target ||
       !camera1_host || !camera1_surface || !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface ||
-      !external_notice || !camera1_notice || !stitched_status || !program_controls || !stitched_controls ||
-      !program_control_tabs || !stitched_control_tabs || !program_focus || !top_bar || !setup_row || !log_panel) {
+      !external_notice || !camera1_notice || !stitched_status || !program_controls || !program_controls_toggle ||
+      !stitched_controls || !program_control_tabs || !stitched_control_tabs || !program_focus || !top_bar ||
+      !setup_row || !log_panel) {
     return false;
   }
 
@@ -1556,63 +1596,26 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(
           program_focus->parentWidget() == program_host && program_focus->size() == QSize(24, 24) &&
               program_focus->x() == program_host->width() - program_focus->width() - 6 && program_focus->y() == 6 &&
-              program_focus->toolTip() == "Focus video" && program_focus->accessibleName() == "Focus video",
-          "The compact focus control must stay in the preview pane's top-right corner") ||
+              program_focus->toolTip() == "Focus video" && program_focus->accessibleName() == "Focus video" &&
+              program_focus->isHidden() && !program_focus->isEnabled(),
+          "The compact focus control must stay hidden until its preview has presented a GPU frame") ||
       !expect_x11_widget_state(
-          program_focus, true, "The focus control must use the preview host as its native X11 coordinate space")) {
+          program_focus,
+          false,
+          "The stopped focus control must remain an unmapped native child of the video host",
+          false)) {
     return false;
   }
   QTest::mouseDClick(preview_target, Qt::LeftButton);
   QApplication::processEvents();
   if (!expect(
-          !top_bar->isVisible() && !setup_row->isVisible() && !log_panel->isVisible() &&
-              !preview_tabs->tabBar()->isVisible() && !program_controls->isVisible() && program_host->isVisible() &&
-              !window->isFullScreen() && program_focus->toolTip() == "Restore HStream controls" &&
-              program_focus->accessibleName() == "Restore HStream controls",
-          "Double-clicking a video should focus it across the HStream app area")) {
-    return false;
-  }
-  activate(program_focus);
-  if (!expect(
           top_bar->isVisible() && setup_row->isVisible() && log_panel->isVisible() &&
-              preview_tabs->tabBar()->isVisible() && program_controls->isVisible(),
-          "The top-right restore icon should restore the normal HStream layout")) {
+              preview_tabs->tabBar()->isVisible() && program_controls->isVisible() && program_focus->isHidden(),
+          "A real double-click while stopped must not enter an empty all-black focus layout")) {
     return false;
   }
-  preview_tabs->setCurrentIndex(2);
-  QApplication::processEvents();
-  QTest::mouseDClick(camera1_target, Qt::LeftButton);
-  QApplication::processEvents();
-  if (!expect(
-          camera1_host->isVisible() && !preview_tabs->tabBar()->isVisible() && !window->isFullScreen(),
-          "Every camera video should support in-app focus mode with a visible restore icon")) {
+  if (!capture_interaction_artifact(window, "stopped-double-click-no-op.png"))
     return false;
-  }
-  preview_tabs->setCurrentIndex(0);
-  QApplication::processEvents();
-  if (!expect(
-          program_host->isVisible() && !preview_tabs->tabBar()->isVisible() && !window->isFullScreen(),
-          "An automatic tab change should transfer focus mode to the selected preview")) {
-    return false;
-  }
-  activate(program_focus);
-  QApplication::processEvents();
-  if (!expect(
-          preview_tabs->tabBar()->isVisible() && top_bar->isVisible() && !window->isFullScreen(),
-          "One restore-icon click after an automatic tab change should restore the normal layout")) {
-    return false;
-  }
-  preview_tabs->setCurrentIndex(2);
-  QApplication::processEvents();
-  QTest::mouseDClick(camera1_target, Qt::LeftButton);
-  QApplication::processEvents();
-  QTest::mouseDClick(camera1_target, Qt::LeftButton);
-  QApplication::processEvents();
-  if (!expect(
-          preview_tabs->tabBar()->isVisible() && top_bar->isVisible() && !window->isFullScreen(),
-          "Double-clicking a focused camera video should restore the normal layout")) {
-    return false;
-  }
   if (!expect(
           window->findChild<QLineEdit*>("pluginPropertyEdit") == nullptr,
           "The inert generic plugin field should not be presented as a working video control")) {
@@ -1724,6 +1727,112 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           preview_target, true, "Playing Program target must remain aligned with its Qt video host")) {
     return false;
   }
+  const int pipeline_start_count = window->logText().count("pipeline started pid=");
+  const int ready_count_before_runtime_toggle = window->logText().count("GPU preview ready channel=program");
+  if (!expect(
+          render_video->isEnabled() && setup_preview_splitter->sizes().at(0) == 0 && program_focus->isVisible() &&
+              program_focus->isEnabled() && program_controls->isHidden() && program_controls_toggle->isVisible(),
+          "A live embedded preview should enable focus and collapse setup and associated controls for more video "
+          "space")) {
+    return false;
+  }
+  if (!capture_interaction_artifact(window, "playing-video-layout.png"))
+    return false;
+  QTest::mouseClick(render_video, Qt::LeftButton);
+  for (int i = 0; i < 100 && !window->logText().contains("GPU preview disabled generation="); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          !render_video->isChecked() && render_video->isEnabled() && preview_target->isHidden() &&
+              program_focus->isHidden() && setup_preview_splitter->sizes().at(0) > 0 &&
+              window->logText().contains("stdin:@set-preview-active none") &&
+              window->logText().count("pipeline started pid=") == pipeline_start_count,
+          "Turning rendering off while playing must quiesce the display branch, restore the setup layout, and keep "
+          "the same pipeline process")) {
+    return false;
+  }
+  if (!capture_interaction_artifact(window, "playing-render-disabled.png"))
+    return false;
+  QTest::mouseClick(render_video, Qt::LeftButton);
+  for (int i = 0;
+       i < 100 && window->logText().count("GPU preview ready channel=program") <= ready_count_before_runtime_toggle;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          render_video->isChecked() && !preview_target->isHidden() && program_focus->isVisible() &&
+              program_focus->isEnabled() && setup_preview_splitter->sizes().at(0) == 0 &&
+              window->logText().contains("reason=render-toggle") &&
+              window->logText().count("pipeline started pid=") == pipeline_start_count,
+          "Turning rendering back on must reactivate the selected GPU preview without restarting the pipeline")) {
+    return false;
+  }
+
+  QTest::mouseDClick(preview_target, Qt::LeftButton);
+  QApplication::processEvents();
+  if (!expect(
+          !top_bar->isVisible() && !setup_row->isVisible() && !log_panel->isVisible() &&
+              !preview_tabs->tabBar()->isVisible() && !program_controls->isVisible() && program_host->isVisible() &&
+              !window->isFullScreen() && program_focus->toolTip() == "Restore HStream controls" &&
+              program_focus->accessibleName() == "Restore HStream controls",
+          "A real double-click on a ready GPU preview should focus it across the HStream app area")) {
+    return false;
+  }
+  window->resize(1500, 920);
+  QApplication::processEvents();
+  if (!expect_x11_widget_state(
+          preview_target, true, "A focused playing target must preserve its native parent and geometry after resize")) {
+    return false;
+  }
+  if (!capture_interaction_artifact(window, "playing-focused-resized.png"))
+    return false;
+
+  const int ready_count_before_focused_disable = window->logText().count("GPU preview ready channel=program");
+  render_video->setChecked(false);
+  for (int i = 0; i < 100 && !preview_target->isHidden(); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          !render_video->isChecked() && top_bar->isVisible() && setup_row->isVisible() && log_panel->isVisible() &&
+              preview_tabs->tabBar()->isVisible() && preview_target->isHidden() && program_focus->isHidden() &&
+              setup_preview_splitter->sizes().at(0) > 0,
+          "Disabling rendering while focused must first restore the complete UI and then unmap the native target")) {
+    return false;
+  }
+  if (!capture_interaction_artifact(window, "playing-focused-render-disabled.png"))
+    return false;
+
+  render_video->setChecked(true);
+  for (int i = 0;
+       i < 100 && window->logText().count("GPU preview ready channel=program") <= ready_count_before_focused_disable;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  QTest::mouseDClick(preview_target, Qt::LeftButton);
+  QApplication::processEvents();
+  if (!expect(
+          render_video->isChecked() && !top_bar->isVisible() && !preview_target->isHidden() &&
+              program_focus->isVisible(),
+          "Re-enabling rendering after a focused disable must allow the ready preview to enter focus again")) {
+    return false;
+  }
+  QTest::mouseClick(program_focus, Qt::LeftButton);
+  QApplication::processEvents();
+  if (!expect(
+          top_bar->isVisible() && setup_row->isVisible() && log_panel->isVisible() &&
+              preview_tabs->tabBar()->isVisible() && program_controls->isHidden() &&
+              program_controls_toggle->isVisible(),
+          "A real click on the high-contrast restore control should restore the normal UI")) {
+    return false;
+  }
+  if (!capture_interaction_artifact(window, "playing-restored.png"))
+    return false;
+  window->resize(1440, 900);
+  QApplication::processEvents();
   preview_tabs->setCurrentIndex(1);
   for (int i = 0; i < 100 && !window->logText().contains("GPU preview ready channel=stitched generation="); ++i) {
     QApplication::processEvents();
@@ -1743,8 +1852,22 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       !expect_x11_widget_state(camera1_target, true, "Selected Camera 1 target must be mapped inside its Qt host")) {
     return false;
   }
+  QTest::mouseDClick(camera1_target, Qt::LeftButton);
+  QApplication::processEvents();
+  if (!expect(
+          camera1_host->isVisible() && !preview_tabs->tabBar()->isVisible() && camera1_focus->isVisible(),
+          "Every ready camera preview should support the same in-app focus mode")) {
+    return false;
+  }
+  QTest::mouseDClick(camera1_target, Qt::LeftButton);
+  QApplication::processEvents();
+  if (!expect(
+          preview_tabs->tabBar()->isVisible() && top_bar->isVisible(),
+          "Double-clicking a focused camera preview should restore the normal layout")) {
+    return false;
+  }
   preview_tabs->setCurrentIndex(0);
-  for (int i = 0; i < 100 && preview_target->isHidden(); ++i) {
+  for (int i = 0; i < 100 && (preview_target->isHidden() || program_focus->isHidden()); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
@@ -1752,6 +1875,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     std::cerr << window->logText().toStdString() << '\n';
   for (QWidget* surface : {preview_surface, stitched_surface, camera1_surface, camera2_surface, camera3_surface}) {
     surface->setProperty("previewRendererState", "ready");
+  }
+  QTest::mouseDClick(preview_target, Qt::LeftButton);
+  QApplication::processEvents();
+  if (!expect(!top_bar->isVisible(), "The stop-while-focused regression must begin in focused preview mode")) {
+    return false;
   }
   activate(stop);
   for (int i = 0; i < 50 && window->pipelineStateText() != "STOPPED"; ++i) {
@@ -1772,6 +1900,15 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Finishing a pipeline must unmap native video targets so stopped-state UI controls cannot be obscured")) {
     return false;
   }
+  if (!expect(
+          top_bar->isVisible() && setup_row->isVisible() && log_panel->isVisible() &&
+              preview_tabs->tabBar()->isVisible() && program_controls->isVisible() && program_focus->isHidden() &&
+              setup_preview_splitter->sizes().at(0) > 0,
+          "Stopping while focused must restore the complete normal UI before unmapping native preview windows")) {
+    return false;
+  }
+  if (!capture_interaction_artifact(window, "stopped-after-focused-stop.png"))
+    return false;
   qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
   qunsetenv("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW");
   qunsetenv("HSTREAM_UI_TEST_PREVIEW_TIMEOUT_MS");
@@ -1807,6 +1944,21 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
+  if (QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0) {
+    for (int i = 0; i < 100 && stitched_surface->isHidden(); ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+  }
+  const bool x11_calibration_preview_ok = window->logText().contains("--ui-preview-windows=program:") &&
+      !stitched_surface->isHidden() && camera1_surface->isHidden() && camera2_surface->isHidden() &&
+      camera3_surface->isHidden();
+  if (QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0 && !x11_calibration_preview_ok) {
+    std::cerr << "calibration preview visibility stitched=" << !stitched_surface->isHidden()
+              << " camera1=" << !camera1_surface->isHidden() << " camera2=" << !camera2_surface->isHidden()
+              << " camera3=" << !camera3_surface->isHidden() << '\n';
+    std::cerr << window->logText().right(4000).toStdString() << '\n';
+  }
   if (!expect(
           window->logText().contains("ds_hockey_app_config.yaml"),
           "Calibration should use the one-pass application config") ||
@@ -1821,7 +1973,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Calibration CP change should be logged") ||
       !expect(
           window->logText().contains("--enable-sinks=RENDER"),
-          "One-pass calibration should render the stitched output") ||
+          "One-pass calibration should retain the logical render sink for local audio monitoring") ||
       !expect(
           window->logText().contains("--show") && !window->logText().contains("--show-stitching"),
           "Calibration should route the normal render sink without enabling stitcher debug windows") ||
@@ -1840,13 +1992,12 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "One-pass calibration should pass the selected control-point limit") ||
       !expect(
           QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0
-              ? window->logText().contains("--ui-preview-windows=program:") && !stitched_surface->isHidden() &&
-                  !camera1_surface->isHidden() && !camera2_surface->isHidden() && !camera3_surface->isHidden()
+              ? x11_calibration_preview_ok
               : !window->logText().contains("--render-window-id=") &&
                   window->logText().contains("HM_RENDER_SINK=nv3dsink") &&
                   !window->logText().contains("--source-render-window-ids=") && stitched_surface->isHidden() &&
                   camera1_surface->isHidden() && camera2_surface->isHidden() && camera3_surface->isHidden(),
-          "Only the X11 test backend should expose embedded stitched and camera preview windows") ||
+          "Only the X11 test backend should expose the selected embedded stitched preview window") ||
       !expect(
           window->logText().contains("ANSI blue runner line"), "ANSI-colored runner output should remain visible") ||
       !expect(
@@ -2315,12 +2466,21 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   qputenv("HM_RENDER_SINK", "nv3dsink");
   const bool x11_test_backend = QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0;
   const int embedded_commands_before_external_run = window->logText().count("--render-window-id=");
+  const int show_commands_before_external_run = window->logText().count("--show");
   activate(start);
   for (int i = 0; i < 50 && !window->logText().contains("HM_RENDER_SINK=nv3dsink"); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
-  if (!expect(window->logText().contains("--show"), "Program run should request render output") ||
+  if (x11_test_backend) {
+    for (int i = 0; i < 100 && preview_surface->isHidden(); ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+  }
+  if (!expect(
+          window->logText().count("--show") >= show_commands_before_external_run + 1,
+          "Program runs should retain the logical render sink for audio monitoring") ||
       !expect(
           window->logText().count("--render-window-id=") == embedded_commands_before_external_run,
           "nv3dsink run must not promise an embedded preview") ||
@@ -2386,25 +2546,42 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
 
   const int fake_sink_commands_before = window->logText().count("--enable-sinks=FAKE");
+  const int render_sink_commands_before = window->logText().count("--enable-sinks=RENDER");
   const int embedded_commands_before = window->logText().count("--render-window-id=");
   const int source_embedded_commands_before = window->logText().count("--source-render-window-ids=");
+  const int gpu_preview_commands_before = window->logText().count("--ui-preview-windows=");
+  const int inactive_preview_commands_before = window->logText().count("--ui-preview-active=none");
   render_video->setChecked(false);
   activate(start);
   for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
-  const bool rendering_disabled = expect(
-                                      window->logText().count("--enable-sinks=FAKE") == fake_sink_commands_before + 1,
-                                      "Disabling video rendering should use a fake sink when no output is selected") &&
-      expect(window->logText().count("--render-window-id=") == embedded_commands_before,
-             "Disabling video rendering should not attach a native preview window") &&
-      expect(window->logText().count("--source-render-window-ids=") == source_embedded_commands_before,
-             "Disabling video rendering should not attach native source-camera preview windows") &&
-      expect(external_notice->text() == "Video rendering is disabled for this run",
-             "The active preview tab should explain that rendering is disabled") &&
-      expect(camera1_notice->text() == "Video rendering is disabled for this run",
-             "Camera tabs should explain that rendering is disabled");
+  const bool rendering_disabled =
+      expect(
+          window->logText().count("--enable-sinks=FAKE") == fake_sink_commands_before + (x11_test_backend ? 0 : 1) &&
+              window->logText().count("--enable-sinks=RENDER") ==
+                  render_sink_commands_before + (x11_test_backend ? 1 : 0),
+          "A disabled X11 preview should retain only the logical audio-monitor render "
+          "sink; non-X11 should use a fake sink") &&
+      expect(
+          window->logText().count("--render-window-id=") == embedded_commands_before,
+          "Disabling video rendering should not attach a native preview window") &&
+      expect(
+          window->logText().count("--source-render-window-ids=") == source_embedded_commands_before,
+          "Disabling video rendering should not attach native source-camera preview windows") &&
+      expect(
+          window->logText().count("--ui-preview-windows=") ==
+                  gpu_preview_commands_before + (x11_test_backend ? 1 : 0) &&
+              window->logText().count("--ui-preview-active=none") ==
+                  inactive_preview_commands_before + (x11_test_backend ? 1 : 0),
+          "An X11 run that starts disabled should provision dormant GPU branches so rendering can be enabled live") &&
+      expect(
+          external_notice->text() == "Video rendering is disabled",
+          "The active preview tab should explain that rendering is disabled") &&
+      expect(
+          camera1_notice->text() == "Video rendering is disabled",
+          "Camera tabs should explain that rendering is disabled");
   activate(stop);
   render_video->setChecked(true);
   if (!rendering_disabled) {
@@ -2464,16 +2641,16 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   // Click without processing events so the synchronous startup setup can be
   // inspected before QProcess delivers its queued FailedToStart signal.
   start->click();
-  const bool targets_mapped_before_failed_start =
-      !preview_target->isHidden() && !stitched_target->isHidden() && !camera1_target->isHidden();
+  const bool targets_safe_before_failed_start = preview_target->isHidden() && stitched_target->isHidden() &&
+      camera1_target->isHidden() && program_focus->isHidden();
   for (int i = 0; i < 100 && window->pipelineStateText() != "STOPPED"; ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
   const bool asynchronous_failure_clean =
       expect(
-          targets_mapped_before_failed_start,
-          "FailedToStart regression must begin with native preview targets mapped by embedded startup") &&
+          targets_safe_before_failed_start,
+          "Embedded startup must keep native targets and focus controls unmapped until a GPU frame is ready") &&
       expect(
           window->pipelineStateText() == "STOPPED",
           "Asynchronous QProcess FailedToStart should restore stopped state") &&

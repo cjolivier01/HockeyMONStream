@@ -47,6 +47,14 @@ void post_preview_status(
 }
 
 struct IsolationState {
+  IsolationState() {
+    g_weak_ref_init(&failure_peer, nullptr);
+  }
+
+  ~IsolationState() {
+    g_weak_ref_clear(&failure_peer);
+  }
+
   std::atomic<bool> active{false};
   std::atomic<bool> failed{false};
   std::atomic<std::uint64_t> generation{0};
@@ -56,6 +64,7 @@ struct IsolationState {
   std::mutex flow_mutex;
   std::mutex channel_mutex;
   std::string channel{"unknown"};
+  GWeakRef failure_peer;
 };
 
 typedef struct _GstHmPreviewIsolation {
@@ -90,6 +99,11 @@ void fail_isolation(GstHmPreviewIsolation* self, GstFlowReturn flow) {
   if (!state->failed.compare_exchange_strong(expected, true))
     return;
   state->active = false;
+  auto* failure_peer = static_cast<GObject*>(g_weak_ref_get(&state->failure_peer));
+  if (failure_peer) {
+    g_object_set(failure_peer, "active", FALSE, nullptr);
+    g_object_unref(failure_peer);
+  }
   std::string channel;
   const std::string message = "downstream preview flow failed: " + std::string(gst_flow_get_name(flow));
   post_preview_status(
@@ -98,6 +112,10 @@ void fail_isolation(GstHmPreviewIsolation* self, GstFlowReturn flow) {
 
 GstFlowReturn isolation_chain(GstPad*, GstObject* parent, GstBuffer* buffer) {
   auto* self = reinterpret_cast<GstHmPreviewIsolation*>(parent);
+  if (self->state->failed.load(std::memory_order_relaxed) || !self->state->active.load(std::memory_order_acquire)) {
+    gst_buffer_unref(buffer);
+    return GST_FLOW_OK;
+  }
   std::lock_guard<std::mutex> lock(self->state->flow_mutex);
   if (self->state->failed.load() || !self->state->active.load()) {
     gst_buffer_unref(buffer);
@@ -115,6 +133,10 @@ GstFlowReturn isolation_chain(GstPad*, GstObject* parent, GstBuffer* buffer) {
 
 GstFlowReturn isolation_chain_list(GstPad*, GstObject* parent, GstBufferList* buffers) {
   auto* self = reinterpret_cast<GstHmPreviewIsolation*>(parent);
+  if (self->state->failed.load(std::memory_order_relaxed) || !self->state->active.load(std::memory_order_acquire)) {
+    gst_buffer_list_unref(buffers);
+    return GST_FLOW_OK;
+  }
   std::lock_guard<std::mutex> lock(self->state->flow_mutex);
   if (self->state->failed.load() || !self->state->active.load()) {
     gst_buffer_list_unref(buffers);
@@ -935,6 +957,13 @@ void set_isolation_generation(GstElement* isolation, std::uint64_t generation) {
   // same-channel readiness retry must not wait behind the active buffer it is
   // trying to observe.
   g_object_set(G_OBJECT(isolation), "generation", static_cast<guint64>(generation), nullptr);
+}
+
+void set_isolation_failure_peer(GstElement* isolation, GstElement* ingress) {
+  if (!isolation || !G_TYPE_CHECK_INSTANCE_TYPE(isolation, gst_hm_preview_isolation_get_type()))
+    return;
+  auto* self = reinterpret_cast<GstHmPreviewIsolation*>(isolation);
+  g_weak_ref_set(&self->state->failure_peer, ingress ? G_OBJECT(ingress) : nullptr);
 }
 
 void set_renderer_generation(GstElement* sink, std::uint64_t generation) {

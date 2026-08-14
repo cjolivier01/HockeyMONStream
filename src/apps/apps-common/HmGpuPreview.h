@@ -17,6 +17,10 @@ bool renderer_available();
 // hmpreviewisolation is a buffer gate and downstream-flow failure barrier.
 void set_isolation_active(GstElement* isolation, bool active, std::uint64_t generation);
 void set_isolation_generation(GstElement* isolation, std::uint64_t generation);
+// Closes ingress automatically if a downstream drain barrier encounters a
+// permanent flow failure, preventing an isolated failed preview from waking
+// its queue indefinitely.
+void set_isolation_failure_peer(GstElement* isolation, GstElement* ingress);
 void set_renderer_generation(GstElement* sink, std::uint64_t generation);
 bool isolation_active(GstElement* isolation);
 

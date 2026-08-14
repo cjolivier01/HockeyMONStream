@@ -15,6 +15,7 @@
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidget>
 
+#include <QtCore/QList>
 #include <QtCore/QProcess>
 
 #include <yaml-cpp/yaml.h>
@@ -29,7 +30,9 @@ class QProcessEnvironment;
 class QCloseEvent;
 class QDialog;
 class QProgressBar;
+class QSplitter;
 class QTimer;
+class QToolButton;
 class ScoreboardSelectionDialog;
 
 namespace hm::ui_internal {
@@ -90,6 +93,7 @@ class HStreamWindow : public QMainWindow {
     kStartup,
     kTabChange,
     kRecovery,
+    kRenderToggle,
   };
 
   void buildUi();
@@ -125,6 +129,11 @@ class HStreamWindow : public QMainWindow {
   QWidget* previewSurfaceForChannel(const QString& channel) const;
   QWidget* previewTargetForChannel(const QString& channel) const;
   void schedulePreviewReadyTimeout(const QString& channel, quint64 generation, int timeout_ms);
+  void setRuntimeVideoRendering(bool enabled);
+  void setPreviewRenderingLayout(bool rendering);
+  void setPreviewFocusAvailable(const QString& channel, bool available);
+  void setAllPreviewFocusAvailable(bool available);
+  bool canFocusPreview(int tab_index) const;
   void togglePreviewFocus(int tab_index);
   void setPreviewFocusMode(bool focused, int tab_index);
   void restartStage();
@@ -251,6 +260,8 @@ class HStreamWindow : public QMainWindow {
   QWidget* top_bar_{nullptr};
   QWidget* setup_panel_{nullptr};
   QWidget* log_panel_{nullptr};
+  QSplitter* main_log_splitter_{nullptr};
+  QSplitter* setup_preview_splitter_{nullptr};
   QWidget* preview_surface_{nullptr};
   QWidget* preview_render_target_{nullptr};
   QWidget* stitched_surface_{nullptr};
@@ -261,6 +272,10 @@ class HStreamWindow : public QMainWindow {
   QTabWidget* program_control_tabs_{nullptr};
   QTabWidget* stitched_control_tabs_{nullptr};
   std::vector<QWidget*> preview_hosts_;
+  std::vector<QWidget*> associated_control_panels_;
+  std::vector<QToolButton*> associated_control_toggles_;
+  std::vector<bool> normal_associated_controls_visible_;
+  std::vector<QWidget*> focus_hidden_widgets_;
   QVBoxLayout* output_list_{nullptr};
   QProcess* pipeline_process_{nullptr};
   QPushButton* start_button_{nullptr};
@@ -274,7 +289,10 @@ class HStreamWindow : public QMainWindow {
   bool calibration_pending_{false};
   bool calibration_dialog_failed_{false};
   bool preview_focus_mode_{false};
+  bool preview_layout_compacted_{false};
   int focused_preview_tab_{-1};
+  QList<int> normal_main_log_sizes_;
+  QList<int> normal_setup_preview_sizes_;
   quint64 preview_generation_{1};
   QString active_preview_channel_;
   QString pending_preview_channel_;
