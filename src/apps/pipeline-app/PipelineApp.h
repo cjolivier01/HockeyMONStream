@@ -124,7 +124,7 @@ class PipelineApplication {
   bool read_stdin_char(char* out) const;
   bool read_runtime_command_line(std::string* line);
   bool handle_runtime_command_line(const std::string& line);
-  void reset_playback_progress_rates();
+  void reset_playback_progress_rates(uint64_t generation);
   bool set_render_window_runtime(guint64 window_id);
   bool set_preview_active_runtime(const std::string& channel, guint64 generation);
   bool capture_preview_frame_runtime(const std::string& channel, const std::string& path);
@@ -214,6 +214,7 @@ class PipelineApplication {
   };
   std::map<int, ProgressState> progress_states_;
   std::map<long, std::map<int, hm::PlaybackProgressMetrics>> ui_progress_by_stage_;
+  uint64_t playback_progress_generation_{0};
   std::unique_ptr<hm::TerminalProgressUi> progress_ui_;
   std::chrono::steady_clock::time_point timed_run_last_progress_wall_;
   uint64_t timed_run_last_progress_ns_{GST_CLOCK_TIME_NONE};

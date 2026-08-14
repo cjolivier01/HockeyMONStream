@@ -119,6 +119,9 @@ class HStreamWindow : public QMainWindow {
   bool handlePlaybackProgressOutput(const QString& line);
   void resetPlaybackProgress();
   void updatePlaybackProgressPresentation();
+  void beginPlaybackProgressReset();
+  void sendPlaybackProgressReset(quint64 generation);
+  int playbackProgressResetTimeoutMs() const;
   void showStitchingCalibrationDialog();
   bool beginObservedStitchingCalibration(const QString& reported_stage);
   void handleStitchingCalibrationOutput(const QString& line);
@@ -305,6 +308,10 @@ class HStreamWindow : public QMainWindow {
   QString playback_stage_;
   QString playback_instances_;
   bool playback_warming_after_resume_{false};
+  bool playback_accept_stale_after_reset_timeout_{false};
+  quint64 playback_reset_generation_{0};
+  quint64 pending_playback_reset_generation_{0};
+  int playback_reset_attempts_{0};
   bool calibration_pending_{false};
   bool calibration_dialog_failed_{false};
   bool preview_focus_mode_{false};

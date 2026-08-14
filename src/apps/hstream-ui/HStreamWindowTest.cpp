@@ -418,7 +418,7 @@ bool write_fake_runner(const QString& path) {
   file.write("sys.stdout.flush()\n");
   file.write(
       "print('HSTREAM_PROGRESS processed_ns=42000000000 total_ns=600000000000 remaining_ns=558000000000 "
-      "eta_ns=279000000000 speed_x=2.000000 fraction=0.070000 stage=0 instance=aggregate instances=1', "
+      "eta_ns=279000000000 speed_x=2.000000 fraction=0.070000 stage=0 instance=aggregate instances=1 generation=0', "
       "flush=True)\n");
   file.write(
       "if os.environ.get('HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW') == '1' or any(argument.startswith("
@@ -512,11 +512,25 @@ bool write_fake_runner(const QString& path) {
   file.write("    time.sleep(5.0)\n");
   file.write("    sys.exit(0)\n");
   file.write("def handle_stdin_line(line):\n");
-  file.write("    global preview_activation_count, preview_disable_stalled\n");
+  file.write(
+      "    global preview_activation_count, preview_disable_stalled, stall_next_progress_reset, "
+      "delayed_progress_generation, drop_progress_resets\n");
   file.write("    print('stdin:' + line.rstrip('\\n'), flush=True)\n");
   file.write("    if line.startswith('@test-stall-preview-disable'):\n");
   file.write("        preview_disable_stalled = True\n");
   file.write("        print('test preview disable stalled', flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-drop-progress-resets'):\n");
+  file.write("        drop_progress_resets = True\n");
+  file.write("        print('test progress resets dropped', flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-resume-progress-resets'):\n");
+  file.write("        drop_progress_resets = False\n");
+  file.write("        print('test progress resets resumed', flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-stall-progress-reset'):\n");
+  file.write("        stall_next_progress_reset = True\n");
+  file.write("        print('test progress reset stalled', flush=True)\n");
   file.write("        return\n");
   file.write("    if line.startswith('@test-resume-preview-disable'):\n");
   file.write("        preview_disable_stalled = False\n");
@@ -529,14 +543,34 @@ bool write_fake_runner(const QString& path) {
       "' message=synthetic review regression', flush=True)\n");
   file.write("        return\n");
   file.write("    if line.startswith('@reset-progress-rate'):\n");
+  file.write("        generation = line.rstrip('\\n').split(' ', 1)[1]\n");
+  file.write("        if drop_progress_resets:\n");
+  file.write("            return\n");
+  file.write("        if stall_next_progress_reset:\n");
+  file.write("            stall_next_progress_reset = False\n");
+  file.write("            delayed_progress_generation = generation\n");
+  file.write("            return\n");
+  file.write("        if delayed_progress_generation:\n");
+  file.write(
+      "            print('HSTREAM_PROGRESS status=reset generation=' + delayed_progress_generation + "
+      "' stage=0 instance=aggregate instances=2', flush=True)\n");
+  file.write(
+      "            print('HSTREAM_PROGRESS processed_ns=43000000000 total_ns=600000000000 "
+      "remaining_ns=557000000000 eta_ns=1114000000000 speed_x=0.500000 fraction=0.071667 stage=0 "
+      "instance=aggregate instances=2 generation=' + delayed_progress_generation, flush=True)\n");
+  file.write("            delayed_progress_generation = ''\n");
   file.write(
       "        print('HSTREAM_PROGRESS processed_ns=43000000000 total_ns=600000000000 remaining_ns=557000000000 "
-      "eta_ns=1114000000000 speed_x=0.500000 fraction=0.071667 stage=0 instance=aggregate instances=2', "
+      "eta_ns=1114000000000 speed_x=0.500000 fraction=0.071667 stage=0 instance=aggregate instances=2 "
+      "generation=' + generation, "
       "flush=True)\n");
-  file.write("        print('HSTREAM_PROGRESS status=reset stage=0 instance=aggregate instances=2', flush=True)\n");
+  file.write(
+      "        print('HSTREAM_PROGRESS status=reset generation=' + generation + "
+      "' stage=0 instance=aggregate instances=2', flush=True)\n");
   file.write(
       "        print('HSTREAM_PROGRESS processed_ns=44000000000 total_ns=600000000000 remaining_ns=556000000000 "
-      "eta_ns=unknown speed_x=0.000000 fraction=0.073333 stage=0 instance=aggregate instances=2', "
+      "eta_ns=unknown speed_x=0.000000 fraction=0.073333 stage=0 instance=aggregate instances=2 generation=' + "
+      "generation, "
       "flush=True)\n");
   file.write("        return\n");
   file.write("    if line.startswith('@set-preview-active '):\n");
@@ -577,6 +611,9 @@ bool write_fake_runner(const QString& path) {
       "                print('runtime property ' + element + ' ' + property_name + '=' + runtime_value, flush=True)\n");
   file.write("preview_activation_count = 0\n");
   file.write("preview_disable_stalled = False\n");
+  file.write("stall_next_progress_reset = False\n");
+  file.write("delayed_progress_generation = ''\n");
+  file.write("drop_progress_resets = False\n");
   file.write("deadline = time.monotonic() + 15.0\n");
   file.write("stdin_fd = sys.stdin.fileno()\n");
   file.write("pending_stdin = b''\n");
@@ -2020,6 +2057,62 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(
           render_video->isChecked() && !preview_target->isHidden() && setup_preview_splitter->sizes().at(0) == 0,
           "Rendering must reactivate normally after a paused render-off request completes")) {
+    return false;
+  }
+
+  pipeline_process->write("@test-stall-progress-reset\n");
+  for (int i = 0; i < 100 && !window->logText().contains("test progress reset stalled"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const int reset_commands_before_race = window->logText().count("stdin:@reset-progress-rate");
+  activate(pause);
+  activate(pause);
+  for (int i = 0; i < 100 && window->logText().count("stdin:@reset-progress-rate") < reset_commands_before_race + 1;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  activate(pause);
+  activate(pause);
+  for (int i = 0; i < 100 && window->logText().count("stdin:@reset-progress-rate") < reset_commands_before_race + 2;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          window->pipelineStateText() == "PLAYING" && window->logText().contains("stdin:@reset-progress-rate 2") &&
+              window->logText().contains("stdin:@reset-progress-rate 3") &&
+              playback_progress->toolTip().contains("ETA: Warming up") &&
+              playback_progress->toolTip().contains("Processing speed: Warming up") &&
+              !playback_progress->toolTip().contains("Processing speed: 0.50x"),
+          "A stale reset acknowledgement must not expose contaminated progress during rapid pause/resume")) {
+    return false;
+  }
+
+  qputenv("HSTREAM_UI_TEST_PROGRESS_RESET_TIMEOUT_MS", "10");
+  pipeline_process->write("@test-drop-progress-resets\n");
+  for (int i = 0; i < 100 && !window->logText().contains("test progress resets dropped"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const int reset_commands_before_timeout = window->logText().count("stdin:@reset-progress-rate");
+  activate(pause);
+  activate(pause);
+  for (int i = 0; i < 100 &&
+       !window->logText().contains("playback speed reset was not acknowledged; using recovered adjacent-sample rate");
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const bool reset_fallback_observed =
+      window->logText().contains("playback speed reset was not acknowledged; using recovered adjacent-sample rate") &&
+      window->logText().count("stdin:@reset-progress-rate") >= reset_commands_before_timeout + 3;
+  pipeline_process->write("@test-resume-progress-resets\n");
+  qunsetenv("HSTREAM_UI_TEST_PROGRESS_RESET_TIMEOUT_MS");
+  if (!expect(
+          reset_fallback_observed && window->pipelineStateText() == "PLAYING",
+          "A dropped reset acknowledgement should retry finitely and fall back without wedging playback")) {
     return false;
   }
 

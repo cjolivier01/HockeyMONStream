@@ -653,10 +653,13 @@ absl::Status PipelineApplication::configureInstances(
         return absl::InternalError("Failed to parse config file");
       }
     }
-    if (hm::playback_progress_sampling_enabled(
-            app_ctx->config.enable_perf_measurement, std::getenv("HSTREAM_UI_PARENT_PID") != nullptr)) {
+    const bool launched_by_ui = std::getenv("HSTREAM_UI_PARENT_PID") != nullptr;
+    if (hm::playback_progress_sampling_enabled(app_ctx->config.enable_perf_measurement, launched_by_ui)) {
       app_ctx->config.enable_perf_measurement = TRUE;
       app_ctx->config.perf_measurement_interval_sec = std::max(1U, app_ctx->config.perf_measurement_interval_sec);
+      if (launched_by_ui) {
+        app_ctx->config.perf_measurement_interval_sec = std::min(5U, app_ctx->config.perf_measurement_interval_sec);
+      }
     }
     if (!ui_preview_window_ids_.empty()) {
       app_ctx->config.hmsticher_config.ui_preview = TRUE;
@@ -2499,7 +2502,8 @@ void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
     append_time(ui_progress, aggregate_progress.eta_ns);
     ui_progress << " speed_x=" << std::fixed << std::setprecision(6) << aggregate_progress.speed_x
                 << " fraction=" << aggregate_progress.fraction << " stage=" << current_stage_
-                << " instance=aggregate instances=" << active_instances;
+                << " instance=aggregate instances=" << active_instances
+                << " generation=" << playback_progress_generation_;
     g_print("%s\n", ui_progress.str().c_str());
   }
   if (progress_ui_ && progress_ui_->started()) {
@@ -2608,7 +2612,7 @@ void PipelineApplication::print_runtime_commands() const {
       "\t@set-render-window <xid>: Move the embedded program render sink to another X11 window\n"
       "\t@capture-preview-frame <program|main|stitched|sourceN> <image-path>: Save one diagnostic UI preview "
       "frame\n"
-      "\t@reset-progress-rate: Reset playback speed and ETA sampling after a process pause\n"
+      "\t@reset-progress-rate <generation>: Reset playback speed and ETA sampling after a process pause\n"
       "\t@set-property <element> <property=value>: Set an allowlisted runtime GStreamer property\n"
       "\t@set-properties <element property=value;...>: Atomically set allowlisted runtime properties\n\n");
   if (!stage_app_contexts_.empty() && !stage_app_contexts_.at(current_stage_).empty() &&
@@ -3281,8 +3285,18 @@ bool PipelineApplication::set_element_properties_runtime(
 }
 
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
-  if (trim_ascii(line) == "reset-progress-rate") {
-    reset_playback_progress_rates();
+  constexpr absl::string_view kResetProgressCommand = "reset-progress-rate";
+  const std::string trimmed_line = trim_ascii(line);
+  if (trimmed_line.rfind(std::string(kResetProgressCommand), 0) == 0 &&
+      trimmed_line.size() > kResetProgressCommand.size() &&
+      std::isspace(static_cast<unsigned char>(trimmed_line[kResetProgressCommand.size()]))) {
+    guint64 generation = 0;
+    if (!parse_uint64_strict(trim_ascii(trimmed_line.substr(kResetProgressCommand.size())), &generation) ||
+        generation == 0) {
+      g_printerr("runtime command failed: reset-progress-rate requires a positive generation\n");
+      return false;
+    }
+    reset_playback_progress_rates(generation);
     return true;
   }
   std::string active_preview_channel;
@@ -3310,23 +3324,41 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
     g_printerr(
         "runtime command failed: expected: set-preview-active <program|stitched|sourceN|none> <generation>, "
         "set-render-window <xid>, capture-preview-frame <main|stitched|sourceN> <jpg-path>, set-properties "
-        "<element property=value;...>, reset-progress-rate, or set-property <element> <property=value>\n");
+        "<element property=value;...>, reset-progress-rate <generation>, or set-property <element> <property=value>\n");
     return false;
   }
   return set_element_property_runtime(element_name, property_name, value);
 }
 
-void PipelineApplication::reset_playback_progress_rates() {
+void PipelineApplication::reset_playback_progress_rates(uint64_t generation) {
   g_mutex_lock(&fps_lock_);
-  for (auto& [index, state] : progress_states_) {
-    (void)index;
-    state.rate_estimator.reset();
+  const bool stale = generation < playback_progress_generation_;
+  if (generation > playback_progress_generation_) {
+    playback_progress_generation_ = generation;
+    for (auto& [index, state] : progress_states_) {
+      (void)index;
+      state.rate_estimator.reset();
+    }
+    ui_progress_by_stage_.erase(current_stage_);
   }
-  ui_progress_by_stage_.erase(current_stage_);
   const size_t active_instances = stage_app_contexts_.at(current_stage_).size();
+  const uint64_t active_generation = playback_progress_generation_;
   g_mutex_unlock(&fps_lock_);
+  if (stale) {
+    g_print(
+        "HSTREAM_PROGRESS status=stale-reset generation=%" G_GUINT64_FORMAT " active_generation=%" G_GUINT64_FORMAT
+        " stage=%ld instance=aggregate instances=%zu\n",
+        generation,
+        active_generation,
+        current_stage_,
+        active_instances);
+    return;
+  }
   g_print(
-      "HSTREAM_PROGRESS status=reset stage=%ld instance=aggregate instances=%zu\n", current_stage_, active_instances);
+      "HSTREAM_PROGRESS status=reset generation=%" G_GUINT64_FORMAT " stage=%ld instance=aggregate instances=%zu\n",
+      generation,
+      current_stage_,
+      active_instances);
 }
 
 bool PipelineApplication::set_preview_active_runtime(const std::string& channel, guint64 generation) {

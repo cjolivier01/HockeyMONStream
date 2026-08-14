@@ -3130,11 +3130,7 @@ void HStreamWindow::pauseOrResumePipeline() {
   if (!pipeline_paused_) {
     playback_eta_ = "Warming up";
     playback_speed_ = "Warming up";
-    playback_warming_after_resume_ = true;
-    const QByteArray reset_progress_command("@reset-progress-rate\n");
-    if (pipeline_process_->write(reset_progress_command) != reset_progress_command.size()) {
-      appendLog("could not reset playback speed after resume; ETA will remain unavailable");
-    }
+    beginPlaybackProgressReset();
   }
   preview_status_->setText(pipeline_paused_ ? "Pipeline paused" : "Pipeline resumed");
   appendLog(pipeline_paused_ ? "pipeline paused" : "pipeline resumed");
@@ -3430,14 +3426,32 @@ bool HStreamWindow::handlePlaybackProgressOutput(const QString& line) {
       fields[token.left(separator)] = token.mid(separator + 1);
     }
   }
+  const auto generation_field = fields.find("generation");
+  bool generation_ok = false;
+  const quint64 generation =
+      generation_field == fields.end() ? 0 : generation_field->second.toULongLong(&generation_ok);
   const auto status = fields.find("status");
   if (status != fields.end() && status->second == "reset") {
-    playback_warming_after_resume_ = false;
-    updatePlaybackProgressPresentation();
+    if (generation_ok && generation == playback_reset_generation_) {
+      pending_playback_reset_generation_ = 0;
+      playback_reset_attempts_ = 0;
+      playback_warming_after_resume_ = false;
+      playback_accept_stale_after_reset_timeout_ = false;
+      playback_eta_ = "Warming up";
+      playback_speed_ = "Warming up";
+      updatePlaybackProgressPresentation();
+    }
     return true;
   }
   const auto instance = fields.find("instance");
   if (instance != fields.end() && instance->second != "aggregate") {
+    return true;
+  }
+  if (playback_reset_generation_ > 0 && (!generation_ok || generation < playback_reset_generation_) &&
+      !playback_accept_stale_after_reset_timeout_) {
+    return true;
+  }
+  if (generation_ok && generation > playback_reset_generation_) {
     return true;
   }
 
@@ -3521,11 +3535,57 @@ void HStreamWindow::resetPlaybackProgress() {
   playback_stage_ = "Unknown";
   playback_instances_ = "Unknown";
   playback_warming_after_resume_ = false;
+  playback_accept_stale_after_reset_timeout_ = false;
+  playback_reset_generation_ = 0;
+  pending_playback_reset_generation_ = 0;
+  playback_reset_attempts_ = 0;
   if (playback_progress_) {
     playback_progress_->setRange(0, 0);
     playback_progress_->setFormat("Starting pipeline…");
   }
   updatePlaybackProgressPresentation();
+}
+
+int HStreamWindow::playbackProgressResetTimeoutMs() const {
+  bool test_timeout_valid = false;
+  const int test_timeout =
+      qEnvironmentVariableIntValue("HSTREAM_UI_TEST_PROGRESS_RESET_TIMEOUT_MS", &test_timeout_valid);
+  return test_timeout_valid && test_timeout > 0 ? test_timeout : 5000;
+}
+
+void HStreamWindow::beginPlaybackProgressReset() {
+  playback_warming_after_resume_ = true;
+  playback_accept_stale_after_reset_timeout_ = false;
+  pending_playback_reset_generation_ = ++playback_reset_generation_;
+  playback_reset_attempts_ = 0;
+  sendPlaybackProgressReset(pending_playback_reset_generation_);
+}
+
+void HStreamWindow::sendPlaybackProgressReset(quint64 generation) {
+  if (generation == 0 || generation != pending_playback_reset_generation_ || !pipeline_process_ ||
+      pipeline_process_->state() == QProcess::NotRunning || pipeline_paused_) {
+    return;
+  }
+  constexpr int kResetAttemptLimit = 3;
+  if (playback_reset_attempts_ >= kResetAttemptLimit) {
+    pending_playback_reset_generation_ = 0;
+    playback_warming_after_resume_ = false;
+    playback_accept_stale_after_reset_timeout_ = true;
+    appendLog("playback speed reset was not acknowledged; using recovered adjacent-sample rate");
+    updatePlaybackProgressPresentation();
+    return;
+  }
+
+  ++playback_reset_attempts_;
+  const QByteArray command = QString("@reset-progress-rate %1\n").arg(generation).toUtf8();
+  if (pipeline_process_->write(command) != command.size() && playback_reset_attempts_ == 1) {
+    appendLog("playback speed reset write was delayed; retrying safely");
+  }
+  QTimer::singleShot(playbackProgressResetTimeoutMs(), this, [this, generation]() {
+    if (generation == pending_playback_reset_generation_) {
+      sendPlaybackProgressReset(generation);
+    }
+  });
 }
 
 void HStreamWindow::updatePlaybackProgressPresentation() {
