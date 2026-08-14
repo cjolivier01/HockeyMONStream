@@ -182,6 +182,7 @@ class PipelineApplication {
   std::map<std::string, guint64> ui_preview_window_ids_;
   std::string initial_ui_preview_channel_{"program"};
   struct UiPreviewChannel {
+    GstElement* ingress_isolation{nullptr};
     GstElement* isolation{nullptr};
     GstElement* sink{nullptr};
   };
