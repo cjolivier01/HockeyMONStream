@@ -88,6 +88,7 @@ cc_test(
     name = "hstream_ui_test",
     srcs = ["HStreamWindowTest.cpp"],
     copts = COMMON_COPTS,
+    linkopts = ["-lX11"],
     env = {
         "QT_QPA_PLATFORM": "offscreen",
     },

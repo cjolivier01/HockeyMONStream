@@ -48,6 +48,10 @@
 #include <thread>
 #include <vector>
 
+#ifdef Q_OS_UNIX
+#include <X11/Xlib.h>
+#endif
+
 namespace fs = std::filesystem;
 
 namespace {
@@ -58,6 +62,50 @@ bool expect(bool condition, const std::string& message) {
     return false;
   }
   return true;
+}
+
+bool expect_x11_widget_state(QWidget* widget, bool expected_viewable, const std::string& description) {
+#ifdef Q_OS_UNIX
+  if (!widget || QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) != 0)
+    return true;
+  Display* display = XOpenDisplay(nullptr);
+  if (!display)
+    return expect(false, description + ": could not open the X11 display");
+  XWindowAttributes attributes{};
+  const Window native_window = static_cast<Window>(widget->winId());
+  Window root = None;
+  Window parent = None;
+  Window* children = nullptr;
+  unsigned int child_count = 0;
+  const bool queried = XGetWindowAttributes(display, native_window, &attributes) != 0 &&
+      XQueryTree(display, native_window, &root, &parent, &children, &child_count) != 0;
+  if (children)
+    XFree(children);
+  const Window expected_parent = static_cast<Window>(widget->parentWidget()->winId());
+  XCloseDisplay(display);
+  if (!queried)
+    return expect(false, description + ": could not query the native X11 window");
+  const bool viewable = attributes.map_state == IsViewable;
+  const qreal scale = widget->devicePixelRatioF();
+  const int expected_x = qRound(widget->x() * scale);
+  const int expected_y = qRound(widget->y() * scale);
+  const int expected_width = qRound(widget->width() * scale);
+  const int expected_height = qRound(widget->height() * scale);
+  return expect(
+      parent == expected_parent && attributes.x == expected_x && attributes.y == expected_y &&
+          attributes.width == expected_width && attributes.height == expected_height && viewable == expected_viewable,
+      description + ": native parent/geometry/map state differs from Qt (parent=" + std::to_string(parent) +
+          " expected-parent=" + std::to_string(expected_parent) + " X11=" + std::to_string(attributes.x) + "," +
+          std::to_string(attributes.y) + " " + std::to_string(attributes.width) + "x" +
+          std::to_string(attributes.height) + " Qt=" + std::to_string(widget->x()) + "," + std::to_string(widget->y()) +
+          " " + std::to_string(widget->width()) + "x" + std::to_string(widget->height()) +
+          " scale=" + std::to_string(scale) + " viewable=" + (viewable ? "true" : "false") + ")");
+#else
+  (void)widget;
+  (void)expected_viewable;
+  (void)description;
+  return true;
+#endif
 }
 
 bool test_path_scoped_auto_rollback() {
@@ -1436,6 +1484,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* preview_surface = require_child<QWidget>(window, "previewSurface");
   auto* preview_target = require_child<QWidget>(window, "previewRenderTarget");
   auto* stitched_surface = require_child<QWidget>(window, "stitchedPreviewSurface");
+  auto* stitched_target = require_child<QWidget>(window, "stitchedPreviewRenderTarget");
   auto* camera1_host = require_child<QWidget>(window, "camera1LetterboxHost");
   auto* camera1_surface = require_child<QWidget>(window, "camera1PreviewSurface");
   auto* camera1_target = require_child<QWidget>(window, "camera1PreviewRenderTarget");
@@ -1455,8 +1504,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* log_panel = require_child<QWidget>(window, "logPanel");
   if (!stop || !start || !pause || !restart || !mode || !control_points || !game_id || !rotate || !max_speed_x ||
       !render_video || !log || !clear_log || !main_log_splitter || !setup_preview_splitter || !output_routing ||
-      !preview_tabs || !program_host || !preview_surface || !preview_target || !stitched_surface || !camera1_host ||
-      !camera1_surface || !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface ||
+      !preview_tabs || !program_host || !preview_surface || !preview_target || !stitched_surface || !stitched_target ||
+      !camera1_host || !camera1_surface || !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface ||
       !external_notice || !camera1_notice || !stitched_status || !program_controls || !stitched_controls ||
       !program_control_tabs || !stitched_control_tabs || !program_focus || !top_bar || !setup_row || !log_panel) {
     return false;
@@ -1465,6 +1514,20 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(
           main_log_splitter->orientation() == Qt::Vertical && main_log_splitter->count() == 2,
           "Main content and runtime log should be separated by a draggable vertical splitter")) {
+    return false;
+  }
+  const QRect stopped_target_rect(preview_target->mapTo(window, QPoint(0, 0)), preview_target->size());
+  const QRect tab_bar_rect(preview_tabs->tabBar()->mapTo(window, QPoint(0, 0)), preview_tabs->tabBar()->size());
+  if (!expect(
+          preview_target->isHidden() && camera1_target->isHidden() && !stopped_target_rect.intersects(tab_bar_rect),
+          "Stopped native video targets must stay unmapped and geometrically below the preview tab bar")) {
+    std::cerr << "stopped_target=" << stopped_target_rect.x() << ',' << stopped_target_rect.y() << ' '
+              << stopped_target_rect.width() << 'x' << stopped_target_rect.height() << " tab_bar=" << tab_bar_rect.x()
+              << ',' << tab_bar_rect.y() << ' ' << tab_bar_rect.width() << 'x' << tab_bar_rect.height() << '\n';
+    return false;
+  }
+  if (!expect_x11_widget_state(
+          preview_target, false, "Stopped Program target must use its Qt host as the native X11 coordinate space")) {
     return false;
   }
   const int preview_height_before_setup_collapse = preview_tabs->height();
@@ -1490,12 +1553,22 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Controls must live in the earliest preview tab whose frames reflect their pipeline stage")) {
     return false;
   }
+  if (!expect(
+          program_focus->parentWidget() == program_host && program_focus->size() == QSize(24, 24) &&
+              program_focus->x() == program_host->width() - program_focus->width() - 6 && program_focus->y() == 6 &&
+              program_focus->toolTip() == "Focus video" && program_focus->accessibleName() == "Focus video",
+          "The compact focus control must stay in the preview pane's top-right corner") ||
+      !expect_x11_widget_state(
+          program_focus, true, "The focus control must use the preview host as its native X11 coordinate space")) {
+    return false;
+  }
   QTest::mouseDClick(preview_target, Qt::LeftButton);
   QApplication::processEvents();
   if (!expect(
           !top_bar->isVisible() && !setup_row->isVisible() && !log_panel->isVisible() &&
               !preview_tabs->tabBar()->isVisible() && !program_controls->isVisible() && program_host->isVisible() &&
-              !window->isFullScreen(),
+              !window->isFullScreen() && program_focus->toolTip() == "Restore HStream controls" &&
+              program_focus->accessibleName() == "Restore HStream controls",
           "Double-clicking a video should focus it across the HStream app area")) {
     return false;
   }
@@ -1647,6 +1720,34 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       expect(!window->logText().contains("stdin:@set-preview-active none") && !preview_surface->isHidden() &&
                  !preview_target->isHidden(),
              "First-frame recovery must never deactivate or hide the selected Program preview");
+  if (!expect_x11_widget_state(
+          preview_target, true, "Playing Program target must remain aligned with its Qt video host")) {
+    return false;
+  }
+  preview_tabs->setCurrentIndex(1);
+  for (int i = 0; i < 100 && !window->logText().contains("GPU preview ready channel=stitched generation="); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect_x11_widget_state(preview_target, false, "Inactive Program target must be unmapped after a tab switch") ||
+      !expect_x11_widget_state(stitched_target, true, "Selected Stitched target must be mapped inside its Qt host")) {
+    return false;
+  }
+  preview_tabs->setCurrentIndex(2);
+  for (int i = 0; i < 100 && !window->logText().contains("GPU preview ready channel=source0 generation="); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect_x11_widget_state(
+          stitched_target, false, "Inactive Stitched target must be unmapped after switching to Camera 1") ||
+      !expect_x11_widget_state(camera1_target, true, "Selected Camera 1 target must be mapped inside its Qt host")) {
+    return false;
+  }
+  preview_tabs->setCurrentIndex(0);
+  for (int i = 0; i < 100 && preview_target->isHidden(); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
   if (!fresh_program_tracked)
     std::cerr << window->logText().toStdString() << '\n';
   for (QWidget* surface : {preview_surface, stitched_surface, camera1_surface, camera2_surface, camera3_surface}) {
@@ -1664,6 +1765,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               camera2_surface->property("previewRendererState").toString() == "idle" &&
               camera3_surface->property("previewRendererState").toString() == "idle",
           "Finishing a pipeline should clear every GPU renderer state")) {
+    return false;
+  }
+  if (!expect(
+          preview_target->isHidden() && camera1_target->isHidden(),
+          "Finishing a pipeline must unmap native video targets so stopped-state UI controls cannot be obscured")) {
     return false;
   }
   qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
@@ -1733,11 +1839,14 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           window->logText().contains("HM_MAX_CONTROL_POINTS=750"),
           "One-pass calibration should pass the selected control-point limit") ||
       !expect(
-          !window->logText().contains("--render-window-id=") && window->logText().contains("HM_RENDER_SINK=nv3dsink") &&
-              !window->logText().contains("--source-render-window-ids=") && stitched_surface->isHidden() &&
-              camera1_surface->isHidden() && camera2_surface->isHidden() && camera3_surface->isHidden(),
-          "The offscreen test backend should fall back to a separate render window instead of passing a non-X11 "
-          "handle for stitched or camera previews") ||
+          QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0
+              ? window->logText().contains("--ui-preview-windows=program:") && !stitched_surface->isHidden() &&
+                  !camera1_surface->isHidden() && !camera2_surface->isHidden() && !camera3_surface->isHidden()
+              : !window->logText().contains("--render-window-id=") &&
+                  window->logText().contains("HM_RENDER_SINK=nv3dsink") &&
+                  !window->logText().contains("--source-render-window-ids=") && stitched_surface->isHidden() &&
+                  camera1_surface->isHidden() && camera2_surface->isHidden() && camera3_surface->isHidden(),
+          "Only the X11 test backend should expose embedded stitched and camera preview windows") ||
       !expect(
           window->logText().contains("ANSI blue runner line"), "ANSI-colored runner output should remain visible") ||
       !expect(
@@ -2204,6 +2313,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
 
   mode->setCurrentIndex(mode->findData("program"));
   qputenv("HM_RENDER_SINK", "nv3dsink");
+  const bool x11_test_backend = QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0;
   const int embedded_commands_before_external_run = window->logText().count("--render-window-id=");
   activate(start);
   for (int i = 0; i < 50 && !window->logText().contains("HM_RENDER_SINK=nv3dsink"); ++i) {
@@ -2226,11 +2336,13 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               window->logText().contains("scoreboard selection complete; pipeline continuing"),
           "Program playback should leave scoreboard selection enabled and launch its native selector") ||
       !expect(
-          window->logText().contains("separate DeepStream window"),
-          "UI must surface self-managed render-window mode") ||
+          x11_test_backend ? !window->logText().contains("separate DeepStream window")
+                           : window->logText().contains("separate DeepStream window"),
+          "UI must distinguish embedded X11 preview from self-managed render-window mode") ||
       !expect(
-          external_notice->parentWidget() == program_host && preview_surface->isHidden(),
-          "External-render notice should use the resizable Qt host instead of the hidden native render surface")) {
+          external_notice->parentWidget() == program_host &&
+              (x11_test_backend ? !preview_surface->isHidden() : preview_surface->isHidden()),
+          "Preview surface visibility must match the selected embedded or external render mode")) {
     return false;
   }
   window->resize(window->width(), 1200);
@@ -2239,10 +2351,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   QApplication::processEvents();
   QTest::qWait(10);
   if (!expect(
-          external_notice->geometry() == program_host->rect(),
+          x11_test_backend || external_notice->geometry() == program_host->rect(),
           "External-render notice should resize and move with its preview tab when the log splitter moves") ||
       !expect(
-          camera1_notice->parentWidget() == camera1_host && camera1_notice->geometry() == camera1_host->rect(),
+          camera1_notice->parentWidget() == camera1_host &&
+              (x11_test_backend || camera1_notice->geometry() == camera1_host->rect()),
           "Camera-render notice should remain owned and resized by its tab when the log splitter moves")) {
     return false;
   }
@@ -2337,8 +2450,41 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     QTest::qWait(10);
   }
   qputenv("HSTREAM_UI_TEST_RUNNER", original_runner);
-  return expect(window->pipelineStateText() == "STOPPED", "Failed runner should restore stopped state") &&
+  const bool absolute_failure_clean =
+      expect(window->pipelineStateText() == "STOPPED", "Failed runner should restore stopped state") &&
       expect(window->logText().contains("pipeline process error"), "Failed runner should log process error");
+  if (!absolute_failure_clean)
+    return false;
+
+  const QByteArray original_path = qgetenv("PATH");
+  qputenv("HSTREAM_UI_TEST_RUNNER", "hstream-ui-missing-runner");
+  qputenv("PATH", "/usr/bin:/bin");
+  qputenv("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW", "1");
+  qputenv("HSTREAM_UI_TEST_BYPASS_SETSID", "1");
+  // Click without processing events so the synchronous startup setup can be
+  // inspected before QProcess delivers its queued FailedToStart signal.
+  start->click();
+  const bool targets_mapped_before_failed_start =
+      !preview_target->isHidden() && !stitched_target->isHidden() && !camera1_target->isHidden();
+  for (int i = 0; i < 100 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const bool asynchronous_failure_clean =
+      expect(
+          targets_mapped_before_failed_start,
+          "FailedToStart regression must begin with native preview targets mapped by embedded startup") &&
+      expect(
+          window->pipelineStateText() == "STOPPED",
+          "Asynchronous QProcess FailedToStart should restore stopped state") &&
+      expect(
+          preview_target->isHidden() && stitched_target->isHidden() && camera1_target->isHidden(),
+          "Asynchronous QProcess FailedToStart must unmap every native preview target");
+  qputenv("HSTREAM_UI_TEST_RUNNER", original_runner);
+  qputenv("PATH", original_path);
+  qunsetenv("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW");
+  qunsetenv("HSTREAM_UI_TEST_BYPASS_SETSID");
+  return asynchronous_failure_clean;
 }
 
 bool test_output_controls(HStreamWindow* window) {

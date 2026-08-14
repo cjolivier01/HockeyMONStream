@@ -208,7 +208,6 @@ class NativeVideoTarget : public QWidget {
     // ownership of every pixel with the external renderer.
     if (QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0) {
       setAttribute(Qt::WA_NativeWindow);
-      setAttribute(Qt::WA_DontCreateNativeAncestors);
       setAttribute(Qt::WA_PaintOnScreen);
       setAttribute(Qt::WA_NoSystemBackground);
     }
@@ -269,23 +268,25 @@ class LetterboxRenderHost : public QWidget {
     render_surface_->setAutoFillBackground(true);
     render_surface_->setPalette(pal);
     render_target_ = new NativeVideoTarget(render_surface_);
-    focus_button_ = new QPushButton(render_surface_);
-    focus_button_->setFixedSize(36, 36);
-    focus_button_->setToolTip("Focus this video (double-click)");
-    focus_button_->setText(QStringLiteral("⛶"));
-    QFont focus_button_font = focus_button_->font();
-    focus_button_font.setPointSize(17);
-    focus_button_->setFont(focus_button_font);
+    // Keep the native overlay unmapped until a pipeline explicitly enables
+    // embedded rendering. A mapped, unpainted X11 child is an opaque black
+    // window and can obscure Qt siblings while the initial layout settles.
+    render_target_->hide();
+    focus_button_ = new QPushButton(this);
+    focus_button_->setFixedSize(24, 24);
+    focus_button_->setIconSize(QSize(14, 14));
+    focus_button_->setToolTip("Focus video");
+    focus_button_->setAccessibleName("Focus video");
+    focus_button_->setIcon(focus_button_->style()->standardIcon(QStyle::SP_TitleBarMaxButton));
     focus_button_->setStyleSheet(
         "QPushButton { background: rgba(15, 23, 42, 210); border: 1px solid rgba(255, 255, 255, 100); "
-        "border-radius: 5px; color: white; padding: 0; }"
+        "border-radius: 3px; color: white; padding: 0; }"
         "QPushButton:hover { background: rgba(30, 64, 175, 235); }");
     if (QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0) {
       // The video-overlay sink owns a native child window. Make the control a
       // native sibling too so the window system can stack it visibly above
       // the sink instead of hiding Qt backing-store pixels behind the video.
       focus_button_->setAttribute(Qt::WA_NativeWindow);
-      focus_button_->setAttribute(Qt::WA_DontCreateNativeAncestors);
       focus_button_->winId();
     }
     render_target_->setFocusButton(focus_button_);
@@ -313,9 +314,10 @@ class LetterboxRenderHost : public QWidget {
   }
 
   void setFocused(bool focused) {
-    focus_button_->setText(focused ? QStringLiteral("↙") : QStringLiteral("⛶"));
-    focus_button_->setToolTip(
-        focused ? "Restore the HStream controls (double-click)" : "Focus this video (double-click)");
+    focus_button_->setIcon(
+        focus_button_->style()->standardIcon(focused ? QStyle::SP_TitleBarNormalButton : QStyle::SP_TitleBarMaxButton));
+    focus_button_->setAccessibleName(focused ? "Restore HStream controls" : "Focus video");
+    focus_button_->setToolTip(focused ? "Restore HStream controls" : "Focus video");
     focus_button_->raise();
   }
 
@@ -349,8 +351,8 @@ class LetterboxRenderHost : public QWidget {
     const int y = (available.height() - height) / 2;
     render_surface_->setGeometry(x, y, width, height);
     render_target_->setGeometry(0, 0, width, height);
-    constexpr int kButtonMargin = 10;
-    focus_button_->move(width - focus_button_->width() - kButtonMargin, kButtonMargin);
+    constexpr int kButtonMargin = 6;
+    focus_button_->move(available.width() - focus_button_->width() - kButtonMargin, kButtonMargin);
     focus_button_->raise();
   }
 
@@ -2885,7 +2887,9 @@ void HStreamWindow::startPipeline() {
   pipeline_process_->setWorkingDirectory(working_dir);
 #ifdef Q_OS_UNIX
   const QString setsid = "/usr/bin/setsid";
-  if (QFileInfo::exists(setsid)) {
+  const bool test_without_setsid =
+      !qgetenv("HSTREAM_UI_TEST_RUNNER").isEmpty() && qEnvironmentVariableIsSet("HSTREAM_UI_TEST_BYPASS_SETSID");
+  if (QFileInfo::exists(setsid) && !test_without_setsid) {
     QStringList wrapped_args;
     wrapped_args << runner;
     wrapped_args << args;
@@ -3168,6 +3172,7 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   pipeline_uses_process_group_ = false;
   pipeline_render_embedded_ = false;
   pipeline_stop_requested_ = false;
+  clearPreviewFrames();
   if (scoreboard_selection_dialog_)
     scoreboard_selection_dialog_->closeAfterBackendCompletion();
   failPendingRuntimeControls("pipeline-error");
