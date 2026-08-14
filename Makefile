@@ -113,7 +113,7 @@ run-video-player: video-player
 
 deb:
 	@echo "Debian package output directory: $(DEB_OUTPUT_DIR)"
-	scripts/make_deb_docker.sh --target-ubuntu=$(TARGET_UBUNTU) --output-dir="$(DEB_OUTPUT_DIR)" $(if $(DEEPSTREAM_DEB),--deepstream-deb=$(DEEPSTREAM_DEB),)
+	scripts/make_deb_docker.sh --target-ubuntu=$(TARGET_UBUNTU) --output-dir="$(DEB_OUTPUT_DIR)" $(if $(DEEPSTREAM_DEB),--deepstream-deb="$(DEEPSTREAM_DEB)",)
 
 deb-ubuntu24:
 	$(MAKE) deb TARGET_UBUNTU=24.04

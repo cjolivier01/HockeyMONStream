@@ -1,6 +1,7 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 
+#include <QtCore/QCoreApplication>
 #include <QtCore/QDateTime>
 #include <QtCore/QDir>
 #include <QtCore/QDirIterator>
@@ -1274,6 +1275,12 @@ void hm::ui_internal::restore_auto_selection_paths(YAML::Node& current, const YA
   restore_child(current["stitching"], map_value(previous, "stitching"), "frame_offsets");
 }
 
+void hm::ui_internal::configure_application_identity() {
+  QCoreApplication::setApplicationName("hstream-ui");
+  QGuiApplication::setApplicationDisplayName("HStream");
+  QGuiApplication::setDesktopFileName("hstream-ui");
+}
+
 bool hm::ui_internal::supports_x11_embedding(const QString& platform_name, bool tegra_runtime) {
 #if defined(__x86_64__)
   return !tegra_runtime && platform_name.compare("xcb", Qt::CaseInsensitive) == 0;
@@ -1294,6 +1301,7 @@ QString hm::ui_internal::preview_channel_for_tab(int tab_index, int camera_count
 }
 
 HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
+  hm::ui_internal::configure_application_identity();
   setWindowIcon(hstream_application_icon());
   capture_complete_log_ = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_GAME_ID");
   pipeline_process_ = new QProcess(this);
