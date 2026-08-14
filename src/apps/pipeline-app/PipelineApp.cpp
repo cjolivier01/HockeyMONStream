@@ -2159,8 +2159,8 @@ void PipelineApplication::record_timed_run_progress(uint64_t processed_ns) {
   }
 }
 
-PipelineApplication::ProgressMetrics PipelineApplication::collect_progress_metrics(AppCtx* app_ctx) {
-  ProgressMetrics metrics;
+hm::PlaybackProgressMetrics PipelineApplication::collect_progress_metrics(AppCtx* app_ctx) {
+  hm::PlaybackProgressMetrics metrics;
   if (!app_ctx || !app_ctx->pipeline.pipeline) {
     return metrics;
   }
@@ -2243,26 +2243,6 @@ PipelineApplication::ProgressMetrics PipelineApplication::collect_progress_metri
   }
 
   const auto now = std::chrono::steady_clock::now();
-  uint64_t eta_ns = GST_CLOCK_TIME_NONE;
-  double speed_x = 0.0;
-  if (!state.have_speed_sample) {
-    state.speed_base_processed_ns = processed_ns;
-    state.speed_base_wall = now;
-    state.have_speed_sample = true;
-  } else {
-    const double wall_seconds =
-        std::chrono::duration_cast<std::chrono::duration<double>>(now - state.speed_base_wall).count();
-    const uint64_t processed_delta_ns =
-        processed_ns >= state.speed_base_processed_ns ? processed_ns - state.speed_base_processed_ns : 0;
-    if (wall_seconds > 0.0 && processed_delta_ns > 0) {
-      speed_x = (static_cast<double>(processed_delta_ns) / static_cast<double>(GST_SECOND)) / wall_seconds;
-      if (state.total_video_ns != GST_CLOCK_TIME_NONE && speed_x > 0.0) {
-        const uint64_t remaining_ns = state.total_video_ns > processed_ns ? state.total_video_ns - processed_ns : 0;
-        eta_ns = static_cast<uint64_t>((static_cast<double>(remaining_ns) / speed_x));
-      }
-    }
-  }
-
   uint64_t remaining_video_ns = GST_CLOCK_TIME_NONE;
   double fraction = 0.0;
   if (state.total_video_ns != GST_CLOCK_TIME_NONE) {
@@ -2271,18 +2251,23 @@ PipelineApplication::ProgressMetrics PipelineApplication::collect_progress_metri
       fraction = static_cast<double>(processed_ns) / static_cast<double>(state.total_video_ns);
     }
   }
+  const auto rate = state.rate_estimator.sample(
+      processed_ns,
+      remaining_video_ns,
+      now,
+      std::chrono::seconds(std::max(1U, app_ctx->config.perf_measurement_interval_sec)));
 
   metrics.valid = true;
   metrics.processed_ns = processed_ns;
   metrics.total_ns = state.total_video_ns;
   metrics.remaining_ns = remaining_video_ns;
-  metrics.eta_ns = eta_ns;
-  metrics.speed_x = speed_x;
+  metrics.eta_ns = rate.eta_ns;
+  metrics.speed_x = rate.speed_x;
   metrics.fraction = fraction;
   return metrics;
 }
 
-std::string PipelineApplication::format_progress_status(const ProgressMetrics& metrics) const {
+std::string PipelineApplication::format_progress_status(const hm::PlaybackProgressMetrics& metrics) const {
   if (!metrics.valid) {
     return "";
   }
@@ -2304,7 +2289,7 @@ std::string PipelineApplication::format_progress_status(const ProgressMetrics& m
 hm::TerminalProgressSnapshot PipelineApplication::make_terminal_progress_snapshot(
     AppCtx* app_ctx,
     NvDsAppPerfStruct* str,
-    const ProgressMetrics& metrics) const {
+    const hm::PlaybackProgressMetrics& metrics) const {
   hm::TerminalProgressSnapshot snapshot;
   snapshot.title = game_id_ && *game_id_ ? *game_id_ : "hstream";
   if (current_stage_ != 0) {
@@ -2472,8 +2457,25 @@ void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
     fps_avg_[i] = str->fps_avg[i];
   }
 
-  const ProgressMetrics progress_metrics = collect_progress_metrics(app_ctx);
-  if (std::getenv("HSTREAM_UI_PARENT_PID") && progress_metrics.valid) {
+  const hm::PlaybackProgressMetrics progress_metrics = collect_progress_metrics(app_ctx);
+  hm::PlaybackProgressMetrics aggregate_progress;
+  const auto active_stage = stage_app_contexts_.find(current_stage_);
+  const size_t active_instances = active_stage == stage_app_contexts_.end() ? 0 : active_stage->second.size();
+  auto& stage_progress = ui_progress_by_stage_[current_stage_];
+  stage_progress[app_ctx->index] = progress_metrics;
+  std::vector<hm::PlaybackProgressMetrics> instance_progress;
+  instance_progress.reserve(active_instances);
+  if (active_stage != stage_app_contexts_.end()) {
+    for (const auto& active_context : active_stage->second) {
+      const auto found = stage_progress.find(active_context->index);
+      if (found != stage_progress.end()) {
+        instance_progress.push_back(found->second);
+      }
+    }
+  }
+  const bool have_aggregate = instance_progress.size() == active_instances &&
+      hm::aggregate_playback_progress(instance_progress, &aggregate_progress);
+  if (std::getenv("HSTREAM_UI_PARENT_PID") && have_aggregate) {
     auto append_time = [](std::ostringstream& output, uint64_t value) {
       if (value == GST_CLOCK_TIME_NONE) {
         output << "unknown";
@@ -2483,15 +2485,16 @@ void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
     };
     std::ostringstream ui_progress;
     ui_progress << "HSTREAM_PROGRESS processed_ns=";
-    append_time(ui_progress, progress_metrics.processed_ns);
+    append_time(ui_progress, aggregate_progress.processed_ns);
     ui_progress << " total_ns=";
-    append_time(ui_progress, progress_metrics.total_ns);
+    append_time(ui_progress, aggregate_progress.total_ns);
     ui_progress << " remaining_ns=";
-    append_time(ui_progress, progress_metrics.remaining_ns);
+    append_time(ui_progress, aggregate_progress.remaining_ns);
     ui_progress << " eta_ns=";
-    append_time(ui_progress, progress_metrics.eta_ns);
-    ui_progress << " speed_x=" << std::fixed << std::setprecision(6) << progress_metrics.speed_x
-                << " fraction=" << progress_metrics.fraction;
+    append_time(ui_progress, aggregate_progress.eta_ns);
+    ui_progress << " speed_x=" << std::fixed << std::setprecision(6) << aggregate_progress.speed_x
+                << " fraction=" << aggregate_progress.fraction << " stage=" << current_stage_
+                << " instance=aggregate instances=" << active_instances;
     g_print("%s\n", ui_progress.str().c_str());
   }
   if (progress_ui_ && progress_ui_->started()) {

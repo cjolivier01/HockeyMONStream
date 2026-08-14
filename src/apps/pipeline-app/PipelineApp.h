@@ -29,6 +29,7 @@
 #include "absl/synchronization/mutex.h"
 
 // Application and common headers.
+#include "PlaybackProgress.h"
 #include "TerminalProgressUi.h"
 #include "configurator.h"
 #include "deepstream_app.h"
@@ -107,21 +108,12 @@ class PipelineApplication {
   static void perf_cb_static(gpointer context, NvDsAppPerfStruct* str);
   void perf_cb(gpointer context, NvDsAppPerfStruct* str);
   void record_timed_run_progress(uint64_t processed_ns);
-  struct ProgressMetrics {
-    bool valid{false};
-    uint64_t processed_ns{GST_CLOCK_TIME_NONE};
-    uint64_t total_ns{GST_CLOCK_TIME_NONE};
-    uint64_t remaining_ns{GST_CLOCK_TIME_NONE};
-    uint64_t eta_ns{GST_CLOCK_TIME_NONE};
-    double speed_x{0.0};
-    double fraction{0.0};
-  };
-  ProgressMetrics collect_progress_metrics(AppCtx* app_ctx);
-  std::string format_progress_status(const ProgressMetrics& metrics) const;
+  hm::PlaybackProgressMetrics collect_progress_metrics(AppCtx* app_ctx);
+  std::string format_progress_status(const hm::PlaybackProgressMetrics& metrics) const;
   hm::TerminalProgressSnapshot make_terminal_progress_snapshot(
       AppCtx* app_ctx,
       NvDsAppPerfStruct* str,
-      const ProgressMetrics& metrics) const;
+      const hm::PlaybackProgressMetrics& metrics) const;
   hm::TerminalProgressGraphSnapshot build_progress_graph_snapshot(
       const std::vector<std::shared_ptr<HmApp>>& app_contexts) const;
   static gboolean check_for_interrupt_static(gpointer data);
@@ -216,12 +208,11 @@ class PipelineApplication {
   gdouble fps_avg_[MAX_SOURCE_BINS];
   struct ProgressState {
     bool initialized{false};
-    bool have_speed_sample{false};
     uint64_t total_video_ns{GST_CLOCK_TIME_NONE};
-    uint64_t speed_base_processed_ns{0};
-    std::chrono::steady_clock::time_point speed_base_wall;
+    hm::PlaybackRateEstimator rate_estimator;
   };
   std::map<int, ProgressState> progress_states_;
+  std::map<long, std::map<int, hm::PlaybackProgressMetrics>> ui_progress_by_stage_;
   std::unique_ptr<hm::TerminalProgressUi> progress_ui_;
   std::chrono::steady_clock::time_point timed_run_last_progress_wall_;
   uint64_t timed_run_last_progress_ns_{GST_CLOCK_TIME_NONE};

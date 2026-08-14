@@ -3127,6 +3127,11 @@ void HStreamWindow::pauseOrResumePipeline() {
   }
   pipeline_paused_ = !pipeline_paused_;
   pipeline_state_->setText(pipeline_paused_ ? "PAUSED" : "PLAYING");
+  if (!pipeline_paused_) {
+    playback_eta_ = "Warming up";
+    playback_speed_ = "Warming up";
+    playback_warming_after_resume_ = true;
+  }
   preview_status_->setText(pipeline_paused_ ? "Pipeline paused" : "Pipeline resumed");
   appendLog(pipeline_paused_ ? "pipeline paused" : "pipeline resumed");
   updateRunControls();
@@ -3421,6 +3426,10 @@ bool HStreamWindow::handlePlaybackProgressOutput(const QString& line) {
       fields[token.left(separator)] = token.mid(separator + 1);
     }
   }
+  const auto instance = fields.find("instance");
+  if (instance != fields.end() && instance->second != "aggregate") {
+    return true;
+  }
 
   auto parse_nanoseconds = [&fields](const QString& name, quint64* value) {
     const auto found = fields.find(name);
@@ -3465,6 +3474,15 @@ bool HStreamWindow::handlePlaybackProgressOutput(const QString& line) {
   bool speed_ok = false;
   const double speed_value = speed == fields.end() ? 0.0 : speed->second.toDouble(&speed_ok);
   playback_speed_ = speed_ok && speed_value > 0.0 ? QString::number(speed_value, 'f', 2) + "x" : "Warming up";
+  const auto stage = fields.find("stage");
+  playback_stage_ = stage == fields.end() ? "Unknown" : stage->second;
+  const auto instances = fields.find("instances");
+  playback_instances_ = instances == fields.end() ? "1" : instances->second;
+  if (playback_warming_after_resume_) {
+    playback_eta_ = "Warming up";
+    playback_speed_ = "Warming up";
+    playback_warming_after_resume_ = false;
+  }
 
   if (playback_progress_) {
     const auto fraction = fields.find("fraction");
@@ -3491,6 +3509,9 @@ void HStreamWindow::resetPlaybackProgress() {
   playback_remaining_ = "Unknown";
   playback_eta_ = "Warming up";
   playback_speed_ = "Warming up";
+  playback_stage_ = "Unknown";
+  playback_instances_ = "Unknown";
+  playback_warming_after_resume_ = false;
   if (playback_progress_) {
     playback_progress_->setRange(0, 0);
     playback_progress_->setFormat("Starting pipeline…");
@@ -3503,9 +3524,21 @@ void HStreamWindow::updatePlaybackProgressPresentation() {
     return;
   }
   const QString state = pipeline_state_ ? pipeline_state_->text() : QString("STARTING");
+  const QString eta = state == "PAUSED" ? "Paused" : playback_eta_;
+  const QString speed = state == "PAUSED" ? "Paused" : playback_speed_;
   playback_progress_->setToolTip(
-      QString("Pipeline: %1\nElapsed: %2\nTotal: %3\nRemaining: %4\nETA: %5\nProcessing speed: %6")
-          .arg(state, playback_elapsed_, playback_total_, playback_remaining_, playback_eta_, playback_speed_));
+      QString(
+          "Pipeline: %1\nStage: %2\nActive pipelines: %3\nElapsed: %4\nTotal: %5\nRemaining: %6\nETA: %7\n"
+          "Processing speed: %8")
+          .arg(
+              state,
+              playback_stage_,
+              playback_instances_,
+              playback_elapsed_,
+              playback_total_,
+              playback_remaining_,
+              eta,
+              speed));
 }
 
 void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {

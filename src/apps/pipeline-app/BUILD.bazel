@@ -145,6 +145,16 @@ cc_test(
 )
 
 cc_test(
+    name = "playback_progress_test",
+    srcs = [
+        "PlaybackProgress.cpp",
+        "PlaybackProgress.h",
+        "PlaybackProgressTest.cpp",
+    ],
+    copts = PIPELINE_APP_COPTS,
+)
+
+cc_test(
     name = "tensorrt_model_cache_test",
     srcs = [
         "TensorRtModelCache.cpp",

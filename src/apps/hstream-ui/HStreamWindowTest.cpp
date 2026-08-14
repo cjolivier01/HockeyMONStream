@@ -418,7 +418,8 @@ bool write_fake_runner(const QString& path) {
   file.write("sys.stdout.flush()\n");
   file.write(
       "print('HSTREAM_PROGRESS processed_ns=42000000000 total_ns=600000000000 remaining_ns=558000000000 "
-      "eta_ns=279000000000 speed_x=2.000000 fraction=0.070000', flush=True)\n");
+      "eta_ns=279000000000 speed_x=2.000000 fraction=0.070000 stage=0 instance=aggregate instances=1', "
+      "flush=True)\n");
   file.write(
       "if os.environ.get('HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW') == '1' or any(argument.startswith("
       "'--ui-preview-windows=') for argument in sys.argv[1:]):\n");
@@ -1875,6 +1876,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               playback_progress->toolTip().contains("Remaining: 00:09:18") &&
               playback_progress->toolTip().contains("ETA: 00:04:39") &&
               playback_progress->toolTip().contains("Processing speed: 2.00x") &&
+              playback_progress->toolTip().contains("Stage: 0") &&
+              playback_progress->toolTip().contains("Active pipelines: 1") &&
               !window->logText().contains("HSTREAM_PROGRESS"),
           "An active run should show exact backend playback progress without adding protocol noise to the log")) {
     return false;
@@ -1954,8 +1957,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   activate(pause);
   if (!expect(
           window->pipelineStateText() == "PAUSED" && playback_progress->isVisible() &&
-              playback_progress->toolTip().contains("Pipeline: PAUSED"),
-          "Pausing should retain the prominent progress bar and describe its paused state"))
+              playback_progress->toolTip().contains("Pipeline: PAUSED") &&
+              playback_progress->toolTip().contains("ETA: Paused") &&
+              playback_progress->toolTip().contains("Processing speed: Paused") &&
+              !playback_progress->toolTip().contains("Processing speed: 2.00x"),
+          "Pausing should retain progress without presenting stale ETA or speed"))
     return false;
   QTest::mouseClick(render_video, Qt::LeftButton);
   QApplication::processEvents();
@@ -1969,6 +1975,13 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
   activate(pause);
+  if (!expect(
+          playback_progress->toolTip().contains("Pipeline: PLAYING") &&
+              playback_progress->toolTip().contains("ETA: Warming up") &&
+              playback_progress->toolTip().contains("Processing speed: Warming up"),
+          "Resuming should warm up ETA and speed until fresh adjacent backend samples arrive")) {
+    return false;
+  }
   for (int i = 0;
        i < 100 && window->logText().count("GPU preview disabled generation=") <= disabled_count_before_paused_toggle;
        ++i) {

@@ -302,6 +302,9 @@ class HStreamWindow : public QMainWindow {
   QString playback_remaining_;
   QString playback_eta_;
   QString playback_speed_;
+  QString playback_stage_;
+  QString playback_instances_;
+  bool playback_warming_after_resume_{false};
   bool calibration_pending_{false};
   bool calibration_dialog_failed_{false};
   bool preview_focus_mode_{false};
