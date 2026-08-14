@@ -20,6 +20,7 @@ endif
 endif
 HOST_CUDA_FLAGS := $(shell scripts/bazel_cuda_host_config.sh 2>/dev/null)
 TARGET_UBUNTU ?= $(shell . /etc/os-release 2>/dev/null && printf '%s' "$$VERSION_ID")
+DEB_OUTPUT_DIR ?= $(TOPDIR)/dist/ubuntu$(TARGET_UBUNTU)
 
 all: print_targets
 
@@ -111,7 +112,8 @@ run-video-player: video-player
 	bazel-bin/src/apps/video-player/video-player --help
 
 deb:
-	scripts/make_deb_docker.sh --target-ubuntu=$(TARGET_UBUNTU) $(if $(DEEPSTREAM_DEB),--deepstream-deb=$(DEEPSTREAM_DEB),)
+	@echo "Debian package output directory: $(DEB_OUTPUT_DIR)"
+	scripts/make_deb_docker.sh --target-ubuntu=$(TARGET_UBUNTU) --output-dir="$(DEB_OUTPUT_DIR)" $(if $(DEEPSTREAM_DEB),--deepstream-deb="$(DEEPSTREAM_DEB)",)
 
 deb-ubuntu24:
 	$(MAKE) deb TARGET_UBUNTU=24.04
@@ -153,7 +155,7 @@ print_targets:
 		'yolo-custom-lib Build //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo.' \
 		'hstream-gst-plugins Build the three HStream-owned GStreamer plugins.' \
 		'qualify-native-onnx Run the non-skippable native/Python ONNX release gate.' \
-		'deb            Build for the host Ubuntu release in an ABI-isolated Docker container.' \
+		'deb            Build in Docker; write the package under dist/ubuntu<version> (override DEB_OUTPUT_DIR).' \
 		'deb-ubuntu24   Build the Ubuntu 24.04 package in Docker (output under dist/ubuntu24.04).' \
 		'deb-ubuntu26   Build the Ubuntu 26.04 package in Docker (output under dist/ubuntu26.04).' \
 		'wsl-deb        Alias for deb; Windows installer is a later WSL wrapper, not a .deb.' \

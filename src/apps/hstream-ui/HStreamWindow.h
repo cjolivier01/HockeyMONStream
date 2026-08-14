@@ -37,6 +37,10 @@ class ScoreboardSelectionDialog;
 
 namespace hm::ui_internal {
 
+// Establishes the desktop identity used by WM_CLASS, desktop-file matching,
+// taskbar grouping, and human-readable application labels. Call before the
+// first native window is created.
+void configure_application_identity();
 // Restores only paths cleared by the UI's automatic video selection. Other
 // keys may have been updated by another config owner in the meantime.
 void restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previous);

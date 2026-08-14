@@ -167,3 +167,24 @@ fi
 
 echo "[make_deb_docker] Building Ubuntu ${TARGET_UBUNTU} package..."
 docker run "${docker_args[@]}" "${image_tag}"
+
+package_filename_version="${PACKAGE_VERSION#v}"
+package_filename_version="$(printf '%s' "${package_filename_version}" | sed -E 's/[^A-Za-z0-9.+:~-]+/./g; s/[.]+/./g; s/^[.]+//; s/[.]+$//')"
+if [[ ! "${package_filename_version}" =~ ^[0-9] ]]; then
+  package_filename_version="0.0+git.${package_filename_version}"
+fi
+host_deb_path="${OUTPUT_DIR}/hstream_${package_filename_version}_amd64.deb"
+host_installer_path="${OUTPUT_DIR}/install-hstream-deb"
+if [[ ! -f "${host_deb_path}" || ! -x "${host_installer_path}" ]]; then
+  echo "ERROR: Docker completed without exporting the expected host artifacts to ${OUTPUT_DIR}." >&2
+  exit 1
+fi
+
+echo ""
+echo "Done: ${host_deb_path}"
+echo "Package output directory: ${OUTPUT_DIR}"
+echo ""
+echo "Install with:"
+printf '  sudo %q \\\n' "${host_installer_path}"
+printf '    --deepstream-deb=%q \\\n' "${DEEPSTREAM_DEB}"
+printf '    --hstream-deb=%q\n' "${host_deb_path}"

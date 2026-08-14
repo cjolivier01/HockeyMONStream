@@ -101,7 +101,8 @@ validate_native_cuda_code hstream-cli "${BUILD_DIR}/bazel-bin/src/apps/pipeline-
 
 rm -rf "${CONTAINER_OUTPUT_DIR}"
 mkdir -p "${CONTAINER_OUTPUT_DIR}"
-HSTREAM_IMMUTABLE_SOURCE=1 HSTREAM_TARGET_UBUNTU="${TARGET_UBUNTU}" scripts/make_deb.sh \
+HSTREAM_IMMUTABLE_SOURCE=1 HSTREAM_TARGET_UBUNTU="${TARGET_UBUNTU}" HSTREAM_CONTAINER_PACKAGE_STAGING=1 \
+  scripts/make_deb.sh \
   --version "${PACKAGE_VERSION}" --output-dir "${CONTAINER_OUTPUT_DIR}"
 
 # Bind-mounted output directories can be root-squashed. Copy the completed

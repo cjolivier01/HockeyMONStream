@@ -180,7 +180,9 @@ mkdir -p \
   "${STAGING}${INSTALL_PREFIX}/configs" \
   "${STAGING}${INSTALL_PREFIX}/share/licenses/onnxruntime" \
   "${STAGING}${INSTALL_PREFIX}/scripts" \
+  "${STAGING}/usr/share/applications" \
   "${STAGING}/usr/share/doc/${PKG_NAME}" \
+  "${STAGING}/usr/share/icons/hicolor/scalable/apps" \
   "${STAGING}/usr/bin"
 
 declare -a package_elfs=()
@@ -869,6 +871,12 @@ ln -s "${INSTALL_PREFIX}/bin/hstream-assets" "${STAGING}/usr/bin/hstream-assets"
 ln -s "${INSTALL_PREFIX}/hstream-ui.sh" "${STAGING}/usr/bin/hstream-ui"
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hstream"
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/pipeline-app"
+install -m 0644 \
+  "${TOPDIR}/src/apps/hstream-ui/hstream-ui.desktop" \
+  "${STAGING}/usr/share/applications/hstream-ui.desktop"
+install -m 0644 \
+  "${TOPDIR}/src/apps/hstream-ui/hstream-ui.svg" \
+  "${STAGING}/usr/share/icons/hicolor/scalable/apps/hstream-ui.svg"
 
 # ---------- DEBIAN/control ----------
 echo "[make_deb] Writing DEBIAN/control..."
@@ -1135,17 +1143,23 @@ dpkg-deb --build --root-owner-group "${STAGING}" "${DEB_PATH}"
 INSTALLER_PATH="${OUTPUT_DIR}/install-hstream-deb"
 install -m 0755 "${TOPDIR}/scripts/install_deb.sh" "${INSTALLER_PATH}"
 
-echo ""
-echo "Done: ${DEB_PATH}"
-echo ""
-echo "Install with:"
-printf '  sudo %s \\\n' "${INSTALLER_PATH}"
-printf '    --deepstream-deb=%s \\\n' '/path/to/deepstream-9.1_9.1.0-1+resolute2_amd64.deb'
-echo "    --hstream-deb=${DEB_PATH}"
-echo "  (the installer configures NVIDIA repositories; DeepStream itself remains a local release artifact)"
-echo ""
-echo "Run with:"
-echo "  /opt/hstream/run.sh [args...]"
-echo "  hstream-cli [args...]   (after install)"
-echo "  hstream-ui              (after install)"
-echo "  hstream [args...]        (compatibility wrapper after install)"
+if [[ "${HSTREAM_CONTAINER_PACKAGE_STAGING:-}" == "1" ]]; then
+  echo ""
+  echo "Container staging complete: ${DEB_PATH}"
+  echo "The Docker wrapper is now copying this package to the host output directory."
+else
+  echo ""
+  echo "Done: ${DEB_PATH}"
+  echo ""
+  echo "Install with:"
+  printf '  sudo %s \\\n' "${INSTALLER_PATH}"
+  printf '    --deepstream-deb=%s \\\n' '/path/to/deepstream-9.1_9.1.0-1+resolute2_amd64.deb'
+  echo "    --hstream-deb=${DEB_PATH}"
+  echo "  (the installer configures NVIDIA repositories; DeepStream itself remains a local release artifact)"
+  echo ""
+  echo "Run with:"
+  echo "  /opt/hstream/run.sh [args...]"
+  echo "  hstream-cli [args...]   (after install)"
+  echo "  hstream-ui              (after install)"
+  echo "  hstream [args...]        (compatibility wrapper after install)"
+fi

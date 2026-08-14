@@ -24,6 +24,8 @@ filegroup(
         "HStreamWindow.h",
         "ScoreboardSelectionDialog.cpp",
         "ScoreboardSelectionDialog.h",
+        "hstream-ui.desktop",
+        "hstream-ui.svg",
         "main.cpp",
     ],
     visibility = ["//visibility:public"],

@@ -51,7 +51,9 @@
 #include <vector>
 
 #ifdef Q_OS_UNIX
+#include <X11/Xatom.h>
 #include <X11/Xlib.h>
+#include <X11/Xutil.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -112,6 +114,124 @@ bool expect_x11_widget_state(
   (void)widget;
   (void)expected_viewable;
   (void)description;
+  return true;
+#endif
+}
+
+bool expect_x11_application_icon(QWidget* widget) {
+#ifdef Q_OS_UNIX
+  if (!widget || QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) != 0)
+    return true;
+  Display* display = XOpenDisplay(nullptr);
+  if (!display)
+    return expect(false, "Could not open X11 display to inspect the HStream application icon");
+  XSync(display, False);
+  const Atom icon_atom = XInternAtom(display, "_NET_WM_ICON", True);
+  Atom actual_type = None;
+  int actual_format = 0;
+  unsigned long item_count = 0;
+  unsigned long bytes_after = 0;
+  unsigned char* data = nullptr;
+  int status = icon_atom == None ? BadAtom
+                                 : XGetWindowProperty(
+                                       display,
+                                       static_cast<Window>(widget->winId()),
+                                       icon_atom,
+                                       0,
+                                       0,
+                                       False,
+                                       XA_CARDINAL,
+                                       &actual_type,
+                                       &actual_format,
+                                       &item_count,
+                                       &bytes_after,
+                                       &data);
+  if (data) {
+    XFree(data);
+    data = nullptr;
+  }
+  constexpr unsigned long kMaximumIconPropertyBytes = 4UL * 1024UL * 1024UL;
+  const unsigned long property_bytes = bytes_after;
+  if (status == Success && actual_type == XA_CARDINAL && actual_format == 32 && property_bytes > 0 &&
+      property_bytes <= kMaximumIconPropertyBytes) {
+    status = XGetWindowProperty(
+        display,
+        static_cast<Window>(widget->winId()),
+        icon_atom,
+        0,
+        static_cast<long>((property_bytes + 3) / 4),
+        False,
+        XA_CARDINAL,
+        &actual_type,
+        &actual_format,
+        &item_count,
+        &bytes_after,
+        &data);
+  } else {
+    status = BadValue;
+  }
+
+  bool complete_payload = status == Success && actual_type == XA_CARDINAL && actual_format == 32 && data &&
+      bytes_after == 0 && item_count >= 3;
+  std::set<std::pair<unsigned long, unsigned long>> visible_sizes;
+  if (complete_payload) {
+    const auto* values = reinterpret_cast<const unsigned long*>(data);
+    unsigned long index = 0;
+    while (index < item_count) {
+      if (item_count - index < 2) {
+        complete_payload = false;
+        break;
+      }
+      const unsigned long width = values[index++];
+      const unsigned long height = values[index++];
+      constexpr unsigned long kMaximumIconDimension = 4096;
+      if (width == 0 || height == 0 || width > kMaximumIconDimension || height > kMaximumIconDimension ||
+          width > (item_count - index) / height) {
+        complete_payload = false;
+        break;
+      }
+      const unsigned long pixel_count = width * height;
+      bool has_visible_pixel = false;
+      for (unsigned long pixel = 0; pixel < pixel_count; ++pixel) {
+        has_visible_pixel = has_visible_pixel || ((values[index + pixel] >> 24U) & 0xffU) != 0;
+      }
+      if (has_visible_pixel)
+        visible_sizes.emplace(width, height);
+      index += pixel_count;
+    }
+    complete_payload = complete_payload && index == item_count;
+  }
+  const std::set<std::pair<unsigned long, unsigned long>> expected_sizes = {
+      {16, 16}, {24, 24}, {32, 32}, {48, 48}, {64, 64}, {128, 128}};
+  const bool exported = complete_payload &&
+      std::includes(visible_sizes.begin(), visible_sizes.end(), expected_sizes.begin(), expected_sizes.end());
+  if (data)
+    XFree(data);
+
+  XClassHint class_hint{};
+  const bool class_hint_available = XGetClassHint(display, static_cast<Window>(widget->winId()), &class_hint) != 0;
+  const std::string class_hint_name = class_hint.res_name ? class_hint.res_name : "<missing>";
+  const std::string class_hint_class = class_hint.res_class ? class_hint.res_class : "<missing>";
+  const std::string executable_name = QFileInfo(QCoreApplication::applicationFilePath()).fileName().toStdString();
+  const bool class_hint_matches = class_hint_available && class_hint.res_name && class_hint.res_class &&
+      class_hint_name == executable_name && class_hint_class == "hstream-ui";
+  if (class_hint.res_name)
+    XFree(class_hint.res_name);
+  if (class_hint.res_class)
+    XFree(class_hint.res_class);
+  XCloseDisplay(display);
+  if (!exported || !class_hint_matches) {
+    std::cerr << "X11 application identity: complete-icon=" << complete_payload << " visible-sizes=";
+    for (const auto& [width, height] : visible_sizes)
+      std::cerr << width << 'x' << height << ',';
+    std::cerr << " class-hint=" << class_hint_matches << " name=" << class_hint_name << " class=" << class_hint_class
+              << '\n';
+  }
+  return expect(
+      exported && class_hint_matches,
+      "The native HStream window should export complete multi-size _NET_WM_ICON data and matching WM_CLASS identity");
+#else
+  (void)widget;
   return true;
 #endif
 }
@@ -1568,6 +1688,26 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       !stitched_controls || !program_control_tabs || !stitched_control_tabs || !program_focus || !top_bar ||
       !setup_row || !log_panel || !pipeline_process) {
     return false;
+  }
+
+  const QPixmap application_icon = window->windowIcon().pixmap(256, 256);
+  const QImage application_icon_image = application_icon.toImage().convertToFormat(QImage::Format_ARGB32);
+  if (!expect(
+          QCoreApplication::applicationName() == "hstream-ui" &&
+              QGuiApplication::applicationDisplayName() == "HStream" &&
+              QGuiApplication::desktopFileName() == "hstream-ui" && !window->windowIcon().isNull() &&
+              !application_icon.isNull() && application_icon.size() == QSize(256, 256) &&
+              qAlpha(application_icon_image.pixel(0, 0)) == 0 && qAlpha(application_icon_image.pixel(128, 128)) == 255,
+          "HStream should expose matching desktop identity and a scalable application icon with transparent corners")) {
+    return false;
+  }
+  if (!expect_x11_application_icon(window))
+    return false;
+  const QString icon_artifact_dir = qEnvironmentVariable("HSTREAM_UI_X11_ARTIFACT_DIR");
+  if (!icon_artifact_dir.isEmpty() &&
+      (!QDir().mkpath(icon_artifact_dir) ||
+       !application_icon.save(QDir(icon_artifact_dir).filePath("hstream-app-icon.png")))) {
+    return expect(false, "Could not save the HStream application-icon test artifact");
   }
 
   if (!expect(
@@ -4081,6 +4221,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
 } // namespace
 
 int main(int argc, char** argv) {
+  hm::ui_internal::configure_application_identity();
   if (!test_path_scoped_auto_rollback() || !test_diagnostic_capture_attempt_paths()) {
     return 1;
   }

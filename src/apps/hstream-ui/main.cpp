@@ -4,6 +4,7 @@
 #include <QtWidgets/QApplication>
 
 int main(int argc, char** argv) {
+  hm::ui_internal::configure_application_identity();
 #if defined(Q_OS_LINUX)
   // DeepStream's EGL render sink consumes an X11 Window handle. On a Wayland
   // desktop Qt otherwise returns a wl_surface pointer from winId(), which the
@@ -15,6 +16,7 @@ int main(int argc, char** argv) {
 #endif
   QApplication app(argc, argv);
   HStreamWindow window;
+  app.setWindowIcon(window.windowIcon());
   window.show();
   return app.exec();
 }
