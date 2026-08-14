@@ -1399,6 +1399,21 @@ void HStreamWindow::buildUi() {
   buildTopBar(top_bar_layout);
   root->addWidget(top_bar_);
 
+  playback_progress_ = new QProgressBar(central);
+  playback_progress_->setObjectName("playbackProgress");
+  playback_progress_->setAccessibleName("Playback progress");
+  playback_progress_->setRange(0, 0);
+  playback_progress_->setTextVisible(true);
+  playback_progress_->setFixedHeight(18);
+  playback_progress_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+  playback_progress_->setStyleSheet(
+      "QProgressBar { background: #20252d; border: 1px solid #596273; border-radius: 4px; color: white; "
+      "font-weight: 600; text-align: center; }"
+      "QProgressBar::chunk { background: #238636; border-radius: 3px; }");
+  playback_progress_->hide();
+  resetPlaybackProgress();
+  root->addWidget(playback_progress_);
+
   main_log_splitter_ = new QSplitter(Qt::Vertical);
   main_log_splitter_->setObjectName("mainLogSplitter");
   main_log_splitter_->setChildrenCollapsible(false);
@@ -3058,6 +3073,7 @@ void HStreamWindow::startPipeline() {
   pipeline_stop_requested_ = false;
 
   pipeline_state_->setText("STARTING");
+  resetPlaybackProgress();
   if (active_run_is_calibration_) {
     if (render_video) {
       preview_status_->setText(
@@ -3372,6 +3388,9 @@ void HStreamWindow::readPipelineOutput() {
       line.remove('\r');
       if (!line.trimmed().isEmpty()) {
         const QString trimmed = line.trimmed();
+        if (handlePlaybackProgressOutput(trimmed)) {
+          continue;
+        }
         if (handleGpuPreviewStatus(trimmed)) {
           continue;
         }
@@ -3386,6 +3405,107 @@ void HStreamWindow::readPipelineOutput() {
   if (pipeline_process_->processChannelMode() != QProcess::MergedChannels) {
     drain(pipeline_process_->readAllStandardError(), &pipeline_stderr_buffer_);
   }
+}
+
+bool HStreamWindow::handlePlaybackProgressOutput(const QString& line) {
+  static const QString prefix = QStringLiteral("HSTREAM_PROGRESS ");
+  if (!line.startsWith(prefix)) {
+    return false;
+  }
+
+  std::map<QString, QString> fields;
+  const QStringList tokens = line.mid(prefix.size()).split(' ', Qt::SkipEmptyParts);
+  for (const QString& token : tokens) {
+    const qsizetype separator = token.indexOf('=');
+    if (separator > 0 && separator + 1 < token.size()) {
+      fields[token.left(separator)] = token.mid(separator + 1);
+    }
+  }
+
+  auto parse_nanoseconds = [&fields](const QString& name, quint64* value) {
+    const auto found = fields.find(name);
+    if (found == fields.end() || found->second == "unknown") {
+      return false;
+    }
+    bool ok = false;
+    const quint64 parsed = found->second.toULongLong(&ok);
+    if (ok && value) {
+      *value = parsed;
+    }
+    return ok;
+  };
+  auto format_duration = [](quint64 nanoseconds) {
+    quint64 total_seconds = nanoseconds / 1000000000ULL;
+    const quint64 hours = total_seconds / 3600;
+    total_seconds %= 3600;
+    const quint64 minutes = total_seconds / 60;
+    const quint64 seconds = total_seconds % 60;
+    return QString("%1:%2:%3")
+        .arg(hours, 2, 10, QLatin1Char('0'))
+        .arg(minutes, 2, 10, QLatin1Char('0'))
+        .arg(seconds, 2, 10, QLatin1Char('0'));
+  };
+
+  quint64 processed_ns = 0;
+  if (!parse_nanoseconds("processed_ns", &processed_ns)) {
+    return true;
+  }
+  playback_elapsed_ = format_duration(processed_ns);
+
+  quint64 total_ns = 0;
+  const bool have_total = parse_nanoseconds("total_ns", &total_ns) && total_ns > 0;
+  playback_total_ = have_total ? format_duration(total_ns) : "Unknown";
+
+  quint64 remaining_ns = 0;
+  playback_remaining_ = parse_nanoseconds("remaining_ns", &remaining_ns) ? format_duration(remaining_ns) : "Unknown";
+  quint64 eta_ns = 0;
+  playback_eta_ = parse_nanoseconds("eta_ns", &eta_ns) ? format_duration(eta_ns) : "Warming up";
+
+  const auto speed = fields.find("speed_x");
+  bool speed_ok = false;
+  const double speed_value = speed == fields.end() ? 0.0 : speed->second.toDouble(&speed_ok);
+  playback_speed_ = speed_ok && speed_value > 0.0 ? QString::number(speed_value, 'f', 2) + "x" : "Warming up";
+
+  if (playback_progress_) {
+    const auto fraction = fields.find("fraction");
+    bool fraction_ok = false;
+    const double fraction_value = fraction == fields.end() ? 0.0 : fraction->second.toDouble(&fraction_ok);
+    if (have_total && fraction_ok && std::isfinite(fraction_value)) {
+      const int progress_x10 = qRound(std::clamp(fraction_value, 0.0, 1.0) * 1000.0);
+      playback_progress_->setRange(0, 1000);
+      playback_progress_->setValue(progress_x10);
+      playback_progress_->setFormat(
+          QString("%1 / %2  •  %3%").arg(playback_elapsed_, playback_total_).arg(progress_x10 / 10.0, 0, 'f', 1));
+    } else {
+      playback_progress_->setRange(0, 0);
+      playback_progress_->setFormat(QString("%1 elapsed").arg(playback_elapsed_));
+    }
+  }
+  updatePlaybackProgressPresentation();
+  return true;
+}
+
+void HStreamWindow::resetPlaybackProgress() {
+  playback_elapsed_ = "Waiting for first frame";
+  playback_total_ = "Unknown";
+  playback_remaining_ = "Unknown";
+  playback_eta_ = "Warming up";
+  playback_speed_ = "Warming up";
+  if (playback_progress_) {
+    playback_progress_->setRange(0, 0);
+    playback_progress_->setFormat("Starting pipeline…");
+  }
+  updatePlaybackProgressPresentation();
+}
+
+void HStreamWindow::updatePlaybackProgressPresentation() {
+  if (!playback_progress_) {
+    return;
+  }
+  const QString state = pipeline_state_ ? pipeline_state_->text() : QString("STARTING");
+  playback_progress_->setToolTip(
+      QString("Pipeline: %1\nElapsed: %2\nTotal: %3\nRemaining: %4\nETA: %5\nProcessing speed: %6")
+          .arg(state, playback_elapsed_, playback_total_, playback_remaining_, playback_eta_, playback_speed_));
 }
 
 void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
@@ -4145,6 +4265,10 @@ void HStreamWindow::updateRunControls() {
   }
   if (!running && pipeline_state_->text().isEmpty()) {
     pipeline_state_->setText("STOPPED");
+  }
+  if (playback_progress_) {
+    playback_progress_->setVisible(running);
+    updatePlaybackProgressPresentation();
   }
   if (start_button_) {
     start_button_->setEnabled(!running);

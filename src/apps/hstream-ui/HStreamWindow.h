@@ -116,6 +116,9 @@ class HStreamWindow : public QMainWindow {
   void handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status);
   void handlePipelineError(QProcess::ProcessError error);
   void readPipelineOutput();
+  bool handlePlaybackProgressOutput(const QString& line);
+  void resetPlaybackProgress();
+  void updatePlaybackProgressPresentation();
   void showStitchingCalibrationDialog();
   bool beginObservedStitchingCalibration(const QString& reported_stage);
   void handleStitchingCalibrationOutput(const QString& line);
@@ -244,6 +247,7 @@ class HStreamWindow : public QMainWindow {
 
   QLabel* backend_mode_{nullptr};
   QLabel* pipeline_state_{nullptr};
+  QProgressBar* playback_progress_{nullptr};
   QLabel* preview_status_{nullptr};
   QLabel* stitched_status_{nullptr};
   QLabel* preview_external_notice_{nullptr};
@@ -293,6 +297,11 @@ class HStreamWindow : public QMainWindow {
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};
   bool pipeline_render_embedded_{false};
+  QString playback_elapsed_;
+  QString playback_total_;
+  QString playback_remaining_;
+  QString playback_eta_;
+  QString playback_speed_;
   bool calibration_pending_{false};
   bool calibration_dialog_failed_{false};
   bool preview_focus_mode_{false};

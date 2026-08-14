@@ -2473,6 +2473,27 @@ void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
   }
 
   const ProgressMetrics progress_metrics = collect_progress_metrics(app_ctx);
+  if (std::getenv("HSTREAM_UI_PARENT_PID") && progress_metrics.valid) {
+    auto append_time = [](std::ostringstream& output, uint64_t value) {
+      if (value == GST_CLOCK_TIME_NONE) {
+        output << "unknown";
+      } else {
+        output << value;
+      }
+    };
+    std::ostringstream ui_progress;
+    ui_progress << "HSTREAM_PROGRESS processed_ns=";
+    append_time(ui_progress, progress_metrics.processed_ns);
+    ui_progress << " total_ns=";
+    append_time(ui_progress, progress_metrics.total_ns);
+    ui_progress << " remaining_ns=";
+    append_time(ui_progress, progress_metrics.remaining_ns);
+    ui_progress << " eta_ns=";
+    append_time(ui_progress, progress_metrics.eta_ns);
+    ui_progress << " speed_x=" << std::fixed << std::setprecision(6) << progress_metrics.speed_x
+                << " fraction=" << progress_metrics.fraction;
+    g_print("%s\n", ui_progress.str().c_str());
+  }
   if (progress_ui_ && progress_ui_->started()) {
     progress_ui_->update(make_terminal_progress_snapshot(app_ctx, str, progress_metrics));
     if (progress_metrics.valid) {

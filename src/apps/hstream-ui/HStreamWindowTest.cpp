@@ -417,6 +417,9 @@ bool write_fake_runner(const QString& path) {
   file.write("sys.stdout.write(' blue runner line\\033[0m\\n')\n");
   file.write("sys.stdout.flush()\n");
   file.write(
+      "print('HSTREAM_PROGRESS processed_ns=42000000000 total_ns=600000000000 remaining_ns=558000000000 "
+      "eta_ns=279000000000 speed_x=2.000000 fraction=0.070000', flush=True)\n");
+  file.write(
       "if os.environ.get('HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW') == '1' or any(argument.startswith("
       "'--ui-preview-windows=') for argument in sys.argv[1:]):\n");
   file.write("    initial_preview = 'program'\n");
@@ -1677,6 +1680,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* stitched_control_tabs = require_child<QTabWidget>(window, "stitchedControlTabs");
   auto* program_focus = require_child<QPushButton>(window, "programFocusButton");
   auto* top_bar = require_child<QWidget>(window, "topBarPanel");
+  auto* playback_progress = require_child<QProgressBar>(window, "playbackProgress");
   auto* setup_row = require_child<QWidget>(window, "setupControlsRow");
   auto* log_panel = require_child<QWidget>(window, "logPanel");
   auto* pipeline_process = window->findChild<QProcess*>();
@@ -1686,7 +1690,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       !camera1_host || !camera1_surface || !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface ||
       !external_notice || !camera1_notice || !stitched_status || !program_controls || !program_controls_toggle ||
       !stitched_controls || !program_control_tabs || !stitched_control_tabs || !program_focus || !top_bar ||
-      !setup_row || !log_panel || !pipeline_process) {
+      !setup_row || !log_panel || !playback_progress || !pipeline_process) {
     return false;
   }
 
@@ -1865,6 +1869,16 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
+  if (!expect(
+          playback_progress->isVisible() && playback_progress->minimum() == 0 && playback_progress->maximum() == 1000 &&
+              playback_progress->value() == 70 && playback_progress->format().contains("00:00:42 / 00:10:00") &&
+              playback_progress->toolTip().contains("Remaining: 00:09:18") &&
+              playback_progress->toolTip().contains("ETA: 00:04:39") &&
+              playback_progress->toolTip().contains("Processing speed: 2.00x") &&
+              !window->logText().contains("HSTREAM_PROGRESS"),
+          "An active run should show exact backend playback progress without adding protocol noise to the log")) {
+    return false;
+  }
   const fs::path fresh_program_config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
   const YAML::Node fresh_program_saved = YAML::LoadFile(fresh_program_config.string());
   YAML::Node fresh_program_status;
@@ -1938,7 +1952,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
 
   const int disabled_count_before_paused_toggle = window->logText().count("GPU preview disabled generation=");
   activate(pause);
-  if (!expect(window->pipelineStateText() == "PAUSED", "The pause regression must stop backend command handling"))
+  if (!expect(
+          window->pipelineStateText() == "PAUSED" && playback_progress->isVisible() &&
+              playback_progress->toolTip().contains("Pipeline: PAUSED"),
+          "Pausing should retain the prominent progress bar and describe its paused state"))
     return false;
   QTest::mouseClick(render_video, Qt::LeftButton);
   QApplication::processEvents();
@@ -2020,7 +2037,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(
           !top_bar->isVisible() && !setup_row->isVisible() && !log_panel->isVisible() &&
               !preview_tabs->tabBar()->isVisible() && !program_controls->isVisible() && program_host->isVisible() &&
-              !window->isFullScreen() && program_focus->toolTip() == "Restore HStream controls" &&
+              playback_progress->isVisible() && !window->isFullScreen() &&
+              program_focus->toolTip() == "Restore HStream controls" &&
               program_focus->accessibleName() == "Restore HStream controls",
           "A real double-click on a ready GPU preview should focus it across the HStream app area")) {
     return false;
@@ -2162,6 +2180,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   for (int i = 0; i < 50 && window->pipelineStateText() != "STOPPED"; ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
+  }
+  if (!expect(playback_progress->isHidden(), "Stopping should hide playback progress until the next run")) {
+    return false;
   }
   if (!expect(
           preview_surface->property("previewRendererState").toString() == "idle" &&
@@ -3895,9 +3916,10 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   auto* stitched_render_target = require_child<QWidget>(window, "stitchedPreviewRenderTarget");
   auto* camera1_surface = require_child<QWidget>(window, "camera1PreviewSurface");
   auto* camera1_render_target = require_child<QWidget>(window, "camera1PreviewRenderTarget");
+  auto* playback_progress = require_child<QProgressBar>(window, "playbackProgress");
   if (!game_id_edit || !create || !start || !stop || !mode || !control_points || !render_video || !archive ||
       !preview_tabs || !program_surface || !program_render_target || !stitched_surface || !stitched_render_target ||
-      !camera1_surface || !camera1_render_target) {
+      !camera1_surface || !camera1_render_target || !playback_progress) {
     return false;
   }
   const bool verify_x11_preview = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_VERIFY_X11_PREVIEW");
@@ -4121,6 +4143,9 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   const QString log = window->completeLogText();
   const bool observed_native_asset_setup = log.contains("pretrained assets will be verified by hstream-cli");
   const bool observed_command = log.contains("pipeline command");
+  const bool observed_playback_progress = playback_progress->isVisible() && playback_progress->maximum() == 1000 &&
+      playback_progress->toolTip().contains("Elapsed: 00:") && playback_progress->toolTip().contains("Remaining:") &&
+      playback_progress->toolTip().contains("ETA:");
   const bool require_scoreboard = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_REQUIRE_SCOREBOARD_SELECTOR");
   activate(stop);
   for (int i = 0; i < 300 && window->pipelineStateText() != "STOPPED"; ++i) {
@@ -4176,6 +4201,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   report += QString("panorama: %1\n").arg(panorama_path);
   report += QString("scoreboard_selector_observed: %1\n").arg(submitted_scoreboard ? "true" : "false");
   report += QString("positive_fps_observed: %1\n").arg(observed_first_frame ? "true" : "false");
+  report += QString("playback_progress_observed: %1\n").arg(observed_playback_progress ? "true" : "false");
   report += QString("log_issue_lines: %1\n").arg(log_issue_count);
   report += QString("fatal_log_issue: %1\n").arg(fatal_log_issue ? "true" : "false");
   report += QString("x11_program_preview: %1\n")
@@ -4200,6 +4226,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
           !require_scoreboard || submitted_scoreboard,
           "Real UI run should launch and complete the scoreboard selector") ||
       !expect(observed_first_frame, "Real UI run should process frames at positive FPS") ||
+      !expect(observed_playback_progress, "Real UI run should expose backend playback progress in the Qt bar") ||
       !expect(
           !verify_x11_preview || (stitched_target_acknowledged && program_target_acknowledged),
           "Program and Stitched tabs should be acknowledged as live native render targets") ||
