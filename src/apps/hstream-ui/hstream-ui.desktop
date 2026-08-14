@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=HStream
+GenericName=Live Video Production
+Comment=GPU video stitching and live production control
+Exec=/usr/bin/hstream-ui
+Icon=hstream-ui
+Terminal=false
+Categories=AudioVideo;Video;
+StartupNotify=true
+StartupWMClass=hstream-ui

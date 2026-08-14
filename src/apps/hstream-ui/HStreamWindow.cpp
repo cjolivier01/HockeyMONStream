@@ -18,10 +18,14 @@
 #include <QtCore/Qt>
 #include <QtGui/QCloseEvent>
 #include <QtGui/QGuiApplication>
+#include <QtGui/QIcon>
+#include <QtGui/QLinearGradient>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPaintEngine>
 #include <QtGui/QPainter>
+#include <QtGui/QPainterPath>
 #include <QtGui/QPalette>
+#include <QtGui/QPixmap>
 #include <QtGui/QResizeEvent>
 #include <QtGui/QTextDocument>
 #include <QtGui/QWheelEvent>
@@ -281,6 +285,54 @@ QIcon preview_focus_icon(bool focused) {
   painter.drawLine(far, far - arm, far, far);
   painter.drawLine(far, far, far - arm, far);
   return QIcon(pixmap);
+}
+
+QIcon hstream_application_icon() {
+  static const QIcon icon = [] {
+    QIcon result;
+    for (const int size : {16, 24, 32, 48, 64, 128, 256}) {
+      QPixmap pixmap(size, size);
+      pixmap.fill(Qt::transparent);
+      QPainter painter(&pixmap);
+      painter.setRenderHint(QPainter::Antialiasing);
+      painter.scale(size / 512.0, size / 512.0);
+
+      QLinearGradient background(64, 42, 448, 470);
+      background.setColorAt(0.0, QColor("#071523"));
+      background.setColorAt(0.55, QColor("#0a3552"));
+      background.setColorAt(1.0, QColor("#08718a"));
+      painter.setPen(Qt::NoPen);
+      painter.setBrush(background);
+      painter.drawRoundedRect(QRectF(18, 18, 476, 476), 108, 108);
+
+      painter.setBrush(Qt::NoBrush);
+      painter.setPen(QPen(QColor(66, 225, 239, 145), 17, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+      painter.drawRoundedRect(QRectF(72, 146, 368, 220), 108, 108);
+
+      painter.setPen(Qt::NoPen);
+      painter.setBrush(QColor("#f7fbff"));
+      painter.drawRoundedRect(QRectF(124, 112, 76, 288), 27, 27);
+      painter.drawRoundedRect(QRectF(312, 112, 76, 288), 27, 27);
+      painter.drawRoundedRect(QRectF(174, 218, 164, 76), 27, 27);
+
+      QPainterPath stream;
+      stream.moveTo(76, 304);
+      stream.cubicTo(159, 246, 217, 329, 304, 265);
+      stream.cubicTo(350, 231, 397, 215, 440, 228);
+      painter.setPen(QPen(QColor("#00cedf"), 39, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+      painter.drawPath(stream);
+      painter.setPen(QPen(QColor("#8ff8ff"), 10, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+      painter.drawPath(stream);
+
+      painter.setPen(QPen(QColor("#f7fbff"), 10));
+      painter.setBrush(QColor("#ff4f64"));
+      painter.drawEllipse(QPointF(399, 105), 31, 31);
+      painter.end();
+      result.addPixmap(pixmap);
+    }
+    return result;
+  }();
+  return icon;
 }
 
 class LetterboxRenderHost : public QWidget {
@@ -1242,6 +1294,7 @@ QString hm::ui_internal::preview_channel_for_tab(int tab_index, int camera_count
 }
 
 HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
+  setWindowIcon(hstream_application_icon());
   capture_complete_log_ = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_GAME_ID");
   pipeline_process_ = new QProcess(this);
   pipeline_process_->setProcessChannelMode(QProcess::MergedChannels);
