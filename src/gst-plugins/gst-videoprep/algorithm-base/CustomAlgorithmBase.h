@@ -81,6 +81,8 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
 
   void Shutdown() override;
 
+  videoprep::RuntimeOutputSize RuntimeOutputSizeForNegotiation() const override;
+
   /* Retrun Compatible Caps */
   GstCaps* GetCompatibleCaps(GstPadDirection direction, GstCaps* in_caps, GstCaps* othercaps) override;
 
@@ -118,7 +120,7 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   gdouble m_scaleFactor = 1.0;
   guint m_frameinsertinterval = 0;
   bool m_transformMode = false;
-  std::atomic<bool> outputthread_stopped{false};
+  bool outputthread_stopped{false};
 
   /* Custom Library Bufferpool */
   BufferPoolConfig m_buffer_pool_config{
@@ -137,6 +139,10 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   std::mutex m_processLock;
   std::condition_variable m_processCV;
   std::mutex m_runtimeOutputLock;
+  bool runtime_output_shutdown_{false};
+  std::atomic<size_t> runtime_output_width_{0};
+  std::atomic<size_t> runtime_output_height_{0};
+  std::atomic<guint> runtime_output_batch_size_{0};
   cudaStream_t cuda_stream_{0};
   absl::Status cuda_status;
   NvBufSurfTransformConfigParams m_config_params;

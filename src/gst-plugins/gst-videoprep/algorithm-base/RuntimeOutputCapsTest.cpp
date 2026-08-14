@@ -290,6 +290,18 @@ int main(int argc, char** argv) {
       pad_has_dimensions(transform_src_pad, kRuntimeWidth, kRuntimeHeight) &&
           pad_has_dimensions(sink_pad, kRuntimeWidth, kRuntimeHeight),
       "post-update buffer flow must preserve runtime caps on transform and downstream");
+
+  ok &= expect(
+      gst_pad_push_event(sink_pad, gst_event_new_reconfigure()),
+      "downstream RECONFIGURE must be accepted after runtime sizing");
+  ok &= expect(
+      push_frame(source, kRuntimeWidth, kRuntimeHeight, 2 * GST_SECOND / 30),
+      "buffer after downstream RECONFIGURE must be accepted");
+  ok &= expect(wait_for_buffers(&observer, 3), "buffer must keep flowing after downstream RECONFIGURE");
+  ok &= expect(
+      pad_has_dimensions(transform_src_pad, kRuntimeWidth, kRuntimeHeight) &&
+          pad_has_dimensions(sink_pad, kRuntimeWidth, kRuntimeHeight),
+      "downstream RECONFIGURE must retain the discovered runtime dimensions");
   ok &= expect(
       hm::videoprep::update_runtime_output_caps(nullptr, nullptr) ==
           hm::videoprep::RuntimeOutputCapsUpdateResult::kFailed,

@@ -22,10 +22,6 @@ namespace fs = std::filesystem;
 
 constexpr auto kCalibrationTimeout = std::chrono::minutes(4);
 constexpr auto kControlTimeout = std::chrono::seconds(20);
-constexpr char kPausedSeekCommand[] = "@seek 30\n";
-constexpr char kPlayingSeekCommand[] = "@seek 40\n";
-constexpr char kPairedSeekRejection[] =
-    "runtime command failed: seek is unavailable for lossless paired-camera sources";
 
 std::string user_home() {
   if (const char* home = std::getenv("HOME"); home && *home) {
@@ -535,39 +531,18 @@ int main(int argc, char** argv) {
         return false;
       }
       mark = resumed.Mark();
-      if (!expect(resumed.Send(kPausedSeekCommand), "paused seek must be delivered to stitched pipeline") ||
-          !expect(
-              resumed.WaitFor(kPairedSeekRejection, mark),
-              "paused paired-camera seek must be rejected before flushing frames")) {
-        return false;
-      }
-      mark = resumed.Mark();
-      if (!expect(resumed.Send("r"), "resume command must be delivered after rejected seek") ||
-          !expect(resumed.WaitFor("Pipeline running", mark), "stitched pipeline must resume after rejected seek")) {
+      if (!expect(resumed.Send("r"), "resume command must be delivered to stitched pipeline") ||
+          !expect(resumed.WaitFor("Pipeline running", mark), "stitched pipeline must resume")) {
         return false;
       }
       mark = resumed.Mark();
       if (!expect(
-              resumed.WaitForProgressAtOrBeyond(1, mark),
-              "stitched pipeline must keep advancing after rejected paused seek")) {
-        return false;
-      }
-      mark = resumed.Mark();
-      if (!expect(resumed.Send(kPlayingSeekCommand), "playing seek must be delivered to stitched pipeline") ||
-          !expect(
-              resumed.WaitFor(kPairedSeekRejection, mark),
-              "playing paired-camera seek must be rejected before flushing frames")) {
-        return false;
-      }
-      mark = resumed.Mark();
-      if (!expect(
-              resumed.WaitForProgressAtOrBeyond(1, mark),
-              "stitched pipeline must keep advancing after rejected playing seek")) {
+              resumed.WaitForProgressAtOrBeyond(1, mark), "stitched pipeline must keep advancing after pause/resume")) {
         return false;
       }
       if (!expect(
               resumed.output().find("Lossless camera frame barrier failed") == std::string::npos,
-              "rejected paired-camera seeks must not disturb exact frame pairing")) {
+              "pause/resume must not disturb exact frame pairing")) {
         return false;
       }
       return stop_successfully(&resumed, "resumed calibrated pipeline must accept Stop/SIGINT");

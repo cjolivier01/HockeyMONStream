@@ -341,6 +341,8 @@ static GstCaps* gst_videoprep_fixate_caps(
 
   guint out_width, out_height;
   const bool runtime_output_size = videoprep->priv && videoprep->priv->UsesRuntimeOutputSize();
+  const RuntimeOutputSize negotiated_runtime_size =
+      videoprep->priv ? videoprep->priv->RuntimeOutputSizeForNegotiation() : RuntimeOutputSize{};
 
   othercaps = gst_caps_truncate(othercaps);
   othercaps = gst_caps_make_writable(othercaps);
@@ -358,21 +360,24 @@ static GstCaps* gst_videoprep_fixate_caps(
     gst_structure_set(outs, "batch-size", G_TYPE_UINT, get_output_batch_size(videoprep, caps), NULL);
   }
 
-  if (!runtime_output_size && videoprep->custom_create_params.output_width_height[0]) {
+  if (!runtime_output_size && !negotiated_runtime_size.valid() &&
+      videoprep->custom_create_params.output_width_height[0]) {
     videoprep->output_width = videoprep->custom_create_params.output_width_height[0];
   }
-  if (!runtime_output_size && videoprep->custom_create_params.output_width_height[1]) {
+  if (!runtime_output_size && !negotiated_runtime_size.valid() &&
+      videoprep->custom_create_params.output_width_height[1]) {
     videoprep->output_height = videoprep->custom_create_params.output_width_height[1];
   }
-  if (!runtime_output_size && !videoprep->output_width && !videoprep->output_height) {
+  if (!runtime_output_size && !negotiated_runtime_size.valid() && !videoprep->output_width &&
+      !videoprep->output_height) {
     videoprep->output_width = videoprep->input_width;
     videoprep->output_height = videoprep->input_height;
     assert(videoprep->output_width && videoprep->output_height);
   }
 
-  out_width = videoprep->output_width;
-  out_height = videoprep->output_height;
-  if (runtime_output_size) {
+  out_width = negotiated_runtime_size.valid() ? negotiated_runtime_size.width : videoprep->output_width;
+  out_height = negotiated_runtime_size.valid() ? negotiated_runtime_size.height : videoprep->output_height;
+  if (runtime_output_size && !negotiated_runtime_size.valid()) {
     gint input_width = 0;
     gint input_height = 0;
     gst_structure_get_int(ins, "width", &input_width);
@@ -556,7 +561,25 @@ static GstCaps* gst_videoprep_transform_caps(
 
   if (direction == GST_PAD_SINK) {
     const guint output_batch_size = get_output_batch_size(videoprep, caps);
-    if (!videoprep->output_width && !videoprep->output_height) {
+    const RuntimeOutputSize runtime_size =
+        videoprep->priv ? videoprep->priv->RuntimeOutputSizeForNegotiation() : RuntimeOutputSize{};
+    if (runtime_size.valid()) {
+      new_caps = gst_caps_new_simple(
+          "video/x-raw",
+          "format",
+          G_TYPE_STRING,
+          "RGBA",
+          "width",
+          G_TYPE_INT,
+          static_cast<gint>(runtime_size.width),
+          "height",
+          G_TYPE_INT,
+          static_cast<gint>(runtime_size.height),
+          "batch-size",
+          G_TYPE_UINT,
+          runtime_size.batch_size > 0 ? runtime_size.batch_size : output_batch_size,
+          NULL);
+    } else if (!videoprep->output_width && !videoprep->output_height) {
       new_caps = gst_caps_new_simple(
           "video/x-raw",
           "format",

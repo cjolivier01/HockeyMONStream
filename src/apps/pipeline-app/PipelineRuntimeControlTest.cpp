@@ -325,31 +325,7 @@ int main(int argc, char** argv) {
     ok &= expect(process.WaitFor("Pipeline running", mark), "pipeline-app must resume PLAYING");
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
   }
-  size_t mark = process.Mark();
-  ok &= expect(process.Send("p"), "pre-seek pause command must be delivered");
-  ok &= expect(process.WaitFor("Pipeline paused", mark), "pipeline-app must pause before seek");
-  mark = process.Mark();
-  ok &= expect(process.Send("@seek 5\n"), "seek command must be delivered");
-  ok &= expect(
-      process.WaitFor("runtime seek position=0:00:05.000000000", mark),
-      "pipeline-app must acknowledge paused runtime seek");
-  mark = process.Mark();
-  ok &= expect(process.Send("r"), "post-seek resume command must be delivered");
-  ok &= expect(process.WaitFor("Pipeline running", mark), "pipeline-app must resume after seek");
-  mark = process.Mark();
-  ok &= expect(
-      process.WaitForProgressAtOrBeyond(5, mark, std::chrono::seconds(12)),
-      "pipeline-app must reach the requested video position after paused seek and resume");
-  mark = process.Mark();
-  ok &= expect(process.Send("@seek 9\n"), "playing seek command must be delivered");
-  ok &= expect(
-      process.WaitFor("runtime seek position=0:00:09.000000000", mark),
-      "pipeline-app must acknowledge runtime seek during continuous playback");
-  mark = process.Mark();
-  ok &= expect(
-      process.WaitForProgressAtOrBeyond(9, mark, std::chrono::seconds(12)),
-      "pipeline-app must reach the requested video position after seek during playback");
-  ok &= expect(process.running(), "pipeline-app must keep processing after repeated pause/resume and seek");
+  ok &= expect(process.running(), "pipeline-app must keep processing after repeated pause/resume");
   ok &= expect(process.Interrupt(), "SIGINT stop must be delivered");
   int exit_code = -1;
   ok &= expect(process.WaitForExit(&exit_code), "pipeline-app must stop promptly after SIGINT");

@@ -229,11 +229,12 @@ absl::Status CustomAlgorithmBase::EnsureDsOutputBufferPool(NvDsBatchMeta* batch_
   videoprep::RuntimeOutputSize output_size;
   HM_ASSIGN_OR_RETURN(output_size, PrepareRuntimeOutputSize(batch_meta, in_surf));
 
-  // Shutdown and output publication use this lock as their ordering point.
-  // Expensive runtime sizing may finish after Stop, but it must not allocate a
-  // pool or publish caps after shutdown has marked the algorithm inactive.
+  // Shutdown and output publication use this lock as their linearization
+  // point. Expensive runtime sizing may finish after Stop was requested, but
+  // it cannot allocate a pool or publish caps after shutdown has acquired the
+  // lock and closed publication.
   std::lock_guard<std::mutex> runtime_output_lock(m_runtimeOutputLock);
-  if (shutdown_requested_.load(std::memory_order_acquire)) {
+  if (runtime_output_shutdown_) {
     return absl::CancelledError("Runtime output sizing cancelled during shutdown");
   }
   if (!output_size.valid()) {
@@ -253,25 +254,26 @@ absl::Status CustomAlgorithmBase::EnsureDsOutputBufferPool(NvDsBatchMeta* batch_
     gst_caps_unref(runtime_caps);
     return status;
   }
-  if (shutdown_requested_.load(std::memory_order_acquire)) {
-    ReleaseDsOutputBufferPool();
-    gst_caps_unref(runtime_caps);
-    return absl::CancelledError("Runtime output caps update cancelled during shutdown");
-  }
-
   // Pushing a CAPS event directly updates the pad's sticky event but bypasses
   // GstBaseTransform's negotiated-caps state. That left the transform and its
   // downstream peer disagreeing after one-pass calibration changed the canvas
   // size, so a resumed calibration could finish Hugin and then fail before its
   // first stitched buffer. Keep the base class and downstream in one atomic
   // negotiation transition instead.
+  // Publish the discovered dimensions before asking GstBaseTransform to
+  // renegotiate. transform_caps/fixate_caps can run synchronously inside the
+  // update and must already return the runtime canvas rather than the input
+  // dimensions. Width is the release/acquire publication sentinel.
+  runtime_output_height_.store(output_size.height, std::memory_order_relaxed);
+  runtime_output_batch_size_.store(output_size.batch_size, std::memory_order_relaxed);
+  runtime_output_width_.store(output_size.width, std::memory_order_release);
   const videoprep::RuntimeOutputCapsUpdateResult caps_result =
       videoprep::update_runtime_output_caps(m_element, runtime_caps);
   if (caps_result != videoprep::RuntimeOutputCapsUpdateResult::kUpdated) {
+    runtime_output_width_.store(0, std::memory_order_release);
     ReleaseDsOutputBufferPool();
     gst_caps_unref(runtime_caps);
-    if (shutdown_requested_.load(std::memory_order_acquire) ||
-        caps_result == videoprep::RuntimeOutputCapsUpdateResult::kCancelled) {
+    if (caps_result == videoprep::RuntimeOutputCapsUpdateResult::kCancelled) {
       return absl::CancelledError("Runtime output caps update cancelled during shutdown");
     }
     return absl::InternalError("Failed to update runtime output caps downstream");
@@ -283,6 +285,18 @@ absl::Status CustomAlgorithmBase::EnsureDsOutputBufferPool(NvDsBatchMeta* batch_
   m_runtimeOutputCaps = runtime_caps;
   GST_INFO_OBJECT(m_element, "Runtime output caps fixed to %" GST_PTR_FORMAT, m_runtimeOutputCaps);
   return absl::OkStatus();
+}
+
+videoprep::RuntimeOutputSize CustomAlgorithmBase::RuntimeOutputSizeForNegotiation() const {
+  const size_t width = runtime_output_width_.load(std::memory_order_acquire);
+  if (width == 0) {
+    return {};
+  }
+  return {
+      .width = width,
+      .height = runtime_output_height_.load(std::memory_order_relaxed),
+      .batch_size = runtime_output_batch_size_.load(std::memory_order_relaxed),
+  };
 }
 
 // Return Compatible Output Caps based on input caps
@@ -414,7 +428,7 @@ bool CustomAlgorithmBase::HandleEvent(GstEvent* event) {
       std::unique_lock<std::mutex> lock(m_processLock);
       m_stop = TRUE;
       m_processCV.notify_all();
-      m_processCV.wait(lock, [this] { return outputthread_stopped.load(std::memory_order_acquire); });
+      m_processCV.wait(lock, [this] { return outputthread_stopped; });
     } break;
     default:
       break;
@@ -556,8 +570,7 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
   bool accepted = false;
   {
     std::lock_guard<std::mutex> lock(m_processLock);
-    if (!shutdown_requested_.load(std::memory_order_acquire) && !outputthread_stopped.load(std::memory_order_acquire) &&
-        !m_stop) {
+    if (!shutdown_requested_.load(std::memory_order_acquire) && !outputthread_stopped && !m_stop) {
       m_processQ.push(packetInfo);
       accepted = true;
       m_processCV.notify_all();
@@ -706,11 +719,13 @@ void update_dummy_meta_data_on_buffer(NvDsBatchMeta* batch_meta) {
 
 void CustomAlgorithmBase::Shutdown() {
   shutdown_requested_.store(true, std::memory_order_release);
-  // Wait out a runtime-output transaction that passed its cancellation check
-  // just before Stop. A transaction that has not started publication will see
-  // shutdown_requested_ and return cancellation instead.
+  // Stop accepting input immediately, then close caps/pool publication while
+  // holding the same lock used by the publishing transaction. If publication
+  // already owns the lock, it is ordered before shutdown; otherwise it sees
+  // runtime_output_shutdown_ and cancels without touching the pipeline.
   {
     std::lock_guard<std::mutex> runtime_output_lock(m_runtimeOutputLock);
+    runtime_output_shutdown_ = true;
   }
   std::queue<PacketInfo> pending;
   {
@@ -730,7 +745,10 @@ void CustomAlgorithmBase::Shutdown() {
 }
 
 void CustomAlgorithmBase::MarkOutputThreadStopped() {
-  outputthread_stopped.store(true, std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> lock(m_processLock);
+    outputthread_stopped = true;
+  }
   m_processCV.notify_all();
 }
 
@@ -745,6 +763,7 @@ void CustomAlgorithmBase::OutputThread(void) {
     cudaError_t cuErr = cudaSetDevice(m_gpuId);
     if (cuErr != cudaSuccess) {
       GST_ERROR_OBJECT(m_element, "Unable to set cuda device");
+      lk.unlock();
       MarkOutputThreadStopped();
       return;
     }
@@ -981,8 +1000,8 @@ void CustomAlgorithmBase::OutputThread(void) {
     lk.lock();
     continue;
   }
-  MarkOutputThreadStopped();
   lk.unlock();
+  MarkOutputThreadStopped();
   return;
 }
 
