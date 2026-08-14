@@ -222,9 +222,21 @@ absl::Status CustomAlgorithmBase::EnsureDsOutputBufferPool(NvDsBatchMeta* batch_
   if (!UsesRuntimeOutputSize()) {
     return absl::FailedPreconditionError("Output buffer pool has not been created");
   }
+  if (shutdown_requested_.load(std::memory_order_acquire)) {
+    return absl::CancelledError("Runtime output sizing cancelled during shutdown");
+  }
 
   videoprep::RuntimeOutputSize output_size;
   HM_ASSIGN_OR_RETURN(output_size, PrepareRuntimeOutputSize(batch_meta, in_surf));
+
+  // Shutdown and output publication use this lock as their linearization
+  // point. Expensive runtime sizing may finish after Stop was requested, but
+  // it cannot allocate a pool or publish caps after shutdown has acquired the
+  // lock and closed publication.
+  std::lock_guard<std::mutex> runtime_output_lock(m_runtimeOutputLock);
+  if (runtime_output_shutdown_) {
+    return absl::CancelledError("Runtime output sizing cancelled during shutdown");
+  }
   if (!output_size.valid()) {
     return absl::FailedPreconditionError("Runtime output size was not provided");
   }
@@ -242,12 +254,29 @@ absl::Status CustomAlgorithmBase::EnsureDsOutputBufferPool(NvDsBatchMeta* batch_
     gst_caps_unref(runtime_caps);
     return status;
   }
-
-  GstEvent* caps_event = gst_event_new_caps(runtime_caps);
-  if (!gst_pad_push_event(GST_BASE_TRANSFORM_SRC_PAD(m_element), caps_event)) {
+  // Pushing a CAPS event directly updates the pad's sticky event but bypasses
+  // GstBaseTransform's negotiated-caps state. That left the transform and its
+  // downstream peer disagreeing after one-pass calibration changed the canvas
+  // size, so a resumed calibration could finish Hugin and then fail before its
+  // first stitched buffer. Keep the base class and downstream in one atomic
+  // negotiation transition instead.
+  // Publish the discovered dimensions before asking GstBaseTransform to
+  // renegotiate. transform_caps/fixate_caps can run synchronously inside the
+  // update and must already return the runtime canvas rather than the input
+  // dimensions. Width is the release/acquire publication sentinel.
+  runtime_output_height_.store(output_size.height, std::memory_order_relaxed);
+  runtime_output_batch_size_.store(output_size.batch_size, std::memory_order_relaxed);
+  runtime_output_width_.store(output_size.width, std::memory_order_release);
+  const videoprep::RuntimeOutputCapsUpdateResult caps_result =
+      videoprep::update_runtime_output_caps(m_element, runtime_caps);
+  if (caps_result != videoprep::RuntimeOutputCapsUpdateResult::kUpdated) {
+    runtime_output_width_.store(0, std::memory_order_release);
     ReleaseDsOutputBufferPool();
     gst_caps_unref(runtime_caps);
-    return absl::InternalError("Failed to push runtime output caps downstream");
+    if (caps_result == videoprep::RuntimeOutputCapsUpdateResult::kCancelled) {
+      return absl::CancelledError("Runtime output caps update cancelled during shutdown");
+    }
+    return absl::InternalError("Failed to update runtime output caps downstream");
   }
 
   if (m_runtimeOutputCaps) {
@@ -256,6 +285,18 @@ absl::Status CustomAlgorithmBase::EnsureDsOutputBufferPool(NvDsBatchMeta* batch_
   m_runtimeOutputCaps = runtime_caps;
   GST_INFO_OBJECT(m_element, "Runtime output caps fixed to %" GST_PTR_FORMAT, m_runtimeOutputCaps);
   return absl::OkStatus();
+}
+
+videoprep::RuntimeOutputSize CustomAlgorithmBase::RuntimeOutputSizeForNegotiation() const {
+  const size_t width = runtime_output_width_.load(std::memory_order_acquire);
+  if (width == 0) {
+    return {};
+  }
+  return {
+      .width = width,
+      .height = runtime_output_height_.load(std::memory_order_relaxed),
+      .batch_size = runtime_output_batch_size_.load(std::memory_order_relaxed),
+  };
 }
 
 // Return Compatible Output Caps based on input caps
@@ -383,16 +424,12 @@ char* CustomAlgorithmBase::QueryProperties() {
 
 bool CustomAlgorithmBase::HandleEvent(GstEvent* event) {
   switch (GST_EVENT_TYPE(event)) {
-    case GST_EVENT_EOS:
-      m_processLock.lock();
+    case GST_EVENT_EOS: {
+      std::unique_lock<std::mutex> lock(m_processLock);
       m_stop = TRUE;
       m_processCV.notify_all();
-      m_processLock.unlock();
-      while (outputthread_stopped == FALSE) {
-        // g_print ("waiting for processq to be empty, buffers in processq = %ld\n", m_processQ.size());
-        g_usleep(1000);
-      }
-      break;
+      m_processCV.wait(lock, [this] { return outputthread_stopped; });
+    } break;
     default:
       break;
   }
@@ -530,12 +567,18 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
     DumpNvBufSurface(in_surf, batch_meta);
   }
 
-  m_processLock.lock();
-  if (!outputthread_stopped) {
-    m_processQ.push(packetInfo);
-    m_processCV.notify_all();
+  bool accepted = false;
+  {
+    std::lock_guard<std::mutex> lock(m_processLock);
+    if (!shutdown_requested_.load(std::memory_order_acquire) && !outputthread_stopped && !m_stop) {
+      m_processQ.push(packetInfo);
+      accepted = true;
+      m_processCV.notify_all();
+    }
   }
-  m_processLock.unlock();
+  if (!accepted) {
+    gst_buffer_unref(inbuf);
+  }
 
   return BufferResult::Buffer_Async; // BufferResult::Buffer_Ok;
 }
@@ -675,20 +718,38 @@ void update_dummy_meta_data_on_buffer(NvDsBatchMeta* batch_meta) {
 #endif // HAS_NVDS_CUSTOMUSERMETA
 
 void CustomAlgorithmBase::Shutdown() {
-  std::unique_lock<std::mutex> lk(m_processLock);
-  // Send a tombstone
-  if (!outputthread_stopped) {
-    // m_processQ.emplace(PacketInfo{.inbuf=nullptr});
-    // std::cout << "Process Q Empty : " << m_processQ.empty() << std::endl;
-    m_processCV.wait(lk, [&] { return m_processQ.empty(); });
+  shutdown_requested_.store(true, std::memory_order_release);
+  // Stop accepting input immediately, then close caps/pool publication while
+  // holding the same lock used by the publishing transaction. If publication
+  // already owns the lock, it is ordered before shutdown; otherwise it sees
+  // runtime_output_shutdown_ and cancels without touching the pipeline.
+  {
+    std::lock_guard<std::mutex> runtime_output_lock(m_runtimeOutputLock);
+    runtime_output_shutdown_ = true;
+  }
+  std::queue<PacketInfo> pending;
+  {
+    std::lock_guard<std::mutex> lock(m_processLock);
     m_stop = TRUE;
+    pending.swap(m_processQ);
     m_processCV.notify_all();
-    lk.unlock();
+  }
+  while (!pending.empty()) {
+    gst_buffer_unref(pending.front().inbuf);
+    pending.pop();
   }
   /* Wait for OutputThread to complete */
   if (m_outputThread && m_outputThread->joinable()) {
     m_outputThread->join();
   }
+}
+
+void CustomAlgorithmBase::MarkOutputThreadStopped() {
+  {
+    std::lock_guard<std::mutex> lock(m_processLock);
+    outputthread_stopped = true;
+  }
+  m_processCV.notify_all();
 }
 
 /* Output Processing Thread */
@@ -702,6 +763,8 @@ void CustomAlgorithmBase::OutputThread(void) {
     cudaError_t cuErr = cudaSetDevice(m_gpuId);
     if (cuErr != cudaSuccess) {
       GST_ERROR_OBJECT(m_element, "Unable to set cuda device");
+      lk.unlock();
+      MarkOutputThreadStopped();
       return;
     }
   }
@@ -709,8 +772,19 @@ void CustomAlgorithmBase::OutputThread(void) {
     if (eos_sent_) {
       return;
     }
+    GstPad* src_pad = GST_BASE_TRANSFORM_SRC_PAD(m_element);
+    if (shutdown_requested_.load(std::memory_order_acquire) || GST_PAD_IS_FLUSHING(src_pad) ||
+        !gst_pad_is_linked(src_pad)) {
+      eos_sent_ = true;
+      return;
+    }
     GstEvent* eos_event = gst_event_new_eos();
-    if (!gst_pad_push_event(GST_BASE_TRANSFORM_SRC_PAD(m_element), eos_event)) {
+    if (!gst_pad_push_event(src_pad, eos_event)) {
+      if (shutdown_requested_.load(std::memory_order_acquire) || GST_PAD_IS_FLUSHING(src_pad) ||
+          !gst_pad_is_linked(src_pad)) {
+        eos_sent_ = true;
+        return;
+      }
       std::cerr << "Error sending EOS downstream from videoprep algorithm" << std::endl;
       return;
     }
@@ -765,7 +839,7 @@ void CustomAlgorithmBase::OutputThread(void) {
         GstBuffer* newGstOutBuf = NULL;
         GstFlowReturn result = GST_FLOW_OK;
         const absl::Status output_pool_status = EnsureDsOutputBufferPool(batch_meta, in_surf);
-        if (absl::IsCancelled(output_pool_status)) {
+        if (absl::IsCancelled(output_pool_status) && !shutdown_requested_.load(std::memory_order_acquire)) {
           std::cerr << output_pool_status << std::endl;
         }
         if (runtime_output_pool_flow.handle_status(output_pool_status, packetInfo.inbuf, send_eos_downstream)) {
@@ -856,15 +930,18 @@ void CustomAlgorithmBase::OutputThread(void) {
         result = gst_buffer_pool_acquire_buffer(m_swbufpool, &swGstOutBuf, NULL);
         if (result != GST_FLOW_OK) {
           GST_ERROR_OBJECT(m_element, "Acquire buffer failed with error = %d", result);
+          MarkOutputThreadStopped();
           return;
         }
 
         if (!gst_buffer_map(swGstOutBuf, &swbufmap, GST_MAP_READ)) {
           printf("could not map sw buffer acquired from sw buffer pool \n");
+          MarkOutputThreadStopped();
           return;
         }
         if (!gst_buffer_map(packetInfo.inbuf, &inbufmap, GST_MAP_READ)) {
           printf("could not map buffer buffer \n");
+          MarkOutputThreadStopped();
           return;
         }
         guint buffersize = (gst_buffer_get_size(packetInfo.inbuf) > gst_buffer_get_size(swGstOutBuf))
@@ -897,7 +974,12 @@ void CustomAlgorithmBase::OutputThread(void) {
     }
     if (last_flow_ret_ == GST_FLOW_OK) {
       // Do we need this anymore?
-      if (!send_eos) {
+      if (shutdown_requested_.load(std::memory_order_acquire)) {
+        if (outBuffer) {
+          gst_buffer_unref(outBuffer);
+          outBuffer = nullptr;
+        }
+      } else if (!send_eos) {
         nvds_set_output_system_timestamp(outBuffer, GST_ELEMENT_NAME(m_element));
         flow_ret = gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(m_element), outBuffer);
         GST_DEBUG_OBJECT(
@@ -918,8 +1000,8 @@ void CustomAlgorithmBase::OutputThread(void) {
     lk.lock();
     continue;
   }
-  outputthread_stopped = true;
   lk.unlock();
+  MarkOutputThreadStopped();
   return;
 }
 

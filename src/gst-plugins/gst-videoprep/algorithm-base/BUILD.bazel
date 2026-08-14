@@ -2,6 +2,15 @@ load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
 INCLUDE_PREFIX = "hstream/src/gst-plugins/gst-videoprep/algorithm-base"
 
+cc_library(
+    name = "runtime-output-caps",
+    srcs = ["RuntimeOutputCaps.cpp"],
+    hdrs = ["RuntimeOutputCaps.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@gstreamer"],
+)
+
 cc_library (
   name = "algorithm-base",
     srcs = [
@@ -21,9 +30,19 @@ cc_library (
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+        ":runtime-output-caps",
         "//src/libs/common:utils",
         "@deepstream//:deepstream_lib",
         "@com_google_absl//absl/status",
         "//toolchains/jetson:cuda_runtime",
   ],
+)
+
+cc_test(
+    name = "runtime_output_caps_test",
+    srcs = ["RuntimeOutputCapsTest.cpp"],
+    deps = [
+        ":runtime-output-caps",
+        "@gstreamer",
+    ],
 )

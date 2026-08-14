@@ -100,6 +100,13 @@ class VideoPrepPriv : public DSCustomLibraryBase {
     return false;
   }
 
+  // Once a runtime-sized algorithm discovers its output dimensions, expose
+  // them to GstBaseTransform negotiation so a later RECONFIGURE cannot fall
+  // back to the input dimensions.
+  virtual RuntimeOutputSize RuntimeOutputSizeForNegotiation() const {
+    return {};
+  }
+
   virtual guint GetOutputBatchSize(guint input_batch_size,
                                    guint configured_batch_size) const {
     return configured_batch_size;

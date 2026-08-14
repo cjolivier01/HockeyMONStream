@@ -4,6 +4,7 @@
 #include <cuda_runtime.h>
 #include <gstreamer-1.0/gst/gstpad.h>
 #include <string.h>
+#include <atomic>
 #include <condition_variable>
 #include <fstream>
 #include <iostream>
@@ -14,6 +15,7 @@
 #include "VideoPrepPriv.h"
 #include "gst-nvevent.h"
 #include "gstnvdsmeta.h"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/RuntimeOutputCaps.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_interface.hpp"
 #include "hstream/src/libs/common/ApplicationPayload.h"
 // #include "deepstream/sources/includes/nvbufsurface.h"
@@ -61,7 +63,6 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
  public:
   CustomAlgorithmBase(int gpu_id, size_t batch_size) : videoprep::VideoPrepPriv(gpu_id, batch_size) {
     m_vectorProperty.clear();
-    outputthread_stopped = false;
   }
 
   /* Set Init Parameters */
@@ -80,6 +81,8 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
 
   void Shutdown() override;
 
+  videoprep::RuntimeOutputSize RuntimeOutputSizeForNegotiation() const override;
+
   /* Retrun Compatible Caps */
   GstCaps* GetCompatibleCaps(GstPadDirection direction, GstCaps* in_caps, GstCaps* othercaps) override;
 
@@ -94,6 +97,7 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
 
   /* Output Processing Thread, push buffer to downstream  */
   void OutputThread(void);
+  void MarkOutputThreadStopped();
 
   absl::Status CreateDsOutputBufferPool(GstCaps* outcaps);
   absl::Status EnsureDsOutputBufferPool(NvDsBatchMeta* batch_meta, NvBufSurface* in_surf);
@@ -116,7 +120,7 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   gdouble m_scaleFactor = 1.0;
   guint m_frameinsertinterval = 0;
   bool m_transformMode = false;
-  bool outputthread_stopped = false;
+  bool outputthread_stopped{false};
 
   /* Custom Library Bufferpool */
   BufferPoolConfig m_buffer_pool_config{
@@ -134,11 +138,17 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   std::queue<PacketInfo> m_processQ;
   std::mutex m_processLock;
   std::condition_variable m_processCV;
+  std::mutex m_runtimeOutputLock;
+  bool runtime_output_shutdown_{false};
+  std::atomic<size_t> runtime_output_width_{0};
+  std::atomic<size_t> runtime_output_height_{0};
+  std::atomic<guint> runtime_output_batch_size_{0};
   cudaStream_t cuda_stream_{0};
   absl::Status cuda_status;
   NvBufSurfTransformConfigParams m_config_params;
   /* Aysnc Stop Handling */
   gboolean m_stop = FALSE;
+  std::atomic<bool> shutdown_requested_{false};
   bool eos_sent_{false};
 
   /* Vector Containing Key:Value Pair of Custom Lib Properties */
