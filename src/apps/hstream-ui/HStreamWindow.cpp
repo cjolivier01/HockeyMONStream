@@ -3797,8 +3797,9 @@ void HStreamWindow::recoverPreviewDisableFailure(const QString& reason, bool for
       (!force && (pending_preview_channel_ != "none" || pending_preview_generation_ == 0))) {
     return;
   }
-  const QString channel =
-      active_preview_channel_.isEmpty() ? selectedPipelinePreviewChannel() : active_preview_channel_;
+  QString channel = selectedPipelinePreviewChannel();
+  if (channel.isEmpty())
+    channel = active_preview_channel_;
   pending_preview_channel_.clear();
   pending_preview_generation_ = 0;
   preview_disable_attempts_ = 0;

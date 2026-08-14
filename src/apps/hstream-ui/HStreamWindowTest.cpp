@@ -1842,26 +1842,35 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     QTest::qWait(10);
   }
   QTest::mouseClick(render_video, Qt::LeftButton);
+  preview_tabs->setCurrentIndex(1);
   for (int i = 0; i < 100 && !window->logText().contains("GPU preview disable failed (the backend did not acknowledge");
        ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
   for (int i = 0; i < 100 &&
-       (preview_target->isHidden() || preview_target->property("previewRendererState").toString() != "ready");
+       (stitched_target->isHidden() || stitched_target->property("previewRendererState").toString() != "ready");
        ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
   if (!expect(
-          render_video->isChecked() && !preview_target->isHidden() && setup_preview_splitter->sizes().at(0) == 0 &&
+          render_video->isChecked() && preview_tabs->currentIndex() == 1 && preview_target->isHidden() &&
+              !stitched_target->isHidden() && setup_preview_splitter->sizes().at(0) == 0 &&
               window->logText().count("GPU preview disable acknowledgement delayed; retrying") >= 3 &&
               window->logText().contains("restoring rendering"),
-          "A missing render-off acknowledgement must restore the truthful enabled UI and reconcile the backend")) {
+          "A missing render-off acknowledgement must restore the visible tab and reconcile its backend channel")) {
     return false;
   }
   pipeline_process->write("@test-resume-preview-disable\n");
   for (int i = 0; i < 100 && !window->logText().contains("test preview disable resumed"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  preview_tabs->setCurrentIndex(0);
+  for (int i = 0; i < 100 &&
+       (preview_target->isHidden() || preview_target->property("previewRendererState").toString() != "ready");
+       ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
