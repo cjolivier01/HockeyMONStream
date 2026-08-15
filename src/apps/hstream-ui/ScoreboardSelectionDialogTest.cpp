@@ -199,6 +199,11 @@ bool test_large_image_viewport_cache(const QString& image_path, const QSize& sou
   return ok;
 }
 
+bool test_absurd_source_dimensions_are_rejected(const QString& image_path) {
+  ScoreboardSelectionCanvas canvas;
+  return expect(!canvas.setImage(image_path), "absurd source dimensions must be rejected before PNG decode");
+}
+
 bool test_successful_submission(const QString& image_path) {
   SelectorServer server;
   if (!expect(server.listen(), "test selector server must listen"))
@@ -335,8 +340,16 @@ int main(int argc, char** argv) {
     if (!large_image.save(large_image_path))
       return 1;
   }
+  const QString absurd_dimension_path = directory.filePath("absurd-width-s.png");
+  {
+    QImage absurd_dimension_image(65536, 1, QImage::Format_RGB888);
+    absurd_dimension_image.fill(QColor(28, 71, 96));
+    if (!absurd_dimension_image.save(absurd_dimension_path))
+      return 1;
+  }
   const bool ok = test_canvas_controls(image_path) &&
-      test_large_image_viewport_cache(large_image_path, large_image_size) && test_successful_submission(image_path) &&
+      test_large_image_viewport_cache(large_image_path, large_image_size) &&
+      test_absurd_source_dimensions_are_rejected(absurd_dimension_path) && test_successful_submission(image_path) &&
       test_failed_submission_remains_open(image_path) && test_cancel_success(image_path) &&
       test_cancel_failure_escapes_modal(image_path, false) && test_cancel_failure_escapes_modal(image_path, true) &&
       test_cancel_backend_disappears(image_path);

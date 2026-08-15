@@ -43,6 +43,8 @@ constexpr double kPointHitRadius = 15.0;
 // image's coordinate space.
 constexpr qint64 kMaximumPreviewBytes = 96LL * 1024LL * 1024LL;
 constexpr int kMaximumPreviewDimension = 8192;
+constexpr png_uint_32 kMaximumSourceDimension = 65535;
+constexpr uint64_t kMaximumSourcePixels = 256ULL * 1024ULL * 1024ULL;
 
 QSize bounded_preview_size(const QSize& source_size) {
   if (!source_size.isValid() || source_size.isEmpty())
@@ -113,6 +115,7 @@ PngPreview read_bounded_png_preview(const QByteArray& path, const QSize& request
     return result;
   }
 
+  png_set_user_limits(context->png, kMaximumSourceDimension, kMaximumSourceDimension);
   png_init_io(context->png, context->file);
   png_read_info(context->png, context->info);
   png_uint_32 source_width = 0;
@@ -130,8 +133,9 @@ PngPreview read_bounded_png_preview(const QByteArray& path, const QSize& request
       &interlace_type,
       nullptr,
       nullptr);
-  if (source_width == 0 || source_height == 0 || requested_size.width() <= 0 || requested_size.height() <= 0 ||
-      static_cast<png_uint_32>(requested_size.width()) > source_width ||
+  const uint64_t source_pixels = static_cast<uint64_t>(source_width) * source_height;
+  if (source_width == 0 || source_height == 0 || source_pixels > kMaximumSourcePixels || requested_size.width() <= 0 ||
+      requested_size.height() <= 0 || static_cast<png_uint_32>(requested_size.width()) > source_width ||
       static_cast<png_uint_32>(requested_size.height()) > source_height || interlace_type != PNG_INTERLACE_NONE) {
     release_png_context(context);
     return result;
@@ -157,6 +161,10 @@ PngPreview read_bounded_png_preview(const QByteArray& path, const QSize& request
   }
 
   const png_size_t source_stride = png_get_rowbytes(context->png, context->info);
+  if (source_stride != static_cast<png_size_t>(source_width) * 4) {
+    release_png_context(context);
+    return result;
+  }
   const size_t preview_stride = static_cast<size_t>(requested_size.width()) * 4;
   const size_t preview_bytes = preview_stride * static_cast<size_t>(requested_size.height());
   context->source_row = static_cast<unsigned char*>(std::malloc(source_stride));
