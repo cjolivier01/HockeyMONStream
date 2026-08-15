@@ -1448,9 +1448,9 @@ absl::Status PipelineApplication::stopPipeline(std::shared_ptr<HmApp> app_contex
   if (!pipeline) {
     return absl::OkStatus();
   }
-  cancel_uri_playlist_frame_barrier(&app_context->pipeline.multi_src_bin);
-  if (gst_element_set_state(pipeline, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE) {
-    return absl::FailedPreconditionError("Can't set pipeline to stopped state.\n");
+  if (!stop_pipeline_gracefully(app_context.get(), 5 * GST_SECOND)) {
+    return absl::DeadlineExceededError(
+        "Pipeline did not finalize EOS before stopping; encoded output may be incomplete");
   }
   return absl::OkStatus();
 }
@@ -1502,6 +1502,17 @@ absl::Status PipelineApplication::playPipelines(
   }
   g_main_loop_run(main_loop_);
   changemode(0);
+
+  // Finalize muxers before reporting success or allowing cleanup to set the
+  // pipeline to NULL. In particular, a UI Stop/SIGINT must leave a playable
+  // archive rather than a truncated container that merely came from exit 0.
+  for (const std::shared_ptr<HmApp>& app_context : app_contexts) {
+    const absl::Status stop_status = stopPipeline(app_context);
+    if (!stop_status.ok()) {
+      std::cerr << stop_status << std::endl;
+      return_value_ = -1;
+    }
+  }
 
   // Bus errors are recorded on their individual AppCtx instances. Cleanup used
   // to copy those values into return_value_, but cleanup runs only after this

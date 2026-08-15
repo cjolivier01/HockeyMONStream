@@ -664,7 +664,8 @@ gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequence, G
   bin->uri_list_frame_ready_sequence = sequence;
   bin->uri_list_released_video_end = logical_video_end;
   const std::vector<NvDsSrcBin*> sources = uri_playlist_sources(parent);
-  if (sources.size() != 2 || !GST_CLOCK_TIME_IS_VALID(logical_video_end)) {
+  if (sources.size() != 2 || !GST_CLOCK_TIME_IS_VALID(logical_video_end) ||
+      sequence != parent->uri_playlist_next_frame_sequence) {
     parent->uri_playlist_barrier_failed = TRUE;
     parent->uri_playlist_delivery_aborted = TRUE;
     parent->uri_playlist_terminal = TRUE;
@@ -740,7 +741,14 @@ gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequence, G
         STREAM,
         FAILED,
         ("Lossless camera frame barrier failed"),
-        ("source=%u sequence=%" G_GUINT64_FORMAT " participants=%zu", bin->source_id, sequence, sources.size()));
+        ("source=%u sequence=%" G_GUINT64_FORMAT " expected=%" G_GUINT64_FORMAT
+         " participants=%zu peer0_ready=%" G_GUINT64_FORMAT " peer1_ready=%" G_GUINT64_FORMAT,
+         bin->source_id,
+         sequence,
+         parent->uri_playlist_next_frame_sequence,
+         sources.size(),
+         sources.size() > 0 ? sources[0]->uri_list_frame_ready_sequence : G_MAXUINT64,
+         sources.size() > 1 ? sources[1]->uri_list_frame_ready_sequence : G_MAXUINT64));
   }
   return released;
 }

@@ -131,12 +131,42 @@ bool cancellation_wakes_waiter_promptly() {
   return true;
 }
 
+bool mismatched_sequences_fail_without_deadlock() {
+  BarrierFixture fixture;
+  std::atomic<int> first_result{-1};
+  std::thread first(
+      [&] { first_result = wait_at_uri_playlist_frame_barrier(fixture.source(0), 0, GST_SECOND) ? 1 : 0; });
+  if (!fixture.waitUntilReady(0, 0, std::chrono::seconds(2))) {
+    cancel_uri_playlist_frame_barrier(fixture.parent());
+    first.join();
+    std::cerr << "First camera did not enter the frame barrier\n";
+    return false;
+  }
+
+  const auto mismatch_started = std::chrono::steady_clock::now();
+  const bool second_result = wait_at_uri_playlist_frame_barrier(fixture.source(1), 1, 2 * GST_SECOND);
+  first.join();
+  const auto mismatch_latency = std::chrono::steady_clock::now() - mismatch_started;
+
+  NvDsSrcParentBin* parent = fixture.parent();
+  g_mutex_lock(&parent->uri_playlist_barrier_mutex);
+  const bool state_ok = parent->uri_playlist_next_frame_sequence == 0 && parent->uri_playlist_terminal &&
+      parent->uri_playlist_barrier_failed && parent->uri_playlist_delivery_aborted;
+  g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+  if (first_result != 0 || second_result || !state_ok || mismatch_latency > std::chrono::seconds(1)) {
+    std::cerr << "Mismatched camera sequences did not fail both waiters promptly\n";
+    return false;
+  }
+  return true;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
-  if (!delayed_peer_outlives_old_timeout() || !cancellation_wakes_waiter_promptly()) {
+  if (!delayed_peer_outlives_old_timeout() || !cancellation_wakes_waiter_promptly() ||
+      !mismatched_sequences_fail_without_deadlock()) {
     return 1;
   }
   return 0;

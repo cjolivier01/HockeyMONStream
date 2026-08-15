@@ -27,7 +27,13 @@ GQuark _dsmeta_quark;
 #define CEIL(a, b) ((a + b - 1) / b)
 
 // Small helpers to reduce repetition and improve readability
-static inline void make_output_path(char* out, size_t out_size, const char* dir, guint app_index, guint stream_id, gulong frame_num) {
+static inline void make_output_path(
+    char* out,
+    size_t out_size,
+    const char* dir,
+    guint app_index,
+    guint stream_id,
+    gulong frame_num) {
   g_snprintf(out, out_size - 1, "%s/%02u_%03u_%06lu.txt", dir, app_index, stream_id, frame_num);
 }
 
@@ -35,7 +41,8 @@ static inline void make_output_path(char* out, size_t out_size, const char* dir,
 static GstPadProbeReturn gie_processing_done_buf_prob(GstPad* pad, GstPadProbeInfo* info, gpointer u_data);
 
 static inline gboolean add_osd_if_enabled(NvDsConfig* config, NvDsInstanceBin* instance_bin, GstElement** last_elem) {
-  if (!config->osd_config.enable) return TRUE;
+  if (!config->osd_config.enable)
+    return TRUE;
   if (!create_osd_bin(&config->osd_config, &instance_bin->osd_bin)) {
     return FALSE;
   }
@@ -220,6 +227,19 @@ static gboolean message_source_is_ui_preview(GstMessage* message) {
   return FALSE;
 }
 
+// Error messages can be posted while createMainLoop() is synchronously waiting
+// for PAUSED/preroll, before the GLib main loop dispatches bus_callback(). Wake
+// an exact-frame peer immediately in the posting thread, but leave the message
+// on the bus so the normal callback still reports and classifies the failure.
+static GstBusSyncReply bus_sync_callback(GstBus* /*bus*/, GstMessage* message, gpointer data) {
+  auto* app_ctx = static_cast<AppCtx*>(data);
+  if (app_ctx && app_ctx->pipeline.multi_src_bin.uri_playlist_exact_pairing_enabled &&
+      GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR && !message_source_is_ui_preview(message)) {
+    cancel_uri_playlist_frame_barrier(&app_ctx->pipeline.multi_src_bin);
+  }
+  return GST_BUS_PASS;
+}
+
 /**
  * callback function to receive messages from components
  * in the pipeline.
@@ -279,7 +299,9 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       // A URI decoder can fail while its peer is waiting at the exact-frame barrier. Wake every waiter before the
       // application begins error teardown; otherwise setting the pipeline to NULL can wait forever on that streaming
       // task. The original error remains the reason the run fails.
-      cancel_uri_playlist_frame_barrier(&appCtx->pipeline.multi_src_bin);
+      if (appCtx->pipeline.multi_src_bin.uri_playlist_exact_pairing_enabled) {
+        cancel_uri_playlist_frame_barrier(&appCtx->pipeline.multi_src_bin);
+      }
 
       if (strstr(error->message, attempts_error)) {
         g_print(
@@ -287,7 +309,6 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
             " Exiting.\n");
         g_error_free(error);
         g_free(debuginfo);
-        appCtx->return_value = 0;
         appCtx->quit = TRUE;
         return TRUE;
       }
@@ -377,6 +398,7 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       break;
     }
     case GST_MESSAGE_EOS: {
+      appCtx->eos_received = TRUE;
       /*
        * In normal scenario, this would use g_main_loop_quit() to exit the
        * loop and release the resources. Since this application might be
@@ -384,7 +406,6 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
        * till all pipelines are done.
        */
       if (appCtx->config.use_nvmultiurisrcbin) {
-        appCtx->eos_received = TRUE;
         gboolean app_quit = TRUE;
         for (int i = 0; i < MAX_SOURCE_BINS; i++) {
           if (appCtx->config.multi_source_config[i].type == NV_DS_SOURCE_RTSP) {
@@ -1241,7 +1262,8 @@ static gboolean create_demux_pipeline(AppCtx* appCtx, guint index) {
   gst_bin_add(GST_BIN(instance_bin->bin), instance_bin->demux_sink_bin.bin);
   last_elem = instance_bin->demux_sink_bin.bin;
 
-  if (!add_osd_if_enabled(config, instance_bin, &last_elem)) goto done;
+  if (!add_osd_if_enabled(config, instance_bin, &last_elem))
+    goto done;
 
   NVGSTDS_BIN_ADD_GHOST_PAD(instance_bin->bin, last_elem, "sink");
   add_bbox_probe(config, instance_bin, instance_bin->demux_sink_bin.bin);
@@ -1322,7 +1344,8 @@ static gboolean create_processing_instance(AppCtx* appCtx, guint index) {
   gst_bin_add(GST_BIN(instance_bin->bin), instance_bin->sink_bin.bin);
   last_elem = instance_bin->sink_bin.bin;
 
-  if (!add_osd_if_enabled(config, instance_bin, &last_elem)) goto done;
+  if (!add_osd_if_enabled(config, instance_bin, &last_elem))
+    goto done;
 
   NVGSTDS_BIN_ADD_GHOST_PAD(instance_bin->bin, last_elem, "sink");
   add_bbox_probe(config, instance_bin, instance_bin->sink_bin.bin);
@@ -2157,6 +2180,10 @@ gboolean create_pipeline(
   g_cond_init(&appCtx->app_cond);
   g_mutex_init(&appCtx->latency_lock);
 
+  bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline->pipeline));
+  gst_bus_set_sync_handler(bus, bus_sync_callback, appCtx, NULL);
+  gst_object_unref(bus);
+
   ret = TRUE;
 done:
 
@@ -2174,6 +2201,47 @@ done:
 /**
  * Function to destroy pipeline and release the resources, probes etc.
  */
+gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
+  if (!appCtx || !appCtx->pipeline.pipeline) {
+    return TRUE;
+  }
+
+  GstElement* pipeline = appCtx->pipeline.pipeline;
+  GstState current = GST_STATE_NULL;
+  GstState pending = GST_STATE_VOID_PENDING;
+  gst_element_get_state(pipeline, &current, &pending, 0);
+  if (current == GST_STATE_NULL && pending == GST_STATE_VOID_PENDING) {
+    return TRUE;
+  }
+
+  cancel_uri_playlist_frame_barrier(&appCtx->pipeline.multi_src_bin);
+  gboolean finalized = appCtx->eos_received || appCtx->return_value != 0;
+  if (!finalized) {
+    if (gst_element_send_event(pipeline, gst_event_new_eos())) {
+      GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline));
+      GstMessage* message =
+          gst_bus_timed_pop_filtered(bus, timeout, static_cast<GstMessageType>(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
+      if (message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS) {
+        appCtx->eos_received = TRUE;
+        finalized = TRUE;
+      } else if (message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
+        bus_callback(bus, message, appCtx);
+      }
+      if (message) {
+        gst_message_unref(message);
+      }
+      gst_object_unref(bus);
+    }
+    if (!finalized) {
+      g_printerr("Pipeline EOS finalization timed out; encoded output may be incomplete\n");
+      appCtx->return_value = -1;
+    }
+  }
+
+  const gboolean stopped = gst_element_set_state(pipeline, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE;
+  return stopped && finalized;
+}
+
 void destroy_pipeline(AppCtx* appCtx) {
   gint64 end_time;
   NvDsConfig* config = &appCtx->config;
@@ -2185,25 +2253,11 @@ void destroy_pipeline(AppCtx* appCtx) {
   if (!appCtx)
     return;
 
-  cancel_uri_playlist_frame_barrier(&appCtx->pipeline.multi_src_bin);
-  gst_element_send_event(appCtx->pipeline.pipeline, gst_event_new_eos());
-  sleep(1);
+  stop_pipeline_gracefully(appCtx, 5 * GST_SECOND);
 
   g_mutex_lock(&appCtx->app_lock);
   if (appCtx->pipeline.pipeline) {
     destroy_smart_record_bin(&appCtx->pipeline.multi_src_bin);
-    bus = gst_pipeline_get_bus(GST_PIPELINE(appCtx->pipeline.pipeline));
-
-    while (TRUE) {
-      GstMessage* message = gst_bus_pop(bus);
-      if (message == NULL || GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS)
-        break;
-      else if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR)
-        bus_callback(bus, message, appCtx);
-      else
-        gst_message_unref(message);
-    }
-    gst_object_unref(bus);
     gst_element_set_state(appCtx->pipeline.pipeline, GST_STATE_NULL);
   }
   g_cond_wait_until(&appCtx->app_cond, &appCtx->app_lock, end_time);
@@ -2237,6 +2291,7 @@ void destroy_pipeline(AppCtx* appCtx) {
 
   if (appCtx->pipeline.pipeline) {
     bus = gst_pipeline_get_bus(GST_PIPELINE(appCtx->pipeline.pipeline));
+    gst_bus_set_sync_handler(bus, NULL, NULL, NULL);
     gst_bus_remove_watch(bus);
     gst_object_unref(bus);
     gst_object_unref(appCtx->pipeline.pipeline);

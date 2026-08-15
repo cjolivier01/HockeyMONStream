@@ -1592,6 +1592,7 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
   game_id_edit_ = new QLineEdit();
   game_id_edit_->setObjectName("gameIdEdit");
   game_id_edit_->setPlaceholderText("game-id");
+  connect(game_id_edit_, &QLineEdit::textChanged, this, [this]() { updateArchiveOutputPathLabel(); });
   connect(game_id_edit_, &QLineEdit::editingFinished, this, [this]() {
     game_id_edit_->setText(sanitized_game_id(game_id_edit_->text()));
     refreshVideoSets();
@@ -2950,6 +2951,8 @@ void HStreamWindow::startPipeline() {
   const QString working_dir = pipelineWorkingDirectory();
   configure_pipeline_runtime_environment(env, working_dir);
   active_archive_output_path_.clear();
+  active_archive_initial_size_ = -1;
+  active_archive_initial_mtime_ms_ = -1;
   const auto archive_toggle = output_toggles_.find("archive-file");
   const bool archive_enabled = !active_run_is_calibration_ && archive_toggle != output_toggles_.end() &&
       archive_toggle->second && archive_toggle->second->isChecked();
@@ -2957,6 +2960,11 @@ void HStreamWindow::startPipeline() {
     const QString output_work_dir = archive_output_work_dir(env, working_dir);
     env.insert("HM_OUTPUT_WORK_DIR", output_work_dir);
     active_archive_output_path_ = archive_output_path(output_work_dir, active_run_game_id_);
+    const QFileInfo previous_archive(active_archive_output_path_);
+    if (previous_archive.isFile()) {
+      active_archive_initial_size_ = previous_archive.size();
+      active_archive_initial_mtime_ms_ = previous_archive.lastModified().toMSecsSinceEpoch();
+    }
     const QString archive_dir = QFileInfo(active_archive_output_path_).absolutePath();
     if (!QDir().mkpath(archive_dir)) {
       output_states_["archive-file"]->setText("ERROR");
@@ -2984,6 +2992,8 @@ void HStreamWindow::startPipeline() {
     appendLog(
         QString("archive output was not started (%1); expected path: %2").arg(reason, active_archive_output_path_));
     active_archive_output_path_.clear();
+    active_archive_initial_size_ = -1;
+    active_archive_initial_mtime_ms_ = -1;
   };
   active_calibration_control_points_ = stitchingCalibrationControlPoints();
   bool calibration_required = false;
@@ -3303,15 +3313,23 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   QString archive_result;
   if (!active_archive_output_path_.isEmpty()) {
     const QFileInfo archive_info(active_archive_output_path_);
-    if (archive_info.isFile() && archive_info.size() > 0) {
+    const bool output_updated = archive_info.isFile() &&
+        (active_archive_initial_size_ < 0 || archive_info.size() != active_archive_initial_size_ ||
+         archive_info.lastModified().toMSecsSinceEpoch() != active_archive_initial_mtime_ms_);
+    if (output_updated && archive_info.size() > 0) {
       const bool complete = exit_status == QProcess::NormalExit && exit_code == 0;
       output_states_["archive-file"]->setText(complete ? "SAVED" : "INCOMPLETE");
       archive_result = QString("archive %1: %2 (%3 bytes)")
                            .arg(complete ? "finalized" : "may be incomplete", active_archive_output_path_)
                            .arg(archive_info.size());
+    } else if (output_updated) {
+      output_states_["archive-file"]->setText("INCOMPLETE");
+      archive_result = QString("archive output is empty and incomplete: %1").arg(active_archive_output_path_);
     } else {
       output_states_["archive-file"]->setText("NO FILE");
-      archive_result = QString("archive output was not created; expected: %1").arg(active_archive_output_path_);
+      archive_result = archive_info.isFile()
+          ? QString("archive output was not updated; existing file remains at: %1").arg(active_archive_output_path_)
+          : QString("archive output was not created; expected: %1").arg(active_archive_output_path_);
     }
   }
   pipeline_paused_ = false;
@@ -3354,6 +3372,8 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   if (!archive_result.isEmpty())
     appendLog(archive_result);
   active_archive_output_path_.clear();
+  active_archive_initial_size_ = -1;
+  active_archive_initial_mtime_ms_ = -1;
   updateRunControls();
 }
 
@@ -3429,9 +3449,16 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   failPendingRuntimeControls("pipeline-error");
   calibration_pending_ = false;
   if (!active_archive_output_path_.isEmpty()) {
-    output_states_["archive-file"]->setText("FAILED");
-    appendLog(QString("archive output was not created; expected: %1").arg(active_archive_output_path_));
-    active_archive_output_path_.clear();
+    if (error == QProcess::Crashed) {
+      output_states_["archive-file"]->setText("CHECKING");
+      appendLog(QString("pipeline crashed; checking archive for partial output: %1").arg(active_archive_output_path_));
+    } else {
+      output_states_["archive-file"]->setText("FAILED");
+      appendLog(QString("archive output was not created; expected: %1").arg(active_archive_output_path_));
+      active_archive_output_path_.clear();
+      active_archive_initial_size_ = -1;
+      active_archive_initial_mtime_ms_ = -1;
+    }
   }
   active_run_game_id_.clear();
   active_run_is_calibration_ = false;
@@ -3469,6 +3496,7 @@ void HStreamWindow::readPipelineOutput() {
         if (handleGpuPreviewStatus(trimmed)) {
           continue;
         }
+        handleArchiveOutputStatus(trimmed);
         appendLog(trimmed);
         handleRuntimeControlResponse(trimmed);
         handleScoreboardSelectorOutput(trimmed);
@@ -3479,6 +3507,50 @@ void HStreamWindow::readPipelineOutput() {
   drain(pipeline_process_->readAllStandardOutput(), &pipeline_stdout_buffer_);
   if (pipeline_process_->processChannelMode() != QProcess::MergedChannels) {
     drain(pipeline_process_->readAllStandardError(), &pipeline_stderr_buffer_);
+  }
+}
+
+void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
+  static const QRegularExpression output_status(
+      R"(^HSTREAM_OUTPUT type=archive sink=(-?\d+) existed=([01]) size=(-?\d+) mtime-ms=(-?\d+) path=(.+)$)");
+  const QRegularExpressionMatch match = output_status.match(line);
+  if (!match.hasMatch() || active_archive_output_path_.isEmpty()) {
+    return;
+  }
+  const QString resolved_path = QFileInfo(match.captured(5)).absoluteFilePath();
+  if (resolved_path.isEmpty()) {
+    return;
+  }
+  const bool path_changed = resolved_path != active_archive_output_path_;
+  active_archive_output_path_ = resolved_path;
+  const bool output_existed = match.captured(2) == "1";
+  active_archive_initial_size_ = output_existed ? match.captured(3).toLongLong() : -1;
+  active_archive_initial_mtime_ms_ = output_existed ? match.captured(4).toLongLong() : -1;
+  if (archive_output_path_label_)
+    archive_output_path_label_->setText(QString("Archive: %1").arg(active_archive_output_path_));
+  appendLog(QString("archive backend %1 output: %2")
+                .arg(path_changed ? "resolved" : "confirmed", active_archive_output_path_));
+}
+
+void HStreamWindow::updateArchiveOutputPathLabel() {
+  if (!archive_output_path_label_) {
+    return;
+  }
+  const auto archive_toggle = output_toggles_.find("archive-file");
+  const bool archive_enabled =
+      archive_toggle != output_toggles_.end() && archive_toggle->second && archive_toggle->second->isChecked();
+  const bool pipeline_running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+  if (pipeline_running && !active_archive_output_path_.isEmpty()) {
+    archive_output_path_label_->setText(
+        QString("Current archive: %1\nRoute change applies to the next run").arg(active_archive_output_path_));
+  } else if (archive_enabled) {
+    const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    archive_output_path_label_->setText(QString("Archive: %1")
+                                            .arg(archive_output_path(
+                                                archive_output_work_dir(env, pipelineWorkingDirectory()),
+                                                game_id_edit_ ? game_id_edit_->text().trimmed() : QString())));
+  } else {
+    archive_output_path_label_->setText("Archive path will be shown when enabled");
   }
 }
 
@@ -5954,19 +6026,8 @@ void HStreamWindow::toggleOutput(const QString& id, bool enabled) {
   const bool pipeline_running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   output_states_[id]->setText(pipeline_running ? "NEXT RUN" : (enabled ? "ENABLED" : "STOPPED"));
   appendLog(QString("output route %1 %2").arg(id, enabled ? "enabled" : "disabled"));
-  if (id == "archive-file" && archive_output_path_label_) {
-    if (pipeline_running && !active_archive_output_path_.isEmpty()) {
-      archive_output_path_label_->setText(
-          QString("Current archive: %1\nRoute change applies to the next run").arg(active_archive_output_path_));
-    } else if (enabled) {
-      const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-      archive_output_path_label_->setText(QString("Archive: %1")
-                                              .arg(archive_output_path(
-                                                  archive_output_work_dir(env, pipelineWorkingDirectory()),
-                                                  game_id_edit_ ? game_id_edit_->text().trimmed() : QString())));
-    } else {
-      archive_output_path_label_->setText("Archive path will be shown when enabled");
-    }
+  if (id == "archive-file") {
+    updateArchiveOutputPathLabel();
   }
   if (pipeline_running) {
     appendLog("output route change will apply on the next pipeline start with the current runner backend");

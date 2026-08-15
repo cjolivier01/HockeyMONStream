@@ -2,6 +2,7 @@
 
 #include <gstreamer-1.0/gst/gstelement.h>
 #include <gstreamer-1.0/gst/gstpipeline.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <yaml-cpp/node/parse.h>
 
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -1440,10 +1442,6 @@ void Configurator::configure_audio(
 }
 
 absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) const {
-  if (game_id_.empty()) {
-    return absl::OkStatus();
-  }
-
   const auto has_audio_for_sink = [&](int sink_id) {
     for (auto kv : pipeline) {
       const std::string key = kv.first.as<std::string>();
@@ -1511,6 +1509,9 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
     if (output_was_rebased && has_audio_for_sink(sink_id)) {
       output_path = add_audio_suffix_to_output_path(output_path.string());
     }
+    if (output_path.is_relative()) {
+      output_path = fs::absolute(output_path);
+    }
 
     set_container_from_output_extension(sink_node, output_path);
     sink_node["output-file"] = output_path.string();
@@ -1524,6 +1525,23 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
             TO_STRING("Failed to create output directory \"" << parent.string() << "\": " << ec.message()));
       }
     }
+    const std::string normalized_output_path = output_path.lexically_normal().string();
+    struct stat previous_output{};
+    const gboolean output_existed =
+        ::stat(normalized_output_path.c_str(), &previous_output) == 0 && S_ISREG(previous_output.st_mode);
+    const gint64 previous_size = output_existed ? static_cast<gint64>(previous_output.st_size) : -1;
+    const gint64 previous_mtime_ms = output_existed
+        ? static_cast<gint64>(previous_output.st_mtim.tv_sec) * 1000 + previous_output.st_mtim.tv_nsec / 1000000
+        : -1;
+    g_print(
+        "HSTREAM_OUTPUT type=archive sink=%d existed=%d size=%" G_GINT64_FORMAT " mtime-ms=%" G_GINT64_FORMAT
+        " path=%s\n",
+        sink_id,
+        output_existed,
+        previous_size,
+        previous_mtime_ms,
+        normalized_output_path.c_str());
+    std::fflush(stdout);
   }
 
   return absl::OkStatus();
@@ -1848,6 +1866,7 @@ absl::Status Configurator::complete_configuration(
     if (clean_requested) {
       return absl::InvalidArgumentError("No game id specified for cleaning");
     }
+    HM_RETURN_IF_ERROR(configure_encode_file_outputs(pipeline));
     return absl::OkStatus();
   }
 
