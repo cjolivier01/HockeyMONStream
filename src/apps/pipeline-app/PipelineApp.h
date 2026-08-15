@@ -128,6 +128,7 @@ class PipelineApplication {
   bool set_render_window_runtime(guint64 window_id);
   bool set_preview_active_runtime(const std::string& channel, guint64 generation);
   bool capture_preview_frame_runtime(const std::string& channel, const std::string& path);
+  bool set_render_audio_muted_runtime(bool muted);
   bool set_element_property_runtime(
       const std::string& element_name,
       const std::string& property_name,

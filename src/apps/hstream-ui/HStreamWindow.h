@@ -124,7 +124,9 @@ class HStreamWindow : public QMainWindow {
   void handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status);
   void handlePipelineError(QProcess::ProcessError error);
   void readPipelineOutput();
+  bool handleStartupProgressOutput(const QString& line);
   bool handlePlaybackProgressOutput(const QString& line);
+  void setPlaybackStartupStage(const QString& stage, const QString& detail);
   void resetPlaybackProgress(bool starting);
   void setPlaybackProgressState(PlaybackProgressState state, const QString& detail = {});
   void updatePlaybackProgressPresentation();
@@ -153,6 +155,7 @@ class HStreamWindow : public QMainWindow {
   void schedulePreviewDisableTimeout(quint64 generation, int timeout_ms);
   void recoverPreviewDisableFailure(const QString& reason, bool force = false);
   int previewDisableTimeoutMs() const;
+  bool setRuntimeRenderAudioMuted(bool muted);
   void setRuntimeVideoRendering(bool enabled);
   void setPreviewRenderingLayout(bool rendering);
   void setPreviewFocusAvailable(const QString& channel, bool available);
@@ -320,6 +323,7 @@ class HStreamWindow : public QMainWindow {
   QString playback_fps_;
   QString playback_fps_average_;
   QString playback_stage_;
+  QString playback_startup_detail_;
   QString playback_instances_;
   QString playback_terminal_detail_;
   PlaybackProgressState playback_progress_state_{PlaybackProgressState::kIdle};

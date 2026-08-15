@@ -403,6 +403,7 @@ bool write_fake_runner(const QString& path) {
       "print('HSTREAM_CALIBRATION_INVALIDATION_ID=' + "
       "os.environ.get('HSTREAM_CALIBRATION_INVALIDATION_ID', ''), flush=True)\n");
   file.write("print('LD_LIBRARY_PATH=' + os.environ.get('LD_LIBRARY_PATH', ''), flush=True)\n");
+  file.write("print('HSTREAM_RENDER_AUDIO_MUTED=' + os.environ.get('HSTREAM_RENDER_AUDIO_MUTED', ''), flush=True)\n");
   file.write("if os.environ.get('HM_NO_SCOREBOARD') != '1':\n");
   file.write("    print('Scoreboard corners are not configured. Open this private, expiring URL:', flush=True)\n");
   file.write("    print('  http://127.0.0.1:45678/?token=' + ('a' * 64), flush=True)\n");
@@ -428,6 +429,13 @@ bool write_fake_runner(const QString& path) {
   file.write("time.sleep(0.05)\n");
   file.write("sys.stdout.write(' blue runner line\\033[0m\\n')\n");
   file.write("sys.stdout.flush()\n");
+  file.write(
+      "print('HSTREAM_STARTUP stage=stitching message=Discovering source chapters and validating saved stitching "
+      "artifacts', flush=True)\n");
+  file.write("time.sleep(float(os.environ.get('HSTREAM_UI_TEST_STARTUP_DELAY_MS', '0')) / 1000.0)\n");
+  file.write(
+      "print('HSTREAM_STARTUP stage=decoding message=Starting decoders and waiting for the first frame', "
+      "flush=True)\n");
   file.write(
       "print('HSTREAM_PROGRESS processed_ns=42000000000 total_ns=600000000000 remaining_ns=558000000000 "
       "eta_ns=279000000000 speed_x=2.000000 fps=42.750000 fps_avg=40.500000 fraction=0.070000 stage=0 "
@@ -1907,10 +1915,27 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   qputenv("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW", "1");
   qputenv("HSTREAM_UI_TEST_PREVIEW_TIMEOUT_MS", "20");
   qputenv("HSTREAM_UI_TEST_PREVIEW_READY_AFTER", "1");
+  qputenv("HSTREAM_UI_TEST_STARTUP_DELAY_MS", "150");
   for (QWidget* surface : {preview_surface, stitched_surface, camera1_surface, camera2_surface, camera3_surface}) {
     surface->setProperty("previewRendererState", "ready");
   }
   activate(start);
+  for (int i = 0; i < 100 && !playback_progress->format().contains("validating saved stitching artifacts"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(5);
+  }
+  qunsetenv("HSTREAM_UI_TEST_STARTUP_DELAY_MS");
+  if (!expect(
+          playback_progress->isVisible() && playback_progress->minimum() == 0 && playback_progress->maximum() == 0 &&
+              playback_progress->format().contains("STARTING") &&
+              playback_progress->format().contains("validating saved stitching artifacts") &&
+              playback_progress->toolTip().contains("Stage: stitching") &&
+              window->logText().contains(
+                  "startup [stitching]: Discovering source chapters and validating saved stitching artifacts") &&
+              !window->logText().contains("HSTREAM_STARTUP"),
+          "A configured or calibrating run must explain each pre-first-frame startup stage without protocol noise")) {
+    return false;
+  }
   const QString initial_program_preview_state = preview_surface->property("previewRendererState").toString();
   if (!expect(
           (initial_program_preview_state == "idle" || initial_program_preview_state == "activating") &&
@@ -1996,9 +2021,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           !render_video->isChecked() && render_video->isEnabled() && preview_target->isHidden() &&
               program_focus->isHidden() && setup_preview_splitter->sizes().at(0) > 0 &&
               window->logText().contains("stdin:@set-preview-active none") &&
+              window->logText().contains("stdin:@set-render-audio-muted 1") &&
               window->logText().count("pipeline started pid=") == pipeline_start_count,
-          "Turning rendering off while playing must quiesce the display branch, restore the setup layout, and keep "
-          "the same pipeline process")) {
+          "Turning rendering off while playing must quiesce video and local monitor audio, restore the setup layout, "
+          "and keep the same pipeline process")) {
     return false;
   }
   if (!capture_interaction_artifact(window, "playing-render-disabled.png"))
@@ -2014,8 +2040,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           render_video->isChecked() && !preview_target->isHidden() && program_focus->isVisible() &&
               program_focus->isEnabled() && setup_preview_splitter->sizes().at(0) == 0 &&
               window->logText().contains("reason=render-toggle") &&
+              window->logText().contains("stdin:@set-render-audio-muted 0") &&
               window->logText().count("pipeline started pid=") == pipeline_start_count,
-          "Turning rendering back on must reactivate the selected GPU preview without restarting the pipeline")) {
+          "Turning rendering back on must restore preview and local monitor audio without restarting the pipeline")) {
     return false;
   }
 
@@ -3037,19 +3064,33 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   const int source_embedded_commands_before = window->logText().count("--source-render-window-ids=");
   const int gpu_preview_commands_before = window->logText().count("--ui-preview-windows=");
   const int inactive_preview_commands_before = window->logText().count("--ui-preview-active=none");
+  const int muted_launches_before = window->logText().count("HSTREAM_RENDER_AUDIO_MUTED=1");
   render_video->setChecked(false);
   activate(start);
-  for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
+  for (int i = 0; i < 100 &&
+       (window->pipelineStateText() != "PLAYING" ||
+        window->logText().count("HSTREAM_RENDER_AUDIO_MUTED=1") <= muted_launches_before);
+       ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
+  const int fake_sink_commands_after = window->logText().count("--enable-sinks=FAKE");
+  const int render_sink_commands_after = window->logText().count("--enable-sinks=RENDER");
+  const bool disabled_sink_selection =
+      fake_sink_commands_after == fake_sink_commands_before + (x11_test_backend ? 0 : 2) &&
+      render_sink_commands_after == render_sink_commands_before + (x11_test_backend ? 2 : 0);
+  if (!disabled_sink_selection) {
+    std::cerr << "disabled render sink counts: platform=" << QGuiApplication::platformName().toStdString()
+              << " fake=" << fake_sink_commands_before << "->" << fake_sink_commands_after
+              << " render=" << render_sink_commands_before << "->" << render_sink_commands_after << '\n';
+  }
   const bool rendering_disabled =
       expect(
-          window->logText().count("--enable-sinks=FAKE") == fake_sink_commands_before + (x11_test_backend ? 0 : 1) &&
-              window->logText().count("--enable-sinks=RENDER") ==
-                  render_sink_commands_before + (x11_test_backend ? 1 : 0),
-          "A disabled X11 preview should retain only the logical audio-monitor render "
-          "sink; non-X11 should use a fake sink") &&
+          disabled_sink_selection,
+          "A disabled X11 preview should retain the dormant render branch; non-X11 should use a fake sink") &&
+      expect(
+          window->logText().count("HSTREAM_RENDER_AUDIO_MUTED=1") == muted_launches_before + 1,
+          "A run started with Render video off must construct its local monitor-audio branch muted") &&
       expect(
           window->logText().count("--render-window-id=") == embedded_commands_before,
           "Disabling video rendering should not attach a native preview window") &&

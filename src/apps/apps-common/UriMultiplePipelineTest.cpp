@@ -597,6 +597,64 @@ int run_multi_sink_without_ids_disables_audio(const fs::path& tmpdir, const fs::
   return 0;
 }
 
+int run_render_audio_initial_mute(const fs::path& audio_path, bool initially_muted) {
+  GstElement* pipeline =
+      gst_pipeline_new(initially_muted ? "hmaudio-muted-render-test" : "hmaudio-audible-render-test");
+  GstElement* render_sink_marker = gst_element_factory_make("fakesink", nullptr);
+  if (!pipeline || !render_sink_marker) {
+    std::cerr << "Failed to create render-audio mute test fixtures\n";
+    if (pipeline) {
+      gst_object_unref(GST_OBJECT(pipeline));
+    }
+    if (render_sink_marker) {
+      gst_object_unref(GST_OBJECT(render_sink_marker));
+    }
+    return 2;
+  }
+
+  NvDsHmAudioConfig audio_cfg{};
+  configure_file_hmaudio(audio_cfg, audio_path);
+
+  NvDsSinkSubBinConfig sink_configs[MAX_SINK_BINS]{};
+  sink_configs[0].enable = TRUE;
+  sink_configs[0].sink_id = 0;
+#ifndef IS_TEGRA
+  sink_configs[0].type = NV_DS_SINK_RENDER_EGL;
+#else
+  sink_configs[0].type = NV_DS_SINK_RENDER_3D;
+#endif
+
+  NvDsSinkBin sink_bin{};
+  sink_bin.sub_bins[0].sink = render_sink_marker;
+  NvDsSrcBin src_bins[MAX_SOURCE_BINS]{};
+  NvDsHmAudioBin audio_bin{};
+  g_setenv("HSTREAM_RENDER_AUDIO_MUTED", initially_muted ? "1" : "0", TRUE);
+  const bool created = create_hmaudio_bin(GST_BIN(pipeline), &audio_cfg, &audio_bin, src_bins, sink_configs, &sink_bin);
+  g_unsetenv("HSTREAM_RENDER_AUDIO_MUTED");
+  gst_object_unref(GST_OBJECT(render_sink_marker));
+  if (!created || !audio_bin.bin) {
+    std::cerr << "Failed to construct the local render-audio branch\n";
+    gst_object_unref(GST_OBJECT(pipeline));
+    return 3;
+  }
+
+  GstElement* volume = gst_bin_get_by_name(GST_BIN(audio_bin.bin), "hmaudio_render_sink0_volume");
+  if (!volume) {
+    std::cerr << "Expected a dedicated volume element in the local render-audio branch\n";
+    gst_object_unref(GST_OBJECT(pipeline));
+    return 4;
+  }
+  gboolean actual_muted = FALSE;
+  g_object_get(G_OBJECT(volume), "mute", &actual_muted, NULL);
+  gst_object_unref(GST_OBJECT(volume));
+  gst_object_unref(GST_OBJECT(pipeline));
+  if (actual_muted != static_cast<gboolean>(initially_muted)) {
+    std::cerr << "Expected initial local render-audio mute=" << initially_muted << ", got " << actual_muted << '\n';
+    return 5;
+  }
+  return 0;
+}
+
 int run_decode_compose_encode(
     const fs::path& tmpdir,
     const std::vector<std::string>& left_uris,
@@ -1206,6 +1264,17 @@ int main(int argc, char** argv) {
   }
 
   rc = run_multi_sink_without_ids_disables_audio(tmpdir, audio);
+  if (rc != 0) {
+    fs::remove_all(tmpdir);
+    return rc;
+  }
+
+  rc = run_render_audio_initial_mute(audio, true);
+  if (rc != 0) {
+    fs::remove_all(tmpdir);
+    return rc;
+  }
+  rc = run_render_audio_initial_mute(audio, false);
   if (rc != 0) {
     fs::remove_all(tmpdir);
     return rc;

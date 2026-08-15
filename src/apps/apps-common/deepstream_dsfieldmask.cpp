@@ -536,19 +536,23 @@ bool create_render_audio_branch(
   GstElement* queue{nullptr};
   GstElement* audioconvert{nullptr};
   GstElement* audioresample{nullptr};
+  GstElement* volume{nullptr};
   GstElement* audiosink{nullptr};
   if (!create_audio_branch_queue(bin, target.config, &queue) ||
       !make_audio_bin_element(
           bin, &audioconvert, NVDS_ELEM_AUDIO_CONV, branch_element_name("render", target.config, "audioconvert")) ||
       !make_audio_bin_element(
           bin, &audioresample, "audioresample", branch_element_name("render", target.config, "resample")) ||
+      !make_audio_bin_element(bin, &volume, "volume", branch_element_name("render", target.config, "volume")) ||
       !make_audio_bin_element(bin, &audiosink, "alsasink", branch_element_name("render", target.config, "alsasink"))) {
     return false;
   }
+  const gboolean initially_muted = g_strcmp0(g_getenv("HSTREAM_RENDER_AUDIO_MUTED"), "1") == 0;
+  g_object_set(G_OBJECT(volume), "mute", initially_muted, NULL);
   if (*hmaudio_config->alsa_dest_device) {
     g_object_set(G_OBJECT(audiosink), "device", hmaudio_config->alsa_dest_device, NULL);
   }
-  return link_audio_elements({queue, audioconvert, audioresample, audiosink});
+  return link_audio_elements({queue, audioconvert, audioresample, volume, audiosink});
 }
 
 bool create_fake_audio_branch(NvDsHmAudioBin* bin, const HmAudioSinkTarget& target) {

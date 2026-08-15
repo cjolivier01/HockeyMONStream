@@ -1513,7 +1513,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   render_video_toggle_ = new QCheckBox("Render video");
   render_video_toggle_->setObjectName("renderVideoCheck");
   render_video_toggle_->setChecked(true);
-  render_video_toggle_->setToolTip("Show the active GPU preview; this can be changed while the pipeline is running");
+  render_video_toggle_->setToolTip(
+      "Show the active GPU preview and play local monitor audio; this can be changed while the pipeline is running");
   connect(render_video_toggle_, &QCheckBox::toggled, this, [this](bool enabled) { setRuntimeVideoRendering(enabled); });
 
   start_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), "Play");
@@ -2935,6 +2936,9 @@ void HStreamWindow::startPipeline() {
     appendLog("pipeline already running");
     return;
   }
+  pipeline_state_->setText("STARTING");
+  resetPlaybackProgress(true);
+  setPlaybackStartupStage("ui", "Preparing the game directory and saved configuration");
   const auto show_startup_error = [this](const QString& detail) {
     resetPlaybackProgress(true);
     setPlaybackProgressState(PlaybackProgressState::kError, detail);
@@ -2976,6 +2980,7 @@ void HStreamWindow::startPipeline() {
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   const QString working_dir = pipelineWorkingDirectory();
   configure_pipeline_runtime_environment(env, working_dir);
+  setPlaybackStartupStage("stitching", "Validating saved stitching state and Left/Right video assignments");
   active_archive_output_path_.clear();
   active_archive_initial_size_ = -1;
   active_archive_initial_mtime_ms_ = -1;
@@ -3055,6 +3060,7 @@ void HStreamWindow::startPipeline() {
   pending_preview_channel_ =
       render_video ? (initial_preview_channel.isEmpty() ? QString("program") : initial_preview_channel) : QString();
   pending_preview_generation_ = pending_preview_channel_.isEmpty() ? 0 : preview_generation_;
+  setPlaybackStartupStage("assets", "Checking pretrained assets and pipeline inputs");
   if (!setupPretrainedAssets(args)) {
     abandon_archive_start("asset setup failed");
     if (calibration_pending_)
@@ -3071,6 +3077,7 @@ void HStreamWindow::startPipeline() {
     updateRunControls();
     return;
   }
+  setPlaybackStartupStage("launch", "Preparing GPU preview windows and launching hstream-cli");
   logMissingTensorRtEngineCaches(args);
 
   const bool embedded_render = std::any_of(
@@ -3140,7 +3147,11 @@ void HStreamWindow::startPipeline() {
   }
   if (!active_calibration_invalidation_id_.isEmpty())
     env.insert("HSTREAM_CALIBRATION_INVALIDATION_ID", active_calibration_invalidation_id_);
-  appendLog("audio enabled via pipeline.hmaudio.enable=1; render audio uses the configured system audio sink");
+  env.insert("HSTREAM_RENDER_AUDIO_MUTED", render_video ? "0" : "1");
+  appendLog(
+      render_video
+          ? "audio enabled via pipeline.hmaudio.enable=1; local monitor audio follows Render video"
+          : "audio enabled for encoded/stream outputs; local monitor audio is muted because Render video is off");
   env.insert("HSTREAM_UI_PARENT_PID", QString::number(QCoreApplication::applicationPid()));
   pipeline_process_->setProcessEnvironment(env);
   pipeline_process_->setWorkingDirectory(working_dir);
@@ -3168,8 +3179,7 @@ void HStreamWindow::startPipeline() {
   pipeline_paused_ = false;
   pipeline_stop_requested_ = false;
 
-  pipeline_state_->setText("STARTING");
-  resetPlaybackProgress(true);
+  setPlaybackStartupStage("process", "Starting the pipeline process");
   if (active_run_is_calibration_) {
     if (render_video) {
       preview_status_->setText(
@@ -3543,6 +3553,9 @@ void HStreamWindow::readPipelineOutput() {
       line.remove('\r');
       if (!line.trimmed().isEmpty()) {
         const QString trimmed = line.trimmed();
+        if (handleStartupProgressOutput(trimmed)) {
+          continue;
+        }
         if (handlePlaybackProgressOutput(trimmed)) {
           continue;
         }
@@ -3561,6 +3574,17 @@ void HStreamWindow::readPipelineOutput() {
   if (pipeline_process_->processChannelMode() != QProcess::MergedChannels) {
     drain(pipeline_process_->readAllStandardError(), &pipeline_stderr_buffer_);
   }
+}
+
+bool HStreamWindow::handleStartupProgressOutput(const QString& line) {
+  static const QRegularExpression startup_pattern(QStringLiteral(R"(^HSTREAM_STARTUP stage=([^ ]+) message=(.+)$)"));
+  const QRegularExpressionMatch match = startup_pattern.match(line);
+  if (!match.hasMatch()) {
+    return false;
+  }
+  setPlaybackStartupStage(match.captured(1), match.captured(2));
+  appendLog(QString("startup [%1]: %2").arg(match.captured(1), match.captured(2)));
+  return true;
 }
 
 bool HStreamWindow::handlePlaybackProgressOutput(const QString& line) {
@@ -3634,6 +3658,7 @@ bool HStreamWindow::handlePlaybackProgressOutput(const QString& line) {
   if (!parse_nanoseconds("processed_ns", &processed_ns)) {
     return true;
   }
+  playback_startup_detail_.clear();
   playback_elapsed_ = format_duration(processed_ns);
 
   quint64 total_ns = 0;
@@ -3681,6 +3706,14 @@ bool HStreamWindow::handlePlaybackProgressOutput(const QString& line) {
   setPlaybackProgressState(PlaybackProgressState::kRunning);
   updatePlaybackProgressPresentation();
   return true;
+}
+
+void HStreamWindow::setPlaybackStartupStage(const QString& stage, const QString& detail) {
+  playback_stage_ = stage;
+  playback_startup_detail_ = detail;
+  updatePlaybackProgressPresentation();
+  if (playback_progress_)
+    playback_progress_->repaint();
 }
 
 void HStreamWindow::setPlaybackProgressState(PlaybackProgressState state, const QString& detail) {
@@ -3733,6 +3766,7 @@ void HStreamWindow::resetPlaybackProgress(bool starting) {
   playback_fps_ = "Warming up";
   playback_fps_average_ = "Unknown";
   playback_stage_ = "Unknown";
+  playback_startup_detail_.clear();
   playback_instances_ = "Unknown";
   playback_progress_x10_ = 0;
   playback_progress_determinate_ = false;
@@ -3825,11 +3859,16 @@ void HStreamWindow::updatePlaybackProgressPresentation() {
                                           .arg(active_fps, active_eta));
       } else {
         playback_progress_->setRange(0, 0);
-        playback_progress_->setFormat(
-            pipeline_state == "STARTING"
-                ? "STARTING  •  Waiting for first frame  •  FPS warming up  •  ETA warming up"
-                : QString("%1%2 elapsed  •  %3  •  %4")
-                      .arg(paused ? "PAUSED  •  " : "", playback_elapsed_, active_fps, active_eta));
+        if (!playback_startup_detail_.isEmpty()) {
+          playback_progress_->setFormat(
+              QString("STARTING  •  %1  •  FPS warming up  •  ETA warming up").arg(playback_startup_detail_));
+        } else {
+          playback_progress_->setFormat(
+              pipeline_state == "STARTING"
+                  ? "STARTING  •  Waiting for first frame  •  FPS warming up  •  ETA warming up"
+                  : QString("%1%2 elapsed  •  %3  •  %4")
+                        .arg(paused ? "PAUSED  •  " : "", playback_elapsed_, active_fps, active_eta));
+        }
       }
       break;
     case PlaybackProgressState::kCompleted:
@@ -4398,6 +4437,7 @@ void HStreamWindow::recoverPreviewDisableFailure(const QString& reason, bool for
     const QSignalBlocker blocker(render_video_toggle_);
     render_video_toggle_->setChecked(true);
   }
+  setRuntimeRenderAudioMuted(false);
   setPreviewRenderingLayout(true);
   if (QWidget* surface = previewSurfaceForChannel(channel))
     surface->show();
@@ -4414,6 +4454,20 @@ void HStreamWindow::recoverPreviewDisableFailure(const QString& reason, bool for
   }
 }
 
+bool HStreamWindow::setRuntimeRenderAudioMuted(bool muted) {
+  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
+    return false;
+  }
+  const QByteArray command = QString("@set-render-audio-muted %1\n").arg(muted ? 1 : 0).toUtf8();
+  if (pipeline_process_->write(command) != command.size()) {
+    appendLog(muted ? "could not mute local render audio" : "could not restore local render audio");
+    return false;
+  }
+  appendLog(
+      muted ? "muting local render audio with video rendering" : "restoring local render audio with video rendering");
+  return true;
+}
+
 void HStreamWindow::setRuntimeVideoRendering(bool enabled) {
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   if (!running) {
@@ -4422,6 +4476,7 @@ void HStreamWindow::setRuntimeVideoRendering(bool enabled) {
                 : "video rendering disabled for the next pipeline start");
     return;
   }
+  setRuntimeRenderAudioMuted(!enabled);
   if (!pipeline_render_embedded_) {
     appendLog("runtime video rendering changes are unavailable for the active external display sink");
     return;

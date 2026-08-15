@@ -146,8 +146,9 @@ int main() {
       cv::imwrite((root / "game" / "right.png").string(), cv::Mat(48, 64, CV_8UC3, cv::Scalar(4, 5, 6))),
       "right source fixture must exist");
   const fs::path pto_gen = root / "pto_gen";
+  const fs::path pto_gen_args = root / "pto_gen.args";
   const fs::path autooptimiser = root / "autooptimiser";
-  const fs::path pano_modify = root / "pano_modify";
+  const fs::path autooptimiser_args = root / "autooptimiser.args";
   const fs::path nona = root / "nona";
   const fs::path enblend = root / "enblend";
   const fs::path fixtures = root / "fixtures";
@@ -170,28 +171,27 @@ int main() {
   ok &= expect(
       write_tool(
           pto_gen,
-          "printf '%s\\n' '# hugin project file' 'p f2 w100 h50 v180' '# control points' "
-          "'#hugin_optimizeReferenceImage 0' > hm_project.pto\n"),
+          "printf '%s\\n' \"$*\" > '" + pto_gen_args.string() +
+              "'\n"
+              "printf '%s\\n' '# hugin project file' 'p f2 w100 h50 v180' '# control points' "
+              "'#hugin_optimizeReferenceImage 0' > hm_project.pto\n"),
       "fake pto_gen must be created");
   ok &= expect(
       write_tool(
           autooptimiser,
-          "test \"$*\" = '-n -l -q -o autooptimiser_out.pto hm_project.pto'\n"
-          "cp \"$6\" \"$5\"\n"
-          "printf '%s\\n' 'Average (rms) distance between Controlpoints' 'after 1 iteration(s): 1.25 units'\n"),
+          "args=\"$*\"; align=0; level=0; select=0; quiet=0; scale=1; output=; input=\n"
+          "while [ \"$#\" -gt 0 ]; do case \"$1\" in -a) align=1 ;; -l) level=1 ;; -s) select=1 ;; "
+          "-q) quiet=1 ;; -x) shift; scale=$1 ;; -o) shift; output=$1 ;; -n) exit 91 ;; *) input=$1 ;; "
+          "esac; shift; done\n"
+          "test \"$align:$level:$select:$quiet:$output:$input\" = "
+          "'1:1:1:1:autooptimiser_out.pto:hm_project.pto'\n"
+          "awk -v scale=\"$scale\" '/^p / { w=int(100 * scale + 0.5); h=int(50 * scale + 0.5); "
+          "sub(/w[0-9]+/, \"w\" w); sub(/h[0-9]+/, \"h\" h) } { print }' \"$input\" > \"$output\"\n"
+          "printf '%s\\n' \"$args\" >> '" +
+              autooptimiser_args.string() +
+              "'\n"
+              "printf '%s\\n' 'Average (rms) distance between Controlpoints' 'after 1 iteration(s): 1.25 units'\n"),
       "fake autooptimiser must be created");
-  ok &= expect(
-      write_tool(
-          pano_modify,
-          "canvas= projection= output= input=\n"
-          "while [ \"$#\" -gt 0 ]; do case \"$1\" in --canvas=*) canvas=${1#*=} ;; --projection=*) "
-          "projection=${1#*=} ;; --fov=*) ;; -o) shift; output=$1 ;; *) "
-          "input=$1 ;; esac; shift; done\n"
-          "if [ \"$canvas\" = AUTO ]; then width=100; height=50; else width=${canvas%x*}; height=${canvas#*x}; fi\n"
-          "awk -v w=\"$width\" -v h=\"$height\" -v p=\"$projection\" '/^p / { if (p != \"\") "
-          "sub(/f[0-9]+/, \"f\" p); sub(/w[0-9]+/, \"w\" w); sub(/h[0-9]+/, \"h\" h) } "
-          "{ print }' \"$input\" > \"$output\"\n"),
-      "fake pano_modify must be created");
   ok &= expect(
       write_tool(
           nona,
@@ -209,7 +209,6 @@ int main() {
       "fake enblend must be created");
   ::setenv("HM_PTO_GEN", pto_gen.c_str(), 1);
   ::setenv("HM_AUTOOPTIMISER", autooptimiser.c_str(), 1);
-  ::setenv("HM_PANO_MODIFY", pano_modify.c_str(), 1);
   ::setenv("HM_NONA", nona.c_str(), 1);
   ::setenv("HM_ENBLEND", enblend.c_str(), 1);
   matches.clear();
@@ -244,18 +243,33 @@ int main() {
     std::cerr << configured << '\n';
   ok &= expect(configured.ok(), "fake Hugin toolchain must complete orchestration");
   if (configured.ok()) {
+    std::ifstream pto_gen_invocation(pto_gen_args);
+    const std::string pto_gen_arguments(
+        (std::istreambuf_iterator<char>(pto_gen_invocation)), std::istreambuf_iterator<char>());
+    ok &= expect(
+        pto_gen_arguments == "-p 0 -o hm_project.pto -f 108 left.png right.png\n",
+        "Hugin input images must be declared rectilinear like HockeyMOM's known-good calibration path");
     std::ifstream optimized(root / "game" / "autooptimiser_out.pto");
     const std::string contents((std::istreambuf_iterator<char>(optimized)), std::istreambuf_iterator<char>());
     const auto scaled = hm::stitching::HuginProject::ParseCanvasSize(contents);
     ok &= expect(
         scaled.ok() && scaled->first == 64 && scaled->second == 32,
-        "portable pano_modify scaling must cap the Hugin canvas");
-    ok &= expect(contents.find("p f1 ") != std::string::npos, "Hugin output projection must remain cylindrical");
+        "autooptimiser -x scaling must cap the Hugin canvas");
     ok &= expect(
-        contents.find("# specify variables\nv r1\nv p1\nv y1\nv\n") != std::string::npos,
-        "Hugin optimization must remain restricted to second-camera roll/pitch/yaw");
-    ok &=
-        expect(contents.find("v r0") == std::string::npos, "unrequested Hugin optimization variables must be removed");
+        contents.find("p f2 ") != std::string::npos,
+        "the projection selected by autooptimiser must not be replaced by a pano_modify pass");
+    std::ifstream optimizer_invocations(autooptimiser_args);
+    const std::string optimizer_args(
+        (std::istreambuf_iterator<char>(optimizer_invocations)), std::istreambuf_iterator<char>());
+    ok &= expect(
+        optimizer_args.find("-a -l -s -q -o autooptimiser_out.pto hm_project.pto") != std::string::npos,
+        "Hugin orchestration must request automatic alignment and projection selection");
+    ok &= expect(
+        optimizer_args.find("-a -l -s -q -x 0.64 -o autooptimiser_out.pto hm_project.pto") != std::string::npos,
+        "oversized Hugin canvases must be retried through autooptimiser -x");
+    ok &= expect(
+        optimizer_args.find("-n") == std::string::npos,
+        "Hugin orchestration must not request script-only optimization");
     const cv::Mat published_seam = cv::imread((root / "game" / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
     ok &= expect(
         published_seam.size() == cv::Size(42, 32),
