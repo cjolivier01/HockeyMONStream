@@ -167,6 +167,24 @@ int main() {
   ok &= expect(
       !rejected_duplicate.error.empty(), "An exact duplicate path must never replay the same arbitrary-named file");
 
+  YAML::Node numbered_parts(YAML::NodeType::Map);
+  numbered_parts["hstream_ui"]["video_roles"]["left"].push_back("left-12.mkv");
+  numbered_parts["hstream_ui"]["video_roles"]["left"].push_back("left-2.mkv");
+  const auto normalized_parts =
+      hm::configurator_internal::select_explicit_stitching_videos(numbered_parts, /*force=*/true);
+  ok &= expect(
+      normalized_parts.error.empty() && normalized_parts.left == std::vector<std::string>{"left-2.mkv", "left-12.mkv"},
+      "Explicit left/right part playlists must support Auto formats and sort multi-digit parts numerically");
+
+  YAML::Node duplicate_persisted(YAML::NodeType::Map);
+  duplicate_persisted["game"]["videos"]["left"].push_back("cam1/GX010001.MP4");
+  duplicate_persisted["game"]["videos"]["left"].push_back("cam1/GX010001.MP4");
+  duplicate_persisted["game"]["videos"]["right"].push_back("cam2/GX010002.MP4");
+  const auto rejected_persisted =
+      hm::configurator_internal::select_explicit_stitching_videos(duplicate_persisted, /*force=*/false);
+  ok &= expect(
+      !rejected_persisted.error.empty(), "A persisted camera playlist must never replay an exact duplicate path");
+
   ok &= expect(
       !hm::configurator_internal::validate_mixed_explicit_auto_playlists(
            /*left_is_explicit=*/true,

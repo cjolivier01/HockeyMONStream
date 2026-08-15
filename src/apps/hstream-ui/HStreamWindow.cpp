@@ -640,7 +640,8 @@ std::optional<QString> explicit_chapter_key(const QString& path) {
   const QString file_name = QFileInfo(path).fileName();
   static const QRegularExpression gopro("^G[A-Z]([0-9]{2})([0-9]{4})\\.(MP4|mp4)$");
   static const QRegularExpression insta360("^VID_([0-9]{8})_([0-9]{6})_([0-9]{3})\\.(MP4|mp4)$");
-  static const QRegularExpression left_right("(left|right)(?:-([0-9]))?\\.mp4$");
+  static const QRegularExpression left_right(
+      "(left|right)(?:-([0-9]+))?\\.(mp4|mkv|m4v)$", QRegularExpression::CaseInsensitiveOption);
 
   const QRegularExpressionMatch gopro_match = gopro.match(file_name);
   if (gopro_match.hasMatch()) {
@@ -653,8 +654,13 @@ std::optional<QString> explicit_chapter_key(const QString& path) {
   }
   const QRegularExpressionMatch lr_match = left_right.match(file_name);
   if (lr_match.hasMatch()) {
-    const QString chapter = lr_match.captured(2).isEmpty() ? "1" : lr_match.captured(2);
-    return QString("lr:%1").arg(chapter);
+    QString part = lr_match.captured(2).isEmpty() ? "1" : lr_match.captured(2);
+    int first_nonzero = 0;
+    while (first_nonzero + 1 < part.size() && part[first_nonzero] == '0') {
+      ++first_nonzero;
+    }
+    part = part.mid(first_nonzero);
+    return QString("lr:%1:%2").arg(QString::number(part.size()).rightJustified(10, '0'), part);
   }
   return std::nullopt;
 }

@@ -215,7 +215,7 @@ std::string explicit_file_chapter_key(const std::string& file) {
   std::smatch match;
   static const std::regex gopro_pattern(R"(^G[A-Z]([0-9]{2})([0-9]{4})\.(MP4|mp4)$)");
   static const std::regex insta360_pattern(R"(^VID_([0-9]{8})_([0-9]{6})_([0-9]{3})\.(MP4|mp4)$)");
-  static const std::regex left_right_pattern(R"((left|right)(?:-([0-9]))?\.mp4$)");
+  static const std::regex left_right_pattern(R"((left|right)(?:-([0-9]+))?\.(mp4|mkv|m4v)$)", std::regex::icase);
   if (std::regex_search(filename, match, gopro_pattern)) {
     return "gopro:" + match[2].str() + ":" + match[1].str();
   }
@@ -223,7 +223,11 @@ std::string explicit_file_chapter_key(const std::string& file) {
     return "insta360:" + match[1].str() + ":" + match[2].str() + ":" + match[3].str();
   }
   if (std::regex_search(filename, match, left_right_pattern)) {
-    return "lr:" + std::string(match[2].matched ? match[2].str() : "1");
+    std::string part = match[2].matched ? match[2].str() : "1";
+    const size_t first_nonzero = part.find_first_not_of('0');
+    part = first_nonzero == std::string::npos ? "0" : part.substr(first_nonzero);
+    const std::string digits = std::to_string(part.size());
+    return "lr:" + std::string(10 - std::min<size_t>(digits.size(), 10), '0') + digits + ":" + part;
   }
   return {};
 }
@@ -687,6 +691,15 @@ configurator_internal::ExplicitStitchingVideoSelection configurator_internal::se
   } else if (!force) {
     selection.left = sequence_path_values(config, {"game", "videos", "left"});
     selection.right = sequence_path_values(config, {"game", "videos", "right"});
+    auto has_duplicate_path = [](const std::vector<std::string>& files) {
+      std::set<std::string> unique;
+      return std::any_of(
+          files.begin(), files.end(), [&](const std::string& file) { return !unique.insert(file).second; });
+    };
+    if (has_duplicate_path(selection.left) || has_duplicate_path(selection.right)) {
+      selection.error = "Persisted Left/Right camera playlists contain a duplicate path";
+      return selection;
+    }
     selection.left_is_explicit = !selection.left.empty();
     selection.right_is_explicit = !selection.right.empty();
   }

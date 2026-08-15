@@ -1150,6 +1150,33 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
     return false;
   }
 
+  const QString part_left_12 = source_dir + "/left-12.mkv";
+  const QString part_left_2 = source_dir + "/left-2.mkv";
+  const QString part_right = source_dir + "/right.mkv";
+  if (!write_fake_video(part_left_12) || !write_fake_video(part_left_2) || !write_fake_video(part_right)) {
+    return false;
+  }
+  game_id->setText("ui-explicit-numbered-parts-game");
+  activate(create);
+  activate(left);
+  video_path->setText(part_left_12);
+  activate(add_video);
+  video_path->setText(part_left_2);
+  activate(add_video);
+  activate(right);
+  video_path->setText(part_right);
+  activate(add_video);
+  const YAML::Node numbered_parts =
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+  if (!expect(
+          numbered_parts["game"]["videos"]["left"].size() == 2 &&
+              numbered_parts["game"]["videos"]["right"].size() == 1 &&
+              numbered_parts["game"]["videos"]["left"][0].as<std::string>() == ".hstream-ui/left/left-2.mkv" &&
+              numbered_parts["game"]["videos"]["left"][1].as<std::string>() == ".hstream-ui/left/left-12.mkv",
+          "Explicit left/right part playlists should support MKV and sort multi-digit parts numerically")) {
+    return false;
+  }
+
   const fs::path duplicate_source_a = fs::path(source_dir.toStdString()) / "source-a";
   const fs::path duplicate_source_b = fs::path(source_dir.toStdString()) / "source-b";
   fs::create_directories(duplicate_source_a);
