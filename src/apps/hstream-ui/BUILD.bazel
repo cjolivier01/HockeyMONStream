@@ -36,6 +36,7 @@ cc_library(
     srcs = ["ScoreboardSelectionDialog.cpp"],
     hdrs = ["ScoreboardSelectionDialog.h"],
     copts = COMMON_COPTS,
+    linkopts = ["-lpng"],
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
