@@ -353,6 +353,7 @@ int main(int argc, char** argv) {
   bool have_archive_baseline = false;
   fs::path archive_baseline_path;
   uintmax_t archive_baseline_size = 0;
+  int archive_baseline_progress = -1;
   std::chrono::steady_clock::time_point required_progress_at{};
   while (std::chrono::steady_clock::now() < deadline) {
     process.Poll();
@@ -364,31 +365,37 @@ int main(int argc, char** argv) {
       break;
     }
     const fs::path archive = find_archive(output_root);
-    if (!have_archive_baseline && progress >= boundary_seconds && !archive.empty()) {
-      std::error_code error;
-      const uintmax_t size = fs::file_size(archive, error);
-      if (!error) {
-        have_archive_baseline = true;
-        archive_baseline_path = archive;
-        archive_baseline_size = size;
-      }
-    }
     if (progress >= required_progress_seconds) {
       const auto now = std::chrono::steady_clock::now();
       if (required_progress_at == std::chrono::steady_clock::time_point{}) {
         required_progress_at = now;
       }
-      if (have_archive_baseline && archive == archive_baseline_path) {
+      if (!have_archive_baseline && !archive.empty()) {
         std::error_code error;
         const uintmax_t size = fs::file_size(archive, error);
-        if (!error && size > archive_baseline_size) {
-          crossed_boundary = true;
-          break;
+        if (!error) {
+          have_archive_baseline = true;
+          archive_baseline_path = archive;
+          archive_baseline_size = size;
+          archive_baseline_progress = progress;
+        }
+      } else if (
+          have_archive_baseline && archive == archive_baseline_path && progress >= archive_baseline_progress + 5) {
+        std::error_code error;
+        const uintmax_t size = fs::file_size(archive, error);
+        if (!error) {
+          if (size > archive_baseline_size) {
+            crossed_boundary = true;
+            break;
+          }
+          archive_baseline_size = size;
+          archive_baseline_progress = progress;
         }
       }
       if (now - required_progress_at >= kBoundaryStallTimeout) {
         std::cerr << "FAIL: video progress crossed the chapter boundary, but the archive did not grow afterward; "
-                  << "baseline bytes=" << archive_baseline_size << " archive=" << archive << '\n'
+                  << "baseline progress=" << archive_baseline_progress << "s baseline bytes=" << archive_baseline_size
+                  << " archive=" << archive << '\n'
                   << process.output_tail() << '\n';
         break;
       }
