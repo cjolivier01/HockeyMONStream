@@ -387,6 +387,7 @@ bool write_fake_runner(const QString& path) {
   file.write("print('HM_RENDER_SINK=' + os.environ.get('HM_RENDER_SINK', ''), flush=True)\n");
   file.write("print('HM_NO_SCOREBOARD=' + os.environ.get('HM_NO_SCOREBOARD', ''), flush=True)\n");
   file.write("print('HM_MAX_CONTROL_POINTS=' + os.environ.get('HM_MAX_CONTROL_POINTS', ''), flush=True)\n");
+  file.write("print('HM_OUTPUT_WORK_DIR=' + os.environ.get('HM_OUTPUT_WORK_DIR', ''), flush=True)\n");
   file.write(
       "print('HSTREAM_CALIBRATION_INVALIDATION_ID=' + "
       "os.environ.get('HSTREAM_CALIBRATION_INVALIDATION_ID', ''), flush=True)\n");
@@ -2966,9 +2967,13 @@ bool test_pipeline_buttons(HStreamWindow* window) {
 
 bool test_output_controls(HStreamWindow* window) {
   auto* spare = require_child<QCheckBox>(window, "outputToggle_spare-rtmp");
+  auto* archive = require_child<QCheckBox>(window, "outputToggle_archive-file");
+  auto* archive_path = require_child<QLabel>(window, "archiveOutputPath");
   auto* youtube_redirect = require_child<QPushButton>(window, "redirectYoutubeButton");
   auto* add_rtsp = require_child<QPushButton>(window, "addRtspButton");
-  if (!spare || !youtube_redirect || !add_rtsp) {
+  auto* start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
+  if (!spare || !archive || !archive_path || !youtube_redirect || !add_rtsp || !start || !stop) {
     return false;
   }
 
@@ -2985,8 +2990,54 @@ bool test_output_controls(HStreamWindow* window) {
   }
 
   activate(add_rtsp);
-  return expect(
-      window->outputStateText("rtsp-dynamic-1") == "ENABLED", "Add RTSP button should create an enabled RTSP output");
+  if (!expect(
+          window->outputStateText("rtsp-dynamic-1") == "ENABLED",
+          "Add RTSP button should create an enabled RTSP output")) {
+    return false;
+  }
+
+  QTemporaryDir output_root;
+  if (!output_root.isValid()) {
+    return false;
+  }
+  const QByteArray original_output_root = qgetenv("HM_OUTPUT_WORK_DIR");
+  qputenv("HM_OUTPUT_WORK_DIR", output_root.path().toLocal8Bit());
+  archive->setChecked(true);
+  const QString expected_path =
+      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("tracking_output-with-audio.mkv");
+  const bool path_visible_before_start = expect(
+      archive_path->text().contains(expected_path),
+      "Archive toggle should show the exact output path before playback starts");
+  activate(start);
+  for (int i = 0; i < 100 && window->pipelineStateText() != "PLAYING"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  for (int i = 0; i < 100 && !window->logText().contains(QString("HM_OUTPUT_WORK_DIR=%1").arg(output_root.path()));
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const bool path_prepared = expect(
+      QDir(QFileInfo(expected_path).absolutePath()).exists() &&
+          window->logText().contains(QString("archive output: %1").arg(expected_path)) &&
+          window->logText().contains(QString("HM_OUTPUT_WORK_DIR=%1").arg(output_root.path())),
+      "Archive playback should create and pass a visible, deterministic output directory");
+  activate(stop);
+  for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const bool missing_output_reported = expect(
+      window->logText().contains(QString("archive output was not created; expected: %1").arg(expected_path)),
+      "Archive playback should explicitly report when the backend produced no file");
+  archive->setChecked(false);
+  if (original_output_root.isEmpty()) {
+    qunsetenv("HM_OUTPUT_WORK_DIR");
+  } else {
+    qputenv("HM_OUTPUT_WORK_DIR", original_output_root);
+  }
+  return path_visible_before_start && path_prepared && missing_output_reported;
 }
 
 bool test_camera_controls(HStreamWindow* window) {
