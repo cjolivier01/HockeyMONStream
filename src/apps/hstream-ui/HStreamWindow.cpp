@@ -6065,86 +6065,50 @@ bool HStreamWindow::syncRuntimeExplicitVideoConfig(YAML::Node& config) {
   const bool has_left = explicit_left && explicit_left.IsSequence() && explicit_left.size() > 0;
   const bool has_right = explicit_right && explicit_right.IsSequence() && explicit_right.size() > 0;
   if (has_left && has_right) {
-    std::map<QString, QString> left_by_chapter;
-    std::map<QString, QString> right_by_chapter;
-    bool parsed = true;
-    for (const auto& item : explicit_left) {
-      const QString path = QString::fromStdString(item.as<std::string>());
-      const std::optional<QString> chapter = explicit_chapter_key(path);
-      if (!chapter || left_by_chapter.count(*chapter)) {
-        parsed = false;
-        break;
-      }
-      left_by_chapter[*chapter] = path;
-    }
-    for (const auto& item : explicit_right) {
-      const QString path = QString::fromStdString(item.as<std::string>());
-      const std::optional<QString> chapter = explicit_chapter_key(path);
-      if (!chapter || right_by_chapter.count(*chapter)) {
-        parsed = false;
-        break;
-      }
-      right_by_chapter[*chapter] = path;
-    }
-    if (parsed && !left_by_chapter.empty() && left_by_chapter.size() == right_by_chapter.size()) {
-      bool same_chapters = true;
-      for (const auto& [chapter, _] : left_by_chapter) {
-        if (!right_by_chapter.count(chapter)) {
-          same_chapters = false;
-          break;
+    auto normalized_playlist = [](const YAML::Node& explicit_videos, YAML::Node& playlist) {
+      std::map<QString, QString> by_chapter;
+      bool any_parseable = false;
+      bool all_parseable = true;
+      for (const auto& item : explicit_videos) {
+        const QString path = QString::fromStdString(item.as<std::string>());
+        const std::optional<QString> chapter = explicit_chapter_key(path);
+        any_parseable = any_parseable || chapter.has_value();
+        all_parseable = all_parseable && chapter.has_value();
+        if (chapter && !by_chapter.emplace(*chapter, path).second) {
+          return false;
         }
       }
-      if (same_chapters) {
-        YAML::Node left_list(YAML::NodeType::Sequence);
-        YAML::Node right_list(YAML::NodeType::Sequence);
-        for (const auto& [chapter, left_path] : left_by_chapter) {
-          left_list.push_back(left_path.toStdString());
-          right_list.push_back(right_by_chapter.at(chapter).toStdString());
+      if (any_parseable && !all_parseable) {
+        return false;
+      }
+      playlist = YAML::Node(YAML::NodeType::Sequence);
+      if (any_parseable) {
+        for (const auto& [_, path] : by_chapter) {
+          playlist.push_back(path.toStdString());
         }
-        config["game"]["videos"]["left"] = left_list;
-        config["game"]["videos"]["right"] = right_list;
-        return true;
-      }
-    }
-    if (explicit_left.size() == 1 && explicit_right.size() == 1) {
-      const QString left_path = QString::fromStdString(explicit_left[0].as<std::string>());
-      const QString right_path = QString::fromStdString(explicit_right[0].as<std::string>());
-      if (!explicit_chapter_key(left_path) && !explicit_chapter_key(right_path)) {
-        YAML::Node left_list(YAML::NodeType::Sequence);
-        YAML::Node right_list(YAML::NodeType::Sequence);
-        left_list.push_back(left_path.toStdString());
-        right_list.push_back(right_path.toStdString());
-        config["game"]["videos"]["left"] = left_list;
-        config["game"]["videos"]["right"] = right_list;
-        return true;
-      }
-    }
-    if (explicit_left.size() == explicit_right.size()) {
-      YAML::Node left_list(YAML::NodeType::Sequence);
-      YAML::Node right_list(YAML::NodeType::Sequence);
-      bool all_unparseable = true;
-      for (size_t i = 0; i < explicit_left.size(); ++i) {
-        const QString left_path = QString::fromStdString(explicit_left[i].as<std::string>());
-        const QString right_path = QString::fromStdString(explicit_right[i].as<std::string>());
-        if (explicit_chapter_key(left_path) || explicit_chapter_key(right_path)) {
-          all_unparseable = false;
-          break;
+      } else {
+        for (const auto& item : explicit_videos) {
+          playlist.push_back(item.as<std::string>());
         }
-        left_list.push_back(left_path.toStdString());
-        right_list.push_back(right_path.toStdString());
       }
-      if (all_unparseable && explicit_left.size() > 0) {
-        config["game"]["videos"]["left"] = left_list;
-        config["game"]["videos"]["right"] = right_list;
-        return true;
-      }
+      return playlist.size() > 0;
+    };
+
+    YAML::Node left_list;
+    YAML::Node right_list;
+    if (normalized_playlist(explicit_left, left_list) && normalized_playlist(explicit_right, right_list)) {
+      // Each camera's chapter labels describe only that camera's physical file boundaries. Preserve and sort the two
+      // playlists independently; requiring equal labels or counts drops valid footage when cameras roll files apart.
+      config["game"]["videos"]["left"] = left_list;
+      config["game"]["videos"]["right"] = right_list;
+      return true;
     }
   }
 
   changed = remove_yaml_key(config["game"]["videos"], "left") || changed;
   changed = remove_yaml_key(config["game"]["videos"], "right") || changed;
   if (has_left && has_right) {
-    appendLog("explicit Left/Right runtime config will apply after both sides have matching chapter sets");
+    appendLog("explicit Left/Right runtime config contains incompatible chapter names");
   } else {
     appendLog("explicit Left/Right selection will apply after both sides are assigned");
   }

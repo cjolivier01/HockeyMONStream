@@ -873,10 +873,12 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
 
   video_path->setText(left_video_2);
   activate(add_video);
-  YAML::Node mismatched_explicit = YAML::LoadFile(config.string());
+  YAML::Node uneven_explicit = YAML::LoadFile(config.string());
   if (!expect(
-          !mismatched_explicit["game"]["videos"]["left"] && !mismatched_explicit["game"]["videos"]["right"],
-          "Mismatched explicit Left/Right chapter counts should not write runtime video config")) {
+          uneven_explicit["game"]["videos"]["left"].size() == 2 &&
+              uneven_explicit["game"]["videos"]["right"].size() == 1 &&
+              uneven_explicit["game"]["videos"]["left"][1].as<std::string>() == ".hstream-ui/left/GX020005.MP4",
+          "Explicit Left/Right playlists with different physical chapter counts should be persisted independently")) {
     return false;
   }
   activate(right);
@@ -896,8 +898,10 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   activate(add_video);
   YAML::Node mismatched_chapters = YAML::LoadFile(config.string());
   if (!expect(
-          !mismatched_chapters["game"]["videos"]["left"] && !mismatched_chapters["game"]["videos"]["right"],
-          "Mismatched explicit Left/Right chapter sets should clear runtime video config")) {
+          mismatched_chapters["game"]["videos"]["left"].size() == 3 &&
+              mismatched_chapters["game"]["videos"]["right"].size() == 2 &&
+              mismatched_chapters["game"]["videos"]["left"][2].as<std::string>() == ".hstream-ui/left/GX030005.MP4",
+          "Explicit Left/Right playlists with different chapter labels should remain independently ordered")) {
     return false;
   }
 
@@ -1111,8 +1115,11 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   YAML::Node arbitrary_mismatched =
       YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
   if (!expect(
-          !arbitrary_mismatched["game"]["videos"]["left"] && !arbitrary_mismatched["game"]["videos"]["right"],
-          "Mismatched arbitrary explicit counts should clear runtime video config")) {
+          arbitrary_mismatched["game"]["videos"]["left"].size() == 2 &&
+              arbitrary_mismatched["game"]["videos"]["right"].size() == 1 &&
+              arbitrary_mismatched["game"]["videos"]["left"][1].as<std::string>() ==
+                  ".hstream-ui/left/left-camera-alt.mov",
+          "Arbitrary explicit playlists with different counts should remain in independent insertion order")) {
     return false;
   }
   activate(right);

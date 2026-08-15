@@ -30,6 +30,11 @@ struct ExplicitStitchingVideoSelection {
 };
 
 ExplicitStitchingVideoSelection select_explicit_stitching_videos(const YAML::Node& config, bool force);
+absl::Status validate_mixed_explicit_auto_playlists(
+    bool left_is_explicit,
+    bool right_is_explicit,
+    size_t auto_left_chapters,
+    size_t auto_right_chapters);
 
 } // namespace configurator_internal
 

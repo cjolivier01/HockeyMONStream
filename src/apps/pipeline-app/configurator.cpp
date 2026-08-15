@@ -642,39 +642,36 @@ configurator_internal::ExplicitStitchingVideoSelection configurator_internal::se
   selection.ui_roles_are_authoritative = !ui_left.empty() || !ui_right.empty();
 
   if (!ui_left.empty() && !ui_right.empty()) {
-    std::map<std::string, std::string> left_by_chapter;
-    std::map<std::string, std::string> right_by_chapter;
-    bool any_parseable = false;
-    bool all_parseable = true;
-    bool duplicate_chapter = false;
-    auto index_chapters = [&](const std::vector<std::string>& files, std::map<std::string, std::string>& indexed) {
+    auto normalize_playlist = [](const std::vector<std::string>& files, std::vector<std::string>& normalized) {
+      std::map<std::string, std::string> indexed;
+      bool any_parseable = false;
+      bool all_parseable = true;
       for (const std::string& file : files) {
         const std::string chapter = explicit_file_chapter_key(file);
         any_parseable = any_parseable || !chapter.empty();
         all_parseable = all_parseable && !chapter.empty();
-        if (!chapter.empty() && !indexed.emplace(chapter, file).second)
-          duplicate_chapter = true;
+        if (!chapter.empty() && !indexed.emplace(chapter, file).second) {
+          return false;
+        }
       }
+      if (any_parseable && !all_parseable) {
+        return false;
+      }
+      if (any_parseable) {
+        for (const auto& [_, file] : indexed) {
+          normalized.emplace_back(file);
+        }
+      } else {
+        normalized = files;
+      }
+      return true;
     };
-    index_chapters(ui_left, left_by_chapter);
-    index_chapters(ui_right, right_by_chapter);
-    if (any_parseable) {
-      if (!all_parseable || duplicate_chapter) {
-        selection.error = "Explicit UI Left/Right roles have incompatible chapter names";
-        return selection;
-      }
-      // Chapter labels describe each camera's physical file boundaries. They are not cross-camera pair IDs: cameras
-      // can split the same frame timeline at different points and therefore have different labels and counts.
-      for (const auto& [_, left_file] : left_by_chapter) {
-        selection.left.emplace_back(left_file);
-      }
-      for (const auto& [_, right_file] : right_by_chapter) {
-        selection.right.emplace_back(right_file);
-      }
-    } else {
-      selection.left = ui_left;
-      selection.right = ui_right;
+    if (!normalize_playlist(ui_left, selection.left) || !normalize_playlist(ui_right, selection.right)) {
+      selection.error = "Explicit UI Left/Right roles have incompatible chapter names";
+      return selection;
     }
+    // Chapter labels describe each camera's physical file boundaries. They are not cross-camera pair IDs: cameras
+    // can split the same frame timeline at different points and therefore have different labels, counts, or schemes.
     selection.left_is_explicit = true;
     selection.right_is_explicit = true;
   } else if (!ui_left.empty()) {
@@ -690,6 +687,23 @@ configurator_internal::ExplicitStitchingVideoSelection configurator_internal::se
     selection.right_is_explicit = !selection.right.empty();
   }
   return selection;
+}
+
+absl::Status configurator_internal::validate_mixed_explicit_auto_playlists(
+    bool left_is_explicit,
+    bool right_is_explicit,
+    size_t auto_left_chapters,
+    size_t auto_right_chapters) {
+  if (left_is_explicit == right_is_explicit) {
+    return absl::OkStatus();
+  }
+  const size_t auto_chapters = left_is_explicit ? auto_right_chapters : auto_left_chapters;
+  if (auto_chapters <= 1) {
+    return absl::OkStatus();
+  }
+  return absl::InvalidArgumentError(
+      "Mixed Explicit/Auto camera selection is ambiguous when the Auto side has multiple physical chapter files. "
+      "Select both Left and Right explicitly, or use Auto for both cameras.");
 }
 
 // Forward declaration for helper defined later in this file
@@ -901,6 +915,13 @@ absl::Status Configurator::gather_stitching_videos(
       }
     }
   }
+
+  HM_RETURN_IF_ERROR(
+      configurator_internal::validate_mixed_explicit_auto_playlists(
+          explicit_left,
+          explicit_right,
+          videos.count("left") ? videos.at("left").size() : 0,
+          videos.count("right") ? videos.at("right").size() : 0));
 
   auto append_chapters = [](const stitching::VideoChapter& chapters, std::vector<std::string>& files) {
     for (const auto& item : chapters) {

@@ -121,6 +121,48 @@ int main() {
       saved_selection.error.empty() && saved_selection.left.size() == 2 && saved_selection.right.size() == 3,
       "A subsequent run must accept independently persisted camera playlists");
 
+  YAML::Node independent_name_schemes(YAML::NodeType::Map);
+  independent_name_schemes["hstream_ui"]["video_roles"]["left"] = out_of_order_left;
+  independent_name_schemes["hstream_ui"]["video_roles"]["right"].push_back("right-camera.mov");
+  independent_name_schemes["hstream_ui"]["video_roles"]["right"].push_back("right-camera-alt.mov");
+  const auto independently_named =
+      hm::configurator_internal::select_explicit_stitching_videos(independent_name_schemes, /*force=*/true);
+  ok &= expect(
+      independently_named.error.empty() &&
+          independently_named.left ==
+              std::vector<std::string>{".hstream-ui/left/GX010001.MP4", ".hstream-ui/left/GX020001.MP4"} &&
+          independently_named.right == std::vector<std::string>{"right-camera.mov", "right-camera-alt.mov"},
+      "Each explicit camera playlist must use its own valid naming and ordering scheme");
+
+  ok &= expect(
+      !hm::configurator_internal::validate_mixed_explicit_auto_playlists(
+           /*left_is_explicit=*/true,
+           /*right_is_explicit=*/false,
+           /*auto_left_chapters=*/0,
+           /*auto_right_chapters=*/3)
+              .ok() &&
+          !hm::configurator_internal::validate_mixed_explicit_auto_playlists(
+               /*left_is_explicit=*/false,
+               /*right_is_explicit=*/true,
+               /*auto_left_chapters=*/2,
+               /*auto_right_chapters=*/0)
+               .ok(),
+      "Mixed Explicit/Auto selection must reject an ambiguous multi-file Auto camera timeline");
+  ok &= expect(
+      hm::configurator_internal::validate_mixed_explicit_auto_playlists(
+          /*left_is_explicit=*/true,
+          /*right_is_explicit=*/false,
+          /*auto_left_chapters=*/0,
+          /*auto_right_chapters=*/1)
+              .ok() &&
+          hm::configurator_internal::validate_mixed_explicit_auto_playlists(
+              /*left_is_explicit=*/true,
+              /*right_is_explicit=*/true,
+              /*auto_left_chapters=*/4,
+              /*auto_right_chapters=*/6)
+              .ok(),
+      "A single-file Auto side and two independently explicit playlists are unambiguous");
+
   const fs::path superseded_force_dir = games / "superseded-force";
   fs::create_directories(superseded_force_dir);
   std::ofstream(superseded_force_dir / "seam_file.png") << "newer generation\n";
