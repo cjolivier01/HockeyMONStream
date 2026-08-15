@@ -602,7 +602,7 @@ QString ansi_to_html(const QString& text) {
 
 bool is_video_file(const QString& path) {
   const QString suffix = QFileInfo(path).suffix().toLower();
-  return suffix == "mp4" || suffix == "mkv" || suffix == "mov" || suffix == "avi";
+  return suffix == "mp4" || suffix == "mkv" || suffix == "m4v" || suffix == "mov" || suffix == "avi";
 }
 
 bool is_auto_chapter_file(const QString& file_name) {
@@ -6074,6 +6074,7 @@ bool HStreamWindow::syncRuntimeExplicitVideoConfig(YAML::Node& config) {
   if (has_left && has_right) {
     auto normalized_playlist = [](const YAML::Node& explicit_videos, YAML::Node& playlist) {
       std::map<QString, QString> by_chapter;
+      std::set<QString> schemes;
       std::set<QString> unique_paths;
       bool any_parseable = false;
       bool all_parseable = true;
@@ -6088,12 +6089,15 @@ bool HStreamWindow::syncRuntimeExplicitVideoConfig(YAML::Node& config) {
         if (chapter && !by_chapter.emplace(*chapter, path).second) {
           return false;
         }
+        if (chapter) {
+          schemes.insert(chapter->section(':', 0, 0));
+        }
       }
       if (any_parseable && !all_parseable) {
         return false;
       }
       playlist = YAML::Node(YAML::NodeType::Sequence);
-      if (any_parseable) {
+      if (any_parseable && schemes.size() == 1) {
         for (const auto& [_, path] : by_chapter) {
           playlist.push_back(path.toStdString());
         }

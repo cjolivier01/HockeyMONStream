@@ -647,6 +647,7 @@ configurator_internal::ExplicitStitchingVideoSelection configurator_internal::se
 
   auto normalize_playlist = [](const std::vector<std::string>& files, std::vector<std::string>& normalized) {
     std::map<std::string, std::string> indexed;
+    std::set<std::string> schemes;
     std::set<std::string> unique_paths;
     bool any_parseable = false;
     bool all_parseable = true;
@@ -660,11 +661,14 @@ configurator_internal::ExplicitStitchingVideoSelection configurator_internal::se
       if (!chapter.empty() && !indexed.emplace(chapter, file).second) {
         return false;
       }
+      if (!chapter.empty()) {
+        schemes.insert(chapter.substr(0, chapter.find(':')));
+      }
     }
     if (any_parseable && !all_parseable) {
       return false;
     }
-    if (any_parseable) {
+    if (any_parseable && schemes.size() == 1) {
       for (const auto& [_, file] : indexed) {
         normalized.emplace_back(file);
       }

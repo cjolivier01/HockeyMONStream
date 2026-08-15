@@ -176,6 +176,16 @@ int main() {
       normalized_parts.error.empty() && normalized_parts.left == std::vector<std::string>{"left-2.mkv", "left-12.mkv"},
       "Explicit left/right part playlists must support Auto formats and sort multi-digit parts numerically");
 
+  YAML::Node heterogeneous_camera(YAML::NodeType::Map);
+  heterogeneous_camera["hstream_ui"]["video_roles"]["left"].push_back("VID_20260815_101000_001.MP4");
+  heterogeneous_camera["hstream_ui"]["video_roles"]["left"].push_back("GX010007.MP4");
+  const auto preserved_heterogeneous =
+      hm::configurator_internal::select_explicit_stitching_videos(heterogeneous_camera, /*force=*/true);
+  ok &= expect(
+      preserved_heterogeneous.error.empty() &&
+          preserved_heterogeneous.left == std::vector<std::string>{"VID_20260815_101000_001.MP4", "GX010007.MP4"},
+      "A heterogeneous explicit camera playlist must preserve the user's total recording order");
+
   YAML::Node duplicate_persisted(YAML::NodeType::Map);
   duplicate_persisted["game"]["videos"]["left"].push_back("cam1/GX010001.MP4");
   duplicate_persisted["game"]["videos"]["left"].push_back("cam1/GX010001.MP4");

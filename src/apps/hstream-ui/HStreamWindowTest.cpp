@@ -1177,6 +1177,35 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
     return false;
   }
 
+  const QString heterogeneous_insta = source_dir + "/VID_20260815_101000_001.MP4";
+  const QString heterogeneous_gopro = source_dir + "/GX010007.MP4";
+  const QString heterogeneous_right = source_dir + "/right-1.m4v";
+  if (!write_fake_video(heterogeneous_insta) || !write_fake_video(heterogeneous_gopro) ||
+      !write_fake_video(heterogeneous_right)) {
+    return false;
+  }
+  game_id->setText("ui-explicit-heterogeneous-camera-game");
+  activate(create);
+  activate(left);
+  video_path->setText(heterogeneous_insta);
+  activate(add_video);
+  video_path->setText(heterogeneous_gopro);
+  activate(add_video);
+  activate(right);
+  video_path->setText(heterogeneous_right);
+  activate(add_video);
+  const YAML::Node heterogeneous_camera =
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+  if (!expect(
+          heterogeneous_camera["game"]["videos"]["left"].size() == 2 &&
+              heterogeneous_camera["game"]["videos"]["right"].size() == 1 &&
+              heterogeneous_camera["game"]["videos"]["left"][0].as<std::string>() ==
+                  ".hstream-ui/left/VID_20260815_101000_001.MP4" &&
+              heterogeneous_camera["game"]["videos"]["left"][1].as<std::string>() == ".hstream-ui/left/GX010007.MP4",
+          "A heterogeneous explicit camera playlist should preserve the user's total recording order")) {
+    return false;
+  }
+
   const fs::path duplicate_source_a = fs::path(source_dir.toStdString()) / "source-a";
   const fs::path duplicate_source_b = fs::path(source_dir.toStdString()) / "source-b";
   fs::create_directories(duplicate_source_a);
