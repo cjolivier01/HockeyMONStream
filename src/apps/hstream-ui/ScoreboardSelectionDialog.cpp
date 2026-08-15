@@ -366,10 +366,12 @@ void ScoreboardSelectionCanvas::clearPoints() {
 }
 
 bool ScoreboardSelectionCanvas::event(QEvent* event) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
   if (event->type() == QEvent::DevicePixelRatioChange) {
     invalidateViewportCache();
     update();
   }
+#endif
   return QWidget::event(event);
 }
 

@@ -186,12 +186,16 @@ bool test_large_image_viewport_cache(const QString& image_path, const QSize& sou
       canvas.viewportRenderCount() == initial_renders + 1,
       "zooming must invalidate and rebuild the large-panorama viewport exactly once");
   const quint64 zoom_renders = canvas.viewportRenderCount();
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
   QEvent dpr_change(QEvent::DevicePixelRatioChange);
   QApplication::sendEvent(&canvas, &dpr_change);
   QApplication::processEvents();
   ok &= expect(
       canvas.viewportRenderCount() == zoom_renders + 1,
       "a device-pixel-ratio change must rebuild the panorama viewport at the new display resolution");
+#else
+  (void)zoom_renders;
+#endif
   return ok;
 }
 
