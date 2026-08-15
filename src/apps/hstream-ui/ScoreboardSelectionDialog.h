@@ -29,6 +29,8 @@ class ScoreboardSelectionCanvas : public QWidget {
   bool setImage(const QString& path);
   void setPoints(const QVector<QPoint>& points);
   const QVector<QPoint>& points() const;
+  QSize imageSize() const;
+  QSize previewSize() const;
   double viewScale() const;
   quint64 viewportRenderCount() const;
   void fitImage();
@@ -62,6 +64,7 @@ class ScoreboardSelectionCanvas : public QWidget {
   void notifySelectionChanged();
 
   QImage image_;
+  QSize image_size_;
   QVector<QPoint> points_;
   double view_scale_{1.0};
   QPointF view_offset_;

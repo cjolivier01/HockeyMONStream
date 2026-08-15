@@ -1,10 +1,12 @@
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 
+#include <QtCore/QFile>
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 #include <QtCore/QTimer>
 #include <QtGui/QCloseEvent>
+#include <QtGui/QImageReader>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPainter>
 #include <QtGui/QPainterPath>
@@ -24,14 +26,188 @@
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QVBoxLayout>
 
+#include <png.h>
+
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
 namespace {
 
 constexpr double kMinimumScale = 0.02;
 constexpr double kMaximumScale = 32.0;
 constexpr double kPointHitRadius = 15.0;
+// Stay comfortably below Qt's default decoded-image allocation limit. The
+// selector only needs a display proxy; submitted points remain in the source
+// image's coordinate space.
+constexpr qint64 kMaximumPreviewBytes = 96LL * 1024LL * 1024LL;
+constexpr int kMaximumPreviewDimension = 8192;
+constexpr png_uint_32 kMaximumSourceDimension = 65535;
+constexpr uint64_t kMaximumSourcePixels = 256ULL * 1024ULL * 1024ULL;
+
+QSize bounded_preview_size(const QSize& source_size) {
+  if (!source_size.isValid() || source_size.isEmpty())
+    return {};
+  const long double source_pixels =
+      static_cast<long double>(source_size.width()) * static_cast<long double>(source_size.height());
+  const long double maximum_pixels = static_cast<long double>(kMaximumPreviewBytes) / 4.0L;
+  const long double memory_scale = source_pixels > maximum_pixels ? std::sqrt(maximum_pixels / source_pixels) : 1.0L;
+  const long double dimension_scale = std::min(
+      static_cast<long double>(kMaximumPreviewDimension) / source_size.width(),
+      static_cast<long double>(kMaximumPreviewDimension) / source_size.height());
+  const long double scale = std::min({1.0L, memory_scale, dimension_scale});
+  return {
+      std::max(1, static_cast<int>(std::floor(source_size.width() * scale))),
+      std::max(1, static_cast<int>(std::floor(source_size.height() * scale))),
+  };
+}
+
+struct PngDecodeContext {
+  FILE* file{nullptr};
+  png_structp png{nullptr};
+  png_infop info{nullptr};
+  unsigned char* source_row{nullptr};
+  unsigned char* preview_pixels{nullptr};
+};
+
+struct PngPreview {
+  unsigned char* pixels{nullptr};
+  int width{0};
+  int height{0};
+  int stride{0};
+};
+
+void release_png_context(PngDecodeContext* context) {
+  if (!context)
+    return;
+  std::free(context->source_row);
+  std::free(context->preview_pixels);
+  if (context->png)
+    png_destroy_read_struct(&context->png, context->info ? &context->info : nullptr, nullptr);
+  if (context->file)
+    std::fclose(context->file);
+  std::free(context);
+}
+
+PngPreview read_bounded_png_preview(const QByteArray& path, const QSize& requested_size) {
+  PngPreview result;
+  auto* context = static_cast<PngDecodeContext*>(std::calloc(1, sizeof(PngDecodeContext)));
+  if (!context)
+    return result;
+  context->file = std::fopen(path.constData(), "rb");
+  if (!context->file) {
+    release_png_context(context);
+    return result;
+  }
+  context->png = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+  if (!context->png) {
+    release_png_context(context);
+    return result;
+  }
+  context->info = png_create_info_struct(context->png);
+  if (!context->info) {
+    release_png_context(context);
+    return result;
+  }
+  if (setjmp(png_jmpbuf(context->png))) {
+    release_png_context(context);
+    return result;
+  }
+
+  png_set_user_limits(context->png, kMaximumSourceDimension, kMaximumSourceDimension);
+  png_init_io(context->png, context->file);
+  png_read_info(context->png, context->info);
+  png_uint_32 source_width = 0;
+  png_uint_32 source_height = 0;
+  int bit_depth = 0;
+  int color_type = 0;
+  int interlace_type = 0;
+  png_get_IHDR(
+      context->png,
+      context->info,
+      &source_width,
+      &source_height,
+      &bit_depth,
+      &color_type,
+      &interlace_type,
+      nullptr,
+      nullptr);
+  const uint64_t source_pixels = static_cast<uint64_t>(source_width) * source_height;
+  if (source_width == 0 || source_height == 0 || source_pixels > kMaximumSourcePixels || requested_size.width() <= 0 ||
+      requested_size.height() <= 0 || static_cast<png_uint_32>(requested_size.width()) > source_width ||
+      static_cast<png_uint_32>(requested_size.height()) > source_height || interlace_type != PNG_INTERLACE_NONE) {
+    release_png_context(context);
+    return result;
+  }
+
+  if (bit_depth == 16)
+    png_set_strip_16(context->png);
+  if (color_type == PNG_COLOR_TYPE_PALETTE)
+    png_set_palette_to_rgb(context->png);
+  if (color_type == PNG_COLOR_TYPE_GRAY && bit_depth < 8)
+    png_set_expand_gray_1_2_4_to_8(context->png);
+  const bool has_transparency = png_get_valid(context->png, context->info, PNG_INFO_tRNS);
+  if (has_transparency)
+    png_set_tRNS_to_alpha(context->png);
+  if (color_type == PNG_COLOR_TYPE_GRAY || color_type == PNG_COLOR_TYPE_GRAY_ALPHA)
+    png_set_gray_to_rgb(context->png);
+  if (!(color_type & PNG_COLOR_MASK_ALPHA) && !has_transparency)
+    png_set_add_alpha(context->png, 0xff, PNG_FILLER_AFTER);
+  png_read_update_info(context->png, context->info);
+  if (png_get_bit_depth(context->png, context->info) != 8 || png_get_channels(context->png, context->info) != 4) {
+    release_png_context(context);
+    return result;
+  }
+
+  const png_size_t source_stride = png_get_rowbytes(context->png, context->info);
+  if (source_stride != static_cast<png_size_t>(source_width) * 4) {
+    release_png_context(context);
+    return result;
+  }
+  const size_t preview_stride = static_cast<size_t>(requested_size.width()) * 4;
+  const size_t preview_bytes = preview_stride * static_cast<size_t>(requested_size.height());
+  context->source_row = static_cast<unsigned char*>(std::malloc(source_stride));
+  context->preview_pixels = static_cast<unsigned char*>(std::malloc(preview_bytes));
+  if (!context->source_row || !context->preview_pixels) {
+    release_png_context(context);
+    return result;
+  }
+
+  int preview_y = 0;
+  for (png_uint_32 source_y = 0; source_y < source_height; ++source_y) {
+    png_read_row(context->png, context->source_row, nullptr);
+    if (preview_y >= requested_size.height())
+      continue;
+    const png_uint_32 selected_source_y = static_cast<png_uint_32>(
+        (static_cast<uint64_t>(2 * preview_y + 1) * source_height) /
+        (2 * static_cast<uint64_t>(requested_size.height())));
+    if (source_y != selected_source_y)
+      continue;
+    unsigned char* preview_row = context->preview_pixels + static_cast<size_t>(preview_y) * preview_stride;
+    for (int preview_x = 0; preview_x < requested_size.width(); ++preview_x) {
+      const png_uint_32 source_x = static_cast<png_uint_32>(
+          (static_cast<uint64_t>(2 * preview_x + 1) * source_width) /
+          (2 * static_cast<uint64_t>(requested_size.width())));
+      std::copy_n(context->source_row + static_cast<size_t>(source_x) * 4, 4, preview_row + preview_x * 4);
+    }
+    ++preview_y;
+  }
+  png_read_end(context->png, context->info);
+  if (preview_y != requested_size.height()) {
+    release_png_context(context);
+    return result;
+  }
+
+  result = {context->preview_pixels, requested_size.width(), requested_size.height(), static_cast<int>(preview_stride)};
+  context->preview_pixels = nullptr;
+  release_png_context(context);
+  return result;
+}
+
+void free_png_preview(void* pixels) {
+  std::free(pixels);
+}
 
 QVector<QPoint> ordered_points(const QVector<QPoint>& points) {
   if (points.size() != 4)
@@ -64,7 +240,33 @@ ScoreboardSelectionCanvas::ScoreboardSelectionCanvas(QWidget* parent) : QWidget(
 }
 
 bool ScoreboardSelectionCanvas::setImage(const QString& path) {
-  image_ = QImage(path);
+  QImageReader reader(path);
+  image_size_ = reader.size();
+  if (!image_size_.isValid() || image_size_.isEmpty()) {
+    image_ = {};
+  } else {
+    const QSize preview_size = bounded_preview_size(image_size_);
+    if (preview_size == image_size_) {
+      image_ = reader.read();
+    } else if (reader.format().toLower() == "png") {
+      PngPreview preview = read_bounded_png_preview(QFile::encodeName(path), preview_size);
+      image_ = QImage(
+          preview.pixels,
+          preview.width,
+          preview.height,
+          preview.stride,
+          QImage::Format_RGBA8888,
+          free_png_preview,
+          preview.pixels);
+    } else if (reader.supportsOption(QImageIOHandler::ScaledSize)) {
+      reader.setScaledSize(preview_size);
+      image_ = reader.read();
+    } else {
+      image_ = {};
+    }
+    if (image_.isNull())
+      image_size_ = {};
+  }
   view_initialized_ = false;
   invalidateViewportCache();
   update();
@@ -87,6 +289,14 @@ const QVector<QPoint>& ScoreboardSelectionCanvas::points() const {
   return points_;
 }
 
+QSize ScoreboardSelectionCanvas::imageSize() const {
+  return image_size_;
+}
+
+QSize ScoreboardSelectionCanvas::previewSize() const {
+  return image_.size();
+}
+
 double ScoreboardSelectionCanvas::viewScale() const {
   return view_scale_;
 }
@@ -98,12 +308,12 @@ quint64 ScoreboardSelectionCanvas::viewportRenderCount() const {
 void ScoreboardSelectionCanvas::fitImage() {
   if (image_.isNull() || width() <= 0 || height() <= 0)
     return;
-  const double horizontal = static_cast<double>(width()) / image_.width();
-  const double vertical = static_cast<double>(height()) / image_.height();
+  const double horizontal = static_cast<double>(width()) / image_size_.width();
+  const double vertical = static_cast<double>(height()) / image_size_.height();
   view_scale_ = std::clamp(std::min(horizontal, vertical), kMinimumScale, kMaximumScale);
   view_offset_ = {
-      (width() - image_.width() * view_scale_) / 2.0,
-      (height() - image_.height() * view_scale_) / 2.0,
+      (width() - image_size_.width() * view_scale_) / 2.0,
+      (height() - image_size_.height() * view_scale_) / 2.0,
   };
   view_initialized_ = true;
   invalidateViewportCache();
@@ -113,7 +323,7 @@ void ScoreboardSelectionCanvas::fitImage() {
 void ScoreboardSelectionCanvas::actualSize() {
   if (image_.isNull())
     return;
-  const QPointF image_center(image_.width() / 2.0, image_.height() / 2.0);
+  const QPointF image_center(image_size_.width() / 2.0, image_size_.height() / 2.0);
   view_scale_ = 1.0;
   view_offset_ = QPointF(width() / 2.0, height() / 2.0) - image_center;
   view_initialized_ = true;
@@ -164,10 +374,12 @@ void ScoreboardSelectionCanvas::clearPoints() {
 }
 
 bool ScoreboardSelectionCanvas::event(QEvent* event) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
   if (event->type() == QEvent::DevicePixelRatioChange) {
     invalidateViewportCache();
     update();
   }
+#endif
   return QWidget::event(event);
 }
 
@@ -320,8 +532,8 @@ QPoint ScoreboardSelectionCanvas::clampImagePoint(const QPointF& point) const {
   if (image_.isNull())
     return {};
   return {
-      std::clamp(qRound(point.x()), 0, image_.width() - 1),
-      std::clamp(qRound(point.y()), 0, image_.height() - 1),
+      std::clamp(qRound(point.x()), 0, image_size_.width() - 1),
+      std::clamp(qRound(point.y()), 0, image_size_.height() - 1),
   };
 }
 
@@ -367,15 +579,23 @@ void ScoreboardSelectionCanvas::renderViewportCache() {
 
   QPainter cache_painter(&viewport_cache_);
   cache_painter.setRenderHint(QPainter::SmoothPixmapTransform);
-  const QRectF image_screen(view_offset_, QSizeF(image_.width() * view_scale_, image_.height() * view_scale_));
+  const QRectF image_screen(
+      view_offset_, QSizeF(image_size_.width() * view_scale_, image_size_.height() * view_scale_));
   const QRectF visible_screen = image_screen.intersected(QRectF(rect()));
   if (!visible_screen.isEmpty()) {
-    const QRectF visible_source(
+    const QRectF visible_source_image(
         (visible_screen.left() - view_offset_.x()) / view_scale_,
         (visible_screen.top() - view_offset_.y()) / view_scale_,
         visible_screen.width() / view_scale_,
         visible_screen.height() / view_scale_);
-    cache_painter.drawImage(visible_screen, image_, visible_source);
+    const double preview_scale_x = static_cast<double>(image_.width()) / image_size_.width();
+    const double preview_scale_y = static_cast<double>(image_.height()) / image_size_.height();
+    const QRectF visible_source_preview(
+        visible_source_image.x() * preview_scale_x,
+        visible_source_image.y() * preview_scale_y,
+        visible_source_image.width() * preview_scale_x,
+        visible_source_image.height() * preview_scale_y);
+    cache_painter.drawImage(visible_screen, image_, visible_source_preview);
   }
   viewport_cache_valid_ = true;
   ++viewport_render_count_;

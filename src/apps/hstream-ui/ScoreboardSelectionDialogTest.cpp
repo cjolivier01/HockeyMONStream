@@ -137,13 +137,33 @@ bool test_canvas_controls(const QString& image_path) {
   return ok;
 }
 
-bool test_large_image_viewport_cache(const QString& image_path) {
+bool test_large_image_viewport_cache(const QString& image_path, const QSize& source_size) {
   ScoreboardSelectionCanvas canvas;
   canvas.resize(901, 521);
   canvas.show();
   if (!expect(canvas.setImage(image_path), "large panorama must load"))
     return false;
+  bool ok = expect(canvas.imageSize() == source_size, "large panorama must retain its original coordinate size");
+  ok &= expect(
+      canvas.previewSize().width() < source_size.width() && canvas.previewSize().height() < source_size.height(),
+      "large panorama must decode to a bounded display preview");
+  ok &= expect(
+      canvas.previewSize().width() <= 8192 &&
+          static_cast<qint64>(canvas.previewSize().width()) * canvas.previewSize().height() * 4 <=
+              96LL * 1024LL * 1024LL,
+      "large panorama preview must stay below its dimension and allocation bounds");
+  canvas.setPoints({QPoint(source_size.width() + 50, source_size.height() + 50)});
+  ok &= expect(
+      canvas.points() == QVector<QPoint>{QPoint(source_size.width() - 1, source_size.height() - 1)},
+      "large panorama points must clamp to source coordinates rather than preview coordinates");
+  canvas.clearPoints();
   canvas.fitImage();
+  const double expected_fit_scale = std::min(
+      static_cast<double>(canvas.width()) / source_size.width(),
+      static_cast<double>(canvas.height()) / source_size.height());
+  ok &= expect(
+      std::abs(canvas.viewScale() - expected_fit_scale) < 0.0001,
+      "large panorama fit must use the source dimensions rather than preview dimensions");
   QApplication::processEvents();
   const quint64 initial_renders = canvas.viewportRenderCount();
   QElapsedTimer hover_timer;
@@ -151,7 +171,7 @@ bool test_large_image_viewport_cache(const QString& image_path) {
   for (int index = 0; index < 200; ++index)
     QTest::mouseMove(&canvas, QPoint(10 + index % 800, 10 + index % 450));
   QApplication::processEvents();
-  bool ok = expect(
+  ok &= expect(
       canvas.viewportRenderCount() == initial_renders,
       "hovering a large panorama must reuse the cached viewport instead of rescaling the image");
   ok &= expect(hover_timer.elapsed() < 2000, "cached large-panorama hover updates must remain responsive");
@@ -166,13 +186,22 @@ bool test_large_image_viewport_cache(const QString& image_path) {
       canvas.viewportRenderCount() == initial_renders + 1,
       "zooming must invalidate and rebuild the large-panorama viewport exactly once");
   const quint64 zoom_renders = canvas.viewportRenderCount();
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
   QEvent dpr_change(QEvent::DevicePixelRatioChange);
   QApplication::sendEvent(&canvas, &dpr_change);
   QApplication::processEvents();
   ok &= expect(
       canvas.viewportRenderCount() == zoom_renders + 1,
       "a device-pixel-ratio change must rebuild the panorama viewport at the new display resolution");
+#else
+  (void)zoom_renders;
+#endif
   return ok;
+}
+
+bool test_absurd_source_dimensions_are_rejected(const QString& image_path) {
+  ScoreboardSelectionCanvas canvas;
+  return expect(!canvas.setImage(image_path), "absurd source dimensions must be rejected before PNG decode");
 }
 
 bool test_successful_submission(const QString& image_path) {
@@ -304,13 +333,25 @@ int main(int argc, char** argv) {
   if (!image.save(image_path))
     return 1;
   const QString large_image_path = directory.filePath("large-s.png");
-  QImage large_image(6000, 2500, QImage::Format_RGB32);
-  large_image.fill(QColor(28, 71, 96));
-  if (!large_image.save(large_image_path))
-    return 1;
-  const bool ok = test_canvas_controls(image_path) && test_large_image_viewport_cache(large_image_path) &&
-      test_successful_submission(image_path) && test_failed_submission_remains_open(image_path) &&
-      test_cancel_success(image_path) && test_cancel_failure_escapes_modal(image_path, false) &&
-      test_cancel_failure_escapes_modal(image_path, true) && test_cancel_backend_disappears(image_path);
+  const QSize large_image_size(13931, 4968);
+  {
+    QImage large_image(large_image_size, QImage::Format_RGB888);
+    large_image.fill(QColor(28, 71, 96));
+    if (!large_image.save(large_image_path))
+      return 1;
+  }
+  const QString absurd_dimension_path = directory.filePath("absurd-width-s.png");
+  {
+    QImage absurd_dimension_image(65536, 1, QImage::Format_RGB888);
+    absurd_dimension_image.fill(QColor(28, 71, 96));
+    if (!absurd_dimension_image.save(absurd_dimension_path))
+      return 1;
+  }
+  const bool ok = test_canvas_controls(image_path) &&
+      test_large_image_viewport_cache(large_image_path, large_image_size) &&
+      test_absurd_source_dimensions_are_rejected(absurd_dimension_path) && test_successful_submission(image_path) &&
+      test_failed_submission_remains_open(image_path) && test_cancel_success(image_path) &&
+      test_cancel_failure_escapes_modal(image_path, false) && test_cancel_failure_escapes_modal(image_path, true) &&
+      test_cancel_backend_disappears(image_path);
   return ok ? 0 : 1;
 }
