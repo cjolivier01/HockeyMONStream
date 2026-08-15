@@ -1435,9 +1435,13 @@ void HStreamWindow::buildUi() {
   playback_progress_->setStyleSheet(
       "QProgressBar { background: #20252d; border: 1px solid #596273; border-radius: 4px; color: white; "
       "font-weight: 600; text-align: center; }"
-      "QProgressBar::chunk { background: #238636; border-radius: 3px; }");
+      "QProgressBar::chunk { background: #238636; border-radius: 3px; }"
+      "QProgressBar[playbackState=\"completed\"] { background: #162b48; border-color: #58a6ff; }"
+      "QProgressBar[playbackState=\"completed\"]::chunk { background: #1f6feb; }"
+      "QProgressBar[playbackState=\"error\"] { background: #5a1a1a; border-color: #ff7b72; }"
+      "QProgressBar[playbackState=\"error\"]::chunk { background: #da3633; }");
   playback_progress_->hide();
-  resetPlaybackProgress();
+  resetPlaybackProgress(false);
   root->addWidget(playback_progress_);
 
   main_log_splitter_ = new QSplitter(Qt::Vertical);
@@ -2931,8 +2935,13 @@ void HStreamWindow::startPipeline() {
     appendLog("pipeline already running");
     return;
   }
+  const auto show_startup_error = [this](const QString& detail) {
+    resetPlaybackProgress(true);
+    setPlaybackProgressState(PlaybackProgressState::kError, detail);
+  };
   clearPreviewFrames();
   if (!ensureGameDirectory()) {
+    show_startup_error("The selected game directory could not be prepared");
     updateRunControls();
     return;
   }
@@ -2958,7 +2967,9 @@ void HStreamWindow::startPipeline() {
     active_run_is_calibration_ = false;
     pipeline_state_->setText("STOPPED");
     preview_status_->setText("Pipeline failed to start");
-    appendLog(QString("pipeline process error=missing runner %1").arg(runner));
+    const QString error_message = QString("pipeline process error=missing runner %1").arg(runner);
+    appendLog(error_message);
+    show_startup_error(error_message);
     updateRunControls();
     return;
   }
@@ -2991,6 +3002,7 @@ void HStreamWindow::startPipeline() {
       active_run_is_calibration_ = false;
       pipeline_state_->setText("STOPPED");
       preview_status_->setText("Archive output setup failed");
+      show_startup_error(QString("Archive output directory could not be created: %1").arg(archive_dir));
       updateRunControls();
       return;
     }
@@ -3024,6 +3036,7 @@ void HStreamWindow::startPipeline() {
     preview_status_->setText("Stitching setup failed");
     if (stitched_status_)
       stitched_status_->setText("Stitched canvas preview");
+    show_startup_error("The game could not be prepared for stitching calibration");
     updateRunControls();
     return;
   }
@@ -3054,6 +3067,7 @@ void HStreamWindow::startPipeline() {
     preview_status_->setText("Asset setup failed");
     if (stitched_status_)
       stitched_status_->setText("Stitched canvas preview");
+    show_startup_error("Required pretrained assets could not be prepared");
     updateRunControls();
     return;
   }
@@ -3155,7 +3169,7 @@ void HStreamWindow::startPipeline() {
   pipeline_stop_requested_ = false;
 
   pipeline_state_->setText("STARTING");
-  resetPlaybackProgress();
+  resetPlaybackProgress(true);
   if (active_run_is_calibration_) {
     if (render_video) {
       preview_status_->setText(
@@ -3360,6 +3374,9 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
     scoreboard_selection_dialog_->closeAfterBackendCompletion();
   clearPreviewFrames();
   const bool stopped_by_user = pipeline_stop_requested_;
+  const bool calibration_ended_incomplete = calibration_pending_ && !stopped_by_user;
+  const bool completed_successfully =
+      exit_status == QProcess::NormalExit && exit_code == 0 && !stopped_by_user && !calibration_ended_incomplete;
   pipeline_stop_requested_ = false;
   if (calibration_pending_ && !stopped_by_user) {
     appendLog("one-pass stitching calibration ended before completion; calibration remains pending");
@@ -3384,6 +3401,17 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   active_calibration_invalidation_id_.clear();
   active_force_reconfigure_ = false;
   pipeline_state_->setText("STOPPED");
+  if (completed_successfully) {
+    setPlaybackProgressState(PlaybackProgressState::kCompleted);
+  } else if (stopped_by_user) {
+    setPlaybackProgressState(PlaybackProgressState::kStopped);
+  } else {
+    setPlaybackProgressState(
+        PlaybackProgressState::kError,
+        QString("Pipeline exited with code %1 (%2)")
+            .arg(exit_code)
+            .arg(exit_status == QProcess::NormalExit ? "normal exit" : "crashed"));
+  }
   preview_status_->setText("Pipeline stopped");
   if (stitched_status_)
     stitched_status_->setText("Stitched canvas preview");
@@ -3488,6 +3516,7 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   active_calibration_invalidation_id_.clear();
   active_force_reconfigure_ = false;
   pipeline_state_->setText("STOPPED");
+  setPlaybackProgressState(PlaybackProgressState::kError, error_message);
   preview_status_->setText("Pipeline failed to start");
   if (stitched_status_)
     stitched_status_->setText("Stitched canvas preview");
@@ -3614,12 +3643,25 @@ bool HStreamWindow::handlePlaybackProgressOutput(const QString& line) {
   quint64 remaining_ns = 0;
   playback_remaining_ = parse_nanoseconds("remaining_ns", &remaining_ns) ? format_duration(remaining_ns) : "Unknown";
   quint64 eta_ns = 0;
-  playback_eta_ = parse_nanoseconds("eta_ns", &eta_ns) ? format_duration(eta_ns) : "Warming up";
+  playback_eta_ =
+      parse_nanoseconds("eta_ns", &eta_ns) ? format_duration(eta_ns) : (have_total ? "Warming up" : "Unknown");
 
   const auto speed = fields.find("speed_x");
   bool speed_ok = false;
   const double speed_value = speed == fields.end() ? 0.0 : speed->second.toDouble(&speed_ok);
   playback_speed_ = speed_ok && speed_value > 0.0 ? QString::number(speed_value, 'f', 2) + "x" : "Warming up";
+  const auto fps = fields.find("fps");
+  bool fps_ok = false;
+  const double fps_value = fps == fields.end() ? 0.0 : fps->second.toDouble(&fps_ok);
+  playback_fps_ = fps_ok && std::isfinite(fps_value) && fps_value > 0.0
+      ? QString::number(fps_value, 'f', 2)
+      : (fps == fields.end() ? "Unknown" : "Warming up");
+  const auto fps_average = fields.find("fps_avg");
+  bool fps_average_ok = false;
+  const double fps_average_value = fps_average == fields.end() ? 0.0 : fps_average->second.toDouble(&fps_average_ok);
+  playback_fps_average_ = fps_average_ok && std::isfinite(fps_average_value) && fps_average_value > 0.0
+      ? QString::number(fps_average_value, 'f', 2)
+      : "Unknown";
   const auto stage = fields.find("stage");
   playback_stage_ = stage == fields.end() ? "Unknown" : stage->second;
   const auto instances = fields.find("instances");
@@ -3629,43 +3671,81 @@ bool HStreamWindow::handlePlaybackProgressOutput(const QString& line) {
     playback_speed_ = "Warming up";
   }
 
-  if (playback_progress_) {
-    const auto fraction = fields.find("fraction");
-    bool fraction_ok = false;
-    const double fraction_value = fraction == fields.end() ? 0.0 : fraction->second.toDouble(&fraction_ok);
-    if (have_total && fraction_ok && std::isfinite(fraction_value)) {
-      const int progress_x10 = qRound(std::clamp(fraction_value, 0.0, 1.0) * 1000.0);
-      playback_progress_->setRange(0, 1000);
-      playback_progress_->setValue(progress_x10);
-      playback_progress_->setFormat(
-          QString("%1 / %2  •  %3%").arg(playback_elapsed_, playback_total_).arg(progress_x10 / 10.0, 0, 'f', 1));
-    } else {
-      playback_progress_->setRange(0, 0);
-      playback_progress_->setFormat(QString("%1 elapsed").arg(playback_elapsed_));
-    }
+  const auto fraction = fields.find("fraction");
+  bool fraction_ok = false;
+  const double fraction_value = fraction == fields.end() ? 0.0 : fraction->second.toDouble(&fraction_ok);
+  playback_progress_determinate_ = have_total && fraction_ok && std::isfinite(fraction_value);
+  if (playback_progress_determinate_) {
+    playback_progress_x10_ = qRound(std::clamp(fraction_value, 0.0, 1.0) * 1000.0);
   }
+  setPlaybackProgressState(PlaybackProgressState::kRunning);
   updatePlaybackProgressPresentation();
   return true;
 }
 
-void HStreamWindow::resetPlaybackProgress() {
+void HStreamWindow::setPlaybackProgressState(PlaybackProgressState state, const QString& detail) {
+  playback_progress_state_ = state;
+  playback_terminal_detail_ = detail;
+  if (state == PlaybackProgressState::kCompleted) {
+    if (playback_total_ != "Unknown") {
+      playback_elapsed_ = playback_total_;
+    }
+    playback_remaining_ = "00:00:00";
+    playback_eta_ = "00:00:00";
+    playback_progress_x10_ = 1000;
+    playback_progress_determinate_ = true;
+  }
+  if (!playback_progress_) {
+    return;
+  }
+  const char* property_value = "idle";
+  switch (state) {
+    case PlaybackProgressState::kRunning:
+      property_value = "running";
+      break;
+    case PlaybackProgressState::kCompleted:
+      property_value = "completed";
+      break;
+    case PlaybackProgressState::kError:
+      property_value = "error";
+      break;
+    case PlaybackProgressState::kStopped:
+      property_value = "stopped";
+      break;
+    case PlaybackProgressState::kIdle:
+      break;
+  }
+  if (playback_progress_->property("playbackState").toString() != QString::fromLatin1(property_value)) {
+    playback_progress_->setProperty("playbackState", property_value);
+    playback_progress_->style()->unpolish(playback_progress_);
+    playback_progress_->style()->polish(playback_progress_);
+    playback_progress_->update();
+  }
+  updatePlaybackProgressPresentation();
+}
+
+void HStreamWindow::resetPlaybackProgress(bool starting) {
   playback_elapsed_ = "Waiting for first frame";
   playback_total_ = "Unknown";
   playback_remaining_ = "Unknown";
   playback_eta_ = "Warming up";
   playback_speed_ = "Warming up";
+  playback_fps_ = "Warming up";
+  playback_fps_average_ = "Unknown";
   playback_stage_ = "Unknown";
   playback_instances_ = "Unknown";
+  playback_progress_x10_ = 0;
+  playback_progress_determinate_ = false;
   playback_warming_after_resume_ = false;
   playback_accept_stale_after_reset_timeout_ = false;
   playback_reset_generation_ = 0;
   pending_playback_reset_generation_ = 0;
   playback_reset_attempts_ = 0;
   if (playback_progress_) {
-    playback_progress_->setRange(0, 0);
-    playback_progress_->setFormat("Starting pipeline…");
+    playback_progress_->setRange(0, starting ? 0 : 1000);
+    playback_progress_->setValue(0);
   }
-  updatePlaybackProgressPresentation();
+  setPlaybackProgressState(starting ? PlaybackProgressState::kRunning : PlaybackProgressState::kIdle);
 }
 
 int HStreamWindow::playbackProgressResetTimeoutMs() const {
@@ -3714,22 +3794,84 @@ void HStreamWindow::updatePlaybackProgressPresentation() {
   if (!playback_progress_) {
     return;
   }
-  const QString state = pipeline_state_ ? pipeline_state_->text() : QString("STARTING");
-  const QString eta = state == "PAUSED" ? "Paused" : playback_eta_;
-  const QString speed = state == "PAUSED" ? "Paused" : playback_speed_;
+  const QString pipeline_state = pipeline_state_ ? pipeline_state_->text() : QString("STARTING");
+  const bool paused = pipeline_state == "PAUSED";
+  const QString eta = paused ? "Paused" : playback_eta_;
+  const QString speed = paused ? "Paused" : playback_speed_;
+  const QString fps = paused ? "Paused" : playback_fps_;
+  auto fps_label = [](const QString& value) {
+    if (value == "Paused") {
+      return QString("FPS paused");
+    }
+    if (value == "Warming up") {
+      return QString("FPS warming up");
+    }
+    if (value == "Unknown") {
+      return QString("FPS unknown");
+    }
+    return QString("%1 FPS").arg(value);
+  };
+  const QString active_fps = fps_label(fps);
+  const QString active_eta = eta == "Paused" ? "ETA paused" : QString("ETA %1").arg(eta.toLower());
+
+  switch (playback_progress_state_) {
+    case PlaybackProgressState::kRunning:
+      if (playback_progress_determinate_) {
+        playback_progress_->setRange(0, 1000);
+        playback_progress_->setValue(playback_progress_x10_);
+        playback_progress_->setFormat(QString("%1%2 / %3  •  %4%  •  %5  •  %6")
+                                          .arg(paused ? "PAUSED  •  " : "", playback_elapsed_, playback_total_)
+                                          .arg(playback_progress_x10_ / 10.0, 0, 'f', 1)
+                                          .arg(active_fps, active_eta));
+      } else {
+        playback_progress_->setRange(0, 0);
+        playback_progress_->setFormat(
+            pipeline_state == "STARTING"
+                ? "STARTING  •  Waiting for first frame  •  FPS warming up  •  ETA warming up"
+                : QString("%1%2 elapsed  •  %3  •  %4")
+                      .arg(paused ? "PAUSED  •  " : "", playback_elapsed_, active_fps, active_eta));
+      }
+      break;
+    case PlaybackProgressState::kCompleted:
+      playback_progress_->setRange(0, 1000);
+      playback_progress_->setValue(1000);
+      playback_progress_->setFormat(
+          QString("COMPLETED  •  %1  •  %2  •  ETA 00:00:00").arg(playback_elapsed_, fps_label(playback_fps_)));
+      break;
+    case PlaybackProgressState::kError:
+      playback_progress_->setRange(0, 1000);
+      playback_progress_->setValue(1000);
+      playback_progress_->setFormat(
+          playback_elapsed_ == "Waiting for first frame"
+              ? "ERROR  •  Pipeline did not start"
+              : QString("ERROR  •  %1 elapsed  •  %2").arg(playback_elapsed_, fps_label(playback_fps_)));
+      break;
+    case PlaybackProgressState::kStopped:
+      playback_progress_->setFormat("STOPPED");
+      break;
+    case PlaybackProgressState::kIdle:
+      playback_progress_->setRange(0, 1000);
+      playback_progress_->setValue(0);
+      playback_progress_->setFormat("No pipeline run yet");
+      break;
+  }
+  QString state_label = pipeline_state;
+  if (playback_progress_state_ == PlaybackProgressState::kCompleted) {
+    state_label = "COMPLETED";
+  } else if (playback_progress_state_ == PlaybackProgressState::kError) {
+    state_label = "ERROR";
+  }
   playback_progress_->setToolTip(
       QString(
           "Pipeline: %1\nStage: %2\nActive pipelines: %3\nElapsed: %4\nTotal: %5\nRemaining: %6\nETA: %7\n"
-          "Processing speed: %8")
+          "Output FPS: %8 (average %9)\nProcessing speed: %10%11")
+          .arg(state_label, playback_stage_, playback_instances_, playback_elapsed_, playback_total_)
+          .arg(playback_remaining_, eta, fps, playback_fps_average_)
           .arg(
-              state,
-              playback_stage_,
-              playback_instances_,
-              playback_elapsed_,
-              playback_total_,
-              playback_remaining_,
-              eta,
-              speed));
+              speed,
+              playback_terminal_detail_.isEmpty() ? QString()
+                                                  : QString("\nDetails: %1").arg(playback_terminal_detail_)));
+  playback_progress_->setAccessibleDescription(playback_progress_->format());
 }
 
 void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
@@ -4535,7 +4677,9 @@ void HStreamWindow::updateRunControls() {
     pipeline_state_->setText("STOPPED");
   }
   if (playback_progress_) {
-    playback_progress_->setVisible(running);
+    const bool terminal_result = playback_progress_state_ == PlaybackProgressState::kCompleted ||
+        playback_progress_state_ == PlaybackProgressState::kError;
+    playback_progress_->setVisible(running || terminal_result);
     updatePlaybackProgressPresentation();
   }
   if (start_button_) {

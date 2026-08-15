@@ -2487,7 +2487,24 @@ void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
     fps_avg_[i] = str->fps_avg[i];
   }
 
-  const hm::PlaybackProgressMetrics progress_metrics = collect_progress_metrics(app_ctx);
+  hm::PlaybackProgressMetrics progress_metrics = collect_progress_metrics(app_ctx);
+  if (numf > 0) {
+    double current_fps_sum = 0.0;
+    double average_fps_sum = 0.0;
+    guint valid_fps_samples = 0;
+    for (guint fps_index = 0; fps_index < numf; ++fps_index) {
+      if (!std::isfinite(fps_[fps_index]) || !std::isfinite(fps_avg_[fps_index])) {
+        continue;
+      }
+      current_fps_sum += std::max(0.0, fps_[fps_index]);
+      average_fps_sum += std::max(0.0, fps_avg_[fps_index]);
+      ++valid_fps_samples;
+    }
+    if (valid_fps_samples > 0) {
+      progress_metrics.output_fps = current_fps_sum / valid_fps_samples;
+      progress_metrics.output_fps_average = average_fps_sum / valid_fps_samples;
+    }
+  }
   hm::PlaybackProgressMetrics aggregate_progress;
   const auto active_stage = stage_app_contexts_.find(current_stage_);
   const size_t active_instances = active_stage == stage_app_contexts_.end() ? 0 : active_stage->second.size();
@@ -2523,6 +2540,7 @@ void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
     ui_progress << " eta_ns=";
     append_time(ui_progress, aggregate_progress.eta_ns);
     ui_progress << " speed_x=" << std::fixed << std::setprecision(6) << aggregate_progress.speed_x
+                << " fps=" << aggregate_progress.output_fps << " fps_avg=" << aggregate_progress.output_fps_average
                 << " fraction=" << aggregate_progress.fraction << " stage=" << current_stage_
                 << " instance=aggregate instances=" << active_instances
                 << " generation=" << playback_progress_generation_;

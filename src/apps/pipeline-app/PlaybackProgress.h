@@ -17,6 +17,8 @@ struct PlaybackProgressMetrics {
   uint64_t eta_ns{kUnknownPlaybackTime};
   double speed_x{0.0};
   double fraction{0.0};
+  double output_fps{0.0};
+  double output_fps_average{0.0};
 };
 
 class PlaybackRateEstimator {
