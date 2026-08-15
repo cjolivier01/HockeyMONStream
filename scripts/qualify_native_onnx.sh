@@ -8,7 +8,7 @@ cd "${TOPDIR}"
 export HM_REQUIRE_ONNX_MODEL_TESTS=1
 export HM_REQUIRE_ONNX_PARITY=1
 
-for tool in pto_gen autooptimiser nona pano_modify realpath sha256sum; do
+for tool in pto_gen autooptimiser nona realpath sha256sum; do
   if ! command -v "${tool}" >/dev/null; then
     echo "Required qualification tool is unavailable on PATH: ${tool}" >&2
     exit 2

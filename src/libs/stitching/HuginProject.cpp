@@ -597,7 +597,7 @@ absl::Status validate_staged_artifacts(const fs::path& directory, const std::opt
     return project.status();
   auto project_canvas = HuginProject::ParseCanvasSize(*project);
   auto projection = HuginProject::ParseProjection(*project);
-  if (!project_canvas.ok() || !projection.ok() || *projection != 1)
+  if (!project_canvas.ok() || !projection.ok())
     return absl::FailedPreconditionError("Hugin optimized project has an invalid canvas or projection");
 
   TiffPlacement first;
@@ -704,58 +704,24 @@ void remove_mapping_outputs(const fs::path& directory) {
   }
 }
 
-std::string restrict_optimization_variables(const std::string& project) {
-  std::istringstream input(project);
-  std::vector<std::string> lines;
-  std::string line;
-  while (std::getline(input, line))
-    lines.push_back(line);
-
-  const std::array<const char*, 3> variables = {"r1", "p1", "y1"};
-  std::vector<std::string> updated;
-  updated.reserve(lines.size() + variables.size() + 2);
-  bool in_variable_block = false;
-  bool replaced = false;
-  auto append_variable_block = [&]() {
-    for (const char* variable : variables)
-      updated.emplace_back(std::string("v ") + variable);
-    updated.emplace_back("v");
-  };
-  for (const std::string& current : lines) {
-    if (current.rfind("# specify variables", 0) == 0) {
-      updated.push_back(current);
-      append_variable_block();
-      in_variable_block = true;
-      replaced = true;
-      continue;
-    }
-    if (in_variable_block) {
-      if (!current.empty() && current.front() == 'v')
-        continue;
-      in_variable_block = false;
-    }
-    updated.push_back(current);
+absl::Status run_autooptimiser(
+    const std::string& autooptimiser,
+    const fs::path& directory,
+    const std::optional<double>& output_scale = std::nullopt) {
+  // Match HockeyMOM's automatic alignment path: let Hugin choose the
+  // optimization stages, projection, field of view, and canvas. When the
+  // resulting canvas exceeds the configured GPU limit, -x scales that same
+  // automatic result without requiring a separate pano_modify pass.
+  std::vector<std::string> command = {autooptimiser, "-a", "-l", "-s", "-q"};
+  if (output_scale.has_value()) {
+    if (!std::isfinite(*output_scale) || *output_scale <= 0.0)
+      return absl::InvalidArgumentError("Autooptimiser output scale must be positive and finite");
+    std::ostringstream scale;
+    scale.imbue(std::locale::classic());
+    scale << std::setprecision(12) << *output_scale;
+    command.insert(command.end(), {"-x", scale.str()});
   }
-  if (!replaced) {
-    const auto insertion = std::find_if(updated.begin(), updated.end(), [](const std::string& value) {
-      return value.rfind("# control points", 0) == 0;
-    });
-    std::vector<std::string> block = {"# specify variables", "v r1", "v p1", "v y1", "v", ""};
-    updated.insert(insertion, block.begin(), block.end());
-  }
-
-  std::ostringstream output;
-  for (const std::string& value : updated)
-    output << value << '\n';
-  return output.str();
-}
-
-absl::Status run_autooptimiser(const std::string& autooptimiser, const fs::path& directory) {
-  // Optimize only the explicitly selected second-camera roll/pitch/yaw
-  // variables and level the result. In particular, do not use -s: its
-  // heuristic projection choice can flip between cylindrical and equirectangular
-  // after a single marginal control-point change.
-  std::vector<std::string> command = {autooptimiser, "-n", "-l", "-q", "-o", "autooptimiser_out.pto", "hm_project.pto"};
+  command.insert(command.end(), {"-o", "autooptimiser_out.pto", "hm_project.pto"});
   std::string output;
   auto status = run_checked(command, directory, &output);
   if (!status.ok())
@@ -770,46 +736,6 @@ absl::Status run_autooptimiser(const std::string& autooptimiser, const fs::path&
     return absl::FailedPreconditionError(
         "Hugin control-point optimization RMS is too large: " + std::to_string(rms) + " pixels");
   }
-  return absl::OkStatus();
-}
-
-absl::Status fit_cylindrical_canvas(const std::string& pano_modify, const fs::path& directory) {
-  const std::string temporary = "autooptimiser_fitted.pto";
-  auto status = run_checked(
-      {pano_modify, "--projection=1", "--fov=AUTO", "--canvas=AUTO", "-o", temporary, "autooptimiser_out.pto"},
-      directory);
-  if (!status.ok())
-    return status;
-  status = validate_nonempty_file(directory / temporary);
-  if (!status.ok())
-    return status;
-  std::error_code error;
-  fs::rename(directory / temporary, directory / "autooptimiser_out.pto", error);
-  if (error)
-    return absl::InternalError("Unable to publish fitted cylindrical Hugin project: " + error.message());
-  return absl::OkStatus();
-}
-
-absl::Status scale_canvas(const std::string& pano_modify, const fs::path& directory, size_t width, size_t height) {
-  if (width == 0 || height == 0)
-    return absl::InvalidArgumentError("Scaled Hugin canvas dimensions must be positive");
-  const std::string temporary = "autooptimiser_scaled.pto";
-  auto status = run_checked(
-      {pano_modify,
-       "--canvas=" + std::to_string(width) + "x" + std::to_string(height),
-       "-o",
-       temporary,
-       "autooptimiser_out.pto"},
-      directory);
-  if (!status.ok())
-    return status;
-  status = validate_nonempty_file(directory / temporary);
-  if (!status.ok())
-    return status;
-  std::error_code error;
-  fs::rename(directory / temporary, directory / "autooptimiser_out.pto", error);
-  if (error)
-    return absl::InternalError("Unable to publish scaled Hugin project: " + error.message());
   return absl::OkStatus();
 }
 
@@ -1157,8 +1083,12 @@ absl::Status HuginProject::Configure(
   std::ostringstream fov;
   fov.imbue(std::locale::classic());
   fov << std::setprecision(12) << options.horizontal_fov;
+  // The camera frames are rectilinear images. Declaring them cylindrical here
+  // produces a superficially blendable panorama, but leaves a large geometric
+  // mismatch in the overlap that GPU blending exposes as repeated/ghosted
+  // content. Keep this aligned with HockeyMOM's proven stitching setup.
   auto status =
-      run_checked({*pto_gen, "-p", "1", "-o", "hm_project.pto", "-f", fov.str(), "left.png", "right.png"}, staging);
+      run_checked({*pto_gen, "-p", "0", "-o", "hm_project.pto", "-f", fov.str(), "left.png", "right.png"}, staging);
   if (!status.ok())
     return status;
   auto project = read_file(staging / "hm_project.pto");
@@ -1167,7 +1097,7 @@ absl::Status HuginProject::Configure(
   auto with_points = InsertControlPoints(*project, matches);
   if (!with_points.ok())
     return with_points.status();
-  status = write_file(staging / "hm_project.pto", restrict_optimization_variables(*with_points));
+  status = write_file(staging / "hm_project.pto", *with_points);
   if (!status.ok())
     return status;
 
@@ -1181,32 +1111,13 @@ absl::Status HuginProject::Configure(
   auto nona = executable("HM_NONA", "nona");
   if (!nona.ok())
     return nona.status();
-  auto optimized_project = read_file(staging / "autooptimiser_out.pto");
-  if (!optimized_project.ok())
-    return optimized_project.status();
-  status = write_file(staging / "autooptimiser_out.pto", restrict_optimization_variables(*optimized_project));
-  if (!status.ok())
-    return status;
-  auto pano_modify_result = executable("HM_PANO_MODIFY", "pano_modify");
-  if (!pano_modify_result.ok())
-    return pano_modify_result.status();
-  const std::string pano_modify = *pano_modify_result;
-  status = fit_cylindrical_canvas(pano_modify, staging);
-  if (!status.ok())
-    return status;
-  auto fitted_project = read_file(staging / "autooptimiser_out.pto");
-  if (!fitted_project.ok())
-    return fitted_project.status();
-  auto projection = ParseProjection(*fitted_project);
-  if (!projection.ok() || *projection != 1)
-    return absl::FailedPreconditionError("Hugin failed to preserve the required cylindrical projection");
+  std::optional<double> output_scale;
   auto fit_canvas = [&](size_t width, size_t height, double rounding_guard) -> absl::Status {
     const size_t longest = std::max(width, height);
     const double factor =
         static_cast<double>(*options.max_canvas_dimension) / static_cast<double>(longest) * rounding_guard;
-    const size_t scaled_width = std::max<size_t>(1, static_cast<size_t>(std::floor(width * factor)));
-    const size_t scaled_height = std::max<size_t>(1, static_cast<size_t>(std::floor(height * factor)));
-    return scale_canvas(pano_modify, staging, scaled_width, scaled_height);
+    output_scale = output_scale.value_or(1.0) * factor;
+    return run_autooptimiser(*autooptimiser, staging, output_scale);
   };
   if (options.max_canvas_dimension.has_value()) {
     auto optimized = read_file(staging / "autooptimiser_out.pto");

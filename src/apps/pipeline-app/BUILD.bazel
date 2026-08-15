@@ -131,6 +131,29 @@ cc_test(
 )
 
 cc_test(
+    name = "pipeline_chapter_archive_stall_test",
+    srcs = ["PipelineChapterArchiveStallTest.cpp"],
+    args = [
+        "$(location :hstream-cli)",
+        "$(location //src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so)",
+        "$(location //configs:ds_hockey_app_config.yaml)",
+    ],
+    data = [
+        ":hstream-cli",
+        "//configs:ds_hockey_app_config.yaml",
+        "//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so",
+    ],
+    size = "enormous",
+    tags = [
+        "local",
+        "manual",
+        "no-cache",
+        "requires-deepstream-hw",
+    ],
+    timeout = "eternal",
+)
+
+cc_test(
     name = "terminal_progress_ui_test",
     srcs = [
         "TerminalProgressUi.cpp",

@@ -63,6 +63,14 @@ GST_DEBUG_CATEGORY(NVDS_APP);
 
 namespace {
 
+void emit_ui_startup(const char* stage, const char* message) {
+  if (!g_getenv("HSTREAM_UI_PARENT_PID")) {
+    return;
+  }
+  g_print("HSTREAM_STARTUP stage=%s message=%s\n", stage, message);
+  std::fflush(stdout);
+}
+
 std::vector<std::string> normalize_cli_args(int argc, char* argv[]) {
   std::vector<std::string> args;
   args.reserve(argc);
@@ -637,6 +645,7 @@ absl::Status PipelineApplication::configureInstances(
         app_ctx->return_value = -1;
         return absl::InternalError("Failed to parse config file");
       }
+      emit_ui_startup("models", "Preparing TensorRT models and engine caches");
       HM_RETURN_IF_ERROR(
           hm::pipeline::PrepareTensorRtModelCache(
               config["pipeline"], fs::path(app_ctx->app_config_file()).parent_path()));
@@ -1479,6 +1488,7 @@ absl::Status PipelineApplication::playPipelines(
       g_print("\ncan't set pipeline to playing state.\n");
       return absl::InternalError("can't set pipeline to playing state");
     }
+    emit_ui_startup("frames", "Pipeline is running; waiting for the first processed frame");
     cleanup_stack.push([this, app_ctx = app_contexts[i]]() {
       auto status = stopPipeline(std::move(app_ctx));
       if (!status.ok()) {
@@ -2021,6 +2031,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   // Cleaning only removes generated game artifacts and must remain usable
   // offline, even when declared models are not installed.
   if (!clean_stitching_artifacts_ && !clean_stitching_from_control_points_) {
+    emit_ui_startup("assets", "Checking pretrained assets");
     std::vector<fs::path> asset_configs;
     for (size_t index = 0, count = g_strv_length(cfg_files_); index < count; ++index)
       asset_configs.emplace_back(cfg_files_[index]);
@@ -2085,6 +2096,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
 
   HM_ASSIGN_OR_RETURN(enabled_sink_types_, parse_types<NvDsSinkType>("sink", enable_sinks_, hm::sink_type_from_string));
 
+  emit_ui_startup("configuration", "Loading game configuration and saved Left/Right video assignments");
   HM_RETURN_IF_ERROR(initializeInstances(global_cleanup_stack));
 
   size_t stage_count = 0;
@@ -2093,13 +2105,17 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     auto& app_contexts = stage_app_contexts_.at(current_stage_);
     {
       auto cache_lock_cleanup = absl::MakeCleanup([] { hm::pipeline::ReleaseTensorRtModelCacheLocks(); });
+      emit_ui_startup("stitching", "Discovering source chapters and validating saved stitching artifacts");
       HM_RETURN_IF_ERROR(configureInstances(stage_count, app_contexts));
       if (!app_contexts.empty()) {
         CleanupStack stage_cleanup_stack;
+        emit_ui_startup("pipeline", "Creating the GPU pipeline and loading plugins");
         HM_RETURN_IF_ERROR(createPipelines(app_contexts, stage_cleanup_stack));
+        emit_ui_startup("video", "Opening video sources and preparing output branches");
         HM_RETURN_IF_ERROR(createMainLoop(app_contexts, stage_windows_[current_stage_], stage_cleanup_stack));
         hm::pipeline::ReleaseTensorRtModelCacheLocks();
         // editor_thread_ = hm::edit_pipeline(GST_OBJECT(app_contexts[0]->pipeline.pipeline));
+        emit_ui_startup("decoding", "Starting decoders and waiting for the first frame");
         HM_RETURN_IF_ERROR(playPipelines(app_contexts, stage_cleanup_stack));
       }
       HM_RETURN_IF_ERROR(waitForPipelinesStopped(app_contexts));
@@ -2652,6 +2668,7 @@ void PipelineApplication::print_runtime_commands() const {
       "\t@set-render-window <xid>: Move the embedded program render sink to another X11 window\n"
       "\t@capture-preview-frame <program|main|stitched|sourceN> <image-path>: Save one diagnostic UI preview "
       "frame\n"
+      "\t@set-render-audio-muted <0|1>: Mute or restore only the local render-audio branch\n"
       "\t@reset-progress-rate <generation>: Reset playback speed and ETA sampling after a process pause\n"
       "\t@set-property <element> <property=value>: Set an allowlisted runtime GStreamer property\n"
       "\t@set-properties <element property=value;...>: Atomically set allowlisted runtime properties\n\n");
@@ -3136,6 +3153,38 @@ bool set_gvalue_from_string(GValue* gvalue, GParamSpec* pspec, const std::string
 }
 } // namespace
 
+bool PipelineApplication::set_render_audio_muted_runtime(bool muted) {
+  size_t updated = 0;
+  auto& app_contexts = stage_app_contexts_.at(current_stage_);
+  for (const auto& app : app_contexts) {
+    if (!app || !app->pipeline.pipeline) {
+      continue;
+    }
+    for (size_t instance_id = 0; instance_id < MAX_SOURCE_BINS; ++instance_id) {
+      GstElement* hmaudio_bin = app->pipeline.instance_bins[instance_id].hmaudio_bin.bin;
+      if (!hmaudio_bin) {
+        continue;
+      }
+      for (size_t sink_id = 0; sink_id < MAX_SINK_BINS; ++sink_id) {
+        const std::string element_name = "hmaudio_render_sink" + std::to_string(sink_id) + "_volume";
+        GstElement* volume = gst_bin_get_by_name(GST_BIN(hmaudio_bin), element_name.c_str());
+        if (!volume) {
+          continue;
+        }
+        g_object_set(G_OBJECT(volume), "mute", muted ? TRUE : FALSE, nullptr);
+        gst_object_unref(volume);
+        ++updated;
+      }
+    }
+  }
+  if (updated == 0) {
+    g_printerr("runtime command failed: no local render-audio branch is active\n");
+    return false;
+  }
+  g_print("HSTREAM_RENDER_AUDIO muted=%d branches=%zu\n", muted ? 1 : 0, updated);
+  return true;
+}
+
 bool PipelineApplication::set_element_property_runtime(
     const std::string& element_name,
     const std::string& property_name,
@@ -3327,6 +3376,17 @@ bool PipelineApplication::set_element_properties_runtime(
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   constexpr absl::string_view kResetProgressCommand = "reset-progress-rate";
   const std::string trimmed_line = trim_ascii(line);
+  constexpr absl::string_view kRenderAudioMutedCommand = "set-render-audio-muted";
+  if (trimmed_line.rfind(std::string(kRenderAudioMutedCommand), 0) == 0 &&
+      trimmed_line.size() > kRenderAudioMutedCommand.size() &&
+      std::isspace(static_cast<unsigned char>(trimmed_line[kRenderAudioMutedCommand.size()]))) {
+    const std::string value = trim_ascii(trimmed_line.substr(kRenderAudioMutedCommand.size()));
+    if (value != "0" && value != "1") {
+      g_printerr("runtime command failed: set-render-audio-muted requires 0 or 1\n");
+      return false;
+    }
+    return set_render_audio_muted_runtime(value == "1");
+  }
   if (trimmed_line.rfind(std::string(kResetProgressCommand), 0) == 0 &&
       trimmed_line.size() > kResetProgressCommand.size() &&
       std::isspace(static_cast<unsigned char>(trimmed_line[kResetProgressCommand.size()]))) {
@@ -3363,7 +3423,8 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   if (!parse_runtime_set_property(line, &element_name, &property_name, &value)) {
     g_printerr(
         "runtime command failed: expected: set-preview-active <program|stitched|sourceN|none> <generation>, "
-        "set-render-window <xid>, capture-preview-frame <main|stitched|sourceN> <jpg-path>, set-properties "
+        "set-render-window <xid>, set-render-audio-muted <0|1>, capture-preview-frame <main|stitched|sourceN> "
+        "<jpg-path>, set-properties "
         "<element property=value;...>, reset-progress-rate <generation>, or set-property <element> <property=value>\n");
     return false;
   }
