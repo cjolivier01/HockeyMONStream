@@ -116,6 +116,8 @@ class HStreamWindow : public QMainWindow {
   void handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status);
   void handlePipelineError(QProcess::ProcessError error);
   void readPipelineOutput();
+  void handleArchiveOutputStatus(const QString& line);
+  void updateArchiveOutputPathLabel();
   void showStitchingCalibrationDialog();
   bool beginObservedStitchingCalibration(const QString& reported_stage);
   void handleStitchingCalibrationOutput(const QString& line);
@@ -250,6 +252,7 @@ class HStreamWindow : public QMainWindow {
   QLabel* stitched_external_notice_{nullptr};
   QLabel* game_path_label_{nullptr};
   QLabel* video_sets_path_label_{nullptr};
+  QLabel* archive_output_path_label_{nullptr};
   QWidget* game_controls_{nullptr};
   QWidget* video_controls_{nullptr};
   QComboBox* game_selector_{nullptr};
@@ -309,6 +312,9 @@ class HStreamWindow : public QMainWindow {
   bool preview_runtime_ready_{false};
   std::set<QString> preview_frame_channels_received_;
   QString active_run_game_id_;
+  QString active_archive_output_path_;
+  qint64 active_archive_initial_size_{-1};
+  qint64 active_archive_initial_mtime_ms_{-1};
   bool active_run_is_calibration_{false};
   int active_calibration_control_points_{0};
   QString active_calibration_start_stage_;
