@@ -76,6 +76,8 @@ bool aggregate_playback_progress(
 
   aggregate->speed_x = instances.front().speed_x;
   aggregate->eta_ns = instances.front().eta_ns;
+  aggregate->output_fps = instances.front().output_fps;
+  aggregate->output_fps_average = instances.front().output_fps_average;
   for (const PlaybackProgressMetrics& metrics : instances) {
     if (metrics.speed_x <= 0.0) {
       aggregate->speed_x = 0.0;
@@ -86,6 +88,16 @@ bool aggregate_playback_progress(
       aggregate->eta_ns = kUnknownPlaybackTime;
     } else if (aggregate->eta_ns != kUnknownPlaybackTime) {
       aggregate->eta_ns = std::max(aggregate->eta_ns, metrics.eta_ns);
+    }
+    if (metrics.output_fps <= 0.0) {
+      aggregate->output_fps = 0.0;
+    } else if (aggregate->output_fps > 0.0) {
+      aggregate->output_fps = std::min(aggregate->output_fps, metrics.output_fps);
+    }
+    if (metrics.output_fps_average <= 0.0) {
+      aggregate->output_fps_average = 0.0;
+    } else if (aggregate->output_fps_average > 0.0) {
+      aggregate->output_fps_average = std::min(aggregate->output_fps_average, metrics.output_fps_average);
     }
   }
   return true;

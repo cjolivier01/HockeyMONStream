@@ -430,8 +430,11 @@ bool write_fake_runner(const QString& path) {
   file.write("sys.stdout.flush()\n");
   file.write(
       "print('HSTREAM_PROGRESS processed_ns=42000000000 total_ns=600000000000 remaining_ns=558000000000 "
-      "eta_ns=279000000000 speed_x=2.000000 fraction=0.070000 stage=0 instance=aggregate instances=1 generation=0', "
+      "eta_ns=279000000000 speed_x=2.000000 fps=42.750000 fps_avg=40.500000 fraction=0.070000 stage=0 "
+      "instance=aggregate instances=1 generation=0', "
       "flush=True)\n");
+  file.write("if os.environ.get('HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS'):\n");
+  file.write("    sys.exit(int(os.environ['HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS']))\n");
   file.write(
       "if os.environ.get('HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW') == '1' or any(argument.startswith("
       "'--ui-preview-windows=') for argument in sys.argv[1:]):\n");
@@ -1933,8 +1936,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(
           playback_progress->isVisible() && playback_progress->minimum() == 0 && playback_progress->maximum() == 1000 &&
               playback_progress->value() == 70 && playback_progress->format().contains("00:00:42 / 00:10:00") &&
+              playback_progress->format().contains("42.75 FPS") &&
+              playback_progress->format().contains("ETA 00:04:39") &&
               playback_progress->toolTip().contains("Remaining: 00:09:18") &&
               playback_progress->toolTip().contains("ETA: 00:04:39") &&
+              playback_progress->toolTip().contains("Output FPS: 42.75 (average 40.50)") &&
               playback_progress->toolTip().contains("Processing speed: 2.00x") &&
               playback_progress->toolTip().contains("Stage: 0") &&
               playback_progress->toolTip().contains("Active pipelines: 1") &&
@@ -2348,6 +2354,30 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   qunsetenv("HSTREAM_UI_TEST_PREVIEW_TIMEOUT_MS");
   qunsetenv("HSTREAM_UI_TEST_PREVIEW_READY_AFTER");
   if (!fresh_program_tracked) {
+    return false;
+  }
+
+  const int completed_runs_before = window->logText().count("pipeline finished exit=0 status=normal");
+  qputenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS", "0");
+  activate(start);
+  for (int i = 0; i < 200 && window->logText().count("pipeline finished exit=0 status=normal") == completed_runs_before;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qunsetenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS");
+  if (!expect(
+          window->pipelineStateText() == "STOPPED" && playback_progress->isVisible() &&
+              playback_progress->minimum() == 0 && playback_progress->maximum() == 1000 &&
+              playback_progress->value() == 1000 && playback_progress->format().contains("COMPLETED") &&
+              playback_progress->format().contains("42.75 FPS") &&
+              playback_progress->format().contains("ETA 00:00:00") &&
+              playback_progress->property("playbackState").toString() == "completed" &&
+              playback_progress->toolTip().contains("Pipeline: COMPLETED"),
+          "A clean natural exit should leave a full, distinct COMPLETED progress result visible")) {
+    return false;
+  }
+  if (!capture_interaction_artifact(window, "playback-completed.png")) {
     return false;
   }
 
@@ -3071,23 +3101,45 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   const bool restart_logged =
       expect(window->logText().contains("stage restart requested"), "Restart button should log a stage restart");
   activate(stop);
+  for (int i = 0; i < 100 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
   if (!restart_logged) {
     return false;
   }
 
   const QByteArray original_runner = qgetenv("HSTREAM_UI_TEST_RUNNER");
+  const int process_errors_before = window->logText().count("pipeline process error");
   qputenv("HSTREAM_UI_TEST_RUNNER", "/tmp/hstream-ui-missing-runner");
   activate(start);
-  for (int i = 0; i < 50 && !window->logText().contains("pipeline process error"); ++i) {
+  for (int i = 0; i < 50 && window->logText().count("pipeline process error") == process_errors_before; ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
   qputenv("HSTREAM_UI_TEST_RUNNER", original_runner);
+  const std::string failed_progress_details =
+      " visible=" + std::string(playback_progress->isVisible() ? "true" : "false") +
+      " range=" + std::to_string(playback_progress->minimum()) + ".." + std::to_string(playback_progress->maximum()) +
+      " value=" + std::to_string(playback_progress->value()) + " format=" + playback_progress->format().toStdString() +
+      " state=" + playback_progress->property("playbackState").toString().toStdString() +
+      " tooltip=" + playback_progress->toolTip().toStdString();
   const bool absolute_failure_clean =
       expect(window->pipelineStateText() == "STOPPED", "Failed runner should restore stopped state") &&
-      expect(window->logText().contains("pipeline process error"), "Failed runner should log process error");
+      expect(
+          window->logText().count("pipeline process error") == process_errors_before + 1,
+          "Failed runner should log a new process error") &&
+      expect(
+          playback_progress->isVisible() && playback_progress->minimum() == 0 && playback_progress->maximum() == 1000 &&
+              playback_progress->value() == 1000 && playback_progress->format().contains("ERROR") &&
+              playback_progress->property("playbackState").toString() == "error" &&
+              playback_progress->toolTip().contains("Pipeline: ERROR"),
+          "A fatal process error should leave a full red ERROR progress result visible:" + failed_progress_details);
   if (!absolute_failure_clean)
     return false;
+  if (!capture_interaction_artifact(window, "playback-error.png")) {
+    return false;
+  }
 
   const QByteArray original_path = qgetenv("PATH");
   qputenv("HSTREAM_UI_TEST_RUNNER", "hstream-ui-missing-runner");
@@ -4349,9 +4401,11 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   const QString log = window->completeLogText();
   const bool observed_native_asset_setup = log.contains("pretrained assets will be verified by hstream-cli");
   const bool observed_command = log.contains("pipeline command");
+  const QRegularExpression playback_fps_label(R"(\b[0-9]+\.[0-9]{2} FPS\b)");
   const bool observed_playback_progress = playback_progress->isVisible() && playback_progress->maximum() == 1000 &&
       playback_progress->toolTip().contains("Elapsed: 00:") && playback_progress->toolTip().contains("Remaining:") &&
-      playback_progress->toolTip().contains("ETA:");
+      playback_progress->toolTip().contains("ETA:") && playback_progress->format().contains("ETA ") &&
+      playback_fps_label.match(playback_progress->format()).hasMatch();
   const bool require_scoreboard = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_REQUIRE_SCOREBOARD_SELECTOR");
   activate(stop);
   for (int i = 0; i < 300 && window->pipelineStateText() != "STOPPED"; ++i) {

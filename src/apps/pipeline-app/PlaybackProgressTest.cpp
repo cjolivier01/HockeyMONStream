@@ -56,6 +56,10 @@ bool test_rate_recovers_after_pause() {
 bool test_multi_instance_aggregate_uses_slowest_pipeline() {
   hm::PlaybackProgressMetrics ahead{true, 80000000000ULL, 100000000000ULL, 20000000000ULL, 10000000000ULL, 2.0, 0.8};
   hm::PlaybackProgressMetrics behind{true, 40000000000ULL, 100000000000ULL, 60000000000ULL, 40000000000ULL, 1.5, 0.4};
+  ahead.output_fps = 42.0;
+  ahead.output_fps_average = 40.0;
+  behind.output_fps = 38.0;
+  behind.output_fps_average = 36.0;
   hm::PlaybackProgressMetrics aggregate;
   bool ok = expect(
       hm::aggregate_playback_progress({ahead, behind}, &aggregate),
@@ -65,6 +69,9 @@ bool test_multi_instance_aggregate_uses_slowest_pipeline() {
       "the aggregate timeline should follow the least-advanced pipeline");
   ok &= expect(near(aggregate.speed_x, 1.5), "the aggregate speed should be the conservative instance rate");
   ok &= expect(aggregate.eta_ns == 40000000000ULL, "the aggregate ETA should be the longest instance ETA");
+  ok &= expect(
+      near(aggregate.output_fps, 38.0) && near(aggregate.output_fps_average, 36.0),
+      "the aggregate output FPS should conservatively follow the slowest active pipeline");
 
   behind.speed_x = 0.0;
   behind.eta_ns = hm::kUnknownPlaybackTime;

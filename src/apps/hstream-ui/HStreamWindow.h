@@ -100,6 +100,14 @@ class HStreamWindow : public QMainWindow {
     kRenderToggle,
   };
 
+  enum class PlaybackProgressState {
+    kIdle,
+    kRunning,
+    kCompleted,
+    kError,
+    kStopped,
+  };
+
   void buildUi();
   void buildTopBar(QVBoxLayout* root);
   void buildMainArea(QVBoxLayout* root);
@@ -117,7 +125,8 @@ class HStreamWindow : public QMainWindow {
   void handlePipelineError(QProcess::ProcessError error);
   void readPipelineOutput();
   bool handlePlaybackProgressOutput(const QString& line);
-  void resetPlaybackProgress();
+  void resetPlaybackProgress(bool starting);
+  void setPlaybackProgressState(PlaybackProgressState state, const QString& detail = {});
   void updatePlaybackProgressPresentation();
   void beginPlaybackProgressReset();
   void sendPlaybackProgressReset(quint64 generation);
@@ -308,8 +317,14 @@ class HStreamWindow : public QMainWindow {
   QString playback_remaining_;
   QString playback_eta_;
   QString playback_speed_;
+  QString playback_fps_;
+  QString playback_fps_average_;
   QString playback_stage_;
   QString playback_instances_;
+  QString playback_terminal_detail_;
+  PlaybackProgressState playback_progress_state_{PlaybackProgressState::kIdle};
+  int playback_progress_x10_{0};
+  bool playback_progress_determinate_{false};
   bool playback_warming_after_resume_{false};
   bool playback_accept_stale_after_reset_timeout_{false};
   quint64 playback_reset_generation_{0};
