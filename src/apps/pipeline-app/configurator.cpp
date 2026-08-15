@@ -214,13 +214,13 @@ std::string explicit_file_chapter_key(const std::string& file) {
   const std::string filename = fs::path(file).filename().string();
   std::smatch match;
   static const std::regex gopro_pattern(R"(^G[A-Z]([0-9]{2})([0-9]{4})\.(MP4|mp4)$)");
-  static const std::regex insta360_pattern(R"(^VID_[0-9]{8}_[0-9]{6}_([0-9]{3})\.(MP4|mp4)$)");
+  static const std::regex insta360_pattern(R"(^VID_([0-9]{8})_([0-9]{6})_([0-9]{3})\.(MP4|mp4)$)");
   static const std::regex left_right_pattern(R"((left|right)(?:-([0-9]))?\.mp4$)");
   if (std::regex_search(filename, match, gopro_pattern)) {
-    return "gopro:" + match[1].str();
+    return "gopro:" + match[2].str() + ":" + match[1].str();
   }
   if (std::regex_search(filename, match, insta360_pattern)) {
-    return "insta360:" + match[1].str();
+    return "insta360:" + match[1].str() + ":" + match[2].str() + ":" + match[3].str();
   }
   if (std::regex_search(filename, match, left_right_pattern)) {
     return "lr:" + std::string(match[2].matched ? match[2].str() : "1");
@@ -641,44 +641,48 @@ configurator_internal::ExplicitStitchingVideoSelection configurator_internal::se
   const std::vector<std::string> ui_right = sequence_path_values(config, {"hstream_ui", "video_roles", "right"});
   selection.ui_roles_are_authoritative = !ui_left.empty() || !ui_right.empty();
 
-  if (!ui_left.empty() && !ui_right.empty()) {
-    auto normalize_playlist = [](const std::vector<std::string>& files, std::vector<std::string>& normalized) {
-      std::map<std::string, std::string> indexed;
-      bool any_parseable = false;
-      bool all_parseable = true;
-      for (const std::string& file : files) {
-        const std::string chapter = explicit_file_chapter_key(file);
-        any_parseable = any_parseable || !chapter.empty();
-        all_parseable = all_parseable && !chapter.empty();
-        if (!chapter.empty() && !indexed.emplace(chapter, file).second) {
-          return false;
-        }
-      }
-      if (any_parseable && !all_parseable) {
+  auto normalize_playlist = [](const std::vector<std::string>& files, std::vector<std::string>& normalized) {
+    std::map<std::string, std::string> indexed;
+    std::set<std::string> unique_paths;
+    bool any_parseable = false;
+    bool all_parseable = true;
+    for (const std::string& file : files) {
+      if (!unique_paths.insert(file).second) {
         return false;
       }
-      if (any_parseable) {
-        for (const auto& [_, file] : indexed) {
-          normalized.emplace_back(file);
-        }
-      } else {
-        normalized = files;
+      const std::string chapter = explicit_file_chapter_key(file);
+      any_parseable = any_parseable || !chapter.empty();
+      all_parseable = all_parseable && !chapter.empty();
+      if (!chapter.empty() && !indexed.emplace(chapter, file).second) {
+        return false;
       }
-      return true;
-    };
-    if (!normalize_playlist(ui_left, selection.left) || !normalize_playlist(ui_right, selection.right)) {
-      selection.error = "Explicit UI Left/Right roles have incompatible chapter names";
-      return selection;
     }
+    if (any_parseable && !all_parseable) {
+      return false;
+    }
+    if (any_parseable) {
+      for (const auto& [_, file] : indexed) {
+        normalized.emplace_back(file);
+      }
+    } else {
+      normalized = files;
+    }
+    return true;
+  };
+  if ((!ui_left.empty() && !normalize_playlist(ui_left, selection.left)) ||
+      (!ui_right.empty() && !normalize_playlist(ui_right, selection.right))) {
+    selection.error = "Explicit UI Left/Right roles have incompatible or duplicate chapter names";
+    return selection;
+  }
+
+  if (!ui_left.empty() && !ui_right.empty()) {
     // Chapter labels describe each camera's physical file boundaries. They are not cross-camera pair IDs: cameras
     // can split the same frame timeline at different points and therefore have different labels, counts, or schemes.
     selection.left_is_explicit = true;
     selection.right_is_explicit = true;
   } else if (!ui_left.empty()) {
-    selection.left = ui_left;
     selection.left_is_explicit = true;
   } else if (!ui_right.empty()) {
-    selection.right = ui_right;
     selection.right_is_explicit = true;
   } else if (!force) {
     selection.left = sequence_path_values(config, {"game", "videos", "left"});

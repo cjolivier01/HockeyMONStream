@@ -686,11 +686,12 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   const QString left_video = source_dir + "/GX010005.MP4";
   const QString left_video_2 = source_dir + "/GX020005.MP4";
   const QString left_video_3 = source_dir + "/GX030005.MP4";
+  const QString left_video_restart = source_dir + "/GX010006.MP4";
   const QString right_video = source_dir + "/GX010002.MP4";
   const QString right_video_2 = source_dir + "/GX020002.MP4";
   if (!write_fake_video(auto_video) || !write_fake_video(suffix_auto_video) || !write_fake_video(center_video) ||
       !write_fake_video(left_video) || !write_fake_video(left_video_2) || !write_fake_video(right_video) ||
-      !write_fake_video(right_video_2) || !write_fake_video(left_video_3)) {
+      !write_fake_video(right_video_2) || !write_fake_video(left_video_3) || !write_fake_video(left_video_restart)) {
     return false;
   }
 
@@ -902,6 +903,17 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
               mismatched_chapters["game"]["videos"]["right"].size() == 2 &&
               mismatched_chapters["game"]["videos"]["left"][2].as<std::string>() == ".hstream-ui/left/GX030005.MP4",
           "Explicit Left/Right playlists with different chapter labels should remain independently ordered")) {
+    return false;
+  }
+  video_path->setText(left_video_restart);
+  activate(add_video);
+  YAML::Node restarted_explicit = YAML::LoadFile(config.string());
+  if (!expect(
+          restarted_explicit["game"]["videos"]["left"].size() == 4 &&
+              restarted_explicit["game"]["videos"]["right"].size() == 2 &&
+              restarted_explicit["game"]["videos"]["left"][2].as<std::string>() == ".hstream-ui/left/GX030005.MP4" &&
+              restarted_explicit["game"]["videos"]["left"][3].as<std::string>() == ".hstream-ui/left/GX010006.MP4",
+          "Explicit GoPro playlists should sort by recording ID before physical chapter number")) {
     return false;
   }
 

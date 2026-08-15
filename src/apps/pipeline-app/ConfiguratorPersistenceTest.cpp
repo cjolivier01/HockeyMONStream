@@ -134,6 +134,39 @@ int main() {
           independently_named.right == std::vector<std::string>{"right-camera.mov", "right-camera-alt.mov"},
       "Each explicit camera playlist must use its own valid naming and ordering scheme");
 
+  YAML::Node one_sided_out_of_order(YAML::NodeType::Map);
+  one_sided_out_of_order["hstream_ui"]["video_roles"]["left"] = out_of_order_left;
+  const auto normalized_one_sided =
+      hm::configurator_internal::select_explicit_stitching_videos(one_sided_out_of_order, /*force=*/true);
+  ok &= expect(
+      normalized_one_sided.error.empty() && normalized_one_sided.left_is_explicit &&
+          !normalized_one_sided.right_is_explicit &&
+          normalized_one_sided.left ==
+              std::vector<std::string>{".hstream-ui/left/GX010001.MP4", ".hstream-ui/left/GX020001.MP4"},
+      "A one-sided explicit playlist must be normalized before the unambiguous single-file Auto mode uses it");
+
+  YAML::Node restarted_recordings(YAML::NodeType::Map);
+  restarted_recordings["hstream_ui"]["video_roles"]["left"].push_back("GX010002.MP4");
+  restarted_recordings["hstream_ui"]["video_roles"]["left"].push_back("GX020001.MP4");
+  restarted_recordings["hstream_ui"]["video_roles"]["right"].push_back("VID_20260815_101500_001.MP4");
+  restarted_recordings["hstream_ui"]["video_roles"]["right"].push_back("VID_20260815_101000_002.MP4");
+  const auto normalized_restarts =
+      hm::configurator_internal::select_explicit_stitching_videos(restarted_recordings, /*force=*/true);
+  ok &= expect(
+      normalized_restarts.error.empty() &&
+          normalized_restarts.left == std::vector<std::string>{"GX020001.MP4", "GX010002.MP4"} &&
+          normalized_restarts.right ==
+              std::vector<std::string>{"VID_20260815_101000_002.MP4", "VID_20260815_101500_001.MP4"},
+      "Explicit GoPro and Insta360 playlists must sort by recording ID before physical chapter number");
+
+  YAML::Node duplicate_arbitrary(YAML::NodeType::Map);
+  duplicate_arbitrary["hstream_ui"]["video_roles"]["left"].push_back("left-camera.mov");
+  duplicate_arbitrary["hstream_ui"]["video_roles"]["left"].push_back("left-camera.mov");
+  const auto rejected_duplicate =
+      hm::configurator_internal::select_explicit_stitching_videos(duplicate_arbitrary, /*force=*/true);
+  ok &= expect(
+      !rejected_duplicate.error.empty(), "An exact duplicate path must never replay the same arbitrary-named file");
+
   ok &= expect(
       !hm::configurator_internal::validate_mixed_explicit_auto_playlists(
            /*left_is_explicit=*/true,

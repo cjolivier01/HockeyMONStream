@@ -644,11 +644,12 @@ std::optional<QString> explicit_chapter_key(const QString& path) {
 
   const QRegularExpressionMatch gopro_match = gopro.match(file_name);
   if (gopro_match.hasMatch()) {
-    return QString("gopro:%1").arg(gopro_match.captured(1));
+    return QString("gopro:%1:%2").arg(gopro_match.captured(2), gopro_match.captured(1));
   }
   const QRegularExpressionMatch insta360_match = insta360.match(file_name);
   if (insta360_match.hasMatch()) {
-    return QString("insta360:%1").arg(insta360_match.captured(3));
+    return QString("insta360:%1:%2:%3")
+        .arg(insta360_match.captured(1), insta360_match.captured(2), insta360_match.captured(3));
   }
   const QRegularExpressionMatch lr_match = left_right.match(file_name);
   if (lr_match.hasMatch()) {
@@ -6067,10 +6068,14 @@ bool HStreamWindow::syncRuntimeExplicitVideoConfig(YAML::Node& config) {
   if (has_left && has_right) {
     auto normalized_playlist = [](const YAML::Node& explicit_videos, YAML::Node& playlist) {
       std::map<QString, QString> by_chapter;
+      std::set<QString> unique_paths;
       bool any_parseable = false;
       bool all_parseable = true;
       for (const auto& item : explicit_videos) {
         const QString path = QString::fromStdString(item.as<std::string>());
+        if (!unique_paths.insert(path).second) {
+          return false;
+        }
         const std::optional<QString> chapter = explicit_chapter_key(path);
         any_parseable = any_parseable || chapter.has_value();
         all_parseable = all_parseable && chapter.has_value();
