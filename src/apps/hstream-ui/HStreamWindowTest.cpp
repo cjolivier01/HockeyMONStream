@@ -1895,6 +1895,17 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(window->pipelineStateText() == "STOPPED", "Stop button should stop the pipeline")) {
     return false;
   }
+  const QString valid_game_id = game_id->text();
+  game_id->clear();
+  activate(start);
+  if (!expect(
+          window->pipelineStateText() == "STOPPED" && playback_progress->isVisible() &&
+              playback_progress->format().contains("ERROR") &&
+              playback_progress->toolTip().contains("selected game directory could not be prepared"),
+          "A game-directory validation failure must restore STOPPED and show a terminal startup error")) {
+    return false;
+  }
+  game_id->setText(valid_game_id);
   if (!expect(control_points->value() == 1500, "Stitching calibration CP default should be 1500")) {
     return false;
   }

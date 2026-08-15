@@ -2940,6 +2940,7 @@ void HStreamWindow::startPipeline() {
   resetPlaybackProgress(true);
   setPlaybackStartupStage("ui", "Preparing the game directory and saved configuration");
   const auto show_startup_error = [this](const QString& detail) {
+    pipeline_state_->setText("STOPPED");
     resetPlaybackProgress(true);
     setPlaybackProgressState(PlaybackProgressState::kError, detail);
   };

@@ -350,6 +350,10 @@ int main(int argc, char** argv) {
   const int required_progress_seconds = boundary_seconds + 5;
   const auto deadline = std::chrono::steady_clock::now() + kHardTimeout;
   auto next_status = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  bool have_archive_baseline = false;
+  fs::path archive_baseline_path;
+  uintmax_t archive_baseline_size = 0;
+  std::chrono::steady_clock::time_point required_progress_at{};
   while (std::chrono::steady_clock::now() < deadline) {
     process.Poll();
     const int progress = process.max_progress_seconds();
@@ -359,9 +363,35 @@ int main(int argc, char** argv) {
                 << process.output_tail() << '\n';
       break;
     }
+    const fs::path archive = find_archive(output_root);
+    if (!have_archive_baseline && progress >= boundary_seconds && !archive.empty()) {
+      std::error_code error;
+      const uintmax_t size = fs::file_size(archive, error);
+      if (!error) {
+        have_archive_baseline = true;
+        archive_baseline_path = archive;
+        archive_baseline_size = size;
+      }
+    }
     if (progress >= required_progress_seconds) {
-      crossed_boundary = true;
-      break;
+      const auto now = std::chrono::steady_clock::now();
+      if (required_progress_at == std::chrono::steady_clock::time_point{}) {
+        required_progress_at = now;
+      }
+      if (have_archive_baseline && archive == archive_baseline_path) {
+        std::error_code error;
+        const uintmax_t size = fs::file_size(archive, error);
+        if (!error && size > archive_baseline_size) {
+          crossed_boundary = true;
+          break;
+        }
+      }
+      if (now - required_progress_at >= kBoundaryStallTimeout) {
+        std::cerr << "FAIL: video progress crossed the chapter boundary, but the archive did not grow afterward; "
+                  << "baseline bytes=" << archive_baseline_size << " archive=" << archive << '\n'
+                  << process.output_tail() << '\n';
+        break;
+      }
     }
     if (progress >= boundary_seconds - 10 &&
         std::chrono::steady_clock::now() - process.last_progress_at() >= kBoundaryStallTimeout) {
