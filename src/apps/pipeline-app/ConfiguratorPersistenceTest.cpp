@@ -97,7 +97,29 @@ int main() {
 
   explicit_roles["hstream_ui"]["video_roles"]["right"][1] = ".hstream-ui/right/GX030002.MP4";
   selected = hm::configurator_internal::select_explicit_stitching_videos(explicit_roles, /*force=*/true);
-  ok &= expect(!selected.error.empty(), "Forced configuration must reject mismatched explicit UI chapters");
+  ok &= expect(
+      selected.error.empty() &&
+          selected.left == std::vector<std::string>{".hstream-ui/left/GX010001.MP4", ".hstream-ui/left/GX020001.MP4"} &&
+          selected.right ==
+              std::vector<std::string>{".hstream-ui/right/GX010002.MP4", ".hstream-ui/right/GX030002.MP4"},
+      "Explicit camera playlists must not be paired by physical chapter number");
+
+  explicit_roles["hstream_ui"]["video_roles"]["right"].push_back(".hstream-ui/right/GX020002.MP4");
+  selected = hm::configurator_internal::select_explicit_stitching_videos(explicit_roles, /*force=*/true);
+  ok &= expect(
+      selected.error.empty() && selected.left.size() == 2 && selected.right.size() == 3 &&
+          selected.right[1] == ".hstream-ui/right/GX020002.MP4" &&
+          selected.right[2] == ".hstream-ui/right/GX030002.MP4",
+      "Explicit camera playlists with different physical chapter counts must be retained independently");
+
+  YAML::Node saved_uneven_playlists(YAML::NodeType::Map);
+  saved_uneven_playlists["game"]["videos"]["left"] = selected.left;
+  saved_uneven_playlists["game"]["videos"]["right"] = selected.right;
+  const auto saved_selection =
+      hm::configurator_internal::select_explicit_stitching_videos(saved_uneven_playlists, /*force=*/false);
+  ok &= expect(
+      saved_selection.error.empty() && saved_selection.left.size() == 2 && saved_selection.right.size() == 3,
+      "A subsequent run must accept independently persisted camera playlists");
 
   const fs::path superseded_force_dir = games / "superseded-force";
   fs::create_directories(superseded_force_dir);

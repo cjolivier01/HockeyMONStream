@@ -350,26 +350,21 @@ absl::Status orientation_internal::save_orientation_config(
   if (left.empty() || right.empty()) {
     return absl::InvalidArgumentError("Both camera orientations need at least one chapter");
   }
-  if (left.size() != right.size()) {
-    return absl::InvalidArgumentError("Left and right cameras have different chapter counts");
-  }
   std::vector<std::string> left_paths;
   std::vector<std::string> right_paths;
-  for (const auto& [chapter, left_path] : left) {
-    const auto found = right.find(chapter);
-    if (found == right.end()) {
-      return absl::InvalidArgumentError("Left and right cameras have mismatched chapter numbers");
+  auto append_relative_paths = [&](const VideoChapter& chapters, std::vector<std::string>& paths) -> absl::Status {
+    paths.reserve(chapters.size());
+    for (const auto& [_, chapter_path] : chapters) {
+      std::error_code error;
+      fs::path relative = fs::relative(chapter_path, game_dir, error);
+      if (error)
+        return absl::InternalError("Failed to relativize video path: " + error.message());
+      paths.push_back(relative.string());
     }
-    std::error_code error;
-    fs::path relative_left = fs::relative(left_path, game_dir, error);
-    if (error)
-      return absl::InternalError("Failed to relativize left video path: " + error.message());
-    fs::path relative_right = fs::relative(found->second, game_dir, error);
-    if (error)
-      return absl::InternalError("Failed to relativize right video path: " + error.message());
-    left_paths.push_back(relative_left.string());
-    right_paths.push_back(relative_right.string());
-  }
+    return absl::OkStatus();
+  };
+  HM_RETURN_IF_ERROR(append_relative_paths(left, left_paths));
+  HM_RETURN_IF_ERROR(append_relative_paths(right, right_paths));
 
   auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
   if (!config_lock.ok())
