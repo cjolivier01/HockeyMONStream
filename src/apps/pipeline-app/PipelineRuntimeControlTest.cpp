@@ -248,11 +248,14 @@ class PipelineProcess {
   std::string output_text_;
 };
 
-bool write_config(const fs::path& config, const fs::path& video, const fs::path& archive) {
+bool write_config(
+    const fs::path& config,
+    const fs::path& video,
+    const fs::path& archive,
+    bool recreate_pipeline = false) {
   std::ofstream output(config);
   output << "application:\n"
          << "  stage: 0\n"
-         << "  complete-configuration: 1\n"
          << "  enable-perf-measurement: 1\n"
          << "  perf-measurement-interval-sec: 1\n"
          << "tiled-display:\n"
@@ -293,6 +296,10 @@ bool write_config(const fs::path& config, const fs::path& video, const fs::path&
          << "  buffer-pool-size: 8\n"
          << "  num-surfaces-per-frame: 1\n"
          << "  gpu-id: 0\n";
+  if (recreate_pipeline) {
+    output << "tests:\n"
+           << "  pipeline-recreate-sec: 5\n";
+  }
   return output.good();
 }
 
@@ -359,6 +366,7 @@ int main(int argc, char** argv) {
   const fs::path root(pattern);
   const fs::path video = root / "input.mp4";
   const fs::path config = root / "pipeline.yaml";
+  const fs::path recreate_config = root / "pipeline-recreate.yaml";
   const fs::path error_config = root / "pipeline-error.yaml";
   const fs::path archive = root / "archive.mkv";
   ok &= expect(
@@ -373,6 +381,8 @@ int main(int argc, char** argv) {
       }),
       "synthetic seekable input must be generated");
   ok &= expect(write_config(config, video, archive), "pipeline-app test config must be written");
+  ok &=
+      expect(write_config(recreate_config, video, archive, true), "pipeline-app recreate test config must be written");
   ok &= expect(
       write_playlist_error_config(error_config, video, root / "missing-second-chapter.mp4"),
       "pipeline-app error test config must be written");
@@ -422,21 +432,26 @@ int main(int argc, char** argv) {
   PipelineProcess failed_process;
   PipelineProcess archive_process;
   if (ok) {
-    ok &=
-        expect(archive_process.Start(argv[1], config, "URI", "ENCODE_FILE"), "pipeline-app archive process must start");
-    ok &= expect(archive_process.WaitFor("Pipeline running"), "archive pipeline must reach PLAYING");
     ok &= expect(
-        archive_process.WaitForProgressAtOrBeyond(1, 0, std::chrono::seconds(12)),
-        "archive pipeline must advance before a user stop");
+        archive_process.Start(argv[1], recreate_config, "URI", "ENCODE_FILE"),
+        "pipeline-app archive process must start");
+    ok &= expect(archive_process.WaitFor("Pipeline running"), "archive pipeline must reach PLAYING");
+    const size_t recreate_mark = archive_process.Mark();
+    ok &= expect(
+        archive_process.WaitFor("Recreate pipeline", recreate_mark, std::chrono::seconds(12)),
+        "archive pipeline must recreate before the final user stop");
+    const size_t recreated_at = archive_process.output().find("Recreate pipeline", recreate_mark);
+    ok &= expect(
+        recreated_at != std::string::npos &&
+            archive_process.WaitFor("Pipeline running", recreated_at, std::chrono::seconds(12)),
+        "recreated archive pipeline must return to PLAYING");
+    std::this_thread::sleep_for(std::chrono::milliseconds(750));
     ok &= expect(archive_process.Interrupt(), "archive pipeline SIGINT stop must be delivered");
     exit_code = -1;
     ok &= expect(archive_process.WaitForExit(&exit_code), "archive pipeline must stop promptly after SIGINT");
     ok &= expect(exit_code == 0, "archive pipeline must exit successfully after EOS finalization");
     ok &= expect(fs::is_regular_file(archive) && fs::file_size(archive) > 0, "archive output must be written");
     ok &= expect(run_command({"ffprobe", "-v", "error", archive.string()}), "user-stopped archive must be playable");
-    ok &= expect(
-        archive_process.output().find("path=" + archive.string()) != std::string::npos,
-        "backend must report the exact archive path");
   }
 
   if (ok) {

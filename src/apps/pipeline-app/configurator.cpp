@@ -1442,6 +1442,10 @@ void Configurator::configure_audio(
 }
 
 absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) const {
+  if (game_id_.empty()) {
+    return absl::OkStatus();
+  }
+
   const auto has_audio_for_sink = [&](int sink_id) {
     for (auto kv : pipeline) {
       const std::string key = kv.first.as<std::string>();
@@ -1866,7 +1870,6 @@ absl::Status Configurator::complete_configuration(
     if (clean_requested) {
       return absl::InvalidArgumentError("No game id specified for cleaning");
     }
-    HM_RETURN_IF_ERROR(configure_encode_file_outputs(pipeline));
     return absl::OkStatus();
   }
 

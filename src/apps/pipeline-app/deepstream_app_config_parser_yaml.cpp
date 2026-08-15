@@ -106,6 +106,8 @@ static gboolean parse_tests_yaml(NvDsConfig* config, const YAML::Node& yaml_ndoe
     std::string paramKey = itr->first.as<std::string>();
     if (paramKey == "file-loop") {
       config->file_loop = itr->second.as<gint>();
+    } else if (paramKey == "pipeline-recreate-sec") {
+      config->pipeline_recreate_sec = itr->second.as<gint>();
     } else {
       cout << "Unknown key " << paramKey << " for group tests" << endl;
     }

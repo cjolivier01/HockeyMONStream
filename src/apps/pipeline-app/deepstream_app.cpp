@@ -1748,6 +1748,11 @@ gboolean create_pipeline(
 
   _dsmeta_quark = g_quark_from_static_string(NVDS_META_STRING);
 
+  // AppCtx is reused by the pipeline-recreate path. EOS only describes the
+  // previous GstPipeline generation and must never let a replacement skip its
+  // own mux finalization.
+  appCtx->eos_received = FALSE;
+
   appCtx->all_bbox_generated_cb = all_bbox_generated_cb;
   appCtx->bbox_generated_post_analytics_cb = bbox_generated_post_analytics_cb;
   appCtx->overlay_graphics_cb = overlay_graphics_cb;
@@ -2216,24 +2221,40 @@ gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
 
   cancel_uri_playlist_frame_barrier(&appCtx->pipeline.multi_src_bin);
   gboolean finalized = appCtx->eos_received || appCtx->return_value != 0;
+  gboolean fatal_error = FALSE;
   if (!finalized) {
     if (gst_element_send_event(pipeline, gst_event_new_eos())) {
       GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline));
-      GstMessage* message =
-          gst_bus_timed_pop_filtered(bus, timeout, static_cast<GstMessageType>(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
-      if (message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS) {
-        appCtx->eos_received = TRUE;
-        finalized = TRUE;
-      } else if (message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
-        bus_callback(bus, message, appCtx);
-      }
-      if (message) {
+      const gint64 wait_started = g_get_monotonic_time();
+      const gint64 timeout_us = static_cast<gint64>(timeout / GST_USECOND);
+      const gint64 deadline = timeout_us > G_MAXINT64 - wait_started ? G_MAXINT64 : wait_started + timeout_us;
+      while (!finalized && !fatal_error) {
+        const gint64 now = g_get_monotonic_time();
+        if (now >= deadline) {
+          break;
+        }
+        GstMessage* message = gst_bus_timed_pop_filtered(
+            bus,
+            static_cast<GstClockTime>(deadline - now) * GST_USECOND,
+            static_cast<GstMessageType>(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
+        if (!message) {
+          break;
+        }
+        if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS) {
+          appCtx->eos_received = TRUE;
+          finalized = TRUE;
+        } else {
+          bus_callback(bus, message, appCtx);
+          fatal_error = appCtx->return_value != 0;
+        }
         gst_message_unref(message);
       }
       gst_object_unref(bus);
     }
     if (!finalized) {
-      g_printerr("Pipeline EOS finalization timed out; encoded output may be incomplete\n");
+      g_printerr(
+          "%s; encoded output may be incomplete\n",
+          fatal_error ? "Pipeline failed while finalizing EOS" : "Pipeline EOS finalization timed out");
       appCtx->return_value = -1;
     }
   }
