@@ -179,11 +179,13 @@ int main() {
   YAML::Node heterogeneous_camera(YAML::NodeType::Map);
   heterogeneous_camera["hstream_ui"]["video_roles"]["left"].push_back("VID_20260815_101000_001.MP4");
   heterogeneous_camera["hstream_ui"]["video_roles"]["left"].push_back("GX010007.MP4");
+  heterogeneous_camera["hstream_ui"]["video_roles"]["left"].push_back("left-camera.mov");
   const auto preserved_heterogeneous =
       hm::configurator_internal::select_explicit_stitching_videos(heterogeneous_camera, /*force=*/true);
   ok &= expect(
       preserved_heterogeneous.error.empty() &&
-          preserved_heterogeneous.left == std::vector<std::string>{"VID_20260815_101000_001.MP4", "GX010007.MP4"},
+          preserved_heterogeneous.left ==
+              std::vector<std::string>{"VID_20260815_101000_001.MP4", "GX010007.MP4", "left-camera.mov"},
       "A heterogeneous explicit camera playlist must preserve the user's total recording order");
 
   YAML::Node duplicate_persisted(YAML::NodeType::Map);

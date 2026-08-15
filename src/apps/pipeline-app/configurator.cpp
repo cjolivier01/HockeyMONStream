@@ -649,15 +649,11 @@ configurator_internal::ExplicitStitchingVideoSelection configurator_internal::se
     std::map<std::string, std::string> indexed;
     std::set<std::string> schemes;
     std::set<std::string> unique_paths;
-    bool any_parseable = false;
-    bool all_parseable = true;
     for (const std::string& file : files) {
       if (!unique_paths.insert(file).second) {
         return false;
       }
       const std::string chapter = explicit_file_chapter_key(file);
-      any_parseable = any_parseable || !chapter.empty();
-      all_parseable = all_parseable && !chapter.empty();
       if (!chapter.empty() && !indexed.emplace(chapter, file).second) {
         return false;
       }
@@ -665,10 +661,7 @@ configurator_internal::ExplicitStitchingVideoSelection configurator_internal::se
         schemes.insert(chapter.substr(0, chapter.find(':')));
       }
     }
-    if (any_parseable && !all_parseable) {
-      return false;
-    }
-    if (any_parseable && schemes.size() == 1) {
+    if (indexed.size() == files.size() && schemes.size() == 1) {
       for (const auto& [_, file] : indexed) {
         normalized.emplace_back(file);
       }

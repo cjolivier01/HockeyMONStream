@@ -1027,8 +1027,13 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   YAML::Node after_right_remove = YAML::LoadFile(config.string());
   if (!expect(
           successful_remove_writer_checked && successful_remove_writer_saw_missing &&
-              updated_text.find("GX010002.MP4") == std::string::npos && !after_right_remove["game"]["videos"]["left"] &&
-              !after_right_remove["game"]["videos"]["right"],
+              updated_text.find("GX010002.MP4") == std::string::npos &&
+              after_right_remove["game"]["videos"]["left"].size() == 4 &&
+              after_right_remove["game"]["videos"]["right"].size() == 2 &&
+              after_right_remove["game"]["videos"]["right"][0].as<std::string>() ==
+                  ".hstream-ui/right/GX020002.MP4" &&
+              after_right_remove["game"]["videos"]["right"][1].as<std::string>() ==
+                  ".hstream-ui/right/concurrent.mov",
           "A successful deletion must complete before a same-path adopter can acquire the config transaction") ||
       !expect(!list_contains(list, "GX010002.MP4"), "Removed explicit imports should not reappear as Auto")) {
     return false;
@@ -1179,9 +1184,10 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
 
   const QString heterogeneous_insta = source_dir + "/VID_20260815_101000_001.MP4";
   const QString heterogeneous_gopro = source_dir + "/GX010007.MP4";
+  const QString heterogeneous_arbitrary = source_dir + "/left-camera.mov";
   const QString heterogeneous_right = source_dir + "/right-1.m4v";
   if (!write_fake_video(heterogeneous_insta) || !write_fake_video(heterogeneous_gopro) ||
-      !write_fake_video(heterogeneous_right)) {
+      !write_fake_video(heterogeneous_arbitrary) || !write_fake_video(heterogeneous_right)) {
     return false;
   }
   game_id->setText("ui-explicit-heterogeneous-camera-game");
@@ -1191,17 +1197,21 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   activate(add_video);
   video_path->setText(heterogeneous_gopro);
   activate(add_video);
+  video_path->setText(heterogeneous_arbitrary);
+  activate(add_video);
   activate(right);
   video_path->setText(heterogeneous_right);
   activate(add_video);
   const YAML::Node heterogeneous_camera =
       YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
   if (!expect(
-          heterogeneous_camera["game"]["videos"]["left"].size() == 2 &&
+          heterogeneous_camera["game"]["videos"]["left"].size() == 3 &&
               heterogeneous_camera["game"]["videos"]["right"].size() == 1 &&
               heterogeneous_camera["game"]["videos"]["left"][0].as<std::string>() ==
                   ".hstream-ui/left/VID_20260815_101000_001.MP4" &&
-              heterogeneous_camera["game"]["videos"]["left"][1].as<std::string>() == ".hstream-ui/left/GX010007.MP4",
+              heterogeneous_camera["game"]["videos"]["left"][1].as<std::string>() == ".hstream-ui/left/GX010007.MP4" &&
+              heterogeneous_camera["game"]["videos"]["left"][2].as<std::string>() ==
+                  ".hstream-ui/left/left-camera.mov",
           "A heterogeneous explicit camera playlist should preserve the user's total recording order")) {
     return false;
   }

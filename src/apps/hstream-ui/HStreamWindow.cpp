@@ -6076,16 +6076,12 @@ bool HStreamWindow::syncRuntimeExplicitVideoConfig(YAML::Node& config) {
       std::map<QString, QString> by_chapter;
       std::set<QString> schemes;
       std::set<QString> unique_paths;
-      bool any_parseable = false;
-      bool all_parseable = true;
       for (const auto& item : explicit_videos) {
         const QString path = QString::fromStdString(item.as<std::string>());
         if (!unique_paths.insert(path).second) {
           return false;
         }
         const std::optional<QString> chapter = explicit_chapter_key(path);
-        any_parseable = any_parseable || chapter.has_value();
-        all_parseable = all_parseable && chapter.has_value();
         if (chapter && !by_chapter.emplace(*chapter, path).second) {
           return false;
         }
@@ -6093,11 +6089,8 @@ bool HStreamWindow::syncRuntimeExplicitVideoConfig(YAML::Node& config) {
           schemes.insert(chapter->section(':', 0, 0));
         }
       }
-      if (any_parseable && !all_parseable) {
-        return false;
-      }
       playlist = YAML::Node(YAML::NodeType::Sequence);
-      if (any_parseable && schemes.size() == 1) {
+      if (by_chapter.size() == explicit_videos.size() && schemes.size() == 1) {
         for (const auto& [_, path] : by_chapter) {
           playlist.push_back(path.toStdString());
         }
