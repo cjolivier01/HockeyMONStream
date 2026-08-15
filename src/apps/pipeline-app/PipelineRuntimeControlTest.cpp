@@ -72,7 +72,7 @@ class PipelineProcess {
     }
   }
 
-  bool Start(const fs::path& executable, const fs::path& config) {
+  bool Start(const fs::path& executable, const fs::path& config, const std::string& source_type = "URI") {
     int input_pipe[2];
     int output_pipe[2];
     if (::pipe(input_pipe) != 0 || ::pipe(output_pipe) != 0) {
@@ -95,7 +95,7 @@ class PipelineProcess {
           executable.string(),
           "-c",
           config.string(),
-          "--enable-sources=URI",
+          "--enable-sources=" + source_type,
           "--enable-sinks=FAKE",
       };
       std::vector<char*> argv;
@@ -278,6 +278,44 @@ bool write_config(const fs::path& config, const fs::path& video) {
   return output.good();
 }
 
+bool write_playlist_error_config(
+    const fs::path& config,
+    const fs::path& video,
+    const fs::path& missing_second_chapter) {
+  std::ofstream output(config);
+  output << "application:\n"
+         << "  stage: 0\n"
+         << "tiled-display:\n"
+         << "  enable: 0\n"
+         << "source0:\n"
+         << "  enable: 1\n"
+         << "  type: 3\n"
+         << "  uri: file://" << video.string() << "\n"
+         << "  uri-list:\n"
+         << "    - file://" << video.string() << "\n"
+         << "    - file://" << missing_second_chapter.string() << "\n"
+         << "  source-id: 0\n"
+         << "  gpu-id: 0\n"
+         << "  cuda-memory-type: 0\n"
+         << "sink0:\n"
+         << "  enable: 1\n"
+         << "  sink-id: 0\n"
+         << "  type: 1\n"
+         << "  sync: 0\n"
+         << "  source-id: 0\n"
+         << "  gpu-id: 0\n"
+         << "streammux:\n"
+         << "  width: 256\n"
+         << "  height: 144\n"
+         << "  batch-size: 1\n"
+         << "  live-source: 0\n"
+         << "  batched-push-timeout: 40000\n"
+         << "  buffer-pool-size: 8\n"
+         << "  num-surfaces-per-frame: 1\n"
+         << "  gpu-id: 0\n";
+  return output.good();
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -295,6 +333,7 @@ int main(int argc, char** argv) {
   const fs::path root(pattern);
   const fs::path video = root / "input.mp4";
   const fs::path config = root / "pipeline.yaml";
+  const fs::path error_config = root / "pipeline-error.yaml";
   ok &= expect(
       run_command({
           "ffmpeg",    "-hide_banner", "-loglevel",
@@ -307,6 +346,9 @@ int main(int argc, char** argv) {
       }),
       "synthetic seekable input must be generated");
   ok &= expect(write_config(config, video), "pipeline-app test config must be written");
+  ok &= expect(
+      write_playlist_error_config(error_config, video, root / "missing-second-chapter.mp4"),
+      "pipeline-app error test config must be written");
 
   PipelineProcess process;
   ok &= expect(process.Start(argv[1], config), "hstream-cli process must start");
@@ -350,10 +392,27 @@ int main(int argc, char** argv) {
         "relaunched pipeline-app must report successful completion");
   }
 
+  PipelineProcess failed_process;
+  if (ok) {
+    ok &=
+        expect(failed_process.Start(argv[1], error_config, "URI-MULTIPLE"), "pipeline-app failure process must start");
+    exit_code = 0;
+    ok &= expect(
+        failed_process.WaitForExit(&exit_code, std::chrono::seconds(20)),
+        "pipeline-app must stop after a decoder playlist error");
+    ok &= expect(exit_code != 0, "pipeline-app must return nonzero after a decoder playlist error");
+    ok &= expect(
+        failed_process.output().find("App run successful") == std::string::npos,
+        "pipeline-app must never report success after a decoder playlist error");
+  }
+
   if (!ok) {
     process.DumpOutput();
     if (!relaunched_process.output().empty()) {
       relaunched_process.DumpOutput();
+    }
+    if (!failed_process.output().empty()) {
+      failed_process.DumpOutput();
     }
     std::cerr << "fixture retained at " << root << '\n';
   } else {

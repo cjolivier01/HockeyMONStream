@@ -1503,6 +1503,17 @@ absl::Status PipelineApplication::playPipelines(
   g_main_loop_run(main_loop_);
   changemode(0);
 
+  // Bus errors are recorded on their individual AppCtx instances. Cleanup used
+  // to copy those values into return_value_, but cleanup runs only after this
+  // method returns, so a failed pipeline was announced as successful and the
+  // process exited zero. Aggregate the results while every context is still
+  // alive and before deciding the run status.
+  for (const std::shared_ptr<HmApp>& app_context : app_contexts) {
+    if (app_context && app_context->return_value != 0) {
+      return_value_ = -1;
+    }
+  }
+
   if (return_value_ != 0)
     status = absl::InternalError("App run failed");
   else

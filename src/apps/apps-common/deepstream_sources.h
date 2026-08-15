@@ -260,6 +260,17 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
 void cancel_uri_playlist_frame_barrier(NvDsSrcParentBin* bin);
 
 /**
+ * Commit one decoded URI-playlist frame only after the other camera reaches
+ * the identical sequence. This wait has no frame-dropping wall-clock timeout;
+ * permanent playlist exhaustion or explicit cancellation releases an
+ * unpairable waiter with FALSE.
+ *
+ * Exposed for the lossless synchronization regression test. Production
+ * callers enter through the decoded-video pad probe.
+ */
+gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequence, GstClockTime logical_video_end);
+
+/**
  * Initialize @ref NvDsSrcParentBin. It creates and adds nvmultiurisrcbin
  * needed for processing to the bin.
  * It also sets properties mentioned in the configuration file under
