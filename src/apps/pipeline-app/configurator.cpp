@@ -3,6 +3,8 @@
 #include <fcntl.h>
 #include <gstreamer-1.0/gst/gstelement.h>
 #include <gstreamer-1.0/gst/gstpipeline.h>
+#include <signal.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <yaml-cpp/node/parse.h>
@@ -820,8 +822,13 @@ absl::StatusOr<fs::path> configurator_internal::reserve_unique_archive_work_file
       (configured_path.stem().string() + ".hstream-run-" + run_id + configured_path.extension().string());
   const int reservation_fd = ::open(run_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
   if (reservation_fd < 0) {
-    return absl::AlreadyExistsError(TO_STRING(
-        "Unique archive work path already exists; refusing to share or overwrite \"" << run_path.string() << "\""));
+    const int saved_errno = errno;
+    if (saved_errno == EEXIST) {
+      return absl::AlreadyExistsError(TO_STRING(
+          "Unique archive work path already exists; refusing to share or overwrite \"" << run_path.string() << "\""));
+    }
+    return absl::InternalError(TO_STRING(
+        "Failed to reserve unique archive work path \"" << run_path.string() << "\": " << std::strerror(saved_errno)));
   }
   if (::close(reservation_fd) != 0) {
     const int saved_errno = errno;
@@ -831,6 +838,92 @@ absl::StatusOr<fs::path> configurator_internal::reserve_unique_archive_work_file
                                                              << "\": " << std::strerror(saved_errno)));
   }
   return run_path;
+}
+
+absl::StatusOr<int> configurator_internal::acquire_archive_output_lock(const fs::path& configured_path) {
+  fs::path lock_path = configured_path;
+  lock_path += ".hstream-lock";
+  const int lock_fd = ::open(lock_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+  if (lock_fd < 0) {
+    return absl::InternalError(
+        TO_STRING("Failed to open archive ownership lock \"" << lock_path.string() << "\": " << std::strerror(errno)));
+  }
+  if (::flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
+    const int saved_errno = errno;
+    ::close(lock_fd);
+    if (saved_errno == EWOULDBLOCK || saved_errno == EAGAIN) {
+      return absl::AlreadyExistsError(
+          TO_STRING("Another HStream process owns archive output \"" << configured_path.string() << "\""));
+    }
+    return absl::InternalError(TO_STRING(
+        "Failed to lock archive output \"" << configured_path.string() << "\": " << std::strerror(saved_errno)));
+  }
+  return lock_fd;
+}
+
+absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archive_work_files(
+    const fs::path& configured_path) {
+  std::vector<fs::path> recovered;
+  const std::string prefix = configured_path.stem().string() + ".hstream-run-";
+  const std::string extension = configured_path.extension().string();
+  std::error_code iterator_error;
+  for (fs::directory_iterator it(configured_path.parent_path(), iterator_error), end; it != end;
+       it.increment(iterator_error)) {
+    if (iterator_error) {
+      return absl::InternalError(TO_STRING(
+          "Failed to inspect archive work directory \"" << configured_path.parent_path().string()
+                                                        << "\": " << iterator_error.message()));
+    }
+    const fs::path candidate = it->path();
+    const std::string filename = candidate.filename().string();
+    if (filename.size() <= prefix.size() + extension.size() || !absl::StartsWith(filename, prefix) ||
+        !absl::EndsWith(filename, extension)) {
+      continue;
+    }
+
+    const std::string ownership = filename.substr(prefix.size(), filename.size() - prefix.size() - extension.size());
+    const std::vector<std::string> tokens = absl::StrSplit(ownership, '-');
+    bool owner_is_live = false;
+    // New paths begin with backend PID and UI-parent PID. Older paths begin with
+    // the UI-parent PID. Checking the first two numeric fields covers both and
+    // deliberately favors retaining a file when PID reuse makes ownership
+    // ambiguous.
+    for (size_t token_index = 0; token_index < std::min<size_t>(tokens.size(), 2); ++token_index) {
+      const std::string& token = tokens[token_index];
+      if (token.empty() || !std::all_of(token.begin(), token.end(), [](unsigned char c) { return std::isdigit(c); }))
+        continue;
+      const long long parsed_pid = std::strtoll(token.c_str(), nullptr, 10);
+      if (parsed_pid <= 0 || parsed_pid > std::numeric_limits<pid_t>::max())
+        continue;
+      if (::kill(static_cast<pid_t>(parsed_pid), 0) == 0 || errno == EPERM) {
+        owner_is_live = true;
+        break;
+      }
+    }
+    if (owner_is_live)
+      continue;
+
+    struct stat candidate_stat{};
+    if (::lstat(candidate.c_str(), &candidate_stat) != 0) {
+      if (errno == ENOENT)
+        continue;
+      return absl::InternalError(TO_STRING(
+          "Failed to inspect stale archive work file \"" << candidate.string() << "\": " << std::strerror(errno)));
+    }
+    if (!S_ISREG(candidate_stat.st_mode) || candidate_stat.st_size <= 0)
+      continue;
+    auto recovery = preserve_existing_archive_work_file(candidate);
+    if (!recovery.ok())
+      return recovery.status();
+    if (recovery->has_value())
+      recovered.push_back(recovery->value());
+  }
+  if (iterator_error) {
+    return absl::InternalError(TO_STRING(
+        "Failed to inspect archive work directory \"" << configured_path.parent_path().string()
+                                                      << "\": " << iterator_error.message()));
+  }
+  return recovered;
 }
 
 // Forward declaration for helper defined later in this file
@@ -1471,6 +1564,23 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
       }
     }
 
+    const std::string configured_output_path = output_path.lexically_normal().string();
+    if (archive_lock_fds_.find(configured_output_path) == archive_lock_fds_.end()) {
+      auto archive_lock = configurator_internal::acquire_archive_output_lock(output_path);
+      if (!archive_lock.ok())
+        return archive_lock.status();
+      archive_lock_fds_.emplace(configured_output_path, *archive_lock);
+    }
+
+    auto stale_recoveries = configurator_internal::recover_stale_archive_work_files(output_path);
+    if (!stale_recoveries.ok())
+      return stale_recoveries.status();
+    for (const fs::path& recovery_path : *stale_recoveries) {
+      g_print("HSTREAM_OUTPUT_RECOVERY type=archive sink=%d path=%s\n", sink_id, recovery_path.string().c_str());
+    }
+    if (!stale_recoveries->empty())
+      std::fflush(stdout);
+
     auto recovered_output = configurator_internal::preserve_existing_archive_work_file(output_path);
     if (!recovered_output.ok())
       return recovered_output.status();
@@ -1484,10 +1594,17 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
 
     const char* archive_run_id = g_getenv("HSTREAM_ARCHIVE_RUN_ID");
     if (archive_run_id && *archive_run_id) {
-      auto unique_output = configurator_internal::reserve_unique_archive_work_file(output_path, archive_run_id);
-      if (!unique_output.ok())
-        return unique_output.status();
-      output_path = *unique_output;
+      auto existing_run_path = archive_run_paths_.find(configured_output_path);
+      if (existing_run_path != archive_run_paths_.end()) {
+        output_path = existing_run_path->second;
+      } else {
+        const std::string owned_run_id = std::to_string(::getpid()) + "-" + archive_run_id;
+        auto unique_output = configurator_internal::reserve_unique_archive_work_file(output_path, owned_run_id);
+        if (!unique_output.ok())
+          return unique_output.status();
+        output_path = *unique_output;
+        archive_run_paths_.emplace(configured_output_path, output_path);
+      }
     }
 
     set_container_from_output_extension(sink_node, output_path);
@@ -1538,7 +1655,8 @@ Configurator::Configurator(const std::string& game_id, const std::string& config
   // Constructor
 }
 Configurator::~Configurator() {
-  // Destructor
+  for (const auto& [_, lock_fd] : archive_lock_fds_)
+    ::close(lock_fd);
 }
 
 std::vector<size_t> Configurator::enable_source_types(

@@ -6,6 +6,7 @@
 #include "yaml-cpp/yaml.h"
 
 #include <limits>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -40,6 +41,9 @@ absl::StatusOr<std::optional<std::filesystem::path>> preserve_existing_archive_w
 absl::StatusOr<std::filesystem::path> reserve_unique_archive_work_file(
     const std::filesystem::path& configured_path,
     const std::string& run_id);
+absl::StatusOr<int> acquire_archive_output_lock(const std::filesystem::path& configured_path);
+absl::StatusOr<std::vector<std::filesystem::path>> recover_stale_archive_work_files(
+    const std::filesystem::path& configured_path);
 
 } // namespace configurator_internal
 
@@ -171,6 +175,8 @@ class Configurator {
   YAML::Node private_config_;
   YAML::Node persisted_private_config_;
   std::string active_stitching_invalidation_id_;
+  mutable std::map<std::string, int> archive_lock_fds_;
+  mutable std::map<std::string, std::filesystem::path> archive_run_paths_;
 
   bool set_stream_offsets_{false};
 };

@@ -379,6 +379,7 @@ class HStreamWindow : public QMainWindow {
   QProgressBar* archive_finalize_progress_{nullptr};
   QPushButton* archive_finalize_ok_button_{nullptr};
   QString archive_finalize_source_path_;
+  QString archive_finalize_game_id_;
   QString archive_finalize_target_path_;
   QString archive_finalize_partial_path_;
   QString archive_finalize_temporary_dir_;

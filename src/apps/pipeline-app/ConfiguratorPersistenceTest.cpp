@@ -351,6 +351,39 @@ int main() {
           duplicate_unique_work.status().code() == absl::StatusCode::kAlreadyExists,
       "Concurrent UI archive runs must reserve different work paths and never share or overwrite one another");
 
+  const auto failed_unique_reservation = hm::configurator_internal::reserve_unique_archive_work_file(
+      root / "missing-archive-parent" / "archive.mkv", "9999-no-parent");
+  ok &= expect(
+      !failed_unique_reservation.ok() && failed_unique_reservation.status().code() == absl::StatusCode::kInternal &&
+          failed_unique_reservation.status().message().find("No such file or directory") != std::string::npos,
+      "Unique work reservation must preserve non-collision errno diagnostics");
+
+  const fs::path stale_run = custom_archive_dir / "operator-selected-name.hstream-run-99999999-88888888-dead.mkv";
+  const fs::path live_run = custom_archive_dir /
+      ("operator-selected-name.hstream-run-" + std::to_string(::getpid()) + "-" + std::to_string(::getpid()) +
+       "-live.mkv");
+  std::ofstream(stale_run, std::ios::binary) << "stale unique run data";
+  std::ofstream(live_run, std::ios::binary) << "live unique run data";
+  const auto stale_recoveries = hm::configurator_internal::recover_stale_archive_work_files(custom_archive);
+  ok &= expect(
+      stale_recoveries.ok() && stale_recoveries->size() == 1 && !fs::exists(stale_run) &&
+          fs::is_regular_file(stale_recoveries->front()) && fs::is_regular_file(live_run),
+      "Restart recovery must retain dead unique runs while leaving work owned by a live backend/UI untouched");
+
+  const auto first_archive_lock = hm::configurator_internal::acquire_archive_output_lock(custom_archive);
+  const auto conflicting_archive_lock = hm::configurator_internal::acquire_archive_output_lock(custom_archive);
+  ok &= expect(
+      first_archive_lock.ok() && !conflicting_archive_lock.ok() &&
+          conflicting_archive_lock.status().code() == absl::StatusCode::kAlreadyExists,
+      "A second backend must fail cleanly instead of renaming or sharing a live direct-CLI archive");
+  if (first_archive_lock.ok())
+    ::close(*first_archive_lock);
+  const auto reacquired_archive_lock = hm::configurator_internal::acquire_archive_output_lock(custom_archive);
+  ok &= expect(
+      reacquired_archive_lock.ok(), "Archive ownership lock must become available after the prior backend exits");
+  if (reacquired_archive_lock.ok())
+    ::close(*reacquired_archive_lock);
+
   const fs::path superseded_force_dir = games / "superseded-force";
   fs::create_directories(superseded_force_dir);
   std::ofstream(superseded_force_dir / "seam_file.png") << "newer generation\n";

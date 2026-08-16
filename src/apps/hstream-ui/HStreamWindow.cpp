@@ -4167,6 +4167,7 @@ void HStreamWindow::startArchiveFinalization(const QString& source_path, const Q
 
   archive_finalize_failed_ = false;
   archive_finalize_source_path_ = QFileInfo(source_path).absoluteFilePath();
+  archive_finalize_game_id_ = game_id;
   archive_finalize_target_path_ = available_final_archive_path(gameDirectory(game_id), game_id);
   archive_finalize_stdout_buffer_.clear();
   archive_finalize_error_output_.clear();
@@ -4376,8 +4377,28 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
     failArchiveFinalization("ffmpeg reported success but did not create a usable MP4.");
     return;
   }
-  if (!QFile::rename(archive_finalize_partial_path_, archive_finalize_target_path_)) {
-    failArchiveFinalization(QString("Could not publish the completed MP4 as %1.").arg(archive_finalize_target_path_));
+  bool published = false;
+  QString publication_error;
+  for (int attempt = 0; attempt < 1000; ++attempt) {
+    const QString candidate =
+        available_final_archive_path(gameDirectory(archive_finalize_game_id_), archive_finalize_game_id_);
+    if (candidate.isEmpty()) {
+      publication_error = "Could not find an available final filename in the game directory.";
+      break;
+    }
+    if (QFile::rename(archive_finalize_partial_path_, candidate)) {
+      archive_finalize_target_path_ = candidate;
+      published = true;
+      break;
+    }
+    if (!QFileInfo::exists(candidate)) {
+      publication_error = QString("Could not publish the completed MP4 as %1.").arg(candidate);
+      break;
+    }
+  }
+  if (!published) {
+    failArchiveFinalization(
+        publication_error.isEmpty() ? "Could not atomically publish the completed MP4." : publication_error);
     return;
   }
   archive_finalize_partial_path_.clear();

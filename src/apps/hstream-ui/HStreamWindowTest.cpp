@@ -3497,11 +3497,15 @@ bool test_output_controls(HStreamWindow* window) {
 
   const QString completed_source =
       QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("completed-source.mkv");
-  const QString completed_target =
+  const QString concurrent_completed_target =
       QDir(window->gameDirectoryText())
           .filePath(QString("%1-tracking_output-with-audio.mp4").arg(window->gameIdText()));
+  const QString completed_target =
+      QDir(window->gameDirectoryText())
+          .filePath(QString("%1-tracking_output-with-audio-1.mp4").arg(window->gameIdText()));
   const QString ffmpeg_arguments = QDir(output_root.path()).filePath("ffmpeg-arguments.txt");
   QFile::remove(completed_source);
+  QFile::remove(concurrent_completed_target);
   QFile::remove(completed_target);
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", completed_source.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_ARCHIVE_WRITE", "1");
@@ -3516,6 +3520,11 @@ bool test_output_controls(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
+  QFile concurrent_completed_archive(concurrent_completed_target);
+  const bool concurrent_completed_archive_created =
+      concurrent_completed_archive.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
+      concurrent_completed_archive.write("another run published this target") > 0;
+  concurrent_completed_archive.close();
   finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
   finalize_progress = window->findChild<QProgressBar*>("archiveFinalizeProgress");
   finalize_headline = window->findChild<QLabel*>("archiveFinalizeHeadline");
@@ -3547,14 +3556,16 @@ bool test_output_controls(HStreamWindow* window) {
   const bool opened_arguments = argument_file.open(QIODevice::ReadOnly);
   const QString argument_text = opened_arguments ? QString::fromUtf8(argument_file.readAll()) : QString();
   const bool archive_deployed = expect(
-      window->outputStateText("archive-file") == "SAVED" && QFileInfo(completed_target).size() > 0 &&
+      concurrent_completed_archive_created && window->outputStateText("archive-file") == "SAVED" &&
+          QFileInfo(completed_target).size() > 0 && QFileInfo(concurrent_completed_target).size() > 0 &&
           !QFileInfo::exists(completed_source) && argument_text.contains("-n\n") && !argument_text.contains("-y\n") &&
           argument_text.contains(
               QString("/.%1-tracking_output-with-audio.hstream-finalize-").arg(window->gameIdText())) &&
           argument_text.contains("-c\ncopy") && argument_text.contains("-movflags\n+faststart") &&
           argument_text.contains("-tag:v\nhvc1") &&
           window->logText().contains(QString("completed archive published: %1").arg(completed_target)),
-      "Natural completion must losslessly remux once, faststart the MP4, prefix its game ID, and remove the work file");
+      "Concurrent completion must keep the first MP4, publish a suffixed lossless faststart MP4, and remove only its "
+      "own work file");
 
   for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
     QApplication::processEvents();
