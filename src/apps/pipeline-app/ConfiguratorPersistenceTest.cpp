@@ -68,6 +68,31 @@ int main() {
   user_overlay[hm::user_config::kPathsKey][hm::user_config::kOutputRootKey] = (root / "configured-output").string();
   std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
 
+  const fs::path no_home_games = root / "no-home-games";
+  const fs::path no_home_output = root / "no-home-output";
+  fs::create_directories(no_home_games / "explicit-roots");
+  std::ofstream(no_home_games / "explicit-roots" / "config.yaml") << "pipeline:\n  private-without-home: yes\n";
+  ::unsetenv("HOME");
+  ::setenv("HM_GAME_DIR", no_home_games.c_str(), 1);
+  ::setenv("HM_OUTPUT_WORK_DIR", no_home_output.c_str(), 1);
+  const auto no_home_overlay = hm::user_config::load_or_create();
+  hm::Configurator no_home_configurator("explicit-roots", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const auto no_home_config = no_home_configurator.load_config();
+  const auto no_home_game_root = no_home_overlay.ok() ? hm::user_config::game_root(*no_home_overlay)
+                                                      : absl::StatusOr<fs::path>(no_home_overlay.status());
+  const auto no_home_output_root = no_home_overlay.ok() ? hm::user_config::output_root(*no_home_overlay)
+                                                        : absl::StatusOr<fs::path>(no_home_overlay.status());
+  ok &= expect(
+      no_home_overlay.ok() && no_home_overlay->IsMap() && no_home_overlay->size() == 0 && no_home_config.ok() &&
+          (*no_home_config)["pipeline"]["baseline-only"].as<std::string>() == "yes" &&
+          (*no_home_config)["pipeline"]["private-without-home"].as<std::string>() == "yes" &&
+          no_home_game_root.ok() && *no_home_game_root == no_home_games && no_home_output_root.ok() &&
+          *no_home_output_root == no_home_output,
+      "Explicit game/output roots must keep configuration usable when HOME is unset");
+  ::setenv("HOME", test_home.c_str(), 1);
+  ::unsetenv("HM_OUTPUT_WORK_DIR");
+  ::setenv("HM_GAME_DIR", games.c_str(), 1);
+
   const fs::path layered_game = games / "layered";
   fs::create_directories(layered_game);
   std::ofstream(layered_game / "config.yaml") << "pipeline:\n  layered-value: private\n  private-only: yes\n";
@@ -83,6 +108,32 @@ int main() {
   ok &= expect(
       hm::Configurator::get_game_dir("layered") == games / "layered",
       "The user overlay game-root must replace the HOME/Videos default when no environment override is present");
+
+  const fs::path snapshot_root_a = root / "snapshot-root-a";
+  const fs::path snapshot_root_b = root / "snapshot-root-b";
+  fs::create_directories(snapshot_root_a / "snapshot-game");
+  fs::create_directories(snapshot_root_b / "snapshot-game");
+  std::ofstream(snapshot_root_a / "snapshot-game" / "config.yaml") << "pipeline:\n  snapshot-origin: a\n";
+  user_overlay[hm::user_config::kPathsKey][hm::user_config::kGameRootKey] = snapshot_root_a.string();
+  std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
+  hm::Configurator snapshot_configurator("snapshot-game", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const auto snapshot_loaded = snapshot_configurator.load_config();
+  user_overlay[hm::user_config::kPathsKey][hm::user_config::kGameRootKey] = snapshot_root_b.string();
+  std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
+  YAML::Node snapshot_save(YAML::NodeType::Map);
+  snapshot_save["pipeline"]["snapshot-save"] = true;
+  const absl::Status snapshot_save_status = snapshot_configurator.save_private_config(snapshot_save);
+  auto snapshot_a_config = hm::stitching::load_game_config_file(snapshot_root_a / "snapshot-game" / "config.yaml");
+  auto snapshot_b_config = hm::stitching::load_game_config_file(snapshot_root_b / "snapshot-game" / "config.yaml");
+  ok &= expect(
+      snapshot_loaded.ok() && (*snapshot_loaded)["pipeline"]["snapshot-origin"].as<std::string>() == "a" &&
+          snapshot_save_status.ok() && snapshot_a_config.ok() && snapshot_a_config->has_value() &&
+          (**snapshot_a_config)["pipeline"]["snapshot-save"].as<bool>() && snapshot_b_config.ok() &&
+          !snapshot_b_config->has_value(),
+      "Each Configurator must use one game-root snapshot for private-config load, lock, merge, and save");
+
+  user_overlay[hm::user_config::kPathsKey][hm::user_config::kGameRootKey] = games.string();
+  std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
   ::setenv("HM_GAME_DIR", games.c_str(), 1);
 
   hm::Configurator configurator("first-save", "", hm::Configurator::kUseConfigFileGpu);

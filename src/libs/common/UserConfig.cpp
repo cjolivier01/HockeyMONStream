@@ -74,6 +74,23 @@ absl::Status write_new_file(const fs::path& path, const std::string& contents) {
   }
   std::error_code ignored;
   fs::remove(temporary_path, ignored);
+  const int parent_fd = ::open(path.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (parent_fd < 0) {
+    return absl::InternalError(
+        absl::StrCat("Failed to open user config directory ", path.parent_path().string(), ": ", std::strerror(errno)));
+  }
+  if (::fsync(parent_fd) != 0) {
+    const int saved_errno = errno;
+    ::close(parent_fd);
+    return absl::InternalError(
+        absl::StrCat("Failed to sync user config directory ", path.parent_path().string(), ": ",
+                     std::strerror(saved_errno)));
+  }
+  if (::close(parent_fd) != 0) {
+    return absl::InternalError(
+        absl::StrCat("Failed to close user config directory ", path.parent_path().string(), ": ",
+                     std::strerror(errno)));
+  }
   return absl::OkStatus();
 }
 
@@ -141,8 +158,16 @@ absl::StatusOr<fs::path> file_path() {
 
 absl::StatusOr<YAML::Node> load_or_create() {
   auto path = file_path();
-  if (!path.ok())
+  if (!path.ok()) {
+    // Explicit environment roots remain usable in non-login automation where
+    // HOME is deliberately absent. Callers that need a default path will get
+    // the original HOME error from game_root()/output_root().
+    const char* home = ::getenv("HOME");
+    const char* game_root = ::getenv("HM_GAME_DIR");
+    if ((!home || !*home) && game_root && *game_root)
+      return YAML::Node(YAML::NodeType::Map);
     return path.status();
+  }
   const absl::Status created = ensure_first_run_file(*path);
   if (!created.ok())
     return created;

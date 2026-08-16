@@ -679,6 +679,9 @@ bool write_fake_ffmpeg(const QString& path) {
   file.write("target = args[-1]\n");
   file.write("print('out_time=00:05:00.000000', flush=True)\n");
   file.write("print('progress=continue', flush=True)\n");
+  file.write("if os.environ.get('HSTREAM_UI_TEST_FFMPEG_FAIL') == '1':\n");
+  file.write("    print('intentional remux failure', file=sys.stderr, flush=True)\n");
+  file.write("    sys.exit(17)\n");
   file.write("time.sleep(0.15)\n");
   file.write("shutil.copyfile(source, target)\n");
   file.write("print('out_time=00:10:00.000000', flush=True)\n");
@@ -3375,9 +3378,18 @@ bool test_output_controls(HStreamWindow* window) {
     return false;
   }
   const QByteArray original_output_root = qgetenv("HM_OUTPUT_WORK_DIR");
-  qputenv("HM_OUTPUT_WORK_DIR", output_root.path().toLocal8Bit());
+  qputenv("HM_OUTPUT_WORK_DIR", "relative-output-test");
   archive->setChecked(true);
   const QString original_game_id = game_id_edit->text();
+  game_id_edit->setText("archive-relative-path-test");
+  const QString relative_planned_path =
+      QDir(QDir(QDir::currentPath()).filePath("relative-output-test/archive-relative-path-test"))
+          .filePath("tracking_output-with-audio.mkv");
+  const bool relative_override_resolved = expect(
+      archive_path->text().contains(relative_planned_path),
+      "A relative HM_OUTPUT_WORK_DIR should resolve from the backend working directory in both the UI and backend");
+
+  qputenv("HM_OUTPUT_WORK_DIR", output_root.path().toLocal8Bit());
   game_id_edit->setText("archive-label-refresh-test");
   const QString alternate_path =
       QDir(QDir(output_root.path()).filePath("archive-label-refresh-test")).filePath("tracking_output-with-audio.mkv");
@@ -3467,6 +3479,46 @@ bool test_output_controls(HStreamWindow* window) {
           argument_text.contains("-movflags\n+faststart") && argument_text.contains("-tag:v\nhvc1") &&
           window->logText().contains(QString("completed archive published: %1").arg(completed_target)),
       "Natural completion must losslessly remux once, faststart the MP4, prefix its game ID, and remove the work file");
+
+  for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const QString failed_source =
+      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("failed-finalization-source.mkv");
+  const QString failed_recovery =
+      QDir(QFileInfo(failed_source).absolutePath()).filePath("failed-finalization-source-finalization-failed.mkv");
+  const QStringList finalized_before_failure =
+      QDir(window->gameDirectoryText())
+          .entryList(
+              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
+  QFile::remove(failed_source);
+  QFile::remove(failed_recovery);
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", failed_source.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_FFMPEG_FAIL", "1");
+  activate(start);
+  for (int i = 0; i < 300 && window->outputStateText("archive-file") != "ERROR"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  auto* finalize_headline = window->findChild<QLabel*>("archiveFinalizeHeadline");
+  auto* finalize_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
+  auto* finalize_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
+  const QStringList finalized_after_failure =
+      QDir(window->gameDirectoryText())
+          .entryList(
+              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
+  const bool failed_archive_retained = expect(
+      window->outputStateText("archive-file") == "ERROR" && finalize_dialog && finalize_dialog->isVisible() &&
+          finalize_headline && finalize_headline->text() == "Video finalization failed" &&
+          finalize_headline->property("finalizationState").toString() == "failed" && finalize_detail &&
+          finalize_detail->text().contains(failed_recovery) && finalize_ok && finalize_ok->isVisible() &&
+          !QFileInfo::exists(failed_source) && QFileInfo(failed_recovery).size() > 0 &&
+          finalized_after_failure == finalized_before_failure,
+      "A failed remux must show a red dismissible error, preserve a uniquely named recovery MKV, and publish no MP4");
+  qunsetenv("HSTREAM_UI_TEST_FFMPEG_FAIL");
+  if (finalize_ok)
+    activate(finalize_ok);
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_WRITE");
   qunsetenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS");
   qunsetenv("HSTREAM_UI_TEST_FFMPEG_ARGS");
@@ -3477,8 +3529,8 @@ bool test_output_controls(HStreamWindow* window) {
   } else {
     qputenv("HM_OUTPUT_WORK_DIR", original_output_root);
   }
-  return path_refreshes_with_game && path_visible_before_start && path_prepared && stale_output_reported &&
-      finalization_visible && archive_deployed;
+  return relative_override_resolved && path_refreshes_with_game && path_visible_before_start && path_prepared &&
+      stale_output_reported && finalization_visible && archive_deployed && failed_archive_retained;
 }
 
 bool test_camera_controls(HStreamWindow* window) {

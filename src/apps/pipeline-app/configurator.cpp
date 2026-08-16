@@ -975,7 +975,7 @@ absl::Status Configurator::gather_stitching_videos(
 
   if (left_files.empty() && right_files.empty() && !videos.count("left") && !videos.count("right")) {
     HM_RETURN_IF_ERROR(stitching::configure_orientation(game_dir, active_stitching_invalidation_id_));
-    overlay_config("", get_private_config_file_name(game_id_));
+    overlay_config("", (game_dir / "config.yaml").string());
     private_config_["game"]["videos"]["left"] = config_["game"]["videos"]["left"];
     private_config_["game"]["videos"]["right"] = config_["game"]["videos"]["right"];
     left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
@@ -1308,10 +1308,7 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
     return false;
   };
 
-  auto configured_output_root = user_config::output_root(config_);
-  if (!configured_output_root.ok())
-    return configured_output_root.status();
-  const fs::path output_work_dir = *configured_output_root / game_id_;
+  std::optional<fs::path> output_work_dir;
 
   for (auto kv : pipeline) {
     const std::string key = kv.first.as<std::string>();
@@ -1326,6 +1323,13 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
       continue;
     }
 
+    if (!output_work_dir.has_value()) {
+      auto configured_output_root = user_config::output_root(config_);
+      if (!configured_output_root.ok())
+        return configured_output_root.status();
+      output_work_dir = *configured_output_root / game_id_;
+    }
+
     const int sink_id = get_node_value<int>(sink_node, "sink-id", -1);
     const int codec = get_node_value<int>(sink_node, "codec", 0);
     std::string output_file = get_node_value<std::string>(sink_node, "output-file", "");
@@ -1336,7 +1340,7 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
     fs::path output_path(output_file);
     const bool output_was_rebased = !output_path.has_parent_path();
     if (output_was_rebased) {
-      output_path = output_work_dir / output_path;
+      output_path = *output_work_dir / output_path;
     }
     if (output_was_rebased && has_audio_for_sink(sink_id)) {
       output_path = add_audio_suffix_to_output_path(output_path.string());
@@ -1470,7 +1474,35 @@ std::string Configurator::file_maybe_in_game_dir(const std::string& basename) {
   if (p.is_absolute()) {
     return p.string();
   }
-  return (get_game_dir(game_id_) / p).string();
+  const absl::Status snapshot_status = ensure_user_config_snapshot();
+  if (!snapshot_status.ok()) {
+    std::cerr << snapshot_status << '\n';
+    return p.string();
+  }
+  return (resolved_game_dir() / p).string();
+}
+
+absl::Status Configurator::ensure_user_config_snapshot() {
+  if (user_config_snapshot_.has_value() && resolved_game_dir_.has_value())
+    return absl::OkStatus();
+
+  YAML::Node user_overlay;
+  HM_ASSIGN_OR_RETURN(user_overlay, user_config::load_or_create());
+  auto root = user_config::game_root(user_overlay);
+  if (!root.ok())
+    return root.status();
+  user_config_snapshot_ = YAML::Clone(user_overlay);
+  resolved_game_dir_ = game_id_.empty() ? fs::path() : *root / game_id_;
+  return absl::OkStatus();
+}
+
+std::filesystem::path Configurator::resolved_game_dir() {
+  const absl::Status status = ensure_user_config_snapshot();
+  if (!status.ok()) {
+    std::cerr << status << '\n';
+    return game_id_.empty() ? fs::path() : fs::path("/games") / game_id_;
+  }
+  return *resolved_game_dir_;
 }
 
 std::filesystem::path Configurator::get_game_dir(const std::string& game_id) {
@@ -1496,7 +1528,8 @@ std::filesystem::path Configurator::get_private_config_file_name(const std::stri
 }
 
 absl::StatusOr<std::optional<YAML::Node>> Configurator::load_private_config() {
-  const fs::path private_config_file = get_private_config_file_name(game_id_);
+  HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
+  const fs::path private_config_file = resolved_game_dir() / "config.yaml";
   if (private_config_file.parent_path().empty() || !fs::is_directory(private_config_file.parent_path())) {
     return std::nullopt;
   }
@@ -1507,11 +1540,12 @@ absl::Status Configurator::save_private_config(
     const YAML::Node& private_config,
     const std::string& expected_invalidation_id,
     bool remove_rink_masks) {
-  const fs::path game_dir = get_game_dir(game_id_);
+  HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
+  const fs::path game_dir = resolved_game_dir();
   auto config_lock = stitching::GameConfigTransactionLock::Acquire(game_dir);
   if (!config_lock.ok())
     return config_lock.status();
-  const fs::path private_config_file = get_private_config_file_name(game_id_);
+  const fs::path private_config_file = game_dir / "config.yaml";
   YAML::Node latest;
   try {
     if (fs::is_regular_file(private_config_file))
@@ -1544,8 +1578,8 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
       config = YAML::LoadFile(baseline_path);
     }
   }
-  YAML::Node user_overlay;
-  HM_ASSIGN_OR_RETURN(user_overlay, user_config::load_or_create());
+  HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
+  const YAML::Node user_overlay = YAML::Clone(*user_config_snapshot_);
   config = merge_nodes(
       config,
       user_overlay,
@@ -1716,7 +1750,8 @@ absl::Status Configurator::complete_configuration(
   const bool is_camera_source = !camera_sources.empty();
 
   // Stitching config mask config dir
-  fs::path game_dir = get_game_dir(game_id_);
+  HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
+  const fs::path game_dir = resolved_game_dir();
   const bool has_hmstitcher = has_node(pipeline, "hmstitcher", false);
   if (clean_requested && !has_hmstitcher) {
     return absl::FailedPreconditionError("No hmstitcher section is configured; nothing to clean");

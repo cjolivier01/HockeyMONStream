@@ -100,6 +100,9 @@ class Configurator {
       const std::string& config_path);
 
  private:
+  absl::Status ensure_user_config_snapshot();
+  std::filesystem::path resolved_game_dir();
+
   // Refactoring helpers to keep complete_configuration() readable
   void apply_gpu_override(YAML::Node& pipeline);
   absl::Status setup_stitcher_and_masks(
@@ -158,6 +161,8 @@ class Configurator {
 
   // The fully-realzied merged config
   YAML::Node config_;
+  std::optional<YAML::Node> user_config_snapshot_;
+  std::optional<std::filesystem::path> resolved_game_dir_;
   YAML::Node private_config_;
   YAML::Node persisted_private_config_;
   std::string active_stitching_invalidation_id_;

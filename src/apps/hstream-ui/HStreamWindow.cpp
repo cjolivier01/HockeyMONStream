@@ -830,8 +830,8 @@ void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QStr
 }
 
 QString archive_output_work_dir(const QProcessEnvironment& env, const QString& working_dir) {
-  (void)working_dir;
   QString root = env.value("HM_OUTPUT_WORK_DIR").trimmed();
+  const bool explicit_environment_override = !root.isEmpty();
   if (root.isEmpty()) {
     auto user_overlay = hm::user_config::load_or_create();
     if (user_overlay.ok()) {
@@ -842,6 +842,11 @@ QString archive_output_work_dir(const QProcessEnvironment& env, const QString& w
   }
   if (root.isEmpty())
     root = QDir::home().filePath("hstream_output");
+  // The backend interprets an explicitly relative environment override from
+  // its working directory. Resolve it the same way here so the path shown and
+  // monitored by the UI always names the file the backend is writing.
+  if (explicit_environment_override && QFileInfo(root).isRelative())
+    root = QDir(working_dir).absoluteFilePath(root);
   return QDir::cleanPath(root);
 }
 
@@ -856,6 +861,20 @@ QString available_final_archive_path(const QString& game_dir, const QString& gam
   for (int suffix = 0; suffix < 1000; ++suffix) {
     const QString filename = suffix == 0 ? base + ".mp4" : QString("%1-%2.mp4").arg(base).arg(suffix);
     const QString candidate = QDir(game_dir).filePath(filename);
+    if (!QFileInfo::exists(candidate))
+      return candidate;
+  }
+  return {};
+}
+
+QString available_failed_archive_path(const QString& source_path) {
+  const QFileInfo source(source_path);
+  const QString extension = source.suffix().isEmpty() ? QString() : "." + source.suffix();
+  const QString base = source.completeBaseName() + "-finalization-failed";
+  for (int suffix = 0; suffix < 1000; ++suffix) {
+    const QString filename =
+        suffix == 0 ? base + extension : QString("%1-%2%3").arg(base).arg(suffix).arg(extension);
+    const QString candidate = QDir(source.absolutePath()).filePath(filename);
     if (!QFileInfo::exists(candidate))
       return candidate;
   }
@@ -4266,13 +4285,25 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
     return;
   archive_finalize_failed_ = true;
   QFile::remove(archive_finalize_partial_path_);
+  QString failure_detail = message;
+  if (QFileInfo::exists(archive_finalize_source_path_)) {
+    const QString failed_archive_path = available_failed_archive_path(archive_finalize_source_path_);
+    if (!failed_archive_path.isEmpty() && QFile::rename(archive_finalize_source_path_, failed_archive_path)) {
+      archive_finalize_source_path_ = failed_archive_path;
+    } else {
+      failure_detail +=
+          "\n\nThe retained work file could not be moved away from the next run's output path. Do not start another "
+          "archive run until this file has been copied to safety.";
+    }
+  }
   output_states_["archive-file"]->setText("ERROR");
   archive_finalize_progress_->setRange(0, 1000);
   archive_finalize_progress_->setValue(1000);
   archive_finalize_progress_->setFormat("ERROR");
   archive_finalize_headline_->setText("Video finalization failed");
   archive_finalize_detail_->setText(
-      QString("%1\n\nThe original completed archive was retained at:\n%2").arg(message, archive_finalize_source_path_));
+      QString("%1\n\nThe completed archive was retained for recovery at:\n%2")
+          .arg(failure_detail, archive_finalize_source_path_));
   archive_finalize_icon_->setPixmap(style()->standardIcon(QStyle::SP_MessageBoxCritical).pixmap(32, 32));
   for (QWidget* widget :
        {static_cast<QWidget*>(archive_finalize_headline_), static_cast<QWidget*>(archive_finalize_progress_)}) {
@@ -4284,7 +4315,8 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
   static_cast<StitchingCalibrationDialog*>(archive_finalize_dialog_)->setCloseAllowed(true);
   archive_finalize_dialog_->show();
   appendLog(
-      QString("archive finalization failed: %1; source retained at %2").arg(message, archive_finalize_source_path_));
+      QString("archive finalization failed: %1; recovery archive retained at %2")
+          .arg(failure_detail, archive_finalize_source_path_));
   updateRunControls();
 }
 
