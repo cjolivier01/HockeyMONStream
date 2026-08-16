@@ -85,9 +85,8 @@ int main() {
   ok &= expect(
       no_home_overlay.ok() && no_home_overlay->IsMap() && no_home_overlay->size() == 0 && no_home_config.ok() &&
           (*no_home_config)["pipeline"]["baseline-only"].as<std::string>() == "yes" &&
-          (*no_home_config)["pipeline"]["private-without-home"].as<std::string>() == "yes" &&
-          no_home_game_root.ok() && *no_home_game_root == no_home_games && no_home_output_root.ok() &&
-          *no_home_output_root == no_home_output,
+          (*no_home_config)["pipeline"]["private-without-home"].as<std::string>() == "yes" && no_home_game_root.ok() &&
+          *no_home_game_root == no_home_games && no_home_output_root.ok() && *no_home_output_root == no_home_output,
       "Explicit game/output roots must keep configuration usable when HOME is unset");
   ::setenv("HOME", test_home.c_str(), 1);
   ::unsetenv("HM_OUTPUT_WORK_DIR");
@@ -324,6 +323,33 @@ int main() {
               /*auto_right_chapters=*/6)
               .ok(),
       "A single-file Auto side and two independently explicit playlists are unambiguous");
+
+  const fs::path custom_archive_dir = root / "configured-output" / "custom-archive-game";
+  const fs::path custom_archive = custom_archive_dir / "operator-selected-name.mkv";
+  const fs::path custom_recovery = custom_archive_dir / "operator-selected-name-finalization-failed.mkv";
+  fs::create_directories(custom_archive_dir);
+  std::ofstream(custom_archive, std::ios::binary) << "completed data from an interrupted custom archive";
+  const auto recovered_custom_archive = hm::configurator_internal::preserve_existing_archive_work_file(custom_archive);
+  std::ifstream recovered_input(custom_recovery, std::ios::binary);
+  const std::string recovered_content{
+      std::istreambuf_iterator<char>(recovered_input), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      recovered_custom_archive.ok() && recovered_custom_archive->has_value() &&
+          recovered_custom_archive->value() == custom_recovery && !fs::exists(custom_archive) &&
+          recovered_content == "completed data from an interrupted custom archive",
+      "Backend output configuration must durably preserve a nonempty custom work path before sink construction");
+
+  const auto first_unique_work =
+      hm::configurator_internal::reserve_unique_archive_work_file(custom_archive, "1234-review-run-a");
+  const auto duplicate_unique_work =
+      hm::configurator_internal::reserve_unique_archive_work_file(custom_archive, "1234-review-run-a");
+  const auto second_unique_work =
+      hm::configurator_internal::reserve_unique_archive_work_file(custom_archive, "5678-review-run-b");
+  ok &= expect(
+      first_unique_work.ok() && second_unique_work.ok() && *first_unique_work != *second_unique_work &&
+          fs::is_regular_file(*first_unique_work) && fs::is_regular_file(*second_unique_work) &&
+          duplicate_unique_work.status().code() == absl::StatusCode::kAlreadyExists,
+      "Concurrent UI archive runs must reserve different work paths and never share or overwrite one another");
 
   const fs::path superseded_force_dir = games / "superseded-force";
   fs::create_directories(superseded_force_dir);

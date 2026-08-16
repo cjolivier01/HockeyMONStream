@@ -110,6 +110,13 @@ class HStreamWindow : public QMainWindow {
     kStopped,
   };
 
+  enum class ArchiveFinalizeStage {
+    kIdle,
+    kRemux,
+    kSyncCompleted,
+    kSyncRecovery,
+  };
+
   void buildUi();
   void buildTopBar(QVBoxLayout* root);
   void buildMainArea(QVBoxLayout* root);
@@ -140,6 +147,9 @@ class HStreamWindow : public QMainWindow {
   void startArchiveFinalization(const QString& source_path, const QString& game_id, bool hevc_video);
   void readArchiveFinalizationProgress();
   void finishArchiveFinalization(int exit_code, QProcess::ExitStatus exit_status);
+  bool startArchiveDurabilitySync(const QString& path, ArchiveFinalizeStage stage, QString* error);
+  void completeArchiveFinalization();
+  void showArchiveFinalizationFailure(const QString& failure_detail);
   void failArchiveFinalization(const QString& message);
   void showStitchingCalibrationDialog();
   bool beginObservedStitchingCalibration(const QString& reported_stage);
@@ -375,7 +385,9 @@ class HStreamWindow : public QMainWindow {
   QString archive_finalize_blocked_source_path_;
   QString archive_finalize_stdout_buffer_;
   QString archive_finalize_error_output_;
+  QString archive_finalize_pending_failure_detail_;
   qint64 archive_finalize_duration_us_{-1};
+  ArchiveFinalizeStage archive_finalize_stage_{ArchiveFinalizeStage::kIdle};
   bool archive_finalize_failed_{false};
   bool active_run_is_calibration_{false};
   int active_calibration_control_points_{0};

@@ -60,17 +60,14 @@
 #include <QtCore/QUuid>
 
 #ifdef Q_OS_UNIX
-#include <fcntl.h>
 #include <signal.h>
 #include <unistd.h>
 #endif
 
 #include <algorithm>
-#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
-#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -885,57 +882,6 @@ QString available_failed_archive_path(const QString& source_path) {
   return {};
 }
 
-bool sync_file_and_parent_directory(const QString& path, QString* error) {
-#ifdef Q_OS_UNIX
-  const QByteArray native_path = QFile::encodeName(path);
-  const int file_fd = ::open(native_path.constData(), O_RDONLY | O_CLOEXEC);
-  if (file_fd < 0) {
-    if (error)
-      *error =
-          QString("Could not open the archive for durability sync: %1").arg(QString::fromLocal8Bit(::strerror(errno)));
-    return false;
-  }
-  if (::fsync(file_fd) != 0) {
-    const int saved_errno = errno;
-    ::close(file_fd);
-    if (error)
-      *error = QString("Could not sync the archive: %1").arg(QString::fromLocal8Bit(::strerror(saved_errno)));
-    return false;
-  }
-  if (::close(file_fd) != 0) {
-    if (error)
-      *error = QString("Could not close the archive after sync: %1").arg(QString::fromLocal8Bit(::strerror(errno)));
-    return false;
-  }
-
-  const QByteArray native_directory = QFile::encodeName(QFileInfo(path).absolutePath());
-  const int directory_fd = ::open(native_directory.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-  if (directory_fd < 0) {
-    if (error)
-      *error = QString("Could not open the archive directory for durability sync: %1")
-                   .arg(QString::fromLocal8Bit(::strerror(errno)));
-    return false;
-  }
-  if (::fsync(directory_fd) != 0) {
-    const int saved_errno = errno;
-    ::close(directory_fd);
-    if (error)
-      *error = QString("Could not sync the archive directory: %1").arg(QString::fromLocal8Bit(::strerror(saved_errno)));
-    return false;
-  }
-  if (::close(directory_fd) != 0) {
-    if (error)
-      *error = QString("Could not close the archive directory after sync: %1")
-                   .arg(QString::fromLocal8Bit(::strerror(errno)));
-    return false;
-  }
-#else
-  Q_UNUSED(path);
-  Q_UNUSED(error);
-#endif
-  return true;
-}
-
 qint64 media_clock_us(const QString& value) {
   const QStringList fields = value.trimmed().split(':');
   if (fields.size() != 3)
@@ -1468,8 +1414,22 @@ HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
       this,
       [this](int exit_code, QProcess::ExitStatus exit_status) { finishArchiveFinalization(exit_code, exit_status); });
   connect(archive_finalize_process_, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
-    if (error == QProcess::FailedToStart)
-      failArchiveFinalization(QString("Could not start ffmpeg: %1").arg(archive_finalize_process_->errorString()));
+    if (error != QProcess::FailedToStart)
+      return;
+    const QString process_error = archive_finalize_process_->errorString();
+    if (archive_finalize_stage_ == ArchiveFinalizeStage::kSyncRecovery) {
+      archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
+      showArchiveFinalizationFailure(
+          archive_finalize_pending_failure_detail_ +
+          QString(
+              "\n\nThe recovery file was renamed, but the durability helper could not start: %1 Do not start "
+              "another archive run until this file has been copied to safety.")
+              .arg(process_error));
+    } else if (archive_finalize_stage_ == ArchiveFinalizeStage::kSyncCompleted) {
+      failArchiveFinalization(QString("Could not start the archive durability helper: %1").arg(process_error));
+    } else {
+      failArchiveFinalization(QString("Could not start ffmpeg: %1").arg(process_error));
+    }
   });
   buildUi();
   refreshGames();
@@ -3145,6 +3105,11 @@ void HStreamWindow::startPipeline() {
   if (archive_enabled) {
     const QString output_work_dir = archive_output_work_dir(env, working_dir);
     env.insert("HM_OUTPUT_WORK_DIR", output_work_dir);
+    env.insert(
+        "HSTREAM_ARCHIVE_RUN_ID",
+        QString("%1-%2")
+            .arg(QCoreApplication::applicationPid())
+            .arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
     active_archive_output_path_ = archive_output_path(output_work_dir, active_run_game_id_);
     const QString archive_dir = QFileInfo(active_archive_output_path_).absolutePath();
     if (!QDir().mkpath(archive_dir)) {
@@ -3161,60 +3126,9 @@ void HStreamWindow::startPipeline() {
       updateRunControls();
       return;
     }
-    QString recovered_archive_path;
-    const QFileInfo previous_archive(active_archive_output_path_);
-    if (previous_archive.isFile() && previous_archive.size() > 0) {
-      recovered_archive_path = available_failed_archive_path(active_archive_output_path_);
-      if (recovered_archive_path.isEmpty() || !QFile::rename(active_archive_output_path_, recovered_archive_path)) {
-        archive_finalize_blocked_source_path_ = active_archive_output_path_;
-        const QString detail = QString("A previous archive work file could not be moved to safety before starting: %1")
-                                   .arg(active_archive_output_path_);
-        output_states_["archive-file"]->setText("ERROR");
-        if (archive_output_path_label_)
-          archive_output_path_label_->setText(detail);
-        appendLog(detail);
-        active_archive_output_path_.clear();
-        active_run_game_id_.clear();
-        active_run_is_calibration_ = false;
-        pipeline_state_->setText("STOPPED");
-        preview_status_->setText("Archive output setup failed");
-        show_startup_error(detail);
-        updateRunControls();
-        return;
-      }
-
-      QString durability_error;
-      if (!sync_file_and_parent_directory(recovered_archive_path, &durability_error)) {
-        archive_finalize_blocked_source_path_ = recovered_archive_path;
-        const QString detail = QString("A previous archive was moved to %1, but it could not be durability-synced. %2")
-                                   .arg(recovered_archive_path, durability_error);
-        output_states_["archive-file"]->setText("ERROR");
-        if (archive_output_path_label_)
-          archive_output_path_label_->setText(detail);
-        appendLog(detail);
-        active_archive_output_path_.clear();
-        active_run_game_id_.clear();
-        active_run_is_calibration_ = false;
-        pipeline_state_->setText("STOPPED");
-        preview_status_->setText("Archive output setup failed");
-        show_startup_error(detail);
-        updateRunControls();
-        return;
-      }
-      archive_finalize_blocked_source_path_.clear();
-      active_archive_recovery_path_ = recovered_archive_path;
-      appendLog(QString("pre-existing archive work file preserved for recovery: %1").arg(recovered_archive_path));
-    } else if (previous_archive.isFile()) {
-      active_archive_initial_size_ = previous_archive.size();
-      active_archive_initial_mtime_ms_ = previous_archive.lastModified().toMSecsSinceEpoch();
-    }
     output_states_["archive-file"]->setText("WRITING");
-    if (archive_output_path_label_) {
-      archive_output_path_label_->setText(
-          recovered_archive_path.isEmpty() ? QString("Archive: %1").arg(active_archive_output_path_)
-                                           : QString("Archive: %1\nPrevious archive retained for recovery: %2")
-                                                 .arg(active_archive_output_path_, recovered_archive_path));
-    }
+    if (archive_output_path_label_)
+      archive_output_path_label_->setText(QString("Archive: %1").arg(active_archive_output_path_));
     appendLog(QString("archive output: %1 (the playable file is finalized when playback stops)")
                   .arg(active_archive_output_path_));
   }
@@ -4125,6 +4039,17 @@ void HStreamWindow::updatePlaybackProgressPresentation() {
 }
 
 void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
+  static const QRegularExpression recovery_status(R"(^HSTREAM_OUTPUT_RECOVERY type=archive sink=(-?\d+) path=(.+)$)");
+  const QRegularExpressionMatch recovery_match = recovery_status.match(line);
+  if (recovery_match.hasMatch() && !active_archive_output_path_.isEmpty()) {
+    active_archive_recovery_path_ = QFileInfo(recovery_match.captured(2)).absoluteFilePath();
+    if (archive_output_path_label_) {
+      archive_output_path_label_->setText(QString("Archive: %1\nPrevious archive retained for recovery: %2")
+                                              .arg(active_archive_output_path_, active_archive_recovery_path_));
+    }
+    appendLog(QString("pre-existing archive work file preserved for recovery: %1").arg(active_archive_recovery_path_));
+    return;
+  }
   static const QRegularExpression output_status(
       R"(^HSTREAM_OUTPUT type=archive sink=(-?\d+) existed=([01]) size=(-?\d+) mtime-ms=(-?\d+)(?: codec=(h264|hevc|unknown))? path=(.+)$)");
   const QRegularExpressionMatch match = output_status.match(line);
@@ -4245,7 +4170,9 @@ void HStreamWindow::startArchiveFinalization(const QString& source_path, const Q
   archive_finalize_target_path_ = available_final_archive_path(gameDirectory(game_id), game_id);
   archive_finalize_stdout_buffer_.clear();
   archive_finalize_error_output_.clear();
+  archive_finalize_pending_failure_detail_.clear();
   archive_finalize_duration_us_ = media_clock_us(playback_total_);
+  archive_finalize_stage_ = ArchiveFinalizeStage::kRemux;
 
   auto apply_state = [](QWidget* widget, const char* state) {
     if (!widget)
@@ -4342,7 +4269,7 @@ void HStreamWindow::startArchiveFinalization(const QString& source_path, const Q
 }
 
 void HStreamWindow::readArchiveFinalizationProgress() {
-  if (!archive_finalize_process_)
+  if (!archive_finalize_process_ || archive_finalize_stage_ != ArchiveFinalizeStage::kRemux)
     return;
   archive_finalize_stdout_buffer_ += QString::fromLocal8Bit(archive_finalize_process_->readAllStandardOutput());
   while (true) {
@@ -4363,10 +4290,78 @@ void HStreamWindow::readArchiveFinalizationProgress() {
   }
 }
 
+bool HStreamWindow::startArchiveDurabilitySync(const QString& path, ArchiveFinalizeStage stage, QString* error) {
+  QString sync_program = qEnvironmentVariable("HSTREAM_UI_SYNC").trimmed();
+  if (sync_program.isEmpty())
+    sync_program = QStandardPaths::findExecutable("sync");
+  else if (QFileInfo(sync_program).isRelative())
+    sync_program = QStandardPaths::findExecutable(sync_program);
+  if (sync_program.isEmpty()) {
+    if (error)
+      *error = "The sync durability helper is not installed or could not be found in PATH.";
+    return false;
+  }
+
+  archive_finalize_stage_ = stage;
+  archive_finalize_stdout_buffer_.clear();
+  archive_finalize_error_output_.clear();
+  archive_finalize_headline_->setText(
+      stage == ArchiveFinalizeStage::kSyncCompleted ? "Saving completed video safely…" : "Securing recovery archive…");
+  archive_finalize_detail_->setText(
+      stage == ArchiveFinalizeStage::kSyncCompleted
+          ? QString("The MP4 is ready and is being flushed safely to disk at:\n%1").arg(path)
+          : QString("The original archive is being flushed safely to disk at:\n%1").arg(path));
+  archive_finalize_progress_->setRange(0, 0);
+  archive_finalize_progress_->setFormat(
+      stage == ArchiveFinalizeStage::kSyncCompleted ? "Saving MP4 safely" : "Securing recovery archive");
+  appendLog(QString("durability sync starting for archive: %1").arg(path));
+  archive_finalize_process_->setProgram(sync_program);
+  archive_finalize_process_->setArguments({"-f", path});
+  archive_finalize_process_->setWorkingDirectory(QFileInfo(path).absolutePath());
+  archive_finalize_process_->start();
+  return true;
+}
+
 void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatus exit_status) {
-  readArchiveFinalizationProgress();
-  if (archive_finalize_failed_)
+  archive_finalize_error_output_ += QString::fromLocal8Bit(archive_finalize_process_->readAllStandardError());
+  if (archive_finalize_stage_ == ArchiveFinalizeStage::kSyncRecovery) {
+    QString failure_detail = archive_finalize_pending_failure_detail_;
+    if (exit_status != QProcess::NormalExit || exit_code != 0) {
+      archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
+      QString helper_detail = archive_finalize_error_output_.trimmed();
+      if (helper_detail.size() > 1000)
+        helper_detail = helper_detail.right(1000);
+      failure_detail +=
+          QString(
+              "\n\nThe recovery file was renamed, but durability sync failed with code %1.%2 Do not start "
+              "another archive run until this file has been copied to safety.")
+              .arg(exit_code)
+              .arg(helper_detail.isEmpty() ? QString() : "\n" + helper_detail);
+    } else {
+      archive_finalize_blocked_source_path_.clear();
+      appendLog(QString("recovery archive safely synced: %1").arg(archive_finalize_source_path_));
+    }
+    showArchiveFinalizationFailure(failure_detail);
     return;
+  }
+  if (archive_finalize_stage_ == ArchiveFinalizeStage::kSyncCompleted) {
+    if (exit_status != QProcess::NormalExit || exit_code != 0) {
+      QString helper_detail = archive_finalize_error_output_.trimmed();
+      if (helper_detail.size() > 1000)
+        helper_detail = helper_detail.right(1000);
+      failArchiveFinalization(QString("Archive durability sync failed with code %1.%2")
+                                  .arg(exit_code)
+                                  .arg(helper_detail.isEmpty() ? QString() : "\n" + helper_detail));
+      return;
+    }
+    appendLog(QString("completed MP4 safely synced: %1").arg(archive_finalize_target_path_));
+    completeArchiveFinalization();
+    return;
+  }
+  if (archive_finalize_stage_ != ArchiveFinalizeStage::kRemux || archive_finalize_failed_)
+    return;
+
+  readArchiveFinalizationProgress();
   if (exit_status != QProcess::NormalExit || exit_code != 0) {
     QString detail = archive_finalize_error_output_.trimmed();
     if (detail.size() > 1000)
@@ -4393,11 +4388,15 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
   }
 
   QString durability_error;
-  if (!sync_file_and_parent_directory(archive_finalize_target_path_, &durability_error)) {
+  if (!startArchiveDurabilitySync(
+          archive_finalize_target_path_, ArchiveFinalizeStage::kSyncCompleted, &durability_error)) {
     failArchiveFinalization(durability_error);
     return;
   }
+}
 
+void HStreamWindow::completeArchiveFinalization() {
+  archive_finalize_stage_ = ArchiveFinalizeStage::kIdle;
   const qint64 final_size = QFileInfo(archive_finalize_target_path_).size();
   const bool source_removed = QFile::remove(archive_finalize_source_path_);
   output_states_["archive-file"]->setText("SAVED");
@@ -4426,38 +4425,9 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
   updateRunControls();
 }
 
-void HStreamWindow::failArchiveFinalization(const QString& message) {
-  if (archive_finalize_failed_)
-    return;
+void HStreamWindow::showArchiveFinalizationFailure(const QString& failure_detail) {
   archive_finalize_failed_ = true;
-  QFile::remove(archive_finalize_partial_path_);
-  archive_finalize_partial_path_.clear();
-  if (!archive_finalize_temporary_dir_.isEmpty()) {
-    QDir().rmdir(archive_finalize_temporary_dir_);
-    archive_finalize_temporary_dir_.clear();
-  }
-  QString failure_detail = message;
-  if (QFileInfo::exists(archive_finalize_source_path_)) {
-    const QString failed_archive_path = available_failed_archive_path(archive_finalize_source_path_);
-    if (!failed_archive_path.isEmpty() && QFile::rename(archive_finalize_source_path_, failed_archive_path)) {
-      archive_finalize_source_path_ = failed_archive_path;
-      QString durability_error;
-      if (sync_file_and_parent_directory(archive_finalize_source_path_, &durability_error)) {
-        archive_finalize_blocked_source_path_.clear();
-      } else {
-        archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
-        failure_detail += QString(
-                              "\n\nThe recovery file was renamed, but it could not be durability-synced. %1 Do not "
-                              "start another archive run until this file has been copied to safety.")
-                              .arg(durability_error);
-      }
-    } else {
-      archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
-      failure_detail +=
-          "\n\nThe retained work file could not be moved away from the next run's output path. Do not start another "
-          "archive run until this file has been copied to safety.";
-    }
-  }
+  archive_finalize_stage_ = ArchiveFinalizeStage::kIdle;
   output_states_["archive-file"]->setText("ERROR");
   archive_finalize_progress_->setRange(0, 1000);
   archive_finalize_progress_->setValue(1000);
@@ -4478,6 +4448,42 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
   appendLog(QString("archive finalization failed: %1; recovery archive retained at %2")
                 .arg(failure_detail, archive_finalize_source_path_));
   updateRunControls();
+}
+
+void HStreamWindow::failArchiveFinalization(const QString& message) {
+  if (archive_finalize_failed_)
+    return;
+  archive_finalize_failed_ = true;
+  QFile::remove(archive_finalize_partial_path_);
+  archive_finalize_partial_path_.clear();
+  if (!archive_finalize_temporary_dir_.isEmpty()) {
+    QDir().rmdir(archive_finalize_temporary_dir_);
+    archive_finalize_temporary_dir_.clear();
+  }
+  QString failure_detail = message;
+  if (QFileInfo::exists(archive_finalize_source_path_)) {
+    const QString failed_archive_path = available_failed_archive_path(archive_finalize_source_path_);
+    if (!failed_archive_path.isEmpty() && QFile::rename(archive_finalize_source_path_, failed_archive_path)) {
+      archive_finalize_source_path_ = failed_archive_path;
+      archive_finalize_pending_failure_detail_ = failure_detail;
+      QString durability_error;
+      if (startArchiveDurabilitySync(
+              archive_finalize_source_path_, ArchiveFinalizeStage::kSyncRecovery, &durability_error)) {
+        return;
+      }
+      archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
+      failure_detail += QString(
+                            "\n\nThe recovery file was renamed, but it could not be durability-synced. %1 Do not "
+                            "start another archive run until this file has been copied to safety.")
+                            .arg(durability_error);
+    } else {
+      archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
+      failure_detail +=
+          "\n\nThe retained work file could not be moved away from the next run's output path. Do not start another "
+          "archive run until this file has been copied to safety.";
+    }
+  }
+  showArchiveFinalizationFailure(failure_detail);
 }
 
 void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {

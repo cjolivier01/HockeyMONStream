@@ -35,6 +35,11 @@ absl::Status validate_mixed_explicit_auto_playlists(
     bool right_is_explicit,
     size_t auto_left_chapters,
     size_t auto_right_chapters);
+absl::StatusOr<std::optional<std::filesystem::path>> preserve_existing_archive_work_file(
+    const std::filesystem::path& output_path);
+absl::StatusOr<std::filesystem::path> reserve_unique_archive_work_file(
+    const std::filesystem::path& configured_path,
+    const std::string& run_id);
 
 } // namespace configurator_internal
 

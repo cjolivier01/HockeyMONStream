@@ -1,5 +1,6 @@
 #include "configurator.h"
 
+#include <fcntl.h>
 #include <gstreamer-1.0/gst/gstelement.h>
 #include <gstreamer-1.0/gst/gstpipeline.h>
 #include <sys/stat.h>
@@ -10,9 +11,11 @@
 #include <opencv2/videoio.hpp>
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -62,6 +65,49 @@ constexpr const char* kEnableFlagField = "enable";
 
 constexpr const char* kDefaultOutputVideoName = "tracking_output.mkv";
 constexpr const char* kLegacyDefaultOutputName = "out.mkv";
+
+absl::Status sync_archive_and_parent(const fs::path& path) {
+  const int archive_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (archive_fd < 0) {
+    return absl::InternalError(TO_STRING(
+        "Failed to open retained archive \"" << path.string() << "\" for durability sync: " << std::strerror(errno)));
+  }
+  if (::fsync(archive_fd) != 0) {
+    const int saved_errno = errno;
+    ::close(archive_fd);
+    return absl::InternalError(
+        TO_STRING("Failed to sync retained archive \"" << path.string() << "\": " << std::strerror(saved_errno)));
+  }
+  if (::close(archive_fd) != 0) {
+    return absl::InternalError(
+        TO_STRING("Failed to close retained archive \"" << path.string() << "\" after sync: " << std::strerror(errno)));
+  }
+
+  const int directory_fd = ::open(path.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (directory_fd < 0) {
+    return absl::InternalError(TO_STRING(
+        "Failed to open archive directory \"" << path.parent_path().string()
+                                              << "\" for durability sync: " << std::strerror(errno)));
+  }
+  if (::fsync(directory_fd) != 0) {
+    const int saved_errno = errno;
+    ::close(directory_fd);
+    return absl::InternalError(TO_STRING(
+        "Failed to sync archive directory \"" << path.parent_path().string() << "\": " << std::strerror(saved_errno)));
+  }
+  if (::close(directory_fd) != 0) {
+    return absl::InternalError(TO_STRING(
+        "Failed to close archive directory \"" << path.parent_path().string()
+                                               << "\" after sync: " << std::strerror(errno)));
+  }
+  return absl::OkStatus();
+}
+
+fs::path archive_recovery_candidate(const fs::path& output_path, int suffix) {
+  const std::string suffix_text = suffix == 0 ? "" : "-" + std::to_string(suffix);
+  return output_path.parent_path() /
+      (output_path.stem().string() + "-finalization-failed" + suffix_text + output_path.extension().string());
+}
 
 int as_int(const YAML::Node& node) {
   // be less asserty than YAML-CPP
@@ -721,6 +767,72 @@ absl::Status configurator_internal::validate_mixed_explicit_auto_playlists(
       "Select both Left and Right explicitly, or use Auto for both cameras.");
 }
 
+absl::StatusOr<std::optional<fs::path>> configurator_internal::preserve_existing_archive_work_file(
+    const fs::path& output_path) {
+  struct stat output_stat{};
+  if (::stat(output_path.c_str(), &output_stat) != 0) {
+    if (errno == ENOENT)
+      return std::optional<fs::path>();
+    return absl::InternalError(
+        TO_STRING("Failed to inspect archive work file \"" << output_path.string() << "\": " << std::strerror(errno)));
+  }
+  if (!S_ISREG(output_stat.st_mode) || output_stat.st_size <= 0)
+    return std::optional<fs::path>();
+
+  for (int suffix = 0; suffix < 1000; ++suffix) {
+    const fs::path recovery_path = archive_recovery_candidate(output_path, suffix);
+    const int reservation_fd =
+        ::open(recovery_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+    if (reservation_fd < 0) {
+      if (errno == EEXIST)
+        continue;
+      return absl::InternalError(TO_STRING(
+          "Failed to reserve archive recovery path \"" << recovery_path.string() << "\": " << std::strerror(errno)));
+    }
+    if (::close(reservation_fd) != 0) {
+      const int saved_errno = errno;
+      ::unlink(recovery_path.c_str());
+      return absl::InternalError(TO_STRING(
+          "Failed to close archive recovery reservation \"" << recovery_path.string()
+                                                            << "\": " << std::strerror(saved_errno)));
+    }
+    if (::rename(output_path.c_str(), recovery_path.c_str()) != 0) {
+      const int saved_errno = errno;
+      ::unlink(recovery_path.c_str());
+      return absl::InternalError(TO_STRING(
+          "Failed to retain existing archive \"" << output_path.string() << "\" at \"" << recovery_path.string()
+                                                 << "\": " << std::strerror(saved_errno)));
+    }
+    HM_RETURN_IF_ERROR(sync_archive_and_parent(recovery_path));
+    return std::optional<fs::path>(recovery_path);
+  }
+  return absl::ResourceExhaustedError(
+      TO_STRING("No recovery filename is available for existing archive \"" << output_path.string() << "\""));
+}
+
+absl::StatusOr<fs::path> configurator_internal::reserve_unique_archive_work_file(
+    const fs::path& configured_path,
+    const std::string& run_id) {
+  static const std::regex safe_run_id(R"(^[A-Za-z0-9_-]{1,128}$)");
+  if (!std::regex_match(run_id, safe_run_id))
+    return absl::InvalidArgumentError("HSTREAM_ARCHIVE_RUN_ID contains unsafe characters");
+  const fs::path run_path = configured_path.parent_path() /
+      (configured_path.stem().string() + ".hstream-run-" + run_id + configured_path.extension().string());
+  const int reservation_fd = ::open(run_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+  if (reservation_fd < 0) {
+    return absl::AlreadyExistsError(TO_STRING(
+        "Unique archive work path already exists; refusing to share or overwrite \"" << run_path.string() << "\""));
+  }
+  if (::close(reservation_fd) != 0) {
+    const int saved_errno = errno;
+    ::unlink(run_path.c_str());
+    return absl::InternalError(TO_STRING(
+        "Failed to close unique archive work reservation \"" << run_path.string()
+                                                             << "\": " << std::strerror(saved_errno)));
+  }
+  return run_path;
+}
+
 // Forward declaration for helper defined later in this file
 void map_key_configs(YAML::Node yaml, const std::vector<std::pair<std::string, std::string>>& map_dest_from_src);
 
@@ -1349,9 +1461,6 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
       output_path = fs::absolute(output_path);
     }
 
-    set_container_from_output_extension(sink_node, output_path);
-    sink_node["output-file"] = output_path.string();
-
     const fs::path parent = output_path.parent_path();
     if (!parent.empty()) {
       std::error_code ec;
@@ -1361,6 +1470,28 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
             TO_STRING("Failed to create output directory \"" << parent.string() << "\": " << ec.message()));
       }
     }
+
+    auto recovered_output = configurator_internal::preserve_existing_archive_work_file(output_path);
+    if (!recovered_output.ok())
+      return recovered_output.status();
+    if (recovered_output->has_value()) {
+      g_print(
+          "HSTREAM_OUTPUT_RECOVERY type=archive sink=%d path=%s\n",
+          sink_id,
+          recovered_output->value().string().c_str());
+      std::fflush(stdout);
+    }
+
+    const char* archive_run_id = g_getenv("HSTREAM_ARCHIVE_RUN_ID");
+    if (archive_run_id && *archive_run_id) {
+      auto unique_output = configurator_internal::reserve_unique_archive_work_file(output_path, archive_run_id);
+      if (!unique_output.ok())
+        return unique_output.status();
+      output_path = *unique_output;
+    }
+
+    set_container_from_output_extension(sink_node, output_path);
+    sink_node["output-file"] = output_path.string();
     const std::string normalized_output_path = output_path.lexically_normal().string();
     struct stat previous_output{};
     const gboolean output_existed =
