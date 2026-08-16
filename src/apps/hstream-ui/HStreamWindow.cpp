@@ -14,6 +14,7 @@
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStandardPaths>
 #include <QtCore/QSysInfo>
+#include <QtCore/QTemporaryDir>
 #include <QtCore/QTimer>
 #include <QtCore/QUrl>
 #include <QtCore/Qt>
@@ -59,13 +60,17 @@
 #include <QtCore/QUuid>
 
 #ifdef Q_OS_UNIX
+#include <fcntl.h>
 #include <signal.h>
+#include <unistd.h>
 #endif
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -872,13 +877,65 @@ QString available_failed_archive_path(const QString& source_path) {
   const QString extension = source.suffix().isEmpty() ? QString() : "." + source.suffix();
   const QString base = source.completeBaseName() + "-finalization-failed";
   for (int suffix = 0; suffix < 1000; ++suffix) {
-    const QString filename =
-        suffix == 0 ? base + extension : QString("%1-%2%3").arg(base).arg(suffix).arg(extension);
+    const QString filename = suffix == 0 ? base + extension : QString("%1-%2%3").arg(base).arg(suffix).arg(extension);
     const QString candidate = QDir(source.absolutePath()).filePath(filename);
     if (!QFileInfo::exists(candidate))
       return candidate;
   }
   return {};
+}
+
+bool sync_file_and_parent_directory(const QString& path, QString* error) {
+#ifdef Q_OS_UNIX
+  const QByteArray native_path = QFile::encodeName(path);
+  const int file_fd = ::open(native_path.constData(), O_RDONLY | O_CLOEXEC);
+  if (file_fd < 0) {
+    if (error)
+      *error = QString("Could not open the completed MP4 for durability sync: %1")
+                   .arg(QString::fromLocal8Bit(::strerror(errno)));
+    return false;
+  }
+  if (::fsync(file_fd) != 0) {
+    const int saved_errno = errno;
+    ::close(file_fd);
+    if (error)
+      *error = QString("Could not sync the completed MP4: %1").arg(QString::fromLocal8Bit(::strerror(saved_errno)));
+    return false;
+  }
+  if (::close(file_fd) != 0) {
+    if (error)
+      *error =
+          QString("Could not close the completed MP4 after sync: %1").arg(QString::fromLocal8Bit(::strerror(errno)));
+    return false;
+  }
+
+  const QByteArray native_directory = QFile::encodeName(QFileInfo(path).absolutePath());
+  const int directory_fd = ::open(native_directory.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (directory_fd < 0) {
+    if (error)
+      *error = QString("Could not open the game directory for durability sync: %1")
+                   .arg(QString::fromLocal8Bit(::strerror(errno)));
+    return false;
+  }
+  if (::fsync(directory_fd) != 0) {
+    const int saved_errno = errno;
+    ::close(directory_fd);
+    if (error)
+      *error = QString("Could not sync the completed video directory: %1")
+                   .arg(QString::fromLocal8Bit(::strerror(saved_errno)));
+    return false;
+  }
+  if (::close(directory_fd) != 0) {
+    if (error)
+      *error = QString("Could not close the completed video directory after sync: %1")
+                   .arg(QString::fromLocal8Bit(::strerror(errno)));
+    return false;
+  }
+#else
+  Q_UNUSED(path);
+  Q_UNUSED(error);
+#endif
+  return true;
 }
 
 qint64 media_clock_us(const QString& value) {
@@ -3022,6 +3079,17 @@ void HStreamWindow::startPipeline() {
             : "pipeline already running");
     return;
   }
+  if (!archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_))
+    archive_finalize_blocked_source_path_.clear();
+  const auto blocked_archive_toggle = output_toggles_.find("archive-file");
+  const bool blocked_archive_enabled = !isCalibrationRun() && blocked_archive_toggle != output_toggles_.end() &&
+      blocked_archive_toggle->second && blocked_archive_toggle->second->isChecked();
+  if (blocked_archive_enabled && !archive_finalize_blocked_source_path_.isEmpty()) {
+    appendLog(QString("archive run blocked until the retained work file is moved to safety: %1")
+                  .arg(archive_finalize_blocked_source_path_));
+    updateRunControls();
+    return;
+  }
   pipeline_state_->setText("STARTING");
   resetPlaybackProgress(true);
   setPlaybackStartupStage("ui", "Preparing the game directory and saved configuration");
@@ -4160,11 +4228,23 @@ void HStreamWindow::startArchiveFinalization(const QString& source_path, const Q
     failArchiveFinalization(QString("Could not create the game directory: %1").arg(target_info.absolutePath()));
     return;
   }
-  archive_finalize_partial_path_ = QDir(target_info.absolutePath())
-                                       .filePath(QString(".%1.hstream-partial-%2.mp4")
-                                                     .arg(target_info.completeBaseName())
-                                                     .arg(QCoreApplication::applicationPid()));
-  QFile::remove(archive_finalize_partial_path_);
+  QTemporaryDir temporary_directory(
+      QDir(target_info.absolutePath())
+          .filePath(QString(".%1.hstream-finalize-XXXXXX").arg(target_info.completeBaseName())));
+  if (!temporary_directory.isValid()) {
+    failArchiveFinalization(
+        QString("Could not create a private temporary directory in %1.").arg(target_info.absolutePath()));
+    return;
+  }
+  if (!QFile::setPermissions(
+          temporary_directory.path(), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner)) {
+    failArchiveFinalization(
+        QString("Could not secure the temporary video directory in %1.").arg(target_info.absolutePath()));
+    return;
+  }
+  temporary_directory.setAutoRemove(false);
+  archive_finalize_temporary_dir_ = temporary_directory.path();
+  archive_finalize_partial_path_ = QDir(archive_finalize_temporary_dir_).filePath("completed.mp4");
 
   QString ffmpeg = qEnvironmentVariable("HSTREAM_UI_FFMPEG").trimmed();
   if (ffmpeg.isEmpty())
@@ -4178,7 +4258,7 @@ void HStreamWindow::startArchiveFinalization(const QString& source_path, const Q
 
   QStringList arguments = {
       "-hide_banner",
-      "-y",
+      "-n",
       "-progress",
       "pipe:1",
       "-nostats",
@@ -4251,6 +4331,18 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
     failArchiveFinalization(QString("Could not publish the completed MP4 as %1.").arg(archive_finalize_target_path_));
     return;
   }
+  archive_finalize_partial_path_.clear();
+  if (!archive_finalize_temporary_dir_.isEmpty()) {
+    if (!QDir().rmdir(archive_finalize_temporary_dir_))
+      appendLog(QString("could not remove empty archive temporary directory: %1").arg(archive_finalize_temporary_dir_));
+    archive_finalize_temporary_dir_.clear();
+  }
+
+  QString durability_error;
+  if (!sync_file_and_parent_directory(archive_finalize_target_path_, &durability_error)) {
+    failArchiveFinalization(durability_error);
+    return;
+  }
 
   const qint64 final_size = QFileInfo(archive_finalize_target_path_).size();
   const bool source_removed = QFile::remove(archive_finalize_source_path_);
@@ -4285,12 +4377,19 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
     return;
   archive_finalize_failed_ = true;
   QFile::remove(archive_finalize_partial_path_);
+  archive_finalize_partial_path_.clear();
+  if (!archive_finalize_temporary_dir_.isEmpty()) {
+    QDir().rmdir(archive_finalize_temporary_dir_);
+    archive_finalize_temporary_dir_.clear();
+  }
   QString failure_detail = message;
   if (QFileInfo::exists(archive_finalize_source_path_)) {
     const QString failed_archive_path = available_failed_archive_path(archive_finalize_source_path_);
     if (!failed_archive_path.isEmpty() && QFile::rename(archive_finalize_source_path_, failed_archive_path)) {
       archive_finalize_source_path_ = failed_archive_path;
+      archive_finalize_blocked_source_path_.clear();
     } else {
+      archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
       failure_detail +=
           "\n\nThe retained work file could not be moved away from the next run's output path. Do not start another "
           "archive run until this file has been copied to safety.";
@@ -4301,9 +4400,8 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
   archive_finalize_progress_->setValue(1000);
   archive_finalize_progress_->setFormat("ERROR");
   archive_finalize_headline_->setText("Video finalization failed");
-  archive_finalize_detail_->setText(
-      QString("%1\n\nThe completed archive was retained for recovery at:\n%2")
-          .arg(failure_detail, archive_finalize_source_path_));
+  archive_finalize_detail_->setText(QString("%1\n\nThe completed archive was retained for recovery at:\n%2")
+                                        .arg(failure_detail, archive_finalize_source_path_));
   archive_finalize_icon_->setPixmap(style()->standardIcon(QStyle::SP_MessageBoxCritical).pixmap(32, 32));
   for (QWidget* widget :
        {static_cast<QWidget*>(archive_finalize_headline_), static_cast<QWidget*>(archive_finalize_progress_)}) {
@@ -4314,9 +4412,8 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
   archive_finalize_ok_button_->show();
   static_cast<StitchingCalibrationDialog*>(archive_finalize_dialog_)->setCloseAllowed(true);
   archive_finalize_dialog_->show();
-  appendLog(
-      QString("archive finalization failed: %1; recovery archive retained at %2")
-          .arg(failure_detail, archive_finalize_source_path_));
+  appendLog(QString("archive finalization failed: %1; recovery archive retained at %2")
+                .arg(failure_detail, archive_finalize_source_path_));
   updateRunControls();
 }
 
@@ -5089,6 +5186,13 @@ void HStreamWindow::setPreviewFocusMode(bool focused, int tab_index) {
 void HStreamWindow::updateRunControls() {
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   const bool finalizing = archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning;
+  if (!archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_))
+    archive_finalize_blocked_source_path_.clear();
+  const auto archive_toggle = output_toggles_.find("archive-file");
+  const bool archive_enabled =
+      archive_toggle != output_toggles_.end() && archive_toggle->second && archive_toggle->second->isChecked();
+  const bool archive_recovery_blocked =
+      !isCalibrationRun() && archive_enabled && !archive_finalize_blocked_source_path_.isEmpty();
   if (!pipeline_state_) {
     return;
   }
@@ -5102,7 +5206,7 @@ void HStreamWindow::updateRunControls() {
     updatePlaybackProgressPresentation();
   }
   if (start_button_) {
-    start_button_->setEnabled(!running && !finalizing);
+    start_button_->setEnabled(!running && !finalizing && !archive_recovery_blocked);
   }
   if (pause_button_) {
     pause_button_->setEnabled(running);
@@ -6792,6 +6896,7 @@ void HStreamWindow::toggleOutput(const QString& id, bool enabled) {
   if (pipeline_running) {
     appendLog("output route change will apply on the next pipeline start with the current runner backend");
   }
+  updateRunControls();
 }
 
 void HStreamWindow::redirectYoutube() {

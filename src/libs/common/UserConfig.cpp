@@ -19,6 +19,25 @@ namespace {
 
 namespace fs = std::filesystem;
 
+absl::Status sync_directory(const fs::path& directory) {
+  const int fd = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (fd < 0) {
+    return absl::InternalError(
+        absl::StrCat("Failed to open directory ", directory.string(), " for sync: ", std::strerror(errno)));
+  }
+  if (::fsync(fd) != 0) {
+    const int saved_errno = errno;
+    ::close(fd);
+    return absl::InternalError(
+        absl::StrCat("Failed to sync directory ", directory.string(), ": ", std::strerror(saved_errno)));
+  }
+  if (::close(fd) != 0) {
+    return absl::InternalError(
+        absl::StrCat("Failed to close directory ", directory.string(), " after sync: ", std::strerror(errno)));
+  }
+  return absl::OkStatus();
+}
+
 absl::StatusOr<fs::path> home_directory() {
   const char* home = ::getenv("HOME");
   if (!home || !*home) {
@@ -74,24 +93,7 @@ absl::Status write_new_file(const fs::path& path, const std::string& contents) {
   }
   std::error_code ignored;
   fs::remove(temporary_path, ignored);
-  const int parent_fd = ::open(path.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-  if (parent_fd < 0) {
-    return absl::InternalError(
-        absl::StrCat("Failed to open user config directory ", path.parent_path().string(), ": ", std::strerror(errno)));
-  }
-  if (::fsync(parent_fd) != 0) {
-    const int saved_errno = errno;
-    ::close(parent_fd);
-    return absl::InternalError(
-        absl::StrCat("Failed to sync user config directory ", path.parent_path().string(), ": ",
-                     std::strerror(saved_errno)));
-  }
-  if (::close(parent_fd) != 0) {
-    return absl::InternalError(
-        absl::StrCat("Failed to close user config directory ", path.parent_path().string(), ": ",
-                     std::strerror(errno)));
-  }
-  return absl::OkStatus();
+  return sync_directory(path.parent_path());
 }
 
 absl::Status ensure_first_run_file(const fs::path& path) {
@@ -102,11 +104,19 @@ absl::Status ensure_first_run_file(const fs::path& path) {
     return absl::InternalError(absl::StrCat("Failed to inspect ", path.string(), ": ", ec.message()));
 
   const fs::path parent = path.parent_path();
-  if (::mkdir(parent.c_str(), S_IRWXU) != 0 && errno != EEXIST) {
+  bool parent_created = false;
+  if (::mkdir(parent.c_str(), S_IRWXU) == 0) {
+    parent_created = true;
+  } else if (errno != EEXIST) {
     return absl::InternalError(absl::StrCat("Failed to create ", parent.string(), ": ", std::strerror(errno)));
   }
   if (!fs::is_directory(parent, ec) || ec) {
     return absl::InternalError(absl::StrCat("User config parent is not a directory: ", parent.string()));
+  }
+  if (parent_created) {
+    const absl::Status home_sync = sync_directory(parent.parent_path());
+    if (!home_sync.ok())
+      return home_sync;
   }
 
   YAML::Node initial(YAML::NodeType::Map);

@@ -370,6 +370,8 @@ class HStreamWindow : public QMainWindow {
   QString archive_finalize_source_path_;
   QString archive_finalize_target_path_;
   QString archive_finalize_partial_path_;
+  QString archive_finalize_temporary_dir_;
+  QString archive_finalize_blocked_source_path_;
   QString archive_finalize_stdout_buffer_;
   QString archive_finalize_error_output_;
   qint64 archive_finalize_duration_us_{-1};
