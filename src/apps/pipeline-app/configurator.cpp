@@ -68,23 +68,7 @@ constexpr const char* kEnableFlagField = "enable";
 constexpr const char* kDefaultOutputVideoName = "tracking_output.mkv";
 constexpr const char* kLegacyDefaultOutputName = "out.mkv";
 
-absl::Status sync_archive_and_parent(const fs::path& path) {
-  const int archive_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-  if (archive_fd < 0) {
-    return absl::InternalError(TO_STRING(
-        "Failed to open retained archive \"" << path.string() << "\" for durability sync: " << std::strerror(errno)));
-  }
-  if (::fsync(archive_fd) != 0) {
-    const int saved_errno = errno;
-    ::close(archive_fd);
-    return absl::InternalError(
-        TO_STRING("Failed to sync retained archive \"" << path.string() << "\": " << std::strerror(saved_errno)));
-  }
-  if (::close(archive_fd) != 0) {
-    return absl::InternalError(
-        TO_STRING("Failed to close retained archive \"" << path.string() << "\" after sync: " << std::strerror(errno)));
-  }
-
+absl::Status sync_parent_directory(const fs::path& path) {
   const int directory_fd = ::open(path.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
   if (directory_fd < 0) {
     return absl::InternalError(TO_STRING(
@@ -103,6 +87,25 @@ absl::Status sync_archive_and_parent(const fs::path& path) {
                                                << "\" after sync: " << std::strerror(errno)));
   }
   return absl::OkStatus();
+}
+
+absl::Status sync_archive_and_parent(const fs::path& path) {
+  const int archive_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (archive_fd < 0) {
+    return absl::InternalError(TO_STRING(
+        "Failed to open retained archive \"" << path.string() << "\" for durability sync: " << std::strerror(errno)));
+  }
+  if (::fsync(archive_fd) != 0) {
+    const int saved_errno = errno;
+    ::close(archive_fd);
+    return absl::InternalError(
+        TO_STRING("Failed to sync retained archive \"" << path.string() << "\": " << std::strerror(saved_errno)));
+  }
+  if (::close(archive_fd) != 0) {
+    return absl::InternalError(
+        TO_STRING("Failed to close retained archive \"" << path.string() << "\" after sync: " << std::strerror(errno)));
+  }
+  return sync_parent_directory(path);
 }
 
 fs::path archive_recovery_candidate(const fs::path& output_path, int suffix) {
@@ -965,25 +968,26 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
       }
     } else {
       std::smatch ownership_match;
-      static const std::regex versioned_owner(R"(^v2-([0-9]+)-.+$)");
+      static const std::regex versioned_backend_and_ui_owner(
+          R"(^v2-([0-9]+)-([0-9]+)-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
       static const std::regex pre_version_backend_and_ui_owner(
-          R"(^([0-9]+)-[0-9]+-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+          R"(^([0-9]+)-([0-9]+)-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
       static const std::regex legacy_ui_owner(
           R"(^([0-9]+)-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
       static const std::regex fallback_owner(R"(^([0-9]+)(?:-|$).*$)");
-      if (std::regex_match(ownership, ownership_match, versioned_owner) ||
-          std::regex_match(ownership, ownership_match, pre_version_backend_and_ui_owner) ||
-          std::regex_match(ownership, ownership_match, legacy_ui_owner) ||
+      const bool has_backend_and_ui = std::regex_match(ownership, ownership_match, versioned_backend_and_ui_owner) ||
+          std::regex_match(ownership, ownership_match, pre_version_backend_and_ui_owner);
+      if (has_backend_and_ui || std::regex_match(ownership, ownership_match, legacy_ui_owner) ||
           std::regex_match(ownership, ownership_match, fallback_owner)) {
         const long long parsed_pid = std::strtoll(ownership_match[1].str().c_str(), nullptr, 10);
         if (parsed_pid > 0 && parsed_pid <= std::numeric_limits<pid_t>::max())
           owner_is_live = ::kill(static_cast<pid_t>(parsed_pid), 0) == 0 || errno == EPERM;
+        if (!owner_is_live && has_backend_and_ui) {
+          const long long ui_pid = std::strtoll(ownership_match[2].str().c_str(), nullptr, 10);
+          if (ui_pid > 0 && ui_pid <= std::numeric_limits<pid_t>::max())
+            owner_is_live = ::kill(static_cast<pid_t>(ui_pid), 0) == 0 || errno == EPERM;
+        }
       }
-    }
-    if (owner_is_live) {
-      if (recovery_lock_fd >= 0)
-        ::close(recovery_lock_fd);
-      continue;
     }
 
     struct stat candidate_stat{};
@@ -996,6 +1000,29 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
       return absl::InternalError(TO_STRING(
           "Failed to inspect stale archive work file \"" << candidate.string()
                                                          << "\": " << std::strerror(saved_errno)));
+    }
+    if (recovery_lock_fd >= 0 && S_ISREG(candidate_stat.st_mode) && candidate_stat.st_size == 0) {
+      int cleanup_errno = 0;
+      if (::unlink(candidate.c_str()) != 0 && errno != ENOENT) {
+        cleanup_errno = errno;
+      } else if (::unlink(recovery_lock_path.c_str()) != 0 && errno != ENOENT) {
+        cleanup_errno = errno;
+      }
+      if (::close(recovery_lock_fd) != 0 && cleanup_errno == 0)
+        cleanup_errno = errno;
+      recovery_lock_fd = -1;
+      HM_RETURN_IF_ERROR(sync_parent_directory(candidate));
+      if (cleanup_errno != 0) {
+        return absl::InternalError(TO_STRING(
+            "Failed to remove abandoned archive work reservation \"" << candidate.string()
+                                                                     << "\": " << std::strerror(cleanup_errno)));
+      }
+      continue;
+    }
+    if (owner_is_live) {
+      if (recovery_lock_fd >= 0)
+        ::close(recovery_lock_fd);
+      continue;
     }
     if (!S_ISREG(candidate_stat.st_mode) || candidate_stat.st_size <= 0) {
       if (recovery_lock_fd >= 0)

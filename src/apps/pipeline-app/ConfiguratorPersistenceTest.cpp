@@ -380,6 +380,10 @@ int main() {
   const fs::path stale_pre_version_run = custom_archive_dir /
       ("operator-selected-name.hstream-run-99999997-" + std::to_string(::getpid()) +
        "-fedcba98-7654-3210-fedc-ba9876543210.mkv");
+  const fs::path dead_versioned_run = custom_archive_dir /
+      "operator-selected-name.hstream-run-v2-99999996-99999995-abcdef01-2345-6789-abcd-ef0123456789.mkv";
+  const fs::path dead_pre_version_run = custom_archive_dir /
+      "operator-selected-name.hstream-run-99999994-99999993-10fedcba-9876-5432-10fe-dcba98765432.mkv";
   const fs::path live_run = custom_archive_dir /
       ("operator-selected-name.hstream-run-" + std::to_string(::getpid()) + "-" + std::to_string(::getpid()) +
        "-live.mkv");
@@ -389,18 +393,21 @@ int main() {
   std::ofstream(stale_run, std::ios::binary) << "stale unique run data";
   std::ofstream(stale_versioned_run, std::ios::binary) << "stale versioned run with live UI parent";
   std::ofstream(stale_pre_version_run, std::ios::binary) << "stale pre-version run with live UI parent";
+  std::ofstream(dead_versioned_run, std::ios::binary) << "stale versioned run with dead backend and UI";
+  std::ofstream(dead_pre_version_run, std::ios::binary) << "stale pre-version run with dead backend and UI";
   std::ofstream(live_run, std::ios::binary) << "live unique run data";
   std::ofstream(legacy_live_ui_run, std::ios::binary) << "legacy work owned by live UI";
   const auto stale_recoveries = hm::configurator_internal::recover_stale_archive_work_files(custom_archive);
   ok &= expect(
       stale_recoveries.ok() && stale_recoveries->size() == 3 && !fs::exists(stale_run) &&
-          !fs::exists(stale_versioned_run) && !fs::exists(stale_pre_version_run) &&
+          fs::is_regular_file(stale_versioned_run) && fs::is_regular_file(stale_pre_version_run) &&
+          !fs::exists(dead_versioned_run) && !fs::exists(dead_pre_version_run) &&
           std::all_of(
               stale_recoveries->begin(),
               stale_recoveries->end(),
               [](const fs::path& path) { return fs::is_regular_file(path); }) &&
           fs::is_regular_file(live_run) && fs::is_regular_file(legacy_live_ui_run),
-      "Restart recovery must use backend ownership for current runs and retain work owned by a live backend or legacy UI");
+      "Restart recovery must retain pre-v3 work while either its backend or UI owner is alive");
   const auto repeated_stale_recoveries = hm::configurator_internal::recover_stale_archive_work_files(custom_archive);
   ok &= expect(
       repeated_stale_recoveries.ok() && repeated_stale_recoveries->empty() && stale_recoveries.ok() &&
@@ -436,6 +443,29 @@ int main() {
           !fs::exists(finalizer_work) && fs::is_regular_file(after_finalization->front()) &&
           !fs::exists(hm::configurator_internal::archive_work_owner_lock_path(finalizer_work)),
       "A second backend must preserve work during backend-to-UI ownership transfer and finalization, then recover it after explicit relinquishment");
+
+  const fs::path failed_start_archive = custom_archive_dir / "failed-start.mkv";
+  const fs::path failed_start_work = custom_archive_dir /
+      ("failed-start.hstream-run-v3-99999995-" + std::to_string(::getpid()) +
+       "-22334455-6677-8899-aabb-ccddeeff0011.mkv");
+  std::ofstream(failed_start_work, std::ios::binary);
+  const auto failed_start_lock = hm::configurator_internal::acquire_archive_work_owner_lock(failed_start_work);
+  if (failed_start_lock.ok())
+    ::close(*failed_start_lock);
+  const fs::path failed_start_lock_path = hm::configurator_internal::archive_work_owner_lock_path(failed_start_work);
+  const auto failed_start_cleanup = hm::configurator_internal::recover_stale_archive_work_files(failed_start_archive);
+  std::ofstream(failed_start_work, std::ios::binary);
+  const auto repeated_failed_start_lock = hm::configurator_internal::acquire_archive_work_owner_lock(failed_start_work);
+  if (repeated_failed_start_lock.ok())
+    ::close(*repeated_failed_start_lock);
+  const auto repeated_failed_start_cleanup =
+      hm::configurator_internal::recover_stale_archive_work_files(failed_start_archive);
+  ok &= expect(
+      failed_start_lock.ok() && failed_start_cleanup.ok() && failed_start_cleanup->empty() &&
+          repeated_failed_start_lock.ok() && repeated_failed_start_cleanup.ok() &&
+          repeated_failed_start_cleanup->empty() && !fs::exists(failed_start_work) &&
+          !fs::exists(failed_start_lock_path),
+      "Repeated failed starts must durably clean each relinquished zero-byte v3 reservation and ownership sidecar");
 
   const auto first_archive_lock = hm::configurator_internal::acquire_archive_output_lock(custom_archive);
   const auto conflicting_archive_lock = hm::configurator_internal::acquire_archive_output_lock(custom_archive);
