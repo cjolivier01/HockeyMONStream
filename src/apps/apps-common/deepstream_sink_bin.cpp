@@ -812,15 +812,54 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
   }
 
   g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin_sink%d", uid);
-  switch (config->type) {
+  if (gpu_preview_fake) {
+    bin->sink = gst_element_factory_make(NVDS_ELEM_SINK_FAKESINK, elem_name);
+    if (bin->sink) {
+      g_object_set(G_OBJECT(bin->sink), "enable-last-sample", FALSE, NULL);
+    }
+  } else {
+    switch (config->type) {
 #ifndef IS_TEGRA
-    case NV_DS_SINK_RENDER_EGL:
-      GST_CAT_INFO(NVDS_APP, "NVvideo renderer\n");
-      bin->sink = gst_element_factory_make(
-          gpu_preview_fake ? NVDS_ELEM_SINK_FAKESINK
-                           : (use_nv3d ? NVDS_ELEM_SINK_3D : (use_xvideo ? "ximagesink" : NVDS_ELEM_SINK_EGL)),
-          elem_name);
-      if (!gpu_preview_fake && !use_xvideo) {
+      case NV_DS_SINK_RENDER_EGL:
+        GST_CAT_INFO(NVDS_APP, "NVvideo renderer\n");
+        bin->sink = gst_element_factory_make(
+            use_nv3d ? NVDS_ELEM_SINK_3D : (use_xvideo ? "ximagesink" : NVDS_ELEM_SINK_EGL), elem_name);
+        if (!use_xvideo) {
+          g_object_set(
+              G_OBJECT(bin->sink),
+              "window-x",
+              config->offset_x,
+              "window-y",
+              config->offset_y,
+              "window-width",
+              config->width,
+              "window-height",
+              config->height,
+              NULL);
+        }
+        g_object_set(G_OBJECT(bin->sink), "enable-last-sample", use_xvideo ? TRUE : FALSE, NULL);
+        break;
+#endif
+      case NV_DS_SINK_RENDER_DRM:
+#ifndef IS_TEGRA
+        NVGSTDS_ERR_MSG_V("nvdrmvideosink is only supported for Jetson");
+        return FALSE;
+#endif
+        GST_CAT_INFO(NVDS_APP, "NVvideo renderer\n");
+        bin->sink = gst_element_factory_make(NVDS_ELEM_SINK_DRM, elem_name);
+        if ((gint)config->color_range > -1) {
+          g_object_set(G_OBJECT(bin->sink), "color-range", config->color_range, NULL);
+        }
+        g_object_set(G_OBJECT(bin->sink), "conn-id", config->conn_id, NULL);
+        g_object_set(G_OBJECT(bin->sink), "plane-id", config->plane_id, NULL);
+        if ((gint)config->set_mode > -1) {
+          g_object_set(G_OBJECT(bin->sink), "set-mode", config->set_mode, NULL);
+        }
+        break;
+#ifdef IS_TEGRA
+      case NV_DS_SINK_RENDER_3D:
+        GST_CAT_INFO(NVDS_APP, "NVvideo renderer\n");
+        bin->sink = gst_element_factory_make(NVDS_ELEM_SINK_3D, elem_name);
         g_object_set(
             G_OBJECT(bin->sink),
             "window-x",
@@ -832,50 +871,16 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
             "window-height",
             config->height,
             NULL);
-      }
-      g_object_set(G_OBJECT(bin->sink), "enable-last-sample", !gpu_preview_fake && use_xvideo ? TRUE : FALSE, NULL);
-      break;
+        g_object_set(G_OBJECT(bin->sink), "enable-last-sample", FALSE, NULL);
+        break;
 #endif
-    case NV_DS_SINK_RENDER_DRM:
-#ifndef IS_TEGRA
-      NVGSTDS_ERR_MSG_V("nvdrmvideosink is only supported for Jetson");
-      return FALSE;
-#endif
-      GST_CAT_INFO(NVDS_APP, "NVvideo renderer\n");
-      bin->sink = gst_element_factory_make(NVDS_ELEM_SINK_DRM, elem_name);
-      if ((gint)config->color_range > -1) {
-        g_object_set(G_OBJECT(bin->sink), "color-range", config->color_range, NULL);
-      }
-      g_object_set(G_OBJECT(bin->sink), "conn-id", config->conn_id, NULL);
-      g_object_set(G_OBJECT(bin->sink), "plane-id", config->plane_id, NULL);
-      if ((gint)config->set_mode > -1) {
-        g_object_set(G_OBJECT(bin->sink), "set-mode", config->set_mode, NULL);
-      }
-      break;
-#ifdef IS_TEGRA
-    case NV_DS_SINK_RENDER_3D:
-      GST_CAT_INFO(NVDS_APP, "NVvideo renderer\n");
-      bin->sink = gst_element_factory_make(NVDS_ELEM_SINK_3D, elem_name);
-      g_object_set(
-          G_OBJECT(bin->sink),
-          "window-x",
-          config->offset_x,
-          "window-y",
-          config->offset_y,
-          "window-width",
-          config->width,
-          "window-height",
-          config->height,
-          NULL);
-      g_object_set(G_OBJECT(bin->sink), "enable-last-sample", FALSE, NULL);
-      break;
-#endif
-    case NV_DS_SINK_FAKE:
-      bin->sink = gst_element_factory_make(NVDS_ELEM_SINK_FAKESINK, elem_name);
-      g_object_set(G_OBJECT(bin->sink), "enable-last-sample", FALSE, NULL);
-      break;
-    default:
-      return FALSE;
+      case NV_DS_SINK_FAKE:
+        bin->sink = gst_element_factory_make(NVDS_ELEM_SINK_FAKESINK, elem_name);
+        g_object_set(G_OBJECT(bin->sink), "enable-last-sample", FALSE, NULL);
+        break;
+      default:
+        return FALSE;
+    }
   }
 
   if (!bin->sink) {
