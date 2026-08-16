@@ -28,6 +28,7 @@ PIPELINE_APP_DEPS = [
     # "//src/libs/common:mod_pipeline",
     "//src/libs/common:utils",
     "//src/libs/common:fs",
+    "//src/libs/common:user_config",
     "//src/libs/stitching",
     "//src/libs/wireless:stream_control",
     "//src/apps/apps-common:deepstream_apps_common",

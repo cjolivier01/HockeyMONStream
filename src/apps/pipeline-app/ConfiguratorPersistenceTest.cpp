@@ -7,9 +7,11 @@
 #include <string>
 
 #include <gst/gst.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
 
+#include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 
@@ -32,9 +34,55 @@ int main() {
   bool ok = true;
   const fs::path root = fs::temp_directory_path() / ("configurator-persistence-test-" + std::to_string(::getpid()));
   fs::remove_all(root);
+  const std::string original_home = ::getenv("HOME") ? ::getenv("HOME") : "";
+  const std::string original_game_root = ::getenv("HM_GAME_DIR") ? ::getenv("HM_GAME_DIR") : "";
+  const std::string original_output_root = ::getenv("HM_OUTPUT_WORK_DIR") ? ::getenv("HM_OUTPUT_WORK_DIR") : "";
+  const fs::path test_home = root / "home";
+  fs::create_directories(test_home);
+  ::setenv("HOME", test_home.c_str(), 1);
+  ::unsetenv("HM_OUTPUT_WORK_DIR");
+
+  auto first_user_config = hm::user_config::load_or_create();
+  const fs::path user_config_path = test_home / ".hstream" / "hstream.yaml";
+  struct stat user_config_stat{};
+  ok &= expect(
+      first_user_config.ok() && fs::is_regular_file(user_config_path) &&
+          (*first_user_config)[hm::user_config::kPathsKey][hm::user_config::kOutputRootKey].as<std::string>() ==
+              (test_home / "hstream_output").string() &&
+          !(*first_user_config)[hm::user_config::kPathsKey][hm::user_config::kGameRootKey] &&
+          ::stat(user_config_path.c_str(), &user_config_stat) == 0 && (user_config_stat.st_mode & 0777) == 0600,
+      "First config read must create a private user overlay containing only the HOME hstream_output default");
+
   const fs::path games = root / "games";
   const fs::path game_dir = games / "first-save";
   fs::create_directories(game_dir);
+  ::setenv("HM_GAME_DIR", games.c_str(), 1);
+
+  const fs::path baseline_root = root / "baseline";
+  fs::create_directories(baseline_root);
+  std::ofstream(baseline_root / "baseline.yaml") << "pipeline:\n  layered-value: baseline\n  baseline-only: yes\n";
+  YAML::Node user_overlay = first_user_config.ok() ? YAML::Clone(*first_user_config) : YAML::Node(YAML::NodeType::Map);
+  user_overlay["pipeline"]["layered-value"] = "user";
+  user_overlay["pipeline"]["user-only"] = "yes";
+  user_overlay[hm::user_config::kPathsKey][hm::user_config::kGameRootKey] = games.string();
+  user_overlay[hm::user_config::kPathsKey][hm::user_config::kOutputRootKey] = (root / "configured-output").string();
+  std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
+
+  const fs::path layered_game = games / "layered";
+  fs::create_directories(layered_game);
+  std::ofstream(layered_game / "config.yaml") << "pipeline:\n  layered-value: private\n  private-only: yes\n";
+  hm::Configurator layered("layered", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const auto layered_config = layered.load_config();
+  ok &= expect(
+      layered_config.ok() && (*layered_config)["pipeline"]["layered-value"].as<std::string>() == "private" &&
+          (*layered_config)["pipeline"]["baseline-only"].as<std::string>() == "yes" &&
+          (*layered_config)["pipeline"]["user-only"].as<std::string>() == "yes" &&
+          (*layered_config)["pipeline"]["private-only"].as<std::string>() == "yes",
+      "Config precedence must be baseline, then user overlay, then game-private YAML");
+  ::unsetenv("HM_GAME_DIR");
+  ok &= expect(
+      hm::Configurator::get_game_dir("layered") == games / "layered",
+      "The user overlay game-root must replace the HOME/Videos default when no environment override is present");
   ::setenv("HM_GAME_DIR", games.c_str(), 1);
 
   hm::Configurator configurator("first-save", "", hm::Configurator::kUseConfigFileGpu);
@@ -308,7 +356,18 @@ int main() {
       superseded_complete_status.code() == absl::StatusCode::kAborted,
       "A reserved complete owner superseded after load_config must abort at the final launch boundary");
 
-  ::unsetenv("HM_GAME_DIR");
   fs::remove_all(root);
+  if (original_home.empty())
+    ::unsetenv("HOME");
+  else
+    ::setenv("HOME", original_home.c_str(), 1);
+  if (original_game_root.empty())
+    ::unsetenv("HM_GAME_DIR");
+  else
+    ::setenv("HM_GAME_DIR", original_game_root.c_str(), 1);
+  if (original_output_root.empty())
+    ::unsetenv("HM_OUTPUT_WORK_DIR");
+  else
+    ::setenv("HM_OUTPUT_WORK_DIR", original_output_root.c_str(), 1);
   return ok ? 0 : 1;
 }

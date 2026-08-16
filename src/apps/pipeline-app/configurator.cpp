@@ -38,6 +38,7 @@
 #include "hstream/src/libs/common/ConfigYaml.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/common/filesystem.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 #include "hstream/src/libs/common/utils.h"
@@ -1307,11 +1308,10 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
     return false;
   };
 
-  const char* configured_output_work_dir = ::getenv("HM_OUTPUT_WORK_DIR");
-  const fs::path output_work_dir =
-      (configured_output_work_dir && *configured_output_work_dir ? fs::path(configured_output_work_dir)
-                                                                 : fs::path(".") / "output_workdirs") /
-      game_id_;
+  auto configured_output_root = user_config::output_root(config_);
+  if (!configured_output_root.ok())
+    return configured_output_root.status();
+  const fs::path output_work_dir = *configured_output_root / game_id_;
 
   for (auto kv : pipeline) {
     const std::string key = kv.first.as<std::string>();
@@ -1327,6 +1327,7 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
     }
 
     const int sink_id = get_node_value<int>(sink_node, "sink-id", -1);
+    const int codec = get_node_value<int>(sink_node, "codec", 0);
     std::string output_file = get_node_value<std::string>(sink_node, "output-file", "");
     if (!is_valid_yaml_value_string(output_file) || output_file == kLegacyDefaultOutputName) {
       output_file = kDefaultOutputVideoName;
@@ -1366,11 +1367,12 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
         : -1;
     g_print(
         "HSTREAM_OUTPUT type=archive sink=%d existed=%d size=%" G_GINT64_FORMAT " mtime-ms=%" G_GINT64_FORMAT
-        " path=%s\n",
+        " codec=%s path=%s\n",
         sink_id,
         output_existed,
         previous_size,
         previous_mtime_ms,
+        codec == 2 ? "hevc" : (codec == 1 ? "h264" : "unknown"),
         normalized_output_path.c_str());
     std::fflush(stdout);
   }
@@ -1475,14 +1477,17 @@ std::filesystem::path Configurator::get_game_dir(const std::string& game_id) {
   if (game_id.empty()) {
     return {};
   }
-  const char* sprefix = ::getenv("HM_GAME_DIR");
-  if (sprefix && *sprefix) {
-    return fs::path(sprefix) / game_id;
+  YAML::Node user_overlay(YAML::NodeType::Map);
+  auto loaded = user_config::load_or_create();
+  if (loaded.ok()) {
+    user_overlay = *loaded;
+  } else {
+    std::cerr << loaded.status() << '\n';
   }
-  const char* homedir = ::getenv("HOME");
-  if (homedir && *homedir) {
-    return fs::path(homedir) / "Videos" / game_id;
-  }
+  auto root = user_config::game_root(user_overlay);
+  if (root.ok())
+    return *root / game_id;
+  std::cerr << root.status() << '\n';
   return fs::path("/games") / game_id;
 }
 
@@ -1539,6 +1544,12 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
       config = YAML::LoadFile(baseline_path);
     }
   }
+  YAML::Node user_overlay;
+  HM_ASSIGN_OR_RETURN(user_overlay, user_config::load_or_create());
+  config = merge_nodes(
+      config,
+      user_overlay,
+      /*warn_if_key_not_in_dest=*/false);
   std::optional<YAML::Node> private_config;
   HM_ASSIGN_OR_RETURN(private_config, load_private_config());
   if (private_config.has_value()) {

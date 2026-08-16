@@ -1,6 +1,7 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
 
 #include <QtCore/QtGlobal>
+#include <QtGui/QIcon>
 #include <QtWidgets/QApplication>
 
 int main(int argc, char** argv) {
@@ -15,8 +16,8 @@ int main(int argc, char** argv) {
   }
 #endif
   QApplication app(argc, argv);
+  app.setWindowIcon(hm::ui_internal::application_icon());
   HStreamWindow window;
-  app.setWindowIcon(window.windowIcon());
   window.show();
   return app.exec();
 }

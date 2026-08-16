@@ -398,7 +398,7 @@ bool write_fake_runner(const QString& path) {
   file.write("    except FileNotFoundError:\n");
   file.write("        archive_before = 'existed=0 size=-1 mtime-ms=-1'\n");
   file.write(
-      "    print('HSTREAM_OUTPUT type=archive sink=2 ' + archive_before + ' path=' + archive_path, flush=True)\n");
+      "    print('HSTREAM_OUTPUT type=archive sink=2 ' + archive_before + ' codec=hevc path=' + archive_path, flush=True)\n");
   file.write(
       "print('HSTREAM_CALIBRATION_INVALIDATION_ID=' + "
       "os.environ.get('HSTREAM_CALIBRATION_INVALIDATION_ID', ''), flush=True)\n");
@@ -442,6 +442,10 @@ bool write_fake_runner(const QString& path) {
       "instance=aggregate instances=1 generation=0', "
       "flush=True)\n");
   file.write("if os.environ.get('HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS'):\n");
+  file.write(
+      "    if os.environ.get('HSTREAM_UI_TEST_ARCHIVE_WRITE') and os.environ.get('HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH'):\n");
+  file.write("        with open(os.environ['HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH'], 'wb') as archive:\n");
+  file.write("            archive.write(b'completed lossless archive')\n");
   file.write("    sys.exit(int(os.environ['HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS']))\n");
   file.write(
       "if os.environ.get('HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW') == '1' or any(argument.startswith("
@@ -651,6 +655,34 @@ bool write_fake_runner(const QString& path) {
   file.write("    while b'\\n' in pending_stdin:\n");
   file.write("        raw_line, pending_stdin = pending_stdin.split(b'\\n', 1)\n");
   file.write("        handle_stdin_line(raw_line.decode(errors='replace') + '\\n')\n");
+  file.close();
+  return QFile::setPermissions(
+      path,
+      QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner | QFileDevice::ReadGroup |
+          QFileDevice::ExeGroup | QFileDevice::ReadOther | QFileDevice::ExeOther);
+}
+
+bool write_fake_ffmpeg(const QString& path) {
+  QFile file(path);
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    return false;
+  file.write("#!/usr/bin/env python3\n");
+  file.write("import os\n");
+  file.write("import shutil\n");
+  file.write("import sys\n");
+  file.write("import time\n");
+  file.write("args = sys.argv[1:]\n");
+  file.write("if os.environ.get('HSTREAM_UI_TEST_FFMPEG_ARGS'):\n");
+  file.write("    with open(os.environ['HSTREAM_UI_TEST_FFMPEG_ARGS'], 'w', encoding='utf-8') as output:\n");
+  file.write("        output.write('\\n'.join(args))\n");
+  file.write("source = args[args.index('-i') + 1]\n");
+  file.write("target = args[-1]\n");
+  file.write("print('out_time=00:05:00.000000', flush=True)\n");
+  file.write("print('progress=continue', flush=True)\n");
+  file.write("time.sleep(0.15)\n");
+  file.write("shutil.copyfile(source, target)\n");
+  file.write("print('out_time=00:10:00.000000', flush=True)\n");
+  file.write("print('progress=end', flush=True)\n");
   file.close();
   return QFile::setPermissions(
       path,
@@ -1030,10 +1062,8 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
               updated_text.find("GX010002.MP4") == std::string::npos &&
               after_right_remove["game"]["videos"]["left"].size() == 4 &&
               after_right_remove["game"]["videos"]["right"].size() == 2 &&
-              after_right_remove["game"]["videos"]["right"][0].as<std::string>() ==
-                  ".hstream-ui/right/GX020002.MP4" &&
-              after_right_remove["game"]["videos"]["right"][1].as<std::string>() ==
-                  ".hstream-ui/right/concurrent.mov",
+              after_right_remove["game"]["videos"]["right"][0].as<std::string>() == ".hstream-ui/right/GX020002.MP4" &&
+              after_right_remove["game"]["videos"]["right"][1].as<std::string>() == ".hstream-ui/right/concurrent.mov",
           "A successful deletion must complete before a same-path adopter can acquire the config transaction") ||
       !expect(!list_contains(list, "GX010002.MP4"), "Removed explicit imports should not reappear as Auto")) {
     return false;
@@ -1210,8 +1240,7 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
               heterogeneous_camera["game"]["videos"]["left"][0].as<std::string>() ==
                   ".hstream-ui/left/VID_20260815_101000_001.MP4" &&
               heterogeneous_camera["game"]["videos"]["left"][1].as<std::string>() == ".hstream-ui/left/GX010007.MP4" &&
-              heterogeneous_camera["game"]["videos"]["left"][2].as<std::string>() ==
-                  ".hstream-ui/left/left-camera.mov",
+              heterogeneous_camera["game"]["videos"]["left"][2].as<std::string>() == ".hstream-ui/left/left-camera.mov",
           "A heterogeneous explicit camera playlist should preserve the user's total recording order")) {
     return false;
   }
@@ -3395,6 +3424,52 @@ bool test_output_controls(HStreamWindow* window) {
       window->logText().contains(
           QString("archive output was not updated; existing file remains at: %1").arg(expected_path)),
       "Archive playback should not claim that an unchanged pre-existing file came from the current run");
+
+  const QString completed_source =
+      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("completed-source.mkv");
+  const QString completed_target =
+      QDir(window->gameDirectoryText())
+          .filePath(QString("%1-tracking_output-with-audio.mp4").arg(window->gameIdText()));
+  const QString ffmpeg_arguments = QDir(output_root.path()).filePath("ffmpeg-arguments.txt");
+  QFile::remove(completed_source);
+  QFile::remove(completed_target);
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", completed_source.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_WRITE", "1");
+  qputenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS", "0");
+  qputenv("HSTREAM_UI_TEST_FFMPEG_ARGS", ffmpeg_arguments.toLocal8Bit());
+  activate(start);
+  QDialog* finalize_dialog = nullptr;
+  QProgressBar* finalize_progress = nullptr;
+  for (int i = 0; i < 300 && window->outputStateText("archive-file") != "FINALIZING"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
+  finalize_progress = window->findChild<QProgressBar*>("archiveFinalizeProgress");
+  for (int i = 0; i < 100 && finalize_progress && finalize_progress->value() <= 0; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const bool finalization_visible = expect(
+      finalize_dialog && finalize_progress && finalize_dialog->isVisible() &&
+          finalize_dialog->windowModality() == Qt::WindowModal && finalize_progress->value() > 0,
+      "A successful pipeline archive must show app-modal lossless finalization progress");
+  for (int i = 0; i < 300 && window->outputStateText("archive-file") != "SAVED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  QFile argument_file(ffmpeg_arguments);
+  const bool opened_arguments = argument_file.open(QIODevice::ReadOnly);
+  const QString argument_text = opened_arguments ? QString::fromUtf8(argument_file.readAll()) : QString();
+  const bool archive_deployed = expect(
+      window->outputStateText("archive-file") == "SAVED" && QFileInfo(completed_target).size() > 0 &&
+          !QFileInfo::exists(completed_source) && argument_text.contains("-c\ncopy") &&
+          argument_text.contains("-movflags\n+faststart") && argument_text.contains("-tag:v\nhvc1") &&
+          window->logText().contains(QString("completed archive published: %1").arg(completed_target)),
+      "Natural completion must losslessly remux once, faststart the MP4, prefix its game ID, and remove the work file");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_WRITE");
+  qunsetenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS");
+  qunsetenv("HSTREAM_UI_TEST_FFMPEG_ARGS");
   archive->setChecked(false);
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH");
   if (original_output_root.isEmpty()) {
@@ -3402,7 +3477,8 @@ bool test_output_controls(HStreamWindow* window) {
   } else {
     qputenv("HM_OUTPUT_WORK_DIR", original_output_root);
   }
-  return path_refreshes_with_game && path_visible_before_start && path_prepared && stale_output_reported;
+  return path_refreshes_with_game && path_visible_before_start && path_prepared && stale_output_reported &&
+      finalization_visible && archive_deployed;
 }
 
 bool test_camera_controls(HStreamWindow* window) {
@@ -4672,10 +4748,12 @@ int main(int argc, char** argv) {
   qputenv("HM_GAME_DIR", game_root.path().toLocal8Bit());
   qunsetenv("USE_NEW_NVSTREAMMUX");
   const QString fake_runner = source_root.path() + "/hstream-ui-fake-runner.sh";
-  if (!write_fake_runner(fake_runner)) {
+  const QString fake_ffmpeg = source_root.path() + "/hstream-ui-fake-ffmpeg.py";
+  if (!write_fake_runner(fake_runner) || !write_fake_ffmpeg(fake_ffmpeg)) {
     return 1;
   }
   qputenv("HSTREAM_UI_TEST_RUNNER", fake_runner.toLocal8Bit());
+  qputenv("HSTREAM_UI_FFMPEG", fake_ffmpeg.toLocal8Bit());
   QApplication app(argc, argv);
   HStreamWindow window;
   window.show();
