@@ -98,6 +98,25 @@ int main() {
         completed_save.ok() && after_completed["game"]["videos"]["left"][0].as<std::string>() == "cam1/left.mp4" &&
             after_completed["game"]["videos"]["right"][0].as<std::string>() == "cam2/right.mp4",
         "a completed Program generation must be allowed to persist its derived camera orientation");
+    const fs::path left_path_2 = completed_root / "cam1" / "left-2.mp4";
+    const fs::path right_path_2 = completed_root / "cam2" / "right-2.mp4";
+    const fs::path right_path_3 = completed_root / "cam2" / "right-3.mp4";
+    touch(left_path_2);
+    touch(right_path_2);
+    touch(right_path_3);
+    const hm::stitching::orientation_internal::VideoChapterMap uneven_left{
+        {2, left_path.string()}, {7, left_path_2.string()}};
+    const hm::stitching::orientation_internal::VideoChapterMap uneven_right{
+        {1, right_path.string()}, {4, right_path_2.string()}, {9, right_path_3.string()}};
+    const auto uneven_save = hm::stitching::orientation_internal::save_orientation_config(
+        completed_root, uneven_left, uneven_right, "program-owner");
+    const YAML::Node after_uneven = YAML::LoadFile((completed_root / "config.yaml").string());
+    ok &= expect(
+        uneven_save.ok() && after_uneven["game"]["videos"]["left"].size() == 2 &&
+            after_uneven["game"]["videos"]["right"].size() == 3 &&
+            after_uneven["game"]["videos"]["left"][1].as<std::string>() == "cam1/left-2.mp4" &&
+            after_uneven["game"]["videos"]["right"][2].as<std::string>() == "cam2/right-3.mp4",
+        "camera playlists with different physical chapter counts must be persisted independently and in order");
     completed["hstream_ui"]["stitching_calibration"]["status"] = "pending";
     completed["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "newer-owner";
     ok &= expect(

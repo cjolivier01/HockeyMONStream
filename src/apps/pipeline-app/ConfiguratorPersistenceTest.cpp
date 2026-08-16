@@ -97,7 +97,134 @@ int main() {
 
   explicit_roles["hstream_ui"]["video_roles"]["right"][1] = ".hstream-ui/right/GX030002.MP4";
   selected = hm::configurator_internal::select_explicit_stitching_videos(explicit_roles, /*force=*/true);
-  ok &= expect(!selected.error.empty(), "Forced configuration must reject mismatched explicit UI chapters");
+  ok &= expect(
+      selected.error.empty() &&
+          selected.left == std::vector<std::string>{".hstream-ui/left/GX010001.MP4", ".hstream-ui/left/GX020001.MP4"} &&
+          selected.right ==
+              std::vector<std::string>{".hstream-ui/right/GX010002.MP4", ".hstream-ui/right/GX030002.MP4"},
+      "Explicit camera playlists must not be paired by physical chapter number");
+
+  explicit_roles["hstream_ui"]["video_roles"]["right"].push_back(".hstream-ui/right/GX020002.MP4");
+  selected = hm::configurator_internal::select_explicit_stitching_videos(explicit_roles, /*force=*/true);
+  ok &= expect(
+      selected.error.empty() && selected.left.size() == 2 && selected.right.size() == 3 &&
+          selected.right[1] == ".hstream-ui/right/GX020002.MP4" &&
+          selected.right[2] == ".hstream-ui/right/GX030002.MP4",
+      "Explicit camera playlists with different physical chapter counts must be retained independently");
+
+  YAML::Node saved_uneven_playlists(YAML::NodeType::Map);
+  saved_uneven_playlists["game"]["videos"]["left"] = selected.left;
+  saved_uneven_playlists["game"]["videos"]["right"] = selected.right;
+  const auto saved_selection =
+      hm::configurator_internal::select_explicit_stitching_videos(saved_uneven_playlists, /*force=*/false);
+  ok &= expect(
+      saved_selection.error.empty() && saved_selection.left.size() == 2 && saved_selection.right.size() == 3,
+      "A subsequent run must accept independently persisted camera playlists");
+
+  YAML::Node independent_name_schemes(YAML::NodeType::Map);
+  independent_name_schemes["hstream_ui"]["video_roles"]["left"] = out_of_order_left;
+  independent_name_schemes["hstream_ui"]["video_roles"]["right"].push_back("right-camera.mov");
+  independent_name_schemes["hstream_ui"]["video_roles"]["right"].push_back("right-camera-alt.mov");
+  const auto independently_named =
+      hm::configurator_internal::select_explicit_stitching_videos(independent_name_schemes, /*force=*/true);
+  ok &= expect(
+      independently_named.error.empty() &&
+          independently_named.left ==
+              std::vector<std::string>{".hstream-ui/left/GX010001.MP4", ".hstream-ui/left/GX020001.MP4"} &&
+          independently_named.right == std::vector<std::string>{"right-camera.mov", "right-camera-alt.mov"},
+      "Each explicit camera playlist must use its own valid naming and ordering scheme");
+
+  YAML::Node one_sided_out_of_order(YAML::NodeType::Map);
+  one_sided_out_of_order["hstream_ui"]["video_roles"]["left"] = out_of_order_left;
+  const auto normalized_one_sided =
+      hm::configurator_internal::select_explicit_stitching_videos(one_sided_out_of_order, /*force=*/true);
+  ok &= expect(
+      normalized_one_sided.error.empty() && normalized_one_sided.left_is_explicit &&
+          !normalized_one_sided.right_is_explicit &&
+          normalized_one_sided.left ==
+              std::vector<std::string>{".hstream-ui/left/GX010001.MP4", ".hstream-ui/left/GX020001.MP4"},
+      "A one-sided explicit playlist must be normalized before the unambiguous single-file Auto mode uses it");
+
+  YAML::Node restarted_recordings(YAML::NodeType::Map);
+  restarted_recordings["hstream_ui"]["video_roles"]["left"].push_back("GX010002.MP4");
+  restarted_recordings["hstream_ui"]["video_roles"]["left"].push_back("GX020001.MP4");
+  restarted_recordings["hstream_ui"]["video_roles"]["right"].push_back("VID_20260815_101500_001.MP4");
+  restarted_recordings["hstream_ui"]["video_roles"]["right"].push_back("VID_20260815_101000_002.MP4");
+  const auto normalized_restarts =
+      hm::configurator_internal::select_explicit_stitching_videos(restarted_recordings, /*force=*/true);
+  ok &= expect(
+      normalized_restarts.error.empty() &&
+          normalized_restarts.left == std::vector<std::string>{"GX020001.MP4", "GX010002.MP4"} &&
+          normalized_restarts.right ==
+              std::vector<std::string>{"VID_20260815_101000_002.MP4", "VID_20260815_101500_001.MP4"},
+      "Explicit GoPro and Insta360 playlists must sort by recording ID before physical chapter number");
+
+  YAML::Node duplicate_arbitrary(YAML::NodeType::Map);
+  duplicate_arbitrary["hstream_ui"]["video_roles"]["left"].push_back("left-camera.mov");
+  duplicate_arbitrary["hstream_ui"]["video_roles"]["left"].push_back("left-camera.mov");
+  const auto rejected_duplicate =
+      hm::configurator_internal::select_explicit_stitching_videos(duplicate_arbitrary, /*force=*/true);
+  ok &= expect(
+      !rejected_duplicate.error.empty(), "An exact duplicate path must never replay the same arbitrary-named file");
+
+  YAML::Node numbered_parts(YAML::NodeType::Map);
+  numbered_parts["hstream_ui"]["video_roles"]["left"].push_back("left-12.mkv");
+  numbered_parts["hstream_ui"]["video_roles"]["left"].push_back("left-2.mkv");
+  const auto normalized_parts =
+      hm::configurator_internal::select_explicit_stitching_videos(numbered_parts, /*force=*/true);
+  ok &= expect(
+      normalized_parts.error.empty() && normalized_parts.left == std::vector<std::string>{"left-2.mkv", "left-12.mkv"},
+      "Explicit left/right part playlists must support Auto formats and sort multi-digit parts numerically");
+
+  YAML::Node heterogeneous_camera(YAML::NodeType::Map);
+  heterogeneous_camera["hstream_ui"]["video_roles"]["left"].push_back("VID_20260815_101000_001.MP4");
+  heterogeneous_camera["hstream_ui"]["video_roles"]["left"].push_back("GX010007.MP4");
+  heterogeneous_camera["hstream_ui"]["video_roles"]["left"].push_back("left-camera.mov");
+  const auto preserved_heterogeneous =
+      hm::configurator_internal::select_explicit_stitching_videos(heterogeneous_camera, /*force=*/true);
+  ok &= expect(
+      preserved_heterogeneous.error.empty() &&
+          preserved_heterogeneous.left ==
+              std::vector<std::string>{"VID_20260815_101000_001.MP4", "GX010007.MP4", "left-camera.mov"},
+      "A heterogeneous explicit camera playlist must preserve the user's total recording order");
+
+  YAML::Node duplicate_persisted(YAML::NodeType::Map);
+  duplicate_persisted["game"]["videos"]["left"].push_back("cam1/GX010001.MP4");
+  duplicate_persisted["game"]["videos"]["left"].push_back("cam1/GX010001.MP4");
+  duplicate_persisted["game"]["videos"]["right"].push_back("cam2/GX010002.MP4");
+  const auto rejected_persisted =
+      hm::configurator_internal::select_explicit_stitching_videos(duplicate_persisted, /*force=*/false);
+  ok &= expect(
+      !rejected_persisted.error.empty(), "A persisted camera playlist must never replay an exact duplicate path");
+
+  ok &= expect(
+      !hm::configurator_internal::validate_mixed_explicit_auto_playlists(
+           /*left_is_explicit=*/true,
+           /*right_is_explicit=*/false,
+           /*auto_left_chapters=*/0,
+           /*auto_right_chapters=*/3)
+              .ok() &&
+          !hm::configurator_internal::validate_mixed_explicit_auto_playlists(
+               /*left_is_explicit=*/false,
+               /*right_is_explicit=*/true,
+               /*auto_left_chapters=*/2,
+               /*auto_right_chapters=*/0)
+               .ok(),
+      "Mixed Explicit/Auto selection must reject an ambiguous multi-file Auto camera timeline");
+  ok &= expect(
+      hm::configurator_internal::validate_mixed_explicit_auto_playlists(
+          /*left_is_explicit=*/true,
+          /*right_is_explicit=*/false,
+          /*auto_left_chapters=*/0,
+          /*auto_right_chapters=*/1)
+              .ok() &&
+          hm::configurator_internal::validate_mixed_explicit_auto_playlists(
+              /*left_is_explicit=*/true,
+              /*right_is_explicit=*/true,
+              /*auto_left_chapters=*/4,
+              /*auto_right_chapters=*/6)
+              .ok(),
+      "A single-file Auto side and two independently explicit playlists are unambiguous");
 
   const fs::path superseded_force_dir = games / "superseded-force";
   fs::create_directories(superseded_force_dir);

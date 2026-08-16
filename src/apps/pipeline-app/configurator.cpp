@@ -210,57 +210,26 @@ std::vector<std::string> sequence_path_values(const YAML::Node& root, const std:
   return current.as<std::vector<std::string>>();
 }
 
-int explicit_file_chapter(const std::string& file) {
-  const std::string filename = fs::path(file).filename().string();
-  std::smatch match;
-  static const std::regex gopro_pattern(R"(^G[A-Z]([0-9]{2})([0-9]{4})\.(MP4|mp4)$)");
-  static const std::regex insta360_pattern(R"(^VID_[0-9]{8}_[0-9]{6}_([0-9]{3})\.(MP4|mp4)$)");
-  static const std::regex left_right_pattern(R"((left|right)(?:-([0-9]))?\.mp4$)");
-  try {
-    if (std::regex_search(filename, match, gopro_pattern)) {
-      return std::stoi(match[1].str());
-    }
-    if (std::regex_search(filename, match, insta360_pattern)) {
-      return std::stoi(match[1].str());
-    }
-    if (std::regex_search(filename, match, left_right_pattern)) {
-      return match[2].matched ? std::stoi(match[2].str()) : 1;
-    }
-  } catch (const std::exception&) {
-    return -1;
-  }
-  return -1;
-}
-
 std::string explicit_file_chapter_key(const std::string& file) {
   const std::string filename = fs::path(file).filename().string();
   std::smatch match;
   static const std::regex gopro_pattern(R"(^G[A-Z]([0-9]{2})([0-9]{4})\.(MP4|mp4)$)");
-  static const std::regex insta360_pattern(R"(^VID_[0-9]{8}_[0-9]{6}_([0-9]{3})\.(MP4|mp4)$)");
-  static const std::regex left_right_pattern(R"((left|right)(?:-([0-9]))?\.mp4$)");
+  static const std::regex insta360_pattern(R"(^VID_([0-9]{8})_([0-9]{6})_([0-9]{3})\.(MP4|mp4)$)");
+  static const std::regex left_right_pattern(R"((left|right)(?:-([0-9]+))?\.(mp4|mkv|m4v)$)", std::regex::icase);
   if (std::regex_search(filename, match, gopro_pattern)) {
-    return "gopro:" + match[1].str();
+    return "gopro:" + match[2].str() + ":" + match[1].str();
   }
   if (std::regex_search(filename, match, insta360_pattern)) {
-    return "insta360:" + match[1].str();
+    return "insta360:" + match[1].str() + ":" + match[2].str() + ":" + match[3].str();
   }
   if (std::regex_search(filename, match, left_right_pattern)) {
-    return "lr:" + std::string(match[2].matched ? match[2].str() : "1");
+    std::string part = match[2].matched ? match[2].str() : "1";
+    const size_t first_nonzero = part.find_first_not_of('0');
+    part = first_nonzero == std::string::npos ? "0" : part.substr(first_nonzero);
+    const std::string digits = std::to_string(part.size());
+    return "lr:" + std::string(10 - std::min<size_t>(digits.size(), 10), '0') + digits + ":" + part;
   }
   return {};
-}
-
-std::map<int, std::string> files_by_explicit_chapter(const std::vector<std::string>& files) {
-  std::map<int, std::string> by_chapter;
-  for (const std::string& file : files) {
-    const int chapter = explicit_file_chapter(file);
-    if (chapter <= 0 || by_chapter.count(chapter)) {
-      by_chapter.clear();
-      return by_chapter;
-    }
-    by_chapter[chapter] = file;
-  }
-  return by_chapter;
 }
 
 void remove_rotation_dependent_rink_cache_keys(YAML::Node& config);
@@ -676,63 +645,79 @@ configurator_internal::ExplicitStitchingVideoSelection configurator_internal::se
   const std::vector<std::string> ui_right = sequence_path_values(config, {"hstream_ui", "video_roles", "right"});
   selection.ui_roles_are_authoritative = !ui_left.empty() || !ui_right.empty();
 
-  if (!ui_left.empty() && !ui_right.empty()) {
-    std::map<std::string, std::string> left_by_chapter;
-    std::map<std::string, std::string> right_by_chapter;
-    bool any_parseable = false;
-    bool all_parseable = true;
-    bool duplicate_chapter = false;
-    auto index_chapters = [&](const std::vector<std::string>& files, std::map<std::string, std::string>& indexed) {
-      for (const std::string& file : files) {
-        const std::string chapter = explicit_file_chapter_key(file);
-        any_parseable = any_parseable || !chapter.empty();
-        all_parseable = all_parseable && !chapter.empty();
-        if (!chapter.empty() && !indexed.emplace(chapter, file).second)
-          duplicate_chapter = true;
+  auto normalize_playlist = [](const std::vector<std::string>& files, std::vector<std::string>& normalized) {
+    std::map<std::string, std::string> indexed;
+    std::set<std::string> schemes;
+    std::set<std::string> unique_paths;
+    for (const std::string& file : files) {
+      if (!unique_paths.insert(file).second) {
+        return false;
       }
-    };
-    index_chapters(ui_left, left_by_chapter);
-    index_chapters(ui_right, right_by_chapter);
-    if (any_parseable) {
-      if (!all_parseable || duplicate_chapter) {
-        selection.error = "Explicit UI Left/Right roles have incompatible chapter names";
-        return selection;
+      const std::string chapter = explicit_file_chapter_key(file);
+      if (!chapter.empty() && !indexed.emplace(chapter, file).second) {
+        return false;
       }
-      if (left_by_chapter.size() != right_by_chapter.size()) {
-        selection.error = "Explicit UI Left/Right roles have different chapter counts";
-        return selection;
+      if (!chapter.empty()) {
+        schemes.insert(chapter.substr(0, chapter.find(':')));
       }
-      for (const auto& [chapter, left_file] : left_by_chapter) {
-        auto right = right_by_chapter.find(chapter);
-        if (right == right_by_chapter.end()) {
-          selection.error = "Explicit UI Left/Right roles have mismatched chapters";
-          return selection;
-        }
-        selection.left.emplace_back(left_file);
-        selection.right.emplace_back(right->second);
-      }
-    } else if (ui_left.size() == ui_right.size()) {
-      selection.left = ui_left;
-      selection.right = ui_right;
-    } else {
-      selection.error = "Explicit UI Left/Right roles have different chapter counts";
-      return selection;
     }
+    if (indexed.size() == files.size() && schemes.size() == 1) {
+      for (const auto& [_, file] : indexed) {
+        normalized.emplace_back(file);
+      }
+    } else {
+      normalized = files;
+    }
+    return true;
+  };
+  if ((!ui_left.empty() && !normalize_playlist(ui_left, selection.left)) ||
+      (!ui_right.empty() && !normalize_playlist(ui_right, selection.right))) {
+    selection.error = "Explicit UI Left/Right roles have incompatible or duplicate chapter names";
+    return selection;
+  }
+
+  if (!ui_left.empty() && !ui_right.empty()) {
+    // Chapter labels describe each camera's physical file boundaries. They are not cross-camera pair IDs: cameras
+    // can split the same frame timeline at different points and therefore have different labels, counts, or schemes.
     selection.left_is_explicit = true;
     selection.right_is_explicit = true;
   } else if (!ui_left.empty()) {
-    selection.left = ui_left;
     selection.left_is_explicit = true;
   } else if (!ui_right.empty()) {
-    selection.right = ui_right;
     selection.right_is_explicit = true;
   } else if (!force) {
     selection.left = sequence_path_values(config, {"game", "videos", "left"});
     selection.right = sequence_path_values(config, {"game", "videos", "right"});
+    auto has_duplicate_path = [](const std::vector<std::string>& files) {
+      std::set<std::string> unique;
+      return std::any_of(
+          files.begin(), files.end(), [&](const std::string& file) { return !unique.insert(file).second; });
+    };
+    if (has_duplicate_path(selection.left) || has_duplicate_path(selection.right)) {
+      selection.error = "Persisted Left/Right camera playlists contain a duplicate path";
+      return selection;
+    }
     selection.left_is_explicit = !selection.left.empty();
     selection.right_is_explicit = !selection.right.empty();
   }
   return selection;
+}
+
+absl::Status configurator_internal::validate_mixed_explicit_auto_playlists(
+    bool left_is_explicit,
+    bool right_is_explicit,
+    size_t auto_left_chapters,
+    size_t auto_right_chapters) {
+  if (left_is_explicit == right_is_explicit) {
+    return absl::OkStatus();
+  }
+  const size_t auto_chapters = left_is_explicit ? auto_right_chapters : auto_left_chapters;
+  if (auto_chapters <= 1) {
+    return absl::OkStatus();
+  }
+  return absl::InvalidArgumentError(
+      "Mixed Explicit/Auto camera selection is ambiguous when the Auto side has multiple physical chapter files. "
+      "Select both Left and Right explicitly, or use Auto for both cameras.");
 }
 
 // Forward declaration for helper defined later in this file
@@ -912,8 +897,6 @@ absl::Status Configurator::gather_stitching_videos(
   right_files = explicit_selection.right;
   bool explicit_left = explicit_selection.left_is_explicit;
   bool explicit_right = explicit_selection.right_is_explicit;
-  std::vector<std::string> explicit_left_files = left_files;
-  std::vector<std::string> explicit_right_files = right_files;
   const bool runtime_videos_owned_by_ui_roles = explicit_selection.ui_roles_are_authoritative;
 
   stitching::VideosDict videos;
@@ -927,8 +910,6 @@ absl::Status Configurator::gather_stitching_videos(
               << std::endl;
     left_files.clear();
     right_files.clear();
-    explicit_left_files.clear();
-    explicit_right_files.clear();
     explicit_left = false;
     explicit_right = false;
     remove_yaml_key_path(config_, {"game", "videos", "left"});
@@ -949,154 +930,26 @@ absl::Status Configurator::gather_stitching_videos(
     }
   }
 
+  HM_RETURN_IF_ERROR(
+      configurator_internal::validate_mixed_explicit_auto_playlists(
+          explicit_left,
+          explicit_right,
+          videos.count("left") ? videos.at("left").size() : 0,
+          videos.count("right") ? videos.at("right").size() : 0));
+
   auto append_chapters = [](const stitching::VideoChapter& chapters, std::vector<std::string>& files) {
     for (const auto& item : chapters) {
       files.emplace_back(item.second);
     }
   };
 
-  auto matching_chapters = [](const std::vector<std::string>& explicit_files, const stitching::VideoChapter& chapters) {
-    std::set<int> matches;
-    for (const std::string& explicit_file : explicit_files) {
-      const fs::path explicit_path(explicit_file);
-      for (const auto& [chapter, discovered_file] : chapters) {
-        const fs::path discovered_path(discovered_file);
-        if (explicit_path == discovered_path || explicit_path.filename() == discovered_path.filename()) {
-          matches.insert(chapter);
-        }
-      }
-    }
-    return matches;
-  };
-
-  auto explicit_files_by_chapter = [&](const std::vector<std::string>& files) {
-    return files_by_explicit_chapter(files);
-  };
-
-  auto chapter_keys = [](const std::map<int, std::string>& files) {
-    std::set<int> keys;
-    for (const auto& [chapter, _] : files) {
-      keys.insert(chapter);
-    }
-    return keys;
-  };
-
-  auto append_matching_chapters =
-      [](const stitching::VideoChapter& chapters, const std::set<int>& wanted, std::vector<std::string>& files) {
-        for (int chapter : wanted) {
-          auto found = chapters.find(chapter);
-          if (found != chapters.end()) {
-            files.emplace_back(found->second);
-          }
-        }
-      };
-
-  auto available_chapters = [](const stitching::VideoChapter& chapters, const std::set<int>& wanted) {
-    std::set<int> available;
-    for (int chapter : wanted) {
-      if (chapters.count(chapter)) {
-        available.insert(chapter);
-      }
-    }
-    return available;
-  };
-
-  auto format_chapters = [](const std::set<int>& chapters) {
-    std::stringstream ss;
-    bool first = true;
-    for (int chapter : chapters) {
-      if (!first) {
-        ss << ",";
-      }
-      first = false;
-      ss << chapter;
-    }
-    return ss.str();
-  };
-
-  auto explicit_files_for_chapters =
-      [](const std::vector<std::string>& files, const stitching::VideoChapter& chapters, const std::set<int>& wanted) {
-        std::vector<std::string> filtered;
-        for (int chapter : wanted) {
-          auto discovered = chapters.find(chapter);
-          if (discovered == chapters.end()) {
-            continue;
-          }
-          const fs::path discovered_path(discovered->second);
-          for (const std::string& file : files) {
-            const fs::path file_path(file);
-            if (file_path == discovered_path || file_path.filename() == discovered_path.filename()) {
-              filtered.emplace_back(file);
-              break;
-            }
-          }
-        }
-        return filtered;
-      };
-
-  auto explicit_files_for_parsed_chapters = [](const std::map<int, std::string>& files_by_chapter,
-                                               const std::set<int>& wanted) {
-    std::vector<std::string> filtered;
-    for (int chapter : wanted) {
-      auto found = files_by_chapter.find(chapter);
-      if (found != files_by_chapter.end()) {
-        filtered.emplace_back(found->second);
-      }
-    }
-    return filtered;
-  };
-
   if ((explicit_left || explicit_right) && left_files.empty() && videos.count("left")) {
-    const std::map<int, std::string> explicit_right_by_chapter =
-        explicit_right ? explicit_files_by_chapter(explicit_right_files) : std::map<int, std::string>();
-    std::set<int> wanted = explicit_right && videos.count("right")
-        ? matching_chapters(explicit_right_files, videos.at("right"))
-        : std::set<int>();
-    if (wanted.empty() && !explicit_right_by_chapter.empty()) {
-      wanted = chapter_keys(explicit_right_by_chapter);
-    }
-    if (!wanted.empty()) {
-      const std::set<int> paired = available_chapters(videos.at("left"), wanted);
-      if (paired != wanted) {
-        return absl::InvalidArgumentError(TO_STRING(
-            "Auto left videos are missing chapter(s) for explicit right selection: wanted "
-            << format_chapters(wanted) << ", found " << format_chapters(paired)));
-      }
-      append_matching_chapters(videos.at("left"), paired, left_files);
-      if (!explicit_right_by_chapter.empty()) {
-        right_files = explicit_files_for_parsed_chapters(explicit_right_by_chapter, paired);
-      } else if (videos.count("right")) {
-        right_files = explicit_files_for_chapters(explicit_right_files, videos.at("right"), paired);
-      }
-    } else if (!explicit_right || videos.at("left").size() == 1) {
-      append_chapters(videos.at("left"), left_files);
-    }
+    // Preserve the complete independently segmented camera playlist. The lossless mux pairs decoded sequence numbers,
+    // not physical filenames, after both playlists have been constructed.
+    append_chapters(videos.at("left"), left_files);
   }
   if ((explicit_left || explicit_right) && right_files.empty() && videos.count("right")) {
-    const std::map<int, std::string> explicit_left_by_chapter =
-        explicit_left ? explicit_files_by_chapter(explicit_left_files) : std::map<int, std::string>();
-    std::set<int> wanted = explicit_left && videos.count("left")
-        ? matching_chapters(explicit_left_files, videos.at("left"))
-        : std::set<int>();
-    if (wanted.empty() && !explicit_left_by_chapter.empty()) {
-      wanted = chapter_keys(explicit_left_by_chapter);
-    }
-    if (!wanted.empty()) {
-      const std::set<int> paired = available_chapters(videos.at("right"), wanted);
-      if (paired != wanted) {
-        return absl::InvalidArgumentError(TO_STRING(
-            "Auto right videos are missing chapter(s) for explicit left selection: wanted "
-            << format_chapters(wanted) << ", found " << format_chapters(paired)));
-      }
-      append_matching_chapters(videos.at("right"), paired, right_files);
-      if (!explicit_left_by_chapter.empty()) {
-        left_files = explicit_files_for_parsed_chapters(explicit_left_by_chapter, paired);
-      } else if (videos.count("left")) {
-        left_files = explicit_files_for_chapters(explicit_left_files, videos.at("left"), paired);
-      }
-    } else if (!explicit_left || videos.at("right").size() == 1) {
-      append_chapters(videos.at("right"), right_files);
-    }
+    append_chapters(videos.at("right"), right_files);
   }
 
   if ((explicit_left || explicit_right) && (left_files.empty() || right_files.empty())) {
@@ -1109,11 +962,6 @@ absl::Status Configurator::gather_stitching_videos(
   }
 
   if ((explicit_left || explicit_right) && !left_files.empty() && !right_files.empty()) {
-    if (left_files.size() != right_files.size()) {
-      return absl::InvalidArgumentError(TO_STRING(
-          "Mismatched explicit/auto video chapters: " << left_files.size() << " left file(s), " << right_files.size()
-                                                      << " right file(s)"));
-    }
     private_config_["game"]["videos"]["left"] = left_files;
     private_config_["game"]["videos"]["right"] = right_files;
     auto spp_status = save_private_config(private_config_, active_stitching_invalidation_id_);
@@ -1136,30 +984,9 @@ absl::Status Configurator::gather_stitching_videos(
   if (left_files.empty() && right_files.empty() && videos.count("left") && videos.count("right")) {
     const stitching::VideoChapter& left_chapter = videos.at("left");
     const stitching::VideoChapter& right_chapter = videos.at("right");
-    if (!left_chapter.empty()) {
-      for (const auto& item : left_chapter) {
-        if (!right_chapter.empty()) {
-          const int chapter = item.first;
-          if (!right_chapter.count(chapter)) {
-            std::cerr << "Right vids are missing chapter " << chapter << ", skipping..." << std::endl;
-            continue;
-          }
-        }
-        left_files.emplace_back(item.second);
-      }
-    }
-    if (!right_chapter.empty()) {
-      for (const auto& item : right_chapter) {
-        if (!left_chapter.empty()) {
-          const int chapter = item.first;
-          if (!left_chapter.count(chapter)) {
-            std::cerr << "Left vids are missing chapter " << chapter << ", skipping..." << std::endl;
-            continue;
-          }
-        }
-        right_files.emplace_back(item.second);
-      }
-    }
+    // Never intersect chapter-number keys here. Doing so drops whole files when camera chapter boundaries differ.
+    append_chapters(left_chapter, left_files);
+    append_chapters(right_chapter, right_files);
     if (!left_files.empty() && !right_files.empty()) {
       private_config_["game"]["videos"]["left"] = left_files;
       private_config_["game"]["videos"]["right"] = right_files;

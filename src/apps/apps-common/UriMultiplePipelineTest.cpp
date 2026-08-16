@@ -815,7 +815,8 @@ int run_lossless_two_camera_mux(
     GstClockTime left_initial_offset = 0,
     GstClockTime right_initial_offset = 0,
     GstClockTime start_time = 0,
-    bool pause_before_playing = false) {
+    bool pause_before_playing = false,
+    guint64 expected_total_frames = 0) {
   NvDsSourceConfig configs[2]{};
   configure_uri_multiple_source(configs[0], left_uris, /*source_id=*/0);
   configure_uri_multiple_source(configs[1], right_uris, /*source_id=*/1, include_right_uri_list);
@@ -933,23 +934,35 @@ int run_lossless_two_camera_mux(
     return rc;
   }
   const size_t expected_complete_chapters = std::min(left_uris.size(), right_uris.size());
-  const size_t expected_decoded_chapters = std::min(
-      left_uris.size() - src_parent.sub_bins[0].uri_playlist_initial_uri_index,
-      right_uris.size() - src_parent.sub_bins[1].uri_playlist_initial_uri_index);
-  const guint minimum_switches = static_cast<guint>(expected_decoded_chapters - 1);
-  const guint maximum_left_switches = std::min<guint>(
-      left_uris.size() - src_parent.sub_bins[0].uri_playlist_initial_uri_index - 1,
-      static_cast<guint>(expected_decoded_chapters));
-  const guint maximum_right_switches = std::min<guint>(
-      right_uris.size() - src_parent.sub_bins[1].uri_playlist_initial_uri_index - 1,
-      static_cast<guint>(expected_decoded_chapters));
-  if (src_parent.sub_bins[0].uri_switch_count < minimum_switches ||
-      src_parent.sub_bins[0].uri_switch_count > maximum_left_switches ||
-      src_parent.sub_bins[1].uri_switch_count < minimum_switches ||
-      src_parent.sub_bins[1].uri_switch_count > maximum_right_switches) {
-    std::cerr << "Unexpected URI switch counts before terminal pairing: " << src_parent.sub_bins[0].uri_switch_count
-              << " and " << src_parent.sub_bins[1].uri_switch_count << "\n";
-    return 5;
+  if (expected_total_frames > 0) {
+    const guint expected_left_switches = static_cast<guint>(left_uris.size() - 1);
+    const guint expected_right_switches = static_cast<guint>(right_uris.size() - 1);
+    if (src_parent.sub_bins[0].uri_switch_count != expected_left_switches ||
+        src_parent.sub_bins[1].uri_switch_count != expected_right_switches) {
+      std::cerr << "Uneven physical chapters did not all switch before terminal pairing: switches="
+                << src_parent.sub_bins[0].uri_switch_count << "," << src_parent.sub_bins[1].uri_switch_count
+                << " expected=" << expected_left_switches << "," << expected_right_switches << "\n";
+      return 5;
+    }
+  } else {
+    const size_t expected_decoded_chapters = std::min(
+        left_uris.size() - src_parent.sub_bins[0].uri_playlist_initial_uri_index,
+        right_uris.size() - src_parent.sub_bins[1].uri_playlist_initial_uri_index);
+    const guint minimum_switches = static_cast<guint>(expected_decoded_chapters - 1);
+    const guint maximum_left_switches = std::min<guint>(
+        left_uris.size() - src_parent.sub_bins[0].uri_playlist_initial_uri_index - 1,
+        static_cast<guint>(expected_decoded_chapters));
+    const guint maximum_right_switches = std::min<guint>(
+        right_uris.size() - src_parent.sub_bins[1].uri_playlist_initial_uri_index - 1,
+        static_cast<guint>(expected_decoded_chapters));
+    if (src_parent.sub_bins[0].uri_switch_count < minimum_switches ||
+        src_parent.sub_bins[0].uri_switch_count > maximum_left_switches ||
+        src_parent.sub_bins[1].uri_switch_count < minimum_switches ||
+        src_parent.sub_bins[1].uri_switch_count > maximum_right_switches) {
+      std::cerr << "Unexpected URI switch counts before terminal pairing: " << src_parent.sub_bins[0].uri_switch_count
+                << " and " << src_parent.sub_bins[1].uri_switch_count << "\n";
+      return 5;
+    }
   }
 
   constexpr guint64 kFramesPerChapter = 15;
@@ -959,7 +972,13 @@ int run_lossless_two_camera_mux(
   const guint64 positioned_frames = std::max(
       preselected_left_frames + src_parent.sub_bins[0].uri_list_initial_positioned_frame_count,
       preselected_right_frames + src_parent.sub_bins[1].uri_list_initial_positioned_frame_count);
-  const guint64 expected_frames_per_source = kFramesPerChapter * expected_complete_chapters - positioned_frames;
+  const guint64 total_frames =
+      expected_total_frames > 0 ? expected_total_frames : kFramesPerChapter * expected_complete_chapters;
+  if (positioned_frames >= total_frames) {
+    std::cerr << "Initial positioning consumed the entire expected paired timeline\n";
+    return 6;
+  }
+  const guint64 expected_frames_per_source = total_frames - positioned_frames;
   for (guint source_id = 0; source_id < 2; ++source_id) {
     const guint64 decoded_before_terminal = src_parent.sub_bins[source_id].uri_list_decoded_frame_count -
         src_parent.sub_bins[source_id].uri_list_terminal_dropped_frame_count;
@@ -1039,7 +1058,7 @@ int run_lossless_two_camera_mux(
               << ", first_pts=" << GST_TIME_AS_SECONDS(audio_stats.first_pts)
               << "s, final_end=" << GST_TIME_AS_SECONDS(audio_stats.final_end)
               << "s, paired_video_end=" << GST_TIME_AS_SECONDS(paired_video_end)
-              << "s, expected=" << expected_complete_chapters << "s\n";
+              << "s, expected=" << static_cast<double>(expected_frames_per_source) / 15.0 << "s\n";
     return 9;
   }
   return 0;
@@ -1059,6 +1078,7 @@ int main(int argc, char** argv) {
   const fs::path a0 = tmpdir / "left_0.mp4";
   const fs::path a1 = tmpdir / "left_1.mp4";
   const fs::path a2 = tmpdir / "left_2.mp4";
+  const fs::path a_long = tmpdir / "left_two_seconds.mp4";
   const fs::path b0 = tmpdir / "right_0.mp4";
   const fs::path b1 = tmpdir / "right_1.mp4";
   const fs::path b2 = tmpdir / "right_2.mp4";
@@ -1067,10 +1087,11 @@ int main(int argc, char** argv) {
   const fs::path shifted_b2 = tmpdir / "right_shifted_2.mp4";
   const fs::path audio = tmpdir / "continuous_audio.m4a";
   if (!make_synthetic_mp4(a0, 1, 0, 440) || !make_synthetic_mp4(a1, 1, 30, 494) ||
-      !make_synthetic_mp4(a2, 1, 60, 523) || !make_synthetic_mp4(b0, 1, 90, 587) ||
-      !make_synthetic_mp4(b1, 1, 120, 659) || !make_synthetic_mp4(b2, 1, 150, 698) ||
-      !make_synthetic_mp4(shifted_b0, 0.8, 180, 740) || !make_synthetic_mp4(shifted_b1, 1.2, 210, 784) ||
-      !make_synthetic_mp4(shifted_b2, 1.0, 240, 831) || !make_synthetic_audio(audio, 3)) {
+      !make_synthetic_mp4(a2, 1, 60, 523) || !make_synthetic_mp4(a_long, 2, 75, 554) ||
+      !make_synthetic_mp4(b0, 1, 90, 587) || !make_synthetic_mp4(b1, 1, 120, 659) ||
+      !make_synthetic_mp4(b2, 1, 150, 698) || !make_synthetic_mp4(shifted_b0, 0.8, 180, 740) ||
+      !make_synthetic_mp4(shifted_b1, 1.2, 210, 784) || !make_synthetic_mp4(shifted_b2, 1.0, 240, 831) ||
+      !make_synthetic_audio(audio, 3)) {
     std::cerr << "Failed to generate synthetic mp4 chapters with ffmpeg\n";
     fs::remove_all(tmpdir);
     return 2;
@@ -1172,6 +1193,29 @@ int main(int argc, char** argv) {
   // Camera chapter boundaries do not have to occur on the same frame. The total streams still pair exactly: the
   // shorter right chapter continues in its next file while the left camera finishes its current file.
   rc = run_lossless_two_camera_mux(left_uris, shifted_right_uris);
+  if (rc != 0) {
+    fs::remove_all(tmpdir);
+    return rc;
+  }
+
+  // Physical chapter files are independent container boundaries, not frame-pair boundaries. Exercise the same
+  // three-second, 45-frame camera timeline partitioned as two files on the left and three on the right. Every file
+  // must switch, while every decoded sequence still forms exactly one complete two-camera mux batch.
+  rc = run_lossless_two_camera_mux(
+      {to_file_uri(a_long), to_file_uri(a2)},
+      right_uris,
+      /*include_right_uri_list=*/true,
+      /*audio_source_id=*/0,
+      /*audio_sleep_time_us=*/0,
+      /*expected_failure=*/ExpectedPipelineFailure::kNone,
+      /*video_sleep_time_us=*/0,
+      /*video_sleep_source_id=*/-1,
+      /*video_sleep_on_buffer=*/0,
+      /*left_initial_offset=*/0,
+      /*right_initial_offset=*/0,
+      /*start_time=*/0,
+      /*pause_before_playing=*/false,
+      /*expected_total_frames=*/45);
   if (rc != 0) {
     fs::remove_all(tmpdir);
     return rc;

@@ -686,11 +686,12 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   const QString left_video = source_dir + "/GX010005.MP4";
   const QString left_video_2 = source_dir + "/GX020005.MP4";
   const QString left_video_3 = source_dir + "/GX030005.MP4";
+  const QString left_video_restart = source_dir + "/GX010006.MP4";
   const QString right_video = source_dir + "/GX010002.MP4";
   const QString right_video_2 = source_dir + "/GX020002.MP4";
   if (!write_fake_video(auto_video) || !write_fake_video(suffix_auto_video) || !write_fake_video(center_video) ||
       !write_fake_video(left_video) || !write_fake_video(left_video_2) || !write_fake_video(right_video) ||
-      !write_fake_video(right_video_2) || !write_fake_video(left_video_3)) {
+      !write_fake_video(right_video_2) || !write_fake_video(left_video_3) || !write_fake_video(left_video_restart)) {
     return false;
   }
 
@@ -873,10 +874,12 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
 
   video_path->setText(left_video_2);
   activate(add_video);
-  YAML::Node mismatched_explicit = YAML::LoadFile(config.string());
+  YAML::Node uneven_explicit = YAML::LoadFile(config.string());
   if (!expect(
-          !mismatched_explicit["game"]["videos"]["left"] && !mismatched_explicit["game"]["videos"]["right"],
-          "Mismatched explicit Left/Right chapter counts should not write runtime video config")) {
+          uneven_explicit["game"]["videos"]["left"].size() == 2 &&
+              uneven_explicit["game"]["videos"]["right"].size() == 1 &&
+              uneven_explicit["game"]["videos"]["left"][1].as<std::string>() == ".hstream-ui/left/GX020005.MP4",
+          "Explicit Left/Right playlists with different physical chapter counts should be persisted independently")) {
     return false;
   }
   activate(right);
@@ -896,8 +899,21 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   activate(add_video);
   YAML::Node mismatched_chapters = YAML::LoadFile(config.string());
   if (!expect(
-          !mismatched_chapters["game"]["videos"]["left"] && !mismatched_chapters["game"]["videos"]["right"],
-          "Mismatched explicit Left/Right chapter sets should clear runtime video config")) {
+          mismatched_chapters["game"]["videos"]["left"].size() == 3 &&
+              mismatched_chapters["game"]["videos"]["right"].size() == 2 &&
+              mismatched_chapters["game"]["videos"]["left"][2].as<std::string>() == ".hstream-ui/left/GX030005.MP4",
+          "Explicit Left/Right playlists with different chapter labels should remain independently ordered")) {
+    return false;
+  }
+  video_path->setText(left_video_restart);
+  activate(add_video);
+  YAML::Node restarted_explicit = YAML::LoadFile(config.string());
+  if (!expect(
+          restarted_explicit["game"]["videos"]["left"].size() == 4 &&
+              restarted_explicit["game"]["videos"]["right"].size() == 2 &&
+              restarted_explicit["game"]["videos"]["left"][2].as<std::string>() == ".hstream-ui/left/GX030005.MP4" &&
+              restarted_explicit["game"]["videos"]["left"][3].as<std::string>() == ".hstream-ui/left/GX010006.MP4",
+          "Explicit GoPro playlists should sort by recording ID before physical chapter number")) {
     return false;
   }
 
@@ -1011,8 +1027,13 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   YAML::Node after_right_remove = YAML::LoadFile(config.string());
   if (!expect(
           successful_remove_writer_checked && successful_remove_writer_saw_missing &&
-              updated_text.find("GX010002.MP4") == std::string::npos && !after_right_remove["game"]["videos"]["left"] &&
-              !after_right_remove["game"]["videos"]["right"],
+              updated_text.find("GX010002.MP4") == std::string::npos &&
+              after_right_remove["game"]["videos"]["left"].size() == 4 &&
+              after_right_remove["game"]["videos"]["right"].size() == 2 &&
+              after_right_remove["game"]["videos"]["right"][0].as<std::string>() ==
+                  ".hstream-ui/right/GX020002.MP4" &&
+              after_right_remove["game"]["videos"]["right"][1].as<std::string>() ==
+                  ".hstream-ui/right/concurrent.mov",
           "A successful deletion must complete before a same-path adopter can acquire the config transaction") ||
       !expect(!list_contains(list, "GX010002.MP4"), "Removed explicit imports should not reappear as Auto")) {
     return false;
@@ -1111,8 +1132,11 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   YAML::Node arbitrary_mismatched =
       YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
   if (!expect(
-          !arbitrary_mismatched["game"]["videos"]["left"] && !arbitrary_mismatched["game"]["videos"]["right"],
-          "Mismatched arbitrary explicit counts should clear runtime video config")) {
+          arbitrary_mismatched["game"]["videos"]["left"].size() == 2 &&
+              arbitrary_mismatched["game"]["videos"]["right"].size() == 1 &&
+              arbitrary_mismatched["game"]["videos"]["left"][1].as<std::string>() ==
+                  ".hstream-ui/left/left-camera-alt.mov",
+          "Arbitrary explicit playlists with different counts should remain in independent insertion order")) {
     return false;
   }
   activate(right);
@@ -1128,6 +1152,67 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
               arbitrary_multi["game"]["videos"]["right"][1].as<std::string>() ==
                   ".hstream-ui/right/right-camera-alt.mov",
           "Equal-length arbitrary explicit lists should run in insertion order")) {
+    return false;
+  }
+
+  const QString part_left_12 = source_dir + "/left-12.mkv";
+  const QString part_left_2 = source_dir + "/left-2.mkv";
+  const QString part_right = source_dir + "/right.mkv";
+  if (!write_fake_video(part_left_12) || !write_fake_video(part_left_2) || !write_fake_video(part_right)) {
+    return false;
+  }
+  game_id->setText("ui-explicit-numbered-parts-game");
+  activate(create);
+  activate(left);
+  video_path->setText(part_left_12);
+  activate(add_video);
+  video_path->setText(part_left_2);
+  activate(add_video);
+  activate(right);
+  video_path->setText(part_right);
+  activate(add_video);
+  const YAML::Node numbered_parts =
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+  if (!expect(
+          numbered_parts["game"]["videos"]["left"].size() == 2 &&
+              numbered_parts["game"]["videos"]["right"].size() == 1 &&
+              numbered_parts["game"]["videos"]["left"][0].as<std::string>() == ".hstream-ui/left/left-2.mkv" &&
+              numbered_parts["game"]["videos"]["left"][1].as<std::string>() == ".hstream-ui/left/left-12.mkv",
+          "Explicit left/right part playlists should support MKV and sort multi-digit parts numerically")) {
+    return false;
+  }
+
+  const QString heterogeneous_insta = source_dir + "/VID_20260815_101000_001.MP4";
+  const QString heterogeneous_gopro = source_dir + "/GX010007.MP4";
+  const QString heterogeneous_arbitrary = source_dir + "/left-camera.mov";
+  const QString heterogeneous_right = source_dir + "/right-1.m4v";
+  if (!write_fake_video(heterogeneous_insta) || !write_fake_video(heterogeneous_gopro) ||
+      !write_fake_video(heterogeneous_arbitrary) || !write_fake_video(heterogeneous_right)) {
+    return false;
+  }
+  game_id->setText("ui-explicit-heterogeneous-camera-game");
+  activate(create);
+  activate(left);
+  video_path->setText(heterogeneous_insta);
+  activate(add_video);
+  video_path->setText(heterogeneous_gopro);
+  activate(add_video);
+  video_path->setText(heterogeneous_arbitrary);
+  activate(add_video);
+  activate(right);
+  video_path->setText(heterogeneous_right);
+  activate(add_video);
+  const YAML::Node heterogeneous_camera =
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+  if (!expect(
+          heterogeneous_camera["game"]["videos"]["left"].size() == 3 &&
+              heterogeneous_camera["game"]["videos"]["right"].size() == 1 &&
+              heterogeneous_camera["game"]["videos"]["left"][0].as<std::string>() ==
+                  ".hstream-ui/left/VID_20260815_101000_001.MP4" &&
+              heterogeneous_camera["game"]["videos"]["left"][1].as<std::string>() == ".hstream-ui/left/GX010007.MP4" &&
+              heterogeneous_camera["game"]["videos"]["left"][2].as<std::string>() ==
+                  ".hstream-ui/left/left-camera.mov",
+          "A heterogeneous explicit camera playlist should preserve the user's total recording order")) {
     return false;
   }
 

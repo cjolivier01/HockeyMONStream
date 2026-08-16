@@ -94,7 +94,7 @@ class PipelineProcess {
           "--options=pipeline.streammux.batch-size=2,pipeline.streammux.sync-inputs=0,"
           "pipeline.streammux.batched-push-timeout=2147483647,"
           "pipeline.streammux.frame-num-reset-on-stream-reset=0,pipeline.streammux.frame-num-reset-on-eos=0,"
-          "pipeline.hmstitcher.show=0",
+          "pipeline.hmstitcher.show=0,pipeline.hmplaycropper.show-scoreboard=0",
           "--options=pipeline.hmaudio.enable=1",
       };
       std::vector<char*> argv;
