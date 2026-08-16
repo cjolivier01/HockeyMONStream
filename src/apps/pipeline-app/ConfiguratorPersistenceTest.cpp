@@ -1,9 +1,11 @@
 #include "src/apps/pipeline-app/configurator.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <string>
 
 #include <gst/gst.h>
@@ -358,17 +360,50 @@ int main() {
           failed_unique_reservation.status().message().find("No such file or directory") != std::string::npos,
       "Unique work reservation must preserve non-collision errno diagnostics");
 
+  std::map<std::string, std::string> claimed_archive_paths;
+  const auto first_archive_claim =
+      hm::configurator_internal::claim_unique_archive_output_path(claimed_archive_paths, custom_archive, "sink0");
+  const auto duplicate_archive_claim = hm::configurator_internal::claim_unique_archive_output_path(
+      claimed_archive_paths, custom_archive_dir / "." / custom_archive.filename(), "sink1");
+  ok &= expect(
+      first_archive_claim.ok() && duplicate_archive_claim.code() == absl::StatusCode::kInvalidArgument &&
+          duplicate_archive_claim.message().find("sink0") != std::string::npos &&
+          duplicate_archive_claim.message().find("sink1") != std::string::npos,
+      "Two enabled encode sinks must never be allowed to write the same normalized archive output");
+
   const fs::path stale_run = custom_archive_dir / "operator-selected-name.hstream-run-99999999-88888888-dead.mkv";
+  const fs::path stale_versioned_run = custom_archive_dir /
+      ("operator-selected-name.hstream-run-v2-99999998-" + std::to_string(::getpid()) +
+       "-01234567-89ab-cdef-0123-456789abcdef.mkv");
+  const fs::path stale_pre_version_run = custom_archive_dir /
+      ("operator-selected-name.hstream-run-99999997-" + std::to_string(::getpid()) +
+       "-fedcba98-7654-3210-fedc-ba9876543210.mkv");
   const fs::path live_run = custom_archive_dir /
       ("operator-selected-name.hstream-run-" + std::to_string(::getpid()) + "-" + std::to_string(::getpid()) +
        "-live.mkv");
+  const fs::path legacy_live_ui_run = custom_archive_dir /
+      ("operator-selected-name.hstream-run-" + std::to_string(::getpid()) +
+       "-00112233-4455-6677-8899-aabbccddeeff.mkv");
   std::ofstream(stale_run, std::ios::binary) << "stale unique run data";
+  std::ofstream(stale_versioned_run, std::ios::binary) << "stale versioned run with live UI parent";
+  std::ofstream(stale_pre_version_run, std::ios::binary) << "stale pre-version run with live UI parent";
   std::ofstream(live_run, std::ios::binary) << "live unique run data";
+  std::ofstream(legacy_live_ui_run, std::ios::binary) << "legacy work owned by live UI";
   const auto stale_recoveries = hm::configurator_internal::recover_stale_archive_work_files(custom_archive);
   ok &= expect(
-      stale_recoveries.ok() && stale_recoveries->size() == 1 && !fs::exists(stale_run) &&
-          fs::is_regular_file(stale_recoveries->front()) && fs::is_regular_file(live_run),
-      "Restart recovery must retain dead unique runs while leaving work owned by a live backend/UI untouched");
+      stale_recoveries.ok() && stale_recoveries->size() == 3 && !fs::exists(stale_run) &&
+          !fs::exists(stale_versioned_run) && !fs::exists(stale_pre_version_run) &&
+          std::all_of(
+              stale_recoveries->begin(),
+              stale_recoveries->end(),
+              [](const fs::path& path) { return fs::is_regular_file(path); }) &&
+          fs::is_regular_file(live_run) && fs::is_regular_file(legacy_live_ui_run),
+      "Restart recovery must use backend ownership for current runs and retain work owned by a live backend or legacy UI");
+  const auto repeated_stale_recoveries = hm::configurator_internal::recover_stale_archive_work_files(custom_archive);
+  ok &= expect(
+      repeated_stale_recoveries.ok() && repeated_stale_recoveries->empty() && stale_recoveries.ok() &&
+          fs::is_regular_file(stale_recoveries->front()),
+      "Restart recovery must leave an already-recovered unique run at its stable recovery path");
 
   const auto first_archive_lock = hm::configurator_internal::acquire_archive_output_lock(custom_archive);
   const auto conflicting_archive_lock = hm::configurator_internal::acquire_archive_output_lock(custom_archive);

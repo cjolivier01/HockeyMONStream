@@ -769,8 +769,11 @@ absl::Status configurator_internal::validate_mixed_explicit_auto_playlists(
       "Select both Left and Right explicitly, or use Auto for both cameras.");
 }
 
-absl::StatusOr<std::optional<fs::path>> configurator_internal::preserve_existing_archive_work_file(
-    const fs::path& output_path) {
+namespace {
+
+absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
+    const fs::path& output_path,
+    const fs::path& recovery_name_base) {
   struct stat output_stat{};
   if (::stat(output_path.c_str(), &output_stat) != 0) {
     if (errno == ENOENT)
@@ -782,7 +785,7 @@ absl::StatusOr<std::optional<fs::path>> configurator_internal::preserve_existing
     return std::optional<fs::path>();
 
   for (int suffix = 0; suffix < 1000; ++suffix) {
-    const fs::path recovery_path = archive_recovery_candidate(output_path, suffix);
+    const fs::path recovery_path = archive_recovery_candidate(recovery_name_base, suffix);
     const int reservation_fd =
         ::open(recovery_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
     if (reservation_fd < 0) {
@@ -810,6 +813,13 @@ absl::StatusOr<std::optional<fs::path>> configurator_internal::preserve_existing
   }
   return absl::ResourceExhaustedError(
       TO_STRING("No recovery filename is available for existing archive \"" << output_path.string() << "\""));
+}
+
+} // namespace
+
+absl::StatusOr<std::optional<fs::path>> configurator_internal::preserve_existing_archive_work_file(
+    const fs::path& output_path) {
+  return preserve_archive_work_file(output_path, output_path);
 }
 
 absl::StatusOr<fs::path> configurator_internal::reserve_unique_archive_work_file(
@@ -861,6 +871,21 @@ absl::StatusOr<int> configurator_internal::acquire_archive_output_lock(const fs:
   return lock_fd;
 }
 
+absl::Status configurator_internal::claim_unique_archive_output_path(
+    std::map<std::string, std::string>& claimed_paths,
+    const fs::path& configured_path,
+    const std::string& sink_name) {
+  const std::string normalized_path = configured_path.lexically_normal().string();
+  const auto [existing, inserted] = claimed_paths.emplace(normalized_path, sink_name);
+  if (!inserted) {
+    return absl::InvalidArgumentError(TO_STRING(
+        "Enabled encode sinks \"" << existing->second << "\" and \"" << sink_name
+                                  << "\" resolve to the same archive output \"" << normalized_path
+                                  << "\"; concurrent writers are forbidden"));
+  }
+  return absl::OkStatus();
+}
+
 absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archive_work_files(
     const fs::path& configured_path) {
   std::vector<fs::path> recovered;
@@ -882,23 +907,21 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
     }
 
     const std::string ownership = filename.substr(prefix.size(), filename.size() - prefix.size() - extension.size());
-    const std::vector<std::string> tokens = absl::StrSplit(ownership, '-');
     bool owner_is_live = false;
-    // New paths begin with backend PID and UI-parent PID. Older paths begin with
-    // the UI-parent PID. Checking the first two numeric fields covers both and
-    // deliberately favors retaining a file when PID reuse makes ownership
-    // ambiguous.
-    for (size_t token_index = 0; token_index < std::min<size_t>(tokens.size(), 2); ++token_index) {
-      const std::string& token = tokens[token_index];
-      if (token.empty() || !std::all_of(token.begin(), token.end(), [](unsigned char c) { return std::isdigit(c); }))
-        continue;
-      const long long parsed_pid = std::strtoll(token.c_str(), nullptr, 10);
-      if (parsed_pid <= 0 || parsed_pid > std::numeric_limits<pid_t>::max())
-        continue;
-      if (::kill(static_cast<pid_t>(parsed_pid), 0) == 0 || errno == EPERM) {
-        owner_is_live = true;
-        break;
-      }
+    std::smatch ownership_match;
+    static const std::regex versioned_owner(R"(^v2-([0-9]+)-.+$)");
+    static const std::regex pre_version_backend_and_ui_owner(
+        R"(^([0-9]+)-[0-9]+-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+    static const std::regex legacy_ui_owner(
+        R"(^([0-9]+)-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+    static const std::regex fallback_owner(R"(^([0-9]+)(?:-|$).*$)");
+    if (std::regex_match(ownership, ownership_match, versioned_owner) ||
+        std::regex_match(ownership, ownership_match, pre_version_backend_and_ui_owner) ||
+        std::regex_match(ownership, ownership_match, legacy_ui_owner) ||
+        std::regex_match(ownership, ownership_match, fallback_owner)) {
+      const long long parsed_pid = std::strtoll(ownership_match[1].str().c_str(), nullptr, 10);
+      if (parsed_pid > 0 && parsed_pid <= std::numeric_limits<pid_t>::max())
+        owner_is_live = ::kill(static_cast<pid_t>(parsed_pid), 0) == 0 || errno == EPERM;
     }
     if (owner_is_live)
       continue;
@@ -912,7 +935,9 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
     }
     if (!S_ISREG(candidate_stat.st_mode) || candidate_stat.st_size <= 0)
       continue;
-    auto recovery = preserve_existing_archive_work_file(candidate);
+    // Publish outside the .hstream-run-* namespace so subsequent startups do
+    // not repeatedly recover and rename the same durable file.
+    auto recovery = preserve_archive_work_file(candidate, configured_path);
     if (!recovery.ok())
       return recovery.status();
     if (recovery->has_value())
@@ -1513,7 +1538,16 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
     return false;
   };
 
+  struct ArchiveOutput {
+    YAML::Node sink_node;
+    int sink_id;
+    int codec;
+    fs::path configured_path;
+  };
+
   std::optional<fs::path> output_work_dir;
+  std::map<std::string, std::string> claimed_output_paths;
+  std::vector<ArchiveOutput> archive_outputs;
 
   for (auto kv : pipeline) {
     const std::string key = kv.first.as<std::string>();
@@ -1553,6 +1587,18 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
     if (output_path.is_relative()) {
       output_path = fs::absolute(output_path);
     }
+
+    HM_RETURN_IF_ERROR(configurator_internal::claim_unique_archive_output_path(claimed_output_paths, output_path, key));
+    archive_outputs.push_back({sink_node, sink_id, codec, std::move(output_path)});
+  }
+
+  // Do not reserve, recover, or mutate any output until the complete sink set
+  // has passed the duplicate-writer preflight above.
+  for (ArchiveOutput& archive_output : archive_outputs) {
+    YAML::Node sink_node = archive_output.sink_node;
+    const int sink_id = archive_output.sink_id;
+    const int codec = archive_output.codec;
+    fs::path output_path = archive_output.configured_path;
 
     const fs::path parent = output_path.parent_path();
     if (!parent.empty()) {
@@ -1598,7 +1644,7 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
       if (existing_run_path != archive_run_paths_.end()) {
         output_path = existing_run_path->second;
       } else {
-        const std::string owned_run_id = std::to_string(::getpid()) + "-" + archive_run_id;
+        const std::string owned_run_id = "v2-" + std::to_string(::getpid()) + "-" + archive_run_id;
         auto unique_output = configurator_internal::reserve_unique_archive_work_file(output_path, owned_run_id);
         if (!unique_output.ok())
           return unique_output.status();

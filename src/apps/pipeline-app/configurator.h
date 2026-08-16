@@ -42,6 +42,10 @@ absl::StatusOr<std::filesystem::path> reserve_unique_archive_work_file(
     const std::filesystem::path& configured_path,
     const std::string& run_id);
 absl::StatusOr<int> acquire_archive_output_lock(const std::filesystem::path& configured_path);
+absl::Status claim_unique_archive_output_path(
+    std::map<std::string, std::string>& claimed_paths,
+    const std::filesystem::path& configured_path,
+    const std::string& sink_name);
 absl::StatusOr<std::vector<std::filesystem::path>> recover_stale_archive_work_files(
     const std::filesystem::path& configured_path);
 
