@@ -38,6 +38,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -54,6 +55,9 @@
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -3520,6 +3524,17 @@ bool test_output_controls(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
+  const QString finalizer_owner_lock_path = completed_source + ".hstream-owner-lock";
+  bool finalizer_owner_lock_held = false;
+#ifdef Q_OS_UNIX
+  const QByteArray encoded_owner_lock_path = QFile::encodeName(finalizer_owner_lock_path);
+  const int owner_lock_probe = ::open(encoded_owner_lock_path.constData(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+  if (owner_lock_probe >= 0) {
+    finalizer_owner_lock_held =
+        ::flock(owner_lock_probe, LOCK_EX | LOCK_NB) != 0 && (errno == EWOULDBLOCK || errno == EAGAIN);
+    ::close(owner_lock_probe);
+  }
+#endif
   QFile concurrent_completed_archive(concurrent_completed_target);
   const bool concurrent_completed_archive_created =
       concurrent_completed_archive.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
@@ -3556,16 +3571,18 @@ bool test_output_controls(HStreamWindow* window) {
   const bool opened_arguments = argument_file.open(QIODevice::ReadOnly);
   const QString argument_text = opened_arguments ? QString::fromUtf8(argument_file.readAll()) : QString();
   const bool archive_deployed = expect(
-      concurrent_completed_archive_created && window->outputStateText("archive-file") == "SAVED" &&
-          QFileInfo(completed_target).size() > 0 && QFileInfo(concurrent_completed_target).size() > 0 &&
-          !QFileInfo::exists(completed_source) && argument_text.contains("-n\n") && !argument_text.contains("-y\n") &&
+      finalizer_owner_lock_held && concurrent_completed_archive_created &&
+          window->outputStateText("archive-file") == "SAVED" && QFileInfo(completed_target).size() > 0 &&
+          QFileInfo(concurrent_completed_target).size() > 0 && !QFileInfo::exists(completed_source) &&
+          !QFileInfo::exists(finalizer_owner_lock_path) && argument_text.contains("-n\n") &&
+          !argument_text.contains("-y\n") &&
           argument_text.contains(
               QString("/.%1-tracking_output-with-audio.hstream-finalize-").arg(window->gameIdText())) &&
           argument_text.contains("-c\ncopy") && argument_text.contains("-movflags\n+faststart") &&
           argument_text.contains("-tag:v\nhvc1") &&
           window->logText().contains(QString("completed archive published: %1").arg(completed_target)),
-      "Concurrent completion must keep the first MP4, publish a suffixed lossless faststart MP4, and remove only its "
-      "own work file");
+      "Concurrent completion must retain finalizer ownership, keep the first MP4, publish a suffixed lossless "
+      "faststart MP4, and remove only its own work file");
 
   for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
     QApplication::processEvents();

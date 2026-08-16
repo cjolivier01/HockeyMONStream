@@ -9,7 +9,9 @@
 #include <string>
 
 #include <gst/gst.h>
+#include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
 
@@ -404,6 +406,36 @@ int main() {
       repeated_stale_recoveries.ok() && repeated_stale_recoveries->empty() && stale_recoveries.ok() &&
           fs::is_regular_file(stale_recoveries->front()),
       "Restart recovery must leave an already-recovered unique run at its stable recovery path");
+
+  const fs::path finalizer_archive = custom_archive_dir / "finalizer-ownership.mkv";
+  const fs::path finalizer_work = custom_archive_dir /
+      ("finalizer-ownership.hstream-run-v3-99999996-" + std::to_string(::getpid()) +
+       "-11223344-5566-7788-99aa-bbccddeeff00.mkv");
+  std::ofstream(finalizer_work, std::ios::binary) << "work file being consumed by the UI finalizer";
+  const auto finalizer_lock = hm::configurator_internal::acquire_archive_work_owner_lock(finalizer_work);
+  pid_t recovery_probe = -1;
+  if (finalizer_lock.ok())
+    recovery_probe = ::fork();
+  if (recovery_probe == 0) {
+    ::close(*finalizer_lock);
+    const auto during_finalization = hm::configurator_internal::recover_stale_archive_work_files(finalizer_archive);
+    _exit(during_finalization.ok() && during_finalization->empty() && fs::is_regular_file(finalizer_work) ? 0 : 1);
+  }
+  int recovery_probe_status = -1;
+  const bool recovery_probe_passed = recovery_probe > 0 && ::waitpid(recovery_probe, &recovery_probe_status, 0) > 0 &&
+      WIFEXITED(recovery_probe_status) && WEXITSTATUS(recovery_probe_status) == 0;
+  if (finalizer_lock.ok())
+    ::close(*finalizer_lock);
+  const auto before_ui_relinquishes = hm::configurator_internal::recover_stale_archive_work_files(finalizer_archive);
+  const bool preserved_before_relinquish = fs::is_regular_file(finalizer_work);
+  fs::remove(hm::configurator_internal::archive_work_owner_lock_path(finalizer_work));
+  const auto after_finalization = hm::configurator_internal::recover_stale_archive_work_files(finalizer_archive);
+  ok &= expect(
+      finalizer_lock.ok() && recovery_probe_passed && before_ui_relinquishes.ok() && before_ui_relinquishes->empty() &&
+          preserved_before_relinquish && after_finalization.ok() && after_finalization->size() == 1 &&
+          !fs::exists(finalizer_work) && fs::is_regular_file(after_finalization->front()) &&
+          !fs::exists(hm::configurator_internal::archive_work_owner_lock_path(finalizer_work)),
+      "A second backend must preserve work during backend-to-UI ownership transfer and finalization, then recover it after explicit relinquishment");
 
   const auto first_archive_lock = hm::configurator_internal::acquire_archive_output_lock(custom_archive);
   const auto conflicting_archive_lock = hm::configurator_internal::acquire_archive_output_lock(custom_archive);

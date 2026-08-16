@@ -60,14 +60,19 @@
 #include <QtCore/QUuid>
 
 #ifdef Q_OS_UNIX
+#include <fcntl.h>
 #include <signal.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -1435,6 +1440,10 @@ HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
   refreshGames();
   updateRunControls();
   appendLog("hstream-ui started with hstream-cli runner backend");
+}
+
+HStreamWindow::~HStreamWindow() {
+  releaseArchiveFinalizerOwnership(false);
 }
 
 void HStreamWindow::closeEvent(QCloseEvent* event) {
@@ -3037,8 +3046,10 @@ void HStreamWindow::startPipeline() {
             : "pipeline already running");
     return;
   }
-  if (!archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_))
+  if (!archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_)) {
     archive_finalize_blocked_source_path_.clear();
+    releaseArchiveFinalizerOwnership(true);
+  }
   const auto blocked_archive_toggle = output_toggles_.find("archive-file");
   const bool blocked_archive_enabled = !isCalibrationRun() && blocked_archive_toggle != output_toggles_.end() &&
       blocked_archive_toggle->second && blocked_archive_toggle->second->isChecked();
@@ -3556,8 +3567,11 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   active_archive_output_path_.clear();
   active_archive_initial_size_ = -1;
   active_archive_initial_mtime_ms_ = -1;
-  if (!archive_to_finalize.isEmpty())
+  if (!archive_to_finalize.isEmpty()) {
     startArchiveFinalization(archive_to_finalize, archive_game_id, active_archive_video_is_hevc_);
+  } else {
+    releaseArchiveFinalizerOwnership(true);
+  }
   updateRunControls();
 }
 
@@ -4060,6 +4074,10 @@ void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
   if (resolved_path.isEmpty()) {
     return;
   }
+  QString ownership_error;
+  if (!acquireArchiveFinalizerOwnership(resolved_path, &ownership_error)) {
+    appendLog(QString("archive finalizer ownership could not be established: %1").arg(ownership_error));
+  }
   const bool path_changed = resolved_path != active_archive_output_path_;
   active_archive_output_path_ = resolved_path;
   const bool output_existed = match.captured(2) == "1";
@@ -4101,6 +4119,54 @@ void HStreamWindow::updateArchiveOutputPathLabel() {
   } else {
     archive_output_path_label_->setText("Archive path will be shown when enabled");
   }
+}
+
+bool HStreamWindow::acquireArchiveFinalizerOwnership(const QString& source_path, QString* error) {
+  const QString absolute_source = QFileInfo(source_path).absoluteFilePath();
+  const QString lock_path = absolute_source + ".hstream-owner-lock";
+  if (archive_finalize_owner_lock_fd_ >= 0 && archive_finalize_owner_lock_path_ == lock_path)
+    return true;
+  releaseArchiveFinalizerOwnership(false);
+#ifdef Q_OS_UNIX
+  const QByteArray encoded_path = QFile::encodeName(lock_path);
+  const int lock_fd = ::open(encoded_path.constData(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+  if (lock_fd < 0) {
+    if (error) {
+      *error = QString("Could not open archive finalizer ownership lock %1: %2")
+                   .arg(lock_path, QString::fromLocal8Bit(std::strerror(errno)));
+    }
+    return false;
+  }
+  if (::flock(lock_fd, LOCK_SH) != 0) {
+    const int saved_errno = errno;
+    ::close(lock_fd);
+    if (error) {
+      *error = QString("Could not claim archive finalizer ownership lock %1: %2")
+                   .arg(lock_path, QString::fromLocal8Bit(std::strerror(saved_errno)));
+    }
+    return false;
+  }
+  archive_finalize_owner_lock_fd_ = lock_fd;
+  archive_finalize_owner_lock_path_ = lock_path;
+  return true;
+#else
+  if (error)
+    *error = "Archive finalizer ownership locks are unavailable on this platform.";
+  return false;
+#endif
+}
+
+void HStreamWindow::releaseArchiveFinalizerOwnership(bool remove_lock_file) {
+#ifdef Q_OS_UNIX
+  if (archive_finalize_owner_lock_fd_ >= 0) {
+    ::flock(archive_finalize_owner_lock_fd_, LOCK_UN);
+    ::close(archive_finalize_owner_lock_fd_);
+  }
+#endif
+  archive_finalize_owner_lock_fd_ = -1;
+  if (remove_lock_file && !archive_finalize_owner_lock_path_.isEmpty())
+    QFile::remove(archive_finalize_owner_lock_path_);
+  archive_finalize_owner_lock_path_.clear();
 }
 
 void HStreamWindow::startArchiveFinalization(const QString& source_path, const QString& game_id, bool hevc_video) {
@@ -4200,6 +4266,16 @@ void HStreamWindow::startArchiveFinalization(const QString& source_path, const Q
   static_cast<StitchingCalibrationDialog*>(archive_finalize_dialog_)->setCloseAllowed(false);
   archive_finalize_dialog_->show();
   archive_finalize_dialog_->raise();
+
+  QString ownership_error;
+  if (!acquireArchiveFinalizerOwnership(archive_finalize_source_path_, &ownership_error)) {
+    archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
+    showArchiveFinalizationFailure(
+        ownership_error +
+        "\n\nThe completed work file could not be protected for finalization. Do not start another archive run until "
+        "this file has been copied to safety.");
+    return;
+  }
 
   if (archive_finalize_target_path_.isEmpty()) {
     failArchiveFinalization("Could not find an available final filename in the game directory.");
@@ -4420,6 +4496,7 @@ void HStreamWindow::completeArchiveFinalization() {
   archive_finalize_stage_ = ArchiveFinalizeStage::kIdle;
   const qint64 final_size = QFileInfo(archive_finalize_target_path_).size();
   const bool source_removed = QFile::remove(archive_finalize_source_path_);
+  releaseArchiveFinalizerOwnership(true);
   output_states_["archive-file"]->setText("SAVED");
   if (archive_output_path_label_)
     archive_output_path_label_->setText(QString("Completed archive: %1").arg(archive_finalize_target_path_));
@@ -4486,6 +4563,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
     const QString failed_archive_path = available_failed_archive_path(archive_finalize_source_path_);
     if (!failed_archive_path.isEmpty() && QFile::rename(archive_finalize_source_path_, failed_archive_path)) {
       archive_finalize_source_path_ = failed_archive_path;
+      releaseArchiveFinalizerOwnership(true);
       archive_finalize_pending_failure_detail_ = failure_detail;
       QString durability_error;
       if (startArchiveDurabilitySync(
@@ -4503,6 +4581,8 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
           "\n\nThe retained work file could not be moved away from the next run's output path. Do not start another "
           "archive run until this file has been copied to safety.";
     }
+  } else {
+    releaseArchiveFinalizerOwnership(true);
   }
   showArchiveFinalizationFailure(failure_detail);
 }
@@ -5276,8 +5356,10 @@ void HStreamWindow::setPreviewFocusMode(bool focused, int tab_index) {
 void HStreamWindow::updateRunControls() {
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   const bool finalizing = archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning;
-  if (!archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_))
+  if (!archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_)) {
     archive_finalize_blocked_source_path_.clear();
+    releaseArchiveFinalizerOwnership(true);
+  }
   const auto archive_toggle = output_toggles_.find("archive-file");
   const bool archive_enabled =
       archive_toggle != output_toggles_.end() && archive_toggle->second && archive_toggle->second->isChecked();

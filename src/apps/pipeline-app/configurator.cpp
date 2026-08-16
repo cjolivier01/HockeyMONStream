@@ -850,6 +850,29 @@ absl::StatusOr<fs::path> configurator_internal::reserve_unique_archive_work_file
   return run_path;
 }
 
+fs::path configurator_internal::archive_work_owner_lock_path(const fs::path& work_path) {
+  fs::path lock_path = work_path;
+  lock_path += ".hstream-owner-lock";
+  return lock_path;
+}
+
+absl::StatusOr<int> configurator_internal::acquire_archive_work_owner_lock(const fs::path& work_path) {
+  const fs::path lock_path = archive_work_owner_lock_path(work_path);
+  const int lock_fd = ::open(lock_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+  if (lock_fd < 0) {
+    return absl::InternalError(TO_STRING(
+        "Failed to open archive work ownership lock \"" << lock_path.string() << "\": " << std::strerror(errno)));
+  }
+  if (::flock(lock_fd, LOCK_SH | LOCK_NB) != 0) {
+    const int saved_errno = errno;
+    ::close(lock_fd);
+    return absl::InternalError(TO_STRING(
+        "Failed to claim archive work ownership lock \"" << lock_path.string()
+                                                         << "\": " << std::strerror(saved_errno)));
+  }
+  return lock_fd;
+}
+
 absl::StatusOr<int> configurator_internal::acquire_archive_output_lock(const fs::path& configured_path) {
   fs::path lock_path = configured_path;
   lock_path += ".hstream-lock";
@@ -908,38 +931,89 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
 
     const std::string ownership = filename.substr(prefix.size(), filename.size() - prefix.size() - extension.size());
     bool owner_is_live = false;
-    std::smatch ownership_match;
-    static const std::regex versioned_owner(R"(^v2-([0-9]+)-.+$)");
-    static const std::regex pre_version_backend_and_ui_owner(
-        R"(^([0-9]+)-[0-9]+-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
-    static const std::regex legacy_ui_owner(
-        R"(^([0-9]+)-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
-    static const std::regex fallback_owner(R"(^([0-9]+)(?:-|$).*$)");
-    if (std::regex_match(ownership, ownership_match, versioned_owner) ||
-        std::regex_match(ownership, ownership_match, pre_version_backend_and_ui_owner) ||
-        std::regex_match(ownership, ownership_match, legacy_ui_owner) ||
-        std::regex_match(ownership, ownership_match, fallback_owner)) {
-      const long long parsed_pid = std::strtoll(ownership_match[1].str().c_str(), nullptr, 10);
-      if (parsed_pid > 0 && parsed_pid <= std::numeric_limits<pid_t>::max())
-        owner_is_live = ::kill(static_cast<pid_t>(parsed_pid), 0) == 0 || errno == EPERM;
+    int recovery_lock_fd = -1;
+    fs::path recovery_lock_path;
+    if (absl::StartsWith(ownership, "v3-")) {
+      recovery_lock_path = archive_work_owner_lock_path(candidate);
+      recovery_lock_fd = ::open(recovery_lock_path.c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+      if (recovery_lock_fd >= 0) {
+        if (::flock(recovery_lock_fd, LOCK_EX | LOCK_NB) != 0) {
+          const int saved_errno = errno;
+          ::close(recovery_lock_fd);
+          recovery_lock_fd = -1;
+          if (saved_errno == EWOULDBLOCK || saved_errno == EAGAIN) {
+            owner_is_live = true;
+          } else {
+            return absl::InternalError(TO_STRING(
+                "Failed to inspect archive work ownership lock \"" << recovery_lock_path.string()
+                                                                   << "\": " << std::strerror(saved_errno)));
+          }
+        } else {
+          std::smatch versioned_match;
+          static const std::regex versioned_backend_and_ui_owner(
+              R"(^v3-[0-9]+-([0-9]+)-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+          if (std::regex_match(ownership, versioned_match, versioned_backend_and_ui_owner)) {
+            const long long ui_pid = std::strtoll(versioned_match[1].str().c_str(), nullptr, 10);
+            if (ui_pid > 0 && ui_pid <= std::numeric_limits<pid_t>::max())
+              owner_is_live = ::kill(static_cast<pid_t>(ui_pid), 0) == 0 || errno == EPERM;
+          }
+        }
+      } else if (errno != ENOENT) {
+        return absl::InternalError(TO_STRING(
+            "Failed to open archive work ownership lock \"" << recovery_lock_path.string()
+                                                            << "\": " << std::strerror(errno)));
+      }
+    } else {
+      std::smatch ownership_match;
+      static const std::regex versioned_owner(R"(^v2-([0-9]+)-.+$)");
+      static const std::regex pre_version_backend_and_ui_owner(
+          R"(^([0-9]+)-[0-9]+-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+      static const std::regex legacy_ui_owner(
+          R"(^([0-9]+)-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+      static const std::regex fallback_owner(R"(^([0-9]+)(?:-|$).*$)");
+      if (std::regex_match(ownership, ownership_match, versioned_owner) ||
+          std::regex_match(ownership, ownership_match, pre_version_backend_and_ui_owner) ||
+          std::regex_match(ownership, ownership_match, legacy_ui_owner) ||
+          std::regex_match(ownership, ownership_match, fallback_owner)) {
+        const long long parsed_pid = std::strtoll(ownership_match[1].str().c_str(), nullptr, 10);
+        if (parsed_pid > 0 && parsed_pid <= std::numeric_limits<pid_t>::max())
+          owner_is_live = ::kill(static_cast<pid_t>(parsed_pid), 0) == 0 || errno == EPERM;
+      }
     }
-    if (owner_is_live)
+    if (owner_is_live) {
+      if (recovery_lock_fd >= 0)
+        ::close(recovery_lock_fd);
       continue;
+    }
 
     struct stat candidate_stat{};
     if (::lstat(candidate.c_str(), &candidate_stat) != 0) {
-      if (errno == ENOENT)
+      const int saved_errno = errno;
+      if (recovery_lock_fd >= 0)
+        ::close(recovery_lock_fd);
+      if (saved_errno == ENOENT)
         continue;
       return absl::InternalError(TO_STRING(
-          "Failed to inspect stale archive work file \"" << candidate.string() << "\": " << std::strerror(errno)));
+          "Failed to inspect stale archive work file \"" << candidate.string()
+                                                         << "\": " << std::strerror(saved_errno)));
     }
-    if (!S_ISREG(candidate_stat.st_mode) || candidate_stat.st_size <= 0)
+    if (!S_ISREG(candidate_stat.st_mode) || candidate_stat.st_size <= 0) {
+      if (recovery_lock_fd >= 0)
+        ::close(recovery_lock_fd);
       continue;
+    }
     // Publish outside the .hstream-run-* namespace so subsequent startups do
     // not repeatedly recover and rename the same durable file.
     auto recovery = preserve_archive_work_file(candidate, configured_path);
-    if (!recovery.ok())
+    if (!recovery.ok()) {
+      if (recovery_lock_fd >= 0)
+        ::close(recovery_lock_fd);
       return recovery.status();
+    }
+    if (recovery_lock_fd >= 0) {
+      ::unlink(recovery_lock_path.c_str());
+      ::close(recovery_lock_fd);
+    }
     if (recovery->has_value())
       recovered.push_back(recovery->value());
   }
@@ -1644,11 +1718,18 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
       if (existing_run_path != archive_run_paths_.end()) {
         output_path = existing_run_path->second;
       } else {
-        const std::string owned_run_id = "v2-" + std::to_string(::getpid()) + "-" + archive_run_id;
+        const std::string owned_run_id = "v3-" + std::to_string(::getpid()) + "-" + archive_run_id;
         auto unique_output = configurator_internal::reserve_unique_archive_work_file(output_path, owned_run_id);
         if (!unique_output.ok())
           return unique_output.status();
         output_path = *unique_output;
+        auto work_lock = configurator_internal::acquire_archive_work_owner_lock(output_path);
+        if (!work_lock.ok()) {
+          ::unlink(output_path.c_str());
+          ::unlink(configurator_internal::archive_work_owner_lock_path(output_path).c_str());
+          return work_lock.status();
+        }
+        archive_work_lock_fds_.emplace(configured_output_path, *work_lock);
         archive_run_paths_.emplace(configured_output_path, output_path);
       }
     }
@@ -1701,6 +1782,8 @@ Configurator::Configurator(const std::string& game_id, const std::string& config
   // Constructor
 }
 Configurator::~Configurator() {
+  for (const auto& [_, lock_fd] : archive_work_lock_fds_)
+    ::close(lock_fd);
   for (const auto& [_, lock_fd] : archive_lock_fds_)
     ::close(lock_fd);
 }

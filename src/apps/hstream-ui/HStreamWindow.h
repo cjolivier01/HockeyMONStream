@@ -54,6 +54,7 @@ QString preview_channel_for_tab(int tab_index, int camera_count);
 class HStreamWindow : public QMainWindow {
  public:
   explicit HStreamWindow(QWidget* parent = nullptr);
+  ~HStreamWindow() override;
 
   QString pipelineStateText() const;
   QString outputStateText(const QString& id) const;
@@ -151,6 +152,8 @@ class HStreamWindow : public QMainWindow {
   void completeArchiveFinalization();
   void showArchiveFinalizationFailure(const QString& failure_detail);
   void failArchiveFinalization(const QString& message);
+  bool acquireArchiveFinalizerOwnership(const QString& source_path, QString* error);
+  void releaseArchiveFinalizerOwnership(bool remove_lock_file);
   void showStitchingCalibrationDialog();
   bool beginObservedStitchingCalibration(const QString& reported_stage);
   void handleStitchingCalibrationOutput(const QString& line);
@@ -387,7 +390,9 @@ class HStreamWindow : public QMainWindow {
   QString archive_finalize_stdout_buffer_;
   QString archive_finalize_error_output_;
   QString archive_finalize_pending_failure_detail_;
+  QString archive_finalize_owner_lock_path_;
   qint64 archive_finalize_duration_us_{-1};
+  int archive_finalize_owner_lock_fd_{-1};
   ArchiveFinalizeStage archive_finalize_stage_{ArchiveFinalizeStage::kIdle};
   bool archive_finalize_failed_{false};
   bool active_run_is_calibration_{false};
