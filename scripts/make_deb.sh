@@ -468,12 +468,6 @@ GST_REGISTRY_DIR="${HOME}/.cache/gstreamer-1.0"
 mkdir -p "${GST_REGISTRY_DIR}"
 export GST_REGISTRY="${GST_REGISTRY_DIR}/registry.hstream.$(uname -m).bin"
 
-# The installed launcher runs from /opt/hstream so packaged config-relative
-# paths resolve correctly. Keep generated video outputs in a per-user writable
-# location instead of trying to create them below the read-only install tree.
-export HM_OUTPUT_WORK_DIR="${HM_OUTPUT_WORK_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/hstream/output_workdirs}"
-mkdir -p "${HM_OUTPUT_WORK_DIR}"
-
 prepend_path GST_PLUGIN_PATH "${INSTALL_DIR}/lib/gst-plugins"
 prepend_path GST_PLUGIN_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 
@@ -834,11 +828,6 @@ prepend_path() {
     *) export "${var_name}=${dir}:${cur}" ;;
   esac
 }
-
-# Archive/ENCODE_FILE runs launched by the installed UI need a writable
-# working directory just like direct CLI runs.
-export HM_OUTPUT_WORK_DIR="${HM_OUTPUT_WORK_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/hstream/output_workdirs}"
-mkdir -p "${HM_OUTPUT_WORK_DIR}"
 
 prepend_path GST_PLUGIN_PATH "${INSTALL_DIR}/lib/gst-plugins"
 prepend_path GST_PLUGIN_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"

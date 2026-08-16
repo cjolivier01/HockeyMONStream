@@ -68,6 +68,21 @@ cc_library(
 )
 
 cc_library(
+    name = "user_config",
+    srcs = ["UserConfig.cpp"],
+    hdrs = ["UserConfig.h"],
+    copts = ["-std=c++17"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_absl//absl/status:status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
     name = "decoded_frame_sequence_meta",
     srcs = ["DecodedFrameSequenceMeta.cpp"],
     hdrs = ["DecodedFrameSequenceMeta.h"],

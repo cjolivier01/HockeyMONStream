@@ -29,6 +29,7 @@
 class QProcessEnvironment;
 class QCloseEvent;
 class QDialog;
+class QIcon;
 class QProgressBar;
 class QSplitter;
 class QTimer;
@@ -41,6 +42,7 @@ namespace hm::ui_internal {
 // taskbar grouping, and human-readable application labels. Call before the
 // first native window is created.
 void configure_application_identity();
+QIcon application_icon();
 // Restores only paths cleared by the UI's automatic video selection. Other
 // keys may have been updated by another config owner in the meantime.
 void restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previous);
@@ -52,6 +54,7 @@ QString preview_channel_for_tab(int tab_index, int camera_count);
 class HStreamWindow : public QMainWindow {
  public:
   explicit HStreamWindow(QWidget* parent = nullptr);
+  ~HStreamWindow() override;
 
   QString pipelineStateText() const;
   QString outputStateText(const QString& id) const;
@@ -108,6 +111,13 @@ class HStreamWindow : public QMainWindow {
     kStopped,
   };
 
+  enum class ArchiveFinalizeStage {
+    kIdle,
+    kRemux,
+    kSyncCompleted,
+    kSyncRecovery,
+  };
+
   void buildUi();
   void buildTopBar(QVBoxLayout* root);
   void buildMainArea(QVBoxLayout* root);
@@ -135,6 +145,15 @@ class HStreamWindow : public QMainWindow {
   int playbackProgressResetTimeoutMs() const;
   void handleArchiveOutputStatus(const QString& line);
   void updateArchiveOutputPathLabel();
+  void startArchiveFinalization(const QString& source_path, const QString& game_id, bool hevc_video);
+  void readArchiveFinalizationProgress();
+  void finishArchiveFinalization(int exit_code, QProcess::ExitStatus exit_status);
+  bool startArchiveDurabilitySync(const QString& path, ArchiveFinalizeStage stage, QString* error);
+  void completeArchiveFinalization();
+  void showArchiveFinalizationFailure(const QString& failure_detail);
+  void failArchiveFinalization(const QString& message);
+  bool acquireArchiveFinalizerOwnership(const QString& source_path, QString* error);
+  void releaseArchiveFinalizerOwnership(bool remove_lock_file);
   void showStitchingCalibrationDialog();
   bool beginObservedStitchingCalibration(const QString& reported_stage);
   void handleStitchingCalibrationOutput(const QString& line);
@@ -351,8 +370,31 @@ class HStreamWindow : public QMainWindow {
   std::set<QString> preview_frame_channels_received_;
   QString active_run_game_id_;
   QString active_archive_output_path_;
+  QString active_archive_recovery_path_;
   qint64 active_archive_initial_size_{-1};
   qint64 active_archive_initial_mtime_ms_{-1};
+  bool active_archive_video_is_hevc_{false};
+  QProcess* archive_finalize_process_{nullptr};
+  QDialog* archive_finalize_dialog_{nullptr};
+  QLabel* archive_finalize_icon_{nullptr};
+  QLabel* archive_finalize_headline_{nullptr};
+  QLabel* archive_finalize_detail_{nullptr};
+  QProgressBar* archive_finalize_progress_{nullptr};
+  QPushButton* archive_finalize_ok_button_{nullptr};
+  QString archive_finalize_source_path_;
+  QString archive_finalize_game_id_;
+  QString archive_finalize_target_path_;
+  QString archive_finalize_partial_path_;
+  QString archive_finalize_temporary_dir_;
+  QString archive_finalize_blocked_source_path_;
+  QString archive_finalize_stdout_buffer_;
+  QString archive_finalize_error_output_;
+  QString archive_finalize_pending_failure_detail_;
+  QString archive_finalize_owner_lock_path_;
+  qint64 archive_finalize_duration_us_{-1};
+  int archive_finalize_owner_lock_fd_{-1};
+  ArchiveFinalizeStage archive_finalize_stage_{ArchiveFinalizeStage::kIdle};
+  bool archive_finalize_failed_{false};
   bool active_run_is_calibration_{false};
   int active_calibration_control_points_{0};
   QString active_calibration_start_stage_;

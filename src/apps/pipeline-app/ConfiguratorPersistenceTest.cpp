@@ -1,15 +1,21 @@
 #include "src/apps/pipeline-app/configurator.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <string>
 
 #include <gst/gst.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
 
+#include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 
@@ -32,9 +38,105 @@ int main() {
   bool ok = true;
   const fs::path root = fs::temp_directory_path() / ("configurator-persistence-test-" + std::to_string(::getpid()));
   fs::remove_all(root);
+  const std::string original_home = ::getenv("HOME") ? ::getenv("HOME") : "";
+  const std::string original_game_root = ::getenv("HM_GAME_DIR") ? ::getenv("HM_GAME_DIR") : "";
+  const std::string original_output_root = ::getenv("HM_OUTPUT_WORK_DIR") ? ::getenv("HM_OUTPUT_WORK_DIR") : "";
+  const fs::path test_home = root / "home";
+  fs::create_directories(test_home);
+  ::setenv("HOME", test_home.c_str(), 1);
+  ::unsetenv("HM_OUTPUT_WORK_DIR");
+
+  auto first_user_config = hm::user_config::load_or_create();
+  const fs::path user_config_path = test_home / ".hstream" / "hstream.yaml";
+  struct stat user_config_stat{};
+  ok &= expect(
+      first_user_config.ok() && fs::is_regular_file(user_config_path) &&
+          (*first_user_config)[hm::user_config::kPathsKey][hm::user_config::kOutputRootKey].as<std::string>() ==
+              (test_home / "hstream_output").string() &&
+          !(*first_user_config)[hm::user_config::kPathsKey][hm::user_config::kGameRootKey] &&
+          ::stat(user_config_path.c_str(), &user_config_stat) == 0 && (user_config_stat.st_mode & 0777) == 0600,
+      "First config read must create a private user overlay containing only the HOME hstream_output default");
+
   const fs::path games = root / "games";
   const fs::path game_dir = games / "first-save";
   fs::create_directories(game_dir);
+  ::setenv("HM_GAME_DIR", games.c_str(), 1);
+
+  const fs::path baseline_root = root / "baseline";
+  fs::create_directories(baseline_root);
+  std::ofstream(baseline_root / "baseline.yaml") << "pipeline:\n  layered-value: baseline\n  baseline-only: yes\n";
+  YAML::Node user_overlay = first_user_config.ok() ? YAML::Clone(*first_user_config) : YAML::Node(YAML::NodeType::Map);
+  user_overlay["pipeline"]["layered-value"] = "user";
+  user_overlay["pipeline"]["user-only"] = "yes";
+  user_overlay[hm::user_config::kPathsKey][hm::user_config::kGameRootKey] = games.string();
+  user_overlay[hm::user_config::kPathsKey][hm::user_config::kOutputRootKey] = (root / "configured-output").string();
+  std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
+
+  const fs::path no_home_games = root / "no-home-games";
+  const fs::path no_home_output = root / "no-home-output";
+  fs::create_directories(no_home_games / "explicit-roots");
+  std::ofstream(no_home_games / "explicit-roots" / "config.yaml") << "pipeline:\n  private-without-home: yes\n";
+  ::unsetenv("HOME");
+  ::setenv("HM_GAME_DIR", no_home_games.c_str(), 1);
+  ::setenv("HM_OUTPUT_WORK_DIR", no_home_output.c_str(), 1);
+  const auto no_home_overlay = hm::user_config::load_or_create();
+  hm::Configurator no_home_configurator("explicit-roots", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const auto no_home_config = no_home_configurator.load_config();
+  const auto no_home_game_root = no_home_overlay.ok() ? hm::user_config::game_root(*no_home_overlay)
+                                                      : absl::StatusOr<fs::path>(no_home_overlay.status());
+  const auto no_home_output_root = no_home_overlay.ok() ? hm::user_config::output_root(*no_home_overlay)
+                                                        : absl::StatusOr<fs::path>(no_home_overlay.status());
+  ok &= expect(
+      no_home_overlay.ok() && no_home_overlay->IsMap() && no_home_overlay->size() == 0 && no_home_config.ok() &&
+          (*no_home_config)["pipeline"]["baseline-only"].as<std::string>() == "yes" &&
+          (*no_home_config)["pipeline"]["private-without-home"].as<std::string>() == "yes" && no_home_game_root.ok() &&
+          *no_home_game_root == no_home_games && no_home_output_root.ok() && *no_home_output_root == no_home_output,
+      "Explicit game/output roots must keep configuration usable when HOME is unset");
+  ::setenv("HOME", test_home.c_str(), 1);
+  ::unsetenv("HM_OUTPUT_WORK_DIR");
+  ::setenv("HM_GAME_DIR", games.c_str(), 1);
+
+  const fs::path layered_game = games / "layered";
+  fs::create_directories(layered_game);
+  std::ofstream(layered_game / "config.yaml") << "pipeline:\n  layered-value: private\n  private-only: yes\n";
+  hm::Configurator layered("layered", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const auto layered_config = layered.load_config();
+  ok &= expect(
+      layered_config.ok() && (*layered_config)["pipeline"]["layered-value"].as<std::string>() == "private" &&
+          (*layered_config)["pipeline"]["baseline-only"].as<std::string>() == "yes" &&
+          (*layered_config)["pipeline"]["user-only"].as<std::string>() == "yes" &&
+          (*layered_config)["pipeline"]["private-only"].as<std::string>() == "yes",
+      "Config precedence must be baseline, then user overlay, then game-private YAML");
+  ::unsetenv("HM_GAME_DIR");
+  ok &= expect(
+      hm::Configurator::get_game_dir("layered") == games / "layered",
+      "The user overlay game-root must replace the HOME/Videos default when no environment override is present");
+
+  const fs::path snapshot_root_a = root / "snapshot-root-a";
+  const fs::path snapshot_root_b = root / "snapshot-root-b";
+  fs::create_directories(snapshot_root_a / "snapshot-game");
+  fs::create_directories(snapshot_root_b / "snapshot-game");
+  std::ofstream(snapshot_root_a / "snapshot-game" / "config.yaml") << "pipeline:\n  snapshot-origin: a\n";
+  user_overlay[hm::user_config::kPathsKey][hm::user_config::kGameRootKey] = snapshot_root_a.string();
+  std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
+  hm::Configurator snapshot_configurator("snapshot-game", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const auto snapshot_loaded = snapshot_configurator.load_config();
+  user_overlay[hm::user_config::kPathsKey][hm::user_config::kGameRootKey] = snapshot_root_b.string();
+  std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
+  YAML::Node snapshot_save(YAML::NodeType::Map);
+  snapshot_save["pipeline"]["snapshot-save"] = true;
+  const absl::Status snapshot_save_status = snapshot_configurator.save_private_config(snapshot_save);
+  auto snapshot_a_config = hm::stitching::load_game_config_file(snapshot_root_a / "snapshot-game" / "config.yaml");
+  auto snapshot_b_config = hm::stitching::load_game_config_file(snapshot_root_b / "snapshot-game" / "config.yaml");
+  ok &= expect(
+      snapshot_loaded.ok() && (*snapshot_loaded)["pipeline"]["snapshot-origin"].as<std::string>() == "a" &&
+          snapshot_save_status.ok() && snapshot_a_config.ok() && snapshot_a_config->has_value() &&
+          (**snapshot_a_config)["pipeline"]["snapshot-save"].as<bool>() && snapshot_b_config.ok() &&
+          !snapshot_b_config->has_value(),
+      "Each Configurator must use one game-root snapshot for private-config load, lock, merge, and save");
+
+  user_overlay[hm::user_config::kPathsKey][hm::user_config::kGameRootKey] = games.string();
+  std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
   ::setenv("HM_GAME_DIR", games.c_str(), 1);
 
   hm::Configurator configurator("first-save", "", hm::Configurator::kUseConfigFileGpu);
@@ -226,6 +328,161 @@ int main() {
               .ok(),
       "A single-file Auto side and two independently explicit playlists are unambiguous");
 
+  const fs::path custom_archive_dir = root / "configured-output" / "custom-archive-game";
+  const fs::path custom_archive = custom_archive_dir / "operator-selected-name.mkv";
+  const fs::path custom_recovery = custom_archive_dir / "operator-selected-name-finalization-failed.mkv";
+  fs::create_directories(custom_archive_dir);
+  std::ofstream(custom_archive, std::ios::binary) << "completed data from an interrupted custom archive";
+  const auto recovered_custom_archive = hm::configurator_internal::preserve_existing_archive_work_file(custom_archive);
+  std::ifstream recovered_input(custom_recovery, std::ios::binary);
+  const std::string recovered_content{
+      std::istreambuf_iterator<char>(recovered_input), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      recovered_custom_archive.ok() && recovered_custom_archive->has_value() &&
+          recovered_custom_archive->value() == custom_recovery && !fs::exists(custom_archive) &&
+          recovered_content == "completed data from an interrupted custom archive",
+      "Backend output configuration must durably preserve a nonempty custom work path before sink construction");
+
+  const auto first_unique_work =
+      hm::configurator_internal::reserve_unique_archive_work_file(custom_archive, "1234-review-run-a");
+  const auto duplicate_unique_work =
+      hm::configurator_internal::reserve_unique_archive_work_file(custom_archive, "1234-review-run-a");
+  const auto second_unique_work =
+      hm::configurator_internal::reserve_unique_archive_work_file(custom_archive, "5678-review-run-b");
+  ok &= expect(
+      first_unique_work.ok() && second_unique_work.ok() && *first_unique_work != *second_unique_work &&
+          fs::is_regular_file(*first_unique_work) && fs::is_regular_file(*second_unique_work) &&
+          duplicate_unique_work.status().code() == absl::StatusCode::kAlreadyExists,
+      "Concurrent UI archive runs must reserve different work paths and never share or overwrite one another");
+
+  const auto failed_unique_reservation = hm::configurator_internal::reserve_unique_archive_work_file(
+      root / "missing-archive-parent" / "archive.mkv", "9999-no-parent");
+  ok &= expect(
+      !failed_unique_reservation.ok() && failed_unique_reservation.status().code() == absl::StatusCode::kInternal &&
+          failed_unique_reservation.status().message().find("No such file or directory") != std::string::npos,
+      "Unique work reservation must preserve non-collision errno diagnostics");
+
+  std::map<std::string, std::string> claimed_archive_paths;
+  const auto first_archive_claim =
+      hm::configurator_internal::claim_unique_archive_output_path(claimed_archive_paths, custom_archive, "sink0");
+  const auto duplicate_archive_claim = hm::configurator_internal::claim_unique_archive_output_path(
+      claimed_archive_paths, custom_archive_dir / "." / custom_archive.filename(), "sink1");
+  ok &= expect(
+      first_archive_claim.ok() && duplicate_archive_claim.code() == absl::StatusCode::kInvalidArgument &&
+          duplicate_archive_claim.message().find("sink0") != std::string::npos &&
+          duplicate_archive_claim.message().find("sink1") != std::string::npos,
+      "Two enabled encode sinks must never be allowed to write the same normalized archive output");
+
+  const fs::path stale_run = custom_archive_dir / "operator-selected-name.hstream-run-99999999-88888888-dead.mkv";
+  const fs::path stale_versioned_run = custom_archive_dir /
+      ("operator-selected-name.hstream-run-v2-99999998-" + std::to_string(::getpid()) +
+       "-01234567-89ab-cdef-0123-456789abcdef.mkv");
+  const fs::path stale_pre_version_run = custom_archive_dir /
+      ("operator-selected-name.hstream-run-99999997-" + std::to_string(::getpid()) +
+       "-fedcba98-7654-3210-fedc-ba9876543210.mkv");
+  const fs::path dead_versioned_run = custom_archive_dir /
+      "operator-selected-name.hstream-run-v2-99999996-99999995-abcdef01-2345-6789-abcd-ef0123456789.mkv";
+  const fs::path dead_pre_version_run = custom_archive_dir /
+      "operator-selected-name.hstream-run-99999994-99999993-10fedcba-9876-5432-10fe-dcba98765432.mkv";
+  const fs::path live_run = custom_archive_dir /
+      ("operator-selected-name.hstream-run-" + std::to_string(::getpid()) + "-" + std::to_string(::getpid()) +
+       "-live.mkv");
+  const fs::path legacy_live_ui_run = custom_archive_dir /
+      ("operator-selected-name.hstream-run-" + std::to_string(::getpid()) +
+       "-00112233-4455-6677-8899-aabbccddeeff.mkv");
+  std::ofstream(stale_run, std::ios::binary) << "stale unique run data";
+  std::ofstream(stale_versioned_run, std::ios::binary) << "stale versioned run with live UI parent";
+  std::ofstream(stale_pre_version_run, std::ios::binary) << "stale pre-version run with live UI parent";
+  std::ofstream(dead_versioned_run, std::ios::binary) << "stale versioned run with dead backend and UI";
+  std::ofstream(dead_pre_version_run, std::ios::binary) << "stale pre-version run with dead backend and UI";
+  std::ofstream(live_run, std::ios::binary) << "live unique run data";
+  std::ofstream(legacy_live_ui_run, std::ios::binary) << "legacy work owned by live UI";
+  const auto stale_recoveries = hm::configurator_internal::recover_stale_archive_work_files(custom_archive);
+  ok &= expect(
+      stale_recoveries.ok() && stale_recoveries->size() == 3 && !fs::exists(stale_run) &&
+          fs::is_regular_file(stale_versioned_run) && fs::is_regular_file(stale_pre_version_run) &&
+          !fs::exists(dead_versioned_run) && !fs::exists(dead_pre_version_run) &&
+          std::all_of(
+              stale_recoveries->begin(),
+              stale_recoveries->end(),
+              [](const fs::path& path) { return fs::is_regular_file(path); }) &&
+          fs::is_regular_file(live_run) && fs::is_regular_file(legacy_live_ui_run),
+      "Restart recovery must retain pre-v3 work while either its backend or UI owner is alive");
+  const auto repeated_stale_recoveries = hm::configurator_internal::recover_stale_archive_work_files(custom_archive);
+  ok &= expect(
+      repeated_stale_recoveries.ok() && repeated_stale_recoveries->empty() && stale_recoveries.ok() &&
+          fs::is_regular_file(stale_recoveries->front()),
+      "Restart recovery must leave an already-recovered unique run at its stable recovery path");
+
+  const fs::path finalizer_archive = custom_archive_dir / "finalizer-ownership.mkv";
+  const fs::path finalizer_work = custom_archive_dir /
+      ("finalizer-ownership.hstream-run-v3-99999996-" + std::to_string(::getpid()) +
+       "-11223344-5566-7788-99aa-bbccddeeff00.mkv");
+  std::ofstream(finalizer_work, std::ios::binary) << "work file being consumed by the UI finalizer";
+  const auto finalizer_lock = hm::configurator_internal::acquire_archive_work_owner_lock(finalizer_work);
+  pid_t recovery_probe = -1;
+  if (finalizer_lock.ok())
+    recovery_probe = ::fork();
+  if (recovery_probe == 0) {
+    ::close(*finalizer_lock);
+    const auto during_finalization = hm::configurator_internal::recover_stale_archive_work_files(finalizer_archive);
+    _exit(during_finalization.ok() && during_finalization->empty() && fs::is_regular_file(finalizer_work) ? 0 : 1);
+  }
+  int recovery_probe_status = -1;
+  const bool recovery_probe_passed = recovery_probe > 0 && ::waitpid(recovery_probe, &recovery_probe_status, 0) > 0 &&
+      WIFEXITED(recovery_probe_status) && WEXITSTATUS(recovery_probe_status) == 0;
+  if (finalizer_lock.ok())
+    ::close(*finalizer_lock);
+  const auto before_ui_relinquishes = hm::configurator_internal::recover_stale_archive_work_files(finalizer_archive);
+  const bool preserved_before_relinquish = fs::is_regular_file(finalizer_work);
+  fs::remove(hm::configurator_internal::archive_work_owner_lock_path(finalizer_work));
+  const auto after_finalization = hm::configurator_internal::recover_stale_archive_work_files(finalizer_archive);
+  ok &= expect(
+      finalizer_lock.ok() && recovery_probe_passed && before_ui_relinquishes.ok() && before_ui_relinquishes->empty() &&
+          preserved_before_relinquish && after_finalization.ok() && after_finalization->size() == 1 &&
+          !fs::exists(finalizer_work) && fs::is_regular_file(after_finalization->front()) &&
+          !fs::exists(hm::configurator_internal::archive_work_owner_lock_path(finalizer_work)),
+      "A second backend must preserve work during backend-to-UI ownership transfer and finalization, then recover it after explicit relinquishment");
+
+  const fs::path failed_start_archive = custom_archive_dir / "failed-start.mkv";
+  const fs::path failed_start_work = custom_archive_dir /
+      ("failed-start.hstream-run-v3-99999995-" + std::to_string(::getpid()) +
+       "-22334455-6677-8899-aabb-ccddeeff0011.mkv");
+  std::ofstream(failed_start_work, std::ios::binary);
+  const auto failed_start_lock = hm::configurator_internal::acquire_archive_work_owner_lock(failed_start_work);
+  if (failed_start_lock.ok())
+    ::close(*failed_start_lock);
+  const fs::path failed_start_lock_path = hm::configurator_internal::archive_work_owner_lock_path(failed_start_work);
+  const bool failed_start_relinquished = fs::remove(failed_start_lock_path);
+  const auto failed_start_cleanup = hm::configurator_internal::recover_stale_archive_work_files(failed_start_archive);
+  std::ofstream(failed_start_work, std::ios::binary);
+  const auto repeated_failed_start_lock = hm::configurator_internal::acquire_archive_work_owner_lock(failed_start_work);
+  if (repeated_failed_start_lock.ok())
+    ::close(*repeated_failed_start_lock);
+  const bool repeated_failed_start_relinquished = fs::remove(failed_start_lock_path);
+  const auto repeated_failed_start_cleanup =
+      hm::configurator_internal::recover_stale_archive_work_files(failed_start_archive);
+  ok &= expect(
+      failed_start_lock.ok() && failed_start_relinquished && failed_start_cleanup.ok() &&
+          failed_start_cleanup->empty() && repeated_failed_start_lock.ok() && repeated_failed_start_relinquished &&
+          repeated_failed_start_cleanup.ok() && repeated_failed_start_cleanup->empty() &&
+          !fs::exists(failed_start_work) && !fs::exists(failed_start_lock_path),
+      "Repeated failed starts must durably clean each relinquished zero-byte v3 reservation and ownership sidecar");
+
+  const auto first_archive_lock = hm::configurator_internal::acquire_archive_output_lock(custom_archive);
+  const auto conflicting_archive_lock = hm::configurator_internal::acquire_archive_output_lock(custom_archive);
+  ok &= expect(
+      first_archive_lock.ok() && !conflicting_archive_lock.ok() &&
+          conflicting_archive_lock.status().code() == absl::StatusCode::kAlreadyExists,
+      "A second backend must fail cleanly instead of renaming or sharing a live direct-CLI archive");
+  if (first_archive_lock.ok())
+    ::close(*first_archive_lock);
+  const auto reacquired_archive_lock = hm::configurator_internal::acquire_archive_output_lock(custom_archive);
+  ok &= expect(
+      reacquired_archive_lock.ok(), "Archive ownership lock must become available after the prior backend exits");
+  if (reacquired_archive_lock.ok())
+    ::close(*reacquired_archive_lock);
+
   const fs::path superseded_force_dir = games / "superseded-force";
   fs::create_directories(superseded_force_dir);
   std::ofstream(superseded_force_dir / "seam_file.png") << "newer generation\n";
@@ -308,7 +565,18 @@ int main() {
       superseded_complete_status.code() == absl::StatusCode::kAborted,
       "A reserved complete owner superseded after load_config must abort at the final launch boundary");
 
-  ::unsetenv("HM_GAME_DIR");
   fs::remove_all(root);
+  if (original_home.empty())
+    ::unsetenv("HOME");
+  else
+    ::setenv("HOME", original_home.c_str(), 1);
+  if (original_game_root.empty())
+    ::unsetenv("HM_GAME_DIR");
+  else
+    ::setenv("HM_GAME_DIR", original_game_root.c_str(), 1);
+  if (original_output_root.empty())
+    ::unsetenv("HM_OUTPUT_WORK_DIR");
+  else
+    ::setenv("HM_OUTPUT_WORK_DIR", original_output_root.c_str(), 1);
   return ok ? 0 : 1;
 }

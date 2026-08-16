@@ -57,6 +57,24 @@ Runtime behavior is controlled by YAML configs in `configs/` and CLI overrides:
 - Inference config: `configs/config_infer_yolox_hockey.yaml`
 - Play tracking defaults: `configs/play_tracker_config.yaml`
 
+Configuration layers are applied in this order: HockeyMOM `baseline.yaml`, the
+per-user `~/.hstream/hstream.yaml` overlay, the game's private `config.yaml`,
+then command-line overrides. On first use HStream creates the user overlay with:
+
+```yaml
+paths:
+  output-root: /home/you/hstream_output
+```
+
+Add `paths.game-root` there to replace the default `$HOME/Videos` game root.
+`paths.output-root` replaces the old working-directory-dependent
+`output_workdirs` behavior. `HM_GAME_DIR` and `HM_OUTPUT_WORK_DIR` remain
+explicit environment overrides for automation.
+
+Successful UI archive runs are losslessly remuxed (not re-encoded) into the
+game directory as `<game-id>-tracking_output-with-audio.mp4`. The final MP4 is
+published only after ffmpeg completes its fast-start compatibility pass.
+
 HockeyMOM baseline config root:
 - Auto-detected from a sibling `../hm/hmlib/config` checkout when present, or from Bazel's `hm` external repo after a build.
 - Override explicitly via `HM_CONFIG_ROOT=/path/to/hm/hmlib/config`

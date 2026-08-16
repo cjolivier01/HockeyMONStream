@@ -14,6 +14,7 @@
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStandardPaths>
 #include <QtCore/QSysInfo>
+#include <QtCore/QTemporaryDir>
 #include <QtCore/QTimer>
 #include <QtCore/QUrl>
 #include <QtCore/Qt>
@@ -53,18 +54,25 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 
 #include <QtCore/QUuid>
 
 #ifdef Q_OS_UNIX
+#include <fcntl.h>
 #include <signal.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -830,28 +838,68 @@ void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QStr
 
 QString archive_output_work_dir(const QProcessEnvironment& env, const QString& working_dir) {
   QString root = env.value("HM_OUTPUT_WORK_DIR").trimmed();
+  const bool explicit_environment_override = !root.isEmpty();
   if (root.isEmpty()) {
-    const QFileInfo working_dir_info(working_dir);
-    const bool installed_read_only_root =
-        QDir::cleanPath(working_dir) == QStringLiteral("/opt/hstream") || !working_dir_info.isWritable();
-    if (!installed_read_only_root) {
-      root = QDir(working_dir).filePath("output_workdirs");
-    } else {
-      QString state_home = env.value("XDG_STATE_HOME").trimmed();
-      if (state_home.isEmpty()) {
-        state_home = QDir(QDir::homePath()).filePath(".local/state");
-      }
-      root = QDir(state_home).filePath("hstream/output_workdirs");
+    auto user_overlay = hm::user_config::load_or_create();
+    if (user_overlay.ok()) {
+      auto configured = hm::user_config::output_root(*user_overlay);
+      if (configured.ok())
+        root = QString::fromStdString(configured->string());
     }
   }
-  if (QFileInfo(root).isRelative()) {
+  if (root.isEmpty())
+    root = QDir::home().filePath("hstream_output");
+  // The backend interprets an explicitly relative environment override from
+  // its working directory. Resolve it the same way here so the path shown and
+  // monitored by the UI always names the file the backend is writing.
+  if (explicit_environment_override && QFileInfo(root).isRelative())
     root = QDir(working_dir).absoluteFilePath(root);
-  }
   return QDir::cleanPath(root);
 }
 
 QString archive_output_path(const QString& output_work_dir, const QString& game_id) {
   return QDir(QDir(output_work_dir).filePath(game_id)).filePath("tracking_output-with-audio.mkv");
+}
+
+QString available_final_archive_path(const QString& game_dir, const QString& game_id) {
+  QString safe_game_id = game_id.trimmed();
+  safe_game_id.replace(QRegularExpression(R"([\\/]+)"), "_");
+  const QString base = QString("%1-tracking_output-with-audio").arg(safe_game_id);
+  for (int suffix = 0; suffix < 1000; ++suffix) {
+    const QString filename = suffix == 0 ? base + ".mp4" : QString("%1-%2.mp4").arg(base).arg(suffix);
+    const QString candidate = QDir(game_dir).filePath(filename);
+    if (!QFileInfo::exists(candidate))
+      return candidate;
+  }
+  return {};
+}
+
+QString available_failed_archive_path(const QString& source_path) {
+  const QFileInfo source(source_path);
+  const QString extension = source.suffix().isEmpty() ? QString() : "." + source.suffix();
+  const QString base = source.completeBaseName() + "-finalization-failed";
+  for (int suffix = 0; suffix < 1000; ++suffix) {
+    const QString filename = suffix == 0 ? base + extension : QString("%1-%2%3").arg(base).arg(suffix).arg(extension);
+    const QString candidate = QDir(source.absolutePath()).filePath(filename);
+    if (!QFileInfo::exists(candidate))
+      return candidate;
+  }
+  return {};
+}
+
+qint64 media_clock_us(const QString& value) {
+  const QStringList fields = value.trimmed().split(':');
+  if (fields.size() != 3)
+    return -1;
+  bool hours_ok = false;
+  bool minutes_ok = false;
+  bool seconds_ok = false;
+  const qint64 hours = fields[0].toLongLong(&hours_ok);
+  const qint64 minutes = fields[1].toLongLong(&minutes_ok);
+  const double seconds = fields[2].toDouble(&seconds_ok);
+  if (!hours_ok || !minutes_ok || !seconds_ok || hours < 0 || minutes < 0 || seconds < 0.0)
+    return -1;
+  return qRound64((hours * 3600.0 + minutes * 60.0 + seconds) * 1000000.0);
 }
 
 QString existing_auto_cam_dir_for_source(const QDir& game_dir, const QFileInfo& source) {
@@ -1314,6 +1362,10 @@ void hm::ui_internal::configure_application_identity() {
   QGuiApplication::setDesktopFileName("hstream-ui");
 }
 
+QIcon hm::ui_internal::application_icon() {
+  return hstream_application_icon();
+}
+
 bool hm::ui_internal::supports_x11_embedding(const QString& platform_name, bool tegra_runtime) {
 #if defined(__x86_64__)
   return !tegra_runtime && platform_name.compare("xcb", Qt::CaseInsensitive) == 0;
@@ -1335,7 +1387,7 @@ QString hm::ui_internal::preview_channel_for_tab(int tab_index, int camera_count
 
 HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
   hm::ui_internal::configure_application_identity();
-  setWindowIcon(hstream_application_icon());
+  setWindowIcon(hm::ui_internal::application_icon());
   capture_complete_log_ = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_GAME_ID");
   pipeline_process_ = new QProcess(this);
   pipeline_process_->setProcessChannelMode(QProcess::MergedChannels);
@@ -1350,10 +1402,48 @@ HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
   });
   connect(pipeline_process_, &QProcess::readyReadStandardOutput, this, [this]() { readPipelineOutput(); });
   connect(pipeline_process_, &QProcess::readyReadStandardError, this, [this]() { readPipelineOutput(); });
+  archive_finalize_process_ = new QProcess(this);
+  archive_finalize_process_->setProcessChannelMode(QProcess::SeparateChannels);
+  connect(archive_finalize_process_, &QProcess::readyReadStandardOutput, this, [this]() {
+    readArchiveFinalizationProgress();
+  });
+  connect(archive_finalize_process_, &QProcess::readyReadStandardError, this, [this]() {
+    archive_finalize_error_output_ += QString::fromLocal8Bit(archive_finalize_process_->readAllStandardError());
+    constexpr qsizetype kMaximumFinalizeErrorCharacters = 64 * 1024;
+    if (archive_finalize_error_output_.size() > kMaximumFinalizeErrorCharacters)
+      archive_finalize_error_output_ = archive_finalize_error_output_.right(kMaximumFinalizeErrorCharacters);
+  });
+  connect(
+      archive_finalize_process_,
+      QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+      this,
+      [this](int exit_code, QProcess::ExitStatus exit_status) { finishArchiveFinalization(exit_code, exit_status); });
+  connect(archive_finalize_process_, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
+    if (error != QProcess::FailedToStart)
+      return;
+    const QString process_error = archive_finalize_process_->errorString();
+    if (archive_finalize_stage_ == ArchiveFinalizeStage::kSyncRecovery) {
+      archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
+      showArchiveFinalizationFailure(
+          archive_finalize_pending_failure_detail_ +
+          QString(
+              "\n\nThe recovery file was renamed, but the durability helper could not start: %1 Do not start "
+              "another archive run until this file has been copied to safety.")
+              .arg(process_error));
+    } else if (archive_finalize_stage_ == ArchiveFinalizeStage::kSyncCompleted) {
+      failArchiveFinalization(QString("Could not start the archive durability helper: %1").arg(process_error));
+    } else {
+      failArchiveFinalization(QString("Could not start ffmpeg: %1").arg(process_error));
+    }
+  });
   buildUi();
   refreshGames();
   updateRunControls();
   appendLog("hstream-ui started with hstream-cli runner backend");
+}
+
+HStreamWindow::~HStreamWindow() {
+  releaseArchiveFinalizerOwnership(false);
 }
 
 void HStreamWindow::closeEvent(QCloseEvent* event) {
@@ -1368,6 +1458,15 @@ void HStreamWindow::closeEvent(QCloseEvent* event) {
       event->ignore();
       return;
     }
+  }
+  if (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) {
+    appendLog("window close deferred while the completed archive is being finalized");
+    if (archive_finalize_dialog_) {
+      archive_finalize_dialog_->show();
+      archive_finalize_dialog_->raise();
+    }
+    event->ignore();
+    return;
   }
   QMainWindow::closeEvent(event);
 }
@@ -2939,8 +3038,25 @@ QStringList HStreamWindow::pipelineArguments() const {
 }
 
 void HStreamWindow::startPipeline() {
-  if (!pipeline_process_ || pipeline_process_->state() != QProcess::NotRunning) {
-    appendLog("pipeline already running");
+  if (!pipeline_process_ || pipeline_process_->state() != QProcess::NotRunning ||
+      (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning)) {
+    appendLog(
+        archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning
+            ? "the completed archive is still being finalized"
+            : "pipeline already running");
+    return;
+  }
+  if (!archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_)) {
+    archive_finalize_blocked_source_path_.clear();
+    releaseArchiveFinalizerOwnership(true);
+  }
+  const auto blocked_archive_toggle = output_toggles_.find("archive-file");
+  const bool blocked_archive_enabled = !isCalibrationRun() && blocked_archive_toggle != output_toggles_.end() &&
+      blocked_archive_toggle->second && blocked_archive_toggle->second->isChecked();
+  if (blocked_archive_enabled && !archive_finalize_blocked_source_path_.isEmpty()) {
+    appendLog(QString("archive run blocked until the retained work file is moved to safety: %1")
+                  .arg(archive_finalize_blocked_source_path_));
+    updateRunControls();
     return;
   }
   pipeline_state_->setText("STARTING");
@@ -2990,20 +3106,22 @@ void HStreamWindow::startPipeline() {
   configure_pipeline_runtime_environment(env, working_dir);
   setPlaybackStartupStage("stitching", "Validating saved stitching state and Left/Right video assignments");
   active_archive_output_path_.clear();
+  active_archive_recovery_path_.clear();
   active_archive_initial_size_ = -1;
   active_archive_initial_mtime_ms_ = -1;
+  active_archive_video_is_hevc_ = false;
   const auto archive_toggle = output_toggles_.find("archive-file");
   const bool archive_enabled = !active_run_is_calibration_ && archive_toggle != output_toggles_.end() &&
       archive_toggle->second && archive_toggle->second->isChecked();
   if (archive_enabled) {
     const QString output_work_dir = archive_output_work_dir(env, working_dir);
     env.insert("HM_OUTPUT_WORK_DIR", output_work_dir);
+    env.insert(
+        "HSTREAM_ARCHIVE_RUN_ID",
+        QString("%1-%2")
+            .arg(QCoreApplication::applicationPid())
+            .arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
     active_archive_output_path_ = archive_output_path(output_work_dir, active_run_game_id_);
-    const QFileInfo previous_archive(active_archive_output_path_);
-    if (previous_archive.isFile()) {
-      active_archive_initial_size_ = previous_archive.size();
-      active_archive_initial_mtime_ms_ = previous_archive.lastModified().toMSecsSinceEpoch();
-    }
     const QString archive_dir = QFileInfo(active_archive_output_path_).absolutePath();
     if (!QDir().mkpath(archive_dir)) {
       output_states_["archive-file"]->setText("ERROR");
@@ -3363,18 +3481,30 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
     appendLog(pipeline_stderr_buffer_.trimmed());
     pipeline_stderr_buffer_.clear();
   }
+  const bool stopped_by_user = pipeline_stop_requested_;
+  const bool calibration_ended_incomplete = calibration_pending_ && !stopped_by_user;
+  const bool completed_successfully =
+      exit_status == QProcess::NormalExit && exit_code == 0 && !stopped_by_user && !calibration_ended_incomplete;
   QString archive_result;
+  QString archive_to_finalize;
+  QString archive_game_id;
   if (!active_archive_output_path_.isEmpty()) {
     const QFileInfo archive_info(active_archive_output_path_);
     const bool output_updated = archive_info.isFile() &&
         (active_archive_initial_size_ < 0 || archive_info.size() != active_archive_initial_size_ ||
          archive_info.lastModified().toMSecsSinceEpoch() != active_archive_initial_mtime_ms_);
     if (output_updated && archive_info.size() > 0) {
-      const bool complete = exit_status == QProcess::NormalExit && exit_code == 0;
-      output_states_["archive-file"]->setText(complete ? "SAVED" : "INCOMPLETE");
-      archive_result = QString("archive %1: %2 (%3 bytes)")
-                           .arg(complete ? "finalized" : "may be incomplete", active_archive_output_path_)
-                           .arg(archive_info.size());
+      output_states_["archive-file"]->setText(completed_successfully ? "FINALIZING" : "INCOMPLETE");
+      archive_result =
+          QString("archive %1: %2 (%3 bytes)")
+              .arg(
+                  completed_successfully ? "container closed; lossless MP4 finalization starting" : "may be incomplete",
+                  active_archive_output_path_)
+              .arg(archive_info.size());
+      if (completed_successfully) {
+        archive_to_finalize = active_archive_output_path_;
+        archive_game_id = active_run_game_id_;
+      }
     } else if (output_updated) {
       output_states_["archive-file"]->setText("INCOMPLETE");
       archive_result = QString("archive output is empty and incomplete: %1").arg(active_archive_output_path_);
@@ -3391,10 +3521,6 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   if (scoreboard_selection_dialog_)
     scoreboard_selection_dialog_->closeAfterBackendCompletion();
   clearPreviewFrames();
-  const bool stopped_by_user = pipeline_stop_requested_;
-  const bool calibration_ended_incomplete = calibration_pending_ && !stopped_by_user;
-  const bool completed_successfully =
-      exit_status == QProcess::NormalExit && exit_code == 0 && !stopped_by_user && !calibration_ended_incomplete;
   pipeline_stop_requested_ = false;
   if (calibration_pending_ && !stopped_by_user) {
     appendLog("one-pass stitching calibration ended before completion; calibration remains pending");
@@ -3441,6 +3567,11 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   active_archive_output_path_.clear();
   active_archive_initial_size_ = -1;
   active_archive_initial_mtime_ms_ = -1;
+  if (!archive_to_finalize.isEmpty()) {
+    startArchiveFinalization(archive_to_finalize, archive_game_id, active_archive_video_is_hevc_);
+  } else {
+    releaseArchiveFinalizerOwnership(true);
+  }
   updateRunControls();
 }
 
@@ -3922,23 +4053,43 @@ void HStreamWindow::updatePlaybackProgressPresentation() {
 }
 
 void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
+  static const QRegularExpression recovery_status(R"(^HSTREAM_OUTPUT_RECOVERY type=archive sink=(-?\d+) path=(.+)$)");
+  const QRegularExpressionMatch recovery_match = recovery_status.match(line);
+  if (recovery_match.hasMatch() && !active_archive_output_path_.isEmpty()) {
+    active_archive_recovery_path_ = QFileInfo(recovery_match.captured(2)).absoluteFilePath();
+    if (archive_output_path_label_) {
+      archive_output_path_label_->setText(QString("Archive: %1\nPrevious archive retained for recovery: %2")
+                                              .arg(active_archive_output_path_, active_archive_recovery_path_));
+    }
+    appendLog(QString("pre-existing archive work file preserved for recovery: %1").arg(active_archive_recovery_path_));
+    return;
+  }
   static const QRegularExpression output_status(
-      R"(^HSTREAM_OUTPUT type=archive sink=(-?\d+) existed=([01]) size=(-?\d+) mtime-ms=(-?\d+) path=(.+)$)");
+      R"(^HSTREAM_OUTPUT type=archive sink=(-?\d+) existed=([01]) size=(-?\d+) mtime-ms=(-?\d+)(?: codec=(h264|hevc|unknown))? path=(.+)$)");
   const QRegularExpressionMatch match = output_status.match(line);
   if (!match.hasMatch() || active_archive_output_path_.isEmpty()) {
     return;
   }
-  const QString resolved_path = QFileInfo(match.captured(5)).absoluteFilePath();
+  const QString resolved_path = QFileInfo(match.captured(6)).absoluteFilePath();
   if (resolved_path.isEmpty()) {
     return;
+  }
+  QString ownership_error;
+  if (!acquireArchiveFinalizerOwnership(resolved_path, &ownership_error)) {
+    appendLog(QString("archive finalizer ownership could not be established: %1").arg(ownership_error));
   }
   const bool path_changed = resolved_path != active_archive_output_path_;
   active_archive_output_path_ = resolved_path;
   const bool output_existed = match.captured(2) == "1";
   active_archive_initial_size_ = output_existed ? match.captured(3).toLongLong() : -1;
   active_archive_initial_mtime_ms_ = output_existed ? match.captured(4).toLongLong() : -1;
-  if (archive_output_path_label_)
-    archive_output_path_label_->setText(QString("Archive: %1").arg(active_archive_output_path_));
+  active_archive_video_is_hevc_ = match.captured(5) == "hevc";
+  if (archive_output_path_label_) {
+    archive_output_path_label_->setText(
+        active_archive_recovery_path_.isEmpty() ? QString("Archive: %1").arg(active_archive_output_path_)
+                                                : QString("Archive: %1\nPrevious archive retained for recovery: %2")
+                                                      .arg(active_archive_output_path_, active_archive_recovery_path_));
+  }
   appendLog(QString("archive backend %1 output: %2")
                 .arg(path_changed ? "resolved" : "confirmed", active_archive_output_path_));
 }
@@ -3953,7 +4104,12 @@ void HStreamWindow::updateArchiveOutputPathLabel() {
   const bool pipeline_running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   if (pipeline_running && !active_archive_output_path_.isEmpty()) {
     archive_output_path_label_->setText(
-        QString("Current archive: %1\nRoute change applies to the next run").arg(active_archive_output_path_));
+        active_archive_recovery_path_.isEmpty()
+            ? QString("Current archive: %1\nRoute change applies to the next run").arg(active_archive_output_path_)
+            : QString(
+                  "Current archive: %1\nPrevious archive retained for recovery: "
+                  "%2\nRoute change applies to the next run")
+                  .arg(active_archive_output_path_, active_archive_recovery_path_));
   } else if (archive_enabled) {
     const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     archive_output_path_label_->setText(QString("Archive: %1")
@@ -3963,6 +4119,472 @@ void HStreamWindow::updateArchiveOutputPathLabel() {
   } else {
     archive_output_path_label_->setText("Archive path will be shown when enabled");
   }
+}
+
+bool HStreamWindow::acquireArchiveFinalizerOwnership(const QString& source_path, QString* error) {
+  const QString absolute_source = QFileInfo(source_path).absoluteFilePath();
+  const QString lock_path = absolute_source + ".hstream-owner-lock";
+  if (archive_finalize_owner_lock_fd_ >= 0 && archive_finalize_owner_lock_path_ == lock_path)
+    return true;
+  releaseArchiveFinalizerOwnership(false);
+#ifdef Q_OS_UNIX
+  const QByteArray encoded_path = QFile::encodeName(lock_path);
+  const int lock_fd = ::open(encoded_path.constData(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+  if (lock_fd < 0) {
+    if (error) {
+      *error = QString("Could not open archive finalizer ownership lock %1: %2")
+                   .arg(lock_path, QString::fromLocal8Bit(std::strerror(errno)));
+    }
+    return false;
+  }
+  if (::flock(lock_fd, LOCK_SH) != 0) {
+    const int saved_errno = errno;
+    ::close(lock_fd);
+    if (error) {
+      *error = QString("Could not claim archive finalizer ownership lock %1: %2")
+                   .arg(lock_path, QString::fromLocal8Bit(std::strerror(saved_errno)));
+    }
+    return false;
+  }
+  archive_finalize_owner_lock_fd_ = lock_fd;
+  archive_finalize_owner_lock_path_ = lock_path;
+  return true;
+#else
+  if (error)
+    *error = "Archive finalizer ownership locks are unavailable on this platform.";
+  return false;
+#endif
+}
+
+void HStreamWindow::releaseArchiveFinalizerOwnership(bool remove_lock_file) {
+#ifdef Q_OS_UNIX
+  if (archive_finalize_owner_lock_fd_ >= 0) {
+    ::flock(archive_finalize_owner_lock_fd_, LOCK_UN);
+    ::close(archive_finalize_owner_lock_fd_);
+  }
+#endif
+  archive_finalize_owner_lock_fd_ = -1;
+  if (remove_lock_file && !archive_finalize_owner_lock_path_.isEmpty())
+    QFile::remove(archive_finalize_owner_lock_path_);
+  archive_finalize_owner_lock_path_.clear();
+}
+
+void HStreamWindow::startArchiveFinalization(const QString& source_path, const QString& game_id, bool hevc_video) {
+  if (!archive_finalize_process_ || archive_finalize_process_->state() != QProcess::NotRunning)
+    return;
+
+  if (!archive_finalize_dialog_) {
+    auto* dialog = new StitchingCalibrationDialog(this);
+    archive_finalize_dialog_ = dialog;
+    dialog->setObjectName("archiveFinalizeDialog");
+    dialog->setWindowTitle("Finalizing completed video");
+    dialog->setWindowModality(Qt::WindowModal);
+    dialog->setMinimumWidth(540);
+    dialog->setStyleSheet(
+        "QLabel[finalizationState=active] { color: #1570ef; font-weight: 600; }"
+        "QLabel[finalizationState=complete] { color: #039855; font-weight: 600; }"
+        "QLabel[finalizationState=failed] { color: #d92d20; font-weight: 600; }"
+        "QProgressBar[finalizationState=active]::chunk { background: #1570ef; }"
+        "QProgressBar[finalizationState=complete]::chunk { background: #039855; }"
+        "QProgressBar[finalizationState=failed]::chunk { background: #d92d20; }");
+
+    auto* root = new QVBoxLayout(dialog);
+    root->setContentsMargins(24, 24, 24, 20);
+    root->setSpacing(14);
+    auto* heading = new QHBoxLayout();
+    heading->setSpacing(14);
+    archive_finalize_icon_ = new QLabel(dialog);
+    archive_finalize_icon_->setObjectName("archiveFinalizeIcon");
+    archive_finalize_icon_->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
+    archive_finalize_icon_->setFixedSize(40, 40);
+    heading->addWidget(archive_finalize_icon_);
+    auto* heading_text = new QVBoxLayout();
+    heading_text->setSpacing(4);
+    archive_finalize_headline_ = new QLabel(dialog);
+    archive_finalize_headline_->setObjectName("archiveFinalizeHeadline");
+    QFont headline_font = archive_finalize_headline_->font();
+    headline_font.setPointSize(headline_font.pointSize() + 2);
+    headline_font.setBold(true);
+    archive_finalize_headline_->setFont(headline_font);
+    archive_finalize_detail_ = new QLabel(dialog);
+    archive_finalize_detail_->setObjectName("archiveFinalizeDetail");
+    archive_finalize_detail_->setWordWrap(true);
+    archive_finalize_detail_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    heading_text->addWidget(archive_finalize_headline_);
+    heading_text->addWidget(archive_finalize_detail_);
+    heading->addLayout(heading_text, 1);
+    root->addLayout(heading);
+
+    archive_finalize_progress_ = new QProgressBar(dialog);
+    archive_finalize_progress_->setObjectName("archiveFinalizeProgress");
+    archive_finalize_progress_->setTextVisible(true);
+    root->addWidget(archive_finalize_progress_);
+
+    auto* buttons = new QHBoxLayout();
+    buttons->addStretch(1);
+    archive_finalize_ok_button_ = new QPushButton("OK", dialog);
+    archive_finalize_ok_button_->setObjectName("archiveFinalizeOkButton");
+    archive_finalize_ok_button_->setDefault(true);
+    archive_finalize_ok_button_->hide();
+    buttons->addWidget(archive_finalize_ok_button_);
+    root->addLayout(buttons);
+    connect(archive_finalize_ok_button_, &QPushButton::clicked, dialog, &QDialog::accept);
+  }
+
+  archive_finalize_failed_ = false;
+  archive_finalize_source_path_ = QFileInfo(source_path).absoluteFilePath();
+  archive_finalize_game_id_ = game_id;
+  archive_finalize_target_path_ = available_final_archive_path(gameDirectory(game_id), game_id);
+  archive_finalize_stdout_buffer_.clear();
+  archive_finalize_error_output_.clear();
+  archive_finalize_pending_failure_detail_.clear();
+  archive_finalize_duration_us_ = media_clock_us(playback_total_);
+  archive_finalize_stage_ = ArchiveFinalizeStage::kRemux;
+
+  auto apply_state = [](QWidget* widget, const char* state) {
+    if (!widget)
+      return;
+    widget->setProperty("finalizationState", state);
+    widget->style()->unpolish(widget);
+    widget->style()->polish(widget);
+  };
+  apply_state(archive_finalize_headline_, "active");
+  apply_state(archive_finalize_progress_, "active");
+  archive_finalize_icon_->setPixmap(style()->standardIcon(QStyle::SP_MessageBoxInformation).pixmap(32, 32));
+  archive_finalize_headline_->setText("Finalizing completed video…");
+  archive_finalize_detail_->setText(
+      "Losslessly remuxing the archive for iPhone and Plex compatibility. The video is not being re-encoded.");
+  if (archive_finalize_duration_us_ > 0) {
+    archive_finalize_progress_->setRange(0, 1000);
+    archive_finalize_progress_->setValue(0);
+    archive_finalize_progress_->setFormat("Preparing MP4  •  0.0%");
+  } else {
+    archive_finalize_progress_->setRange(0, 0);
+    archive_finalize_progress_->setFormat("Preparing MP4");
+  }
+  archive_finalize_ok_button_->hide();
+  static_cast<StitchingCalibrationDialog*>(archive_finalize_dialog_)->setCloseAllowed(false);
+  archive_finalize_dialog_->show();
+  archive_finalize_dialog_->raise();
+
+  QString ownership_error;
+  if (!acquireArchiveFinalizerOwnership(archive_finalize_source_path_, &ownership_error)) {
+    archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
+    showArchiveFinalizationFailure(
+        ownership_error +
+        "\n\nThe completed work file could not be protected for finalization. Do not start another archive run until "
+        "this file has been copied to safety.");
+    return;
+  }
+
+  if (archive_finalize_target_path_.isEmpty()) {
+    failArchiveFinalization("Could not find an available final filename in the game directory.");
+    return;
+  }
+  const QFileInfo target_info(archive_finalize_target_path_);
+  if (!QDir().mkpath(target_info.absolutePath())) {
+    failArchiveFinalization(QString("Could not create the game directory: %1").arg(target_info.absolutePath()));
+    return;
+  }
+  QTemporaryDir temporary_directory(
+      QDir(target_info.absolutePath())
+          .filePath(QString(".%1.hstream-finalize-XXXXXX").arg(target_info.completeBaseName())));
+  if (!temporary_directory.isValid()) {
+    failArchiveFinalization(
+        QString("Could not create a private temporary directory in %1.").arg(target_info.absolutePath()));
+    return;
+  }
+  if (!QFile::setPermissions(
+          temporary_directory.path(), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner)) {
+    failArchiveFinalization(
+        QString("Could not secure the temporary video directory in %1.").arg(target_info.absolutePath()));
+    return;
+  }
+  temporary_directory.setAutoRemove(false);
+  archive_finalize_temporary_dir_ = temporary_directory.path();
+  archive_finalize_partial_path_ = QDir(archive_finalize_temporary_dir_).filePath("completed.mp4");
+
+  QString ffmpeg = qEnvironmentVariable("HSTREAM_UI_FFMPEG").trimmed();
+  if (ffmpeg.isEmpty())
+    ffmpeg = QStandardPaths::findExecutable("ffmpeg");
+  else if (QFileInfo(ffmpeg).isRelative())
+    ffmpeg = QStandardPaths::findExecutable(ffmpeg);
+  if (ffmpeg.isEmpty()) {
+    failArchiveFinalization("ffmpeg is not installed or could not be found in PATH.");
+    return;
+  }
+
+  QStringList arguments = {
+      "-hide_banner",
+      "-n",
+      "-progress",
+      "pipe:1",
+      "-nostats",
+      "-i",
+      archive_finalize_source_path_,
+      "-map",
+      "0:v:0",
+      "-map",
+      "0:a?",
+      "-map_metadata",
+      "0",
+      "-c",
+      "copy",
+      "-movflags",
+      "+faststart"};
+  if (hevc_video)
+    arguments << "-tag:v" << "hvc1";
+  arguments << archive_finalize_partial_path_;
+  output_states_["archive-file"]->setText("FINALIZING");
+  appendLog(
+      QString("finalizing archive without re-encoding: %1 -> %2").arg(source_path, archive_finalize_target_path_));
+  archive_finalize_process_->setProgram(ffmpeg);
+  archive_finalize_process_->setArguments(arguments);
+  archive_finalize_process_->setWorkingDirectory(target_info.absolutePath());
+  archive_finalize_process_->start();
+  updateRunControls();
+}
+
+void HStreamWindow::readArchiveFinalizationProgress() {
+  if (!archive_finalize_process_ || archive_finalize_stage_ != ArchiveFinalizeStage::kRemux)
+    return;
+  archive_finalize_stdout_buffer_ += QString::fromLocal8Bit(archive_finalize_process_->readAllStandardOutput());
+  while (true) {
+    const qsizetype newline = archive_finalize_stdout_buffer_.indexOf('\n');
+    if (newline < 0)
+      break;
+    const QString line = archive_finalize_stdout_buffer_.left(newline).trimmed();
+    archive_finalize_stdout_buffer_.remove(0, newline + 1);
+    if (!line.startsWith("out_time="))
+      continue;
+    const qint64 completed_us = media_clock_us(line.mid(QString("out_time=").size()));
+    if (completed_us < 0 || archive_finalize_duration_us_ <= 0 || !archive_finalize_progress_)
+      continue;
+    const int value = static_cast<int>(std::clamp<qint64>(completed_us * 1000 / archive_finalize_duration_us_, 0, 999));
+    archive_finalize_progress_->setRange(0, 1000);
+    archive_finalize_progress_->setValue(value);
+    archive_finalize_progress_->setFormat(QString("Preparing MP4  •  %1%").arg(value / 10.0, 0, 'f', 1));
+  }
+}
+
+bool HStreamWindow::startArchiveDurabilitySync(const QString& path, ArchiveFinalizeStage stage, QString* error) {
+  QString sync_program = qEnvironmentVariable("HSTREAM_UI_SYNC").trimmed();
+  if (sync_program.isEmpty())
+    sync_program = QStandardPaths::findExecutable("sync");
+  else if (QFileInfo(sync_program).isRelative())
+    sync_program = QStandardPaths::findExecutable(sync_program);
+  if (sync_program.isEmpty()) {
+    if (error)
+      *error = "The sync durability helper is not installed or could not be found in PATH.";
+    return false;
+  }
+
+  archive_finalize_stage_ = stage;
+  archive_finalize_stdout_buffer_.clear();
+  archive_finalize_error_output_.clear();
+  archive_finalize_headline_->setText(
+      stage == ArchiveFinalizeStage::kSyncCompleted ? "Saving completed video safely…" : "Securing recovery archive…");
+  archive_finalize_detail_->setText(
+      stage == ArchiveFinalizeStage::kSyncCompleted
+          ? QString("The MP4 is ready and is being flushed safely to disk at:\n%1").arg(path)
+          : QString("The original archive is being flushed safely to disk at:\n%1").arg(path));
+  archive_finalize_progress_->setRange(0, 0);
+  archive_finalize_progress_->setFormat(
+      stage == ArchiveFinalizeStage::kSyncCompleted ? "Saving MP4 safely" : "Securing recovery archive");
+  appendLog(QString("durability sync starting for archive: %1").arg(path));
+  archive_finalize_process_->setProgram(sync_program);
+  archive_finalize_process_->setArguments({"-f", path});
+  archive_finalize_process_->setWorkingDirectory(QFileInfo(path).absolutePath());
+  archive_finalize_process_->start();
+  return true;
+}
+
+void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatus exit_status) {
+  archive_finalize_error_output_ += QString::fromLocal8Bit(archive_finalize_process_->readAllStandardError());
+  if (archive_finalize_stage_ == ArchiveFinalizeStage::kSyncRecovery) {
+    QString failure_detail = archive_finalize_pending_failure_detail_;
+    if (exit_status != QProcess::NormalExit || exit_code != 0) {
+      archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
+      QString helper_detail = archive_finalize_error_output_.trimmed();
+      if (helper_detail.size() > 1000)
+        helper_detail = helper_detail.right(1000);
+      failure_detail +=
+          QString(
+              "\n\nThe recovery file was renamed, but durability sync failed with code %1.%2 Do not start "
+              "another archive run until this file has been copied to safety.")
+              .arg(exit_code)
+              .arg(helper_detail.isEmpty() ? QString() : "\n" + helper_detail);
+    } else {
+      archive_finalize_blocked_source_path_.clear();
+      appendLog(QString("recovery archive safely synced: %1").arg(archive_finalize_source_path_));
+    }
+    showArchiveFinalizationFailure(failure_detail);
+    return;
+  }
+  if (archive_finalize_stage_ == ArchiveFinalizeStage::kSyncCompleted) {
+    if (exit_status != QProcess::NormalExit || exit_code != 0) {
+      QString helper_detail = archive_finalize_error_output_.trimmed();
+      if (helper_detail.size() > 1000)
+        helper_detail = helper_detail.right(1000);
+      failArchiveFinalization(QString("Archive durability sync failed with code %1.%2")
+                                  .arg(exit_code)
+                                  .arg(helper_detail.isEmpty() ? QString() : "\n" + helper_detail));
+      return;
+    }
+    appendLog(QString("completed MP4 safely synced: %1").arg(archive_finalize_target_path_));
+    completeArchiveFinalization();
+    return;
+  }
+  if (archive_finalize_stage_ != ArchiveFinalizeStage::kRemux || archive_finalize_failed_)
+    return;
+
+  readArchiveFinalizationProgress();
+  if (exit_status != QProcess::NormalExit || exit_code != 0) {
+    QString detail = archive_finalize_error_output_.trimmed();
+    if (detail.size() > 1000)
+      detail = detail.right(1000);
+    failArchiveFinalization(
+        QString("ffmpeg exited with code %1.%2").arg(exit_code).arg(detail.isEmpty() ? QString() : "\n" + detail));
+    return;
+  }
+
+  const QFileInfo partial(archive_finalize_partial_path_);
+  if (!partial.isFile() || partial.size() <= 0) {
+    failArchiveFinalization("ffmpeg reported success but did not create a usable MP4.");
+    return;
+  }
+  bool published = false;
+  QString publication_error;
+  for (int attempt = 0; attempt < 1000; ++attempt) {
+    const QString candidate =
+        available_final_archive_path(gameDirectory(archive_finalize_game_id_), archive_finalize_game_id_);
+    if (candidate.isEmpty()) {
+      publication_error = "Could not find an available final filename in the game directory.";
+      break;
+    }
+    if (QFile::rename(archive_finalize_partial_path_, candidate)) {
+      archive_finalize_target_path_ = candidate;
+      published = true;
+      break;
+    }
+    if (!QFileInfo::exists(candidate)) {
+      publication_error = QString("Could not publish the completed MP4 as %1.").arg(candidate);
+      break;
+    }
+  }
+  if (!published) {
+    failArchiveFinalization(
+        publication_error.isEmpty() ? "Could not atomically publish the completed MP4." : publication_error);
+    return;
+  }
+  archive_finalize_partial_path_.clear();
+  if (!archive_finalize_temporary_dir_.isEmpty()) {
+    if (!QDir().rmdir(archive_finalize_temporary_dir_))
+      appendLog(QString("could not remove empty archive temporary directory: %1").arg(archive_finalize_temporary_dir_));
+    archive_finalize_temporary_dir_.clear();
+  }
+
+  QString durability_error;
+  if (!startArchiveDurabilitySync(
+          archive_finalize_target_path_, ArchiveFinalizeStage::kSyncCompleted, &durability_error)) {
+    failArchiveFinalization(durability_error);
+    return;
+  }
+}
+
+void HStreamWindow::completeArchiveFinalization() {
+  archive_finalize_stage_ = ArchiveFinalizeStage::kIdle;
+  const qint64 final_size = QFileInfo(archive_finalize_target_path_).size();
+  const bool source_removed = QFile::remove(archive_finalize_source_path_);
+  releaseArchiveFinalizerOwnership(true);
+  output_states_["archive-file"]->setText("SAVED");
+  if (archive_output_path_label_)
+    archive_output_path_label_->setText(QString("Completed archive: %1").arg(archive_finalize_target_path_));
+  archive_finalize_progress_->setRange(0, 1000);
+  archive_finalize_progress_->setValue(1000);
+  archive_finalize_progress_->setFormat("COMPLETED  •  100.0%");
+  archive_finalize_headline_->setText("Completed video is ready");
+  archive_finalize_detail_->setText(archive_finalize_target_path_);
+  archive_finalize_icon_->setPixmap(style()->standardIcon(QStyle::SP_DialogApplyButton).pixmap(32, 32));
+  archive_finalize_headline_->setProperty("finalizationState", "complete");
+  archive_finalize_progress_->setProperty("finalizationState", "complete");
+  for (QWidget* widget :
+       {static_cast<QWidget*>(archive_finalize_headline_), static_cast<QWidget*>(archive_finalize_progress_)}) {
+    widget->style()->unpolish(widget);
+    widget->style()->polish(widget);
+  }
+  static_cast<StitchingCalibrationDialog*>(archive_finalize_dialog_)->setCloseAllowed(true);
+  appendLog(
+      QString("completed archive published: %1 (%2 bytes)%3")
+          .arg(archive_finalize_target_path_)
+          .arg(final_size)
+          .arg(source_removed ? QString() : QString("; source retained at %1").arg(archive_finalize_source_path_)));
+  QTimer::singleShot(500, archive_finalize_dialog_, &QDialog::accept);
+  updateRunControls();
+}
+
+void HStreamWindow::showArchiveFinalizationFailure(const QString& failure_detail) {
+  archive_finalize_failed_ = true;
+  archive_finalize_stage_ = ArchiveFinalizeStage::kIdle;
+  output_states_["archive-file"]->setText("ERROR");
+  archive_finalize_progress_->setRange(0, 1000);
+  archive_finalize_progress_->setValue(1000);
+  archive_finalize_progress_->setFormat("ERROR");
+  archive_finalize_headline_->setText("Video finalization failed");
+  archive_finalize_detail_->setText(QString("%1\n\nThe completed archive was retained for recovery at:\n%2")
+                                        .arg(failure_detail, archive_finalize_source_path_));
+  archive_finalize_icon_->setPixmap(style()->standardIcon(QStyle::SP_MessageBoxCritical).pixmap(32, 32));
+  for (QWidget* widget :
+       {static_cast<QWidget*>(archive_finalize_headline_), static_cast<QWidget*>(archive_finalize_progress_)}) {
+    widget->setProperty("finalizationState", "failed");
+    widget->style()->unpolish(widget);
+    widget->style()->polish(widget);
+  }
+  archive_finalize_ok_button_->show();
+  static_cast<StitchingCalibrationDialog*>(archive_finalize_dialog_)->setCloseAllowed(true);
+  archive_finalize_dialog_->show();
+  appendLog(QString("archive finalization failed: %1; recovery archive retained at %2")
+                .arg(failure_detail, archive_finalize_source_path_));
+  updateRunControls();
+}
+
+void HStreamWindow::failArchiveFinalization(const QString& message) {
+  if (archive_finalize_failed_)
+    return;
+  archive_finalize_failed_ = true;
+  QFile::remove(archive_finalize_partial_path_);
+  archive_finalize_partial_path_.clear();
+  if (!archive_finalize_temporary_dir_.isEmpty()) {
+    QDir().rmdir(archive_finalize_temporary_dir_);
+    archive_finalize_temporary_dir_.clear();
+  }
+  QString failure_detail = message;
+  if (QFileInfo::exists(archive_finalize_source_path_)) {
+    const QString failed_archive_path = available_failed_archive_path(archive_finalize_source_path_);
+    if (!failed_archive_path.isEmpty() && QFile::rename(archive_finalize_source_path_, failed_archive_path)) {
+      archive_finalize_source_path_ = failed_archive_path;
+      releaseArchiveFinalizerOwnership(true);
+      archive_finalize_pending_failure_detail_ = failure_detail;
+      QString durability_error;
+      if (startArchiveDurabilitySync(
+              archive_finalize_source_path_, ArchiveFinalizeStage::kSyncRecovery, &durability_error)) {
+        return;
+      }
+      archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
+      failure_detail += QString(
+                            "\n\nThe recovery file was renamed, but it could not be durability-synced. %1 Do not "
+                            "start another archive run until this file has been copied to safety.")
+                            .arg(durability_error);
+    } else {
+      archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
+      failure_detail +=
+          "\n\nThe retained work file could not be moved away from the next run's output path. Do not start another "
+          "archive run until this file has been copied to safety.";
+    }
+  } else {
+    releaseArchiveFinalizerOwnership(true);
+  }
+  showArchiveFinalizationFailure(failure_detail);
 }
 
 void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
@@ -4733,6 +5355,16 @@ void HStreamWindow::setPreviewFocusMode(bool focused, int tab_index) {
 
 void HStreamWindow::updateRunControls() {
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+  const bool finalizing = archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning;
+  if (!archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_)) {
+    archive_finalize_blocked_source_path_.clear();
+    releaseArchiveFinalizerOwnership(true);
+  }
+  const auto archive_toggle = output_toggles_.find("archive-file");
+  const bool archive_enabled =
+      archive_toggle != output_toggles_.end() && archive_toggle->second && archive_toggle->second->isChecked();
+  const bool archive_recovery_blocked =
+      !isCalibrationRun() && archive_enabled && !archive_finalize_blocked_source_path_.isEmpty();
   if (!pipeline_state_) {
     return;
   }
@@ -4746,7 +5378,7 @@ void HStreamWindow::updateRunControls() {
     updatePlaybackProgressPresentation();
   }
   if (start_button_) {
-    start_button_->setEnabled(!running);
+    start_button_->setEnabled(!running && !finalizing && !archive_recovery_blocked);
   }
   if (pause_button_) {
     pause_button_->setEnabled(running);
@@ -4756,19 +5388,19 @@ void HStreamWindow::updateRunControls() {
     stop_button_->setEnabled(running);
   }
   if (run_mode_selector_) {
-    run_mode_selector_->setEnabled(!running);
+    run_mode_selector_->setEnabled(!running && !finalizing);
   }
   if (control_points_spin_) {
-    control_points_spin_->setEnabled(!running);
+    control_points_spin_->setEnabled(!running && !finalizing);
   }
   if (render_video_toggle_) {
     render_video_toggle_->setEnabled(!running || pipeline_render_embedded_);
   }
   if (game_controls_) {
-    game_controls_->setEnabled(!running);
+    game_controls_->setEnabled(!running && !finalizing);
   }
   if (video_controls_) {
-    video_controls_->setEnabled(!running);
+    video_controls_->setEnabled(!running && !finalizing);
   }
 }
 
@@ -5627,6 +6259,12 @@ QString HStreamWindow::gameRoot() const {
   if (!env.isEmpty()) {
     return QString::fromLocal8Bit(env);
   }
+  auto user_overlay = hm::user_config::load_or_create();
+  if (user_overlay.ok()) {
+    auto configured = hm::user_config::game_root(*user_overlay);
+    if (configured.ok())
+      return QString::fromStdString(configured->string());
+  }
   return QDir::home().filePath("Videos");
 }
 
@@ -6430,6 +7068,7 @@ void HStreamWindow::toggleOutput(const QString& id, bool enabled) {
   if (pipeline_running) {
     appendLog("output route change will apply on the next pipeline start with the current runner backend");
   }
+  updateRunControls();
 }
 
 void HStreamWindow::redirectYoutube() {

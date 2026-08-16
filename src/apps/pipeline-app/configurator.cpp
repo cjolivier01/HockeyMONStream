@@ -1,7 +1,10 @@
 #include "configurator.h"
 
+#include <fcntl.h>
 #include <gstreamer-1.0/gst/gstelement.h>
 #include <gstreamer-1.0/gst/gstpipeline.h>
+#include <signal.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <yaml-cpp/node/parse.h>
@@ -10,9 +13,11 @@
 #include <opencv2/videoio.hpp>
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -38,6 +43,7 @@
 #include "hstream/src/libs/common/ConfigYaml.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/common/filesystem.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 #include "hstream/src/libs/common/utils.h"
@@ -61,6 +67,52 @@ constexpr const char* kEnableFlagField = "enable";
 
 constexpr const char* kDefaultOutputVideoName = "tracking_output.mkv";
 constexpr const char* kLegacyDefaultOutputName = "out.mkv";
+
+absl::Status sync_parent_directory(const fs::path& path) {
+  const int directory_fd = ::open(path.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (directory_fd < 0) {
+    return absl::InternalError(TO_STRING(
+        "Failed to open archive directory \"" << path.parent_path().string()
+                                              << "\" for durability sync: " << std::strerror(errno)));
+  }
+  if (::fsync(directory_fd) != 0) {
+    const int saved_errno = errno;
+    ::close(directory_fd);
+    return absl::InternalError(TO_STRING(
+        "Failed to sync archive directory \"" << path.parent_path().string() << "\": " << std::strerror(saved_errno)));
+  }
+  if (::close(directory_fd) != 0) {
+    return absl::InternalError(TO_STRING(
+        "Failed to close archive directory \"" << path.parent_path().string()
+                                               << "\" after sync: " << std::strerror(errno)));
+  }
+  return absl::OkStatus();
+}
+
+absl::Status sync_archive_and_parent(const fs::path& path) {
+  const int archive_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (archive_fd < 0) {
+    return absl::InternalError(TO_STRING(
+        "Failed to open retained archive \"" << path.string() << "\" for durability sync: " << std::strerror(errno)));
+  }
+  if (::fsync(archive_fd) != 0) {
+    const int saved_errno = errno;
+    ::close(archive_fd);
+    return absl::InternalError(
+        TO_STRING("Failed to sync retained archive \"" << path.string() << "\": " << std::strerror(saved_errno)));
+  }
+  if (::close(archive_fd) != 0) {
+    return absl::InternalError(
+        TO_STRING("Failed to close retained archive \"" << path.string() << "\" after sync: " << std::strerror(errno)));
+  }
+  return sync_parent_directory(path);
+}
+
+fs::path archive_recovery_candidate(const fs::path& output_path, int suffix) {
+  const std::string suffix_text = suffix == 0 ? "" : "-" + std::to_string(suffix);
+  return output_path.parent_path() /
+      (output_path.stem().string() + "-finalization-failed" + suffix_text + output_path.extension().string());
+}
 
 int as_int(const YAML::Node& node) {
   // be less asserty than YAML-CPP
@@ -720,6 +772,292 @@ absl::Status configurator_internal::validate_mixed_explicit_auto_playlists(
       "Select both Left and Right explicitly, or use Auto for both cameras.");
 }
 
+namespace {
+
+absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
+    const fs::path& output_path,
+    const fs::path& recovery_name_base) {
+  struct stat output_stat{};
+  if (::stat(output_path.c_str(), &output_stat) != 0) {
+    if (errno == ENOENT)
+      return std::optional<fs::path>();
+    return absl::InternalError(
+        TO_STRING("Failed to inspect archive work file \"" << output_path.string() << "\": " << std::strerror(errno)));
+  }
+  if (!S_ISREG(output_stat.st_mode) || output_stat.st_size <= 0)
+    return std::optional<fs::path>();
+
+  for (int suffix = 0; suffix < 1000; ++suffix) {
+    const fs::path recovery_path = archive_recovery_candidate(recovery_name_base, suffix);
+    const int reservation_fd =
+        ::open(recovery_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+    if (reservation_fd < 0) {
+      if (errno == EEXIST)
+        continue;
+      return absl::InternalError(TO_STRING(
+          "Failed to reserve archive recovery path \"" << recovery_path.string() << "\": " << std::strerror(errno)));
+    }
+    if (::close(reservation_fd) != 0) {
+      const int saved_errno = errno;
+      ::unlink(recovery_path.c_str());
+      return absl::InternalError(TO_STRING(
+          "Failed to close archive recovery reservation \"" << recovery_path.string()
+                                                            << "\": " << std::strerror(saved_errno)));
+    }
+    if (::rename(output_path.c_str(), recovery_path.c_str()) != 0) {
+      const int saved_errno = errno;
+      ::unlink(recovery_path.c_str());
+      return absl::InternalError(TO_STRING(
+          "Failed to retain existing archive \"" << output_path.string() << "\" at \"" << recovery_path.string()
+                                                 << "\": " << std::strerror(saved_errno)));
+    }
+    HM_RETURN_IF_ERROR(sync_archive_and_parent(recovery_path));
+    return std::optional<fs::path>(recovery_path);
+  }
+  return absl::ResourceExhaustedError(
+      TO_STRING("No recovery filename is available for existing archive \"" << output_path.string() << "\""));
+}
+
+} // namespace
+
+absl::StatusOr<std::optional<fs::path>> configurator_internal::preserve_existing_archive_work_file(
+    const fs::path& output_path) {
+  return preserve_archive_work_file(output_path, output_path);
+}
+
+absl::StatusOr<fs::path> configurator_internal::reserve_unique_archive_work_file(
+    const fs::path& configured_path,
+    const std::string& run_id) {
+  static const std::regex safe_run_id(R"(^[A-Za-z0-9_-]{1,128}$)");
+  if (!std::regex_match(run_id, safe_run_id))
+    return absl::InvalidArgumentError("HSTREAM_ARCHIVE_RUN_ID contains unsafe characters");
+  const fs::path run_path = configured_path.parent_path() /
+      (configured_path.stem().string() + ".hstream-run-" + run_id + configured_path.extension().string());
+  const int reservation_fd = ::open(run_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+  if (reservation_fd < 0) {
+    const int saved_errno = errno;
+    if (saved_errno == EEXIST) {
+      return absl::AlreadyExistsError(TO_STRING(
+          "Unique archive work path already exists; refusing to share or overwrite \"" << run_path.string() << "\""));
+    }
+    return absl::InternalError(TO_STRING(
+        "Failed to reserve unique archive work path \"" << run_path.string() << "\": " << std::strerror(saved_errno)));
+  }
+  if (::close(reservation_fd) != 0) {
+    const int saved_errno = errno;
+    ::unlink(run_path.c_str());
+    return absl::InternalError(TO_STRING(
+        "Failed to close unique archive work reservation \"" << run_path.string()
+                                                             << "\": " << std::strerror(saved_errno)));
+  }
+  return run_path;
+}
+
+fs::path configurator_internal::archive_work_owner_lock_path(const fs::path& work_path) {
+  fs::path lock_path = work_path;
+  lock_path += ".hstream-owner-lock";
+  return lock_path;
+}
+
+absl::StatusOr<int> configurator_internal::acquire_archive_work_owner_lock(const fs::path& work_path) {
+  const fs::path lock_path = archive_work_owner_lock_path(work_path);
+  const int lock_fd = ::open(lock_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+  if (lock_fd < 0) {
+    return absl::InternalError(TO_STRING(
+        "Failed to open archive work ownership lock \"" << lock_path.string() << "\": " << std::strerror(errno)));
+  }
+  if (::flock(lock_fd, LOCK_SH | LOCK_NB) != 0) {
+    const int saved_errno = errno;
+    ::close(lock_fd);
+    return absl::InternalError(TO_STRING(
+        "Failed to claim archive work ownership lock \"" << lock_path.string()
+                                                         << "\": " << std::strerror(saved_errno)));
+  }
+  return lock_fd;
+}
+
+absl::StatusOr<int> configurator_internal::acquire_archive_output_lock(const fs::path& configured_path) {
+  fs::path lock_path = configured_path;
+  lock_path += ".hstream-lock";
+  const int lock_fd = ::open(lock_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+  if (lock_fd < 0) {
+    return absl::InternalError(
+        TO_STRING("Failed to open archive ownership lock \"" << lock_path.string() << "\": " << std::strerror(errno)));
+  }
+  if (::flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
+    const int saved_errno = errno;
+    ::close(lock_fd);
+    if (saved_errno == EWOULDBLOCK || saved_errno == EAGAIN) {
+      return absl::AlreadyExistsError(
+          TO_STRING("Another HStream process owns archive output \"" << configured_path.string() << "\""));
+    }
+    return absl::InternalError(TO_STRING(
+        "Failed to lock archive output \"" << configured_path.string() << "\": " << std::strerror(saved_errno)));
+  }
+  return lock_fd;
+}
+
+absl::Status configurator_internal::claim_unique_archive_output_path(
+    std::map<std::string, std::string>& claimed_paths,
+    const fs::path& configured_path,
+    const std::string& sink_name) {
+  const std::string normalized_path = configured_path.lexically_normal().string();
+  const auto [existing, inserted] = claimed_paths.emplace(normalized_path, sink_name);
+  if (!inserted) {
+    return absl::InvalidArgumentError(TO_STRING(
+        "Enabled encode sinks \"" << existing->second << "\" and \"" << sink_name
+                                  << "\" resolve to the same archive output \"" << normalized_path
+                                  << "\"; concurrent writers are forbidden"));
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archive_work_files(
+    const fs::path& configured_path) {
+  std::vector<fs::path> recovered;
+  const std::string prefix = configured_path.stem().string() + ".hstream-run-";
+  const std::string extension = configured_path.extension().string();
+  std::error_code iterator_error;
+  for (fs::directory_iterator it(configured_path.parent_path(), iterator_error), end; it != end;
+       it.increment(iterator_error)) {
+    if (iterator_error) {
+      return absl::InternalError(TO_STRING(
+          "Failed to inspect archive work directory \"" << configured_path.parent_path().string()
+                                                        << "\": " << iterator_error.message()));
+    }
+    const fs::path candidate = it->path();
+    const std::string filename = candidate.filename().string();
+    if (filename.size() <= prefix.size() + extension.size() || !absl::StartsWith(filename, prefix) ||
+        !absl::EndsWith(filename, extension)) {
+      continue;
+    }
+
+    const std::string ownership = filename.substr(prefix.size(), filename.size() - prefix.size() - extension.size());
+    bool owner_is_live = false;
+    const bool has_v3_ownership = absl::StartsWith(ownership, "v3-");
+    int recovery_lock_fd = -1;
+    bool recovery_lock_is_absent = false;
+    fs::path recovery_lock_path;
+    if (has_v3_ownership) {
+      recovery_lock_path = archive_work_owner_lock_path(candidate);
+      recovery_lock_fd = ::open(recovery_lock_path.c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+      if (recovery_lock_fd >= 0) {
+        if (::flock(recovery_lock_fd, LOCK_EX | LOCK_NB) != 0) {
+          const int saved_errno = errno;
+          ::close(recovery_lock_fd);
+          recovery_lock_fd = -1;
+          if (saved_errno == EWOULDBLOCK || saved_errno == EAGAIN) {
+            owner_is_live = true;
+          } else {
+            return absl::InternalError(TO_STRING(
+                "Failed to inspect archive work ownership lock \"" << recovery_lock_path.string()
+                                                                   << "\": " << std::strerror(saved_errno)));
+          }
+        } else {
+          std::smatch versioned_match;
+          static const std::regex versioned_backend_and_ui_owner(
+              R"(^v3-[0-9]+-([0-9]+)-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+          if (std::regex_match(ownership, versioned_match, versioned_backend_and_ui_owner)) {
+            const long long ui_pid = std::strtoll(versioned_match[1].str().c_str(), nullptr, 10);
+            if (ui_pid > 0 && ui_pid <= std::numeric_limits<pid_t>::max())
+              owner_is_live = ::kill(static_cast<pid_t>(ui_pid), 0) == 0 || errno == EPERM;
+          }
+        }
+      } else {
+        recovery_lock_is_absent = errno == ENOENT;
+        if (!recovery_lock_is_absent) {
+          return absl::InternalError(TO_STRING(
+              "Failed to open archive work ownership lock \"" << recovery_lock_path.string()
+                                                              << "\": " << std::strerror(errno)));
+        }
+      }
+    } else {
+      std::smatch ownership_match;
+      static const std::regex versioned_backend_and_ui_owner(
+          R"(^v2-([0-9]+)-([0-9]+)-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+      static const std::regex pre_version_backend_and_ui_owner(
+          R"(^([0-9]+)-([0-9]+)-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+      static const std::regex legacy_ui_owner(
+          R"(^([0-9]+)-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+      static const std::regex fallback_owner(R"(^([0-9]+)(?:-|$).*$)");
+      const bool has_backend_and_ui = std::regex_match(ownership, ownership_match, versioned_backend_and_ui_owner) ||
+          std::regex_match(ownership, ownership_match, pre_version_backend_and_ui_owner);
+      if (has_backend_and_ui || std::regex_match(ownership, ownership_match, legacy_ui_owner) ||
+          std::regex_match(ownership, ownership_match, fallback_owner)) {
+        const long long parsed_pid = std::strtoll(ownership_match[1].str().c_str(), nullptr, 10);
+        if (parsed_pid > 0 && parsed_pid <= std::numeric_limits<pid_t>::max())
+          owner_is_live = ::kill(static_cast<pid_t>(parsed_pid), 0) == 0 || errno == EPERM;
+        if (!owner_is_live && has_backend_and_ui) {
+          const long long ui_pid = std::strtoll(ownership_match[2].str().c_str(), nullptr, 10);
+          if (ui_pid > 0 && ui_pid <= std::numeric_limits<pid_t>::max())
+            owner_is_live = ::kill(static_cast<pid_t>(ui_pid), 0) == 0 || errno == EPERM;
+        }
+      }
+    }
+
+    struct stat candidate_stat{};
+    if (::lstat(candidate.c_str(), &candidate_stat) != 0) {
+      const int saved_errno = errno;
+      if (recovery_lock_fd >= 0)
+        ::close(recovery_lock_fd);
+      if (saved_errno == ENOENT)
+        continue;
+      return absl::InternalError(TO_STRING(
+          "Failed to inspect stale archive work file \"" << candidate.string()
+                                                         << "\": " << std::strerror(saved_errno)));
+    }
+    if (has_v3_ownership && (recovery_lock_fd >= 0 || recovery_lock_is_absent) && S_ISREG(candidate_stat.st_mode) &&
+        candidate_stat.st_size == 0) {
+      int cleanup_errno = 0;
+      if (::unlink(candidate.c_str()) != 0 && errno != ENOENT) {
+        cleanup_errno = errno;
+      } else if (::unlink(recovery_lock_path.c_str()) != 0 && errno != ENOENT) {
+        cleanup_errno = errno;
+      }
+      if (recovery_lock_fd >= 0 && ::close(recovery_lock_fd) != 0 && cleanup_errno == 0)
+        cleanup_errno = errno;
+      recovery_lock_fd = -1;
+      HM_RETURN_IF_ERROR(sync_parent_directory(candidate));
+      if (cleanup_errno != 0) {
+        return absl::InternalError(TO_STRING(
+            "Failed to remove abandoned archive work reservation \"" << candidate.string()
+                                                                     << "\": " << std::strerror(cleanup_errno)));
+      }
+      continue;
+    }
+    if (owner_is_live) {
+      if (recovery_lock_fd >= 0)
+        ::close(recovery_lock_fd);
+      continue;
+    }
+    if (!S_ISREG(candidate_stat.st_mode) || candidate_stat.st_size <= 0) {
+      if (recovery_lock_fd >= 0)
+        ::close(recovery_lock_fd);
+      continue;
+    }
+    // Publish outside the .hstream-run-* namespace so subsequent startups do
+    // not repeatedly recover and rename the same durable file.
+    auto recovery = preserve_archive_work_file(candidate, configured_path);
+    if (!recovery.ok()) {
+      if (recovery_lock_fd >= 0)
+        ::close(recovery_lock_fd);
+      return recovery.status();
+    }
+    if (recovery_lock_fd >= 0) {
+      ::unlink(recovery_lock_path.c_str());
+      ::close(recovery_lock_fd);
+    }
+    if (recovery->has_value())
+      recovered.push_back(recovery->value());
+  }
+  if (iterator_error) {
+    return absl::InternalError(TO_STRING(
+        "Failed to inspect archive work directory \"" << configured_path.parent_path().string()
+                                                      << "\": " << iterator_error.message()));
+  }
+  return recovered;
+}
+
 // Forward declaration for helper defined later in this file
 void map_key_configs(YAML::Node yaml, const std::vector<std::pair<std::string, std::string>>& map_dest_from_src);
 
@@ -974,7 +1312,7 @@ absl::Status Configurator::gather_stitching_videos(
 
   if (left_files.empty() && right_files.empty() && !videos.count("left") && !videos.count("right")) {
     HM_RETURN_IF_ERROR(stitching::configure_orientation(game_dir, active_stitching_invalidation_id_));
-    overlay_config("", get_private_config_file_name(game_id_));
+    overlay_config("", (game_dir / "config.yaml").string());
     private_config_["game"]["videos"]["left"] = config_["game"]["videos"]["left"];
     private_config_["game"]["videos"]["right"] = config_["game"]["videos"]["right"];
     left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
@@ -1307,11 +1645,16 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
     return false;
   };
 
-  const char* configured_output_work_dir = ::getenv("HM_OUTPUT_WORK_DIR");
-  const fs::path output_work_dir =
-      (configured_output_work_dir && *configured_output_work_dir ? fs::path(configured_output_work_dir)
-                                                                 : fs::path(".") / "output_workdirs") /
-      game_id_;
+  struct ArchiveOutput {
+    YAML::Node sink_node;
+    int sink_id;
+    int codec;
+    fs::path configured_path;
+  };
+
+  std::optional<fs::path> output_work_dir;
+  std::map<std::string, std::string> claimed_output_paths;
+  std::vector<ArchiveOutput> archive_outputs;
 
   for (auto kv : pipeline) {
     const std::string key = kv.first.as<std::string>();
@@ -1326,7 +1669,15 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
       continue;
     }
 
+    if (!output_work_dir.has_value()) {
+      auto configured_output_root = user_config::output_root(config_);
+      if (!configured_output_root.ok())
+        return configured_output_root.status();
+      output_work_dir = *configured_output_root / game_id_;
+    }
+
     const int sink_id = get_node_value<int>(sink_node, "sink-id", -1);
+    const int codec = get_node_value<int>(sink_node, "codec", 0);
     std::string output_file = get_node_value<std::string>(sink_node, "output-file", "");
     if (!is_valid_yaml_value_string(output_file) || output_file == kLegacyDefaultOutputName) {
       output_file = kDefaultOutputVideoName;
@@ -1335,7 +1686,7 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
     fs::path output_path(output_file);
     const bool output_was_rebased = !output_path.has_parent_path();
     if (output_was_rebased) {
-      output_path = output_work_dir / output_path;
+      output_path = *output_work_dir / output_path;
     }
     if (output_was_rebased && has_audio_for_sink(sink_id)) {
       output_path = add_audio_suffix_to_output_path(output_path.string());
@@ -1344,8 +1695,17 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
       output_path = fs::absolute(output_path);
     }
 
-    set_container_from_output_extension(sink_node, output_path);
-    sink_node["output-file"] = output_path.string();
+    HM_RETURN_IF_ERROR(configurator_internal::claim_unique_archive_output_path(claimed_output_paths, output_path, key));
+    archive_outputs.push_back({sink_node, sink_id, codec, std::move(output_path)});
+  }
+
+  // Do not reserve, recover, or mutate any output until the complete sink set
+  // has passed the duplicate-writer preflight above.
+  for (ArchiveOutput& archive_output : archive_outputs) {
+    YAML::Node sink_node = archive_output.sink_node;
+    const int sink_id = archive_output.sink_id;
+    const int codec = archive_output.codec;
+    fs::path output_path = archive_output.configured_path;
 
     const fs::path parent = output_path.parent_path();
     if (!parent.empty()) {
@@ -1356,6 +1716,59 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
             TO_STRING("Failed to create output directory \"" << parent.string() << "\": " << ec.message()));
       }
     }
+
+    const std::string configured_output_path = output_path.lexically_normal().string();
+    if (archive_lock_fds_.find(configured_output_path) == archive_lock_fds_.end()) {
+      auto archive_lock = configurator_internal::acquire_archive_output_lock(output_path);
+      if (!archive_lock.ok())
+        return archive_lock.status();
+      archive_lock_fds_.emplace(configured_output_path, *archive_lock);
+    }
+
+    auto stale_recoveries = configurator_internal::recover_stale_archive_work_files(output_path);
+    if (!stale_recoveries.ok())
+      return stale_recoveries.status();
+    for (const fs::path& recovery_path : *stale_recoveries) {
+      g_print("HSTREAM_OUTPUT_RECOVERY type=archive sink=%d path=%s\n", sink_id, recovery_path.string().c_str());
+    }
+    if (!stale_recoveries->empty())
+      std::fflush(stdout);
+
+    auto recovered_output = configurator_internal::preserve_existing_archive_work_file(output_path);
+    if (!recovered_output.ok())
+      return recovered_output.status();
+    if (recovered_output->has_value()) {
+      g_print(
+          "HSTREAM_OUTPUT_RECOVERY type=archive sink=%d path=%s\n",
+          sink_id,
+          recovered_output->value().string().c_str());
+      std::fflush(stdout);
+    }
+
+    const char* archive_run_id = g_getenv("HSTREAM_ARCHIVE_RUN_ID");
+    if (archive_run_id && *archive_run_id) {
+      auto existing_run_path = archive_run_paths_.find(configured_output_path);
+      if (existing_run_path != archive_run_paths_.end()) {
+        output_path = existing_run_path->second;
+      } else {
+        const std::string owned_run_id = "v3-" + std::to_string(::getpid()) + "-" + archive_run_id;
+        auto unique_output = configurator_internal::reserve_unique_archive_work_file(output_path, owned_run_id);
+        if (!unique_output.ok())
+          return unique_output.status();
+        output_path = *unique_output;
+        auto work_lock = configurator_internal::acquire_archive_work_owner_lock(output_path);
+        if (!work_lock.ok()) {
+          ::unlink(output_path.c_str());
+          ::unlink(configurator_internal::archive_work_owner_lock_path(output_path).c_str());
+          return work_lock.status();
+        }
+        archive_work_lock_fds_.emplace(configured_output_path, *work_lock);
+        archive_run_paths_.emplace(configured_output_path, output_path);
+      }
+    }
+
+    set_container_from_output_extension(sink_node, output_path);
+    sink_node["output-file"] = output_path.string();
     const std::string normalized_output_path = output_path.lexically_normal().string();
     struct stat previous_output{};
     const gboolean output_existed =
@@ -1366,11 +1779,12 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
         : -1;
     g_print(
         "HSTREAM_OUTPUT type=archive sink=%d existed=%d size=%" G_GINT64_FORMAT " mtime-ms=%" G_GINT64_FORMAT
-        " path=%s\n",
+        " codec=%s path=%s\n",
         sink_id,
         output_existed,
         previous_size,
         previous_mtime_ms,
+        codec == 2 ? "hevc" : (codec == 1 ? "h264" : "unknown"),
         normalized_output_path.c_str());
     std::fflush(stdout);
   }
@@ -1401,7 +1815,10 @@ Configurator::Configurator(const std::string& game_id, const std::string& config
   // Constructor
 }
 Configurator::~Configurator() {
-  // Destructor
+  for (const auto& [_, lock_fd] : archive_work_lock_fds_)
+    ::close(lock_fd);
+  for (const auto& [_, lock_fd] : archive_lock_fds_)
+    ::close(lock_fd);
 }
 
 std::vector<size_t> Configurator::enable_source_types(
@@ -1468,21 +1885,52 @@ std::string Configurator::file_maybe_in_game_dir(const std::string& basename) {
   if (p.is_absolute()) {
     return p.string();
   }
-  return (get_game_dir(game_id_) / p).string();
+  const absl::Status snapshot_status = ensure_user_config_snapshot();
+  if (!snapshot_status.ok()) {
+    std::cerr << snapshot_status << '\n';
+    return p.string();
+  }
+  return (resolved_game_dir() / p).string();
+}
+
+absl::Status Configurator::ensure_user_config_snapshot() {
+  if (user_config_snapshot_.has_value() && resolved_game_dir_.has_value())
+    return absl::OkStatus();
+
+  YAML::Node user_overlay;
+  HM_ASSIGN_OR_RETURN(user_overlay, user_config::load_or_create());
+  auto root = user_config::game_root(user_overlay);
+  if (!root.ok())
+    return root.status();
+  user_config_snapshot_ = YAML::Clone(user_overlay);
+  resolved_game_dir_ = game_id_.empty() ? fs::path() : *root / game_id_;
+  return absl::OkStatus();
+}
+
+std::filesystem::path Configurator::resolved_game_dir() {
+  const absl::Status status = ensure_user_config_snapshot();
+  if (!status.ok()) {
+    std::cerr << status << '\n';
+    return game_id_.empty() ? fs::path() : fs::path("/games") / game_id_;
+  }
+  return *resolved_game_dir_;
 }
 
 std::filesystem::path Configurator::get_game_dir(const std::string& game_id) {
   if (game_id.empty()) {
     return {};
   }
-  const char* sprefix = ::getenv("HM_GAME_DIR");
-  if (sprefix && *sprefix) {
-    return fs::path(sprefix) / game_id;
+  YAML::Node user_overlay(YAML::NodeType::Map);
+  auto loaded = user_config::load_or_create();
+  if (loaded.ok()) {
+    user_overlay = *loaded;
+  } else {
+    std::cerr << loaded.status() << '\n';
   }
-  const char* homedir = ::getenv("HOME");
-  if (homedir && *homedir) {
-    return fs::path(homedir) / "Videos" / game_id;
-  }
+  auto root = user_config::game_root(user_overlay);
+  if (root.ok())
+    return *root / game_id;
+  std::cerr << root.status() << '\n';
   return fs::path("/games") / game_id;
 }
 
@@ -1491,7 +1939,8 @@ std::filesystem::path Configurator::get_private_config_file_name(const std::stri
 }
 
 absl::StatusOr<std::optional<YAML::Node>> Configurator::load_private_config() {
-  const fs::path private_config_file = get_private_config_file_name(game_id_);
+  HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
+  const fs::path private_config_file = resolved_game_dir() / "config.yaml";
   if (private_config_file.parent_path().empty() || !fs::is_directory(private_config_file.parent_path())) {
     return std::nullopt;
   }
@@ -1502,11 +1951,12 @@ absl::Status Configurator::save_private_config(
     const YAML::Node& private_config,
     const std::string& expected_invalidation_id,
     bool remove_rink_masks) {
-  const fs::path game_dir = get_game_dir(game_id_);
+  HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
+  const fs::path game_dir = resolved_game_dir();
   auto config_lock = stitching::GameConfigTransactionLock::Acquire(game_dir);
   if (!config_lock.ok())
     return config_lock.status();
-  const fs::path private_config_file = get_private_config_file_name(game_id_);
+  const fs::path private_config_file = game_dir / "config.yaml";
   YAML::Node latest;
   try {
     if (fs::is_regular_file(private_config_file))
@@ -1539,6 +1989,12 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
       config = YAML::LoadFile(baseline_path);
     }
   }
+  HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
+  const YAML::Node user_overlay = YAML::Clone(*user_config_snapshot_);
+  config = merge_nodes(
+      config,
+      user_overlay,
+      /*warn_if_key_not_in_dest=*/false);
   std::optional<YAML::Node> private_config;
   HM_ASSIGN_OR_RETURN(private_config, load_private_config());
   if (private_config.has_value()) {
@@ -1705,7 +2161,8 @@ absl::Status Configurator::complete_configuration(
   const bool is_camera_source = !camera_sources.empty();
 
   // Stitching config mask config dir
-  fs::path game_dir = get_game_dir(game_id_);
+  HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
+  const fs::path game_dir = resolved_game_dir();
   const bool has_hmstitcher = has_node(pipeline, "hmstitcher", false);
   if (clean_requested && !has_hmstitcher) {
     return absl::FailedPreconditionError("No hmstitcher section is configured; nothing to clean");
