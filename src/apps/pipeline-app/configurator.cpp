@@ -934,9 +934,11 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
 
     const std::string ownership = filename.substr(prefix.size(), filename.size() - prefix.size() - extension.size());
     bool owner_is_live = false;
+    const bool has_v3_ownership = absl::StartsWith(ownership, "v3-");
     int recovery_lock_fd = -1;
+    bool recovery_lock_is_absent = false;
     fs::path recovery_lock_path;
-    if (absl::StartsWith(ownership, "v3-")) {
+    if (has_v3_ownership) {
       recovery_lock_path = archive_work_owner_lock_path(candidate);
       recovery_lock_fd = ::open(recovery_lock_path.c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
       if (recovery_lock_fd >= 0) {
@@ -961,10 +963,13 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
               owner_is_live = ::kill(static_cast<pid_t>(ui_pid), 0) == 0 || errno == EPERM;
           }
         }
-      } else if (errno != ENOENT) {
-        return absl::InternalError(TO_STRING(
-            "Failed to open archive work ownership lock \"" << recovery_lock_path.string()
-                                                            << "\": " << std::strerror(errno)));
+      } else {
+        recovery_lock_is_absent = errno == ENOENT;
+        if (!recovery_lock_is_absent) {
+          return absl::InternalError(TO_STRING(
+              "Failed to open archive work ownership lock \"" << recovery_lock_path.string()
+                                                              << "\": " << std::strerror(errno)));
+        }
       }
     } else {
       std::smatch ownership_match;
@@ -1001,14 +1006,15 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
           "Failed to inspect stale archive work file \"" << candidate.string()
                                                          << "\": " << std::strerror(saved_errno)));
     }
-    if (recovery_lock_fd >= 0 && S_ISREG(candidate_stat.st_mode) && candidate_stat.st_size == 0) {
+    if (has_v3_ownership && (recovery_lock_fd >= 0 || recovery_lock_is_absent) && S_ISREG(candidate_stat.st_mode) &&
+        candidate_stat.st_size == 0) {
       int cleanup_errno = 0;
       if (::unlink(candidate.c_str()) != 0 && errno != ENOENT) {
         cleanup_errno = errno;
       } else if (::unlink(recovery_lock_path.c_str()) != 0 && errno != ENOENT) {
         cleanup_errno = errno;
       }
-      if (::close(recovery_lock_fd) != 0 && cleanup_errno == 0)
+      if (recovery_lock_fd >= 0 && ::close(recovery_lock_fd) != 0 && cleanup_errno == 0)
         cleanup_errno = errno;
       recovery_lock_fd = -1;
       HM_RETURN_IF_ERROR(sync_parent_directory(candidate));

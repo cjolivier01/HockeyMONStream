@@ -453,18 +453,20 @@ int main() {
   if (failed_start_lock.ok())
     ::close(*failed_start_lock);
   const fs::path failed_start_lock_path = hm::configurator_internal::archive_work_owner_lock_path(failed_start_work);
+  const bool failed_start_relinquished = fs::remove(failed_start_lock_path);
   const auto failed_start_cleanup = hm::configurator_internal::recover_stale_archive_work_files(failed_start_archive);
   std::ofstream(failed_start_work, std::ios::binary);
   const auto repeated_failed_start_lock = hm::configurator_internal::acquire_archive_work_owner_lock(failed_start_work);
   if (repeated_failed_start_lock.ok())
     ::close(*repeated_failed_start_lock);
+  const bool repeated_failed_start_relinquished = fs::remove(failed_start_lock_path);
   const auto repeated_failed_start_cleanup =
       hm::configurator_internal::recover_stale_archive_work_files(failed_start_archive);
   ok &= expect(
-      failed_start_lock.ok() && failed_start_cleanup.ok() && failed_start_cleanup->empty() &&
-          repeated_failed_start_lock.ok() && repeated_failed_start_cleanup.ok() &&
-          repeated_failed_start_cleanup->empty() && !fs::exists(failed_start_work) &&
-          !fs::exists(failed_start_lock_path),
+      failed_start_lock.ok() && failed_start_relinquished && failed_start_cleanup.ok() &&
+          failed_start_cleanup->empty() && repeated_failed_start_lock.ok() && repeated_failed_start_relinquished &&
+          repeated_failed_start_cleanup.ok() && repeated_failed_start_cleanup->empty() &&
+          !fs::exists(failed_start_work) && !fs::exists(failed_start_lock_path),
       "Repeated failed starts must durably clean each relinquished zero-byte v3 reservation and ownership sidecar");
 
   const auto first_archive_lock = hm::configurator_internal::acquire_archive_output_lock(custom_archive);
