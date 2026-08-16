@@ -597,6 +597,53 @@ int run_multi_sink_without_ids_disables_audio(const fs::path& tmpdir, const fs::
   return 0;
 }
 
+int run_headless_render_video_sink() {
+  const std::vector<NvDsSinkType> render_types = {
+#ifndef IS_TEGRA
+      NV_DS_SINK_RENDER_EGL,
+#else
+      NV_DS_SINK_RENDER_3D,
+#endif
+      NV_DS_SINK_RENDER_DRM,
+  };
+  for (NvDsSinkType render_type : render_types) {
+    NvDsSinkSubBinConfig sink_config{};
+    sink_config.enable = TRUE;
+    sink_config.source_id = 0;
+    sink_config.type = render_type;
+    sink_config.sync = TRUE;
+    sink_config.render_config.gpu_id = 0;
+    sink_config.render_config.qos = TRUE;
+
+    NvDsSinkBin sink_bin{};
+    set_embedded_gpu_preview_video_mode(TRUE);
+    const bool created = create_sink_bin(1, &sink_config, &sink_bin, 0);
+    set_embedded_gpu_preview_video_mode(FALSE);
+    if (!created || !sink_bin.sub_bins[0].sink) {
+      std::cerr << "Failed to construct a headless render-video sink for type " << render_type << '\n';
+      if (sink_bin.bin) {
+        gst_object_unref(GST_OBJECT(sink_bin.bin));
+      }
+      return 2;
+    }
+
+    GstElementFactory* factory = gst_element_get_factory(sink_bin.sub_bins[0].sink);
+    const gchar* factory_name = factory ? gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)) : nullptr;
+    gboolean sync = TRUE;
+    gboolean qos = TRUE;
+    g_object_get(G_OBJECT(sink_bin.sub_bins[0].sink), "sync", &sync, "qos", &qos, NULL);
+    if (g_strcmp0(factory_name, "fakesink") != 0 || sync || qos) {
+      std::cerr << "Headless render-video type " << render_type << " must use an unsynchronized, non-QoS fakesink; "
+                << "factory=" << (factory_name ? factory_name : "(null)") << " sync=" << sync << " qos=" << qos
+                << '\n';
+      gst_object_unref(GST_OBJECT(sink_bin.bin));
+      return 3;
+    }
+    gst_object_unref(GST_OBJECT(sink_bin.bin));
+  }
+  return 0;
+}
+
 int run_render_audio_initial_mute(const fs::path& audio_path, bool initially_muted) {
   GstElement* pipeline =
       gst_pipeline_new(initially_muted ? "hmaudio-muted-render-test" : "hmaudio-audible-render-test");
@@ -639,18 +686,34 @@ int run_render_audio_initial_mute(const fs::path& audio_path, bool initially_mut
   }
 
   GstElement* volume = gst_bin_get_by_name(GST_BIN(audio_bin.bin), "hmaudio_render_sink0_volume");
-  if (!volume) {
-    std::cerr << "Expected a dedicated volume element in the local render-audio branch\n";
+  GstElement* audiosink = gst_bin_get_by_name(GST_BIN(audio_bin.bin), "hmaudio_render_sink0_alsasink");
+  if (!volume || !audiosink) {
+    std::cerr << "Expected dedicated volume and ALSA elements in the local render-audio branch\n";
+    if (volume) {
+      gst_object_unref(GST_OBJECT(volume));
+    }
+    if (audiosink) {
+      gst_object_unref(GST_OBJECT(audiosink));
+    }
     gst_object_unref(GST_OBJECT(pipeline));
     return 4;
   }
   gboolean actual_muted = FALSE;
+  gboolean audio_sync = TRUE;
+  gboolean audio_async = TRUE;
   g_object_get(G_OBJECT(volume), "mute", &actual_muted, NULL);
+  g_object_get(G_OBJECT(audiosink), "sync", &audio_sync, "async", &audio_async, NULL);
   gst_object_unref(GST_OBJECT(volume));
+  gst_object_unref(GST_OBJECT(audiosink));
   gst_object_unref(GST_OBJECT(pipeline));
   if (actual_muted != static_cast<gboolean>(initially_muted)) {
     std::cerr << "Expected initial local render-audio mute=" << initially_muted << ", got " << actual_muted << '\n';
     return 5;
+  }
+  if (audio_sync || audio_async) {
+    std::cerr << "Local render audio must not clock-block lossless archive processing; sync=" << audio_sync
+              << ", async=" << audio_async << '\n';
+    return 6;
   }
   return 0;
 }
@@ -1308,6 +1371,12 @@ int main(int argc, char** argv) {
   }
 
   rc = run_multi_sink_without_ids_disables_audio(tmpdir, audio);
+  if (rc != 0) {
+    fs::remove_all(tmpdir);
+    return rc;
+  }
+
+  rc = run_headless_render_video_sink();
   if (rc != 0) {
     fs::remove_all(tmpdir);
     return rc;

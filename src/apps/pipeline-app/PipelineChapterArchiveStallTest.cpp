@@ -90,7 +90,11 @@ class PipelineProcess {
           "-c",
           config.string(),
           "--enable-sources=URI-MULTIPLE",
-          "--enable-sinks=ENCODE_FILE",
+          "--enable-sinks=RENDER,ENCODE_FILE",
+          // Match hstream-ui's render-type audio routing while keeping this manual regression platform-neutral and
+          // headless. Only render video is replaced; the local ALSA monitor and independent lossless archive branches
+          // remain in the production graph.
+          "--headless-render-video",
           "--options=pipeline.streammux.batch-size=2,pipeline.streammux.sync-inputs=0,"
           "pipeline.streammux.batched-push-timeout=2147483647,"
           "pipeline.streammux.frame-num-reset-on-stream-reset=0,pipeline.streammux.frame-num-reset-on-eos=0,"

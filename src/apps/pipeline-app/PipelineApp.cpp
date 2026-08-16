@@ -1650,6 +1650,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &render_window_id_,
        "Native X11 window id to use for the render sink instead of creating a DeepStream window",
        "XID"},
+      {"headless-render-video",
+       0,
+       0,
+       G_OPTION_ARG_NONE,
+       &headless_render_video_,
+       "Replace render-type video output with an unsynchronized fakesink while retaining render audio routing",
+       nullptr},
       {"ui-preview-windows",
        0,
        0,
@@ -1934,10 +1941,8 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     }
     active_ui_preview_channel_ = initial_ui_preview_channel_ == "none" ? std::string() : initial_ui_preview_channel_;
     active_ui_preview_generation_ = 1;
-    set_embedded_gpu_preview_video_mode(TRUE);
-  } else {
-    set_embedded_gpu_preview_video_mode(FALSE);
   }
+  set_embedded_gpu_preview_video_mode(headless_render_video_ || !ui_preview_window_ids_.empty());
 
   constexpr const char* kCalibrationInvalidationEnvironment = "HSTREAM_CALIBRATION_INVALIDATION_ID";
   if (clean_stitching_expected_invalidation_id_ != nullptr) {
