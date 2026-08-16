@@ -891,21 +891,20 @@ bool sync_file_and_parent_directory(const QString& path, QString* error) {
   const int file_fd = ::open(native_path.constData(), O_RDONLY | O_CLOEXEC);
   if (file_fd < 0) {
     if (error)
-      *error = QString("Could not open the completed MP4 for durability sync: %1")
-                   .arg(QString::fromLocal8Bit(::strerror(errno)));
+      *error =
+          QString("Could not open the archive for durability sync: %1").arg(QString::fromLocal8Bit(::strerror(errno)));
     return false;
   }
   if (::fsync(file_fd) != 0) {
     const int saved_errno = errno;
     ::close(file_fd);
     if (error)
-      *error = QString("Could not sync the completed MP4: %1").arg(QString::fromLocal8Bit(::strerror(saved_errno)));
+      *error = QString("Could not sync the archive: %1").arg(QString::fromLocal8Bit(::strerror(saved_errno)));
     return false;
   }
   if (::close(file_fd) != 0) {
     if (error)
-      *error =
-          QString("Could not close the completed MP4 after sync: %1").arg(QString::fromLocal8Bit(::strerror(errno)));
+      *error = QString("Could not close the archive after sync: %1").arg(QString::fromLocal8Bit(::strerror(errno)));
     return false;
   }
 
@@ -913,7 +912,7 @@ bool sync_file_and_parent_directory(const QString& path, QString* error) {
   const int directory_fd = ::open(native_directory.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
   if (directory_fd < 0) {
     if (error)
-      *error = QString("Could not open the game directory for durability sync: %1")
+      *error = QString("Could not open the archive directory for durability sync: %1")
                    .arg(QString::fromLocal8Bit(::strerror(errno)));
     return false;
   }
@@ -921,13 +920,12 @@ bool sync_file_and_parent_directory(const QString& path, QString* error) {
     const int saved_errno = errno;
     ::close(directory_fd);
     if (error)
-      *error = QString("Could not sync the completed video directory: %1")
-                   .arg(QString::fromLocal8Bit(::strerror(saved_errno)));
+      *error = QString("Could not sync the archive directory: %1").arg(QString::fromLocal8Bit(::strerror(saved_errno)));
     return false;
   }
   if (::close(directory_fd) != 0) {
     if (error)
-      *error = QString("Could not close the completed video directory after sync: %1")
+      *error = QString("Could not close the archive directory after sync: %1")
                    .arg(QString::fromLocal8Bit(::strerror(errno)));
     return false;
   }
@@ -3137,6 +3135,7 @@ void HStreamWindow::startPipeline() {
   configure_pipeline_runtime_environment(env, working_dir);
   setPlaybackStartupStage("stitching", "Validating saved stitching state and Left/Right video assignments");
   active_archive_output_path_.clear();
+  active_archive_recovery_path_.clear();
   active_archive_initial_size_ = -1;
   active_archive_initial_mtime_ms_ = -1;
   active_archive_video_is_hevc_ = false;
@@ -3147,11 +3146,6 @@ void HStreamWindow::startPipeline() {
     const QString output_work_dir = archive_output_work_dir(env, working_dir);
     env.insert("HM_OUTPUT_WORK_DIR", output_work_dir);
     active_archive_output_path_ = archive_output_path(output_work_dir, active_run_game_id_);
-    const QFileInfo previous_archive(active_archive_output_path_);
-    if (previous_archive.isFile()) {
-      active_archive_initial_size_ = previous_archive.size();
-      active_archive_initial_mtime_ms_ = previous_archive.lastModified().toMSecsSinceEpoch();
-    }
     const QString archive_dir = QFileInfo(active_archive_output_path_).absolutePath();
     if (!QDir().mkpath(archive_dir)) {
       output_states_["archive-file"]->setText("ERROR");
@@ -3167,9 +3161,60 @@ void HStreamWindow::startPipeline() {
       updateRunControls();
       return;
     }
+    QString recovered_archive_path;
+    const QFileInfo previous_archive(active_archive_output_path_);
+    if (previous_archive.isFile() && previous_archive.size() > 0) {
+      recovered_archive_path = available_failed_archive_path(active_archive_output_path_);
+      if (recovered_archive_path.isEmpty() || !QFile::rename(active_archive_output_path_, recovered_archive_path)) {
+        archive_finalize_blocked_source_path_ = active_archive_output_path_;
+        const QString detail = QString("A previous archive work file could not be moved to safety before starting: %1")
+                                   .arg(active_archive_output_path_);
+        output_states_["archive-file"]->setText("ERROR");
+        if (archive_output_path_label_)
+          archive_output_path_label_->setText(detail);
+        appendLog(detail);
+        active_archive_output_path_.clear();
+        active_run_game_id_.clear();
+        active_run_is_calibration_ = false;
+        pipeline_state_->setText("STOPPED");
+        preview_status_->setText("Archive output setup failed");
+        show_startup_error(detail);
+        updateRunControls();
+        return;
+      }
+
+      QString durability_error;
+      if (!sync_file_and_parent_directory(recovered_archive_path, &durability_error)) {
+        archive_finalize_blocked_source_path_ = recovered_archive_path;
+        const QString detail = QString("A previous archive was moved to %1, but it could not be durability-synced. %2")
+                                   .arg(recovered_archive_path, durability_error);
+        output_states_["archive-file"]->setText("ERROR");
+        if (archive_output_path_label_)
+          archive_output_path_label_->setText(detail);
+        appendLog(detail);
+        active_archive_output_path_.clear();
+        active_run_game_id_.clear();
+        active_run_is_calibration_ = false;
+        pipeline_state_->setText("STOPPED");
+        preview_status_->setText("Archive output setup failed");
+        show_startup_error(detail);
+        updateRunControls();
+        return;
+      }
+      archive_finalize_blocked_source_path_.clear();
+      active_archive_recovery_path_ = recovered_archive_path;
+      appendLog(QString("pre-existing archive work file preserved for recovery: %1").arg(recovered_archive_path));
+    } else if (previous_archive.isFile()) {
+      active_archive_initial_size_ = previous_archive.size();
+      active_archive_initial_mtime_ms_ = previous_archive.lastModified().toMSecsSinceEpoch();
+    }
     output_states_["archive-file"]->setText("WRITING");
-    if (archive_output_path_label_)
-      archive_output_path_label_->setText(QString("Archive: %1").arg(active_archive_output_path_));
+    if (archive_output_path_label_) {
+      archive_output_path_label_->setText(
+          recovered_archive_path.isEmpty() ? QString("Archive: %1").arg(active_archive_output_path_)
+                                           : QString("Archive: %1\nPrevious archive retained for recovery: %2")
+                                                 .arg(active_archive_output_path_, recovered_archive_path));
+    }
     appendLog(QString("archive output: %1 (the playable file is finalized when playback stops)")
                   .arg(active_archive_output_path_));
   }
@@ -4096,8 +4141,12 @@ void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
   active_archive_initial_size_ = output_existed ? match.captured(3).toLongLong() : -1;
   active_archive_initial_mtime_ms_ = output_existed ? match.captured(4).toLongLong() : -1;
   active_archive_video_is_hevc_ = match.captured(5) == "hevc";
-  if (archive_output_path_label_)
-    archive_output_path_label_->setText(QString("Archive: %1").arg(active_archive_output_path_));
+  if (archive_output_path_label_) {
+    archive_output_path_label_->setText(
+        active_archive_recovery_path_.isEmpty() ? QString("Archive: %1").arg(active_archive_output_path_)
+                                                : QString("Archive: %1\nPrevious archive retained for recovery: %2")
+                                                      .arg(active_archive_output_path_, active_archive_recovery_path_));
+  }
   appendLog(QString("archive backend %1 output: %2")
                 .arg(path_changed ? "resolved" : "confirmed", active_archive_output_path_));
 }
@@ -4112,7 +4161,12 @@ void HStreamWindow::updateArchiveOutputPathLabel() {
   const bool pipeline_running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   if (pipeline_running && !active_archive_output_path_.isEmpty()) {
     archive_output_path_label_->setText(
-        QString("Current archive: %1\nRoute change applies to the next run").arg(active_archive_output_path_));
+        active_archive_recovery_path_.isEmpty()
+            ? QString("Current archive: %1\nRoute change applies to the next run").arg(active_archive_output_path_)
+            : QString(
+                  "Current archive: %1\nPrevious archive retained for recovery: "
+                  "%2\nRoute change applies to the next run")
+                  .arg(active_archive_output_path_, active_archive_recovery_path_));
   } else if (archive_enabled) {
     const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     archive_output_path_label_->setText(QString("Archive: %1")
@@ -4387,7 +4441,16 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
     const QString failed_archive_path = available_failed_archive_path(archive_finalize_source_path_);
     if (!failed_archive_path.isEmpty() && QFile::rename(archive_finalize_source_path_, failed_archive_path)) {
       archive_finalize_source_path_ = failed_archive_path;
-      archive_finalize_blocked_source_path_.clear();
+      QString durability_error;
+      if (sync_file_and_parent_directory(archive_finalize_source_path_, &durability_error)) {
+        archive_finalize_blocked_source_path_.clear();
+      } else {
+        archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
+        failure_detail += QString(
+                              "\n\nThe recovery file was renamed, but it could not be durability-synced. %1 Do not "
+                              "start another archive run until this file has been copied to safety.")
+                              .arg(durability_error);
+      }
     } else {
       archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
       failure_detail +=

@@ -3401,9 +3401,19 @@ bool test_output_controls(HStreamWindow* window) {
   game_id_edit->setText(original_game_id);
   const QString planned_path =
       QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("tracking_output-with-audio.mkv");
+  const QString restarted_recovery_path =
+      QDir(QFileInfo(planned_path).absolutePath()).filePath("tracking_output-with-audio-finalization-failed.mkv");
   const QString expected_path =
       QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("custom-archive.mkv");
   QDir().mkpath(QFileInfo(expected_path).absolutePath());
+  QFile::remove(planned_path);
+  QFile::remove(restarted_recovery_path);
+  QFile interrupted_archive(planned_path);
+  if (!interrupted_archive.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+      interrupted_archive.write("archive from interrupted UI session") < 0) {
+    return false;
+  }
+  interrupted_archive.close();
   QFile existing_archive(expected_path);
   if (!existing_archive.open(QIODevice::WriteOnly | QIODevice::Truncate) || existing_archive.write("old archive") < 0) {
     return false;
@@ -3429,6 +3439,15 @@ bool test_output_controls(HStreamWindow* window) {
           window->logText().contains(QString("archive backend resolved output: %1").arg(expected_path)) &&
           window->logText().contains(QString("HM_OUTPUT_WORK_DIR=%1").arg(output_root.path())),
       "Archive playback should show the backend's exact resolved path and pass a deterministic output directory");
+  QFile recovered_interrupted_archive(restarted_recovery_path);
+  const bool recovered_interrupted_archive_opened = recovered_interrupted_archive.open(QIODevice::ReadOnly);
+  const bool interrupted_archive_preserved = expect(
+      recovered_interrupted_archive_opened &&
+          recovered_interrupted_archive.readAll() == QByteArray("archive from interrupted UI session") &&
+          !QFileInfo::exists(planned_path) && archive_path->text().contains(restarted_recovery_path) &&
+          window->logText().contains(
+              QString("pre-existing archive work file preserved for recovery: %1").arg(restarted_recovery_path)),
+      "A new UI session must move a nonempty canonical work MKV to a visible recovery path before launching");
   activate(stop);
   for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
     QApplication::processEvents();
@@ -3564,8 +3583,8 @@ bool test_output_controls(HStreamWindow* window) {
     qputenv("HM_OUTPUT_WORK_DIR", original_output_root);
   }
   return relative_override_resolved && path_refreshes_with_game && path_visible_before_start && path_prepared &&
-      stale_output_reported && finalization_visible && archive_deployed && failed_archive_retained &&
-      unsafe_retry_blocked && retry_unblocked_after_recovery;
+      interrupted_archive_preserved && stale_output_reported && finalization_visible && archive_deployed &&
+      failed_archive_retained && unsafe_retry_blocked && retry_unblocked_after_recovery;
 }
 
 bool test_camera_controls(HStreamWindow* window) {

@@ -357,6 +357,7 @@ class HStreamWindow : public QMainWindow {
   std::set<QString> preview_frame_channels_received_;
   QString active_run_game_id_;
   QString active_archive_output_path_;
+  QString active_archive_recovery_path_;
   qint64 active_archive_initial_size_{-1};
   qint64 active_archive_initial_mtime_ms_{-1};
   bool active_archive_video_is_hevc_{false};
