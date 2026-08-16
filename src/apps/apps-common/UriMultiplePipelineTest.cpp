@@ -639,18 +639,34 @@ int run_render_audio_initial_mute(const fs::path& audio_path, bool initially_mut
   }
 
   GstElement* volume = gst_bin_get_by_name(GST_BIN(audio_bin.bin), "hmaudio_render_sink0_volume");
-  if (!volume) {
-    std::cerr << "Expected a dedicated volume element in the local render-audio branch\n";
+  GstElement* audiosink = gst_bin_get_by_name(GST_BIN(audio_bin.bin), "hmaudio_render_sink0_alsasink");
+  if (!volume || !audiosink) {
+    std::cerr << "Expected dedicated volume and ALSA elements in the local render-audio branch\n";
+    if (volume) {
+      gst_object_unref(GST_OBJECT(volume));
+    }
+    if (audiosink) {
+      gst_object_unref(GST_OBJECT(audiosink));
+    }
     gst_object_unref(GST_OBJECT(pipeline));
     return 4;
   }
   gboolean actual_muted = FALSE;
+  gboolean audio_sync = TRUE;
+  gboolean audio_async = TRUE;
   g_object_get(G_OBJECT(volume), "mute", &actual_muted, NULL);
+  g_object_get(G_OBJECT(audiosink), "sync", &audio_sync, "async", &audio_async, NULL);
   gst_object_unref(GST_OBJECT(volume));
+  gst_object_unref(GST_OBJECT(audiosink));
   gst_object_unref(GST_OBJECT(pipeline));
   if (actual_muted != static_cast<gboolean>(initially_muted)) {
     std::cerr << "Expected initial local render-audio mute=" << initially_muted << ", got " << actual_muted << '\n';
     return 5;
+  }
+  if (audio_sync || audio_async) {
+    std::cerr << "Local render audio must not clock-block lossless archive processing; sync=" << audio_sync
+              << ", async=" << audio_async << '\n';
+    return 6;
   }
   return 0;
 }
