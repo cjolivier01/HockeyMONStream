@@ -883,27 +883,34 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
     goto done;
   }
 
-  // The embedded X11 preview is observational and must never throttle or drop
-  // the processing/encode branch because inference temporarily falls behind
-  // the input clock (for example while the first TensorRT context starts).
-  // A synchronized ximagesink can otherwise reject every late frame and
-  // leave an application-owned window permanently black even though valid
-  // BGRx samples reach the sink. Encoded and self-managed render sinks retain
-  // their configured timing behavior.
+  // Embedded/headless render-video terminators are observational and must never throttle the processing/encode
+  // branch. A synchronized application-owned ximagesink can reject every late frame when inference falls behind,
+  // while a synchronized fakesink needlessly clock-paces an otherwise headless render branch. Encoded and
+  // self-managed render sinks retain their configured timing behavior.
 #ifndef IS_TEGRA
   g_object_set(
       G_OBJECT(bin->sink),
       "sync",
-      use_xvideo ? FALSE : config->sync,
+      gpu_preview_fake || use_xvideo ? FALSE : config->sync,
       "max-lateness",
       -1,
       "async",
       FALSE,
       "qos",
-      use_xvideo ? FALSE : config->qos,
+      gpu_preview_fake || use_xvideo ? FALSE : config->qos,
       NULL);
 #else
-  g_object_set(G_OBJECT(bin->sink), "sync", config->sync, "max-lateness", -1, "async", FALSE, "qos", config->qos, NULL);
+  g_object_set(
+      G_OBJECT(bin->sink),
+      "sync",
+      gpu_preview_fake ? FALSE : config->sync,
+      "max-lateness",
+      -1,
+      "async",
+      FALSE,
+      "qos",
+      gpu_preview_fake ? FALSE : config->qos,
+      NULL);
 #endif
 
   if (!gpu_preview_fake &&
