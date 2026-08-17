@@ -139,6 +139,41 @@ int main() {
     std::cerr << "vpplaytracker context missing after initialization\n";
     return 3;
   }
+
+  NvDsBatchMeta* initial_batch = nvds_create_batch_meta(1);
+  NvDsFrameMeta* initial_frame_meta = initial_batch ? nvds_acquire_frame_meta_from_pool(initial_batch) : nullptr;
+  if (!initial_batch || !initial_frame_meta) {
+    std::cerr << "could not allocate initial-frame metadata\n";
+    if (initial_batch) {
+      nvds_destroy_batch_meta(initial_batch);
+    }
+    return 14;
+  }
+  initial_frame_meta->source_id = 0;
+  initial_frame_meta->source_frame_width = 3840;
+  initial_frame_meta->source_frame_height = 1080;
+  initial_frame_meta->pipeline_width = 3840;
+  initial_frame_meta->pipeline_height = 1080;
+  nvds_add_frame_meta_to_batch(initial_batch, initial_frame_meta);
+  NvBufSurfaceParams initial_surface{};
+  initial_surface.width = 3840;
+  initial_surface.height = 1080;
+  GstDsPlayTrackerFrame initial_frame;
+  initial_frame.frame_meta = initial_frame_meta;
+  initial_frame.input_surf_params = &initial_surface;
+  const bool initial_processed = DsPlayTrackerProcessFrame(context, initial_frame, stream);
+  const auto initial_tracker = context->play_trackers.find(0);
+  const bool initial_frame_preserved = initial_processed && initial_batch->num_frames_in_batch == 1 &&
+      initial_batch->frame_meta_list && initial_batch->frame_meta_list->data == initial_frame_meta;
+  const bool waiting_without_synthetic_crop = initial_frame.play_tracker_results.tracking_boxes.empty() &&
+      initial_frame_meta->obj_meta_list == nullptr && initial_tracker != context->play_trackers.end() &&
+      !initial_tracker->second.has_received_tracks;
+  nvds_destroy_batch_meta(initial_batch);
+  if (!initial_frame_preserved || !waiting_without_synthetic_crop) {
+    std::cerr << "pre-detection frame was dropped or given a synthetic full-frame Program crop\n";
+    return 15;
+  }
+
   YAML::Node base_yaml = YAML::LoadFile(cfg.string());
   context->play_trackers[0].play_tracker_config =
       gst_hm_playtracker::create_play_tracker_config(hm::BBox(0, 0, 1280, 720), base_yaml["play-tracker"]);

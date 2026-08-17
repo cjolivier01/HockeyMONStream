@@ -121,27 +121,32 @@ cudaError_t mapNppStatusToCudaError(const NppStatus& status) {
   }
 }
 
-std::vector<hm::BBox> get_object_boxes(NvDsBatchMeta* batch_meta, int class_id_low, int class_id_hi) {
-  std::vector<hm::BBox> results;
+std::vector<std::optional<hm::BBox>> get_object_boxes_by_frame(
+    NvDsBatchMeta* batch_meta,
+    int class_id_low,
+    int class_id_hi) {
+  std::vector<std::optional<hm::BBox>> results;
   const size_t batch_size = batch_meta->num_frames_in_batch;
   // Debug-only assert sanity check
   assert(batch_size == g_list_length(batch_meta->frame_meta_list));
   results.reserve(batch_size);
   for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != nullptr; l_frame = l_frame->next) {
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)l_frame->data;
+    std::optional<hm::BBox> result;
     for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
       NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
       if (obj_meta->class_id >= class_id_low && obj_meta->class_id <= class_id_hi) {
-        results.emplace_back(hm::BBox(
-            obj_meta->rect_params.left,
-            obj_meta->rect_params.top,
-            obj_meta->rect_params.left + obj_meta->rect_params.width,
-            obj_meta->rect_params.top + obj_meta->rect_params.height));
+        result.emplace(
+            hm::BBox(
+                obj_meta->rect_params.left,
+                obj_meta->rect_params.top,
+                obj_meta->rect_params.left + obj_meta->rect_params.width,
+                obj_meta->rect_params.top + obj_meta->rect_params.height));
         break;
       }
     }
+    results.emplace_back(result);
   }
-  // All or nothing
   return results;
 }
 

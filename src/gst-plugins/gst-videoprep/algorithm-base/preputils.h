@@ -4,6 +4,8 @@
 #include <nppi.h>
 
 #include <iostream>
+#include <optional>
+#include <vector>
 
 #include "cupano/cuda/cudaStatus.h"
 #include "hstream/src/libs/common/Surface.h"
@@ -40,7 +42,10 @@ uint32_t gst_videoprep_version();
 
 cudaError_t mapNppStatusToCudaError(const NppStatus& status);
 
-std::vector<hm::BBox> get_object_boxes(NvDsBatchMeta* batch_meta, int class_id_low, int class_id_hi);
+std::vector<std::optional<hm::BBox>> get_object_boxes_by_frame(
+    NvDsBatchMeta* batch_meta,
+    int class_id_low,
+    int class_id_hi);
 
 CudaStatus cropSurface(
     const hm::surface::Surface& in_surface,

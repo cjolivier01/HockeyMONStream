@@ -460,13 +460,14 @@ absl::Status PlayCropperPriv::GenerateOutput(
 
   HM_RETURN_IF_ERROR(hm::to_status(cudaSetDevice(m_gpuId)));
 
-  const std::vector<BBox> tracking_boxes = get_object_boxes(
+  const std::vector<std::optional<BBox>> tracking_boxes = get_object_boxes_by_frame(
       batch_meta, DsPlayTrackerInitParams::kPlayBoxClassIdBase, DsPlayTrackerInitParams::kPlayBoxClassIdBase);
-  assert(tracking_boxes.empty() || tracking_boxes.size() == batch_meta->num_frames_in_batch);
+  if (tracking_boxes.size() != batch_meta->num_frames_in_batch || tracking_boxes.size() != in_surface->numFilled) {
+    return absl::FailedPreconditionError("Playcropper metadata does not match the filled input batch");
+  }
 
   out_surface->numFilled = 0;
 
-  assert(tracking_boxes.empty() || tracking_boxes.size() == in_surface->numFilled);
   size_t nr_surfaces_to_process = in_surface->numFilled;
   assert(nr_surfaces_to_process <= m_buffer_pool_config.max_buffers);
 
@@ -506,8 +507,8 @@ absl::Status PlayCropperPriv::GenerateOutput(
     FloatValue scale_h = float(input_height) / frame_meta->source_frame_height;
 
     // Get tracking box
-    BBox tbox = !tracking_boxes.empty()
-        ? tracking_boxes.at(batch_nr)
+    BBox tbox = tracking_boxes[batch_nr].has_value()
+        ? *tracking_boxes[batch_nr]
         : make_null_tracking_box(&in_surface->surfaceList[batch_nr], &out_surface->surfaceList[batch_nr]);
 
     tbox.left *= scale_w;
