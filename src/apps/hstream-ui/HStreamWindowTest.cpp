@@ -1623,7 +1623,12 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
       !expect(
           progress->isVisible() && progress->minimum() == 0 && progress->maximum() == 0,
           "Active calibration should show indeterminate progress") ||
-      !expect(cancel->isVisible() && !ok->isVisible(), "Active calibration should offer Stop instead of OK")) {
+      !expect(cancel->isVisible() && !ok->isVisible(), "Active calibration should offer Stop instead of OK") ||
+      !expect(
+          cancel->toolTip().contains("Stop the active stitching calibration") &&
+              ok->toolTip().contains("Close this calibration result") && cancel->statusTip() == cancel->toolTip() &&
+              ok->statusTip() == ok->toolTip(),
+          "Calibration dialog actions should explain their behavior on hover")) {
     activate(stop);
     return false;
   }
@@ -1987,8 +1992,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(
           program_focus->parentWidget() == program_host && program_focus->size() == QSize(24, 24) &&
               program_focus->x() == program_host->width() - program_focus->width() - 6 && program_focus->y() == 6 &&
-              program_focus->toolTip() == "Focus video" && program_focus->accessibleName() == "Focus video" &&
-              program_focus->isHidden() && !program_focus->isEnabled(),
+              program_focus->toolTip().contains("Expand the Program preview") &&
+              program_focus->accessibleName() == "Focus video" && program_focus->isHidden() &&
+              !program_focus->isEnabled(),
           "The compact focus control must stay hidden until its preview has presented a GPU frame") ||
       !expect_x11_widget_state(
           program_focus,
@@ -2373,7 +2379,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           !top_bar->isVisible() && !setup_row->isVisible() && !log_panel->isVisible() &&
               !preview_tabs->tabBar()->isVisible() && !program_controls->isVisible() && program_host->isVisible() &&
               playback_progress->isVisible() && !window->isFullScreen() &&
-              program_focus->toolTip() == "Restore HStream controls" &&
+              program_focus->toolTip().contains("Restore the normal HStream layout") &&
               program_focus->accessibleName() == "Restore HStream controls",
           "A real double-click on a ready GPU preview should focus it across the HStream app area")) {
     return false;
@@ -3616,8 +3622,9 @@ bool test_output_controls(HStreamWindow* window) {
           finalize_headline && finalize_headline->text() == "Video finalization failed" &&
           finalize_headline->property("finalizationState").toString() == "failed" && finalize_detail &&
           finalize_detail->text().contains(failed_recovery) && finalize_ok && finalize_ok->isVisible() &&
-          !QFileInfo::exists(failed_source) && QFileInfo(failed_recovery).size() > 0 &&
-          finalized_after_failure == finalized_before_failure,
+          finalize_ok->toolTip().contains("Close the finalization result") &&
+          finalize_ok->statusTip() == finalize_ok->toolTip() && !QFileInfo::exists(failed_source) &&
+          QFileInfo(failed_recovery).size() > 0 && finalized_after_failure == finalized_before_failure,
       "A failed remux must show a red dismissible error, preserve a uniquely named recovery MKV, and publish no MP4");
   if (finalize_ok)
     activate(finalize_ok);
@@ -3693,6 +3700,49 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
 
+  const QStringList documented_controls = {
+      "runModeCombo",
+      "controlPointsSpin",
+      "renderVideoCheck",
+      "startPipelineButton",
+      "pausePipelineButton",
+      "restartStageButton",
+      "savePresetButton",
+      "resetCameraButton",
+      "stopPipelineButton",
+      "createGameButton",
+      "refreshGamesButton",
+      "browseVideoButton",
+      "addVideoButton",
+      "removeVideoButton",
+      "videoRole_auto",
+      "videoRole_left",
+      "videoRole_center",
+      "videoRole_right",
+      "outputToggle_youtube-primary",
+      "outputToggle_rtsp-local",
+      "outputToggle_archive-file",
+      "outputToggle_spare-rtmp",
+      "redirectYoutubeButton",
+      "addRtspButton",
+      "clearLogButton",
+      "programFocusButton",
+      "stitchedFocusButton",
+      "programControlsToggle",
+      "stitchedControlsToggle",
+      "cameraSlider_Stitch_Rotate_Degrees",
+      "cameraSlider_Stop_Direction_Change_Delay_Frames",
+      "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10",
+  };
+  for (const QString& object_name : documented_controls) {
+    QWidget* control = window->findChild<QWidget*>(object_name);
+    if (!expect(
+            control && control->toolTip().trimmed().size() >= 20 && control->statusTip() == control->toolTip(),
+            QString("Interactive control should provide detailed hover help: %1").arg(object_name).toStdString())) {
+      return false;
+    }
+  }
+
   game_id->setText("ui-camera-control-game");
   activate(create);
   const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
@@ -3705,7 +3755,76 @@ bool test_camera_controls(HStreamWindow* window) {
   activate(create);
   if (!expect(
           fixed_edge_link->value() == 1 && fixed_edge_left->value() == 220 && fixed_edge_right->value() == 220,
-          "Camera controls should load the scalar rink.camera.fixed_edge_rotation_angle value")) {
+          "Camera controls should load the scalar rink.camera.fixed_edge_rotation_angle value") ||
+      !expect(!save->isEnabled(), "Save Preset should be disabled after loading the saved control snapshot")) {
+    return false;
+  }
+
+  {
+    YAML::Node malformed(YAML::NodeType::Map);
+    malformed["hstream_ui"]["camera_controls"]["Stop_Direction_Change_Delay_Frames"] = 11;
+    malformed["hstream_ui"]["camera_controls"]["Max_Speed_X_x10"] = "not-an-integer";
+    std::ofstream out(config);
+    out << malformed << "\n";
+  }
+  activate(create);
+  if (!expect(
+          stop_delay->value() == 0,
+          "Malformed saved controls should not partially apply values parsed before the error") ||
+      !expect(save->isEnabled(), "Malformed saved controls should leave the current controls unsaved")) {
+    return false;
+  }
+  {
+    YAML::Node existing(YAML::NodeType::Map);
+    existing["rink"]["camera"]["fixed_edge_rotation_angle"] = 22.0;
+    std::ofstream out(config);
+    out << existing << "\n";
+  }
+  activate(create);
+  if (!expect(
+          fixed_edge_link->value() == 1 && fixed_edge_left->value() == 220 && fixed_edge_right->value() == 220,
+          "Camera controls should recover after a malformed saved config is corrected") ||
+      !expect(!save->isEnabled(), "Loading the corrected config should restore the clean preset snapshot")) {
+    return false;
+  }
+
+  {
+    YAML::Node out_of_range_link(YAML::NodeType::Map);
+    out_of_range_link["hstream_ui"]["camera_controls"]["Link_Fixed_Edge_Rotation_Left_Right"] = -1;
+    out_of_range_link["hstream_ui"]["camera_controls"]["Left_Fixed_Edge_Rotation_Angle_x10"] = 250;
+    out_of_range_link["hstream_ui"]["camera_controls"]["Right_Fixed_Edge_Rotation_Angle_x10"] = 750;
+    std::ofstream out(config);
+    out << out_of_range_link << "\n";
+  }
+  activate(create);
+  if (!expect(
+          fixed_edge_link->value() == 0 && fixed_edge_left->value() == 250 && fixed_edge_right->value() == 750,
+          "Saved controls should be clamped before linked fixed-edge rotation is reconciled")) {
+    return false;
+  }
+  {
+    YAML::Node existing(YAML::NodeType::Map);
+    existing["rink"]["camera"]["fixed_edge_rotation_angle"] = 22.0;
+    std::ofstream out(config);
+    out << existing << "\n";
+  }
+  activate(create);
+
+  const QString loaded_game_id = game_id->text();
+  stop_delay->setValue(1);
+  if (!expect(save->isEnabled(), "Changing a loaded preset should enable Save Preset")) {
+    return false;
+  }
+  game_id->clear();
+  if (!expect(!save->isEnabled(), "Save Preset should disable when there is no game to receive the changes")) {
+    return false;
+  }
+  game_id->setText(loaded_game_id);
+  if (!expect(save->isEnabled(), "Restoring the destination game should expose the still-unsaved change")) {
+    return false;
+  }
+  stop_delay->setValue(0);
+  if (!expect(!save->isEnabled(), "Reverting a control to its loaded value should disable Save Preset")) {
     return false;
   }
 
@@ -3726,7 +3845,8 @@ bool test_camera_controls(HStreamWindow* window) {
       !expect(
           window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 14,
           "Tracker braking slider should update controller state") ||
-      !expect(window->cameraControlValue("Max_Speed_X_x10") == 450, "Speed slider should update controller state")) {
+      !expect(window->cameraControlValue("Max_Speed_X_x10") == 450, "Speed slider should update controller state") ||
+      !expect(save->isEnabled(), "Changing a preset-backed control should enable Save Preset")) {
     return false;
   }
 
@@ -3766,7 +3886,154 @@ bool test_camera_controls(HStreamWindow* window) {
     out << "stale-mask";
   }
 
+  const fs::path runtime_dir_collision = fs::path(window->gameDirectoryText().toStdString()) / ".hstream-ui";
+  {
+    std::ofstream out(runtime_dir_collision);
+    out << "directory-collision";
+  }
+  std::ifstream config_before_failed_save_input(config, std::ios::binary);
+  const std::string config_before_failed_save(
+      (std::istreambuf_iterator<char>(config_before_failed_save_input)), std::istreambuf_iterator<char>());
   activate(save);
+  std::ifstream config_after_failed_save_input(config, std::ios::binary);
+  const std::string config_after_failed_save(
+      (std::istreambuf_iterator<char>(config_after_failed_save_input)), std::istreambuf_iterator<char>());
+  if (!expect(save->isEnabled(), "A failed playtracker sidecar write should keep Save Preset enabled") ||
+      !expect(
+          config_after_failed_save == config_before_failed_save,
+          "A failed playtracker sidecar write should not publish a partially updated config.yaml")) {
+    return false;
+  }
+  fs::remove(runtime_dir_collision);
+
+  activate(save);
+  if (!expect(!save->isEnabled(), "A successful preset save should disable Save Preset until another change")) {
+    return false;
+  }
+
+  const YAML::Node committed_before_publish_failure = YAML::LoadFile(config.string());
+  YAML::Node committed_sidecar_node;
+  if (!expect(
+          lookup_yaml_path(
+              committed_before_publish_failure,
+              {"pipeline", "ds-playtracker", "config-file"},
+              &committed_sidecar_node) &&
+              committed_sidecar_node.IsScalar(),
+          "A saved tracker preset should reference its immutable sidecar")) {
+    return false;
+  }
+  const fs::path committed_sidecar = committed_sidecar_node.as<std::string>();
+  std::ifstream committed_config_input(config, std::ios::binary);
+  const std::string committed_config(
+      (std::istreambuf_iterator<char>(committed_config_input)), std::istreambuf_iterator<char>());
+  std::ifstream committed_sidecar_input(committed_sidecar, std::ios::binary);
+  const std::string committed_sidecar_contents(
+      (std::istreambuf_iterator<char>(committed_sidecar_input)), std::istreambuf_iterator<char>());
+  max_speed_x->setValue(451);
+  qputenv("HSTREAM_UI_TEST_FAIL_PRESET_RETIREMENT_PUBLISH", "1");
+  activate(save);
+  qunsetenv("HSTREAM_UI_TEST_FAIL_PRESET_RETIREMENT_PUBLISH");
+  const YAML::Node after_failed_retirement = YAML::LoadFile(config.string());
+  YAML::Node after_failed_retirement_sidecar;
+  const QStringList sidecars_after_failed_retirement =
+      QDir(QString::fromStdString(committed_sidecar.parent_path().string()))
+          .entryList({"play_tracker_config_*.yaml"}, QDir::Files, QDir::Name);
+  if (!expect(save->isEnabled(), "A failed retirement marker should keep Save Preset enabled") ||
+      !expect(
+          lookup_yaml_path(
+              after_failed_retirement,
+              {"pipeline", "ds-playtracker", "config-file"},
+              &after_failed_retirement_sidecar) &&
+              after_failed_retirement_sidecar.IsScalar() &&
+              after_failed_retirement_sidecar.as<std::string>() == committed_sidecar.string(),
+          "A failed retirement marker should leave the old sidecar active") ||
+      !expect(
+          sidecars_after_failed_retirement.size() == 1,
+          "A failed retirement marker should remove the unpublished replacement generation")) {
+    return false;
+  }
+  qputenv("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_PUBLISH", "1");
+  activate(save);
+  qunsetenv("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_PUBLISH");
+  std::ifstream failed_publish_config_input(config, std::ios::binary);
+  const std::string failed_publish_config(
+      (std::istreambuf_iterator<char>(failed_publish_config_input)), std::istreambuf_iterator<char>());
+  std::ifstream failed_publish_sidecar_input(committed_sidecar, std::ios::binary);
+  const std::string failed_publish_sidecar(
+      (std::istreambuf_iterator<char>(failed_publish_sidecar_input)), std::istreambuf_iterator<char>());
+  const QStringList persistent_sidecars = QDir(QString::fromStdString(committed_sidecar.parent_path().string()))
+                                              .entryList({"play_tracker_config_*.yaml"}, QDir::Files, QDir::Name);
+  if (!expect(save->isEnabled(), "A failed config commit should keep the changed preset savable") ||
+      !expect(failed_publish_config == committed_config, "A failed config commit should preserve config.yaml") ||
+      !expect(
+          failed_publish_sidecar == committed_sidecar_contents,
+          "A failed config commit should preserve the effective playtracker sidecar") ||
+      !expect(
+          persistent_sidecars.size() == 1,
+          "A failed config commit should remove its unpublished playtracker sidecar generation")) {
+    return false;
+  }
+
+  fs::last_write_time(committed_sidecar, fs::file_time_type::clock::now() - std::chrono::hours(25));
+  qputenv("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_POST_COMMIT", "1");
+  activate(save);
+  qunsetenv("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_POST_COMMIT");
+  const YAML::Node visible_after_post_commit_error = YAML::LoadFile(config.string());
+  YAML::Node visible_sidecar_node;
+  const bool has_visible_sidecar = lookup_yaml_path(
+      visible_after_post_commit_error, {"pipeline", "ds-playtracker", "config-file"}, &visible_sidecar_node);
+  const fs::path visible_sidecar = has_visible_sidecar && visible_sidecar_node.IsScalar()
+      ? fs::path(visible_sidecar_node.as<std::string>())
+      : fs::path();
+  if (!expect(save->isEnabled(), "A post-commit durability error should keep Save Preset enabled") ||
+      !expect(
+          !visible_sidecar.empty() && visible_sidecar != committed_sidecar && fs::exists(visible_sidecar),
+          "A visible post-commit config generation should retain its referenced sidecar") ||
+      !expect(
+          fs::exists(committed_sidecar),
+          "A prior config reader should retain access to its immutable sidecar after a later save")) {
+    return false;
+  }
+  max_speed_x->setValue(450);
+  if (!expect(
+          save->isEnabled(),
+          "Reverting a control after a post-commit error should stay dirty against the visible generation")) {
+    return false;
+  }
+  max_speed_x->setValue(451);
+  if (!expect(save->isEnabled(), "A visible generation with uncertain durability should keep retry enabled")) {
+    return false;
+  }
+  activate(create);
+  if (!expect(
+          max_speed_x->value() == 451 && save->isEnabled(),
+          "Reloading the same visible generation should preserve its durability retry requirement")) {
+    return false;
+  }
+  activate(save);
+  if (!expect(!save->isEnabled(), "A successful durability retry should clear the retry-required state")) {
+    return false;
+  }
+  max_speed_x->setValue(450);
+  activate(save);
+  if (!expect(!save->isEnabled(), "A successful retry should restore the intended saved snapshot") ||
+      !expect(
+          fs::exists(committed_sidecar),
+          "Recent superseded sidecars should remain available to delayed pipeline readers")) {
+    return false;
+  }
+  const fs::path committed_retirement_marker =
+      committed_sidecar.parent_path() / (".retired-" + committed_sidecar.filename().string());
+  fs::last_write_time(committed_retirement_marker, fs::file_time_type::clock::now() - std::chrono::hours(25));
+
+  stop_delay->setValue(15);
+  if (!expect(save->isEnabled(), "A new change after saving should re-enable Save Preset")) {
+    return false;
+  }
+  stop_delay->setValue(14);
+  if (!expect(!save->isEnabled(), "Reverting to the saved value should clear the preset dirty state")) {
+    return false;
+  }
   YAML::Node saved = YAML::LoadFile(config.string());
   const bool removed_rink_mask = !fs::exists(rink_mask);
   const bool removed_scoreboard_polygon =
@@ -3863,6 +4130,10 @@ bool test_camera_controls(HStreamWindow* window) {
       std::ofstream out(rink_mask);
       out << "fresh-mask";
     }
+    max_accel_x->setValue(10);
+    if (!expect(save->isEnabled(), "A non-rotation control change should make the externally updated preset savable")) {
+      return false;
+    }
     activate(save);
     YAML::Node after_same_rotation_save = YAML::LoadFile(config.string());
     const bool kept_rink_mask = fs::exists(rink_mask);
@@ -3874,11 +4145,19 @@ bool test_camera_controls(HStreamWindow* window) {
         lookup_yaml_path(after_same_rotation_save, {"rink", "ice_contours_combined_bbox"}, nullptr);
     if (!expect(kept_rink_mask, "Saving unchanged stitch rotation should preserve rink mask image") ||
         !expect(kept_scoreboard_polygon, "Saving unchanged stitch rotation should preserve scoreboard perspective") ||
-        !expect(kept_ice_mask_keys, "Saving unchanged stitch rotation should preserve cached ice-mask metadata")) {
+        !expect(kept_ice_mask_keys, "Saving unchanged stitch rotation should preserve cached ice-mask metadata") ||
+        !expect(
+            !fs::exists(committed_sidecar),
+            "A later successful save should garbage-collect superseded sidecars after the reader grace period")) {
       std::cerr << after_same_rotation_save << '\n';
       return false;
     }
-    saved = after_same_rotation_save;
+    max_accel_x->setValue(0);
+    activate(save);
+    saved = YAML::LoadFile(config.string());
+    if (!expect(!save->isEnabled(), "Restoring and saving a control should leave the preset clean")) {
+      return false;
+    }
   }
 
   YAML::Node stitching;
@@ -4323,9 +4602,9 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!preserved_manual_gamma || !preserved_manual_left_gamma) {
     std::cerr << cleaned << '\n';
   }
-  return expect(
-             has_cleaned_controls && cleaned_controls.IsMap() && cleaned_controls.size() == 0,
-             "Saving defaults should clear saved camera controls") &&
+  const bool cleaned_defaults = expect(
+                                    has_cleaned_controls && cleaned_controls.IsMap() && cleaned_controls.size() == 0,
+                                    "Saving defaults should clear saved camera controls") &&
       expect(!lookup_yaml_path(cleaned, {"stitching", "post_stitch_rotate_degrees"}, nullptr),
              "Saving defaults should clear UI-generated stitch runtime override") &&
       expect(!lookup_yaml_path(cleaned, {"rink", "camera", "fixed_edge_rotation_angle"}, nullptr),
@@ -4333,6 +4612,33 @@ bool test_camera_controls(HStreamWindow* window) {
       expect(restored_custom_playtracker_config, "Saving defaults should restore custom playtracker config override") &&
       expect(preserved_manual_gamma, "Saving defaults should preserve non-UI-authored runtime config") &&
       expect(preserved_manual_left_gamma, "Saving defaults should preserve same-prefix manual color config");
+  if (!cleaned_defaults) {
+    return false;
+  }
+
+  const fs::path aged_active_sidecar = runtime_dir / "play_tracker_config_aged-active.yaml";
+  fs::copy_file(custom_playtracker_config, aged_active_sidecar, fs::copy_options::overwrite_existing);
+  fs::last_write_time(aged_active_sidecar, fs::file_time_type::clock::now() - std::chrono::hours(25));
+  cleaned["pipeline"]["ds-playtracker"]["config-file"] = aged_active_sidecar.string();
+  cleaned["hstream_ui"]["generated_runtime_keys"] = YAML::Node(YAML::NodeType::Sequence);
+  cleaned["hstream_ui"]["generated_runtime_values"] = YAML::Node(YAML::NodeType::Map);
+  cleaned["hstream_ui"].remove("playtracker_config_base");
+  {
+    std::ofstream out(config);
+    out << cleaned << "\n";
+  }
+  activate(create);
+  rotate->setValue(72);
+  activate(save);
+  const YAML::Node after_aged_active_save = YAML::LoadFile(config.string());
+  YAML::Node active_sidecar_node;
+  const bool retained_aged_active_sidecar =
+      lookup_yaml_path(after_aged_active_save, {"pipeline", "ds-playtracker", "config-file"}, &active_sidecar_node) &&
+      active_sidecar_node.IsScalar() && active_sidecar_node.as<std::string>() == aged_active_sidecar.string() &&
+      fs::exists(aged_active_sidecar);
+  return expect(
+      retained_aged_active_sidecar,
+      "Preset GC should never delete the aged playtracker sidecar referenced by the committed config");
 }
 
 bool test_window_close_stops_pipeline(HStreamWindow* window) {

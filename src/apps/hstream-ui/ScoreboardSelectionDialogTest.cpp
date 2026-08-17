@@ -215,7 +215,28 @@ bool test_successful_submission(const QString& image_path) {
   dialog->show();
   QApplication::processEvents();
   QPushButton* save = dialog->findChild<QPushButton*>("scoreboardSaveButton");
-  bool ok = expect(save && save->isEnabled(), "Save Selection must enable when four points exist");
+  const QStringList documented_buttons = {
+      "scoreboardZoomOutButton",
+      "scoreboardZoomInButton",
+      "scoreboardFitButton",
+      "scoreboardActualSizeButton",
+      "scoreboardFocusButton",
+      "scoreboardUndoButton",
+      "scoreboardClearButton",
+      "scoreboardNoScoreboardButton",
+      "scoreboardCancelButton",
+      "scoreboardSaveButton",
+  };
+  bool ok = true;
+  for (const QString& object_name : documented_buttons) {
+    auto* button = dialog->findChild<QPushButton*>(object_name);
+    const QByteArray message =
+        QString("Scoreboard action should provide detailed hover help: %1").arg(object_name).toUtf8();
+    ok &= expect(
+        button && button->toolTip().trimmed().size() >= 20 && button->statusTip() == button->toolTip(),
+        message.constData());
+  }
+  ok &= expect(save && save->isEnabled(), "Save Selection must enable when four points exist");
   if (save)
     save->click();
   ok &= expect(

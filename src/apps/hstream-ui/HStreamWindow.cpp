@@ -177,6 +177,15 @@ QLabel* make_value_label(const QString& object_name, const QString& value) {
   return label;
 }
 
+void set_control_help(QWidget* control, const QString& description) {
+  if (!control)
+    return;
+  control->setToolTip(description);
+  control->setStatusTip(description);
+  control->setWhatsThis(description);
+  control->setAccessibleDescription(description);
+}
+
 class WheelPassthroughSlider : public QSlider {
  public:
   explicit WheelPassthroughSlider(Qt::Orientation orientation, QWidget* parent = nullptr)
@@ -366,7 +375,8 @@ class LetterboxRenderHost : public QWidget {
     focus_button_ = new QPushButton(this);
     focus_button_->setFixedSize(24, 24);
     focus_button_->setIconSize(QSize(14, 14));
-    focus_button_->setToolTip("Focus video");
+    set_control_help(
+        focus_button_, "Expand this video preview to fill the application while keeping video on the GPU.");
     focus_button_->setAccessibleName("Focus video");
     focus_button_->setIcon(preview_focus_icon(false));
     focus_button_->setStyleSheet(
@@ -421,7 +431,10 @@ class LetterboxRenderHost : public QWidget {
   void setFocused(bool focused) {
     focus_button_->setIcon(preview_focus_icon(focused));
     focus_button_->setAccessibleName(focused ? "Restore HStream controls" : "Focus video");
-    focus_button_->setToolTip(focused ? "Restore HStream controls" : "Focus video");
+    set_control_help(
+        focus_button_,
+        focused ? "Restore the normal HStream layout and controls."
+                : "Expand this video preview to fill the application while keeping video on the GPU.");
     focus_button_->raise();
   }
 
@@ -1285,6 +1298,38 @@ bool same_file_path(const QString& lhs, const QString& rhs) {
   return QFileInfo(lhs).absoluteFilePath() == QFileInfo(rhs).absoluteFilePath();
 }
 
+bool is_ui_persistent_playtracker_config(const QString& path, const QString& game_dir) {
+  const QFileInfo info(path);
+  const QString runtime_dir = QFileInfo(QDir(game_dir).filePath(".hstream-ui")).absoluteFilePath();
+  const QString filename = info.fileName();
+  const bool owned_name = filename == "play_tracker_config.yaml" ||
+      (filename.startsWith("play_tracker_config_") && filename.endsWith(".yaml"));
+  return owned_name && info.absolutePath() == runtime_dir;
+}
+
+QString resolve_ui_persistent_playtracker_config(
+    const YAML::Node& config,
+    const QString& game_dir,
+    const QString& working_dir) {
+  YAML::Node configured_sidecar;
+  if (!lookup_yaml_path(config, "pipeline.ds-playtracker.config-file", &configured_sidecar) ||
+      !configured_sidecar.IsScalar()) {
+    return {};
+  }
+  const QString configured = QString::fromStdString(configured_sidecar.as<std::string>());
+  for (const QString& candidate : playtracker_config_candidates(configured, game_dir, working_dir)) {
+    if (is_ui_persistent_playtracker_config(candidate, game_dir)) {
+      return QFileInfo(candidate).absoluteFilePath();
+    }
+  }
+  return {};
+}
+
+QString playtracker_sidecar_retirement_marker(const QString& sidecar) {
+  const QFileInfo info(sidecar);
+  return QDir(info.absolutePath()).filePath(".retired-" + info.fileName());
+}
+
 bool yaml_scalar_bool(YAML::Node node, bool default_value) {
   if (!node || !node.IsScalar()) {
     return default_value;
@@ -1574,6 +1619,8 @@ void HStreamWindow::buildUi() {
   root->addWidget(main_log_splitter_, 1);
 
   setCentralWidget(central);
+  configureControlHelp();
+  captureSavedControlState();
 }
 
 void HStreamWindow::buildTopBar(QVBoxLayout* root) {
@@ -1629,8 +1676,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   pause_button_->setObjectName("pausePipelineButton");
   auto* restart = new QPushButton(style()->standardIcon(QStyle::SP_BrowserReload), "Restart Stage");
   restart->setObjectName("restartStageButton");
-  auto* save = new QPushButton(style()->standardIcon(QStyle::SP_DialogSaveButton), "Save Preset");
-  save->setObjectName("savePresetButton");
+  save_preset_button_ = new QPushButton(style()->standardIcon(QStyle::SP_DialogSaveButton), "Save Preset");
+  save_preset_button_->setObjectName("savePresetButton");
   auto* reset = new QPushButton("Reset Camera");
   reset->setObjectName("resetCameraButton");
   stop_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaStop), "Stop");
@@ -1640,7 +1687,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   connect(pause_button_, &QPushButton::clicked, this, [this]() { pauseOrResumePipeline(); });
   connect(stop_button_, &QPushButton::clicked, this, [this]() { stopPipeline(); });
   connect(restart, &QPushButton::clicked, this, [this]() { restartStage(); });
-  connect(save, &QPushButton::clicked, this, [this]() { savePreset(); });
+  connect(save_preset_button_, &QPushButton::clicked, this, [this]() { savePreset(); });
   connect(reset, &QPushButton::clicked, this, [this]() { resetCameraControls(); });
 
   status_bar->addWidget(title);
@@ -1659,7 +1706,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   action_bar->addWidget(start_button_);
   action_bar->addWidget(pause_button_);
   action_bar->addWidget(restart);
-  action_bar->addWidget(save);
+  action_bar->addWidget(save_preset_button_);
   action_bar->addWidget(reset);
   action_bar->addWidget(stop_button_);
   root->addLayout(status_bar);
@@ -1718,7 +1765,10 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
   game_id_edit_ = new QLineEdit();
   game_id_edit_->setObjectName("gameIdEdit");
   game_id_edit_->setPlaceholderText("game-id");
-  connect(game_id_edit_, &QLineEdit::textChanged, this, [this]() { updateArchiveOutputPathLabel(); });
+  connect(game_id_edit_, &QLineEdit::textChanged, this, [this]() {
+    updateArchiveOutputPathLabel();
+    updatePresetDirtyState();
+  });
   connect(game_id_edit_, &QLineEdit::editingFinished, this, [this]() {
     game_id_edit_->setText(sanitized_game_id(game_id_edit_->text()));
     refreshVideoSets();
@@ -1832,12 +1882,16 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
         toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
         toggle->setText(label);
         toggle->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+        set_control_help(
+            toggle,
+            "Show or hide the controls associated with this video stage to trade control space for a larger preview.");
         connect(toggle, &QToolButton::toggled, controls, [toggle, controls](bool expanded) {
           controls->setVisible(expanded);
           toggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
-          toggle->setToolTip(
-              expanded ? "Hide controls to give the video more space"
-                       : "Show controls associated with this video stage");
+          set_control_help(
+              toggle,
+              expanded ? "Hide the controls associated with this video stage to give the preview more space."
+                       : "Show the controls associated with this video stage so their changes can be viewed live.");
         });
         associated_control_toggles_.push_back(toggle);
         associated_control_panels_.push_back(controls);
@@ -2009,6 +2063,129 @@ void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
   layout->addWidget(add_rtsp);
   parent->addWidget(group, 0, Qt::AlignTop);
   parent->addStretch(1);
+}
+
+void HStreamWindow::configureControlHelp() {
+  auto help = [this](const QString& object_name, const QString& description) {
+    set_control_help(findChild<QWidget*>(object_name), description);
+  };
+
+  help(
+      "runModeCombo",
+      "Choose Program for the full output pipeline, or Stitching Calibration to rebuild stitching artifacts and inspect the stitched preview. Output archives are created only by Program runs.");
+  help(
+      "controlPointsSpin",
+      "Set the maximum number of feature control points used during stitching calibration. Changing it makes Program recalibrate stale stitching before continuing.");
+  help(
+      "renderVideoCheck",
+      "Show GPU video previews and local monitor audio. This can be toggled while running without stopping the processing pipeline.");
+  help(
+      "startPipelineButton",
+      "Validate the selected game and start the chosen run mode. Output routes are captured when Play is pressed; route changes during playback apply to the next run.");
+  help(
+      "pausePipelineButton",
+      "Pause or resume the running pipeline without discarding its current processing position.");
+  help(
+      "restartStageButton",
+      "Stop the current pipeline and start the selected mode again, preserving the current game, controls, and output-route selections.");
+  help(
+      "resetCameraButton",
+      "Restore all Program and Stitched camera controls to their built-in defaults. Use Save Preset afterward if those defaults should persist for this game.");
+  help(
+      "stopPipelineButton",
+      "Request a graceful stop of the running pipeline. Partial archive work is retained rather than presented as a completed video.");
+
+  help(
+      "gameSelector",
+      "Select an existing game directory and load its videos, stitching configuration, and saved controls.");
+  help("gameIdEdit", "Enter the game directory name to create or load under the configured game root.");
+  help("createGameButton", "Create the entered game directory if needed, then load its videos and saved controls.");
+  help("refreshGamesButton", "Rescan the configured game root and refresh the existing-game list.");
+  help("videoPathEdit", "Enter a video file or directory to import into the selected game.");
+  help("browseVideoButton", "Choose a video file or directory with the native file browser.");
+  help(
+      "addVideoButton",
+      "Import the entered video using the selected Auto, Left, Center, or Right role and update the game configuration.");
+  help("removeVideoButton", "Remove the selected imported video assignment from this game.");
+  help(
+      "videoRole_auto",
+      "Let HStream discover the camera role and chapter ordering from supported filenames and directories.");
+  help("videoRole_left", "Assign the imported video explicitly to the left camera timeline.");
+  help(
+      "videoRole_center",
+      "Assign the imported video explicitly to the center camera timeline when that layout is supported.");
+  help("videoRole_right", "Assign the imported video explicitly to the right camera timeline.");
+  help("videoSetList", "Shows the video files and camera-role assignments currently configured for this game.");
+
+  help(
+      "outputToggle_youtube-primary",
+      "Enable the primary YouTube/RTMP output for the next Program run. Changes made while playing apply on the next run.");
+  help(
+      "outputToggle_rtsp-local",
+      "Enable the local RTSP server output for the next Program run. Changes made while playing apply on the next run.");
+  help(
+      "outputToggle_archive-file",
+      "Encode an archive during the next Program run. Work is written below the configured output root, then a successful run is losslessly finalized as a fast-start MP4 in the game directory. Stitching Calibration does not archive.");
+  help(
+      "outputToggle_spare-rtmp",
+      "Enable the spare RTMP destination for the next Program run. Changes made while playing apply on the next run.");
+  help(
+      "redirectYoutubeButton", "Enable and redirect the primary YouTube output using the configured RTMP destination.");
+  help("addRtspButton", "Add another local RTSP mount and enable it for the next Program run.");
+  help("clearLogButton", "Clear the visible runtime log. This does not stop or otherwise change the running pipeline.");
+
+  help(
+      "programFocusButton",
+      "Expand the Program preview to fill the application; click again to restore the normal layout.");
+  help(
+      "stitchedFocusButton",
+      "Expand the Stitched preview to fill the application; click again to restore the normal layout.");
+  help("camera1FocusButton", "Expand Camera 1 to fill the application; click again to restore the normal layout.");
+  help("camera2FocusButton", "Expand Camera 2 to fill the application; click again to restore the normal layout.");
+  help("camera3FocusButton", "Expand Camera 3 to fill the application; click again to restore the normal layout.");
+  help(
+      "programControlsToggle",
+      "Show or hide controls that affect Program frames after stitching, allowing the video preview to use more space.");
+  help(
+      "stitchedControlsToggle",
+      "Show or hide controls that affect the stitched canvas before Program tracking, allowing the video preview to use more space.");
+
+  const std::map<QString, QString> camera_help = {
+      {"Stop_Direction_Change_Delay_Frames",
+       "Frames to wait before stopping tracked motion after its direction changes."},
+      {"Cancel_Stop_On_Opposite_Direction", "When enabled, cancel a pending stop if motion reverses direction again."},
+      {"Stop_Cancel_Hysteresis_Frames",
+       "Frames of opposite-direction motion required before a pending stop is cancelled."},
+      {"Stop_Delay_Cooldown_Frames", "Cooldown frames before another direction-change stop delay may begin."},
+      {"Time_To_Dest_Speed_Limit_Frames",
+       "Limit tracking speed when the estimated time to the destination falls below this frame count."},
+      {"Apply_To_Fast_Box", "Apply saved tracking and motion tuning to the fast/current-ROI tracking box."},
+      {"Apply_To_Follower_Box", "Apply saved tracking and motion tuning to the follower/aspect tracking box."},
+      {"Overshoot_Stop_Delay_Frames", "Frames to delay stopping when tracking motion overshoots its destination."},
+      {"Post_Nonstop_Stop_Delay_Frames", "Frames to delay stopping after a continuous non-stop movement segment."},
+      {"Overshoot_Speed_Ratio_x100",
+       "Overshoot speed multiplier in hundredths; 70 means 0.70 times the configured speed."},
+      {"Max_Speed_X_x10", "Horizontal tracking speed override in tenths; zero keeps the underlying configured value."},
+      {"Max_Speed_Y_x10", "Vertical tracking speed override in tenths; zero keeps the underlying configured value."},
+      {"Max_Accel_X_x10",
+       "Horizontal tracking acceleration override in tenths; zero keeps the underlying configured value."},
+      {"Max_Accel_Y_x10",
+       "Vertical tracking acceleration override in tenths; zero keeps the underlying configured value."},
+      {"Stitch_Rotate_Degrees",
+       "Rotate the stitched canvas before play tracking. The default display value of 90 corresponds to no additional configured rotation."},
+      {"Link_Fixed_Edge_Rotation_Left_Right",
+       "Keep the left and right fixed-edge crop rotations equal when enabled; disable it to tune each side independently."},
+      {"Left_Fixed_Edge_Rotation_Angle_x10",
+       "Left fixed-edge crop rotation in tenths of a degree; 250 means 25.0 degrees."},
+      {"Right_Fixed_Edge_Rotation_Angle_x10",
+       "Right fixed-edge crop rotation in tenths of a degree; 250 means 25.0 degrees."},
+  };
+  for (const auto& [id, description] : camera_help) {
+    help(
+        "cameraSlider_" + id,
+        description + " Changes apply live where supported; Save Preset stores the value for this game.");
+  }
+  updatePresetDirtyState();
 }
 
 void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage) {
@@ -2361,7 +2538,6 @@ bool HStreamWindow::saveStitchingCalibrationState(
       config = YAML::Node(YAML::NodeType::Map);
     }
   }
-
   YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
   if (require_matching_pending) {
     const int current_control_points = calibration["control_points"] && calibration["control_points"].IsScalar()
@@ -2652,9 +2828,17 @@ void HStreamWindow::showStitchingCalibrationDialog() {
     buttons->addStretch(1);
     calibration_cancel_button_ = new QPushButton("Stop calibration", dialog);
     calibration_cancel_button_->setObjectName("stitchCalibrationCancelButton");
+    set_control_help(
+        calibration_cancel_button_,
+        "Stop the active stitching calibration and its pipeline. Completed calibration stages remain visible in "
+        "the runtime log.");
     calibration_ok_button_ = new QPushButton("OK", dialog);
     calibration_ok_button_->setObjectName("stitchCalibrationOkButton");
     calibration_ok_button_->setDefault(true);
+    set_control_help(
+        calibration_ok_button_,
+        "Close this calibration result after reviewing the failure details. Successful calibration closes "
+        "automatically and continues the pipeline.");
     buttons->addWidget(calibration_cancel_button_);
     buttons->addWidget(calibration_ok_button_);
     root->addLayout(buttons);
@@ -4225,6 +4409,9 @@ void HStreamWindow::startArchiveFinalization(const QString& source_path, const Q
     archive_finalize_ok_button_ = new QPushButton("OK", dialog);
     archive_finalize_ok_button_->setObjectName("archiveFinalizeOkButton");
     archive_finalize_ok_button_->setDefault(true);
+    set_control_help(
+        archive_finalize_ok_button_,
+        "Close the finalization result after reviewing where the completed MP4 or recoverable work file was saved.");
     archive_finalize_ok_button_->hide();
     buttons->addWidget(archive_finalize_ok_button_);
     root->addLayout(buttons);
@@ -5436,15 +5623,44 @@ void HStreamWindow::savePreset() {
       return;
     }
   }
+  const QString game_dir = QString::fromStdString(config_path.parent_path().string());
+  const QString previous_active_sidecar =
+      resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
 
   bool invalidate_rink_masks = false;
   int invalidated_config_artifacts = 0;
-  if (!applySavedControlConfig(config, &invalidate_rink_masks, &invalidated_config_artifacts)) {
+  QString published_playtracker_sidecar;
+  if (!applySavedControlConfig(
+          config, &invalidate_rink_masks, &invalidated_config_artifacts, &published_playtracker_sidecar)) {
+    if (!published_playtracker_sidecar.isEmpty()) {
+      QFile::remove(published_playtracker_sidecar);
+    }
     return;
+  }
+  const QString intended_active_sidecar =
+      resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
+  if (!previous_active_sidecar.isEmpty() && !same_file_path(previous_active_sidecar, intended_active_sidecar)) {
+    const QString retirement_marker = playtracker_sidecar_retirement_marker(previous_active_sidecar);
+    const absl::Status retirement_publish = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FAIL_PRESET_RETIREMENT_PUBLISH")
+        ? absl::InternalError("sidecar retirement publication failure requested by test")
+        : hm::stitching::publish_named_file(
+              fs::path(retirement_marker.toStdString()), previous_active_sidecar.toStdString() + "\n");
+    if (!retirement_publish.ok()) {
+      if (!published_playtracker_sidecar.isEmpty()) {
+        QFile::remove(published_playtracker_sidecar);
+      }
+      appendLog(QString("could not durably retire playtracker config %1: %2")
+                    .arg(previous_active_sidecar, retirement_publish.ToString().c_str()));
+      return;
+    }
   }
   absl::Status publish;
   size_t invalidated_masks = 0;
-  if (invalidate_rink_masks) {
+  const bool fail_before_config_publish = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_PUBLISH");
+  const bool fail_after_config_publish = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_POST_COMMIT");
+  if (fail_before_config_publish) {
+    publish = absl::InternalError("preset config publication failure requested by test");
+  } else if (invalidate_rink_masks) {
     auto transaction =
         hm::stitching::publish_game_config_without_rink_masks(config_path.parent_path(), YAML::Dump(config) + "\n");
     if (transaction.ok()) {
@@ -5456,16 +5672,93 @@ void HStreamWindow::savePreset() {
   } else {
     publish = publish_yaml_config(config_path, config);
   }
+  if (fail_after_config_publish && publish.ok()) {
+    publish = absl::InternalError("post-commit preset config failure requested by test");
+  }
   if (!publish.ok()) {
+    bool published_sidecar_may_be_referenced = published_playtracker_sidecar.isEmpty();
+    YAML::Node visible_config;
+    bool visible_config_loaded = false;
+    try {
+      if (fs::is_regular_file(config_path)) {
+        visible_config = YAML::LoadFile(config_path.string());
+        visible_config_loaded = true;
+      }
+    } catch (const std::exception&) {
+      // The transaction lock is already held. If the just-published config
+      // cannot be inspected directly, conservatively retain its sidecar.
+      published_sidecar_may_be_referenced = true;
+    }
+    if (visible_config_loaded && !published_playtracker_sidecar.isEmpty()) {
+      YAML::Node configured_sidecar;
+      if (lookup_yaml_path(visible_config, "pipeline.ds-playtracker.config-file", &configured_sidecar) &&
+          configured_sidecar.IsScalar()) {
+        const QString configured = QString::fromStdString(configured_sidecar.as<std::string>());
+        for (const QString& candidate :
+             playtracker_config_candidates(configured, game_dir, pipelineWorkingDirectory())) {
+          if (same_file_path(candidate, published_playtracker_sidecar)) {
+            published_sidecar_may_be_referenced = true;
+            break;
+          }
+        }
+      }
+    }
+    const bool visible_generation_matches = visible_config_loaded && YAML::Dump(visible_config) == YAML::Dump(config);
+    if (!published_sidecar_may_be_referenced) {
+      QFile::remove(published_playtracker_sidecar);
+    }
+    if (visible_generation_matches) {
+      // The rename became visible but durability confirmation failed. Track
+      // that visible generation as the baseline while keeping Save enabled
+      // so the user can retry the durability operation.
+      preset_save_retry_required_ = true;
+      preset_save_retry_game_id_ = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
+      captureSavedControlState();
+    }
     appendLog(QString("failed to write preset %1: %2")
                   .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
     return;
+  }
+  const QString active_sidecar = resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
+  const fs::path runtime_dir = config_path.parent_path() / ".hstream-ui";
+  std::error_code cleanup_error;
+  const auto stale_before = fs::file_time_type::clock::now() - std::chrono::hours(24);
+  for (fs::directory_iterator it(runtime_dir, cleanup_error), end; !cleanup_error && it != end;
+       it.increment(cleanup_error)) {
+    const std::string filename = it->path().filename().string();
+    if (filename.rfind("play_tracker_config_", 0) != 0 || it->path().extension() != ".yaml" ||
+        same_file_path(QString::fromStdString(it->path().string()), active_sidecar)) {
+      continue;
+    }
+    const fs::path retirement_marker =
+        fs::path(playtracker_sidecar_retirement_marker(QString::fromStdString(it->path().string())).toStdString());
+    if (!fs::is_regular_file(retirement_marker, cleanup_error) || cleanup_error) {
+      cleanup_error.clear();
+      continue;
+    }
+    const fs::file_time_type modified = fs::last_write_time(retirement_marker, cleanup_error);
+    if (cleanup_error || modified > stale_before) {
+      cleanup_error.clear();
+      continue;
+    }
+    fs::remove(it->path(), cleanup_error);
+    if (cleanup_error) {
+      appendLog(QString("could not remove stale playtracker config %1: %2")
+                    .arg(QString::fromStdString(it->path().string()), QString::fromStdString(cleanup_error.message())));
+      cleanup_error.clear();
+      continue;
+    }
+    fs::remove(retirement_marker, cleanup_error);
+    cleanup_error.clear();
   }
   if (invalidate_rink_masks) {
     appendLog(QString("stitch rotation saved; invalidated %1 scoreboard/ice-mask artifact(s)")
                   .arg(invalidated_config_artifacts + static_cast<int>(invalidated_masks)));
   }
   appendLog(QString("preset saved %1").arg(QString::fromStdString(config_path.string())));
+  preset_save_retry_required_ = false;
+  preset_save_retry_game_id_.clear();
+  captureSavedControlState();
 }
 
 void HStreamWindow::resetCameraControls() {
@@ -5498,10 +5791,51 @@ void HStreamWindow::resetCameraControls() {
     scheduled_playtracker_force_all_targets_ = true;
   }
   appendLog("camera controls reset to defaults");
+  updatePresetDirtyState();
+}
+
+void HStreamWindow::captureSavedControlState() {
+  saved_camera_controls_.clear();
+  for (const auto& [id, slider] : camera_sliders_) {
+    if (slider)
+      saved_camera_controls_[id] = slider->value();
+  }
+  updatePresetDirtyState();
+}
+
+void HStreamWindow::updatePresetDirtyState() {
+  if (!save_preset_button_)
+    return;
+  bool dirty = preset_save_retry_required_ || saved_camera_controls_.size() != camera_sliders_.size();
+  if (!dirty) {
+    for (const auto& [id, slider] : camera_sliders_) {
+      const auto saved = saved_camera_controls_.find(id);
+      if (!slider || saved == saved_camera_controls_.end() || saved->second != slider->value()) {
+        dirty = true;
+        break;
+      }
+    }
+  }
+  const bool has_game = game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty();
+  const bool can_save = dirty && has_game;
+  if (save_preset_button_->isEnabled() != can_save)
+    save_preset_button_->setEnabled(can_save);
+  const QString description = !has_game ? "Select or create a game before saving camera-control changes."
+      : preset_save_retry_required_     ? "Retry saving the current preset because its last durability check failed."
+      : dirty ? "Save the changed Program and Stitched camera controls into this game's config.yaml for future runs."
+              : "No camera-control changes need saving. Adjust a Program or Stitched control to enable Save Preset.";
+  if (save_preset_button_->toolTip() != description)
+    set_control_help(save_preset_button_, description);
 }
 
 void HStreamWindow::loadSavedControlConfig() {
+  const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
+  if (preset_save_retry_required_ && preset_save_retry_game_id_ != game_id) {
+    preset_save_retry_required_ = false;
+    preset_save_retry_game_id_.clear();
+  }
   if (!game_id_edit_ || game_id_edit_->text().isEmpty()) {
+    captureSavedControlState();
     return;
   }
   if (control_points_spin_) {
@@ -5527,48 +5861,49 @@ void HStreamWindow::loadSavedControlConfig() {
   auto loaded_config = hm::stitching::load_game_config_file(config_path);
   if (!loaded_config.ok()) {
     appendLog(QString("could not load saved controls: %1").arg(loaded_config.status().ToString().c_str()));
+    saved_camera_controls_.clear();
+    updatePresetDirtyState();
     return;
   }
   if (!loaded_config->has_value()) {
+    captureSavedControlState();
     return;
   }
   try {
     YAML::Node config = **loaded_config;
-    auto set_control_without_signal = [this](const QString& id, int value) {
-      const auto slider_it = camera_sliders_.find(id);
-      if (slider_it == camera_sliders_.end()) {
+    std::map<QString, int> staged_controls;
+    for (const auto& [id, slider] : camera_sliders_) {
+      if (slider)
+        staged_controls[id] = slider->value();
+    }
+    auto stage_control = [this, &staged_controls](const QString& id, int value) {
+      const auto slider = camera_sliders_.find(id);
+      if (slider == camera_sliders_.end() || !slider->second) {
         return false;
       }
-      const bool blocked = slider_it->second->blockSignals(true);
-      slider_it->second->setValue(value);
-      slider_it->second->blockSignals(blocked);
-      const int applied_value = slider_it->second->value();
-      const auto label_it = camera_value_labels_.find(id);
-      if (label_it != camera_value_labels_.end()) {
-        label_it->second->setText(QString::number(applied_value));
-      }
+      staged_controls[id] = std::clamp(value, slider->second->minimum(), slider->second->maximum());
       return true;
     };
+    int staged_control_points =
+        control_points_spin_ ? control_points_spin_->value() : kDefaultStitchCalibrationControlPoints;
     YAML::Node control_points;
     if (control_points_spin_ &&
         lookup_yaml_path(config, "hstream_ui.stitching_calibration.control_points", &control_points) &&
         control_points.IsScalar()) {
-      const bool blocked = control_points_spin_->blockSignals(true);
-      control_points_spin_->setValue(control_points.as<int>());
-      control_points_spin_->blockSignals(blocked);
+      staged_control_points = control_points.as<int>();
     }
     YAML::Node fixed_edge_rotation;
     if (lookup_yaml_path(config, "rink.camera.fixed_edge_rotation_angle", &fixed_edge_rotation)) {
       auto angle_x10 = [](const YAML::Node& value) { return static_cast<int>(std::lround(value.as<double>() * 10.0)); };
       if (fixed_edge_rotation.IsSequence() && fixed_edge_rotation.size() == 2) {
-        set_control_without_signal("Link_Fixed_Edge_Rotation_Left_Right", 0);
-        set_control_without_signal("Left_Fixed_Edge_Rotation_Angle_x10", angle_x10(fixed_edge_rotation[0]));
-        set_control_without_signal("Right_Fixed_Edge_Rotation_Angle_x10", angle_x10(fixed_edge_rotation[1]));
+        stage_control("Link_Fixed_Edge_Rotation_Left_Right", 0);
+        stage_control("Left_Fixed_Edge_Rotation_Angle_x10", angle_x10(fixed_edge_rotation[0]));
+        stage_control("Right_Fixed_Edge_Rotation_Angle_x10", angle_x10(fixed_edge_rotation[1]));
       } else if (fixed_edge_rotation.IsScalar()) {
         const int value = angle_x10(fixed_edge_rotation);
-        set_control_without_signal("Link_Fixed_Edge_Rotation_Left_Right", 1);
-        set_control_without_signal("Left_Fixed_Edge_Rotation_Angle_x10", value);
-        set_control_without_signal("Right_Fixed_Edge_Rotation_Angle_x10", value);
+        stage_control("Link_Fixed_Edge_Rotation_Left_Right", 1);
+        stage_control("Left_Fixed_Edge_Rotation_Angle_x10", value);
+        stage_control("Right_Fixed_Edge_Rotation_Angle_x10", value);
       } else {
         appendLog("ignored invalid rink.camera.fixed_edge_rotation_angle; expected one value or [left, right]");
       }
@@ -5578,30 +5913,53 @@ void HStreamWindow::loadSavedControlConfig() {
     if (controls && controls.IsMap()) {
       for (const auto& entry : controls) {
         const QString id = QString::fromStdString(entry.first.as<std::string>());
-        if (set_control_without_signal(id, entry.second.as<int>())) {
+        if (camera_sliders_.find(id) != camera_sliders_.end() && stage_control(id, entry.second.as<int>())) {
           ++loaded;
         }
       }
     }
-    if (cameraControlValue("Link_Fixed_Edge_Rotation_Left_Right") != 0) {
-      set_control_without_signal(
-          "Right_Fixed_Edge_Rotation_Angle_x10", cameraControlValue("Left_Fixed_Edge_Rotation_Angle_x10"));
+    if (staged_controls["Link_Fixed_Edge_Rotation_Left_Right"] != 0) {
+      staged_controls["Right_Fixed_Edge_Rotation_Angle_x10"] = staged_controls["Left_Fixed_Edge_Rotation_Angle_x10"];
+    }
+    if (control_points_spin_) {
+      const bool blocked = control_points_spin_->blockSignals(true);
+      control_points_spin_->setValue(staged_control_points);
+      control_points_spin_->blockSignals(blocked);
+    }
+    for (const auto& [id, value] : staged_controls) {
+      const auto slider_it = camera_sliders_.find(id);
+      if (slider_it == camera_sliders_.end() || !slider_it->second)
+        continue;
+      const bool blocked = slider_it->second->blockSignals(true);
+      slider_it->second->setValue(value);
+      slider_it->second->blockSignals(blocked);
+      const auto label_it = camera_value_labels_.find(id);
+      if (label_it != camera_value_labels_.end()) {
+        label_it->second->setText(QString::number(slider_it->second->value()));
+      }
     }
     appendLog(QString("loaded %1 saved camera controls").arg(loaded));
+    captureSavedControlState();
   } catch (const std::exception& exc) {
     appendLog(QString("could not load saved camera controls: %1").arg(exc.what()));
+    saved_camera_controls_.clear();
+    updatePresetDirtyState();
   }
 }
 
 bool HStreamWindow::applySavedControlConfig(
     YAML::Node& config,
     bool* invalidate_rink_masks,
-    int* invalidated_config_artifacts) {
+    int* invalidated_config_artifacts,
+    QString* published_playtracker_sidecar) {
   if (invalidate_rink_masks) {
     *invalidate_rink_masks = false;
   }
   if (invalidated_config_artifacts) {
     *invalidated_config_artifacts = 0;
+  }
+  if (published_playtracker_sidecar) {
+    published_playtracker_sidecar->clear();
   }
   if (!yaml_defined(config) || config.IsNull()) {
     config = YAML::Node(YAML::NodeType::Map);
@@ -5768,8 +6126,10 @@ bool HStreamWindow::applySavedControlConfig(
     QDir runtime_dir(QDir(game_dir).filePath(".hstream-ui"));
     if (!runtime_dir.exists() && !runtime_dir.mkpath(".")) {
       appendLog(QString("could not create playtracker runtime config directory %1").arg(runtime_dir.path()));
+      return false;
     } else {
-      const QString runtime_config_path = runtime_dir.filePath("play_tracker_config.yaml");
+      const QString runtime_config_path = runtime_dir.filePath(
+          QString("play_tracker_config_%1.yaml").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
       try {
         QString base_playtracker_config = pipelineConfigPath("play_tracker_config.yaml");
         QString configured_playtracker_config;
@@ -5780,7 +6140,8 @@ bool HStreamWindow::applySavedControlConfig(
           const QString working_dir = pipelineWorkingDirectory();
           const QStringList candidates = playtracker_config_candidates(configured, game_dir, working_dir);
           for (const QString& candidate : candidates) {
-            if (same_file_path(candidate, runtime_config_path)) {
+            if (same_file_path(candidate, runtime_config_path) ||
+                is_ui_persistent_playtracker_config(candidate, game_dir)) {
               if (previous_playtracker_config_base && previous_playtracker_config_base.IsScalar()) {
                 configured = QString::fromStdString(previous_playtracker_config_base.as<std::string>());
                 const QStringList base_candidates = playtracker_config_candidates(configured, game_dir, working_dir);
@@ -5866,25 +6227,29 @@ bool HStreamWindow::applySavedControlConfig(
           apply_live_box(1);
         }
 
-        std::ofstream tracker_out(runtime_config_path.toStdString());
-        if (!tracker_out) {
-          appendLog(QString("could not open playtracker runtime config %1").arg(runtime_config_path));
-        } else {
-          tracker_out << play_tracker_config << "\n";
-          tracker_out.close();
-          if (!tracker_out) {
-            appendLog(QString("could not write playtracker runtime config %1").arg(runtime_config_path));
-          } else {
-            config["pipeline"]["ds-playtracker"]["config-file"] = runtime_config_path.toStdString();
-            if (!configured_playtracker_config.isEmpty() && configured_playtracker_config != runtime_config_path) {
-              config["hstream_ui"]["playtracker_config_base"] = configured_playtracker_config.toStdString();
-            }
-            mark_runtime_key("pipeline.ds-playtracker.config-file");
-            appendLog(QString("playtracker runtime config saved %1").arg(runtime_config_path));
-          }
+        const absl::Status runtime_publish = hm::stitching::publish_named_file(
+            fs::path(runtime_config_path.toStdString()), YAML::Dump(play_tracker_config) + "\n");
+        if (!runtime_publish.ok()) {
+          // The atomic rename can succeed before a later directory fsync
+          // reports failure. This UUID generation is not referenced by the
+          // still-locked game config, so it is safe to remove here.
+          QFile::remove(runtime_config_path);
+          appendLog(QString("could not atomically write playtracker runtime config %1: %2")
+                        .arg(runtime_config_path, runtime_publish.ToString().c_str()));
+          return false;
         }
+        if (published_playtracker_sidecar) {
+          *published_playtracker_sidecar = QFileInfo(runtime_config_path).absoluteFilePath();
+        }
+        config["pipeline"]["ds-playtracker"]["config-file"] = runtime_config_path.toStdString();
+        if (!configured_playtracker_config.isEmpty() && configured_playtracker_config != runtime_config_path) {
+          config["hstream_ui"]["playtracker_config_base"] = configured_playtracker_config.toStdString();
+        }
+        mark_runtime_key("pipeline.ds-playtracker.config-file");
+        appendLog(QString("playtracker runtime config saved %1").arg(runtime_config_path));
       } catch (const std::exception& exc) {
         appendLog(QString("could not save playtracker runtime config: %1").arg(exc.what()));
+        return false;
       }
     }
   }
@@ -7087,6 +7452,9 @@ void HStreamWindow::addRtspOutput() {
   auto* toggle = new QCheckBox(QString("RTSP Mount /dynamic%1").arg(dynamic_rtsp_count_));
   toggle->setObjectName("outputToggle_" + id);
   toggle->setChecked(true);
+  set_control_help(
+      toggle,
+      "Enable this additional local RTSP mount for the next Program run. Changes made while playing apply on the next run.");
   auto* state = make_value_label("outputState_" + id, "ENABLED");
   output_toggles_[id] = toggle;
   output_states_[id] = state;
@@ -7148,7 +7516,8 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
         const QString working_dir = pipelineWorkingDirectory();
         const QStringList candidates = playtracker_config_candidates(configured, game_dir, working_dir);
         for (const QString& candidate : candidates) {
-          if (same_file_path(candidate, runtime_config_path) || same_file_path(candidate, persistent_runtime_config)) {
+          if (same_file_path(candidate, runtime_config_path) || same_file_path(candidate, persistent_runtime_config) ||
+              is_ui_persistent_playtracker_config(candidate, game_dir)) {
             YAML::Node base_config_file;
             if (lookup_yaml_path(game_config, "hstream_ui.playtracker_config_base", &base_config_file) &&
                 base_config_file.IsScalar()) {
@@ -7649,6 +8018,7 @@ QSlider* HStreamWindow::addSlider(
     } else {
       appendLog(QString("camera control %1=%2 apply=save/restart").arg(id).arg(new_value));
     }
+    updatePresetDirtyState();
   });
   row->addWidget(name, 0, 0);
   row->addWidget(value_label, 0, 1);
