@@ -48,6 +48,29 @@ cc_test(
     ],
 )
 
+cc_test(
+    name = "playcropper_metadata_alignment_test",
+    srcs = ["PlayCropperMetadataAlignmentTest.cpp"],
+    deps = [
+        "//src/gst-plugins/gst-playtracker:playtracker_context_header",
+        "//src/gst-plugins/gst-videoprep/algorithm-base",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+        "@local_cuda//:nppc",
+        "@local_cuda//:nppif",
+        "@local_cuda//:nppig",
+        "//toolchains/jetson:cuda_runtime",
+    ],
+    copts = [
+        "-x",
+        "c++",
+        "-std=c++17",
+    ],
+    linkopts = [
+        "-lnvdsbufferpool",
+    ],
+)
+
 cuda_library(
     name = "play_cropper_cuda_lib",
     srcs = [
