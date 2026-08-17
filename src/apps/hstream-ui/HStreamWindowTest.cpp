@@ -3788,6 +3788,28 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
 
+  {
+    YAML::Node out_of_range_link(YAML::NodeType::Map);
+    out_of_range_link["hstream_ui"]["camera_controls"]["Link_Fixed_Edge_Rotation_Left_Right"] = -1;
+    out_of_range_link["hstream_ui"]["camera_controls"]["Left_Fixed_Edge_Rotation_Angle_x10"] = 250;
+    out_of_range_link["hstream_ui"]["camera_controls"]["Right_Fixed_Edge_Rotation_Angle_x10"] = 750;
+    std::ofstream out(config);
+    out << out_of_range_link << "\n";
+  }
+  activate(create);
+  if (!expect(
+          fixed_edge_link->value() == 0 && fixed_edge_left->value() == 250 && fixed_edge_right->value() == 750,
+          "Saved controls should be clamped before linked fixed-edge rotation is reconciled")) {
+    return false;
+  }
+  {
+    YAML::Node existing(YAML::NodeType::Map);
+    existing["rink"]["camera"]["fixed_edge_rotation_angle"] = 22.0;
+    std::ofstream out(config);
+    out << existing << "\n";
+  }
+  activate(create);
+
   const QString loaded_game_id = game_id->text();
   stop_delay->setValue(1);
   if (!expect(save->isEnabled(), "Changing a loaded preset should enable Save Preset")) {
@@ -3888,6 +3910,52 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!expect(!save->isEnabled(), "A successful preset save should disable Save Preset until another change")) {
     return false;
   }
+
+  const YAML::Node committed_before_publish_failure = YAML::LoadFile(config.string());
+  YAML::Node committed_sidecar_node;
+  if (!expect(
+          lookup_yaml_path(
+              committed_before_publish_failure,
+              {"pipeline", "ds-playtracker", "config-file"},
+              &committed_sidecar_node) &&
+              committed_sidecar_node.IsScalar(),
+          "A saved tracker preset should reference its immutable sidecar")) {
+    return false;
+  }
+  const fs::path committed_sidecar = committed_sidecar_node.as<std::string>();
+  std::ifstream committed_config_input(config, std::ios::binary);
+  const std::string committed_config(
+      (std::istreambuf_iterator<char>(committed_config_input)), std::istreambuf_iterator<char>());
+  std::ifstream committed_sidecar_input(committed_sidecar, std::ios::binary);
+  const std::string committed_sidecar_contents(
+      (std::istreambuf_iterator<char>(committed_sidecar_input)), std::istreambuf_iterator<char>());
+  max_speed_x->setValue(451);
+  qputenv("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_PUBLISH", "1");
+  activate(save);
+  qunsetenv("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_PUBLISH");
+  std::ifstream failed_publish_config_input(config, std::ios::binary);
+  const std::string failed_publish_config(
+      (std::istreambuf_iterator<char>(failed_publish_config_input)), std::istreambuf_iterator<char>());
+  std::ifstream failed_publish_sidecar_input(committed_sidecar, std::ios::binary);
+  const std::string failed_publish_sidecar(
+      (std::istreambuf_iterator<char>(failed_publish_sidecar_input)), std::istreambuf_iterator<char>());
+  const QStringList persistent_sidecars = QDir(QString::fromStdString(committed_sidecar.parent_path().string()))
+                                              .entryList({"play_tracker_config_*.yaml"}, QDir::Files, QDir::Name);
+  if (!expect(save->isEnabled(), "A failed config commit should keep the changed preset savable") ||
+      !expect(failed_publish_config == committed_config, "A failed config commit should preserve config.yaml") ||
+      !expect(
+          failed_publish_sidecar == committed_sidecar_contents,
+          "A failed config commit should preserve the effective playtracker sidecar") ||
+      !expect(
+          persistent_sidecars.size() == 1,
+          "A failed config commit should remove its unpublished playtracker sidecar generation")) {
+    return false;
+  }
+  max_speed_x->setValue(450);
+  if (!expect(!save->isEnabled(), "Reverting after a failed config commit should restore the saved snapshot")) {
+    return false;
+  }
+
   stop_delay->setValue(15);
   if (!expect(save->isEnabled(), "A new change after saving should re-enable Save Preset")) {
     return false;

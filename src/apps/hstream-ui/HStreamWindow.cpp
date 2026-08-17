@@ -1298,6 +1298,15 @@ bool same_file_path(const QString& lhs, const QString& rhs) {
   return QFileInfo(lhs).absoluteFilePath() == QFileInfo(rhs).absoluteFilePath();
 }
 
+bool is_ui_persistent_playtracker_config(const QString& path, const QString& game_dir) {
+  const QFileInfo info(path);
+  const QString runtime_dir = QFileInfo(QDir(game_dir).filePath(".hstream-ui")).absoluteFilePath();
+  const QString filename = info.fileName();
+  const bool owned_name = filename == "play_tracker_config.yaml" ||
+      (filename.startsWith("play_tracker_config_") && filename.endsWith(".yaml"));
+  return owned_name && info.absolutePath() == runtime_dir;
+}
+
 bool yaml_scalar_bool(YAML::Node node, bool default_value) {
   if (!node || !node.IsScalar()) {
     return default_value;
@@ -5595,12 +5604,24 @@ void HStreamWindow::savePreset() {
 
   bool invalidate_rink_masks = false;
   int invalidated_config_artifacts = 0;
-  if (!applySavedControlConfig(config, &invalidate_rink_masks, &invalidated_config_artifacts)) {
+  QString published_playtracker_sidecar;
+  QString superseded_playtracker_sidecar;
+  if (!applySavedControlConfig(
+          config,
+          &invalidate_rink_masks,
+          &invalidated_config_artifacts,
+          &published_playtracker_sidecar,
+          &superseded_playtracker_sidecar)) {
+    if (!published_playtracker_sidecar.isEmpty()) {
+      QFile::remove(published_playtracker_sidecar);
+    }
     return;
   }
   absl::Status publish;
   size_t invalidated_masks = 0;
-  if (invalidate_rink_masks) {
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_PUBLISH")) {
+    publish = absl::InternalError("preset config publication failure requested by test");
+  } else if (invalidate_rink_masks) {
     auto transaction =
         hm::stitching::publish_game_config_without_rink_masks(config_path.parent_path(), YAML::Dump(config) + "\n");
     if (transaction.ok()) {
@@ -5613,9 +5634,17 @@ void HStreamWindow::savePreset() {
     publish = publish_yaml_config(config_path, config);
   }
   if (!publish.ok()) {
+    if (!published_playtracker_sidecar.isEmpty()) {
+      QFile::remove(published_playtracker_sidecar);
+    }
     appendLog(QString("failed to write preset %1: %2")
                   .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
     return;
+  }
+  if (!superseded_playtracker_sidecar.isEmpty() &&
+      !same_file_path(superseded_playtracker_sidecar, published_playtracker_sidecar) &&
+      QFileInfo::exists(superseded_playtracker_sidecar) && !QFile::remove(superseded_playtracker_sidecar)) {
+    appendLog(QString("could not remove superseded playtracker config %1").arg(superseded_playtracker_sidecar));
   }
   if (invalidate_rink_masks) {
     appendLog(QString("stitch rotation saved; invalidated %1 scoreboard/ice-mask artifact(s)")
@@ -5735,10 +5764,11 @@ void HStreamWindow::loadSavedControlConfig() {
         staged_controls[id] = slider->value();
     }
     auto stage_control = [this, &staged_controls](const QString& id, int value) {
-      if (camera_sliders_.find(id) == camera_sliders_.end()) {
+      const auto slider = camera_sliders_.find(id);
+      if (slider == camera_sliders_.end() || !slider->second) {
         return false;
       }
-      staged_controls[id] = value;
+      staged_controls[id] = std::clamp(value, slider->second->minimum(), slider->second->maximum());
       return true;
     };
     int staged_control_points =
@@ -5807,12 +5837,20 @@ void HStreamWindow::loadSavedControlConfig() {
 bool HStreamWindow::applySavedControlConfig(
     YAML::Node& config,
     bool* invalidate_rink_masks,
-    int* invalidated_config_artifacts) {
+    int* invalidated_config_artifacts,
+    QString* published_playtracker_sidecar,
+    QString* superseded_playtracker_sidecar) {
   if (invalidate_rink_masks) {
     *invalidate_rink_masks = false;
   }
   if (invalidated_config_artifacts) {
     *invalidated_config_artifacts = 0;
+  }
+  if (published_playtracker_sidecar) {
+    published_playtracker_sidecar->clear();
+  }
+  if (superseded_playtracker_sidecar) {
+    superseded_playtracker_sidecar->clear();
   }
   if (!yaml_defined(config) || config.IsNull()) {
     config = YAML::Node(YAML::NodeType::Map);
@@ -5847,6 +5885,20 @@ bool HStreamWindow::applySavedControlConfig(
         for (const QString& current_candidate : current_candidates) {
           if (same_file_path(current_candidate, previous_path)) {
             generated_value_matches = true;
+            break;
+          }
+        }
+      }
+      if (generated_value_matches && path == "pipeline.ds-playtracker.config-file" && current.IsScalar() &&
+          game_id_edit_) {
+        const QString game_dir = gameDirectory(game_id_edit_->text());
+        const QString configured = QString::fromStdString(current.as<std::string>());
+        for (const QString& candidate :
+             playtracker_config_candidates(configured, game_dir, pipelineWorkingDirectory())) {
+          if (is_ui_persistent_playtracker_config(candidate, game_dir)) {
+            if (superseded_playtracker_sidecar) {
+              *superseded_playtracker_sidecar = QFileInfo(candidate).absoluteFilePath();
+            }
             break;
           }
         }
@@ -5981,7 +6033,8 @@ bool HStreamWindow::applySavedControlConfig(
       appendLog(QString("could not create playtracker runtime config directory %1").arg(runtime_dir.path()));
       return false;
     } else {
-      const QString runtime_config_path = runtime_dir.filePath("play_tracker_config.yaml");
+      const QString runtime_config_path = runtime_dir.filePath(
+          QString("play_tracker_config_%1.yaml").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
       try {
         QString base_playtracker_config = pipelineConfigPath("play_tracker_config.yaml");
         QString configured_playtracker_config;
@@ -5992,7 +6045,8 @@ bool HStreamWindow::applySavedControlConfig(
           const QString working_dir = pipelineWorkingDirectory();
           const QStringList candidates = playtracker_config_candidates(configured, game_dir, working_dir);
           for (const QString& candidate : candidates) {
-            if (same_file_path(candidate, runtime_config_path)) {
+            if (same_file_path(candidate, runtime_config_path) ||
+                is_ui_persistent_playtracker_config(candidate, game_dir)) {
               if (previous_playtracker_config_base && previous_playtracker_config_base.IsScalar()) {
                 configured = QString::fromStdString(previous_playtracker_config_base.as<std::string>());
                 const QStringList base_candidates = playtracker_config_candidates(configured, game_dir, working_dir);
@@ -6084,6 +6138,9 @@ bool HStreamWindow::applySavedControlConfig(
           appendLog(QString("could not atomically write playtracker runtime config %1: %2")
                         .arg(runtime_config_path, runtime_publish.ToString().c_str()));
           return false;
+        }
+        if (published_playtracker_sidecar) {
+          *published_playtracker_sidecar = QFileInfo(runtime_config_path).absoluteFilePath();
         }
         config["pipeline"]["ds-playtracker"]["config-file"] = runtime_config_path.toStdString();
         if (!configured_playtracker_config.isEmpty() && configured_playtracker_config != runtime_config_path) {
@@ -7360,7 +7417,8 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
         const QString working_dir = pipelineWorkingDirectory();
         const QStringList candidates = playtracker_config_candidates(configured, game_dir, working_dir);
         for (const QString& candidate : candidates) {
-          if (same_file_path(candidate, runtime_config_path) || same_file_path(candidate, persistent_runtime_config)) {
+          if (same_file_path(candidate, runtime_config_path) || same_file_path(candidate, persistent_runtime_config) ||
+              is_ui_persistent_playtracker_config(candidate, game_dir)) {
             YAML::Node base_config_file;
             if (lookup_yaml_path(game_config, "hstream_ui.playtracker_config_base", &base_config_file) &&
                 base_config_file.IsScalar()) {
