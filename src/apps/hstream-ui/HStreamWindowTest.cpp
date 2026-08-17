@@ -4010,6 +4010,21 @@ bool test_camera_controls(HStreamWindow* window) {
           "Reloading the same visible generation should preserve its durability retry requirement")) {
     return false;
   }
+  const QString durability_retry_game_id = game_id->text();
+  game_id->setText("ui-camera-control-other-game");
+  activate(create);
+  if (!expect(
+          !save->isEnabled() && !save->toolTip().contains("Retry saving"),
+          "A different game should not inherit another game's durability retry requirement")) {
+    return false;
+  }
+  game_id->setText(durability_retry_game_id);
+  activate(create);
+  if (!expect(
+          max_speed_x->value() == 451 && save->isEnabled() && save->toolTip().contains("Retry saving"),
+          "Returning to a game should restore its pending durability retry requirement")) {
+    return false;
+  }
   activate(save);
   if (!expect(!save->isEnabled(), "A successful durability retry should clear the retry-required state")) {
     return false;
