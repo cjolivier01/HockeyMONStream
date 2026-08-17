@@ -5711,8 +5711,9 @@ void HStreamWindow::savePreset() {
       // The rename became visible but durability confirmation failed. Track
       // that visible generation as the baseline while keeping Save enabled
       // so the user can retry the durability operation.
-      preset_save_retry_required_ = true;
-      preset_save_retry_game_id_ = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
+      if (game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty()) {
+        preset_save_retry_game_ids_.insert(game_id_edit_->text().trimmed());
+      }
       captureSavedControlState();
     }
     appendLog(QString("failed to write preset %1: %2")
@@ -5756,8 +5757,9 @@ void HStreamWindow::savePreset() {
                   .arg(invalidated_config_artifacts + static_cast<int>(invalidated_masks)));
   }
   appendLog(QString("preset saved %1").arg(QString::fromStdString(config_path.string())));
-  preset_save_retry_required_ = false;
-  preset_save_retry_game_id_.clear();
+  if (game_id_edit_) {
+    preset_save_retry_game_ids_.erase(game_id_edit_->text().trimmed());
+  }
   captureSavedControlState();
 }
 
@@ -5806,7 +5808,9 @@ void HStreamWindow::captureSavedControlState() {
 void HStreamWindow::updatePresetDirtyState() {
   if (!save_preset_button_)
     return;
-  bool dirty = preset_save_retry_required_ || saved_camera_controls_.size() != camera_sliders_.size();
+  const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
+  const bool retry_required = !game_id.isEmpty() && preset_save_retry_game_ids_.count(game_id) != 0;
+  bool dirty = retry_required || saved_camera_controls_.size() != camera_sliders_.size();
   if (!dirty) {
     for (const auto& [id, slider] : camera_sliders_) {
       const auto saved = saved_camera_controls_.find(id);
@@ -5816,12 +5820,12 @@ void HStreamWindow::updatePresetDirtyState() {
       }
     }
   }
-  const bool has_game = game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty();
+  const bool has_game = !game_id.isEmpty();
   const bool can_save = dirty && has_game;
   if (save_preset_button_->isEnabled() != can_save)
     save_preset_button_->setEnabled(can_save);
   const QString description = !has_game ? "Select or create a game before saving camera-control changes."
-      : preset_save_retry_required_     ? "Retry saving the current preset because its last durability check failed."
+      : retry_required ? "Retry saving the current preset because its last durability check failed."
       : dirty ? "Save the changed Program and Stitched camera controls into this game's config.yaml for future runs."
               : "No camera-control changes need saving. Adjust a Program or Stitched control to enable Save Preset.";
   if (save_preset_button_->toolTip() != description)
@@ -5829,11 +5833,6 @@ void HStreamWindow::updatePresetDirtyState() {
 }
 
 void HStreamWindow::loadSavedControlConfig() {
-  const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
-  if (preset_save_retry_required_ && preset_save_retry_game_id_ != game_id) {
-    preset_save_retry_required_ = false;
-    preset_save_retry_game_id_.clear();
-  }
   if (!game_id_edit_ || game_id_edit_->text().isEmpty()) {
     captureSavedControlState();
     return;

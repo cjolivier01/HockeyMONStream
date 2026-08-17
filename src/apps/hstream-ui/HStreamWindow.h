@@ -432,8 +432,7 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, int> camera_defaults_;
   std::map<QString, int> saved_camera_controls_;
-  bool preset_save_retry_required_{false};
-  QString preset_save_retry_game_id_;
+  std::set<QString> preset_save_retry_game_ids_;
   std::vector<PendingRuntimeControl> pending_runtime_controls_;
   std::map<quint64, RuntimeControlBatch> runtime_control_batches_;
   std::map<QString, int> scheduled_rotation_controls_;
