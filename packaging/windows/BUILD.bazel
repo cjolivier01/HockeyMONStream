@@ -1,0 +1,4 @@
+exports_files([
+    "HStreamWslInstaller.nsi",
+    "hstream-wsl.ps1",
+])

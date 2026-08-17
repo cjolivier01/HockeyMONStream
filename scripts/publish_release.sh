@@ -26,7 +26,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-for command_name in git gh make dpkg-deb sha256sum; do
+for command_name in git gh make dpkg-deb sha256sum makensis rsvg-convert icotool file; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     echo "ERROR: required command not found: ${command_name}" >&2
     exit 1
@@ -119,6 +119,7 @@ echo "  hstream_${release_tag}_jetson-ubuntu22.04_arm64.deb"
 echo "  hugin_2022.0.0+dfsg.orig.tar.xz"
 echo "  libvigraimpex_1.11.1+dfsg.orig.tar.xz"
 echo "  hstream_${release_tag}_jetson-hugin-build.sh"
+echo "  hstream_${release_tag}_windows-wsl-setup.exe"
 echo "  SHA256SUMS"
 
 if [[ "${DRY_RUN}" -eq 1 ]]; then
@@ -165,6 +166,9 @@ mkdir -p "${build_dir}/ubuntu24.04" "${build_dir}/ubuntu26.04" "${build_dir}/jet
 make deb-ubuntu24 PACKAGE_VERSION="${release_tag}" DEB_OUTPUT_DIR="${build_dir}/ubuntu24.04"
 make deb-ubuntu26 PACKAGE_VERSION="${release_tag}" DEB_OUTPUT_DIR="${build_dir}/ubuntu26.04"
 make deb-jetson PACKAGE_VERSION="${release_tag}" JETSON_DEB_OUTPUT_DIR="${build_dir}/jetson"
+make windows-installer \
+  WINDOWS_INSTALLER_VERSION="${release_tag}" \
+  WINDOWS_INSTALLER_OUTPUT_DIR="${build_dir}/windows"
 
 validate_and_stage_deb() {
   local source_path="$1"
@@ -204,6 +208,14 @@ validate_and_stage_deb \
 validate_and_stage_deb \
   "${build_dir}/jetson/hstream_${package_version}_arm64.deb" \
   arm64 22.04 jetson "hstream_${release_tag}_jetson-ubuntu22.04_arm64.deb"
+windows_installer="${build_dir}/windows/hstream_${release_tag}_windows-wsl-setup.exe"
+if [[ ! -f "${windows_installer}" ]] ||
+   [[ "$(file -Lb "${windows_installer}")" != *"PE32 executable"* ]]; then
+  echo "ERROR: expected Windows WSL bootstrapper was not created: ${windows_installer}" >&2
+  exit 1
+fi
+install -m 0755 "${windows_installer}" \
+  "${release_dir}/hstream_${release_tag}_windows-wsl-setup.exe"
 
 # The Jetson package redistributes GPLv2 Hugin binaries. Accompany them with
 # the exact verified corresponding-source archive and the build-control script
@@ -216,7 +228,7 @@ chmod 0755 "${hugin_build_script_asset}"
 
 (
   cd "${release_dir}"
-  sha256sum ./*.deb ./*.tar.xz ./*.sh > SHA256SUMS
+  sha256sum ./*.deb ./*.exe ./*.tar.xz ./*.sh > SHA256SUMS
 )
 
 # Recheck after the long builds so a concurrent publisher cannot claim the
@@ -242,6 +254,7 @@ fi
 
 release_assets=(
   "${release_dir}"/*.deb
+  "${release_dir}"/*.exe
   "${release_dir}"/*.tar.xz
   "${release_dir}"/*.sh
   "${release_dir}/SHA256SUMS"
