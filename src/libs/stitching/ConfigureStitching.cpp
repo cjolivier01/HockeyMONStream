@@ -1769,6 +1769,19 @@ absl::Status create_field_mask(
   if (!expected_output_generation.empty()) {
     HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, *hugin_generation));
   }
+  // Avoid GPU readback and rink inference after this calibration generation
+  // has already been superseded. Publication validates again under the config
+  // transaction lock because a newer invalidation can still arrive while the
+  // expensive inference is running.
+  if (!expected_invalidation_id.empty()) {
+    auto config_transaction = GameConfigTransactionLock::Acquire(root);
+    if (!config_transaction.ok())
+      return config_transaction.status();
+    auto config = load_config_or_empty(root / "config.yaml");
+    if (!config.ok())
+      return config.status();
+    HM_RETURN_IF_ERROR(validate_stitching_generation_owner(*config, expected_invalidation_id));
+  }
   std::string pattern = (root / ".hstream-field-mask-input-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
