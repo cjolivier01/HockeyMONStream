@@ -155,8 +155,12 @@ int main() {
   initial_frame_meta->pipeline_width = 3840;
   initial_frame_meta->pipeline_height = 1080;
   nvds_add_frame_meta_to_batch(initial_batch, initial_frame_meta);
+  NvBufSurfaceParams initial_surface{};
+  initial_surface.width = 3840;
+  initial_surface.height = 1080;
   GstDsPlayTrackerFrame initial_frame;
   initial_frame.frame_meta = initial_frame_meta;
+  initial_frame.input_surf_params = &initial_surface;
   const bool initial_processed = DsPlayTrackerProcessFrame(context, initial_frame, stream);
   const auto initial_tracker = context->play_trackers.find(0);
   const bool initial_frame_preserved = initial_processed && initial_batch->num_frames_in_batch == 1 &&
