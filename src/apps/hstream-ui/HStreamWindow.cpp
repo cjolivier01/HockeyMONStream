@@ -1307,6 +1307,24 @@ bool is_ui_persistent_playtracker_config(const QString& path, const QString& gam
   return owned_name && info.absolutePath() == runtime_dir;
 }
 
+QString resolve_ui_persistent_playtracker_config(
+    const YAML::Node& config,
+    const QString& game_dir,
+    const QString& working_dir) {
+  YAML::Node configured_sidecar;
+  if (!lookup_yaml_path(config, "pipeline.ds-playtracker.config-file", &configured_sidecar) ||
+      !configured_sidecar.IsScalar()) {
+    return {};
+  }
+  const QString configured = QString::fromStdString(configured_sidecar.as<std::string>());
+  for (const QString& candidate : playtracker_config_candidates(configured, game_dir, working_dir)) {
+    if (is_ui_persistent_playtracker_config(candidate, game_dir)) {
+      return QFileInfo(candidate).absoluteFilePath();
+    }
+  }
+  return {};
+}
+
 bool yaml_scalar_bool(YAML::Node node, bool default_value) {
   if (!node || !node.IsScalar()) {
     return default_value;
@@ -2515,7 +2533,6 @@ bool HStreamWindow::saveStitchingCalibrationState(
       config = YAML::Node(YAML::NodeType::Map);
     }
   }
-
   YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
   if (require_matching_pending) {
     const int current_control_points = calibration["control_points"] && calibration["control_points"].IsScalar()
@@ -5601,6 +5618,20 @@ void HStreamWindow::savePreset() {
       return;
     }
   }
+  const QString game_dir = QString::fromStdString(config_path.parent_path().string());
+  const QString previous_active_sidecar =
+      resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
+  auto mark_sidecar_retired = [this](const QString& sidecar) {
+    if (sidecar.isEmpty() || !QFileInfo::exists(sidecar)) {
+      return;
+    }
+    std::error_code retirement_error;
+    fs::last_write_time(fs::path(sidecar.toStdString()), fs::file_time_type::clock::now(), retirement_error);
+    if (retirement_error) {
+      appendLog(QString("could not mark superseded playtracker config %1 for later cleanup: %2")
+                    .arg(sidecar, QString::fromStdString(retirement_error.message())));
+    }
+  };
 
   bool invalidate_rink_masks = false;
   int invalidated_config_artifacts = 0;
@@ -5652,7 +5683,6 @@ void HStreamWindow::savePreset() {
       if (lookup_yaml_path(visible_config, "pipeline.ds-playtracker.config-file", &configured_sidecar) &&
           configured_sidecar.IsScalar()) {
         const QString configured = QString::fromStdString(configured_sidecar.as<std::string>());
-        const QString game_dir = QString::fromStdString(config_path.parent_path().string());
         for (const QString& candidate :
              playtracker_config_candidates(configured, game_dir, pipelineWorkingDirectory())) {
           if (same_file_path(candidate, published_playtracker_sidecar)) {
@@ -5662,12 +5692,30 @@ void HStreamWindow::savePreset() {
         }
       }
     }
+    const bool visible_generation_matches = visible_config_loaded && YAML::Dump(visible_config) == YAML::Dump(config);
     if (!published_sidecar_may_be_referenced) {
       QFile::remove(published_playtracker_sidecar);
+    }
+    if (visible_generation_matches) {
+      // The rename became visible but durability confirmation failed. Track
+      // that visible generation as the baseline while keeping Save enabled
+      // so the user can retry the durability operation.
+      preset_save_retry_required_ = true;
+      captureSavedControlState();
+      const QString visible_active_sidecar =
+          resolve_ui_persistent_playtracker_config(visible_config, game_dir, pipelineWorkingDirectory());
+      if (!same_file_path(previous_active_sidecar, visible_active_sidecar)) {
+        mark_sidecar_retired(previous_active_sidecar);
+      }
     }
     appendLog(QString("failed to write preset %1: %2")
                   .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
     return;
+  }
+  const QString active_sidecar = resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
+  if (!previous_active_sidecar.isEmpty() && !same_file_path(previous_active_sidecar, active_sidecar) &&
+      QFileInfo::exists(previous_active_sidecar)) {
+    mark_sidecar_retired(previous_active_sidecar);
   }
   const fs::path runtime_dir = config_path.parent_path() / ".hstream-ui";
   std::error_code cleanup_error;
@@ -5676,7 +5724,7 @@ void HStreamWindow::savePreset() {
        it.increment(cleanup_error)) {
     const std::string filename = it->path().filename().string();
     if (filename.rfind("play_tracker_config_", 0) != 0 || it->path().extension() != ".yaml" ||
-        same_file_path(QString::fromStdString(it->path().string()), published_playtracker_sidecar)) {
+        same_file_path(QString::fromStdString(it->path().string()), active_sidecar)) {
       continue;
     }
     const fs::file_time_type modified = it->last_write_time(cleanup_error);
@@ -5696,6 +5744,7 @@ void HStreamWindow::savePreset() {
                   .arg(invalidated_config_artifacts + static_cast<int>(invalidated_masks)));
   }
   appendLog(QString("preset saved %1").arg(QString::fromStdString(config_path.string())));
+  preset_save_retry_required_ = false;
   captureSavedControlState();
 }
 
@@ -5744,7 +5793,7 @@ void HStreamWindow::captureSavedControlState() {
 void HStreamWindow::updatePresetDirtyState() {
   if (!save_preset_button_)
     return;
-  bool dirty = saved_camera_controls_.size() != camera_sliders_.size();
+  bool dirty = preset_save_retry_required_ || saved_camera_controls_.size() != camera_sliders_.size();
   if (!dirty) {
     for (const auto& [id, slider] : camera_sliders_) {
       const auto saved = saved_camera_controls_.find(id);
@@ -5759,6 +5808,7 @@ void HStreamWindow::updatePresetDirtyState() {
   if (save_preset_button_->isEnabled() != can_save)
     save_preset_button_->setEnabled(can_save);
   const QString description = !has_game ? "Select or create a game before saving camera-control changes."
+      : preset_save_retry_required_     ? "Retry saving the current preset because its last durability check failed."
       : dirty ? "Save the changed Program and Stitched camera controls into this game's config.yaml for future runs."
               : "No camera-control changes need saving. Adjust a Program or Stitched control to enable Save Preset.";
   if (save_preset_button_->toolTip() != description)
@@ -5766,6 +5816,7 @@ void HStreamWindow::updatePresetDirtyState() {
 }
 
 void HStreamWindow::loadSavedControlConfig() {
+  preset_save_retry_required_ = false;
   if (!game_id_edit_ || game_id_edit_->text().isEmpty()) {
     captureSavedControlState();
     return;

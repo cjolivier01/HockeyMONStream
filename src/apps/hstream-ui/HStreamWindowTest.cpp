@@ -3952,6 +3952,7 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
 
+  fs::last_write_time(committed_sidecar, fs::file_time_type::clock::now() - std::chrono::hours(25));
   qputenv("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_POST_COMMIT", "1");
   activate(save);
   qunsetenv("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_POST_COMMIT");
@@ -3971,10 +3972,18 @@ bool test_camera_controls(HStreamWindow* window) {
           "A prior config reader should retain access to its immutable sidecar after a later save")) {
     return false;
   }
-  activate(create);
+  max_speed_x->setValue(450);
   if (!expect(
-          max_speed_x->value() == 451 && !save->isEnabled(),
-          "Reloading a visible post-commit generation should establish it as the saved preset")) {
+          save->isEnabled(),
+          "Reverting a control after a post-commit error should stay dirty against the visible generation")) {
+    return false;
+  }
+  max_speed_x->setValue(451);
+  if (!expect(save->isEnabled(), "A visible generation with uncertain durability should keep retry enabled")) {
+    return false;
+  }
+  activate(save);
+  if (!expect(!save->isEnabled(), "A successful durability retry should clear the retry-required state")) {
     return false;
   }
   max_speed_x->setValue(450);
@@ -4563,9 +4572,9 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!preserved_manual_gamma || !preserved_manual_left_gamma) {
     std::cerr << cleaned << '\n';
   }
-  return expect(
-             has_cleaned_controls && cleaned_controls.IsMap() && cleaned_controls.size() == 0,
-             "Saving defaults should clear saved camera controls") &&
+  const bool cleaned_defaults = expect(
+                                    has_cleaned_controls && cleaned_controls.IsMap() && cleaned_controls.size() == 0,
+                                    "Saving defaults should clear saved camera controls") &&
       expect(!lookup_yaml_path(cleaned, {"stitching", "post_stitch_rotate_degrees"}, nullptr),
              "Saving defaults should clear UI-generated stitch runtime override") &&
       expect(!lookup_yaml_path(cleaned, {"rink", "camera", "fixed_edge_rotation_angle"}, nullptr),
@@ -4573,6 +4582,33 @@ bool test_camera_controls(HStreamWindow* window) {
       expect(restored_custom_playtracker_config, "Saving defaults should restore custom playtracker config override") &&
       expect(preserved_manual_gamma, "Saving defaults should preserve non-UI-authored runtime config") &&
       expect(preserved_manual_left_gamma, "Saving defaults should preserve same-prefix manual color config");
+  if (!cleaned_defaults) {
+    return false;
+  }
+
+  const fs::path aged_active_sidecar = runtime_dir / "play_tracker_config_aged-active.yaml";
+  fs::copy_file(custom_playtracker_config, aged_active_sidecar, fs::copy_options::overwrite_existing);
+  fs::last_write_time(aged_active_sidecar, fs::file_time_type::clock::now() - std::chrono::hours(25));
+  cleaned["pipeline"]["ds-playtracker"]["config-file"] = aged_active_sidecar.string();
+  cleaned["hstream_ui"]["generated_runtime_keys"] = YAML::Node(YAML::NodeType::Sequence);
+  cleaned["hstream_ui"]["generated_runtime_values"] = YAML::Node(YAML::NodeType::Map);
+  cleaned["hstream_ui"].remove("playtracker_config_base");
+  {
+    std::ofstream out(config);
+    out << cleaned << "\n";
+  }
+  activate(create);
+  rotate->setValue(72);
+  activate(save);
+  const YAML::Node after_aged_active_save = YAML::LoadFile(config.string());
+  YAML::Node active_sidecar_node;
+  const bool retained_aged_active_sidecar =
+      lookup_yaml_path(after_aged_active_save, {"pipeline", "ds-playtracker", "config-file"}, &active_sidecar_node) &&
+      active_sidecar_node.IsScalar() && active_sidecar_node.as<std::string>() == aged_active_sidecar.string() &&
+      fs::exists(aged_active_sidecar);
+  return expect(
+      retained_aged_active_sidecar,
+      "Preset GC should never delete the aged playtracker sidecar referenced by the committed config");
 }
 
 bool test_window_close_stops_pipeline(HStreamWindow* window) {
