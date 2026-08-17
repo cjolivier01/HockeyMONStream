@@ -5605,13 +5605,8 @@ void HStreamWindow::savePreset() {
   bool invalidate_rink_masks = false;
   int invalidated_config_artifacts = 0;
   QString published_playtracker_sidecar;
-  QString superseded_playtracker_sidecar;
   if (!applySavedControlConfig(
-          config,
-          &invalidate_rink_masks,
-          &invalidated_config_artifacts,
-          &published_playtracker_sidecar,
-          &superseded_playtracker_sidecar)) {
+          config, &invalidate_rink_masks, &invalidated_config_artifacts, &published_playtracker_sidecar)) {
     if (!published_playtracker_sidecar.isEmpty()) {
       QFile::remove(published_playtracker_sidecar);
     }
@@ -5619,7 +5614,9 @@ void HStreamWindow::savePreset() {
   }
   absl::Status publish;
   size_t invalidated_masks = 0;
-  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_PUBLISH")) {
+  const bool fail_before_config_publish = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_PUBLISH");
+  const bool fail_after_config_publish = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_POST_COMMIT");
+  if (fail_before_config_publish) {
     publish = absl::InternalError("preset config publication failure requested by test");
   } else if (invalidate_rink_masks) {
     auto transaction =
@@ -5633,18 +5630,66 @@ void HStreamWindow::savePreset() {
   } else {
     publish = publish_yaml_config(config_path, config);
   }
+  if (fail_after_config_publish && publish.ok()) {
+    publish = absl::InternalError("post-commit preset config failure requested by test");
+  }
   if (!publish.ok()) {
-    if (!published_playtracker_sidecar.isEmpty()) {
+    bool published_sidecar_may_be_referenced = published_playtracker_sidecar.isEmpty();
+    YAML::Node visible_config;
+    bool visible_config_loaded = false;
+    try {
+      if (fs::is_regular_file(config_path)) {
+        visible_config = YAML::LoadFile(config_path.string());
+        visible_config_loaded = true;
+      }
+    } catch (const std::exception&) {
+      // The transaction lock is already held. If the just-published config
+      // cannot be inspected directly, conservatively retain its sidecar.
+      published_sidecar_may_be_referenced = true;
+    }
+    if (visible_config_loaded && !published_playtracker_sidecar.isEmpty()) {
+      YAML::Node configured_sidecar;
+      if (lookup_yaml_path(visible_config, "pipeline.ds-playtracker.config-file", &configured_sidecar) &&
+          configured_sidecar.IsScalar()) {
+        const QString configured = QString::fromStdString(configured_sidecar.as<std::string>());
+        const QString game_dir = QString::fromStdString(config_path.parent_path().string());
+        for (const QString& candidate :
+             playtracker_config_candidates(configured, game_dir, pipelineWorkingDirectory())) {
+          if (same_file_path(candidate, published_playtracker_sidecar)) {
+            published_sidecar_may_be_referenced = true;
+            break;
+          }
+        }
+      }
+    }
+    if (!published_sidecar_may_be_referenced) {
       QFile::remove(published_playtracker_sidecar);
     }
     appendLog(QString("failed to write preset %1: %2")
                   .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
     return;
   }
-  if (!superseded_playtracker_sidecar.isEmpty() &&
-      !same_file_path(superseded_playtracker_sidecar, published_playtracker_sidecar) &&
-      QFileInfo::exists(superseded_playtracker_sidecar) && !QFile::remove(superseded_playtracker_sidecar)) {
-    appendLog(QString("could not remove superseded playtracker config %1").arg(superseded_playtracker_sidecar));
+  const fs::path runtime_dir = config_path.parent_path() / ".hstream-ui";
+  std::error_code cleanup_error;
+  const auto stale_before = fs::file_time_type::clock::now() - std::chrono::hours(24);
+  for (fs::directory_iterator it(runtime_dir, cleanup_error), end; !cleanup_error && it != end;
+       it.increment(cleanup_error)) {
+    const std::string filename = it->path().filename().string();
+    if (filename.rfind("play_tracker_config_", 0) != 0 || it->path().extension() != ".yaml" ||
+        same_file_path(QString::fromStdString(it->path().string()), published_playtracker_sidecar)) {
+      continue;
+    }
+    const fs::file_time_type modified = it->last_write_time(cleanup_error);
+    if (cleanup_error || modified > stale_before) {
+      cleanup_error.clear();
+      continue;
+    }
+    fs::remove(it->path(), cleanup_error);
+    if (cleanup_error) {
+      appendLog(QString("could not remove stale playtracker config %1: %2")
+                    .arg(QString::fromStdString(it->path().string()), QString::fromStdString(cleanup_error.message())));
+      cleanup_error.clear();
+    }
   }
   if (invalidate_rink_masks) {
     appendLog(QString("stitch rotation saved; invalidated %1 scoreboard/ice-mask artifact(s)")
@@ -5838,8 +5883,7 @@ bool HStreamWindow::applySavedControlConfig(
     YAML::Node& config,
     bool* invalidate_rink_masks,
     int* invalidated_config_artifacts,
-    QString* published_playtracker_sidecar,
-    QString* superseded_playtracker_sidecar) {
+    QString* published_playtracker_sidecar) {
   if (invalidate_rink_masks) {
     *invalidate_rink_masks = false;
   }
@@ -5848,9 +5892,6 @@ bool HStreamWindow::applySavedControlConfig(
   }
   if (published_playtracker_sidecar) {
     published_playtracker_sidecar->clear();
-  }
-  if (superseded_playtracker_sidecar) {
-    superseded_playtracker_sidecar->clear();
   }
   if (!yaml_defined(config) || config.IsNull()) {
     config = YAML::Node(YAML::NodeType::Map);
@@ -5885,20 +5926,6 @@ bool HStreamWindow::applySavedControlConfig(
         for (const QString& current_candidate : current_candidates) {
           if (same_file_path(current_candidate, previous_path)) {
             generated_value_matches = true;
-            break;
-          }
-        }
-      }
-      if (generated_value_matches && path == "pipeline.ds-playtracker.config-file" && current.IsScalar() &&
-          game_id_edit_) {
-        const QString game_dir = gameDirectory(game_id_edit_->text());
-        const QString configured = QString::fromStdString(current.as<std::string>());
-        for (const QString& candidate :
-             playtracker_config_candidates(configured, game_dir, pipelineWorkingDirectory())) {
-          if (is_ui_persistent_playtracker_config(candidate, game_dir)) {
-            if (superseded_playtracker_sidecar) {
-              *superseded_playtracker_sidecar = QFileInfo(candidate).absoluteFilePath();
-            }
             break;
           }
         }
@@ -6135,6 +6162,10 @@ bool HStreamWindow::applySavedControlConfig(
         const absl::Status runtime_publish = hm::stitching::publish_named_file(
             fs::path(runtime_config_path.toStdString()), YAML::Dump(play_tracker_config) + "\n");
         if (!runtime_publish.ok()) {
+          // The atomic rename can succeed before a later directory fsync
+          // reports failure. This UUID generation is not referenced by the
+          // still-locked game config, so it is safe to remove here.
+          QFile::remove(runtime_config_path);
           appendLog(QString("could not atomically write playtracker runtime config %1: %2")
                         .arg(runtime_config_path, runtime_publish.ToString().c_str()));
           return false;

@@ -273,8 +273,7 @@ class HStreamWindow : public QMainWindow {
       YAML::Node& config,
       bool* invalidate_rink_masks,
       int* invalidated_config_artifacts,
-      QString* published_playtracker_sidecar,
-      QString* superseded_playtracker_sidecar);
+      QString* published_playtracker_sidecar);
   void loadSavedControlConfig();
   bool sendLiveCameraControl(const QString& id, int value);
   bool publishRuntimeControlBatch(

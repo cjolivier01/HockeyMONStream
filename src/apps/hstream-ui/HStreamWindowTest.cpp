@@ -3951,10 +3951,41 @@ bool test_camera_controls(HStreamWindow* window) {
           "A failed config commit should remove its unpublished playtracker sidecar generation")) {
     return false;
   }
-  max_speed_x->setValue(450);
-  if (!expect(!save->isEnabled(), "Reverting after a failed config commit should restore the saved snapshot")) {
+
+  qputenv("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_POST_COMMIT", "1");
+  activate(save);
+  qunsetenv("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_POST_COMMIT");
+  const YAML::Node visible_after_post_commit_error = YAML::LoadFile(config.string());
+  YAML::Node visible_sidecar_node;
+  const bool has_visible_sidecar = lookup_yaml_path(
+      visible_after_post_commit_error, {"pipeline", "ds-playtracker", "config-file"}, &visible_sidecar_node);
+  const fs::path visible_sidecar = has_visible_sidecar && visible_sidecar_node.IsScalar()
+      ? fs::path(visible_sidecar_node.as<std::string>())
+      : fs::path();
+  if (!expect(save->isEnabled(), "A post-commit durability error should keep Save Preset enabled") ||
+      !expect(
+          !visible_sidecar.empty() && visible_sidecar != committed_sidecar && fs::exists(visible_sidecar),
+          "A visible post-commit config generation should retain its referenced sidecar") ||
+      !expect(
+          fs::exists(committed_sidecar),
+          "A prior config reader should retain access to its immutable sidecar after a later save")) {
     return false;
   }
+  activate(create);
+  if (!expect(
+          max_speed_x->value() == 451 && !save->isEnabled(),
+          "Reloading a visible post-commit generation should establish it as the saved preset")) {
+    return false;
+  }
+  max_speed_x->setValue(450);
+  activate(save);
+  if (!expect(!save->isEnabled(), "A successful retry should restore the intended saved snapshot") ||
+      !expect(
+          fs::exists(committed_sidecar),
+          "Recent superseded sidecars should remain available to delayed pipeline readers")) {
+    return false;
+  }
+  fs::last_write_time(committed_sidecar, fs::file_time_type::clock::now() - std::chrono::hours(25));
 
   stop_delay->setValue(15);
   if (!expect(save->isEnabled(), "A new change after saving should re-enable Save Preset")) {
@@ -4075,7 +4106,10 @@ bool test_camera_controls(HStreamWindow* window) {
         lookup_yaml_path(after_same_rotation_save, {"rink", "ice_contours_combined_bbox"}, nullptr);
     if (!expect(kept_rink_mask, "Saving unchanged stitch rotation should preserve rink mask image") ||
         !expect(kept_scoreboard_polygon, "Saving unchanged stitch rotation should preserve scoreboard perspective") ||
-        !expect(kept_ice_mask_keys, "Saving unchanged stitch rotation should preserve cached ice-mask metadata")) {
+        !expect(kept_ice_mask_keys, "Saving unchanged stitch rotation should preserve cached ice-mask metadata") ||
+        !expect(
+            !fs::exists(committed_sidecar),
+            "A later successful save should garbage-collect superseded sidecars after the reader grace period")) {
       std::cerr << after_same_rotation_save << '\n';
       return false;
     }
