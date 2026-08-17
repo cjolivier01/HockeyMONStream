@@ -1623,7 +1623,12 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
       !expect(
           progress->isVisible() && progress->minimum() == 0 && progress->maximum() == 0,
           "Active calibration should show indeterminate progress") ||
-      !expect(cancel->isVisible() && !ok->isVisible(), "Active calibration should offer Stop instead of OK")) {
+      !expect(cancel->isVisible() && !ok->isVisible(), "Active calibration should offer Stop instead of OK") ||
+      !expect(
+          cancel->toolTip().contains("Stop the active stitching calibration") &&
+              ok->toolTip().contains("Close this calibration result") && cancel->statusTip() == cancel->toolTip() &&
+              ok->statusTip() == ok->toolTip(),
+          "Calibration dialog actions should explain their behavior on hover")) {
     activate(stop);
     return false;
   }
@@ -1987,8 +1992,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(
           program_focus->parentWidget() == program_host && program_focus->size() == QSize(24, 24) &&
               program_focus->x() == program_host->width() - program_focus->width() - 6 && program_focus->y() == 6 &&
-              program_focus->toolTip() == "Focus video" && program_focus->accessibleName() == "Focus video" &&
-              program_focus->isHidden() && !program_focus->isEnabled(),
+              program_focus->toolTip().contains("Expand the Program preview") &&
+              program_focus->accessibleName() == "Focus video" && program_focus->isHidden() &&
+              !program_focus->isEnabled(),
           "The compact focus control must stay hidden until its preview has presented a GPU frame") ||
       !expect_x11_widget_state(
           program_focus,
@@ -2373,7 +2379,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           !top_bar->isVisible() && !setup_row->isVisible() && !log_panel->isVisible() &&
               !preview_tabs->tabBar()->isVisible() && !program_controls->isVisible() && program_host->isVisible() &&
               playback_progress->isVisible() && !window->isFullScreen() &&
-              program_focus->toolTip() == "Restore HStream controls" &&
+              program_focus->toolTip().contains("Restore the normal HStream layout") &&
               program_focus->accessibleName() == "Restore HStream controls",
           "A real double-click on a ready GPU preview should focus it across the HStream app area")) {
     return false;
@@ -3616,8 +3622,9 @@ bool test_output_controls(HStreamWindow* window) {
           finalize_headline && finalize_headline->text() == "Video finalization failed" &&
           finalize_headline->property("finalizationState").toString() == "failed" && finalize_detail &&
           finalize_detail->text().contains(failed_recovery) && finalize_ok && finalize_ok->isVisible() &&
-          !QFileInfo::exists(failed_source) && QFileInfo(failed_recovery).size() > 0 &&
-          finalized_after_failure == finalized_before_failure,
+          finalize_ok->toolTip().contains("Close the finalization result") &&
+          finalize_ok->statusTip() == finalize_ok->toolTip() && !QFileInfo::exists(failed_source) &&
+          QFileInfo(failed_recovery).size() > 0 && finalized_after_failure == finalized_before_failure,
       "A failed remux must show a red dismissible error, preserve a uniquely named recovery MKV, and publish no MP4");
   if (finalize_ok)
     activate(finalize_ok);
@@ -3693,6 +3700,49 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
 
+  const QStringList documented_controls = {
+      "runModeCombo",
+      "controlPointsSpin",
+      "renderVideoCheck",
+      "startPipelineButton",
+      "pausePipelineButton",
+      "restartStageButton",
+      "savePresetButton",
+      "resetCameraButton",
+      "stopPipelineButton",
+      "createGameButton",
+      "refreshGamesButton",
+      "browseVideoButton",
+      "addVideoButton",
+      "removeVideoButton",
+      "videoRole_auto",
+      "videoRole_left",
+      "videoRole_center",
+      "videoRole_right",
+      "outputToggle_youtube-primary",
+      "outputToggle_rtsp-local",
+      "outputToggle_archive-file",
+      "outputToggle_spare-rtmp",
+      "redirectYoutubeButton",
+      "addRtspButton",
+      "clearLogButton",
+      "programFocusButton",
+      "stitchedFocusButton",
+      "programControlsToggle",
+      "stitchedControlsToggle",
+      "cameraSlider_Stitch_Rotate_Degrees",
+      "cameraSlider_Stop_Direction_Change_Delay_Frames",
+      "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10",
+  };
+  for (const QString& object_name : documented_controls) {
+    QWidget* control = window->findChild<QWidget*>(object_name);
+    if (!expect(
+            control && control->toolTip().trimmed().size() >= 20 && control->statusTip() == control->toolTip(),
+            QString("Interactive control should provide detailed hover help: %1").arg(object_name).toStdString())) {
+      return false;
+    }
+  }
+
   game_id->setText("ui-camera-control-game");
   activate(create);
   const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
@@ -3705,7 +3755,26 @@ bool test_camera_controls(HStreamWindow* window) {
   activate(create);
   if (!expect(
           fixed_edge_link->value() == 1 && fixed_edge_left->value() == 220 && fixed_edge_right->value() == 220,
-          "Camera controls should load the scalar rink.camera.fixed_edge_rotation_angle value")) {
+          "Camera controls should load the scalar rink.camera.fixed_edge_rotation_angle value") ||
+      !expect(!save->isEnabled(), "Save Preset should be disabled after loading the saved control snapshot")) {
+    return false;
+  }
+
+  const QString loaded_game_id = game_id->text();
+  stop_delay->setValue(1);
+  if (!expect(save->isEnabled(), "Changing a loaded preset should enable Save Preset")) {
+    return false;
+  }
+  game_id->clear();
+  if (!expect(!save->isEnabled(), "Save Preset should disable when there is no game to receive the changes")) {
+    return false;
+  }
+  game_id->setText(loaded_game_id);
+  if (!expect(save->isEnabled(), "Restoring the destination game should expose the still-unsaved change")) {
+    return false;
+  }
+  stop_delay->setValue(0);
+  if (!expect(!save->isEnabled(), "Reverting a control to its loaded value should disable Save Preset")) {
     return false;
   }
 
@@ -3726,7 +3795,8 @@ bool test_camera_controls(HStreamWindow* window) {
       !expect(
           window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 14,
           "Tracker braking slider should update controller state") ||
-      !expect(window->cameraControlValue("Max_Speed_X_x10") == 450, "Speed slider should update controller state")) {
+      !expect(window->cameraControlValue("Max_Speed_X_x10") == 450, "Speed slider should update controller state") ||
+      !expect(save->isEnabled(), "Changing a preset-backed control should enable Save Preset")) {
     return false;
   }
 
@@ -3767,6 +3837,17 @@ bool test_camera_controls(HStreamWindow* window) {
   }
 
   activate(save);
+  if (!expect(!save->isEnabled(), "A successful preset save should disable Save Preset until another change")) {
+    return false;
+  }
+  stop_delay->setValue(15);
+  if (!expect(save->isEnabled(), "A new change after saving should re-enable Save Preset")) {
+    return false;
+  }
+  stop_delay->setValue(14);
+  if (!expect(!save->isEnabled(), "Reverting to the saved value should clear the preset dirty state")) {
+    return false;
+  }
   YAML::Node saved = YAML::LoadFile(config.string());
   const bool removed_rink_mask = !fs::exists(rink_mask);
   const bool removed_scoreboard_polygon =
@@ -3863,6 +3944,10 @@ bool test_camera_controls(HStreamWindow* window) {
       std::ofstream out(rink_mask);
       out << "fresh-mask";
     }
+    max_accel_x->setValue(10);
+    if (!expect(save->isEnabled(), "A non-rotation control change should make the externally updated preset savable")) {
+      return false;
+    }
     activate(save);
     YAML::Node after_same_rotation_save = YAML::LoadFile(config.string());
     const bool kept_rink_mask = fs::exists(rink_mask);
@@ -3878,7 +3963,12 @@ bool test_camera_controls(HStreamWindow* window) {
       std::cerr << after_same_rotation_save << '\n';
       return false;
     }
-    saved = after_same_rotation_save;
+    max_accel_x->setValue(0);
+    activate(save);
+    saved = YAML::LoadFile(config.string());
+    if (!expect(!save->isEnabled(), "Restoring and saving a control should leave the preset clean")) {
+      return false;
+    }
   }
 
   YAML::Node stitching;

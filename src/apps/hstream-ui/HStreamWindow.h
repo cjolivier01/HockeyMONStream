@@ -126,6 +126,7 @@ class HStreamWindow : public QMainWindow {
   void buildOutputControls(QVBoxLayout* parent);
   void buildCameraControls(QVBoxLayout* parent, bool program_stage);
   void buildLog(QVBoxLayout* root);
+  void configureControlHelp();
 
   void startPipeline();
   void pauseOrResumePipeline();
@@ -185,6 +186,8 @@ class HStreamWindow : public QMainWindow {
   void restartStage();
   void savePreset();
   void resetCameraControls();
+  void captureSavedControlState();
+  void updatePresetDirtyState();
   void refreshGames();
   void selectGame(const QString& game_id);
   void createOrLoadGame();
@@ -328,6 +331,7 @@ class HStreamWindow : public QMainWindow {
   QProcess* pipeline_process_{nullptr};
   QPushButton* start_button_{nullptr};
   QPushButton* pause_button_{nullptr};
+  QPushButton* save_preset_button_{nullptr};
   QPushButton* stop_button_{nullptr};
   QCheckBox* render_video_toggle_{nullptr};
   bool pipeline_paused_{false};
@@ -423,6 +427,7 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QSlider*> camera_sliders_;
   std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, int> camera_defaults_;
+  std::map<QString, int> saved_camera_controls_;
   std::vector<PendingRuntimeControl> pending_runtime_controls_;
   std::map<quint64, RuntimeControlBatch> runtime_control_batches_;
   std::map<QString, int> scheduled_rotation_controls_;

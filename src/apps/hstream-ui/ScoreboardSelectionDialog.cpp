@@ -46,6 +46,15 @@ constexpr int kMaximumPreviewDimension = 8192;
 constexpr png_uint_32 kMaximumSourceDimension = 65535;
 constexpr uint64_t kMaximumSourcePixels = 256ULL * 1024ULL * 1024ULL;
 
+void set_control_help(QWidget* control, const QString& description) {
+  if (!control)
+    return;
+  control->setToolTip(description);
+  control->setStatusTip(description);
+  control->setWhatsThis(description);
+  control->setAccessibleDescription(description);
+}
+
 QSize bounded_preview_size(const QSize& source_size) {
   if (!source_size.isValid() || source_size.isEmpty())
     return {};
@@ -719,21 +728,28 @@ void ScoreboardSelectionDialog::buildUi() {
     zoom_row->addWidget(button, row, column);
     return button;
   };
-  add_button("Zoom Out", "scoreboardZoomOutButton", 0, 0, [this]() { canvas_->zoomBy(0.8); });
-  add_button("Zoom In", "scoreboardZoomInButton", 0, 1, [this]() { canvas_->zoomBy(1.25); });
-  add_button("Fit Image", "scoreboardFitButton", 1, 0, [this]() { canvas_->fitImage(); });
-  add_button("100% Zoom", "scoreboardActualSizeButton", 1, 1, [this]() { canvas_->actualSize(); });
+  auto* zoom_out = add_button("Zoom Out", "scoreboardZoomOutButton", 0, 0, [this]() { canvas_->zoomBy(0.8); });
+  set_control_help(zoom_out, "Zoom out around the center of the scoreboard image to show more of the rink.");
+  auto* zoom_in = add_button("Zoom In", "scoreboardZoomInButton", 0, 1, [this]() { canvas_->zoomBy(1.25); });
+  set_control_help(zoom_in, "Zoom in around the center of the scoreboard image for more precise corner placement.");
+  auto* fit = add_button("Fit Image", "scoreboardFitButton", 1, 0, [this]() { canvas_->fitImage(); });
+  set_control_help(fit, "Fit the entire stitched image inside the selection canvas.");
+  auto* actual_size = add_button("100% Zoom", "scoreboardActualSizeButton", 1, 1, [this]() { canvas_->actualSize(); });
+  set_control_help(actual_size, "Show the selection image at one display pixel per preview-image pixel.");
   focus_button_ = add_button("Focus Points", "scoreboardFocusButton", 2, 0, [this]() { canvas_->focusPoints(); });
+  set_control_help(focus_button_, "Zoom and pan to frame the currently selected scoreboard corner points.");
   undo_button_ = add_button("Undo Last Point", "scoreboardUndoButton", 2, 1, [this]() {
     canvas_->undoLastPoint();
     status_title_->setText("Last point removed");
     status_message_->setText("Click to place it again or drag another point into place.");
   });
+  set_control_help(undo_button_, "Remove the most recently placed scoreboard corner without clearing other points.");
   clear_button_ = add_button("Clear Points", "scoreboardClearButton", 3, 0, [this]() {
     canvas_->clearPoints();
     status_title_->setText("Points cleared");
     status_message_->setText("Click four scoreboard corners to start again.");
   });
+  set_control_help(clear_button_, "Remove all selected scoreboard corners and begin the selection again.");
   no_scoreboard_button_ = add_button("No Scoreboard", "scoreboardNoScoreboardButton", 3, 1, [this]() {
     QMessageBox confirmation(
         QMessageBox::Question,
@@ -747,6 +763,9 @@ void ScoreboardSelectionDialog::buildUi() {
       submit(Submission::kNoScoreboard);
     }
   });
+  set_control_help(
+      no_scoreboard_button_,
+      "Confirm that this game has no visible scoreboard and disable the scoreboard overlay for its pipeline.");
   panel_layout->addLayout(zoom_row);
 
   auto* points_title = new QLabel("Selected image coordinates", panel);
@@ -773,9 +792,13 @@ void ScoreboardSelectionDialog::buildUi() {
   action_row->addStretch();
   cancel_button_ = new QPushButton("Cancel", this);
   cancel_button_->setObjectName("scoreboardCancelButton");
+  set_control_help(cancel_button_, "Cancel scoreboard selection and stop waiting for a selection in the pipeline.");
   connect(cancel_button_, &QPushButton::clicked, this, [this]() { requestCancel(); });
   save_button_ = new QPushButton("Save Selection", this);
   save_button_->setObjectName("scoreboardSaveButton");
+  set_control_help(
+      save_button_,
+      "Save the four selected scoreboard corners for this game and allow the waiting pipeline to continue.");
   connect(save_button_, &QPushButton::clicked, this, [this]() { submit(Submission::kSave); });
   action_row->addWidget(cancel_button_);
   action_row->addWidget(save_button_);
