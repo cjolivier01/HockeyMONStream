@@ -16,7 +16,20 @@ TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALL_PREFIX="/opt/hstream"
 PKG_NAME="hstream"
 PKG_ARCH="${PKG_ARCH:-}"
-DEEPSTREAM_REQUIRED_VERSION="9.1.0-1+resolute2"
+TARGET_PLATFORM="${HSTREAM_TARGET_PLATFORM:-desktop}"
+case "${TARGET_PLATFORM}" in
+  desktop)
+    DEEPSTREAM_PACKAGE="${DEEPSTREAM_PACKAGE:-deepstream-9.1}"
+    DEEPSTREAM_REQUIRED_VERSION="${DEEPSTREAM_REQUIRED_VERSION:-9.1.0-1+resolute2}"
+    EXPECTED_CUDA_SONAME="${EXPECTED_CUDA_SONAME:-13}"
+    ;;
+  jetson)
+    DEEPSTREAM_PACKAGE="${DEEPSTREAM_PACKAGE:-deepstream-7.1}"
+    DEEPSTREAM_REQUIRED_VERSION="${DEEPSTREAM_REQUIRED_VERSION:-7.1.0-1}"
+    EXPECTED_CUDA_SONAME="${EXPECTED_CUDA_SONAME:-12}"
+    ;;
+  *) echo "ERROR: HSTREAM_TARGET_PLATFORM must be desktop or jetson." >&2; exit 1 ;;
+esac
 
 # ---------- arg parsing ----------
 PKG_VERSION=""
@@ -56,10 +69,14 @@ if [[ -z "${TARGET_UBUNTU}" && -r /etc/os-release ]]; then
     TARGET_UBUNTU="${VERSION_ID:-}"
   fi
 fi
-case "${TARGET_UBUNTU}" in
-  24.04|26.04) ;;
-  *)
-    echo "ERROR: HSTREAM_TARGET_UBUNTU must identify Ubuntu 24.04 or 26.04." >&2
+case "${TARGET_PLATFORM}:${TARGET_UBUNTU}" in
+  desktop:24.04|desktop:26.04|jetson:22.04) ;;
+  desktop:*)
+    echo "ERROR: desktop packages require Ubuntu 24.04 or 26.04." >&2
+    exit 1
+    ;;
+  jetson:*)
+    echo "ERROR: Jetson packages require the JetPack 6 Ubuntu 22.04 baseline." >&2
     exit 1
     ;;
 esac
@@ -88,12 +105,28 @@ if [[ "${PKG_ARCH}" == "all" || "${PKG_ARCH}" == "any" || "${PKG_ARCH}" == "sour
   echo "ERROR: unsupported binary package architecture: ${PKG_ARCH}" >&2
   exit 1
 fi
-if [[ "${PKG_ARCH}" != "amd64" ]]; then
-  echo "ERROR: HStream Debian packaging currently supports amd64 only; ${PKG_ARCH} runtime paths are not implemented." >&2
-  exit 1
-fi
+case "${TARGET_PLATFORM}:${PKG_ARCH}" in
+  desktop:amd64)
+    DEB_MULTIARCH=x86_64-linux-gnu
+    CUDA_TARGET_TRIPLE=x86_64-linux
+    ;;
+  jetson:arm64)
+    DEB_MULTIARCH=aarch64-linux-gnu
+    CUDA_TARGET_TRIPLE=aarch64-linux
+    ;;
+  *)
+    echo "ERROR: unsupported HStream package platform/architecture: ${TARGET_PLATFORM}/${PKG_ARCH}" >&2
+    exit 1
+    ;;
+esac
 if ! dpkg --validate-version "${PKG_VERSION}" >/dev/null 2>&1; then
   echo "ERROR: invalid Debian package version: ${PKG_VERSION}" >&2
+  exit 1
+fi
+installed_deepstream_version="$(dpkg-query -W -f='${Version}' "${DEEPSTREAM_PACKAGE}" 2>/dev/null || true)"
+if [[ "${installed_deepstream_version}" != "${DEEPSTREAM_REQUIRED_VERSION}" ]]; then
+  echo "ERROR: ${DEEPSTREAM_PACKAGE} ${DEEPSTREAM_REQUIRED_VERSION} is required to build this package." >&2
+  echo "Installed version: ${installed_deepstream_version:-not installed}" >&2
   exit 1
 fi
 
@@ -101,6 +134,7 @@ fi
 HSTREAM_CLI="${TOPDIR}/bazel-bin/src/apps/pipeline-app/hstream-cli"
 HSTREAM_ASSETS="${TOPDIR}/bazel-bin/src/apps/hstream-assets/hstream-assets"
 HSTREAM_UI="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-ui"
+HSTREAM_HUGIN_TOOLS_DIR="${HSTREAM_HUGIN_TOOLS_DIR:-}"
 HSTREAM_GST_PLUGINS=(
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so"
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-playtracker/libgstplaytracker.so"
@@ -114,9 +148,23 @@ if [[ ! -f "${HSTREAM_ASSETS}" ]]; then
   echo "ERROR: ${HSTREAM_ASSETS} not found. Run 'make hstream-assets' first, or pass --build." >&2
   exit 1
 fi
-if [[ ! -f "${HSTREAM_UI}" ]]; then
+if [[ "${TARGET_PLATFORM}" == "desktop" && ! -f "${HSTREAM_UI}" ]]; then
   echo "ERROR: ${HSTREAM_UI} not found. Run 'make hstream-ui' first, or pass --build." >&2
   exit 1
+fi
+if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
+  for required_hugin_file in \
+    bin/autooptimiser \
+    bin/nona \
+    lib/libhuginbase.so.0.0 \
+    lib/libvigraimpex.so.11.1.11.1 \
+    licenses/hugin/COPYING.txt \
+    licenses/vigra/LICENSE.txt; do
+    if [[ -z "${HSTREAM_HUGIN_TOOLS_DIR}" || ! -f "${HSTREAM_HUGIN_TOOLS_DIR}/${required_hugin_file}" ]]; then
+      echo "ERROR: pinned Jetson Hugin artifact is missing: ${required_hugin_file}" >&2
+      exit 1
+    fi
+  done
 fi
 for plugin in "${HSTREAM_GST_PLUGINS[@]}"; do
   if [[ ! -f "${plugin}" ]]; then
@@ -149,7 +197,9 @@ validate_elf_arch() {
 }
 validate_elf_arch "${HSTREAM_CLI}"
 validate_elf_arch "${HSTREAM_ASSETS}"
-validate_elf_arch "${HSTREAM_UI}"
+if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
+  validate_elf_arch "${HSTREAM_UI}"
+fi
 
 # ---------- ensure tools ----------
 if ! command -v patchelf &>/dev/null; then
@@ -178,7 +228,9 @@ mkdir -p \
   "${STAGING}${INSTALL_PREFIX}/bin" \
   "${STAGING}${INSTALL_PREFIX}/lib/gst-plugins" \
   "${STAGING}${INSTALL_PREFIX}/configs" \
+  "${STAGING}${INSTALL_PREFIX}/share/licenses/hugin" \
   "${STAGING}${INSTALL_PREFIX}/share/licenses/onnxruntime" \
+  "${STAGING}${INSTALL_PREFIX}/share/licenses/vigra" \
   "${STAGING}${INSTALL_PREFIX}/scripts" \
   "${STAGING}/usr/share/applications" \
   "${STAGING}/usr/share/doc/${PKG_NAME}" \
@@ -188,7 +240,7 @@ mkdir -p \
 declare -a package_elfs=()
 
 # ---------- helpers ----------
-INSTALL_RPATH="${INSTALL_PREFIX}/lib:/opt/nvidia/deepstream/deepstream/lib:/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib"
+INSTALL_RPATH="${INSTALL_PREFIX}/lib:/opt/nvidia/deepstream/deepstream/lib:/usr/local/cuda/lib64:/usr/local/cuda/targets/${CUDA_TARGET_TRIPLE}/lib"
 
 patchelf_rpath() {
   local elf="$1"
@@ -211,12 +263,6 @@ collect_bundled_libs() {
     | grep -v '^not$' \
     | while read -r lib; do
         case "${lib}" in
-          /lib/x86_64-linux-gnu/*) ;;
-          /lib/aarch64-linux-gnu/*) ;;
-          /usr/lib/x86_64-linux-gnu/*) ;;
-          /usr/lib/aarch64-linux-gnu/*) ;;
-          /usr/lib/*)  ;;
-          /lib/*)      ;;
           /opt/nvidia/*) ;;
           /usr/local/cuda/*) ;;
           *) echo "${lib}" ;;
@@ -225,17 +271,31 @@ collect_bundled_libs() {
 }
 
 # Returns true if $1 (a real/resolved path) is a system lib we should NOT bundle.
+declare -A system_lib_ownership_cache=()
 is_system_lib() {
   local real="$1"
   case "${real}" in
-    /lib/x86_64-linux-gnu/*) return 0 ;;
-    /lib/aarch64-linux-gnu/*) return 0 ;;
-    /usr/lib/x86_64-linux-gnu/*) return 0 ;;
-    /usr/lib/aarch64-linux-gnu/*) return 0 ;;
-    /usr/lib/*) return 0 ;;
-    /lib/*) return 0 ;;
     /opt/nvidia/*) return 0 ;;
     /usr/local/cuda*) return 0 ;;
+    /usr/lib/*|/lib/*)
+      # JetPack images can contain locally installed native libraries (for
+      # example OpenCV under /lib) that no Debian package owns. Bundle those
+      # libraries so the resulting .deb is self-contained. Distro-owned files
+      # remain external dependencies resolved by dpkg-shlibdeps.
+      if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
+        if [[ -n "${system_lib_ownership_cache[${real}]+set}" ]]; then
+          [[ "${system_lib_ownership_cache[${real}]}" == system ]]
+          return
+        fi
+        if dpkg-query -S "${real}" >/dev/null 2>&1; then
+          system_lib_ownership_cache["${real}"]=system
+          return 0
+        fi
+        system_lib_ownership_cache["${real}"]=bundle
+        return 1
+      fi
+      return 0
+      ;;
   esac
   return 1
 }
@@ -277,17 +337,46 @@ package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-cli")
 cp "${HSTREAM_ASSETS}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-assets"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-assets"
 package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-assets")
-cp "${HSTREAM_UI}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
-patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
-package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-ui")
+if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
+  cp "${HSTREAM_UI}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
+  patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
+  package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-ui")
+fi
 ln -s hstream-cli "${STAGING}${INSTALL_PREFIX}/bin/pipeline-app"
 
-# ---------- bundled shared libs (OpenCV etc.) ----------
+# Ubuntu 22.04 arm64 publishes no hugin-tools package. Jetson releases include
+# pinned source-built copies of the two required commands and their private
+# Hugin/VIGRA libraries, with upstream licenses, so clean-state calibration is
+# available without an unsatisfiable package dependency.
+if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
+  for hugin_tool in autooptimiser nona; do
+    hugin_source="${HSTREAM_HUGIN_TOOLS_DIR}/bin/${hugin_tool}"
+    hugin_destination="${STAGING}${INSTALL_PREFIX}/bin/${hugin_tool}"
+    validate_elf_arch "${hugin_source}"
+    install -m 0755 "${hugin_source}" "${hugin_destination}"
+    patchelf_rpath "${hugin_destination}"
+    package_elfs+=("${hugin_destination}")
+  done
+  install_lib "${HSTREAM_HUGIN_TOOLS_DIR}/lib/libhuginbase.so.0.0" "${STAGING}${INSTALL_PREFIX}/lib"
+  install_lib "${HSTREAM_HUGIN_TOOLS_DIR}/lib/libvigraimpex.so.11.1.11.1" "${STAGING}${INSTALL_PREFIX}/lib"
+  install -m 0644 "${HSTREAM_HUGIN_TOOLS_DIR}/licenses/hugin/COPYING.txt" \
+    "${STAGING}${INSTALL_PREFIX}/share/licenses/hugin/COPYING.txt"
+  install -m 0644 "${HSTREAM_HUGIN_TOOLS_DIR}/licenses/vigra/LICENSE.txt" \
+    "${STAGING}${INSTALL_PREFIX}/share/licenses/vigra/LICENSE.txt"
+  LD_LIBRARY_PATH="${STAGING}${INSTALL_PREFIX}/lib" "${STAGING}${INSTALL_PREFIX}/bin/autooptimiser" \
+    --help >/dev/null
+  LD_LIBRARY_PATH="${STAGING}${INSTALL_PREFIX}/lib" "${STAGING}${INSTALL_PREFIX}/bin/nona" --help >/dev/null
+fi
+
+# ---------- bundled private shared libs ----------
 echo "[make_deb] Collecting bundled shared libs..."
 declare -A seen_libs
 
 # Collect from the binaries and the exact HStream-owned plugin set.
-all_elfs=("${HSTREAM_CLI}" "${HSTREAM_ASSETS}" "${HSTREAM_UI}" "${HSTREAM_GST_PLUGINS[@]}")
+all_elfs=("${HSTREAM_CLI}" "${HSTREAM_ASSETS}" "${HSTREAM_GST_PLUGINS[@]}")
+if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
+  all_elfs+=("${HSTREAM_UI}")
+fi
 
 for elf in "${all_elfs[@]}"; do
   while IFS= read -r lib_path; do
@@ -304,7 +393,10 @@ done
 # ONNX Runtime is pinned by WORKSPACE and is not assumed to exist as a distro
 # package. collect_bundled_libs stages its shared library; preserve the
 # upstream notices alongside it.
-BAZEL_OUTPUT_BASE="$(${TOPDIR}/bazelisk info output_base 2>/dev/null || bazelisk info output_base)"
+BAZEL_OUTPUT_BASE="${HSTREAM_BAZEL_OUTPUT_BASE:-}"
+if [[ -z "${BAZEL_OUTPUT_BASE}" ]]; then
+  BAZEL_OUTPUT_BASE="$("${TOPDIR}/bazelisk" info output_base 2>/dev/null || bazelisk info output_base)"
+fi
 case "${PKG_ARCH}" in
   amd64) ORT_REPOSITORY=onnxruntime_linux_x86_64 ;;
   arm64) ORT_REPOSITORY=onnxruntime_linux_aarch64 ;;
@@ -411,7 +503,8 @@ while IFS= read -r asset; do
   source_hash_after="${source_hash_after%% *}"
   staged_hash="$(sha256sum "${dest}")"
   staged_hash="${staged_hash%% *}"
-  if [[ "${source_hash_before}" != "${source_hash_after}" || "${source_hash_before}" != "${staged_hash}" ]]; then
+  if [[ "${source_hash_before}" != "${source_hash_after}" ]] ||
+     [[ "${source_hash_before}" != "${staged_hash}" ]]; then
     echo "ERROR: pretrained asset changed while it was staged: ${asset}" >&2
     exit 1
   fi
@@ -470,8 +563,9 @@ export GST_REGISTRY="${GST_REGISTRY_DIR}/registry.hstream.$(uname -m).bin"
 
 prepend_path GST_PLUGIN_PATH "${INSTALL_DIR}/lib/gst-plugins"
 prepend_path GST_PLUGIN_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
+prepend_path PATH "${INSTALL_DIR}/bin"
 
-# Bundled libs (OpenCV etc.) are embedded in /opt/hstream/lib; the binary's
+# Bundled private libs are embedded in /opt/hstream/lib; the binary's
 # RPATH already includes this dir, but gst-plugins are dlopen'd at runtime so
 # LD_LIBRARY_PATH is still needed for them.
 prepend_path LD_LIBRARY_PATH "${INSTALL_DIR}/lib"
@@ -480,6 +574,8 @@ prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib"
 prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/nvshmem/13"
 prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/libcusparseLt/13"
+prepend_path LD_LIBRARY_PATH "/usr/lib/aarch64-linux-gnu/tegra"
+prepend_path LD_LIBRARY_PATH "/usr/local/cuda/targets/aarch64-linux/lib"
 one_pass_only=1
 have_sink_arg=0
 show_arg=0
@@ -809,7 +905,8 @@ RUNSH
 chmod 755 "${STAGING}${INSTALL_PREFIX}/run.sh"
 
 # ---------- installed UI wrapper ----------
-cat > "${STAGING}${INSTALL_PREFIX}/hstream-ui.sh" <<'UISH'
+if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
+  cat > "${STAGING}${INSTALL_PREFIX}/hstream-ui.sh" <<'UISH'
 #!/bin/bash
 set -euo pipefail
 
@@ -831,15 +928,19 @@ prepend_path() {
 
 prepend_path GST_PLUGIN_PATH "${INSTALL_DIR}/lib/gst-plugins"
 prepend_path GST_PLUGIN_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
+prepend_path PATH "${INSTALL_DIR}/bin"
 prepend_path LD_LIBRARY_PATH "${INSTALL_DIR}/lib"
 prepend_path LD_LIBRARY_PATH "${INSTALL_DIR}/lib/gst-plugins"
 prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib"
 prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/nvshmem/13"
 prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/libcusparseLt/13"
+prepend_path LD_LIBRARY_PATH "/usr/lib/aarch64-linux-gnu/tegra"
+prepend_path LD_LIBRARY_PATH "/usr/local/cuda/targets/aarch64-linux/lib"
 exec "${INSTALL_DIR}/bin/hstream-ui" "$@"
 UISH
-chmod 755 "${STAGING}${INSTALL_PREFIX}/hstream-ui.sh"
+  chmod 755 "${STAGING}${INSTALL_PREFIX}/hstream-ui.sh"
+fi
 
 # A short-lived older package left its runtime calibration tree unowned after
 # upgrades. Current releases are fully native, so remove only that exact legacy
@@ -857,15 +958,17 @@ chmod 0755 "${STAGING}/DEBIAN/postinst"
 # ---------- package-owned command wrappers ----------
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hstream-cli"
 ln -s "${INSTALL_PREFIX}/bin/hstream-assets" "${STAGING}/usr/bin/hstream-assets"
-ln -s "${INSTALL_PREFIX}/hstream-ui.sh" "${STAGING}/usr/bin/hstream-ui"
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hstream"
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/pipeline-app"
-install -m 0644 \
-  "${TOPDIR}/src/apps/hstream-ui/hstream-ui.desktop" \
-  "${STAGING}/usr/share/applications/hstream-ui.desktop"
-install -m 0644 \
-  "${TOPDIR}/src/apps/hstream-ui/hstream-ui.svg" \
-  "${STAGING}/usr/share/icons/hicolor/scalable/apps/hstream-ui.svg"
+if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
+  ln -s "${INSTALL_PREFIX}/hstream-ui.sh" "${STAGING}/usr/bin/hstream-ui"
+  install -m 0644 \
+    "${TOPDIR}/src/apps/hstream-ui/hstream-ui.desktop" \
+    "${STAGING}/usr/share/applications/hstream-ui.desktop"
+  install -m 0644 \
+    "${TOPDIR}/src/apps/hstream-ui/hstream-ui.svg" \
+    "${STAGING}/usr/share/icons/hicolor/scalable/apps/hstream-ui.svg"
+fi
 
 # ---------- DEBIAN/control ----------
 echo "[make_deb] Writing DEBIAN/control..."
@@ -892,11 +995,11 @@ declare -a shlibdeps_elf_args=()
 declare -a shlibdeps_private_lib_args=()
 declare -a shlibdeps_private_lib_dirs=()
 for elf in "${package_elfs[@]}"; do
-  if patchelf --print-needed "${elf}" \
-    | grep -Eq '^lib(cudart|npp[^.]*|cublas[^.]*|cufft[^.]*|curand[^.]*|cusolver[^.]*|cusparse[^.]*|nvrtc[^.]*|nvJitLink)[.]so[.]12$'; then
-    echo "ERROR: CUDA 12 dependency entered the CUDA 13.2 HStream package: ${elf}" >&2
-    patchelf --print-needed "${elf}" \
-      | grep -E '^lib(cudart|npp[^.]*|cublas[^.]*|cufft[^.]*|curand[^.]*|cusolver[^.]*|cusparse[^.]*|nvrtc[^.]*|nvJitLink)[.]so[.]12$' >&2
+  CUDA_NEEDED="$(patchelf --print-needed "${elf}" \
+    | grep -E '^lib(cudart|npp[^.]*|cublas[^.]*|cufft[^.]*|curand[^.]*|cusolver[^.]*|cusparse[^.]*|nvrtc[^.]*|nvJitLink)[.]so[.][0-9]+$' || true)"
+  if [[ -n "${CUDA_NEEDED}" ]] && grep -Ev "[.]so[.]${EXPECTED_CUDA_SONAME}$" <<< "${CUDA_NEEDED}" >/dev/null; then
+    echo "ERROR: ${TARGET_PLATFORM} package ELF linked against an unexpected CUDA major: ${elf}" >&2
+    printf '  %s\n' "${CUDA_NEEDED}" >&2
     exit 1
   fi
   shlibdeps_elf_args+=("-e${elf}")
@@ -912,8 +1015,16 @@ if [[ ! -f "${DEEPSTREAM_TRACKER_RUNTIME}" ]]; then
   exit 1
 fi
 validate_elf_arch "${DEEPSTREAM_TRACKER_RUNTIME}"
-dependency_elfs=("${package_elfs[@]}" "${DEEPSTREAM_TRACKER_RUNTIME}")
-shlibdeps_elf_args+=("-e${DEEPSTREAM_TRACKER_RUNTIME}")
+dependency_elfs=("${package_elfs[@]}")
+if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
+  # Desktop DeepStream's package metadata does not expose every dependency of
+  # its dlopen'd tracker implementation (notably MQTT), so include that ELF in
+  # dependency discovery. JetPack's deepstream-7.1 package already declares
+  # the tracker/VPI runtime graph; asking dpkg-shlibdeps to analyze NVIDIA's
+  # private tracker ELF there fails because libnvvpi3 ships no shlibs metadata.
+  dependency_elfs+=("${DEEPSTREAM_TRACKER_RUNTIME}")
+  shlibdeps_elf_args+=("-e${DEEPSTREAM_TRACKER_RUNTIME}")
+fi
 
 # NVIDIA does not ship Debian shlibs metadata for its unversioned DeepStream
 # libraries or most CUDA toolkit libraries. Generate metadata from the packages
@@ -923,26 +1034,69 @@ shlibdeps_elf_args+=("-e${DEEPSTREAM_TRACKER_RUNTIME}")
 # not provide Ubuntu's older libcuda1 alias, so depending on that alias can
 # make apt replace an otherwise compatible installed driver.
 SHLIBS_LOCAL="${SHLIBDEPS_WORK_DIR}/debian/shlibs.local"
-printf '%s\n' 'libcuda 1 libcuda.so.1' > "${SHLIBS_LOCAL}"
+if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
+  printf '%s\n' 'libcuda 1 nvidia-l4t-cuda | libcuda.so.1' > "${SHLIBS_LOCAL}"
+else
+  printf '%s\n' 'libcuda 1 libcuda.so.1' > "${SHLIBS_LOCAL}"
+fi
+
+# NVIDIA's JetPack repository owns its OpenCV 4.8 libraries in the `libopencv`
+# package but publishes no shlibs metadata. Supply minimum-version mappings so
+# dpkg-shlibdeps emits the maintained package dependency instead of bundling
+# about 40 MiB of duplicate OpenCV code into HStream. A minimum permits
+# JetPack security/bug-fix package upgrades, while a next-minor upper bound
+# prevents apt from accepting a future package which drops the required ABI.
+if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
+  jetson_opencv_version="$(dpkg-query -W -f='${Version}' libopencv 2>/dev/null || true)"
+  if [[ -z "${jetson_opencv_version}" ]]; then
+    echo "ERROR: JetPack libopencv package is required to build the Jetson package." >&2
+    exit 1
+  fi
+  if [[ ! "${jetson_opencv_version}" =~ ^([0-9]+:)?([0-9]+)[.]([0-9]+)([.+:~-]|$) ]]; then
+    echo "ERROR: cannot derive an ABI range from JetPack libopencv version: ${jetson_opencv_version}" >&2
+    exit 1
+  fi
+  jetson_opencv_major="${BASH_REMATCH[2]}"
+  jetson_opencv_minor="${BASH_REMATCH[3]}"
+  jetson_opencv_upper_version="${jetson_opencv_major}.$((10#${jetson_opencv_minor} + 1))~"
+  opencv_mapping_count=0
+  for opencv_library in /usr/lib/libopencv_*.so.*; do
+    [[ -f "${opencv_library}" && ! -L "${opencv_library}" ]] || continue
+    opencv_owner="$(dpkg-query -S "${opencv_library}" 2>/dev/null | head -n1 | cut -d: -f1 || true)"
+    [[ "${opencv_owner}" == "libopencv" ]] || continue
+    opencv_soname="$(patchelf --print-soname "${opencv_library}" 2>/dev/null || true)"
+    if [[ "${opencv_soname}" =~ ^(libopencv_.+)[.]so[.]([0-9]+)$ ]]; then
+      printf '%s %s libopencv (>= %s), libopencv (<< %s)\n' \
+        "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" \
+        "${jetson_opencv_version}" "${jetson_opencv_upper_version}" >> "${SHLIBS_LOCAL}"
+      opencv_mapping_count=$((opencv_mapping_count + 1))
+    fi
+  done
+  if [[ "${opencv_mapping_count}" -eq 0 ]]; then
+    echo "ERROR: no JetPack libopencv shlibs mappings could be generated." >&2
+    exit 1
+  fi
+fi
 CUDA_STUB_DIR="${SHLIBDEPS_WORK_DIR}/cuda-stubs"
 mkdir -p "${CUDA_STUB_DIR}"
 if [[ -f /usr/local/cuda/lib64/stubs/libcuda.so ]]; then
   ln -s /usr/local/cuda/lib64/stubs/libcuda.so "${CUDA_STUB_DIR}/libcuda.so.1"
-elif [[ -f /usr/local/cuda/targets/x86_64-linux/lib/stubs/libcuda.so ]]; then
-  ln -s /usr/local/cuda/targets/x86_64-linux/lib/stubs/libcuda.so "${CUDA_STUB_DIR}/libcuda.so.1"
+elif [[ -f "/usr/local/cuda/targets/${CUDA_TARGET_TRIPLE}/lib/stubs/libcuda.so" ]]; then
+  ln -s "/usr/local/cuda/targets/${CUDA_TARGET_TRIPLE}/lib/stubs/libcuda.so" "${CUDA_STUB_DIR}/libcuda.so.1"
 fi
 
 declare -a cuda_search_dirs=(
   /usr/local/cuda/lib64
-  /usr/local/cuda/targets/x86_64-linux/lib
-  /usr/lib/x86_64-linux-gnu
-  /usr/lib/x86_64-linux-gnu/libcusparseLt/13
-  /usr/lib/x86_64-linux-gnu/nvshmem/13
+  "/usr/local/cuda/targets/${CUDA_TARGET_TRIPLE}/lib"
+  "/usr/lib/${DEB_MULTIARCH}"
+  "/usr/lib/${DEB_MULTIARCH}/tegra"
+  "/usr/lib/${DEB_MULTIARCH}/libcusparseLt/${EXPECTED_CUDA_SONAME}"
+  "/usr/lib/${DEB_MULTIARCH}/nvshmem/${EXPECTED_CUDA_SONAME}"
 )
 declare -a shlibdeps_cuda_lib_args=()
 while IFS= read -r cuda_versioned_dir; do
   cuda_search_dirs+=("${cuda_versioned_dir}")
-done < <(find /usr/local -maxdepth 4 -type d -path '/usr/local/cuda-*/targets/x86_64-linux/lib' -print | sort -V)
+done < <(find /usr/local -maxdepth 4 -type d -path "/usr/local/cuda-*/targets/${CUDA_TARGET_TRIPLE}/lib" -print | sort -V)
 for cuda_dir in "${cuda_search_dirs[@]}"; do
   [[ -d "${cuda_dir}" ]] || continue
   shlibdeps_cuda_lib_args+=("-l${cuda_dir}")
@@ -970,7 +1124,7 @@ for elf in "${dependency_elfs[@]}"; do
       fi
     done
     [[ -n "${cuda_library}" ]] || continue
-    cuda_package="$(dpkg-query -S "${cuda_library}" 2>/dev/null | head -n1 | cut -d: -f1)"
+    cuda_package="$(dpkg-query -S "${cuda_library}" 2>/dev/null | head -n1 | cut -d: -f1 || true)"
     [[ -n "${cuda_package}" ]] || continue
     case "${cuda_package}" in
       cuda-*|libcu*|libnpp*|libnvfatbin*|libnvjitlink*|libnvshmem*) ;;
@@ -996,9 +1150,10 @@ for elf in "${dependency_elfs[@]}"; do
     done
     [[ -n "${ds_library}" ]] || continue
     if [[ "${needed}" =~ ^(lib.+)[.]so[.]([0-9]+) ]]; then
-      printf '%s %s deepstream-9.1 (= %s)\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${DEEPSTREAM_REQUIRED_VERSION}"
+      printf '%s %s %s (= %s)\n' \
+        "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${DEEPSTREAM_PACKAGE}" "${DEEPSTREAM_REQUIRED_VERSION}"
     elif [[ "${needed}" =~ ^(lib.+)[.]so$ ]]; then
-      printf '%s 0 deepstream-9.1 (= %s)\n' "${BASH_REMATCH[1]}" "${DEEPSTREAM_REQUIRED_VERSION}"
+      printf '%s 0 %s (= %s)\n' "${BASH_REMATCH[1]}" "${DEEPSTREAM_PACKAGE}" "${DEEPSTREAM_REQUIRED_VERSION}"
     fi
   done < <(patchelf --print-needed "${elf}")
 done | sort -u >> "${SHLIBS_LOCAL}"
@@ -1037,16 +1192,30 @@ fi
 SHLIB_DEPENDS="${SHLIB_DEPENDS//, /,$'\n' }"
 # Keep the DeepStream relationship explicit below and avoid emitting it twice
 # when dependency-only DeepStream runtime ELFs also resolve to that package.
-SHLIB_DEPENDS="$(printf '%s\n' "${SHLIB_DEPENDS}" | sed '/^ deepstream-9[.]1 /d')"
-if ! grep -Eq '(^|[[:space:]])libmosquitto1([[:space:](,]|$)' <<< "${SHLIB_DEPENDS}"; then
+SHLIB_DEPENDS="$(printf '%s\n' "${SHLIB_DEPENDS}" | sed "/^ ${DEEPSTREAM_PACKAGE//./[.]} /d")"
+if [[ "${TARGET_PLATFORM}" == "desktop" ]] &&
+   ! grep -Eq '(^|[[:space:]])libmosquitto1([[:space:](,]|$)' <<< "${SHLIB_DEPENDS}"; then
   echo "ERROR: nvtracker dependency analysis did not emit libmosquitto1." >&2
   exit 1
 fi
-if ! grep -Eq '(^|[[:space:]])libcuda[.]so[.]1([[:space:](,]|$)' <<< "${SHLIB_DEPENDS}" ||
+if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
+  expected_cuda_dependency='nvidia-l4t-cuda | libcuda.so.1'
+else
+  expected_cuda_dependency='libcuda.so.1'
+fi
+if ! grep -Fq "${expected_cuda_dependency}" <<< "${SHLIB_DEPENDS}" ||
    grep -Eq '(^|[[:space:]])libcuda1([[:space:](,]|$)' <<< "${SHLIB_DEPENDS}"; then
-  echo "ERROR: CUDA driver dependency must use the libcuda.so.1 virtual ABI without the legacy libcuda1 alias." >&2
+  echo "ERROR: CUDA driver dependency does not match ${TARGET_PLATFORM} policy: ${expected_cuda_dependency}." >&2
   printf '%s\n' "${SHLIB_DEPENDS}" >&2
   exit 1
+fi
+if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
+  if ! grep -Fq "libopencv (>= ${jetson_opencv_version})" <<< "${SHLIB_DEPENDS}" ||
+     ! grep -Fq "libopencv (<< ${jetson_opencv_upper_version})" <<< "${SHLIB_DEPENDS}"; then
+    echo "ERROR: Jetson dependency analysis did not emit the required libopencv ABI range." >&2
+    printf '%s\n' "${SHLIB_DEPENDS}" >&2
+    exit 1
+  fi
 fi
 if grep -Eiq '(^|[[:space:]])(libnccl[^,[:space:]]*|python[^,[:space:]]*|onnxruntime[^,[:space:]]*)' \
     <<< "${SHLIB_DEPENDS}"; then
@@ -1057,6 +1226,18 @@ fi
 rm -rf "${SHLIBDEPS_WORK_DIR}"
 
 INSTALLED_SIZE=$(du -sk "${STAGING}" | awk '{print $1}')
+if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
+  PACKAGE_DESCRIPTION="HStream video pipeline application and UI"
+  PACKAGE_CONTENTS="Installs the HStream CLI/UI binaries"
+  UI_LAUNCH_HELP="Launch the UI with: ${INSTALL_PREFIX}/hstream-ui.sh
+ or via the hstream-ui wrapper in /usr/bin/hstream-ui."
+  RUNTIME_TOOL_DEPENDS=$',\n hugin-tools,\n enblend'
+else
+  PACKAGE_DESCRIPTION="HStream video pipeline application for Jetson"
+  PACKAGE_CONTENTS="Installs the HStream CLI and pinned native Hugin calibration tools"
+  UI_LAUNCH_HELP="The Qt desktop UI is not part of the Jetson package."
+  RUNTIME_TOOL_DEPENDS=""
+fi
 cat > "${STAGING}/DEBIAN/control" <<CONTROL
 Package: ${PKG_NAME}
 Version: ${PKG_VERSION}
@@ -1064,29 +1245,27 @@ Architecture: ${PKG_ARCH}
 X-HStream-Source-Commit: ${SOURCE_REVISION}
 X-HStream-Source-Epoch: ${SOURCE_EPOCH}
 X-HStream-Target-Ubuntu: ${TARGET_UBUNTU}
+X-HStream-Target-Platform: ${TARGET_PLATFORM}
 Maintainer: Christopher Olivier <cjolivier01@gmail.com>
 Installed-Size: ${INSTALLED_SIZE}
 Depends: ${SHLIB_DEPENDS},
  ca-certificates,
- deepstream-9.1 (= ${DEEPSTREAM_REQUIRED_VERSION}),
+ ${DEEPSTREAM_PACKAGE} (= ${DEEPSTREAM_REQUIRED_VERSION}),
  ffmpeg,
  gstreamer1.0-plugins-bad,
- gstreamer1.0-nice,
- hugin-tools,
- enblend
-Description: HStream video pipeline application and UI
- Installs the HStream CLI/UI binaries, private shared libraries,
+ gstreamer1.0-nice${RUNTIME_TOOL_DEPENDS}
+Description: ${PACKAGE_DESCRIPTION}
+ ${PACKAGE_CONTENTS}, private shared libraries,
  GStreamer plugins, configs, native ONNX Runtime, and non-engine pretrained
  assets to ${INSTALL_PREFIX}. Runtime calibration does not launch Python.
  .
  External requirements not otherwise expressed as direct dependencies:
-   - NVIDIA CUDA Toolkit 13.2 at /usr/local/cuda (pulled transitively by DeepStream)
+   - NVIDIA CUDA Toolkit ABI ${EXPECTED_CUDA_SONAME} at /usr/local/cuda (provided with DeepStream/JetPack)
    - Configured model frameworks beyond the packaged native stitching runtime
  .
  Launch the CLI with: ${INSTALL_PREFIX}/run.sh [args...]
  or via the hstream-cli wrapper in /usr/bin/hstream-cli.
- Launch the UI with: ${INSTALL_PREFIX}/hstream-ui.sh
- or via the hstream-ui wrapper in /usr/bin/hstream-ui.
+ ${UI_LAUNCH_HELP}
 CONTROL
 
 if find "${STAGING}${INSTALL_PREFIX}" -type f \( -name '*.py' -o -name '*.pyc' -o -name '*.pyo' \) -print -quit \

@@ -21,8 +21,8 @@ bool expect(bool condition, const char* message) {
 } // namespace
 
 int main(int argc, char** argv) {
-  if (argc != 7) {
-    std::cerr << "FAIL: expected .bazelrc, Dockerfile, builder, packager, Docker runner, and installer paths\n";
+  if (argc != 10) {
+    std::cerr << "FAIL: expected desktop/Jetson Debian build and release policy inputs\n";
     return 1;
   }
   const std::string bazelrc = read(argv[1]);
@@ -31,6 +31,9 @@ int main(int argc, char** argv) {
   const std::string packager = read(argv[4]);
   const std::string docker_runner = read(argv[5]);
   const std::string installer = read(argv[6]);
+  const std::string jetson_builder = read(argv[7]);
+  const std::string hugin_builder = read(argv[8]);
+  const std::string publisher = read(argv[9]);
   bool ok = true;
   ok &= expect(
       contains(bazelrc, "build:deb_ubuntu24 --repo_env=CUDA_PATH=/usr/local/cuda-13.2") &&
@@ -47,9 +50,10 @@ int main(int argc, char** argv) {
       "every target-OS build must select CUDA 13.2");
   ok &= expect(
       contains(packager, "X-HStream-Target-Ubuntu: ${TARGET_UBUNTU}") &&
-          contains(packager, "CUDA 12 dependency entered the CUDA 13.2 HStream package") &&
+          contains(packager, "X-HStream-Target-Platform: ${TARGET_PLATFORM}") &&
+          contains(packager, "EXPECTED_CUDA_SONAME") && contains(packager, "unexpected CUDA major") &&
           contains(packager, "pretrained/native-calibration") && contains(packager, "model_cache_root"),
-      "package must carry OS provenance, reject CUDA 12 ELFs, and stage verified native models");
+      "package must carry platform provenance, enforce each platform's CUDA ABI, and stage verified native models");
   ok &= expect(
       contains(docker_runner, ":/root/.cache/hstream/models:ro") &&
           contains(docker_runner, "HSTREAM_MODEL_CACHE_DIR"),
@@ -72,5 +76,31 @@ int main(int argc, char** argv) {
           !contains(installer, "rollback_transaction") &&
           !contains(installer, "install -m 0644 \"${combined_keyring}\" /usr/share/keyrings/cuda-archive-keyring.gpg"),
       "Ubuntu 26 installer must own its key and interruption-safely replace duplicate compatibility sources");
+  ok &= expect(
+      contains(bazelrc, "build:deb_jetson --@rules_cuda//cuda:archs=sm_87") &&
+          contains(jetson_builder, "--config=opt --config=deb_jetson") &&
+          contains(jetson_builder, "output_base=\"${persistent_cache_root}/output\"") &&
+          !contains(jetson_builder, "--disk_cache") &&
+          contains(jetson_builder, "bazelisk --batch") &&
+          contains(jetson_builder, "--sandbox_base=\"${sandbox_base}\"") &&
+          contains(jetson_builder, "--action_env=TMPDIR=/var/tmp") &&
+          contains(jetson_builder, "--sandbox_tmpfs_path=/var/tmp") &&
+          contains(jetson_builder, "--list-elf") && contains(jetson_builder, "--list-ptx") &&
+          contains(jetson_builder, "apt-get -s install"),
+      "Jetson release packages must contain verified native Orin code and pass an install simulation");
+  ok &= expect(
+      contains(packager, "nvidia-l4t-cuda | libcuda.so.1") &&
+          contains(packager, "libopencv (>= %s), libopencv (<< %s)") &&
+          contains(packager, "jetson_opencv_upper_version") && contains(packager, "HSTREAM_HUGIN_TOOLS_DIR") &&
+          contains(hugin_builder, "HUGIN_SHA256=") && contains(hugin_builder, "VIGRA_SHA256=") &&
+          contains(hugin_builder, "--export-sources") && contains(hugin_builder, "autooptimiser") &&
+          contains(hugin_builder, "nona"),
+      "Jetson packages must use L4T/OpenCV dependencies and pinned source-built Hugin calibration tools");
+  ok &= expect(
+      contains(publisher, "X-HStream-Source-Commit") && contains(publisher, "--repo \"${repository}\"") &&
+          contains(publisher, "git remote get-url --push --all origin") &&
+          contains(publisher, "hugin_2022.0.0+dfsg.orig.tar.xz") && contains(publisher, "10#${patch}") &&
+          contains(publisher, "(0|[1-9][0-9]*)"),
+      "release publication must verify provenance/source compliance, pin GitHub operations, and increment strict semver");
   return ok ? 0 : 1;
 }

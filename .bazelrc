@@ -70,6 +70,11 @@ build:deb_ubuntu24 --@rules_cuda//cuda:archs=sm_75;sm_80;sm_86;sm_89;sm_90;sm_10
 build:deb_ubuntu26 --repo_env=CUDA_PATH=/usr/local/cuda-13.2
 build:deb_ubuntu26 --@rules_cuda//cuda:archs=sm_75;sm_80;sm_86;sm_89;sm_90;sm_100;sm_120
 
+# JetPack 6 release packages target Orin. Ship native sm_87 SASS instead of
+# relying on runtime PTX compilation on every installation.
+build:deb_jetson --config=jetson
+build:deb_jetson --@rules_cuda//cuda:archs=sm_87
+
 build:arm64 --define=target_platform=arm64
 build:arm64 --action_env=target_platform="arm64"
 build:arm64 --copt=-DABSL_NO_XPACLRI

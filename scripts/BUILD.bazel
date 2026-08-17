@@ -31,8 +31,12 @@
 # )
 exports_files([
     "install_deb.sh",
+    "build_hugin_tools_jetson.sh",
+    "delete_release.sh",
     "make_deb.sh",
     "make_deb_docker.sh",
+    "make_deb_jetson.sh",
+    "publish_release.sh",
     "qualify_native_onnx.sh",
     "test_hstream_ui_e2e.sh",
 ])
