@@ -5719,7 +5719,8 @@ void HStreamWindow::loadSavedControlConfig() {
   auto loaded_config = hm::stitching::load_game_config_file(config_path);
   if (!loaded_config.ok()) {
     appendLog(QString("could not load saved controls: %1").arg(loaded_config.status().ToString().c_str()));
-    captureSavedControlState();
+    saved_camera_controls_.clear();
+    updatePresetDirtyState();
     return;
   }
   if (!loaded_config->has_value()) {
@@ -5728,41 +5729,38 @@ void HStreamWindow::loadSavedControlConfig() {
   }
   try {
     YAML::Node config = **loaded_config;
-    auto set_control_without_signal = [this](const QString& id, int value) {
-      const auto slider_it = camera_sliders_.find(id);
-      if (slider_it == camera_sliders_.end()) {
+    std::map<QString, int> staged_controls;
+    for (const auto& [id, slider] : camera_sliders_) {
+      if (slider)
+        staged_controls[id] = slider->value();
+    }
+    auto stage_control = [this, &staged_controls](const QString& id, int value) {
+      if (camera_sliders_.find(id) == camera_sliders_.end()) {
         return false;
       }
-      const bool blocked = slider_it->second->blockSignals(true);
-      slider_it->second->setValue(value);
-      slider_it->second->blockSignals(blocked);
-      const int applied_value = slider_it->second->value();
-      const auto label_it = camera_value_labels_.find(id);
-      if (label_it != camera_value_labels_.end()) {
-        label_it->second->setText(QString::number(applied_value));
-      }
+      staged_controls[id] = value;
       return true;
     };
+    int staged_control_points =
+        control_points_spin_ ? control_points_spin_->value() : kDefaultStitchCalibrationControlPoints;
     YAML::Node control_points;
     if (control_points_spin_ &&
         lookup_yaml_path(config, "hstream_ui.stitching_calibration.control_points", &control_points) &&
         control_points.IsScalar()) {
-      const bool blocked = control_points_spin_->blockSignals(true);
-      control_points_spin_->setValue(control_points.as<int>());
-      control_points_spin_->blockSignals(blocked);
+      staged_control_points = control_points.as<int>();
     }
     YAML::Node fixed_edge_rotation;
     if (lookup_yaml_path(config, "rink.camera.fixed_edge_rotation_angle", &fixed_edge_rotation)) {
       auto angle_x10 = [](const YAML::Node& value) { return static_cast<int>(std::lround(value.as<double>() * 10.0)); };
       if (fixed_edge_rotation.IsSequence() && fixed_edge_rotation.size() == 2) {
-        set_control_without_signal("Link_Fixed_Edge_Rotation_Left_Right", 0);
-        set_control_without_signal("Left_Fixed_Edge_Rotation_Angle_x10", angle_x10(fixed_edge_rotation[0]));
-        set_control_without_signal("Right_Fixed_Edge_Rotation_Angle_x10", angle_x10(fixed_edge_rotation[1]));
+        stage_control("Link_Fixed_Edge_Rotation_Left_Right", 0);
+        stage_control("Left_Fixed_Edge_Rotation_Angle_x10", angle_x10(fixed_edge_rotation[0]));
+        stage_control("Right_Fixed_Edge_Rotation_Angle_x10", angle_x10(fixed_edge_rotation[1]));
       } else if (fixed_edge_rotation.IsScalar()) {
         const int value = angle_x10(fixed_edge_rotation);
-        set_control_without_signal("Link_Fixed_Edge_Rotation_Left_Right", 1);
-        set_control_without_signal("Left_Fixed_Edge_Rotation_Angle_x10", value);
-        set_control_without_signal("Right_Fixed_Edge_Rotation_Angle_x10", value);
+        stage_control("Link_Fixed_Edge_Rotation_Left_Right", 1);
+        stage_control("Left_Fixed_Edge_Rotation_Angle_x10", value);
+        stage_control("Right_Fixed_Edge_Rotation_Angle_x10", value);
       } else {
         appendLog("ignored invalid rink.camera.fixed_edge_rotation_angle; expected one value or [left, right]");
       }
@@ -5772,20 +5770,37 @@ void HStreamWindow::loadSavedControlConfig() {
     if (controls && controls.IsMap()) {
       for (const auto& entry : controls) {
         const QString id = QString::fromStdString(entry.first.as<std::string>());
-        if (set_control_without_signal(id, entry.second.as<int>())) {
+        if (camera_sliders_.find(id) != camera_sliders_.end() && stage_control(id, entry.second.as<int>())) {
           ++loaded;
         }
       }
     }
-    if (cameraControlValue("Link_Fixed_Edge_Rotation_Left_Right") != 0) {
-      set_control_without_signal(
-          "Right_Fixed_Edge_Rotation_Angle_x10", cameraControlValue("Left_Fixed_Edge_Rotation_Angle_x10"));
+    if (staged_controls["Link_Fixed_Edge_Rotation_Left_Right"] != 0) {
+      staged_controls["Right_Fixed_Edge_Rotation_Angle_x10"] = staged_controls["Left_Fixed_Edge_Rotation_Angle_x10"];
+    }
+    if (control_points_spin_) {
+      const bool blocked = control_points_spin_->blockSignals(true);
+      control_points_spin_->setValue(staged_control_points);
+      control_points_spin_->blockSignals(blocked);
+    }
+    for (const auto& [id, value] : staged_controls) {
+      const auto slider_it = camera_sliders_.find(id);
+      if (slider_it == camera_sliders_.end() || !slider_it->second)
+        continue;
+      const bool blocked = slider_it->second->blockSignals(true);
+      slider_it->second->setValue(value);
+      slider_it->second->blockSignals(blocked);
+      const auto label_it = camera_value_labels_.find(id);
+      if (label_it != camera_value_labels_.end()) {
+        label_it->second->setText(QString::number(slider_it->second->value()));
+      }
     }
     appendLog(QString("loaded %1 saved camera controls").arg(loaded));
     captureSavedControlState();
   } catch (const std::exception& exc) {
     appendLog(QString("could not load saved camera controls: %1").arg(exc.what()));
-    captureSavedControlState();
+    saved_camera_controls_.clear();
+    updatePresetDirtyState();
   }
 }
 
@@ -5964,6 +5979,7 @@ bool HStreamWindow::applySavedControlConfig(
     QDir runtime_dir(QDir(game_dir).filePath(".hstream-ui"));
     if (!runtime_dir.exists() && !runtime_dir.mkpath(".")) {
       appendLog(QString("could not create playtracker runtime config directory %1").arg(runtime_dir.path()));
+      return false;
     } else {
       const QString runtime_config_path = runtime_dir.filePath("play_tracker_config.yaml");
       try {
@@ -6062,25 +6078,22 @@ bool HStreamWindow::applySavedControlConfig(
           apply_live_box(1);
         }
 
-        std::ofstream tracker_out(runtime_config_path.toStdString());
-        if (!tracker_out) {
-          appendLog(QString("could not open playtracker runtime config %1").arg(runtime_config_path));
-        } else {
-          tracker_out << play_tracker_config << "\n";
-          tracker_out.close();
-          if (!tracker_out) {
-            appendLog(QString("could not write playtracker runtime config %1").arg(runtime_config_path));
-          } else {
-            config["pipeline"]["ds-playtracker"]["config-file"] = runtime_config_path.toStdString();
-            if (!configured_playtracker_config.isEmpty() && configured_playtracker_config != runtime_config_path) {
-              config["hstream_ui"]["playtracker_config_base"] = configured_playtracker_config.toStdString();
-            }
-            mark_runtime_key("pipeline.ds-playtracker.config-file");
-            appendLog(QString("playtracker runtime config saved %1").arg(runtime_config_path));
-          }
+        const absl::Status runtime_publish = hm::stitching::publish_named_file(
+            fs::path(runtime_config_path.toStdString()), YAML::Dump(play_tracker_config) + "\n");
+        if (!runtime_publish.ok()) {
+          appendLog(QString("could not atomically write playtracker runtime config %1: %2")
+                        .arg(runtime_config_path, runtime_publish.ToString().c_str()));
+          return false;
         }
+        config["pipeline"]["ds-playtracker"]["config-file"] = runtime_config_path.toStdString();
+        if (!configured_playtracker_config.isEmpty() && configured_playtracker_config != runtime_config_path) {
+          config["hstream_ui"]["playtracker_config_base"] = configured_playtracker_config.toStdString();
+        }
+        mark_runtime_key("pipeline.ds-playtracker.config-file");
+        appendLog(QString("playtracker runtime config saved %1").arg(runtime_config_path));
       } catch (const std::exception& exc) {
         appendLog(QString("could not save playtracker runtime config: %1").arg(exc.what()));
+        return false;
       }
     }
   }

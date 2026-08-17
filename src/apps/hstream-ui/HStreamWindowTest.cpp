@@ -3760,6 +3760,34 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
 
+  {
+    YAML::Node malformed(YAML::NodeType::Map);
+    malformed["hstream_ui"]["camera_controls"]["Stop_Direction_Change_Delay_Frames"] = 11;
+    malformed["hstream_ui"]["camera_controls"]["Max_Speed_X_x10"] = "not-an-integer";
+    std::ofstream out(config);
+    out << malformed << "\n";
+  }
+  activate(create);
+  if (!expect(
+          stop_delay->value() == 0,
+          "Malformed saved controls should not partially apply values parsed before the error") ||
+      !expect(save->isEnabled(), "Malformed saved controls should leave the current controls unsaved")) {
+    return false;
+  }
+  {
+    YAML::Node existing(YAML::NodeType::Map);
+    existing["rink"]["camera"]["fixed_edge_rotation_angle"] = 22.0;
+    std::ofstream out(config);
+    out << existing << "\n";
+  }
+  activate(create);
+  if (!expect(
+          fixed_edge_link->value() == 1 && fixed_edge_left->value() == 220 && fixed_edge_right->value() == 220,
+          "Camera controls should recover after a malformed saved config is corrected") ||
+      !expect(!save->isEnabled(), "Loading the corrected config should restore the clean preset snapshot")) {
+    return false;
+  }
+
   const QString loaded_game_id = game_id->text();
   stop_delay->setValue(1);
   if (!expect(save->isEnabled(), "Changing a loaded preset should enable Save Preset")) {
@@ -3835,6 +3863,26 @@ bool test_camera_controls(HStreamWindow* window) {
     std::ofstream out(rink_mask);
     out << "stale-mask";
   }
+
+  const fs::path runtime_dir_collision = fs::path(window->gameDirectoryText().toStdString()) / ".hstream-ui";
+  {
+    std::ofstream out(runtime_dir_collision);
+    out << "directory-collision";
+  }
+  std::ifstream config_before_failed_save_input(config, std::ios::binary);
+  const std::string config_before_failed_save(
+      (std::istreambuf_iterator<char>(config_before_failed_save_input)), std::istreambuf_iterator<char>());
+  activate(save);
+  std::ifstream config_after_failed_save_input(config, std::ios::binary);
+  const std::string config_after_failed_save(
+      (std::istreambuf_iterator<char>(config_after_failed_save_input)), std::istreambuf_iterator<char>());
+  if (!expect(save->isEnabled(), "A failed playtracker sidecar write should keep Save Preset enabled") ||
+      !expect(
+          config_after_failed_save == config_before_failed_save,
+          "A failed playtracker sidecar write should not publish a partially updated config.yaml")) {
+    return false;
+  }
+  fs::remove(runtime_dir_collision);
 
   activate(save);
   if (!expect(!save->isEnabled(), "A successful preset save should disable Save Preset until another change")) {
