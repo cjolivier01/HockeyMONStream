@@ -3930,6 +3930,28 @@ bool test_camera_controls(HStreamWindow* window) {
   const std::string committed_sidecar_contents(
       (std::istreambuf_iterator<char>(committed_sidecar_input)), std::istreambuf_iterator<char>());
   max_speed_x->setValue(451);
+  qputenv("HSTREAM_UI_TEST_FAIL_PRESET_RETIREMENT_PUBLISH", "1");
+  activate(save);
+  qunsetenv("HSTREAM_UI_TEST_FAIL_PRESET_RETIREMENT_PUBLISH");
+  const YAML::Node after_failed_retirement = YAML::LoadFile(config.string());
+  YAML::Node after_failed_retirement_sidecar;
+  const QStringList sidecars_after_failed_retirement =
+      QDir(QString::fromStdString(committed_sidecar.parent_path().string()))
+          .entryList({"play_tracker_config_*.yaml"}, QDir::Files, QDir::Name);
+  if (!expect(save->isEnabled(), "A failed retirement marker should keep Save Preset enabled") ||
+      !expect(
+          lookup_yaml_path(
+              after_failed_retirement,
+              {"pipeline", "ds-playtracker", "config-file"},
+              &after_failed_retirement_sidecar) &&
+              after_failed_retirement_sidecar.IsScalar() &&
+              after_failed_retirement_sidecar.as<std::string>() == committed_sidecar.string(),
+          "A failed retirement marker should leave the old sidecar active") ||
+      !expect(
+          sidecars_after_failed_retirement.size() == 1,
+          "A failed retirement marker should remove the unpublished replacement generation")) {
+    return false;
+  }
   qputenv("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_PUBLISH", "1");
   activate(save);
   qunsetenv("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_PUBLISH");
@@ -3982,6 +4004,12 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!expect(save->isEnabled(), "A visible generation with uncertain durability should keep retry enabled")) {
     return false;
   }
+  activate(create);
+  if (!expect(
+          max_speed_x->value() == 451 && save->isEnabled(),
+          "Reloading the same visible generation should preserve its durability retry requirement")) {
+    return false;
+  }
   activate(save);
   if (!expect(!save->isEnabled(), "A successful durability retry should clear the retry-required state")) {
     return false;
@@ -3994,7 +4022,9 @@ bool test_camera_controls(HStreamWindow* window) {
           "Recent superseded sidecars should remain available to delayed pipeline readers")) {
     return false;
   }
-  fs::last_write_time(committed_sidecar, fs::file_time_type::clock::now() - std::chrono::hours(25));
+  const fs::path committed_retirement_marker =
+      committed_sidecar.parent_path() / (".retired-" + committed_sidecar.filename().string());
+  fs::last_write_time(committed_retirement_marker, fs::file_time_type::clock::now() - std::chrono::hours(25));
 
   stop_delay->setValue(15);
   if (!expect(save->isEnabled(), "A new change after saving should re-enable Save Preset")) {

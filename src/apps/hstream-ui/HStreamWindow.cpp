@@ -1325,6 +1325,11 @@ QString resolve_ui_persistent_playtracker_config(
   return {};
 }
 
+QString playtracker_sidecar_retirement_marker(const QString& sidecar) {
+  const QFileInfo info(sidecar);
+  return QDir(info.absolutePath()).filePath(".retired-" + info.fileName());
+}
+
 bool yaml_scalar_bool(YAML::Node node, bool default_value) {
   if (!node || !node.IsScalar()) {
     return default_value;
@@ -5621,17 +5626,6 @@ void HStreamWindow::savePreset() {
   const QString game_dir = QString::fromStdString(config_path.parent_path().string());
   const QString previous_active_sidecar =
       resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
-  auto mark_sidecar_retired = [this](const QString& sidecar) {
-    if (sidecar.isEmpty() || !QFileInfo::exists(sidecar)) {
-      return;
-    }
-    std::error_code retirement_error;
-    fs::last_write_time(fs::path(sidecar.toStdString()), fs::file_time_type::clock::now(), retirement_error);
-    if (retirement_error) {
-      appendLog(QString("could not mark superseded playtracker config %1 for later cleanup: %2")
-                    .arg(sidecar, QString::fromStdString(retirement_error.message())));
-    }
-  };
 
   bool invalidate_rink_masks = false;
   int invalidated_config_artifacts = 0;
@@ -5642,6 +5636,23 @@ void HStreamWindow::savePreset() {
       QFile::remove(published_playtracker_sidecar);
     }
     return;
+  }
+  const QString intended_active_sidecar =
+      resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
+  if (!previous_active_sidecar.isEmpty() && !same_file_path(previous_active_sidecar, intended_active_sidecar)) {
+    const QString retirement_marker = playtracker_sidecar_retirement_marker(previous_active_sidecar);
+    const absl::Status retirement_publish = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FAIL_PRESET_RETIREMENT_PUBLISH")
+        ? absl::InternalError("sidecar retirement publication failure requested by test")
+        : hm::stitching::publish_named_file(
+              fs::path(retirement_marker.toStdString()), previous_active_sidecar.toStdString() + "\n");
+    if (!retirement_publish.ok()) {
+      if (!published_playtracker_sidecar.isEmpty()) {
+        QFile::remove(published_playtracker_sidecar);
+      }
+      appendLog(QString("could not durably retire playtracker config %1: %2")
+                    .arg(previous_active_sidecar, retirement_publish.ToString().c_str()));
+      return;
+    }
   }
   absl::Status publish;
   size_t invalidated_masks = 0;
@@ -5701,22 +5712,14 @@ void HStreamWindow::savePreset() {
       // that visible generation as the baseline while keeping Save enabled
       // so the user can retry the durability operation.
       preset_save_retry_required_ = true;
+      preset_save_retry_game_id_ = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
       captureSavedControlState();
-      const QString visible_active_sidecar =
-          resolve_ui_persistent_playtracker_config(visible_config, game_dir, pipelineWorkingDirectory());
-      if (!same_file_path(previous_active_sidecar, visible_active_sidecar)) {
-        mark_sidecar_retired(previous_active_sidecar);
-      }
     }
     appendLog(QString("failed to write preset %1: %2")
                   .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
     return;
   }
   const QString active_sidecar = resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
-  if (!previous_active_sidecar.isEmpty() && !same_file_path(previous_active_sidecar, active_sidecar) &&
-      QFileInfo::exists(previous_active_sidecar)) {
-    mark_sidecar_retired(previous_active_sidecar);
-  }
   const fs::path runtime_dir = config_path.parent_path() / ".hstream-ui";
   std::error_code cleanup_error;
   const auto stale_before = fs::file_time_type::clock::now() - std::chrono::hours(24);
@@ -5727,7 +5730,13 @@ void HStreamWindow::savePreset() {
         same_file_path(QString::fromStdString(it->path().string()), active_sidecar)) {
       continue;
     }
-    const fs::file_time_type modified = it->last_write_time(cleanup_error);
+    const fs::path retirement_marker =
+        fs::path(playtracker_sidecar_retirement_marker(QString::fromStdString(it->path().string())).toStdString());
+    if (!fs::is_regular_file(retirement_marker, cleanup_error) || cleanup_error) {
+      cleanup_error.clear();
+      continue;
+    }
+    const fs::file_time_type modified = fs::last_write_time(retirement_marker, cleanup_error);
     if (cleanup_error || modified > stale_before) {
       cleanup_error.clear();
       continue;
@@ -5737,7 +5746,10 @@ void HStreamWindow::savePreset() {
       appendLog(QString("could not remove stale playtracker config %1: %2")
                     .arg(QString::fromStdString(it->path().string()), QString::fromStdString(cleanup_error.message())));
       cleanup_error.clear();
+      continue;
     }
+    fs::remove(retirement_marker, cleanup_error);
+    cleanup_error.clear();
   }
   if (invalidate_rink_masks) {
     appendLog(QString("stitch rotation saved; invalidated %1 scoreboard/ice-mask artifact(s)")
@@ -5745,6 +5757,7 @@ void HStreamWindow::savePreset() {
   }
   appendLog(QString("preset saved %1").arg(QString::fromStdString(config_path.string())));
   preset_save_retry_required_ = false;
+  preset_save_retry_game_id_.clear();
   captureSavedControlState();
 }
 
@@ -5816,7 +5829,11 @@ void HStreamWindow::updatePresetDirtyState() {
 }
 
 void HStreamWindow::loadSavedControlConfig() {
-  preset_save_retry_required_ = false;
+  const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
+  if (preset_save_retry_required_ && preset_save_retry_game_id_ != game_id) {
+    preset_save_retry_required_ = false;
+    preset_save_retry_game_id_.clear();
+  }
   if (!game_id_edit_ || game_id_edit_->text().isEmpty()) {
     captureSavedControlState();
     return;
