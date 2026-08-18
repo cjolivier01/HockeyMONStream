@@ -322,10 +322,6 @@ absl::StatusOr<fs::path> select_runtime_cache_root(const fs::path& root) {
   add_environment_candidate("TEST_TMPDIR", "hstream-runtime-cache");
   add_environment_candidate("XDG_CACHE_HOME", "hstream");
   add_environment_candidate("HOME", ".cache/hstream");
-  std::error_code temp_ec;
-  const fs::path temp = fs::temp_directory_path(temp_ec);
-  if (!temp_ec)
-    candidates.push_back(temp / ("hstream-runtime-" + std::to_string(static_cast<unsigned long>(::getuid()))));
 
   std::error_code ec;
   for (const fs::path& candidate : candidates) {
@@ -347,6 +343,15 @@ absl::StatusOr<fs::path> select_runtime_cache_root(const fs::path& root) {
     if (!ec)
       return candidate;
     ec.clear();
+  }
+
+  const fs::path temp = fs::temp_directory_path(ec);
+  if (!ec) {
+    std::string pattern = (temp / "hstream-runtime-XXXXXX").string();
+    std::vector<char> mutable_pattern(pattern.begin(), pattern.end());
+    mutable_pattern.push_back('\0');
+    if (char* directory = ::mkdtemp(mutable_pattern.data()))
+      return fs::path(directory);
   }
   return absl::PermissionDeniedError("Could not find a writable hstream runtime cache directory");
 }
@@ -500,6 +505,9 @@ absl::Status configure_pipeline_runtime_environment(const char* argv0) {
   auto cache_root = select_runtime_cache_root(root);
   if (!cache_root.ok())
     return cache_root.status();
+  // Preserve an atomically created fallback across the one-time re-exec and
+  // keep any UI-selected private cache root coherent in the child process.
+  setenv("HSTREAM_RUNTIME_CACHE_DIR", cache_root->c_str(), 1);
   const fs::path packaged_native_models = root / "pretrained/native-calibration";
   if (!std::getenv("HM_NATIVE_MODEL_DIR") && fs::is_directory(packaged_native_models)) {
     setenv("HM_NATIVE_MODEL_DIR", packaged_native_models.c_str(), 1);

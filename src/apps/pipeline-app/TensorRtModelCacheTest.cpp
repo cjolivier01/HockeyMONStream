@@ -71,7 +71,7 @@ int main(int argc, char** argv) {
     write_inference_config(configs / "infer.yaml", 0);
     std::ofstream(configs / "loader.yaml") << "property:\n"
                                               "  onnx-file: ../packaged-models/detector.onnx\n"
-                                              "  model-engine-file: /tmp/loader.engine\n"
+                                              "  model-engine-file: ../packaged-models/loader.engine\n"
                                               "  custom-lib-path: libnvdsinfer_custom_impl_Yolo.so\n"
                                               "  batch-size: 2\n"
                                               "  gpu-id: 0\n"
@@ -236,6 +236,24 @@ int main(int argc, char** argv) {
         !loader_engine.empty() &&
             fs::path(second_loader_cached["property"]["model-engine-file"].as<std::string>()) == loader_engine,
         "identical parser contents in different launch directories must reuse the TensorRT engine cache identity");
+  }
+
+  std::ofstream(parser_binary, std::ios::trunc) << "changed staged test parser\n";
+  const fs::path third_runtime_libraries = root / "runtime-libraries-changed-parser";
+  fs::create_directories(third_runtime_libraries);
+  const fs::path third_staged_yolo = third_runtime_libraries / "libnvdsinfer_custom_impl_Yolo.so";
+  fs::create_symlink(parser_binary, third_staged_yolo);
+  ::setenv("HSTREAM_NVINFER_CUSTOM_LIBRARY_DIR", third_runtime_libraries.c_str(), 1);
+  YAML::Node changed_parser_pipeline = pipeline_for("loader.yaml");
+  ok &= expect(
+      hm::pipeline::PrepareTensorRtModelCache(changed_parser_pipeline, configs).ok(),
+      "a changed parser staged for another launch must prepare successfully");
+  const fs::path changed_parser_runtime = changed_parser_pipeline["primary-gie"]["config-file"].as<std::string>();
+  if (fs::is_regular_file(changed_parser_runtime)) {
+    const YAML::Node changed_parser_cached = YAML::LoadFile(changed_parser_runtime.string());
+    ok &= expect(
+        fs::path(changed_parser_cached["property"]["model-engine-file"].as<std::string>()) != loader_engine,
+        "changed parser contents must select a fresh TensorRT engine cache identity");
   }
   ::unsetenv("HSTREAM_NVINFER_CUSTOM_LIBRARY_DIR");
   hm::pipeline::ReleaseTensorRtModelCacheLocks();

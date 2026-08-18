@@ -750,7 +750,6 @@ QString writable_runtime_cache_root(const QString& working_dir) {
   const QString standard_cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
   if (!standard_cache.isEmpty())
     candidates.push_back(QDir(standard_cache).filePath("runtime"));
-  candidates.push_back(QDir(QDir::tempPath()).filePath("hstream-runtime"));
 
   for (const QString& candidate : candidates) {
     if (candidate.isEmpty() || !QDir().mkpath(candidate))
@@ -759,7 +758,15 @@ QString writable_runtime_cache_root(const QString& working_dir) {
     if (probe.isValid())
       return QDir(candidate).absolutePath();
   }
-  return {};
+
+  QTemporaryDir fallback(QDir(QDir::tempPath()).filePath("hstream-runtime-XXXXXX"));
+  if (!fallback.isValid() ||
+      !QFile::setPermissions(
+          fallback.path(), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner)) {
+    return {};
+  }
+  fallback.setAutoRemove(false);
+  return QDir(fallback.path()).absolutePath();
 }
 
 void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& cache_root, const QString& bazel_bin_path) {
@@ -882,6 +889,9 @@ QString configure_pipeline_runtime_environment(
   const QString cache_root = writable_runtime_cache_root(working_dir);
   if (cache_root.isEmpty())
     return "could not find a writable hstream runtime cache directory";
+  // Keep the child CLI on this exact private root, including when the UI had
+  // to create an unpredictable last-resort temporary directory.
+  env.insert("HSTREAM_RUNTIME_CACHE_DIR", cache_root);
   // DeepStream 9.1's legacy nvstreammux rejects the native 8K source caps used
   // by stitching. Match run.sh while preserving an explicit diagnostic
   // override from the caller.
