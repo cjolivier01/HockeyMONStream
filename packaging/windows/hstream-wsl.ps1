@@ -169,13 +169,18 @@ function Test-WslBasePathRegistered([string]$BasePath) {
     return $false
 }
 
-function Remove-AbandonedWslImport([string]$RecordPath, [string]$Name, [string]$BasePath) {
+function Remove-AbandonedWslImport([string]$RecordPath, [string]$Name, [string]$StateRoot) {
     try {
         $record = Read-WslRegistrationRecord $RecordPath
-        $expectedBasePath = Normalize-WindowsPath $BasePath
-        if (-not $record -or $record.Schema -ne 2 -or $record.DistroName -ne $Name -or
+        if (-not $record) {
+            return $false
+        }
+        $recordBasePath = Normalize-WindowsPath ([string]$record.BasePath)
+        $directoryName = Split-Path -Leaf $recordBasePath
+        $expectedBasePath = Normalize-WindowsPath (Join-Path $StateRoot $directoryName)
+        if ($record.Schema -ne 2 -or $record.DistroName -ne $Name -or
             $record.MarkerValue -ne $DistroMarkerValue -or $record.State -ne "pending" -or
-            (Normalize-WindowsPath ([string]$record.BasePath)) -ne $expectedBasePath -or
+            $directoryName -notmatch '^WSL-[0-9a-f]{32}$' -or $recordBasePath -ne $expectedBasePath -or
             (Test-WslBasePathRegistered $expectedBasePath)) {
             return $false
         }
@@ -193,6 +198,30 @@ function Remove-AbandonedWslImport([string]$RecordPath, [string]$Name, [string]$
         if ($_.Exception.Message -like "Refusing to remove an abandoned WSL import*") {
             throw
         }
+        return $false
+    }
+}
+
+function Bind-PendingWslRegistration([string]$RecordPath, [string]$Name, [string]$StateRoot) {
+    try {
+        $record = Read-WslRegistrationRecord $RecordPath
+        $registration = Get-WslDistroRegistration $Name
+        if (-not $record -or -not $registration -or $record.Schema -ne 2 -or
+            $record.DistroName -ne $Name -or $record.MarkerValue -ne $DistroMarkerValue -or
+            $record.State -ne "pending" -or ([string]$record.RegistrationId)) {
+            return $false
+        }
+        $recordBasePath = Normalize-WindowsPath ([string]$record.BasePath)
+        $directoryName = Split-Path -Leaf $recordBasePath
+        $expectedBasePath = Normalize-WindowsPath (Join-Path $StateRoot $directoryName)
+        if ($directoryName -notmatch '^WSL-[0-9a-f]{32}$' -or $recordBasePath -ne $expectedBasePath -or
+            (Normalize-WindowsPath $registration.BasePath) -ne $expectedBasePath) {
+            return $false
+        }
+        Write-WslRegistrationRecord `
+            $RecordPath $Name $registration.BasePath "pending" $registration.RegistrationId
+        return $true
+    } catch {
         return $false
     }
 }
@@ -481,30 +510,30 @@ function Install-HStream {
 
     $stateRoot = Join-Path $env:LOCALAPPDATA "HStream"
     $downloads = Join-Path $stateRoot "Downloads"
-    $distroRoot = Join-Path $stateRoot "WSL"
     $pendingImport = Join-Path $stateRoot "pending-wsl-import.json"
     $installationRecord = Join-Path $stateRoot "wsl-installation.json"
     New-Item -ItemType Directory -Force -Path $downloads | Out-Null
     $rootfs = Join-Path $downloads $UbuntuRootfsName
-    $importedThisRun = $false
     try {
         if (-not (Test-WslDistro $DistroName)) {
-            Remove-AbandonedWslImport $pendingImport $DistroName $distroRoot | Out-Null
-            if (Test-Path -LiteralPath $distroRoot) {
-                throw "Refusing to reuse an unverified WSL import directory: $distroRoot"
+            if (Test-Path -LiteralPath $pendingImport) {
+                $removedAbandonedImport = Remove-AbandonedWslImport $pendingImport $DistroName $stateRoot
+                if (-not $removedAbandonedImport) {
+                    throw "Refusing to overwrite an unverified pending WSL import record: $pendingImport"
+                }
             }
             Download-VerifiedFile `
                 -Uri $UbuntuRootfsUri `
                 -Destination $rootfs `
                 -ChecksumName $UbuntuRootfsName `
                 -ExpectedHash $UbuntuRootfsSha256
-            New-Item -ItemType Directory -Path $distroRoot | Out-Null
+            $distroRoot = Join-Path $stateRoot ("WSL-" + [Guid]::NewGuid().ToString("N"))
             Write-WslRegistrationRecord $pendingImport $DistroName $distroRoot "pending" ""
+            New-Item -ItemType Directory -Path $distroRoot | Out-Null
             Write-Stage "Importing the dedicated $DistroName WSL 2 distribution"
             Invoke-Checked -FilePath $WslExecutable -ArgumentList @(
                 "--import", $DistroName, $distroRoot, $rootfs, "--version", "2"
             ) | Out-Null
-            $importedThisRun = $true
             $registration = Get-WslDistroRegistration $DistroName
             if (-not $registration -or
                 (Normalize-WindowsPath $registration.BasePath) -ne (Normalize-WindowsPath $distroRoot)) {
@@ -515,6 +544,7 @@ function Install-HStream {
             Remove-Item -Force -LiteralPath $rootfs
             Set-HStreamDistroOwnership $DistroName
         } elseif (-not (Test-HStreamDistroOwnership $DistroName)) {
+            Bind-PendingWslRegistration $pendingImport $DistroName $stateRoot | Out-Null
             if (-not (Test-WslRegistrationRecord $pendingImport $DistroName "pending")) {
                 throw "A WSL distribution named $DistroName already exists but is not managed by the HStream installer. Rename it or choose a different Windows account before installing."
             }
@@ -546,14 +576,14 @@ function Install-HStream {
             $installationRecord $DistroName $registration.BasePath "complete" $registration.RegistrationId
         Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $pendingImport, $rootfs
     } catch {
-        if ($importedThisRun -or (Test-WslRegistrationRecord $pendingImport $DistroName "pending")) {
+        if (Test-WslRegistrationRecord $pendingImport $DistroName "pending") {
             Write-Stage "Removing the incomplete HStream WSL import"
             & $WslExecutable --unregister $DistroName | Out-Null
             if ($LASTEXITCODE -eq 0) {
                 Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $pendingImport
             }
         } elseif (-not (Test-WslDistro $DistroName)) {
-            Remove-AbandonedWslImport $pendingImport $DistroName $distroRoot | Out-Null
+            Remove-AbandonedWslImport $pendingImport $DistroName $stateRoot | Out-Null
         }
         throw
     }
@@ -621,6 +651,13 @@ function Unregister-HStream {
         }
         Write-Stage "Unregistering $DistroName and permanently deleting its WSL filesystem"
         Invoke-Checked -FilePath $WslExecutable -ArgumentList @("--unregister", $DistroName) | Out-Null
+    } else {
+        if (Test-Path -LiteralPath $pendingImport) {
+            $removedAbandonedImport = Remove-AbandonedWslImport $pendingImport $DistroName $stateRoot
+            if (-not $removedAbandonedImport) {
+                throw "Refusing to discard an unverified pending WSL import record: $pendingImport"
+            }
+        }
     }
     Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $pendingImport, $installationRecord
 }

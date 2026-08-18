@@ -161,6 +161,8 @@ int main(int argc, char** argv) {
           contains(windows_powershell, "$record.Schema -eq 2") &&
           contains(windows_powershell, "Get-WslDistroRegistration") &&
           contains(windows_powershell, "Remove-AbandonedWslImport") &&
+          contains(windows_powershell, "Bind-PendingWslRegistration") &&
+          contains(windows_powershell, "^WSL-[0-9a-f]{32}$") &&
           contains(windows_powershell, "Removing the incomplete HStream WSL import") &&
           contains(windows_powershell, "--import\", $DistroName") &&
           contains(windows_powershell, "install ok installed $expectedHStreamVersion") &&

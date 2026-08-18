@@ -84,8 +84,10 @@ satisfies HStream's `libcuda.so.1` dependency.
 The installer refuses to reuse or unregister an existing WSL distribution named
 `HStream` unless it can verify installer ownership. The primary proof is a
 marker written inside the distro at import time. A pending import transaction
-records the expected WSL registration path so a failed import can be safely
-removed before retry. After registration, the transaction and the durable
+records a random, per-import WSL directory before it is created so a failed
+import can be safely removed before retry. If execution stops just after WSL
+registers it, that random path safely identifies the registration whose GUID
+must be bound on the next run. After registration, the transaction and durable
 record under `%LOCALAPPDATA%\HStream` are bound to the Lxss registration GUID as
 well as its name and base path. This lets the uninstaller verify the same
 registration even when the distro is damaged and cannot boot to expose its
