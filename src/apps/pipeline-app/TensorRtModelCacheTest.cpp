@@ -215,6 +215,14 @@ int main(int argc, char** argv) {
     ok &= expect(
         writable_loader_cached["property"]["custom-lib-path"].as<std::string>() == staged_yolo.string(),
         "the writable-model runtime config must use the staged custom library path");
+    ok &= expect(
+        writable_loader_cached["property"]["onnx-file"].as<std::string>() ==
+            fs::absolute(configs / "writable-detector.onnx").lexically_normal().string(),
+        "moving a staged-parser config must preserve its relative ONNX path");
+    ok &= expect(
+        writable_loader_cached["property"]["model-engine-file"].as<std::string>() ==
+            fs::absolute(configs / "writable-detector.engine").lexically_normal().string(),
+        "moving a staged-parser config must preserve its relative engine path");
   }
 
   const fs::path second_runtime_libraries = root / "runtime-libraries-second-launch";

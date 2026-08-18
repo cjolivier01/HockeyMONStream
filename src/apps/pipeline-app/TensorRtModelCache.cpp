@@ -94,6 +94,24 @@ std::optional<fs::path> staged_custom_library_path(const std::string& raw_key, c
   return fs::absolute(candidate).lexically_normal();
 }
 
+void relocate_inference_paths(YAML::Node properties, const fs::path& base, bool include_model_engine) {
+  if (!properties || !properties.IsMap())
+    return;
+  for (auto property : properties) {
+    const std::string key = property.first.as<std::string>();
+    if ((!include_model_engine && key == "model-engine-file") || !property.second.IsScalar() ||
+        !is_path_property(key)) {
+      continue;
+    }
+    const std::string value = property.second.as<std::string>();
+    if (const auto staged = staged_custom_library_path(key, value); staged.has_value()) {
+      properties[key] = staged->string();
+    } else if (!value.empty() && !is_loader_resolved_custom_library(key, value)) {
+      properties[key] = fs::absolute(resolve_path(value, base)).lexically_normal().string();
+    }
+  }
+}
+
 absl::Status ensure_owned_temporary_root(const fs::path& directory) {
   if (::mkdir(directory.c_str(), 0700) != 0 && errno != EEXIST)
     return absl::InternalError(
@@ -471,7 +489,11 @@ absl::Status prepare_inference_config(
   auto publish_staged_custom_library = [&]() -> absl::Status {
     if (!staged_custom_library.has_value())
       return absl::OkStatus();
-    properties["custom-lib-path"] = staged_custom_library->string();
+    // Moving a DeepStream inference config changes the base for every relative
+    // file property, not only the staged parser that required the move. Keep
+    // the model, engine, labels, and calibration inputs anchored to the
+    // original inference-config directory.
+    relocate_inference_paths(properties, inference_path.parent_path(), true);
     return publish_custom_library_runtime_config(section, inference, inference_path, *staged_custom_library);
   };
   if (!properties || !properties.IsMap() || !properties["onnx-file"] || !properties["model-engine-file"] ||
@@ -521,17 +543,7 @@ absl::Status prepare_inference_config(
   if (!model_status.ok())
     return model_status;
 
-  for (auto property : properties) {
-    const std::string key = property.first.as<std::string>();
-    if (key == "model-engine-file" || !property.second.IsScalar() || !is_path_property(key))
-      continue;
-    const std::string value = property.second.as<std::string>();
-    if (const auto staged = staged_custom_library_path(key, value); staged.has_value()) {
-      properties[key] = staged->string();
-    } else if (!value.empty() && !is_loader_resolved_custom_library(key, value)) {
-      properties[key] = resolve_path(value, inference_path.parent_path()).string();
-    }
-  }
+  relocate_inference_paths(properties, inference_path.parent_path(), false);
   properties["onnx-file"] = cached_onnx.string();
   const bool secondary = section_name.rfind("secondary-gie", 0) == 0;
   fs::path cached_engine = derived_engine_path(cached_onnx, properties, section, pipeline, secondary);
