@@ -554,6 +554,10 @@ bool write_fake_runner(const QString& path) {
       "        print('HSTREAM_CALIBRATION stage=calibration status=complete message=Stitching calibration is "
       "complete', flush=True)\n");
   file.write("        print('hmstitcher: one-pass stitching configuration complete', flush=True)\n");
+  file.write("        time.sleep(float(os.environ.get('HSTREAM_UI_TEST_PLAYBACK_RESTART_DELAY_MS', '0')) / 1000.0)\n");
+  file.write(
+      "        print('HSTREAM_CALIBRATION stage=playback-restart status=complete message=Playback restarted', "
+      "flush=True)\n");
   file.write("if os.environ.get('HSTREAM_UI_TEST_CLOSE_STDIN') == '1':\n");
   file.write("    sys.stdin.close()\n");
   file.write("    time.sleep(5.0)\n");
@@ -1751,7 +1755,21 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
     return false;
 
   qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
+  qputenv("HSTREAM_UI_TEST_PLAYBACK_RESTART_DELAY_MS", "750");
   activate(start);
+  for (int i = 0; i < 400 && !headline->text().contains("Restarting playback"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const YAML::Node waiting_for_restart =
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+  const bool waits_for_restart =
+      expect(
+          dialog->isVisible() && headline->text().contains("Restarting playback") && progress->isVisible(),
+          "Calibration completion must keep the progress popup open while playback restarts") &&
+      expect(
+          waiting_for_restart["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "pending",
+          "The UI must not declare calibration playback running before the restart-complete event");
   for (int i = 0; i < 400 &&
        (dialog->isVisible() ||
         !window->logText().contains("one-pass stitching calibration complete; continuous stitched preview running"));
@@ -1766,6 +1784,7 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   const bool success_ok = expect(
                               !dialog->isVisible(),
                               "Successful rink-complete calibration should close the popup automatically") &&
+      waits_for_restart &&
       expect(window->pipelineStateText() == "PLAYING", "The pipeline should continue after the popup auto-closes") &&
       expect(has_completed_status && completed_status.as<std::string>() == "complete",
              "Only the final rink-complete milestone should persist completed calibration") &&
@@ -1777,6 +1796,7 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
     QTest::qWait(10);
   }
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+  qunsetenv("HSTREAM_UI_TEST_PLAYBACK_RESTART_DELAY_MS");
   if (!success_ok || !set_test_calibration_status(window, "complete"))
     return false;
 

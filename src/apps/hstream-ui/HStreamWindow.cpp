@@ -3138,15 +3138,37 @@ void HStreamWindow::handleStitchingCalibrationOutput(const QString& line) {
   const QString stage = match.captured(1);
   const QString status = match.captured(2);
   const QString message = match.captured(3).trimmed();
+  if (stage == "playback-restart") {
+    if (status == "complete" && !active_run_game_id_.isEmpty()) {
+      calibration_playback_restart_observed_ = true;
+      if (calibration_waiting_for_playback_restart_)
+        completeStitchingCalibration();
+    } else if (status == "failed" && calibration_pending_) {
+      failStitchingCalibration(message.isEmpty() ? "Playback could not restart after stitching." : message);
+    }
+    return;
+  }
   if (!calibration_pending_ && !beginObservedStitchingCalibration(stage))
     return;
   if (status == "started" && calibration_dialog_)
     calibration_dialog_->show();
   if (stage == "calibration") {
-    if (status == "complete")
-      completeStitchingCalibration();
-    else if (status == "failed")
+    if (status == "complete") {
+      calibration_waiting_for_playback_restart_ = true;
+      for (const CalibrationStageSpec& spec : kCalibrationStages)
+        setStitchingCalibrationStage(QString::fromLatin1(spec.id), "complete", {});
+      if (calibration_headline_)
+        calibration_headline_->setText("Restarting playback…");
+      if (calibration_detail_)
+        calibration_detail_->setText("Stitching is ready. Restarting continuous playback from the beginning.");
+      if (preview_status_)
+        preview_status_->setText("Restarting playback after stitching calibration");
+      appendLog("one-pass stitching calibration complete; waiting for continuous playback to restart");
+      if (calibration_playback_restart_observed_)
+        completeStitchingCalibration();
+    } else if (status == "failed") {
       failStitchingCalibration(message.isEmpty() ? "The native stitching calibration failed." : message);
+    }
     return;
   }
   setStitchingCalibrationStage(stage, status, message);
@@ -3173,6 +3195,8 @@ void HStreamWindow::completeStitchingCalibration() {
         "Stitching inputs changed while calibration was running. Stop and press Play to rebuild the newer dependency.");
     return;
   }
+  calibration_waiting_for_playback_restart_ = false;
+  calibration_playback_restart_observed_ = false;
   calibration_pending_ = false;
   for (const CalibrationStageSpec& spec : kCalibrationStages)
     setStitchingCalibrationStage(QString::fromLatin1(spec.id), "complete", {});
@@ -3229,6 +3253,8 @@ void HStreamWindow::completeStitchingCalibration() {
 void HStreamWindow::failStitchingCalibration(const QString& message) {
   if (calibration_dialog_failed_)
     return;
+  calibration_waiting_for_playback_restart_ = false;
+  calibration_playback_restart_observed_ = false;
   if (!calibration_dialog_)
     showStitchingCalibrationDialog();
   calibration_dialog_failed_ = true;
@@ -3381,6 +3407,8 @@ void HStreamWindow::startPipeline() {
   }
   active_run_game_id_ = game_id_edit_->text().trimmed();
   active_run_is_calibration_ = isCalibrationRun();
+  calibration_waiting_for_playback_restart_ = false;
+  calibration_playback_restart_observed_ = false;
   active_calibration_control_points_ = 0;
   active_stitch_frame_time_ = stitchFrameTime();
   active_calibration_start_stage_.clear();
@@ -3847,6 +3875,8 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   }
   last_playtracker_runtime_snapshot_.clear();
   calibration_pending_ = false;
+  calibration_waiting_for_playback_restart_ = false;
+  calibration_playback_restart_observed_ = false;
   active_run_game_id_.clear();
   active_run_is_calibration_ = false;
   active_calibration_control_points_ = 0;
@@ -3955,6 +3985,8 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
     scoreboard_selection_dialog_->closeAfterBackendCompletion();
   failPendingRuntimeControls("pipeline-error");
   calibration_pending_ = false;
+  calibration_waiting_for_playback_restart_ = false;
+  calibration_playback_restart_observed_ = false;
   if (!active_archive_output_path_.isEmpty()) {
     if (error == QProcess::Crashed) {
       output_states_["archive-file"]->setText("CHECKING");

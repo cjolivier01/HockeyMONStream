@@ -6,12 +6,13 @@
 
 #include <sys/wait.h>
 #include <unistd.h>
+#include <yaml-cpp/yaml.h>
 
 namespace {
 
 namespace fs = std::filesystem;
 
-bool exits_with_argument_error(
+int run_and_get_exit_code(
     const char* executable,
     const std::vector<std::string>& arguments,
     const fs::path& game_root = {},
@@ -20,9 +21,13 @@ bool exits_with_argument_error(
   if (child == 0) {
     if (!game_root.empty()) {
       ::setenv("HM_GAME_DIR", game_root.c_str(), 1);
+    } else {
+      ::unsetenv("HM_GAME_DIR");
     }
     if (!control_points_environment.empty()) {
       ::setenv("HM_MAX_CONTROL_POINTS", control_points_environment.c_str(), 1);
+    } else {
+      ::unsetenv("HM_MAX_CONTROL_POINTS");
     }
     std::vector<char*> args{const_cast<char*>(executable)};
     for (const std::string& argument : arguments) {
@@ -33,7 +38,17 @@ bool exits_with_argument_error(
     _exit(127);
   }
   int status = 0;
-  return child > 0 && ::waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 3;
+  if (child <= 0 || ::waitpid(child, &status, 0) != child || !WIFEXITED(status))
+    return -1;
+  return WEXITSTATUS(status);
+}
+
+bool exits_with_argument_error(
+    const char* executable,
+    const std::vector<std::string>& arguments,
+    const fs::path& game_root = {},
+    const std::string& control_points_environment = {}) {
+  return run_and_get_exit_code(executable, arguments, game_root, control_points_environment) == 3;
 }
 
 } // namespace
@@ -65,13 +80,21 @@ int main(int argc, char** argv) {
   const fs::path game_root = root / "games";
   const fs::path game_dir = game_root / "malformed-config";
   const fs::path conflict_game_dir = game_root / "control-point-conflict";
+  const fs::path configured_game_dir = game_root / "configured-game";
   const fs::path pipeline_config = root / "pipeline.yaml";
+  const fs::path configured_pipeline_config = root / "configured-pipeline.yaml";
   const fs::path rotation_zero_config = root / "rotation-zero.yaml";
   const fs::path rotation_ten_config = root / "rotation-ten.yaml";
   fs::create_directories(game_dir);
   fs::create_directories(conflict_game_dir);
+  fs::create_directories(configured_game_dir);
   std::ofstream(game_dir / "config.yaml") << "stitching:\n  stitch_frame_time:\n    - 00:00:07\n";
   std::ofstream(pipeline_config) << "application:\n  stage: 0\n";
+  std::ofstream(configured_pipeline_config) << "application:\n"
+                                            << "  stage: 0\n"
+                                            << "  complete-configuration: 1\n"
+                                            << "hmstitcher:\n"
+                                            << "  enable: 1\n";
   const bool malformed_config_rejected = exits_with_argument_error(
       argv[1], {"--game-id=malformed-config", "--cfg-file=" + pipeline_config.string()}, game_root);
   if (!malformed_config_rejected) {
@@ -83,6 +106,60 @@ int main(int argc, char** argv) {
   if (!exits_with_argument_error(
           argv[1], {"--game-id=malformed-config", "--cfg-file=" + pipeline_config.string()}, game_root)) {
     std::cerr << "FAIL: an explicitly empty config-file stitch-frame time did not produce an invalid-argument exit\n";
+    fs::remove_all(root);
+    return 1;
+  }
+  std::ofstream(configured_game_dir / "config.yaml") << "stitching:\n"
+                                                     << "  stitch_frame_time: 00:00:03\n"
+                                                     << "hstream_ui:\n"
+                                                     << "  stitching_calibration:\n"
+                                                     << "    control_points: 750\n"
+                                                     << "    status: complete\n"
+                                                     << "    invalidation_id: configured-owner\n";
+  if (run_and_get_exit_code(
+          argv[1],
+          {"--game-id=configured-game",
+           "--cfg-file=" + configured_pipeline_config.string(),
+           "--stitch-frame-time=00:00:07",
+           "--clean"},
+          game_root) != 0) {
+    std::cerr << "FAIL: a configured-game nonzero stitch-frame override did not trigger clean calibration setup\n";
+    fs::remove_all(root);
+    return 1;
+  }
+  YAML::Node configured_after_nonzero = YAML::LoadFile((configured_game_dir / "config.yaml").string());
+  const YAML::Node nonzero_calibration = configured_after_nonzero["hstream_ui"]["stitching_calibration"];
+  const std::string nonzero_owner = nonzero_calibration["invalidation_id"].as<std::string>("");
+  if (configured_after_nonzero["stitching"]["stitch_frame_time"].as<std::string>("") != "00:00:07" ||
+      nonzero_calibration["status"].as<std::string>("") != "pending" ||
+      nonzero_calibration["stale_from"].as<std::string>("") != "input" ||
+      nonzero_calibration["artifacts_invalidated"].as<bool>(true) || nonzero_owner.empty() ||
+      nonzero_owner == "configured-owner") {
+    std::cerr << "FAIL: configured-game nonzero CLI override was not persisted and invalidated from input\n"
+              << YAML::Dump(configured_after_nonzero) << '\n';
+    fs::remove_all(root);
+    return 1;
+  }
+  if (run_and_get_exit_code(
+          argv[1],
+          {"--game-id=configured-game",
+           "--cfg-file=" + configured_pipeline_config.string(),
+           "--stitch-frame-time=00:00:00",
+           "--clean"},
+          game_root) != 0) {
+    std::cerr << "FAIL: a configured-game zero stitch-frame override did not trigger clean calibration setup\n";
+    fs::remove_all(root);
+    return 1;
+  }
+  YAML::Node configured_after_zero = YAML::LoadFile((configured_game_dir / "config.yaml").string());
+  const YAML::Node zero_calibration = configured_after_zero["hstream_ui"]["stitching_calibration"];
+  const std::string zero_owner = zero_calibration["invalidation_id"].as<std::string>("");
+  if (configured_after_zero["stitching"]["stitch_frame_time"] ||
+      zero_calibration["status"].as<std::string>("") != "pending" ||
+      zero_calibration["stale_from"].as<std::string>("") != "input" ||
+      zero_calibration["artifacts_invalidated"].as<bool>(true) || zero_owner.empty() || zero_owner == nonzero_owner) {
+    std::cerr << "FAIL: configured-game zero CLI override was not removed and invalidated from input\n"
+              << YAML::Dump(configured_after_zero) << '\n';
     fs::remove_all(root);
     return 1;
   }

@@ -109,7 +109,8 @@ class PipelineProcess {
       bool supply_control_points_environment = true,
       int same_stage_instances = 1,
       int completion_timeout_ms = 0,
-      bool suppress_calibration_completion = false) {
+      bool suppress_calibration_completion = false,
+      int pipeline_recreate_seconds = 0) {
     int input_pipe[2];
     int output_pipe[2];
     if (::pipe(input_pipe) != 0 || ::pipe(output_pipe) != 0) {
@@ -193,6 +194,10 @@ class PipelineProcess {
       }
       if (!stitch_rotate_degrees.empty()) {
         arguments.push_back("--stitch-rotate-degrees=" + stitch_rotate_degrees);
+      }
+      if (pipeline_recreate_seconds > 0) {
+        arguments.push_back(
+            "--options=pipeline.tests.pipeline-recreate-sec=" + std::to_string(pipeline_recreate_seconds));
       }
       std::vector<char*> argv;
       argv.reserve(arguments.size() + 1);
@@ -584,6 +589,45 @@ int main(int argc, char** argv) {
           {}),
       "overlapping camera videos must be generated");
 
+  PipelineProcess periodic_recreation;
+  if (ok) {
+    ok = [&] {
+      if (!expect(
+              write_game_config(game / "config.yaml", 128, "periodic-recreation", false),
+              "periodic recreation calibration config must be written") ||
+          !expect(
+              periodic_recreation.Start(
+                  argv[1],
+                  pipeline_config,
+                  game_root,
+                  plugin_directory,
+                  "periodic-recreation",
+                  128,
+                  false,
+                  /*stitch_frame_time=*/"00:00:59.900",
+                  /*time_limit_seconds=*/0,
+                  /*stitch_rotate_degrees=*/{},
+                  /*supply_runtime_invalidation=*/true,
+                  /*rink_inference_delay_ms=*/0,
+                  /*supply_control_points_environment=*/true,
+                  /*same_stage_instances=*/1,
+                  /*completion_timeout_ms=*/0,
+                  /*suppress_calibration_completion=*/false,
+                  /*pipeline_recreate_seconds=*/1),
+              "periodic recreation calibration pipeline must start") ||
+          !expect(
+              periodic_recreation.WaitFor(
+                  "Deferring periodic pipeline recreation until stitching calibration completes",
+                  0,
+                  kCalibrationTimeout),
+              "periodic recreation must defer while one-pass calibration is active")) {
+        return false;
+      }
+      return stop_successfully(
+          &periodic_recreation, "periodic recreation deferral must leave calibration interruptible");
+    }();
+  }
+
   PipelineProcess initial;
   if (ok) {
     ok = [&] {
@@ -678,6 +722,7 @@ int main(int argc, char** argv) {
   PipelineProcess completed_missing;
   PipelineProcess multi_context_nonzero;
   PipelineProcess multi_context_zero;
+  std::string zero_time_invalidation_id;
   if (ok) {
     ok = [&] {
       if (!expect(
@@ -840,9 +885,14 @@ int main(int argc, char** argv) {
         return false;
       }
       auto persisted = hm::stitching::load_game_config_file(game / "config.yaml");
+      if (persisted.ok() && persisted->has_value()) {
+        zero_time_invalidation_id =
+            (**persisted)["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>("");
+      }
       if (!expect(
-              persisted.ok() && persisted->has_value() && !(**persisted)["stitching"]["stitch_frame_time"],
-              "an explicit zero CLI time used for calibration must remove the persisted nonzero dependency")) {
+              persisted.ok() && persisted->has_value() && !(**persisted)["stitching"]["stitch_frame_time"] &&
+                  !zero_time_invalidation_id.empty(),
+              "an explicit zero CLI time must remove the nonzero dependency and own its new generation")) {
         return false;
       }
       return stop_successfully(&multi_context_zero, "same-stage zero-time playback must remain controllable");
@@ -857,7 +907,7 @@ int main(int argc, char** argv) {
                   pipeline_config,
                   game_root,
                   plugin_directory,
-                  "saved-config-time",
+                  zero_time_invalidation_id,
                   128,
                   false,
                   /*stitch_frame_time=*/"00:00:02",

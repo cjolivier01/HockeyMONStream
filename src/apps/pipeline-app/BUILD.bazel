@@ -200,6 +200,7 @@ cc_test(
     srcs = ["StitchFrameTimeCliTest.cpp"],
     args = ["$(location :hstream-cli)"],
     data = [":hstream-cli"],
+    deps = ["@yaml-cpp"],
 )
 
 cc_test(

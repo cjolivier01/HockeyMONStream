@@ -72,7 +72,7 @@ struct StitchFrameRewindRequest {
 };
 
 guint stitch_frame_completion_timeout_ms() {
-  constexpr guint kDefaultTimeoutMs = 30'000;
+  constexpr guint kDefaultTimeoutMs = 300'000;
   const char* configured = g_getenv("HM_TEST_STITCH_FRAME_COMPLETION_TIMEOUT_MS");
   if (!configured || !*configured) {
     return kDefaultTimeoutMs;
@@ -749,6 +749,18 @@ absl::Status PipelineApplication::configureInstances(
         }
       }
 
+      if (stitch_frame_time_set_) {
+        bool stitch_frame_time_changed = false;
+        HM_ASSIGN_OR_RETURN(
+            stitch_frame_time_changed,
+            app_ctx->configurator().reconcile_stitch_frame_time_override(
+                stitch_frame_time_override_config_value_,
+                clean_stitching_expected_invalidation_id_ ? clean_stitching_expected_invalidation_id_ : ""));
+        if (stitch_frame_time_changed) {
+          g_print("Changed stitch-frame time; stitching calibration is pending from the input stage\n");
+        }
+      }
+
       // Now auto-configure stuff as needed, i.e. dependent pipelines or stitching (if needed)
       absl::Status configuration_status = app_ctx->complete_configuration(
           force_reconfigure_,
@@ -766,10 +778,6 @@ absl::Status PipelineApplication::configureInstances(
       }
       if (!configuration_status.ok()) {
         return configuration_status;
-      }
-      if (stitch_frame_time_set_ && app_ctx->configurator().stitching_calibration_required()) {
-        HM_RETURN_IF_ERROR(
-            app_ctx->configurator().persist_stitch_frame_time_override(stitch_frame_time_override_config_value_));
       }
       std::optional<double> stitch_output_rotation;
       HM_ASSIGN_OR_RETURN(stitch_output_rotation, active_stitch_output_rotation(app_ctx->configurator().config()));
@@ -2125,7 +2133,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        G_OPTION_ARG_STRING,
        &stitch_frame_time,
        "Use the frame at this timestamp for one-pass stitching calibration",
-       "HH:MM:SS"},
+       "HH:MM:SS[.mmm]"},
       {"input-uri",
        'i',
        0,
@@ -4189,6 +4197,8 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
       }
     }
     stitch_frame_calibration_active_.store(false, std::memory_order_release);
+    g_print("HSTREAM_CALIBRATION stage=playback-restart status=complete message=Playback restarted\n");
+    std::fflush(stdout);
   }
   return TRUE;
 }
@@ -4348,6 +4358,20 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
     paused_contexts.push_back(context.get());
   }
 
+  // A bus error may arrive after the state poll that first observed PAUSED.
+  // Drain once more at the last safe boundary before any old generation is
+  // destroyed so a genuine decoder/GPU/sink failure cannot be hidden by the
+  // replacement pipeline.
+  for (AppCtx* context : rewind_contexts) {
+    if (!consume_pending_pipeline_errors(context)) {
+      g_printerr("Calibration pipeline failed at the stitch-frame restart boundary\n");
+      quit_ = TRUE;
+      if (main_loop_)
+        g_main_loop_quit(main_loop_);
+      return FALSE;
+    }
+  }
+
   for (AppCtx* context : rewind_contexts) {
     stitch_frame_rewound_contexts_.insert(context);
   }
@@ -4392,6 +4416,8 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
   }
   stitch_frame_calibration_active_.store(false, std::memory_order_release);
   g_print("hmstitcher: playback restarted after stitch-frame calibration\n");
+  g_print("HSTREAM_CALIBRATION stage=playback-restart status=complete message=Playback restarted\n");
+  std::fflush(stdout);
   return G_SOURCE_REMOVE;
 }
 
@@ -4780,9 +4806,15 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
   guint i;
   gboolean ret = TRUE;
   AppCtx* app_ctx_ptr = reinterpret_cast<AppCtx*>(arg);
+  const bool calibration_context = one_pass_calibration_contexts_.count(app_ctx_ptr) != 0;
+  const bool calibration_restart = calibration_context && stitch_frame_rewound_contexts_.count(app_ctx_ptr) != 0;
+  if (calibration_context && !calibration_restart) {
+    g_print("Deferring periodic pipeline recreation until stitching calibration completes\n");
+    return TRUE;
+  }
   g_print("Destroy pipeline\n");
   ui_preview_channels_.clear();
-  if (one_pass_calibration_contexts_.count(app_ctx_ptr) != 0) {
+  if (calibration_restart) {
     destroy_pipeline_for_recreate(app_ctx_ptr);
   } else {
     destroy_pipeline(app_ctx_ptr);

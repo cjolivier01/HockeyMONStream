@@ -368,6 +368,8 @@ class HStreamWindow : public QMainWindow {
   int playback_reset_attempts_{0};
   bool calibration_pending_{false};
   bool calibration_dialog_failed_{false};
+  bool calibration_waiting_for_playback_restart_{false};
+  bool calibration_playback_restart_observed_{false};
   bool preview_focus_mode_{false};
   bool preview_layout_compacted_{false};
   int focused_preview_tab_{-1};
