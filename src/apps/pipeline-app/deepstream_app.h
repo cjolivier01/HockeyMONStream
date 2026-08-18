@@ -56,6 +56,7 @@ typedef void (*bbox_generated_callback)(AppCtx* appCtx, GstBuffer* buf, NvDsBatc
 typedef gboolean (*overlay_graphics_callback)(AppCtx* appCtx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
 typedef gboolean (*element_message_callback)(AppCtx* appCtx, GstMessage* message);
 typedef gboolean (*defer_eos_callback)(AppCtx* appCtx);
+typedef void (*fatal_pipeline_error_callback)(AppCtx* appCtx);
 
 typedef struct {
   guint index;
@@ -224,6 +225,7 @@ struct _AppCtx {
   };
   element_message_callback element_message_cb{nullptr};
   defer_eos_callback defer_eos_cb{nullptr};
+  fatal_pipeline_error_callback fatal_pipeline_error_cb{nullptr};
   NvDsFrameLatencyInfo* latency_info{nullptr};
   GMutex latency_lock{
       0,
@@ -242,7 +244,15 @@ struct _AppCtx {
 class HmApp : public _AppCtx {
  public:
   HmApp(std::string game_id, std::string app_config_file, int override_gpu_id)
-      : game_id_(std::move(game_id)), app_config_file_(std::move(app_config_file)), override_gpu_id_(override_gpu_id) {}
+      : game_id_(std::move(game_id)), app_config_file_(std::move(app_config_file)), override_gpu_id_(override_gpu_id) {
+    g_mutex_init(&app_lock);
+    g_cond_init(&app_cond);
+  }
+
+  ~HmApp() {
+    g_cond_clear(&app_cond);
+    g_mutex_clear(&app_lock);
+  }
 
   const std::string& app_config_file() const {
     return app_config_file_;

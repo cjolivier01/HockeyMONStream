@@ -85,6 +85,8 @@ int main(int argc, char** argv) {
   const fs::path nonstitch_pipeline_config = root / "nonstitch-pipeline.yaml";
   const fs::path disabled_stitch_pipeline_config = root / "disabled-stitch-pipeline.yaml";
   const fs::path configured_pipeline_config = root / "configured-pipeline.yaml";
+  const fs::path incomplete_bad_rotation_config = root / "incomplete-bad-rotation.yaml";
+  const fs::path unusable_trailing_config = root / "unusable-trailing.yaml";
   const fs::path rotation_zero_config = root / "rotation-zero.yaml";
   const fs::path rotation_ten_config = root / "rotation-ten.yaml";
   fs::create_directories(game_dir);
@@ -108,6 +110,17 @@ int main(int argc, char** argv) {
                                             << "  complete-configuration: 1\n"
                                             << "hmstitcher:\n"
                                             << "  enable: 1\n";
+  std::ofstream(incomplete_bad_rotation_config) << "application:\n"
+                                                << "  stage: 0\n"
+                                                << "  complete-configuration: 0\n"
+                                                << "hmstitcher:\n"
+                                                << "  enable: 1\n"
+                                                << "  post-stitch-rotate-degrees: definitely-invalid\n";
+  std::ofstream(unusable_trailing_config) << "application:\n"
+                                          << "  stage: 0\n"
+                                          << "source0:\n"
+                                          << "  enable: 1\n"
+                                          << "  config-file: deliberately-missing-subconfig.yaml\n";
   const bool malformed_config_rejected = exits_with_argument_error(
       argv[1], {"--game-id=malformed-config", "--cfg-file=" + pipeline_config.string()}, game_root);
   if (!malformed_config_rejected) {
@@ -132,15 +145,17 @@ int main(int argc, char** argv) {
   const int configured_nonzero_exit = run_and_get_exit_code(
       argv[1],
       {"--game-id=configured-game",
+       "--cfg-file=" + incomplete_bad_rotation_config.string(),
        "--cfg-file=" + nonstitch_pipeline_config.string(),
        "--cfg-file=" + disabled_stitch_pipeline_config.string(),
        "--cfg-file=" + configured_pipeline_config.string(),
-       "--cfg-file=" + configured_pipeline_config.string(),
+       "--cfg-file=" + unusable_trailing_config.string(),
        "--stitch-frame-time=00:00:07",
        "--clean"},
       game_root);
   if (configured_nonzero_exit != 0) {
-    std::cerr << "FAIL: configured-game nonzero stitch-frame override did not complete clean-only setup\n";
+    std::cerr
+        << "FAIL: clean-only setup did not skip an incomplete bad rotation or globally short-circuit trailing YAML\n";
     fs::remove_all(root);
     return 1;
   }

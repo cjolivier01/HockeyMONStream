@@ -114,7 +114,9 @@ class PipelineProcess {
       const std::string& enabled_source_type = "URI-MULTIPLE",
       const fs::path& same_stage_peer_config = {},
       bool suppress_restart_playing = false,
-      int restart_timeout_ms = 0) {
+      int restart_timeout_ms = 0,
+      bool inject_calibration_error = false,
+      bool inject_replacement_eos = false) {
     int input_pipe[2];
     int output_pipe[2];
     if (::pipe(input_pipe) != 0 || ::pipe(output_pipe) != 0) {
@@ -180,6 +182,16 @@ class PipelineProcess {
         ::setenv("HM_TEST_STITCH_FRAME_RESTART_TIMEOUT_MS", std::to_string(restart_timeout_ms).c_str(), 1);
       } else {
         ::unsetenv("HM_TEST_STITCH_FRAME_RESTART_TIMEOUT_MS");
+      }
+      if (inject_calibration_error) {
+        ::setenv("HM_TEST_INJECT_STITCHING_CALIBRATION_ERROR", "1", 1);
+      } else {
+        ::unsetenv("HM_TEST_INJECT_STITCHING_CALIBRATION_ERROR");
+      }
+      if (inject_replacement_eos) {
+        ::setenv("HM_TEST_STITCH_FRAME_REPLACEMENT_EOS", "1", 1);
+      } else {
+        ::unsetenv("HM_TEST_STITCH_FRAME_REPLACEMENT_EOS");
       }
       if (start_from_features && supply_runtime_invalidation) {
         ::setenv("HSTREAM_CALIBRATION_START_STAGE", "features", 1);
@@ -842,6 +854,8 @@ int main(int argc, char** argv) {
   PipelineProcess completed_missing;
   PipelineProcess multi_context_nonzero;
   PipelineProcess nonstitch_peer;
+  PipelineProcess fatal_error_with_peer;
+  PipelineProcess replacement_eos;
   PipelineProcess restart_timeout;
   PipelineProcess multi_context_zero;
   std::string zero_time_invalidation_id;
@@ -1064,6 +1078,100 @@ int main(int argc, char** argv) {
 
   if (ok) {
     ok = [&] {
+      if (!expect(remove_rink_masks(game), "fatal calibration error fixture must remove the saved rink mask") ||
+          !expect(
+              fatal_error_with_peer.Start(
+                  argv[1],
+                  pipeline_config,
+                  game_root,
+                  plugin_directory,
+                  "saved-config-time",
+                  128,
+                  false,
+                  /*stitch_frame_time=*/{},
+                  /*time_limit_seconds=*/0,
+                  /*stitch_rotate_degrees=*/{},
+                  /*supply_runtime_invalidation=*/false,
+                  /*rink_inference_delay_ms=*/0,
+                  /*supply_control_points_environment=*/false,
+                  /*same_stage_instances=*/1,
+                  /*completion_timeout_ms=*/0,
+                  /*suppress_calibration_completion=*/false,
+                  /*pipeline_recreate_seconds=*/0,
+                  /*enabled_source_type=*/"URI-MULTIPLE",
+                  /*same_stage_peer_config=*/nonstitch_peer_pipeline_config,
+                  /*suppress_restart_playing=*/false,
+                  /*restart_timeout_ms=*/0,
+                  /*inject_calibration_error=*/true),
+              "calibration error pipeline with an ordinary same-stage peer must start") ||
+          !expect(
+              fatal_error_with_peer.WaitFor(
+                  "HSTREAM_CALIBRATION stage=calibration status=failed", 0, kCalibrationTimeout),
+              "a fatal calibration error must publish structured failure for the whole stage")) {
+        return false;
+      }
+      int exit_code = 0;
+      return expect(
+                 fatal_error_with_peer.WaitForExit(&exit_code, std::chrono::seconds(10)),
+                 "a fatal calibration error must stop an ordinary same-stage peer promptly") &&
+          expect(exit_code != 0, "a fatal calibration error with an ordinary peer must return failure") &&
+          expect(fatal_error_with_peer.output().find("HSTREAM_CALIBRATION stage=playback-restart status=complete") ==
+                     std::string::npos,
+                 "a fatal calibration error must not publish playback restart completion");
+    }();
+  }
+
+  if (ok) {
+    ok = [&] {
+      if (!expect(remove_rink_masks(game), "replacement EOS fixture must remove the saved rink mask") ||
+          !expect(
+              replacement_eos.Start(
+                  argv[1],
+                  pipeline_config,
+                  game_root,
+                  plugin_directory,
+                  "saved-config-time",
+                  128,
+                  false,
+                  /*stitch_frame_time=*/{},
+                  /*time_limit_seconds=*/0,
+                  /*stitch_rotate_degrees=*/{},
+                  /*supply_runtime_invalidation=*/false,
+                  /*rink_inference_delay_ms=*/0,
+                  /*supply_control_points_environment=*/false,
+                  /*same_stage_instances=*/1,
+                  /*completion_timeout_ms=*/0,
+                  /*suppress_calibration_completion=*/false,
+                  /*pipeline_recreate_seconds=*/0,
+                  /*enabled_source_type=*/"URI-MULTIPLE",
+                  /*same_stage_peer_config=*/{},
+                  /*suppress_restart_playing=*/false,
+                  /*restart_timeout_ms=*/0,
+                  /*inject_calibration_error=*/false,
+                  /*inject_replacement_eos=*/true),
+              "replacement EOS calibration pipeline must start") ||
+          !expect(
+              replacement_eos.WaitFor("posting replacement EOS before restart finalization", 0, kCalibrationTimeout),
+              "replacement EOS must be posted while restart finalization is pending") ||
+          !expect(
+              replacement_eos.WaitFor(
+                  "HSTREAM_CALIBRATION stage=playback-restart status=complete", 0, kCalibrationTimeout),
+              "replacement EOS must allow restart bookkeeping to finish")) {
+        return false;
+      }
+      int exit_code = 0;
+      return expect(
+                 replacement_eos.WaitForExit(&exit_code, std::chrono::seconds(10)),
+                 "replacement EOS must terminate finite playback promptly") &&
+          expect(exit_code == 0, "replacement EOS must remain a normal successful end of playback") &&
+          expect(replacement_eos.output().find("HSTREAM_CALIBRATION stage=playback-restart status=failed") ==
+                     std::string::npos,
+                 "replacement EOS must not be misclassified as restart failure");
+    }();
+  }
+
+  if (ok) {
+    ok = [&] {
       if (!expect(remove_rink_masks(game), "multi-context zero fixture must remove the saved rink mask") ||
           !expect(
               multi_context_zero.Start(
@@ -1279,6 +1387,8 @@ int main(int argc, char** argv) {
     completed_missing.DumpOutput("completed config with missing artifact");
     multi_context_nonzero.DumpOutput("same-stage nonzero calibration");
     nonstitch_peer.DumpOutput("same-stage non-stitch peer calibration");
+    fatal_error_with_peer.DumpOutput("fatal calibration error with peer");
+    replacement_eos.DumpOutput("replacement EOS calibration");
     restart_timeout.DumpOutput("suppressed-PLAYING restart calibration");
     multi_context_zero.DumpOutput("same-stage zero calibration");
     rotated.DumpOutput("rotation-invalidated calibration");

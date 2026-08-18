@@ -142,6 +142,8 @@ class PipelineApplication {
   gboolean event_thread_func();
   static gboolean handle_element_message_static(AppCtx* app_ctx, GstMessage* message);
   gboolean handle_element_message(AppCtx* app_ctx, GstMessage* message);
+  static void handle_fatal_pipeline_error_static(AppCtx* app_ctx);
+  void handle_fatal_pipeline_error(AppCtx* app_ctx);
   static gboolean should_defer_eos_static(AppCtx* app_ctx);
   gboolean should_defer_eos(AppCtx* app_ctx);
   static gboolean stitch_frame_completion_timeout_static(gpointer arg);
@@ -159,6 +161,8 @@ class PipelineApplication {
   gboolean overlay_graphics(AppCtx* app_ctx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
   static gboolean recreate_pipeline_thread_func_static(gpointer arg);
   gboolean recreate_pipeline_thread_func(gpointer arg);
+  static gboolean inject_stitching_calibration_error_static(gpointer arg);
+  gboolean inject_stitching_calibration_error();
   absl::Status auto_focus_cameras(const std::vector<std::shared_ptr<HmApp>>& app_contexts) const;
   absl::Status configure_source_preview_sinks(const std::vector<std::shared_ptr<HmApp>>& app_contexts);
 

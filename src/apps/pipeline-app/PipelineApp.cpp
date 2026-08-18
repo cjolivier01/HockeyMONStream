@@ -670,6 +670,7 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
     app_ctx->active_source_index = -1;
     app_ctx->element_message_cb = handle_element_message_static;
     app_ctx->defer_eos_cb = should_defer_eos_static;
+    app_ctx->fatal_pipeline_error_cb = handle_fatal_pipeline_error_static;
     if (show_bbox_text_)
       app_ctx->show_bbox_text = TRUE;
     if (input_uris_ && input_uris_[i]) {
@@ -702,6 +703,12 @@ absl::Status PipelineApplication::configureInstances(
   const bool clean_only_requested = clean_stitching_artifacts_ || clean_stitching_from_control_points_;
   for (size_t i = 0; i < app_contexts.size(); ++i) {
     auto& app_ctx = app_contexts[i];
+    // Clean-only is a single global action. Once an eligible context has
+    // completed it, later contexts must not load subconfigs, apply overrides,
+    // or validate settings that cannot affect the already-finished cleanup.
+    if (clean_only_requested && clean_only_action_completed_) {
+      continue;
+    }
     const bool yaml_config = g_str_has_suffix(app_ctx->app_config_file().c_str(), ".yml") ||
         g_str_has_suffix(app_ctx->app_config_file().c_str(), ".yaml");
     // Clean-only eligibility depends on the layered YAML configuration. Legacy
@@ -773,16 +780,22 @@ absl::Status PipelineApplication::configureInstances(
         }
       }
 
-      const auto active_stitcher_before_configuration = active_stitch_output_rotation(app_ctx->configurator().config());
-      if (!active_stitcher_before_configuration.ok()) {
-        return active_stitcher_before_configuration.status();
-      }
       bool complete_configuration_enabled = false;
       try {
         complete_configuration_enabled =
             hm::get_node_value(app_ctx->configurator().config(), "pipeline.application.complete-configuration", false);
       } catch (const std::exception& error) {
         return absl::InvalidArgumentError(TO_STRING("Invalid complete-configuration setting: " << error.what()));
+      }
+      // Rotation is a runtime stitcher setting. An incomplete configuration
+      // cannot own a clean-only action, so do not reject cleanup based on a
+      // malformed rotation in a context that will be skipped globally.
+      if (clean_only_requested && !complete_configuration_enabled) {
+        continue;
+      }
+      const auto active_stitcher_before_configuration = active_stitch_output_rotation(app_ctx->configurator().config());
+      if (!active_stitcher_before_configuration.ok()) {
+        return active_stitcher_before_configuration.status();
       }
       const bool clean_eligible = active_stitcher_before_configuration->has_value() && complete_configuration_enabled;
       if (clean_only_requested) {
@@ -1781,6 +1794,9 @@ absl::Status PipelineApplication::playPipelines(
   print_runtime_commands();
   changemode(1);
   g_timeout_add(40, event_thread_func_static, nullptr);
+  if (g_getenv("HM_TEST_INJECT_STITCHING_CALIBRATION_ERROR")) {
+    g_idle_add(inject_stitching_calibration_error_static, nullptr);
+  }
   if (!ui_preview_channels_.empty()) {
     // Re-arm the initial channel directly after PLAYING. Startup must not race
     // an external command against installation of the GLib stdin poll.
@@ -4060,6 +4076,54 @@ gboolean PipelineApplication::handle_element_message_static(AppCtx* app_ctx, Gst
   return instance_ ? instance_->handle_element_message(app_ctx, message) : FALSE;
 }
 
+void PipelineApplication::handle_fatal_pipeline_error_static(AppCtx* app_ctx) {
+  if (instance_) {
+    instance_->handle_fatal_pipeline_error(app_ctx);
+  }
+}
+
+void PipelineApplication::handle_fatal_pipeline_error(AppCtx* app_ctx) {
+  if (!app_ctx || !stitch_frame_calibration_active_.load(std::memory_order_acquire)) {
+    return;
+  }
+  const auto active_stage = stage_app_contexts_.find(current_stage_);
+  if (active_stage == stage_app_contexts_.end() ||
+      std::none_of(active_stage->second.begin(), active_stage->second.end(), [app_ctx](const auto& context) {
+        return context.get() == app_ctx;
+      })) {
+    return;
+  }
+  if (!stitch_frame_calibration_active_.exchange(false, std::memory_order_acq_rel)) {
+    return;
+  }
+  const bool restart_active = stitch_frame_rewind_cancellation_requested_ || stitch_frame_restart_awaiting_playing_ ||
+      stitch_frame_rewound_contexts_.count(app_ctx) != 0;
+  if (stitch_frame_rewind_source_id_ != 0) {
+    g_source_remove(stitch_frame_rewind_source_id_);
+    stitch_frame_rewind_source_id_ = 0;
+  }
+  cancel_stitch_frame_completion_timeout();
+  stitch_frame_rewind_pending_contexts_.clear();
+  stitch_frame_rewind_cancellation_requested_ = false;
+  stitch_frame_restart_awaiting_playing_ = false;
+  stitch_frame_rewind_deadline_ = {};
+  for (const auto& context : active_stage->second) {
+    if (!context) {
+      continue;
+    }
+    context->return_value = -1;
+    context->quit = TRUE;
+  }
+  g_print(
+      "HSTREAM_CALIBRATION stage=%s status=failed message=Pipeline failed during stitching calibration\n",
+      restart_active ? "playback-restart" : "calibration");
+  std::fflush(stdout);
+  quit_ = TRUE;
+  if (main_loop_) {
+    g_main_loop_quit(main_loop_);
+  }
+}
+
 gboolean PipelineApplication::should_defer_eos_static(AppCtx* app_ctx) {
   return instance_ ? instance_->should_defer_eos(app_ctx) : FALSE;
 }
@@ -4079,7 +4143,7 @@ gboolean PipelineApplication::should_defer_eos(AppCtx* app_ctx) {
   if (context == active_stage->second.end()) {
     return FALSE;
   }
-  if (stitch_frame_rewind_pending_contexts_.count(app_ctx) != 0) {
+  if (stitch_frame_rewind_pending_contexts_.count(app_ctx) != 0 && stitch_frame_rewound_contexts_.count(app_ctx) == 0) {
     return TRUE;
   }
   std::vector<hm::pipeline_internal::StitchFrameRewindState> states;
@@ -4335,9 +4399,10 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
     stitch_frame_rewind_cancellation_requested_ = false;
     stitch_frame_restart_awaiting_playing_ = false;
     stitch_frame_rewind_deadline_ = {};
-    stitch_frame_calibration_active_.store(false, std::memory_order_release);
-    g_print("HSTREAM_CALIBRATION stage=playback-restart status=failed message=%s\n", message);
-    std::fflush(stdout);
+    if (stitch_frame_calibration_active_.exchange(false, std::memory_order_acq_rel)) {
+      g_print("HSTREAM_CALIBRATION stage=playback-restart status=failed message=%s\n", message);
+      std::fflush(stdout);
+    }
     quit_ = TRUE;
     if (main_loop_) {
       g_main_loop_quit(main_loop_);
@@ -4450,9 +4515,15 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
 
   bool all_playing = true;
   for (AppCtx* context : stage_contexts) {
-    if (!dispatch_pending_pipeline_bus_messages(context)) {
+    const gboolean bus_running = dispatch_pending_pipeline_bus_messages(context);
+    const bool replacement_eos = stitch_frame_rewound_contexts_.count(context) != 0 && context->eos_received &&
+        context->quit && context->return_value == 0;
+    if (!bus_running && !replacement_eos) {
       return fail_restart(
           "A replacement pipeline failed while entering PLAYING", "Playback failed while restarting after calibration");
+    }
+    if (replacement_eos) {
+      continue;
     }
     GstState current = GST_STATE_VOID_PENDING;
     GstState pending = GST_STATE_VOID_PENDING;
@@ -4477,12 +4548,17 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
         "Timed out restarting playback after calibration");
   }
   for (AppCtx* context : stage_contexts) {
-    if (!dispatch_pending_pipeline_bus_messages(context)) {
+    const gboolean bus_running = dispatch_pending_pipeline_bus_messages(context);
+    const bool replacement_eos = stitch_frame_rewound_contexts_.count(context) != 0 && context->eos_received &&
+        context->quit && context->return_value == 0;
+    if (!bus_running && !replacement_eos) {
       return fail_restart(
           "A replacement pipeline failed immediately after entering PLAYING",
           "Playback failed while restarting after calibration");
     }
-    resume_perf_measurement(&context->perf_struct);
+    if (!replacement_eos) {
+      resume_perf_measurement(&context->perf_struct);
+    }
   }
 
   // The calibration pipelines were paused before the shared timing fields
@@ -4517,6 +4593,18 @@ gboolean PipelineApplication::event_thread_func() {
       break;
   }
   if (i == app_ctx.size()) {
+    // Replacement EOS is terminal playback, not calibration EOS. Give the
+    // already-scheduled restart callback one turn to consume that terminal
+    // state and publish completion before the stage loop exits normally.
+    const bool replacement_eos_awaiting_finalization =
+        stitch_frame_restart_awaiting_playing_ && stitch_frame_calibration_active_.load(std::memory_order_acquire) &&
+        std::any_of(app_ctx.begin(), app_ctx.end(), [this](const auto& context) {
+          return context && stitch_frame_rewound_contexts_.count(context.get()) != 0 && context->eos_received &&
+              context->return_value == 0;
+        });
+    if (replacement_eos_awaiting_finalization) {
+      return TRUE;
+    }
     quit_ = TRUE;
     if (main_loop_)
       g_main_loop_quit(main_loop_);
@@ -4888,6 +4976,34 @@ gboolean PipelineApplication::recreate_pipeline_thread_func_static(gpointer arg)
   return instance_ ? instance_->recreate_pipeline_thread_func(arg) : FALSE;
 }
 
+gboolean PipelineApplication::inject_stitching_calibration_error_static(gpointer /*arg*/) {
+  return instance_ ? instance_->inject_stitching_calibration_error() : G_SOURCE_REMOVE;
+}
+
+gboolean PipelineApplication::inject_stitching_calibration_error() {
+  if (!stitch_frame_calibration_active_.load(std::memory_order_acquire)) {
+    return G_SOURCE_REMOVE;
+  }
+  const auto active_stage = stage_app_contexts_.find(current_stage_);
+  if (active_stage == stage_app_contexts_.end()) {
+    return G_SOURCE_REMOVE;
+  }
+  for (const auto& context : active_stage->second) {
+    if (!context || one_pass_calibration_contexts_.count(context.get()) == 0 || !context->pipeline.pipeline) {
+      continue;
+    }
+    g_print("hmstitcher: injecting calibration pipeline error for lifecycle test\n");
+    GError* error = g_error_new_literal(
+        g_quark_from_static_string("hstream-stitch-frame-lifecycle-test"), 1, "injected calibration pipeline failure");
+    GstMessage* message = gst_message_new_error(
+        GST_OBJECT(context->pipeline.pipeline), error, "injected calibration pipeline failure with same-stage peer");
+    g_error_free(error);
+    gst_element_post_message(context->pipeline.pipeline, message);
+    return G_SOURCE_REMOVE;
+  }
+  return G_SOURCE_REMOVE;
+}
+
 gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
   guint i;
   gboolean ret = TRUE;
@@ -4959,6 +5075,11 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
   if (gst_element_set_state(app_ctx_ptr->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
     g_print("\ncan't set pipeline to playing state.\n");
     return FALSE;
+  }
+  if (calibration_restart && g_getenv("HM_TEST_STITCH_FRAME_REPLACEMENT_EOS")) {
+    g_print("hmstitcher: posting replacement EOS before restart finalization for lifecycle test\n");
+    gst_element_post_message(
+        app_ctx_ptr->pipeline.pipeline, gst_message_new_eos(GST_OBJECT(app_ctx_ptr->pipeline.pipeline)));
   }
   return ret;
 }

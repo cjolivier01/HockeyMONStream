@@ -360,6 +360,9 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       g_free(debuginfo);
       appCtx->return_value = -1;
       appCtx->quit = TRUE;
+      if (appCtx->fatal_pipeline_error_cb) {
+        appCtx->fatal_pipeline_error_cb(appCtx);
+      }
       break;
     }
     case GST_MESSAGE_STATE_CHANGED: {
@@ -2208,8 +2211,6 @@ gboolean create_pipeline(
 
   GST_DEBUG_BIN_TO_DOT_FILE_WITH_TS(GST_BIN(appCtx->pipeline.pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "ds-app-null");
 
-  g_mutex_init(&appCtx->app_lock);
-  g_cond_init(&appCtx->app_cond);
   g_mutex_init(&appCtx->latency_lock);
 
   bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline->pipeline));
