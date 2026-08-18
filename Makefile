@@ -26,6 +26,7 @@ JETSON_DEB_HOST ?= stubby
 JETSON_DEB_OUTPUT_DIR ?= $(TOPDIR)/dist/jetson
 WINDOWS_INSTALLER_OUTPUT_DIR ?= $(TOPDIR)/dist/windows
 WINDOWS_INSTALLER_VERSION ?=
+WINDOWS_INSTALLER_REPOSITORY ?= cjolivier01/hstream
 
 all: print_targets
 
@@ -146,7 +147,10 @@ delete-release:
 wsl-deb: deb
 
 windows-installer:
-	scripts/make_windows_installer.sh --output-dir="$(WINDOWS_INSTALLER_OUTPUT_DIR)" $(if $(WINDOWS_INSTALLER_VERSION),--version="$(WINDOWS_INSTALLER_VERSION)",)
+	scripts/make_windows_installer.sh \
+		--output-dir="$(WINDOWS_INSTALLER_OUTPUT_DIR)" \
+		--repository="$(WINDOWS_INSTALLER_REPOSITORY)" \
+		$(if $(WINDOWS_INSTALLER_VERSION),--version="$(WINDOWS_INSTALLER_VERSION)",)
 
 clean:
 	$(BAZEL) clean

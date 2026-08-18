@@ -100,7 +100,8 @@ int main(int argc, char** argv) {
           contains(publisher, "git remote get-url --push --all origin") &&
           contains(publisher, "hugin_2022.0.0+dfsg.orig.tar.xz") && contains(publisher, "10#${patch}") &&
           contains(publisher, "(0|[1-9][0-9]*)") && contains(publisher, "windows-wsl-setup.exe") &&
-          contains(publisher, "sha256sum ./*.deb ./*.exe") && contains(publisher, "\"${release_dir}\"/*.exe"),
+          contains(publisher, "sha256sum ./*.deb ./*.exe") && contains(publisher, "\"${release_dir}\"/*.exe") &&
+          contains(publisher, "WINDOWS_INSTALLER_REPOSITORY=\"${repository}\""),
       "release publication must verify provenance/source compliance, increment strict semver, and publish Windows setup");
   ok &= expect(
       contains(windows_builder, "makensis") && contains(windows_builder, "rsvg-convert") &&
@@ -111,24 +112,35 @@ int main(int argc, char** argv) {
       contains(windows_nsis, "File /oname=hstream-wsl.ps1") &&
           contains(windows_nsis, "File /oname=install-hstream-deb") &&
           !contains(windows_nsis, "File /oname=hstream.deb") && !contains(windows_nsis, "File /oname=deepstream.deb") &&
+          contains(windows_nsis, "RequestExecutionLevel user") &&
+          !contains(windows_nsis, "RequestExecutionLevel admin") &&
           contains(windows_nsis, "Select NVIDIA DeepStream") && contains(windows_nsis, "MB_DEFBUTTON2") &&
           contains(windows_nsis, "permanently deletes") && contains(windows_nsis, "NSD_CreatePassword") &&
           contains(windows_nsis, "SetEnvironmentVariableW") && !contains(windows_nsis, "-GitHubToken"),
       "Windows setup must remain a small bootstrapper, keep credentials off command lines, and confirm data deletion");
   ok &= expect(
       contains(windows_powershell, "Download-VerifiedFile") && contains(windows_powershell, "Get-FileHash") &&
-          contains(windows_powershell, "cloud-images.ubuntu.com/wsl/releases/24.04") &&
+          contains(windows_powershell, "cloud-images.ubuntu.com/wsl/releases/24.04/20240423") &&
+          contains(windows_powershell, "UbuntuRootfsSha256") &&
           contains(windows_powershell, "releases/download/$VersionTag") &&
-      contains(windows_powershell, "api.github.com/repos/$RepositoryName/releases/assets") &&
+          contains(windows_powershell, "api.github.com/repos/$RepositoryName/releases/assets") &&
           contains(windows_powershell, "HSTREAM_GITHUB_TOKEN") &&
           contains(windows_powershell, "wsl.2.7.11.0.x64.msi") &&
           contains(windows_powershell, "A611DDACEE689D2FB1FB5319E58AF7F3998864D86CDCE632EADD8E61614A0F9D") &&
+          contains(windows_powershell, "MinimumWslVersion") &&
+          contains(windows_powershell, "Get-WslRuntimeVersion") &&
+          contains(windows_powershell, "EnsureWslMachine") &&
+          contains(windows_powershell, "Start-Process") && contains(windows_powershell, "-Verb RunAs") &&
           contains(windows_powershell, "Get-AuthenticodeSignature") &&
           contains(windows_powershell, "O=Microsoft Corporation") && contains(windows_powershell, "msiexec.exe") &&
           contains(windows_powershell, "\"/qn\"") && !contains(windows_powershell, "wsl.exe --install") &&
           contains(windows_powershell, "^ID=ubuntu$") &&
           contains(windows_powershell, "^VERSION_ID=.*24[.]04.*$") &&
           contains(windows_powershell, "/lib64/ld-linux-x86-64.so.2") &&
+          contains(windows_powershell, "PROCESSOR_ARCHITEW6432") &&
+          contains(windows_powershell, "Test-HStreamDistroOwnership") &&
+          contains(windows_powershell, "hstream-wsl-bootstrapper-schema-1") &&
+          contains(windows_powershell, "Refusing to unregister") &&
           contains(windows_powershell, "--import\", $DistroName") &&
           contains(windows_powershell, "/usr/lib/wsl/lib/libcuda.so.1") &&
           contains(windows_powershell, "Package: hstream-wsl-libcuda") &&

@@ -4,11 +4,14 @@
 It does not embed Ubuntu, HStream, DeepStream, or pretrained assets. At install
 time it:
 
-1. enables WSL 2 and requests a restart when Windows requires one;
-2. when the Store-delivered WSL runtime is absent, silently installs Microsoft's
-   pinned WSL 2.7.11 MSI after SHA-256 and Authenticode verification;
-3. downloads Canonical's Ubuntu 24.04 AMD64 WSL root filesystem and verifies it
-   against Canonical's `SHA256SUMS`;
+1. requests administrator approval only when machine-level WSL prerequisites
+   need to be installed, while keeping the distro and launchers in the invoking
+   user's account;
+2. when the Store-delivered WSL runtime is absent or older than 2.7.11, silently
+   installs Microsoft's pinned WSL MSI after SHA-256 and Authenticode
+   verification;
+3. downloads a dated Canonical Ubuntu 24.04 AMD64 WSL root filesystem and
+   verifies it against the SHA-256 digest embedded in the bootstrapper;
 4. imports a dedicated per-user distribution named `HStream`;
 5. downloads the versioned Ubuntu 24.04 HStream package and verifies it against
    the `SHA256SUMS` from the same GitHub Release;
@@ -28,7 +31,7 @@ line, and is not stored by the installer.
 Install the small cross-build toolchain once:
 
 ```bash
-sudo apt-get install nsis librsvg2-bin icoutils
+sudo apt-get install nsis librsvg2-bin icoutils file
 ```
 
 Then build an installer for the highest local release tag:
@@ -59,6 +62,10 @@ the Debian packages and `SHA256SUMS`.
 The installer never installs a Linux display driver. A small dependency marker
 inside the dedicated distro tells APT that the Windows-projected WSL CUDA driver
 satisfies HStream's `libcuda.so.1` dependency.
+
+The installer refuses to reuse or unregister an existing WSL distribution named
+`HStream` unless it contains the ownership marker written at import time. This
+prevents an unrelated distro with the same name from being modified or deleted.
 
 Uninstall removes the Windows launcher by default. Removing the dedicated WSL
 distribution is a separate, explicit confirmation because it permanently

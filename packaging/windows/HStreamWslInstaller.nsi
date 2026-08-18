@@ -1,5 +1,5 @@
 Unicode True
-RequestExecutionLevel admin
+RequestExecutionLevel user
 SetCompressor /SOLID lzma
 SetCompressorDictSize 32
 

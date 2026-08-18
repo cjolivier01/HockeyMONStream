@@ -26,7 +26,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-for command_name in git gh make dpkg-deb sha256sum makensis rsvg-convert icotool file; do
+for command_name in git gh; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     echo "ERROR: required command not found: ${command_name}" >&2
     exit 1
@@ -127,6 +127,13 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
   exit 0
 fi
 
+for command_name in make dpkg-deb sha256sum makensis rsvg-convert icotool file; do
+  if ! command -v "${command_name}" >/dev/null 2>&1; then
+    echo "ERROR: required release build command not found: ${command_name}" >&2
+    exit 1
+  fi
+done
+
 if ! git diff --quiet HEAD -- || ! git diff --cached --quiet; then
   echo "ERROR: refusing to publish with tracked or staged changes." >&2
   exit 1
@@ -168,7 +175,8 @@ make deb-ubuntu26 PACKAGE_VERSION="${release_tag}" DEB_OUTPUT_DIR="${build_dir}/
 make deb-jetson PACKAGE_VERSION="${release_tag}" JETSON_DEB_OUTPUT_DIR="${build_dir}/jetson"
 make windows-installer \
   WINDOWS_INSTALLER_VERSION="${release_tag}" \
-  WINDOWS_INSTALLER_OUTPUT_DIR="${build_dir}/windows"
+  WINDOWS_INSTALLER_OUTPUT_DIR="${build_dir}/windows" \
+  WINDOWS_INSTALLER_REPOSITORY="${repository}"
 
 validate_and_stage_deb() {
   local source_path="$1"

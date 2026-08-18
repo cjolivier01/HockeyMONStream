@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("Install", "Launch", "Unregister")]
+    [ValidateSet("Install", "Launch", "Unregister", "EnsureWslMachine")]
     [string]$Action = "Install",
     [string]$VersionTag = "",
     [string]$Repository = "cjolivier01/hstream",
@@ -14,6 +14,12 @@ $ProgressPreference = "SilentlyContinue"
 
 $WslMsiUri = "https://github.com/microsoft/WSL/releases/download/2.7.11/wsl.2.7.11.0.x64.msi"
 $WslMsiSha256 = "A611DDACEE689D2FB1FB5319E58AF7F3998864D86CDCE632EADD8E61614A0F9D"
+$MinimumWslVersion = [Version]"2.7.11.0"
+$UbuntuRootfsName = "ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz"
+$UbuntuRootfsUri = "https://cloud-images.ubuntu.com/wsl/releases/24.04/20240423/$UbuntuRootfsName"
+$UbuntuRootfsSha256 = "8251E27FFFF381A4AF5F41DCB94D867DE3E0D9774A9241908AB34555D99315EA"
+$DistroMarkerPath = "/etc/hstream-wsl-distribution"
+$DistroMarkerValue = "hstream-wsl-bootstrapper-schema-1"
 
 function Write-Stage([string]$Message) {
     Write-Host "[HStream] $Message"
@@ -43,6 +49,14 @@ function Get-WslDistros {
 
 function Test-WslDistro([string]$Name) {
     return (Get-WslDistros) -contains $Name
+}
+
+function Test-HStreamDistroOwnership([string]$Name) {
+    if (-not (Test-WslDistro $Name)) {
+        return $false
+    }
+    & wsl.exe --distribution $Name --user root -- "/bin/grep" "-Fxq" $DistroMarkerValue $DistroMarkerPath
+    return $LASTEXITCODE -eq 0
 }
 
 function Get-WslPath([string]$WindowsPath) {
@@ -88,27 +102,38 @@ function Download-VerifiedFile {
     param(
         [Parameter(Mandatory = $true)][string]$Uri,
         [Parameter(Mandatory = $true)][string]$Destination,
-        [Parameter(Mandatory = $true)][string]$ChecksumUri,
-        [Parameter(Mandatory = $true)][string]$ChecksumName,
+        [string]$ChecksumUri = "",
+        [string]$ChecksumName = "",
+        [string]$ExpectedHash = "",
         [string]$GitHubRepository = "",
         [string]$GitHubReleaseTag = ""
     )
-    $checksumPath = "$Destination.SHA256SUMS"
-    Write-Stage "Downloading checksums from $ChecksumUri"
-    if ($GitHubRepository) {
-        Save-GitHubReleaseAsset -RepositoryName $GitHubRepository -ReleaseTag $GitHubReleaseTag `
-            -AssetName "SHA256SUMS" -Destination $checksumPath
+    if ($ExpectedHash) {
+        if ($ExpectedHash -notmatch '^[0-9a-fA-F]{64}$') {
+            throw "ExpectedHash must be a SHA-256 digest."
+        }
+        $expectedHash = $ExpectedHash.ToUpperInvariant()
     } else {
-        Invoke-WebRequest -UseBasicParsing -Uri $ChecksumUri -OutFile $checksumPath
+        if (-not $ChecksumUri -or -not $ChecksumName) {
+            throw "ChecksumUri and ChecksumName are required when ExpectedHash is omitted."
+        }
+        $checksumPath = "$Destination.SHA256SUMS"
+        Write-Stage "Downloading checksums from $ChecksumUri"
+        if ($GitHubRepository) {
+            Save-GitHubReleaseAsset -RepositoryName $GitHubRepository -ReleaseTag $GitHubReleaseTag `
+                -AssetName "SHA256SUMS" -Destination $checksumPath
+        } else {
+            Invoke-WebRequest -UseBasicParsing -Uri $ChecksumUri -OutFile $checksumPath
+        }
+        $escapedName = [Regex]::Escape($ChecksumName)
+        $checksumLine = Get-Content -LiteralPath $checksumPath | Where-Object {
+            $_ -match "^([0-9a-fA-F]{64})\s+\*?(?:[.][\\/])?$escapedName$"
+        } | Select-Object -First 1
+        if (-not $checksumLine) {
+            throw "No SHA-256 entry for $ChecksumName in $ChecksumUri"
+        }
+        $expectedHash = ([Regex]::Match($checksumLine, "^[0-9a-fA-F]{64}").Value).ToUpperInvariant()
     }
-    $escapedName = [Regex]::Escape($ChecksumName)
-    $checksumLine = Get-Content -LiteralPath $checksumPath | Where-Object {
-        $_ -match "^([0-9a-fA-F]{64})\s+\*?(?:[.][\\/])?$escapedName$"
-    } | Select-Object -First 1
-    if (-not $checksumLine) {
-        throw "No SHA-256 entry for $ChecksumName in $ChecksumUri"
-    }
-    $expectedHash = ([Regex]::Match($checksumLine, "^[0-9a-fA-F]{64}").Value).ToUpperInvariant()
     $download = $true
     if (Test-Path -LiteralPath $Destination -PathType Leaf) {
         $download = (Get-FileHash -Algorithm SHA256 -LiteralPath $Destination).Hash -ne $expectedHash
@@ -132,11 +157,42 @@ function Download-VerifiedFile {
     if ((Get-FileHash -Algorithm SHA256 -LiteralPath $Destination).Hash -ne $expectedHash) {
         throw "SHA-256 verification failed for cached file $Destination"
     }
-    Write-Stage "Verified $ChecksumName"
+    $verifiedName = if ($ChecksumName) { $ChecksumName } else { [IO.Path]::GetFileName($Destination) }
+    Write-Stage "Verified $verifiedName"
+}
+
+function Get-WslRuntimeVersion {
+    if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
+        return $null
+    }
+    $output = @(& wsl.exe --version 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        return $null
+    }
+    foreach ($line in $output) {
+        $normalized = ($line -replace [char]0, "").Trim()
+        if ($normalized -match '([0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?)') {
+            try {
+                return [Version]$Matches[1]
+            } catch {
+                return $null
+            }
+        }
+    }
+    return $null
+}
+
+function Test-WslRuntimeReady {
+    $version = Get-WslRuntimeVersion
+    if (-not $version -or $version -lt $MinimumWslVersion) {
+        return $false
+    }
+    & wsl.exe --status 2>$null | Out-Null
+    return $LASTEXITCODE -eq 0
 }
 
 function Install-WslRuntime {
-    $downloads = Join-Path (Join-Path $env:LOCALAPPDATA "HStream") "Downloads"
+    $downloads = Join-Path (Join-Path $env:ProgramData "HStream") "Downloads"
     $wslMsi = Join-Path $downloads "wsl.2.7.11.0.x64.msi"
     New-Item -ItemType Directory -Force -Path $downloads | Out-Null
 
@@ -177,7 +233,7 @@ function Install-WslRuntime {
     }
 }
 
-function Ensure-WslPlatform {
+function Ensure-WslMachinePrerequisites {
     $rebootRequired = $false
     foreach ($featureName in @("Microsoft-Windows-Subsystem-Linux", "VirtualMachinePlatform")) {
         $feature = Get-WindowsOptionalFeature -Online -FeatureName $featureName
@@ -194,12 +250,40 @@ function Ensure-WslPlatform {
     if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
         throw "wsl.exe is unavailable after enabling the required Windows features."
     }
+    $version = Get-WslRuntimeVersion
+    if (-not $version -or $version -lt $MinimumWslVersion) {
+        Install-WslRuntime
+    }
     & wsl.exe --status | Out-Host
     if ($LASTEXITCODE -ne 0) {
-        Install-WslRuntime
-        & wsl.exe --status | Out-Host
-        if ($LASTEXITCODE -ne 0) {
-            throw "The Microsoft WSL runtime was installed, but wsl.exe --status still fails (exit $LASTEXITCODE)."
+        throw "The Microsoft WSL runtime is installed, but wsl.exe --status fails (exit $LASTEXITCODE)."
+    }
+}
+
+function Ensure-WslPlatform {
+    if (-not (Test-WslRuntimeReady)) {
+        Write-Stage "Requesting administrator approval for Windows WSL prerequisites"
+        $powershell = Join-Path $PSHOME "powershell.exe"
+        $quotedScriptPath = '"' + $PSCommandPath + '"'
+        $githubToken = $env:HSTREAM_GITHUB_TOKEN
+        try {
+            $env:HSTREAM_GITHUB_TOKEN = $null
+            $process = Start-Process -FilePath $powershell -Verb RunAs -Wait -PassThru -ArgumentList @(
+                "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $quotedScriptPath,
+                "-Action", "EnsureWslMachine"
+            )
+        } finally {
+            $env:HSTREAM_GITHUB_TOKEN = $githubToken
+        }
+        if ($process.ExitCode -eq 3010) {
+            Write-Stage "Windows must restart before WSL provisioning can continue."
+            exit 3010
+        }
+        if ($process.ExitCode -ne 0) {
+            throw "The elevated WSL prerequisite helper failed with exit code $($process.ExitCode)."
+        }
+        if (-not (Test-WslRuntimeReady)) {
+            throw "WSL $MinimumWslVersion or newer is required, but the runtime is still unavailable."
         }
     }
     Invoke-Checked -FilePath "wsl.exe" -ArgumentList @("--set-default-version", "2") | Out-Null
@@ -257,7 +341,12 @@ function Install-HStream {
     if ($DistroName -notmatch '^[A-Za-z0-9._-]+$') {
         throw "DistroName contains unsupported characters."
     }
-    if (-not [Environment]::Is64BitOperatingSystem) {
+    $nativeArchitecture = if ($env:PROCESSOR_ARCHITEW6432) {
+        $env:PROCESSOR_ARCHITEW6432
+    } else {
+        $env:PROCESSOR_ARCHITECTURE
+    }
+    if (-not [Environment]::Is64BitOperatingSystem -or $nativeArchitecture -ne "AMD64") {
         throw "HStream requires 64-bit Windows on an AMD64 processor."
     }
     if (-not (Test-Path -LiteralPath $DeepStreamDeb -PathType Leaf)) {
@@ -269,20 +358,28 @@ function Install-HStream {
     $downloads = Join-Path $stateRoot "Downloads"
     $distroRoot = Join-Path $stateRoot "WSL"
     New-Item -ItemType Directory -Force -Path $downloads | Out-Null
-    $rootfsName = "ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz"
-    $rootfs = Join-Path $downloads $rootfsName
+    $rootfs = Join-Path $downloads $UbuntuRootfsName
     if (-not (Test-WslDistro $DistroName)) {
         Download-VerifiedFile `
-            -Uri "https://cloud-images.ubuntu.com/wsl/releases/24.04/current/$rootfsName" `
+            -Uri $UbuntuRootfsUri `
             -Destination $rootfs `
-            -ChecksumUri "https://cloud-images.ubuntu.com/wsl/releases/24.04/current/SHA256SUMS" `
-            -ChecksumName $rootfsName
+            -ChecksumName $UbuntuRootfsName `
+            -ExpectedHash $UbuntuRootfsSha256
         New-Item -ItemType Directory -Force -Path $distroRoot | Out-Null
         Write-Stage "Importing the dedicated $DistroName WSL 2 distribution"
         Invoke-Checked -FilePath "wsl.exe" -ArgumentList @(
             "--import", $DistroName, $distroRoot, $rootfs, "--version", "2"
         ) | Out-Null
         Remove-Item -Force -LiteralPath $rootfs
+        Invoke-Checked -FilePath "wsl.exe" -ArgumentList @(
+            "--distribution", $DistroName, "--user", "root", "--", "sh", "-c",
+            "printf '%s\n' '$DistroMarkerValue' > '$DistroMarkerPath'"
+        ) | Out-Null
+    } elseif (-not (Test-HStreamDistroOwnership $DistroName)) {
+        throw "A WSL distribution named $DistroName already exists but is not managed by the HStream installer. Rename it or choose a different Windows account before installing."
+    }
+    if (-not (Test-HStreamDistroOwnership $DistroName)) {
+        throw "The $DistroName WSL distribution is missing its HStream ownership marker."
     }
 
     Write-Stage "Validating the imported Ubuntu distribution"
@@ -344,6 +441,9 @@ function Launch-HStream {
 
 function Unregister-HStream {
     if (Test-WslDistro $DistroName) {
+        if (-not (Test-HStreamDistroOwnership $DistroName)) {
+            throw "Refusing to unregister $DistroName because it is not owned by the HStream installer."
+        }
         Write-Stage "Unregistering $DistroName and permanently deleting its WSL filesystem"
         Invoke-Checked -FilePath "wsl.exe" -ArgumentList @("--unregister", $DistroName) | Out-Null
     }
@@ -358,6 +458,7 @@ try {
         "Install" { Install-HStream }
         "Launch" { Launch-HStream }
         "Unregister" { Unregister-HStream }
+        "EnsureWslMachine" { Ensure-WslMachinePrerequisites }
     }
 } catch {
     Write-Error $_
