@@ -37,6 +37,32 @@ bool expect(bool condition, const char* message) {
 int main() {
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
   bool ok = true;
+  const auto rotation_value = [](const YAML::Node& config) {
+    return hm::configurator_internal::effective_stitch_output_rotation(config);
+  };
+  const auto missing_rotation = rotation_value(YAML::Load("{}"));
+  const auto global_null_rotation = rotation_value(YAML::Load("stitching:\n  post_stitch_rotate_degrees: null\n"));
+  const auto global_rotation = rotation_value(YAML::Load("stitching:\n  post_stitch_rotate_degrees: 2.5\n"));
+  const auto pipeline_null_fallback = rotation_value(
+      YAML::Load(
+          "stitching:\n  post_stitch_rotate_degrees: 2.5\n"
+          "pipeline:\n  hmstitcher:\n    post-stitch-rotate-degrees: null\n"));
+  const auto pipeline_override = rotation_value(
+      YAML::Load(
+          "stitching:\n  post_stitch_rotate_degrees: invalid-lower-priority-value\n"
+          "pipeline:\n  hmstitcher:\n    post-stitch-rotate-degrees: 5\n"));
+  const auto malformed_pipeline = rotation_value(
+      YAML::Load(
+          "stitching:\n  post_stitch_rotate_degrees: 2.5\n"
+          "pipeline:\n  hmstitcher:\n    post-stitch-rotate-degrees: invalid\n"));
+  const auto non_finite_pipeline =
+      rotation_value(YAML::Load("pipeline:\n  hmstitcher:\n    post-stitch-rotate-degrees: .nan\n"));
+  ok &= expect(
+      missing_rotation.ok() && *missing_rotation == 0.0 && global_null_rotation.ok() && *global_null_rotation == 0.0 &&
+          global_rotation.ok() && *global_rotation == 2.5 && pipeline_null_fallback.ok() &&
+          *pipeline_null_fallback == 2.5 && pipeline_override.ok() && *pipeline_override == 5.0 &&
+          absl::IsInvalidArgument(malformed_pipeline.status()) && absl::IsInvalidArgument(non_finite_pipeline.status()),
+      "Stitch output rotation must use the highest-priority non-null value and reject an invalid active value");
   ok &= expect(
       !hm::OnePassCalibrationRequired(
           /*one_pass_mode=*/false, /*stitching_configured=*/false, /*field_mask_configured=*/false) &&

@@ -187,6 +187,16 @@ post-stitch-rotate-degrees: nope
     return 1;
   }
 
+  HmStitcherConfig null_stitcher_rotation{};
+  const YAML::Node null_stitcher_rotation_yaml = YAML::Load(R"yaml(
+post-stitch-rotate-degrees: null
+)yaml");
+  if (!parse_hmstitcher_yaml(&null_stitcher_rotation, null_stitcher_rotation_yaml, "/tmp") ||
+      null_stitcher_rotation.post_stitch_rotate_degrees != 0.0F) {
+    std::cerr << "Expected null post-stitch-rotate-degrees to behave as unset\n";
+    return 1;
+  }
+
   const YAML::Node uri_playlist_config = YAML::Load(R"yaml(
 application:
   enable-perf-measurement: 0

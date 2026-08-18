@@ -365,16 +365,20 @@ gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_
   SET_LOCATOR(locator, *config, show);
   SET_LOCATOR(locator, *config, force_scoreboard_config);
   double post_stitch_rotate_degrees = 0.0;
-  if (!parse_finite_yaml_double(
+  YAML::Node post_stitch_rotate_degrees_node;
+  const bool post_stitch_rotate_degrees_set =
+      find_yaml_alias(
+          yaml_node, "post-stitch-rotate-degrees", "post_stitch_rotate_degrees", &post_stitch_rotate_degrees_node) &&
+      !post_stitch_rotate_degrees_node.IsNull();
+  if (post_stitch_rotate_degrees_set &&
+      !parse_finite_yaml_double(
           yaml_node, "post-stitch-rotate-degrees", "post_stitch_rotate_degrees", &post_stitch_rotate_degrees)) {
     return false;
   }
-  YAML::Node post_stitch_rotate_degrees_node;
-  if (find_yaml_alias(
-          yaml_node, "post-stitch-rotate-degrees", "post_stitch_rotate_degrees", &post_stitch_rotate_degrees_node)) {
+  if (post_stitch_rotate_degrees_set) {
     config->post_stitch_rotate_degrees = static_cast<gfloat>(post_stitch_rotate_degrees);
   }
-  SET_LOCATOR(locator, *config, post_stitch_rotate_degrees);
+  locator.ignored.emplace("post_stitch_rotate_degrees");
   SET_LOCATOR(locator, *config, minimize_blend);
   SET_LOCATOR(locator, *config, ui_preview);
   SET_LOCATOR_CHARS(locator, *config, stitch_compute_precision);

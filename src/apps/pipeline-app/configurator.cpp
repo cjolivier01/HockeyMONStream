@@ -836,6 +836,28 @@ absl::Status configurator_internal::validate_mixed_explicit_auto_playlists(
       "Select both Left and Right explicitly, or use Auto for both cameras.");
 }
 
+absl::StatusOr<double> configurator_internal::effective_stitch_output_rotation(const YAML::Node& config) {
+  for (const char* path : {
+           "pipeline.hmstitcher.post-stitch-rotate-degrees",
+           "stitching.post_stitch_rotate_degrees",
+       }) {
+    const auto value = get_node(config, path);
+    if (!value.has_value() || value->IsNull()) {
+      continue;
+    }
+    try {
+      const double rotation = value->as<double>();
+      if (!std::isfinite(rotation)) {
+        return absl::InvalidArgumentError(std::string(path) + " must be finite");
+      }
+      return rotation == 0.0 ? 0.0 : rotation;
+    } catch (const std::exception& error) {
+      return absl::InvalidArgumentError("Invalid " + std::string(path) + ": " + error.what());
+    }
+  }
+  return 0.0;
+}
+
 namespace {
 
 absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
@@ -1202,10 +1224,8 @@ void Configurator::map_common_config_keys() {
 }
 
 absl::Status Configurator::invalidate_rotation_dependent_cache_if_needed(const fs::path& game_dir) {
-  const double desired_rotation = get_rotation_or_default(
-      config_,
-      "pipeline.hmstitcher.post-stitch-rotate-degrees",
-      get_rotation_or_default(config_, "stitching.post_stitch_rotate_degrees", 0.0));
+  double desired_rotation = 0.0;
+  HM_ASSIGN_OR_RETURN(desired_rotation, configurator_internal::effective_stitch_output_rotation(config_));
   constexpr double kRotationEpsilon = 1e-6;
   const bool has_marker = has_node(private_config_, "stitching.generated_field_mask_post_stitch_rotate_degrees", true);
   bool should_invalidate = std::abs(desired_rotation) > kRotationEpsilon;
