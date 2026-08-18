@@ -148,7 +148,10 @@ int main(int argc, char** argv) {
           contains(windows_powershell, "hstream-wsl-bootstrapper-schema-1") &&
           contains(windows_powershell, "Refusing to unregister") &&
           contains(windows_powershell, "pending-wsl-import.json") &&
-          contains(windows_powershell, "Test-PendingImportTransaction") &&
+          contains(windows_powershell, "wsl-installation.json") &&
+          contains(windows_powershell, "Write-WslRegistrationRecord") &&
+          contains(windows_powershell, "Test-WslRegistrationRecord") &&
+          contains(windows_powershell, "State = $State") && contains(windows_powershell, "$distroRoot \"complete\"") &&
           contains(windows_powershell, "Get-WslDistroBasePath") &&
           contains(windows_powershell, "Removing the incomplete HStream WSL import") &&
           contains(windows_powershell, "--import\", $DistroName") &&

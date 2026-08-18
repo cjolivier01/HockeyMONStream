@@ -69,7 +69,10 @@ The installer refuses to reuse or unregister an existing WSL distribution named
 `HStream` unless it contains the ownership marker written at import time. This
 prevents an unrelated distro with the same name from being modified or deleted.
 An import transaction records the expected WSL registration path so an
-interrupted import can be safely completed or removed on the next run.
+interrupted import can be safely completed or removed on the next run. After
+the import completes, a separate record under `%LOCALAPPDATA%\HStream` retains
+the registered base path. This lets the uninstaller verify ownership even when
+the distro is damaged and cannot boot to expose its in-distro marker.
 
 Uninstall removes the Windows launcher by default. Removing the dedicated WSL
 distribution is a separate, explicit confirmation because it permanently

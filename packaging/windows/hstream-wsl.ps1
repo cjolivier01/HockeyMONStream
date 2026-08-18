@@ -83,32 +83,34 @@ function Get-WslDistroBasePath([string]$Name) {
     return ""
 }
 
-function Write-PendingImportTransaction([string]$Path, [string]$Name, [string]$BasePath) {
+function Write-WslRegistrationRecord([string]$Path, [string]$Name, [string]$BasePath, [string]$State) {
     $temporary = "$Path.new"
     [ordered]@{
         Schema = 1
         DistroName = $Name
         BasePath = (Normalize-WindowsPath $BasePath)
         MarkerValue = $DistroMarkerValue
+        State = $State
     } | ConvertTo-Json -Compress | Set-Content -LiteralPath $temporary -Encoding UTF8
     Move-Item -Force -LiteralPath $temporary -Destination $Path
 }
 
-function Test-PendingImportTransaction([string]$Path, [string]$Name, [string]$BasePath) {
+function Test-WslRegistrationRecord([string]$Path, [string]$Name, [string]$BasePath, [string]$State) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         return $false
     }
     try {
-        $transaction = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+        $record = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
         $registeredBasePath = Get-WslDistroBasePath $Name
         if (-not $registeredBasePath) {
             return $false
         }
         $expectedBasePath = Normalize-WindowsPath $BasePath
-        return $transaction.Schema -eq 1 -and
-            $transaction.DistroName -eq $Name -and
-            $transaction.MarkerValue -eq $DistroMarkerValue -and
-            (Normalize-WindowsPath ([string]$transaction.BasePath)) -eq $expectedBasePath -and
+        return $record.Schema -eq 1 -and
+            $record.DistroName -eq $Name -and
+            $record.MarkerValue -eq $DistroMarkerValue -and
+            $record.State -eq $State -and
+            (Normalize-WindowsPath ([string]$record.BasePath)) -eq $expectedBasePath -and
             (Normalize-WindowsPath $registeredBasePath) -eq $expectedBasePath
     } catch {
         return $false
@@ -400,6 +402,7 @@ function Install-HStream {
     $downloads = Join-Path $stateRoot "Downloads"
     $distroRoot = Join-Path $stateRoot "WSL"
     $pendingImport = Join-Path $stateRoot "pending-wsl-import.json"
+    $installationRecord = Join-Path $stateRoot "wsl-installation.json"
     New-Item -ItemType Directory -Force -Path $downloads | Out-Null
     $rootfs = Join-Path $downloads $UbuntuRootfsName
     try {
@@ -410,7 +413,7 @@ function Install-HStream {
                 -ChecksumName $UbuntuRootfsName `
                 -ExpectedHash $UbuntuRootfsSha256
             New-Item -ItemType Directory -Force -Path $distroRoot | Out-Null
-            Write-PendingImportTransaction $pendingImport $DistroName $distroRoot
+            Write-WslRegistrationRecord $pendingImport $DistroName $distroRoot "pending"
             Write-Stage "Importing the dedicated $DistroName WSL 2 distribution"
             Invoke-Checked -FilePath "wsl.exe" -ArgumentList @(
                 "--import", $DistroName, $distroRoot, $rootfs, "--version", "2"
@@ -418,7 +421,7 @@ function Install-HStream {
             Remove-Item -Force -LiteralPath $rootfs
             Set-HStreamDistroOwnership $DistroName
         } elseif (-not (Test-HStreamDistroOwnership $DistroName)) {
-            if (-not (Test-PendingImportTransaction $pendingImport $DistroName $distroRoot)) {
+            if (-not (Test-WslRegistrationRecord $pendingImport $DistroName $distroRoot "pending")) {
                 throw "A WSL distribution named $DistroName already exists but is not managed by the HStream installer. Rename it or choose a different Windows account before installing."
             }
             Write-Stage "Recovering an interrupted HStream WSL import"
@@ -441,9 +444,10 @@ function Install-HStream {
             "--distribution", $DistroName, "--user", "root", "--",
             "/usr/bin/test", "-e", "/lib64/ld-linux-x86-64.so.2"
         ) | Out-Null
+        Write-WslRegistrationRecord $installationRecord $DistroName $distroRoot "complete"
         Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $pendingImport, $rootfs
     } catch {
-        if (Test-PendingImportTransaction $pendingImport $DistroName $distroRoot) {
+        if (Test-WslRegistrationRecord $pendingImport $DistroName $distroRoot "pending") {
             Write-Stage "Removing the incomplete HStream WSL import"
             & wsl.exe --unregister $DistroName | Out-Null
             if ($LASTEXITCODE -eq 0) {
@@ -502,16 +506,19 @@ function Unregister-HStream {
     $stateRoot = Join-Path $env:LOCALAPPDATA "HStream"
     $distroRoot = Join-Path $stateRoot "WSL"
     $pendingImport = Join-Path $stateRoot "pending-wsl-import.json"
+    $installationRecord = Join-Path $stateRoot "wsl-installation.json"
     if (Test-WslDistro $DistroName) {
         if (-not (Test-HStreamDistroOwnership $DistroName)) {
-            if (-not (Test-PendingImportTransaction $pendingImport $DistroName $distroRoot)) {
+            $hasPendingRecord = Test-WslRegistrationRecord $pendingImport $DistroName $distroRoot "pending"
+            $hasInstallationRecord = Test-WslRegistrationRecord $installationRecord $DistroName $distroRoot "complete"
+            if (-not $hasPendingRecord -and -not $hasInstallationRecord) {
                 throw "Refusing to unregister $DistroName because it is not owned by the HStream installer."
             }
         }
         Write-Stage "Unregistering $DistroName and permanently deleting its WSL filesystem"
         Invoke-Checked -FilePath "wsl.exe" -ArgumentList @("--unregister", $DistroName) | Out-Null
-        Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $pendingImport
     }
+    Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $pendingImport, $installationRecord
 }
 
 $logRoot = Join-Path $env:LOCALAPPDATA "HStream"
