@@ -20,35 +20,34 @@ int main(int argc, char** argv) {
     return 1;
   }
   const fs::path root(pattern);
-  auto run_clean = [&](const char* game_id,
-                       const std::vector<const char*>& clean_flags,
-                       const char* runtime_invalidation_id) {
-    const pid_t child = ::fork();
-    if (child == 0) {
-      ::setenv("HOME", (root / "home").c_str(), 1);
-      ::setenv("HM_GAME_DIR", (root / "games").c_str(), 1);
-      ::setenv("HTTP_PROXY", "http://127.0.0.1:1", 1);
-      ::setenv("HTTPS_PROXY", "http://127.0.0.1:1", 1);
-      if (runtime_invalidation_id != nullptr)
-        ::setenv("HSTREAM_CALIBRATION_INVALIDATION_ID", runtime_invalidation_id, 1);
-      else
-        ::unsetenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
-      std::vector<char*> child_argv = {
-          argv[1],
-          const_cast<char*>("-g"),
-          const_cast<char*>(game_id),
-          const_cast<char*>("-c"),
-          argv[2],
+  auto run_clean =
+      [&](const char* game_id, const std::vector<const char*>& clean_flags, const char* runtime_invalidation_id) {
+        const pid_t child = ::fork();
+        if (child == 0) {
+          ::setenv("HOME", (root / "home").c_str(), 1);
+          ::setenv("HM_GAME_DIR", (root / "games").c_str(), 1);
+          ::setenv("HTTP_PROXY", "http://127.0.0.1:1", 1);
+          ::setenv("HTTPS_PROXY", "http://127.0.0.1:1", 1);
+          if (runtime_invalidation_id != nullptr)
+            ::setenv("HSTREAM_CALIBRATION_INVALIDATION_ID", runtime_invalidation_id, 1);
+          else
+            ::unsetenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
+          std::vector<char*> child_argv = {
+              argv[1],
+              const_cast<char*>("-g"),
+              const_cast<char*>(game_id),
+              const_cast<char*>("-c"),
+              argv[2],
+          };
+          for (const char* flag : clean_flags)
+            child_argv.push_back(const_cast<char*>(flag));
+          child_argv.push_back(nullptr);
+          ::execv(argv[1], child_argv.data());
+          _exit(127);
+        }
+        int status = 0;
+        return child > 0 && ::waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
       };
-      for (const char* flag : clean_flags)
-        child_argv.push_back(const_cast<char*>(flag));
-      child_argv.push_back(nullptr);
-      ::execv(argv[1], child_argv.data());
-      _exit(127);
-    }
-    int status = 0;
-    return child > 0 && ::waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
-  };
 
   const fs::path full_game = root / "games" / "clean-only-test";
   fs::create_directories(full_game);
@@ -63,7 +62,8 @@ int main(int argc, char** argv) {
   std::ofstream(partial_game / "seam_file.png") << "generated artifact\n";
   std::ofstream(partial_game / "config.yaml")
       << "game:\n  stitching:\n    frame_offsets:\n      left: 3\n      right: 0\n"
-      << "hstream_ui:\n  stitching_calibration:\n    status: pending\n    stale_from: features\n"
+      << "hstream_ui:\n  stitching_calibration:\n    control_points: 750\n    status: pending\n"
+      << "    stale_from: features\n"
       << "    artifacts_invalidated: false\n    invalidation_id: partial-clean-token\n";
   const bool partial_clean_ok =
       run_clean(
@@ -87,9 +87,7 @@ int main(int argc, char** argv) {
       !fs::exists(combined_game / "seam_file.png") && !fs::exists(combined_game / "left.png") &&
       !fs::exists(combined_game / "right.png");
   const bool mismatched_runtime_token_rejected = !run_clean(
-      "clean-only-test",
-      {"--clean", "--clean-expected-invalidation-id=cli-token"},
-      "different-environment-token");
+      "clean-only-test", {"--clean", "--clean-expected-invalidation-id=cli-token"}, "different-environment-token");
   const bool no_asset_download = !fs::exists(root / "home" / ".cache" / "hstream" / "models");
   fs::remove_all(root);
   if (!full_clean_ok || !partial_clean_ok || !synchronization_preserved || !combined_clean_ok ||

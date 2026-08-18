@@ -255,7 +255,10 @@ class PipelineApplication {
   guint stitch_frame_rewind_source_id_{0};
   guint stitch_frame_completion_timeout_source_id_{0};
   bool stitch_frame_rewind_cancellation_requested_{false};
+  bool stitch_frame_restart_awaiting_playing_{false};
   std::chrono::steady_clock::time_point stitch_frame_rewind_deadline_;
+  bool clean_only_eligible_context_seen_{false};
+  bool clean_only_action_completed_{false};
   uint64_t main_loop_generation_{0};
   uint64_t first_pts_ns_{0};
   bool have_first_pts_{false};

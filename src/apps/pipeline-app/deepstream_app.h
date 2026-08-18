@@ -186,6 +186,7 @@ struct _AppCtx {
   gint return_value{0};
   guint index{0};
   gint active_source_index{0};
+  GstState observed_pipeline_state{GST_STATE_NULL};
 
   GMutex app_lock{
       0,
@@ -339,7 +340,7 @@ void toggle_show_bbox_text(AppCtx* appCtx);
 
 void destroy_pipeline(AppCtx* appCtx);
 void destroy_pipeline_for_recreate(AppCtx* appCtx);
-gboolean consume_pending_pipeline_errors(AppCtx* appCtx);
+gboolean dispatch_pending_pipeline_bus_messages(AppCtx* appCtx);
 gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout);
 void restart_pipeline(AppCtx* appCtx);
 

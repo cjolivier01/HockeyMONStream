@@ -366,6 +366,7 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       GstState oldstate, newstate;
       gst_message_parse_state_changed(message, &oldstate, &newstate, NULL);
       if (appCtx && GST_ELEMENT(GST_MESSAGE_SRC(message)) == appCtx->pipeline.pipeline) {
+        appCtx->observed_pipeline_state = newstate;
         switch (newstate) {
           case GST_STATE_PLAYING:
             NVGSTDS_INFO_MSG_V("Pipeline running\n");
@@ -528,18 +529,22 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
   return TRUE;
 }
 
-gboolean consume_pending_pipeline_errors(AppCtx* appCtx) {
+gboolean dispatch_pending_pipeline_bus_messages(AppCtx* appCtx) {
   if (!appCtx || !appCtx->pipeline.pipeline) {
     return TRUE;
   }
   GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(appCtx->pipeline.pipeline));
   GstMessage* message = nullptr;
-  while ((message = gst_bus_pop_filtered(bus, GST_MESSAGE_ERROR)) != nullptr) {
-    bus_callback(bus, message, appCtx);
+  gboolean keep_running = TRUE;
+  while ((message = gst_bus_pop(bus)) != nullptr) {
+    keep_running = bus_callback(bus, message, appCtx);
     gst_message_unref(message);
+    if (!keep_running && appCtx->quit) {
+      break;
+    }
   }
   gst_object_unref(bus);
-  return appCtx->return_value == 0;
+  return keep_running && appCtx->return_value == 0 && !appCtx->quit;
 }
 
 /**
@@ -1773,6 +1778,7 @@ gboolean create_pipeline(
   // previous GstPipeline generation and must never let a replacement skip its
   // own mux finalization.
   appCtx->eos_received = FALSE;
+  appCtx->observed_pipeline_state = GST_STATE_NULL;
 
   appCtx->all_bbox_generated_cb = all_bbox_generated_cb;
   appCtx->bbox_generated_post_analytics_cb = bbox_generated_post_analytics_cb;

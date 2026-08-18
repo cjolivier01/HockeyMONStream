@@ -111,7 +111,10 @@ class PipelineProcess {
       int completion_timeout_ms = 0,
       bool suppress_calibration_completion = false,
       int pipeline_recreate_seconds = 0,
-      const std::string& enabled_source_type = "URI-MULTIPLE") {
+      const std::string& enabled_source_type = "URI-MULTIPLE",
+      const fs::path& same_stage_peer_config = {},
+      bool suppress_restart_playing = false,
+      int restart_timeout_ms = 0) {
     int input_pipe[2];
     int output_pipe[2];
     if (::pipe(input_pipe) != 0 || ::pipe(output_pipe) != 0) {
@@ -151,7 +154,7 @@ class PipelineProcess {
       } else {
         ::unsetenv("HM_TEST_RINK_INFERENCE_DELAY_MS");
       }
-      if (same_stage_instances > 1) {
+      if (same_stage_instances > 1 || !same_stage_peer_config.empty()) {
         // dGPU startup normally serializes PAUSED preroll. Exercise the same
         // concurrent calibration path used on integrated/ARM systems.
         ::setenv("HM_TEST_CONCURRENT_STITCHING_CALIBRATION", "1", 1);
@@ -168,6 +171,16 @@ class PipelineProcess {
       } else {
         ::unsetenv("HM_TEST_SUPPRESS_STITCHING_CALIBRATION_COMPLETION");
       }
+      if (suppress_restart_playing) {
+        ::setenv("HM_TEST_SUPPRESS_STITCH_FRAME_RESTART_PLAYING", "1", 1);
+      } else {
+        ::unsetenv("HM_TEST_SUPPRESS_STITCH_FRAME_RESTART_PLAYING");
+      }
+      if (restart_timeout_ms > 0) {
+        ::setenv("HM_TEST_STITCH_FRAME_RESTART_TIMEOUT_MS", std::to_string(restart_timeout_ms).c_str(), 1);
+      } else {
+        ::unsetenv("HM_TEST_STITCH_FRAME_RESTART_TIMEOUT_MS");
+      }
       if (start_from_features && supply_runtime_invalidation) {
         ::setenv("HSTREAM_CALIBRATION_START_STAGE", "features", 1);
       } else {
@@ -181,6 +194,10 @@ class PipelineProcess {
       for (int instance = 0; instance < same_stage_instances; ++instance) {
         arguments.push_back("-c");
         arguments.push_back(pipeline_config.string());
+      }
+      if (!same_stage_peer_config.empty()) {
+        arguments.push_back("-c");
+        arguments.push_back(same_stage_peer_config.string());
       }
       arguments.push_back("--enable-sources=" + enabled_source_type);
       arguments.push_back("--enable-sinks=FAKE");
@@ -409,6 +426,38 @@ bool write_ordinary_uri_pipeline_config(const fs::path& path) {
   }
 }
 
+bool write_nonstitch_peer_pipeline_config(const fs::path& path, const fs::path& game_dir) {
+  if (!write_pipeline_config(path)) {
+    return false;
+  }
+  try {
+    YAML::Node config = YAML::LoadFile(path.string());
+    config.remove("hmstitcher");
+    config["application"]["complete-configuration"] = 0;
+    const std::string left_uri = "file://" + (game_dir / "cam1" / "GX010001.MP4").string();
+    const std::string right_uri = "file://" + (game_dir / "cam2" / "GX010002.MP4").string();
+    config["source0"]["uri"] = left_uri;
+    config["source0"]["uri-list"].push_back(left_uri);
+    config["source1"]["uri"] = right_uri;
+    config["source1"]["uri-list"].push_back(right_uri);
+    std::ofstream output(path);
+    output << YAML::Dump(config) << '\n';
+    return output.good();
+  } catch (const YAML::Exception&) {
+    return false;
+  }
+}
+
+size_t count_occurrences(const std::string& value, const std::string& needle, size_t begin, size_t end) {
+  size_t count = 0;
+  size_t position = begin;
+  while (position < end && (position = value.find(needle, position)) != std::string::npos && position < end) {
+    ++count;
+    position += needle.size();
+  }
+  return count;
+}
+
 bool write_game_config(
     const fs::path& path,
     int control_points,
@@ -529,6 +578,13 @@ bool runtime_caps_succeeded(PipelineProcess* process, const char* message) {
       message);
 }
 
+bool restart_completed_after_running(PipelineProcess* process, size_t after, size_t required_running_events = 1) {
+  const std::string& output = process->output();
+  const size_t completion = output.find("HSTREAM_CALIBRATION stage=playback-restart status=complete", after);
+  return completion != std::string::npos &&
+      count_occurrences(output, "Pipeline running", after, completion) >= required_running_events;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -548,12 +604,16 @@ int main(int argc, char** argv) {
   const fs::path game = game_root / "proto";
   const fs::path pipeline_config = root / "pipeline.yaml";
   const fs::path ordinary_uri_pipeline_config = root / "ordinary-uri-pipeline.yaml";
+  const fs::path nonstitch_peer_pipeline_config = root / "nonstitch-peer-pipeline.yaml";
   const fs::path plugin_directory = fs::path(argv[2]).parent_path();
   fs::create_directories(game / "cam1");
   fs::create_directories(game / "cam2");
   ok &= expect(write_pipeline_config(pipeline_config), "pipeline config must be written");
   ok &= expect(
       write_ordinary_uri_pipeline_config(ordinary_uri_pipeline_config), "ordinary URI pipeline config must be written");
+  ok &= expect(
+      write_nonstitch_peer_pipeline_config(nonstitch_peer_pipeline_config, game),
+      "same-stage non-stitch peer config must be written");
   ok &= expect(
       run_command(
           {"ffmpeg",
@@ -724,10 +784,9 @@ int main(int argc, char** argv) {
           !expect(initial.WaitFor("Stitched canvas size:"), "initial calibration must publish the real canvas")) {
         return false;
       }
-      const size_t restart_position = initial.output().rfind("playback restarted after stitch-frame calibration");
       if (!expect(
-              initial.WaitFor("Pipeline running", restart_position),
-              "normal playback must reach PLAYING after stitch-frame calibration")) {
+              restart_completed_after_running(&initial, 0),
+              "normal playback must reach PLAYING before stitch-frame restart completes")) {
         return false;
       }
       return stop_successfully(
@@ -782,6 +841,8 @@ int main(int argc, char** argv) {
   PipelineProcess saved_config;
   PipelineProcess completed_missing;
   PipelineProcess multi_context_nonzero;
+  PipelineProcess nonstitch_peer;
+  PipelineProcess restart_timeout;
   PipelineProcess multi_context_zero;
   std::string zero_time_invalidation_id;
   if (ok) {
@@ -820,8 +881,8 @@ int main(int argc, char** argv) {
                   "playback restarted after stitch-frame calibration", restart_mark, kCalibrationTimeout),
               "standalone launch must honor the nonzero fractional stitch time from config.yaml") ||
           !expect(
-              saved_config.WaitFor("Pipeline running", restart_mark),
-              "standalone saved-time playback must reach PLAYING after calibration")) {
+              restart_completed_after_running(&saved_config, restart_mark),
+              "standalone saved-time playback must reach PLAYING before restart completes")) {
         return false;
       }
       return stop_successfully(&saved_config, "standalone saved-time playback must accept Stop/SIGINT");
@@ -855,10 +916,8 @@ int main(int argc, char** argv) {
               completed_missing.WaitFor("playback restarted after stitch-frame calibration", 0, kCalibrationTimeout),
               "runtime-discovered recalibration must honor the saved nonzero stitch time") ||
           !expect(
-              completed_missing.WaitFor(
-                  "Pipeline running",
-                  completed_missing.output().rfind("playback restarted after stitch-frame calibration")),
-              "runtime-discovered recalibration must reach normal PLAYING state")) {
+              restart_completed_after_running(&completed_missing, 0),
+              "runtime-discovered recalibration must reach PLAYING before restart completes")) {
         return false;
       }
       return stop_successfully(
@@ -895,10 +954,8 @@ int main(int argc, char** argv) {
                   "playback restarted after stitch-frame calibration", 0, kCalibrationTimeout),
               "shared nonzero completion must recreate every calibration context") ||
           !expect(
-              multi_context_nonzero.WaitFor(
-                  "Pipeline running",
-                  multi_context_nonzero.output().rfind("playback restarted after stitch-frame calibration")),
-              "same-stage nonzero replacements must reach normal PLAYING state") ||
+              restart_completed_after_running(&multi_context_nonzero, 0, 2),
+              "same-stage nonzero replacements must reach PLAYING before restart completes") ||
           !expect(
               multi_context_nonzero.output().find("Failed to pause pipeline before stitch-frame restart") ==
                   std::string::npos,
@@ -909,6 +966,99 @@ int main(int argc, char** argv) {
         return false;
       }
       return stop_successfully(&multi_context_nonzero, "same-stage nonzero playback must remain controllable");
+    }();
+  }
+
+  if (ok) {
+    ok = [&] {
+      if (!expect(remove_rink_masks(game), "non-stitch peer fixture must remove the saved rink mask") ||
+          !expect(
+              nonstitch_peer.Start(
+                  argv[1],
+                  pipeline_config,
+                  game_root,
+                  plugin_directory,
+                  "saved-config-time",
+                  128,
+                  false,
+                  /*stitch_frame_time=*/{},
+                  /*time_limit_seconds=*/0,
+                  /*stitch_rotate_degrees=*/{},
+                  /*supply_runtime_invalidation=*/false,
+                  /*rink_inference_delay_ms=*/0,
+                  /*supply_control_points_environment=*/false,
+                  /*same_stage_instances=*/1,
+                  /*completion_timeout_ms=*/0,
+                  /*suppress_calibration_completion=*/false,
+                  /*pipeline_recreate_seconds=*/0,
+                  /*enabled_source_type=*/"URI-MULTIPLE",
+                  /*same_stage_peer_config=*/nonstitch_peer_pipeline_config),
+              "calibration pipeline with an ordinary same-stage peer must start") ||
+          !expect(
+              nonstitch_peer.WaitFor("HSTREAM_CALIBRATION stage=calibration status=complete", 0, kCalibrationTimeout),
+              "calibration pipeline with an ordinary peer must complete") ||
+          !expect(
+              nonstitch_peer.WaitFor(
+                  "HSTREAM_CALIBRATION stage=playback-restart status=complete", 0, kCalibrationTimeout),
+              "calibration pipeline and its ordinary peer must restart")) {
+        return false;
+      }
+      const std::string& output = nonstitch_peer.output();
+      const size_t calibration_position = output.rfind("HSTREAM_CALIBRATION stage=calibration status=complete");
+      const size_t restart_position =
+          output.find("HSTREAM_CALIBRATION stage=playback-restart status=complete", calibration_position);
+      if (!expect(
+              calibration_position != std::string::npos && restart_position != std::string::npos &&
+                  count_occurrences(output, "Pipeline running", calibration_position, restart_position) >= 2,
+              "replacement calibration and ordinary peer pipelines must both reach PLAYING before restart completes")) {
+        return false;
+      }
+      return stop_successfully(
+          &nonstitch_peer, "playback with a restarted ordinary same-stage peer must remain controllable");
+    }();
+  }
+
+  if (ok) {
+    ok = [&] {
+      if (!expect(remove_rink_masks(game), "restart timeout fixture must remove the saved rink mask") ||
+          !expect(
+              restart_timeout.Start(
+                  argv[1],
+                  pipeline_config,
+                  game_root,
+                  plugin_directory,
+                  "saved-config-time",
+                  128,
+                  false,
+                  /*stitch_frame_time=*/{},
+                  /*time_limit_seconds=*/0,
+                  /*stitch_rotate_degrees=*/{},
+                  /*supply_runtime_invalidation=*/false,
+                  /*rink_inference_delay_ms=*/0,
+                  /*supply_control_points_environment=*/false,
+                  /*same_stage_instances=*/1,
+                  /*completion_timeout_ms=*/0,
+                  /*suppress_calibration_completion=*/false,
+                  /*pipeline_recreate_seconds=*/0,
+                  /*enabled_source_type=*/"URI-MULTIPLE",
+                  /*same_stage_peer_config=*/{},
+                  /*suppress_restart_playing=*/true,
+                  /*restart_timeout_ms=*/500),
+              "suppressed-PLAYING calibration pipeline must start") ||
+          !expect(
+              restart_timeout.WaitFor(
+                  "HSTREAM_CALIBRATION stage=playback-restart status=failed", 0, kCalibrationTimeout),
+              "a replacement that never reaches PLAYING must publish a bounded restart failure")) {
+        return false;
+      }
+      int exit_code = 0;
+      return expect(
+                 restart_timeout.output().find("HSTREAM_CALIBRATION stage=playback-restart status=complete") ==
+                     std::string::npos,
+                 "a timed-out replacement must not publish playback-restart completion") &&
+          expect(restart_timeout.WaitForExit(&exit_code, std::chrono::seconds(10)),
+                 "a timed-out replacement must exit promptly") &&
+          expect(exit_code != 0, "a timed-out replacement must return a failure status");
     }();
   }
 
@@ -939,10 +1089,8 @@ int main(int argc, char** argv) {
               multi_context_zero.WaitFor("playback restarted after stitch-frame calibration", 0, kCalibrationTimeout),
               "shared zero-time completion must recreate peers to quiesce redundant workers") ||
           !expect(
-              multi_context_zero.WaitFor(
-                  "Pipeline running",
-                  multi_context_zero.output().rfind("playback restarted after stitch-frame calibration")),
-              "same-stage zero-time replacements must reach normal PLAYING state")) {
+              restart_completed_after_running(&multi_context_zero, 0, 2),
+              "same-stage zero-time replacements must reach PLAYING before restart completes")) {
         return false;
       }
       auto persisted = hm::stitching::load_game_config_file(game / "config.yaml");
@@ -983,10 +1131,9 @@ int main(int argc, char** argv) {
               "rotation invalidation must be reflected in the stitch-frame startup snapshot")) {
         return false;
       }
-      const size_t restart_position = rotated.output().rfind("playback restarted after stitch-frame calibration");
       if (!expect(
-              rotated.WaitFor("Pipeline running", restart_position),
-              "rotation-invalidated normal playback must reach PLAYING after calibration")) {
+              restart_completed_after_running(&rotated, 0),
+              "rotation-invalidated playback must reach PLAYING before restart completes")) {
         return false;
       }
       return stop_successfully(
@@ -1131,6 +1278,8 @@ int main(int argc, char** argv) {
     saved_config.DumpOutput("standalone saved-time calibration");
     completed_missing.DumpOutput("completed config with missing artifact");
     multi_context_nonzero.DumpOutput("same-stage nonzero calibration");
+    nonstitch_peer.DumpOutput("same-stage non-stitch peer calibration");
+    restart_timeout.DumpOutput("suppressed-PLAYING restart calibration");
     multi_context_zero.DumpOutput("same-stage zero calibration");
     rotated.DumpOutput("rotation-invalidated calibration");
     resumed.DumpOutput("CP-change resume");

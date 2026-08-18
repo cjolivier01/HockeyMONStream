@@ -83,6 +83,7 @@ int main(int argc, char** argv) {
   const fs::path configured_game_dir = game_root / "configured-game";
   const fs::path pipeline_config = root / "pipeline.yaml";
   const fs::path nonstitch_pipeline_config = root / "nonstitch-pipeline.yaml";
+  const fs::path disabled_stitch_pipeline_config = root / "disabled-stitch-pipeline.yaml";
   const fs::path configured_pipeline_config = root / "configured-pipeline.yaml";
   const fs::path rotation_zero_config = root / "rotation-zero.yaml";
   const fs::path rotation_ten_config = root / "rotation-ten.yaml";
@@ -91,7 +92,17 @@ int main(int argc, char** argv) {
   fs::create_directories(configured_game_dir);
   std::ofstream(game_dir / "config.yaml") << "stitching:\n  stitch_frame_time:\n    - 00:00:07\n";
   std::ofstream(pipeline_config) << "application:\n  stage: 0\n";
-  std::ofstream(nonstitch_pipeline_config) << "application:\n  stage: 0\n  complete-configuration: 0\n";
+  std::ofstream(nonstitch_pipeline_config) << "application:\n"
+                                           << "  stage: 0\n"
+                                           << "  complete-configuration: 1\n"
+                                           << "primary-gie:\n"
+                                           << "  enable: 1\n"
+                                           << "  config-file: deliberately-missing-model-config.txt\n";
+  std::ofstream(disabled_stitch_pipeline_config) << "application:\n"
+                                                 << "  stage: 0\n"
+                                                 << "  complete-configuration: 1\n"
+                                                 << "hmstitcher:\n"
+                                                 << "  enable: 0\n";
   std::ofstream(configured_pipeline_config) << "application:\n"
                                             << "  stage: 0\n"
                                             << "  complete-configuration: 1\n"
@@ -122,6 +133,8 @@ int main(int argc, char** argv) {
       argv[1],
       {"--game-id=configured-game",
        "--cfg-file=" + nonstitch_pipeline_config.string(),
+       "--cfg-file=" + disabled_stitch_pipeline_config.string(),
+       "--cfg-file=" + configured_pipeline_config.string(),
        "--cfg-file=" + configured_pipeline_config.string(),
        "--stitch-frame-time=00:00:07",
        "--clean"},
@@ -147,7 +160,9 @@ int main(int argc, char** argv) {
   const int configured_zero_exit = run_and_get_exit_code(
       argv[1],
       {"--game-id=configured-game",
+       "--cfg-file=" + configured_pipeline_config.string(),
        "--cfg-file=" + nonstitch_pipeline_config.string(),
+       "--cfg-file=" + disabled_stitch_pipeline_config.string(),
        "--cfg-file=" + configured_pipeline_config.string(),
        "--stitch-frame-time=00:00:00",
        "--clean"},
@@ -166,6 +181,18 @@ int main(int argc, char** argv) {
       zero_calibration["artifacts_invalidated"].as<bool>(true) || zero_owner.empty() || zero_owner == nonzero_owner) {
     std::cerr << "FAIL: configured-game zero CLI override was not removed and invalidated from input\n"
               << YAML::Dump(configured_after_zero) << '\n';
+    fs::remove_all(root);
+    return 1;
+  }
+  const int no_eligible_exit = run_and_get_exit_code(
+      argv[1],
+      {"--game-id=configured-game",
+       "--cfg-file=" + nonstitch_pipeline_config.string(),
+       "--cfg-file=" + disabled_stitch_pipeline_config.string(),
+       "--clean"},
+      game_root);
+  if (no_eligible_exit == 0 || no_eligible_exit == 127) {
+    std::cerr << "FAIL: clean-only setup without an active eligible stitcher was not rejected\n";
     fs::remove_all(root);
     return 1;
   }
