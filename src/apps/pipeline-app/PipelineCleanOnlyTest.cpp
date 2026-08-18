@@ -26,6 +26,7 @@ int main(int argc, char** argv) {
         if (child == 0) {
           ::setenv("HOME", (root / "home").c_str(), 1);
           ::setenv("HM_GAME_DIR", (root / "games").c_str(), 1);
+          ::setenv("HM_CONFIG_ROOT", (root / "config-root").c_str(), 1);
           ::setenv("HTTP_PROXY", "http://127.0.0.1:1", 1);
           ::setenv("HTTPS_PROXY", "http://127.0.0.1:1", 1);
           if (runtime_invalidation_id != nullptr)
@@ -50,6 +51,8 @@ int main(int argc, char** argv) {
       };
 
   const fs::path full_game = root / "games" / "clean-only-test";
+  fs::create_directories(root / "config-root");
+  std::ofstream(root / "config-root" / "baseline.yaml") << "stitching:\n  post_stitch_rotate_degrees: null\n";
   fs::create_directories(full_game);
   std::ofstream(full_game / "seam_file.png") << "generated artifact\n";
   const bool full_clean_ok =

@@ -161,8 +161,12 @@ absl::StatusOr<std::optional<double>> active_stitch_output_rotation(const YAML::
         !hm::get_node_value(config, "pipeline.hmstitcher.enable", false)) {
       return std::nullopt;
     }
-    double rotation = hm::get_node_value(config, "stitching.post_stitch_rotate_degrees", 0.0);
-    rotation = hm::get_node_value(config, "pipeline.hmstitcher.post-stitch-rotate-degrees", rotation);
+    const auto rotation_or = [&config](const char* path, double fallback) {
+      const auto value = hm::get_node(config, path);
+      return !value.has_value() || value->IsNull() ? fallback : value->as<double>();
+    };
+    double rotation = rotation_or("stitching.post_stitch_rotate_degrees", 0.0);
+    rotation = rotation_or("pipeline.hmstitcher.post-stitch-rotate-degrees", rotation);
     if (!std::isfinite(rotation)) {
       return absl::InvalidArgumentError("Active hmstitcher post-stitch rotation must be finite");
     }
