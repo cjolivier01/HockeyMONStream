@@ -183,17 +183,21 @@ int main(int argc, char** argv) {
       "concurrent cache probe must continue after the engine lock is released");
 
   YAML::Node loader_pipeline = pipeline_for("loader.yaml");
+  const fs::path parser_binary = root / "libnvdsinfer_custom_impl_Yolo.so";
+  std::ofstream(parser_binary) << "staged test parser\n";
   const fs::path runtime_libraries = root / "runtime-libraries";
   fs::create_directories(runtime_libraries);
   const fs::path staged_yolo = runtime_libraries / "libnvdsinfer_custom_impl_Yolo.so";
-  std::ofstream(staged_yolo) << "staged test parser\n";
+  fs::create_symlink(parser_binary, staged_yolo);
   ::setenv("HSTREAM_NVINFER_CUSTOM_LIBRARY_DIR", runtime_libraries.c_str(), 1);
   ok &= expect(
       hm::pipeline::PrepareTensorRtModelCache(loader_pipeline, configs).ok(),
       "a loader-resolved custom inference library must prepare successfully");
   const fs::path loader_runtime = loader_pipeline["primary-gie"]["config-file"].as<std::string>();
+  fs::path loader_engine;
   if (fs::is_regular_file(loader_runtime)) {
     const YAML::Node loader_cached = YAML::LoadFile(loader_runtime.string());
+    loader_engine = loader_cached["property"]["model-engine-file"].as<std::string>();
     ok &= expect(
         loader_cached["property"]["custom-lib-path"].as<std::string>() == staged_yolo.string(),
         "a bare custom library name must resolve to the staged runtime library in the runtime inference config");
@@ -211,6 +215,27 @@ int main(int argc, char** argv) {
     ok &= expect(
         writable_loader_cached["property"]["custom-lib-path"].as<std::string>() == staged_yolo.string(),
         "the writable-model runtime config must use the staged custom library path");
+  }
+
+  const fs::path second_runtime_libraries = root / "runtime-libraries-second-launch";
+  fs::create_directories(second_runtime_libraries);
+  const fs::path second_staged_yolo = second_runtime_libraries / "libnvdsinfer_custom_impl_Yolo.so";
+  fs::create_symlink(parser_binary, second_staged_yolo);
+  ::setenv("HSTREAM_NVINFER_CUSTOM_LIBRARY_DIR", second_runtime_libraries.c_str(), 1);
+  YAML::Node second_loader_pipeline = pipeline_for("loader.yaml");
+  ok &= expect(
+      hm::pipeline::PrepareTensorRtModelCache(second_loader_pipeline, configs).ok(),
+      "the same parser staged for a second launch must prepare successfully");
+  const fs::path second_loader_runtime = second_loader_pipeline["primary-gie"]["config-file"].as<std::string>();
+  if (fs::is_regular_file(second_loader_runtime)) {
+    const YAML::Node second_loader_cached = YAML::LoadFile(second_loader_runtime.string());
+    ok &= expect(
+        second_loader_cached["property"]["custom-lib-path"].as<std::string>() == second_staged_yolo.string(),
+        "the second launch runtime config must use its own staged custom library path");
+    ok &= expect(
+        !loader_engine.empty() &&
+            fs::path(second_loader_cached["property"]["model-engine-file"].as<std::string>()) == loader_engine,
+        "identical parser contents in different launch directories must reuse the TensorRT engine cache identity");
   }
   ::unsetenv("HSTREAM_NVINFER_CUSTOM_LIBRARY_DIR");
   hm::pipeline::ReleaseTensorRtModelCacheLocks();

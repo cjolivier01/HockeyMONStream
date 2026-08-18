@@ -234,17 +234,21 @@ absl::StatusOr<std::string> inference_build_digest(
       if (key == "model-engine-file" || !is_path_property(key))
         continue;
       const std::string value = property.second.as<std::string>();
-      fs::path input;
       if (is_loader_resolved_custom_library(key, value)) {
+        // Keep the logical loader-resolved name stable across PID-scoped
+        // staging directories, while still invalidating the engine when the
+        // actual parser contents change.
+        fingerprint << "input:" << key << '=' << value << '\n';
         const auto staged = staged_custom_library_path(key, value);
-        if (!staged.has_value()) {
-          fingerprint << "input:" << key << '=' << value << '\n';
+        if (!staged.has_value())
           continue;
-        }
-        input = *staged;
-      } else {
-        input = resolve_path(value, inference_path.parent_path());
+        auto hash = hm::assets::AssetManager::Sha256(*staged);
+        if (!hash.ok())
+          return hash.status();
+        fingerprint << "sha256:" << *hash << '\n';
+        continue;
       }
+      const fs::path input = resolve_path(value, inference_path.parent_path());
       fingerprint << "input:" << key << '=' << fs::absolute(input).lexically_normal().string() << '\n';
       std::error_code error;
       if (fs::is_regular_file(input, error) && !error) {
@@ -463,12 +467,11 @@ absl::Status prepare_inference_config(
   if (properties && properties.IsMap() && properties["custom-lib-path"] && properties["custom-lib-path"].IsScalar()) {
     staged_custom_library =
         staged_custom_library_path("custom-lib-path", properties["custom-lib-path"].as<std::string>());
-    if (staged_custom_library.has_value())
-      properties["custom-lib-path"] = staged_custom_library->string();
   }
   auto publish_staged_custom_library = [&]() -> absl::Status {
     if (!staged_custom_library.has_value())
       return absl::OkStatus();
+    properties["custom-lib-path"] = staged_custom_library->string();
     return publish_custom_library_runtime_config(section, inference, inference_path, *staged_custom_library);
   };
   if (!properties || !properties.IsMap() || !properties["onnx-file"] || !properties["model-engine-file"] ||
