@@ -79,6 +79,13 @@ int main(int argc, char** argv) {
     fs::remove_all(root);
     return 1;
   }
+  std::ofstream(game_dir / "config.yaml") << "stitching:\n  stitch_frame_time: \"\"\n";
+  if (!exits_with_argument_error(
+          argv[1], {"--game-id=malformed-config", "--cfg-file=" + pipeline_config.string()}, game_root)) {
+    std::cerr << "FAIL: an explicitly empty config-file stitch-frame time did not produce an invalid-argument exit\n";
+    fs::remove_all(root);
+    return 1;
+  }
   std::ofstream(conflict_game_dir / "config.yaml") << "pipeline:\n"
                                                    << "  application:\n"
                                                    << "    complete-configuration: 1\n"

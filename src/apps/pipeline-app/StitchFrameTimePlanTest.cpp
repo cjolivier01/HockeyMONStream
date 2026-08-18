@@ -46,8 +46,14 @@ int main() {
       candidates == std::vector<size_t>({0, 1}),
       "One completion message must rewind every active context that started at stitch-frame time");
   ok &= expect(
-      hm::pipeline_internal::stitch_frame_rewind_candidates(/*stitch_frame_time_ns=*/0, states).empty(),
-      "A default stitch-frame time must never schedule a rewind");
+      hm::pipeline_internal::stitch_frame_rewind_candidates(/*stitch_frame_time_ns=*/0, states) ==
+          std::vector<size_t>({0, 1}),
+      "Same-stage calibration peers must be recreated after shared completion even at the default time");
+  ok &= expect(
+      hm::pipeline_internal::stitch_frame_rewind_candidates(
+          /*stitch_frame_time_ns=*/0, {{true, false, false}})
+          .empty(),
+      "A single default-time calibration context does not need a playback restart");
   ok &= expect(
       hm::pipeline_internal::stitch_frame_rewind_request_is_current(
           /*request_stage=*/2,

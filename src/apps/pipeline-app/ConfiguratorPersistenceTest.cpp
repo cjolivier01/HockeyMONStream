@@ -177,6 +177,30 @@ int main() {
           (**final_config)["hstream_ui"]["keep"].as<bool>(),
       "Configurator first save must retain keys created after its absent baseline");
 
+  const fs::path stitch_override_dir = games / "stitch-override";
+  fs::create_directories(stitch_override_dir);
+  YAML::Node stitch_override_config(YAML::NodeType::Map);
+  stitch_override_config["stitching"]["stitch_frame_time"] = "00:00:07";
+  stitch_override_config["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+  stitch_override_config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "stitch-override-a";
+  ok &= expect(
+      hm::stitching::publish_game_config(stitch_override_dir, YAML::Dump(stitch_override_config) + "\n").ok(),
+      "stitch-frame override fixture must publish");
+  hm::Configurator stitch_override("stitch-override", "", hm::Configurator::kUseConfigFileGpu);
+  const auto stitch_override_loaded = stitch_override.load_config();
+  const absl::Status zero_override_status = stitch_override.persist_stitch_frame_time_override({});
+  auto after_zero_override = hm::stitching::load_game_config_file(stitch_override_dir / "config.yaml");
+  const absl::Status fractional_override_status = stitch_override.persist_stitch_frame_time_override("00:00:00.500");
+  auto after_fractional_override = hm::stitching::load_game_config_file(stitch_override_dir / "config.yaml");
+  ok &= expect(
+      stitch_override_loaded.ok() && zero_override_status.ok() && after_zero_override.ok() &&
+          after_zero_override->has_value() && !(**after_zero_override)["stitching"]["stitch_frame_time"] &&
+          (**after_zero_override)["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() ==
+              "stitch-override-a" &&
+          fractional_override_status.ok() && after_fractional_override.ok() && after_fractional_override->has_value() &&
+          (**after_fractional_override)["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00.500",
+      "Runtime stitch-frame overrides must remove zero, persist nonzero, and preserve the pending generation owner");
+
   YAML::Node explicit_roles(YAML::NodeType::Map);
   explicit_roles["hstream_ui"]["video_roles"]["left"].push_back(".hstream-ui/left/GX010001.MP4");
   explicit_roles["hstream_ui"]["video_roles"]["right"].push_back(".hstream-ui/right/GX010002.MP4");

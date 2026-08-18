@@ -106,7 +106,8 @@ class PipelineProcess {
       const std::string& stitch_rotate_degrees = {},
       bool supply_runtime_invalidation = true,
       int rink_inference_delay_ms = 0,
-      bool supply_control_points_environment = true) {
+      bool supply_control_points_environment = true,
+      int same_stage_instances = 1) {
     int input_pipe[2];
     int output_pipe[2];
     if (::pipe(input_pipe) != 0 || ::pipe(output_pipe) != 0) {
@@ -146,6 +147,13 @@ class PipelineProcess {
       } else {
         ::unsetenv("HM_TEST_RINK_INFERENCE_DELAY_MS");
       }
+      if (same_stage_instances > 1) {
+        // dGPU startup normally serializes PAUSED preroll. Exercise the same
+        // concurrent calibration path used on integrated/ARM systems.
+        ::setenv("HM_TEST_CONCURRENT_STITCHING_CALIBRATION", "1", 1);
+      } else {
+        ::unsetenv("HM_TEST_CONCURRENT_STITCHING_CALIBRATION");
+      }
       if (start_from_features && supply_runtime_invalidation) {
         ::setenv("HSTREAM_CALIBRATION_START_STAGE", "features", 1);
       } else {
@@ -155,11 +163,13 @@ class PipelineProcess {
           executable.string(),
           "-g",
           "proto",
-          "-c",
-          pipeline_config.string(),
-          "--enable-sources=URI-MULTIPLE",
-          "--enable-sinks=FAKE",
       };
+      for (int instance = 0; instance < same_stage_instances; ++instance) {
+        arguments.push_back("-c");
+        arguments.push_back(pipeline_config.string());
+      }
+      arguments.push_back("--enable-sources=URI-MULTIPLE");
+      arguments.push_back("--enable-sinks=FAKE");
       if (supply_runtime_invalidation) {
         arguments.push_back("--clean-expected-invalidation-id=" + invalidation_id);
       }
@@ -437,6 +447,21 @@ bool write_rink_mask_invalidation(const fs::path& path, const std::string& inval
   }
 }
 
+bool remove_rink_masks(const fs::path& game_dir) {
+  std::error_code error;
+  for (const auto& entry : fs::directory_iterator(game_dir, error)) {
+    if (error)
+      return false;
+    const std::string name = entry.path().filename().string();
+    if (name.rfind("rink_mask_", 0) == 0 && entry.path().extension() == ".png") {
+      fs::remove(entry.path(), error);
+      if (error)
+        return false;
+    }
+  }
+  return true;
+}
+
 bool clean_from_control_points(
     const fs::path& executable,
     const fs::path& pipeline_config,
@@ -592,6 +617,9 @@ int main(int argc, char** argv) {
 
   PipelineProcess rotated;
   PipelineProcess saved_config;
+  PipelineProcess completed_missing;
+  PipelineProcess multi_context_nonzero;
+  PipelineProcess multi_context_zero;
   if (ok) {
     ok = [&] {
       if (!expect(
@@ -633,6 +661,130 @@ int main(int argc, char** argv) {
         return false;
       }
       return stop_successfully(&saved_config, "standalone saved-time playback must accept Stop/SIGINT");
+    }();
+  }
+
+  if (ok) {
+    ok = [&] {
+      if (!expect(remove_rink_masks(game), "completed-config fixture must remove only the saved rink mask") ||
+          !expect(
+              completed_missing.Start(
+                  argv[1],
+                  pipeline_config,
+                  game_root,
+                  plugin_directory,
+                  "saved-config-time",
+                  128,
+                  false,
+                  /*stitch_frame_time=*/{},
+                  /*time_limit_seconds=*/0,
+                  /*stitch_rotate_degrees=*/{},
+                  /*supply_runtime_invalidation=*/false,
+                  /*rink_inference_delay_ms=*/0,
+                  /*supply_control_points_environment=*/false),
+              "completed config with a missing artifact must start standalone recalibration") ||
+          !expect(
+              completed_missing.WaitFor(
+                  "Using persisted stitching calibration control-point limit 128", 0, kCalibrationTimeout),
+              "runtime-discovered recalibration must restore completed config control points") ||
+          !expect(
+              completed_missing.WaitFor("playback restarted after stitch-frame calibration", 0, kCalibrationTimeout),
+              "runtime-discovered recalibration must honor the saved nonzero stitch time") ||
+          !expect(
+              completed_missing.WaitFor(
+                  "Pipeline running",
+                  completed_missing.output().rfind("playback restarted after stitch-frame calibration")),
+              "runtime-discovered recalibration must reach normal PLAYING state")) {
+        return false;
+      }
+      return stop_successfully(
+          &completed_missing, "runtime-discovered completed-config recalibration must accept Stop/SIGINT");
+    }();
+  }
+
+  if (ok) {
+    ok = [&] {
+      if (!expect(remove_rink_masks(game), "multi-context nonzero fixture must remove the saved rink mask") ||
+          !expect(
+              multi_context_nonzero.Start(
+                  argv[1],
+                  pipeline_config,
+                  game_root,
+                  plugin_directory,
+                  "saved-config-time",
+                  128,
+                  false,
+                  /*stitch_frame_time=*/{},
+                  /*time_limit_seconds=*/0,
+                  /*stitch_rotate_degrees=*/{},
+                  /*supply_runtime_invalidation=*/false,
+                  /*rink_inference_delay_ms=*/2000,
+                  /*supply_control_points_environment=*/false,
+                  /*same_stage_instances=*/2),
+              "two same-stage nonzero calibration contexts must start") ||
+          !expect(
+              multi_context_nonzero.WaitFor(
+                  "HSTREAM_CALIBRATION stage=rink-mask status=started", 0, kCalibrationTimeout),
+              "same-stage nonzero calibration must enter cancellable rink-mask work") ||
+          !expect(
+              multi_context_nonzero.WaitFor(
+                  "playback restarted after stitch-frame calibration", 0, kCalibrationTimeout),
+              "shared nonzero completion must recreate every calibration context") ||
+          !expect(
+              multi_context_nonzero.WaitFor(
+                  "Pipeline running",
+                  multi_context_nonzero.output().rfind("playback restarted after stitch-frame calibration")),
+              "same-stage nonzero replacements must reach normal PLAYING state") ||
+          !expect(
+              multi_context_nonzero.output().find("Failed to pause pipeline before stitch-frame restart") ==
+                  std::string::npos,
+              "shared nonzero completion must not pause a busy calibration peer")) {
+        return false;
+      }
+      return stop_successfully(&multi_context_nonzero, "same-stage nonzero playback must remain controllable");
+    }();
+  }
+
+  if (ok) {
+    ok = [&] {
+      if (!expect(remove_rink_masks(game), "multi-context zero fixture must remove the saved rink mask") ||
+          !expect(
+              multi_context_zero.Start(
+                  argv[1],
+                  pipeline_config,
+                  game_root,
+                  plugin_directory,
+                  "saved-config-time",
+                  128,
+                  false,
+                  /*stitch_frame_time=*/"00:00:00",
+                  /*time_limit_seconds=*/0,
+                  /*stitch_rotate_degrees=*/{},
+                  /*supply_runtime_invalidation=*/false,
+                  /*rink_inference_delay_ms=*/2000,
+                  /*supply_control_points_environment=*/false,
+                  /*same_stage_instances=*/2),
+              "two same-stage zero-time calibration contexts must start") ||
+          !expect(
+              multi_context_zero.WaitFor("HSTREAM_CALIBRATION stage=rink-mask status=started", 0, kCalibrationTimeout),
+              "same-stage zero-time calibration must enter cancellable rink-mask work") ||
+          !expect(
+              multi_context_zero.WaitFor("playback restarted after stitch-frame calibration", 0, kCalibrationTimeout),
+              "shared zero-time completion must recreate peers to quiesce redundant workers") ||
+          !expect(
+              multi_context_zero.WaitFor(
+                  "Pipeline running",
+                  multi_context_zero.output().rfind("playback restarted after stitch-frame calibration")),
+              "same-stage zero-time replacements must reach normal PLAYING state")) {
+        return false;
+      }
+      auto persisted = hm::stitching::load_game_config_file(game / "config.yaml");
+      if (!expect(
+              persisted.ok() && persisted->has_value() && !(**persisted)["stitching"]["stitch_frame_time"],
+              "an explicit zero CLI time used for calibration must remove the persisted nonzero dependency")) {
+        return false;
+      }
+      return stop_successfully(&multi_context_zero, "same-stage zero-time playback must remain controllable");
     }();
   }
 
@@ -804,6 +956,9 @@ int main(int argc, char** argv) {
   if (!ok) {
     initial.DumpOutput("initial calibration");
     saved_config.DumpOutput("standalone saved-time calibration");
+    completed_missing.DumpOutput("completed config with missing artifact");
+    multi_context_nonzero.DumpOutput("same-stage nonzero calibration");
+    multi_context_zero.DumpOutput("same-stage zero calibration");
     rotated.DumpOutput("rotation-invalidated calibration");
     resumed.DumpOutput("CP-change resume");
     interrupted.DumpOutput("interrupted calibration");

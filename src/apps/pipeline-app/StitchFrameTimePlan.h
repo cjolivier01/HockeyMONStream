@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -25,7 +26,11 @@ inline std::vector<size_t> stitch_frame_rewind_candidates(
     uint64_t stitch_frame_time_ns,
     const std::vector<StitchFrameRewindState>& states) {
   std::vector<size_t> candidates;
-  if (stitch_frame_time_ns == 0) {
+  const size_t unfinished_calibration_contexts =
+      static_cast<size_t>(std::count_if(states.begin(), states.end(), [](const StitchFrameRewindState& state) {
+        return state.calibration_required && !state.rewind_complete;
+      }));
+  if (stitch_frame_time_ns == 0 && unfinished_calibration_contexts < 2) {
     return candidates;
   }
   for (size_t index = 0; index < states.size(); ++index) {

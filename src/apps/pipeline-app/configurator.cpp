@@ -71,18 +71,17 @@ constexpr const char* kLegacyDefaultOutputName = "out.mkv";
 absl::StatusOr<size_t> persisted_stitching_control_points(const YAML::Node& config) {
   const auto value = get_node(config, "hstream_ui.stitching_calibration.control_points");
   if (!value.has_value() || !value->IsScalar()) {
-    return absl::InvalidArgumentError("Pending stitching calibration must persist a positive control_points value");
+    return absl::InvalidArgumentError("Stitching calibration must persist a positive control_points value");
   }
   try {
     const uint64_t control_points = value->as<uint64_t>();
     if (control_points == 0 || control_points > std::numeric_limits<size_t>::max()) {
       return absl::InvalidArgumentError(
-          "Pending stitching calibration control_points must be a positive platform-sized integer");
+          "Stitching calibration control_points must be a positive platform-sized integer");
     }
     return static_cast<size_t>(control_points);
   } catch (const YAML::Exception& error) {
-    return absl::InvalidArgumentError(
-        "Invalid pending stitching calibration control_points: " + std::string(error.what()));
+    return absl::InvalidArgumentError("Invalid stitching calibration control_points: " + std::string(error.what()));
   }
 }
 
@@ -2035,6 +2034,29 @@ absl::Status Configurator::save_private_config(
   return status;
 }
 
+absl::Status Configurator::persist_stitch_frame_time_override(const std::string& normalized_stitch_frame_time) {
+  if (normalized_stitch_frame_time.empty()) {
+    remove_yaml_key_path(config_, {"stitching", "stitch_frame_time"});
+    remove_yaml_key_path(private_config_, {"stitching", "stitch_frame_time"});
+  } else {
+    config_["stitching"]["stitch_frame_time"] = normalized_stitch_frame_time;
+    private_config_["stitching"]["stitch_frame_time"] = normalized_stitch_frame_time;
+  }
+
+  std::string expected_invalidation_id;
+  try {
+    const std::string status = get_node_value(config_, "hstream_ui.stitching_calibration.status", std::string());
+    const std::string invalidation_id =
+        get_node_value(config_, "hstream_ui.stitching_calibration.invalidation_id", std::string());
+    if ((status == "pending" || status == "complete") && !invalidation_id.empty()) {
+      expected_invalidation_id = invalidation_id;
+    }
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Unable to persist stitch-frame override: " + std::string(error.what()));
+  }
+  return save_private_config(private_config_, expected_invalidation_id);
+}
+
 absl::StatusOr<YAML::Node> Configurator::load_config() {
   YAML::Node config;
   if (!config_root_dir_.empty()) {
@@ -2232,6 +2254,7 @@ absl::Status Configurator::complete_configuration(
   const std::string effective_invalidation_id =
       resume_pending_invalidation ? loaded_invalidation_id : clean_expected_invalidation_id;
   std::optional<size_t> loaded_control_points;
+  bool control_points_environment_enforced = false;
   bool stitching_artifacts_precleaned = false;
   if (has_hmstitcher && !effective_invalidation_id.empty()) {
     bool loaded_invalidation_matches = loaded_invalidation_id == effective_invalidation_id;
@@ -2290,6 +2313,7 @@ absl::Status Configurator::complete_configuration(
     }
     if (loaded_control_points.has_value()) {
       HM_RETURN_IF_ERROR(enforce_stitching_control_points_environment(*loaded_control_points));
+      control_points_environment_enforced = true;
     }
     active_stitching_invalidation_id_ = effective_invalidation_id;
   }
@@ -2347,6 +2371,37 @@ absl::Status Configurator::complete_configuration(
   // the one-pass startup position only after the effective runtime rotation
   // and canvas constraints have been applied.
   HM_RETURN_IF_ERROR(setup_stitcher_and_masks(pipeline, game_dir, force, pipeline_has_hmstitcher));
+  if (stitching_calibration_required_) {
+    if (!loaded_control_points.has_value() && loaded_status == "complete") {
+      size_t control_points = 0;
+      HM_ASSIGN_OR_RETURN(control_points, persisted_stitching_control_points(config_));
+
+      auto config_transaction = stitching::GameConfigTransactionLock::Acquire(game_dir);
+      if (!config_transaction.ok())
+        return config_transaction.status();
+      const fs::path private_config_file = game_dir / "config.yaml";
+      try {
+        const YAML::Node current = YAML::LoadFile(private_config_file.string());
+        const std::string current_status =
+            get_node_value(current, "hstream_ui.stitching_calibration.status", std::string());
+        const std::string current_invalidation_id =
+            get_node_value(current, "hstream_ui.stitching_calibration.invalidation_id", std::string());
+        size_t current_control_points = 0;
+        HM_ASSIGN_OR_RETURN(current_control_points, persisted_stitching_control_points(current));
+        if (current_status != loaded_status || current_invalidation_id != loaded_invalidation_id ||
+            current_control_points != control_points) {
+          return absl::AbortedError("Completed stitching calibration state changed before pipeline launch");
+        }
+      } catch (const YAML::Exception& error) {
+        return absl::InvalidArgumentError(
+            "Unable to revalidate completed stitching calibration before launch: " + std::string(error.what()));
+      }
+      loaded_control_points = control_points;
+    }
+    if (loaded_control_points.has_value() && !control_points_environment_enforced) {
+      HM_RETURN_IF_ERROR(enforce_stitching_control_points_environment(*loaded_control_points));
+    }
+  }
 
   // Live box mappings
   const std::map<std::string, std::string> live_box_map_dest_from_src{

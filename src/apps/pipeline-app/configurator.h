@@ -73,6 +73,7 @@ class Configurator {
       const YAML::Node& private_config,
       const std::string& expected_invalidation_id = {},
       bool remove_rink_masks = false);
+  absl::Status persist_stitch_frame_time_override(const std::string& normalized_stitch_frame_time);
 
   static std::filesystem::path get_game_dir(const std::string& game_id);
   static std::filesystem::path get_private_config_file_name(const std::string& game_id);

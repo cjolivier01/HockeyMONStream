@@ -241,12 +241,15 @@ class PipelineApplication {
   std::unique_ptr<std::thread> editor_thread_;
   uint64_t start_time_ns_{0};
   uint64_t stitch_frame_time_ns_{0};
+  std::string stitch_frame_time_override_config_value_;
   bool stitch_frame_time_set_{false};
   bool stitch_frame_time_loaded_from_config_{false};
   std::set<const AppCtx*> stitch_frame_rewound_contexts_;
   std::set<const AppCtx*> stitch_frame_rewind_pending_contexts_;
   std::atomic<bool> stitch_frame_calibration_active_{false};
   guint stitch_frame_rewind_source_id_{0};
+  bool stitch_frame_rewind_cancellation_requested_{false};
+  std::chrono::steady_clock::time_point stitch_frame_rewind_deadline_;
   uint64_t main_loop_generation_{0};
   uint64_t first_pts_ns_{0};
   bool have_first_pts_{false};

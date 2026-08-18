@@ -88,6 +88,39 @@ absl::StatusOr<uint64_t> parse_stitch_frame_time_option(const char* option, cons
   }
 }
 
+std::string normalized_stitch_frame_time_config_value(uint64_t nanoseconds) {
+  if (nanoseconds == 0) {
+    return {};
+  }
+  const uint64_t total_milliseconds = nanoseconds / GST_MSECOND;
+  const uint64_t hours = total_milliseconds / (60 * 60 * 1000);
+  const uint64_t minutes = total_milliseconds / (60 * 1000) % 60;
+  const uint64_t seconds = total_milliseconds / 1000 % 60;
+  const uint64_t milliseconds = total_milliseconds % 1000;
+  std::ostringstream value;
+  value << std::setfill('0') << std::setw(2) << hours << ':' << std::setw(2) << minutes << ':' << std::setw(2)
+        << seconds;
+  if (milliseconds != 0) {
+    value << '.' << std::setw(3) << milliseconds;
+  }
+  return value.str();
+}
+
+absl::StatusOr<uint64_t> configured_stitch_frame_time(const YAML::Node& config) {
+  const auto value = hm::get_node(config, "stitching.stitch_frame_time");
+  if (!value.has_value()) {
+    return 0;
+  }
+  if (!value->IsScalar()) {
+    return absl::InvalidArgumentError("stitching.stitch_frame_time must be a scalar HH:MM:SS or HH:MM:SS.mmm value");
+  }
+  try {
+    return hm::stitch_frame_time_to_nanoseconds(value->as<std::string>());
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(TO_STRING("Invalid stitching.stitch_frame_time: " << error.what()));
+  }
+}
+
 absl::StatusOr<std::optional<double>> active_stitch_output_rotation(const YAML::Node& config) {
   try {
     const auto stitcher = hm::get_node(config, "pipeline.hmstitcher");
@@ -716,6 +749,10 @@ absl::Status PipelineApplication::configureInstances(
       if (!configuration_status.ok()) {
         return configuration_status;
       }
+      if (stitch_frame_time_set_ && app_ctx->configurator().stitching_calibration_required()) {
+        HM_RETURN_IF_ERROR(
+            app_ctx->configurator().persist_stitch_frame_time_override(stitch_frame_time_override_config_value_));
+      }
       std::optional<double> stitch_output_rotation;
       HM_ASSIGN_OR_RETURN(stitch_output_rotation, active_stitch_output_rotation(app_ctx->configurator().config()));
       if (stitch_output_rotation.has_value()) {
@@ -743,16 +780,8 @@ absl::Status PipelineApplication::configureInstances(
       }
       YAML::Node config = app_ctx->configurator().config();
       if (!stitch_frame_time_set_) {
-        std::string configured_stitch_frame_time;
         uint64_t configured_stitch_frame_time_ns = 0;
-        try {
-          configured_stitch_frame_time = hm::get_node_value(config, "stitching.stitch_frame_time", std::string());
-          if (!configured_stitch_frame_time.empty()) {
-            configured_stitch_frame_time_ns = hm::stitch_frame_time_to_nanoseconds(configured_stitch_frame_time);
-          }
-        } catch (const std::exception& error) {
-          return absl::InvalidArgumentError(TO_STRING("Invalid stitching.stitch_frame_time: " << error.what()));
-        }
+        HM_ASSIGN_OR_RETURN(configured_stitch_frame_time_ns, configured_stitch_frame_time(config));
         if (stitch_frame_time_loaded_from_config_ && stitch_frame_time_ns_ != configured_stitch_frame_time_ns) {
           return absl::InvalidArgumentError(
               "All pipeline instances must use the same stitching.stitch_frame_time value");
@@ -1586,7 +1615,7 @@ absl::Status PipelineApplication::createMainLoop(
     cudaGetDevice(&current_device);
     struct cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, current_device);
-    if (!prop.integrated) {
+    if (!prop.integrated && !g_getenv("HM_TEST_CONCURRENT_STITCHING_CALIBRATION")) {
       auto pause_status = pause_pipeline_for_model_initialization(app_contexts[i].get(), &cintr_);
       if (!pause_status.ok()) {
         if (absl::IsCancelled(pause_status)) {
@@ -2181,6 +2210,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
       return parsed_stitch_frame_time.status();
     }
     stitch_frame_time_ns_ = *parsed_stitch_frame_time;
+    stitch_frame_time_override_config_value_ = normalized_stitch_frame_time_config_value(stitch_frame_time_ns_);
     stitch_frame_time_set_ = true;
   }
 
@@ -3973,13 +4003,9 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
     return TRUE;
   }
   // The stitch artifact generation and completion latch are shared across all
-  // contexts in this stage. Only one stitcher posts the completion message,
-  // but every peer is now out of calibration and must use normal EOS handling.
-  for (const auto& context : active_stage->second) {
-    if (context) {
-      one_pass_calibration_contexts_.erase(context.get());
-    }
-  }
+  // contexts in this stage. Only one stitcher posts the completion message.
+  // Keep every calibration context classified as such until its old worker is
+  // cancelled and its replacement pipeline is running.
   std::vector<hm::pipeline_internal::StitchFrameRewindState> states;
   states.reserve(active_stage->second.size());
   for (const auto& context : active_stage->second) {
@@ -3998,8 +4024,8 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
         .stage = current_stage_,
         .main_loop_generation = main_loop_generation_,
     };
-    stitch_frame_rewind_source_id_ =
-        g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, rewind_after_stitching_calibration_static, request, [](gpointer data) {
+    stitch_frame_rewind_source_id_ = g_timeout_add_full(
+        G_PRIORITY_DEFAULT, 10, rewind_after_stitching_calibration_static, request, [](gpointer data) {
           delete static_cast<StitchFrameRewindRequest*>(data);
         });
     if (stitch_frame_rewind_source_id_ == 0) {
@@ -4019,6 +4045,11 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
       std::lock_guard<std::mutex> lock(playback_timing_mu_);
       timed_run_last_progress_wall_ =
           time_limit_seconds_ > 0 ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    }
+    for (const auto& context : active_stage->second) {
+      if (context) {
+        one_pass_calibration_contexts_.erase(context.get());
+      }
     }
     stitch_frame_calibration_active_.store(false, std::memory_order_release);
   }
@@ -4042,19 +4073,26 @@ void PipelineApplication::cancel_stitch_frame_rewind(uint64_t main_loop_generati
     stitch_frame_rewind_source_id_ = 0;
   }
   stitch_frame_rewind_pending_contexts_.clear();
+  stitch_frame_rewind_cancellation_requested_ = false;
+  stitch_frame_rewind_deadline_ = {};
   stitch_frame_calibration_active_.store(false, std::memory_order_release);
 }
 
 gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uint64_t main_loop_generation) {
-  stitch_frame_rewind_source_id_ = 0;
   if (!hm::pipeline_internal::stitch_frame_rewind_request_is_current(
           stage, main_loop_generation, current_stage_, main_loop_generation_, main_loop_ != nullptr)) {
+    stitch_frame_rewind_source_id_ = 0;
     stitch_frame_rewind_pending_contexts_.clear();
+    stitch_frame_rewind_cancellation_requested_ = false;
+    stitch_frame_rewind_deadline_ = {};
     return FALSE;
   }
   const auto active_stage = stage_app_contexts_.find(stage);
   if (active_stage == stage_app_contexts_.end()) {
+    stitch_frame_rewind_source_id_ = 0;
     stitch_frame_rewind_pending_contexts_.clear();
+    stitch_frame_rewind_cancellation_requested_ = false;
+    stitch_frame_rewind_deadline_ = {};
     return FALSE;
   }
   std::vector<AppCtx*> rewind_contexts;
@@ -4065,18 +4103,97 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
     }
   }
   if (rewind_contexts.empty() || quit_) {
+    stitch_frame_rewind_source_id_ = 0;
     stitch_frame_rewind_pending_contexts_.clear();
+    stitch_frame_rewind_cancellation_requested_ = false;
+    stitch_frame_rewind_deadline_ = {};
     return FALSE;
   }
 
-  g_print(
-      "hmstitcher: calibration frame complete; restarting playback at %" GST_TIME_FORMAT "\n",
-      GST_TIME_ARGS(start_time_ns_));
+  // A shared completion can arrive while another same-stage stitcher is still
+  // inside synchronous feature, Hugin, or rink-mask work. Detach the old bus
+  // watches before cooperative cancellation so an expected AbortedError from
+  // those workers cannot fail the replacement generation. Releasing every URI
+  // barrier first also prevents teardown from waiting on an abandoned pair.
+  // Request PAUSED asynchronously and poll from this timeout source: setting a
+  // busy streaming pipeline directly to NULL can block the GLib main loop.
+  if (!stitch_frame_rewind_cancellation_requested_) {
+    g_print(
+        "hmstitcher: calibration frame complete; restarting playback at %" GST_TIME_FORMAT "\n",
+        GST_TIME_ARGS(start_time_ns_));
+    for (AppCtx* context : rewind_contexts) {
+      if (context->pipeline.pipeline) {
+        GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(context->pipeline.pipeline));
+        if (bus) {
+          gst_bus_remove_watch(bus);
+          gst_object_unref(bus);
+        }
+      }
+      cancel_uri_playlist_frame_barrier(&context->pipeline.multi_src_bin);
+      if (GstElement* stitcher = context->pipeline.hmstitcher_bin.elem_hmstitcher) {
+        g_object_set(G_OBJECT(stitcher), "cancel-pending-work", TRUE, nullptr);
+      }
+      context->eos_received = TRUE;
+      if (context->pipeline.pipeline &&
+          gst_element_set_state(context->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
+        g_printerr("Failed to quiesce calibration pipeline before stitch-frame restart\n");
+        context->return_value = -1;
+        quit_ = TRUE;
+        stitch_frame_rewind_source_id_ = 0;
+        if (main_loop_)
+          g_main_loop_quit(main_loop_);
+        return FALSE;
+      }
+    }
+    stitch_frame_rewind_cancellation_requested_ = true;
+    stitch_frame_rewind_deadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  }
+
+  bool all_quiesced = true;
+  for (AppCtx* context : rewind_contexts) {
+    if (!context->pipeline.pipeline) {
+      continue;
+    }
+    GstState current = GST_STATE_VOID_PENDING;
+    GstState pending = GST_STATE_VOID_PENDING;
+    const GstStateChangeReturn state =
+        gst_element_get_state(context->pipeline.pipeline, &current, &pending, /*timeout=*/0);
+    if (state == GST_STATE_CHANGE_FAILURE) {
+      g_printerr("Calibration pipeline failed while quiescing for stitch-frame restart\n");
+      context->return_value = -1;
+      quit_ = TRUE;
+      stitch_frame_rewind_source_id_ = 0;
+      if (main_loop_)
+        g_main_loop_quit(main_loop_);
+      return FALSE;
+    }
+    if (state == GST_STATE_CHANGE_ASYNC || current > GST_STATE_PAUSED || pending > GST_STATE_PAUSED) {
+      all_quiesced = false;
+    }
+  }
+  if (!all_quiesced) {
+    if (std::chrono::steady_clock::now() < stitch_frame_rewind_deadline_) {
+      return G_SOURCE_CONTINUE;
+    }
+    g_printerr("Timed out quiescing calibration peers before stitch-frame restart\n");
+    for (AppCtx* context : rewind_contexts) {
+      context->return_value = -1;
+    }
+    quit_ = TRUE;
+    stitch_frame_rewind_source_id_ = 0;
+    if (main_loop_)
+      g_main_loop_quit(main_loop_);
+    return FALSE;
+  }
+  stitch_frame_rewind_source_id_ = 0;
+  stitch_frame_rewind_cancellation_requested_ = false;
+  stitch_frame_rewind_deadline_ = {};
 
   std::vector<AppCtx*> paused_contexts;
   paused_contexts.reserve(active_stage->second.size());
   for (const auto& context : active_stage->second) {
-    if (!context || !context->pipeline.pipeline) {
+    if (!context || !context->pipeline.pipeline ||
+        std::find(rewind_contexts.begin(), rewind_contexts.end(), context.get()) != rewind_contexts.end()) {
       continue;
     }
     if (!pause_pipeline(context.get())) {
@@ -4104,6 +4221,7 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
       recreation_ok = false;
       break;
     }
+    one_pass_calibration_contexts_.erase(context);
   }
   for (AppCtx* context : paused_contexts) {
     if (std::find(rewind_contexts.begin(), rewind_contexts.end(), context) == rewind_contexts.end()) {
