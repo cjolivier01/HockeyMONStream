@@ -5,6 +5,7 @@
 #include <QtCore/QDateTime>
 #include <QtCore/QDir>
 #include <QtCore/QDirIterator>
+#include <QtCore/QEvent>
 #include <QtCore/QEventLoop>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
@@ -1536,6 +1537,22 @@ HStreamWindow::~HStreamWindow() {
   releaseArchiveFinalizerOwnership(false);
 }
 
+bool HStreamWindow::eventFilter(QObject* watched, QEvent* event) {
+  if (watched == stitch_frame_time_edit_ && event) {
+    if (event->type() == QEvent::FocusIn) {
+      stitch_frame_time_edit_->setDisplayFormat(kStitchFrameTimeFractionalFormat);
+    } else if (event->type() == QEvent::FocusOut) {
+      QTimer::singleShot(0, this, [this] {
+        if (stitch_frame_time_edit_ && !stitch_frame_time_edit_->hasFocus() &&
+            stitch_frame_time_edit_->time().msec() == 0) {
+          stitch_frame_time_edit_->setDisplayFormat(kStitchFrameTimeFormat);
+        }
+      });
+    }
+  }
+  return QMainWindow::eventFilter(watched, event);
+}
+
 void HStreamWindow::closeEvent(QCloseEvent* event) {
   if (!event) {
     return;
@@ -1718,11 +1735,13 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   stitch_frame_time_edit_->setDisplayFormat(kStitchFrameTimeFormat);
   stitch_frame_time_edit_->setTime(QTime(0, 0, 0));
   stitch_frame_time_edit_->setWrapping(false);
+  stitch_frame_time_edit_->installEventFilter(this);
   stitch_frame_time_edit_->setToolTip(
       "Frame timestamp used to calibrate stitching. Playback returns to the beginning after one-pass calibration.");
   connect(stitch_frame_time_edit_, &QTimeEdit::timeChanged, this, [this](const QTime& value) {
     stitch_frame_time_edit_->setDisplayFormat(
-        value.msec() == 0 ? kStitchFrameTimeFormat : kStitchFrameTimeFractionalFormat);
+        value.msec() == 0 && !stitch_frame_time_edit_->hasFocus() ? kStitchFrameTimeFormat
+                                                                  : kStitchFrameTimeFractionalFormat);
     updatePresetDirtyState();
   });
 

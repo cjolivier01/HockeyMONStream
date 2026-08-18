@@ -129,9 +129,13 @@ absl::StatusOr<std::string> executable(const char* override_name, const char* na
 absl::Status run_checked(
     const std::vector<std::string>& command,
     const fs::path& working_dir,
-    std::string* captured = nullptr) {
+    std::string* captured = nullptr,
+    const std::function<bool()>& is_cancelled = {}) {
   const int exit_code = hm::run_command(
-      command, working_dir.string(), environment(), [captured](const std::string& error, const std::string& output) {
+      command,
+      working_dir.string(),
+      environment(),
+      [captured](const std::string& error, const std::string& output) {
         if (captured != nullptr) {
           captured->append(error);
           captured->push_back('\n');
@@ -142,7 +146,11 @@ absl::Status run_checked(
           std::cerr << error << '\n';
         if (!output.empty())
           std::cout << output << '\n';
-      });
+      },
+      is_cancelled);
+  if (is_cancelled && is_cancelled()) {
+    return absl::CancelledError("Hugin calibration command cancelled");
+  }
   if (exit_code != 0) {
     std::ostringstream message;
     message << "Command failed with exit code " << exit_code << ':';
@@ -707,7 +715,8 @@ void remove_mapping_outputs(const fs::path& directory) {
 absl::Status run_autooptimiser(
     const std::string& autooptimiser,
     const fs::path& directory,
-    const std::optional<double>& output_scale = std::nullopt) {
+    const std::optional<double>& output_scale = std::nullopt,
+    const std::function<bool()>& is_cancelled = {}) {
   // Match HockeyMOM's automatic alignment path: let Hugin choose the
   // optimization stages, projection, field of view, and canvas. When the
   // resulting canvas exceeds the configured GPU limit, -x scales that same
@@ -723,7 +732,7 @@ absl::Status run_autooptimiser(
   }
   command.insert(command.end(), {"-o", "autooptimiser_out.pto", "hm_project.pto"});
   std::string output;
-  auto status = run_checked(command, directory, &output);
+  auto status = run_checked(command, directory, &output, is_cancelled);
   if (!status.ok())
     return status;
   static const std::regex rms_pattern(R"(([0-9]+(?:[.][0-9]+)?(?:[eE][+-]?[0-9]+)?)[[:space:]]+units)");
@@ -739,10 +748,16 @@ absl::Status run_autooptimiser(
   return absl::OkStatus();
 }
 
-absl::Status run_nona(const std::string& nona, const fs::path& directory) {
+absl::Status run_nona(
+    const std::string& nona,
+    const fs::path& directory,
+    const std::function<bool()>& is_cancelled = {}) {
   remove_mapping_outputs(directory);
   return run_checked(
-      {nona, "-m", "TIFF_m", "-z", "NONE", "--bigtiff", "-c", "-o", "mapping_", "autooptimiser_out.pto"}, directory);
+      {nona, "-m", "TIFF_m", "-z", "NONE", "--bigtiff", "-c", "-o", "mapping_", "autooptimiser_out.pto"},
+      directory,
+      nullptr,
+      is_cancelled);
 }
 
 absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir, bool* prepared) {
@@ -1023,6 +1038,9 @@ absl::Status HuginProject::Configure(
     const fs::path& game_dir,
     const std::vector<FeatureMatch>& matches,
     const Options& options) {
+  if (options.is_cancelled && options.is_cancelled()) {
+    return absl::CancelledError("Hugin calibration cancelled before optimizer setup");
+  }
   return Configure(game_dir, game_dir / "left.png", game_dir / "right.png", matches, options);
 }
 
@@ -1032,6 +1050,9 @@ absl::Status HuginProject::Configure(
     const fs::path& right_image,
     const std::vector<FeatureMatch>& matches,
     const Options& options) {
+  if (options.is_cancelled && options.is_cancelled()) {
+    return absl::CancelledError("Hugin calibration cancelled before optimizer setup");
+  }
   if (!std::isfinite(options.horizontal_fov) || options.horizontal_fov <= 0.0 || options.horizontal_fov >= 360.0) {
     return absl::InvalidArgumentError("Hugin horizontal field of view must be between 0 and 360 degrees");
   }
@@ -1087,8 +1108,11 @@ absl::Status HuginProject::Configure(
   // produces a superficially blendable panorama, but leaves a large geometric
   // mismatch in the overlap that GPU blending exposes as repeated/ghosted
   // content. Keep this aligned with HockeyMOM's proven stitching setup.
-  auto status =
-      run_checked({*pto_gen, "-p", "0", "-o", "hm_project.pto", "-f", fov.str(), "left.png", "right.png"}, staging);
+  auto status = run_checked(
+      {*pto_gen, "-p", "0", "-o", "hm_project.pto", "-f", fov.str(), "left.png", "right.png"},
+      staging,
+      nullptr,
+      options.is_cancelled);
   if (!status.ok())
     return status;
   auto project = read_file(staging / "hm_project.pto");
@@ -1101,7 +1125,7 @@ absl::Status HuginProject::Configure(
   if (!status.ok())
     return status;
 
-  status = run_autooptimiser(*autooptimiser, staging);
+  status = run_autooptimiser(*autooptimiser, staging, std::nullopt, options.is_cancelled);
   if (!status.ok())
     return status;
   if (options.progress)
@@ -1117,7 +1141,7 @@ absl::Status HuginProject::Configure(
     const double factor =
         static_cast<double>(*options.max_canvas_dimension) / static_cast<double>(longest) * rounding_guard;
     output_scale = output_scale.value_or(1.0) * factor;
-    return run_autooptimiser(*autooptimiser, staging, output_scale);
+    return run_autooptimiser(*autooptimiser, staging, output_scale, options.is_cancelled);
   };
   if (options.max_canvas_dimension.has_value()) {
     auto optimized = read_file(staging / "autooptimiser_out.pto");
@@ -1135,7 +1159,7 @@ absl::Status HuginProject::Configure(
   }
 
   for (int attempt = 0; attempt < 3; ++attempt) {
-    status = run_nona(*nona, staging);
+    status = run_nona(*nona, staging, options.is_cancelled);
     if (!status.ok())
       return status;
     bool mappings_valid = true;
@@ -1176,8 +1200,12 @@ absl::Status HuginProject::Configure(
   if (enblend.ok()) {
     status = run_checked(
         {*enblend, "--save-masks=seam_file.png", "-o", "panorama.tif", "mapping_0000.tif", "mapping_0001.tif"},
-        staging);
+        staging,
+        nullptr,
+        options.is_cancelled);
     if (!status.ok()) {
+      if (absl::IsCancelled(status))
+        return status;
       std::cerr << "Warning: native enblend preview failed; a hard seam will be generated: " << status << '\n';
       fs::remove(staging / "seam_file.png", error);
       error.clear();
@@ -1189,6 +1217,8 @@ absl::Status HuginProject::Configure(
   status = validate_staged_artifacts(staging, options.max_canvas_dimension);
   if (!status.ok())
     return status;
+  if (options.is_cancelled && options.is_cancelled())
+    return absl::CancelledError("Hugin calibration cancelled before publication");
   if (!options.expected_invalidation_id.empty()) {
     auto config_transaction = GameConfigTransactionLock::Acquire(game_dir);
     if (!config_transaction.ok())

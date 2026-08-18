@@ -237,6 +237,34 @@ int main() {
       "optimizer stage must become active before Hugin setup can fail");
   ::setenv("HM_PTO_GEN", pto_gen.c_str(), 1);
   options.progress = {};
+  const fs::path slow_autooptimiser = root / "slow-autooptimiser";
+  const fs::path slow_optimizer_started = root / "slow-autooptimiser.started";
+  ok &= expect(
+      write_tool(
+          slow_autooptimiser,
+          "printf started > '" + slow_optimizer_started.string() +
+              "'\n"
+              "sleep 30\n"),
+      "slow fake autooptimiser must be created");
+  ::setenv("HM_AUTOOPTIMISER", slow_autooptimiser.c_str(), 1);
+  std::atomic<bool> cancel_optimizer{false};
+  options.is_cancelled = [&] { return cancel_optimizer.load(); };
+  std::thread optimizer_interrupt([&] {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!fs::exists(slow_optimizer_started) && std::chrono::steady_clock::now() < deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    cancel_optimizer = true;
+  });
+  const auto cancellation_started = std::chrono::steady_clock::now();
+  const auto cancelled_optimizer = hm::stitching::HuginProject::Configure(
+      root / "game", root / "private-inputs" / "left.png", root / "private-inputs" / "right.png", matches, options);
+  const auto cancellation_elapsed = std::chrono::steady_clock::now() - cancellation_started;
+  optimizer_interrupt.join();
+  options.is_cancelled = {};
+  ::setenv("HM_AUTOOPTIMISER", autooptimiser.c_str(), 1);
+  ok &= expect(
+      absl::IsCancelled(cancelled_optimizer) && cancellation_elapsed < std::chrono::seconds(5),
+      "optimizer cancellation must terminate the Hugin process group before pipeline shutdown times out");
   const auto configured = hm::stitching::HuginProject::Configure(
       root / "game", root / "private-inputs" / "left.png", root / "private-inputs" / "right.png", matches, options);
   if (!configured.ok())

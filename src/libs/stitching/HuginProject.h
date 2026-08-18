@@ -43,6 +43,7 @@ class HuginProject {
     std::optional<size_t> max_canvas_dimension;
     std::string expected_invalidation_id;
     ProgressCallback progress;
+    std::function<bool()> is_cancelled;
   };
 
   // Pure helpers exposed for focused contract tests.

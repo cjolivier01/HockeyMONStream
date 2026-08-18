@@ -1,5 +1,6 @@
 #include "hstream/src/libs/common/Process.h"
 
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <functional>
@@ -11,6 +12,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/select.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -42,7 +44,8 @@ int run_command(
     const std::vector<std::string>& cmd,
     const std::string& working_dir,
     const std::map<std::string, std::string>& env,
-    std::function<void(const std::string&, const std::string&)> callback) {
+    std::function<void(const std::string&, const std::string&)> callback,
+    const std::function<bool()>& is_cancelled) {
   if (cmd.empty()) {
     std::cerr << "Error: command is empty." << std::endl;
     return -1;
@@ -74,6 +77,13 @@ int run_command(
 
   if (pid == 0) {
     // Child process
+
+    // Cancellable commands get their own process group so cancellation also
+    // reaches helper processes spawned by tools such as Hugin and enblend.
+    if (is_cancelled && ::setpgid(0, 0) != 0) {
+      perror("setpgid");
+      _exit(1);
+    }
 
     // Change working directory if provided.
     if (!working_dir.empty() && chdir(working_dir.c_str()) != 0) {
@@ -123,6 +133,10 @@ int run_command(
   }
   // Parent process
 
+  if (is_cancelled && ::setpgid(pid, pid) != 0 && errno != EACCES && errno != ESRCH) {
+    perror("setpgid");
+  }
+
   // Close write ends as we only need to read.
   close(pipe_stdout[1]);
   close(pipe_stderr[1]);
@@ -138,9 +152,40 @@ int run_command(
 
   bool stdout_open = true;
   bool stderr_open = true;
+  bool child_exited = false;
+  bool cancellation_requested = false;
+  bool cancellation_killed = false;
+  int status = 0;
+  std::chrono::steady_clock::time_point cancellation_started;
 
-  // Loop while either pipe is open.
-  while (stdout_open || stderr_open) {
+  // Loop while either pipe is open. For cancellable commands, keep polling a
+  // child that closed its output streams so cancellation remains observable.
+  while (stdout_open || stderr_open || (is_cancelled && !child_exited)) {
+    if (!child_exited) {
+      const pid_t wait_result = ::waitpid(pid, &status, WNOHANG);
+      if (wait_result == pid) {
+        child_exited = true;
+      } else if (wait_result < 0 && errno != EINTR) {
+        perror("waitpid");
+        child_exited = true;
+        status = -1;
+      }
+    }
+    if (!cancellation_requested && is_cancelled && is_cancelled()) {
+      cancellation_requested = true;
+      cancellation_started = std::chrono::steady_clock::now();
+      if (::kill(-pid, SIGTERM) != 0 && errno != ESRCH) {
+        perror("kill(SIGTERM)");
+      }
+    }
+    if (cancellation_requested && !cancellation_killed &&
+        std::chrono::steady_clock::now() - cancellation_started >= std::chrono::milliseconds(500)) {
+      cancellation_killed = true;
+      if (::kill(-pid, SIGKILL) != 0 && errno != ESRCH) {
+        perror("kill(SIGKILL)");
+      }
+    }
+
     fd_set readfds;
     FD_ZERO(&readfds);
     int maxfd = -1;
@@ -154,7 +199,9 @@ int run_command(
       if (pipe_stderr[0] > maxfd)
         maxfd = pipe_stderr[0];
     }
-    int ret = select(maxfd + 1, &readfds, nullptr, nullptr, nullptr);
+    timeval timeout{0, 100000};
+    timeval* timeout_ptr = is_cancelled ? &timeout : nullptr;
+    int ret = select(maxfd + 1, &readfds, nullptr, nullptr, timeout_ptr);
     if (ret < 0) {
       if (errno == EINTR)
         continue;
@@ -220,8 +267,7 @@ int run_command(
   }
 
   // Wait for the child process to finish.
-  int status = 0;
-  if (waitpid(pid, &status, 0) == -1) {
+  if (!child_exited && waitpid(pid, &status, 0) == -1) {
     perror("waitpid");
     return -1;
   }

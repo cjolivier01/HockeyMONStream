@@ -2078,6 +2078,37 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
 
+  window->activateWindow();
+  stitch_frame_time->setFocus(Qt::OtherFocusReason);
+  QTest::qWait(10);
+  auto* stitch_frame_line_edit = stitch_frame_time->findChild<QLineEdit*>();
+  stitch_frame_time->setCurrentSection(QDateTimeEdit::MSecSection);
+  QTest::keyClick(stitch_frame_time, Qt::Key_Up);
+  QTest::keyClick(stitch_frame_time, Qt::Key_Tab);
+  QApplication::processEvents();
+  if (!expect(
+          stitch_frame_time->displayedSections().testFlag(QDateTimeEdit::MSecSection) &&
+              stitch_frame_time->time() == QTime(0, 0, 0, 1),
+          QString(
+              "The default stitch-frame editor should accept millisecond keyboard input (format=%1, time=%2, "
+              "section=%3, focus=%4, text=%5)")
+              .arg(stitch_frame_time->displayFormat())
+              .arg(stitch_frame_time->time().toString("HH:mm:ss.zzz"))
+              .arg(static_cast<int>(stitch_frame_time->currentSection()))
+              .arg(stitch_frame_time->hasFocus())
+              .arg(stitch_frame_line_edit ? stitch_frame_line_edit->text() : QString("missing"))
+              .toStdString())) {
+    return false;
+  }
+  mode->setFocus();
+  stitch_frame_time->setTime(QTime(0, 0, 0));
+  QApplication::processEvents();
+  if (!expect(
+          stitch_frame_time->displayFormat() == "HH:mm:ss",
+          "An unfocused zero stitch-frame value should display as 00:00:00")) {
+    return false;
+  }
+
   mode->setCurrentIndex(mode->findData("program"));
   if (!expect(
           control_points->isEnabled(),

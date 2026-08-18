@@ -50,6 +50,7 @@
 #include "hstream/src/libs/camera/AutoFocus.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
 
 #include "absl/cleanup/cleanup.h"
 #include "absl/strings/str_split.h"
@@ -84,6 +85,24 @@ absl::StatusOr<uint64_t> parse_stitch_frame_time_option(const char* option, cons
   } catch (const std::exception& error) {
     return absl::InvalidArgumentError(
         std::string("Invalid ") + option + " value '" + (value ? value : "") + "': " + error.what());
+  }
+}
+
+absl::StatusOr<std::optional<double>> active_stitch_output_rotation(const YAML::Node& config) {
+  try {
+    const auto stitcher = hm::get_node(config, "pipeline.hmstitcher");
+    if (!stitcher.has_value() || !stitcher->IsMap() ||
+        !hm::get_node_value(config, "pipeline.hmstitcher.enable", false)) {
+      return std::nullopt;
+    }
+    double rotation = hm::get_node_value(config, "stitching.post_stitch_rotate_degrees", 0.0);
+    rotation = hm::get_node_value(config, "pipeline.hmstitcher.post-stitch-rotate-degrees", rotation);
+    if (!std::isfinite(rotation)) {
+      return absl::InvalidArgumentError("Active hmstitcher post-stitch rotation must be finite");
+    }
+    return rotation == 0.0 ? 0.0 : rotation;
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(TO_STRING("Invalid active hmstitcher rotation: " << error.what()));
   }
 }
 
@@ -612,6 +631,7 @@ absl::Status PipelineApplication::configureInstances(
     size_t stage_index,
     std::vector<std::shared_ptr<HmApp>>& app_contexts) {
   std::vector<std::shared_ptr<HmApp>> valid_app_contexts;
+  std::vector<double> stage_stitch_output_rotations;
   for (size_t i = 0; i < app_contexts.size(); ++i) {
     auto& app_ctx = app_contexts[i];
     if (g_str_has_suffix(app_ctx->app_config_file().c_str(), ".yml") ||
@@ -696,6 +716,15 @@ absl::Status PipelineApplication::configureInstances(
       if (!configuration_status.ok()) {
         return configuration_status;
       }
+      std::optional<double> stitch_output_rotation;
+      HM_ASSIGN_OR_RETURN(stitch_output_rotation, active_stitch_output_rotation(app_ctx->configurator().config()));
+      if (stitch_output_rotation.has_value()) {
+        stage_stitch_output_rotations.push_back(*stitch_output_rotation);
+        if (!hm::pipeline_internal::stitch_output_rotations_are_consistent(stage_stitch_output_rotations)) {
+          return absl::InvalidArgumentError(
+              "All active hmstitcher instances in a stage must use the same post-stitch rotation");
+        }
+      }
       const std::string& active_invalidation_id = app_ctx->configurator().active_stitching_invalidation_id();
       if (!active_invalidation_id.empty()) {
         const char* runtime_invalidation_id = g_getenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
@@ -707,17 +736,22 @@ absl::Status PipelineApplication::configureInstances(
           return absl::InternalError("Unable to publish the saved stitching invalidation ID to runtime plugins");
         }
       }
+      if (app_ctx->configurator().stitching_calibration_required()) {
+        HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(
+            "pipeline.hmstitcher.private-properties.calibration-run-generation",
+            std::to_string(main_loop_generation_ + 1)));
+      }
       YAML::Node config = app_ctx->configurator().config();
       if (!stitch_frame_time_set_) {
-        const std::string configured_stitch_frame_time =
-            hm::get_node_value(config, "stitching.stitch_frame_time", std::string());
+        std::string configured_stitch_frame_time;
         uint64_t configured_stitch_frame_time_ns = 0;
-        if (!configured_stitch_frame_time.empty()) {
-          try {
+        try {
+          configured_stitch_frame_time = hm::get_node_value(config, "stitching.stitch_frame_time", std::string());
+          if (!configured_stitch_frame_time.empty()) {
             configured_stitch_frame_time_ns = hm::stitch_frame_time_to_nanoseconds(configured_stitch_frame_time);
-          } catch (const std::exception& error) {
-            return absl::InvalidArgumentError(TO_STRING("Invalid stitching.stitch_frame_time: " << error.what()));
           }
+        } catch (const std::exception& error) {
+          return absl::InvalidArgumentError(TO_STRING("Invalid stitching.stitch_frame_time: " << error.what()));
         }
         if (stitch_frame_time_loaded_from_config_ && stitch_frame_time_ns_ != configured_stitch_frame_time_ns) {
           return absl::InvalidArgumentError(
@@ -3914,10 +3948,28 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
     return FALSE;
   }
   const auto active_stage = stage_app_contexts_.find(current_stage_);
-  if (!app_ctx || active_stage == stage_app_contexts_.end() ||
-      std::none_of(active_stage->second.begin(), active_stage->second.end(), [app_ctx](const auto& context) {
+  if (!app_ctx || active_stage == stage_app_contexts_.end()) {
+    return TRUE;
+  }
+  const auto completion_context =
+      std::find_if(active_stage->second.begin(), active_stage->second.end(), [app_ctx](const auto& context) {
         return context.get() == app_ctx;
-      })) {
+      });
+  if (completion_context == active_stage->second.end()) {
+    return TRUE;
+  }
+  const char* output_generation = gst_structure_get_string(structure, "output-generation");
+  std::string stitcher_config_path;
+  try {
+    stitcher_config_path = hm::get_node_value(
+        (*completion_context)->configurator().config(), "pipeline.hmstitcher.config-file", std::string());
+  } catch (const std::exception& error) {
+    g_printerr("Ignoring malformed stitching completion message config: %s\n", error.what());
+    return TRUE;
+  }
+  if (!output_generation || !*output_generation || stitcher_config_path.empty() ||
+      !hm::stitching::is_field_mask_configured(stitcher_config_path, output_generation)) {
+    g_printerr("Ignoring stale stitching completion message for a non-current output generation\n");
     return TRUE;
   }
   // The stitch artifact generation and completion latch are shared across all

@@ -48,13 +48,14 @@ struct OnePassCalibrationProgressPlan {
 
 class OnePassCalibrationCompletionLatch {
  public:
-  bool delivered() const;
-  bool try_begin_delivery();
-  void finish_delivery(bool delivered);
+  bool delivered(const std::string& calibration_scope) const;
+  bool try_begin_delivery(const std::string& calibration_scope);
+  void finish_delivery(const std::string& calibration_scope, bool delivered);
 
  private:
-  // 0 = available, 1 = a stitcher is posting, 2 = delivered to the bus.
-  std::atomic<unsigned> state_{0};
+  // 0 = available, 1 = a stitcher is publishing completion, 2 = published.
+  mutable std::mutex mutex_;
+  std::unordered_map<std::string, unsigned> state_by_scope_;
 };
 
 // Keeps resumed calibration observable even when stitch mappings were already
@@ -147,6 +148,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   std::string hugin_generation_id_ ABSL_GUARDED_BY(stitcher_mu_);
   std::string config_file_;
   std::string calibration_invalidation_id_;
+  std::string calibration_run_generation_;
   GstElement* owner_element_{nullptr};
   std::mutex process_mu_;
   size_t process_pass_{0};

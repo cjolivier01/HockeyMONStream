@@ -3,6 +3,7 @@
 #include "hstream/src/libs/common/utils.h"
 
 #include <iostream>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -62,6 +63,14 @@ int main() {
       !hm::pipeline_internal::stitch_frame_should_account_playback(/*calibration_rewind_pending=*/true) &&
           hm::pipeline_internal::stitch_frame_should_account_playback(/*calibration_rewind_pending=*/false),
       "Calibration-frame playback must not consume time-limit or progress accounting");
+  ok &= expect(
+      hm::pipeline_internal::stitch_output_rotations_are_consistent({}) &&
+          hm::pipeline_internal::stitch_output_rotations_are_consistent({0.0, -0.0}) &&
+          hm::pipeline_internal::stitch_output_rotations_are_consistent({10.0, 10.0}) &&
+          !hm::pipeline_internal::stitch_output_rotations_are_consistent({0.0, 10.0}) &&
+          !hm::pipeline_internal::stitch_output_rotations_are_consistent(
+              {10.0, std::numeric_limits<double>::quiet_NaN()}),
+      "Every active stitcher in a stage must use the same finite output rotation generation input");
   ok &= expect(
       hm::hhmmss_to_nanoseconds("00:60:00") == 3'600'000'000'000ULL,
       "The existing start-time parser must retain rollover compatibility");

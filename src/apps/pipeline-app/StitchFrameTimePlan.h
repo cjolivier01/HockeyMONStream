@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -47,6 +48,17 @@ inline bool stitch_frame_rewind_request_is_current(
 
 inline bool stitch_frame_should_account_playback(bool calibration_rewind_pending) {
   return !calibration_rewind_pending;
+}
+
+inline bool stitch_output_rotations_are_consistent(const std::vector<double>& rotations) {
+  if (rotations.empty() || !std::isfinite(rotations.front()))
+    return rotations.empty();
+  const double expected = rotations.front() == 0.0 ? 0.0 : rotations.front();
+  for (double rotation : rotations) {
+    if (!std::isfinite(rotation) || (rotation == 0.0 ? 0.0 : rotation) != expected)
+      return false;
+  }
+  return true;
 }
 
 } // namespace hm::pipeline_internal

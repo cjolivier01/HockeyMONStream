@@ -30,6 +30,7 @@
 class QProcessEnvironment;
 class QCloseEvent;
 class QDialog;
+class QEvent;
 class QIcon;
 class QProgressBar;
 class QSplitter;
@@ -70,6 +71,7 @@ class HStreamWindow : public QMainWindow {
 
  protected:
   void closeEvent(QCloseEvent* event) override;
+  bool eventFilter(QObject* watched, QEvent* event) override;
 
  private:
   enum class CopiedImportCleanupResult {

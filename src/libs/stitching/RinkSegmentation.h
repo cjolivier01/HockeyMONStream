@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -46,7 +47,10 @@ class RinkSegmentation {
       const float* mask_logits,
       size_t mask_logit_count);
 
-  absl::StatusOr<RinkProfile> Infer(const cv::Mat& bgr_image, double inference_scale = 1.0) const;
+  absl::StatusOr<RinkProfile> Infer(
+      const cv::Mat& bgr_image,
+      double inference_scale = 1.0,
+      const std::function<bool()>& is_cancelled = {}) const;
 
  private:
   explicit RinkSegmentation(std::unique_ptr<hm::onnx::Session> session);

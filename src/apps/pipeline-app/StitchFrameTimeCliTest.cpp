@@ -1,4 +1,7 @@
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <string>
 #include <vector>
 
 #include <sys/wait.h>
@@ -6,14 +9,22 @@
 
 namespace {
 
-bool exits_with_argument_error(const char* executable, const char* value) {
+namespace fs = std::filesystem;
+
+bool exits_with_argument_error(
+    const char* executable,
+    const std::vector<std::string>& arguments,
+    const fs::path& game_root = {}) {
   const pid_t child = ::fork();
   if (child == 0) {
-    std::vector<char*> args = {
-        const_cast<char*>(executable),
-        const_cast<char*>(value),
-        nullptr,
-    };
+    if (!game_root.empty()) {
+      ::setenv("HM_GAME_DIR", game_root.c_str(), 1);
+    }
+    std::vector<char*> args{const_cast<char*>(executable)};
+    for (const std::string& argument : arguments) {
+      args.push_back(const_cast<char*>(argument.c_str()));
+    }
+    args.push_back(nullptr);
     ::execv(executable, args.data());
     _exit(127);
   }
@@ -35,10 +46,45 @@ int main(int argc, char** argv) {
            "--stitch-frame-time=00:60:00",
            "--stitch-frame-time=inf",
        }) {
-    if (!exits_with_argument_error(argv[1], value)) {
+    if (!exits_with_argument_error(argv[1], {value})) {
       std::cerr << "FAIL: malformed stitch-frame time did not produce an invalid-argument exit: " << value << '\n';
       return 1;
     }
   }
+
+  std::string pattern = (fs::temp_directory_path() / "hstream-stitch-frame-cli-test-XXXXXX").string();
+  if (::mkdtemp(pattern.data()) == nullptr) {
+    std::cerr << "FAIL: unable to create stitch-frame CLI test directory\n";
+    return 1;
+  }
+  const fs::path root(pattern);
+  const fs::path game_root = root / "games";
+  const fs::path game_dir = game_root / "malformed-config";
+  const fs::path pipeline_config = root / "pipeline.yaml";
+  const fs::path rotation_zero_config = root / "rotation-zero.yaml";
+  const fs::path rotation_ten_config = root / "rotation-ten.yaml";
+  fs::create_directories(game_dir);
+  std::ofstream(game_dir / "config.yaml") << "stitching:\n  stitch_frame_time:\n    - 00:00:07\n";
+  std::ofstream(pipeline_config) << "application:\n  stage: 0\n";
+  const bool malformed_config_rejected = exits_with_argument_error(
+      argv[1], {"--game-id=malformed-config", "--cfg-file=" + pipeline_config.string()}, game_root);
+  if (!malformed_config_rejected) {
+    std::cerr << "FAIL: a non-scalar config-file stitch-frame time did not produce an invalid-argument exit\n";
+    fs::remove_all(root);
+    return 1;
+  }
+  std::ofstream(rotation_zero_config)
+      << "application:\n  stage: 0\nhmstitcher:\n  enable: 1\n  post-stitch-rotate-degrees: 0\n";
+  std::ofstream(rotation_ten_config)
+      << "application:\n  stage: 0\nhmstitcher:\n  enable: 1\n  post-stitch-rotate-degrees: 10\n";
+  if (!exits_with_argument_error(
+          argv[1],
+          {"--cfg-file=" + rotation_zero_config.string(), "--cfg-file=" + rotation_ten_config.string()},
+          game_root)) {
+    std::cerr << "FAIL: same-stage stitchers with incompatible output rotations were not rejected\n";
+    fs::remove_all(root);
+    return 1;
+  }
+  fs::remove_all(root);
   return 0;
 }

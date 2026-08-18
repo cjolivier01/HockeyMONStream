@@ -61,6 +61,13 @@ int main() {
     }
     initial_hugin_lock->reset();
   }
+  NvBufSurfaceParams cancelled_surface_params{};
+  hm::surface::Surface cancelled_surface(&cancelled_surface_params);
+  const auto cancelled_rink =
+      hm::stitching::create_field_mask(root.string(), cancelled_surface, {}, {}, [] { return true; });
+  ok &= expect(
+      absl::IsCancelled(cancelled_rink),
+      "an already-cancelled rink-mask generation must stop before GPU readback or inference");
   cv::Mat first(24, 32, CV_8U, cv::Scalar(0));
   cv::Mat second(24, 32, CV_8U, cv::Scalar(0));
   first(cv::Rect(2, 3, 10, 8)).setTo(255);

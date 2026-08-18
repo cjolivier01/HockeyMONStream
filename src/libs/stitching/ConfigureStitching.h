@@ -50,7 +50,8 @@ absl::Status create_field_mask(
     const std::string& game_dir,
     surface::Surface surface,
     const std::string& expected_output_generation = {},
-    const std::string& expected_invalidation_id = {});
+    const std::string& expected_invalidation_id = {},
+    const std::function<bool()>& is_cancelled = {});
 
 absl::Status save_rink_profile(
     const std::string& game_dir,
@@ -81,7 +82,10 @@ absl::Status clean_stitching_artifacts_from_control_points(
     const std::string& game_dir,
     const std::string& expected_invalidation_id = {});
 
-absl::Status configure_orientation(const std::string& game_dir, const std::string& expected_invalidation_id = {});
+absl::Status configure_orientation(
+    const std::string& game_dir,
+    const std::string& expected_invalidation_id = {},
+    const std::function<bool()>& is_cancelled = {});
 
 bool is_scoreboard_configured(const std::string& game_dir);
 

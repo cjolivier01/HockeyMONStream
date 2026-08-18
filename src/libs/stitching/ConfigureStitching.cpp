@@ -1129,6 +1129,7 @@ absl::Status create_control_points(
   options.max_canvas_dimension = max_canvas_dimension;
   options.expected_invalidation_id = expected_invalidation_id;
   options.progress = report_calibration_progress;
+  options.is_cancelled = is_cancelled;
   return HuginProject::Configure(game_dir, left_file, right_file, matched.selected, options);
 }
 
@@ -1776,7 +1777,10 @@ absl::Status create_field_mask(
     const std::string& game_dir,
     surface::Surface surface,
     const std::string& expected_output_generation,
-    const std::string& expected_invalidation_id) {
+    const std::string& expected_invalidation_id,
+    const std::function<bool()>& is_cancelled) {
+  if (is_cancelled && is_cancelled())
+    return absl::CancelledError("Rink-mask calibration cancelled before inference");
   const fs::path root(game_dir);
   auto hugin_lock = HuginProject::RecoverAndLock(root);
   if (!hugin_lock.ok())
@@ -1799,6 +1803,15 @@ absl::Status create_field_mask(
     if (!config.ok())
       return config.status();
     HM_RETURN_IF_ERROR(validate_stitching_generation_owner(*config, expected_invalidation_id));
+  }
+  if (const char* delay = std::getenv("HM_TEST_RINK_INFERENCE_DELAY_MS")) {
+    const long delay_ms = std::strtol(delay, nullptr, 10);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(0L, delay_ms));
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (is_cancelled && is_cancelled())
+        return absl::CancelledError("Rink-mask calibration cancelled before inference");
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
   }
   std::string pattern = (root / ".hstream-field-mask-input-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
@@ -1826,17 +1839,20 @@ absl::Status create_field_mask(
   std::unique_ptr<RinkSegmentation> model;
   HM_ASSIGN_OR_RETURN(model, RinkSegmentation::Create(model_path.string()));
   RinkProfile profile;
-  HM_ASSIGN_OR_RETURN(profile, model->Infer(stitched, RinkSegmentation::kHockeyMomInferenceScale));
+  HM_ASSIGN_OR_RETURN(profile, model->Infer(stitched, RinkSegmentation::kHockeyMomInferenceScale, is_cancelled));
   return save_rink_profile_locked(
       game_dir, profile, *hugin_generation, expected_output_generation, expected_invalidation_id, &stitched);
 }
 
-absl::Status configure_orientation(const std::string& game_dir, const std::string& expected_invalidation_id) {
+absl::Status configure_orientation(
+    const std::string& game_dir,
+    const std::string& expected_invalidation_id,
+    const std::function<bool()>& is_cancelled) {
   fs::path model_path;
   HM_ASSIGN_OR_RETURN(model_path, rink_model_path());
   std::unique_ptr<RinkSegmentation> model;
   HM_ASSIGN_OR_RETURN(model, RinkSegmentation::Create(model_path.string()));
-  return configure_game_orientation(game_dir, *model, expected_invalidation_id);
+  return configure_game_orientation(game_dir, *model, expected_invalidation_id, is_cancelled);
 }
 
 bool is_scoreboard_configured(const std::string& game_dir) {

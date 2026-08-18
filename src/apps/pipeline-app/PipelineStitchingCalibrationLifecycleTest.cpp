@@ -104,7 +104,8 @@ class PipelineProcess {
       const std::string& stitch_frame_time = {},
       int time_limit_seconds = 0,
       const std::string& stitch_rotate_degrees = {},
-      bool supply_runtime_invalidation = true) {
+      bool supply_runtime_invalidation = true,
+      int rink_inference_delay_ms = 0) {
     int input_pipe[2];
     int output_pipe[2];
     if (::pipe(input_pipe) != 0 || ::pipe(output_pipe) != 0) {
@@ -135,6 +136,11 @@ class PipelineProcess {
       ::setenv("USE_NEW_NVSTREAMMUX", "yes", 1);
       ::setenv("GST_DEBUG", "NVDS_APP:4", 1);
       ::setenv("GST_PLUGIN_PATH", plugin_directory.c_str(), 1);
+      if (rink_inference_delay_ms > 0) {
+        ::setenv("HM_TEST_RINK_INFERENCE_DELAY_MS", std::to_string(rink_inference_delay_ms).c_str(), 1);
+      } else {
+        ::unsetenv("HM_TEST_RINK_INFERENCE_DELAY_MS");
+      }
       if (start_from_features && supply_runtime_invalidation) {
         ::setenv("HSTREAM_CALIBRATION_START_STAGE", "features", 1);
       } else {
@@ -395,6 +401,31 @@ bool write_saved_stitch_time_invalidation(
     calibration["stale_from"] = "input";
     calibration["artifacts_invalidated"] = false;
     calibration["invalidation_id"] = invalidation_id;
+    return hm::stitching::publish_game_config(path.parent_path(), YAML::Dump(config) + "\n").ok();
+  } catch (const YAML::Exception&) {
+    return false;
+  }
+}
+
+bool write_rink_mask_invalidation(const fs::path& path, const std::string& invalidation_id) {
+  try {
+    YAML::Node config = YAML::LoadFile(path.string());
+    YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+    calibration["status"] = "pending";
+    calibration["stale_from"] = "rink-mask";
+    calibration["artifacts_invalidated"] = true;
+    calibration["invalidation_id"] = invalidation_id;
+    std::error_code error;
+    for (const auto& entry : fs::directory_iterator(path.parent_path(), error)) {
+      if (error)
+        return false;
+      const std::string name = entry.path().filename().string();
+      if (name.rfind("rink_mask_", 0) == 0 && entry.path().extension() == ".png") {
+        fs::remove(entry.path(), error);
+        if (error)
+          return false;
+      }
+    }
     return hm::stitching::publish_game_config(path.parent_path(), YAML::Dump(config) + "\n").ok();
   } catch (const YAML::Exception&) {
     return false;
@@ -733,6 +764,32 @@ int main(int argc, char** argv) {
     }();
   }
 
+  PipelineProcess interrupted_rink;
+  if (ok) {
+    ok = expect(
+             write_rink_mask_invalidation(game / "config.yaml", "interrupted-rink"),
+             "rink interruption config must preserve stitch maps while invalidating the rink mask") &&
+        expect(
+             interrupted_rink.Start(
+                 argv[1],
+                 pipeline_config,
+                 game_root,
+                 plugin_directory,
+                 "interrupted-rink",
+                 80,
+                 false,
+                 /*stitch_frame_time=*/{},
+                 /*time_limit_seconds=*/0,
+                 /*stitch_rotate_degrees=*/{},
+                 /*supply_runtime_invalidation=*/true,
+                 /*rink_inference_delay_ms=*/30000),
+             "interruptible rink-mask pipeline must start") &&
+        expect(
+             interrupted_rink.WaitFor("HSTREAM_CALIBRATION stage=rink-mask status=started", 0, kCalibrationTimeout),
+             "interruptible calibration must reach rink-mask inference") &&
+        stop_successfully(&interrupted_rink, "in-progress rink-mask inference must accept Stop/SIGINT");
+  }
+
   if (!ok) {
     initial.DumpOutput("initial calibration");
     saved_config.DumpOutput("standalone saved-time calibration");
@@ -740,6 +797,7 @@ int main(int argc, char** argv) {
     resumed.DumpOutput("CP-change resume");
     interrupted.DumpOutput("interrupted calibration");
     recovered.DumpOutput("recovered calibration");
+    interrupted_rink.DumpOutput("interrupted rink-mask calibration");
     std::cerr << "fixture retained at " << root << '\n';
   } else {
     fs::remove_all(root);

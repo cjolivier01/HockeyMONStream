@@ -84,6 +84,16 @@ bool calibration_starts_from_control_points() {
   return g_strcmp0(g_getenv("HSTREAM_CALIBRATION_START_STAGE"), "features") == 0;
 }
 
+std::string calibration_completion_scope(
+    const std::string& output_generation,
+    const std::string& invalidation_id,
+    const std::string& run_generation) {
+  std::ostringstream scope;
+  scope << output_generation.size() << ':' << output_generation << invalidation_id.size() << ':' << invalidation_id
+        << run_generation.size() << ':' << run_generation;
+  return scope.str();
+}
+
 void log_canvas_hint(const std::string& prefix, size_t width, size_t height) {
   if (!width || !height) {
     return;
@@ -144,17 +154,28 @@ OnePassCalibrationProgressPlan one_pass_calibration_progress_plan(
   };
 }
 
-bool OnePassCalibrationCompletionLatch::delivered() const {
-  return state_.load(std::memory_order_acquire) == 2;
+bool OnePassCalibrationCompletionLatch::delivered(const std::string& calibration_scope) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto state = state_by_scope_.find(calibration_scope);
+  return state != state_by_scope_.end() && state->second == 2;
 }
 
-bool OnePassCalibrationCompletionLatch::try_begin_delivery() {
-  unsigned expected = 0;
-  return state_.compare_exchange_strong(expected, 1, std::memory_order_acq_rel);
+bool OnePassCalibrationCompletionLatch::try_begin_delivery(const std::string& calibration_scope) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  unsigned& state = state_by_scope_[calibration_scope];
+  if (state != 0)
+    return false;
+  state = 1;
+  return true;
 }
 
-void OnePassCalibrationCompletionLatch::finish_delivery(bool delivered) {
-  state_.store(delivered ? 2U : 0U, std::memory_order_release);
+void OnePassCalibrationCompletionLatch::finish_delivery(const std::string& calibration_scope, bool delivered) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (delivered) {
+    state_by_scope_[calibration_scope] = 2;
+  } else {
+    state_by_scope_.erase(calibration_scope);
+  }
 }
 
 StitcherPriv::~StitcherPriv() {
@@ -174,6 +195,7 @@ void StitcherPriv::Shutdown() {
     hugin_generation_id_.clear();
   }
   calibration_invalidation_id_.clear();
+  calibration_run_generation_.clear();
   release_rotation_scratch();
 }
 
@@ -842,6 +864,8 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     require_decoded_frame_sequence_meta_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "cancel-pending-work") {
     calibration_cancelled_.store(true, std::memory_order_release);
+  } else if (prop.key == "calibration-run-generation") {
+    calibration_run_generation_ = prop.value;
   } else if (
       prop.key == "stitch-compute-precision" || prop.key == "stitch_compute_precision" ||
       prop.key == "stitcher-compute-precision" || prop.key == "stitcher_compute_precision") {
@@ -1273,7 +1297,9 @@ absl::Status StitcherPriv::GenerateOutput(
         } else {
           if (!orientation_ran_) {
             absl::Status orientation_status =
-                stitching::configure_orientation(config_file_, calibration_invalidation_id_);
+                stitching::configure_orientation(config_file_, calibration_invalidation_id_, [this] {
+                  return calibration_cancelled_.load(std::memory_order_acquire);
+                });
             if (!orientation_status.ok()) {
               std::cerr << orientation_status << "\n" << std::flush;
               return orientation_status;
@@ -1391,6 +1417,8 @@ absl::Status StitcherPriv::GenerateOutput(
     std::string output_generation;
     HM_ASSIGN_OR_RETURN(
         output_generation, stitching::stitched_output_generation_id(hugin_generation, applied_post_stitch_rotation));
+    const std::string completion_scope =
+        calibration_completion_scope(output_generation, calibration_invalidation_id_, calibration_run_generation_);
 
     if (one_pass_mode_ && !field_mask_attempted_) {
       field_mask_attempted_ = true;
@@ -1399,16 +1427,21 @@ absl::Status StitcherPriv::GenerateOutput(
           configured_during_run_,
           mask_configured,
           /*report_latched=*/false,
-          process_calibration_completion_latch.delivered());
+          process_calibration_completion_latch.delivered(completion_scope));
       if (progress.report) {
         report_calibration_progress("rink-mask", "started", "Looking for the ice surface in the stitched panorama");
       }
       if (progress.create_mask) {
         absl::Status mask_status = stitching::create_field_mask(
-            config_file_, logical_output_surface, output_generation, calibration_invalidation_id_);
+            config_file_, logical_output_surface, output_generation, calibration_invalidation_id_, [this] {
+              return calibration_cancelled_.load(std::memory_order_acquire);
+            });
         if (!mask_status.ok()) {
           std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
           calibration_completion_reported_ = true;
+          if (absl::IsCancelled(mask_status)) {
+            return absl::AbortedError("Rink-mask calibration stopped during pipeline teardown");
+          }
           return report_calibration_failure(mask_status);
         } else {
           mask_configured = true;
@@ -1418,24 +1451,33 @@ absl::Status StitcherPriv::GenerateOutput(
           configured_during_run_,
           mask_configured,
           /*report_latched=*/progress.report,
-          process_calibration_completion_latch.delivered());
+          process_calibration_completion_latch.delivered(completion_scope));
       calibration_completion_ready_ = progress.complete;
     }
     if (one_pass_mode_ && calibration_completion_ready_ && !calibration_completion_reported_) {
-      if (process_calibration_completion_latch.delivered()) {
-        calibration_completion_reported_ = true;
-      } else if (owner_element_ && process_calibration_completion_latch.try_begin_delivery()) {
+      if (owner_element_) {
         const bool delivered = gst_element_post_message(
             owner_element_,
             gst_message_new_element(
-                GST_OBJECT(owner_element_), gst_structure_new_empty("hstream-stitching-calibration-complete")));
-        process_calibration_completion_latch.finish_delivery(delivered);
+                GST_OBJECT(owner_element_),
+                gst_structure_new(
+                    "hstream-stitching-calibration-complete",
+                    "output-generation",
+                    G_TYPE_STRING,
+                    output_generation.c_str(),
+                    "calibration-scope",
+                    G_TYPE_STRING,
+                    completion_scope.c_str(),
+                    nullptr)));
         if (delivered) {
-          report_calibration_progress("rink-mask", "complete", "Ice surface calibration is ready");
-          report_calibration_progress("calibration", "complete", "Stitching calibration is complete");
-          g_print("hmstitcher: one-pass stitching configuration complete\n");
-          std::fflush(stdout);
           calibration_completion_reported_ = true;
+          if (process_calibration_completion_latch.try_begin_delivery(completion_scope)) {
+            report_calibration_progress("rink-mask", "complete", "Ice surface calibration is ready");
+            report_calibration_progress("calibration", "complete", "Stitching calibration is complete");
+            g_print("hmstitcher: one-pass stitching configuration complete\n");
+            std::fflush(stdout);
+            process_calibration_completion_latch.finish_delivery(completion_scope, /*delivered=*/true);
+          }
         }
       }
     }
