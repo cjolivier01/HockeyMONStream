@@ -6,7 +6,9 @@ time it:
 
 1. requests administrator approval only when machine-level WSL prerequisites
    need to be installed, while keeping the distro and launchers in the invoking
-   user's account;
+   user's account; the installer hash-verifies the exact helper bytes before
+   executing them elevated, and stages the signed WSL MSI in a random
+   Administrators/SYSTEM-only directory;
 2. when the Store-delivered WSL runtime is absent or older than 2.7.11, silently
    installs Microsoft's pinned WSL MSI after SHA-256 and Authenticode
    verification;
@@ -66,6 +68,8 @@ satisfies HStream's `libcuda.so.1` dependency.
 The installer refuses to reuse or unregister an existing WSL distribution named
 `HStream` unless it contains the ownership marker written at import time. This
 prevents an unrelated distro with the same name from being modified or deleted.
+An import transaction records the expected WSL registration path so an
+interrupted import can be safely completed or removed on the next run.
 
 Uninstall removes the Windows launcher by default. Removing the dedicated WSL
 distribution is a separate, explicit confirmation because it permanently

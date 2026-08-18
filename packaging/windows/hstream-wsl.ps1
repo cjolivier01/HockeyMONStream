@@ -20,6 +20,7 @@ $UbuntuRootfsUri = "https://cloud-images.ubuntu.com/wsl/releases/24.04/20240423/
 $UbuntuRootfsSha256 = "8251E27FFFF381A4AF5F41DCB94D867DE3E0D9774A9241908AB34555D99315EA"
 $DistroMarkerPath = "/etc/hstream-wsl-distribution"
 $DistroMarkerValue = "hstream-wsl-bootstrapper-schema-1"
+$WslPrerequisiteExitCode = 1701
 
 function Write-Stage([string]$Message) {
     Write-Host "[HStream] $Message"
@@ -57,6 +58,61 @@ function Test-HStreamDistroOwnership([string]$Name) {
     }
     & wsl.exe --distribution $Name --user root -- "/bin/grep" "-Fxq" $DistroMarkerValue $DistroMarkerPath
     return $LASTEXITCODE -eq 0
+}
+
+function Set-HStreamDistroOwnership([string]$Name) {
+    Invoke-Checked -FilePath "wsl.exe" -ArgumentList @(
+        "--distribution", $Name, "--user", "root", "--", "sh", "-c",
+        "printf '%s\n' '$DistroMarkerValue' > '$DistroMarkerPath'"
+    ) | Out-Null
+}
+
+function Normalize-WindowsPath([string]$Path) {
+    $withoutDevicePrefix = $Path -replace '^\\\\[?]\\', ''
+    return [IO.Path]::GetFullPath($withoutDevicePrefix).TrimEnd('\')
+}
+
+function Get-WslDistroBasePath([string]$Name) {
+    $lxssRoot = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss"
+    foreach ($registration in Get-ChildItem -LiteralPath $lxssRoot -ErrorAction SilentlyContinue) {
+        $properties = Get-ItemProperty -LiteralPath $registration.PSPath
+        if ($properties.DistributionName -eq $Name) {
+            return [string]$properties.BasePath
+        }
+    }
+    return ""
+}
+
+function Write-PendingImportTransaction([string]$Path, [string]$Name, [string]$BasePath) {
+    $temporary = "$Path.new"
+    [ordered]@{
+        Schema = 1
+        DistroName = $Name
+        BasePath = (Normalize-WindowsPath $BasePath)
+        MarkerValue = $DistroMarkerValue
+    } | ConvertTo-Json -Compress | Set-Content -LiteralPath $temporary -Encoding UTF8
+    Move-Item -Force -LiteralPath $temporary -Destination $Path
+}
+
+function Test-PendingImportTransaction([string]$Path, [string]$Name, [string]$BasePath) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+    try {
+        $transaction = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+        $registeredBasePath = Get-WslDistroBasePath $Name
+        if (-not $registeredBasePath) {
+            return $false
+        }
+        $expectedBasePath = Normalize-WindowsPath $BasePath
+        return $transaction.Schema -eq 1 -and
+            $transaction.DistroName -eq $Name -and
+            $transaction.MarkerValue -eq $DistroMarkerValue -and
+            (Normalize-WindowsPath ([string]$transaction.BasePath)) -eq $expectedBasePath -and
+            (Normalize-WindowsPath $registeredBasePath) -eq $expectedBasePath
+    } catch {
+        return $false
+    }
 }
 
 function Get-WslPath([string]$WindowsPath) {
@@ -192,17 +248,22 @@ function Test-WslRuntimeReady {
 }
 
 function Install-WslRuntime {
-    $downloads = Join-Path (Join-Path $env:ProgramData "HStream") "Downloads"
-    $wslMsi = Join-Path $downloads "wsl.2.7.11.0.x64.msi"
-    New-Item -ItemType Directory -Force -Path $downloads | Out-Null
-
-    $download = $true
-    if (Test-Path -LiteralPath $wslMsi -PathType Leaf) {
-        $download = (Get-FileHash -Algorithm SHA256 -LiteralPath $wslMsi).Hash -ne $WslMsiSha256
+    $stagingDirectory = Join-Path $env:ProgramData ("HStream-WSL-" + [Guid]::NewGuid().ToString("N"))
+    $directory = New-Item -ItemType Directory -Path $stagingDirectory
+    if (($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Refusing to stage the WSL runtime in a reparse point: $stagingDirectory"
     }
-    if ($download) {
+    Invoke-Checked -FilePath "icacls.exe" -ArgumentList @(
+        $stagingDirectory, "/inheritance:r", "/grant:r",
+        "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"
+    ) | Out-Null
+    Invoke-Checked -FilePath "icacls.exe" -ArgumentList @(
+        $stagingDirectory, "/setowner", "*S-1-5-32-544"
+    ) | Out-Null
+    $wslMsi = Join-Path $stagingDirectory "wsl.2.7.11.0.x64.msi"
+
+    try {
         $temporary = "$wslMsi.download"
-        Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $temporary
         Write-Stage "Downloading the Microsoft WSL 2.7.11 runtime"
         Invoke-WebRequest -UseBasicParsing -Uri $WslMsiUri -OutFile $temporary
         if ((Get-FileHash -Algorithm SHA256 -LiteralPath $temporary).Hash -ne $WslMsiSha256) {
@@ -210,26 +271,28 @@ function Install-WslRuntime {
             throw "SHA-256 verification failed for $WslMsiUri"
         }
         Move-Item -Force -LiteralPath $temporary -Destination $wslMsi
-    }
-    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $wslMsi).Hash -ne $WslMsiSha256) {
-        throw "SHA-256 verification failed for cached WSL runtime $wslMsi"
-    }
+        if ((Get-FileHash -Algorithm SHA256 -LiteralPath $wslMsi).Hash -ne $WslMsiSha256) {
+            throw "SHA-256 verification failed for staged WSL runtime $wslMsi"
+        }
 
-    $signature = Get-AuthenticodeSignature -LiteralPath $wslMsi
-    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
-        -not $signature.SignerCertificate -or
-        $signature.SignerCertificate.Subject -notmatch '(^|,\s*)O=Microsoft Corporation(,|$)') {
-        throw "The WSL runtime MSI does not have a valid Microsoft Authenticode signature."
-    }
-    Write-Stage "Verified the Microsoft WSL 2.7.11 runtime"
+        $signature = Get-AuthenticodeSignature -LiteralPath $wslMsi
+        if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+            -not $signature.SignerCertificate -or
+            $signature.SignerCertificate.Subject -notmatch '(^|,\s*)O=Microsoft Corporation(,|$)') {
+            throw "The WSL runtime MSI does not have a valid Microsoft Authenticode signature."
+        }
+        Write-Stage "Verified the Microsoft WSL 2.7.11 runtime"
 
-    Write-Stage "Installing the Microsoft WSL runtime silently"
-    $installCode = Invoke-Checked -FilePath "msiexec.exe" -ArgumentList @(
-        "/i", $wslMsi, "/qn", "/norestart"
-    ) -AllowedExitCodes @(0, 3010)
-    if ($installCode -eq 3010) {
-        Write-Stage "Windows must restart before WSL provisioning can continue."
-        exit 3010
+        Write-Stage "Installing the Microsoft WSL runtime silently"
+        $installCode = Invoke-Checked -FilePath "msiexec.exe" -ArgumentList @(
+            "/i", $wslMsi, "/qn", "/norestart"
+        ) -AllowedExitCodes @(0, 3010)
+        if ($installCode -eq 3010) {
+            Write-Stage "Windows must restart before WSL provisioning can continue."
+            exit 3010
+        }
+    } finally {
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -LiteralPath $stagingDirectory
     }
 }
 
@@ -262,29 +325,8 @@ function Ensure-WslMachinePrerequisites {
 
 function Ensure-WslPlatform {
     if (-not (Test-WslRuntimeReady)) {
-        Write-Stage "Requesting administrator approval for Windows WSL prerequisites"
-        $powershell = Join-Path $PSHOME "powershell.exe"
-        $quotedScriptPath = '"' + $PSCommandPath + '"'
-        $githubToken = $env:HSTREAM_GITHUB_TOKEN
-        try {
-            $env:HSTREAM_GITHUB_TOKEN = $null
-            $process = Start-Process -FilePath $powershell -Verb RunAs -Wait -PassThru -ArgumentList @(
-                "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $quotedScriptPath,
-                "-Action", "EnsureWslMachine"
-            )
-        } finally {
-            $env:HSTREAM_GITHUB_TOKEN = $githubToken
-        }
-        if ($process.ExitCode -eq 3010) {
-            Write-Stage "Windows must restart before WSL provisioning can continue."
-            exit 3010
-        }
-        if ($process.ExitCode -ne 0) {
-            throw "The elevated WSL prerequisite helper failed with exit code $($process.ExitCode)."
-        }
-        if (-not (Test-WslRuntimeReady)) {
-            throw "WSL $MinimumWslVersion or newer is required, but the runtime is still unavailable."
-        }
+        Write-Stage "Administrator approval is required for Windows WSL prerequisites."
+        exit $WslPrerequisiteExitCode
     }
     Invoke-Checked -FilePath "wsl.exe" -ArgumentList @("--set-default-version", "2") | Out-Null
 }
@@ -357,44 +399,61 @@ function Install-HStream {
     $stateRoot = Join-Path $env:LOCALAPPDATA "HStream"
     $downloads = Join-Path $stateRoot "Downloads"
     $distroRoot = Join-Path $stateRoot "WSL"
+    $pendingImport = Join-Path $stateRoot "pending-wsl-import.json"
     New-Item -ItemType Directory -Force -Path $downloads | Out-Null
     $rootfs = Join-Path $downloads $UbuntuRootfsName
-    if (-not (Test-WslDistro $DistroName)) {
-        Download-VerifiedFile `
-            -Uri $UbuntuRootfsUri `
-            -Destination $rootfs `
-            -ChecksumName $UbuntuRootfsName `
-            -ExpectedHash $UbuntuRootfsSha256
-        New-Item -ItemType Directory -Force -Path $distroRoot | Out-Null
-        Write-Stage "Importing the dedicated $DistroName WSL 2 distribution"
-        Invoke-Checked -FilePath "wsl.exe" -ArgumentList @(
-            "--import", $DistroName, $distroRoot, $rootfs, "--version", "2"
-        ) | Out-Null
-        Remove-Item -Force -LiteralPath $rootfs
-        Invoke-Checked -FilePath "wsl.exe" -ArgumentList @(
-            "--distribution", $DistroName, "--user", "root", "--", "sh", "-c",
-            "printf '%s\n' '$DistroMarkerValue' > '$DistroMarkerPath'"
-        ) | Out-Null
-    } elseif (-not (Test-HStreamDistroOwnership $DistroName)) {
-        throw "A WSL distribution named $DistroName already exists but is not managed by the HStream installer. Rename it or choose a different Windows account before installing."
-    }
-    if (-not (Test-HStreamDistroOwnership $DistroName)) {
-        throw "The $DistroName WSL distribution is missing its HStream ownership marker."
-    }
+    try {
+        if (-not (Test-WslDistro $DistroName)) {
+            Download-VerifiedFile `
+                -Uri $UbuntuRootfsUri `
+                -Destination $rootfs `
+                -ChecksumName $UbuntuRootfsName `
+                -ExpectedHash $UbuntuRootfsSha256
+            New-Item -ItemType Directory -Force -Path $distroRoot | Out-Null
+            Write-PendingImportTransaction $pendingImport $DistroName $distroRoot
+            Write-Stage "Importing the dedicated $DistroName WSL 2 distribution"
+            Invoke-Checked -FilePath "wsl.exe" -ArgumentList @(
+                "--import", $DistroName, $distroRoot, $rootfs, "--version", "2"
+            ) | Out-Null
+            Remove-Item -Force -LiteralPath $rootfs
+            Set-HStreamDistroOwnership $DistroName
+        } elseif (-not (Test-HStreamDistroOwnership $DistroName)) {
+            if (-not (Test-PendingImportTransaction $pendingImport $DistroName $distroRoot)) {
+                throw "A WSL distribution named $DistroName already exists but is not managed by the HStream installer. Rename it or choose a different Windows account before installing."
+            }
+            Write-Stage "Recovering an interrupted HStream WSL import"
+            Set-HStreamDistroOwnership $DistroName
+        }
+        if (-not (Test-HStreamDistroOwnership $DistroName)) {
+            throw "The $DistroName WSL distribution is missing its HStream ownership marker."
+        }
 
-    Write-Stage "Validating the imported Ubuntu distribution"
-    Invoke-Checked -FilePath "wsl.exe" -ArgumentList @(
-        "--distribution", $DistroName, "--user", "root", "--",
-        "grep", "-Eq", '^ID=ubuntu$', "/etc/os-release"
-    ) | Out-Null
-    Invoke-Checked -FilePath "wsl.exe" -ArgumentList @(
-        "--distribution", $DistroName, "--user", "root", "--",
-        "grep", "-Eq", '^VERSION_ID=.*24[.]04.*$', "/etc/os-release"
-    ) | Out-Null
-    Invoke-Checked -FilePath "wsl.exe" -ArgumentList @(
-        "--distribution", $DistroName, "--user", "root", "--",
-        "/usr/bin/test", "-e", "/lib64/ld-linux-x86-64.so.2"
-    ) | Out-Null
+        Write-Stage "Validating the imported Ubuntu distribution"
+        Invoke-Checked -FilePath "wsl.exe" -ArgumentList @(
+            "--distribution", $DistroName, "--user", "root", "--",
+            "grep", "-Eq", '^ID=ubuntu$', "/etc/os-release"
+        ) | Out-Null
+        Invoke-Checked -FilePath "wsl.exe" -ArgumentList @(
+            "--distribution", $DistroName, "--user", "root", "--",
+            "grep", "-Eq", '^VERSION_ID=.*24[.]04.*$', "/etc/os-release"
+        ) | Out-Null
+        Invoke-Checked -FilePath "wsl.exe" -ArgumentList @(
+            "--distribution", $DistroName, "--user", "root", "--",
+            "/usr/bin/test", "-e", "/lib64/ld-linux-x86-64.so.2"
+        ) | Out-Null
+        Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $pendingImport, $rootfs
+    } catch {
+        if (Test-PendingImportTransaction $pendingImport $DistroName $distroRoot) {
+            Write-Stage "Removing the incomplete HStream WSL import"
+            & wsl.exe --unregister $DistroName | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $pendingImport
+            }
+        } elseif (-not (Test-WslDistro $DistroName)) {
+            Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $pendingImport
+        }
+        throw
+    }
     Initialize-HStreamDistro
 
     $hstreamName = "hstream_${VersionTag}_ubuntu24.04_amd64.deb"
@@ -440,12 +499,18 @@ function Launch-HStream {
 }
 
 function Unregister-HStream {
+    $stateRoot = Join-Path $env:LOCALAPPDATA "HStream"
+    $distroRoot = Join-Path $stateRoot "WSL"
+    $pendingImport = Join-Path $stateRoot "pending-wsl-import.json"
     if (Test-WslDistro $DistroName) {
         if (-not (Test-HStreamDistroOwnership $DistroName)) {
-            throw "Refusing to unregister $DistroName because it is not owned by the HStream installer."
+            if (-not (Test-PendingImportTransaction $pendingImport $DistroName $distroRoot)) {
+                throw "Refusing to unregister $DistroName because it is not owned by the HStream installer."
+            }
         }
         Write-Stage "Unregistering $DistroName and permanently deleting its WSL filesystem"
         Invoke-Checked -FilePath "wsl.exe" -ArgumentList @("--unregister", $DistroName) | Out-Null
+        Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $pendingImport
     }
 }
 

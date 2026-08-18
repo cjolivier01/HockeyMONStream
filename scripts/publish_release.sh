@@ -26,17 +26,10 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-for command_name in git gh; do
-  if ! command -v "${command_name}" >/dev/null 2>&1; then
-    echo "ERROR: required command not found: ${command_name}" >&2
-    exit 1
-  fi
-done
-if ! gh auth status >/dev/null 2>&1; then
-  echo "ERROR: GitHub CLI is not authenticated. Run 'gh auth login' first." >&2
+if ! command -v git >/dev/null 2>&1; then
+  echo "ERROR: required command not found: git" >&2
   exit 1
 fi
-
 cd "${TOPDIR}"
 normalize_github_repository() {
   local remote_url="$1"
@@ -127,12 +120,16 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
   exit 0
 fi
 
-for command_name in make dpkg-deb sha256sum makensis rsvg-convert icotool file; do
+for command_name in gh make dpkg-deb sha256sum makensis rsvg-convert icotool file; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     echo "ERROR: required release build command not found: ${command_name}" >&2
     exit 1
   fi
 done
+if ! gh auth status >/dev/null 2>&1; then
+  echo "ERROR: GitHub CLI is not authenticated. Run 'gh auth login' first." >&2
+  exit 1
+fi
 
 if ! git diff --quiet HEAD -- || ! git diff --cached --quiet; then
   echo "ERROR: refusing to publish with tracked or staged changes." >&2

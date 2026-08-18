@@ -106,7 +106,8 @@ int main(int argc, char** argv) {
   ok &= expect(
       contains(windows_builder, "makensis") && contains(windows_builder, "rsvg-convert") &&
           contains(windows_builder, "icotool") && contains(windows_builder, "PE32 executable") &&
-          contains(windows_builder, "^v(0|[1-9][0-9]*)"),
+          contains(windows_builder, "^v(0|[1-9][0-9]*)") && contains(windows_builder, "sha256sum") &&
+          contains(windows_builder, "POWERSHELL_SHA256"),
       "Windows setup must cross-build a versioned native executable and preserve the HStream icon");
   ok &= expect(
       contains(windows_nsis, "File /oname=hstream-wsl.ps1") &&
@@ -116,7 +117,10 @@ int main(int argc, char** argv) {
           !contains(windows_nsis, "RequestExecutionLevel admin") &&
           contains(windows_nsis, "Select NVIDIA DeepStream") && contains(windows_nsis, "MB_DEFBUTTON2") &&
           contains(windows_nsis, "permanently deletes") && contains(windows_nsis, "NSD_CreatePassword") &&
-          contains(windows_nsis, "SetEnvironmentVariableW") && !contains(windows_nsis, "-GitHubToken"),
+          contains(windows_nsis, "SetEnvironmentVariableW") && !contains(windows_nsis, "-GitHubToken") &&
+          contains(windows_nsis, "ExecShellWait \"runas\"") && contains(windows_nsis, "POWERSHELL_SHA256") &&
+          contains(windows_nsis, "ReadAllBytes") && contains(windows_nsis, "SHA256") &&
+          contains(windows_nsis, "ScriptBlock]::Create") && contains(windows_nsis, "EnsureWslMachine"),
       "Windows setup must remain a small bootstrapper, keep credentials off command lines, and confirm data deletion");
   ok &= expect(
       contains(windows_powershell, "Download-VerifiedFile") && contains(windows_powershell, "Get-FileHash") &&
@@ -127,20 +131,26 @@ int main(int argc, char** argv) {
           contains(windows_powershell, "HSTREAM_GITHUB_TOKEN") &&
           contains(windows_powershell, "wsl.2.7.11.0.x64.msi") &&
           contains(windows_powershell, "A611DDACEE689D2FB1FB5319E58AF7F3998864D86CDCE632EADD8E61614A0F9D") &&
-          contains(windows_powershell, "MinimumWslVersion") &&
-          contains(windows_powershell, "Get-WslRuntimeVersion") &&
-          contains(windows_powershell, "EnsureWslMachine") &&
-          contains(windows_powershell, "Start-Process") && contains(windows_powershell, "-Verb RunAs") &&
+          contains(windows_powershell, "MinimumWslVersion") && contains(windows_powershell, "Get-WslRuntimeVersion") &&
+          contains(windows_powershell, "WslPrerequisiteExitCode") && contains(windows_powershell, "EnsureWslMachine") &&
+          !contains(windows_powershell, "-EncodedCommand") && !contains(windows_powershell, "-Verb RunAs") &&
+          contains(windows_powershell, "HStream-WSL-") && contains(windows_powershell, "[Guid]::NewGuid()") &&
+          contains(windows_powershell, "icacls.exe") && contains(windows_powershell, "/inheritance:r") &&
+          contains(windows_powershell, "*S-1-5-18:(OI)(CI)F") &&
+          contains(windows_powershell, "*S-1-5-32-544:(OI)(CI)F") &&
           contains(windows_powershell, "Get-AuthenticodeSignature") &&
           contains(windows_powershell, "O=Microsoft Corporation") && contains(windows_powershell, "msiexec.exe") &&
           contains(windows_powershell, "\"/qn\"") && !contains(windows_powershell, "wsl.exe --install") &&
-          contains(windows_powershell, "^ID=ubuntu$") &&
-          contains(windows_powershell, "^VERSION_ID=.*24[.]04.*$") &&
+          contains(windows_powershell, "^ID=ubuntu$") && contains(windows_powershell, "^VERSION_ID=.*24[.]04.*$") &&
           contains(windows_powershell, "/lib64/ld-linux-x86-64.so.2") &&
           contains(windows_powershell, "PROCESSOR_ARCHITEW6432") &&
           contains(windows_powershell, "Test-HStreamDistroOwnership") &&
           contains(windows_powershell, "hstream-wsl-bootstrapper-schema-1") &&
           contains(windows_powershell, "Refusing to unregister") &&
+          contains(windows_powershell, "pending-wsl-import.json") &&
+          contains(windows_powershell, "Test-PendingImportTransaction") &&
+          contains(windows_powershell, "Get-WslDistroBasePath") &&
+          contains(windows_powershell, "Removing the incomplete HStream WSL import") &&
           contains(windows_powershell, "--import\", $DistroName") &&
           contains(windows_powershell, "/usr/lib/wsl/lib/libcuda.so.1") &&
           contains(windows_powershell, "Package: hstream-wsl-libcuda") &&

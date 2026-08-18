@@ -54,7 +54,7 @@ if [[ ! "${REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
   echo "ERROR: --repository must be OWNER/REPO." >&2
   exit 2
 fi
-for command_name in makensis rsvg-convert icotool file; do
+for command_name in makensis rsvg-convert icotool file sha256sum; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     echo "ERROR: required Windows installer build command not found: ${command_name}" >&2
     echo "Install build dependencies with: sudo apt-get install nsis librsvg2-bin icoutils" >&2
@@ -87,6 +87,7 @@ icotool --create --output="${icon_file}" "${icon_pngs[@]}"
 package_version="${VERSION_TAG#v}"
 output_file="${OUTPUT_DIR}/hstream_${VERSION_TAG}_windows-wsl-setup.exe"
 temporary_output="${build_dir}/$(basename "${output_file}")"
+powershell_sha256="$(sha256sum "${TOPDIR}/packaging/windows/hstream-wsl.ps1" | awk '{print toupper($1)}')"
 makensis -V2 -NOCD \
   -DVERSION_TAG="${VERSION_TAG}" \
   -DPACKAGE_VERSION="${package_version}" \
@@ -94,6 +95,7 @@ makensis -V2 -NOCD \
   -DOUTPUT_FILE="${temporary_output}" \
   -DICON_FILE="${icon_file}" \
   -DPOWERSHELL_SOURCE="${TOPDIR}/packaging/windows/hstream-wsl.ps1" \
+  -DPOWERSHELL_SHA256="${powershell_sha256}" \
   -DLINUX_INSTALLER_SOURCE="${TOPDIR}/scripts/install_deb.sh" \
   "${TOPDIR}/packaging/windows/HStreamWslInstaller.nsi"
 

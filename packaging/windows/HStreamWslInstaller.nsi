@@ -132,6 +132,13 @@ Function GitHubTokenPageLeave
   ${NSD_GetText} $GitHubTokenInput $GitHubToken
 FunctionEnd
 
+Function RunHStreamProvisioning
+  System::Call 'Kernel32::SetEnvironmentVariableW(w "HSTREAM_GITHUB_TOKEN", w "$GitHubToken") i .r0'
+  nsExec::ExecToLog '"$PowerShellExe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\hstream-wsl.ps1" -Action Install -VersionTag "${VERSION_TAG}" -Repository "${REPOSITORY}" -DistroName "HStream" -DeepStreamDeb "$DeepStreamDeb"'
+  Pop $ExitCode
+  System::Call 'Kernel32::SetEnvironmentVariableW(w "HSTREAM_GITHUB_TOKEN", w "") i .r0'
+FunctionEnd
+
 Section "HStream WSL environment" SEC_MAIN
   SetOutPath "$INSTDIR"
   File /oname=hstream-wsl.ps1 "${POWERSHELL_SOURCE}"
@@ -140,10 +147,14 @@ Section "HStream WSL environment" SEC_MAIN
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
   DetailPrint "Provisioning the dedicated HStream WSL 2 distribution..."
-  System::Call 'Kernel32::SetEnvironmentVariableW(w "HSTREAM_GITHUB_TOKEN", w "$GitHubToken") i .r0'
-  nsExec::ExecToLog '"$PowerShellExe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\hstream-wsl.ps1" -Action Install -VersionTag "${VERSION_TAG}" -Repository "${REPOSITORY}" -DistroName "HStream" -DeepStreamDeb "$DeepStreamDeb"'
-  Pop $ExitCode
-  System::Call 'Kernel32::SetEnvironmentVariableW(w "HSTREAM_GITHUB_TOKEN", w "") i .r0'
+  Call RunHStreamProvisioning
+  ${If} $ExitCode == "1701"
+    DetailPrint "Requesting administrator approval for Windows WSL prerequisites..."
+    ExecShellWait "runas" "$PowerShellExe" `-NoLogo -NoProfile -ExecutionPolicy Bypass -Command "& { param([string]$$p); $$b=[IO.File]::ReadAllBytes($$p); $$a=[Security.Cryptography.SHA256]::Create(); try { $$h=([BitConverter]::ToString($$a.ComputeHash($$b))).Replace('-','') } finally { $$a.Dispose() }; if ($$h -cne '${POWERSHELL_SHA256}') { exit 86 }; & ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString($$b))) -Action EnsureWslMachine }" "$INSTDIR\hstream-wsl.ps1"` SW_SHOW $ExitCode
+    ${If} $ExitCode == "0"
+      Call RunHStreamProvisioning
+    ${EndIf}
+  ${EndIf}
   ${If} $ExitCode == "3010"
     SetRebootFlag true
     MessageBox MB_ICONINFORMATION|MB_OK "Windows enabled WSL components. Restart Windows, then run this installer again to finish installing HStream."
