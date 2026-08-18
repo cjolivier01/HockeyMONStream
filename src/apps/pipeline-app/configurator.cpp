@@ -839,6 +839,7 @@ absl::Status configurator_internal::validate_mixed_explicit_auto_playlists(
 absl::StatusOr<double> configurator_internal::effective_stitch_output_rotation(const YAML::Node& config) {
   for (const char* path : {
            "pipeline.hmstitcher.post-stitch-rotate-degrees",
+           "pipeline.hmstitcher.post_stitch_rotate_degrees",
            "stitching.post_stitch_rotate_degrees",
        }) {
     const auto value = get_node(config, path);
@@ -1182,6 +1183,11 @@ absl::Status Configurator::setup_stitcher_and_masks(
 }
 
 void Configurator::map_common_config_keys() {
+  map_key_configs(
+      config_,
+      {
+          {"pipeline.hmstitcher.post-stitch-rotate-degrees", "pipeline.hmstitcher.post_stitch_rotate_degrees"},
+      });
   map_key_configs(
       config_,
       {

@@ -51,17 +51,42 @@ int main() {
       YAML::Load(
           "stitching:\n  post_stitch_rotate_degrees: invalid-lower-priority-value\n"
           "pipeline:\n  hmstitcher:\n    post-stitch-rotate-degrees: 5\n"));
+  const auto underscored_pipeline_override = rotation_value(
+      YAML::Load(
+          "stitching:\n  post_stitch_rotate_degrees: invalid-lower-priority-value\n"
+          "pipeline:\n  hmstitcher:\n    post_stitch_rotate_degrees: 7.5\n"));
+  const auto underscored_pipeline_null_fallback = rotation_value(
+      YAML::Load(
+          "stitching:\n  post_stitch_rotate_degrees: 2.5\n"
+          "pipeline:\n  hmstitcher:\n    post_stitch_rotate_degrees: null\n"));
+  const auto all_null_rotation = rotation_value(
+      YAML::Load(
+          "stitching:\n  post_stitch_rotate_degrees: null\n"
+          "pipeline:\n  hmstitcher:\n    post-stitch-rotate-degrees: null\n"
+          "    post_stitch_rotate_degrees: null\n"));
   const auto malformed_pipeline = rotation_value(
       YAML::Load(
           "stitching:\n  post_stitch_rotate_degrees: 2.5\n"
           "pipeline:\n  hmstitcher:\n    post-stitch-rotate-degrees: invalid\n"));
   const auto non_finite_pipeline =
       rotation_value(YAML::Load("pipeline:\n  hmstitcher:\n    post-stitch-rotate-degrees: .nan\n"));
+  const auto malformed_underscored_pipeline =
+      rotation_value(YAML::Load("pipeline:\n  hmstitcher:\n    post_stitch_rotate_degrees: invalid\n"));
+  const auto non_finite_underscored_pipeline =
+      rotation_value(YAML::Load("pipeline:\n  hmstitcher:\n    post_stitch_rotate_degrees: .inf\n"));
+  const auto malformed_global = rotation_value(YAML::Load("stitching:\n  post_stitch_rotate_degrees: invalid\n"));
+  const auto non_finite_global = rotation_value(YAML::Load("stitching:\n  post_stitch_rotate_degrees: -.inf\n"));
   ok &= expect(
       missing_rotation.ok() && *missing_rotation == 0.0 && global_null_rotation.ok() && *global_null_rotation == 0.0 &&
           global_rotation.ok() && *global_rotation == 2.5 && pipeline_null_fallback.ok() &&
           *pipeline_null_fallback == 2.5 && pipeline_override.ok() && *pipeline_override == 5.0 &&
-          absl::IsInvalidArgument(malformed_pipeline.status()) && absl::IsInvalidArgument(non_finite_pipeline.status()),
+          underscored_pipeline_override.ok() && *underscored_pipeline_override == 7.5 &&
+          underscored_pipeline_null_fallback.ok() && *underscored_pipeline_null_fallback == 2.5 &&
+          all_null_rotation.ok() && *all_null_rotation == 0.0 && absl::IsInvalidArgument(malformed_pipeline.status()) &&
+          absl::IsInvalidArgument(non_finite_pipeline.status()) &&
+          absl::IsInvalidArgument(malformed_underscored_pipeline.status()) &&
+          absl::IsInvalidArgument(non_finite_underscored_pipeline.status()) &&
+          absl::IsInvalidArgument(malformed_global.status()) && absl::IsInvalidArgument(non_finite_global.status()),
       "Stitch output rotation must use the highest-priority non-null value and reject an invalid active value");
   ok &= expect(
       !hm::OnePassCalibrationRequired(
