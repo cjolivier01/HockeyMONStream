@@ -292,6 +292,9 @@ cc_test(
     "$(location //scripts:make_deb_jetson.sh)",
     "$(location //scripts:build_hugin_tools_jetson.sh)",
     "$(location //scripts:publish_release.sh)",
+    "$(location //scripts:make_windows_installer.sh)",
+    "$(location //packaging/windows:HStreamWslInstaller.nsi)",
+    "$(location //packaging/windows:hstream-wsl.ps1)",
   ],
   data = [
     "//:.bazelrc",
@@ -302,7 +305,10 @@ cc_test(
     "//scripts:make_deb.sh",
     "//scripts:make_deb_docker.sh",
     "//scripts:make_deb_jetson.sh",
+    "//scripts:make_windows_installer.sh",
     "//scripts:publish_release.sh",
+    "//packaging/windows:HStreamWslInstaller.nsi",
+    "//packaging/windows:hstream-wsl.ps1",
   ],
 )
 

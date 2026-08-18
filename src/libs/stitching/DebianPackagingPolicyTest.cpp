@@ -21,8 +21,8 @@ bool expect(bool condition, const char* message) {
 } // namespace
 
 int main(int argc, char** argv) {
-  if (argc != 10) {
-    std::cerr << "FAIL: expected desktop/Jetson Debian build and release policy inputs\n";
+  if (argc != 13) {
+    std::cerr << "FAIL: expected desktop/Jetson/Windows build and release policy inputs\n";
     return 1;
   }
   const std::string bazelrc = read(argv[1]);
@@ -34,6 +34,9 @@ int main(int argc, char** argv) {
   const std::string jetson_builder = read(argv[7]);
   const std::string hugin_builder = read(argv[8]);
   const std::string publisher = read(argv[9]);
+  const std::string windows_builder = read(argv[10]);
+  const std::string windows_nsis = read(argv[11]);
+  const std::string windows_powershell = read(argv[12]);
   bool ok = true;
   ok &= expect(
       contains(bazelrc, "build:deb_ubuntu24 --repo_env=CUDA_PATH=/usr/local/cuda-13.2") &&
@@ -55,8 +58,7 @@ int main(int argc, char** argv) {
           contains(packager, "pretrained/native-calibration") && contains(packager, "model_cache_root"),
       "package must carry platform provenance, enforce each platform's CUDA ABI, and stage verified native models");
   ok &= expect(
-      contains(docker_runner, ":/root/.cache/hstream/models:ro") &&
-          contains(docker_runner, "HSTREAM_MODEL_CACHE_DIR"),
+      contains(docker_runner, ":/root/.cache/hstream/models:ro") && contains(docker_runner, "HSTREAM_MODEL_CACHE_DIR"),
       "immutable Docker build must expose the content-addressed native model cache read-only");
   ok &= expect(
       contains(installer, "X-HStream-Target-Ubuntu") && !contains(installer, "libc6 (>= 2.43)") &&
@@ -67,8 +69,7 @@ int main(int argc, char** argv) {
           !contains(installer, "nccl") && !contains(installer, "NCCL"),
       "installer must validate OS provenance, replace older DeepStream atomically, and leave NCCL policy untouched");
   ok &= expect(
-      contains(installer, "hstream-cuda-ubuntu2404-compat.gpg") &&
-          contains(installer, "disable_cuda_compat_sources") &&
+      contains(installer, "hstream-cuda-ubuntu2404-compat.gpg") && contains(installer, "disable_cuda_compat_sources") &&
           contains(installer, "disable_installer_managed_cuda_sources") &&
           contains(installer, "CUDA_LEGACY_COMPAT_SOURCE") && contains(installer, "publish_cuda_compat_source") &&
           contains(installer, "restore_compat_source_transition") && contains(installer, "sync -d") &&
@@ -80,13 +81,11 @@ int main(int argc, char** argv) {
       contains(bazelrc, "build:deb_jetson --@rules_cuda//cuda:archs=sm_87") &&
           contains(jetson_builder, "--config=opt --config=deb_jetson") &&
           contains(jetson_builder, "output_base=\"${persistent_cache_root}/output\"") &&
-          !contains(jetson_builder, "--disk_cache") &&
-          contains(jetson_builder, "bazelisk --batch") &&
+          !contains(jetson_builder, "--disk_cache") && contains(jetson_builder, "bazelisk --batch") &&
           contains(jetson_builder, "--sandbox_base=\"${sandbox_base}\"") &&
           contains(jetson_builder, "--action_env=TMPDIR=/var/tmp") &&
-          contains(jetson_builder, "--sandbox_tmpfs_path=/var/tmp") &&
-          contains(jetson_builder, "--list-elf") && contains(jetson_builder, "--list-ptx") &&
-          contains(jetson_builder, "apt-get -s install"),
+          contains(jetson_builder, "--sandbox_tmpfs_path=/var/tmp") && contains(jetson_builder, "--list-elf") &&
+          contains(jetson_builder, "--list-ptx") && contains(jetson_builder, "apt-get -s install"),
       "Jetson release packages must contain verified native Orin code and pass an install simulation");
   ok &= expect(
       contains(packager, "nvidia-l4t-cuda | libcuda.so.1") &&
@@ -100,7 +99,77 @@ int main(int argc, char** argv) {
       contains(publisher, "X-HStream-Source-Commit") && contains(publisher, "--repo \"${repository}\"") &&
           contains(publisher, "git remote get-url --push --all origin") &&
           contains(publisher, "hugin_2022.0.0+dfsg.orig.tar.xz") && contains(publisher, "10#${patch}") &&
-          contains(publisher, "(0|[1-9][0-9]*)"),
-      "release publication must verify provenance/source compliance, pin GitHub operations, and increment strict semver");
+          contains(publisher, "(0|[1-9][0-9]*)") && contains(publisher, "windows-wsl-setup.exe") &&
+          contains(publisher, "sha256sum ./*.deb ./*.exe") && contains(publisher, "\"${release_dir}\"/*.exe") &&
+          contains(publisher, "WINDOWS_INSTALLER_REPOSITORY=\"${repository}\"") &&
+          contains(publisher, "WINDOWS_SIGNING_PKCS12") && contains(publisher, "osslsigncode verify"),
+      "release publication must verify provenance/source compliance, increment strict semver, and publish Windows setup");
+  ok &= expect(
+      contains(windows_builder, "makensis") && contains(windows_builder, "rsvg-convert") &&
+          contains(windows_builder, "icotool") && contains(windows_builder, "PE32 executable") &&
+          contains(windows_builder, "^v(0|[1-9][0-9]*)") && contains(windows_builder, "sha256sum") &&
+          contains(windows_builder, "POWERSHELL_SHA256") && contains(windows_builder, "osslsigncode sign") &&
+          contains(windows_builder, "-readpass") && contains(windows_builder, "osslsigncode verify"),
+      "Windows setup must cross-build a versioned native executable and preserve the HStream icon");
+  ok &= expect(
+      contains(windows_nsis, "File /oname=hstream-wsl.ps1") &&
+          contains(windows_nsis, "File /oname=install-hstream-deb") &&
+          !contains(windows_nsis, "File /oname=hstream.deb") && !contains(windows_nsis, "File /oname=deepstream.deb") &&
+          contains(windows_nsis, "RequestExecutionLevel user") &&
+          !contains(windows_nsis, "RequestExecutionLevel admin") &&
+          contains(windows_nsis, "Select NVIDIA DeepStream") && contains(windows_nsis, "MB_DEFBUTTON2") &&
+          contains(windows_nsis, "permanently deletes") && contains(windows_nsis, "NSD_CreatePassword") &&
+          contains(windows_nsis, "SetEnvironmentVariableW") && !contains(windows_nsis, "-GitHubToken") &&
+          contains(windows_nsis, "ExecShellWait \"runas\"") && contains(windows_nsis, "POWERSHELL_SHA256") &&
+          contains(windows_nsis, "ReadAllBytes") && contains(windows_nsis, "SHA256") &&
+          contains(windows_nsis, "ScriptBlock]::Create") && contains(windows_nsis, "EnsureWslMachine") &&
+          contains(windows_nsis, "HStream was not removed") && contains(windows_nsis, "Abort"),
+      "Windows setup must remain a small bootstrapper, keep credentials off command lines, and confirm data deletion");
+  ok &= expect(
+      contains(windows_powershell, "Download-VerifiedFile") && contains(windows_powershell, "Get-FileHash") &&
+          contains(windows_powershell, "cloud-images.ubuntu.com/wsl/releases/24.04/20240423") &&
+          contains(windows_powershell, "UbuntuRootfsSha256") &&
+          contains(windows_powershell, "releases/download/$VersionTag") &&
+          contains(windows_powershell, "api.github.com/repos/$RepositoryName/releases/assets") &&
+          contains(windows_powershell, "HSTREAM_GITHUB_TOKEN") &&
+          contains(windows_powershell, "wsl.2.7.11.0.x64.msi") &&
+          contains(windows_powershell, "A611DDACEE689D2FB1FB5319E58AF7F3998864D86CDCE632EADD8E61614A0F9D") &&
+          contains(windows_powershell, "MinimumWslVersion") && contains(windows_powershell, "Get-WslRuntimeVersion") &&
+          contains(windows_powershell, "WslPrerequisiteExitCode") && contains(windows_powershell, "EnsureWslMachine") &&
+          !contains(windows_powershell, "-EncodedCommand") && !contains(windows_powershell, "-Verb RunAs") &&
+          contains(windows_powershell, "[Environment]::SystemDirectory") &&
+          contains(windows_powershell, "$env:PSModulePath = $WindowsPowerShellModules") &&
+          contains(windows_powershell, "Dism\\Get-WindowsOptionalFeature") &&
+          !contains(windows_powershell, "FilePath \"wsl.exe\"") && contains(windows_powershell, "HStream-WSL-") &&
+          contains(windows_powershell, "[Guid]::NewGuid()") && contains(windows_powershell, "icacls.exe") &&
+          contains(windows_powershell, "/inheritance:r") && contains(windows_powershell, "*S-1-5-18:(OI)(CI)F") &&
+          contains(windows_powershell, "*S-1-5-32-544:(OI)(CI)F") &&
+          contains(windows_powershell, "Get-AuthenticodeSignature") &&
+          contains(windows_powershell, "O=Microsoft Corporation") && contains(windows_powershell, "msiexec.exe") &&
+          contains(windows_powershell, "\"/qn\"") && !contains(windows_powershell, "wsl.exe --install") &&
+          contains(windows_powershell, "^ID=ubuntu$") && contains(windows_powershell, "^VERSION_ID=.*24[.]04.*$") &&
+          contains(windows_powershell, "/lib64/ld-linux-x86-64.so.2") &&
+          contains(windows_powershell, "PROCESSOR_ARCHITEW6432") &&
+          contains(windows_powershell, "Test-HStreamDistroOwnership") &&
+          contains(windows_powershell, "hstream-wsl-bootstrapper-schema-1") &&
+          contains(windows_powershell, "Refusing to unregister") &&
+          contains(windows_powershell, "pending-wsl-import.json") &&
+          contains(windows_powershell, "wsl-installation.json") &&
+          contains(windows_powershell, "Write-WslRegistrationRecord") &&
+          contains(windows_powershell, "Test-WslRegistrationRecord") &&
+          contains(windows_powershell, "RegistrationId = $RegistrationId") &&
+          contains(windows_powershell, "$record.Schema -eq 2") &&
+          contains(windows_powershell, "Get-WslDistroRegistration") &&
+          contains(windows_powershell, "Remove-AbandonedWslImport") &&
+          contains(windows_powershell, "Bind-PendingWslRegistration") &&
+          contains(windows_powershell, "^WSL-[0-9a-f]{32}$") &&
+          contains(windows_powershell, "Removing the incomplete HStream WSL import") &&
+          contains(windows_powershell, "--import\", $DistroName") &&
+          contains(windows_powershell, "install ok installed $expectedHStreamVersion") &&
+          contains(windows_powershell, "install ok installed 9.1.0-1+resolute2") &&
+          contains(windows_powershell, "/usr/lib/wsl/lib/libcuda.so.1") &&
+          contains(windows_powershell, "Package: hstream-wsl-libcuda") &&
+          !contains(windows_powershell, "nvidia-driver") && !contains(windows_powershell, "cuda-drivers"),
+      "WSL provisioning must verify downloads, isolate HStream, and use only the Windows-projected CUDA driver");
   return ok ? 0 : 1;
 }

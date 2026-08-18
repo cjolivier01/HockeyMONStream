@@ -36,6 +36,7 @@ exports_files([
     "make_deb.sh",
     "make_deb_docker.sh",
     "make_deb_jetson.sh",
+    "make_windows_installer.sh",
     "publish_release.sh",
     "qualify_native_onnx.sh",
     "test_hstream_ui_e2e.sh",
