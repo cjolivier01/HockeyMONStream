@@ -125,6 +125,7 @@ case "$(uname -m)" in
   aarch64 | arm64) BAZEL_SOLIB_DIRECTORY="_solib_aarch64" ;;
   *) BAZEL_SOLIB_DIRECTORY="_solib_unknown" ;;
 esac
+RUNTIME_LAUNCH_KEY="launch-${BASHPID:-$$}"
 
 # Use a repo-local registry so stale blacklists in ~/.cache don't break local plugins.
 GST_REGISTRY_DIR="${SCRIPT_DIR}/.cache/gstreamer-1.0"
@@ -145,7 +146,7 @@ prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 # directories on LD_LIBRARY_PATH so dependent support libraries remain visible.
 BAZEL_GST_PLUGIN_ROOT="${SCRIPT_DIR}/bazel-bin/src/gst-plugins"
 if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
-  BAZEL_GST_RUNTIME_PLUGIN_DIR="${SCRIPT_DIR}/.cache/gst-plugin-path/$(uname -m)/${BAZEL_OUTPUT_CONFIGURATION}"
+  BAZEL_GST_RUNTIME_PLUGIN_DIR="${SCRIPT_DIR}/.cache/gst-plugin-path/$(uname -m)/${BAZEL_OUTPUT_CONFIGURATION}/${RUNTIME_LAUNCH_KEY}"
   mkdir -p "${BAZEL_GST_RUNTIME_PLUGIN_DIR}"
   find "${BAZEL_GST_RUNTIME_PLUGIN_DIR}" -maxdepth 1 -type l -name '*.so' -delete
 
@@ -194,7 +195,7 @@ if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
     # Plugins are staged behind symlinks, so their Bazel-relative RUNPATH can
     # no longer reliably locate ONNX Runtime. Put the exact SONAME in a short,
     # stable dependency directory before the scanner runs.
-    BAZEL_RUNTIME_LIB_DIR="${SCRIPT_DIR}/.cache/runtime-lib-path/$(uname -m)/${BAZEL_OUTPUT_CONFIGURATION}"
+    BAZEL_RUNTIME_LIB_DIR="${SCRIPT_DIR}/.cache/runtime-lib-path/$(uname -m)/${BAZEL_OUTPUT_CONFIGURATION}/${RUNTIME_LAUNCH_KEY}"
     mkdir -p "${BAZEL_RUNTIME_LIB_DIR}"
     ORT_RUNTIME_SO="$({
       find -L "${BAZEL_BIN_REAL}/${BAZEL_SOLIB_DIRECTORY}" \

@@ -76,6 +76,14 @@ int main(int argc, char** argv) {
                                               "  batch-size: 2\n"
                                               "  gpu-id: 0\n"
                                               "  network-mode: 0\n";
+    std::ofstream(configs / "writable-detector.onnx") << "writable test model\n";
+    std::ofstream(configs / "loader-writable.yaml") << "property:\n"
+                                                       "  onnx-file: writable-detector.onnx\n"
+                                                       "  model-engine-file: writable-detector.engine\n"
+                                                       "  custom-lib-path: libnvdsinfer_custom_impl_Yolo.so\n"
+                                                       "  batch-size: 2\n"
+                                                       "  gpu-id: 0\n"
+                                                       "  network-mode: 0\n";
     std::ofstream(configs / "infer.txt") << "[property]\nonnx-file=detector.onnx\n";
     std::ofstream(configs / "linked.yaml") << "property:\n"
                                               "  onnx-file: ../packaged-models/linked-detector.onnx\n"
@@ -175,6 +183,11 @@ int main(int argc, char** argv) {
       "concurrent cache probe must continue after the engine lock is released");
 
   YAML::Node loader_pipeline = pipeline_for("loader.yaml");
+  const fs::path runtime_libraries = root / "runtime-libraries";
+  fs::create_directories(runtime_libraries);
+  const fs::path staged_yolo = runtime_libraries / "libnvdsinfer_custom_impl_Yolo.so";
+  std::ofstream(staged_yolo) << "staged test parser\n";
+  ::setenv("HSTREAM_NVINFER_CUSTOM_LIBRARY_DIR", runtime_libraries.c_str(), 1);
   ok &= expect(
       hm::pipeline::PrepareTensorRtModelCache(loader_pipeline, configs).ok(),
       "a loader-resolved custom inference library must prepare successfully");
@@ -182,9 +195,24 @@ int main(int argc, char** argv) {
   if (fs::is_regular_file(loader_runtime)) {
     const YAML::Node loader_cached = YAML::LoadFile(loader_runtime.string());
     ok &= expect(
-        loader_cached["property"]["custom-lib-path"].as<std::string>() == "libnvdsinfer_custom_impl_Yolo.so",
-        "a bare custom library name must remain loader-resolved in the runtime inference config");
+        loader_cached["property"]["custom-lib-path"].as<std::string>() == staged_yolo.string(),
+        "a bare custom library name must resolve to the staged runtime library in the runtime inference config");
   }
+  YAML::Node writable_loader_pipeline = pipeline_for("loader-writable.yaml");
+  ok &= expect(
+      hm::pipeline::PrepareTensorRtModelCache(writable_loader_pipeline, configs).ok(),
+      "a staged custom library must prepare even when the ONNX model directory is writable");
+  const fs::path writable_loader_runtime = writable_loader_pipeline["primary-gie"]["config-file"].as<std::string>();
+  ok &= expect(
+      writable_loader_runtime != configs / "loader-writable.yaml" && fs::is_regular_file(writable_loader_runtime),
+      "a writable model must still receive a runtime inference config for its staged custom library");
+  if (fs::is_regular_file(writable_loader_runtime)) {
+    const YAML::Node writable_loader_cached = YAML::LoadFile(writable_loader_runtime.string());
+    ok &= expect(
+        writable_loader_cached["property"]["custom-lib-path"].as<std::string>() == staged_yolo.string(),
+        "the writable-model runtime config must use the staged custom library path");
+  }
+  ::unsetenv("HSTREAM_NVINFER_CUSTOM_LIBRARY_DIR");
   hm::pipeline::ReleaseTensorRtModelCacheLocks();
 
   const fs::path fp32_runtime_directory = runtime_config.parent_path();

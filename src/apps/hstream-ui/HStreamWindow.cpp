@@ -723,18 +723,58 @@ QString bazel_solib_directory(const QString& architecture) {
   return {};
 }
 
-void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_dir, const QString& bazel_bin_path) {
-  const QDir bazel_bin(bazel_bin_path.isEmpty() ? QDir(working_dir).filePath("bazel-bin") : bazel_bin_path);
+QString runtime_architecture_name() {
+  const QString architecture = QSysInfo::currentCpuArchitecture().toLower();
+  if (architecture == "amd64" || architecture == "x86_64")
+    return "x86_64";
+  if (architecture == "arm64" || architecture == "aarch64")
+    return "aarch64";
+  return architecture.isEmpty() ? QString("unknown") : architecture;
+}
+
+QString runtime_launch_key() {
+  return QString("launch-%1").arg(QCoreApplication::applicationPid());
+}
+
+QString writable_runtime_cache_root(const QString& working_dir) {
+  QStringList candidates;
+  auto add_environment_candidate = [&candidates](const char* name, const QString& suffix = {}) {
+    const QString value = qEnvironmentVariable(name);
+    if (!value.isEmpty())
+      candidates.push_back(suffix.isEmpty() ? value : QDir(value).filePath(suffix));
+  };
+  add_environment_candidate("HSTREAM_RUNTIME_CACHE_DIR");
+  candidates.push_back(QDir(working_dir).filePath(".cache"));
+  add_environment_candidate("TEST_TMPDIR", "hstream-runtime-cache");
+  add_environment_candidate("XDG_CACHE_HOME", "hstream");
+  const QString standard_cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+  if (!standard_cache.isEmpty())
+    candidates.push_back(QDir(standard_cache).filePath("runtime"));
+  candidates.push_back(QDir(QDir::tempPath()).filePath("hstream-runtime"));
+
+  for (const QString& candidate : candidates) {
+    if (candidate.isEmpty() || !QDir().mkpath(candidate))
+      continue;
+    QTemporaryDir probe(QDir(candidate).filePath(".write-probe-XXXXXX"));
+    if (probe.isValid())
+      return QDir(candidate).absolutePath();
+  }
+  return {};
+}
+
+void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& cache_root, const QString& bazel_bin_path) {
+  const QDir bazel_bin(bazel_bin_path);
   const QDir root(bazel_bin.filePath("src/gst-plugins"));
   if (!root.exists()) {
     return;
   }
 
-  const QString arch =
-      QSysInfo::currentCpuArchitecture().isEmpty() ? QString("unknown") : QSysInfo::currentCpuArchitecture();
+  const QString arch = runtime_architecture_name();
   const QDir canonical_bazel_bin(canonical_dir_path(bazel_bin.absolutePath()));
   const QString output_configuration = bazel_output_configuration(canonical_bazel_bin.absolutePath());
-  QDir runtime_dir(QDir(working_dir).filePath(QString(".cache/gst-plugin-path/%1/%2").arg(arch, output_configuration)));
+  QDir runtime_dir(
+      QDir(cache_root)
+          .filePath(QString("gst-plugin-path/%1/%2/%3").arg(arch, output_configuration, runtime_launch_key())));
   if (!runtime_dir.exists() && !runtime_dir.mkpath(".")) {
     return;
   }
@@ -784,7 +824,8 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_di
   }
 
   QDir runtime_lib_dir(
-      QDir(working_dir).filePath(QString(".cache/runtime-lib-path/%1/%2").arg(arch, output_configuration)));
+      QDir(cache_root)
+          .filePath(QString("runtime-lib-path/%1/%2/%3").arg(arch, output_configuration, runtime_launch_key())));
   bool staged_runtime_library = false;
   if (runtime_lib_dir.mkpath(".")) {
     for (const QFileInfo& solib_root : solib_roots) {
@@ -838,6 +879,9 @@ QString configure_pipeline_runtime_environment(
     if (!missing.isEmpty())
       return QString("matching Bazel runtime artifact is missing: %1").arg(missing);
   }
+  const QString cache_root = writable_runtime_cache_root(working_dir);
+  if (cache_root.isEmpty())
+    return "could not find a writable hstream runtime cache directory";
   // DeepStream 9.1's legacy nvstreammux rejects the native 8K source caps used
   // by stitching. Match run.sh while preserving an explicit diagnostic
   // override from the caller.
@@ -850,13 +894,9 @@ QString configure_pipeline_runtime_environment(
         hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) ? "ximagesink"
                                                                                                      : "nv3dsink");
   }
-  QDir registry_dir(QDir(working_dir).filePath(".cache/gstreamer-1.0"));
-  if (!registry_dir.mkpath(".")) {
-    registry_dir = QDir(QDir::home().filePath(".cache/gstreamer-1.0"));
-  }
+  QDir registry_dir(QDir(cache_root).filePath("gstreamer-1.0"));
   if (registry_dir.mkpath(".")) {
-    const QString arch =
-        QSysInfo::currentCpuArchitecture().isEmpty() ? QString("unknown") : QSysInfo::currentCpuArchitecture();
+    const QString arch = runtime_architecture_name();
     const QString selected_bazel_bin =
         bazel_bin_path.isEmpty() ? QDir(working_dir).filePath("bazel-bin") : bazel_bin_path;
     const QString output_configuration = bazel_output_configuration(selected_bazel_bin);
@@ -871,7 +911,8 @@ QString configure_pipeline_runtime_environment(
   prepend_env_path(env, "LD_LIBRARY_PATH", QDir(working_dir).filePath("lib/gst-plugins"));
   prepend_env_path(env, "LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib");
   prepend_env_path(env, "LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
-  stage_bazel_gst_plugins(env, working_dir, bazel_bin_path);
+  if (!bazel_bin_path.isEmpty())
+    stage_bazel_gst_plugins(env, cache_root, bazel_bin_path);
   return {};
 }
 

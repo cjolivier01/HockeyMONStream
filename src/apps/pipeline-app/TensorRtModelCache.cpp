@@ -81,6 +81,19 @@ bool is_loader_resolved_custom_library(const std::string& raw_key, const std::st
   return lowercase(raw_key) == "custom-lib-path" && !value.empty() && fs::path(value).parent_path().empty();
 }
 
+std::optional<fs::path> staged_custom_library_path(const std::string& raw_key, const std::string& value) {
+  if (!is_loader_resolved_custom_library(raw_key, value))
+    return std::nullopt;
+  const char* directory = std::getenv("HSTREAM_NVINFER_CUSTOM_LIBRARY_DIR");
+  if (!directory || !*directory)
+    return std::nullopt;
+  const fs::path candidate = fs::path(directory) / value;
+  std::error_code error;
+  if (!fs::is_regular_file(candidate, error) || error)
+    return std::nullopt;
+  return fs::absolute(candidate).lexically_normal();
+}
+
 absl::Status ensure_owned_temporary_root(const fs::path& directory) {
   if (::mkdir(directory.c_str(), 0700) != 0 && errno != EEXIST)
     return absl::InternalError(
@@ -221,11 +234,17 @@ absl::StatusOr<std::string> inference_build_digest(
       if (key == "model-engine-file" || !is_path_property(key))
         continue;
       const std::string value = property.second.as<std::string>();
+      fs::path input;
       if (is_loader_resolved_custom_library(key, value)) {
-        fingerprint << "input:" << key << '=' << value << '\n';
-        continue;
+        const auto staged = staged_custom_library_path(key, value);
+        if (!staged.has_value()) {
+          fingerprint << "input:" << key << '=' << value << '\n';
+          continue;
+        }
+        input = *staged;
+      } else {
+        input = resolve_path(value, inference_path.parent_path());
       }
-      const fs::path input = resolve_path(value, inference_path.parent_path());
       fingerprint << "input:" << key << '=' << fs::absolute(input).lexically_normal().string() << '\n';
       std::error_code error;
       if (fs::is_regular_file(input, error) && !error) {
@@ -394,6 +413,34 @@ absl::Status publish_yaml(const fs::path& target, const YAML::Node& config) {
   return absl::OkStatus();
 }
 
+absl::Status publish_custom_library_runtime_config(
+    YAML::Node section,
+    const YAML::Node& inference,
+    const fs::path& inference_path,
+    const fs::path& staged_library) {
+  auto root = cache_root();
+  if (!root.ok())
+    return root.status();
+  auto root_status = ensure_private_directory(*root);
+  if (!root_status.ok())
+    return root_status;
+  const fs::path runtime_configs = *root / "runtime-configs";
+  auto directory_status = ensure_private_directory(runtime_configs);
+  if (!directory_status.ok())
+    return directory_status;
+  std::ostringstream identity;
+  identity << inference_path << '\n' << staged_library << '\n' << inference;
+  auto digest = hm::assets::AssetManager::Sha256Bytes(identity.str());
+  if (!digest.ok())
+    return digest.status();
+  const fs::path runtime_config = runtime_configs / (digest->substr(0, 32) + ".yaml");
+  auto publish_status = publish_yaml(runtime_config, inference);
+  if (!publish_status.ok())
+    return publish_status;
+  section["config-file"] = runtime_config.string();
+  return absl::OkStatus();
+}
+
 absl::Status prepare_inference_config(
     YAML::Node section,
     const YAML::Node& pipeline,
@@ -412,9 +459,21 @@ absl::Status prepare_inference_config(
         "Unable to read inference config " + inference_path.string() + ": " + exception.what());
   }
   YAML::Node properties = inference["property"];
+  std::optional<fs::path> staged_custom_library;
+  if (properties && properties.IsMap() && properties["custom-lib-path"] && properties["custom-lib-path"].IsScalar()) {
+    staged_custom_library =
+        staged_custom_library_path("custom-lib-path", properties["custom-lib-path"].as<std::string>());
+    if (staged_custom_library.has_value())
+      properties["custom-lib-path"] = staged_custom_library->string();
+  }
+  auto publish_staged_custom_library = [&]() -> absl::Status {
+    if (!staged_custom_library.has_value())
+      return absl::OkStatus();
+    return publish_custom_library_runtime_config(section, inference, inference_path, *staged_custom_library);
+  };
   if (!properties || !properties.IsMap() || !properties["onnx-file"] || !properties["model-engine-file"] ||
       !properties["onnx-file"].IsScalar() || !properties["model-engine-file"].IsScalar()) {
-    return absl::OkStatus();
+    return publish_staged_custom_library();
   }
 
   const fs::path onnx_path = resolve_path(properties["onnx-file"].as<std::string>(), inference_path.parent_path());
@@ -429,13 +488,13 @@ absl::Status prepare_inference_config(
     return absl::InvalidArgumentError("TensorRT model-engine-file must name an engine file");
   error.clear();
   if (fs::is_regular_file(configured_engine, error) && !error)
-    return absl::OkStatus();
+    return publish_staged_custom_library();
   if (lowercase(configured_engine.filename().string()).find("_bf16.engine") != std::string::npos) {
     return absl::NotFoundError(
         "Configured prebuilt BF16 TensorRT engine is unavailable: " + configured_engine.string());
   }
   if (::access(onnx_path.parent_path().c_str(), W_OK) == 0)
-    return absl::OkStatus();
+    return publish_staged_custom_library();
 
   auto build_digest = inference_build_digest(inference, section, pipeline, section_name, inference_path);
   if (!build_digest.ok())
@@ -464,8 +523,11 @@ absl::Status prepare_inference_config(
     if (key == "model-engine-file" || !property.second.IsScalar() || !is_path_property(key))
       continue;
     const std::string value = property.second.as<std::string>();
-    if (!value.empty() && !is_loader_resolved_custom_library(key, value))
+    if (const auto staged = staged_custom_library_path(key, value); staged.has_value()) {
+      properties[key] = staged->string();
+    } else if (!value.empty() && !is_loader_resolved_custom_library(key, value)) {
       properties[key] = resolve_path(value, inference_path.parent_path()).string();
+    }
   }
   properties["onnx-file"] = cached_onnx.string();
   const bool secondary = section_name.rfind("secondary-gie", 0) == 0;

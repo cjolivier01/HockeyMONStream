@@ -222,6 +222,10 @@ std::string bazel_solib_directory_name() {
 #endif
 }
 
+std::string runtime_launch_key() {
+  return "launch-" + std::to_string(static_cast<unsigned long>(::getpid()));
+}
+
 bool manages_its_own_window(GstElement* sink) {
   if (sink == nullptr) {
     return false;
@@ -307,7 +311,47 @@ std::optional<fs::path> running_executable_path(const char* argv0) {
   return exe;
 }
 
-void stage_bazel_gst_plugins(const fs::path& root, const fs::path& bazel_bin) {
+absl::StatusOr<fs::path> select_runtime_cache_root(const fs::path& root) {
+  std::vector<fs::path> candidates;
+  auto add_environment_candidate = [&candidates](const char* name, const fs::path& suffix = {}) {
+    if (const char* value = std::getenv(name); value && *value)
+      candidates.push_back(fs::path(value) / suffix);
+  };
+  add_environment_candidate("HSTREAM_RUNTIME_CACHE_DIR");
+  candidates.push_back(root / ".cache");
+  add_environment_candidate("TEST_TMPDIR", "hstream-runtime-cache");
+  add_environment_candidate("XDG_CACHE_HOME", "hstream");
+  add_environment_candidate("HOME", ".cache/hstream");
+  std::error_code temp_ec;
+  const fs::path temp = fs::temp_directory_path(temp_ec);
+  if (!temp_ec)
+    candidates.push_back(temp / ("hstream-runtime-" + std::to_string(static_cast<unsigned long>(::getuid()))));
+
+  std::error_code ec;
+  for (const fs::path& candidate : candidates) {
+    if (candidate.empty())
+      continue;
+    fs::create_directories(candidate, ec);
+    if (ec) {
+      ec.clear();
+      continue;
+    }
+    const fs::path probe = candidate / (".write-probe-" + std::to_string(static_cast<unsigned long>(::getpid())));
+    fs::remove(probe, ec);
+    ec.clear();
+    if (!fs::create_directory(probe, ec) || ec) {
+      ec.clear();
+      continue;
+    }
+    fs::remove(probe, ec);
+    if (!ec)
+      return candidate;
+    ec.clear();
+  }
+  return absl::PermissionDeniedError("Could not find a writable hstream runtime cache directory");
+}
+
+void stage_bazel_gst_plugins(const fs::path& cache_root, const fs::path& bazel_bin) {
   const fs::path bazel_plugin_root = bazel_bin / "src/gst-plugins";
   if (!fs::is_directory(bazel_plugin_root)) {
     return;
@@ -316,7 +360,8 @@ void stage_bazel_gst_plugins(const fs::path& root, const fs::path& bazel_bin) {
   std::error_code ec;
   const std::string output_configuration =
       bazel_bin.parent_path().filename().empty() ? "unknown-output" : bazel_bin.parent_path().filename().string();
-  const fs::path runtime_plugin_dir = root / ".cache/gst-plugin-path" / host_arch_name() / output_configuration;
+  const fs::path runtime_plugin_dir =
+      cache_root / "gst-plugin-path" / host_arch_name() / output_configuration / runtime_launch_key();
   fs::create_directories(runtime_plugin_dir, ec);
   if (ec) {
     return;
@@ -372,8 +417,9 @@ absl::Status validate_bazel_runtime_artifacts(const hm::pipeline_internal::Runti
   return absl::OkStatus();
 }
 
-absl::Status stage_bazel_runtime_libraries(const hm::pipeline_internal::RuntimePaths& runtime) {
-  const fs::path& root = runtime.root;
+absl::Status stage_bazel_runtime_libraries(
+    const hm::pipeline_internal::RuntimePaths& runtime,
+    const fs::path& cache_root) {
   const fs::path& bazel_bin = runtime.bazel_bin;
   if (!fs::is_directory(bazel_bin))
     return absl::OkStatus();
@@ -401,7 +447,8 @@ absl::Status stage_bazel_runtime_libraries(const hm::pipeline_internal::RuntimeP
   if (onnxruntime.empty() && !fs::is_regular_file(yolo, ec))
     return absl::OkStatus();
 
-  const fs::path runtime_dir = root / ".cache/runtime-lib-path" / host_arch_name() / runtime.output_configuration;
+  const fs::path runtime_dir =
+      cache_root / "runtime-lib-path" / host_arch_name() / runtime.output_configuration / runtime_launch_key();
   fs::create_directories(runtime_dir, ec);
   if (ec)
     return absl::InternalError(
@@ -450,12 +497,15 @@ absl::Status configure_pipeline_runtime_environment(const char* argv0) {
   auto runtime_status = validate_bazel_runtime_artifacts(runtime);
   if (!runtime_status.ok())
     return runtime_status;
+  auto cache_root = select_runtime_cache_root(root);
+  if (!cache_root.ok())
+    return cache_root.status();
   const fs::path packaged_native_models = root / "pretrained/native-calibration";
   if (!std::getenv("HM_NATIVE_MODEL_DIR") && fs::is_directory(packaged_native_models)) {
     setenv("HM_NATIVE_MODEL_DIR", packaged_native_models.c_str(), 1);
   }
   std::error_code ec;
-  fs::path registry_dir = root / ".cache/gstreamer-1.0";
+  fs::path registry_dir = *cache_root / "gstreamer-1.0";
   fs::create_directories(registry_dir, ec);
   if (ec) {
     if (const char* home = std::getenv("HOME"); home && *home) {
@@ -478,10 +528,21 @@ absl::Status configure_pipeline_runtime_environment(const char* argv0) {
   prepend_env_path("LD_LIBRARY_PATH", root / "lib/gst-plugins");
   prepend_env_path("LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib");
   prepend_env_path("LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
-  stage_bazel_gst_plugins(root, bazel_bin);
-  runtime_status = stage_bazel_runtime_libraries(runtime);
+  stage_bazel_gst_plugins(*cache_root, bazel_bin);
+  runtime_status = stage_bazel_runtime_libraries(runtime, *cache_root);
   if (!runtime_status.ok())
     return runtime_status;
+  const fs::path staged_custom_library_dir =
+      *cache_root / "runtime-lib-path" / host_arch_name() / runtime.output_configuration / runtime_launch_key();
+  const fs::path staged_yolo = staged_custom_library_dir / "libnvdsinfer_custom_impl_Yolo.so";
+  const fs::path installed_yolo = root / "lib/libnvdsinfer_custom_impl_Yolo.so";
+  if (fs::is_regular_file(staged_yolo, ec) && !ec) {
+    setenv("HSTREAM_NVINFER_CUSTOM_LIBRARY_DIR", staged_custom_library_dir.c_str(), 1);
+  } else {
+    ec.clear();
+    if (fs::is_regular_file(installed_yolo, ec) && !ec)
+      setenv("HSTREAM_NVINFER_CUSTOM_LIBRARY_DIR", installed_yolo.parent_path().c_str(), 1);
+  }
   return absl::OkStatus();
 }
 
