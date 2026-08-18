@@ -55,6 +55,7 @@ typedef struct _AppCtx AppCtx;
 typedef void (*bbox_generated_callback)(AppCtx* appCtx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
 typedef gboolean (*overlay_graphics_callback)(AppCtx* appCtx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
 typedef gboolean (*element_message_callback)(AppCtx* appCtx, GstMessage* message);
+typedef gboolean (*defer_eos_callback)(AppCtx* appCtx);
 
 typedef struct {
   guint index;
@@ -221,6 +222,7 @@ struct _AppCtx {
       0,
   };
   element_message_callback element_message_cb{nullptr};
+  defer_eos_callback defer_eos_cb{nullptr};
   NvDsFrameLatencyInfo* latency_info{nullptr};
   GMutex latency_lock{
       0,

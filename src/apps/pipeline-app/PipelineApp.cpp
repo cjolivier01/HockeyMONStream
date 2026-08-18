@@ -35,6 +35,7 @@
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -636,6 +637,7 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
     app_ctx->index = i;
     app_ctx->active_source_index = -1;
     app_ctx->element_message_cb = handle_element_message_static;
+    app_ctx->defer_eos_cb = should_defer_eos_static;
     if (show_bbox_text_)
       app_ctx->show_bbox_text = TRUE;
     if (input_uris_ && input_uris_[i]) {
@@ -3972,6 +3974,43 @@ gboolean PipelineApplication::handle_element_message_static(AppCtx* app_ctx, Gst
   return instance_ ? instance_->handle_element_message(app_ctx, message) : FALSE;
 }
 
+gboolean PipelineApplication::should_defer_eos_static(AppCtx* app_ctx) {
+  return instance_ ? instance_->should_defer_eos(app_ctx) : FALSE;
+}
+
+gboolean PipelineApplication::should_defer_eos(AppCtx* app_ctx) const {
+  if (!app_ctx || app_ctx->return_value != 0 || !stitch_frame_calibration_active_.load(std::memory_order_acquire)) {
+    return FALSE;
+  }
+  const auto active_stage = stage_app_contexts_.find(current_stage_);
+  if (active_stage == stage_app_contexts_.end()) {
+    return FALSE;
+  }
+  const auto context =
+      std::find_if(active_stage->second.begin(), active_stage->second.end(), [app_ctx](const auto& candidate) {
+        return candidate.get() == app_ctx;
+      });
+  if (context == active_stage->second.end()) {
+    return FALSE;
+  }
+  if (stitch_frame_rewind_pending_contexts_.count(app_ctx) != 0) {
+    return TRUE;
+  }
+  std::vector<hm::pipeline_internal::StitchFrameRewindState> states;
+  states.reserve(active_stage->second.size());
+  for (const auto& candidate : active_stage->second) {
+    states.push_back({
+        candidate && candidate->configurator().stitching_calibration_required(),
+        candidate && stitch_frame_rewound_contexts_.count(candidate.get()) != 0,
+        candidate && stitch_frame_rewind_pending_contexts_.count(candidate.get()) != 0,
+    });
+  }
+  const std::vector<size_t> restart_candidates =
+      hm::pipeline_internal::stitch_frame_rewind_candidates(stitch_frame_time_ns_, states);
+  const size_t context_index = static_cast<size_t>(std::distance(active_stage->second.begin(), context));
+  return std::find(restart_candidates.begin(), restart_candidates.end(), context_index) != restart_candidates.end();
+}
+
 gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage* message) {
   const GstStructure* structure = message ? gst_message_get_structure(message) : nullptr;
   if (!structure || !gst_structure_has_name(structure, "hstream-stitching-calibration-complete")) {
@@ -4215,12 +4254,16 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
   bool recreation_ok = true;
   for (AppCtx* context : rewind_contexts) {
     stitch_frame_rewind_pending_contexts_.erase(context);
-    if (!recreate_pipeline_thread_func(context)) {
+    if (context->return_value != 0 || !recreate_pipeline_thread_func(context)) {
       context->return_value = -1;
       context->quit = TRUE;
       recreation_ok = false;
       break;
     }
+    // EOS belongs to the intentionally abandoned calibration generation. A
+    // successfully playing replacement is live again; a real bus error is
+    // preserved above through return_value and must not be cleared here.
+    context->quit = FALSE;
     one_pass_calibration_contexts_.erase(context);
   }
   for (AppCtx* context : paused_contexts) {

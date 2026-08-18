@@ -399,6 +399,10 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
     }
     case GST_MESSAGE_EOS: {
       appCtx->eos_received = TRUE;
+      if (appCtx->defer_eos_cb && appCtx->defer_eos_cb(appCtx)) {
+        NVGSTDS_INFO_MSG_V("Received EOS while awaiting calibration restart ...\n");
+        return TRUE;
+      }
       /*
        * In normal scenario, this would use g_main_loop_quit() to exit the
        * loop and release the resources. Since this application might be

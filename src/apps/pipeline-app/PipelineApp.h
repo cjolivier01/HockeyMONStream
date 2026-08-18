@@ -142,6 +142,8 @@ class PipelineApplication {
   gboolean event_thread_func();
   static gboolean handle_element_message_static(AppCtx* app_ctx, GstMessage* message);
   gboolean handle_element_message(AppCtx* app_ctx, GstMessage* message);
+  static gboolean should_defer_eos_static(AppCtx* app_ctx);
+  gboolean should_defer_eos(AppCtx* app_ctx) const;
   static gboolean rewind_after_stitching_calibration_static(gpointer arg);
   gboolean rewind_after_stitching_calibration(long stage, uint64_t main_loop_generation);
   void cancel_stitch_frame_rewind(uint64_t main_loop_generation);

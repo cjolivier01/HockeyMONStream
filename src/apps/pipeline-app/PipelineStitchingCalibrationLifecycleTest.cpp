@@ -586,7 +586,7 @@ int main(int argc, char** argv) {
                   "initial",
                   128,
                   false,
-                  /*stitch_frame_time=*/"00:00:02",
+                  /*stitch_frame_time=*/"00:00:59.900",
                   /*time_limit_seconds=*/1),
               "initial calibration pipeline must start") ||
           !expect(
@@ -596,11 +596,14 @@ int main(int argc, char** argv) {
               initial.WaitFor("HSTREAM_CALIBRATION stage=orientation status=complete", 0, kCalibrationTimeout),
               "initial calibration must configure orientation") ||
           !expect(
+              initial.WaitFor("Received EOS while awaiting calibration restart", 0, kCalibrationTimeout),
+              "near-EOS calibration must preserve the bus watch until its restart is scheduled") ||
+          !expect(
               initial.WaitFor("HSTREAM_CALIBRATION stage=calibration status=complete", 0, kCalibrationTimeout),
               "initial calibration must complete") ||
           !expect(
               initial.WaitFor("playback restarted after stitch-frame calibration", 0, kCalibrationTimeout),
-              "a stitch frame beyond the time limit must still complete calibration and restart normal playback") ||
+              "a near-EOS stitch frame beyond the time limit must still restart normal playback") ||
           !expect(initial.WaitFor("Stitched canvas size:"), "initial calibration must publish the real canvas")) {
         return false;
       }
