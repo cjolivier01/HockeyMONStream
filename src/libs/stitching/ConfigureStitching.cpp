@@ -1100,10 +1100,17 @@ absl::Status create_control_points(
   std::unique_ptr<FeatureMatcher> matcher;
   HM_ASSIGN_OR_RETURN(matcher, FeatureMatcher::Create(model_path.string()));
   FeatureMatchResult matched;
-  HM_ASSIGN_OR_RETURN(matched, matcher->Infer(left, right, max_control_points, [] {
-    report_calibration_progress("features", "complete", "Control points found in both camera frames");
-    report_calibration_progress("matching", "started", "Selecting and validating control-point matches");
-  }));
+  HM_ASSIGN_OR_RETURN(
+      matched,
+      matcher->Infer(
+          left,
+          right,
+          max_control_points,
+          [] {
+            report_calibration_progress("features", "complete", "Control points found in both camera frames");
+            report_calibration_progress("matching", "started", "Selecting and validating control-point matches");
+          },
+          is_cancelled));
   if (is_cancelled && is_cancelled()) {
     return absl::CancelledError("Stitching calibration cancelled");
   }
@@ -1592,6 +1599,13 @@ absl::Status save_rink_profile_locked(
         profile.combined_bbox.x + profile.combined_bbox.width,
         profile.combined_bbox.y + profile.combined_bbox.height};
     config["rink"]["stitched_output_generation"] = current_output_generation;
+    if (!expected_invalidation_id.empty()) {
+      YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+      calibration["status"] = "complete";
+      calibration["invalidation_id"] = expected_invalidation_id;
+      calibration.remove("stale_from");
+      calibration.remove("artifacts_invalidated");
+    }
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Unable to update rink profile YAML: " + std::string(exception.what()));
   }

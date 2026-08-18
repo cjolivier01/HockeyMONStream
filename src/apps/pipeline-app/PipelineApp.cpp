@@ -78,6 +78,15 @@ absl::StatusOr<uint64_t> parse_time_option(const char* option, const char* value
   }
 }
 
+absl::StatusOr<uint64_t> parse_stitch_frame_time_option(const char* option, const char* value) {
+  try {
+    return hm::stitch_frame_time_to_nanoseconds(value ? value : "");
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(
+        std::string("Invalid ") + option + " value '" + (value ? value : "") + "': " + error.what());
+  }
+}
+
 void emit_ui_startup(const char* stage, const char* message) {
   if (!g_getenv("HSTREAM_UI_PARENT_PID")) {
     return;
@@ -127,16 +136,49 @@ bool manages_its_own_window(GstElement* sink) {
       g_strcmp0(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)), NVDS_ELEM_SINK_3D) == 0;
 }
 
-absl::Status pause_pipeline_for_model_initialization(GstElement* pipeline) {
+absl::Status pause_pipeline_for_model_initialization(
+    AppCtx* app_ctx,
+    const volatile sig_atomic_t* interrupt_requested) {
+  GstElement* pipeline = app_ctx ? app_ctx->pipeline.pipeline : nullptr;
+  if (!pipeline) {
+    return absl::InvalidArgumentError("Missing pipeline while initializing models");
+  }
   if (gst_element_set_state(pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE)
     return absl::InternalError("Failed to set pipeline to PAUSED");
-  constexpr GstClockTime kModelInitializationTimeout = 15 * 60 * GST_SECOND;
-  const GstStateChangeReturn result = gst_element_get_state(pipeline, nullptr, nullptr, kModelInitializationTimeout);
-  if (result == GST_STATE_CHANGE_FAILURE)
-    return absl::InternalError("Pipeline failed while initializing models");
-  if (result == GST_STATE_CHANGE_ASYNC)
-    return absl::DeadlineExceededError("Timed out waiting for pipeline model initialization");
-  return absl::OkStatus();
+  constexpr auto kModelInitializationTimeout = std::chrono::minutes(15);
+  constexpr auto kCancellationTimeout = std::chrono::seconds(5);
+  constexpr GstClockTime kPollInterval = 100 * GST_MSECOND;
+  const auto initialization_deadline = std::chrono::steady_clock::now() + kModelInitializationTimeout;
+  std::optional<std::chrono::steady_clock::time_point> cancellation_deadline;
+  while (true) {
+    const GstStateChangeReturn result = gst_element_get_state(pipeline, nullptr, nullptr, kPollInterval);
+    const bool interrupted = interrupt_requested && *interrupt_requested;
+    if (interrupted && !cancellation_deadline.has_value()) {
+      g_printerr("Interrupt received during pipeline preroll; cancelling stitching calibration\n");
+      if (GstElement* stitcher = app_ctx->pipeline.hmstitcher_bin.elem_hmstitcher) {
+        g_object_set(G_OBJECT(stitcher), "cancel-pending-work", TRUE, nullptr);
+      }
+      cancellation_deadline = std::chrono::steady_clock::now() + kCancellationTimeout;
+    }
+    if (interrupted && result != GST_STATE_CHANGE_ASYNC) {
+      return absl::CancelledError("Pipeline initialization interrupted");
+    }
+    if (result == GST_STATE_CHANGE_FAILURE) {
+      return absl::InternalError("Pipeline failed while initializing models");
+    }
+    if (result != GST_STATE_CHANGE_ASYNC) {
+      return absl::OkStatus();
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (cancellation_deadline.has_value() && now >= *cancellation_deadline) {
+      g_printerr("Calibration did not acknowledge cancellation within five seconds; terminating the worker process\n");
+      std::fflush(stderr);
+      std::_Exit(128 + SIGINT);
+    }
+    if (now >= initialization_deadline) {
+      return absl::DeadlineExceededError("Timed out waiting for pipeline model initialization");
+    }
+  }
 }
 
 void prepend_env_path(const char* name, const fs::path& dir) {
@@ -654,6 +696,17 @@ absl::Status PipelineApplication::configureInstances(
       if (!configuration_status.ok()) {
         return configuration_status;
       }
+      const std::string& active_invalidation_id = app_ctx->configurator().active_stitching_invalidation_id();
+      if (!active_invalidation_id.empty()) {
+        const char* runtime_invalidation_id = g_getenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
+        if (runtime_invalidation_id && *runtime_invalidation_id && runtime_invalidation_id != active_invalidation_id) {
+          return absl::InvalidArgumentError(
+              "All pipeline instances must use the same stitching calibration invalidation ID");
+        }
+        if (!g_setenv("HSTREAM_CALIBRATION_INVALIDATION_ID", active_invalidation_id.c_str(), /*overwrite=*/TRUE)) {
+          return absl::InternalError("Unable to publish the saved stitching invalidation ID to runtime plugins");
+        }
+      }
       YAML::Node config = app_ctx->configurator().config();
       if (!stitch_frame_time_set_) {
         const std::string configured_stitch_frame_time =
@@ -661,7 +714,7 @@ absl::Status PipelineApplication::configureInstances(
         uint64_t configured_stitch_frame_time_ns = 0;
         if (!configured_stitch_frame_time.empty()) {
           try {
-            configured_stitch_frame_time_ns = hm::hhmmss_to_nanoseconds(configured_stitch_frame_time);
+            configured_stitch_frame_time_ns = hm::stitch_frame_time_to_nanoseconds(configured_stitch_frame_time);
           } catch (const std::exception& error) {
             return absl::InvalidArgumentError(TO_STRING("Invalid stitching.stitch_frame_time: " << error.what()));
           }
@@ -1350,6 +1403,42 @@ absl::Status PipelineApplication::createMainLoop(
   reset_playback_timing_state(current_stage_);
   g_timeout_add(400, check_for_interrupt_static, nullptr);
 
+  auto owned_windows = std::make_shared<std::set<Window>>();
+  cleanup_stack.push([this, contexts = app_contexts, stage = current_stage_, owned_windows] {
+    for (const auto& context : contexts) {
+      if (!context) {
+        continue;
+      }
+      if (context->return_value == -1) {
+        return_value_ = -1;
+      }
+      destroy_pipeline(context.get());
+    }
+    const auto stage_windows = stage_windows_.find(stage);
+    if (stage_windows != stage_windows_.end()) {
+      for (auto& [index, window] : stage_windows->second) {
+        (void)index;
+        if (window && owned_windows->count(window)) {
+          absl::MutexLock lk(&disp_lock_);
+          if (display_) {
+            XFlush(display_);
+            XDestroyWindow(display_, window);
+          }
+        }
+        window = 0;
+      }
+    }
+    if (x_event_thread_ && x_event_thread_->joinable) {
+      g_thread_join(x_event_thread_);
+      x_event_thread_ = nullptr;
+    }
+    absl::MutexLock lk(&disp_lock_);
+    if (display_) {
+      XCloseDisplay(display_);
+      display_ = nullptr;
+    }
+  });
+
   bool has_video_overlay_sink = false;
   for (const auto& app_ctx : app_contexts) {
     for (guint j = 0; j < app_ctx->config.num_sink_sub_bins; j++) {
@@ -1370,19 +1459,16 @@ absl::Status PipelineApplication::createMainLoop(
       NVGSTDS_ERR_MSG_V("Could not open X Display");
       return absl::InternalError("Could not open X Display");
     }
-    cleanup_stack.push([this] {
-      absl::MutexLock lk(&disp_lock_);
-      if (display_)
-        XCloseDisplay(display_);
-      display_ = nullptr;
-    });
   }
 
-  std::set<Window> owned_windows;
   for (guint i = 0; i < app_contexts.size(); i++) {
 #if defined(__aarch64__)
-    auto pause_status = pause_pipeline_for_model_initialization(app_contexts[i]->pipeline.pipeline);
+    auto pause_status = pause_pipeline_for_model_initialization(app_contexts[i].get(), &cintr_);
     if (!pause_status.ok()) {
+      if (absl::IsCancelled(pause_status)) {
+        quit_ = TRUE;
+        return absl::OkStatus();
+      }
       NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
       return pause_status;
     }
@@ -1427,7 +1513,7 @@ absl::Status PipelineApplication::createMainLoop(
             2,
             0x00000000,
             0x00000000);
-        owned_windows.insert(windows[i]);
+        owned_windows->insert(windows[i]);
 
         XSetNormalHints(display_, windows[i], &hints);
 
@@ -1467,40 +1553,18 @@ absl::Status PipelineApplication::createMainLoop(
     struct cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, current_device);
     if (!prop.integrated) {
-      auto pause_status = pause_pipeline_for_model_initialization(app_contexts[i]->pipeline.pipeline);
+      auto pause_status = pause_pipeline_for_model_initialization(app_contexts[i].get(), &cintr_);
       if (!pause_status.ok()) {
+        if (absl::IsCancelled(pause_status)) {
+          quit_ = TRUE;
+          return absl::OkStatus();
+        }
         NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
         return pause_status;
       }
     }
 #endif
   }
-  cleanup_stack.push([this, contexts = app_contexts, windows = windows, owned_windows]() mutable -> void {
-    // (void)waitForPipelinesStopped(contexts);
-    for (guint i = 0; i < contexts.size(); i++) {
-      if (contexts[i]) {
-        if (contexts[i]->return_value == -1)
-          return_value_ = -1;
-        destroy_pipeline(contexts[i].get());
-        absl::MutexLock lk(&disp_lock_);
-        if (windows[i] && owned_windows.count(windows[i])) {
-          // post_dummy_event(display_, windows[i]);
-          XFlush(display_);
-          XDestroyWindow(display_, windows[i]);
-        }
-        windows[i] = 0;
-        // contexts[i].reset();
-      }
-    }
-    if (x_event_thread_ && x_event_thread_->joinable) {
-      g_thread_join(x_event_thread_);
-    }
-    absl::MutexLock lk(&disp_lock_);
-    if (display_)
-      XCloseDisplay(display_);
-    display_ = nullptr;
-  });
-
   return absl::OkStatus();
 }
 
@@ -2077,7 +2141,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     start_time_ns_ = *parsed_start_time;
   }
   if (stitch_frame_time) {
-    const auto parsed_stitch_frame_time = parse_time_option("--stitch-frame-time", stitch_frame_time);
+    const auto parsed_stitch_frame_time = parse_stitch_frame_time_option("--stitch-frame-time", stitch_frame_time);
     g_free(stitch_frame_time);
     if (!parsed_stitch_frame_time.ok()) {
       return parsed_stitch_frame_time.status();
@@ -2206,6 +2270,9 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
         HM_RETURN_IF_ERROR(createPipelines(app_contexts, stage_cleanup_stack));
         emit_ui_startup("video", "Opening video sources and preparing output branches");
         HM_RETURN_IF_ERROR(createMainLoop(app_contexts, stage_windows_[current_stage_], stage_cleanup_stack));
+        if (quit_) {
+          return absl::OkStatus();
+        }
         hm::pipeline::ReleaseTensorRtModelCacheLocks();
         // editor_thread_ = hm::edit_pipeline(GST_OBJECT(app_contexts[0]->pipeline.pipeline));
         emit_ui_startup("decoding", "Starting decoders and waiting for the first frame");

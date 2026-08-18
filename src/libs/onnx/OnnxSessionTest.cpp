@@ -70,6 +70,10 @@ int main() {
     }
     ok &= expect(!(*session)->RunFloat("wrong", {1, 2}, input, 2).ok(), "wrong input name must fail");
     ok &= expect(!(*session)->RunFloat("input", {1, 2}, input, 1).ok(), "wrong data length must fail");
+    const auto cancelled = (*session)->RunFloat("input", {1, 2}, input, 2, [] { return true; });
+    ok &= expect(
+        !cancelled.ok() && cancelled.status().code() == absl::StatusCode::kCancelled,
+        "an already-cancelled inference must stop before entering ONNX Runtime");
   }
 
   auto wrong_contract = output_contract();

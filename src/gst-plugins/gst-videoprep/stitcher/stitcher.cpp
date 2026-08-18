@@ -1408,10 +1408,8 @@ absl::Status StitcherPriv::GenerateOutput(
             config_file_, logical_output_surface, output_generation, calibration_invalidation_id_);
         if (!mask_status.ok()) {
           std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
-          if (progress.report && !calibration_completion_reported_) {
-            report_calibration_progress("calibration", "failed", mask_status.ToString());
-            calibration_completion_reported_ = true;
-          }
+          calibration_completion_reported_ = true;
+          return report_calibration_failure(mask_status);
         } else {
           mask_configured = true;
         }

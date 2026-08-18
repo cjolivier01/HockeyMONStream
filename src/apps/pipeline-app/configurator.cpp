@@ -2172,12 +2172,18 @@ absl::Status Configurator::complete_configuration(
   if (clean_requested && !has_hmstitcher) {
     return absl::FailedPreconditionError("No hmstitcher section is configured; nothing to clean");
   }
+  const std::string loaded_invalidation_id =
+      get_node_value(config_, "hstream_ui.stitching_calibration.invalidation_id", std::string());
+  const std::string loaded_status = get_node_value(config_, "hstream_ui.stitching_calibration.status", std::string());
+  const std::string loaded_stale_from =
+      get_node_value(config_, "hstream_ui.stitching_calibration.stale_from", std::string());
+  const bool resume_pending_invalidation = has_hmstitcher && clean_expected_invalidation_id.empty() &&
+      loaded_status == "pending" && !loaded_invalidation_id.empty();
+  const std::string effective_invalidation_id =
+      resume_pending_invalidation ? loaded_invalidation_id : clean_expected_invalidation_id;
   bool stitching_artifacts_precleaned = false;
-  if (has_hmstitcher && !clean_expected_invalidation_id.empty()) {
-    const std::string loaded_invalidation_id =
-        get_node_value(config_, "hstream_ui.stitching_calibration.invalidation_id", std::string());
-    const std::string loaded_status = get_node_value(config_, "hstream_ui.stitching_calibration.status", std::string());
-    bool loaded_invalidation_matches = loaded_invalidation_id == clean_expected_invalidation_id;
+  if (has_hmstitcher && !effective_invalidation_id.empty()) {
+    bool loaded_invalidation_matches = loaded_invalidation_id == effective_invalidation_id;
     bool loaded_artifacts_invalidated = false;
     if (loaded_status == "pending") {
       HM_ASSIGN_OR_RETURN(
@@ -2199,8 +2205,7 @@ absl::Status Configurator::complete_configuration(
       return config_transaction.status();
     const fs::path private_config_file = game_dir / "config.yaml";
     HM_RETURN_IF_ERROR(
-        stitching::validate_stitching_generation_owner_file_locked(
-            private_config_file, clean_expected_invalidation_id));
+        stitching::validate_stitching_generation_owner_file_locked(private_config_file, effective_invalidation_id));
     try {
       const YAML::Node current = YAML::LoadFile(private_config_file.string());
       const std::string current_status =
@@ -2222,21 +2227,25 @@ absl::Status Configurator::complete_configuration(
       return absl::InvalidArgumentError(
           "Unable to revalidate stitching configuration before launch: " + std::string(error.what()));
     }
-    active_stitching_invalidation_id_ = clean_expected_invalidation_id;
+    active_stitching_invalidation_id_ = effective_invalidation_id;
   }
-  const bool should_clean_stitching = clean_requested || (force && !stitching_artifacts_precleaned);
+  const bool auto_clean_pending_invalidation = resume_pending_invalidation && !stitching_artifacts_precleaned;
+  const bool effective_clean_from_control_points =
+      clean_from_control_points_only || (auto_clean_pending_invalidation && loaded_stale_from == "features");
+  const bool should_clean_stitching =
+      clean_requested || auto_clean_pending_invalidation || (force && !stitching_artifacts_precleaned);
   if (has_hmstitcher && should_clean_stitching) {
     YAML::Node preserved_pipeline = config_["pipeline"];
-    absl::Status clean_status = clean_from_control_points_only
-        ? stitching::clean_stitching_artifacts_from_control_points(game_dir.string(), clean_expected_invalidation_id)
-        : stitching::clean_stitching_artifacts(game_dir.string(), clean_expected_invalidation_id);
+    absl::Status clean_status = effective_clean_from_control_points
+        ? stitching::clean_stitching_artifacts_from_control_points(game_dir.string(), effective_invalidation_id)
+        : stitching::clean_stitching_artifacts(game_dir.string(), effective_invalidation_id);
     if (!clean_status.ok()) {
-      if (clean_requested || (force && !clean_expected_invalidation_id.empty())) {
+      if (clean_requested || auto_clean_pending_invalidation || (force && !effective_invalidation_id.empty())) {
         return clean_status;
       }
       std::cerr << "Warning: failed to clean stitching artifacts: " << clean_status << std::endl;
     } else {
-      if (clean_from_control_points_only) {
+      if (effective_clean_from_control_points) {
         remove_control_point_dependent_stitching_cache_keys(config_);
         remove_control_point_dependent_stitching_cache_keys(private_config_);
       } else {

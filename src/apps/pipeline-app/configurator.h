@@ -96,6 +96,9 @@ class Configurator {
   bool stitching_calibration_required() const {
     return stitching_calibration_required_;
   }
+  const std::string& active_stitching_invalidation_id() const {
+    return active_stitching_invalidation_id_;
+  }
 
   absl::Status complete_configuration(
       bool force,

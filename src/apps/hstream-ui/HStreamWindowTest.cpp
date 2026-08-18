@@ -3797,6 +3797,45 @@ bool test_camera_controls(HStreamWindow* window) {
   }
 
   {
+    YAML::Node fractional(YAML::NodeType::Map);
+    fractional["rink"]["camera"]["fixed_edge_rotation_angle"] = 22.0;
+    fractional["stitching"]["stitch_frame_time"] = "00:10:07.500";
+    std::ofstream out(config);
+    out << fractional << "\n";
+  }
+  activate(create);
+  if (!expect(
+          stitch_frame_time->time() == QTime(0, 10, 7, 500),
+          "Camera controls should load a fractional stitching.stitch_frame_time value") ||
+      !expect(
+          stitch_frame_time->displayFormat() == "HH:mm:ss.zzz",
+          "A fractional stitch-frame time should display milliseconds") ||
+      !expect(!save->isEnabled(), "A fractional stitch-frame time should participate in the clean preset snapshot")) {
+    return false;
+  }
+
+  {
+    YAML::Node nonscalar(YAML::NodeType::Map);
+    nonscalar["stitching"]["stitch_frame_time"].push_back("00:00:07");
+    std::ofstream out(config);
+    out << nonscalar << "\n";
+  }
+  activate(create);
+  if (!expect(
+          stitch_frame_time->time() == QTime(0, 0, 0),
+          "A non-scalar stitch-frame time should fail closed to the default") ||
+      !expect(save->isEnabled(), "A non-scalar stitch-frame time should leave the current controls unsaved")) {
+    return false;
+  }
+  {
+    YAML::Node existing(YAML::NodeType::Map);
+    existing["rink"]["camera"]["fixed_edge_rotation_angle"] = 22.0;
+    std::ofstream out(config);
+    out << existing << "\n";
+  }
+  activate(create);
+
+  {
     YAML::Node out_of_range_link(YAML::NodeType::Map);
     out_of_range_link["hstream_ui"]["camera_controls"]["Link_Fixed_Edge_Rotation_Left_Right"] = -1;
     out_of_range_link["hstream_ui"]["camera_controls"]["Left_Fixed_Edge_Rotation_Angle_x10"] = 250;
@@ -4088,6 +4127,7 @@ bool test_camera_controls(HStreamWindow* window) {
   YAML::Node saved_calibration_status;
   YAML::Node saved_calibration_stale_from;
   YAML::Node saved_calibration_artifacts_invalidated;
+  YAML::Node saved_calibration_invalidation_id;
   const bool stitch_frame_time_invalidated_calibration =
       lookup_yaml_path(saved, {"hstream_ui", "stitching_calibration", "status"}, &saved_calibration_status) &&
       saved_calibration_status.IsScalar() && saved_calibration_status.as<std::string>() == "pending" &&
@@ -4098,7 +4138,9 @@ bool test_camera_controls(HStreamWindow* window) {
           {"hstream_ui", "stitching_calibration", "artifacts_invalidated"},
           &saved_calibration_artifacts_invalidated) &&
       saved_calibration_artifacts_invalidated.IsScalar() && !saved_calibration_artifacts_invalidated.as<bool>() &&
-      !lookup_yaml_path(saved, {"hstream_ui", "stitching_calibration", "invalidation_id"}, nullptr);
+      lookup_yaml_path(
+          saved, {"hstream_ui", "stitching_calibration", "invalidation_id"}, &saved_calibration_invalidation_id) &&
+      saved_calibration_invalidation_id.IsScalar() && !saved_calibration_invalidation_id.as<std::string>().empty();
   YAML::Node saved_fixed_edge_rotation;
   const bool has_saved_fixed_edge_rotation =
       lookup_yaml_path(saved, {"rink", "camera", "fixed_edge_rotation_angle"}, &saved_fixed_edge_rotation);
@@ -4143,7 +4185,7 @@ bool test_camera_controls(HStreamWindow* window) {
           saved_stitch_frame_time_ok, "Save preset should persist a non-default stitching.stitch_frame_time value") ||
       !expect(
           stitch_frame_time_invalidated_calibration,
-          "Changing stitch-frame time should mark calibration stale from the input without retaining an owner") ||
+          "Changing stitch-frame time should reserve a backend-visible input invalidation owner") ||
       !expect(has_saved_rotation && saved_rotation_ok, "Stitch slider should save the runtime rotation config") ||
       !expect(
           saved_fixed_edge_rotation_ok,

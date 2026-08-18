@@ -93,6 +93,7 @@ constexpr int kFixedEdgeRotationMaximumX10 = 900;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
 constexpr char kDefaultStitchFrameTime[] = "00:00:00";
 constexpr char kStitchFrameTimeFormat[] = "HH:mm:ss";
+constexpr char kStitchFrameTimeFractionalFormat[] = "HH:mm:ss.zzz";
 constexpr int kRuntimeControlAckTimeoutMs = 3000;
 constexpr qsizetype kMaxCapturedLogCharacters = 16 * 1024 * 1024;
 constexpr char kStitchedPreviewPipelineOptions[] =
@@ -114,6 +115,18 @@ constexpr CalibrationStageSpec kCalibrationStages[] = {
     {"canvas", "Build stitch maps and panorama"},
     {"rink-mask", "Find the ice surface"},
 };
+
+std::optional<QTime> parse_stitch_frame_time(const QString& value) {
+  QTime parsed = QTime::fromString(value, kStitchFrameTimeFormat);
+  if (!parsed.isValid()) {
+    parsed = QTime::fromString(value, kStitchFrameTimeFractionalFormat);
+  }
+  return parsed.isValid() ? std::optional<QTime>(parsed) : std::nullopt;
+}
+
+QString format_stitch_frame_time(const QTime& value) {
+  return value.msec() == 0 ? value.toString(kStitchFrameTimeFormat) : value.toString(kStitchFrameTimeFractionalFormat);
+}
 
 std::optional<size_t> calibration_stage_index(const QString& stage) {
   for (size_t index = 0; index < std::size(kCalibrationStages); ++index) {
@@ -1262,6 +1275,35 @@ bool lookup_yaml_path(YAML::Node root, const QString& dotted_path, YAML::Node* v
   return lookup_yaml_path_at(root, parts, 0, value);
 }
 
+bool read_stitch_frame_time(YAML::Node config, QString* normalized, bool* present = nullptr) {
+  if (normalized) {
+    *normalized = QString::fromLatin1(kDefaultStitchFrameTime);
+  }
+  YAML::Node node;
+  const bool found = lookup_yaml_path(config, "stitching.stitch_frame_time", &node);
+  if (present) {
+    *present = found;
+  }
+  if (!found) {
+    return true;
+  }
+  if (!node.IsScalar()) {
+    return false;
+  }
+  try {
+    const auto parsed = parse_stitch_frame_time(QString::fromStdString(node.as<std::string>()));
+    if (!parsed.has_value()) {
+      return false;
+    }
+    if (normalized) {
+      *normalized = format_stitch_frame_time(*parsed);
+    }
+    return true;
+  } catch (const YAML::Exception&) {
+    return false;
+  }
+}
+
 QStringList pipeline_config_files_from_args(const QStringList& pipeline_args) {
   QStringList config_files;
   for (int i = 0; i < pipeline_args.size(); ++i) {
@@ -1678,7 +1720,11 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   stitch_frame_time_edit_->setWrapping(false);
   stitch_frame_time_edit_->setToolTip(
       "Frame timestamp used to calibrate stitching. Playback returns to the beginning after one-pass calibration.");
-  connect(stitch_frame_time_edit_, &QTimeEdit::timeChanged, this, [this]() { updatePresetDirtyState(); });
+  connect(stitch_frame_time_edit_, &QTimeEdit::timeChanged, this, [this](const QTime& value) {
+    stitch_frame_time_edit_->setDisplayFormat(
+        value.msec() == 0 ? kStitchFrameTimeFormat : kStitchFrameTimeFractionalFormat);
+    updatePresetDirtyState();
+  });
 
   render_video_toggle_ = new QCheckBox("Render video");
   render_video_toggle_->setObjectName("renderVideoCheck");
@@ -2485,7 +2531,7 @@ int HStreamWindow::stitchingCalibrationControlPoints() const {
 }
 
 QString HStreamWindow::stitchFrameTime() const {
-  return stitch_frame_time_edit_ ? stitch_frame_time_edit_->time().toString(kStitchFrameTimeFormat)
+  return stitch_frame_time_edit_ ? format_stitch_frame_time(stitch_frame_time_edit_->time())
                                  : QString::fromLatin1(kDefaultStitchFrameTime);
 }
 
@@ -2568,17 +2614,7 @@ bool HStreamWindow::saveStitchingCalibrationState(
   YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
   if (require_matching_pending) {
     QString current_stitch_frame_time = QString::fromLatin1(kDefaultStitchFrameTime);
-    YAML::Node current_stitch_frame_time_node;
-    bool current_stitch_frame_time_valid = true;
-    if (lookup_yaml_path(config, "stitching.stitch_frame_time", &current_stitch_frame_time_node) &&
-        current_stitch_frame_time_node.IsScalar()) {
-      const QTime parsed = QTime::fromString(
-          QString::fromStdString(current_stitch_frame_time_node.as<std::string>()), kStitchFrameTimeFormat);
-      current_stitch_frame_time_valid = parsed.isValid();
-      if (parsed.isValid()) {
-        current_stitch_frame_time = parsed.toString(kStitchFrameTimeFormat);
-      }
-    }
+    const bool current_stitch_frame_time_valid = read_stitch_frame_time(config, &current_stitch_frame_time);
     const int current_control_points = calibration["control_points"] && calibration["control_points"].IsScalar()
         ? calibration["control_points"].as<int>()
         : -1;
@@ -2593,6 +2629,15 @@ bool HStreamWindow::saveStitchingCalibrationState(
         : QString();
     const bool current_invalidated = calibration["artifacts_invalidated"] &&
         calibration["artifacts_invalidated"].IsScalar() && calibration["artifacts_invalidated"].as<bool>();
+    const bool already_completed = status == "complete" && current_status == "complete" && current_stale.isEmpty() &&
+        current_invalidation_id == expected_invalidation_id && !current_invalidated &&
+        current_stitch_frame_time_valid && current_stitch_frame_time == active_stitch_frame_time_ &&
+        current_control_points == control_points;
+    if (already_completed) {
+      if (applied)
+        *applied = true;
+      return true;
+    }
     const bool expected_invalidated = status != "pending";
     if (!current_stitch_frame_time_valid || current_stitch_frame_time != active_stitch_frame_time_ ||
         current_control_points != control_points || current_status != "pending" || current_stale != stale_from ||
@@ -2666,15 +2711,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         saved_control_points = saved.as<int>();
         saved_found = true;
       }
-      YAML::Node stitch_frame_time;
-      if (lookup_yaml_path(config, "stitching.stitch_frame_time", &stitch_frame_time) && stitch_frame_time.IsScalar()) {
-        const QString configured = QString::fromStdString(stitch_frame_time.as<std::string>());
-        const QTime parsed = QTime::fromString(configured, kStitchFrameTimeFormat);
-        saved_stitch_frame_time_valid = parsed.isValid();
-        if (parsed.isValid()) {
-          saved_stitch_frame_time = parsed.toString(kStitchFrameTimeFormat);
-        }
-      }
+      saved_stitch_frame_time_valid = read_stitch_frame_time(config, &saved_stitch_frame_time);
       YAML::Node status;
       if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.status", &status) && status.IsScalar()) {
         saved_status = QString::fromStdString(status.as<std::string>());
@@ -5919,6 +5956,7 @@ void HStreamWindow::loadSavedControlConfig() {
   if (stitch_frame_time_edit_) {
     const bool blocked = stitch_frame_time_edit_->blockSignals(true);
     stitch_frame_time_edit_->setTime(QTime(0, 0, 0));
+    stitch_frame_time_edit_->setDisplayFormat(kStitchFrameTimeFormat);
     stitch_frame_time_edit_->blockSignals(blocked);
   }
   for (const auto& [id, value] : camera_defaults_) {
@@ -5971,16 +6009,18 @@ void HStreamWindow::loadSavedControlConfig() {
         control_points.IsScalar()) {
       staged_control_points = control_points.as<int>();
     }
-    YAML::Node stitch_frame_time;
-    if (stitch_frame_time_edit_ && lookup_yaml_path(config, "stitching.stitch_frame_time", &stitch_frame_time) &&
-        stitch_frame_time.IsScalar()) {
-      const QString configured = QString::fromStdString(stitch_frame_time.as<std::string>());
-      const QTime parsed = QTime::fromString(configured, kStitchFrameTimeFormat);
-      if (parsed.isValid()) {
-        staged_stitch_frame_time = parsed;
-      } else {
-        appendLog(QString("ignored invalid stitching.stitch_frame_time %1; expected HH:MM:SS").arg(configured));
+    QString configured_stitch_frame_time;
+    bool stitch_frame_time_present = false;
+    if (stitch_frame_time_edit_ &&
+        !read_stitch_frame_time(config, &configured_stitch_frame_time, &stitch_frame_time_present)) {
+      throw std::invalid_argument("stitching.stitch_frame_time must be HH:MM:SS or HH:MM:SS.mmm");
+    }
+    if (stitch_frame_time_edit_ && stitch_frame_time_present) {
+      const auto parsed = parse_stitch_frame_time(configured_stitch_frame_time);
+      if (!parsed.has_value()) {
+        throw std::invalid_argument("stitching.stitch_frame_time could not be normalized");
       }
+      staged_stitch_frame_time = *parsed;
     }
     YAML::Node fixed_edge_rotation;
     if (lookup_yaml_path(config, "rink.camera.fixed_edge_rotation_angle", &fixed_edge_rotation)) {
@@ -6019,6 +6059,8 @@ void HStreamWindow::loadSavedControlConfig() {
     if (stitch_frame_time_edit_) {
       const bool blocked = stitch_frame_time_edit_->blockSignals(true);
       stitch_frame_time_edit_->setTime(staged_stitch_frame_time);
+      stitch_frame_time_edit_->setDisplayFormat(
+          staged_stitch_frame_time.msec() == 0 ? kStitchFrameTimeFormat : kStitchFrameTimeFractionalFormat);
       stitch_frame_time_edit_->blockSignals(blocked);
     }
     for (const auto& [id, value] : staged_controls) {
@@ -6130,17 +6172,7 @@ bool HStreamWindow::applySavedControlConfig(
   config["hstream_ui"]["camera_controls"] = controls;
 
   QString previous_stitch_frame_time = QString::fromLatin1(kDefaultStitchFrameTime);
-  bool previous_stitch_frame_time_valid = true;
-  YAML::Node previous_stitch_frame_time_node;
-  if (lookup_yaml_path(config, "stitching.stitch_frame_time", &previous_stitch_frame_time_node) &&
-      previous_stitch_frame_time_node.IsScalar()) {
-    const QTime parsed = QTime::fromString(
-        QString::fromStdString(previous_stitch_frame_time_node.as<std::string>()), kStitchFrameTimeFormat);
-    previous_stitch_frame_time_valid = parsed.isValid();
-    if (parsed.isValid()) {
-      previous_stitch_frame_time = parsed.toString(kStitchFrameTimeFormat);
-    }
-  }
+  const bool previous_stitch_frame_time_valid = read_stitch_frame_time(config, &previous_stitch_frame_time);
   const QString stitch_frame_time = stitchFrameTime();
   const bool stitch_frame_time_changed =
       !previous_stitch_frame_time_valid || previous_stitch_frame_time != stitch_frame_time;
@@ -6153,7 +6185,7 @@ bool HStreamWindow::applySavedControlConfig(
     calibration["status"] = "pending";
     calibration["stale_from"] = "input";
     calibration["artifacts_invalidated"] = false;
-    calibration.remove("invalidation_id");
+    calibration["invalidation_id"] = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
     appendLog(QString("stitch frame time changed %1 -> %2; stitching calibration marked stale")
                   .arg(previous_stitch_frame_time_valid ? previous_stitch_frame_time : QString("invalid"))
                   .arg(stitch_frame_time));

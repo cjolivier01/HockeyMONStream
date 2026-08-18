@@ -121,6 +121,10 @@ cc_test(
         ":hstream-cli",
         "//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so",
     ],
+    deps = [
+        "//src/libs/stitching:game_config",
+        "@yaml-cpp",
+    ],
     size = "large",
     tags = [
         "local",

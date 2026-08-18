@@ -105,6 +105,11 @@ int main() {
         "current calibration token must permit transactional rink publication");
     YAML::Node completed_config = YAML::LoadFile((root / "config.yaml").string());
     YAML::Node completed_calibration = completed_config["hstream_ui"]["stitching_calibration"];
+    ok &= expect(
+        completed_calibration["status"].as<std::string>("") == "complete" && !completed_calibration["stale_from"] &&
+            !completed_calibration["artifacts_invalidated"] &&
+            completed_calibration["invalidation_id"].as<std::string>("") == "rink-run-a",
+        "final rink publication must complete the active calibration generation atomically");
     completed_calibration["status"] = "complete";
     completed_calibration.remove("artifacts_invalidated");
     completed_config["stitching"]["post_stitch_rotate_degrees"] = 2.5;

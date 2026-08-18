@@ -63,13 +63,26 @@ int main() {
           hm::pipeline_internal::stitch_frame_should_account_playback(/*calibration_rewind_pending=*/false),
       "Calibration-frame playback must not consume time-limit or progress accounting");
   ok &= expect(
-      hm::hhmmss_to_nanoseconds("00:00:07") == 7'000'000'000ULL &&
-          hm::hhmmss_to_nanoseconds("00:10:07.500") == 607'500'000'000ULL,
+      hm::hhmmss_to_nanoseconds("00:60:00") == 3'600'000'000'000ULL,
+      "The existing start-time parser must retain rollover compatibility");
+  ok &= expect(
+      hm::stitch_frame_time_to_nanoseconds("00:00:07") == 7'000'000'000ULL &&
+          hm::stitch_frame_time_to_nanoseconds("00:10:07.500") == 607'500'000'000ULL,
       "Stitch-frame parsing must retain valid whole-second and fractional timestamps");
-  for (const char* invalid : {"", "bogus", "00:00:07junk", "-1", "00:60:00", "00:00:60", "nan", "inf"}) {
+  for (const char* invalid : {
+           "",
+           "bogus",
+           "00:00:07junk",
+           "-1",
+           "00:60:00",
+           "00:00:60",
+           "24:00:00",
+           "nan",
+           "inf",
+       }) {
     bool rejected = false;
     try {
-      (void)hm::hhmmss_to_nanoseconds(invalid);
+      (void)hm::stitch_frame_time_to_nanoseconds(invalid);
     } catch (const std::exception&) {
       rejected = true;
     }

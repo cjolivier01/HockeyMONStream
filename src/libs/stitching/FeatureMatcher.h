@@ -57,7 +57,8 @@ class FeatureMatcher {
       const cv::Mat& left_bgr,
       const cv::Mat& right_bgr,
       size_t max_control_points,
-      const std::function<void()>& inference_complete = {}) const;
+      const std::function<void()>& inference_complete = {},
+      const std::function<bool()>& is_cancelled = {}) const;
 
  private:
   explicit FeatureMatcher(std::unique_ptr<hm::onnx::Session> session);

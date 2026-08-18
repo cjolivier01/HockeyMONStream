@@ -16,6 +16,10 @@
 #include <thread>
 #include <vector>
 
+#include <yaml-cpp/yaml.h>
+
+#include "hstream/src/libs/stitching/GameConfig.h"
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -99,7 +103,8 @@ class PipelineProcess {
       bool start_from_features,
       const std::string& stitch_frame_time = {},
       int time_limit_seconds = 0,
-      const std::string& stitch_rotate_degrees = {}) {
+      const std::string& stitch_rotate_degrees = {},
+      bool supply_runtime_invalidation = true) {
     int input_pipe[2];
     int output_pipe[2];
     if (::pipe(input_pipe) != 0 || ::pipe(output_pipe) != 0) {
@@ -119,13 +124,18 @@ class PipelineProcess {
       if (!home.empty()) {
         ::setenv("HOME", home.c_str(), 1);
       }
-      ::setenv("HSTREAM_CALIBRATION_PENDING", "1", 1);
-      ::setenv("HSTREAM_CALIBRATION_INVALIDATION_ID", invalidation_id.c_str(), 1);
+      if (supply_runtime_invalidation) {
+        ::setenv("HSTREAM_CALIBRATION_PENDING", "1", 1);
+        ::setenv("HSTREAM_CALIBRATION_INVALIDATION_ID", invalidation_id.c_str(), 1);
+      } else {
+        ::unsetenv("HSTREAM_CALIBRATION_PENDING");
+        ::unsetenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
+      }
       ::setenv("HM_MAX_CONTROL_POINTS", std::to_string(control_points).c_str(), 1);
       ::setenv("USE_NEW_NVSTREAMMUX", "yes", 1);
       ::setenv("GST_DEBUG", "NVDS_APP:4", 1);
       ::setenv("GST_PLUGIN_PATH", plugin_directory.c_str(), 1);
-      if (start_from_features) {
+      if (start_from_features && supply_runtime_invalidation) {
         ::setenv("HSTREAM_CALIBRATION_START_STAGE", "features", 1);
       } else {
         ::unsetenv("HSTREAM_CALIBRATION_START_STAGE");
@@ -138,8 +148,10 @@ class PipelineProcess {
           pipeline_config.string(),
           "--enable-sources=URI-MULTIPLE",
           "--enable-sinks=FAKE",
-          "--clean-expected-invalidation-id=" + invalidation_id,
       };
+      if (supply_runtime_invalidation) {
+        arguments.push_back("--clean-expected-invalidation-id=" + invalidation_id);
+      }
       if (!stitch_frame_time.empty()) {
         arguments.push_back("--stitch-frame-time=" + stitch_frame_time);
       }
@@ -369,6 +381,26 @@ bool write_game_config(
   return output.good();
 }
 
+bool write_saved_stitch_time_invalidation(
+    const fs::path& path,
+    const std::string& stitch_frame_time,
+    const std::string& invalidation_id) {
+  try {
+    YAML::Node config = YAML::LoadFile(path.string());
+    config["game"]["stitching"]["frame_offsets"]["left"] = 0;
+    config["game"]["stitching"]["frame_offsets"]["right"] = 0;
+    config["stitching"]["stitch_frame_time"] = stitch_frame_time;
+    YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+    calibration["status"] = "pending";
+    calibration["stale_from"] = "input";
+    calibration["artifacts_invalidated"] = false;
+    calibration["invalidation_id"] = invalidation_id;
+    return hm::stitching::publish_game_config(path.parent_path(), YAML::Dump(config) + "\n").ok();
+  } catch (const YAML::Exception&) {
+    return false;
+  }
+}
+
 bool clean_from_control_points(
     const fs::path& executable,
     const fs::path& pipeline_config,
@@ -435,13 +467,19 @@ int main(int argc, char** argv) {
            "lavfi",
            "-i",
            "testsrc2=size=960x540:rate=15,drawgrid=width=37:height=29:thickness=2:color=white@0.6,format=yuv420p",
+           "-f",
+           "lavfi",
+           "-i",
+           "sine=frequency=1000:sample_rate=48000",
            "-filter_complex",
-           "[0:v]split=2[l][r];[l]crop=640:480:0:30[left];[r]crop=640:480:320:30[right]",
+           "[0:v]split=2[l][r];[l]crop=640:480:0:30[left];[r]crop=640:480:320:30[right];"
+           "[1:a]asplit=2[left_audio][right_audio]",
            "-map",
            "[left]",
+           "-map",
+           "[left_audio]",
            "-t",
            "60",
-           "-an",
            "-c:v",
            "libx264",
            "-preset",
@@ -450,12 +488,15 @@ int main(int argc, char** argv) {
            "15",
            "-pix_fmt",
            "yuv420p",
+           "-c:a",
+           "aac",
            (game / "cam1" / "GX010001.MP4").string(),
            "-map",
            "[right]",
+           "-map",
+           "[right_audio]",
            "-t",
            "60",
-           "-an",
            "-c:v",
            "libx264",
            "-preset",
@@ -464,6 +505,8 @@ int main(int argc, char** argv) {
            "15",
            "-pix_fmt",
            "yuv420p",
+           "-c:a",
+           "aac",
            (game / "cam2" / "GX010002.MP4").string()},
           {}),
       "overlapping camera videos must be generated");
@@ -512,6 +555,45 @@ int main(int argc, char** argv) {
   }
 
   PipelineProcess rotated;
+  PipelineProcess saved_config;
+  if (ok) {
+    ok = [&] {
+      if (!expect(
+              write_saved_stitch_time_invalidation(game / "config.yaml", "00:00:00.500", "saved-config-time"),
+              "saved stitch-time invalidation must be written over existing artifacts") ||
+          !expect(
+              saved_config.Start(
+                  argv[1],
+                  pipeline_config,
+                  game_root,
+                  plugin_directory,
+                  "saved-config-time",
+                  128,
+                  false,
+                  /*stitch_frame_time=*/{},
+                  /*time_limit_seconds=*/0,
+                  /*stitch_rotate_degrees=*/{},
+                  /*supply_runtime_invalidation=*/false),
+              "standalone launch must start from the saved invalidation") ||
+          !expect(
+              saved_config.WaitFor("HSTREAM_CALIBRATION stage=features status=started", 0, kCalibrationTimeout),
+              "standalone launch must rebuild existing artifacts after a saved stitch-time change")) {
+        return false;
+      }
+      const size_t restart_mark = saved_config.Mark();
+      if (!expect(
+              saved_config.WaitFor(
+                  "playback restarted after stitch-frame calibration", restart_mark, kCalibrationTimeout),
+              "standalone launch must honor the nonzero fractional stitch time from config.yaml") ||
+          !expect(
+              saved_config.WaitFor("Pipeline running", restart_mark),
+              "standalone saved-time playback must reach PLAYING after calibration")) {
+        return false;
+      }
+      return stop_successfully(&saved_config, "standalone saved-time playback must accept Stop/SIGINT");
+    }();
+  }
+
   if (ok) {
     ok = [&] {
       if (!expect(
@@ -520,7 +602,7 @@ int main(int argc, char** argv) {
                   pipeline_config,
                   game_root,
                   plugin_directory,
-                  "initial",
+                  "saved-config-time",
                   128,
                   false,
                   /*stitch_frame_time=*/"00:00:02",
@@ -653,6 +735,7 @@ int main(int argc, char** argv) {
 
   if (!ok) {
     initial.DumpOutput("initial calibration");
+    saved_config.DumpOutput("standalone saved-time calibration");
     rotated.DumpOutput("rotation-invalidated calibration");
     resumed.DumpOutput("CP-change resume");
     interrupted.DumpOutput("interrupted calibration");

@@ -18,8 +18,7 @@ bool exits_with_argument_error(const char* executable, const char* value) {
     _exit(127);
   }
   int status = 0;
-  return child > 0 && ::waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) != 0 &&
-      WEXITSTATUS(status) != 127;
+  return child > 0 && ::waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 3;
 }
 
 } // namespace
@@ -37,7 +36,7 @@ int main(int argc, char** argv) {
            "--stitch-frame-time=inf",
        }) {
     if (!exits_with_argument_error(argv[1], value)) {
-      std::cerr << "FAIL: malformed stitch-frame time did not produce a normal nonzero exit: " << value << '\n';
+      std::cerr << "FAIL: malformed stitch-frame time did not produce an invalid-argument exit: " << value << '\n';
       return 1;
     }
   }

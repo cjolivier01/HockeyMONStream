@@ -1,5 +1,6 @@
 #include "utils.h"
 
+#include <cctype>
 #include <cmath>
 #include <limits>
 
@@ -80,32 +81,17 @@ uint64_t hhmmss_to_nanoseconds(const std::string& hhmmss_string) {
     }
     return value;
   };
-  auto require_whole = [&hhmmss_string](double value, const char* component) {
-    if (std::floor(value) != value) {
-      throw std::invalid_argument("Fractional " + std::string(component) + " in time string: " + hhmmss_string);
-    }
-  };
-
   long double seconds = 0.0;
   if (tokens.size() == 3) {
     // Format: HH:MM:SS.ssss
     const double hours = parse_component(tokens[0], "hours");
     const double minutes = parse_component(tokens[1], "minutes");
     const double secs = parse_component(tokens[2], "seconds");
-    require_whole(hours, "hours");
-    require_whole(minutes, "minutes");
-    if (minutes >= 60.0 || secs >= 60.0) {
-      throw std::invalid_argument("Minutes and seconds must be below 60 in time string: " + hhmmss_string);
-    }
     seconds = hours * 3600.0 + minutes * 60.0 + secs;
   } else if (tokens.size() == 2) {
     // Format: MM:SS.ssss
     const double minutes = parse_component(tokens[0], "minutes");
     const double secs = parse_component(tokens[1], "seconds");
-    require_whole(minutes, "minutes");
-    if (secs >= 60.0) {
-      throw std::invalid_argument("Seconds must be below 60 in time string: " + hhmmss_string);
-    }
     seconds = minutes * 60.0 + secs;
   } else if (tokens.size() == 1) {
     // Format: SS.ssss (or just seconds)
@@ -121,6 +107,40 @@ uint64_t hhmmss_to_nanoseconds(const std::string& hhmmss_string) {
     throw std::out_of_range("Time string is too large: " + hhmmss_string);
   }
   return static_cast<uint64_t>(nanoseconds);
+}
+
+uint64_t stitch_frame_time_to_nanoseconds(const std::string& stitch_frame_time) {
+  const bool has_milliseconds = stitch_frame_time.size() == 12 && stitch_frame_time[8] == '.';
+  if ((stitch_frame_time.size() != 8 && !has_milliseconds) || stitch_frame_time[2] != ':' ||
+      stitch_frame_time[5] != ':') {
+    throw std::invalid_argument("Expected HH:MM:SS or HH:MM:SS.mmm: " + stitch_frame_time);
+  }
+  for (size_t index = 0; index < stitch_frame_time.size(); ++index) {
+    if (index == 2 || index == 5 || (has_milliseconds && index == 8)) {
+      continue;
+    }
+    if (!std::isdigit(static_cast<unsigned char>(stitch_frame_time[index]))) {
+      throw std::invalid_argument("Expected numeric HH:MM:SS or HH:MM:SS.mmm: " + stitch_frame_time);
+    }
+  }
+  const auto two_digits = [&stitch_frame_time](size_t offset) {
+    return static_cast<unsigned>(stitch_frame_time[offset] - '0') * 10U +
+        static_cast<unsigned>(stitch_frame_time[offset + 1] - '0');
+  };
+  const unsigned hours = two_digits(0);
+  const unsigned minutes = two_digits(3);
+  const unsigned seconds = two_digits(6);
+  if (hours >= 24 || minutes >= 60 || seconds >= 60) {
+    throw std::invalid_argument("Stitch frame time is outside the 24-hour HH:MM:SS range: " + stitch_frame_time);
+  }
+  unsigned milliseconds = 0;
+  if (has_milliseconds) {
+    milliseconds = static_cast<unsigned>(stitch_frame_time[9] - '0') * 100U +
+        static_cast<unsigned>(stitch_frame_time[10] - '0') * 10U + static_cast<unsigned>(stitch_frame_time[11] - '0');
+  }
+  return (static_cast<uint64_t>(hours) * 3600ULL + static_cast<uint64_t>(minutes) * 60ULL + seconds) *
+      1'000'000'000ULL +
+      static_cast<uint64_t>(milliseconds) * 1'000'000ULL;
 }
 
 namespace utils {

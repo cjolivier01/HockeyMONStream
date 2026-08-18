@@ -17,6 +17,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <functional>
 #include <map>
 #include <memory>
@@ -163,7 +164,7 @@ class PipelineApplication {
   std::set<AppCtx*> one_pass_calibration_contexts_;
 
   long current_stage_{0};
-  guint cintr_;
+  volatile sig_atomic_t cintr_;
   GMainLoop* main_loop_{nullptr};
   // Command-line options / configuration
   gchar** cfg_files_{nullptr};

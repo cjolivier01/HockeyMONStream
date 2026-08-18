@@ -62,6 +62,7 @@ YAML::Node deep_copy(const YAML::Node& node);
 std::tuple<size_t, size_t> resize_to_fit(size_t origWidth, size_t origHeight, size_t maxWidth, size_t maxHeight);
 
 uint64_t hhmmss_to_nanoseconds(const std::string& hhmmss_string);
+uint64_t stitch_frame_time_to_nanoseconds(const std::string& stitch_frame_time);
 
 inline std::string as_string_stream(const std::ostream& ss) {
   return static_cast<const std::stringstream&>(ss).str();
