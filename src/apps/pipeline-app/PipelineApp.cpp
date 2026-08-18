@@ -3,6 +3,7 @@
 /* clang-format on */
 
 #include "PipelineApp.h"
+#include "StitchFrameTimePlan.h"
 
 #include <gstreamer-1.0/gst/gstelement.h>
 #include "hstream/src/apps/apps-common/deepstream_config.h"
@@ -3741,11 +3742,11 @@ gboolean PipelineApplication::event_thread_func_static(gpointer arg) {
 }
 
 uint64_t PipelineApplication::initial_pipeline_position_ns(const HmApp* app_ctx) const {
-  if (app_ctx && stitch_frame_time_ns_ > 0 && app_ctx->configurator().stitching_calibration_required() &&
-      stitch_frame_rewound_contexts_.count(app_ctx) == 0) {
-    return stitch_frame_time_ns_;
-  }
-  return start_time_ns_;
+  return hm::pipeline_internal::stitch_frame_initial_position(
+      start_time_ns_,
+      stitch_frame_time_ns_,
+      app_ctx && app_ctx->configurator().stitching_calibration_required(),
+      app_ctx && stitch_frame_rewound_contexts_.count(app_ctx) != 0);
 }
 
 gboolean PipelineApplication::handle_element_message_static(AppCtx* app_ctx, GstMessage* message) {
@@ -3757,13 +3758,27 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
   if (!structure || !gst_structure_has_name(structure, "hstream-stitching-calibration-complete")) {
     return FALSE;
   }
-  auto* hm_app = static_cast<HmApp*>(app_ctx);
-  if (!hm_app || stitch_frame_time_ns_ == 0 || !hm_app->configurator().stitching_calibration_required() ||
-      stitch_frame_rewound_contexts_.count(app_ctx) != 0 || stitch_frame_rewind_pending_contexts_.count(app_ctx) != 0) {
+  const auto active_stage = stage_app_contexts_.find(current_stage_);
+  if (!app_ctx || active_stage == stage_app_contexts_.end() ||
+      std::none_of(active_stage->second.begin(), active_stage->second.end(), [app_ctx](const auto& context) {
+        return context.get() == app_ctx;
+      })) {
     return TRUE;
   }
-  stitch_frame_rewind_pending_contexts_.insert(app_ctx);
-  g_idle_add(rewind_after_stitching_calibration_static, app_ctx);
+  std::vector<hm::pipeline_internal::StitchFrameRewindState> states;
+  states.reserve(active_stage->second.size());
+  for (const auto& context : active_stage->second) {
+    states.push_back({
+        context && context->configurator().stitching_calibration_required(),
+        context && stitch_frame_rewound_contexts_.count(context.get()) != 0,
+        context && stitch_frame_rewind_pending_contexts_.count(context.get()) != 0,
+    });
+  }
+  for (const size_t index : hm::pipeline_internal::stitch_frame_rewind_candidates(stitch_frame_time_ns_, states)) {
+    AppCtx* context = active_stage->second[index].get();
+    stitch_frame_rewind_pending_contexts_.insert(context);
+    g_idle_add(rewind_after_stitching_calibration_static, context);
+  }
   return TRUE;
 }
 

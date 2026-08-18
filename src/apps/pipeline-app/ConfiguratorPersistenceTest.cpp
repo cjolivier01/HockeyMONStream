@@ -1,3 +1,4 @@
+#include "src/apps/pipeline-app/StitcherOnePassConfig.h"
 #include "src/apps/pipeline-app/configurator.h"
 
 #include <algorithm>
@@ -36,6 +37,16 @@ bool expect(bool condition, const char* message) {
 int main() {
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
   bool ok = true;
+  ok &= expect(
+      !hm::OnePassCalibrationRequired(
+          /*one_pass_mode=*/false, /*stitching_configured=*/false, /*field_mask_configured=*/false) &&
+          !hm::OnePassCalibrationRequired(
+              /*one_pass_mode=*/true, /*stitching_configured=*/true, /*field_mask_configured=*/true) &&
+          hm::OnePassCalibrationRequired(
+              /*one_pass_mode=*/true, /*stitching_configured=*/false, /*field_mask_configured=*/false) &&
+          hm::OnePassCalibrationRequired(
+              /*one_pass_mode=*/true, /*stitching_configured=*/true, /*field_mask_configured=*/false),
+      "One-pass calibration must include missing mappings and mask-only resume state");
   const fs::path root = fs::temp_directory_path() / ("configurator-persistence-test-" + std::to_string(::getpid()));
   fs::remove_all(root);
   const std::string original_home = ::getenv("HOME") ? ::getenv("HOME") : "";

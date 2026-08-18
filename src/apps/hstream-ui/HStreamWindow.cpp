@@ -3422,6 +3422,8 @@ void HStreamWindow::startPipeline() {
     updateRunControls();
     return;
   }
+  saved_stitch_frame_time_ = active_stitch_frame_time_;
+  updatePresetDirtyState();
   calibration_pending_ = calibration_required;
   if (calibration_pending_)
     showStitchingCalibrationDialog();

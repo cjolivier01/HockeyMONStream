@@ -51,6 +51,8 @@ namespace stitcher {
 
 namespace {
 
+std::atomic<bool> process_calibration_completion_latched{false};
+
 std::string calibration_message(std::string message) {
   std::replace(message.begin(), message.end(), '\n', ' ');
   std::replace(message.begin(), message.end(), '\r', ' ');
@@ -130,9 +132,11 @@ static constexpr int kNumStitcherLaplacianLevels = 11;
 OnePassCalibrationProgressPlan one_pass_calibration_progress_plan(
     bool configured_during_run,
     bool mask_configured,
-    bool report_latched) {
+    bool report_latched,
+    bool process_completion_latched) {
   const bool create_mask = !mask_configured;
-  const bool report = report_latched || configured_during_run || calibration_progress_requested() || create_mask;
+  const bool report = report_latched ||
+      (!process_completion_latched && (configured_during_run || calibration_progress_requested() || create_mask));
   return {
       .report = report,
       .create_mask = create_mask,
@@ -1365,8 +1369,11 @@ absl::Status StitcherPriv::GenerateOutput(
     if (one_pass_mode_ && !field_mask_attempted_) {
       field_mask_attempted_ = true;
       bool mask_configured = stitching::is_field_mask_configured(config_file_, output_generation);
-      OnePassCalibrationProgressPlan progress =
-          one_pass_calibration_progress_plan(configured_during_run_, mask_configured);
+      OnePassCalibrationProgressPlan progress = one_pass_calibration_progress_plan(
+          configured_during_run_,
+          mask_configured,
+          /*report_latched=*/false,
+          process_calibration_completion_latched.load(std::memory_order_relaxed));
       if (progress.report) {
         report_calibration_progress("rink-mask", "started", "Looking for the ice surface in the stitched panorama");
       }
@@ -1384,17 +1391,23 @@ absl::Status StitcherPriv::GenerateOutput(
         }
       }
       progress = one_pass_calibration_progress_plan(
-          configured_during_run_, mask_configured, /*report_latched=*/progress.report);
+          configured_during_run_,
+          mask_configured,
+          /*report_latched=*/progress.report,
+          process_calibration_completion_latched.load(std::memory_order_relaxed));
       if (progress.complete && !calibration_completion_reported_) {
-        report_calibration_progress("rink-mask", "complete", "Ice surface calibration is ready");
-        report_calibration_progress("calibration", "complete", "Stitching calibration is complete");
-        g_print("hmstitcher: one-pass stitching configuration complete\n");
-        std::fflush(stdout);
-        if (owner_element_) {
-          gst_element_post_message(
-              owner_element_,
-              gst_message_new_element(
-                  GST_OBJECT(owner_element_), gst_structure_new_empty("hstream-stitching-calibration-complete")));
+        bool expected = false;
+        if (process_calibration_completion_latched.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
+          report_calibration_progress("rink-mask", "complete", "Ice surface calibration is ready");
+          report_calibration_progress("calibration", "complete", "Stitching calibration is complete");
+          g_print("hmstitcher: one-pass stitching configuration complete\n");
+          std::fflush(stdout);
+          if (owner_element_) {
+            gst_element_post_message(
+                owner_element_,
+                gst_message_new_element(
+                    GST_OBJECT(owner_element_), gst_structure_new_empty("hstream-stitching-calibration-complete")));
+          }
         }
         calibration_completion_reported_ = true;
       }

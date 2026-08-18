@@ -49,4 +49,8 @@ inline StitcherSizingConfig ParseStitcherSizingConfig(const YAML::Node& pipeline
   return config;
 }
 
+inline bool OnePassCalibrationRequired(bool one_pass_mode, bool stitching_configured, bool field_mask_configured) {
+  return one_pass_mode && (!stitching_configured || !field_mask_configured);
+}
+
 } // namespace hm
