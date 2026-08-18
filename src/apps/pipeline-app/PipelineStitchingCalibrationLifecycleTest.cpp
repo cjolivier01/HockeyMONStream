@@ -107,7 +107,9 @@ class PipelineProcess {
       bool supply_runtime_invalidation = true,
       int rink_inference_delay_ms = 0,
       bool supply_control_points_environment = true,
-      int same_stage_instances = 1) {
+      int same_stage_instances = 1,
+      int completion_timeout_ms = 0,
+      bool suppress_calibration_completion = false) {
     int input_pipe[2];
     int output_pipe[2];
     if (::pipe(input_pipe) != 0 || ::pipe(output_pipe) != 0) {
@@ -153,6 +155,16 @@ class PipelineProcess {
         ::setenv("HM_TEST_CONCURRENT_STITCHING_CALIBRATION", "1", 1);
       } else {
         ::unsetenv("HM_TEST_CONCURRENT_STITCHING_CALIBRATION");
+      }
+      if (completion_timeout_ms > 0) {
+        ::setenv("HM_TEST_STITCH_FRAME_COMPLETION_TIMEOUT_MS", std::to_string(completion_timeout_ms).c_str(), 1);
+      } else {
+        ::unsetenv("HM_TEST_STITCH_FRAME_COMPLETION_TIMEOUT_MS");
+      }
+      if (suppress_calibration_completion) {
+        ::setenv("HM_TEST_SUPPRESS_STITCHING_CALIBRATION_COMPLETION", "1", 1);
+      } else {
+        ::unsetenv("HM_TEST_SUPPRESS_STITCHING_CALIBRATION_COMPLETION");
       }
       if (start_from_features && supply_runtime_invalidation) {
         ::setenv("HSTREAM_CALIBRATION_START_STAGE", "features", 1);
@@ -618,6 +630,49 @@ int main(int argc, char** argv) {
     }();
   }
 
+  PipelineProcess missing_completion;
+  if (ok) {
+    ok = [&] {
+      if (!expect(
+              write_rink_mask_invalidation(game / "config.yaml", "missing-completion"),
+              "missing-completion rink invalidation must be written") ||
+          !expect(
+              missing_completion.Start(
+                  argv[1],
+                  pipeline_config,
+                  game_root,
+                  plugin_directory,
+                  "missing-completion",
+                  128,
+                  false,
+                  /*stitch_frame_time=*/"00:00:59.900",
+                  /*time_limit_seconds=*/0,
+                  /*stitch_rotate_degrees=*/{},
+                  /*supply_runtime_invalidation=*/true,
+                  /*rink_inference_delay_ms=*/0,
+                  /*supply_control_points_environment=*/true,
+                  /*same_stage_instances=*/1,
+                  /*completion_timeout_ms=*/15'000,
+                  /*suppress_calibration_completion=*/true),
+              "missing-completion calibration pipeline must start") ||
+          !expect(
+              missing_completion.WaitFor(
+                  "suppressing calibration completion for lifecycle test", 0, kCalibrationTimeout),
+              "missing-completion calibration must reach its completion boundary") ||
+          !expect(
+              missing_completion.WaitFor(
+                  "Timed out waiting for stitching calibration completion after EOS", 0, std::chrono::seconds(30)),
+              "EOS without a valid stitching completion must fail after a bounded wait")) {
+        return false;
+      }
+      int exit_code = 0;
+      return expect(
+                 missing_completion.WaitForExit(&exit_code, std::chrono::seconds(10)),
+                 "missing-completion calibration must exit after its completion timeout") &&
+          expect(exit_code != 0, "missing-completion calibration must return a failure status");
+    }();
+  }
+
   PipelineProcess rotated;
   PipelineProcess saved_config;
   PipelineProcess completed_missing;
@@ -741,7 +796,10 @@ int main(int argc, char** argv) {
           !expect(
               multi_context_nonzero.output().find("Failed to pause pipeline before stitch-frame restart") ==
                   std::string::npos,
-              "shared nonzero completion must not pause a busy calibration peer")) {
+              "shared nonzero completion must not pause a busy calibration peer") ||
+          !expect(
+              multi_context_nonzero.output().find("ERROR from hmstitcher") == std::string::npos,
+              "intentional peer calibration cancellation must not post a pipeline error")) {
         return false;
       }
       return stop_successfully(&multi_context_nonzero, "same-stage nonzero playback must remain controllable");
@@ -958,6 +1016,7 @@ int main(int argc, char** argv) {
 
   if (!ok) {
     initial.DumpOutput("initial calibration");
+    missing_completion.DumpOutput("missing-completion calibration");
     saved_config.DumpOutput("standalone saved-time calibration");
     completed_missing.DumpOutput("completed config with missing artifact");
     multi_context_nonzero.DumpOutput("same-stage nonzero calibration");

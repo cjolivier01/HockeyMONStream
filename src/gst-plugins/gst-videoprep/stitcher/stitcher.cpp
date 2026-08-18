@@ -716,11 +716,10 @@ absl::Status StitcherPriv::configure_one_pass_from_surfaces(
     if (!configure_status.ok()) {
       std::cerr << configure_status << "\n" << std::flush;
       if (absl::IsCancelled(configure_status)) {
-        // CustomAlgorithmBase treats Cancelled as a request to push EOS. A
-        // pipeline teardown already owns terminal delivery, and trying to
-        // serialize a second EOS from this streaming thread can deadlock the
-        // state transition that requested cancellation.
-        return absl::AbortedError("Stitching calibration stopped during pipeline teardown");
+        // cancel-pending-work also requests base-class shutdown, so Cancelled
+        // terminates the worker without pushing a second EOS or posting an
+        // error on the pipeline bus.
+        return configure_status;
       }
       return report_calibration_failure(configure_status);
     }
@@ -864,6 +863,7 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     require_decoded_frame_sequence_meta_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "cancel-pending-work") {
     calibration_cancelled_.store(true, std::memory_order_release);
+    RequestShutdown();
   } else if (prop.key == "calibration-run-generation") {
     calibration_run_generation_ = prop.value;
   } else if (
@@ -1440,7 +1440,7 @@ absl::Status StitcherPriv::GenerateOutput(
           std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
           calibration_completion_reported_ = true;
           if (absl::IsCancelled(mask_status)) {
-            return absl::AbortedError("Rink-mask calibration stopped during pipeline teardown");
+            return mask_status;
           }
           return report_calibration_failure(mask_status);
         } else {
@@ -1455,7 +1455,10 @@ absl::Status StitcherPriv::GenerateOutput(
       calibration_completion_ready_ = progress.complete;
     }
     if (one_pass_mode_ && calibration_completion_ready_ && !calibration_completion_reported_) {
-      if (owner_element_) {
+      if (g_getenv("HM_TEST_SUPPRESS_STITCHING_CALIBRATION_COMPLETION")) {
+        calibration_completion_reported_ = true;
+        g_print("hmstitcher: suppressing calibration completion for lifecycle test\n");
+      } else if (owner_element_) {
         const bool delivered = gst_element_post_message(
             owner_element_,
             gst_message_new_element(

@@ -339,6 +339,7 @@ void toggle_show_bbox_text(AppCtx* appCtx);
 
 void destroy_pipeline(AppCtx* appCtx);
 void destroy_pipeline_for_recreate(AppCtx* appCtx);
+gboolean consume_pending_pipeline_errors(AppCtx* appCtx);
 gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout);
 void restart_pipeline(AppCtx* appCtx);
 

@@ -91,6 +91,12 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   /* Deinit members */
   ~CustomAlgorithmBase();
 
+ protected:
+  // Signal the worker to stop without joining it. This is used when pipeline
+  // teardown must cooperatively cancel long-running algorithm work without
+  // blocking the GLib main loop that owns the state transition.
+  void RequestShutdown();
+
  private:
   /* Helper Function to Extract Batch Meta from buffer */
   NvDsBatchMeta* GetNVDS_BatchMeta(GstBuffer* buffer);

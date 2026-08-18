@@ -71,6 +71,22 @@ struct StitchFrameRewindRequest {
   uint64_t main_loop_generation;
 };
 
+guint stitch_frame_completion_timeout_ms() {
+  constexpr guint kDefaultTimeoutMs = 30'000;
+  const char* configured = g_getenv("HM_TEST_STITCH_FRAME_COMPLETION_TIMEOUT_MS");
+  if (!configured || !*configured) {
+    return kDefaultTimeoutMs;
+  }
+  gchar* end = nullptr;
+  const guint64 parsed = g_ascii_strtoull(configured, &end, 10);
+  if (!end || *end != '\0' || parsed == 0 || parsed > G_MAXUINT) {
+    g_printerr(
+        "Ignoring invalid HM_TEST_STITCH_FRAME_COMPLETION_TIMEOUT_MS=%s; using %u ms\n", configured, kDefaultTimeoutMs);
+    return kDefaultTimeoutMs;
+  }
+  return static_cast<guint>(parsed);
+}
+
 absl::StatusOr<uint64_t> parse_time_option(const char* option, const char* value) {
   try {
     return hm::hhmmss_to_nanoseconds(value ? value : "");
@@ -783,7 +799,12 @@ absl::Status PipelineApplication::configureInstances(
       YAML::Node config = app_ctx->configurator().config();
       if (!stitch_frame_time_set_) {
         uint64_t configured_stitch_frame_time_ns = 0;
-        HM_ASSIGN_OR_RETURN(configured_stitch_frame_time_ns, configured_stitch_frame_time(config));
+        // Stitch-frame time is a per-game UI/calibration choice. Do not let a
+        // baseline or user overlay value resurface when config.yaml omits the
+        // required default zero value.
+        HM_ASSIGN_OR_RETURN(
+            configured_stitch_frame_time_ns,
+            configured_stitch_frame_time(app_ctx->configurator().game_private_config()));
         if (stitch_frame_time_loaded_from_config_ && stitch_frame_time_ns_ != configured_stitch_frame_time_ns) {
           return absl::InvalidArgumentError(
               "All pipeline instances must use the same stitching.stitch_frame_time value");
@@ -3978,7 +3999,7 @@ gboolean PipelineApplication::should_defer_eos_static(AppCtx* app_ctx) {
   return instance_ ? instance_->should_defer_eos(app_ctx) : FALSE;
 }
 
-gboolean PipelineApplication::should_defer_eos(AppCtx* app_ctx) const {
+gboolean PipelineApplication::should_defer_eos(AppCtx* app_ctx) {
   if (!app_ctx || app_ctx->return_value != 0 || !stitch_frame_calibration_active_.load(std::memory_order_acquire)) {
     return FALSE;
   }
@@ -4008,7 +4029,72 @@ gboolean PipelineApplication::should_defer_eos(AppCtx* app_ctx) const {
   const std::vector<size_t> restart_candidates =
       hm::pipeline_internal::stitch_frame_rewind_candidates(stitch_frame_time_ns_, states);
   const size_t context_index = static_cast<size_t>(std::distance(active_stage->second.begin(), context));
-  return std::find(restart_candidates.begin(), restart_candidates.end(), context_index) != restart_candidates.end();
+  if (std::find(restart_candidates.begin(), restart_candidates.end(), context_index) == restart_candidates.end()) {
+    return FALSE;
+  }
+  if (stitch_frame_completion_timeout_source_id_ == 0) {
+    auto* request = new StitchFrameRewindRequest{
+        .stage = current_stage_,
+        .main_loop_generation = main_loop_generation_,
+    };
+    stitch_frame_completion_timeout_source_id_ = g_timeout_add_full(
+        G_PRIORITY_DEFAULT,
+        stitch_frame_completion_timeout_ms(),
+        stitch_frame_completion_timeout_static,
+        request,
+        [](gpointer data) { delete static_cast<StitchFrameRewindRequest*>(data); });
+    if (stitch_frame_completion_timeout_source_id_ == 0) {
+      delete request;
+      g_printerr("Failed to schedule stitching calibration completion timeout\n");
+      app_ctx->return_value = -1;
+      app_ctx->quit = TRUE;
+      quit_ = TRUE;
+      return FALSE;
+    }
+  }
+  return TRUE;
+}
+
+gboolean PipelineApplication::stitch_frame_completion_timeout_static(gpointer arg) {
+  const auto* request = static_cast<const StitchFrameRewindRequest*>(arg);
+  return instance_ && request
+      ? instance_->stitch_frame_completion_timeout(request->stage, request->main_loop_generation)
+      : G_SOURCE_REMOVE;
+}
+
+gboolean PipelineApplication::stitch_frame_completion_timeout(long stage, uint64_t main_loop_generation) {
+  stitch_frame_completion_timeout_source_id_ = 0;
+  if (!hm::pipeline_internal::stitch_frame_rewind_request_is_current(
+          stage, main_loop_generation, current_stage_, main_loop_generation_, main_loop_ != nullptr) ||
+      !stitch_frame_calibration_active_.load(std::memory_order_acquire) ||
+      !stitch_frame_rewind_pending_contexts_.empty()) {
+    return G_SOURCE_REMOVE;
+  }
+  const auto active_stage = stage_app_contexts_.find(stage);
+  if (active_stage == stage_app_contexts_.end()) {
+    return G_SOURCE_REMOVE;
+  }
+  g_printerr("Timed out waiting for stitching calibration completion after EOS\n");
+  for (const auto& context : active_stage->second) {
+    if (context && context->configurator().stitching_calibration_required() &&
+        stitch_frame_rewound_contexts_.count(context.get()) == 0) {
+      context->return_value = -1;
+      context->quit = TRUE;
+    }
+  }
+  stitch_frame_calibration_active_.store(false, std::memory_order_release);
+  quit_ = TRUE;
+  if (main_loop_) {
+    g_main_loop_quit(main_loop_);
+  }
+  return G_SOURCE_REMOVE;
+}
+
+void PipelineApplication::cancel_stitch_frame_completion_timeout() {
+  if (stitch_frame_completion_timeout_source_id_ != 0) {
+    g_source_remove(stitch_frame_completion_timeout_source_id_);
+    stitch_frame_completion_timeout_source_id_ = 0;
+  }
 }
 
 gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage* message) {
@@ -4041,6 +4127,7 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
     g_printerr("Ignoring stale stitching completion message for a non-current output generation\n");
     return TRUE;
   }
+  cancel_stitch_frame_completion_timeout();
   // The stitch artifact generation and completion latch are shared across all
   // contexts in this stage. Only one stitcher posts the completion message.
   // Keep every calibration context classified as such until its old worker is
@@ -4071,6 +4158,17 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
       delete request;
       stitch_frame_rewind_pending_contexts_.clear();
       g_printerr("Failed to schedule playback restart after stitching calibration\n");
+      for (const auto& context : active_stage->second) {
+        if (context && context->configurator().stitching_calibration_required()) {
+          context->return_value = -1;
+          context->quit = TRUE;
+        }
+      }
+      stitch_frame_calibration_active_.store(false, std::memory_order_release);
+      quit_ = TRUE;
+      if (main_loop_) {
+        g_main_loop_quit(main_loop_);
+      }
       return TRUE;
     }
   } else if (
@@ -4111,6 +4209,7 @@ void PipelineApplication::cancel_stitch_frame_rewind(uint64_t main_loop_generati
     g_source_remove(stitch_frame_rewind_source_id_);
     stitch_frame_rewind_source_id_ = 0;
   }
+  cancel_stitch_frame_completion_timeout();
   stitch_frame_rewind_pending_contexts_.clear();
   stitch_frame_rewind_cancellation_requested_ = false;
   stitch_frame_rewind_deadline_ = {};
@@ -4150,24 +4249,18 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
   }
 
   // A shared completion can arrive while another same-stage stitcher is still
-  // inside synchronous feature, Hugin, or rink-mask work. Detach the old bus
-  // watches before cooperative cancellation so an expected AbortedError from
-  // those workers cannot fail the replacement generation. Releasing every URI
-  // barrier first also prevents teardown from waiting on an abandoned pair.
-  // Request PAUSED asynchronously and poll from this timeout source: setting a
-  // busy streaming pipeline directly to NULL can block the GLib main loop.
+  // inside synchronous feature, Hugin, or rink-mask work. Cooperative
+  // cancellation terminates that work without posting a bus error. Keep each
+  // old bus watch active so unrelated decoder, GPU, and sink errors remain
+  // observable. Releasing every URI barrier first also prevents teardown from
+  // waiting on an abandoned pair. Request PAUSED asynchronously and poll from
+  // this timeout source: setting a busy streaming pipeline directly to NULL
+  // can block the GLib main loop.
   if (!stitch_frame_rewind_cancellation_requested_) {
     g_print(
         "hmstitcher: calibration frame complete; restarting playback at %" GST_TIME_FORMAT "\n",
         GST_TIME_ARGS(start_time_ns_));
     for (AppCtx* context : rewind_contexts) {
-      if (context->pipeline.pipeline) {
-        GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(context->pipeline.pipeline));
-        if (bus) {
-          gst_bus_remove_watch(bus);
-          gst_object_unref(bus);
-        }
-      }
       cancel_uri_playlist_frame_barrier(&context->pipeline.multi_src_bin);
       if (GstElement* stitcher = context->pipeline.hmstitcher_bin.elem_hmstitcher) {
         g_object_set(G_OBJECT(stitcher), "cancel-pending-work", TRUE, nullptr);
@@ -4190,6 +4283,15 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
 
   bool all_quiesced = true;
   for (AppCtx* context : rewind_contexts) {
+    if (!consume_pending_pipeline_errors(context)) {
+      g_printerr("Calibration pipeline failed while quiescing for stitch-frame restart\n");
+      quit_ = TRUE;
+      stitch_frame_rewind_source_id_ = 0;
+      if (main_loop_) {
+        g_main_loop_quit(main_loop_);
+      }
+      return FALSE;
+    }
     if (!context->pipeline.pipeline) {
       continue;
     }
@@ -4680,7 +4782,11 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
   AppCtx* app_ctx_ptr = reinterpret_cast<AppCtx*>(arg);
   g_print("Destroy pipeline\n");
   ui_preview_channels_.clear();
-  destroy_pipeline_for_recreate(app_ctx_ptr);
+  if (one_pass_calibration_contexts_.count(app_ctx_ptr) != 0) {
+    destroy_pipeline_for_recreate(app_ctx_ptr);
+  } else {
+    destroy_pipeline(app_ctx_ptr);
+  }
   g_print("Recreate pipeline\n");
   if (!create_pipeline(app_ctx_ptr, nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
     NVGSTDS_ERR_MSG_V("Failed to create pipeline");

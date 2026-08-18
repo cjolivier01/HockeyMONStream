@@ -143,7 +143,10 @@ class PipelineApplication {
   static gboolean handle_element_message_static(AppCtx* app_ctx, GstMessage* message);
   gboolean handle_element_message(AppCtx* app_ctx, GstMessage* message);
   static gboolean should_defer_eos_static(AppCtx* app_ctx);
-  gboolean should_defer_eos(AppCtx* app_ctx) const;
+  gboolean should_defer_eos(AppCtx* app_ctx);
+  static gboolean stitch_frame_completion_timeout_static(gpointer arg);
+  gboolean stitch_frame_completion_timeout(long stage, uint64_t main_loop_generation);
+  void cancel_stitch_frame_completion_timeout();
   static gboolean rewind_after_stitching_calibration_static(gpointer arg);
   gboolean rewind_after_stitching_calibration(long stage, uint64_t main_loop_generation);
   void cancel_stitch_frame_rewind(uint64_t main_loop_generation);
@@ -250,6 +253,7 @@ class PipelineApplication {
   std::set<const AppCtx*> stitch_frame_rewind_pending_contexts_;
   std::atomic<bool> stitch_frame_calibration_active_{false};
   guint stitch_frame_rewind_source_id_{0};
+  guint stitch_frame_completion_timeout_source_id_{0};
   bool stitch_frame_rewind_cancellation_requested_{false};
   std::chrono::steady_clock::time_point stitch_frame_rewind_deadline_;
   uint64_t main_loop_generation_{0};

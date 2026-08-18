@@ -93,6 +93,9 @@ class Configurator {
   const YAML::Node& config() const {
     return config_;
   }
+  const YAML::Node& game_private_config() const {
+    return private_config_;
+  }
 
   bool stitching_calibration_required() const {
     return stitching_calibration_required_;

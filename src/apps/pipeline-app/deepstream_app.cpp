@@ -528,6 +528,20 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
   return TRUE;
 }
 
+gboolean consume_pending_pipeline_errors(AppCtx* appCtx) {
+  if (!appCtx || !appCtx->pipeline.pipeline) {
+    return TRUE;
+  }
+  GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(appCtx->pipeline.pipeline));
+  GstMessage* message = nullptr;
+  while ((message = gst_bus_pop_filtered(bus, GST_MESSAGE_ERROR)) != nullptr) {
+    bus_callback(bus, message, appCtx);
+    gst_message_unref(message);
+  }
+  gst_object_unref(bus);
+  return appCtx->return_value == 0;
+}
+
 /**
  * Function to dump bounding box data in kitti format. For this to work,
  * property "gie-kitti-output-dir" must be set in configuration file.

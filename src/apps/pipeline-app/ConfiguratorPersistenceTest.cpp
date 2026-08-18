@@ -75,10 +75,15 @@ int main() {
 
   const fs::path baseline_root = root / "baseline";
   fs::create_directories(baseline_root);
-  std::ofstream(baseline_root / "baseline.yaml") << "pipeline:\n  layered-value: baseline\n  baseline-only: yes\n";
+  std::ofstream(baseline_root / "baseline.yaml") << "pipeline:\n"
+                                                 << "  layered-value: baseline\n"
+                                                 << "  baseline-only: yes\n"
+                                                 << "stitching:\n"
+                                                 << "  stitch_frame_time: 00:00:07\n";
   YAML::Node user_overlay = first_user_config.ok() ? YAML::Clone(*first_user_config) : YAML::Node(YAML::NodeType::Map);
   user_overlay["pipeline"]["layered-value"] = "user";
   user_overlay["pipeline"]["user-only"] = "yes";
+  user_overlay["stitching"]["stitch_frame_time"] = "00:00:08";
   user_overlay[hm::user_config::kPathsKey][hm::user_config::kGameRootKey] = games.string();
   user_overlay[hm::user_config::kPathsKey][hm::user_config::kOutputRootKey] = (root / "configured-output").string();
   std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
@@ -116,7 +121,9 @@ int main() {
       layered_config.ok() && (*layered_config)["pipeline"]["layered-value"].as<std::string>() == "private" &&
           (*layered_config)["pipeline"]["baseline-only"].as<std::string>() == "yes" &&
           (*layered_config)["pipeline"]["user-only"].as<std::string>() == "yes" &&
-          (*layered_config)["pipeline"]["private-only"].as<std::string>() == "yes",
+          (*layered_config)["pipeline"]["private-only"].as<std::string>() == "yes" &&
+          (*layered_config)["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:08" &&
+          !hm::get_node(layered.game_private_config(), "stitching.stitch_frame_time").has_value(),
       "Config precedence must be baseline, then user overlay, then game-private YAML");
   ::unsetenv("HM_GAME_DIR");
   ok &= expect(
@@ -190,16 +197,23 @@ int main() {
   const auto stitch_override_loaded = stitch_override.load_config();
   const absl::Status zero_override_status = stitch_override.persist_stitch_frame_time_override({});
   auto after_zero_override = hm::stitching::load_game_config_file(stitch_override_dir / "config.yaml");
+  hm::Configurator stitch_override_reloaded(
+      "stitch-override", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const auto stitch_override_reloaded_config = stitch_override_reloaded.load_config();
   const absl::Status fractional_override_status = stitch_override.persist_stitch_frame_time_override("00:00:00.500");
   auto after_fractional_override = hm::stitching::load_game_config_file(stitch_override_dir / "config.yaml");
   ok &= expect(
       stitch_override_loaded.ok() && zero_override_status.ok() && after_zero_override.ok() &&
           after_zero_override->has_value() && !(**after_zero_override)["stitching"]["stitch_frame_time"] &&
+          stitch_override_reloaded_config.ok() &&
+          (*stitch_override_reloaded_config)["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:08" &&
+          !hm::get_node(stitch_override_reloaded.game_private_config(), "stitching.stitch_frame_time").has_value() &&
           (**after_zero_override)["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() ==
               "stitch-override-a" &&
           fractional_override_status.ok() && after_fractional_override.ok() && after_fractional_override->has_value() &&
           (**after_fractional_override)["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00.500",
-      "Runtime stitch-frame overrides must remove zero, persist nonzero, and preserve the pending generation owner");
+      "Runtime stitch-frame overrides must remove zero, mask lower config layers, persist nonzero, and preserve the "
+      "pending generation owner");
 
   YAML::Node explicit_roles(YAML::NodeType::Map);
   explicit_roles["hstream_ui"]["video_roles"]["left"].push_back(".hstream-ui/left/GX010001.MP4");
