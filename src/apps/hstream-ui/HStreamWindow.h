@@ -55,6 +55,9 @@ QString preview_channel_for_tab(int tab_index, int camera_count);
 QString matching_development_pipeline_runner(const QString& application_path);
 QString matching_development_bazel_bin(const QString& application_path);
 QString development_runtime_root_for_application(const QString& application_path);
+// Returns an empty string when all artifacts needed by a Bazel development
+// runtime are present, or the missing artifact path otherwise.
+QString missing_development_runtime_artifact(const QString& bazel_bin_path);
 
 } // namespace hm::ui_internal
 

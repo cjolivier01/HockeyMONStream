@@ -700,6 +700,29 @@ void prepend_env_path(QProcessEnvironment& env, const QString& name, const QStri
   }
 }
 
+QString bazel_output_configuration(const QString& bazel_bin_path) {
+  const QString canonical_path = canonical_dir_path(bazel_bin_path);
+  const QFileInfo bin_info(canonical_path);
+  if (bin_info.fileName() != "bin")
+    return "installed";
+  const QDir configuration_dir = bin_info.dir();
+  QDir bazel_out_dir = configuration_dir;
+  if (!bazel_out_dir.cdUp() || bazel_out_dir.dirName() != "bazel-out")
+    return "installed";
+  QString output_configuration = configuration_dir.dirName();
+  output_configuration.replace(QRegularExpression("[^A-Za-z0-9_.-]"), "_");
+  return output_configuration.isEmpty() ? QString("unknown-output") : output_configuration;
+}
+
+QString bazel_solib_directory(const QString& architecture) {
+  const QString normalized = architecture.toLower();
+  if (normalized == "x86_64" || normalized == "amd64")
+    return "_solib_k8";
+  if (normalized == "aarch64" || normalized == "arm64")
+    return "_solib_aarch64";
+  return {};
+}
+
 void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_dir, const QString& bazel_bin_path) {
   const QDir bazel_bin(bazel_bin_path.isEmpty() ? QDir(working_dir).filePath("bazel-bin") : bazel_bin_path);
   const QDir root(bazel_bin.filePath("src/gst-plugins"));
@@ -710,10 +733,7 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_di
   const QString arch =
       QSysInfo::currentCpuArchitecture().isEmpty() ? QString("unknown") : QSysInfo::currentCpuArchitecture();
   const QDir canonical_bazel_bin(canonical_dir_path(bazel_bin.absolutePath()));
-  QString output_configuration = QFileInfo(canonical_bazel_bin.absolutePath()).dir().dirName();
-  output_configuration.replace(QRegularExpression("[^A-Za-z0-9_.-]"), "_");
-  if (output_configuration.isEmpty())
-    output_configuration = "unknown-output";
+  const QString output_configuration = bazel_output_configuration(canonical_bazel_bin.absolutePath());
   QDir runtime_dir(QDir(working_dir).filePath(QString(".cache/gst-plugin-path/%1/%2").arg(arch, output_configuration)));
   if (!runtime_dir.exists() && !runtime_dir.mkpath(".")) {
     return;
@@ -749,8 +769,9 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_di
   }
 
   const QDir bazel_bin_dir(canonical_bazel_bin);
-  const QFileInfoList solib_roots =
-      bazel_bin_dir.entryInfoList(QStringList() << "_solib_*", QDir::Dirs | QDir::NoDotAndDotDot);
+  const QString solib_directory = bazel_solib_directory(arch);
+  const QFileInfoList solib_roots = bazel_bin_dir.entryInfoList(
+      QStringList() << (solib_directory.isEmpty() ? "_solib_*" : solib_directory), QDir::Dirs | QDir::NoDotAndDotDot);
   for (const QFileInfo& solib_root : solib_roots) {
     prepend_env_path(env, "LD_LIBRARY_PATH", solib_root.absoluteFilePath());
     const QDir solib_dir(solib_root.absoluteFilePath());
@@ -764,6 +785,7 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_di
 
   QDir runtime_lib_dir(
       QDir(working_dir).filePath(QString(".cache/runtime-lib-path/%1/%2").arg(arch, output_configuration)));
+  bool staged_runtime_library = false;
   if (runtime_lib_dir.mkpath(".")) {
     for (const QFileInfo& solib_root : solib_roots) {
       QDirIterator onnxruntime_it(
@@ -773,11 +795,20 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_di
       const QFileInfo onnxruntime(onnxruntime_it.next());
       const QString link_path = runtime_lib_dir.filePath("libonnxruntime.so.1");
       QFile::remove(link_path);
-      if (QFile::link(onnxruntime.canonicalFilePath(), link_path))
-        prepend_env_path(env, "LD_LIBRARY_PATH", runtime_lib_dir.absolutePath());
+      staged_runtime_library = QFile::link(onnxruntime.canonicalFilePath(), link_path) ||
+          QFileInfo(link_path).isFile() || staged_runtime_library;
       break;
     }
+    const QFileInfo yolo(bazel_bin.filePath("src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"));
+    if (yolo.isFile()) {
+      const QString link_path = runtime_lib_dir.filePath("libnvdsinfer_custom_impl_Yolo.so");
+      QFile::remove(link_path);
+      staged_runtime_library =
+          QFile::link(yolo.canonicalFilePath(), link_path) || QFileInfo(link_path).isFile() || staged_runtime_library;
+    }
   }
+  if (staged_runtime_library)
+    prepend_env_path(env, "LD_LIBRARY_PATH", runtime_lib_dir.absolutePath());
 
   prepend_env_path(env, "GST_PLUGIN_PATH", runtime_dir.absolutePath());
 }
@@ -798,10 +829,15 @@ bool is_tegra_runtime() {
 #endif
 }
 
-void configure_pipeline_runtime_environment(
+QString configure_pipeline_runtime_environment(
     QProcessEnvironment& env,
     const QString& working_dir,
     const QString& bazel_bin_path) {
+  if (!bazel_bin_path.isEmpty()) {
+    const QString missing = hm::ui_internal::missing_development_runtime_artifact(bazel_bin_path);
+    if (!missing.isEmpty())
+      return QString("matching Bazel runtime artifact is missing: %1").arg(missing);
+  }
   // DeepStream 9.1's legacy nvstreammux rejects the native 8K source caps used
   // by stitching. Match run.sh while preserving an explicit diagnostic
   // override from the caller.
@@ -821,7 +857,12 @@ void configure_pipeline_runtime_environment(
   if (registry_dir.mkpath(".")) {
     const QString arch =
         QSysInfo::currentCpuArchitecture().isEmpty() ? QString("unknown") : QSysInfo::currentCpuArchitecture();
-    env.insert("GST_REGISTRY", registry_dir.filePath(QString("registry.hstream.native-onnx-v1.%1.bin").arg(arch)));
+    const QString selected_bazel_bin =
+        bazel_bin_path.isEmpty() ? QDir(working_dir).filePath("bazel-bin") : bazel_bin_path;
+    const QString output_configuration = bazel_output_configuration(selected_bazel_bin);
+    env.insert(
+        "GST_REGISTRY",
+        registry_dir.filePath(QString("registry.hstream.native-onnx-v1.%1.%2.bin").arg(arch, output_configuration)));
   }
 
   prepend_env_path(env, "GST_PLUGIN_PATH", QDir(working_dir).filePath("lib/gst-plugins"));
@@ -831,20 +872,7 @@ void configure_pipeline_runtime_environment(
   prepend_env_path(env, "LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib");
   prepend_env_path(env, "LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
   stage_bazel_gst_plugins(env, working_dir, bazel_bin_path);
-
-  const QDir bazel_bin(bazel_bin_path.isEmpty() ? QDir(working_dir).filePath("bazel-bin") : bazel_bin_path);
-  const QString yolo_so = bazel_bin.filePath("src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so");
-  if (QFileInfo::exists(yolo_so)) {
-    QDir lib_dir(QDir(working_dir).filePath("lib"));
-    if (lib_dir.mkpath(".")) {
-      const QString link_path = lib_dir.filePath("libnvdsinfer_custom_impl_Yolo.so");
-      const QFileInfo link_info(link_path);
-      if (!link_info.exists() || link_info.isSymLink()) {
-        QFile::remove(link_path);
-        QFile::link(QFileInfo(yolo_so).canonicalFilePath(), link_path);
-      }
-    }
-  }
+  return {};
 }
 
 QString archive_output_work_dir(const QProcessEnvironment& env, const QString& working_dir) {
@@ -1476,13 +1504,35 @@ QString hm::ui_internal::matching_development_bazel_bin(const QString& applicati
 
   QDir application_dir = application_info.absoluteDir();
   if (application_dir.dirName() != "hstream-ui" || !application_dir.cdUp() || application_dir.dirName() != "apps" ||
-      !application_dir.cdUp() || application_dir.dirName() != "src" || !application_dir.cdUp())
+      !application_dir.cdUp() || application_dir.dirName() != "src" || !application_dir.cdUp() ||
+      application_dir.dirName() != "bin")
+    return {};
+  QDir configuration_dir = application_dir;
+  if (!configuration_dir.cdUp() || configuration_dir.dirName().isEmpty() || !configuration_dir.cdUp() ||
+      configuration_dir.dirName() != "bazel-out")
     return {};
   return application_dir.absolutePath();
 }
 
+QString hm::ui_internal::missing_development_runtime_artifact(const QString& bazel_bin_path) {
+  const QDir bazel_bin(canonical_dir_path(bazel_bin_path));
+  const QStringList required = {
+      "src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so",
+      "src/gst-plugins/gst-playtracker/libgstplaytracker.so",
+      "src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so",
+      "src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so",
+  };
+  for (const QString& relative_path : required) {
+    const QString artifact = bazel_bin.filePath(relative_path);
+    if (!QFileInfo(artifact).isFile())
+      return artifact;
+  }
+  return {};
+}
+
 QString hm::ui_internal::development_runtime_root_for_application(const QString& application_path) {
-  if (matching_development_bazel_bin(application_path).isEmpty())
+  const QString bazel_bin_path = matching_development_bazel_bin(application_path);
+  if (bazel_bin_path.isEmpty())
     return {};
 
   QFileInfo application_info(application_path);
@@ -1503,6 +1553,16 @@ QString hm::ui_internal::development_runtime_root_for_application(const QString&
     if (!candidate.cdUp())
       break;
   }
+  QDir execroot(bazel_bin_path);
+  if (!execroot.cdUp() || !execroot.cdUp() || !execroot.cdUp())
+    return {};
+  const QString canonical_source_directory = QFileInfo(execroot.filePath("src")).canonicalFilePath();
+  if (canonical_source_directory.isEmpty())
+    return {};
+  const QDir source_root = QFileInfo(canonical_source_directory).dir();
+  const QFileInfo workspace_marker(source_root.filePath("WORKSPACE.bazel"));
+  if (workspace_marker.isFile() && QFileInfo(source_root.filePath("configs")).isDir())
+    return source_root.absolutePath();
   return {};
 }
 
@@ -3475,7 +3535,17 @@ void HStreamWindow::startPipeline() {
   }
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   const QString working_dir = pipelineWorkingDirectory();
-  configure_pipeline_runtime_environment(env, working_dir, development_bazel_bin_);
+  const QString runtime_error = configure_pipeline_runtime_environment(env, working_dir, development_bazel_bin_);
+  if (!runtime_error.isEmpty()) {
+    calibration_pending_ = false;
+    active_run_game_id_.clear();
+    active_run_is_calibration_ = false;
+    preview_status_->setText("Pipeline failed to start");
+    appendLog(runtime_error);
+    show_startup_error(runtime_error);
+    updateRunControls();
+    return;
+  }
   setPlaybackStartupStage("stitching", "Validating saved stitching state and Left/Right video assignments");
   active_archive_output_path_.clear();
   active_archive_recovery_path_.clear();

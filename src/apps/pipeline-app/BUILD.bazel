@@ -23,6 +23,11 @@ PIPELINE_APP_LINKOPTS = [
     "-lm",
 ]
 
+PIPELINE_APP_RUNTIME_DATA = [
+    "//src/gst-plugins:hstream_runtime_plugins",
+    "//src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo",
+]
+
 PIPELINE_APP_DEPS = [
     "//src/libs/assets:asset_manager",
     # "//src/libs/common:mod_pipeline",
@@ -55,6 +60,7 @@ cc_binary(
     name = "pipeline-app",
     srcs = PIPELINE_APP_SRCS,
     copts = PIPELINE_APP_COPTS,
+    data = PIPELINE_APP_RUNTIME_DATA,
     linkopts = PIPELINE_APP_LINKOPTS,
     deps = PIPELINE_APP_DEPS,
 )
@@ -63,6 +69,7 @@ cc_binary(
     name = "hstream-cli",
     srcs = PIPELINE_APP_SRCS,
     copts = PIPELINE_APP_COPTS,
+    data = PIPELINE_APP_RUNTIME_DATA,
     linkopts = PIPELINE_APP_LINKOPTS,
     visibility = ["//visibility:public"],
     deps = PIPELINE_APP_DEPS,

@@ -14,7 +14,7 @@ gst_cc_plugin(
     ],
     linkopts = [
     ],
-    visibility = ["//visibility:private"],
+    visibility = ["//visibility:public"],
     deps = [
         ":playtracker_context",
     ],

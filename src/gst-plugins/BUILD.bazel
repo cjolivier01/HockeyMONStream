@@ -1,0 +1,9 @@
+filegroup(
+    name = "hstream_runtime_plugins",
+    srcs = [
+        "//src/gst-plugins/gst-fieldmask:libnvdsgst_dsfieldmask.so",
+        "//src/gst-plugins/gst-playtracker:libgstplaytracker.so",
+        "//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so",
+    ],
+    visibility = ["//visibility:public"],
+)

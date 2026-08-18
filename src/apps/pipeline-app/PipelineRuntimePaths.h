@@ -1,12 +1,15 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
 
 namespace hm::pipeline_internal {
 
 struct RuntimePaths {
   std::filesystem::path root;
   std::filesystem::path bazel_bin;
+  std::string output_configuration;
+  bool bazel_output = false;
 };
 
 RuntimePaths select_runtime_paths(

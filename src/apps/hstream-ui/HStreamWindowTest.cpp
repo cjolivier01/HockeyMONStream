@@ -280,17 +280,28 @@ bool test_matching_development_runtime_selection() {
     return expect(false, "Could not create a temporary Bazel runtime layout");
 
   const fs::path workspace_root = fs::path(temporary_root.path().toStdString()) / "workspace";
-  const fs::path output_apps = workspace_root / "bazel-out" / "k8-opt" / "bin" / "src" / "apps";
+  const fs::path execution_root = fs::path(temporary_root.path().toStdString()) / "output-base/execroot/synthetic";
+  const fs::path output_apps = execution_root / "bazel-out" / "k8-opt" / "bin" / "src" / "apps";
   const fs::path application = output_apps / "hstream-ui" / "hstream-ui";
   const fs::path matching_runner = output_apps / "pipeline-app" / "hstream-cli";
   const fs::path unrelated_runner = workspace_root / "bazel-bin" / "src" / "apps" / "pipeline-app" / "hstream-cli";
+  const std::vector<fs::path> runtime_artifacts = {
+      execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so",
+      execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-playtracker/libgstplaytracker.so",
+      execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so",
+      execution_root / "bazel-out/k8-opt/bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so",
+  };
   std::error_code error;
   fs::create_directories(application.parent_path(), error);
   fs::create_directories(matching_runner.parent_path(), error);
   fs::create_directories(unrelated_runner.parent_path(), error);
   fs::create_directories(workspace_root / "configs", error);
+  fs::create_directories(workspace_root / "src", error);
   if (error)
     return expect(false, "Could not create a synthetic Bazel runtime layout: " + error.message());
+  fs::create_directory_symlink(workspace_root / "src", execution_root / "src", error);
+  if (error)
+    return expect(false, "Could not create a synthetic Bazel source-package link: " + error.message());
   for (const fs::path& path : {application, matching_runner, unrelated_runner}) {
     std::ofstream file(path);
     file << "synthetic executable\n";
@@ -299,6 +310,12 @@ bool test_matching_development_runtime_selection() {
         path, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec, fs::perm_options::replace, error);
     if (error)
       return expect(false, "Could not make a synthetic Bazel runtime executable: " + error.message());
+  }
+  for (const fs::path& path : runtime_artifacts) {
+    fs::create_directories(path.parent_path(), error);
+    if (error)
+      return expect(false, "Could not create a synthetic runtime artifact directory: " + error.message());
+    std::ofstream(path) << "synthetic runtime artifact\n";
   }
   {
     std::ofstream workspace_marker(workspace_root / "WORKSPACE.bazel");
@@ -330,6 +347,18 @@ bool test_matching_development_runtime_selection() {
                  hm::ui_internal::development_runtime_root_for_application("/opt/hstream/bin/hstream-ui").isEmpty(),
              "An installed UI must not be mistaken for a Bazel development runtime");
   if (!selected_ok)
+    return false;
+
+  const QString selected_runtime_error = hm::ui_internal::missing_development_runtime_artifact(selected_bazel_bin);
+  if (!expect(selected_runtime_error.isEmpty(), "A complete matching Bazel runtime must pass validation"))
+    return false;
+  fs::remove(runtime_artifacts.front(), error);
+  if (error)
+    return expect(false, "Could not remove a synthetic runtime artifact: " + error.message());
+  if (!expect(
+          hm::ui_internal::missing_development_runtime_artifact(selected_bazel_bin)
+              .endsWith("libnvdsgst_dsfieldmask.so"),
+          "A Bazel UI must identify a missing matching runtime artifact before Play"))
     return false;
 
   fs::remove(matching_runner, error);

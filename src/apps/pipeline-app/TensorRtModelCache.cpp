@@ -77,6 +77,10 @@ bool is_path_property(const std::string& raw_key) {
   return key.find("file") != std::string::npos || key.find("path") != std::string::npos;
 }
 
+bool is_loader_resolved_custom_library(const std::string& raw_key, const std::string& value) {
+  return lowercase(raw_key) == "custom-lib-path" && !value.empty() && fs::path(value).parent_path().empty();
+}
+
 absl::Status ensure_owned_temporary_root(const fs::path& directory) {
   if (::mkdir(directory.c_str(), 0700) != 0 && errno != EEXIST)
     return absl::InternalError(
@@ -216,7 +220,12 @@ absl::StatusOr<std::string> inference_build_digest(
       const std::string key = property.first.as<std::string>();
       if (key == "model-engine-file" || !is_path_property(key))
         continue;
-      const fs::path input = resolve_path(property.second.as<std::string>(), inference_path.parent_path());
+      const std::string value = property.second.as<std::string>();
+      if (is_loader_resolved_custom_library(key, value)) {
+        fingerprint << "input:" << key << '=' << value << '\n';
+        continue;
+      }
+      const fs::path input = resolve_path(value, inference_path.parent_path());
       fingerprint << "input:" << key << '=' << fs::absolute(input).lexically_normal().string() << '\n';
       std::error_code error;
       if (fs::is_regular_file(input, error) && !error) {
@@ -455,7 +464,7 @@ absl::Status prepare_inference_config(
     if (key == "model-engine-file" || !property.second.IsScalar() || !is_path_property(key))
       continue;
     const std::string value = property.second.as<std::string>();
-    if (!value.empty())
+    if (!value.empty() && !is_loader_resolved_custom_library(key, value))
       properties[key] = resolve_path(value, inference_path.parent_path()).string();
   }
   properties["onnx-file"] = cached_onnx.string();

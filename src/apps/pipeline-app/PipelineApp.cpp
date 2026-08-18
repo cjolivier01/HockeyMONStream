@@ -212,6 +212,16 @@ std::string host_arch_name() {
 #endif
 }
 
+std::string bazel_solib_directory_name() {
+#if defined(__x86_64__)
+  return "_solib_k8";
+#elif defined(__aarch64__)
+  return "_solib_aarch64";
+#else
+  return {};
+#endif
+}
+
 bool manages_its_own_window(GstElement* sink) {
   if (sink == nullptr) {
     return false;
@@ -344,46 +354,92 @@ void stage_bazel_gst_plugins(const fs::path& root, const fs::path& bazel_bin) {
   prepend_env_path("GST_PLUGIN_PATH", runtime_plugin_dir);
 }
 
-void stage_bazel_runtime_libraries(const fs::path& root, const fs::path& bazel_bin) {
-  if (!fs::is_directory(bazel_bin))
-    return;
-  std::error_code ec;
-  fs::path onnxruntime;
-  for (const fs::directory_entry& solib : fs::directory_iterator(bazel_bin, ec)) {
-    if (ec)
-      return;
-    if (!solib.is_directory(ec) || solib.path().filename().string().rfind("_solib_", 0) != 0) {
-      ec.clear();
-      continue;
-    }
-    for (const fs::directory_entry& entry : fs::recursive_directory_iterator(solib.path(), ec)) {
-      if (ec)
-        return;
-      if (entry.path().filename() == "libonnxruntime.so.1" && entry.is_regular_file(ec) && !ec) {
-        onnxruntime = fs::canonical(entry.path(), ec);
-        break;
-      }
-    }
-    if (!onnxruntime.empty())
-      break;
+absl::Status validate_bazel_runtime_artifacts(const hm::pipeline_internal::RuntimePaths& runtime) {
+  if (!runtime.bazel_output)
+    return absl::OkStatus();
+  const std::vector<fs::path> required = {
+      "src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so",
+      "src/gst-plugins/gst-playtracker/libgstplaytracker.so",
+      "src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so",
+      "src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so",
+  };
+  for (const fs::path& relative_path : required) {
+    const fs::path artifact = runtime.bazel_bin / relative_path;
+    std::error_code ec;
+    if (!fs::is_regular_file(artifact, ec) || ec)
+      return absl::NotFoundError(TO_STRING("Matching Bazel runtime artifact is missing: " << artifact));
   }
-  if (onnxruntime.empty() || ec)
-    return;
-  const std::string output_configuration =
-      bazel_bin.parent_path().filename().empty() ? "unknown-output" : bazel_bin.parent_path().filename().string();
-  const fs::path runtime_dir = root / ".cache/runtime-lib-path" / host_arch_name() / output_configuration;
-  fs::create_directories(runtime_dir, ec);
-  if (ec)
-    return;
-  const fs::path link = runtime_dir / "libonnxruntime.so.1";
-  fs::remove(link, ec);
-  ec.clear();
-  fs::create_symlink(onnxruntime, link, ec);
-  if (!ec)
-    prepend_env_path("LD_LIBRARY_PATH", runtime_dir);
+  return absl::OkStatus();
 }
 
-void configure_pipeline_runtime_environment(const char* argv0) {
+absl::Status stage_bazel_runtime_libraries(const hm::pipeline_internal::RuntimePaths& runtime) {
+  const fs::path& root = runtime.root;
+  const fs::path& bazel_bin = runtime.bazel_bin;
+  if (!fs::is_directory(bazel_bin))
+    return absl::OkStatus();
+  std::error_code ec;
+  fs::path onnxruntime;
+  const fs::path solib = bazel_bin / bazel_solib_directory_name();
+  if (!fs::is_directory(solib, ec)) {
+    if (runtime.bazel_output)
+      return absl::NotFoundError(TO_STRING("Matching Bazel shared-library tree is missing: " << solib));
+    return absl::OkStatus();
+  }
+  for (const fs::directory_entry& entry : fs::recursive_directory_iterator(solib, ec)) {
+    if (ec)
+      return absl::InternalError(TO_STRING("Could not inspect Bazel runtime libraries: " << ec.message()));
+    if (entry.path().filename() == "libonnxruntime.so.1" && entry.is_regular_file(ec) && !ec) {
+      onnxruntime = fs::canonical(entry.path(), ec);
+      break;
+    }
+  }
+  if (ec)
+    return absl::InternalError(TO_STRING("Could not inspect Bazel runtime libraries: " << ec.message()));
+  if (runtime.bazel_output && onnxruntime.empty())
+    return absl::NotFoundError(TO_STRING("Matching Bazel ONNX Runtime library is missing below " << bazel_bin));
+  const fs::path yolo = bazel_bin / "src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so";
+  if (onnxruntime.empty() && !fs::is_regular_file(yolo, ec))
+    return absl::OkStatus();
+
+  const fs::path runtime_dir = root / ".cache/runtime-lib-path" / host_arch_name() / runtime.output_configuration;
+  fs::create_directories(runtime_dir, ec);
+  if (ec)
+    return absl::InternalError(
+        TO_STRING("Could not create runtime-library cache " << runtime_dir << ": " << ec.message()));
+  auto stage_library = [&runtime_dir](const fs::path& source, const fs::path& name) -> absl::Status {
+    if (source.empty())
+      return absl::OkStatus();
+    std::error_code link_ec;
+    const fs::path canonical = fs::canonical(source, link_ec);
+    if (link_ec)
+      return absl::InternalError(
+          TO_STRING("Could not resolve runtime library " << source << ": " << link_ec.message()));
+    const fs::path link = runtime_dir / name;
+    fs::remove(link, link_ec);
+    link_ec.clear();
+    fs::create_symlink(canonical, link, link_ec);
+    if (link_ec) {
+      std::error_code existing_ec;
+      const fs::path existing = fs::canonical(link, existing_ec);
+      if (!existing_ec && existing == canonical)
+        return absl::OkStatus();
+      return absl::InternalError(TO_STRING("Could not stage runtime library " << link << ": " << link_ec.message()));
+    }
+    return absl::OkStatus();
+  };
+  auto status = stage_library(onnxruntime, "libonnxruntime.so.1");
+  if (!status.ok())
+    return status;
+  if (fs::is_regular_file(yolo, ec) && !ec) {
+    status = stage_library(yolo, "libnvdsinfer_custom_impl_Yolo.so");
+    if (!status.ok())
+      return status;
+  }
+  prepend_env_path("LD_LIBRARY_PATH", runtime_dir);
+  return absl::OkStatus();
+}
+
+absl::Status configure_pipeline_runtime_environment(const char* argv0) {
   std::error_code error;
   const fs::path working_directory = fs::current_path(error);
   const fs::path executable = running_executable_path(argv0).value_or(argv0 ? fs::path(argv0) : fs::path());
@@ -391,11 +447,13 @@ void configure_pipeline_runtime_environment(const char* argv0) {
       hm::pipeline_internal::select_runtime_paths(executable, error ? fs::path() : working_directory);
   const fs::path& root = runtime.root;
   const fs::path& bazel_bin = runtime.bazel_bin;
+  auto runtime_status = validate_bazel_runtime_artifacts(runtime);
+  if (!runtime_status.ok())
+    return runtime_status;
   const fs::path packaged_native_models = root / "pretrained/native-calibration";
   if (!std::getenv("HM_NATIVE_MODEL_DIR") && fs::is_directory(packaged_native_models)) {
     setenv("HM_NATIVE_MODEL_DIR", packaged_native_models.c_str(), 1);
   }
-  stage_bazel_runtime_libraries(root, bazel_bin);
   std::error_code ec;
   fs::path registry_dir = root / ".cache/gstreamer-1.0";
   fs::create_directories(registry_dir, ec);
@@ -408,7 +466,9 @@ void configure_pipeline_runtime_environment(const char* argv0) {
   }
   if (!ec) {
     const std::string registry =
-        (registry_dir / ("registry.hstream.native-onnx-v1." + host_arch_name() + ".bin")).string();
+        (registry_dir /
+         ("registry.hstream.native-onnx-v1." + host_arch_name() + "." + runtime.output_configuration + ".bin"))
+            .string();
     setenv("GST_REGISTRY", registry.c_str(), 1);
   }
 
@@ -419,21 +479,10 @@ void configure_pipeline_runtime_environment(const char* argv0) {
   prepend_env_path("LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib");
   prepend_env_path("LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
   stage_bazel_gst_plugins(root, bazel_bin);
-
-  const fs::path yolo_so = bazel_bin / "src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so";
-  if (fs::exists(yolo_so)) {
-    const fs::path lib_dir = root / "lib";
-    fs::create_directories(lib_dir, ec);
-    const fs::path link_path = lib_dir / "libnvdsinfer_custom_impl_Yolo.so";
-    if (!fs::exists(link_path) || fs::is_symlink(fs::symlink_status(link_path))) {
-      std::error_code link_ec;
-      const fs::path canonical = fs::canonical(yolo_so, link_ec);
-      if (!link_ec) {
-        fs::remove(link_path, link_ec);
-        fs::create_symlink(canonical, link_path, link_ec);
-      }
-    }
-  }
+  runtime_status = stage_bazel_runtime_libraries(runtime);
+  if (!runtime_status.ok())
+    return runtime_status;
+  return absl::OkStatus();
 }
 
 std::string format_duration_ns(uint64_t ns) {
@@ -5093,7 +5142,11 @@ int main(int argc, char* argv[]) {
     }
   }
 #endif
-  configure_pipeline_runtime_environment(argc > 0 ? argv[0] : nullptr);
+  const auto runtime_status = configure_pipeline_runtime_environment(argc > 0 ? argv[0] : nullptr);
+  if (!runtime_status.ok()) {
+    g_printerr("hstream-cli runtime setup failed: %s\n", runtime_status.ToString().c_str());
+    return 78;
+  }
   if (!std::getenv("HSTREAM_RUNTIME_ENV_READY")) {
     setenv("HSTREAM_RUNTIME_ENV_READY", "1", 1);
     if (argc > 0 && argv[0]) {

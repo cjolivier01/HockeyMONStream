@@ -26,7 +26,7 @@ property:
   maintain-aspect-ratio: 1
   symmetric-padding: 0
   parse-bbox-func-name: NvDsInferParseYolo
-  custom-lib-path: ../lib/libnvdsinfer_custom_impl_Yolo.so
+  custom-lib-path: libnvdsinfer_custom_impl_Yolo.so
   # Let DeepStream/TensorRT build+serialize the engine from the ONNX.
   # The YOLO custom engine builder path is for Darknet-style weights and prevents engine caching here.
 

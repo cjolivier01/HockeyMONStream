@@ -69,6 +69,13 @@ int main(int argc, char** argv) {
     std::ofstream(models / "detector_bf16.engine") << "prebuilt BF16 engine\n";
     fs::create_symlink("detector.onnx", models / "linked-detector.onnx");
     write_inference_config(configs / "infer.yaml", 0);
+    std::ofstream(configs / "loader.yaml") << "property:\n"
+                                              "  onnx-file: ../packaged-models/detector.onnx\n"
+                                              "  model-engine-file: /tmp/loader.engine\n"
+                                              "  custom-lib-path: libnvdsinfer_custom_impl_Yolo.so\n"
+                                              "  batch-size: 2\n"
+                                              "  gpu-id: 0\n"
+                                              "  network-mode: 0\n";
     std::ofstream(configs / "infer.txt") << "[property]\nonnx-file=detector.onnx\n";
     std::ofstream(configs / "linked.yaml") << "property:\n"
                                               "  onnx-file: ../packaged-models/linked-detector.onnx\n"
@@ -166,6 +173,19 @@ int main(int argc, char** argv) {
       ::waitpid(lock_probe, &probe_status, 0) == lock_probe && WIFEXITED(probe_status) &&
           WEXITSTATUS(probe_status) == 0,
       "concurrent cache probe must continue after the engine lock is released");
+
+  YAML::Node loader_pipeline = pipeline_for("loader.yaml");
+  ok &= expect(
+      hm::pipeline::PrepareTensorRtModelCache(loader_pipeline, configs).ok(),
+      "a loader-resolved custom inference library must prepare successfully");
+  const fs::path loader_runtime = loader_pipeline["primary-gie"]["config-file"].as<std::string>();
+  if (fs::is_regular_file(loader_runtime)) {
+    const YAML::Node loader_cached = YAML::LoadFile(loader_runtime.string());
+    ok &= expect(
+        loader_cached["property"]["custom-lib-path"].as<std::string>() == "libnvdsinfer_custom_impl_Yolo.so",
+        "a bare custom library name must remain loader-resolved in the runtime inference config");
+  }
+  hm::pipeline::ReleaseTensorRtModelCacheLocks();
 
   const fs::path fp32_runtime_directory = runtime_config.parent_path();
   write_inference_config(configs / "infer.yaml", 2);
