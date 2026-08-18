@@ -72,9 +72,44 @@ bool is_yaml(const fs::path& path) {
   return extension == ".yaml" || extension == ".yml";
 }
 
-bool is_path_property(const std::string& raw_key) {
+enum class InferencePropertyKind {
+  kOther,
+  kPath,
+  kPathList,
+};
+
+InferencePropertyKind inference_property_kind(const std::string& raw_key) {
   const std::string key = lowercase(raw_key);
-  return key.find("file") != std::string::npos || key.find("path") != std::string::npos;
+  if (key == "op-tensor-files")
+    return InferencePropertyKind::kPathList;
+  if (key == "model-engine-file" || key == "labelfile-path" || key == "int8-calib-file" || key == "ip-tensor-file" ||
+      key == "mean-file" || key == "custom-lib-path" || key == "custom-network-config" || key == "model-file" ||
+      key == "proto-file" || key == "uff-file" || key == "tlt-encoded-model" || key == "onnx-file") {
+    return InferencePropertyKind::kPath;
+  }
+  return InferencePropertyKind::kOther;
+}
+
+std::vector<std::string> split_path_list(const std::string& value) {
+  std::vector<std::string> paths;
+  size_t begin = 0;
+  while (true) {
+    const size_t separator = value.find(';', begin);
+    paths.push_back(value.substr(begin, separator - begin));
+    if (separator == std::string::npos)
+      return paths;
+    begin = separator + 1;
+  }
+}
+
+std::string join_path_list(const std::vector<std::string>& paths) {
+  std::ostringstream joined;
+  for (size_t index = 0; index < paths.size(); ++index) {
+    if (index != 0)
+      joined << ';';
+    joined << paths[index];
+  }
+  return joined.str();
 }
 
 bool is_loader_resolved_custom_library(const std::string& raw_key, const std::string& value) {
@@ -99,16 +134,25 @@ void relocate_inference_paths(YAML::Node properties, const fs::path& base, bool 
     return;
   for (auto property : properties) {
     const std::string key = property.first.as<std::string>();
-    if ((!include_model_engine && key == "model-engine-file") || !property.second.IsScalar() ||
-        !is_path_property(key)) {
+    const InferencePropertyKind kind = inference_property_kind(key);
+    if ((!include_model_engine && lowercase(key) == "model-engine-file") || !property.second.IsScalar() ||
+        kind == InferencePropertyKind::kOther) {
       continue;
     }
     const std::string value = property.second.as<std::string>();
     if (const auto staged = staged_custom_library_path(key, value); staged.has_value()) {
       properties[key] = staged->string();
-    } else if (!value.empty() && !is_loader_resolved_custom_library(key, value)) {
-      properties[key] = fs::absolute(resolve_path(value, base)).lexically_normal().string();
+      continue;
     }
+    if (is_loader_resolved_custom_library(key, value))
+      continue;
+    std::vector<std::string> paths =
+        kind == InferencePropertyKind::kPathList ? split_path_list(value) : std::vector<std::string>{value};
+    for (std::string& path : paths) {
+      if (!path.empty())
+        path = fs::absolute(resolve_path(path, base)).lexically_normal().string();
+    }
+    properties[key] = kind == InferencePropertyKind::kPathList ? join_path_list(paths) : paths.front();
   }
 }
 
@@ -249,7 +293,8 @@ absl::StatusOr<std::string> inference_build_digest(
       if (!property.first.IsScalar() || !property.second.IsScalar())
         continue;
       const std::string key = property.first.as<std::string>();
-      if (key == "model-engine-file" || !is_path_property(key))
+      const InferencePropertyKind kind = inference_property_kind(key);
+      if (lowercase(key) == "model-engine-file" || kind == InferencePropertyKind::kOther)
         continue;
       const std::string value = property.second.as<std::string>();
       if (is_loader_resolved_custom_library(key, value)) {
@@ -266,14 +311,21 @@ absl::StatusOr<std::string> inference_build_digest(
         fingerprint << "sha256:" << *hash << '\n';
         continue;
       }
-      const fs::path input = resolve_path(value, inference_path.parent_path());
-      fingerprint << "input:" << key << '=' << fs::absolute(input).lexically_normal().string() << '\n';
-      std::error_code error;
-      if (fs::is_regular_file(input, error) && !error) {
-        auto hash = hm::assets::AssetManager::Sha256(input);
-        if (!hash.ok())
-          return hash.status();
-        fingerprint << "sha256:" << *hash << '\n';
+      const std::vector<std::string> paths =
+          kind == InferencePropertyKind::kPathList ? split_path_list(value) : std::vector<std::string>{value};
+      for (size_t index = 0; index < paths.size(); ++index) {
+        const fs::path input = resolve_path(paths[index], inference_path.parent_path());
+        fingerprint << "input:" << key;
+        if (kind == InferencePropertyKind::kPathList)
+          fingerprint << '[' << index << ']';
+        fingerprint << '=' << fs::absolute(input).lexically_normal().string() << '\n';
+        std::error_code error;
+        if (fs::is_regular_file(input, error) && !error) {
+          auto hash = hm::assets::AssetManager::Sha256(input);
+          if (!hash.ok())
+            return hash.status();
+          fingerprint << "sha256:" << *hash << '\n';
+        }
       }
     }
   }
