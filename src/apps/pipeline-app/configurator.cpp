@@ -68,6 +68,56 @@ constexpr const char* kEnableFlagField = "enable";
 constexpr const char* kDefaultOutputVideoName = "tracking_output.mkv";
 constexpr const char* kLegacyDefaultOutputName = "out.mkv";
 
+absl::StatusOr<size_t> persisted_stitching_control_points(const YAML::Node& config) {
+  const auto value = get_node(config, "hstream_ui.stitching_calibration.control_points");
+  if (!value.has_value() || !value->IsScalar()) {
+    return absl::InvalidArgumentError("Pending stitching calibration must persist a positive control_points value");
+  }
+  try {
+    const uint64_t control_points = value->as<uint64_t>();
+    if (control_points == 0 || control_points > std::numeric_limits<size_t>::max()) {
+      return absl::InvalidArgumentError(
+          "Pending stitching calibration control_points must be a positive platform-sized integer");
+    }
+    return static_cast<size_t>(control_points);
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError(
+        "Invalid pending stitching calibration control_points: " + std::string(error.what()));
+  }
+}
+
+absl::Status enforce_stitching_control_points_environment(size_t control_points) {
+  const char* configured = g_getenv("HM_MAX_CONTROL_POINTS");
+  if (configured && *configured) {
+    if (!std::all_of(configured, configured + std::strlen(configured), [](unsigned char character) {
+          return std::isdigit(character);
+        })) {
+      return absl::InvalidArgumentError("HM_MAX_CONTROL_POINTS must be a positive integer");
+    }
+    size_t consumed = 0;
+    unsigned long long runtime_control_points = 0;
+    try {
+      runtime_control_points = std::stoull(configured, &consumed);
+    } catch (const std::exception&) {
+      return absl::InvalidArgumentError("HM_MAX_CONTROL_POINTS must be a positive integer");
+    }
+    if (consumed != std::strlen(configured) || runtime_control_points == 0 ||
+        runtime_control_points > std::numeric_limits<size_t>::max()) {
+      return absl::InvalidArgumentError("HM_MAX_CONTROL_POINTS must be a positive platform-sized integer");
+    }
+    if (runtime_control_points != control_points) {
+      return absl::InvalidArgumentError(TO_STRING(
+          "HM_MAX_CONTROL_POINTS=" << runtime_control_points
+                                   << " conflicts with pending stitching calibration control_points="
+                                   << control_points));
+    }
+  } else if (!g_setenv("HM_MAX_CONTROL_POINTS", std::to_string(control_points).c_str(), /*overwrite=*/TRUE)) {
+    return absl::InternalError("Unable to publish saved stitching control points to calibration workers");
+  }
+  std::cout << "Using persisted stitching calibration control-point limit " << control_points << std::endl;
+  return absl::OkStatus();
+}
+
 absl::Status sync_parent_directory(const fs::path& path) {
   const int directory_fd = ::open(path.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
   if (directory_fd < 0) {
@@ -2181,6 +2231,7 @@ absl::Status Configurator::complete_configuration(
       loaded_status == "pending" && !loaded_invalidation_id.empty();
   const std::string effective_invalidation_id =
       resume_pending_invalidation ? loaded_invalidation_id : clean_expected_invalidation_id;
+  std::optional<size_t> loaded_control_points;
   bool stitching_artifacts_precleaned = false;
   if (has_hmstitcher && !effective_invalidation_id.empty()) {
     bool loaded_invalidation_matches = loaded_invalidation_id == effective_invalidation_id;
@@ -2194,6 +2245,11 @@ absl::Status Configurator::complete_configuration(
     }
     if (!loaded_invalidation_matches) {
       return absl::AbortedError("Loaded stitching configuration was superseded before configuration");
+    }
+    if (loaded_status == "pending") {
+      size_t control_points = 0;
+      HM_ASSIGN_OR_RETURN(control_points, persisted_stitching_control_points(config_));
+      loaded_control_points = control_points;
     }
 
     // load_config() and this final launch boundary are separated by command-line
@@ -2214,6 +2270,11 @@ absl::Status Configurator::complete_configuration(
         return absl::AbortedError("Stitching configuration state changed before pipeline launch");
       }
       if (current_status == "pending") {
+        size_t current_control_points = 0;
+        HM_ASSIGN_OR_RETURN(current_control_points, persisted_stitching_control_points(current));
+        if (!loaded_control_points.has_value() || current_control_points != *loaded_control_points) {
+          return absl::AbortedError("Stitching control-point limit changed before pipeline launch");
+        }
         bool current_artifacts_invalidated = false;
         HM_ASSIGN_OR_RETURN(
             current_artifacts_invalidated,
@@ -2226,6 +2287,9 @@ absl::Status Configurator::complete_configuration(
     } catch (const YAML::Exception& error) {
       return absl::InvalidArgumentError(
           "Unable to revalidate stitching configuration before launch: " + std::string(error.what()));
+    }
+    if (loaded_control_points.has_value()) {
+      HM_RETURN_IF_ERROR(enforce_stitching_control_points_environment(*loaded_control_points));
     }
     active_stitching_invalidation_id_ = effective_invalidation_id;
   }

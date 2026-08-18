@@ -500,6 +500,7 @@ int main() {
   YAML::Node stale_force_config(YAML::NodeType::Map);
   stale_force_config["pipeline"]["application"]["complete-configuration"] = "1";
   stale_force_config["pipeline"]["hmstitcher"]["enable"] = "1";
+  stale_force_config["hstream_ui"]["stitching_calibration"]["control_points"] = 1500;
   stale_force_config["hstream_ui"]["stitching_calibration"]["status"] = "pending";
   stale_force_config["hstream_ui"]["stitching_calibration"]["stale_from"] = "input";
   stale_force_config["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = true;

@@ -105,7 +105,8 @@ class PipelineProcess {
       int time_limit_seconds = 0,
       const std::string& stitch_rotate_degrees = {},
       bool supply_runtime_invalidation = true,
-      int rink_inference_delay_ms = 0) {
+      int rink_inference_delay_ms = 0,
+      bool supply_control_points_environment = true) {
     int input_pipe[2];
     int output_pipe[2];
     if (::pipe(input_pipe) != 0 || ::pipe(output_pipe) != 0) {
@@ -132,7 +133,11 @@ class PipelineProcess {
         ::unsetenv("HSTREAM_CALIBRATION_PENDING");
         ::unsetenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
       }
-      ::setenv("HM_MAX_CONTROL_POINTS", std::to_string(control_points).c_str(), 1);
+      if (supply_control_points_environment) {
+        ::setenv("HM_MAX_CONTROL_POINTS", std::to_string(control_points).c_str(), 1);
+      } else {
+        ::unsetenv("HM_MAX_CONTROL_POINTS");
+      }
       ::setenv("USE_NEW_NVSTREAMMUX", "yes", 1);
       ::setenv("GST_DEBUG", "NVDS_APP:4", 1);
       ::setenv("GST_PLUGIN_PATH", plugin_directory.c_str(), 1);
@@ -604,8 +609,14 @@ int main(int argc, char** argv) {
                   /*stitch_frame_time=*/{},
                   /*time_limit_seconds=*/0,
                   /*stitch_rotate_degrees=*/{},
-                  /*supply_runtime_invalidation=*/false),
+                  /*supply_runtime_invalidation=*/false,
+                  /*rink_inference_delay_ms=*/0,
+                  /*supply_control_points_environment=*/false),
               "standalone launch must start from the saved invalidation") ||
+          !expect(
+              saved_config.WaitFor(
+                  "Using persisted stitching calibration control-point limit 128", 0, kCalibrationTimeout),
+              "standalone launch must restore the saved control-point limit without a pre-seeded environment") ||
           !expect(
               saved_config.WaitFor("HSTREAM_CALIBRATION stage=features status=started", 0, kCalibrationTimeout),
               "standalone launch must rebuild existing artifacts after a saved stitch-time change")) {

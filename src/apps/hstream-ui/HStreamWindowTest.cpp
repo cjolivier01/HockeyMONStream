@@ -4155,11 +4155,15 @@ bool test_camera_controls(HStreamWindow* window) {
   const bool saved_stitch_frame_time_ok =
       lookup_yaml_path(saved, {"stitching", "stitch_frame_time"}, &saved_stitch_frame_time) &&
       saved_stitch_frame_time.IsScalar() && saved_stitch_frame_time.as<std::string>() == "00:00:07";
+  YAML::Node saved_calibration_control_points;
   YAML::Node saved_calibration_status;
   YAML::Node saved_calibration_stale_from;
   YAML::Node saved_calibration_artifacts_invalidated;
   YAML::Node saved_calibration_invalidation_id;
   const bool stitch_frame_time_invalidated_calibration =
+      lookup_yaml_path(
+          saved, {"hstream_ui", "stitching_calibration", "control_points"}, &saved_calibration_control_points) &&
+      saved_calibration_control_points.IsScalar() && saved_calibration_control_points.as<int>() == 1500 &&
       lookup_yaml_path(saved, {"hstream_ui", "stitching_calibration", "status"}, &saved_calibration_status) &&
       saved_calibration_status.IsScalar() && saved_calibration_status.as<std::string>() == "pending" &&
       lookup_yaml_path(saved, {"hstream_ui", "stitching_calibration", "stale_from"}, &saved_calibration_stale_from) &&

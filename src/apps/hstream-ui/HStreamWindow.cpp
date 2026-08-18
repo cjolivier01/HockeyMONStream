@@ -6201,6 +6201,7 @@ bool HStreamWindow::applySavedControlConfig(
   }
   if (stitch_frame_time_changed) {
     YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+    calibration["control_points"] = stitchingCalibrationControlPoints();
     calibration["status"] = "pending";
     calibration["stale_from"] = "input";
     calibration["artifacts_invalidated"] = false;
