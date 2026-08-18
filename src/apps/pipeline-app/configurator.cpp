@@ -2111,7 +2111,9 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
   uint64_t current_time_ns = 0;
   HM_ASSIGN_OR_RETURN(current_time_ns, private_stitch_frame_time(latest));
   const bool changed = current_time_ns != requested_time_ns;
-  if (changed) {
+  const bool remove_explicit_default =
+      normalized_stitch_frame_time.empty() && get_node(latest, "stitching.stitch_frame_time").has_value();
+  if (changed || remove_explicit_default) {
     std::string invalidation_id = expected_invalidation_id;
     if (!invalidation_id.empty()) {
       const YAML::Node current_calibration = latest["hstream_ui"]["stitching_calibration"];
@@ -2125,7 +2127,7 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
       if ((current_status != "pending" && current_status != "complete") || current_owner != invalidation_id) {
         return absl::AbortedError("Stitch-frame override invalidation owner was superseded before reconciliation");
       }
-    } else {
+    } else if (changed) {
       gchar* generated_invalidation_id = g_uuid_string_random();
       if (!generated_invalidation_id)
         return absl::InternalError("Unable to create a stitch-frame invalidation ID");
@@ -2139,34 +2141,36 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
       latest["stitching"]["stitch_frame_time"] = normalized_stitch_frame_time;
     }
 
-    size_t control_points = kDefaultStitchingControlPoints;
-    if (get_node(latest, "hstream_ui.stitching_calibration.control_points").has_value()) {
-      HM_ASSIGN_OR_RETURN(control_points, persisted_stitching_control_points(latest));
-    } else if (const char* configured = g_getenv("HM_MAX_CONTROL_POINTS"); configured && *configured) {
-      if (!std::all_of(configured, configured + std::strlen(configured), [](unsigned char character) {
-            return std::isdigit(character);
-          })) {
-        return absl::InvalidArgumentError("HM_MAX_CONTROL_POINTS must be a positive integer");
+    if (changed) {
+      size_t control_points = kDefaultStitchingControlPoints;
+      if (get_node(latest, "hstream_ui.stitching_calibration.control_points").has_value()) {
+        HM_ASSIGN_OR_RETURN(control_points, persisted_stitching_control_points(latest));
+      } else if (const char* configured = g_getenv("HM_MAX_CONTROL_POINTS"); configured && *configured) {
+        if (!std::all_of(configured, configured + std::strlen(configured), [](unsigned char character) {
+              return std::isdigit(character);
+            })) {
+          return absl::InvalidArgumentError("HM_MAX_CONTROL_POINTS must be a positive integer");
+        }
+        size_t consumed = 0;
+        unsigned long long parsed = 0;
+        try {
+          parsed = std::stoull(configured, &consumed);
+        } catch (const std::exception&) {
+          return absl::InvalidArgumentError("HM_MAX_CONTROL_POINTS must be a positive integer");
+        }
+        if (consumed != std::strlen(configured) || parsed == 0 || parsed > std::numeric_limits<size_t>::max()) {
+          return absl::InvalidArgumentError("HM_MAX_CONTROL_POINTS must be a positive platform-sized integer");
+        }
+        control_points = static_cast<size_t>(parsed);
       }
-      size_t consumed = 0;
-      unsigned long long parsed = 0;
-      try {
-        parsed = std::stoull(configured, &consumed);
-      } catch (const std::exception&) {
-        return absl::InvalidArgumentError("HM_MAX_CONTROL_POINTS must be a positive integer");
-      }
-      if (consumed != std::strlen(configured) || parsed == 0 || parsed > std::numeric_limits<size_t>::max()) {
-        return absl::InvalidArgumentError("HM_MAX_CONTROL_POINTS must be a positive platform-sized integer");
-      }
-      control_points = static_cast<size_t>(parsed);
-    }
 
-    YAML::Node calibration = latest["hstream_ui"]["stitching_calibration"];
-    calibration["control_points"] = control_points;
-    calibration["status"] = "pending";
-    calibration["stale_from"] = "input";
-    calibration["artifacts_invalidated"] = false;
-    calibration["invalidation_id"] = invalidation_id;
+      YAML::Node calibration = latest["hstream_ui"]["stitching_calibration"];
+      calibration["control_points"] = control_points;
+      calibration["status"] = "pending";
+      calibration["stale_from"] = "input";
+      calibration["artifacts_invalidated"] = false;
+      calibration["invalidation_id"] = invalidation_id;
+    }
 
     const absl::Status publish = stitching::publish_game_config(game_dir, YAML::Dump(latest) + "\n");
     if (!publish.ok())

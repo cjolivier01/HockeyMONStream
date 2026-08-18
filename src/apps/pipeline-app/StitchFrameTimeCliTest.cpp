@@ -81,6 +81,7 @@ int main(int argc, char** argv) {
   const fs::path game_dir = game_root / "malformed-config";
   const fs::path conflict_game_dir = game_root / "control-point-conflict";
   const fs::path configured_game_dir = game_root / "configured-game";
+  const fs::path canonical_zero_game_dir = game_root / "canonical-zero-game";
   const fs::path pipeline_config = root / "pipeline.yaml";
   const fs::path nonstitch_pipeline_config = root / "nonstitch-pipeline.yaml";
   const fs::path disabled_stitch_pipeline_config = root / "disabled-stitch-pipeline.yaml";
@@ -92,6 +93,7 @@ int main(int argc, char** argv) {
   fs::create_directories(game_dir);
   fs::create_directories(conflict_game_dir);
   fs::create_directories(configured_game_dir);
+  fs::create_directories(canonical_zero_game_dir);
   std::ofstream(game_dir / "config.yaml") << "stitching:\n  stitch_frame_time:\n    - 00:00:07\n";
   std::ofstream(pipeline_config) << "application:\n  stage: 0\n";
   std::ofstream(nonstitch_pipeline_config) << "application:\n"
@@ -196,6 +198,36 @@ int main(int argc, char** argv) {
       zero_calibration["artifacts_invalidated"].as<bool>(true) || zero_owner.empty() || zero_owner == nonzero_owner) {
     std::cerr << "FAIL: configured-game zero CLI override was not removed and invalidated from input\n"
               << YAML::Dump(configured_after_zero) << '\n';
+    fs::remove_all(root);
+    return 1;
+  }
+  std::ofstream(canonical_zero_game_dir / "config.yaml") << "stitching:\n"
+                                                         << "  stitch_frame_time: 00:00:00.000\n"
+                                                         << "hstream_ui:\n"
+                                                         << "  stitching_calibration:\n"
+                                                         << "    control_points: 750\n"
+                                                         << "    status: complete\n"
+                                                         << "    invalidation_id: canonical-zero-owner\n";
+  const int canonical_zero_exit = run_and_get_exit_code(
+      argv[1],
+      {"--game-id=canonical-zero-game",
+       "--cfg-file=" + configured_pipeline_config.string(),
+       "--stitch-frame-time=00:00:00",
+       "--clean"},
+      game_root);
+  if (canonical_zero_exit != 0) {
+    std::cerr << "FAIL: explicit default stitch-frame time was not canonicalized successfully\n";
+    fs::remove_all(root);
+    return 1;
+  }
+  const YAML::Node canonical_zero_after = YAML::LoadFile((canonical_zero_game_dir / "config.yaml").string());
+  const YAML::Node canonical_zero_stitching = canonical_zero_after["stitching"];
+  const YAML::Node canonical_zero_calibration = canonical_zero_after["hstream_ui"]["stitching_calibration"];
+  if ((canonical_zero_stitching && canonical_zero_stitching["stitch_frame_time"]) ||
+      canonical_zero_calibration["status"].as<std::string>("") != "complete" ||
+      canonical_zero_calibration["invalidation_id"].as<std::string>("") != "canonical-zero-owner") {
+    std::cerr << "FAIL: explicit default stitch-frame time was not removed without invalidating calibration\n"
+              << YAML::Dump(canonical_zero_after) << '\n';
     fs::remove_all(root);
     return 1;
   }
