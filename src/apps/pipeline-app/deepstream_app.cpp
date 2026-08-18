@@ -431,6 +431,9 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       break;
     }
     case GST_MESSAGE_ELEMENT: {
+      if (appCtx->element_message_cb && appCtx->element_message_cb(appCtx, message)) {
+        break;
+      }
       if (hm::gst_message_is_force_pipeline_eos(message)) {
         bool app_quit = false;
         if (hm::gst_message_parse_force_pipeline_eos(message, &app_quit)) {

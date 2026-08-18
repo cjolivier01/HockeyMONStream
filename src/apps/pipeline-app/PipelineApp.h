@@ -137,6 +137,11 @@ class PipelineApplication {
       const std::vector<std::tuple<std::string, std::string, std::string>>& assignments);
   static gboolean event_thread_func_static(gpointer arg);
   gboolean event_thread_func();
+  static gboolean handle_element_message_static(AppCtx* app_ctx, GstMessage* message);
+  gboolean handle_element_message(AppCtx* app_ctx, GstMessage* message);
+  static gboolean rewind_after_stitching_calibration_static(gpointer arg);
+  gboolean rewind_after_stitching_calibration(AppCtx* app_ctx);
+  uint64_t initial_pipeline_position_ns(const HmApp* app_ctx) const;
   static int get_source_id_from_coordinates(float x_rel, float y_rel, AppCtx* app_ctx);
   static gpointer nvds_x_event_thread_static(gpointer data);
   gpointer nvds_x_event_thread();
@@ -228,6 +233,11 @@ class PipelineApplication {
   gboolean rrowsel_, selecting_;
   std::unique_ptr<std::thread> editor_thread_;
   uint64_t start_time_ns_{0};
+  uint64_t stitch_frame_time_ns_{0};
+  bool stitch_frame_time_set_{false};
+  bool stitch_frame_time_loaded_from_config_{false};
+  std::set<const AppCtx*> stitch_frame_rewound_contexts_;
+  std::set<const AppCtx*> stitch_frame_rewind_pending_contexts_;
   uint64_t first_pts_ns_{0};
   bool have_first_pts_{false};
   std::array<uint64_t, MAX_SOURCE_BINS> first_frame_numbers_by_source_{};

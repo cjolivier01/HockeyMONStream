@@ -93,6 +93,10 @@ class Configurator {
     return config_;
   }
 
+  bool stitching_calibration_required() const {
+    return stitching_calibration_required_;
+  }
+
   absl::Status complete_configuration(
       bool force,
       bool clean_stitching_artifacts = false,
@@ -181,6 +185,7 @@ class Configurator {
   YAML::Node private_config_;
   YAML::Node persisted_private_config_;
   std::string active_stitching_invalidation_id_;
+  bool stitching_calibration_required_{false};
   mutable std::map<std::string, int> archive_lock_fds_;
   mutable std::map<std::string, int> archive_work_lock_fds_;
   mutable std::map<std::string, std::filesystem::path> archive_run_paths_;

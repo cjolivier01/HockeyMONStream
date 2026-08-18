@@ -1075,11 +1075,14 @@ absl::Status Configurator::setup_stitcher_and_masks(
     bool& has_hmstitcher) {
   has_hmstitcher = get_node(pipeline, "hmstitcher")->IsDefined();
   if (has_hmstitcher) {
-    if (get_node_value(pipeline, "hmstitcher.enable", FALSE) &&
-        get_node_value(pipeline, "hmstitcher.configure-only", FALSE)) {
+    const bool enabled = get_node_value(pipeline, "hmstitcher.enable", FALSE);
+    const bool configure_only = get_node_value(pipeline, "hmstitcher.configure-only", FALSE);
+    const bool one_pass_mode = get_node_value(pipeline, "hmstitcher.one-pass-mode", FALSE);
+    if (enabled && (configure_only || one_pass_mode)) {
       bool is_configured;
       HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(game_dir));
-      if (is_configured && !force) {
+      stitching_calibration_required_ = one_pass_mode && !is_configured;
+      if (configure_only && is_configured && !force) {
         return absl::CancelledError("Stitching is already configured.");
       }
     }
@@ -2136,6 +2139,7 @@ absl::Status Configurator::complete_configuration(
     bool show_render_sink,
     double show_render_scale) {
   active_stitching_invalidation_id_.clear();
+  stitching_calibration_required_ = false;
   const bool clean_requested = clean_stitching_artifacts || clean_stitching_from_control_points;
   const bool clean_from_control_points_only = clean_stitching_from_control_points && !clean_stitching_artifacts;
   if (!get_node_value(config_, "pipeline.application.complete-configuration", false)) {

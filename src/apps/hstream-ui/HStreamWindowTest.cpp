@@ -32,6 +32,7 @@
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTextEdit>
+#include <QtWidgets/QTimeEdit>
 #include <QtWidgets/QToolButton>
 
 #include <yaml-cpp/yaml.h>
@@ -1882,6 +1883,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* restart = require_child<QPushButton>(window, "restartStageButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* control_points = require_child<QSpinBox>(window, "controlPointsSpin");
+  auto* stitch_frame_time = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
   auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
@@ -1917,13 +1919,13 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* setup_row = require_child<QWidget>(window, "setupControlsRow");
   auto* log_panel = require_child<QWidget>(window, "logPanel");
   auto* pipeline_process = window->findChild<QProcess*>();
-  if (!stop || !start || !pause || !restart || !mode || !control_points || !game_id || !rotate || !max_speed_x ||
-      !render_video || !log || !clear_log || !main_log_splitter || !setup_preview_splitter || !output_routing ||
-      !preview_tabs || !program_host || !preview_surface || !preview_target || !stitched_surface || !stitched_target ||
-      !camera1_host || !camera1_surface || !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface ||
-      !external_notice || !camera1_notice || !stitched_status || !program_controls || !program_controls_toggle ||
-      !stitched_controls || !program_control_tabs || !stitched_control_tabs || !program_focus || !top_bar ||
-      !setup_row || !log_panel || !playback_progress || !pipeline_process) {
+  if (!stop || !start || !pause || !restart || !mode || !control_points || !stitch_frame_time || !game_id || !rotate ||
+      !max_speed_x || !render_video || !log || !clear_log || !main_log_splitter || !setup_preview_splitter ||
+      !output_routing || !preview_tabs || !program_host || !preview_surface || !preview_target || !stitched_surface ||
+      !stitched_target || !camera1_host || !camera1_surface || !camera1_target || !camera1_focus || !camera2_surface ||
+      !camera3_surface || !external_notice || !camera1_notice || !stitched_status || !program_controls ||
+      !program_controls_toggle || !stitched_controls || !program_control_tabs || !stitched_control_tabs ||
+      !program_focus || !top_bar || !setup_row || !log_panel || !playback_progress || !pipeline_process) {
     return false;
   }
 
@@ -2068,7 +2070,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
   game_id->setText(valid_game_id);
-  if (!expect(control_points->value() == 1500, "Stitching calibration CP default should be 1500")) {
+  if (!expect(control_points->value() == 1500, "Stitching calibration CP default should be 1500") ||
+      !expect(
+          stitch_frame_time->time() == QTime(0, 0, 0) &&
+              stitch_frame_time->mapTo(window, QPoint(0, 0)).x() > control_points->mapTo(window, QPoint(0, 0)).x(),
+          "Stitch-frame time should default to 00:00:00 immediately to the right of control points")) {
     return false;
   }
 
@@ -3694,15 +3700,17 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
+  auto* stitch_frame_time = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
   if (!rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right || !stop_delay || !apply_to_fast ||
       !max_accel_x || !max_speed_x || !max_speed_y || !reset || !save || !create || !game_id || !start || !stop ||
-      !mode) {
+      !mode || !stitch_frame_time) {
     return false;
   }
 
   const QStringList documented_controls = {
       "runModeCombo",
       "controlPointsSpin",
+      "stitchFrameTimeEdit",
       "renderVideoCheck",
       "startPipelineButton",
       "pausePipelineButton",
@@ -3834,6 +3842,7 @@ bool test_camera_controls(HStreamWindow* window) {
   fixed_edge_right->setValue(750);
   stop_delay->setValue(14);
   max_speed_x->setValue(450);
+  stitch_frame_time->setTime(QTime(0, 0, 7));
   if (!expect(
           window->cameraControlValue("Stitch_Rotate_Degrees") == 72,
           "Stitch rotation slider should update controller state") ||
@@ -3846,6 +3855,9 @@ bool test_camera_controls(HStreamWindow* window) {
           window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 14,
           "Tracker braking slider should update controller state") ||
       !expect(window->cameraControlValue("Max_Speed_X_x10") == 450, "Speed slider should update controller state") ||
+      !expect(
+          stitch_frame_time->time() == QTime(0, 0, 7),
+          "Stitch-frame control should accept an HH:MM:SS calibration timestamp") ||
       !expect(save->isEnabled(), "Changing a preset-backed control should enable Save Preset")) {
     return false;
   }
@@ -4069,6 +4081,24 @@ bool test_camera_controls(HStreamWindow* window) {
   YAML::Node saved_rotation;
   const bool has_saved_rotation = lookup_yaml_path(saved, {"stitching", "post_stitch_rotate_degrees"}, &saved_rotation);
   const bool saved_rotation_ok = saved_rotation && saved_rotation.IsScalar() && saved_rotation.as<int>() == 18;
+  YAML::Node saved_stitch_frame_time;
+  const bool saved_stitch_frame_time_ok =
+      lookup_yaml_path(saved, {"stitching", "stitch_frame_time"}, &saved_stitch_frame_time) &&
+      saved_stitch_frame_time.IsScalar() && saved_stitch_frame_time.as<std::string>() == "00:00:07";
+  YAML::Node saved_calibration_status;
+  YAML::Node saved_calibration_stale_from;
+  YAML::Node saved_calibration_artifacts_invalidated;
+  const bool stitch_frame_time_invalidated_calibration =
+      lookup_yaml_path(saved, {"hstream_ui", "stitching_calibration", "status"}, &saved_calibration_status) &&
+      saved_calibration_status.IsScalar() && saved_calibration_status.as<std::string>() == "pending" &&
+      lookup_yaml_path(saved, {"hstream_ui", "stitching_calibration", "stale_from"}, &saved_calibration_stale_from) &&
+      saved_calibration_stale_from.IsScalar() && saved_calibration_stale_from.as<std::string>() == "input" &&
+      lookup_yaml_path(
+          saved,
+          {"hstream_ui", "stitching_calibration", "artifacts_invalidated"},
+          &saved_calibration_artifacts_invalidated) &&
+      saved_calibration_artifacts_invalidated.IsScalar() && !saved_calibration_artifacts_invalidated.as<bool>() &&
+      !lookup_yaml_path(saved, {"hstream_ui", "stitching_calibration", "invalidation_id"}, nullptr);
   YAML::Node saved_fixed_edge_rotation;
   const bool has_saved_fixed_edge_rotation =
       lookup_yaml_path(saved, {"rink", "camera", "fixed_edge_rotation_angle"}, &saved_fixed_edge_rotation);
@@ -4109,6 +4139,11 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!expect(window->logText().contains("preset saved"), "Save preset button should log persistence") ||
       !expect(saved_controls_ok, "Save preset should persist non-default control values") ||
       !expect(!has_default_follower, "Save preset should omit default control values") ||
+      !expect(
+          saved_stitch_frame_time_ok, "Save preset should persist a non-default stitching.stitch_frame_time value") ||
+      !expect(
+          stitch_frame_time_invalidated_calibration,
+          "Changing stitch-frame time should mark calibration stale from the input without retaining an owner") ||
       !expect(has_saved_rotation && saved_rotation_ok, "Stitch slider should save the runtime rotation config") ||
       !expect(
           saved_fixed_edge_rotation_ok,
@@ -4255,6 +4290,12 @@ bool test_camera_controls(HStreamWindow* window) {
     QTest::qWait(10);
   }
   if (!expect(window->pipelineStateText() == "PLAYING", "Fake runner should start for live playtracker control test")) {
+    return false;
+  }
+  if (!expect(
+          window->logText().contains("--stitch-frame-time=00:00:07"),
+          "A saved non-default stitch-frame time should be passed to hstream-cli")) {
+    activate(stop);
     return false;
   }
   const int rotation_commands_before =
@@ -4644,6 +4685,7 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(create);
   rotate->setValue(72);
+  stitch_frame_time->setTime(QTime(0, 0, 0));
   activate(save);
   const YAML::Node after_aged_active_save = YAML::LoadFile(config.string());
   YAML::Node active_sidecar_node;
@@ -4652,8 +4694,10 @@ bool test_camera_controls(HStreamWindow* window) {
       active_sidecar_node.IsScalar() && active_sidecar_node.as<std::string>() == aged_active_sidecar.string() &&
       fs::exists(aged_active_sidecar);
   return expect(
-      retained_aged_active_sidecar,
-      "Preset GC should never delete the aged playtracker sidecar referenced by the committed config");
+             retained_aged_active_sidecar,
+             "Preset GC should never delete the aged playtracker sidecar referenced by the committed config") &&
+      expect(!lookup_yaml_path(after_aged_active_save, {"stitching", "stitch_frame_time"}, nullptr),
+             "Saving the default stitch-frame time should omit stitching.stitch_frame_time");
 }
 
 bool test_window_close_stops_pipeline(HStreamWindow* window) {

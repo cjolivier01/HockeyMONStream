@@ -526,6 +526,7 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
     app_ctx->car_class_id = -1;
     app_ctx->index = i;
     app_ctx->active_source_index = -1;
+    app_ctx->element_message_cb = handle_element_message_static;
     if (show_bbox_text_)
       app_ctx->show_bbox_text = TRUE;
     if (input_uris_ && input_uris_[i]) {
@@ -639,6 +640,24 @@ absl::Status PipelineApplication::configureInstances(
         return configuration_status;
       }
       YAML::Node config = app_ctx->configurator().config();
+      if (!stitch_frame_time_set_) {
+        const std::string configured_stitch_frame_time =
+            hm::get_node_value(config, "stitching.stitch_frame_time", std::string());
+        uint64_t configured_stitch_frame_time_ns = 0;
+        if (!configured_stitch_frame_time.empty()) {
+          try {
+            configured_stitch_frame_time_ns = hm::hhmmss_to_nanoseconds(configured_stitch_frame_time);
+          } catch (const std::exception& error) {
+            return absl::InvalidArgumentError(TO_STRING("Invalid stitching.stitch_frame_time: " << error.what()));
+          }
+        }
+        if (stitch_frame_time_loaded_from_config_ && stitch_frame_time_ns_ != configured_stitch_frame_time_ns) {
+          return absl::InvalidArgumentError(
+              "All pipeline instances must use the same stitching.stitch_frame_time value");
+        }
+        stitch_frame_time_ns_ = configured_stitch_frame_time_ns;
+        stitch_frame_time_loaded_from_config_ = true;
+      }
       // std::cout << config["pipeline"] << "\n";
       if (!config["pipeline"].IsDefined()) {
         NVGSTDS_ERR_MSG_V("Config file '%s' did not produce a pipeline section", app_ctx->app_config_file().c_str());
@@ -691,9 +710,10 @@ absl::Status PipelineApplication::createPipelines(
       NVGSTDS_ERR_MSG_V("Failed to create pipeline");
       return absl::InternalError("Failed to create pipeline");
     }
+    const uint64_t initial_position_ns = initial_pipeline_position_ns(app_contexts[i].get());
     HM_RETURN_IF_ERROR(
         app_contexts[i]->configurator().prepare_initial_pipeline_position(
-            app_contexts[i]->pipeline, app_contexts[i]->config, start_time_ns_));
+            app_contexts[i]->pipeline, app_contexts[i]->config, initial_position_ns));
     if (dump_pipeline_dot_) {
       std::string s = "pipeline";
       if (i) {
@@ -1477,8 +1497,9 @@ absl::Status PipelineApplication::playPipelines(
     CleanupStack& cleanup_stack) {
   absl::Status status;
   for (guint i = 0; i < app_contexts.size(); i++) {
+    const uint64_t initial_position_ns = initial_pipeline_position_ns(app_contexts[i].get());
     status = app_contexts[i]->configurator().post_config_pipeline(
-        app_contexts[i]->pipeline, app_contexts[i]->config, start_time_ns_);
+        app_contexts[i]->pipeline, app_contexts[i]->config, initial_position_ns);
     if (!status.ok()) {
       std::cerr << status << std::endl;
       g_print("\npipeline post-configuration failed.\n");
@@ -1613,6 +1634,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   absl::Status status = absl::OkStatus();
   GError* error = nullptr;
   char* start_time{nullptr};
+  char* stitch_frame_time{nullptr};
   std::vector<std::string> normalized_args = normalize_cli_args(argc, argv);
   std::vector<char*> normalized_argv = make_mutable_argv(normalized_args);
   int normalized_argc = static_cast<int>(normalized_argv.size());
@@ -1903,6 +1925,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        "Apply stitching changes only if this invalidation is still current",
        "ID"},
       {"start-time", 's', 0, G_OPTION_ARG_STRING, &start_time, "Start time", nullptr},
+      {"stitch-frame-time",
+       0,
+       0,
+       G_OPTION_ARG_STRING,
+       &stitch_frame_time,
+       "Use the frame at this timestamp for one-pass stitching calibration",
+       "HH:MM:SS"},
       {"input-uri",
        'i',
        0,
@@ -1996,6 +2025,11 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   if (start_time) {
     start_time_ns_ = hm::hhmmss_to_nanoseconds(start_time);
     g_free(start_time);
+  }
+  if (stitch_frame_time) {
+    stitch_frame_time_ns_ = hm::hhmmss_to_nanoseconds(stitch_frame_time);
+    stitch_frame_time_set_ = true;
+    g_free(stitch_frame_time);
   }
 
   if (progress_ui_enabled_) {
@@ -3706,6 +3740,71 @@ gboolean PipelineApplication::event_thread_func_static(gpointer arg) {
   return TRUE;
 }
 
+uint64_t PipelineApplication::initial_pipeline_position_ns(const HmApp* app_ctx) const {
+  if (app_ctx && stitch_frame_time_ns_ > 0 && app_ctx->configurator().stitching_calibration_required() &&
+      stitch_frame_rewound_contexts_.count(app_ctx) == 0) {
+    return stitch_frame_time_ns_;
+  }
+  return start_time_ns_;
+}
+
+gboolean PipelineApplication::handle_element_message_static(AppCtx* app_ctx, GstMessage* message) {
+  return instance_ ? instance_->handle_element_message(app_ctx, message) : FALSE;
+}
+
+gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage* message) {
+  const GstStructure* structure = message ? gst_message_get_structure(message) : nullptr;
+  if (!structure || !gst_structure_has_name(structure, "hstream-stitching-calibration-complete")) {
+    return FALSE;
+  }
+  auto* hm_app = static_cast<HmApp*>(app_ctx);
+  if (!hm_app || stitch_frame_time_ns_ == 0 || !hm_app->configurator().stitching_calibration_required() ||
+      stitch_frame_rewound_contexts_.count(app_ctx) != 0 || stitch_frame_rewind_pending_contexts_.count(app_ctx) != 0) {
+    return TRUE;
+  }
+  stitch_frame_rewind_pending_contexts_.insert(app_ctx);
+  g_idle_add(rewind_after_stitching_calibration_static, app_ctx);
+  return TRUE;
+}
+
+gboolean PipelineApplication::rewind_after_stitching_calibration_static(gpointer arg) {
+  if (instance_) {
+    instance_->rewind_after_stitching_calibration(static_cast<AppCtx*>(arg));
+  }
+  return G_SOURCE_REMOVE;
+}
+
+gboolean PipelineApplication::rewind_after_stitching_calibration(AppCtx* app_ctx) {
+  if (!app_ctx || stitch_frame_rewind_pending_contexts_.erase(app_ctx) == 0 ||
+      stitch_frame_rewound_contexts_.count(app_ctx) != 0) {
+    return FALSE;
+  }
+  stitch_frame_rewound_contexts_.insert(app_ctx);
+  g_print(
+      "hmstitcher: calibration frame complete; restarting playback at %" GST_TIME_FORMAT "\n",
+      GST_TIME_ARGS(start_time_ns_));
+  have_first_pts_ = false;
+  have_first_frame_by_source_.fill(false);
+  first_frame_numbers_by_source_.fill(0);
+  for (auto& [index, state] : progress_states_) {
+    (void)index;
+    state.initialized = false;
+    state.total_video_ns = GST_CLOCK_TIME_NONE;
+    state.rate_estimator.reset();
+  }
+  ui_progress_by_stage_.erase(current_stage_);
+  if (!recreate_pipeline_thread_func(app_ctx)) {
+    app_ctx->return_value = -1;
+    app_ctx->quit = TRUE;
+    if (main_loop_) {
+      g_main_loop_quit(main_loop_);
+    }
+    return FALSE;
+  }
+  g_print("hmstitcher: playback restarted after stitch-frame calibration\n");
+  return TRUE;
+}
+
 gboolean PipelineApplication::event_thread_func() {
   guint i;
   gboolean ret = TRUE;
@@ -4092,8 +4191,9 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
     return FALSE;
   }
   auto* hm_app = static_cast<HmApp*>(app_ctx_ptr);
+  const uint64_t initial_position_ns = initial_pipeline_position_ns(hm_app);
   const absl::Status position_status =
-      hm_app->configurator().prepare_initial_pipeline_position(hm_app->pipeline, hm_app->config, start_time_ns_);
+      hm_app->configurator().prepare_initial_pipeline_position(hm_app->pipeline, hm_app->config, initial_position_ns);
   if (!position_status.ok()) {
     NVGSTDS_ERR_MSG_V("Failed to restore initial pipeline position: %s", position_status.ToString().c_str());
     return FALSE;
@@ -4112,6 +4212,12 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
   }
   if (gst_element_set_state(app_ctx_ptr->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
     NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
+    return FALSE;
+  }
+  const absl::Status post_config_status =
+      hm_app->configurator().post_config_pipeline(hm_app->pipeline, hm_app->config, initial_position_ns);
+  if (!post_config_status.ok()) {
+    NVGSTDS_ERR_MSG_V("Failed to restore post-configuration position: %s", post_config_status.ToString().c_str());
     return FALSE;
   }
   for (i = 0; i < app_ctx_ptr->config.num_sink_sub_bins; i++) {

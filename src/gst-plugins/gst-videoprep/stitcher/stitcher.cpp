@@ -577,6 +577,7 @@ absl::Status StitcherPriv::reload_stitcher() {
 }
 
 absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
+  owner_element_ = params && params->m_element ? GST_ELEMENT(params->m_element) : nullptr;
   if (params->config_file) {
     config_file_ = params->config_file;
   }
@@ -1389,6 +1390,12 @@ absl::Status StitcherPriv::GenerateOutput(
         report_calibration_progress("calibration", "complete", "Stitching calibration is complete");
         g_print("hmstitcher: one-pass stitching configuration complete\n");
         std::fflush(stdout);
+        if (owner_element_) {
+          gst_element_post_message(
+              owner_element_,
+              gst_message_new_element(
+                  GST_OBJECT(owner_element_), gst_structure_new_empty("hstream-stitching-calibration-complete")));
+        }
         calibration_completion_reported_ = true;
       }
     }

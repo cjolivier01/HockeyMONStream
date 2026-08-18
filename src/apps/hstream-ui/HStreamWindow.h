@@ -12,6 +12,7 @@
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTextEdit>
+#include <QtWidgets/QTimeEdit>
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidget>
 
@@ -246,6 +247,7 @@ class HStreamWindow : public QMainWindow {
   bool setupPretrainedAssets(const QStringList& pipeline_args);
   void logMissingTensorRtEngineCaches(const QStringList& pipeline_args);
   int stitchingCalibrationControlPoints() const;
+  QString stitchFrameTime() const;
   bool prepareStitchingCalibrationRun(
       const QString& runner,
       const QString& working_dir,
@@ -303,6 +305,7 @@ class HStreamWindow : public QMainWindow {
   QComboBox* game_selector_{nullptr};
   QComboBox* run_mode_selector_{nullptr};
   QSpinBox* control_points_spin_{nullptr};
+  QTimeEdit* stitch_frame_time_edit_{nullptr};
   QLineEdit* game_id_edit_{nullptr};
   QLineEdit* video_path_edit_{nullptr};
   QListWidget* video_set_list_{nullptr};
@@ -405,6 +408,7 @@ class HStreamWindow : public QMainWindow {
   bool archive_finalize_failed_{false};
   bool active_run_is_calibration_{false};
   int active_calibration_control_points_{0};
+  QString active_stitch_frame_time_;
   QString active_calibration_start_stage_;
   QString active_calibration_invalidation_id_;
   bool calibration_restart_requested_{false};
@@ -432,6 +436,7 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, int> camera_defaults_;
   std::map<QString, int> saved_camera_controls_;
+  QString saved_stitch_frame_time_;
   std::set<QString> preset_save_retry_game_ids_;
   std::vector<PendingRuntimeControl> pending_runtime_controls_;
   std::map<quint64, RuntimeControlBatch> runtime_control_batches_;

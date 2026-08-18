@@ -133,6 +133,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   std::string hugin_generation_id_ ABSL_GUARDED_BY(stitcher_mu_);
   std::string config_file_;
   std::string calibration_invalidation_id_;
+  GstElement* owner_element_{nullptr};
   std::mutex process_mu_;
   size_t process_pass_{0};
   bool configure_only_{false};
