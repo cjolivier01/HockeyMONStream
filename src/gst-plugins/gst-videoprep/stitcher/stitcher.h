@@ -46,6 +46,17 @@ struct OnePassCalibrationProgressPlan {
   bool complete;
 };
 
+class OnePassCalibrationCompletionLatch {
+ public:
+  bool delivered() const;
+  bool try_begin_delivery();
+  void finish_delivery(bool delivered);
+
+ private:
+  // 0 = available, 1 = a stitcher is posting, 2 = delivered to the bus.
+  std::atomic<unsigned> state_{0};
+};
+
 // Keeps resumed calibration observable even when stitch mappings were already
 // committed before the prior run stopped. report_latched preserves a progress
 // sequence that this run already announced while it creates the rink mask.
@@ -149,6 +160,8 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool orientation_ran_{false};
   bool field_mask_attempted_{false};
   bool calibration_completion_reported_{false};
+  bool calibration_completion_ready_{false};
+  std::atomic_bool calibration_cancelled_{false};
   size_t left_frame_offset_ns_{0}, right_frame_offset_ns_{0};
   bool show_{false};
   bool match_exposure_{false};

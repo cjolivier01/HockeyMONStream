@@ -185,6 +185,17 @@ cc_test(
         "StitchFrameTimePlanTest.cpp",
     ],
     copts = PIPELINE_APP_COPTS,
+    deps = [
+        "//src/libs/common:utils_base",
+        "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "stitch_frame_time_cli_test",
+    srcs = ["StitchFrameTimeCliTest.cpp"],
+    args = ["$(location :hstream-cli)"],
+    data = [":hstream-cli"],
 )
 
 cc_test(

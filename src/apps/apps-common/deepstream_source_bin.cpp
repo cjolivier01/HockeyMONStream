@@ -434,6 +434,41 @@ static gboolean send_uri_video_eos(NvDsSrcBin* bin) {
   return sent;
 }
 
+void stop_uri_playlist_sources_gracefully(NvDsSrcParentBin* parent) {
+  if (!parent) {
+    return;
+  }
+
+  std::vector<NvDsSrcBin*> sources;
+  g_mutex_lock(&parent->uri_playlist_barrier_mutex);
+  sources = uri_playlist_sources(parent);
+  parent->uri_playlist_terminal = TRUE;
+  parent->uri_playlist_delivery_aborted = TRUE;
+  for (NvDsSrcBin* source : sources) {
+    source->uri_list_permanently_ended = TRUE;
+    source->uri_switch_pending = FALSE;
+    source->uri_terminal_audio_drain_pending = FALSE;
+  }
+  g_cond_broadcast(&parent->uri_playlist_barrier_cond);
+  g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+
+  // Decoder EOS is deliberately hidden at physical URI boundaries. Once an
+  // application stop cancels exact pairing, those decoder events can no
+  // longer run the normal terminal coordinator, so close the logical branches
+  // explicitly after every barrier waiter has been released. Retire the URI
+  // decoders first so they cannot report a downstream-flow error after the
+  // synthetic EOS has already closed their logical branches.
+  for (NvDsSrcBin* source : sources) {
+    if (source->src_elem) {
+      gst_element_set_state(source->src_elem, GST_STATE_NULL);
+    }
+  }
+  for (NvDsSrcBin* source : sources) {
+    send_uri_audio_eos(source, FALSE);
+    send_uri_video_eos(source);
+  }
+}
+
 static GstPadProbeReturn uri_playlist_mux_sink_buffer_probe(
     GstPad* /*pad*/,
     GstPadProbeInfo* info,
@@ -1860,6 +1895,19 @@ static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
   if (!bin || !config) {
     return;
   }
+  if (bin->uri_playlist_mutex_initialized) {
+    g_mutex_clear(&bin->uri_playlist_mutex);
+  }
+  g_mutex_init(&bin->uri_playlist_mutex);
+  bin->uri_playlist_mutex_initialized = TRUE;
+  if (bin->uri_list) {
+    for (guint i = 0; i < bin->num_uri_list; ++i) {
+      g_free(bin->uri_list[i]);
+    }
+    g_free(bin->uri_list);
+    bin->uri_list = nullptr;
+    bin->num_uri_list = 0;
+  }
   std::vector<std::string> uris = split_semicolon_list(config->uri_list);
   if (uris.empty() && config->type == NV_DS_SOURCE_URI_MULTIPLE && config->uri && *config->uri) {
     // A one-file camera is still a participant in the exact two-camera barrier. Production configuration historically
@@ -1869,7 +1917,6 @@ static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
   if (uris.empty()) {
     return;
   }
-  g_mutex_init(&bin->uri_playlist_mutex);
   bin->num_uri_list = static_cast<guint>(uris.size());
   bin->uri_list = (gchar**)g_malloc0(sizeof(gchar*) * bin->num_uri_list);
   for (guint i = 0; i < bin->num_uri_list; ++i) {
@@ -3298,8 +3345,13 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
   }
 
   bin->reset_thread = NULL;
+  if (bin->uri_playlist_barrier_initialized) {
+    g_cond_clear(&bin->uri_playlist_barrier_cond);
+    g_mutex_clear(&bin->uri_playlist_barrier_mutex);
+  }
   g_mutex_init(&bin->uri_playlist_barrier_mutex);
   g_cond_init(&bin->uri_playlist_barrier_cond);
+  bin->uri_playlist_barrier_initialized = TRUE;
   bin->uri_playlist_next_frame_sequence = 0;
   bin->uri_playlist_paired_video_end = GST_CLOCK_TIME_NONE;
   bin->uri_playlist_exact_pairing_enabled = uri_playlist_source_count == 2;

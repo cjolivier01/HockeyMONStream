@@ -1059,7 +1059,8 @@ absl::Status create_control_points(
     const std::string& game_dir,
     surface::Surface left_surface,
     surface::Surface right_surface,
-    const std::string& expected_invalidation_id) {
+    const std::string& expected_invalidation_id,
+    const std::function<bool()>& is_cancelled) {
   std::string pattern = (fs::path(game_dir) / ".hstream-calibration-input-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
@@ -1103,6 +1104,9 @@ absl::Status create_control_points(
     report_calibration_progress("features", "complete", "Control points found in both camera frames");
     report_calibration_progress("matching", "started", "Selecting and validating control-point matches");
   }));
+  if (is_cancelled && is_cancelled()) {
+    return absl::CancelledError("Stitching calibration cancelled");
+  }
   if (matched.accepted_match_count < 16) {
     return absl::FailedPreconditionError(TO_STRING(
         "Native feature matcher produced only " << matched.accepted_match_count
@@ -1854,8 +1858,10 @@ absl::Status configure_stitching(
     const std::string& game_dir,
     surface::Surface left_surface,
     surface::Surface right_surface,
-    const std::string& expected_invalidation_id) {
-  HM_RETURN_IF_ERROR(create_control_points(game_dir, left_surface, right_surface, expected_invalidation_id));
+    const std::string& expected_invalidation_id,
+    const std::function<bool()>& is_cancelled) {
+  HM_RETURN_IF_ERROR(
+      create_control_points(game_dir, left_surface, right_surface, expected_invalidation_id, is_cancelled));
   return absl::OkStatus();
 }
 

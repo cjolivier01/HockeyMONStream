@@ -241,6 +241,21 @@ bool expect_resumed_calibration_progress_contract() {
     std::cerr << "New one-pass configuration should retain its calibration progress contract" << std::endl;
     return false;
   }
+  hm::stitcher::OnePassCalibrationCompletionLatch completion_latch;
+  if (!completion_latch.try_begin_delivery() || completion_latch.delivered()) {
+    std::cerr << "Completion latch should expose an in-flight delivery without marking it delivered" << std::endl;
+    return false;
+  }
+  completion_latch.finish_delivery(/*delivered=*/false);
+  if (completion_latch.delivered() || !completion_latch.try_begin_delivery()) {
+    std::cerr << "A failed bus post should release completion ownership for a recreated stitcher" << std::endl;
+    return false;
+  }
+  completion_latch.finish_delivery(/*delivered=*/true);
+  if (!completion_latch.delivered() || completion_latch.try_begin_delivery()) {
+    std::cerr << "A delivered completion should suppress duplicate recreated-stitcher messages" << std::endl;
+    return false;
+  }
   return true;
 }
 

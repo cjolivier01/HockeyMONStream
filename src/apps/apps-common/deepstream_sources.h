@@ -164,6 +164,7 @@ typedef struct {
   gboolean uri_list_boundary_handled;
   /** Guards URI playlist lifecycle fields when this source is not owned by a multi-source parent. */
   GMutex uri_playlist_mutex;
+  gboolean uri_playlist_mutex_initialized;
   /** Optional playlist state (for file sources). */
   gchar** uri_list;
   guint num_uri_list;
@@ -215,6 +216,7 @@ struct NvDsSrcParentBin {
   /** Coordinates exact decoded-frame pairs across multi-camera URI playlist switches. */
   GMutex uri_playlist_barrier_mutex;
   GCond uri_playlist_barrier_cond;
+  gboolean uri_playlist_barrier_initialized;
   guint64 uri_playlist_next_frame_sequence;
   guint64 uri_playlist_paired_video_end;
   gboolean uri_playlist_exact_pairing_enabled;
@@ -236,6 +238,8 @@ gboolean configure_uri_playlist_initial_offsets(
     guint64 right_video_offset_ns,
     guint audio_source_id,
     guint64 start_time_ns);
+/** Cancel exact-pair waits and close every logical URI-playlist branch with synthetic EOS. */
+void stop_uri_playlist_sources_gracefully(NvDsSrcParentBin* bin);
 
 gboolean create_source_bin(NvDsSourceConfig* config, NvDsSrcBin* bin);
 gboolean create_audio_source_bin(NvDsSourceConfig* config, NvDsSrcBin* bin);

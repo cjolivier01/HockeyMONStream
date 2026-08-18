@@ -64,6 +64,20 @@ GST_DEBUG_CATEGORY(NVDS_APP);
 
 namespace {
 
+struct StitchFrameRewindRequest {
+  long stage;
+  uint64_t main_loop_generation;
+};
+
+absl::StatusOr<uint64_t> parse_time_option(const char* option, const char* value) {
+  try {
+    return hm::hhmmss_to_nanoseconds(value ? value : "");
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(
+        std::string("Invalid ") + option + " value '" + (value ? value : "") + "': " + error.what());
+  }
+}
+
 void emit_ui_startup(const char* stage, const char* message) {
   if (!g_getenv("HSTREAM_UI_PARENT_PID")) {
     return;
@@ -1311,17 +1325,29 @@ absl::Status PipelineApplication::createMainLoop(
     }
   });
 
-  _intr_setup();
-  have_first_pts_ = false;
-  first_pts_ns_ = 0;
-  have_first_frame_by_source_.fill(false);
-  first_frame_numbers_by_source_.fill(0);
-  timed_run_last_progress_ns_ = GST_CLOCK_TIME_NONE;
-  if (time_limit_seconds_ > 0) {
-    timed_run_last_progress_wall_ = std::chrono::steady_clock::now();
-  } else {
-    timed_run_last_progress_wall_ = {};
+  const uint64_t main_loop_generation = ++main_loop_generation_;
+  cleanup_stack.push([this, main_loop_generation] { cancel_stitch_frame_rewind(main_loop_generation); });
+
+  std::vector<AppCtx*> stage_calibration_contexts;
+  for (const auto& context : app_contexts) {
+    if (context && context->configurator().stitching_calibration_required()) {
+      one_pass_calibration_contexts_.insert(context.get());
+      stage_calibration_contexts.push_back(context.get());
+    }
   }
+  cleanup_stack.push([this, stage_calibration_contexts] {
+    for (AppCtx* context : stage_calibration_contexts) {
+      one_pass_calibration_contexts_.erase(context);
+    }
+  });
+
+  _intr_setup();
+  const bool calibration_active = std::any_of(app_contexts.begin(), app_contexts.end(), [this](const auto& context) {
+    return context && context->configurator().stitching_calibration_required() &&
+        stitch_frame_rewound_contexts_.count(context.get()) == 0;
+  });
+  stitch_frame_calibration_active_.store(calibration_active, std::memory_order_release);
+  reset_playback_timing_state(current_stage_);
   g_timeout_add(400, check_for_interrupt_static, nullptr);
 
   bool has_video_overlay_sink = false;
@@ -1484,6 +1510,23 @@ absl::Status PipelineApplication::stopPipeline(std::shared_ptr<HmApp> app_contex
   }
   GstElement* pipeline = app_context->pipeline.pipeline;
   if (!pipeline) {
+    return absl::OkStatus();
+  }
+  if (one_pass_calibration_contexts_.count(app_context.get()) != 0) {
+    // A one-pass generation has no complete downstream stream to finalize
+    // until calibration posts its completion message. On interruption, discard
+    // that generation directly; waiting for EOS behind a synchronous feature
+    // or rink-mask calculation can only time out and there is no valid archive
+    // to preserve yet.
+    GstElement* stitcher = app_context->pipeline.hmstitcher_bin.elem_hmstitcher;
+    if (stitcher) {
+      g_object_set(G_OBJECT(stitcher), "cancel-pending-work", TRUE, nullptr);
+    }
+    app_context->eos_received = TRUE;
+    cancel_uri_playlist_frame_barrier(&app_context->pipeline.multi_src_bin);
+    if (gst_element_set_state(pipeline, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE) {
+      return absl::InternalError("Interrupted calibration pipeline could not be stopped");
+    }
     return absl::OkStatus();
   }
   if (!stop_pipeline_gracefully(app_context.get(), 5 * GST_SECOND)) {
@@ -2024,13 +2067,23 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   }
 
   if (start_time) {
-    start_time_ns_ = hm::hhmmss_to_nanoseconds(start_time);
+    const auto parsed_start_time = parse_time_option("--start-time", start_time);
     g_free(start_time);
+    if (!parsed_start_time.ok()) {
+      if (stitch_frame_time)
+        g_free(stitch_frame_time);
+      return parsed_start_time.status();
+    }
+    start_time_ns_ = *parsed_start_time;
   }
   if (stitch_frame_time) {
-    stitch_frame_time_ns_ = hm::hhmmss_to_nanoseconds(stitch_frame_time);
-    stitch_frame_time_set_ = true;
+    const auto parsed_stitch_frame_time = parse_time_option("--stitch-frame-time", stitch_frame_time);
     g_free(stitch_frame_time);
+    if (!parsed_stitch_frame_time.ok()) {
+      return parsed_stitch_frame_time.status();
+    }
+    stitch_frame_time_ns_ = *parsed_stitch_frame_time;
+    stitch_frame_time_set_ = true;
   }
 
   if (progress_ui_enabled_) {
@@ -2235,10 +2288,36 @@ void PipelineApplication::perf_cb_static(gpointer context, NvDsAppPerfStruct* st
     instance_->perf_cb(context, str);
 }
 
+void PipelineApplication::reset_playback_timing_state(long stage) {
+  g_mutex_lock(&fps_lock_);
+  for (auto& [index, state] : progress_states_) {
+    (void)index;
+    state.initialized = false;
+    state.total_video_ns = GST_CLOCK_TIME_NONE;
+    state.rate_estimator.reset();
+  }
+  ui_progress_by_stage_.erase(stage);
+  g_mutex_unlock(&fps_lock_);
+  std::lock_guard<std::mutex> lock(playback_timing_mu_);
+  have_first_pts_ = false;
+  first_pts_ns_ = 0;
+  have_first_frame_by_source_.fill(false);
+  first_frame_numbers_by_source_.fill(0);
+  timed_run_last_progress_ns_ = GST_CLOCK_TIME_NONE;
+  timed_run_last_progress_wall_ = time_limit_seconds_ > 0 &&
+          hm::pipeline_internal::stitch_frame_should_account_playback(
+                                      stitch_frame_calibration_active_.load(std::memory_order_acquire))
+      ? std::chrono::steady_clock::now()
+      : std::chrono::steady_clock::time_point{};
+}
+
 void PipelineApplication::record_timed_run_progress(uint64_t processed_ns) {
-  if (time_limit_seconds_ <= 0 || processed_ns == GST_CLOCK_TIME_NONE) {
+  if (time_limit_seconds_ <= 0 || processed_ns == GST_CLOCK_TIME_NONE ||
+      !hm::pipeline_internal::stitch_frame_should_account_playback(
+          stitch_frame_calibration_active_.load(std::memory_order_acquire))) {
     return;
   }
+  std::lock_guard<std::mutex> lock(playback_timing_mu_);
   if (timed_run_last_progress_ns_ == GST_CLOCK_TIME_NONE || processed_ns > timed_run_last_progress_ns_) {
     timed_run_last_progress_ns_ = processed_ns;
     timed_run_last_progress_wall_ = std::chrono::steady_clock::now();
@@ -2247,7 +2326,9 @@ void PipelineApplication::record_timed_run_progress(uint64_t processed_ns) {
 
 hm::PlaybackProgressMetrics PipelineApplication::collect_progress_metrics(AppCtx* app_ctx) {
   hm::PlaybackProgressMetrics metrics;
-  if (!app_ctx || !app_ctx->pipeline.pipeline) {
+  if (!app_ctx || !app_ctx->pipeline.pipeline ||
+      !hm::pipeline_internal::stitch_frame_should_account_playback(
+          stitch_frame_calibration_active_.load(std::memory_order_acquire))) {
     return metrics;
   }
 
@@ -2655,11 +2736,18 @@ gboolean PipelineApplication::check_for_interrupt() {
       g_main_loop_quit(main_loop_);
     return FALSE;
   }
-  if (time_limit_seconds_ > 0 && timed_run_last_progress_wall_ != std::chrono::steady_clock::time_point{}) {
+  std::chrono::steady_clock::time_point last_progress_wall;
+  {
+    std::lock_guard<std::mutex> lock(playback_timing_mu_);
+    last_progress_wall = timed_run_last_progress_wall_;
+  }
+  if (time_limit_seconds_ > 0 &&
+      hm::pipeline_internal::stitch_frame_should_account_playback(
+          stitch_frame_calibration_active_.load(std::memory_order_acquire)) &&
+      last_progress_wall != std::chrono::steady_clock::time_point{}) {
     constexpr int kTimedRunNoProgressTimeoutSeconds = 60;
-    const auto stalled_seconds = std::chrono::duration_cast<std::chrono::seconds>(
-                                     std::chrono::steady_clock::now() - timed_run_last_progress_wall_)
-                                     .count();
+    const auto stalled_seconds =
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - last_progress_wall).count();
     if (stalled_seconds >= kTimedRunNoProgressTimeoutSeconds) {
       g_printerr(
           "Timed run saw no video-time progress for %d wall-clock seconds; stopping\n",
@@ -3765,6 +3853,14 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
       })) {
     return TRUE;
   }
+  // The stitch artifact generation and completion latch are shared across all
+  // contexts in this stage. Only one stitcher posts the completion message,
+  // but every peer is now out of calibration and must use normal EOS handling.
+  for (const auto& context : active_stage->second) {
+    if (context) {
+      one_pass_calibration_contexts_.erase(context.get());
+    }
+  }
   std::vector<hm::pipeline_internal::StitchFrameRewindState> states;
   states.reserve(active_stage->second.size());
   for (const auto& context : active_stage->second) {
@@ -3777,47 +3873,144 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
   for (const size_t index : hm::pipeline_internal::stitch_frame_rewind_candidates(stitch_frame_time_ns_, states)) {
     AppCtx* context = active_stage->second[index].get();
     stitch_frame_rewind_pending_contexts_.insert(context);
-    g_idle_add(rewind_after_stitching_calibration_static, context);
+  }
+  if (!stitch_frame_rewind_pending_contexts_.empty() && stitch_frame_rewind_source_id_ == 0) {
+    auto* request = new StitchFrameRewindRequest{
+        .stage = current_stage_,
+        .main_loop_generation = main_loop_generation_,
+    };
+    stitch_frame_rewind_source_id_ =
+        g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, rewind_after_stitching_calibration_static, request, [](gpointer data) {
+          delete static_cast<StitchFrameRewindRequest*>(data);
+        });
+    if (stitch_frame_rewind_source_id_ == 0) {
+      delete request;
+      stitch_frame_rewind_pending_contexts_.clear();
+      g_printerr("Failed to schedule playback restart after stitching calibration\n");
+      return TRUE;
+    }
+  } else if (
+      stitch_frame_rewind_pending_contexts_.empty() &&
+      stitch_frame_calibration_active_.load(std::memory_order_acquire)) {
+    // A zero stitch-frame time needs no pipeline recreation, but calibration
+    // work still must not consume normal playback progress or time limits.
+    // Publish a fresh baseline before enabling those callbacks.
+    reset_playback_timing_state(current_stage_);
+    {
+      std::lock_guard<std::mutex> lock(playback_timing_mu_);
+      timed_run_last_progress_wall_ =
+          time_limit_seconds_ > 0 ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    }
+    stitch_frame_calibration_active_.store(false, std::memory_order_release);
   }
   return TRUE;
 }
 
 gboolean PipelineApplication::rewind_after_stitching_calibration_static(gpointer arg) {
-  if (instance_) {
-    instance_->rewind_after_stitching_calibration(static_cast<AppCtx*>(arg));
+  const auto* request = static_cast<const StitchFrameRewindRequest*>(arg);
+  if (instance_ && request) {
+    return instance_->rewind_after_stitching_calibration(request->stage, request->main_loop_generation);
   }
   return G_SOURCE_REMOVE;
 }
 
-gboolean PipelineApplication::rewind_after_stitching_calibration(AppCtx* app_ctx) {
-  if (!app_ctx || stitch_frame_rewind_pending_contexts_.erase(app_ctx) == 0 ||
-      stitch_frame_rewound_contexts_.count(app_ctx) != 0) {
+void PipelineApplication::cancel_stitch_frame_rewind(uint64_t main_loop_generation) {
+  if (main_loop_generation != main_loop_generation_) {
+    return;
+  }
+  if (stitch_frame_rewind_source_id_ != 0) {
+    g_source_remove(stitch_frame_rewind_source_id_);
+    stitch_frame_rewind_source_id_ = 0;
+  }
+  stitch_frame_rewind_pending_contexts_.clear();
+  stitch_frame_calibration_active_.store(false, std::memory_order_release);
+}
+
+gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uint64_t main_loop_generation) {
+  stitch_frame_rewind_source_id_ = 0;
+  if (!hm::pipeline_internal::stitch_frame_rewind_request_is_current(
+          stage, main_loop_generation, current_stage_, main_loop_generation_, main_loop_ != nullptr)) {
+    stitch_frame_rewind_pending_contexts_.clear();
     return FALSE;
   }
-  stitch_frame_rewound_contexts_.insert(app_ctx);
+  const auto active_stage = stage_app_contexts_.find(stage);
+  if (active_stage == stage_app_contexts_.end()) {
+    stitch_frame_rewind_pending_contexts_.clear();
+    return FALSE;
+  }
+  std::vector<AppCtx*> rewind_contexts;
+  for (const auto& context : active_stage->second) {
+    if (context && stitch_frame_rewind_pending_contexts_.count(context.get()) != 0 &&
+        stitch_frame_rewound_contexts_.count(context.get()) == 0) {
+      rewind_contexts.push_back(context.get());
+    }
+  }
+  if (rewind_contexts.empty() || quit_) {
+    stitch_frame_rewind_pending_contexts_.clear();
+    return FALSE;
+  }
+
   g_print(
       "hmstitcher: calibration frame complete; restarting playback at %" GST_TIME_FORMAT "\n",
       GST_TIME_ARGS(start_time_ns_));
-  have_first_pts_ = false;
-  have_first_frame_by_source_.fill(false);
-  first_frame_numbers_by_source_.fill(0);
-  for (auto& [index, state] : progress_states_) {
-    (void)index;
-    state.initialized = false;
-    state.total_video_ns = GST_CLOCK_TIME_NONE;
-    state.rate_estimator.reset();
-  }
-  ui_progress_by_stage_.erase(current_stage_);
-  if (!recreate_pipeline_thread_func(app_ctx)) {
-    app_ctx->return_value = -1;
-    app_ctx->quit = TRUE;
-    if (main_loop_) {
-      g_main_loop_quit(main_loop_);
+
+  std::vector<AppCtx*> paused_contexts;
+  paused_contexts.reserve(active_stage->second.size());
+  for (const auto& context : active_stage->second) {
+    if (!context || !context->pipeline.pipeline) {
+      continue;
     }
+    if (!pause_pipeline(context.get())) {
+      g_printerr("Failed to pause pipeline before stitch-frame restart\n");
+      context->return_value = -1;
+      quit_ = TRUE;
+      if (main_loop_)
+        g_main_loop_quit(main_loop_);
+      return FALSE;
+    }
+    paused_contexts.push_back(context.get());
+  }
+
+  for (AppCtx* context : rewind_contexts) {
+    stitch_frame_rewound_contexts_.insert(context);
+  }
+  reset_playback_timing_state(stage);
+
+  bool recreation_ok = true;
+  for (AppCtx* context : rewind_contexts) {
+    stitch_frame_rewind_pending_contexts_.erase(context);
+    if (!recreate_pipeline_thread_func(context)) {
+      context->return_value = -1;
+      context->quit = TRUE;
+      recreation_ok = false;
+      break;
+    }
+  }
+  for (AppCtx* context : paused_contexts) {
+    if (std::find(rewind_contexts.begin(), rewind_contexts.end(), context) == rewind_contexts.end()) {
+      recreation_ok = resume_pipeline(context) && recreation_ok;
+    }
+  }
+  if (!recreation_ok) {
+    quit_ = TRUE;
+    if (main_loop_)
+      g_main_loop_quit(main_loop_);
     return FALSE;
   }
+
+  // The calibration pipelines were paused before the shared timing fields
+  // were reset, and all callbacks continue to ignore those fields while this
+  // flag is true. Publish the new baseline before allowing normal accounting.
+  reset_playback_timing_state(stage);
+  {
+    std::lock_guard<std::mutex> lock(playback_timing_mu_);
+    timed_run_last_progress_ns_ = GST_CLOCK_TIME_NONE;
+    timed_run_last_progress_wall_ =
+        time_limit_seconds_ > 0 ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+  }
+  stitch_frame_calibration_active_.store(false, std::memory_order_release);
   g_print("hmstitcher: playback restarted after stitch-frame calibration\n");
-  return TRUE;
+  return G_SOURCE_REMOVE;
 }
 
 gboolean PipelineApplication::event_thread_func() {
@@ -4081,65 +4274,73 @@ gboolean PipelineApplication::overlay_graphics(
     GstBuffer* buf,
     NvDsBatchMeta* batch_meta,
     guint index) {
-  if (time_limit_seconds_ > 0 && batch_meta) {
+  if (time_limit_seconds_ > 0 && batch_meta &&
+      hm::pipeline_internal::stitch_frame_should_account_playback(
+          stitch_frame_calibration_active_.load(std::memory_order_acquire))) {
     const uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
     if (buf) {
       GstClockTime pts = GST_BUFFER_PTS(buf);
       if (GST_CLOCK_TIME_IS_VALID(pts)) {
-        uint64_t pts_ns = static_cast<uint64_t>(pts);
-        if (!have_first_pts_) {
-          first_pts_ns_ = pts_ns;
-          have_first_pts_ = true;
-        } else {
-          if (pts_ns < first_pts_ns_) {
+        const uint64_t pts_ns = static_cast<uint64_t>(pts);
+        uint64_t elapsed_ns = 0;
+        bool have_elapsed = false;
+        {
+          std::lock_guard<std::mutex> lock(playback_timing_mu_);
+          if (!have_first_pts_) {
+            first_pts_ns_ = pts_ns;
+            have_first_pts_ = true;
+          } else if (pts_ns < first_pts_ns_) {
             first_pts_ns_ = pts_ns;
           } else {
-            uint64_t elapsed_ns = pts_ns - first_pts_ns_;
-            record_timed_run_progress(elapsed_ns);
-            if (elapsed_ns >= limit_ns) {
-              if (!quit_) {
-                quit_ = TRUE;
-                if (main_loop_) {
-                  g_main_loop_quit(main_loop_);
-                }
+            elapsed_ns = pts_ns - first_pts_ns_;
+            have_elapsed = true;
+          }
+        }
+        if (have_elapsed) {
+          record_timed_run_progress(elapsed_ns);
+          if (elapsed_ns >= limit_ns) {
+            if (!quit_) {
+              quit_ = TRUE;
+              if (main_loop_) {
+                g_main_loop_quit(main_loop_);
               }
-              return TRUE;
             }
+            return TRUE;
           }
         }
       }
     }
 
     uint64_t elapsed_from_frames_ns = 0;
-    for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != nullptr; l_frame = l_frame->next) {
-      NvDsFrameMeta* frame_meta = reinterpret_cast<NvDsFrameMeta*>(l_frame->data);
-      if (!frame_meta || frame_meta->source_id >= MAX_SOURCE_BINS) {
-        continue;
-      }
-      const int source_id = static_cast<int>(frame_meta->source_id);
-      const int fps_n = app_ctx->config.multi_source_config[source_id].camera_fps_n;
-      const int fps_d = app_ctx->config.multi_source_config[source_id].camera_fps_d;
-      if (fps_n <= 0 || fps_d <= 0) {
-        continue;
-      }
-      if (frame_meta->frame_num < 0) {
-        continue;
-      }
-      const uint64_t frame_num = static_cast<uint64_t>(frame_meta->frame_num);
-      if (!have_first_frame_by_source_[source_id]) {
-        have_first_frame_by_source_[source_id] = true;
-        first_frame_numbers_by_source_[source_id] = frame_num;
-        continue;
-      }
-      if (frame_num < first_frame_numbers_by_source_[source_id]) {
-        first_frame_numbers_by_source_[source_id] = frame_num;
-        continue;
-      }
-      const uint64_t frame_delta = frame_num - first_frame_numbers_by_source_[source_id];
-      const uint64_t elapsed_ns = (frame_delta * static_cast<uint64_t>(GST_SECOND) * static_cast<uint64_t>(fps_d)) /
-          static_cast<uint64_t>(fps_n);
-      if (elapsed_ns > elapsed_from_frames_ns) {
-        elapsed_from_frames_ns = elapsed_ns;
+    {
+      std::lock_guard<std::mutex> lock(playback_timing_mu_);
+      for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != nullptr; l_frame = l_frame->next) {
+        NvDsFrameMeta* frame_meta = reinterpret_cast<NvDsFrameMeta*>(l_frame->data);
+        if (!frame_meta || frame_meta->source_id >= MAX_SOURCE_BINS) {
+          continue;
+        }
+        const int source_id = static_cast<int>(frame_meta->source_id);
+        const int fps_n = app_ctx->config.multi_source_config[source_id].camera_fps_n;
+        const int fps_d = app_ctx->config.multi_source_config[source_id].camera_fps_d;
+        if (fps_n <= 0 || fps_d <= 0 || frame_meta->frame_num < 0) {
+          continue;
+        }
+        const uint64_t frame_num = static_cast<uint64_t>(frame_meta->frame_num);
+        if (!have_first_frame_by_source_[source_id]) {
+          have_first_frame_by_source_[source_id] = true;
+          first_frame_numbers_by_source_[source_id] = frame_num;
+          continue;
+        }
+        if (frame_num < first_frame_numbers_by_source_[source_id]) {
+          first_frame_numbers_by_source_[source_id] = frame_num;
+          continue;
+        }
+        const uint64_t frame_delta = frame_num - first_frame_numbers_by_source_[source_id];
+        const uint64_t elapsed_ns = (frame_delta * static_cast<uint64_t>(GST_SECOND) * static_cast<uint64_t>(fps_d)) /
+            static_cast<uint64_t>(fps_n);
+        if (elapsed_ns > elapsed_from_frames_ns) {
+          elapsed_from_frames_ns = elapsed_ns;
+        }
       }
     }
     record_timed_run_progress(elapsed_from_frames_ns);
@@ -4199,7 +4400,7 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
   AppCtx* app_ctx_ptr = reinterpret_cast<AppCtx*>(arg);
   g_print("Destroy pipeline\n");
   ui_preview_channels_.clear();
-  destroy_pipeline(app_ctx_ptr);
+  destroy_pipeline_for_recreate(app_ctx_ptr);
   g_print("Recreate pipeline\n");
   if (!create_pipeline(app_ctx_ptr, nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
     NVGSTDS_ERR_MSG_V("Failed to create pipeline");

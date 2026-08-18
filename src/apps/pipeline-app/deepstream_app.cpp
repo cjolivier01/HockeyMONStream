@@ -2222,7 +2222,7 @@ gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
     return TRUE;
   }
 
-  cancel_uri_playlist_frame_barrier(&appCtx->pipeline.multi_src_bin);
+  stop_uri_playlist_sources_gracefully(&appCtx->pipeline.multi_src_bin);
   gboolean finalized = appCtx->eos_received || appCtx->return_value != 0;
   gboolean fatal_error = FALSE;
   if (!finalized) {
@@ -2341,6 +2341,17 @@ void destroy_pipeline(AppCtx* appCtx) {
         stop_cloud_to_device_messaging(appCtx->c2d_ctx[i]);
     }
   }
+}
+
+void destroy_pipeline_for_recreate(AppCtx* appCtx) {
+  if (!appCtx) {
+    return;
+  }
+  // A replacement generation will open/finalize its own sinks. Treat the old
+  // generation as already finalized so destroy_pipeline does not wait for EOS
+  // on a pipeline intentionally paused at a calibration boundary.
+  appCtx->eos_received = TRUE;
+  destroy_pipeline(appCtx);
 }
 
 gboolean pause_pipeline(AppCtx* appCtx) {

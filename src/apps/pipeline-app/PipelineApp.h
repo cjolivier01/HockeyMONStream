@@ -15,10 +15,12 @@
 #include <termios.h>
 #include <unistd.h>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <thread>
@@ -140,7 +142,9 @@ class PipelineApplication {
   static gboolean handle_element_message_static(AppCtx* app_ctx, GstMessage* message);
   gboolean handle_element_message(AppCtx* app_ctx, GstMessage* message);
   static gboolean rewind_after_stitching_calibration_static(gpointer arg);
-  gboolean rewind_after_stitching_calibration(AppCtx* app_ctx);
+  gboolean rewind_after_stitching_calibration(long stage, uint64_t main_loop_generation);
+  void cancel_stitch_frame_rewind(uint64_t main_loop_generation);
+  void reset_playback_timing_state(long stage);
   uint64_t initial_pipeline_position_ns(const HmApp* app_ctx) const;
   static int get_source_id_from_coordinates(float x_rel, float y_rel, AppCtx* app_ctx);
   static gpointer nvds_x_event_thread_static(gpointer data);
@@ -156,6 +160,7 @@ class PipelineApplication {
   // std::vector<std::unique_ptr<HmApp>> app_ctx_;
   std::map<long, std::vector<std::shared_ptr<HmApp>>> stage_app_contexts_;
   std::map<long, std::map</*instance_number=*/int, Window>> stage_windows_;
+  std::set<AppCtx*> one_pass_calibration_contexts_;
 
   long current_stage_{0};
   guint cintr_;
@@ -223,6 +228,7 @@ class PipelineApplication {
   std::map<long, std::map<int, hm::PlaybackProgressMetrics>> ui_progress_by_stage_;
   uint64_t playback_progress_generation_{0};
   std::unique_ptr<hm::TerminalProgressUi> progress_ui_;
+  std::mutex playback_timing_mu_;
   std::chrono::steady_clock::time_point timed_run_last_progress_wall_;
   uint64_t timed_run_last_progress_ns_{GST_CLOCK_TIME_NONE};
   // Display / event loop
@@ -238,6 +244,9 @@ class PipelineApplication {
   bool stitch_frame_time_loaded_from_config_{false};
   std::set<const AppCtx*> stitch_frame_rewound_contexts_;
   std::set<const AppCtx*> stitch_frame_rewind_pending_contexts_;
+  std::atomic<bool> stitch_frame_calibration_active_{false};
+  guint stitch_frame_rewind_source_id_{0};
+  uint64_t main_loop_generation_{0};
   uint64_t first_pts_ns_{0};
   bool have_first_pts_{false};
   std::array<uint64_t, MAX_SOURCE_BINS> first_frame_numbers_by_source_{};

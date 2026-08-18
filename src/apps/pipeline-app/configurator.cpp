@@ -2264,14 +2264,16 @@ absl::Status Configurator::complete_configuration(
     return absl::CancelledError("Stitching artifacts cleaned");
   }
 
-  bool pipeline_has_hmstitcher = false;
-  HM_RETURN_IF_ERROR(setup_stitcher_and_masks(pipeline, game_dir, force, pipeline_has_hmstitcher));
-
   map_common_config_keys();
+  bool pipeline_has_hmstitcher = get_node(pipeline, "hmstitcher")->IsDefined();
   if (pipeline_has_hmstitcher) {
     HM_RETURN_IF_ERROR(invalidate_rotation_dependent_cache_if_needed(game_dir));
     HM_RETURN_IF_ERROR(invalidate_canvas_dependent_cache_if_needed(game_dir));
   }
+  // Cache invalidation above can remove a previously valid rink mask. Compute
+  // the one-pass startup position only after the effective runtime rotation
+  // and canvas constraints have been applied.
+  HM_RETURN_IF_ERROR(setup_stitcher_and_masks(pipeline, game_dir, force, pipeline_has_hmstitcher));
 
   // Live box mappings
   const std::map<std::string, std::string> live_box_map_dest_from_src{

@@ -96,7 +96,10 @@ class PipelineProcess {
       const fs::path& plugin_directory,
       const std::string& invalidation_id,
       int control_points,
-      bool start_from_features) {
+      bool start_from_features,
+      const std::string& stitch_frame_time = {},
+      int time_limit_seconds = 0,
+      const std::string& stitch_rotate_degrees = {}) {
     int input_pipe[2];
     int output_pipe[2];
     if (::pipe(input_pipe) != 0 || ::pipe(output_pipe) != 0) {
@@ -137,6 +140,15 @@ class PipelineProcess {
           "--enable-sinks=FAKE",
           "--clean-expected-invalidation-id=" + invalidation_id,
       };
+      if (!stitch_frame_time.empty()) {
+        arguments.push_back("--stitch-frame-time=" + stitch_frame_time);
+      }
+      if (time_limit_seconds > 0) {
+        arguments.push_back("--time-limit=" + std::to_string(time_limit_seconds));
+      }
+      if (!stitch_rotate_degrees.empty()) {
+        arguments.push_back("--stitch-rotate-degrees=" + stitch_rotate_degrees);
+      }
       std::vector<char*> argv;
       argv.reserve(arguments.size() + 1);
       for (std::string& argument : arguments) {
@@ -462,7 +474,16 @@ int main(int argc, char** argv) {
       if (!expect(
               write_game_config(game / "config.yaml", 128, "initial", false), "initial game config must be written") ||
           !expect(
-              initial.Start(argv[1], pipeline_config, game_root, plugin_directory, "initial", 128, false),
+              initial.Start(
+                  argv[1],
+                  pipeline_config,
+                  game_root,
+                  plugin_directory,
+                  "initial",
+                  128,
+                  false,
+                  /*stitch_frame_time=*/"00:00:02",
+                  /*time_limit_seconds=*/1),
               "initial calibration pipeline must start") ||
           !expect(
               initial.WaitFor("HSTREAM_CALIBRATION stage=input status=complete", 0, kCalibrationTimeout),
@@ -473,13 +494,55 @@ int main(int argc, char** argv) {
           !expect(
               initial.WaitFor("HSTREAM_CALIBRATION stage=calibration status=complete", 0, kCalibrationTimeout),
               "initial calibration must complete") ||
-          !expect(initial.WaitFor("Stitched canvas size:"), "initial calibration must publish the real canvas") ||
           !expect(
-              initial.WaitForProgressAtOrBeyond(1, initial.Mark()),
-              "initial calibration must push stitched buffers downstream")) {
+              initial.WaitFor("playback restarted after stitch-frame calibration", 0, kCalibrationTimeout),
+              "a stitch frame beyond the time limit must still complete calibration and restart normal playback") ||
+          !expect(initial.WaitFor("Stitched canvas size:"), "initial calibration must publish the real canvas")) {
         return false;
       }
-      return stop_successfully(&initial, "initial calibrated pipeline must accept Stop/SIGINT");
+      const size_t restart_position = initial.output().rfind("playback restarted after stitch-frame calibration");
+      if (!expect(
+              initial.WaitFor("Pipeline running", restart_position),
+              "normal playback must reach PLAYING after stitch-frame calibration")) {
+        return false;
+      }
+      return stop_successfully(
+          &initial, "post-calibration playback must remain controllable after bypassing the calibration time limit");
+    }();
+  }
+
+  PipelineProcess rotated;
+  if (ok) {
+    ok = [&] {
+      if (!expect(
+              rotated.Start(
+                  argv[1],
+                  pipeline_config,
+                  game_root,
+                  plugin_directory,
+                  "initial",
+                  128,
+                  false,
+                  /*stitch_frame_time=*/"00:00:02",
+                  /*time_limit_seconds=*/1,
+                  /*stitch_rotate_degrees=*/"10"),
+              "rotation-invalidated calibration pipeline must start") ||
+          !expect(
+              rotated.WaitFor("HSTREAM_CALIBRATION stage=calibration status=complete", 0, kCalibrationTimeout),
+              "rotation-invalidated rink calibration must complete") ||
+          !expect(
+              rotated.WaitFor("playback restarted after stitch-frame calibration", 0, kCalibrationTimeout),
+              "rotation invalidation must be reflected in the stitch-frame startup snapshot")) {
+        return false;
+      }
+      const size_t restart_position = rotated.output().rfind("playback restarted after stitch-frame calibration");
+      if (!expect(
+              rotated.WaitFor("Pipeline running", restart_position),
+              "rotation-invalidated normal playback must reach PLAYING after calibration")) {
+        return false;
+      }
+      return stop_successfully(
+          &rotated, "rotation-invalidated post-calibration playback must remain controllable after restart");
     }();
   }
 
@@ -590,6 +653,7 @@ int main(int argc, char** argv) {
 
   if (!ok) {
     initial.DumpOutput("initial calibration");
+    rotated.DumpOutput("rotation-invalidated calibration");
     resumed.DumpOutput("CP-change resume");
     interrupted.DumpOutput("interrupted calibration");
     recovered.DumpOutput("recovered calibration");

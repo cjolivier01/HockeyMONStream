@@ -51,7 +51,7 @@ namespace stitcher {
 
 namespace {
 
-std::atomic<bool> process_calibration_completion_latched{false};
+OnePassCalibrationCompletionLatch process_calibration_completion_latch;
 
 std::string calibration_message(std::string message) {
   std::replace(message.begin(), message.end(), '\n', ' ');
@@ -142,6 +142,19 @@ OnePassCalibrationProgressPlan one_pass_calibration_progress_plan(
       .create_mask = create_mask,
       .complete = report && mask_configured,
   };
+}
+
+bool OnePassCalibrationCompletionLatch::delivered() const {
+  return state_.load(std::memory_order_acquire) == 2;
+}
+
+bool OnePassCalibrationCompletionLatch::try_begin_delivery() {
+  unsigned expected = 0;
+  return state_.compare_exchange_strong(expected, 1, std::memory_order_acq_rel);
+}
+
+void OnePassCalibrationCompletionLatch::finish_delivery(bool delivered) {
+  state_.store(delivered ? 2U : 0U, std::memory_order_release);
 }
 
 StitcherPriv::~StitcherPriv() {
@@ -675,9 +688,18 @@ absl::Status StitcherPriv::configure_one_pass_from_surfaces(
       orientation_ran_ = true;
     }
     absl::Status configure_status = stitching::configure_stitching(
-        config_file_, incoming_surface_left, incoming_surface_right, calibration_invalidation_id_);
+        config_file_, incoming_surface_left, incoming_surface_right, calibration_invalidation_id_, [this] {
+          return calibration_cancelled_.load(std::memory_order_acquire);
+        });
     if (!configure_status.ok()) {
       std::cerr << configure_status << "\n" << std::flush;
+      if (absl::IsCancelled(configure_status)) {
+        // CustomAlgorithmBase treats Cancelled as a request to push EOS. A
+        // pipeline teardown already owns terminal delivery, and trying to
+        // serialize a second EOS from this streaming thread can deadlock the
+        // state transition that requested cancellation.
+        return absl::AbortedError("Stitching calibration stopped during pipeline teardown");
+      }
       return report_calibration_failure(configure_status);
     }
     configured_during_run_ = true;
@@ -818,6 +840,8 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     minimize_blend_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "require-decoded-frame-sequence-meta" || prop.key == "require_decoded_frame_sequence_meta") {
     require_decoded_frame_sequence_meta_ = !!std::atol(prop.value.c_str());
+  } else if (prop.key == "cancel-pending-work") {
+    calibration_cancelled_.store(true, std::memory_order_release);
   } else if (
       prop.key == "stitch-compute-precision" || prop.key == "stitch_compute_precision" ||
       prop.key == "stitcher-compute-precision" || prop.key == "stitcher_compute_precision") {
@@ -1257,7 +1281,9 @@ absl::Status StitcherPriv::GenerateOutput(
             orientation_ran_ = true;
           }
           absl::Status configure_status = stitching::configure_stitching(
-              config_file_, incoming_surface_left, incoming_surface_right, calibration_invalidation_id_);
+              config_file_, incoming_surface_left, incoming_surface_right, calibration_invalidation_id_, [this] {
+                return calibration_cancelled_.load(std::memory_order_acquire);
+              });
           if (!configure_status.ok()) {
             std::cerr << configure_status << "\n" << std::flush;
             return to_status(CudaStatus(
@@ -1373,7 +1399,7 @@ absl::Status StitcherPriv::GenerateOutput(
           configured_during_run_,
           mask_configured,
           /*report_latched=*/false,
-          process_calibration_completion_latched.load(std::memory_order_relaxed));
+          process_calibration_completion_latch.delivered());
       if (progress.report) {
         report_calibration_progress("rink-mask", "started", "Looking for the ice surface in the stitched panorama");
       }
@@ -1394,22 +1420,25 @@ absl::Status StitcherPriv::GenerateOutput(
           configured_during_run_,
           mask_configured,
           /*report_latched=*/progress.report,
-          process_calibration_completion_latched.load(std::memory_order_relaxed));
-      if (progress.complete && !calibration_completion_reported_) {
-        bool expected = false;
-        if (process_calibration_completion_latched.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
+          process_calibration_completion_latch.delivered());
+      calibration_completion_ready_ = progress.complete;
+    }
+    if (one_pass_mode_ && calibration_completion_ready_ && !calibration_completion_reported_) {
+      if (process_calibration_completion_latch.delivered()) {
+        calibration_completion_reported_ = true;
+      } else if (owner_element_ && process_calibration_completion_latch.try_begin_delivery()) {
+        const bool delivered = gst_element_post_message(
+            owner_element_,
+            gst_message_new_element(
+                GST_OBJECT(owner_element_), gst_structure_new_empty("hstream-stitching-calibration-complete")));
+        process_calibration_completion_latch.finish_delivery(delivered);
+        if (delivered) {
           report_calibration_progress("rink-mask", "complete", "Ice surface calibration is ready");
           report_calibration_progress("calibration", "complete", "Stitching calibration is complete");
           g_print("hmstitcher: one-pass stitching configuration complete\n");
           std::fflush(stdout);
-          if (owner_element_) {
-            gst_element_post_message(
-                owner_element_,
-                gst_message_new_element(
-                    GST_OBJECT(owner_element_), gst_structure_new_empty("hstream-stitching-calibration-complete")));
-          }
+          calibration_completion_reported_ = true;
         }
-        calibration_completion_reported_ = true;
       }
     }
 

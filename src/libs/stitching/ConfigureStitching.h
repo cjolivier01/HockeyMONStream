@@ -4,6 +4,7 @@
 #include "src/libs/common/Status.h"
 /* clang-format on */
 
+#include <functional>
 #include <string>
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -90,7 +91,8 @@ absl::Status configure_stitching(
     const std::string& game_dir,
     surface::Surface left_surface,
     surface::Surface right_surface,
-    const std::string& expected_invalidation_id = {});
+    const std::string& expected_invalidation_id = {},
+    const std::function<bool()>& is_cancelled = {});
 
 // Ensure `${game_dir}/seam_file.png` exists.
 //
