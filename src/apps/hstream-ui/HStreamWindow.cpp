@@ -144,30 +144,6 @@ absl::Status publish_yaml_config(const fs::path& config_path, const YAML::Node& 
   return hm::stitching::publish_game_config(config_path.parent_path(), contents);
 }
 
-QString development_runtime_root() {
-  QString application_path = QFileInfo(QCoreApplication::applicationFilePath()).canonicalFilePath();
-  if (application_path.isEmpty()) {
-    application_path = QFileInfo(QCoreApplication::applicationFilePath()).absoluteFilePath();
-  }
-  const QString application_name = QFileInfo(application_path).fileName();
-  QDir candidate_root(QDir::currentPath());
-  while (true) {
-    const QString candidate_application =
-        candidate_root.filePath(QString("bazel-bin/src/apps/hstream-ui/%1").arg(application_name));
-    const QString candidate_path = QFileInfo(candidate_application).canonicalFilePath();
-    const QString runner = candidate_root.filePath("bazel-bin/src/apps/pipeline-app/hstream-cli");
-    const QString configs = candidate_root.filePath("configs");
-    if (!candidate_path.isEmpty() && candidate_path == application_path && QFileInfo(runner).isExecutable() &&
-        QFileInfo(configs).isDir()) {
-      return candidate_root.absolutePath();
-    }
-    if (!candidate_root.cdUp()) {
-      break;
-    }
-  }
-  return {};
-}
-
 struct CameraSliderSpec {
   const char* id;
   const char* label;
@@ -1476,8 +1452,52 @@ QString hm::ui_internal::preview_channel_for_tab(int tab_index, int camera_count
   return source_index >= 0 && source_index < camera_count ? QString("source%1").arg(source_index) : QString();
 }
 
+QString hm::ui_internal::matching_development_pipeline_runner(const QString& application_path) {
+  QFileInfo application_info(application_path);
+  QString resolved_application = application_info.canonicalFilePath();
+  if (resolved_application.isEmpty())
+    resolved_application = application_info.absoluteFilePath();
+  application_info.setFile(resolved_application);
+  if (application_info.fileName() != "hstream-ui")
+    return {};
+
+  QDir application_dir = application_info.absoluteDir();
+  if (application_dir.dirName() != "hstream-ui" || !application_dir.cdUp() || application_dir.dirName() != "apps")
+    return {};
+  const QString runner = application_dir.filePath("pipeline-app/hstream-cli");
+  return QFileInfo(runner).isExecutable() ? QFileInfo(runner).absoluteFilePath() : QString();
+}
+
+QString hm::ui_internal::development_runtime_root_for_application(const QString& application_path) {
+  if (matching_development_pipeline_runner(application_path).isEmpty())
+    return {};
+
+  QFileInfo application_info(application_path);
+  QString resolved_application = application_info.canonicalFilePath();
+  if (resolved_application.isEmpty())
+    resolved_application = application_info.absoluteFilePath();
+  QDir candidate = QFileInfo(resolved_application).absoluteDir();
+  while (true) {
+    const QFileInfo workspace_marker(candidate.filePath("WORKSPACE.bazel"));
+    const QFileInfo configs(candidate.filePath("configs"));
+    if (workspace_marker.isFile() && configs.isDir()) {
+      const QString canonical_marker = workspace_marker.canonicalFilePath();
+      const QString source_root =
+          canonical_marker.isEmpty() ? candidate.absolutePath() : QFileInfo(canonical_marker).absolutePath();
+      if (QFileInfo(QDir(source_root).filePath("configs")).isDir())
+        return source_root;
+    }
+    if (!candidate.cdUp())
+      break;
+  }
+  return {};
+}
+
 HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
   hm::ui_internal::configure_application_identity();
+  const QString application_path = QCoreApplication::applicationFilePath();
+  development_runtime_root_ = hm::ui_internal::development_runtime_root_for_application(application_path);
+  development_pipeline_runner_ = hm::ui_internal::matching_development_pipeline_runner(application_path);
   setWindowIcon(hm::ui_internal::application_icon());
   capture_complete_log_ = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_GAME_ID");
   pipeline_process_ = new QProcess(this);
@@ -1530,7 +1550,7 @@ HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
   buildUi();
   refreshGames();
   updateRunControls();
-  appendLog("hstream-ui started with hstream-cli runner backend");
+  appendLog(QString("hstream-ui started with hstream-cli runner backend=%1").arg(pipelineRunnerPath()));
 }
 
 HStreamWindow::~HStreamWindow() {
@@ -2409,9 +2429,11 @@ QString HStreamWindow::pipelineRunnerPath() const {
   if (!test_runner.isEmpty()) {
     return QString::fromLocal8Bit(test_runner);
   }
-  const QString development_root = development_runtime_root();
-  if (!development_root.isEmpty()) {
-    return QDir(development_root).filePath("bazel-bin/src/apps/pipeline-app/hstream-cli");
+  if (!development_pipeline_runner_.isEmpty()) {
+    return development_pipeline_runner_;
+  }
+  if (!development_runtime_root_.isEmpty()) {
+    return QDir(development_runtime_root_).filePath("bazel-bin/src/apps/pipeline-app/hstream-cli");
   }
   const QString installed_runner = "/opt/hstream/bin/hstream-cli";
   if (QFileInfo::exists(installed_runner)) {
@@ -2429,9 +2451,8 @@ QString HStreamWindow::pipelineRunnerPath() const {
 }
 
 QString HStreamWindow::pipelineConfigPath(const QString& config_name) const {
-  const QString development_root = development_runtime_root();
-  if (!development_root.isEmpty()) {
-    const QString development_config = QDir(QDir(development_root).filePath("configs")).filePath(config_name);
+  if (!development_runtime_root_.isEmpty()) {
+    const QString development_config = QDir(QDir(development_runtime_root_).filePath("configs")).filePath(config_name);
     if (QFileInfo::exists(development_config)) {
       return development_config;
     }
@@ -2447,9 +2468,8 @@ QString HStreamWindow::pipelineWorkingDirectory() const {
   if (!qgetenv("HSTREAM_UI_TEST_RUNNER").isEmpty()) {
     return QDir::currentPath();
   }
-  const QString development_root = development_runtime_root();
-  if (!development_root.isEmpty()) {
-    return development_root;
+  if (!development_runtime_root_.isEmpty()) {
+    return development_runtime_root_;
   }
   if (QFileInfo::exists("/opt/hstream/bin/hstream-cli")) {
     return "/opt/hstream";

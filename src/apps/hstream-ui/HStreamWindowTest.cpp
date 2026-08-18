@@ -274,6 +274,56 @@ bool test_path_scoped_auto_rollback() {
       "Auto cleanup rollback must restore owned paths without replacing an intervening unrelated update");
 }
 
+bool test_matching_development_runtime_selection() {
+  QTemporaryDir temporary_root;
+  if (!temporary_root.isValid())
+    return expect(false, "Could not create a temporary Bazel runtime layout");
+
+  const fs::path workspace_root = fs::path(temporary_root.path().toStdString()) / "workspace";
+  const fs::path output_apps = workspace_root / "bazel-out" / "k8-opt" / "bin" / "src" / "apps";
+  const fs::path application = output_apps / "hstream-ui" / "hstream-ui";
+  const fs::path matching_runner = output_apps / "pipeline-app" / "hstream-cli";
+  const fs::path unrelated_runner = workspace_root / "bazel-bin" / "src" / "apps" / "pipeline-app" / "hstream-cli";
+  std::error_code error;
+  fs::create_directories(application.parent_path(), error);
+  fs::create_directories(matching_runner.parent_path(), error);
+  fs::create_directories(unrelated_runner.parent_path(), error);
+  fs::create_directories(workspace_root / "configs", error);
+  if (error)
+    return expect(false, "Could not create a synthetic Bazel runtime layout: " + error.message());
+  for (const fs::path& path : {application, matching_runner, unrelated_runner}) {
+    std::ofstream file(path);
+    file << "synthetic executable\n";
+    file.close();
+    fs::permissions(
+        path, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec, fs::perm_options::replace, error);
+    if (error)
+      return expect(false, "Could not make a synthetic Bazel runtime executable: " + error.message());
+  }
+  {
+    std::ofstream workspace_marker(workspace_root / "WORKSPACE.bazel");
+    workspace_marker << "workspace(name = \"synthetic\")\n";
+  }
+
+  const QString selected_runner =
+      hm::ui_internal::matching_development_pipeline_runner(QString::fromStdString(application.string()));
+  const QString selected_root =
+      hm::ui_internal::development_runtime_root_for_application(QString::fromStdString(application.string()));
+  return expect(
+             QFileInfo(selected_runner).canonicalFilePath() ==
+                 QFileInfo(QString::fromStdString(matching_runner.string())).canonicalFilePath(),
+             "A Bazel-built UI must select the sibling CLI from its immutable output tree") &&
+      expect(QFileInfo(selected_runner).canonicalFilePath() !=
+                 QFileInfo(QString::fromStdString(unrelated_runner.string())).canonicalFilePath(),
+             "A changed bazel-bin output must not redirect an already-running UI to another CLI") &&
+      expect(QFileInfo(selected_root).canonicalFilePath() ==
+                 QFileInfo(QString::fromStdString(workspace_root.string())).canonicalFilePath(),
+             "A Bazel-built UI must recover its source workspace for configs and the pipeline working directory") &&
+      expect(hm::ui_internal::matching_development_pipeline_runner("/opt/hstream/bin/hstream-ui").isEmpty() &&
+                 hm::ui_internal::development_runtime_root_for_application("/opt/hstream/bin/hstream-ui").isEmpty(),
+             "An installed UI must not be mistaken for a Bazel development runtime");
+}
+
 bool lookup_yaml_key(YAML::Node parent, const char* key, YAML::Node* value) {
   if (!parent.IsMap()) {
     return false;
@@ -2128,6 +2178,65 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "An unfocused zero stitch-frame value should display as 00:00:00")) {
     return false;
   }
+
+  const fs::path stitch_time_transition_config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  {
+    YAML::Node completed_at_zero = YAML::LoadFile(stitch_time_transition_config.string());
+    YAML::Node calibration = completed_at_zero["hstream_ui"]["stitching_calibration"];
+    calibration["control_points"] = control_points->value();
+    calibration["status"] = "complete";
+    calibration.remove("stale_from");
+    calibration.remove("artifacts_invalidated");
+    calibration.remove("invalidation_id");
+    YAML::Node stitching = completed_at_zero["stitching"];
+    if (stitching && stitching.IsMap())
+      stitching.remove("stitch_frame_time");
+    const auto published = hm::stitching::publish_game_config(
+        stitch_time_transition_config.parent_path(), YAML::Dump(completed_at_zero) + "\n");
+    if (!published.ok()) {
+      std::cerr << "Could not prepare the zero-to-nonzero stitch-frame Play regression: " << published << '\n';
+      return false;
+    }
+  }
+  auto* save_preset = require_child<QPushButton>(window, "savePresetButton");
+  mode->setCurrentIndex(mode->findData("stitch-calibration"));
+  stitch_frame_time->setTime(QTime(0, 0, 7));
+  QApplication::processEvents();
+  if (!save_preset ||
+      !expect(save_preset->isEnabled(), "Changing stitch-frame time should be unsaved before Play is pressed")) {
+    return false;
+  }
+  const int nonzero_argument_count = window->logText().count("--stitch-frame-time=00:00:07");
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS", "500");
+  activate(start);
+  const YAML::Node pending_nonzero = YAML::LoadFile(stitch_time_transition_config.string());
+  const YAML::Node pending_nonzero_calibration = pending_nonzero["hstream_ui"]["stitching_calibration"];
+  const bool zero_to_nonzero_play_ok =
+      expect(
+          window->logText().count("--stitch-frame-time=00:00:07") == nonzero_argument_count + 1,
+          "Play must pass a newly edited nonzero stitch-frame time to hstream-cli without requiring Save Preset") &&
+      expect(
+          pending_nonzero["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:07",
+          "Play must persist a newly edited non-default stitch-frame time in config.yaml") &&
+      expect(
+          pending_nonzero_calibration["status"].as<std::string>() == "pending" &&
+              pending_nonzero_calibration["stale_from"].as<std::string>() == "input" &&
+              pending_nonzero_calibration["artifacts_invalidated"].as<bool>() &&
+              pending_nonzero_calibration["invalidation_id"].IsScalar(),
+          "Changing stitch-frame time at Play must invalidate input calibration before launching playback") &&
+      expect(!save_preset->isEnabled(), "Play should capture the persisted stitch-frame time as the saved value");
+  activate(stop);
+  for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+  qunsetenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS");
+  if (!zero_to_nonzero_play_ok)
+    return false;
+  stitch_frame_time->setTime(QTime(0, 0, 0));
+  QApplication::processEvents();
 
   mode->setCurrentIndex(mode->findData("program"));
   if (!expect(
@@ -5369,7 +5478,8 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
 
 int main(int argc, char** argv) {
   hm::ui_internal::configure_application_identity();
-  if (!test_path_scoped_auto_rollback() || !test_diagnostic_capture_attempt_paths()) {
+  if (!test_path_scoped_auto_rollback() || !test_matching_development_runtime_selection() ||
+      !test_diagnostic_capture_attempt_paths()) {
     return 1;
   }
   const QByteArray e2e_game_id = qgetenv("HSTREAM_UI_E2E_GAME_ID");

@@ -50,6 +50,10 @@ QIcon application_icon();
 void restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previous);
 bool supports_x11_embedding(const QString& platform_name, bool tegra_runtime = false);
 QString preview_channel_for_tab(int tab_index, int camera_count);
+// Selects the pipeline runner and source workspace that belong to a Bazel-built
+// UI executable without consulting the mutable bazel-bin workspace symlink.
+QString matching_development_pipeline_runner(const QString& application_path);
+QString development_runtime_root_for_application(const QString& application_path);
 
 } // namespace hm::ui_internal
 
@@ -440,6 +444,8 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, int> camera_defaults_;
   std::map<QString, int> saved_camera_controls_;
+  QString development_runtime_root_;
+  QString development_pipeline_runner_;
   QString saved_stitch_frame_time_;
   std::set<QString> preset_save_retry_game_ids_;
   std::vector<PendingRuntimeControl> pending_runtime_controls_;
