@@ -22,7 +22,11 @@ time it:
 7. creates Start-menu shortcuts for the UI, shell, games, and output folders.
 
 The NVIDIA DeepStream package is deliberately not embedded or uploaded by the
-bootstrapper. The installer validates the selected package before installation.
+bootstrapper. The installer validates the selected package's name, version, and
+architecture before installation, but the local package is an explicitly
+trusted input: Debian maintainer scripts run as root inside WSL and can access
+the invoking user's mounted Windows files. Obtain it from NVIDIA and verify it
+before selecting it.
 When the release repository is private, the installer also requests a
 fine-grained GitHub token with read-only Contents access. The token is passed
 to the provisioning process through its environment, is kept off the command
@@ -33,7 +37,7 @@ line, and is not stored by the installer.
 Install the small cross-build toolchain once:
 
 ```bash
-sudo apt-get install nsis librsvg2-bin icoutils file
+sudo apt-get install nsis librsvg2-bin icoutils file osslsigncode
 ```
 
 Then build an installer for the highest local release tag:
@@ -48,9 +52,21 @@ Or select the release explicitly:
 make windows-installer WINDOWS_INSTALLER_VERSION=v0.2.0
 ```
 
-The output is written under `dist/windows/`. `make publish` passes its newly
-allocated version to this target and publishes the resulting `.exe` alongside
-the Debian packages and `SHA256SUMS`.
+The output is written under `dist/windows/`. Developer builds are unsigned.
+Release publication requires an Authenticode code-signing certificate and its
+password in separate files:
+
+```bash
+WINDOWS_SIGNING_PKCS12=/secure/hstream-code-signing.p12 \
+WINDOWS_SIGNING_PASSWORD_FILE=/secure/hstream-code-signing.password \
+make publish
+```
+
+The password is read from its file instead of being placed on a command line.
+The builder signs and RFC 3161 timestamps the executable with `osslsigncode`,
+and the publisher independently verifies the embedded signature before staging
+the `.exe` beside the Debian packages and `SHA256SUMS`. Override the timestamp
+service with `WINDOWS_SIGNING_TIMESTAMP_URL` when needed.
 
 ## Runtime requirements
 
@@ -66,14 +82,16 @@ inside the dedicated distro tells APT that the Windows-projected WSL CUDA driver
 satisfies HStream's `libcuda.so.1` dependency.
 
 The installer refuses to reuse or unregister an existing WSL distribution named
-`HStream` unless it contains the ownership marker written at import time. This
-prevents an unrelated distro with the same name from being modified or deleted.
-An import transaction records the expected WSL registration path so an
-interrupted import can be safely completed or removed on the next run. After
-the import completes, a separate record under `%LOCALAPPDATA%\HStream` retains
-the registered base path. This lets the uninstaller verify ownership even when
-the distro is damaged and cannot boot to expose its in-distro marker.
+`HStream` unless it can verify installer ownership. The primary proof is a
+marker written inside the distro at import time. A pending import transaction
+records the expected WSL registration path so a failed import can be safely
+removed before retry. After registration, the transaction and the durable
+record under `%LOCALAPPDATA%\HStream` are bound to the Lxss registration GUID as
+well as its name and base path. This lets the uninstaller verify the same
+registration even when the distro is damaged and cannot boot to expose its
+in-distro marker, without accepting a later distro that reuses its name/path.
 
 Uninstall removes the Windows launcher by default. Removing the dedicated WSL
 distribution is a separate, explicit confirmation because it permanently
-deletes the distro's games, configuration, and output.
+deletes the distro's games, configuration, and output. If WSL cannot unregister
+the distro, uninstall stops and retains its normal retry entry and helper files.

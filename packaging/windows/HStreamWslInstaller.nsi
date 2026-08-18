@@ -186,7 +186,9 @@ Section "Uninstall"
   nsExec::ExecToLog '"$PowerShellExe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\hstream-wsl.ps1" -Action Unregister -DistroName "HStream"'
   Pop $ExitCode
   ${If} $ExitCode != "0"
-    MessageBox MB_ICONEXCLAMATION|MB_OK "The Windows launcher will be removed, but unregistering the HStream WSL distribution failed with exit code $ExitCode."
+    SetErrorLevel 1
+    MessageBox MB_ICONSTOP|MB_OK "Unregistering the HStream WSL distribution failed with exit code $ExitCode. HStream was not removed; retry uninstall after resolving the WSL error."
+    Abort
   ${EndIf}
 
 PreserveDistro:

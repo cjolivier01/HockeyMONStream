@@ -8,6 +8,9 @@ TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION_TAG=""
 OUTPUT_DIR="${TOPDIR}/dist/windows"
 REPOSITORY="cjolivier01/hstream"
+SIGNING_PKCS12="${WINDOWS_SIGNING_PKCS12:-}"
+SIGNING_PASSWORD_FILE="${WINDOWS_SIGNING_PASSWORD_FILE:-}"
+SIGNING_TIMESTAMP_URL="${WINDOWS_SIGNING_TIMESTAMP_URL:-http://timestamp.digicert.com}"
 
 usage() {
   cat <<'USAGE'
@@ -23,6 +26,12 @@ Options:
 
 Ubuntu build dependencies:
   sudo apt-get install nsis librsvg2-bin icoutils
+
+Release signing environment:
+  WINDOWS_SIGNING_PKCS12          Authenticode code-signing PKCS#12 file.
+  WINDOWS_SIGNING_PASSWORD_FILE   File containing its password (never placed
+                                  on the command line).
+  WINDOWS_SIGNING_TIMESTAMP_URL   RFC 3161 service (default: DigiCert).
 USAGE
 }
 
@@ -61,6 +70,17 @@ for command_name in makensis rsvg-convert icotool file sha256sum; do
     exit 1
   fi
 done
+if [[ -n "${SIGNING_PKCS12}" || -n "${SIGNING_PASSWORD_FILE}" ]]; then
+  if [[ ! -f "${SIGNING_PKCS12}" || ! -f "${SIGNING_PASSWORD_FILE}" ]]; then
+    echo "ERROR: WINDOWS_SIGNING_PKCS12 and WINDOWS_SIGNING_PASSWORD_FILE must both name readable files." >&2
+    exit 1
+  fi
+  if ! command -v osslsigncode >/dev/null 2>&1; then
+    echo "ERROR: Authenticode signing requires osslsigncode." >&2
+    echo "Install it with: sudo apt-get install osslsigncode" >&2
+    exit 1
+  fi
+fi
 
 OUTPUT_DIR="$(mkdir -p "${OUTPUT_DIR}" && cd "${OUTPUT_DIR}" && pwd)"
 build_dir="$(mktemp -d "${OUTPUT_DIR}/.hstream-windows-installer.XXXXXX")"
@@ -103,6 +123,21 @@ if [[ "$(file -Lb "${temporary_output}")" != *"PE32 executable"* ]]; then
   echo "ERROR: NSIS did not produce a Windows executable: ${temporary_output}" >&2
   exit 1
 fi
-install -m 0755 "${temporary_output}" "${output_file}"
+installer_to_publish="${temporary_output}"
+if [[ -n "${SIGNING_PKCS12}" ]]; then
+  signed_output="${build_dir}/signed-$(basename "${output_file}")"
+  osslsigncode sign \
+    -pkcs12 "${SIGNING_PKCS12}" \
+    -readpass "${SIGNING_PASSWORD_FILE}" \
+    -h sha256 \
+    -n "HStream Windows/WSL Bootstrapper" \
+    -i "https://github.com/${REPOSITORY}" \
+    -ts "${SIGNING_TIMESTAMP_URL}" \
+    -in "${temporary_output}" \
+    -out "${signed_output}"
+  osslsigncode verify -in "${signed_output}"
+  installer_to_publish="${signed_output}"
+fi
+install -m 0755 "${installer_to_publish}" "${output_file}"
 echo "Windows WSL bootstrapper: ${output_file}"
 du -h "${output_file}"

@@ -120,12 +120,16 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
   exit 0
 fi
 
-for command_name in gh make dpkg-deb sha256sum makensis rsvg-convert icotool file; do
+for command_name in gh make dpkg-deb sha256sum makensis rsvg-convert icotool file osslsigncode; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     echo "ERROR: required release build command not found: ${command_name}" >&2
     exit 1
   fi
 done
+if [[ ! -f "${WINDOWS_SIGNING_PKCS12:-}" || ! -f "${WINDOWS_SIGNING_PASSWORD_FILE:-}" ]]; then
+  echo "ERROR: release publication requires WINDOWS_SIGNING_PKCS12 and WINDOWS_SIGNING_PASSWORD_FILE." >&2
+  exit 1
+fi
 if ! gh auth status >/dev/null 2>&1; then
   echo "ERROR: GitHub CLI is not authenticated. Run 'gh auth login' first." >&2
   exit 1
@@ -173,7 +177,10 @@ make deb-jetson PACKAGE_VERSION="${release_tag}" JETSON_DEB_OUTPUT_DIR="${build_
 make windows-installer \
   WINDOWS_INSTALLER_VERSION="${release_tag}" \
   WINDOWS_INSTALLER_OUTPUT_DIR="${build_dir}/windows" \
-  WINDOWS_INSTALLER_REPOSITORY="${repository}"
+  WINDOWS_INSTALLER_REPOSITORY="${repository}" \
+  WINDOWS_SIGNING_PKCS12="${WINDOWS_SIGNING_PKCS12}" \
+  WINDOWS_SIGNING_PASSWORD_FILE="${WINDOWS_SIGNING_PASSWORD_FILE}" \
+  WINDOWS_SIGNING_TIMESTAMP_URL="${WINDOWS_SIGNING_TIMESTAMP_URL:-http://timestamp.digicert.com}"
 
 validate_and_stage_deb() {
   local source_path="$1"
@@ -217,6 +224,10 @@ windows_installer="${build_dir}/windows/hstream_${release_tag}_windows-wsl-setup
 if [[ ! -f "${windows_installer}" ]] ||
    [[ "$(file -Lb "${windows_installer}")" != *"PE32 executable"* ]]; then
   echo "ERROR: expected Windows WSL bootstrapper was not created: ${windows_installer}" >&2
+  exit 1
+fi
+if ! osslsigncode verify -in "${windows_installer}"; then
+  echo "ERROR: Windows WSL bootstrapper is not validly Authenticode-signed: ${windows_installer}" >&2
   exit 1
 fi
 install -m 0755 "${windows_installer}" \
