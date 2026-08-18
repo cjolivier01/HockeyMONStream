@@ -3,6 +3,7 @@
 /* clang-format on */
 
 #include "PipelineApp.h"
+#include "PipelineRuntimePaths.h"
 #include "StitchFrameTimePlan.h"
 
 #include <gstreamer-1.0/gst/gstelement.h>
@@ -285,49 +286,27 @@ void prepend_env_path(const char* name, const fs::path& dir) {
   setenv(name, updated.c_str(), 1);
 }
 
-std::optional<fs::path> runtime_root_from_executable(const char* argv0) {
+std::optional<fs::path> running_executable_path(const char* argv0) {
   std::error_code ec;
   fs::path exe = fs::read_symlink("/proc/self/exe", ec);
   if (ec && argv0 && std::string(argv0).find('/') != std::string::npos) {
     exe = fs::canonical(argv0, ec);
   }
-  if (ec || exe.empty()) {
+  if (ec || exe.empty())
     return std::nullopt;
-  }
-  for (fs::path cursor = exe.parent_path(); !cursor.empty(); cursor = cursor.parent_path()) {
-    if (cursor.filename() == "bazel-bin") {
-      return cursor.parent_path();
-    }
-    if (cursor.filename() == "bin" && fs::exists(cursor.parent_path() / "configs")) {
-      return cursor.parent_path();
-    }
-    if (cursor == cursor.root_path()) {
-      break;
-    }
-  }
-  return std::nullopt;
+  return exe;
 }
 
-fs::path pipeline_runtime_root(const char* argv0) {
-  std::error_code ec;
-  const fs::path cwd = fs::current_path(ec);
-  if (!ec && (fs::is_directory(cwd / "bazel-bin/src/gst-plugins") || fs::is_directory(cwd / "lib/gst-plugins"))) {
-    return cwd;
-  }
-  if (auto exe_root = runtime_root_from_executable(argv0)) {
-    return *exe_root;
-  }
-  return cwd;
-}
-
-void stage_bazel_gst_plugins(const fs::path& root) {
-  const fs::path bazel_plugin_root = root / "bazel-bin/src/gst-plugins";
+void stage_bazel_gst_plugins(const fs::path& root, const fs::path& bazel_bin) {
+  const fs::path bazel_plugin_root = bazel_bin / "src/gst-plugins";
   if (!fs::is_directory(bazel_plugin_root)) {
     return;
   }
 
   std::error_code ec;
-  const fs::path runtime_plugin_dir = root / ".cache/gst-plugin-path" / host_arch_name();
+  const std::string output_configuration =
+      bazel_bin.parent_path().filename().empty() ? "unknown-output" : bazel_bin.parent_path().filename().string();
+  const fs::path runtime_plugin_dir = root / ".cache/gst-plugin-path" / host_arch_name() / output_configuration;
   fs::create_directories(runtime_plugin_dir, ec);
   if (ec) {
     return;
@@ -365,8 +344,7 @@ void stage_bazel_gst_plugins(const fs::path& root) {
   prepend_env_path("GST_PLUGIN_PATH", runtime_plugin_dir);
 }
 
-void stage_bazel_runtime_libraries(const fs::path& root) {
-  const fs::path bazel_bin = root / "bazel-bin";
+void stage_bazel_runtime_libraries(const fs::path& root, const fs::path& bazel_bin) {
   if (!fs::is_directory(bazel_bin))
     return;
   std::error_code ec;
@@ -391,7 +369,9 @@ void stage_bazel_runtime_libraries(const fs::path& root) {
   }
   if (onnxruntime.empty() || ec)
     return;
-  const fs::path runtime_dir = root / ".cache/runtime-lib-path" / host_arch_name();
+  const std::string output_configuration =
+      bazel_bin.parent_path().filename().empty() ? "unknown-output" : bazel_bin.parent_path().filename().string();
+  const fs::path runtime_dir = root / ".cache/runtime-lib-path" / host_arch_name() / output_configuration;
   fs::create_directories(runtime_dir, ec);
   if (ec)
     return;
@@ -404,12 +384,18 @@ void stage_bazel_runtime_libraries(const fs::path& root) {
 }
 
 void configure_pipeline_runtime_environment(const char* argv0) {
-  const fs::path root = pipeline_runtime_root(argv0);
+  std::error_code error;
+  const fs::path working_directory = fs::current_path(error);
+  const fs::path executable = running_executable_path(argv0).value_or(argv0 ? fs::path(argv0) : fs::path());
+  const hm::pipeline_internal::RuntimePaths runtime =
+      hm::pipeline_internal::select_runtime_paths(executable, error ? fs::path() : working_directory);
+  const fs::path& root = runtime.root;
+  const fs::path& bazel_bin = runtime.bazel_bin;
   const fs::path packaged_native_models = root / "pretrained/native-calibration";
   if (!std::getenv("HM_NATIVE_MODEL_DIR") && fs::is_directory(packaged_native_models)) {
     setenv("HM_NATIVE_MODEL_DIR", packaged_native_models.c_str(), 1);
   }
-  stage_bazel_runtime_libraries(root);
+  stage_bazel_runtime_libraries(root, bazel_bin);
   std::error_code ec;
   fs::path registry_dir = root / ".cache/gstreamer-1.0";
   fs::create_directories(registry_dir, ec);
@@ -432,9 +418,9 @@ void configure_pipeline_runtime_environment(const char* argv0) {
   prepend_env_path("LD_LIBRARY_PATH", root / "lib/gst-plugins");
   prepend_env_path("LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib");
   prepend_env_path("LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
-  stage_bazel_gst_plugins(root);
+  stage_bazel_gst_plugins(root, bazel_bin);
 
-  const fs::path yolo_so = root / "bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so";
+  const fs::path yolo_so = bazel_bin / "src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so";
   if (fs::exists(yolo_so)) {
     const fs::path lib_dir = root / "lib";
     fs::create_directories(lib_dir, ec);

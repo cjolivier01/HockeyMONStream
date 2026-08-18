@@ -53,6 +53,7 @@ QString preview_channel_for_tab(int tab_index, int camera_count);
 // Selects the pipeline runner and source workspace that belong to a Bazel-built
 // UI executable without consulting the mutable bazel-bin workspace symlink.
 QString matching_development_pipeline_runner(const QString& application_path);
+QString matching_development_bazel_bin(const QString& application_path);
 QString development_runtime_root_for_application(const QString& application_path);
 
 } // namespace hm::ui_internal
@@ -446,6 +447,7 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, int> saved_camera_controls_;
   QString development_runtime_root_;
   QString development_pipeline_runner_;
+  QString development_bazel_bin_;
   QString saved_stitch_frame_time_;
   std::set<QString> preset_save_retry_game_ids_;
   std::vector<PendingRuntimeControl> pending_runtime_controls_;

@@ -307,21 +307,49 @@ bool test_matching_development_runtime_selection() {
 
   const QString selected_runner =
       hm::ui_internal::matching_development_pipeline_runner(QString::fromStdString(application.string()));
+  const QString selected_bazel_bin =
+      hm::ui_internal::matching_development_bazel_bin(QString::fromStdString(application.string()));
   const QString selected_root =
       hm::ui_internal::development_runtime_root_for_application(QString::fromStdString(application.string()));
-  return expect(
-             QFileInfo(selected_runner).canonicalFilePath() ==
-                 QFileInfo(QString::fromStdString(matching_runner.string())).canonicalFilePath(),
-             "A Bazel-built UI must select the sibling CLI from its immutable output tree") &&
+  const bool selected_ok = expect(
+                               QFileInfo(selected_runner).canonicalFilePath() ==
+                                   QFileInfo(QString::fromStdString(matching_runner.string())).canonicalFilePath(),
+                               "A Bazel-built UI must select the sibling CLI from its immutable output tree") &&
       expect(QFileInfo(selected_runner).canonicalFilePath() !=
                  QFileInfo(QString::fromStdString(unrelated_runner.string())).canonicalFilePath(),
              "A changed bazel-bin output must not redirect an already-running UI to another CLI") &&
+      expect(QFileInfo(selected_bazel_bin).canonicalFilePath() ==
+                 QFileInfo(QString::fromStdString((output_apps.parent_path().parent_path()).string()))
+                     .canonicalFilePath(),
+             "A Bazel-built UI must retain the immutable output tree used for plugins and runtime libraries") &&
       expect(QFileInfo(selected_root).canonicalFilePath() ==
                  QFileInfo(QString::fromStdString(workspace_root.string())).canonicalFilePath(),
              "A Bazel-built UI must recover its source workspace for configs and the pipeline working directory") &&
       expect(hm::ui_internal::matching_development_pipeline_runner("/opt/hstream/bin/hstream-ui").isEmpty() &&
+                 hm::ui_internal::matching_development_bazel_bin("/opt/hstream/bin/hstream-ui").isEmpty() &&
                  hm::ui_internal::development_runtime_root_for_application("/opt/hstream/bin/hstream-ui").isEmpty(),
              "An installed UI must not be mistaken for a Bazel development runtime");
+  if (!selected_ok)
+    return false;
+
+  fs::remove(matching_runner, error);
+  if (error)
+    return expect(false, "Could not remove the matching synthetic CLI: " + error.message());
+  return expect(
+             hm::ui_internal::matching_development_pipeline_runner(QString::fromStdString(application.string()))
+                 .isEmpty(),
+             "A missing sibling CLI must not redirect a Bazel-built UI to another runner") &&
+      expect(QFileInfo(hm::ui_internal::matching_development_bazel_bin(QString::fromStdString(application.string())))
+                     .canonicalFilePath() ==
+                 QFileInfo(QString::fromStdString((output_apps.parent_path().parent_path()).string()))
+                     .canonicalFilePath(),
+             "A Bazel-built UI must retain its immutable output tree when the sibling CLI is missing") &&
+      expect(QFileInfo(
+                 hm::ui_internal::development_runtime_root_for_application(
+                     QString::fromStdString(application.string())))
+                     .canonicalFilePath() ==
+                 QFileInfo(QString::fromStdString(workspace_root.string())).canonicalFilePath(),
+             "A Bazel-built UI must retain its source workspace when the sibling CLI is missing");
 }
 
 bool lookup_yaml_key(YAML::Node parent, const char* key, YAML::Node* value) {
@@ -2199,7 +2227,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     }
   }
   auto* save_preset = require_child<QPushButton>(window, "savePresetButton");
-  mode->setCurrentIndex(mode->findData("stitch-calibration"));
+  mode->setCurrentIndex(mode->findData("program"));
   stitch_frame_time->setTime(QTime(0, 0, 7));
   QApplication::processEvents();
   if (!save_preset ||
@@ -2226,6 +2254,23 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               pending_nonzero_calibration["invalidation_id"].IsScalar(),
           "Changing stitch-frame time at Play must invalidate input calibration before launching playback") &&
       expect(!save_preset->isEnabled(), "Play should capture the persisted stitch-frame time as the saved value");
+  for (int i = 0; i < 400 &&
+       !window->logText().contains("one-pass stitching calibration complete; continuous program playback running");
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const YAML::Node completed_nonzero = YAML::LoadFile(stitch_time_transition_config.string());
+  const bool nonzero_playback_restart_ok =
+      expect(
+          window->pipelineStateText() == "PLAYING" &&
+              window->logText().contains(
+                  "one-pass stitching calibration complete; continuous program playback running"),
+          "Program Play must stay running after recalibrating at a newly edited stitch-frame time") &&
+      expect(
+          completed_nonzero["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "complete" &&
+              completed_nonzero["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:07",
+          "Playback restart must persist completed calibration at the newly edited stitch-frame time");
   activate(stop);
   for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
     QApplication::processEvents();
@@ -2233,7 +2278,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS");
-  if (!zero_to_nonzero_play_ok)
+  if (!zero_to_nonzero_play_ok || !nonzero_playback_restart_ok)
     return false;
   stitch_frame_time->setTime(QTime(0, 0, 0));
   QApplication::processEvents();

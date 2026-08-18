@@ -183,6 +183,16 @@ cc_test(
 )
 
 cc_test(
+    name = "pipeline_runtime_paths_test",
+    srcs = [
+        "PipelineRuntimePaths.cpp",
+        "PipelineRuntimePaths.h",
+        "PipelineRuntimePathsTest.cpp",
+    ],
+    copts = PIPELINE_APP_COPTS,
+)
+
+cc_test(
     name = "stitch_frame_time_plan_test",
     srcs = [
         "StitchFrameTimePlan.h",

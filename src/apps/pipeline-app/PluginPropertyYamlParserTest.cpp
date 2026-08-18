@@ -209,6 +209,28 @@ post_stitch_rotate_degrees: null
     return 1;
   }
 
+  auto dashed_null_underscored_rotation = std::make_unique<HmStitcherConfig>();
+  const YAML::Node dashed_null_underscored_rotation_yaml = YAML::Load(R"yaml(
+post-stitch-rotate-degrees: null
+post_stitch_rotate_degrees: 8.5
+)yaml");
+  if (!parse_hmstitcher_yaml(dashed_null_underscored_rotation.get(), dashed_null_underscored_rotation_yaml, "/tmp") ||
+      dashed_null_underscored_rotation->post_stitch_rotate_degrees != 8.5F) {
+    std::cerr << "Expected a non-null underscored rotation to follow a null dashed alias\n";
+    return 1;
+  }
+
+  auto dashed_null_malformed_underscored_rotation = std::make_unique<HmStitcherConfig>();
+  const YAML::Node dashed_null_malformed_underscored_rotation_yaml = YAML::Load(R"yaml(
+post-stitch-rotate-degrees: null
+post_stitch_rotate_degrees: invalid
+)yaml");
+  if (parse_hmstitcher_yaml(
+          dashed_null_malformed_underscored_rotation.get(), dashed_null_malformed_underscored_rotation_yaml, "/tmp")) {
+    std::cerr << "Expected a malformed active underscored rotation after a null dashed alias to fail\n";
+    return 1;
+  }
+
   const YAML::Node uri_playlist_config = YAML::Load(R"yaml(
 application:
   enable-perf-measurement: 0

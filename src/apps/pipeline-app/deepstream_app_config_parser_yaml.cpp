@@ -49,6 +49,41 @@ bool find_yaml_alias(
   return false;
 }
 
+bool find_non_null_yaml_alias(
+    const YAML::Node& yaml_node,
+    const char* dashed_key,
+    const char* underscored_key,
+    YAML::Node* out) {
+  if (!out)
+    return false;
+  for (const char* key : {dashed_key, underscored_key}) {
+    if (!key)
+      continue;
+    const YAML::Node candidate = yaml_node[key];
+    if (candidate.IsDefined() && !candidate.IsNull()) {
+      *out = candidate;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool parse_finite_yaml_double_node(const YAML::Node& node, const char* key, double* out) {
+  try {
+    const double value = node.as<double>();
+    if (!std::isfinite(value)) {
+      cout << "Invalid non-finite value for " << key << endl;
+      return false;
+    }
+    if (out)
+      *out = value;
+  } catch (const std::exception& exc) {
+    cout << "Invalid numeric value for " << key << ": " << exc.what() << endl;
+    return false;
+  }
+  return true;
+}
+
 bool parse_finite_yaml_double(
     const YAML::Node& yaml_node,
     const char* dashed_key,
@@ -63,20 +98,7 @@ bool parse_finite_yaml_double(
   if (!found) {
     return true;
   }
-  try {
-    const double value = node.as<double>();
-    if (!std::isfinite(value)) {
-      cout << "Invalid non-finite value for " << dashed_key << endl;
-      return false;
-    }
-    if (out) {
-      *out = value;
-    }
-  } catch (const std::exception& exc) {
-    cout << "Invalid numeric value for " << dashed_key << ": " << exc.what() << endl;
-    return false;
-  }
-  return true;
+  return parse_finite_yaml_double_node(node, dashed_key, out);
 }
 
 } // namespace
@@ -366,13 +388,11 @@ gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_
   SET_LOCATOR(locator, *config, force_scoreboard_config);
   double post_stitch_rotate_degrees = 0.0;
   YAML::Node post_stitch_rotate_degrees_node;
-  const bool post_stitch_rotate_degrees_set =
-      find_yaml_alias(
-          yaml_node, "post-stitch-rotate-degrees", "post_stitch_rotate_degrees", &post_stitch_rotate_degrees_node) &&
-      !post_stitch_rotate_degrees_node.IsNull();
+  const bool post_stitch_rotate_degrees_set = find_non_null_yaml_alias(
+      yaml_node, "post-stitch-rotate-degrees", "post_stitch_rotate_degrees", &post_stitch_rotate_degrees_node);
   if (post_stitch_rotate_degrees_set &&
-      !parse_finite_yaml_double(
-          yaml_node, "post-stitch-rotate-degrees", "post_stitch_rotate_degrees", &post_stitch_rotate_degrees)) {
+      !parse_finite_yaml_double_node(
+          post_stitch_rotate_degrees_node, "post-stitch-rotate-degrees", &post_stitch_rotate_degrees)) {
     return false;
   }
   if (post_stitch_rotate_degrees_set) {

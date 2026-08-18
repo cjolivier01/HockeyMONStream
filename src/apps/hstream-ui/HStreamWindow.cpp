@@ -700,15 +700,21 @@ void prepend_env_path(QProcessEnvironment& env, const QString& name, const QStri
   }
 }
 
-void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_dir) {
-  const QDir root(QDir(working_dir).filePath("bazel-bin/src/gst-plugins"));
+void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_dir, const QString& bazel_bin_path) {
+  const QDir bazel_bin(bazel_bin_path.isEmpty() ? QDir(working_dir).filePath("bazel-bin") : bazel_bin_path);
+  const QDir root(bazel_bin.filePath("src/gst-plugins"));
   if (!root.exists()) {
     return;
   }
 
   const QString arch =
       QSysInfo::currentCpuArchitecture().isEmpty() ? QString("unknown") : QSysInfo::currentCpuArchitecture();
-  QDir runtime_dir(QDir(working_dir).filePath(QString(".cache/gst-plugin-path/%1").arg(arch)));
+  const QDir canonical_bazel_bin(canonical_dir_path(bazel_bin.absolutePath()));
+  QString output_configuration = QFileInfo(canonical_bazel_bin.absolutePath()).dir().dirName();
+  output_configuration.replace(QRegularExpression("[^A-Za-z0-9_.-]"), "_");
+  if (output_configuration.isEmpty())
+    output_configuration = "unknown-output";
+  QDir runtime_dir(QDir(working_dir).filePath(QString(".cache/gst-plugin-path/%1/%2").arg(arch, output_configuration)));
   if (!runtime_dir.exists() && !runtime_dir.mkpath(".")) {
     return;
   }
@@ -742,12 +748,7 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_di
     }
   }
 
-  QFileInfo bazel_bin_info(QDir(working_dir).filePath("bazel-bin"));
-  QString bazel_bin_path = bazel_bin_info.canonicalFilePath();
-  if (bazel_bin_path.isEmpty()) {
-    bazel_bin_path = bazel_bin_info.absoluteFilePath();
-  }
-  const QDir bazel_bin_dir(bazel_bin_path);
+  const QDir bazel_bin_dir(canonical_bazel_bin);
   const QFileInfoList solib_roots =
       bazel_bin_dir.entryInfoList(QStringList() << "_solib_*", QDir::Dirs | QDir::NoDotAndDotDot);
   for (const QFileInfo& solib_root : solib_roots) {
@@ -761,7 +762,8 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_di
     }
   }
 
-  QDir runtime_lib_dir(QDir(working_dir).filePath(QString(".cache/runtime-lib-path/%1").arg(arch)));
+  QDir runtime_lib_dir(
+      QDir(working_dir).filePath(QString(".cache/runtime-lib-path/%1/%2").arg(arch, output_configuration)));
   if (runtime_lib_dir.mkpath(".")) {
     for (const QFileInfo& solib_root : solib_roots) {
       QDirIterator onnxruntime_it(
@@ -796,7 +798,10 @@ bool is_tegra_runtime() {
 #endif
 }
 
-void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QString& working_dir) {
+void configure_pipeline_runtime_environment(
+    QProcessEnvironment& env,
+    const QString& working_dir,
+    const QString& bazel_bin_path) {
   // DeepStream 9.1's legacy nvstreammux rejects the native 8K source caps used
   // by stitching. Match run.sh while preserving an explicit diagnostic
   // override from the caller.
@@ -825,10 +830,10 @@ void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QStr
   prepend_env_path(env, "LD_LIBRARY_PATH", QDir(working_dir).filePath("lib/gst-plugins"));
   prepend_env_path(env, "LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib");
   prepend_env_path(env, "LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
-  stage_bazel_gst_plugins(env, working_dir);
+  stage_bazel_gst_plugins(env, working_dir, bazel_bin_path);
 
-  const QString yolo_so =
-      QDir(working_dir).filePath("bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so");
+  const QDir bazel_bin(bazel_bin_path.isEmpty() ? QDir(working_dir).filePath("bazel-bin") : bazel_bin_path);
+  const QString yolo_so = bazel_bin.filePath("src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so");
   if (QFileInfo::exists(yolo_so)) {
     QDir lib_dir(QDir(working_dir).filePath("lib"));
     if (lib_dir.mkpath(".")) {
@@ -1453,6 +1458,14 @@ QString hm::ui_internal::preview_channel_for_tab(int tab_index, int camera_count
 }
 
 QString hm::ui_internal::matching_development_pipeline_runner(const QString& application_path) {
+  const QString bazel_bin = matching_development_bazel_bin(application_path);
+  if (bazel_bin.isEmpty())
+    return {};
+  const QString runner = QDir(bazel_bin).filePath("src/apps/pipeline-app/hstream-cli");
+  return QFileInfo(runner).isExecutable() ? QFileInfo(runner).absoluteFilePath() : QString();
+}
+
+QString hm::ui_internal::matching_development_bazel_bin(const QString& application_path) {
   QFileInfo application_info(application_path);
   QString resolved_application = application_info.canonicalFilePath();
   if (resolved_application.isEmpty())
@@ -1462,14 +1475,14 @@ QString hm::ui_internal::matching_development_pipeline_runner(const QString& app
     return {};
 
   QDir application_dir = application_info.absoluteDir();
-  if (application_dir.dirName() != "hstream-ui" || !application_dir.cdUp() || application_dir.dirName() != "apps")
+  if (application_dir.dirName() != "hstream-ui" || !application_dir.cdUp() || application_dir.dirName() != "apps" ||
+      !application_dir.cdUp() || application_dir.dirName() != "src" || !application_dir.cdUp())
     return {};
-  const QString runner = application_dir.filePath("pipeline-app/hstream-cli");
-  return QFileInfo(runner).isExecutable() ? QFileInfo(runner).absoluteFilePath() : QString();
+  return application_dir.absolutePath();
 }
 
 QString hm::ui_internal::development_runtime_root_for_application(const QString& application_path) {
-  if (matching_development_pipeline_runner(application_path).isEmpty())
+  if (matching_development_bazel_bin(application_path).isEmpty())
     return {};
 
   QFileInfo application_info(application_path);
@@ -1498,6 +1511,7 @@ HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
   const QString application_path = QCoreApplication::applicationFilePath();
   development_runtime_root_ = hm::ui_internal::development_runtime_root_for_application(application_path);
   development_pipeline_runner_ = hm::ui_internal::matching_development_pipeline_runner(application_path);
+  development_bazel_bin_ = hm::ui_internal::matching_development_bazel_bin(application_path);
   setWindowIcon(hm::ui_internal::application_icon());
   capture_complete_log_ = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_GAME_ID");
   pipeline_process_ = new QProcess(this);
@@ -2432,8 +2446,11 @@ QString HStreamWindow::pipelineRunnerPath() const {
   if (!development_pipeline_runner_.isEmpty()) {
     return development_pipeline_runner_;
   }
-  if (!development_runtime_root_.isEmpty()) {
-    return QDir(development_runtime_root_).filePath("bazel-bin/src/apps/pipeline-app/hstream-cli");
+  if (!development_bazel_bin_.isEmpty()) {
+    // A Bazel-built UI must never fall back to an installed or differently
+    // configured CLI. Returning the expected sibling path makes startup fail
+    // closed with a useful missing-runner diagnostic.
+    return QDir(development_bazel_bin_).filePath("src/apps/pipeline-app/hstream-cli");
   }
   const QString installed_runner = "/opt/hstream/bin/hstream-cli";
   if (QFileInfo::exists(installed_runner)) {
@@ -3458,7 +3475,7 @@ void HStreamWindow::startPipeline() {
   }
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   const QString working_dir = pipelineWorkingDirectory();
-  configure_pipeline_runtime_environment(env, working_dir);
+  configure_pipeline_runtime_environment(env, working_dir, development_bazel_bin_);
   setPlaybackStartupStage("stitching", "Validating saved stitching state and Left/Right video assignments");
   active_archive_output_path_.clear();
   active_archive_recovery_path_.clear();
