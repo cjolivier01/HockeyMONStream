@@ -110,7 +110,8 @@ class PipelineProcess {
       int same_stage_instances = 1,
       int completion_timeout_ms = 0,
       bool suppress_calibration_completion = false,
-      int pipeline_recreate_seconds = 0) {
+      int pipeline_recreate_seconds = 0,
+      const std::string& enabled_source_type = "URI-MULTIPLE") {
     int input_pipe[2];
     int output_pipe[2];
     if (::pipe(input_pipe) != 0 || ::pipe(output_pipe) != 0) {
@@ -181,7 +182,7 @@ class PipelineProcess {
         arguments.push_back("-c");
         arguments.push_back(pipeline_config.string());
       }
-      arguments.push_back("--enable-sources=URI-MULTIPLE");
+      arguments.push_back("--enable-sources=" + enabled_source_type);
       arguments.push_back("--enable-sinks=FAKE");
       if (supply_runtime_invalidation) {
         arguments.push_back("--clean-expected-invalidation-id=" + invalidation_id);
@@ -392,6 +393,22 @@ hmstitcher:
   return output.good();
 }
 
+bool write_ordinary_uri_pipeline_config(const fs::path& path) {
+  if (!write_pipeline_config(path)) {
+    return false;
+  }
+  try {
+    YAML::Node config = YAML::LoadFile(path.string());
+    config["source0"]["type"] = 2;
+    config["source1"]["type"] = 2;
+    std::ofstream output(path);
+    output << YAML::Dump(config) << '\n';
+    return output.good();
+  } catch (const YAML::Exception&) {
+    return false;
+  }
+}
+
 bool write_game_config(
     const fs::path& path,
     int control_points,
@@ -530,10 +547,13 @@ int main(int argc, char** argv) {
   const fs::path game_root = root / "games";
   const fs::path game = game_root / "proto";
   const fs::path pipeline_config = root / "pipeline.yaml";
+  const fs::path ordinary_uri_pipeline_config = root / "ordinary-uri-pipeline.yaml";
   const fs::path plugin_directory = fs::path(argv[2]).parent_path();
   fs::create_directories(game / "cam1");
   fs::create_directories(game / "cam2");
   ok &= expect(write_pipeline_config(pipeline_config), "pipeline config must be written");
+  ok &= expect(
+      write_ordinary_uri_pipeline_config(ordinary_uri_pipeline_config), "ordinary URI pipeline config must be written");
   ok &= expect(
       run_command(
           {"ffmpeg",
@@ -588,6 +608,47 @@ int main(int argc, char** argv) {
            (game / "cam2" / "GX010002.MP4").string()},
           {}),
       "overlapping camera videos must be generated");
+
+  PipelineProcess ordinary_uri;
+  if (ok) {
+    ok = [&] {
+      if (!expect(
+              write_game_config(game / "config.yaml", 128, "ordinary-uri", false),
+              "ordinary URI calibration config must be written") ||
+          !expect(
+              ordinary_uri.Start(
+                  argv[1],
+                  ordinary_uri_pipeline_config,
+                  game_root,
+                  plugin_directory,
+                  "ordinary-uri",
+                  128,
+                  false,
+                  /*stitch_frame_time=*/"00:00:30",
+                  /*time_limit_seconds=*/0,
+                  /*stitch_rotate_degrees=*/{},
+                  /*supply_runtime_invalidation=*/true,
+                  /*rink_inference_delay_ms=*/0,
+                  /*supply_control_points_environment=*/true,
+                  /*same_stage_instances=*/1,
+                  /*completion_timeout_ms=*/0,
+                  /*suppress_calibration_completion=*/false,
+                  /*pipeline_recreate_seconds=*/0,
+                  /*enabled_source_type=*/"URI"),
+              "ordinary URI calibration pipeline must start") ||
+          !expect(
+              ordinary_uri.WaitFor("A nonzero stitch-frame time requires exactly two URI-MULTIPLE camera sources"),
+              "unsupported ordinary URI calibration must fail before preroll")) {
+        return false;
+      }
+      int exit_code = 0;
+      return expect(ordinary_uri.WaitForExit(&exit_code), "unsupported ordinary URI calibration must exit promptly") &&
+          expect(exit_code != 0, "unsupported ordinary URI calibration must return a failure") &&
+          expect(ordinary_uri.output().find("HSTREAM_CALIBRATION stage=calibration status=complete") ==
+                     std::string::npos,
+                 "unsupported ordinary URI calibration must not publish completion from frame zero");
+    }();
+  }
 
   PipelineProcess periodic_recreation;
   if (ok) {

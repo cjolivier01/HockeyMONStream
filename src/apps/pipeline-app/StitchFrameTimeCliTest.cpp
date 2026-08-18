@@ -82,6 +82,7 @@ int main(int argc, char** argv) {
   const fs::path conflict_game_dir = game_root / "control-point-conflict";
   const fs::path configured_game_dir = game_root / "configured-game";
   const fs::path pipeline_config = root / "pipeline.yaml";
+  const fs::path nonstitch_pipeline_config = root / "nonstitch-pipeline.yaml";
   const fs::path configured_pipeline_config = root / "configured-pipeline.yaml";
   const fs::path rotation_zero_config = root / "rotation-zero.yaml";
   const fs::path rotation_ten_config = root / "rotation-ten.yaml";
@@ -90,6 +91,7 @@ int main(int argc, char** argv) {
   fs::create_directories(configured_game_dir);
   std::ofstream(game_dir / "config.yaml") << "stitching:\n  stitch_frame_time:\n    - 00:00:07\n";
   std::ofstream(pipeline_config) << "application:\n  stage: 0\n";
+  std::ofstream(nonstitch_pipeline_config) << "application:\n  stage: 0\n  complete-configuration: 0\n";
   std::ofstream(configured_pipeline_config) << "application:\n"
                                             << "  stage: 0\n"
                                             << "  complete-configuration: 1\n"
@@ -116,14 +118,16 @@ int main(int argc, char** argv) {
                                                      << "    control_points: 750\n"
                                                      << "    status: complete\n"
                                                      << "    invalidation_id: configured-owner\n";
-  if (run_and_get_exit_code(
-          argv[1],
-          {"--game-id=configured-game",
-           "--cfg-file=" + configured_pipeline_config.string(),
-           "--stitch-frame-time=00:00:07",
-           "--clean"},
-          game_root) != 0) {
-    std::cerr << "FAIL: a configured-game nonzero stitch-frame override did not trigger clean calibration setup\n";
+  const int configured_nonzero_exit = run_and_get_exit_code(
+      argv[1],
+      {"--game-id=configured-game",
+       "--cfg-file=" + nonstitch_pipeline_config.string(),
+       "--cfg-file=" + configured_pipeline_config.string(),
+       "--stitch-frame-time=00:00:07",
+       "--clean"},
+      game_root);
+  if (configured_nonzero_exit != 0) {
+    std::cerr << "FAIL: configured-game nonzero stitch-frame override did not complete clean-only setup\n";
     fs::remove_all(root);
     return 1;
   }
@@ -140,14 +144,16 @@ int main(int argc, char** argv) {
     fs::remove_all(root);
     return 1;
   }
-  if (run_and_get_exit_code(
-          argv[1],
-          {"--game-id=configured-game",
-           "--cfg-file=" + configured_pipeline_config.string(),
-           "--stitch-frame-time=00:00:00",
-           "--clean"},
-          game_root) != 0) {
-    std::cerr << "FAIL: a configured-game zero stitch-frame override did not trigger clean calibration setup\n";
+  const int configured_zero_exit = run_and_get_exit_code(
+      argv[1],
+      {"--game-id=configured-game",
+       "--cfg-file=" + nonstitch_pipeline_config.string(),
+       "--cfg-file=" + configured_pipeline_config.string(),
+       "--stitch-frame-time=00:00:00",
+       "--clean"},
+      game_root);
+  if (configured_zero_exit != 0) {
+    std::cerr << "FAIL: configured-game zero stitch-frame override did not complete clean-only setup\n";
     fs::remove_all(root);
     return 1;
   }
@@ -160,6 +166,39 @@ int main(int argc, char** argv) {
       zero_calibration["artifacts_invalidated"].as<bool>(true) || zero_owner.empty() || zero_owner == nonzero_owner) {
     std::cerr << "FAIL: configured-game zero CLI override was not removed and invalidated from input\n"
               << YAML::Dump(configured_after_zero) << '\n';
+    fs::remove_all(root);
+    return 1;
+  }
+  std::ofstream(configured_game_dir / "config.yaml") << "stitching:\n"
+                                                     << "  stitch_frame_time: 00:00:03\n"
+                                                     << "hstream_ui:\n"
+                                                     << "  stitching_calibration:\n"
+                                                     << "    control_points: 750\n"
+                                                     << "    status: pending\n"
+                                                     << "    stale_from: input\n"
+                                                     << "    artifacts_invalidated: false\n"
+                                                     << "    invalidation_id: current-owner\n";
+  const int superseded_exit = run_and_get_exit_code(
+      argv[1],
+      {"--game-id=configured-game",
+       "--cfg-file=" + nonstitch_pipeline_config.string(),
+       "--cfg-file=" + configured_pipeline_config.string(),
+       "--stitch-frame-time=00:00:07",
+       "--clean",
+       "--clean-expected-invalidation-id=stale-owner"},
+      game_root);
+  if (superseded_exit <= 0 || superseded_exit == 127) {
+    std::cerr << "FAIL: a superseded guarded stitch-frame override was not rejected\n";
+    fs::remove_all(root);
+    return 1;
+  }
+  const YAML::Node configured_after_superseded = YAML::LoadFile((configured_game_dir / "config.yaml").string());
+  const YAML::Node superseded_calibration = configured_after_superseded["hstream_ui"]["stitching_calibration"];
+  if (configured_after_superseded["stitching"]["stitch_frame_time"].as<std::string>("") != "00:00:03" ||
+      superseded_calibration["status"].as<std::string>("") != "pending" ||
+      superseded_calibration["invalidation_id"].as<std::string>("") != "current-owner") {
+    std::cerr << "FAIL: a superseded guarded override mutated game-private stitch-frame state\n"
+              << YAML::Dump(configured_after_superseded) << '\n';
     fs::remove_all(root);
     return 1;
   }

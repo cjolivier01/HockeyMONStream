@@ -683,6 +683,7 @@ absl::Status PipelineApplication::configureInstances(
     std::vector<std::shared_ptr<HmApp>>& app_contexts) {
   std::vector<std::shared_ptr<HmApp>> valid_app_contexts;
   std::vector<double> stage_stitch_output_rotations;
+  bool completed_clean_only_action = false;
   for (size_t i = 0; i < app_contexts.size(); ++i) {
     auto& app_ctx = app_contexts[i];
     if (g_str_has_suffix(app_ctx->app_config_file().c_str(), ".yml") ||
@@ -749,7 +750,11 @@ absl::Status PipelineApplication::configureInstances(
         }
       }
 
-      if (stitch_frame_time_set_) {
+      const auto active_stitcher_before_configuration = active_stitch_output_rotation(app_ctx->configurator().config());
+      if (!active_stitcher_before_configuration.ok()) {
+        return active_stitcher_before_configuration.status();
+      }
+      if (stitch_frame_time_set_ && active_stitcher_before_configuration->has_value()) {
         bool stitch_frame_time_changed = false;
         HM_ASSIGN_OR_RETURN(
             stitch_frame_time_changed,
@@ -774,6 +779,7 @@ absl::Status PipelineApplication::configureInstances(
           return configuration_status;
         }
         std::cerr << configuration_status << std::endl;
+        completed_clean_only_action = true;
         continue;
       }
       if (!configuration_status.ok()) {
@@ -856,6 +862,9 @@ absl::Status PipelineApplication::configureInstances(
     }
     valid_app_contexts.emplace_back(std::move(app_ctx));
   }
+  if (completed_clean_only_action) {
+    valid_app_contexts.clear();
+  }
   app_contexts = std::move(valid_app_contexts);
   if (progress_ui_ && progress_ui_->started()) {
     progress_ui_->setGraphSnapshot(build_progress_graph_snapshot(app_contexts));
@@ -873,6 +882,12 @@ absl::Status PipelineApplication::createPipelines(
       return absl::InternalError("Failed to create pipeline");
     }
     const uint64_t initial_position_ns = initial_pipeline_position_ns(app_contexts[i].get());
+    if (app_contexts[i]->configurator().stitching_calibration_required() && initial_position_ns != 0 &&
+        !app_contexts[i]->pipeline.multi_src_bin.uri_playlist_exact_pairing_enabled) {
+      return absl::FailedPreconditionError(
+          "A nonzero stitch-frame time requires exactly two URI-MULTIPLE camera sources so calibration can be "
+          "positioned before preroll");
+    }
     HM_RETURN_IF_ERROR(
         app_contexts[i]->configurator().prepare_initial_pipeline_position(
             app_contexts[i]->pipeline, app_contexts[i]->config, initial_position_ns));
