@@ -1794,7 +1794,7 @@ absl::Status PipelineApplication::playPipelines(
   print_runtime_commands();
   changemode(1);
   g_timeout_add(40, event_thread_func_static, nullptr);
-  if (g_getenv("HM_TEST_INJECT_STITCHING_CALIBRATION_ERROR")) {
+  if (g_getenv("HM_TEST_INJECT_STITCHING_CALIBRATION_ERROR") || g_getenv("HM_TEST_INJECT_STITCHING_CALIBRATION_EOS")) {
     g_idle_add(inject_stitching_calibration_error_static, nullptr);
   }
   if (!ui_preview_channels_.empty()) {
@@ -4143,23 +4143,13 @@ gboolean PipelineApplication::should_defer_eos(AppCtx* app_ctx) {
   if (context == active_stage->second.end()) {
     return FALSE;
   }
+  const bool unfinished_calibration =
+      (*context)->configurator().stitching_calibration_required() && stitch_frame_rewound_contexts_.count(app_ctx) == 0;
+  if (!unfinished_calibration) {
+    return FALSE;
+  }
   if (stitch_frame_rewind_pending_contexts_.count(app_ctx) != 0 && stitch_frame_rewound_contexts_.count(app_ctx) == 0) {
     return TRUE;
-  }
-  std::vector<hm::pipeline_internal::StitchFrameRewindState> states;
-  states.reserve(active_stage->second.size());
-  for (const auto& candidate : active_stage->second) {
-    states.push_back({
-        candidate && candidate->configurator().stitching_calibration_required(),
-        candidate && stitch_frame_rewound_contexts_.count(candidate.get()) != 0,
-        candidate && stitch_frame_rewind_pending_contexts_.count(candidate.get()) != 0,
-    });
-  }
-  const std::vector<size_t> restart_candidates =
-      hm::pipeline_internal::stitch_frame_rewind_candidates(stitch_frame_time_ns_, states);
-  const size_t context_index = static_cast<size_t>(std::distance(active_stage->second.begin(), context));
-  if (std::find(restart_candidates.begin(), restart_candidates.end(), context_index) == restart_candidates.end()) {
-    return FALSE;
   }
   if (stitch_frame_completion_timeout_source_id_ == 0) {
     auto* request = new StitchFrameRewindRequest{
@@ -4315,6 +4305,10 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
     for (const auto& context : active_stage->second) {
       if (context) {
         one_pass_calibration_contexts_.erase(context.get());
+        if (context->configurator().stitching_calibration_required() && context->eos_received &&
+            context->return_value == 0) {
+          context->quit = TRUE;
+        }
       }
     }
     stitch_frame_calibration_active_.store(false, std::memory_order_release);
@@ -4388,6 +4382,9 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
       stage_contexts.push_back(context.get());
     }
   }
+  const auto clean_terminal_context = [](const AppCtx* context) {
+    return context && context->eos_received && context->quit && context->return_value == 0;
+  };
   auto fail_restart = [&](const char* diagnostic, const char* message) -> gboolean {
     g_printerr("%s\n", diagnostic);
     for (AppCtx* context : stage_contexts) {
@@ -4420,6 +4417,9 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
         "hmstitcher: calibration frame complete; restarting playback at %" GST_TIME_FORMAT "\n",
         GST_TIME_ARGS(start_time_ns_));
     for (AppCtx* context : stage_contexts) {
+      if (clean_terminal_context(context)) {
+        continue;
+      }
       if (std::find(rewind_contexts.begin(), rewind_contexts.end(), context) != rewind_contexts.end()) {
         cancel_uri_playlist_frame_barrier(&context->pipeline.multi_src_bin);
         if (GstElement* stitcher = context->pipeline.hmstitcher_bin.elem_hmstitcher) {
@@ -4443,10 +4443,14 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
   if (!stitch_frame_restart_awaiting_playing_) {
     bool all_quiesced = true;
     for (AppCtx* context : stage_contexts) {
-      if (!dispatch_pending_pipeline_bus_messages(context)) {
+      const gboolean bus_running = dispatch_pending_pipeline_bus_messages(context);
+      if (!bus_running && !clean_terminal_context(context)) {
         return fail_restart(
             "A same-stage pipeline failed while quiescing for stitch-frame restart",
             "A pipeline failed while preparing playback restart");
+      }
+      if (clean_terminal_context(context)) {
+        continue;
       }
       GstState current = GST_STATE_VOID_PENDING;
       GstState pending = GST_STATE_VOID_PENDING;
@@ -4475,7 +4479,8 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
     // Drain every peer once more at the last safe boundary before destroying
     // any old calibration generation.
     for (AppCtx* context : stage_contexts) {
-      if (!dispatch_pending_pipeline_bus_messages(context)) {
+      const gboolean bus_running = dispatch_pending_pipeline_bus_messages(context);
+      if (!bus_running && !clean_terminal_context(context)) {
         return fail_restart(
             "A same-stage pipeline failed at the stitch-frame restart boundary",
             "A pipeline failed before playback could restart");
@@ -4500,6 +4505,9 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
       if (std::find(rewind_contexts.begin(), rewind_contexts.end(), context) != rewind_contexts.end()) {
         continue;
       }
+      if (clean_terminal_context(context)) {
+        continue;
+      }
       context->observed_pipeline_state = GST_STATE_VOID_PENDING;
       if (gst_element_set_state(context->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
         return fail_restart(
@@ -4516,13 +4524,11 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
   bool all_playing = true;
   for (AppCtx* context : stage_contexts) {
     const gboolean bus_running = dispatch_pending_pipeline_bus_messages(context);
-    const bool replacement_eos = stitch_frame_rewound_contexts_.count(context) != 0 && context->eos_received &&
-        context->quit && context->return_value == 0;
-    if (!bus_running && !replacement_eos) {
+    if (!bus_running && !clean_terminal_context(context)) {
       return fail_restart(
           "A replacement pipeline failed while entering PLAYING", "Playback failed while restarting after calibration");
     }
-    if (replacement_eos) {
+    if (clean_terminal_context(context)) {
       continue;
     }
     GstState current = GST_STATE_VOID_PENDING;
@@ -4549,14 +4555,12 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
   }
   for (AppCtx* context : stage_contexts) {
     const gboolean bus_running = dispatch_pending_pipeline_bus_messages(context);
-    const bool replacement_eos = stitch_frame_rewound_contexts_.count(context) != 0 && context->eos_received &&
-        context->quit && context->return_value == 0;
-    if (!bus_running && !replacement_eos) {
+    if (!bus_running && !clean_terminal_context(context)) {
       return fail_restart(
           "A replacement pipeline failed immediately after entering PLAYING",
           "Playback failed while restarting after calibration");
     }
-    if (!replacement_eos) {
+    if (!clean_terminal_context(context)) {
       resume_perf_measurement(&context->perf_struct);
     }
   }
@@ -4991,6 +4995,11 @@ gboolean PipelineApplication::inject_stitching_calibration_error() {
   for (const auto& context : active_stage->second) {
     if (!context || one_pass_calibration_contexts_.count(context.get()) == 0 || !context->pipeline.pipeline) {
       continue;
+    }
+    if (g_getenv("HM_TEST_INJECT_STITCHING_CALIBRATION_EOS")) {
+      g_print("hmstitcher: posting calibration EOS before completion for lifecycle test\n");
+      gst_element_post_message(context->pipeline.pipeline, gst_message_new_eos(GST_OBJECT(context->pipeline.pipeline)));
+      return G_SOURCE_REMOVE;
     }
     g_print("hmstitcher: injecting calibration pipeline error for lifecycle test\n");
     GError* error = g_error_new_literal(

@@ -116,7 +116,8 @@ class PipelineProcess {
       bool suppress_restart_playing = false,
       int restart_timeout_ms = 0,
       bool inject_calibration_error = false,
-      bool inject_replacement_eos = false) {
+      bool inject_replacement_eos = false,
+      bool inject_calibration_eos = false) {
     int input_pipe[2];
     int output_pipe[2];
     if (::pipe(input_pipe) != 0 || ::pipe(output_pipe) != 0) {
@@ -192,6 +193,11 @@ class PipelineProcess {
         ::setenv("HM_TEST_STITCH_FRAME_REPLACEMENT_EOS", "1", 1);
       } else {
         ::unsetenv("HM_TEST_STITCH_FRAME_REPLACEMENT_EOS");
+      }
+      if (inject_calibration_eos) {
+        ::setenv("HM_TEST_INJECT_STITCHING_CALIBRATION_EOS", "1", 1);
+      } else {
+        ::unsetenv("HM_TEST_INJECT_STITCHING_CALIBRATION_EOS");
       }
       if (start_from_features && supply_runtime_invalidation) {
         ::setenv("HSTREAM_CALIBRATION_START_STAGE", "features", 1);
@@ -438,7 +444,10 @@ bool write_ordinary_uri_pipeline_config(const fs::path& path) {
   }
 }
 
-bool write_nonstitch_peer_pipeline_config(const fs::path& path, const fs::path& game_dir) {
+bool write_nonstitch_peer_pipeline_config(
+    const fs::path& path,
+    const fs::path& game_dir,
+    const fs::path& media_path = {}) {
   if (!write_pipeline_config(path)) {
     return false;
   }
@@ -446,8 +455,10 @@ bool write_nonstitch_peer_pipeline_config(const fs::path& path, const fs::path& 
     YAML::Node config = YAML::LoadFile(path.string());
     config.remove("hmstitcher");
     config["application"]["complete-configuration"] = 0;
-    const std::string left_uri = "file://" + (game_dir / "cam1" / "GX010001.MP4").string();
-    const std::string right_uri = "file://" + (game_dir / "cam2" / "GX010002.MP4").string();
+    const std::string left_uri =
+        "file://" + (media_path.empty() ? game_dir / "cam1" / "GX010001.MP4" : media_path).string();
+    const std::string right_uri =
+        "file://" + (media_path.empty() ? game_dir / "cam2" / "GX010002.MP4" : media_path).string();
     config["source0"]["uri"] = left_uri;
     config["source0"]["uri-list"].push_back(left_uri);
     config["source1"]["uri"] = right_uri;
@@ -617,6 +628,8 @@ int main(int argc, char** argv) {
   const fs::path pipeline_config = root / "pipeline.yaml";
   const fs::path ordinary_uri_pipeline_config = root / "ordinary-uri-pipeline.yaml";
   const fs::path nonstitch_peer_pipeline_config = root / "nonstitch-peer-pipeline.yaml";
+  const fs::path short_nonstitch_peer_pipeline_config = root / "short-nonstitch-peer-pipeline.yaml";
+  const fs::path short_peer_media = root / "short-peer.mp4";
   const fs::path plugin_directory = fs::path(argv[2]).parent_path();
   fs::create_directories(game / "cam1");
   fs::create_directories(game / "cam2");
@@ -626,6 +639,9 @@ int main(int argc, char** argv) {
   ok &= expect(
       write_nonstitch_peer_pipeline_config(nonstitch_peer_pipeline_config, game),
       "same-stage non-stitch peer config must be written");
+  ok &= expect(
+      write_nonstitch_peer_pipeline_config(short_nonstitch_peer_pipeline_config, game, short_peer_media),
+      "short same-stage non-stitch peer config must be written");
   ok &= expect(
       run_command(
           {"ffmpeg",
@@ -680,6 +696,22 @@ int main(int argc, char** argv) {
            (game / "cam2" / "GX010002.MP4").string()},
           {}),
       "overlapping camera videos must be generated");
+  ok &= expect(
+      run_command(
+          {"ffmpeg",
+           "-hide_banner",
+           "-loglevel",
+           "error",
+           "-y",
+           "-i",
+           (game / "cam1" / "GX010001.MP4").string(),
+           "-t",
+           "0.25",
+           "-c",
+           "copy",
+           short_peer_media.string()},
+          {}),
+      "short ordinary-peer video must be generated");
 
   PipelineProcess ordinary_uri;
   if (ok) {
@@ -807,6 +839,8 @@ int main(int argc, char** argv) {
   }
 
   PipelineProcess missing_completion;
+  PipelineProcess zero_missing_completion;
+  PipelineProcess zero_eos_completion;
   if (ok) {
     ok = [&] {
       if (!expect(
@@ -849,11 +883,114 @@ int main(int argc, char** argv) {
     }();
   }
 
+  if (ok) {
+    ok = [&] {
+      if (!expect(
+              write_game_config(game / "config.yaml", 128, "zero-missing-completion", false),
+              "zero-time missing-completion config must be written") ||
+          !expect(
+              zero_missing_completion.Start(
+                  argv[1],
+                  pipeline_config,
+                  game_root,
+                  plugin_directory,
+                  "zero-missing-completion",
+                  128,
+                  false,
+                  /*stitch_frame_time=*/"00:00:00",
+                  /*time_limit_seconds=*/0,
+                  /*stitch_rotate_degrees=*/{},
+                  /*supply_runtime_invalidation=*/true,
+                  /*rink_inference_delay_ms=*/0,
+                  /*supply_control_points_environment=*/true,
+                  /*same_stage_instances=*/1,
+                  /*completion_timeout_ms=*/500,
+                  /*suppress_calibration_completion=*/true,
+                  /*pipeline_recreate_seconds=*/0,
+                  /*enabled_source_type=*/"URI-MULTIPLE",
+                  /*same_stage_peer_config=*/{},
+                  /*suppress_restart_playing=*/false,
+                  /*restart_timeout_ms=*/0,
+                  /*inject_calibration_error=*/false,
+                  /*inject_replacement_eos=*/false,
+                  /*inject_calibration_eos=*/true),
+              "zero-time missing-completion calibration must start") ||
+          !expect(
+              zero_missing_completion.WaitFor(
+                  "Received EOS while awaiting calibration restart", 0, kCalibrationTimeout),
+              "zero-time calibration EOS must be deferred while completion is pending") ||
+          !expect(
+              zero_missing_completion.WaitFor(
+                  "Timed out waiting for stitching calibration completion after EOS", 0, kCalibrationTimeout),
+              "zero-time calibration without completion must fail after a bounded wait")) {
+        return false;
+      }
+      int exit_code = 0;
+      return expect(
+                 zero_missing_completion.WaitForExit(&exit_code, std::chrono::seconds(10)),
+                 "zero-time missing completion must exit after its timeout") &&
+          expect(exit_code != 0, "zero-time missing completion must return a failure status") &&
+          expect(zero_missing_completion.output().find("HSTREAM_CALIBRATION stage=playback-restart status=complete") ==
+                     std::string::npos,
+                 "zero-time missing completion must not publish restart completion");
+    }();
+  }
+
+  if (ok) {
+    ok = [&] {
+      if (!expect(
+              write_game_config(game / "config.yaml", 128, "zero-eos-completion", false),
+              "zero-time EOS completion config must be written") ||
+          !expect(
+              zero_eos_completion.Start(
+                  argv[1],
+                  pipeline_config,
+                  game_root,
+                  plugin_directory,
+                  "zero-eos-completion",
+                  128,
+                  false,
+                  /*stitch_frame_time=*/"00:00:00",
+                  /*time_limit_seconds=*/0,
+                  /*stitch_rotate_degrees=*/{},
+                  /*supply_runtime_invalidation=*/true,
+                  /*rink_inference_delay_ms=*/0,
+                  /*supply_control_points_environment=*/true,
+                  /*same_stage_instances=*/1,
+                  /*completion_timeout_ms=*/30'000,
+                  /*suppress_calibration_completion=*/false,
+                  /*pipeline_recreate_seconds=*/0,
+                  /*enabled_source_type=*/"URI-MULTIPLE",
+                  /*same_stage_peer_config=*/{},
+                  /*suppress_restart_playing=*/false,
+                  /*restart_timeout_ms=*/0,
+                  /*inject_calibration_error=*/false,
+                  /*inject_replacement_eos=*/false,
+                  /*inject_calibration_eos=*/true),
+              "zero-time EOS completion calibration must start") ||
+          !expect(
+              zero_eos_completion.WaitFor("Received EOS while awaiting calibration restart", 0, kCalibrationTimeout),
+              "zero-time calibration must consume EOS while waiting for completion") ||
+          !expect(
+              zero_eos_completion.WaitFor(
+                  "HSTREAM_CALIBRATION stage=playback-restart status=complete", 0, kCalibrationTimeout),
+              "zero-time calibration completion must finalize consumed EOS")) {
+        return false;
+      }
+      int exit_code = 0;
+      return expect(
+                 zero_eos_completion.WaitForExit(&exit_code, std::chrono::seconds(10)),
+                 "zero-time consumed EOS must terminate after completion") &&
+          expect(exit_code == 0, "zero-time consumed EOS must remain a successful terminal condition");
+    }();
+  }
+
   PipelineProcess rotated;
   PipelineProcess saved_config;
   PipelineProcess completed_missing;
   PipelineProcess multi_context_nonzero;
   PipelineProcess nonstitch_peer;
+  PipelineProcess short_nonstitch_peer;
   PipelineProcess fatal_error_with_peer;
   PipelineProcess replacement_eos;
   PipelineProcess restart_timeout;
@@ -1029,6 +1166,55 @@ int main(int argc, char** argv) {
       }
       return stop_successfully(
           &nonstitch_peer, "playback with a restarted ordinary same-stage peer must remain controllable");
+    }();
+  }
+
+  if (ok) {
+    ok = [&] {
+      if (!expect(remove_rink_masks(game), "short non-stitch peer fixture must remove the saved rink mask") ||
+          !expect(
+              short_nonstitch_peer.Start(
+                  argv[1],
+                  pipeline_config,
+                  game_root,
+                  plugin_directory,
+                  "saved-config-time",
+                  128,
+                  false,
+                  /*stitch_frame_time=*/{},
+                  /*time_limit_seconds=*/0,
+                  /*stitch_rotate_degrees=*/{},
+                  /*supply_runtime_invalidation=*/false,
+                  /*rink_inference_delay_ms=*/3000,
+                  /*supply_control_points_environment=*/false,
+                  /*same_stage_instances=*/1,
+                  /*completion_timeout_ms=*/0,
+                  /*suppress_calibration_completion=*/false,
+                  /*pipeline_recreate_seconds=*/0,
+                  /*enabled_source_type=*/"URI-MULTIPLE",
+                  /*same_stage_peer_config=*/short_nonstitch_peer_pipeline_config),
+              "calibration pipeline with a short ordinary same-stage peer must start") ||
+          !expect(
+              short_nonstitch_peer.WaitFor(
+                  "HSTREAM_CALIBRATION stage=rink-mask status=started", 0, kCalibrationTimeout),
+              "short-peer calibration must enter delayed rink-mask work") ||
+          !expect(
+              short_nonstitch_peer.WaitFor("Received EOS. Exiting", 0, kCalibrationTimeout),
+              "short ordinary peer must finish while stitching calibration is active") ||
+          !expect(
+              short_nonstitch_peer.WaitFor(
+                  "HSTREAM_CALIBRATION stage=playback-restart status=complete", 0, kCalibrationTimeout),
+              "a cleanly finished ordinary peer must not prevent playback restart")) {
+        return false;
+      }
+      if (!expect(
+              short_nonstitch_peer.output().find("HSTREAM_CALIBRATION stage=playback-restart status=failed") ==
+                  std::string::npos,
+              "ordinary peer EOS during calibration must not be classified as restart failure")) {
+        return false;
+      }
+      return stop_successfully(
+          &short_nonstitch_peer, "playback must remain controllable after a same-stage peer reaches EOS");
     }();
   }
 
@@ -1383,10 +1569,13 @@ int main(int argc, char** argv) {
   if (!ok) {
     initial.DumpOutput("initial calibration");
     missing_completion.DumpOutput("missing-completion calibration");
+    zero_missing_completion.DumpOutput("zero-time missing-completion calibration");
+    zero_eos_completion.DumpOutput("zero-time consumed-EOS completion calibration");
     saved_config.DumpOutput("standalone saved-time calibration");
     completed_missing.DumpOutput("completed config with missing artifact");
     multi_context_nonzero.DumpOutput("same-stage nonzero calibration");
     nonstitch_peer.DumpOutput("same-stage non-stitch peer calibration");
+    short_nonstitch_peer.DumpOutput("short same-stage non-stitch peer calibration");
     fatal_error_with_peer.DumpOutput("fatal calibration error with peer");
     replacement_eos.DumpOutput("replacement EOS calibration");
     restart_timeout.DumpOutput("suppressed-PLAYING restart calibration");
