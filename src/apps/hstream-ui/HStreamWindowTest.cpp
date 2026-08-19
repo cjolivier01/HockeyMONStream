@@ -4105,6 +4105,7 @@ bool test_camera_controls(HStreamWindow* window) {
     direct_overrides["rink"]["camera"]["breakaway_detection"]["post_nonstop_stop_delay_count"] = 9;
     direct_overrides["rink"]["camera"]["breakaway_detection"]["overshoot_scale_speed_ratio"] = 0.83;
     direct_overrides["stitching"]["post_stitch_rotate_degrees"] = 18;
+    direct_overrides["pipeline"]["hmplaycropper"]["properties"]["shadow-lift"] = 35;
     std::ofstream out(config);
     out << direct_overrides << "\n";
   }
@@ -4118,13 +4119,14 @@ bool test_camera_controls(HStreamWindow* window) {
               window->cameraControlValue("Overshoot_Stop_Delay_Frames") == 8 &&
               window->cameraControlValue("Post_Nonstop_Stop_Delay_Frames") == 9 &&
               window->cameraControlValue("Overshoot_Speed_Ratio_x100") == 83 &&
-              window->cameraControlValue("Stitch_Rotate_Degrees") == 72,
+              window->cameraControlValue("Stitch_Rotate_Degrees") == 72 &&
+              window->cameraControlValue("Bring_Up_Shadows") == 35,
           "Direct per-game baseline-key overrides should initialize every corresponding camera control")) {
     return false;
   }
   activate(reset);
   if (!expect(
-          stop_delay->value() == 10 && rotate->value() == 90 && save->isEnabled(),
+          stop_delay->value() == 10 && rotate->value() == 90 && bring_up_shadows->value() == 0 && save->isEnabled(),
           "Reset should stage removal of direct per-game canonical overrides")) {
     return false;
   }
@@ -4132,14 +4134,59 @@ bool test_camera_controls(HStreamWindow* window) {
   const YAML::Node after_direct_reset = YAML::LoadFile(config.string());
   if (!expect(
           !lookup_yaml_path(after_direct_reset, {"rink", "camera", "stop_on_dir_change_delay"}, nullptr) &&
-              !lookup_yaml_path(after_direct_reset, {"stitching", "post_stitch_rotate_degrees"}, nullptr),
+              !lookup_yaml_path(after_direct_reset, {"stitching", "post_stitch_rotate_degrees"}, nullptr) &&
+              !lookup_yaml_path(
+                  after_direct_reset, {"pipeline", "hmplaycropper", "properties", "shadow-lift"}, nullptr),
           "Reset plus Save should remove direct canonical values instead of letting them resurface on reload")) {
     return false;
   }
   activate(create);
   if (!expect(
-          stop_delay->value() == 10 && rotate->value() == 90 && !save->isEnabled(),
+          stop_delay->value() == 10 && rotate->value() == 90 && bring_up_shadows->value() == 0 && !save->isEnabled(),
           "Reload after Reset plus Save should remain on bundled defaults")) {
+    return false;
+  }
+
+  {
+    YAML::Node shadow_precedence(YAML::NodeType::Map);
+    shadow_precedence["pipeline"]["hmplaycropper"]["properties"]["shadow-lift"] = 35;
+    shadow_precedence["hstream_ui"]["camera_controls"]["Bring_Up_Shadows"] = 45;
+    std::ofstream out(config);
+    out << shadow_precedence << "\n";
+  }
+  activate(create);
+  if (!expect(
+          bring_up_shadows->value() == 45 && bring_up_shadows->minimum() == 0 && bring_up_shadows->maximum() == 100 &&
+              !save->isEnabled(),
+          "Saved UI shadow lift should take precedence over the canonical runtime value")) {
+    return false;
+  }
+
+  {
+    YAML::Node invalid_shadow_lift(YAML::NodeType::Map);
+    invalid_shadow_lift["pipeline"]["hmplaycropper"]["properties"]["shadow-lift"] = 101;
+    std::ofstream out(config);
+    out << invalid_shadow_lift << "\n";
+  }
+  activate(create);
+  if (!expect(
+          bring_up_shadows->value() == 0 && bring_up_shadows->minimum() == 0 && bring_up_shadows->maximum() == 100 &&
+              save->isEnabled(),
+          "Out-of-range canonical shadow lift should fail closed without widening the slider")) {
+    return false;
+  }
+
+  {
+    YAML::Node fractional_shadow_lift(YAML::NodeType::Map);
+    fractional_shadow_lift["pipeline"]["hmplaycropper"]["properties"]["shadow-lift"] = 35.5;
+    std::ofstream out(config);
+    out << fractional_shadow_lift << "\n";
+  }
+  activate(create);
+  if (!expect(
+          bring_up_shadows->value() == 0 && bring_up_shadows->minimum() == 0 && bring_up_shadows->maximum() == 100 &&
+              save->isEnabled(),
+          "Fractional canonical shadow lift should fail closed as incompatible with the integer control")) {
     return false;
   }
 

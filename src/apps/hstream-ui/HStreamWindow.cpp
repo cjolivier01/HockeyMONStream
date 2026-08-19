@@ -6484,6 +6484,15 @@ void HStreamWindow::loadSavedControlConfig() {
       }
       return static_cast<int>(std::lround(value));
     };
+    auto bounded_integer_control = [](const QString& path, const YAML::Node& value, int minimum, int maximum) {
+      const double numeric_value = value.as<double>();
+      if (!std::isfinite(numeric_value) || std::trunc(numeric_value) != numeric_value ||
+          numeric_value < static_cast<double>(minimum) || numeric_value > static_cast<double>(maximum)) {
+        throw std::invalid_argument(
+            QString("%1 must be a whole number from %2 through %3").arg(path).arg(minimum).arg(maximum).toStdString());
+      }
+      return static_cast<int>(numeric_value);
+    };
     auto stage_integer_path = [&config, &stage_control](const QString& path, const QString& id) {
       YAML::Node value;
       if (lookup_yaml_path(config, path, &value))
@@ -6568,12 +6577,20 @@ void HStreamWindow::loadSavedControlConfig() {
         appendLog("ignored invalid rink.camera.fixed_edge_rotation_angle; expected null, one value, or [left, right]");
       }
     }
+    YAML::Node shadow_lift;
+    if (lookup_yaml_path(config, "pipeline.hmplaycropper.properties.shadow-lift", &shadow_lift)) {
+      stage_control(
+          "Bring_Up_Shadows",
+          bounded_integer_control("pipeline.hmplaycropper.properties.shadow-lift", shadow_lift, 0, 100));
+    }
     YAML::Node controls = config["hstream_ui"]["camera_controls"];
     int loaded = 0;
     if (controls && controls.IsMap()) {
       for (const auto& entry : controls) {
         const QString id = QString::fromStdString(entry.first.as<std::string>());
-        const int value = entry.second.as<int>();
+        const int value = id == "Bring_Up_Shadows"
+            ? bounded_integer_control("hstream_ui.camera_controls.Bring_Up_Shadows", entry.second, 0, 100)
+            : entry.second.as<int>();
         if ((id == "Link_Fixed_Edge_Rotation_Left_Right" || id == "Apply_To_Fast_Box" ||
              id == "Apply_To_Follower_Box") &&
             value != 0 && value != 1) {
@@ -6698,6 +6715,7 @@ bool HStreamWindow::applySavedControlConfig(
   // Remove the old values first, then serialize only non-default controls.
   for (const char* path : {
            "stitching.post_stitch_rotate_degrees",
+           "pipeline.hmplaycropper.properties.shadow-lift",
            "rink.camera.fixed_edge_rotation_angle",
            "rink.camera.stop_on_dir_change_delay",
            "rink.camera.cancel_stop_on_opposite_dir",
