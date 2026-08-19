@@ -3764,6 +3764,10 @@ QStringList HStreamWindow::pipelineArguments() const {
                   .arg(render_video ? (initial_channel.isEmpty() ? "program" : initial_channel) : "none");
     }
   }
+  if (!isCalibrationRun()) {
+    args << QString("--options=pipeline.hmplaycropper.properties.shadow-lift=%1")
+                .arg(cameraControlValue("Bring_Up_Shadows"));
+  }
   args << "--options=pipeline.hmaudio.enable=1";
   return args;
 }

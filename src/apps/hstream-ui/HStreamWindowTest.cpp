@@ -4820,10 +4820,18 @@ bool test_camera_controls(HStreamWindow* window) {
 
   YAML::Node relative_runtime_config = YAML::LoadFile(config.string());
   relative_runtime_config["pipeline"]["ds-playtracker"]["config-file"] = ".hstream-ui/play_tracker_config.yaml";
+  relative_runtime_config["pipeline"]["hmplaycropper"]["properties"]["shadow-lift"] = 35;
+  relative_runtime_config["hstream_ui"]["camera_controls"]["Bring_Up_Shadows"] = 45;
   relative_runtime_config["hstream_ui"]["playtracker_config_base"] = custom_playtracker_config.string();
   {
     std::ofstream out(config);
     out << relative_runtime_config << "\n";
+  }
+  activate(create);
+  if (!expect(
+          bring_up_shadows->value() == 45 && !save->isEnabled(),
+          "Reload should select the companion shadow lift over a stale canonical value before launch")) {
+    return false;
   }
   mode->setCurrentIndex(mode->findData("program"));
   activate(start);
@@ -4837,6 +4845,12 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!expect(
           window->logText().contains("--stitch-frame-time=00:00:07"),
           "A saved non-default stitch-frame time should be passed to hstream-cli")) {
+    activate(stop);
+    return false;
+  }
+  if (!expect(
+          window->logText().contains("--options=pipeline.hmplaycropper.properties.shadow-lift=45"),
+          "Program launch should override stale canonical shadow lift with the effective UI value")) {
     activate(stop);
     return false;
   }
