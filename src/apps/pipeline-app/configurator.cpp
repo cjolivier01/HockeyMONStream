@@ -40,6 +40,7 @@
 #include "hstream/src/apps/apps-common/deepstream_config.h"
 #include "hstream/src/apps/apps-common/deepstream_sinks.h"
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
+#include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/ConfigYaml.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/Status.h"
@@ -911,6 +912,91 @@ configurator_internal::ExplicitStitchingVideoSelection configurator_internal::se
   return selection;
 }
 
+absl::StatusOr<YAML::Node> configurator_internal::build_effective_playtracker_config(
+    const YAML::Node& effective_config,
+    const YAML::Node& base_playtracker_config) {
+  if (!effective_config.IsMap())
+    return absl::InvalidArgumentError("Effective application config must be a YAML map");
+  if (!base_playtracker_config.IsMap() || !base_playtracker_config["play-tracker"].IsMap())
+    return absl::InvalidArgumentError("Playtracker config must contain a play-tracker map");
+
+  YAML::Node result = YAML::Clone(base_playtracker_config);
+  YAML::Node play_tracker = result["play-tracker"];
+  YAML::Node live_boxes = play_tracker["live-boxes"];
+  if (!live_boxes.IsSequence() || live_boxes.size() < 2)
+    return absl::InvalidArgumentError("Playtracker config must contain fast and follower live-boxes");
+
+  auto copy_required = [&](YAML::Node destination, const char* destination_key, const char* source_path) {
+    const std::optional<YAML::Node> source = get_node(effective_config, source_path);
+    if (!source || !source->IsDefined() || source->IsNull())
+      return absl::InvalidArgumentError(std::string("Effective baseline is missing required key ") + source_path);
+    destination[destination_key] = YAML::Clone(*source);
+    return absl::OkStatus();
+  };
+
+  HM_RETURN_IF_ERROR(copy_required(play_tracker, "camera-name", "camera.name"));
+  HM_RETURN_IF_ERROR(copy_required(play_tracker, "no-wide-start", "play_tracker.no_wide_start"));
+  HM_RETURN_IF_ERROR(copy_required(play_tracker, "ignore-largest-bbox", "rink.tracking.cam_ignore_largest"));
+  HM_RETURN_IF_ERROR(copy_required(
+      play_tracker, "min-considered-group-velocity", "rink.camera.breakaway_detection.min_considered_group_velocity"));
+  HM_RETURN_IF_ERROR(
+      copy_required(play_tracker, "group-ratio-threshold", "rink.camera.breakaway_detection.group_ratio_threshold"));
+  HM_RETURN_IF_ERROR(copy_required(
+      play_tracker, "group-velocity-speed-ratio", "rink.camera.breakaway_detection.group_velocity_speed_ratio"));
+  HM_RETURN_IF_ERROR(copy_required(
+      play_tracker, "scale-speed-constraints", "rink.camera.breakaway_detection.scale_speed_constraints"));
+  HM_RETURN_IF_ERROR(
+      copy_required(play_tracker, "nonstop-delay-count", "rink.camera.breakaway_detection.nonstop_delay_count"));
+  HM_RETURN_IF_ERROR(copy_required(
+      play_tracker, "overshoot-scale-speed-ratio", "rink.camera.breakaway_detection.overshoot_scale_speed_ratio"));
+  HM_RETURN_IF_ERROR(copy_required(
+      play_tracker, "overshoot-stop-delay-count", "rink.camera.breakaway_detection.overshoot_stop_delay_count"));
+  HM_RETURN_IF_ERROR(copy_required(play_tracker, "max-speed-ratio-x", "rink.camera.max_speed_ratio_x"));
+  HM_RETURN_IF_ERROR(copy_required(play_tracker, "max-speed-ratio-y", "rink.camera.max_speed_ratio_y"));
+  HM_RETURN_IF_ERROR(copy_required(play_tracker, "max-accel-ratio-x", "rink.camera.max_accel_ratio_x"));
+  HM_RETURN_IF_ERROR(copy_required(play_tracker, "max-accel-ratio-y", "rink.camera.max_accel_ratio_y"));
+  HM_RETURN_IF_ERROR(
+      copy_required(play_tracker, "follower-box-min-height-ratio", "rink.camera.follower_box_min_height_ratio"));
+
+  YAML::Node fast = live_boxes[0];
+  YAML::Node follower = live_boxes[1];
+  for (YAML::Node box : {fast, follower}) {
+    HM_RETURN_IF_ERROR(
+        copy_required(box, "time-to-dest-speed-limit-frames", "rink.camera.time_to_dest_speed_limit_frames"));
+    HM_RETURN_IF_ERROR(
+        copy_required(box, "time-to-dest-stop-speed-threshold", "rink.camera.time_to_dest_stop_speed_threshold"));
+    HM_RETURN_IF_ERROR(
+        copy_required(box, "resizing-stop-on-dir-change-delay", "rink.camera.resizing_stop_on_dir_change_delay"));
+    HM_RETURN_IF_ERROR(
+        copy_required(box, "resizing-cancel-stop-on-opposite-dir", "rink.camera.resizing_cancel_stop_on_opposite_dir"));
+    HM_RETURN_IF_ERROR(copy_required(
+        box, "resizing-stop-cancel-hysteresis-frames", "rink.camera.resizing_stop_cancel_hysteresis_frames"));
+    HM_RETURN_IF_ERROR(
+        copy_required(box, "resizing-stop-delay-cooldown-frames", "rink.camera.resizing_stop_delay_cooldown_frames"));
+    HM_RETURN_IF_ERROR(copy_required(
+        box, "resizing-time-to-dest-speed-limit-frames", "rink.camera.resizing_time_to_dest_speed_limit_frames"));
+    HM_RETURN_IF_ERROR(copy_required(
+        box, "resizing-time-to-dest-stop-speed-threshold", "rink.camera.resizing_time_to_dest_stop_speed_threshold"));
+  }
+  HM_RETURN_IF_ERROR(
+      copy_required(follower, "stop-translation-on-dir-change-delay", "rink.camera.stop_on_dir_change_delay"));
+  HM_RETURN_IF_ERROR(copy_required(follower, "cancel-stop-on-opposite-dir", "rink.camera.cancel_stop_on_opposite_dir"));
+  HM_RETURN_IF_ERROR(
+      copy_required(follower, "cancel-stop-hysteresis-frames", "rink.camera.stop_cancel_hysteresis_frames"));
+  HM_RETURN_IF_ERROR(copy_required(follower, "stop-delay-cooldown-frames", "rink.camera.stop_delay_cooldown_frames"));
+  HM_RETURN_IF_ERROR(copy_required(
+      follower, "post-nonstop-stop-delay-count", "rink.camera.breakaway_detection.post_nonstop_stop_delay_count"));
+  HM_RETURN_IF_ERROR(
+      copy_required(follower, "sticky-size-ratio-to-frame-width", "rink.camera.sticky_size_ratio_to_frame_width"));
+  HM_RETURN_IF_ERROR(
+      copy_required(follower, "sticky-translation-gaussian-mult", "rink.camera.sticky_translation_gaussian_mult"));
+  HM_RETURN_IF_ERROR(
+      copy_required(follower, "unsticky-translation-size-ratio", "rink.camera.unsticky_translation_size_ratio"));
+  HM_RETURN_IF_ERROR(copy_required(follower, "scale-dest-width", "rink.camera.follower_box_scale_width"));
+  HM_RETURN_IF_ERROR(copy_required(follower, "scale-dest-height", "rink.camera.follower_box_scale_height"));
+  return result;
+}
+
 absl::Status configurator_internal::validate_mixed_explicit_auto_playlists(
     bool left_is_explicit,
     bool right_is_explicit,
@@ -1319,6 +1405,89 @@ void Configurator::map_common_config_keys() {
       stage_config["fixed-edge-rotation-angle-right"] = (*fixed_edge_rotation)[1];
     }
   }
+}
+
+absl::Status Configurator::materialize_playtracker_config(
+    YAML::Node& pipeline,
+    const fs::path& game_dir,
+    const fs::path& pipeline_config_dir) {
+  YAML::Node section = pipeline["ds-playtracker"];
+  if (!section.IsDefined())
+    return absl::OkStatus();
+  YAML::Node configured_file = section["config-file"];
+  if (!configured_file.IsScalar())
+    return absl::InvalidArgumentError("pipeline.ds-playtracker.config-file must name a base YAML file");
+
+  const fs::path configured_path = configured_file.as<std::string>();
+  std::vector<fs::path> candidates;
+  if (configured_path.is_absolute()) {
+    candidates.push_back(configured_path);
+  } else {
+    candidates = {
+        game_dir / configured_path,
+        pipeline_config_dir / configured_path,
+        fs::path(config_root_dir_) / configured_path,
+        fs::current_path() / configured_path,
+        fs::current_path() / "configs" / configured_path,
+    };
+  }
+  fs::path base_path;
+  for (const fs::path& candidate : candidates) {
+    std::error_code error;
+    if (fs::is_regular_file(candidate, error) && !error) {
+      base_path = candidate;
+      break;
+    }
+  }
+  if (base_path.empty()) {
+    std::string searched;
+    for (const fs::path& candidate : candidates) {
+      if (!searched.empty())
+        searched += ", ";
+      searched += candidate.string();
+    }
+    return absl::NotFoundError("Could not locate pipeline.ds-playtracker.config-file; searched: " + searched);
+  }
+
+  YAML::Node base;
+  try {
+    base = YAML::LoadFile(base_path.string());
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError(
+        "Failed to load playtracker base config " + base_path.string() + ": " + error.what());
+  }
+  YAML::Node effective;
+  HM_ASSIGN_OR_RETURN(effective, configurator_internal::build_effective_playtracker_config(config_, base));
+  const std::string contents = YAML::Dump(effective) + "\n";
+
+  uint64_t hash = 1469598103934665603ULL;
+  for (const unsigned char byte : contents) {
+    hash ^= byte;
+    hash *= 1099511628211ULL;
+  }
+  std::ostringstream filename;
+  filename << "play_tracker_config-" << std::hex << hash << ".yaml";
+  const fs::path runtime_dir = game_dir / ".hstream-runtime";
+  std::error_code directory_error;
+  fs::create_directories(runtime_dir, directory_error);
+  if (directory_error) {
+    return absl::InternalError(
+        "Could not create playtracker runtime config directory " + runtime_dir.string() + ": " +
+        directory_error.message());
+  }
+  const fs::path effective_path = runtime_dir / filename.str();
+  bool already_current = false;
+  {
+    std::ifstream existing(effective_path, std::ios::binary);
+    if (existing) {
+      const std::string existing_contents((std::istreambuf_iterator<char>(existing)), std::istreambuf_iterator<char>());
+      already_current = existing_contents == contents;
+    }
+  }
+  if (!already_current)
+    HM_RETURN_IF_ERROR(stitching::publish_named_file(effective_path, contents));
+  section["config-file"] = effective_path.string();
+  return absl::OkStatus();
 }
 
 absl::Status Configurator::invalidate_rotation_dependent_cache_if_needed(const fs::path& game_dir) {
@@ -2340,13 +2509,10 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
 }
 
 absl::StatusOr<YAML::Node> Configurator::load_config() {
-  YAML::Node config;
-  if (!config_root_dir_.empty()) {
-    std::filesystem::path baseline_path = std::filesystem::path(config_root_dir_) / "baseline.yaml";
-    if (std::filesystem::exists(baseline_path)) {
-      config = YAML::LoadFile(baseline_path);
-    }
-  }
+  const auto baseline = baseline_config::load_from_root(config_root_dir_);
+  if (!baseline.ok())
+    return baseline.status();
+  YAML::Node config = YAML::Clone(baseline->values);
   HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
   const YAML::Node user_overlay = YAML::Clone(*user_config_snapshot_);
   config = merge_nodes(
@@ -2492,7 +2658,8 @@ absl::Status Configurator::complete_configuration(
     bool clean_stitching_from_control_points,
     const std::string& clean_expected_invalidation_id,
     bool show_render_sink,
-    double show_render_scale) {
+    double show_render_scale,
+    const fs::path& pipeline_config_dir) {
   active_stitching_invalidation_id_.clear();
   stitching_calibration_required_ = false;
   const bool clean_requested = clean_stitching_artifacts || clean_stitching_from_control_points;
@@ -2649,6 +2816,7 @@ absl::Status Configurator::complete_configuration(
   }
 
   map_common_config_keys();
+  HM_RETURN_IF_ERROR(materialize_playtracker_config(pipeline, game_dir, pipeline_config_dir));
   bool pipeline_has_hmstitcher = get_node(pipeline, "hmstitcher")->IsDefined();
   if (pipeline_has_hmstitcher) {
     HM_RETURN_IF_ERROR(invalidate_rotation_dependent_cache_if_needed(game_dir));

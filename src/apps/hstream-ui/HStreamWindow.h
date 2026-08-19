@@ -138,6 +138,7 @@ class HStreamWindow : public QMainWindow {
   void buildCameraControls(QVBoxLayout* parent, bool program_stage);
   void buildLog(QVBoxLayout* root);
   void configureControlHelp();
+  void loadBaselineDefaults();
 
   void startPipeline();
   void pauseOrResumePipeline();
@@ -447,6 +448,8 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QSlider*> camera_sliders_;
   std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, int> camera_defaults_;
+  YAML::Node baseline_config_;
+  QString baseline_config_root_;
   std::map<QString, int> saved_camera_controls_;
   QString development_runtime_root_;
   QString development_pipeline_runner_;

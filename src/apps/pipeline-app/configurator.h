@@ -52,6 +52,9 @@ absl::StatusOr<std::vector<std::filesystem::path>> recover_stale_archive_work_fi
     const std::filesystem::path& configured_path);
 absl::StatusOr<double> effective_stitch_output_rotation(const YAML::Node& config);
 std::vector<std::string> enabled_source_video_uris(const YAML::Node& pipeline);
+absl::StatusOr<YAML::Node> build_effective_playtracker_config(
+    const YAML::Node& effective_config,
+    const YAML::Node& base_playtracker_config);
 
 } // namespace configurator_internal
 
@@ -115,7 +118,8 @@ class Configurator {
       bool clean_stitching_from_control_points = false,
       const std::string& clean_expected_invalidation_id = {},
       bool show_render_sink = false,
-      double show_render_scale = -1.0);
+      double show_render_scale = -1.0,
+      const std::filesystem::path& pipeline_config_dir = {});
 
   absl::Status prepare_initial_pipeline_position(
       NvDsPipeline& pipeline,
@@ -142,6 +146,10 @@ class Configurator {
       bool force,
       bool& has_hmstitcher);
   void map_common_config_keys();
+  absl::Status materialize_playtracker_config(
+      YAML::Node& pipeline,
+      const std::filesystem::path& game_dir,
+      const std::filesystem::path& pipeline_config_dir);
   absl::Status invalidate_rotation_dependent_cache_if_needed(const std::filesystem::path& game_dir);
   absl::Status invalidate_canvas_dependent_cache_if_needed(const std::filesystem::path& game_dir);
   void apply_scoreboard_perspective(YAML::Node& pipeline);

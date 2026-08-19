@@ -3987,6 +3987,22 @@ bool test_camera_controls(HStreamWindow* window) {
 
   game_id->setText("ui-camera-control-game");
   activate(create);
+  if (!expect(
+          window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 10 &&
+              window->cameraControlValue("Cancel_Stop_On_Opposite_Direction") == 1 &&
+              window->cameraControlValue("Stop_Cancel_Hysteresis_Frames") == 2 &&
+              window->cameraControlValue("Stop_Delay_Cooldown_Frames") == 2 &&
+              window->cameraControlValue("Time_To_Dest_Speed_Limit_Frames") == 20 &&
+              window->cameraControlValue("Overshoot_Stop_Delay_Frames") == 6 &&
+              window->cameraControlValue("Post_Nonstop_Stop_Delay_Frames") == 6 &&
+              window->cameraControlValue("Overshoot_Speed_Ratio_x100") == 70 &&
+              window->cameraControlValue("Stitch_Rotate_Degrees") == 90 &&
+              window->cameraControlValue("Link_Fixed_Edge_Rotation_Left_Right") == 1 &&
+              window->cameraControlValue("Left_Fixed_Edge_Rotation_Angle_x10") == 100 &&
+              window->cameraControlValue("Right_Fixed_Edge_Rotation_Angle_x10") == 100,
+          "Camera control defaults should be transformed directly from the bundled baseline")) {
+    return false;
+  }
   const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
   {
     YAML::Node existing(YAML::NodeType::Map);
@@ -4003,6 +4019,35 @@ bool test_camera_controls(HStreamWindow* window) {
   }
 
   {
+    YAML::Node direct_overrides(YAML::NodeType::Map);
+    direct_overrides["rink"]["camera"]["stop_on_dir_change_delay"] = 13;
+    direct_overrides["rink"]["camera"]["cancel_stop_on_opposite_dir"] = false;
+    direct_overrides["rink"]["camera"]["stop_cancel_hysteresis_frames"] = 4;
+    direct_overrides["rink"]["camera"]["stop_delay_cooldown_frames"] = 5;
+    direct_overrides["rink"]["camera"]["time_to_dest_speed_limit_frames"] = 30;
+    direct_overrides["rink"]["camera"]["breakaway_detection"]["overshoot_stop_delay_count"] = 8;
+    direct_overrides["rink"]["camera"]["breakaway_detection"]["post_nonstop_stop_delay_count"] = 9;
+    direct_overrides["rink"]["camera"]["breakaway_detection"]["overshoot_scale_speed_ratio"] = 0.83;
+    direct_overrides["stitching"]["post_stitch_rotate_degrees"] = 18;
+    std::ofstream out(config);
+    out << direct_overrides << "\n";
+  }
+  activate(create);
+  if (!expect(
+          window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 13 &&
+              window->cameraControlValue("Cancel_Stop_On_Opposite_Direction") == 0 &&
+              window->cameraControlValue("Stop_Cancel_Hysteresis_Frames") == 4 &&
+              window->cameraControlValue("Stop_Delay_Cooldown_Frames") == 5 &&
+              window->cameraControlValue("Time_To_Dest_Speed_Limit_Frames") == 30 &&
+              window->cameraControlValue("Overshoot_Stop_Delay_Frames") == 8 &&
+              window->cameraControlValue("Post_Nonstop_Stop_Delay_Frames") == 9 &&
+              window->cameraControlValue("Overshoot_Speed_Ratio_x100") == 83 &&
+              window->cameraControlValue("Stitch_Rotate_Degrees") == 72,
+          "Direct per-game baseline-key overrides should initialize every corresponding camera control")) {
+    return false;
+  }
+
+  {
     YAML::Node malformed(YAML::NodeType::Map);
     malformed["hstream_ui"]["camera_controls"]["Stop_Direction_Change_Delay_Frames"] = 11;
     malformed["hstream_ui"]["camera_controls"]["Max_Speed_X_x10"] = "not-an-integer";
@@ -4011,7 +4056,7 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(create);
   if (!expect(
-          stop_delay->value() == 0,
+          stop_delay->value() == 10,
           "Malformed saved controls should not partially apply values parsed before the error") ||
       !expect(save->isEnabled(), "Malformed saved controls should leave the current controls unsaved")) {
     return false;
@@ -4104,7 +4149,7 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!expect(save->isEnabled(), "Restoring the destination game should expose the still-unsaved change")) {
     return false;
   }
-  stop_delay->setValue(0);
+  stop_delay->setValue(10);
   if (!expect(!save->isEnabled(), "Reverting a control to its loaded value should disable Save Preset")) {
     return false;
   }
@@ -4538,8 +4583,8 @@ bool test_camera_controls(HStreamWindow* window) {
 
   activate(reset);
   if (!expect(
-          window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 0,
-          "Reset should restore the native tracker default")) {
+          window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 10,
+          "Reset should restore the bundled baseline tracker default")) {
     return false;
   }
 

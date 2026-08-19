@@ -33,6 +33,7 @@
 #include "hstream/src/apps/apps-common/deepstream_streammux.h"
 #include "hstream/src/apps/apps-common/deepstream_tiled_display.h"
 #include "hstream/src/apps/apps-common/deepstream_tracker.h"
+#include "hstream/src/libs/common/BaselineConfig.h"
 
 // #include "gst-nvdscommonconfig.h"
 
@@ -259,30 +260,10 @@ class HmApp : public _AppCtx {
   }
 
   absl::Status load_config() {
-    std::filesystem::path config_root;
-    if (const char* s = ::getenv("HM_CONFIG_ROOT"); s && *s) {
-      config_root = s;
-    }
-    // Auto-detect HockeyMOM config roots when not explicitly set.
-    // Prefer a sibling ../hm checkout, then Bazel's external repo, then an optional submodule.
-    if (config_root.empty() || !std::filesystem::exists(config_root / "baseline.yaml")) {
-      const std::filesystem::path cwd = std::filesystem::current_path();
-      const std::filesystem::path sibling_hm = cwd / ".." / "hm" / "hmlib" / "config";
-      const std::filesystem::path bazel_hm = cwd / "bazel-hstream" / "external" / "hm" / "hmlib" / "config";
-      const std::filesystem::path submodule_hm = cwd / "external" / "hm" / "hmlib" / "config";
-
-      if (std::filesystem::exists(sibling_hm / "baseline.yaml")) {
-        config_root = sibling_hm;
-      } else if (std::filesystem::exists(bazel_hm / "baseline.yaml")) {
-        config_root = bazel_hm;
-      } else if (std::filesystem::exists(submodule_hm / "baseline.yaml")) {
-        config_root = submodule_hm;
-      } else {
-        config_root.clear();
-      }
-    }
-
-    configurator_ = std::make_unique<hm::Configurator>(game_id_, config_root.string(), override_gpu_id_);
+    const auto config_root = hm::baseline_config::resolve_root();
+    if (!config_root.ok())
+      return config_root.status();
+    configurator_ = std::make_unique<hm::Configurator>(game_id_, config_root->string(), override_gpu_id_);
     return configurator_->configure();
   }
 
@@ -308,7 +289,8 @@ class HmApp : public _AppCtx {
         clean_stitching_from_control_points,
         clean_expected_invalidation_id,
         show_render_sink,
-        show_render_scale);
+        show_render_scale,
+        std::filesystem::path(app_config_file_).parent_path());
   }
 
   bool pause();

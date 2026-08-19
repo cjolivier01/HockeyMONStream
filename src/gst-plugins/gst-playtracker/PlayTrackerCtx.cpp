@@ -39,9 +39,13 @@ bool validate_numeric_yaml_fields(const YAML::Node& node, std::string* error) {
       "max-lost-track-age",
       "max-positions",
       "max-speed-h",
+      "max-speed-ratio-x",
+      "max-speed-ratio-y",
       "max-speed-w",
       "max-speed-x",
       "max-speed-y",
+      "max-accel-ratio-x",
+      "max-accel-ratio-y",
       "max-velocity-positions",
       "max-width",
       "max-height",
@@ -58,6 +62,7 @@ bool validate_numeric_yaml_fields(const YAML::Node& node, std::string* error) {
       "resizing-stop-delay-cooldown-frames",
       "resizing-stop-on-dir-change-delay",
       "resizing-time-to-dest-speed-limit-frames",
+      "resizing-time-to-dest-stop-speed-threshold",
       "size-ratio-thresh-grow-dh",
       "size-ratio-thresh-grow-dw",
       "size-ratio-thresh-shrink-dh",
@@ -69,7 +74,9 @@ bool validate_numeric_yaml_fields(const YAML::Node& node, std::string* error) {
       "cancel-stop-hysteresis-frames",
       "post-nonstop-stop-delay-count",
       "time-to-dest-speed-limit-frames",
+      "time-to-dest-stop-speed-threshold",
       "unsticky-translation-size-ratio",
+      "follower-box-min-height-ratio",
   };
   if (!node) {
     return true;
@@ -152,6 +159,7 @@ ResizingConfig create_resizing_config(
   SET_LOCATOR(locator, config, resizing_stop_cancel_hysteresis_frames);
   SET_LOCATOR(locator, config, resizing_stop_delay_cooldown_frames);
   SET_LOCATOR(locator, config, resizing_time_to_dest_speed_limit_frames);
+  SET_LOCATOR(locator, config, resizing_time_to_dest_stop_speed_threshold);
   SET_LOCATOR(locator, config, sticky_sizing);
   SET_LOCATOR(locator, config, size_ratio_thresh_grow_dw);
   SET_LOCATOR(locator, config, size_ratio_thresh_grow_dh);
@@ -176,6 +184,7 @@ TranslatingBoxConfig create_translating_box_config(
   SET_LOCATOR(locator, config, cancel_stop_hysteresis_frames);
   SET_LOCATOR(locator, config, stop_delay_cooldown_frames);
   SET_LOCATOR(locator, config, time_to_dest_speed_limit_frames);
+  SET_LOCATOR(locator, config, time_to_dest_stop_speed_threshold);
   SET_LOCATOR(locator, config, sticky_translation);
   SET_LOCATOR(locator, config, sticky_size_ratio_to_frame_width);
   SET_LOCATOR(locator, config, sticky_translation_gaussian_mult);
@@ -285,7 +294,18 @@ void adjust_config(const BBox& arena_box, PlayTrackerConfig& pt_config, const st
 PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::Node& yaml) {
   PlayTrackerConfig config;
   hm::utils::ConfigLocator locator{
-      .ignored{"live-boxes", "hstream-apply-to-fast-box", "hstream-apply-to-follower-box", "hstream-runtime-tuning"},
+      .ignored{
+          "camera-name",
+          "follower-box-min-height-ratio",
+          "hstream-apply-to-fast-box",
+          "hstream-apply-to-follower-box",
+          "hstream-runtime-tuning",
+          "live-boxes",
+          "max-accel-ratio-x",
+          "max-accel-ratio-y",
+          "max-speed-ratio-x",
+          "max-speed-ratio-y",
+      },
   };
   std::vector<YAML::Node> live_box_yamls;
 
@@ -306,7 +326,25 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
   config.ignore_outlier_players = true; // EXPERIMENTAL
   config.ignore_left_and_right_extremes = false; // EXPERIMENTAL
 
-  adjust_config(arena_box, config);
+  const std::string camera_name = yaml["camera-name"] ? yaml["camera-name"].as<std::string>() : "GoPro";
+  adjust_config(arena_box, config, camera_name);
+  const float max_speed_ratio_x = yaml["max-speed-ratio-x"] ? yaml["max-speed-ratio-x"].as<float>() : 1.0f;
+  const float max_speed_ratio_y = yaml["max-speed-ratio-y"] ? yaml["max-speed-ratio-y"].as<float>() : 1.0f;
+  const float max_accel_ratio_x = yaml["max-accel-ratio-x"] ? yaml["max-accel-ratio-x"].as<float>() : 1.0f;
+  const float max_accel_ratio_y = yaml["max-accel-ratio-y"] ? yaml["max-accel-ratio-y"].as<float>() : 1.0f;
+  for (AllLivingBoxConfig& box : config.living_boxes) {
+    box.max_speed_x *= max_speed_ratio_x;
+    box.max_speed_y *= max_speed_ratio_y;
+    box.max_accel_x *= max_accel_ratio_x;
+    box.max_accel_y *= max_accel_ratio_y;
+    box.max_speed_w *= max_speed_ratio_x;
+    box.max_speed_h *= max_speed_ratio_y;
+    box.max_accel_w *= max_accel_ratio_x;
+    box.max_accel_h *= max_accel_ratio_y;
+  }
+  if (!config.living_boxes.empty() && yaml["follower-box-min-height-ratio"]) {
+    config.living_boxes.back().min_height = arena_box.height() * yaml["follower-box-min-height-ratio"].as<float>();
+  }
   for (size_t i = 0; i < live_box_yamls.size() && i < config.living_boxes.size(); ++i) {
     const std::optional<FloatValue> fixed_aspect_ratio =
         i + 1 == config.living_boxes.size() ? std::optional<FloatValue>(16.0 / 9.0) : std::nullopt;
@@ -316,8 +354,6 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
   SET_LOCATOR(locator, config, max_lost_track_age);
   SET_LOCATOR(locator, config, ignore_largest_bbox);
   set_config_from_yaml(yaml, locator);
-
-  config.no_wide_start = true;
 
   return config;
 }
@@ -735,6 +771,21 @@ absl::Status DsPlayTrackerValidateConfigFile(const std::string& config_file) {
     std::string numeric_error;
     if (!gst_hm_playtracker::validate_numeric_yaml_fields(yaml["play-tracker"], &numeric_error)) {
       return absl::InvalidArgumentError(numeric_error);
+    }
+    const YAML::Node play_tracker = yaml["play-tracker"];
+    if (play_tracker["camera-name"] &&
+        !gst_hm_playtracker::CAMERA_TYPE_MAX_SPEEDS.count(play_tracker["camera-name"].as<std::string>())) {
+      return absl::InvalidArgumentError("unsupported playtracker camera-name");
+    }
+    for (const char* key : {
+             "follower-box-min-height-ratio",
+             "max-accel-ratio-x",
+             "max-accel-ratio-y",
+             "max-speed-ratio-x",
+             "max-speed-ratio-y",
+         }) {
+      if (play_tracker[key] && play_tracker[key].as<double>() < 0.0)
+        return absl::InvalidArgumentError(absl::StrCat("playtracker ", key, " must be non-negative"));
     }
     (void)gst_hm_playtracker::create_play_tracker_config(hm::BBox(0, 0, 1920, 1080), yaml["play-tracker"]);
   } catch (const std::exception& exc) {

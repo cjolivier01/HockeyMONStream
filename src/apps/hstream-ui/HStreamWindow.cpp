@@ -56,6 +56,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 
@@ -89,7 +90,6 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr int kFixedEdgeRotationDefaultX10 = 100;
 constexpr int kFixedEdgeRotationMaximumX10 = 900;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
 constexpr char kDefaultStitchFrameTime[] = "00:00:00";
@@ -1251,6 +1251,21 @@ YAML::Node map_value(YAML::Node parent, const char* key) {
   return YAML::Node();
 }
 
+YAML::Node merge_yaml_maps(const YAML::Node& base, const YAML::Node& overlay) {
+  if (!overlay.IsMap())
+    return YAML::Clone(overlay);
+  YAML::Node result = base.IsMap() ? YAML::Clone(base) : YAML::Node(YAML::NodeType::Map);
+  for (const auto& entry : overlay) {
+    const std::string key = entry.first.as<std::string>();
+    YAML::Node base_child = result[key];
+    if (entry.second.IsMap() && base_child.IsMap())
+      result[key] = merge_yaml_maps(base_child, entry.second);
+    else
+      result[key] = YAML::Clone(entry.second);
+  }
+  return result;
+}
+
 bool lookup_yaml_key(YAML::Node parent, const char* key, YAML::Node* value) {
   if (!parent.IsMap()) {
     return false;
@@ -1618,6 +1633,7 @@ QString hm::ui_internal::development_runtime_root_for_application(const QString&
 }
 
 HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
+  loadBaselineDefaults();
   hm::ui_internal::configure_application_identity();
   const QString application_path = QCoreApplication::applicationFilePath();
   development_runtime_root_ = hm::ui_internal::development_runtime_root_for_application(application_path);
@@ -1676,6 +1692,137 @@ HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
   refreshGames();
   updateRunControls();
   appendLog(QString("hstream-ui started with hstream-cli runner backend=%1").arg(pipelineRunnerPath()));
+}
+
+void HStreamWindow::loadBaselineDefaults() {
+  const auto loaded = hm::baseline_config::load();
+  if (!loaded.ok())
+    throw std::runtime_error(loaded.status().ToString());
+  const auto user_overlay = hm::user_config::load_or_create();
+  if (!user_overlay.ok())
+    throw std::runtime_error(user_overlay.status().ToString());
+  baseline_config_ = merge_yaml_maps(loaded->values, *user_overlay);
+  baseline_config_root_ = QString::fromStdString(loaded->root.string());
+
+  auto require = [this](const QString& path) {
+    YAML::Node value;
+    if (!lookup_yaml_path(baseline_config_, path, &value))
+      throw std::runtime_error(QString("Bundled baseline is missing required UI default %1").arg(path).toStdString());
+    return value;
+  };
+  auto integer = [&require](const QString& path) {
+    const YAML::Node value = require(path);
+    if (!value.IsScalar())
+      throw std::runtime_error(QString("Bundled baseline UI default %1 must be a scalar").arg(path).toStdString());
+    try {
+      return value.as<int>();
+    } catch (const YAML::Exception& error) {
+      throw std::runtime_error(
+          QString("Invalid integer UI default %1 in bundled baseline: %2").arg(path, error.what()).toStdString());
+    }
+  };
+  auto boolean = [&require](const QString& path) {
+    const YAML::Node value = require(path);
+    if (!value.IsScalar())
+      throw std::runtime_error(QString("Bundled baseline UI default %1 must be a scalar").arg(path).toStdString());
+    try {
+      return value.as<bool>() ? 1 : 0;
+    } catch (const YAML::Exception& error) {
+      throw std::runtime_error(
+          QString("Invalid boolean UI default %1 in bundled baseline: %2").arg(path, error.what()).toStdString());
+    }
+  };
+  auto scaled = [&require](const QString& path, double scale) {
+    const YAML::Node value = require(path);
+    if (!value.IsScalar())
+      throw std::runtime_error(QString("Bundled baseline UI default %1 must be a scalar").arg(path).toStdString());
+    try {
+      return static_cast<int>(std::lround(value.as<double>() * scale));
+    } catch (const YAML::Exception& error) {
+      throw std::runtime_error(
+          QString("Invalid numeric UI default %1 in bundled baseline: %2").arg(path, error.what()).toStdString());
+    }
+  };
+  auto checked = [this](const QString& id, int value, int minimum, int maximum) {
+    if (value < minimum || value > maximum) {
+      throw std::runtime_error(QString("Bundled baseline value for %1 is outside the UI range [%2, %3]: %4")
+                                   .arg(id)
+                                   .arg(minimum)
+                                   .arg(maximum)
+                                   .arg(value)
+                                   .toStdString());
+    }
+    camera_defaults_[id] = value;
+  };
+
+  checked("Stop_Direction_Change_Delay_Frames", integer("rink.camera.stop_on_dir_change_delay"), 0, 60);
+  checked("Cancel_Stop_On_Opposite_Direction", boolean("rink.camera.cancel_stop_on_opposite_dir"), 0, 1);
+  checked("Stop_Cancel_Hysteresis_Frames", integer("rink.camera.stop_cancel_hysteresis_frames"), 0, 10);
+  checked("Stop_Delay_Cooldown_Frames", integer("rink.camera.stop_delay_cooldown_frames"), 0, 30);
+  checked("Time_To_Dest_Speed_Limit_Frames", integer("rink.camera.time_to_dest_speed_limit_frames"), 0, 120);
+  checked("Overshoot_Stop_Delay_Frames", integer("rink.camera.breakaway_detection.overshoot_stop_delay_count"), 0, 60);
+  checked(
+      "Post_Nonstop_Stop_Delay_Frames",
+      integer("rink.camera.breakaway_detection.post_nonstop_stop_delay_count"),
+      0,
+      60);
+  checked(
+      "Overshoot_Speed_Ratio_x100",
+      scaled("rink.camera.breakaway_detection.overshoot_scale_speed_ratio", 100.0),
+      0,
+      200);
+
+  const YAML::Node rotation = require("stitching.post_stitch_rotate_degrees");
+  int rotation_slider = 90;
+  if (!rotation.IsNull()) {
+    if (!rotation.IsScalar())
+      throw std::runtime_error("Bundled baseline stitching.post_stitch_rotate_degrees must be null or numeric");
+    try {
+      rotation_slider = 90 - static_cast<int>(std::lround(rotation.as<double>()));
+    } catch (const YAML::Exception& error) {
+      throw std::runtime_error(
+          std::string("Invalid stitching.post_stitch_rotate_degrees in bundled baseline: ") + error.what());
+    }
+  }
+  checked("Stitch_Rotate_Degrees", rotation_slider, 0, 180);
+
+  const YAML::Node fixed_rotation = require("rink.camera.fixed_edge_rotation_angle");
+  try {
+    if (fixed_rotation.IsSequence() && fixed_rotation.size() == 2) {
+      checked("Link_Fixed_Edge_Rotation_Left_Right", 0, 0, 1);
+      checked(
+          "Left_Fixed_Edge_Rotation_Angle_x10",
+          static_cast<int>(std::lround(fixed_rotation[0].as<double>() * 10.0)),
+          0,
+          kFixedEdgeRotationMaximumX10);
+      checked(
+          "Right_Fixed_Edge_Rotation_Angle_x10",
+          static_cast<int>(std::lround(fixed_rotation[1].as<double>() * 10.0)),
+          0,
+          kFixedEdgeRotationMaximumX10);
+    } else if (fixed_rotation.IsScalar()) {
+      const int value = static_cast<int>(std::lround(fixed_rotation.as<double>() * 10.0));
+      checked("Link_Fixed_Edge_Rotation_Left_Right", 1, 0, 1);
+      checked("Left_Fixed_Edge_Rotation_Angle_x10", value, 0, kFixedEdgeRotationMaximumX10);
+      checked("Right_Fixed_Edge_Rotation_Angle_x10", value, 0, kFixedEdgeRotationMaximumX10);
+    } else {
+      throw std::runtime_error(
+          "Bundled baseline rink.camera.fixed_edge_rotation_angle must be numeric or [left, right]");
+    }
+  } catch (const YAML::Exception& error) {
+    throw std::runtime_error(
+        std::string("Invalid rink.camera.fixed_edge_rotation_angle in bundled baseline: ") + error.what());
+  }
+
+  // These selectors describe where a UI edit is applied, rather than a
+  // HockeyMOM config value. A zero speed/acceleration means no UI override, so
+  // the effective values continue to come from the baseline-backed pipeline.
+  camera_defaults_["Apply_To_Fast_Box"] = 0;
+  camera_defaults_["Apply_To_Follower_Box"] = 1;
+  camera_defaults_["Max_Speed_X_x10"] = 0;
+  camera_defaults_["Max_Speed_Y_x10"] = 0;
+  camera_defaults_["Max_Accel_X_x10"] = 0;
+  camera_defaults_["Max_Accel_Y_x10"] = 0;
 }
 
 HStreamWindow::~HStreamWindow() {
@@ -2421,6 +2568,12 @@ void HStreamWindow::configureControlHelp() {
 }
 
 void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage) {
+  auto default_value = [this](const QString& id) {
+    const auto found = camera_defaults_.find(id);
+    if (found == camera_defaults_.end())
+      throw std::logic_error(QString("No initialized camera-control default for %1").arg(id).toStdString());
+    return found->second;
+  };
   auto* group = new QGroupBox(program_stage ? "Program Controls" : "Stitched Controls");
   group->setObjectName(program_stage ? "programControlsGroup" : "stitchedControlsGroup");
   group->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -2468,36 +2621,64 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   };
 
   const std::vector<CameraSliderSpec> tracking_controls = {
-      {"Stop_Direction_Change_Delay_Frames", "Stop direction-change delay frames", 0, 60, 0},
-      {"Cancel_Stop_On_Opposite_Direction", "Cancel stop on opposite direction", 0, 1, 0},
-      {"Stop_Cancel_Hysteresis_Frames", "Stop cancel hysteresis frames", 0, 10, 0},
-      {"Stop_Delay_Cooldown_Frames", "Stop-delay cooldown frames", 0, 30, 0},
-      {"Time_To_Dest_Speed_Limit_Frames", "Time-to-destination speed limit frames", 0, 120, 10},
-      {"Apply_To_Fast_Box", "Apply to fast box", 0, 1, 0},
-      {"Apply_To_Follower_Box", "Apply to follower box", 0, 1, 1},
+      {"Stop_Direction_Change_Delay_Frames",
+       "Stop direction-change delay frames",
+       0,
+       60,
+       default_value("Stop_Direction_Change_Delay_Frames")},
+      {"Cancel_Stop_On_Opposite_Direction",
+       "Cancel stop on opposite direction",
+       0,
+       1,
+       default_value("Cancel_Stop_On_Opposite_Direction")},
+      {"Stop_Cancel_Hysteresis_Frames",
+       "Stop cancel hysteresis frames",
+       0,
+       10,
+       default_value("Stop_Cancel_Hysteresis_Frames")},
+      {"Stop_Delay_Cooldown_Frames", "Stop-delay cooldown frames", 0, 30, default_value("Stop_Delay_Cooldown_Frames")},
+      {"Time_To_Dest_Speed_Limit_Frames",
+       "Time-to-destination speed limit frames",
+       0,
+       120,
+       default_value("Time_To_Dest_Speed_Limit_Frames")},
+      {"Apply_To_Fast_Box", "Apply to fast box", 0, 1, default_value("Apply_To_Fast_Box")},
+      {"Apply_To_Follower_Box", "Apply to follower box", 0, 1, default_value("Apply_To_Follower_Box")},
   };
   const std::vector<CameraSliderSpec> motion_controls = {
-      {"Overshoot_Stop_Delay_Frames", "Overshoot stop-delay frames", 0, 60, 0},
-      {"Post_Nonstop_Stop_Delay_Frames", "Post-nonstop stop-delay frames", 0, 60, 0},
-      {"Overshoot_Speed_Ratio_x100", "Overshoot speed ratio x100", 0, 200, 70},
-      {"Max_Speed_X_x10", "Max speed X override x10 (0 = configured)", 0, 2000, 0},
-      {"Max_Speed_Y_x10", "Max speed Y override x10 (0 = configured)", 0, 2000, 0},
-      {"Max_Accel_X_x10", "Max accel X override x10 (0 = configured)", 0, 1000, 0},
-      {"Max_Accel_Y_x10", "Max accel Y override x10 (0 = configured)", 0, 1000, 0},
+      {"Overshoot_Stop_Delay_Frames",
+       "Overshoot stop-delay frames",
+       0,
+       60,
+       default_value("Overshoot_Stop_Delay_Frames")},
+      {"Post_Nonstop_Stop_Delay_Frames",
+       "Post-nonstop stop-delay frames",
+       0,
+       60,
+       default_value("Post_Nonstop_Stop_Delay_Frames")},
+      {"Overshoot_Speed_Ratio_x100", "Overshoot speed ratio x100", 0, 200, default_value("Overshoot_Speed_Ratio_x100")},
+      {"Max_Speed_X_x10", "Max speed X override x10 (0 = configured)", 0, 2000, default_value("Max_Speed_X_x10")},
+      {"Max_Speed_Y_x10", "Max speed Y override x10 (0 = configured)", 0, 2000, default_value("Max_Speed_Y_x10")},
+      {"Max_Accel_X_x10", "Max accel X override x10 (0 = configured)", 0, 1000, default_value("Max_Accel_X_x10")},
+      {"Max_Accel_Y_x10", "Max accel Y override x10 (0 = configured)", 0, 1000, default_value("Max_Accel_Y_x10")},
   };
   const std::vector<CameraSliderSpec> stitch_controls = {
-      {"Stitch_Rotate_Degrees", "Stitch rotate degrees", 0, 180, 90},
-      {"Link_Fixed_Edge_Rotation_Left_Right", "Link left/right fixed-edge rotation", 0, 1, 1},
+      {"Stitch_Rotate_Degrees", "Stitch rotate degrees", 0, 180, default_value("Stitch_Rotate_Degrees")},
+      {"Link_Fixed_Edge_Rotation_Left_Right",
+       "Link left/right fixed-edge rotation",
+       0,
+       1,
+       default_value("Link_Fixed_Edge_Rotation_Left_Right")},
       {"Left_Fixed_Edge_Rotation_Angle_x10",
        "Left fixed-edge rotation angle x10",
        0,
        kFixedEdgeRotationMaximumX10,
-       kFixedEdgeRotationDefaultX10},
+       default_value("Left_Fixed_Edge_Rotation_Angle_x10")},
       {"Right_Fixed_Edge_Rotation_Angle_x10",
        "Right fixed-edge rotation angle x10",
        0,
        kFixedEdgeRotationMaximumX10,
-       kFixedEdgeRotationDefaultX10},
+       default_value("Right_Fixed_Edge_Rotation_Angle_x10")},
   };
 
   if (program_stage) {
@@ -3586,6 +3767,8 @@ void HStreamWindow::startPipeline() {
   }
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   const QString working_dir = pipelineWorkingDirectory();
+  if (!baseline_config_root_.isEmpty())
+    env.insert("HM_CONFIG_ROOT", baseline_config_root_);
   const QString runtime_error = configure_pipeline_runtime_environment(env, working_dir, development_bazel_bin_);
   if (!runtime_error.isEmpty()) {
     calibration_pending_ = false;
@@ -6209,6 +6392,33 @@ void HStreamWindow::loadSavedControlConfig() {
       staged_controls[id] = std::clamp(value, slider->second->minimum(), slider->second->maximum());
       return true;
     };
+    auto stage_integer_path = [&config, &stage_control](const QString& path, const QString& id) {
+      YAML::Node value;
+      if (lookup_yaml_path(config, path, &value))
+        stage_control(id, value.as<int>());
+    };
+    auto stage_boolean_path = [&config, &stage_control](const QString& path, const QString& id) {
+      YAML::Node value;
+      if (lookup_yaml_path(config, path, &value))
+        stage_control(id, value.as<bool>() ? 1 : 0);
+    };
+    stage_integer_path("rink.camera.stop_on_dir_change_delay", "Stop_Direction_Change_Delay_Frames");
+    stage_boolean_path("rink.camera.cancel_stop_on_opposite_dir", "Cancel_Stop_On_Opposite_Direction");
+    stage_integer_path("rink.camera.stop_cancel_hysteresis_frames", "Stop_Cancel_Hysteresis_Frames");
+    stage_integer_path("rink.camera.stop_delay_cooldown_frames", "Stop_Delay_Cooldown_Frames");
+    stage_integer_path("rink.camera.time_to_dest_speed_limit_frames", "Time_To_Dest_Speed_Limit_Frames");
+    stage_integer_path("rink.camera.breakaway_detection.overshoot_stop_delay_count", "Overshoot_Stop_Delay_Frames");
+    stage_integer_path(
+        "rink.camera.breakaway_detection.post_nonstop_stop_delay_count", "Post_Nonstop_Stop_Delay_Frames");
+    YAML::Node overshoot_ratio;
+    if (lookup_yaml_path(config, "rink.camera.breakaway_detection.overshoot_scale_speed_ratio", &overshoot_ratio)) {
+      stage_control("Overshoot_Speed_Ratio_x100", static_cast<int>(std::lround(overshoot_ratio.as<double>() * 100.0)));
+    }
+    YAML::Node stitch_rotation;
+    if (lookup_yaml_path(config, "stitching.post_stitch_rotate_degrees", &stitch_rotation) &&
+        !stitch_rotation.IsNull()) {
+      stage_control("Stitch_Rotate_Degrees", 90 - static_cast<int>(std::lround(stitch_rotation.as<double>())));
+    }
     int staged_control_points =
         control_points_spin_ ? control_points_spin_->value() : kDefaultStitchCalibrationControlPoints;
     QTime staged_stitch_frame_time(0, 0, 0);

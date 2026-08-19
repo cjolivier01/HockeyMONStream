@@ -1,12 +1,7 @@
 play-tracker:
-  # Keep these defaults aligned with ../hm/hmlib/config/baseline.yaml (rink.camera.breakaway_detection)
-  min-considered-group-velocity: 3.0
-  group-ratio-threshold: 0.5
-  group-velocity-speed-ratio: 0.3
-  scale-speed-constraints: 3.0
-  nonstop-delay-count: 2
-  overshoot-scale-speed-ratio: 0.7
-  ignore-largest-bbox: 1
+  # Baseline-backed values are materialized from configs/baseline.yaml after
+  # user, game, and CLI overlays are merged. Keep only structural/native
+  # behavior here so this file cannot become a second source of defaults.
 
   live-boxes:
     - name: current_roi
@@ -19,9 +14,3 @@ play-tracker:
       dynamic-acceleration-scaling: 1.0
       sticky-translation: 1
       sticky-sizing: 1
-      sticky-size-ratio-to-frame-width: 10.0
-      sticky-translation-gaussian-mult: 5.0
-      unsticky-translation-size-ratio: 0.75
-      scale-dest-width: 1.45
-      scale-dest-height: 1.45
-  no-wide-start: 1

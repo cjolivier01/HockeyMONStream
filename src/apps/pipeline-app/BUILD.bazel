@@ -33,6 +33,7 @@ PIPELINE_APP_DEPS = [
     # "//src/libs/common:mod_pipeline",
     "//src/libs/common:utils",
     "//src/libs/common:fs",
+    "//src/libs/common:baseline_config",
     "//src/libs/common:user_config",
     "//src/libs/stitching",
     "//src/libs/wireless:stream_control",
@@ -257,6 +258,7 @@ cc_test(
     ],
     deps = [
         "//src/apps/apps-common:deepstream_apps_common",
+        "//src/libs/common:baseline_config",
         "//src/libs/common:utils",
         "@com_google_absl//absl/status:statusor",
         "@deepstream//:deepstream_lib",

@@ -466,8 +466,6 @@ ds-playtracker:
         dynamic-acceleration-scaling: 0
       - name: current_roi_aspect
         dynamic-acceleration-scaling: 1.0
-        scale_dest_width: 1.45
-        scale_dest_height: 1.45
 
 ds-fieldmask:
   enable: 1

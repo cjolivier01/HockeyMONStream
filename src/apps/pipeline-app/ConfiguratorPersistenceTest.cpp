@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
 
+#include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
@@ -107,6 +108,74 @@ int main() {
   fs::create_directories(test_home);
   ::setenv("HOME", test_home.c_str(), 1);
   ::unsetenv("HM_OUTPUT_WORK_DIR");
+
+  const auto bundled_baseline = hm::baseline_config::load();
+  YAML::Node playtracker_base = YAML::Load(R"(
+play-tracker:
+  preserve-me: yes
+  live-boxes:
+    - name: current_roi
+      preserve-fast: 1
+    - name: current_roi_aspect
+      preserve-follower: 1
+)");
+  auto effective_playtracker = bundled_baseline.ok()
+      ? hm::configurator_internal::build_effective_playtracker_config(bundled_baseline->values, playtracker_base)
+      : absl::StatusOr<YAML::Node>(bundled_baseline.status());
+  if (effective_playtracker.ok()) {
+    const YAML::Node play_tracker = (*effective_playtracker)["play-tracker"];
+    const YAML::Node fast = play_tracker["live-boxes"][0];
+    const YAML::Node follower = play_tracker["live-boxes"][1];
+    ok &= expect(
+        play_tracker["preserve-me"].as<std::string>() == "yes" && fast["preserve-fast"].as<int>() == 1 &&
+            follower["preserve-follower"].as<int>() == 1 && play_tracker["camera-name"].as<std::string>() == "GoPro" &&
+            play_tracker["no-wide-start"].as<bool>() && play_tracker["ignore-largest-bbox"].as<bool>() &&
+            play_tracker["min-considered-group-velocity"].as<double>() == 3.0 &&
+            play_tracker["group-ratio-threshold"].as<double>() == 0.5 &&
+            play_tracker["group-velocity-speed-ratio"].as<double>() == 0.3 &&
+            play_tracker["scale-speed-constraints"].as<double>() == 3.0 &&
+            play_tracker["nonstop-delay-count"].as<int>() == 2 &&
+            play_tracker["overshoot-scale-speed-ratio"].as<double>() == 0.7 &&
+            play_tracker["overshoot-stop-delay-count"].as<int>() == 6 &&
+            play_tracker["max-speed-ratio-x"].as<double>() == 1.0 &&
+            play_tracker["max-speed-ratio-y"].as<double>() == 1.0 &&
+            play_tracker["max-accel-ratio-x"].as<double>() == 1.0 &&
+            play_tracker["max-accel-ratio-y"].as<double>() == 1.0 &&
+            play_tracker["follower-box-min-height-ratio"].as<double>() == 0.2 &&
+            fast["time-to-dest-speed-limit-frames"].as<int>() == 20 &&
+            fast["time-to-dest-stop-speed-threshold"].as<double>() == 0.25 &&
+            fast["resizing-stop-on-dir-change-delay"].as<int>() == 4 &&
+            fast["resizing-cancel-stop-on-opposite-dir"].as<bool>() &&
+            fast["resizing-stop-cancel-hysteresis-frames"].as<int>() == 10 &&
+            fast["resizing-stop-delay-cooldown-frames"].as<int>() == 2 &&
+            fast["resizing-time-to-dest-speed-limit-frames"].as<int>() == 10 &&
+            fast["resizing-time-to-dest-stop-speed-threshold"].as<double>() == 0.25 &&
+            follower["stop-translation-on-dir-change-delay"].as<int>() == 10 &&
+            follower["cancel-stop-on-opposite-dir"].as<bool>() &&
+            follower["cancel-stop-hysteresis-frames"].as<int>() == 2 &&
+            follower["stop-delay-cooldown-frames"].as<int>() == 2 &&
+            follower["post-nonstop-stop-delay-count"].as<int>() == 6 &&
+            follower["sticky-size-ratio-to-frame-width"].as<double>() == 10.0 &&
+            follower["sticky-translation-gaussian-mult"].as<double>() == 5.0 &&
+            follower["unsticky-translation-size-ratio"].as<double>() == 0.75 &&
+            follower["scale-dest-width"].as<double>() == 1.45 && follower["scale-dest-height"].as<double>() == 1.45,
+        "Every native playtracker default represented by baseline.yaml must be materialized after preserving structure");
+  } else {
+    ok &= expect(false, effective_playtracker.status().ToString().c_str());
+  }
+  if (bundled_baseline.ok()) {
+    YAML::Node overlaid = YAML::Clone(bundled_baseline->values);
+    overlaid["rink"]["camera"]["stop_on_dir_change_delay"] = 17;
+    overlaid["rink"]["camera"]["breakaway_detection"]["overshoot_stop_delay_count"] = 12;
+    const auto overlaid_playtracker =
+        hm::configurator_internal::build_effective_playtracker_config(overlaid, playtracker_base);
+    ok &= expect(
+        overlaid_playtracker.ok() &&
+            (*overlaid_playtracker)["play-tracker"]["overshoot-stop-delay-count"].as<int>() == 12 &&
+            (*overlaid_playtracker)["play-tracker"]["live-boxes"][1]["stop-translation-on-dir-change-delay"]
+                    .as<int>() == 17,
+        "Merged user/game/CLI values must replace bundled defaults in the materialized native tracker config");
+  }
 
   auto first_user_config = hm::user_config::load_or_create();
   const fs::path user_config_path = test_home / ".hstream" / "hstream.yaml";
@@ -208,7 +277,7 @@ int main() {
   std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
   ::setenv("HM_GAME_DIR", games.c_str(), 1);
 
-  hm::Configurator configurator("first-save", "", hm::Configurator::kUseConfigFileGpu);
+  hm::Configurator configurator("first-save", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const auto loaded = configurator.load_config();
   ok &= expect(loaded.ok(), "Configurator must load when the private config is initially absent");
 
@@ -615,7 +684,7 @@ int main() {
   ok &= expect(
       hm::stitching::publish_game_config(superseded_force_dir, YAML::Dump(stale_force_config) + "\n").ok(),
       "stale forced configuration fixture must publish");
-  hm::Configurator forced_configurator("superseded-force", "", hm::Configurator::kUseConfigFileGpu);
+  hm::Configurator forced_configurator("superseded-force", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   ok &= expect(forced_configurator.configure().ok(), "forced configurator must load its stale snapshot");
   auto initially_current =
       hm::stitching::is_stitching_invalidation_cleanup_applied(superseded_force_dir.string(), "stale-force");
@@ -666,7 +735,8 @@ int main() {
   ok &= expect(
       hm::stitching::publish_game_config(superseded_complete_dir, YAML::Dump(reserved_complete_config) + "\n").ok(),
       "reserved complete owner fixture must publish");
-  hm::Configurator complete_configurator("superseded-complete", "", hm::Configurator::kUseConfigFileGpu);
+  hm::Configurator complete_configurator(
+      "superseded-complete", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   ok &= expect(complete_configurator.configure().ok(), "reserved complete configurator must load its owner snapshot");
   reserved_complete_config["hstream_ui"]["stitching_calibration"]["status"] = "pending";
   reserved_complete_config["hstream_ui"]["stitching_calibration"]["stale_from"] = "input";

@@ -54,6 +54,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":scoreboard_selection_dialog",
+        "//src/libs/common:baseline_config",
         "//src/libs/common:user_config",
         "//src/libs/stitching:game_config",
         "@qt//:qt_widgets",

@@ -71,3 +71,12 @@ cc_test(
         "@gstreamer",
     ],
 )
+
+cc_test(
+    name = "playtracker_baseline_defaults_test",
+    srcs = ["PlayTrackerBaselineDefaultsTest.cpp"],
+    deps = [
+        ":playtracker_context",
+        "@yaml-cpp",
+    ],
+)
