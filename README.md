@@ -82,6 +82,16 @@ Bazel/runfiles, and `/opt/hstream` package runs. Native play-tracker settings
 are materialized from the fully merged configuration, so lower-level plugin
 files do not maintain a second set of baseline defaults.
 
+Every baseline field with a native HStream consumer is translated from that
+same merged configuration. This includes stitching enable/blend/precision and
+rotation, play-crop and plotting controls, tracker tuning, scoreboard geometry,
+and archive bitrate/path/dimensions. Structural app YAML describes pipeline
+topology and may provide an intentional native value; an explicit canonical
+user, game, or CLI value overrides lower layers. At the same explicit layer, a
+direct native property wins. Baseline fields for features that exist only in
+HockeyMOM/Aspen remain present in the merged YAML but have no invented HStream
+mapping until a native consumer exists.
+
 `HM_CONFIG_ROOT=/path/to/config` is an explicit diagnostic/development
 override. If it is set but does not contain a valid `baseline.yaml`, startup
 fails instead of silently selecting another copy.

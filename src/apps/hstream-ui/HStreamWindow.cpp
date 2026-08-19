@@ -57,6 +57,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/PlayTrackerConfigRoles.h"
 #include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 
@@ -93,7 +94,7 @@ namespace {
 
 constexpr int kFixedEdgeRotationMaximumX10 = 900;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
-constexpr char kDefaultStitchFrameTime[] = "00:00:00";
+constexpr char kZeroStitchFrameTime[] = "00:00:00";
 constexpr char kStitchFrameTimeFormat[] = "HH:mm:ss";
 constexpr char kStitchFrameTimeFractionalFormat[] = "HH:mm:ss.zzz";
 constexpr int kRuntimeControlAckTimeoutMs = 3000;
@@ -1352,9 +1353,13 @@ bool lookup_yaml_path(YAML::Node root, const QString& dotted_path, YAML::Node* v
   return lookup_yaml_path_at(root, parts, 0, value);
 }
 
-bool read_stitch_frame_time(YAML::Node config, QString* normalized, bool* present = nullptr) {
+bool read_stitch_frame_time(
+    YAML::Node config,
+    QString* normalized,
+    bool* present = nullptr,
+    const QString& fallback = QString::fromLatin1(kZeroStitchFrameTime)) {
   if (normalized) {
-    *normalized = QString::fromLatin1(kDefaultStitchFrameTime);
+    *normalized = fallback;
   }
   YAML::Node node;
   const bool found = lookup_yaml_path(config, "stitching.stitch_frame_time", &node);
@@ -1742,6 +1747,15 @@ void HStreamWindow::loadBaselineDefaults() {
   };
   auto checked = [this](const QString& id, int value, int, int) { camera_defaults_[id] = value; };
 
+  const YAML::Node stitch_frame_time = require("stitching.stitch_frame_time");
+  if (!stitch_frame_time.IsScalar())
+    throw std::runtime_error("Effective baseline stitching.stitch_frame_time must be a scalar");
+  const auto parsed_stitch_frame_time =
+      parse_stitch_frame_time(QString::fromStdString(stitch_frame_time.as<std::string>()));
+  if (!parsed_stitch_frame_time.has_value())
+    throw std::runtime_error("Effective baseline stitching.stitch_frame_time must be HH:MM:SS or HH:MM:SS.mmm");
+  default_stitch_frame_time_ = format_stitch_frame_time(*parsed_stitch_frame_time);
+
   checked("Stop_Direction_Change_Delay_Frames", integer("rink.camera.stop_on_dir_change_delay"), 0, 60);
   checked("Cancel_Stop_On_Opposite_Direction", boolean("rink.camera.cancel_stop_on_opposite_dir"), 0, 1);
   checked("Stop_Cancel_Hysteresis_Frames", integer("rink.camera.stop_cancel_hysteresis_frames"), 0, 10);
@@ -2012,7 +2026,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   stitch_frame_time_edit_ = new QTimeEdit();
   stitch_frame_time_edit_->setObjectName("stitchFrameTimeEdit");
   stitch_frame_time_edit_->setDisplayFormat(kStitchFrameTimeFormat);
-  stitch_frame_time_edit_->setTime(QTime(0, 0, 0));
+  stitch_frame_time_edit_->setTime(*parse_stitch_frame_time(default_stitch_frame_time_));
   stitch_frame_time_edit_->setWrapping(false);
   stitch_frame_time_edit_->installEventFilter(this);
   stitch_frame_time_edit_->setToolTip(
@@ -2867,7 +2881,7 @@ int HStreamWindow::stitchingCalibrationControlPoints() const {
 
 QString HStreamWindow::stitchFrameTime() const {
   return stitch_frame_time_edit_ ? format_stitch_frame_time(stitch_frame_time_edit_->time())
-                                 : QString::fromLatin1(kDefaultStitchFrameTime);
+                                 : default_stitch_frame_time_;
 }
 
 bool HStreamWindow::runStitchingClean(
@@ -2948,8 +2962,9 @@ bool HStreamWindow::saveStitchingCalibrationState(
   }
   YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
   if (require_matching_pending) {
-    QString current_stitch_frame_time = QString::fromLatin1(kDefaultStitchFrameTime);
-    const bool current_stitch_frame_time_valid = read_stitch_frame_time(config, &current_stitch_frame_time);
+    QString current_stitch_frame_time = default_stitch_frame_time_;
+    const bool current_stitch_frame_time_valid =
+        read_stitch_frame_time(config, &current_stitch_frame_time, nullptr, default_stitch_frame_time_);
     const int current_control_points = calibration["control_points"] && calibration["control_points"].IsScalar()
         ? calibration["control_points"].as<int>()
         : -1;
@@ -3021,7 +3036,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   const fs::path config_path = fs::path(gameDirectory(active_run_game_id_).toStdString()) / "config.yaml";
   bool saved_found = false;
   int saved_control_points = 0;
-  QString saved_stitch_frame_time = QString::fromLatin1(kDefaultStitchFrameTime);
+  QString saved_stitch_frame_time = default_stitch_frame_time_;
   bool saved_stitch_frame_time_valid = true;
   QString saved_status;
   QString saved_stale_from;
@@ -3046,7 +3061,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         saved_control_points = saved.as<int>();
         saved_found = true;
       }
-      saved_stitch_frame_time_valid = read_stitch_frame_time(config, &saved_stitch_frame_time);
+      saved_stitch_frame_time_valid =
+          read_stitch_frame_time(config, &saved_stitch_frame_time, nullptr, default_stitch_frame_time_);
       YAML::Node status;
       if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.status", &status) && status.IsScalar()) {
         saved_status = QString::fromStdString(status.as<std::string>());
@@ -3070,7 +3086,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     const bool stitch_frame_time_changed =
         !saved_stitch_frame_time_valid || saved_stitch_frame_time != active_stitch_frame_time_;
     remove_yaml_path(config, {"stitching", "stitch_frame_time"});
-    if (active_stitch_frame_time_ != kDefaultStitchFrameTime) {
+    if (active_stitch_frame_time_ != default_stitch_frame_time_) {
       config["stitching"]["stitch_frame_time"] = active_stitch_frame_time_.toStdString();
     }
     const bool needs_calibration =
@@ -3652,7 +3668,7 @@ QStringList HStreamWindow::pipelineArguments() const {
   if (isCalibrationRun() || calibration_pending_) {
     args << QString("--options=%1").arg(kStitchedPreviewPipelineOptions);
   }
-  if (!active_stitch_frame_time_.isEmpty() && active_stitch_frame_time_ != kDefaultStitchFrameTime) {
+  if (!active_stitch_frame_time_.isEmpty() && active_stitch_frame_time_ != default_stitch_frame_time_) {
     args << QString("--stitch-frame-time=%1").arg(active_stitch_frame_time_);
   }
   if (embed_render_window) {
@@ -6258,6 +6274,11 @@ void HStreamWindow::resetCameraControls() {
       it->second->setValue(value);
     }
   }
+  if (stitch_frame_time_edit_) {
+    const auto parsed = parse_stitch_frame_time(default_stitch_frame_time_);
+    if (parsed.has_value())
+      stitch_frame_time_edit_->setTime(*parsed);
+  }
   if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
     // Reset every runtime-tunable field on both boxes, including a box that
     // was tuned before its target selector was returned to the default.
@@ -6334,8 +6355,10 @@ void HStreamWindow::loadSavedControlConfig() {
   }
   if (stitch_frame_time_edit_) {
     const bool blocked = stitch_frame_time_edit_->blockSignals(true);
-    stitch_frame_time_edit_->setTime(QTime(0, 0, 0));
-    stitch_frame_time_edit_->setDisplayFormat(kStitchFrameTimeFormat);
+    const QTime default_time = *parse_stitch_frame_time(default_stitch_frame_time_);
+    stitch_frame_time_edit_->setTime(default_time);
+    stitch_frame_time_edit_->setDisplayFormat(
+        default_time.msec() == 0 ? kStitchFrameTimeFormat : kStitchFrameTimeFractionalFormat);
     stitch_frame_time_edit_->blockSignals(blocked);
   }
   for (const auto& [id, value] : camera_defaults_) {
@@ -6421,7 +6444,7 @@ void HStreamWindow::loadSavedControlConfig() {
     }
     int staged_control_points =
         control_points_spin_ ? control_points_spin_->value() : kDefaultStitchCalibrationControlPoints;
-    QTime staged_stitch_frame_time(0, 0, 0);
+    QTime staged_stitch_frame_time = *parse_stitch_frame_time(default_stitch_frame_time_);
     YAML::Node control_points;
     if (control_points_spin_ &&
         lookup_yaml_path(config, "hstream_ui.stitching_calibration.control_points", &control_points) &&
@@ -6431,7 +6454,8 @@ void HStreamWindow::loadSavedControlConfig() {
     QString configured_stitch_frame_time;
     bool stitch_frame_time_present = false;
     if (stitch_frame_time_edit_ &&
-        !read_stitch_frame_time(config, &configured_stitch_frame_time, &stitch_frame_time_present)) {
+        !read_stitch_frame_time(
+            config, &configured_stitch_frame_time, &stitch_frame_time_present, default_stitch_frame_time_)) {
       throw std::invalid_argument("stitching.stitch_frame_time must be HH:MM:SS or HH:MM:SS.mmm");
     }
     if (stitch_frame_time_edit_ && stitch_frame_time_present) {
@@ -6625,13 +6649,14 @@ bool HStreamWindow::applySavedControlConfig(
   }
   config["hstream_ui"]["camera_controls"] = controls;
 
-  QString previous_stitch_frame_time = QString::fromLatin1(kDefaultStitchFrameTime);
-  const bool previous_stitch_frame_time_valid = read_stitch_frame_time(config, &previous_stitch_frame_time);
+  QString previous_stitch_frame_time = default_stitch_frame_time_;
+  const bool previous_stitch_frame_time_valid =
+      read_stitch_frame_time(config, &previous_stitch_frame_time, nullptr, default_stitch_frame_time_);
   const QString stitch_frame_time = stitchFrameTime();
   const bool stitch_frame_time_changed =
       !previous_stitch_frame_time_valid || previous_stitch_frame_time != stitch_frame_time;
   remove_yaml_path(config, {"stitching", "stitch_frame_time"});
-  if (stitch_frame_time != kDefaultStitchFrameTime) {
+  if (stitch_frame_time != default_stitch_frame_time_) {
     config["stitching"]["stitch_frame_time"] = stitch_frame_time.toStdString();
   }
   if (stitch_frame_time_changed) {
@@ -6780,11 +6805,16 @@ bool HStreamWindow::applySavedControlConfig(
           play_tracker_config["play-tracker"]["live-boxes"] = YAML::Node(YAML::NodeType::Sequence);
         }
         YAML::Node live_boxes = play_tracker_config["play-tracker"]["live-boxes"];
-        while (live_boxes.size() < 2) {
-          YAML::Node box(YAML::NodeType::Map);
-          box["name"] = live_boxes.size() == 0 ? "current_roi" : "current_roi_aspect";
-          live_boxes.push_back(box);
+        if (live_boxes.size() == 0) {
+          for (const char* name : {"current_roi", "current_roi_aspect"}) {
+            YAML::Node box(YAML::NodeType::Map);
+            box["name"] = name;
+            live_boxes.push_back(box);
+          }
         }
+        const auto live_box_roles = hm::resolve_playtracker_live_box_roles(live_boxes);
+        if (!live_box_roles.ok())
+          throw std::invalid_argument(live_box_roles.status().ToString());
 
         YAML::Node play_tracker = play_tracker_config["play-tracker"];
         if (has_control(controls, "Overshoot_Stop_Delay_Frames")) {
@@ -6794,7 +6824,7 @@ bool HStreamWindow::applySavedControlConfig(
           play_tracker["overshoot-scale-speed-ratio"] = ratio_x100(slider_value("Overshoot_Speed_Ratio_x100"));
         }
 
-        auto apply_live_box = [&](int index) {
+        auto apply_live_box = [&](size_t index) {
           if (has_control(controls, "Stop_Direction_Change_Delay_Frames")) {
             live_boxes[index]["stop-translation-on-dir-change-delay"] =
                 slider_value("Stop_Direction_Change_Delay_Frames");
@@ -6828,10 +6858,10 @@ bool HStreamWindow::applySavedControlConfig(
           }
         };
         if (slider_value("Apply_To_Fast_Box") != 0) {
-          apply_live_box(0);
+          apply_live_box(live_box_roles->fast_index);
         }
         if (slider_value("Apply_To_Follower_Box") != 0) {
-          apply_live_box(1);
+          apply_live_box(live_box_roles->follower_index);
         }
 
         const absl::Status runtime_publish = hm::stitching::publish_named_file(
@@ -8157,10 +8187,18 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
       play_tracker_config["play-tracker"]["live-boxes"] = YAML::Node(YAML::NodeType::Sequence);
     }
     YAML::Node live_boxes = play_tracker_config["play-tracker"]["live-boxes"];
-    while (live_boxes.size() < 2) {
-      YAML::Node box(YAML::NodeType::Map);
-      box["name"] = live_boxes.size() == 0 ? "current_roi" : "current_roi_aspect";
-      live_boxes.push_back(box);
+    if (live_boxes.size() == 0) {
+      for (const char* name : {"current_roi", "current_roi_aspect"}) {
+        YAML::Node box(YAML::NodeType::Map);
+        box["name"] = name;
+        live_boxes.push_back(box);
+      }
+    }
+    const auto live_box_roles = hm::resolve_playtracker_live_box_roles(live_boxes);
+    if (!live_box_roles.ok()) {
+      appendLog(
+          QString("could not resolve playtracker live-box roles: %1").arg(live_box_roles.status().ToString().c_str()));
+      return {};
     }
 
     auto slider_value = [this](const QString& id) -> int {
@@ -8171,7 +8209,7 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
       const auto default_it = camera_defaults_.find(id);
       return default_it != camera_defaults_.end() && slider_value(id) != default_it->second;
     };
-    auto apply_live_box = [&](int index) {
+    auto apply_live_box = [&](size_t index) {
       auto set_if_changed = [&](const QString& id, const char* key) {
         if (slider_changed(id)) {
           live_boxes[index][key] = static_cast<double>(slider_value(id)) / 10.0;
@@ -8235,10 +8273,10 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
       play_tracker["overshoot-scale-speed-ratio"] = ratio_x100(slider_value("Overshoot_Speed_Ratio_x100"));
     }
     if (slider_value("Apply_To_Fast_Box") != 0) {
-      apply_live_box(0);
+      apply_live_box(live_box_roles->fast_index);
     }
     if (slider_value("Apply_To_Follower_Box") != 0) {
-      apply_live_box(1);
+      apply_live_box(live_box_roles->follower_index);
     }
 
     const absl::Status publish = hm::stitching::publish_named_file(

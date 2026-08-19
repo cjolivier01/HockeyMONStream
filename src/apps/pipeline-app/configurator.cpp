@@ -43,6 +43,7 @@
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/ConfigYaml.h"
+#include "hstream/src/libs/common/PlayTrackerConfigRoles.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/UserConfig.h"
@@ -929,6 +930,8 @@ absl::StatusOr<YAML::Node> configurator_internal::build_effective_playtracker_co
   YAML::Node live_boxes = play_tracker["live-boxes"];
   if (!live_boxes.IsSequence() || live_boxes.size() == 0)
     return absl::InvalidArgumentError("Playtracker config must contain at least one live-box");
+  PlayTrackerLiveBoxRoles roles;
+  HM_ASSIGN_OR_RETURN(roles, resolve_playtracker_live_box_roles(live_boxes));
 
   enum class ScalarType { kString, kBool, kInt, kDouble };
   auto validate_scalar = [](const YAML::Node& value, ScalarType type, const std::string& path) -> absl::Status {
@@ -1026,25 +1029,11 @@ absl::StatusOr<YAML::Node> configurator_internal::build_effective_playtracker_co
   HM_RETURN_IF_ERROR(
       copy_global("follower-box-min-height-ratio", "rink.camera.follower_box_min_height_ratio", ScalarType::kDouble));
 
-  YAML::Node follower;
-  bool named_follower_found = false;
-  std::set<std::string> known_names;
   for (size_t index = 0; index < live_boxes.size(); ++index) {
     YAML::Node box = live_boxes[index];
-    if (!box.IsMap())
-      return absl::InvalidArgumentError("play-tracker.live-boxes entries must be maps");
     const YAML::Node name = box["name"];
     if (name.IsDefined() && !name.IsNull()) {
       HM_RETURN_IF_ERROR(validate_scalar(name, ScalarType::kString, "play-tracker.live-boxes.name"));
-      const std::string parsed_name = name.as<std::string>();
-      if ((parsed_name == "current_roi" || parsed_name == "current_roi_aspect") &&
-          !known_names.insert(parsed_name).second) {
-        return absl::InvalidArgumentError("play-tracker.live-boxes contains duplicate known name " + parsed_name);
-      }
-      if (parsed_name == "current_roi_aspect") {
-        follower = box;
-        named_follower_found = true;
-      }
     }
     const std::string box_path = "play-tracker.live-boxes[" + std::to_string(index) + "].";
     HM_RETURN_IF_ERROR(copy_required(
@@ -1096,10 +1085,11 @@ absl::StatusOr<YAML::Node> configurator_internal::build_effective_playtracker_co
         ScalarType::kDouble,
         box_path + "resizing-time-to-dest-stop-speed-threshold"));
   }
-  if (!named_follower_found)
-    follower = live_boxes[live_boxes.size() - 1];
+  YAML::Node follower = live_boxes[roles.follower_index];
+  const YAML::Node follower_name = follower["name"];
+  const bool named_follower = follower_name.IsScalar() && follower_name.as<std::string>() == "current_roi_aspect";
   const std::string follower_path =
-      named_follower_found ? "play-tracker.live-boxes[current_roi_aspect]." : "play-tracker.live-boxes[last].";
+      named_follower ? "play-tracker.live-boxes[current_roi_aspect]." : "play-tracker.live-boxes[follower].";
   HM_RETURN_IF_ERROR(copy_required(
       follower,
       "stop-translation-on-dir-change-delay",
@@ -1160,6 +1150,12 @@ absl::StatusOr<YAML::Node> configurator_internal::build_effective_playtracker_co
       "rink.camera.follower_box_scale_height",
       ScalarType::kDouble,
       follower_path + "scale-dest-height"));
+  std::vector<size_t> normalized_order;
+  HM_ASSIGN_OR_RETURN(normalized_order, normalized_playtracker_live_box_order(live_boxes));
+  YAML::Node normalized_boxes(YAML::NodeType::Sequence);
+  for (const size_t index : normalized_order)
+    normalized_boxes.push_back(YAML::Clone(live_boxes[index]));
+  play_tracker["live-boxes"] = normalized_boxes;
   return result;
 }
 
@@ -1489,9 +1485,6 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
   return recovered;
 }
 
-// Forward declaration for helper defined later in this file
-void map_key_configs(YAML::Node yaml, const std::vector<std::pair<std::string, std::string>>& map_dest_from_src);
-
 void Configurator::apply_gpu_override(YAML::Node& pipeline) {
   if (override_gpu_id_ != kUseConfigFileGpu) {
     pipeline["application"]["global-gpu-id"] = override_gpu_id_;
@@ -1526,51 +1519,299 @@ absl::Status Configurator::setup_stitcher_and_masks(
   return absl::OkStatus();
 }
 
-void Configurator::map_common_config_keys() {
-  map_key_configs(
-      config_,
-      {
-          {"pipeline.hmstitcher.post-stitch-rotate-degrees", "pipeline.hmstitcher.post_stitch_rotate_degrees"},
-      });
-  map_key_configs(
-      config_,
-      {
-          {"stitching.post_stitch_rotate_degrees", "stitching.stitch_rotate_degrees"},
-          {"stitching.post_stitch_rotate_degrees", "stitching.stitch-rotate-degrees"},
-          {"stitching.post_stitch_rotate_degrees", "game.stitching.post_stitch_rotate_degrees"},
-          {"stitching.post_stitch_rotate_degrees", "game.stitching.stitch_rotate_degrees"},
-          {"stitching.post_stitch_rotate_degrees", "game.stitching.stitch-rotate-degrees"},
-      });
-  const std::vector<std::pair<std::string, std::string>> map_dest_from_src{
-      {"pipeline.hmstitcher.post-stitch-rotate-degrees", "stitching.post_stitch_rotate_degrees"},
-  };
-  map_key_configs(config_, map_dest_from_src);
+absl::Status Configurator::map_common_config_keys() {
+  YAML::Node pipeline = config_["pipeline"];
+  if (!pipeline.IsMap())
+    return absl::OkStatus();
 
-  const std::optional<YAML::Node> fixed_edge_rotation = get_node(config_, "rink.camera.fixed_edge_rotation_angle");
-  if (!fixed_edge_rotation || !fixed_edge_rotation->IsDefined() || fixed_edge_rotation->IsNull()) {
-    return;
+  auto canonical_source = [&](const std::string& source_path,
+                              const std::string& destination_path,
+                              const YAML::Node& destination,
+                              bool required) -> absl::StatusOr<std::optional<YAML::Node>> {
+    const std::optional<YAML::Node> source = get_node(config_, source_path);
+    if (!source.has_value() || !source->IsDefined()) {
+      if (required)
+        return absl::InvalidArgumentError("Effective baseline is missing supported key " + source_path);
+      return std::nullopt;
+    }
+    const int source_rank = std::max(0, explicit_value_rank(source_path));
+    const int destination_rank = explicit_value_rank(destination_path);
+    if (destination_rank >= source_rank && destination_rank >= 1)
+      return std::nullopt;
+    if (destination.IsDefined() && !destination.IsNull() && source_rank == 0 && destination_rank < 0)
+      return std::nullopt;
+    return YAML::Clone(*source);
+  };
+
+  auto map_bool = [&](const std::string& source_path,
+                      const std::string& destination_path,
+                      YAML::Node destination,
+                      const char* key,
+                      bool invert = false) -> absl::Status {
+    std::optional<YAML::Node> source;
+    HM_ASSIGN_OR_RETURN(source, canonical_source(source_path, destination_path, destination[key], true));
+    if (!source.has_value())
+      return absl::OkStatus();
+    if ((*source).IsNull() || !(*source).IsScalar())
+      return absl::InvalidArgumentError(source_path + " must be a non-null boolean");
+    try {
+      const bool value = (*source).as<bool>();
+      destination[key] = (invert ? !value : value) ? 1 : 0;
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError("Invalid " + source_path + ": " + error.what());
+    }
+    return absl::OkStatus();
+  };
+
+  if (pipeline["hmstitcher"].IsMap()) {
+    YAML::Node stitcher = pipeline["hmstitcher"];
+    HM_RETURN_IF_ERROR(map_bool("stitching.enabled", "pipeline.hmstitcher.enable", stitcher, "enable"));
+    HM_RETURN_IF_ERROR(
+        map_bool("stitching.minimize_blend", "pipeline.hmstitcher.minimize-blend", stitcher, "minimize-blend"));
+
+    std::optional<YAML::Node> dtype;
+    HM_ASSIGN_OR_RETURN(
+        dtype,
+        canonical_source(
+            "stitching.dtype",
+            "pipeline.hmstitcher.stitch-compute-precision",
+            stitcher["stitch-compute-precision"],
+            true));
+    if (dtype.has_value()) {
+      if ((*dtype).IsNull() || !(*dtype).IsScalar())
+        return absl::InvalidArgumentError("stitching.dtype must be float32 or float16");
+      const std::string value = (*dtype).as<std::string>();
+      if (value == "float32" || value == "fp32")
+        stitcher["stitch-compute-precision"] = "fp32";
+      else if (value == "float16" || value == "fp16" || value == "half")
+        stitcher["stitch-compute-precision"] = "fp16";
+      else
+        return absl::InvalidArgumentError("stitching.dtype must be float32 or float16");
+    }
+
+    // Promote the highest-ranked legacy canonical spelling before mapping it
+    // to the native stitcher property.
+    const char* canonical_rotation_path = "stitching.post_stitch_rotate_degrees";
+    int rotation_rank = explicit_value_rank(canonical_rotation_path);
+    std::optional<YAML::Node> rotation = get_node(config_, canonical_rotation_path);
+    for (const char* alias : {
+             "stitching.stitch_rotate_degrees",
+             "stitching.stitch-rotate-degrees",
+             "game.stitching.post_stitch_rotate_degrees",
+             "game.stitching.stitch_rotate_degrees",
+             "game.stitching.stitch-rotate-degrees",
+         }) {
+      const int alias_rank = explicit_value_rank(alias);
+      const std::optional<YAML::Node> alias_value = get_node(config_, alias);
+      if (alias_value.has_value() && alias_rank > rotation_rank) {
+        rotation = YAML::Clone(*alias_value);
+        rotation_rank = alias_rank;
+      }
+    }
+    if (rotation.has_value() && rotation_rank >= 0) {
+      config_["stitching"]["post_stitch_rotate_degrees"] = YAML::Clone(*rotation);
+      explicit_value_ranks_[canonical_rotation_path] = rotation_rank;
+    }
+    const int dashed_rank = explicit_value_rank("pipeline.hmstitcher.post-stitch-rotate-degrees");
+    const int underscored_rank = explicit_value_rank("pipeline.hmstitcher.post_stitch_rotate_degrees");
+    if (stitcher["post_stitch_rotate_degrees"].IsDefined() &&
+        (!stitcher["post-stitch-rotate-degrees"].IsDefined() || underscored_rank > dashed_rank)) {
+      stitcher["post-stitch-rotate-degrees"] = YAML::Clone(stitcher["post_stitch_rotate_degrees"]);
+      if (underscored_rank >= 0)
+        explicit_value_ranks_["pipeline.hmstitcher.post-stitch-rotate-degrees"] = underscored_rank;
+    }
+    std::optional<YAML::Node> mapped_rotation;
+    HM_ASSIGN_OR_RETURN(
+        mapped_rotation,
+        canonical_source(
+            canonical_rotation_path,
+            "pipeline.hmstitcher.post-stitch-rotate-degrees",
+            stitcher["post-stitch-rotate-degrees"],
+            false));
+    if (mapped_rotation.has_value()) {
+      if ((*mapped_rotation).IsNull()) {
+        stitcher.remove("post-stitch-rotate-degrees");
+        stitcher.remove("post_stitch_rotate_degrees");
+      } else {
+        if (!(*mapped_rotation).IsScalar())
+          return absl::InvalidArgumentError("stitching.post_stitch_rotate_degrees must be null or numeric");
+        try {
+          const double value = (*mapped_rotation).as<double>();
+          if (!std::isfinite(value))
+            return absl::InvalidArgumentError("stitching.post_stitch_rotate_degrees must be finite");
+          stitcher["post-stitch-rotate-degrees"] = value;
+        } catch (const YAML::Exception& error) {
+          return absl::InvalidArgumentError(
+              "Invalid stitching.post_stitch_rotate_degrees: " + std::string(error.what()));
+        }
+      }
+    }
   }
-  if (!fixed_edge_rotation->IsSequence() || fixed_edge_rotation->size() != 2) {
-    map_key_configs(
-        config_,
-        {
-            {"pipeline.hmplaycropper.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle"},
-            {"pipeline.ds-playtracker.fixed-edge-rotation-angle", "rink.camera.fixed_edge_rotation_angle"},
-        });
-    return;
+
+  if (pipeline["hmplaycropper"].IsMap()) {
+    YAML::Node cropper = pipeline["hmplaycropper"];
+    HM_RETURN_IF_ERROR(map_bool("rink.camera.crop_image", "pipeline.hmplaycropper.no-crop", cropper, "no-crop", true));
+    HM_RETURN_IF_ERROR(
+        map_bool("plot.plot_moving_boxes", "pipeline.hmplaycropper.plot-play-tracking", cropper, "plot-play-tracking"));
+    HM_RETURN_IF_ERROR(map_bool(
+        "plot.plot_individual_player_tracking",
+        "pipeline.hmplaycropper.plot-player-tracking",
+        cropper,
+        "plot-player-tracking"));
   }
-  for (const char* stage : {"hmplaycropper", "ds-playtracker"}) {
-    YAML::Node stage_config = config_["pipeline"][stage];
-    if (stage_config["fixed-edge-rotation-angle"].IsDefined()) {
+
+  for (const auto& entry : pipeline) {
+    const std::string section_name = entry.first.as<std::string>();
+    YAML::Node sink = entry.second;
+    if (!absl::StartsWith(section_name, "sink") || !sink.IsMap() || !sink["type"].IsScalar())
+      continue;
+    int sink_type = 0;
+    try {
+      sink_type = sink["type"].as<int>();
+    } catch (const YAML::Exception&) {
       continue;
     }
-    if (!stage_config["fixed-edge-rotation-angle-left"].IsDefined()) {
-      stage_config["fixed-edge-rotation-angle-left"] = (*fixed_edge_rotation)[0];
+    if (sink_type != NV_DS_SINK_ENCODE_FILE)
+      continue;
+
+    const std::string sink_path = "pipeline." + section_name + ".";
+    std::optional<YAML::Node> bitrate;
+    HM_ASSIGN_OR_RETURN(bitrate, canonical_source("video_out.bit_rate", sink_path + "bitrate", sink["bitrate"], true));
+    if (bitrate.has_value()) {
+      if ((*bitrate).IsNull() || !(*bitrate).IsScalar())
+        return absl::InvalidArgumentError("video_out.bit_rate must be a positive integer");
+      try {
+        const int64_t value = (*bitrate).as<int64_t>();
+        if (value <= 0 || value > G_MAXINT)
+          return absl::InvalidArgumentError("video_out.bit_rate must fit a positive native encoder bitrate");
+        sink["bitrate"] = value;
+      } catch (const YAML::Exception& error) {
+        return absl::InvalidArgumentError("Invalid video_out.bit_rate: " + std::string(error.what()));
+      }
     }
-    if (!stage_config["fixed-edge-rotation-angle-right"].IsDefined()) {
-      stage_config["fixed-edge-rotation-angle-right"] = (*fixed_edge_rotation)[1];
+
+    std::optional<YAML::Node> output_path;
+    HM_ASSIGN_OR_RETURN(
+        output_path,
+        canonical_source("video_out.output_video_path", sink_path + "output-file", sink["output-file"], false));
+    if (output_path.has_value()) {
+      if ((*output_path).IsNull()) {
+        if (explicit_value_rank("video_out.output_video_path") >= 1)
+          sink.remove("output-file");
+      } else {
+        if (!(*output_path).IsScalar() || (*output_path).as<std::string>().empty())
+          return absl::InvalidArgumentError("video_out.output_video_path must be null or a non-empty path");
+        sink["output-file"] = (*output_path).as<std::string>();
+      }
+    }
+
+    for (const auto& [canonical_key, native_key] : {
+             std::pair<const char*, const char*>("output_width", "width"),
+             std::pair<const char*, const char*>("output_height", "height"),
+         }) {
+      const std::string source_path = std::string("video_out.") + canonical_key;
+      const std::string destination_path = sink_path + native_key;
+      std::optional<YAML::Node> dimension;
+      HM_ASSIGN_OR_RETURN(dimension, canonical_source(source_path, destination_path, sink[native_key], false));
+      if (!dimension.has_value())
+        continue;
+      const int source_rank = explicit_value_rank(source_path);
+      if ((*dimension).IsNull() || ((*dimension).IsScalar() && (*dimension).as<std::string>() == "auto")) {
+        if (source_rank >= 1)
+          sink.remove(native_key);
+        continue;
+      }
+      if (!(*dimension).IsScalar())
+        return absl::InvalidArgumentError(source_path + " must be auto, null, or a positive integer");
+      try {
+        const int value = (*dimension).as<int>();
+        if (value <= 0)
+          return absl::InvalidArgumentError(source_path + " must be auto, null, or a positive integer");
+        sink[native_key] = value;
+      } catch (const YAML::Exception& error) {
+        return absl::InvalidArgumentError("Invalid " + source_path + ": " + error.what());
+      }
     }
   }
+
+  const std::optional<YAML::Node> fixed_edge_rotation = get_node(config_, "rink.camera.fixed_edge_rotation_angle");
+  if (!fixed_edge_rotation.has_value() || !fixed_edge_rotation->IsDefined())
+    return absl::InvalidArgumentError(
+        "Effective baseline is missing supported key rink.camera.fixed_edge_rotation_angle");
+  auto validate_fixed_edge_value = [](const YAML::Node& value, const std::string& path) -> absl::Status {
+    if (!value.IsScalar())
+      return absl::InvalidArgumentError(path + " must be numeric");
+    try {
+      if (!std::isfinite(value.as<double>()))
+        return absl::InvalidArgumentError(path + " must be finite");
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError("Invalid " + path + ": " + error.what());
+    }
+    return absl::OkStatus();
+  };
+  if (!fixed_edge_rotation->IsNull()) {
+    if (fixed_edge_rotation->IsSequence()) {
+      if (fixed_edge_rotation->size() != 2)
+        return absl::InvalidArgumentError("rink.camera.fixed_edge_rotation_angle must be numeric or [left, right]");
+      HM_RETURN_IF_ERROR(
+          validate_fixed_edge_value((*fixed_edge_rotation)[0], "rink.camera.fixed_edge_rotation_angle[0]"));
+      HM_RETURN_IF_ERROR(
+          validate_fixed_edge_value((*fixed_edge_rotation)[1], "rink.camera.fixed_edge_rotation_angle[1]"));
+    } else {
+      HM_RETURN_IF_ERROR(validate_fixed_edge_value(*fixed_edge_rotation, "rink.camera.fixed_edge_rotation_angle"));
+    }
+  }
+  for (const char* stage : {"hmplaycropper", "ds-playtracker"}) {
+    YAML::Node stage_config = pipeline[stage];
+    if (!stage_config.IsMap())
+      continue;
+    const std::string prefix = std::string("pipeline.") + stage + ".";
+    const int source_rank = std::max(0, explicit_value_rank("rink.camera.fixed_edge_rotation_angle"));
+    auto may_replace = [&](const char* key) {
+      const int destination_rank = explicit_value_rank(prefix + key);
+      return destination_rank < source_rank &&
+          !(destination_rank < 0 && source_rank == 0 && stage_config[key].IsDefined());
+    };
+    if (fixed_edge_rotation->IsNull()) {
+      if (source_rank >= 1) {
+        for (const char* key : {
+                 "fixed-edge-rotation-angle",
+                 "fixed-edge-rotation-angle-left",
+                 "fixed-edge-rotation-angle-right",
+             }) {
+          if (may_replace(key))
+            stage_config.remove(key);
+        }
+      }
+    } else if (fixed_edge_rotation->IsSequence()) {
+      if (may_replace("fixed-edge-rotation-angle"))
+        stage_config.remove("fixed-edge-rotation-angle");
+      if (may_replace("fixed-edge-rotation-angle-left"))
+        stage_config["fixed-edge-rotation-angle-left"] = (*fixed_edge_rotation)[0];
+      if (may_replace("fixed-edge-rotation-angle-right"))
+        stage_config["fixed-edge-rotation-angle-right"] = (*fixed_edge_rotation)[1];
+    } else if (fixed_edge_rotation->IsScalar()) {
+      if (may_replace("fixed-edge-rotation-angle"))
+        stage_config["fixed-edge-rotation-angle"] = YAML::Clone(*fixed_edge_rotation);
+      if (source_rank >= 1) {
+        if (may_replace("fixed-edge-rotation-angle-left"))
+          stage_config.remove("fixed-edge-rotation-angle-left");
+        if (may_replace("fixed-edge-rotation-angle-right"))
+          stage_config.remove("fixed-edge-rotation-angle-right");
+      }
+    } else {
+      return absl::InvalidArgumentError("rink.camera.fixed_edge_rotation_angle must be numeric or [left, right]");
+    }
+  }
+  return absl::OkStatus();
+}
+
+absl::Status Configurator::apply_supported_baseline_mappings() {
+  HM_RETURN_IF_ERROR(map_common_config_keys());
+  YAML::Node pipeline = config_["pipeline"];
+  if (pipeline.IsMap())
+    HM_RETURN_IF_ERROR(apply_scoreboard_perspective(pipeline));
+  return absl::OkStatus();
 }
 
 namespace {
@@ -1708,13 +1949,13 @@ absl::Status Configurator::materialize_playtracker_config(
   if (configured_path.is_absolute()) {
     candidates.push_back(configured_path);
   } else {
-    candidates = {
-        game_dir / configured_path,
-        pipeline_config_dir / configured_path,
-        fs::path(config_root_dir_) / configured_path,
-        fs::current_path() / configured_path,
-        fs::current_path() / "configs" / configured_path,
-    };
+    if (!game_dir.empty())
+      candidates.push_back(game_dir / configured_path);
+    if (!pipeline_config_dir.empty())
+      candidates.push_back(pipeline_config_dir / configured_path);
+    candidates.push_back(fs::path(config_root_dir_) / configured_path);
+    candidates.push_back(fs::current_path() / configured_path);
+    candidates.push_back(fs::current_path() / "configs" / configured_path);
   }
   fs::path base_path;
   for (const fs::path& candidate : candidates) {
@@ -1839,41 +2080,78 @@ absl::Status Configurator::invalidate_canvas_dependent_cache_if_needed(const fs:
   return absl::OkStatus();
 }
 
-void Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
+absl::Status Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
   if (!pipeline["hmplaycropper"].IsDefined()) {
-    return;
+    return absl::OkStatus();
   }
-  const auto set_playcropper_if_not_set = [&](const std::string& dest_key, const std::string& src_key) {
-    YAML::Node dest_node = pipeline["hmplaycropper"][dest_key];
-    if (dest_node.IsDefined() && !dest_node.IsNull()) {
-      return;
-    }
+  const auto map_playcropper_scalar = [&](const std::string& dest_key, const std::string& src_key) -> absl::Status {
     std::optional<YAML::Node> src_node = get_node(config_, src_key);
-    if (!src_node || !src_node->IsDefined() || src_node->IsNull()) {
-      return;
+    if (!src_node || !src_node->IsDefined())
+      return absl::InvalidArgumentError("Effective baseline is missing supported key " + src_key);
+    const std::string destination_path = "pipeline.hmplaycropper." + dest_key;
+    const int source_rank = std::max(0, explicit_value_rank(src_key));
+    const int destination_rank = explicit_value_rank(destination_path);
+    YAML::Node destination = pipeline["hmplaycropper"][dest_key];
+    if (destination_rank >= source_rank && destination_rank >= 1)
+      return absl::OkStatus();
+    if (destination.IsDefined() && !destination.IsNull() && source_rank == 0 && destination_rank < 0)
+      return absl::OkStatus();
+    if (src_node->IsNull()) {
+      if (source_rank >= 1)
+        pipeline["hmplaycropper"].remove(dest_key);
+      return absl::OkStatus();
     }
-    pipeline["hmplaycropper"][dest_key] = src_node->as<std::string>();
+    if (!src_node->IsScalar())
+      return absl::InvalidArgumentError(src_key + " must be a scalar");
+    pipeline["hmplaycropper"][dest_key] = YAML::Clone(*src_node);
+    return absl::OkStatus();
   };
-  set_playcropper_if_not_set("scoreboard-projected-width", "rink.scoreboard.projected_width");
-  set_playcropper_if_not_set("scoreboard-projected-height", "rink.scoreboard.projected_height");
-  set_playcropper_if_not_set("scoreboard-scale", "rink.scoreboard.scoreboard_scale");
-  if (has_node(config_, "rink.scoreboard.perspective_polygon", /*non_null=*/true)) {
-    auto points = config_["rink"]["scoreboard"]["perspective_polygon"].as<std::vector<std::vector<int>>>();
+  HM_RETURN_IF_ERROR(map_playcropper_scalar("scoreboard-projected-width", "rink.scoreboard.projected_width"));
+  HM_RETURN_IF_ERROR(map_playcropper_scalar("scoreboard-projected-height", "rink.scoreboard.projected_height"));
+  HM_RETURN_IF_ERROR(map_playcropper_scalar("scoreboard-scale", "rink.scoreboard.scoreboard_scale"));
+
+  const std::string source_path = "rink.scoreboard.perspective_polygon";
+  const std::string destination_path = "pipeline.hmplaycropper.scoreboard-perspective-polygon";
+  const std::optional<YAML::Node> polygon = get_node(config_, source_path);
+  if (!polygon.has_value() || !polygon->IsDefined())
+    return absl::InvalidArgumentError("Effective baseline is missing supported key " + source_path);
+  const int source_rank = std::max(0, explicit_value_rank(source_path));
+  const int destination_rank = explicit_value_rank(destination_path);
+  YAML::Node destination = pipeline["hmplaycropper"]["scoreboard-perspective-polygon"];
+  const bool source_wins = !(destination_rank >= source_rank && destination_rank >= 1) &&
+      !(destination.IsDefined() && !destination.IsNull() && source_rank == 0 && destination_rank < 0);
+  if (source_wins && polygon->IsNull()) {
+    if (source_rank >= 1)
+      pipeline["hmplaycropper"].remove("scoreboard-perspective-polygon");
+  } else if (source_wins) {
+    if (!polygon->IsSequence())
+      return absl::InvalidArgumentError(source_path + " must be null or four [x, y] points");
+    std::vector<std::vector<int>> points;
+    try {
+      points = polygon->as<std::vector<std::vector<int>>>();
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError("Invalid " + source_path + ": " + error.what());
+    }
     const bool disabled = points.size() == 4 && std::all_of(points.begin(), points.end(), [](const auto& point) {
                             return point.size() == 2 && point[0] == 0 && point[1] == 0;
                           });
     if (!points.empty() && !disabled) {
-      assert(points.size() == 4);
+      if (points.size() != 4 ||
+          !std::all_of(points.begin(), points.end(), [](const auto& point) { return point.size() == 2; })) {
+        return absl::InvalidArgumentError(source_path + " must contain four [x, y] points");
+      }
       std::stringstream ss;
       for (size_t i = 0, n = points.size(); i < n; ++i) {
         if (i)
           ss << ',';
-        assert(points[i].size() == 2);
         ss << std::to_string(points[i].at(0)) << ',' << points[i].at(1);
       }
       pipeline["hmplaycropper"]["scoreboard-perspective-polygon"] = ss.str();
+    } else if (source_rank >= 1) {
+      pipeline["hmplaycropper"].remove("scoreboard-perspective-polygon");
     }
   }
+  return absl::OkStatus();
 }
 
 absl::Status Configurator::gather_stitching_videos(
@@ -2307,6 +2585,7 @@ absl::Status Configurator::configure_encode_file_outputs(
     int sink_id;
     int codec;
     fs::path configured_path;
+    bool bitrate_is_explicit;
   };
 
   std::optional<fs::path> output_work_dir;
@@ -2353,12 +2632,19 @@ absl::Status Configurator::configure_encode_file_outputs(
     }
 
     HM_RETURN_IF_ERROR(configurator_internal::claim_unique_archive_output_path(claimed_output_paths, output_path, key));
-    archive_outputs.push_back({sink_node, sink_id, codec, std::move(output_path)});
+    const int canonical_bitrate_rank = explicit_value_rank("video_out.bit_rate");
+    const int native_bitrate_rank = explicit_value_rank("pipeline." + key + ".bitrate");
+    archive_outputs.push_back(
+        {sink_node, sink_id, codec, std::move(output_path), canonical_bitrate_rank >= 1 || native_bitrate_rank >= 1});
   }
 
+  const bool has_auto_bitrate_output =
+      std::any_of(archive_outputs.begin(), archive_outputs.end(), [](const ArchiveOutput& output) {
+        return !output.bitrate_is_explicit;
+      });
   const std::optional<SourceBitrateReference> bitrate_reference =
-      archive_outputs.empty() ? std::nullopt : select_source_bitrate_reference(source_video_paths);
-  if (!archive_outputs.empty() && !bitrate_reference.has_value()) {
+      has_auto_bitrate_output ? select_source_bitrate_reference(source_video_paths) : std::nullopt;
+  if (has_auto_bitrate_output && !bitrate_reference.has_value()) {
     g_printerr(
         "Warning: source video bitrate metadata is unavailable; encode-file sinks will retain their configured "
         "bitrate\n");
@@ -2383,7 +2669,7 @@ absl::Status Configurator::configure_encode_file_outputs(
     const int codec = archive_output.codec;
     fs::path output_path = archive_output.configured_path;
 
-    if (bitrate_reference.has_value()) {
+    if (bitrate_reference.has_value() && !archive_output.bitrate_is_explicit) {
       sink_node["bitrate"] =
           std::to_string(std::min<uint64_t>(bitrate_reference->bitrate, static_cast<uint64_t>(G_MAXINT)));
       sink_node["bitrate-per-pixel-numerator"] = std::to_string(bitrate_reference->bitrate_per_pixel.numerator);
@@ -2667,12 +2953,20 @@ absl::Status Configurator::save_private_config(
 }
 
 absl::Status Configurator::persist_stitch_frame_time_override(const std::string& normalized_stitch_frame_time) {
-  if (normalized_stitch_frame_time.empty()) {
-    remove_yaml_key_path(config_, {"stitching", "stitch_frame_time"});
+  const std::string requested = normalized_stitch_frame_time.empty() ? "00:00:00" : normalized_stitch_frame_time;
+  uint64_t requested_time_ns = 0;
+  uint64_t lower_layer_time_ns = 0;
+  try {
+    requested_time_ns = stitch_frame_time_to_nanoseconds(requested);
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError("Invalid stitch-frame override: " + std::string(error.what()));
+  }
+  HM_ASSIGN_OR_RETURN(lower_layer_time_ns, private_stitch_frame_time(lower_layer_config_));
+  config_["stitching"]["stitch_frame_time"] = requested;
+  if (requested_time_ns == lower_layer_time_ns) {
     remove_yaml_key_path(private_config_, {"stitching", "stitch_frame_time"});
   } else {
-    config_["stitching"]["stitch_frame_time"] = normalized_stitch_frame_time;
-    private_config_["stitching"]["stitch_frame_time"] = normalized_stitch_frame_time;
+    private_config_["stitching"]["stitch_frame_time"] = requested;
   }
 
   std::string expected_invalidation_id;
@@ -2692,13 +2986,12 @@ absl::Status Configurator::persist_stitch_frame_time_override(const std::string&
 absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
     const std::string& normalized_stitch_frame_time,
     const std::string& expected_invalidation_id) {
+  const std::string requested = normalized_stitch_frame_time.empty() ? "00:00:00" : normalized_stitch_frame_time;
   uint64_t requested_time_ns = 0;
-  if (!normalized_stitch_frame_time.empty()) {
-    try {
-      requested_time_ns = stitch_frame_time_to_nanoseconds(normalized_stitch_frame_time);
-    } catch (const std::exception& error) {
-      return absl::InvalidArgumentError("Invalid stitch-frame override: " + std::string(error.what()));
-    }
+  try {
+    requested_time_ns = stitch_frame_time_to_nanoseconds(requested);
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError("Invalid stitch-frame override: " + std::string(error.what()));
   }
 
   // A config-only invocation can use the CLI timestamp for positioning, but
@@ -2725,12 +3018,16 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
     return absl::InvalidArgumentError("Failed to load private stitch-frame state: " + std::string(error.what()));
   }
 
-  uint64_t current_time_ns = 0;
-  HM_ASSIGN_OR_RETURN(current_time_ns, private_stitch_frame_time(latest));
+  uint64_t lower_layer_time_ns = 0;
+  HM_ASSIGN_OR_RETURN(lower_layer_time_ns, private_stitch_frame_time(lower_layer_config_));
+  const bool private_value_present = get_node(latest, "stitching.stitch_frame_time").has_value();
+  uint64_t current_time_ns = lower_layer_time_ns;
+  if (private_value_present)
+    HM_ASSIGN_OR_RETURN(current_time_ns, private_stitch_frame_time(latest));
   const bool changed = current_time_ns != requested_time_ns;
-  const bool remove_explicit_default =
-      normalized_stitch_frame_time.empty() && get_node(latest, "stitching.stitch_frame_time").has_value();
-  if (changed || remove_explicit_default) {
+  const bool should_persist = requested_time_ns != lower_layer_time_ns;
+  const bool persistence_changed = private_value_present != should_persist;
+  if (changed || persistence_changed) {
     std::string invalidation_id = expected_invalidation_id;
     if (!invalidation_id.empty()) {
       const YAML::Node current_calibration = latest["hstream_ui"]["stitching_calibration"];
@@ -2752,11 +3049,10 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
       g_free(generated_invalidation_id);
     }
 
-    if (normalized_stitch_frame_time.empty()) {
+    if (should_persist)
+      latest["stitching"]["stitch_frame_time"] = requested;
+    else
       remove_yaml_key_path(latest, {"stitching", "stitch_frame_time"});
-    } else {
-      latest["stitching"]["stitch_frame_time"] = normalized_stitch_frame_time;
-    }
 
     if (changed) {
       size_t control_points = kDefaultStitchingControlPoints;
@@ -2796,11 +3092,7 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
 
   private_config_ = YAML::Clone(latest);
   persisted_private_config_ = YAML::Clone(latest);
-  if (normalized_stitch_frame_time.empty()) {
-    remove_yaml_key_path(config_, {"stitching", "stitch_frame_time"});
-  } else {
-    config_["stitching"]["stitch_frame_time"] = normalized_stitch_frame_time;
-  }
+  config_["stitching"]["stitch_frame_time"] = requested;
   const auto calibration = get_node(latest, "hstream_ui.stitching_calibration");
   if (calibration.has_value()) {
     config_["hstream_ui"]["stitching_calibration"] = YAML::Clone(*calibration);
@@ -2817,16 +3109,20 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
   YAML::Node config = YAML::Clone(baseline->values);
   HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
   const YAML::Node user_overlay = YAML::Clone(*user_config_snapshot_);
+  explicit_value_ranks_.clear();
+  record_explicit_overlay(user_overlay, {}, 1);
   explicit_config_ = YAML::Clone(user_overlay);
   config = merge_nodes(
       config,
       user_overlay,
       /*warn_if_key_not_in_dest=*/false);
+  lower_layer_config_ = YAML::Clone(config);
   std::optional<YAML::Node> private_config;
   HM_ASSIGN_OR_RETURN(private_config, load_private_config());
   if (private_config.has_value()) {
     private_config_ = *private_config;
     persisted_private_config_ = YAML::Clone(private_config_);
+    record_explicit_overlay(private_config_, {}, 2);
     explicit_config_ = merge_nodes(
         explicit_config_,
         private_config_,
@@ -2840,23 +3136,6 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
     persisted_private_config_ = YAML::Node(YAML::NodeType::Map);
   }
   return config;
-}
-
-bool set_if_not_set(YAML::Node node, const std::string& dest_key, const std::string& src_key) {
-  std::optional<YAML::Node> dest_node = get_node(node, dest_key);
-  if (dest_node && dest_node->IsDefined() && !dest_node->IsNull()) {
-    return false;
-  }
-  std::optional<YAML::Node> src_node = get_node(node, src_key);
-  if (!src_node || !src_node->IsDefined() || src_node->IsNull()) {
-    return false;
-  }
-  if (dest_key.find(':') != std::string::npos) {
-    usleep(0);
-  } else {
-    set_node_value(node, dest_key, src_node->as<std::string>());
-  }
-  return true;
 }
 
 bool Configurator::underlay_config(const std::string& node_name, const std::string& filename) {
@@ -2886,6 +3165,7 @@ bool Configurator::overlay_config(const std::string& node_name, const std::strin
   }
   // std::cout << config_ << std::endl;
   YAML::Node overlaid_config = YAML::LoadFile(filename);
+  record_explicit_overlay(overlaid_config, node_name, 2);
   if (node_name.empty()) {
     config_ = merge_nodes(
         config_,
@@ -2936,6 +3216,28 @@ YAML::Node Configurator::merge_nodes(const YAML::Node& base, const YAML::Node& o
   return result;
 }
 
+void Configurator::record_explicit_overlay(const YAML::Node& overlay, const std::string& prefix, int rank) {
+  if (!overlay.IsMap()) {
+    if (!prefix.empty())
+      explicit_value_ranks_[prefix] = rank;
+    return;
+  }
+  if (overlay.size() == 0 && !prefix.empty()) {
+    explicit_value_ranks_[prefix] = rank;
+    return;
+  }
+  for (const auto& entry : overlay) {
+    const std::string key = entry.first.as<std::string>();
+    const std::string path = prefix.empty() ? key : prefix + "." + key;
+    record_explicit_overlay(entry.second, path, rank);
+  }
+}
+
+int Configurator::explicit_value_rank(const std::string& path) const {
+  const auto found = explicit_value_ranks_.find(path);
+  return found == explicit_value_ranks_.end() ? -1 : found->second;
+}
+
 absl::Status Configurator::configure() {
   YAML::Node config;
   HM_ASSIGN_OR_RETURN(config, Configurator::load_config());
@@ -2959,14 +3261,6 @@ absl::StatusOr<bool> Configurator::does_need_stitching(const std::string& game_d
   return false;
 }
 
-void map_key_configs(YAML::Node yaml, const std::vector<std::pair<std::string, std::string>>& map_dest_from_src) {
-  for (const auto& dest_from_src : map_dest_from_src) {
-    const std::string& dest_key = dest_from_src.first;
-    const std::string& src_key = dest_from_src.second;
-    set_if_not_set(yaml, dest_key, src_key);
-  }
-}
-
 absl::Status Configurator::complete_configuration(
     bool force,
     bool clean_stitching_artifacts,
@@ -2988,7 +3282,7 @@ absl::Status Configurator::complete_configuration(
   }
 
   apply_gpu_override(pipeline);
-  map_common_config_keys();
+  HM_RETURN_IF_ERROR(apply_supported_baseline_mappings());
 
   if (game_id_.empty() && clean_requested)
     return absl::InvalidArgumentError("No game id specified for cleaning");
@@ -3176,24 +3470,6 @@ absl::Status Configurator::complete_configuration(
     }
   }
 
-  // Live box mappings
-  const std::map<std::string, std::string> live_box_map_dest_from_src{
-      {"pipeline.ds-playtracker.play-tracker.live-boxes:1", "rink.camera.follower_box_scale_width"},
-      {"pipeline.ds-playtracker.play-tracker.live-boxes:1", "rink.camera.follower_box_scale_height"},
-  };
-  // TODO: this needs to go into or replace the play tracker config, but
-  // currently just coming from the file later in parsing (these value mapings
-  // arent currently applied anywhere)
-  // map_key_configs(config_, live_box_map_dest_from_src);
-
-  // std::cout << config_["pipeline.ds-playtracker"] << std::endl;
-
-  // set_if_not_set(config_,
-  // "pipeline.ds-playtracker.dynamic-acceleration-scaling",
-  // "rink.camera.dynamic_acceleration_scaling");
-
-  apply_scoreboard_perspective(pipeline);
-
   YAML::Node offsets = ensure_game_frame_offsets_node(config_);
 
   size_t area = 0, ww = 0, hh = 0;
@@ -3268,6 +3544,7 @@ absl::Status Configurator::apply_config_item(const std::string& key, const std::
   //  std::cout << config_ << std::endl;
   config_ = merge_nodes(config_, overlaid_config, /*warn_if_key_not_in_dest=*/false);
   explicit_config_ = merge_nodes(explicit_config_, overlaid_config, /*warn_if_key_not_in_dest=*/false);
+  record_explicit_overlay(overlaid_config, {}, 3);
   // std::cout << config_ << std::endl;
   return absl::OkStatus();
 }

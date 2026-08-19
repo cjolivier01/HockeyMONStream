@@ -32,6 +32,7 @@ cc_library(
     deps = [
         ":playtracker_context_header",
         "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
+        "//src/libs/common:playtracker_config_roles",
         "//src/libs/common:utils",
         "@hm//hockeymom/csrc/play_tracker",
     ],
@@ -48,6 +49,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
+        "//src/libs/common:playtracker_config_roles",
         "//src/libs/common:utils",
         "@hm//hockeymom/csrc/play_tracker",
     ],

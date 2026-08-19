@@ -123,9 +123,6 @@ absl::StatusOr<uint64_t> parse_stitch_frame_time_option(const char* option, cons
 }
 
 std::string normalized_stitch_frame_time_config_value(uint64_t nanoseconds) {
-  if (nanoseconds == 0) {
-    return {};
-  }
   const uint64_t total_milliseconds = nanoseconds / GST_MSECOND;
   const uint64_t hours = total_milliseconds / (60 * 60 * 1000);
   const uint64_t minutes = total_milliseconds / (60 * 1000) % 60;
@@ -883,6 +880,10 @@ absl::Status PipelineApplication::configureInstances(
         }
       }
 
+      // Canonical baseline/user/game/CLI settings must be translated before
+      // active-stage inspection (notably stitching.enabled and rotation).
+      HM_RETURN_IF_ERROR(app_ctx->configurator().apply_supported_baseline_mappings());
+
       bool complete_configuration_enabled = false;
       try {
         complete_configuration_enabled =
@@ -969,12 +970,7 @@ absl::Status PipelineApplication::configureInstances(
       YAML::Node config = app_ctx->configurator().config();
       if (!stitch_frame_time_set_) {
         uint64_t configured_stitch_frame_time_ns = 0;
-        // Stitch-frame time is a per-game UI/calibration choice. Do not let a
-        // baseline or user overlay value resurface when config.yaml omits the
-        // required default zero value.
-        HM_ASSIGN_OR_RETURN(
-            configured_stitch_frame_time_ns,
-            configured_stitch_frame_time(app_ctx->configurator().game_private_config()));
+        HM_ASSIGN_OR_RETURN(configured_stitch_frame_time_ns, configured_stitch_frame_time(config));
         if (stitch_frame_time_loaded_from_config_ && stitch_frame_time_ns_ != configured_stitch_frame_time_ns) {
           return absl::InvalidArgumentError(
               "All pipeline instances must use the same stitching.stitch_frame_time value");

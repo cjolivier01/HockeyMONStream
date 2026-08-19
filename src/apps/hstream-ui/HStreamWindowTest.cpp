@@ -5040,6 +5040,37 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
 
+  const fs::path one_box_playtracker_config =
+      fs::path(window->gameDirectoryText().toStdString()) / "one_box_playtracker.yaml";
+  YAML::Node one_box_tracker(YAML::NodeType::Map);
+  YAML::Node one_box_sequence(YAML::NodeType::Sequence);
+  YAML::Node one_box(YAML::NodeType::Map);
+  one_box["name"] = "operator_only";
+  one_box["sticky-translation-gaussian-mult"] = 8.5;
+  one_box_sequence.push_back(one_box);
+  one_box_tracker["play-tracker"]["live-boxes"] = one_box_sequence;
+  std::ofstream(one_box_playtracker_config) << YAML::Dump(one_box_tracker) << '\n';
+  YAML::Node one_box_game_config = YAML::Clone(cleaned);
+  one_box_game_config["pipeline"]["ds-playtracker"]["config-file"] = one_box_playtracker_config.string();
+  one_box_game_config["hstream_ui"].remove("playtracker_config_base");
+  std::ofstream(config) << YAML::Dump(one_box_game_config) << '\n';
+  activate(create);
+  max_speed_x->setValue(333);
+  activate(save);
+  const YAML::Node saved_one_box_game = YAML::LoadFile(config.string());
+  const fs::path saved_one_box_path = saved_one_box_game["pipeline"]["ds-playtracker"]["config-file"].as<std::string>();
+  const YAML::Node saved_one_box = YAML::LoadFile(saved_one_box_path.string());
+  const YAML::Node saved_one_box_sequence = saved_one_box["play-tracker"]["live-boxes"];
+  if (!expect(
+          saved_one_box_sequence.IsSequence() && saved_one_box_sequence.size() == 1 &&
+              saved_one_box_sequence[0]["name"].as<std::string>() == "operator_only" &&
+              saved_one_box_sequence[0]["sticky-translation-gaussian-mult"].as<double>() == 8.5 &&
+              saved_one_box_sequence[0]["max-speed-x"].as<double>() == 33.3,
+          "Saving a one-box tracker preset must tune its shared role without silently adding a second box")) {
+    std::cerr << saved_one_box << '\n';
+    return false;
+  }
+
   const fs::path aged_active_sidecar = runtime_dir / "play_tracker_config_aged-active.yaml";
   fs::copy_file(custom_playtracker_config, aged_active_sidecar, fs::copy_options::overwrite_existing);
   fs::last_write_time(aged_active_sidecar, fs::file_time_type::clock::now() - std::chrono::hours(25));
@@ -5066,6 +5097,98 @@ bool test_camera_controls(HStreamWindow* window) {
              "Preset GC should never delete the aged playtracker sidecar referenced by the committed config") &&
       expect(!lookup_yaml_path(after_aged_active_save, {"stitching", "stitch_frame_time"}, nullptr),
              "Saving the default stitch-frame time should omit stitching.stitch_frame_time");
+}
+
+bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory) {
+  const QByteArray original_home = qgetenv("HOME");
+  QTemporaryDir user_home;
+  if (!user_home.isValid())
+    return false;
+  const QString user_config_directory = QDir(user_home.path()).filePath(".hstream");
+  if (!QDir().mkpath(user_config_directory))
+    return false;
+  YAML::Node user_config(YAML::NodeType::Map);
+  user_config["stitching"]["stitch_frame_time"] = "00:00:08";
+  {
+    std::ofstream out(QDir(user_config_directory).filePath("hstream.yaml").toStdString());
+    out << YAML::Dump(user_config) << '\n';
+  }
+
+  const fs::path game_root(qgetenv("HM_GAME_DIR").constData());
+  const fs::path copied_game = game_root / "ui-user-stitch-default";
+  std::error_code copy_error;
+  fs::remove_all(copied_game, copy_error);
+  copy_error.clear();
+  fs::create_directories(copied_game, copy_error);
+  const fs::path source_game(source_game_directory.toStdString());
+  for (fs::directory_iterator it(source_game, copy_error), end; !copy_error && it != end; it.increment(copy_error)) {
+    fs::copy(
+        it->path(),
+        copied_game / it->path().filename(),
+        fs::copy_options::recursive | fs::copy_options::overwrite_existing,
+        copy_error);
+  }
+  if (copy_error)
+    return expect(false, "Could not prepare the nonzero user stitch-frame fixture: " + copy_error.message());
+  const fs::path copied_config = copied_game / "config.yaml";
+  YAML::Node copied_config_node =
+      fs::is_regular_file(copied_config) ? YAML::LoadFile(copied_config.string()) : YAML::Node(YAML::NodeType::Map);
+  if (copied_config_node["stitching"] && copied_config_node["stitching"].IsMap())
+    copied_config_node["stitching"].remove("stitch_frame_time");
+  std::ofstream(copied_config) << YAML::Dump(copied_config_node) << '\n';
+
+  qputenv("HOME", user_home.path().toLocal8Bit());
+  bool ok = true;
+  {
+    HStreamWindow user_default_window;
+    user_default_window.show();
+    auto* game_id = require_child<QLineEdit>(&user_default_window, "gameIdEdit");
+    auto* create = require_child<QPushButton>(&user_default_window, "createGameButton");
+    auto* save = require_child<QPushButton>(&user_default_window, "savePresetButton");
+    auto* start = require_child<QPushButton>(&user_default_window, "startPipelineButton");
+    auto* stop = require_child<QPushButton>(&user_default_window, "stopPipelineButton");
+    auto* mode = require_child<QComboBox>(&user_default_window, "runModeCombo");
+    auto* stitch_frame_time = require_child<QTimeEdit>(&user_default_window, "stitchFrameTimeEdit");
+    ok = game_id && create && save && start && stop && mode && stitch_frame_time;
+    if (ok) {
+      game_id->setText("ui-user-stitch-default");
+      activate(create);
+      ok &= expect(
+          stitch_frame_time->time() == QTime(0, 0, 8) && !save->isEnabled(),
+          "A nonzero user-level stitch-frame default must initialize the UI and clean preset snapshot");
+      stitch_frame_time->setTime(QTime(0, 0, 0));
+      QApplication::processEvents();
+      ok &= expect(save->isEnabled(), "Zero must remain an explicit edit against a nonzero user-level default");
+      activate(save);
+      const YAML::Node saved_zero = YAML::LoadFile(copied_config.string());
+      ok &= expect(
+          saved_zero["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00" && !save->isEnabled(),
+          "Saving zero against a nonzero user default must persist an explicit game override");
+
+      mode->setCurrentIndex(mode->findData("program"));
+      const int zero_argument_count = user_default_window.logText().count("--stitch-frame-time=00:00:00");
+      qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
+      activate(start);
+      for (int i = 0;
+           i < 50 && user_default_window.logText().count("--stitch-frame-time=00:00:00") == zero_argument_count;
+           ++i) {
+        QApplication::processEvents();
+        QTest::qWait(10);
+      }
+      const YAML::Node played_zero = YAML::LoadFile(copied_config.string());
+      ok &= expect(
+          user_default_window.logText().count("--stitch-frame-time=00:00:00") == zero_argument_count + 1 &&
+              played_zero["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00",
+          "Play must pass and retain an explicit zero stitch frame when the lower-layer default is nonzero");
+      activate(stop);
+      qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+    }
+  }
+  if (original_home.isEmpty())
+    qunsetenv("HOME");
+  else
+    qputenv("HOME", original_home);
+  return ok;
 }
 
 bool test_window_close_stops_pipeline(HStreamWindow* window) {
@@ -5681,6 +5804,10 @@ int main(int argc, char** argv) {
 
   if (!test_game_setup(&window, source_root.path())) {
     std::cerr << "test_game_setup failed\n";
+    return 1;
+  }
+  if (!test_nonzero_user_stitch_frame_default(window.gameDirectoryText())) {
+    std::cerr << "test_nonzero_user_stitch_frame_default failed\n";
     return 1;
   }
   if (!test_calibration_progress_dialog(&window)) {

@@ -99,6 +99,20 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "playtracker_config_roles",
+    srcs = ["PlayTrackerConfigRoles.cpp"],
+    hdrs = ["PlayTrackerConfigRoles.h"],
+    copts = ["-std=c++17"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@yaml-cpp",
+    ],
+)
+
 cc_test(
     name = "baseline_config_test",
     srcs = ["BaselineConfigTest.cpp"],

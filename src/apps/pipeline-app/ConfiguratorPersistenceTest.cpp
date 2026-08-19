@@ -229,13 +229,16 @@ play-tracker:
         bundled_baseline->values, YAML::Node(YAML::NodeType::Map), one_box);
     ok &= expect(
         reordered.ok() && (*reordered)["play-tracker"]["live-boxes"].size() == 3 &&
-            (*reordered)["play-tracker"]["live-boxes"][0]["sticky-translation-gaussian-mult"].as<double>() == 5.0 &&
+            (*reordered)["play-tracker"]["live-boxes"][0]["name"].as<std::string>() == "current_roi" &&
+            (*reordered)["play-tracker"]["live-boxes"][0]["preserve-fast"].as<int>() == 1 &&
             (*reordered)["play-tracker"]["live-boxes"][1]["preserve-extra"].as<bool>() &&
             (*reordered)["play-tracker"]["live-boxes"][1]["time-to-dest-speed-limit-frames"].as<int>() == 20 &&
+            (*reordered)["play-tracker"]["live-boxes"][2]["name"].as<std::string>() == "current_roi_aspect" &&
+            (*reordered)["play-tracker"]["live-boxes"][2]["sticky-translation-gaussian-mult"].as<double>() == 5.0 &&
             one_box_effective.ok() && (*one_box_effective)["play-tracker"]["live-boxes"].size() == 1 &&
             (*one_box_effective)["play-tracker"]["live-boxes"][0]["sticky-translation-gaussian-mult"].as<double>() ==
                 5.0,
-        "Baseline fill must map the named follower, preserve additional boxes, and retain one-box compatibility");
+        "Baseline fill must normalize native roles, preserve additional boxes, and retain one-box compatibility");
 
     YAML::Node malformed_effective = YAML::Clone(bundled_baseline->values);
     YAML::Node malformed_explicit(YAML::NodeType::Map);
@@ -270,11 +273,12 @@ play-tracker:
 
   const fs::path baseline_root = root / "baseline";
   fs::create_directories(baseline_root);
-  std::ofstream(baseline_root / "baseline.yaml") << "pipeline:\n"
-                                                 << "  layered-value: baseline\n"
-                                                 << "  baseline-only: yes\n"
-                                                 << "stitching:\n"
-                                                 << "  stitch_frame_time: 00:00:07\n";
+  YAML::Node test_baseline =
+      bundled_baseline.ok() ? YAML::Clone(bundled_baseline->values) : YAML::Node(YAML::NodeType::Map);
+  test_baseline["pipeline"]["layered-value"] = "baseline";
+  test_baseline["pipeline"]["baseline-only"] = "yes";
+  test_baseline["stitching"]["stitch_frame_time"] = "00:00:07";
+  std::ofstream(baseline_root / "baseline.yaml") << YAML::Dump(test_baseline) << '\n';
   YAML::Node user_overlay = first_user_config.ok() ? YAML::Clone(*first_user_config) : YAML::Node(YAML::NodeType::Map);
   user_overlay["pipeline"]["layered-value"] = "user";
   user_overlay["pipeline"]["user-only"] = "yes";
@@ -282,6 +286,187 @@ play-tracker:
   user_overlay[hm::user_config::kPathsKey][hm::user_config::kGameRootKey] = games.string();
   user_overlay[hm::user_config::kPathsKey][hm::user_config::kOutputRootKey] = (root / "configured-output").string();
   std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
+
+  const fs::path mapping_structure_path = root / "mapping-structure.yaml";
+  YAML::Node mapping_structure(YAML::NodeType::Map);
+  mapping_structure["hmstitcher"] = YAML::Node(YAML::NodeType::Map);
+  mapping_structure["hmplaycropper"] = YAML::Node(YAML::NodeType::Map);
+  mapping_structure["ds-playtracker"] = YAML::Node(YAML::NodeType::Map);
+  mapping_structure["sink0"]["type"] = 3; // NV_DS_SINK_ENCODE_FILE
+  std::ofstream(mapping_structure_path) << YAML::Dump(mapping_structure) << '\n';
+
+  fs::create_directories(games / "mapping-defaults");
+  hm::Configurator mapping_defaults("mapping-defaults", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_defaults_loaded = mapping_defaults.configure().ok() &&
+      mapping_defaults.underlay_config("pipeline", mapping_structure_path.string());
+  const absl::Status mapping_defaults_status = mapping_defaults_loaded
+      ? mapping_defaults.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping defaults fixture did not load");
+  const absl::Status mapping_defaults_second_status = mapping_defaults.apply_supported_baseline_mappings();
+  const auto mapping_defaults_rotation =
+      hm::configurator_internal::effective_stitch_output_rotation(mapping_defaults.config());
+  const YAML::Node mapped_defaults = mapping_defaults.config()["pipeline"];
+  ok &= expect(
+      mapping_defaults_status.ok() && mapping_defaults_second_status.ok() && mapping_defaults_rotation.ok() &&
+          *mapping_defaults_rotation == 0.0 && mapped_defaults["hmstitcher"]["enable"].as<int>() == 1 &&
+          mapped_defaults["hmstitcher"]["minimize-blend"].as<int>() == 0 &&
+          mapped_defaults["hmstitcher"]["stitch-compute-precision"].as<std::string>() == "fp32" &&
+          mapped_defaults["hmplaycropper"]["no-crop"].as<int>() == 0 &&
+          mapped_defaults["hmplaycropper"]["plot-play-tracking"].as<int>() == 0 &&
+          mapped_defaults["hmplaycropper"]["plot-player-tracking"].as<int>() == 0 &&
+          mapped_defaults["sink0"]["bitrate"].as<int>() == 55000000 &&
+          !mapped_defaults["sink0"]["output-file"].IsDefined() && !mapped_defaults["sink0"]["width"].IsDefined() &&
+          !mapped_defaults["sink0"]["height"].IsDefined() &&
+          mapped_defaults["hmplaycropper"]["fixed-edge-rotation-angle"].as<double>() == 10.0 &&
+          mapped_defaults["ds-playtracker"]["fixed-edge-rotation-angle"].as<double>() == 10.0 &&
+          mapped_defaults["hmplaycropper"]["scoreboard-projected-width"].as<std::string>() == "%10" &&
+          mapped_defaults["hmplaycropper"]["scoreboard-projected-height"].as<std::string>() == "%20" &&
+          mapped_defaults["hmplaycropper"]["scoreboard-scale"].as<double>() == 1.0 &&
+          !mapped_defaults["hmplaycropper"]["scoreboard-perspective-polygon"].IsDefined(),
+      "Every supported non-tracker native default must be filled from the bundled canonical baseline");
+
+  const fs::path structural_custom_path = root / "mapping-structural-custom.yaml";
+  YAML::Node structural_custom = YAML::Clone(mapping_structure);
+  structural_custom["hmstitcher"]["enable"] = 0;
+  structural_custom["hmstitcher"]["minimize-blend"] = 1;
+  structural_custom["hmstitcher"]["stitch-compute-precision"] = "fp16";
+  structural_custom["hmstitcher"]["post_stitch_rotate_degrees"] = 37.0;
+  structural_custom["hmplaycropper"]["no-crop"] = 1;
+  structural_custom["hmplaycropper"]["plot-play-tracking"] = 1;
+  structural_custom["hmplaycropper"]["plot-player-tracking"] = 1;
+  structural_custom["hmplaycropper"]["fixed-edge-rotation-angle"] = 12.0;
+  structural_custom["hmplaycropper"]["scoreboard-projected-width"] = "%77";
+  structural_custom["sink0"]["bitrate"] = 999999;
+  structural_custom["sink0"]["output-file"] = "structural.mkv";
+  structural_custom["sink0"]["width"] = 999;
+  std::ofstream(structural_custom_path) << YAML::Dump(structural_custom) << '\n';
+  fs::create_directories(games / "mapping-structural");
+  hm::Configurator mapping_structural(
+      "mapping-structural", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_structural_loaded = mapping_structural.configure().ok() &&
+      mapping_structural.underlay_config("pipeline", structural_custom_path.string());
+  const absl::Status mapping_structural_status = mapping_structural_loaded
+      ? mapping_structural.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping structural fixture did not load");
+  const YAML::Node mapped_structural = mapping_structural.config()["pipeline"];
+  ok &= expect(
+      mapping_structural_status.ok() && mapped_structural["hmstitcher"]["enable"].as<int>() == 0 &&
+          mapped_structural["hmstitcher"]["minimize-blend"].as<int>() == 1 &&
+          mapped_structural["hmstitcher"]["stitch-compute-precision"].as<std::string>() == "fp16" &&
+          mapped_structural["hmstitcher"]["post-stitch-rotate-degrees"].as<double>() == 37.0 &&
+          mapped_structural["hmplaycropper"]["no-crop"].as<int>() == 1 &&
+          mapped_structural["hmplaycropper"]["plot-play-tracking"].as<int>() == 1 &&
+          mapped_structural["hmplaycropper"]["plot-player-tracking"].as<int>() == 1 &&
+          mapped_structural["hmplaycropper"]["fixed-edge-rotation-angle"].as<double>() == 12.0 &&
+          mapped_structural["hmplaycropper"]["scoreboard-projected-width"].as<std::string>() == "%77" &&
+          mapped_structural["sink0"]["bitrate"].as<int>() == 999999 &&
+          mapped_structural["sink0"]["output-file"].as<std::string>() == "structural.mkv" &&
+          mapped_structural["sink0"]["width"].as<int>() == 999,
+      "Bundled defaults must fill omissions without replacing custom structural native values");
+
+  const fs::path canonical_game_dir = games / "mapping-canonical";
+  fs::create_directories(canonical_game_dir);
+  YAML::Node canonical_overrides(YAML::NodeType::Map);
+  canonical_overrides["stitching"]["enabled"] = false;
+  canonical_overrides["stitching"]["minimize_blend"] = true;
+  canonical_overrides["stitching"]["dtype"] = "float16";
+  canonical_overrides["stitching"]["post_stitch_rotate_degrees"] = 15.0;
+  canonical_overrides["rink"]["camera"]["crop_image"] = false;
+  canonical_overrides["rink"]["camera"]["fixed_edge_rotation_angle"].push_back(21.0);
+  canonical_overrides["rink"]["camera"]["fixed_edge_rotation_angle"].push_back(22.0);
+  canonical_overrides["rink"]["scoreboard"]["projected_width"] = "%11";
+  canonical_overrides["rink"]["scoreboard"]["projected_height"] = "%22";
+  canonical_overrides["rink"]["scoreboard"]["scoreboard_scale"] = 1.25;
+  for (const auto& point : std::vector<std::pair<int, int>>{{1, 2}, {3, 4}, {5, 6}, {7, 8}}) {
+    YAML::Node coordinates(YAML::NodeType::Sequence);
+    coordinates.push_back(point.first);
+    coordinates.push_back(point.second);
+    canonical_overrides["rink"]["scoreboard"]["perspective_polygon"].push_back(coordinates);
+  }
+  canonical_overrides["plot"]["plot_moving_boxes"] = true;
+  canonical_overrides["plot"]["plot_individual_player_tracking"] = true;
+  canonical_overrides["video_out"]["bit_rate"] = 123456;
+  canonical_overrides["video_out"]["output_video_path"] = "/tmp/canonical.mkv";
+  canonical_overrides["video_out"]["output_width"] = 1280;
+  canonical_overrides["video_out"]["output_height"] = 720;
+  std::ofstream(canonical_game_dir / "config.yaml") << YAML::Dump(canonical_overrides) << '\n';
+  hm::Configurator mapping_canonical("mapping-canonical", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_canonical_loaded = mapping_canonical.configure().ok() &&
+      mapping_canonical.underlay_config("pipeline", structural_custom_path.string());
+  const absl::Status mapping_canonical_status = mapping_canonical_loaded
+      ? mapping_canonical.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping canonical fixture did not load");
+  const YAML::Node mapped_canonical = mapping_canonical.config()["pipeline"];
+  ok &= expect(
+      mapping_canonical_status.ok() && mapped_canonical["hmstitcher"]["enable"].as<int>() == 0 &&
+          mapped_canonical["hmstitcher"]["minimize-blend"].as<int>() == 1 &&
+          mapped_canonical["hmstitcher"]["stitch-compute-precision"].as<std::string>() == "fp16" &&
+          mapped_canonical["hmstitcher"]["post-stitch-rotate-degrees"].as<double>() == 15.0 &&
+          mapped_canonical["hmplaycropper"]["no-crop"].as<int>() == 1 &&
+          mapped_canonical["hmplaycropper"]["plot-play-tracking"].as<int>() == 1 &&
+          mapped_canonical["hmplaycropper"]["plot-player-tracking"].as<int>() == 1 &&
+          !mapped_canonical["hmplaycropper"]["fixed-edge-rotation-angle"].IsDefined() &&
+          mapped_canonical["hmplaycropper"]["fixed-edge-rotation-angle-left"].as<double>() == 21.0 &&
+          mapped_canonical["hmplaycropper"]["fixed-edge-rotation-angle-right"].as<double>() == 22.0 &&
+          mapped_canonical["ds-playtracker"]["fixed-edge-rotation-angle-left"].as<double>() == 21.0 &&
+          mapped_canonical["ds-playtracker"]["fixed-edge-rotation-angle-right"].as<double>() == 22.0 &&
+          mapped_canonical["hmplaycropper"]["scoreboard-projected-width"].as<std::string>() == "%11" &&
+          mapped_canonical["hmplaycropper"]["scoreboard-projected-height"].as<std::string>() == "%22" &&
+          mapped_canonical["hmplaycropper"]["scoreboard-scale"].as<double>() == 1.25 &&
+          mapped_canonical["hmplaycropper"]["scoreboard-perspective-polygon"].as<std::string>() == "1,2,3,4,5,6,7,8" &&
+          mapped_canonical["sink0"]["bitrate"].as<int>() == 123456 &&
+          mapped_canonical["sink0"]["output-file"].as<std::string>() == "/tmp/canonical.mkv" &&
+          mapped_canonical["sink0"]["width"].as<int>() == 1280 && mapped_canonical["sink0"]["height"].as<int>() == 720,
+      "Explicit canonical game values must replace lower-ranked structural native values for every supported mapping");
+
+  ok &= expect(
+      mapping_canonical.apply_config_item("pipeline.hmstitcher.enable", "1").ok() &&
+          mapping_canonical.apply_supported_baseline_mappings().ok() &&
+          mapping_canonical.config()["pipeline"]["hmstitcher"]["enable"].as<int>() == 1 &&
+          mapping_canonical.apply_config_item("stitching.enabled", "false").ok() &&
+          mapping_canonical.apply_supported_baseline_mappings().ok() &&
+          mapping_canonical.config()["pipeline"]["hmstitcher"]["enable"].as<int>() == 1,
+      "A higher-ranked direct native value must win, and direct native must win a same-rank canonical tie");
+
+  const fs::path native_game_dir = games / "mapping-native-precedence";
+  fs::create_directories(native_game_dir);
+  YAML::Node native_game_override(YAML::NodeType::Map);
+  native_game_override["pipeline"]["hmstitcher"]["enable"] = 1;
+  std::ofstream(native_game_dir / "config.yaml") << YAML::Dump(native_game_override) << '\n';
+  hm::Configurator mapping_native_precedence(
+      "mapping-native-precedence", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_native_precedence_loaded = mapping_native_precedence.configure().ok() &&
+      mapping_native_precedence.underlay_config("pipeline", mapping_structure_path.string()) &&
+      mapping_native_precedence.apply_config_item("stitching.enabled", "false").ok();
+  const absl::Status mapping_native_precedence_status = mapping_native_precedence_loaded
+      ? mapping_native_precedence.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping native precedence fixture did not load");
+  ok &= expect(
+      mapping_native_precedence_status.ok() &&
+          mapping_native_precedence.config()["pipeline"]["hmstitcher"]["enable"].as<int>() == 0,
+      "A higher-ranked canonical CLI value must replace a lower-ranked direct native game value");
+
+  const fs::path clear_game_dir = games / "mapping-explicit-clear";
+  fs::create_directories(clear_game_dir);
+  YAML::Node explicit_clears(YAML::NodeType::Map);
+  explicit_clears["video_out"]["output_video_path"] = YAML::Node(YAML::NodeType::Null);
+  explicit_clears["video_out"]["output_width"] = "auto";
+  explicit_clears["video_out"]["output_height"] = YAML::Node(YAML::NodeType::Null);
+  explicit_clears["rink"]["scoreboard"]["perspective_polygon"] = YAML::Node(YAML::NodeType::Null);
+  std::ofstream(clear_game_dir / "config.yaml") << YAML::Dump(explicit_clears) << '\n';
+  hm::Configurator mapping_explicit_clear(
+      "mapping-explicit-clear", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_explicit_clear_loaded = mapping_explicit_clear.configure().ok() &&
+      mapping_explicit_clear.underlay_config("pipeline", structural_custom_path.string());
+  const absl::Status mapping_explicit_clear_status = mapping_explicit_clear_loaded
+      ? mapping_explicit_clear.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping explicit clear fixture did not load");
+  const YAML::Node mapped_clear = mapping_explicit_clear.config()["pipeline"];
+  ok &= expect(
+      mapping_explicit_clear_status.ok() && !mapped_clear["sink0"]["output-file"].IsDefined() &&
+          !mapped_clear["sink0"]["width"].IsDefined() && !mapped_clear["sink0"]["height"].IsDefined() &&
+          !mapped_clear["hmplaycropper"]["scoreboard-perspective-polygon"].IsDefined(),
+      "Explicit canonical null/auto values must clear lower-ranked native output and scoreboard fields");
 
   const fs::path no_home_games = root / "no-home-games";
   const fs::path no_home_output = root / "no-home-output";
@@ -508,15 +693,17 @@ play-tracker:
   auto after_fractional_override = hm::stitching::load_game_config_file(stitch_override_dir / "config.yaml");
   ok &= expect(
       stitch_override_loaded.ok() && zero_override_status.ok() && after_zero_override.ok() &&
-          after_zero_override->has_value() && !(**after_zero_override)["stitching"]["stitch_frame_time"] &&
+          after_zero_override->has_value() &&
+          (**after_zero_override)["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00" &&
           stitch_override_reloaded_config.ok() &&
-          (*stitch_override_reloaded_config)["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:08" &&
-          !hm::get_node(stitch_override_reloaded.game_private_config(), "stitching.stitch_frame_time").has_value() &&
+          (*stitch_override_reloaded_config)["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00" &&
+          hm::get_node(stitch_override_reloaded.game_private_config(), "stitching.stitch_frame_time").has_value() &&
           (**after_zero_override)["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() ==
               "stitch-override-a" &&
           fractional_override_status.ok() && after_fractional_override.ok() && after_fractional_override->has_value() &&
           (**after_fractional_override)["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00.500",
-      "Runtime stitch-frame overrides must remove zero, mask lower config layers, persist nonzero, and preserve the "
+      "Runtime stitch-frame overrides must persist zero against a nonzero lower layer, persist nonzero, and preserve "
+      "the "
       "pending generation owner");
 
   YAML::Node source_uri_spellings(YAML::NodeType::Map);

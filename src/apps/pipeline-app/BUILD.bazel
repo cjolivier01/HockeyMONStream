@@ -34,6 +34,7 @@ PIPELINE_APP_DEPS = [
     "//src/libs/common:utils",
     "//src/libs/common:fs",
     "//src/libs/common:baseline_config",
+    "//src/libs/common:playtracker_config_roles",
     "//src/libs/common:user_config",
     "//src/libs/stitching",
     "//src/libs/wireless:stream_control",
@@ -96,9 +97,11 @@ cc_test(
     args = [
         "$(location :hstream-cli)",
         "$(location //configs:ds_hockey_configure_stitching.yaml)",
+        "$(location //configs:baseline.yaml)",
     ],
     data = [
         ":hstream-cli",
+        "//configs:baseline.yaml",
         "//configs:ds_hockey_configure_stitching.yaml",
     ],
 )

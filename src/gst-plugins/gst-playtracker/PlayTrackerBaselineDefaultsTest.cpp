@@ -98,18 +98,61 @@ live-boxes:
           follower.cancel_stop_hysteresis_frames == 2 && follower.stop_delay_cooldown_frames == 2 &&
           follower.post_nonstop_stop_delay_count == 6,
       "Follower braking defaults should be parsed from the materialized baseline");
+
+  YAML::Node reordered_yaml = YAML::Clone(yaml);
+  YAML::Node reordered_boxes(YAML::NodeType::Sequence);
+  YAML::Node reordered_fast = YAML::Clone(yaml["live-boxes"][0]);
+  reordered_fast["stop-translation-on-dir-change-delay"] = 11;
+  YAML::Node reordered_follower = YAML::Clone(yaml["live-boxes"][1]);
+  reordered_follower["stop-translation-on-dir-change-delay"] = 22;
+  YAML::Node additional_box = YAML::Clone(yaml["live-boxes"][0]);
+  additional_box["name"] = "operator_extra";
+  additional_box["stop-translation-on-dir-change-delay"] = 33;
+  reordered_boxes.push_back(reordered_follower);
+  reordered_boxes.push_back(additional_box);
+  reordered_boxes.push_back(reordered_fast);
+  reordered_yaml["live-boxes"] = reordered_boxes;
+  const hm::play_tracker::PlayTrackerConfig reordered_config =
+      gst_hm_playtracker::create_play_tracker_config(hm::BBox(0, 0, 2000, 1000), reordered_yaml);
+  ok &= expect(
+      reordered_config.living_boxes.size() == 3 &&
+          reordered_config.living_boxes[0].stop_translation_on_dir_change_delay == 11 &&
+          reordered_config.living_boxes[1].stop_translation_on_dir_change_delay == 33 &&
+          reordered_config.living_boxes[2].stop_translation_on_dir_change_delay == 22 &&
+          near(reordered_config.living_boxes[2].min_height, 300.0f),
+      "Native tracker construction must normalize fast first and follower last while retaining additional boxes");
+
+  YAML::Node one_box_yaml = YAML::Clone(yaml);
+  YAML::Node one_box_sequence(YAML::NodeType::Sequence);
+  YAML::Node one_box = YAML::Clone(yaml["live-boxes"][1]);
+  one_box["name"] = "operator_only";
+  one_box["stop-translation-on-dir-change-delay"] = 44;
+  one_box_sequence.push_back(one_box);
+  one_box_yaml["live-boxes"] = one_box_sequence;
+  const hm::play_tracker::PlayTrackerConfig one_box_config =
+      gst_hm_playtracker::create_play_tracker_config(hm::BBox(0, 0, 2000, 1000), one_box_yaml);
+  ok &= expect(
+      one_box_config.living_boxes.size() == 1 &&
+          one_box_config.living_boxes[0].stop_translation_on_dir_change_delay == 44 &&
+          near(one_box_config.living_boxes[0].min_height, 300.0f),
+      "A native one-box tracker config must retain one box and use it for both fast and follower roles");
+
   const std::filesystem::path validation_path = std::filesystem::temp_directory_path() /
       ("playtracker-baseline-validation-" + std::to_string(::getpid()) + ".yaml");
   YAML::Node document(YAML::NodeType::Map);
   document["play-tracker"] = YAML::Clone(yaml);
   std::ofstream(validation_path) << YAML::Dump(document) << '\n';
   const absl::Status valid_status = DsPlayTrackerValidateConfigFile(validation_path.string());
+  document["play-tracker"] = YAML::Clone(one_box_yaml);
+  std::ofstream(validation_path) << YAML::Dump(document) << '\n';
+  const absl::Status one_box_status = DsPlayTrackerValidateConfigFile(validation_path.string());
+  document["play-tracker"] = YAML::Clone(yaml);
   document["play-tracker"]["no-wide-start"] = "not-a-boolean";
   std::ofstream(validation_path) << YAML::Dump(document) << '\n';
   const absl::Status malformed_status = DsPlayTrackerValidateConfigFile(validation_path.string());
   std::filesystem::remove(validation_path);
   ok &= expect(
-      valid_status.ok() && !malformed_status.ok(),
-      "Native validation must require and type-check every baseline-backed tracker field");
+      valid_status.ok() && one_box_status.ok() && !malformed_status.ok(),
+      "Native validation must accept one-box compatibility and type-check every baseline-backed tracker field");
   return ok ? 0 : 1;
 }

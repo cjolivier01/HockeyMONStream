@@ -6,6 +6,7 @@
 #include "hockeymom/csrc/play_tracker/TranslatingBox.h"
 #include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 #include "hstream/src/libs/common/ConfigYaml.h"
+#include "hstream/src/libs/common/PlayTrackerConfigRoles.h"
 #include "hstream/src/libs/common/PlotContext.h"
 #include "hstream/src/libs/common/Status.h"
 
@@ -312,8 +313,11 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
 
   if (yaml["live-boxes"]) {
     YAML::Node live_boxes = yaml["live-boxes"];
-    // Iterate over the list
-    for (const auto& box_yaml : live_boxes) {
+    const auto normalized_order = hm::normalized_playtracker_live_box_order(live_boxes);
+    if (!normalized_order.ok())
+      throw std::invalid_argument(normalized_order.status().ToString());
+    for (const size_t index : *normalized_order) {
+      const YAML::Node box_yaml = live_boxes[index];
       live_box_yamls.emplace_back(box_yaml);
       config.living_boxes.emplace_back(create_all_living_box_config(arena_box, box_yaml));
     }
@@ -366,7 +370,7 @@ absl::Status validate_runtime_tuning_target(
   if (tuning.apply_to_fast_box && box_count < 1) {
     return absl::FailedPreconditionError("playtracker runtime tuning requires a fast live box");
   }
-  if (tuning.apply_to_follower_box && box_count < 2) {
+  if (tuning.apply_to_follower_box && box_count < 1) {
     return absl::FailedPreconditionError("playtracker runtime tuning requires a follower live box");
   }
   if (tracker_context.base_play_tracker_config.living_boxes.size() != box_count) {
@@ -401,7 +405,8 @@ absl::Status apply_runtime_tuning_to_tracker(
   }
   const size_t box_count = tracker_context->play_tracker_config.living_boxes.size();
   for (size_t index = 0; index < box_count; ++index) {
-    const bool selected = (index == 0 && tuning.apply_to_fast_box) || (index == 1 && tuning.apply_to_follower_box);
+    const bool selected =
+        (index == 0 && tuning.apply_to_fast_box) || (index + 1 == box_count && tuning.apply_to_follower_box);
     if (!selected) {
       continue;
     }
@@ -824,12 +829,11 @@ absl::Status DsPlayTrackerValidateConfigFile(const std::string& config_file) {
          }) {
       HM_RETURN_IF_ERROR(require_number(play_tracker, key, "play-tracker"));
     }
-    size_t follower_index = live_boxes.size() - 1;
-    bool named_follower_found = false;
+    const auto roles = hm::resolve_playtracker_live_box_roles(live_boxes);
+    if (!roles.ok())
+      return roles.status();
     for (size_t index = 0; index < live_boxes.size(); ++index) {
       const YAML::Node box = live_boxes[index];
-      if (!box.IsMap())
-        return absl::InvalidArgumentError("playtracker live-box entries must be maps");
       const std::string context = absl::StrCat("play-tracker.live-boxes[", index, "]");
       for (const char* key : {
                "time-to-dest-speed-limit-frames",
@@ -847,16 +851,9 @@ absl::Status DsPlayTrackerValidateConfigFile(const std::string& config_file) {
         HM_RETURN_IF_ERROR(require_number(box, key, context.c_str()));
       }
       HM_RETURN_IF_ERROR(require_bool(box, "resizing-cancel-stop-on-opposite-dir", context.c_str()));
-      const YAML::Node name = box["name"];
-      if (name && name.IsScalar() && name.as<std::string>() == "current_roi_aspect") {
-        if (named_follower_found)
-          return absl::InvalidArgumentError("playtracker has duplicate current_roi_aspect live-boxes");
-        named_follower_found = true;
-        follower_index = index;
-      }
     }
-    const YAML::Node follower = live_boxes[follower_index];
-    const std::string follower_context = absl::StrCat("play-tracker.live-boxes[", follower_index, "]");
+    const YAML::Node follower = live_boxes[roles->follower_index];
+    const std::string follower_context = absl::StrCat("play-tracker.live-boxes[", roles->follower_index, "]");
     for (const char* key : {
              "stop-translation-on-dir-change-delay",
              "cancel-stop-hysteresis-frames",
@@ -924,7 +921,7 @@ absl::StatusOr<DsPlayTrackerRuntimeTuning> DsPlayTrackerLoadRuntimeTuning(const 
     if (apply_to_fast && live_box_count < 1) {
       return absl::FailedPreconditionError("playtracker runtime tuning requires a fast live box");
     }
-    if (apply_to_follower && live_box_count < 2) {
+    if (apply_to_follower && live_box_count < 1) {
       return absl::FailedPreconditionError("playtracker runtime tuning requires a follower live box");
     }
     return DsPlayTrackerRuntimeTuning{

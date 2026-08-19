@@ -74,6 +74,10 @@ class Configurator {
 
   absl::Status apply_config_item(const std::string& key, const std::string& value);
 
+  // Translate canonical baseline/user/game/CLI settings into the native
+  // pipeline properties that currently implement those features.
+  absl::Status apply_supported_baseline_mappings();
+
   absl::StatusOr<std::optional<YAML::Node>> load_private_config();
   absl::Status save_private_config(
       const YAML::Node& private_config,
@@ -138,6 +142,8 @@ class Configurator {
  private:
   absl::Status ensure_user_config_snapshot();
   std::filesystem::path resolved_game_dir();
+  void record_explicit_overlay(const YAML::Node& overlay, const std::string& prefix, int rank);
+  int explicit_value_rank(const std::string& path) const;
 
   // Refactoring helpers to keep complete_configuration() readable
   void apply_gpu_override(YAML::Node& pipeline);
@@ -146,14 +152,14 @@ class Configurator {
       const std::filesystem::path& game_dir,
       bool force,
       bool& has_hmstitcher);
-  void map_common_config_keys();
+  absl::Status map_common_config_keys();
   absl::Status materialize_playtracker_config(
       YAML::Node& pipeline,
       const std::filesystem::path& game_dir,
       const std::filesystem::path& pipeline_config_dir);
   absl::Status invalidate_rotation_dependent_cache_if_needed(const std::filesystem::path& game_dir);
   absl::Status invalidate_canvas_dependent_cache_if_needed(const std::filesystem::path& game_dir);
-  void apply_scoreboard_perspective(YAML::Node& pipeline);
+  absl::Status apply_scoreboard_perspective(YAML::Node& pipeline);
   absl::Status gather_stitching_videos(
       const std::filesystem::path& game_dir,
       bool force,
@@ -205,6 +211,13 @@ class Configurator {
   // Only user, game, and CLI overlays. App YAML files are structural
   // underlays and therefore are intentionally excluded from this tree.
   YAML::Node explicit_config_;
+  // Bundled baseline plus the user overlay, before per-game values. This is
+  // the lower layer used to decide whether a game must persist an explicit
+  // zero/nonzero override.
+  YAML::Node lower_layer_config_;
+  // Leaf-path provenance: user=1, game=2, CLI=3. Structural app YAML is not
+  // recorded, and bundled baseline is implicit rank 0.
+  std::map<std::string, int> explicit_value_ranks_;
   std::optional<YAML::Node> user_config_snapshot_;
   std::optional<std::filesystem::path> resolved_game_dir_;
   YAML::Node private_config_;

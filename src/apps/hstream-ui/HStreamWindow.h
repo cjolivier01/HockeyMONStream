@@ -450,6 +450,7 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, int> camera_defaults_;
   YAML::Node baseline_config_;
   QString baseline_config_root_;
+  QString default_stitch_frame_time_{"00:00:00"};
   std::map<QString, int> saved_camera_controls_;
   QString development_runtime_root_;
   QString development_pipeline_runner_;

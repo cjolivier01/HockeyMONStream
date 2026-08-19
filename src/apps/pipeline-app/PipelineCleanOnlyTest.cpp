@@ -10,8 +10,8 @@
 namespace fs = std::filesystem;
 
 int main(int argc, char** argv) {
-  if (argc != 3) {
-    std::cerr << "FAIL: expected hstream-cli and calibration config paths\n";
+  if (argc != 4) {
+    std::cerr << "FAIL: expected hstream-cli, calibration config, and baseline config paths\n";
     return 1;
   }
   std::string pattern = (fs::temp_directory_path() / "hstream-clean-only-test-XXXXXX").string();
@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
 
   const fs::path full_game = root / "games" / "clean-only-test";
   fs::create_directories(root / "config-root");
-  std::ofstream(root / "config-root" / "baseline.yaml") << "stitching:\n  post_stitch_rotate_degrees: null\n";
+  fs::copy_file(argv[3], root / "config-root" / "baseline.yaml");
   fs::create_directories(full_game);
   std::ofstream(full_game / "seam_file.png") << "generated artifact\n";
   const bool full_clean_ok =
