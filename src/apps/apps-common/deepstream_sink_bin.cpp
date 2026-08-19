@@ -34,6 +34,7 @@
 #include "deepstream_common.h"
 #include "deepstream_sinks.h"
 
+#include "hstream/src/libs/common/VideoBitrate.h"
 #include "hstream/src/libs/common/pipeline_utils.h" // For gst_element_request_pad_simple on jetson
 
 static std::atomic<guint> next_uid = 1;
@@ -62,6 +63,100 @@ namespace {
 
 constexpr guint kWebRtcPayloadType = 96;
 constexpr guint kDefaultWebRtcPort = 8080;
+
+struct FileEncoderBitrateScale {
+  GstElement* encoder{nullptr};
+  hm::BitratePerPixel bitrate_per_pixel;
+  NvDsEncoderType codec{NV_DS_ENCODER_H264};
+  NvDsEncHwSwType encoder_type{NV_DS_ENCODER_TYPE_HW};
+  uint64_t last_bitrate_bps{0};
+};
+
+GstPadProbeReturn update_file_encoder_bitrate_from_caps(GstPad*, GstPadProbeInfo* info, gpointer user_data) {
+  auto* scale = static_cast<FileEncoderBitrateScale*>(user_data);
+  if (!scale || (info->type & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) == 0) {
+    return GST_PAD_PROBE_OK;
+  }
+
+  GstEvent* event = gst_pad_probe_info_get_event(info);
+  if (!event || GST_EVENT_TYPE(event) != GST_EVENT_CAPS) {
+    return GST_PAD_PROBE_OK;
+  }
+
+  GstCaps* caps = nullptr;
+  gst_event_parse_caps(event, &caps);
+  const GstStructure* structure = caps && gst_caps_get_size(caps) > 0 ? gst_caps_get_structure(caps, 0) : nullptr;
+  gint width = 0;
+  gint height = 0;
+  if (!structure || !gst_structure_get_int(structure, "width", &width) ||
+      !gst_structure_get_int(structure, "height", &height) || width <= 0 || height <= 0) {
+    return GST_PAD_PROBE_OK;
+  }
+
+  const std::optional<uint64_t> scaled_bitrate =
+      hm::scale_bitrate(scale->bitrate_per_pixel, static_cast<uint64_t>(width), static_cast<uint64_t>(height));
+  if (!scaled_bitrate.has_value() || *scaled_bitrate == 0) {
+    GST_WARNING_OBJECT(scale->encoder, "Could not scale source bitrate for output caps %dx%d", width, height);
+    return GST_PAD_PROBE_OK;
+  }
+  if (*scaled_bitrate > G_MAXINT) {
+    GST_WARNING_OBJECT(
+        scale->encoder,
+        "Scaled bitrate %" G_GUINT64_FORMAT " exceeds the supported maximum %d; clamping",
+        *scaled_bitrate,
+        G_MAXINT);
+  }
+  const uint64_t bitrate_bps = std::min<uint64_t>(*scaled_bitrate, G_MAXINT);
+  if (bitrate_bps == scale->last_bitrate_bps) {
+    return GST_PAD_PROBE_OK;
+  }
+
+  if (scale->encoder_type == NV_DS_ENCODER_TYPE_SW && scale->codec != NV_DS_ENCODER_MPEG4) {
+    const guint bitrate_kbps = static_cast<guint>(std::max<uint64_t>(1, (bitrate_bps + 500) / 1000));
+    g_object_set(G_OBJECT(scale->encoder), "bitrate", bitrate_kbps, NULL);
+  } else {
+    g_object_set(G_OBJECT(scale->encoder), "bitrate", static_cast<guint>(bitrate_bps), NULL);
+  }
+  scale->last_bitrate_bps = bitrate_bps;
+  GST_INFO_OBJECT(
+      scale->encoder,
+      "Set resolution-scaled file bitrate to %" G_GUINT64_FORMAT " bps for %dx%d output",
+      bitrate_bps,
+      width,
+      height);
+  g_print("HSTREAM_ARCHIVE_BITRATE bitrate=%" G_GUINT64_FORMAT " width=%d height=%d\n", bitrate_bps, width, height);
+  std::fflush(stdout);
+  return GST_PAD_PROBE_OK;
+}
+
+void install_file_encoder_bitrate_scaling(const NvDsSinkEncoderConfig* config, GstElement* encoder) {
+  const hm::BitratePerPixel bitrate_per_pixel{
+      config->bitrate_per_pixel_numerator,
+      config->bitrate_per_pixel_denominator,
+  };
+  if (!bitrate_per_pixel.valid()) {
+    return;
+  }
+
+  GstPad* sink_pad = gst_element_get_static_pad(encoder, "sink");
+  if (!sink_pad) {
+    GST_WARNING_OBJECT(encoder, "Could not install resolution-scaled file bitrate handling");
+    return;
+  }
+
+  auto* scale = new FileEncoderBitrateScale{
+      encoder,
+      bitrate_per_pixel,
+      config->codec,
+      config->enc_type,
+      0,
+  };
+  gst_pad_add_probe(
+      sink_pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, update_file_encoder_bitrate_from_caps, scale, [](gpointer data) {
+        delete static_cast<FileEncoderBitrateScale*>(data);
+      });
+  gst_object_unref(sink_pad);
+}
 
 #ifndef IS_TEGRA
 bool use_xvideo_render_sink() {
@@ -1310,6 +1405,7 @@ static gboolean create_encode_file_bin(NvDsSinkEncoderConfig* config, NvDsSinkBi
       g_object_set(G_OBJECT(bin->encoder), "speed-preset", config->sw_preset, NULL);
     }
   }
+  install_file_encoder_bitrate_scaling(config, bin->encoder);
 
   switch (config->codec) {
     case NV_DS_ENCODER_H264:

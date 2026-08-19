@@ -17,6 +17,7 @@ cc_library(
         "Process.h",
         "RenderSet.h",
         "TempFile.h",
+        "VideoBitrate.h",
         "pipeline_utils.h",
     ],
     copts = [
@@ -92,6 +93,12 @@ cc_library(
         "@deepstream//:deepstream_lib",
         "@gstreamer",
     ],
+)
+
+cc_test(
+    name = "video_bitrate_test",
+    srcs = ["VideoBitrateTest.cpp"],
+    deps = [":utils"],
 )
 
 cc_test(

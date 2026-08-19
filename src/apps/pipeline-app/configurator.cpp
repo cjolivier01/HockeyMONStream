@@ -44,6 +44,7 @@
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/UserConfig.h"
+#include "hstream/src/libs/common/VideoBitrate.h"
 #include "hstream/src/libs/common/filesystem.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 #include "hstream/src/libs/common/utils.h"
@@ -67,6 +68,67 @@ constexpr const char* kEnableFlagField = "enable";
 
 constexpr const char* kDefaultOutputVideoName = "tracking_output.mkv";
 constexpr const char* kLegacyDefaultOutputName = "out.mkv";
+
+struct SourceBitrateReference {
+  std::string path;
+  uint64_t bitrate{0};
+  uint64_t width{0};
+  uint64_t height{0};
+  BitratePerPixel bitrate_per_pixel;
+};
+
+std::optional<SourceBitrateReference> select_source_bitrate_reference(
+    const std::vector<std::string>& source_video_paths) {
+  std::optional<SourceBitrateReference> selected;
+  std::unordered_set<std::string> visited;
+  for (const std::string& path : source_video_paths) {
+    const std::string normalized_path = fs::path(path).lexically_normal().string();
+    if (normalized_path.empty() || !visited.insert(normalized_path).second) {
+      continue;
+    }
+
+    const Videoinfo info = getVideoInfo(normalized_path);
+    if (info.video_bit_rate == 0 || info.width <= 0 || info.height <= 0) {
+      continue;
+    }
+    const uint64_t width = static_cast<uint64_t>(info.width);
+    const uint64_t height = static_cast<uint64_t>(info.height);
+    const uint64_t bitrate = static_cast<uint64_t>(info.video_bit_rate);
+    const std::optional<BitratePerPixel> bitrate_per_pixel = make_bitrate_per_pixel(bitrate, width, height);
+    if (!bitrate_per_pixel.has_value()) {
+      continue;
+    }
+
+    const uint64_t pixels = width * height;
+    const uint64_t selected_pixels = selected.has_value() ? selected->width * selected->height : 0;
+    if (!selected.has_value() || bitrate > selected->bitrate ||
+        (bitrate == selected->bitrate && pixels < selected_pixels)) {
+      selected = SourceBitrateReference{normalized_path, bitrate, width, height, *bitrate_per_pixel};
+    }
+  }
+  return selected;
+}
+
+std::optional<std::string> local_video_path_from_uri(const std::string& uri) {
+  if (uri.empty()) {
+    return std::nullopt;
+  }
+  if (!absl::StartsWith(uri, "file://")) {
+    return uri.find("://") == std::string::npos ? std::optional<std::string>(uri) : std::nullopt;
+  }
+
+  GError* error = nullptr;
+  gchar* filename = g_filename_from_uri(uri.c_str(), nullptr, &error);
+  if (error) {
+    g_error_free(error);
+  }
+  if (!filename) {
+    return uri.substr(std::strlen("file://"));
+  }
+  std::string path(filename);
+  g_free(filename);
+  return path;
+}
 
 absl::Status sync_parent_directory(const fs::path& path) {
   const int directory_fd = ::open(path.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -688,6 +750,35 @@ std::optional<YAML::Node> maybe_get_config_file(const YAML::Node& yaml_node, con
 }
 
 } // namespace
+
+std::vector<std::string> configurator_internal::enabled_source_video_uris(const YAML::Node& pipeline) {
+  std::vector<std::string> uris;
+  for (const auto& item : pipeline) {
+    const std::string key = item.first.as<std::string>();
+    if (!absl::StartsWith(key, "source") || !is_enabled(item.second)) {
+      continue;
+    }
+    const NvDsSourceType source_type = static_cast<NvDsSourceType>(get_node_value<int>(item.second, "type", 0));
+    if (source_type != NV_DS_SOURCE_URI && source_type != NV_DS_SOURCE_URI_MULTIPLE) {
+      continue;
+    }
+
+    const YAML::Node uri_list = item.second["uri-list"].IsDefined() ? item.second["uri-list"] : item.second["uri_list"];
+    if (uri_list.IsSequence()) {
+      for (const YAML::Node& uri : uri_list) {
+        uris.emplace_back(uri.as<std::string>());
+      }
+    } else if (uri_list.IsScalar()) {
+      for (const absl::string_view uri : absl::StrSplit(uri_list.as<std::string>(), ';', absl::SkipEmpty())) {
+        uris.emplace_back(uri.data(), uri.size());
+      }
+    }
+    if (item.second["uri"].IsScalar()) {
+      uris.emplace_back(item.second["uri"].as<std::string>());
+    }
+  }
+  return uris;
+}
 
 configurator_internal::ExplicitStitchingVideoSelection configurator_internal::select_explicit_stitching_videos(
     const YAML::Node& config,
@@ -1606,7 +1697,9 @@ void Configurator::configure_audio(
   }
 }
 
-absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) const {
+absl::Status Configurator::configure_encode_file_outputs(
+    YAML::Node& pipeline,
+    const std::vector<std::string>& source_video_paths) const {
   if (game_id_.empty()) {
     return absl::OkStatus();
   }
@@ -1699,6 +1792,25 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
     archive_outputs.push_back({sink_node, sink_id, codec, std::move(output_path)});
   }
 
+  const std::optional<SourceBitrateReference> bitrate_reference =
+      archive_outputs.empty() ? std::nullopt : select_source_bitrate_reference(source_video_paths);
+  if (!archive_outputs.empty() && !bitrate_reference.has_value()) {
+    g_printerr(
+        "Warning: source video bitrate metadata is unavailable; encode-file sinks will retain their configured "
+        "bitrate\n");
+  } else if (bitrate_reference.has_value()) {
+    g_print(
+        "HSTREAM_ARCHIVE_BITRATE_REFERENCE bitrate=%" G_GUINT64_FORMAT " width=%" G_GUINT64_FORMAT
+        " height=%" G_GUINT64_FORMAT " ratio=%" G_GUINT64_FORMAT "/%" G_GUINT64_FORMAT " source=%s\n",
+        bitrate_reference->bitrate,
+        bitrate_reference->width,
+        bitrate_reference->height,
+        bitrate_reference->bitrate_per_pixel.numerator,
+        bitrate_reference->bitrate_per_pixel.denominator,
+        bitrate_reference->path.c_str());
+    std::fflush(stdout);
+  }
+
   // Do not reserve, recover, or mutate any output until the complete sink set
   // has passed the duplicate-writer preflight above.
   for (ArchiveOutput& archive_output : archive_outputs) {
@@ -1706,6 +1818,13 @@ absl::Status Configurator::configure_encode_file_outputs(YAML::Node& pipeline) c
     const int sink_id = archive_output.sink_id;
     const int codec = archive_output.codec;
     fs::path output_path = archive_output.configured_path;
+
+    if (bitrate_reference.has_value()) {
+      sink_node["bitrate"] =
+          std::to_string(std::min<uint64_t>(bitrate_reference->bitrate, static_cast<uint64_t>(G_MAXINT)));
+      sink_node["bitrate-per-pixel-numerator"] = std::to_string(bitrate_reference->bitrate_per_pixel.numerator);
+      sink_node["bitrate-per-pixel-denominator"] = std::to_string(bitrate_reference->bitrate_per_pixel.denominator);
+    }
 
     const fs::path parent = output_path.parent_path();
     if (!parent.empty()) {
@@ -2323,7 +2442,24 @@ absl::Status Configurator::complete_configuration(
     pipeline["streammux"]["frame-num-reset-on-stream-reset"] = "0";
     pipeline["streammux"]["frame-num-reset-on-eos"] = "0";
   }
-  HM_RETURN_IF_ERROR(configure_encode_file_outputs(pipeline));
+  std::vector<std::string> source_video_paths;
+  source_video_paths.reserve(left_files.size() + right_files.size());
+  for (const std::string& path : left_files) {
+    source_video_paths.emplace_back(file_maybe_in_game_dir(path));
+  }
+  for (const std::string& path : right_files) {
+    source_video_paths.emplace_back(file_maybe_in_game_dir(path));
+  }
+  const auto append_source_uri = [this, &source_video_paths](const std::string& uri) {
+    const std::optional<std::string> path = local_video_path_from_uri(uri);
+    if (path.has_value() && !path->empty()) {
+      source_video_paths.emplace_back(file_maybe_in_game_dir(*path));
+    }
+  };
+  for (const std::string& uri : configurator_internal::enabled_source_video_uris(pipeline)) {
+    append_source_uri(uri);
+  }
+  HM_RETURN_IF_ERROR(configure_encode_file_outputs(pipeline, source_video_paths));
 
   if (show_render_sink) {
     HM_RETURN_IF_ERROR(ensure_render_sink_with_scale(pipeline, show_render_scale));

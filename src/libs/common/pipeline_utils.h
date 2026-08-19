@@ -47,7 +47,7 @@ struct Videoinfo {
   int height{0};
   double fps{0.0};
   size_t frame_count{0};
-  size_t video_bit_rate{55000000};
+  size_t video_bit_rate{0};
   // size_t audio_samples_per_second{0};
   // size_t num_audio_channels{0};
   // size_t num_audio_streams{0};

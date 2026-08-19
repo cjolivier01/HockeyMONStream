@@ -50,6 +50,7 @@ absl::Status claim_unique_archive_output_path(
     const std::string& sink_name);
 absl::StatusOr<std::vector<std::filesystem::path>> recover_stale_archive_work_files(
     const std::filesystem::path& configured_path);
+std::vector<std::string> enabled_source_video_uris(const YAML::Node& pipeline);
 
 } // namespace configurator_internal
 
@@ -162,7 +163,8 @@ class Configurator {
       const std::vector<std::string>& right_files,
       const YAML::Node& offsets,
       size_t& num_video_sources);
-  absl::Status configure_encode_file_outputs(YAML::Node& pipeline) const;
+  absl::Status configure_encode_file_outputs(YAML::Node& pipeline, const std::vector<std::string>& source_video_paths)
+      const;
   void log_enabled_bins(const YAML::Node& pipeline) const;
 
   std::string file_maybe_in_game_dir(const std::string& basename);
