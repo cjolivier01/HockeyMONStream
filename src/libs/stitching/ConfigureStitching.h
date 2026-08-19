@@ -39,10 +39,12 @@ absl::StatusOr<std::string> stitched_output_generation_id(
     double post_stitch_rotate_degrees);
 
 // Validates that a completion event describes the current Hugin artifacts and
-// configured post-stitch rotation without requiring a downstream rink mask.
+// calibration owner without requiring a downstream rink mask. The rotation in
+// the reported generation is the authoritative live hmstitcher value.
 absl::Status validate_stitched_output_generation(
     const std::string& game_dir,
-    const std::string& expected_output_generation);
+    const std::string& expected_output_generation,
+    const std::string& expected_invalidation_id = {});
 
 bool is_field_mask_configured(const std::string& game_dir, const std::string& expected_output_generation = {});
 

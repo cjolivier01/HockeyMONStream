@@ -1,8 +1,11 @@
 #include "src/apps/pipeline-app/StitchingCalibrationMode.h"
+#include "hstream/src/libs/assets/AssetManager.h"
 #include "hstream/src/libs/stitching/CalibrationCompletion.h"
 #include "src/apps/pipeline-app/StitcherOnePassConfig.h"
 
+#include <filesystem>
 #include <iostream>
+#include <set>
 #include <string>
 
 #include <yaml-cpp/yaml.h>
@@ -21,7 +24,7 @@ bool expect(bool condition, const char* message) {
 
 } // namespace
 
-int main() {
+int main(int argc, char* argv[]) {
   YAML::Node config = YAML::Load(R"yaml(
 pipeline:
   source0: {enable: 1}
@@ -92,6 +95,21 @@ pipeline:
            "message-converter",
        }) {
     ok &= expect(!enabled(pipeline, stage), (std::string("calibration must disable ") + stage).c_str());
+  }
+  ok &= expect(argc == 2, "test must receive the hockey application config");
+  if (argc == 2) {
+    auto assets = hm::assets::AssetManager::Discover({std::filesystem::path(argv[1])}, [](YAML::Node config) {
+      hm::pipeline_internal::configure_stitching_calibration_pipeline(config);
+    });
+    std::set<std::string> asset_names;
+    if (assets.ok()) {
+      for (const auto& asset : *assets)
+        asset_names.insert(asset.name);
+    }
+    ok &= expect(
+        assets.ok() && assets->size() == 2 && asset_names.count("ice-rink-mask2former-swin-s") == 1 &&
+            asset_names.count("aliked-lightglue-k2048") == 1,
+        "real calibration discovery must retain orientation/matching models and omit Program detector assets");
   }
   return ok ? 0 : 1;
 }

@@ -2475,6 +2475,10 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     for (size_t index = 0, count = g_strv_length(cfg_files_); index < count; ++index)
       asset_configs.emplace_back(cfg_files_[index]);
     if (stitching_calibration_only_) {
+      // Prune Program child configs before discovery. The two native assets
+      // declared directly by the hockey config remain intentional: LightGlue
+      // matches features, and the rink model is also used to orient cameras
+      // when calibration starts before the features stage.
       HM_RETURN_IF_ERROR(hm::assets::AssetManager::Ensure(asset_configs, [](YAML::Node config) {
         hm::pipeline_internal::configure_stitching_calibration_pipeline(config);
       }));
@@ -4373,9 +4377,10 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
             output_generation, active_invalidation_id, std::to_string(main_loop_generation_))
       : std::string();
   const bool generation_current = output_generation && *output_generation && !stitcher_config_path.empty() &&
-      (stitching_calibration_only_
-           ? hm::stitching::validate_stitched_output_generation(stitcher_config_path, output_generation).ok()
-           : hm::stitching::is_field_mask_configured(stitcher_config_path, output_generation));
+      (stitching_calibration_only_ ? hm::stitching::validate_stitched_output_generation(
+                                         stitcher_config_path, output_generation, active_invalidation_id)
+                                         .ok()
+                                   : hm::stitching::is_field_mask_configured(stitcher_config_path, output_generation));
   if (!generation_current || !calibration_scope || expected_scope != calibration_scope) {
     g_printerr("Ignoring stale stitching completion message for a non-current output generation\n");
     return TRUE;

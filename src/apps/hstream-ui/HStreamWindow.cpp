@@ -1214,12 +1214,17 @@ bool invalidate_stitching_calibration(YAML::Node& config, const char* stale_from
       : "";
   const bool previous_invalidated = calibration["artifacts_invalidated"] &&
       calibration["artifacts_invalidated"].IsScalar() && calibration["artifacts_invalidated"].as<bool>();
+  const std::string previous_rink_status = calibration["rink_mask_status"] && calibration["rink_mask_status"].IsScalar()
+      ? calibration["rink_mask_status"].as<std::string>()
+      : "";
   const bool had_invalidation_id = calibration["invalidation_id"] && calibration["invalidation_id"].IsScalar();
   calibration["status"] = "pending";
+  calibration["rink_mask_status"] = "pending";
   calibration["stale_from"] = stale_from;
   calibration["artifacts_invalidated"] = false;
   calibration.remove("invalidation_id");
-  return previous_status != "pending" || previous_stale != stale_from || previous_invalidated || had_invalidation_id;
+  return previous_status != "pending" || previous_stale != stale_from || previous_invalidated ||
+      previous_rink_status != "pending" || had_invalidation_id;
 }
 
 bool yaml_defined(YAML::Node node) {
@@ -2830,6 +2835,8 @@ bool HStreamWindow::saveStitchingCalibrationState(
 
   calibration["control_points"] = control_points;
   calibration["status"] = status.toStdString();
+  if (status == "pending")
+    calibration["rink_mask_status"] = "pending";
   if (!expected_invalidation_id.isEmpty())
     calibration["invalidation_id"] = expected_invalidation_id.toStdString();
   if (status == "complete") {
@@ -2962,6 +2969,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
     calibration["control_points"] = control_points;
     calibration["status"] = "pending";
+    calibration["rink_mask_status"] = "pending";
     calibration["stale_from"] = stale_from.toStdString();
     calibration["artifacts_invalidated"] = !(clean_all || clean_from_control_points);
     calibration["invalidation_id"] = active_calibration_invalidation_id_.toStdString();
@@ -3232,6 +3240,7 @@ bool HStreamWindow::beginObservedStitchingCalibration(const QString& reported_st
     active_calibration_start_stage_ = current_start_stage;
     calibration["control_points"] = active_calibration_control_points_;
     calibration["status"] = "pending";
+    calibration["rink_mask_status"] = "pending";
     calibration["stale_from"] = active_calibration_start_stage_.toStdString();
     calibration["artifacts_invalidated"] = true;
     const auto publish = publish_yaml_config(config_path, config);
@@ -6437,6 +6446,7 @@ bool HStreamWindow::applySavedControlConfig(
     YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
     calibration["control_points"] = stitchingCalibrationControlPoints();
     calibration["status"] = "pending";
+    calibration["rink_mask_status"] = "pending";
     calibration["stale_from"] = "input";
     calibration["artifacts_invalidated"] = false;
     calibration["invalidation_id"] = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();

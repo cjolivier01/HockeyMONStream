@@ -1411,7 +1411,8 @@ absl::StatusOr<YAML::Node> load_config_or_empty(const fs::path& config_path) {
 
 absl::Status validate_stitched_output_generation(
     const std::string& game_dir,
-    const std::string& expected_output_generation) {
+    const std::string& expected_output_generation,
+    const std::string& expected_invalidation_id) {
   if (game_dir.empty() || expected_output_generation.empty())
     return absl::InvalidArgumentError("A game directory and stitched-output generation are required");
 
@@ -1429,12 +1430,7 @@ absl::Status validate_stitched_output_generation(
   auto config = load_config_or_empty(root / "config.yaml");
   if (!config.ok())
     return config.status();
-  auto configured_generation = configured_output_generation(*config, *hugin_generation);
-  if (!configured_generation.ok())
-    return configured_generation.status();
-  if (*configured_generation != expected_output_generation)
-    return absl::AbortedError("Stitched output uses a stale post-stitch rotation");
-  return absl::OkStatus();
+  return validate_stitching_generation_owner(*config, expected_invalidation_id);
 }
 
 absl::StatusOr<cv::Mat> load_field_mask(const std::string& game_dir, const std::string& expected_output_generation) {
@@ -1622,6 +1618,7 @@ absl::Status save_rink_profile_locked(
     if (!expected_invalidation_id.empty()) {
       YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
       calibration["status"] = "complete";
+      calibration["rink_mask_status"] = "complete";
       calibration["invalidation_id"] = expected_invalidation_id;
       calibration.remove("stale_from");
       calibration.remove("artifacts_invalidated");

@@ -2319,6 +2319,7 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
       YAML::Node calibration = latest["hstream_ui"]["stitching_calibration"];
       calibration["control_points"] = control_points;
       calibration["status"] = "pending";
+      calibration["rink_mask_status"] = "pending";
       calibration["stale_from"] = "input";
       calibration["artifacts_invalidated"] = false;
       calibration["invalidation_id"] = invalidation_id;

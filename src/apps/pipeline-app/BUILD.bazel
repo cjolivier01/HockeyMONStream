@@ -219,8 +219,11 @@ cc_test(
         "StitchingCalibrationModeTest.cpp",
         "StitcherOnePassConfig.h",
     ],
+    args = ["$(location //configs:ds_hockey_app_config.yaml)"],
     copts = PIPELINE_APP_COPTS,
+    data = ["//configs:ds_hockey_app_config.yaml"],
     deps = [
+        "//src/libs/assets:asset_manager",
         "//src/libs/stitching",
         "@yaml-cpp",
     ],
