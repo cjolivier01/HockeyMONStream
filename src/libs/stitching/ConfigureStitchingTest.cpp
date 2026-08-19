@@ -419,7 +419,7 @@ bool expect_hard_seam_generation_requires_opt_in(const fs::path& tmpdir) {
   return true;
 }
 
-bool expect_cropped_enblend_seam_is_accepted(const fs::path& tmpdir) {
+bool expect_cropped_enblend_seam_is_normalized(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "cropped_enblend_seam";
   fs::remove_all(dir);
   fs::create_directories(dir);
@@ -436,8 +436,10 @@ bool expect_cropped_enblend_seam_is_accepted(const fs::path& tmpdir) {
   unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
   const auto status = hm::stitching::maybe_create_default_seam_file(dir.string());
   const cv::Mat preserved = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
-  if (!status.ok() || preserved.size() != seam.size()) {
-    std::cerr << "cropped enblend seam within the mapping canvas must be preserved: " << status << std::endl;
+  cv::Mat expected;
+  cv::copyMakeBorder(seam, expected, 0, 2, 0, 6, cv::BORDER_REPLICATE);
+  if (!status.ok() || preserved.size() != cv::Size(96, 32) || cv::norm(preserved, expected, cv::NORM_INF) != 0) {
+    std::cerr << "cropped enblend seam within the mapping canvas must be normalized: " << status << std::endl;
     return false;
   }
   return true;
@@ -499,7 +501,7 @@ int main() {
     finish(tmpdir, 12);
   }
 
-  if (!expect_cropped_enblend_seam_is_accepted(tmpdir)) {
+  if (!expect_cropped_enblend_seam_is_normalized(tmpdir)) {
     finish(tmpdir, 13);
   }
 

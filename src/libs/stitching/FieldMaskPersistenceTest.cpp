@@ -47,6 +47,9 @@ int main() {
        }) {
     cv::imwrite((root / name).string(), cv::Mat(24, 32, CV_32F, cv::Scalar(0.0f)));
   }
+  cv::Mat initial_seam(24, 32, CV_8U, cv::Scalar(0));
+  initial_seam.colRange(16, initial_seam.cols).setTo(255);
+  cv::imwrite((root / "seam_file.png").string(), initial_seam);
   auto initial_hugin_lock = hm::stitching::HuginProject::RecoverAndLock(root);
   ok &= expect(initial_hugin_lock.ok(), "generation test must lock initial Hugin artifacts");
   std::string initial_output_generation;
@@ -211,6 +214,19 @@ int main() {
     ok &= expect(
         hm::stitching::is_field_mask_configured(root.string()),
         "durably prepared rink publication must recover on the next owner");
+
+    const fs::path replacement_seam = root / "seam_file.replacement.png";
+    cv::Mat changed_seam(24, 32, CV_8U, cv::Scalar(255));
+    changed_seam.colRange(16, changed_seam.cols).setTo(0);
+    cv::imwrite(replacement_seam.string(), changed_seam);
+    fs::rename(replacement_seam, root / "seam_file.png");
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()),
+        "a seam-only replacement must invalidate a field mask generated from different stitched pixels");
+    ok &= expect(
+        hm::stitching::save_rink_profile(root.string(), profile).ok() &&
+            hm::stitching::is_field_mask_configured(root.string()),
+        "regenerating the profile must bind it to the replacement seam generation");
 
     const fs::path replacement_mapping = root / "mapping_0000_x.replacement.tif";
     cv::imwrite(replacement_mapping.string(), cv::Mat(24, 32, CV_32F, cv::Scalar(1.0f)));

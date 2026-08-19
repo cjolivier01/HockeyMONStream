@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -82,6 +83,41 @@ bool write_remap_pair(
   }
   return cv::imwrite((directory / (prefix + "_x.tif")).string(), x) &&
       cv::imwrite((directory / (prefix + "_y.tif")).string(), y);
+}
+
+uint32_t png_crc32(const unsigned char* data, size_t size) {
+  uint32_t crc = 0xffffffffU;
+  for (size_t index = 0; index < size; ++index) {
+    crc ^= data[index];
+    for (int bit = 0; bit < 8; ++bit)
+      crc = (crc >> 1) ^ (0xedb88320U & (0U - (crc & 1U)));
+  }
+  return crc ^ 0xffffffffU;
+}
+
+void append_big_endian_u32(std::vector<unsigned char>* output, uint32_t value) {
+  output->push_back(static_cast<unsigned char>(value >> 24));
+  output->push_back(static_cast<unsigned char>(value >> 16));
+  output->push_back(static_cast<unsigned char>(value >> 8));
+  output->push_back(static_cast<unsigned char>(value));
+}
+
+bool add_png_pixel_offset(const std::filesystem::path& path, int32_t x, int32_t y) {
+  std::ifstream input(path, std::ios::binary);
+  std::vector<unsigned char> png((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+  if (png.size() < 33 || std::string(png.begin() + 12, png.begin() + 16) != "IHDR")
+    return false;
+  std::vector<unsigned char> chunk;
+  append_big_endian_u32(&chunk, 9);
+  chunk.insert(chunk.end(), {'o', 'F', 'F', 's'});
+  append_big_endian_u32(&chunk, static_cast<uint32_t>(x));
+  append_big_endian_u32(&chunk, static_cast<uint32_t>(y));
+  chunk.push_back(0); // pixel units
+  append_big_endian_u32(&chunk, png_crc32(chunk.data() + 4, 13));
+  png.insert(png.begin() + 33, chunk.begin(), chunk.end());
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  output.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+  return output.good();
 }
 
 } // namespace
@@ -165,6 +201,8 @@ int main() {
   cv::Mat seam(30, 40, CV_8U, cv::Scalar(0));
   seam.colRange(20, 40).setTo(255);
   ok &= expect(cv::imwrite((fixtures / "seam_file.png").string(), seam), "fake seam must exist");
+  ok &= expect(
+      add_png_pixel_offset(fixtures / "seam_file.png", 1, 1), "fake cropped enblend seam must carry an oFFs origin");
   ok &= expect(
       cv::imwrite((fixtures / "panorama.tif").string(), cv::Mat(32, 42, CV_8UC3, cv::Scalar(1, 2, 3))),
       "fake panorama must exist");
@@ -299,9 +337,11 @@ int main() {
         optimizer_args.find("-n") == std::string::npos,
         "Hugin orchestration must not request script-only optimization");
     const cv::Mat published_seam = cv::imread((root / "game" / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+    cv::Mat expected_seam;
+    cv::copyMakeBorder(seam, expected_seam, 1, 1, 1, 1, cv::BORDER_REPLICATE);
     ok &= expect(
-        published_seam.size() == cv::Size(40, 30),
-        "Hugin validation must preserve an enblend mask cropped within hm-cupano's 42x32 mapping canvas");
+        published_seam.size() == cv::Size(42, 32) && cv::norm(published_seam, expected_seam, cv::NORM_INF) == 0,
+        "Hugin validation must place an oFFs-cropped enblend mask onto hm-cupano's full mapping canvas");
     const cv::Mat published_left = cv::imread((root / "game" / "left.png").string(), cv::IMREAD_COLOR);
     const cv::Mat published_right = cv::imread((root / "game" / "right.png").string(), cv::IMREAD_COLOR);
     ok &= expect(

@@ -525,8 +525,9 @@ absl::Status StitcherPriv::ensure_stitcher() {
     return absl::NotFoundError("No control masks to load");
   }
 
-  // In one-pass mode we want to be resilient to partial stitcher artifacts (e.g. mapping TIFFs exist but seam_file.png
-  // is missing). Without a seam file, hm-cupano will fail to load control masks and we would output a gray canvas.
+  // In one-pass mode, defer loading until configuration has produced the mapping artifacts. Once mappings exist, every
+  // mode validates the seam before hm-cupano loads it: enblend may save a cropped PNG with an oFFs origin that
+  // hm-cupano does not interpret itself.
   if (one_pass_mode_) {
     auto is_configured = hm::stitching::is_stitching_configured(config_file_);
     if (!is_configured.ok()) {
@@ -539,11 +540,11 @@ absl::Status StitcherPriv::ensure_stitcher() {
       }
       return absl::OkStatus();
     }
-    const absl::Status seam_status = hm::stitching::maybe_create_default_seam_file(config_file_);
-    if (!seam_status.ok()) {
-      return seam_status;
-    }
   }
+
+  const absl::Status seam_status = hm::stitching::maybe_create_default_seam_file(config_file_);
+  if (!seam_status.ok())
+    return seam_status;
 
   auto artifact_lock = hm::stitching::HuginProject::RecoverAndLock(config_file_);
   if (!artifact_lock.ok()) {

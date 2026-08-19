@@ -81,6 +81,18 @@ const std::array<const char*, 8> kLegacyRequiredArtifacts = {
     "mapping_0001_y.tif",
 };
 
+const std::array<const char*, 9> kGenerationArtifacts = {
+    "hm_project.pto",
+    "autooptimiser_out.pto",
+    "mapping_0000.tif",
+    "mapping_0000_x.tif",
+    "mapping_0000_y.tif",
+    "mapping_0001.tif",
+    "mapping_0001_x.tif",
+    "mapping_0001_y.tif",
+    "seam_file.png",
+};
+
 const std::array<const char*, 2> kOptionalArtifacts = {"seam_file.png", "panorama.tif"};
 
 absl::StatusOr<std::string> read_file(const fs::path& path) {
@@ -448,28 +460,142 @@ absl::Status inspect_remap_tiff(
   return validate_decoded_dimensions(width, height, maximum_dimension, "Hugin remap TIFF " + path.string());
 }
 
-absl::StatusOr<std::pair<int, int>> read_png_dimensions(const fs::path& path) {
+struct PngLayout {
+  int width{0};
+  int height{0};
+  int offset_x{0};
+  int offset_y{0};
+};
+
+absl::StatusOr<PngLayout> read_png_layout(const fs::path& path) {
   std::ifstream input(path, std::ios::binary);
-  std::array<unsigned char, 24> header{};
-  input.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()));
   const std::array<unsigned char, 8> signature = {137, 80, 78, 71, 13, 10, 26, 10};
-  if (input.gcount() != static_cast<std::streamsize>(header.size()) ||
-      !std::equal(signature.begin(), signature.end(), header.begin()) || header[8] != 0 || header[9] != 0 ||
-      header[10] != 0 || header[11] != 13 || header[12] != 'I' || header[13] != 'H' || header[14] != 'D' ||
-      header[15] != 'R') {
+  std::array<unsigned char, 8> file_signature{};
+  input.read(reinterpret_cast<char*>(file_signature.data()), static_cast<std::streamsize>(file_signature.size()));
+  if (!input || file_signature != signature) {
     return absl::FailedPreconditionError("Invalid PNG header: " + path.string());
   }
-  auto big_endian_u32 = [&](size_t offset) {
-    return (static_cast<uint32_t>(header[offset]) << 24) | (static_cast<uint32_t>(header[offset + 1]) << 16) |
-        (static_cast<uint32_t>(header[offset + 2]) << 8) | static_cast<uint32_t>(header[offset + 3]);
+  auto big_endian_u32 = [](const unsigned char* bytes) {
+    return (static_cast<uint32_t>(bytes[0]) << 24) | (static_cast<uint32_t>(bytes[1]) << 16) |
+        (static_cast<uint32_t>(bytes[2]) << 8) | static_cast<uint32_t>(bytes[3]);
   };
-  const uint32_t width = big_endian_u32(16);
-  const uint32_t height = big_endian_u32(20);
-  if (width == 0 || height == 0 || width > std::numeric_limits<int>::max() ||
-      height > std::numeric_limits<int>::max()) {
-    return absl::FailedPreconditionError("Invalid PNG dimensions: " + path.string());
+
+  PngLayout layout;
+  bool have_header = false;
+  while (input) {
+    std::array<unsigned char, 8> chunk_header{};
+    input.read(reinterpret_cast<char*>(chunk_header.data()), static_cast<std::streamsize>(chunk_header.size()));
+    if (!input)
+      break;
+    const uint32_t length = big_endian_u32(chunk_header.data());
+    const std::string type(reinterpret_cast<const char*>(chunk_header.data() + 4), 4);
+    if (type == "IHDR") {
+      if (have_header || length != 13)
+        return absl::FailedPreconditionError("Invalid PNG IHDR chunk: " + path.string());
+      std::array<unsigned char, 13> data{};
+      input.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
+      if (!input)
+        return absl::FailedPreconditionError("Truncated PNG IHDR chunk: " + path.string());
+      const uint32_t width = big_endian_u32(data.data());
+      const uint32_t height = big_endian_u32(data.data() + 4);
+      if (width == 0 || height == 0 || width > std::numeric_limits<int>::max() ||
+          height > std::numeric_limits<int>::max()) {
+        return absl::FailedPreconditionError("Invalid PNG dimensions: " + path.string());
+      }
+      layout.width = static_cast<int>(width);
+      layout.height = static_cast<int>(height);
+      have_header = true;
+    } else if (type == "oFFs") {
+      if (!have_header || length != 9)
+        return absl::FailedPreconditionError("Invalid PNG oFFs chunk: " + path.string());
+      std::array<unsigned char, 9> data{};
+      input.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
+      if (!input || data[8] != 0)
+        return absl::FailedPreconditionError("PNG seam offset is not expressed in pixels: " + path.string());
+      auto signed_coordinate = [&](const unsigned char* bytes) {
+        const uint32_t value = big_endian_u32(bytes);
+        return value <= static_cast<uint32_t>(std::numeric_limits<int32_t>::max())
+            ? static_cast<int64_t>(value)
+            : static_cast<int64_t>(value) - (int64_t{1} << 32);
+      };
+      layout.offset_x = static_cast<int>(signed_coordinate(data.data()));
+      layout.offset_y = static_cast<int>(signed_coordinate(data.data() + 4));
+    } else {
+      input.seekg(static_cast<std::streamoff>(length), std::ios::cur);
+      if (!input)
+        return absl::FailedPreconditionError("Truncated PNG chunk: " + path.string());
+    }
+    std::array<unsigned char, 4> crc{};
+    input.read(reinterpret_cast<char*>(crc.data()), static_cast<std::streamsize>(crc.size()));
+    if (!input)
+      return absl::FailedPreconditionError("Truncated PNG chunk CRC: " + path.string());
+    if (type == "IDAT" || type == "IEND")
+      break;
   }
-  return std::make_pair(static_cast<int>(width), static_cast<int>(height));
+  if (!have_header)
+    return absl::FailedPreconditionError("PNG is missing its IHDR chunk: " + path.string());
+  return layout;
+}
+
+absl::StatusOr<std::pair<int, int>> read_png_dimensions(const fs::path& path) {
+  auto layout = read_png_layout(path);
+  if (!layout.ok())
+    return layout.status();
+  return std::make_pair(layout->width, layout->height);
+}
+
+absl::Status validate_and_normalize_seam(const fs::path& path, int canvas_width, int canvas_height) {
+  if (canvas_width <= 0 || canvas_height <= 0)
+    return absl::InvalidArgumentError("Seam canvas dimensions must be positive");
+  auto layout = read_png_layout(path);
+  if (!layout.ok())
+    return layout.status();
+  const int64_t right = static_cast<int64_t>(layout->offset_x) + layout->width;
+  const int64_t bottom = static_cast<int64_t>(layout->offset_y) + layout->height;
+  if (layout->offset_x < 0 || layout->offset_y < 0 || right > canvas_width || bottom > canvas_height) {
+    return absl::FailedPreconditionError(
+        "PNG seam crop lies outside its mapping canvas: " + path.string() + " crop=" + std::to_string(layout->width) +
+        "x" + std::to_string(layout->height) + "+" + std::to_string(layout->offset_x) + "+" +
+        std::to_string(layout->offset_y) + " canvas=" + std::to_string(canvas_width) + "x" +
+        std::to_string(canvas_height));
+  }
+
+  cv::Mat seam;
+  try {
+    seam = cv::imread(path.string(), cv::IMREAD_GRAYSCALE);
+  } catch (const cv::Exception& exception) {
+    return absl::ResourceExhaustedError("Unable to safely decode seam: " + std::string(exception.what()));
+  } catch (const std::bad_alloc&) {
+    return absl::ResourceExhaustedError("Unable to allocate decoded seam");
+  }
+  if (seam.empty() || seam.type() != CV_8UC1 || seam.cols != layout->width || seam.rows != layout->height)
+    return absl::FailedPreconditionError("PNG seam is not a decodable 8-bit grayscale image: " + path.string());
+  double minimum = 0.0;
+  double maximum = 0.0;
+  cv::minMaxLoc(seam, &minimum, &maximum);
+  if (maximum <= minimum)
+    return absl::FailedPreconditionError("PNG seam is uniform: " + path.string());
+
+  if (layout->offset_x != 0 || layout->offset_y != 0 || seam.cols != canvas_width || seam.rows != canvas_height) {
+    cv::Mat normalized;
+    try {
+      cv::copyMakeBorder(
+          seam,
+          normalized,
+          layout->offset_y,
+          canvas_height - static_cast<int>(bottom),
+          layout->offset_x,
+          canvas_width - static_cast<int>(right),
+          cv::BORDER_REPLICATE);
+      if (!cv::imwrite(path.string(), normalized))
+        return absl::InternalError("Unable to write normalized seam: " + path.string());
+    } catch (const cv::Exception& exception) {
+      return absl::ResourceExhaustedError("Unable to normalize seam: " + std::string(exception.what()));
+    } catch (const std::bad_alloc&) {
+      return absl::ResourceExhaustedError("Unable to allocate normalized seam");
+    }
+  }
+  return absl::OkStatus();
 }
 
 absl::Status validate_remaps(
@@ -650,30 +776,15 @@ absl::Status validate_staged_artifacts(const fs::path& directory, const std::opt
   // expected to equal the uncropped PTO panorama canvas. Both contracts must
   // independently be finite and bounded.
   const fs::path seam_path = directory / "seam_file.png";
-  auto seam_dimensions = read_png_dimensions(seam_path);
-  cv::Mat seam;
-  // Enblend may crop the saved mask to the non-transparent panorama bounds.
-  // hm-cupano deliberately pads such masks on the right and bottom by
-  // replicating their border, so any non-empty mask bounded by the decoded
-  // mapping canvas satisfies its runtime contract.
-  if (seam_dimensions.ok() && seam_dimensions->first <= canvas->first && seam_dimensions->second <= canvas->second) {
-    try {
-      seam = cv::imread(seam_path.string(), cv::IMREAD_GRAYSCALE);
-    } catch (const cv::Exception&) {
-      seam.release();
-    } catch (const std::bad_alloc&) {
-      return absl::ResourceExhaustedError("Unable to allocate decoded Hugin seam");
-    }
-  }
-  double minimum = 0.0;
-  double maximum = 0.0;
-  if (!seam.empty())
-    cv::minMaxLoc(seam, &minimum, &maximum);
-  if (seam.empty() || seam.cols > canvas->first || seam.rows > canvas->second || maximum <= minimum) {
+  status = validate_and_normalize_seam(seam_path, canvas->first, canvas->second);
+  if (!status.ok()) {
+    if (!absl::IsFailedPrecondition(status))
+      return status;
     if (!hard_seam_fallback_enabled()) {
       return absl::FailedPreconditionError(
-          "enblend did not produce a valid, non-uniform seam_file.png; refusing to generate a hard-seam fallback. "
-          "Fix enblend seam generation or set HM_ALLOW_HARD_SEAM_FALLBACK=1 to explicitly allow the fallback");
+          "enblend did not produce a usable seam_file.png; refusing to generate a hard-seam fallback: " +
+          status.ToString() +
+          ". Fix enblend seam generation or set HM_ALLOW_HARD_SEAM_FALLBACK=1 to explicitly allow the fallback");
     }
     try {
       status = create_hard_seam(seam_path, first, second, canvas->first, canvas->second);
@@ -684,18 +795,10 @@ absl::Status validate_staged_artifacts(const fs::path& directory, const std::opt
     }
     if (!status.ok())
       return status;
-    auto generated_dimensions = read_png_dimensions(seam_path);
-    if (!generated_dimensions.ok() || generated_dimensions->first != canvas->first ||
-        generated_dimensions->second != canvas->second) {
-      return absl::FailedPreconditionError("Generated Hugin seam has invalid dimensions");
-    }
-    seam = cv::imread(seam_path.string(), cv::IMREAD_GRAYSCALE);
-    if (seam.empty())
-      return absl::FailedPreconditionError("Generated Hugin seam is not decodable");
-    cv::minMaxLoc(seam, &minimum, &maximum);
+    status = validate_and_normalize_seam(seam_path, canvas->first, canvas->second);
+    if (!status.ok())
+      return status;
   }
-  if (seam.type() != CV_8UC1 || seam.cols > canvas->first || seam.rows > canvas->second || maximum <= minimum)
-    return absl::FailedPreconditionError("Hugin seam violates the decoded canvas/type contract");
   return fsync_path(seam_path);
 }
 
@@ -895,12 +998,16 @@ absl::Status HuginProject::Recover(const fs::path& game_dir) {
   return lock.ok() ? absl::OkStatus() : lock.status();
 }
 
+absl::Status HuginProject::ValidateAndNormalizeSeam(const fs::path& seam_path, int canvas_width, int canvas_height) {
+  return validate_and_normalize_seam(seam_path, canvas_width, canvas_height);
+}
+
 absl::StatusOr<std::string> HuginProject::GenerationId(const fs::path& game_dir, const ArtifactLock&) {
   std::ostringstream generation;
-  // The stitched surface is determined by the PTO/remap generation. Legacy
-  // valid generations did not publish left.png/right.png, so do not make
-  // those provenance images part of the runtime identity.
-  for (const char* name : kLegacyRequiredArtifacts) {
+  // The stitched surface is determined by the PTO/remaps and seam. Legacy
+  // valid generations did not publish left.png/right.png, so do not make those
+  // provenance images part of the runtime identity.
+  for (const char* name : kGenerationArtifacts) {
     struct stat metadata{};
     const fs::path path = game_dir / name;
     if (::stat(path.c_str(), &metadata) != 0 || !S_ISREG(metadata.st_mode)) {

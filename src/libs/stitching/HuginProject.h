@@ -58,6 +58,13 @@ class HuginProject {
   static absl::StatusOr<int> ParseProjection(const std::string& pto);
   static absl::StatusOr<CameraPose> ParseCameraPose(const std::string& pto, size_t image_index);
 
+  // Validate a two-camera enblend seam and expand any pixel-offset crop to the
+  // full mapping canvas expected by hm-cupano.
+  static absl::Status ValidateAndNormalizeSeam(
+      const std::filesystem::path& seam_path,
+      int canvas_width,
+      int canvas_height);
+
   // Builds all Hugin products in a private same-filesystem directory and only
   // publishes them into game_dir after every required mapping has validated.
   static absl::Status Configure(

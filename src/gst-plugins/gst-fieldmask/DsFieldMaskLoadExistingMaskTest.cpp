@@ -42,6 +42,9 @@ int main() {
     std::ofstream(tmpdir / name) << "generation-test-artifact\n";
   }
 
+  cv::Mat seam(64, 64, CV_8UC1, cv::Scalar(0));
+  seam.colRange(32, seam.cols).setTo(255);
+  cv::imwrite((tmpdir / "seam_file.png").string(), seam);
   cv::Mat mask(64, 64, CV_8UC1, cv::Scalar(255));
   hm::stitching::RinkProfile profile;
   profile.masks = {mask};

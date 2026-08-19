@@ -930,7 +930,6 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
   if (!artifact_lock.ok())
     return artifact_lock.status();
   const fs::path seam_path = root / "seam_file.png";
-  const bool seam_exists = fs::exists(seam_path);
 
   const fs::path mapping0_path = root / "mapping_0000.tif";
   const fs::path mapping1_path = root / "mapping_0001.tif";
@@ -948,41 +947,22 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
   HM_ASSIGN_OR_RETURN(measured_canvas, normalize_and_measure_canvas(&p0, &p1));
   const int canvas_width = static_cast<int>(measured_canvas.width);
   const int canvas_height = static_cast<int>(measured_canvas.height);
-  if (seam_exists) {
-    cv::Mat existing;
-    try {
-      existing = cv::imread(seam_path.string(), cv::IMREAD_GRAYSCALE);
-    } catch (const cv::Exception& exception) {
-      return absl::ResourceExhaustedError("Unable to safely decode existing seam: " + std::string(exception.what()));
-    } catch (const std::bad_alloc&) {
-      return absl::ResourceExhaustedError("Unable to allocate decoded seam");
-    }
-    // Enblend can crop its mask to the non-transparent panorama bounds.
-    // hm-cupano accepts that representation and pads its right/bottom borders
-    // to the mapping canvas at load time.
-    if (!existing.empty() && existing.cols <= canvas_width && existing.rows <= canvas_height) {
-      double min_value = 0.0;
-      double max_value = 0.0;
-      cv::minMaxLoc(existing, &min_value, &max_value);
-      if (max_value > min_value) {
-        return absl::OkStatus();
-      }
-      std::cerr << "Existing seam mask is uniform; regenerating " << seam_path.string() << std::endl;
-    }
-    if (existing.empty() || existing.cols > canvas_width || existing.rows > canvas_height) {
-      std::cerr << "Existing seam mask exceeds the stitched canvas; regenerating " << seam_path.string() << " for "
-                << canvas_width << "x" << canvas_height << std::endl;
-    }
-  }
+  const absl::Status seam_status = HuginProject::ValidateAndNormalizeSeam(seam_path, canvas_width, canvas_height);
+  if (seam_status.ok())
+    return absl::OkStatus();
+  if (!absl::IsFailedPrecondition(seam_status))
+    return seam_status;
 
   if (!hard_seam_fallback_enabled()) {
     return absl::FailedPreconditionError(TO_STRING(
-        "A valid, non-uniform seam_file.png is required under " << root.string()
-                                                                << "; refusing to generate a hard-seam fallback. "
-                                                                   "Regenerate it with enblend or set "
-                                                                   "HM_ALLOW_HARD_SEAM_FALLBACK=1 to explicitly "
-                                                                   "allow the fallback"));
+        "A usable seam_file.png is required under " << root.string()
+                                                    << "; refusing to generate a hard-seam fallback: " << seam_status
+                                                    << ". Regenerate it with enblend or set "
+                                                       "HM_ALLOW_HARD_SEAM_FALLBACK=1 to explicitly "
+                                                       "allow the fallback"));
   }
+  std::cerr << "Existing seam mask is unusable; HM_ALLOW_HARD_SEAM_FALLBACK=1 permits regeneration: " << seam_status
+            << std::endl;
 
   const int x0 = static_cast<int>(p0.x_px);
   const int y0 = static_cast<int>(p0.y_px);
@@ -1049,7 +1029,7 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
 
   std::cout << "Created fallback seam mask: " << seam_path.string() << " (" << canvas_width << "x" << canvas_height
             << ")" << std::endl;
-  return absl::OkStatus();
+  return HuginProject::ValidateAndNormalizeSeam(seam_path, canvas_width, canvas_height);
 }
 
 bool can_configure_stitching(const YAML::Node& config) {
