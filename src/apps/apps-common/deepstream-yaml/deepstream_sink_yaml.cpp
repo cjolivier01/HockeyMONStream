@@ -83,6 +83,10 @@ gboolean parse_sink_yaml(
       config->encoder_config.enc_type = (NvDsEncHwSwType)itr->second.as<int>();
     } else if (paramKey == "bitrate") {
       config->encoder_config.bitrate = itr->second.as<gint>();
+    } else if (paramKey == "bitrate-per-pixel-numerator") {
+      config->encoder_config.bitrate_per_pixel_numerator = itr->second.as<guint64>();
+    } else if (paramKey == "bitrate-per-pixel-denominator") {
+      config->encoder_config.bitrate_per_pixel_denominator = itr->second.as<guint64>();
     } else if (paramKey == "profile") {
       config->encoder_config.profile = itr->second.as<guint>();
     } else if (paramKey == "iframeinterval") {

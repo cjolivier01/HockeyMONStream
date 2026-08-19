@@ -266,6 +266,24 @@ int main() {
       "Runtime stitch-frame overrides must remove zero, mask lower config layers, persist nonzero, and preserve the "
       "pending generation owner");
 
+  YAML::Node source_uri_spellings(YAML::NodeType::Map);
+  source_uri_spellings["source0"]["enable"] = 1;
+  source_uri_spellings["source0"]["type"] = static_cast<int>(NV_DS_SOURCE_URI_MULTIPLE);
+  source_uri_spellings["source0"]["uri_list"].push_back("file:///camera/chapter-1.mp4");
+  source_uri_spellings["source0"]["uri_list"].push_back("file:///camera/chapter-highest-bitrate.mp4");
+  source_uri_spellings["source0"]["uri"] = "file:///camera/chapter-1.mp4";
+  source_uri_spellings["source1"]["enable"] = 0;
+  source_uri_spellings["source1"]["type"] = static_cast<int>(NV_DS_SOURCE_URI_MULTIPLE);
+  source_uri_spellings["source1"]["uri-list"].push_back("file:///disabled.mp4");
+  const auto source_uris = hm::configurator_internal::enabled_source_video_uris(source_uri_spellings);
+  ok &= expect(
+      source_uris ==
+          std::vector<std::string>{
+              "file:///camera/chapter-1.mp4",
+              "file:///camera/chapter-highest-bitrate.mp4",
+              "file:///camera/chapter-1.mp4"},
+       "Bitrate discovery must inspect every enabled uri_list chapter, including later higher-bitrate entries");
+
   YAML::Node explicit_roles(YAML::NodeType::Map);
   explicit_roles["hstream_ui"]["video_roles"]["left"].push_back(".hstream-ui/left/GX010001.MP4");
   explicit_roles["hstream_ui"]["video_roles"]["right"].push_back(".hstream-ui/right/GX010002.MP4");
