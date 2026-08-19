@@ -31,5 +31,8 @@ cc_library(
 cc_test(
   name = "asset_manager_test",
   srcs = ["AssetManagerTest.cpp"],
-  deps = [":asset_manager"],
+  deps = [
+    ":asset_manager",
+    "@yaml-cpp",
+  ],
 )

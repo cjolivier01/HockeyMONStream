@@ -713,8 +713,9 @@ std::string internal::github_token(std::chrono::milliseconds cli_timeout) {
   return github_token_from_cli(cli_timeout);
 }
 
-absl::StatusOr<std::vector<AssetSpec>> AssetManager::Discover(
+absl::StatusOr<std::vector<AssetSpec>> discover_impl(
     const std::vector<fs::path>& configs,
+    const AssetManager::ConfigTransform& transform,
     const Limits& limits) {
   struct Pending {
     fs::path path;
@@ -744,6 +745,8 @@ absl::StatusOr<std::vector<AssetSpec>> AssetManager::Discover(
     } catch (const YAML::Exception& exception) {
       return absl::InvalidArgumentError("Unable to parse asset config " + canonical.string() + ": " + exception.what());
     }
+    if (transform)
+      transform(config);
     std::vector<YAML::Node> specs;
     for (const char* key : {"pretrained-assets", "assets", "downloads"})
       normalize_specs(config[key], &specs);
@@ -763,8 +766,40 @@ absl::StatusOr<std::vector<AssetSpec>> AssetManager::Discover(
   return assets;
 }
 
+absl::StatusOr<std::vector<AssetSpec>> AssetManager::Discover(
+    const std::vector<fs::path>& configs,
+    const Limits& limits) {
+  return discover_impl(configs, {}, limits);
+}
+
+absl::StatusOr<std::vector<AssetSpec>> AssetManager::Discover(
+    const std::vector<fs::path>& configs,
+    const ConfigTransform& transform,
+    const Limits& limits) {
+  return discover_impl(configs, transform, limits);
+}
+
 absl::Status AssetManager::Ensure(const std::vector<fs::path>& configs, const Limits& limits) {
   auto assets = Discover(configs, limits);
+  if (!assets.ok())
+    return assets.status();
+  static const CURLcode initialized = curl_global_init(CURL_GLOBAL_DEFAULT);
+  if (initialized != CURLE_OK)
+    return absl::InternalError("Unable to initialize HTTPS asset manager");
+  size_t total = 0;
+  for (const AssetSpec& spec : *assets) {
+    auto status = ensure_one(spec, limits, &total);
+    if (!status.ok())
+      return status;
+  }
+  return absl::OkStatus();
+}
+
+absl::Status AssetManager::Ensure(
+    const std::vector<fs::path>& configs,
+    const ConfigTransform& transform,
+    const Limits& limits) {
+  auto assets = Discover(configs, transform, limits);
   if (!assets.ok())
     return assets.status();
   static const CURLcode initialized = curl_global_init(CURL_GLOBAL_DEFAULT);

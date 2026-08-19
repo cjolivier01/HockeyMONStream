@@ -4,6 +4,7 @@
 #include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/stitching/CalibrationCompletion.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
@@ -82,16 +83,6 @@ bool calibration_progress_requested() {
 
 bool calibration_starts_from_control_points() {
   return g_strcmp0(g_getenv("HSTREAM_CALIBRATION_START_STAGE"), "features") == 0;
-}
-
-std::string calibration_completion_scope(
-    const std::string& output_generation,
-    const std::string& invalidation_id,
-    const std::string& run_generation) {
-  std::ostringstream scope;
-  scope << output_generation.size() << ':' << output_generation << invalidation_id.size() << ':' << invalidation_id
-        << run_generation.size() << ':' << run_generation;
-  return scope.str();
 }
 
 void log_canvas_hint(const std::string& prefix, size_t width, size_t height) {
@@ -850,6 +841,8 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     configure_only_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "one-pass-mode") {
     one_pass_mode_ = !!std::atol(prop.value.c_str());
+  } else if (prop.key == "calibrate-field-mask" || prop.key == "calibrate_field_mask") {
+    calibrate_field_mask_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "force-scoreboard-config" || prop.key == "force_scoreboard_config") {
     force_scoreboard_config_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "show") {
@@ -1418,18 +1411,19 @@ absl::Status StitcherPriv::GenerateOutput(
     std::string output_generation;
     HM_ASSIGN_OR_RETURN(
         output_generation, stitching::stitched_output_generation_id(hugin_generation, applied_post_stitch_rotation));
-    const std::string completion_scope =
-        calibration_completion_scope(output_generation, calibration_invalidation_id_, calibration_run_generation_);
+    const std::string completion_scope = stitching::calibration_completion_scope(
+        output_generation, calibration_invalidation_id_, calibration_run_generation_);
 
     if (one_pass_mode_ && !field_mask_attempted_) {
       field_mask_attempted_ = true;
-      bool mask_configured = stitching::is_field_mask_configured(config_file_, output_generation);
+      bool mask_configured = !calibrate_field_mask_ ||
+          stitching::is_field_mask_configured(config_file_, output_generation, calibration_invalidation_id_);
       OnePassCalibrationProgressPlan progress = one_pass_calibration_progress_plan(
           configured_during_run_,
           mask_configured,
           /*report_latched=*/false,
           process_calibration_completion_latch.delivered(completion_scope));
-      if (progress.report) {
+      if (progress.create_mask) {
         report_calibration_progress("rink-mask", "started", "Looking for the ice surface in the stitched panorama");
       }
       if (progress.create_mask) {
@@ -1476,7 +1470,8 @@ absl::Status StitcherPriv::GenerateOutput(
         if (delivered) {
           calibration_completion_reported_ = true;
           if (process_calibration_completion_latch.try_begin_delivery(completion_scope)) {
-            report_calibration_progress("rink-mask", "complete", "Ice surface calibration is ready");
+            if (calibrate_field_mask_)
+              report_calibration_progress("rink-mask", "complete", "Ice surface calibration is ready");
             report_calibration_progress("calibration", "complete", "Stitching calibration is complete");
             g_print("hmstitcher: one-pass stitching configuration complete\n");
             std::fflush(stdout);

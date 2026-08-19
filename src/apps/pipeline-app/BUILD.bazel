@@ -213,6 +213,23 @@ cc_test(
 )
 
 cc_test(
+    name = "stitching_calibration_mode_test",
+    srcs = [
+        "StitchingCalibrationMode.h",
+        "StitchingCalibrationModeTest.cpp",
+        "StitcherOnePassConfig.h",
+    ],
+    args = ["$(location //configs:ds_hockey_app_config.yaml)"],
+    copts = PIPELINE_APP_COPTS,
+    data = ["//configs:ds_hockey_app_config.yaml"],
+    deps = [
+        "//src/libs/assets:asset_manager",
+        "//src/libs/stitching",
+        "@yaml-cpp",
+    ],
+)
+
+cc_test(
     name = "stitch_frame_time_cli_test",
     srcs = ["StitchFrameTimeCliTest.cpp"],
     args = ["$(location :hstream-cli)"],

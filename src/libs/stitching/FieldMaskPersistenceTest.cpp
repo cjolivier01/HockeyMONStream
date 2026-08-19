@@ -64,6 +64,47 @@ int main() {
     }
     initial_hugin_lock->reset();
   }
+  ok &= expect(
+      !initial_output_generation.empty() &&
+          hm::stitching::validate_stitched_output_generation(root.string(), initial_output_generation).ok(),
+      "stitching-only completion must accept the current Hugin generation without a rink mask");
+  std::string live_rotation_generation;
+  {
+    auto hugin_lock = hm::stitching::HuginProject::RecoverAndLock(root);
+    ok &= expect(hugin_lock.ok(), "runtime-rotation completion test must lock Hugin artifacts");
+    if (hugin_lock.ok()) {
+      auto hugin_generation = hm::stitching::HuginProject::GenerationId(root, **hugin_lock);
+      ok &= expect(hugin_generation.ok(), "runtime-rotation completion test must identify Hugin artifacts");
+      if (hugin_generation.ok()) {
+        auto generation = hm::stitching::stitched_output_generation_id(*hugin_generation, 1.0);
+        ok &= expect(generation.ok(), "runtime-rotation completion test must identify stitched output");
+        if (generation.ok())
+          live_rotation_generation = *generation;
+      }
+    }
+  }
+  ok &= expect(
+      !live_rotation_generation.empty() &&
+          hm::stitching::validate_stitched_output_generation(root.string(), live_rotation_generation).ok(),
+      "stitching-only completion must accept the live runtime rotation even before Save Preset");
+  auto stale_hugin_generation = hm::stitching::stitched_output_generation_id("stale-hugin", 0.0);
+  ok &= expect(
+      stale_hugin_generation.ok() &&
+          absl::IsAborted(hm::stitching::validate_stitched_output_generation(root.string(), *stale_hugin_generation)),
+      "stitching-only completion must reject a result from stale Hugin artifacts");
+  {
+    YAML::Node owned = YAML::LoadFile((root / "config.yaml").string());
+    owned["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+    owned["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "current-owner";
+    std::ofstream(root / "config.yaml") << owned << '\n';
+  }
+  ok &= expect(
+      hm::stitching::validate_stitched_output_generation(root.string(), initial_output_generation, "current-owner")
+              .ok() &&
+          absl::IsAborted(
+              hm::stitching::validate_stitched_output_generation(
+                  root.string(), initial_output_generation, "superseded-owner")),
+      "stitching-only completion must reject a superseded persisted calibration owner");
   NvBufSurfaceParams cancelled_surface_params{};
   hm::surface::Surface cancelled_surface(&cancelled_surface_params);
   const auto cancelled_rink =
@@ -118,8 +159,9 @@ int main() {
     ok &= expect(
         completed_calibration["status"].as<std::string>("") == "complete" && !completed_calibration["stale_from"] &&
             !completed_calibration["artifacts_invalidated"] &&
+            completed_calibration["rink_mask_status"].as<std::string>("") == "complete" &&
             completed_calibration["invalidation_id"].as<std::string>("") == "rink-run-a",
-        "final rink publication must complete the active calibration generation atomically");
+        "final rink publication must complete the active calibration and rink-mask generation atomically");
     completed_calibration["status"] = "complete";
     completed_calibration.remove("artifacts_invalidated");
     completed_config["stitching"]["post_stitch_rotate_degrees"] = 2.5;
@@ -129,8 +171,8 @@ int main() {
     }
     ok &= expect(
         hm::stitching::save_rink_profile(root.string(), profile, "rink-run-a").ok() &&
-            hm::stitching::is_field_mask_configured(root.string()),
-        "the completed generation owner must be able to publish a live-rotation rink generation");
+            hm::stitching::is_field_mask_configured(root.string(), {}, "rink-run-a"),
+        "the completed generation owner must be able to publish and validate a live-rotation rink generation");
     YAML::Node superseding_config = YAML::LoadFile((root / "config.yaml").string());
     superseding_config["hstream_ui"]["stitching_calibration"]["status"] = "pending";
     superseding_config["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = false;
@@ -144,8 +186,9 @@ int main() {
     ok &= expect(
         absl::IsAborted(superseded_rink) &&
             after_superseded_rink["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() ==
-                "rink-run-b",
-        "superseded rink publication must preserve the newer invalidation generation");
+                "rink-run-b" &&
+            !hm::stitching::is_field_mask_configured(root.string(), {}, "rink-run-a"),
+        "superseded rink publication and completion must preserve the newer invalidation generation");
 
     const cv::Mat committed_snapshot(24, 32, CV_8UC3, cv::Scalar(1, 2, 3));
     ok &= expect(

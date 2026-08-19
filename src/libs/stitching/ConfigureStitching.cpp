@@ -1409,7 +1409,34 @@ absl::StatusOr<YAML::Node> load_config_or_empty(const fs::path& config_path) {
 
 } // namespace
 
-absl::StatusOr<cv::Mat> load_field_mask(const std::string& game_dir, const std::string& expected_output_generation) {
+absl::Status validate_stitched_output_generation(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& expected_invalidation_id) {
+  if (game_dir.empty() || expected_output_generation.empty())
+    return absl::InvalidArgumentError("A game directory and stitched-output generation are required");
+
+  const fs::path root(game_dir);
+  auto hugin_lock = HuginProject::RecoverAndLock(root);
+  if (!hugin_lock.ok())
+    return hugin_lock.status();
+  auto config_transaction = GameConfigTransactionLock::Acquire(root);
+  if (!config_transaction.ok())
+    return config_transaction.status();
+  auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
+  if (!hugin_generation.ok())
+    return hugin_generation.status();
+  HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, *hugin_generation));
+  auto config = load_config_or_empty(root / "config.yaml");
+  if (!config.ok())
+    return config.status();
+  return validate_stitching_generation_owner(*config, expected_invalidation_id);
+}
+
+absl::StatusOr<cv::Mat> load_field_mask(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& expected_invalidation_id) {
   if (game_dir.empty()) {
     return absl::InvalidArgumentError("A game directory is required to load the field mask");
   }
@@ -1427,6 +1454,7 @@ absl::StatusOr<cv::Mat> load_field_mask(const std::string& game_dir, const std::
   auto config = load_config_or_empty(root / "config.yaml");
   if (!config.ok())
     return config.status();
+  HM_RETURN_IF_ERROR(validate_stitching_generation_owner(*config, expected_invalidation_id));
   std::string current_output_generation;
   if (!expected_output_generation.empty()) {
     HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, *hugin_generation));
@@ -1487,8 +1515,11 @@ absl::StatusOr<cv::Mat> load_field_mask(const std::string& game_dir, const std::
   return mask;
 }
 
-bool is_field_mask_configured(const std::string& game_dir, const std::string& expected_output_generation) {
-  return load_field_mask(game_dir, expected_output_generation).ok();
+bool is_field_mask_configured(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& expected_invalidation_id) {
+  return load_field_mask(game_dir, expected_output_generation, expected_invalidation_id).ok();
 }
 
 absl::Status save_rink_profile_locked(
@@ -1594,6 +1625,7 @@ absl::Status save_rink_profile_locked(
     if (!expected_invalidation_id.empty()) {
       YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
       calibration["status"] = "complete";
+      calibration["rink_mask_status"] = "complete";
       calibration["invalidation_id"] = expected_invalidation_id;
       calibration.remove("stale_from");
       calibration.remove("artifacts_invalidated");

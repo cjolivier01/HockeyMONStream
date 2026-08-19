@@ -53,4 +53,30 @@ inline bool OnePassCalibrationRequired(bool one_pass_mode, bool stitching_config
   return one_pass_mode && (!stitching_configured || !field_mask_configured);
 }
 
+inline bool OnePassCalibrationRequiredForMode(
+    bool one_pass_mode,
+    bool stitching_configured,
+    bool field_mask_configured,
+    bool calibrate_field_mask,
+    bool calibration_completion_requested) {
+  return one_pass_mode &&
+      (!stitching_configured || (calibrate_field_mask && !field_mask_configured) ||
+       (!calibrate_field_mask && calibration_completion_requested));
+}
+
+inline bool StitcherCalibratesFieldMask(const YAML::Node& pipeline) {
+  if (!pipeline || !pipeline.IsMap()) {
+    return true;
+  }
+  const YAML::Node hmstitcher = pipeline["hmstitcher"];
+  if (!hmstitcher || !hmstitcher.IsMap()) {
+    return true;
+  }
+  const YAML::Node private_properties = hmstitcher["private-properties"];
+  if (!private_properties || !private_properties.IsMap()) {
+    return true;
+  }
+  return parse_one_pass_bool(private_properties["calibrate-field-mask"], true);
+}
+
 } // namespace hm
